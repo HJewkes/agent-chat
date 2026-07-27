@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "agent-chat",
+  "displayName": "Agent Chat",
+  "version": "0.1.0",
+  "description": "Cross-session messaging between Claude Code sessions, delivered over the channels capability",
+  "author": {
+    "name": "agent-chat"
+  },
+  "license": "MIT",
+  "keywords": ["mcp", "channels", "messaging", "multi-session"],
+  "mcpServers": {
+    "agent-chat": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/agent-chat-launch.sh",
+      "args": ["mcp"]
+    }
+  },
+  "channels": [
+    {
+      "server": "agent-chat"
+    }
+  ]
+}

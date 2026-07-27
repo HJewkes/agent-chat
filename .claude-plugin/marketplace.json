@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "agent-chat-local",
+  "description": "Local marketplace for agent-chat cross-session messaging",
+  "owner": {
+    "name": "agent-chat"
+  },
+  "plugins": [
+    {
+      "name": "agent-chat",
+      "source": "./plugins/agent-chat",
+      "description": "Cross-session messaging between Claude Code sessions, delivered over the channels capability"
+    }
+  ]
+}
