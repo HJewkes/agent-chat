@@ -173,10 +173,10 @@ class SocketServer {
       core.registry.setAwaitingApproval(conn, false)
     switch (msg.t) {
       case 'register': {
-        const result = core.registry.register(conn, msg)
-        if (result.ok)
-          core.append({ kind: 'registered', actor: msg.name, body: msg.workingOn, meta: { cwd: msg.cwd } })
-        logEvent(result.ok ? 'registered' : 'register_rejected', { name: msg.name, reason: result.reason })
+        // Destroying the displaced socket is what makes a takeover final: leaving
+        // it open would let the predecessor keep writing under a name it no
+        // longer holds.
+        const result = core.register(conn, msg, stale => stale.destroy())
         return reply(conn, { t: 'register_result', ...result })
       }
       case 'status':
@@ -249,18 +249,7 @@ class SocketServer {
     )
     conn.on('data', read)
 
-    const drop = (): void => {
-      const entry = core.registry.entryFor(conn)
-      const name = core.registry.drop(conn)
-      if (!name) return
-      logEvent('deregistered', { name, reason: 'connection closed' })
-      core.append({
-        kind: 'deregistered',
-        actor: name,
-        body: entry?.workingOn ?? '',
-        meta: { status: entry?.status ?? '' },
-      })
-    }
+    const drop = (): void => core.drop(conn)
     conn.on('close', drop)
     conn.on('error', drop)
   }

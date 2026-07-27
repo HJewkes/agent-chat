@@ -46,6 +46,24 @@ export const INSTRUCTIONS = [
 ].join(' ')
 
 /**
+ * Identity handed to a spawned agent by its launch plan. Both must be present:
+ * an id without a name cannot be registered, and a name without an id is just an
+ * ordinary session that happens to have been told what to call itself.
+ */
+export interface SpawnedIdentity {
+  agentId: string
+  name: string
+  workingOn: string
+}
+
+export function spawnedIdentity(env: NodeJS.ProcessEnv = process.env): SpawnedIdentity | undefined {
+  const agentId = env.AGENT_CHAT_AGENT_ID
+  const name = env.AGENT_CHAT_NAME
+  if (!agentId || !name) return undefined
+  return { agentId, name, workingOn: env.AGENT_CHAT_WORKING_ON ?? 'spawned agent, awaiting its first turn' }
+}
+
+/**
  * One of these runs per Claude Code session. Its stdio pipe is the session's
  * address, so routing is decided by which process emits, not by any field in
  * the notification (the channel protocol has no addressing).
@@ -86,6 +104,26 @@ export async function startMcpServer(): Promise<void> {
   const broker = new BrokerClient(deliver)
   await broker.connect()
 
+  // A spawned agent registers from its environment, before the model has had a
+  // turn. The name was already assigned at spawn time, so waiting for the model
+  // to call chat_register would make peer reachability depend on it complying
+  // with an instruction — a race that will sometimes lose, and which fails by
+  // leaving the agent invisible to everyone told to talk to it.
+  const spawned = spawnedIdentity()
+  if (spawned) {
+    await broker.request(
+      {
+        t: 'register',
+        name: spawned.name,
+        workingOn: spawned.workingOn,
+        cwd: process.cwd(),
+        pid: process.pid,
+        agentId: spawned.agentId,
+      },
+      'register_result',
+    )
+  }
+
   mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     await broker.send({
       t: 'approval',
@@ -95,7 +133,7 @@ export async function startMcpServer(): Promise<void> {
       inputPreview: params.input_preview,
     })
   })
-  const handler = new ToolHandler(broker)
+  const handler = new ToolHandler(broker, spawned?.name)
 
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...TOOL_DEFINITIONS] }))
   mcp.setRequestHandler(CallToolRequestSchema, async request => {

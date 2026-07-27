@@ -6,6 +6,13 @@ interface Entry {
   workingOn: string
   cwd: string
   pid: number
+  /**
+   * Set when this connection registered against a durable agent identity. The
+   * registry stays ignorant of what an agent is — it only needs the id to tell a
+   * resume takeover apart from a name collision, and to name the identity that
+   * just went away when the socket drops.
+   */
+  agentId?: string
   status: SessionStatus
   /** Set when Claude Code opened a permission dialog; cleared by any later activity. */
   awaitingApproval: boolean
@@ -171,17 +178,31 @@ export class Registry<C> {
   /**
    * A name is a lease held by a live connection, so it can only be taken over
    * once the previous holder is gone. That covers restarts and /mcp reconnect.
+   *
+   * One exception, and it exists for resume. When the incoming registration
+   * carries the same `agentId` as the entry currently holding the name, this is
+   * the same durable agent arriving in a new process — a takeover, not a
+   * collision. Without it, a resumed agent racing its predecessor's `close`
+   * handler fails with "held by another session", and the failure reads as a bug
+   * in resume rather than the race it is. The evicted connection comes back so
+   * the caller can record the detach and close the socket; identity checks are
+   * the caller's job, since the registry does not know what an agent id means.
    */
   register(
     conn: C,
-    input: { name: string; workingOn: string; cwd: string; pid: number },
-  ): { ok: boolean; reason?: string } {
+    input: { name: string; workingOn: string; cwd: string; pid: number; agentId?: string },
+  ): { ok: boolean; reason?: string; evicted?: C } {
     if (RESERVED_NAMES.has(input.name.toLowerCase()))
       return { ok: false, reason: `"${input.name}" is reserved and cannot be used as a session name` }
 
     const held = this.findByName(input.name)
-    if (held && held[0] !== conn)
-      return { ok: false, reason: `name "${input.name}" is held by another session` }
+    let evicted: C | undefined
+    if (held && held[0] !== conn) {
+      const sameAgent = input.agentId !== undefined && held[1].agentId === input.agentId
+      if (!sameAgent) return { ok: false, reason: `name "${input.name}" is held by another session` }
+      evicted = held[0]
+      this.entries.delete(evicted)
+    }
 
     const existing = this.entries.get(conn)
     this.entries.set(conn, {
@@ -189,13 +210,14 @@ export class Registry<C> {
       workingOn: input.workingOn,
       cwd: input.cwd,
       pid: input.pid,
+      ...(input.agentId === undefined ? {} : { agentId: input.agentId }),
       status: existing?.status ?? 'available',
       awaitingApproval: existing?.awaitingApproval ?? false,
       dnd: existing?.dnd ?? false,
       registeredAt: existing?.registeredAt ?? this.now(),
       lastSeen: this.now(),
     })
-    return { ok: true }
+    return { ok: true, ...(evicted === undefined ? {} : { evicted }) }
   }
 
   setStatus(conn: C, status: SessionStatus, workingOn?: string, dnd?: boolean): boolean {
@@ -247,9 +269,17 @@ export class Registry<C> {
     return this.entries.get(conn)?.awaitingApproval ?? false
   }
 
-  entryFor(conn: C): { workingOn: string; status: SessionStatus } | undefined {
+  entryFor(
+    conn: C,
+  ): { name: string; workingOn: string; status: SessionStatus; agentId?: string } | undefined {
     const entry = this.entries.get(conn)
-    return entry ? { workingOn: entry.workingOn, status: entry.status } : undefined
+    if (!entry) return undefined
+    return {
+      name: entry.name,
+      workingOn: entry.workingOn,
+      status: entry.status,
+      ...(entry.agentId === undefined ? {} : { agentId: entry.agentId }),
+    }
   }
 
   private build(from: string, text: string, extra: Partial<DeliveredMessage> = {}): DeliveredMessage {

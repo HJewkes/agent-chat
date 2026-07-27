@@ -213,9 +213,24 @@ function formatInbox(messages: DeliveredMessage[]): string {
 
 /** Tracks the registered name purely so chat_list can mark which entry is us. */
 export class ToolHandler {
-  private registeredName: string | null = null
+  private registeredName: string | null
+  /** True when the name came from the spawn environment rather than the model. */
+  private readonly nameIsFixed: boolean
 
-  constructor(private readonly broker: BrokerClient) {}
+  /**
+   * `spawnedName` seeds the handler for an agent the broker already registered
+   * from its environment. Without it the broker knows the agent's name and the
+   * handler does not, so `chat_send` would refuse with "call chat_register
+   * first" while the agent looked perfectly registered to every peer — visible
+   * to everyone, able to answer no one.
+   */
+  constructor(
+    private readonly broker: BrokerClient,
+    spawnedName?: string,
+  ) {
+    this.registeredName = spawnedName ?? null
+    this.nameIsFixed = spawnedName !== undefined
+  }
 
   private async call(
     message: Parameters<BrokerClient['request']>[0],
@@ -258,6 +273,18 @@ export class ToolHandler {
   }
 
   private async register(name: string, workingOn: string) {
+    // A spawned agent was named by whoever spawned it, and peers have already
+    // been told that name. Letting the model rename itself mid-session would
+    // strand every one of them, so the call is a no-op rather than a rename.
+    if (this.nameIsFixed) {
+      if (name === this.registeredName)
+        return text(`Already registered as "${name}" by the agent that spawned you.`)
+      return text(
+        `You are already registered as "${this.registeredName}" (spawned agent); ` +
+          'that name is fixed for this session.',
+      )
+    }
+
     const res = (await this.call(
       { t: 'register', name, workingOn, cwd: process.cwd(), pid: process.pid },
       'register_result',

@@ -18,12 +18,13 @@ const RECONNECT_DELAYS_MS = [100, 250, 500, 1000, 2000, 5000]
 
 type Waiter = (msg: ServerMessage) => void
 
-interface Identity {
-  name: string
-  workingOn: string
-  cwd: string
-  pid: number
-}
+/**
+ * What gets replayed on reconnect. `agentId` is in here deliberately: a broker
+ * restart that replayed only the name would reattach the process as an ordinary
+ * session, and the durable agent would go quietly missing from the roster at
+ * exactly the moment the roster is meant to be the trustworthy view.
+ */
+type Identity = Omit<Extract<ClientMessage, { t: 'register' }>, 't'>
 
 const brokerEntry = (): string => path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'cli.js')
 
@@ -115,7 +116,10 @@ export class BrokerClient {
   }
 
   request(message: ClientMessage, replyType: ReplyType): Promise<ServerMessage> {
-    if (message.t === 'register') this.identity = { ...message }
+    if (message.t === 'register') {
+      const { t: _kind, ...identity } = message
+      this.identity = identity
+    }
     return new Promise((resolve, reject) => {
       const socket = this.socket
       if (!socket) return reject(new Error('not connected to the broker'))

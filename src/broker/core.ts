@@ -1,9 +1,12 @@
 import type net from 'node:net'
-import { HUMAN, type DeliveredMessage } from '../protocol.js'
+import { HUMAN, type ClientMessage, type DeliveredMessage } from '../protocol.js'
+import { AgentLog } from '../agents/identity.js'
 import { logEvent } from './log.js'
 import { EventLog, newMsgId, type AppendInput } from './event-log.js'
 import { EventHub } from './events.js'
 import { Registry } from './registry.js'
+
+type RegisterMessage = Extract<ClientMessage, { t: 'register' }>
 
 export type Conn = net.Socket
 
@@ -34,6 +37,7 @@ export class BrokerCore {
   readonly registry: Registry<Conn>
   readonly events: EventLog
   readonly hub: EventHub
+  readonly agents: AgentLog
   readonly startedAt: number
 
   private readonly deliver: Deliver
@@ -43,6 +47,7 @@ export class BrokerCore {
     this.registry = options.registry ?? new Registry<Conn>()
     this.events = options.events ?? new EventLog(options.dbPath)
     this.hub = options.hub ?? new EventHub()
+    this.agents = new AgentLog(this.events)
     this.startedAt = Date.now()
   }
 
@@ -58,6 +63,78 @@ export class BrokerCore {
       data: JSON.stringify({ id: written.id, msgId: written.msgId, kind: input.kind, actor: input.actor }),
     })
     return written
+  }
+
+  /**
+   * Can this connection claim `agentId` under `name`?
+   *
+   * The check that matters is the name match. An agent id is an 8-char slice and
+   * is visible in the log to every session on the machine, so without this a
+   * session could register as an agent it merely read about and inherit that
+   * agent's peers, its brief, and whatever authority the roster implies. Binding
+   * the id to the name it was spawned under makes a stolen id useless on its own.
+   */
+  private claimable(agentId: string, name: string): { ok: true } | { ok: false; reason: string } {
+    const identity = this.agents.get(agentId)
+    if (!identity) return { ok: false, reason: `no agent with id ${agentId}` }
+    if (identity.name !== name)
+      return { ok: false, reason: `agent ${agentId} is "${identity.name}", not "${name}"` }
+    // Retirement frees the name, so another agent may already hold it. Attaching
+    // would resurrect an identity whose isolation has already been released.
+    if (identity.state === 'retired') return { ok: false, reason: `agent ${agentId} has been retired` }
+    return { ok: true }
+  }
+
+  /**
+   * The one registration path. Presence goes in the registry and dies with the
+   * socket; attaching and detaching go in the log and outlive it.
+   *
+   * `evict` closes a connection the takeover displaced. Injected because the core
+   * holds no sockets — same reason `deliver` is.
+   */
+  register(conn: Conn, msg: RegisterMessage, evict?: (conn: Conn) => void): { ok: boolean; reason?: string } {
+    if (msg.agentId !== undefined) {
+      const claim = this.claimable(msg.agentId, msg.name)
+      if (!claim.ok) {
+        logEvent('register_rejected', { name: msg.name, agentId: msg.agentId, reason: claim.reason })
+        return { ok: false, reason: claim.reason }
+      }
+    }
+
+    const result = this.registry.register(conn, msg)
+    logEvent(result.ok ? 'registered' : 'register_rejected', { name: msg.name, reason: result.reason })
+    if (!result.ok) return { ok: false, ...(result.reason === undefined ? {} : { reason: result.reason }) }
+
+    if (result.evicted !== undefined) {
+      // The predecessor's own close handler would append this too, but it may not
+      // have fired yet and the entry is already gone — so record it here, and let
+      // drop() find nothing left to record when it does fire.
+      if (msg.agentId !== undefined)
+        this.append({
+          kind: 'agent_detached',
+          actor: msg.name,
+          ref: msg.agentId,
+          body: 'superseded by resume',
+        })
+      logEvent('deregistered', { name: msg.name, reason: 'superseded by resume' })
+      evict?.(result.evicted)
+    }
+
+    this.append({ kind: 'registered', actor: msg.name, body: msg.workingOn, meta: { cwd: msg.cwd } })
+    if (msg.agentId !== undefined)
+      this.append({ kind: 'agent_attached', actor: msg.name, ref: msg.agentId, body: msg.workingOn })
+    return { ok: true }
+  }
+
+  /** The socket went away. Presence ends; the identity does not. */
+  drop(conn: Conn): void {
+    const entry = this.registry.entryFor(conn)
+    const name = this.registry.drop(conn)
+    if (!name || !entry) return
+    logEvent('deregistered', { name, reason: 'connection closed' })
+    this.append({ kind: 'deregistered', actor: name, body: entry.workingOn, meta: { status: entry.status } })
+    if (entry.agentId !== undefined)
+      this.append({ kind: 'agent_detached', actor: name, ref: entry.agentId, body: 'connection closed' })
   }
 
   /** Deliver to a named session if it happens to be connected right now. */
