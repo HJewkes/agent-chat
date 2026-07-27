@@ -397,3 +397,38 @@ describe('pair exchange rate', () => {
     expect(stdout).toContain('volleying across separate threads')
   })
 })
+
+describe('observation', () => {
+  it('reads a peer without delivering anything into it', async () => {
+    // Control first: a directed message DOES land, so the counter is working and
+    // an unchanged count afterwards means something.
+    const before = carol.inbox.length
+    await call(alice, 'chat_send', { to: 'carol', text: 'observation control' })
+    await settle()
+    expect(carol.inbox.length).toBe(before + 1)
+
+    const seen = await call(alice, 'chat_activity', { name: 'carol' })
+    await settle()
+
+    expect(carol.inbox.length).toBe(before + 1)
+    expect(seen).toContain('this read did not notify carol')
+    expect(seen).toContain('observation control')
+  })
+
+  it('answers for a session that has already exited', async () => {
+    const heidi = await startSession('heidi')
+    await call(heidi, 'chat_register', { name: 'heidi', working_on: 'something short-lived' })
+    await call(heidi, 'chat_send', { to: 'alice', text: 'before I go' })
+    await heidi.transport.close()
+    await settle()
+
+    const seen = await call(alice, 'chat_activity', { name: 'heidi' })
+
+    expect(seen).toContain('not currently registered')
+    expect(seen).toContain('before I go')
+  })
+
+  it('reports an unknown name rather than inventing a trail', async () => {
+    expect(await call(alice, 'chat_activity', { name: 'nobody-by-that-name' })).toContain('No session named')
+  })
+})

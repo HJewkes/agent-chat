@@ -226,6 +226,16 @@ function handleMessage(conn: Conn, msg: ClientMessage): void {
     }
     case 'history':
       return reply(conn, { t: 'history_result', items: events.history(msg.limit) })
+    case 'activity': {
+      // Deliberately no deliver() anywhere on this path: reading a peer must
+      // cost that peer nothing, or observing and interrupting stay the same act.
+      const session = registry.list().find(s => s.name === msg.name)
+      return reply(conn, {
+        t: 'activity_result',
+        ...(session ? { session } : {}),
+        events: events.activityFor(msg.name, msg.limit),
+      })
+    }
     case 'human_send':
       return handleHumanSend(conn, msg.to, msg.text)
     case 'approval':

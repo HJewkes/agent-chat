@@ -80,6 +80,8 @@ export type ClientMessage =
   | { t: 'answer'; msgId: string; text: string }
   | { t: 'dismiss'; msgId: string }
   | { t: 'history'; limit: number }
+  /** Read one session's trail. Never delivers anything to the session being read. */
+  | { t: 'activity'; name: string; limit: number }
   /** From the terminal client, which is the human and so never registers. */
   | { t: 'human_send'; to: string; text: string }
   /** Claude Code opened a permission dialog in this session. Observed, never answered. */
@@ -107,6 +109,8 @@ export type ServerMessage =
   | { t: 'queue_result'; items: QueueItem[] }
   | { t: 'answer_result'; ok: boolean; reason?: string }
   | { t: 'history_result'; items: QueueItem[] }
+  /** `session` is absent when the name has no live registration; `events` outlives it. */
+  | { t: 'activity_result'; session?: SessionInfo; events: QueueItem[] }
   | { t: 'deliver'; message: DeliveredMessage }
   | { t: 'error'; reason: string }
 

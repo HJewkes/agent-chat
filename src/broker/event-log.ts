@@ -131,6 +131,35 @@ export class EventLog {
     return rows.map(toMessage)
   }
 
+  /**
+   * Everything one session did or had done to it, newest last. Read-only and
+   * pure query: observing a peer this way puts nothing into that peer's context,
+   * which is the whole point — today the only way to learn what a session was
+   * doing was to message it, so observation and interruption were the same act.
+   */
+  activityFor(name: string, limit: number): QueueItem[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM (
+           SELECT * FROM events
+           WHERE actor = ? OR target = ?
+           ORDER BY id DESC LIMIT ?
+         ) ORDER BY id ASC`,
+      )
+      .all(name, name, limit) as unknown as Row[]
+    return rows.map(row => ({
+      msgId: row.msg_id ?? String(row.id),
+      kind: row.kind as QueueItem['kind'],
+      from: row.actor,
+      text: row.body ?? '',
+      at: row.ts,
+      meta: {
+        ...((row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>),
+        ...(row.target ? { target: row.target } : {}),
+      },
+    }))
+  }
+
   /** Open items for the human: addressed to them and not yet answered or dismissed. */
   humanQueue(): QueueItem[] {
     const rows = this.db

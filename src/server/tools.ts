@@ -1,6 +1,6 @@
 import type { BrokerClient } from '../client/broker-client.js'
 import { SESSION_STATUSES } from '../protocol.js'
-import type { DeliveredMessage, ServerMessage, SessionInfo, SessionStatus } from '../protocol.js'
+import type { DeliveredMessage, QueueItem, ServerMessage, SessionInfo, SessionStatus } from '../protocol.js'
 
 /**
  * The MCP SDK does not enforce `required` or `enum` on inbound arguments, so a
@@ -96,6 +96,22 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'chat_activity',
+    description:
+      'See what another session has been doing without interrupting it. This is a read: it puts ' +
+      'nothing into that session and costs it nothing, so prefer it over messaging a peer to ask ' +
+      'what it is up to. Shows bus activity — messages, status changes, permission prompts — not ' +
+      'the work itself, and it still answers for a session that has already exited.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Registered name of the session to look at' },
+        limit: { type: 'number', description: 'How many recent events to show (default 15)' },
+      },
+      required: ['name'],
+    },
+  },
+  {
     name: 'chat_broadcast',
     description:
       'Send a message to every registered session except this one. Use sparingly: the cost is ' +
@@ -160,6 +176,21 @@ function formatSessions(sessions: SessionInfo[], self: string | null): string {
   return `Active sessions:\n${rows.join('\n')}`
 }
 
+function formatActivity(name: string, session: SessionInfo | undefined, events: QueueItem[]): string {
+  const header = session
+    ? `${name} [${session.status}, idle ${ago(session.idleMs)}] — ${session.workingOn || 'no description'}\n  ${session.cwd}`
+    : `${name} is not currently registered. Last known activity below.`
+  if (events.length === 0) return `${header}\n\nNothing on the bus yet.`
+
+  const rows = events.map(e => {
+    // Direction is the useful thing at a glance: what it did vs what landed on it.
+    const arrow = e.from === name ? `-> ${e.meta.target ?? '?'}` : `<- ${e.from}`
+    const body = e.text.replace(/\s+/g, ' ').slice(0, 90)
+    return `  ${ago(Date.now() - e.at).padStart(4)} ago  ${e.kind.padEnd(16)} ${arrow.padEnd(14)} ${body}`
+  })
+  return `${header}\n\nRecent bus activity (this read did not notify ${name}):\n${rows.join('\n')}`
+}
+
 function formatInbox(messages: DeliveredMessage[]): string {
   if (messages.length === 0) return 'No messages yet.'
   const rows = messages.map(m => {
@@ -191,6 +222,8 @@ export class ToolHandler {
         return this.status(requireStatus(args), optionalString(args, 'working_on'))
       case 'chat_list':
         return this.list()
+      case 'chat_activity':
+        return this.activity(requireString(args, 'name'), boundedLimit(args, 'limit', 15, INBOX_MAX))
       case 'chat_send':
         return this.send(
           requireString(args, 'to'),
@@ -236,6 +269,17 @@ export class ToolHandler {
       { t: 'list_result' }
     >
     return text(formatSessions(res.sessions, this.registeredName))
+  }
+
+  private async activity(name: string, limit: number) {
+    const res = (await this.call({ t: 'activity', name, limit }, 'activity_result')) as Extract<
+      ServerMessage,
+      { t: 'activity_result' }
+    >
+    if (!res.session && res.events.length === 0) {
+      return text(`No session named "${name}" is registered, and nothing in the log mentions it.`)
+    }
+    return text(formatActivity(name, res.session, res.events))
   }
 
   private async send(to: string, body: string, inReplyTo?: string) {
