@@ -51,6 +51,15 @@ field-for-field. `description` is run through a summarizer that falls back to `"
 is why it is so often uninformative for Bash; this is the concrete basis for the
 complaint in ideas.md R1.
 
+## Relay is not MCP-specific
+
+Nothing in the selection path filters by tool origin, and it shows: built-in tools
+relay too. Observed 2026-07-27 from a peer session, `approval_request` rows naming
+`Skill` (`brwhs`) and `Edit` (`ytmmz`) alongside the MCP ones. So the queue sees a
+session's real work — file edits, skill invocations, shell commands — not just
+agent-chat's own chatter. That is what makes I1/I2 worth having; a queue that only
+ever showed `chat_status` prompts would be noise with no signal.
+
 ## What does *not* get relayed
 
 Two skips, both silent:
@@ -93,6 +102,16 @@ permission view, and permission views drift apart between concurrently-running
 sessions. Observed 2026-07-27: `chat_send` was present in
 `.claude/settings.local.json`, and a session still produced `approval_request izfnu`
 for `chat_send` more than a minute later.
+
+Four rows from three concurrent sessions on 2026-07-27 separate the two directions.
+`cc-relay` answered "don't ask again" for `chat_send` at ~12:06:32:
+
+| time | session | tool | relayed? | |
+|---|---|---|---|---|
+| 12:06:25 | cc-relay | `chat_send` | yes | the prompt that was then granted |
+| 12:08:58 | cc-relay | `chat_send` | **no** | own grant honoured on the very next call |
+| 12:07:45 | cc-main | `chat_send` | yes | 73s after the on-disk entry existed |
+| 12:15:37 | cc2-relay | `chat_broadcast` | yes | ~3min after that entry reached disk |
 
 The mechanism is not that settings are frozen at launch — they aren't. When a user
 answers "always allow", `persistPermissions` does two independent things: `wfe(d)`
