@@ -4,6 +4,31 @@ Read out of the Claude Code binary (v2.1.220) and confirmed live on 2026-07-27.
 This documents what the host actually does, as distinct from what `src/server/index.ts`
 declares. Symbol names are minified and will drift between releases; the shapes won't.
 
+## Read this first: the whole feature is behind a remote flag, default off
+
+Permission relay is gated on `tengu_harbor_permissions`, a remotely-evaluated flag
+whose **default is `false`**:
+
+```js
+function gSd(){ return Ke("tengu_harbor_permissions", !1) }
+```
+
+It guards the effect that installs the channel permission callbacks into session
+state — `if(!gSd()) return;` — and those callbacks are exactly the `m` that the relay
+block tests (`if (m && !t.tool.requiresUserInteraction?.())`). Flag off means `m` is
+undefined means nothing is ever sent. Not degraded: absent.
+
+It is currently `true` for this account, which is the only reason any of the findings
+below were observable. It can be revoked server-side, without a release, without a
+version change, and without any local signal — the failure mode is the same silent
+nothing described throughout this document.
+
+**So nothing may depend on relay for correctness.** Approval items are a best-effort
+observability nicety. Any design that treats a missing `approval_request` as meaning
+"that session is not blocked" is wrong twice over: once because absence never proved
+that anyway (see below), and once because the entire channel may have been switched
+off remotely since the last time anyone checked.
+
 ## The relay reaches allowlisted plugin channels
 
 It uses the *same* gate as ordinary channel messages — there is no separate permission
