@@ -18,11 +18,27 @@ export const pidPath = (): string => path.join(home(), 'broker.pid')
 /** `{port, version, started}` — what `restart` reads to reuse the port it was on. */
 export const metaPath = (): string => path.join(home(), 'broker.meta.json')
 
-/** Shared secret for the loopback HTTP surface, written 0600 alongside the socket. */
-export const tokenPath = (): string => path.join(home(), 'broker.token')
+/**
+ * Shared secret for the loopback HTTP surface, written 0600 alongside the socket.
+ * The unix socket is 0600 so the trust boundary is the OS account; a loopback TCP
+ * port is reachable by any local user, which is strictly weaker. This restores parity.
+ */
+export const tokenPath = (): string => path.join(home(), 'ui.token')
 
 /** Built dashboard assets, served by the broker rather than by a separate dev server. */
 export const dashboardDir = (): string => path.join(dist(), 'dashboard')
+
+/**
+ * Per-agent working state for agent teams: launch plan, mcp config, isolation
+ * handle. The event log stays the source of truth for identity — these are
+ * artifacts of a running process, not a parallel store of who exists.
+ */
+export const agentsDir = (): string => path.join(home(), 'agents')
+
+export const agentDir = (agentId: string): string => path.join(agentsDir(), agentId)
+
+/** User-defined agent profiles, layered over the four builtins. */
+export const profilesDir = (): string => path.join(home(), 'profiles')
 
 const dist = (): string => path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 

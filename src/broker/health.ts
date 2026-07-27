@@ -1,22 +1,9 @@
+import type { HealthPayload } from '../api-contract.js'
 import { socketPath } from '../paths.js'
 import type { BrokerCore } from './core.js'
 import { VERSION } from './version.js'
 
-/**
- * Shape served at `GET /health`. Frozen here rather than inline in a route so it
- * is callable — and testable — before any HTTP layer exists, which is the point
- * of building it in this step.
- */
-export interface HealthPayload {
-  ok: boolean
-  version: string
-  pid: number
-  uptime_ms: number
-  port: number | null
-  socket: string
-  sessions: number
-  queue_open: number
-}
+export type { HealthPayload }
 
 /**
  * `uptime_ms` is the load-bearing field, not a vanity metric. Process lifetime is

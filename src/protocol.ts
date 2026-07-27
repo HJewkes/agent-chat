@@ -25,17 +25,70 @@ export interface SessionInfo {
 export const HUMAN = 'human'
 export const RESERVED_NAMES = new Set([HUMAN, 'user', 'system', 'claude', 'all', 'everyone'])
 
-export type EventKind =
-  | 'message'
-  | 'broadcast'
-  | 'question'
-  | 'notice'
-  | 'answer'
-  | 'resolution'
-  | 'approval_request'
-  | 'registered'
-  | 'deregistered'
-  | 'route_failed'
+/**
+ * Every event kind, as a runtime value rather than only a type.
+ *
+ * This is deliberate and it is load-bearing. The SSE contract enumerates this
+ * union, and test files are excluded from tsconfig — so a purely type-level
+ * exhaustiveness guard is silently inert and a new kind can slip past the
+ * contract with nothing failing. Deriving the type from an array makes the list
+ * checkable at runtime, which is the only place a check actually runs here.
+ * Same shape as SESSION_STATUSES above.
+ */
+export const EVENT_KINDS = [
+  'message',
+  'broadcast',
+  'question',
+  'notice',
+  'answer',
+  'resolution',
+  'approval_request',
+  'registered',
+  'deregistered',
+  'route_failed',
+  // Agent identity lifecycle. Landed ahead of any agent code on purpose: this
+  // union is enumerated in the SSE contract, so adding kinds later unfreezes
+  // that contract and re-serialises everything built against it.
+  //
+  // Id convention, and it is load-bearing rather than cosmetic: `agent_spawned`
+  // puts the AGENT ID in `msg_id`, and every later row puts it in `ref`. That
+  // makes both hot queries hit indexes that already exist — "the spawn record
+  // for agent X" on events_msg_id, "everything that happened to agent X" on
+  // events_ref.
+  'agent_spawned',
+  'agent_attached',
+  'agent_detached',
+  'agent_resumed',
+  'agent_exited',
+  'agent_retired',
+  'isolation_allocated',
+  'isolation_released',
+  // Refusals are events rather than just `reason` strings on a reply: they are
+  // the security-relevant thing, and must be in the log whether or not anyone
+  // was watching at the time.
+  'agent_spawn_refused',
+  'verdict_refused',
+] as const
+
+export type EventKind = (typeof EVENT_KINDS)[number]
+
+/** The two SSE event names that are not event kinds. See api-contract.ts. */
+export const NON_KIND_SSE_EVENTS = ['session_status', 'reset'] as const
+
+/**
+ * Two kinds are deliberately absent.
+ *
+ * A permission verdict is a `resolution` row (actor `human`, `ref` the
+ * approval_request's msg_id, body `allow`/`deny`) — the same shape `dismiss`
+ * already writes, so the existing CLOSED subquery retires it from humanQueue()
+ * with no query change. An `approval_verdict` kind would leave the item open
+ * forever until someone also taught CLOSED about it.
+ *
+ * "Blocked" is derived, not recorded: an agent is blocked when it has an open
+ * approval_request. Recording it as state would need a matching "unblocked"
+ * event, and the host never sends one — when the local dialog wins the race it
+ * sends the channel server nothing at all.
+ */
 
 export interface DeliveredMessage {
   msgId: string
@@ -68,9 +121,28 @@ export interface QueueItem {
   meta: Record<string, string>
 }
 
+/** Names an agent-teams isolation strategy. Widened as strategies land. */
+export type IsolationName = 'none' | 'worktree' | 'file-ownership' | 'toolset-limited'
+
+/** Where a spawned agent's process is presented. */
+export type SurfaceName = 'headless' | 'iterm-pane' | 'iterm-tab' | 'iterm-window'
+
 /** Session -> broker. */
 export type ClientMessage =
-  | { t: 'register'; name: string; workingOn: string; cwd: string; pid: number }
+  /**
+   * `agentId` is what turns a process into an existing durable identity rather
+   * than a new registration: presence is ephemeral, identity is not, and
+   * resuming is a new process attaching to an identity that already exists.
+   */
+  | {
+      t: 'register'
+      name: string
+      workingOn: string
+      cwd: string
+      pid: number
+      agentId?: string
+      termSessionId?: string
+    }
   | { t: 'status'; status: SessionStatus; workingOn?: string; dnd?: boolean }
   | { t: 'list' }
   | { t: 'send'; to: string; text: string; inReplyTo?: string }
@@ -88,6 +160,19 @@ export type ClientMessage =
   | { t: 'human_send'; to: string; text: string }
   /** Claude Code opened a permission dialog in this session. Observed, never answered. */
   | { t: 'approval'; requestId: string; toolName: string; description: string; inputPreview: string }
+  // Agent teams. Declared ahead of the handlers so the wire shape is frozen
+  // before three tracks start building against it; nothing routes these yet.
+  | {
+      t: 'spawn'
+      name: string
+      profile: string
+      brief: string
+      cwd?: string
+      isolation?: IsolationName
+      surface?: SurfaceName
+    }
+  | { t: 'agents'; includeRetired?: boolean }
+  | { t: 'retire'; name: string }
 
 /** Broker -> session. */
 export type ServerMessage =
@@ -115,6 +200,35 @@ export type ServerMessage =
   | { t: 'activity_result'; session?: SessionInfo; events: QueueItem[] }
   | { t: 'deliver'; message: DeliveredMessage }
   | { t: 'error'; reason: string }
+  /**
+   * `warnings` carries isolation.check()'s non-fatal output back to the
+   * requesting model — "you are sharing a checkout with bob" is something it
+   * should be told even though the spawn succeeded.
+   */
+  | {
+      t: 'spawn_result'
+      ok: boolean
+      agentId?: string
+      name?: string
+      reason?: string
+      warnings?: string[]
+    }
+  | { t: 'agents_result'; agents: AgentIdentity[] }
+
+/**
+ * A durable agent identity. Placeholder shape frozen with the rest of the
+ * contract; A1 builds the read model that produces it, and may add fields.
+ * Presence is deliberately NOT in here — that is the registry's job, and it is
+ * ephemeral by design.
+ */
+export interface AgentIdentity {
+  agentId: string
+  name: string
+  profile: string
+  state: 'spawning' | 'live' | 'detached' | 'exited' | 'retired'
+  spawnedBy: string
+  spawnedAt: number
+}
 
 export type ReplyType = Exclude<ServerMessage['t'], 'deliver' | 'error'>
 
