@@ -32,8 +32,23 @@ export interface RouteResult<C> {
    * throttling lossless rather than lossy.
    */
   suppressLive?: boolean
-  /** A runaway thread the human should be told about, since neither peer will be. */
-  escalate?: { from: string; to: string; depth: number }
+  /** A stopped exchange the human should be told about, since neither peer will be. */
+  escalate?: Escalation
+}
+
+/**
+ * Depth asks how deep one conversation has gone; rate asks how fast two sessions
+ * are talking regardless of threading. They catch different things and one
+ * threshold cannot serve both, so the trip carries which measurement fired.
+ */
+export interface Escalation {
+  from: string
+  to: string
+  kind: 'thread_depth' | 'exchange_rate'
+  /** The measurement that tripped, for the routing log. */
+  value: number
+  /** One line for the human queue, who is the only party outside the exchange. */
+  summary: string
 }
 
 /**
@@ -52,6 +67,22 @@ const THREAD_MAX_DEPTH = 20
 
 /** How many msgId -> depth entries to remember before evicting the oldest. */
 const DEPTH_MEMORY = 2000
+
+/**
+ * Backstop for the evasion the depth breaker cannot see: depth resets the moment
+ * a model opens a fresh thread instead of replying, and that is what a
+ * well-intentioned model does — "this is a new topic" is a reasonable thought
+ * mid-volley. Counting per ordered pair catches two sessions alternating across
+ * many shallow threads, which burns the same tokens with none of the signal.
+ *
+ * The window is long on purpose. Every reply costs a model turn, so a legitimate
+ * pair and a runaway one look alike over 60 seconds; they only separate when
+ * sustained. 20 messages in one direction inside 10 minutes is one every 30
+ * seconds, held up for the whole window. Not tuned to 2026-07-27, where the
+ * busiest ordered pair managed roughly 6 messages in 40 minutes.
+ */
+const PAIR_WINDOW_MS = 10 * 60_000
+const PAIR_MAX_MESSAGES = 20
 
 /**
  * Broadcast budget, denominated in amplified bytes (payload x live recipients)
@@ -75,6 +106,8 @@ export class Registry<C> {
   private readonly depths = new Map<string, number>()
   /** Sender name -> recent broadcast spend, pruned to the current window on read. */
   private readonly broadcastSpend = new Map<string, { at: number; bytes: number }[]>()
+  /** "from -> to" -> send times, pruned on read. Ordered, so each way is its own budget. */
+  private readonly pairSends = new Map<string, number[]>()
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -92,6 +125,17 @@ export class Registry<C> {
       if (!oldest.done) this.depths.delete(oldest.value)
     }
     this.depths.set(msgId, depth)
+  }
+
+  /** Send times from one session to another, pruned to the current window in place. */
+  private pairLedger(from: string, to: string): number[] {
+    // NUL separator because nothing stops a session registering a name with a
+    // space in it, and "a b" -> "c" must not collide with "a" -> "b c".
+    const key = `${from}\u0000${to}`
+    const cutoff = this.now() - PAIR_WINDOW_MS
+    const kept = (this.pairSends.get(key) ?? []).filter(at => at > cutoff)
+    this.pairSends.set(key, kept)
+    return kept
   }
 
   /** This sender's broadcast spend, pruned to the current window in place. */
@@ -228,9 +272,40 @@ export class Registry<C> {
           'The thread has been escalated to the human queue. Do not start a fresh thread ' +
           'to continue it — wait for the human, who can see both sides.',
         deliveries: [],
-        escalate: { from: sender.name, to, depth },
+        escalate: {
+          from: sender.name,
+          to,
+          kind: 'thread_depth',
+          value: depth,
+          summary: `${sender.name} and ${to} reached reply depth ${depth} and were stopped.`,
+        },
       }
     }
+
+    // Checked after depth so a deep thread reports the more specific measurement.
+    const pair = this.pairLedger(sender.name, to)
+    if (pair.length >= PAIR_MAX_MESSAGES) {
+      const minutes = PAIR_WINDOW_MS / 60_000
+      return {
+        ok: false,
+        recipients: [],
+        reason:
+          `you have sent ${to} ${pair.length} messages in ${minutes} minutes, which is the limit. ` +
+          'Starting a new thread does not reset this. The exchange has been escalated to the ' +
+          'human queue — wait for them rather than rephrasing and retrying.',
+        deliveries: [],
+        escalate: {
+          from: sender.name,
+          to,
+          kind: 'exchange_rate',
+          value: pair.length,
+          summary:
+            `${sender.name} sent ${to} ${pair.length} messages in ${minutes} minutes and was ` +
+            'stopped. They may be volleying across separate threads, which the depth limit cannot see.',
+        },
+      }
+    }
+    pair.push(this.now())
 
     const message = this.build(sender.name, text, inReplyTo === undefined ? {} : { inReplyTo })
     return { ok: true, msgId: message.msgId, recipients: [to], deliveries: [{ conn: target[0], message }] }

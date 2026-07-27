@@ -198,7 +198,7 @@ describe('Registry thread depth', () => {
     expect(last.ok).toBe(false)
     expect(last.deliveries).toHaveLength(0)
     expect(last.reason).toContain('depth')
-    expect(last.escalate).toEqual({ from: 'bob', to: 'alice', depth: 20 })
+    expect(last.escalate).toMatchObject({ from: 'bob', to: 'alice', kind: 'thread_depth', value: 20 })
   })
 
   it('leaves directed messages on a fresh thread unaffected by a broken one', () => {
@@ -265,5 +265,67 @@ describe('Registry broadcast budget', () => {
 
     expect(directed.ok).toBe(true)
     expect(directed.suppressLive).toBeFalsy()
+  })
+})
+
+describe('Registry pair exchange rate', () => {
+  const trio = (now: () => number = Date.now) => {
+    const registry = new Registry<object>(now)
+    const [alice, bob, carol] = [conn('a'), conn('b'), conn('c')]
+    register(registry, alice, 'alice')
+    register(registry, bob, 'bob')
+    register(registry, carol, 'carol')
+    return { registry, alice, bob, carol }
+  }
+
+  /** Sends `count` messages that never reply to anything, so depth stays at 1 throughout. */
+  const volleyFreshThreads = (registry: Registry<object>, from: object, to: string, count: number) => {
+    const results = []
+    for (let i = 0; i < count; i++) results.push(registry.send(from, to, `fresh thread ${i}`))
+    return results
+  }
+
+  it('catches a pair volleying across fresh threads, which the depth breaker cannot see', () => {
+    const { registry, alice } = trio()
+
+    const delivered = volleyFreshThreads(registry, alice, 'bob', 20)
+    const refused = registry.send(alice, 'bob', 'and another')
+
+    // Control: every one of these got through, and none of them ever raised depth.
+    expect(delivered.every(r => r.ok)).toBe(true)
+    expect(delivered.every(r => r.deliveries[0]?.message.threadDepth === 1)).toBe(true)
+    // So the depth breaker was never going to fire, and the rate limit is what caught it.
+    expect(refused.ok).toBe(false)
+    expect(refused.escalate).toMatchObject({ from: 'alice', to: 'bob', kind: 'exchange_rate', value: 20 })
+    expect(refused.reason).toContain('new thread does not reset this')
+  })
+
+  it('budgets each direction and each peer separately', () => {
+    const { registry, alice, bob } = trio()
+    volleyFreshThreads(registry, alice, 'bob', 20)
+
+    expect(registry.send(alice, 'bob', 'blocked').ok).toBe(false)
+    // The reverse direction is its own budget, and so is a different recipient.
+    expect(registry.send(bob, 'alice', 'reply is fine').ok).toBe(true)
+    expect(registry.send(alice, 'carol', 'a third party is fine').ok).toBe(true)
+  })
+
+  it('lets the rate recover once the window has passed', () => {
+    let clock = 0
+    const { registry, alice } = trio(() => clock)
+    volleyFreshThreads(registry, alice, 'bob', 20)
+    expect(registry.send(alice, 'bob', 'blocked').ok).toBe(false)
+
+    clock += 10 * 60_000 + 1
+
+    expect(registry.send(alice, 'bob', 'a fresh window').ok).toBe(true)
+  })
+
+  it('does not charge refused sends against the budget', () => {
+    const { registry, alice } = trio()
+    for (let i = 0; i < 25; i++) registry.send(alice, 'nobody', 'into the void')
+
+    // Those all failed on an unknown recipient, so alice's budget for a real peer is intact.
+    expect(registry.send(alice, 'bob', 'still fine').ok).toBe(true)
   })
 })

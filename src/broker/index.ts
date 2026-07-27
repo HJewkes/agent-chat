@@ -11,7 +11,7 @@ import {
 import { home, socketPath } from '../paths.js'
 import { logEvent } from './log.js'
 import { EventLog, newMsgId } from './event-log.js'
-import { Registry, type RouteResult } from './registry.js'
+import { Registry, type Escalation, type RouteResult } from './registry.js'
 
 type Conn = net.Socket
 
@@ -81,13 +81,18 @@ function handleRoute(conn: Conn, result: RouteResult<Conn>, kind: 'message' | 'b
  * the sender was refused and the recipient never heard anything. So it goes to the
  * human queue, which is the only party outside the loop.
  */
-function escalateThread(escalate: { from: string; to: string; depth: number }): void {
+function escalateThread(escalate: Escalation): void {
   const body =
-    `${escalate.from} and ${escalate.to} reached reply depth ${escalate.depth} and were stopped. ` +
-    'Neither has been told anything the other can see; if the exchange was worthwhile, ' +
-    'answer one of them.'
+    `${escalate.summary} Neither has been told anything the other can see; ` +
+    'if the exchange was worthwhile, answer one of them.'
   const { msgId } = events.append({ kind: 'notice', actor: escalate.from, target: HUMAN, body })
-  logEvent('thread_breaker', { msgId, from: escalate.from, to: escalate.to, depth: escalate.depth })
+  logEvent('exchange_breaker', {
+    msgId,
+    kind: escalate.kind,
+    from: escalate.from,
+    to: escalate.to,
+    value: escalate.value,
+  })
 }
 
 /** Messages to the human are logged, never delivered — nothing holds that socket. */

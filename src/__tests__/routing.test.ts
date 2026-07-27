@@ -370,3 +370,30 @@ describe('broadcast budget', () => {
     expect(carol.inbox.length).toBe(before + 1)
   })
 })
+
+describe('pair exchange rate', () => {
+  it('stops a fresh-thread volley and tells the human, in their words not the sender’s', async () => {
+    const frank = await startSession('frank')
+    const grace = await startSession('grace')
+    await call(frank, 'chat_register', { name: 'frank', working_on: 'rate probe' })
+    await call(grace, 'chat_register', { name: 'grace', working_on: 'rate probe' })
+
+    // Control: the budget's worth of messages all arrive, none of them a reply,
+    // so thread_depth never leaves 1 and the depth breaker is not what fires.
+    for (let i = 0; i < 20; i++) {
+      expect(await call(frank, 'chat_send', { to: 'grace', text: `volley ${i}` })).toMatch(/^Delivered/)
+    }
+    await settle()
+    expect(grace.inbox).toHaveLength(20)
+    expect(grace.inbox.at(-1)?.meta?.thread_depth).toBe('1')
+
+    const refused = await call(frank, 'chat_send', { to: 'grace', text: 'once more' })
+    await settle()
+
+    expect(refused).toMatch(/^Not delivered/)
+    expect(grace.inbox).toHaveLength(20)
+    const { stdout } = await cli(['inbox'])
+    expect(stdout).toContain('frank sent grace 20 messages')
+    expect(stdout).toContain('volleying across separate threads')
+  })
+})
