@@ -48,7 +48,9 @@ describe('core.append fan-out', () => {
   it('notifies every subscriber with the id of the row it just wrote', () => {
     const { core } = makeCore()
     const frames: Array<{ event: string; data: string }> = []
-    core.hub.subscribe(frame => frames.push(frame))
+    core.hub.subscribe(frame => {
+      frames.push(frame)
+    })
 
     const written = core.append({ kind: 'notice', actor: 'alpha', target: HUMAN, body: 'hello' })
 
