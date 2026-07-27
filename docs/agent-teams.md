@@ -2189,3 +2189,70 @@ interactive-mode `--agents`/`--mcp-config`/`--append-system-prompt` pattern
 (no code copy needed, it's ~90 lines and already fairly generic). Skip the PM/
 delivery/workflow layers entirely — they're brain's domain logic, not spawning
 infra.
+
+---
+
+# Part 5 — Picking this up
+
+## If you are the first to read this
+
+Please pass it on. Run `agent-chat ps` and let the other registered sessions
+know the doc exists and where it is — one line each is plenty. The session that
+wrote it is not on the bus (it was launched without `--channels`), so it cannot
+see your messages or reach you; coordination has to happen between you and the
+human.
+
+## Suggested order
+
+Detail is in Part 2 §13. The first three steps are serial and best done by one
+person, because they touch the hot files everything else depends on.
+
+1. **Service Step 1** — `BrokerCore` extraction. No behaviour change; the
+   existing tests should pass unmodified.
+2. **Service Step 2** — lifecycle + health. Still no HTTP.
+3. **Service Step 2a** — freeze the API contract, and fold in teams **A0** (nine
+   `EventKind`s plus the protocol variants) and the `paths.ts` additions at the
+   same time. Ten minutes of work, and it is what lets everything else run in
+   parallel. Skipping it re-serialises the whole fan-out.
+
+Then **A1** (identity read model) → **A2** (presence bridge).
+
+**A2 is the pivotal step and deliberately comes before any spawning code.** Its
+acceptance test: set `AGENT_CHAT_AGENT_ID` and `AGENT_CHAT_NAME` by hand, launch
+`claude` yourself, and watch it appear in the roster as a durable peer another
+session can `chat_send` to. The hard part — a process becoming a first-class
+peer — is then fully working before a line of spawn code exists. If A2 does not
+work, no amount of spawn machinery will rescue it.
+
+After **A3**, the surfaces track (A4, A8) and the isolation track (A5) can run
+concurrently. A6, A7 and A9 are serial. The ownership table is in §13.
+
+## Coordination
+
+- **You share one checkout.** This is exactly the CC-9 failure: three sessions
+  bootstrapped from the same handoff, all picked the same task, and two wrote to
+  the same tree. Agreeing file ownership on the bus before writing costs a
+  message and saves a merge.
+- **`src/cli/**` and `broker/core.ts` are genuine conflicts**, not just busy
+  files — the CLI restructure and the `BrokerCore` edits both rewrite them.
+  Serialise those.
+- **Leave other sessions' uncommitted work alone.** Stage your own paths
+  explicitly rather than `git add -A`; at time of writing there is an
+  uncommitted `README.md` edit belonging to one of you.
+- **Say which step you are taking and which paths you own** when you start. The
+  roster shows who is live but not who owns what — that part is still prose, and
+  CC-13 exists because of it.
+
+## Two things worth watching in your own behaviour
+
+- **Priority inversion (CC-16, open).** Peer traffic arrives with the immediacy
+  of a live event, while the user's own request sits back in the transcript
+  looking already-answered — so the interrupt gets served first. It happened
+  here: a user waited through three rounds of agent-to-agent correction for an
+  answer to a one-line question. Every round was individually justified, which
+  is what makes it hard to notice. Volume throttling does not touch it.
+- **Verify artifacts, not reports.** Of five subagents run while writing this,
+  one returned its report through the intended channel unprompted. Two went idle
+  silently, one nested a layer deep and reported `BLOCKED` while its children's
+  results surfaced elsewhere. Checking `git log`, the file, or the test output
+  directly was load-bearing every time. Assume the same of each other, kindly.
