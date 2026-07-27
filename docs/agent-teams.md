@@ -106,8 +106,12 @@ better and replaces it.
 - `--output-format stream-json` versus brain's single final `JSON.parse` (Part 2
   §9). Streaming is what would let headless progress appear live, and it is much
   cheaper to design in than to retrofit.
-- Whether this belongs in the `claude-channels` initiative or a new one.
 - Sequencing against the remaining CC-* verification tasks.
+
+**Decided:** this work stays in the `claude-channels` initiative rather than
+getting one of its own, and is tracked there as a CC-* task. The CC-9 through
+CC-16 findings came out of the same sessions and bear directly on it — splitting
+the initiative would separate the design from the evidence that motivates it.
 
 ---
 
