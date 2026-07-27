@@ -22,6 +22,20 @@ function optionalString(args: Record<string, unknown>, key: string): string | un
   return typeof value === 'string' && value.trim() !== '' ? value : undefined
 }
 
+/** Upper bound on a replay request, so one tool call cannot flood a session's context. */
+const INBOX_MAX = 50
+
+/** Number(undefined) is NaN, which JSON.stringify sends over the wire as null. */
+function boundedLimit(args: Record<string, unknown>, key: string, fallback: number, max: number): number {
+  const value = args[key]
+  if (value === undefined || value === null) return fallback
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    throw new Error(`${key} must be a positive number`)
+  }
+  return Math.min(Math.floor(parsed), max)
+}
+
 function requireStatus(args: Record<string, unknown>): SessionStatus {
   const value = args.status
   if (typeof value !== 'string' || !(SESSION_STATUSES as readonly string[]).includes(value)) {
@@ -182,7 +196,7 @@ export class ToolHandler {
       case 'chat_notify':
         return this.toHuman('notify', requireString(args, 'text'))
       case 'chat_inbox':
-        return this.inbox(Number(args.limit ?? 10))
+        return this.inbox(boundedLimit(args, 'limit', 10, INBOX_MAX))
       default:
         throw new Error(`unknown tool: ${name}`)
     }

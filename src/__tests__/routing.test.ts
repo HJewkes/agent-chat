@@ -267,6 +267,14 @@ describe('argument validation', () => {
   it('refuses an empty question instead of asking the human nothing', async () => {
     expect(await call(alice, 'chat_ask', { text: '   ' })).toContain('text is required')
   })
+
+  it('refuses a non-numeric inbox limit rather than sending NaN over the wire', async () => {
+    expect(await call(alice, 'chat_inbox', { limit: 'lots' })).toContain('limit must be a positive number')
+  })
+
+  it('still defaults the inbox limit when it is omitted', async () => {
+    expect(await call(alice, 'chat_inbox')).not.toContain('Error:')
+  })
 })
 
 describe('leases', () => {
