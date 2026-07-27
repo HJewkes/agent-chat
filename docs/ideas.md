@@ -345,6 +345,12 @@ sitting outside the mechanism Claude Code already audits. Skip both halves.
 
 The salvageable part is I1/I2/I3: observe, notify, and let a human answer.
 
+Confirmed 2026-07-27: the host really does accept `{request_id, behavior}` over
+`notifications/claude/channel/permission`, races it against the local dialog, and acts on
+whichever lands first. So none of the above is hypothetical — the mechanism is sitting
+there working, and every session on the channel allowlist can already reach it. See
+`permission-relay.md`. Declining to send a verdict is the only thing stopping us.
+
 ### R2. Broker-side deterministic permission policy
 
 Rules like "auto-allow Read in ~/projects/voltras, always relay Bash to the human"
