@@ -121,11 +121,22 @@ export interface QueueItem {
   meta: Record<string, string>
 }
 
-/** Names an agent-teams isolation strategy. Widened as strategies land. */
-export type IsolationName = 'none' | 'worktree' | 'file-ownership' | 'toolset-limited'
+/**
+ * Names an agent-teams isolation strategy, and where a spawned agent's process
+ * is presented. Runtime arrays rather than bare type unions for the same reason
+ * EVENT_KINDS is one: profile files are user-authored JSON, so these have to be
+ * checkable at the point a string arrives from disk, not only at compile time.
+ */
+export const ISOLATION_NAMES = ['none', 'worktree', 'file-ownership', 'toolset-limited'] as const
 
-/** Where a spawned agent's process is presented. */
-export type SurfaceName = 'headless' | 'iterm-pane' | 'iterm-tab' | 'iterm-window'
+export type IsolationName = (typeof ISOLATION_NAMES)[number]
+
+export const SURFACE_NAMES = ['headless', 'iterm-pane', 'iterm-tab', 'iterm-window'] as const
+
+export type SurfaceName = (typeof SURFACE_NAMES)[number]
+
+/** The surfaces that put the agent in front of a human who can answer a prompt. */
+export const isInteractiveSurface = (surface: SurfaceName): boolean => surface !== 'headless'
 
 /** Session -> broker. */
 export type ClientMessage =

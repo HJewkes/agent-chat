@@ -11,6 +11,8 @@ import { startMcpServer } from './server/index.js'
 import { BrokerClient } from './client/broker-client.js'
 import { logPath, socketPath } from './paths.js'
 import { type QueueItem, type ServerMessage } from './protocol.js'
+import { runAgent } from './agents/run-agent.js'
+import { listProfileNames, loadProfile } from './agents/profiles.js'
 
 const USAGE = `agent-chat — cross-session messaging for Claude Code
 
@@ -21,6 +23,8 @@ const USAGE = `agent-chat — cross-session messaging for Claude Code
   agent-chat ps                        list registered sessions
   agent-chat history [n]               recent events from the log (default 30)
   agent-chat log [n]                   recent routing decisions
+  agent-chat profiles                  agent profiles available to spawn with
+  agent-chat run-agent <id>            run a planned agent (surfaces call this)
   agent-chat broker                    run the broker in the foreground
   agent-chat mcp                       the MCP server (Claude Code spawns this)
 
@@ -148,6 +152,20 @@ async function history(limit: number): Promise<void> {
   }
 }
 
+function profiles(): void {
+  for (const name of listProfileNames()) {
+    const profile = loadProfile(name)
+    if ('error' in profile) {
+      console.log(`${name.padEnd(14)} !! ${profile.error}`)
+      continue
+    }
+    console.log(
+      `${name.padEnd(14)} ${profile.model.padEnd(7)} ${profile.surface.padEnd(12)} ${profile.description}`,
+    )
+    console.log(`${' '.repeat(14)} tools: ${profile.allowedTools.join(', ')}`)
+  }
+}
+
 async function main(): Promise<void> {
   const [verb, ...args] = process.argv.slice(2)
   switch (verb) {
@@ -173,6 +191,13 @@ async function main(): Promise<void> {
     case 'log':
       console.log(`routing decisions: tail -f ${logPath()} | grep route`)
       return history(Number(args[0] ?? 20))
+    case 'run-agent': {
+      const agentId = args[0]
+      if (agentId === undefined) throw new Error('usage: agent-chat run-agent <agent-id>')
+      return runAgent(agentId)
+    }
+    case 'profiles':
+      return profiles()
     default:
       console.log(USAGE)
       process.exit(verb === undefined || verb === '--help' || verb === '-h' ? 0 : 1)
