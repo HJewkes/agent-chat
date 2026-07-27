@@ -13,6 +13,8 @@ import { logEvent } from './log.js'
 import { newMsgId } from './event-log.js'
 import { type Escalation, type RouteResult } from './registry.js'
 import { BrokerCore, type Conn } from './core.js'
+import { probeSocket, removeStateFiles, writeMeta, writePidFile } from './lifecycle.js'
+import { VERSION } from './version.js'
 
 const MAX_OPEN_QUESTIONS = 3
 
@@ -264,24 +266,14 @@ class SocketServer {
   }
 }
 
-/** Distinguishes a live broker from a socket file left by a killed one. */
-function probeExisting(sock: string): Promise<boolean> {
-  return new Promise(resolve => {
-    if (!fs.existsSync(sock)) return resolve(false)
-    const probe = net.connect(sock)
-    probe.on('connect', () => {
-      probe.destroy()
-      resolve(true)
-    })
-    probe.on('error', () => resolve(false))
-  })
-}
-
 export async function startBroker(): Promise<net.Server | null> {
   const sock = socketPath()
   fs.mkdirSync(home(), { recursive: true })
 
-  if (await probeExisting(sock)) {
+  // Probe the socket BEFORE touching any other resource. This is the single
+  // instance guard, and it has to run first so two racing auto-starts can never
+  // both get as far as binding a port.
+  if (await probeSocket(sock)) {
     logEvent('broker_exit', { reason: 'another broker is already listening' })
     return null
   }
@@ -296,11 +288,20 @@ export async function startBroker(): Promise<net.Server | null> {
   fs.chmodSync(sock, 0o600) // this user only; the trust boundary is the OS account
   logEvent('broker_started', { pid: process.pid, sock })
 
+  // Written only after the socket is bound and serving, so their presence never
+  // implies more than is true. `port` stays null until the HTTP layer exists and
+  // reports what it actually got — the bind is best-effort, and recording an
+  // intended port as though it were a bound one is how a status command starts
+  // lying.
+  writePidFile()
+  writeMeta({ port: null, version: VERSION, started: Date.now(), pid: process.pid })
+
   const shutdown = (): void => {
     logEvent('broker_stopping', { pid: process.pid })
     server.close()
     core.close()
     if (fs.existsSync(sock)) fs.unlinkSync(sock)
+    removeStateFiles()
     process.exit(0)
   }
   process.on('SIGINT', shutdown)
