@@ -470,12 +470,38 @@ when cross-session transcript reading was permitted freely (CC-19), though it ne
 that, being measurable on one's own transcript. Only Q3 and Q5 remain, and both need elapsed
 time rather than a decision.
 
-The question that turned out to matter was not in this list when it was written: **what is
-the trust boundary — machine, principal, or initiative?** It is currently the machine, by
-default and by nobody's decision, with 16,786 characters of one initiative's deliberation
-delivered to an uninvolved session as the measured consequence. Filed as CC-21, priority 1.
-Note that CC-19's "permit freely" was decided while the boundary was *implicitly* one person
-on one machine, so it should be revisited rather than inherited if that ever changes.
+The question that turned out to matter was not in this list when it was written, and **as I
+asked it, it was the wrong question.** I framed CC-21 as "what is the trust boundary —
+machine, principal, or initiative?", treating message *scope* and message *authority* as one
+decision. They are two, and the answer separates them:
+
+**Delivery stays machine-wide.** The bus is not partitioned. Scoping is solved by
+**subscription rather than boundary**: messages carry one or more **tags**, sessions
+subscribe to the tag sets they care about, and history is pullable per tag. Closer to
+chatrooms than to a security perimeter, and multi-tag so a message can belong to several
+conversations at once. This absorbs CC-10 (multicast) and CC-13 (tags) as the mechanism
+rather than leaving them as separate features. The `vw68-daemon` observation — 16,786
+characters of one initiative's deliberation delivered to an uninvolved session — is real,
+but it is a **routing** defect, not a disclosure one, and the fix is that broadcast was the
+wrong primitive rather than that the bus was too wide.
+
+**Authority is handled separately, and structurally.** Trust between agents is
+self-organised — peers negotiate their own working arrangements, as the three sessions here
+did. What is *not* left to negotiation is the human's authority: **CC-22** adds a
+human-signed authoritative message, so "this genuinely carries the principal's authority" is
+**verifiable rather than asserted**.
+
+That is a tier-3 answer in the terms of Part 5, and a better one than the tier-1 answer this
+document proposed. Prose asking an agent to treat peer claims sceptically binds attention;
+an unforgeable signature binds regardless. The rule becomes mechanical — **unsigned carries
+no authority, signed does** — and the failure mode we hit repeatedly today, a peer relaying
+"the human asked me to tell you this", stops depending on anyone's judgement.
+
+**Consequence for Part 6, which is the thing this unblocks:** because delivery stays
+machine-wide, peers genuinely may be unrelated sessions from other initiatives. So the
+host's framing — a peer is "very likely working on your behalf" — **must not be adopted**,
+even though the rest of that paragraph should be. The Part 6 draft below is already correct
+on this by accident of having adapted rather than pasted; it now has a reason.
 
 1. **Does a recipient that sees a classification actually defer?** One probe, not a build —
    the CC-3 token-test shape. If models ignore the attribute, sender-side classification
