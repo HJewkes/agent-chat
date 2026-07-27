@@ -70,6 +70,30 @@ Two skips, both silent:
 A prompt that never opens obviously relays nothing either. An auto-allowed tool call
 produces no `approval_request`; absence of a row is not evidence the relay is broken.
 
+**Headless sessions relay nothing at all.** Verified 2026-07-27 against a `--print`
+session (`cc-headless-d`) with a positive control, which is what makes it a result
+rather than an absence:
+
+- the channel was demonstrably **live** — the session quoted back its inbound
+  `<channel source="plugin:agent-chat:agent-chat" from="human" …>` token verbatim, and
+  the broker logged the route (`38222d97`, 12:30:51). This confirms the binary read
+  that `--channels` is parsed unconditionally in non-interactive mode.
+- a permission denial genuinely **occurred** — `git status` returned "Claude requested
+  permissions to use Bash, but you haven't granted it yet", while a `node -e` Bash call
+  in the same session ran fine, so it was not a blanket block.
+- **zero** `approval_request` rows were produced by that session or any other headless
+  probe. All 15 rows in the log came from the three interactive sessions.
+
+Channel live, prompt genuinely blocked, nothing relayed. Non-interactive denials are
+auto-resolved without ever opening a promptable request, so relay has nothing to
+forward. The push also arrived *between tool calls mid-turn*, not at session start.
+
+This is the load-bearing caveat for the whole feature, so state it plainly: **the
+permission observatory sees interactive sessions only.** Background and `--print` peers
+are addressable for messaging but invisible when blocked — and they are exactly the
+population you would most want an observatory for, since nobody is watching their
+terminal. See ideas.md I1.
+
 ## The host *will* accept a verdict — abstaining is our choice, not its constraint
 
 This is the finding worth carrying forward. The host registers a handler for

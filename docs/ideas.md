@@ -82,6 +82,16 @@ becomes the only place with a complete, machine-readable record of what every
 agent on the box asked to do. That artifact — _what did my agents actually try to
 run last night_ — is worth more than the messaging layer it's bolted to.
 
+**Bounded 2026-07-27, and it cuts at the second reason specifically.** Relay fires
+for interactive sessions only. A `--print` session with a live channel and a genuine
+permission denial produced no relay at all, because non-interactive denials are
+auto-resolved without opening a promptable request (`permission-relay.md`). So the
+observatory cannot see background or headless peers — and "what did my agents try to
+run last night" describes precisely an unattended overnight run, which is the case
+least likely to be interactive. The first reason survives intact: for interactive
+sessions, `blocked` really is knowable. The second is narrower than written, and the
+complete-record framing should not be repeated without this caveat attached.
+
 **Effort.** S. It is one `setNotificationHandler`, one `ClientMessage` variant, one
 `logEvent`, one CLI verb. The verdict path is not needed and should not be built yet.
 
