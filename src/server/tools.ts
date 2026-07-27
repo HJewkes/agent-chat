@@ -1,5 +1,34 @@
 import type { BrokerClient } from '../client/broker-client.js'
+import { SESSION_STATUSES } from '../protocol.js'
 import type { DeliveredMessage, ServerMessage, SessionInfo, SessionStatus } from '../protocol.js'
+
+/**
+ * The MCP SDK does not enforce `required` or `enum` on inbound arguments, so a
+ * model that omits a field reaches the handler with `undefined`. `String(undefined)`
+ * is the non-empty string "undefined", which passes every downstream check — the
+ * broker routes it, logs it, and answers ok:true while the recipient is delivered
+ * the word "undefined". Observed live on 2026-07-27. Validate at the boundary.
+ */
+function requireString(args: Record<string, unknown>, key: string): string {
+  const value = args[key]
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error(`${key} is required and must be a non-empty string`)
+  }
+  return value
+}
+
+function optionalString(args: Record<string, unknown>, key: string): string | undefined {
+  const value = args[key]
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined
+}
+
+function requireStatus(args: Record<string, unknown>): SessionStatus {
+  const value = args.status
+  if (typeof value !== 'string' || !(SESSION_STATUSES as readonly string[]).includes(value)) {
+    throw new Error(`status must be one of: ${SESSION_STATUSES.join(', ')}`)
+  }
+  return value as SessionStatus
+}
 
 export const TOOL_DEFINITIONS = [
   {
@@ -135,19 +164,23 @@ export class ToolHandler {
   async handle(name: string, args: Record<string, unknown>) {
     switch (name) {
       case 'chat_register':
-        return this.register(String(args.name), String(args.working_on ?? ''))
+        return this.register(requireString(args, 'name'), optionalString(args, 'working_on') ?? '')
       case 'chat_status':
-        return this.status(args.status as SessionStatus, args.working_on as string | undefined)
+        return this.status(requireStatus(args), optionalString(args, 'working_on'))
       case 'chat_list':
         return this.list()
       case 'chat_send':
-        return this.send(String(args.to), String(args.text), args.in_reply_to as string | undefined)
+        return this.send(
+          requireString(args, 'to'),
+          requireString(args, 'text'),
+          optionalString(args, 'in_reply_to'),
+        )
       case 'chat_broadcast':
-        return this.broadcast(String(args.text))
+        return this.broadcast(requireString(args, 'text'))
       case 'chat_ask':
-        return this.toHuman('ask', String(args.text))
+        return this.toHuman('ask', requireString(args, 'text'))
       case 'chat_notify':
-        return this.toHuman('notify', String(args.text))
+        return this.toHuman('notify', requireString(args, 'text'))
       case 'chat_inbox':
         return this.inbox(Number(args.limit ?? 10))
       default:

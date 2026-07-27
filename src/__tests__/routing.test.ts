@@ -242,6 +242,33 @@ describe('human queue', () => {
   })
 })
 
+describe('argument validation', () => {
+  /**
+   * Live regression, 2026-07-27: a session called chat_send with `message` instead
+   * of `text`. The SDK does not enforce `required`, so the handler coerced the
+   * missing field with String(undefined) and the recipient was delivered the word
+   * "undefined" while the sender was told the send succeeded.
+   */
+  it('refuses a send whose body arrived under the wrong key, delivering nothing', async () => {
+    const before = bob.inbox.length
+    const sent = await call(alice, 'chat_send', { to: 'bob', message: 'body under the wrong key' })
+    await settle()
+
+    expect(sent).toContain('text is required')
+    expect(bob.inbox).toHaveLength(before)
+    expect(bob.inbox.map(m => m.content)).not.toContain('undefined')
+  })
+
+  it('refuses a status outside the enum rather than storing it', async () => {
+    expect(await call(bob, 'chat_status', { status: 'busy' })).toContain('must be one of')
+    expect(await call(alice, 'chat_list')).not.toContain('busy')
+  })
+
+  it('refuses an empty question instead of asking the human nothing', async () => {
+    expect(await call(alice, 'chat_ask', { text: '   ' })).toContain('text is required')
+  })
+})
+
 describe('leases', () => {
   it('rejects a name that a live session holds', async () => {
     const impostor = await startSession('impostor')

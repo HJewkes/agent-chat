@@ -1,7 +1,9 @@
 // Wire protocol between a session's MCP subprocess and the shared broker.
 // Newline-delimited JSON over a unix socket.
 
-export type SessionStatus = 'working' | 'available' | 'blocked'
+export const SESSION_STATUSES = ['working', 'available', 'blocked'] as const
+
+export type SessionStatus = (typeof SESSION_STATUSES)[number]
 
 export interface SessionInfo {
   name: string
