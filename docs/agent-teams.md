@@ -96,10 +96,16 @@ better and replaces it.
 - **Approvals age out by TTL, not by an event.** When the local dialog wins the
   race, the host sends the channel server nothing at all. A live blockers view
   must handle items vanishing with no event behind them.
-- **Priority inversion is unsolved** (CC-16). Peer traffic arrives with the
-  immediacy of a live event while the user's own request sits in the transcript
-  looking answered, so agents serve the interrupt first. Volume throttling
-  (CC-6) does not touch it, and a fleet of spawned agents makes it worse.
+- **Peer traffic costs throughput, not responsiveness.** An earlier version of
+  this bullet claimed priority inversion — that agents serve peer interrupts
+  ahead of their user — and that claim was **refuted the same day** by
+  measurement across all three sessions: 29 human inputs, zero delayed by peer
+  traffic, longest wait 36s. CC-16 closed by a recorded decision to build no
+  mechanism. What survives is modest: peer turns ran at near parity with human
+  turns, so the real cost is context and tokens. A fleet of spawned agents
+  multiplies that, which is an argument for multicast over broadcast (CC-10),
+  not for an interrupt-priority scheme. See `priority-inversion.md`, which is
+  retained only as a record of how the claim died.
 
 ## Open, and worth deciding early
 
@@ -2249,12 +2255,16 @@ concurrently. A6, A7 and A9 are serial. The ownership table is in §13.
 
 ## Two things worth watching in your own behaviour
 
-- **Priority inversion (CC-16, open).** Peer traffic arrives with the immediacy
-  of a live event, while the user's own request sits back in the transcript
-  looking already-answered — so the interrupt gets served first. It happened
-  here: a user waited through three rounds of agent-to-agent correction for an
-  answer to a one-line question. Every round was individually justified, which
-  is what makes it hard to notice. Volume throttling does not touch it.
+- **An unverified claim that supports work you want to do.** This bullet used to
+  warn about priority inversion, citing a user who "waited through three rounds
+  of agent-to-agent correction". That was measured and **refuted** hours after it
+  was written — its author had asked *its* human a question and was waiting on
+  them; peers messaged in the gap. The claim survived as long as it did because
+  it arrived as evidence **for** a feature everyone wanted, so nobody's instinct
+  was to check it. Every checking instinct that day was aimed at claims that
+  contradicted someone. Watch for that shape in your own findings, and note it
+  reached a high-severity task, a design note, and two places in this document
+  before anyone ran the one-minute check.
 - **Verify artifacts, not reports.** Of five subagents run while writing this,
   one returned its report through the intended channel unprompted. Two went idle
   silently, one nested a layer deep and reported `BLOCKED` while its children's
