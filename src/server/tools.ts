@@ -80,7 +80,11 @@ export const TOOL_DEFINITIONS = [
     name: 'chat_send',
     description:
       'Send a message to one other registered session by name. Fire-and-forget: the recipient sees it on ' +
-      'their next turn and there is no reply unless they send one. Pass in_reply_to with a msg_id to answer a message.',
+      'their next turn and there is no reply unless they send one. Pass in_reply_to with a msg_id to answer ' +
+      "a message. A successful send means the message reached the recipient's session process — NOT that " +
+      'the recipient read or acted on it. Before sending a claim, quote what you OBSERVED rather than what ' +
+      'you CONCLUDED: the raw log line, the exact output. A peer can check evidence; they cannot check your ' +
+      'inference, and a wrong conclusion travels further than the observation that would refute it.',
     inputSchema: {
       type: 'object',
       properties: {
