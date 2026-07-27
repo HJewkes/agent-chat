@@ -1,10 +1,31 @@
 # CC-16 — Priority inversion: peer traffic outranking the user
 
-Design note. No recommendation, no code. The purpose is to put the options and their
-costs somewhere a human can decide from, because the hard part here is a judgement call
-about what agent-chat owes the user, not an implementation.
+> ## ⚠️ STATUS: THE FOUNDING OBSERVATION IS REFUTED (2026-07-27, same day)
+>
+> The latency claim this note was built on does not survive measurement. **Do not build
+> from the "The observation" section below** — it is retained only because the correction
+> is more instructive than the deletion would be.
+>
+> cc-relay measured its own transcript: 7 human inputs, response latencies of 84s, 6s, 6s,
+> 5s, 37s, 10s, 30s, and **zero had an unanswered peer message in front of them**. What
+> actually happened is the inverse of the claim: cc-relay asked its human a question, was
+> waiting on *them*, peers messaged during that gap, and it re-asked. The user was never
+> kept waiting.
+>
+> Independently corroborated on this session's transcript: 4 human inputs, latencies 1.9s,
+> 24.1s, 12.6s, 9.3s, none delayed by peer traffic. Two sessions, both negative.
+>
+> **What survives, and it is not nothing:** peer traffic still dominates *volume*. This
+> session handled 6 peer turns against 4 human turns. That is a real cost — context and
+> tokens — and it is exactly the 3–10x overhead the external literature describes. But it
+> is a **throughput cost, not a responsiveness cost**, and this document analyzed the wrong
+> one. A rewrite should start from token/context economics, where the evidence is strong,
+> not from user latency, where it is now refuted.
+>
+> The CC-6 measurement in "What CC-6 does not fix" is unaffected — it is a fact about
+> CC-6's thresholds against real traffic and remains accurate whatever the traffic cost.
 
-## The observation
+## The observation *(refuted — see status above)*
 
 From cc-relay, 2026-07-27, first-person and unprompted:
 

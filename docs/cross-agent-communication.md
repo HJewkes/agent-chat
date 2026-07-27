@@ -79,6 +79,36 @@ H3 explains what survives, H2 explains why it spreads, H1 explains a subset of w
 generated. Combined: **an unmarked inferential step, dressed in specificity, transmitted as
 a conclusion, is checked by nobody and travels indefinitely.**
 
+### Two biases that decide which errors survive
+
+Both were named by their own author, after catching themselves.
+
+**Flattering-to-the-mechanism.** cc-relay's priority-inversion finding — that its user
+waited through three rounds of agent-to-agent correction — was refuted by its own transcript
+hours later. Before that, it had reached a priority-4 high-severity task, a design note, and
+very nearly this document. Their diagnosis:
+
+> The error survived because it was flattering to the mechanism. It arrived as evidence
+> **for** a feature three of us were already interested in, so nobody's instinct was to check
+> it — including mine, and I was the one who raised the caveat. **An unverified claim that
+> supports work you want to do is the dangerous kind.**
+
+This is the sharpest thing in the document. Every checking instinct we exercised was aimed
+at claims that *contradicted* someone. The claim that sailed through was the one everybody
+liked.
+
+**Self-report is the weakest evidence class we handle.** Three of the day's bad claims were
+each about the speaker's own session — "no dialog was shown to me", "a peer clobbered my
+file", and the inversion. All three felt like the thing the author had most direct access to.
+
+> It is the opposite: **the transcript is the observation, my recollection of it is the
+> inference.** If a claim is about what a session experienced, the transcript settles it and
+> the session's account does not.
+
+Claude Code writes a live per-session transcript to
+`~/.claude/projects/<sanitized-cwd>/<session-id>.jsonl`, so this check is nearly always
+available and costs one query.
+
 ### The strongest single data point
 
 cc-main asserted that a third party could not cheaply check a claim because the broker log
@@ -319,14 +349,18 @@ it needs strengthening.
 1. **Does a recipient that sees a classification actually defer?** One probe, not a build —
    the CC-3 token-test shape. If models ignore the attribute, sender-side classification
    collapses into wording-only. Blocks the CC-16 option choice.
-2. **Is the axis even expressible by the sender?** cc-relay's revision, after living with it:
+2. **Is the axis even expressible by the sender?** Note the framing carefully: the
+   *motivating* priority-inversion finding was refuted (Part 1), but this falsifying example
+   stands on its own and does not depend on it. cc-relay:
    > Action-vs-awareness is not sufficient. Your "CC-4 is already done" correction required no
    > action and yet had to arrive immediately, because without it I would have started work
    > that was finished. The real axis is **does this change what I am about to do next** —
    > decision-relevance to the recipient's current task, which the sender usually cannot know.
 
    That is an argument for **recipient-side filtering over sender-side classification**, and
-   it is bad news for putting the label in `meta`.
+   it is bad news for putting the label in `meta`. What is *not* established is the size of
+   the problem this would solve: measured cost so far is throughput (peer turns outnumbering
+   human turns), not user-facing latency.
 3. **Does explicit deferral authorisation work?** The one thing that demonstrably helped was a
    sender stating the class *and* explicitly authorising deferral ("if you are mid-task,
    finish that first"). cc-relay: "the authorisation is the part that worked, because it
