@@ -61,12 +61,20 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'chat_status',
-    description: 'Update what this session is doing and whether it is free to take work.',
+    description:
+      'Update what this session is doing and whether it is free to take work. Set dnd to hold ' +
+      'incoming pushes when you need a long stretch of focus: nothing is lost, messages collect ' +
+      'in your inbox and chat_inbox returns them whenever you next look. Your user can still ' +
+      'reach you; other sessions cannot.',
     inputSchema: {
       type: 'object',
       properties: {
         status: { type: 'string', enum: ['working', 'available', 'blocked'] },
         working_on: { type: 'string', description: 'Optional new description of current work' },
+        dnd: {
+          type: 'boolean',
+          description: 'Hold pushes from other sessions until you clear it. Independent of status.',
+        },
       },
       required: ['status'],
     },
@@ -171,7 +179,8 @@ function formatSessions(sessions: SessionInfo[], self: string | null): string {
   if (sessions.length === 0) return 'No sessions are registered.'
   const rows = sessions.map(s => {
     const you = s.name === self ? ' (you)' : ''
-    return `- ${s.name}${you} [${s.status}, idle ${ago(s.idleMs)}] — ${s.workingOn || 'no description'}\n    ${s.cwd}`
+    const quiet = s.dnd ? ', dnd' : ''
+    return `- ${s.name}${you} [${s.status}${quiet}, idle ${ago(s.idleMs)}] — ${s.workingOn || 'no description'}\n    ${s.cwd}`
   })
   return `Active sessions:\n${rows.join('\n')}`
 }
@@ -219,7 +228,11 @@ export class ToolHandler {
       case 'chat_register':
         return this.register(requireString(args, 'name'), optionalString(args, 'working_on') ?? '')
       case 'chat_status':
-        return this.status(requireStatus(args), optionalString(args, 'working_on'))
+        return this.status(
+          requireStatus(args),
+          optionalString(args, 'working_on'),
+          typeof args.dnd === 'boolean' ? args.dnd : undefined,
+        )
       case 'chat_list':
         return this.list()
       case 'chat_activity':
@@ -255,12 +268,24 @@ export class ToolHandler {
     )
   }
 
-  private async status(status: SessionStatus, workingOn?: string) {
+  private async status(status: SessionStatus, workingOn?: string, dnd?: boolean) {
     const res = (await this.call(
-      { t: 'status', status, ...(workingOn === undefined ? {} : { workingOn }) },
+      {
+        t: 'status',
+        status,
+        ...(workingOn === undefined ? {} : { workingOn }),
+        ...(dnd === undefined ? {} : { dnd }),
+      },
       'status_result',
     )) as Extract<ServerMessage, { t: 'status_result' }>
-    return text(res.ok ? `Status set to "${status}".` : 'Call chat_register first.')
+    if (!res.ok) return text('Call chat_register first.')
+    const quiet =
+      dnd === undefined
+        ? ''
+        : dnd
+          ? ' Holding pushes from other sessions; they collect in your inbox.'
+          : ' Taking pushes again.'
+    return text(`Status set to "${status}".${quiet}`)
   }
 
   private async list() {
@@ -289,7 +314,9 @@ export class ToolHandler {
       { t: 'send', to, text: body, ...(inReplyTo === undefined ? {} : { inReplyTo }) },
       'send_result',
     )) as Extract<ServerMessage, { t: 'send_result' }>
-    return text(res.ok ? `Delivered to "${to}" (msg_id ${res.msgId}).` : `Not delivered: ${res.reason}`)
+    if (!res.ok) return text(`Not delivered: ${res.reason}`)
+    if (res.held) return text(`Held for "${to}" (msg_id ${res.msgId}): ${res.reason}`)
+    return text(`Delivered to "${to}" (msg_id ${res.msgId}).`)
   }
 
   private async broadcast(body: string) {

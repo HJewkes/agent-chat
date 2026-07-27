@@ -9,14 +9,26 @@ interface Entry {
   status: SessionStatus
   /** Set when Claude Code opened a permission dialog; cleared by any later activity. */
   awaitingApproval: boolean
+  /**
+   * Do not push to this session; log for its inbox instead. Orthogonal to status
+   * on purpose — a session can be working and still want messages, or available
+   * and want silence, so this is not a fourth SessionStatus.
+   */
+  dnd: boolean
   registeredAt: number
   lastSeen: number
 }
 
-/** A message the transport layer should write to `conn`. */
+/**
+ * A message the transport layer should record for `conn`. `live: false` means log
+ * it to the inbox but do not push — the recipient is in do-not-disturb. Per
+ * delivery rather than per route, because one broadcast can be live for some
+ * recipients and held for others.
+ */
 export interface Delivery<C> {
   conn: C
   message: DeliveredMessage
+  live: boolean
 }
 
 export interface RouteResult<C> {
@@ -179,19 +191,25 @@ export class Registry<C> {
       pid: input.pid,
       status: existing?.status ?? 'available',
       awaitingApproval: existing?.awaitingApproval ?? false,
+      dnd: existing?.dnd ?? false,
       registeredAt: existing?.registeredAt ?? this.now(),
       lastSeen: this.now(),
     })
     return { ok: true }
   }
 
-  setStatus(conn: C, status: SessionStatus, workingOn?: string): boolean {
+  setStatus(conn: C, status: SessionStatus, workingOn?: string, dnd?: boolean): boolean {
     const entry = this.entries.get(conn)
     if (!entry) return false
     entry.status = status
     if (workingOn !== undefined) entry.workingOn = workingOn
+    if (dnd !== undefined) entry.dnd = dnd
     entry.lastSeen = this.now()
     return true
+  }
+
+  isDnd(name: string): boolean {
+    return this.findByName(name)?.[1].dnd ?? false
   }
 
   list(): SessionInfo[] {
@@ -200,6 +218,7 @@ export class Registry<C> {
       workingOn: e.workingOn,
       cwd: e.cwd,
       status: e.awaitingApproval ? 'blocked' : e.status,
+      dnd: e.dnd,
       idleMs: this.now() - e.lastSeen,
       registeredAt: e.registeredAt,
     }))
@@ -308,7 +327,20 @@ export class Registry<C> {
     pair.push(this.now())
 
     const message = this.build(sender.name, text, inReplyTo === undefined ? {} : { inReplyTo })
-    return { ok: true, msgId: message.msgId, recipients: [to], deliveries: [{ conn: target[0], message }] }
+    const live = !target[1].dnd
+    return {
+      ok: true,
+      msgId: message.msgId,
+      recipients: [to],
+      deliveries: [{ conn: target[0], message, live }],
+      ...(live
+        ? {}
+        : {
+            reason:
+              `${to} is not taking pushes right now. The message is in their inbox and they will ` +
+              'see it when they next look, so do not resend it.',
+          }),
+    }
   }
 
   /** Routes to every registered session except the sender. */
@@ -318,9 +350,9 @@ export class Registry<C> {
 
     const message = this.build(sender.name, text, { broadcast: true })
     const deliveries: Delivery<C>[] = []
-    for (const target of this.entries.keys()) {
+    for (const [target, entry] of this.entries) {
       if (target === conn) continue
-      deliveries.push({ conn: target, message })
+      deliveries.push({ conn: target, message, live: !entry.dnd })
     }
 
     // Charged against the budget even when suppressed, or hitting the limit would

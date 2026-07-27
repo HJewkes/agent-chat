@@ -329,3 +329,51 @@ describe('Registry pair exchange rate', () => {
     expect(registry.send(alice, 'bob', 'still fine').ok).toBe(true)
   })
 })
+
+describe('Registry do-not-disturb', () => {
+  const trio = () => {
+    const registry = new Registry<object>()
+    const [alice, bob, carol] = [conn('a'), conn('b'), conn('c')]
+    register(registry, alice, 'alice')
+    register(registry, bob, 'bob')
+    register(registry, carol, 'carol')
+    return { registry, alice, bob, carol }
+  }
+
+  it('retains a directed message for a quiet session instead of pushing it', () => {
+    const { registry, alice, bob } = trio()
+    registry.setStatus(bob, 'working', undefined, true)
+
+    const result = registry.send(alice, 'bob', 'are you there?')
+
+    // Routed and logged, just not pushed — that is what makes DND lossless.
+    expect(result.ok).toBe(true)
+    expect(result.deliveries).toHaveLength(1)
+    expect(result.deliveries[0]?.live).toBe(false)
+    expect(result.reason).toContain('inbox')
+  })
+
+  it('holds a broadcast per recipient rather than for everyone', () => {
+    const { registry, alice, bob } = trio()
+    registry.setStatus(bob, 'working', undefined, true)
+
+    const result = registry.broadcast(alice, 'switching branches')
+
+    const byName = new Map(result.deliveries.map(d => [registry.nameOf(d.conn), d.live]))
+    expect(byName.get('bob')).toBe(false)
+    expect(byName.get('carol')).toBe(true)
+  })
+
+  it('keeps dnd orthogonal to status, in both directions', () => {
+    const { registry, alice, bob } = trio()
+    registry.setStatus(bob, 'working', undefined, true)
+
+    // A later status update that says nothing about dnd must not clear it.
+    registry.setStatus(bob, 'available')
+    expect(registry.send(alice, 'bob', 'still quiet?').deliveries[0]?.live).toBe(false)
+    expect(registry.list().find(s => s.name === 'bob')?.status).toBe('available')
+
+    registry.setStatus(bob, 'available', undefined, false)
+    expect(registry.send(alice, 'bob', 'back?').deliveries[0]?.live).toBe(true)
+  })
+})

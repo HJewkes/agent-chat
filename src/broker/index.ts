@@ -57,9 +57,11 @@ function handleRoute(conn: Conn, result: RouteResult<Conn>, kind: 'message' | 'b
       ...(delivery.message.inReplyTo ? { ref: delivery.message.inReplyTo } : {}),
       body: delivery.message.text,
     })
-    // Suppressed deliveries are logged above and simply not pushed. The inbox is
-    // a query over the log, so chat_inbox still returns them.
-    if (!result.suppressLive) deliver(delivery.conn, delivery.message)
+    // Held deliveries are logged above and simply not pushed. The inbox is a
+    // query over the log, so chat_inbox still returns them. Two independent
+    // reasons to hold: the sender is over budget (whole route) or this one
+    // recipient is in do-not-disturb.
+    if (!result.suppressLive && delivery.live) deliver(delivery.conn, delivery.message)
   }
   if (!result.ok) {
     events.append({ kind: 'route_failed', actor: from, target: to, body: result.reason ?? 'unknown' })
@@ -72,7 +74,9 @@ function handleRoute(conn: Conn, result: RouteResult<Conn>, kind: 'message' | 'b
     recipients: result.recipients,
     ...(result.msgId === undefined ? {} : { msgId: result.msgId }),
     ...(result.reason === undefined ? {} : { reason: result.reason }),
-    ...(result.suppressLive ? { held: true } : {}),
+    ...(result.suppressLive || (result.deliveries.length > 0 && result.deliveries.every(d => !d.live))
+      ? { held: true }
+      : {}),
   })
 }
 
@@ -158,6 +162,9 @@ function handleHumanSend(conn: Conn, to: string, text: string): void {
     })
   }
   events.append({ kind: 'message', actor: HUMAN, target: to, msgId, body: text })
+  // The human overrides do-not-disturb and no agent can. Scarcity has to be
+  // structural: if any peer could mark a message urgent, every message would be
+  // urgent within a day. There is simply no parameter for it on the agent path.
   deliver(target, { msgId, from: HUMAN, text, at: Date.now() })
   logEvent('route', { kind: 'message', msgId, from: HUMAN, to, delivered: true, recipients: [to] })
   reply(conn, { t: 'send_result', ok: true, msgId, recipients: [to] })
@@ -197,7 +204,10 @@ function handleMessage(conn: Conn, msg: ClientMessage): void {
       return reply(conn, { t: 'register_result', ...result })
     }
     case 'status':
-      return reply(conn, { t: 'status_result', ok: registry.setStatus(conn, msg.status, msg.workingOn) })
+      return reply(conn, {
+        t: 'status_result',
+        ok: registry.setStatus(conn, msg.status, msg.workingOn, msg.dnd),
+      })
     case 'list':
       return reply(conn, { t: 'list_result', sessions: registry.list() })
     case 'send':

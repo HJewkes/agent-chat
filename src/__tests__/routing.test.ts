@@ -432,3 +432,35 @@ describe('observation', () => {
     expect(await call(alice, 'chat_activity', { name: 'nobody-by-that-name' })).toContain('No session named')
   })
 })
+
+describe('do not disturb', () => {
+  it('holds peer pushes but loses nothing, and the human still gets through', async () => {
+    const ivan = await startSession('ivan')
+    await call(ivan, 'chat_register', { name: 'ivan', working_on: 'a long stretch of focus' })
+
+    // Control: while ivan is taking pushes, a peer message arrives live.
+    await call(alice, 'chat_send', { to: 'ivan', text: 'before the quiet' })
+    await settle()
+    expect(ivan.inbox).toHaveLength(1)
+
+    await call(ivan, 'chat_status', { status: 'working', dnd: true })
+    const held = await call(alice, 'chat_send', { to: 'ivan', text: 'during the quiet' })
+    await settle()
+
+    expect(ivan.inbox).toHaveLength(1)
+    expect(held).toContain('not taking pushes')
+    // Nothing lost: it is in the log, so the inbox query returns it.
+    expect(await call(ivan, 'chat_inbox', { limit: 10 })).toContain('during the quiet')
+    // And peers can see the state rather than guessing why nobody replies.
+    expect(await call(alice, 'chat_list')).toContain('dnd')
+
+    // The human overrides; no agent has a way to.
+    await execFileAsync(process.execPath, [CLI, 'send', 'ivan', 'your user needs you'], {
+      env: { ...process.env, AGENT_CHAT_HOME: TEST_HOME },
+    })
+    await settle()
+
+    expect(ivan.inbox).toHaveLength(2)
+    expect(ivan.inbox.at(-1)?.content).toBe('your user needs you')
+  })
+})

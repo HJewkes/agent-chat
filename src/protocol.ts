@@ -10,6 +10,8 @@ export interface SessionInfo {
   workingOn: string
   cwd: string
   status: SessionStatus
+  /** Holding pushes; messages still accumulate in the inbox. Orthogonal to status. */
+  dnd: boolean
   idleMs: number
   registeredAt: number
 }
@@ -69,7 +71,7 @@ export interface QueueItem {
 /** Session -> broker. */
 export type ClientMessage =
   | { t: 'register'; name: string; workingOn: string; cwd: string; pid: number }
-  | { t: 'status'; status: SessionStatus; workingOn?: string }
+  | { t: 'status'; status: SessionStatus; workingOn?: string; dnd?: boolean }
   | { t: 'list' }
   | { t: 'send'; to: string; text: string; inReplyTo?: string }
   | { t: 'broadcast'; text: string }
