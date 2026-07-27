@@ -216,18 +216,40 @@ export type ServerMessage =
   | { t: 'agents_result'; agents: AgentIdentity[] }
 
 /**
- * A durable agent identity. Placeholder shape frozen with the rest of the
- * contract; A1 builds the read model that produces it, and may add fields.
+ * The lifecycle an agent identity is folded into. Durable: it is a projection of
+ * the event log, so it survives a broker restart in a way presence cannot.
+ */
+export const AGENT_LIFECYCLES = ['spawning', 'live', 'detached', 'exited', 'retired'] as const
+
+export type AgentLifecycle = (typeof AGENT_LIFECYCLES)[number]
+
+/**
+ * A durable agent identity, produced by the A1 read model (`agents/identity.ts`).
  * Presence is deliberately NOT in here — that is the registry's job, and it is
- * ephemeral by design.
+ * ephemeral by design. The two are paired at render time, never stored together.
+ *
+ * The first six fields were frozen with the rest of the contract in step 2a; the
+ * rest were added by A1 under the "may add fields" allowance. `isolation` and
+ * `surface` are plain strings rather than IsolationName / SurfaceName because
+ * they are read back out of a free-text `meta` blob, and the fold cannot promise
+ * a value written by an older binary is still in either union.
  */
 export interface AgentIdentity {
   agentId: string
   name: string
   profile: string
-  state: 'spawning' | 'live' | 'detached' | 'exited' | 'retired'
+  state: AgentLifecycle
   spawnedBy: string
   spawnedAt: number
+  brief: string
+  cwd: string
+  isolation: string
+  surface: string
+  /** The uuid passed to --session-id. The resume handle. */
+  sessionId: string
+  /** Timestamp of the newest row referencing this identity, spawn included. */
+  lastEventAt: number
+  exit?: { code: number | null; summary: string; costUsd?: number }
 }
 
 export type ReplyType = Exclude<ServerMessage['t'], 'deliver' | 'error'>

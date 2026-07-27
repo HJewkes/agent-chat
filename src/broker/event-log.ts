@@ -23,6 +23,22 @@ export interface AppendInput {
   meta?: Record<string, string>
 }
 
+/**
+ * A log row in the shape the agent fold consumes: decoded `meta`, camelCase, and
+ * no `id`. Deliberately not the sqlite `Row` — nothing downstream of the fold
+ * should depend on the storage schema.
+ */
+export interface AgentEventRow {
+  kind: EventKind
+  ts: number
+  actor: string
+  target: string | null
+  msgId: string | null
+  ref: string | null
+  body: string | null
+  meta: Record<string, string>
+}
+
 interface Row {
   id: number
   ts: number
@@ -65,6 +81,24 @@ export const APPROVAL_TTL_MS = 10 * 60 * 1000
 
 /** An item is closed once something references it as answered or dismissed. */
 const CLOSED = `SELECT ref FROM events WHERE kind IN ('answer','resolution') AND ref IS NOT NULL`
+
+/**
+ * Kinds the agent read model folds over. `agent_spawn_refused` and
+ * `verdict_refused` are absent on purpose: a refusal never creates or advances
+ * an identity, so folding it would invent an agent that was never spawned.
+ */
+const AGENT_KINDS = [
+  'agent_spawned',
+  'agent_attached',
+  'agent_detached',
+  'agent_resumed',
+  'agent_exited',
+  'agent_retired',
+  'isolation_allocated',
+  'isolation_released',
+] as const satisfies readonly EventKind[]
+
+const AGENT_KINDS_SQL = AGENT_KINDS.map(k => `'${k}'`).join(',')
 
 // Loaded through require so Vite/vitest don't try to pre-bundle a builtin they
 // don't yet know about. The type import above is erased, so it costs nothing.
@@ -204,6 +238,30 @@ export class EventLog {
       .prepare(`SELECT 1 AS hit FROM events WHERE msg_id = ? AND msg_id NOT IN (${CLOSED}) LIMIT 1`)
       .get(msgId) as unknown as { hit: number } | undefined
     return row !== undefined
+  }
+
+  /**
+   * Every row that bears on an agent identity, oldest first, for the fold in
+   * `agents/identity.ts`.
+   *
+   * The db handle stays private and this returns plain rows rather than the read
+   * model reaching in: the fold is then a pure function over a row list, unit
+   * testable with no database at all, which is the point of the A1 ordering.
+   */
+  agentEvents(): AgentEventRow[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM events WHERE kind IN (${AGENT_KINDS_SQL}) ORDER BY id ASC`)
+      .all() as unknown as Row[]
+    return rows.map(row => ({
+      kind: row.kind as EventKind,
+      ts: row.ts,
+      actor: row.actor,
+      target: row.target,
+      msgId: row.msg_id,
+      ref: row.ref,
+      body: row.body,
+      meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
+    }))
   }
 
   history(limit: number): QueueItem[] {
