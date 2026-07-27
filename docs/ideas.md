@@ -421,9 +421,13 @@ Not ideas — things I'd expect to break, several of which have no fix above.
 - **Name collisions across projects.** Two repos both want `api`. The second
   registration fails, that session picks something else, and every peer's
   remembered name is now wrong with no notification.
-- **The inbox is per-connection-lifetime and capped at 50** (`registry.ts:4`). It
-  survives reconnect (`registry.ts:73`) but not the broker restarting, and a busy
-  session on a broadcast-heavy bus can roll 50 messages faster than you'd think.
+- **The inbox is a bounded query over the event log.** This bullet used to say
+  "per-connection-lifetime and capped at 50 (`registry.ts:4`)", which stopped being
+  true when the inbox became an event-log query (`event-log.ts:121`) and the old
+  constant went with it — leaving replay unbounded until `e407993` reinstated a cap
+  at the tool boundary (`tools.ts:199`). The durability story inverted too: backing
+  it with the log means it now survives a broker restart rather than dying with the
+  connection. Still true that a broadcast-heavy bus rolls past the window fast.
 
 ## What a peer session could do that a user wouldn't want
 

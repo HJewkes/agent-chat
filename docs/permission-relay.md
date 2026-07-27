@@ -21,9 +21,16 @@ SSd(clients, name => Sft(name, k0()) !== undefined)
 - Dev-flag channels are merged into that *same* array with `dev:true`.
 
 So the dev-flag-vs-plugin distinction CC-2 originally asked about does not exist on this
-code path. Both resolve through one list. Whatever gates ordinary channel delivery gates
-relay identically — including `gateChannelServer`'s `allowedChannelPlugins` check, which
-is what makes an allowlisted plugin work without the dev flag.
+code path. Both resolve through one list, and whatever gates ordinary channel delivery
+gates relay identically.
+
+Scope that carefully: the equivalence is at **recipient selection**, not at the gate.
+`gateChannelServer` still discriminates by kind — a `server:` target that isn't
+dev-flagged is refused outright, and the `allowedChannelPlugins` check matches on
+`{plugin, marketplace}` pairs, so it can never admit a bare `server:` entry no matter
+what is listed. Packaging as a plugin remains the only route off the dev flag; that is
+what CC-7 was for. What CC-2 establishes is narrower and is the thing that was actually
+in doubt: relay adds no *further* gate of its own on top of that.
 
 **Confirmed live**: a `chat_list` prompt in a session launched with
 `--channels plugin:agent-chat@agent-chat-local` (no dev flag) produced
@@ -78,6 +85,35 @@ capability being declined rather than a hypothetical. Keep it that way.
 The corollary for our own design: when the local dialog wins, the host sends the channel
 server *nothing*. There is no resolution notification. That is why pending approvals are
 aged out by TTL rather than closed by an event.
+
+## An approval row is session-relative — never compare rows across sessions
+
+The broker log records *that a session prompted*, which depends on that session's
+permission view, and permission views drift apart between concurrently-running
+sessions. Observed 2026-07-27: `chat_send` was present in
+`.claude/settings.local.json`, and a session still produced `approval_request izfnu`
+for `chat_send` more than a minute later.
+
+The mechanism is not that settings are frozen at launch — they aren't. When a user
+answers "always allow", `persistPermissions` does two independent things: `wfe(d)`
+writes the rule to disk fire-and-forget, and `ste(...)` updates *that session's*
+in-memory permission context. The running session therefore honours its own grants
+immediately, without re-reading anything. What is missing is the other direction:
+settings reads are memoized (`Tqn` over the `E2n` map) with no file watcher, so one
+session's write does not reach another session's cached view. Sessions launched at
+different times, or which have granted different things, disagree indefinitely.
+
+The consequence for anyone reading the log:
+
+- **Presence of an `approval_request` is solid evidence.** A prompt really opened and
+  really relayed. This is what CC-2 was verified on and it is unaffected.
+- **Absence proves nothing about the relay.** It means that tool was already permitted
+  *in that session*, and says nothing about whether relay works or about any other
+  session.
+
+So an A/B across two sessions is only valid if they were launched from the same
+permission state — which, in a shared checkout where sessions grant permissions as
+they go, is not the default and cannot be assumed.
 
 ## Note: relaying our own tool calls
 
