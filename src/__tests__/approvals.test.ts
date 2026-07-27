@@ -8,6 +8,7 @@ import { z } from 'zod'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { EventLog, APPROVAL_TTL_MS } from '../broker/event-log.js'
+import { reapBroker } from './broker-harness.js'
 
 /**
  * Permission relay, observe-only. Drives the real notification Claude Code
@@ -57,6 +58,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await transport.close().catch(() => undefined)
+  // See routing.test.ts: the broker is detached and outlives the transport.
+  await reapBroker(TEST_HOME)
   fs.rmSync(TEST_HOME, { recursive: true, force: true })
 })
 

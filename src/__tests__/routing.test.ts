@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { z } from 'zod'
+import { reapBroker } from './broker-harness.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
@@ -78,6 +79,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   for (const s of sessions) await s.transport.close().catch(() => undefined)
+  // Closing the transports ends the sessions, not the broker: it was spawned
+  // detached so it would outlive them. Reap it explicitly or every run leaks one.
+  await reapBroker(TEST_HOME)
   fs.rmSync(TEST_HOME, { recursive: true, force: true })
 })
 
