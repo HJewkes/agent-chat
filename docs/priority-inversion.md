@@ -28,8 +28,12 @@
 > with "decide to build nothing" an acceptable close).
 >
 > A rewrite, if there is one, should start from token/context economics rather than user
-> latency. Note that even there the evidence is thinner than the external literature's
-> 3–10x, which measures a different topology.
+> latency — but **not by reaching for the literature's 3–10x figure, which would be a
+> category error.** That number measures total multi-agent token consumption against a
+> single-agent baseline; peer-to-human inbound bytes is a different quantity entirely, and
+> the two are not comparable. cc-main measured that ratio across all three sessions and got
+> 2.7x, 1.6x and 0.2x — the last an artifact of a large bootstrap prompt counting as human
+> input. Wide spread, small sample, and measuring the wrong thing for the comparison anyway.
 >
 > The CC-6 measurement in "What CC-6 does not fix" is unaffected — it is a fact about
 > CC-6's thresholds against real traffic and remains accurate whatever the traffic cost.
