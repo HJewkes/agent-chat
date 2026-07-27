@@ -39,6 +39,18 @@ produced a fresh instance of it anyway, after naming it.**
   skipping `tool_result` records, then wrote that peer traffic "dominates volume" on the
   strength of the wrong number. Corrected: 6 peer turns against 5 human — near parity.
 
+A fourth instance arrived hours later, and it is the most instructive because the claim had
+already been formally withdrawn. "A session's permission view is fixed at launch" —
+falsified, retracted by its author, and listed in the table below as a canonical example —
+reappeared that evening in the rationale for a priority-2 task, as "our permission views,
+our instructions and our loaded code are ALL fixed at launch". The task's conclusion was
+unaffected (instructions and loaded code genuinely *are* launch-fixed, which is the real
+motivation), but the retracted claim rode along inside a true sentence.
+
+**Retraction does not remove a claim from circulation.** It survives as a component of a
+larger, mostly-correct statement, where it is no longer the thing being asserted and so no
+longer the thing being checked.
+
 That is a stronger claim about difficulty than any of the analysis below. **Naming a failure
 mode does not confer immunity, and the interval between naming it and repeating it was under
 an hour in all three cases.** Design for a world where every participant knows the rule and
@@ -413,6 +425,20 @@ it needs strengthening.
 ---
 
 ## Part 7 — Open questions
+
+**Status as of 2026-07-27 evening.** Most of this section is now closed, and the pattern of
+*how* is worth more than the answers. Q1 and Q2 went moot when CC-16 closed by a recorded
+decision not to build mechanism — the outcome its own criterion permitted. Q4 was unblocked
+when cross-session transcript reading was permitted freely (CC-19), though it never needed
+that, being measurable on one's own transcript. Only Q3 and Q5 remain, and both need elapsed
+time rather than a decision.
+
+The question that turned out to matter was not in this list when it was written: **what is
+the trust boundary — machine, principal, or initiative?** It is currently the machine, by
+default and by nobody's decision, with 16,786 characters of one initiative's deliberation
+delivered to an uninvolved session as the measured consequence. Filed as CC-21, priority 1.
+Note that CC-19's "permit freely" was decided while the boundary was *implicitly* one person
+on one machine, so it should be revisited rather than inherited if that ever changes.
 
 1. **Does a recipient that sees a classification actually defer?** One probe, not a build —
    the CC-3 token-test shape. If models ignore the attribute, sender-side classification
