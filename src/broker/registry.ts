@@ -13,6 +13,17 @@ interface Entry {
    * just went away when the socket drops.
    */
   agentId?: string
+  /**
+   * The requester's `ITERM_SESSION_ID`, used as the anchor for a visible spawn.
+   *
+   * Presence data, and deliberately so: the broker is started detached with
+   * `stdio: 'ignore'` and has no terminal of its own, so the process that does
+   * the spawning is structurally not the process that knows where to put a pane.
+   * An anchor is a property of a live connection and is meaningless once that
+   * connection is gone — which is exactly the lifetime an entry already has.
+   * Storing it here also means a requester can only ever offer its own pane.
+   */
+  termSessionId?: string
   status: SessionStatus
   /** Set when Claude Code opened a permission dialog; cleared by any later activity. */
   awaitingApproval: boolean
@@ -190,7 +201,14 @@ export class Registry<C> {
    */
   register(
     conn: C,
-    input: { name: string; workingOn: string; cwd: string; pid: number; agentId?: string },
+    input: {
+      name: string
+      workingOn: string
+      cwd: string
+      pid: number
+      agentId?: string
+      termSessionId?: string
+    },
   ): { ok: boolean; reason?: string; evicted?: C } {
     if (RESERVED_NAMES.has(input.name.toLowerCase()))
       return { ok: false, reason: `"${input.name}" is reserved and cannot be used as a session name` }
@@ -211,6 +229,7 @@ export class Registry<C> {
       cwd: input.cwd,
       pid: input.pid,
       ...(input.agentId === undefined ? {} : { agentId: input.agentId }),
+      ...(input.termSessionId === undefined ? {} : { termSessionId: input.termSessionId }),
       status: existing?.status ?? 'available',
       awaitingApproval: existing?.awaitingApproval ?? false,
       dnd: existing?.dnd ?? false,
@@ -253,6 +272,17 @@ export class Registry<C> {
   /** The live connection for a name, if that session is currently up. */
   connFor(name: string): C | undefined {
     return this.findByName(name)?.[0]
+  }
+
+  /**
+   * The pane a spawn requested from `conn` should be anchored to.
+   *
+   * Read from the requester's OWN entry rather than taken from the request, so a
+   * session cannot claim someone else's pane and land an agent in a window it
+   * has nothing to do with.
+   */
+  anchorFor(conn: C): string | undefined {
+    return this.entries.get(conn)?.termSessionId
   }
 
   /**

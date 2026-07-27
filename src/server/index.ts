@@ -5,6 +5,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { BrokerClient } from '../client/broker-client.js'
 import type { DeliveredMessage } from '../protocol.js'
 import { TOOL_DEFINITIONS, ToolHandler } from './tools.js'
+import { terminalAnchor } from './anchor.js'
 
 /**
  * Claude Code sends this when a tool-approval dialog opens in this session.
@@ -122,6 +123,7 @@ export async function startMcpServer(): Promise<void> {
         cwd: process.cwd(),
         pid: process.pid,
         agentId: spawned.agentId,
+        ...terminalAnchor(),
       },
       'register_result',
     )

@@ -1,5 +1,6 @@
 import type { BrokerClient } from '../client/broker-client.js'
 import { SESSION_STATUSES } from '../protocol.js'
+import { terminalAnchor } from './anchor.js'
 import type { DeliveredMessage, QueueItem, ServerMessage, SessionInfo, SessionStatus } from '../protocol.js'
 
 /**
@@ -286,7 +287,7 @@ export class ToolHandler {
     }
 
     const res = (await this.call(
-      { t: 'register', name, workingOn, cwd: process.cwd(), pid: process.pid },
+      { t: 'register', name, workingOn, cwd: process.cwd(), pid: process.pid, ...terminalAnchor() },
       'register_result',
     )) as Extract<ServerMessage, { t: 'register_result' }>
     if (!res.ok) return text(`Registration failed: ${res.reason}`)

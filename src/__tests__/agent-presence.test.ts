@@ -8,6 +8,7 @@ import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { pairPresence } from '../agents/identity.js'
 import { spawnedIdentity } from '../server/index.js'
+import { terminalAnchor } from '../server/anchor.js'
 import { ToolHandler } from '../server/tools.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { ServerMessage } from '../protocol.js'
@@ -207,6 +208,49 @@ describe('presence paired with the identity it attached to', () => {
     expect(pairPresence(gone, { connected: core.registry.connFor('scout') !== undefined }).status).toBe(
       'detached',
     )
+  })
+})
+
+describe('the pane anchor for visible spawns', () => {
+  it('travels on register, since the broker has no terminal of its own', () => {
+    expect(terminalAnchor({ ITERM_SESSION_ID: 'w0t1p2:ABC-123' })).toEqual({
+      termSessionId: 'w0t1p2:ABC-123',
+    })
+    expect(terminalAnchor({})).toEqual({})
+  })
+
+  it('is read from the requester’s own entry, so nobody can claim another’s pane', () => {
+    const core = makeCore()
+    const mine = fakeConn()
+    const theirs = fakeConn()
+    core.register(mine, {
+      t: 'register',
+      name: 'mine',
+      workingOn: '',
+      cwd: '/tmp',
+      pid: 1,
+      termSessionId: 'w0t0p0:MINE',
+    })
+    core.register(theirs, { t: 'register', name: 'theirs', workingOn: '', cwd: '/tmp', pid: 2 })
+
+    expect(core.registry.anchorFor(mine)).toBe('w0t0p0:MINE')
+    expect(core.registry.anchorFor(theirs)).toBeUndefined()
+  })
+
+  it('dies with the connection, because an anchor pane outlives nothing', () => {
+    const core = makeCore()
+    const conn = fakeConn()
+    core.register(conn, {
+      t: 'register',
+      name: 'mine',
+      workingOn: '',
+      cwd: '/tmp',
+      pid: 1,
+      termSessionId: 'w0t0p0:MINE',
+    })
+    core.drop(conn)
+
+    expect(core.registry.anchorFor(conn)).toBeUndefined()
   })
 })
 
