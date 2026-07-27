@@ -173,10 +173,14 @@ class SocketServer {
       core.registry.setAwaitingApproval(conn, false)
     switch (msg.t) {
       case 'register': {
-        // Destroying the displaced socket is what makes a takeover final: leaving
-        // it open would let the predecessor keep writing under a name it no
-        // longer holds.
-        const result = core.register(conn, msg, stale => stale.destroy())
+        // Closing the displaced socket is what makes a takeover final: leaving it
+        // open would let the predecessor keep writing under a name it no longer
+        // holds. `end` rather than `destroy` so the fatal frame is flushed first
+        // — the predecessor has to learn why, or it just reconnects and takes the
+        // name back.
+        const result = core.register(conn, msg, stale =>
+          stale.end(encode({ t: 'error', reason: `superseded by a resume of "${msg.name}"`, fatal: true })),
+        )
         return reply(conn, { t: 'register_result', ...result })
       }
       case 'status':

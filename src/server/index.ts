@@ -101,7 +101,10 @@ export async function startMcpServer(): Promise<void> {
     })
   }
 
-  const broker = new BrokerClient(deliver)
+  // A superseded session has nothing left to do: a newer process holds its
+  // identity, and Claude Code will see the pipe close. Exiting is the honest
+  // outcome, and the only one that does not leave two processes on one name.
+  const broker = new BrokerClient(deliver, () => process.exit(0))
   await broker.connect()
 
   // A spawned agent registers from its environment, before the model has had a

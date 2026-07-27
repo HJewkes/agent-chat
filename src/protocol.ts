@@ -199,7 +199,15 @@ export type ServerMessage =
   /** `session` is absent when the name has no live registration; `events` outlives it. */
   | { t: 'activity_result'; session?: SessionInfo; events: QueueItem[] }
   | { t: 'deliver'; message: DeliveredMessage }
-  | { t: 'error'; reason: string }
+  /**
+   * `fatal` means stop, do not reconnect. It exists for exactly one case and the
+   * case is not optional: a connection displaced by a resume takeover would
+   * otherwise hit its reconnect ladder, replay its registration with the same
+   * agentId, and take the identity straight back — two live processes trading one
+   * name forever, each a legitimate holder by the takeover rule. An ordinary
+   * error stays retryable; this one ends the process that received it.
+   */
+  | { t: 'error'; reason: string; fatal?: boolean }
   /**
    * `warnings` carries isolation.check()'s non-fatal output back to the
    * requesting model — "you are sharing a checkout with bob" is something it

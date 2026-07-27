@@ -41,11 +41,30 @@ export class BrokerClient {
   /** FIFO per reply type; the socket answers in order, so this stays aligned. */
   private readonly waiters = new Map<ReplyType, Waiter[]>()
 
-  constructor(private readonly onDeliver: (message: DeliveredMessage) => void) {}
+  /**
+   * `onFatal` fires when the broker says stop rather than retry. The only sender
+   * today is a resume takeover, and the caller is expected to end the process:
+   * this connection's identity now belongs to a successor, so reconnecting would
+   * start a fight over it rather than recover from anything.
+   */
+  constructor(
+    private readonly onDeliver: (message: DeliveredMessage) => void,
+    private readonly onFatal?: (reason: string) => void,
+  ) {}
 
   private handle(msg: ServerMessage): void {
     if (msg.t === 'deliver') return this.onDeliver(msg.message)
-    if (msg.t === 'error') return
+    if (msg.t === 'error') {
+      if (!msg.fatal) return
+      // Set before destroying, so the close handler sees a deliberate shutdown
+      // and does not climb the reconnect ladder.
+      this.closed = true
+      this.socket?.destroy()
+      this.socket = null
+      this.failAllWaiters(msg.reason)
+      this.onFatal?.(msg.reason)
+      return
+    }
     const queue = this.waiters.get(msg.t)
     queue?.shift()?.(msg)
   }
