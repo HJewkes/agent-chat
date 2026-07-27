@@ -140,8 +140,31 @@ function handleHumanSend(conn: Conn, to: string, text: string): void {
   reply(conn, { t: 'send_result', ok: true, msgId, recipients: [to] })
 }
 
+/**
+ * A permission dialog opened in this session. Observed only: we never send a
+ * verdict. Because `request_id` is never rendered in the terminal dialog, a
+ * channel server is the only thing on the machine that can enumerate these.
+ */
+function handleApproval(conn: Conn, msg: Extract<ClientMessage, { t: 'approval' }>): void {
+  const from = registry.nameOf(conn)
+  if (!from) return
+  registry.setAwaitingApproval(conn, true)
+
+  const { msgId } = events.append({
+    kind: 'approval_request',
+    actor: from,
+    target: HUMAN,
+    body: `${msg.toolName}: ${msg.description}`,
+    meta: { request_id: msg.requestId, tool_name: msg.toolName, input_preview: msg.inputPreview },
+  })
+  logEvent('approval_request', { msgId, from, requestId: msg.requestId, tool: msg.toolName })
+}
+
 function handleMessage(conn: Conn, msg: ClientMessage): void {
   registry.touch(conn)
+  // A session blocked on a dialog cannot call tools, so anything else it sends
+  // proves the dialog closed — the only unblock signal Claude Code gives us.
+  if (msg.t !== 'approval' && registry.isAwaitingApproval(conn)) registry.setAwaitingApproval(conn, false)
   switch (msg.t) {
     case 'register': {
       const result = registry.register(conn, msg)
@@ -182,6 +205,8 @@ function handleMessage(conn: Conn, msg: ClientMessage): void {
       return reply(conn, { t: 'history_result', items: events.history(msg.limit) })
     case 'human_send':
       return handleHumanSend(conn, msg.to, msg.text)
+    case 'approval':
+      return handleApproval(conn, msg)
   }
 }
 

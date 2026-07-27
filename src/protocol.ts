@@ -72,6 +72,8 @@ export type ClientMessage =
   | { t: 'history'; limit: number }
   /** From the terminal client, which is the human and so never registers. */
   | { t: 'human_send'; to: string; text: string }
+  /** Claude Code opened a permission dialog in this session. Observed, never answered. */
+  | { t: 'approval'; requestId: string; toolName: string; description: string; inputPreview: string }
 
 /** Broker -> session. */
 export type ServerMessage =

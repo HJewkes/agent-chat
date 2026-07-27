@@ -56,6 +56,13 @@ CREATE INDEX IF NOT EXISTS events_ref ON events(ref);
 const INBOX_KINDS = ["'message'", "'broadcast'", "'answer'"].join(',')
 /** Kinds that need the human to look at them. */
 const QUEUE_KINDS = ["'message'", "'question'", "'notice'", "'approval_request'"].join(',')
+/**
+ * The local terminal dialog stays open in parallel and the first verdict wins,
+ * but Claude Code sends no event when it does. A pending approval is therefore
+ * presumed answered after this long rather than lingering in the queue forever.
+ */
+export const APPROVAL_TTL_MS = 10 * 60 * 1000
+
 /** An item is closed once something references it as answered or dismissed. */
 const CLOSED = `SELECT ref FROM events WHERE kind IN ('answer','resolution') AND ref IS NOT NULL`
 
@@ -131,9 +138,10 @@ export class EventLog {
         `SELECT * FROM events
          WHERE target = 'human' AND kind IN (${QUEUE_KINDS})
            AND msg_id NOT IN (${CLOSED})
+           AND (kind != 'approval_request' OR ts > ?)
          ORDER BY id ASC`,
       )
-      .all() as unknown as Row[]
+      .all(Date.now() - APPROVAL_TTL_MS) as unknown as Row[]
     return rows.map(row => ({
       msgId: row.msg_id ?? String(row.id),
       kind: row.kind as QueueItem['kind'],

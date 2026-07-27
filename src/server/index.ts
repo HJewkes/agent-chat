@@ -1,9 +1,25 @@
+import { z } from 'zod'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { BrokerClient } from '../client/broker-client.js'
 import type { DeliveredMessage } from '../protocol.js'
 import { TOOL_DEFINITIONS, ToolHandler } from './tools.js'
+
+/**
+ * Claude Code sends this when a tool-approval dialog opens in this session.
+ * setNotificationHandler dispatches on the method literal, so the schema is
+ * both validator and routing key.
+ */
+const PermissionRequestSchema = z.object({
+  method: z.literal('notifications/claude/channel/permission_request'),
+  params: z.object({
+    request_id: z.string(),
+    tool_name: z.string(),
+    description: z.string(), // untrusted, and often just "Run shell command"
+    input_preview: z.string(), // untrusted
+  }),
+})
 
 const INSTRUCTIONS = [
   'Cross-session messaging with other Claude Code sessions on this machine.',
@@ -24,7 +40,16 @@ export async function startMcpServer(): Promise<void> {
   const mcp = new Server(
     { name: 'agent-chat', version: '0.1.0' },
     {
-      capabilities: { experimental: { 'claude/channel': {} }, tools: {} },
+      capabilities: {
+        experimental: {
+          'claude/channel': {},
+          // Observe-only: we surface prompts to the human and never send a verdict.
+          // Routing verdicts between sessions would let one Claude grant another
+          // permissions the user never granted. See docs/ideas.md.
+          'claude/channel/permission': {},
+        },
+        tools: {},
+      },
       instructions: INSTRUCTIONS,
     },
   )
@@ -41,6 +66,16 @@ export async function startMcpServer(): Promise<void> {
 
   const broker = new BrokerClient(deliver)
   await broker.connect()
+
+  mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
+    await broker.send({
+      t: 'approval',
+      requestId: params.request_id,
+      toolName: params.tool_name,
+      description: params.description,
+      inputPreview: params.input_preview,
+    })
+  })
   const handler = new ToolHandler(broker)
 
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...TOOL_DEFINITIONS] }))

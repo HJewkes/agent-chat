@@ -137,9 +137,10 @@ agent-chat mcp                  the MCP server (Claude Code spawns this)
 npm run build && npm test
 ```
 
-40 checks across three suites. `registry.test.ts` covers live routing decisions,
-`event-log.test.ts` covers the projections, and `routing.test.ts` drives real MCP
-sessions over stdio. The properties that matter:
+48 checks across four suites. `registry.test.ts` covers live routing decisions,
+`event-log.test.ts` covers the projections, `routing.test.ts` drives real MCP
+sessions over stdio, and `approvals.test.ts` drives the real permission-request
+notification. The properties that matter:
 
 - a directed message reaches the addressee **and nobody else**
 - an unknown recipient is refused rather than fanned out
@@ -151,6 +152,9 @@ sessions over stdio. The properties that matter:
 - the question budget counts only _unanswered_ questions, per session
 - reserved names are refused, so no session can register as `human`
 - a name is rejected while held, released on exit, then reclaimable
+- a permission prompt surfaces with its input preview and **no verdict is sent**
+- a blocked session clears the moment it does anything else
+- a stale approval ages out of the queue, while questions never do
 
 ## Limits
 

@@ -67,10 +67,18 @@ async function inbox(): Promise<void> {
   for (const item of ordered) {
     console.log(`${LABEL[item.kind] ?? item.kind} ${item.msgId}  ${item.from.padEnd(14)} ${ago(item.at)}`)
     console.log(`      ${item.text}`)
+    // For an approval the description is often just "Run shell command", so the
+    // preview is the only place the actual command shows up.
+    if (item.meta.input_preview) console.log(`      ${item.meta.input_preview.slice(0, 200)}`)
   }
   const open = res.items.filter(needsAnswer).length
+  const blocked = res.items.filter(i => i.kind === 'approval_request')
   console.log(`\n${res.items.length} waiting, ${open} needing an answer.`)
-  if (open > 0) console.log('answer with: agent-chat answer <id> "..."')
+  if (blocked.length > 0) {
+    const who = [...new Set(blocked.map(i => i.from))].join(', ')
+    console.log(`${who} blocked on a permission prompt — answer in that session's terminal.`)
+  }
+  if (open > blocked.length) console.log('answer with: agent-chat answer <id> "..."')
 }
 
 async function answer(args: string[], verb: 'answer' | 'dismiss'): Promise<void> {

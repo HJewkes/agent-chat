@@ -7,6 +7,8 @@ interface Entry {
   cwd: string
   pid: number
   status: SessionStatus
+  /** Set when Claude Code opened a permission dialog; cleared by any later activity. */
+  awaitingApproval: boolean
   registeredAt: number
   lastSeen: number
 }
@@ -68,6 +70,7 @@ export class Registry<C> {
       cwd: input.cwd,
       pid: input.pid,
       status: existing?.status ?? 'available',
+      awaitingApproval: existing?.awaitingApproval ?? false,
       registeredAt: existing?.registeredAt ?? this.now(),
       lastSeen: this.now(),
     })
@@ -88,7 +91,7 @@ export class Registry<C> {
       name: e.name,
       workingOn: e.workingOn,
       cwd: e.cwd,
-      status: e.status,
+      status: e.awaitingApproval ? 'blocked' : e.status,
       idleMs: this.now() - e.lastSeen,
       registeredAt: e.registeredAt,
     }))
@@ -101,6 +104,20 @@ export class Registry<C> {
   /** The live connection for a name, if that session is currently up. */
   connFor(name: string): C | undefined {
     return this.findByName(name)?.[0]
+  }
+
+  /**
+   * A permission dialog is the one case where blocked-ness is knowable rather
+   * than self-reported: a session waiting on one cannot call tools, so the next
+   * message from it is proof the dialog closed.
+   */
+  setAwaitingApproval(conn: C, awaiting: boolean): void {
+    const entry = this.entries.get(conn)
+    if (entry) entry.awaitingApproval = awaiting
+  }
+
+  isAwaitingApproval(conn: C): boolean {
+    return this.entries.get(conn)?.awaitingApproval ?? false
   }
 
   entryFor(conn: C): { workingOn: string; status: SessionStatus } | undefined {

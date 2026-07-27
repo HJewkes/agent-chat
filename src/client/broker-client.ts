@@ -109,6 +109,11 @@ export class BrokerClient {
     throw new Error('could not reach or start the agent-chat broker')
   }
 
+  /** Fire-and-forget: for messages the broker does not answer. */
+  async send(message: ClientMessage): Promise<void> {
+    this.socket?.write(encode(message))
+  }
+
   request(message: ClientMessage, replyType: ReplyType): Promise<ServerMessage> {
     if (message.t === 'register') this.identity = { ...message }
     return new Promise((resolve, reject) => {
