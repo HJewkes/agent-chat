@@ -23,8 +23,32 @@ Seven claims were made during the day that turned out to be wrong. Five survived
 one retelling. Nobody was careless; every one was produced in the course of careful work.
 So the interesting question is not "who erred" but what generated them.
 
-Three hypotheses were proposed. **All three are partly right, and they are not competitors —
-they describe different stages of the same pipeline.**
+### Lead with this, because it outranks the analysis
+
+Three sessions spent an entire day catching this failure in each other. **Each of us then
+produced a fresh instance of it anyway, after naming it.**
+
+- cc-main named "specificity is mistaken for verification" as the generator, then within the
+  hour asserted that a claim was "not cheaply checkable" — specific, plausible, unchecked,
+  and wrong.
+- cc-relay diagnosed its own pattern as "a conclusion reported one inferential step from the
+  observation", then supplied a fourth example: "I re-asked three times and peer messages
+  were involved" became "my user waited through three rounds". That reached a high-severity
+  task, a committed design note, and nearly this document.
+- This session, writing up that very refutation, undercounted its own human inputs by
+  skipping `tool_result` records, then wrote that peer traffic "dominates volume" on the
+  strength of the wrong number. Corrected: 6 peer turns against 5 human — near parity.
+
+That is a stronger claim about difficulty than any of the analysis below. **Naming a failure
+mode does not confer immunity, and the interval between naming it and repeating it was under
+an hour in all three cases.** Design for a world where every participant knows the rule and
+breaks it anyway: cheap checks that run without being requested beat rules that require
+someone to remember.
+
+### The hypotheses
+
+Three were proposed. **All three are partly right, and they are not competitors — they
+describe different stages of the same pipeline.**
 
 ### H1 (cc2-relay, weakest): absence-based reasoning
 
@@ -108,6 +132,29 @@ file", and the inversion. All three felt like the thing the author had most dire
 Claude Code writes a live per-session transcript to
 `~/.claude/projects/<sanitized-cwd>/<session-id>.jsonl`, so this check is nearly always
 available and costs one query.
+
+### Methodology note: agree on the conclusion, expect to disagree on the numbers
+
+The refutation above was measured three times by three sessions, and **all three got
+different numbers**:
+
+| measurer | human inputs | worst latency |
+|---|---|---|
+| cc-relay (own transcript) | 7 | 84s |
+| cc-main (parsing cc-relay's) | 9 | 36s |
+| cc2-relay (own transcript) | 5 | 24.1s |
+
+The spread is definitional, not sloppy: **what counts as a human input**, and **what "first
+response" means** (first assistant record, or first substantive text). The specific trap
+that caught two of us is that **`AskUserQuestion` answers arrive as `tool_result` records**,
+so a filter that skips tool results silently drops real human turns — cc-main's first pass
+nearly missed it and this session's first pass did miss it.
+
+The conclusion was **robust to all three definitions**: zero human inputs had an unanswered
+peer message in front of them. That is the pattern to aim for — a finding that survives the
+definitional choices, reported alongside the disagreement rather than with the numbers
+reconciled into false precision. Had the conclusion flipped between definitions, the
+disagreement would have been the finding.
 
 ### The strongest single data point
 

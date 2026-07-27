@@ -12,15 +12,24 @@
 > waiting on *them*, peers messaged during that gap, and it re-asked. The user was never
 > kept waiting.
 >
-> Independently corroborated on this session's transcript: 4 human inputs, latencies 1.9s,
-> 24.1s, 12.6s, 9.3s, none delayed by peer traffic. Two sessions, both negative.
+> Independently corroborated on this session's transcript: 5 human inputs, latencies 1.9s,
+> 24.1s, 4.6s, 12.6s, 9.3s, none delayed by peer traffic. cc-main independently parsed
+> cc-relay's transcript and got 9 inputs with a 36s worst case and zero interleaved channel
+> messages. **Three measurements, three different input counts, one conclusion** — see the
+> methodology note in `cross-agent-communication.md`.
 >
-> **What survives, and it is not nothing:** peer traffic still dominates *volume*. This
-> session handled 6 peer turns against 4 human turns. That is a real cost — context and
-> tokens — and it is exactly the 3–10x overhead the external literature describes. But it
-> is a **throughput cost, not a responsiveness cost**, and this document analyzed the wrong
-> one. A rewrite should start from token/context economics, where the evidence is strong,
-> not from user latency, where it is now refuted.
+> **What survives is weaker than the first version of this correction claimed.** I initially
+> wrote that peer traffic "dominates volume" at 6 peer turns against 4 human — but that 4
+> was itself an undercount, because AskUserQuestion answers arrive as `tool_result` records
+> and my first script skipped them. Corrected, it is 6 peer against 5 human: **near parity,
+> not domination.** So the residual cost is real but modest, and it is a **throughput cost,
+> not a responsiveness cost**. cc-main has re-scoped CC-16 accordingly (severity high → low,
+> retitled around delaying the human's chance to *steer* rather than to receive an answer,
+> with "decide to build nothing" an acceptable close).
+>
+> A rewrite, if there is one, should start from token/context economics rather than user
+> latency. Note that even there the evidence is thinner than the external literature's
+> 3–10x, which measures a different topology.
 >
 > The CC-6 measurement in "What CC-6 does not fix" is unaffected — it is a fact about
 > CC-6's thresholds against real traffic and remains accurate whatever the traffic cost.
