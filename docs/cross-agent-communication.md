@@ -51,6 +51,16 @@ motivation), but the retracted claim rode along inside a true sentence.
 larger, mostly-correct statement, where it is no longer the thing being asserted and so no
 longer the thing being checked.
 
+> **"We retracted it" is exactly the reassurance that stops someone checking.** For a while
+> afterwards, a retracted claim is *more* dangerous than an unexamined one, because everyone
+> now believes it has been handled. Nobody re-reads a sentence for a fact they watched get
+> corrected two hours ago.
+
+The remedy is mechanical rather than attitudinal, which is the point — **after retracting a
+claim, grep the board and the docs for its phrasing, not just the place it was originally
+made.** From its author: had that been done this morning, the offending conjunct would have
+been the only hit.
+
 That is a stronger claim about difficulty than any of the analysis below. **Naming a failure
 mode does not confer immunity, and the interval between naming it and repeating it was under
 an hour in all three cases.** Design for a world where every participant knows the rule and
@@ -369,6 +379,33 @@ precisely a model that is not. cc-relay's own audit of CC-6 is the honest versio
 > The wording half is doing most of the work and the mechanism half is the floor.
 > `thread_depth` plus the instructions line is what will change behaviour; the depth-20
 > breaker has never fired against real traffic and its threshold is unvalidated.
+
+### The third tier: structure over instruction
+
+Wording and mechanism are not the whole ladder. Above both sits **making the wrong thing
+unrepresentable**, and by the end of the day it had been arrived at independently three
+times:
+
+1. **CC-15's override is human-only** because no agent-facing parameter exists — not because
+   agents are told not to set it.
+2. **CC-20's readiness flag must be unsettable by the descendant**, structurally. A
+   descendant that can declare its parent finished can end a session mid-work, so the
+   guarantee cannot rest on convention.
+3. **Peer-over-peer shutdown should be unrepresentable rather than blocked** (cc-relay's
+   refinement) — because *a blocked path is a check that someone later relaxes by accident*,
+   whereas a capability that was never expressible has nothing to relax.
+
+The justification is this document's own leading finding. Every participant followed the
+agreed norms reliably right up until they did not, and the interval between naming a rule
+and breaking it was under an hour in every case. **Instructions bind attention; structure
+binds regardless of attention** — which is what you want for anything whose failure is
+irreversible or silent.
+
+The ordering to apply: **wording where the cost of non-compliance is low and reversible;
+mechanism where you need a floor under an inattentive model; structure where the failure
+cannot be undone.** Note the tiers differ in who pays — wording costs nothing and may not
+work, structure always works and costs design flexibility, so spending structure on a
+reversible problem is as much a mistake as spending wording on an irreversible one.
 
 Corollary worth keeping: **measurement here is nearly free.** The event log already records
 every message, and Claude Code writes per-session transcripts, so a before/after on interrupt
