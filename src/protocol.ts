@@ -45,6 +45,14 @@ export interface DeliveredMessage {
   broadcast?: boolean
   /** Marks non-conversational deliveries, e.g. an answer coming back from the human. */
   event?: string
+  /**
+   * Length of the in_reply_to chain this message sits on, starting at 1. Stamped
+   * into `meta` so both models can see a thread lengthening and wrap up on their
+   * own, before the broker has to be blunt about it.
+   */
+  threadDepth?: number
+  /** Set once a thread is long enough to be worth flagging, alongside threadDepth. */
+  threadHint?: string
   at: number
 }
 
@@ -82,7 +90,19 @@ export type ServerMessage =
   | { t: 'register_result'; ok: boolean; reason?: string }
   | { t: 'status_result'; ok: boolean }
   | { t: 'list_result'; sessions: SessionInfo[] }
-  | { t: 'send_result'; ok: boolean; msgId?: string; recipients: string[]; reason?: string }
+  /**
+   * `held` means the message was retained for every recipient's inbox but not
+   * pushed live. It is not a failure, and the sender must not resend: the content
+   * is already durable in the event log and `chat_inbox` will return it.
+   */
+  | {
+      t: 'send_result'
+      ok: boolean
+      msgId?: string
+      recipients: string[]
+      reason?: string
+      held?: boolean
+    }
   | { t: 'inbox_result'; messages: DeliveredMessage[] }
   | { t: 'queue_result'; items: QueueItem[] }
   | { t: 'answer_result'; ok: boolean; reason?: string }

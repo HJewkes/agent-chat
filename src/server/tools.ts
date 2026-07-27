@@ -93,7 +93,11 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'chat_broadcast',
-    description: 'Send a message to every registered session except this one. Use sparingly.',
+    description:
+      'Send a message to every registered session except this one. Use sparingly: the cost is ' +
+      'the message times the number of sessions, and each one is a derailed turn. Past a budget ' +
+      'a broadcast is held in recipients’ inboxes instead of being pushed, so prefer chat_send ' +
+      'to the sessions that actually need it.',
     inputSchema: {
       type: 'object',
       properties: { text: { type: 'string', description: 'Message body' } },
@@ -248,6 +252,7 @@ export class ToolHandler {
     >
     if (!res.ok) return text(`Not delivered: ${res.reason}`)
     if (res.recipients.length === 0) return text('No other sessions are registered, so nobody received it.')
+    if (res.held) return text(`Held for ${res.recipients.join(', ')}: ${res.reason}`)
     return text(`Broadcast to ${res.recipients.join(', ')} (msg_id ${res.msgId}).`)
   }
 

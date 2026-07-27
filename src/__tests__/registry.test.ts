@@ -131,3 +131,139 @@ describe('Registry directory', () => {
     ])
   })
 })
+
+/** Walks a reply chain, returning the result of the last (possibly refused) hop. */
+function replyChain(registry: Registry<object>, alice: object, bob: object, hops: number) {
+  let result = registry.send(alice, 'bob', 'hop 1')
+  let inReplyTo = result.msgId
+  for (let hop = 2; hop <= hops; hop++) {
+    const fromAlice = hop % 2 === 1
+    result = registry.send(fromAlice ? alice : bob, fromAlice ? 'bob' : 'alice', `hop ${hop}`, inReplyTo)
+    inReplyTo = result.msgId
+  }
+  return result
+}
+
+describe('Registry thread depth', () => {
+  const pair = () => {
+    const registry = new Registry<object>()
+    const [alice, bob] = [conn('a'), conn('b')]
+    register(registry, alice, 'alice')
+    register(registry, bob, 'bob')
+    return { registry, alice, bob }
+  }
+
+  it('stamps depth 1 on a fresh thread and increments along the chain', () => {
+    const { registry, alice, bob } = pair()
+
+    const first = registry.send(alice, 'bob', 'start')
+    const second = registry.send(bob, 'alice', 'reply', first.msgId)
+    const third = registry.send(alice, 'bob', 'reply again', second.msgId)
+
+    expect(first.deliveries[0]?.message.threadDepth).toBe(1)
+    expect(second.deliveries[0]?.message.threadDepth).toBe(2)
+    expect(third.deliveries[0]?.message.threadDepth).toBe(3)
+  })
+
+  /**
+   * The longest real chain on 2026-07-27 ran to depth 5 and every link corrected a
+   * genuine error. Guards against anyone tuning the breaker down onto useful work.
+   */
+  it('delivers a depth-5 chain untouched, with no hint and no refusal', () => {
+    const { registry, alice, bob } = pair()
+
+    const last = replyChain(registry, alice, bob, 5)
+
+    expect(last.ok).toBe(true)
+    expect(last.deliveries).toHaveLength(1)
+    expect(last.deliveries[0]?.message.threadDepth).toBe(5)
+    expect(last.deliveries[0]?.message.threadHint).toBeUndefined()
+  })
+
+  it('hints at the warning depth but still delivers', () => {
+    const { registry, alice, bob } = pair()
+
+    const last = replyChain(registry, alice, bob, 12)
+
+    expect(last.ok).toBe(true)
+    expect(last.deliveries).toHaveLength(1)
+    expect(last.deliveries[0]?.message.threadHint).toBe('wrap_up')
+  })
+
+  it('breaks a runaway thread, delivering nothing and escalating to the human', () => {
+    const { registry, alice, bob } = pair()
+
+    const last = replyChain(registry, alice, bob, 20)
+
+    expect(last.ok).toBe(false)
+    expect(last.deliveries).toHaveLength(0)
+    expect(last.reason).toContain('depth')
+    expect(last.escalate).toEqual({ from: 'bob', to: 'alice', depth: 20 })
+  })
+
+  it('leaves directed messages on a fresh thread unaffected by a broken one', () => {
+    const { registry, alice, bob } = pair()
+    replyChain(registry, alice, bob, 20)
+
+    expect(registry.send(alice, 'bob', 'starting over').ok).toBe(true)
+  })
+})
+
+describe('Registry broadcast budget', () => {
+  const trio = (now: () => number) => {
+    const registry = new Registry<object>(now)
+    const [alice, bob, carol] = [conn('a'), conn('b'), conn('c')]
+    register(registry, alice, 'alice')
+    register(registry, bob, 'bob')
+    register(registry, carol, 'carol')
+    return { registry, alice }
+  }
+
+  const big = 'x'.repeat(5000)
+
+  it('pushes a broadcast live while the sender is under budget', () => {
+    const { registry, alice } = trio(() => 0)
+
+    const result = registry.broadcast(alice, big)
+
+    expect(result.ok).toBe(true)
+    expect(result.suppressLive).toBeFalsy()
+    expect(result.deliveries).toHaveLength(2)
+  })
+
+  it('holds an over-budget broadcast without losing it', () => {
+    const { registry, alice } = trio(() => 0)
+
+    registry.broadcast(alice, big)
+    const second = registry.broadcast(alice, big)
+
+    expect(second.ok).toBe(true)
+    expect(second.suppressLive).toBe(true)
+    // Still addressed to everyone: suppression is about the push, not the content.
+    expect(second.deliveries).toHaveLength(2)
+    expect(second.recipients).toEqual(['bob', 'carol'])
+    expect(second.reason).toContain('inbox')
+  })
+
+  it('lets the budget recover once the window has passed', () => {
+    let clock = 0
+    const { registry, alice } = trio(() => clock)
+
+    registry.broadcast(alice, big)
+    expect(registry.broadcast(alice, big).suppressLive).toBe(true)
+    clock += 61_000
+
+    expect(registry.broadcast(alice, big).suppressLive).toBeFalsy()
+  })
+
+  it('never throttles a directed message, even with the budget blown', () => {
+    const { registry, alice } = trio(() => 0)
+    registry.broadcast(alice, big)
+    registry.broadcast(alice, big)
+
+    const directed = registry.send(alice, 'bob', big)
+
+    expect(directed.ok).toBe(true)
+    expect(directed.suppressLive).toBeFalsy()
+  })
+})

@@ -296,3 +296,77 @@ describe('leases', () => {
     expect(await call(replacement, 'chat_register', { name: 'dave' })).toContain('Registered as "dave"')
   })
 })
+
+describe('thread depth', () => {
+  it('stamps a model-visible depth that increments with each reply', async () => {
+    const opener = await call(alice, 'chat_send', { to: 'bob', text: 'depth check' })
+    await settle()
+    const msgId = /msg_id (\w+)/.exec(opener)?.[1]
+    expect(bob.inbox.at(-1)?.meta?.thread_depth).toBe('1')
+
+    await call(bob, 'chat_send', { to: 'alice', text: 'depth reply', in_reply_to: msgId })
+    await settle()
+
+    expect(alice.inbox.at(-1)?.meta?.thread_depth).toBe('2')
+    expect(alice.inbox.at(-1)?.meta?.thread_hint).toBeUndefined()
+  })
+
+  it('escalates a runaway thread to the human, who is the only party outside it', async () => {
+    let inReplyTo = /msg_id (\w+)/.exec(await call(alice, 'chat_send', { to: 'bob', text: 'runaway 1' }))?.[1]
+    let last = ''
+    for (let hop = 2; hop <= 20; hop++) {
+      const fromAlice = hop % 2 === 1
+      last = await call(fromAlice ? alice : bob, 'chat_send', {
+        to: fromAlice ? 'bob' : 'alice',
+        text: `runaway ${hop}`,
+        in_reply_to: inReplyTo,
+      })
+      inReplyTo = /msg_id (\w+)/.exec(last)?.[1] ?? inReplyTo
+    }
+
+    expect(last).toMatch(/^Not delivered/)
+    expect(last).toContain('Do not start a fresh thread')
+    const { stdout } = await cli(['inbox'])
+    expect(stdout).toContain('reached reply depth 20')
+  })
+})
+
+describe('broadcast budget', () => {
+  /**
+   * Asserting a message was NOT pushed is only meaningful next to a control
+   * proving the same call pushes when under budget — otherwise a broken
+   * broadcast path would pass as successful throttling.
+   */
+  it('pushes while under budget, holds over it, and keeps the held one retrievable', async () => {
+    const erin = await startSession('erin')
+    await call(erin, 'chat_register', { name: 'erin', working_on: 'budget probe' })
+    // Sized so one broadcast fits the budget and two cannot, with enough headroom
+    // that the exact number of sessions left registered by earlier tests is not
+    // load-bearing — the cost is payload x recipients, so fanout moves this.
+    const bulky = `held-probe ${'x'.repeat(3000)}`
+
+    const before = bob.inbox.length
+    const first = await call(erin, 'chat_broadcast', { text: `first ${bulky}` })
+    await settle()
+    expect(first).toMatch(/^Broadcast to/)
+    expect(bob.inbox.length).toBe(before + 1)
+
+    const second = await call(erin, 'chat_broadcast', { text: `second ${bulky}` })
+    await settle()
+    expect(second).toMatch(/^Held for/)
+    expect(second).toContain('inbox')
+    expect(bob.inbox.length).toBe(before + 1)
+
+    // Held, not dropped: the log is the source of truth and the inbox queries it.
+    expect(await call(bob, 'chat_inbox', { limit: 5 })).toContain('second held-probe')
+  })
+
+  it('still delivers a directed message from a sender who is over budget', async () => {
+    const before = carol.inbox.length
+    const sent = await call(alice, 'chat_send', { to: 'carol', text: 'directed, not throttled' })
+    await settle()
+
+    expect(sent).toMatch(/^Delivered/)
+    expect(carol.inbox.length).toBe(before + 1)
+  })
+})

@@ -57,11 +57,14 @@ function handleRoute(conn: Conn, result: RouteResult<Conn>, kind: 'message' | 'b
       ...(delivery.message.inReplyTo ? { ref: delivery.message.inReplyTo } : {}),
       body: delivery.message.text,
     })
-    deliver(delivery.conn, delivery.message)
+    // Suppressed deliveries are logged above and simply not pushed. The inbox is
+    // a query over the log, so chat_inbox still returns them.
+    if (!result.suppressLive) deliver(delivery.conn, delivery.message)
   }
   if (!result.ok) {
     events.append({ kind: 'route_failed', actor: from, target: to, body: result.reason ?? 'unknown' })
   }
+  if (result.escalate) escalateThread(result.escalate)
 
   reply(conn, {
     t: 'send_result',
@@ -69,7 +72,22 @@ function handleRoute(conn: Conn, result: RouteResult<Conn>, kind: 'message' | 'b
     recipients: result.recipients,
     ...(result.msgId === undefined ? {} : { msgId: result.msgId }),
     ...(result.reason === undefined ? {} : { reason: result.reason }),
+    ...(result.suppressLive ? { held: true } : {}),
   })
+}
+
+/**
+ * A broken thread is the one case where neither participant can raise the alarm:
+ * the sender was refused and the recipient never heard anything. So it goes to the
+ * human queue, which is the only party outside the loop.
+ */
+function escalateThread(escalate: { from: string; to: string; depth: number }): void {
+  const body =
+    `${escalate.from} and ${escalate.to} reached reply depth ${escalate.depth} and were stopped. ` +
+    'Neither has been told anything the other can see; if the exchange was worthwhile, ' +
+    'answer one of them.'
+  const { msgId } = events.append({ kind: 'notice', actor: escalate.from, target: HUMAN, body })
+  logEvent('thread_breaker', { msgId, from: escalate.from, to: escalate.to, depth: escalate.depth })
 }
 
 /** Messages to the human are logged, never delivered — nothing holds that socket. */
