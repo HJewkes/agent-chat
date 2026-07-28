@@ -491,12 +491,30 @@ should append them unconditionally rather than trusting each profile to remember
 Builtins, shaped after brain's `buildDefaultAgents()` (`launch.ts:60-85`) but
 carrying isolation and surface, which brain's cannot:
 
-| Profile       | model  | tools                               | isolation         | surface        | why that surface                                   |
-| ------------- | ------ | ----------------------------------- | ----------------- | -------------- | -------------------------------------------------- |
-| `explorer`    | sonnet | Read, Grep, Glob                    | `toolset-limited` | headless       | read-only; nothing it does can prompt              |
-| `reviewer`    | sonnet | Read, Grep, Glob, Bash              | `toolset-limited` | headless       | Bash is narrow and allowlisted                     |
-| `implementer` | opus   | Read, Write, Edit, Bash, Grep, Glob | `worktree`        | **iterm-pane** | writes; a prompt is answerable in the pane (§11.3) |
-| `peer`        | opus   | Read, Write, Edit, Bash, Grep, Glob | `none`            | **iterm-tab**  | long-lived collaborator                            |
+| Profile       | model  | tools                               | denies            | isolation         | surface        | why that surface                                   |
+| ------------- | ------ | ----------------------------------- | ----------------- | ----------------- | -------------- | -------------------------------------------------- |
+| `explorer`    | sonnet | Read, Grep, Glob                    | Bash, Write, Edit | `toolset-limited` | headless       | read-only; nothing it does can prompt              |
+| `reviewer`    | sonnet | Read, Grep, Glob, Bash              | Write, Edit       | `toolset-limited` | headless       | Bash is narrow and allowlisted                     |
+| `implementer` | opus   | Read, Write, Edit, Bash, Grep, Glob | —                 | `worktree`        | **iterm-pane** | writes; a prompt is answerable in the pane (§11.3) |
+| `peer`        | opus   | Read, Write, Edit, Bash, Grep, Glob | —                 | `none`            | **iterm-tab**  | long-lived collaborator                            |
+
+**The `denies` column is what makes the read-only profiles read-only — the tools
+column does not.** `--allowed-tools` GRANTS permission; it does not remove a
+tool, and a spawned agent still inherits the user's and the project's
+`settings.json`. A `Bash(*)` in either one hands a shell to an "explorer".
+Observed, not inferred (CC-28): an explorer-profile agent ran `git log` and got
+real output, then reported it had been blocked. Only `--disallowed-tools` takes
+the tool away, and `src/__tests__/live-toolset.test.ts` asserts it against a real
+`claude` with a positive control, because an argv snapshot passed on the broken
+code. The lists are enumerated rather than derived, so **a tool Claude Code gains
+later is allowed by omission** until someone adds it — the accepted cost of not
+owning a list of every tool that exists.
+
+`reviewer` keeps Bash on purpose: a reviewer that cannot run the tests is an
+`explorer` with a different prelude. It is confined at the file boundary instead.
+`implementer` and `peer` are deliberately unconfined here — running the tests and
+committing IS their job, and denying Bash would break the workflow this document
+describes.
 
 `peer` is the profile that expresses what this whole system is for: a long-lived
 agent in a visible pane, sharing the checkout, addressable by name — the thing
@@ -852,6 +870,16 @@ docs: this restricts _what an agent can do_, not _where it collides_. A read-onl
 explorer cannot conflict with anyone, which is a real and useful form of
 isolation, but it is not a substitute for `worktree` for a writer.
 
+Be equally honest about which list does the work: only `disallowedTools`
+confines (see the profile table in §4). `check()` therefore warns whenever the
+deny list is empty, **including when a non-empty allow list is present** — the
+first version keyed the warning on `allowedTools` being empty, which is the one
+case where it did not apply, so it read as proof the case had been handled while
+every read-only profile kept a shell. Note the supervisor consumes only
+`allocation.cwd`, `.note`, `.addDirs` and `.ref`; the tool lists reach argv from
+`profile.*` via the launch plan, so returning a deny list from a strategy alone
+changes nothing.
+
 #### 7.3 Composition
 
 `toolset-limited` is really a decorator over any of the others. The interface
@@ -1154,6 +1182,12 @@ authority"_), a `agent_spawn` call is untrusted input. Therefore:
   too, pointing at the thread-depth constants. **A spec that cites a line number
   reads as though someone checked it.**
 
+- **A profile's toolset actually confines,** via `--disallowed-tools` on the
+  read-only builtins (§4). This was the third stated defence in this section to
+  turn out to be prose with no implementation — after `cwd` above, and the spawn
+  rate budget in §11.3, which is still open. Audit the rest of §11 against
+  RUNNING BEHAVIOUR rather than against the code; the code here looked correct,
+  and the flag that was already in the argv was the wrong flag.
 - **`name` goes through the same `RESERVED_NAMES` check** as registration
   (`protocol.ts:24`, `registry.ts:95-96`). A spawned agent named `human` would
   inherit the user's authority in every peer's reading of `from` — `docs/ideas.md`

@@ -267,11 +267,11 @@ export class Supervisor {
       agentId,
       agentName: req.name,
       baseCwd: cwd,
-      // Without this the toolset strategy sees no tool lists and warns that the
-      // agent "runs at full capability" on every explorer and reviewer spawn —
-      // false, since the launch plan passes --allowed-tools from the profile
-      // regardless. A warning that cries wolf on the read-only profiles is worse
-      // than none: it is the same channel a real over-permission has to use.
+      // Without this the toolset strategy sees no tool lists and warns on every
+      // spawn. It is the DENY list that silences the warning, because that is the
+      // only one that confines — an earlier version of this comment argued the
+      // warning was false because --allowed-tools was passed regardless, which was
+      // the exact misreading that let a read-only profile keep a shell.
       toolset: {
         allowedTools: [...profile.allowedTools],
         ...(profile.disallowedTools ? { disallowedTools: [...profile.disallowedTools] } : {}),
