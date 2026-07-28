@@ -41,6 +41,7 @@ export class BrokerCore {
   readonly startedAt: number
 
   private readonly deliver: Deliver
+  private readonly watchers = new Set<(row: AppendInput) => void>
 
   constructor(deliver: Deliver, options: BrokerCoreOptions = {}) {
     this.deliver = deliver
@@ -62,7 +63,25 @@ export class BrokerCore {
       event: 'append',
       data: JSON.stringify({ id: written.id, msgId: written.msgId, kind: input.kind, actor: input.actor }),
     })
+    // Typed, and separate from the hub on purpose: the hub speaks stringly SSE
+    // frames for browsers, and the supervisor needs the row itself rather than a
+    // re-parse of its own JSON. Same single write path feeds both.
+    for (const watch of this.watchers) {
+      try {
+        watch(input)
+      } catch {
+        // A watcher must never be able to fail a write that already happened.
+      }
+    }
     return written
+  }
+
+  /** Observe every appended row. Returns its own unsubscribe. */
+  onAppend(watch: (row: AppendInput) => void): () => void {
+    this.watchers.add(watch)
+    return () => {
+      this.watchers.delete(watch)
+    }
   }
 
   /**

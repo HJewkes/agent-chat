@@ -71,6 +71,14 @@ export interface LaunchHandle {
   pid?: number
   /** iTerm session UUID, for `agent attach`. */
   paneRef?: string
+  /**
+   * Resolves when the process ends. Headless ONLY, and its absence is the whole
+   * asymmetry of §8.1 rather than an oversight: the broker does not own an iTerm
+   * pane's process, so when a human types /exit nothing calls back into
+   * agent-chat. A visible agent's exit is inferred from presence instead — a
+   * detach with no reattach — which is why it can never carry an exit code.
+   */
+  exited?: Promise<{ code: number | null; signal: string | null }>
 }
 
 export interface Surface {

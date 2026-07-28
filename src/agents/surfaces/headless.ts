@@ -21,7 +21,20 @@ export function headlessSurface(options: SurfaceOptions = {}): Surface {
         stdio: ['pipe', 'pipe', 'pipe'],
       })
       child.unref()
-      return { surface: 'headless', ...(child.pid === undefined ? {} : { pid: child.pid }) }
+
+      // Settled rather than pending, so nothing here keeps the broker's event
+      // loop alive: the child is detached and unref'd precisely so it outlives
+      // us, and a promise nobody awaits must not undo that.
+      const exited = new Promise<{ code: number | null; signal: string | null }>(resolve => {
+        child.once('exit', (code: number | null, signal: string | null) => resolve({ code, signal }))
+        child.once('error', () => resolve({ code: null, signal: null }))
+      })
+
+      return {
+        surface: 'headless',
+        ...(child.pid === undefined ? {} : { pid: child.pid }),
+        exited,
+      }
     },
   }
 }

@@ -51,18 +51,28 @@ describe('surface registry', () => {
 describe('headless surface', () => {
   const capturingSpawn = () => {
     const calls: { bin: string; args: string[]; options: Record<string, unknown> }[] = []
+    const listeners = new Map<string, (...args: unknown[]) => void>()
     const spawn: SpawnFn = (bin, args, options) => {
       calls.push({ bin, args, options: options as Record<string, unknown> })
-      return { pid: 4242, unref: () => undefined }
+      return {
+        pid: 4242,
+        unref: () => undefined,
+        once: (event: string, listener: (...a: never[]) => void) => {
+          listeners.set(event, listener as (...a: unknown[]) => void)
+          return undefined
+        },
+      }
     }
-    return { calls, spawn }
+    /** Fire the child's exit, so the supervisor's headless path can be exercised. */
+    const exit = (code: number | null, signal: string | null = null) => listeners.get('exit')?.(code, signal)
+    return { calls, spawn, exit }
   }
 
   it('starts the agent detached, with pipes, and reports its pid', async () => {
     const { calls, spawn } = capturingSpawn()
     const handle = await surfaceFor('headless', { spawn }).launch(plan())
 
-    expect(handle).toEqual({ surface: 'headless', pid: 4242 })
+    expect(handle).toMatchObject({ surface: 'headless', pid: 4242 })
     expect(calls).toHaveLength(1)
     expect(calls[0]?.options).toMatchObject({ detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
   })
@@ -77,9 +87,19 @@ describe('headless surface', () => {
     expect(args).not.toContain('--model')
   })
 
+  it('exposes the child exit the supervisor infers headless death from', async () => {
+    const { spawn, exit } = capturingSpawn()
+    const handle = await surfaceFor('headless', { spawn }).launch(plan())
+
+    exit(3, null)
+    await expect(handle.exited).resolves.toEqual({ code: 3, signal: null })
+  })
+
   it('omits pid rather than reporting undefined when the child never started', async () => {
-    const spawn: SpawnFn = () => ({ unref: () => undefined })
-    expect(await surfaceFor('headless', { spawn }).launch(plan())).toEqual({ surface: 'headless' })
+    const spawn: SpawnFn = () => ({ unref: () => undefined, once: () => undefined })
+    const handle = await surfaceFor('headless', { spawn }).launch(plan())
+    expect(handle.pid).toBeUndefined()
+    expect(handle.surface).toBe('headless')
   })
 })
 
