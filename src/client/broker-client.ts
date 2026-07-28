@@ -6,6 +6,7 @@ import {
   lineReader,
   type ClientMessage,
   type DeliveredMessage,
+  type SystemEvent,
   type ReplyType,
   type ServerMessage,
 } from '../protocol.js'
@@ -46,10 +47,12 @@ export class BrokerClient {
   constructor(
     private readonly onDeliver: (message: DeliveredMessage) => void,
     private readonly onFatal?: (reason: string) => void,
+    private readonly onSystemEvents?: (events: SystemEvent[]) => void,
   ) {}
 
   private handle(msg: ServerMessage): void {
     if (msg.t === 'deliver') return this.onDeliver(msg.message)
+    if (msg.t === 'system_events') return this.onSystemEvents?.(msg.events)
     if (msg.t === 'error') {
       if (!msg.fatal) return
       // Set before destroying, so the close handler sees a deliberate shutdown

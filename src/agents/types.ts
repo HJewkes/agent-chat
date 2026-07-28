@@ -1,4 +1,4 @@
-import type { IsolationName, SurfaceName } from '../protocol.js'
+import type { IsolationName, Subscription, SurfaceName } from '../protocol.js'
 
 /**
  * A profile bundles the things that always travel together, so a spawn is one
@@ -51,6 +51,9 @@ export interface LaunchPlanInput {
   /** Propagated so a spawned agent joins the same bus rather than a default one. */
   agentChatHome?: string
   workingOn?: string
+  /** Tags and subscriptions the spawner chose; applied at the agent's own register. */
+  tags?: string[]
+  subscriptions?: Subscription[]
 }
 
 export interface LaunchPlan {

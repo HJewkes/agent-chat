@@ -51,6 +51,11 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   AGENT_CHAT_AGENT_ID: input.agentId,
   AGENT_CHAT_NAME: input.name,
   AGENT_CHAT_WORKING_ON: input.workingOn ?? titleFor(input),
+  // Defaults chosen by whoever spawned it, applied on that first registration —
+  // so an agent is already listening to the right things before its first turn,
+  // rather than needing the model to remember to subscribe.
+  ...(input.tags?.length ? { AGENT_CHAT_TAGS: input.tags.join(',') } : {}),
+  ...(input.subscriptions?.length ? { AGENT_CHAT_SUBSCRIPTIONS: JSON.stringify(input.subscriptions) } : {}),
   // Without this a spawned agent under a relocated home would join the default
   // bus instead of its parent's, and be invisible to everyone that spawned it.
   ...(input.agentChatHome === undefined ? {} : { AGENT_CHAT_HOME: input.agentChatHome }),

@@ -1,8 +1,16 @@
 import type { BrokerClient } from '../client/broker-client.js'
-import { ISOLATION_NAMES, SESSION_STATUSES, SURFACE_NAMES } from '../protocol.js'
+import { ISOLATION_NAMES, SESSION_STATUSES, SUBSCRIBABLE_KINDS, SURFACE_NAMES } from '../protocol.js'
 import { terminalAnchor } from './anchor.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
-import type { DeliveredMessage, QueueItem, ServerMessage, SessionInfo, SessionStatus } from '../protocol.js'
+import type {
+  DeliveredMessage,
+  QueueItem,
+  ServerMessage,
+  SessionInfo,
+  SessionStatus,
+  SubscribableKind,
+  SubscriptionSelector,
+} from '../protocol.js'
 
 /**
  * The MCP SDK does not enforce `required` or `enum` on inbound arguments, so a
@@ -191,6 +199,45 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'chat_subscribe',
+    description:
+      'Ask to be told when sessions and agents come and go. Scope it: "name" for one agent, "tag" for ' +
+      'everything carrying a tag, or "all" — which is genuinely noisy on a busy bus and worth avoiding ' +
+      'unless you are coordinating. Events arrive batched and marked from agent-chat, and are LIFECYCLE ' +
+      'ONLY: you learn who is here, never what anyone said. Re-subscribing with the same scope replaces ' +
+      'that rule rather than adding a second one. Subscriptions last as long as this session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scope: {
+          type: 'string',
+          enum: ['all', 'name', 'tag'],
+          description: 'What to watch. "name" and "tag" need target set.',
+        },
+        target: { type: 'string', description: 'The agent name, or the tag. Omit only for scope "all".' },
+        kinds: {
+          type: 'array',
+          items: { type: 'string', enum: [...SUBSCRIBABLE_KINDS] },
+          description: `Which events. Defaults to joins and leaves. One of: ${SUBSCRIBABLE_KINDS.join(', ')}`,
+        },
+      },
+      required: ['scope'],
+    },
+  },
+  {
+    name: 'chat_unsubscribe',
+    description:
+      'Stop being told. Pass the same scope and target to drop one rule, or no arguments at all to drop ' +
+      'every subscription this session holds.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scope: { type: 'string', enum: ['all', 'name', 'tag'] },
+        target: { type: 'string' },
+      },
+    },
+  },
+  {
     name: 'agent_spawn',
     description:
       'Spawn a durable agent that runs as its own Claude Code session and joins the bus as an ordinary ' +
@@ -249,6 +296,17 @@ export const TOOL_DEFINITIONS = [
 ] as const
 
 const text = (value: string) => ({ content: [{ type: 'text' as const, text: value }] })
+
+/** Joins and leaves — what someone asking to be told about comings and goings means. */
+const DEFAULT_SUBSCRIBED_KINDS: SubscribableKind[] = [
+  'registered',
+  'deregistered',
+  'agent_attached',
+  'agent_detached',
+]
+
+const describe = (selector: SubscriptionSelector): string =>
+  'all' in selector ? 'everything' : 'name' in selector ? `agent "${selector.name}"` : `tag "${selector.tag}"`
 
 const ago = (ms: number): string =>
   ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)}m`
@@ -344,6 +402,10 @@ export class ToolHandler {
         return this.toHuman('notify', requireString(args, 'text'))
       case 'chat_inbox':
         return this.inbox(boundedLimit(args, 'limit', 10, INBOX_MAX))
+      case 'chat_subscribe':
+        return this.subscribe(args)
+      case 'chat_unsubscribe':
+        return this.unsubscribe(args)
       case 'agent_spawn':
         return this.spawnAgent(args)
       case 'agent_profiles':
@@ -462,6 +524,51 @@ export class ToolHandler {
       { t: 'inbox_result' }
     >
     return text(formatInbox(res.messages))
+  }
+
+  /**
+   * "all" needs no target; "name" and "tag" are meaningless without one. Caught
+   * here because the MCP SDK enforces neither, and a scope silently defaulting to
+   * global is the one mistake that turns a quiet bus into a loud one.
+   */
+  private selectorFrom(args: Record<string, unknown>): SubscriptionSelector {
+    const scope = optionalEnum(args, 'scope', ['all', 'name', 'tag'] as const)
+    if (scope === undefined) throw new Error('scope is required and must be one of: all, name, tag')
+    if (scope === 'all') return { all: true }
+    const target = optionalString(args, 'target')
+    if (target === undefined) throw new Error(`scope "${scope}" needs target set to the ${scope} to watch`)
+    return scope === 'name' ? { name: target } : { tag: target }
+  }
+
+  private async subscribe(args: Record<string, unknown>) {
+    const selector = this.selectorFrom(args)
+    const raw = args.kinds
+    const kinds = Array.isArray(raw) ? raw : DEFAULT_SUBSCRIBED_KINDS
+    for (const kind of kinds) {
+      if (typeof kind !== 'string' || !(SUBSCRIBABLE_KINDS as readonly string[]).includes(kind)) {
+        throw new Error(`kinds must all be one of: ${SUBSCRIBABLE_KINDS.join(', ')}`)
+      }
+    }
+
+    const res = (await this.call(
+      { t: 'subscribe', subscriptions: [{ selector, kinds: kinds as SubscribableKind[] }] },
+      'subscribe_result',
+    )) as Extract<ServerMessage, { t: 'subscribe_result' }>
+    if (!res.ok) return text(`Not subscribed: ${res.reason}`)
+    return text(`Subscribed to ${describe(selector)} for ${kinds.join(', ')}. Holding ${res.held}.`)
+  }
+
+  private async unsubscribe(args: Record<string, unknown>) {
+    const all = args.scope === undefined
+    const res = (await this.call(
+      { t: 'unsubscribe', ...(all ? {} : { selector: this.selectorFrom(args) }) },
+      'subscribe_result',
+    )) as Extract<ServerMessage, { t: 'subscribe_result' }>
+    return text(
+      all
+        ? `Dropped every subscription. Holding ${res.held}.`
+        : `Unsubscribed from ${describe(this.selectorFrom(args))}. Holding ${res.held}.`,
+    )
   }
 
   /**

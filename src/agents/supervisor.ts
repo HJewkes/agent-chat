@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { BrokerCore } from '../broker/core.js'
 import { newMsgId } from '../broker/event-log.js'
-import { RESERVED_NAMES, type IsolationName, type SurfaceName } from '../protocol.js'
+import { RESERVED_NAMES, type IsolationName, type Subscription, type SurfaceName } from '../protocol.js'
 import { buildLaunchPlan, permModeFor } from './launch-plan.js'
 import { buildMcpConfig, mcpConfigPath, readLaunchPlan, writeLaunchFiles } from './launch-files.js'
 import { loadProfile } from './profiles.js'
@@ -48,6 +48,9 @@ export interface SpawnRequest {
   parentAgentId?: string
   requestedBy: string
   forceReset?: boolean
+  /** Applied at the spawned agent's own registration, before its first turn. */
+  tags?: string[]
+  subscriptions?: Subscription[]
   /**
    * The requester's pane, resolved by the caller from its OWN connection. Passed
    * in rather than looked up here because only the socket layer holds the
@@ -272,6 +275,8 @@ export class Supervisor {
       surface,
       mcpConfigPath: mcpConfigPath(agentId),
       ...(allocation.addDirs ? { extraDirs: allocation.addDirs } : {}),
+      ...(req.tags?.length ? { tags: req.tags } : {}),
+      ...(req.subscriptions?.length ? { subscriptions: req.subscriptions } : {}),
       agentChatHome: home(),
     })
     writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry()))

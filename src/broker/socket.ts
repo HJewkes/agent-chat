@@ -14,6 +14,7 @@ import { newMsgId } from './event-log.js'
 import { type Escalation, type RouteResult } from './registry.js'
 import { BrokerCore, type Conn } from './core.js'
 import { Supervisor } from '../agents/supervisor.js'
+import { SystemEventFeed } from './subscriptions.js'
 import { probeSocket, removeStateFiles, writeMeta, writePidFile } from './lifecycle.js'
 import { VERSION } from './version.js'
 
@@ -34,13 +35,27 @@ const deliver = (conn: Conn, message: DeliveredMessage): void => {
  */
 class SocketServer {
   private readonly supervisor: Supervisor
+  private readonly feed: SystemEventFeed<Conn>
+  private readonly unwatch: () => void
 
   constructor(private readonly core: BrokerCore) {
+    this.feed = new SystemEventFeed<Conn>(core.registry, (conn, events) => {
+      reply(conn, { t: 'system_events', events })
+    })
+    // Fed from the single write path, so a subscriber sees exactly what the log
+    // recorded rather than a second notion of what happened.
+    this.unwatch = core.onAppend(row => this.feed.offer(row))
     // The broker owns the supervisor, not the requesting session: an agent must
     // outlive whoever asked for it, and the semaphore and depth cap need exactly
     // one enforcement point. The anchor comes from the requester's OWN registry
     // entry, so nobody can spawn into a pane they do not hold.
     this.supervisor = new Supervisor(core)
+  }
+
+  close(): void {
+    this.unwatch()
+    this.feed.close()
+    this.supervisor.close()
   }
 
   /** Spawn on behalf of `conn`, resolving its pane anchor from its own entry. */
@@ -64,6 +79,8 @@ class SocketServer {
       ...(cwd === undefined ? {} : { cwd }),
       ...(msg.isolation === undefined ? {} : { isolation: msg.isolation }),
       ...(msg.surface === undefined ? {} : { surface: msg.surface }),
+      ...(msg.tags === undefined ? {} : { tags: msg.tags }),
+      ...(msg.subscriptions === undefined ? {} : { subscriptions: msg.subscriptions }),
       ...(requester?.agentId === undefined ? {} : { parentAgentId: requester.agentId }),
       ...(anchor === undefined ? {} : { anchor }),
     })
@@ -233,6 +250,10 @@ class SocketServer {
         })
       case 'list':
         return reply(conn, { t: 'list_result', sessions: core.registry.list() })
+      case 'subscribe':
+        return reply(conn, { t: 'subscribe_result', ...core.registry.subscribe(conn, msg.subscriptions) })
+      case 'unsubscribe':
+        return reply(conn, { t: 'subscribe_result', ...core.registry.unsubscribe(conn, msg.selector) })
       case 'send':
         if (msg.to === HUMAN) return this.enqueueForHuman(conn, 'message', msg.text)
         return this.handleRoute(
@@ -352,6 +373,7 @@ export async function startBroker(): Promise<net.Server | null> {
   const shutdown = (): void => {
     logEvent('broker_stopping', { pid: process.pid })
     server.close()
+    socketServer.close()
     core.close()
     if (fs.existsSync(sock)) fs.unlinkSync(sock)
     removeStateFiles()

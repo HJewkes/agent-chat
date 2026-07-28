@@ -3,7 +3,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { BrokerClient } from '../client/broker-client.js'
-import type { DeliveredMessage } from '../protocol.js'
+import type { DeliveredMessage, Subscription, SystemEvent } from '../protocol.js'
 import { TOOL_DEFINITIONS, ToolHandler } from './tools.js'
 import { terminalAnchor } from './anchor.js'
 
@@ -55,13 +55,40 @@ export interface SpawnedIdentity {
   agentId: string
   name: string
   workingOn: string
+  tags?: string[]
+  subscriptions?: Subscription[]
+}
+
+/**
+ * A malformed subscription must not cost the agent its registration: it would
+ * come back as an ordinary session with no durable identity, which is a far
+ * worse failure than starting up subscribed to nothing.
+ */
+function parseSubscriptions(raw: string | undefined): Subscription[] | undefined {
+  if (!raw) return undefined
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? (parsed as Subscription[]) : undefined
+  } catch {
+    return undefined
+  }
 }
 
 export function spawnedIdentity(env: NodeJS.ProcessEnv = process.env): SpawnedIdentity | undefined {
   const agentId = env.AGENT_CHAT_AGENT_ID
   const name = env.AGENT_CHAT_NAME
   if (!agentId || !name) return undefined
-  return { agentId, name, workingOn: env.AGENT_CHAT_WORKING_ON ?? 'spawned agent, awaiting its first turn' }
+  const tags = env.AGENT_CHAT_TAGS?.split(',')
+    .map(tag => tag.trim())
+    .filter(tag => tag !== '')
+  const subscriptions = parseSubscriptions(env.AGENT_CHAT_SUBSCRIPTIONS)
+  return {
+    agentId,
+    name,
+    workingOn: env.AGENT_CHAT_WORKING_ON ?? 'spawned agent, awaiting its first turn',
+    ...(tags?.length ? { tags } : {}),
+    ...(subscriptions?.length ? { subscriptions } : {}),
+  }
 }
 
 /**
@@ -102,10 +129,26 @@ export async function startMcpServer(): Promise<void> {
     })
   }
 
+  /**
+   * `from: agent-chat` and no `msg_id`, so a lifecycle event can never be read
+   * as a peer speaking. Nothing here is addressed BY anyone — the broker is
+   * reporting what the log recorded, and there is no one to reply to.
+   */
+  const deliverSystemEvents = (events: SystemEvent[]): void => {
+    const lines = events.map(e => `${e.subject} ${e.kind}${e.detail ? ` — ${e.detail}` : ''}`)
+    void mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content: `Lifecycle: ${lines.join('; ')}`,
+        meta: { from: 'agent-chat', system: 'true', count: String(events.length) },
+      },
+    })
+  }
+
   // A superseded session has nothing left to do: a newer process holds its
   // identity, and Claude Code will see the pipe close. Exiting is the honest
   // outcome, and the only one that does not leave two processes on one name.
-  const broker = new BrokerClient(deliver, () => process.exit(0))
+  const broker = new BrokerClient(deliver, () => process.exit(0), deliverSystemEvents)
   await broker.connect()
 
   // A spawned agent registers from its environment, before the model has had a
@@ -123,6 +166,8 @@ export async function startMcpServer(): Promise<void> {
         cwd: process.cwd(),
         pid: process.pid,
         agentId: spawned.agentId,
+        ...(spawned.tags ? { tags: spawned.tags } : {}),
+        ...(spawned.subscriptions ? { subscriptions: spawned.subscriptions } : {}),
         ...terminalAnchor(),
       },
       'register_result',

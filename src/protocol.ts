@@ -72,6 +72,57 @@ export const EVENT_KINDS = [
 
 export type EventKind = (typeof EVENT_KINDS)[number]
 
+/**
+ * What a session may ask to be pushed. LIFECYCLE ONLY, and the omissions are the
+ * point: `message`, `broadcast`, `question` and `answer` are absent so that no
+ * subscription can turn into a wiretap on traffic between other peers. A global
+ * subscriber learns who is here, never what they said.
+ *
+ * Reading another session's trail stays possible through chat_activity, which is
+ * explicit, one session at a time, and itself logged.
+ *
+ * Note this is a filter over kinds that already exist. Subscriptions deliberately
+ * add NO new EventKind, because the union is frozen into the SSE contract and
+ * extending it re-serialises everything built against it.
+ */
+export const SUBSCRIBABLE_KINDS = [
+  'registered',
+  'deregistered',
+  'agent_spawned',
+  'agent_attached',
+  'agent_detached',
+  'agent_resumed',
+  'agent_exited',
+  'agent_retired',
+  'agent_spawn_refused',
+] as const satisfies readonly EventKind[]
+
+export type SubscribableKind = (typeof SUBSCRIBABLE_KINDS)[number]
+
+/**
+ * Who an event must be about for a subscriber to hear it. `all` is the noisy one
+ * and exists knowingly — coalescing is what makes it survivable.
+ */
+export type SubscriptionSelector = { all: true } | { name: string } | { tag: string }
+
+export interface Subscription {
+  selector: SubscriptionSelector
+  kinds: SubscribableKind[]
+}
+
+/**
+ * A log row reshaped for a subscriber. `subject` is who the event is about,
+ * resolved as target-then-actor: `agent_spawned` names the agent in `target`
+ * while `agent_exited` has only `actor`, and a subscriber cares about the agent
+ * either way.
+ */
+export interface SystemEvent {
+  kind: SubscribableKind
+  subject: string
+  at: number
+  detail?: string
+}
+
 /** The two SSE event names that are not event kinds. See api-contract.ts. */
 export const NON_KIND_SSE_EVENTS = ['session_status', 'reset'] as const
 
@@ -153,8 +204,15 @@ export type ClientMessage =
       pid: number
       agentId?: string
       termSessionId?: string
+      /** Many, not one: a session is usually in more than one conversation. */
+      tags?: string[]
+      subscriptions?: Subscription[]
     }
   | { t: 'status'; status: SessionStatus; workingOn?: string; dnd?: boolean }
+  /** Replaces any subscription with the same selector, so re-subscribing is idempotent. */
+  | { t: 'subscribe'; subscriptions: Subscription[] }
+  /** Omitting the selector clears every subscription this session holds. */
+  | { t: 'unsubscribe'; selector?: SubscriptionSelector }
   | { t: 'list' }
   | { t: 'send'; to: string; text: string; inReplyTo?: string }
   | { t: 'broadcast'; text: string }
@@ -181,6 +239,9 @@ export type ClientMessage =
       cwd?: string
       isolation?: IsolationName
       surface?: SurfaceName
+      /** Tags and subscriptions the spawned agent starts with, before it runs. */
+      tags?: string[]
+      subscriptions?: Subscription[]
     }
   | { t: 'agents'; includeRetired?: boolean }
   | { t: 'retire'; name: string }
@@ -188,6 +249,13 @@ export type ClientMessage =
 /** Broker -> session. */
 export type ServerMessage =
   | { t: 'register_result'; ok: boolean; reason?: string }
+  | { t: 'subscribe_result'; ok: boolean; held: number; reason?: string }
+  /**
+   * Batched, because three agents starting together is one thing that happened,
+   * not three interruptions. Distinct from `deliver` so a system event can never
+   * be mistaken for a peer speaking.
+   */
+  | { t: 'system_events'; events: SystemEvent[] }
   | { t: 'status_result'; ok: boolean }
   | { t: 'list_result'; sessions: SessionInfo[] }
   /**

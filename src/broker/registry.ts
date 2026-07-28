@@ -1,5 +1,19 @@
 import { randomUUID } from 'node:crypto'
-import { RESERVED_NAMES, type DeliveredMessage, type SessionInfo, type SessionStatus } from '../protocol.js'
+import {
+  RESERVED_NAMES,
+  type DeliveredMessage,
+  type SessionInfo,
+  type SessionStatus,
+  type Subscription,
+  type SubscriptionSelector,
+} from '../protocol.js'
+
+/** Selectors are the identity of a subscription, which is what makes re-subscribing idempotent. */
+const sameSelector = (a: SubscriptionSelector, b: SubscriptionSelector): boolean => {
+  if ('all' in a || 'all' in b) return 'all' in a && 'all' in b
+  if ('name' in a || 'name' in b) return 'name' in a && 'name' in b && a.name === b.name
+  return a.tag === b.tag
+}
 
 interface Entry {
   name: string
@@ -33,6 +47,10 @@ interface Entry {
    * and want silence, so this is not a fourth SessionStatus.
    */
   dnd: boolean
+  /** Many per session: a session is usually in more than one conversation. */
+  tags: string[]
+  /** Ephemeral like everything else here — re-declared on register, never stored. */
+  subscriptions: Subscription[]
   registeredAt: number
   lastSeen: number
 }
@@ -208,6 +226,8 @@ export class Registry<C> {
       pid: number
       agentId?: string
       termSessionId?: string
+      tags?: string[]
+      subscriptions?: Subscription[]
     },
   ): { ok: boolean; reason?: string; evicted?: C } {
     if (RESERVED_NAMES.has(input.name.toLowerCase()))
@@ -230,6 +250,10 @@ export class Registry<C> {
       pid: input.pid,
       ...(input.agentId === undefined ? {} : { agentId: input.agentId }),
       ...(input.termSessionId === undefined ? {} : { termSessionId: input.termSessionId }),
+      // A re-register re-declares both, which is how a resumed agent gets its
+      // subscriptions back without anything having persisted them.
+      tags: input.tags ?? existing?.tags ?? [],
+      subscriptions: input.subscriptions ?? existing?.subscriptions ?? [],
       status: existing?.status ?? 'available',
       awaitingApproval: existing?.awaitingApproval ?? false,
       dnd: existing?.dnd ?? false,
@@ -288,6 +312,70 @@ export class Registry<C> {
   /** Where the requester is working, for spawns that name no cwd of their own. */
   cwdFor(conn: C): string | undefined {
     return this.entries.get(conn)?.cwd
+  }
+
+  /**
+   * Replace by selector rather than append, so a session re-declaring what it
+   * wants converges instead of accumulating duplicates of the same rule.
+   */
+  subscribe(conn: C, subscriptions: Subscription[]): { ok: boolean; held: number; reason?: string } {
+    const entry = this.entries.get(conn)
+    if (!entry) return { ok: false, held: 0, reason: 'register before subscribing' }
+
+    for (const wanted of subscriptions) {
+      const at = entry.subscriptions.findIndex(s => sameSelector(s.selector, wanted.selector))
+      if (at === -1) entry.subscriptions.push(wanted)
+      else entry.subscriptions[at] = wanted
+    }
+    // A subscription with no kinds is an unsubscribe by another name; dropping it
+    // here means "subscribe to nothing" cannot leave a rule that matches nothing.
+    entry.subscriptions = entry.subscriptions.filter(s => s.kinds.length > 0)
+    return { ok: true, held: entry.subscriptions.length }
+  }
+
+  unsubscribe(conn: C, selector?: SubscriptionSelector): { ok: boolean; held: number } {
+    const entry = this.entries.get(conn)
+    if (!entry) return { ok: false, held: 0 }
+
+    entry.subscriptions = selector ? entry.subscriptions.filter(s => !sameSelector(s.selector, selector)) : []
+    return { ok: true, held: entry.subscriptions.length }
+  }
+
+  tagsOf(conn: C): string[] {
+    return this.entries.get(conn)?.tags ?? []
+  }
+
+  /** Every session currently carrying a tag, for resolving a `tag` selector. */
+  private namesWithTag(tag: string): Set<string> {
+    const names = new Set<string>()
+    for (const entry of this.entries.values()) if (entry.tags.includes(tag)) names.add(entry.name)
+    return names
+  }
+
+  /**
+   * Who should be pushed this event, and never the session it is about — being
+   * told that you yourself just registered is pure noise.
+   *
+   * A `tag` selector matches on the SUBJECT's tags, not the subscriber's: "tell
+   * me about the agent-teams agents" is a question about them, not about me.
+   */
+  subscribersFor(event: { kind: string; subject: string }): C[] {
+    const matched: C[] = []
+    for (const [conn, entry] of this.entries) {
+      if (entry.name === event.subject) continue
+      // Suppressed rather than queued: a system event is already durable in the
+      // log, so `history` still shows it and nothing is lost by not pushing.
+      if (entry.dnd) continue
+
+      const wants = entry.subscriptions.some(sub => {
+        if (!(sub.kinds as readonly string[]).includes(event.kind)) return false
+        if ('all' in sub.selector) return true
+        if ('name' in sub.selector) return sub.selector.name === event.subject
+        return this.namesWithTag(sub.selector.tag).has(event.subject)
+      })
+      if (wants) matched.push(conn)
+    }
+    return matched
   }
 
   /**
