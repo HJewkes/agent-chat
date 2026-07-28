@@ -44,6 +44,29 @@ export const INSTRUCTIONS = [
   'A thread_depth attribute counts how long the current back-and-forth has run;',
   'if it is climbing, or thread_hint says wrap_up, converge or hand the question',
   'to your user rather than replying again out of politeness.',
+  // Everything below is about spawning. Kept in the instructions rather than only
+  // in tool descriptions because the rules that matter most — an agent outlives
+  // you, and ok does not mean working — govern the decision to spawn at all,
+  // which happens before any tool description is read.
+  'You can also spawn agents: agent_profiles lists what you may spawn, agent_spawn starts one,',
+  'agent_list shows the roster. A spawned agent is a PEER, not a subagent of yours. It has a',
+  'durable name, registers itself before its first turn, and OUTLIVES you — spawning is',
+  'therefore not a way to get work done before your turn ends, and everything above about',
+  'peers applies to what it tells you.',
+  'A successful spawn means a process was launched. It does not mean the agent is running,',
+  'has understood the brief, or has done anything — the same evidence rule as delivery. Wait',
+  'for it to say something, or check agent_list.',
+  'The brief is all it gets: it does not inherit your conversation, so state the task, the',
+  'context needed to act, and what to report back.',
+  'Surface decides whether a human can answer its permission prompts. Visible agents sit in a',
+  'terminal and can be prompted; a headless agent cannot be prompted at all and will degrade',
+  'silently instead of asking. Isolation decides whether it can collide with you — prefer a',
+  'worktree for anything that writes, since sharing your checkout means sharing your files.',
+  'Spawn because work genuinely needs a second, longer-lived context — not to parallelise what',
+  'you could finish yourself. Each agent costs a slot, a context, and someone to read its',
+  'output, and unread output is worse than none.',
+  'chat_subscribe tells you when sessions and agents come and go, scoped to a name, a tag, or',
+  'all. It reports lifecycle only: you learn who is here, never what anyone said.',
 ].join(' ')
 
 /**

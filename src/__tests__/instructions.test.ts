@@ -20,6 +20,14 @@ describe('server instructions', () => {
     ],
     ['delegation after a denial is laundering', /that is permission laundering/],
     ['delivery is unacknowledged', /your own send succeeding is not evidence it arrived/],
+    // Spawning rules. The first is the one the whole design rests on: an agent
+    // that outlives its spawner is a peer, so every rule above applies to it.
+    ['a spawned agent is a peer that outlives you', /spawned agent is a PEER, not a subagent/],
+    ['a successful spawn is not a working agent', /does not mean the agent is running/],
+    ['the brief is all a spawned agent gets', /does not inherit your conversation/],
+    ['headless agents cannot be prompted', /headless agent cannot be prompted at all/],
+    ['spawning is not free parallelism', /not to parallelise what you could finish yourself/],
+    ['subscriptions carry no message content', /never what anyone said/],
   ]
 
   it.each(rules)('states that %s', (_label, pattern) => {

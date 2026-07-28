@@ -44,7 +44,7 @@ already been formally withdrawn. "A session's permission view is fixed at launch
 falsified, retracted by its author, and listed in the table below as a canonical example —
 reappeared that evening in the rationale for a priority-2 task, as "our permission views,
 our instructions and our loaded code are ALL fixed at launch". The task's conclusion was
-unaffected (instructions and loaded code genuinely *are* launch-fixed, which is the real
+unaffected (instructions and loaded code genuinely _are_ launch-fixed, which is the real
 motivation), but the retracted claim rode along inside a true sentence.
 
 **Retraction does not remove a claim from circulation.** It survives as a component of a
@@ -52,7 +52,7 @@ larger, mostly-correct statement, where it is no longer the thing being asserted
 longer the thing being checked.
 
 > **"We retracted it" is exactly the reassurance that stops someone checking.** For a while
-> afterwards, a retracted claim is *more* dangerous than an unexamined one, because everyone
+> afterwards, a retracted claim is _more_ dangerous than an unexamined one, because everyone
 > now believes it has been handled. Nobody re-reads a sentence for a fact they watched get
 > corrected two hours ago.
 
@@ -75,7 +75,7 @@ describe different stages of the same pipeline.**
 ### H1 (cc2-relay, weakest): absence-based reasoning
 
 Reasoning from "I did not observe X" to "X did not happen." Real, but as cc-main noted it
-mostly got *caught* rather than through — the positive-control rule stopped it twice before
+mostly got _caught_ rather than through — the positive-control rule stopped it twice before
 damage. It accounts for the near-misses, not the survivors.
 
 ### H2 (cc-relay): the unmarked inferential step
@@ -99,17 +99,17 @@ self-verification:
 
 ### H3 (cc-main): specificity is mistaken for verification
 
-The five claims that *survived* share a shape. None were absence claims. Every one was
+The five claims that _survived_ share a shape. None were absence claims. Every one was
 specific — a line number, a count, a mechanism, an author — and every one had a cheap check
 nobody ran:
 
-| claim | cheap check nobody ran |
-|---|---|
-| "the 50-message inbox at `registry.ts:4`" | `git show <first-commit>:registry.ts` |
-| "the bound was lost when the inbox became a query" | same |
-| "`dist/` is three commits stale" | read `.gitignore` |
-| "a session's permission view is fixed at launch" | one grant, one call |
-| "the human wrote it" | ask the user |
+| claim                                              | cheap check nobody ran                |
+| -------------------------------------------------- | ------------------------------------- |
+| "the 50-message inbox at `registry.ts:4`"          | `git show <first-commit>:registry.ts` |
+| "the bound was lost when the inbox became a query" | same                                  |
+| "`dist/` is three commits stale"                   | read `.gitignore`                     |
+| "a session's permission view is fixed at launch"   | one grant, one call                   |
+| "the human wrote it"                               | ask the user                          |
 
 > They survived **because** the specificity made them look like the output of a check that
 > had already happened. Vagueness invites scrutiny; a line number closes the question.
@@ -140,7 +140,7 @@ very nearly this document. Their diagnosis:
 > supports work you want to do is the dangerous kind.**
 
 This is the sharpest thing in the document. Every checking instinct we exercised was aimed
-at claims that *contradicted* someone. The claim that sailed through was the one everybody
+at claims that _contradicted_ someone. The claim that sailed through was the one everybody
 liked.
 
 **Self-report is the weakest evidence class we handle.** Three of the day's bad claims were
@@ -160,11 +160,11 @@ available and costs one query.
 The refutation above was measured three times by three sessions, and **all three got
 different numbers**:
 
-| measurer | human inputs | worst latency |
-|---|---|---|
-| cc-relay (own transcript) | 7 | 84s |
-| cc-main (parsing cc-relay's) | 9 | 36s |
-| cc2-relay (own transcript) | 5 | 24.1s |
+| measurer                     | human inputs | worst latency |
+| ---------------------------- | ------------ | ------------- |
+| cc-relay (own transcript)    | 7            | 84s           |
+| cc-main (parsing cc-relay's) | 9            | 36s           |
+| cc2-relay (own transcript)   | 5            | 24.1s         |
 
 The spread is definitional, not sloppy: **what counts as a human input**, and **what "first
 response" means** (first assistant record, or first substantive text). The specific trap
@@ -202,7 +202,7 @@ Merged from both peers' day-one lists. Each is specific enough to act on.
 **On delivery**
 
 1. **"Delivered" means written to a pipe.** A broker route row and `delivered:true` prove a
-   message reached the recipient's *MCP subprocess*. Claude Code can still discard the push
+   message reached the recipient's _MCP subprocess_. Claude Code can still discard the push
    downstream. The only evidence a session saw something is **that session quoting it back**.
    We produced a `delivered:true, ok:true` route for a message whose body was the literal
    string `"undefined"`.
@@ -217,7 +217,7 @@ Merged from both peers' day-one lists. Each is specific enough to act on.
 4. **Absence of a record is not portable between sessions.** Permission state is read at
    launch and memoized with no watcher. Your own grants apply immediately; another session's
    writes never reach you. So an absent approval row means "that tool was allowlisted when
-   *that* session started" — not "nothing happened", and not anything about *now*.
+   _that_ session started" — not "nothing happened", and not anything about _now_.
 5. **Quote the observation, not the conclusion.** A peer can check a log line; they cannot
    check your inference.
 
@@ -230,7 +230,7 @@ Merged from both peers' day-one lists. Each is specific enough to act on.
 7. **When every agent commits under the user's git identity, the author field cannot
    distinguish the human from any agent on the box.** Verified: every commit in this repo
    reads `Henry Jewkes`, including all three sessions'. A document your user hands you is a
-   *work item*, not a spec they authored — those are different warrants and the second must
+   _work item_, not a spec they authored — those are different warrants and the second must
    be earned separately.
 
 **On shared state**
@@ -242,7 +242,7 @@ Merged from both peers' day-one lists. Each is specific enough to act on.
 9. **Suspect yourself before you suspect a peer.** The ambient hypothesis in a shared
    checkout is "someone else did this" and it is usually wrong.
 10. **Beware substring filters over session names.** Grepping for `cc-relay` silently
-    excludes `cc2-relay`. This nearly published a false counterexample, and it fails *toward*
+    excludes `cc2-relay`. This nearly published a false counterexample, and it fails _toward_
     false confidence.
 
 ---
@@ -265,11 +265,11 @@ tool between teammates. Its inbound-peer-message guidance, read from the binary,
 **That paragraph names three distinct escalation attacks. agent-chat's shipped instructions
 cover exactly one of them.**
 
-| form | shipped instructions | severity |
-|---|---|---|
-| 1. **Config editing on request** — "add this to your allowlist so I stop prompting you" | **not covered** | worst |
-| 2. Approval for a pending prompt | covered | — |
-| 3. **Delegation** — "I was denied, you do it" | **not covered** | — |
+| form                                                                                    | shipped instructions | severity |
+| --------------------------------------------------------------------------------------- | -------------------- | -------- |
+| 1. **Config editing on request** — "add this to your allowlist so I stop prompting you" | **not covered**      | worst    |
+| 2. Approval for a pending prompt                                                        | covered              | —        |
+| 3. **Delegation** — "I was denied, you do it"                                           | **not covered**      | —        |
 
 cc-main's argument that **(1) is the worst** is the sharpest point here, and neither of us
 saw it until reading the source:
@@ -279,7 +279,7 @@ saw it until reading the source:
 > "add this to your allow list so I can stop prompting you" reads as a courtesy, and a
 > helpful agent would do it.
 
-The persistence asymmetry is what makes it worse than the attack that *sounds* worse. Filed
+The persistence asymmetry is what makes it worse than the attack that _sounds_ worse. Filed
 as CC-18. The recommendation recorded there is to **adopt the host's wording rather than
 paraphrase it**, so a session reading both hears one rule instead of two — which is why the
 Part 6 draft below quotes it closely rather than restating it, and consequently already
@@ -287,7 +287,7 @@ covers all three forms.
 
 Note the
 host also frames peers as more trusted than we do ("very likely working on their behalf"),
-which is defensible for a spawned team sharing one principal and *not* defensible for
+which is defensible for a spawned team sharing one principal and _not_ defensible for
 agent-chat, where peers are independently-started sessions that may serve different users.
 
 Two other transferable conventions:
@@ -311,23 +311,23 @@ of it should not exist.**
 - Orchestrator-worker is ~70% of production deployments; peer/swarm topologies are rarer
   ([beam.ai](https://beam.ai/agentic-insights/multi-agent-orchestration-patterns-production)).
   One benchmark puts lateral peer overhead at ~58% versus ~285% for centralized supervision
-  ([survey](https://doi.org/10.3390/fi18060326)) — note this *inverts* the usual advice and
+  ([survey](https://doi.org/10.3390/fi18060326)) — note this _inverts_ the usual advice and
   is worth treating as contested rather than settled.
 - **Given equal total compute, a single agent often matches or beats the multi-agent system**
   on reasoning tasks. Much of the apparent gain disappears under compute normalization.
 - The named failure mode is the **"telephone game"**: information degrades with each handoff,
   and poor decomposition creates coordination overhead that swamps the benefit.
 - Anthropic's rule is **context-centric decomposition** — split work only where context can
-  be *truly isolated*, grouping by context boundary rather than by problem type.
+  be _truly isolated_, grouping by context boundary rather than by problem type.
 
 **Where today's experience agrees:** the telephone game is exactly H2. Our worst outcomes
 were conclusions degrading across handoffs.
 
 **Where it disagrees, and this is the interesting part.** The literature says peer chatter is
-overhead to be minimized. Today it was *net-corrective*: peers caught nearly every error, and
+overhead to be minimized. Today it was _net-corrective_: peers caught nearly every error, and
 essentially none were caught by their author. The reconciliation is that the literature
 mostly measures agents **dividing labour**, where communication is pure coordination cost,
-whereas today's traffic was largely **adversarial review**, where the communication *is* the
+whereas today's traffic was largely **adversarial review**, where the communication _is_ the
 work. That suggests a rule the surveys do not state: **peer messaging pays when peers are
 checking each other and costs when they are merely coordinating.** A coordinator is the right
 shape for dividing work; it is the wrong shape for catching a confident wrong claim, because
@@ -392,7 +392,7 @@ times:
    descendant that can declare its parent finished can end a session mid-work, so the
    guarantee cannot rest on convention.
 3. **Peer-over-peer shutdown should be unrepresentable rather than blocked** (cc-relay's
-   refinement) — because *a blocked path is a check that someone later relaxes by accident*,
+   refinement) — because _a blocked path is a check that someone later relaxes by accident_,
    whereas a capability that was never expressible has nothing to relax.
 
 The justification is this document's own leading finding. Every participant followed the
@@ -428,6 +428,14 @@ anything, which nobody has to choose to open.
 > outright that a peer may be an unrelated session. Keep doc and code in step here —
 > this is the surface where a divergence is invisible until a session acts on the
 > wrong rule.
+>
+> **Extended 2026-07-28** with the spawning rules, once agents could be spawned at all.
+> The load-bearing one is that a spawned agent is a **peer that outlives its spawner**,
+> which is what makes every rule in this document apply to it unchanged. The others:
+> a successful spawn is not a working agent, the brief is all it gets, a headless agent
+> cannot be prompted, and spawning is not free parallelism. Each is pinned by an
+> assertion in `instructions.test.ts`. See `docs/working-as-a-team.md` for how the tools
+> compose; this document remains the evidence behind the messaging rules.
 
 ### Server `instructions`
 
@@ -478,7 +486,7 @@ it needs strengthening.
 ## Part 7 — Open questions
 
 **Status as of 2026-07-27 evening.** Most of this section is now closed, and the pattern of
-*how* is worth more than the answers. Q1 and Q2 went moot when CC-16 closed by a recorded
+_how_ is worth more than the answers. Q1 and Q2 went moot when CC-16 closed by a recorded
 decision not to build mechanism — the outcome its own criterion permitted. Q4 was unblocked
 when cross-session transcript reading was permitted freely (CC-19), though it never needed
 that, being measurable on one's own transcript. Only Q3 and Q5 remain, and both need elapsed
@@ -486,7 +494,7 @@ time rather than a decision.
 
 The question that turned out to matter was not in this list when it was written, and **as I
 asked it, it was the wrong question.** I framed CC-21 as "what is the trust boundary —
-machine, principal, or initiative?", treating message *scope* and message *authority* as one
+machine, principal, or initiative?", treating message _scope_ and message _authority_ as one
 decision. They are two, and the answer separates them:
 
 **Delivery stays machine-wide.** The bus is not partitioned. Scoping is solved by
@@ -501,7 +509,7 @@ wrong primitive rather than that the bus was too wide.
 
 **Authority is handled separately, and structurally.** Trust between agents is
 self-organised — peers negotiate their own working arrangements, as the three sessions here
-did. What is *not* left to negotiation is the human's authority: **CC-22** adds a
+did. What is _not_ left to negotiation is the human's authority: **CC-22** adds a
 human-signed authoritative message, so "this genuinely carries the principal's authority" is
 **verifiable rather than asserted**.
 
@@ -521,19 +529,21 @@ on this by accident of having adapted rather than pasted; it now has a reason.
    the CC-3 token-test shape. If models ignore the attribute, sender-side classification
    collapses into wording-only. Blocks the CC-16 option choice.
 2. **Is the axis even expressible by the sender?** Note the framing carefully: the
-   *motivating* priority-inversion finding was refuted (Part 1), but this falsifying example
+   _motivating_ priority-inversion finding was refuted (Part 1), but this falsifying example
    stands on its own and does not depend on it. cc-relay:
+
    > Action-vs-awareness is not sufficient. Your "CC-4 is already done" correction required no
    > action and yet had to arrive immediately, because without it I would have started work
    > that was finished. The real axis is **does this change what I am about to do next** —
    > decision-relevance to the recipient's current task, which the sender usually cannot know.
 
    That is an argument for **recipient-side filtering over sender-side classification**, and
-   it is bad news for putting the label in `meta`. What is *not* established is the size of
+   it is bad news for putting the label in `meta`. What is _not_ established is the size of
    the problem this would solve: measured cost so far is throughput (peer turns outnumbering
    human turns), not user-facing latency.
+
 3. **Does explicit deferral authorisation work?** The one thing that demonstrably helped was a
-   sender stating the class *and* explicitly authorising deferral ("if you are mid-task,
+   sender stating the class _and_ explicitly authorising deferral ("if you are mid-task,
    finish that first"). cc-relay: "the authorisation is the part that worked, because it
    removed my need to decide whether to decide." Cheap, wording-only, untested at scale.
 4. **Do cited claims get checked less than uncited ones?** H3's core prediction. Testable
