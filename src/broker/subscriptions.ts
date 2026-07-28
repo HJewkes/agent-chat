@@ -60,12 +60,27 @@ export class SystemEventFeed<C> {
     if (this.timer === null) this.timer = setTimeout(() => this.flush(), this.coalesceMs).unref()
   }
 
+  /** A subscriber that disconnected mid-window is simply dropped, not pushed to. */
+  forget(conn: C): void {
+    this.pending.delete(conn)
+  }
+
   flush(): void {
     if (this.timer !== null) {
       clearTimeout(this.timer)
       this.timer = null
     }
-    for (const [conn, events] of this.pending) this.push(conn, events)
+    for (const [conn, events] of this.pending) {
+      // A conn can close inside the coalesce window, and writing to a closed
+      // socket throws. One dead subscriber must not cost every other subscriber
+      // its notification, so the failure is contained per recipient rather than
+      // allowed to abandon the loop.
+      try {
+        this.push(conn, events)
+      } catch {
+        // Nothing to recover: the rows are durable in the log regardless.
+      }
+    }
     this.pending.clear()
   }
 

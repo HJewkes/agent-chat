@@ -173,19 +173,63 @@ describe('the system event feed', () => {
     feed.close()
   })
 
-  it('ignores kinds nobody may subscribe to, so traffic never leaks', () => {
+  /**
+   * Two independent defences, so this asserts both. The earlier version of this
+   * test subscribed to everything, offered a `message` row, and checked nothing
+   * arrived — but `offer` returns on the row kind BEFORE consulting any
+   * subscription, so it would have passed identically with no subscriptions at
+   * all. It proved the early return and nothing else.
+   */
+  it('refuses to store a non-subscribable kind, even from a raw client', () => {
+    const registry = new Registry<object>()
+    const watcher = conn('w')
+    register(registry, watcher, 'watcher')
+
+    // Bypasses the tool handler entirely, as anything on the 0600 socket can.
+    registry.subscribe(watcher, [{ selector: { all: true }, kinds: ['message', 'registered'] as never }])
+
+    expect(registry.subscribersFor({ kind: 'message', subject: 'other' })).toEqual([])
+    // The legitimate kind in the same call survives, so this filters rather than rejects.
+    expect(registry.subscribersFor({ kind: 'registered', subject: 'other' })).toEqual([watcher])
+  })
+
+  it('never builds a system event from a content row, whatever is stored', () => {
     vi.useFakeTimers()
     const registry = new Registry<object>()
     const [watcher, other] = [conn('w'), conn('o')]
-    // Even a subscriber that asks for everything must not receive message rows.
     register(registry, watcher, 'watcher', { subscriptions: watch(...SUBSCRIBABLE_KINDS) })
     register(registry, other, 'other')
     const { feed, pushed } = feedWith(registry)
 
+    // A lifecycle row proves the watcher IS wired up — without this control, the
+    // assertion below cannot tell suppression from a subscriber that never matched.
+    feed.offer({ kind: 'registered', actor: 'other' })
     feed.offer({ kind: 'message', actor: 'other', target: 'someone', body: 'the secret' })
     vi.advanceTimersByTime(300)
 
-    expect(pushed).toEqual([])
+    const kinds = pushed.flatMap(p => p.events.map(e => e.kind))
+    expect(kinds).toEqual(['registered'])
+    expect(JSON.stringify(pushed)).not.toContain('the secret')
+    vi.useRealTimers()
+    feed.close()
+  })
+
+  it('drops a subscriber that disconnected mid-window instead of writing to it', () => {
+    vi.useFakeTimers()
+    const registry = new Registry<object>()
+    const [watcher, other] = [conn('w'), conn('o')]
+    register(registry, watcher, 'watcher', { subscriptions: watch('registered') })
+    register(registry, other, 'other')
+    const pushed: object[] = []
+    const feed = new SystemEventFeed<object>(registry, c => {
+      // A real socket throws once closed; this stands in for that.
+      if (c === watcher) throw new Error('write after end')
+      pushed.push(c)
+    })
+
+    feed.offer({ kind: 'registered', actor: 'other' })
+    expect(() => vi.advanceTimersByTime(300)).not.toThrow()
+
     vi.useRealTimers()
     feed.close()
   })

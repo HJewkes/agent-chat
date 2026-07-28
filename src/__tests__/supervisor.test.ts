@@ -91,6 +91,66 @@ describe('spawning', () => {
     expect(core.events.agentEvents().some(r => r.kind === 'isolation_allocated')).toBe(true)
   })
 
+  /**
+   * §11.2 promised this check in prose — "must exist, must be a directory, and
+   * must be at or under the cwd of some currently-registered session ... A peer
+   * can spawn where somebody is already working; it cannot spawn in ~/.ssh" —
+   * and the code never had it. Found by a spawned reviewer reading the section
+   * against the source. `cwd` decides where a process with the profile's tools
+   * gets to read, so an unvalidated one is a read primitive anywhere on disk.
+   */
+  describe('the cwd a spawn asks for', () => {
+    it('refuses a peer a directory nobody is working in', async () => {
+      const sup = withStubbedSurface()
+      core.register(fakeConn(), { t: 'register', name: 'peer', workingOn: '', cwd: workspace(), pid: 1 })
+
+      const result = await sup.spawn(spawnReq({ requestedBy: 'peer', cwd: os.homedir() }))
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/at or under a directory some session is working in/)
+      expect(core.events.history(10).some(r => r.kind === 'agent_spawn_refused')).toBe(true)
+    })
+
+    it('lets a peer spawn under a directory a session is working in', async () => {
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      core.register(fakeConn(), { t: 'register', name: 'peer', workingOn: '', cwd: shared, pid: 1 })
+
+      expect((await sup.spawn(spawnReq({ requestedBy: 'peer', cwd: shared }))).ok).toBe(true)
+    })
+
+    it('does not let .. climb out of a session workspace', async () => {
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      core.register(fakeConn(), { t: 'register', name: 'peer', workingOn: '', cwd: shared, pid: 1 })
+
+      const escape = path.join(shared, '..')
+      const result = await sup.spawn(spawnReq({ requestedBy: 'peer', cwd: escape }))
+
+      expect(result.ok).toBe(false)
+    })
+
+    it('refuses a path that does not exist, or is a file', async () => {
+      const sup = withStubbedSurface()
+      const dir = workspace()
+      const file = path.join(dir, 'a-file')
+      fs.writeFileSync(file, 'x')
+
+      expect((await sup.spawn(spawnReq({ cwd: path.join(dir, 'nope') }))).reason).toMatch(/does not exist/)
+      expect((await sup.spawn(spawnReq({ name: 'two', cwd: file }))).reason).toMatch(/not a directory/)
+    })
+
+    /** The human holds no registry entry to be contained by, and is the trust root. */
+    it('exempts the human from containment but not from existence', async () => {
+      const sup = withStubbedSurface()
+
+      expect((await sup.spawn(spawnReq({ requestedBy: 'human', cwd: os.homedir() }))).ok).toBe(true)
+      expect(
+        (await sup.spawn(spawnReq({ name: 'two', requestedBy: 'human', cwd: '/nope/nowhere' }))).reason,
+      ).toMatch(/does not exist/)
+    })
+  })
+
   it('refuses a reserved name, and records the refusal as an event', async () => {
     const sup = withStubbedSurface()
     const result = await sup.spawn(spawnReq({ name: 'human' }))

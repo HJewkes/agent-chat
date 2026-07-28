@@ -56,7 +56,7 @@ not children on a pipe. That is the design's whole point.
 The one thing to internalise before reading the rest.
 
 - **Presence** — "connected right now" — is tied to socket/process lifetime and
-  is *never* persisted. This is what buys no heartbeats, no TTLs, no stale-entry
+  is _never_ persisted. This is what buys no heartbeats, no TTLs, no stale-entry
   reaper.
 - **Identity** — "this agent exists, was spawned for this task, has this
   history, may be resumed" — is durable, in the event log.
@@ -73,7 +73,7 @@ better and replaces it.
 - The MCP layer stays **stdio, one subprocess per session**. That is what makes
   channel delivery addressable at all — `notifications/claude/channel` carries
   only `content` and `meta`, with no addressing field, so "which subprocess
-  emits" *is* the address. It is also the house convention: active-work, brain
+  emits" _is_ the address. It is also the house convention: active-work, brain
   and voltras-mcp all register stdio-per-session.
 - The **event log stays the single source of truth**. New state is appended
   events or queries over them, never a parallel store.
@@ -88,7 +88,7 @@ better and replaces it.
 - **Headless agents do not relay permission prompts.** Verified live in CC-2
   with a positive control: interactive sessions produce `approval_request` rows,
   a headless one produces none, ever. Since permissions are no longer bypassed,
-  a headless agent blocked on a prompt is *invisible* to the very view meant to
+  a headless agent blocked on a prompt is _invisible_ to the very view meant to
   unblock it. See `permission-relay.md`.
 - **The relay is behind a remote feature flag** (`tengu_harbor_permissions`,
   default false, currently true for this account). It can be revoked
@@ -173,23 +173,23 @@ different lifecycles is a coupling neither repo has earned.
 This is the load-bearing paragraph. Read it before anything else.
 
 The service plan §4.5 says **do not persist the registry**, and gives the
-correct reason: *"a registration outliving its process is a lease outliving the
-thing it leases."* That buys agent-chat its cleanest property — the README's *"no
-heartbeats, no TTLs, no stale-entry reaper."* `Registry.entries` is keyed by the
+correct reason: _"a registration outliving its process is a lease outliving the
+thing it leases."_ That buys agent-chat its cleanest property — the README's _"no
+heartbeats, no TTLs, no stale-entry reaper."_ `Registry.entries` is keyed by the
 connection object itself (`registry.ts:73`), so liveness is not tracked, it is
-*structural*: the entry cannot exist without the socket.
+_structural_: the entry cannot exist without the socket.
 
 Spawning appears to need the opposite — agents that outlive a session, can be
 listed tomorrow, can be resumed. Both are right, because they are about two
 different things:
 
-| | Presence | Identity |
-|---|---|---|
-| Means | "connected right now" | "this agent exists, was spawned for this brief, has this history, may be resumed" |
-| Lives in | `Registry`, an in-memory `Map` keyed by socket (`registry.ts:73`) | the append-only event log (`broker/event-log.ts`) |
-| Lifetime | the socket | forever |
-| Recovered by | reconnect + re-register (`broker-client.ts:65-72`) | it was never lost |
-| Persisted | **never** | **always** |
+|              | Presence                                                          | Identity                                                                          |
+| ------------ | ----------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Means        | "connected right now"                                             | "this agent exists, was spawned for this brief, has this history, may be resumed" |
+| Lives in     | `Registry`, an in-memory `Map` keyed by socket (`registry.ts:73`) | the append-only event log (`broker/event-log.ts`)                                 |
+| Lifetime     | the socket                                                        | forever                                                                           |
+| Recovered by | reconnect + re-register (`broker-client.ts:65-72`)                | it was never lost                                                                 |
+| Persisted    | **never**                                                         | **always**                                                                        |
 
 **Resuming is a new process attaching to an existing identity, not a new
 registration of a new thing.** A resumed agent gets a fresh socket (new presence)
@@ -204,7 +204,7 @@ whole reaper problem with it: pids are reused, a wedged process is "alive", and
 the poll interval is the resolution of your liveness signal.
 
 agent-chat's socket-connection-as-lease is strictly better: no polling, no TTL,
-no reaper, and pid reuse is irrelevant because the socket *is* the identity of
+no reaper, and pid reuse is irrelevant because the socket _is_ the identity of
 the connection. **When lifting brain's `agents` table, keep the durable identity
 fields and drop `pid` as a liveness source.** A pid is still recorded — it is
 useful for `kill` and for diagnostics — but nothing ever asks `process.kill(pid,0)`
@@ -215,9 +215,9 @@ to decide whether an agent is up. That question is answered by
 
 brain models identity as a mutable row: `UPDATE agents SET status = ...`
 (`brain/src/modules/agents/data.ts:133-152`). Do **not** lift that shape. The
-service plan's assumption 2 is binding — *the append-only log is the source of
+service plan's assumption 2 is binding — _the append-only log is the source of
 truth; new state is appended events or queries over them, never a parallel
-store.* An `agents` table alongside `events` in the same file would be exactly
+store._ An `agents` table alongside `events` in the same file would be exactly
 the parallel store that assumption forbids, and it would immediately drift: the
 socket handler would write rows, the HTTP layer would write rows, and the single
 write path the service plan §4.2 is built to establish would be broken on day one.
@@ -248,24 +248,24 @@ the architecture's one non-negotiable rule.
 
 Added to the union at `protocol.ts:26-36`:
 
-| Kind | `msg_id` | `ref` | `actor` | `target` | Meaning |
-|---|---|---|---|---|---|
-| `agent_spawned` | **the agent id** | — | spawner name (or `human`) | agent name | identity created |
-| `agent_attached` | new | agent id | agent name | — | a process registered as this agent |
-| `agent_detached` | new | agent id | agent name | — | its socket dropped |
-| `agent_resumed` | new | agent id | spawner name | agent name | a new process was launched against this identity |
-| `agent_exited` | new | agent id | agent name | — | the process ended; carries exit code / summary / cost |
-| `agent_retired` | new | agent id | actor who retired it | agent name | terminal; isolation released, name freed |
-| `isolation_allocated` | new | agent id | agent name | — | strategy + handle (branch, path, patterns) |
-| `isolation_released` | new | agent id | agent name | — | released, or refused-and-why |
-| `agent_spawn_refused` | new | — | requester | requested name | budget, depth, authority, or cwd refusal |
-| `verdict_refused` | new | — | requester | — | something reached for the verdict path without human authority (§11.4) |
+| Kind                  | `msg_id`         | `ref`    | `actor`                   | `target`       | Meaning                                                                |
+| --------------------- | ---------------- | -------- | ------------------------- | -------------- | ---------------------------------------------------------------------- |
+| `agent_spawned`       | **the agent id** | —        | spawner name (or `human`) | agent name     | identity created                                                       |
+| `agent_attached`      | new              | agent id | agent name                | —              | a process registered as this agent                                     |
+| `agent_detached`      | new              | agent id | agent name                | —              | its socket dropped                                                     |
+| `agent_resumed`       | new              | agent id | spawner name              | agent name     | a new process was launched against this identity                       |
+| `agent_exited`        | new              | agent id | agent name                | —              | the process ended; carries exit code / summary / cost                  |
+| `agent_retired`       | new              | agent id | actor who retired it      | agent name     | terminal; isolation released, name freed                               |
+| `isolation_allocated` | new              | agent id | agent name                | —              | strategy + handle (branch, path, patterns)                             |
+| `isolation_released`  | new              | agent id | agent name                | —              | released, or refused-and-why                                           |
+| `agent_spawn_refused` | new              | —        | requester                 | requested name | budget, depth, authority, or cwd refusal                               |
+| `verdict_refused`     | new              | —        | requester                 | —              | something reached for the verdict path without human authority (§11.4) |
 
 `agent_spawn_refused` and `verdict_refused` are deliberately events and not just
 `reason` strings on a reply: refusals are the security-relevant thing (§11) and
 must be in the log whether or not anyone was watching.
 
-**Two kinds deliberately *not* added.** A permission verdict does not get its
+**Two kinds deliberately _not_ added.** A permission verdict does not get its
 own kind, and neither does "blocked":
 
 - **The verdict is a `resolution` row** — `actor: 'human'`, `ref` = the
@@ -278,7 +278,7 @@ own kind, and neither does "blocked":
 - **Blocked is derived, not recorded** (§11.5). An agent is blocked when it has
   an open `approval_request`. Recording it as state would need a matching
   "unblocked" event, and the host never sends one — when the local dialog wins,
-  *"the host sends the channel server nothing"* (`docs/permission-relay.md:118-120`).
+  _"the host sends the channel server nothing"_ (`docs/permission-relay.md:118-120`).
 
 `approval_request` (`broker/index.ts:153-159`) gains one `meta` key: `agent_id`,
 set when the actor is a known agent. That is the correlation key (`request_id`
@@ -354,7 +354,7 @@ export class AgentLog {
   constructor(private readonly events: EventLog) {}
   roster(opts?: { includeRetired?: boolean }): AgentIdentity[]
   get(id: string): AgentIdentity | undefined
-  byName(name: string): AgentIdentity | undefined   // most recent non-retired
+  byName(name: string): AgentIdentity | undefined // most recent non-retired
   nameIsClaimed(name: string): boolean
 }
 ```
@@ -379,20 +379,20 @@ agent_spawned                        -> spawning
 This is what the roster view (CLI and dashboard) actually renders, and it is
 where the design pays off:
 
-| Lifecycle (durable) | Presence (`connFor(name)`) | Renders as | Note |
-|---|---|---|---|
-| `live` | connected | **running** | the normal case |
-| `live` | connected, open `approval_request` | **blocked** | derived, not stored (§11.5); the row a human acts on |
-| `live` | connected, idle past threshold | **stalled?** | the relay-blind fallback (§11.6) |
-| `live` | absent | **reconnecting** | broker bounced, or ≤8.85 s reconnect ladder (`broker-client.ts:17`) |
-| `detached` | absent | **detached** | process gone, identity intact, resumable |
-| `detached` | connected | — | impossible; log `agent_state_anomaly` and trust presence |
-| `exited` | absent | **finished** | terminal unless resumed |
-| `exited` | connected | — | a bug; the exit handler fired while a socket lives |
-| `spawning` | absent | **starting** | between launch and first register |
+| Lifecycle (durable) | Presence (`connFor(name)`)         | Renders as       | Note                                                                |
+| ------------------- | ---------------------------------- | ---------------- | ------------------------------------------------------------------- |
+| `live`              | connected                          | **running**      | the normal case                                                     |
+| `live`              | connected, open `approval_request` | **blocked**      | derived, not stored (§11.5); the row a human acts on                |
+| `live`              | connected, idle past threshold     | **stalled?**     | the relay-blind fallback (§11.6)                                    |
+| `live`              | absent                             | **reconnecting** | broker bounced, or ≤8.85 s reconnect ladder (`broker-client.ts:17`) |
+| `detached`          | absent                             | **detached**     | process gone, identity intact, resumable                            |
+| `detached`          | connected                          | —                | impossible; log `agent_state_anomaly` and trust presence            |
+| `exited`            | absent                             | **finished**     | terminal unless resumed                                             |
+| `exited`            | connected                          | —                | a bug; the exit handler fired while a socket lives                  |
+| `spawning`          | absent                             | **starting**     | between launch and first register                                   |
 
-The second row is the direct mitigation for service plan §8 item 4 — *"restart
-empties the registry; `ps`/`chat_list`/`/api/sessions` all lie for ≤8.85 s."*
+The second row is the direct mitigation for service plan §8 item 4 — _"restart
+empties the registry; `ps`/`chat_list`/`/api/sessions` all lie for ≤8.85 s."_
 A durable agent cannot vanish from the roster during that window; it can only
 change presence. **The agents view is therefore more truthful than the sessions
 view**, which is a good reason to build it (§12.4).
@@ -430,17 +430,17 @@ src/
 
 #### 3.1 Edits outside `src/agents/**` — the complete list
 
-| File | Edit | Size |
-|---|---|---|
-| `protocol.ts:26-36` | 9 new `EventKind`s | ~9 lines |
-| `protocol.ts:71` | `register` gains optional `agentId` | 1 line |
-| `protocol.ts:70-86` | new `ClientMessage`s: `spawn`, `agents`, `retire` | ~4 lines |
-| `protocol.ts:89-111` | new `ServerMessage`s: `spawn_result`, `agents_result` | ~3 lines |
-| `broker/core.ts` (service plan §4.2) | route the three new client messages to `Supervisor` | ~20 lines |
-| `broker/core.ts` | append `agent_attached` / `agent_detached` on register/drop | ~10 lines |
-| `server/index.ts:67-68` | env-driven auto-register before the model runs (§6.1) | ~12 lines |
-| `server/tools.ts` | `chat_spawn`, `chat_agents`; seed `registeredName` (§6.2) | ~60 lines |
-| `paths.ts` | `agentsDir()`, `agentDir(id)`, `profilesDir()` | ~4 lines |
+| File                                 | Edit                                                        | Size      |
+| ------------------------------------ | ----------------------------------------------------------- | --------- |
+| `protocol.ts:26-36`                  | 9 new `EventKind`s                                          | ~9 lines  |
+| `protocol.ts:71`                     | `register` gains optional `agentId`                         | 1 line    |
+| `protocol.ts:70-86`                  | new `ClientMessage`s: `spawn`, `agents`, `retire`           | ~4 lines  |
+| `protocol.ts:89-111`                 | new `ServerMessage`s: `spawn_result`, `agents_result`       | ~3 lines  |
+| `broker/core.ts` (service plan §4.2) | route the three new client messages to `Supervisor`         | ~20 lines |
+| `broker/core.ts`                     | append `agent_attached` / `agent_detached` on register/drop | ~10 lines |
+| `server/index.ts:67-68`              | env-driven auto-register before the model runs (§6.1)       | ~12 lines |
+| `server/tools.ts`                    | `agent_spawn`, `agent_list`; seed `registeredName` (§6.2)   | ~60 lines |
+| `paths.ts`                           | `agentsDir()`, `agentDir(id)`, `profilesDir()`              | ~4 lines  |
 
 No changes to `registry.ts`, `event-log.ts` (beyond the service plan's own
 `since()` addition), `broker-client.ts`, or `log.ts`.
@@ -484,19 +484,19 @@ is neither. §11.1 gives the full argument.
 miss: agent-chat's tools are themselves permission-gated, so a spawned agent
 whose profile omits them can register (registration is not a tool call, §6.1) but
 **cannot send a single message** — it appears as a healthy peer that never
-answers. `docs/permission-relay.md:161-166` records this biting in practice: *"an
-unapproved agent-chat session reports its own blockage."* `buildLaunchPlan()`
+answers. `docs/permission-relay.md:161-166` records this biting in practice: _"an
+unapproved agent-chat session reports its own blockage."_ `buildLaunchPlan()`
 should append them unconditionally rather than trusting each profile to remember.
 
 Builtins, shaped after brain's `buildDefaultAgents()` (`launch.ts:60-85`) but
 carrying isolation and surface, which brain's cannot:
 
-| Profile | model | tools | isolation | surface | why that surface |
-|---|---|---|---|---|---|
-| `explorer` | sonnet | Read, Grep, Glob | `toolset-limited` | headless | read-only; nothing it does can prompt |
-| `reviewer` | sonnet | Read, Grep, Glob, Bash | `toolset-limited` | headless | Bash is narrow and allowlisted |
-| `implementer` | opus | Read, Write, Edit, Bash, Grep, Glob | `worktree` | **iterm-pane** | writes; a prompt is answerable in the pane (§11.3) |
-| `peer` | opus | Read, Write, Edit, Bash, Grep, Glob | `none` | **iterm-tab** | long-lived collaborator |
+| Profile       | model  | tools                               | isolation         | surface        | why that surface                                   |
+| ------------- | ------ | ----------------------------------- | ----------------- | -------------- | -------------------------------------------------- |
+| `explorer`    | sonnet | Read, Grep, Glob                    | `toolset-limited` | headless       | read-only; nothing it does can prompt              |
+| `reviewer`    | sonnet | Read, Grep, Glob, Bash              | `toolset-limited` | headless       | Bash is narrow and allowlisted                     |
+| `implementer` | opus   | Read, Write, Edit, Bash, Grep, Glob | `worktree`        | **iterm-pane** | writes; a prompt is answerable in the pane (§11.3) |
+| `peer`        | opus   | Read, Write, Edit, Bash, Grep, Glob | `none`            | **iterm-tab**  | long-lived collaborator                            |
 
 `peer` is the profile that expresses what this whole system is for: a long-lived
 agent in a visible pane, sharing the checkout, addressable by name — the thing
@@ -511,7 +511,7 @@ you have a reason not to.** §11.3.
 
 **User profiles load from `~/.agent-chat/profiles/*.json` by name only.** A
 spawn request names a profile; it never carries a profile body. That single rule
-is what keeps `chat_spawn` from being "execute arbitrary argv" (§11.2). Profiles
+is what keeps `agent_spawn` from being "execute arbitrary argv" (§11.2). Profiles
 are also the second copy of brain's two-layer definition idea (Claude Code
 `--agents` objects and markdown templates with `{PLACEHOLDER}` substitution,
 `brain/src/modules/agents/template-renderer.ts:12-24`). **Do not lift the
@@ -546,8 +546,8 @@ export interface LaunchPlan {
 
 export interface LaunchHandle {
   surface: SurfaceName
-  pid?: number        // headless only
-  paneRef?: string    // iTerm session UUID, for `agent attach`
+  pid?: number // headless only
+  paneRef?: string // iTerm session UUID, for `agent attach`
 }
 
 export interface Surface {
@@ -578,14 +578,14 @@ Common to every surface:
 under the environment's normal posture — the settings allowlists the user already
 maintains. §11.1.
 
-Surface-specific, and this is the *entire* difference:
+Surface-specific, and this is the _entire_ difference:
 
-| | headless | iterm-* |
-|---|---|---|
+|        | headless                                                | iterm-*                                                          |
+| ------ | ------------------------------------------------------- | ---------------------------------------------------------------- |
 | prompt | `-p` + `--output-format stream-json`, body on **stdin** | body is in `--append-system-prompt`; the pane starts interactive |
-| stdio | `['pipe','pipe','pipe']`, `detached:true` | owned by the terminal |
+| stdio  | `['pipe','pipe','pipe']`, `detached:true`               | owned by the terminal                                            |
 
-Note what is *not* in that table any more: the permission posture used to be the
+Note what is _not_ in that table any more: the permission posture used to be the
 third row, and removing it is the point. Two spawn paths that differ only in how
 the prompt is delivered are two paths that stay in sync.
 
@@ -598,7 +598,7 @@ contains agent-chat itself, resolved the same way the plugin shim resolves it
 #### 5.3 The launch file, and why it exists
 
 **Never interpolate a brief into a shell command line.** Briefs are multi-line,
-model-authored, and for iTerm would have to survive AppleScript's quoting *and*
+model-authored, and for iTerm would have to survive AppleScript's quoting _and_
 the shell's. That is an injection surface and a debugging nightmare.
 
 Instead the supervisor writes `~/.agent-chat/agents/<id>/plan.json` (mode `0600`,
@@ -634,7 +634,7 @@ the process that knows where to put the pane.
 
 Resolution — and this is why the pane anchor is presence data, not identity data:
 
-- The requesting session's MCP subprocess *does* inherit `ITERM_SESSION_ID` from
+- The requesting session's MCP subprocess _does_ inherit `ITERM_SESSION_ID` from
   Claude Code. It sends it on `register`, as a new optional field.
 - The broker stores it on the `Registry` entry. **This is correct placement**: an
   anchor pane is a property of a live connection and is meaningless once that
@@ -706,14 +706,14 @@ Registration now happens before the model's first turn. The agent is in
 #### 6.2 Seed `registeredName` in the tool handler — a real bug otherwise
 
 `ToolHandler.registeredName` starts `null` (`tools.ts:167`) and `chat_send`
-refuses while it is null: *"Call chat_register before sending, so the recipient
-knows who you are"* (`tools.ts:234-235`). With env auto-registration the broker
+refuses while it is null: _"Call chat_register before sending, so the recipient
+knows who you are"_ (`tools.ts:234-235`). With env auto-registration the broker
 knows the agent's name but the tool handler does not, so **a spawned agent would
 be unable to send a single message** while appearing perfectly registered to
 everyone else. Seed it from `AGENT_CHAT_NAME` in the `ToolHandler` constructor.
 
 And make `chat_register` idempotent for a seeded handler: re-registering the same
-name is a no-op success; registering a *different* name returns
+name is a no-op success; registering a _different_ name returns
 `You are already registered as "<name>" (spawned agent); that name is fixed for
 this session.` A spawned agent renaming itself would strand every peer that was
 told to talk to it.
@@ -723,7 +723,7 @@ told to talk to it.
 `Registry.register` refuses a name held by another live connection
 (`registry.ts:98-100`). On resume this bites: if the resumed process registers
 before the dead process's `close` handler has fired, the resume fails with
-*"name held by another session"* and the failure looks like a bug in resume
+_"name held by another session"_ and the failure looks like a bug in resume
 rather than a race.
 
 **Rule:** when the incoming `register` carries an `agentId` that matches the
@@ -785,13 +785,13 @@ export interface IsolationStrategy {
 }
 ```
 
-`check` is separate from `allocate` on purpose: it lets `chat_spawn` answer
-*"this would collide with alice"* without side effects, and it is what makes
+`check` is separate from `allocate` on purpose: it lets `agent_spawn` answer
+_"this would collide with alice"_ without side effects, and it is what makes
 `file-ownership` useful as advice rather than only as enforcement.
 
 #### 7.2 The four strategies
 
-**`none`** — `allocate` returns `{ cwd: baseCwd }`. `check` returns a *warning*
+**`none`** — `allocate` returns `{ cwd: baseCwd }`. `check` returns a _warning_
 line (not a refusal) naming any live agent already running in the same cwd.
 `release` is a no-op returning true. This is the correct default for `peer`
 agents: shared checkout, humans and agents in the same tree, coordination by
@@ -800,7 +800,7 @@ conversation. Twenty lines.
 **`worktree`** — lift `brain/src/modules/agents/worktree.ts`. What to keep and
 what to cut:
 
-*Keep:* `findGitRoot()` via `--git-common-dir` (`worktree.ts:89-100`) — this is
+_Keep:_ `findGitRoot()` via `--git-common-dir` (`worktree.ts:89-100`) — this is
 the fix for nested worktrees when allocating from inside one, and it is not
 obvious. `inspectWorktreeForRelease()` (`:184-234`) and the dirty/unpushed
 refusal in `releaseWorktree` (`:259-268`) — this is the guard that stops an
@@ -809,12 +809,12 @@ which two incidents produced it. `cleanupStaleAllocations` (`:378-391`). The
 budget concept (`DEFAULT_BUDGET = 3`, `:81`). Copying `.claude/` into the
 worktree (`:153-158`) so hooks fire.
 
-*Cut:* everything keyed to brain's PM and GitHub domain — the `workstream`
+_Cut:_ everything keyed to brain's PM and GitHub domain — the `workstream`
 requirement and its hard throw (`:113-118`), `getDeliveryForTask` /
 `ACTIVE_DELIVERY_STATUSES` (`:37-45`, `:336-339`), `cleanupOrphanRemoteBranches`
 (`:461-487`) and its `gh` calls, `requireWorktreeIsolation` (`:494-507`).
 
-*Re-anchor:* allocation is keyed by **agent id**, not task id. The branch is
+_Re-anchor:_ allocation is keyed by **agent id**, not task id. The branch is
 `agent-chat/<name>` rather than `agent/<workstream>/<taskId>`. And the 120 s
 `RECLAIM_GRACE_MS` (`:59`) survives — but its justification changes: in brain it
 guards a racing push/PR; here it guards the window between `agent_exited` and a
@@ -822,7 +822,7 @@ human noticing there is unpushed work. Anchor it on the `agent_exited` row's
 timestamp. **The grace window and the release refusal are the two things most
 likely to be dropped as "brain-specific" during the lift. They are not.**
 
-*Re-home:* allocations are `isolation_allocated` events, not a
+_Re-home:_ allocations are `isolation_allocated` events, not a
 `worktree_allocations` table (`brain/src/modules/agents/schema.ts:30-38`). Live
 allocations = allocated rows whose agent has no matching `isolation_released`.
 Same rule as §1.2.
@@ -835,7 +835,7 @@ drops in with no adaptation at all.
 
 What agent-chat adds that brain cannot: in brain the manifest is a static object
 assembled at dispatch time. Here, **a claim is a lease held by presence**. The
-strategy's `check()` builds the manifest from the claims of currently-*connected*
+strategy's `check()` builds the manifest from the claims of currently-_connected_
 agents (roster ∩ registry), so a claim by a dead agent stops blocking the moment
 its socket closes — no stale locks, no reaper. That is `docs/ideas.md` I6
 realised through a different door, and it is the reason `file-ownership` belongs
@@ -848,7 +848,7 @@ case of two agents both touching `package.json`.
 
 **`toolset-limited`** — `allocate` returns `{ cwd: baseCwd, allowedTools,
 disallowedTools }` from the profile. Fifteen lines. Be honest about it in the
-docs: this restricts *what an agent can do*, not *where it collides*. A read-only
+docs: this restricts _what an agent can do_, not _where it collides_. A read-only
 explorer cannot conflict with anyone, which is a real and useful form of
 isolation, but it is not a substitute for `worktree` for a writer.
 
@@ -917,21 +917,21 @@ spawning, not a defect in this design.
 `agent_spawned.meta.session_id` (brain does the same, `dispatch.ts:647-648`).
 Resume rebuilds the launch plan with `--resume <that uuid>` in place of
 `--session-id`, reuses the agent id and name, and appends `agent_resumed`.
-Isolation is *not* reallocated — the existing `isolation_allocated` handle is
+Isolation is _not_ reallocated — the existing `isolation_allocated` handle is
 reused, so a resumed worktree agent lands back in its own worktree with its
 branch intact.
 
 **Be honest about the limit:** the conversation transcript that `--resume`
 restores lives in Claude Code's own state (`~/.claude/projects/…`), not in
 agent-chat. If it has been cleaned up, resume yields identity, brief, and
-isolation — but not memory. Durable identity is not durable *context*, and the
+isolation — but not memory. Durable identity is not durable _context_, and the
 CLI should say which one it is giving you.
 
 #### 8.3 Kill and retire, kept distinct
 
 - `agent kill <name>` — end the process. Headless: SIGTERM to the recorded pid,
-  SIGKILL after 3 s. Visible: **refuse**, and print *"<name> is running in an
-  iTerm pane; exit it there, or `agent-chat agent attach <name>` to go to it."*
+  SIGKILL after 3 s. Visible: **refuse**, and print _"<name> is running in an
+  iTerm pane; exit it there, or `agent-chat agent attach <name>` to go to it."_
   Killing a pane the human is looking at, from a bus a peer model can reach, is
   not a thing to build.
 - `agent retire <name>` — close the identity: release isolation (which may
@@ -960,7 +960,7 @@ that will otherwise be got wrong:
    is resumable in place, so releasing the slot would let a second agent allocate
    over the top of it. The cost is real — blocked agents starve the concurrency
    budget — and the mitigation is visibility, not eviction: `agent ls` prints
-   `3/3 slots (1 blocked)` so *"why can't I spawn"* has an answer on screen, and
+   `3/3 slots (1 blocked)` so _"why can't I spawn"_ has an answer on screen, and
    the blockers view (§11.5) is one command away.
 
 ---
@@ -980,8 +980,8 @@ as they happen, so the dashboard can show a headless agent working rather than a
 row that sits still for twenty minutes; early failure detection; and — the
 reason this got more important under the new permissions posture — **it is the
 only way to see a headless agent's permission denials** (§11.2), which arrive as
-ordinary `tool_result` frames carrying *"Claude requested permissions to use
-Bash, but you haven't granted it yet"* and are otherwise completely silent.
+ordinary `tool_result` frames carrying _"Claude requested permissions to use
+Bash, but you haven't granted it yet"_ and are otherwise completely silent.
 
 **Costs:** an incremental NDJSON parser with partial-line buffering (the existing
 `lineReader` at `protocol.ts:119-135` is exactly this and can be reused —
@@ -997,7 +997,7 @@ event row per frame would swamp a log whose other users produce tens of rows a d
 2. **Only derived rows are appended:** one `agent_exited` at the end (with
    summary, cost, duration), at most one progress row per ~60 s carrying a
    one-line "currently: <tool>" — throttled in the parser, not the log — and one
-   `notice` per *distinct* denied tool (§11.2), deduplicated, because the same
+   `notice` per _distinct_ denied tool (§11.2), deduplicated, because the same
    denial repeating forty times is one fact.
 
 **Lifecycle correctness must not depend on it.** Visible agents produce no
@@ -1044,12 +1044,12 @@ model — "you are sharing a checkout with bob" is information it should have.
 
 #### 10.2 MCP tools
 
-- **`chat_spawn`** — `{name, profile, brief, cwd?}`. Note the omissions: no
+- **`agent_spawn`** — `{name, profile, brief, cwd?}`. Note the omissions: no
   `model`, no `tools`, no `permission_mode`, no `isolation` override. Those come
   from the named profile, and a peer model does not get to raise them (§11.2).
   The description must state the budget and that spawned agents are ordinary
   peers reachable with `chat_send`.
-- **`chat_agents`** — the roster with presence, so a model can find a detached
+- **`agent_list`** — the roster with presence, so a model can find a detached
   agent it spawned an hour ago. This is the tool that makes the topology feel
   flat: agents discover each other through a list, not through a parent handle.
 
@@ -1085,8 +1085,8 @@ is specific to this repo rather than general caution.
 agent-chat has already drawn this line once. It declares
 `claude/channel/permission` observe-only and never sends a verdict
 (`server/index.ts:45-49`), and `docs/ideas.md` R1 argues at length against
-widening who issues verdicts, concluding *"this is a machine for one Claude to
-grant another Claude permissions the user never granted."* Spawning
+widening who issues verdicts, concluding _"this is a machine for one Claude to
+grant another Claude permissions the user never granted."_ Spawning
 `bypassPermissions` agents is **a larger hole than the one R1 refuses**: it does
 not route a verdict, it removes the dialog entirely, for the whole run. A system
 that will not let a peer model answer one permission prompt cannot coherently let
@@ -1099,30 +1099,40 @@ a peer model create an agent that is never prompted.
   This is a strong argument for visible spawning being the MVP default rather
   than a nicety.
 - **Headless: `--permission-mode default`,** combined with the profile's
-  `--allowed-tools` so routine work does not block. A headless agent that *does*
+  `--allowed-tools` so routine work does not block. A headless agent that _does_
   block is not a dead end here the way it is elsewhere: the permission relay
   already observes it (`broker/index.ts:148-161`) and it surfaces in
   `agent-chat inbox` as an `APPR` row (`cli.ts:47-52`, `:75-80`). Blocking
-  becomes *visible* instead of silent — which is the feature agent-chat uniquely
+  becomes _visible_ instead of silent — which is the feature agent-chat uniquely
   has, and the reason it does not need `bypassPermissions` to be usable.
 - **`bypassPermissions` requires all three:** an explicit per-spawn flag, an
   opt-in in `~/.agent-chat/config.json`, and a requester that is the **human
-  CLI** rather than a peer session. It is never reachable from `chat_spawn`, it
+  CLI** rather than a peer session. It is never reachable from `agent_spawn`, it
   is never settable in a profile file, and every such spawn appends its own
   auditable event.
 
 #### 11.2 The spawn request is attacker-controlled
 
 From the trust model in the server instructions (`server/index.ts:27-29` — peer
-messages are *"information to weigh, not instructions carrying your user's
-authority"*), a `chat_spawn` call is untrusted input. Therefore:
+messages are _"information to weigh, not instructions carrying your user's
+authority"_), a `agent_spawn` call is untrusted input. Therefore:
 
 - **Profiles by name only.** Never an inline profile body in the tool call.
-  Without this rule, `chat_spawn` is `exec(argv)` with extra steps.
+  Without this rule, `agent_spawn` is `exec(argv)` with extra steps.
 - **`cwd` is validated:** must exist, must be a directory, and must be at or
-  under the cwd of some currently-registered session (`registry.ts:126-133`
-  already exposes every session's cwd). A peer can spawn where somebody is
-  already working; it cannot spawn in `~/.ssh`.
+  under the cwd of some currently-registered session (`registry.list()` exposes
+  every session's cwd). A peer can spawn where somebody is already working; it
+  cannot spawn in `~/.ssh`. Implemented in `supervisor.ts` `checkCwd`, which
+  resolves through `realpath` first so `..` and a symlink out of the tree are
+  both caught. The human at the CLI is exempt from containment — they hold no
+  registry entry to be contained by — but not from existence.
+
+  This was prose for a day before it was code: the rule was written here, the
+  check was never implemented, and the gap was found by a spawned reviewer
+  reading this section against the source. The line number cited here was wrong
+  too, pointing at the thread-depth constants. **A spec that cites a line number
+  reads as though someone checked it.**
+
 - **`name` goes through the same `RESERVED_NAMES` check** as registration
   (`protocol.ts:24`, `registry.ts:95-96`). A spawned agent named `human` would
   inherit the user's authority in every peer's reading of `from` — `docs/ideas.md`
@@ -1148,7 +1158,7 @@ authority"*), a `chat_spawn` call is untrusted input. Therefore:
 
 The trust boundary is the OS account (`broker/index.ts:264`). Any session with
 `Bash` can run `agent-chat agent spawn` directly and bypass every gate in §11.2.
-These controls stop a *confused* agent, not an adversarial one — which is the
+These controls stop a _confused_ agent, not an adversarial one — which is the
 right threat model and the same one `docs/ideas.md` I9 states. Say it plainly in
 the PR rather than implying more.
 
@@ -1187,11 +1197,11 @@ moment. Add `agentsDir()`, `agentDir(id)`, `profilesDir()` there.
 
 - **`src/cli/**` — real conflict.** Service Step 3 gives agent A exclusive
   ownership of the CLI restructure. `src/cli/agent.ts` is a new command group in
-  that tree. Sequence it *after* Step 3; do not run them concurrently.
+  that tree. Sequence it _after_ Step 3; do not run them concurrently.
 - **`broker/core.ts` — real conflict.** The supervisor wiring edits the same file
   Step 1 creates and Step 6 edits. Serialise.
 - **§4.5 "do not persist the registry" — not a conflict.** This plan does not
-  persist the registry; it persists *identity*, which is a different thing, and
+  persist the registry; it persists _identity_, which is a different thing, and
   the registry stays exactly as ephemeral as it is today (§1). Add one
   cross-reference sentence to service plan §4.5 so a later reader does not read
   the agents work as a reversal of a decision that was correct.
@@ -1206,7 +1216,7 @@ And with a specific justification beyond "it would be nice":
 
 The sessions view is known to lie for up to 8.85 s after a broker restart
 (service plan §8 item 4). The agents view **structurally cannot** — identity is
-durable, so an agent shows as *"live / reconnecting"* rather than disappearing
+durable, so an agent shows as _"live / reconnecting"_ rather than disappearing
 (§2.5, row 2). It is the more truthful of the two views and it directly mitigates
 a wart the service plan can otherwise only paper over with a caveat banner.
 
@@ -1225,57 +1235,64 @@ a wart the service plan can otherwise only paper over with a caveat banner.
 Each step ends with `npm test` green and a repo that still works. Preconditions
 are per-step.
 
-**A0 — EventKinds + protocol variants.** *Precondition: none; do it inside
-service Step 2a.* Nine kinds, three client messages, two server messages, two
+**A0 — EventKinds + protocol variants.** _Precondition: none; do it inside
+service Step 2a._ Nine kinds, three client messages, two server messages, two
 optional `register` fields. No behaviour. §12.2.
 
-**A1 — Identity read model.** *Precondition: service Step 1 (BrokerCore).*
+**A1 — Identity read model.** _Precondition: service Step 1 (BrokerCore)._
 `AgentLog` (§2.4), the lifecycle fold, `nameIsClaimed`. Pure queries and a pure
 fold — tested against synthetic rows with no process and no database file.
-*Acceptance: fold tests cover every transition in §2.4 plus both anomalies in §2.5.*
+_Acceptance: fold tests cover every transition in §2.4 plus both anomalies in §2.5._
 
 **A2 — Presence bridge. The key step, and it comes before spawning.**
-*Precondition: A1.* `agentId` on register, env auto-registration in
+_Precondition: A1._ `agentId` on register, env auto-registration in
 `server/index.ts` (§6.1), seeded `registeredName` in `ToolHandler` (§6.2), the
 takeover rule (§6.3), `agent_attached` / `agent_detached` in the register and
 drop paths.
 
-*Acceptance, and this is the whole point of the ordering:* set
+_Acceptance, and this is the whole point of the ordering:_ set
 `AGENT_CHAT_AGENT_ID` and `AGENT_CHAT_NAME` by hand, launch `claude` yourself,
 and watch it appear in `agent-chat agent ls` as a durable peer that another
 session can `chat_send` to. **The hard part — a spawned process becoming a
 first-class peer — is fully working and tested before one line of spawning code
 exists.** If A2 does not work, no amount of spawn machinery will help.
 
-**A3 — Profiles + launch plan.** *Precondition: A2.* `AgentProfile`, the four
+**A3 — Profiles + launch plan.** _Precondition: A2._ `AgentProfile`, the four
 builtins, the `~/.agent-chat/profiles/` loader, `buildLaunchPlan()` as a pure
 function, `plan.json` / `mcp.json` writing, and `agent-chat run-agent`.
-*Acceptance: snapshot tests on argv for every surface × profile combination.*
+_Acceptance: snapshot tests on argv for every surface × profile combination._
 Still nothing spawned.
 
-**A4 — Surfaces.** *Precondition: A3.* `headless` first (easiest to assert on),
+**A4 — Surfaces.** _Precondition: A3._ `headless` first (easiest to assert on),
 then `iterm-pane` / `iterm-tab` / `iterm-window` with the anchor plumbing and the
 fallback ladder (§5.4). Exposed only as `agent-chat agent spawn` — human-driven.
 No MCP tool yet, so §11's authority question does not exist yet.
 
-**A5 — Isolation.** *Precondition: A4.* `none` and `toolset-limited` (trivial),
+**A5 — Isolation.** _Precondition: A4._ `none` and `toolset-limited` (trivial),
 then `worktree` (the lift, §7.2 — the largest single chunk), then
 `file-ownership` (verbatim lift + the presence-lease `check`).
 
-**A6 — Lifecycle.** *Precondition: A5.* Exit handling for both surface classes
+**A6 — Lifecycle.** _Precondition: A5._ Exit handling for both surface classes
 including the settle window (§8.1), `agent_exited`, isolation release with the
 refusal path, the semaphore, resume (§8.2), kill and retire (§8.3).
 
-**A7 — MCP tool surface + security gates.** *Precondition: A6.* `chat_spawn`,
-`chat_agents`, and the whole of §11.2/§11.3. **Deliberately last:** every step
+> **Note on §8's diagram.** It shows `isolation.check()` reaching
+> `agent_spawn_refused`. There is no such path: `check()` returns warnings only,
+> and no strategy currently has a condition that should hard-refuse — a dirty
+> worktree or a missing dir is a warning. Decided 2026-07-28 to treat the diagram
+> as aspirational rather than build the veto. Revisit when a strategy first needs
+> to stop a spawn outright.
+
+**A7 — MCP tool surface + security gates.** _Precondition: A6._ `agent_spawn`,
+`agent_list`, and the whole of §11.2/§11.3. **Deliberately last:** every step
 before it is human-triggered from a CLI the human already trusts, so the peer
 authority question arrives exactly once, in one reviewable diff, instead of being
 smeared across six steps.
 
-**A8 — stream-json enrichment.** *Precondition: A6.* Headless only, `stream.jsonl`
+**A8 — stream-json enrichment.** _Precondition: A6._ Headless only, `stream.jsonl`
 to disk, throttled derived rows, `agent logs`. §9.
 
-**A9 — Dashboard agents view.** *Precondition: A7 + service Steps 4 and 5.*
+**A9 — Dashboard agents view.** _Precondition: A7 + service Steps 4 and 5._
 `GET /api/agents`, `Agents.tsx`, read-only. §12.4.
 
 **A10 — Docs.** README agents section; a `docs/agent-teams.md` recording the
@@ -1287,10 +1304,10 @@ a future reader will otherwise try to "fix".
 A0-A3 are serial and touch shared files. After A3, two tracks can run
 concurrently on distinct ownership:
 
-| Track | Owns exclusively | Must not touch |
-|---|---|---|
+| Track                     | Owns exclusively                                 | Must not touch            |
+| ------------------------- | ------------------------------------------------ | ------------------------- |
 | **S — surfaces** (A4, A8) | `src/agents/surfaces/**`, `src/agents/stream.ts` | `src/agents/isolation/**` |
-| **I — isolation** (A5) | `src/agents/isolation/**` | `src/agents/surfaces/**` |
+| **I — isolation** (A5)    | `src/agents/isolation/**`                        | `src/agents/surfaces/**`  |
 
 `supervisor.ts` and `types.ts` are shared: edited in A3, then A6 by one owner.
 A6, A7, A9 are serial.
@@ -1313,7 +1330,7 @@ handler. Without the takeover rule (§6.3) resume fails intermittently, with an
 error message that points at the wrong subsystem. Small fix, easy to omit,
 expensive to diagnose.
 
-**3. Spawn authority.** `chat_spawn` lets a peer model create processes.
+**3. Spawn authority.** `agent_spawn` lets a peer model create processes.
 Mitigated by profiles-by-name-only, cwd validation, reserved names, depth and
 concurrency caps, and `bypassPermissions` being human-CLI-only (§11). Residual
 and unavoidable: any session with `Bash` bypasses all of it. The controls are
@@ -1338,7 +1355,6 @@ Code's state, not agent-chat's (§8.2). A user who reads "resumable" as "picks u
 where it left off" will be disappointed the first time `~/.claude/projects` has
 been cleaned. Wording problem, not an engineering one — but it will be the first
 complaint if the CLI does not say which one it is giving you.
-
 
 ---
 
@@ -1367,7 +1383,7 @@ Stated here so a later reader can check whether they still hold.
    compromise — it is the house standard: all three references are
    stdio-per-session (active-work registers `active-work mcp serve --stdio`;
    brain registers `command`/`args` in `.mcp.json`; voltras is stdio-only). It
-   is *also* load-bearing here for a reason unique to agent-chat, see §1.
+   is _also_ load-bearing here for a reason unique to agent-chat, see §1.
 2. **The append-only SQLite log is the source of truth**
    (`src/broker/event-log.ts`). Every derived view — a session's inbox
    (`event-log.ts:121`), the human queue (`event-log.ts:135`), the question
@@ -1389,7 +1405,7 @@ This is the most important paragraph in the document.
 **In active-work, the stdio MCP server is not a client of the daemon.** The MCP
 subprocess, the CLI, and the HTTP daemon all independently read and write plain
 files on disk, coordinated by atomic writes plus `proper-lockfile` advisory
-locks. The daemon is a *convenience* — it hosts a dashboard and an
+locks. The daemon is a _convenience_ — it hosts a dashboard and an
 MCP-over-HTTP route. Kill it and the CLI and the stdio MCP keep working.
 
 **agent-chat cannot work that way, and must not be refactored toward it.**
@@ -1405,10 +1421,10 @@ and delivery is a write to that specific socket (`src/broker/index.ts:32-37`,
 - **The lifecycle design diverges from active-work in one specific way: the
   broker must auto-start, and must never require a supervisor or a manual
   `setup` step.** active-work's daemon is started by an explicit setup step or a
-  launchd/systemd unit and is deliberately *not* auto-started per request,
+  launchd/systemd unit and is deliberately _not_ auto-started per request,
   because nothing breaks while it is down. Here everything breaks.
 
-The consequence for restart — process lifetime *is* the registration lease — is
+The consequence for restart — process lifetime _is_ the registration lease — is
 worked through in §4.5.
 
 ### 1.1 Why HTTP goes in the broker: demonstrated, not preferred
@@ -1417,7 +1433,7 @@ Two of the three references independently arrived at the same bug by putting a
 dashboard HTTP server inside the **per-session MCP process**:
 
 - **voltras** — port and DB collisions when two sessions run concurrently. Its
-  own code says *"VW-68: one shared daemon removes this race."*
+  own code says _"VW-68: one shared daemon removes this race."_
 - **brain** — `.mcp.json` runs the full `serve` (HTTP dashboard + MCP stdio) per
   session, so every new Claude session tries to bind 7800 and **evicts the
   previous holder** via a `POST /api/shutdown` self-eviction protocol
@@ -1434,22 +1450,22 @@ This is the rationale to cite in review. It is not a style preference.
 
 ### 2. House conventions, concrete
 
-| Concern | active-work / brain (concrete) | agent-chat plan |
-|---|---|---|
-| Lifecycle verbs | `mcp serve [--stdio\|--detach\|--port]`, `mcp status`, `mcp stop`, `mcp restart`, `mcp logs [--lines]`, top-level `doctor` | `service start\|stop\|status\|restart\|logs\|open`, top-level `doctor` |
-| Detach | `spawn(process.execPath, …, {detached:true, stdio:'ignore'})` | identical — already what `broker-client.ts:90` does |
-| `stop` | read PID → SIGTERM → poll liveness ≤3 s → remove PID file | identical, plus §4.4 |
-| `status` | two-stage on purpose: `process.kill(pid,0)` **then** `GET /health` with a 500 ms timeout | three-stage: socket probe → PID → `/health` (§4.3) |
-| State files | `<stateRoot>/daemon.pid`, `<stateRoot>/daemon.meta.json` = `{port, version, started}` | `~/.agent-chat/broker.pid`, `~/.agent-chat/broker.meta.json`, same fields |
-| `/health` | `{ok, version, pid, uptime_ms, port}` | same + `socket`, `sessions`, `queue_open` |
-| Logging | pino dual-stream: pretty→stderr when TTY, JSON lines→`<stateRoot>/daemon.log`; level from env | **keep `logEvent`** JSONL (§7.1); `service logs` tails `~/.agent-chat/broker.log`, default 50 lines, no `--follow` |
-| Supervision | launchd `~/Library/LaunchAgents/dev.hjewkes.<name>.plist` (RunAtLoad + KeepAlive), logs to `~/Library/Logs/<name>/`; systemd user unit on Linux | **none** (§7.2) |
-| UI stack | React 19 + Vite + `vite-plugin-singlefile` → one self-contained `dist/dashboard/index.html`; `react-native`→`react-native-web` alias | identical |
-| UI tsconfig | `src/dashboard/` **excluded from the main tsconfig**, own Vite config, `outDir` explicitly resolved to `<repo>/dist/dashboard` | identical (§8, item 9) |
-| Build | `tsup && build:dashboard` | `tsc && npm run build:dashboard` — this repo builds with `tsc`, not tsup |
-| Serving | daemon serves `/ui` and `/ui/*` from `dist/dashboard/`, SPA fallback to index.html, placeholder page when unbuilt. Not a separate port. | identical |
-| Data transport | REST + **SSE** `EventSource('/events')`. No websockets anywhere in the house style — a doc claims `/ws` but the code is SSE; the doc is stale. | REST + SSE, but §6 — this is where we exceed the reference |
-| Companion skill | `postinstall` copies `skill/` → `~/.claude/skills/<name>/` | optional, §7.4 |
+| Concern         | active-work / brain (concrete)                                                                                                                  | agent-chat plan                                                                                                    |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Lifecycle verbs | `mcp serve [--stdio\|--detach\|--port]`, `mcp status`, `mcp stop`, `mcp restart`, `mcp logs [--lines]`, top-level `doctor`                      | `service start\|stop\|status\|restart\|logs\|open`, top-level `doctor`                                             |
+| Detach          | `spawn(process.execPath, …, {detached:true, stdio:'ignore'})`                                                                                   | identical — already what `broker-client.ts:90` does                                                                |
+| `stop`          | read PID → SIGTERM → poll liveness ≤3 s → remove PID file                                                                                       | identical, plus §4.4                                                                                               |
+| `status`        | two-stage on purpose: `process.kill(pid,0)` **then** `GET /health` with a 500 ms timeout                                                        | three-stage: socket probe → PID → `/health` (§4.3)                                                                 |
+| State files     | `<stateRoot>/daemon.pid`, `<stateRoot>/daemon.meta.json` = `{port, version, started}`                                                           | `~/.agent-chat/broker.pid`, `~/.agent-chat/broker.meta.json`, same fields                                          |
+| `/health`       | `{ok, version, pid, uptime_ms, port}`                                                                                                           | same + `socket`, `sessions`, `queue_open`                                                                          |
+| Logging         | pino dual-stream: pretty→stderr when TTY, JSON lines→`<stateRoot>/daemon.log`; level from env                                                   | **keep `logEvent`** JSONL (§7.1); `service logs` tails `~/.agent-chat/broker.log`, default 50 lines, no `--follow` |
+| Supervision     | launchd `~/Library/LaunchAgents/dev.hjewkes.<name>.plist` (RunAtLoad + KeepAlive), logs to `~/Library/Logs/<name>/`; systemd user unit on Linux | **none** (§7.2)                                                                                                    |
+| UI stack        | React 19 + Vite + `vite-plugin-singlefile` → one self-contained `dist/dashboard/index.html`; `react-native`→`react-native-web` alias            | identical                                                                                                          |
+| UI tsconfig     | `src/dashboard/` **excluded from the main tsconfig**, own Vite config, `outDir` explicitly resolved to `<repo>/dist/dashboard`                  | identical (§8, item 9)                                                                                             |
+| Build           | `tsup && build:dashboard`                                                                                                                       | `tsc && npm run build:dashboard` — this repo builds with `tsc`, not tsup                                           |
+| Serving         | daemon serves `/ui` and `/ui/*` from `dist/dashboard/`, SPA fallback to index.html, placeholder page when unbuilt. Not a separate port.         | identical                                                                                                          |
+| Data transport  | REST + **SSE** `EventSource('/events')`. No websockets anywhere in the house style — a doc claims `/ws` but the code is SSE; the doc is stale.  | REST + SSE, but §6 — this is where we exceed the reference                                                         |
+| Companion skill | `postinstall` copies `skill/` → `~/.claude/skills/<name>/`                                                                                      | optional, §7.4                                                                                                     |
 
 ---
 
@@ -1470,7 +1486,7 @@ only, deliberately; agent-chat does the same.
 - Bind `127.0.0.1` only. Never `0.0.0.0`.
 - **The bind is best-effort.** On `EADDRINUSE` the broker logs
   `logEvent('http_unavailable', {port})` and carries on serving the unix socket.
-  Deliberate divergence: in active-work the daemon *is* the port; here the
+  Deliberate divergence: in active-work the daemon _is_ the port; here the
   socket is the service and the port is an accessory. Messaging must never fail
   because a dashboard port is occupied.
 
@@ -1527,7 +1543,7 @@ Today `src/broker/index.ts:20-21` holds module-level mutable singletons:
 
 ```ts
 const registry = new Registry<Conn>()
-let events: EventLog          // assigned only inside startBroker(), index.ts:258
+let events: EventLog // assigned only inside startBroker(), index.ts:258
 ```
 
 An HTTP handler importing `events` before `startBroker()` runs gets `undefined`.
@@ -1541,7 +1557,7 @@ export class BrokerCore {
   readonly startedAt: number
   constructor(deliver: (conn: Conn, message: DeliveredMessage) => void)
 
-  append(input: AppendInput): { id: number; msgId: string }   // EventLog.append + hub fan-out
+  append(input: AppendInput): { id: number; msgId: string } // EventLog.append + hub fan-out
   answer(msgId: string, text: string): { ok: boolean; reason?: string }
   dismiss(msgId: string): { ok: boolean; reason?: string }
 }
@@ -1556,7 +1572,7 @@ Three properties fall out, and all three are requirements:
 2. **`answer()`/`dismiss()` are the only verdict paths.** They are lifted
    verbatim from `handleAnswer` (`broker/index.ts:91-124`) and the `dismiss`
    case (`broker/index.ts:197-201`). The socket handler
-   (`broker/index.ts:195-201`) and the HTTP route both *call* them. That is one
+   (`broker/index.ts:195-201`) and the HTTP route both _call_ them. That is one
    write path with two callers, not two write paths. The transport-specific part
    — writing a `ServerMessage` back down a socket — stays in `socket.ts`.
 3. `deliver` is injected by `socket.ts`, so `core` stays free of transport I/O
@@ -1569,15 +1585,15 @@ API for it is not possible — which is another way of stating §1.1.
 
 #### 4.3 Commands
 
-| Command | Behaviour |
-|---|---|
-| `service status` | **Three-stage**, extending active-work's two-stage. (1) socket probe — connect to `~/.agent-chat/chat.sock`, reusing `probeExisting` (`broker/index.ts:237`); this is authoritative liveness. (2) PID file for pid/port/started. (3) `GET /health`, 500 ms timeout, for uptime/session count/queue depth. Report each stage separately so "running but HTTP down" is legible. |
-| `service start [--port] [--foreground]` | Default detached spawn; `--foreground` is today's `agent-chat broker` (`cli.ts:156`). |
-| `service stop` | read PID → SIGTERM → poll `process.kill(pid,0)` ≤3 s → SIGKILL → remove PID file. See §4.4. |
-| `service restart` | stop + start, reusing the port from `broker.meta.json` unless `--port` overrides. Prints the §4.5 warning. |
-| `service logs [-n 50]` | tail `~/.agent-chat/broker.log`. Default 50 lines, no `--follow`, matching `mcp logs`. |
-| `service open` | `open http://127.0.0.1:<port>/ui`, or print the URL when not a TTY. |
-| `doctor` | §7.3 |
+| Command                                 | Behaviour                                                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `service status`                        | **Three-stage**, extending active-work's two-stage. (1) socket probe — connect to `~/.agent-chat/chat.sock`, reusing `probeExisting` (`broker/index.ts:237`); this is authoritative liveness. (2) PID file for pid/port/started. (3) `GET /health`, 500 ms timeout, for uptime/session count/queue depth. Report each stage separately so "running but HTTP down" is legible. |
+| `service start [--port] [--foreground]` | Default detached spawn; `--foreground` is today's `agent-chat broker` (`cli.ts:156`).                                                                                                                                                                                                                                                                                         |
+| `service stop`                          | read PID → SIGTERM → poll `process.kill(pid,0)` ≤3 s → SIGKILL → remove PID file. See §4.4.                                                                                                                                                                                                                                                                                   |
+| `service restart`                       | stop + start, reusing the port from `broker.meta.json` unless `--port` overrides. Prints the §4.5 warning.                                                                                                                                                                                                                                                                    |
+| `service logs [-n 50]`                  | tail `~/.agent-chat/broker.log`. Default 50 lines, no `--follow`, matching `mcp logs`.                                                                                                                                                                                                                                                                                        |
+| `service open`                          | `open http://127.0.0.1:<port>/ui`, or print the URL when not a TTY.                                                                                                                                                                                                                                                                                                           |
+| `doctor`                                | §7.3                                                                                                                                                                                                                                                                                                                                                                          |
 
 **Do not rename `agent-chat broker` or `agent-chat mcp`.** Both are
 process-launch contracts: `broker-client.ts:90` spawns `[brokerEntry(), 'broker']`
@@ -1590,14 +1606,14 @@ plugin manifest in the same commit.
 
 The guard today is `probeExisting(sock)` (`broker/index.ts:237-249`): connect to
 the socket; if something answers, log `broker_exit` and return `null`. That is
-*better* than a PID file — it proves the process is accepting connections and is
+_better_ than a PID file — it proves the process is accepting connections and is
 immune to stale files after `kill -9`. A TCP listener adds a second, competing
 guard. Rules:
 
 1. **Probe the socket first and exit before touching the port.** Two racing
    auto-starts must never both reach `listen(7600)`.
 2. Bind the unix socket (`broker/index.ts:262`), `chmod 0600`
-   (`broker/index.ts:264`), *then* bind the port. `EADDRINUSE` on the port is
+   (`broker/index.ts:264`), _then_ bind the port. `EADDRINUSE` on the port is
    logged and swallowed (§3).
 3. Write the PID file only after both binds. It is **diagnostic only** —
    `status` never uses it to answer "is it running".
@@ -1618,7 +1634,7 @@ within ~100 ms. With sessions attached, `stop` is functionally a restart.
 
 #### 4.5 Restart vs. the registration lease — the sharpest interaction
 
-Process lifetime *is* the registration lease, and `Registry.entries` is an
+Process lifetime _is_ the registration lease, and `Registry.entries` is an
 in-memory `Map` (`registry.ts:38`). A broker restart evaporates every
 registration. What survives, what heals, and what breaks:
 
@@ -1633,7 +1649,7 @@ registration. What survives, what heals, and what breaks:
   that window `Registry.list()` (`registry.ts:89`) is empty or partial, so
   `agent-chat ps`, `chat_list`, and `/api/sessions` all **lie**, and a directed
   `chat_send` fails with `no active session named "bob"` (`registry.ts:135`) —
-  which a sending model reads as *"bob is gone"*, not *"the broker bounced"*.
+  which a sending model reads as _"bob is gone"_, not _"the broker bounced"_.
 
 Mitigations to build:
 
@@ -1653,17 +1669,17 @@ Mitigations to build:
 The user decided: the browser can **answer** and **dismiss** escalations.
 Constraints that came with the decision, and how each is satisfied:
 
-| Constraint | Satisfied by |
-|---|---|
-| Writes go through the broker on the same path the CLI uses | `core.answer()` / `core.dismiss()` (§4.2), called by both the socket handler and the HTTP route |
-| No second write path; resolution is itself an event | `core.append()` is the single writer. `dismiss` appends a `resolution` row exactly as `broker/index.ts:200` does today. The HTTP layer never touches `EventLog` directly. |
-| Narrow interactive surface | **answer and dismiss only** |
-| Loopback only | bind `127.0.0.1` (§3), plus §6.5 |
+| Constraint                                                 | Satisfied by                                                                                                                                                              |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Writes go through the broker on the same path the CLI uses | `core.answer()` / `core.dismiss()` (§4.2), called by both the socket handler and the HTTP route                                                                           |
+| No second write path; resolution is itself an event        | `core.append()` is the single writer. `dismiss` appends a `resolution` row exactly as `broker/index.ts:200` does today. The HTTP layer never touches `EventLog` directly. |
+| Narrow interactive surface                                 | **answer and dismiss only**                                                                                                                                               |
+| Loopback only                                              | bind `127.0.0.1` (§3), plus §6.5                                                                                                                                          |
 
 **Permanently out of scope for the UI:**
 
 - **Permission verdicts.** Approval items render read-only with the message the
-  CLI already prints — *"answer in that session's terminal"* (`cli.ts:79`). The
+  CLI already prints — _"answer in that session's terminal"_ (`cli.ts:79`). The
   relay is observe-only by construction: `src/server/index.ts:45-49` declares
   `claude/channel/permission` and never sends a verdict, and
   `docs/ideas.md` R1 argues at length against widening who issues verdicts. The
@@ -1675,7 +1691,7 @@ Constraints that came with the decision, and how each is satisfied:
 #### 5.1 Concurrent clients: browser and CLI acting on the same item
 
 Already solved by the existing design; the job is to not break it, and to make
-the UI *reflect* it rather than trust its own optimistic state.
+the UI _reflect_ it rather than trust its own optimistic state.
 
 **The broker is the arbiter.** `EventLog.isOpen(msgId)` (`event-log.ts:173`)
 tests whether anything references the item as `answer` or `resolution`
@@ -1795,8 +1811,8 @@ ANY  /mcp                    404 with an explanatory body, §7.5
 
 #### 6.5 Auth on the loopback port
 
-The socket is `chmod 0600` — *"this user only; the trust boundary is the OS
-account"* (`broker/index.ts:264`). A loopback TCP port is reachable by **any
+The socket is `chmod 0600` — _"this user only; the trust boundary is the OS
+account"_ (`broker/index.ts:264`). A loopback TCP port is reachable by **any
 local OS user**, which is strictly weaker. Restore parity:
 
 - Write a random token to `~/.agent-chat/ui.token`, mode `0600`, at broker start.
@@ -1806,7 +1822,7 @@ local OS user**, which is strictly weaker. Restore parity:
 - Reject requests whose `Origin` is present and is not `http://127.0.0.1:<port>`.
 
 Note honestly in the PR: a session with `Bash` can already run
-`agent-chat answer` and forge a human verdict. The token closes the *multi-user*
+`agent-chat answer` and forge a human verdict. The token closes the _multi-user_
 gap the TCP port opens; it does not change the agent threat model, which is
 unchanged from today.
 
@@ -1816,8 +1832,8 @@ unchanged from today.
 
 Stated up front so review does not read them as oversights.
 
-**7.1 No pino.** active-work's `logger.ts` writes an *operational* log.
-agent-chat's `log.ts` writes a *domain* log — the README calls it "the only
+**7.1 No pino.** active-work's `logger.ts` writes an _operational_ log.
+agent-chat's `log.ts` writes a _domain_ log — the README calls it "the only
 external evidence that a message went to exactly one session" — and its JSONL
 shape is documented. Replacing it with pino would either lose that shape or
 duplicate it. Keep `logEvent` (`broker/log.ts:8`); `service logs` gives it
@@ -1826,7 +1842,7 @@ active-work's `mcp logs` ergonomics.
 **7.2 No launchd/systemd supervision.** active-work ships a launchd plist with
 `RunAtLoad`+`KeepAlive` because its daemon is not auto-started. agent-chat
 auto-starts on first use (`broker-client.ts:88`), which already provides the
-availability a supervisor would — and `KeepAlive` *plus* auto-start means two
+availability a supervisor would — and `KeepAlive` _plus_ auto-start means two
 owners racing to resurrect one process, making the non-sticky-`stop` problem
 (§4.4) strictly worse. If supervision is ever added it must go through the same
 `probeExisting` guard so the loser exits cleanly.
@@ -1862,7 +1878,7 @@ how to pick a session name), copy it to `~/.claude/skills/agent-chat/` in
 (`active-work/src/server/daemon.ts:86`). Doing that here would destroy directed
 messaging: the channel notification carries only `content` and `meta`
 (`src/server/index.ts:60-64`) with no addressing field, so "which subprocess
-emits" *is* the address. Collapse to one shared HTTP MCP server and there is
+emits" _is_ the address. Collapse to one shared HTTP MCP server and there is
 nothing left to address with. `/mcp` returns 404 with a body explaining this, so
 a reader who expects the house pattern gets told why instead of filing a bug.
 
@@ -1875,20 +1891,20 @@ documents why: unix socket paths cap near 104 bytes on macOS.
 
 ### 8. Existing behaviour the new layers touch or break
 
-| # | Issue | Where | Handling |
-|---|---|---|---|
-| 1 | `events` is a module-level `let` assigned only inside `startBroker()` | `broker/index.ts:21`, `:258` | `BrokerCore` (§4.2) |
-| 2 | Two competing single-instance guards once a port exists | §4.4 | socket probe first; port failure non-fatal |
-| 3 | `stop` resurrected by any live client within ~100 ms | `broker-client.ts:65,88,93` | document; print attached-session count |
-| 4 | Restart empties the registry; `ps`/`chat_list`/`/api/sessions` lie for ≤8.85 s | §4.5 | `brokerUptimeMs` + UI caveat; do not persist the registry |
-| 5 | `APPROVAL_TTL_MS = 10 min` silently drops approvals out of `humanQueue()` | `event-log.ts:64`, `:143` | in a *live* UI these visibly vanish with no event behind them. Render approvals with an expiry countdown. **Do not change the TTL** — the comment at `:60-63` explains why it exists. |
-| 6 | Loopback TCP is weaker than the socket's `chmod 0600` | `broker/index.ts:264` | token file + Origin check (§6.5) |
-| 7 | `dist/` is gitignored; the plugin shim locates the checkout at spawn time | commit `a027926`, `bin/agent-chat-launch.sh` | `build` becomes `tsc && npm run build:dashboard`; `dist/dashboard/` must land where `dashboard-routes.ts` probes. **Do not touch the shim's resolution order** — its build check targets `dist/cli.js` and stays correct. |
-| 8 | `cli.ts:2-7` suppresses the `node:sqlite` ExperimentalWarning at the entrypoint | `cli.ts:2-7` | preserve **verbatim and first** when splitting into `src/cli/index.ts`. Losing it puts warnings into the MCP server's stderr, which is the stdio transport's neighbour. |
-| 9 | `tsconfig.json` compiles all of `src/**/*` with `lib: ["ES2023"]` and no DOM | `tsconfig.json:12`, `:19` | `src/dashboard` must be added to `exclude` or `tsc` fails on JSX and DOM globals. This is why both references exclude it. |
-| 10 | Runtime deps go 2 → ~4 (`hono`, `@hono/node-server`, `commander`), plus react/vite dev deps | `package.json` | intended cost of matching the house stack; call it out in the PR |
-| 11 | `vitest` 2.x here vs 3.x in both references | `package.json` | bump when convenient, not as part of this work |
-| 12 | README and `docs/ideas.md` describe a socket-only architecture | — | README gains a dashboard section. `docs/ideas.md` I3 ("human verdict from any terminal") is partly realised by the UI — cross-reference, do not rewrite. |
+| #   | Issue                                                                                       | Where                                        | Handling                                                                                                                                                                                                                  |
+| --- | ------------------------------------------------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `events` is a module-level `let` assigned only inside `startBroker()`                       | `broker/index.ts:21`, `:258`                 | `BrokerCore` (§4.2)                                                                                                                                                                                                       |
+| 2   | Two competing single-instance guards once a port exists                                     | §4.4                                         | socket probe first; port failure non-fatal                                                                                                                                                                                |
+| 3   | `stop` resurrected by any live client within ~100 ms                                        | `broker-client.ts:65,88,93`                  | document; print attached-session count                                                                                                                                                                                    |
+| 4   | Restart empties the registry; `ps`/`chat_list`/`/api/sessions` lie for ≤8.85 s              | §4.5                                         | `brokerUptimeMs` + UI caveat; do not persist the registry                                                                                                                                                                 |
+| 5   | `APPROVAL_TTL_MS = 10 min` silently drops approvals out of `humanQueue()`                   | `event-log.ts:64`, `:143`                    | in a _live_ UI these visibly vanish with no event behind them. Render approvals with an expiry countdown. **Do not change the TTL** — the comment at `:60-63` explains why it exists.                                     |
+| 6   | Loopback TCP is weaker than the socket's `chmod 0600`                                       | `broker/index.ts:264`                        | token file + Origin check (§6.5)                                                                                                                                                                                          |
+| 7   | `dist/` is gitignored; the plugin shim locates the checkout at spawn time                   | commit `a027926`, `bin/agent-chat-launch.sh` | `build` becomes `tsc && npm run build:dashboard`; `dist/dashboard/` must land where `dashboard-routes.ts` probes. **Do not touch the shim's resolution order** — its build check targets `dist/cli.js` and stays correct. |
+| 8   | `cli.ts:2-7` suppresses the `node:sqlite` ExperimentalWarning at the entrypoint             | `cli.ts:2-7`                                 | preserve **verbatim and first** when splitting into `src/cli/index.ts`. Losing it puts warnings into the MCP server's stderr, which is the stdio transport's neighbour.                                                   |
+| 9   | `tsconfig.json` compiles all of `src/**/*` with `lib: ["ES2023"]` and no DOM                | `tsconfig.json:12`, `:19`                    | `src/dashboard` must be added to `exclude` or `tsc` fails on JSX and DOM globals. This is why both references exclude it.                                                                                                 |
+| 10  | Runtime deps go 2 → ~4 (`hono`, `@hono/node-server`, `commander`), plus react/vite dev deps | `package.json`                               | intended cost of matching the house stack; call it out in the PR                                                                                                                                                          |
+| 11  | `vitest` 2.x here vs 3.x in both references                                                 | `package.json`                               | bump when convenient, not as part of this work                                                                                                                                                                            |
+| 12  | README and `docs/ideas.md` describe a socket-only architecture                              | —                                            | README gains a dashboard section. `docs/ideas.md` I3 ("human verdict from any terminal") is partly realised by the UI — cross-reference, do not rewrite.                                                                  |
 
 ---
 
@@ -1898,32 +1914,32 @@ Each step ends with `npm test` green (48 tests today) and a shippable repo.
 Preconditions are per-step so the order stands on its own.
 
 **Step 1 — `BrokerCore` extraction. No behaviour change.**
-*Precondition: none.* Split `broker/index.ts` into `core.ts` + `socket.ts`.
+_Precondition: none._ Split `broker/index.ts` into `core.ts` + `socket.ts`.
 Every `events.append` → `core.append`. Lift `handleAnswer` and the dismiss case
 into `core.answer`/`core.dismiss`. Add `EventHub` wired to `core.append`, no
 subscribers yet. **Acceptance: the existing 48 tests pass unmodified.** New unit
 tests for `core.append` fan-out and `core.answer` on an already-closed item.
-*Blocks everything.*
+_Blocks everything._
 
 **Step 2 — Lifecycle + health, still no HTTP.**
-*Precondition: step 1.* `lifecycle.ts`, `health.ts`, PID/meta files, `paths.ts`
+_Precondition: step 1._ `lifecycle.ts`, `health.ts`, PID/meta files, `paths.ts`
 additions, shutdown cleanup. `buildHealthPayload()` is callable and unit-tested
 before any server exists.
 
 **Step 2a — Freeze the API contract.**
-*Precondition: step 2.* Write `src/dashboard/types.ts` — response shapes for
+_Precondition: step 2._ Write `src/dashboard/types.ts` — response shapes for
 queue/sessions/history/health plus the SSE frame. One small file, written once,
 imported by both the API and the UI. **This is what lets steps 3, 4, and 5 run in
 parallel; do not skip it.**
 
 **Step 3 — CLI restructure.**
-*Precondition: step 2.* commander root with `human` / `service` / `debug` /
+_Precondition: step 2._ commander root with `human` / `service` / `debug` /
 `doctor` groups. Old flat verbs kept as hidden aliases for one release (README
 and `docs/ideas.md` reference them by name). `agent-chat broker` and
 `agent-chat mcp` keep their exact strings (§4.3). Port `cli.ts:2-7` first.
 
 **Step 4 — HTTP layer, reads only.**
-*Precondition: steps 1, 2, 2a.* `http.ts` (pure factory), `api-routes.ts` GETs,
+_Precondition: steps 1, 2, 2a._ `http.ts` (pure factory), `api-routes.ts` GETs,
 `sse.ts` with the resume cursor, `/health`, `/ui` placeholder, port bind in
 `daemon.ts` with `EADDRINUSE` tolerance, `/mcp` explanatory 404. Test via
 `app.fetch()` with no port bound — active-work's `buildHttpApp` is pure for
@@ -1931,17 +1947,17 @@ exactly this reason (`active-work/src/server/http.ts:14-19`). SSE tests must
 cover the subscribe-then-query ordering (§6.2 step 2) and the >500-row `reset`.
 
 **Step 5 — Dashboard SPA.**
-*Precondition: step 2a for types; merges after step 4.* React + Vite singlefile
+_Precondition: step 2a for types; merges after step 4._ React + Vite singlefile
 → `dist/dashboard`, `dashboard-routes.ts`, three views (Queue / Sessions / Log),
 `utils/api.ts`, `utils/live.ts`, `LiveIndicator`. The `tsconfig` exclusion
 (§8, item 9) and the `build` script change land here.
 
 **Step 6 — Interactive writes.**
-*Precondition: steps 4 and 5.* `POST /api/answer`, `POST /api/dismiss` calling
+_Precondition: steps 4 and 5._ `POST /api/answer`, `POST /api/dismiss` calling
 `core.answer`/`core.dismiss`; token file + Origin check; UI affordances and the
 four reconciliation rules from §5.1. Approvals stay read-only.
 
-**Step 7 — `doctor`.** *Precondition: step 2 (needs the probes).* Can slot
+**Step 7 — `doctor`.** _Precondition: step 2 (needs the probes)._ Can slot
 anywhere after step 2; listed late because it is the least coupled.
 
 **Step 8 — Docs.** README dashboard + `service` sections, `docs/ideas.md`
@@ -1953,11 +1969,11 @@ Steps 1, 2, and 2a are serial and touch the hot files. **Do them solo, on one
 branch, before fanning out.** After 2a is frozen, three agents can run
 concurrently:
 
-| Agent | Owns exclusively | Must not touch |
-|---|---|---|
-| **A — CLI** (steps 3, 7) | `src/cli/**`, `src/cli.ts` (becomes a 3-line shim), `src/broker/doctor.ts` | `src/broker/http*.ts`, `src/dashboard/**` |
-| **B — HTTP** (step 4) | `src/broker/http.ts`, `api-routes.ts`, `sse.ts`, `dashboard-routes.ts`, `daemon.ts` | `src/cli/**`, `src/dashboard/**` |
-| **C — UI** (step 5) | `src/dashboard/**` except `types.ts`, plus `vite.config.ts` | `src/broker/**`, `src/cli/**` |
+| Agent                    | Owns exclusively                                                                    | Must not touch                            |
+| ------------------------ | ----------------------------------------------------------------------------------- | ----------------------------------------- |
+| **A — CLI** (steps 3, 7) | `src/cli/**`, `src/cli.ts` (becomes a 3-line shim), `src/broker/doctor.ts`          | `src/broker/http*.ts`, `src/dashboard/**` |
+| **B — HTTP** (step 4)    | `src/broker/http.ts`, `api-routes.ts`, `sse.ts`, `dashboard-routes.ts`, `daemon.ts` | `src/cli/**`, `src/dashboard/**`          |
+| **C — UI** (step 5)      | `src/dashboard/**` except `types.ts`, plus `vite.config.ts`                         | `src/broker/**`, `src/cli/**`             |
 
 Shared, edited once then frozen:
 
@@ -1986,7 +2002,7 @@ Worth stating in the README, since it was a genuine open question.
    `spawnBroker()` auto-starts the daemon (`broker-client.ts:90`). Both are
    process-launch contracts, not conveniences.
 3. **The dashboard is not always reachable** — ssh, tmux, a headless box, or the
-   port already taken (§3). A UI that is the *only* way to unblock an agent is a
+   port already taken (§3). A UI that is the _only_ way to unblock an agent is a
    single point of failure for a system whose whole purpose is unblocking agents.
 
 The step-3 grouping encodes that: `inbox`/`answer`/`dismiss` stay top-level as
@@ -1996,7 +2012,6 @@ replaces day to day. `send` is arguably human-facing (`docs/ideas.md` P5, "the
 human is a peer on the same bus", `cli.ts:44`) — it sits in `debug` because
 unprompted human→agent messages are rarer than answering an escalation, and
 because §5 deliberately keeps it out of the UI.
-
 
 ---
 
@@ -2008,9 +2023,11 @@ Two independent spawn paths exist:
 
 **A. Interactive launch** — `src/commands/launch.ts:204-207`. Spawns the user's own
 foreground `claude` CLI:
+
 ```js
 spawn(claude, claudeArgs, { stdio: 'inherit', env: { ...process.env } })
 ```
+
 `claudeArgs` built from: `--append-system-prompt <briefing>` (project briefing text,
 `generateSystemPrompt` launch.ts:18-58, pulled from `generateSessionBriefing`),
 `--mcp-config <json>` (registers `brain serve` as stdio MCP server, launch.ts:87-93),
@@ -2020,9 +2037,11 @@ project/global `launch.json` override, launch.ts:100-122), `--model`, `--continu
 `which claude`. No JSON parsing needed — it's a normal foreground TTY session.
 
 **B. Headless dispatch** — `src/server/dispatch.ts:638-682` `spawnClaude()`:
+
 ```js
 spawn(claudeBin, args, { cwd, env: {...}, stdio: ['pipe','pipe','pipe'], detached: true })
 ```
+
 argv: `-p --output-format json --model <m> --permission-mode bypassPermissions
 --session-id <uuid> --append-system-prompt "On completion output exactly: DONE
 <task> <summary>. On failure: FAILED <task> <reason>." --allowed-tools <csv>
@@ -2152,18 +2171,20 @@ Two layers of agent definitions:
 ### 7. Reusability assessment
 
 **Cleanly separable** (little/no brain-DB coupling beyond a generic `db: unknown`
-+ raw prepared-statement calls that could trivially swap to any sqlite/kv store):
-- `src/modules/agents/worktree.ts` — pure git/fs logic, only touches
+
+- raw prepared-statement calls that could trivially swap to any sqlite/kv store):
+
+* `src/modules/agents/worktree.ts` — pure git/fs logic, only touches
   `data.ts`'s worktree_allocations helpers.
-- `src/modules/agents/data.ts` — thin CRUD layer over 2 tables; the `toRaw()`
+* `src/modules/agents/data.ts` — thin CRUD layer over 2 tables; the `toRaw()`
   shim (data.ts:20-25) already tolerates "BrainDB or raw db" — trivial to further
   decouple into any storage.
-- `src/modules/agents/completion-protocol.ts` (parse half only — `parseCompletionMessage`,
+* `src/modules/agents/completion-protocol.ts` (parse half only — `parseCompletionMessage`,
   `isCompletionMessage`) — pure string parsing, zero deps.
-- `src/commands/launch.ts` spawn/argv-building logic (minus `generateSessionBriefing`
+* `src/commands/launch.ts` spawn/argv-building logic (minus `generateSessionBriefing`
   and `BrainDB` import) — genuinely a generic "launch claude with agents+mcp+briefing"
   wrapper; the briefing generator is the only brain-specific piece.
-- The headless `spawnClaude`/`setupProcessTracking`/`handleProcessExit` core
+* The headless `spawnClaude`/`setupProcessTracking`/`handleProcessExit` core
   (dispatch.ts:638-778) is conceptually generic (spawn `-p --output-format json`,
   buffer stdio, parse exit) but is written inline against `svc: BrainServiceClass`
   and `getAgent/updateAgentStatus/setAgentContext` — would need those DB calls
@@ -2171,11 +2192,12 @@ Two layers of agent definitions:
   stderr)) to lift cleanly.
 
 **Deeply entangled** (would need real surgery):
+
 - `src/server/dispatch.ts` as a whole — task claiming/PM status transitions,
   workflow-step metadata resolution, budget-per-category config, and worktree
   allocation are all interleaved with the spawn call in `runDispatch`. The
-  *spawn mechanics* (section 1B) are a small, extractable slice; the *task
-  sourcing* (`resolveExplicitTask`/`resolveNextTask`/`pullNextTask`) is pure
+  _spawn mechanics_ (section 1B) are a small, extractable slice; the _task
+  sourcing_ (`resolveExplicitTask`/`resolveNextTask`/`pullNextTask`) is pure
   brain PM and not reusable.
 - `src/modules/agents/dispatch-loop.ts` — orchestration logic (semaphore, retry,
   delivery hookup) is generic in shape but hard-wired to `DeliveryOutcome`/
@@ -2184,7 +2206,7 @@ Two layers of agent definitions:
 - `src/modules/agents/coordinator.ts`, `prompt-builder.ts`, `prompt-templates.ts`,
   `template-renderer.ts` — templating is generic, but variable-building
   (`buildTemplateVariables`, `buildAgentDispatchContext`) pulls from PM task
-  notes/routing/ownership; only the template *rendering engine* (placeholder
+  notes/routing/ownership; only the template _rendering engine_ (placeholder
   substitution) is a clean lift.
 - `delivery.ts`/`delivery-monitor.ts`/`delivery-review.ts`/`merge-stack.ts`/
   `fix-agent.ts`/`auto-merge.ts` — GitHub PR lifecycle automation layered on top
@@ -2258,7 +2280,7 @@ concurrently. A6, A7 and A9 are serial. The ownership table is in §13.
 - **An unverified claim that supports work you want to do.** This bullet used to
   warn about priority inversion, citing a user who "waited through three rounds
   of agent-to-agent correction". That was measured and **refuted** hours after it
-  was written — its author had asked *its* human a question and was waiting on
+  was written — its author had asked _its_ human a question and was waiting on
   them; peers messaged in the gap. The claim survived as long as it did because
   it arrived as evidence **for** a feature everyone wanted, so nobody's instinct
   was to check it. Every checking instinct that day was aimed at claims that

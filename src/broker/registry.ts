@@ -1,12 +1,29 @@
 import { randomUUID } from 'node:crypto'
 import {
   RESERVED_NAMES,
+  SUBSCRIBABLE_KINDS,
   type DeliveredMessage,
   type SessionInfo,
   type SessionStatus,
   type Subscription,
   type SubscriptionSelector,
 } from '../protocol.js'
+
+/**
+ * Drop any kind that is not subscribable, wherever subscriptions enter.
+ *
+ * Enforced HERE, not only in the tool handler. The tool is one client of this
+ * socket; a raw client on the same 0600 socket can send whatever it likes and was
+ * previously stored verbatim, so `kinds: ['message']` was accepted with ok:true.
+ * Nothing leaked, because the feed also gates on the row kind — but resting a
+ * content-isolation property on a single check is how it stops being true after
+ * an unrelated refactor.
+ */
+const sanitizeSubscriptions = (subscriptions: Subscription[]): Subscription[] =>
+  subscriptions.map(sub => ({
+    selector: sub.selector,
+    kinds: sub.kinds.filter(kind => (SUBSCRIBABLE_KINDS as readonly string[]).includes(kind)),
+  }))
 
 /** Selectors are the identity of a subscription, which is what makes re-subscribing idempotent. */
 const sameSelector = (a: SubscriptionSelector, b: SubscriptionSelector): boolean => {
@@ -253,7 +270,9 @@ export class Registry<C> {
       // A re-register re-declares both, which is how a resumed agent gets its
       // subscriptions back without anything having persisted them.
       tags: input.tags ?? existing?.tags ?? [],
-      subscriptions: input.subscriptions ?? existing?.subscriptions ?? [],
+      subscriptions: input.subscriptions
+        ? sanitizeSubscriptions(input.subscriptions)
+        : (existing?.subscriptions ?? []),
       status: existing?.status ?? 'available',
       awaitingApproval: existing?.awaitingApproval ?? false,
       dnd: existing?.dnd ?? false,
@@ -322,7 +341,13 @@ export class Registry<C> {
     const entry = this.entries.get(conn)
     if (!entry) return { ok: false, held: 0, reason: 'register before subscribing' }
 
-    for (const wanted of subscriptions) {
+    // Filtered HERE, not only in the tool handler. The tool is one client of this
+    // socket; a raw client on the same 0600 socket can send whatever it likes, and
+    // was previously stored verbatim — so `kinds: ['message']` was accepted with
+    // ok:true. Nothing leaked, because the feed also gates on the row kind, but
+    // resting a content-isolation property on a single check is how it stops
+    // being true after an unrelated refactor.
+    for (const wanted of sanitizeSubscriptions(subscriptions)) {
       const at = entry.subscriptions.findIndex(s => sameSelector(s.selector, wanted.selector))
       if (at === -1) entry.subscriptions.push(wanted)
       else entry.subscriptions[at] = wanted
