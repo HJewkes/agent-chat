@@ -14,6 +14,7 @@ import { type QueueItem, type ServerMessage } from './protocol.js'
 import { runAgent } from './agents/run-agent.js'
 import { listProfileNames, loadProfile } from './agents/profiles.js'
 import { pairPresence } from './agents/identity.js'
+import { transcriptLine } from './agents/transcript.js'
 
 const USAGE = `agent-chat — cross-session messaging for Claude Code
 
@@ -185,6 +186,7 @@ async function agentLs(): Promise<void> {
     const { status } = pairPresence(agent, { connected })
     console.log(`${agent.name.padEnd(16)} ${status.padEnd(13)} ${agent.profile.padEnd(12)} ${agent.agentId}`)
     console.log(`${' '.repeat(16)} ${agent.cwd}`)
+    console.log(`${' '.repeat(16)} ${transcriptLine(agent.cwd, agent.sessionId)}`)
   }
 }
 

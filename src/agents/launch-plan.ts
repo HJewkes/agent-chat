@@ -87,6 +87,12 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
   for (const dir of input.extraDirs ?? []) args.push('--add-dir', dir)
 
   if (!interactive) {
+    // This output goes to /dev/null — the headless surface discards all three
+    // streams on purpose (see `surfaces/headless.ts`), and the readable record of
+    // a headless run is Claude Code's own transcript, not this. The format is kept
+    // rather than dropped so that anything later choosing to read the stream gets
+    // NDJSON instead of prose, but nothing reads it today.
+    //
     // `--verbose` is mandatory here, not decoration: Claude Code refuses with
     // "When using --print, --output-format=stream-json requires --verbose".
     // Verified against the installed CLI rather than inferred from --help, which

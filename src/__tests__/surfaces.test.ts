@@ -1,4 +1,6 @@
+import { spawn as nodeSpawn } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
+import { HEADLESS_STDIO } from '../agents/surfaces/headless.js'
 import { SURFACE_NAMES, isInteractiveSurface, type SurfaceName } from '../protocol.js'
 import { SurfaceRefused, surfaceFor, type SpawnFn, type SurfaceOptions } from '../agents/surfaces/index.js'
 import type { LaunchPlan } from '../agents/types.js'
@@ -68,14 +70,41 @@ describe('headless surface', () => {
     return { calls, spawn, exit }
   }
 
-  it('starts the agent detached, with pipes, and reports its pid', async () => {
+  it('starts the agent detached, discarding its streams, and reports its pid', async () => {
     const { calls, spawn } = capturingSpawn()
     const handle = await surfaceFor('headless', { spawn }).launch(plan())
 
     expect(handle).toMatchObject({ surface: 'headless', pid: 4242 })
     expect(calls).toHaveLength(1)
-    expect(calls[0]?.options).toMatchObject({ detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
+    expect(calls[0]?.options).toMatchObject({ detached: true, stdio: ['ignore', 'ignore', 'ignore'] })
   })
+
+  /**
+   * The regression that matters, and the only one a fake spawn cannot show.
+   *
+   * These streams were piped with nothing reading them, so a child that produced
+   * more than the ~64KB kernel pipe buffer blocked on write and hung forever while
+   * still looking alive. A megabyte is comfortably past that. Under the old
+   * ['pipe','pipe','pipe'] this test does not fail an assertion — it times out,
+   * which is exactly what the bug did to an agent.
+   */
+  it('lets a child that floods both streams run to completion', async () => {
+    const loud = `
+      process.stdout.write('o'.repeat(1024 * 1024))
+      process.stderr.write('e'.repeat(1024 * 1024))
+    `
+    const child = nodeSpawn(process.execPath, ['-e', loud], {
+      detached: true,
+      stdio: [...HEADLESS_STDIO],
+    })
+    child.unref()
+
+    const exit = await new Promise<number | null>(resolve => {
+      child.once('exit', code => resolve(code))
+      child.once('error', () => resolve(null))
+    })
+    expect(exit).toBe(0)
+  }, 15_000)
 
   it('launches the fixed run-agent command, never the brief or the agent argv', async () => {
     const { calls, spawn } = capturingSpawn()

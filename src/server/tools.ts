@@ -2,6 +2,7 @@ import type { BrokerClient } from '../client/broker-client.js'
 import { ISOLATION_NAMES, SESSION_STATUSES, SUBSCRIBABLE_KINDS, SURFACE_NAMES } from '../protocol.js'
 import { terminalAnchor } from './anchor.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
+import { transcriptLine } from '../agents/transcript.js'
 import type {
   DeliveredMessage,
   QueueItem,
@@ -627,7 +628,11 @@ export class ToolHandler {
     >
     if (res.agents.length === 0) return text('No agents.')
     const rows = res.agents.map(
-      a => `- ${a.name} [${a.state}, ${a.profile}, ${a.surface}] spawned by ${a.spawnedBy}\n    ${a.cwd}`,
+      a =>
+        `- ${a.name} [${a.state}, ${a.profile}, ${a.surface}] spawned by ${a.spawnedBy}\n    ${a.cwd}` +
+        // A headless agent's output is discarded, so this is the only way to read
+        // what it actually did without interrupting it for a report.
+        `\n    ${transcriptLine(a.cwd, a.sessionId)}`,
     )
     return text(`Durable agents:\n${rows.join('\n')}`)
   }
