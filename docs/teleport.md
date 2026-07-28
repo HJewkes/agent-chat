@@ -320,6 +320,22 @@ that varied the name hit the impostor-refusal path instead and observed no
 eviction at all, which would read as "the trap is not real" to anyone who
 tested it carelessly.
 
+**"Dead bus" understates it, and this is the sharpest thing measured.** A
+separate probe killed the MCP subprocess of a live session directly, and
+Claude Code **restarted the MCP server** — new pid, same parent. The session's
+next turn then called `chat_list` and it SUCCEEDED, returning "No sessions are
+registered", with the session itself absent from its own roster. So the state
+after severing is not a dead bus anyone would notice. It is a WORKING bus on
+which the session is silently deregistered, unreachable by every peer, with
+nothing anywhere prompting it to register again. The session cannot tell: its
+tools work and return plausible answers.
+
+This is not a defect in adoption — registration is per-connection by design —
+but it is the concrete shape of what D2's shutdown must never leave behind,
+and it is invisible from inside the session that it happens to. Any shutdown
+path that severs a connection without ending the process produces this state,
+which is why shutdown must signal the HOST pid and not the registry's `pid`.
+
 **Why v0 doesn't need the workaround.** With no overlap (§4), there is never
 a moment when two live processes want the same name. The predecessor's
 connection is fully closed — `agent_retired` appended, name no longer
