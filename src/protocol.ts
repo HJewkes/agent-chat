@@ -203,6 +203,25 @@ export type ClientMessage =
       cwd: string
       pid: number
       agentId?: string
+      /**
+       * `CLAUDE_CODE_SESSION_ID`, read by the MCP subprocess from its own
+       * environment. Never asked of the model, which is what lets the broker mint
+       * a durable identity for an ordinary session without that identity becoming
+       * self-asserted. Absent means no adoption: an older binary, or a client that
+       * is not a Claude Code session at all.
+       */
+      sessionId?: string
+      /**
+       * The pid of Claude Code itself, not of this MCP subprocess.
+       *
+       * `pid` above is `process.pid` — the subprocess. Signalling that severs the
+       * bus and leaves Claude Code running, which is worse than either extreme
+       * because the screen shows a live session that can no longer be reached.
+       * This carries the one that is actually actionable. Presence data: a pid is
+       * meaningless once its process is gone, so nothing persists it and nothing
+       * asks `process.kill(pid, 0)` to decide whether a session is up.
+       */
+      hostPid?: number
       termSessionId?: string
       /** Many, not one: a session is usually in more than one conversation. */
       tags?: string[]
@@ -311,6 +330,25 @@ export const AGENT_LIFECYCLES = ['spawning', 'live', 'detached', 'exited', 'reti
 export type AgentLifecycle = (typeof AGENT_LIFECYCLES)[number]
 
 /**
+ * How an identity came to exist, and therefore how much of it to trust.
+ *
+ * `spawned` — the broker minted the id AND assigned the name from a launch plan,
+ * then handed both to the process in its environment. Every field is
+ * broker-derived.
+ *
+ * `adopted` — an ordinary human-started session, given an identity by the broker
+ * when it registered. The id, the Claude Code session id and the cwd are still
+ * broker- or host-derived, but the NAME and the BRIEF are whatever the model
+ * typed into `chat_register`. That is the weaker guarantee `from` already has
+ * versus `source`, and it is recorded here rather than left to convention
+ * because a roster (CC-11) and an endorsement (CC-22) need to tell the two
+ * apart.
+ */
+export const AGENT_ORIGINS = ['spawned', 'adopted'] as const
+
+export type AgentOrigin = (typeof AGENT_ORIGINS)[number]
+
+/**
  * A durable agent identity, produced by the A1 read model (`agents/identity.ts`).
  * Presence is deliberately NOT in here — that is the registry's job, and it is
  * ephemeral by design. The two are paired at render time, never stored together.
@@ -326,6 +364,8 @@ export interface AgentIdentity {
   name: string
   profile: string
   state: AgentLifecycle
+  /** Whether the name and brief are broker-assigned or self-reported. */
+  origin: AgentOrigin
   spawnedBy: string
   spawnedAt: number
   brief: string

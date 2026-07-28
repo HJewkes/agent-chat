@@ -454,4 +454,28 @@ describe('spawn depth', () => {
     const spawned = core.events.agentEvents().find(r => r.kind === 'agent_spawned')
     expect(spawned?.meta.depth).toBe('1')
   })
+
+  it('leaves a human session at the depth it had before it had an identity', async () => {
+    // An adopted session is a parent now, and depthOf() adds one to the parent's
+    // recorded depth. If adoption recorded depth 1, every agent a human spawned
+    // would start at 2 and its children would breach the cap — the fleet would
+    // silently lose a level on the day ordinary sessions gained identities.
+    const sup = withStubbedSurface()
+    core.register(fakeConn(), {
+      t: 'register',
+      name: 'human-session',
+      workingOn: 'CC-30',
+      cwd: workspace(),
+      pid: 1,
+      sessionId: 'sess-adopted',
+    })
+    const parentAgentId = core.agents.roster()[0]?.agentId
+
+    await sup.spawn(spawnReq({ parentAgentId }))
+
+    const spawned = core.events
+      .agentEvents()
+      .find(r => r.kind === 'agent_spawned' && r.meta.origin !== 'adopted')
+    expect(spawned?.meta.depth).toBe('1')
+  })
 })

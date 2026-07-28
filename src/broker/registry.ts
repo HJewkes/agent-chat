@@ -45,6 +45,17 @@ interface Entry {
    */
   agentId?: string
   /**
+   * Claude Code's own pid, as opposed to `pid` above, which is the MCP
+   * subprocess that sent the registration.
+   *
+   * Presence data for the same reason `termSessionId` is: a pid names a running
+   * process and means nothing once that process is gone, so it belongs to the
+   * lifetime of a connection rather than to the log. Recording it durably would
+   * reintroduce exactly what the socket-as-lease design removed — a stored pid
+   * that has to be re-checked, and pid reuse to be wrong about.
+   */
+  hostPid?: number
+  /**
    * The requester's `ITERM_SESSION_ID`, used as the anchor for a visible spawn.
    *
    * Presence data, and deliberately so: the broker is started detached with
@@ -70,6 +81,16 @@ interface Entry {
   subscriptions: Subscription[]
   registeredAt: number
   lastSeen: number
+}
+
+/** What a caller holding a connection may read back about it. */
+export interface EntryView {
+  name: string
+  workingOn: string
+  status: SessionStatus
+  agentId?: string
+  /** Claude Code's pid. Never persisted; see `Entry.hostPid`. */
+  hostPid?: number
 }
 
 /**
@@ -242,6 +263,7 @@ export class Registry<C> {
       cwd: string
       pid: number
       agentId?: string
+      hostPid?: number
       termSessionId?: string
       tags?: string[]
       subscriptions?: Subscription[]
@@ -266,6 +288,7 @@ export class Registry<C> {
       cwd: input.cwd,
       pid: input.pid,
       ...(input.agentId === undefined ? {} : { agentId: input.agentId }),
+      ...(input.hostPid === undefined ? {} : { hostPid: input.hostPid }),
       ...(input.termSessionId === undefined ? {} : { termSessionId: input.termSessionId }),
       // A re-register re-declares both, which is how a resumed agent gets its
       // subscriptions back without anything having persisted them.
@@ -417,9 +440,21 @@ export class Registry<C> {
     return this.entries.get(conn)?.awaitingApproval ?? false
   }
 
-  entryFor(
-    conn: C,
-  ): { name: string; workingOn: string; status: SessionStatus; agentId?: string } | undefined {
+  /**
+   * Bind a durable identity to a connection after it has registered.
+   *
+   * Separate from `register` because an adopted identity is resolved or minted
+   * only once the registration has succeeded — minting first would strand an
+   * identity in the log every time a name turned out to be held. Note this is
+   * NOT a second route to the takeover rule above: by the time this runs, the
+   * name is already held by this connection.
+   */
+  bindIdentity(conn: C, agentId: string): void {
+    const entry = this.entries.get(conn)
+    if (entry) entry.agentId = agentId
+  }
+
+  entryFor(conn: C): EntryView | undefined {
     const entry = this.entries.get(conn)
     if (!entry) return undefined
     return {
@@ -427,6 +462,7 @@ export class Registry<C> {
       workingOn: entry.workingOn,
       status: entry.status,
       ...(entry.agentId === undefined ? {} : { agentId: entry.agentId }),
+      ...(entry.hostPid === undefined ? {} : { hostPid: entry.hostPid }),
     }
   }
 

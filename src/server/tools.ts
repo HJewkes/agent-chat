@@ -1,6 +1,7 @@
 import type { BrokerClient } from '../client/broker-client.js'
 import { ISOLATION_NAMES, SESSION_STATUSES, SUBSCRIBABLE_KINDS, SURFACE_NAMES } from '../protocol.js'
 import { terminalAnchor } from './anchor.js'
+import { hostIdentity } from './host.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
 import { transcriptLine } from '../agents/transcript.js'
 import type {
@@ -432,7 +433,19 @@ export class ToolHandler {
     }
 
     const res = (await this.call(
-      { t: 'register', name, workingOn, cwd: process.cwd(), pid: process.pid, ...terminalAnchor() },
+      {
+        t: 'register',
+        name,
+        workingOn,
+        cwd: process.cwd(),
+        pid: process.pid,
+        // The half of this registration the model did not choose. `name` and
+        // `workingOn` above came from the model; these came from the process,
+        // which is what lets the broker mint an identity for an ordinary session
+        // without that identity being self-asserted.
+        ...hostIdentity(),
+        ...terminalAnchor(),
+      },
       'register_result',
     )) as Extract<ServerMessage, { t: 'register_result' }>
     if (!res.ok) return text(`Registration failed: ${res.reason}`)
@@ -629,7 +642,11 @@ export class ToolHandler {
     if (res.agents.length === 0) return text('No agents.')
     const rows = res.agents.map(
       a =>
-        `- ${a.name} [${a.state}, ${a.profile}, ${a.surface}] spawned by ${a.spawnedBy}\n    ${a.cwd}` +
+        // An adopted identity has no profile and no surface we chose, and its
+        // name is self-reported — so it says what it is rather than rendering
+        // two empty fields and reading like an agent someone spawned.
+        `- ${a.name} [${a.state}, ${a.origin === 'adopted' ? 'human-started session' : `${a.profile}, ${a.surface}`}]` +
+        ` spawned by ${a.spawnedBy}\n    ${a.cwd}` +
         // A headless agent's output is discarded, so this is the only way to read
         // what it actually did without interrupting it for a report.
         `\n    ${transcriptLine(a.cwd, a.sessionId)}`,

@@ -36,8 +36,19 @@ export class SystemEventFeed<C> {
     private readonly coalesceMs: number = COALESCE_MS,
   ) {}
 
-  offer(row: { kind: string; actor?: string; target?: string; body?: string }): void {
+  offer(row: {
+    kind: string
+    actor?: string
+    target?: string
+    body?: string
+    meta?: Record<string, string>
+  }): void {
     if (!isSubscribable(row.kind)) return
+    // An adopted identity is minted the moment an ordinary session registers, and
+    // that same event already goes out as `registered`. Pushing both would mean a
+    // subscriber's feed doubled up on the day sessions gained identities, for no
+    // information it did not already have. The row is in the log either way.
+    if (row.kind === 'agent_spawned' && row.meta?.origin === 'adopted') return
     const subject = subjectOf(row)
     if (subject === undefined) return
 

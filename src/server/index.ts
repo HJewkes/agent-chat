@@ -6,6 +6,7 @@ import { BrokerClient } from '../client/broker-client.js'
 import type { DeliveredMessage, Subscription, SystemEvent } from '../protocol.js'
 import { TOOL_DEFINITIONS, ToolHandler } from './tools.js'
 import { terminalAnchor } from './anchor.js'
+import { hostIdentity } from './host.js'
 
 /**
  * Claude Code sends this when a tool-approval dialog opens in this session.
@@ -189,6 +190,10 @@ export async function startMcpServer(): Promise<void> {
         cwd: process.cwd(),
         pid: process.pid,
         agentId: spawned.agentId,
+        // Sent by a spawned agent too, though only the ordinary path adopts on
+        // it: a pane agent's Claude Code process has no pid anywhere else, since
+        // the surface hands back a pane rather than a child.
+        ...hostIdentity(),
         ...(spawned.tags ? { tags: spawned.tags } : {}),
         ...(spawned.subscriptions ? { subscriptions: spawned.subscriptions } : {}),
         ...terminalAnchor(),
