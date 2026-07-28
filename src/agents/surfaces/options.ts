@@ -27,6 +27,13 @@ export interface SurfaceOptions {
    * normal case, not an error: the window surface needs none.
    */
   anchor?: string
+  /**
+   * The pane of the last agent already stacked beside this anchor, if any. A new
+   * agent splits THAT rather than the anchor, so the coordinator's pane is not
+   * halved once per spawn. Resolved by the supervisor, which is the only thing
+   * that knows which agents are live and where they were put.
+   */
+  columnAfter?: string
   /** Told when a surface silently downgrades, e.g. the anchor pane has closed. */
   onNotice?: (message: string) => void
   runAppleScript?: AppleScriptRunner

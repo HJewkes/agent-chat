@@ -70,6 +70,8 @@ interface Live {
   handle: LaunchHandle
   allocation: Allocation
   isolation: IsolationName
+  /** Which anchor this agent was placed beside, so later spawns can stack on it. */
+  anchor?: string
   settle?: NodeJS.Timeout
 }
 
@@ -299,7 +301,7 @@ export class Supervisor {
     })
 
     const handle = await this.launchOn(surface, plan, req.anchor)
-    this.track(agentId, req.name, handle, allocation, isolationName)
+    this.track(agentId, req.name, handle, allocation, isolationName, req.anchor)
     logEvent('agent_spawned', { agentId, name: req.name, surface: handle.surface, cwd: allocation.cwd })
     return {
       ok: true,
@@ -309,10 +311,26 @@ export class Supervisor {
     }
   }
 
+  /**
+   * The newest live agent already stacked beside this anchor. Insertion order is
+   * spawn order, so the last match is the bottom of the column — the pane a new
+   * agent should split. Nothing is persisted: a column is a fact about panes that
+   * currently exist, and after a broker restart the next spawn starts a new one.
+   */
+  private columnFor(anchor: string): string | undefined {
+    let bottom: string | undefined
+    for (const entry of this.live.values()) {
+      if (entry.anchor === anchor && entry.handle.paneRef) bottom = entry.handle.paneRef
+    }
+    return bottom
+  }
+
   private async launchOn(surface: SurfaceName, plan: LaunchPlan, anchor?: string): Promise<LaunchHandle> {
+    const columnAfter = anchor === undefined ? undefined : this.columnFor(anchor)
     return surfaceFor(surface, {
       ...this.surfaceOptions,
       ...(anchor === undefined ? {} : { anchor }),
+      ...(columnAfter === undefined ? {} : { columnAfter }),
       onNotice: text => {
         this.core.append({ kind: 'notice', actor: 'agent-chat', target: 'human', body: text })
       },
@@ -325,8 +343,9 @@ export class Supervisor {
     handle: LaunchHandle,
     allocation: Allocation,
     isolation: IsolationName,
+    anchor?: string,
   ): void {
-    const entry: Live = { agentId, name, handle, allocation, isolation }
+    const entry: Live = { agentId, name, handle, allocation, isolation, ...(anchor ? { anchor } : {}) }
     this.live.set(agentId, entry)
     // Headless only. A visible agent has no such promise, by design, and falls
     // through to the presence-inferred path instead.

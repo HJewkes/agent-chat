@@ -128,6 +128,43 @@ describe('spawning', () => {
     expect(result.warnings ?? []).not.toContainEqual(expect.stringMatching(/restricts nothing/))
   })
 
+  /**
+   * The supervisor is the only thing that knows which agents are live and where
+   * they were put, so it is what turns "second agent for this anchor" into a pane
+   * to split. Asserted through the AppleScript because that is the observable:
+   * the surface is built per launch and keeps no state of its own.
+   */
+  it('stacks the second agent on the first, and only for the same anchor', async () => {
+    const scripts: string[] = []
+    const runAppleScript = (script: string): string => {
+      scripts.push(script)
+      if (script.includes('is running')) return 'true'
+      return `PANE-${scripts.length}`
+    }
+    supervisor = new Supervisor(core, { surface: { platform: 'darwin', runAppleScript } })
+
+    const first = await supervisor.spawn(spawnReq({ name: 'one', surface: 'iterm-pane', anchor: 'w0t0p0:A' }))
+    const second = await supervisor.spawn(
+      spawnReq({ name: 'two', surface: 'iterm-pane', anchor: 'w0t0p0:A' }),
+    )
+    const elsewhere = await supervisor.spawn(
+      spawnReq({ name: 'three', surface: 'iterm-pane', anchor: 'w9t9p9:B' }),
+    )
+
+    expect([first.ok, second.ok, elsewhere.ok]).toEqual([true, true, true])
+    // Each spawn runs an "is running" probe then a launch; the launch is what
+    // carries the target, and the stub numbers panes by call order.
+    const launches = scripts.filter(s => s.includes('spawned'))
+
+    // The first agent has no column to join, so it names no pane to split.
+    expect(launches[0]).not.toContain('is "PANE-')
+    // The second stacks on the first agent's pane, not on the anchor.
+    expect(launches[1]).toContain('is "PANE-2"')
+    // A different anchor starts its own column rather than continuing this one.
+    expect(launches[2]).not.toContain('is "PANE-2"')
+    expect(launches[2]).not.toContain('is "PANE-4"')
+  })
+
   it('releases the slot when the launch fails, rather than leaking it', async () => {
     const semaphore = new Semaphore(1)
     const sup = withStubbedSurface({ semaphore })

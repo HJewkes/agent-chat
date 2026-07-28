@@ -116,6 +116,50 @@ describe('iterm surfaces', () => {
     expect(script).not.toContain('current window')
   })
 
+  /**
+   * The layout this replaces: every agent split the ANCHOR, so the coordinator's
+   * pane halved on each spawn. Measured live at three agents — anchor and both
+   * agents sat at cols=62, a row of equal columns with nothing predominant.
+   */
+  it('stacks a later agent under the column instead of splitting the anchor again', async () => {
+    const { scripts, options } = fakeIterm()
+
+    await surfaceFor('iterm-pane', {
+      ...options,
+      anchor: ANCHOR,
+      columnAfter: 'FIRST-AGENT-PANE',
+    }).launch(plan())
+
+    const script = lastScript(scripts)
+    expect(script).toContain('is "FIRST-AGENT-PANE"')
+    expect(script).toContain('split horizontally with default profile')
+    // Still resolved by uuid, never by focus — the column must not change that.
+    expect(script).not.toContain('current window')
+  })
+
+  it('starts a fresh column when the previous agent pane has been closed', async () => {
+    // The script keeps BOTH branches and picks at runtime, so a column session
+    // that no longer exists falls back to splitting the anchor rather than failing.
+    const { scripts, options } = fakeIterm()
+
+    await surfaceFor('iterm-pane', { ...options, anchor: ANCHOR, columnAfter: 'GONE' }).launch(plan())
+
+    const script = lastScript(scripts)
+    expect(script).toContain('if columnSession is not missing value then')
+    expect(script).toContain('split vertically with default profile')
+  })
+
+  it('ignores a column for a tab, which is not a split at all', async () => {
+    const { scripts, options } = fakeIterm()
+
+    await surfaceFor('iterm-tab', { ...options, anchor: ANCHOR, columnAfter: 'FIRST-AGENT-PANE' }).launch(
+      plan(),
+    )
+
+    expect(lastScript(scripts)).toContain('create tab with default profile')
+    expect(lastScript(scripts)).not.toContain('split horizontally')
+  })
+
   it('opens a tab in the anchor window rather than splitting it', async () => {
     const { scripts, options } = fakeIterm()
     const handle = await surfaceFor('iterm-tab', { ...options, anchor: ANCHOR }).launch(plan())

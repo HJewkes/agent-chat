@@ -31,9 +31,16 @@ const anchorUuid = (anchor: string | undefined): string | undefined => {
   return uuid === undefined || uuid === '' ? undefined : uuid
 }
 
-const findAnchor = (uuid: string): string => `
+/**
+ * One pass for both sessions we might target. `columnUuid` is empty when there is
+ * no column yet, and no session's unique ID is ever the empty string, so the
+ * lookup simply finds nothing — which is also the correct answer when the column
+ * pane existed and has since been closed.
+ */
+const findSessions = (uuid: string, columnUuid: string): string => `
   set anchorSession to missing value
   set anchorWindow to missing value
+  set columnSession to missing value
   repeat with w in windows
     repeat with t in tabs of w
       repeat with s in sessions of t
@@ -41,18 +48,39 @@ const findAnchor = (uuid: string): string => `
           set anchorSession to s
           set anchorWindow to w
         end if
+        if (unique ID of s) is ${asString(columnUuid)} then
+          set columnSession to s
+        end if
       end repeat
     end repeat
   end repeat
   if anchorSession is missing value then return ${asString(NO_ANCHOR)}`
 
-/** Splits the anchor pane, or opens a tab in the anchor's window. Never a new window. */
-const beside = (surface: ItermSurfaceName, uuid: string, command: string): string => {
+/**
+ * Agents stack in a column beside the anchor, rather than each one splitting the
+ * anchor again — which halved the coordinator's pane on every spawn and left a
+ * row of equal columns. The first agent splits the anchor VERTICALLY, taking one
+ * side; each later agent splits the previous AGENT pane HORIZONTALLY, so the
+ * column subdivides and the anchor keeps the width it has.
+ *
+ * Falling back to the vertical split when the column session is gone is what
+ * makes a closed agent pane self-healing: the next spawn starts a fresh column.
+ */
+const beside = (
+  surface: ItermSurfaceName,
+  uuid: string,
+  command: string,
+  columnUuid: string = '',
+): string => {
   const open =
     surface === 'iterm-pane'
-      ? '  tell anchorSession to set spawned to (split vertically with default profile)'
+      ? `  if columnSession is not missing value then
+    tell columnSession to set spawned to (split horizontally with default profile)
+  else
+    tell anchorSession to set spawned to (split vertically with default profile)
+  end if`
       : '  tell anchorWindow to set spawned to (current session of (create tab with default profile))'
-  return `tell application "iTerm2"${findAnchor(uuid)}
+  return `tell application "iTerm2"${findSessions(uuid, columnUuid)}
 ${open}
   tell spawned to write text ${asString(command)}
   return unique ID of spawned
@@ -96,7 +124,7 @@ function launchIterm(surface: ItermSurfaceName, plan: LaunchPlan, options: Surfa
   const uuid = anchorUuid(options.anchor)
 
   if (surface !== 'iterm-window' && uuid !== undefined) {
-    const paneRef = run(beside(surface, uuid, command))
+    const paneRef = run(beside(surface, uuid, command, options.columnAfter))
     if (paneRef !== NO_ANCHOR) return { surface, paneRef }
     options.onNotice?.(`anchor session ${uuid} is gone; opening an iTerm window instead of ${surface}`)
   }
