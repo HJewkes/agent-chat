@@ -299,6 +299,27 @@ built for.) The first pass of this document saw the trap and routed around
 it with a generation-suffixed name (`cc27` → `cc27-g2`), which sidestepped
 the eviction race at the cost of every peer's remembered address going stale.
 
+**Measured, not assumed.** The trap above was verified against real OS
+processes rather than read off the source, because this document has been
+wrong before about what the code does. A real headless `claude` was left
+mid-`Bash` with its own MCP subprocess as a child; an evictor then registered
+under the same agentId and name. The MCP subprocess stopped answering
+`kill(pid, 0)` **~100-120 ms later** (102/112/114 ms across three runs),
+bracketed in the log by `agent_detached "superseded by resume"` →
+`agent_attached` — while the parent `claude` process stayed alive and running
+for the full window observed. That is precisely "a live session with a dead
+bus", confirmed by parent/child pids rather than by anything either process
+said about itself. No meaningful concurrent-registration window exists: the
+gap is socket-write and teardown latency, not an interval anyone could act in.
+
+Two consequences worth carrying. First, **nothing may be designed on the
+assumption that an evicted predecessor gets a turn to notice and react** — it
+does not; it is severed and oblivious. Second, and easy to get wrong:
+**takeover requires the same NAME as well as the same `agentId`.** A probe
+that varied the name hit the impostor-refusal path instead and observed no
+eviction at all, which would read as "the trap is not real" to anyone who
+tested it carelessly.
+
 **Why v0 doesn't need the workaround.** With no overlap (§4), there is never
 a moment when two live processes want the same name. The predecessor's
 connection is fully closed — `agent_retired` appended, name no longer
@@ -468,6 +489,23 @@ being what the session actually knew. The _tool description_ demands:
 
 Size cap — 8 KB is a reasonable start, **refused rather than truncated**. A
 truncated handoff loses its tail, and the tail is items 4-6.
+
+**Item 6 is a mechanism, not a convention — verified.** `@path` expansion
+works in a brief on BOTH delivery paths, positional-after-`--` and stdin
+with `-p`. A real headless agent was spawned with `@<abs-path>` in its brief
+and with Read, Bash, Glob and Grep all DENIED — the denial is the control,
+since it makes "the model went and fetched it" impossible. The transcript
+carried an `attachment` record of `type: "file"` holding the file's literal
+content, inserted BEFORE the assistant's first turn, with zero `tool_use`
+frames; the model then answered with marker text it had no tool available to
+go and get. So this is Claude Code's own client-side expansion, not the model
+choosing to read.
+
+Write item 6 as `@`-prefixed absolute paths. The descendant then starts with
+those files already in context rather than with a list of files it is trusted
+to remember to open — which also means the handoff should carry POINTERS
+rather than pasted file contents, and that in turn is an argument the 8 KB cap
+is more generous than it first looks.
 
 ---
 
@@ -754,9 +792,8 @@ decided by inertia.
 
 ## 13. Where I am uncertain
 
-- Whether `@path` expansion works in a positional or stdin brief (§8). If it
-  does, "the right files auto-loaded" becomes a mechanism instead of a
-  convention. Untested.
+- ~~Whether `@path` expansion works in a positional or stdin brief.~~
+  **SETTLED — it works, on both paths. See §8.1.**
 - The right handoff size cap. 8 KB is a guess with no measurement behind it, in
   the same category as the thread-depth constants that `registry.ts` is candid
   about not having validated.
