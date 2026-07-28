@@ -967,6 +967,27 @@ that will otherwise be got wrong:
 
 ### 9. `--output-format stream-json`: what it buys, what it costs
 
+> **SUPERSEDED 2026-07-28 by CC-24 (`6527b4b`). Read this as history, not as a plan.**
+>
+> The headless surface now DISCARDS stdout and stderr rather than draining them.
+> The pipes this section assumed a reader for were the CC-24 defect: nothing ever
+> read them, so past the ~64KB kernel buffer a chatty agent blocked on write and
+> wedged while still looking healthy. A reader could not be the fix either — the
+> child is detached and unref'd so it outlives the broker, so any reader the broker
+> holds dies with it and re-arms the same hang.
+>
+> The recommendation below — `stream.jsonl` on disk, throttled derived rows, a
+> `notice` per distinct denied tool — is therefore NOT being built as written.
+> Claude Code already writes a complete structured transcript per session and we
+> assign the session id ourselves, so `agents/transcript.ts` points at that file
+> instead of duplicating it. `agent ls` and `agent_list` show the path.
+>
+> What genuinely does NOT survive this change is the denial-visibility argument
+> below, which is load-bearing for CC-23. **CC-29 owns that decision.** Note the
+> premise is unverified: whether a headless denial appears in the transcript has
+> not been confirmed, because the probe built to check it hit CC-28 instead and
+> the agent was never denied at all.
+
 brain parses a single final `JSON.parse` of `--output-format json`
 (`dispatch.ts:718-724`). Consequences visible in its own code: on a crash there
 is no output at all (`catch { /* non-JSON output */ }` at `:723`) and progress is
@@ -1289,8 +1310,12 @@ before it is human-triggered from a CLI the human already trusts, so the peer
 authority question arrives exactly once, in one reviewable diff, instead of being
 smeared across six steps.
 
-**A8 — stream-json enrichment.** _Precondition: A6._ Headless only, `stream.jsonl`
-to disk, throttled derived rows, `agent logs`. §9.
+**A8 — stream-json enrichment.** ~~_Precondition: A6._ Headless only,
+`stream.jsonl` to disk, throttled derived rows, `agent logs`. §9.~~
+**RETIRED 2026-07-28, never built.** Its absence was the CC-24 defect: the pipes
+this step was to read were left unread for weeks. CC-24 discarded the streams
+instead and points at Claude Code's own transcript. See the banner on §9; the
+denial-visibility half it leaves behind is CC-29.
 
 **A9 — Dashboard agents view.** _Precondition: A7 + service Steps 4 and 5._
 `GET /api/agents`, `Agents.tsx`, read-only. §12.4.

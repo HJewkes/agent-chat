@@ -41,7 +41,7 @@ export class BrokerCore {
   readonly startedAt: number
 
   private readonly deliver: Deliver
-  private readonly watchers = new Set<(row: AppendInput) => void>
+  private readonly watchers = new Set<(row: AppendInput) => void>()
 
   constructor(deliver: Deliver, options: BrokerCoreOptions = {}) {
     this.deliver = deliver
