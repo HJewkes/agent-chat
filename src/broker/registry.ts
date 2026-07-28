@@ -285,6 +285,11 @@ export class Registry<C> {
     return this.entries.get(conn)?.termSessionId
   }
 
+  /** Where the requester is working, for spawns that name no cwd of their own. */
+  cwdFor(conn: C): string | undefined {
+    return this.entries.get(conn)?.cwd
+  }
+
   /**
    * A permission dialog is the one case where blocked-ness is knowable rather
    * than self-reported: a session waiting on one cannot call tools, so the next

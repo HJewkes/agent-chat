@@ -1,6 +1,7 @@
 import type { BrokerClient } from '../client/broker-client.js'
-import { SESSION_STATUSES } from '../protocol.js'
+import { ISOLATION_NAMES, SESSION_STATUSES, SURFACE_NAMES } from '../protocol.js'
 import { terminalAnchor } from './anchor.js'
+import { listProfileNames, loadProfile } from '../agents/profiles.js'
 import type { DeliveredMessage, QueueItem, ServerMessage, SessionInfo, SessionStatus } from '../protocol.js'
 
 /**
@@ -21,6 +22,25 @@ function requireString(args: Record<string, unknown>, key: string): string {
 function optionalString(args: Record<string, unknown>, key: string): string | undefined {
   const value = args[key]
   return typeof value === 'string' && value.trim() !== '' ? value : undefined
+}
+
+/**
+ * An absent optional enum is fine; a misspelled one is not. Declaring `enum` in the
+ * schema does not enforce it (see above), and silently dropping an unrecognised
+ * value would spawn onto the profile default while the caller believes it asked
+ * for something else — a headless agent where it wanted an answerable pane.
+ */
+function optionalEnum<T extends string>(
+  args: Record<string, unknown>,
+  key: string,
+  allowed: readonly T[],
+): T | undefined {
+  const value = args[key]
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string' || !(allowed as readonly string[]).includes(value)) {
+    throw new Error(`${key} must be one of: ${allowed.join(', ')}`)
+  }
+  return value as T
 }
 
 /** Upper bound on a replay request, so one tool call cannot flood a session's context. */
@@ -170,6 +190,62 @@ export const TOOL_DEFINITIONS = [
       },
     },
   },
+  {
+    name: 'agent_spawn',
+    description:
+      'Spawn a durable agent that runs as its own Claude Code session and joins the bus as an ordinary ' +
+      'peer, addressable by name with chat_send. Register first — the spawn is attributed to you, and a ' +
+      'visible agent is placed in YOUR terminal, which the broker resolves from your own registration ' +
+      'rather than from anything you pass here. The agent outlives this session: it belongs to the ' +
+      'broker, not to you, so spawning is not a way to get work done before your turn ends. The profile ' +
+      'decides the model, the tool set and where the agent appears — read agent_profiles before choosing ' +
+      'one, and prefer the narrowest that fits. Spawn because work genuinely needs a second, longer-lived ' +
+      'context, not to parallelise something you could finish yourself.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: 'Short handle for the agent, e.g. "auth-review". Must be free.',
+        },
+        profile: { type: 'string', description: 'Profile name; see agent_profiles for what each grants.' },
+        brief: {
+          type: 'string',
+          description:
+            'What the agent should do, in full. It starts with only this — it does not inherit your ' +
+            'conversation, so state the task, the context needed to act, and what to report back.',
+        },
+        surface: {
+          type: 'string',
+          enum: [...SURFACE_NAMES],
+          description:
+            "Overrides the profile's surface. Visible surfaces land in your window and can answer " +
+            'permission prompts; headless cannot be prompted at all.',
+        },
+        isolation: {
+          type: 'string',
+          enum: [...ISOLATION_NAMES],
+          description: "Overrides the profile's isolation, e.g. worktree to keep it out of your checkout.",
+        },
+        cwd: { type: 'string', description: 'Working directory. Defaults to yours.' },
+      },
+      required: ['name', 'profile', 'brief'],
+    },
+  },
+  {
+    name: 'agent_profiles',
+    description:
+      'List the profiles agent_spawn can use, with the model, tool set, surface and isolation each grants. ' +
+      'Read this before spawning rather than guessing a profile name.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'agent_list',
+    description:
+      'List durable agents with their lifecycle state and whether a process is currently attached. ' +
+      'An agent can exist without being connected — identity outlives presence.',
+    inputSchema: { type: 'object', properties: {} },
+  },
 ] as const
 
 const text = (value: string) => ({ content: [{ type: 'text' as const, text: value }] })
@@ -268,6 +344,12 @@ export class ToolHandler {
         return this.toHuman('notify', requireString(args, 'text'))
       case 'chat_inbox':
         return this.inbox(boundedLimit(args, 'limit', 10, INBOX_MAX))
+      case 'agent_spawn':
+        return this.spawnAgent(args)
+      case 'agent_profiles':
+        return this.agentProfiles()
+      case 'agent_list':
+        return this.agentList()
       default:
         throw new Error(`unknown tool: ${name}`)
     }
@@ -380,5 +462,66 @@ export class ToolHandler {
       { t: 'inbox_result' }
     >
     return text(formatInbox(res.messages))
+  }
+
+  /**
+   * The anchor is deliberately absent from the request. The broker resolves it
+   * from THIS session's registry entry, so a spawn cannot be aimed at a pane the
+   * caller does not hold — and passing one here would be ignored anyway (§5.4).
+   */
+  private async spawnAgent(args: Record<string, unknown>) {
+    if (this.registeredName === null) {
+      return text(
+        'Register with chat_register first: a spawn is attributed to the session that asked for it.',
+      )
+    }
+    const surface = optionalEnum(args, 'surface', SURFACE_NAMES)
+    const isolation = optionalEnum(args, 'isolation', ISOLATION_NAMES)
+    const cwd = optionalString(args, 'cwd')
+    const res = (await this.call(
+      {
+        t: 'spawn',
+        name: requireString(args, 'name'),
+        profile: requireString(args, 'profile'),
+        brief: requireString(args, 'brief'),
+        ...(surface === undefined ? {} : { surface }),
+        ...(isolation === undefined ? {} : { isolation }),
+        ...(cwd === undefined ? {} : { cwd }),
+      },
+      'spawn_result',
+    )) as Extract<ServerMessage, { t: 'spawn_result' }>
+
+    if (!res.ok) return text(`Not spawned: ${res.reason}`)
+    const warnings = (res.warnings ?? []).map(w => `\n  warning: ${w}`).join('')
+    return text(
+      `Spawned "${res.name}" (${res.agentId}). It is a peer now — reach it with chat_send, ` +
+        `not by spawning again.${warnings}`,
+    )
+  }
+
+  private agentProfiles() {
+    const rows = listProfileNames().map(name => {
+      const profile = loadProfile(name)
+      if ('error' in profile) return `- ${name}: unreadable (${profile.error})`
+      return (
+        `- ${name} [${profile.model}, ${profile.surface}, isolation ${profile.isolation}]\n` +
+        `    ${profile.description}\n    tools: ${profile.allowedTools.join(', ')}`
+      )
+    })
+    return text(
+      rows.length === 0 ? 'No profiles available.' : `Profiles for agent_spawn:\n${rows.join('\n')}`,
+    )
+  }
+
+  private async agentList() {
+    const res = (await this.call({ t: 'agents' }, 'agents_result')) as Extract<
+      ServerMessage,
+      { t: 'agents_result' }
+    >
+    if (res.agents.length === 0) return text('No agents.')
+    const rows = res.agents.map(
+      a => `- ${a.name} [${a.state}, ${a.profile}, ${a.surface}] spawned by ${a.spawnedBy}\n    ${a.cwd}`,
+    )
+    return text(`Durable agents:\n${rows.join('\n')}`)
   }
 }

@@ -5,6 +5,32 @@ const conn = (id: string) => ({ id })
 const register = (registry: Registry<object>, c: object, name: string) =>
   registry.register(c, { name, workingOn: `${name}'s work`, cwd: `/tmp/${name}`, pid: 1 })
 
+/**
+ * Regression: a spawn that named no cwd fell through to `process.cwd()` in the
+ * SUPERVISOR, which runs inside the broker — and the broker is autostarted by
+ * whichever client connects first, so its cwd is an arbitrary repo. A live spawn
+ * from this checkout ran its agent in ~/projects/relay. The requester's own cwd
+ * is the only meaningful default, and the registry is where it already lived.
+ *
+ * This covers the accessor, not the socket wiring that consumes it; there is no
+ * socket-level spawn harness yet.
+ */
+describe('the requester cwd a spawn defaults to', () => {
+  it('reports the cwd the session registered with', () => {
+    const registry = new Registry<object>()
+    const alice = conn('a')
+    register(registry, alice, 'alice')
+
+    expect(registry.cwdFor(alice)).toBe('/tmp/alice')
+  })
+
+  it('reports nothing for an unregistered connection, rather than a stale or default path', () => {
+    const registry = new Registry<object>()
+
+    expect(registry.cwdFor(conn('ghost'))).toBeUndefined()
+  })
+})
+
 describe('Registry routing', () => {
   it('delivers a directed message to exactly one session', () => {
     const registry = new Registry<object>()

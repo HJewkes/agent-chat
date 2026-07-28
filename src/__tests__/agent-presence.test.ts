@@ -320,3 +320,90 @@ describe('the seeded tool handler', () => {
     )
   })
 })
+
+/**
+ * The spawn tool's boundary. The MCP SDK enforces neither `required` nor `enum`,
+ * so every guard here has to be a runtime one — the same lesson `chat_status`
+ * learned when `String(undefined)` sailed through as the literal text "undefined".
+ */
+describe('agent_spawn at the tool boundary', () => {
+  const stubBroker = (reply: ServerMessage) => ({ request: async () => reply }) as unknown as BrokerClient
+
+  const textOf = (result: { content: { text: string }[] }): string => result.content[0]!.text
+
+  const spawned = (name: string) => stubBroker({ t: 'spawn_result', ok: true, agentId: 'a1b2c3d4', name })
+
+  it('refuses to spawn before the session has registered', async () => {
+    const handler = new ToolHandler(stubBroker({ t: 'spawn_result', ok: true, name: 'scout' }))
+
+    const result = textOf(
+      await handler.handle('agent_spawn', { name: 'scout', profile: 'explorer', brief: 'read the log' }),
+    )
+
+    expect(result).toMatch(/chat_register/)
+  })
+
+  it('rejects a misspelled surface rather than silently using the profile default', async () => {
+    // Dropping it would spawn headless where the caller asked to be able to answer
+    // a prompt, and nothing in the reply would say so.
+    const handler = new ToolHandler(spawned('scout'), 'cc-main')
+
+    await expect(
+      handler.handle('agent_spawn', {
+        name: 'scout',
+        profile: 'explorer',
+        brief: 'read the log',
+        surface: 'iterm-panes',
+      }),
+    ).rejects.toThrow(/surface must be one of/)
+  })
+
+  it('rejects a misspelled isolation for the same reason', async () => {
+    const handler = new ToolHandler(spawned('scout'), 'cc-main')
+
+    await expect(
+      handler.handle('agent_spawn', {
+        name: 'scout',
+        profile: 'implementer',
+        brief: 'fix the bug',
+        isolation: 'worktrees',
+      }),
+    ).rejects.toThrow(/isolation must be one of/)
+  })
+
+  it('accepts a spawn with no overrides, leaving the profile to decide', async () => {
+    const handler = new ToolHandler(spawned('scout'), 'cc-main')
+
+    const result = textOf(
+      await handler.handle('agent_spawn', { name: 'scout', profile: 'explorer', brief: 'read the log' }),
+    )
+
+    expect(result).toMatch(/Spawned "scout"/)
+    expect(result).toMatch(/chat_send/)
+  })
+
+  /**
+   * §5.4: the anchor is resolved by the broker from the requester's OWN registry
+   * entry. If the tool forwarded one, a caller could aim a spawn at a pane it does
+   * not hold, which is the whole reason the field is not in the schema.
+   */
+  it('never forwards an anchor, even when one is passed', async () => {
+    const sent: unknown[] = []
+    const broker = {
+      request: async (msg: unknown) => {
+        sent.push(msg)
+        return { t: 'spawn_result', ok: true, agentId: 'a1b2c3d4', name: 'scout' }
+      },
+    } as unknown as BrokerClient
+    const handler = new ToolHandler(broker, 'cc-main')
+
+    await handler.handle('agent_spawn', {
+      name: 'scout',
+      profile: 'explorer',
+      brief: 'read the log',
+      anchor: 'w9t9p9:SOMEONE-ELSES-PANE',
+    })
+
+    expect(sent[0]).not.toHaveProperty('anchor')
+  })
+})

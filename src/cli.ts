@@ -13,6 +13,7 @@ import { logPath, socketPath } from './paths.js'
 import { type QueueItem, type ServerMessage } from './protocol.js'
 import { runAgent } from './agents/run-agent.js'
 import { listProfileNames, loadProfile } from './agents/profiles.js'
+import { pairPresence } from './agents/identity.js'
 
 const USAGE = `agent-chat — cross-session messaging for Claude Code
 
@@ -23,6 +24,9 @@ const USAGE = `agent-chat — cross-session messaging for Claude Code
   agent-chat ps                        list registered sessions
   agent-chat history [n]               recent events from the log (default 30)
   agent-chat log [n]                   recent routing decisions
+  agent-chat agent ls                  durable agents, with lifecycle and presence
+  agent-chat agent spawn <name> <profile> <brief>
+  agent-chat agent retire <name>       release isolation and free the name
   agent-chat profiles                  agent profiles available to spawn with
   agent-chat run-agent <id>            run a planned agent (surfaces call this)
   agent-chat broker                    run the broker in the foreground
@@ -152,6 +156,85 @@ async function history(limit: number): Promise<void> {
   }
 }
 
+/**
+ * The roster: durable lifecycle paired with ephemeral presence.
+ *
+ * More truthful than `ps` by construction — a live agent whose broker just
+ * bounced shows as reconnecting rather than vanishing, because identity is a
+ * query over the log and only presence depends on a socket being up.
+ */
+async function agentLs(): Promise<void> {
+  const [agents, sessions] = await withBroker(async b => {
+    const roster = (await b.request({ t: 'agents' }, 'agents_result')) as Extract<
+      ServerMessage,
+      { t: 'agents_result' }
+    >
+    const live = (await b.request({ t: 'list' }, 'list_result')) as Extract<
+      ServerMessage,
+      { t: 'list_result' }
+    >
+    return [roster.agents, live.sessions] as const
+  })
+
+  if (agents.length === 0) {
+    console.log('No agents. Spawn one with: agent-chat agent spawn <name> <profile> "<brief>"')
+    return
+  }
+  for (const agent of agents) {
+    const connected = sessions.some(s => s.name === agent.name)
+    const { status } = pairPresence(agent, { connected })
+    console.log(`${agent.name.padEnd(16)} ${status.padEnd(13)} ${agent.profile.padEnd(12)} ${agent.agentId}`)
+    console.log(`${' '.repeat(16)} ${agent.cwd}`)
+  }
+}
+
+async function agentSpawn(args: string[]): Promise<void> {
+  const [name, profile, ...words] = args
+  if (!name || !profile || words.length === 0) {
+    console.error('usage: agent-chat agent spawn <name> <profile> "<brief>"')
+    process.exit(1)
+  }
+  const res = (await withBroker(b =>
+    // The human holds no registry entry (§6.4), so the broker has no cwd to read
+    // for them — send it, or the agent inherits the broker's arbitrary one.
+    b.request({ t: 'spawn', name, profile, brief: words.join(' '), cwd: process.cwd() }, 'spawn_result'),
+  )) as Extract<ServerMessage, { t: 'spawn_result' }>
+
+  for (const warning of res.warnings ?? []) console.log(warning)
+  console.log(res.ok ? `Spawned ${res.name} (${res.agentId}).` : `Not spawned: ${res.reason}`)
+  process.exit(res.ok ? 0 : 1)
+}
+
+async function agentRetire(args: string[]): Promise<void> {
+  const name = args[0]
+  if (!name) {
+    console.error('usage: agent-chat agent retire <name>')
+    process.exit(1)
+  }
+  const res = (await withBroker(b => b.request({ t: 'retire', name }, 'spawn_result'))) as Extract<
+    ServerMessage,
+    { t: 'spawn_result' }
+  >
+  console.log(res.ok ? `Retired ${name}.` : `Not retired: ${res.reason}`)
+  process.exit(res.ok ? 0 : 1)
+}
+
+async function agent(args: string[]): Promise<void> {
+  const [verb, ...rest] = args
+  switch (verb) {
+    case 'ls':
+    case undefined:
+      return agentLs()
+    case 'spawn':
+      return agentSpawn(rest)
+    case 'retire':
+      return agentRetire(rest)
+    default:
+      console.error(`unknown agent verb "${verb}"; try ls, spawn or retire`)
+      process.exit(1)
+  }
+}
+
 function profiles(): void {
   for (const name of listProfileNames()) {
     const profile = loadProfile(name)
@@ -196,6 +279,8 @@ async function main(): Promise<void> {
       if (agentId === undefined) throw new Error('usage: agent-chat run-agent <agent-id>')
       return runAgent(agentId)
     }
+    case 'agent':
+      return agent(args)
     case 'profiles':
       return profiles()
     default:

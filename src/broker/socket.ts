@@ -13,6 +13,7 @@ import { logEvent } from './log.js'
 import { newMsgId } from './event-log.js'
 import { type Escalation, type RouteResult } from './registry.js'
 import { BrokerCore, type Conn } from './core.js'
+import { Supervisor } from '../agents/supervisor.js'
 import { probeSocket, removeStateFiles, writeMeta, writePidFile } from './lifecycle.js'
 import { VERSION } from './version.js'
 
@@ -32,7 +33,49 @@ const deliver = (conn: Conn, message: DeliveredMessage): void => {
  * in `BrokerCore`.
  */
 class SocketServer {
-  constructor(private readonly core: BrokerCore) {}
+  private readonly supervisor: Supervisor
+
+  constructor(private readonly core: BrokerCore) {
+    // The broker owns the supervisor, not the requesting session: an agent must
+    // outlive whoever asked for it, and the semaphore and depth cap need exactly
+    // one enforcement point. The anchor comes from the requester's OWN registry
+    // entry, so nobody can spawn into a pane they do not hold.
+    this.supervisor = new Supervisor(core)
+  }
+
+  /** Spawn on behalf of `conn`, resolving its pane anchor from its own entry. */
+  private async handleSpawn(conn: Conn, msg: Extract<ClientMessage, { t: 'spawn' }>): Promise<void> {
+    // An unregistered connection is the human at the CLI (§6.4) — they spawn
+    // without being a session, and the socket is 0600, so reaching it at all
+    // already means being the user. They hold no registry entry and therefore no
+    // anchor, which §5.4 resolves as the new-window fallback rather than an error.
+    const requestedBy = this.core.registry.nameOf(conn) ?? HUMAN
+    const requester = this.core.registry.entryFor(conn)
+    const anchor = this.core.registry.anchorFor(conn)
+    const cwd = msg.cwd ?? this.core.registry.cwdFor(conn)
+    const outcome = await this.supervisor.spawn({
+      name: msg.name,
+      profile: msg.profile,
+      brief: msg.brief,
+      requestedBy,
+      // The requester's cwd, not the broker's. The broker is autostarted by
+      // whichever client happened to connect first, so ITS cwd is an arbitrary
+      // repo — spawning without this put an agent in an unrelated checkout.
+      ...(cwd === undefined ? {} : { cwd }),
+      ...(msg.isolation === undefined ? {} : { isolation: msg.isolation }),
+      ...(msg.surface === undefined ? {} : { surface: msg.surface }),
+      ...(requester?.agentId === undefined ? {} : { parentAgentId: requester.agentId }),
+      ...(anchor === undefined ? {} : { anchor }),
+    })
+    reply(conn, {
+      t: 'spawn_result',
+      ok: outcome.ok,
+      ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }),
+      ...(outcome.name === undefined ? {} : { name: outcome.name }),
+      ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+      ...(outcome.warnings === undefined ? {} : { warnings: outcome.warnings }),
+    })
+  }
 
   private handleRoute(
     conn: Conn,
@@ -242,6 +285,23 @@ class SocketServer {
         return this.handleHumanSend(conn, msg.to, msg.text)
       case 'approval':
         return this.handleApproval(conn, msg)
+      case 'spawn':
+        void this.handleSpawn(conn, msg)
+        return
+      case 'agents':
+        return reply(conn, {
+          t: 'agents_result',
+          agents: core.agents.roster({ includeRetired: msg.includeRetired ?? false }),
+        })
+      case 'retire':
+        void this.supervisor.retire(msg.name).then(result =>
+          reply(conn, {
+            t: 'spawn_result',
+            ok: result.ok,
+            ...(result.reason === undefined ? {} : { reason: result.reason }),
+          }),
+        )
+        return
     }
   }
 
