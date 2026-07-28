@@ -8,7 +8,8 @@ import {
 } from '../api-contract.js'
 import { EVENT_KINDS } from '../protocol.js'
 import type { ClientMessage, EventKind, ServerMessage } from '../protocol.js'
-import { agentDir, agentsDir, profilesDir, tokenPath } from '../paths.js'
+import fs from 'node:fs'
+import { agentDir, agentsDir, cliEntry, profilesDir, tokenPath } from '../paths.js'
 
 /**
  * Step 2a freezes the API contract so steps 3, 4 and 5 can be built in parallel
@@ -137,5 +138,20 @@ describe('agent-teams paths', () => {
   /** §6.5 names this file ui.token; the dashboard route reads it by that name. */
   it('names the loopback token file ui.token', () => {
     expect(tokenPath().endsWith('/ui.token')).toBe(true)
+  })
+
+  /**
+   * Regression: three call sites each resolved this differently and all three
+   * produced `src/cli.js` — a file that has never existed — whenever the code ran
+   * from the source tree. The failure surfaced as MODULE_NOT_FOUND inside a freshly
+   * opened terminal window, about as far from the cause as it could land.
+   *
+   * Asserting the file EXISTS is the part that matters: `dist/` is the only
+   * runnable entry, because our internal imports use the TS-ESM `.js` specifier
+   * convention and Node's type stripping will not rewrite those to `.ts`.
+   */
+  it('resolves the CLI entry to a file that exists, from either tree', () => {
+    expect(cliEntry().endsWith('/dist/cli.js')).toBe(true)
+    expect(fs.existsSync(cliEntry())).toBe(true)
   })
 })

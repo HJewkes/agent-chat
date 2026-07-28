@@ -26,7 +26,7 @@ export const metaPath = (): string => path.join(home(), 'broker.meta.json')
 export const tokenPath = (): string => path.join(home(), 'ui.token')
 
 /** Built dashboard assets, served by the broker rather than by a separate dev server. */
-export const dashboardDir = (): string => path.join(dist(), 'dashboard')
+export const dashboardDir = (): string => path.join(packageRoot(), 'dashboard')
 
 /**
  * Per-agent working state for agent teams: launch plan, mcp config, isolation
@@ -40,7 +40,24 @@ export const agentDir = (agentId: string): string => path.join(agentsDir(), agen
 /** User-defined agent profiles, layered over the four builtins. */
 export const profilesDir = (): string => path.join(home(), 'profiles')
 
-const dist = (): string => path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+/** The package root, reached identically from `dist/paths.js` and `src/paths.ts`. */
+const packageRoot = (): string => path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+
+/**
+ * Always the built `dist/cli.js`, whether we are running from `dist/` or `src/`.
+ *
+ * Resolving relative to our own directory looked right and was wrong: from a
+ * source-tree run it produced `src/cli.js`, which has never existed. The source
+ * tree is not a runnable target either — our internal imports use the TS-ESM
+ * `.js` specifier convention (`./broker/index.js`) and Node's type stripping
+ * does not rewrite those back to `.ts`, so `node src/cli.ts` dies on the first
+ * relative import. `dist/` is the only entry that runs; anchoring on the package
+ * root reaches it from both trees.
+ *
+ * The cost is that a spawn from a source checkout runs whatever `npm run build`
+ * last produced, so a stale `dist/` launches stale agents.
+ */
+export const cliEntry = (): string => path.join(packageRoot(), 'dist', 'cli.js')
 
 /**
  * 7600 is clear on this machine and inside the house 7xxx band: active-work holds

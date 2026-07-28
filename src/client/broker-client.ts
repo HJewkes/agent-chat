@@ -1,8 +1,6 @@
 import net from 'node:net'
 import fs from 'node:fs'
 import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
-import path from 'node:path'
 import {
   encode,
   lineReader,
@@ -11,7 +9,7 @@ import {
   type ReplyType,
   type ServerMessage,
 } from '../protocol.js'
-import { home, socketPath } from '../paths.js'
+import { cliEntry, home, socketPath } from '../paths.js'
 
 const REQUEST_TIMEOUT_MS = 5000
 const RECONNECT_DELAYS_MS = [100, 250, 500, 1000, 2000, 5000]
@@ -25,8 +23,6 @@ type Waiter = (msg: ServerMessage) => void
  * exactly the moment the roster is meant to be the trustworthy view.
  */
 type Identity = Omit<Extract<ClientMessage, { t: 'register' }>, 't'>
-
-const brokerEntry = (): string => path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'cli.js')
 
 const wait = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -107,7 +103,7 @@ export class BrokerClient {
   /** Starts a broker detached, so it outlives whichever session happened to spawn it. */
   private spawnBroker(): void {
     fs.mkdirSync(home(), { recursive: true })
-    spawn(process.execPath, [brokerEntry(), 'broker'], { detached: true, stdio: 'ignore' }).unref()
+    spawn(process.execPath, [cliEntry(), 'broker'], { detached: true, stdio: 'ignore' }).unref()
   }
 
   async connect(): Promise<void> {

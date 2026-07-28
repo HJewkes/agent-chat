@@ -1,5 +1,4 @@
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { cliEntry } from '../../paths.js'
 
 /**
  * The one command every surface launches: `agent-chat run-agent <id>`.
@@ -9,9 +8,6 @@ import { fileURLToPath } from 'node:url'
  * every command line — AppleScript only ever carries a fixed string with an
  * 8-char id in it. See launch-files.ts for the longer version of this argument.
  */
-
-/** dist/cli.js — the same resolution broker-client uses to restart the broker. */
-const cliEntry = (): string => path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'cli.js')
 
 export const runAgentArgv = (agentId: string): string[] => [cliEntry(), 'run-agent', agentId]
 
