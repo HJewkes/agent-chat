@@ -268,6 +268,41 @@ describe('inferring the exit of a visible agent', () => {
     expect(semaphore.inUse).toBe(0)
   })
 
+  /**
+   * Regression, found by a spawned reviewer reading A6 against §8.
+   *
+   * The settle timer closes over the Live object, but `recordExit` looks the
+   * entry up by id in the CURRENT map. A resume inside the settle window replaces
+   * that entry without cancelling the old timer, so the stale timer fires against
+   * the AGENT THAT JUST CAME BACK — deleting it, freeing its slot, and appending
+   * an `agent_exited` for a process that is running.
+   *
+   * Driven through a real spawn and resume rather than the map, because the
+   * interaction between the two is the thing under test.
+   */
+  it('does not let a settle from the previous life kill a resumed agent', async () => {
+    const semaphore = new Semaphore(2)
+    const sup = withStubbedSurface({ settleMs: 30_000, semaphore })
+    const spawned = await sup.spawn(spawnReq({ name: 'scout' }))
+    const agentId = spawned.agentId!
+
+    // Attach, then drop: the settle window is now counting down.
+    core.append({ kind: 'agent_attached', actor: 'scout', ref: agentId })
+    core.append({ kind: 'agent_detached', actor: 'scout', ref: agentId })
+    vi.advanceTimersByTime(5_000)
+
+    // It comes back before the window closes.
+    expect((await sup.resume('scout')).ok).toBe(true)
+    core.append({ kind: 'agent_attached', actor: 'scout', ref: agentId })
+
+    // The window from the FIRST life now expires.
+    vi.advanceTimersByTime(60_000)
+
+    expect(kindsFor(agentId)).not.toContain('agent_exited')
+    expect(core.agents.get(agentId)?.state).toBe('live')
+    expect(semaphore.inUse).toBeGreaterThan(0)
+  })
+
   it('records one exit even when both the settle and a child exit fire', () => {
     const sup = withStubbedSurface({ settleMs: 100 })
     liveAgent(sup, 'a1', 'scout')

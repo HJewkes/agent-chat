@@ -350,6 +350,14 @@ export class Supervisor {
     isolation: IsolationName,
     anchor?: string,
   ): void {
+    // A settle timer from a previous life closes over the OLD Live object, but
+    // `recordExit` resolves the entry by id against the current map — so a timer
+    // left armed here would fire against the agent that just came back, delete
+    // it, free its slot, and record an exit for a running process. Replacing the
+    // entry has to cancel the timer that belonged to it.
+    const previous = this.live.get(agentId)
+    if (previous?.settle) clearTimeout(previous.settle)
+
     const entry: Live = { agentId, name, handle, allocation, isolation, ...(anchor ? { anchor } : {}) }
     this.live.set(agentId, entry)
     // Headless only. A visible agent has no such promise, by design, and falls
