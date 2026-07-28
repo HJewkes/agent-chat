@@ -34,10 +34,13 @@ export const PEER_PREAMBLE = [
   'Report progress rather than waiting to be asked, and say so plainly when you are blocked.',
 ].join(' ')
 
-const systemPrompt = (input: LaunchPlanInput, includeBrief: boolean): string =>
-  [PEER_PREAMBLE, input.profile.promptPrelude, includeBrief ? input.brief : '']
-    .filter(part => part.trim() !== '')
-    .join('\n\n')
+/**
+ * Standing context, never the brief. Both surfaces now deliver the brief as a
+ * turn — positionally for interactive, on stdin for headless — so putting it
+ * here as well would only duplicate it.
+ */
+const systemPrompt = (input: LaunchPlanInput): string =>
+  [PEER_PREAMBLE, input.profile.promptPrelude].filter(part => part.trim() !== '').join('\n\n')
 
 const titleFor = (input: LaunchPlanInput): string => {
   const firstLine = input.brief.split('\n')[0]?.trim() ?? ''
@@ -72,9 +75,9 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     '--session-id',
     input.sessionId,
     '--append-system-prompt',
-    // Interactive panes have no other channel for the brief; headless gets it on
-    // stdin as the actual prompt, so repeating it here would only duplicate it.
-    systemPrompt(input, interactive),
+    // Standing context only. The brief is a TASK, and a task has to arrive as a
+    // turn — see below.
+    systemPrompt(input),
     '--mcp-config',
     input.mcpConfigPath,
     '--allowed-tools',
@@ -93,6 +96,22 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     // posture inherited from the environment could never be answered by a human.
     // Visible surfaces deliberately emit no flag at all and inherit normally.
     args.push('--permission-mode', 'default')
+  } else {
+    // `claude [options] [prompt]` — the positional prompt is what makes an
+    // interactive agent actually START. Without it the pane opened, Claude Code
+    // came up, and the agent waited forever for a turn nothing would give it: a
+    // spawn that reported ok and did nothing. Observed with three agents idling.
+    //
+    // `--` is load-bearing, not decoration. `--allowed-tools <tools...>` and
+    // `--add-dir <directories...>` are VARIADIC, so a bare trailing positional is
+    // swallowed as one more tool name — the brief vanishes AND the allowlist is
+    // silently corrupted. Verified against the installed CLI: without `--` it
+    // fails "Input must be provided either through stdin or as a prompt
+    // argument"; with it the prompt lands.
+    //
+    // Safe because run-agent spawns an argv ARRAY with no shell, so a
+    // model-authored brief is one argument rather than something to quote.
+    args.push('--', input.brief)
   }
 
   return {

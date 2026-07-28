@@ -111,16 +111,41 @@ describe('the argv every surface shares', () => {
 })
 
 describe('the one thing surfaces are allowed to differ on', () => {
-  it('delivers the prompt on stdin when headless and in the system prompt when visible', () => {
+  /**
+   * The brief must arrive as a TURN on both surfaces, by different mechanisms.
+   *
+   * This test previously asserted that a visible agent got its brief in the
+   * system prompt, which is what the code did and is why the suite stayed green
+   * while every interactive agent was inert: Claude Code came up, the brief sat
+   * in the system prompt, and nothing ever gave the agent a turn. It idled until
+   * a human typed. The old assertion pinned the bug as intended behaviour.
+   */
+  it('delivers the brief as a turn on both surfaces, never as system context', () => {
     const headless = buildLaunchPlan(input({ surface: 'headless' }))
     expect(headless.stdin).toBe('find every caller of foo()')
-    expect(flag(headless.args, '--append-system-prompt')).not.toContain('find every caller')
     expect(headless.args).toContain('-p')
 
     const pane = buildLaunchPlan(input({ surface: 'iterm-pane' }))
+    // The positional prompt, behind `--`. Both must hold: --allowed-tools and
+    // --add-dir are variadic, so an unterminated positional is swallowed as a
+    // tool name and the agent starts with no prompt at all.
+    expect(pane.args.slice(-2)).toEqual(['--', 'find every caller of foo()'])
     expect(pane.stdin).toBeUndefined()
-    expect(flag(pane.args, '--append-system-prompt')).toContain('find every caller of foo()')
     expect(pane.args).not.toContain('-p')
+
+    // Neither carries it as standing context, on either surface.
+    for (const plan of [headless, pane]) {
+      expect(flag(plan.args, '--append-system-prompt')).not.toContain('find every caller')
+    }
+  })
+
+  it('gives every interactive surface something to act on', () => {
+    // The failure this guards is silent: the pane opens, Claude Code starts, and
+    // the agent waits forever for a turn nothing will send.
+    for (const surface of SURFACE_NAMES.filter(s => s !== 'headless')) {
+      const plan = buildLaunchPlan(input({ surface }))
+      expect(plan.args.slice(-2)).toEqual(['--', 'find every caller of foo()'])
+    }
   })
 
   it('differs on nothing else across all four surfaces', () => {
@@ -134,6 +159,9 @@ describe('the one thing surfaces are allowed to differ on', () => {
         const arg = args[i]!
         if (promptFlags.has(arg)) continue
         if (arg === 'default' && args[i - 1] === '--permission-mode') continue
+        // The positional brief and its `--` are the interactive half of prompt
+        // delivery — the same permitted axis as -p and stdin, not a second one.
+        if (arg === 'find every caller of foo()' || arg === '--') continue
         kept.push(arg === flag(args, '--append-system-prompt') ? '<system-prompt>' : arg)
       }
       return kept
