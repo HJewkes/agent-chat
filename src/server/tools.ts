@@ -205,19 +205,23 @@ export const TOOL_DEFINITIONS = [
     name: 'chat_subscribe',
     description:
       'Ask to be told when sessions and agents come and go. Scope it: "name" for one agent, "tag" for ' +
-      'everything carrying a tag, or "all" — which is genuinely noisy on a busy bus and worth avoiding ' +
-      'unless you are coordinating. Events arrive batched and marked from agent-chat, and are LIFECYCLE ' +
-      'ONLY: you learn who is here, never what anyone said. Re-subscribing with the same scope replaces ' +
-      'that rule rather than adding a second one. Subscriptions last as long as this session.',
+      'everything carrying a tag, "spawned" for agents you yourself spawned (auto-applied on agent_spawn, ' +
+      'so you rarely need to set this by hand), or "all" — which is genuinely noisy on a busy bus and ' +
+      'worth avoiding unless you are coordinating. Events arrive batched and marked from agent-chat, and ' +
+      'are LIFECYCLE ONLY: you learn who is here, never what anyone said. Re-subscribing with the same ' +
+      'scope replaces that rule rather than adding a second one. Subscriptions last as long as this session.',
     inputSchema: {
       type: 'object',
       properties: {
         scope: {
           type: 'string',
-          enum: ['all', 'name', 'tag'],
-          description: 'What to watch. "name" and "tag" need target set.',
+          enum: ['all', 'name', 'tag', 'spawned'],
+          description: 'What to watch. "name" and "tag" need target set; "spawned" and "all" do not.',
         },
-        target: { type: 'string', description: 'The agent name, or the tag. Omit only for scope "all".' },
+        target: {
+          type: 'string',
+          description: 'The agent name, or the tag. Omit for scope "all" or "spawned".',
+        },
         kinds: {
           type: 'array',
           items: { type: 'string', enum: [...SUBSCRIBABLE_KINDS] },
@@ -235,7 +239,7 @@ export const TOOL_DEFINITIONS = [
     inputSchema: {
       type: 'object',
       properties: {
-        scope: { type: 'string', enum: ['all', 'name', 'tag'] },
+        scope: { type: 'string', enum: ['all', 'name', 'tag', 'spawned'] },
         target: { type: 'string' },
       },
     },
@@ -377,7 +381,13 @@ const DEFAULT_SUBSCRIBED_KINDS: SubscribableKind[] = [
 ]
 
 const describe = (selector: SubscriptionSelector): string =>
-  'all' in selector ? 'everything' : 'name' in selector ? `agent "${selector.name}"` : `tag "${selector.tag}"`
+  'all' in selector
+    ? 'everything'
+    : 'name' in selector
+      ? `agent "${selector.name}"`
+      : 'spawnedBy' in selector
+        ? 'agents you spawned'
+        : `tag "${selector.tag}"`
 
 const ago = (ms: number): string =>
   ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)}m`
@@ -626,14 +636,15 @@ export class ToolHandler {
   }
 
   /**
-   * "all" needs no target; "name" and "tag" are meaningless without one. Caught
-   * here because the MCP SDK enforces neither, and a scope silently defaulting to
-   * global is the one mistake that turns a quiet bus into a loud one.
+   * "all" and "spawned" need no target; "name" and "tag" are meaningless without
+   * one. Caught here because the MCP SDK enforces neither, and a scope silently
+   * defaulting to global is the one mistake that turns a quiet bus into a loud one.
    */
   private selectorFrom(args: Record<string, unknown>): SubscriptionSelector {
-    const scope = optionalEnum(args, 'scope', ['all', 'name', 'tag'] as const)
-    if (scope === undefined) throw new Error('scope is required and must be one of: all, name, tag')
+    const scope = optionalEnum(args, 'scope', ['all', 'name', 'tag', 'spawned'] as const)
+    if (scope === undefined) throw new Error('scope is required and must be one of: all, name, tag, spawned')
     if (scope === 'all') return { all: true }
+    if (scope === 'spawned') return { spawnedBy: 'self' }
     const target = optionalString(args, 'target')
     if (target === undefined) throw new Error(`scope "${scope}" needs target set to the ${scope} to watch`)
     return scope === 'name' ? { name: target } : { tag: target }

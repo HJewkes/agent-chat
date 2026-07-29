@@ -105,6 +105,16 @@ class SocketServer {
       ...(requester?.agentId === undefined ? {} : { parentAgentId: requester.agentId }),
       ...(anchor === undefined ? {} : { anchor }),
     })
+    // Auto-subscribe the requester to its own spawn's lifecycle, so it learns
+    // when the agent actually attaches without having to name it or poll
+    // agent_list. Provenance rather than naming: the selector stays correct as
+    // this connection spawns more agents later, with no rule to repoint.
+    if (outcome.ok && outcome.name !== undefined) {
+      this.core.registry.recordSpawn(conn, outcome.name)
+      this.core.registry.subscribe(conn, [
+        { selector: { spawnedBy: 'self' }, kinds: ['agent_attached', 'agent_exited'] },
+      ])
+    }
     reply(conn, {
       t: 'spawn_result',
       ok: outcome.ok,

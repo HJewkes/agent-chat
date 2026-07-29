@@ -70,6 +70,26 @@ describe('subscription scoping', () => {
     expect(registry.subscribersFor({ kind: 'agent_attached', subject: 'untagged' })).toEqual([])
   })
 
+  /**
+   * `spawnedBy` is provenance rather than naming: it must resolve from what the
+   * watcher itself spawned, not from any name or tag the subject happens to
+   * carry, and it must never leak across to a connection that spawned something
+   * else entirely.
+   */
+  it('matches a spawnedBy selector against what the subscriber itself spawned', () => {
+    const registry = new Registry<object>()
+    const [watcher, otherSpawner] = [conn('w'), conn('s')]
+    register(registry, watcher, 'watcher', {
+      subscriptions: [{ selector: { spawnedBy: 'self' }, kinds: ['agent_attached'] }],
+    })
+    register(registry, otherSpawner, 'other-spawner')
+    registry.recordSpawn(watcher, 'scout')
+    registry.recordSpawn(otherSpawner, 'ranger')
+
+    expect(registry.subscribersFor({ kind: 'agent_attached', subject: 'scout' })).toEqual([watcher])
+    expect(registry.subscribersFor({ kind: 'agent_attached', subject: 'ranger' })).toEqual([])
+  })
+
   it('filters by kind, so a leave subscriber is not woken by a join', () => {
     const registry = new Registry<object>()
     const [watcher, other] = [conn('w'), conn('o')]
