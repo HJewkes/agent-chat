@@ -8,7 +8,7 @@ import {
   type DeliveredMessage,
   type ServerMessage,
 } from '../protocol.js'
-import { home, socketPath } from '../paths.js'
+import { cliEntry, home, socketPath } from '../paths.js'
 import { logEvent } from './log.js'
 import { newMsgId } from './event-log.js'
 import { type Escalation, type RouteResult } from './registry.js'
@@ -186,6 +186,73 @@ class SocketServer {
       ...(result.reason === undefined ? {} : { reason: result.reason }),
       ...(result.ok ? { name } : {}),
     })
+  }
+
+  /**
+   * Say out loud when a client is running a different build from the broker.
+   *
+   * CC-36: a session resolves its agent-chat entry through its own launcher, and
+   * that need not be the entry the broker is running. The failure is invisible
+   * from BOTH sides — the client registers normally, appears healthy on the
+   * roster and answers messages, and only its TOOL LIST is stale. Two live
+   * agents reported not having a tool the broker had shipped, and nothing said
+   * the builds disagreed; it read as a feature defect for most of an hour.
+   *
+   * A notice rather than a refusal, because a mismatch is usually harmless — a
+   * session started before a rebuild is running old code and working fine. What
+   * is not acceptable is that it be SILENT.
+   */
+  private noteBuildMismatch(name: string, build: string | undefined): void {
+    const ours = cliEntry()
+    if (build === undefined || build === ours) return
+    this.core.append({
+      kind: 'notice',
+      actor: 'agent-chat',
+      target: HUMAN,
+      body:
+        `${name} is running a different agent-chat build from the broker. Its tools come from ` +
+        `${build}; the broker is ${ours}. Tools added since that build will be missing from ` +
+        `${name} even though it registered normally — restart it, or point its launcher at the ` +
+        'same checkout.',
+    })
+    logEvent('build_mismatch', { name, client: build, broker: ours })
+  }
+
+  /**
+   * Put a returning session back on the bus under the name it already held.
+   *
+   * The name comes from the LOG, never from the request — `bySession` matches
+   * adopted identities only, so this cannot reach a spawned agent's name by
+   * quoting its session id (the hole `BrokerCore.claimable` closes for agent
+   * ids). A session with nothing to reclaim gets ok:false and carries on to the
+   * ordinary `chat_register` path.
+   */
+  private handleReadopt(conn: Conn, msg: Extract<ClientMessage, { t: 'readopt' }>): void {
+    const known = this.core.agents.bySession(msg.sessionId)
+    if (known === undefined || known.name === '')
+      return reply(conn, {
+        t: 'register_result',
+        ok: false,
+        reason: 'no previous registration for this session',
+      })
+    // Already here: a live connection under this name means nothing was lost, and
+    // re-registering would evict a healthy peer to fix a problem it does not have.
+    if (this.core.registry.connFor(known.name) !== undefined)
+      return reply(conn, { t: 'register_result', ok: false, reason: `${known.name} is already connected` })
+
+    const result = this.core.register(conn, {
+      t: 'register',
+      name: known.name,
+      workingOn: known.brief === '' ? 'reconnected after its MCP server was replaced' : known.brief,
+      cwd: msg.cwd,
+      pid: msg.pid,
+      sessionId: msg.sessionId,
+      ...(msg.hostPid === undefined ? {} : { hostPid: msg.hostPid }),
+      ...(msg.termSessionId === undefined ? {} : { termSessionId: msg.termSessionId }),
+      ...(msg.build === undefined ? {} : { build: msg.build }),
+    })
+    if (result.ok) logEvent('readopted', { name: known.name, sessionId: msg.sessionId })
+    reply(conn, { t: 'register_result', ...result, ...(result.ok ? { name: known.name } : {}) })
   }
 
   /**
@@ -374,8 +441,11 @@ class SocketServer {
         const result = core.register(conn, msg, stale =>
           stale.end(encode({ t: 'error', reason: `superseded by a resume of "${msg.name}"`, fatal: true })),
         )
+        if (result.ok) this.noteBuildMismatch(msg.name, msg.build)
         return reply(conn, { t: 'register_result', ...result })
       }
+      case 'readopt':
+        return this.handleReadopt(conn, msg)
       case 'status':
         return reply(conn, {
           t: 'status_result',
