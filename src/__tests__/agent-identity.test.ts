@@ -111,6 +111,31 @@ describe('the lifecycle fold', () => {
     expect(foldAgent([row('agent_attached'), row('agent_exited')])).toBeUndefined()
   })
 
+  it('reads a row with no origin marker as a supervisor spawn', () => {
+    // Every row written before adoption existed is one, so the default decides
+    // how the whole existing log folds.
+    expect(foldAgent([spawned()])?.origin).toBe('spawned')
+  })
+
+  it('marks an adopted identity, so a self-chosen name is not read as an assigned one', () => {
+    const adopted = spawned({ meta: { origin: 'adopted', session_id: 'sess-9' } })
+
+    expect(foldAgent([adopted])?.origin).toBe('adopted')
+  })
+
+  it('lets an adopted name follow the session, since the session chose it', () => {
+    const adopted = spawned({ meta: { origin: 'adopted' } })
+    const agent = foldAgent([adopted, row('agent_attached', { actor: 'scout-renamed' })])
+
+    expect(agent?.name).toBe('scout-renamed')
+  })
+
+  it('pins a spawned name, because peers were told it before the agent had a turn', () => {
+    const agent = foldAgent([spawned(), row('agent_attached', { actor: 'impostor' })])
+
+    expect(agent?.name).toBe('scout')
+  })
+
   it('advances lastEventAt without letting isolation rows change lifecycle', () => {
     const attached = row('agent_attached')
     const allocated = row('isolation_allocated', { meta: { branch: 'agent/scout' } })
@@ -127,6 +152,7 @@ describe('pairing identity with presence', () => {
     name: 'scout',
     profile: 'reader',
     state,
+    origin: 'spawned',
     spawnedBy: 'human',
     spawnedAt: 1,
     brief: '',
@@ -135,6 +161,9 @@ describe('pairing identity with presence', () => {
     surface: '',
     sessionId: '',
     lastEventAt: 1,
+    // Every identity has one: 1 for an agent nothing has ever succeeded, which
+    // is the truth for this fixture rather than a placeholder.
+    generation: 1,
   })
 
   it('renders the normal cases from the table', () => {
@@ -248,6 +277,69 @@ describe('AgentLog over a real event log', () => {
     spawn(log, 'a2', 'scout')
 
     expect(new AgentLog(log).byName('scout')?.agentId).toBe('a2')
+  })
+
+  const adopt = (log: EventLog, id: string, name: string, sessionId: string) =>
+    log.append({
+      kind: 'agent_spawned',
+      actor: 'human',
+      target: name,
+      msgId: id,
+      meta: { origin: 'adopted', session_id: sessionId },
+    })
+
+  it('finds an adopted identity by the Claude Code session it belongs to', () => {
+    const log = freshLog()
+    adopt(log, 'a1', 'scout', 'sess-1')
+
+    expect(new AgentLog(log).bySession('sess-1')?.agentId).toBe('a1')
+  })
+
+  it('refuses to hand a spawned identity to anyone quoting its session id', () => {
+    // The id is in the log where every session on the machine can read it, so
+    // matching on it would make adoption a way to claim someone else's agent.
+    const log = freshLog()
+    log.append({
+      kind: 'agent_spawned',
+      actor: 'human',
+      target: 'scout',
+      msgId: 'a1',
+      meta: { session_id: 'sess-1' },
+    })
+
+    expect(new AgentLog(log).bySession('sess-1')).toBeUndefined()
+  })
+
+  it('matches no identity for a session id it has never seen, and none for none', () => {
+    const log = freshLog()
+    adopt(log, 'a1', 'scout', 'sess-1')
+    const agents = new AgentLog(log)
+
+    expect(agents.bySession('sess-2')).toBeUndefined()
+    expect(agents.bySession('')).toBeUndefined()
+  })
+
+  it('keeps adopted identities out of retire and resume, which cannot act on them', () => {
+    // byName is what those two resolve through, and an adopted identity has no
+    // launch plan to relaunch and no isolation to release.
+    const log = freshLog()
+    adopt(log, 'a1', 'scout', 'sess-1')
+
+    expect(new AgentLog(log).byName('scout')).toBeUndefined()
+  })
+
+  it('does not let a human session lease a name a later agent may need', () => {
+    const log = freshLog()
+    adopt(log, 'a1', 'scout', 'sess-1')
+
+    expect(new AgentLog(log).nameIsClaimed('scout')).toBe(false)
+  })
+
+  it('still lists an adopted identity on the roster', () => {
+    const log = freshLog()
+    adopt(log, 'a1', 'scout', 'sess-1')
+
+    expect(new AgentLog(log).roster().map(a => a.agentId)).toEqual(['a1'])
   })
 
   it('re-reads the log on every call, so it cannot drift from it', () => {

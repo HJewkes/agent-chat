@@ -6,6 +6,7 @@ import { BrokerClient } from '../client/broker-client.js'
 import type { DeliveredMessage, Subscription, SystemEvent } from '../protocol.js'
 import { TOOL_DEFINITIONS, ToolHandler } from './tools.js'
 import { terminalAnchor } from './anchor.js'
+import { hostIdentity } from './host.js'
 
 /**
  * Claude Code sends this when a tool-approval dialog opens in this session.
@@ -67,6 +68,14 @@ export const INSTRUCTIONS = [
   'output, and unread output is worse than none.',
   'chat_subscribe tells you when sessions and agents come and go, scoped to a name, a tag, or',
   'all. It reports lifecycle only: you learn who is here, never what anyone said.',
+  // Placed with the spawn rules for the same reason those are here: the decision
+  // to teleport is made before any tool description is read, and the two facts
+  // that govern it — you end, and your successor gets only what you write — are
+  // exactly the ones a model will otherwise assume its way past.
+  'agent_teleport ends this session and starts a successor on the CURRENT build, keeping your name',
+  'so peers can keep reaching you. Use it when your instructions or the code you run on have moved',
+  'since you started. Build first, or the successor picks up the same stale build. Your transcript',
+  'does not travel: the handoff you write is all it gets, and you are shut down once it is recorded.',
 ].join(' ')
 
 /**
@@ -189,6 +198,10 @@ export async function startMcpServer(): Promise<void> {
         cwd: process.cwd(),
         pid: process.pid,
         agentId: spawned.agentId,
+        // Sent by a spawned agent too, though only the ordinary path adopts on
+        // it: a pane agent's Claude Code process has no pid anywhere else, since
+        // the surface hands back a pane rather than a child.
+        ...hostIdentity(),
         ...(spawned.tags ? { tags: spawned.tags } : {}),
         ...(spawned.subscriptions ? { subscriptions: spawned.subscriptions } : {}),
         ...terminalAnchor(),

@@ -28,6 +28,7 @@ const USAGE = `agent-chat — cross-session messaging for Claude Code
   agent-chat agent ls                  durable agents, with lifecycle and presence
   agent-chat agent spawn <name> <profile> <brief>
   agent-chat agent retire <name>       release isolation and free the name
+  agent-chat teleport abort <name>     stop a session ending itself for a successor
   agent-chat profiles                  agent profiles available to spawn with
   agent-chat run-agent <id>            run a planned agent (surfaces call this)
   agent-chat broker                    run the broker in the foreground
@@ -184,7 +185,14 @@ async function agentLs(): Promise<void> {
   for (const agent of agents) {
     const connected = sessions.some(s => s.name === agent.name)
     const { status } = pairPresence(agent, { connected })
-    console.log(`${agent.name.padEnd(16)} ${status.padEnd(13)} ${agent.profile.padEnd(12)} ${agent.agentId}`)
+    // Lineage is advertised here rather than smuggled into the name: peers keep
+    // addressing "planner" across a teleport, and this is where you find out
+    // which generation of it you are talking to. Both fields are broker-derived,
+    // so they are fact rather than an agent's claim about itself.
+    const lineage = agent.teleportFrom ? `  gen=${agent.generation} from=${agent.teleportFrom}` : ''
+    console.log(
+      `${agent.name.padEnd(16)} ${status.padEnd(13)} ${agent.profile.padEnd(12)} ${agent.agentId}${lineage}`,
+    )
     console.log(`${' '.repeat(16)} ${agent.cwd}`)
     console.log(`${' '.repeat(16)} ${transcriptLine(agent.cwd, agent.sessionId)}`)
   }
@@ -237,6 +245,26 @@ async function agent(args: string[]): Promise<void> {
   }
 }
 
+/**
+ * The human's veto on a teleport countdown, and deliberately a CLI verb rather
+ * than a tool: the countdown exists so a person can stop a session ending
+ * itself, and a veto any agent could exercise is not a veto. The broker refuses
+ * this frame from a registered connection; this one holds no registration.
+ */
+async function teleportAbort(args: string[]): Promise<void> {
+  const name = args[0]
+  if (!name) {
+    console.error('usage: agent-chat teleport abort <name>')
+    process.exit(1)
+  }
+  const res = (await withBroker(b => b.request({ t: 'teleport_abort', name }, 'teleport_result'))) as Extract<
+    ServerMessage,
+    { t: 'teleport_result' }
+  >
+  console.log(res.ok ? `Stopped ${name}'s teleport. It is still live, on the old build.` : res.reason)
+  process.exit(res.ok ? 0 : 1)
+}
+
 function profiles(): void {
   for (const name of listProfileNames()) {
     const profile = loadProfile(name)
@@ -283,6 +311,14 @@ async function main(): Promise<void> {
     }
     case 'agent':
       return agent(args)
+    case 'teleport': {
+      const [sub, ...rest] = args
+      if (sub !== 'abort') {
+        console.error('usage: agent-chat teleport abort <name>')
+        process.exit(1)
+      }
+      return teleportAbort(rest)
+    }
     case 'profiles':
       return profiles()
     default:

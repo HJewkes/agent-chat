@@ -208,6 +208,35 @@ describe('every builtin profile, on every surface', () => {
     const writes = (p: AgentProfile) => p.allowedTools.some(t => t === 'Write' || t === 'Edit')
     for (const builtin of BUILTIN_PROFILES.filter(writes)) expect(builtin.surface).not.toBe('headless')
   })
+
+  // A read-only profile is read-only because of what it DENIES. Omitting a tool
+  // from allowedTools leaves it grantable by the user's or project's settings, so
+  // "not in allowedTools" is not a claim this suite can rest on.
+  it('denies rather than merely omits the mutating tools on the read-only builtins', () => {
+    const named = (name: string) => BUILTIN_PROFILES.find(p => p.name === name)
+    expect(named('explorer')?.disallowedTools).toEqual(['Bash', 'Write', 'Edit'])
+    expect(named('reviewer')?.disallowedTools).toEqual(['Write', 'Edit'])
+
+    for (const name of ['explorer', 'reviewer']) {
+      const denied = flag(
+        buildLaunchPlan(input({ profile: named(name) as AgentProfile })).args,
+        '--disallowed-tools',
+      )
+      expect(denied?.split(',')).toEqual(expect.arrayContaining(['Write', 'Edit']))
+    }
+  })
+
+  // The other half of the same rule: confining these would break the workflow
+  // agent-teams exists for, since running the tests and committing IS the job.
+  it('leaves the writing builtins able to run a shell', () => {
+    for (const name of ['implementer', 'peer']) {
+      const builtin = BUILTIN_PROFILES.find(p => p.name === name) as AgentProfile
+      expect(builtin.disallowedTools ?? []).not.toContain('Bash')
+      expect(
+        flag(buildLaunchPlan(input({ profile: builtin })).args, '--allowed-tools')?.split(','),
+      ).toContain('Bash')
+    }
+  })
 })
 
 describe('profiles resolve by name only', () => {

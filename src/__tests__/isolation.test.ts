@@ -98,12 +98,28 @@ describe('toolset-limited', () => {
     expect(alloc.allowedTools).toEqual(['Read', 'Grep'])
     expect(alloc.disallowedTools).toEqual(['Bash'])
     expect(alloc.note).toContain('Read, Grep')
+    expect(alloc.note).toContain('Bash are unavailable')
   })
 
   it('warns when it would restrict nothing', async () => {
     const reasons = await toolsetStrategy.check(ctxFor('/repo'))
     expect(reasons.every(isWarning)).toBe(true)
     expect(reasons).toHaveLength(1)
+  })
+
+  // The regression that matters: an allow list alone confines nothing, because
+  // the agent still inherits settings that may grant Bash. The old check went
+  // quiet here, which is how a read-only profile kept a shell.
+  it('still warns when an allow list is present but nothing is denied', async () => {
+    const ctx = ctxFor('/repo', { toolset: { allowedTools: ['Read', 'Grep', 'Glob'] } })
+    const reasons = await toolsetStrategy.check(ctx)
+    expect(reasons).toHaveLength(1)
+    expect(reasons[0]).toContain('disallowedTools')
+  })
+
+  it('goes quiet only once a deny list is actually present', async () => {
+    const ctx = ctxFor('/repo', { toolset: { allowedTools: ['Read'], disallowedTools: ['Bash'] } })
+    expect(await toolsetStrategy.check(ctx)).toEqual([])
   })
 })
 

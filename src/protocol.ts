@@ -61,6 +61,11 @@ export const EVENT_KINDS = [
   'agent_resumed',
   'agent_exited',
   'agent_retired',
+  // Teleport (CC-20). Two kinds rather than one with a `meta.phase`: "wrote its
+  // handoff" and "the countdown ran out" are different instants, and a query for
+  // either should not have to filter on a stringly field.
+  'agent_handoff',
+  'agent_stood_down',
   'isolation_allocated',
   'isolation_released',
   // Refusals are events rather than just `reason` strings on a reply: they are
@@ -84,6 +89,14 @@ export type EventKind = (typeof EVENT_KINDS)[number]
  * Note this is a filter over kinds that already exist. Subscriptions deliberately
  * add NO new EventKind, because the union is frozen into the SSE contract and
  * extending it re-serialises everything built against it.
+ *
+ * `agent_handoff` is absent for a stronger reason than the rest: its body is a
+ * whole document, and `SystemEventFeed.offer` copies a row's body into the
+ * pushed event. Subscribing to it would fan one session's handoff into every
+ * subscriber's context — a content leak by construction, into the one channel
+ * whose stated guarantee is "you learn who is here, never what anyone said".
+ * Succession is already visible through the descendant's `agent_spawned` and the
+ * predecessor's `agent_retired`, both of which are here.
  */
 export const SUBSCRIBABLE_KINDS = [
   'registered',
@@ -203,6 +216,25 @@ export type ClientMessage =
       cwd: string
       pid: number
       agentId?: string
+      /**
+       * `CLAUDE_CODE_SESSION_ID`, read by the MCP subprocess from its own
+       * environment. Never asked of the model, which is what lets the broker mint
+       * a durable identity for an ordinary session without that identity becoming
+       * self-asserted. Absent means no adoption: an older binary, or a client that
+       * is not a Claude Code session at all.
+       */
+      sessionId?: string
+      /**
+       * The pid of Claude Code itself, not of this MCP subprocess.
+       *
+       * `pid` above is `process.pid` — the subprocess. Signalling that severs the
+       * bus and leaves Claude Code running, which is worse than either extreme
+       * because the screen shows a live session that can no longer be reached.
+       * This carries the one that is actually actionable. Presence data: a pid is
+       * meaningless once its process is gone, so nothing persists it and nothing
+       * asks `process.kill(pid, 0)` to decide whether a session is up.
+       */
+      hostPid?: number
       termSessionId?: string
       /** Many, not one: a session is usually in more than one conversation. */
       tags?: string[]
@@ -245,6 +277,26 @@ export type ClientMessage =
     }
   | { t: 'agents'; includeRetired?: boolean }
   | { t: 'retire'; name: string }
+  /**
+   * Hand off to a successor and end this session. NAMES NO AGENT: the subject is
+   * resolved by the broker from the requesting connection, the same discipline
+   * `anchor` and `parentAgentId` already follow. There is deliberately no field
+   * for a target, a profile, a surface or a tool list — a teleport is a
+   * continuation, and a `profile` argument would be a model authoring its own
+   * privilege escalation and calling it a handoff.
+   *
+   * `model` is the ONE negotiable field, and it is not a privilege: an agent may
+   * deliberately succeed itself onto a cheaper or stronger model. Absent means
+   * "whatever this session is running on now", which is the point of teleport.
+   */
+  | { t: 'teleport'; handoff: string; model?: string }
+  /**
+   * Stop a countdown that has not fired yet. The human's veto, and it has no
+   * MCP tool — see `docs/teleport.md` §4.2. The broker refuses it from a
+   * REGISTERED connection, so the only caller left is someone at the CLI, who
+   * could already retire or kill anything on a 0600 socket.
+   */
+  | { t: 'teleport_abort'; name: string }
 
 /** Broker -> session. */
 export type ServerMessage =
@@ -301,6 +353,26 @@ export type ServerMessage =
       warnings?: string[]
     }
   | { t: 'agents_result'; agents: AgentIdentity[] }
+  /**
+   * Answered as soon as the handoff is recorded and the sequence is committed to,
+   * NOT when the descendant is up: a visible predecessor has 30 seconds of
+   * countdown left to run, and holding the reply that long would blow the
+   * client's 5s request timeout and leave the model believing it failed.
+   *
+   * `name` is the predecessor's own name, restated rather than newly assigned —
+   * the descendant keeps it (§5.1), so "the descendant's name" is not new
+   * information. `agentId` is the descendant's, which is.
+   */
+  | {
+      t: 'teleport_result'
+      ok: boolean
+      reason?: string
+      name?: string
+      agentId?: string
+      /** Milliseconds until shutdown. Absent for a headless predecessor: there is no wait. */
+      countdownMs?: number
+      warnings?: string[]
+    }
 
 /**
  * The lifecycle an agent identity is folded into. Durable: it is a projection of
@@ -309,6 +381,25 @@ export type ServerMessage =
 export const AGENT_LIFECYCLES = ['spawning', 'live', 'detached', 'exited', 'retired'] as const
 
 export type AgentLifecycle = (typeof AGENT_LIFECYCLES)[number]
+
+/**
+ * How an identity came to exist, and therefore how much of it to trust.
+ *
+ * `spawned` — the broker minted the id AND assigned the name from a launch plan,
+ * then handed both to the process in its environment. Every field is
+ * broker-derived.
+ *
+ * `adopted` — an ordinary human-started session, given an identity by the broker
+ * when it registered. The id, the Claude Code session id and the cwd are still
+ * broker- or host-derived, but the NAME and the BRIEF are whatever the model
+ * typed into `chat_register`. That is the weaker guarantee `from` already has
+ * versus `source`, and it is recorded here rather than left to convention
+ * because a roster (CC-11) and an endorsement (CC-22) need to tell the two
+ * apart.
+ */
+export const AGENT_ORIGINS = ['spawned', 'adopted'] as const
+
+export type AgentOrigin = (typeof AGENT_ORIGINS)[number]
 
 /**
  * A durable agent identity, produced by the A1 read model (`agents/identity.ts`).
@@ -326,6 +417,8 @@ export interface AgentIdentity {
   name: string
   profile: string
   state: AgentLifecycle
+  /** Whether the name and brief are broker-assigned or self-reported. */
+  origin: AgentOrigin
   spawnedBy: string
   spawnedAt: number
   brief: string
@@ -336,6 +429,15 @@ export interface AgentIdentity {
   sessionId: string
   /** Timestamp of the newest row referencing this identity, spawn included. */
   lastEventAt: number
+  /**
+   * How many teleports deep this identity is: 1 for one that has never
+   * teleported, incrementing per hop. Broker-derived, like `teleportFrom` —
+   * written by the broker from its own resolution of the predecessor, never from
+   * a client-supplied field, which is what makes it lineage rather than a claim.
+   */
+  generation: number
+  /** The immediate predecessor's agentId. The rest of the chain is a walk of these. */
+  teleportFrom?: string
   exit?: { code: number | null; summary: string; costUsd?: number }
 }
 

@@ -54,6 +54,13 @@ export interface LaunchPlanInput {
   /** Tags and subscriptions the spawner chose; applied at the agent's own register. */
   tags?: string[]
   subscriptions?: Subscription[]
+  /**
+   * Replaces `PEER_PREAMBLE`. Teleport's descendant is not a freshly spawned
+   * agent being told it outlives its spawner — it is the continuation of a
+   * session that ended on purpose, and telling it the wrong story about its own
+   * origin is how it ends up reporting to a predecessor that no longer exists.
+   */
+  preamble?: string
 }
 
 export interface LaunchPlan {

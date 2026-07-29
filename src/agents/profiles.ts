@@ -12,6 +12,21 @@ import type { AgentProfile } from './types.js'
  * has a human-answerable dialog sitting right there in its pane; a headless one
  * does not, and cannot be unblocked by anyone. The asymmetry is severe enough to
  * drive the default: spawn writers visible unless there is a reason not to.
+ *
+ * THE DENY LISTS ARE WHAT CONFINE A READ-ONLY PROFILE — `allowedTools` does not.
+ * `--allowed-tools` GRANTS permission; it does not remove a tool. A spawned agent
+ * still inherits `~/.claude/settings.json` and the project's settings, so a
+ * `Bash(*)` sitting in either one hands a shell to an "explorer" whose profile
+ * names only Read, Grep and Glob. Observed, not inferred: an explorer-profile
+ * agent ran `git log` and got real output back. Only `--disallowed-tools`
+ * actually takes the tool away.
+ *
+ * KNOWN COST OF DOING IT THIS WAY, so nobody has to rediscover it: these lists
+ * are ENUMERATED, not derived from (known tools − allowedTools). A tool Claude
+ * Code gains later is therefore ALLOWED BY OMISSION on these profiles until
+ * someone adds it here. That was chosen deliberately over deriving the complement
+ * — the derivation needs a list of every tool that exists, which we would then own
+ * and have to keep true. Add new mutating tools to these lists.
  */
 export const BUILTIN_PROFILES: readonly AgentProfile[] = [
   {
@@ -19,6 +34,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     description: 'Read-only search and reconnaissance. Nothing it does can prompt.',
     model: 'sonnet',
     allowedTools: ['Read', 'Grep', 'Glob'],
+    disallowedTools: ['Bash', 'Write', 'Edit'],
     isolation: 'toolset-limited',
     surface: 'headless',
     promptPrelude: 'You are a read-only explorer. Report what you find; do not attempt to change anything.',
@@ -28,6 +44,10 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     description: 'Reads and runs narrow checks. Bash is allowlisted, not open-ended.',
     model: 'sonnet',
     allowedTools: ['Read', 'Grep', 'Glob', 'Bash'],
+    // Bash SURVIVES here on purpose — a reviewer that cannot run the tests is an
+    // explorer with a different prelude. It is confined at the file boundary
+    // instead: it may run commands, it may not edit what it is reviewing.
+    disallowedTools: ['Write', 'Edit'],
     isolation: 'toolset-limited',
     surface: 'headless',
     promptPrelude:

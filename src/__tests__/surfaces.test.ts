@@ -293,3 +293,28 @@ describe('anchor parsing', () => {
     expect(lastScript(scripts).includes(UUID)).toBe(usable)
   })
 })
+
+/**
+ * Regression, found on the first real teleport rather than by a test.
+ *
+ * A pane is opened by AppleScript and runs in a fresh shell carrying the USER's
+ * environment, not the broker's — so a relocated `AGENT_CHAT_HOME` was invisible
+ * to it and `run-agent` looked for its plan under the default home and died.
+ * Headless never had the bug, because it is spawned by the broker and inherits
+ * it, which is exactly why nothing caught this.
+ */
+describe('the command a visible surface hands to a shell', () => {
+  it('carries the broker’s home, so the pane finds the plan the broker wrote', async () => {
+    const previous = process.env.AGENT_CHAT_HOME
+    process.env.AGENT_CHAT_HOME = '/tmp/somewhere else'
+    try {
+      const { scripts, options } = fakeIterm()
+      await surfaceFor('iterm-tab', { ...options, anchor: ANCHOR }).launch(plan())
+
+      expect(lastScript(scripts)).toContain("AGENT_CHAT_HOME='/tmp/somewhere else'")
+    } finally {
+      if (previous === undefined) delete process.env.AGENT_CHAT_HOME
+      else process.env.AGENT_CHAT_HOME = previous
+    }
+  })
+})

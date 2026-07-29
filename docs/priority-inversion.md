@@ -9,7 +9,7 @@
 > cc-relay measured its own transcript: 7 human inputs, response latencies of 84s, 6s, 6s,
 > 5s, 37s, 10s, 30s, and **zero had an unanswered peer message in front of them**. What
 > actually happened is the inverse of the claim: cc-relay asked its human a question, was
-> waiting on *them*, peers messaged during that gap, and it re-asked. The user was never
+> waiting on _them_, peers messaged during that gap, and it re-asked. The user was never
 > kept waiting.
 >
 > Independently corroborated on this session's transcript: 5 human inputs, latencies 1.9s,
@@ -24,7 +24,7 @@
 > and my first script skipped them. Corrected, it is 6 peer against 5 human: **near parity,
 > not domination.** So the residual cost is real but modest, and it is a **throughput cost,
 > not a responsiveness cost**. cc-main has re-scoped CC-16 accordingly (severity high → low,
-> retitled around delaying the human's chance to *steer* rather than to receive an answer,
+> retitled around delaying the human's chance to _steer_ rather than to receive an answer,
 > with "decide to build nothing" an acceptable close).
 >
 > A rewrite, if there is one, should start from token/context economics rather than user
@@ -38,7 +38,7 @@
 > The CC-6 measurement in "What CC-6 does not fix" is unaffected — it is a fact about
 > CC-6's thresholds against real traffic and remains accurate whatever the traffic cost.
 
-## The observation *(refuted — see status above)*
+## The observation _(refuted — see status above)_
 
 From cc-relay, 2026-07-27, first-person and unprompted:
 
@@ -64,17 +64,17 @@ a reply-depth breaker at 20.
 Measured against the actual window that caused the complaint — everything cc-relay
 received between 12:19 and 12:29 on 2026-07-27:
 
-| time | kind | from | payload | amplified | suppressed by CC-6? |
-|---|---|---|---|---|---|
-| 12:19:58 | broadcast | cc2-relay | 3,256 | 9,768 | no — under 16,000, alone in window |
-| 12:23:05 | directed | cc2-relay | 1,786 | — | no — directed, never charged |
-| 12:24:14 | directed | cc-main | 1,978 | — | no — directed, never charged |
-| 12:25:52 | directed | cc-main | 2,660 | — | no — directed, never charged |
-| 12:26:42 | broadcast | cc2-relay | 2,329 | 6,987 | no — under 16,000, alone in window |
-| 12:28:10 | directed | cc2-relay | 1,493 | — | no — directed, never charged |
+| time     | kind      | from      | payload | amplified | suppressed by CC-6?                |
+| -------- | --------- | --------- | ------- | --------- | ---------------------------------- |
+| 12:19:58 | broadcast | cc2-relay | 3,256   | 9,768     | no — under 16,000, alone in window |
+| 12:23:05 | directed  | cc2-relay | 1,786   | —         | no — directed, never charged       |
+| 12:24:14 | directed  | cc-main   | 1,978   | —         | no — directed, never charged       |
+| 12:25:52 | directed  | cc-main   | 2,660   | —         | no — directed, never charged       |
+| 12:26:42 | broadcast | cc2-relay | 2,329   | 6,987     | no — under 16,000, alone in window |
+| 12:28:10 | directed  | cc2-relay | 1,493   | —         | no — directed, never charged       |
 
 **CC-6 would have suppressed none of them.** Six interrupts, ~13.5 KB, in eight minutes,
-every one passing every threshold. Four were directed and therefore *categorically*
+every one passing every threshold. Four were directed and therefore _categorically_
 exempt — not "under budget" but never charged at all. The two broadcasts sat nearly seven
 minutes apart, so each was alone in its 60-second window and cleared the budget by 40%
 and 56% respectively.
@@ -90,8 +90,8 @@ byte or count budget while still starving the user. Volume was never the variabl
 The dividing line is not urgency, size, or sender. It is **whether a message needs the
 recipient's action or merely their awareness.**
 
-- *Needs action*: the CC-3 token probe. The test cannot proceed without a reply.
-- *Needs awareness only*: "P8 was fabricated, I've corrected the doc." True, important,
+- _Needs action_: the CC-3 token probe. The test cannot proceed without a reply.
+- _Needs awareness only_: "P8 was fabricated, I've corrected the doc." True, important,
   worth knowing — and nothing about it required interrupting a turn.
 
 Most of what starved cc-relay's user was the second kind delivered with the urgency of
@@ -130,7 +130,7 @@ instrumentation project.
 CC-12 (observe without interrupting) would let peers see each other's state without
 anything being delivered. If it landed, much of today's traffic would never have been a
 message at all — the P8 correction, the audit result and the retraction are all things a
-peer could have *pulled* rather than been *pushed*.
+peer could have _pulled_ rather than been _pushed_.
 
 The honest tension, stated both ways:
 
@@ -141,7 +141,7 @@ CC-16 first risks engineering a classification system for traffic that should no
 
 **Against.** CC-12 is priority 10 and CC-16 is priority 4, high severity. Sequencing a
 high-severity problem behind a low-priority one defers the only failure in this initiative
-the *human* actually feels rather than one the agents feel. CC-12 is also unbuilt and
+the _human_ actually feels rather than one the agents feel. CC-12 is also unbuilt and
 unscoped, so "land CC-12 first" is an unbounded delay. And CC-12 does not fully subsume
 CC-16: pull-based observation removes awareness traffic, but a genuinely
 action-needing message still interrupts, and the user's request still loses to it.
@@ -154,22 +154,22 @@ wording alone moves the interrupt count, the sequencing question may not need an
 
 1. **Wording only.** Tool descriptions on `chat_send` push senders to classify; server
    `instructions` tell recipients awareness-class messages don't warrant breaking off.
-   *Cost*: no guarantee, effect unmeasured until traffic accumulates. *Cheapest, fully
-   reversible, compatible with every other option.*
+   _Cost_: no guarantee, effect unmeasured until traffic accumulates. _Cheapest, fully
+   reversible, compatible with every other option._
 2. **`meta` classification.** Sender sets `needs="action"|"awareness"`; broker stamps it;
-   recipient sees it as a tag attribute before the body. *Cost*: senders self-classify and
+   recipient sees it as a tag attribute before the body. _Cost_: senders self-classify and
    will inflate — everyone believes their correction is urgent. Needs a default, and the
    default is the whole design.
 3. **Deferred delivery for awareness-class.** Hold awareness messages until the recipient
-   next calls `chat_inbox` or a turn boundary. *Cost*: converts "noisy" into "quiet and
+   next calls `chat_inbox` or a turn boundary. _Cost_: converts "noisy" into "quiet and
    missed", the same objection I4 raised against digests. Lossless only because the event
    log retains everything.
-4. **Do nothing; rely on CC-12.** *Cost*: defers a high-severity problem behind an
+4. **Do nothing; rely on CC-12.** _Cost_: defers a high-severity problem behind an
    unscoped one, and does not cover action-class interrupts.
 
 ## What would settle it
 
-Whether a recipient that *sees* `needs="awareness"` actually defers. That is one probe,
+Whether a recipient that _sees_ `needs="awareness"` actually defers. That is one probe,
 not a build: send a peer an awareness-tagged message mid-task and ask whether they
 deferred it, the same shape as the CC-3 token test. Worth running before choosing between
 options 2 and 3, because if models ignore the attribute, both collapse into option 1.

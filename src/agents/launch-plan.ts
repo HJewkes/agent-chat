@@ -40,7 +40,9 @@ export const PEER_PREAMBLE = [
  * here as well would only duplicate it.
  */
 const systemPrompt = (input: LaunchPlanInput): string =>
-  [PEER_PREAMBLE, input.profile.promptPrelude].filter(part => part.trim() !== '').join('\n\n')
+  [input.preamble ?? PEER_PREAMBLE, input.profile.promptPrelude]
+    .filter(part => part.trim() !== '')
+    .join('\n\n')
 
 const titleFor = (input: LaunchPlanInput): string => {
   const firstLine = input.brief.split('\n')[0]?.trim() ?? ''
@@ -69,9 +71,15 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
   const interactive = isInteractiveSurface(surface)
   const { profile } = input
 
+  // An empty `model` or `allowedTools` means INHERIT, and only teleport produces
+  // one: an ordinary human-started session has no profile to copy, so its
+  // descendant is meant to run the way the harness runs it — the model the human
+  // is actually on, and the permission posture their own settings give. Emitting
+  // a flag there would not be "the same configuration", it would be this code
+  // guessing one. Every profile on disk still fails validation without both
+  // fields, so this cannot be reached from a profile file.
   const args = [
-    '--model',
-    profile.model,
+    ...(profile.model === '' ? [] : ['--model', profile.model]),
     '--session-id',
     input.sessionId,
     '--append-system-prompt',
@@ -80,9 +88,13 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     systemPrompt(input),
     '--mcp-config',
     input.mcpConfigPath,
-    '--allowed-tools',
-    [...profile.allowedTools, AGENT_CHAT_TOOLS].join(','),
   ]
+  // Note what an inherited posture costs: agent-chat's own tools stop being
+  // allowlisted here and fall back to the session's ordinary permission rules,
+  // which is correct for a descendant of a session that was already living under
+  // them, and wrong for anything else.
+  if (profile.allowedTools.length > 0)
+    args.push('--allowed-tools', [...profile.allowedTools, AGENT_CHAT_TOOLS].join(','))
   if (profile.disallowedTools?.length) args.push('--disallowed-tools', profile.disallowedTools.join(','))
   for (const dir of input.extraDirs ?? []) args.push('--add-dir', dir)
 

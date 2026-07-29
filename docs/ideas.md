@@ -14,20 +14,20 @@ P1's `inbox[]` field was wrong for the same reason, and P6 cited a line belongin
 broadcast. Citations below are corrected to current `HEAD`; treat any *un*audited
 claim here as a hypothesis until you have opened the file.
 
-| #   | Primitive                                                                                                               | Where                                   |
-| --- | ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| P1  | Registry entry: `name`, `workingOn`, `cwd`, `pid`, `status`, `awaitingApproval`, `registeredAt`, `lastSeen` — **no `inbox[]`; the original row invented one** | `broker/registry.ts:4`                  |
-| P2  | The broker sees every message and every routing decision, and already writes JSONL                                      | `broker/log.ts:8`, `broker/index.ts:23` |
-| P3  | `meta` becomes `<channel>` tag attributes — **model-visible**, keys must be `[A-Za-z0-9_]+` or they're silently dropped | `server/index.ts:33`                    |
-| P4  | Registration is identity _and_ delivery filter; the name is a lease held by a live socket, released on close            | `registry.ts:56`, `broker/index.ts:71`  |
-| P5  | The human is a peer on the same bus via `agent-chat send --as`                                                          | `cli.ts:44`                             |
-| P6  | `in_reply_to` correlation ids (was cited at `:130`, which is broadcast's doc comment)                                   | `registry.ts:133`                       |
-| P7  | Broadcast fanout to all-but-sender                                                                                      | `registry.ts:148`                       |
+| #   | Primitive                                                                                                                                                                                                                                                                                                     | Where                                   |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| P1  | Registry entry: `name`, `workingOn`, `cwd`, `pid`, `status`, `awaitingApproval`, `registeredAt`, `lastSeen` — **no `inbox[]`; the original row invented one**                                                                                                                                                 | `broker/registry.ts:4`                  |
+| P2  | The broker sees every message and every routing decision, and already writes JSONL                                                                                                                                                                                                                            | `broker/log.ts:8`, `broker/index.ts:23` |
+| P3  | `meta` becomes `<channel>` tag attributes — **model-visible**, keys must be `[A-Za-z0-9_]+` or they're silently dropped                                                                                                                                                                                       | `server/index.ts:33`                    |
+| P4  | Registration is identity _and_ delivery filter; the name is a lease held by a live socket, released on close                                                                                                                                                                                                  | `registry.ts:56`, `broker/index.ts:71`  |
+| P5  | The human is a peer on the same bus via `agent-chat send --as`                                                                                                                                                                                                                                                | `cli.ts:44`                             |
+| P6  | `in_reply_to` correlation ids (was cited at `:130`, which is broadcast's doc comment)                                                                                                                                                                                                                         | `registry.ts:133`                       |
+| P7  | Broadcast fanout to all-but-sender                                                                                                                                                                                                                                                                            | `registry.ts:148`                       |
 | P8  | Inbox is a bounded query over the append-only event log, so replay survives broker restart. **The original row — a replayable 50-message per-session inbox retained across reconnect — never existed at any commit.** The cap is now a tool-input bound (`INBOX_MAX`), a different thing in a different layer | `event-log.ts:121`, `tools.ts:26`       |
-| P9  | Permission relay — declared nowhere yet. **Unbuilt.**                                                                   | —                                       |
-| P10 | The broker knows every session's `cwd`                                                                                  | `registry.ts:65`                        |
-| P11 | The broker knows every session's `pid`                                                                                  | `registry.ts:65`                        |
-| P12 | `instructions` is a per-session system-prompt injection point, constructed at spawn time                                | `server/index.ts:8`                     |
+| P9  | Permission relay — declared nowhere yet. **Unbuilt.**                                                                                                                                                                                                                                                         | —                                       |
+| P10 | The broker knows every session's `cwd`                                                                                                                                                                                                                                                                        | `registry.ts:65`                        |
+| P11 | The broker knows every session's `pid`                                                                                                                                                                                                                                                                        | `registry.ts:65`                        |
+| P12 | `instructions` is a per-session system-prompt injection point, constructed at spawn time                                                                                                                                                                                                                      | `server/index.ts:8`                     |
 
 ### Facts from the live docs that constrain everything below
 
@@ -165,7 +165,7 @@ dropped — it's already in the inbox — it's replaced by one summary notificat
 fabricated. The losslessness claim survives, but not for the reason written here: it
 never rested on a retained per-session inbox, because there wasn't one. It rests on
 the event log being the source of truth with the inbox as a query over it
-(`event-log.ts:121`), which is a *stronger* guarantee — overflow survives a broker
+(`event-log.ts:121`), which is a _stronger_ guarantee — overflow survives a broker
 restart, not just a reconnect. So throttle-don't-drop is still sound. Anything else
 in this entry that leans on P8's wording, rather than on the log, should be re-read
 before it is relied on.
