@@ -297,6 +297,20 @@ export type ClientMessage =
    * could already retire or kill anything on a 0600 socket.
    */
   | { t: 'teleport_abort'; name: string }
+  /**
+   * Pull a headless agent into a terminal window. This one DOES name an agent,
+   * and that is the deliberate divergence from `teleport` above: the case it
+   * exists for is an agent too blocked to ask for itself, because a headless
+   * session relays no permission prompts (CC-2). It only ever widens what a human
+   * can see, and the broker refuses it for anything not already headless.
+   */
+  | { t: 'surface'; name: string }
+  /**
+   * Go headless. NAMES NO AGENT, exactly as `teleport` does not: making another
+   * peer's work invisible is the operation worth making unrepresentable, so there
+   * is no field to ask for it.
+   */
+  | { t: 'background' }
 
 /** Broker -> session. */
 export type ServerMessage =
@@ -371,6 +385,21 @@ export type ServerMessage =
       agentId?: string
       /** Milliseconds until shutdown. Absent for a headless predecessor: there is no wait. */
       countdownMs?: number
+      warnings?: string[]
+    }
+  /**
+   * `surface` is where it ACTUALLY landed, which is not always what was asked
+   * for: the iTerm ladder downgrades a pane or tab to a new window when the
+   * anchor is gone, and a caller that reported the request rather than the
+   * outcome would tell the human to look in the wrong place.
+   */
+  | {
+      t: 'switch_result'
+      ok: boolean
+      reason?: string
+      name?: string
+      agentId?: string
+      surface?: SurfaceName
       warnings?: string[]
     }
 

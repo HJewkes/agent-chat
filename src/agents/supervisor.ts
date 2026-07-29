@@ -6,10 +6,19 @@ import { newMsgId } from '../broker/event-log.js'
 import {
   HUMAN,
   RESERVED_NAMES,
+  type AgentIdentity,
   type IsolationName,
   type Subscription,
   type SurfaceName,
 } from '../protocol.js'
+import {
+  BACKGROUNDED_BRIEF,
+  checkBackgroundable,
+  checkSurfaceable,
+  placementFor,
+  SURFACED_NOTICE,
+  type SwitchOutcome,
+} from './mode-switch.js'
 import { buildLaunchPlan, permModeFor } from './launch-plan.js'
 import { buildMcpConfig, mcpConfigPath, readLaunchPlan, writeLaunchFiles } from './launch-files.js'
 import { loadProfile } from './profiles.js'
@@ -55,6 +64,27 @@ export const MAX_DEPTH = 2
 
 /** How long a process gets to exit on SIGTERM before the ladder reaches SIGKILL. */
 const KILL_GRACE_MS = 3000
+
+/** How long to wait for a stopped agent's socket to go before reclaiming its name. */
+const NAME_FREE_TIMEOUT_MS = 8_000
+const NAME_FREE_POLL_MS = 100
+
+/**
+ * A mode switch, resolved by the socket layer before it reaches here.
+ *
+ * `hostPid` is present only for backgrounding, where it comes from the caller's
+ * OWN registry entry — which is what makes "background someone else" impossible
+ * rather than merely refused. Surfacing does not need it: the broker owns the
+ * headless child it is about to stop.
+ */
+export interface SwitchRequest {
+  name: string
+  to: 'headless' | 'interactive'
+  requestedBy: string
+  /** The requester's own pane. Decides same-window placement; absent is not an error. */
+  anchor?: string
+  hostPid?: number
+}
 
 export interface SpawnRequest {
   name: string
@@ -108,12 +138,19 @@ export interface SupervisorOptions {
   surface?: Pick<SurfaceOptions, 'runAppleScript' | 'spawn' | 'platform'>
   /** Teleport's human-veto window. Shortened in tests; never shortened in production. */
   countdownMs?: number
+  /**
+   * How long a mode switch waits for the stopped process's socket to go before
+   * reclaiming its name. Shortened in tests, where nothing ever closes a fake
+   * connection and the full window would just be dead time.
+   */
+  nameFreeMs?: number
 }
 
 export class Supervisor implements TeleportHost {
   private readonly live = new Map<string, Live>()
   private readonly semaphore: Semaphore
   private readonly settleMs: number
+  private readonly nameFreeMs: number
   private readonly surfaceOptions: SupervisorOptions['surface']
   private readonly unwatch: () => void
   private readonly teleporter: Teleport
@@ -124,6 +161,7 @@ export class Supervisor implements TeleportHost {
   ) {
     this.semaphore = options.semaphore ?? new Semaphore()
     this.settleMs = options.settleMs ?? SETTLE_MS
+    this.nameFreeMs = options.nameFreeMs ?? NAME_FREE_TIMEOUT_MS
     this.surfaceOptions = options.surface ?? {}
     this.unwatch = core.onAppend(row => this.onRow(row))
     this.teleporter = new Teleport(core, this, options.countdownMs)
@@ -538,6 +576,119 @@ export class Supervisor implements TeleportHost {
     // so a resumed worktree agent lands back in its own worktree, branch intact.
     this.track(identity.agentId, name, handle, { cwd: plan.cwd }, identity.isolation as IsolationName)
     return { ok: true, agentId: identity.agentId, name }
+  }
+
+  /**
+   * Move a live agent between headless and a terminal, keeping its conversation.
+   * Policy — who may aim this, and where it lands — is `mode-switch.ts`; this is
+   * the mechanism only.
+   */
+  async switchSurface(req: SwitchRequest): Promise<SwitchOutcome> {
+    const identity = this.core.agents.byName(req.name)
+    const blocked =
+      req.to === 'headless'
+        ? checkBackgroundable(identity, req.name, req.hostPid)
+        : checkSurfaceable(identity, req.name)
+    if (blocked) return { ok: false, reason: blocked }
+
+    const agent = identity as AgentIdentity
+    const profile = loadProfile(agent.profile)
+    if ('error' in profile)
+      return { ok: false, reason: `cannot reload profile "${agent.profile}": ${profile.error}` }
+    if (agent.sessionId === '')
+      return { ok: false, reason: `${req.name} has no recorded session id, so it cannot be resumed` }
+
+    const stopped = this.stopFor(req, agent)
+    if (!stopped.ok) return { ok: false, reason: stopped.reason as string }
+    await this.waitForNameFree(req.name)
+    return this.resumeOnto(req, agent, profile)
+  }
+
+  /**
+   * End the running process, by the route that direction is allowed to use.
+   *
+   * Surfacing reaches `kill`, which refuses anything but a headless agent — and
+   * a headless agent is the only thing surfacing applies to, so the guard that
+   * protects a human's pane from a peer stays fully intact. Backgrounding reaches
+   * `endSession`, on a pid the caller reported about its OWN process.
+   *
+   * An agent that is not live is not an error: it is already stopped, and the
+   * resume below is exactly what it needed anyway.
+   */
+  private stopFor(req: SwitchRequest, agent: AgentIdentity): { ok: boolean; reason?: string } {
+    if (!this.live.has(agent.agentId)) return { ok: true }
+    if (req.to === 'headless') return this.endSession(req.name, req.hostPid as number)
+    return this.kill(req.name)
+  }
+
+  /** Rebuild the plan against the new surface and reattach to the same conversation. */
+  private async resumeOnto(
+    req: SwitchRequest,
+    agent: AgentIdentity,
+    profile: AgentProfile,
+  ): Promise<SwitchOutcome> {
+    const entry = this.live.get(agent.agentId)
+    const surface = req.to === 'headless' ? 'headless' : placementFor(req.anchor)
+    const allocation = entry?.allocation ?? { cwd: agent.cwd }
+    const isolation = entry?.isolation ?? (agent.isolation as IsolationName)
+
+    const plan = buildLaunchPlan({
+      agentId: agent.agentId,
+      sessionId: agent.sessionId,
+      resume: true,
+      name: req.name,
+      profile,
+      brief: req.to === 'headless' ? BACKGROUNDED_BRIEF : agent.brief,
+      cwd: allocation.cwd,
+      surface,
+      mcpConfigPath: mcpConfigPath(agent.agentId),
+      ...(allocation.addDirs ? { extraDirs: allocation.addDirs } : {}),
+      agentChatHome: home(),
+    })
+    writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry()))
+
+    // `surface` in meta is what stops the roster reporting the pane this agent no
+    // longer has — `foldAgent` reads it, and only a switch ever writes it.
+    this.core.append({
+      kind: 'agent_resumed',
+      actor: req.requestedBy,
+      target: req.name,
+      ref: agent.agentId,
+      body: req.to === 'headless' ? 'backgrounded' : 'surfaced',
+      meta: { session_id: agent.sessionId, surface, from_surface: agent.surface },
+    })
+
+    const handle = await this.launchOn(surface, plan, req.anchor)
+    this.track(agent.agentId, req.name, handle, allocation, isolation, req.anchor)
+    logEvent('agent_surface_switched', { name: req.name, to: handle.surface, from: agent.surface })
+    // Delivered after the relaunch so it lands in the session that came back,
+    // rather than the one that was about to be signalled.
+    if (req.to !== 'headless') this.tellAgent(req.name, SURFACED_NOTICE)
+    return { ok: true, name: req.name, agentId: agent.agentId, surface: handle.surface }
+  }
+
+  /**
+   * A `message` rather than a `notice`: notices are not pushed and are not an
+   * inbox kind, so one aimed at a session is simply never seen — the defect the
+   * teleport live runs found, and the same trap is open here.
+   */
+  private tellAgent(name: string, body: string): void {
+    const { msgId } = this.core.append({ kind: 'message', actor: 'agent-chat', target: name, body })
+    this.core.deliverTo(name, { msgId, from: 'agent-chat', text: body, at: Date.now() })
+  }
+
+  /**
+   * Registration is what holds a name, and the resumed process registers under
+   * the name the stopped one still holds. Timing out is not fatal — the launch
+   * proceeds and the agent's own registration reports the collision.
+   */
+  private async waitForNameFree(name: string): Promise<void> {
+    const deadline = Date.now() + this.nameFreeMs
+    while (Date.now() < deadline) {
+      if (this.core.registry.connFor(name) === undefined) return
+      await new Promise(resolve => setTimeout(resolve, NAME_FREE_POLL_MS))
+    }
+    logEvent('switch_name_held', { name, waitedMs: this.nameFreeMs })
   }
 
   /** Hand off to a successor and end this session. See `teleport.ts`. */
