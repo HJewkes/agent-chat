@@ -6,22 +6,28 @@ primitive it stands on. Ranking is at the bottom; the honest kills are in
 
 ## Primitives actually available
 
-Read from the source, not assumed:
+Read from the source, not assumed — **except where it wasn't**. Audited 2026-07-27
+against `27071ec`, the commit this table was written from. P8 was fabricated: there
+was no inbox in `registry.ts` and no literal `50` anywhere in `src/` at that commit,
+so it described a primitive that never existed rather than one that later regressed.
+P1's `inbox[]` field was wrong for the same reason, and P6 cited a line belonging to
+broadcast. Citations below are corrected to current `HEAD`; treat any *un*audited
+claim here as a hypothesis until you have opened the file.
 
-| #   | Primitive                                                                                                               | Where                                   |
-| --- | ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| P1  | Registry entry: `name`, `workingOn`, `cwd`, `pid`, `status`, `registeredAt`, `lastSeen`, `inbox[]`                      | `broker/registry.ts:6`                  |
-| P2  | The broker sees every message and every routing decision, and already writes JSONL                                      | `broker/log.ts:8`, `broker/index.ts:23` |
-| P3  | `meta` becomes `<channel>` tag attributes — **model-visible**, keys must be `[A-Za-z0-9_]+` or they're silently dropped | `server/index.ts:33`                    |
-| P4  | Registration is identity _and_ delivery filter; the name is a lease held by a live socket, released on close            | `registry.ts:56`, `broker/index.ts:71`  |
-| P5  | The human is a peer on the same bus via `agent-chat send --as`                                                          | `cli.ts:44`                             |
-| P6  | `in_reply_to` correlation ids                                                                                           | `registry.ts:130`                       |
-| P7  | Broadcast fanout to all-but-sender                                                                                      | `registry.ts:136`                       |
-| P8  | Replayable 50-message inbox per session, retained across reconnect                                                      | `registry.ts:102`, `registry.ts:73`     |
-| P9  | Permission relay — declared nowhere yet. **Unbuilt.**                                                                   | —                                       |
-| P10 | The broker knows every session's `cwd`                                                                                  | `registry.ts:65`                        |
-| P11 | The broker knows every session's `pid`                                                                                  | `registry.ts:65`                        |
-| P12 | `instructions` is a per-session system-prompt injection point, constructed at spawn time                                | `server/index.ts:8`                     |
+| #   | Primitive                                                                                                                                                                                                                                                                                                     | Where                                   |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| P1  | Registry entry: `name`, `workingOn`, `cwd`, `pid`, `status`, `awaitingApproval`, `registeredAt`, `lastSeen` — **no `inbox[]`; the original row invented one**                                                                                                                                                 | `broker/registry.ts:4`                  |
+| P2  | The broker sees every message and every routing decision, and already writes JSONL                                                                                                                                                                                                                            | `broker/log.ts:8`, `broker/index.ts:23` |
+| P3  | `meta` becomes `<channel>` tag attributes — **model-visible**, keys must be `[A-Za-z0-9_]+` or they're silently dropped                                                                                                                                                                                       | `server/index.ts:33`                    |
+| P4  | Registration is identity _and_ delivery filter; the name is a lease held by a live socket, released on close                                                                                                                                                                                                  | `registry.ts:56`, `broker/index.ts:71`  |
+| P5  | The human is a peer on the same bus via `agent-chat send --as`                                                                                                                                                                                                                                                | `cli.ts:44`                             |
+| P6  | `in_reply_to` correlation ids (was cited at `:130`, which is broadcast's doc comment)                                                                                                                                                                                                                         | `registry.ts:133`                       |
+| P7  | Broadcast fanout to all-but-sender                                                                                                                                                                                                                                                                            | `registry.ts:148`                       |
+| P8  | Inbox is a bounded query over the append-only event log, so replay survives broker restart. **The original row — a replayable 50-message per-session inbox retained across reconnect — never existed at any commit.** The cap is now a tool-input bound (`INBOX_MAX`), a different thing in a different layer | `event-log.ts:121`, `tools.ts:26`       |
+| P9  | Permission relay — declared nowhere yet. **Unbuilt.**                                                                                                                                                                                                                                                         | —                                       |
+| P10 | The broker knows every session's `cwd`                                                                                                                                                                                                                                                                        | `registry.ts:65`                        |
+| P11 | The broker knows every session's `pid`                                                                                                                                                                                                                                                                        | `registry.ts:65`                        |
+| P12 | `instructions` is a per-session system-prompt injection point, constructed at spawn time                                                                                                                                                                                                                      | `server/index.ts:8`                     |
 
 ### Facts from the live docs that constrain everything below
 
@@ -75,6 +81,16 @@ that can enumerate pending prompts. Run this across five sessions and the broker
 becomes the only place with a complete, machine-readable record of what every
 agent on the box asked to do. That artifact — _what did my agents actually try to
 run last night_ — is worth more than the messaging layer it's bolted to.
+
+**Bounded 2026-07-27, and it cuts at the second reason specifically.** Relay fires
+for interactive sessions only. A `--print` session with a live channel and a genuine
+permission denial produced no relay at all, because non-interactive denials are
+auto-resolved without opening a promptable request (`permission-relay.md`). So the
+observatory cannot see background or headless peers — and "what did my agents try to
+run last night" describes precisely an unattended overnight run, which is the case
+least likely to be interactive. The first reason survives intact: for interactive
+sessions, `blocked` really is knowable. The second is narrower than written, and the
+complete-record framing should not be repeated without this caveat attached.
 
 **Effort.** S. It is one `setNotificationHandler`, one `ClientMessage` variant, one
 `logEvent`, one CLI verb. The verdict path is not needed and should not be built yet.
@@ -144,6 +160,15 @@ dropped — it's already in the inbox — it's replaced by one summary notificat
 `4 more messages from alice, bob — call chat_inbox`.
 
 **Primitive.** P7 + P8. The inbox is what makes this safe and therefore cheap.
+
+**Premise re-checked 2026-07-27**, because CC-6 builds on it and P8 turned out to be
+fabricated. The losslessness claim survives, but not for the reason written here: it
+never rested on a retained per-session inbox, because there wasn't one. It rests on
+the event log being the source of truth with the inbox as a query over it
+(`event-log.ts:121`), which is a _stronger_ guarantee — overflow survives a broker
+restart, not just a reconnect. So throttle-don't-drop is still sound. Anything else
+in this entry that leans on P8's wording, rather than on the log, should be re-read
+before it is relied on.
 
 **Why it's valuable.** Every delivered message is a permanent context cost for the
 recipient and a derailment of whatever turn it lands on. At five sessions, one
@@ -345,6 +370,12 @@ sitting outside the mechanism Claude Code already audits. Skip both halves.
 
 The salvageable part is I1/I2/I3: observe, notify, and let a human answer.
 
+Confirmed 2026-07-27: the host really does accept `{request_id, behavior}` over
+`notifications/claude/channel/permission`, races it against the local dialog, and acts on
+whichever lands first. So none of the above is hypothetical — the mechanism is sitting
+there working, and every session on the channel allowlist can already reach it. See
+`permission-relay.md`. Declining to send a verdict is the only thing stopping us.
+
 ### R2. Broker-side deterministic permission policy
 
 Rules like "auto-allow Read in ~/projects/voltras, always relay Bash to the human"
@@ -415,9 +446,14 @@ Not ideas — things I'd expect to break, several of which have no fix above.
 - **Name collisions across projects.** Two repos both want `api`. The second
   registration fails, that session picks something else, and every peer's
   remembered name is now wrong with no notification.
-- **The inbox is per-connection-lifetime and capped at 50** (`registry.ts:4`). It
-  survives reconnect (`registry.ts:73`) but not the broker restarting, and a busy
-  session on a broadcast-heavy bus can roll 50 messages faster than you'd think.
+- **The inbox is a bounded query over the event log.** This bullet used to say
+  "per-connection-lifetime and capped at 50 (`registry.ts:4`)". That was never true —
+  not a regression, an invention: `27071ec` has no inbox in `registry.ts` and no
+  literal `50` in `src/` at all. Today the inbox is an event-log query
+  (`event-log.ts:121`) bounded at the tool boundary by `INBOX_MAX` (`tools.ts:26`,
+  added in `e407993`). So replay survives a broker restart rather than dying with the
+  connection — the opposite of what the bullet claimed. Still true that a
+  broadcast-heavy bus rolls past the window fast.
 
 ## What a peer session could do that a user wouldn't want
 

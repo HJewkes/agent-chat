@@ -23,6 +23,22 @@ export interface AppendInput {
   meta?: Record<string, string>
 }
 
+/**
+ * A log row in the shape the agent fold consumes: decoded `meta`, camelCase, and
+ * no `id`. Deliberately not the sqlite `Row` — nothing downstream of the fold
+ * should depend on the storage schema.
+ */
+export interface AgentEventRow {
+  kind: EventKind
+  ts: number
+  actor: string
+  target: string | null
+  msgId: string | null
+  ref: string | null
+  body: string | null
+  meta: Record<string, string>
+}
+
 interface Row {
   id: number
   ts: number
@@ -65,6 +81,26 @@ export const APPROVAL_TTL_MS = 10 * 60 * 1000
 
 /** An item is closed once something references it as answered or dismissed. */
 const CLOSED = `SELECT ref FROM events WHERE kind IN ('answer','resolution') AND ref IS NOT NULL`
+
+/**
+ * Kinds the agent read model folds over. `agent_spawn_refused` and
+ * `verdict_refused` are absent on purpose: a refusal never creates or advances
+ * an identity, so folding it would invent an agent that was never spawned.
+ */
+const AGENT_KINDS = [
+  'agent_spawned',
+  'agent_attached',
+  'agent_detached',
+  'agent_resumed',
+  'agent_exited',
+  'agent_retired',
+  'agent_handoff',
+  'agent_stood_down',
+  'isolation_allocated',
+  'isolation_released',
+] as const satisfies readonly EventKind[]
+
+const AGENT_KINDS_SQL = AGENT_KINDS.map(k => `'${k}'`).join(',')
 
 // Loaded through require so Vite/vitest don't try to pre-bundle a builtin they
 // don't yet know about. The type import above is erased, so it costs nothing.
@@ -131,6 +167,35 @@ export class EventLog {
     return rows.map(toMessage)
   }
 
+  /**
+   * Everything one session did or had done to it, newest last. Read-only and
+   * pure query: observing a peer this way puts nothing into that peer's context,
+   * which is the whole point — today the only way to learn what a session was
+   * doing was to message it, so observation and interruption were the same act.
+   */
+  activityFor(name: string, limit: number): QueueItem[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM (
+           SELECT * FROM events
+           WHERE actor = ? OR target = ?
+           ORDER BY id DESC LIMIT ?
+         ) ORDER BY id ASC`,
+      )
+      .all(name, name, limit) as unknown as Row[]
+    return rows.map(row => ({
+      msgId: row.msg_id ?? String(row.id),
+      kind: row.kind as QueueItem['kind'],
+      from: row.actor,
+      text: row.body ?? '',
+      at: row.ts,
+      meta: {
+        ...((row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>),
+        ...(row.target ? { target: row.target } : {}),
+      },
+    }))
+  }
+
   /** Open items for the human: addressed to them and not yet answered or dismissed. */
   humanQueue(): QueueItem[] {
     const rows = this.db
@@ -163,6 +228,50 @@ export class EventLog {
     return row.n
   }
 
+  /**
+   * The questions this session still has outstanding, not just how many.
+   *
+   * Teleport refuses while any are open, and a refusal a model cannot act on is
+   * one it will retry against the same wall — so the reason has to name them,
+   * the way `send_result.reason` names a route failure rather than reporting
+   * "failed".
+   */
+  openQuestions(actor: string): QueueItem[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM events
+         WHERE actor = ? AND kind = 'question' AND msg_id NOT IN (${CLOSED})
+         ORDER BY id ASC`,
+      )
+      .all(actor) as unknown as Row[]
+    return rows.map(row => ({
+      msgId: row.msg_id ?? String(row.id),
+      kind: row.kind as QueueItem['kind'],
+      from: row.actor,
+      text: row.body ?? '',
+      at: row.ts,
+      meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
+    }))
+  }
+
+  /**
+   * Peer traffic that landed in `name`'s inbox since `since`.
+   *
+   * Deliberately NOT called "unread": nothing anywhere tracks a read cursor, so
+   * this counts what ARRIVED in a window the caller picks. Teleport uses it to
+   * warn — never to refuse — since the descendant keeps the name and `chat_inbox`
+   * still returns every one of these rows after the hop.
+   */
+  inboxCountSince(name: string, since: number): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM events
+         WHERE target = ? AND kind IN (${INBOX_KINDS}) AND ts >= ?`,
+      )
+      .get(name, since) as unknown as { n: number }
+    return row.n
+  }
+
   /** The session that raised `msgId`, so an answer knows where to go back to. */
   authorOf(msgId: string): string | undefined {
     const row = this.db.prepare(`SELECT actor FROM events WHERE msg_id = ? LIMIT 1`).get(msgId) as unknown as
@@ -175,6 +284,30 @@ export class EventLog {
       .prepare(`SELECT 1 AS hit FROM events WHERE msg_id = ? AND msg_id NOT IN (${CLOSED}) LIMIT 1`)
       .get(msgId) as unknown as { hit: number } | undefined
     return row !== undefined
+  }
+
+  /**
+   * Every row that bears on an agent identity, oldest first, for the fold in
+   * `agents/identity.ts`.
+   *
+   * The db handle stays private and this returns plain rows rather than the read
+   * model reaching in: the fold is then a pure function over a row list, unit
+   * testable with no database at all, which is the point of the A1 ordering.
+   */
+  agentEvents(): AgentEventRow[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM events WHERE kind IN (${AGENT_KINDS_SQL}) ORDER BY id ASC`)
+      .all() as unknown as Row[]
+    return rows.map(row => ({
+      kind: row.kind as EventKind,
+      ts: row.ts,
+      actor: row.actor,
+      target: row.target,
+      msgId: row.msg_id,
+      ref: row.ref,
+      body: row.body,
+      meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
+    }))
   }
 
   history(limit: number): QueueItem[] {

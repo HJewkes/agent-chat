@@ -1,31 +1,29 @@
 import net from 'node:net'
 import fs from 'node:fs'
 import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
-import path from 'node:path'
 import {
   encode,
   lineReader,
   type ClientMessage,
   type DeliveredMessage,
+  type SystemEvent,
   type ReplyType,
   type ServerMessage,
 } from '../protocol.js'
-import { home, socketPath } from '../paths.js'
+import { cliEntry, home, socketPath } from '../paths.js'
 
 const REQUEST_TIMEOUT_MS = 5000
 const RECONNECT_DELAYS_MS = [100, 250, 500, 1000, 2000, 5000]
 
 type Waiter = (msg: ServerMessage) => void
 
-interface Identity {
-  name: string
-  workingOn: string
-  cwd: string
-  pid: number
-}
-
-const brokerEntry = (): string => path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'cli.js')
+/**
+ * What gets replayed on reconnect. `agentId` is in here deliberately: a broker
+ * restart that replayed only the name would reattach the process as an ordinary
+ * session, and the durable agent would go quietly missing from the roster at
+ * exactly the moment the roster is meant to be the trustworthy view.
+ */
+type Identity = Omit<Extract<ClientMessage, { t: 'register' }>, 't'>
 
 const wait = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -40,11 +38,32 @@ export class BrokerClient {
   /** FIFO per reply type; the socket answers in order, so this stays aligned. */
   private readonly waiters = new Map<ReplyType, Waiter[]>()
 
-  constructor(private readonly onDeliver: (message: DeliveredMessage) => void) {}
+  /**
+   * `onFatal` fires when the broker says stop rather than retry. The only sender
+   * today is a resume takeover, and the caller is expected to end the process:
+   * this connection's identity now belongs to a successor, so reconnecting would
+   * start a fight over it rather than recover from anything.
+   */
+  constructor(
+    private readonly onDeliver: (message: DeliveredMessage) => void,
+    private readonly onFatal?: (reason: string) => void,
+    private readonly onSystemEvents?: (events: SystemEvent[]) => void,
+  ) {}
 
   private handle(msg: ServerMessage): void {
     if (msg.t === 'deliver') return this.onDeliver(msg.message)
-    if (msg.t === 'error') return
+    if (msg.t === 'system_events') return this.onSystemEvents?.(msg.events)
+    if (msg.t === 'error') {
+      if (!msg.fatal) return
+      // Set before destroying, so the close handler sees a deliberate shutdown
+      // and does not climb the reconnect ladder.
+      this.closed = true
+      this.socket?.destroy()
+      this.socket = null
+      this.failAllWaiters(msg.reason)
+      this.onFatal?.(msg.reason)
+      return
+    }
     const queue = this.waiters.get(msg.t)
     queue?.shift()?.(msg)
   }
@@ -87,7 +106,7 @@ export class BrokerClient {
   /** Starts a broker detached, so it outlives whichever session happened to spawn it. */
   private spawnBroker(): void {
     fs.mkdirSync(home(), { recursive: true })
-    spawn(process.execPath, [brokerEntry(), 'broker'], { detached: true, stdio: 'ignore' }).unref()
+    spawn(process.execPath, [cliEntry(), 'broker'], { detached: true, stdio: 'ignore' }).unref()
   }
 
   async connect(): Promise<void> {
@@ -115,7 +134,10 @@ export class BrokerClient {
   }
 
   request(message: ClientMessage, replyType: ReplyType): Promise<ServerMessage> {
-    if (message.t === 'register') this.identity = { ...message }
+    if (message.t === 'register') {
+      const { t: _kind, ...identity } = message
+      this.identity = identity
+    }
     return new Promise((resolve, reject) => {
       const socket = this.socket
       if (!socket) return reject(new Error('not connected to the broker'))

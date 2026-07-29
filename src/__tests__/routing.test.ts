@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { z } from 'zod'
+import { reapBroker } from './broker-harness.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
@@ -78,6 +79,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   for (const s of sessions) await s.transport.close().catch(() => undefined)
+  // Closing the transports ends the sessions, not the broker: it was spawned
+  // detached so it would outlive them. Reap it explicitly or every run leaks one.
+  await reapBroker(TEST_HOME)
   fs.rmSync(TEST_HOME, { recursive: true, force: true })
 })
 
@@ -242,6 +246,41 @@ describe('human queue', () => {
   })
 })
 
+describe('argument validation', () => {
+  /**
+   * Live regression, 2026-07-27: a session called chat_send with `message` instead
+   * of `text`. The SDK does not enforce `required`, so the handler coerced the
+   * missing field with String(undefined) and the recipient was delivered the word
+   * "undefined" while the sender was told the send succeeded.
+   */
+  it('refuses a send whose body arrived under the wrong key, delivering nothing', async () => {
+    const before = bob.inbox.length
+    const sent = await call(alice, 'chat_send', { to: 'bob', message: 'body under the wrong key' })
+    await settle()
+
+    expect(sent).toContain('text is required')
+    expect(bob.inbox).toHaveLength(before)
+    expect(bob.inbox.map(m => m.content)).not.toContain('undefined')
+  })
+
+  it('refuses a status outside the enum rather than storing it', async () => {
+    expect(await call(bob, 'chat_status', { status: 'busy' })).toContain('must be one of')
+    expect(await call(alice, 'chat_list')).not.toContain('busy')
+  })
+
+  it('refuses an empty question instead of asking the human nothing', async () => {
+    expect(await call(alice, 'chat_ask', { text: '   ' })).toContain('text is required')
+  })
+
+  it('refuses a non-numeric inbox limit rather than sending NaN over the wire', async () => {
+    expect(await call(alice, 'chat_inbox', { limit: 'lots' })).toContain('limit must be a positive number')
+  })
+
+  it('still defaults the inbox limit when it is omitted', async () => {
+    expect(await call(alice, 'chat_inbox')).not.toContain('Error:')
+  })
+})
+
 describe('leases', () => {
   it('rejects a name that a live session holds', async () => {
     const impostor = await startSession('impostor')
@@ -259,5 +298,173 @@ describe('leases', () => {
     expect(await call(alice, 'chat_send', { to: 'dave', text: 'still there?' })).toMatch(/^Not delivered/)
     const replacement = await startSession('dave2')
     expect(await call(replacement, 'chat_register', { name: 'dave' })).toContain('Registered as "dave"')
+  })
+})
+
+describe('thread depth', () => {
+  it('stamps a model-visible depth that increments with each reply', async () => {
+    const opener = await call(alice, 'chat_send', { to: 'bob', text: 'depth check' })
+    await settle()
+    const msgId = /msg_id (\w+)/.exec(opener)?.[1]
+    expect(bob.inbox.at(-1)?.meta?.thread_depth).toBe('1')
+
+    await call(bob, 'chat_send', { to: 'alice', text: 'depth reply', in_reply_to: msgId })
+    await settle()
+
+    expect(alice.inbox.at(-1)?.meta?.thread_depth).toBe('2')
+    expect(alice.inbox.at(-1)?.meta?.thread_hint).toBeUndefined()
+  })
+
+  it('escalates a runaway thread to the human, who is the only party outside it', async () => {
+    let inReplyTo = /msg_id (\w+)/.exec(await call(alice, 'chat_send', { to: 'bob', text: 'runaway 1' }))?.[1]
+    let last = ''
+    for (let hop = 2; hop <= 20; hop++) {
+      const fromAlice = hop % 2 === 1
+      last = await call(fromAlice ? alice : bob, 'chat_send', {
+        to: fromAlice ? 'bob' : 'alice',
+        text: `runaway ${hop}`,
+        in_reply_to: inReplyTo,
+      })
+      inReplyTo = /msg_id (\w+)/.exec(last)?.[1] ?? inReplyTo
+    }
+
+    expect(last).toMatch(/^Not delivered/)
+    expect(last).toContain('Do not start a fresh thread')
+    const { stdout } = await cli(['inbox'])
+    expect(stdout).toContain('reached reply depth 20')
+  })
+})
+
+describe('broadcast budget', () => {
+  /**
+   * Asserting a message was NOT pushed is only meaningful next to a control
+   * proving the same call pushes when under budget — otherwise a broken
+   * broadcast path would pass as successful throttling.
+   */
+  it('pushes while under budget, holds over it, and keeps the held one retrievable', async () => {
+    const erin = await startSession('erin')
+    await call(erin, 'chat_register', { name: 'erin', working_on: 'budget probe' })
+    // Sized so one broadcast fits the budget and two cannot, with enough headroom
+    // that the exact number of sessions left registered by earlier tests is not
+    // load-bearing — the cost is payload x recipients, so fanout moves this.
+    const bulky = `held-probe ${'x'.repeat(3000)}`
+
+    const before = bob.inbox.length
+    const first = await call(erin, 'chat_broadcast', { text: `first ${bulky}` })
+    await settle()
+    expect(first).toMatch(/^Broadcast to/)
+    expect(bob.inbox.length).toBe(before + 1)
+
+    const second = await call(erin, 'chat_broadcast', { text: `second ${bulky}` })
+    await settle()
+    expect(second).toMatch(/^Held for/)
+    expect(second).toContain('inbox')
+    expect(bob.inbox.length).toBe(before + 1)
+
+    // Held, not dropped: the log is the source of truth and the inbox queries it.
+    expect(await call(bob, 'chat_inbox', { limit: 5 })).toContain('second held-probe')
+  })
+
+  it('still delivers a directed message from a sender who is over budget', async () => {
+    const before = carol.inbox.length
+    const sent = await call(alice, 'chat_send', { to: 'carol', text: 'directed, not throttled' })
+    await settle()
+
+    expect(sent).toMatch(/^Delivered/)
+    expect(carol.inbox.length).toBe(before + 1)
+  })
+})
+
+describe('pair exchange rate', () => {
+  it('stops a fresh-thread volley and tells the human, in their words not the sender’s', async () => {
+    const frank = await startSession('frank')
+    const grace = await startSession('grace')
+    await call(frank, 'chat_register', { name: 'frank', working_on: 'rate probe' })
+    await call(grace, 'chat_register', { name: 'grace', working_on: 'rate probe' })
+
+    // Control: the budget's worth of messages all arrive, none of them a reply,
+    // so thread_depth never leaves 1 and the depth breaker is not what fires.
+    for (let i = 0; i < 20; i++) {
+      expect(await call(frank, 'chat_send', { to: 'grace', text: `volley ${i}` })).toMatch(/^Delivered/)
+    }
+    await settle()
+    expect(grace.inbox).toHaveLength(20)
+    expect(grace.inbox.at(-1)?.meta?.thread_depth).toBe('1')
+
+    const refused = await call(frank, 'chat_send', { to: 'grace', text: 'once more' })
+    await settle()
+
+    expect(refused).toMatch(/^Not delivered/)
+    expect(grace.inbox).toHaveLength(20)
+    const { stdout } = await cli(['inbox'])
+    expect(stdout).toContain('frank sent grace 20 messages')
+    expect(stdout).toContain('volleying across separate threads')
+  })
+})
+
+describe('observation', () => {
+  it('reads a peer without delivering anything into it', async () => {
+    // Control first: a directed message DOES land, so the counter is working and
+    // an unchanged count afterwards means something.
+    const before = carol.inbox.length
+    await call(alice, 'chat_send', { to: 'carol', text: 'observation control' })
+    await settle()
+    expect(carol.inbox.length).toBe(before + 1)
+
+    const seen = await call(alice, 'chat_activity', { name: 'carol' })
+    await settle()
+
+    expect(carol.inbox.length).toBe(before + 1)
+    expect(seen).toContain('this read did not notify carol')
+    expect(seen).toContain('observation control')
+  })
+
+  it('answers for a session that has already exited', async () => {
+    const heidi = await startSession('heidi')
+    await call(heidi, 'chat_register', { name: 'heidi', working_on: 'something short-lived' })
+    await call(heidi, 'chat_send', { to: 'alice', text: 'before I go' })
+    await heidi.transport.close()
+    await settle()
+
+    const seen = await call(alice, 'chat_activity', { name: 'heidi' })
+
+    expect(seen).toContain('not currently registered')
+    expect(seen).toContain('before I go')
+  })
+
+  it('reports an unknown name rather than inventing a trail', async () => {
+    expect(await call(alice, 'chat_activity', { name: 'nobody-by-that-name' })).toContain('No session named')
+  })
+})
+
+describe('do not disturb', () => {
+  it('holds peer pushes but loses nothing, and the human still gets through', async () => {
+    const ivan = await startSession('ivan')
+    await call(ivan, 'chat_register', { name: 'ivan', working_on: 'a long stretch of focus' })
+
+    // Control: while ivan is taking pushes, a peer message arrives live.
+    await call(alice, 'chat_send', { to: 'ivan', text: 'before the quiet' })
+    await settle()
+    expect(ivan.inbox).toHaveLength(1)
+
+    await call(ivan, 'chat_status', { status: 'working', dnd: true })
+    const held = await call(alice, 'chat_send', { to: 'ivan', text: 'during the quiet' })
+    await settle()
+
+    expect(ivan.inbox).toHaveLength(1)
+    expect(held).toContain('not taking pushes')
+    // Nothing lost: it is in the log, so the inbox query returns it.
+    expect(await call(ivan, 'chat_inbox', { limit: 10 })).toContain('during the quiet')
+    // And peers can see the state rather than guessing why nobody replies.
+    expect(await call(alice, 'chat_list')).toContain('dnd')
+
+    // The human overrides; no agent has a way to.
+    await execFileAsync(process.execPath, [CLI, 'send', 'ivan', 'your user needs you'], {
+      env: { ...process.env, AGENT_CHAT_HOME: TEST_HOME },
+    })
+    await settle()
+
+    expect(ivan.inbox).toHaveLength(2)
+    expect(ivan.inbox.at(-1)?.content).toBe('your user needs you')
   })
 })

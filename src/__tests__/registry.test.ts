@@ -5,6 +5,32 @@ const conn = (id: string) => ({ id })
 const register = (registry: Registry<object>, c: object, name: string) =>
   registry.register(c, { name, workingOn: `${name}'s work`, cwd: `/tmp/${name}`, pid: 1 })
 
+/**
+ * Regression: a spawn that named no cwd fell through to `process.cwd()` in the
+ * SUPERVISOR, which runs inside the broker — and the broker is autostarted by
+ * whichever client connects first, so its cwd is an arbitrary repo. A live spawn
+ * from this checkout ran its agent in ~/projects/relay. The requester's own cwd
+ * is the only meaningful default, and the registry is where it already lived.
+ *
+ * This covers the accessor, not the socket wiring that consumes it; there is no
+ * socket-level spawn harness yet.
+ */
+describe('the requester cwd a spawn defaults to', () => {
+  it('reports the cwd the session registered with', () => {
+    const registry = new Registry<object>()
+    const alice = conn('a')
+    register(registry, alice, 'alice')
+
+    expect(registry.cwdFor(alice)).toBe('/tmp/alice')
+  })
+
+  it('reports nothing for an unregistered connection, rather than a stale or default path', () => {
+    const registry = new Registry<object>()
+
+    expect(registry.cwdFor(conn('ghost'))).toBeUndefined()
+  })
+})
+
 describe('Registry routing', () => {
   it('delivers a directed message to exactly one session', () => {
     const registry = new Registry<object>()
@@ -129,5 +155,251 @@ describe('Registry directory', () => {
         cwd: '/tmp/alice',
       }),
     ])
+  })
+})
+
+/** Walks a reply chain, returning the result of the last (possibly refused) hop. */
+function replyChain(registry: Registry<object>, alice: object, bob: object, hops: number) {
+  let result = registry.send(alice, 'bob', 'hop 1')
+  let inReplyTo = result.msgId
+  for (let hop = 2; hop <= hops; hop++) {
+    const fromAlice = hop % 2 === 1
+    result = registry.send(fromAlice ? alice : bob, fromAlice ? 'bob' : 'alice', `hop ${hop}`, inReplyTo)
+    inReplyTo = result.msgId
+  }
+  return result
+}
+
+describe('Registry thread depth', () => {
+  const pair = () => {
+    const registry = new Registry<object>()
+    const [alice, bob] = [conn('a'), conn('b')]
+    register(registry, alice, 'alice')
+    register(registry, bob, 'bob')
+    return { registry, alice, bob }
+  }
+
+  it('stamps depth 1 on a fresh thread and increments along the chain', () => {
+    const { registry, alice, bob } = pair()
+
+    const first = registry.send(alice, 'bob', 'start')
+    const second = registry.send(bob, 'alice', 'reply', first.msgId)
+    const third = registry.send(alice, 'bob', 'reply again', second.msgId)
+
+    expect(first.deliveries[0]?.message.threadDepth).toBe(1)
+    expect(second.deliveries[0]?.message.threadDepth).toBe(2)
+    expect(third.deliveries[0]?.message.threadDepth).toBe(3)
+  })
+
+  /**
+   * The longest real chain on 2026-07-27 ran to depth 5 and every link corrected a
+   * genuine error. Guards against anyone tuning the breaker down onto useful work.
+   */
+  it('delivers a depth-5 chain untouched, with no hint and no refusal', () => {
+    const { registry, alice, bob } = pair()
+
+    const last = replyChain(registry, alice, bob, 5)
+
+    expect(last.ok).toBe(true)
+    expect(last.deliveries).toHaveLength(1)
+    expect(last.deliveries[0]?.message.threadDepth).toBe(5)
+    expect(last.deliveries[0]?.message.threadHint).toBeUndefined()
+  })
+
+  it('hints at the warning depth but still delivers', () => {
+    const { registry, alice, bob } = pair()
+
+    const last = replyChain(registry, alice, bob, 12)
+
+    expect(last.ok).toBe(true)
+    expect(last.deliveries).toHaveLength(1)
+    expect(last.deliveries[0]?.message.threadHint).toBe('wrap_up')
+  })
+
+  it('breaks a runaway thread, delivering nothing and escalating to the human', () => {
+    const { registry, alice, bob } = pair()
+
+    const last = replyChain(registry, alice, bob, 20)
+
+    expect(last.ok).toBe(false)
+    expect(last.deliveries).toHaveLength(0)
+    expect(last.reason).toContain('depth')
+    expect(last.escalate).toMatchObject({ from: 'bob', to: 'alice', kind: 'thread_depth', value: 20 })
+  })
+
+  it('leaves directed messages on a fresh thread unaffected by a broken one', () => {
+    const { registry, alice, bob } = pair()
+    replyChain(registry, alice, bob, 20)
+
+    expect(registry.send(alice, 'bob', 'starting over').ok).toBe(true)
+  })
+})
+
+describe('Registry broadcast budget', () => {
+  const trio = (now: () => number) => {
+    const registry = new Registry<object>(now)
+    const [alice, bob, carol] = [conn('a'), conn('b'), conn('c')]
+    register(registry, alice, 'alice')
+    register(registry, bob, 'bob')
+    register(registry, carol, 'carol')
+    return { registry, alice }
+  }
+
+  const big = 'x'.repeat(5000)
+
+  it('pushes a broadcast live while the sender is under budget', () => {
+    const { registry, alice } = trio(() => 0)
+
+    const result = registry.broadcast(alice, big)
+
+    expect(result.ok).toBe(true)
+    expect(result.suppressLive).toBeFalsy()
+    expect(result.deliveries).toHaveLength(2)
+  })
+
+  it('holds an over-budget broadcast without losing it', () => {
+    const { registry, alice } = trio(() => 0)
+
+    registry.broadcast(alice, big)
+    const second = registry.broadcast(alice, big)
+
+    expect(second.ok).toBe(true)
+    expect(second.suppressLive).toBe(true)
+    // Still addressed to everyone: suppression is about the push, not the content.
+    expect(second.deliveries).toHaveLength(2)
+    expect(second.recipients).toEqual(['bob', 'carol'])
+    expect(second.reason).toContain('inbox')
+  })
+
+  it('lets the budget recover once the window has passed', () => {
+    let clock = 0
+    const { registry, alice } = trio(() => clock)
+
+    registry.broadcast(alice, big)
+    expect(registry.broadcast(alice, big).suppressLive).toBe(true)
+    clock += 61_000
+
+    expect(registry.broadcast(alice, big).suppressLive).toBeFalsy()
+  })
+
+  it('never throttles a directed message, even with the budget blown', () => {
+    const { registry, alice } = trio(() => 0)
+    registry.broadcast(alice, big)
+    registry.broadcast(alice, big)
+
+    const directed = registry.send(alice, 'bob', big)
+
+    expect(directed.ok).toBe(true)
+    expect(directed.suppressLive).toBeFalsy()
+  })
+})
+
+describe('Registry pair exchange rate', () => {
+  const trio = (now: () => number = Date.now) => {
+    const registry = new Registry<object>(now)
+    const [alice, bob, carol] = [conn('a'), conn('b'), conn('c')]
+    register(registry, alice, 'alice')
+    register(registry, bob, 'bob')
+    register(registry, carol, 'carol')
+    return { registry, alice, bob, carol }
+  }
+
+  /** Sends `count` messages that never reply to anything, so depth stays at 1 throughout. */
+  const volleyFreshThreads = (registry: Registry<object>, from: object, to: string, count: number) => {
+    const results = []
+    for (let i = 0; i < count; i++) results.push(registry.send(from, to, `fresh thread ${i}`))
+    return results
+  }
+
+  it('catches a pair volleying across fresh threads, which the depth breaker cannot see', () => {
+    const { registry, alice } = trio()
+
+    const delivered = volleyFreshThreads(registry, alice, 'bob', 20)
+    const refused = registry.send(alice, 'bob', 'and another')
+
+    // Control: every one of these got through, and none of them ever raised depth.
+    expect(delivered.every(r => r.ok)).toBe(true)
+    expect(delivered.every(r => r.deliveries[0]?.message.threadDepth === 1)).toBe(true)
+    // So the depth breaker was never going to fire, and the rate limit is what caught it.
+    expect(refused.ok).toBe(false)
+    expect(refused.escalate).toMatchObject({ from: 'alice', to: 'bob', kind: 'exchange_rate', value: 20 })
+    expect(refused.reason).toContain('new thread does not reset this')
+  })
+
+  it('budgets each direction and each peer separately', () => {
+    const { registry, alice, bob } = trio()
+    volleyFreshThreads(registry, alice, 'bob', 20)
+
+    expect(registry.send(alice, 'bob', 'blocked').ok).toBe(false)
+    // The reverse direction is its own budget, and so is a different recipient.
+    expect(registry.send(bob, 'alice', 'reply is fine').ok).toBe(true)
+    expect(registry.send(alice, 'carol', 'a third party is fine').ok).toBe(true)
+  })
+
+  it('lets the rate recover once the window has passed', () => {
+    let clock = 0
+    const { registry, alice } = trio(() => clock)
+    volleyFreshThreads(registry, alice, 'bob', 20)
+    expect(registry.send(alice, 'bob', 'blocked').ok).toBe(false)
+
+    clock += 10 * 60_000 + 1
+
+    expect(registry.send(alice, 'bob', 'a fresh window').ok).toBe(true)
+  })
+
+  it('does not charge refused sends against the budget', () => {
+    const { registry, alice } = trio()
+    for (let i = 0; i < 25; i++) registry.send(alice, 'nobody', 'into the void')
+
+    // Those all failed on an unknown recipient, so alice's budget for a real peer is intact.
+    expect(registry.send(alice, 'bob', 'still fine').ok).toBe(true)
+  })
+})
+
+describe('Registry do-not-disturb', () => {
+  const trio = () => {
+    const registry = new Registry<object>()
+    const [alice, bob, carol] = [conn('a'), conn('b'), conn('c')]
+    register(registry, alice, 'alice')
+    register(registry, bob, 'bob')
+    register(registry, carol, 'carol')
+    return { registry, alice, bob, carol }
+  }
+
+  it('retains a directed message for a quiet session instead of pushing it', () => {
+    const { registry, alice, bob } = trio()
+    registry.setStatus(bob, 'working', undefined, true)
+
+    const result = registry.send(alice, 'bob', 'are you there?')
+
+    // Routed and logged, just not pushed — that is what makes DND lossless.
+    expect(result.ok).toBe(true)
+    expect(result.deliveries).toHaveLength(1)
+    expect(result.deliveries[0]?.live).toBe(false)
+    expect(result.reason).toContain('inbox')
+  })
+
+  it('holds a broadcast per recipient rather than for everyone', () => {
+    const { registry, alice, bob } = trio()
+    registry.setStatus(bob, 'working', undefined, true)
+
+    const result = registry.broadcast(alice, 'switching branches')
+
+    const byName = new Map(result.deliveries.map(d => [registry.nameOf(d.conn), d.live]))
+    expect(byName.get('bob')).toBe(false)
+    expect(byName.get('carol')).toBe(true)
+  })
+
+  it('keeps dnd orthogonal to status, in both directions', () => {
+    const { registry, alice, bob } = trio()
+    registry.setStatus(bob, 'working', undefined, true)
+
+    // A later status update that says nothing about dnd must not clear it.
+    registry.setStatus(bob, 'available')
+    expect(registry.send(alice, 'bob', 'still quiet?').deliveries[0]?.live).toBe(false)
+    expect(registry.list().find(s => s.name === 'bob')?.status).toBe('available')
+
+    registry.setStatus(bob, 'available', undefined, false)
+    expect(registry.send(alice, 'bob', 'back?').deliveries[0]?.live).toBe(true)
   })
 })

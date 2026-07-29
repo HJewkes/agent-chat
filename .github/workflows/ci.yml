@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  # Unfiltered on purpose, and this is a change from the sibling repos rather
+  # than an oversight. Work here has branched off long-lived feature branches as
+  # often as off main, and a `branches: [main]` filter means those PRs run no
+  # checks at all — which is how the filter that looks tidiest ends up gating
+  # nothing. Every PR is checked, whatever it targets.
+  pull_request:
+
+# Named explicitly because THIS repo is private and the sibling it mirrors is
+# public. A default read token on a public repo already covers pull-request
+# metadata; on a private one it covers contents and metadata only, so gitleaks
+# — which lists the PR's commits to decide what to scan — died with
+# "Resource not accessible by integration" on the first run.
+permissions:
+  contents: read
+  pull-requests: read
+
+# One job, named `check`, because that is the context name the branch
+# protection on these repos requires. Splitting it into lint/test/build jobs
+# would rename the context and silently satisfy protection with nothing.
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so gitleaks can scan every commit
+
+      # Fail the build if a credential was ever committed, not just if one is
+      # present now — hence the full history above.
+      - name: Scan for secrets (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Security audit
+        run: npm audit --audit-level=critical
+
+      # No lint step: this repo has no eslint config, and prettier is the whole
+      # of its style enforcement. Saying so beats a step that runs nothing.
+      - name: Format
+        run: npm run format:check
+
+      # Covers the test files too — tsconfig.test.json exists precisely because
+      # the main tsconfig excludes them, which once let a broken test typecheck.
+      - name: Typecheck
+        run: npm run typecheck
+
+      # BEFORE the tests, not after. The integration suites spawn
+      # `node dist/cli.js` as a real subprocess — an MCP server, a broker, a
+      # planned agent — so an unbuilt dist is not a late failure, it is every
+      # one of those tests failing for a reason that looks like something else.
+      - name: Build
+        run: npm run build
+
+      - name: Verify build output
+        run: test -f dist/cli.js || (echo "Build output missing" && exit 1)
+
+      # The live suites (AGENT_CHAT_LIVE) stay skipped here and are meant to:
+      # they drive real Claude Code sessions and real iTerm windows, neither of
+      # which exists on a runner.
+      - name: Test
+        run: npm test
