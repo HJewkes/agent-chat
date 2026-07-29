@@ -239,6 +239,41 @@ export type ClientMessage =
       /** Many, not one: a session is usually in more than one conversation. */
       tags?: string[]
       subscriptions?: Subscription[]
+      /**
+       * Which BUILD this client is running, so a mismatch with the broker's own
+       * is reported rather than inferred (CC-36).
+       *
+       * A session loads agent-chat from whichever entry its launcher resolved,
+       * and that need not be the one the broker is running. The resulting state
+       * is invisible from both sides: the client registers normally and answers
+       * messages, and only its TOOL LIST is stale. Two live agents reported not
+       * having a tool the broker had shipped, and nothing anywhere said the
+       * builds disagreed.
+       */
+      build?: string
+    }
+  /**
+   * Reclaim a registration this session already had, without asking the model.
+   *
+   * CC-31: registration is per-connection by design, so a replaced MCP
+   * subprocess comes back with no registration and nothing prompts it to make
+   * one. The model called `chat_register` earlier in the conversation and will
+   * not call it again — from inside, the session looks registered.
+   *
+   * NAMES NO NAME, deliberately. The session id is read by the subprocess from
+   * its own environment, never from the model, and the broker resolves the name
+   * from its own log. That is what stops this being a way to claim a name by
+   * quoting a field: the only name reachable is the one this session already
+   * held.
+   */
+  | {
+      t: 'readopt'
+      sessionId: string
+      cwd: string
+      pid: number
+      hostPid?: number
+      termSessionId?: string
+      build?: string
     }
   | { t: 'status'; status: SessionStatus; workingOn?: string; dnd?: boolean }
   /** Replaces any subscription with the same selector, so re-subscribing is idempotent. */
@@ -314,7 +349,12 @@ export type ClientMessage =
 
 /** Broker -> session. */
 export type ServerMessage =
-  | { t: 'register_result'; ok: boolean; reason?: string }
+  /**
+   * `name` is set only by a readopt, where the CLIENT did not know it — the
+   * broker resolved it from the log. An ordinary register already knows the name
+   * it asked for and gets nothing back.
+   */
+  | { t: 'register_result'; ok: boolean; reason?: string; name?: string }
   | { t: 'subscribe_result'; ok: boolean; held: number; reason?: string }
   /**
    * Batched, because three agents starting together is one thing that happened,

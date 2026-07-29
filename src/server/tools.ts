@@ -3,6 +3,7 @@ import { ISOLATION_NAMES, SESSION_STATUSES, SUBSCRIBABLE_KINDS, SURFACE_NAMES } 
 import { terminalAnchor } from './anchor.js'
 import { hostIdentity } from './host.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
+import { cliEntry } from '../paths.js'
 import { transcriptLine } from '../agents/transcript.js'
 import type {
   DeliveredMessage,
@@ -432,8 +433,15 @@ export class ToolHandler {
   constructor(
     private readonly broker: BrokerClient,
     spawnedName?: string,
+    /**
+     * A name reclaimed by `readopt` (CC-31), for a session whose MCP subprocess
+     * was replaced. Seeded for the same reason as `spawnedName` and NOT fixed:
+     * this session chose its own name once and may legitimately choose again,
+     * whereas a spawned agent's name was promised to peers before it ran.
+     */
+    readoptedName?: string,
   ) {
-    this.registeredName = spawnedName ?? null
+    this.registeredName = spawnedName ?? readoptedName ?? null
     this.nameIsFixed = spawnedName !== undefined
   }
 
@@ -519,6 +527,9 @@ export class ToolHandler {
         // without that identity being self-asserted.
         ...hostIdentity(),
         ...terminalAnchor(),
+        // CC-36: lets the broker say so when this session's tools come from a
+        // different build than the one it is talking to.
+        build: cliEntry(),
       },
       'register_result',
     )) as Extract<ServerMessage, { t: 'register_result' }>

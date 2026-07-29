@@ -3,7 +3,8 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { BrokerClient } from '../client/broker-client.js'
-import type { DeliveredMessage, Subscription, SystemEvent } from '../protocol.js'
+import type { DeliveredMessage, ServerMessage, Subscription, SystemEvent } from '../protocol.js'
+import { cliEntry } from '../paths.js'
 import { TOOL_DEFINITIONS, ToolHandler } from './tools.js'
 import { terminalAnchor } from './anchor.js'
 import { hostIdentity } from './host.js'
@@ -124,6 +125,37 @@ export function spawnedIdentity(env: NodeJS.ProcessEnv = process.env): SpawnedId
 }
 
 /**
+ * Ask the broker to put this session back under the name it already held.
+ *
+ * Returns the reclaimed name, or undefined when there is nothing to reclaim —
+ * which is the ordinary case for a session starting for the first time, and is
+ * not an error. Failures are swallowed for the same reason: a broker that cannot
+ * answer this must not stop the server coming up, because then a reliability fix
+ * would itself be a new way to lose the bus.
+ */
+async function readopt(broker: BrokerClient): Promise<string | undefined> {
+  const host = hostIdentity()
+  if (host.sessionId === undefined) return undefined
+  try {
+    const res = (await broker.request(
+      {
+        t: 'readopt',
+        sessionId: host.sessionId,
+        cwd: process.cwd(),
+        pid: process.pid,
+        build: cliEntry(),
+        ...(host.hostPid === undefined ? {} : { hostPid: host.hostPid }),
+        ...terminalAnchor(),
+      },
+      'register_result',
+    )) as Extract<ServerMessage, { t: 'register_result' }>
+    return res.ok ? res.name : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * One of these runs per Claude Code session. Its stdio pipe is the session's
  * address, so routing is decided by which process emits, not by any field in
  * the notification (the channel protocol has no addressing).
@@ -205,10 +237,22 @@ export async function startMcpServer(): Promise<void> {
         ...(spawned.tags ? { tags: spawned.tags } : {}),
         ...(spawned.subscriptions ? { subscriptions: spawned.subscriptions } : {}),
         ...terminalAnchor(),
+        build: cliEntry(),
       },
       'register_result',
     )
   }
+
+  // CC-31. An ordinary session registers because the MODEL called chat_register,
+  // and registration is per-connection — so a replaced MCP subprocess comes back
+  // holding nothing, while the model, which already made that call earlier in the
+  // conversation, has no reason to make it again. From inside the session it
+  // still looks registered.
+  //
+  // Nothing here is asked of the model: the session id comes from this process's
+  // own environment, and the NAME comes from the broker's log. A session with
+  // nothing to reclaim gets ok:false and the ordinary path is unaffected.
+  const readopted = spawned ? undefined : await readopt(broker)
 
   mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     await broker.send({
@@ -219,7 +263,10 @@ export async function startMcpServer(): Promise<void> {
       inputPreview: params.input_preview,
     })
   })
-  const handler = new ToolHandler(broker, spawned?.name)
+  // A readopted session already holds its name, so the handler must know it —
+  // otherwise chat_register would look unmade and the model would be told to
+  // call it, which is the confusion this whole path exists to remove.
+  const handler = new ToolHandler(broker, spawned?.name, readopted)
 
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...TOOL_DEFINITIONS] }))
   mcp.setRequestHandler(CallToolRequestSchema, async request => {
