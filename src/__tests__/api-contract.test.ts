@@ -49,6 +49,14 @@ const KINDS_AT_FREEZE = [
   'isolation_released',
   'agent_spawn_refused',
   'verdict_refused',
+  // Added deliberately for teleport (CC-20), following the process this test
+  // asks for rather than routing around it. Both are handled by the two views:
+  // the human queue does not carry them (QUEUE_KINDS is unchanged — a handoff is
+  // a record, not something needing an answer), and the log view renders any
+  // kind generically, truncating the body it prints, which matters because an
+  // `agent_handoff` body is a whole document rather than a line.
+  'agent_handoff',
+  'agent_stood_down',
 ]
 
 describe('SSE event names cover every EventKind', () => {

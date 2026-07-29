@@ -393,6 +393,18 @@ export class Registry<C> {
     return this.entries.get(conn)?.tags ?? []
   }
 
+  /**
+   * What this connection is subscribed to, so a teleport can carry it across.
+   *
+   * Subscriptions are registry-only and ephemeral — nothing persists them, and
+   * the descendant is a new process that will never see the predecessor's
+   * `subscribe` calls. Readable exactly when it matters: a session is by
+   * definition connected at the moment it asks to teleport.
+   */
+  subscriptionsOf(conn: C): Subscription[] {
+    return this.entries.get(conn)?.subscriptions ?? []
+  }
+
   /** Every session currently carrying a tag, for resolving a `tag` selector. */
   private namesWithTag(tag: string): Set<string> {
     const names = new Set<string>()

@@ -61,6 +61,11 @@ export const EVENT_KINDS = [
   'agent_resumed',
   'agent_exited',
   'agent_retired',
+  // Teleport (CC-20). Two kinds rather than one with a `meta.phase`: "wrote its
+  // handoff" and "the countdown ran out" are different instants, and a query for
+  // either should not have to filter on a stringly field.
+  'agent_handoff',
+  'agent_stood_down',
   'isolation_allocated',
   'isolation_released',
   // Refusals are events rather than just `reason` strings on a reply: they are
@@ -84,6 +89,14 @@ export type EventKind = (typeof EVENT_KINDS)[number]
  * Note this is a filter over kinds that already exist. Subscriptions deliberately
  * add NO new EventKind, because the union is frozen into the SSE contract and
  * extending it re-serialises everything built against it.
+ *
+ * `agent_handoff` is absent for a stronger reason than the rest: its body is a
+ * whole document, and `SystemEventFeed.offer` copies a row's body into the
+ * pushed event. Subscribing to it would fan one session's handoff into every
+ * subscriber's context — a content leak by construction, into the one channel
+ * whose stated guarantee is "you learn who is here, never what anyone said".
+ * Succession is already visible through the descendant's `agent_spawned` and the
+ * predecessor's `agent_retired`, both of which are here.
  */
 export const SUBSCRIBABLE_KINDS = [
   'registered',
@@ -264,6 +277,26 @@ export type ClientMessage =
     }
   | { t: 'agents'; includeRetired?: boolean }
   | { t: 'retire'; name: string }
+  /**
+   * Hand off to a successor and end this session. NAMES NO AGENT: the subject is
+   * resolved by the broker from the requesting connection, the same discipline
+   * `anchor` and `parentAgentId` already follow. There is deliberately no field
+   * for a target, a profile, a surface or a tool list — a teleport is a
+   * continuation, and a `profile` argument would be a model authoring its own
+   * privilege escalation and calling it a handoff.
+   *
+   * `model` is the ONE negotiable field, and it is not a privilege: an agent may
+   * deliberately succeed itself onto a cheaper or stronger model. Absent means
+   * "whatever this session is running on now", which is the point of teleport.
+   */
+  | { t: 'teleport'; handoff: string; model?: string }
+  /**
+   * Stop a countdown that has not fired yet. The human's veto, and it has no
+   * MCP tool — see `docs/teleport.md` §4.2. The broker refuses it from a
+   * REGISTERED connection, so the only caller left is someone at the CLI, who
+   * could already retire or kill anything on a 0600 socket.
+   */
+  | { t: 'teleport_abort'; name: string }
 
 /** Broker -> session. */
 export type ServerMessage =
@@ -320,6 +353,26 @@ export type ServerMessage =
       warnings?: string[]
     }
   | { t: 'agents_result'; agents: AgentIdentity[] }
+  /**
+   * Answered as soon as the handoff is recorded and the sequence is committed to,
+   * NOT when the descendant is up: a visible predecessor has 30 seconds of
+   * countdown left to run, and holding the reply that long would blow the
+   * client's 5s request timeout and leave the model believing it failed.
+   *
+   * `name` is the predecessor's own name, restated rather than newly assigned —
+   * the descendant keeps it (§5.1), so "the descendant's name" is not new
+   * information. `agentId` is the descendant's, which is.
+   */
+  | {
+      t: 'teleport_result'
+      ok: boolean
+      reason?: string
+      name?: string
+      agentId?: string
+      /** Milliseconds until shutdown. Absent for a headless predecessor: there is no wait. */
+      countdownMs?: number
+      warnings?: string[]
+    }
 
 /**
  * The lifecycle an agent identity is folded into. Durable: it is a projection of
@@ -376,6 +429,15 @@ export interface AgentIdentity {
   sessionId: string
   /** Timestamp of the newest row referencing this identity, spawn included. */
   lastEventAt: number
+  /**
+   * How many teleports deep this identity is: 1 for one that has never
+   * teleported, incrementing per hop. Broker-derived, like `teleportFrom` —
+   * written by the broker from its own resolution of the predecessor, never from
+   * a client-supplied field, which is what makes it lineage rather than a claim.
+   */
+  generation: number
+  /** The immediate predecessor's agentId. The rest of the chain is a walk of these. */
+  teleportFrom?: string
   exit?: { code: number | null; summary: string; costUsd?: number }
 }
 

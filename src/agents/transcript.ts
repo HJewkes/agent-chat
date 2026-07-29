@@ -70,6 +70,60 @@ function readProjects(): string[] {
   }
 }
 
+/** Only the tail is read: a long session's transcript runs to megabytes. */
+const TAIL_BYTES = 256 * 1024
+
+/**
+ * The model the newest assistant turn actually ran on.
+ *
+ * Teleport's rule is that a descendant replicates the configuration its
+ * predecessor is running under, and for an ordinary human-started session there
+ * is no profile to copy it from — the model is not in the environment either
+ * (`CLAUDE_CODE_SESSION_ID` and the rest are, this is not). It IS on every
+ * assistant row of Claude Code's own transcript, as `message.model`. Observed on
+ * a live transcript, not inferred: `claude-opus-5` on 39 of 39 assistant rows of
+ * the session that wrote this.
+ *
+ * Telemetry owned by another program, so every failure is a miss rather than a
+ * throw — undefined means "could not tell", and the caller inherits the
+ * harness default instead of guessing a model on the human's behalf.
+ */
+export function observedModel(cwd: string, sessionId: string): string | undefined {
+  const found = findTranscript(cwd, sessionId)
+  if (!found.exists) return undefined
+  try {
+    const handle = fs.openSync(found.path, 'r')
+    try {
+      const size = fs.fstatSync(handle).size
+      const length = Math.min(size, TAIL_BYTES)
+      const buffer = Buffer.alloc(length)
+      fs.readSync(handle, buffer, 0, length, size - length)
+      return newestModel(buffer.toString('utf8'))
+    } finally {
+      fs.closeSync(handle)
+    }
+  } catch {
+    return undefined
+  }
+}
+
+function newestModel(tail: string): string | undefined {
+  const lines = tail.split('\n')
+  // Newest first, and the first line is skipped: reading from an offset almost
+  // always lands mid-row, and half a JSON object is not a parse failure worth
+  // reporting — it is the price of not reading the whole file.
+  for (let at = lines.length - 1; at > 0; at--) {
+    try {
+      const row = JSON.parse(lines[at] ?? '') as { message?: { model?: unknown } }
+      const model = row.message?.model
+      if (typeof model === 'string' && model !== '') return model
+    } catch {
+      continue
+    }
+  }
+  return undefined
+}
+
 /** One line for a roster: the path, or why there is not one. */
 export const transcriptLine = (cwd: string, sessionId: string): string => {
   if (sessionId === '') return 'transcript: none recorded for this agent'

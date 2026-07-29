@@ -94,6 +94,8 @@ const AGENT_KINDS = [
   'agent_resumed',
   'agent_exited',
   'agent_retired',
+  'agent_handoff',
+  'agent_stood_down',
   'isolation_allocated',
   'isolation_released',
 ] as const satisfies readonly EventKind[]
@@ -223,6 +225,50 @@ export class EventLog {
          WHERE actor = ? AND kind = 'question' AND msg_id NOT IN (${CLOSED})`,
       )
       .get(actor) as unknown as { n: number }
+    return row.n
+  }
+
+  /**
+   * The questions this session still has outstanding, not just how many.
+   *
+   * Teleport refuses while any are open, and a refusal a model cannot act on is
+   * one it will retry against the same wall — so the reason has to name them,
+   * the way `send_result.reason` names a route failure rather than reporting
+   * "failed".
+   */
+  openQuestions(actor: string): QueueItem[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM events
+         WHERE actor = ? AND kind = 'question' AND msg_id NOT IN (${CLOSED})
+         ORDER BY id ASC`,
+      )
+      .all(actor) as unknown as Row[]
+    return rows.map(row => ({
+      msgId: row.msg_id ?? String(row.id),
+      kind: row.kind as QueueItem['kind'],
+      from: row.actor,
+      text: row.body ?? '',
+      at: row.ts,
+      meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
+    }))
+  }
+
+  /**
+   * Peer traffic that landed in `name`'s inbox since `since`.
+   *
+   * Deliberately NOT called "unread": nothing anywhere tracks a read cursor, so
+   * this counts what ARRIVED in a window the caller picks. Teleport uses it to
+   * warn — never to refuse — since the descendant keeps the name and `chat_inbox`
+   * still returns every one of these rows after the hop.
+   */
+  inboxCountSince(name: string, since: number): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM events
+         WHERE target = ? AND kind IN (${INBOX_KINDS}) AND ts >= ?`,
+      )
+      .get(name, since) as unknown as { n: number }
     return row.n
   }
 

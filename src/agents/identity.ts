@@ -38,6 +38,16 @@ const exitFrom = (row: AgentEventRow): NonNullable<AgentIdentity['exit']> => {
  */
 const originOf = (row: AgentEventRow): AgentOrigin => (row.meta.origin === 'adopted' ? 'adopted' : 'spawned')
 
+/**
+ * Generation is 1 unless the spawn row was stamped by a teleport. Rows written
+ * before teleport existed have no stamp, and 1 is the truth for them rather than
+ * a guess: an identity nothing ever succeeded IS the first of its line.
+ */
+const generationOf = (row: AgentEventRow): number => {
+  const value = Number.parseInt(row.meta.generation ?? '1', 10)
+  return Number.isFinite(value) && value > 0 ? value : 1
+}
+
 const spawnedFrom = (row: AgentEventRow, id: string): AgentIdentity => ({
   agentId: id,
   name: row.target ?? row.meta.name ?? '',
@@ -52,6 +62,8 @@ const spawnedFrom = (row: AgentEventRow, id: string): AgentIdentity => ({
   surface: row.meta.surface ?? '',
   sessionId: row.meta.session_id ?? '',
   lastEventAt: row.ts,
+  generation: generationOf(row),
+  ...(row.meta.teleport_from ? { teleportFrom: row.meta.teleport_from } : {}),
 })
 
 /** Lifecycle transitions, keyed by kind. Kinds absent here only bump `lastEventAt`. */
@@ -254,5 +266,34 @@ export class AgentLog {
    */
   nameIsClaimed(name: string): boolean {
     return this.byName(name) !== undefined
+  }
+
+  /**
+   * Has this identity stood down for a successor?
+   *
+   * A query, not a lifecycle state, and deliberately: standing down lasts
+   * seconds, so making it a state would put it in `pairPresence`'s switch and
+   * force a rendering decision for a condition nobody will ever see on screen.
+   */
+  stoodDown(agentId: string): boolean {
+    return this.events.agentEvents().some(row => row.kind === 'agent_stood_down' && row.ref === agentId)
+  }
+
+  /** The identity this one teleported into, if it has one. */
+  successorOf(agentId: string): AgentIdentity | undefined {
+    return this.all().find(a => a.teleportFrom === agentId)
+  }
+
+  /**
+   * The raw `meta` of an identity's spawn row.
+   *
+   * For the fields `AgentIdentity` deliberately does not model — `depth` and
+   * `parent` are enforcement inputs rather than things a roster should show, and
+   * teleport has to carry both across UNCHANGED (succession is not branching,
+   * so an inherited depth is the whole point).
+   */
+  spawnMeta(agentId: string): Record<string, string> {
+    const row = this.events.agentEvents().find(r => r.kind === 'agent_spawned' && r.msgId === agentId)
+    return row?.meta ?? {}
   }
 }
