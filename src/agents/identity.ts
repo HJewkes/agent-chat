@@ -108,6 +108,12 @@ export function foldAgent(rows: readonly AgentEventRow[]): AgentIdentity | undef
     // it last called itself. A spawned name never moves — it came from the launch
     // plan and peers were told it before the agent had a turn.
     if (agent.origin === 'adopted' && row.kind === 'agent_attached') agent.name = row.actor
+    // Presentation is not fixed at spawn: a mode switch resumes the SAME identity
+    // into a different surface, and a roster reading `surface` off the spawn row
+    // would keep reporting the pane an agent no longer has. Only `agent_resumed`
+    // carries it, and only when a switch actually changed it — an ordinary resume
+    // omits the field and leaves this alone.
+    if (row.kind === 'agent_resumed' && row.meta.surface) agent.surface = row.meta.surface
     if (row.kind === 'agent_exited') agent.exit = exitFrom(row)
     const next = TRANSITIONS[row.kind]
     if (next !== undefined) agent.state = next

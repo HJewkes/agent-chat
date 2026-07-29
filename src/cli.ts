@@ -28,6 +28,7 @@ const USAGE = `agent-chat — cross-session messaging for Claude Code
   agent-chat agent ls                  durable agents, with lifecycle and presence
   agent-chat agent spawn <name> <profile> <brief>
   agent-chat agent retire <name>       release isolation and free the name
+  agent-chat agent surface <name>      bring a headless agent into a window you can answer
   agent-chat teleport abort <name>     stop a session ending itself for a successor
   agent-chat profiles                  agent profiles available to spawn with
   agent-chat run-agent <id>            run a planned agent (surfaces call this)
@@ -229,6 +230,37 @@ async function agentRetire(args: string[]): Promise<void> {
   process.exit(res.ok ? 0 : 1)
 }
 
+/**
+ * Bring a headless agent up where it can be seen and answered.
+ *
+ * A CLI verb because the human is the one who NOTICES. CC-2 established that a
+ * headless session relays no permission prompts at all, so a blocked headless
+ * agent cannot report being blocked — someone outside it has to pull it up. The
+ * agent-facing tool exists too; this is the same operation for a person who is
+ * looking at `agent ls` and can see one has gone quiet.
+ *
+ * No anchor: this connection holds no registration and therefore no pane, which
+ * the iTerm ladder resolves as a new window rather than an error.
+ */
+async function agentSurface(args: string[]): Promise<void> {
+  const name = args[0]
+  if (!name) {
+    console.error('usage: agent-chat agent surface <name>')
+    process.exit(1)
+  }
+  const res = (await withBroker(b => b.request({ t: 'surface', name }, 'switch_result'))) as Extract<
+    ServerMessage,
+    { t: 'switch_result' }
+  >
+  console.log(
+    res.ok
+      ? `${name} is now in ${res.surface}, resumed on its existing conversation. ` +
+          'The turn it was part way through was interrupted.'
+      : `Not surfaced: ${res.reason}`,
+  )
+  process.exit(res.ok ? 0 : 1)
+}
+
 async function agent(args: string[]): Promise<void> {
   const [verb, ...rest] = args
   switch (verb) {
@@ -239,8 +271,10 @@ async function agent(args: string[]): Promise<void> {
       return agentSpawn(rest)
     case 'retire':
       return agentRetire(rest)
+    case 'surface':
+      return agentSurface(rest)
     default:
-      console.error(`unknown agent verb "${verb}"; try ls, spawn or retire`)
+      console.error(`unknown agent verb "${verb}"; try ls, spawn, surface or retire`)
       process.exit(1)
   }
 }

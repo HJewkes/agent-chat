@@ -80,7 +80,12 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
   // fields, so this cannot be reached from a profile file.
   const args = [
     ...(profile.model === '' ? [] : ['--model', profile.model]),
-    '--session-id',
+    // `--session-id` MINTS a conversation; `--resume` reattaches to an existing
+    // one. A mode switch is the only caller that wants the second, and wants it
+    // for the reason the feature exists: the agent has to come back knowing what
+    // it was doing, in a different window. Verified against the installed CLI —
+    // a transcript written under `-p` resumes interactively and vice versa.
+    input.resume === true ? '--resume' : '--session-id',
     input.sessionId,
     '--append-system-prompt',
     // Standing context only. The brief is a TASK, and a task has to arrive as a
@@ -129,7 +134,12 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     //
     // Safe because run-agent spawns an argv ARRAY with no shell, so a
     // model-authored brief is one argument rather than something to quote.
-    args.push('--', input.brief)
+    //
+    // A resume is the exception, and deliberately takes no prompt at all: the
+    // pane opens on the conversation exactly as the agent left it. Injecting a
+    // turn here would answer the pending tool call for the human — and a pending
+    // tool call nobody could answer is the reason surfacing exists.
+    if (input.resume !== true) args.push('--', input.brief)
   }
 
   return {

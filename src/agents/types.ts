@@ -45,6 +45,19 @@ export interface LaunchPlanInput {
   cwd: string
   /** Overrides `profile.surface` when the request asked for a different one. */
   surface?: SurfaceName
+  /**
+   * Reattach to `sessionId` instead of minting it: `--resume` rather than
+   * `--session-id`. What makes a mode switch a continuation of one agent rather
+   * than a second one wearing its name.
+   *
+   * The two surfaces diverge here, and not symmetrically. An interactive resume
+   * takes NO positional prompt — the pane opens on the conversation as it stands,
+   * which is the whole point when the thing to look at is a permission prompt
+   * nobody could answer. A headless resume still needs one, because `-p` refuses
+   * without input; the caller supplies a continuation instruction there, never
+   * the original brief, which would restart the work rather than continue it.
+   */
+  resume?: boolean
   mcpConfigPath: string
   /** From the isolation strategy: dirs outside cwd the agent may still read. */
   extraDirs?: string[]

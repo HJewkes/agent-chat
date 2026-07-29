@@ -14,6 +14,7 @@ import { newMsgId } from './event-log.js'
 import { type Escalation, type RouteResult } from './registry.js'
 import { BrokerCore, type Conn } from './core.js'
 import { Supervisor } from '../agents/supervisor.js'
+import type { SwitchOutcome } from '../agents/mode-switch.js'
 import { SystemEventFeed } from './subscriptions.js'
 import {
   probeSocket,
@@ -33,6 +34,19 @@ const reply = (conn: Conn, message: ServerMessage): void => {
 
 const deliver = (conn: Conn, message: DeliveredMessage): void => {
   reply(conn, { t: 'deliver', message })
+}
+
+/** Both switch directions answer on one frame, so they serialise it the same way. */
+const replySwitch = (conn: Conn, outcome: SwitchOutcome): void => {
+  reply(conn, {
+    t: 'switch_result',
+    ok: outcome.ok,
+    ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+    ...(outcome.name === undefined ? {} : { name: outcome.name }),
+    ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }),
+    ...(outcome.surface === undefined ? {} : { surface: outcome.surface }),
+    ...(outcome.warnings === undefined ? {} : { warnings: outcome.warnings }),
+  })
 }
 
 /**
@@ -172,6 +186,45 @@ class SocketServer {
       ...(result.reason === undefined ? {} : { reason: result.reason }),
       ...(result.ok ? { name } : {}),
     })
+  }
+
+  /**
+   * Pull a named headless agent into a terminal.
+   *
+   * The one field the request carries is WHO to surface. Everything about WHERE
+   * it lands still comes from the requester's own connection: an anchored session
+   * gets the agent beside it in the same window, and a background agent surfacing
+   * itself has no anchor and opens its own window. Neither can be asked for.
+   */
+  private async handleSurface(conn: Conn, name: string): Promise<void> {
+    const anchor = this.core.registry.anchorFor(conn)
+    const outcome = await this.supervisor.switchSurface({
+      name,
+      to: 'interactive',
+      requestedBy: this.core.registry.nameOf(conn) ?? HUMAN,
+      ...(anchor === undefined ? {} : { anchor }),
+    })
+    replySwitch(conn, outcome)
+  }
+
+  /** Go headless. The subject is the caller, resolved here and nowhere else. */
+  private async handleBackground(conn: Conn): Promise<void> {
+    const entry = this.core.registry.entryFor(conn)
+    if (entry?.agentId === undefined) {
+      return replySwitch(conn, {
+        ok: false,
+        reason:
+          'going headless needs a durable identity, and this connection has none. Call ' +
+          'chat_register first.',
+      })
+    }
+    const outcome = await this.supervisor.switchSurface({
+      name: entry.name,
+      to: 'headless',
+      requestedBy: entry.name,
+      ...(entry.hostPid === undefined ? {} : { hostPid: entry.hostPid }),
+    })
+    replySwitch(conn, outcome)
   }
 
   private handleRoute(
@@ -399,6 +452,12 @@ class SocketServer {
         return
       case 'teleport_abort':
         return this.handleTeleportAbort(conn, msg.name)
+      case 'surface':
+        void this.handleSurface(conn, msg.name)
+        return
+      case 'background':
+        void this.handleBackground(conn)
+        return
       case 'retire':
         void this.supervisor.retire(msg.name).then(result =>
           reply(conn, {

@@ -320,6 +320,36 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'agent_surface',
+    description:
+      'Pull a HEADLESS agent into a terminal window where your human can see it and answer it. Use ' +
+      'this when a headless agent has gone quiet or looks stuck: a headless session is never shown a ' +
+      'permission prompt, so anything it needed approval for was silently denied and it has no way to ' +
+      'tell you that is what happened. Surfacing is the fix — the agent comes back with its name, its ' +
+      'identity and its whole conversation intact, in a window. If you are in a terminal yourself it ' +
+      'opens beside you in the same window; if you are headless it opens its own. COST, and say so if ' +
+      'you report this: the agent is stopped and resumed, so whatever turn it was part way through is ' +
+      'lost. Refused for an agent already in a terminal — agent_list shows where each one is.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The headless agent to bring up, as shown by agent_list.' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'agent_background',
+    description:
+      'Send YOURSELF headless, releasing the terminal window you are in. This names no agent and ' +
+      'cannot be aimed at one: you may only background yourself. Your name, identity and conversation ' +
+      'all survive. Understand what you are giving up before calling it — headless sessions are never ' +
+      'shown permission prompts, so anything needing approval will be denied outright rather than ' +
+      'asked about, and nobody is watching a pane for you. Do not background yourself while you are ' +
+      'blocked on something, or expect to be.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
     name: 'agent_profiles',
     description:
       'List the profiles agent_spawn can use, with the model, tool set, surface and isolation each grants. ' +
@@ -450,6 +480,10 @@ export class ToolHandler {
         return this.spawnAgent(args)
       case 'agent_teleport':
         return this.teleport(args)
+      case 'agent_surface':
+        return this.surfaceAgent(args)
+      case 'agent_background':
+        return this.backgroundSelf()
       case 'agent_profiles':
         return this.agentProfiles()
       case 'agent_list':
@@ -691,6 +725,46 @@ export class ToolHandler {
       `Teleport accepted. Handoff recorded; your successor is ${res.agentId} and keeps the name ` +
         `"${res.name}". ${when} Do not start anything new — finish or write down whatever is in ` +
         `flight, because it will not survive this turn.${warnings}`,
+    )
+  }
+
+  private async surfaceAgent(args: Record<string, unknown>) {
+    const name = requireString(args, 'name')
+    const res = (await this.call({ t: 'surface', name }, 'switch_result')) as Extract<
+      ServerMessage,
+      { t: 'switch_result' }
+    >
+    if (!res.ok) return text(`Not surfacing ${name}: ${res.reason}`)
+    // Where it LANDED, not where it was asked to go: the iTerm ladder downgrades
+    // to a new window when an anchor is gone, and telling the human to look in
+    // the wrong place is the failure this whole feature exists to prevent.
+    const where =
+      res.surface === 'iterm-window'
+        ? 'a new iTerm window'
+        : res.surface === 'iterm-tab'
+          ? 'a new iTerm tab'
+          : 'a pane in your window'
+    return text(
+      `${res.name} is now in ${where}, resumed on its existing conversation and keeping its name. ` +
+        'The turn it was part way through was interrupted by the switch. If it was stuck on a ' +
+        'permission prompt, that prompt is answerable there now — tell your human to look.',
+    )
+  }
+
+  private async backgroundSelf() {
+    if (this.registeredName === null)
+      return text(
+        'Register with chat_register first: going headless keeps your identity, and you have none yet.',
+      )
+    const res = (await this.call({ t: 'background' }, 'switch_result')) as Extract<
+      ServerMessage,
+      { t: 'switch_result' }
+    >
+    if (!res.ok) return text(`Not going headless: ${res.reason}`)
+    return text(
+      'Going headless. This session is being shut down and resumed without a window, keeping your ' +
+        'name and your conversation. Do not start anything new — the turn you are in now will not ' +
+        'survive it.',
     )
   }
 
