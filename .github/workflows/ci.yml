@@ -3,11 +3,11 @@ name: CI
 on:
   push:
     branches: [main]
-  # Deliberately NOT filtered to `main`, unlike the sibling repos this mirrors.
-  # Trunk here is currently `feat/plugin-packaging` — `main` holds only the
-  # original POC — so a base filter would mean the PRs that actually land work
-  # get no checks at all. Add the filter back once main is the branch things
-  # merge into.
+  # Unfiltered on purpose, and this is a change from the sibling repos rather
+  # than an oversight. Work here has branched off long-lived feature branches as
+  # often as off main, and a `branches: [main]` filter means those PRs run no
+  # checks at all — which is how the filter that looks tidiest ends up gating
+  # nothing. Every PR is checked, whatever it targets.
   pull_request:
 
 # Named explicitly because THIS repo is private and the sibling it mirrors is
