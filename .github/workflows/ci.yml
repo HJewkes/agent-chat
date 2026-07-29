@@ -10,6 +10,15 @@ on:
   # merge into.
   pull_request:
 
+# Named explicitly because THIS repo is private and the sibling it mirrors is
+# public. A default read token on a public repo already covers pull-request
+# metadata; on a private one it covers contents and metadata only, so gitleaks
+# — which lists the PR's commits to decide what to scan — died with
+# "Resource not accessible by integration" on the first run.
+permissions:
+  contents: read
+  pull-requests: read
+
 # One job, named `check`, because that is the context name the branch
 # protection on these repos requires. Splitting it into lint/test/build jobs
 # would rename the context and silently satisfy protection with nothing.
