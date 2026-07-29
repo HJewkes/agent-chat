@@ -87,6 +87,20 @@ ${open}
 end tell`
 }
 
+/**
+ * Run the command IN the anchor session, rather than opening anything.
+ *
+ * For teleport, and only teleport: the anchor is the predecessor's own pane and
+ * the predecessor has already exited, so its shell is back at a prompt. The
+ * descendant lands exactly where the session it continues was sitting — same
+ * window, same split, same place in the human's layout. Opening a tab instead
+ * left a dead pane behind and moved the work somewhere nobody was looking.
+ */
+const inPlace = (uuid: string, command: string): string => `tell application "iTerm2"${findSessions(uuid, '')}
+  tell anchorSession to write text ${asString(command)}
+  return unique ID of anchorSession
+end tell`
+
 /** The fallback everything lands on: needs no anchor, so it cannot fail to find one. */
 const newWindow = (command: string): string => `tell application "iTerm2"
   set spawned to (current session of (create window with default profile))
@@ -123,7 +137,14 @@ function launchIterm(surface: ItermSurfaceName, plan: LaunchPlan, options: Surfa
   const command = runAgentCommand(plan.agentId)
   const uuid = anchorUuid(options.anchor)
 
-  if (surface !== 'iterm-window' && uuid !== undefined) {
+  // Reuse is tried first and falls through to the ordinary ladder when the pane
+  // has closed — a human who quit the whole window during the countdown should
+  // still get their descendant, somewhere they can find it.
+  if (options.reuseAnchor && uuid !== undefined) {
+    const paneRef = run(inPlace(uuid, command))
+    if (paneRef !== NO_ANCHOR) return { surface, paneRef }
+    options.onNotice?.(`pane ${uuid} is gone; opening an iTerm window rather than reusing it`)
+  } else if (surface !== 'iterm-window' && uuid !== undefined) {
     const paneRef = run(beside(surface, uuid, command, options.columnAfter))
     if (paneRef !== NO_ANCHOR) return { surface, paneRef }
     options.onNotice?.(`anchor session ${uuid} is gone; opening an iTerm window instead of ${surface}`)

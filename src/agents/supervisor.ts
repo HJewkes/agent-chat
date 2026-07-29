@@ -393,12 +393,18 @@ export class Supervisor implements TeleportHost {
     return bottom
   }
 
-  private async launchOn(surface: SurfaceName, plan: LaunchPlan, anchor?: string): Promise<LaunchHandle> {
+  private async launchOn(
+    surface: SurfaceName,
+    plan: LaunchPlan,
+    anchor?: string,
+    reuseAnchor = false,
+  ): Promise<LaunchHandle> {
     const columnAfter = anchor === undefined ? undefined : this.columnFor(anchor)
     return surfaceFor(surface, {
       ...this.surfaceOptions,
       ...(anchor === undefined ? {} : { anchor }),
       ...(columnAfter === undefined ? {} : { columnAfter }),
+      ...(reuseAnchor ? { reuseAnchor } : {}),
       onNotice: text => {
         this.core.append({ kind: 'notice', actor: 'agent-chat', target: 'human', body: text })
       },
@@ -659,7 +665,10 @@ export class Supervisor implements TeleportHost {
       },
     })
 
-    const handle = await this.launchOn(input.surface, plan, input.anchor)
+    // The descendant takes the pane its predecessor vacated, rather than a tab
+    // beside it. Safe here and nowhere else: this anchor is the predecessor's
+    // own pane, and the predecessor is already gone.
+    const handle = await this.launchOn(input.surface, plan, input.anchor, input.reuseAnchor ?? false)
     // Transfers the allocation to the descendant's id, so ITS eventual retire
     // releases the real strategy rather than a no-op one.
     this.track(input.agentId, input.name, handle, allocation, isolation, input.anchor)

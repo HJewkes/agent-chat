@@ -50,6 +50,16 @@ export const HANDOFF_MAX_BYTES = 8 * 1024
 const NAME_FREE_TIMEOUT_MS = 8_000
 const NAME_FREE_POLL_MS = 100
 
+/**
+ * A beat for the vacated pane's shell to get back to a prompt.
+ *
+ * Only matters when the descendant reuses the predecessor's pane: the command
+ * is TYPED into that session, and one written while Claude Code is still tearing
+ * its TUI down is swallowed — leaving a pane that just sits there, with no error
+ * anywhere, which is the worst way for this to fail.
+ */
+export const PANE_SETTLE_MS = 750
+
 /** What every descendant is told about its own origin, in place of PEER_PREAMBLE. */
 export const TELEPORT_PREAMBLE = [
   'You are the continuation of a session that handed off to you and then ended. You keep its',
@@ -111,6 +121,8 @@ export interface RelaunchInput {
   tags?: string[]
   subscriptions?: Subscription[]
   anchor?: string
+  /** Land in the predecessor's own pane rather than beside it. */
+  reuseAnchor?: boolean
   inherited?: InheritedIsolation
   /** For the descendant's `isolation_allocated` row, so a later release finds the real tree. */
   inheritedFrom?: string
@@ -135,6 +147,8 @@ interface Pending {
 }
 
 const bytes = (text: string): number => Buffer.byteLength(text, 'utf8')
+
+const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
 /**
  * A descendant of an ordinary human-started session, which has no profile to
@@ -303,6 +317,21 @@ export class Teleport {
     ]
   }
 
+  /**
+   * Tell a session something it MUST act on, and actually deliver it.
+   *
+   * Found live: an abort was appended as a `notice` targeted at the session and
+   * the session never saw it. Notices are not pushed, and `notice` is not an
+   * inbox kind either — so the predecessor sat there believing it was about to
+   * be shut down, which is the one thing an abort exists to stop it believing.
+   * A `message` from `agent-chat` is delivered on the next turn and survives in
+   * the inbox if the session is mid-turn when it lands.
+   */
+  private tell(name: string, body: string): void {
+    const { msgId } = this.core.append({ kind: 'message', actor: 'agent-chat', target: name, body })
+    this.core.deliverTo(name, { msgId, from: 'agent-chat', text: body, at: Date.now() })
+  }
+
   private notifyCountdown(name: string): void {
     this.core.append({
       kind: 'notice',
@@ -325,12 +354,7 @@ export class Teleport {
         return { ok: false, reason: `${name}'s teleport is already under way and cannot be stopped` }
       clearTimeout(entry.timer)
       this.pending.delete(agentId)
-      this.core.append({
-        kind: 'notice',
-        actor: 'agent-chat',
-        target: name,
-        body: 'Your teleport was aborted by the human. You are still live, still on the old build.',
-      })
+      this.tell(name, 'Your teleport was aborted by the human. You are still live, still on the old build.')
       logEvent('teleport_aborted', { name, agentId })
       return { ok: true }
     }
@@ -364,6 +388,7 @@ export class Teleport {
     })
 
     try {
+      if (subject.anchor !== undefined) await sleep(PANE_SETTLE_MS)
       await this.host.relaunch(this.relaunchFor(entry))
       logEvent('teleport_completed', { name: subject.name, from: agentId, to: entry.descendantId })
     } catch (err) {
@@ -408,7 +433,7 @@ export class Teleport {
       },
       ...(subject.tags.length > 0 ? { tags: subject.tags } : {}),
       ...(subject.subscriptions.length > 0 ? { subscriptions: subject.subscriptions } : {}),
-      ...(subject.anchor === undefined ? {} : { anchor: subject.anchor }),
+      ...(subject.anchor === undefined ? {} : { anchor: subject.anchor, reuseAnchor: true }),
       ...(entry.inherited === undefined ? {} : { inherited: entry.inherited }),
       ...(entry.inherited === undefined ? {} : { inheritedFrom: subject.agentId }),
     }
@@ -427,7 +452,7 @@ export class Teleport {
     const deadline = Date.now() + NAME_FREE_TIMEOUT_MS
     while (Date.now() < deadline) {
       if (this.core.registry.connFor(name) === undefined) return
-      await new Promise(resolve => setTimeout(resolve, NAME_FREE_POLL_MS))
+      await sleep(NAME_FREE_POLL_MS)
     }
     logEvent('teleport_name_held', { name, waitedMs: NAME_FREE_TIMEOUT_MS })
   }

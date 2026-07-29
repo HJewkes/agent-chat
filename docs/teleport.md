@@ -895,3 +895,49 @@ Two smaller notes worth having written down:
 - **The predecessor's `Live` entry is dropped at relaunch**, not left for its
   own exit to clear. `Supervisor.find(name)` scans by name, and while both
   entries are in the map "the live agent called scout" resolves to the dead one.
+
+---
+
+## 15. What the first live teleports found
+
+Run 2026-07-29 on an isolated bus (`AGENT_CHAT_HOME=/tmp/tport`), against real
+Claude Code sessions in real iTerm panes. Four runs: one aborted, one that
+failed, two that completed — the second of those a gen-3 hop. Every fix below
+came from watching it rather than from reading the code, which is the point of
+having done it.
+
+**1. An aborted predecessor was never told.** The abort appended a `notice`
+targeted at the session. Notices are not pushed live, and `notice` is not an
+inbox kind either — so the row existed, nothing delivered it, and the
+predecessor went on believing it was seconds from being shut down. That is the
+exact belief an abort exists to end. It is now a `message` from `agent-chat`,
+delivered on the next turn and durable in the inbox if the session is mid-turn.
+
+**2. A visible descendant could not find its own launch plan.** The tab opened
+and died with `no launch plan for agent 71aa68a5 at ~/.agent-chat/...` while the
+plan sat in the relocated home the broker was actually using. A pane is opened
+by AppleScript and runs in a fresh shell carrying the USER's environment, not
+the broker's; headless never had the bug because it is spawned by the broker and
+inherits it. `runAgentCommand` now carries `AGENT_CHAT_HOME` explicitly. **This
+was never teleport-specific** — every visible spawn under a relocated home had
+it, and nothing caught it because the default home makes it invisible.
+
+**3. The descendant opened as a new tab, which is the wrong place.** §4.3 says
+"reopen in the same iTerm window", and a tab satisfies that literally while
+being wrong in practice: it left the predecessor's pane behind at a dead shell
+prompt and moved the work out of the split the human was watching. The
+descendant now runs IN the vacated pane — `write text` into the anchor session
+itself, after a 750 ms settle so the command is not typed into a TUI still
+tearing down. Note what this is NOT: it is not `iterm-pane`, which SPLITS the
+anchor. Splitting is right for a spawn, where the requester's pane stays alive
+beside the new agent, and wrong here, where it would halve a pane whose session
+is about to die. Reuse is available only to teleport, because only teleport has
+an anchor its caller has just vacated.
+
+What the runs confirmed working, and could not have been confirmed any other
+way: SIGTERM on the reported `hostPid` ends Claude Code and its MCP subprocess
+with it; the descendant's registration wins the name once that socket closes;
+the countdown notice reaches the human queue and `agent-chat teleport abort`
+stops it; an ordinary session's descendant comes up on the inherited
+configuration and registers under the same name; and a descendant can itself
+teleport again — `gen=3` — with lineage intact through both hops.

@@ -34,6 +34,17 @@ export interface SurfaceOptions {
    * that knows which agents are live and where they were put.
    */
   columnAfter?: string
+  /**
+   * Put the agent IN the anchor session rather than beside it.
+   *
+   * Only teleport sets this, and only because a teleport's anchor is the
+   * predecessor's OWN pane, which it has just vacated — so the descendant takes
+   * the place its predecessor held instead of appearing as a new tab next to a
+   * pane sitting at a dead shell prompt. Never set for a spawn: an agent must
+   * not be able to type into a pane somebody else is working in, and the anchor
+   * of a spawn is the REQUESTER's live pane.
+   */
+  reuseAnchor?: boolean
   /** Told when a surface silently downgrades, e.g. the anchor pane has closed. */
   onNotice?: (message: string) => void
   runAppleScript?: AppleScriptRunner

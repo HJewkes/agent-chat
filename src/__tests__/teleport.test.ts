@@ -8,7 +8,7 @@ import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { Supervisor } from '../agents/supervisor.js'
-import { HANDOFF_MAX_BYTES } from '../agents/teleport.js'
+import { HANDOFF_MAX_BYTES, PANE_SETTLE_MS } from '../agents/teleport.js'
 import { planPath } from '../agents/launch-files.js'
 import type { LaunchPlan } from '../agents/types.js'
 
@@ -29,6 +29,8 @@ const tmpDirs: string[] = []
 let core: BrokerCore
 let supervisor: Supervisor
 let killed: Array<{ pid: number; signal: string }>
+/** Everything the broker pushed to a live session, so "was it told?" is answerable. */
+let delivered: Array<{ conn: Conn; text: string }>
 
 const COUNTDOWN_MS = 1000
 
@@ -36,7 +38,7 @@ function makeCore(): BrokerCore {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-tele-'))
   tmpDirs.push(dir)
   process.env.AGENT_CHAT_HOME = dir
-  return new BrokerCore(() => undefined, {
+  return new BrokerCore((conn, message) => delivered.push({ conn, text: message.text }), {
     events: new EventLog(path.join(dir, 'events.db')),
     registry: new Registry<Conn>(),
   })
@@ -131,6 +133,7 @@ const planFor = (agentId: string): LaunchPlan =>
 beforeEach(() => {
   vi.useFakeTimers()
   killed = []
+  delivered = []
   vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: unknown) => {
     killed.push({ pid, signal: String(signal) })
     return true
@@ -420,6 +423,59 @@ describe('a visible predecessor', () => {
     expect(kinds()).not.toContain('agent_retired')
     expect(killed).toEqual([])
     expect(core.agents.get(agentId)?.state).not.toBe('retired')
+  })
+
+  /**
+   * Regression, found in the first live run rather than by a test: the abort was
+   * appended as a `notice` targeted at the session, and the session never saw
+   * it. Notices are not pushed, and `notice` is not an inbox kind either — so
+   * the predecessor went on believing it was seconds from being shut down,
+   * which is precisely the belief an abort exists to end.
+   */
+  it('tells the predecessor it survived, deliverably', async () => {
+    const agentId = await spawnAgent(visible)
+    // The agent's own registration, which is what makes it reachable at all —
+    // the delivery under test goes to a live connection, not to a name.
+    const conn = fakeConn()
+    core.register(conn, { t: 'register', name: 'scout', workingOn: '', cwd: workspace(), pid: 1, agentId })
+    await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+
+    supervisor.abortTeleport('scout')
+
+    expect(delivered.map(d => d.text)).toContainEqual(expect.stringMatching(/aborted by the human/))
+    core.drop(conn)
+  })
+
+  /**
+   * Observed on the first successful live teleport and corrected: the descendant
+   * opened as a new TAB, leaving the predecessor's pane behind at a dead shell
+   * prompt and moving the work out of the split the human was watching. It takes
+   * the pane its predecessor vacated instead — safe only because that pane
+   * belongs to the caller and the caller is already gone.
+   */
+  it('lands in the pane its predecessor vacated, not beside it', async () => {
+    const scripts: string[] = []
+    supervisor.close()
+    supervisor = new Supervisor(core, {
+      countdownMs: COUNTDOWN_MS,
+      surface: {
+        platform: 'darwin',
+        runAppleScript: script => {
+          if (script.includes('is running')) return 'true'
+          scripts.push(script)
+          return 'reused-pane-uuid'
+        },
+      },
+    })
+    const agentId = await spawnAgent(visible)
+
+    await supervisor.teleport({ subject: subject(agentId, { anchor: 'w0t1p0:ANCHOR-UUID' }), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS)
+
+    const launch = scripts[scripts.length - 1] ?? ''
+    expect(launch).toContain('tell anchorSession to write text')
+    expect(launch).not.toContain('create tab')
+    expect(launch).not.toContain('split')
   })
 
   it('cannot be aborted once the countdown has already run out', async () => {
