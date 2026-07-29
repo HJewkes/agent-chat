@@ -94,8 +94,14 @@ export const SOCKET_WATCH_MS = 30_000
 export interface SocketWatch {
   /** The path bound at startup. */
   path: string
-  /** Its inode THEN, so a replacement socket at the same path is detected. */
-  ino: number
+  /**
+   * Who owns the socket now — `readPidFile` in production, injected so this is
+   * testable without a broker. Null means unknown, which is deliberately NOT
+   * read as "someone else": a missing or half-written pid file is a routine
+   * state, and exiting on it would make a diagnostic file load-bearing.
+   */
+  owner: () => number | null
+  ownPid?: number
   intervalMs?: number
   /** Called once, with a reason to log, when the socket is no longer ours. */
   onLost: (reason: string) => void
@@ -122,21 +128,32 @@ export interface SocketWatch {
  * Returns its own cancel, and the timer is unref'd so it never holds the process
  * open on its own.
  */
-export function watchSocket({ path, ino, intervalMs = SOCKET_WATCH_MS, onLost }: SocketWatch): () => void {
+export function watchSocket({
+  path,
+  owner,
+  ownPid = process.pid,
+  intervalMs = SOCKET_WATCH_MS,
+  onLost,
+}: SocketWatch): () => void {
   const timer = setInterval(() => {
-    let current: fs.Stats
-    try {
-      current = fs.statSync(path)
-    } catch {
+    if (!fs.existsSync(path)) {
       clearInterval(timer)
       return onLost(`the socket at ${path} is gone; nothing can reach this broker`)
     }
-    // A DIFFERENT socket at the same path means another broker replaced us —
-    // and that one now owns the pid file, the meta file and the path itself, so
-    // whoever handles this must not tidy up on the way out.
-    if (current.ino !== ino) {
+    // Ownership is asked of the pid file rather than inferred from the socket's
+    // inode, which is what this first tried. Inode numbers are REUSED: on the
+    // Linux runner, deleting a socket and binding a new one at the same path
+    // handed back the same inode, so "is it still mine" answered yes about a
+    // file that was not. A pid cannot be wrong in that direction.
+    //
+    // Note this is not the pid file answering LIVENESS — the socket does that,
+    // and that asymmetry still holds. It is answering identity: who owns the
+    // path now. A broker that finds someone else's pid there must leave both
+    // the socket and the state files alone on its way out.
+    const who = owner()
+    if (who !== null && who !== ownPid) {
       clearInterval(timer)
-      onLost(`the socket at ${path} belongs to another broker now`)
+      onLost(`the socket at ${path} belongs to broker ${who} now`)
     }
   }, intervalMs)
   timer.unref?.()

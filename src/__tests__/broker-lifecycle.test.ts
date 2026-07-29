@@ -20,22 +20,25 @@ import { watchSocket } from '../broker/lifecycle.js'
 const tmpDirs: string[] = []
 const cancels: Array<() => void> = []
 
-function socketFile(): { dir: string; file: string; ino: number } {
+const OWN_PID = 4242
+
+function socketFile(): { dir: string; file: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-watch-'))
   tmpDirs.push(dir)
   const file = path.join(dir, 'chat.sock')
   fs.writeFileSync(file, '')
-  return { dir, file, ino: fs.statSync(file).ino }
+  return { dir, file }
 }
 
 /** Resolves with the reason, or rejects if the watchdog stays quiet. */
-function lostReason(file: string, ino: number): Promise<string> {
+function lostReason(file: string, owner: () => number | null): Promise<string> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('watchdog never fired')), 2000)
     cancels.push(
       watchSocket({
         path: file,
-        ino,
+        owner,
+        ownPid: OWN_PID,
         intervalMs: 10,
         onLost: reason => {
           clearTimeout(timer)
@@ -53,8 +56,8 @@ afterEach(() => {
 
 describe('a broker watching its own socket', () => {
   it('reports itself unreachable once the socket is unlinked', async () => {
-    const { file, ino } = socketFile()
-    const lost = lostReason(file, ino)
+    const { file } = socketFile()
+    const lost = lostReason(file, () => OWN_PID)
 
     fs.rmSync(file)
 
@@ -63,8 +66,8 @@ describe('a broker watching its own socket', () => {
 
   /** The whole leak, in one line: the home a test made goes away, the broker does not. */
   it('reports it when the entire home directory is removed', async () => {
-    const { dir, file, ino } = socketFile()
-    const lost = lostReason(file, ino)
+    const { dir, file } = socketFile()
+    const lost = lostReason(file, () => OWN_PID)
 
     fs.rmSync(dir, { recursive: true, force: true })
 
@@ -72,25 +75,61 @@ describe('a broker watching its own socket', () => {
   })
 
   /**
-   * A different socket at the same path is another broker, and the distinction
+   * A socket owned by someone else is a REPLACEMENT broker, and the distinction
    * is load-bearing rather than cosmetic: the caller must NOT unlink the path or
    * remove the state files on its way out, or being orphaned turns into an
    * outage for whichever broker replaced it.
+   *
+   * Ownership is asked of the pid file. The first version of this compared the
+   * socket's INODE, and CI is what proved that wrong: on the Linux runner,
+   * deleting a socket and creating another at the same path returned the same
+   * inode, so the watchdog concluded the file was still its own. The bug was in
+   * the implementation, not the test — a reused inode is a false negative on
+   * every filesystem that recycles them.
    */
   it('distinguishes a replacement broker from a deletion', async () => {
-    const { file, ino } = socketFile()
-    const lost = lostReason(file, ino)
+    const { file } = socketFile()
+    const lost = lostReason(file, () => OWN_PID + 1)
 
-    fs.rmSync(file)
-    fs.writeFileSync(file, '')
-
-    await expect(lost).resolves.toMatch(/belongs to another broker/)
+    await expect(lost).resolves.toMatch(/belongs to broker/)
   })
 
   it('stays quiet while the socket is still its own', async () => {
-    const { file, ino } = socketFile()
+    const { file } = socketFile()
     let fired = false
-    cancels.push(watchSocket({ path: file, ino, intervalMs: 10, onLost: () => (fired = true) }))
+    cancels.push(
+      watchSocket({
+        path: file,
+        owner: () => OWN_PID,
+        ownPid: OWN_PID,
+        intervalMs: 10,
+        onLost: () => (fired = true),
+      }),
+    )
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    expect(fired).toBe(false)
+  })
+
+  /**
+   * A missing or half-written pid file is routine — it is diagnostic, not
+   * authoritative — so an unknown owner must not read as "someone else". Exiting
+   * on it would make a file the design deliberately does not trust into the
+   * thing that decides whether the broker lives.
+   */
+  it('stays quiet when the owner cannot be determined', async () => {
+    const { file } = socketFile()
+    let fired = false
+    cancels.push(
+      watchSocket({
+        path: file,
+        owner: () => null,
+        ownPid: OWN_PID,
+        intervalMs: 10,
+        onLost: () => (fired = true),
+      }),
+    )
 
     await new Promise(resolve => setTimeout(resolve, 100))
 
@@ -98,9 +137,15 @@ describe('a broker watching its own socket', () => {
   })
 
   it('can be cancelled, so a normal shutdown does not race its own watchdog', async () => {
-    const { file, ino } = socketFile()
+    const { file } = socketFile()
     let fired = false
-    const cancel = watchSocket({ path: file, ino, intervalMs: 10, onLost: () => (fired = true) })
+    const cancel = watchSocket({
+      path: file,
+      owner: () => OWN_PID,
+      ownPid: OWN_PID,
+      intervalMs: 10,
+      onLost: () => (fired = true),
+    })
 
     cancel()
     fs.rmSync(file)

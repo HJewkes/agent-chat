@@ -15,7 +15,14 @@ import { type Escalation, type RouteResult } from './registry.js'
 import { BrokerCore, type Conn } from './core.js'
 import { Supervisor } from '../agents/supervisor.js'
 import { SystemEventFeed } from './subscriptions.js'
-import { probeSocket, removeStateFiles, watchSocket, writeMeta, writePidFile } from './lifecycle.js'
+import {
+  probeSocket,
+  readPidFile,
+  removeStateFiles,
+  watchSocket,
+  writeMeta,
+  writePidFile,
+} from './lifecycle.js'
 import { VERSION } from './version.js'
 
 const MAX_OPEN_QUESTIONS = 3
@@ -472,7 +479,7 @@ export async function startBroker(): Promise<net.Server | null> {
   // client can find it and nothing will ever end it. See `watchSocket`.
   const stopWatching = watchSocket({
     path: sock,
-    ino: fs.statSync(sock).ino,
+    owner: readPidFile,
     onLost: reason => {
       logEvent('broker_exit', { reason, pid: process.pid })
       shutdown(!fs.existsSync(sock))
