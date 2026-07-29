@@ -10,12 +10,12 @@ tests in `src/__tests__/isolation.test.ts` (29 tests, real git repos in tmpdirs)
 strategies need them and nothing outside `isolation/**` could be edited to supply
 them another way:
 
-| Field | Who needs it | Why |
-|---|---|---|
+| Field                | Who needs it             | Why                                                                                                                                                                                             |
+| -------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `peers?: LivePeer[]` | `none`, `file-ownership` | roster ∩ registry, computed by the caller. Keeps strategies pure and is the mechanism behind claim-as-lease: a disconnected agent is simply absent, so its claim stops blocking with no reaper. |
-| `toolset?` | `toolset-limited` | the profile's tool lists; the context otherwise carries no profile. |
-| `strict?` | `file-ownership` | warn by default, refuse under `--strict` (§7.2). |
-| `exitedAt?` | `worktree` | the `agent_exited` row's timestamp, which anchors `RECLAIM_GRACE_MS`. |
+| `toolset?`           | `toolset-limited`        | the profile's tool lists; the context otherwise carries no profile.                                                                                                                             |
+| `strict?`            | `file-ownership`         | warn by default, refuse under `--strict` (§7.2).                                                                                                                                                |
+| `exitedAt?`          | `worktree`               | the `agent_exited` row's timestamp, which anchors `RECLAIM_GRACE_MS`.                                                                                                                           |
 
 **Wiring the supervisor needs to do:** build `peers` from `agentLog.roster()` ∩
 `registry`, mapping each peer's `ref.claims` (comma-joined at allocate time) back
@@ -51,13 +51,13 @@ classes. Rather than widen the frozen interface, advisory lines carry a
 `allocate` used to `branch -D` unconditionally, which destroyed the commits of an
 agent that died before calling release. It now branches three ways:
 
-| Leftover state | Behaviour |
-|---|---|
-| branch holds commits, worktree dir gone | **adopt** — `worktree add <path> <branch>`, `ref.reused = 'true'` |
-| branch holds nothing beyond base | reset to current HEAD, so nobody inherits a stale base |
-| worktree dir on disk / branch checked out | throw `WorktreeInUseError` |
+| Leftover state                            | Behaviour                                                         |
+| ----------------------------------------- | ----------------------------------------------------------------- |
+| branch holds commits, worktree dir gone   | **adopt** — `worktree add <path> <branch>`, `ref.reused = 'true'` |
+| branch holds nothing beyond base          | reset to current HEAD, so nobody inherits a stale base            |
+| worktree dir on disk / branch checked out | throw `WorktreeInUseError`                                        |
 
-Adoption rather than refusal, because a respawn under the same name *is* that
+Adoption rather than refusal, because a respawn under the same name _is_ that
 agent continuing: handing back its own branch is what the operator wanted and it
 needs no human rescue. `ctx.forceReset` discards and resets in every case,
 including over a worktree still on disk — the allocate-side counterpart to

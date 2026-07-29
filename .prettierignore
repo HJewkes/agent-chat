@@ -1,0 +1,6 @@
+node_modules/
+dist/
+
+# Written INTO the workspace by the gitleaks action during CI, then picked up by
+# the format step that runs after it. Not ours, not committed, not formattable.
+results.sarif

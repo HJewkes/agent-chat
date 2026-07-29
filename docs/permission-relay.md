@@ -10,7 +10,9 @@ Permission relay is gated on `tengu_harbor_permissions`, a remotely-evaluated fl
 whose **default is `false`**:
 
 ```js
-function gSd(){ return Ke("tengu_harbor_permissions", !1) }
+function gSd() {
+  return Ke('tengu_harbor_permissions', !1)
+}
 ```
 
 It guards the effect that installs the channel permission callbacks into session
@@ -31,7 +33,7 @@ off remotely since the last time anyone checked.
 
 ## The relay reaches allowlisted plugin channels
 
-It uses the *same* gate as ordinary channel messages — there is no separate permission
+It uses the _same_ gate as ordinary channel messages — there is no separate permission
 allowlist. Recipient selection is:
 
 ```js
@@ -43,7 +45,7 @@ SSd(clients, name => Sft(name, k0()) !== undefined)
   `kind:"server"` by exact name, or `plugin:<pluginName>:<serverName>` against a
   `{kind:"plugin", name}` entry. agent-chat's client name is
   `plugin:agent-chat:agent-chat`, so it matches the `agent-chat` plugin target.
-- Dev-flag channels are merged into that *same* array with `dev:true`.
+- Dev-flag channels are merged into that _same_ array with `dev:true`.
 
 So the dev-flag-vs-plugin distinction CC-2 originally asked about does not exist on this
 code path. Both resolve through one list, and whatever gates ordinary channel delivery
@@ -55,7 +57,7 @@ dev-flagged is refused outright, and the `allowedChannelPlugins` check matches o
 `{plugin, marketplace}` pairs, so it can never admit a bare `server:` entry no matter
 what is listed. Packaging as a plugin remains the only route off the dev flag; that is
 what CC-7 was for. What CC-2 establishes is narrower and is the thing that was actually
-in doubt: relay adds no *further* gate of its own on top of that.
+in doubt: relay adds no _further_ gate of its own on top of that.
 
 **Confirmed live**: a `chat_list` prompt in a session launched with
 `--channels plugin:agent-chat@agent-chat-local` (no dev flag) produced
@@ -64,7 +66,7 @@ in the broker log and an APPR row in the queue.
 
 ## Two capabilities are required, not one
 
-`SSd` filters on **both** `claude/channel` *and* `claude/channel/permission` being
+`SSd` filters on **both** `claude/channel` _and_ `claude/channel/permission` being
 present in `capabilities.experimental`. Declaring only the first gets you messages and
 silently no relay. We declare both.
 
@@ -85,7 +87,7 @@ session's real work — file edits, skill invocations, shell commands — not ju
 agent-chat's own chatter. That is what makes I1/I2 worth having; a queue that only
 ever showed `chat_status` prompts would be noise with no signal.
 
-## What does *not* get relayed
+## What does _not_ get relayed
 
 Two skips, both silent:
 
@@ -111,7 +113,7 @@ rather than an absence:
 
 Channel live, prompt genuinely blocked, nothing relayed. Non-interactive denials are
 auto-resolved without ever opening a promptable request, so relay has nothing to
-forward. The push also arrived *between tool calls mid-turn*, not at session start.
+forward. The push also arrived _between tool calls mid-turn_, not at session start.
 
 This is the load-bearing caveat for the whole feature, so state it plainly: **the
 permission observatory sees interactive sessions only.** Background and `--print` peers
@@ -119,7 +121,7 @@ are addressable for messaging but invisible when blocked — and they are exactl
 population you would most want an observatory for, since nobody is watching their
 terminal. See ideas.md I1.
 
-## The host *will* accept a verdict — abstaining is our choice, not its constraint
+## The host _will_ accept a verdict — abstaining is our choice, not its constraint
 
 This is the finding worth carrying forward. The host registers a handler for
 `notifications/claude/channel/permission`:
@@ -141,12 +143,12 @@ assumption the capability existed; it does, exactly as described, so R1 is a liv
 capability being declined rather than a hypothetical. Keep it that way.
 
 The corollary for our own design: when the local dialog wins, the host sends the channel
-server *nothing*. There is no resolution notification. That is why pending approvals are
+server _nothing_. There is no resolution notification. That is why pending approvals are
 aged out by TTL rather than closed by an event.
 
 ## An approval row is session-relative — never compare rows across sessions
 
-The broker log records *that a session prompted*, which depends on that session's
+The broker log records _that a session prompted_, which depends on that session's
 permission view, and permission views drift apart between concurrently-running
 sessions. Observed 2026-07-27: `chat_send` was present in
 `.claude/settings.local.json`, and a session still produced `approval_request izfnu`
@@ -155,16 +157,16 @@ for `chat_send` more than a minute later.
 Four rows from three concurrent sessions on 2026-07-27 separate the two directions.
 `cc-relay` answered "don't ask again" for `chat_send` at ~12:06:32:
 
-| time | session | tool | relayed? | |
-|---|---|---|---|---|
-| 12:06:25 | cc-relay | `chat_send` | yes | the prompt that was then granted |
-| 12:08:58 | cc-relay | `chat_send` | **no** | own grant honoured on the very next call |
-| 12:07:45 | cc-main | `chat_send` | yes | 73s after the on-disk entry existed |
-| 12:15:37 | cc2-relay | `chat_broadcast` | yes | ~3min after that entry reached disk |
+| time     | session   | tool             | relayed? |                                          |
+| -------- | --------- | ---------------- | -------- | ---------------------------------------- |
+| 12:06:25 | cc-relay  | `chat_send`      | yes      | the prompt that was then granted         |
+| 12:08:58 | cc-relay  | `chat_send`      | **no**   | own grant honoured on the very next call |
+| 12:07:45 | cc-main   | `chat_send`      | yes      | 73s after the on-disk entry existed      |
+| 12:15:37 | cc2-relay | `chat_broadcast` | yes      | ~3min after that entry reached disk      |
 
 The mechanism is not that settings are frozen at launch — they aren't. When a user
 answers "always allow", `persistPermissions` does two independent things: `wfe(d)`
-writes the rule to disk fire-and-forget, and `ste(...)` updates *that session's*
+writes the rule to disk fire-and-forget, and `ste(...)` updates _that session's_
 in-memory permission context. The running session therefore honours its own grants
 immediately, without re-reading anything. What is missing is the other direction:
 settings reads are memoized (`Tqn` over the `E2n` map) with no file watcher, so one
@@ -176,7 +178,7 @@ The consequence for anyone reading the log:
 - **Presence of an `approval_request` is solid evidence.** A prompt really opened and
   really relayed. This is what CC-2 was verified on and it is unaffected.
 - **Absence proves nothing about the relay.** It means that tool was already permitted
-  *in that session*, and says nothing about whether relay works or about any other
+  _in that session_, and says nothing about whether relay works or about any other
   session.
 
 So an A/B across two sessions is only valid if they were launched from the same
