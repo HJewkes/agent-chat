@@ -282,6 +282,44 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'agent_teleport',
+    description:
+      'End this session and start a successor that boots from the CURRENT build, keeping your name, ' +
+      'your peers, your tags and your working directory. Use it when your own instructions or the code ' +
+      'you run on have moved since you started — the alternative is exiting (losing what you know) or ' +
+      'staying useful and stale. BUILD FIRST: the successor execs whatever `npm run build` last ' +
+      'produced, so a teleport that skips the build achieves nothing at real cost. This is not a resume ' +
+      'and not a subagent: your transcript does not come with you, the handoff below is all your ' +
+      'successor gets, and you will be shut down. If you are visible in a terminal, your human gets 30 ' +
+      'seconds to stop it; if you are headless it happens immediately. You cannot cancel it yourself. ' +
+      'Answer or dismiss any open questions to the human first — teleport refuses while any are open.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        handoff: {
+          type: 'string',
+          description:
+            'Everything your successor needs, written by you, stored verbatim, 8 KB max (refused, not ' +
+            'truncated). Cover, in this order: (1) what you were mid-way through, in enough detail to ' +
+            'resume without you; (2) state on disk — branch, uncommitted files, what builds and what ' +
+            'does not; (3) what you would have done next, and why that and not the alternative; (4) ' +
+            'what you already tried that did NOT work, which is the most expensive thing to lose; (5) ' +
+            'who you owe a reply to and what you promised; (6) files to read first, in order, as ' +
+            '@-prefixed absolute paths — Claude Code expands those into your successor’s first turn, ' +
+            'so point at files instead of pasting them.',
+        },
+        model: {
+          type: 'string',
+          description:
+            'Optional. Omit to keep running on the model you are on now, which is the usual case. Set ' +
+            'it only to succeed yourself onto a different one deliberately — a cheaper model for a ' +
+            'long grind, a stronger one for what is left.',
+        },
+      },
+      required: ['handoff'],
+    },
+  },
+  {
     name: 'agent_profiles',
     description:
       'List the profiles agent_spawn can use, with the model, tool set, surface and isolation each grants. ' +
@@ -410,6 +448,8 @@ export class ToolHandler {
         return this.unsubscribe(args)
       case 'agent_spawn':
         return this.spawnAgent(args)
+      case 'agent_teleport':
+        return this.teleport(args)
       case 'agent_profiles':
         return this.agentProfiles()
       case 'agent_list':
@@ -617,6 +657,40 @@ export class ToolHandler {
     return text(
       `Spawned "${res.name}" (${res.agentId}). It is a peer now — reach it with chat_send, ` +
         `not by spawning again.${warnings}`,
+    )
+  }
+
+  /**
+   * Hand off and end this session.
+   *
+   * Nothing here names the subject: the broker resolves it from this
+   * connection's own registry entry, which is what makes "teleport someone else"
+   * unrepresentable rather than merely refused.
+   */
+  private async teleport(args: Record<string, unknown>) {
+    if (this.registeredName === null) {
+      return text(
+        'Register with chat_register first: teleport hands your name to a successor, and you do not ' +
+          'have one yet.',
+      )
+    }
+    const model = optionalString(args, 'model')
+    const res = (await this.call(
+      { t: 'teleport', handoff: requireString(args, 'handoff'), ...(model === undefined ? {} : { model }) },
+      'teleport_result',
+    )) as Extract<ServerMessage, { t: 'teleport_result' }>
+
+    if (!res.ok) return text(`Not teleporting: ${res.reason}`)
+    const warnings = (res.warnings ?? []).map(w => `\n  warning: ${w}`).join('')
+    const when =
+      res.countdownMs === undefined
+        ? 'Your successor is starting now and this session is being shut down.'
+        : `Your human has ${Math.round(res.countdownMs / 1000)}s to stop this, then you will be shut ` +
+          'down and your successor will open in the same window.'
+    return text(
+      `Teleport accepted. Handoff recorded; your successor is ${res.agentId} and keeps the name ` +
+        `"${res.name}". ${when} Do not start anything new — finish or write down whatever is in ` +
+        `flight, because it will not survive this turn.${warnings}`,
     )
   }
 

@@ -19,6 +19,14 @@ import { SurfaceRefused, type SurfaceOptions } from './surfaces/options.js'
 import { Semaphore } from './semaphore.js'
 import { cliEntry, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
+import {
+  Teleport,
+  type InheritedIsolation,
+  type RelaunchInput,
+  type TeleportHost,
+  type TeleportOutcome,
+  type TeleportRequest,
+} from './teleport.js'
 import type { AgentProfile, LaunchHandle, LaunchPlan } from './types.js'
 
 /**
@@ -44,6 +52,9 @@ export const SETTLE_MS = 30_000
 
 /** Spawn depth cap. Without it an agent team is a fork bomb with a model picking the branching factor. */
 export const MAX_DEPTH = 2
+
+/** How long a process gets to exit on SIGTERM before the ladder reaches SIGKILL. */
+const KILL_GRACE_MS = 3000
 
 export interface SpawnRequest {
   name: string
@@ -95,14 +106,17 @@ export interface SupervisorOptions {
    * happens to be running iTerm — passing on CI and spawning panes on a laptop.
    */
   surface?: Pick<SurfaceOptions, 'runAppleScript' | 'spawn' | 'platform'>
+  /** Teleport's human-veto window. Shortened in tests; never shortened in production. */
+  countdownMs?: number
 }
 
-export class Supervisor {
+export class Supervisor implements TeleportHost {
   private readonly live = new Map<string, Live>()
   private readonly semaphore: Semaphore
   private readonly settleMs: number
   private readonly surfaceOptions: SupervisorOptions['surface']
   private readonly unwatch: () => void
+  private readonly teleporter: Teleport
 
   constructor(
     private readonly core: BrokerCore,
@@ -112,6 +126,7 @@ export class Supervisor {
     this.settleMs = options.settleMs ?? SETTLE_MS
     this.surfaceOptions = options.surface ?? {}
     this.unwatch = core.onAppend(row => this.onRow(row))
+    this.teleporter = new Teleport(core, this, options.countdownMs)
   }
 
   /**
@@ -440,7 +455,7 @@ export class Supervisor {
       } catch {
         // exited on the polite signal, which is the good case
       }
-    }, 3000).unref?.()
+    }, KILL_GRACE_MS).unref?.()
     return { ok: true }
   }
 
@@ -519,6 +534,138 @@ export class Supervisor {
     return { ok: true, agentId: identity.agentId, name }
   }
 
+  /** Hand off to a successor and end this session. See `teleport.ts`. */
+  async teleport(req: TeleportRequest): Promise<TeleportOutcome> {
+    return this.teleporter.start(req)
+  }
+
+  /** The human's veto on a countdown. No agent-facing path reaches this. */
+  abortTeleport(name: string): { ok: boolean; reason?: string } {
+    return this.teleporter.abort(name)
+  }
+
+  /**
+   * The predecessor's isolation, for the descendant to STAND IN rather than
+   * re-allocate. Undefined for an ordinary session, which never had one.
+   */
+  inheritedIsolation(agentId: string): InheritedIsolation | undefined {
+    const entry = this.live.get(agentId)
+    if (!entry) return undefined
+    return { allocation: entry.allocation, isolation: entry.isolation, slot: this.semaphore.has(agentId) }
+  }
+
+  /**
+   * End Claude Code itself, on a pid the session reported about its own process.
+   *
+   * Deliberately NOT `kill(name)`: that refuses on a visible surface, because
+   * killing a pane a human is looking at from a bus any peer can reach is not a
+   * thing to build. This is the other case — the session asked to end itself, a
+   * human was offered 30 seconds to say no, and nothing here can be aimed at
+   * anyone else, since the pid came from the caller's own registration.
+   */
+  endSession(name: string, hostPid: number): { ok: boolean; reason?: string } {
+    try {
+      process.kill(hostPid, 'SIGTERM')
+    } catch {
+      return { ok: false, reason: `${name} (pid ${hostPid}) was already gone` }
+    }
+    setTimeout(() => {
+      try {
+        process.kill(hostPid, 'SIGKILL')
+      } catch {
+        // exited on the polite signal, which is the good case
+      }
+    }, KILL_GRACE_MS).unref?.()
+    return { ok: true }
+  }
+
+  /**
+   * Launch a descendant into a name and an isolation that already exist.
+   *
+   * Everything the ordinary spawn path decides — a fresh allocation, a slot, a
+   * depth one greater than its parent — is pinned by the caller here instead,
+   * because a teleport is a continuation of one agent rather than the creation
+   * of another. What it does NOT skip is rebuilding the launch plan and the MCP
+   * config: that is what makes the descendant exec the current `dist/cli.js` and
+   * read the current instructions, which is the entire payoff of the feature.
+   */
+  async relaunch(input: RelaunchInput): Promise<void> {
+    // The descendant occupies exactly what the predecessor did, so the budget
+    // sees one agent throughout rather than two for the length of a launch.
+    if (input.inheritedFrom !== undefined) this.semaphore.release(input.inheritedFrom)
+    if (input.inherited?.slot) this.semaphore.acquire(input.agentId)
+    // The predecessor's entry is dropped here rather than left for its own exit
+    // to clear: `find(name)` scans by name, and for as long as both entries sit
+    // in the map, "the live agent called scout" resolves to the dead one — so a
+    // kill or an `agent attach` would be aimed at a process that is already gone.
+    if (input.inheritedFrom !== undefined) {
+      const predecessor = this.live.get(input.inheritedFrom)
+      if (predecessor?.settle) clearTimeout(predecessor.settle)
+      this.live.delete(input.inheritedFrom)
+    }
+
+    const isolation = input.inherited?.isolation ?? 'none'
+    const allocation = input.inherited?.allocation ?? { cwd: input.cwd }
+    if (input.inherited !== undefined)
+      this.core.append({
+        kind: 'isolation_allocated',
+        actor: input.name,
+        ref: input.agentId,
+        body: allocation.note ?? '',
+        meta: {
+          strategy: isolation,
+          ...(allocation.ref ?? {}),
+          // So a later release still finds the branch, worktree path and git root
+          // it needs — without this the tree survives every retirement forever.
+          ...(input.inheritedFrom === undefined ? {} : { inherited_from: input.inheritedFrom }),
+        },
+      })
+
+    const sessionId = Teleport.newSessionId()
+    const plan = buildLaunchPlan({
+      agentId: input.agentId,
+      sessionId,
+      name: input.name,
+      profile: input.profile,
+      brief: input.brief,
+      cwd: allocation.cwd,
+      surface: input.surface,
+      preamble: input.preamble,
+      mcpConfigPath: mcpConfigPath(input.agentId),
+      ...(allocation.addDirs ? { extraDirs: allocation.addDirs } : {}),
+      ...(input.tags?.length ? { tags: input.tags } : {}),
+      ...(input.subscriptions?.length ? { subscriptions: input.subscriptions } : {}),
+      agentChatHome: home(),
+    })
+    writeLaunchFiles(plan, buildMcpConfig(input.profile, cliEntry()))
+
+    this.core.append({
+      kind: 'agent_spawned',
+      actor: input.name,
+      target: input.name,
+      msgId: input.agentId,
+      body: input.brief,
+      meta: {
+        name: input.name,
+        profile: input.profile.name,
+        model: input.profile.model,
+        surface: input.surface,
+        isolation,
+        cwd: allocation.cwd,
+        session_id: sessionId,
+        allowed_tools: input.profile.allowedTools.join(','),
+        perm_mode: permModeFor(input.surface),
+        ...input.meta,
+      },
+    })
+
+    const handle = await this.launchOn(input.surface, plan, input.anchor)
+    // Transfers the allocation to the descendant's id, so ITS eventual retire
+    // releases the real strategy rather than a no-op one.
+    this.track(input.agentId, input.name, handle, allocation, isolation, input.anchor)
+    logEvent('agent_teleported', { agentId: input.agentId, name: input.name, from: input.inheritedFrom })
+  }
+
   /** Live agents, for `agent ls` and the slot summary. */
   liveIds(): string[] {
     return [...this.live.keys()]
@@ -539,6 +686,7 @@ export class Supervisor {
 
   close(): void {
     this.unwatch()
+    this.teleporter.close()
     for (const entry of this.live.values()) if (entry.settle) clearTimeout(entry.settle)
   }
 }

@@ -68,6 +68,14 @@ export const INSTRUCTIONS = [
   'output, and unread output is worse than none.',
   'chat_subscribe tells you when sessions and agents come and go, scoped to a name, a tag, or',
   'all. It reports lifecycle only: you learn who is here, never what anyone said.',
+  // Placed with the spawn rules for the same reason those are here: the decision
+  // to teleport is made before any tool description is read, and the two facts
+  // that govern it — you end, and your successor gets only what you write — are
+  // exactly the ones a model will otherwise assume its way past.
+  'agent_teleport ends this session and starts a successor on the CURRENT build, keeping your name',
+  'so peers can keep reaching you. Use it when your instructions or the code you run on have moved',
+  'since you started. Build first, or the successor picks up the same stale build. Your transcript',
+  'does not travel: the handoff you write is all it gets, and you are shut down once it is recorded.',
 ].join(' ')
 
 /**

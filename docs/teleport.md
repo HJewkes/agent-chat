@@ -1,6 +1,9 @@
 # teleport — a session that hands off to its own successor
 
-**Status:** design only. No code was written producing this. **Written:**
+**Status:** IMPLEMENTED 2026-07-29 on branch `feat/teleport-identity`. The
+design below is what was built; **§14 records the five things the
+implementation had to decide that this document did not**, and is the part to
+read first if code and prose ever disagree. **Written:**
 2026-07-28, branch `feat/plugin-packaging`. **Tracked as:** CC-20. **Revised**
 the same day, once the five open decisions below closed — see §12. The
 revision is a simplification, not a reversal: §4-§6 and §12 changed
@@ -821,3 +824,74 @@ decided by inertia.
 - D5 (§12) is a genuinely open decision, not a resolved one dressed as open —
   say so rather than assume "warn only" by default because it was the
   original recommendation.
+
+---
+
+## 14. What the implementation decided that this document did not
+
+Written 2026-07-29, alongside the code (`src/agents/teleport.ts`,
+`supervisor.ts`, `broker/socket.ts`, `server/tools.ts`). Everything here is a
+gap the design left, found by building it. Where this section and anything
+above disagree, this section is what the code does.
+
+**1. An adopted session has no profile to inherit, so it inherits the
+HARNESS.** §5 pins "profile, surface, cwd and tool lists are inherited", and D3
+then required ordinary human-started sessions to teleport — but an adopted
+identity is minted at `chat_register` and carries no model, no tools, no
+isolation and no surface. The first instinct was a new builtin profile for
+descendants. The human rejected that framing outright: _"allowedTools should
+just be the default tools rather than us setting allowed/disallowed, and
+ideally we pull model from that parent session for continuity ... we should try
+to replicate the configuration that the current session is running over."_ So
+the descendant of an ordinary session gets **no `--allowed-tools` and no
+`--disallowed-tools` flag at all** — it lives under the human's own settings,
+exactly as its predecessor did — and its model is read from Claude Code's own
+transcript (`transcript.ts:observedModel`, `message.model` on the newest
+assistant row; observed on a live transcript, not inferred). Empty `model` or
+empty `allowedTools` in a profile now MEANS "inherit" in `buildLaunchPlan`.
+Note the cost, stated where the code does it: with no allow list, agent-chat's
+own tools stop being allowlisted for the descendant and fall back to ordinary
+permission rules. That is right for a session already living under them and
+wrong for anything else, which is why nothing but teleport can produce it — a
+profile file still fails validation without both fields.
+
+**2. `model` is the one negotiable field.** A parameter on the teleport tool,
+against §5's "no parameter to change them" — kept narrow deliberately, from the
+same human note: an agent may succeed itself onto a cheaper or stronger model on
+purpose. A model is not a privilege; a profile, a surface and a tool list are,
+and none of them are settable.
+
+**3. Teleport refuses a session that never reported `hostPid`.** §5.1 measured
+that severing the MCP subprocess leaves a working bus on which the session is
+silently deregistered and cannot tell. The only pid that ends the session is
+Claude Code's own, which arrives on `register` (CC-30). If it is absent — an
+MCP server older than teleport — the sequence does not start. Refusing is the
+only option that cannot produce two live processes on one name.
+
+**4. The abort is a wire frame with a check, not an absent capability.** §4.2
+asks for a human-only abort and §6 argues that the strong form of such a rule is
+an operation nobody can express. These pull against each other here, because
+the human at the CLI and an agent reach the broker over the SAME socket: a veto
+that no frame can express is a veto the human cannot exercise either. So
+`teleport_abort` exists and the broker refuses it from any REGISTERED
+connection, leaving the human at the CLI (`agent-chat teleport abort <name>`),
+who could already retire or kill anything on a 0600 socket. No MCP tool exposes
+it. This is the one place in teleport where a check stands in for a structural
+defence, and it is marked as such in `socket.ts`.
+
+**5. D5 resolved: warn only.** Decided by the human 2026-07-29. Teleport reports
+how many messages arrived for the name during the session and tells the
+predecessor to say in the handoff which it had already handled. It does not
+refuse: unread items stay addressed to the name, the descendant keeps the name,
+and `chat_inbox` still returns them.
+
+Two smaller notes worth having written down:
+
+- **The visible/headless split is read off the SURFACE, not off a separate
+  notion of visibility.** A descendant of an ordinary session is `iterm-tab`, so
+  ordinary sessions always get the countdown; the iTerm surface's existing
+  ladder handles a missing or closed anchor by opening a window, which is the
+  same fallback a spawn already gets.
+- **The predecessor's `Live` entry is dropped at relaunch**, not left for its
+  own exit to clear. `Supervisor.find(name)` scans by name, and while both
+  entries are in the map "the live agent called scout" resolves to the dead one.

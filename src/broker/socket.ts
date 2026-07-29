@@ -94,6 +94,79 @@ class SocketServer {
     })
   }
 
+  /**
+   * Teleport on behalf of `conn`, resolving WHO from its own registry entry.
+   *
+   * Every field the supervisor acts on — the identity to retire, the pid to
+   * signal, the pane to reopen in, the tags and subscriptions to carry — is read
+   * from the requester's own connection. The wire message carries none of them,
+   * so there is no version of this call that ends someone else's session.
+   */
+  private async handleTeleport(conn: Conn, msg: Extract<ClientMessage, { t: 'teleport' }>): Promise<void> {
+    const { registry } = this.core
+    const entry = registry.entryFor(conn)
+    if (entry?.agentId === undefined) {
+      return reply(conn, {
+        t: 'teleport_result',
+        ok: false,
+        reason:
+          'teleport needs a durable identity, and this connection has none. Call chat_register ' +
+          'first; if you already have, the broker could not read this session id from the ' +
+          'environment, which an older MCP server does not send.',
+      })
+    }
+    const outcome = await this.supervisor.teleport({
+      subject: {
+        agentId: entry.agentId,
+        name: entry.name,
+        cwd: registry.cwdFor(conn) ?? process.cwd(),
+        tags: registry.tagsOf(conn),
+        subscriptions: registry.subscriptionsOf(conn),
+        ...(entry.hostPid === undefined ? {} : { hostPid: entry.hostPid }),
+        ...(registry.anchorFor(conn) === undefined ? {} : { anchor: registry.anchorFor(conn) as string }),
+      },
+      handoff: msg.handoff,
+      ...(msg.model === undefined ? {} : { model: msg.model }),
+    })
+    reply(conn, {
+      t: 'teleport_result',
+      ok: outcome.ok,
+      ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+      ...(outcome.name === undefined ? {} : { name: outcome.name }),
+      ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }),
+      ...(outcome.countdownMs === undefined ? {} : { countdownMs: outcome.countdownMs }),
+      ...(outcome.warnings === undefined ? {} : { warnings: outcome.warnings }),
+    })
+  }
+
+  /**
+   * The countdown's abort, and the one place a check stands in for a structural
+   * defence — deliberately, because a human at the CLI and an agent reach the
+   * broker over the same socket, and the human's veto has to be reachable.
+   *
+   * A REGISTERED connection is a session, and no session may cancel a shutdown
+   * (its own or anyone's): a descendant suppressing its predecessor's veto would
+   * make the human's 30 seconds a formality. What is left is the human at the
+   * CLI, who holds no registration and could already retire or kill anything on
+   * a 0600 socket. No MCP tool exposes this frame.
+   */
+  private handleTeleportAbort(conn: Conn, name: string): void {
+    if (this.core.registry.nameOf(conn) !== undefined) {
+      return reply(conn, {
+        t: 'teleport_result',
+        ok: false,
+        reason: 'aborting a teleport is the human’s call; a session cannot cancel a countdown',
+      })
+    }
+    const result = this.supervisor.abortTeleport(name)
+    reply(conn, {
+      t: 'teleport_result',
+      ok: result.ok,
+      ...(result.reason === undefined ? {} : { reason: result.reason }),
+      ...(result.ok ? { name } : {}),
+    })
+  }
+
   private handleRoute(
     conn: Conn,
     result: RouteResult<Conn>,
@@ -314,6 +387,11 @@ class SocketServer {
           t: 'agents_result',
           agents: core.agents.roster({ includeRetired: msg.includeRetired ?? false }),
         })
+      case 'teleport':
+        void this.handleTeleport(conn, msg)
+        return
+      case 'teleport_abort':
+        return this.handleTeleportAbort(conn, msg.name)
       case 'retire':
         void this.supervisor.retire(msg.name).then(result =>
           reply(conn, {
