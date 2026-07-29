@@ -161,6 +161,9 @@ describe('pairing identity with presence', () => {
     surface: '',
     sessionId: '',
     lastEventAt: 1,
+    // Every identity has one: 1 for an agent nothing has ever succeeded, which
+    // is the truth for this fixture rather than a placeholder.
+    generation: 1,
   })
 
   it('renders the normal cases from the table', () => {

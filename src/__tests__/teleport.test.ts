@@ -204,10 +204,10 @@ describe('what teleport refuses before it commits to anything', () => {
   it('refuses a session that never reported the pid of Claude Code itself', async () => {
     const agentId = await spawnAgent()
 
-    const result = await supervisor.teleport({
-      subject: { ...subject(agentId), hostPid: undefined },
-      handoff: 'ok',
-    })
+    // The key is REMOVED rather than set to undefined: `exactOptionalPropertyTypes`
+    // is on, and an absent field is what an older MCP server actually sends.
+    const { hostPid: _unreported, ...withoutPid } = subject(agentId)
+    const result = await supervisor.teleport({ subject: withoutPid, handoff: 'ok' })
 
     expect(result.ok).toBe(false)
     expect(result.reason).toMatch(/pid of Claude Code/)
