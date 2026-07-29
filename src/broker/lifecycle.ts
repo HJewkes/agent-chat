@@ -82,6 +82,67 @@ export function readMeta(): BrokerMeta | null {
   }
 }
 
+/**
+ * How often a broker checks that the socket it bound is still its own.
+ *
+ * Long, because it is a leak reaper rather than a health check: nothing depends
+ * on noticing quickly, and a broker polling its own socket every second would be
+ * spending a wakeup a second forever to catch an event that happens once.
+ */
+export const SOCKET_WATCH_MS = 30_000
+
+export interface SocketWatch {
+  /** The path bound at startup. */
+  path: string
+  /** Its inode THEN, so a replacement socket at the same path is detected. */
+  ino: number
+  intervalMs?: number
+  /** Called once, with a reason to log, when the socket is no longer ours. */
+  onLost: (reason: string) => void
+}
+
+/**
+ * Exit when the socket a broker bound is no longer its own.
+ *
+ * The socket IS the lease — everything else here is ordered around that — and a
+ * broker whose socket has been unlinked is not degraded, it is UNREACHABLE. No
+ * client can find it, it will never serve another request, and nothing will ever
+ * come along to end it. Seven such processes were found running against deleted
+ * temp directories, the oldest a day old, each holding a sqlite handle to a
+ * database that no longer existed.
+ *
+ * The cause is structural rather than careless: `BrokerClient` auto-starts a
+ * broker `detached` and `unref`ed, precisely so it outlives whichever session
+ * happened to need it first. Any test that points `AGENT_CHAT_HOME` at a temp
+ * directory therefore causes a broker, and cleaning that directory up does not
+ * end it. `reapBroker` exists for this and is easy to forget — which is why the
+ * fix belongs in the broker, where forgetting is not an option, rather than in
+ * one more thing every test has to remember.
+ *
+ * Returns its own cancel, and the timer is unref'd so it never holds the process
+ * open on its own.
+ */
+export function watchSocket({ path, ino, intervalMs = SOCKET_WATCH_MS, onLost }: SocketWatch): () => void {
+  const timer = setInterval(() => {
+    let current: fs.Stats
+    try {
+      current = fs.statSync(path)
+    } catch {
+      clearInterval(timer)
+      return onLost(`the socket at ${path} is gone; nothing can reach this broker`)
+    }
+    // A DIFFERENT socket at the same path means another broker replaced us —
+    // and that one now owns the pid file, the meta file and the path itself, so
+    // whoever handles this must not tidy up on the way out.
+    if (current.ino !== ino) {
+      clearInterval(timer)
+      onLost(`the socket at ${path} belongs to another broker now`)
+    }
+  }, intervalMs)
+  timer.unref?.()
+  return () => clearInterval(timer)
+}
+
 /** Both state files go together; neither is load-bearing, so failure to remove is not fatal. */
 export function removeStateFiles(): void {
   for (const file of [pidPath(), metaPath()]) {

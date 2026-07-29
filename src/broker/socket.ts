@@ -15,7 +15,7 @@ import { type Escalation, type RouteResult } from './registry.js'
 import { BrokerCore, type Conn } from './core.js'
 import { Supervisor } from '../agents/supervisor.js'
 import { SystemEventFeed } from './subscriptions.js'
-import { probeSocket, removeStateFiles, writeMeta, writePidFile } from './lifecycle.js'
+import { probeSocket, removeStateFiles, watchSocket, writeMeta, writePidFile } from './lifecycle.js'
 import { VERSION } from './version.js'
 
 const MAX_OPEN_QUESTIONS = 3
@@ -448,16 +448,38 @@ export async function startBroker(): Promise<net.Server | null> {
   writePidFile()
   writeMeta({ port: null, version: VERSION, started: Date.now(), pid: process.pid })
 
-  const shutdown = (): void => {
+  /**
+   * `tidy` is false for exactly one caller: the watchdog, when the socket at our
+   * path now belongs to a DIFFERENT broker. Unlinking then would take out a live
+   * broker's socket on the way out, and removing the state files would delete
+   * the pid and meta it had just written — turning our own orphaning into an
+   * outage for whoever replaced us.
+   */
+  const shutdown = (tidy = true): void => {
     logEvent('broker_stopping', { pid: process.pid })
+    stopWatching()
     server.close()
     socketServer.close()
     core.close()
-    if (fs.existsSync(sock)) fs.unlinkSync(sock)
-    removeStateFiles()
+    if (tidy) {
+      if (fs.existsSync(sock)) fs.unlinkSync(sock)
+      removeStateFiles()
+    }
     process.exit(0)
   }
-  process.on('SIGINT', shutdown)
-  process.on('SIGTERM', shutdown)
+
+  // A broker whose socket has been unlinked is unreachable, not degraded: no
+  // client can find it and nothing will ever end it. See `watchSocket`.
+  const stopWatching = watchSocket({
+    path: sock,
+    ino: fs.statSync(sock).ino,
+    onLost: reason => {
+      logEvent('broker_exit', { reason, pid: process.pid })
+      shutdown(!fs.existsSync(sock))
+    },
+  })
+
+  process.on('SIGINT', () => shutdown())
+  process.on('SIGTERM', () => shutdown())
   return server
 }
