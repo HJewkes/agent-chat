@@ -774,6 +774,24 @@ describe('spawn privilege', () => {
     return msgId
   }
 
+  /** Same as `spawnedParent`, but also records the deny list it was itself held to. */
+  const spawnedParentWithDeny = (name: string, cwd: string, tools: string[], denied: string[]): string => {
+    const { msgId } = core.append({
+      kind: 'agent_spawned',
+      actor: 'human',
+      target: name,
+      meta: { name, depth: '1', allowed_tools: tools.join(','), disallowed_tools: denied.join(',') },
+    })
+    core.register(fakeConn(), { t: 'register', name, workingOn: '', cwd, pid: 1 })
+    return msgId
+  }
+
+  const profilesDirFor = (): string => {
+    const dir = path.join(process.env.AGENT_CHAT_HOME as string, 'profiles')
+    fs.mkdirSync(dir, { recursive: true })
+    return dir
+  }
+
   it('refuses an agent a profile granting tools it was not granted itself', async () => {
     const sup = withStubbedSurface()
     const shared = workspace()
@@ -851,5 +869,42 @@ describe('spawn privilege', () => {
 
     const spawned = core.events.agentEvents().find(r => r.kind === 'agent_spawned')
     expect(spawned?.meta.disallowed_tools).toBe('Bash,Write,Edit')
+  })
+
+  /**
+   * CC-40: same allowedTools as the parent, so the allow-side check alone would
+   * wave this through — but `disallowedTools` is what actually confines a
+   * profile (see profiles.ts), and this one drops `Bash` from the deny list the
+   * parent itself was held to. A custom profile file, because no builtin pairs
+   * identical allowedTools with a strictly weaker disallowedTools.
+   */
+  it('refuses a profile with the same grant but a weaker deny list', async () => {
+    const sup = withStubbedSurface()
+    const shared = workspace()
+    fs.writeFileSync(
+      path.join(profilesDirFor(), 'looser-explorer.json'),
+      JSON.stringify({
+        model: 'sonnet',
+        allowedTools: ['Read', 'Grep', 'Glob'],
+        disallowedTools: ['Write', 'Edit'],
+        isolation: 'toolset-limited',
+        surface: 'headless',
+      }),
+    )
+    const parentAgentId = spawnedParentWithDeny(
+      'explorer-agent',
+      shared,
+      ['Read', 'Grep', 'Glob'],
+      ['Bash', 'Write', 'Edit'],
+    )
+
+    const result = await sup.spawn(
+      spawnReq({ profile: 'looser-explorer', requestedBy: 'explorer-agent', parentAgentId, cwd: shared }),
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/weaker deny list/)
+    expect(result.reason).toMatch(/Bash/)
+    expect(core.events.history(10).some(r => r.kind === 'agent_spawn_refused')).toBe(true)
   })
 })
