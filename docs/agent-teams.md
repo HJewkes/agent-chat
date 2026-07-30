@@ -1199,9 +1199,10 @@ authority"_), a `agent_spawn` call is untrusted input. Therefore:
 - **A profile's toolset actually confines,** via `--disallowed-tools` on the
   read-only builtins (§4). This was the third stated defence in this section to
   turn out to be prose with no implementation — after `cwd` above, and the spawn
-  rate budget in §11.3, which is still open. Audit the rest of §11 against
-  RUNNING BEHAVIOUR rather than against the code; the code here looked correct,
-  and the flag that was already in the argv was the wrong flag.
+  rate budget in §11.3 (closed CC-25, 2026-07-30 — see §11.3 for what shipped).
+  Audit the rest of §11 against RUNNING BEHAVIOUR rather than against the code;
+  the code here looked correct, and the flag that was already in the argv was
+  the wrong flag.
 - **`name` goes through the same `RESERVED_NAMES` check** as registration
   (`protocol.ts:24`, `registry.ts:95-96`). A spawned agent named `human` would
   inherit the user's authority in every peer's reading of `from` — `docs/ideas.md`
@@ -1216,9 +1217,12 @@ authority"_), a `agent_spawn` call is untrusted input. Therefore:
   3 live agents. Slot released on `agent_exited`.
 - **Depth:** `agent_spawned.meta.depth`, default cap 2. Without this, an agent
   team is a fork bomb with a language model deciding the branching factor.
-- **Rate:** a spawn budget per requester per window, mirroring the broadcast
-  budget already in `registry.ts:63-64` and the `MAX_OPEN_QUESTIONS = 3` budget
-  at `broker/index.ts:18`. The house pattern is established; follow it.
+- **Rate:** `SpawnRateBudget` (`agents/spawn-rate.ts`), a spawn budget per
+  requester per window — 5 attempts per 60s by default — mirroring the
+  broadcast budget already in `registry.ts:63-64` and the
+  `MAX_OPEN_QUESTIONS = 3` budget at `broker/index.ts:18`. Checked in
+  `Supervisor.preflight`, exempting the human at the CLI for the same reason
+  `checkCwd` does (CC-25, closed 2026-07-30 — this was prose-only until then).
 - Every refusal appends `agent_spawn_refused` and returns a `reason` the model
   can act on — the `send_result.reason` pattern (`broker/index.ts:81-82`), which
   exists because a refusal a model cannot understand is a refusal it will retry.
