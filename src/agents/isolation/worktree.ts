@@ -3,7 +3,13 @@ import { cpSync, existsSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { warn } from './warnings.js'
+import { findGitRoot } from '../../git.js'
 import type { Allocation, IsolationContext, IsolationStrategy, ReleaseOptions } from './index.js'
+
+// Re-exported because this module was its original home and callers (and tests)
+// still reach for it here; the implementation moved to `src/git.ts` so the MCP
+// subprocess can resolve a worktree without importing an isolation strategy.
+export { findGitRoot }
 
 const execFileAsync = promisify(execFile)
 
@@ -55,19 +61,6 @@ async function gitOrNull(args: readonly string[], cwd: string): Promise<string |
   } catch {
     return null
   }
-}
-
-/**
- * The true repository root, resolved through worktrees.
- *
- * `--git-common-dir` rather than `--show-toplevel`: when this runs from inside a
- * worktree, the toplevel is that worktree, and allocating from it would nest
- * worktrees inside worktrees. Non-obvious, and it is the whole reason this
- * helper exists rather than a one-liner at each call site.
- */
-export async function findGitRoot(cwd: string): Promise<string | null> {
-  const commonDir = await gitOrNull(['rev-parse', '--path-format=absolute', '--git-common-dir'], cwd)
-  return commonDir === null ? null : path.dirname(commonDir)
 }
 
 /** A name reaches this from a model, so it must not be able to escape basePath. */

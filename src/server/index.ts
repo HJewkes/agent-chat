@@ -8,6 +8,7 @@ import { cliEntry } from '../paths.js'
 import { TOOL_DEFINITIONS, ToolHandler } from './tools.js'
 import { terminalAnchor } from './anchor.js'
 import { hostIdentity } from './host.js'
+import { observedRegistration } from '../git.js'
 
 /**
  * Claude Code sends this when a tool-approval dialog opens in this session.
@@ -159,6 +160,7 @@ async function readopt(broker: BrokerClient): Promise<string | undefined> {
         pid: process.pid,
         build: cliEntry(),
         ...(host.hostPid === undefined ? {} : { hostPid: host.hostPid }),
+        ...(await observedRegistration()),
         ...terminalAnchor(),
       },
       'register_result',
@@ -256,6 +258,10 @@ export async function startMcpServer(): Promise<void> {
         // it: a pane agent's Claude Code process has no pid anywhere else, since
         // the surface hands back a pane rather than a child.
         ...hostIdentity(),
+        // CC-11. A spawned agent is the case this matters most for: it usually
+        // runs in a worktree of its own, and the branch is the fastest way for a
+        // peer to see whether it is somewhere its edits can collide.
+        ...(await observedRegistration()),
         ...(spawned.tags ? { tags: spawned.tags } : {}),
         ...(spawned.subscriptions ? { subscriptions: spawned.subscriptions } : {}),
         ...terminalAnchor(),

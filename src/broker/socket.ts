@@ -306,6 +306,7 @@ export class SocketServer {
       sessionId: msg.sessionId,
       ...(msg.hostPid === undefined ? {} : { hostPid: msg.hostPid }),
       ...(msg.termSessionId === undefined ? {} : { termSessionId: msg.termSessionId }),
+      ...(msg.observed === undefined ? {} : { observed: msg.observed }),
       ...(msg.build === undefined ? {} : { build: msg.build }),
     })
     if (result.ok) logEvent('readopted', { name: known.name, sessionId: msg.sessionId })
@@ -666,7 +667,7 @@ export class SocketServer {
       case 'status':
         return reply(conn, {
           t: 'status_result',
-          ok: core.registry.setStatus(conn, msg.status, msg.workingOn, msg.dnd),
+          ok: core.registry.setStatus(conn, msg.status, msg.workingOn, msg.dnd, msg.declared),
         })
       case 'list':
         return reply(conn, { t: 'list_result', sessions: core.registry.list() })
