@@ -1203,6 +1203,28 @@ authority"_), a `agent_spawn` call is untrusted input. Therefore:
   Audit the rest of §11 against RUNNING BEHAVIOUR rather than against the code;
   the code here looked correct, and the flag that was already in the argv was
   the wrong flag.
+- **A spawn cannot escalate** (CC-39, closed 2026-07-30). Naming a profile is not
+  the same as being entitled to it: `AGENT_CHAT_TOOLS` is appended to every
+  profile's allowlist unconditionally (`launch-plan.ts`) and no profile denies
+  `agent_spawn`, so before this a read-only `explorer` could ask for
+  `profile: "peer"` and get a `Bash`-capable agent back — no `Write`, no custom
+  profile file, escalation by naming a string. `Supervisor.checkEscalation` now
+  refuses unless the requested profile's `allowedTools` is a subset of what the
+  REQUESTER was granted at its own spawn (`agent_spawned.meta.allowed_tools`,
+  read the way `depthOf` reads that row's `depth`). Matching is on the tool
+  string, not on meaning: `Bash(git:*)` does not satisfy a child asking for plain
+  `Bash`, because nothing here can tell whether it covers what that child will
+  run. Over-refusing costs a human one explicit spawn; under-refusing hands out a
+  shell.
+
+  Exempt: a session a human started directly, adopted identity or not. It holds
+  no broker-granted profile — it runs under that human's own settings, possibly
+  wide open — so there is no boundary to hold it to, and gating it would be false
+  confidence rather than protection. Only an agent the broker handed a profile to
+  is held to that profile's edge when it spawns further peers. §11.4 still
+  applies: a `Bash`-capable agent shelling out to the CLI bypasses this like
+  everything else in this section.
+
 - **`name` goes through the same `RESERVED_NAMES` check** as registration
   (`protocol.ts:24`, `registry.ts:95-96`). A spawned agent named `human` would
   inherit the user's authority in every peer's reading of `from` — `docs/ideas.md`

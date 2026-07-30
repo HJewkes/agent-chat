@@ -313,6 +313,11 @@ export class Supervisor implements TeleportHost {
     return undefined
   }
 
+  /** The requester's OWN `agent_spawned` row — the only record of what it was granted. */
+  private spawnEventOf(agentId: string) {
+    return this.core.events.agentEvents().find(row => row.kind === 'agent_spawned' && row.msgId === agentId)
+  }
+
   /**
    * Depth of a spawn requested by `parentAgentId`, read from the parent's own
    * recorded depth rather than recomputed by walking the chain — the parent may
@@ -321,11 +326,58 @@ export class Supervisor implements TeleportHost {
    */
   private depthOf(parentAgentId: string | undefined): number {
     if (!parentAgentId) return 1
-    const spawn = this.core.events
-      .agentEvents()
-      .find(row => row.kind === 'agent_spawned' && row.msgId === parentAgentId)
-    const parentDepth = Number.parseInt(spawn?.meta.depth ?? '1', 10)
+    const parentDepth = Number.parseInt(this.spawnEventOf(parentAgentId)?.meta.depth ?? '1', 10)
     return (Number.isFinite(parentDepth) ? parentDepth : 1) + 1
+  }
+
+  /**
+   * What the requester itself was granted, or undefined when nothing granted it
+   * anything — which is the exemption, not a failure to find one.
+   *
+   * A session a human started directly has no profile: it runs under that
+   * human's own Claude Code settings, and the broker has no bound on it to hold
+   * a spawn to. An ADOPTED session is that same case wearing an identity, so its
+   * row is skipped by origin rather than by its empty tool list. Only an agent
+   * the broker handed a profile to has a boundary here to be held to.
+   */
+  private grantedTools(parentAgentId: string | undefined): Set<string> | undefined {
+    if (!parentAgentId) return undefined
+    const spawn = this.spawnEventOf(parentAgentId)
+    if (!spawn || spawn.meta.origin === 'adopted') return undefined
+    const granted = (spawn.meta.allowed_tools ?? '')
+      .split(',')
+      .map(tool => tool.trim())
+      .filter(tool => tool !== '')
+    return granted.length === 0 ? undefined : new Set(granted)
+  }
+
+  /**
+   * CC-39: an agent may not spawn a peer more capable than itself.
+   *
+   * `agent_spawn` resolves a profile BY NAME, and `AGENT_CHAT_TOOLS` is appended
+   * to every profile's allowlist unconditionally (`launch-plan.ts`) while no
+   * profile denies `agent_spawn` — so a read-only `explorer` could already ask
+   * for `profile: "peer"` and get a `Bash`-capable agent back, with no Write and
+   * no custom profile file needed. The privilege was never checked against the
+   * requester's own; this is that check, at the one enforcement point a spawn
+   * has to pass through.
+   *
+   * Matching is on the tool STRING, deliberately not on what it means: a parent
+   * scoped to `Bash(git:*)` does not satisfy a child asking for plain `Bash`,
+   * and a mismatch nobody here can reason about refuses. Over-refusing costs a
+   * human one explicit spawn; under-refusing hands out a shell.
+   */
+  private checkEscalation(req: SpawnRequest, profile: AgentProfile): string | undefined {
+    if (req.requestedBy === HUMAN) return undefined
+    const granted = this.grantedTools(req.parentAgentId)
+    if (granted === undefined) return undefined
+
+    const escalated = profile.allowedTools.filter(tool => !granted.has(tool))
+    if (escalated.length === 0) return undefined
+    return (
+      `profile "${profile.name}" grants tools you were not granted (${escalated.join(', ')}); ` +
+      'an agent cannot spawn a peer more capable than itself — ask the human to spawn it'
+    )
   }
 
   async spawn(req: SpawnRequest): Promise<SpawnOutcome> {
@@ -335,6 +387,8 @@ export class Supervisor implements TeleportHost {
 
     const profile = loadProfile(req.profile)
     if ('error' in profile) return this.refuse(req, profile.error)
+    const escalation = this.checkEscalation(req, profile)
+    if (escalation) return this.refuse(req, escalation)
 
     const cwd = req.cwd ?? process.cwd()
     const cwdError = this.checkCwd(cwd, req.requestedBy)
@@ -429,6 +483,10 @@ export class Supervisor implements TeleportHost {
         cwd: allocation.cwd,
         session_id: sessionId,
         allowed_tools: profile.allowedTools.join(','),
+        // Recorded for symmetry with the allowlist the escalation check reads:
+        // the deny list is the half that actually confines (see `profiles.ts`),
+        // so a row that names one and not the other under-describes the agent.
+        disallowed_tools: (profile.disallowedTools ?? []).join(','),
         perm_mode: permModeFor(surface),
         depth: String(depth),
       },
