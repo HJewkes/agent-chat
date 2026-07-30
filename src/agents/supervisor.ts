@@ -340,15 +340,22 @@ export class Supervisor implements TeleportHost {
    * row is skipped by origin rather than by its empty tool list. Only an agent
    * the broker handed a profile to has a boundary here to be held to.
    */
-  private grantedTools(parentAgentId: string | undefined): Set<string> | undefined {
+  private toolSetOf(
+    parentAgentId: string | undefined,
+    field: 'allowed_tools' | 'disallowed_tools',
+  ): Set<string> | undefined {
     if (!parentAgentId) return undefined
     const spawn = this.spawnEventOf(parentAgentId)
     if (!spawn || spawn.meta.origin === 'adopted') return undefined
-    const granted = (spawn.meta.allowed_tools ?? '')
+    const tools = (spawn.meta[field] ?? '')
       .split(',')
       .map(tool => tool.trim())
       .filter(tool => tool !== '')
-    return granted.length === 0 ? undefined : new Set(granted)
+    return tools.length === 0 ? undefined : new Set(tools)
+  }
+
+  private grantedTools(parentAgentId: string | undefined): Set<string> | undefined {
+    return this.toolSetOf(parentAgentId, 'allowed_tools')
   }
 
   /**
@@ -366,18 +373,41 @@ export class Supervisor implements TeleportHost {
    * scoped to `Bash(git:*)` does not satisfy a child asking for plain `Bash`,
    * and a mismatch nobody here can reason about refuses. Over-refusing costs a
    * human one explicit spawn; under-refusing hands out a shell.
+   *
+   * CC-40: the allow-side check above is not the whole story. `profiles.ts`
+   * itself says the deny list is what actually confines a profile — allowedTools
+   * only grants — so a parent could pass the allow-side check while spawning a
+   * child whose deny list is strictly weaker than its own (same allowedTools,
+   * fewer disallowedTools). Symmetric check: every tool the parent was denied
+   * must still be denied to the child, or refuse the same way.
    */
   private checkEscalation(req: SpawnRequest, profile: AgentProfile): string | undefined {
     if (req.requestedBy === HUMAN) return undefined
-    const granted = this.grantedTools(req.parentAgentId)
-    if (granted === undefined) return undefined
 
-    const escalated = profile.allowedTools.filter(tool => !granted.has(tool))
-    if (escalated.length === 0) return undefined
-    return (
-      `profile "${profile.name}" grants tools you were not granted (${escalated.join(', ')}); ` +
-      'an agent cannot spawn a peer more capable than itself — ask the human to spawn it'
-    )
+    const granted = this.grantedTools(req.parentAgentId)
+    if (granted !== undefined) {
+      const escalated = profile.allowedTools.filter(tool => !granted.has(tool))
+      if (escalated.length > 0) {
+        return (
+          `profile "${profile.name}" grants tools you were not granted (${escalated.join(', ')}); ` +
+          'an agent cannot spawn a peer more capable than itself — ask the human to spawn it'
+        )
+      }
+    }
+
+    const parentDenied = this.toolSetOf(req.parentAgentId, 'disallowed_tools')
+    if (parentDenied !== undefined) {
+      const childDenied = new Set(profile.disallowedTools ?? [])
+      const relaxed = [...parentDenied].filter(tool => !childDenied.has(tool))
+      if (relaxed.length > 0) {
+        return (
+          `profile "${profile.name}" does not deny tools you were denied (${relaxed.join(', ')}); ` +
+          'a spawned peer cannot have a weaker deny list than its parent — ask the human to spawn it'
+        )
+      }
+    }
+
+    return undefined
   }
 
   async spawn(req: SpawnRequest): Promise<SpawnOutcome> {
