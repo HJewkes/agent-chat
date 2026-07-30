@@ -3,14 +3,20 @@ import {
   DECLARED_MAX_BYTES,
   DECLARED_MAX_KEYS,
   DECLARED_MAX_VALUE_CHARS,
+  MAX_MULTICAST_RECIPIENTS,
   RESERVED_NAMES,
+  SELF_TAG,
   SUBSCRIBABLE_KINDS,
+  TAG_MAX_PER_APPLIER,
+  TAG_MAX_PER_SESSION,
+  tagProblem,
   type DeclaredPresence,
   type DeliveredMessage,
   type ObservedPresence,
   type RecipientResult,
   type SessionInfo,
   type SessionStatus,
+  type SessionTag,
   type Subscription,
   type SubscriptionSelector,
 } from '../protocol.js'
@@ -51,6 +57,25 @@ const sanitizeDeclared = (declared: DeclaredPresence): DeclaredPresence => {
     bytes += Buffer.byteLength(key) + Buffer.byteLength(trimmed)
     if (bytes > DECLARED_MAX_BYTES) break
     kept[key] = trimmed
+  }
+  return kept
+}
+
+/**
+ * Turn self-declared tag strings from a `register` frame into attributed tags.
+ *
+ * Silently drops what is malformed or over budget, the same way `sanitizeDeclared`
+ * clamps rather than rejects: a registration answers ok/reason about the NAME, and
+ * failing a whole registration over a stray tag would cost a session the bus. The
+ * `tag` frame, which exists to do exactly this, rejects instead.
+ */
+const sanitizeSelfTags = (tags: string[], at: number): SessionTag[] => {
+  const kept: SessionTag[] = []
+  for (const tag of tags) {
+    if (kept.length >= TAG_MAX_PER_SESSION) break
+    if (tagProblem(tag) !== undefined) continue
+    if (kept.some(held => held.tag === tag)) continue
+    kept.push({ tag, by: SELF_TAG, at })
   }
   return kept
 }
@@ -106,8 +131,13 @@ interface Entry {
    * and want silence, so this is not a fourth SessionStatus.
    */
   dnd: boolean
-  /** Many per session: a session is usually in more than one conversation. */
-  tags: string[]
+  /**
+   * Many per session: a session is usually in more than one conversation. Each
+   * carries WHO applied it (CC-13), because a peer's label and a session's own
+   * claim about itself are different things and a reader must be able to tell
+   * them apart. Presence data like everything else here.
+   */
+  tags: SessionTag[]
   /** Ephemeral like everything else here — re-declared on register, never stored. */
   subscriptions: Subscription[]
   /**
@@ -375,7 +405,7 @@ export class Registry<C> {
       ...(input.termSessionId === undefined ? {} : { termSessionId: input.termSessionId }),
       // A re-register re-declares both, which is how a resumed agent gets its
       // subscriptions back without anything having persisted them.
-      tags: input.tags ?? existing?.tags ?? [],
+      tags: input.tags ? sanitizeSelfTags(input.tags, this.now()) : (existing?.tags ?? []),
       subscriptions: input.subscriptions
         ? sanitizeSubscriptions(input.subscriptions)
         : (existing?.subscriptions ?? []),
@@ -440,6 +470,10 @@ export class Registry<C> {
       // Omitted when empty rather than sent as `{}`: "declared nothing" and
       // "declared an empty bag" are the same state and should render the same.
       ...(e.declared === undefined || Object.keys(e.declared).length === 0 ? {} : { declared: e.declared }),
+      // Same omit-when-empty rule, and every session's tags go to every reader:
+      // a session must be able to see a label a peer put on it, which it can only
+      // do if tags are on the roster rather than answered to whoever asked.
+      ...(e.tags.length === 0 ? {} : { tags: [...e.tags] }),
     }))
   }
 
@@ -501,8 +535,102 @@ export class Registry<C> {
     return { ok: true, held: entry.subscriptions.length }
   }
 
-  tagsOf(conn: C): string[] {
+  /** Every tag on this connection, peer-applied ones included, with attribution. */
+  tagsOf(conn: C): SessionTag[] {
     return this.entries.get(conn)?.tags ?? []
+  }
+
+  /**
+   * Only the tags this session declared about ITSELF, as plain strings.
+   *
+   * This is what a teleport carries across, and the distinction is the whole
+   * point (HUMAN DECISION, CC-13): a peer-applied tag surviving a teleport would
+   * arrive on a fresh identity as `by: 'self'`, laundering someone else's label
+   * into the descendant's own declaration. A successor may of course be tagged
+   * again by the peer that meant it.
+   */
+  selfTagsOf(conn: C): string[] {
+    return (this.entries.get(conn)?.tags ?? []).filter(t => t.by === SELF_TAG).map(t => t.tag)
+  }
+
+  /**
+   * Add and remove tags on `target` (or on the caller, when target is absent).
+   *
+   * Attribution is resolved HERE from the applying connection, never taken from
+   * the frame — the discipline `anchorFor` follows for panes and `teleport` for
+   * its subject. Rejects rather than clamping: unlike a registration, this call
+   * exists only to change tags, so there is always somewhere to report the reason.
+   */
+  applyTags(
+    conn: C,
+    input: { target?: string; add?: string[]; remove?: string[] },
+  ): {
+    ok: boolean
+    reason?: string
+    subject?: string
+    tags: SessionTag[]
+    added: string[]
+    removed: string[]
+  } {
+    const applier = this.entries.get(conn)
+    const fail = (reason: string) => ({ ok: false, reason, tags: [], added: [], removed: [] })
+    if (!applier) return fail('register before tagging')
+
+    const found: [C, Entry] | undefined =
+      input.target === undefined ? [conn, applier] : this.findByName(input.target)
+    if (!found) return fail(`no active session named "${input.target}"`)
+    const subject = found[1]
+    const onSelf = found[0] === conn
+
+    const add = input.add ?? []
+    const remove = input.remove ?? []
+    if (add.length === 0 && remove.length === 0) return fail('name at least one tag to add or remove')
+    for (const tag of [...add, ...remove]) {
+      const problem = tagProblem(tag)
+      if (problem) return fail(problem)
+    }
+
+    // A session owns its own presence, so it may remove ANY tag on itself. On a
+    // PEER it may only remove what it applied itself — otherwise one agent could
+    // strip a label a third party put on another, which is the quiet way to undo
+    // someone else's coordination without anyone seeing it happen.
+    if (!onSelf) {
+      for (const tag of remove) {
+        const held = subject.tags.find(t => t.tag === tag)
+        if (held === undefined) continue
+        if (held.by !== applier.name)
+          return fail(
+            `"${tag}" on ${subject.name} was applied by ${held.by === SELF_TAG ? subject.name : held.by}; ` +
+              'you may only remove tags you applied yourself',
+          )
+      }
+    }
+
+    const wanted = subject.tags.filter(t => !remove.includes(t.tag))
+    const removed = subject.tags.filter(t => remove.includes(t.tag)).map(t => t.tag)
+    const added: string[] = []
+    const by = onSelf ? SELF_TAG : applier.name
+    for (const tag of add) {
+      if (wanted.some(t => t.tag === tag)) continue
+      if (wanted.length >= TAG_MAX_PER_SESSION)
+        return fail(`${subject.name} already carries ${TAG_MAX_PER_SESSION} tags, which is the limit`)
+      if (this.tagsAppliedBy(applier.name) - removed.length + added.length >= TAG_MAX_PER_APPLIER)
+        return fail(`you have placed ${TAG_MAX_PER_APPLIER} tags across this bus, which is the limit`)
+      wanted.push({ tag, by, at: this.now() })
+      added.push(tag)
+    }
+
+    subject.tags = wanted
+    return { ok: true, subject: subject.name, tags: [...subject.tags], added, removed }
+  }
+
+  /** How many tags one applier is holding across every session, its own included. */
+  private tagsAppliedBy(name: string): number {
+    let count = 0
+    for (const [, entry] of this.entries)
+      for (const tag of entry.tags)
+        if (tag.by === name || (tag.by === SELF_TAG && entry.name === name)) count += 1
+    return count
   }
 
   /**
@@ -517,10 +645,24 @@ export class Registry<C> {
     return this.entries.get(conn)?.subscriptions ?? []
   }
 
-  /** Every session currently carrying a tag, for resolving a `tag` selector. */
+  /**
+   * Every session currently carrying a tag, for resolving a `tag` selector or a
+   * `toTag` address.
+   *
+   * MATCHES REGARDLESS OF WHO APPLIED THE TAG, on purpose: "whoever owns src" is
+   * a question about the label, and restricting it to self-declared ones would
+   * make a peer's tag invisible to the only operation it exists for.
+   *
+   * A TAG IS NEVER AUTHORIZATION. Anything reached this way is reached because a
+   * string matched — an agent can tag itself `owner:src` in one call, so nothing
+   * downstream may read a match as a grant of ownership, priority, or the right
+   * to be obeyed. Same boundary `from` has against `source`: it says who, never
+   * what they are allowed to do.
+   */
   private namesWithTag(tag: string): Set<string> {
     const names = new Set<string>()
-    for (const entry of this.entries.values()) if (entry.tags.includes(tag)) names.add(entry.name)
+    for (const entry of this.entries.values())
+      if (entry.tags.some(held => held.tag === tag)) names.add(entry.name)
     return names
   }
 
@@ -815,6 +957,48 @@ export class Registry<C> {
    */
   multicast(conn: C, to: string[], text: string, inReplyTo?: string): RouteResult<C> {
     return this.route(conn, to, text, {
+      chargePair: true,
+      chargesFrom: MULTICAST_CHARGES_FROM,
+      audience: true,
+      ...(inReplyTo === undefined ? {} : { inReplyTo }),
+    })
+  }
+
+  /**
+   * Routes to whoever carries `tag` (CC-13), through the SAME path a multicast
+   * takes — same pair charge, same fanout budget, same per-recipient results.
+   * Addressing by tag is a way of naming recipients, not a way of paying less
+   * for the same fanout.
+   *
+   * A tag nothing carries FAILS. `ok: true` with an empty recipient list would be
+   * a call that looked delivered and reached nobody, which is the worst outcome
+   * available here: the sender goes on believing the work was handed off.
+   */
+  multicastTag(conn: C, tag: string, text: string, inReplyTo?: string): RouteResult<C> {
+    const sender = this.entries.get(conn)
+    if (!sender) return { ok: false, recipients: [], results: [], reason: 'not registered', deliveries: [] }
+
+    const refuse = (reason: string): RouteResult<C> => ({
+      ok: false,
+      recipients: [],
+      results: [],
+      reason,
+      deliveries: [],
+    })
+    const carriers = this.namesWithTag(tag)
+    if (carriers.size === 0) return refuse(`no session carries tag "${tag}"`)
+    // Dropped rather than reported as a `self` miss: carrying the tag you are
+    // addressing is the normal case for a working group, and reading back "you
+    // were not delivered to" for it is noise, not information.
+    const targets = [...carriers].filter(name => name !== sender.name)
+    if (targets.length === 0) return refuse(`you are the only session carrying tag "${tag}"`)
+    if (targets.length > MAX_MULTICAST_RECIPIENTS)
+      return refuse(
+        `${targets.length} sessions carry tag "${tag}", past the limit of ${MAX_MULTICAST_RECIPIENTS} ` +
+          'for one directed send. Name the sessions that actually need this, or broadcast.',
+      )
+
+    return this.route(conn, targets, text, {
       chargePair: true,
       chargesFrom: MULTICAST_CHARGES_FROM,
       audience: true,

@@ -163,7 +163,9 @@ export class SocketServer {
         agentId: entry.agentId,
         name: entry.name,
         cwd: registry.cwdFor(conn) ?? process.cwd(),
-        tags: registry.tagsOf(conn),
+        // SELF-declared tags only. A peer's label must not ride across a teleport
+        // and reappear on a fresh identity as that identity's own declaration.
+        tags: registry.selfTagsOf(conn),
         subscriptions: registry.subscriptionsOf(conn),
         ...(entry.hostPid === undefined ? {} : { hostPid: entry.hostPid }),
         ...(registry.anchorFor(conn) === undefined ? {} : { anchor: registry.anchorFor(conn) as string }),
@@ -404,6 +406,49 @@ export class SocketServer {
       ...(result.suppressLive || (result.deliveries.length > 0 && result.deliveries.every(d => !d.live))
         ? { held: true }
         : {}),
+    })
+  }
+
+  /**
+   * Add or remove tags, on the caller or on a peer (CC-13).
+   *
+   * Two things are deliberately absent. There is NO push to the tagged session:
+   * a peer's label must not lengthen a turn that had nothing to do with it (the
+   * lesson `noteWorkingOnCollision` already follows), so it becomes visible on
+   * that session's next chat_list and nowhere else. And there is NO new EventKind
+   * — `notice` carries it, because EVENT_KINDS is frozen into the SSE contract.
+   * The row is targeted at the SUBJECT rather than the human, so it lands in
+   * chat_activity for both parties instead of in a queue nobody asked to fill.
+   */
+  private handleTag(conn: Conn, msg: Extract<ClientMessage, { t: 'tag' }>): void {
+    const result = this.core.registry.applyTags(conn, msg)
+    if (result.ok && result.subject !== undefined) {
+      const applier = this.core.registry.nameOf(conn) ?? '?'
+      const onSelf = result.subject === applier
+      const parts = [
+        result.added.length > 0 ? `+${result.added.join(' +')}` : '',
+        result.removed.length > 0 ? `-${result.removed.join(' -')}` : '',
+      ].filter(Boolean)
+      if (parts.length > 0) {
+        this.core.append({
+          kind: 'notice',
+          actor: applier,
+          target: result.subject,
+          body: `${applier} tagged ${onSelf ? 'itself' : result.subject}: ${parts.join(' ')}`,
+          meta: {
+            ...(result.added.length > 0 ? { tag_add: result.added.join(',') } : {}),
+            ...(result.removed.length > 0 ? { tag_remove: result.removed.join(',') } : {}),
+          },
+        })
+        logEvent('tag', { by: applier, subject: result.subject, add: result.added, remove: result.removed })
+      }
+    }
+    reply(conn, {
+      t: 'tag_result',
+      ok: result.ok,
+      tags: result.tags,
+      ...(result.subject === undefined ? {} : { subject: result.subject }),
+      ...(result.reason === undefined ? {} : { reason: result.reason }),
     })
   }
 
@@ -671,11 +716,32 @@ export class SocketServer {
         })
       case 'list':
         return reply(conn, { t: 'list_result', sessions: core.registry.list() })
+      case 'tag':
+        return this.handleTag(conn, msg)
       case 'subscribe':
         return reply(conn, { t: 'subscribe_result', ...core.registry.subscribe(conn, msg.subscriptions) })
       case 'unsubscribe':
         return reply(conn, { t: 'subscribe_result', ...core.registry.unsubscribe(conn, msg.selector) })
       case 'send': {
+        // Tag addressing resolves to a set of names and then goes down the very
+        // same multicast path, so there is exactly one fanout implementation to
+        // keep budgeted. A tag matching nobody comes back ok:false from there.
+        if (msg.toTag !== undefined) {
+          return this.handleRoute(
+            conn,
+            core.registry.multicastTag(conn, msg.toTag, msg.text, msg.inReplyTo),
+            'message',
+            `tag ${msg.toTag}`,
+          )
+        }
+        if (msg.to === undefined) {
+          return reply(conn, {
+            t: 'send_result',
+            ok: false,
+            recipients: [],
+            reason: 'name a recipient in `to`, or a tag in `toTag`',
+          })
+        }
         if (msg.to === HUMAN) return this.enqueueForHuman(conn, 'message', msg.text)
         if (!Array.isArray(msg.to)) {
           return this.handleRoute(
