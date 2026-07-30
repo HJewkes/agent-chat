@@ -461,20 +461,41 @@ export class SocketServer {
     // check and the human's eventual approval — that would need the approval
     // bound to an agentId rather than a name, which nothing else on this bus does
     // either (accepted, tracked separately).
-    if (core.registry.connFor(msg.to) === undefined)
-      return refuse(`no session named "${msg.to}" is currently connected`)
-    if (core.events.openCount(from, 'endorse_request') >= MAX_OPEN_ENDORSEMENTS)
+    const recipientConn = core.registry.connFor(msg.to)
+    if (recipientConn === undefined) return refuse(`no session named "${msg.to}" is currently connected`)
+
+    // Keyed by durable agent identity when this connection has one, so
+    // re-registering under a new name cannot buy a fresh budget (CC-38). A
+    // raw, never-adopted connection has nothing to key on and falls back to
+    // the per-name count it always had.
+    const composer = core.registry.entryFor(conn)
+    const openEndorsements = composer?.agentId
+      ? core.events.openCountByAgent(composer.agentId, 'endorse_request')
+      : core.events.openCount(from, 'endorse_request')
+    if (openEndorsements >= MAX_OPEN_ENDORSEMENTS)
       return refuse(
         `you already have ${MAX_OPEN_ENDORSEMENTS} messages waiting for endorsement; ` +
           'let those be read before composing another',
       )
 
+    // CC-38: `msg.to` is whatever name won the race to register it — nothing
+    // distinguishes a self-chosen, authoritative-sounding name ("lead") from
+    // one actually assigned to someone. Recording whether the recipient has a
+    // durable identity (minted by the broker, never self-asserted) and how
+    // long they have held the name lets the human judge that for themself
+    // when `inbox` shows "would be delivered to X, with your authority".
+    const recipient = core.registry.entryFor(recipientConn)
     const { msgId } = core.append({
       kind: 'endorse_request',
       actor: from,
       target: HUMAN,
       body: msg.text,
-      meta: { recipient: msg.to },
+      meta: {
+        recipient: msg.to,
+        ...(composer?.agentId ? { agent_id: composer.agentId } : {}),
+        recipient_durable: recipient?.agentId ? 'true' : 'false',
+        recipient_registered_at: String(recipient?.registeredAt ?? Date.now()),
+      },
     })
     logEvent('endorse_request', { msgId, from, to: msg.to })
     reply(conn, { t: 'send_result', ok: true, msgId, recipients: [HUMAN] })

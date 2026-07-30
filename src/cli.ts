@@ -85,6 +85,16 @@ async function inbox(): Promise<void> {
     // approved unread, which is the failure the whole flow exists to prevent.
     if (item.kind === 'endorse_request') {
       console.log(`      would be delivered to ${item.meta.recipient} as ${item.from}, with your authority:`)
+      // CC-38: any free name is available to whoever registers it first.
+      // recipient_durable distinguishes a broker-minted identity from a
+      // self-chosen one that could belong to anybody.
+      if (item.meta.recipient_durable === 'false') {
+        const registeredAt = Number(item.meta.recipient_registered_at ?? Date.now())
+        console.log(
+          `      warning: "${item.meta.recipient}" has no durable Claude Code identity ` +
+            `(registered ${ago(registeredAt)}) — a raw process could have claimed that name.`,
+        )
+      }
     }
     console.log(`      ${item.text}`)
     // For an approval the description is often just "Run shell command", so the
