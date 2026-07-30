@@ -1,7 +1,9 @@
 # What to build on the agent-chat backbone
 
-Ideation only — nothing here is implemented. Every idea names the existing
-primitive it stands on. Ranking is at the bottom; the honest kills are in
+Ideation only — nothing here is implemented, **except I1 (permission-prompt
+observatory), shipped 2026-07-27** — see the P9 row below and
+`docs/permission-relay.md`. Every idea names the existing primitive it stands
+on. Ranking is at the bottom; the honest kills are in
 [Considered and rejected](#considered-and-rejected).
 
 ## Primitives actually available
@@ -24,7 +26,7 @@ claim here as a hypothesis until you have opened the file.
 | P6  | `in_reply_to` correlation ids (was cited at `:130`, which is broadcast's doc comment)                                                                                                                                                                                                                         | `registry.ts:133`                       |
 | P7  | Broadcast fanout to all-but-sender                                                                                                                                                                                                                                                                            | `registry.ts:148`                       |
 | P8  | Inbox is a bounded query over the append-only event log, so replay survives broker restart. **The original row — a replayable 50-message per-session inbox retained across reconnect — never existed at any commit.** The cap is now a tool-input bound (`INBOX_MAX`), a different thing in a different layer | `event-log.ts:121`, `tools.ts:26`       |
-| P9  | Permission relay — declared nowhere yet. **Unbuilt.**                                                                                                                                                                                                                                                         | —                                       |
+| P9  | Permission relay — **shipped 2026-07-27** as a read-only observatory (I1 below), gated behind the remote flag `tengu_harbor_permissions` (currently `true`). See `docs/permission-relay.md` for verified mechanics.                                                                                       | `broker/socket.ts:681`, `broker/event-log.ts:82` |
 | P10 | The broker knows every session's `cwd`                                                                                                                                                                                                                                                                        | `registry.ts:65`                        |
 | P11 | The broker knows every session's `pid`                                                                                                                                                                                                                                                                        | `registry.ts:65`                        |
 | P12 | `instructions` is a per-session system-prompt injection point, constructed at spawn time                                                                                                                                                                                                                      | `server/index.ts:8`                     |
@@ -58,6 +60,8 @@ these were not in my brief:
 ## The ideas
 
 ### I1. Permission-prompt observatory (read-only relay) {#i1}
+
+**Shipped 2026-07-27.** The verdict path (I3) is still not built.
 
 **What.** Declare `claude/channel/permission`, handle
 `notifications/claude/channel/permission_request`, forward it to the broker, and

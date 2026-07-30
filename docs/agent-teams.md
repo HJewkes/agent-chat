@@ -1,7 +1,15 @@
 # agent-teams — design, plan, and coordination
 
-Spawning and supervising Claude Code agents inside agent-chat. This is a plan.
-Nothing in it is implemented yet.
+Spawning and supervising Claude Code agents inside agent-chat.
+
+**Status, 2026-07-30: Parts 1-2 are SHIPPED, not a plan.** Agent identity,
+spawning, and supervision are implemented and wired into `server/tools.ts`
+(`agent_spawn`, `agent_list`, `agent_profiles`, `agent_surface`,
+`agent_background`, `agent_logs`, `agent_teleport` are live MCP tools), backed
+by `src/agents/**` (including `launch-plan.ts`, `supervisor.ts`). CC-25 (spawn
+rate budget) and CC-39 (spawn-cannot-escalate) both closed 2026-07-30 against
+this code — see §11.2-11.3 for what shipped. Part 3 (service/HTTP/dashboard)
+remains a plan only; see its own status note at the top of that section.
 
 Everything lives in this one document:
 
