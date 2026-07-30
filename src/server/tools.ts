@@ -211,8 +211,11 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'chat_register',
     description:
-      'Announce this session to other Claude sessions on this machine. Call once at the start of the session. ' +
-      'The name is how others address you and is held until this session exits.',
+      'Call this FIRST, before your first substantive tool call — before editing files, before spawning ' +
+      'anything, before starting independent work. It costs one line and is the only way peers can address ' +
+      "you or see you in chat_list; skipping it makes you invisible to anyone checking who's already " +
+      "working in this checkout. If you're unsure whether to register, register — it's free, reversible, " +
+      'and the default should be yes.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -238,7 +241,8 @@ export const TOOL_DEFINITIONS = [
       'Update what this session is doing and whether it is free to take work. Set dnd to hold ' +
       'incoming pushes when you need a long stretch of focus: nothing is lost, messages collect ' +
       'in your inbox and chat_inbox returns them whenever you next look. Your user can still ' +
-      'reach you; other sessions cannot.',
+      "reach you; other sessions cannot. Set dnd BEFORE a long stretch of focused work you don't " +
+      "want interrupted — don't wait until a peer message already derailed you.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -262,7 +266,13 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'chat_list',
-    description: 'List the Claude sessions currently registered, with status and what each is working on.',
+    description:
+      'Check who else is active before you start any work that could overlap with someone else — an ' +
+      'independent parallel task, editing a file another session might also touch, or before deciding to ' +
+      'spawn an agent to do something a peer might already be doing. This is free and answers "is anyone ' +
+      'already on this?" in one call. Call it proactively, at the start of a session and again before ' +
+      "diverging into independent work — don't wait to be asked, and don't assume you're the only session " +
+      'in this checkout.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -480,13 +490,16 @@ export const TOOL_DEFINITIONS = [
     name: 'agent_spawn',
     description:
       'Spawn a durable agent that runs as its own Claude Code session and joins the bus as an ordinary ' +
-      'peer, addressable by name with chat_send. Register first — the spawn is attributed to you, and a ' +
+      'peer, addressable by name with chat_send. Reach for this — without being asked — when work needs a ' +
+      'second, longer-lived context: a review that should run while you keep working, an exploration whose ' +
+      "search shouldn't clutter your own context, or a task that must outlive your session. Do NOT spawn " +
+      'to parallelise something you could just finish yourself, or to look busy. ' +
+      'Register first — the spawn is attributed to you, and a ' +
       'visible agent is placed in YOUR terminal, which the broker resolves from your own registration ' +
       'rather than from anything you pass here. The agent outlives this session: it belongs to the ' +
       'broker, not to you, so spawning is not a way to get work done before your turn ends. The profile ' +
       'decides the model, the tool set and where the agent appears — read agent_profiles before choosing ' +
-      'one, and prefer the narrowest that fits. Spawn because work genuinely needs a second, longer-lived ' +
-      'context, not to parallelise something you could finish yourself.',
+      'one, and prefer the narrowest that fits.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -589,8 +602,9 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'agent_profiles',
     description:
-      'List the profiles agent_spawn can use, with the model, tool set, surface and isolation each grants. ' +
-      'Read this before spawning rather than guessing a profile name.',
+      "Call this automatically as step one of any spawn decision — even ones you're fairly sure about. " +
+      "It's free, and guessing a profile name risks silently granting the wrong tool set. " +
+      'List the profiles agent_spawn can use, with the model, tool set, surface and isolation each grants.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
