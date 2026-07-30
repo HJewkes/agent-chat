@@ -429,6 +429,157 @@ describe('retire', () => {
   })
 })
 
+/**
+ * CC-37. Opening a pane and never closing it left a dead shell behind every
+ * retired agent. The line drawn here: retire closes, an exit does not, and only
+ * a surface the broker itself opened is ever a candidate.
+ */
+describe('retiring an agent that was given a pane', () => {
+  /** An iTerm2 that answers scripts without one existing. Never reaches osascript. */
+  function fakeIterm(settleMs = 30_000) {
+    const scripts: string[] = []
+    const runAppleScript = (script: string): string => {
+      scripts.push(script)
+      if (script.includes('is running')) return 'true'
+      if (script.includes('to close')) return '@@closed@@'
+      return 'PANE-1'
+    }
+    supervisor = new Supervisor(core, { settleMs, surface: { platform: 'darwin', runAppleScript } })
+    return { scripts, sup: supervisor, closes: () => scripts.filter(s => s.includes('to close')) }
+  }
+
+  const liveOn = (sup: Supervisor, handle: Record<string, unknown>, id = 'a1'): void => {
+    core.append({ kind: 'agent_spawned', actor: 'human', target: 'scout', msgId: id, body: 'work' })
+    ;(sup as unknown as { live: Map<string, unknown> }).live.set(id, {
+      agentId: id,
+      name: 'scout',
+      handle,
+      allocation: { cwd: '/tmp' },
+      isolation: 'none',
+    })
+  }
+
+  it('closes the pane the broker opened for it', async () => {
+    const { sup, closes } = fakeIterm()
+    liveOn(sup, { surface: 'iterm-pane', paneRef: 'PANE-1', ownsSurface: true })
+
+    expect((await sup.retire('scout')).ok).toBe(true)
+    expect(closes()).toHaveLength(1)
+    expect(closes()[0]).toContain('is "PANE-1"')
+  })
+
+  /**
+   * The constraint that matters. An adopted session's pane is the human's own,
+   * and the bus that reaches retire is one any peer can talk to.
+   */
+  it('never closes a surface the broker did not create', async () => {
+    const { sup, closes } = fakeIterm()
+    liveOn(sup, { surface: 'iterm-pane', paneRef: 'HUMANS-OWN-PANE' })
+
+    expect((await sup.retire('scout')).ok).toBe(true)
+    expect(closes()).toEqual([])
+  })
+
+  /**
+   * An agent finishing is not an instruction to throw away what it printed: the
+   * pane stays until a human explicitly retires it.
+   */
+  it('leaves the pane open when the agent merely exits', () => {
+    const { sup, closes } = fakeIterm(500)
+    liveOn(sup, { surface: 'iterm-pane', paneRef: 'PANE-1', ownsSurface: true })
+
+    core.append({ kind: 'agent_detached', actor: 'scout', ref: 'a1' })
+    vi.advanceTimersByTime(500)
+
+    expect(kindsFor('a1')).toContain('agent_exited')
+    expect(closes()).toEqual([])
+  })
+
+  it('does nothing for a headless agent, which has no surface', async () => {
+    const { sup, scripts } = fakeIterm()
+    liveOn(sup, { surface: 'headless', pid: 999999 })
+
+    expect((await sup.retire('scout')).ok).toBe(true)
+    expect(scripts).toEqual([])
+  })
+
+  /**
+   * The subtle case. A teleport descendant lands IN the predecessor's pane, so
+   * its own launch cannot tell who created it — the answer is a generation or
+   * more old. Ownership has to travel with the succession, or an agent becomes
+   * unclosable simply by having teleported once.
+   */
+  it('still closes a pane a descendant inherited from the agent it succeeded', async () => {
+    const { sup, closes } = fakeIterm()
+    liveOn(sup, { surface: 'iterm-pane', paneRef: 'PANE-1', ownsSurface: true }, 'a1')
+
+    // What teleport's `finish` does before it relaunches: the predecessor stands
+    // down and gives up the name, so the descendant is the agent called scout.
+    core.append({ kind: 'agent_retired', actor: 'agent-chat', target: 'scout', ref: 'a1' })
+
+    await sup.relaunch({
+      agentId: 'a2',
+      name: 'scout',
+      profile: {
+        name: 'inherited',
+        description: '',
+        model: '',
+        allowedTools: [],
+        isolation: 'none',
+        surface: 'iterm-pane',
+        promptPrelude: '',
+      },
+      brief: 'carry on',
+      cwd: '/tmp',
+      surface: 'iterm-pane',
+      preamble: 'you are the continuation',
+      meta: {},
+      anchor: 'w1t0p0:PANE-1',
+      reuseAnchor: true,
+      inheritedFrom: 'a1',
+    })
+
+    expect((await sup.retire('scout')).ok).toBe(true)
+    expect(closes()).toHaveLength(1)
+    expect(closes()[0]).toContain('is "PANE-1"')
+  })
+
+  /** The same succession, but into a pane that was the human's to begin with. */
+  it('does not let a teleport turn a human’s pane into one the broker may close', async () => {
+    const { sup, closes } = fakeIterm()
+    liveOn(sup, { surface: 'iterm-pane', paneRef: 'PANE-1' }, 'a1')
+
+    // What teleport's `finish` does before it relaunches: the predecessor stands
+    // down and gives up the name, so the descendant is the agent called scout.
+    core.append({ kind: 'agent_retired', actor: 'agent-chat', target: 'scout', ref: 'a1' })
+
+    await sup.relaunch({
+      agentId: 'a2',
+      name: 'scout',
+      profile: {
+        name: 'inherited',
+        description: '',
+        model: '',
+        allowedTools: [],
+        isolation: 'none',
+        surface: 'iterm-pane',
+        promptPrelude: '',
+      },
+      brief: 'carry on',
+      cwd: '/tmp',
+      surface: 'iterm-pane',
+      preamble: 'you are the continuation',
+      meta: {},
+      anchor: 'w1t0p0:PANE-1',
+      reuseAnchor: true,
+      inheritedFrom: 'a1',
+    })
+
+    expect((await sup.retire('scout')).ok).toBe(true)
+    expect(closes()).toEqual([])
+  })
+})
+
 describe('spawn depth', () => {
   it('caps a chain of agents spawning agents', async () => {
     const sup = withStubbedSurface()

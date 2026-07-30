@@ -20,6 +20,9 @@ export type ItermSurfaceName = Extract<SurfaceName, `iterm-${string}`>
 /** Returned by the search scripts when the anchor session no longer exists. */
 const NO_ANCHOR = '@@no-anchor@@'
 
+/** Returned by the teardown script when it found the session and closed it. */
+const CLOSED = '@@closed@@'
+
 const osascript: AppleScriptRunner = script =>
   execFileSync('osascript', ['-e', script], { encoding: 'utf8' }).trim()
 
@@ -109,6 +112,19 @@ const newWindow = (command: string): string => `tell application "iTerm2"
 end tell`
 
 /**
+ * Close one session, found the same way everything else here finds one.
+ *
+ * A session is the unit for all three surfaces: closing the last session of a
+ * tab closes the tab, and the last tab of a window closes the window — so a
+ * pane, a tab and a window all tear down through this one script. Finding
+ * nothing is the ordinary case of a human who already closed it by hand.
+ */
+const closeSession = (uuid: string): string => `tell application "iTerm2"${findSessions(uuid, '')}
+  tell anchorSession to close
+  return ${asString(CLOSED)}
+end tell`
+
+/**
  * Asked without launching it: `is running` is false for an app that is not up,
  * where a `tell` would start iTerm2 and drop a window on an unsuspecting desktop.
  */
@@ -141,15 +157,37 @@ function launchIterm(surface: ItermSurfaceName, plan: LaunchPlan, options: Surfa
   // has closed — a human who quit the whole window during the countdown should
   // still get their descendant, somewhere they can find it.
   if (options.reuseAnchor && uuid !== undefined) {
+    // No `ownsSurface`: this pane was already open and this launch only wrote
+    // into it. Whether the broker opened it in an earlier life is a question
+    // about the PREDECESSOR, which only the supervisor can answer.
     const paneRef = run(inPlace(uuid, command))
     if (paneRef !== NO_ANCHOR) return { surface, paneRef }
     options.onNotice?.(`pane ${uuid} is gone; opening an iTerm window rather than reusing it`)
   } else if (surface !== 'iterm-window' && uuid !== undefined) {
     const paneRef = run(beside(surface, uuid, command, options.columnAfter))
-    if (paneRef !== NO_ANCHOR) return { surface, paneRef }
+    if (paneRef !== NO_ANCHOR) return { surface, paneRef, ownsSurface: true }
     options.onNotice?.(`anchor session ${uuid} is gone; opening an iTerm window instead of ${surface}`)
   }
-  return { surface: 'iterm-window', paneRef: run(newWindow(command)) }
+  return { surface: 'iterm-window', paneRef: run(newWindow(command)), ownsSurface: true }
+}
+
+/**
+ * Close what this broker opened, and nothing else.
+ *
+ * Every failure here is benign and none of them should fail a shutdown: iTerm2
+ * has quit, the human closed the pane themselves, osascript is unavailable. The
+ * agent is going away either way, so a surface that outlives it is untidy rather
+ * than wrong.
+ */
+function closeIterm(handle: LaunchHandle, options: SurfaceOptions): boolean {
+  if (handle.ownsSurface !== true || handle.paneRef === undefined) return false
+  const run = options.runAppleScript ?? osascript
+  try {
+    requireIterm(options, run)
+    return run(closeSession(handle.paneRef)) === CLOSED
+  } catch {
+    return false
+  }
 }
 
 export function itermSurface(name: ItermSurfaceName, options: SurfaceOptions = {}): Surface {
@@ -157,5 +195,6 @@ export function itermSurface(name: ItermSurfaceName, options: SurfaceOptions = {
     name,
     interactive: true,
     launch: async (plan: LaunchPlan): Promise<LaunchHandle> => launchIterm(name, plan, options),
+    close: async (handle: LaunchHandle): Promise<boolean> => closeIterm(handle, options),
   }
 }

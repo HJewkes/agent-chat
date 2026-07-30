@@ -53,5 +53,7 @@ export function headlessSurface(options: SurfaceOptions = {}): Surface {
         exited,
       }
     },
+    /** Nothing to close: having no surface is what headless means. */
+    close: async (): Promise<boolean> => false,
   }
 }

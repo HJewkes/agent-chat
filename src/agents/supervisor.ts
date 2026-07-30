@@ -70,6 +70,20 @@ const NAME_FREE_TIMEOUT_MS = 8_000
 const NAME_FREE_POLL_MS = 100
 
 /**
+ * Did this descendant land in the very pane its predecessor was closing, and was
+ * that pane one the broker opened?
+ *
+ * The subtle half of CC-37. A teleport reuses the predecessor's own session, so
+ * the launch itself cannot tell whether the broker created it — that fact may be
+ * several generations old. Carrying it forward is what stops an agent that has
+ * teleported once ending up in a pane nothing is ever allowed to close; matching
+ * on the pane ref is what stops it being carried when the descendant fell back to
+ * a fresh window, or when the predecessor was sitting in a human's own pane.
+ */
+const succeedsInto = (handle: LaunchHandle, predecessor: LaunchHandle | undefined): boolean =>
+  predecessor?.ownsSurface === true && handle.paneRef !== undefined && handle.paneRef === predecessor.paneRef
+
+/**
  * A mode switch, resolved by the socket layer before it reaches here.
  *
  * `hostPid` is present only for backgrounding, where it comes from the caller's
@@ -534,12 +548,33 @@ export class Supervisor implements TeleportHost {
           ok: false,
           reason: `${name}'s isolation still holds work. Merge or discard it, or retire with --force.`,
         }
+      await this.closeSurface(entry)
       this.live.delete(identity.agentId)
     }
 
     this.semaphore.release(identity.agentId)
     this.core.append({ kind: 'agent_retired', actor: 'human', target: name, ref: identity.agentId })
     return { ok: true }
+  }
+
+  /**
+   * Close the pane, tab or window a retiring agent was given.
+   *
+   * RETIRE ONLY, and the two halves of that are both deliberate. An exit does not
+   * close anything: an agent finishing is not an instruction to throw away what it
+   * printed, and a human reading its last output should not have the pane vanish
+   * from under them. Retire is the explicit "I am done with this agent" — the same
+   * act that frees the name and releases the isolation, so the surface goes with
+   * them. `kill` needs nothing here: it already refuses on any visible surface.
+   *
+   * What is closed is decided by `ownsSurface`, one layer down. A pane the broker
+   * merely split off, or an adopted session's own window, has no such mark and
+   * survives — which is the whole constraint.
+   */
+  private async closeSurface(entry: Live): Promise<void> {
+    if (entry.handle.ownsSurface !== true) return
+    const closed = await surfaceFor(entry.handle.surface, { ...this.surfaceOptions }).close(entry.handle)
+    logEvent('agent_surface_closed', { name: entry.name, surface: entry.handle.surface, closed })
   }
 
   /**
@@ -755,10 +790,10 @@ export class Supervisor implements TeleportHost {
     // to clear: `find(name)` scans by name, and for as long as both entries sit
     // in the map, "the live agent called scout" resolves to the dead one — so a
     // kill or an `agent attach` would be aimed at a process that is already gone.
-    if (input.inheritedFrom !== undefined) {
-      const predecessor = this.live.get(input.inheritedFrom)
-      if (predecessor?.settle) clearTimeout(predecessor.settle)
-      this.live.delete(input.inheritedFrom)
+    const predecessor = input.inheritedFrom === undefined ? undefined : this.live.get(input.inheritedFrom)
+    if (predecessor !== undefined) {
+      if (predecessor.settle) clearTimeout(predecessor.settle)
+      this.live.delete(predecessor.agentId)
     }
 
     const isolation = input.inherited?.isolation ?? 'none'
@@ -819,7 +854,8 @@ export class Supervisor implements TeleportHost {
     // The descendant takes the pane its predecessor vacated, rather than a tab
     // beside it. Safe here and nowhere else: this anchor is the predecessor's
     // own pane, and the predecessor is already gone.
-    const handle = await this.launchOn(input.surface, plan, input.anchor, input.reuseAnchor ?? false)
+    const launched = await this.launchOn(input.surface, plan, input.anchor, input.reuseAnchor ?? false)
+    const handle = succeedsInto(launched, predecessor?.handle) ? { ...launched, ownsSurface: true } : launched
     // Transfers the allocation to the descendant's id, so ITS eventual retire
     // releases the real strategy rather than a no-op one.
     this.track(input.agentId, input.name, handle, allocation, isolation, input.anchor)
