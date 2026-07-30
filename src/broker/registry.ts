@@ -29,6 +29,7 @@ const sanitizeSubscriptions = (subscriptions: Subscription[]): Subscription[] =>
 const sameSelector = (a: SubscriptionSelector, b: SubscriptionSelector): boolean => {
   if ('all' in a || 'all' in b) return 'all' in a && 'all' in b
   if ('name' in a || 'name' in b) return 'name' in a && 'name' in b && a.name === b.name
+  if ('spawnedBy' in a || 'spawnedBy' in b) return 'spawnedBy' in a && 'spawnedBy' in b
   return a.tag === b.tag
 }
 
@@ -79,6 +80,14 @@ interface Entry {
   tags: string[]
   /** Ephemeral like everything else here — re-declared on register, never stored. */
   subscriptions: Subscription[]
+  /**
+   * Names of agents spawned by THIS connection, for resolving a `spawnedBy`
+   * selector. Presence-scoped like the anchor and the subscriptions themselves —
+   * it dies with the socket, carried across a re-register on the same conn but
+   * never persisted, since it is only ever consulted while the requester is
+   * still connected to receive the push.
+   */
+  spawned: Set<string>
   registeredAt: number
   lastSeen: number
 }
@@ -296,6 +305,7 @@ export class Registry<C> {
       subscriptions: input.subscriptions
         ? sanitizeSubscriptions(input.subscriptions)
         : (existing?.subscriptions ?? []),
+      spawned: existing?.spawned ?? new Set(),
       status: existing?.status ?? 'available',
       awaitingApproval: existing?.awaitingApproval ?? false,
       dnd: existing?.dnd ?? false,
@@ -431,11 +441,22 @@ export class Registry<C> {
         if (!(sub.kinds as readonly string[]).includes(event.kind)) return false
         if ('all' in sub.selector) return true
         if ('name' in sub.selector) return sub.selector.name === event.subject
+        if ('spawnedBy' in sub.selector) return entry.spawned.has(event.subject)
         return this.namesWithTag(sub.selector.tag).has(event.subject)
       })
       if (wants) matched.push(conn)
     }
     return matched
+  }
+
+  /**
+   * Record that `conn` spawned `name`, so a later `spawnedBy` subscription
+   * resolves without the requester having named the agent itself. Called once,
+   * right after a spawn succeeds — never inferred from the log, since only the
+   * socket layer knows which connection actually asked.
+   */
+  recordSpawn(conn: C, name: string): void {
+    this.entries.get(conn)?.spawned.add(name)
   }
 
   /**

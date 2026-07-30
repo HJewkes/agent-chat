@@ -114,9 +114,12 @@ export type SubscribableKind = (typeof SUBSCRIBABLE_KINDS)[number]
 
 /**
  * Who an event must be about for a subscriber to hear it. `all` is the noisy one
- * and exists knowingly — coalescing is what makes it survivable.
+ * and exists knowingly — coalescing is what makes it survivable. `spawnedBy` is
+ * provenance rather than naming: it matches whatever the subscribing connection
+ * has itself spawned, so it stays correct as more agents come and go without the
+ * subscriber having to name each one or repoint at a shared tag.
  */
-export type SubscriptionSelector = { all: true } | { name: string } | { tag: string }
+export type SubscriptionSelector = { all: true } | { name: string } | { tag: string } | { spawnedBy: 'self' }
 
 export interface Subscription {
   selector: SubscriptionSelector

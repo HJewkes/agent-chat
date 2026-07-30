@@ -57,6 +57,10 @@ work — the tool list is the permission lever, and it is the only one. There is
 moment it returns. You never have to match a later broadcast against your own spawn to work out
 which agent is which.
 
+That identity is genuinely yours the moment it returns, but the agent is still booting. You are
+auto-subscribed to `agent_attached` and `agent_exited` for whatever you spawn — no `chat_subscribe`
+call needed — so you learn the moment it actually attaches rather than polling `agent_list`.
+
 **`chat_send`** addresses it by name. A spawned agent is an ordinary peer on the bus — there is
 no separate channel for "your" agents, and no privileged relationship.
 
@@ -109,9 +113,10 @@ file is not parallelism.
 
 ## 5. Subscriptions
 
-`chat_subscribe` scopes by **name**, **tag**, or **all**. Tags are many per session, and a tag
-selector matches the _subject's_ tags — "tell me about the agent-teams agents" is a question
-about them, not about you.
+`chat_subscribe` scopes by **name**, **tag**, **spawned**, or **all**. Tags are many per session,
+and a tag selector matches the _subject's_ tags — "tell me about the agent-teams agents" is a
+question about them, not about you. `spawned` is provenance rather than naming — it matches
+whatever you yourself have spawned, and `agent_spawn` sets it up for you automatically (see §2).
 
 Two properties worth knowing:
 
