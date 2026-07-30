@@ -90,6 +90,76 @@ describe('core.append fan-out', () => {
   })
 })
 
+describe('core.register — CC-9 workingOn collision notice', () => {
+  it('notices the human when two sessions in the same cwd register identical workingOn text', () => {
+    const { core } = makeCore()
+    core.register(fakeConn(), {
+      t: 'register',
+      name: 'alpha',
+      workingOn: 'fixing CC-9',
+      cwd: '/repo',
+      pid: 1,
+    })
+    core.register(fakeConn(), { t: 'register', name: 'beta', workingOn: 'fixing CC-9', cwd: '/repo', pid: 2 })
+
+    const notices = core.events.history(10).filter(row => row.kind === 'notice')
+    expect(notices).toHaveLength(1)
+    expect(notices[0]).toMatchObject({ from: 'agent-chat', meta: { target: HUMAN } })
+    expect(notices[0]!.text).toContain('beta')
+    expect(notices[0]!.text).toContain('alpha')
+    expect(notices[0]!.text).toContain('/repo')
+  })
+
+  it('does not notice when workingOn differs', () => {
+    const { core } = makeCore()
+    core.register(fakeConn(), {
+      t: 'register',
+      name: 'alpha',
+      workingOn: 'fixing CC-9',
+      cwd: '/repo',
+      pid: 1,
+    })
+    core.register(fakeConn(), {
+      t: 'register',
+      name: 'beta',
+      workingOn: 'fixing CC-10',
+      cwd: '/repo',
+      pid: 2,
+    })
+
+    expect(core.events.history(10).filter(row => row.kind === 'notice')).toHaveLength(0)
+  })
+
+  it('does not notice when cwd differs', () => {
+    const { core } = makeCore()
+    core.register(fakeConn(), {
+      t: 'register',
+      name: 'alpha',
+      workingOn: 'fixing CC-9',
+      cwd: '/repo-a',
+      pid: 1,
+    })
+    core.register(fakeConn(), {
+      t: 'register',
+      name: 'beta',
+      workingOn: 'fixing CC-9',
+      cwd: '/repo-b',
+      pid: 2,
+    })
+
+    expect(core.events.history(10).filter(row => row.kind === 'notice')).toHaveLength(0)
+  })
+
+  it('does not notice a re-register of the same session against its own prior entry', () => {
+    const { core } = makeCore()
+    const conn = fakeConn()
+    core.register(conn, { t: 'register', name: 'alpha', workingOn: 'fixing CC-9', cwd: '/repo', pid: 1 })
+    core.register(conn, { t: 'register', name: 'alpha', workingOn: 'fixing CC-9', cwd: '/repo', pid: 1 })
+
+    expect(core.events.history(10).filter(row => row.kind === 'notice')).toHaveLength(0)
+  })
+})
+
 describe('core.answer', () => {
   it('delivers live to an author that is still connected', () => {
     const { core, delivered } = makeCore()

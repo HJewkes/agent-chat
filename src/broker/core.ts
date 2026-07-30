@@ -130,6 +130,7 @@ export class BrokerCore {
     if (result.evicted !== undefined) this.supersede(msg.name, msg.agentId, result.evicted, evict)
 
     this.append({ kind: 'registered', actor: msg.name, body: msg.workingOn, meta: { cwd: msg.cwd } })
+    this.noteWorkingOnCollision(msg.name, msg.workingOn, msg.cwd)
     // Resolved from the session id, so a session on a new socket re-attaches to
     // the identity it already has. Minting happens only here, after a successful
     // registration: mint any earlier and a name that turned out to be held leaves
@@ -141,6 +142,37 @@ export class BrokerCore {
       this.append({ kind: 'agent_attached', actor: msg.name, ref: agentId, body: msg.workingOn })
     }
     return { ok: true }
+  }
+
+  /**
+   * CC-9: two ordinary sessions bootstrapped from the same active-work
+   * initiative in the same directory can end up with byte-for-byte identical
+   * `workingOn` text — the bootstrap prompt is generic and has no awareness of
+   * a sibling session. `chat_list` then shows two rows a human cannot tell
+   * apart by anything but name.
+   *
+   * Posted to the human's queue rather than back to the registering session:
+   * a warning surfaced in the tool result would land in that session's own
+   * turn for a condition it did not cause and cannot fix alone (CC-16 — peer
+   * conditions should not lengthen an unrelated turn). The human is the one
+   * party who can see both sessions at once and decide whether to redirect
+   * one of them.
+   */
+  private noteWorkingOnCollision(name: string, workingOn: string, cwd: string): void {
+    const collidesWith = this.registry
+      .list()
+      .filter(s => s.name !== name && s.cwd === cwd && s.workingOn.trim() === workingOn.trim())
+    if (collidesWith.length === 0) return
+    const others = collidesWith.map(s => s.name).join(', ')
+    this.append({
+      kind: 'notice',
+      actor: 'agent-chat',
+      target: HUMAN,
+      body:
+        `${name} registered in ${cwd} with the same "workingOn" text as ${others} — ` +
+        'chat_list will not distinguish them without looking at registeredAt.',
+    })
+    logEvent('working_on_collision', { name, cwd, collides_with: collidesWith.map(s => s.name) })
   }
 
   /** A takeover displaced a live connection: record the detach and close it. */
