@@ -1,5 +1,11 @@
 import type { BrokerClient } from '../client/broker-client.js'
-import { ISOLATION_NAMES, SESSION_STATUSES, SUBSCRIBABLE_KINDS, SURFACE_NAMES } from '../protocol.js'
+import {
+  ISOLATION_NAMES,
+  MAX_MULTICAST_RECIPIENTS,
+  SESSION_STATUSES,
+  SUBSCRIBABLE_KINDS,
+  SURFACE_NAMES,
+} from '../protocol.js'
 import { terminalAnchor } from './anchor.js'
 import { hostIdentity } from './host.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
@@ -10,6 +16,7 @@ import { findDenials } from '../agents/denials.js'
 import type {
   DeliveredMessage,
   QueueItem,
+  RecipientResult,
   ServerMessage,
   SessionInfo,
   SessionStatus,
@@ -30,6 +37,22 @@ function requireString(args: Record<string, unknown>, key: string): string {
     throw new Error(`${key} is required and must be a non-empty string`)
   }
   return value
+}
+
+/**
+ * `to` for chat_send, which takes one name or several. Validated here for the
+ * same reason `requireString` is: the SDK enforces neither the schema's `anyOf`
+ * nor its `maxItems`, so a list of 40 names or one containing `undefined` would
+ * otherwise reach the broker and be routed.
+ */
+function requireRecipients(args: Record<string, unknown>): string | string[] {
+  const value = args.to
+  if (!Array.isArray(value)) return requireString(args, 'to')
+  const names = value.filter((n): n is string => typeof n === 'string' && n.trim() !== '')
+  if (names.length !== value.length || names.length === 0) {
+    throw new Error('to must be a non-empty session name, or a list of them')
+  }
+  return names
 }
 
 function optionalString(args: Record<string, unknown>, key: string): string | undefined {
@@ -130,16 +153,28 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'chat_send',
     description:
-      'Send a message to one other registered session by name. Fire-and-forget: the recipient sees it on ' +
+      'Send a message to one other registered session by name, or to a named list of them. ' +
+      'Fire-and-forget: the recipient sees it on ' +
       'their next turn and there is no reply unless they send one. Pass in_reply_to with a msg_id to answer ' +
       "a message. A successful send means the message reached the recipient's session process — NOT that " +
       'the recipient read or acted on it. Before sending a claim, quote what you OBSERVED rather than what ' +
       'you CONCLUDED: the raw log line, the exact output. A peer can check evidence; they cannot check your ' +
-      'inference, and a wrong conclusion travels further than the observation that would refute it.',
+      'inference, and a wrong conclusion travels further than the observation that would refute it. ' +
+      `Addressing several names costs the same fanout budget a broadcast does, and past ${MAX_MULTICAST_RECIPIENTS} ` +
+      'names the call is refused — that many recipients is a broadcast, so send one. Each recipient is told ' +
+      'who else received it, so say plainly who should act; otherwise everyone answers or nobody does.',
     inputSchema: {
       type: 'object',
       properties: {
-        to: { type: 'string', description: 'Registered name of the recipient session' },
+        to: {
+          anyOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: MAX_MULTICAST_RECIPIENTS },
+          ],
+          description:
+            'Registered name of the recipient session, or a list of up to ' +
+            `${MAX_MULTICAST_RECIPIENTS} names to tell the same thing once.`,
+        },
         text: { type: 'string', description: 'Message body' },
         in_reply_to: { type: 'string', description: 'msg_id of the message being answered, if any' },
       },
@@ -510,6 +545,7 @@ function formatInbox(messages: DeliveredMessage[]): string {
   const rows = messages.map(m => {
     const tags = [
       m.broadcast ? 'broadcast' : null,
+      m.audience ? `also to ${m.audience.join(', ')}` : null,
       m.inReplyTo ? `re ${m.inReplyTo}` : null,
       // Named the same way here as in the channel attribute, so a model reading
       // a replayed message reaches the same conclusion as one reading it live.
@@ -519,6 +555,33 @@ function formatInbox(messages: DeliveredMessage[]): string {
     return `- [${m.msgId}] from ${m.from}${suffix}: ${m.text}`
   })
   return `Recent messages:\n${rows.join('\n')}`
+}
+
+/** Why one addressee of a multicast got nothing, in words a sender can act on. */
+const MISS_REASON: Record<string, string> = {
+  no_such_session: 'no active session',
+  self: 'that is you',
+  refused: 'refused by the broker',
+}
+
+/**
+ * A multicast reports per recipient, because "ok" over a list of names hides the
+ * one that failed — and the sender's next move (chase that peer, or not) depends
+ * entirely on which one it was.
+ */
+function formatFanout(results: RecipientResult[], msgId: string | undefined, reason?: string): string {
+  const took = results.filter(r => r.status === 'delivered' || r.status === 'held')
+  const missed = results.filter(r => !took.includes(r))
+  const parts: string[] = []
+  if (took.length > 0) parts.push(`Delivered to ${took.map(r => r.name).join(', ')} (msg_id ${msgId})`)
+  const held = took.filter(r => r.status === 'held')
+  if (held.length > 0) parts.push(`held in the inbox of ${held.map(r => r.name).join(', ')}`)
+  if (missed.length > 0) {
+    const each = missed.map(r => `${r.name} (${MISS_REASON[r.status] ?? r.status})`)
+    parts.push(`not delivered to ${each.join(', ')}`)
+  }
+  const tail = reason ? ` ${reason}` : ''
+  return `${parts.join('; ')}. ${took.length} of ${results.length}.${tail}`
 }
 
 /** `2026-07-30T11:04:22.913Z` -> `11:04:22`; anything else renders as nothing. */
@@ -596,7 +659,7 @@ export class ToolHandler {
         return this.activity(requireString(args, 'name'), boundedLimit(args, 'limit', 15, INBOX_MAX))
       case 'chat_send':
         return this.send(
-          requireString(args, 'to'),
+          requireRecipients(args),
           requireString(args, 'text'),
           optionalString(args, 'in_reply_to'),
         )
@@ -713,14 +776,24 @@ export class ToolHandler {
     return text(formatActivity(name, res.session, res.events))
   }
 
-  private async send(to: string, body: string, inReplyTo?: string) {
+  private async send(to: string | string[], body: string, inReplyTo?: string) {
     if (!this.registeredName)
       return text('Call chat_register before sending, so the recipient knows who you are.')
+    // A hard cap, not a nudge: past this the call IS a broadcast, and letting it
+    // through under a directed tool's name is how the fanout budget gets routed
+    // around one name at a time.
+    if (Array.isArray(to) && to.length > MAX_MULTICAST_RECIPIENTS) {
+      return text(
+        `Refused: chat_send takes at most ${MAX_MULTICAST_RECIPIENTS} recipients and you named ` +
+          `${to.length}. Use chat_broadcast, or pick the sessions that actually need this.`,
+      )
+    }
     const res = (await this.call(
       { t: 'send', to, text: body, ...(inReplyTo === undefined ? {} : { inReplyTo }) },
       'send_result',
     )) as Extract<ServerMessage, { t: 'send_result' }>
     if (!res.ok) return text(`Not delivered: ${res.reason}`)
+    if (Array.isArray(to)) return text(formatFanout(res.results ?? [], res.msgId, res.reason))
     if (res.held) return text(`Held for "${to}" (msg_id ${res.msgId}): ${res.reason}`)
     return text(`Delivered to "${to}" (msg_id ${res.msgId}).`)
   }

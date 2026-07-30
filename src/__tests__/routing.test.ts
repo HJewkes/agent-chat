@@ -165,6 +165,58 @@ describe('inbox', () => {
   })
 })
 
+describe('multicast', () => {
+  it('reaches exactly the named sessions, once each, with one msg_id', async () => {
+    const sent = await call(alice, 'chat_send', { to: ['bob', 'carol'], text: 'standup in five' })
+    await settle()
+
+    const msgId = /msg_id (\w+)/.exec(sent)?.[1]
+    expect(sent).toContain('Delivered to bob, carol')
+    expect(sent).toContain('2 of 2.')
+    expect(bob.inbox.at(-1)?.content).toBe('standup in five')
+    expect(carol.inbox.at(-1)?.content).toBe('standup in five')
+    expect(bob.inbox.at(-1)?.meta?.msg_id).toBe(msgId)
+    expect(carol.inbox.at(-1)?.meta?.msg_id).toBe(msgId)
+  })
+
+  it('tells each recipient who else got it, and does not pass it off as a broadcast', async () => {
+    await call(alice, 'chat_send', { to: ['bob', 'carol'], text: 'who wants the migration?' })
+    await settle()
+
+    expect(bob.inbox.at(-1)?.meta?.audience).toBe('bob,carol')
+    expect(bob.inbox.at(-1)?.meta?.broadcast).toBeUndefined()
+  })
+
+  it('delivers to the names that exist and reports the one that does not', async () => {
+    const before = bob.inbox.length
+    const sent = await call(alice, 'chat_send', { to: ['bob', 'gamma'], text: 'partial' })
+    await settle()
+
+    expect(sent).toContain('Delivered to bob')
+    expect(sent).toContain('not delivered to gamma (no active session)')
+    expect(sent).toContain('1 of 2.')
+    expect(bob.inbox).toHaveLength(before + 1)
+  })
+
+  it('refuses the whole call when the human is one of several recipients', async () => {
+    const before = bob.inbox.length
+    const sent = await call(alice, 'chat_send', { to: ['bob', 'human'], text: 'both of you' })
+    await settle()
+
+    expect(sent).toMatch(/^Not delivered/)
+    expect(sent).toContain('queue, not a session')
+    expect(bob.inbox).toHaveLength(before)
+  })
+
+  it('caps the recipient list and points at chat_broadcast instead', async () => {
+    const many = ['bob', 'carol', 'd', 'e', 'f', 'g', 'h', 'i', 'j']
+    const sent = await call(alice, 'chat_send', { to: many, text: 'everyone' })
+
+    expect(sent).toContain('Refused')
+    expect(sent).toContain('chat_broadcast')
+  })
+})
+
 describe('terminal client', () => {
   it('lets a human message one session from the CLI', async () => {
     const before = carol.inbox.length
