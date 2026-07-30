@@ -752,3 +752,104 @@ describe('spawn depth', () => {
     expect(spawned?.meta.depth).toBe('1')
   })
 })
+
+/**
+ * CC-39. `agent_spawn` resolves a profile by NAME and never asked whether the
+ * requester was privileged enough to grant what that profile allows — while
+ * `launch-plan.ts` appends agent-chat's own tools (agent_spawn among them) to
+ * every profile unconditionally. A read-only `explorer` could therefore ask for
+ * `profile: "peer"` and get a Bash-capable agent back, with no Write and no
+ * custom profile file needed: escalation by naming a string.
+ */
+describe('spawn privilege', () => {
+  /** A spawned agent that was itself granted `tools`, and is registered so it may spawn. */
+  const spawnedParent = (name: string, cwd: string, tools: string[]): string => {
+    const { msgId } = core.append({
+      kind: 'agent_spawned',
+      actor: 'human',
+      target: name,
+      meta: { name, depth: '1', allowed_tools: tools.join(',') },
+    })
+    core.register(fakeConn(), { t: 'register', name, workingOn: '', cwd, pid: 1 })
+    return msgId
+  }
+
+  it('refuses an agent a profile granting tools it was not granted itself', async () => {
+    const sup = withStubbedSurface()
+    const shared = workspace()
+    const parentAgentId = spawnedParent('explorer-agent', shared, ['Read', 'Grep', 'Glob'])
+
+    const result = await sup.spawn(
+      spawnReq({ profile: 'peer', requestedBy: 'explorer-agent', parentAgentId, cwd: shared }),
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/cannot spawn a peer more capable than itself/)
+    expect(result.reason).toMatch(/Bash/)
+    expect(core.events.history(10).some(r => r.kind === 'agent_spawn_refused')).toBe(true)
+  })
+
+  it('allows an agent a profile no wider than its own grant', async () => {
+    const sup = withStubbedSurface()
+    const shared = workspace()
+    const parentAgentId = spawnedParent('reviewer-agent', shared, ['Read', 'Grep', 'Glob', 'Bash'])
+
+    const result = await sup.spawn(
+      spawnReq({ profile: 'explorer', requestedBy: 'reviewer-agent', parentAgentId, cwd: shared }),
+    )
+
+    expect(result.ok).toBe(true)
+  })
+
+  /**
+   * Scoped forms are matched as STRINGS, not semantically: nothing here can tell
+   * whether `Bash(git:*)` covers what a child asking for plain `Bash` will run,
+   * and the direction to be wrong in is refusing.
+   */
+  it('does not read a scoped grant as satisfying a broader one', async () => {
+    const sup = withStubbedSurface()
+    const shared = workspace()
+    const parentAgentId = spawnedParent('scoped-agent', shared, ['Read', 'Grep', 'Glob', 'Bash(git:*)'])
+
+    const result = await sup.spawn(
+      spawnReq({ profile: 'reviewer', requestedBy: 'scoped-agent', parentAgentId, cwd: shared }),
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/Bash/)
+  })
+
+  /**
+   * A session a human started directly holds no broker-granted profile — it runs
+   * under that human's own settings — so there is no boundary here to hold it to,
+   * and gating it would be false confidence rather than protection. Its adopted
+   * identity is a parent id like any other, which is exactly the trap.
+   */
+  it('exempts an ordinary human session, adopted identity and all', async () => {
+    const sup = withStubbedSurface()
+    const shared = workspace()
+    core.register(fakeConn(), {
+      t: 'register',
+      name: 'human-session',
+      workingOn: 'CC-39',
+      cwd: shared,
+      pid: 1,
+      sessionId: 'sess-adopted',
+    })
+    const parentAgentId = core.agents.roster()[0]?.agentId
+
+    const result = await sup.spawn(
+      spawnReq({ profile: 'peer', requestedBy: 'human-session', parentAgentId, cwd: shared }),
+    )
+
+    expect(result.ok).toBe(true)
+  })
+
+  it('records the deny list beside the allow list on the spawn row', async () => {
+    const sup = withStubbedSurface()
+    await sup.spawn(spawnReq({ profile: 'explorer' }))
+
+    const spawned = core.events.agentEvents().find(r => r.kind === 'agent_spawned')
+    expect(spawned?.meta.disallowed_tools).toBe('Bash,Write,Edit')
+  })
+})
