@@ -131,6 +131,15 @@ override with `AGENT_CHAT_HOME`.
 | `chat_ask(text)`                    | Ask the human. Budgeted, non-blocking.      |
 | `chat_notify(text)`                 | Leave the human a notice needing no answer. |
 | `chat_inbox(limit?)`                | Re-read recent messages, including answers. |
+| `chat_transcript(name?, limit?)`    | Recent turns of a session's own transcript. |
+
+`chat_transcript` reads the per-session log Claude Code writes to
+`~/.claude/projects/<slug>/<session-id>.jsonl` whether or not anyone looks at it,
+so observing a session costs it nothing and does not interrupt it. **It is not
+gated.** Any session on this machine may read any other's, by explicit decision
+(CC-19, 2026-07-27): there is no opt-in and no consent handshake, and the trust
+boundary is the OS account, the same as for the socket. Assume your own
+transcript is readable by every other session here.
 
 Inbound messages arrive as `<channel source="plugin:agent-chat:agent-chat"
 from="alice" msg_id="a1b2c3d4" thread_depth="1">`, plus `in_reply_to` and

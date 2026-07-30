@@ -122,7 +122,9 @@ Two properties worth knowing:
 
 - **Lifecycle only.** `message`, `broadcast`, `question` and `answer` are not subscribable. A
   global subscriber learns who is here, never what they said. Reading a peer's trail is still
-  possible through `chat_activity` — explicit, one session at a time, and itself logged.
+  possible through `chat_activity` — explicit, one session at a time, and itself logged — and
+  reading what a peer actually did is possible through `chat_transcript`, which is ungated by
+  decision (CC-19): it reads a file Claude Code was already writing, not a request the peer answers.
 - **Coalesced.** Three agents starting together arrive as one notification, not three. Peer
   traffic already lengthens turns; a per-event join feed would make that worse for no added
   information.

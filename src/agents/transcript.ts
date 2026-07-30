@@ -74,6 +74,30 @@ function readProjects(): string[] {
 const TAIL_BYTES = 256 * 1024
 
 /**
+ * The last `bytes` of a file as text, or undefined if it cannot be read.
+ *
+ * Reading from an offset almost always lands mid-row, so the first line of what
+ * comes back is usually half a JSON object. Every caller drops it; that is the
+ * price of not reading the whole file, not a parse failure worth reporting.
+ */
+export function readTail(file: string, bytes = TAIL_BYTES): string | undefined {
+  try {
+    const handle = fs.openSync(file, 'r')
+    try {
+      const size = fs.fstatSync(handle).size
+      const length = Math.min(size, bytes)
+      const buffer = Buffer.alloc(length)
+      fs.readSync(handle, buffer, 0, length, size - length)
+      return buffer.toString('utf8')
+    } finally {
+      fs.closeSync(handle)
+    }
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * The model the newest assistant turn actually ran on.
  *
  * Teleport's rule is that a descendant replicates the configuration its
@@ -91,27 +115,13 @@ const TAIL_BYTES = 256 * 1024
 export function observedModel(cwd: string, sessionId: string): string | undefined {
   const found = findTranscript(cwd, sessionId)
   if (!found.exists) return undefined
-  try {
-    const handle = fs.openSync(found.path, 'r')
-    try {
-      const size = fs.fstatSync(handle).size
-      const length = Math.min(size, TAIL_BYTES)
-      const buffer = Buffer.alloc(length)
-      fs.readSync(handle, buffer, 0, length, size - length)
-      return newestModel(buffer.toString('utf8'))
-    } finally {
-      fs.closeSync(handle)
-    }
-  } catch {
-    return undefined
-  }
+  const tail = readTail(found.path)
+  return tail === undefined ? undefined : newestModel(tail)
 }
 
 function newestModel(tail: string): string | undefined {
   const lines = tail.split('\n')
-  // Newest first, and the first line is skipped: reading from an offset almost
-  // always lands mid-row, and half a JSON object is not a parse failure worth
-  // reporting — it is the price of not reading the whole file.
+  // Newest first, and the first line is skipped — see readTail.
   for (let at = lines.length - 1; at > 0; at--) {
     try {
       const row = JSON.parse(lines[at] ?? '') as { message?: { model?: unknown } }
