@@ -20,7 +20,8 @@ const USAGE = `agent-chat — cross-session messaging for Claude Code
 
   agent-chat inbox                     what your agents need from you
   agent-chat answer <id> <text>        answer a question; routes back to the asker
-  agent-chat dismiss <id>              close an item without answering
+  agent-chat endorse <id>              approve a composed message; delivers it with your authority
+  agent-chat dismiss <id>              close an item without answering, or decline an endorsement
   agent-chat send <to> <text>          message a session as the human
   agent-chat ps                        list registered sessions
   agent-chat history [n]               recent events from the log (default 30)
@@ -60,6 +61,7 @@ const LABEL: Record<string, string> = {
   approval_request: 'APPR ',
   notice: 'note ',
   message: 'msg  ',
+  endorse_request: 'ENDR ',
 }
 
 async function inbox(): Promise<void> {
@@ -72,11 +74,18 @@ async function inbox(): Promise<void> {
     return
   }
   // Things that need an answer first; notices are just there when you look.
-  const needsAnswer = (i: QueueItem): boolean => i.kind === 'question' || i.kind === 'approval_request'
+  const needsAnswer = (i: QueueItem): boolean =>
+    i.kind === 'question' || i.kind === 'approval_request' || i.kind === 'endorse_request'
   const ordered = [...res.items].sort((a, b) => Number(needsAnswer(b)) - Number(needsAnswer(a)))
 
   for (const item of ordered) {
     console.log(`${LABEL[item.kind] ?? item.kind} ${item.msgId}  ${item.from.padEnd(14)} ${ago(item.at)}`)
+    // The exact bytes that will be delivered, in full and untruncated. This
+    // print IS the thing being endorsed — anything elided here would be
+    // approved unread, which is the failure the whole flow exists to prevent.
+    if (item.kind === 'endorse_request') {
+      console.log(`      would be delivered to ${item.meta.recipient} as ${item.from}, with your authority:`)
+    }
     console.log(`      ${item.text}`)
     // For an approval the description is often just "Run shell command", so the
     // preview is the only place the actual command shows up.
@@ -90,6 +99,35 @@ async function inbox(): Promise<void> {
     console.log(`${who} blocked on a permission prompt — answer in that session's terminal.`)
   }
   if (open > blocked.length) console.log('answer with: agent-chat answer <id> "..."')
+  if (res.items.some(i => i.kind === 'endorse_request')) {
+    console.log('endorse with: agent-chat endorse <id>   (or dismiss <id> to decline)')
+  }
+}
+
+/**
+ * Approve one composed message and deliver it with the human's authority.
+ *
+ * A CLI verb and nothing else, for the same reason `teleport abort` is one: the
+ * broker refuses this frame from any registered connection, so the only caller
+ * that can reach it is a person at a 0600 socket. No text argument — the bytes
+ * are the ones already stored and already shown by `inbox`, which is what makes
+ * the delivered message necessarily the one that was read.
+ */
+async function endorse(args: string[]): Promise<void> {
+  const msgId = args[0]
+  if (!msgId) {
+    console.error('usage: agent-chat endorse <id>   (see agent-chat inbox for the full text)')
+    process.exit(1)
+  }
+  const res = (await withBroker(b => b.request({ t: 'endorse_approve', msgId }, 'answer_result'))) as Extract<
+    ServerMessage,
+    { t: 'answer_result' }
+  >
+  if (!res.ok) {
+    console.error(res.reason)
+    process.exit(1)
+  }
+  console.log(`Endorsed ${msgId}; delivered as written.${res.reason ? ` ${res.reason}` : ''}`)
 }
 
 async function answer(args: string[], verb: 'answer' | 'dismiss'): Promise<void> {
@@ -329,6 +367,8 @@ async function main(): Promise<void> {
       return answer(args, 'answer')
     case 'dismiss':
       return answer(args, 'dismiss')
+    case 'endorse':
+      return endorse(args)
     case 'ps':
       return ps()
     case 'send':

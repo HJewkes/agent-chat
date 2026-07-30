@@ -28,6 +28,11 @@ describe('server instructions', () => {
     ['headless agents cannot be prompted', /headless agent cannot be prompted at all/],
     ['spawning is not free parallelism', /not to parallelise what you could finish yourself/],
     ['subscriptions carry no message content', /never what anyone said/],
+    // CC-22. These sit next to the peer-authority rule they carve an exception
+    // out of, because read on its own either one of the pair is misleading.
+    ['an endorsement marker is broker-set', /no agent can put it on a message/],
+    ['an endorsed message is not automatically binding', /still not automatically binding on your work/],
+    ['tool-permission approval is not endorsement', /granted you a tool call, not these words/],
   ]
 
   it.each(rules)('states that %s', (_label, pattern) => {
@@ -44,6 +49,20 @@ describe('server instructions', () => {
   it('does not let a peer be assumed to work on your behalf', () => {
     expect(INSTRUCTIONS).toMatch(/Do not assume a peer is working on your behalf/)
     expect(INSTRUCTIONS).not.toMatch(/working on their behalf/)
+  })
+
+  /**
+   * The laundering vector points the other way from every other rule here: an
+   * endorsed message carries real authority, so the risk is an agent composing
+   * something subtly off its human's meaning and getting it waved through. The
+   * tool description is where that warning has to live — it is read at the
+   * moment of composing, which is the moment the mistake gets made.
+   */
+  it('warns on chat_endorse against composing beyond what the human decided', () => {
+    const endorse = TOOL_DEFINITIONS.find(tool => tool.name === 'chat_endorse')
+    expect(endorse?.description).toMatch(/laundering your intent/)
+    expect(endorse?.description).toMatch(/does NOT send/)
+    expect(endorse?.description).toMatch(/One approval covers this one message/)
   })
 
   it('warns on chat_broadcast that recipients may have no stake in the work', () => {

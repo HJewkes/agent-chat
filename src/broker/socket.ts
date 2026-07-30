@@ -28,6 +28,17 @@ import { VERSION } from './version.js'
 
 const MAX_OPEN_QUESTIONS = 3
 
+/**
+ * Endorsement requests one session may have waiting at once.
+ *
+ * Lower than the question budget on purpose: each one asks the human to read a
+ * whole message word for word and take responsibility for it, which is a more
+ * expensive ask than answering a question — and a backlog of them is exactly the
+ * condition under which they stop being read carefully and start being
+ * rubber-stamped.
+ */
+const MAX_OPEN_ENDORSEMENTS = 2
+
 const reply = (conn: Conn, message: ServerMessage): void => {
   conn.write(encode(message))
 }
@@ -54,7 +65,7 @@ const replySwitch = (conn: Conn, outcome: SwitchOutcome): void => {
  * calls and results back into bytes; all state and every write to the log lives
  * in `BrokerCore`.
  */
-class SocketServer {
+export class SocketServer {
   private readonly supervisor: Supervisor
   private readonly feed: SystemEventFeed<Conn>
   private readonly unwatch: () => void
@@ -379,7 +390,7 @@ class SocketServer {
     const from = core.registry.nameOf(conn)
     if (!from) return reply(conn, { t: 'send_result', ok: false, recipients: [], reason: 'not registered' })
 
-    if (kind === 'question' && core.events.openQuestionCount(from) >= MAX_OPEN_QUESTIONS) {
+    if (kind === 'question' && core.events.openCount(from, 'question') >= MAX_OPEN_QUESTIONS) {
       const reason = `you already have ${MAX_OPEN_QUESTIONS} unanswered questions; resolve one before asking again`
       return reply(conn, { t: 'send_result', ok: false, recipients: [], reason })
     }
@@ -387,6 +398,71 @@ class SocketServer {
     const { msgId } = core.append({ kind, actor: from, target: HUMAN, body: text })
     logEvent('route', { kind, msgId, from, to: HUMAN, delivered: true, recipients: [HUMAN] })
     reply(conn, { t: 'send_result', ok: true, msgId, recipients: [HUMAN] })
+  }
+
+  /**
+   * Store a composed message for the human to read, and deliver NOTHING.
+   *
+   * The recipient is recorded now and read back from the log at approval time,
+   * so the human's decision is bound to one body and one addressee together.
+   */
+  private handleEndorseRequest(conn: Conn, msg: Extract<ClientMessage, { t: 'endorse' }>): void {
+    const { core } = this
+    const from = core.registry.nameOf(conn)
+    const refuse = (reason: string): void =>
+      reply(conn, { t: 'send_result', ok: false, recipients: [], reason })
+    if (!from) return refuse('not registered')
+    // Endorsing a message to the human, or to yourself, is a request for a
+    // signature on nothing: the value is entirely in what a THIRD party can tell
+    // about where the authority came from.
+    if (msg.to === HUMAN || msg.to === from)
+      return refuse('an endorsement is relayed to a peer; your human is the one approving it')
+    if (core.events.openCount(from, 'endorse_request') >= MAX_OPEN_ENDORSEMENTS)
+      return refuse(
+        `you already have ${MAX_OPEN_ENDORSEMENTS} messages waiting for endorsement; ` +
+          'let those be read before composing another',
+      )
+
+    const { msgId } = core.append({
+      kind: 'endorse_request',
+      actor: from,
+      target: HUMAN,
+      body: msg.text,
+      meta: { recipient: msg.to },
+    })
+    logEvent('endorse_request', { msgId, from, to: msg.to })
+    reply(conn, { t: 'send_result', ok: true, msgId, recipients: [HUMAN] })
+  }
+
+  /**
+   * The human's approval, and the second half of what makes the marker
+   * unforgeable — the first being that no message shape carries it.
+   *
+   * Refused from a REGISTERED connection, exactly as `teleport_abort` is: a
+   * session approving its own composition, or a peer's, would make endorsement a
+   * thing agents grant each other. What is left is someone at the CLI, and on a
+   * 0600 socket that is the user. No MCP tool exposes this frame.
+   */
+  private handleEndorseApprove(conn: Conn, msgId: string): void {
+    if (this.core.registry.nameOf(conn) !== undefined) {
+      this.core.append({
+        kind: 'verdict_refused',
+        actor: this.core.registry.nameOf(conn) ?? '?',
+        ref: msgId,
+        body: 'a session tried to endorse a message',
+      })
+      return reply(conn, {
+        t: 'answer_result',
+        ok: false,
+        reason: 'endorsing is the human’s call; a session cannot endorse its own message or a peer’s',
+      })
+    }
+    const result = this.core.endorse(msgId)
+    reply(conn, {
+      t: 'answer_result',
+      ok: result.ok,
+      ...(result.reason === undefined ? {} : { reason: result.reason }),
+    })
   }
 
   /** The human has no registration to route from, so this bypasses the registry sender check. */
@@ -481,6 +557,10 @@ class SocketServer {
         return this.enqueueForHuman(conn, 'question', msg.text)
       case 'notify':
         return this.enqueueForHuman(conn, 'notice', msg.text)
+      case 'endorse':
+        return this.handleEndorseRequest(conn, msg)
+      case 'endorse_approve':
+        return this.handleEndorseApprove(conn, msg.msgId)
       case 'inbox': {
         const name = core.registry.nameOf(conn)
         return reply(conn, { t: 'inbox_result', messages: name ? core.events.inboxFor(name, msg.limit) : [] })

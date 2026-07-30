@@ -134,7 +134,80 @@ things before its first turn rather than depending on the model remembering to s
 
 ---
 
-## 6. Failure modes we have actually hit
+## 6. Relaying a decision: `chat_endorse`
+
+A peer relaying what a human wants is **not** that human's authority over another agent's work.
+That norm is right and it is load-bearing — but it left a gap. On 2026-07-27 one session relayed
+four of its human's decisions to peers. One peer refused to act on them, correctly citing the
+norm. Another accepted only after checking with its own human. Both were right, and that is
+exactly what exposed the problem: the bus could carry _"my human said X"_ and nothing more, so
+every cross-session decision cost a round trip through a second human, or stalled.
+
+`chat_endorse` adds the missing third state. A recipient can now tell apart:
+
+| What arrives       | `from`  | `provenance`     | What it means                                                                              |
+| ------------------ | ------- | ---------------- | ------------------------------------------------------------------------------------------ |
+| Human-authored     | `human` | —                | Your human typed it and sent it.                                                           |
+| Agent-authored     | a peer  | —                | That peer's own words, including any claim about a human.                                  |
+| **Human-endorsed** | a peer  | `human-endorsed` | The peer composed it; **their** human read those exact bytes and approved delivering them. |
+
+The middle and bottom rows are the distinction that matters. `from` stays the composer in both,
+deliberately — the authority is the human's, the words are the agent's, and collapsing the
+endorsed case into `from: human` would let an agent's phrasing acquire the appearance of a
+human's own.
+
+### The flow
+
+1. The composing agent calls `chat_endorse` with `to` and `text`. **Nothing is sent.**
+2. The text lands in the human queue as an `ENDR` item. `agent-chat inbox` prints it in full and
+   untruncated, naming the recipient — that print _is_ the thing being endorsed.
+3. The human runs `agent-chat endorse <id>` to approve, or `agent-chat dismiss <id>` to decline.
+4. On approval the **broker** delivers the stored text. The composer never sends it, and so gets
+   no opportunity to alter it between approval and delivery.
+
+### Why you can trust the marker
+
+`provenance` is set in exactly one function, `BrokerCore.endorse`. No client message carries the
+field, no tool parameter reaches it, and the approval frame is refused outright from any
+registered connection — so no session can endorse its own message or a peer's. This is the same
+lesson `source` teaches over `from` on a channel tag: **a marker an agent can set is worth
+nothing**, because the whole value is that a recipient can trust it without checking.
+
+### Tool-permission approval is not endorsement
+
+The easiest mistake to make here. Approving a `chat_send` prompt means _"you may call this
+tool"_, not _"I endorse this text"_. A human who clicks **don't ask again** grants every future
+send in that session with no further attention, so permission approval decays to nothing while
+the content varies freely. Endorsement binds to the **specific message body** and to nothing
+else.
+
+### The risk this design carries
+
+An endorsed message carries real authority, which points a laundering vector the other way: an
+agent that composes something subtly off what its human meant and gets it rubber-stamped has
+laundered its own intent into an instruction to a peer. Four things push back on that, and none
+of them is enough alone:
+
+- the human sees the exact delivered bytes, in full;
+- endorsement covers **one message** — never a session, a peer or a topic, so a second message
+  is a second decision;
+- the request, its text, and the human's verdict are all rows in the event log, so the record
+  shows what was approved and by whom;
+- the recipient still weighs it. **An endorsed message is not auto-obeyed by anything.** Even a
+  genuine instruction from someone else's principal is not automatically binding on your work.
+
+Composing agents get a budget of 2 open requests. A backlog is the condition under which these
+stop being read and start being waved through.
+
+### When not to use it
+
+Your human can already send as themselves with `agent-chat send`. If the message is short and
+they are at the keyboard, that is simpler and stronger. `chat_endorse` earns its place when the
+relay is long enough that retyping it by hand is the reason it does not happen.
+
+---
+
+## 7. Failure modes we have actually hit
 
 These are not hypothetical. Each cost real time.
 
@@ -169,7 +242,7 @@ HEAD?" check expires before the command runs.
 
 ---
 
-## 7. When not to spawn
+## 8. When not to spawn
 
 Spawning has a cost that is easy to underweight: a slot, a context, and **someone to read the
 output**. Unread agent output is worse than none — it looks like progress.

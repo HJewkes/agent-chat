@@ -73,6 +73,12 @@ export const EVENT_KINDS = [
   // was watching at the time.
   'agent_spawn_refused',
   'verdict_refused',
+  // CC-22. A message an agent composed and wants delivered with its human's
+  // authority. It sits in the human queue like a `question` and is closed by the
+  // same `resolution` row, so approving and declining both reuse machinery that
+  // already retires an item — an `endorse_verdict` kind would leave it open
+  // forever until someone also taught CLOSED about it.
+  'endorse_request',
 ] as const
 
 export type EventKind = (typeof EVENT_KINDS)[number]
@@ -157,10 +163,34 @@ export const NON_KIND_SSE_EVENTS = ['session_status', 'reset'] as const
  * sends the channel server nothing at all.
  */
 
+/**
+ * How much of a message's authority comes from a human, where `from` alone
+ * cannot say. A recipient must be able to tell three states apart:
+ *
+ * 1. human-authored — `from` is HUMAN and no provenance. The human typed it.
+ * 2. agent-authored — `from` is a peer and no provenance. That peer's own words.
+ * 3. human-endorsed — `from` is a peer AND provenance is `human-endorsed`. The
+ *    peer composed it; a human read these exact bytes and approved delivering
+ *    them. Same authority as (1), deliberately not the same provenance: `from`
+ *    stays the composer so an agent's phrasing never acquires the appearance of
+ *    a human's own words.
+ *
+ * BROKER-SET ONLY, and that is the whole value. No ClientMessage carries this
+ * field and no tool parameter reaches it — the same lesson `source` teaches over
+ * `from`. A marker an agent can set is worth nothing, because the point is that
+ * a recipient can trust it without going and checking.
+ *
+ * It raises provenance, never obligation: an endorsed message is still a message
+ * the recipient weighs, not an instruction its tooling obeys.
+ */
+export type Provenance = 'human-endorsed'
+
 export interface DeliveredMessage {
   msgId: string
   from: string
   text: string
+  /** Absent on every ordinary message. See {@link Provenance}. */
+  provenance?: Provenance
   /** Set when this message answers an earlier one, carrying that message's id. */
   inReplyTo?: string
   /** True when the sender addressed everyone rather than this session specifically. */
@@ -292,6 +322,23 @@ export type ClientMessage =
   | { t: 'queue' }
   | { t: 'answer'; msgId: string; text: string }
   | { t: 'dismiss'; msgId: string }
+  /**
+   * Compose a message for `to` and put it to the human for endorsement. It is
+   * NOT sent: the text is stored, the human is shown those exact bytes, and only
+   * the broker delivers them. Note what is absent — there is no field here that
+   * marks the result as endorsed, and no way to ask for one.
+   */
+  | { t: 'endorse'; to: string; text: string }
+  /**
+   * The human approving one stored request, by id. Carries no text, so the bytes
+   * delivered are necessarily the bytes shown; the composer gets no second bite
+   * between approval and delivery.
+   *
+   * The broker refuses this from a REGISTERED connection, the same discipline
+   * `teleport_abort` follows: what is left is someone at the CLI, who on a 0600
+   * socket is the user. Declining is `dismiss`, which already closes any item.
+   */
+  | { t: 'endorse_approve'; msgId: string }
   | { t: 'history'; limit: number }
   /** Read one session's trail. Never delivers anything to the session being read. */
   | { t: 'activity'; name: string; limit: number }

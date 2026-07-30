@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { home } from '../paths.js'
-import type { DeliveredMessage, EventKind, QueueItem } from '../protocol.js'
+import type { DeliveredMessage, EventKind, Provenance, QueueItem } from '../protocol.js'
 
 /**
  * Append-only event log. Everything that happens on the bus lands here; live
@@ -71,7 +71,9 @@ CREATE INDEX IF NOT EXISTS events_ref ON events(ref);
 /** Kinds that a recipient should see in their inbox. */
 const INBOX_KINDS = ["'message'", "'broadcast'", "'answer'"].join(',')
 /** Kinds that need the human to look at them. */
-const QUEUE_KINDS = ["'message'", "'question'", "'notice'", "'approval_request'"].join(',')
+const QUEUE_KINDS = ["'message'", "'question'", "'notice'", "'approval_request'", "'endorse_request'"].join(
+  ',',
+)
 /**
  * The local terminal dialog stays open in parallel and the first verdict wins,
  * but Claude Code sends no event when it does. A pending approval is therefore
@@ -120,6 +122,11 @@ const toMessage = (row: Row): DeliveredMessage => {
     ...(row.ref ? { inReplyTo: row.ref } : {}),
     ...(row.kind === 'broadcast' ? { broadcast: true } : {}),
     ...(meta.event ? { event: meta.event } : {}),
+    // Replayed from the row the broker wrote, so a message re-read from the
+    // inbox carries the same marker the live push did. Nothing a client sends
+    // reaches `meta`, which is what keeps this as trustworthy on the way out as
+    // it was on the way in.
+    ...(meta.provenance === 'human-endorsed' ? { provenance: 'human-endorsed' as Provenance } : {}),
   }
 }
 
@@ -217,15 +224,37 @@ export class EventLog {
     }))
   }
 
-  /** How many questions this session has outstanding, for budgeting. */
-  openQuestionCount(actor: string): number {
+  /** How many items of one kind this session has outstanding, for budgeting. */
+  openCount(actor: string, kind: EventKind): number {
     const row = this.db
       .prepare(
         `SELECT COUNT(*) AS n FROM events
-         WHERE actor = ? AND kind = 'question' AND msg_id NOT IN (${CLOSED})`,
+         WHERE actor = ? AND kind = ? AND msg_id NOT IN (${CLOSED})`,
       )
-      .get(actor) as unknown as { n: number }
+      .get(actor, kind) as unknown as { n: number }
     return row.n
+  }
+
+  /**
+   * The stored text of an endorsement request that is still open, with who
+   * composed it and who it was composed for.
+   *
+   * Delivery reads the body from HERE rather than from the approving request,
+   * which is what makes the delivered bytes necessarily the bytes the human was
+   * shown. Returns undefined once the item is closed, so an approval is a grant
+   * over exactly one message and cannot be replayed.
+   */
+  openEndorsement(msgId: string): { composer: string; recipient: string; text: string } | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM events
+         WHERE msg_id = ? AND kind = 'endorse_request' AND msg_id NOT IN (${CLOSED}) LIMIT 1`,
+      )
+      .get(msgId) as unknown as Row | undefined
+    if (!row) return undefined
+    const meta = (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>
+    if (!meta.recipient) return undefined
+    return { composer: row.actor, recipient: meta.recipient, text: row.body ?? '' }
   }
 
   /**

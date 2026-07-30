@@ -57,6 +57,11 @@ const KINDS_AT_FREEZE = [
   // `agent_handoff` body is a whole document rather than a line.
   'agent_handoff',
   'agent_stood_down',
+  // CC-22, added through this test rather than around it. Both views handle it:
+  // the human queue DOES carry this one (unlike agent_handoff — an endorsement
+  // request is precisely something needing an answer), and the log view renders
+  // any kind generically. Not subscribable: its body is message content.
+  'endorse_request',
 ]
 
 describe('SSE event names cover every EventKind', () => {
