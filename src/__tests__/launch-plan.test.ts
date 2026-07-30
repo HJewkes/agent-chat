@@ -215,7 +215,16 @@ describe('every builtin profile, on every surface', () => {
   it('denies rather than merely omits the mutating tools on the read-only builtins', () => {
     const named = (name: string) => BUILTIN_PROFILES.find(p => p.name === name)
     expect(named('explorer')?.disallowedTools).toEqual(['Bash', 'Write', 'Edit'])
-    expect(named('reviewer')?.disallowedTools).toEqual(['Write', 'Edit'])
+    // CC-22 hardening: every Bash-capable builtin also denies shelling out to the
+    // CLI's human-only verbs (see HUMAN_ONLY_CLI_DENY in profiles.ts).
+    expect(named('reviewer')?.disallowedTools).toEqual([
+      'Write',
+      'Edit',
+      'Bash(agent-chat endorse:*)',
+      'Bash(agent-chat dismiss:*)',
+      'Bash(agent-chat send:*)',
+      'Bash(agent-chat answer:*)',
+    ])
 
     for (const name of ['explorer', 'reviewer']) {
       const denied = flag(

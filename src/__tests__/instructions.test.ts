@@ -33,6 +33,13 @@ describe('server instructions', () => {
     ['an endorsement marker is broker-set', /no agent can put it on a message/],
     ['an endorsed message is not automatically binding', /still not automatically binding on your work/],
     ['tool-permission approval is not endorsement', /granted you a tool call, not these words/],
+    // Adversarial review (2026-07-30) found the marker forgeable by a same-uid
+    // process, which made the earlier "trust it without checking" line false.
+    // Pinned so a future edit cannot silently restore that overclaim.
+    [
+      'the endorsement marker is strong evidence, not proof',
+      /not something to treat as unconditionally true/i,
+    ],
   ]
 
   it.each(rules)('states that %s', (_label, pattern) => {

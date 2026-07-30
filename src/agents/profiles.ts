@@ -27,7 +27,26 @@ import type { AgentProfile } from './types.js'
  * someone adds it here. That was chosen deliberately over deriving the complement
  * — the derivation needs a list of every tool that exists, which we would then own
  * and have to keep true. Add new mutating tools to these lists.
+ *
+ * `HUMAN_ONLY_CLI_DENY` below is the same idea aimed at a narrower target: the
+ * `agent-chat` CLI verbs that act with the human's own authority (`endorse`,
+ * `dismiss`, `send`, `answer` — see `broker/socket.ts`'s `isHuman`). CC-22's
+ * adversarial review (2026-07-30) found a `Bash`-capable spawned agent could
+ * self-approve its own endorsement by simply shelling out to `agent-chat
+ * endorse <id>`. Denying the pattern here is CONFIGURATION, not a guarantee —
+ * it stops the straightforward case (a profile-granted `Bash` running the
+ * command as written) and nothing more: a differently-invoked form (`node
+ * dist/cli.js endorse`, an absolute path, `npx agent-chat endorse`) is a
+ * different literal string and will not match; a raw socket write bypasses the
+ * CLI, and therefore this list, entirely. Real defense in depth, not a fix —
+ * `broker/socket.ts`'s `isHuman` states the same limit from the broker side.
  */
+const HUMAN_ONLY_CLI_DENY = [
+  'Bash(agent-chat endorse:*)',
+  'Bash(agent-chat dismiss:*)',
+  'Bash(agent-chat send:*)',
+  'Bash(agent-chat answer:*)',
+]
 export const BUILTIN_PROFILES: readonly AgentProfile[] = [
   {
     name: 'explorer',
@@ -47,7 +66,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     // Bash SURVIVES here on purpose — a reviewer that cannot run the tests is an
     // explorer with a different prelude. It is confined at the file boundary
     // instead: it may run commands, it may not edit what it is reviewing.
-    disallowedTools: ['Write', 'Edit'],
+    disallowedTools: ['Write', 'Edit', ...HUMAN_ONLY_CLI_DENY],
     isolation: 'toolset-limited',
     surface: 'headless',
     promptPrelude:
@@ -59,6 +78,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     description: 'Writes code in its own worktree, in a visible pane so prompts are answerable.',
     model: 'opus',
     allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob'],
+    disallowedTools: HUMAN_ONLY_CLI_DENY,
     isolation: 'worktree',
     surface: 'iterm-pane',
     promptPrelude:
@@ -73,6 +93,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     description: 'A long-lived collaborator sharing your checkout, addressable by name.',
     model: 'opus',
     allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob'],
+    disallowedTools: HUMAN_ONLY_CLI_DENY,
     isolation: 'none',
     surface: 'iterm-tab',
     promptPrelude:

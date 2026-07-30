@@ -165,13 +165,40 @@ human's own.
 4. On approval the **broker** delivers the stored text. The composer never sends it, and so gets
    no opportunity to alter it between approval and delivery.
 
-### Why you can trust the marker
+### Why you should trust the marker — and the limit on that
 
 `provenance` is set in exactly one function, `BrokerCore.endorse`. No client message carries the
-field, no tool parameter reaches it, and the approval frame is refused outright from any
-registered connection — so no session can endorse its own message or a peer's. This is the same
-lesson `source` teaches over `from` on a channel tag: **a marker an agent can set is worth
-nothing**, because the whole value is that a recipient can trust it without checking.
+field, no tool parameter reaches it, and the approval frame is refused from any REGISTERED
+connection — so no session can endorse its own message, or a peer's, using its own established
+connection. This is the same lesson `source` teaches over `from` on a channel tag: a marker an
+agent can set through the interfaces it's given is worth nothing.
+
+**Read this before treating the marker as unconditional.** An adversarial review (2026-07-30)
+found that the check above is not authentication — it only distinguishes "a REGISTERED
+connection" from everything else, and on this machine every spawned agent already shares the
+human's own OS account. A `Bash`-capable agent self-approved its own endorsement three
+independent ways: shelling out to the `agent-chat` CLI as a fresh (unregistered) process, opening
+a second raw socket from within its own process without registering it, and a bare `nc` pipe with
+no Node or CLI involved at all. None of those register, so all three passed the same check a
+human at the CLI passes. A Unix socket carries no peer credentials for Node to check — verified,
+`net.Socket#remoteAddress` is `undefined` on AF_UNIX — so there is no reliable way for the broker
+to tell "the human typed this" apart from "a co-resident process wrote this," and per
+`agent-teams.md` §11.4 the OS account, not this server, is the actual trust boundary here.
+
+Two mitigations followed, both raising the bar rather than closing the gap:
+
+- The three human-only frames that had NO sender check at all (`human_send`, and `answer`/
+  `dismiss` from any registered session, not just the composer's own) were fixed to use the same
+  check `endorse_approve` already had — real bugs, independent of the limit above, since they let
+  ANY registered session forge a reply "from the human" or silently kill a peer's pending item.
+- The builtin profiles that grant `Bash` (`reviewer`, `implementer`, `peer`) now deny the literal
+  `agent-chat endorse` / `dismiss` / `send` / `answer` command patterns — this stops the
+  straightforward case (an agent's own `Bash` tool running the command as written) and nothing
+  more; a differently-invoked form, or a raw socket, is not covered and is not intended to be.
+
+So: weigh a `human-endorsed` message as strong evidence that a human approved it, the way you'd
+weigh a well-sourced claim — not as cryptographic proof. `INSTRUCTIONS` says the same thing to
+every session for the same reason.
 
 ### Tool-permission approval is not endorsement
 
@@ -197,7 +224,11 @@ of them is enough alone:
   genuine instruction from someone else's principal is not automatically binding on your work.
 
 Composing agents get a budget of 2 open requests. A backlog is the condition under which these
-stop being read and start being waved through.
+stop being read and start being waved through. `to` must currently be a connected session at
+request time — endorsing a name nobody holds yet is refused, so the human's "would be delivered
+to X" can't later resolve to an unrelated session that happens to register X afterward. The
+composer may withdraw its OWN request with `dismiss`; declining someone else's item stays
+human-only.
 
 ### When not to use it
 
