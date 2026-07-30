@@ -5,6 +5,49 @@ export const SESSION_STATUSES = ['working', 'available', 'blocked'] as const
 
 export type SessionStatus = (typeof SESSION_STATUSES)[number]
 
+/**
+ * Read from the session's own process. NEVER model-supplied — there is no tool
+ * parameter that reaches any field here, the same discipline `provenance` and
+ * `source` already follow. A peer reading these is reading a fact about where
+ * that session is running, not a claim about it.
+ */
+export interface ObservedPresence {
+  /** `git rev-parse --abbrev-ref HEAD`. Absent on a detached HEAD or a non-repo. */
+  gitBranch?: string
+  /** `git rev-parse --show-toplevel`: the checkout this session is actually in. */
+  worktreePath?: string
+  /** True when that checkout is a linked worktree rather than the main one. */
+  isLinkedWorktree?: boolean
+}
+
+/**
+ * Model-supplied. CLAIMS, NOT FACTS, and rendered as such.
+ *
+ * HUMAN DECISION (2026-07-30): an open bag, not a closed/validated field set.
+ * A session may declare arbitrary key/value pairs — `role`, `initiative`,
+ * `task`, or anything a fleet finds useful next month — chosen over a closed
+ * `{role, initiative, taskId}` despite the accuracy cost, because the shapes
+ * worth declaring are not knowable in advance.
+ *
+ * The tradeoff that buys is flooding: an open bag with no ceiling lets one
+ * session put arbitrary text into every peer's `chat_list` output forever. So
+ * the budget below is enforced INSTEAD of key validation, and it is the only
+ * thing standing in for a schema — see {@link DECLARED_MAX_KEYS} and friends.
+ */
+export type DeclaredPresence = Record<string, string>
+
+/**
+ * The size budget on {@link DeclaredPresence}. It replaces key validation, so it
+ * is load-bearing rather than defensive: chat_list is read by every session on
+ * the machine, and a bag with no ceiling is a way to spend everyone else's
+ * context. Enforced at the tool boundary (rejected, so the model learns) AND in
+ * the registry (clamped, because a raw client on the same 0600 socket never
+ * passes through a tool).
+ */
+export const DECLARED_MAX_KEYS = 8
+export const DECLARED_MAX_VALUE_CHARS = 64
+export const DECLARED_MAX_BYTES = 512
+
 export interface SessionInfo {
   name: string
   workingOn: string
@@ -14,6 +57,17 @@ export interface SessionInfo {
   dnd: boolean
   idleMs: number
   registeredAt: number
+  /**
+   * Structured presence (CC-11), split by TRUST rather than by topic: `observed`
+   * is derived from the session's process, `declared` is whatever the model said.
+   *
+   * Nested rather than flat because that split is the extensibility mechanism and
+   * the trust boundary in one shape — a flat bag of optional fields invites the
+   * next one onto the wrong side of the line. Both records, and every field in
+   * them, are optional, so a reader written before CC-11 keeps working.
+   */
+  observed?: ObservedPresence
+  declared?: DeclaredPresence
 }
 
 /**
@@ -309,6 +363,15 @@ export type ClientMessage =
       tags?: string[]
       subscriptions?: Subscription[]
       /**
+       * Derived by the MCP subprocess from its own working directory, next to
+       * `hostIdentity()` and `terminalAnchor()` and for the same structural
+       * reason: the broker runs detached, in a directory of its own, and cannot
+       * see any of this for itself. No tool parameter reaches it.
+       */
+      observed?: ObservedPresence
+      /** What the model says about itself. Re-declared on register, never stored. */
+      declared?: DeclaredPresence
+      /**
        * Which BUILD this client is running, so a mismatch with the broker's own
        * is reported rather than inferred (CC-36).
        *
@@ -342,9 +405,23 @@ export type ClientMessage =
       pid: number
       hostPid?: number
       termSessionId?: string
+      /** Re-derived on the way back in; a reclaimed registration is still a registration. */
+      observed?: ObservedPresence
       build?: string
     }
-  | { t: 'status'; status: SessionStatus; workingOn?: string; dnd?: boolean }
+  /**
+   * `declared` rides here as well as on `register` because a session's role or
+   * initiative changes mid-session far more often than its name does, and
+   * re-registering to say so would mean re-taking a name lease to update a label.
+   * Omitting it leaves whatever was declared before; sending `{}` clears it.
+   */
+  | {
+      t: 'status'
+      status: SessionStatus
+      workingOn?: string
+      dnd?: boolean
+      declared?: DeclaredPresence
+    }
   /** Replaces any subscription with the same selector, so re-subscribing is idempotent. */
   | { t: 'subscribe'; subscriptions: Subscription[] }
   /** Omitting the selector clears every subscription this session holds. */

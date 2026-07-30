@@ -130,7 +130,7 @@ export class BrokerCore {
     if (result.evicted !== undefined) this.supersede(msg.name, msg.agentId, result.evicted, evict)
 
     this.append({ kind: 'registered', actor: msg.name, body: msg.workingOn, meta: { cwd: msg.cwd } })
-    this.noteWorkingOnCollision(msg.name, msg.workingOn, msg.cwd)
+    this.noteWorkingOnCollision(msg)
     // Resolved from the session id, so a session on a new socket re-attaches to
     // the identity it already has. Minting happens only here, after a successful
     // registration: mint any earlier and a name that turned out to be held leaves
@@ -158,21 +158,46 @@ export class BrokerCore {
    * party who can see both sessions at once and decide whether to redirect
    * one of them.
    */
-  private noteWorkingOnCollision(name: string, workingOn: string, cwd: string): void {
-    const collidesWith = this.registry
-      .list()
-      .filter(s => s.name !== name && s.cwd === cwd && s.workingOn.trim() === workingOn.trim())
-    if (collidesWith.length === 0) return
-    const others = collidesWith.map(s => s.name).join(', ')
-    this.append({
-      kind: 'notice',
-      actor: 'agent-chat',
-      target: HUMAN,
-      body:
-        `${name} registered in ${cwd} with the same "workingOn" text as ${others} — ` +
-        'chat_list will not distinguish them without looking at registeredAt.',
+  private noteWorkingOnCollision(msg: RegisterMessage): void {
+    const { name, workingOn, cwd } = msg
+    const peers = this.registry.list().filter(s => s.name !== name)
+    const sameText = peers.filter(s => s.cwd === cwd && s.workingOn.trim() === workingOn.trim())
+
+    // CC-11 extends the SAME notice rather than adding a second path. Identical
+    // `workingOn` text is only the visible half of the problem: two sessions that
+    // wrote DIFFERENT descriptions of the same checkout collide on files just as
+    // hard, and the text check cannot see it at all. An observed worktree can,
+    // because it is derived from the process rather than typed by the model.
+    const worktree = msg.observed?.worktreePath
+    const sameTree =
+      worktree === undefined
+        ? []
+        : peers.filter(s => s.observed?.worktreePath === worktree && !sameText.includes(s))
+    if (sameText.length === 0 && sameTree.length === 0) return
+
+    const branch = msg.observed?.gitBranch
+    const lines: string[] = []
+    if (sameText.length > 0)
+      lines.push(
+        `${name} registered in ${cwd} with the same "workingOn" text as ` +
+          `${sameText.map(s => s.name).join(', ')} — chat_list will not distinguish them ` +
+          'without looking at registeredAt.',
+      )
+    if (sameTree.length > 0)
+      lines.push(
+        `${name} is working in the same checkout as ${sameTree.map(s => s.name).join(', ')} ` +
+          `(${worktree}${branch === undefined ? '' : `, branch ${branch}`}), so their edits land on ` +
+          'the same files however differently they describe the work. Give one of them a worktree ' +
+          'of its own, or decide which files each owns.',
+      )
+
+    this.append({ kind: 'notice', actor: 'agent-chat', target: HUMAN, body: lines.join(' ') })
+    logEvent('working_on_collision', {
+      name,
+      cwd,
+      collides_with: sameText.map(s => s.name),
+      shares_worktree_with: sameTree.map(s => s.name),
     })
-    logEvent('working_on_collision', { name, cwd, collides_with: collidesWith.map(s => s.name) })
   }
 
   /** A takeover displaced a live connection: record the detach and close it. */

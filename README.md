@@ -121,17 +121,30 @@ override with `AGENT_CHAT_HOME`.
 
 ## Tools
 
-| Tool                                | Purpose                                     |
-| ----------------------------------- | ------------------------------------------- |
-| `chat_register(name, working_on)`   | Announce this session. Call once at start.  |
-| `chat_status(status, working_on?)`  | `working` / `available` / `blocked`.        |
-| `chat_list()`                       | Who's active, their status, work, and cwd.  |
-| `chat_send(to, text, in_reply_to?)` | Message one session by name.                |
-| `chat_broadcast(text)`              | Message everyone else.                      |
-| `chat_ask(text)`                    | Ask the human. Budgeted, non-blocking.      |
-| `chat_notify(text)`                 | Leave the human a notice needing no answer. |
-| `chat_inbox(limit?)`                | Re-read recent messages, including answers. |
-| `chat_transcript(name?, limit?)`    | Recent turns of a session's own transcript. |
+| Tool                                          | Purpose                                      |
+| --------------------------------------------- | -------------------------------------------- |
+| `chat_register(name, working_on, declared?)`  | Announce this session. Call once at start.   |
+| `chat_status(status, working_on?, declared?)` | `working` / `available` / `blocked`.         |
+| `chat_list()`                                 | Who's active, their status, work, and where. |
+| `chat_send(to, text, in_reply_to?)`           | Message one session by name.                 |
+| `chat_broadcast(text)`                        | Message everyone else.                       |
+| `chat_ask(text)`                              | Ask the human. Budgeted, non-blocking.       |
+| `chat_notify(text)`                           | Leave the human a notice needing no answer.  |
+| `chat_inbox(limit?)`                          | Re-read recent messages, including answers.  |
+| `chat_transcript(name?, limit?)`              | Recent turns of a session's own transcript.  |
+
+`chat_list` splits what it knows about a session by trust, not by topic (CC-11).
+The **observed** half — git branch, checkout, whether that checkout is a linked
+worktree — is derived from the session's own process at registration; no tool
+parameter reaches it, so no model can assert it. The **declared** half is an open
+bag of short `key=value` labels the session chose for itself (`role`,
+`initiative`, `task`, whatever a fleet finds useful), rendered marked
+`(self-reported)` so a reader never mistakes a claim for a fact. Declared labels
+are capped at 8 keys, 64 characters each and 512 bytes in total: every session on
+the machine reads them, so an uncapped bag is a way to spend everyone else's
+context. Two sessions sharing a checkout now also produce a notice to the human
+even when they described their work differently — the text comparison alone
+could not see that case.
 
 `chat_transcript` reads the per-session log Claude Code writes to
 `~/.claude/projects/<slug>/<session-id>.jsonl` whether or not anyone looks at it,
@@ -241,8 +254,6 @@ evidence across sessions of different vintages. Presence is unaffected.
 - Multicast — addressing a named _set_ of sessions. Today it is one recipient or
   everyone, and broadcast gets used because it is the only thing that takes more
   than one name.
-- Structured presence — sessions publish one freeform string, so two peers
-  working the same task are indistinguishable in `chat_list`.
 - Observing a peer without interrupting it. Right now asking what a session is
   doing _is_ the interruption.
 - Do-not-disturb, with an override category scarce enough to stay meaningful.

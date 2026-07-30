@@ -1,8 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import {
+  DECLARED_MAX_BYTES,
+  DECLARED_MAX_KEYS,
+  DECLARED_MAX_VALUE_CHARS,
   RESERVED_NAMES,
   SUBSCRIBABLE_KINDS,
+  type DeclaredPresence,
   type DeliveredMessage,
+  type ObservedPresence,
   type RecipientResult,
   type SessionInfo,
   type SessionStatus,
@@ -25,6 +30,30 @@ const sanitizeSubscriptions = (subscriptions: Subscription[]): Subscription[] =>
     selector: sub.selector,
     kinds: sub.kinds.filter(kind => (SUBSCRIBABLE_KINDS as readonly string[]).includes(kind)),
   }))
+
+/**
+ * Clamp a declared bag to the published budget, wherever one enters.
+ *
+ * Enforced HERE as well as at the tool boundary, for the same reason
+ * `sanitizeSubscriptions` is: the MCP tool is one client of this socket, and a
+ * raw client on the same 0600 socket can send whatever it likes. The tool
+ * REJECTS an over-budget bag so the model learns; this layer silently drops what
+ * is over the line, because a socket client has nobody to tell. Values are
+ * type-checked rather than cast (CC-8): this is model-supplied structure.
+ */
+const sanitizeDeclared = (declared: DeclaredPresence): DeclaredPresence => {
+  const kept: DeclaredPresence = {}
+  let bytes = 0
+  for (const [key, value] of Object.entries(declared)) {
+    if (typeof key !== 'string' || typeof value !== 'string') continue
+    if (Object.keys(kept).length >= DECLARED_MAX_KEYS) break
+    const trimmed = value.slice(0, DECLARED_MAX_VALUE_CHARS)
+    bytes += Buffer.byteLength(key) + Buffer.byteLength(trimmed)
+    if (bytes > DECLARED_MAX_BYTES) break
+    kept[key] = trimmed
+  }
+  return kept
+}
 
 /** Selectors are the identity of a subscription, which is what makes re-subscribing idempotent. */
 const sameSelector = (a: SubscriptionSelector, b: SubscriptionSelector): boolean => {
@@ -81,6 +110,14 @@ interface Entry {
   tags: string[]
   /** Ephemeral like everything else here — re-declared on register, never stored. */
   subscriptions: Subscription[]
+  /**
+   * Structured presence (CC-11). Both are presence data for the same reason
+   * `hostPid` and the anchor are: a branch is true of a running process in a
+   * directory, and means nothing once that process is gone. Re-declared on
+   * register exactly as `tags` and `subscriptions` are, never persisted.
+   */
+  observed?: ObservedPresence
+  declared?: DeclaredPresence
   /**
    * Names of agents spawned by THIS connection, for resolving a `spawnedBy`
    * selector. Presence-scoped like the anchor and the subscriptions themselves —
@@ -311,6 +348,8 @@ export class Registry<C> {
       termSessionId?: string
       tags?: string[]
       subscriptions?: Subscription[]
+      observed?: ObservedPresence
+      declared?: DeclaredPresence
     },
   ): { ok: boolean; reason?: string; evicted?: C } {
     if (RESERVED_NAMES.has(input.name.toLowerCase()))
@@ -340,6 +379,18 @@ export class Registry<C> {
       subscriptions: input.subscriptions
         ? sanitizeSubscriptions(input.subscriptions)
         : (existing?.subscriptions ?? []),
+      // Same re-declare-or-carry rule, so a resumed agent keeps the presence it
+      // had rather than reappearing as a session nobody can place.
+      ...((input.observed ?? existing?.observed)
+        ? { observed: input.observed ?? (existing?.observed as ObservedPresence) }
+        : {}),
+      ...((input.declared ?? existing?.declared)
+        ? {
+            declared: input.declared
+              ? sanitizeDeclared(input.declared)
+              : (existing?.declared as DeclaredPresence),
+          }
+        : {}),
       spawned: existing?.spawned ?? new Set(),
       status: existing?.status ?? 'available',
       awaitingApproval: existing?.awaitingApproval ?? false,
@@ -350,12 +401,24 @@ export class Registry<C> {
     return { ok: true, ...(evicted === undefined ? {} : { evicted }) }
   }
 
-  setStatus(conn: C, status: SessionStatus, workingOn?: string, dnd?: boolean): boolean {
+  /**
+   * `declared` REPLACES rather than merges: a session correcting "I am on CC-10"
+   * to "I am on CC-11" must not end up asserting both, and a merge has no way to
+   * express a retraction. An empty record therefore clears it.
+   */
+  setStatus(
+    conn: C,
+    status: SessionStatus,
+    workingOn?: string,
+    dnd?: boolean,
+    declared?: DeclaredPresence,
+  ): boolean {
     const entry = this.entries.get(conn)
     if (!entry) return false
     entry.status = status
     if (workingOn !== undefined) entry.workingOn = workingOn
     if (dnd !== undefined) entry.dnd = dnd
+    if (declared !== undefined) entry.declared = sanitizeDeclared(declared)
     entry.lastSeen = this.now()
     return true
   }
@@ -373,6 +436,10 @@ export class Registry<C> {
       dnd: e.dnd,
       idleMs: this.now() - e.lastSeen,
       registeredAt: e.registeredAt,
+      ...(e.observed === undefined ? {} : { observed: e.observed }),
+      // Omitted when empty rather than sent as `{}`: "declared nothing" and
+      // "declared an empty bag" are the same state and should render the same.
+      ...(e.declared === undefined || Object.keys(e.declared).length === 0 ? {} : { declared: e.declared }),
     }))
   }
 

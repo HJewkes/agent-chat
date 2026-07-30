@@ -1,11 +1,15 @@
 import type { BrokerClient } from '../client/broker-client.js'
 import {
+  DECLARED_MAX_BYTES,
+  DECLARED_MAX_KEYS,
+  DECLARED_MAX_VALUE_CHARS,
   ISOLATION_NAMES,
   MAX_MULTICAST_RECIPIENTS,
   SESSION_STATUSES,
   SUBSCRIBABLE_KINDS,
   SURFACE_NAMES,
 } from '../protocol.js'
+import { observedRegistration } from '../git.js'
 import { terminalAnchor } from './anchor.js'
 import { hostIdentity } from './host.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
@@ -14,6 +18,7 @@ import { transcriptLine } from '../agents/transcript.js'
 import { readTurns, type TranscriptRead } from '../agents/turns.js'
 import { findDenials } from '../agents/denials.js'
 import type {
+  DeclaredPresence,
   DeliveredMessage,
   QueueItem,
   RecipientResult,
@@ -53,6 +58,49 @@ function requireRecipients(args: Record<string, unknown>): string | string[] {
     throw new Error('to must be a non-empty session name, or a list of them')
   }
   return names
+}
+
+/**
+ * `declared` for chat_register and chat_status: an open bag of labels a session
+ * asserts about itself, validated here for the same reason `requireRecipients`
+ * is — the SDK enforces nothing in the schema, so an object of nested objects,
+ * or forty keys of prose, would otherwise reach the broker and be rendered into
+ * every peer's chat_list.
+ *
+ * REJECTS rather than silently trims, which is the difference between this and
+ * the registry's clamp. A model that gets an error learns the shape; a model
+ * whose bag was quietly truncated believes it declared something it did not.
+ * Values are narrowed rather than cast (CC-8): this is model-supplied structure.
+ */
+function optionalDeclared(args: Record<string, unknown>): DeclaredPresence | undefined {
+  const value = args.declared
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('declared must be an object of short string labels, e.g. {"role": "implementer"}')
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+  if (entries.length > DECLARED_MAX_KEYS) {
+    throw new Error(`declared may carry at most ${DECLARED_MAX_KEYS} keys; got ${entries.length}`)
+  }
+  const declared: DeclaredPresence = {}
+  let bytes = 0
+  for (const [key, item] of entries) {
+    if (typeof item !== 'string') {
+      throw new Error(`declared.${key} must be a string — declared carries labels, not nested structure`)
+    }
+    if (item.length > DECLARED_MAX_VALUE_CHARS) {
+      throw new Error(`declared.${key} must be at most ${DECLARED_MAX_VALUE_CHARS} characters`)
+    }
+    bytes += Buffer.byteLength(key) + Buffer.byteLength(item)
+    declared[key] = item
+  }
+  if (bytes > DECLARED_MAX_BYTES) {
+    throw new Error(
+      `declared is ${bytes} bytes, over the ${DECLARED_MAX_BYTES}-byte budget. Every session on ` +
+        'this machine reads it in chat_list; keep it to short labels.',
+    )
+  }
+  return declared
 }
 
 function optionalString(args: Record<string, unknown>, key: string): string | undefined {
@@ -121,6 +169,16 @@ export const TOOL_DEFINITIONS = [
       properties: {
         name: { type: 'string', description: 'Short handle for this session, e.g. "voltras-ui"' },
         working_on: { type: 'string', description: 'One line on what this session is doing' },
+        declared: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description:
+            'Optional short labels other sessions can filter and read you by, e.g. ' +
+            '{"role": "implementer", "initiative": "claude-channels", "task": "CC-11"}. Keys are ' +
+            'yours to choose. Peers see these marked as self-reported, so declare what is true. ' +
+            `At most ${DECLARED_MAX_KEYS} keys, ${DECLARED_MAX_VALUE_CHARS} characters each. Your ` +
+            'branch and checkout are NOT declared here — the server reads those from this process.',
+        },
       },
       required: ['name'],
     },
@@ -140,6 +198,14 @@ export const TOOL_DEFINITIONS = [
         dnd: {
           type: 'boolean',
           description: 'Hold pushes from other sessions until you clear it. Independent of status.',
+        },
+        declared: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description:
+            'Replace the self-reported labels from chat_register, e.g. when you move to a new task. ' +
+            'This REPLACES the whole set rather than merging, so send every label you still want; ' +
+            'an empty object clears them. Omit it to leave them as they are.',
         },
       },
       required: ['status'],
@@ -515,12 +581,44 @@ const describe = (selector: SubscriptionSelector): string =>
 const ago = (ms: number): string =>
   ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)}m`
 
+/**
+ * The declared line, and the `(self-reported)` marker is the point of it: a
+ * reader must be able to tell a session's claim about its role from a fact about
+ * its checkout, and the two sit one line apart. Rendered only when there is
+ * something to render, so an undeclared session stays a two-line entry.
+ */
+function declaredLine(declared: DeclaredPresence | undefined): string {
+  const pairs = Object.entries(declared ?? {})
+  if (pairs.length === 0) return ''
+  return `\n    declared: ${pairs.map(([key, value]) => `${key}=${value}`).join(', ')}   (self-reported)`
+}
+
+/**
+ * cwd, then whatever the process could be OBSERVED to be sitting in. Everything
+ * on this line is derived from the session's own process rather than typed by
+ * it, which is what makes "main checkout" worth reading — two rows on the same
+ * worktree are two sessions that will edit the same files.
+ */
+function observedLine(s: SessionInfo): string {
+  const parts = [
+    s.cwd,
+    s.observed?.gitBranch,
+    s.observed?.isLinkedWorktree === undefined
+      ? undefined
+      : s.observed.isLinkedWorktree
+        ? 'linked worktree'
+        : 'main checkout',
+  ].filter((part): part is string => part !== undefined && part !== '')
+  return `\n    ${parts.join('  ·  ')}`
+}
+
 function formatSessions(sessions: SessionInfo[], self: string | null): string {
   if (sessions.length === 0) return 'No sessions are registered.'
   const rows = sessions.map(s => {
     const you = s.name === self ? ' (you)' : ''
     const quiet = s.dnd ? ', dnd' : ''
-    return `- ${s.name}${you} [${s.status}${quiet}, idle ${ago(s.idleMs)}] — ${s.workingOn || 'no description'}\n    ${s.cwd}`
+    const head = `- ${s.name}${you} [${s.status}${quiet}, idle ${ago(s.idleMs)}] — ${s.workingOn || 'no description'}`
+    return `${head}${declaredLine(s.declared)}${observedLine(s)}`
   })
   return `Active sessions:\n${rows.join('\n')}`
 }
@@ -646,12 +744,17 @@ export class ToolHandler {
   async handle(name: string, args: Record<string, unknown>) {
     switch (name) {
       case 'chat_register':
-        return this.register(requireString(args, 'name'), optionalString(args, 'working_on') ?? '')
+        return this.register(
+          requireString(args, 'name'),
+          optionalString(args, 'working_on') ?? '',
+          optionalDeclared(args),
+        )
       case 'chat_status':
         return this.status(
           requireStatus(args),
           optionalString(args, 'working_on'),
           typeof args.dnd === 'boolean' ? args.dnd : undefined,
+          optionalDeclared(args),
         )
       case 'chat_list':
         return this.list()
@@ -698,7 +801,7 @@ export class ToolHandler {
     }
   }
 
-  private async register(name: string, workingOn: string) {
+  private async register(name: string, workingOn: string, declared?: DeclaredPresence) {
     // A spawned agent was named by whoever spawned it, and peers have already
     // been told that name. Letting the model rename itself mid-session would
     // strand every one of them, so the call is a no-op rather than a rename.
@@ -724,6 +827,11 @@ export class ToolHandler {
         // without that identity being self-asserted.
         ...hostIdentity(),
         ...terminalAnchor(),
+        // CC-11. Derived from this process's directory, never asked of the model:
+        // "which checkout am I in" is knowable, and a self-reported answer to a
+        // knowable question is a downgrade dressed as a feature.
+        ...(await observedRegistration()),
+        ...(declared === undefined ? {} : { declared }),
         // CC-36: lets the broker say so when this session's tools come from a
         // different build than the one it is talking to.
         build: cliEntry(),
@@ -737,13 +845,19 @@ export class ToolHandler {
     )
   }
 
-  private async status(status: SessionStatus, workingOn?: string, dnd?: boolean) {
+  private async status(
+    status: SessionStatus,
+    workingOn?: string,
+    dnd?: boolean,
+    declared?: DeclaredPresence,
+  ) {
     const res = (await this.call(
       {
         t: 'status',
         status,
         ...(workingOn === undefined ? {} : { workingOn }),
         ...(dnd === undefined ? {} : { dnd }),
+        ...(declared === undefined ? {} : { declared }),
       },
       'status_result',
     )) as Extract<ServerMessage, { t: 'status_result' }>
