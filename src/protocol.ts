@@ -48,6 +48,58 @@ export const DECLARED_MAX_KEYS = 8
 export const DECLARED_MAX_VALUE_CHARS = 64
 export const DECLARED_MAX_BYTES = 512
 
+/**
+ * A label carried by a session, with WHO put it there (CC-13).
+ *
+ * NEVER AUTHORIZATION. A session may tag itself `owner:src`, and nothing in this
+ * system may read that as a grant of ownership or any other privilege — it is a
+ * routing and discovery label, exactly as weak a claim as {@link DeclaredPresence}
+ * and rendered as such. The same lesson `from` teaches over `source`.
+ *
+ * `by` is resolved BY THE BROKER from the applying connection's own registered
+ * name — the discipline `anchorFor` and teleport's subject already follow. No
+ * wire field reaches it, so "who says so" is the one part of a tag that cannot
+ * be authored. `self` when the holder declared it about itself.
+ */
+export interface SessionTag {
+  tag: string
+  by: string
+  at: number
+}
+
+/** `by` for a tag a session declared about itself, rather than a peer's label. */
+export const SELF_TAG = 'self'
+
+/**
+ * The budget on tags, load-bearing for the same reason the declared budget is:
+ * a tag is an UNRESTRICTED WRITE into a peer's presence and into every peer's
+ * chat_list output, so without a ceiling one session can spend everyone else's
+ * context — and here it can do it to rows that are not even its own.
+ *
+ * Enforced at the tool boundary (rejected, so the model learns) and again in the
+ * registry (rejected there too, unlike `declared`: a tag mutation already answers
+ * ok/reason, so a raw socket client has somewhere to be told).
+ */
+export const TAG_MAX_PER_SESSION = 16
+export const TAG_MAX_CHARS = 32
+/** Tags one applier may hold across the whole bus, its own row included. */
+export const TAG_MAX_PER_APPLIER = 32
+
+/**
+ * Letters, digits, underscore, colon, dot, hyphen — enough for `owner:src`-style
+ * namespacing and nothing that could be mistaken for prose or a sentence.
+ */
+export const TAG_PATTERN = /^[A-Za-z0-9_:.-]+$/
+
+/** The one place a tag string is judged, so the tool and the registry agree. */
+export function tagProblem(tag: unknown): string | undefined {
+  if (typeof tag !== 'string' || tag.trim() === '') return 'a tag must be a non-empty string'
+  if (tag.length > TAG_MAX_CHARS) return `"${tag}" is ${tag.length} characters; the limit is ${TAG_MAX_CHARS}`
+  if (!TAG_PATTERN.test(tag))
+    return `"${tag}" has characters a tag may not use; allowed are letters, digits, and _ : . -`
+  return undefined
+}
+
 export interface SessionInfo {
   name: string
   workingOn: string
@@ -68,6 +120,12 @@ export interface SessionInfo {
    */
   observed?: ObservedPresence
   declared?: DeclaredPresence
+  /**
+   * Tags this session carries, each with who applied it (CC-13). Omitted rather
+   * than sent empty, for the same reason `declared` is: "carries no tags" and
+   * "carries an empty list" are the same state and should render the same.
+   */
+  tags?: SessionTag[]
 }
 
 /**
@@ -359,7 +417,12 @@ export type ClientMessage =
        */
       hostPid?: number
       termSessionId?: string
-      /** Many, not one: a session is usually in more than one conversation. */
+      /**
+       * Many, not one: a session is usually in more than one conversation. Still
+       * `string[]` after CC-13 and deliberately so — everything arriving here is
+       * SELF-declared, so the broker stamps `by: 'self'` itself and there is no
+       * wire breakage for a client that already sent tags.
+       */
       tags?: string[]
       subscriptions?: Subscription[]
       /**
@@ -435,7 +498,28 @@ export type ClientMessage =
    * broker, a list on `send` at least fails fast with "no active session
    * named...". A fast wrong answer beats a silent hang.
    */
-  | { t: 'send'; to: string | string[]; text: string; inReplyTo?: string }
+  /**
+   * `toTag` addresses whoever CARRIES a tag, and is deliberately a separate
+   * field rather than an overload of `to` (CC-13): a session name that happens to
+   * look like a tag string must never be ambiguous with tag addressing. It
+   * resolves to a set of names and then routes through the same multicast path,
+   * charged the same way — a tag is a way of naming recipients, not a cheaper
+   * fanout. A tag nothing carries is a FAILURE, not a silent no-op.
+   */
+  | { t: 'send'; to?: string | string[]; toTag?: string; text: string; inReplyTo?: string }
+  /**
+   * Add or remove tags, on yourself or on a peer (CC-13).
+   *
+   * `target` absent means yourself. WHO APPLIED IT is not on this frame at all —
+   * the broker resolves it from this connection's own registration, so a peer's
+   * label can never be forged into a self-declaration or attributed to a third
+   * session.
+   *
+   * A genuinely new frame type rather than an overload, which is safe here in a
+   * way it was not for CC-10's `send`: there is no older broker that ever
+   * answered a tag call, so there is no graceful degradation to preserve.
+   */
+  | { t: 'tag'; target?: string; add?: string[]; remove?: string[] }
   | { t: 'broadcast'; text: string }
   | { t: 'inbox'; limit: number }
   | { t: 'ask'; text: string }
@@ -554,6 +638,8 @@ export type ServerMessage =
       reason?: string
       held?: boolean
     }
+  /** `tags` is the subject's full set after the change, so a caller sees the result. */
+  | { t: 'tag_result'; ok: boolean; reason?: string; subject?: string; tags: SessionTag[] }
   | { t: 'inbox_result'; messages: DeliveredMessage[] }
   | { t: 'queue_result'; items: QueueItem[] }
   | { t: 'answer_result'; ok: boolean; reason?: string }

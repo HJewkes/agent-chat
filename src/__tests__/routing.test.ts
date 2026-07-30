@@ -574,3 +574,48 @@ describe('do not disturb', () => {
     expect(ivan.inbox.at(-1)?.content).toBe('your user needs you')
   })
 })
+
+/**
+ * CC-13 end to end: the motivating case, which is three sessions that had to
+ * negotiate "who owns src" by hand over broadcast because there was no way to
+ * query it or address it.
+ */
+describe('session tags', () => {
+  it('tags a session, shows it with attribution, and delivers to whoever carries it', async () => {
+    const dana = await startSession('dana')
+    await call(dana, 'chat_register', { name: 'dana', working_on: 'the src tree' })
+
+    const quiet = carol.inbox.length
+    await call(dana, 'chat_tag', { add: ['owner:src'] })
+    // A peer's label on someone else, which must be visibly a peer's label.
+    await call(alice, 'chat_tag', { target: 'carol', add: ['owner:src'] })
+    await settle()
+
+    // No push, by design: a peer's label must not lengthen carol's turn. She
+    // learns about it the next time she looks, and not before.
+    expect(carol.inbox).toHaveLength(quiet)
+
+    const roster = await call(carol, 'chat_list')
+    expect(roster).toContain('tags: owner:src (self)')
+    expect(roster).toMatch(/tags: owner:src \(by alice, \d+[sm] ago\)/)
+
+    const sent = await call(bob, 'chat_send', { to_tag: 'owner:src', text: 'rebase before you push' })
+    await settle()
+
+    expect(sent).toContain('Tag "owner:src"')
+    expect(sent).toContain('2 of 2')
+    expect(carol.inbox.at(-1)?.content).toBe('rebase before you push')
+    expect(dana.inbox.at(-1)?.content).toBe('rebase before you push')
+
+    // The mutation is in the log without a new EventKind, on the SUBJECT's trail
+    // rather than in the human's queue.
+    expect(await call(bob, 'chat_activity', { name: 'carol' })).toContain('notice')
+
+    const missing = await call(bob, 'chat_send', { to_tag: 'owner:tests', text: 'anyone?' })
+    expect(missing).toContain('no session carries tag "owner:tests"')
+
+    // Carol owns her own presence and may drop a label a peer applied.
+    expect(await call(carol, 'chat_tag', { remove: ['owner:src'] })).toContain('no tags')
+    await call(dana, 'chat_tag', { remove: ['owner:src'] })
+  })
+})

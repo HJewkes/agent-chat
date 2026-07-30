@@ -136,6 +136,37 @@ things before its first turn rather than depending on the model remembering to s
 
 ---
 
+## 5a. Tags: addressing a role instead of a name (CC-13)
+
+`chat_tag` puts a short label on you, or on a peer. `chat_list` shows every session's tags with
+**who applied them** — `owner:src (by cc-main, 4m ago)` is somebody else's label, `stale (self)`
+is that session's own claim. `chat_send` with `to_tag` delivers to everyone carrying one, through
+the same fanout path and the same budget a multicast pays, and a tag **nobody carries fails** —
+it is never an `ok` that quietly reached no one.
+
+The case it exists for: three sessions negotiating "cc-relay owns `src/**`, cc2-relay owns
+`docs/**`, cc-main verifies" over broadcast, with no way afterwards to ask who owns `src` or to
+tell them something.
+
+Four things worth knowing before using it:
+
+- **A tag is never authorization.** Any session can tag itself `owner:src`, `lead` or `approved`.
+  A tag records a claim about who is doing what; nothing on this bus treats it as ownership,
+  priority, or permission. Weigh it exactly as you would the same words in a message.
+- **Tagging a peer does not notify it.** No push, no interrupted turn — it sees the label on its
+  next `chat_list`. Tagging is also not assigning: if you want a peer to do something, say so in
+  a message.
+- **Removal.** You may remove any tag on yourself, including one a peer applied — you own your
+  own presence. On a peer you may remove only tags **you** applied.
+- **Teleport carries self-declared tags only.** A peer's label does not follow you onto a new
+  identity, because arriving there it would be indistinguishable from your own declaration.
+
+Caps, because a tag is a write into every peer's `chat_list`: 16 tags per session, 32 characters
+each, `A-Z a-z 0-9 _ : . -` only, and 32 tags total per applier across the bus. All rejected at
+the tool boundary rather than truncated.
+
+---
+
 ## 6. Relaying a decision: `chat_endorse`
 
 A peer relaying what a human wants is **not** that human's authority over another agent's work.

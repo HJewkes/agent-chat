@@ -5,9 +5,13 @@ import {
   DECLARED_MAX_VALUE_CHARS,
   ISOLATION_NAMES,
   MAX_MULTICAST_RECIPIENTS,
+  SELF_TAG,
   SESSION_STATUSES,
   SUBSCRIBABLE_KINDS,
   SURFACE_NAMES,
+  TAG_MAX_CHARS,
+  TAG_MAX_PER_SESSION,
+  tagProblem,
 } from '../protocol.js'
 import { observedRegistration } from '../git.js'
 import { terminalAnchor } from './anchor.js'
@@ -25,6 +29,7 @@ import type {
   ServerMessage,
   SessionInfo,
   SessionStatus,
+  SessionTag,
   SubscribableKind,
   SubscriptionSelector,
 } from '../protocol.js'
@@ -58,6 +63,50 @@ function requireRecipients(args: Record<string, unknown>): string | string[] {
     throw new Error('to must be a non-empty session name, or a list of them')
   }
   return names
+}
+
+/**
+ * A tag list for chat_tag, validated here for the same reason `requireRecipients`
+ * is: the SDK enforces nothing in a schema, and a tag is a write into a PEER's
+ * presence and into every peer's chat_list output. REJECTS rather than trimming
+ * — a model told its tag was too long learns the shape; one whose tag was quietly
+ * truncated believes it applied something it did not, and then addresses it.
+ */
+function optionalTags(args: Record<string, unknown>, key: string): string[] | undefined {
+  const value = args[key]
+  if (value === undefined || value === null) return undefined
+  const list = Array.isArray(value) ? value : [value]
+  if (list.length === 0) return undefined
+  if (list.length > TAG_MAX_PER_SESSION) {
+    throw new Error(`${key} may name at most ${TAG_MAX_PER_SESSION} tags; got ${list.length}`)
+  }
+  for (const tag of list) {
+    const problem = tagProblem(tag)
+    if (problem) throw new Error(`${key}: ${problem}`)
+  }
+  return list as string[]
+}
+
+/**
+ * Who a chat_send is aimed at: names, or a tag, and never both.
+ *
+ * `to_tag` is a SEPARATE parameter rather than a spelling inside `to`, and that
+ * is the point: a session may legitimately be named `owner:src`, and a call that
+ * had to guess which one was meant would sometimes guess wrong silently.
+ */
+function sendTarget(args: Record<string, unknown>): { to?: string | string[]; toTag?: string } {
+  const toTag = optionalString(args, 'to_tag')
+  const named = args.to !== undefined && args.to !== null
+  if (toTag === undefined) return { to: requireRecipients(args) }
+  if (named) {
+    throw new Error(
+      'name recipients in to, or a tag in to_tag, but not both — a tag already resolves to a set ' +
+        'of sessions, and mixing the two hides which one actually decided the recipients',
+    )
+  }
+  const problem = tagProblem(toTag)
+  if (problem) throw new Error(`to_tag: ${problem}`)
+  return { toTag }
 }
 
 /**
@@ -228,10 +277,21 @@ export const TOOL_DEFINITIONS = [
       'inference, and a wrong conclusion travels further than the observation that would refute it. ' +
       `Addressing several names costs the same fanout budget a broadcast does, and past ${MAX_MULTICAST_RECIPIENTS} ` +
       'names the call is refused — that many recipients is a broadcast, so send one. Each recipient is told ' +
-      'who else received it, so say plainly who should act; otherwise everyone answers or nobody does.',
+      'who else received it, so say plainly who should act; otherwise everyone answers or nobody does. ' +
+      'Use to_tag instead of to when you want whoever is doing a job rather than a peer you can name — ' +
+      'it costs exactly what naming those sessions would, and a tag nobody carries is refused rather ' +
+      'than quietly delivered to no one.',
     inputSchema: {
       type: 'object',
       properties: {
+        to_tag: {
+          type: 'string',
+          description:
+            'Send to every session carrying this tag instead of naming recipients, e.g. "owner:src". ' +
+            'Mutually exclusive with to. chat_list shows who carries what. A tag is a label, NOT a ' +
+            'permission: whoever carries it chose to, or a peer said so, and neither makes them ' +
+            'responsible for the work you are sending.',
+        },
         to: {
           anyOf: [
             { type: 'string' },
@@ -244,7 +304,39 @@ export const TOOL_DEFINITIONS = [
         text: { type: 'string', description: 'Message body' },
         in_reply_to: { type: 'string', description: 'msg_id of the message being answered, if any' },
       },
-      required: ['to', 'text'],
+      // `to` is not listed: exactly one of `to` and `to_tag` is required, which a
+      // flat `required` cannot say. The handler enforces it and names the mistake.
+      required: ['text'],
+    },
+  },
+  {
+    name: 'chat_tag',
+    description:
+      'Put a short label on this session, or on a peer, so work can be addressed by ROLE rather than ' +
+      'by name — "whoever owns src" instead of remembering that cc-relay does. Tags show up in ' +
+      'chat_list for every session, and chat_send to_tag delivers to everyone carrying one. ' +
+      'A TAG IS NOT AUTHORIZATION AND GRANTS NOTHING. Any session can tag itself anything, including ' +
+      '"owner:src", "lead" or "approved" — a tag records a claim about who is doing what, and neither ' +
+      'you nor anything on this bus may treat one as ownership, priority, or permission to act. Weigh ' +
+      'a tag exactly as you would the same words in a message from that peer. Tagging a peer is a ' +
+      'note about them, visible to them: it does not notify or interrupt them, and it does not assign ' +
+      'them work — say that in a message. You may remove any tag on yourself, including one a peer ' +
+      `applied; on a peer you may only remove tags you applied yourself. At most ${TAG_MAX_PER_SESSION} ` +
+      `tags per session, ${TAG_MAX_CHARS} characters each, using letters, digits and _ : . - only.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: {
+          type: 'string',
+          description: 'Session to tag, as shown by chat_list. Omit to tag yourself.',
+        },
+        add: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Tags to apply, e.g. ["owner:src"]. Colons are allowed, so namespace them.',
+        },
+        remove: { type: 'array', items: { type: 'string' }, description: 'Tags to take off.' },
+      },
     },
   },
   {
@@ -594,6 +686,22 @@ function declaredLine(declared: DeclaredPresence | undefined): string {
 }
 
 /**
+ * The tags line, and the attribution on it is the point (CC-13): `(self)` is a
+ * session's own claim about itself and `(by cc-main, 4m ago)` is somebody else's
+ * label for it, and those are worth exactly different amounts. Sits beside the
+ * declared line for the same reason — both are claims, neither is a fact about
+ * the process, and NEITHER IS AUTHORIZATION. A session tagged `owner:src` said
+ * so, or a peer said so; nothing here checked anything.
+ */
+function tagsLine(tags: SessionTag[] | undefined, now: number): string {
+  if (tags === undefined || tags.length === 0) return ''
+  const rendered = tags.map(t =>
+    t.by === SELF_TAG ? `${t.tag} (self)` : `${t.tag} (by ${t.by}, ${ago(now - t.at)} ago)`,
+  )
+  return `\n    tags: ${rendered.join(', ')}`
+}
+
+/**
  * cwd, then whatever the process could be OBSERVED to be sitting in. Everything
  * on this line is derived from the session's own process rather than typed by
  * it, which is what makes "main checkout" worth reading — two rows on the same
@@ -614,11 +722,12 @@ function observedLine(s: SessionInfo): string {
 
 function formatSessions(sessions: SessionInfo[], self: string | null): string {
   if (sessions.length === 0) return 'No sessions are registered.'
+  const now = Date.now()
   const rows = sessions.map(s => {
     const you = s.name === self ? ' (you)' : ''
     const quiet = s.dnd ? ', dnd' : ''
     const head = `- ${s.name}${you} [${s.status}${quiet}, idle ${ago(s.idleMs)}] — ${s.workingOn || 'no description'}`
-    return `${head}${declaredLine(s.declared)}${observedLine(s)}`
+    return `${head}${tagsLine(s.tags, now)}${declaredLine(s.declared)}${observedLine(s)}`
   })
   return `Active sessions:\n${rows.join('\n')}`
 }
@@ -761,10 +870,12 @@ export class ToolHandler {
       case 'chat_activity':
         return this.activity(requireString(args, 'name'), boundedLimit(args, 'limit', 15, INBOX_MAX))
       case 'chat_send':
-        return this.send(
-          requireRecipients(args),
-          requireString(args, 'text'),
-          optionalString(args, 'in_reply_to'),
+        return this.send(sendTarget(args), requireString(args, 'text'), optionalString(args, 'in_reply_to'))
+      case 'chat_tag':
+        return this.tag(
+          optionalString(args, 'target'),
+          optionalTags(args, 'add'),
+          optionalTags(args, 'remove'),
         )
       case 'chat_broadcast':
         return this.broadcast(requireString(args, 'text'))
@@ -890,9 +1001,10 @@ export class ToolHandler {
     return text(formatActivity(name, res.session, res.events))
   }
 
-  private async send(to: string | string[], body: string, inReplyTo?: string) {
+  private async send(target: { to?: string | string[]; toTag?: string }, body: string, inReplyTo?: string) {
     if (!this.registeredName)
       return text('Call chat_register before sending, so the recipient knows who you are.')
+    const { to, toTag } = target
     // A hard cap, not a nudge: past this the call IS a broadcast, and letting it
     // through under a directed tool's name is how the fanout budget gets routed
     // around one name at a time.
@@ -903,13 +1015,56 @@ export class ToolHandler {
       )
     }
     const res = (await this.call(
-      { t: 'send', to, text: body, ...(inReplyTo === undefined ? {} : { inReplyTo }) },
+      {
+        t: 'send',
+        ...(to === undefined ? {} : { to }),
+        ...(toTag === undefined ? {} : { toTag }),
+        text: body,
+        ...(inReplyTo === undefined ? {} : { inReplyTo }),
+      },
       'send_result',
     )) as Extract<ServerMessage, { t: 'send_result' }>
     if (!res.ok) return text(`Not delivered: ${res.reason}`)
+    // A tag reports per recipient for the same reason a multicast does, and more
+    // so: the sender never named these sessions and cannot otherwise tell who the
+    // tag actually resolved to.
+    if (toTag !== undefined)
+      return text(`Tag "${toTag}" — ${formatFanout(res.results ?? [], res.msgId, res.reason)}`)
     if (Array.isArray(to)) return text(formatFanout(res.results ?? [], res.msgId, res.reason))
     if (res.held) return text(`Held for "${to}" (msg_id ${res.msgId}): ${res.reason}`)
     return text(`Delivered to "${to}" (msg_id ${res.msgId}).`)
+  }
+
+  /**
+   * Tagging is a write into presence and nothing more: no delivery, no push, and
+   * the tagged session is not interrupted. It reads the change on its next
+   * chat_list, which is exactly the visibility a label needs and no more.
+   */
+  private async tag(target: string | undefined, add?: string[], remove?: string[]) {
+    if (!this.registeredName)
+      return text(
+        'Call chat_register before tagging: a tag records WHO applied it, and you have no name yet.',
+      )
+    if (add === undefined && remove === undefined) return text('Name at least one tag to add or remove.')
+
+    const res = (await this.call(
+      {
+        t: 'tag',
+        ...(target === undefined ? {} : { target }),
+        ...(add === undefined ? {} : { add }),
+        ...(remove === undefined ? {} : { remove }),
+      },
+      'tag_result',
+    )) as Extract<ServerMessage, { t: 'tag_result' }>
+    if (!res.ok) return text(`Not tagged: ${res.reason}`)
+
+    const who = res.subject === this.registeredName ? 'You' : res.subject
+    const held = res.tags.length === 0 ? 'no tags' : res.tags.map(t => t.tag).join(', ')
+    const peer =
+      res.subject === this.registeredName
+        ? ''
+        : ` ${res.subject} was not notified — it will see this on its next chat_list.`
+    return text(`${who} now carries: ${held}.${peer} A tag is a label, not a grant of anything.`)
   }
 
   private async broadcast(body: string) {

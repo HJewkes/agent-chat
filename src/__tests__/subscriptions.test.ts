@@ -159,7 +159,7 @@ describe('managing subscriptions', () => {
     register(registry, watcher, 'watcher', { tags: ['team'], subscriptions: watch('registered') })
     register(registry, watcher, 'watcher')
 
-    expect(registry.tagsOf(watcher)).toEqual(['team'])
+    expect(registry.tagsOf(watcher).map(t => t.tag)).toEqual(['team'])
     expect(registry.subscribersFor({ kind: 'registered', subject: 'other' })).toEqual([watcher])
   })
 })

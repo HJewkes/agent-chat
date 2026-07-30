@@ -596,3 +596,267 @@ describe('Registry do-not-disturb', () => {
     expect(registry.send(alice, 'bob', 'back?').deliveries[0]?.live).toBe(true)
   })
 })
+
+/**
+ * CC-13 — session tags. The motivating case is three sessions negotiating
+ * "cc-relay owns src/**, cc2-relay owns docs/**" by hand over broadcast, with no
+ * way to query or address "whoever owns src". So what has to hold is that a tag
+ * is addressable, that WHO applied it is resolved by the broker rather than
+ * claimed, and that a tag never becomes a way to spend somebody else's presence.
+ */
+describe('Session tags', () => {
+  const trio = (now: () => number = () => 0) => {
+    const registry = new Registry<object>(now)
+    const [alice, bob, carol] = [conn('a'), conn('b'), conn('c')]
+    register(registry, alice, 'alice')
+    register(registry, bob, 'bob')
+    register(registry, carol, 'carol')
+    return { registry, alice, bob, carol }
+  }
+
+  it('adds and removes a tag on the caller, attributed to self', () => {
+    const { registry, alice } = trio()
+
+    expect(registry.applyTags(alice, { add: ['owner:src'] }).ok).toBe(true)
+    expect(registry.tagsOf(alice)).toEqual([{ tag: 'owner:src', by: 'self', at: 0 }])
+
+    expect(registry.applyTags(alice, { remove: ['owner:src'] }).ok).toBe(true)
+    expect(registry.tagsOf(alice)).toEqual([])
+  })
+
+  /**
+   * The attribution is the security-relevant half of a tag: the frame carries no
+   * `by` field at all, and the broker writes the applier's OWN registered name.
+   * A peer's label can therefore never be forged into a self-declaration, nor
+   * attributed to a third session that had nothing to do with it.
+   */
+  it('resolves who applied a peer tag from the connection, never from the request', () => {
+    const { registry, alice, bob } = trio()
+
+    registry.applyTags(alice, { target: 'bob', add: ['reviewer'] })
+
+    expect(registry.tagsOf(bob)).toEqual([{ tag: 'reviewer', by: 'alice', at: 0 }])
+  })
+
+  it('refuses a tag from an unregistered connection, which has no name to attribute', () => {
+    const { registry } = trio()
+
+    expect(registry.applyTags(conn('ghost'), { add: ['owner:src'] }).ok).toBe(false)
+  })
+
+  it('lets a session remove any tag on itself, including one a peer applied', () => {
+    const { registry, alice, bob } = trio()
+    registry.applyTags(alice, { target: 'bob', add: ['stale'] })
+
+    expect(registry.applyTags(bob, { remove: ['stale'] }).ok).toBe(true)
+    expect(registry.tagsOf(bob)).toEqual([])
+  })
+
+  /**
+   * Stops cc-relay stripping a label a THIRD party put on cc2-relay, which is
+   * the quiet way to undo someone else's coordination with nobody watching.
+   */
+  it('lets a peer remove only the tags it applied itself', () => {
+    const { registry, alice, bob, carol } = trio()
+    registry.applyTags(alice, { target: 'carol', add: ['owner:docs'] })
+    registry.applyTags(bob, { target: 'carol', add: ['reviewer'] })
+
+    const refused = registry.applyTags(bob, { target: 'carol', remove: ['owner:docs'] })
+    expect(refused.ok).toBe(false)
+    expect(refused.reason).toContain('applied by alice')
+    expect(registry.tagsOf(carol).map(t => t.tag)).toEqual(['owner:docs', 'reviewer'])
+
+    expect(registry.applyTags(bob, { target: 'carol', remove: ['reviewer'] }).ok).toBe(true)
+    expect(registry.tagsOf(carol).map(t => t.tag)).toEqual(['owner:docs'])
+  })
+
+  it('refuses to tag a session that is not registered', () => {
+    const { registry, alice } = trio()
+
+    expect(registry.applyTags(alice, { target: 'dave', add: ['owner:src'] }).ok).toBe(false)
+  })
+
+  it('keeps tags across a re-register that omits them, and re-declares the ones it sends', () => {
+    const { registry, alice, bob } = trio()
+    registry.applyTags(alice, { add: ['owner:src'] })
+    registry.applyTags(bob, { target: 'alice', add: ['reviewer'] })
+
+    register(registry, alice, 'alice')
+    expect(registry.tagsOf(alice).map(t => t.tag)).toEqual(['owner:src', 'reviewer'])
+  })
+
+  /**
+   * HUMAN DECISION: peer-applied tags do NOT survive a teleport. Carrying one
+   * across would land it on a fresh identity as `by: 'self'`, which is a peer's
+   * label laundered into the successor's own declaration.
+   */
+  it('offers only self-declared tags for a teleport to carry across', () => {
+    const { registry, alice, bob } = trio()
+    registry.applyTags(alice, { add: ['owner:src'] })
+    registry.applyTags(bob, { target: 'alice', add: ['slow'] })
+
+    expect(registry.tagsOf(alice).map(t => t.tag)).toEqual(['owner:src', 'slow'])
+    expect(registry.selfTagsOf(alice)).toEqual(['owner:src'])
+  })
+
+  it('publishes tags with attribution on the roster, so a session sees its own labels', () => {
+    const { registry, alice, bob } = trio()
+    registry.applyTags(bob, { target: 'alice', add: ['owner:src'] })
+
+    const listed = registry.list().find(s => s.name === 'alice')
+    expect(listed?.tags).toEqual([{ tag: 'owner:src', by: 'bob', at: 0 }])
+    // Omitted rather than empty, exactly as `declared` is.
+    expect(registry.list().find(s => s.name === 'carol')?.tags).toBeUndefined()
+  })
+})
+
+describe('Tag addressing', () => {
+  const team = () => {
+    const registry = new Registry<object>(() => 0)
+    const [alice, bob, carol] = [conn('a'), conn('b'), conn('c')]
+    register(registry, alice, 'alice')
+    register(registry, bob, 'bob')
+    register(registry, carol, 'carol')
+    registry.applyTags(bob, { add: ['owner:src'] })
+    registry.applyTags(alice, { target: 'carol', add: ['owner:src'] })
+    return { registry, alice, bob, carol }
+  }
+
+  /** Peer-applied tags match too — "whoever owns src" is a question about the label. */
+  it('routes to every session carrying the tag, however the tag got there', () => {
+    const { registry, alice } = team()
+
+    const result = registry.multicastTag(alice, 'owner:src', 'rebase before you push')
+
+    expect(result.ok).toBe(true)
+    expect(result.recipients.sort()).toEqual(['bob', 'carol'])
+    // Straight off CC-10's machinery: each recipient is told who else has it.
+    expect(result.deliveries[0]?.message.audience?.sort()).toEqual(['bob', 'carol'])
+    expect(result.results.map(r => r.status)).toEqual(['delivered', 'delivered'])
+  })
+
+  it('reports per recipient, so a quiet peer is held rather than hidden', () => {
+    const { registry, alice, bob } = team()
+    registry.setStatus(bob, 'working', undefined, true)
+
+    const result = registry.multicastTag(alice, 'owner:src', 'rebase before you push')
+
+    expect(result.results.find(r => r.name === 'bob')?.status).toBe('held')
+    expect(result.results.find(r => r.name === 'carol')?.status).toBe('delivered')
+  })
+
+  /**
+   * The worst available outcome here is a call that looks delivered and reached
+   * nobody: the sender goes on believing the work was handed off.
+   */
+  it('fails a tag nothing carries rather than answering ok with no recipients', () => {
+    const { registry, alice } = team()
+
+    const result = registry.multicastTag(alice, 'owner:tests', 'who has this?')
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain('no session carries tag "owner:tests"')
+    expect(result.deliveries).toHaveLength(0)
+  })
+
+  it('fails rather than echoing when the sender is the only carrier', () => {
+    const { registry, alice } = team()
+    registry.applyTags(alice, { add: ['solo'] })
+
+    const result = registry.multicastTag(alice, 'solo', 'anyone?')
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain('only session carrying')
+  })
+
+  /**
+   * A tag is a way of NAMING recipients, not a cheaper fanout — otherwise
+   * "tag everyone, then address the tag" is a one-line bypass of the only
+   * control this bus has against exactly the traffic it was built to catch.
+   */
+  it('charges the tag route the same fanout budget a multicast pays', () => {
+    const { registry, alice } = team()
+    const big = 'x'.repeat(5000)
+
+    registry.multicastTag(alice, 'owner:src', big)
+    expect(registry.multicastTag(alice, 'owner:src', big).suppressLive).toBe(true)
+  })
+
+  it('spends the same ledger a multicast does, so alternating the two is not a way round it', () => {
+    const { registry, alice } = team()
+    const big = 'x'.repeat(5000)
+
+    registry.multicast(alice, ['bob', 'carol'], big)
+    expect(registry.multicastTag(alice, 'owner:src', big).suppressLive).toBe(true)
+  })
+})
+
+describe('Tag budgets', () => {
+  const solo = () => {
+    const registry = new Registry<object>(() => 0)
+    const alice = conn('a')
+    register(registry, alice, 'alice')
+    return { registry, alice }
+  }
+
+  it('refuses a seventeenth tag rather than silently dropping it', () => {
+    const { registry, alice } = solo()
+    const sixteen = Array.from({ length: 16 }, (_, i) => `t${i}`)
+
+    expect(registry.applyTags(alice, { add: sixteen }).ok).toBe(true)
+    const over = registry.applyTags(alice, { add: ['one-too-many'] })
+    expect(over.ok).toBe(false)
+    expect(over.reason).toContain('16 tags')
+    expect(registry.tagsOf(alice)).toHaveLength(16)
+  })
+
+  it('refuses an over-long tag and one with characters a tag may not use', () => {
+    const { registry, alice } = solo()
+
+    expect(registry.applyTags(alice, { add: ['x'.repeat(33)] }).ok).toBe(false)
+    expect(registry.applyTags(alice, { add: ['owner of src'] }).ok).toBe(false)
+    expect(registry.applyTags(alice, { add: ['owner/src'] }).ok).toBe(false)
+    expect(registry.tagsOf(alice)).toEqual([])
+    // The permitted shape, stated by example: namespacing is the whole point.
+    expect(registry.applyTags(alice, { add: ['owner:src.v2-1_a'] }).ok).toBe(true)
+  })
+
+  /** One agent must not be able to put a line on every row of everyone's chat_list. */
+  it('caps how many tags one applier may place across the whole bus', () => {
+    const registry = new Registry<object>(() => 0)
+    const alice = conn('a')
+    register(registry, alice, 'alice')
+    for (let i = 0; i < 4; i += 1) {
+      const peer = conn(`p${i}`)
+      register(registry, peer, `peer${i}`)
+      // 4 peers x 8 tags = 32, which is the per-applier limit.
+      registry.applyTags(alice, {
+        target: `peer${i}`,
+        add: Array.from({ length: 8 }, (_, n) => `t${i}-${n}`),
+      })
+    }
+
+    const over = registry.applyTags(alice, { add: ['mine'] })
+    expect(over.ok).toBe(false)
+    expect(over.reason).toContain('across this bus')
+  })
+
+  /**
+   * A registration answers ok/reason about the NAME, so a malformed tag is
+   * dropped there rather than costing a session the bus — the same split
+   * `sanitizeDeclared` makes against the tool boundary's rejection.
+   */
+  it('clamps rather than rejects tags arriving on a registration', () => {
+    const registry = new Registry<object>(() => 0)
+    const alice = conn('a')
+    registry.register(alice, {
+      name: 'alice',
+      workingOn: 'w',
+      cwd: '/tmp',
+      pid: 1,
+      tags: ['owner:src', 'not a tag', 'x'.repeat(40)],
+    })
+
+    expect(registry.tagsOf(alice)).toEqual([{ tag: 'owner:src', by: 'self', at: 0 }])
+  })
+})
