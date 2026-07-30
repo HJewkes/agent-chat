@@ -96,6 +96,199 @@ describe('Registry routing', () => {
   })
 })
 
+describe('Registry multicast', () => {
+  const quartet = (now: () => number = Date.now) => {
+    const registry = new Registry<object>(now)
+    const [alice, bob, carol, dave] = [conn('a'), conn('b'), conn('c'), conn('d')]
+    register(registry, alice, 'alice')
+    register(registry, bob, 'bob')
+    register(registry, carol, 'carol')
+    register(registry, dave, 'dave')
+    return { registry, alice, bob, carol, dave }
+  }
+
+  it('delivers to exactly the named sessions and nobody else', () => {
+    const { registry, alice, bob, carol } = quartet()
+
+    const result = registry.multicast(alice, ['bob', 'carol'], 'standup in five')
+
+    expect(result.ok).toBe(true)
+    expect(result.recipients).toEqual(['bob', 'carol'])
+    expect(result.deliveries.map(d => d.conn).sort()).toEqual([bob, carol].sort())
+    expect(result.results).toEqual([
+      { name: 'bob', status: 'delivered' },
+      { name: 'carol', status: 'delivered' },
+    ])
+  })
+
+  it('sends ONE message, so replies thread and depth accounting stays coherent', () => {
+    const { registry, alice } = quartet()
+
+    const result = registry.multicast(alice, ['bob', 'carol'], 'standup in five')
+
+    const ids = new Set(result.deliveries.map(d => d.message.msgId))
+    expect([...ids]).toEqual([result.msgId])
+  })
+
+  it('tells each recipient who else was addressed', () => {
+    const { registry, alice } = quartet()
+
+    const result = registry.multicast(alice, ['bob', 'carol'], 'standup in five')
+
+    expect(result.deliveries[0]?.message.audience).toEqual(['bob', 'carol'])
+    // Not a broadcast: recipients must not read it as "everyone already knows".
+    expect(result.deliveries[0]?.message.broadcast).toBeUndefined()
+  })
+
+  it('leaves a directed send and a broadcast without an audience', () => {
+    const { registry, alice } = quartet()
+
+    expect(registry.send(alice, 'bob', 'just you').deliveries[0]?.message.audience).toBeUndefined()
+    expect(registry.broadcast(alice, 'everyone').deliveries[0]?.message.audience).toBeUndefined()
+    // One resolvable name IS a directed send, whatever the caller spelled.
+    expect(registry.multicast(alice, ['bob'], 'just you').deliveries[0]?.message.audience).toBeUndefined()
+  })
+
+  it('reports an unknown name per recipient rather than failing the whole call', () => {
+    const { registry, alice, bob } = quartet()
+
+    const result = registry.multicast(alice, ['bob', 'gamma'], 'heads up')
+
+    expect(result.ok).toBe(true)
+    expect(result.recipients).toEqual(['bob'])
+    expect(result.deliveries.map(d => d.conn)).toEqual([bob])
+    expect(result.results).toEqual([
+      { name: 'bob', status: 'delivered' },
+      { name: 'gamma', status: 'no_such_session', reason: 'no active session named "gamma"' },
+    ])
+  })
+
+  it('reports the sender addressing itself without dropping the rest', () => {
+    const { registry, alice } = quartet()
+
+    const result = registry.multicast(alice, ['alice', 'bob'], 'heads up')
+
+    expect(result.ok).toBe(true)
+    expect(result.results[0]).toMatchObject({ name: 'alice', status: 'self' })
+    expect(result.recipients).toEqual(['bob'])
+  })
+
+  it('fails only when nobody could take it', () => {
+    const { registry, alice } = quartet()
+
+    const result = registry.multicast(alice, ['gamma', 'delta'], 'anyone?')
+
+    expect(result.ok).toBe(false)
+    expect(result.deliveries).toHaveLength(0)
+    expect(result.results.map(r => r.status)).toEqual(['no_such_session', 'no_such_session'])
+  })
+
+  it('holds per recipient for do-not-disturb, exactly as a broadcast does', () => {
+    const { registry, alice, bob } = quartet()
+    registry.setStatus(bob, 'working', undefined, true)
+
+    const result = registry.multicast(alice, ['bob', 'carol'], 'standup in five')
+
+    expect(result.results).toEqual([
+      { name: 'bob', status: 'held' },
+      { name: 'carol', status: 'delivered' },
+    ])
+    const byName = new Map(result.deliveries.map(d => [registry.nameOf(d.conn), d.live]))
+    expect(byName.get('bob')).toBe(false)
+    expect(byName.get('carol')).toBe(true)
+  })
+
+  it('collapses a name addressed twice, so a typo cannot double-charge a peer', () => {
+    const { registry, alice } = quartet()
+
+    const result = registry.multicast(alice, ['bob', 'bob'], 'once please')
+
+    expect(result.recipients).toEqual(['bob'])
+    expect(result.deliveries).toHaveLength(1)
+  })
+
+  it('carries in_reply_to and thread depth like any other message', () => {
+    const { registry, alice, bob } = quartet()
+    const first = registry.send(bob, 'alice', 'what next?')
+
+    const answer = registry.multicast(alice, ['bob', 'carol'], 'this next', first.msgId)
+
+    expect(answer.deliveries[0]?.message.inReplyTo).toBe(first.msgId)
+    expect(answer.deliveries[0]?.message.threadDepth).toBe(2)
+  })
+
+  it('refuses a recipient the sender has already hit the rate limit with', () => {
+    const { registry, alice } = quartet()
+    for (let i = 0; i < 20; i++) registry.send(alice, 'bob', `fresh thread ${i}`)
+
+    const result = registry.multicast(alice, ['bob', 'carol'], 'and one more')
+
+    expect(result.results[0]).toMatchObject({ name: 'bob', status: 'refused' })
+    expect(result.recipients).toEqual(['carol'])
+  })
+})
+
+/**
+ * The anti-bypass property, and the reason multicast could not simply skip the
+ * fanout budget: without this, naming every registered session in one chat_send
+ * is a broadcast that costs nothing, and the only control this bus has against
+ * the traffic it was built to catch is one argument away from irrelevant.
+ */
+describe('Registry multicast fanout budget', () => {
+  const quartet = (now: () => number) => {
+    const registry = new Registry<object>(now)
+    const [alice, bob, carol, dave] = [conn('a'), conn('b'), conn('c'), conn('d')]
+    register(registry, alice, 'alice')
+    register(registry, bob, 'bob')
+    register(registry, carol, 'carol')
+    register(registry, dave, 'dave')
+    return { registry, alice }
+  }
+
+  const big = 'x'.repeat(5000)
+
+  it('charges a multicast the same amplified bytes a broadcast pays', () => {
+    const { registry, alice } = quartet(() => 0)
+
+    registry.multicast(alice, ['bob', 'carol', 'dave'], big)
+    const second = registry.multicast(alice, ['bob', 'carol', 'dave'], big)
+
+    expect(second.suppressLive).toBe(true)
+    // Held, not lost: every addressee still has it in their inbox.
+    expect(second.deliveries).toHaveLength(3)
+    expect(second.reason).toContain('inbox')
+  })
+
+  it('spends the SAME ledger as broadcast, so alternating the two is not a way round it', () => {
+    const { registry, alice } = quartet(() => 0)
+
+    registry.broadcast(alice, big)
+    expect(registry.multicast(alice, ['bob', 'carol', 'dave'], big).suppressLive).toBe(true)
+  })
+
+  it('leaves a two-name multicast charged and a one-name one free', () => {
+    const { registry, alice } = quartet(() => 0)
+
+    // 5000 bytes x 2 recipients, twice, is past the 16k budget.
+    registry.multicast(alice, ['bob', 'carol'], big)
+    expect(registry.multicast(alice, ['bob', 'carol'], big).suppressLive).toBe(true)
+    // A single recipient is a directed message and is never throttled.
+    expect(registry.multicast(alice, ['dave'], big).suppressLive).toBeFalsy()
+    expect(registry.send(alice, 'dave', big).suppressLive).toBeFalsy()
+  })
+
+  it('lets the budget recover once the window has passed', () => {
+    let clock = 0
+    const { registry, alice } = quartet(() => clock)
+    registry.multicast(alice, ['bob', 'carol', 'dave'], big)
+    expect(registry.multicast(alice, ['bob', 'carol', 'dave'], big).suppressLive).toBe(true)
+
+    clock += 61_000
+
+    expect(registry.multicast(alice, ['bob', 'carol', 'dave'], big).suppressLive).toBeFalsy()
+  })
+})
+
 describe('Registry leases', () => {
   it('rejects a name held by a live session', () => {
     const registry = new Registry<object>()

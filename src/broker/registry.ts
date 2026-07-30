@@ -3,6 +3,7 @@ import {
   RESERVED_NAMES,
   SUBSCRIBABLE_KINDS,
   type DeliveredMessage,
+  type RecipientResult,
   type SessionInfo,
   type SessionStatus,
   type Subscription,
@@ -119,7 +120,14 @@ export interface Delivery<C> {
 export interface RouteResult<C> {
   ok: boolean
   msgId?: string
+  /** Everyone the message was routed to, live or held. Unchanged by CC-10. */
   recipients: string[]
+  /**
+   * One entry per name the sender ADDRESSED, so a multicast that missed one peer
+   * can say which. Additive alongside `recipients`, which several readers
+   * (cli.ts, the dashboard, the API contract) already depend on.
+   */
+  results: RecipientResult[]
   reason?: string
   deliveries: Delivery<C>[]
   /**
@@ -131,6 +139,22 @@ export interface RouteResult<C> {
   suppressLive?: boolean
   /** A stopped exchange the human should be told about, since neither peer will be. */
   escalate?: Escalation
+}
+
+/**
+ * What separates a send from a multicast from a broadcast, which is only ever
+ * which budgets apply and what the recipients are told about each other.
+ */
+interface RouteOptions {
+  inReplyTo?: string
+  /** Ordered-pair rate limiting. Off for a broadcast, which is not a conversation. */
+  chargePair: boolean
+  /** Recipient count from which the fanout budget applies; Infinity never charges. */
+  chargesFrom: number
+  /** Stamp `audience` on the delivered message, so recipients see who else has it. */
+  audience?: boolean
+  /** Mark the message as addressed to everyone. */
+  broadcast?: boolean
 }
 
 /**
@@ -182,14 +206,23 @@ const PAIR_WINDOW_MS = 10 * 60_000
 const PAIR_MAX_MESSAGES = 20
 
 /**
- * Broadcast budget, denominated in amplified bytes (payload x live recipients)
- * because fanout is the cost. On 2026-07-27 broadcasts were 3 of 17 messages but
- * 57% of all delivered bytes, so a message-count budget would have missed the
- * problem entirely. Directed messages are never throttled: broadcast is where
+ * Fanout budget, denominated in amplified bytes (payload x recipients) because
+ * fanout is the cost. On 2026-07-27 broadcasts were 3 of 17 messages but 57% of
+ * all delivered bytes, so a message-count budget would have missed the problem
+ * entirely. Messages to a single recipient are never throttled: fanout is where
  * the abuse lives, and starving a targeted request would break real work.
+ *
+ * A multicast of two or more names is charged the same way, and that is not a
+ * detail. If it were not, "list every registered name in one chat_send" would be
+ * a broadcast that costs nothing — a one-line bypass of the only control this
+ * bus has against exactly the traffic it was built to catch.
  */
-const BROADCAST_WINDOW_MS = 60_000
-const BROADCAST_BUDGET_BYTES = 16_000
+const FANOUT_WINDOW_MS = 60_000
+const FANOUT_BUDGET_BYTES = 16_000
+
+/** From how many recipients a route starts paying the fanout budget. */
+const BROADCAST_CHARGES_FROM = 1
+const MULTICAST_CHARGES_FROM = 2
 
 const newMsgId = (): string => randomUUID().slice(0, 8)
 
@@ -201,8 +234,8 @@ export class Registry<C> {
   private readonly entries = new Map<C, Entry>()
   /** msgId -> chain length, so a reply can find its parent's depth in O(1). */
   private readonly depths = new Map<string, number>()
-  /** Sender name -> recent broadcast spend, pruned to the current window on read. */
-  private readonly broadcastSpend = new Map<string, { at: number; bytes: number }[]>()
+  /** Sender name -> recent fanout spend, pruned to the current window on read. */
+  private readonly fanoutSpend = new Map<string, { at: number; bytes: number }[]>()
   /** "from -> to" -> send times, pruned on read. Ordered, so each way is its own budget. */
   private readonly pairSends = new Map<string, number[]>()
 
@@ -235,11 +268,11 @@ export class Registry<C> {
     return kept
   }
 
-  /** This sender's broadcast spend, pruned to the current window in place. */
-  private broadcastLedger(name: string): { at: number; bytes: number }[] {
-    const cutoff = this.now() - BROADCAST_WINDOW_MS
-    const kept = (this.broadcastSpend.get(name) ?? []).filter(s => s.at > cutoff)
-    this.broadcastSpend.set(name, kept)
+  /** This sender's fanout spend, pruned to the current window in place. */
+  private fanoutLedger(name: string): { at: number; bytes: number }[] {
+    const cutoff = this.now() - FANOUT_WINDOW_MS
+    const kept = (this.fanoutSpend.get(name) ?? []).filter(s => s.at > cutoff)
+    this.fanoutSpend.set(name, kept)
     return kept
   }
 
@@ -517,118 +550,220 @@ export class Registry<C> {
     }
   }
 
-  /** Routes to exactly one session, or to none if the name isn't registered. */
-  send(conn: C, to: string, text: string, inReplyTo?: string): RouteResult<C> {
-    const sender = this.entries.get(conn)
-    if (!sender) return { ok: false, recipients: [], reason: 'not registered', deliveries: [] }
-
-    const target = this.findByName(to)
-    if (!target)
-      return { ok: false, recipients: [], reason: `no active session named "${to}"`, deliveries: [] }
-    if (target[0] === conn)
-      return { ok: false, recipients: [], reason: 'cannot send to yourself', deliveries: [] }
-
-    // The breaker exists for the case nobody is watching: two agents that ignore
-    // the depth stamps would otherwise ping-pong indefinitely, burning tokens in
-    // both while the human sees only a routing log they are not tailing.
+  /**
+   * The depth breaker, which stops a whole route rather than one recipient: a
+   * thread is a property of the exchange, not of who happens to be on the list.
+   *
+   * It exists for the case nobody is watching. Two agents that ignore the depth
+   * stamps would otherwise ping-pong indefinitely, burning tokens in both while
+   * the human sees only a routing log they are not tailing.
+   */
+  private depthRefusal(from: string, targets: string[], inReplyTo?: string): RouteResult<C> | undefined {
     const depth = this.depthFor(inReplyTo)
-    if (depth >= THREAD_MAX_DEPTH) {
+    if (depth < THREAD_MAX_DEPTH) return undefined
+    const to = targets.join(', ')
+    return {
+      ok: false,
+      recipients: [],
+      results: targets.map(name => ({ name, status: 'refused' as const, reason: 'thread too deep' })),
+      reason:
+        `this reply would be depth ${depth}, past the limit of ${THREAD_MAX_DEPTH}. ` +
+        'The thread has been escalated to the human queue. Do not start a fresh thread ' +
+        'to continue it — wait for the human, who can see both sides.',
+      deliveries: [],
+      escalate: {
+        from,
+        to,
+        kind: 'thread_depth',
+        value: depth,
+        summary: `${from} and ${to} reached reply depth ${depth} and were stopped.`,
+      },
+    }
+  }
+
+  /**
+   * The ordered-pair rate limit for ONE recipient, charged on the way through so
+   * a route that is refused for some other reason costs the sender nothing.
+   */
+  private chargePair(from: string, to: string): { reason: string; escalate: Escalation } | undefined {
+    const pair = this.pairLedger(from, to)
+    if (pair.length < PAIR_MAX_MESSAGES) {
+      pair.push(this.now())
+      return undefined
+    }
+    const minutes = PAIR_WINDOW_MS / 60_000
+    return {
+      reason:
+        `you have sent ${to} ${pair.length} messages in ${minutes} minutes, which is the limit. ` +
+        'Starting a new thread does not reset this. The exchange has been escalated to the ' +
+        'human queue — wait for them rather than rephrasing and retrying.',
+      escalate: {
+        from,
+        to,
+        kind: 'exchange_rate',
+        value: pair.length,
+        summary:
+          `${from} sent ${to} ${pair.length} messages in ${minutes} minutes and was ` +
+          'stopped. They may be volleying across separate threads, which the depth limit cannot see.',
+      },
+    }
+  }
+
+  /**
+   * Turn addressed names into a per-name verdict and the entries that will
+   * actually receive something. Order is preserved so the sender reads its own
+   * list back; duplicates collapse, since addressing a peer twice is a typo and
+   * charging them twice for it would be a way to double a rate limit.
+   */
+  private resolveTargets(
+    conn: C,
+    from: string,
+    targets: string[],
+    chargePair: boolean,
+  ): { results: RecipientResult[]; hits: [C, Entry][]; escalate?: Escalation } {
+    const results: RecipientResult[] = []
+    const hits: [C, Entry][] = []
+    let escalate: Escalation | undefined
+    for (const name of [...new Set(targets)]) {
+      const found = this.findByName(name)
+      if (!found) {
+        results.push({ name, status: 'no_such_session', reason: `no active session named "${name}"` })
+        continue
+      }
+      if (found[0] === conn) {
+        results.push({ name, status: 'self', reason: 'cannot send to yourself' })
+        continue
+      }
+      const refused = chargePair ? this.chargePair(from, name) : undefined
+      if (refused) {
+        results.push({ name, status: 'refused', reason: refused.reason })
+        escalate ??= refused.escalate
+        continue
+      }
+      results.push({ name, status: found[1].dnd ? 'held' : 'delivered' })
+      hits.push(found)
+    }
+    return { results, hits, ...(escalate === undefined ? {} : { escalate }) }
+  }
+
+  /**
+   * Charge the fanout budget, returning the running total once it is blown.
+   *
+   * Charged even when the result is suppressed, or hitting the limit would make
+   * every subsequent fanout free — which is the opposite of a budget.
+   */
+  private chargeFanout(from: string, text: string, count: number, chargesFrom: number): number | undefined {
+    if (count < chargesFrom) return undefined
+    const amplified = Buffer.byteLength(text) * count
+    const ledger = this.fanoutLedger(from)
+    const spent = ledger.reduce((total, s) => total + s.bytes, 0)
+    ledger.push({ at: this.now(), bytes: amplified })
+    return spent + amplified > FANOUT_BUDGET_BYTES ? spent + amplified : undefined
+  }
+
+  /**
+   * The one router behind `send`, `multicast` and `broadcast`. They differ only
+   * in who they resolve and what they are charged for, and keeping that in one
+   * place is what stops a fourth fanout path shipping without a budget.
+   */
+  private route(conn: C, targets: string[], text: string, opts: RouteOptions): RouteResult<C> {
+    const sender = this.entries.get(conn)
+    if (!sender) return { ok: false, recipients: [], results: [], reason: 'not registered', deliveries: [] }
+
+    // Before anything is charged, so a refused thread costs the sender nothing.
+    const tooDeep = this.depthRefusal(sender.name, targets, opts.inReplyTo)
+    if (tooDeep) return tooDeep
+
+    const { results, hits, escalate } = this.resolveTargets(conn, sender.name, targets, opts.chargePair)
+    if (hits.length === 0 && !opts.broadcast) {
+      const failed = results.find(r => r.status !== 'delivered' && r.status !== 'held')
       return {
         ok: false,
         recipients: [],
-        reason:
-          `this reply would be depth ${depth}, past the limit of ${THREAD_MAX_DEPTH}. ` +
-          'The thread has been escalated to the human queue. Do not start a fresh thread ' +
-          'to continue it — wait for the human, who can see both sides.',
+        results,
+        reason: failed?.reason ?? 'nobody was addressed',
         deliveries: [],
-        escalate: {
-          from: sender.name,
-          to,
-          kind: 'thread_depth',
-          value: depth,
-          summary: `${sender.name} and ${to} reached reply depth ${depth} and were stopped.`,
-        },
+        // Only meaningful for a two-party exchange; with a list there is no one
+        // pair for the human to look at, and the per-recipient status says it.
+        ...(escalate && targets.length === 1 ? { escalate } : {}),
       }
     }
 
-    // Checked after depth so a deep thread reports the more specific measurement.
-    const pair = this.pairLedger(sender.name, to)
-    if (pair.length >= PAIR_MAX_MESSAGES) {
-      const minutes = PAIR_WINDOW_MS / 60_000
-      return {
-        ok: false,
-        recipients: [],
-        reason:
-          `you have sent ${to} ${pair.length} messages in ${minutes} minutes, which is the limit. ` +
-          'Starting a new thread does not reset this. The exchange has been escalated to the ' +
-          'human queue — wait for them rather than rephrasing and retrying.',
-        deliveries: [],
-        escalate: {
-          from: sender.name,
-          to,
-          kind: 'exchange_rate',
-          value: pair.length,
-          summary:
-            `${sender.name} sent ${to} ${pair.length} messages in ${minutes} minutes and was ` +
-            'stopped. They may be volleying across separate threads, which the depth limit cannot see.',
-        },
-      }
-    }
-    pair.push(this.now())
+    const names = hits.map(([, entry]) => entry.name)
+    const message = this.build(sender.name, text, {
+      ...(opts.inReplyTo === undefined ? {} : { inReplyTo: opts.inReplyTo }),
+      ...(opts.broadcast ? { broadcast: true } : {}),
+      // A one-name multicast is a directed send by another spelling, so it gets
+      // no audience: there is nobody else on it for a recipient to defer to.
+      ...(opts.audience && names.length > 1 ? { audience: names } : {}),
+    })
+    const deliveries: Delivery<C>[] = hits.map(([target, entry]) => ({
+      conn: target,
+      message,
+      live: !entry.dnd,
+    }))
 
-    const message = this.build(sender.name, text, inReplyTo === undefined ? {} : { inReplyTo })
-    const live = !target[1].dnd
+    const overBudget = this.chargeFanout(sender.name, text, deliveries.length, opts.chargesFrom)
+    const held = deliveries.filter(d => !d.live).map(d => this.nameOf(d.conn) ?? '?')
     return {
       ok: true,
       msgId: message.msgId,
-      recipients: [to],
-      deliveries: [{ conn: target[0], message, live }],
-      ...(live
+      recipients: names,
+      results,
+      deliveries,
+      ...(overBudget === undefined
         ? {}
         : {
+            suppressLive: true,
             reason:
-              `${to} is not taking pushes right now. The message is in their inbox and they will ` +
-              'see it when they next look, so do not resend it.',
+              `fanout budget spent (${overBudget} of ${FANOUT_BUDGET_BYTES} amplified ` +
+              `bytes in ${FANOUT_WINDOW_MS / 1000}s). Held in every recipient's inbox rather than ` +
+              'pushed live, so nothing is lost and resending would only duplicate it. ' +
+              'Prefer chat_send to the sessions that actually need this.',
           }),
+      ...(overBudget === undefined && held.length > 0
+        ? {
+            reason:
+              `${held.join(', ')} ${held.length === 1 ? 'is' : 'are'} not taking pushes right now. ` +
+              'The message is in their inbox and they will see it when they next look, so do not resend it.',
+          }
+        : {}),
     }
+  }
+
+  /** Routes to exactly one session, or to none if the name isn't registered. */
+  send(conn: C, to: string, text: string, inReplyTo?: string): RouteResult<C> {
+    return this.route(conn, [to], text, {
+      chargePair: true,
+      chargesFrom: Infinity,
+      ...(inReplyTo === undefined ? {} : { inReplyTo }),
+    })
+  }
+
+  /**
+   * Routes to exactly the named sessions (CC-10). Unknown names are reported per
+   * recipient rather than failing the call: a list of five where one peer has
+   * exited is four useful deliveries, and refusing all five teaches the sender to
+   * reach for chat_broadcast instead — which is strictly worse for everyone.
+   */
+  multicast(conn: C, to: string[], text: string, inReplyTo?: string): RouteResult<C> {
+    return this.route(conn, to, text, {
+      chargePair: true,
+      chargesFrom: MULTICAST_CHARGES_FROM,
+      audience: true,
+      ...(inReplyTo === undefined ? {} : { inReplyTo }),
+    })
   }
 
   /** Routes to every registered session except the sender. */
   broadcast(conn: C, text: string): RouteResult<C> {
-    const sender = this.entries.get(conn)
-    if (!sender) return { ok: false, recipients: [], reason: 'not registered', deliveries: [] }
-
-    const message = this.build(sender.name, text, { broadcast: true })
-    const deliveries: Delivery<C>[] = []
-    for (const [target, entry] of this.entries) {
-      if (target === conn) continue
-      deliveries.push({ conn: target, message, live: !entry.dnd })
-    }
-
-    // Charged against the budget even when suppressed, or hitting the limit would
-    // make every subsequent broadcast free.
-    const amplified = Buffer.byteLength(text) * deliveries.length
-    const ledger = this.broadcastLedger(sender.name)
-    const spent = ledger.reduce((total, s) => total + s.bytes, 0)
-    if (deliveries.length > 0) ledger.push({ at: this.now(), bytes: amplified })
-
-    const overBudget = deliveries.length > 0 && spent + amplified > BROADCAST_BUDGET_BYTES
-    return {
-      ok: true,
-      msgId: message.msgId,
-      recipients: deliveries.map(d => this.nameOf(d.conn) ?? '?'),
-      deliveries,
-      ...(overBudget
-        ? {
-            suppressLive: true,
-            reason:
-              `broadcast budget spent (${spent + amplified} of ${BROADCAST_BUDGET_BYTES} amplified ` +
-              `bytes in ${BROADCAST_WINDOW_MS / 1000}s). Held in every recipient's inbox rather than ` +
-              'pushed live, so nothing is lost and resending would only duplicate it. ' +
-              'Prefer chat_send to the sessions that actually need this.',
-          }
-        : {}),
-    }
+    const everyoneElse: string[] = []
+    for (const [target, entry] of this.entries) if (target !== conn) everyoneElse.push(entry.name)
+    return this.route(conn, everyoneElse, text, {
+      chargePair: false,
+      chargesFrom: BROADCAST_CHARGES_FROM,
+      broadcast: true,
+    })
   }
 
   drop(conn: C): string | undefined {

@@ -196,6 +196,10 @@ export async function startMcpServer(): Promise<void> {
     const meta: Record<string, string> = { from: message.from, msg_id: message.msgId }
     if (message.inReplyTo) meta.in_reply_to = message.inReplyTo
     if (message.broadcast) meta.broadcast = 'true'
+    // Who else was told the same thing, so three recipients do not each answer
+    // as though they were the only one asked. Multicast only; a broadcast
+    // already says "everyone" and a directed send has an audience of one.
+    if (message.audience) meta.audience = message.audience.join(',')
     // Model-visible, so a lengthening thread is something both sides can act on
     // before the broker has to refuse. Keys must stay in [A-Za-z0-9_] or Claude
     // Code drops them silently.

@@ -377,6 +377,10 @@ export class SocketServer {
         msgId: delivery.message.msgId,
         ...(delivery.message.inReplyTo ? { ref: delivery.message.inReplyTo } : {}),
         body: delivery.message.text,
+        // A multicast stays kind 'message' — it is directed, just to several
+        // people — and carries who else got it in meta. EventKind is frozen into
+        // the SSE contract, so a new member there would break readers broadly.
+        ...(delivery.message.audience ? { meta: { audience: delivery.message.audience.join(',') } } : {}),
       })
       // Held deliveries are logged above and simply not pushed. The inbox is a
       // query over the log, so chat_inbox still returns them. Two independent
@@ -393,6 +397,7 @@ export class SocketServer {
       t: 'send_result',
       ok: result.ok,
       recipients: result.recipients,
+      results: result.results,
       ...(result.msgId === undefined ? {} : { msgId: result.msgId }),
       ...(result.reason === undefined ? {} : { reason: result.reason }),
       ...(result.suppressLive || (result.deliveries.length > 0 && result.deliveries.every(d => !d.live))
@@ -669,14 +674,36 @@ export class SocketServer {
         return reply(conn, { t: 'subscribe_result', ...core.registry.subscribe(conn, msg.subscriptions) })
       case 'unsubscribe':
         return reply(conn, { t: 'subscribe_result', ...core.registry.unsubscribe(conn, msg.selector) })
-      case 'send':
+      case 'send': {
         if (msg.to === HUMAN) return this.enqueueForHuman(conn, 'message', msg.text)
+        if (!Array.isArray(msg.to)) {
+          return this.handleRoute(
+            conn,
+            core.registry.send(conn, msg.to, msg.text, msg.inReplyTo),
+            'message',
+            msg.to,
+          )
+        }
+        // The human is a queue, not a session, and a multicast is a fan-out to
+        // sessions. Splitting one call across both write paths is where the bugs
+        // would live, so the whole call is refused rather than half-honoured.
+        if (msg.to.includes(HUMAN)) {
+          return reply(conn, {
+            t: 'send_result',
+            ok: false,
+            recipients: [],
+            reason:
+              `"${HUMAN}" cannot be one of several recipients — the human is a queue, not a session. ` +
+              'Send to the peers in one call and use chat_notify or chat_ask for the human.',
+          })
+        }
         return this.handleRoute(
           conn,
-          core.registry.send(conn, msg.to, msg.text, msg.inReplyTo),
+          core.registry.multicast(conn, msg.to, msg.text, msg.inReplyTo),
           'message',
-          msg.to,
+          msg.to.join(', '),
         )
+      }
       case 'broadcast':
         return this.handleRoute(conn, core.registry.broadcast(conn, msg.text), 'broadcast', '*')
       case 'ask':

@@ -26,6 +26,14 @@ export const HUMAN = 'human'
 export const RESERVED_NAMES = new Set([HUMAN, 'user', 'system', 'claude', 'all', 'everyone'])
 
 /**
+ * How many names one `chat_send` may address. A hard cap, not a hint: past this
+ * the honest description of the call is "tell everyone", and `chat_broadcast`
+ * already exists, is understood by recipients as low-priority, and is the thing
+ * the fanout budget was tuned against.
+ */
+export const MAX_MULTICAST_RECIPIENTS = 8
+
+/**
  * Every event kind, as a runtime value rather than only a type.
  *
  * This is deliberate and it is load-bearing. The SSE contract enumerates this
@@ -195,6 +203,14 @@ export interface DeliveredMessage {
   inReplyTo?: string
   /** True when the sender addressed everyone rather than this session specifically. */
   broadcast?: boolean
+  /**
+   * Everyone this message went to, set only on a multicast — a `send` has an
+   * audience of one and a `broadcast` already says "everyone" by other means.
+   *
+   * Recipient-visible on purpose: knowing three peers were told the same thing
+   * is what stops all three answering it, and a recipient cannot infer it.
+   */
+  audience?: string[]
   /** Marks non-conversational deliveries, e.g. an answer coming back from the human. */
   event?: string
   /**
@@ -206,6 +222,26 @@ export interface DeliveredMessage {
   /** Set once a thread is long enough to be worth flagging, alongside threadDepth. */
   threadHint?: string
   at: number
+}
+
+/**
+ * What happened to one addressee of one route.
+ *
+ * `held` is not a failure — the message is in that session's inbox. `refused`
+ * covers a live session the broker declined to route to, e.g. one this sender
+ * has already hit the exchange-rate limit with.
+ */
+export type RecipientStatus = 'delivered' | 'held' | 'no_such_session' | 'self' | 'refused'
+
+/**
+ * Per addressee rather than per route, because a multicast can succeed for some
+ * names and fail for others, and collapsing that into one ok/reason pair makes
+ * the sender guess which. Additive: `recipients` still lists who took it.
+ */
+export interface RecipientResult {
+  name: string
+  status: RecipientStatus
+  reason?: string
 }
 
 /** An open item in the human queue: a projection of the log, never stored state. */
@@ -314,7 +350,15 @@ export type ClientMessage =
   /** Omitting the selector clears every subscription this session holds. */
   | { t: 'unsubscribe'; selector?: SubscriptionSelector }
   | { t: 'list' }
-  | { t: 'send'; to: string; text: string; inReplyTo?: string }
+  /**
+   * `to` takes a list for a multicast (CC-10). Deliberately an overload of the
+   * EXISTING frame rather than a new `multicast` type: the broker's frame switch
+   * has no default case, so an unknown `t` is dropped silently and the caller
+   * hangs out its request timeout with nothing to report. Against an older
+   * broker, a list on `send` at least fails fast with "no active session
+   * named...". A fast wrong answer beats a silent hang.
+   */
+  | { t: 'send'; to: string | string[]; text: string; inReplyTo?: string }
   | { t: 'broadcast'; text: string }
   | { t: 'inbox'; limit: number }
   | { t: 'ask'; text: string }
@@ -424,6 +468,12 @@ export type ServerMessage =
       ok: boolean
       msgId?: string
       recipients: string[]
+      /**
+       * One entry per name the sender addressed, including the ones that took
+       * nothing. Absent from replies that never had addressees to report on
+       * (the human queue paths), which is why it is optional rather than empty.
+       */
+      results?: RecipientResult[]
       reason?: string
       held?: boolean
     }
