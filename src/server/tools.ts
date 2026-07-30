@@ -5,6 +5,7 @@ import { hostIdentity } from './host.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
 import { cliEntry } from '../paths.js'
 import { transcriptLine } from '../agents/transcript.js'
+import { findDenials } from '../agents/denials.js'
 import type {
   DeliveredMessage,
   QueueItem,
@@ -56,6 +57,9 @@ function optionalEnum<T extends string>(
 
 /** Upper bound on a replay request, so one tool call cannot flood a session's context. */
 const INBOX_MAX = 50
+
+/** Same reasoning as INBOX_MAX, applied to a transcript scan. */
+const DENIALS_MAX = 20
 
 /** Number(undefined) is NaN, which JSON.stringify sends over the wire as null. */
 function boundedLimit(args: Record<string, unknown>, key: string, fallback: number, max: number): number {
@@ -368,6 +372,28 @@ export const TOOL_DEFINITIONS = [
       'An agent can exist without being connected — identity outlives presence.',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'agent_logs',
+    description:
+      "Read a headless agent's own transcript for tool calls that were DENIED by a settings-level " +
+      'permission rule (Claude Code writes `is_error: true` on the denied tool_result). Use this when ' +
+      'an agent looks stuck and you suspect a permission denial rather than a crash. IMPORTANT LIMIT: ' +
+      'this sees only ONE of two kinds of "blocked". A tool the agent\'s PROFILE never granted is absent ' +
+      'from its schema entirely — there is no tool_use to deny, so it leaves no trace here at all. For ' +
+      "that kind, check the profile's deny list instead (agent_profiles, or the denied-tools line from " +
+      'agent_spawn). Empty output means no settings-level denial was found; it does not mean nothing was denied.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The agent, as shown by agent_list.' },
+        limit: {
+          type: 'number',
+          description: `How many recent denials to return (default 10, max ${DENIALS_MAX})`,
+        },
+      },
+      required: ['name'],
+    },
+  },
 ] as const
 
 const text = (value: string) => ({ content: [{ type: 'text' as const, text: value }] })
@@ -506,6 +532,8 @@ export class ToolHandler {
         return this.agentProfiles()
       case 'agent_list':
         return this.agentList()
+      case 'agent_logs':
+        return this.agentLogs(requireString(args, 'name'), boundedLimit(args, 'limit', 10, DENIALS_MAX))
       default:
         throw new Error(`unknown tool: ${name}`)
     }
@@ -710,9 +738,13 @@ export class ToolHandler {
 
     if (!res.ok) return text(`Not spawned: ${res.reason}`)
     const warnings = (res.warnings ?? []).map(w => `\n  warning: ${w}`).join('')
+    // Told here, not just in the spawned agent's own brief: a toolset-confined
+    // agent cannot report being stuck (the tool is absent from its schema, not
+    // refused), so spawn time is the only place this is knowable with certainty.
+    const denied = res.disallowedTools?.length ? `\n  denied tools: ${res.disallowedTools.join(', ')}` : ''
     return text(
       `Spawned "${res.name}" (${res.agentId}). It is a peer now — reach it with chat_send, ` +
-        `not by spawning again.${warnings}`,
+        `not by spawning again.${warnings}${denied}`,
     )
   }
 
@@ -794,9 +826,12 @@ export class ToolHandler {
     const rows = listProfileNames().map(name => {
       const profile = loadProfile(name)
       if ('error' in profile) return `- ${name}: unreadable (${profile.error})`
+      const denies = profile.disallowedTools?.length
+        ? `\n    denies: ${profile.disallowedTools.join(', ')}`
+        : ''
       return (
         `- ${name} [${profile.model}, ${profile.surface}, isolation ${profile.isolation}]\n` +
-        `    ${profile.description}\n    tools: ${profile.allowedTools.join(', ')}`
+        `    ${profile.description}\n    tools: ${profile.allowedTools.join(', ')}${denies}`
       )
     })
     return text(
@@ -822,5 +857,23 @@ export class ToolHandler {
         `\n    ${transcriptLine(a.cwd, a.sessionId)}`,
     )
     return text(`Durable agents:\n${rows.join('\n')}`)
+  }
+
+  private async agentLogs(name: string, limit: number) {
+    const res = (await this.call({ t: 'agents' }, 'agents_result')) as Extract<
+      ServerMessage,
+      { t: 'agents_result' }
+    >
+    const agent = res.agents.find(a => a.name === name)
+    if (agent === undefined) return text(`No agent named "${name}".`)
+
+    const denials = findDenials(agent.cwd, agent.sessionId, limit)
+    if (denials.length === 0)
+      return text(
+        `No settings-level denials found in "${name}"'s transcript. This does not rule out a ` +
+          "toolset-confined tool — that kind leaves no trace here; check the agent's deny list instead.",
+      )
+    const rows = denials.map(d => `- ${d.tool}${d.kind ? ` (${d.kind})` : ''}: ${d.detail}`)
+    return text(`Denials for "${name}":\n${rows.join('\n')}`)
   }
 }

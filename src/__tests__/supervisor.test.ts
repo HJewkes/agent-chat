@@ -189,6 +189,29 @@ describe('spawning', () => {
   })
 
   /**
+   * CC-29: a toolset-confined tool never shows up as a denial after the fact, so
+   * the deny list has to be knowable at spawn time instead. Echoed on the outcome
+   * so the SPAWNER sees it, not just the spawned agent's own brief.
+   */
+  it('echoes the profile deny list on a successful spawn', async () => {
+    const sup = withStubbedSurface()
+
+    const result = await sup.spawn(spawnReq({ profile: 'explorer' }))
+
+    expect(result.ok).toBe(true)
+    expect(result.disallowedTools).toEqual(['Bash', 'Write', 'Edit'])
+  })
+
+  it('omits disallowedTools for a profile that grants everything it lists', async () => {
+    const sup = withStubbedSurface()
+
+    const result = await sup.spawn(spawnReq({ profile: 'implementer', isolation: 'none' }))
+
+    expect(result.ok).toBe(true)
+    expect(result.disallowedTools).toBeUndefined()
+  })
+
+  /**
    * The supervisor is the only thing that knows which agents are live and where
    * they were put, so it is what turns "second agent for this anchor" into a pane
    * to split. Asserted through the AppleScript because that is the observable:

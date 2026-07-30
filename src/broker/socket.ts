@@ -122,6 +122,7 @@ class SocketServer {
       ...(outcome.name === undefined ? {} : { name: outcome.name }),
       ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
       ...(outcome.warnings === undefined ? {} : { warnings: outcome.warnings }),
+      ...(outcome.disallowedTools === undefined ? {} : { disallowedTools: outcome.disallowedTools }),
     })
   }
 
