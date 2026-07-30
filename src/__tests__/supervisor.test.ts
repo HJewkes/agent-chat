@@ -202,13 +202,25 @@ describe('spawning', () => {
     expect(result.disallowedTools).toEqual(['Bash', 'Write', 'Edit'])
   })
 
-  it('omits disallowedTools for a profile that grants everything it lists', async () => {
+  /**
+   * CC-22 hardening: `implementer` grants Bash outright, but even it denies
+   * shelling out to the CLI's own human-only verbs (HUMAN_ONLY_CLI_DENY in
+   * profiles.ts) — the mitigation for the adversarial review's self-approval
+   * finding. Echoed here for the same reason CC-29's deny list is: the spawner
+   * should see it, not just infer it from a failed shell command later.
+   */
+  it('denies the CLI human-only verbs even on a profile that otherwise grants Bash', async () => {
     const sup = withStubbedSurface()
 
     const result = await sup.spawn(spawnReq({ profile: 'implementer', isolation: 'none' }))
 
     expect(result.ok).toBe(true)
-    expect(result.disallowedTools).toBeUndefined()
+    expect(result.disallowedTools).toEqual([
+      'Bash(agent-chat endorse:*)',
+      'Bash(agent-chat dismiss:*)',
+      'Bash(agent-chat send:*)',
+      'Bash(agent-chat answer:*)',
+    ])
   })
 
   /**

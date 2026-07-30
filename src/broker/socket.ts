@@ -183,6 +183,40 @@ export class SocketServer {
   }
 
   /**
+   * True only for a connection with no registration — the human at the CLI, on
+   * the theory that reaching a 0600 socket at all already means being the OS
+   * account's owner.
+   *
+   * THIS IS A WEAKER GUARANTEE THAN THE FRAMES BUILT ON IT CLAIM. It stops a
+   * session using ITS OWN registered connection to act with the human's
+   * authority. It does NOT stop a process that opens a SECOND, unregistered
+   * connection, or shells out to the `agent-chat` CLI, or writes raw bytes to
+   * the socket with `nc` — none of those register, so all pass this check.
+   * Verified empirically (CC-22 adversarial review, 2026-07-30): a `Bash`-
+   * capable spawned agent self-approved its own endorsement three ways — a CLI
+   * subprocess, a second in-process socket, and a bare `nc` pipe — because a
+   * Unix socket carries no peer credentials for Node to check (`net.Socket`
+   * exposes no pid/uid; `remoteAddress` is `undefined` on AF_UNIX). On this
+   * machine every agent already runs under the human's own OS account, which
+   * `agent-teams.md` §11.4 names as the actual trust boundary: "these controls
+   * stop a confused agent, not an adversarial one." This check is exactly that
+   * kind of control — real defense against an agent using its own established
+   * session to act as the human, not a guarantee against a deliberately
+   * adversarial co-resident process. See `profiles.ts` for the other half:
+   * denying the builtin profiles' own `Bash` the ability to invoke these CLI
+   * verbs at all, which is what actually stops the common case.
+   */
+  private isHuman(conn: Conn): boolean {
+    return this.core.registry.nameOf(conn) === undefined
+  }
+
+  /** Record that a session reached for an action only the human may take. */
+  private refuseToSession(conn: Conn, action: string): void {
+    const name = this.core.registry.nameOf(conn) ?? '?'
+    this.core.append({ kind: 'verdict_refused', actor: name, body: `a session tried to ${action}` })
+  }
+
+  /**
    * The countdown's abort, and the one place a check stands in for a structural
    * defence — deliberately, because a human at the CLI and an agent reach the
    * broker over the same socket, and the human's veto has to be reachable.
@@ -190,11 +224,12 @@ export class SocketServer {
    * A REGISTERED connection is a session, and no session may cancel a shutdown
    * (its own or anyone's): a descendant suppressing its predecessor's veto would
    * make the human's 30 seconds a formality. What is left is the human at the
-   * CLI, who holds no registration and could already retire or kill anything on
-   * a 0600 socket. No MCP tool exposes this frame.
+   * CLI. No MCP tool exposes this frame. See `isHuman` for what this check does
+   * and does not guarantee.
    */
   private handleTeleportAbort(conn: Conn, name: string): void {
-    if (this.core.registry.nameOf(conn) !== undefined) {
+    if (!this.isHuman(conn)) {
+      this.refuseToSession(conn, 'cancel a teleport countdown')
       return reply(conn, {
         t: 'teleport_result',
         ok: false,
@@ -418,6 +453,16 @@ export class SocketServer {
     // about where the authority came from.
     if (msg.to === HUMAN || msg.to === from)
       return refuse('an endorsement is relayed to a peer; your human is the one approving it')
+    // The human is shown "would be delivered to X" and decides based on that
+    // name. Refusing an unknown name here at least closes the case an adversarial
+    // review found live: approving a request for a name nobody holds yet, which
+    // then gets delivered to whoever happens to register it later. This does NOT
+    // close the narrower race where the recipient changes identity between this
+    // check and the human's eventual approval — that would need the approval
+    // bound to an agentId rather than a name, which nothing else on this bus does
+    // either (accepted, tracked separately).
+    if (core.registry.connFor(msg.to) === undefined)
+      return refuse(`no session named "${msg.to}" is currently connected`)
     if (core.events.openCount(from, 'endorse_request') >= MAX_OPEN_ENDORSEMENTS)
       return refuse(
         `you already have ${MAX_OPEN_ENDORSEMENTS} messages waiting for endorsement; ` +
@@ -436,22 +481,65 @@ export class SocketServer {
   }
 
   /**
+   * The human answering a queue item. CC-22's adversarial review found this had
+   * NO sender check at all: any REGISTERED session could answer any OTHER
+   * session's question and have it delivered as `from: HUMAN` — the single
+   * cheapest forgery found, since it needs nothing but a frame on a connection
+   * the caller already legitimately holds. No MCP tool exposes `answer`, so a
+   * model reaches this only by talking to the socket directly; see `isHuman`.
+   */
+  private handleAnswer(conn: Conn, msgId: string, text: string): void {
+    if (!this.isHuman(conn)) {
+      this.refuseToSession(conn, 'answer a queue item')
+      return reply(conn, {
+        t: 'answer_result',
+        ok: false,
+        reason: 'answering is the human’s call; a session cannot answer on the human’s behalf',
+      })
+    }
+    const result = this.core.answer(msgId, text)
+    reply(conn, {
+      t: 'answer_result',
+      ok: result.ok,
+      ...(result.reason === undefined ? {} : { reason: result.reason }),
+    })
+  }
+
+  /**
+   * Close a queue item without answering it. Unlike `answer`, the item's own
+   * AUTHOR may withdraw its own request — declining someone else's is still
+   * human-only. CC-22's adversarial review found neither check present: any
+   * registered session could silently dismiss any other session's pending item,
+   * including one still waiting on human review.
+   */
+  private handleDismiss(conn: Conn, msgId: string): void {
+    const author = this.core.events.authorOf(msgId)
+    const caller = this.core.registry.nameOf(conn)
+    if (!this.isHuman(conn) && caller !== author) {
+      this.refuseToSession(conn, 'dismiss another session’s queue item')
+      return reply(conn, {
+        t: 'answer_result',
+        ok: false,
+        reason: 'dismissing someone else’s item is the human’s call; a session may withdraw its own',
+      })
+    }
+    const result = this.core.dismiss(msgId)
+    reply(conn, {
+      t: 'answer_result',
+      ok: result.ok,
+      ...(result.reason === undefined ? {} : { reason: result.reason }),
+    })
+  }
+
+  /**
    * The human's approval, and the second half of what makes the marker
-   * unforgeable — the first being that no message shape carries it.
-   *
-   * Refused from a REGISTERED connection, exactly as `teleport_abort` is: a
-   * session approving its own composition, or a peer's, would make endorsement a
-   * thing agents grant each other. What is left is someone at the CLI, and on a
-   * 0600 socket that is the user. No MCP tool exposes this frame.
+   * unforgeable AGAINST A SESSION USING ITS OWN CONNECTION — the first being
+   * that no message shape carries the field itself. See `isHuman` for what this
+   * check does and does not guarantee against a more determined bypass.
    */
   private handleEndorseApprove(conn: Conn, msgId: string): void {
-    if (this.core.registry.nameOf(conn) !== undefined) {
-      this.core.append({
-        kind: 'verdict_refused',
-        actor: this.core.registry.nameOf(conn) ?? '?',
-        ref: msgId,
-        body: 'a session tried to endorse a message',
-      })
+    if (!this.isHuman(conn)) {
+      this.refuseToSession(conn, 'endorse a message')
       return reply(conn, {
         t: 'answer_result',
         ok: false,
@@ -466,8 +554,24 @@ export class SocketServer {
     })
   }
 
-  /** The human has no registration to route from, so this bypasses the registry sender check. */
+  /**
+   * The human has no registration to route from, so this bypasses the ordinary
+   * registry sender check on `send` — which is exactly why it needs its OWN
+   * check instead of none at all. CC-22's adversarial review found this had
+   * NONE: any connection, registered or not, could forge `from: HUMAN` AND
+   * override do-not-disturb, with no CLI or endorsement flow involved. See
+   * `isHuman` for what the fix below does and does not guarantee.
+   */
   private handleHumanSend(conn: Conn, to: string, text: string): void {
+    if (!this.isHuman(conn)) {
+      this.refuseToSession(conn, 'send a message as the human')
+      return reply(conn, {
+        t: 'send_result',
+        ok: false,
+        recipients: [],
+        reason: 'sending as the human is the human’s call; a session cannot speak with that authority',
+      })
+    }
     const { core } = this
     const target = core.registry.connFor(to)
     const msgId = newMsgId()
@@ -568,22 +672,10 @@ export class SocketServer {
       }
       case 'queue':
         return reply(conn, { t: 'queue_result', items: core.events.humanQueue() })
-      case 'answer': {
-        const result = core.answer(msg.msgId, msg.text)
-        return reply(conn, {
-          t: 'answer_result',
-          ok: result.ok,
-          ...(result.reason === undefined ? {} : { reason: result.reason }),
-        })
-      }
-      case 'dismiss': {
-        const result = core.dismiss(msg.msgId)
-        return reply(conn, {
-          t: 'answer_result',
-          ok: result.ok,
-          ...(result.reason === undefined ? {} : { reason: result.reason }),
-        })
-      }
+      case 'answer':
+        return this.handleAnswer(conn, msg.msgId, msg.text)
+      case 'dismiss':
+        return this.handleDismiss(conn, msg.msgId)
       case 'history':
         return reply(conn, { t: 'history_result', items: core.events.history(msg.limit) })
       case 'activity': {
