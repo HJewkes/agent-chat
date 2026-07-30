@@ -180,6 +180,34 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'chat_endorse',
+    description:
+      'Put a message to your human for approval, and on approval have the broker deliver it to a peer ' +
+      'marked as carrying that human’s authority. This does NOT send: your human is shown the exact ' +
+      'bytes below and either approves or declines, and the broker delivers the stored text — you do ' +
+      'not get to send it yourself afterwards. Use it to relay a decision your human has actually made, ' +
+      'when a peer needs it AS a decision; an ordinary chat_send saying "my human wants X" is a peer ' +
+      'reporting a claim, and a peer is right to want more than that before acting. Do NOT use it to ' +
+      'give your own view extra weight — the message arrives under YOUR name with your human’s ' +
+      'authority behind it, so composing something they did not mean and getting it waved through is ' +
+      'laundering your intent into an instruction to someone else. Write what they decided, in their ' +
+      'terms, and no more. One approval covers this one message and nothing else. The recipient is ' +
+      'still entitled to weigh it. You may have 2 waiting at a time.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        to: { type: 'string', description: 'Registered name of the peer who should receive it' },
+        text: {
+          type: 'string',
+          description:
+            'The exact message to deliver. Your human reads this verbatim; whatever you write here is ' +
+            'what arrives, so make it stand on its own — the recipient sees no other context.',
+        },
+      },
+      required: ['to', 'text'],
+    },
+  },
+  {
     name: 'chat_notify',
     description:
       'Leave the human a status notice that needs no answer, e.g. finishing a long task or hitting something ' +
@@ -420,7 +448,13 @@ function formatActivity(name: string, session: SessionInfo | undefined, events: 
 function formatInbox(messages: DeliveredMessage[]): string {
   if (messages.length === 0) return 'No messages yet.'
   const rows = messages.map(m => {
-    const tags = [m.broadcast ? 'broadcast' : null, m.inReplyTo ? `re ${m.inReplyTo}` : null].filter(Boolean)
+    const tags = [
+      m.broadcast ? 'broadcast' : null,
+      m.inReplyTo ? `re ${m.inReplyTo}` : null,
+      // Named the same way here as in the channel attribute, so a model reading
+      // a replayed message reaches the same conclusion as one reading it live.
+      m.provenance === 'human-endorsed' ? 'human-endorsed: their human approved these exact words' : null,
+    ].filter(Boolean)
     const suffix = tags.length > 0 ? ` (${tags.join(', ')})` : ''
     return `- [${m.msgId}] from ${m.from}${suffix}: ${m.text}`
   })
@@ -488,6 +522,8 @@ export class ToolHandler {
         return this.toHuman('ask', requireString(args, 'text'))
       case 'chat_notify':
         return this.toHuman('notify', requireString(args, 'text'))
+      case 'chat_endorse':
+        return this.endorse(requireString(args, 'to'), requireString(args, 'text'))
       case 'chat_inbox':
         return this.inbox(boundedLimit(args, 'limit', 10, INBOX_MAX))
       case 'chat_subscribe':
@@ -624,6 +660,27 @@ export class ToolHandler {
       kind === 'ask'
         ? `Question queued for the human (msg_id ${res.msgId}). They may not see it for a while — carry on with other work.`
         : `Notice left for the human (msg_id ${res.msgId}).`,
+    )
+  }
+
+  /**
+   * There is deliberately no way here to learn the verdict, and no completion to
+   * wait on: the request goes to the human queue and the delivery, if it happens,
+   * happens without this session in the loop. That is what stops "endorse then
+   * send anyway" being a shape the model can reach for.
+   */
+  private async endorse(to: string, body: string) {
+    if (!this.registeredName)
+      return text('Call chat_register before composing an endorsement, so the recipient knows who you are.')
+    const res = (await this.call({ t: 'endorse', to, text: body }, 'send_result')) as Extract<
+      ServerMessage,
+      { t: 'send_result' }
+    >
+    if (!res.ok) return text(`Not queued: ${res.reason}`)
+    return text(
+      `Waiting on your human (msg_id ${res.msgId}). NOTHING has been sent to "${to}" and nothing will ` +
+        'be unless they approve it, at which point the broker delivers exactly the text above. Carry ' +
+        'on with other work; do not send it yourself in the meantime.',
     )
   }
 

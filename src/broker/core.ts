@@ -253,6 +253,59 @@ export class BrokerCore {
     return { ok: true, ...(live ? {} : { reason: `${author} is offline; queued in its inbox` }) }
   }
 
+  /**
+   * The human approving one composed message, which delivers it (CC-22).
+   *
+   * The ONLY place `provenance` is ever set. Three properties hold here and
+   * nowhere else has to be trusted for them:
+   *
+   * - the text comes from the stored row, so the delivered bytes are the bytes
+   *   the human was shown — the composer never gets to re-send;
+   * - `openEndorsement` returns nothing once the item is closed, and the
+   *   resolution below closes it, so approval is a grant over exactly one
+   *   message rather than a standing one over a peer or a topic;
+   * - `from` stays the composer, so the recipient sees endorsed-agent-words
+   *   rather than something indistinguishable from the human speaking.
+   *
+   * Declining is `dismiss`: it closes the item and delivers nothing.
+   */
+  endorse(msgId: string): VerdictResult {
+    const request = this.events.openEndorsement(msgId)
+    if (!request) return { ok: false, reason: `${msgId} is not an open endorsement request` }
+
+    this.append({ kind: 'resolution', actor: HUMAN, ref: msgId, body: 'endorsed' })
+    const message: DeliveredMessage = {
+      msgId: newMsgId(),
+      from: request.composer,
+      text: request.text,
+      provenance: 'human-endorsed',
+      at: Date.now(),
+    }
+    this.append({
+      kind: 'message',
+      actor: request.composer,
+      target: request.recipient,
+      msgId: message.msgId,
+      body: request.text,
+      // `endorsed_from` rather than `ref`: the recipient never saw the request,
+      // so surfacing it as an in-reply-to would show them a thread they were not
+      // part of. The audit trail wants the edge; the conversation does not.
+      meta: { provenance: 'human-endorsed', endorsed_from: msgId },
+    })
+
+    const live = this.deliverTo(request.recipient, message)
+    logEvent('route', {
+      kind: 'message',
+      msgId: message.msgId,
+      from: request.composer,
+      to: request.recipient,
+      delivered: live,
+      provenance: 'human-endorsed',
+      ref: msgId,
+    })
+    return { ok: true, ...(live ? {} : { reason: `${request.recipient} is offline; queued in its inbox` }) }
+  }
+
   /** Close an item without answering it. Resolution is an event, never a mutation. */
   dismiss(msgId: string): VerdictResult {
     if (!this.events.isOpen(msgId)) return { ok: false, reason: `${msgId} is not an open item` }

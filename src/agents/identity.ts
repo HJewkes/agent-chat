@@ -4,7 +4,7 @@ import type { AgentIdentity, AgentLifecycle, AgentOrigin } from '../protocol.js'
 /**
  * The durable half of an agent: who it is, not whether it is currently plugged
  * in. A pure projection of the event log, in the same spirit as `humanQueue()`
- * and `openQuestionCount()` — nothing here is stored state.
+ * and `openCount()` — nothing here is stored state.
  *
  * The split is the whole design. Presence lives in the registry and dies with a
  * socket; identity lives in the log and outlives the process. Pairing them is

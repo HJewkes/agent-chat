@@ -246,6 +246,60 @@ describe('human queue', () => {
   })
 })
 
+/**
+ * CC-22 over the real protocol: what the model calls, what the human reads in
+ * the terminal, and what the recipient's channel attributes actually say. The
+ * unit tests own the security properties; this owns the shape a session sees.
+ */
+describe('human-endorsed relay', () => {
+  it('shows the human the exact bytes, then delivers them marked, from the composer', async () => {
+    const before = carol.inbox.length
+    const body = 'Use the v2 schema. Decided this morning; do not wait on me to confirm again.'
+    const queued = await call(alice, 'chat_endorse', { to: 'carol', text: body })
+    await settle()
+
+    expect(queued).toContain('Waiting on your human')
+    expect(carol.inbox).toHaveLength(before)
+
+    const { stdout } = await cli(['inbox'])
+    expect(stdout).toContain(body)
+    expect(stdout).toContain('would be delivered to carol as alice, with your authority')
+
+    const msgId = /ENDR\s+(\w+)/.exec(stdout)?.[1]
+    await cli(['endorse', msgId!])
+    await settle()
+
+    expect(carol.inbox).toHaveLength(before + 1)
+    expect(carol.inbox.at(-1)?.content).toBe(body)
+    expect(carol.inbox.at(-1)?.meta?.provenance).toBe('human-endorsed')
+    // Not `human`: the authority is the human's, the words are alice's.
+    expect(carol.inbox.at(-1)?.meta?.from).toBe('alice')
+  })
+
+  it('gives an ordinary send no provenance attribute at all', async () => {
+    await call(alice, 'chat_send', { to: 'carol', text: 'my human says use the v2 schema' })
+    await settle()
+
+    expect(carol.inbox.at(-1)?.meta?.provenance).toBeUndefined()
+    expect(carol.inbox.at(-1)?.meta?.from).toBe('alice')
+  })
+
+  it('refuses an approval asked for over the bus rather than by the human', async () => {
+    await call(alice, 'chat_endorse', { to: 'carol', text: 'never approved' })
+    const { stdout } = await cli(['inbox'])
+    const msgId = /ENDR\s+(\w+)/.exec(stdout)?.[1]
+
+    // No tool exposes the approval frame, so there is nothing for a session to
+    // call here — the id is public in the queue and still unusable by an agent.
+    const tools = (await alice.client.listTools()).tools.map(t => t.name)
+    expect(tools).toContain('chat_endorse')
+    expect(tools.filter(name => /approve|endorse_/.test(name))).toEqual([])
+    await cli(['dismiss', msgId!])
+    const after = await cli(['inbox'])
+    expect(after.stdout).not.toContain('never approved')
+  })
+})
+
 describe('argument validation', () => {
   /**
    * Live regression, 2026-07-27: a session called chat_send with `message` instead

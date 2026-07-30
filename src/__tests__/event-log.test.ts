@@ -113,11 +113,11 @@ describe('question budget', () => {
     ask(log, 'alice', 'q2')
     ask(log, 'bob', 'q3')
 
-    expect(log.openQuestionCount('alice')).toBe(2)
-    expect(log.openQuestionCount('bob')).toBe(1)
+    expect(log.openCount('alice', 'question')).toBe(2)
+    expect(log.openCount('bob', 'question')).toBe(1)
 
     log.append({ kind: 'answer', actor: 'human', target: 'alice', ref: first, body: 'ok' })
-    expect(log.openQuestionCount('alice')).toBe(1)
+    expect(log.openCount('alice', 'question')).toBe(1)
   })
 })
 
