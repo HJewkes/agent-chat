@@ -236,6 +236,10 @@ describe('the marker cannot be set by a client', () => {
   const register = (server: SocketServer, conn: Conn, name: string): void =>
     server.handleMessage(conn, { t: 'register', name, workingOn: 'testing', cwd: '/tmp', pid: 1 })
 
+  /** A registration that mints (or resumes) a durable agent identity. */
+  const registerDurable = (server: SocketServer, conn: Conn, name: string, sessionId: string): void =>
+    server.handleMessage(conn, { t: 'register', name, workingOn: 'testing', cwd: '/tmp', pid: 1, sessionId })
+
   it('drops a provenance field smuggled onto an ordinary send', () => {
     const { server, wire } = makeServer()
     const alpha = wire()
@@ -364,6 +368,66 @@ describe('the marker cannot be set by a client', () => {
     const result = alpha.frames.at(-1) as Extract<ServerMessage, { t: 'send_result' }>
     expect(result.ok).toBe(false)
     expect(result.reason).toMatch(/no session named "nobody-registered" is currently connected/)
+  })
+
+  /**
+   * CC-38: the budget above is keyed by `actor` (the composer's self-chosen
+   * name), so a session that burns its budget and re-registers under a new
+   * name used to start over with a fresh one. A durable agent identity is
+   * minted by the broker at adoption and cannot be self-asserted, so keying
+   * on it when present closes that for any adopted session.
+   */
+  it('does not let re-registering under a new name refresh the endorsement budget', () => {
+    const { server, wire } = makeServer()
+    const beta = wire()
+    register(server, beta.conn, 'beta')
+
+    const first = wire()
+    registerDurable(server, first.conn, 'alpha', 'sess-fixed')
+    for (let i = 0; i < 2; i++) {
+      server.handleMessage(first.conn, { t: 'endorse', to: 'beta', text: `pending ${i}` })
+    }
+
+    // Same durable identity (same sessionId), a new connection, a new name.
+    const second = wire()
+    registerDurable(server, second.conn, 'lead', 'sess-fixed')
+    server.handleMessage(second.conn, { t: 'endorse', to: 'beta', text: 'one too many under a new name' })
+
+    const last = second.frames.at(-1) as Extract<ServerMessage, { t: 'send_result' }>
+    expect(last.ok).toBe(false)
+    expect(last.reason).toMatch(/waiting for endorsement/)
+  })
+
+  /**
+   * CC-38: `msg.to` is whatever name won the race to register it — an
+   * authoritative-sounding free name ("lead") is exactly as available to an
+   * adversary as any other. Recording whether the recipient has a durable
+   * identity lets `inbox` warn the human instead of silently trusting the name.
+   */
+  it('flags a non-durable recipient in the endorsement request meta', () => {
+    const { core, server, wire } = makeServer()
+    const alpha = wire()
+    const lead = wire()
+    register(server, alpha.conn, 'alpha')
+    register(server, lead.conn, 'lead')
+
+    server.handleMessage(alpha.conn, { t: 'endorse', to: 'lead', text: 'ship it' })
+
+    const item = core.events.humanQueue().find(i => i.kind === 'endorse_request')
+    expect(item?.meta.recipient_durable).toBe('false')
+  })
+
+  it('does not flag a recipient that holds a durable agent identity', () => {
+    const { core, server, wire } = makeServer()
+    const alpha = wire()
+    const lead = wire()
+    register(server, alpha.conn, 'alpha')
+    registerDurable(server, lead.conn, 'lead', 'sess-lead')
+
+    server.handleMessage(alpha.conn, { t: 'endorse', to: 'lead', text: 'ship it' })
+
+    const item = core.events.humanQueue().find(i => i.kind === 'endorse_request')
+    expect(item?.meta.recipient_durable).toBe('true')
   })
 })
 

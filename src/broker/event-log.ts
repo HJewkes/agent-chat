@@ -236,6 +236,26 @@ export class EventLog {
   }
 
   /**
+   * Same budget, but by durable agent identity rather than by name (CC-38).
+   *
+   * `openCount` is keyed on `actor`, which is whatever the composer typed into
+   * `chat_register` this connection — a session that re-registers under a new
+   * name gets a fresh budget every time. `agent_id` in `meta` is minted by the
+   * broker at adoption and cannot be self-asserted, so counting by it closes
+   * that for any session with a durable identity. A raw, never-adopted
+   * connection has no `agent_id` to key on and falls back to `openCount`.
+   */
+  openCountByAgent(agentId: string, kind: EventKind): number {
+    const rows = this.db
+      .prepare(`SELECT meta FROM events WHERE kind = ? AND msg_id NOT IN (${CLOSED})`)
+      .all(kind) as unknown as { meta: string | null }[]
+    return rows.filter(row => {
+      const meta = (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>
+      return meta.agent_id === agentId
+    }).length
+  }
+
+  /**
    * The stored text of an endorsement request that is still open, with who
    * composed it and who it was composed for.
    *

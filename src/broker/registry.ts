@@ -100,6 +100,8 @@ export interface EntryView {
   agentId?: string
   /** Claude Code's pid. Never persisted; see `Entry.hostPid`. */
   hostPid?: number
+  /** When this connection registered. Lets a caller judge how fresh a name is. */
+  registeredAt: number
 }
 
 /**
@@ -496,6 +498,7 @@ export class Registry<C> {
       status: entry.status,
       ...(entry.agentId === undefined ? {} : { agentId: entry.agentId }),
       ...(entry.hostPid === undefined ? {} : { hostPid: entry.hostPid }),
+      registeredAt: entry.registeredAt,
     }
   }
 
