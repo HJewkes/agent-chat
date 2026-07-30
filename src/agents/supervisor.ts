@@ -128,6 +128,8 @@ export interface SpawnOutcome {
   name?: string
   reason?: string
   warnings?: string[]
+  /** The profile's own deny list. See protocol.ts's `spawn_result` for why this matters. */
+  disallowedTools?: string[]
 }
 
 interface Live {
@@ -428,6 +430,7 @@ export class Supervisor implements TeleportHost {
       agentId,
       name: req.name,
       ...(warnings.length > 0 ? { warnings } : {}),
+      ...(profile.disallowedTools?.length ? { disallowedTools: [...profile.disallowedTools] } : {}),
     }
   }
 

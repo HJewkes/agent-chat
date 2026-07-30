@@ -1015,6 +1015,20 @@ that will otherwise be got wrong:
 > premise is unverified: whether a headless denial appears in the transcript has
 > not been confirmed, because the probe built to check it hit CC-28 instead and
 > the agent was never denied at all.
+>
+> **CC-29 RESOLVED 2026-07-30.** The premise above is confirmed: a settings-level
+> denial DOES appear in the transcript, as `tool_result.is_error === true` matched
+> to its `tool_use`. But there are two kinds of "blocked" and only that one is
+> observable — a TOOLSET-CONFINED tool (absent from `--allowed-tools` /
+> `--disallowed-tools`) never emits a `tool_use` at all, so it leaves no trace to
+> find, ever. Built accordingly: `agent_logs <name>` (`src/agents/denials.ts`)
+> reads the settings-level case directly from the existing transcript pointer, no
+> stream file and no watcher; the toolset-confined case is handled by moving the
+> leverage to spawn time instead — `spawn_result.disallowedTools` and
+> `agent_profiles`'s `denies:` line tell the SPAWNER what was withheld, since
+> that is knowable with certainty even though "it got stuck" is not. The
+> `stream.jsonl` / per-frame `notice` design below is not what got built — it
+> predates the transcript-pointer approach entirely.
 
 brain parses a single final `JSON.parse` of `--output-format json`
 (`dispatch.ts:718-724`). Consequences visible in its own code: on a crash there

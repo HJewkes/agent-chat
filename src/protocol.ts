@@ -455,6 +455,13 @@ export type ServerMessage =
       name?: string
       reason?: string
       warnings?: string[]
+      /**
+       * The profile's own deny list, echoed back on success. CC-29's finding:
+       * a toolset-confined agent cannot report being stuck — the tool is absent
+       * from its schema, not refused — so the only place this is knowable with
+       * certainty is here, at spawn time, before the agent can fail silently.
+       */
+      disallowedTools?: string[]
     }
   | { t: 'agents_result'; agents: AgentIdentity[] }
   /**
