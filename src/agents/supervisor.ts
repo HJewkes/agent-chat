@@ -26,6 +26,7 @@ import { resolve as resolveIsolation, type Allocation, type IsolationContext } f
 import { surfaceFor } from './surfaces/index.js'
 import { SurfaceRefused, type SurfaceOptions } from './surfaces/options.js'
 import { Semaphore } from './semaphore.js'
+import { SpawnRateBudget } from './spawn-rate.js'
 import { cliEntry, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import {
@@ -145,6 +146,7 @@ interface Live {
 
 export interface SupervisorOptions {
   semaphore?: Semaphore
+  spawnRateBudget?: SpawnRateBudget
   settleMs?: number
   /**
    * Merged into every surface built here. Without it a test naming `iterm-pane`
@@ -165,6 +167,7 @@ export interface SupervisorOptions {
 export class Supervisor implements TeleportHost {
   private readonly live = new Map<string, Live>()
   private readonly semaphore: Semaphore
+  private readonly spawnRateBudget: SpawnRateBudget
   private readonly settleMs: number
   private readonly nameFreeMs: number
   private readonly surfaceOptions: SupervisorOptions['surface']
@@ -176,6 +179,7 @@ export class Supervisor implements TeleportHost {
     options: SupervisorOptions = {},
   ) {
     this.semaphore = options.semaphore ?? new Semaphore()
+    this.spawnRateBudget = options.spawnRateBudget ?? new SpawnRateBudget()
     this.settleMs = options.settleMs ?? SETTLE_MS
     this.nameFreeMs = options.nameFreeMs ?? NAME_FREE_TIMEOUT_MS
     this.surfaceOptions = options.surface ?? {}
@@ -298,6 +302,14 @@ export class Supervisor implements TeleportHost {
     if (this.core.registry.connFor(req.name) !== undefined)
       return `a session is already registered as "${req.name}"`
     if (depth > MAX_DEPTH) return `spawn depth ${depth} exceeds the cap of ${MAX_DEPTH}`
+    // Checked last of the cheap gates and first of the stateful ones: the human
+    // at the CLI is exempt, same reasoning as checkCwd's exemption — they hold
+    // no registry entry to be rate-limited by and reaching the socket already
+    // means being the local user.
+    if (req.requestedBy !== HUMAN) {
+      const rate = this.spawnRateBudget.check(req.requestedBy)
+      if (!rate.ok) return rate.reason
+    }
     return undefined
   }
 

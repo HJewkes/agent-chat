@@ -7,6 +7,7 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Semaphore } from '../agents/semaphore.js'
+import { SpawnRateBudget } from '../agents/spawn-rate.js'
 import { MAX_DEPTH, Supervisor } from '../agents/supervisor.js'
 
 /**
@@ -73,7 +74,9 @@ afterEach(() => {
  * the machine running the tests happens to have iTerm open — which it did, and
  * which meant these tests opened real windows on a developer laptop.
  */
-function withStubbedSurface(opts: { settleMs?: number; semaphore?: Semaphore } = {}): Supervisor {
+function withStubbedSurface(
+  opts: { settleMs?: number; semaphore?: Semaphore; spawnRateBudget?: SpawnRateBudget } = {},
+): Supervisor {
   supervisor = new Supervisor(core, { ...opts, surface: { platform: 'linux' } })
   return supervisor
 }
@@ -292,6 +295,90 @@ describe('the concurrency budget', () => {
     expect(semaphore.acquire('a1')).toBe(true)
     expect(semaphore.acquire('a1')).toBe(true)
     expect(semaphore.inUse).toBe(1)
+  })
+})
+
+/**
+ * CC-25 — §11.3 promised "a spawn budget per requester per window" and it did
+ * not exist. The semaphore bounds standing population; this bounds churn, which
+ * the semaphore cannot see because each spawn in a loop is legal on its own.
+ */
+describe('the spawn rate budget', () => {
+  /** A requester needs a registered session at `cwd` or checkCwd refuses first. */
+  const registerPeer = (name: string, cwd: string): void => {
+    core.register(fakeConn(), { t: 'register', name, workingOn: '', cwd, pid: 1 })
+  }
+
+  it('refuses once a requester exceeds the per-window limit, naming the limit', async () => {
+    const spawnRateBudget = new SpawnRateBudget(60_000, 2)
+    const sup = withStubbedSurface({ spawnRateBudget })
+    const shared = workspace()
+    registerPeer('peer', shared)
+
+    const first = await sup.spawn(spawnReq({ name: 'scout-1', requestedBy: 'peer', cwd: shared }))
+    const second = await sup.spawn(spawnReq({ name: 'scout-2', requestedBy: 'peer', cwd: shared }))
+    const third = await sup.spawn(spawnReq({ name: 'scout-3', requestedBy: 'peer', cwd: shared }))
+
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
+    expect(third.ok).toBe(false)
+    expect(third.reason).toMatch(/peer has attempted 2 spawns in the last 60s \(limit 2\)/)
+  })
+
+  it('records the refusal as an event, not just a reply string', async () => {
+    const spawnRateBudget = new SpawnRateBudget(60_000, 1)
+    const sup = withStubbedSurface({ spawnRateBudget })
+    const shared = workspace()
+    registerPeer('peer', shared)
+
+    await sup.spawn(spawnReq({ name: 'scout-1', requestedBy: 'peer', cwd: shared }))
+    await sup.spawn(spawnReq({ name: 'scout-2', requestedBy: 'peer', cwd: shared }))
+
+    const refusal = core.events.history(10).find(r => r.kind === 'agent_spawn_refused')
+    expect(refusal?.from).toBe('peer')
+    expect(refusal?.text).toMatch(/attempted 1 spawns/)
+  })
+
+  it('tracks requesters independently, so a busy peer does not throttle another', async () => {
+    const spawnRateBudget = new SpawnRateBudget(60_000, 1)
+    const sup = withStubbedSurface({ spawnRateBudget })
+    const sharedA = workspace()
+    const sharedB = workspace()
+    registerPeer('alice', sharedA)
+    registerPeer('bob', sharedB)
+
+    const peerA = await sup.spawn(spawnReq({ name: 'scout-a', requestedBy: 'alice', cwd: sharedA }))
+    const peerB = await sup.spawn(spawnReq({ name: 'scout-b', requestedBy: 'bob', cwd: sharedB }))
+
+    expect(peerA.ok).toBe(true)
+    expect(peerB.ok).toBe(true)
+  })
+
+  it('lets a spent budget free up once the window has passed', async () => {
+    const spawnRateBudget = new SpawnRateBudget(60_000, 1)
+    const sup = withStubbedSurface({ spawnRateBudget })
+    const shared = workspace()
+    registerPeer('peer', shared)
+
+    await sup.spawn(spawnReq({ name: 'scout-1', requestedBy: 'peer', cwd: shared }))
+    const blocked = await sup.spawn(spawnReq({ name: 'scout-2', requestedBy: 'peer', cwd: shared }))
+    expect(blocked.ok).toBe(false)
+
+    vi.advanceTimersByTime(60_001)
+
+    const after = await sup.spawn(spawnReq({ name: 'scout-3', requestedBy: 'peer', cwd: shared }))
+    expect(after.ok).toBe(true)
+  })
+
+  it('exempts the human at the CLI, same reasoning as checkCwd', async () => {
+    const spawnRateBudget = new SpawnRateBudget(60_000, 1)
+    const sup = withStubbedSurface({ spawnRateBudget })
+
+    const first = await sup.spawn(spawnReq({ name: 'scout-1', requestedBy: 'human' }))
+    const second = await sup.spawn(spawnReq({ name: 'scout-2', requestedBy: 'human' }))
+
+    expect(first.ok).toBe(true)
+    expect(second.ok).toBe(true)
   })
 })
 
