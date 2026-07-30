@@ -48,6 +48,14 @@ and the notice sink are constructor options rather than launch arguments.
   "iTerm2 not running" name `headless` in the message.
 - **iTerm2 liveness is asked with `application "iTerm2" is running`**, never a
   `tell`, which would launch iTerm2 and drop a window on an unsuspecting desktop.
+- **A surface is closed only by the thing that opened it** (CC-37). `launch`
+  marks `ownsSurface` on a split, tab or window it created and leaves it off a
+  pane it merely wrote into, and `Surface.close` refuses without that mark — so
+  an anchor, or an adopted session's own window, is never closable from a bus any
+  peer can reach. Teardown fires on `retire` and nowhere else: an exit is not an
+  instruction to throw away what the agent printed. Closing a session covers all
+  three surfaces, since iTerm2 closes the tab with its last session and the window
+  with its last tab.
 
 ## The two §5.4 lessons, and how the tests pin them
 

@@ -8,6 +8,7 @@ import type { LaunchPlan } from '../agents/types.js'
 const ANCHOR = 'w1t0p0:D5C6B476-BD80-4CED-BA27-A660BC1E01F3'
 const UUID = 'D5C6B476-BD80-4CED-BA27-A660BC1E01F3'
 const NO_ANCHOR = '@@no-anchor@@'
+const CLOSED = '@@closed@@'
 
 const plan = (over: Partial<LaunchPlan> = {}): LaunchPlan => ({
   agentId: 'ag000001',
@@ -28,6 +29,7 @@ function fakeIterm(found = true) {
     scripts.push(script)
     if (script.includes('is running')) return 'true'
     if (!found && script.includes(NO_ANCHOR)) return NO_ANCHOR
+    if (script.includes('to close')) return CLOSED
     return 'NEW-SESSION-UUID'
   }
   const options: SurfaceOptions = {
@@ -137,7 +139,7 @@ describe('iterm surfaces', () => {
     const { scripts, options } = fakeIterm()
     const handle = await surfaceFor('iterm-pane', { ...options, anchor: ANCHOR }).launch(plan())
 
-    expect(handle).toEqual({ surface: 'iterm-pane', paneRef: 'NEW-SESSION-UUID' })
+    expect(handle).toEqual({ surface: 'iterm-pane', paneRef: 'NEW-SESSION-UUID', ownsSurface: true })
     const script = lastScript(scripts)
     expect(script).toContain(`is "${UUID}"`)
     expect(script).toContain('split vertically with default profile')
@@ -222,7 +224,7 @@ describe('iterm surfaces', () => {
     const { scripts, notices, options } = fakeIterm()
     const handle = await surfaceFor('iterm-pane', options).launch(plan())
 
-    expect(handle).toEqual({ surface: 'iterm-window', paneRef: 'NEW-SESSION-UUID' })
+    expect(handle).toEqual({ surface: 'iterm-window', paneRef: 'NEW-SESSION-UUID', ownsSurface: true })
     expect(lastScript(scripts)).toContain('create window with default profile')
     expect(notices).toEqual([])
   })
@@ -231,7 +233,7 @@ describe('iterm surfaces', () => {
     const { scripts, notices, options } = fakeIterm(false)
     const handle = await surfaceFor('iterm-pane', { ...options, anchor: ANCHOR }).launch(plan())
 
-    expect(handle).toEqual({ surface: 'iterm-window', paneRef: 'NEW-SESSION-UUID' })
+    expect(handle).toEqual({ surface: 'iterm-window', paneRef: 'NEW-SESSION-UUID', ownsSurface: true })
     expect(lastScript(scripts)).toContain('create window with default profile')
     expect(notices).toHaveLength(1)
     expect(notices[0]).toContain(UUID)
@@ -273,6 +275,85 @@ describe('iterm surfaces', () => {
     const surface = surfaceFor('iterm-window', { platform: 'darwin', runAppleScript })
 
     await expect(surface.launch(plan())).rejects.toThrow(SurfaceRefused)
+  })
+})
+
+/**
+ * CC-37. Creation and destruction were asymmetric: a pane was opened and never
+ * closed, so every retired agent left a dead shell behind. The constraint that
+ * shapes all of it is that only a surface the BROKER opened may be closed — an
+ * anchor is a human's own pane, reachable from a bus any peer can talk to.
+ */
+describe('tearing a surface down', () => {
+  it('marks a surface it opened, and does not mark one it only wrote into', async () => {
+    const { options } = fakeIterm()
+    const opened = await surfaceFor('iterm-tab', { ...options, anchor: ANCHOR }).launch(plan())
+    const reused = await surfaceFor('iterm-tab', {
+      ...options,
+      anchor: ANCHOR,
+      reuseAnchor: true,
+    }).launch(plan())
+
+    expect(opened.ownsSurface).toBe(true)
+    expect(reused.ownsSurface).toBeUndefined()
+  })
+
+  it('closes the session it opened, addressed by uuid rather than by focus', async () => {
+    const { scripts, options } = fakeIterm()
+    const surface = surfaceFor('iterm-pane', { ...options, anchor: ANCHOR })
+    const handle = await surface.launch(plan())
+
+    await expect(surface.close(handle)).resolves.toBe(true)
+    const script = lastScript(scripts)
+    expect(script).toContain('is "NEW-SESSION-UUID"')
+    expect(script).toContain('to close')
+    expect(script).not.toContain('current window')
+  })
+
+  it('never closes a pane it did not open, and runs no script at all to decide that', async () => {
+    const { scripts, options } = fakeIterm()
+    const surface = surfaceFor('iterm-pane', { ...options, anchor: ANCHOR, reuseAnchor: true })
+    const handle = await surface.launch(plan())
+    const before = scripts.length
+
+    await expect(surface.close(handle)).resolves.toBe(false)
+    expect(scripts).toHaveLength(before)
+  })
+
+  /** The handle of an adopted session: a pane ref the broker recorded but never created. */
+  it('never closes an adopted session’s own pane', async () => {
+    const { scripts, options } = fakeIterm()
+    const surface = surfaceFor('iterm-pane', { ...options, anchor: ANCHOR })
+
+    await expect(surface.close({ surface: 'iterm-pane', paneRef: UUID })).resolves.toBe(false)
+    expect(scripts.some(script => script.includes('to close'))).toBe(false)
+  })
+
+  it('reports nothing closed when the human already closed the pane by hand', async () => {
+    const { options } = fakeIterm(false)
+    const surface = surfaceFor('iterm-pane', { ...options, anchor: ANCHOR })
+
+    const closed = await surface.close({ surface: 'iterm-pane', paneRef: 'GONE', ownsSurface: true })
+
+    expect(closed).toBe(false)
+  })
+
+  /** A shutdown must not fail because iTerm2 quit, or because this is not a Mac. */
+  it('reports nothing closed rather than throwing when iTerm2 cannot be reached', async () => {
+    const surface = surfaceFor('iterm-pane', {
+      platform: 'darwin',
+      runAppleScript: () => {
+        throw new Error('osascript: command not found')
+      },
+    })
+    const handle = { surface: 'iterm-pane' as const, paneRef: UUID, ownsSurface: true }
+
+    await expect(surface.close(handle)).resolves.toBe(false)
+    await expect(surfaceFor('iterm-pane', { platform: 'linux' }).close(handle)).resolves.toBe(false)
+  })
+
+  it('has nothing to close for a headless agent', async () => {
+    await expect(surfaceFor('headless').close({ surface: 'headless', pid: 42 })).resolves.toBe(false)
   })
 })
 

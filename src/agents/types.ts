@@ -95,6 +95,15 @@ export interface LaunchHandle {
   /** iTerm session UUID, for `agent attach`. */
   paneRef?: string
   /**
+   * The broker OPENED this surface, so the broker may also close it.
+   *
+   * Absent for a pane the broker only wrote INTO: an anchor belongs to whoever
+   * was already sitting in it, and closing that from a bus any peer can reach is
+   * the same thing `kill` refuses to do. Only a split, tab or window this launch
+   * created sets it.
+   */
+  ownsSurface?: boolean
+  /**
    * Resolves when the process ends. Headless ONLY, and its absence is the whole
    * asymmetry of §8.1 rather than an oversight: the broker does not own an iTerm
    * pane's process, so when a human types /exit nothing calls back into
@@ -108,4 +117,10 @@ export interface Surface {
   readonly name: SurfaceName
   readonly interactive: boolean
   launch(plan: LaunchPlan): Promise<LaunchHandle>
+  /**
+   * Tear down the surface this handle was launched on, and report whether
+   * anything was closed. A no-op unless `ownsSurface` is set — the check lives
+   * here, in the only layer that knows what a pane is, so no caller can skip it.
+   */
+  close(handle: LaunchHandle): Promise<boolean>
 }
