@@ -62,6 +62,13 @@ jobs:
       # `node dist/cli.js` as a real subprocess — an MCP server, a broker, a
       # planned agent — so an unbuilt dist is not a late failure, it is every
       # one of those tests failing for a reason that looks like something else.
+      #
+      # `npm test` now also triggers a build via the `pretest` script, so this
+      # explicit step is redundant in the happy path. It stays anyway: `pretest`
+      # only protects `npm test` (npm lifecycle scripts don't fire for a direct
+      # `vitest` invocation), and a `pretest` build failure would otherwise be
+      # buried inside the "Test" step's log under a generic npm error instead of
+      # failing here, at a step named for exactly what broke.
       - name: Build
         run: npm run build
 

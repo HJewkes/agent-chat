@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "pretest": "npm run build",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run",
     "format": "prettier --write .",
