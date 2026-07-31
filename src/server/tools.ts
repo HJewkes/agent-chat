@@ -214,8 +214,8 @@ export const TOOL_DEFINITIONS = [
       'Call this FIRST, before your first substantive tool call — before editing files, before spawning ' +
       'anything, before starting independent work. It costs one line and is the only way peers can address ' +
       "you or see you in chat_list; skipping it makes you invisible to anyone checking who's already " +
-      "working in this checkout. If you're unsure whether to register, register — it's free, reversible, " +
-      'and the default should be yes.',
+      "working in this checkout. The name is held until this session exits. If you're unsure whether to " +
+      "register, register — it's free, reversible, and the default should be yes.",
     inputSchema: {
       type: 'object',
       properties: {
