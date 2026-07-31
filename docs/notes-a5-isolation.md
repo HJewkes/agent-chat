@@ -1,5 +1,8 @@
 # A5 — Isolation: implementation notes
 
+Dated 2026-07-27 — postdates `docs/agent-teams.md` §7 (the pluggable-isolation plan) and
+supersedes it where they differ: this describes what was actually built, not what was planned.
+
 Files: `src/agents/isolation/{index,none,toolset,file-ownership,worktree,warnings}.ts`,
 tests in `src/__tests__/isolation.test.ts` (29 tests, real git repos in tmpdirs).
 

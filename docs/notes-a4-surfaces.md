@@ -1,5 +1,9 @@
 # A4 — surfaces: what got built, and the seams left for A5/A6
 
+Implementation notes, dated 2026-07-27 — postdates `docs/agent-teams.md` §5 (the spawning/
+surfaces plan) and supersedes it where they differ: this describes what was actually built,
+not what was planned.
+
 ## Shape
 
 ```
