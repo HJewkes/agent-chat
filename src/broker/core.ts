@@ -2,7 +2,8 @@ import type net from 'node:net'
 import { HUMAN, type ClientMessage, type DeliveredMessage } from '../protocol.js'
 import { AgentLog } from '../agents/identity.js'
 import { logEvent } from './log.js'
-import { EventLog, newMsgId, type AppendInput } from './event-log.js'
+import { EventLog, newMsgId } from './event-log.js'
+import type { AppendInput, EventStore } from './event-store.js'
 import { EventHub } from './events.js'
 import { Registry } from './registry.js'
 
@@ -35,7 +36,7 @@ export type Deliver = (conn: Conn, message: DeliveredMessage) => void
  */
 export class BrokerCore {
   readonly registry: Registry<Conn>
-  readonly events: EventLog
+  readonly events: EventStore
   readonly hub: EventHub
   readonly agents: AgentLog
   readonly startedAt: number
@@ -382,7 +383,7 @@ export interface VerdictResult {
 
 export interface BrokerCoreOptions {
   registry?: Registry<Conn>
-  events?: EventLog
+  events?: EventStore
   hub?: EventHub
   dbPath?: string
 }

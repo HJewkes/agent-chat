@@ -1,4 +1,4 @@
-import type { AgentEventRow, EventLog } from '../broker/event-log.js'
+import type { AgentEventRow, EventStore } from '../broker/event-store.js'
 import type { AgentIdentity, AgentLifecycle, AgentOrigin } from '../protocol.js'
 
 /**
@@ -214,7 +214,7 @@ export function pairPresence(agent: AgentIdentity, presence: PresenceInput): Ros
  * re-folds, so it can never drift from the log the way a cached aggregate would.
  */
 export class AgentLog {
-  constructor(private readonly events: EventLog) {}
+  constructor(private readonly events: EventStore) {}
 
   private all(): AgentIdentity[] {
     const agents: AgentIdentity[] = []

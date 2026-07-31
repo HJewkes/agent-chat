@@ -5,39 +5,19 @@ import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { home } from '../paths.js'
 import type { DeliveredMessage, EventKind, Provenance, QueueItem } from '../protocol.js'
+import type { AgentEventRow, AppendInput, EventStore } from './event-store.js'
 
 /**
  * Append-only event log. Everything that happens on the bus lands here; live
  * delivery is a side effect, not the record. Derived state (a session's inbox,
  * the human queue) is a query, never a stored aggregate — which is why the
  * inbox now survives a broker restart and why "resolved" is itself an event.
+ *
+ * The sqlite-backed implementation of `EventStore`, and the only file in the
+ * tree that knows `node:sqlite` exists.
  */
 
-export interface AppendInput {
-  kind: EventKind
-  actor: string
-  target?: string
-  msgId?: string
-  ref?: string
-  body?: string
-  meta?: Record<string, string>
-}
-
-/**
- * A log row in the shape the agent fold consumes: decoded `meta`, camelCase, and
- * no `id`. Deliberately not the sqlite `Row` — nothing downstream of the fold
- * should depend on the storage schema.
- */
-export interface AgentEventRow {
-  kind: EventKind
-  ts: number
-  actor: string
-  target: string | null
-  msgId: string | null
-  ref: string | null
-  body: string | null
-  meta: Record<string, string>
-}
+export type { AgentEventRow, AppendInput, EventStore } from './event-store.js'
 
 interface Row {
   id: number
@@ -130,7 +110,7 @@ const toMessage = (row: Row): DeliveredMessage => {
   }
 }
 
-export class EventLog {
+export class EventLog implements EventStore {
   private readonly db: DatabaseSyncType
 
   constructor(dbPath?: string) {
