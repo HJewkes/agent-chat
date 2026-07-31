@@ -10,6 +10,25 @@ next poll. Agents can also escalate to you, and you answer from a terminal.
 > **Status: proof of concept.** Channels are a research preview and the flag
 > syntax may change. See [Limits](#limits).
 
+## Docs
+
+**Start here: [`docs/working-as-a-team.md`](docs/working-as-a-team.md)** — the
+canonical, current guide to how the tools fit together. Everything else in
+`docs/` is context, not required reading:
+
+| Doc                                | What it is                                                                |
+| ----------------------------------- | -------------------------------------------------------------------------- |
+| `working-as-a-team.md`              | Current guide — how the tools compose, day to day.                       |
+| `demo-walkthrough.md`               | Current guide — a live runbook for sanity-checking what's shipped.       |
+| `permission-relay.md`               | Current guide — verified mechanics of the permission relay, as built.    |
+| `cross-agent-communication.md`      | Lessons learned from real multi-session runs; the evidence behind the messaging rules in `working-as-a-team.md`. |
+| `teleport.md`                       | Design record — implemented; §14 records where the build diverged from the design. |
+| `agent-teams.md`                    | Design record — a plan; nothing in it is implemented yet.                |
+| `notes-a4-surfaces.md`              | Implementation notes — what got built for surfaces, and seams left open. |
+| `notes-a5-isolation.md`             | Implementation notes — the isolation strategies, as implemented.         |
+| `priority-inversion.md`             | Explored and rejected — founding observation was refuted the same day; kept for the correction, not the claim. |
+| `ideas.md`                          | Backlog — ideation only, ranked, nothing implemented.                    |
+
 ## Why it works the way it does
 
 Claude Code spawns an MCP server as a **subprocess per session**. That
@@ -121,17 +140,29 @@ override with `AGENT_CHAT_HOME`.
 
 ## Tools
 
-| Tool                                          | Purpose                                      |
-| --------------------------------------------- | -------------------------------------------- |
-| `chat_register(name, working_on, declared?)`  | Announce this session. Call once at start.   |
-| `chat_status(status, working_on?, declared?)` | `working` / `available` / `blocked`.         |
-| `chat_list()`                                 | Who's active, their status, work, and where. |
-| `chat_send(to, text, in_reply_to?)`           | Message one session by name.                 |
-| `chat_broadcast(text)`                        | Message everyone else.                       |
-| `chat_ask(text)`                              | Ask the human. Budgeted, non-blocking.       |
-| `chat_notify(text)`                           | Leave the human a notice needing no answer.  |
-| `chat_inbox(limit?)`                          | Re-read recent messages, including answers.  |
-| `chat_transcript(name?, limit?)`              | Recent turns of a session's own transcript.  |
+| Tool                                                            | Purpose                                                                 |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `chat_register(name, working_on, declared?)`                    | Announce this session. Call once at start.                              |
+| `chat_status(status, working_on?, dnd?, declared?)`             | `working` / `available` / `blocked`; set `dnd` to hold peer pushes.     |
+| `chat_list()`                                                   | Who's active, their status, work, tags, and where.                      |
+| `chat_send(to \| to_tag, text, in_reply_to?)`                   | Message one session, a named list, or everyone carrying a tag.          |
+| `chat_tag(target?, add?, remove?)`                              | Label yourself or a peer by role, e.g. `owner:src`. Not authorization.  |
+| `chat_activity(name, limit?)`                                   | See what a peer has been doing, without interrupting it.                |
+| `chat_broadcast(text)`                                          | Message everyone else. Use sparingly.                                   |
+| `chat_ask(text)`                                                | Ask the human. Budgeted, non-blocking.                                  |
+| `chat_endorse(to, text)`                                        | Have the human approve a message, then deliver it under your authority. |
+| `chat_notify(text)`                                             | Leave the human a notice needing no answer.                             |
+| `chat_inbox(limit?)`                                            | Re-read recent messages, including answers.                             |
+| `chat_subscribe(scope, target?, kinds?)`                        | Be told when sessions or agents join or leave.                          |
+| `chat_unsubscribe(scope?, target?)`                             | Stop being told; omit both to drop every subscription.                  |
+| `agent_spawn(name, profile, brief, surface?, isolation?, cwd?)` | Spawn a durable agent that joins the bus as a peer.                     |
+| `agent_teleport(handoff, model?)`                               | End this session, starting a successor from the current build.          |
+| `agent_surface(name)`                                           | Pull a headless agent into a visible terminal.                          |
+| `agent_background()`                                            | Send yourself headless, releasing your terminal.                        |
+| `agent_profiles()`                                              | List spawnable profiles: model, tool set, surface, isolation.           |
+| `agent_list()`                                                  | List durable agents with lifecycle state and whether attached.          |
+| `agent_logs(name, limit?)`                                      | Read a headless agent's settings-level permission-denial trace.         |
+| `chat_transcript(name?, limit?)`                                | Recent turns of a session's own transcript.                             |
 
 `chat_list` splits what it knows about a session by trust, not by topic (CC-11).
 The **observed** half — git branch, checkout, whether that checkout is a linked
@@ -251,11 +282,5 @@ evidence across sessions of different vintages. Presence is unaffected.
 
 ## Not built yet
 
-- Multicast — addressing a named _set_ of sessions. Today it is one recipient or
-  everyone, and broadcast gets used because it is the only thing that takes more
-  than one name.
-- Observing a peer without interrupting it. Right now asking what a session is
-  doing _is_ the interruption.
-- Do-not-disturb, with an override category scarce enough to stay meaningful.
 - Path claims — reusing the lease primitive for files instead of nicknames.
 - A per-pair rate backstop, since `thread_depth` resets on a fresh thread.
