@@ -93,6 +93,15 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     systemPrompt(input),
     '--mcp-config',
     input.mcpConfigPath,
+    // Without this, notifications/claude/channel is never negotiated for the
+    // child process: the broker's push still "succeeds" as a raw stdio write
+    // (chat_send reports delivered), but Claude Code silently discards it —
+    // no <channel> block, no new turn. A spawned peer would only ever see a
+    // message via a manual chat_inbox pull, which defeats the point of a
+    // durable, addressable peer. Matches the flag active-work's own launcher
+    // passes for a human-started session (`aw`'s buildChannelArgs).
+    '--channels',
+    'plugin:agent-chat@agent-chat-local',
   ]
   // Note what an inherited posture costs: agent-chat's own tools stop being
   // allowlisted here and fall back to the session's ordinary permission rules,

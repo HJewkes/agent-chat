@@ -26,14 +26,28 @@ export const planPath = (agentId: string): string => path.join(agentDir(agentId)
 export const mcpConfigPath = (agentId: string): string => path.join(agentDir(agentId), 'mcp.json')
 
 /**
- * The MCP config a spawned agent starts with. Always contains agent-chat itself
- * — an agent that cannot reach the bus is not a peer, it is a subprocess — plus
- * whatever the profile adds.
+ * The MCP config a spawned agent starts with.
+ *
+ * EXPERIMENT (2026-07-31, CC-45/CC-46 live-push verification): agent-chat used
+ * to force its own entry here unconditionally, on the theory that "an agent
+ * that cannot reach the bus is not a peer, it is a subprocess". That guaranteed
+ * tool access even if the agent-chat plugin isn't installed for the child, but
+ * it means the child's agent-chat server is THIS custom --mcp-config entry, not
+ * the one Claude Code actually grants `notifications/claude/channel` to via
+ * `--channels plugin:agent-chat@agent-chat-local` (launch-plan.ts) — that grant
+ * appears tied to the plugin-loaded server (`agent-chat-launch.sh mcp`), not a
+ * same-named --mcp-config entry. Confirmed empirically: with --channels alone,
+ * Claude Code's own banner confirmed injection was "enabled" for the session,
+ * but a pushed chat_send message still never arrived. Dropping this entry and
+ * relying on the plugin's normal auto-load (env vars still propagate via
+ * envFor(), which the plugin's own subprocess reads identically) is the
+ * unverified fix under test. If this breaks agent-chat tool access — e.g. a
+ * setup where the plugin isn't installed, only `npm link`ed — that is the
+ * regression to watch for and the reason this used to be unconditional.
  */
-export function buildMcpConfig(profile: AgentProfile, entry: string): Record<string, unknown> {
+export function buildMcpConfig(profile: AgentProfile, _entry: string): Record<string, unknown> {
   return {
     mcpServers: {
-      'plugin:agent-chat:agent-chat': { command: process.execPath, args: [entry, 'mcp'] },
       ...(profile.mcpServers ?? {}),
     },
   }
