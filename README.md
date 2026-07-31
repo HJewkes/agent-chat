@@ -16,18 +16,18 @@ next poll. Agents can also escalate to you, and you answer from a terminal.
 canonical, current guide to how the tools fit together. Everything else in
 `docs/` is context, not required reading:
 
-| Doc                                | What it is                                                                |
-| ----------------------------------- | -------------------------------------------------------------------------- |
-| `working-as-a-team.md`              | Current guide — how the tools compose, day to day.                       |
-| `demo-walkthrough.md`               | Current guide — a live runbook for sanity-checking what's shipped.       |
-| `permission-relay.md`               | Current guide — verified mechanics of the permission relay, as built.    |
-| `cross-agent-communication.md`      | Lessons learned from real multi-session runs; the evidence behind the messaging rules in `working-as-a-team.md`. |
-| `teleport.md`                       | Design record — implemented; §14 records where the build diverged from the design. |
-| `agent-teams.md`                    | Design record — a plan; nothing in it is implemented yet.                |
-| `notes-a4-surfaces.md`              | Implementation notes — what got built for surfaces, and seams left open. |
-| `notes-a5-isolation.md`             | Implementation notes — the isolation strategies, as implemented.         |
-| `priority-inversion.md`             | Explored and rejected — founding observation was refuted the same day; kept for the correction, not the claim. |
-| `ideas.md`                          | Backlog — ideation only, ranked, nothing implemented.                    |
+| Doc                            | What it is                                                                                                       |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `working-as-a-team.md`         | Current guide — how the tools compose, day to day.                                                               |
+| `demo-walkthrough.md`          | Current guide — a live runbook for sanity-checking what's shipped.                                               |
+| `permission-relay.md`          | Current guide — verified mechanics of the permission relay, as built.                                            |
+| `cross-agent-communication.md` | Lessons learned from real multi-session runs; the evidence behind the messaging rules in `working-as-a-team.md`. |
+| `teleport.md`                  | Design record — implemented; §14 records where the build diverged from the design.                               |
+| `agent-teams.md`               | Design record — a plan; nothing in it is implemented yet.                                                        |
+| `notes-a4-surfaces.md`         | Implementation notes — what got built for surfaces, and seams left open.                                         |
+| `notes-a5-isolation.md`        | Implementation notes — the isolation strategies, as implemented.                                                 |
+| `priority-inversion.md`        | Explored and rejected — founding observation was refuted the same day; kept for the correction, not the claim.   |
+| `ideas.md`                     | Backlog — ideation only, ranked, nothing implemented.                                                            |
 
 ## Why it works the way it does
 

@@ -5,12 +5,12 @@ Status: proposed. Supersedes nothing. Gates any work on a remote/cloud-backed st
 ## Context
 
 PR #19 extracted `EventStore` (`src/broker/event-store.ts`) out of the sqlite-backed
-`EventLog`. That fixed a *coupling* problem: `BrokerCore` now holds an interface
+`EventLog`. That fixed a _coupling_ problem: `BrokerCore` now holds an interface
 (`src/broker/core.ts:38`), the concrete class is injectable (`src/broker/core.ts:49`,
 `BrokerCoreOptions.events`), and `event-log.ts` is the only file in the tree that
 knows `node:sqlite` exists.
 
-It did not fix — and was not meant to fix — the *latency* problem. All 14 methods
+It did not fix — and was not meant to fix — the _latency_ problem. All 14 methods
 are synchronous, because `node:sqlite` is synchronous. A network-backed
 implementation cannot honestly satisfy that signature. So the shape is swappable
 and the contract is not. This ADR decides the latency model before anyone writes
@@ -54,7 +54,7 @@ Blast radius, honestly measured: 21 direct `.events.` call sites, plus 41
 And even done perfectly, (a) is insufficient on its own: it turns each
 `AgentLog.all()` fold into a full-log network round-trip, so a roster render
 becomes several. Async-everywhere buys the right to be remote and does nothing
-about being remote *well*.
+about being remote _well_.
 
 ### (b) Local write-ahead cache: sync reads, async replication out
 
@@ -65,7 +65,7 @@ budget gates and reply-inline handlers keep working.
 Cost: two sources of truth with the local one winning. The log's ordering is a
 local `INTEGER PRIMARY KEY AUTOINCREMENT` (`event-log.ts` SCHEMA), and `msgId` is a
 random 8-char uuid slice (`newMsgId`), so ids order rows within one machine and
-carry no cross-machine ordering at all. Openness is *derived* — `isOpen` /
+carry no cross-machine ordering at all. Openness is _derived_ — `isOpen` /
 `authorOf` / `openEndorsement` are queries over resolution rows (`core.ts:282-283`,
 `:331`, `:369`) — so replication lag between two hosts means two humans can each
 see the same endorsement request as open and each approve it. Nothing in the
