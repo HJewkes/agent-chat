@@ -216,9 +216,11 @@ describe('every builtin profile, on every surface', () => {
   // "not in allowedTools" is not a claim this suite can rest on.
   it('denies rather than merely omits the mutating tools on the read-only builtins', () => {
     const named = (name: string) => BUILTIN_PROFILES.find(p => p.name === name)
-    expect(named('explorer')?.disallowedTools).toEqual(['Bash', 'Write', 'Edit'])
+    expect(named('explorer')?.disallowedTools).toEqual(['Bash', 'Write', 'Edit', 'AskUserQuestion'])
     // CC-22 hardening: every Bash-capable builtin also denies shelling out to the
     // CLI's human-only verbs (see HUMAN_ONLY_CLI_DENY in profiles.ts).
+    // CC-47 hardening: every builtin also denies AskUserQuestion (see NO_SELF_QUESTION
+    // in profiles.ts) so a spawned agent can't self-block on the Turn Endings rule.
     expect(named('reviewer')?.disallowedTools).toEqual([
       'Write',
       'Edit',
@@ -226,6 +228,7 @@ describe('every builtin profile, on every surface', () => {
       'Bash(agent-chat dismiss:*)',
       'Bash(agent-chat send:*)',
       'Bash(agent-chat answer:*)',
+      'AskUserQuestion',
     ])
 
     for (const name of ['explorer', 'reviewer']) {

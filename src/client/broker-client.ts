@@ -13,6 +13,7 @@ import {
 import { cliEntry, home, socketPath } from '../paths.js'
 
 const REQUEST_TIMEOUT_MS = 5000
+// Front-loaded to catch a broker already starting, tailed off for a cold one; the sum is the give-up budget.
 const RECONNECT_DELAYS_MS = [100, 250, 500, 1000, 2000, 5000]
 
 type Waiter = (msg: ServerMessage) => void
