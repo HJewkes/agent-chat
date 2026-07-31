@@ -63,6 +63,8 @@ describe('the argv every surface shares', () => {
       Be brief.",
         "--mcp-config",
         "/state/agents/ag000001/mcp.json",
+        "--channels",
+        "plugin:agent-chat@agent-chat-local",
         "--allowed-tools",
         "Read,Grep,mcp__plugin_agent-chat_agent-chat__*",
         "-p",
@@ -333,11 +335,19 @@ describe('the launch files', () => {
     expect(fs.statSync(planPath('ag000001')).mode & 0o777).toBe(0o600)
   })
 
-  it('always gives the agent agent-chat itself, plus whatever the profile adds', () => {
+  it('carries through whatever the profile adds, and nothing of its own', () => {
+    // agent-chat used to force its own entry here unconditionally. Dropped
+    // 2026-07-31 (CC-45/CC-46): Claude Code's `--channels` grant for
+    // notifications/claude/channel is tied to the plugin-loaded agent-chat
+    // server, not a same-named --mcp-config entry — confirmed empirically that
+    // a spawned peer with the forced entry present never received a pushed
+    // chat_send, and did once this was removed and agent-chat was left to load
+    // via the plugin's normal auto-load path instead. See launch-plan.ts's
+    // --channels flag, which is the other half of this fix.
     const config = buildMcpConfig(profile({ mcpServers: { extra: { command: 'x' } } }), '/repo/dist/cli.js')
     const servers = (config as { mcpServers: Record<string, unknown> }).mcpServers
 
-    expect(Object.keys(servers)).toEqual(['plugin:agent-chat:agent-chat', 'extra'])
+    expect(Object.keys(servers)).toEqual(['extra'])
   })
 
   it('refuses to run an agent with no plan on disk', () => {
