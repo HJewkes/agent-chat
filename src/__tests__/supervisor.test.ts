@@ -202,7 +202,7 @@ describe('spawning', () => {
     const result = await sup.spawn(spawnReq({ profile: 'explorer' }))
 
     expect(result.ok).toBe(true)
-    expect(result.disallowedTools).toEqual(['Bash', 'Write', 'Edit'])
+    expect(result.disallowedTools).toEqual(['Bash', 'Write', 'Edit', 'AskUserQuestion'])
   })
 
   /**
@@ -223,6 +223,7 @@ describe('spawning', () => {
       'Bash(agent-chat dismiss:*)',
       'Bash(agent-chat send:*)',
       'Bash(agent-chat answer:*)',
+      'AskUserQuestion',
     ])
   })
 
@@ -868,7 +869,7 @@ describe('spawn privilege', () => {
     await sup.spawn(spawnReq({ profile: 'explorer' }))
 
     const spawned = core.events.agentEvents().find(r => r.kind === 'agent_spawned')
-    expect(spawned?.meta.disallowed_tools).toBe('Bash,Write,Edit')
+    expect(spawned?.meta.disallowed_tools).toBe('Bash,Write,Edit,AskUserQuestion')
   })
 
   /**

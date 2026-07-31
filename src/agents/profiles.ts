@@ -47,13 +47,28 @@ const HUMAN_ONLY_CLI_DENY = [
   'Bash(agent-chat send:*)',
   'Bash(agent-chat answer:*)',
 ]
+
+/**
+ * CC-47: the operator's global CLAUDE.md requires every turn that ends without
+ * a pending tool result to end with AskUserQuestion. A spawned agent inherits
+ * that file like any other session, so the turn right after it goes idle —
+ * first contact or any later one — gets forced into asking itself an
+ * unanswerable question and sits blocked until a human clicks through it in
+ * its pane. Headless profiles can't even be prompted, so there it hangs
+ * forever with no human able to see why. Denying the tool outright is a
+ * config-level fix, not a CLAUDE.md edit: the rule still applies, it just has
+ * no tool left to satisfy it with, so the agent ends the turn on plain text
+ * instead of blocking.
+ */
+const NO_SELF_QUESTION = ['AskUserQuestion']
+
 export const BUILTIN_PROFILES: readonly AgentProfile[] = [
   {
     name: 'explorer',
     description: 'Read-only search and reconnaissance. Nothing it does can prompt.',
     model: 'sonnet',
     allowedTools: ['Read', 'Grep', 'Glob'],
-    disallowedTools: ['Bash', 'Write', 'Edit'],
+    disallowedTools: ['Bash', 'Write', 'Edit', ...NO_SELF_QUESTION],
     isolation: 'toolset-limited',
     surface: 'headless',
     promptPrelude: 'You are a read-only explorer. Report what you find; do not attempt to change anything.',
@@ -66,7 +81,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     // Bash SURVIVES here on purpose — a reviewer that cannot run the tests is an
     // explorer with a different prelude. It is confined at the file boundary
     // instead: it may run commands, it may not edit what it is reviewing.
-    disallowedTools: ['Write', 'Edit', ...HUMAN_ONLY_CLI_DENY],
+    disallowedTools: ['Write', 'Edit', ...HUMAN_ONLY_CLI_DENY, ...NO_SELF_QUESTION],
     isolation: 'toolset-limited',
     surface: 'headless',
     promptPrelude:
@@ -78,7 +93,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     description: 'Writes code in its own worktree, in a visible pane so prompts are answerable.',
     model: 'opus',
     allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob'],
-    disallowedTools: HUMAN_ONLY_CLI_DENY,
+    disallowedTools: [...HUMAN_ONLY_CLI_DENY, ...NO_SELF_QUESTION],
     isolation: 'worktree',
     surface: 'iterm-pane',
     promptPrelude:
@@ -93,7 +108,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     description: 'A long-lived collaborator sharing your checkout, addressable by name.',
     model: 'opus',
     allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob'],
-    disallowedTools: HUMAN_ONLY_CLI_DENY,
+    disallowedTools: [...HUMAN_ONLY_CLI_DENY, ...NO_SELF_QUESTION],
     isolation: 'none',
     surface: 'iterm-tab',
     promptPrelude:

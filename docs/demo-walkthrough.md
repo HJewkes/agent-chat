@@ -97,7 +97,7 @@ in this repo.` → `agent_spawn` with `profile: explorer`. **In A**, say `List a
 
 **In A**, say: `Pull scout into a visible terminal.` → `agent_surface`. Watch it
 actually open a pane. Then **in A**, say: `Send scout headless again.` →
-`agent_background` — note this only works on *yourself*, so you'd actually run this
+`agent_background` — note this only works on _yourself_, so you'd actually run this
 one from within scout's own session if you want to see it self-background.
 
 **In A**, say: `Show scout's denied-tool log.` → `agent_logs` — should be empty for a
