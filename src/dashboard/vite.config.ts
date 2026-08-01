@@ -30,13 +30,20 @@ export default defineConfig({
    * server the page is on 5173 and the broker on 7600, and without this the
    * fetches are cross-origin and blocked. Proxying rather than enabling CORS on
    * the broker keeps the loopback surface as narrow as §6.5 wants it.
+   *
+   * EVERY KEY IS AN ANCHORED REGEX, and that is not style. A plain `'/api'` key
+   * is a PREFIX match, so it also captures `/api.ts` — this directory's own
+   * module — and forwards it to the broker, which answers 503. The page then
+   * fails to load one module in the middle of its import graph and renders
+   * nothing at all, with no console error to explain why. Found by looking at
+   * a blank page; keep the anchors.
    */
   server: {
     proxy: {
-      '/api': BROKER_ORIGIN,
-      '/health': BROKER_ORIGIN,
+      '^/api/': BROKER_ORIGIN,
+      '^/health$': BROKER_ORIGIN,
       // SSE needs the connection held open rather than buffered.
-      '/events': { target: BROKER_ORIGIN, changeOrigin: true, ws: false },
+      '^/events$': { target: BROKER_ORIGIN, changeOrigin: true, ws: false },
     },
   },
   build: {

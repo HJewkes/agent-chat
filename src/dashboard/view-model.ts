@@ -22,7 +22,11 @@ export interface AgentMetrics {
   errorRate: number
   tokensIn: number
   tokensOut: number
-  /** Tool names in call order, newest last — the sparkline's input. */
+  /**
+   * Tool DOMAINS in call order, newest last — the sparkline's input. Domains
+   * rather than tool names because that is what `TOOL_COLORS` is keyed by; see
+   * {@link toolDomain}.
+   */
   toolSequence: string[]
   frictionCount: number
   filesWritten: number
@@ -39,6 +43,26 @@ export interface AgentVM {
   notice: string
 }
 
+/**
+ * Claude Code's tool name -> one of the five domains `TOOL_COLORS` knows.
+ *
+ * Brain fed its sparkline pre-bucketed lowercase "tool domains" from its own
+ * database, so the raw names never reached `TOOL_COLORS` there. Here they do,
+ * and every name misses the table — which renders the whole strip in the
+ * fallback grey and quietly turns the sparkline into decoration. A failed call
+ * is reported as `error` regardless of which tool it was: for a strip meant to
+ * be read at a glance, "something went wrong here" outranks "it was a Read".
+ */
+export function toolDomain(toolName: string, outcome: string): string {
+  if (outcome === 'error') return 'error'
+  const name = toolName.toLowerCase()
+  if (name === 'read' || name === 'notebookread') return 'read'
+  if (name === 'write' || name === 'edit' || name === 'notebookedit') return 'write'
+  if (name === 'bash' || name === 'bashoutput' || name === 'killshell') return 'bash'
+  if (name === 'grep' || name === 'glob' || name === 'websearch' || name === 'webfetch') return 'search'
+  return 'read'
+}
+
 export function toMetrics(t: TranscriptAnalytics): AgentMetrics {
   return {
     toolCalls: t.toolCalls.length,
@@ -46,7 +70,7 @@ export function toMetrics(t: TranscriptAnalytics): AgentMetrics {
     errorRate: t.errorRate,
     tokensIn: t.tokens.inputTokens,
     tokensOut: t.tokens.outputTokens,
-    toolSequence: t.toolCalls.map((c) => c.toolName),
+    toolSequence: t.toolCalls.map((c) => toolDomain(c.toolName, c.outcome)),
     frictionCount: t.frictionSignals.length,
     filesWritten: t.filesWritten.length,
     subagentCount: t.subagentCount,
