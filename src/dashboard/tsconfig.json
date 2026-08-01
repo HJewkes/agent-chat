@@ -1,0 +1,34 @@
+{
+  // The dashboard is excluded from the root tsconfig — it needs JSX and DOM
+  // globals that the main build (lib: ES2023, no DOM) cannot compile. Excluded
+  // is not the same as unchecked, though: `vite build` runs esbuild, which
+  // strips types without ever looking at them, so without this file a type
+  // error here would ship silently. `tsc -p src/dashboard` is the check.
+  //
+  // noEmit, always. An excluded file that emitted .js into dist/ would give
+  // broker code something importable that the main build does not know about.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "strict": true,
+    // Two flags the root config sets are deliberately OFF here. The component
+    // kit is a direct copy of brain's, which was never typechecked at all, and
+    // it indexes arrays and passes `T | undefined` into optional props in a
+    // dozen places. Rewriting it to satisfy those flags is a port, not a copy —
+    // out of scope for V1 (that is CC-54's titan-design work).
+    //   "noUncheckedIndexedAccess": true,
+    //   "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "types": ["react", "react-dom", "node"]
+  },
+  "include": ["**/*.ts", "**/*.tsx", "../api-contract.ts", "../protocol.ts"],
+  "exclude": ["vite.config.ts"]
+}
