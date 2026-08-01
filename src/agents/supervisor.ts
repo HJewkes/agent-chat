@@ -30,6 +30,7 @@ import { resolveBriefing, type BriefingResult } from './active-work.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { cliEntry, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
+import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import {
   Teleport,
   type InheritedIsolation,
@@ -168,6 +169,11 @@ export interface SupervisorOptions {
    * connection and the full window would just be dead time.
    */
   nameFreeMs?: number
+  /**
+   * CC-71: injectable so a test can assert exactly which lifecycle hook fired
+   * with which payload, without a real `hooks.json` or a real shell command.
+   */
+  hookSpawn?: HookSpawnFn
 }
 
 /**
@@ -190,6 +196,7 @@ export class Supervisor implements TeleportHost {
   private readonly settleMs: number
   private readonly nameFreeMs: number
   private readonly surfaceOptions: SupervisorOptions['surface']
+  private readonly hookSpawn: HookSpawnFn | undefined
   private readonly unwatch: () => void
   private readonly teleporter: Teleport
 
@@ -202,8 +209,13 @@ export class Supervisor implements TeleportHost {
     this.settleMs = options.settleMs ?? SETTLE_MS
     this.nameFreeMs = options.nameFreeMs ?? NAME_FREE_TIMEOUT_MS
     this.surfaceOptions = options.surface ?? {}
+    this.hookSpawn = options.hookSpawn
     this.unwatch = core.onAppend(row => this.onRow(row))
     this.teleporter = new Teleport(core, this, options.countdownMs)
+  }
+
+  private fireHook(event: HookEvent, payload: Record<string, unknown>): void {
+    runHooks(event, payload, this.hookSpawn ? { spawn: this.hookSpawn } : {})
   }
 
   /**
@@ -258,6 +270,12 @@ export class Supervisor implements TeleportHost {
       },
     })
     logEvent('agent_exited', { agentId, name: entry.name, code: outcome.code, inferred: outcome.inferred })
+    this.fireHook('on_complete', {
+      agentId,
+      code: outcome.code,
+      signal: outcome.signal,
+      inferred: outcome.inferred ?? false,
+    })
   }
 
   private refuse(req: SpawnRequest, reason: string): SpawnOutcome {
@@ -562,6 +580,15 @@ export class Supervisor implements TeleportHost {
     const handle = await this.launchOn(surface, plan, req.anchor)
     this.track(agentId, req.name, handle, allocation, isolationName, req.anchor)
     logEvent('agent_spawned', { agentId, name: req.name, surface: handle.surface, cwd: allocation.cwd })
+    this.fireHook('on_spawn', {
+      agentId,
+      name: req.name,
+      session_id: sessionId,
+      cwd: allocation.cwd,
+      parent: req.parentAgentId ?? null,
+      profile: profile.name,
+      briefing: briefing?.slug ?? null,
+    })
     return {
       ok: true,
       agentId,
@@ -1000,6 +1027,15 @@ export class Supervisor implements TeleportHost {
     // releases the real strategy rather than a no-op one.
     this.track(input.agentId, input.name, handle, allocation, isolation, input.anchor)
     logEvent('agent_teleported', { agentId: input.agentId, name: input.name, from: input.inheritedFrom })
+    this.fireHook('on_spawn', {
+      agentId: input.agentId,
+      name: input.name,
+      session_id: sessionId,
+      cwd: allocation.cwd,
+      parent: null,
+      profile: input.profile.name,
+      briefing: null,
+    })
   }
 
   /** Live agents, for `agent ls` and the slot summary. */
