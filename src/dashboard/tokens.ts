@@ -302,6 +302,20 @@ export const semantic = {
     },
   },
 
+  // -- Agent activity (CC-66) --
+  // The four categories the network graph glows by, kept in the same layer as
+  // `tool` so the dashboard has ONE colour language for "what is this node
+  // doing" rather than a second one invented for the graph. Each is picked to
+  // stay distinguishable from every `tool` entry: `message` takes the LIGHT info
+  // blue because `read` already holds the mid one, and `notice` stays tertiary
+  // grey to agree with `eventKindColor`.
+  activity: {
+    message: palette.userBlue.base,
+    question: palette.amber.base,
+    notice: palette.gray.dark,
+    thinking: palette.purple.light,
+  },
+
   // -- Error text on dark --
   errorText: palette.red.light,
 
@@ -536,13 +550,23 @@ export const colors = {
   border: semantic.border,
 } as const
 
-/** Tool type colors for sparklines and tool-activity breakdowns. */
+/**
+ * Activity type colors for sparklines, tool breakdowns and the agent network
+ * graph. The first five are tool calls read out of a transcript; the last four
+ * are agent-to-agent traffic read out of the event log (CC-66). One map, because
+ * both answer the same question — what is this agent doing right now — and two
+ * maps would drift into two colour languages on the same page.
+ */
 export const TOOL_COLORS: Record<string, string> = {
   read: semantic.status.info,
   write: palette.brand.base,
   bash: palette.teal.base,
   search: palette.steel.base,
   error: palette.red.base,
+  message: semantic.activity.message,
+  question: semantic.activity.question,
+  notice: semantic.activity.notice,
+  thinking: semantic.activity.thinking,
 }
 
 // ---------------------------------------------------------------------------

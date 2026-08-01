@@ -9,7 +9,7 @@
  * construction and this file is exactly where a well-meaning backdoor would be
  * added (docs §5).
  */
-import { TOKEN_HEADER } from '../api-contract.js'
+import { MAX_HISTORY_LIMIT, TOKEN_HEADER } from '../api-contract.js'
 import type {
   HealthPayload,
   HistoryResponse,
@@ -45,7 +45,13 @@ async function get<T>(path: string): Promise<T> {
 export const fetchHealth = (): Promise<HealthPayload> => get<HealthPayload>('/health')
 export const fetchSessions = (): Promise<SessionsResponse> => get<SessionsResponse>('/api/sessions')
 export const fetchQueue = (): Promise<QueueResponse> => get<QueueResponse>('/api/queue')
-export const fetchHistory = (limit = 200): Promise<HistoryResponse> =>
+/**
+ * Defaults to the server's own ceiling rather than its default: the network
+ * graph (CC-66) needs enough history that spawn edges do not age out on a busy
+ * day, and every dashboard view shares this one fetch (live.ts), so there is no
+ * cheaper tier to give the feed/log views instead.
+ */
+export const fetchHistory = (limit = MAX_HISTORY_LIMIT): Promise<HistoryResponse> =>
   get<HistoryResponse>(`/api/history?limit=${limit}`)
 
 /**

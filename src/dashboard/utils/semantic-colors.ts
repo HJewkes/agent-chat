@@ -13,7 +13,8 @@
  * mapping both would leave working and available indistinguishable.
  */
 import type { EventKind, SessionStatus } from '../../protocol.js'
-import { semantic } from '../components/shared/colors.js'
+import type { ActivityCategory } from '../agent-graph.js'
+import { semantic, TOOL_COLORS } from '../components/shared/colors.js'
 
 const SESSION_STATUS_COLORS: Record<SessionStatus, string> = {
   working: semantic.status.active,
@@ -53,4 +54,13 @@ const EVENT_KIND_COLORS: Partial<Record<EventKind, string>> = {
 
 export function eventKindColor(kind: EventKind | string): string {
   return EVENT_KIND_COLORS[kind as EventKind] ?? semantic.text.tertiary
+}
+
+/**
+ * Colour for a network-graph node's newest activity. Resolved through
+ * TOOL_COLORS rather than a map of its own, so the graph and every tool
+ * breakdown on the page speak one colour language (CC-66).
+ */
+export function activityColor(category: ActivityCategory): string {
+  return TOOL_COLORS[category] ?? semantic.text.tertiary
 }
