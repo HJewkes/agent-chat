@@ -18,10 +18,15 @@ export { RankedList } from './RankedList.js'
 export type { RankedListProps, RankedListItem } from './RankedList.js'
 export { HorizBarList } from './HorizBarList.js'
 export type { HorizBarListProps, HorizBarRow } from './HorizBarList.js'
-export { ChartContainer, GridLines, DEFAULT_PADDING, xPos, yPos } from './chart/index.js'
+export { CommandPalette } from './CommandPalette.js'
+export type { CommandPaletteProps, PaletteCommand } from './CommandPalette.js'
+export { ChartContainer, GridLines, Axis, LineChart, DEFAULT_PADDING, xPos, yPos } from './chart/index.js'
 export type {
   ChartContainerProps,
   GridLinesProps,
+  AxisProps,
+  LineChartProps,
+  ChartSeries,
   DataPoint,
   ChartConfig,
   ChartPadding,

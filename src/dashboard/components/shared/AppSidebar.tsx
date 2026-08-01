@@ -1,6 +1,8 @@
-import React from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { View, Text, Pressable } from 'react-native'
 import { palette, semantic, component, sp } from '../../tokens.js'
+import { CommandPalette } from './CommandPalette.js'
+import type { PaletteCommand } from './CommandPalette.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -12,8 +14,10 @@ export interface AppSidebarProps {
   navItems: Array<{ id: string; label: string; icon: string; hash: string }>
   projectName: string
   generatedAt: string
-  /** Omitted here: agent-chat's V1 dashboard ships no command palette. */
+  /** Host override: takes the palette over entirely, replacing the built-in one. */
   onOpenPalette?: () => void
+  /** Appended to the nav commands the palette builds from `navItems`. */
+  extraCommands?: PaletteCommand[]
   liveMode?: boolean
   sseConnected?: boolean
   lastRefresh?: Date | null
@@ -30,10 +34,13 @@ export function AppSidebar({
   projectName,
   generatedAt,
   onOpenPalette,
+  extraCommands,
   liveMode,
   sseConnected,
   lastRefresh,
 }: AppSidebarProps) {
+  const cmdPalette = useNavPalette({ navItems, onSelect, extraCommands, onOpenPalette })
+
   return (
     <View style={styles.sidebar}>
       {/* Header */}
@@ -41,16 +48,20 @@ export function AppSidebar({
         <Text style={styles.sidebarTitle}>{projectName}</Text>
       </View>
 
-      {/* Command palette button — only when a host supplies a palette. */}
-      {onOpenPalette && (
-        <Pressable onPress={onOpenPalette} style={styles.paletteBtn}>
-          <Text style={styles.paletteBtnIcon}>⌕</Text>
-          <Text style={styles.paletteBtnText}>Search…</Text>
-          <View style={styles.paletteBtnKbd}>
-            <Text style={styles.paletteBtnKbdText}>⌘K</Text>
-          </View>
-        </Pressable>
-      )}
+      {/* Command palette: built-in unless the host takes it over via onOpenPalette. */}
+      <Pressable onPress={cmdPalette.open} style={styles.paletteBtn}>
+        <Text style={styles.paletteBtnIcon}>⌕</Text>
+        <Text style={styles.paletteBtnText}>Search…</Text>
+        <View style={styles.paletteBtnKbd}>
+          <Text style={styles.paletteBtnKbdText}>⌘K</Text>
+        </View>
+      </Pressable>
+      <CommandPalette
+        open={cmdPalette.isOpen}
+        commands={cmdPalette.commands}
+        onClose={cmdPalette.close}
+        placeholder="Jump to a view…"
+      />
 
       {/* Nav items */}
       <View style={styles.navList}>
@@ -97,6 +108,52 @@ export function AppSidebar({
       </View>
     </View>
   )
+}
+
+// ---------------------------------------------------------------------------
+// Palette wiring
+// ---------------------------------------------------------------------------
+
+type NavPaletteArgs = Pick<AppSidebarProps, 'navItems' | 'onSelect' | 'extraCommands' | 'onOpenPalette'>
+
+/**
+ * Nav items are the palette's baseline command set, so a host gets a working
+ * ⌘K without listing its own views twice. `onOpenPalette` still wins when a
+ * host wants to run the palette itself.
+ */
+function useNavPalette({ navItems, onSelect, extraCommands, onOpenPalette }: NavPaletteArgs) {
+  const [isOpen, setIsOpen] = useState(false)
+
+  const commands = useMemo<PaletteCommand[]>(() => {
+    const navCommands = navItems.map(item => ({
+      id: `nav:${item.id}`,
+      label: `Go to ${item.label}`,
+      hint: item.hash,
+      run: () => {
+        window.location.hash = item.hash
+        onSelect(item.id)
+      },
+    }))
+    return [...navCommands, ...(extraCommands ?? [])]
+  }, [navItems, onSelect, extraCommands])
+
+  const open = useCallback(() => {
+    if (onOpenPalette) onOpenPalette()
+    else setIsOpen(true)
+  }, [onOpenPalette])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'k' || !(event.metaKey || event.ctrlKey)) return
+      event.preventDefault()
+      open()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [open])
+
+  const close = useCallback(() => setIsOpen(false), [])
+  return { isOpen, commands, open, close }
 }
 
 // ---------------------------------------------------------------------------
