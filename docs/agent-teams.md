@@ -325,6 +325,7 @@ session_id    the uuid passed to --session-id; the resume handle
 allowed_tools csv, as passed to --allowed-tools
 perm_mode     the --permission-mode actually used, or "" for inherited
 depth         spawn depth (§11.3)
+briefing      active-work slug injected in front of the brief (§5.6), if any
 ```
 
 `meta` keys must stay in `[A-Za-z0-9_]` — keys with hyphens are silently dropped
@@ -692,6 +693,45 @@ launch. Three reasons, all of them load-bearing:
    second writer to the same SQLite file.
 3. **One budget.** The semaphore and the depth cap (§11.3) need exactly one
    enforcement point. Per-session enforcement is not enforcement.
+
+#### 5.6 `briefing`: the onboarding doc a fresh agent never got (CC-63)
+
+A spawned agent starts from its brief and nothing else, so in practice every
+brief written by hand has re-described the same orientation context: what the
+initiative is, what is already decided, which files to read first. That context
+already exists on disk, written by `active-work`. `agent_spawn` takes an optional
+`briefing` — an initiative slug, or `auto` — and the broker prepends that
+initiative's `brief.md`, open task list and newest session note to the brief.
+
+Implemented in `agents/active-work.ts` (`resolveBriefing`, `briefingFor`), called
+from `Supervisor.briefingFor`. Shape of the decision, in order of how much it
+matters:
+
+- **A pointer, not text.** The request names a slug; the broker decides what to
+  read. Letting a requester pass the briefing body — or the directory to read it
+  from — would make `agent_spawn` a way to have arbitrary files read back into a
+  context, which §11.2 spends its length avoiding.
+- **Which initiative, when `cwd` does not say.** `auto` resolves from the
+  REQUESTER's registered cwd first, then from the spawn's target `cwd`. The
+  coordinator is the party that knows which initiative the work belongs to and
+  usually sits in the initiative directory itself; the target is usually a
+  checkout, and several initiatives can legitimately share one. When neither
+  names an initiative, the spawn succeeds with a warning and no briefing —
+  guessing produces a confidently wrong onboarding doc the agent cannot tell is
+  wrong. Mapping repo paths back to initiatives through `artifacts.yml` was
+  considered and rejected: it records a repo per tracked branch, so it is
+  ambiguous exactly when it would be relied on.
+- **Never a precondition.** An unresolvable slug warns; it does not fail the
+  spawn. Orientation is an improvement to a brief.
+- **The log keeps the ASK.** `agent_spawned.body` stays the coordinator's own
+  brief, with `meta.briefing` naming the slug that was injected in front of it.
+  Pasting an initiative's onboarding doc into every spawn row would bury what was
+  actually requested.
+- **Reading another tool's layout** (`<root>/<slug>/{brief.md,tasks,sessions}`,
+  root per `env-paths`, overridable with `AGENT_CHAT_ACTIVE_WORK_ROOT`) is a
+  shallow dependency taken on purpose. Nothing shells out to the `active-work`
+  CLI — the broker must not need another program installed to spawn an agent —
+  and nothing writes. If the layout moves, this degrades to "no briefing found".
 
 ---
 
@@ -1101,7 +1141,8 @@ wiring.
 ```ts
 // Session -> broker
 | { t: 'spawn'; name: string; profile: string; brief: string;
-    cwd?: string; isolation?: IsolationName; surface?: SurfaceName }
+    cwd?: string; isolation?: IsolationName; surface?: SurfaceName;
+    briefing?: string }   // active-work slug or "auto" (§5.6)
 | { t: 'agents'; includeRetired?: boolean }
 | { t: 'retire'; name: string }
 // register gains:  agentId?: string;  termSessionId?: string
@@ -1117,7 +1158,9 @@ model — "you are sharing a checkout with bob" is information it should have.
 
 #### 10.2 MCP tools
 
-- **`agent_spawn`** — `{name, profile, brief, cwd?}`. Note the omissions: no
+- **`agent_spawn`** — `{name, profile, brief, cwd?, briefing?}` (`briefing` per
+  §5.6: a slug the broker resolves, never text the caller supplies). Note the
+  omissions: no
   `model`, no `tools`, no `permission_mode`, no `isolation` override. Those come
   from the named profile, and a peer model does not get to raise them (§11.2).
   The description must state the budget and that spawned agents are ordinary
@@ -1131,7 +1174,7 @@ Both are gated (§11) and both refuse clearly rather than failing.
 #### 10.3 CLI
 
 ```
-agent-chat agent spawn <name> --profile <p> [--cwd] [--surface] [--isolation] [--brief|-]
+agent-chat agent spawn <name> <profile> [--briefing <slug|auto>] "<brief>"
 agent-chat agent ls [--all]        roster: lifecycle x presence (§2.5)
 agent-chat agent attach <name>     select the iTerm pane, or print how to reach it
 agent-chat agent resume <name>     new process, same identity

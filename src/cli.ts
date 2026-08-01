@@ -248,15 +248,30 @@ async function agentLs(): Promise<void> {
 }
 
 async function agentSpawn(args: string[]): Promise<void> {
-  const [name, profile, ...words] = args
-  if (!name || !profile || words.length === 0) {
-    console.error('usage: agent-chat agent spawn <name> <profile> "<brief>"')
+  // `--briefing <slug|auto>` (CC-63) is pulled out before positionals so the
+  // brief can still be an unquoted run of words, which is how this verb is used.
+  const flagAt = args.indexOf('--briefing')
+  const briefing = flagAt === -1 ? undefined : args[flagAt + 1]
+  const positional = flagAt === -1 ? args : [...args.slice(0, flagAt), ...args.slice(flagAt + 2)]
+  const [name, profile, ...words] = positional
+  if (!name || !profile || words.length === 0 || (flagAt !== -1 && briefing === undefined)) {
+    console.error('usage: agent-chat agent spawn <name> <profile> [--briefing <slug|auto>] "<brief>"')
     process.exit(1)
   }
   const res = (await withBroker(b =>
     // The human holds no registry entry (§6.4), so the broker has no cwd to read
     // for them — send it, or the agent inherits the broker's arbitrary one.
-    b.request({ t: 'spawn', name, profile, brief: words.join(' '), cwd: process.cwd() }, 'spawn_result'),
+    b.request(
+      {
+        t: 'spawn',
+        name,
+        profile,
+        brief: words.join(' '),
+        cwd: process.cwd(),
+        ...(briefing === undefined ? {} : { briefing }),
+      },
+      'spawn_result',
+    ),
   )) as Extract<ServerMessage, { t: 'spawn_result' }>
 
   for (const warning of res.warnings ?? []) console.log(warning)

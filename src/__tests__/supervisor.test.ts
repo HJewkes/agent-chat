@@ -9,6 +9,7 @@ import { Registry } from '../broker/registry.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { SpawnRateBudget } from '../agents/spawn-rate.js'
 import { MAX_DEPTH, Supervisor } from '../agents/supervisor.js'
+import { readLaunchPlan } from '../agents/launch-files.js'
 
 /**
  * A6 — lifecycle. What is being proved is that an agent's slot, isolation and
@@ -169,6 +170,55 @@ describe('spawning', () => {
       expect(
         (await sup.spawn(spawnReq({ name: 'two', requestedBy: 'human', cwd: '/nope/nowhere' }))).reason,
       ).toMatch(/does not exist/)
+    })
+  })
+
+  /**
+   * CC-63. The briefing itself is built and resolved in `active-work.ts` and
+   * tested there; what matters here is that the spawned agent is actually HANDED
+   * it, and that a briefing that cannot be resolved costs a warning rather than
+   * the spawn.
+   */
+  describe('an injected active-work briefing', () => {
+    /** A minimal initiative, in a root the supervisor is pointed at by env. */
+    function initiativeRoot(slug: string): string {
+      const root = workspace()
+      fs.mkdirSync(path.join(root, slug), { recursive: true })
+      fs.writeFileSync(path.join(root, slug, 'brief.md'), '# Widgets\n\nWhy: to prove orientation lands.\n')
+      process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = root
+      return root
+    }
+
+    afterEach(() => {
+      delete process.env.AGENT_CHAT_ACTIVE_WORK_ROOT
+    })
+
+    it('prepends the initiative to the brief the agent actually receives', async () => {
+      const sup = withStubbedSurface()
+      initiativeRoot('widgets')
+
+      const result = await sup.spawn(spawnReq({ brief: 'review the parser', briefing: 'widgets' }))
+
+      expect(result.ok).toBe(true)
+      // Headless carries the brief on stdin; this is what the process is handed.
+      const delivered = readLaunchPlan(result.agentId as string).stdin ?? ''
+      expect(delivered).toContain('Why: to prove orientation lands.')
+      expect(delivered).toContain('review the parser')
+      // The log records what was ASKED FOR, with the slug as the pointer.
+      const row = core.events.agentEvents().find(r => r.kind === 'agent_spawned')
+      expect(row?.body).toBe('review the parser')
+      expect(row?.meta.briefing).toBe('widgets')
+    })
+
+    it('spawns anyway, with a warning, when the initiative cannot be resolved', async () => {
+      const sup = withStubbedSurface()
+      initiativeRoot('widgets')
+
+      const result = await sup.spawn(spawnReq({ briefing: 'no-such-initiative' }))
+
+      expect(result.ok).toBe(true)
+      expect(result.warnings?.join(' ')).toMatch(/no active-work initiative "no-such-initiative"/)
+      expect(readLaunchPlan(result.agentId as string).stdin ?? '').not.toContain('Orientation')
     })
   })
 

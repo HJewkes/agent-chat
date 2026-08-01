@@ -527,6 +527,16 @@ export const TOOL_DEFINITIONS = [
           description: "Overrides the profile's isolation, e.g. worktree to keep it out of your checkout.",
         },
         cwd: { type: 'string', description: 'Working directory. Defaults to yours.' },
+        briefing: {
+          type: 'string',
+          description:
+            'Optional active-work initiative slug (e.g. "claude-channels"), or "auto". The broker reads ' +
+            "that initiative's brief.md, open tasks and latest session note and prepends them to your " +
+            'brief, so you do not have to re-describe the project — write the ASSIGNMENT in brief and ' +
+            'let this carry the orientation. "auto" resolves from your own directory first, then from ' +
+            'cwd; if neither is inside an initiative the spawn still succeeds, with a warning and no ' +
+            'briefing. Omit it when the work has no active-work initiative behind it.',
+        },
       },
       required: ['name', 'profile', 'brief'],
     },
@@ -1196,6 +1206,7 @@ export class ToolHandler {
     const surface = optionalEnum(args, 'surface', SURFACE_NAMES)
     const isolation = optionalEnum(args, 'isolation', ISOLATION_NAMES)
     const cwd = optionalString(args, 'cwd')
+    const briefing = optionalString(args, 'briefing')
     const res = (await this.call(
       {
         t: 'spawn',
@@ -1205,6 +1216,7 @@ export class ToolHandler {
         ...(surface === undefined ? {} : { surface }),
         ...(isolation === undefined ? {} : { isolation }),
         ...(cwd === undefined ? {} : { cwd }),
+        ...(briefing === undefined ? {} : { briefing }),
       },
       'spawn_result',
     )) as Extract<ServerMessage, { t: 'spawn_result' }>
