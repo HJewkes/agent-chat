@@ -976,4 +976,60 @@ describe('spawn privilege', () => {
     expect(result.reason).toMatch(/Bash/)
     expect(core.events.history(10).some(r => r.kind === 'agent_spawn_refused')).toBe(true)
   })
+
+  /**
+   * CC-69: a parent denied only scoped Bash sub-patterns (as `peer` is) can
+   * spawn a child whose deny list denies ALL of Bash (as `explorer` does) — the
+   * blanket deny is strictly stronger, so it is not actually a weaker deny list
+   * even though none of the scoped strings appear in it literally.
+   */
+  it('treats a blanket deny as covering the scoped sub-patterns it subsumes', async () => {
+    const sup = withStubbedSurface()
+    const shared = workspace()
+    const parentAgentId = spawnedParentWithDeny(
+      'peer-agent',
+      shared,
+      ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob'],
+      ['Bash(agent-chat endorse:*)', 'Bash(agent-chat dismiss:*)', 'AskUserQuestion'],
+    )
+
+    const result = await sup.spawn(
+      spawnReq({ profile: 'explorer', requestedBy: 'peer-agent', parentAgentId, cwd: shared }),
+    )
+
+    expect(result.ok).toBe(true)
+  })
+
+  /**
+   * The fix above must not become "any deny satisfies any deny" — a child that
+   * only denies a scoped sub-pattern still does not satisfy a parent that was
+   * denied the blanket tool.
+   */
+  it('still refuses a scoped child deny against a blanket parent deny', async () => {
+    const sup = withStubbedSurface()
+    const shared = workspace()
+    fs.writeFileSync(
+      path.join(profilesDirFor(), 'scoped-denier.json'),
+      JSON.stringify({
+        model: 'sonnet',
+        allowedTools: ['Read', 'Grep', 'Glob', 'Bash'],
+        disallowedTools: ['Bash(git:*)'],
+        isolation: 'toolset-limited',
+        surface: 'headless',
+      }),
+    )
+    const parentAgentId = spawnedParentWithDeny(
+      'blanket-denied-agent',
+      shared,
+      ['Read', 'Grep', 'Glob', 'Bash'],
+      ['Bash'],
+    )
+
+    const result = await sup.spawn(
+      spawnReq({ profile: 'scoped-denier', requestedBy: 'blanket-denied-agent', parentAgentId, cwd: shared }),
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/weaker deny list/)
+  })
 })
