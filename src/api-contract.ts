@@ -1,5 +1,6 @@
 import { EVENT_KINDS, NON_KIND_SSE_EVENTS } from './protocol.js'
 import type { EventKind, QueueItem, SessionInfo } from './protocol.js'
+import type { SessionAnalytics } from './agents/analytics/types.js'
 
 /**
  * The frozen HTTP + SSE contract, written once and imported by both the API and
@@ -53,6 +54,49 @@ export interface SessionsResponse {
 
 export interface HistoryResponse {
   items: QueueItem[]
+}
+
+/**
+ * `SessionAnalytics` made JSON-safe.
+ *
+ * Three of its fields are `Map`s (one with `Set` values), and `JSON.stringify`
+ * turns a Map into `{}` — silently, with a 200 and a well-formed body, which is
+ * the worst possible failure mode for a read API. So the wire type states the
+ * conversion rather than leaving each caller to discover it: `Map` becomes a
+ * plain record, the nested `Set` becomes an array.
+ */
+export interface TranscriptAnalytics extends Omit<
+  SessionAnalytics,
+  'filesTouched' | 'modelCounts' | 'skillUsage'
+> {
+  /** tool name -> the files it touched. */
+  filesTouched: Record<string, string[]>
+  modelCounts: Record<string, number>
+  skillUsage: Record<string, number>
+}
+
+/**
+ * `GET /api/transcript?sessionId=&cwd=`.
+ *
+ * The transcript is telemetry owned by Claude Code, not by us: it may never have
+ * been written, or may have been reaped. So a miss is `exists: false` with a 404
+ * and the path we looked at — a normal state a reader can act on, not an error.
+ *
+ * `analytics` is the fold of a whole session's transcript and can run to several
+ * megabytes on a long one. It is a deliberate on-demand read, never part of a
+ * list response.
+ */
+export interface TranscriptResponse {
+  sessionId: string
+  cwd: string
+  path: string
+  exists: boolean
+  analytics: TranscriptAnalytics | null
+}
+
+/** Every 4xx from `/api/*` carries this, so a client never has to sniff the body. */
+export interface ErrorResponse {
+  error: string
 }
 
 /** `POST /api/answer` and `POST /api/dismiss` both return this. */

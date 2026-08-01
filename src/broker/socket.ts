@@ -1,4 +1,3 @@
-import net from 'node:net'
 import fs from 'node:fs'
 import {
   encode,
@@ -8,7 +7,7 @@ import {
   type DeliveredMessage,
   type ServerMessage,
 } from '../protocol.js'
-import { cliEntry, home, socketPath } from '../paths.js'
+import { cliEntry, socketPath } from '../paths.js'
 import { logEvent } from './log.js'
 import { newMsgId } from './event-log.js'
 import { type Escalation, type RouteResult } from './registry.js'
@@ -16,15 +15,6 @@ import { BrokerCore, type Conn } from './core.js'
 import { Supervisor } from '../agents/supervisor.js'
 import type { SwitchOutcome } from '../agents/mode-switch.js'
 import { SystemEventFeed } from './subscriptions.js'
-import {
-  probeSocket,
-  readPidFile,
-  removeStateFiles,
-  watchSocket,
-  writeMeta,
-  writePidFile,
-} from './lifecycle.js'
-import { VERSION } from './version.js'
 
 const MAX_OPEN_QUESTIONS = 3
 
@@ -43,7 +33,13 @@ const reply = (conn: Conn, message: ServerMessage): void => {
   conn.write(encode(message))
 }
 
-const deliver = (conn: Conn, message: DeliveredMessage): void => {
+/**
+ * The transport half of `BrokerCore`'s injected `deliver`. Exported because
+ * `daemon.ts` is what composes a core with this server — the core must stay free
+ * of socket I/O for the same reason the HTTP layer must: one write path, several
+ * transports.
+ */
+export const deliver = (conn: Conn, message: DeliveredMessage): void => {
   reply(conn, { t: 'deliver', message })
 }
 
@@ -850,117 +846,4 @@ export class SocketServer {
     conn.on('close', drop)
     conn.on('error', drop)
   }
-}
-
-/**
- * Take ownership of the socket path, or report that someone else already has it.
- *
- * Probes the socket BEFORE touching any other resource. This is the single
- * instance guard, and it has to run first so two racing auto-starts can never
- * both get as far as binding a port.
- */
-async function claimSocketPath(sock: string): Promise<boolean> {
-  if (await probeSocket(sock)) {
-    logEvent('broker_exit', { reason: 'another broker is already listening' })
-    return false
-  }
-  if (fs.existsSync(sock)) fs.unlinkSync(sock)
-  return true
-}
-
-/** Bind the listener and hand connections to `socketServer`. */
-async function listenOn(sock: string, socketServer: SocketServer): Promise<net.Server> {
-  const server = net.createServer(conn => socketServer.onConnection(conn))
-  server.on('error', err => logEvent('broker_error', { error: String(err) }))
-
-  await new Promise<void>(resolve => server.listen(sock, resolve))
-  fs.chmodSync(sock, 0o600) // this user only; the trust boundary is the OS account
-  logEvent('broker_started', { pid: process.pid, sock })
-  return server
-}
-
-/**
- * Written only after the socket is bound and serving, so their presence never
- * implies more than is true. `port` stays null until the HTTP layer exists and
- * reports what it actually got — the bind is best-effort, and recording an
- * intended port as though it were a bound one is how a status command starts
- * lying.
- */
-function recordBrokerState(): void {
-  writePidFile()
-  writeMeta({ port: null, version: VERSION, started: Date.now(), pid: process.pid })
-}
-
-interface ShutdownDeps {
-  sock: string
-  server: net.Server
-  socketServer: SocketServer
-  core: BrokerCore
-  stopWatching: () => void
-}
-
-/**
- * `tidy` is false for exactly one caller: the watchdog, when the socket at our
- * path now belongs to a DIFFERENT broker. Unlinking then would take out a live
- * broker's socket on the way out, and removing the state files would delete
- * the pid and meta it had just written — turning our own orphaning into an
- * outage for whoever replaced us.
- */
-function makeShutdown({ sock, server, socketServer, core, stopWatching }: ShutdownDeps) {
-  return (tidy = true): void => {
-    logEvent('broker_stopping', { pid: process.pid })
-    stopWatching()
-    server.close()
-    socketServer.close()
-    core.close()
-    if (tidy) {
-      if (fs.existsSync(sock)) fs.unlinkSync(sock)
-      removeStateFiles()
-    }
-    process.exit(0)
-  }
-}
-
-function installSignalHandlers(shutdown: () => void): void {
-  process.on('SIGINT', () => shutdown())
-  process.on('SIGTERM', () => shutdown())
-}
-
-export async function startBroker(): Promise<net.Server | null> {
-  const sock = socketPath()
-  fs.mkdirSync(home(), { recursive: true })
-  if (!(await claimSocketPath(sock))) return null
-
-  const core = new BrokerCore(deliver)
-  const socketServer = new SocketServer(core)
-  const server = await listenOn(sock, socketServer)
-  recordBrokerState()
-
-  // The watcher and the shutdown it triggers are mutually referential: shutdown
-  // must stop the watcher, and the watcher must be able to call shutdown. The
-  // indirection below keeps that cycle, which the original expressed by closing
-  // over a `const` declared further down — shutdown never runs before startup
-  // finishes, so the reference is always resolved by the time it is read.
-  let stopWatching: (() => void) | undefined
-  const shutdown = makeShutdown({
-    sock,
-    server,
-    socketServer,
-    core,
-    stopWatching: () => stopWatching?.(),
-  })
-
-  // A broker whose socket has been unlinked is unreachable, not degraded: no
-  // client can find it and nothing will ever end it. See `watchSocket`.
-  stopWatching = watchSocket({
-    path: sock,
-    owner: readPidFile,
-    onLost: reason => {
-      logEvent('broker_exit', { reason, pid: process.pid })
-      shutdown(!fs.existsSync(sock))
-    },
-  })
-
-  installSignalHandlers(shutdown)
-  return server
 }
