@@ -9,7 +9,7 @@ import { TokenGauge } from '../components/shared/TokenGauge.js'
 import { HorizBarList } from '../components/shared/HorizBarList.js'
 import type { HorizBarRow } from '../components/shared/HorizBarList.js'
 import { fmtDuration, fmtK, fmtTime } from '../utils/formatting.js'
-import { sessionStatusColor } from '../utils/semantic-colors.js'
+import { dndColor, sessionStatusColor } from '../utils/semantic-colors.js'
 import { branchOf, fmtIdle, sortSessions } from '../view-model.js'
 import { useTranscripts } from '../transcripts.js'
 import type { TranscriptEntry } from '../transcripts.js'
@@ -174,7 +174,7 @@ function SessionDetail({ session }: { session: SessionInfo }) {
       <View style={styles.detailHeader}>
         <Text style={styles.detailId}>{session.name}</Text>
         <Badge label={session.status} color={sessionStatusColor(session.status)} dot />
-        {session.dnd && <Badge label="dnd" color={C.textTertiary} />}
+        {session.dnd && <Badge label="dnd" color={dndColor()} />}
       </View>
 
       <Text style={styles.workingOn}>{session.workingOn || 'No stated task'}</Text>

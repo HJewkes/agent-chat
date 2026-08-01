@@ -1,79 +1,94 @@
 /**
- * Brain Dashboard Design Tokens — v2
+ * Dashboard Design Tokens — v3, resolved from titan-design
  *
- * Principle: every color on the page traces back to a named token.
- * Three layers: Palette (raw values), Semantic (meaning), Component (usage).
+ * Principle: every color on the page traces back to a titan-design semantic
+ * token. Nothing below is a hand-picked hex; the only literals left are
+ * opacities. Three layers: Palette (hue families), Semantic (meaning),
+ * Component (usage).
+ *
+ * `T` is titan's resolved DARK token set. The dashboard is dark-only today, so
+ * it resolves once at module load rather than through a theme context; adding
+ * light mode means threading `getSemanticColors('light')` through a provider,
+ * not editing values here.
  *
  * The backward-compat `colors` export preserves the exact shape of the v1 API.
  */
 
-import { generateShades } from './utils/color-utils.js'
+import {
+  categoricalPalette,
+  getSemanticColors,
+  greyRamp,
+  primitiveColors,
+} from '@titan-design/react-ui/theme/tokens'
+import { alpha, generateShades } from './utils/color-utils.js'
+
+const T = getSemanticColors('dark')
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Layer 1: Primitive Palette
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Hue families, each anchored on the titan token that carries its meaning.
 // Pre-compute shade scales so the palette object can be `as const`.
-const _brand = generateShades('#FF7900')
-const _teal = generateShades('#14B8A6')
-const _red = generateShades('#F83030')
-const _amber = generateShades('#F4A736')
-const _gold = generateShades('#D4A520')
-const _userBlue = generateShades('#5B9BD5')
-const _accentBlue = generateShades('#2563EB')
-const _steel = generateShades('#406D87')
-const _purple = generateShades('#823CA0') // dim-base intentionally differs from display base
-const _green = generateShades('#22c55e')
-const _gray = generateShades('#6B7280') // dim-base; display variants use brighter tones
+const _brand = generateShades(T['brand-primary'])
+const _teal = generateShades(T['status-success'])
+const _red = generateShades(T['status-error'])
+const _amber = generateShades(T['status-warning'])
+const _gold = generateShades(T['status-warning-dark'])
+const _userBlue = generateShades(T['status-info-light'])
+const _accentBlue = generateShades(T['status-info-dark'])
+const _steel = generateShades(T['brand-secondary'])
+const _purple = generateShades(T['data-5'])
+const _green = generateShades(T['status-live'])
+const _gray = generateShades(greyRamp[600])
 
 export const palette = {
   // -- Neutrals / Surfaces --
-  black: '#000000',
-  white: '#ffffff',
-  bg: '#101010',
-  surface1: '#161616',
-  surface2: '#191919',
-  surface3: '#1e1e1e',
+  black: primitiveColors.black,
+  white: primitiveColors.white,
+  bg: T['background-base'],
+  surface1: T['surface-elevated'],
+  surface2: T['surface-raised'],
+  surface3: T['surface-overlay'],
 
   // -- Brand --
   brand: {
     ..._brand,
     // Extra shades beyond the standard scale
-    dim06: `rgba(255,121,0,0.06)`,
-    dim20: `rgba(255,121,0,0.20)`,
-    dim30: `rgba(255,121,0,0.30)`,
+    dim06: alpha(T['brand-primary'], 0.06),
+    dim20: alpha(T['brand-primary'], 0.2),
+    dim30: alpha(T['brand-primary'], 0.3),
   },
 
   // -- Teal (success/done/write) --
   teal: {
     ..._teal,
     // Extra shades beyond the standard scale
-    dim10: `rgba(20,184,166,0.10)`,
-    dim20: `rgba(20,184,166,0.20)`,
+    dim10: alpha(T['status-success'], 0.1),
+    dim20: alpha(T['status-success'], 0.2),
   },
 
   // -- Red (error/blocked) --
   red: {
     ..._red,
-    light: '#F87171',
-    // was #DC050C — brightened for WCAG AA (3.4→4.6:1 on surface2 #191919)
+    light: T['status-error-light'],
     // Extra shades beyond the standard scale
-    dim10: `rgba(248,48,48,0.10)`,
-    dim20: `rgba(248,48,48,0.20)`,
-    dim30: `rgba(248,48,48,0.30)`,
+    dim10: alpha(T['status-error'], 0.1),
+    dim20: alpha(T['status-error'], 0.2),
+    dim30: alpha(T['status-error'], 0.3),
   },
 
-  // -- Critical (iOS system red -- priority only) --
+  // -- Critical (priority only) --
   critical: {
-    base: '#FF3B30',
+    base: T['status-error-vivid'],
   },
 
   // -- Amber (edit/idle/warning) --
   amber: {
     ..._amber,
     // Extra shades beyond the standard scale
-    dim20: `rgba(244,167,54,0.20)`,
-    dim40: `rgba(244,167,54,0.40)`,
+    dim20: alpha(T['status-warning'], 0.2),
+    dim40: alpha(T['status-warning'], 0.4),
   },
 
   // -- Gold (ready/queued) --
@@ -83,42 +98,42 @@ export const palette = {
 
   // -- Blue (info/read) --
   blue: {
-    base: '#2196F3',
-    dark: '#1965B0',
-    light: '#7BAFDE',
+    base: T['status-info'],
+    dark: T['status-info-dark'],
+    light: T['status-info-light'],
   },
 
   // -- User blue (message cards) --
   userBlue: {
     ..._userBlue,
     // Special named aliases kept for semantic clarity
-    bgDark: 'rgba(20,50,90,0.35)',
-    border50: `rgba(91,155,213,0.50)`,
+    bgDark: alpha(T['status-info-dark'], 0.35),
+    border50: alpha(T['status-info-light'], 0.5),
     // Extra shades beyond the standard scale
-    dim35: `rgba(91,155,213,0.35)`,
+    dim35: alpha(T['status-info-light'], 0.35),
   },
 
-  // -- SubagentDrawer blue (different base from info blue) --
+  // -- SubagentDrawer blue (deeper than info blue) --
   accentBlue: {
     ..._accentBlue,
     // Extra shades beyond the standard scale
-    dim06: `rgba(37,99,235,0.06)`,
-    dim40: `rgba(37,99,235,0.40)`,
+    dim06: alpha(T['status-info-dark'], 0.06),
+    dim20: alpha(T['status-info-dark'], 0.2),
+    dim40: alpha(T['status-info-dark'], 0.4),
   },
 
   // -- Steel (secondary accent) --
   steel: {
     ..._steel,
     // Extra shades beyond the standard scale
-    dim30: `rgba(64,109,135,0.30)`,
+    dim30: alpha(T['brand-secondary'], 0.3),
   },
 
   // -- Purple (review/grep/glob) --
   purple: {
-    base: '#A855F7',
-    light: '#C084FC',
-    // dim uses #823CA0 (muted purple) intentionally for subtle backgrounds
-    dim20: `rgba(130,60,160,0.20)`,
+    base: T['data-5'],
+    light: T['data-9'],
+    dim20: alpha(T['data-5'], 0.2),
   },
 
   // -- Green (live/active dot) --
@@ -128,55 +143,59 @@ export const palette = {
 
   // -- Gray (bash/inactive) --
   gray: {
-    base: '#9CA3AF',
-    dark: '#848B98', // was #6B7280 — brightened for WCAG AA (3.9→5.6:1 on #101010)
-    darker: '#4B5563',
-    // dim variants use #6B7280 (mid-gray) as base for subtle backgrounds
+    base: T['text-secondary'],
+    dark: T['text-tertiary'],
+    darker: greyRamp[700],
+    // dim variants sit on the mid-grey step, for subtle backgrounds
     dim15: _gray.dim15,
-    dim20: `rgba(107,114,128,0.20)`,
+    dim20: alpha(greyRamp[600], 0.2),
   },
 
   // -- Overlay --
+  // The two steps titan names as interaction states use those tokens; the rest
+  // are plain scrims with no semantic role, derived off titan's primitives.
   overlay: {
-    white02: 'rgba(255,255,255,0.02)',
-    white03: 'rgba(255,255,255,0.03)',
-    white04: 'rgba(255,255,255,0.04)',
-    white06: 'rgba(255,255,255,0.06)',
-    white12: 'rgba(255,255,255,0.12)',
-    white25: 'rgba(255,255,255,0.25)',
-    black30: 'rgba(0,0,0,0.30)',
-    black40: 'rgba(0,0,0,0.40)',
-    black70: 'rgba(0,0,0,0.70)',
+    white02: alpha(primitiveColors.white, 0.02),
+    white03: alpha(primitiveColors.white, 0.03),
+    white04: T['interactive-hover'],
+    white06: alpha(primitiveColors.white, 0.06),
+    white12: T['interactive-focus'],
+    white25: alpha(primitiveColors.white, 0.25),
+    black30: alpha(primitiveColors.black, 0.3),
+    black40: alpha(primitiveColors.black, 0.4),
+    black70: alpha(primitiveColors.black, 0.7),
   },
 
   // -- Chart series palette --
   series: [
-    '#FF7900',
-    '#1965B0',
-    '#14B8A6',
-    '#882E72',
-    '#4EB265',
-    '#F4A736',
-    '#7BAFDE',
-    '#DC050C',
-    '#F7F056',
+    T['data-1'],
+    T['data-2'],
+    T['data-3'],
+    T['data-4'],
+    T['data-5'],
+    T['data-6'],
+    T['data-7'],
+    T['data-8'],
+    T['data-9'],
   ] as const,
 
   // -- Avatar palette --
-  avatar: ['#FF7900', '#2196F3', '#14B8A6', '#406D87', '#F4A736', '#8B5CF6', '#EC4899'] as const,
+  // titan's CVD-solved categorical set, so two agents adjacent on the roster
+  // stay tellable apart.
+  avatar: categoricalPalette.default,
 
   // -- Chart data colors (extended for NotesBreakdown) --
   dataColors: [
-    '#FF7900',
-    '#1965B0',
-    '#14B8A6',
-    '#882E72',
-    '#4EB265',
-    '#F4A736',
-    '#7BAFDE',
-    '#DC050C',
-    '#8B5CF6',
-    '#EC4899',
+    T['data-1'],
+    T['data-2'],
+    T['data-3'],
+    T['data-4'],
+    T['data-5'],
+    T['data-6'],
+    T['data-7'],
+    T['data-8'],
+    T['data-9'],
+    T['data-10'],
   ] as const,
 } as const
 
@@ -187,10 +206,14 @@ export const palette = {
 export const semantic = {
   // -- Typography --
   text: {
-    primary: '#F3F4F6',
-    secondary: palette.gray.base,
-    tertiary: palette.gray.dark,
-    inverse: palette.white,
+    primary: T['text-primary'],
+    secondary: T['text-secondary'],
+    tertiary: T['text-tertiary'],
+    // `inverse` here means "text sitting ON a filled brand/accent fill", which
+    // is titan's `on-brand-primary` (white). Titan's own `text-inverse` is the
+    // opposite thing — near-black, for dark text on a light page — and using it
+    // would put #1C1916 on the orange active-filter chip.
+    inverse: T['on-brand-primary'],
   },
 
   // -- Surfaces --
@@ -201,20 +224,28 @@ export const semantic = {
     elevated: palette.surface3,
   },
 
-  border: '#2a2a2a',
+  // titan retired solid dark borders in favour of alpha hairlines.
+  border: T['hairline-default'],
 
   // -- Status --
   status: {
-    success: palette.teal.base,
-    error: palette.red.base,
-    warning: palette.amber.base,
-    info: palette.blue.base,
-    active: palette.brand.base,
-    idle: palette.amber.base,
-    live: palette.green.base,
-    done: palette.teal.base,
-    blocked: palette.red.base,
-    pending: palette.gray.dark,
+    success: T['status-success'],
+    error: T['status-error'],
+    warning: T['status-warning'],
+    info: T['status-info'],
+    // A session that is working is live right now, which is what `status-live`
+    // is for. `status-live` and `status-success` resolve to the same green
+    // today, so anything meaning "idle but healthy" uses `liveMuted` to stay
+    // distinguishable from it.
+    active: T['status-live'],
+    live: T['status-live'],
+    liveMuted: T['status-live-muted'],
+    idle: T['status-warning'],
+    done: T['status-success'],
+    blocked: T['status-error'],
+    // `dnd` is a boolean flag, not a session status — it reads as a muted chip.
+    dnd: T['text-tertiary'],
+    pending: T['text-tertiary'],
     static: palette.gray.darker,
   },
 
@@ -238,7 +269,7 @@ export const semantic = {
 
   // -- Tool types --
   tool: {
-    read: { fg: palette.blue.light, bg: 'rgba(25,101,176,0.2)' },
+    read: { fg: palette.blue.light, bg: palette.accentBlue.dim20 },
     write: { fg: palette.teal.base, bg: palette.teal.dim20 },
     edit: { fg: palette.amber.base, bg: palette.amber.dim20 },
     bash: { fg: palette.gray.base, bg: palette.gray.dim20 },
@@ -249,7 +280,7 @@ export const semantic = {
 
   // -- Tool pill variants (slightly different bg) --
   toolPill: {
-    read: { fg: palette.blue.light, bg: 'rgba(25,101,176,0.2)' },
+    read: { fg: palette.blue.light, bg: palette.accentBlue.dim20 },
     write: { fg: palette.teal.base, bg: palette.teal.dim20 },
     bash: { fg: palette.amber.base, bg: palette.amber.dim15 },
     agent: { fg: palette.brand.base, bg: palette.brand.dim12 },
@@ -266,7 +297,7 @@ export const semantic = {
     claude: {
       accent: palette.brand.base,
       text: palette.brand.base,
-      bg: '#1a1400',
+      bg: palette.brand.dim08,
       border: palette.brand.dim25,
     },
   },
@@ -415,7 +446,7 @@ export const component = {
     bg: palette.surface1,
     border: semantic.border,
     positiveDeltaBg: palette.teal.dim15,
-    negativeDeltaBg: 'rgba(209,67,67,0.15)',
+    negativeDeltaBg: palette.red.dim15,
     positiveSpark: palette.brand.base,
     negativeSpark: palette.red.base,
   },
@@ -453,7 +484,7 @@ export const component = {
   // -- Command palette --
   commandPalette: {
     overlayBg: palette.overlay.black70,
-    panelBg: '#1a1a1a',
+    panelBg: palette.surface3,
     activeItemBg: palette.brand.dim08,
   },
 
@@ -495,14 +526,14 @@ export const colors = {
   surface3: palette.surface3,
   brand: palette.brand.base,
   steel: palette.steel.base,
-  textPrimary: '#F3F4F6',
-  textSecondary: '#9CA3AF',
-  textTertiary: '#848B98',
-  success: palette.teal.base,
-  error: palette.red.base,
-  warning: palette.amber.base,
-  info: palette.blue.base,
-  border: '#2a2a2a',
+  textPrimary: semantic.text.primary,
+  textSecondary: semantic.text.secondary,
+  textTertiary: semantic.text.tertiary,
+  success: semantic.status.success,
+  error: semantic.status.error,
+  warning: semantic.status.warning,
+  info: semantic.status.info,
+  border: semantic.border,
 } as const
 
 /** Tool type colors for sparklines and tool-activity breakdowns. */
