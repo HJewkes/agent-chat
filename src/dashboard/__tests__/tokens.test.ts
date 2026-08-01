@@ -13,7 +13,7 @@ const T = getSemanticColors('dark')
 describe('dashboard tokens resolve from titan-design', () => {
   it('takes brand, surfaces and text from titan semantic tokens', () => {
     expect(semantic.accent).toBe(T['brand-primary'])
-    expect(semantic.surface.page).toBe(T['background-base'])
+    expect(semantic.surface.page).toBe(T['surface-base'])
     expect(semantic.surface.card).toBe(T['surface-elevated'])
     expect(semantic.border).toBe(T['hairline-default'])
     expect(semantic.text.primary).toBe(T['text-primary'])
