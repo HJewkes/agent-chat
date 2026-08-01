@@ -171,3 +171,12 @@ export const MAX_REPLAY_ROWS = 500
 export const HEARTBEAT_MS = 25_000
 
 export const TOKEN_HEADER = 'X-Agent-Chat-Token'
+
+/**
+ * `/api/history`'s default and ceiling. Shared so a client raising its own
+ * request (CC-66's network graph needs deeper history than the feed's default
+ * to keep spawn edges from aging out) asks for something the server will
+ * actually honour, rather than guessing a number independently of the cap.
+ */
+export const DEFAULT_HISTORY_LIMIT = 200
+export const MAX_HISTORY_LIMIT = 1000

@@ -1,13 +1,15 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
-import type {
-  ErrorResponse,
-  HistoryResponse,
-  QueueResponse,
-  SessionsResponse,
-  TranscriptAnalytics,
-  TranscriptResponse,
-  VerdictResponse,
+import {
+  DEFAULT_HISTORY_LIMIT,
+  MAX_HISTORY_LIMIT,
+  type ErrorResponse,
+  type HistoryResponse,
+  type QueueResponse,
+  type SessionsResponse,
+  type TranscriptAnalytics,
+  type TranscriptResponse,
+  type VerdictResponse,
 } from '../api-contract.js'
 import type { SessionAnalytics } from '../agents/analytics/types.js'
 import { parseSessionFile } from '../agents/analytics/parser.js'
@@ -35,9 +37,6 @@ import type { BrokerCore } from './core.js'
  * by socket object and exists only in this process's memory, which is the whole
  * reason the HTTP layer lives in the broker instead of in the MCP subprocess.
  */
-
-const DEFAULT_HISTORY_LIMIT = 200
-const MAX_HISTORY_LIMIT = 1000
 
 export function apiRoutes(core: BrokerCore): Hono {
   const api = new Hono()
