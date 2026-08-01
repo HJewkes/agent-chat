@@ -7,17 +7,19 @@ import { AgentsView } from './views/AgentsView.js'
 import { SessionsView } from './views/SessionsView.js'
 import { QueueView } from './views/QueueView.js'
 import { LogView } from './views/LogView.js'
+import { ChatView } from './views/ChatView.js'
 import { useLiveData } from './live.js'
 import { fetchHealth } from './api.js'
 import { palette, sp } from './tokens.js'
 
-type ViewId = 'overview' | 'agents' | 'sessions' | 'queue' | 'log'
+type ViewId = 'overview' | 'agents' | 'sessions' | 'queue' | 'chat' | 'log'
 
 const NAV_ITEMS = [
   { id: 'overview', label: 'Overview', icon: '⌂', hash: '#overview' },
   { id: 'agents', label: 'Agents', icon: '◉', hash: '#agents' },
   { id: 'sessions', label: 'Sessions', icon: '◷', hash: '#sessions' },
   { id: 'queue', label: 'Queue', icon: '✦', hash: '#queue' },
+  { id: 'chat', label: 'Chat', icon: '✉', hash: '#chat' },
   { id: 'log', label: 'Log', icon: '▤', hash: '#log' },
 ]
 
@@ -81,6 +83,7 @@ export function App() {
           {activeView === 'agents' && <AgentsView sessions={sessions} />}
           {activeView === 'sessions' && <SessionsView sessions={sessions} initialSession={sessionParam} />}
           {activeView === 'queue' && <QueueView queue={queue} />}
+          {activeView === 'chat' && <ChatView history={history} />}
           {activeView === 'log' && <LogView history={history} />}
         </View>
       </View>
