@@ -49,6 +49,15 @@ export const agentDir = (agentId: string): string => path.join(agentsDir(), agen
 /** User-defined agent profiles, layered over the four builtins. */
 export const profilesDir = (): string => path.join(home(), 'profiles')
 
+/**
+ * Generic agent-lifecycle hook registrations (CC-71) — `{ on_spawn?: string[],
+ * on_complete?: string[] }`, each entry a shell command invoked with the event
+ * payload as JSON on stdin. Mirrors Claude Code's own `settings.json` hooks
+ * convention. This file names no specific consumer; active-work (or anything
+ * else) registers itself here without agent-chat's source ever knowing it exists.
+ */
+export const hooksPath = (): string => path.join(home(), 'hooks.json')
+
 /** The package root, reached identically from `dist/paths.js` and `src/paths.ts`. */
 const packageRoot = (): string => path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 

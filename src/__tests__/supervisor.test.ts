@@ -10,6 +10,7 @@ import { Semaphore } from '../agents/semaphore.js'
 import { SpawnRateBudget } from '../agents/spawn-rate.js'
 import { MAX_DEPTH, Supervisor } from '../agents/supervisor.js'
 import { readLaunchPlan } from '../agents/launch-files.js'
+import type { HookProcess, HookSpawnFn } from '../agents/hooks.js'
 
 /**
  * A6 — lifecycle. What is being proved is that an agent's slot, isolation and
@@ -76,7 +77,12 @@ afterEach(() => {
  * which meant these tests opened real windows on a developer laptop.
  */
 function withStubbedSurface(
-  opts: { settleMs?: number; semaphore?: Semaphore; spawnRateBudget?: SpawnRateBudget } = {},
+  opts: {
+    settleMs?: number
+    semaphore?: Semaphore
+    spawnRateBudget?: SpawnRateBudget
+    hookSpawn?: HookSpawnFn
+  } = {},
 ): Supervisor {
   supervisor = new Supervisor(core, { ...opts, surface: { platform: 'linux' } })
   return supervisor
@@ -1031,5 +1037,126 @@ describe('spawn privilege', () => {
 
     expect(result.ok).toBe(false)
     expect(result.reason).toMatch(/weaker deny list/)
+  })
+})
+
+/** CC-71: on_spawn/on_complete lifecycle hooks. */
+describe('lifecycle hooks', () => {
+  interface Captured {
+    command: string
+    stdin: string
+  }
+
+  function writeHooksConfig(config: unknown): void {
+    fs.writeFileSync(path.join(process.env.AGENT_CHAT_HOME as string, 'hooks.json'), JSON.stringify(config))
+  }
+
+  function capturingHookSpawn(): { spawn: HookSpawnFn; calls: Captured[] } {
+    const calls: Captured[] = []
+    const spawn: HookSpawnFn = command => {
+      const call: Captured = { command, stdin: '' }
+      calls.push(call)
+      const proc: HookProcess = {
+        stdin: {
+          write: chunk => {
+            call.stdin += chunk
+          },
+          end: () => undefined,
+        },
+        on: () => undefined,
+      }
+      return proc
+    }
+    return { spawn, calls }
+  }
+
+  it('fires on_spawn with the agent, session and cwd on a successful spawn', async () => {
+    writeHooksConfig({ on_spawn: ['/bin/on-spawn.sh'] })
+    const { spawn, calls } = capturingHookSpawn()
+    const sup = withStubbedSurface({ hookSpawn: spawn })
+
+    const result = await sup.spawn(spawnReq({ name: 'scout', requestedBy: 'human' }))
+
+    expect(result.ok).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.command).toBe('/bin/on-spawn.sh')
+    const payload = JSON.parse(calls[0]?.stdin ?? '{}')
+    expect(payload).toMatchObject({ agentId: result.agentId, name: 'scout', parent: null })
+    expect(typeof payload.session_id).toBe('string')
+    expect(typeof payload.cwd).toBe('string')
+  })
+
+  it('does not fire on_spawn when the spawn is refused', async () => {
+    writeHooksConfig({ on_spawn: ['/bin/on-spawn.sh'] })
+    const { spawn, calls } = capturingHookSpawn()
+    const sup = withStubbedSurface({ hookSpawn: spawn })
+
+    const result = await sup.spawn(spawnReq({ requestedBy: 'peer', cwd: os.homedir() }))
+
+    expect(result.ok).toBe(false)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('is a no-op when no hooks.json is registered', async () => {
+    const { spawn, calls } = capturingHookSpawn()
+    const sup = withStubbedSurface({ hookSpawn: spawn })
+
+    const result = await sup.spawn(spawnReq({ requestedBy: 'human' }))
+
+    expect(result.ok).toBe(true)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('fires on_complete with the exit code on a real exit', () => {
+    writeHooksConfig({ on_complete: ['/bin/on-complete.sh'] })
+    const { spawn, calls } = capturingHookSpawn()
+    const sup = withStubbedSurface({ hookSpawn: spawn })
+    core.append({ kind: 'agent_spawned', actor: 'human', target: 'scout', msgId: 'a1', body: 'work' })
+    ;(sup as unknown as { live: Map<string, unknown> }).live.set('a1', {
+      agentId: 'a1',
+      name: 'scout',
+      handle: { surface: 'iterm-pane' },
+      allocation: { cwd: '/tmp' },
+      isolation: 'none',
+    })
+
+    core.append({ kind: 'agent_detached', actor: 'scout', ref: 'a1' })
+    ;(sup as unknown as { recordExit: (id: string, o: unknown) => void }).recordExit('a1', {
+      code: 0,
+      signal: null,
+    })
+
+    expect(calls).toHaveLength(1)
+    expect(JSON.parse(calls[0]?.stdin ?? '{}')).toEqual({
+      agentId: 'a1',
+      code: 0,
+      signal: null,
+      inferred: false,
+    })
+  })
+
+  it('fires on_complete with inferred: true on a synthesised exit', () => {
+    writeHooksConfig({ on_complete: ['/bin/on-complete.sh'] })
+    const { spawn, calls } = capturingHookSpawn()
+    const sup = withStubbedSurface({ settleMs: 1000, hookSpawn: spawn })
+    core.append({ kind: 'agent_spawned', actor: 'human', target: 'scout', msgId: 'a1', body: 'work' })
+    ;(sup as unknown as { live: Map<string, unknown> }).live.set('a1', {
+      agentId: 'a1',
+      name: 'scout',
+      handle: { surface: 'iterm-pane' },
+      allocation: { cwd: '/tmp' },
+      isolation: 'none',
+    })
+
+    core.append({ kind: 'agent_detached', actor: 'scout', ref: 'a1' })
+    vi.advanceTimersByTime(1000)
+
+    expect(calls).toHaveLength(1)
+    expect(JSON.parse(calls[0]?.stdin ?? '{}')).toEqual({
+      agentId: 'a1',
+      code: null,
+      signal: null,
+      inferred: true,
+    })
   })
 })
