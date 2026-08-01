@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context, type MiddlewareHandler } from 'hono'
 import { TOKEN_HEADER, type ErrorResponse } from '../api-contract.js'
 import { apiRoutes } from './api-routes.js'
 import type { BrokerCore } from './core.js'
@@ -59,10 +59,13 @@ export function buildHttpApp({ core, port, token = null, dashboard = {} }: HttpA
     await next()
   })
 
-  app.use('/api/*', async (c, next) => {
-    if (token !== null && c.req.header(TOKEN_HEADER) !== token) return forbidden(c, 'missing or bad token')
-    await next()
-  })
+  app.use('/api/*', requireToken(token))
+
+  // The live tail is a read of the same queue, session and message activity
+  // `/api/*` guards, so leaving it open let any local OS user watch everything
+  // the token was supposed to gate. Same secret, same middleware — see
+  // `requireToken` for why this one also accepts the token in the query.
+  app.use('/events', requireToken(token, { allowQuery: true }))
 
   app.get('/health', c => c.json(buildHealthPayload(core, port())))
 
@@ -100,6 +103,27 @@ export function buildHttpApp({ core, port, token = null, dashboard = {} }: HttpA
 
   return app
 }
+
+/**
+ * The one token check, shared by `/api/*` and `/events` so they cannot drift
+ * apart again — they were separate exactly once, and that was the CC-59 hole.
+ *
+ * `allowQuery` exists for `/events` alone. The browser's native `EventSource`
+ * has no API for request headers at all, so `dashboard/live.ts` can only put the
+ * token in the query string; header-only would mean a permanently 403ing
+ * dashboard. `/api/*` is reached by `fetch`, which can set the header, so it
+ * stays header-only rather than inheriting a secret that leaks into access logs
+ * and `Referer`.
+ */
+function requireToken(token: string | null, { allowQuery = false } = {}): MiddlewareHandler {
+  return async (c, next) => {
+    if (token !== null && presentedToken(c, allowQuery) !== token) return forbidden(c, 'missing or bad token')
+    await next()
+  }
+}
+
+const presentedToken = (c: Context, allowQuery: boolean): string | undefined =>
+  c.req.header(TOKEN_HEADER) ?? (allowQuery ? c.req.query('token') : undefined)
 
 /**
  * Loopback only, and the port must match the one we bound: `http://127.0.0.1:3000`

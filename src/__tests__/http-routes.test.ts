@@ -549,4 +549,53 @@ describe('GET /events', () => {
     expect(text).toContain('event: question')
     expect(text).toContain('"body":"live one"')
   })
+
+  /**
+   * CC-59. The tail carries the same queue, session and message activity as
+   * `/api/*`, and a loopback TCP port is reachable by every local OS account, so
+   * an unauthenticated read here defeats the token entirely.
+   */
+  it('rejects an unauthenticated tail once a token is configured', async () => {
+    const res = await app(makeCore(), { token: 's3cret' }).fetch(new Request('http://127.0.0.1/events'))
+
+    expect(res.status).toBe(403)
+    expect(res.headers.get('Content-Type')).not.toContain('text/event-stream')
+    expect(((await res.json()) as ErrorResponse).error).toContain('token')
+  })
+
+  it('rejects a tail presenting the wrong token', async () => {
+    const res = await app(makeCore(), { token: 's3cret' }).fetch(
+      new Request('http://127.0.0.1/events?token=guess'),
+    )
+
+    expect(res.status).toBe(403)
+  })
+
+  /** `EventSource` cannot set headers, so the query string is the only channel it has. */
+  it('streams for a client that presents the token in the query, as EventSource must', async () => {
+    const core = makeCore()
+    const res = await app(core, { token: 's3cret' }).fetch(
+      new Request('http://127.0.0.1/events?token=s3cret'),
+    )
+    expect(res.status).toBe(200)
+
+    const reader = res.body!.getReader()
+    const written = core.append({ kind: 'question', actor: 'beta', target: HUMAN, body: 'authed' })
+    const text = new TextDecoder().decode((await reader.read()).value)
+    await reader.cancel()
+
+    expect(text).toContain(`id: ${written.id}`)
+    expect(text).toContain('"body":"authed"')
+  })
+
+  /** Non-browser readers — curl, the CLI, tests — can still use the header. */
+  it('streams for a client that presents the token in the header', async () => {
+    const res = await app(makeCore(), { token: 's3cret' }).fetch(
+      new Request('http://127.0.0.1/events', { headers: { [TOKEN_HEADER]: 's3cret' } }),
+    )
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toContain('text/event-stream')
+    await res.body?.cancel()
+  })
 })
