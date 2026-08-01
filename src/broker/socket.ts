@@ -356,6 +356,7 @@ export class SocketServer {
     result: RouteResult<Conn>,
     kind: 'message' | 'broadcast',
     to: string,
+    tag?: string,
   ): void {
     const { core } = this
     const from = core.registry.nameOf(conn) ?? '?'
@@ -369,6 +370,14 @@ export class SocketServer {
     })
 
     for (const delivery of result.deliveries) {
+      // A multicast stays kind 'message' — it is directed, just to several
+      // people — and carries who else got it, and the tag it was addressed by,
+      // in meta. EventKind is frozen into the SSE contract, so a new member
+      // there would break readers broadly.
+      const meta = {
+        ...(delivery.message.audience ? { audience: delivery.message.audience.join(',') } : {}),
+        ...(tag ? { tag } : {}),
+      }
       // One row per recipient so a session's inbox is a plain query on `target`.
       core.append({
         kind,
@@ -377,10 +386,7 @@ export class SocketServer {
         msgId: delivery.message.msgId,
         ...(delivery.message.inReplyTo ? { ref: delivery.message.inReplyTo } : {}),
         body: delivery.message.text,
-        // A multicast stays kind 'message' — it is directed, just to several
-        // people — and carries who else got it in meta. EventKind is frozen into
-        // the SSE contract, so a new member there would break readers broadly.
-        ...(delivery.message.audience ? { meta: { audience: delivery.message.audience.join(',') } } : {}),
+        ...(Object.keys(meta).length > 0 ? { meta } : {}),
       })
       // Held deliveries are logged above and simply not pushed. The inbox is a
       // query over the log, so chat_inbox still returns them. Two independent
@@ -729,6 +735,7 @@ export class SocketServer {
             core.registry.multicastTag(conn, msg.toTag, msg.text, msg.inReplyTo),
             'message',
             `tag ${msg.toTag}`,
+            msg.toTag,
           )
         }
         if (msg.to === undefined) {
