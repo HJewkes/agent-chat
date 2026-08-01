@@ -14,7 +14,16 @@
     "declaration": true,
     "sourceMap": true,
     "skipLibCheck": true,
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    // Node only. Without this, tsc auto-loads EVERY package under
+    // node_modules/@types, and the dashboard's dependency chain drags in
+    // @types/react-native (via @titan-design/react-ui -> @gluestack-ui).
+    // Its globals overwrite node's: setTimeout returns number rather than
+    // Timeout, AbortSignal.timeout disappears, and fetch's BodyInit becomes
+    // react-native's. That breaks src/broker and src/agents — files that have
+    // nothing to do with the dashboard and do not import react-native at all.
+    // The dashboard has its own tsconfig and declares the types it needs.
+    "types": ["node"]
   },
   "include": ["src/**/*"],
   "exclude": ["src/**/__tests__/**", "src/dashboard"]
