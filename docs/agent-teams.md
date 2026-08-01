@@ -1399,6 +1399,9 @@ a wart the service plan can otherwise only paper over with a caveat banner.
 
 ### 13. Sequencing
 
+_This section is the original build plan (A0–A6), written before implementation began._
+_All steps below have since shipped — read it as history, not a roadmap._
+
 Each step ends with `npm test` green and a repo that still works. Preconditions
 are per-step.
 
