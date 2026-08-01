@@ -8,13 +8,18 @@ import { Badge } from '../components/shared/Badge.js'
 import { TokenGauge } from '../components/shared/TokenGauge.js'
 import { HorizBarList } from '../components/shared/HorizBarList.js'
 import type { HorizBarRow } from '../components/shared/HorizBarList.js'
+import { RankedList } from '../components/shared/RankedList.js'
+import type { RankedListItem } from '../components/shared/RankedList.js'
+import { LineChart } from '../components/shared/chart/LineChart.js'
+import type { ChartSeries } from '../components/shared/chart/LineChart.js'
 import { fmtDuration, fmtK, fmtTime } from '../utils/formatting.js'
 import { dndColor, sessionStatusColor } from '../utils/semantic-colors.js'
-import { branchOf, fmtIdle, sortSessions } from '../view-model.js'
+import { branchOf, fmtIdle, sortSessions, topFilesTouched } from '../view-model.js'
 import { useTranscripts } from '../transcripts.js'
 import type { TranscriptEntry } from '../transcripts.js'
 import { claudeSessionIdOf, fetchTranscript } from '../api.js'
 import type { TranscriptAnalytics } from '../../api-contract.js'
+import type { TokenSnapshot } from '../../agents/analytics/types.js'
 
 interface SessionsViewProps {
   sessions: SessionsResponse | null
@@ -216,11 +221,34 @@ function SessionDetail({ session }: { session: SessionInfo }) {
   )
 }
 
+/** Snapshots are per-message; only the ends and midpoint get a readable label. */
+function snapshotLabels(snapshots: TokenSnapshot[]): string[] {
+  const keep = new Set([0, Math.floor((snapshots.length - 1) / 2), snapshots.length - 1])
+  return snapshots.map((s, i) => (keep.has(i) ? fmtTime(new Date(s.timestamp).toISOString()) : ''))
+}
+
+function fileTouchRows(filesTouched: Record<string, string[]>, limit: number): RankedListItem[] {
+  return topFilesTouched(filesTouched, limit).map(({ path, tools }) => ({
+    label: path.split('/').pop() ?? path,
+    sublabel: path,
+    value: tools.length,
+    badge: tools.join(' · '),
+    color: C.brand,
+  }))
+}
+
 function TranscriptPanels({ t }: { t: TranscriptAnalytics }) {
   const toolRows: HorizBarRow[] = Object.entries(t.toolCallsByName)
     .sort(([, a], [, b]) => b - a)
     .slice(0, 12)
     .map(([label, value]) => ({ label, value, display: String(value) }))
+
+  const snapshots = t.tokenSnapshots
+  const tokenSeries: ChartSeries[] = [
+    { name: 'Cumulative in', color: C.info, values: snapshots.map(s => s.cumulativeInput) },
+    { name: 'Cumulative out', color: C.brand, values: snapshots.map(s => s.cumulativeOutput) },
+  ]
+  const files = fileTouchRows(t.filesTouched, 8)
 
   return (
     <>
@@ -250,8 +278,23 @@ function TranscriptPanels({ t }: { t: TranscriptAnalytics }) {
       </View>
 
       <View style={styles.panel}>
+        <Text style={styles.sectionHeading}>Token Growth</Text>
+        <LineChart
+          series={tokenSeries}
+          xLabels={snapshotLabels(snapshots)}
+          formatValue={v => fmtK(Math.round(v))}
+          emptyText="No token snapshots recorded"
+        />
+      </View>
+
+      <View style={styles.panel}>
         <Text style={styles.sectionHeading}>Tool Breakdown</Text>
         <HorizBarList rows={toolRows} emptyText="No tool calls recorded" />
+      </View>
+
+      <View style={styles.panel}>
+        <Text style={styles.sectionHeading}>Files Touched</Text>
+        <RankedList items={files} showBars emptyText="No files touched" />
       </View>
 
       <View style={styles.panel}>
