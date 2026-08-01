@@ -46,8 +46,8 @@ export function SessionsView({ sessions, initialSession }: SessionsViewProps) {
     if (initialSession) setSelected(initialSession)
   }, [initialSession])
 
-  const filtered = sortSessions(list.filter((s) => filter === 'all' || s.status === filter))
-  const selectedSession = filtered.find((s) => s.name === selected) ?? filtered[0] ?? null
+  const filtered = sortSessions(list.filter(s => filter === 'all' || s.status === filter))
+  const selectedSession = filtered.find(s => s.name === selected) ?? filtered[0] ?? null
 
   if (list.length === 0) {
     return (
@@ -64,7 +64,7 @@ export function SessionsView({ sessions, initialSession }: SessionsViewProps) {
         <View style={styles.sidebarHeader}>
           <Text style={styles.sidebarTitle}>Sessions</Text>
           <View style={styles.filters}>
-            {FILTERS.map((f) => (
+            {FILTERS.map(f => (
               <Pressable
                 key={f}
                 onPress={() => setFilter(f)}
@@ -76,7 +76,7 @@ export function SessionsView({ sessions, initialSession }: SessionsViewProps) {
           </View>
         </View>
         <ScrollView style={styles.list}>
-          {filtered.map((session) => (
+          {filtered.map(session => (
             <SessionRow
               key={session.name}
               session={session}
@@ -152,7 +152,7 @@ function SessionDetail({ session }: { session: SessionInfo }) {
 
     setNotice('Loading transcript analytics…')
     void fetchTranscript(sessionId, session.cwd)
-      .then((res) => {
+      .then(res => {
         if (cancelled) return
         if (res.exists && res.analytics) {
           setAnalytics(res.analytics)
@@ -204,7 +204,7 @@ function SessionDetail({ session }: { session: SessionInfo }) {
 
       {session.tags && session.tags.length > 0 && (
         <View style={styles.tagRow}>
-          {session.tags.map((t) => (
+          {session.tags.map(t => (
             <Badge key={t.tag} label={`${t.tag} · by ${t.by}`} color={C.steel} size="sm" />
           ))}
         </View>
@@ -237,7 +237,7 @@ function TranscriptPanels({ t }: { t: TranscriptAnalytics }) {
             },
             { label: 'Duration', value: fmtDuration(t.durationMs), color: C.textSecondary },
           ] as Array<{ label: string; value: string; color: string }>
-        ).map((stat) => (
+        ).map(stat => (
           <View key={stat.label} style={styles.statBox}>
             <Text style={[styles.statValue, { color: stat.color }]}>{stat.value}</Text>
             <Text style={styles.statLabel}>{stat.label}</Text>

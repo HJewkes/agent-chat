@@ -7,24 +7,24 @@
  * The backward-compat `colors` export preserves the exact shape of the v1 API.
  */
 
-import { generateShades } from './utils/color-utils.js';
+import { generateShades } from './utils/color-utils.js'
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Layer 1: Primitive Palette
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Pre-compute shade scales so the palette object can be `as const`.
-const _brand = generateShades('#FF7900');
-const _teal = generateShades('#14B8A6');
-const _red = generateShades('#F83030');
-const _amber = generateShades('#F4A736');
-const _gold = generateShades('#D4A520');
-const _userBlue = generateShades('#5B9BD5');
-const _accentBlue = generateShades('#2563EB');
-const _steel = generateShades('#406D87');
-const _purple = generateShades('#823CA0'); // dim-base intentionally differs from display base
-const _green = generateShades('#22c55e');
-const _gray = generateShades('#6B7280'); // dim-base; display variants use brighter tones
+const _brand = generateShades('#FF7900')
+const _teal = generateShades('#14B8A6')
+const _red = generateShades('#F83030')
+const _amber = generateShades('#F4A736')
+const _gold = generateShades('#D4A520')
+const _userBlue = generateShades('#5B9BD5')
+const _accentBlue = generateShades('#2563EB')
+const _steel = generateShades('#406D87')
+const _purple = generateShades('#823CA0') // dim-base intentionally differs from display base
+const _green = generateShades('#22c55e')
+const _gray = generateShades('#6B7280') // dim-base; display variants use brighter tones
 
 export const palette = {
   // -- Neutrals / Surfaces --
@@ -178,7 +178,7 @@ export const palette = {
     '#8B5CF6',
     '#EC4899',
   ] as const,
-} as const;
+} as const
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Layer 2: Semantic Aliases
@@ -277,7 +277,7 @@ export const semantic = {
   // -- Brand accent --
   accent: palette.brand.base,
   accentDim: palette.brand.dim12,
-} as const;
+} as const
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Layer 3: Component Tokens
@@ -481,7 +481,7 @@ export const component = {
   swimlaneHeader: {
     bg: palette.overlay.white02,
   },
-} as const;
+} as const
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Backward-compat re-exports (existing shape preserved)
@@ -503,7 +503,7 @@ export const colors = {
   warning: palette.amber.base,
   info: palette.blue.base,
   border: '#2a2a2a',
-} as const;
+} as const
 
 /** Tool type colors for sparklines and tool-activity breakdowns. */
 export const TOOL_COLORS: Record<string, string> = {
@@ -512,14 +512,14 @@ export const TOOL_COLORS: Record<string, string> = {
   bash: palette.teal.base,
   search: palette.steel.base,
   error: palette.red.base,
-};
+}
 
 // ---------------------------------------------------------------------------
 // Categorical color palettes — for avatar hashing, chart series, etc.
 // ---------------------------------------------------------------------------
 
 /** Stable palette for deterministic avatar / agent coloring. */
-export const AVATAR_COLORS = palette.avatar;
+export const AVATAR_COLORS = palette.avatar
 
 // ---------------------------------------------------------------------------
 // Spacing scale (px values)
@@ -536,10 +536,10 @@ export const spacing = {
   8: 16,
   10: 20,
   12: 24,
-} as const;
+} as const
 
 /** Short alias for spacing scale. sp[4] → 8, sp[8] → 16, sp[10] → 20 */
-export const sp = spacing;
+export const sp = spacing
 
 // ---------------------------------------------------------------------------
 // Border radius scale (px values)
@@ -552,7 +552,7 @@ export const radii = {
   lg: 12,
   xl: 16,
   full: 9999,
-} as const;
+} as const
 
 // ---------------------------------------------------------------------------
 // Typography
@@ -584,7 +584,7 @@ export const typography = {
     normal: 1.5,
     relaxed: 1.75,
   },
-} as const;
+} as const
 
 /**
  * Typography presets — compose font, size, weight, and lineHeight into
@@ -699,7 +699,7 @@ export const type = {
     fontWeight: '700' as const,
     lineHeight: 32 * 1.2,
   },
-} as const;
+} as const
 
 // ---------------------------------------------------------------------------
 // Elevation / surface colors
@@ -715,4 +715,4 @@ export const elevation = {
   overlay: palette.surface2,
   /** Tooltips, dropdowns */
   floating: palette.surface3,
-} as const;
+} as const

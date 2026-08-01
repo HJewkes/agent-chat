@@ -21,7 +21,7 @@ const NAV_ITEMS = [
   { id: 'log', label: 'Log', icon: '▤', hash: '#log' },
 ]
 
-const VALID_VIEWS = new Set<string>(NAV_ITEMS.map((n) => n.id))
+const VALID_VIEWS = new Set<string>(NAV_ITEMS.map(n => n.id))
 
 interface HashLocation {
   view: ViewId
@@ -79,9 +79,7 @@ export function App() {
             <OverviewView sessions={sessions} queue={queue} history={history} health={health} />
           )}
           {activeView === 'agents' && <AgentsView sessions={sessions} />}
-          {activeView === 'sessions' && (
-            <SessionsView sessions={sessions} initialSession={sessionParam} />
-          )}
+          {activeView === 'sessions' && <SessionsView sessions={sessions} initialSession={sessionParam} />}
           {activeView === 'queue' && <QueueView queue={queue} />}
           {activeView === 'log' && <LogView history={history} />}
         </View>

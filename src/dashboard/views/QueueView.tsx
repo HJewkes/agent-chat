@@ -52,7 +52,7 @@ export function QueueView({ queue }: QueueViewProps) {
         Human Queue <Text style={s.count}>({items.length} open)</Text>
       </Text>
       <Text style={s.readOnlyNote}>Read-only in this build — answer and dismiss from the CLI.</Text>
-      {items.map((item) => (
+      {items.map(item => (
         <QueueRow key={item.msgId} item={item} />
       ))}
     </View>

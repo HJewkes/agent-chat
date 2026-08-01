@@ -1,15 +1,15 @@
-import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
-import { C } from './colors.js';
-import { type as T } from '../../tokens.js';
+import React from 'react'
+import { View, Text, StyleSheet } from 'react-native'
+import { C } from './colors.js'
+import { type as T } from '../../tokens.js'
 
 interface SectionProps {
-  title: string;
-  subtitle?: string;
-  children?: React.ReactNode;
+  title: string
+  subtitle?: string
+  children?: React.ReactNode
   /** 'card' wraps content in a bordered surface card (default).
    *  'inline' renders a title + horizontal rule with no card chrome. */
-  variant?: 'card' | 'inline';
+  variant?: 'card' | 'inline'
 }
 
 export function Section({ title, subtitle, children, variant = 'card' }: SectionProps) {
@@ -23,7 +23,7 @@ export function Section({ title, subtitle, children, variant = 'card' }: Section
         </View>
         {children}
       </View>
-    );
+    )
   }
 
   return (
@@ -32,7 +32,7 @@ export function Section({ title, subtitle, children, variant = 'card' }: Section
       {subtitle && <Text style={styles.cardSubtitle}>{subtitle}</Text>}
       {children}
     </View>
-  );
+  )
 }
 
 const styles = StyleSheet.create({
@@ -83,4 +83,4 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: C.border,
   },
-});
+})

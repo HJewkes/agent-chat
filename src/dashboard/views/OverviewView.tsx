@@ -19,8 +19,8 @@ interface OverviewViewProps {
 
 export function OverviewView({ sessions, queue, history, health }: OverviewViewProps) {
   const list = sessions?.sessions ?? []
-  const blocked = list.filter((s) => s.status === 'blocked').length
-  const approvals = (queue?.items ?? []).filter((i) => i.kind === 'approval_request').length
+  const blocked = list.filter(s => s.status === 'blocked').length
+  const approvals = (queue?.items ?? []).filter(i => i.kind === 'approval_request').length
   const recent = (history?.items ?? []).slice(0, 12)
 
   return (
@@ -61,7 +61,7 @@ export function OverviewView({ sessions, queue, history, health }: OverviewViewP
             {recent.length === 0 ? (
               <Text style={s.emptyHint}>Nothing logged yet</Text>
             ) : (
-              recent.map((item) => (
+              recent.map(item => (
                 <View key={`${item.msgId}:${item.at}:${item.kind}`} style={s.eventRow}>
                   <Badge
                     label={item.kind.replace(/_/g, ' ')}

@@ -1,48 +1,41 @@
-import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
-import { C, component } from './colors.js';
+import React from 'react'
+import { View, Text, StyleSheet } from 'react-native'
+import { C, component } from './colors.js'
 
 export interface RankedListItem {
-  label: string;
-  value: number;
-  sublabel?: string;
-  color?: string;
-  badge?: string;
-  badgeHighlight?: boolean;
+  label: string
+  value: number
+  sublabel?: string
+  color?: string
+  badge?: string
+  badgeHighlight?: boolean
 }
 
 export interface RankedListProps {
-  items: RankedListItem[];
-  maxValue?: number;
-  emptyText?: string;
+  items: RankedListItem[]
+  maxValue?: number
+  emptyText?: string
   /** Show a proportional bar behind each row */
-  showBars?: boolean;
+  showBars?: boolean
 }
 
-export function RankedList({
-  items,
-  maxValue,
-  emptyText = 'No items',
-  showBars = false,
-}: RankedListProps) {
+export function RankedList({ items, maxValue, emptyText = 'No items', showBars = false }: RankedListProps) {
   if (items.length === 0) {
-    return <Text style={styles.emptyText}>{emptyText}</Text>;
+    return <Text style={styles.emptyText}>{emptyText}</Text>
   }
 
-  const max = maxValue ?? Math.max(...items.map(i => i.value), 1);
+  const max = maxValue ?? Math.max(...items.map(i => i.value), 1)
 
   return (
     <View>
       {items.map((item, idx) => (
         <View key={`${item.label}-${idx}`} style={styles.row}>
-          <Text style={[styles.value, item.color != null ? { color: item.color } : null]}>
-            {item.value}x
-          </Text>
+          <Text style={[styles.value, item.color != null ? { color: item.color } : null]}>{item.value}x</Text>
           <View style={styles.labelWrap}>
-            <Text style={styles.label} numberOfLines={1}>{item.label}</Text>
-            {item.sublabel != null && (
-              <Text style={styles.sublabel}>{item.sublabel}</Text>
-            )}
+            <Text style={styles.label} numberOfLines={1}>
+              {item.label}
+            </Text>
+            {item.sublabel != null && <Text style={styles.sublabel}>{item.sublabel}</Text>}
             {showBars && (
               <View style={styles.barTrack}>
                 <View
@@ -65,7 +58,7 @@ export function RankedList({
         </View>
       ))}
     </View>
-  );
+  )
 }
 
 const styles = StyleSheet.create({
@@ -99,4 +92,4 @@ const styles = StyleSheet.create({
   badgeHighlight: { backgroundColor: component.statCard.negativeDeltaBg },
   badgeText: { fontSize: 11, color: C.textSecondary },
   badgeTextHighlight: { color: C.error, fontWeight: '600' },
-});
+})

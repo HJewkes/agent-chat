@@ -1,13 +1,13 @@
-import React from 'react';
-import { View } from 'react-native';
-import type { ChartPadding } from './types.js';
-import { DEFAULT_PADDING } from './types.js';
+import React from 'react'
+import { View } from 'react-native'
+import type { ChartPadding } from './types.js'
+import { DEFAULT_PADDING } from './types.js'
 
 export interface ChartContainerProps {
-  width: number;
-  height: number;
-  padding?: ChartPadding;
-  children: React.ReactNode;
+  width: number
+  height: number
+  padding?: ChartPadding
+  children: React.ReactNode
 }
 
 /**
@@ -16,7 +16,7 @@ export interface ChartContainerProps {
  */
 export function ChartContainer({ width, height, padding = DEFAULT_PADDING, children }: ChartContainerProps) {
   // padding is available for consumers who compute positions externally
-  void padding;
+  void padding
   return (
     <View style={{ width: '100%' }}>
       {/* Brain suppressed a type error here; under this repo's react-native
@@ -25,5 +25,5 @@ export function ChartContainer({ width, height, padding = DEFAULT_PADDING, child
         {children}
       </svg>
     </View>
-  );
+  )
 }

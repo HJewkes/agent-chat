@@ -1,33 +1,33 @@
-import React from 'react';
-import { View, Text, Pressable, StyleSheet } from 'react-native';
-import { C } from './colors.js';
+import React from 'react'
+import { View, Text, Pressable, StyleSheet } from 'react-native'
+import { C } from './colors.js'
 
 export interface PillProps {
-  label: string;
+  label: string
   /** Text color, default C.textTertiary. */
-  color?: string;
+  color?: string
   /** Background color, default 'transparent'. */
-  bg?: string;
+  bg?: string
   /** Border color, default 'transparent'. */
-  borderColor?: string;
+  borderColor?: string
   /** Left accent stripe color, default none. */
-  borderLeftColor?: string;
+  borderLeftColor?: string
   /** Left accent stripe width, default 0. */
-  borderLeftWidth?: number;
+  borderLeftWidth?: number
   /** true = fully rounded (99px), false = 4px corners. Default true. */
-  rounded?: boolean;
+  rounded?: boolean
   /** Controls padding and font size. */
-  size?: 'xs' | 'sm' | 'md';
+  size?: 'xs' | 'sm' | 'md'
   /** Optional leading status dot. */
-  dot?: { color: string; size?: number };
-  onPress?: () => void;
+  dot?: { color: string; size?: number }
+  onPress?: () => void
 }
 
 const SIZE_PRESETS = {
   xs: { fontSize: 9, paddingH: 4, paddingV: 1 },
   sm: { fontSize: 10, paddingH: 8, paddingV: 2 },
   md: { fontSize: 10, paddingH: 8, paddingV: 3 },
-} as const;
+} as const
 
 export function Pill({
   label,
@@ -41,8 +41,8 @@ export function Pill({
   dot,
   onPress,
 }: PillProps) {
-  const preset = SIZE_PRESETS[size];
-  const borderRadius = rounded ? 99 : 4;
+  const preset = SIZE_PRESETS[size]
+  const borderRadius = rounded ? 99 : 4
 
   const containerStyle = [
     styles.container,
@@ -57,14 +57,11 @@ export function Pill({
       borderLeftColor,
       borderLeftWidth,
     },
-  ];
+  ]
 
-  const textStyle = [
-    styles.label,
-    { color, fontSize: preset.fontSize },
-  ];
+  const textStyle = [styles.label, { color, fontSize: preset.fontSize }]
 
-  const dotSize = dot?.size ?? 5;
+  const dotSize = dot?.size ?? 5
 
   const content = (
     <>
@@ -81,17 +78,17 @@ export function Pill({
       )}
       <Text style={textStyle}>{label}</Text>
     </>
-  );
+  )
 
   if (onPress) {
     return (
       <Pressable onPress={onPress} style={containerStyle}>
         {content}
       </Pressable>
-    );
+    )
   }
 
-  return <View style={containerStyle}>{content}</View>;
+  return <View style={containerStyle}>{content}</View>
 }
 
 const styles = StyleSheet.create({
@@ -107,4 +104,4 @@ const styles = StyleSheet.create({
     fontFamily: "'Space Grotesk', sans-serif",
     fontWeight: '600',
   },
-});
+})

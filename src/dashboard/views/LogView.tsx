@@ -26,8 +26,8 @@ export function LogView({ history }: LogViewProps) {
   const items = history?.items ?? []
   const [kindFilter, setKindFilter] = useState<string>('all')
 
-  const kinds = useMemo(() => ['all', ...Array.from(new Set(items.map((i) => i.kind))).sort()], [items])
-  const filtered = items.filter((i) => kindFilter === 'all' || i.kind === kindFilter)
+  const kinds = useMemo(() => ['all', ...Array.from(new Set(items.map(i => i.kind))).sort()], [items])
+  const filtered = items.filter(i => kindFilter === 'all' || i.kind === kindFilter)
 
   if (history === null) {
     return (
@@ -41,7 +41,7 @@ export function LogView({ history }: LogViewProps) {
     <View style={s.container}>
       <Text style={s.pageTitle}>Event Log</Text>
       <View style={s.filters}>
-        {kinds.map((k) => (
+        {kinds.map(k => (
           <Pressable
             key={k}
             onPress={() => setKindFilter(k)}
@@ -55,7 +55,7 @@ export function LogView({ history }: LogViewProps) {
       <DataTable<QueueItem>
         columns={COLUMNS}
         data={filtered}
-        getKey={(item) => `${item.msgId}:${item.at}:${item.kind}`}
+        getKey={item => `${item.msgId}:${item.at}:${item.kind}`}
         emptyText="No events recorded"
         renderCell={(item, key) => <Cell item={item} columnKey={key} />}
       />

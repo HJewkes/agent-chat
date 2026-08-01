@@ -1,16 +1,16 @@
-import React from 'react';
-import { View } from 'react-native';
-import { colors, component } from '../../tokens.js';
+import React from 'react'
+import { View } from 'react-native'
+import { colors, component } from '../../tokens.js'
 
 export interface CardProps {
-  children: React.ReactNode;
-  variant?: 'plain' | 'accent' | 'subtle';
-  accentColor?: string;
-  accentWidth?: number;
-  borderColor?: string;
-  bg?: string;
-  padding?: number;
-  radius?: number;
+  children: React.ReactNode
+  variant?: 'plain' | 'accent' | 'subtle'
+  accentColor?: string
+  accentWidth?: number
+  borderColor?: string
+  bg?: string
+  padding?: number
+  radius?: number
 }
 
 export function Card({
@@ -23,17 +23,17 @@ export function Card({
   padding = 10,
   radius = 8,
 }: CardProps) {
-  const resolvedBorder = borderColor ?? colors.border;
+  const resolvedBorder = borderColor ?? colors.border
 
   const baseStyle = {
     borderRadius: radius,
     padding,
     borderWidth: 1,
     borderColor: resolvedBorder,
-  };
+  }
 
   if (variant === 'accent') {
-    const accent = accentColor ?? colors.brand;
+    const accent = accentColor ?? colors.brand
     return (
       <View
         style={{
@@ -45,11 +45,11 @@ export function Card({
       >
         {children}
       </View>
-    );
+    )
   }
 
   if (variant === 'subtle') {
-    const accent = accentColor ?? colors.brand;
+    const accent = accentColor ?? colors.brand
     return (
       <View
         style={{
@@ -60,7 +60,7 @@ export function Card({
       >
         {children}
       </View>
-    );
+    )
   }
 
   // plain
@@ -73,5 +73,5 @@ export function Card({
     >
       {children}
     </View>
-  );
+  )
 }

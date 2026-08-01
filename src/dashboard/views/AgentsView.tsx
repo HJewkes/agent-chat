@@ -27,7 +27,7 @@ export function AgentsView({ sessions }: AgentsViewProps) {
   const list = sessions?.sessions ?? []
   const transcripts = useTranscripts(list)
 
-  const agents: AgentVM[] = sortSessions(list).map((session) => {
+  const agents: AgentVM[] = sortSessions(list).map(session => {
     const entry = transcripts.get(session.name)
     return { session, metrics: entry.metrics, notice: metricsNotice(entry) }
   })
@@ -39,7 +39,7 @@ export function AgentsView({ sessions }: AgentsViewProps) {
     <View style={s.container}>
       <StatsBar agents={agents} />
       <View style={s.cardsGrid}>
-        {agents.map((agent) => (
+        {agents.map(agent => (
           <View key={agent.session.name} style={s.cardSlot}>
             <AgentCard
               agent={agent}
@@ -55,9 +55,9 @@ export function AgentsView({ sessions }: AgentsViewProps) {
 }
 
 function StatsBar({ agents }: { agents: AgentVM[] }) {
-  const live = agents.filter((a) => isLive(a.session)).length
-  const blocked = agents.filter((a) => a.session.status === 'blocked').length
-  const withMetrics = agents.filter((a) => a.metrics !== null)
+  const live = agents.filter(a => isLive(a.session)).length
+  const blocked = agents.filter(a => a.session.status === 'blocked').length
+  const withMetrics = agents.filter(a => a.metrics !== null)
   const totalTokens = withMetrics.reduce((n, a) => n + a.metrics!.tokensIn + a.metrics!.tokensOut, 0)
   const totalTools = withMetrics.reduce((n, a) => n + a.metrics!.toolCalls, 0)
   const totalErrors = withMetrics.reduce((n, a) => n + a.metrics!.errors, 0)

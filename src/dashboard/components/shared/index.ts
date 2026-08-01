@@ -19,4 +19,10 @@ export type { RankedListProps, RankedListItem } from './RankedList.js'
 export { HorizBarList } from './HorizBarList.js'
 export type { HorizBarListProps, HorizBarRow } from './HorizBarList.js'
 export { ChartContainer, GridLines, DEFAULT_PADDING, xPos, yPos } from './chart/index.js'
-export type { ChartContainerProps, GridLinesProps, DataPoint, ChartConfig, ChartPadding } from './chart/index.js'
+export type {
+  ChartContainerProps,
+  GridLinesProps,
+  DataPoint,
+  ChartConfig,
+  ChartPadding,
+} from './chart/index.js'

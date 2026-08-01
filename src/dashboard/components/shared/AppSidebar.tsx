@@ -1,22 +1,22 @@
-import React from 'react';
-import { View, Text, Pressable } from 'react-native';
-import { palette, semantic, component, sp } from '../../tokens.js';
+import React from 'react'
+import { View, Text, Pressable } from 'react-native'
+import { palette, semantic, component, sp } from '../../tokens.js'
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface AppSidebarProps {
-  active: string;
-  onSelect: (id: string) => void;
-  navItems: Array<{ id: string; label: string; icon: string; hash: string }>;
-  projectName: string;
-  generatedAt: string;
+  active: string
+  onSelect: (id: string) => void
+  navItems: Array<{ id: string; label: string; icon: string; hash: string }>
+  projectName: string
+  generatedAt: string
   /** Omitted here: agent-chat's V1 dashboard ships no command palette. */
-  onOpenPalette?: () => void;
-  liveMode?: boolean;
-  sseConnected?: boolean;
-  lastRefresh?: Date | null;
+  onOpenPalette?: () => void
+  liveMode?: boolean
+  sseConnected?: boolean
+  lastRefresh?: Date | null
 }
 
 // ---------------------------------------------------------------------------
@@ -54,15 +54,15 @@ export function AppSidebar({
 
       {/* Nav items */}
       <View style={styles.navList}>
-        {navItems.map((item) => {
-          const effectiveActive = active;
-          const isActive = item.id === effectiveActive;
+        {navItems.map(item => {
+          const effectiveActive = active
+          const isActive = item.id === effectiveActive
           return (
             <Pressable
               key={item.id}
               onPress={() => {
-                window.location.hash = item.hash;
-                onSelect(item.id);
+                window.location.hash = item.hash
+                onSelect(item.id)
               }}
               style={({ pressed }: { pressed: boolean }) => [
                 styles.navItem,
@@ -70,15 +70,11 @@ export function AppSidebar({
                 pressed && !isActive && styles.navItemPressed,
               ]}
             >
-              <Text style={[styles.navIcon, isActive && styles.navIconActive]}>
-                {item.icon}
-              </Text>
-              <Text style={[styles.navLabel, isActive && styles.navLabelActive]}>
-                {item.label}
-              </Text>
+              <Text style={[styles.navIcon, isActive && styles.navIconActive]}>{item.icon}</Text>
+              <Text style={[styles.navLabel, isActive && styles.navLabelActive]}>{item.label}</Text>
               {isActive && <View style={styles.navActiveBar} />}
             </Pressable>
-          );
+          )
         })}
       </View>
 
@@ -86,7 +82,9 @@ export function AppSidebar({
       <View style={styles.sidebarFooter}>
         <Text style={styles.footerTime}>{generatedAt}</Text>
         <View style={styles.liveIndicator}>
-          <View style={[styles.liveDot, liveMode && sseConnected ? styles.liveDotActive : styles.liveDotStatic]} />
+          <View
+            style={[styles.liveDot, liveMode && sseConnected ? styles.liveDotActive : styles.liveDotStatic]}
+          />
           <Text style={styles.liveLabel}>
             {liveMode && sseConnected ? 'Live' : liveMode ? 'Connecting…' : 'Static'}
           </Text>
@@ -98,23 +96,23 @@ export function AppSidebar({
         </View>
       </View>
     </View>
-  );
+  )
 }
 
 // ---------------------------------------------------------------------------
 // Styles
 // ---------------------------------------------------------------------------
 
-const BRAND = palette.brand.base;
-const BORDER = semantic.border;
-const TEXT_PRIMARY = semantic.text.primary;
-const TEXT_SECONDARY = semantic.text.secondary;
-const TEXT_TERTIARY = semantic.text.tertiary;
-const ACTIVE_BG = component.sidebar.navActiveBg;
-const HOVER_BG = component.sidebar.navHoverBg;
-const SIDEBAR_BG = component.sidebar.bg;
-const SURFACE2 = palette.surface2;
-const SURFACE3 = palette.surface3;
+const BRAND = palette.brand.base
+const BORDER = semantic.border
+const TEXT_PRIMARY = semantic.text.primary
+const TEXT_SECONDARY = semantic.text.secondary
+const TEXT_TERTIARY = semantic.text.tertiary
+const ACTIVE_BG = component.sidebar.navActiveBg
+const HOVER_BG = component.sidebar.navHoverBg
+const SIDEBAR_BG = component.sidebar.bg
+const SURFACE2 = palette.surface2
+const SURFACE3 = palette.surface3
 
 const styles = {
   sidebar: {
@@ -266,4 +264,4 @@ const styles = {
     color: TEXT_TERTIARY,
     fontFamily: 'monospace',
   },
-};
+}

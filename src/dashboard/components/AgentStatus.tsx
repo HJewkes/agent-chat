@@ -25,12 +25,10 @@ export function AgentStatus({ sessions, brokerUptimeMs, reconnectGraceMs }: Agen
       <View style={s.cardContent}>
         {sessions.length === 0 ? (
           <Text style={s.emptyText}>
-            {reconnecting
-              ? 'Broker restarted — sessions reconnecting…'
-              : 'No sessions registered'}
+            {reconnecting ? 'Broker restarted — sessions reconnecting…' : 'No sessions registered'}
           </Text>
         ) : (
-          sessions.map((session) => (
+          sessions.map(session => (
             <View key={session.name} style={s.agentRow}>
               <View style={s.rowTop}>
                 <Text style={s.agentName}>{session.name}</Text>

@@ -16,7 +16,7 @@ interface Props {
 }
 
 function buildSparkEvents(toolSequence: string[]): SparkEvent[] {
-  return toolSequence.slice(-15).map((type) => ({ type }))
+  return toolSequence.slice(-15).map(type => ({ type }))
 }
 
 /**
@@ -64,7 +64,7 @@ export function AgentCard({ agent, onPress }: Props) {
 
       {session.tags && session.tags.length > 0 && (
         <View style={s.tagRow}>
-          {session.tags.map((t) => (
+          {session.tags.map(t => (
             <Badge key={t.tag} label={t.tag} color={C.steel} size="sm" />
           ))}
         </View>

@@ -1,25 +1,27 @@
-import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
-import { C } from './colors.js';
-import { fmtK } from '../../utils/formatting.js';
-import { sp } from '../../tokens.js';
+import React from 'react'
+import { View, Text, StyleSheet } from 'react-native'
+import { C } from './colors.js'
+import { fmtK } from '../../utils/formatting.js'
+import { sp } from '../../tokens.js'
 
 interface Props {
-  tokensIn: number;
-  tokensOut: number;
-  maxTokens?: number;
+  tokensIn: number
+  tokensOut: number
+  maxTokens?: number
 }
 
 export function TokenGauge({ tokensIn, tokensOut, maxTokens = 200000 }: Props) {
-  const total = tokensIn + tokensOut;
-  const inPct = Math.round((tokensIn / maxTokens) * 100);
-  const outPct = Math.min(Math.round((tokensOut / maxTokens) * 100), 100 - inPct);
+  const total = tokensIn + tokensOut
+  const inPct = Math.round((tokensIn / maxTokens) * 100)
+  const outPct = Math.min(Math.round((tokensOut / maxTokens) * 100), 100 - inPct)
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.headerLabel}>Token Usage</Text>
-        <Text style={styles.headerValue}>{fmtK(total)} / {fmtK(maxTokens)}</Text>
+        <Text style={styles.headerValue}>
+          {fmtK(total)} / {fmtK(maxTokens)}
+        </Text>
       </View>
       <View style={styles.bar}>
         <View style={[styles.barIn, { width: `${inPct}%` as unknown as number }]} />
@@ -30,7 +32,7 @@ export function TokenGauge({ tokensIn, tokensOut, maxTokens = 200000 }: Props) {
         <Text style={styles.labelOut}>↑ {fmtK(tokensOut)} output</Text>
       </View>
     </View>
-  );
+  )
 }
 
 const styles = StyleSheet.create({
@@ -65,4 +67,4 @@ const styles = StyleSheet.create({
   },
   labelIn: { fontSize: 10, color: C.info },
   labelOut: { fontSize: 10, color: C.brand },
-});
+})

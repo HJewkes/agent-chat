@@ -1,22 +1,22 @@
-import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
-import { C } from './colors.js';
+import React from 'react'
+import { View, Text, StyleSheet } from 'react-native'
+import { C } from './colors.js'
 
 export interface DataTableColumn {
-  key: string;
-  label: string;
-  width?: number;
-  align?: 'left' | 'right';
-  flex?: number;
+  key: string
+  label: string
+  width?: number
+  align?: 'left' | 'right'
+  flex?: number
 }
 
 export interface DataTableProps<T> {
-  columns: DataTableColumn[];
-  data: T[];
-  renderCell: (item: T, columnKey: string) => React.ReactNode;
-  highlightRow?: (item: T) => boolean;
-  getKey: (item: T) => string;
-  emptyText?: string;
+  columns: DataTableColumn[]
+  data: T[]
+  renderCell: (item: T, columnKey: string) => React.ReactNode
+  highlightRow?: (item: T) => boolean
+  getKey: (item: T) => string
+  emptyText?: string
 }
 
 export function DataTable<T>({
@@ -28,18 +28,15 @@ export function DataTable<T>({
   emptyText = 'No data',
 }: DataTableProps<T>) {
   if (data.length === 0) {
-    return <Text style={styles.emptyText}>{emptyText}</Text>;
+    return <Text style={styles.emptyText}>{emptyText}</Text>
   }
 
   return (
     <View>
       {data.map(item => {
-        const highlighted = highlightRow?.(item) ?? false;
+        const highlighted = highlightRow?.(item) ?? false
         return (
-          <View
-            key={getKey(item)}
-            style={[styles.row, highlighted && styles.rowHighlighted]}
-          >
+          <View key={getKey(item)} style={[styles.row, highlighted && styles.rowHighlighted]}>
             {columns.map(col => (
               <View
                 key={col.key}
@@ -53,10 +50,10 @@ export function DataTable<T>({
               </View>
             ))}
           </View>
-        );
+        )
       })}
     </View>
-  );
+  )
 }
 
 const styles = StyleSheet.create({
@@ -76,4 +73,4 @@ const styles = StyleSheet.create({
   },
   cell: { justifyContent: 'center' },
   cellRight: { alignItems: 'flex-end' },
-});
+})

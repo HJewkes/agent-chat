@@ -1,28 +1,28 @@
-import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
-import { C } from './colors.js';
-import { sp } from '../../tokens.js';
+import React from 'react'
+import { View, Text, StyleSheet } from 'react-native'
+import { C } from './colors.js'
+import { sp } from '../../tokens.js'
 
 export interface HorizBarRow {
-  label: string;
+  label: string
   /** Value used to compute bar width (0–maxValue). */
-  value: number;
+  value: number
   /** Text displayed at the right end. */
-  display: string;
+  display: string
   /** Optional annotation shown after the display value. */
-  annotation?: string;
+  annotation?: string
   /** Highlight the bar in the warning color. */
-  warn?: boolean;
+  warn?: boolean
   /** Override the fill color. */
-  color?: string;
+  color?: string
 }
 
 export interface HorizBarListProps {
-  rows: HorizBarRow[];
-  maxValue?: number;
-  labelWidth?: number;
-  barHeight?: number;
-  emptyText?: string;
+  rows: HorizBarRow[]
+  maxValue?: number
+  labelWidth?: number
+  barHeight?: number
+  emptyText?: string
 }
 
 export function HorizBarList({
@@ -33,16 +33,16 @@ export function HorizBarList({
   emptyText = 'No data',
 }: HorizBarListProps) {
   if (rows.length === 0 || rows.every(r => r.value === 0)) {
-    return <Text style={styles.empty}>{emptyText}</Text>;
+    return <Text style={styles.empty}>{emptyText}</Text>
   }
 
-  const max = maxValue ?? Math.max(...rows.map(r => r.value), 1);
+  const max = maxValue ?? Math.max(...rows.map(r => r.value), 1)
 
   return (
     <View style={styles.wrap}>
       {rows.map((row, i) => {
-        const pct = (row.value / max) * 100;
-        const fillColor = row.warn ? C.warning : (row.color ?? C.brand);
+        const pct = (row.value / max) * 100
+        const fillColor = row.warn ? C.warning : (row.color ?? C.brand)
         return (
           <View key={`${row.label}-${i}`} style={styles.row}>
             <Text style={[styles.label, { width: labelWidth }]} numberOfLines={1}>
@@ -68,10 +68,10 @@ export function HorizBarList({
               <View style={styles.annotationSpacer} />
             )}
           </View>
-        );
+        )
       })}
     </View>
-  );
+  )
 }
 
 const styles = StyleSheet.create({
@@ -89,4 +89,4 @@ const styles = StyleSheet.create({
   warnText: { color: C.error },
   annotation: { fontSize: 11, color: C.error, minWidth: 36, textAlign: 'right' },
   annotationSpacer: { minWidth: 36 },
-});
+})

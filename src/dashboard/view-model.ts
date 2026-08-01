@@ -70,7 +70,7 @@ export function toMetrics(t: TranscriptAnalytics): AgentMetrics {
     errorRate: t.errorRate,
     tokensIn: t.tokens.inputTokens,
     tokensOut: t.tokens.outputTokens,
-    toolSequence: t.toolCalls.map((c) => toolDomain(c.toolName, c.outcome)),
+    toolSequence: t.toolCalls.map(c => toolDomain(c.toolName, c.outcome)),
     frictionCount: t.frictionSignals.length,
     filesWritten: t.filesWritten.length,
     subagentCount: t.subagentCount,
