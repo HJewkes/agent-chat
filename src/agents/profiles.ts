@@ -7,11 +7,17 @@ import type { AgentProfile } from './types.js'
 /**
  * The four builtins, layered under anything in `~/.agent-chat/profiles/*.json`.
  *
- * Writers default to a VISIBLE surface, and that is a permissions decision
- * rather than an aesthetic one. A visible agent that hits a permission prompt
- * has a human-answerable dialog sitting right there in its pane; a headless one
- * does not, and cannot be unblocked by anyone. The asymmetry is severe enough to
- * drive the default: spawn writers visible unless there is a reason not to.
+ * All four builtins default to a VISIBLE surface (`iterm-pane`), and that is a
+ * permissions decision rather than an aesthetic one. A visible agent that hits
+ * a permission prompt has a human-answerable dialog sitting right there in its
+ * pane; a headless one does not, and cannot be unblocked by anyone. The
+ * asymmetry is severe enough to drive the default: spawn every builtin visible
+ * unless there is a reason not to. `explorer`/`reviewer` used to default to
+ * `headless` (their `AskUserQuestion` deny predates this change and stays —
+ * see `NO_SELF_QUESTION` — since a read-only/narrow-check agent still has no
+ * business opening a question, visible pane or not); a bare `headless` surface
+ * remains available and is still exactly what `surfaces/headless.ts` documents
+ * (no terminal at all, `stdio` discarded) for whatever explicitly asks for it.
  *
  * THE DENY LISTS ARE WHAT CONFINE A READ-ONLY PROFILE — `allowedTools` does not.
  * `--allowed-tools` GRANTS permission; it does not remove a tool. A spawned agent
@@ -70,7 +76,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     allowedTools: ['Read', 'Grep', 'Glob'],
     disallowedTools: ['Bash', 'Write', 'Edit', ...NO_SELF_QUESTION],
     isolation: 'toolset-limited',
-    surface: 'headless',
+    surface: 'iterm-pane',
     promptPrelude: 'You are a read-only explorer. Report what you find; do not attempt to change anything.',
   },
   {
@@ -83,7 +89,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     // instead: it may run commands, it may not edit what it is reviewing.
     disallowedTools: ['Write', 'Edit', ...HUMAN_ONLY_CLI_DENY, ...NO_SELF_QUESTION],
     isolation: 'toolset-limited',
-    surface: 'headless',
+    surface: 'iterm-pane',
     promptPrelude:
       'You are reviewing work you did not write. Report findings with file and line references. ' +
       'Do not fix what you find unless asked.',
