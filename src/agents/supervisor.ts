@@ -170,6 +170,19 @@ export interface SupervisorOptions {
   nameFreeMs?: number
 }
 
+/**
+ * CC-69: unlike the allow side, a blanket deny genuinely does subsume a scoped
+ * one — denying all of `Bash` is strictly stronger than denying `Bash(x:*)`, so
+ * a child that denies plain `Bash` still satisfies a parent that was only
+ * denied `Bash(x:*)`. Checked one level: a child denying the tool's base name
+ * (the part before its first `(`) covers any of that tool's scoped variants.
+ */
+function stillDenied(childDenied: Set<string>, tool: string): boolean {
+  if (childDenied.has(tool)) return true
+  const base = tool.split('(')[0] ?? tool
+  return base !== tool && childDenied.has(base)
+}
+
 export class Supervisor implements TeleportHost {
   private readonly live = new Map<string, Live>()
   private readonly semaphore: Semaphore
@@ -390,7 +403,7 @@ export class Supervisor implements TeleportHost {
     const parentDenied = this.toolSetOf(req.parentAgentId, 'disallowed_tools')
     if (parentDenied !== undefined) {
       const childDenied = new Set(profile.disallowedTools ?? [])
-      const relaxed = [...parentDenied].filter(tool => !childDenied.has(tool))
+      const relaxed = [...parentDenied].filter(tool => !stillDenied(childDenied, tool))
       if (relaxed.length > 0) {
         return (
           `profile "${profile.name}" does not deny tools you were denied (${relaxed.join(', ')}); ` +
