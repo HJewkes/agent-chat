@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_target ON events(target, id);
 CREATE INDEX IF NOT EXISTS events_msg_id ON events(msg_id);
 CREATE INDEX IF NOT EXISTS events_ref ON events(ref);
+CREATE INDEX IF NOT EXISTS events_kind ON events(kind, id);
 `
 
 /** Kinds that a recipient should see in their inbox. */
