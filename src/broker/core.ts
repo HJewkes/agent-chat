@@ -207,12 +207,7 @@ export class BrokerCore<C = Conn> {
   }
 
   /** A takeover displaced a live connection: record the detach and close it. */
-  private supersede(
-    name: string,
-    agentId: string | undefined,
-    evicted: C,
-    evict?: (conn: C) => void,
-  ): void {
+  private supersede(name: string, agentId: string | undefined, evicted: C, evict?: (conn: C) => void): void {
     // The predecessor's own close handler would append this too, but it may not
     // have fired yet and the entry is already gone — so record it here, and let
     // drop() find nothing left to record when it does fire.
