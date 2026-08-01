@@ -46,7 +46,12 @@ export const palette = {
   // -- Neutrals / Surfaces --
   black: primitiveColors.black,
   white: primitiveColors.white,
-  bg: T['background-base'],
+  // `surface-base`, not `background-base`: the latter is titan's separate
+  // full-bleed-screen ladder (950/925/900/975) and doesn't pair with
+  // surface-elevated/raised/overlay below. Using it here put the page one
+  // step darker (950, titan's "Shell" plane) than titan's actual "Main
+  // content plane" (925), which is what surface-base resolves to.
+  bg: T['surface-base'],
   surface1: T['surface-elevated'],
   surface2: T['surface-raised'],
   surface3: T['surface-overlay'],
