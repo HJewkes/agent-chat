@@ -11,8 +11,13 @@ type RegisterMessage = Extract<ClientMessage, { t: 'register' }>
 
 export type Conn = net.Socket
 
-/** Live delivery to a connected session, injected so the core never touches a socket. */
-export type Deliver = (conn: Conn, message: DeliveredMessage) => void
+/**
+ * Live delivery to a connected session, injected so the core never touches a
+ * socket. Generic over the connection type so `BrokerCore` itself can be
+ * instantiated over a non-socket transport (relay's fold-in target); every
+ * existing caller passes no type argument and keeps getting `Conn`.
+ */
+export type Deliver<C = Conn> = (conn: C, message: DeliveredMessage) => void
 
 /**
  * The broker's state and its only write path.
@@ -34,19 +39,19 @@ export type Deliver = (conn: Conn, message: DeliveredMessage) => void
  * Transport stays outside: `deliver` is injected, and turning a result into a
  * `ServerMessage` on a socket is the caller's job.
  */
-export class BrokerCore {
-  readonly registry: Registry<Conn>
+export class BrokerCore<C = Conn> {
+  readonly registry: Registry<C>
   readonly events: EventStore
   readonly hub: EventHub
   readonly agents: AgentLog
   readonly startedAt: number
 
-  private readonly deliver: Deliver
+  private readonly deliver: Deliver<C>
   private readonly watchers = new Set<(row: AppendInput) => void>()
 
-  constructor(deliver: Deliver, options: BrokerCoreOptions = {}) {
+  constructor(deliver: Deliver<C>, options: BrokerCoreOptions<C> = {}) {
     this.deliver = deliver
-    this.registry = options.registry ?? new Registry<Conn>()
+    this.registry = options.registry ?? new Registry<C>()
     this.events = options.events ?? new EventLog(options.dbPath)
     this.hub = options.hub ?? new EventHub()
     this.agents = new AgentLog(this.events)
@@ -112,7 +117,7 @@ export class BrokerCore {
    * `evict` closes a connection the takeover displaced. Injected because the core
    * holds no sockets — same reason `deliver` is.
    */
-  register(conn: Conn, msg: RegisterMessage, evict?: (conn: Conn) => void): { ok: boolean; reason?: string } {
+  register(conn: C, msg: RegisterMessage, evict?: (conn: C) => void): { ok: boolean; reason?: string } {
     if (msg.agentId !== undefined) {
       const claim = this.claimable(msg.agentId, msg.name)
       if (!claim.ok) {
@@ -202,12 +207,7 @@ export class BrokerCore {
   }
 
   /** A takeover displaced a live connection: record the detach and close it. */
-  private supersede(
-    name: string,
-    agentId: string | undefined,
-    evicted: Conn,
-    evict?: (conn: Conn) => void,
-  ): void {
+  private supersede(name: string, agentId: string | undefined, evicted: C, evict?: (conn: C) => void): void {
     // The predecessor's own close handler would append this too, but it may not
     // have fired yet and the entry is already gone — so record it here, and let
     // drop() find nothing left to record when it does fire.
@@ -254,7 +254,7 @@ export class BrokerCore {
   }
 
   /** The socket went away. Presence ends; the identity does not. */
-  drop(conn: Conn): void {
+  drop(conn: C): void {
     const entry = this.registry.entryFor(conn)
     const name = this.registry.drop(conn)
     if (!name || !entry) return
@@ -381,8 +381,8 @@ export interface VerdictResult {
   reason?: string
 }
 
-export interface BrokerCoreOptions {
-  registry?: Registry<Conn>
+export interface BrokerCoreOptions<C = Conn> {
+  registry?: Registry<C>
   events?: EventStore
   hub?: EventHub
   dbPath?: string
