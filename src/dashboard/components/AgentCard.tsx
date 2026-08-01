@@ -1,12 +1,12 @@
 import React from 'react'
 import { View, Text, Pressable, StyleSheet } from 'react-native'
-import { C, palette } from './shared/colors.js'
+import { C } from './shared/colors.js'
 import { TokenGauge } from './shared/TokenGauge.js'
 import { ActivitySparkline } from './shared/ActivitySparkline.js'
 import type { SparkEvent } from './shared/ActivitySparkline.js'
 import { Avatar } from './shared/Avatar.js'
 import { Badge } from './shared/Badge.js'
-import { sessionStatusColor } from '../utils/semantic-colors.js'
+import { dndColor, sessionStatusColor } from '../utils/semantic-colors.js'
 import { branchOf, fmtIdle } from '../view-model.js'
 import type { AgentVM } from '../view-model.js'
 
@@ -43,7 +43,7 @@ export function AgentCard({ agent, onPress }: Props) {
             <Text style={s.name}>{session.name}</Text>
             <View style={s.badgeRow}>
               <Badge label={session.status} color={statusColor} dot size="sm" />
-              {session.dnd && <Badge label="dnd" color={palette.gray.base} size="sm" />}
+              {session.dnd && <Badge label="dnd" color={dndColor()} size="sm" />}
             </View>
           </View>
         </View>

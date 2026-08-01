@@ -1,8 +1,10 @@
 import React from 'react'
 import { View, Text, StyleSheet } from 'react-native'
-import { C } from './colors.js'
+import { C, component } from './colors.js'
 import { fmtK } from '../../utils/formatting.js'
 import { sp } from '../../tokens.js'
+
+const gauge = component.tokenGauge
 
 interface Props {
   tokensIn: number
@@ -46,18 +48,18 @@ const styles = StyleSheet.create({
   headerValue: { fontSize: 11, color: C.textTertiary },
   bar: {
     height: sp[4],
-    backgroundColor: C.surface3,
+    backgroundColor: gauge.track,
     borderRadius: sp[2],
     overflow: 'hidden',
     flexDirection: 'row',
   },
   barIn: {
     height: '100%' as unknown as number,
-    backgroundColor: C.info,
+    backgroundColor: gauge.inputBar,
   },
   barOut: {
     height: '100%' as unknown as number,
-    backgroundColor: C.brand,
+    backgroundColor: gauge.outputBar,
     marginLeft: 1,
   },
   labels: {
@@ -65,6 +67,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginTop: sp[2],
   },
-  labelIn: { fontSize: 10, color: C.info },
-  labelOut: { fontSize: 10, color: C.brand },
+  labelIn: { fontSize: 10, color: gauge.inputLabel },
+  labelOut: { fontSize: 10, color: gauge.outputLabel },
 })
