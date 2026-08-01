@@ -33,6 +33,18 @@ export interface AgentEventRow {
   meta: Record<string, string>
 }
 
+/**
+ * An `AgentEventRow` with the log id that ordered it.
+ *
+ * The id is deliberately absent from `AgentEventRow` — the agent fold is a pure
+ * function over content and has no business knowing storage order. The SSE tail
+ * is the opposite case: there the id IS the contract, because it becomes the
+ * frame's `id:` and therefore the browser's resume cursor.
+ */
+export interface LoggedEventRow extends AgentEventRow {
+  id: number
+}
+
 export interface EventStore {
   append(input: AppendInput): { id: number; msgId: string }
 
@@ -69,6 +81,19 @@ export interface EventStore {
   agentEvents(): AgentEventRow[]
 
   history(limit: number): QueueItem[]
+
+  /**
+   * Rows with `id > afterId`, oldest first, at most `limit` of them.
+   *
+   * The one read the SSE tail needs. A reconnecting browser sends back the last
+   * frame id it saw and this returns exactly what it missed, in the order it was
+   * written. Bounded on purpose: an unbounded replay is how a browser left open
+   * overnight ends up re-reading the whole log in one burst.
+   */
+  since(afterId: number, limit: number): LoggedEventRow[]
+
+  /** The highest id in the log, or 0 when it is empty. */
+  latestId(): number
 
   close(): void
 }

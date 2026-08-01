@@ -25,8 +25,17 @@ export const metaPath = (): string => path.join(home(), 'broker.meta.json')
  */
 export const tokenPath = (): string => path.join(home(), 'ui.token')
 
-/** Built dashboard assets, served by the broker rather than by a separate dev server. */
-export const dashboardDir = (): string => path.join(packageRoot(), 'dashboard')
+/**
+ * Built dashboard assets, served by the broker rather than by a separate dev server.
+ *
+ * Anchored on the package root and then `dist/`, for the same reason `cliEntry`
+ * below is: `packageRoot()` is already the repo root from either tree, so the
+ * `dist` segment has to be spelled out. Without it this resolved to
+ * `<repo>/dashboard`, which nothing has ever written — `/ui` served the "not
+ * built" placeholder and `doctor` reported the dashboard missing while
+ * `dist/dashboard/index.html` sat on disk.
+ */
+export const dashboardDir = (): string => path.join(packageRoot(), 'dist', 'dashboard')
 
 /**
  * Per-agent working state for agent teams: launch plan, mcp config, isolation

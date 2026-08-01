@@ -5,7 +5,7 @@ import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { home } from '../paths.js'
 import type { DeliveredMessage, EventKind, Provenance, QueueItem } from '../protocol.js'
-import type { AgentEventRow, AppendInput, EventStore } from './event-store.js'
+import type { AgentEventRow, AppendInput, EventStore, LoggedEventRow } from './event-store.js'
 
 /**
  * Append-only event log. Everything that happens on the bus lands here; live
@@ -17,7 +17,7 @@ import type { AgentEventRow, AppendInput, EventStore } from './event-store.js'
  * tree that knows `node:sqlite` exists.
  */
 
-export type { AgentEventRow, AppendInput, EventStore } from './event-store.js'
+export type { AgentEventRow, AppendInput, EventStore, LoggedEventRow } from './event-store.js'
 
 interface Row {
   id: number
@@ -355,6 +355,35 @@ export class EventLog implements EventStore {
         ...(row.target ? { target: row.target } : {}),
       },
     }))
+  }
+
+  /**
+   * The SSE tail's catch-up query. Ordered by id ASC because the frame id is the
+   * client's resume cursor, and a cursor that goes backwards is worse than no
+   * cursor at all.
+   */
+  since(afterId: number, limit: number): LoggedEventRow[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM events WHERE id > ? ORDER BY id ASC LIMIT ?`)
+      .all(afterId, limit) as unknown as Row[]
+    return rows.map(row => ({
+      id: row.id,
+      kind: row.kind as EventKind,
+      ts: row.ts,
+      actor: row.actor,
+      target: row.target,
+      msgId: row.msg_id,
+      ref: row.ref,
+      body: row.body,
+      meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
+    }))
+  }
+
+  latestId(): number {
+    const row = this.db.prepare(`SELECT MAX(id) AS max_id FROM events`).get() as unknown as {
+      max_id: number | null
+    }
+    return row.max_id ?? 0
   }
 
   close(): void {
