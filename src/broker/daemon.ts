@@ -14,6 +14,7 @@ import {
 } from './lifecycle.js'
 import { logEvent } from './log.js'
 import { deliver, SocketServer } from './socket.js'
+import { ensureToken } from './token.js'
 import { VERSION } from './version.js'
 
 /**
@@ -55,7 +56,8 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   const server = await listenOn(sock, socketServer)
 
   // Only after the socket is serving, and only ever best-effort.
-  const http = options.http === false ? null : await bindHttp(core, options.port ?? defaultPort())
+  const http =
+    options.http === false ? null : await bindHttp(core, options.port ?? defaultPort(), ensureToken())
   recordBrokerState(http?.port ?? null)
 
   // The watcher and the shutdown it triggers are mutually referential: shutdown
@@ -127,15 +129,21 @@ async function listenOn(sock: string, socketServer: SocketServer): Promise<net.S
  * listener is up, and `/health` must report the port actually bound rather than
  * the one we asked for.
  *
+ * `token` defaults to null so a test can bind a bare port without minting a
+ * secret; `startBroker` always passes one. The dashboard gets its copy injected
+ * into the HTML the broker itself serves, so both sides read the same 0600 file
+ * and nothing has to be configured.
+ *
  * Exported so the tolerance can be tested against a genuinely occupied port
  * without standing up a whole broker.
  */
 export async function bindHttp(
   core: BrokerCore,
   port: number,
+  token: string | null = null,
 ): Promise<{ server: ServerType; port: number } | null> {
   let bound: number | null = null
-  const app = buildHttpApp({ core, port: () => bound })
+  const app = buildHttpApp({ core, port: () => bound, token, dashboard: { token: () => token } })
 
   return new Promise(resolve => {
     let settled = false

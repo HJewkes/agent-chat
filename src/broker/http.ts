@@ -32,9 +32,12 @@ export interface HttpAppOptions {
    *
    * The unix socket is `chmod 0600`, so the trust boundary is the OS account. A
    * loopback TCP port is reachable by ANY local user, which is strictly weaker,
-   * and the token restores parity. It is null until the wave that writes
-   * `~/.agent-chat/ui.token` and teaches the dashboard to send it — enforcing it
-   * before then would lock out the very clients that cannot yet supply it.
+   * and the token restores parity. `startBroker` passes `ensureToken()`; null is
+   * for tests and for a bare `bindHttp` that wants no auth.
+   *
+   * The browser gets its copy because `dashboard-routes.ts` injects it into the
+   * served `index.html` — the server reads the 0600 file, an unauthorized local
+   * user cannot.
    *
    * Note honestly: this closes the multi-user gap the TCP port opens. It does
    * not change the agent threat model at all — any session with Bash can already

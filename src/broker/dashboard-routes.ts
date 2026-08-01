@@ -19,10 +19,19 @@ import { dashboardDir } from '../paths.js'
 export interface DashboardOptions {
   /** Injected so tests can point at a fixture directory instead of `dist/`. */
   dir?: () => string
+  /**
+   * The `/api/*` secret, handed to the page that needs it (docs §6.5).
+   *
+   * A getter for the same reason `port` is one in `http.ts`: the value belongs to
+   * the daemon and is not known when the routes are built. Null leaves the HTML
+   * untouched, which is what `vite dev` and the unbuilt-placeholder path want.
+   */
+  token?: () => string | null
 }
 
 export function dashboardRoutes(options: DashboardOptions = {}): Hono {
   const dir = options.dir ?? dashboardDir
+  const token = options.token ?? (() => null)
   const ui = new Hono()
 
   ui.get('/*', c => {
@@ -34,12 +43,35 @@ export function dashboardRoutes(options: DashboardOptions = {}): Hono {
     // SPA fallback: any path under /ui that is not a file is a client-side
     // route, and the app resolves it once it has booted.
     const index = path.join(root, 'index.html')
-    if (fs.existsSync(index)) return c.html(fs.readFileSync(index, 'utf8'))
+    if (fs.existsSync(index)) return c.html(withToken(fs.readFileSync(index, 'utf8'), token()))
 
     return c.html(placeholderPage(root), 200)
   })
 
   return ui
+}
+
+/**
+ * Hand the page the token by rewriting the HTML on the way out.
+ *
+ * This is the mechanism the whole scheme rests on: the file is `0600`, so THIS
+ * process can read it and another local OS account cannot, and serving it inside
+ * the document is how the privilege crosses into the browser. There is no other
+ * channel — a `fetch` for the token would need the token.
+ *
+ * Injected at the TOP of `<head>`, before the bundle: the app reads
+ * `window.__AGENT_CHAT_TOKEN__` during module evaluation, so a script placed
+ * after it would run too late and every request would 403.
+ *
+ * The value is JSON-encoded and its `<` escaped, because a token containing
+ * `</script>` would otherwise end the tag early. Ours is hex and cannot, but the
+ * escape belongs next to the injection rather than in the generator's docstring.
+ */
+function withToken(html: string, token: string | null): string {
+  if (token === null) return html
+  const literal = JSON.stringify(token).replace(/</g, '\\u003c')
+  const tag = `<script>window.__AGENT_CHAT_TOKEN__=${literal}</script>`
+  return html.includes('<head>') ? html.replace('<head>', `<head>${tag}`) : `${tag}${html}`
 }
 
 /**

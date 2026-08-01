@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import type {
   ErrorResponse,
   HistoryResponse,
@@ -6,6 +7,7 @@ import type {
   SessionsResponse,
   TranscriptAnalytics,
   TranscriptResponse,
+  VerdictResponse,
 } from '../api-contract.js'
 import type { SessionAnalytics } from '../agents/analytics/types.js'
 import { parseSessionFile } from '../agents/analytics/parser.js'
@@ -13,17 +15,21 @@ import { findTranscript } from '../agents/transcript.js'
 import type { BrokerCore } from './core.js'
 
 /**
- * The read model over HTTP.
+ * The read model over HTTP, plus exactly two writes.
  *
- * Every route here is a GET, and that is a constraint rather than a stage we
- * have not finished: `POST /api/answer` and `/api/dismiss` land in a later wave
- * and will call `core.answer()`/`core.dismiss()`, which are the ONLY verdict
- * paths. Nothing in this file may ever write to the log — `core.append()` is the
- * single writer, and an HTTP route reaching past it would be the second one.
+ * `POST /api/answer` and `POST /api/dismiss` call `core.answer()` /
+ * `core.dismiss()` and nothing else. Those are the ONLY verdict paths, shared
+ * with the socket handler the CLI talks to, and they own the `isOpen` check that
+ * makes a second verdict on an item lose deterministically. This file must not
+ * re-check it — a duplicate check here would be a second arbiter, and the two
+ * would drift. Nothing in this file may ever write to the log directly:
+ * `core.append()` is the single writer, and an HTTP route reaching past it would
+ * be the second one.
  *
- * Permission verdicts are permanently out of scope for any surface here. The
- * relay is observe-only by construction, and a dashboard write path would be a
- * backdoor around that, not a feature.
+ * `POST /api/approve` does not exist and never will. Permission verdicts are
+ * permanently out of scope for any surface here — the relay is observe-only by
+ * construction, and a dashboard write path would be a backdoor around that, not
+ * a feature. Its absence is asserted by a test, deliberately.
  *
  * The registry is read IN-PROCESS. It has to be: the live session list is keyed
  * by socket object and exists only in this process's memory, which is the whole
@@ -106,7 +112,56 @@ export function apiRoutes(core: BrokerCore): Hono {
     }
   })
 
+  /**
+   * The human answering a queue item from the browser.
+   *
+   * `ok: false` is a 200, not a 4xx. "Already resolved elsewhere" is the design
+   * working — someone answered from a terminal a moment ago — and the UI shows it
+   * inline while waiting for the SSE `answer`/`resolution` frame to retire the
+   * row. An error status would push the dashboard into a failure branch for the
+   * most ordinary concurrent outcome there is (docs §5.1 rule 3). A 400 is
+   * reserved for a request that is malformed, which is a client bug.
+   */
+  api.post('/answer', async c => {
+    const body = await readJson(c)
+    const msgId = stringField(body, 'msgId')
+    const text = stringField(body, 'text')
+    if (msgId === null) return badRequest(c, 'msgId is required')
+    if (text === null || text === '') return badRequest(c, 'text is required')
+
+    const result: VerdictResponse = core.answer(msgId, text)
+    return c.json(result)
+  })
+
+  api.post('/dismiss', async c => {
+    const msgId = stringField(await readJson(c), 'msgId')
+    if (msgId === null) return badRequest(c, 'msgId is required')
+
+    const result: VerdictResponse = core.dismiss(msgId)
+    return c.json(result)
+  })
+
   return api
+}
+
+function badRequest(c: Context, message: string): Response {
+  const error: ErrorResponse = { error: message }
+  return c.json(error, 400)
+}
+
+/** A malformed or absent body is an empty object, so field validation reports it. */
+async function readJson(c: Context): Promise<unknown> {
+  try {
+    return await c.req.json()
+  } catch {
+    return {}
+  }
+}
+
+function stringField(body: unknown, key: string): string | null {
+  if (typeof body !== 'object' || body === null) return null
+  const value = (body as Record<string, unknown>)[key]
+  return typeof value === 'string' ? value.trim() : null
 }
 
 function historyLimit(raw: string | undefined): number {

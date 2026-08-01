@@ -1,8 +1,13 @@
 /**
- * The dashboard's whole read path.
+ * The dashboard's read path, plus the two writes the UI is allowed to make.
  *
  * Every shape here comes from `src/api-contract.ts` — deliberately imported
  * rather than restated, so this file cannot drift from the routes serving it.
+ *
+ * There is no `approve` here and there must never be one. Permission verdicts
+ * are answered in the session's own terminal; the relay is observe-only by
+ * construction and this file is exactly where a well-meaning backdoor would be
+ * added (docs §5).
  */
 import { TOKEN_HEADER } from '../api-contract.js'
 import type {
@@ -11,6 +16,7 @@ import type {
   QueueResponse,
   SessionsResponse,
   TranscriptResponse,
+  VerdictResponse,
 } from '../api-contract.js'
 import type { SessionInfo } from '../protocol.js'
 
@@ -41,6 +47,31 @@ export const fetchSessions = (): Promise<SessionsResponse> => get<SessionsRespon
 export const fetchQueue = (): Promise<QueueResponse> => get<QueueResponse>('/api/queue')
 export const fetchHistory = (limit = 200): Promise<HistoryResponse> =>
   get<HistoryResponse>(`/api/history?limit=${limit}`)
+
+/**
+ * The two writes, both of which resolve rather than throw on `ok: false`.
+ *
+ * "Already resolved elsewhere" is a normal concurrent outcome — someone typed
+ * `agent-chat answer <id>` in a terminal a moment ago — and the broker reports it
+ * as a 200 with `ok: false` for exactly that reason. Turning it into a rejection
+ * here would put the most ordinary race in the product down the error path
+ * (docs §5.1 rule 3). Only transport and auth failures throw.
+ */
+async function post<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { ...headers(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(`${path} -> ${res.status} ${res.statusText}`)
+  return (await res.json()) as T
+}
+
+export const postAnswer = (msgId: string, text: string): Promise<VerdictResponse> =>
+  post<VerdictResponse>('/api/answer', { msgId, text })
+
+export const postDismiss = (msgId: string): Promise<VerdictResponse> =>
+  post<VerdictResponse>('/api/dismiss', { msgId })
 
 /**
  * `GET /api/transcript?sessionId=&cwd=`.

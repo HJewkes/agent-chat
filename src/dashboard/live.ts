@@ -1,7 +1,7 @@
 /**
  * Liveness: one SSE subscription, one poll fallback, one refetch.
  *
- * V1 deliberately does NOT apply frames incrementally. Every frame — whatever
+ * This deliberately does NOT apply frames incrementally. Every frame — whatever
  * its kind — means "the read model moved", and the answer is to refetch the
  * three list endpoints. That is the same thing active-work's dashboard does
  * with its single `change` ping, and it is correct here for a reason worth
@@ -10,10 +10,13 @@
  * from an `answer` or `resolution` frame would mean reimplementing that
  * subquery in the browser and keeping the two in step. Refetching cannot drift.
  *
- * Applying frames incrementally is a real optimisation, just not one V1 needs
- * at a few dozen rows. TODO(CC-53): revisit when the queue view gains write
- * affordances, since that is when optimistic-vs-authoritative state starts to
- * matter (docs §5.1 rule 1: no optimistic removal).
+ * THAT IS ALSO WHAT MAKES THE WRITE PATH CORRECT (docs §5.1). Because the queue
+ * is always server truth, `QueueView` has nothing to optimistically remove: it
+ * marks a row pending and the row leaves when the refetch triggered by the
+ * `answer`/`resolution` frame no longer contains it. A CLI answer retires the
+ * row through the identical path, and a reconnect replays the missed resolution
+ * through the resume cursor and drives the same refetch. All four reconciliation
+ * rules fall out of refetch-on-frame; none of them needed extra machinery.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { SSE_EVENT_NAMES } from '../api-contract.js'

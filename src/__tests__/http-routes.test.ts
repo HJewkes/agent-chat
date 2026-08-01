@@ -11,6 +11,7 @@ import type {
   QueueResponse,
   SessionsResponse,
   TranscriptResponse,
+  VerdictResponse,
 } from '../api-contract.js'
 import { TOKEN_HEADER } from '../api-contract.js'
 import { BrokerCore, type Conn } from '../broker/core.js'
@@ -257,15 +258,87 @@ describe('GET /api/transcript', () => {
 })
 
 describe('write routes', () => {
+  const post = (core: BrokerCore, route: string, body: unknown) =>
+    app(core).fetch(
+      new Request(`http://127.0.0.1${route}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    )
+
+  it('answers an open item and closes it, so the queue no longer lists it', async () => {
+    const core = makeCore()
+    const item = core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'ship it?' })
+
+    const res = await post(core, '/api/answer', { msgId: item.msgId, text: 'yes, ship it' })
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as VerdictResponse).ok).toBe(true)
+
+    expect(core.events.humanQueue().map(i => i.msgId)).not.toContain(item.msgId)
+    expect(core.events.history(10).some(e => e.kind === 'answer' && e.text === 'yes, ship it')).toBe(true)
+  })
+
+  it('dismisses an open item', async () => {
+    const core = makeCore()
+    const item = core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'still?' })
+
+    const res = await post(core, '/api/dismiss', { msgId: item.msgId })
+    expect(((await res.json()) as VerdictResponse).ok).toBe(true)
+    expect(core.events.humanQueue()).toHaveLength(0)
+  })
+
   /**
-   * Not "not implemented yet" — a guard. Verdicts have exactly one write path
-   * (`core.answer`/`core.dismiss`) and permission verdicts have none at all from
-   * any surface here. A route appearing before the wave that wires it to the
-   * core would be the second write path this design exists to prevent.
+   * The concurrency contract from docs §5.1, asserted rather than described: the
+   * second verdict loses, and it loses as a 200 with `ok:false`. A 4xx here would
+   * push the dashboard into its error branch for the single most ordinary
+   * outcome in the design — someone answered from a terminal a moment ago.
    */
-  it.each(['/api/answer', '/api/dismiss', '/api/approve'])('does not serve POST %s yet', async route => {
-    const res = await app(makeCore()).fetch(new Request(`http://127.0.0.1${route}`, { method: 'POST' }))
+  it('reports a second verdict as a 200 with ok:false, not as an error status', async () => {
+    const core = makeCore()
+    const item = core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'q' })
+    core.answer(item.msgId, 'answered from the CLI')
+
+    const res = await post(core, '/api/answer', { msgId: item.msgId, text: 'answered from the browser' })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as VerdictResponse
+    expect(body.ok).toBe(false)
+    expect(body.reason).toContain('not an open item')
+  })
+
+  it.each([
+    ['/api/answer', {}],
+    ['/api/answer', { msgId: 'abc' }],
+    ['/api/answer', { msgId: 'abc', text: '   ' }],
+    ['/api/dismiss', {}],
+  ])('400s on a malformed %s body (%o), which is a client bug rather than a race', async (route, body) => {
+    const res = await post(makeCore(), route, body)
+    expect(res.status).toBe(400)
+  })
+
+  /**
+   * PERMANENT, not "not yet". Permission verdicts are out of scope for every
+   * surface here: the relay is observe-only by construction and a dashboard
+   * write path would be a backdoor around that. This assertion is the guard that
+   * makes adding one a test failure rather than a review comment.
+   */
+  it('does not serve POST /api/approve, and never will', async () => {
+    const res = await app(makeCore()).fetch(new Request('http://127.0.0.1/api/approve', { method: 'POST' }))
     expect(res.status).toBe(404)
+  })
+
+  it('requires the token on the write routes too, not only on the reads', async () => {
+    const core = makeCore()
+    const item = core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'q' })
+    const res = await app(core, { token: 's3cret' }).fetch(
+      new Request('http://127.0.0.1/api/dismiss', {
+        method: 'POST',
+        body: JSON.stringify({ msgId: item.msgId }),
+      }),
+    )
+
+    expect(res.status).toBe(403)
+    expect(core.events.humanQueue()).toHaveLength(1)
   })
 })
 
@@ -388,6 +461,37 @@ describe('GET /ui', () => {
       new Request(`http://127.0.0.1/ui/..%2F${path.basename(path.dirname(dir))}/secret.txt`),
     )
     expect(await res.text()).not.toContain('do not serve me')
+  })
+
+  /**
+   * The whole token scheme rests on this: the file is 0600, so the broker can
+   * read it and another local account cannot, and the served document is the ONLY
+   * channel by which the browser learns it — a fetch for the token would need the
+   * token. If this injection stops happening, every /api/* call 403s.
+   */
+  it('injects the token into the served index.html, which is how the browser gets it', async () => {
+    const dir = tmpDir('agent-chat-ui-')
+    fs.writeFileSync(path.join(dir, 'index.html'), '<!doctype html><html><head></head><body></body></html>')
+
+    const res = await app(makeCore(), { dashboard: { dir: () => dir, token: () => 's3cret' } }).fetch(
+      new Request('http://127.0.0.1/ui'),
+    )
+    const html = await res.text()
+
+    expect(html).toContain('window.__AGENT_CHAT_TOKEN__="s3cret"')
+    // Before the bundle, not after it: the app reads the global during module
+    // evaluation, so a script placed later would run too late to be seen.
+    expect(html.indexOf('__AGENT_CHAT_TOKEN__')).toBeLessThan(html.indexOf('<body>'))
+  })
+
+  it('leaves the HTML untouched when there is no token, which is the vite-dev case', async () => {
+    const dir = tmpDir('agent-chat-ui-')
+    fs.writeFileSync(path.join(dir, 'index.html'), '<!doctype html><html><head></head></html>')
+
+    const res = await app(makeCore(), { dashboard: { dir: () => dir } }).fetch(
+      new Request('http://127.0.0.1/ui'),
+    )
+    expect(await res.text()).not.toContain('__AGENT_CHAT_TOKEN__')
   })
 })
 
