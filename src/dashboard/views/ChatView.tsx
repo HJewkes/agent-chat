@@ -9,6 +9,7 @@ import { Pill } from '../components/shared/Pill.js'
 import { fmtTime } from '../utils/formatting.js'
 import { eventKindColor } from '../utils/semantic-colors.js'
 import { avatarColor } from '../utils/avatar.js'
+import { AgentNetworkGraph } from '../components/AgentNetworkGraph.js'
 import { chatParticipants, filterChatEntries, groupChatEntries } from '../chat-feed.js'
 import type { ChatEntry } from '../chat-feed.js'
 
@@ -47,6 +48,7 @@ export function ChatView({ history }: ChatViewProps) {
   return (
     <View style={s.container}>
       <Text style={s.pageTitle}>Chat</Text>
+      <AgentNetworkGraph items={history.items} entries={entries} />
       <FilterBar
         participants={participants}
         selected={agents}
