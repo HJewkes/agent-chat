@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
-import path from 'node:path'
 import type { BrokerCore } from '../broker/core.js'
 import { newMsgId } from '../broker/event-log.js'
 import {
@@ -26,6 +25,8 @@ import { resolve as resolveIsolation, type Allocation, type IsolationContext } f
 import { surfaceFor } from './surfaces/index.js'
 import { SurfaceRefused, type SurfaceOptions } from './surfaces/options.js'
 import { Semaphore } from './semaphore.js'
+import { checkSpawnCwd } from './spawn-cwd.js'
+import { resolveBriefing, type BriefingResult } from './active-work.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { cliEntry, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
@@ -108,6 +109,11 @@ export interface SpawnRequest {
   cwd?: string
   isolation?: IsolationName
   surface?: SurfaceName
+  /**
+   * CC-63: an active-work slug, or `auto`, whose brief/tasks/sessions are read
+   * and prepended to `brief`. Absent means the brief is exactly what was passed.
+   */
+  briefing?: string
   /** Empty for a human-initiated spawn; otherwise the requesting agent's id. */
   parentAgentId?: string
   requestedBy: string
@@ -257,40 +263,26 @@ export class Supervisor implements TeleportHost {
 
   /**
    * §11.2: the spawn request is attacker-controlled, and `cwd` decides where a
-   * process with the profile's tools gets to read. The spec promised this check
-   * and the code never had it — a peer could spawn an agent in `~/.ssh`, which is
-   * the exact example the spec uses to say it cannot.
+   * process with the profile's tools gets to read. The policy itself lives in
+   * `spawn-cwd.ts`, which is where the reasoning — and CC-62's widening of it
+   * from "somewhere a session already sits" to "somewhere in your own workspace
+   * that is not a credential directory" — is written down.
    *
-   * Containment is to directories some registered session is already working in:
-   * a peer may spawn where work is happening, nowhere else. Resolved through
-   * realpath first, so `..` and a symlink pointing out of the tree are both
-   * caught rather than passing a string comparison.
-   *
-   * The human at the CLI is exempt from containment, not from existence. They
-   * hold no registry entry to be contained by, and reaching a 0600 socket already
-   * means being the local user — the same reasoning that lets them spawn at all.
+   * The human at the CLI is exempt from the location rules, not from existence.
+   * They hold no registry entry to be contained by, and reaching a 0600 socket
+   * already means being the local user — the same reasoning that lets them spawn
+   * at all.
    */
   private checkCwd(cwd: string, requestedBy: string): string | undefined {
-    let real: string
-    try {
-      const stat = fs.statSync(cwd)
-      if (!stat.isDirectory()) return `cwd is not a directory: ${cwd}`
-      real = fs.realpathSync(cwd)
-    } catch {
-      return `cwd does not exist: ${cwd}`
-    }
-    if (requestedBy === HUMAN) return undefined
-
-    const contained = this.core.registry.list().some(session => {
-      let root: string
+    if (requestedBy === HUMAN) {
       try {
-        root = fs.realpathSync(session.cwd)
+        if (!fs.statSync(cwd).isDirectory()) return `cwd is not a directory: ${cwd}`
       } catch {
-        return false
+        return `cwd does not exist: ${cwd}`
       }
-      return real === root || real.startsWith(root + path.sep)
-    })
-    return contained ? undefined : `cwd must be at or under a directory some session is working in: ${cwd}`
+      return undefined
+    }
+    return checkSpawnCwd(cwd, { sessionRoots: this.core.registry.list().map(session => session.cwd) })
   }
 
   /** Everything checkable before anything is allocated or written. */
@@ -410,6 +402,25 @@ export class Supervisor implements TeleportHost {
     return undefined
   }
 
+  /**
+   * CC-63. Nothing when the spawn did not ask for a briefing; otherwise the
+   * orientation block, or the reason there is not one.
+   *
+   * The requester's cwd comes from the REGISTRY, not from the request — the same
+   * discipline `anchor` and `parentAgentId` follow. A slug is a pointer to a
+   * directory that gets read and handed to a new process, so letting the caller
+   * assert where it is standing would turn `auto` into "read me any initiative".
+   */
+  private briefingFor(req: SpawnRequest, targetCwd: string): BriefingResult | undefined {
+    if (req.briefing === undefined) return undefined
+    const requester = this.core.registry.list().find(session => session.name === req.requestedBy)
+    return resolveBriefing({
+      briefing: req.briefing,
+      ...(requester ? { requesterCwd: requester.cwd } : {}),
+      targetCwd,
+    })
+  }
+
   async spawn(req: SpawnRequest): Promise<SpawnOutcome> {
     const depth = this.depthOf(req.parentAgentId)
     const blocked = this.preflight(req, depth)
@@ -445,11 +456,18 @@ export class Supervisor implements TeleportHost {
     }
 
     const warnings = await resolveIsolation([isolationName]).check(ctx)
+    // A briefing is an improvement to the brief, never a precondition for one:
+    // an unresolvable initiative warns and spawns anyway. The alternative is a
+    // spawn that fails for a reason unrelated to the work.
+    const briefing = this.briefingFor(req, cwd)
+    if (briefing !== undefined && 'warning' in briefing) warnings.push(briefing.warning)
+    const injected = briefing !== undefined && 'text' in briefing ? briefing : undefined
+
     if (!this.semaphore.acquire(agentId))
       return this.refuse(req, `no free agent slots (${this.semaphore.summary()}); retire one first`)
 
     try {
-      return await this.launch(req, ctx, agentId, isolationName, warnings, profile, depth)
+      return await this.launch(req, ctx, agentId, isolationName, warnings, profile, depth, injected)
     } catch (err) {
       this.semaphore.release(agentId)
       const reason = err instanceof SurfaceRefused ? err.message : `spawn failed: ${(err as Error).message}`
@@ -466,6 +484,7 @@ export class Supervisor implements TeleportHost {
     warnings: string[],
     profile: AgentProfile,
     depth: number,
+    briefing?: { text: string; slug: string },
   ): Promise<SpawnOutcome> {
     const allocation = await resolveIsolation([isolationName]).allocate(ctx)
     this.core.append({
@@ -483,7 +502,7 @@ export class Supervisor implements TeleportHost {
       sessionId,
       name: req.name,
       profile,
-      brief: [req.brief, allocation.note].filter(Boolean).join('\n\n'),
+      brief: [briefing?.text, req.brief, allocation.note].filter(Boolean).join('\n\n'),
       cwd: allocation.cwd,
       surface,
       mcpConfigPath: mcpConfigPath(agentId),
@@ -502,9 +521,14 @@ export class Supervisor implements TeleportHost {
       actor: req.requestedBy,
       target: req.name,
       msgId: agentId,
+      // The coordinator's own brief, not the injected briefing in front of it:
+      // the log records what was ASKED FOR, and an initiative's onboarding doc
+      // pasted into every spawn row would bury it. The slug in `meta` is the
+      // pointer back to what the agent was actually handed.
       body: req.brief,
       meta: {
         name: req.name,
+        ...(briefing ? { briefing: briefing.slug } : {}),
         parent: req.parentAgentId ?? '',
         profile: profile.name,
         model: profile.model,

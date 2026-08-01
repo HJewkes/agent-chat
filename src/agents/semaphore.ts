@@ -13,7 +13,7 @@
  * would drift up a slot every time both ran.
  */
 
-export const DEFAULT_SLOTS = 3
+export const DEFAULT_SLOTS = 20
 
 export class Semaphore {
   private readonly held = new Set<string>()

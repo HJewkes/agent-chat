@@ -9,6 +9,7 @@ import { Registry } from '../broker/registry.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { SpawnRateBudget } from '../agents/spawn-rate.js'
 import { MAX_DEPTH, Supervisor } from '../agents/supervisor.js'
+import { readLaunchPlan } from '../agents/launch-files.js'
 
 /**
  * A6 — lifecycle. What is being proved is that an agent's slot, isolation and
@@ -95,23 +96,41 @@ describe('spawning', () => {
   })
 
   /**
-   * §11.2 promised this check in prose — "must exist, must be a directory, and
-   * must be at or under the cwd of some currently-registered session ... A peer
-   * can spawn where somebody is already working; it cannot spawn in ~/.ssh" —
-   * and the code never had it. Found by a spawned reviewer reading the section
-   * against the source. `cwd` decides where a process with the profile's tools
-   * gets to read, so an unvalidated one is a read primitive anywhere on disk.
+   * §11.2 promised this check in prose — "must exist, must be a directory ... A
+   * peer can spawn where somebody is already working; it cannot spawn in
+   * ~/.ssh" — and the code never had it. Found by a spawned reviewer reading the
+   * section against the source. `cwd` decides where a process with the profile's
+   * tools gets to read, so an unvalidated one is a read primitive anywhere on
+   * disk. The location rules themselves live in `spawn-cwd.ts` and are tested
+   * there; these cover the supervisor honouring them, plus the human exemption,
+   * which exists only at this layer.
    */
   describe('the cwd a spawn asks for', () => {
-    it('refuses a peer a directory nobody is working in', async () => {
+    it('refuses a peer the home directory itself', async () => {
       const sup = withStubbedSurface()
       core.register(fakeConn(), { t: 'register', name: 'peer', workingOn: '', cwd: workspace(), pid: 1 })
 
       const result = await sup.spawn(spawnReq({ requestedBy: 'peer', cwd: os.homedir() }))
 
       expect(result.ok).toBe(false)
-      expect(result.reason).toMatch(/at or under a directory some session is working in/)
+      expect(result.reason).toMatch(/must be under your home directory/)
       expect(core.events.history(10).some(r => r.kind === 'agent_spawn_refused')).toBe(true)
+    })
+
+    /**
+     * CC-62's regression. This refused before the widening: the target existed
+     * and was perfectly ordinary, but no OTHER session happened to be sitting in
+     * it — which is exactly the state a freshly created worktree is in, and why
+     * `isolation: worktree` was unusable without a decoy session first.
+     */
+    it('lets a peer spawn into a fresh directory no session is working in', async () => {
+      const sup = withStubbedSurface()
+      core.register(fakeConn(), { t: 'register', name: 'peer', workingOn: '', cwd: workspace(), pid: 1 })
+
+      const result = await sup.spawn(spawnReq({ requestedBy: 'peer', cwd: workspace() }))
+
+      expect(result.reason).toBeUndefined()
+      expect(result.ok).toBe(true)
     })
 
     it('lets a peer spawn under a directory a session is working in', async () => {
@@ -122,7 +141,7 @@ describe('spawning', () => {
       expect((await sup.spawn(spawnReq({ requestedBy: 'peer', cwd: shared }))).ok).toBe(true)
     })
 
-    it('does not let .. climb out of a session workspace', async () => {
+    it('does not let .. climb out to the root of the temp area', async () => {
       const sup = withStubbedSurface()
       const shared = workspace()
       core.register(fakeConn(), { t: 'register', name: 'peer', workingOn: '', cwd: shared, pid: 1 })
@@ -144,13 +163,62 @@ describe('spawning', () => {
     })
 
     /** The human holds no registry entry to be contained by, and is the trust root. */
-    it('exempts the human from containment but not from existence', async () => {
+    it('exempts the human from the location rules but not from existence', async () => {
       const sup = withStubbedSurface()
 
       expect((await sup.spawn(spawnReq({ requestedBy: 'human', cwd: os.homedir() }))).ok).toBe(true)
       expect(
         (await sup.spawn(spawnReq({ name: 'two', requestedBy: 'human', cwd: '/nope/nowhere' }))).reason,
       ).toMatch(/does not exist/)
+    })
+  })
+
+  /**
+   * CC-63. The briefing itself is built and resolved in `active-work.ts` and
+   * tested there; what matters here is that the spawned agent is actually HANDED
+   * it, and that a briefing that cannot be resolved costs a warning rather than
+   * the spawn.
+   */
+  describe('an injected active-work briefing', () => {
+    /** A minimal initiative, in a root the supervisor is pointed at by env. */
+    function initiativeRoot(slug: string): string {
+      const root = workspace()
+      fs.mkdirSync(path.join(root, slug), { recursive: true })
+      fs.writeFileSync(path.join(root, slug, 'brief.md'), '# Widgets\n\nWhy: to prove orientation lands.\n')
+      process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = root
+      return root
+    }
+
+    afterEach(() => {
+      delete process.env.AGENT_CHAT_ACTIVE_WORK_ROOT
+    })
+
+    it('prepends the initiative to the brief the agent actually receives', async () => {
+      const sup = withStubbedSurface()
+      initiativeRoot('widgets')
+
+      const result = await sup.spawn(spawnReq({ brief: 'review the parser', briefing: 'widgets' }))
+
+      expect(result.ok).toBe(true)
+      // Headless carries the brief on stdin; this is what the process is handed.
+      const delivered = readLaunchPlan(result.agentId as string).stdin ?? ''
+      expect(delivered).toContain('Why: to prove orientation lands.')
+      expect(delivered).toContain('review the parser')
+      // The log records what was ASKED FOR, with the slug as the pointer.
+      const row = core.events.agentEvents().find(r => r.kind === 'agent_spawned')
+      expect(row?.body).toBe('review the parser')
+      expect(row?.meta.briefing).toBe('widgets')
+    })
+
+    it('spawns anyway, with a warning, when the initiative cannot be resolved', async () => {
+      const sup = withStubbedSurface()
+      initiativeRoot('widgets')
+
+      const result = await sup.spawn(spawnReq({ briefing: 'no-such-initiative' }))
+
+      expect(result.ok).toBe(true)
+      expect(result.warnings?.join(' ')).toMatch(/no active-work initiative "no-such-initiative"/)
+      expect(readLaunchPlan(result.agentId as string).stdin ?? '').not.toContain('Orientation')
     })
   })
 

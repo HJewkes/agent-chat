@@ -111,6 +111,7 @@ function addAgentCommands(program: Command): void {
   agent
     .command('spawn <name> <profile> <brief...>')
     .description('start a new agent')
+    .option('--briefing <slug|auto>', 'prepend an active-work initiative\'s orientation to the brief')
     .action(agents.agentSpawn)
   agent.command('retire <name>').description('release isolation and free the name').action(agents.agentRetire)
   agent

@@ -44,12 +44,29 @@ export async function agentLs(): Promise<void> {
   }
 }
 
-export async function agentSpawn(name: string, profile: string, words: string[]): Promise<void> {
+export async function agentSpawn(
+  name: string,
+  profile: string,
+  words: string[],
+  // CC-63: an active-work initiative slug (or "auto"), prepended to the brief
+  // as orientation. Optional, so every call site that predates it still works.
+  options: { briefing?: string } = {},
+): Promise<void> {
   if (words.length === 0) fail('usage: agent-chat agent spawn <name> <profile> "<brief>"')
   const res = (await withBroker(b =>
     // The human holds no registry entry (§6.4), so the broker has no cwd to read
     // for them — send it, or the agent inherits the broker's arbitrary one.
-    b.request({ t: 'spawn', name, profile, brief: words.join(' '), cwd: process.cwd() }, 'spawn_result'),
+    b.request(
+      {
+        t: 'spawn',
+        name,
+        profile,
+        brief: words.join(' '),
+        cwd: process.cwd(),
+        ...(options.briefing === undefined ? {} : { briefing: options.briefing }),
+      },
+      'spawn_result',
+    ),
   )) as Extract<ServerMessage, { t: 'spawn_result' }>
 
   for (const warning of res.warnings ?? []) console.log(warning)

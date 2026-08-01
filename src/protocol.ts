@@ -574,6 +574,13 @@ export type ClientMessage =
       cwd?: string
       isolation?: IsolationName
       surface?: SurfaceName
+      /**
+       * An active-work initiative slug, or `auto`, whose brief, open tasks and
+       * latest session are prepended to `brief` by the broker (CC-63). Sent as a
+       * pointer rather than as text so the requester cannot use it to have
+       * arbitrary files read back to it — the broker resolves what it will read.
+       */
+      briefing?: string
       /** Tags and subscriptions the spawned agent starts with, before it runs. */
       tags?: string[]
       subscriptions?: Subscription[]
