@@ -31,13 +31,13 @@ a name risks silently granting the wrong tool set. Profile choice fixes the mode
 (`explorer`/`reviewer` = sonnet, `implementer`/`peer` = opus); there is no separate
 `model` parameter.
 
-| Old vocabulary | Now call |
-|---|---|
-| subagent / hand off / async agent (writes code) | `agent_spawn(profile: "implementer", ...)` (own worktree) or `profile: "peer"` (shares your checkout) |
-| search / find / explore (read-only) | `agent_spawn(profile: "explorer", ...)` |
-| review / narrow checks | `agent_spawn(profile: "reviewer", ...)` |
-| plan / design the approach | No profile replicates the old `Plan` subagent's read-only, architecture-focused framing. Spawn `explorer` to investigate, then synthesize the plan yourself — don't silently treat another profile as equivalent. |
-| **"fork me" / "with your context"** | **Not currently possible.** Every `agent_spawn` starts a fresh process from only the `brief` text — none inherit a running conversation's context or prompt cache. Say so explicitly rather than substituting a different profile. Tracked as **CC-44** in the `claude-channels` initiative. |
+| Old vocabulary                                  | Now call                                                                                                                                                                                                                                                                                     |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| subagent / hand off / async agent (writes code) | `agent_spawn(profile: "implementer", ...)` (own worktree) or `profile: "peer"` (shares your checkout)                                                                                                                                                                                        |
+| search / find / explore (read-only)             | `agent_spawn(profile: "explorer", ...)`                                                                                                                                                                                                                                                      |
+| review / narrow checks                          | `agent_spawn(profile: "reviewer", ...)`                                                                                                                                                                                                                                                      |
+| plan / design the approach                      | No profile replicates the old `Plan` subagent's read-only, architecture-focused framing. Spawn `explorer` to investigate, then synthesize the plan yourself — don't silently treat another profile as equivalent.                                                                            |
+| **"fork me" / "with your context"**             | **Not currently possible.** Every `agent_spawn` starts a fresh process from only the `brief` text — none inherit a running conversation's context or prompt cache. Say so explicitly rather than substituting a different profile. Tracked as **CC-44** in the `claude-channels` initiative. |
 
 Every spawn `brief` contains, in order: task scope (one domain) — context needed to act
 without asking (including exact file:line locations you already found, so the agent
@@ -73,7 +73,7 @@ Verify agent output before committing it — a passing test count isn't proof:
 
 - Ask for one concrete mutation the agent made and which test caught it, not just
   that tests currently pass.
-- Ask what the agent actually *saw* in each state (a render, a screenshot), not just
+- Ask what the agent actually _saw_ in each state (a render, a screenshot), not just
   whether errors were thrown — a broken or blank state can throw nothing.
 - Require claims to carry checkable evidence (e.g. a named CI run), not a bare
   verdict like "pre-existing failure, trust me."
