@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
-import path from 'node:path'
 import type { BrokerCore } from '../broker/core.js'
 import { newMsgId } from '../broker/event-log.js'
 import {
@@ -26,6 +25,7 @@ import { resolve as resolveIsolation, type Allocation, type IsolationContext } f
 import { surfaceFor } from './surfaces/index.js'
 import { SurfaceRefused, type SurfaceOptions } from './surfaces/options.js'
 import { Semaphore } from './semaphore.js'
+import { checkSpawnCwd } from './spawn-cwd.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { cliEntry, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
@@ -257,40 +257,26 @@ export class Supervisor implements TeleportHost {
 
   /**
    * §11.2: the spawn request is attacker-controlled, and `cwd` decides where a
-   * process with the profile's tools gets to read. The spec promised this check
-   * and the code never had it — a peer could spawn an agent in `~/.ssh`, which is
-   * the exact example the spec uses to say it cannot.
+   * process with the profile's tools gets to read. The policy itself lives in
+   * `spawn-cwd.ts`, which is where the reasoning — and CC-62's widening of it
+   * from "somewhere a session already sits" to "somewhere in your own workspace
+   * that is not a credential directory" — is written down.
    *
-   * Containment is to directories some registered session is already working in:
-   * a peer may spawn where work is happening, nowhere else. Resolved through
-   * realpath first, so `..` and a symlink pointing out of the tree are both
-   * caught rather than passing a string comparison.
-   *
-   * The human at the CLI is exempt from containment, not from existence. They
-   * hold no registry entry to be contained by, and reaching a 0600 socket already
-   * means being the local user — the same reasoning that lets them spawn at all.
+   * The human at the CLI is exempt from the location rules, not from existence.
+   * They hold no registry entry to be contained by, and reaching a 0600 socket
+   * already means being the local user — the same reasoning that lets them spawn
+   * at all.
    */
   private checkCwd(cwd: string, requestedBy: string): string | undefined {
-    let real: string
-    try {
-      const stat = fs.statSync(cwd)
-      if (!stat.isDirectory()) return `cwd is not a directory: ${cwd}`
-      real = fs.realpathSync(cwd)
-    } catch {
-      return `cwd does not exist: ${cwd}`
-    }
-    if (requestedBy === HUMAN) return undefined
-
-    const contained = this.core.registry.list().some(session => {
-      let root: string
+    if (requestedBy === HUMAN) {
       try {
-        root = fs.realpathSync(session.cwd)
+        if (!fs.statSync(cwd).isDirectory()) return `cwd is not a directory: ${cwd}`
       } catch {
-        return false
+        return `cwd does not exist: ${cwd}`
       }
-      return real === root || real.startsWith(root + path.sep)
-    })
-    return contained ? undefined : `cwd must be at or under a directory some session is working in: ${cwd}`
+      return undefined
+    }
+    return checkSpawnCwd(cwd, { sessionRoots: this.core.registry.list().map(session => session.cwd) })
   }
 
   /** Everything checkable before anything is allocated or written. */

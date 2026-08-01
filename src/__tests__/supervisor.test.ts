@@ -95,23 +95,41 @@ describe('spawning', () => {
   })
 
   /**
-   * §11.2 promised this check in prose — "must exist, must be a directory, and
-   * must be at or under the cwd of some currently-registered session ... A peer
-   * can spawn where somebody is already working; it cannot spawn in ~/.ssh" —
-   * and the code never had it. Found by a spawned reviewer reading the section
-   * against the source. `cwd` decides where a process with the profile's tools
-   * gets to read, so an unvalidated one is a read primitive anywhere on disk.
+   * §11.2 promised this check in prose — "must exist, must be a directory ... A
+   * peer can spawn where somebody is already working; it cannot spawn in
+   * ~/.ssh" — and the code never had it. Found by a spawned reviewer reading the
+   * section against the source. `cwd` decides where a process with the profile's
+   * tools gets to read, so an unvalidated one is a read primitive anywhere on
+   * disk. The location rules themselves live in `spawn-cwd.ts` and are tested
+   * there; these cover the supervisor honouring them, plus the human exemption,
+   * which exists only at this layer.
    */
   describe('the cwd a spawn asks for', () => {
-    it('refuses a peer a directory nobody is working in', async () => {
+    it('refuses a peer the home directory itself', async () => {
       const sup = withStubbedSurface()
       core.register(fakeConn(), { t: 'register', name: 'peer', workingOn: '', cwd: workspace(), pid: 1 })
 
       const result = await sup.spawn(spawnReq({ requestedBy: 'peer', cwd: os.homedir() }))
 
       expect(result.ok).toBe(false)
-      expect(result.reason).toMatch(/at or under a directory some session is working in/)
+      expect(result.reason).toMatch(/must be under your home directory/)
       expect(core.events.history(10).some(r => r.kind === 'agent_spawn_refused')).toBe(true)
+    })
+
+    /**
+     * CC-62's regression. This refused before the widening: the target existed
+     * and was perfectly ordinary, but no OTHER session happened to be sitting in
+     * it — which is exactly the state a freshly created worktree is in, and why
+     * `isolation: worktree` was unusable without a decoy session first.
+     */
+    it('lets a peer spawn into a fresh directory no session is working in', async () => {
+      const sup = withStubbedSurface()
+      core.register(fakeConn(), { t: 'register', name: 'peer', workingOn: '', cwd: workspace(), pid: 1 })
+
+      const result = await sup.spawn(spawnReq({ requestedBy: 'peer', cwd: workspace() }))
+
+      expect(result.reason).toBeUndefined()
+      expect(result.ok).toBe(true)
     })
 
     it('lets a peer spawn under a directory a session is working in', async () => {
@@ -122,7 +140,7 @@ describe('spawning', () => {
       expect((await sup.spawn(spawnReq({ requestedBy: 'peer', cwd: shared }))).ok).toBe(true)
     })
 
-    it('does not let .. climb out of a session workspace', async () => {
+    it('does not let .. climb out to the root of the temp area', async () => {
       const sup = withStubbedSurface()
       const shared = workspace()
       core.register(fakeConn(), { t: 'register', name: 'peer', workingOn: '', cwd: shared, pid: 1 })
@@ -144,7 +162,7 @@ describe('spawning', () => {
     })
 
     /** The human holds no registry entry to be contained by, and is the trust root. */
-    it('exempts the human from containment but not from existence', async () => {
+    it('exempts the human from the location rules but not from existence', async () => {
       const sup = withStubbedSurface()
 
       expect((await sup.spawn(spawnReq({ requestedBy: 'human', cwd: os.homedir() }))).ok).toBe(true)

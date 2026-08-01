@@ -1194,19 +1194,36 @@ Therefore:
 
 - **Profiles by name only.** Never an inline profile body in the tool call.
   Without this rule, `agent_spawn` is `exec(argv)` with extra steps.
-- **`cwd` is validated:** must exist, must be a directory, and must be at or
-  under the cwd of some currently-registered session (`registry.list()` exposes
-  every session's cwd). A peer can spawn where somebody is already working; it
-  cannot spawn in `~/.ssh`. Implemented in `supervisor.ts` `checkCwd`, which
-  resolves through `realpath` first so `..` and a symlink out of the tree are
-  both caught. The human at the CLI is exempt from containment — they hold no
-  registry entry to be contained by — but not from existence.
+- **`cwd` is validated:** must exist, must be a directory, must not sit inside a
+  credential directory, and must be either at or under the cwd of some
+  currently-registered session (`registry.list()` exposes every session's cwd) or
+  strictly under the user's home directory or the system temp dir. A peer can
+  spawn anywhere in its human's own workspace; it cannot spawn in `~/.ssh`, in
+  `$HOME` itself, in `/etc`, or in another user's home. The policy lives in
+  `agents/spawn-cwd.ts` (`checkSpawnCwd`, with `SENSITIVE_DIRS` naming the
+  credential directories), called from `supervisor.ts` `checkCwd`; it resolves
+  through `realpath` first so `..` and a symlink out of the tree are both caught.
+  The human at the CLI is exempt from the location rules — they hold no registry
+  entry to be contained by — but not from existence.
 
   This was prose for a day before it was code: the rule was written here, the
   check was never implemented, and the gap was found by a spawned reviewer
   reading this section against the source. The line number cited here was wrong
   too, pointing at the thread-depth constants. **A spec that cites a line number
   reads as though someone checked it.**
+
+  **CC-62 (2026-07-31) widened it, and the reason is worth keeping.** The
+  original rule was pure containment to occupied directories, which carried an
+  accidental precondition: a peer could only spawn where some OTHER session
+  already happened to be sitting. `isolation: worktree` needs a real git repo at
+  `cwd` and the coordinator's own directory usually is not one, so worktree
+  spawns into a repo nobody had open were refused — and the workaround in
+  practice was to drop to `isolation: none` and tell the agent to `cd` in its
+  brief. A sandbox whose documented workaround is "leave the sandbox" buys
+  nothing. The property the section actually argues for is about SENSITIVE paths,
+  not occupied ones, so that is what the check now enforces — and it enforces it
+  slightly harder than before: a credential directory is refused even when a
+  session is registered in it.
 
 - **A profile's toolset actually confines,** via `--disallowed-tools` on the
   read-only builtins (§4). This was the third stated defence in this section to
