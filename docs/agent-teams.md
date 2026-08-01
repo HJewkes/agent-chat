@@ -676,6 +676,42 @@ Resolution — and this is why the pane anchor is presence data, not identity da
   logged `notice`; not macOS or iTerm2 not running → refuse with a reason naming
   `headless` as the alternative, and append `agent_spawn_refused`.
 
+**Placement is column-by-spawn-depth, and it falls out of the anchor rule above
+for free — it is not a separate scheme.** A column is keyed by *whose* pane is
+being split beside (`supervisor.ts`'s `columnFor`, matching on `entry.anchor`),
+and the anchor is always the requester's own pane:
+
+- The human's own coordinating session is column 0 by construction — nothing
+  ever splits beside it except its own direct spawns.
+- A session's direct spawns all carry the *same* anchor (their requester's
+  pane), so `columnFor` finds the bottom-most one and stacks the next below it
+  — one column, vertical stacking, immediately beside the requester.
+- A spawn's own children carry a *different* anchor (their requester's own
+  pane, one level down), so `columnFor` finds no match, splits that requester's
+  pane instead, and starts a fresh column one step further right.
+
+Reading left to right is reading spawn depth, and scanning down a column shows
+every sibling spawned by the same parent — with no extra bookkeeping, because
+depth was already encoded in which pane the requester happened to be in.
+Verified live 2026-08-01 with a two-level spawn (coordinator → child →
+grandchild): the broker's event log shows no `notice` for either spawn, which
+only fires on the anchor-fallback path — so both used the primary split, each
+targeting the UUID of its own requester's pane (the coordinator's for the
+child, the child's for the grandchild), never the same one twice. iTerm's
+AppleScript surface exposes no session frame/bounds to confirm the resulting
+geometry by eye, so this is mechanism-level confirmation (the right pane was
+targeted, on the right side, with no fallback) rather than a pixel-level
+screenshot.
+
+**Column overflow is an explicit non-decision.** A column subdivides by
+horizontal split on every new sibling, without a cap or wrap — verified fine at
+the fan-outs actually run so far (a handful of siblings under the 20-slot
+concurrency budget), and it self-heals the moment a pane closes (§ *stacks in a
+column beside the anchor* above: a closed column pane makes the next spawn
+start a fresh column rather than erroring). A hard cap or a wrap-to-new-column
+rule can be added later if a real session hits an unusable sliver of a pane;
+nothing here blocks that from being additive.
+
 Assume macOS/iTerm2 for MVP, but the `Surface` interface is the seam: a
 `tmux-pane` surface is a drop-in later, and nothing outside `surfaces/` knows
 what a pane is. The word "iterm" must not appear in `supervisor.ts`.
