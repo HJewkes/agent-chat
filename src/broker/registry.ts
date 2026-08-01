@@ -47,6 +47,26 @@ const sanitizeSubscriptions = (subscriptions: Subscription[]): Subscription[] =>
  * is over the line, because a socket client has nobody to tell. Values are
  * type-checked rather than cast (CC-8): this is model-supplied structure.
  */
+/**
+ * The observed presence a reader sees, with Claude Code's session id folded in.
+ *
+ * Stored beside `observed` and merged only here, because it arrives as a
+ * top-level field of the register frame but belongs on the observed side of the
+ * trust split — it is read from the session's own environment, never typed by a
+ * model. Undefined when there is nothing to report, so "observed nothing" and
+ * "observed an empty object" stay the same state.
+ */
+const observedOf = (entry: {
+  observed?: ObservedPresence
+  sessionId?: string
+}): ObservedPresence | undefined => {
+  if (entry.observed === undefined && entry.sessionId === undefined) return undefined
+  return {
+    ...entry.observed,
+    ...(entry.sessionId === undefined ? {} : { claudeSessionId: entry.sessionId }),
+  }
+}
+
 const sanitizeDeclared = (declared: DeclaredPresence): DeclaredPresence => {
   const kept: DeclaredPresence = {}
   let bytes = 0
@@ -148,6 +168,13 @@ interface Entry {
    */
   observed?: ObservedPresence
   declared?: DeclaredPresence
+  /**
+   * Claude Code's own session id, off the register frame. Kept beside `observed`
+   * rather than inside it because it arrives as a top-level field of the frame,
+   * and folded into `observed` on the way out — see `list()`. Presence-scoped
+   * like everything else here.
+   */
+  sessionId?: string
   /**
    * Names of agents spawned by THIS connection, for resolving a `spawnedBy`
    * selector. Presence-scoped like the anchor and the subscriptions themselves —
@@ -380,6 +407,7 @@ export class Registry<C> {
       subscriptions?: Subscription[]
       observed?: ObservedPresence
       declared?: DeclaredPresence
+      sessionId?: string
     },
   ): { ok: boolean; reason?: string; evicted?: C } {
     if (RESERVED_NAMES.has(input.name.toLowerCase()))
@@ -421,6 +449,11 @@ export class Registry<C> {
               : (existing?.declared as DeclaredPresence),
           }
         : {}),
+      // Same re-declare-or-carry rule: a resumed agent keeps the transcript it
+      // was already addressable by.
+      ...((input.sessionId ?? existing?.sessionId) === undefined
+        ? {}
+        : { sessionId: (input.sessionId ?? existing?.sessionId) as string }),
       spawned: existing?.spawned ?? new Set(),
       status: existing?.status ?? 'available',
       awaitingApproval: existing?.awaitingApproval ?? false,
@@ -466,7 +499,7 @@ export class Registry<C> {
       dnd: e.dnd,
       idleMs: this.now() - e.lastSeen,
       registeredAt: e.registeredAt,
-      ...(e.observed === undefined ? {} : { observed: e.observed }),
+      ...(observedOf(e) === undefined ? {} : { observed: observedOf(e) as ObservedPresence }),
       // Omitted when empty rather than sent as `{}`: "declared nothing" and
       // "declared an empty bag" are the same state and should render the same.
       ...(e.declared === undefined || Object.keys(e.declared).length === 0 ? {} : { declared: e.declared }),

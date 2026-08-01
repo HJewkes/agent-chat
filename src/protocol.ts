@@ -18,6 +18,19 @@ export interface ObservedPresence {
   worktreePath?: string
   /** True when that checkout is a linked worktree rather than the main one. */
   isLinkedWorktree?: boolean
+  /**
+   * Claude Code's OWN session id, which is what locates a session's transcript.
+   *
+   * Observed rather than declared, and that distinction is the whole reason it
+   * belongs here: the MCP subprocess reads it from `CLAUDE_CODE_SESSION_ID` in
+   * its own environment and puts it on the register frame. No model ever types
+   * it, so no session can name someone else's transcript by claiming their id.
+   *
+   * Absent for a raw socket client and for anything Claude Code did not start.
+   * `GET /api/transcript?sessionId=` takes exactly this value — without it on
+   * the roster the transcript exists and nothing can address it.
+   */
+  claudeSessionId?: string
 }
 
 /**
