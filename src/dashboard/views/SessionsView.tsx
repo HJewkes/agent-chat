@@ -14,7 +14,7 @@ import { LineChart } from '../components/shared/chart/LineChart.js'
 import type { ChartSeries } from '../components/shared/chart/LineChart.js'
 import { fmtDuration, fmtK, fmtTime } from '../utils/formatting.js'
 import { dndColor, sessionStatusColor } from '../utils/semantic-colors.js'
-import { branchOf, fmtIdle, sortSessions } from '../view-model.js'
+import { branchOf, fmtIdle, sortSessions, topFilesTouched } from '../view-model.js'
 import { useTranscripts } from '../transcripts.js'
 import type { TranscriptEntry } from '../transcripts.js'
 import { claudeSessionIdOf, fetchTranscript } from '../api.js'
@@ -227,21 +227,14 @@ function snapshotLabels(snapshots: TokenSnapshot[]): string[] {
   return snapshots.map((s, i) => (keep.has(i) ? fmtTime(new Date(s.timestamp).toISOString()) : ''))
 }
 
-/** `filesTouched` is tool -> files; the interesting ranking is the inverse. */
-function topFilesTouched(filesTouched: Record<string, string[]>, limit: number): RankedListItem[] {
-  const counts = new Map<string, number>()
-  for (const files of Object.values(filesTouched)) {
-    for (const file of files) counts.set(file, (counts.get(file) ?? 0) + 1)
-  }
-  return [...counts.entries()]
-    .sort(([, a], [, b]) => b - a)
-    .slice(0, limit)
-    .map(([path, value]) => ({
-      label: path.split('/').pop() ?? path,
-      sublabel: path,
-      value,
-      color: C.brand,
-    }))
+function fileTouchRows(filesTouched: Record<string, string[]>, limit: number): RankedListItem[] {
+  return topFilesTouched(filesTouched, limit).map(({ path, tools }) => ({
+    label: path.split('/').pop() ?? path,
+    sublabel: path,
+    value: tools.length,
+    badge: tools.join(' · '),
+    color: C.brand,
+  }))
 }
 
 function TranscriptPanels({ t }: { t: TranscriptAnalytics }) {
@@ -255,7 +248,7 @@ function TranscriptPanels({ t }: { t: TranscriptAnalytics }) {
     { name: 'Cumulative in', color: C.info, values: snapshots.map(s => s.cumulativeInput) },
     { name: 'Cumulative out', color: C.brand, values: snapshots.map(s => s.cumulativeOutput) },
   ]
-  const files = topFilesTouched(t.filesTouched, 8)
+  const files = fileTouchRows(t.filesTouched, 8)
 
   return (
     <>

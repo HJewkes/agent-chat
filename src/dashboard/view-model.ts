@@ -106,3 +106,21 @@ export function fmtIdle(ms: number): string {
   if (m < 60) return `${m}m idle`
   return `${Math.floor(m / 60)}h ${m % 60}m idle`
 }
+
+export interface FileTouchSummary {
+  path: string
+  /** The tools that touched the file, e.g. Read, Edit. */
+  tools: string[]
+}
+
+/**
+ * `filesTouched` maps a FILE PATH to the set of tools that touched it — not the
+ * other way round. Read backwards it ranks tool names as if they were files,
+ * which is exactly what the first cut of the Files Touched panel did.
+ */
+export function topFilesTouched(filesTouched: Record<string, string[]>, limit: number): FileTouchSummary[] {
+  return Object.entries(filesTouched)
+    .sort(([, a], [, b]) => b.length - a.length)
+    .slice(0, limit)
+    .map(([path, tools]) => ({ path, tools }))
+}

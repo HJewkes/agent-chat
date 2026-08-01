@@ -53,6 +53,9 @@ export function AppSidebar({
         <Text style={styles.paletteBtnIcon}>⌕</Text>
         <Text style={styles.paletteBtnText}>Search…</Text>
         <View style={styles.paletteBtnKbd}>
+          <Text style={styles.paletteBtnKbdText}>/</Text>
+        </View>
+        <View style={styles.paletteBtnKbd}>
           <Text style={styles.paletteBtnKbdText}>⌘K</Text>
         </View>
       </Pressable>
@@ -116,6 +119,22 @@ export function AppSidebar({
 
 type NavPaletteArgs = Pick<AppSidebarProps, 'navItems' | 'onSelect' | 'extraCommands' | 'onOpenPalette'>
 
+function isTypingTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null
+  if (el == null) return false
+  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable === true
+}
+
+/**
+ * `/` is here because Chrome claims Cmd-K for its omnibox before a page ever
+ * sees the keystroke, which leaves ⌘K alone unreliable in a browser tab. `/`
+ * is never reserved, so there is always one key that works.
+ */
+function opensPalette(event: KeyboardEvent): boolean {
+  if (event.key === 'k' && (event.metaKey || event.ctrlKey)) return true
+  return event.key === '/' && !event.metaKey && !event.ctrlKey && !isTypingTarget(event.target)
+}
+
 /**
  * Nav items are the palette's baseline command set, so a host gets a working
  * ⌘K without listing its own views twice. `onOpenPalette` still wins when a
@@ -144,12 +163,13 @@ function useNavPalette({ navItems, onSelect, extraCommands, onOpenPalette }: Nav
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'k' || !(event.metaKey || event.ctrlKey)) return
+      if (!opensPalette(event)) return
       event.preventDefault()
       open()
     }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    // Capture phase: nothing on the page gets to swallow the shortcut first.
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [open])
 
   const close = useCallback(() => setIsOpen(false), [])

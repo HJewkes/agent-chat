@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { View, Text, Pressable, ScrollView, TextInput, StyleSheet } from 'react-native'
 import { C, component } from './colors.js'
 import { sp } from '../../tokens.js'
@@ -61,7 +62,7 @@ export function CommandPalette({ open, commands, onClose, placeholder = 'Search�
 
   if (!open) return null
 
-  return (
+  return portalToBody(
     <View style={styles.backdrop}>
       <Pressable style={styles.backdropHit} onPress={onClose} />
       <View style={styles.panel}>
@@ -98,8 +99,22 @@ export function CommandPalette({ open, commands, onClose, placeholder = 'Search�
           <Text style={styles.footerText}>↑↓ navigate · ↵ open · esc close</Text>
         </View>
       </View>
-    </View>
+    </View>,
   )
+}
+
+/**
+ * The overlay MUST leave the subtree it is declared in.
+ *
+ * react-native-web gives every `View` `position: relative; z-index: 0`, so the
+ * sidebar that renders this palette is itself a stacking context — a fixed
+ * child of it cannot paint above `main`, which is a later sibling with the same
+ * z-index and an opaque background. The palette laid out correctly and was
+ * invisible on screen until it was portalled out.
+ */
+function portalToBody(node: React.ReactElement): React.ReactElement {
+  if (typeof document === 'undefined') return node
+  return createPortal(node, document.body) as React.ReactElement
 }
 
 const styles = StyleSheet.create({
