@@ -677,16 +677,16 @@ Resolution — and this is why the pane anchor is presence data, not identity da
   `headless` as the alternative, and append `agent_spawn_refused`.
 
 **Placement is column-by-spawn-depth, and it falls out of the anchor rule above
-for free — it is not a separate scheme.** A column is keyed by *whose* pane is
+for free — it is not a separate scheme.** A column is keyed by _whose_ pane is
 being split beside (`supervisor.ts`'s `columnFor`, matching on `entry.anchor`),
 and the anchor is always the requester's own pane:
 
 - The human's own coordinating session is column 0 by construction — nothing
   ever splits beside it except its own direct spawns.
-- A session's direct spawns all carry the *same* anchor (their requester's
+- A session's direct spawns all carry the _same_ anchor (their requester's
   pane), so `columnFor` finds the bottom-most one and stacks the next below it
   — one column, vertical stacking, immediately beside the requester.
-- A spawn's own children carry a *different* anchor (their requester's own
+- A spawn's own children carry a _different_ anchor (their requester's own
   pane, one level down), so `columnFor` finds no match, splits that requester's
   pane instead, and starts a fresh column one step further right.
 
@@ -706,8 +706,8 @@ screenshot.
 **Column overflow is an explicit non-decision.** A column subdivides by
 horizontal split on every new sibling, without a cap or wrap — verified fine at
 the fan-outs actually run so far (a handful of siblings under the 20-slot
-concurrency budget), and it self-heals the moment a pane closes (§ *stacks in a
-column beside the anchor* above: a closed column pane makes the next spawn
+concurrency budget), and it self-heals the moment a pane closes (§ _stacks in a
+column beside the anchor_ above: a closed column pane makes the next spawn
 start a fresh column rather than erroring). A hard cap or a wrap-to-new-column
 rule can be added later if a real session hits an unusable sliver of a pane;
 nothing here blocks that from being additive.
