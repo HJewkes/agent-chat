@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import net from 'node:net'
 import { serve, type ServerType } from '@hono/node-server'
+import type { Hono } from 'hono'
 import { defaultPort, home, socketPath } from '../paths.js'
 import { BrokerCore } from './core.js'
 import { buildHttpApp } from './http.js'
@@ -136,15 +137,48 @@ async function listenOn(sock: string, socketServer: SocketServer): Promise<net.S
  *
  * Exported so the tolerance can be tested against a genuinely occupied port
  * without standing up a whole broker.
+ *
+ * `EADDRINUSE` right after boot is often another process still tearing its own
+ * listener down (a broker restart racing the OS releasing the old socket), not
+ * a permanent occupant. A couple of short retries absorbs that race; giving up
+ * after one attempt was CC-70 — the log showed a single `http_unavailable` and
+ * nothing ever tried again, so a transient collision looked identical to a
+ * permanently occupied port.
  */
+const BIND_RETRY_ATTEMPTS = 3
+const BIND_RETRY_DELAY_MS = 150
+
 export async function bindHttp(
   core: BrokerCore,
   port: number,
   token: string | null = null,
+  attempts: number = BIND_RETRY_ATTEMPTS,
+  retryDelayMs: number = BIND_RETRY_DELAY_MS,
 ): Promise<{ server: ServerType; port: number } | null> {
   let bound: number | null = null
   const app = buildHttpApp({ core, port: () => bound, token, dashboard: { token: () => token } })
 
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const result = await tryBindOnce(app, port, attempt, attempts)
+    if (result !== null) {
+      bound = result.port
+      return result
+    }
+    if (attempt < attempts) await sleep(retryDelayMs)
+  }
+  return null
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function tryBindOnce(
+  app: Hono,
+  port: number,
+  attempt: number,
+  attempts: number,
+): Promise<{ server: ServerType; port: number } | null> {
   return new Promise(resolve => {
     let settled = false
     const finish = (result: { server: ServerType; port: number } | null): void => {
@@ -152,23 +186,24 @@ export async function bindHttp(
       settled = true
       resolve(result)
     }
+    const giveUp = (error: string): void => {
+      const willRetry = attempt < attempts
+      logEvent('http_unavailable', { port, error, attempt, attempts, willRetry })
+      finish(null)
+    }
 
     let server: ServerType
     try {
       server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port }, info => {
-        bound = info.port
-        logEvent('http_started', { port: info.port })
+        logEvent('http_started', { port: info.port, attempt })
         finish({ server, port: info.port })
       })
     } catch (err) {
-      logEvent('http_unavailable', { port, error: String(err) })
-      return finish(null)
+      giveUp(String(err))
+      return
     }
 
-    server.on('error', (err: NodeJS.ErrnoException) => {
-      logEvent('http_unavailable', { port, error: err.code ?? String(err) })
-      finish(null)
-    })
+    server.on('error', (err: NodeJS.ErrnoException) => giveUp(err.code ?? String(err)))
   })
 }
 
