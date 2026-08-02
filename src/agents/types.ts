@@ -58,6 +58,18 @@ export interface LaunchPlanInput {
    * the original brief, which would restart the work rather than continue it.
    */
   resume?: boolean
+  /**
+   * A turn to hand the resumed conversation, for the caller that has something
+   * to SAY rather than something to look at (R-59). Ignored unless `resume` is
+   * true; the same session id is reused, so the turn lands in the existing
+   * transcript rather than a `--fork-session` copy.
+   *
+   * It makes the interactive resume print-and-exit rather than open on the
+   * conversation — `-p` is what delivers the message — which is the point: this
+   * is for driving an agent that nobody is watching a pane for. Leave it unset
+   * for the surfacing case, where the pane IS the deliverable.
+   */
+  resumeMessage?: string
   mcpConfigPath: string
   /** From the isolation strategy: dirs outside cwd the agent may still read. */
   extraDirs?: string[]

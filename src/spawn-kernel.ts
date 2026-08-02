@@ -56,3 +56,9 @@ export type { Transcript } from './agents/transcript.js'
 
 export { findDenials } from './agents/denials.js'
 export type { Denial } from './agents/denials.js'
+
+// Builds an argv and returns it — no env, no disk, nothing started — which is
+// what lets a resume-with-message primitive cross the boundary while
+// `run-agent.ts` stays behind it.
+export { resumeWithMessage } from './agents/resume.js'
+export type { ResumeCommand } from './agents/resume.js'

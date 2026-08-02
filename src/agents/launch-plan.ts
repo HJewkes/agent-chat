@@ -148,7 +148,14 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     // pane opens on the conversation exactly as the agent left it. Injecting a
     // turn here would answer the pending tool call for the human — and a pending
     // tool call nobody could answer is the reason surfacing exists.
+    //
+    // `resumeMessage` is the caller opting out of that, for the other half of
+    // R-59: a resume that carries something to SAY. `-p` is a boolean in the CLI,
+    // so the message is an ordinary positional prompt behind the same load-bearing
+    // `--` — and it turns this run into a one-shot print rather than a pane to
+    // type in, which is why it is opt-in and never set by surfacing.
     if (input.resume !== true) args.push('--', input.brief)
+    else if (input.resumeMessage) args.push('-p', '--', input.resumeMessage)
   }
 
   return {
@@ -157,7 +164,10 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     args,
     cwd: input.cwd,
     env: envFor(input),
-    ...(interactive ? {} : { stdin: input.brief }),
+    // Headless already delivers its turn on stdin, so a resume message needs no
+    // extra flag here — it just displaces the brief, which on a resume would
+    // restart the work instead of continuing it.
+    ...(interactive ? {} : { stdin: (input.resume === true && input.resumeMessage) || input.brief }),
     title: titleFor(input),
     surface,
   }
