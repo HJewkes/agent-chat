@@ -59,7 +59,14 @@ describe('the spawn-kernel subpath', () => {
     // boolean there, so the message rides as the positional prompt after it.
     expect(kernel.resumeWithMessage('sess-1', 'the build is green')).toEqual({
       bin: 'claude',
-      args: ['-p', 'the build is green', '--resume', 'sess-1'],
+      args: ['-p', '--', 'the build is green', '--resume', 'sess-1'],
+    })
+  })
+
+  it('guards a message starting with "-" behind "--", matching launch-plan.ts', () => {
+    expect(kernel.resumeWithMessage('sess-1', '-1 on that approach')).toEqual({
+      bin: 'claude',
+      args: ['-p', '--', '-1 on that approach', '--resume', 'sess-1'],
     })
   })
 

@@ -30,16 +30,20 @@ export interface ResumeCommand {
 }
 
 /**
- * Build `claude -p <message> --resume <sessionId>`.
+ * Build `claude -p -- <message> --resume <sessionId>`.
  *
  * Both arguments are rejected empty rather than passed through: an empty session
  * id resumes the most recent conversation on the machine (`--resume` takes an
  * OPTIONAL value), and an empty message makes `-p` wait on stdin that will never
  * arrive. Both fail as a hang or as the wrong agent answering, which is far more
  * expensive to diagnose than a throw here.
+ *
+ * The `--` before `message` matches launch-plan.ts's own `-p, '--', brief` shape:
+ * without it, a message starting with `-` (e.g. a correction like "-1 on that
+ * approach") risks the CLI parser reading it as a flag instead of the prompt.
  */
 export function resumeWithMessage(sessionId: string, message: string): ResumeCommand {
   if (sessionId.trim() === '') throw new Error('resumeWithMessage needs a session id')
   if (message.trim() === '') throw new Error('resumeWithMessage needs a non-empty message')
-  return { bin: 'claude', args: ['-p', message, '--resume', sessionId] }
+  return { bin: 'claude', args: ['-p', '--', message, '--resume', sessionId] }
 }
