@@ -173,6 +173,51 @@ describe('the one thing surfaces are allowed to differ on', () => {
   })
 })
 
+/**
+ * R-59. A resume normally takes no turn at all — that is what makes surfacing a
+ * pane the human can answer in rather than a turn answered on their behalf. A
+ * `resumeMessage` is the caller opting out of that on purpose, so each assertion
+ * here is about it staying opt-in and staying on the SAME conversation.
+ */
+describe('a resume that carries a message', () => {
+  const resumed = (over: Partial<LaunchPlanInput> = {}) =>
+    buildLaunchPlan(input({ resume: true, surface: 'iterm-pane', ...over }))
+
+  it('delivers it as a prompt, where a bare resume takes none', () => {
+    expect(resumed().args).not.toContain('-p')
+
+    const args = resumed({ resumeMessage: 'the build is green, carry on' }).args
+    // `--` is load-bearing: --allowed-tools is variadic, so an unterminated
+    // positional is swallowed as one more tool name and the message vanishes.
+    expect(args.slice(-3)).toEqual(['-p', '--', 'the build is green, carry on'])
+  })
+
+  it('mutates the existing transcript rather than forking a copy', () => {
+    const args = resumed({ resumeMessage: 'carry on' }).args
+    expect(args).not.toContain('--fork-session')
+    expect(flag(args, '--resume')).toBe('00000000-0000-4000-8000-000000000001')
+    expect(args).not.toContain('--session-id')
+  })
+
+  it('never sends the original brief, which would restart the work', () => {
+    const args = resumed({ resumeMessage: 'carry on' }).args
+    expect(args).not.toContain('find every caller of foo()')
+  })
+
+  it('displaces the stdin turn on headless, where -p already carries one', () => {
+    const plan = resumed({ surface: 'headless', resumeMessage: 'carry on' })
+    expect(plan.stdin).toBe('carry on')
+    // One prompt mechanism per surface: headless keeps using stdin.
+    expect(plan.args).not.toContain('carry on')
+  })
+
+  it('is ignored without resume, so an ordinary spawn cannot be redirected by it', () => {
+    const args = buildLaunchPlan(input({ surface: 'iterm-pane', resumeMessage: 'carry on' })).args
+    expect(args.slice(-2)).toEqual(['--', 'find every caller of foo()'])
+    expect(args).not.toContain('carry on')
+  })
+})
+
 describe('permission posture', () => {
   it('pins headless to default and lets a visible surface inherit', () => {
     // A headless agent has no pane, so a wider posture inherited from the

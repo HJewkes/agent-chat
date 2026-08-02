@@ -20,14 +20,22 @@ import { HUMAN } from '../protocol.js'
  * fatal. Here the unix socket is the service and the port hosts a dashboard, so
  * `EADDRINUSE` must be logged and swallowed — messaging can never fail because
  * something else got to 7600 first.
+ *
+ * `bindHttp` logs through `logEvent`, which writes to `AGENT_CHAT_HOME`'s
+ * `broker.log` — the real user's, unless we point it elsewhere. Every other
+ * test file that exercises broker code does this; skipping it here was how a
+ * `vitest` run ended up writing fake `http_started`/`EADDRINUSE` noise into a
+ * live user's dashboard log (CC-70).
  */
 
 const tmpDirs: string[] = []
 const closers: Array<() => Promise<void> | void> = []
+const previousHome = process.env.AGENT_CHAT_HOME
 
 function makeCore(): BrokerCore {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-daemon-'))
   tmpDirs.push(dir)
+  process.env.AGENT_CHAT_HOME = dir
   const core = new BrokerCore(() => undefined, {
     events: new EventLog(path.join(dir, 'events.db')),
     registry: new Registry<Conn>(),
@@ -47,6 +55,8 @@ async function occupyPort(): Promise<number> {
 afterEach(async () => {
   for (const close of closers.splice(0).reverse()) await close()
   for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+  if (previousHome === undefined) delete process.env.AGENT_CHAT_HOME
+  else process.env.AGENT_CHAT_HOME = previousHome
 })
 
 describe('bindHttp', () => {

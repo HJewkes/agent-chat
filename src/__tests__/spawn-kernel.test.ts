@@ -54,6 +54,29 @@ describe('the spawn-kernel subpath', () => {
     expect(typeof kernel.findDenials).toBe('function')
   })
 
+  it('builds a resume-with-message argv without starting anything', () => {
+    // R-59: the shape verified against the installed CLI. `-p/--print` is a
+    // boolean there, so the message rides as the positional prompt after it.
+    expect(kernel.resumeWithMessage('sess-1', 'the build is green')).toEqual({
+      bin: 'claude',
+      args: ['-p', '--', 'the build is green', '--resume', 'sess-1'],
+    })
+  })
+
+  it('guards a message starting with "-" behind "--", matching launch-plan.ts', () => {
+    expect(kernel.resumeWithMessage('sess-1', '-1 on that approach')).toEqual({
+      bin: 'claude',
+      args: ['-p', '--', '-1 on that approach', '--resume', 'sess-1'],
+    })
+  })
+
+  it('refuses the two empties that fail as a hang rather than an error', () => {
+    // An empty id resumes the most recent conversation on the machine, since
+    // `--resume` takes an optional value; an empty message leaves -p on stdin.
+    expect(() => kernel.resumeWithMessage('', 'hi')).toThrow(/session id/)
+    expect(() => kernel.resumeWithMessage('sess-1', '  ')).toThrow(/message/)
+  })
+
   it('exports nothing that spawns a process', () => {
     // run-agent.ts builds `env: { ...process.env }`, which relay's own threat
     // model (T7/M8) forbids outright. Keeping it out is a property of this
