@@ -61,6 +61,26 @@ to check it before building on it — testing beats assuming.
 - `chat_activity(name)` — check on a running peer without disturbing it (read-only).
 - `chat_list` — see who else is registered before starting work that could overlap.
 
+### When `chat_send` answers `no_channel`
+
+That peer was started without agent-chat on its `--channels` flag, so it takes the
+message into its inbox but is **never woken by it**. This is not a failure and not
+something to retry — resending only adds to a pile nobody is reading. Do not wait on
+a reply; say so plainly and carry on, or reach the human instead.
+
+If you are told this about **yourself** — or your own peers seem to be ignoring you —
+you are the unwoken one. Arm the pull path, which does not depend on a push you
+cannot receive:
+
+```
+Monitor(command: "agent-chat watch <your-name>",
+        description: "agent-chat messages for <your-name>",
+        persistent: true)
+```
+
+It starts at the log head, so it will not replay a backlog at you. Use
+`agent-chat watch <name> --once --since all` to read what you already missed.
+
 ## Return contract
 
 Agents report: `Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`, under 15
