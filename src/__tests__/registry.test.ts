@@ -31,6 +31,61 @@ describe('the requester cwd a spawn defaults to', () => {
   })
 })
 
+/**
+ * CC-73. The bug this replaces was not a crash — it was `chat_send` answering
+ * `delivered` for a recipient whose Claude Code drops the push client-side, so
+ * senders waited on replies nothing would ever prompt. One live session had
+ * taken 217 messages that way before anyone noticed.
+ */
+describe('the delivery verdict for a session that cannot be woken', () => {
+  const pair = (posture: 'yes' | 'no' | 'unknown') => {
+    const registry = new Registry<object>(Date.now, () => posture)
+    const [alice, bob] = [conn('a'), conn('b')]
+    register(registry, alice, 'alice')
+    register(registry, bob, 'bob')
+    return { registry, alice, bob }
+  }
+
+  it('reports no_channel instead of delivered when the host lacks the flag', () => {
+    const { registry, alice } = pair('no')
+
+    expect(registry.send(alice, 'bob', 'are you there').results).toEqual([
+      { name: 'bob', status: 'no_channel', reason: expect.stringContaining('--channels') },
+    ])
+  })
+
+  it('still routes the message, because the inbox is what makes it recoverable', () => {
+    const { registry, alice } = pair('no')
+
+    const result = registry.send(alice, 'bob', 'are you there')
+
+    expect(result.ok).toBe(true)
+    expect(result.recipients).toEqual(['bob'])
+    expect(result.deliveries).toHaveLength(1)
+  })
+
+  it('reports delivered when the host has the flag', () => {
+    const { registry, alice } = pair('yes')
+
+    expect(registry.send(alice, 'bob', 'are you there').results[0]?.status).toBe('delivered')
+  })
+
+  it('reports delivered when the posture could not be determined', () => {
+    // `unknown` must not become a warning: crying no_channel for every session
+    // whose argv we failed to read would train senders to ignore the signal.
+    const { registry, alice } = pair('unknown')
+
+    expect(registry.send(alice, 'bob', 'are you there').results[0]?.status).toBe('delivered')
+  })
+
+  it('prefers held over no_channel, since dnd is the session own choice', () => {
+    const { registry, alice, bob } = pair('no')
+    registry.setStatus(bob, 'available', undefined, true)
+
+    expect(registry.send(alice, 'bob', 'are you there').results[0]?.status).toBe('held')
+  })
+})
+
 describe('Registry routing', () => {
   it('delivers a directed message to exactly one session', () => {
     const registry = new Registry<object>()

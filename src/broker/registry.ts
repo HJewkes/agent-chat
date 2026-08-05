@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { hostChannelStatus, type ChannelStatus } from './host-channels.js'
 import {
   DECLARED_MAX_BYTES,
   DECLARED_MAX_KEYS,
@@ -14,6 +15,7 @@ import {
   type DeliveredMessage,
   type ObservedPresence,
   type RecipientResult,
+  type RecipientStatus,
   type SessionInfo,
   type SessionStatus,
   type SessionTag,
@@ -131,6 +133,15 @@ interface Entry {
    * that has to be re-checked, and pid reuse to be wrong about.
    */
   hostPid?: number
+  /**
+   * Whether that host can actually receive a channel push, resolved once at
+   * register time from `hostPid` (CC-73).
+   *
+   * Presence data like everything around it, and necessarily so: it is a fact
+   * about a running process's argv, and a re-register is exactly when it can
+   * have changed — a session that switched surface is a different process.
+   */
+  channels?: ChannelStatus
   /**
    * The requester's `ITERM_SESSION_ID`, used as the anchor for a visible spawn.
    *
@@ -333,7 +344,15 @@ export class Registry<C> {
   /** "from -> to" -> send times, pruned on read. Ordered, so each way is its own budget. */
   private readonly pairSends = new Map<string, number[]>()
 
-  constructor(private readonly now: () => number = Date.now) {}
+  constructor(
+    private readonly now: () => number = Date.now,
+    /**
+     * Injected for the same reason `now` is: a unit test must be able to state
+     * a session's channel posture outright rather than arrange a real process
+     * with the right argv to imply it.
+     */
+    private readonly channelStatus: (hostPid: number | undefined) => ChannelStatus = hostChannelStatus,
+  ) {}
 
   /** Depth of a reply to `inReplyTo`: one past its parent, or 1 to start a thread. */
   private depthFor(inReplyTo?: string): number {
@@ -430,6 +449,10 @@ export class Registry<C> {
       pid: input.pid,
       ...(input.agentId === undefined ? {} : { agentId: input.agentId }),
       ...(input.hostPid === undefined ? {} : { hostPid: input.hostPid }),
+      // Resolved here rather than at send time: this is one `ps` per
+      // registration instead of one per recipient per message, and the answer
+      // cannot change without the host process changing, which is a re-register.
+      channels: this.channelStatus(input.hostPid),
       ...(input.termSessionId === undefined ? {} : { termSessionId: input.termSessionId }),
       // A re-register re-declares both, which is how a resumed agent gets its
       // subscriptions back without anything having persisted them.
@@ -882,10 +905,32 @@ export class Registry<C> {
         escalate ??= refused.escalate
         continue
       }
-      results.push({ name, status: found[1].dnd ? 'held' : 'delivered' })
+      results.push({ name, ...this.deliveryVerdict(found[1]) })
       hits.push(found)
     }
     return { results, hits, ...(escalate === undefined ? {} : { escalate }) }
+  }
+
+  /**
+   * What to tell the sender about a recipient the broker is going to write to.
+   *
+   * The push happens either way — the message is logged and `chat_inbox` will
+   * return it — so none of these are failures. What differs is whether the
+   * recipient will be WOKEN by it, and that is the part a sender was previously
+   * told wrongly: a host without the channel flag drops the notification
+   * client-side, so `delivered` was true of the socket write and false of
+   * everything the sender actually cared about (CC-73).
+   */
+  private deliveryVerdict(entry: Entry): { status: RecipientStatus; reason?: string } {
+    if (entry.dnd) return { status: 'held' }
+    if (entry.channels === 'no')
+      return {
+        status: 'no_channel',
+        reason:
+          `"${entry.name}" was started without agent-chat on its --channels flag, so it is not woken by ` +
+          'pushes. The message is in its inbox and it will see it on its next chat_inbox.',
+      }
+    return { status: 'delivered' }
   }
 
   /**

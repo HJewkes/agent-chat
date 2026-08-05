@@ -355,8 +355,15 @@ export interface DeliveredMessage {
  * `held` is not a failure — the message is in that session's inbox. `refused`
  * covers a live session the broker declined to route to, e.g. one this sender
  * has already hit the exchange-rate limit with.
+ *
+ * `no_channel` is also not a failure, and is the distinction that matters most
+ * to a sender waiting on a reply: the recipient's Claude Code was started
+ * without agent-chat on its `--channels` flag, so it takes the message into its
+ * inbox but is never WOKEN by it. Before CC-73 this reported `delivered`, which
+ * is why sessions sat for hours accumulating hundreds of messages while every
+ * sender believed they had got through.
  */
-export type RecipientStatus = 'delivered' | 'held' | 'no_such_session' | 'self' | 'refused'
+export type RecipientStatus = 'delivered' | 'held' | 'no_such_session' | 'self' | 'refused' | 'no_channel'
 
 /**
  * Per addressee rather than per route, because a multicast can succeed for some
