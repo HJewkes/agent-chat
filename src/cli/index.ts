@@ -10,6 +10,7 @@ import * as debug from './debug.js'
 import { doctor } from './doctor.js'
 import * as human from './human.js'
 import * as service from './service.js'
+import { watch, type WatchOptions } from './watch.js'
 
 const HUMAN = 'Human commands:'
 const AGENTS = 'Agent commands:'
@@ -102,6 +103,15 @@ function addDebugCommands(program: Command): void {
 }
 
 function addAgentCommands(program: Command): void {
+  program
+    .command('watch <name>')
+    .description('stream messages for a session that cannot receive channel pushes')
+    .helpGroup(AGENTS)
+    .option('--since <id|now|all>', 'start from a log id, the current head, or the whole backlog', 'now')
+    .option('--interval <seconds>', 'how often to poll', '2')
+    .option('--once', 'print what is waiting and exit, instead of following')
+    .action((name: string, options: WatchOptions) => watch(name, options))
+
   const agent = program.command('agent').description('durable agents').helpGroup(AGENTS)
 
   agent

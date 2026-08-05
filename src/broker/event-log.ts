@@ -5,6 +5,7 @@ import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { home } from '../paths.js'
 import type { DeliveredMessage, EventKind, Provenance, QueueItem } from '../protocol.js'
+import type { CursoredMessage } from '../protocol.js'
 import type { AgentEventRow, AppendInput, EventStore, LoggedEventRow } from './event-store.js'
 
 /**
@@ -153,6 +154,20 @@ export class EventLog implements EventStore {
       )
       .all(name, limit) as unknown as Row[]
     return rows.map(toMessage)
+  }
+
+  inboxSince(name: string, afterId: number, limit: number): CursoredMessage[] {
+    // Ascending straight out of the query, unlike `inboxFor`: a watcher wants
+    // the OLDEST unseen rows, so the limit must cut the far end of a backlog
+    // rather than the near end. Index-backed by events_target on (target, id).
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM events
+         WHERE target = ? AND kind IN (${INBOX_KINDS}) AND id > ?
+         ORDER BY id ASC LIMIT ?`,
+      )
+      .all(name, afterId, limit) as unknown as Row[]
+    return rows.map(row => ({ ...toMessage(row), id: row.id }))
   }
 
   /**

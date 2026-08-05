@@ -1,4 +1,4 @@
-import type { DeliveredMessage, EventKind, QueueItem } from '../protocol.js'
+import type { CursoredMessage, DeliveredMessage, EventKind, QueueItem } from '../protocol.js'
 
 /**
  * The storage seam. Everything downstream of the broker depends on this
@@ -50,6 +50,16 @@ export interface EventStore {
 
   /** Everything addressed to `name`, oldest first. */
   inboxFor(name: string, limit: number): DeliveredMessage[]
+
+  /**
+   * The same inbox, but only what landed after `afterId`, oldest first.
+   *
+   * The read a watcher resumes from (CC-73). `inboxFor` cannot serve it: a
+   * poller needs to know which rows are NEW since it last looked, and a
+   * newest-N window answers a different question — it re-reports what was
+   * already seen and silently drops anything that arrived faster than N.
+   */
+  inboxSince(name: string, afterId: number, limit: number): CursoredMessage[]
 
   /** Everything one session did or had done to it, newest last. */
   activityFor(name: string, limit: number): QueueItem[]
