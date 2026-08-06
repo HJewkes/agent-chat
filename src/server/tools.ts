@@ -801,12 +801,22 @@ const MISS_REASON: Record<string, string> = {
  * entirely on which one it was.
  */
 function formatFanout(results: RecipientResult[], msgId: string | undefined, reason?: string): string {
-  const took = results.filter(r => r.status === 'delivered' || r.status === 'held')
+  // `no_channel` counts as taken for the same reason `held` does — the message
+  // is in that session's inbox — but it is called out separately below, because
+  // a sender that reads only the first clause would wait for a reply that
+  // nothing is going to prompt (CC-73).
+  const took = results.filter(r => ['delivered', 'held', 'no_channel'].includes(r.status))
   const missed = results.filter(r => !took.includes(r))
   const parts: string[] = []
   if (took.length > 0) parts.push(`Delivered to ${took.map(r => r.name).join(', ')} (msg_id ${msgId})`)
   const held = took.filter(r => r.status === 'held')
   if (held.length > 0) parts.push(`held in the inbox of ${held.map(r => r.name).join(', ')}`)
+  const unwoken = took.filter(r => r.status === 'no_channel')
+  if (unwoken.length > 0)
+    parts.push(
+      `NOT WOKEN: ${unwoken.map(r => r.name).join(', ')} — started without agent-chat on --channels, so the ` +
+        'message sits in the inbox unread until that session next looks. Do not wait on a reply',
+    )
   if (missed.length > 0) {
     const each = missed.map(r => `${r.name} (${MISS_REASON[r.status] ?? r.status})`)
     parts.push(`not delivered to ${each.join(', ')}`)

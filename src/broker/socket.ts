@@ -15,6 +15,14 @@ import { BrokerCore, type Conn } from './core.js'
 import { Supervisor } from '../agents/supervisor.js'
 import type { SwitchOutcome } from '../agents/mode-switch.js'
 import { SystemEventFeed } from './subscriptions.js'
+import { nextWatchCursor } from './watch-cursor.js'
+
+/**
+ * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
+ * pulls a stranded session's backlog in ordered batches instead of one burst.
+ * The caller keeps polling, so nothing is lost — it just arrives in order.
+ */
+const WATCH_MAX_BATCH = 50
 
 const MAX_OPEN_QUESTIONS = 3
 
@@ -797,6 +805,27 @@ export class SocketServer {
         return this.handleDismiss(conn, msg.msgId)
       case 'history':
         return reply(conn, { t: 'history_result', items: core.events.history(msg.limit) })
+      case 'inbox_since': {
+        // Head read BEFORE the rows, never after. Read after, a message landing
+        // between the two would sit below a cursor that had already advanced
+        // past it, and a watcher would never show it — the exact silent loss
+        // this command exists to end.
+        const head = core.events.latestId()
+        const limit = Math.max(1, Math.min(msg.limit, WATCH_MAX_BATCH))
+        const messages = core.events.inboxSince(msg.name, msg.afterId, limit)
+        return reply(conn, {
+          t: 'inbox_since_result',
+          messages,
+          nextCursor: nextWatchCursor({
+            head,
+            // Falls back to 0, never to `afterId`: an empty read must resolve to
+            // the head so a quiet inbox still advances, and carrying `afterId`
+            // forward would pin the cursor wherever a caller pointed it.
+            lastReturned: messages.at(-1)?.id ?? 0,
+            truncated: messages.length === limit,
+          }),
+        })
+      }
       case 'activity': {
         // Deliberately no deliver() anywhere on this path: reading a peer must
         // cost that peer nothing, or observing and interrupting stay the same act.

@@ -355,8 +355,28 @@ export interface DeliveredMessage {
  * `held` is not a failure — the message is in that session's inbox. `refused`
  * covers a live session the broker declined to route to, e.g. one this sender
  * has already hit the exchange-rate limit with.
+ *
+ * `no_channel` is also not a failure, and is the distinction that matters most
+ * to a sender waiting on a reply: the recipient's Claude Code was started
+ * without agent-chat on its `--channels` flag, so it takes the message into its
+ * inbox but is never WOKEN by it. Before CC-73 this reported `delivered`, which
+ * is why sessions sat for hours accumulating hundreds of messages while every
+ * sender believed they had got through.
  */
-export type RecipientStatus = 'delivered' | 'held' | 'no_such_session' | 'self' | 'refused'
+export type RecipientStatus = 'delivered' | 'held' | 'no_such_session' | 'self' | 'refused' | 'no_channel'
+
+/**
+ * A delivered message carrying the log id that ordered it, so a reader can say
+ * where to resume.
+
+ * The id is deliberately absent from `DeliveredMessage`, which models what a
+ * recipient is SHOWN rather than where it sat in a log. A cursor is the case
+ * where that order is itself the contract — the same reason `LoggedEventRow`
+ * exists for the SSE tail.
+ */
+export interface CursoredMessage extends DeliveredMessage {
+  id: number
+}
 
 /**
  * Per addressee rather than per route, because a multicast can succeed for some
@@ -558,6 +578,14 @@ export type ClientMessage =
    */
   | { t: 'endorse_approve'; msgId: string }
   | { t: 'history'; limit: number }
+  /**
+   * One poll of a name's inbox for what arrived after `afterId` (CC-73).
+   *
+   * A pull, so it works for a session the broker cannot push to at all — which
+   * is the entire point. Like `activity`, reading delivers nothing to the
+   * session being read, so a watcher costs its own peer nothing.
+   */
+  | { t: 'inbox_since'; name: string; afterId: number; limit: number }
   /** Read one session's trail. Never delivers anything to the session being read. */
   | { t: 'activity'; name: string; limit: number }
   /** From the terminal client, which is the human and so never registers. */
@@ -664,6 +692,18 @@ export type ServerMessage =
   | { t: 'queue_result'; items: QueueItem[] }
   | { t: 'answer_result'; ok: boolean; reason?: string }
   | { t: 'history_result'; items: QueueItem[] }
+  /**
+   * `nextCursor` is what to send as the next `afterId`, computed by the broker
+   * rather than inferred by the caller — because inferring it correctly needs
+   * two facts a caller does not have together, and getting it wrong loses
+   * messages silently, which is the failure CC-73 exists to end.
+   *
+   * The rule: when the read was truncated by `limit` the cursor can only
+   * advance to the last message returned, since there is known backlog behind
+   * it. When it was not truncated, it advances to the log head — otherwise a
+   * quiet inbox would re-scan the same rows on every poll forever.
+   */
+  | { t: 'inbox_since_result'; messages: CursoredMessage[]; nextCursor: number }
   /** `session` is absent when the name has no live registration; `events` outlives it. */
   | { t: 'activity_result'; session?: SessionInfo; events: QueueItem[] }
   | { t: 'deliver'; message: DeliveredMessage }

@@ -414,4 +414,17 @@ describe('the terminal title', () => {
     expect(buildLaunchPlan(input({ brief: 'x'.repeat(200) })).title).toHaveLength('scout — '.length + 48)
     expect(buildLaunchPlan(input({ brief: '' })).title).toBe('scout')
   })
+
+  it('stops Claude Code overwriting that title on a surface that has one', () => {
+    // Without this the pane ends up labelled by whatever the agent is currently
+    // doing, so a wall of them reads as activity rather than as WHO — and that
+    // text is long enough to truncate away and goes stale as the work moves on.
+    const plan = buildLaunchPlan(input({ surface: 'iterm-pane' }))
+
+    expect(plan.env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE).toBe('1')
+  })
+
+  it('leaves it unset for a headless agent, which has no terminal either way', () => {
+    expect(buildLaunchPlan(input()).env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE).toBeUndefined()
+  })
 })

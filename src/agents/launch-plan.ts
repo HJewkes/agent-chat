@@ -64,6 +64,17 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   // Without this a spawned agent under a relocated home would join the default
   // bus instead of its parent's, and be invisible to everyone that spawned it.
   ...(input.agentChatHome === undefined ? {} : { AGENT_CHAT_HOME: input.agentChatHome }),
+  // `run-agent` writes the agent's name as the terminal title, and Claude Code
+  // then overwrites it with a description of whatever it is currently doing —
+  // so a wall of panes ends up labelled by activity rather than by WHO, which
+  // is the thing a human scanning them needs. Its text is also long enough to
+  // truncate away and goes stale as the work moves on.
+  //
+  // Only set for a surface that has a title to keep: a headless agent has no
+  // terminal, so there is nothing here to win or lose.
+  ...(isInteractiveSurface(input.surface ?? input.profile.surface)
+    ? { CLAUDE_CODE_DISABLE_TERMINAL_TITLE: '1' }
+    : {}),
 })
 
 export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
