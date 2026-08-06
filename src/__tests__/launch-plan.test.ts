@@ -409,10 +409,29 @@ describe('the terminal title', () => {
     expect(oscTitle('scout — find foo')).toBe(']0;scout — find foo')
   })
 
-  it('summarises the brief without letting a long one run away', () => {
-    expect(buildLaunchPlan(input()).title).toBe('scout — find every caller of foo()')
-    expect(buildLaunchPlan(input({ brief: 'x'.repeat(200) })).title).toHaveLength('scout — '.length + 48)
+  it('carries the name alone, so a pane says WHO rather than what', () => {
+    // A pane is a few characters wide and is scanned to find one agent, so
+    // anything after the name only pushes the name toward the truncation. This
+    // was harmless while Claude Code overwrote the title outright; once it stops
+    // (see below), whatever is here is what a human actually reads.
+    expect(buildLaunchPlan(input()).title).toBe('scout')
+    expect(buildLaunchPlan(input({ brief: 'x'.repeat(200) })).title).toBe('scout')
     expect(buildLaunchPlan(input({ brief: '' })).title).toBe('scout')
+  })
+
+  it('keeps the brief summary on working_on, which is read from a roster not a pane', () => {
+    expect(buildLaunchPlan(input()).env.AGENT_CHAT_WORKING_ON).toBe('scout — find every caller of foo()')
+    expect(buildLaunchPlan(input({ brief: 'x'.repeat(200) })).env.AGENT_CHAT_WORKING_ON).toHaveLength(
+      'scout — '.length + 48,
+    )
+    expect(buildLaunchPlan(input({ brief: '' })).env.AGENT_CHAT_WORKING_ON).toBe('scout')
+  })
+
+  it('lets an explicit working_on win over the summary, and never touches the title', () => {
+    const plan = buildLaunchPlan(input({ workingOn: 'CC-74 verification' }))
+
+    expect(plan.env.AGENT_CHAT_WORKING_ON).toBe('CC-74 verification')
+    expect(plan.title).toBe('scout')
   })
 
   it('stops Claude Code overwriting that title on a surface that has one', () => {
