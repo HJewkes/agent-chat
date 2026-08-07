@@ -6,6 +6,7 @@ import { defaultPort, home, socketPath } from '../paths.js'
 import { BrokerCore } from './core.js'
 import { buildHttpApp } from './http.js'
 import { isEphemeralHome, watchIdle } from './ephemeral.js'
+import { newestBuildMtime } from './staleness.js'
 import {
   probeSocket,
   readPidFile,
@@ -250,9 +251,26 @@ function tryBindOnce(
  * recording an intended port as though it were a bound one is how a status
  * command starts lying.
  */
+/**
+ * Sampled at import, before anything binds (CC-57).
+ *
+ * This is a statement about the code THIS PROCESS LOADED, so the earliest
+ * possible read is the most accurate one — a sample taken later could pick up a
+ * build that landed during startup and record it as though we were running it.
+ * Doing the walk here also keeps it out of the window between binding the socket
+ * and writing the pid file, which a test races.
+ */
+const BUILD_AT_LOAD = newestBuildMtime()
+
 function recordBrokerState(port: number | null): void {
   writePidFile()
-  writeMeta({ port, version: VERSION, started: Date.now(), pid: process.pid })
+  writeMeta({
+    port,
+    version: VERSION,
+    started: Date.now(),
+    pid: process.pid,
+    ...(BUILD_AT_LOAD === null ? {} : { buildMtime: BUILD_AT_LOAD.mtimeMs }),
+  })
 }
 
 interface ShutdownDeps {

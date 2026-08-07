@@ -17,6 +17,13 @@ export interface BrokerMeta {
   version: string
   started: number
   pid: number
+  /**
+   * Newest `dist/` mtime at the moment this broker loaded its code (CC-57).
+   *
+   * Optional because meta files written before this existed must still parse —
+   * an unreadable stamp has to mean "cannot tell", never "stale".
+   */
+  buildMtime?: number
 }
 
 /** Connect to the socket: an answer is proof of a live broker, not just a leftover file. */
@@ -76,7 +83,13 @@ export function readMeta(): BrokerMeta | null {
     if (typeof parsed.version !== 'string' || typeof parsed.started !== 'number') return null
     if (typeof parsed.pid !== 'number') return null
     const port = typeof parsed.port === 'number' ? parsed.port : null
-    return { port, version: parsed.version, started: parsed.started, pid: parsed.pid }
+    return {
+      port,
+      version: parsed.version,
+      started: parsed.started,
+      pid: parsed.pid,
+      ...(typeof parsed.buildMtime === 'number' ? { buildMtime: parsed.buildMtime } : {}),
+    }
   } catch {
     return null
   }

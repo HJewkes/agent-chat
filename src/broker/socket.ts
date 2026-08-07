@@ -16,6 +16,8 @@ import { Supervisor } from '../agents/supervisor.js'
 import type { SwitchOutcome } from '../agents/mode-switch.js'
 import { SystemEventFeed } from './subscriptions.js'
 import { nextWatchCursor } from './watch-cursor.js'
+import { newestBuildMtime, stalenessWarning } from './staleness.js'
+import { readMeta } from './lifecycle.js'
 
 /**
  * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
@@ -131,13 +133,20 @@ export class SocketServer {
         { selector: { spawnedBy: 'self' }, kinds: ['agent_attached', 'agent_exited'] },
       ])
     }
+    // Spawn is the moment staleness stops being cosmetic: argv is fixed here and
+    // now, so an agent launched from an out-of-date broker carries the old
+    // behaviour for its whole life, and a later restart cannot correct it. This
+    // is the one place the warning has to reach a reader (CC-57).
+    const stale = stalenessWarning(readMeta()?.buildMtime, newestBuildMtime())
+    const warnings = [...(outcome.warnings ?? []), ...(stale === null ? [] : [stale])]
+
     reply(conn, {
       t: 'spawn_result',
       ok: outcome.ok,
       ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }),
       ...(outcome.name === undefined ? {} : { name: outcome.name }),
       ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
-      ...(outcome.warnings === undefined ? {} : { warnings: outcome.warnings }),
+      ...(warnings.length === 0 ? {} : { warnings }),
       ...(outcome.disallowedTools === undefined ? {} : { disallowedTools: outcome.disallowedTools }),
     })
   }
