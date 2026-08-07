@@ -39,7 +39,10 @@ describe('command tree', () => {
 
   it('regroups the diagnostic verbs under debug', () => {
     const debug = find(program, 'debug')
-    expect(names(debug as Command).sort()).toEqual(['history', 'log', 'ps', 'send'].sort())
+    // `claims` belongs here for the same reason `ps` does: claims are otherwise
+    // visible only to agents through chat_list, which leaves a human diagnosing
+    // a refusal with nothing to look at (CC-56).
+    expect(names(debug as Command).sort()).toEqual(['claims', 'history', 'log', 'ps', 'send'].sort())
   })
 
   it('puts doctor at the top level, not under service', () => {

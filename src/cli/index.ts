@@ -91,6 +91,7 @@ function addDebugCommands(program: Command): void {
   const dbg = program.command('debug').description('diagnostics: sessions, history, routing')
 
   dbg.command('ps').description('list registered sessions').action(debug.ps)
+  dbg.command('claims').description('who holds which worktrees and paths').action(debug.claims)
   dbg
     .command('history [n]')
     .description('recent events from the log (default 30)')

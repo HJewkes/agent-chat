@@ -6,6 +6,7 @@ import { EventLog, newMsgId } from './event-log.js'
 import type { AppendInput, EventStore } from './event-store.js'
 import { EventHub } from './events.js'
 import { Registry } from './registry.js'
+import { ClaimLedger } from './claims.js'
 
 type RegisterMessage = Extract<ClientMessage, { t: 'register' }>
 
@@ -45,6 +46,8 @@ export class BrokerCore<C = Conn> {
   readonly hub: EventHub
   readonly agents: AgentLog
   readonly startedAt: number
+  /** Live worktree/file claims, released with the connection that took them (CC-56). */
+  readonly claims = new ClaimLedger()
 
   private readonly deliver: Deliver<C>
   private readonly watchers = new Set<(row: AppendInput) => void>()
@@ -258,6 +261,10 @@ export class BrokerCore<C = Conn> {
     const entry = this.registry.entryFor(conn)
     const name = this.registry.drop(conn)
     if (!name || !entry) return
+    // Claims are leases held by presence, so they end here rather than needing
+    // to be reaped: an agent that dies mid-task stops blocking its peers at
+    // once, and there is no such thing as a stale claim (CC-56).
+    this.claims.releaseAll(name)
     logEvent('deregistered', { name, reason: 'connection closed' })
     this.append({ kind: 'deregistered', actor: name, body: entry.workingOn, meta: { status: entry.status } })
     if (entry.agentId !== undefined)

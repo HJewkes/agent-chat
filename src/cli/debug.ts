@@ -18,6 +18,41 @@ export async function ps(): Promise<void> {
   }
 }
 
+/**
+ * Who currently holds what (CC-56).
+ *
+ * Claims are otherwise visible only to agents, through `chat_list`, which leaves
+ * a human diagnosing "why was that refused" with nothing to look at.
+ *
+ * Grouped by worktree because the worktree is the unit of collision: claims in
+ * two different ones never contend, so a flat list would invite exactly the
+ * misreading the design exists to prevent.
+ */
+export async function claims(): Promise<void> {
+  const res = (await withBroker(b => b.request({ t: 'list' }, 'list_result'))) as Extract<
+    ServerMessage,
+    { t: 'list_result' }
+  >
+  const held = res.claims ?? []
+  if (held.length === 0) {
+    console.log('No claims held.')
+    return
+  }
+  const byWorktree = new Map<string, typeof held>()
+  for (const claim of held) {
+    const group = byWorktree.get(claim.worktreePath)
+    if (group) group.push(claim)
+    else byWorktree.set(claim.worktreePath, [claim])
+  }
+  for (const [worktree, group] of byWorktree) {
+    console.log(worktree)
+    for (const claim of group) {
+      const what = claim.kind === 'worktree' ? '(whole worktree)' : claim.patterns.join(', ')
+      console.log(`  ${claim.owner.padEnd(16)} ${what}`)
+    }
+  }
+}
+
 export async function send(to: string, words: string[]): Promise<void> {
   if (words.length === 0) fail('usage: agent-chat debug send <to> <text>')
   const res = (await withBroker(b =>
