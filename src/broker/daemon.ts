@@ -5,6 +5,7 @@ import type { Hono } from 'hono'
 import { defaultPort, home, socketPath } from '../paths.js'
 import { BrokerCore } from './core.js'
 import { buildHttpApp } from './http.js'
+import { isEphemeralHome, watchIdle } from './ephemeral.js'
 import {
   probeSocket,
   readPidFile,
@@ -54,7 +55,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
 
   const core = new BrokerCore(deliver)
   const socketServer = new SocketServer(core)
-  const server = await listenOn(sock, socketServer)
+  const { server, openConnections } = await listenOn(sock, socketServer)
 
   // Only after the socket is serving, and only ever best-effort.
   const http =
@@ -67,13 +68,17 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   // over a `const` declared further down — shutdown never runs before startup
   // finishes, so the reference is always resolved by the time it is read.
   let stopWatching: (() => void) | undefined
+  let stopIdleWatch: (() => void) | undefined
   const shutdown = makeShutdown({
     sock,
     server,
     socketServer,
     core,
     http: http?.server ?? null,
-    stopWatching: () => stopWatching?.(),
+    stopWatching: () => {
+      stopWatching?.()
+      stopIdleWatch?.()
+    },
   })
 
   // A broker whose socket has been unlinked is unreachable, not degraded: no
@@ -86,6 +91,20 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
       shutdown(!fs.existsSync(sock))
     },
   })
+
+  // A broker under a throwaway home belongs to one run of something and has no
+  // reason to outlive it. The shared bus is deliberately exempt — it sits at
+  // zero connections for days by design, so idleness alone must never end it.
+  // See `ephemeral.ts` for why the gate is the home's location (CC-76).
+  if (isEphemeralHome(home())) {
+    stopIdleWatch = watchIdle({
+      connections: openConnections,
+      onIdle: idleForMs => {
+        logEvent('broker_exit', { reason: 'ephemeral home idle', idleForMs, pid: process.pid })
+        shutdown(true)
+      },
+    })
+  }
 
   installSignalHandlers(shutdown)
   return server
@@ -107,15 +126,33 @@ async function claimSocketPath(sock: string): Promise<boolean> {
   return true
 }
 
-/** Bind the listener and hand connections to `socketServer`. */
-async function listenOn(sock: string, socketServer: SocketServer): Promise<net.Server> {
-  const server = net.createServer(conn => socketServer.onConnection(conn))
+/**
+ * Bind the listener and hand connections to `socketServer`.
+ *
+ * Counts open connections as it goes. `server.getConnections` would answer the
+ * same question, but only through a callback, which would make the idle reaper's
+ * timer async for no gain — and a counter is something a test can state outright.
+ */
+async function listenOn(
+  sock: string,
+  socketServer: SocketServer,
+): Promise<{ server: net.Server; openConnections: () => number }> {
+  let open = 0
+  const server = net.createServer(conn => {
+    open++
+    // `close` rather than `end`: a half-open connection is still a client, and
+    // counting it as gone would let the reaper fire with someone still attached.
+    conn.on('close', () => {
+      open--
+    })
+    socketServer.onConnection(conn)
+  })
   server.on('error', err => logEvent('broker_error', { error: String(err) }))
 
   await new Promise<void>(resolve => server.listen(sock, resolve))
   fs.chmodSync(sock, 0o600) // this user only; the trust boundary is the OS account
   logEvent('broker_started', { pid: process.pid, sock })
-  return server
+  return { server, openConnections: () => open }
 }
 
 /**
