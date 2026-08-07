@@ -28,6 +28,7 @@ import type {
   RecipientResult,
   ServerMessage,
   SessionInfo,
+  SessionClaim,
   SessionStatus,
   SessionTag,
   SubscribableKind,
@@ -152,6 +153,25 @@ function optionalDeclared(args: Record<string, unknown>): DeclaredPresence | und
   return declared
 }
 
+/**
+ * Claim patterns, or undefined for "the whole worktree" (CC-56).
+ *
+ * An EMPTY array collapses to undefined rather than erroring, because the two
+ * plausible readings of `patterns: []` — claim nothing, claim everything — would
+ * both be guesses. Undefined has one documented meaning, so both spellings of
+ * "no patterns given" reach it.
+ */
+function optionalPatterns(args: Record<string, unknown>): string[] | undefined {
+  const value = args['patterns']
+  if (value === undefined || value === null) return undefined
+  const list = Array.isArray(value) ? value : [value]
+  const kept = list.filter(p => typeof p === 'string' && p.trim() !== '') as string[]
+  if (kept.length === 0) return undefined
+  if (kept.length > CLAIM_MAX_PATTERNS)
+    throw new Error(`patterns may name at most ${CLAIM_MAX_PATTERNS} globs; got ${kept.length}`)
+  return kept.map(p => p.trim())
+}
+
 function optionalString(args: Record<string, unknown>, key: string): string | undefined {
   const value = args[key]
   return typeof value === 'string' && value.trim() !== '' ? value : undefined
@@ -178,6 +198,15 @@ function optionalEnum<T extends string>(
 
 /** Upper bound on a replay request, so one tool call cannot flood a session's context. */
 const INBOX_MAX = 50
+
+/**
+ * Globs one session may claim at once.
+ *
+ * A cap rather than a limit anyone should reach: a claim naming dozens of
+ * patterns is describing a whole worktree the long way round, and should say so
+ * by claiming the worktree instead.
+ */
+const CLAIM_MAX_PATTERNS = 24
 
 /** Same reasoning as INBOX_MAX, applied to a transcript scan. */
 const DENIALS_MAX = 20
@@ -274,6 +303,54 @@ export const TOOL_DEFINITIONS = [
       "diverging into independent work — don't wait to be asked, and don't assume you're the only session " +
       'in this checkout.',
     inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'chat_claim',
+    description:
+      'Say which worktree — and optionally which paths inside it — you are about to work in, so peers ' +
+      'sharing that checkout find out BEFORE they overwrite you rather than after. Call it once you know ' +
+      'what you will edit, and again to narrow or widen: re-claiming REPLACES your previous claim rather ' +
+      'than adding to it. A claim overlapping one a peer already holds is refused and names them, which is ' +
+      'your cue to message them rather than to retry. Two agents in DIFFERENT worktrees of the same ' +
+      'repository never conflict, even on the same file — that is two branches, and git settles it at ' +
+      'merge. Advisory, and worth being clear-eyed about: nothing intercepts a file write, so this records ' +
+      'who got somewhere first and cannot stop a peer who never claims at all. Your claims are released ' +
+      'when your session ends — a lease held by presence, not a lock anyone has to clean up.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        patterns: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Path globs you intend to edit, relative to the worktree root, e.g. ["src/broker/**", ' +
+            '"src/protocol.ts"]. `*` matches within a segment, `**` across segments. OMIT to claim the ' +
+            'WHOLE worktree, which is exclusive and refuses every other claim in it.',
+        },
+        worktree_path: {
+          type: 'string',
+          description:
+            'Absolute path of the worktree, when it is not the one this session runs in — for an agent ' +
+            'working across several projects at once. You may hold claims in many repositories, but only ' +
+            'ONE worktree per repository.',
+        },
+      },
+    },
+  },
+  {
+    name: 'chat_release',
+    description:
+      'Give up a claim once you are done with that area, so a peer waiting on it can take it without ' +
+      'waiting for your session to end. Releases every claim you hold unless you name a worktree.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        worktree_path: {
+          type: 'string',
+          description: 'Release only the claim in this worktree. Omit to release everything you hold.',
+        },
+      },
+    },
   },
   {
     name: 'chat_send',
@@ -744,16 +821,46 @@ function observedLine(s: SessionInfo): string {
   return `\n    ${parts.join('  ·  ')}`
 }
 
-function formatSessions(sessions: SessionInfo[], self: string | null): string {
+function formatSessions(sessions: SessionInfo[], self: string | null, claims: SessionClaim[] = []): string {
   if (sessions.length === 0) return 'No sessions are registered.'
   const now = Date.now()
   const rows = sessions.map(s => {
     const you = s.name === self ? ' (you)' : ''
     const quiet = s.dnd ? ', dnd' : ''
     const head = `- ${s.name}${you} [${s.status}${quiet}, idle ${ago(s.idleMs)}] — ${s.workingOn || 'no description'}`
-    return `${head}${tagsLine(s.tags, now)}${declaredLine(s.declared)}${observedLine(s)}`
+    return `${head}${tagsLine(s.tags, now)}${declaredLine(s.declared)}${observedLine(s)}${claimLine(claims, s.name)}`
   })
-  return `Active sessions:\n${rows.join('\n')}`
+  return `Active sessions:\n${rows.join('\n')}${claimsFooter(claims, sessions, self)}`
+}
+
+/** What this session holds, on its own row, so the roster answers "who has what". */
+function claimLine(claims: SessionClaim[], name: string): string {
+  const mine = claims.filter(c => c.owner === name)
+  if (mine.length === 0) return ''
+  const parts = mine.map(c =>
+    c.kind === 'worktree'
+      ? `holds all of ${c.worktreePath}`
+      : `holds ${c.patterns.join(', ')} in ${c.worktreePath}`,
+  )
+  return `\n    claim: ${parts.join(' | ')}`
+}
+
+/**
+ * Named only when the reader could actually collide — same worktree, someone
+ * else. A claim in a checkout you are not in is noise, and the whole value of
+ * this signal depends on it not becoming noise (CC-56).
+ */
+function claimsFooter(claims: SessionClaim[], sessions: SessionInfo[], self: string | null): string {
+  if (self === null) return ''
+  const mine = sessions.find(s => s.name === self)?.observed?.worktreePath
+  if (mine === undefined) return ''
+  const here = claims.filter(c => c.worktreePath === mine && c.owner !== self)
+  if (here.length === 0) return ''
+  return (
+    `\n\nIn your worktree (${mine}), ${here.map(c => `"${c.owner}"`).join(' and ')} ` +
+    `${here.length === 1 ? 'has' : 'have'} claimed work. Message them before editing those paths — ` +
+    `claims are advisory and mark who got there first.`
+  )
 }
 
 function formatActivity(name: string, session: SessionInfo | undefined, events: QueueItem[]): string {
@@ -901,6 +1008,10 @@ export class ToolHandler {
         )
       case 'chat_list':
         return this.list()
+      case 'chat_claim':
+        return this.claim(optionalPatterns(args), optionalString(args, 'worktree_path'))
+      case 'chat_release':
+        return this.release(optionalString(args, 'worktree_path'))
       case 'chat_activity':
         return this.activity(requireString(args, 'name'), boundedLimit(args, 'limit', 15, INBOX_MAX))
       case 'chat_send':
@@ -1021,7 +1132,35 @@ export class ToolHandler {
       ServerMessage,
       { t: 'list_result' }
     >
-    return text(formatSessions(res.sessions, this.registeredName))
+    return text(formatSessions(res.sessions, this.registeredName, res.claims ?? []))
+  }
+
+  private async claim(patterns: string[] | undefined, worktreePath: string | undefined) {
+    const res = (await this.call(
+      {
+        t: 'claim',
+        ...(worktreePath === undefined ? {} : { worktreePath }),
+        ...(patterns === undefined ? {} : { patterns }),
+      },
+      'claim_result',
+    )) as Extract<ServerMessage, { t: 'claim_result' }>
+
+    if (!res.ok) return text(res.reason ?? 'Claim refused.')
+    const claim = res.claim
+    if (claim === undefined) return text('Claimed.')
+    const what = claim.kind === 'worktree' ? 'the whole worktree' : claim.patterns.join(', ')
+    return text(
+      `Claimed ${what} in ${claim.worktreePath}. Peers see this in chat_list. It is advisory — it marks ` +
+        `that you got there first, and does not prevent a write.`,
+    )
+  }
+
+  private async release(worktreePath: string | undefined) {
+    const res = (await this.call(
+      { t: 'release', ...(worktreePath === undefined ? {} : { worktreePath }) },
+      'release_result',
+    )) as Extract<ServerMessage, { t: 'release_result' }>
+    return text(res.released ? 'Released.' : 'You were not holding a claim there.')
   }
 
   private async activity(name: string, limit: number) {

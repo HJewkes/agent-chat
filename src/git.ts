@@ -73,6 +73,12 @@ export async function observedPresence(
     // the literal string "HEAD" in every peer's chat_list and read as one.
     ...(branch !== null && branch !== '' && branch !== 'HEAD' ? { gitBranch: branch } : {}),
     ...(toplevel === null || toplevel === '' ? {} : { worktreePath: toplevel }),
+    // The repository BEHIND the worktree, kept as a value rather than only
+    // reduced to the boolean below. Two worktrees of one repo are exactly the
+    // case where claims must NOT collide — the same file in each is independent
+    // work that git settles at merge — so what identifies "same project,
+    // different workspace" has to survive as something comparable (CC-56).
+    ...(commonDir === null ? {} : { repoPath: path.dirname(path.resolve(commonDir)) }),
     ...(commonDir === null || gitDir === null
       ? {}
       : { isLinkedWorktree: path.resolve(commonDir) !== path.resolve(gitDir) }),

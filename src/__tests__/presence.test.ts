@@ -46,6 +46,10 @@ describe('observedPresence — derived, never asked of the model', () => {
     expect(await observedPresence('/repo', git)).toEqual({
       gitBranch: 'feat/cc11',
       worktreePath: '/repo',
+      // The repository behind the worktree, which here is the worktree itself.
+      // Kept as a value rather than only folded into the boolean below, because
+      // claims need to tell "same project" from "same workspace" (CC-56).
+      repoPath: '/repo',
       isLinkedWorktree: false,
     })
   })
@@ -67,6 +71,12 @@ describe('observedPresence — derived, never asked of the model', () => {
     const observed = await observedPresence('/repo/.worktrees/scout', git)
 
     expect(observed).toMatchObject({ worktreePath: '/repo/.worktrees/scout', isLinkedWorktree: true })
+    // The case the whole claim design turns on: the workspace is the worktree,
+    // but the PROJECT is the repository behind it. Two sessions here and in
+    // /repo are on two branches, so claiming the same file in each is ordinary
+    // work rather than a collision (CC-56).
+    expect(observed?.repoPath).toBe('/repo')
+    expect(observed?.repoPath).not.toBe(observed?.worktreePath)
   })
 
   it('omits the branch on a detached HEAD rather than reporting the string "HEAD"', async () => {

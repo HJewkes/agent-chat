@@ -17,6 +17,7 @@ import type { SwitchOutcome } from '../agents/mode-switch.js'
 import { SystemEventFeed } from './subscriptions.js'
 import { nextWatchCursor } from './watch-cursor.js'
 import { newestBuildMtime, stalenessWarning } from './staleness.js'
+import { findGitRoot } from '../git.js'
 import { readMeta } from './lifecycle.js'
 
 /**
@@ -149,6 +150,72 @@ export class SocketServer {
       ...(warnings.length === 0 ? {} : { warnings }),
       ...(outcome.disallowedTools === undefined ? {} : { disallowedTools: outcome.disallowedTools }),
     })
+  }
+
+  /**
+   * Take a claim for `conn` (CC-56).
+   *
+   * The OWNER is read from the connection, never from the message: a claim is a
+   * statement about who is working somewhere, and letting one be made in another
+   * session's name would turn an advisory signal into a way to fence peers out
+   * of a checkout they are entitled to.
+   *
+   * The worktree, by contrast, may be named — an agent working across several
+   * projects at once has to claim in a checkout that is not its own cwd. What it
+   * cannot do is hold two worktrees of the SAME repository, which the ledger
+   * enforces from the repo path resolved here.
+   */
+  private async handleClaim(conn: Conn, msg: Extract<ClientMessage, { t: 'claim' }>): Promise<void> {
+    const owner = this.core.registry.nameOf(conn)
+    if (owner === undefined)
+      return reply(conn, {
+        t: 'claim_result',
+        ok: false,
+        reason: 'register before claiming — a claim is held by a named session, and you have no name yet.',
+      })
+
+    const observed = this.core.registry.observedFor(conn)
+    const worktreePath = msg.worktreePath ?? observed?.worktreePath
+    if (worktreePath === undefined)
+      return reply(conn, {
+        t: 'claim_result',
+        ok: false,
+        reason:
+          'no worktree to claim: this session is not in a git checkout, so pass worktreePath explicitly.',
+      })
+
+    // Resolved rather than taken on trust, and re-resolved even for the
+    // session's own worktree: the one-worktree-per-repo rule is only meaningful
+    // if the repository is identified the same way for every claim.
+    const repoPath =
+      worktreePath === observed?.worktreePath && observed.repoPath !== undefined
+        ? observed.repoPath
+        : ((await findGitRoot(worktreePath)) ?? undefined)
+
+    const outcome = this.core.claims.claim({
+      owner,
+      worktreePath,
+      ...(repoPath === undefined ? {} : { repoPath }),
+      ...(msg.patterns === undefined ? {} : { patterns: msg.patterns }),
+    })
+
+    reply(
+      conn,
+      outcome.ok
+        ? { t: 'claim_result', ok: true, claim: outcome.claim }
+        : { t: 'claim_result', ok: false, reason: outcome.reason, conflicts: outcome.conflicts },
+    )
+  }
+
+  /** Release this session's claim in one worktree, or everywhere it holds one. */
+  private handleRelease(conn: Conn, msg: Extract<ClientMessage, { t: 'release' }>): void {
+    const owner = this.core.registry.nameOf(conn)
+    if (owner === undefined) return reply(conn, { t: 'release_result', released: false })
+    const released =
+      msg.worktreePath === undefined
+        ? this.core.claims.releaseAll(owner)
+        : this.core.claims.releaseIn(owner, msg.worktreePath)
+    reply(conn, { t: 'release_result', released })
   }
 
   /**
@@ -734,8 +801,19 @@ export class SocketServer {
           t: 'status_result',
           ok: core.registry.setStatus(conn, msg.status, msg.workingOn, msg.dnd, msg.declared),
         })
-      case 'list':
-        return reply(conn, { t: 'list_result', sessions: core.registry.list() })
+      case 'list': {
+        const claims = core.claims.list()
+        return reply(conn, {
+          t: 'list_result',
+          sessions: core.registry.list(),
+          ...(claims.length === 0 ? {} : { claims }),
+        })
+      }
+      case 'claim':
+        void this.handleClaim(conn, msg)
+        return
+      case 'release':
+        return this.handleRelease(conn, msg)
       case 'tag':
         return this.handleTag(conn, msg)
       case 'subscribe':

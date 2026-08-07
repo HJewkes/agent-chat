@@ -11,11 +11,39 @@ export type SessionStatus = (typeof SESSION_STATUSES)[number]
  * `source` already follow. A peer reading these is reading a fact about where
  * that session is running, not a claim about it.
  */
+/**
+ * A live statement of intent: who is working where, and on what (CC-56).
+ *
+ * Scoped to a WORKTREE rather than a repository, because two worktrees of one
+ * repo editing the same path are two branches, not a collision. Advisory
+ * throughout — nothing intercepts a file write, so this records who got there
+ * first rather than preventing anyone from arriving second.
+ */
+export interface SessionClaim {
+  owner: string
+  worktreePath: string
+  repoPath?: string
+  /** `worktree` owns everything in it; `files` owns the listed patterns. */
+  kind: 'worktree' | 'files'
+  patterns: string[]
+  at: number
+}
+
 export interface ObservedPresence {
   /** `git rev-parse --abbrev-ref HEAD`. Absent on a detached HEAD or a non-repo. */
   gitBranch?: string
   /** `git rev-parse --show-toplevel`: the checkout this session is actually in. */
   worktreePath?: string
+  /**
+   * The repository the worktree belongs to, from `--git-common-dir` (CC-56).
+   *
+   * Distinct from `worktreePath` in exactly the case that matters: several
+   * worktrees share one `repoPath`, and work in them is INDEPENDENT — the same
+   * file edited in two of them is not a collision, it is two branches git
+   * reconciles at merge. So claims scope by WORKTREE, while this answers "same
+   * project", which is a different question and must not be conflated with it.
+   */
+  repoPath?: string
   /** True when that checkout is a linked worktree rather than the main one. */
   isLinkedWorktree?: boolean
   /**
@@ -524,6 +552,15 @@ export type ClientMessage =
   | { t: 'unsubscribe'; selector?: SubscriptionSelector }
   | { t: 'list' }
   /**
+   * Take a claim on a worktree, or on paths within one (CC-56).
+   *
+   * `worktreePath` defaults to the requester's own observed worktree; passing
+   * one is how an agent working across several projects claims in another. No
+   * `patterns` means the whole worktree.
+   */
+  | { t: 'claim'; worktreePath?: string; patterns?: string[] }
+  | { t: 'release'; worktreePath?: string }
+  /**
    * `to` takes a list for a multicast (CC-10). Deliberately an overload of the
    * EXISTING frame rather than a new `multicast` type: the broker's frame switch
    * has no default case, so an unknown `t` is dropped silently and the caller
@@ -666,7 +703,14 @@ export type ServerMessage =
    */
   | { t: 'system_events'; events: SystemEvent[] }
   | { t: 'status_result'; ok: boolean }
-  | { t: 'list_result'; sessions: SessionInfo[] }
+  /**
+   * `claims` rides along with the roster rather than needing its own call: the
+   * question a peer has when reading who is active is what they are holding, and
+   * two round trips would let the two answers disagree (CC-56).
+   */
+  | { t: 'list_result'; sessions: SessionInfo[]; claims?: SessionClaim[] }
+  | { t: 'claim_result'; ok: boolean; reason?: string; claim?: SessionClaim; conflicts?: SessionClaim[] }
+  | { t: 'release_result'; released: boolean }
   /**
    * `held` means the message was retained for every recipient's inbox but not
    * pushed live. It is not a failure, and the sender must not resend: the content

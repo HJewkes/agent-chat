@@ -559,6 +559,19 @@ export class Registry<C> {
   }
 
   /**
+   * The git facts observed for this connection at registration.
+   *
+   * Read from the entry rather than through `EntryView`, which is a deliberately
+   * narrow projection. A claim needs the worktree and repository a session is
+   * actually in, and taking those from the CONNECTION is what stops a session
+   * claiming somewhere it merely says it is (CC-56).
+   */
+  observedFor(conn: C): ObservedPresence | undefined {
+    const entry = this.entries.get(conn)
+    return entry === undefined ? undefined : observedOf(entry)
+  }
+
+  /**
    * Replace by selector rather than append, so a session re-declaring what it
    * wants converges instead of accumulating duplicates of the same rule.
    */
