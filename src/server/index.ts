@@ -9,6 +9,7 @@ import { TOOL_DEFINITIONS, ToolHandler } from './tools.js'
 import { terminalAnchor } from './anchor.js'
 import { hostIdentity } from './host.js'
 import { observedRegistration } from '../git.js'
+import { exitWhenStdinEnds } from './stdio-lifetime.js'
 
 /**
  * Claude Code sends this when a tool-approval dialog opens in this session.
@@ -308,9 +309,15 @@ export async function startMcpServer(): Promise<void> {
   const transport = new StdioServerTransport()
   // Claude Code closing the pipe means the session is gone. Exit rather than
   // linger on the broker socket, so the registration lease is released promptly.
-  transport.onclose = (): void => {
+  const shutdown = (): void => {
     broker.close()
     process.exit(0)
   }
+  transport.onclose = shutdown
   await mcp.connect(transport)
+  // ...but onclose alone never fires for a closed pipe: the SDK raises it only
+  // from its own close(), so EOF on stdin reaches nothing. Watching the stream
+  // itself is what makes the comment above true (CC-75). Wired after connect,
+  // because connect() is what starts the transport reading.
+  exitWhenStdinEnds({ stdin: process.stdin, onEnd: shutdown })
 }
