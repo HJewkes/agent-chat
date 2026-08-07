@@ -44,18 +44,40 @@ const systemPrompt = (input: LaunchPlanInput): string =>
     .filter(part => part.trim() !== '')
     .join('\n\n')
 
-const titleFor = (input: LaunchPlanInput): string => {
+/**
+ * A one-line gist of the brief, for the roster line a peer reads in `chat_list`.
+ *
+ * Answers "what is that agent up to" for someone scanning a list they can take
+ * their time over — which is a different question from the one a pane title
+ * answers, hence no longer shared with it.
+ */
+const summaryFor = (input: LaunchPlanInput): string => {
   const firstLine = input.brief.split('\n')[0]?.trim() ?? ''
   const summary = firstLine.length > 48 ? `${firstLine.slice(0, 47)}…` : firstLine
   return summary === '' ? input.name : `${input.name} — ${summary}`
 }
+
+/**
+ * The pane title: the agent's name, and nothing else.
+ *
+ * It used to carry a slice of the brief too, which was harmless only because
+ * Claude Code overwrote the whole thing anyway. Now that it does not (see
+ * `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` below), that slice is what a human
+ * actually reads — and a pane is a few characters wide, so a brief appended to
+ * the name pushes the name toward the truncation and reintroduces the exact
+ * complaint the disable was meant to settle: a title that says what the agent
+ * is doing rather than WHO it is.
+ *
+ * A wall of panes is scanned to find one agent. Only the name does that.
+ */
+const titleFor = (input: LaunchPlanInput): string => input.name
 
 const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   // Read by the child's own MCP server, which registers from them before the
   // model takes a turn. This is what makes a spawned process a durable peer.
   AGENT_CHAT_AGENT_ID: input.agentId,
   AGENT_CHAT_NAME: input.name,
-  AGENT_CHAT_WORKING_ON: input.workingOn ?? titleFor(input),
+  AGENT_CHAT_WORKING_ON: input.workingOn ?? summaryFor(input),
   // Defaults chosen by whoever spawned it, applied on that first registration —
   // so an agent is already listening to the right things before its first turn,
   // rather than needing the model to remember to subscribe.
