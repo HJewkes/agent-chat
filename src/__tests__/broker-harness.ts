@@ -14,7 +14,7 @@ import path from 'node:path'
  * it. Call this BEFORE removing the home directory — the pid file lives inside it.
  */
 export async function reapBroker(home: string): Promise<void> {
-  const pid = readPid(path.join(home, 'broker.pid'))
+  const pid = await waitForPid(path.join(home, 'broker.pid'))
   if (pid === null) return
 
   try {
@@ -34,6 +34,24 @@ export async function reapBroker(home: string): Promise<void> {
   } catch {
     // it exited between the check and the signal
   }
+}
+
+/**
+ * The pid file is written AFTER the socket is bound, and callers wait on the
+ * socket — so "no pid file" routinely means "not written yet" rather than "no
+ * broker". Returning null on the first look let the caller skip the kill
+ * entirely and then race `rmSync` against a broker still writing its state
+ * files, which surfaced as an intermittent ENOTEMPTY teardown.
+ *
+ * Bounded, because a genuinely absent pid file must still resolve quickly.
+ */
+async function waitForPid(file: string, attempts = 20, delayMs = 50): Promise<number | null> {
+  for (let i = 0; i < attempts; i += 1) {
+    const pid = readPid(file)
+    if (pid !== null) return pid
+    await new Promise(resolve => setTimeout(resolve, delayMs))
+  }
+  return null
 }
 
 function readPid(file: string): number | null {

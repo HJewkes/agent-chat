@@ -78,6 +78,14 @@ const packageRoot = (): string => path.dirname(path.dirname(fileURLToPath(import
 export const cliEntry = (): string => path.join(packageRoot(), 'dist', 'cli.js')
 
 /**
+ * The compiled tree the running process was loaded from.
+ *
+ * Exported so staleness can be measured against it (CC-57) — the cost noted
+ * just above is only payable if something can see it coming.
+ */
+export const distDir = (): string => path.join(packageRoot(), 'dist')
+
+/**
  * 7600 is clear on this machine and inside the house 7xxx band: active-work holds
  * 7400, voltras 7723, brain 7800. Loopback only, always.
  */

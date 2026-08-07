@@ -6,6 +6,7 @@ import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
 import type { HealthPayload } from '../api-contract.js'
 import { cliEntry, dashboardDir, defaultPort, home, socketPath } from '../paths.js'
 import { probeSocket, readMeta } from './lifecycle.js'
+import { newestBuildMtime, stalenessWarning } from './staleness.js'
 
 /**
  * Preflight for the failures that cost real time and give no error.
@@ -102,8 +103,7 @@ function checkDatabase(): Check {
   }
 }
 
-async function checkBroker(): Promise<Check[]> {
-  const live = await probeSocket()
+async function checkBroker(live: boolean): Promise<Check[]> {
   const socket: Check = {
     name: 'broker socket',
     status: live ? 'ok' : 'warn',
@@ -151,6 +151,37 @@ function checkBuild(): Check {
   return fs.existsSync(entry)
     ? { name: 'build', status: 'ok', detail: entry }
     : { name: 'build', status: 'fail', detail: `${entry} missing — run npm run build` }
+}
+
+/**
+ * Is the running broker serving the code that is on disk? (CC-57)
+ *
+ * A warn rather than a fail, and only when a broker is actually up: a rebuilt
+ * `dist/` is a completely normal state for a developer mid-change, and the
+ * broker is not broken — it is just older than the tree. What makes it worth
+ * saying is that the failure it causes is invisible and permanent per agent.
+ */
+function checkFreshness(live: boolean): Check[] {
+  if (!live) return []
+  const meta = readMeta()
+  const current = newestBuildMtime()
+  if (meta?.buildMtime === undefined || current === null) {
+    return [
+      {
+        name: 'broker fresh',
+        status: 'ok',
+        detail: 'no build stamp to compare — restart the broker to start tracking',
+      },
+    ]
+  }
+  const warning = stalenessWarning(meta.buildMtime, current)
+  return [
+    {
+      name: 'broker fresh',
+      status: warning === null ? 'ok' : 'warn',
+      detail: warning ?? `serving the current build (${path.basename(current.file)})`,
+    },
+  ]
 }
 
 /** The four-step ladder in `bin/agent-chat-launch.sh`; a miss here breaks the MCP spawn. */
@@ -224,14 +255,18 @@ function checkDashboard(): Check {
 }
 
 export async function runChecks(): Promise<Check[]> {
+  // Probed once and shared: two checks need the answer, and asking twice would
+  // let them disagree about whether a broker exists.
+  const live = await probeSocket()
   return [
     checkNode(),
     checkStateDir(),
     checkSocketPath(),
     checkDatabase(),
-    ...(await checkBroker()),
+    ...(await checkBroker(live)),
     checkCliOnPath(),
     checkBuild(),
+    ...checkFreshness(live),
     checkLauncher(),
     checkChannelAllowlist(),
     checkDashboard(),
