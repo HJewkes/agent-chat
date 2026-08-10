@@ -120,9 +120,13 @@ function addAgentCommands(program: Command): void {
     .description('agents, with lifecycle and presence')
     .action(agents.agentLs)
   agent
-    .command('spawn <name> <profile> <brief...>')
+    // The brief is OPTIONAL in argv only because `--brief-stdin` is the other
+    // way to supply it; `resolveBrief` still refuses a spawn with neither, so
+    // the usage error moved rather than disappeared.
+    .command('spawn <name> <profile> [brief...]')
     .description('start a new agent')
     .option('--briefing <slug|auto>', "prepend an active-work initiative's orientation to the brief")
+    .option('--brief-stdin', 'read the brief from stdin, keeping it out of world-readable argv')
     .action(agents.agentSpawn)
   agent.command('retire <name>').description('release isolation and free the name').action(agents.agentRetire)
   agent

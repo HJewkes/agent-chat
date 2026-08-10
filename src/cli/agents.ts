@@ -44,15 +44,58 @@ export async function agentLs(): Promise<void> {
   }
 }
 
+/** Read stdin to EOF. The one impure half of `--brief-stdin`, kept beside it and nowhere else. */
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = []
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer)
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+/**
+ * Where the brief comes from: argv words, or stdin under `--brief-stdin`.
+ *
+ * The flag exists for callers whose brief is not theirs — relay dispatches a
+ * task body the operator captured by voice, and argv is world-readable via `ps`,
+ * so passing it positionally discloses that text to every local process (relay's
+ * R-68, which this closes). Nothing downstream changes: the wire `spawn` frame
+ * carries the brief over a socket either way, and a headless agent already
+ * receives it on the child's stdin rather than in `claude`'s argv.
+ *
+ * Pure, and throws rather than exiting, so the exclusivity rules are testable
+ * without a pipe or a broker — the same seam `resumeWithMessage` draws.
+ */
+export function resolveBrief(words: string[], stdin: string | undefined): string {
+  if (stdin === undefined) {
+    if (words.length === 0) throw new Error('usage: agent-chat agent spawn <name> <profile> "<brief>"')
+    return words.join(' ')
+  }
+  // Refused rather than merged, because there is no reading of a split brief
+  // that is obviously right, and silently dropping either half sends an agent
+  // off with half a task — which costs a whole run to notice.
+  if (words.length > 0) {
+    throw new Error('--brief-stdin reads the brief from stdin; do not also pass it as arguments')
+  }
+  // Only the trailing newline a pipe adds is stripped. Interior whitespace is
+  // the caller's — a brief is prose, and its blank lines are structure.
+  const brief = stdin.replace(/\n+$/, '')
+  if (brief.trim() === '') throw new Error('--brief-stdin got an empty brief on stdin')
+  return brief
+}
+
 export async function agentSpawn(
   name: string,
   profile: string,
   words: string[],
   // CC-63: an active-work initiative slug (or "auto"), prepended to the brief
   // as orientation. Optional, so every call site that predates it still works.
-  options: { briefing?: string } = {},
+  options: { briefing?: string; briefStdin?: boolean } = {},
 ): Promise<void> {
-  if (words.length === 0) fail('usage: agent-chat agent spawn <name> <profile> "<brief>"')
+  let brief: string
+  try {
+    brief = resolveBrief(words, options.briefStdin === true ? await readStdin() : undefined)
+  } catch (err) {
+    fail((err as Error).message)
+  }
   const res = (await withBroker(b =>
     // The human holds no registry entry (§6.4), so the broker has no cwd to read
     // for them — send it, or the agent inherits the broker's arbitrary one.
@@ -61,7 +104,7 @@ export async function agentSpawn(
         t: 'spawn',
         name,
         profile,
-        brief: words.join(' '),
+        brief,
         cwd: process.cwd(),
         ...(options.briefing === undefined ? {} : { briefing: options.briefing }),
       },
