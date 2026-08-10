@@ -124,6 +124,14 @@ describe('agent spawn brief sources', () => {
     expect(resolveBrief([], 'line one\n\nline two\n')).toBe('line one\n\nline two')
   })
 
+  it('strips exactly one trailing newline, so a deliberate blank last line survives', () => {
+    expect(resolveBrief([], 'body\n\n\n')).toBe('body\n\n')
+  })
+
+  it('strips a CRLF pair whole, leaving no carriage return welded to the last word', () => {
+    expect(resolveBrief([], 'one\r\ntwo\r\n')).toBe('one\r\ntwo')
+  })
+
   it('refuses a brief given both ways rather than guessing which one is meant', () => {
     expect(() => resolveBrief(['also', 'this'], 'the real brief')).toThrow(/do not also pass it/)
   })
