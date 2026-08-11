@@ -1,5 +1,11 @@
 node_modules/
 dist/
+
+# Worktree isolation cuts agent worktrees here (isolation/worktree.ts's
+# DEFAULT_BASE_PATH). They are checkouts of this same repo, so leaving them
+# untracked put them in every session's `git status` and one `git add -A` away
+# from being committed into it.
+.worktrees/
 *.log
 *.tsbuildinfo
 
