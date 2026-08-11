@@ -15,7 +15,7 @@ const execFileAsync = promisify(execFile)
 
 const DEFAULT_BUDGET = 3
 const DEFAULT_BASE_PATH = '.worktrees'
-const BRANCH_PREFIX = 'agent-chat/'
+export const BRANCH_PREFIX = 'agent-chat/'
 
 /**
  * Grace window between an agent exiting and its worktree becoming reclaimable.

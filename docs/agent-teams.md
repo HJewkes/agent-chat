@@ -977,6 +977,40 @@ config change later, not a refactor. Say this in the code comment; a future
 contributor will otherwise hardcode the single-strategy assumption into the
 supervisor.
 
+#### 7.4 The life of a worktree, and who may end it
+
+Stated because the leak here is a leak of _nobody's_ making — every individual
+step is correct and the worktree still survives everything (CC-80).
+
+| Stage       | Who                       | What                                                                                                                                                                                                                              |
+| ----------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **create**  | the supervisor, at spawn  | `worktreeStrategy.allocate` cuts `agent-chat/<name>` at `.worktrees/<name>`, under a per-machine budget (3). The allocation is recorded in `runtime.json`, which is what makes every later stage possible after a broker restart. |
+| **hold**    | the agent                 | For as long as it is `live` or `spawning`, nothing may reclaim it.                                                                                                                                                                |
+| **grace**   | nobody                    | `RECLAIM_GRACE_MS` (120s) after the agent stops. The window exists so "I'll look at it in a minute" does not become a dangling commit, and it is anchored on `agent_exited`, not on wall clock since allocation.                  |
+| **release** | `agent retire`            | Removes the worktree, deletes the branch, drops `runtime.json`. **Refuses** on uncommitted changes or commits that exist nowhere else; `--force` overrides, which is a person choosing to destroy them.                           |
+| **reclaim** | `agent worktrees --prune` | The same destruction, for the case retire never covers.                                                                                                                                                                           |
+
+**The gap `reclaim` closes.** Release is driven by retire, and retire is driven
+by a person deciding they are done. Nothing drives the case where nobody
+decides: an agent exits, is never retired, and holds its worktree and branch
+indefinitely. The grace window already answered _how long until this is
+reclaimable_ — nothing was asking. `agent worktrees` asks, reports, and prunes
+only what is `reclaimable`: no live agent, past grace, clean, and holding no
+commit that exists nowhere else.
+
+**Ownership is the branch prefix, not the path.** `basePath` is configurable;
+`agent-chat/<name>` is what `branchFor` writes and nothing else creates. This is
+what keeps the sweep off **Claude Code's own agent worktrees**, which sit in
+`.claude/worktrees/agent-*` on ordinary branch names and are usually `locked`.
+Those are a different tool's leak, unreachable from here, and offering a reclaim
+that would then refuse to run is worse than ignoring them. Locked worktrees are
+skipped regardless of branch.
+
+**There is no timer.** Reclaim is a verb a person runs, not a daemon that
+deletes branches on a schedule. The whole reason the grace window and the
+dirty/unmerged refusal exist is that work was actually lost; a background sweeper
+would be the same hazard wearing a clock.
+
 ---
 
 ### 8. Lifecycle
@@ -1245,6 +1279,7 @@ agent-chat agent attach <name>     select the iTerm pane, or print how to reach 
 agent-chat agent resume <name>     new process, same identity
 agent-chat agent kill <name>       headless only
 agent-chat agent retire <name> [--force]  release isolation, end it, free the name
+agent-chat agent worktrees [--prune]  what is held in git, and what nobody uses
 agent-chat agent logs <name> [-n]  tail stream.jsonl
 agent-chat run-agent <id>          internal; the fixed launch command of §5.3
 ```

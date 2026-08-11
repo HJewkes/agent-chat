@@ -118,6 +118,19 @@ describe('agent retire', () => {
   })
 })
 
+/** CC-80. Reporting is the default; destroying anything takes a flag. */
+describe('agent worktrees', () => {
+  const worktrees = find(find(buildProgram(), 'agent') as Command, 'worktrees') as Command
+
+  it('exists as a verb of its own', () => {
+    expect(worktrees).toBeDefined()
+  })
+
+  it('reports by default and reclaims only when asked', () => {
+    expect(worktrees.options.map(o => o.long)).toEqual(expect.arrayContaining(['--prune', '--force']))
+  })
+})
+
 /**
  * `--brief-stdin` (relay's R-68). The point of the flag is that a brief the
  * caller did not author never reaches world-readable argv, so these assert both

@@ -1,4 +1,6 @@
+import { findGitRoot } from '../git.js'
 import { pairPresence } from '../agents/identity.js'
+import { reclaim, sweepWorktrees } from '../agents/isolation/sweep.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
 import { transcriptLine } from '../agents/transcript.js'
 import { type ServerMessage } from '../protocol.js'
@@ -95,6 +97,47 @@ export function resolveBrief(words: string[], stdin: string | undefined): string
   const brief = stdin.replace(/\r?\n$/, '')
   if (brief.trim() === '') throw new Error('--brief-stdin got an empty brief on stdin')
   return brief
+}
+
+/**
+ * What agent-chat is holding in git, and what nobody is using (CC-80).
+ *
+ * Retire releases a worktree when a person decides they are done with an agent.
+ * The leak is the case where nobody decides: an agent exits, is never retired,
+ * and holds its worktree and branch indefinitely. This is the verb that asks.
+ *
+ * `--prune` acts only on what the report calls `reclaimable` — no live agent,
+ * past the grace window, nothing uncommitted and no commit that exists nowhere
+ * else. `--force` overrides that per the same rule `retire --force` follows: a
+ * human deciding to throw work away, never an agent.
+ */
+export async function agentWorktrees(options: { prune?: boolean; force?: boolean } = {}): Promise<void> {
+  const roster = await withBroker(async b => {
+    const result = (await b.request({ t: 'agents' }, 'agents_result')) as Extract<
+      ServerMessage,
+      { t: 'agents_result' }
+    >
+    return result.agents
+  })
+  const root = await findGitRoot(process.cwd())
+  const swept = await sweepWorktrees(roster, { ...(root === null ? {} : { roots: [root] }) })
+
+  if (swept.length === 0) return console.log('No agent-chat worktrees on this machine.')
+  for (const entry of swept) {
+    console.log(`${entry.status.padEnd(12)} ${entry.branch.padEnd(28)} ${entry.worktree}`)
+    console.log(`${' '.repeat(12)} ${entry.detail}`)
+  }
+
+  if (options.prune !== true) {
+    const n = swept.filter(e => e.status === 'reclaimable').length
+    return console.log(n === 0 ? '\nNothing to reclaim.' : `\n${n} reclaimable. Reclaim with --prune.`)
+  }
+
+  console.log('')
+  for (const entry of swept.filter(e => options.force === true || e.status === 'reclaimable')) {
+    const result = await reclaim(entry, { ...(options.force === true ? { force: true } : {}) })
+    console.log(result.ok ? `Reclaimed ${entry.branch}.` : `Left ${entry.branch}: ${result.reason}`)
+  }
 }
 
 export async function agentSpawn(
