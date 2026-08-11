@@ -1,7 +1,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { agentDir } from '../paths.js'
-import type { AgentProfile, LaunchPlan } from './types.js'
+import type { IsolationName } from '../protocol.js'
+import type { Allocation } from './isolation/index.js'
+import type { AgentProfile, LaunchHandle, LaunchPlan } from './types.js'
 
 /**
  * The launch files, and why they exist at all.
@@ -70,4 +72,55 @@ export function readLaunchPlan(agentId: string): LaunchPlan {
   const file = planPath(agentId)
   if (!fs.existsSync(file)) throw new Error(`no launch plan for agent ${agentId} at ${file}`)
   return JSON.parse(fs.readFileSync(file, 'utf8')) as LaunchPlan
+}
+
+export const runtimeStatePath = (agentId: string): string => path.join(agentDir(agentId), 'runtime.json')
+
+/**
+ * What a running agent HOLDS, as opposed to how it was started (CC-78).
+ *
+ * The plan is a recipe and is written once; this is the pane that was actually
+ * opened and the worktree that was actually allocated, and it exists because
+ * `Supervisor.live` is memory only. A broker restart used to take both with it,
+ * which left retire unable to release a worktree or close a pane for any agent
+ * spawned before the restart — a leak of exactly the shape CC-77 fixed for the
+ * process.
+ *
+ * `exited` is deliberately absent from `handle`: it is a Promise held by the
+ * process that did the launching, and it cannot survive a restart in any form.
+ * Its absence is already the signal for "infer this agent's exit from presence".
+ */
+export interface RuntimeState {
+  handle: Omit<LaunchHandle, 'exited'>
+  allocation: Allocation
+  isolation: IsolationName
+  anchor?: string
+}
+
+export function writeRuntimeState(agentId: string, state: RuntimeState): void {
+  writePrivate(runtimeStatePath(agentId), JSON.stringify(state, null, 2))
+}
+
+/**
+ * Undefined for anything unreadable, never a throw: this is a best-effort
+ * fallback used when the in-memory entry is already gone, so a missing or
+ * corrupt file must degrade to the old behaviour (say what could not be done)
+ * rather than fail the retire that is trying to clean up.
+ */
+export function readRuntimeState(agentId: string): RuntimeState | undefined {
+  try {
+    return JSON.parse(fs.readFileSync(runtimeStatePath(agentId), 'utf8')) as RuntimeState
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Dropped once the agent is retired, so a released allocation can never be
+ * released a second time. Worktree release runs `worktree remove` and
+ * `branch -D`; replaying that against a branch name a later agent has since
+ * taken would destroy someone else's work.
+ */
+export function clearRuntimeState(agentId: string): void {
+  fs.rmSync(runtimeStatePath(agentId), { force: true })
 }

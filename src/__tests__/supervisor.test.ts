@@ -9,7 +9,12 @@ import { Registry } from '../broker/registry.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { SpawnRateBudget } from '../agents/spawn-rate.js'
 import { MAX_DEPTH, Supervisor } from '../agents/supervisor.js'
-import { readLaunchPlan } from '../agents/launch-files.js'
+import {
+  readLaunchPlan,
+  readRuntimeState,
+  runtimeStatePath,
+  writeRuntimeState,
+} from '../agents/launch-files.js'
 import type { HookProcess, HookSpawnFn } from '../agents/hooks.js'
 
 /**
@@ -709,6 +714,8 @@ describe('retiring reaps the process', () => {
   })
 
   it('says what it could not do instead of reporting a bare ok', async () => {
+    // Nothing in memory AND nothing on disk: an agent from before runtime state
+    // was persisted. Retire still frees the name, and still says what it skipped.
     const sup = withStubbedSurface()
     identity()
     registerSession()
@@ -716,7 +723,7 @@ describe('retiring reaps the process', () => {
     const result = await sup.retire('scout')
 
     expect(result.ok).toBe(true)
-    expect(result.reason).toMatch(/no launch handle/)
+    expect(result.reason).toMatch(/no record of what scout held/)
     expect(result.reason).toMatch(/isolation.*not released/)
   })
 
@@ -770,6 +777,123 @@ describe('retiring reaps the process', () => {
 
     const row = core.events.agentEvents().find(r => r.kind === 'agent_retired')
     expect(row?.meta?.reaped).toBe('true')
+  })
+})
+
+/**
+ * CC-78. The other half of what CC-77 exposed. The reap could be fixed from the
+ * registry, but the worktree and the pane could not: `alloc.ref` and the pane's
+ * UUID existed only in `Supervisor.live`, so a broker restart leaked a worktree
+ * and a branch per agent. What a running agent HOLDS now goes to disk beside its
+ * plan, and retire reads it back when memory has nothing.
+ *
+ * A fresh Supervisor over the same core and the same AGENT_CHAT_HOME is exactly
+ * what a broker restart looks like from here: the log and the agent directories
+ * survive, `live` does not.
+ */
+describe('runtime state outliving the broker', () => {
+  const identity = (id = 'a1'): void => {
+    core.append({ kind: 'agent_spawned', actor: 'human', target: 'scout', msgId: id, body: 'work' })
+  }
+
+  it('is written when an agent is launched', async () => {
+    const sup = withStubbedSurface()
+    const result = await sup.spawn(spawnReq())
+
+    const state = readRuntimeState(result.agentId as string)
+    expect(state?.handle.surface).toBe('headless')
+    expect(state?.isolation).toBe('none')
+    expect(state?.allocation.cwd).toBeDefined()
+  })
+
+  it('is not the launch handle: an unserialisable exit promise is dropped', async () => {
+    // `exited` is a Promise held by the process that launched the agent. Keeping
+    // it out is what makes the persisted copy safe to hand to retire and nowhere
+    // else — its absence already means "infer this agent's exit from presence".
+    const sup = withStubbedSurface()
+    const result = await sup.spawn(spawnReq())
+
+    expect(readRuntimeState(result.agentId as string)?.handle).not.toHaveProperty('exited')
+  })
+
+  it('lets a restarted broker release the worktree it did not allocate', async () => {
+    identity()
+    // A worktree allocation with no `ref` is one the strategy refuses to
+    // release — which is the point: only a supervisor that actually READ the
+    // persisted isolation can refuse for that reason.
+    writeRuntimeState('a1', {
+      handle: { surface: 'headless' },
+      allocation: { cwd: '/tmp' },
+      isolation: 'worktree',
+    })
+
+    const result = await withStubbedSurface().retire('scout')
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/still holds work/)
+  })
+
+  it('lets a restarted broker close the pane it did not open', async () => {
+    identity()
+    writeRuntimeState('a1', {
+      handle: { surface: 'iterm-pane', paneRef: 'PANE-1', ownsSurface: true },
+      allocation: { cwd: '/tmp' },
+      isolation: 'none',
+    })
+    const scripts: string[] = []
+    supervisor = new Supervisor(core, {
+      surface: {
+        platform: 'darwin',
+        runAppleScript: (script: string): string => {
+          scripts.push(script)
+          return script.includes('is running')
+            ? 'true'
+            : script.includes('to close')
+              ? '@@closed@@'
+              : 'PANE-1'
+        },
+      },
+    })
+
+    expect((await supervisor.retire('scout')).ok).toBe(true)
+    expect(scripts.filter(s => s.includes('to close'))[0]).toContain('is "PANE-1"')
+  })
+
+  it('says nothing about a lost handle when it found one on disk', async () => {
+    identity()
+    writeRuntimeState('a1', {
+      handle: { surface: 'headless' },
+      allocation: { cwd: '/tmp' },
+      isolation: 'none',
+    })
+
+    expect((await withStubbedSurface().retire('scout')).reason).toBeUndefined()
+  })
+
+  it('drops the state on retire, so an allocation is never released twice', async () => {
+    // `worktree remove` plus `branch -D`, replayed against a branch name a later
+    // agent has since taken, destroys someone else's work.
+    identity()
+    writeRuntimeState('a1', {
+      handle: { surface: 'headless' },
+      allocation: { cwd: '/tmp' },
+      isolation: 'none',
+    })
+
+    await withStubbedSurface().retire('scout')
+
+    expect(readRuntimeState('a1')).toBeUndefined()
+  })
+
+  it('degrades to the old behaviour on an unreadable file rather than failing', async () => {
+    identity()
+    fs.mkdirSync(path.dirname(runtimeStatePath('a1')), { recursive: true })
+    fs.writeFileSync(runtimeStatePath('a1'), 'not json')
+
+    const result = await withStubbedSurface().retire('scout')
+
+    expect(result.ok).toBe(true)
+    expect(result.reason).toMatch(/no record of what scout held/)
   })
 })
 

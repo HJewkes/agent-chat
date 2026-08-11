@@ -19,7 +19,15 @@ import {
   type SwitchOutcome,
 } from './mode-switch.js'
 import { buildLaunchPlan, permModeFor } from './launch-plan.js'
-import { buildMcpConfig, mcpConfigPath, readLaunchPlan, writeLaunchFiles } from './launch-files.js'
+import {
+  buildMcpConfig,
+  clearRuntimeState,
+  mcpConfigPath,
+  readLaunchPlan,
+  readRuntimeState,
+  writeLaunchFiles,
+  writeRuntimeState,
+} from './launch-files.js'
 import { loadProfile } from './profiles.js'
 import { resolve as resolveIsolation, type Allocation, type IsolationContext } from './isolation/index.js'
 import { surfaceFor } from './surfaces/index.js'
@@ -648,6 +656,12 @@ export class Supervisor implements TeleportHost {
 
     const entry: Live = { agentId, name, handle, allocation, isolation, ...(anchor ? { anchor } : {}) }
     this.live.set(agentId, entry)
+    // CC-78: the same facts on disk, so a retire that outlives this broker can
+    // still release the worktree and close the pane. `exited` is dropped because
+    // a Promise cannot be persisted, which is also what makes the persisted copy
+    // safe to use only where an exit callback is irrelevant.
+    const { exited: _exited, ...handleState } = handle
+    writeRuntimeState(agentId, { handle: handleState, allocation, isolation, ...(anchor ? { anchor } : {}) })
     // Headless only. A visible agent has no such promise, by design, and falls
     // through to the presence-inferred path instead.
     void handle.exited?.then(outcome => this.recordExit(agentId, outcome))
@@ -697,11 +711,14 @@ export class Supervisor implements TeleportHost {
    * makes routine, since `live` is memory only and nothing rehydrates it. That
    * gap is not theoretical: an agent retired after a restart sat finished in its
    * pane for three days, and its retire reported ok.
+   *
+   * CC-78 closed the other half of the same gap: what `live` held is now also on
+   * disk, so a restart no longer costs the worktree and the pane either.
    */
   async retire(name: string, force = false): Promise<{ ok: boolean; reason?: string }> {
     const identity = this.core.agents.byName(name)
     if (!identity) return { ok: false, reason: `no agent named "${name}"` }
-    const entry = this.live.get(identity.agentId)
+    const entry = this.live.get(identity.agentId) ?? this.rehydrate(identity.agentId, name)
 
     if (entry) {
       const released = await this.releaseIsolation(identity, name, entry, force)
@@ -716,6 +733,7 @@ export class Supervisor implements TeleportHost {
 
     const reaped = this.reap(name)
     this.semaphore.release(identity.agentId)
+    clearRuntimeState(identity.agentId)
     this.core.append({
       kind: 'agent_retired',
       actor: 'human',
@@ -724,6 +742,23 @@ export class Supervisor implements TeleportHost {
       meta: { reaped },
     })
     return { ok: true, ...(this.retireCaveat(name, entry !== undefined, reaped) ?? {}) }
+  }
+
+  /**
+   * The persisted runtime state, shaped as the `Live` entry retire needs.
+   *
+   * RETIRE ONLY, and deliberately not put back into `live`. A general rehydrate
+   * on broker start would hand every other caller an entry describing a process
+   * this broker did not launch: `kill` would signal a pid that may since have
+   * been recycled, and the settle timers and slot accounting in `recordExit`
+   * would infer exits for agents nobody is watching. Retire needs none of that.
+   * It needs the worktree to remove and the pane to close, and it is about to
+   * throw the identity away regardless.
+   */
+  private rehydrate(agentId: string, name: string): Live | undefined {
+    const state = readRuntimeState(agentId)
+    if (!state) return undefined
+    return { agentId, name, ...state }
   }
 
   /** Extracted from `retire` so the log row is written on both outcomes, once. */
@@ -779,8 +814,9 @@ export class Supervisor implements TeleportHost {
     const notes: string[] = []
     if (!hadHandle)
       notes.push(
-        `the broker holds no launch handle for ${name} (it restarted since ${name} was spawned), ` +
-          'so any isolation it allocated was not released and any pane it owns was not closed',
+        `the broker has no record of what ${name} held, in memory or on disk (spawned before ` +
+          'runtime state was persisted, or the file is unreadable), so any isolation it allocated ' +
+          'was not released and any pane it owns was not closed',
       )
     if (reaped === 'no_host_pid')
       notes.push(
