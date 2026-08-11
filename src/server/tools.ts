@@ -827,7 +827,11 @@ function formatSessions(sessions: SessionInfo[], self: string | null, claims: Se
   const rows = sessions.map(s => {
     const you = s.name === self ? ' (you)' : ''
     const quiet = s.dnd ? ', dnd' : ''
-    const head = `- ${s.name}${you} [${s.status}${quiet}, idle ${ago(s.idleMs)}] — ${s.workingOn || 'no description'}`
+    // CC-82: a derived name is not a chosen one, and addressing it means "whoever
+    // is working in that directory". Marked so a reader does not mistake it for
+    // an identity the session declared.
+    const named = s.provisional === true ? ', unnamed' : ''
+    const head = `- ${s.name}${you} [${s.status}${quiet}${named}, idle ${ago(s.idleMs)}] — ${s.workingOn || 'no description'}`
     return `${head}${tagsLine(s.tags, now)}${declaredLine(s.declared)}${observedLine(s)}${claimLine(claims, s.name)}`
   })
   return `Active sessions:\n${rows.join('\n')}${claimsFooter(claims, sessions, self)}`
@@ -1095,7 +1099,17 @@ export class ToolHandler {
       'register_result',
     )) as Extract<ServerMessage, { t: 'register_result' }>
     if (!res.ok) return text(`Registration failed: ${res.reason}`)
+    // CC-82: the session may already have been registered provisionally by its
+    // own MCP server, under a name derived from its directory. Saying so matters
+    // — peers may have addressed the old name, and it is about to stop working.
+    const renamedFrom =
+      this.registeredName !== null && this.registeredName !== name ? this.registeredName : null
     this.registeredName = name
+    if (renamedFrom !== null)
+      return text(
+        `Registered as "${name}", replacing the provisional name "${renamedFrom}" your MCP server ` +
+          'assigned from this directory. Peers addressing the old name will need the new one.',
+      )
     return text(
       `Registered as "${name}". Other sessions can reach you by that name until this session exits.`,
     )
