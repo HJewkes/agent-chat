@@ -627,6 +627,153 @@ describe('retire', () => {
 })
 
 /**
+ * CC-77. Retire used to end a process only as a side effect of closing the pane
+ * it opened, and closing needs a launch handle — which lives in memory and dies
+ * with the broker. An agent retired after a broker restart therefore kept its
+ * name freed, its slot released, and its process running: observed three days
+ * running in a pane, with `agent_retired` in the log and nothing after it.
+ *
+ * The pid comes from the REGISTRY, which is the whole point: a session
+ * re-registers after every broker restart, so it is populated exactly when the
+ * handle is not.
+ */
+describe('retiring reaps the process', () => {
+  let signals: [number, NodeJS.Signals][]
+
+  beforeEach(() => {
+    signals = []
+    vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      signals.push([pid, signal as NodeJS.Signals])
+      return true
+    })
+  })
+
+  afterEach(() => vi.restoreAllMocks())
+
+  const identity = (name = 'scout', id = 'a1'): void => {
+    core.append({ kind: 'agent_spawned', actor: 'human', target: name, msgId: id, body: 'work' })
+  }
+
+  /** `pid` is the MCP subprocess; `hostPid` is Claude Code, and is the optional one. */
+  const registerSession = (over: { hostPid?: number } = { hostPid: 4242 }): void => {
+    core.registry.register(fakeConn(), { name: 'scout', workingOn: 'work', cwd: '/tmp', pid: 1, ...over })
+  }
+
+  const liveOn = (
+    sup: Supervisor,
+    isolation = 'none',
+    allocation: Record<string, unknown> = { cwd: '/tmp' },
+  ): void => {
+    ;(sup as unknown as { live: Map<string, unknown> }).live.set('a1', {
+      agentId: 'a1',
+      name: 'scout',
+      handle: { surface: 'headless' },
+      allocation,
+      isolation,
+    })
+  }
+
+  it('ends Claude Code itself, not the MCP subprocess that reported it', async () => {
+    // `pid` above is the subprocess: signalling that severs the bus and leaves a
+    // live session no peer can reach. `hostPid` is the one that is actionable.
+    const sup = withStubbedSurface()
+    identity()
+    registerSession()
+
+    expect((await sup.retire('scout')).ok).toBe(true)
+
+    expect(signals).toEqual([[4242, 'SIGTERM']])
+  })
+
+  it('follows an ignored SIGTERM with SIGKILL', async () => {
+    const sup = withStubbedSurface()
+    identity()
+    registerSession()
+
+    await sup.retire('scout')
+    vi.advanceTimersByTime(3000)
+
+    expect(signals.map(s => s[1])).toEqual(['SIGTERM', 'SIGKILL'])
+  })
+
+  it('reaps an agent whose launch handle the broker lost in a restart', async () => {
+    // The regression itself: no live entry, because nothing rehydrates `live`.
+    const sup = withStubbedSurface()
+    identity()
+    registerSession()
+
+    const result = await sup.retire('scout')
+
+    expect(result.ok).toBe(true)
+    expect(signals[0]).toEqual([4242, 'SIGTERM'])
+  })
+
+  it('says what it could not do instead of reporting a bare ok', async () => {
+    const sup = withStubbedSurface()
+    identity()
+    registerSession()
+
+    const result = await sup.retire('scout')
+
+    expect(result.ok).toBe(true)
+    expect(result.reason).toMatch(/no launch handle/)
+    expect(result.reason).toMatch(/isolation.*not released/)
+  })
+
+  it('signals nothing for an agent that is no longer registered', async () => {
+    // The ordinary, quiet case: the agent already exited, or closing its pane
+    // just ended it. Nothing left to signal, and nothing to warn about.
+    const sup = withStubbedSurface()
+    identity()
+    liveOn(sup)
+
+    const result = await sup.retire('scout')
+
+    expect(signals).toEqual([])
+    expect(result.reason).toBeUndefined()
+  })
+
+  it('refuses to signal a session that never reported hostPid, and says where to go', async () => {
+    const sup = withStubbedSurface()
+    identity()
+    liveOn(sup)
+    registerSession({})
+
+    const result = await sup.retire('scout')
+
+    expect(signals).toEqual([])
+    expect(result.ok).toBe(true)
+    expect(result.reason).toMatch(/exit it in its terminal/)
+  })
+
+  it('kills nothing when the isolation refuses to release', async () => {
+    // Order matters: isolation can hold uncommitted work, and a refusal that has
+    // already killed the process is not a refusal.
+    const sup = withStubbedSurface()
+    identity()
+    liveOn(sup, 'worktree')
+    registerSession()
+
+    const result = await sup.retire('scout')
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/still holds work/)
+    expect(signals).toEqual([])
+  })
+
+  it('records what the reap did on the retire row', async () => {
+    const sup = withStubbedSurface()
+    identity()
+    registerSession()
+
+    await sup.retire('scout')
+
+    const row = core.events.agentEvents().find(r => r.kind === 'agent_retired')
+    expect(row?.meta?.reaped).toBe('true')
+  })
+})
+
+/**
  * CC-37. Opening a pane and never closing it left a dead shell behind every
  * retired agent. The line drawn here: retire closes, an exit does not, and only
  * a surface the broker itself opened is ever a candidate.

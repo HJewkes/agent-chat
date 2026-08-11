@@ -265,7 +265,7 @@ Added to the union at `protocol.ts:26-36`:
 | `agent_detached`      | new              | agent id | agent name                | —              | its socket dropped                                                     |
 | `agent_resumed`       | new              | agent id | spawner name              | agent name     | a new process was launched against this identity                       |
 | `agent_exited`        | new              | agent id | agent name                | —              | the process ended; carries exit code / summary / cost                  |
-| `agent_retired`       | new              | agent id | actor who retired it      | agent name     | terminal; isolation released, name freed                               |
+| `agent_retired`       | new              | agent id | actor who retired it      | agent name     | terminal; isolation released, process reaped (`meta.reaped`), name freed |
 | `isolation_allocated` | new              | agent id | agent name                | —              | strategy + handle (branch, path, patterns)                             |
 | `isolation_released`  | new              | agent id | agent name                | —              | released, or refused-and-why                                           |
 | `agent_spawn_refused` | new              | —        | requester                 | requested name | budget, depth, authority, or cwd refusal                               |
@@ -1049,9 +1049,23 @@ CLI should say which one it is giving you.
   Killing a pane the human is looking at, from a bus a peer model can reach, is
   not a thing to build.
 - `agent retire <name>` — close the identity: release isolation (which may
-  refuse on dirty/unpushed, §7.2), append `agent_retired`, free the name. Retire
-  is the only thing that frees a name, so a detached agent's name stays reserved
-  and its peers' remembered addressing stays valid.
+  refuse on dirty/unpushed, §7.2), close the surface, **end the process**, append
+  `agent_retired`, free the name. Retire is the only thing that frees a name, so
+  a detached agent's name stays reserved and its peers' remembered addressing
+  stays valid.
+
+  The reap (CC-77) is not a second `kill`, and the asymmetry with the bullet
+  above is deliberate: retire is CLI-only, so the caller is a person, and it is
+  already the act that destroys the isolation. It signals `hostPid` from the
+  session's own **registration**, not from the launch handle. That is the whole
+  point — handles live in `Supervisor.live`, which is memory only and is never
+  rehydrated, so a broker restart between spawn and retire used to leave retire
+  doing bookkeeping alone: name freed, slot released, isolation unreleased, pane
+  open and process still running, all reported as `ok`. Registrations survive a
+  restart because every session re-registers. When retire cannot do part of the
+  job — no handle to release isolation with, or a session too old to report
+  `hostPid` — it returns ok **with a `reason` naming what it skipped**, and the
+  CLI prints that under the confirmation.
 
 #### 8.4 Budgets must not reap a blocked agent
 
@@ -1215,7 +1229,7 @@ agent-chat agent ls [--all]        roster: lifecycle x presence (§2.5)
 agent-chat agent attach <name>     select the iTerm pane, or print how to reach it
 agent-chat agent resume <name>     new process, same identity
 agent-chat agent kill <name>       headless only
-agent-chat agent retire <name>     release isolation, free the name
+agent-chat agent retire <name>     release isolation, end it, free the name
 agent-chat agent logs <name> [-n]  tail stream.jsonl
 agent-chat run-agent <id>          internal; the fixed launch command of §5.3
 ```

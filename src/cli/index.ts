@@ -128,7 +128,10 @@ function addAgentCommands(program: Command): void {
     .option('--briefing <slug|auto>', "prepend an active-work initiative's orientation to the brief")
     .option('--brief-stdin', 'read the brief from stdin, keeping it out of world-readable argv')
     .action(agents.agentSpawn)
-  agent.command('retire <name>').description('release isolation and free the name').action(agents.agentRetire)
+  agent
+    .command('retire <name>')
+    .description('release isolation, end the process, and free the name')
+    .action(agents.agentRetire)
   agent
     .command('surface <name>')
     .description('bring a headless agent into a window you can answer')

@@ -543,6 +543,23 @@ export class Registry<C> {
   }
 
   /**
+   * Claude Code's own pid for a name, for the caller that has to END a session
+   * it did not launch (CC-77: retire).
+   *
+   * Presence rather than identity, and that is exactly why retire reads it here
+   * instead of from the supervisor's launch handle: handles live only in the
+   * broker's memory, but a session re-registers after every broker restart — so
+   * this is available precisely in the case where the handle is gone.
+   *
+   * Undefined covers two different things the caller must tell apart, which is
+   * what `connFor` is for: not registered at all (nothing to end), versus
+   * registered by an MCP server too old to report `hostPid`.
+   */
+  hostPidFor(name: string): number | undefined {
+    return this.findByName(name)?.[1].hostPid
+  }
+
+  /**
    * The pane a spawn requested from `conn` should be anchored to.
    *
    * Read from the requester's OWN entry rather than taken from the request, so a

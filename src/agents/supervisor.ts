@@ -685,9 +685,18 @@ export class Supervisor implements TeleportHost {
   }
 
   /**
-   * Close the identity: release isolation, free the name. Retire is the ONLY
-   * thing that frees a name, so a detached agent stays addressable and its
-   * peers' remembered addressing keeps working until someone decides otherwise.
+   * Close the identity: release isolation, close the surface, end the process,
+   * free the name. Retire is the ONLY thing that frees a name, so a detached
+   * agent stays addressable and its peers' remembered addressing keeps working
+   * until someone decides otherwise.
+   *
+   * CC-77 added the reap, and the order matters: isolation can REFUSE (dirty or
+   * unmerged work), so nothing is killed until that has passed. Closing a
+   * broker-owned pane already ended the process in the ordinary case — the reap
+   * is for the case where there is no handle to close, which a broker restart
+   * makes routine, since `live` is memory only and nothing rehydrates it. That
+   * gap is not theoretical: an agent retired after a restart sat finished in its
+   * pane for three days, and its retire reported ok.
    */
   async retire(name: string, force = false): Promise<{ ok: boolean; reason?: string }> {
     const identity = this.core.agents.byName(name)
@@ -695,21 +704,7 @@ export class Supervisor implements TeleportHost {
     const entry = this.live.get(identity.agentId)
 
     if (entry) {
-      const ctx: IsolationContext = {
-        agentId: identity.agentId,
-        agentName: name,
-        baseCwd: identity.cwd,
-        ...(identity.exit ? { exitedAt: identity.lastEventAt } : {}),
-      }
-      const strategy = resolveIsolation([entry.isolation])
-      const released = await strategy.release(ctx, entry.allocation, { force })
-      this.core.append({
-        kind: 'isolation_released',
-        actor: name,
-        ref: identity.agentId,
-        body: released ? '' : 'refused: uncommitted or unmerged work, or inside the reclaim window',
-        meta: { strategy: entry.isolation, released: String(released) },
-      })
+      const released = await this.releaseIsolation(identity, name, entry, force)
       if (!released)
         return {
           ok: false,
@@ -719,9 +714,80 @@ export class Supervisor implements TeleportHost {
       this.live.delete(identity.agentId)
     }
 
+    const reaped = this.reap(name)
     this.semaphore.release(identity.agentId)
-    this.core.append({ kind: 'agent_retired', actor: 'human', target: name, ref: identity.agentId })
-    return { ok: true }
+    this.core.append({
+      kind: 'agent_retired',
+      actor: 'human',
+      target: name,
+      ref: identity.agentId,
+      meta: { reaped },
+    })
+    return { ok: true, ...(this.retireCaveat(name, entry !== undefined, reaped) ?? {}) }
+  }
+
+  /** Extracted from `retire` so the log row is written on both outcomes, once. */
+  private async releaseIsolation(
+    identity: AgentIdentity,
+    name: string,
+    entry: Live,
+    force: boolean,
+  ): Promise<boolean> {
+    const ctx: IsolationContext = {
+      agentId: identity.agentId,
+      agentName: name,
+      baseCwd: identity.cwd,
+      ...(identity.exit ? { exitedAt: identity.lastEventAt } : {}),
+    }
+    const released = await resolveIsolation([entry.isolation]).release(ctx, entry.allocation, { force })
+    this.core.append({
+      kind: 'isolation_released',
+      actor: name,
+      ref: identity.agentId,
+      body: released ? '' : 'refused: uncommitted or unmerged work, or inside the reclaim window',
+      meta: { strategy: entry.isolation, released: String(released) },
+    })
+    return released
+  }
+
+  /**
+   * End Claude Code itself for an agent being retired, on the pid its own
+   * registration reported.
+   *
+   * `endSession` is reused rather than `kill`: `kill` refuses on a visible
+   * surface, and rightly — killing a pane a human is looking at from a bus any
+   * peer can reach is not a thing to build. Retire is not that. It is CLI-only,
+   * so the caller is a person, and it is already the act that frees the name and
+   * destroys the isolation; leaving the process alive was the odd one out.
+   *
+   * `not_registered` is the ordinary, quiet case: the agent already exited, or
+   * its pane close above ended it, and there is nothing left to signal.
+   */
+  private reap(name: string): 'true' | 'not_registered' | 'no_host_pid' | 'already_gone' {
+    if (this.core.registry.connFor(name) === undefined) return 'not_registered'
+    const hostPid = this.core.registry.hostPidFor(name)
+    if (hostPid === undefined) return 'no_host_pid'
+    return this.endSession(name, hostPid).ok ? 'true' : 'already_gone'
+  }
+
+  /**
+   * What retire could NOT do, said out loud. Retire still succeeded — the name
+   * is freed either way — but returning a bare ok is what let a live process and
+   * an unreleased worktree go unnoticed for three days.
+   */
+  private retireCaveat(name: string, hadHandle: boolean, reaped: string): { reason: string } | undefined {
+    const notes: string[] = []
+    if (!hadHandle)
+      notes.push(
+        `the broker holds no launch handle for ${name} (it restarted since ${name} was spawned), ` +
+          'so any isolation it allocated was not released and any pane it owns was not closed',
+      )
+    if (reaped === 'no_host_pid')
+      notes.push(
+        `${name} is still running but its MCP server predates \`hostPid\`, so the broker cannot end ` +
+          'it without severing the bus and leaving it running; exit it in its terminal',
+      )
+    return notes.length === 0 ? undefined : { reason: `Note: ${notes.join('. ')}.` }
   }
 
   /**

@@ -137,7 +137,10 @@ export async function agentRetire(name: string): Promise<void> {
     ServerMessage,
     { t: 'spawn_result' }
   >
+  // `reason` on a successful retire is a caveat, not a failure: what the broker
+  // could not do (CC-77). Dropping it is what let a live process go unnoticed.
   console.log(res.ok ? `Retired ${name}.` : `Not retired: ${res.reason}`)
+  if (res.ok && res.reason !== undefined) console.log(res.reason)
   process.exit(res.ok ? 0 : 1)
 }
 
