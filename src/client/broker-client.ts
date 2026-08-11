@@ -36,6 +36,8 @@ export class BrokerClient {
   private socket: net.Socket | null = null
   private identity: Identity | null = null
   private closed = false
+  /** Guards against concurrent CC-83 recoveries racing for the same name. */
+  private reregistering = false
   /** FIFO per reply type; the socket answers in order, so this stays aligned. */
   private readonly waiters = new Map<ReplyType, Waiter[]>()
 
@@ -55,6 +57,7 @@ export class BrokerClient {
     if (msg.t === 'deliver') return this.onDeliver(msg.message)
     if (msg.t === 'system_events') return this.onSystemEvents?.(msg.events)
     if (msg.t === 'error') {
+      if (msg.code === 'not_registered') return void this.reregister()
       if (!msg.fatal) return
       // Set before destroying, so the close handler sees a deliberate shutdown
       // and does not climb the reconnect ladder.
@@ -80,6 +83,41 @@ export class BrokerClient {
     )
     socket.on('close', () => void this.onDrop())
     socket.on('error', () => void this.onDrop())
+  }
+
+  /**
+   * Replay the registration onto a connection the broker no longer knows (CC-83).
+   *
+   * `onDrop` covers the case where the socket closed and we saw it. This covers
+   * the case where it did not: the broker dropped the registration, the socket
+   * stayed up, and nothing on this side had any reason to suspect it. The identity
+   * is already the thing `onDrop` replays, so recovery is the same act on a
+   * different trigger.
+   *
+   * NO IDENTITY, NO ACTION — and that is what keeps the human's CLI out of this.
+   * A CLI connection never registers, so it never has one to replay; it reaches
+   * the broker over this same socket and would otherwise react to a hint meant for
+   * sessions.
+   *
+   * Deliberately does NOT retry the frame that provoked the hint. That call fails
+   * as it always has; what changes is that the session is addressable again by the
+   * next one, rather than staying invisible until it restarts. Retrying would mean
+   * buffering frames and re-driving the waiter queue, and a replayed `send` risks
+   * delivering twice.
+   */
+  private async reregister(): Promise<void> {
+    // One at a time: a burst of refused frames would otherwise each start their
+    // own registration, and they would race each other for the same name.
+    if (this.identity === null || this.reregistering || this.closed) return
+    this.reregistering = true
+    try {
+      await this.request({ t: 'register', ...this.identity }, 'register_result')
+    } catch {
+      // The next refused frame hints again; a failed recovery must not be louder
+      // than the condition it recovers from.
+    } finally {
+      this.reregistering = false
+    }
   }
 
   private async onDrop(): Promise<void> {
