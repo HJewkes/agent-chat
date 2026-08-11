@@ -651,7 +651,14 @@ export type ClientMessage =
       subscriptions?: Subscription[]
     }
   | { t: 'agents'; includeRetired?: boolean }
-  | { t: 'retire'; name: string }
+  /**
+   * `force` bypasses the isolation's dirty/unmerged refusal, and destroys the
+   * commits it was protecting. Optional so an older client still type-checks,
+   * and absent means false — the safe direction, since the field only ever adds
+   * destruction. There is no agent-facing route to this: `retire` is a CLI verb,
+   * and forcing it is a human deciding to throw work away.
+   */
+  | { t: 'retire'; name: string; force?: boolean }
   /**
    * Hand off to a successor and end this session. NAMES NO AGENT: the subject is
    * resolved by the broker from the requesting connection, the same discipline

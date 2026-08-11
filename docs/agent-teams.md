@@ -258,18 +258,18 @@ the architecture's one non-negotiable rule.
 
 Added to the union at `protocol.ts:26-36`:
 
-| Kind                  | `msg_id`         | `ref`    | `actor`                   | `target`       | Meaning                                                                |
-| --------------------- | ---------------- | -------- | ------------------------- | -------------- | ---------------------------------------------------------------------- |
-| `agent_spawned`       | **the agent id** | —        | spawner name (or `human`) | agent name     | identity created                                                       |
-| `agent_attached`      | new              | agent id | agent name                | —              | a process registered as this agent                                     |
-| `agent_detached`      | new              | agent id | agent name                | —              | its socket dropped                                                     |
-| `agent_resumed`       | new              | agent id | spawner name              | agent name     | a new process was launched against this identity                       |
-| `agent_exited`        | new              | agent id | agent name                | —              | the process ended; carries exit code / summary / cost                  |
-| `agent_retired`       | new              | agent id | actor who retired it      | agent name     | terminal; isolation released, name freed                               |
-| `isolation_allocated` | new              | agent id | agent name                | —              | strategy + handle (branch, path, patterns)                             |
-| `isolation_released`  | new              | agent id | agent name                | —              | released, or refused-and-why                                           |
-| `agent_spawn_refused` | new              | —        | requester                 | requested name | budget, depth, authority, or cwd refusal                               |
-| `verdict_refused`     | new              | —        | requester                 | —              | something reached for the verdict path without human authority (§11.4) |
+| Kind                  | `msg_id`         | `ref`    | `actor`                   | `target`       | Meaning                                                                  |
+| --------------------- | ---------------- | -------- | ------------------------- | -------------- | ------------------------------------------------------------------------ |
+| `agent_spawned`       | **the agent id** | —        | spawner name (or `human`) | agent name     | identity created                                                         |
+| `agent_attached`      | new              | agent id | agent name                | —              | a process registered as this agent                                       |
+| `agent_detached`      | new              | agent id | agent name                | —              | its socket dropped                                                       |
+| `agent_resumed`       | new              | agent id | spawner name              | agent name     | a new process was launched against this identity                         |
+| `agent_exited`        | new              | agent id | agent name                | —              | the process ended; carries exit code / summary / cost                    |
+| `agent_retired`       | new              | agent id | actor who retired it      | agent name     | terminal; isolation released, process reaped (`meta.reaped`), name freed |
+| `isolation_allocated` | new              | agent id | agent name                | —              | strategy + handle (branch, path, patterns)                               |
+| `isolation_released`  | new              | agent id | agent name                | —              | released, or refused-and-why                                             |
+| `agent_spawn_refused` | new              | —        | requester                 | requested name | budget, depth, authority, or cwd refusal                                 |
+| `verdict_refused`     | new              | —        | requester                 | —              | something reached for the verdict path without human authority (§11.4)   |
 
 `agent_spawn_refused` and `verdict_refused` are deliberately events and not just
 `reason` strings on a reply: refusals are the security-relevant thing (§11) and
@@ -990,7 +990,7 @@ spawn request
   -> isolation.allocate()                            -> isolation_allocated
   -> buildLaunchPlan() -> write plan.json + mcp.json
   -> append agent_spawned  (the identity now exists, before any process does)
-  -> surface.launch()
+  -> surface.launch()      -> track(): write runtime.json (handle + allocation)
   -> [child registers via env]                       -> agent_attached   -> lifecycle: live
   ...
   -> [may block on a permission prompt at any time]  -> approval_request -> derived: blocked
@@ -1001,6 +1001,7 @@ spawn request
                     visible: no signal — see below)  -> agent_exited
   -> semaphore.release()
   -> retire (explicit, or on `agent retire`)         -> isolation_released, agent_retired
+     release isolation -> close surface -> reap the process -> drop runtime.json
 ```
 
 **`agent_spawned` is appended before the launch, not after.** If the launch then
@@ -1048,10 +1049,38 @@ CLI should say which one it is giving you.
   iTerm pane; exit it there, or `agent-chat agent attach <name>` to go to it."_
   Killing a pane the human is looking at, from a bus a peer model can reach, is
   not a thing to build.
-- `agent retire <name>` — close the identity: release isolation (which may
-  refuse on dirty/unpushed, §7.2), append `agent_retired`, free the name. Retire
-  is the only thing that frees a name, so a detached agent's name stays reserved
-  and its peers' remembered addressing stays valid.
+- `agent retire <name> [--force]` — close the identity: release isolation (which
+  may refuse on dirty/unpushed, §7.2, and `--force` overrides that at the cost of
+  the commits it was protecting), close the surface, **end the process**, append
+  `agent_retired`, free the name. Retire is the only thing that frees a name, so
+  a detached agent's name stays reserved and its peers' remembered addressing
+  stays valid. `force` reaches the strategy only from the CLI: it is a human
+  deciding to throw work away, and there is no agent-facing route to it.
+
+  The reap (CC-77) is not a second `kill`, and the asymmetry with the bullet
+  above is deliberate: retire is CLI-only, so the caller is a person, and it is
+  already the act that destroys the isolation. It signals `hostPid` from the
+  session's own **registration**, not from the launch handle. That is the whole
+  point — `Supervisor.live` is memory only, so a broker restart between spawn and
+  retire used to leave retire doing bookkeeping alone: name freed, slot released,
+  isolation unreleased, pane open and process still running, all reported as
+  `ok`. Registrations survive a restart because every session re-registers.
+
+  What `live` holds is also persisted, to `runtime.json` beside `plan.json`
+  (CC-78) — the pane that was actually opened and the worktree that was actually
+  allocated, as opposed to the plan, which is only the recipe. Retire reads it
+  back when memory has nothing, so a restart no longer costs a worktree and a
+  branch per agent. It is a **retire-path fallback, not general rehydration**:
+  handing a restored entry to `kill` would signal a pid that may since have been
+  recycled, and `recordExit`'s settle timers would infer exits for agents nobody
+  is watching. Retire needs neither, and is about to discard the identity anyway.
+  The file is deleted on retire, so an allocation can never be released twice —
+  replaying `worktree remove` + `branch -D` against a branch name a later agent
+  has taken destroys someone else's work.
+
+  When retire still cannot do part of the job — nothing in memory _or_ on disk,
+  or a session too old to report `hostPid` — it returns ok **with a `reason`
+  naming what it skipped**, and the CLI prints that under the confirmation.
 
 #### 8.4 Budgets must not reap a blocked agent
 
@@ -1215,7 +1244,7 @@ agent-chat agent ls [--all]        roster: lifecycle x presence (§2.5)
 agent-chat agent attach <name>     select the iTerm pane, or print how to reach it
 agent-chat agent resume <name>     new process, same identity
 agent-chat agent kill <name>       headless only
-agent-chat agent retire <name>     release isolation, free the name
+agent-chat agent retire <name> [--force]  release isolation, end it, free the name
 agent-chat agent logs <name> [-n]  tail stream.jsonl
 agent-chat run-agent <id>          internal; the fixed launch command of §5.3
 ```
@@ -1337,9 +1366,9 @@ Therefore:
   (`protocol.ts:24`, `registry.ts:95-96`). A spawned agent named `human` would
   inherit the user's authority in every peer's reading of `from` — `docs/ideas.md`
   I9, and the reason those names are already reserved.
-- **`plan.json` / `mcp.json` are `0600` in a `0700` dir,** and `run-agent` uses
-  an argv array with no shell. Nothing model-authored is ever interpolated into a
-  command line.
+- **`plan.json` / `mcp.json` / `runtime.json` are `0600` in a `0700` dir,** and
+  `run-agent` uses an argv array with no shell. Nothing model-authored is ever
+  interpolated into a command line.
 
 #### 11.3 Budget, depth, and the runaway case
 

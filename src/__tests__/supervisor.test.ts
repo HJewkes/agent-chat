@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import type net from 'node:net'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
@@ -9,7 +10,14 @@ import { Registry } from '../broker/registry.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { SpawnRateBudget } from '../agents/spawn-rate.js'
 import { MAX_DEPTH, Supervisor } from '../agents/supervisor.js'
-import { readLaunchPlan } from '../agents/launch-files.js'
+import {
+  readLaunchPlan,
+  readRuntimeState,
+  runtimeStatePath,
+  writeRuntimeState,
+} from '../agents/launch-files.js'
+import { worktreeStrategy } from '../agents/isolation/worktree.js'
+import type { Allocation } from '../agents/isolation/index.js'
 import type { HookProcess, HookSpawnFn } from '../agents/hooks.js'
 
 /**
@@ -623,6 +631,338 @@ describe('retire', () => {
 
   it('reports plainly when there is no such agent', async () => {
     expect((await withStubbedSurface().retire('nobody')).reason).toMatch(/no agent named "nobody"/)
+  })
+})
+
+/**
+ * CC-77. Retire used to end a process only as a side effect of closing the pane
+ * it opened, and closing needs a launch handle — which lives in memory and dies
+ * with the broker. An agent retired after a broker restart therefore kept its
+ * name freed, its slot released, and its process running: observed three days
+ * running in a pane, with `agent_retired` in the log and nothing after it.
+ *
+ * The pid comes from the REGISTRY, which is the whole point: a session
+ * re-registers after every broker restart, so it is populated exactly when the
+ * handle is not.
+ */
+describe('retiring reaps the process', () => {
+  let signals: [number, NodeJS.Signals][]
+
+  beforeEach(() => {
+    signals = []
+    vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      signals.push([pid, signal as NodeJS.Signals])
+      return true
+    })
+  })
+
+  afterEach(() => vi.restoreAllMocks())
+
+  const identity = (name = 'scout', id = 'a1'): void => {
+    core.append({ kind: 'agent_spawned', actor: 'human', target: name, msgId: id, body: 'work' })
+  }
+
+  /** `pid` is the MCP subprocess; `hostPid` is Claude Code, and is the optional one. */
+  const registerSession = (over: { hostPid?: number } = { hostPid: 4242 }): void => {
+    core.registry.register(fakeConn(), { name: 'scout', workingOn: 'work', cwd: '/tmp', pid: 1, ...over })
+  }
+
+  const liveOn = (
+    sup: Supervisor,
+    isolation = 'none',
+    allocation: Record<string, unknown> = { cwd: '/tmp' },
+  ): void => {
+    ;(sup as unknown as { live: Map<string, unknown> }).live.set('a1', {
+      agentId: 'a1',
+      name: 'scout',
+      handle: { surface: 'headless' },
+      allocation,
+      isolation,
+    })
+  }
+
+  it('ends Claude Code itself, not the MCP subprocess that reported it', async () => {
+    // `pid` above is the subprocess: signalling that severs the bus and leaves a
+    // live session no peer can reach. `hostPid` is the one that is actionable.
+    const sup = withStubbedSurface()
+    identity()
+    registerSession()
+
+    expect((await sup.retire('scout')).ok).toBe(true)
+
+    expect(signals).toEqual([[4242, 'SIGTERM']])
+  })
+
+  it('follows an ignored SIGTERM with SIGKILL', async () => {
+    const sup = withStubbedSurface()
+    identity()
+    registerSession()
+
+    await sup.retire('scout')
+    vi.advanceTimersByTime(3000)
+
+    expect(signals.map(s => s[1])).toEqual(['SIGTERM', 'SIGKILL'])
+  })
+
+  it('reaps an agent whose launch handle the broker lost in a restart', async () => {
+    // The regression itself: no live entry, because nothing rehydrates `live`.
+    const sup = withStubbedSurface()
+    identity()
+    registerSession()
+
+    const result = await sup.retire('scout')
+
+    expect(result.ok).toBe(true)
+    expect(signals[0]).toEqual([4242, 'SIGTERM'])
+  })
+
+  it('says what it could not do instead of reporting a bare ok', async () => {
+    // Nothing in memory AND nothing on disk: an agent from before runtime state
+    // was persisted. Retire still frees the name, and still says what it skipped.
+    const sup = withStubbedSurface()
+    identity()
+    registerSession()
+
+    const result = await sup.retire('scout')
+
+    expect(result.ok).toBe(true)
+    expect(result.reason).toMatch(/no record of what scout held/)
+    expect(result.reason).toMatch(/isolation.*not released/)
+  })
+
+  it('signals nothing for an agent that is no longer registered', async () => {
+    // The ordinary, quiet case: the agent already exited, or closing its pane
+    // just ended it. Nothing left to signal, and nothing to warn about.
+    const sup = withStubbedSurface()
+    identity()
+    liveOn(sup)
+
+    const result = await sup.retire('scout')
+
+    expect(signals).toEqual([])
+    expect(result.reason).toBeUndefined()
+  })
+
+  it('refuses to signal a session that never reported hostPid, and says where to go', async () => {
+    const sup = withStubbedSurface()
+    identity()
+    liveOn(sup)
+    registerSession({})
+
+    const result = await sup.retire('scout')
+
+    expect(signals).toEqual([])
+    expect(result.ok).toBe(true)
+    expect(result.reason).toMatch(/exit it in its terminal/)
+  })
+
+  it('kills nothing when the isolation refuses to release', async () => {
+    // Order matters: isolation can hold uncommitted work, and a refusal that has
+    // already killed the process is not a refusal.
+    const sup = withStubbedSurface()
+    identity()
+    liveOn(sup, 'worktree')
+    registerSession()
+
+    const result = await sup.retire('scout')
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/still holds work/)
+    expect(signals).toEqual([])
+  })
+
+  it('records what the reap did on the retire row', async () => {
+    const sup = withStubbedSurface()
+    identity()
+    registerSession()
+
+    await sup.retire('scout')
+
+    const row = core.events.agentEvents().find(r => r.kind === 'agent_retired')
+    expect(row?.meta?.reaped).toBe('true')
+  })
+})
+
+/**
+ * CC-78. The other half of what CC-77 exposed. The reap could be fixed from the
+ * registry, but the worktree and the pane could not: `alloc.ref` and the pane's
+ * UUID existed only in `Supervisor.live`, so a broker restart leaked a worktree
+ * and a branch per agent. What a running agent HOLDS now goes to disk beside its
+ * plan, and retire reads it back when memory has nothing.
+ *
+ * A fresh Supervisor over the same core and the same AGENT_CHAT_HOME is exactly
+ * what a broker restart looks like from here: the log and the agent directories
+ * survive, `live` does not.
+ */
+describe('runtime state outliving the broker', () => {
+  const identity = (id = 'a1'): void => {
+    core.append({ kind: 'agent_spawned', actor: 'human', target: 'scout', msgId: id, body: 'work' })
+  }
+
+  it('is written when an agent is launched', async () => {
+    const sup = withStubbedSurface()
+    const result = await sup.spawn(spawnReq())
+
+    const state = readRuntimeState(result.agentId as string)
+    expect(state?.handle.surface).toBe('headless')
+    expect(state?.isolation).toBe('none')
+    expect(state?.allocation.cwd).toBeDefined()
+  })
+
+  it('is not the launch handle: an unserialisable exit promise is dropped', async () => {
+    // `exited` is a Promise held by the process that launched the agent. Keeping
+    // it out is what makes the persisted copy safe to hand to retire and nowhere
+    // else — its absence already means "infer this agent's exit from presence".
+    const sup = withStubbedSurface()
+    const result = await sup.spawn(spawnReq())
+
+    expect(readRuntimeState(result.agentId as string)?.handle).not.toHaveProperty('exited')
+  })
+
+  it('lets a restarted broker release the worktree it did not allocate', async () => {
+    identity()
+    // A worktree allocation with no `ref` is one the strategy refuses to
+    // release — which is the point: only a supervisor that actually READ the
+    // persisted isolation can refuse for that reason.
+    writeRuntimeState('a1', {
+      handle: { surface: 'headless' },
+      allocation: { cwd: '/tmp' },
+      isolation: 'worktree',
+    })
+
+    const result = await withStubbedSurface().retire('scout')
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/still holds work/)
+  })
+
+  it('lets a restarted broker close the pane it did not open', async () => {
+    identity()
+    writeRuntimeState('a1', {
+      handle: { surface: 'iterm-pane', paneRef: 'PANE-1', ownsSurface: true },
+      allocation: { cwd: '/tmp' },
+      isolation: 'none',
+    })
+    const scripts: string[] = []
+    supervisor = new Supervisor(core, {
+      surface: {
+        platform: 'darwin',
+        runAppleScript: (script: string): string => {
+          scripts.push(script)
+          return script.includes('is running')
+            ? 'true'
+            : script.includes('to close')
+              ? '@@closed@@'
+              : 'PANE-1'
+        },
+      },
+    })
+
+    expect((await supervisor.retire('scout')).ok).toBe(true)
+    expect(scripts.filter(s => s.includes('to close'))[0]).toContain('is "PANE-1"')
+  })
+
+  it('says nothing about a lost handle when it found one on disk', async () => {
+    identity()
+    writeRuntimeState('a1', {
+      handle: { surface: 'headless' },
+      allocation: { cwd: '/tmp' },
+      isolation: 'none',
+    })
+
+    expect((await withStubbedSurface().retire('scout')).reason).toBeUndefined()
+  })
+
+  it('drops the state on retire, so an allocation is never released twice', async () => {
+    // `worktree remove` plus `branch -D`, replayed against a branch name a later
+    // agent has since taken, destroys someone else's work.
+    identity()
+    writeRuntimeState('a1', {
+      handle: { surface: 'headless' },
+      allocation: { cwd: '/tmp' },
+      isolation: 'none',
+    })
+
+    await withStubbedSurface().retire('scout')
+
+    expect(readRuntimeState('a1')).toBeUndefined()
+  })
+
+  it('degrades to the old behaviour on an unreadable file rather than failing', async () => {
+    identity()
+    fs.mkdirSync(path.dirname(runtimeStatePath('a1')), { recursive: true })
+    fs.writeFileSync(runtimeStatePath('a1'), 'not json')
+
+    const result = await withStubbedSurface().retire('scout')
+
+    expect(result.ok).toBe(true)
+    expect(result.reason).toMatch(/no record of what scout held/)
+  })
+})
+
+/**
+ * CC-79. The strategies have honoured `force` since they were written, and it is
+ * tested against them directly in isolation.test.ts. What was never wired was
+ * the path a person actually takes to reach it — so this covers the supervisor's
+ * half of that, against a real repository, because a worktree that refuses is
+ * not provable against a mock.
+ */
+describe('retiring with force', () => {
+  const git = (args: string[], cwd: string): string =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim()
+
+  /** A repository with one commit, for a worktree to be cut from. */
+  function makeRepo(): string {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'sup-force-')))
+    tmpDirs.push(dir)
+    git(['init', '-b', 'main'], dir)
+    git(['config', 'user.email', 'test@example.com'], dir)
+    git(['config', 'user.name', 'Test'], dir)
+    git(['config', 'commit.gpgsign', 'false'], dir)
+    fs.writeFileSync(path.join(dir, 'README.md'), 'seed\n')
+    git(['add', '.'], dir)
+    git(['commit', '-m', 'seed'], dir)
+    return dir
+  }
+
+  /** An agent holding a real worktree with a commit nobody else has. */
+  async function agentHoldingUnmergedWork(sup: Supervisor): Promise<Allocation> {
+    core.append({ kind: 'agent_spawned', actor: 'human', target: 'scout', msgId: 'a1', body: 'work' })
+    const repo = makeRepo()
+    const allocation = await worktreeStrategy.allocate({ agentId: 'a1', agentName: 'scout', baseCwd: repo })
+    fs.writeFileSync(path.join(allocation.cwd, 'feature.ts'), 'work\n')
+    git(['add', 'feature.ts'], allocation.cwd)
+    git(['commit', '-m', 'add feature'], allocation.cwd)
+    ;(sup as unknown as { live: Map<string, unknown> }).live.set('a1', {
+      agentId: 'a1',
+      name: 'scout',
+      handle: { surface: 'headless' },
+      allocation,
+      isolation: 'worktree',
+    })
+    return allocation
+  }
+
+  it('refuses without it, keeping the commits nobody else has', async () => {
+    const sup = withStubbedSurface()
+    const allocation = await agentHoldingUnmergedWork(sup)
+
+    const result = await sup.retire('scout')
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/retire with --force/)
+    expect(fs.existsSync(allocation.cwd)).toBe(true)
+  })
+
+  it('destroys them when the human says so', async () => {
+    const sup = withStubbedSurface()
+    const allocation = await agentHoldingUnmergedWork(sup)
+
+    const result = await sup.retire('scout', true)
+
+    expect(result.ok).toBe(true)
+    expect(fs.existsSync(allocation.cwd)).toBe(false)
+    expect(core.agents.nameIsClaimed('scout')).toBe(false)
   })
 })
 

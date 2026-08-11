@@ -103,6 +103,22 @@ describe('process-launch contracts', () => {
 })
 
 /**
+ * CC-79. The isolation's refusal has always said "or retire with `--force`",
+ * and the flag did not exist: no option here, no field on the wire, and the
+ * broker calling `retire(name)` with the parameter left at its default. A human
+ * whose worktree held uncommitted work was told to pass something that was
+ * silently ignored, and had to remove the worktree by hand.
+ */
+describe('agent retire', () => {
+  it('offers the --force its own refusal message names', () => {
+    const agent = find(buildProgram(), 'agent') as Command
+    const retire = find(agent, 'retire') as Command
+
+    expect(retire.options.map(o => o.long)).toContain('--force')
+  })
+})
+
+/**
  * `--brief-stdin` (relay's R-68). The point of the flag is that a brief the
  * caller did not author never reaches world-readable argv, so these assert both
  * the argv shape that makes it possible and the rules that keep a spawn from

@@ -78,9 +78,10 @@ describe('the spawn-kernel subpath', () => {
   })
 
   it('exports nothing that spawns a process', () => {
-    // run-agent.ts builds `env: { ...process.env }`, which relay's own threat
-    // model (T7/M8) forbids outright. Keeping it out is a property of this
-    // module, so it is asserted rather than left to review.
+    // Nothing here may start a process. run-agent.ts is the one that does, and
+    // keeping it out is a property of this module, so it is asserted rather
+    // than left to review. (It used to be kept out for spreading process.env
+    // as well; R-70 fixed that at the source in agents/agent-env.ts.)
     expect(Object.keys(kernel).some(name => /spawn|launch|runAgent/i.test(name))).toBe(false)
   })
 })

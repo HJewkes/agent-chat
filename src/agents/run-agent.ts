@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { agentEnv } from './agent-env.js'
 import { readLaunchPlan } from './launch-files.js'
 import type { LaunchPlan } from './types.js'
 
@@ -26,7 +27,14 @@ export function runAgent(agentId: string): void {
 function exec(plan: LaunchPlan): void {
   const child = spawn(plan.bin, plan.args, {
     cwd: plan.cwd,
-    env: { ...process.env, ...plan.env },
+    // `agentEnv()`, not `process.env`: an agent inherited every credential
+    // exported by whatever shell started the broker, which is relay's T7/M8
+    // minimal-env clause not surviving delegation. See agent-env.ts for why
+    // this is a denylist and what that costs.
+    //
+    // `plan.env` still wins, and deliberately: it is what the SPAWNER chose for
+    // this agent, which is the bounded thing the clause asks for.
+    env: { ...agentEnv(), ...plan.env },
     // The brief goes in on stdin for headless; an interactive surface hands the
     // terminal straight through so the human can type into the pane.
     stdio: plan.stdin === undefined ? 'inherit' : ['pipe', 'inherit', 'inherit'],

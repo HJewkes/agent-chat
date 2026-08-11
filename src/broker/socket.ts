@@ -947,7 +947,7 @@ export class SocketServer {
         void this.handleBackground(conn)
         return
       case 'retire':
-        void this.supervisor.retire(msg.name).then(result =>
+        void this.supervisor.retire(msg.name, msg.force === true).then(result =>
           reply(conn, {
             t: 'spawn_result',
             ok: result.ok,

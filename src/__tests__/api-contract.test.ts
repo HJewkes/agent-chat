@@ -102,6 +102,9 @@ describe('agent protocol variants are on the wire type', () => {
     expectAssignable<ClientMessage>({ t: 'spawn', name: 'scout', profile: 'reviewer', brief: 'look' })
     expectAssignable<ClientMessage>({ t: 'agents', includeRetired: true })
     expectAssignable<ClientMessage>({ t: 'retire', name: 'scout' })
+    // CC-79: optional, so an older client still type-checks, and absent means
+    // false — the safe direction, since the field only ever adds destruction.
+    expectAssignable<ClientMessage>({ t: 'retire', name: 'scout', force: true })
   })
 
   it('accepts the two new server messages', () => {
