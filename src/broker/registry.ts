@@ -143,6 +143,12 @@ interface Entry {
    */
   channels?: ChannelStatus
   /**
+   * The name was derived from the session's directory, not chosen by it (CC-82).
+   * Presence data like everything around it: a rename clears it, and it is a
+   * fact about how THIS registration was made rather than about the identity.
+   */
+  provisional?: boolean
+  /**
    * The requester's `ITERM_SESSION_ID`, used as the anchor for a visible spawn.
    *
    * Presence data, and deliberately so: the broker is started detached with
@@ -421,6 +427,7 @@ export class Registry<C> {
       pid: number
       agentId?: string
       hostPid?: number
+      provisional?: boolean
       termSessionId?: string
       tags?: string[]
       subscriptions?: Subscription[]
@@ -449,6 +456,9 @@ export class Registry<C> {
       pid: input.pid,
       ...(input.agentId === undefined ? {} : { agentId: input.agentId }),
       ...(input.hostPid === undefined ? {} : { hostPid: input.hostPid }),
+      // Absent rather than false on a chosen name, so a re-register that names
+      // itself CLEARS the mark instead of carrying it forward (CC-82).
+      ...(input.provisional === true ? { provisional: true } : {}),
       // Resolved here rather than at send time: this is one `ps` per
       // registration instead of one per recipient per message, and the answer
       // cannot change without the host process changing, which is a re-register.
@@ -523,6 +533,7 @@ export class Registry<C> {
       idleMs: this.now() - e.lastSeen,
       registeredAt: e.registeredAt,
       ...(observedOf(e) === undefined ? {} : { observed: observedOf(e) as ObservedPresence }),
+      ...(e.provisional === true ? { provisional: true } : {}),
       // Omitted when empty rather than sent as `{}`: "declared nothing" and
       // "declared an empty bag" are the same state and should render the same.
       ...(e.declared === undefined || Object.keys(e.declared).length === 0 ? {} : { declared: e.declared }),

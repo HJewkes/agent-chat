@@ -162,6 +162,13 @@ export interface SessionInfo {
   observed?: ObservedPresence
   declared?: DeclaredPresence
   /**
+   * This session has not named itself: the name was derived from its directory
+   * by its own MCP server so it would be reachable at all (CC-82). Read it as
+   * "whoever is working in that directory", and expect it to change the moment
+   * the session calls `chat_register`.
+   */
+  provisional?: boolean
+  /**
    * Tags this session carries, each with who applied it (CC-13). Omitted rather
    * than sent empty, for the same reason `declared` is: "carries no tags" and
    * "carries an empty list" are the same state and should render the same.
@@ -495,6 +502,18 @@ export type ClientMessage =
       observed?: ObservedPresence
       /** What the model says about itself. Re-declared on register, never stored. */
       declared?: DeclaredPresence
+      /**
+       * This name was DERIVED, not chosen (CC-82).
+       *
+       * An ordinary session is registered by its own MCP server at startup, so
+       * that being addressable stops depending on the model having called
+       * `chat_register`. The name then comes from the session's directory: it
+       * means "a session running in relay/", not "a session that calls itself
+       * relay", and a peer reading `from` has to be able to tell those apart.
+       * Cleared by the rename `chat_register` performs, which is the session
+       * declaring an identity for the first time.
+       */
+      provisional?: boolean
       /**
        * Which BUILD this client is running, so a mismatch with the broker's own
        * is reported rather than inferred (CC-36).

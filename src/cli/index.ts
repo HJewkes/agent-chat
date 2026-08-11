@@ -134,6 +134,12 @@ function addAgentCommands(program: Command): void {
     .option('--force', 'discard uncommitted or unmerged work the isolation is holding')
     .action(agents.agentRetire)
   agent
+    .command('worktrees')
+    .description('worktrees agent-chat is holding, and which nobody is using')
+    .option('--prune', 'reclaim the ones nothing would be lost from')
+    .option('--force', 'with --prune, reclaim even those holding work')
+    .action(agents.agentWorktrees)
+  agent
     .command('surface <name>')
     .description('bring a headless agent into a window you can answer')
     .action(agents.agentSurface)
