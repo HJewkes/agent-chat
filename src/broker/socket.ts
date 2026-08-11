@@ -45,6 +45,34 @@ const reply = (conn: Conn, message: ServerMessage): void => {
 }
 
 /**
+ * Frames that only a registered session can mean anything by (CC-83).
+ *
+ * Named explicitly rather than derived from "is this connection registered",
+ * because an UNREGISTERED connection is the normal shape of the human at the CLI
+ * — `isHuman` is literally defined as having no name. A blanket check would fire
+ * on every ordinary CLI command. Each frame here already refuses when there is no
+ * name behind it; the list only says which refusals mean "you should have had a
+ * registration", as opposed to "the human may not do this".
+ *
+ * The human's own frames — `human_send`, `answer`, `dismiss`, `endorse_approve`,
+ * `queue`, `teleport_abort` — are deliberately absent, and must stay absent.
+ */
+const SESSION_FRAMES: ReadonlySet<ClientMessage['t']> = new Set([
+  'send',
+  'broadcast',
+  'ask',
+  'notify',
+  'endorse',
+  'subscribe',
+  'unsubscribe',
+  'tag',
+  'claim',
+  'release',
+  'status',
+  'approval',
+])
+
+/**
  * The transport half of `BrokerCore`'s injected `deliver`. Exported because
  * `daemon.ts` is what composes a core with this server — the core must stay free
  * of socket I/O for the same reason the HTTP layer must: one write path, several
@@ -774,6 +802,35 @@ export class SocketServer {
     logEvent('approval_request', { msgId, from, requestId: msg.requestId, tool: msg.toolName })
   }
 
+  /**
+   * Tell a session that the broker has no registration for it (CC-83).
+   *
+   * THE FAILURE THIS CLOSES. `BrokerClient.onDrop()` already replays the identity,
+   * but it fires only from the socket's own close/error handlers. A connection the
+   * BROKER dropped without the client observing a close leaves `onDrop` unfired,
+   * the client believing it is registered, and the session invisible to every peer
+   * while looking perfectly healthy from inside. Observed live 2026-08-11:
+   * voltras-bench deregistered at 06:39:12 with its MCP subprocess still connected,
+   * and never came back.
+   *
+   * Sent ALONGSIDE the ordinary typed refusal rather than instead of it, so no
+   * result shape changes and the caller's pending request still gets its answer.
+   * The frame is advice to the client library, not an answer to the request.
+   *
+   * Costs nothing when healthy: a registered connection never reaches the reply.
+   */
+  private hintUnregistered(conn: Conn, msg: ClientMessage): void {
+    if (!SESSION_FRAMES.has(msg.t)) return
+    if (this.core.registry.nameOf(conn) !== undefined) return
+    reply(conn, {
+      t: 'error',
+      code: 'not_registered',
+      reason:
+        `the broker has no registration for this connection, so "${msg.t}" was refused. ` +
+        'If you hold an identity, register again — nothing about your session has to restart.',
+    })
+  }
+
   handleMessage(conn: Conn, msg: ClientMessage): void {
     const { core } = this
     core.registry.touch(conn)
@@ -781,6 +838,7 @@ export class SocketServer {
     // proves the dialog closed — the only unblock signal Claude Code gives us.
     if (msg.t !== 'approval' && core.registry.isAwaitingApproval(conn))
       core.registry.setAwaitingApproval(conn, false)
+    this.hintUnregistered(conn, msg)
     switch (msg.t) {
       case 'register': {
         // Closing the displaced socket is what makes a takeover final: leaving it

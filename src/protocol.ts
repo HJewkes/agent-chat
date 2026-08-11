@@ -785,7 +785,13 @@ export type ServerMessage =
    * name forever, each a legitimate holder by the takeover rule. An ordinary
    * error stays retryable; this one ends the process that received it.
    */
-  | { t: 'error'; reason: string; fatal?: boolean }
+  /**
+   * `code` makes a refusal actionable rather than merely readable. The only one
+   * today is `not_registered`, which tells a client holding an identity that the
+   * broker does not have it — the CC-83 recovery signal. A code is advice about
+   * what to DO; `reason` stays the thing a human reads.
+   */
+  | { t: 'error'; reason: string; fatal?: boolean; code?: 'not_registered' }
   /**
    * `warnings` carries isolation.check()'s non-fatal output back to the
    * requesting model — "you are sharing a checkout with bob" is something it

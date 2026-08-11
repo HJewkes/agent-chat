@@ -1918,6 +1918,23 @@ registration. What survives, what heals, and what breaks:
   This is exactly the property the log-as-truth design bought.
 - **Self-heals — registrations.** `onDrop()` (`broker-client.ts:65-72`)
   reconnects and replays `{t:'register', ...identity}`.
+- **Self-heals — a registration dropped with the socket still up (CC-83).**
+  `onDrop()` fires only from the socket's own `close`/`error` handlers, so it
+  covers a broker that went away and not a registration that did. When the broker
+  drops an entry while the connection stays open, nothing on the client side has
+  any reason to suspect it: the session is invisible to every peer and perfectly
+  healthy from inside. Observed live 2026-08-11 — `voltras-bench` deregistered at
+  06:39:12 with its MCP subprocess still holding broker sockets, and never came
+  back. The broker now answers a **session frame** from a connection it does not
+  know with `{t:'error', code:'not_registered'}`, and a client holding an identity
+  replays it onto the same socket. Event-driven, so it costs a healthy session
+  nothing and needs no timer — the alternative was a heartbeat, which is what the
+  "no heartbeats, no TTLs" rule below exists to avoid. Note the frame list is
+  explicit (`socket.ts`, `SESSION_FRAMES`) rather than "is this connection
+  registered": an **unregistered connection is the normal shape of the human at
+  the CLI** (`isHuman` is defined as having no name), so a blanket check would
+  fire on every ordinary command. A client with no identity ignores the hint,
+  which is the other half of the same guarantee.
 - **Broken for 0.1–8.85 s — presence and directed routing.** The reconnect
   ladder is `[100, 250, 500, 1000, 2000, 5000]` ms (`broker-client.ts:17`). In
   that window `Registry.list()` (`registry.ts:89`) is empty or partial, so
