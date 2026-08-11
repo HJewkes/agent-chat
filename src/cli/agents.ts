@@ -44,15 +44,73 @@ export async function agentLs(): Promise<void> {
   }
 }
 
+/**
+ * Read stdin to EOF. The one impure half of `--brief-stdin`, kept beside it and
+ * nowhere else.
+ *
+ * A terminal is refused rather than read. `--brief-stdin` with nothing piped in
+ * otherwise waits on a human who was given no prompt to answer — it looks like a
+ * hang, and the eventual ^D reports the confusing "empty brief" instead of the
+ * real mistake. The check is `isTTY`, not emptiness, because an empty PIPE is a
+ * legitimate thing to diagnose and a terminal never is.
+ */
+async function readStdin(): Promise<string> {
+  if (process.stdin.isTTY) {
+    throw new Error('--brief-stdin expects the brief piped in; stdin is a terminal')
+  }
+  const chunks: Buffer[] = []
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer)
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+/**
+ * Where the brief comes from: argv words, or stdin under `--brief-stdin`.
+ *
+ * The flag exists for callers whose brief is not theirs — relay dispatches a
+ * task body the operator captured by voice, and argv is world-readable via `ps`,
+ * so passing it positionally discloses that text to every local process (relay's
+ * R-68, which this closes). Nothing downstream changes: the wire `spawn` frame
+ * carries the brief over a socket either way, and a headless agent already
+ * receives it on the child's stdin rather than in `claude`'s argv.
+ *
+ * Pure, and throws rather than exiting, so the exclusivity rules are testable
+ * without a pipe or a broker — the same seam `resumeWithMessage` draws.
+ */
+export function resolveBrief(words: string[], stdin: string | undefined): string {
+  if (stdin === undefined) {
+    if (words.length === 0) throw new Error('usage: agent-chat agent spawn <name> <profile> "<brief>"')
+    return words.join(' ')
+  }
+  // Refused rather than merged, because there is no reading of a split brief
+  // that is obviously right, and silently dropping either half sends an agent
+  // off with half a task — which costs a whole run to notice.
+  if (words.length > 0) {
+    throw new Error('--brief-stdin reads the brief from stdin; do not also pass it as arguments')
+  }
+  // Exactly ONE trailing newline is stripped — the one `echo` or a heredoc adds.
+  // Not `\n+$`: a brief deliberately ending in a blank line is prose whose shape
+  // is the author's, and there is no way to tell the second newline from the
+  // first once both are gone. `\r?` because a CRLF pipe would otherwise leave a
+  // stray carriage return welded to the last word.
+  const brief = stdin.replace(/\r?\n$/, '')
+  if (brief.trim() === '') throw new Error('--brief-stdin got an empty brief on stdin')
+  return brief
+}
+
 export async function agentSpawn(
   name: string,
   profile: string,
   words: string[],
   // CC-63: an active-work initiative slug (or "auto"), prepended to the brief
   // as orientation. Optional, so every call site that predates it still works.
-  options: { briefing?: string } = {},
+  options: { briefing?: string; briefStdin?: boolean } = {},
 ): Promise<void> {
-  if (words.length === 0) fail('usage: agent-chat agent spawn <name> <profile> "<brief>"')
+  let brief: string
+  try {
+    brief = resolveBrief(words, options.briefStdin === true ? await readStdin() : undefined)
+  } catch (err) {
+    fail((err as Error).message)
+  }
   const res = (await withBroker(b =>
     // The human holds no registry entry (§6.4), so the broker has no cwd to read
     // for them — send it, or the agent inherits the broker's arbitrary one.
@@ -61,7 +119,7 @@ export async function agentSpawn(
         t: 'spawn',
         name,
         profile,
-        brief: words.join(' '),
+        brief,
         cwd: process.cwd(),
         ...(options.briefing === undefined ? {} : { briefing: options.briefing }),
       },

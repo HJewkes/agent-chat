@@ -112,15 +112,47 @@ const toMessage = (row: Row): DeliveredMessage => {
   }
 }
 
+/**
+ * 0600 on the log and its WAL sidecars, for the same reason `token.ts` and
+ * `launch-files.ts` already do it: this file holds every brief verbatim
+ * (`supervisor.ts` appends `body: req.brief` on `agent_spawned`), and briefs are
+ * routinely somebody else's text — relay dispatches task bodies its operator
+ * captured by voice. Left at the default it was `-rw-r--r--`, readable by any
+ * local account, which is a durable version of exactly the `ps` disclosure that
+ * relay's R-68 went to some trouble to close.
+ *
+ * SQLite creates `-wal` and `-shm` itself, after and independently of the main
+ * file, so all three are named rather than trusting the first to cover them.
+ * Missing sidecars are not an error: WAL mode creates them lazily, and a
+ * read-only or freshly-created log may legitimately have none yet.
+ *
+ * The DIRECTORY is what actually holds the line, and is why this does not stop
+ * at the three files. SQLite deletes the sidecars on a clean close and recreates
+ * them on the next open — under the process umask, not under whatever this last
+ * set them to. A 0700 directory makes them unreachable no matter what mode they
+ * come back with; the per-file chmod is what fixes logs that already exist.
+ */
+function restrictToOwner(file: string): void {
+  for (const path of [file, `${file}-wal`, `${file}-shm`]) {
+    try {
+      fs.chmodSync(path, 0o600)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+    }
+  }
+  fs.chmodSync(path.dirname(file), 0o700)
+}
+
 export class EventLog implements EventStore {
   private readonly db: DatabaseSyncType
 
   constructor(dbPath?: string) {
     const file = dbPath ?? path.join(home(), 'events.db')
-    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
     this.db = new DatabaseSync(file)
     this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec(SCHEMA)
+    restrictToOwner(file)
   }
 
   append(input: AppendInput): { id: number; msgId: string } {

@@ -4,6 +4,7 @@ import path from 'node:path'
 import type { Command } from 'commander'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { runChecks, worstStatus, type Check } from '../broker/doctor.js'
+import { resolveBrief } from '../cli/agents.js'
 import { buildProgram } from '../cli/index.js'
 import { tailLines } from '../cli/service.js'
 
@@ -98,6 +99,46 @@ describe('process-launch contracts', () => {
       expect(names(program), `${verb} must still parse`).toContain(verb)
       expect(visible, `${verb} should no longer be advertised`).not.toContain(verb)
     }
+  })
+})
+
+/**
+ * `--brief-stdin` (relay's R-68). The point of the flag is that a brief the
+ * caller did not author never reaches world-readable argv, so these assert both
+ * the argv shape that makes it possible and the rules that keep a spawn from
+ * proceeding on a brief that is missing, doubled or blank.
+ */
+describe('agent spawn brief sources', () => {
+  const spawn = find(find(buildProgram(), 'agent') as Command, 'spawn') as Command
+
+  it('offers --brief-stdin and leaves the positional brief optional', () => {
+    expect(spawn.options.map(o => o.long)).toContain('--brief-stdin')
+    expect(spawn.usage()).toContain('[brief...]')
+  })
+
+  it('joins argv words when no stdin is offered', () => {
+    expect(resolveBrief(['fix', 'the', 'build'], undefined)).toBe('fix the build')
+  })
+
+  it('takes stdin verbatim apart from the trailing newline a pipe adds', () => {
+    expect(resolveBrief([], 'line one\n\nline two\n')).toBe('line one\n\nline two')
+  })
+
+  it('strips exactly one trailing newline, so a deliberate blank last line survives', () => {
+    expect(resolveBrief([], 'body\n\n\n')).toBe('body\n\n')
+  })
+
+  it('strips a CRLF pair whole, leaving no carriage return welded to the last word', () => {
+    expect(resolveBrief([], 'one\r\ntwo\r\n')).toBe('one\r\ntwo')
+  })
+
+  it('refuses a brief given both ways rather than guessing which one is meant', () => {
+    expect(() => resolveBrief(['also', 'this'], 'the real brief')).toThrow(/do not also pass it/)
+  })
+
+  it('refuses a spawn with no brief at all, from either source', () => {
+    expect(() => resolveBrief([], undefined)).toThrow(/usage:/)
+    expect(() => resolveBrief([], '   \n')).toThrow(/empty brief/)
   })
 })
 
