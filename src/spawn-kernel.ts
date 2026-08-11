@@ -40,8 +40,14 @@
  * Only modules that are pure enough to cross a project boundary: filesystem
  * reads of another program's telemetry, no `agent-chat` state, no broker, no
  * config. Nothing that spawns. `run-agent.ts` in particular must never be
- * exported from here — it builds `env: { ...process.env }`, which is precisely
- * what relay's own threat model (T7/M8) forbids.
+ * exported from here: it starts a process, and a module that crosses a project
+ * boundary should not be able to.
+ *
+ * That rule used to be justified by `run-agent.ts` building
+ * `env: { ...process.env }` — precisely what relay's threat model (T7/M8)
+ * forbids. R-70 fixed that at the source (see `agents/agent-env.ts`), so the
+ * justification is now the plainer one above: spawning is the thing, not the
+ * environment it spawned with.
  */
 
 export {
