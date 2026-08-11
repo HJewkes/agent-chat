@@ -1,4 +1,8 @@
-node_modules/
+# No trailing slash, deliberately. `node_modules/` matches a DIRECTORY and not a
+# SYMLINK, so a worktree sharing the main checkout's install (`node_modules ->
+# /path/to/agent-chat/node_modules`, which is how these worktrees avoid a second
+# install) sailed straight past it and was committed by a `git add -A`.
+node_modules
 dist/
 
 # Worktree isolation cuts agent worktrees here (isolation/worktree.ts's
