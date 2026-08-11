@@ -1049,11 +1049,13 @@ CLI should say which one it is giving you.
   iTerm pane; exit it there, or `agent-chat agent attach <name>` to go to it."_
   Killing a pane the human is looking at, from a bus a peer model can reach, is
   not a thing to build.
-- `agent retire <name>` — close the identity: release isolation (which may
-  refuse on dirty/unpushed, §7.2), close the surface, **end the process**, append
+- `agent retire <name> [--force]` — close the identity: release isolation (which
+  may refuse on dirty/unpushed, §7.2, and `--force` overrides that at the cost of
+  the commits it was protecting), close the surface, **end the process**, append
   `agent_retired`, free the name. Retire is the only thing that frees a name, so
   a detached agent's name stays reserved and its peers' remembered addressing
-  stays valid.
+  stays valid. `force` reaches the strategy only from the CLI: it is a human
+  deciding to throw work away, and there is no agent-facing route to it.
 
   The reap (CC-77) is not a second `kill`, and the asymmetry with the bullet
   above is deliberate: retire is CLI-only, so the caller is a person, and it is
@@ -1242,7 +1244,7 @@ agent-chat agent ls [--all]        roster: lifecycle x presence (§2.5)
 agent-chat agent attach <name>     select the iTerm pane, or print how to reach it
 agent-chat agent resume <name>     new process, same identity
 agent-chat agent kill <name>       headless only
-agent-chat agent retire <name>     release isolation, end it, free the name
+agent-chat agent retire <name> [--force]  release isolation, end it, free the name
 agent-chat agent logs <name> [-n]  tail stream.jsonl
 agent-chat run-agent <id>          internal; the fixed launch command of §5.3
 ```

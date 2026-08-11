@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import type net from 'node:net'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
@@ -15,6 +16,8 @@ import {
   runtimeStatePath,
   writeRuntimeState,
 } from '../agents/launch-files.js'
+import { worktreeStrategy } from '../agents/isolation/worktree.js'
+import type { Allocation } from '../agents/isolation/index.js'
 import type { HookProcess, HookSpawnFn } from '../agents/hooks.js'
 
 /**
@@ -894,6 +897,72 @@ describe('runtime state outliving the broker', () => {
 
     expect(result.ok).toBe(true)
     expect(result.reason).toMatch(/no record of what scout held/)
+  })
+})
+
+/**
+ * CC-79. The strategies have honoured `force` since they were written, and it is
+ * tested against them directly in isolation.test.ts. What was never wired was
+ * the path a person actually takes to reach it — so this covers the supervisor's
+ * half of that, against a real repository, because a worktree that refuses is
+ * not provable against a mock.
+ */
+describe('retiring with force', () => {
+  const git = (args: string[], cwd: string): string =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim()
+
+  /** A repository with one commit, for a worktree to be cut from. */
+  function makeRepo(): string {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'sup-force-')))
+    tmpDirs.push(dir)
+    git(['init', '-b', 'main'], dir)
+    git(['config', 'user.email', 'test@example.com'], dir)
+    git(['config', 'user.name', 'Test'], dir)
+    git(['config', 'commit.gpgsign', 'false'], dir)
+    fs.writeFileSync(path.join(dir, 'README.md'), 'seed\n')
+    git(['add', '.'], dir)
+    git(['commit', '-m', 'seed'], dir)
+    return dir
+  }
+
+  /** An agent holding a real worktree with a commit nobody else has. */
+  async function agentHoldingUnmergedWork(sup: Supervisor): Promise<Allocation> {
+    core.append({ kind: 'agent_spawned', actor: 'human', target: 'scout', msgId: 'a1', body: 'work' })
+    const repo = makeRepo()
+    const allocation = await worktreeStrategy.allocate({ agentId: 'a1', agentName: 'scout', baseCwd: repo })
+    fs.writeFileSync(path.join(allocation.cwd, 'feature.ts'), 'work\n')
+    git(['add', 'feature.ts'], allocation.cwd)
+    git(['commit', '-m', 'add feature'], allocation.cwd)
+    ;(sup as unknown as { live: Map<string, unknown> }).live.set('a1', {
+      agentId: 'a1',
+      name: 'scout',
+      handle: { surface: 'headless' },
+      allocation,
+      isolation: 'worktree',
+    })
+    return allocation
+  }
+
+  it('refuses without it, keeping the commits nobody else has', async () => {
+    const sup = withStubbedSurface()
+    const allocation = await agentHoldingUnmergedWork(sup)
+
+    const result = await sup.retire('scout')
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/retire with --force/)
+    expect(fs.existsSync(allocation.cwd)).toBe(true)
+  })
+
+  it('destroys them when the human says so', async () => {
+    const sup = withStubbedSurface()
+    const allocation = await agentHoldingUnmergedWork(sup)
+
+    const result = await sup.retire('scout', true)
+
+    expect(result.ok).toBe(true)
+    expect(fs.existsSync(allocation.cwd)).toBe(false)
+    expect(core.agents.nameIsClaimed('scout')).toBe(false)
   })
 })
 

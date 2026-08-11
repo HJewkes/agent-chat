@@ -131,6 +131,7 @@ function addAgentCommands(program: Command): void {
   agent
     .command('retire <name>')
     .description('release isolation, end the process, and free the name')
+    .option('--force', 'discard uncommitted or unmerged work the isolation is holding')
     .action(agents.agentRetire)
   agent
     .command('surface <name>')
