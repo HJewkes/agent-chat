@@ -121,6 +121,25 @@ describe('toolset-limited', () => {
     const ctx = ctxFor('/repo', { toolset: { allowedTools: ['Read'], disallowedTools: ['Bash'] } })
     expect(await toolsetStrategy.check(ctx)).toEqual([])
   })
+
+  /**
+   * 2026-08-31: an explorer read "Your tools are limited to: Read, Grep, Glob",
+   * concluded chat_send was not available to it, and ended its turn without one
+   * tool call — while `launch-plan` had appended the agent-chat grant to its argv
+   * all along. An agent that believes it cannot report back does not report back,
+   * which is the whole cost of spawning it.
+   */
+  it('tells the agent it can still chat, which the profile list alone does not say', async () => {
+    const ctx = ctxFor('/repo', {
+      toolset: { allowedTools: ['Read', 'Grep', 'Glob'], disallowedTools: ['Bash'] },
+    })
+    const alloc = await toolsetStrategy.allocate(ctx)
+
+    expect(alloc.note).toContain('chat_send')
+    expect(alloc.note).toContain('ToolSearch')
+    // The three claims the agent made, each contradicted by the note it is given.
+    expect(alloc.note).not.toMatch(/limited to: Read, Grep, Glob\.?$/)
+  })
 })
 
 describe('file-ownership patterns', () => {
