@@ -16,16 +16,31 @@ import type { Allocation, IsolationContext, IsolationStrategy } from './index.js
  * profile never mentioned.
  */
 /**
- * What the agent is TOLD. Say only what is enforced.
+ * What the agent is TOLD. Say only what is enforced — and say all of it.
  *
  * A read-only agent once ran Bash successfully and then reported that it had been
  * blocked, naming this note as the thing that stopped it — it believed its brief
  * over a tool_result in its own context. So a note claiming a limit we do not
  * enforce does not merely fail to help, it manufactures a confident false report.
+ *
+ * The mirror of that, 2026-08-31: this note listed the PROFILE's tools, while
+ * `launch-plan` appends `AGENT_CHAT_TOOLS` to the same spawn under the same
+ * condition. An explorer read "your tools are limited to: Read, Grep, Glob",
+ * concluded it had no way to chat_send, and ended its turn without attempting a
+ * single tool call. Its twin, spawned from the same profile nineteen hundred
+ * milliseconds earlier, called ToolSearch and found the tools exactly where they
+ * were. Understating what an agent has costs what overstating it costs, and for
+ * the same reason: the agent believes the note over its own toolset.
  */
 const noteFor = (allowed: readonly string[], denied: readonly string[] | undefined): string => {
+  // Named in prose rather than as the glob, which is what the agent actually
+  // has to type. A glob in a sentence reads as a pattern to match, not a grant.
+  const chat =
+    ' You also have agent-chat’s own tools (chat_send, chat_list and the rest); load them with' +
+    ' ToolSearch if they are not already listed, and use them to report back.'
   const limits = `Your tools are limited to: ${allowed.join(', ')}.`
-  return denied?.length ? `${limits} ${denied.join(', ')} are unavailable to you.` : limits
+  const unavailable = denied?.length ? ` ${denied.join(', ')} are unavailable to you.` : ''
+  return `${limits}${unavailable}${chat}`
 }
 
 export const toolsetStrategy: IsolationStrategy = {
