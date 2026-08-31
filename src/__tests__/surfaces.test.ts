@@ -25,7 +25,7 @@ const plan = (over: Partial<LaunchPlan> = {}): LaunchPlan => ({
 function fakeIterm(found = true) {
   const scripts: string[] = []
   const notices: string[] = []
-  const run = (script: string): string => {
+  const run = async (script: string): Promise<string> => {
     scripts.push(script)
     if (script.includes('is running')) return 'true'
     if (!found && script.includes(NO_ANCHOR)) return NO_ANCHOR
@@ -258,7 +258,7 @@ describe('iterm surfaces', () => {
 
   it('refuses when iTerm2 is not running, rather than launching it', async () => {
     const scripts: string[] = []
-    const runAppleScript = (script: string): string => {
+    const runAppleScript = async (script: string): Promise<string> => {
       scripts.push(script)
       return 'false'
     }
@@ -269,12 +269,42 @@ describe('iterm surfaces', () => {
   })
 
   it('refuses when the running check itself fails', async () => {
-    const runAppleScript = (): string => {
-      throw new Error('osascript: command not found')
-    }
+    const runAppleScript = (): Promise<string> => Promise.reject(new Error('osascript: command not found'))
     const surface = surfaceFor('iterm-window', { platform: 'darwin', runAppleScript })
 
     await expect(surface.launch(plan())).rejects.toThrow(SurfaceRefused)
+  })
+
+  /**
+   * The launch runs inside the broker, which is one event loop serving every
+   * session on the machine. `execFileSync` here stopped it dead for as long as
+   * iTerm2 took — five seconds during a burst of spawns on 2026-08-31, which is
+   * longer than a sibling agent's MCP server waits for its own registration
+   * before giving up. Waiting on the script must yield, not block.
+   */
+  it('leaves the caller free to do other work while the script runs', async () => {
+    const order: string[] = []
+    let release = (): void => undefined
+    const held = new Promise<void>(resolve => (release = resolve))
+    const surface = surfaceFor('iterm-window', {
+      platform: 'darwin',
+      runAppleScript: async script => {
+        if (script.includes('is running')) return 'true'
+        order.push('script started')
+        await held
+        return 'NEW-SESSION-UUID'
+      },
+    })
+
+    const launching = surface.launch(plan())
+    // The point of the test: this only ever runs because the launch gave the
+    // event loop back while osascript was outstanding.
+    while (!order.includes('script started')) await new Promise(setImmediate)
+    order.push('other work ran')
+    release()
+
+    await expect(launching).resolves.toMatchObject({ paneRef: 'NEW-SESSION-UUID' })
+    expect(order).toEqual(['script started', 'other work ran'])
   })
 })
 
@@ -342,9 +372,7 @@ describe('tearing a surface down', () => {
   it('reports nothing closed rather than throwing when iTerm2 cannot be reached', async () => {
     const surface = surfaceFor('iterm-pane', {
       platform: 'darwin',
-      runAppleScript: () => {
-        throw new Error('osascript: command not found')
-      },
+      runAppleScript: () => Promise.reject(new Error('osascript: command not found')),
     })
     const handle = { surface: 'iterm-pane' as const, paneRef: UUID, ownsSurface: true }
 

@@ -1,8 +1,17 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { SpawnOptions } from 'node:child_process'
 
-/** Runs one AppleScript and returns its trimmed output. Injected so tests need no macOS. */
-export type AppleScriptRunner = (script: string) => string
+/**
+ * Runs one AppleScript and resolves with its trimmed output. Injected so tests
+ * need no macOS.
+ *
+ * Async because the only caller runs inside the broker, and the broker is one
+ * event loop serving every session on the machine. A synchronous `osascript`
+ * stopped it dead for as long as iTerm2 took to answer — measured at five
+ * seconds during a burst of spawns, which is long enough for a sibling agent's
+ * MCP server to give up registering and exit.
+ */
+export type AppleScriptRunner = (script: string) => Promise<string>
 
 /**
  * The slice of `child_process.spawn` a surface uses. Injected for the same reason.

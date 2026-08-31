@@ -66,7 +66,7 @@ function makeSupervisor(semaphore?: Semaphore): Supervisor {
     surface: {
       platform: 'darwin',
       spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
-      runAppleScript: script => (script.includes('is running') ? 'true' : 'fake-pane-uuid'),
+      runAppleScript: script => Promise.resolve(script.includes('is running') ? 'true' : 'fake-pane-uuid'),
     },
   })
   return supervisor
@@ -460,7 +460,7 @@ describe('a visible predecessor', () => {
       countdownMs: COUNTDOWN_MS,
       surface: {
         platform: 'darwin',
-        runAppleScript: script => {
+        runAppleScript: async script => {
           if (script.includes('is running')) return 'true'
           scripts.push(script)
           return 'reused-pane-uuid'

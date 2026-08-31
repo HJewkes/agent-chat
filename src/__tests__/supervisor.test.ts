@@ -317,7 +317,7 @@ describe('spawning', () => {
    */
   it('stacks the second agent on the first, and only for the same anchor', async () => {
     const scripts: string[] = []
-    const runAppleScript = (script: string): string => {
+    const runAppleScript = async (script: string): Promise<string> => {
       scripts.push(script)
       if (script.includes('is running')) return 'true'
       return `PANE-${scripts.length}`
@@ -847,7 +847,7 @@ describe('runtime state outliving the broker', () => {
     supervisor = new Supervisor(core, {
       surface: {
         platform: 'darwin',
-        runAppleScript: (script: string): string => {
+        runAppleScript: async (script: string): Promise<string> => {
           scripts.push(script)
           return script.includes('is running')
             ? 'true'
@@ -975,7 +975,7 @@ describe('retiring an agent that was given a pane', () => {
   /** An iTerm2 that answers scripts without one existing. Never reaches osascript. */
   function fakeIterm(settleMs = 30_000) {
     const scripts: string[] = []
-    const runAppleScript = (script: string): string => {
+    const runAppleScript = async (script: string): Promise<string> => {
       scripts.push(script)
       if (script.includes('is running')) return 'true'
       if (script.includes('to close')) return '@@closed@@'
