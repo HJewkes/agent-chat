@@ -143,6 +143,100 @@ export function spawnedIdentity(env: NodeJS.ProcessEnv = process.env): SpawnedId
   }
 }
 
+/** Tailed off so a broker that is down for a while is retried without a busy loop. */
+const REGISTRATION_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000, 60_000]
+
+const pause = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+
+/**
+ * Reach the broker, or come up without it.
+ *
+ * Startup must never depend on the broker answering, and this is the incident
+ * that says so: a broker blocked on a sibling's spawn stalled for fourteen
+ * seconds, the unguarded awaits here threw out of `startMcpServer` before
+ * `mcp.connect` ran, and Claude Code saw a server that never answered
+ * `initialize`. It cached that failure for fifteen minutes, so the agent spent
+ * its whole life with no chat tools at all — while the broker recovered less
+ * than a second after the client gave up.
+ *
+ * A stalled broker may cost a session its REACHABILITY, which `retryRegistration`
+ * then wins back. It may never cost the session its TOOLS, because nothing
+ * retries a server Claude Code has already written off.
+ */
+async function reachBroker(broker: BrokerClient): Promise<boolean> {
+  try {
+    await broker.connect()
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Register a spawned agent under the name its launch plan already assigned.
+ *
+ * Registering from the environment rather than waiting for the model is CC-17's
+ * point: the name was decided at spawn time, so peer reachability must not
+ * depend on the model complying with an instruction. Failure is swallowed for
+ * the same reason `readopt` and `registerProvisionally` swallow theirs.
+ */
+async function registerSpawned(broker: BrokerClient, spawned: SpawnedIdentity): Promise<boolean> {
+  try {
+    const res = (await broker.request(
+      {
+        t: 'register',
+        name: spawned.name,
+        workingOn: spawned.workingOn,
+        cwd: process.cwd(),
+        pid: process.pid,
+        agentId: spawned.agentId,
+        // Sent by a spawned agent too, though only the ordinary path adopts on
+        // it: a pane agent's Claude Code process has no pid anywhere else, since
+        // the surface hands back a pane rather than a child.
+        ...hostIdentity(),
+        // CC-11. A spawned agent is the case this matters most for: it usually
+        // runs in a worktree of its own, and the branch is the fastest way for a
+        // peer to see whether it is somewhere its edits can collide.
+        ...(await observedRegistration()),
+        ...(spawned.tags ? { tags: spawned.tags } : {}),
+        ...(spawned.subscriptions ? { subscriptions: spawned.subscriptions } : {}),
+        ...terminalAnchor(),
+        build: cliEntry(),
+      },
+      'register_result',
+    )) as Extract<ServerMessage, { t: 'register_result' }>
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Keep trying, after startup, for a spawned agent that did not get on the bus.
+ *
+ * Only the spawned path is retried here, because only it knows what to retry:
+ * the launch plan fixed the name, so a replay asks for exactly what the first
+ * attempt asked for. Registration is keyed on the connection and re-registering
+ * an `agentId` it already holds is idempotent, so a retry that races a first
+ * attempt the broker did in fact accept costs nothing.
+ *
+ * An ordinary session has no such name to replay — `readopt` reads it from the
+ * broker's own log and `registerProvisionally` may have to disambiguate — and
+ * its model can still call chat_register, which a spawned agent should never
+ * have to be told to do.
+ */
+function retryRegistration(broker: BrokerClient, spawned: SpawnedIdentity): void {
+  void (async () => {
+    for (const delay of REGISTRATION_RETRY_DELAYS_MS) {
+      await pause(delay)
+      if (!(await reachBroker(broker))) continue
+      if (await registerSpawned(broker, spawned)) return
+    }
+    // Deliberately quiet: this ran because the session is already degraded, and
+    // stderr on an MCP server is read as a server fault by the client.
+  })()
+}
+
 /**
  * Ask the broker to put this session back under the name it already held.
  *
@@ -303,7 +397,7 @@ export async function startMcpServer(): Promise<void> {
   // identity, and Claude Code will see the pipe close. Exiting is the honest
   // outcome, and the only one that does not leave two processes on one name.
   const broker = new BrokerClient(deliver, () => process.exit(0), deliverSystemEvents)
-  await broker.connect()
+  const online = await reachBroker(broker)
 
   // A spawned agent registers from its environment, before the model has had a
   // turn. The name was already assigned at spawn time, so waiting for the model
@@ -311,31 +405,8 @@ export async function startMcpServer(): Promise<void> {
   // with an instruction — a race that will sometimes lose, and which fails by
   // leaving the agent invisible to everyone told to talk to it.
   const spawned = spawnedIdentity()
-  if (spawned) {
-    await broker.request(
-      {
-        t: 'register',
-        name: spawned.name,
-        workingOn: spawned.workingOn,
-        cwd: process.cwd(),
-        pid: process.pid,
-        agentId: spawned.agentId,
-        // Sent by a spawned agent too, though only the ordinary path adopts on
-        // it: a pane agent's Claude Code process has no pid anywhere else, since
-        // the surface hands back a pane rather than a child.
-        ...hostIdentity(),
-        // CC-11. A spawned agent is the case this matters most for: it usually
-        // runs in a worktree of its own, and the branch is the fastest way for a
-        // peer to see whether it is somewhere its edits can collide.
-        ...(await observedRegistration()),
-        ...(spawned.tags ? { tags: spawned.tags } : {}),
-        ...(spawned.subscriptions ? { subscriptions: spawned.subscriptions } : {}),
-        ...terminalAnchor(),
-        build: cliEntry(),
-      },
-      'register_result',
-    )
-  }
+  const spawnedRegistered = spawned !== undefined && online && (await registerSpawned(broker, spawned))
+  if (spawned && !spawnedRegistered) retryRegistration(broker, spawned)
 
   // CC-31. An ordinary session registers because the MODEL called chat_register,
   // and registration is per-connection — so a replaced MCP subprocess comes back
@@ -346,7 +417,7 @@ export async function startMcpServer(): Promise<void> {
   // Nothing here is asked of the model: the session id comes from this process's
   // own environment, and the NAME comes from the broker's log. A session with
   // nothing to reclaim gets ok:false and the ordinary path is unaffected.
-  const readopted = spawned ? undefined : await readopt(broker)
+  const readopted = spawned || !online ? undefined : await readopt(broker)
 
   // CC-82. Neither path above covers a session starting for the FIRST time: it
   // has no launch plan to be named by, and nothing in the log to reclaim. Until
@@ -356,7 +427,7 @@ export async function startMcpServer(): Promise<void> {
   // none of them reachable. So the server names it from its own directory and
   // registers it, marked provisional. The model renaming itself later is the
   // ordinary path, not a correction.
-  const provisional = spawned || readopted ? undefined : await registerProvisionally(broker)
+  const provisional = spawned || readopted || !online ? undefined : await registerProvisionally(broker)
 
   mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     await broker.send({

@@ -62,7 +62,7 @@ function makeSupervisor(): Supervisor {
     surface: {
       platform: 'darwin',
       spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
-      runAppleScript: script => (script.includes('is running') ? 'true' : 'fake-pane-uuid'),
+      runAppleScript: script => Promise.resolve(script.includes('is running') ? 'true' : 'fake-pane-uuid'),
     },
   })
   return supervisor

@@ -149,6 +149,10 @@ export class BrokerClient {
   }
 
   async connect(): Promise<void> {
+    // A caller retrying its way back onto the bus cannot see whether a drop
+    // already reconnected underneath it. Attaching a second socket would strand
+    // the first one, which is the one holding this session's registration.
+    if (this.socket !== null) return
     try {
       this.attach(await this.tryConnect())
       return
