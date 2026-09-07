@@ -19,6 +19,7 @@ import { hostIdentity } from './host.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
 import { cliEntry } from '../paths.js'
 import { transcriptLine } from '../agents/transcript.js'
+import { budgetMiss, formatBudget, readBudget, type BudgetRead } from '../agents/budget.js'
 import { readTurns, type TranscriptRead } from '../agents/turns.js'
 import { findDenials } from '../agents/denials.js'
 import type {
@@ -750,6 +751,28 @@ export const TOOL_DEFINITIONS = [
       },
     },
   },
+  {
+    name: 'session_budget',
+    description:
+      'How full your context window is and how much of the account rate-limit budget is gone — yours ' +
+      "by default, or a peer's by name. Call it BEFORE the two decisions it exists for: teleporting " +
+      'to a successor while there is still room to write the handoff, and spawning agents when the ' +
+      'weekly window is nearly spent. Both are cheap early and impossible late. The numbers come from ' +
+      'the status line, which Claude Code hands the real figures and which is the only place they leave ' +
+      'the session — so a reading may be MISSING (nothing has written one) or STALE (that session has ' +
+      'not redrawn since it went idle), and both are reported rather than smoothed over. Never read ' +
+      'stale as current: an idle peer keeps publishing the fill it had when it stopped.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description:
+            'Session or agent to read, as shown by chat_list or agent_list. Omit to read your own.',
+        },
+      },
+    },
+  },
 ] as const
 
 const text = (value: string) => ({ content: [{ type: 'text' as const, text: value }] })
@@ -960,6 +983,9 @@ function formatTurns(who: string, read: TranscriptRead): string {
   return `${head}\n  ${transcript.path}\n\n${rows.join('\n')}`
 }
 
+const renderBudget = (who: string, read: BudgetRead): string =>
+  read.found ? formatBudget(who, read) : budgetMiss(who, read)
+
 /** Tracks the registered name purely so chat_list can mark which entry is us. */
 export class ToolHandler {
   private registeredName: string | null
@@ -1056,6 +1082,8 @@ export class ToolHandler {
         return this.agentLogs(requireString(args, 'name'), boundedLimit(args, 'limit', 10, DENIALS_MAX))
       case 'chat_transcript':
         return this.transcript(optionalString(args, 'name'), boundedLimit(args, 'limit', 12, TURNS_MAX))
+      case 'session_budget':
+        return this.budget(optionalString(args, 'name'))
       default:
         throw new Error(`unknown tool: ${name}`)
     }
@@ -1559,5 +1587,35 @@ export class ToolHandler {
           'read. chat_list shows who is registered; agent_list shows who has an identity.',
       )
     return text(formatTurns(name, readTurns(agent.cwd, agent.sessionId, limit)))
+  }
+
+  /**
+   * Resolved exactly like `transcript` above, and for the same reason: the join
+   * key is Claude Code's own session id, which this process reads from its own
+   * environment for itself and the registry already carries for every peer.
+   * Nothing new is published and the model is asked for nothing.
+   */
+  private async budget(name: string | undefined) {
+    if (name === undefined || name === this.registeredName) {
+      const { sessionId } = hostIdentity()
+      if (sessionId === undefined)
+        return text(
+          'No CLAUDE_CODE_SESSION_ID in this process, so there is no session to look a budget up for. ' +
+            'That means this is not a Claude Code session.',
+        )
+      return text(renderBudget('You', readBudget(sessionId)))
+    }
+
+    const res = (await this.call({ t: 'agents' }, 'agents_result')) as Extract<
+      ServerMessage,
+      { t: 'agents_result' }
+    >
+    const agent = res.agents.find(a => a.name === name)
+    if (agent === undefined)
+      return text(
+        `No session or agent named "${name}" has a durable identity, so there is no session id to ` +
+          'look a budget up for. chat_list shows who is registered; agent_list shows who has an identity.',
+      )
+    return text(renderBudget(name, readBudget(agent.sessionId)))
   }
 }

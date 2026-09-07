@@ -17,7 +17,7 @@ import path from 'node:path'
  */
 
 /** `CLAUDE_CONFIG_DIR` is Claude Code's own override; honouring it keeps us in step. */
-const configDir = (): string => process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude')
+export const configDir = (): string => process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude')
 
 const projectsDir = (): string => path.join(configDir(), 'projects')
 

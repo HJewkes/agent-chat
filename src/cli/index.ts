@@ -143,6 +143,10 @@ function addAgentCommands(program: Command): void {
     .command('surface <name>')
     .description('bring a headless agent into a window you can answer')
     .action(agents.agentSurface)
+  agent
+    .command('budget [name]')
+    .description('context fill and account rate limits, per agent')
+    .action((name?: string) => agents.agentBudget(name))
 
   program
     .command('teleport')
