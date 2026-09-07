@@ -1,3 +1,4 @@
+import { budgetMiss, formatBudget, readBudget } from '../agents/budget.js'
 import { findGitRoot } from '../git.js'
 import { pairPresence } from '../agents/identity.js'
 import { reclaim, sweepWorktrees } from '../agents/isolation/sweep.js'
@@ -232,6 +233,31 @@ export async function teleportAbort(name: string): Promise<void> {
   >
   console.log(res.ok ? `Stopped ${name}'s teleport. It is still live, on the old build.` : res.reason)
   process.exit(res.ok ? 0 : 1)
+}
+
+/**
+ * The peer-facing half of `session_budget` — what a planner reads before it
+ * decides who gets the next task. `[name]` omitted lists every agent with a
+ * reading, because the pacing question is usually "which of these is nearly
+ * full", not "how is one of them doing".
+ */
+export async function agentBudget(name?: string): Promise<void> {
+  const agents = await withBroker(async b => {
+    const res = (await b.request({ t: 'agents' }, 'agents_result')) as Extract<
+      ServerMessage,
+      { t: 'agents_result' }
+    >
+    return res.agents
+  })
+
+  const wanted = name === undefined ? agents : agents.filter(a => a.name === name)
+  if (wanted.length === 0)
+    fail(name === undefined ? 'No agents have a durable identity.' : `No agent "${name}".`)
+
+  for (const agent of wanted) {
+    const read = readBudget(agent.sessionId)
+    console.log(read.found ? formatBudget(agent.name, read) : budgetMiss(agent.name, read))
+  }
 }
 
 export function profiles(): void {
