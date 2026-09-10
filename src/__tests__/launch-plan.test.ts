@@ -238,6 +238,34 @@ describe('permission posture', () => {
   })
 })
 
+/**
+ * A profile's defaults are a decision, and nothing else asserts them — changing
+ * `peer` from `iterm-tab` to `iterm-pane` for CC-89 left the whole suite green.
+ * Pinning them here means the next change to one has to say so, and gives the
+ * decision somewhere executable to live alongside the comment that argues it.
+ */
+describe('builtin profile defaults', () => {
+  const surfaceOf = (name: string): string | undefined => BUILTIN_PROFILES.find(p => p.name === name)?.surface
+
+  it('gives every writing profile a visible surface', () => {
+    // A prompt in a headless session cannot be answered, so a profile that can
+    // write must land somewhere a human could reply.
+    for (const builtin of BUILTIN_PROFILES.filter(p => p.allowedTools.includes('Write')))
+      expect(builtin.surface, `${builtin.name} writes but is not visible`).not.toBe('headless')
+  })
+
+  it('puts peer in a pane, not a tab (CC-89)', () => {
+    expect(surfaceOf('peer')).toBe('iterm-pane')
+  })
+
+  it('defaults no builtin to headless, leaving that an explicit choice per spawn', () => {
+    // A headless agent that hits a prompt degrades silently rather than
+    // blocking. That is the right behaviour only when someone chose it
+    // knowingly, so it is never what you get by not deciding.
+    for (const builtin of BUILTIN_PROFILES) expect(builtin.surface).not.toBe('headless')
+  })
+})
+
 describe('every builtin profile, on every surface', () => {
   it('builds a plan naming the profile model and its tools', () => {
     for (const builtin of BUILTIN_PROFILES) {

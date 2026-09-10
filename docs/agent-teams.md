@@ -502,12 +502,16 @@ should append them unconditionally rather than trusting each profile to remember
 Builtins, shaped after brain's `buildDefaultAgents()` (`launch.ts:60-85`) but
 carrying isolation and surface, which brain's cannot:
 
-| Profile       | model  | tools                               | denies            | isolation         | surface        | why that surface                                   |
-| ------------- | ------ | ----------------------------------- | ----------------- | ----------------- | -------------- | -------------------------------------------------- |
-| `explorer`    | sonnet | Read, Grep, Glob                    | Bash, Write, Edit | `toolset-limited` | headless       | read-only; nothing it does can prompt              |
-| `reviewer`    | sonnet | Read, Grep, Glob, Bash              | Write, Edit       | `toolset-limited` | headless       | Bash is narrow and allowlisted                     |
-| `implementer` | opus   | Read, Write, Edit, Bash, Grep, Glob | —                 | `worktree`        | **iterm-pane** | writes; a prompt is answerable in the pane (§11.3) |
-| `peer`        | opus   | Read, Write, Edit, Bash, Grep, Glob | —                 | `none`            | **iterm-tab**  | long-lived collaborator                            |
+| Profile       | model  | tools                               | denies            | isolation         | surface        | why that surface                                                                |
+| ------------- | ------ | ----------------------------------- | ----------------- | ----------------- | -------------- | ------------------------------------------------------------------------------- |
+| `explorer`    | sonnet | Read, Grep, Glob                    | Bash, Write, Edit | `toolset-limited` | **iterm-pane** | read-only, so nothing it does can prompt — but visible so you can watch it work |
+| `reviewer`    | sonnet | Read, Grep, Glob, Bash              | Write, Edit       | `toolset-limited` | **iterm-pane** | Bash is narrow and allowlisted; visible for the same reason as `explorer`       |
+| `implementer` | opus   | Read, Write, Edit, Bash, Grep, Glob | —                 | `worktree`        | **iterm-pane** | writes; a prompt is answerable in the pane (§11.3)                              |
+| `peer`        | opus   | Read, Write, Edit, Bash, Grep, Glob | —                 | `none`            | **iterm-pane** | long-lived collaborator; visible because it shares your checkout (CC-89)        |
+
+No builtin defaults to `headless`. A headless agent that hits a prompt degrades silently
+rather than blocking, which is right only when someone chose it knowingly — so it is an
+explicit `surface: "headless"` on the spawn, never what you get by not deciding.
 
 **The `denies` column is what makes the read-only profiles read-only — the tools
 column does not.** `--allowed-tools` GRANTS permission; it does not remove a

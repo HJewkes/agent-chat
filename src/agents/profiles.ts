@@ -108,15 +108,25 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
   },
   {
     // The profile that expresses what this whole system is for: a long-lived
-    // agent in a visible tab, sharing the checkout, addressable by name — the
-    // thing a spawn-tree topology cannot express.
+    // agent sharing the checkout, addressable by name — the thing a spawn-tree
+    // topology cannot express.
+    //
+    // A pane rather than a tab (CC-89), which reverses the original choice and
+    // makes the header comment above true of all four builtins rather than
+    // three. The tab was meant to say "co-equal, not a subordinate", but it says
+    // it by hiding the agent behind a tab bar that shows no output until you
+    // switch to it — and a peer sharing your checkout is the one whose edits you
+    // most need to see landing. The same permissions argument that moved
+    // explorer and reviewer applies here with more force, since this profile can
+    // write. Co-equality is carried by `isolation: 'none'` and the prelude,
+    // which is where it belongs; the surface is about visibility.
     name: 'peer',
     description: 'A long-lived collaborator sharing your checkout, addressable by name.',
     model: 'opus',
     allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob'],
     disallowedTools: [...HUMAN_ONLY_CLI_DENY, ...NO_SELF_QUESTION],
     isolation: 'none',
-    surface: 'iterm-tab',
+    surface: 'iterm-pane',
     promptPrelude:
       'You are a peer working alongside other sessions in a shared checkout. Coordinate over ' +
       'agent-chat before editing files someone else may be holding.',
