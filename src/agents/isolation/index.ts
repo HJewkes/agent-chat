@@ -29,6 +29,13 @@ export interface IsolationContext {
   declaredPaths?: string[]
   /** Roster ∩ registry, supplied by the caller. Absent means "assume nobody". */
   peers?: readonly LivePeer[]
+  /**
+   * A worktree the task system assigned (CC-72). When set, `worktree` isolation
+   * ADOPTS it instead of allocating: no branch is created, and release must not
+   * remove what this process did not create. Isolation is a property of the
+   * work, so the assignment outranks whatever the profile would have chosen.
+   */
+  assignedWorktree?: string
   /** For toolset-limited: the profile's tool lists, which the context does not otherwise carry. */
   toolset?: { allowedTools?: string[]; disallowedTools?: string[] }
   /** Turns advisory conflicts into refusals. Wired to `--strict`. */

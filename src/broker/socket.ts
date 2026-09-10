@@ -147,6 +147,8 @@ export class SocketServer {
       ...(msg.isolation === undefined ? {} : { isolation: msg.isolation }),
       ...(msg.surface === undefined ? {} : { surface: msg.surface }),
       ...(msg.briefing === undefined ? {} : { briefing: msg.briefing }),
+      ...(msg.worktree === undefined ? {} : { worktree: msg.worktree }),
+      ...(msg.owns === undefined ? {} : { owns: msg.owns }),
       ...(msg.tags === undefined ? {} : { tags: msg.tags }),
       ...(msg.subscriptions === undefined ? {} : { subscriptions: msg.subscriptions }),
       ...(requester?.agentId === undefined ? {} : { parentAgentId: requester.agentId }),

@@ -162,14 +162,14 @@ function optionalDeclared(args: Record<string, unknown>): DeclaredPresence | und
  * both be guesses. Undefined has one documented meaning, so both spellings of
  * "no patterns given" reach it.
  */
-function optionalPatterns(args: Record<string, unknown>): string[] | undefined {
-  const value = args['patterns']
+function optionalPatterns(args: Record<string, unknown>, key = 'patterns'): string[] | undefined {
+  const value = args[key]
   if (value === undefined || value === null) return undefined
   const list = Array.isArray(value) ? value : [value]
   const kept = list.filter(p => typeof p === 'string' && p.trim() !== '') as string[]
   if (kept.length === 0) return undefined
   if (kept.length > CLAIM_MAX_PATTERNS)
-    throw new Error(`patterns may name at most ${CLAIM_MAX_PATTERNS} globs; got ${kept.length}`)
+    throw new Error(`${key} may name at most ${CLAIM_MAX_PATTERNS} globs; got ${kept.length}`)
   return kept.map(p => p.trim())
 }
 
@@ -605,6 +605,26 @@ export const TOOL_DEFINITIONS = [
           description: "Overrides the profile's isolation, e.g. worktree to keep it out of your checkout.",
         },
         cwd: { type: 'string', description: 'Working directory. Defaults to yours.' },
+        worktree: {
+          type: 'string',
+          description:
+            'Absolute path of a worktree the TASK SYSTEM already assigned to this work. Pass it when ' +
+            'something upstream decided where this task runs — a parent task, a wave plan — rather than ' +
+            'letting the profile pick. It is ADOPTED, not created: it must already exist, no branch is ' +
+            'made, no worktree-budget slot is taken, and retiring the agent leaves it in place, because ' +
+            'sibling agents may still be working in it. Do not pass a path you invented; if nobody ' +
+            'assigned a worktree, omit this and let the profile decide.',
+        },
+        owns: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Path globs INSIDE the worktree that this agent owns, e.g. ["src/broker/**", ' +
+            '"src/protocol.ts"]. This is what lets several agents share one worktree: each is given a ' +
+            'disjoint set of paths, and a spawn overlapping what a live peer already holds is warned ' +
+            'about by name. Advisory, like chat_claim — it records who was given what, and cannot stop ' +
+            'an agent that writes outside its set.',
+        },
         briefing: {
           type: 'string',
           description:
@@ -1398,6 +1418,8 @@ export class ToolHandler {
     const isolation = optionalEnum(args, 'isolation', ISOLATION_NAMES)
     const cwd = optionalString(args, 'cwd')
     const briefing = optionalString(args, 'briefing')
+    const worktree = optionalString(args, 'worktree')
+    const owns = optionalPatterns(args, 'owns')
     const res = (await this.call(
       {
         t: 'spawn',
@@ -1408,6 +1430,8 @@ export class ToolHandler {
         ...(isolation === undefined ? {} : { isolation }),
         ...(cwd === undefined ? {} : { cwd }),
         ...(briefing === undefined ? {} : { briefing }),
+        ...(worktree === undefined ? {} : { worktree }),
+        ...(owns === undefined ? {} : { owns }),
       },
       'spawn_result',
     )) as Extract<ServerMessage, { t: 'spawn_result' }>

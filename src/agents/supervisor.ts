@@ -123,6 +123,10 @@ export interface SpawnRequest {
    * and prepended to `brief`. Absent means the brief is exactly what was passed.
    */
   briefing?: string
+  /** CC-72: a worktree the task system assigned. Adopted, never allocated. */
+  worktree?: string
+  /** CC-81: path globs inside the worktree this agent owns. */
+  owns?: string[]
   /** Empty for a human-initiated spawn; otherwise the requesting agent's id. */
   parentAgentId?: string
   requestedBy: string
@@ -195,6 +199,46 @@ function stillDenied(childDenied: Set<string>, tool: string): boolean {
   if (childDenied.has(tool)) return true
   const base = tool.split('(')[0] ?? tool
   return base !== tool && childDenied.has(base)
+}
+
+/**
+ * Which isolation this spawn actually gets (CC-72, CC-81).
+ *
+ * The task system's assignment outranks the profile, because isolation is a
+ * property of the WORK and the profile only ever guessed. An assigned worktree
+ * means `worktree`; declared paths with no worktree mean `file-ownership`. Both
+ * beat `req.isolation`, which is the caller saying what strategy to run rather
+ * than what the work needs.
+ */
+export function isolationFor(
+  req: { worktree?: string; owns?: string[]; isolation?: IsolationName },
+  profile: { isolation: IsolationName },
+): IsolationName {
+  if (req.worktree) return 'worktree'
+  if (req.owns?.length) return 'file-ownership'
+  return req.isolation ?? profile.isolation
+}
+
+/**
+ * The floor: a request may narrow a profile's isolation, never widen it.
+ *
+ * Only one widening actually costs anything, so only one is named — an agent the
+ * profile put in its own worktree landing in the shared checkout instead. The
+ * others are not comparable (`toolset-limited` confines tools, `file-ownership`
+ * confines paths), and inventing a total order over four incomparable strategies
+ * would refuse combinations that are fine.
+ *
+ * Warn rather than refuse, matching `file-ownership.check` — an override is a
+ * legitimate thing to do deliberately (a throwaway probe that must not cost a
+ * worktree slot), and a refusal here would break it with no way through.
+ */
+export function floorWarning(requested: IsolationName, profileIsolation: IsolationName): string | undefined {
+  if (profileIsolation !== 'worktree' || requested === 'worktree') return undefined
+  return (
+    `isolation "${requested}" widens this profile's "worktree": the agent will write in the shared ` +
+    'checkout rather than its own. Intended for a short-lived agent that must not hold a worktree ' +
+    'slot; pass an assigned worktree instead if the work needs isolating.'
+  )
 }
 
 export class Supervisor implements TeleportHost {
@@ -473,7 +517,7 @@ export class Supervisor implements TeleportHost {
     const cwd = req.cwd ?? process.cwd()
     const cwdError = this.checkCwd(cwd, req.requestedBy)
     if (cwdError) return this.refuse(req, cwdError)
-    const isolationName = req.isolation ?? profile.isolation
+    const isolationName = isolationFor(req, profile)
     // Minted before the slot is taken so that acquire and release are keyed the
     // same way. Keying acquire on the name and release on the id leaks a slot on
     // every exit, and the leak is invisible until spawning stops working.
@@ -482,6 +526,24 @@ export class Supervisor implements TeleportHost {
       agentId,
       agentName: req.name,
       baseCwd: cwd,
+      ...(req.worktree ? { assignedWorktree: req.worktree } : {}),
+      ...(req.owns?.length ? { declaredPaths: [...req.owns] } : {}),
+      // The claim ledger is the live answer to "who holds what here", leased by
+      // presence: a claim whose owner has disconnected is already gone from it,
+      // so a spawn never blocks on a peer that no longer exists. Supplying it is
+      // what makes file-ownership's conflict check able to fire at all — without
+      // it the strategy allocated against an empty roster and silently behaved
+      // like `none`.
+      peers: this.core.claims.inWorktree(cwd).map(c => ({
+        agentId: c.owner,
+        name: c.owner,
+        cwd: c.worktreePath,
+        // A whole-worktree claim carries NO patterns — it owns everything — and
+        // `leaseholders()` drops any peer with an empty claim list. Mapping it to
+        // `**` keeps the strongest claim there is from being the one silently
+        // ignored, and says the same thing in the vocabulary the manifest speaks.
+        claims: c.kind === 'worktree' ? ['**'] : [...c.patterns],
+      })),
       // Without this the toolset strategy sees no tool lists and warns on every
       // spawn. It is the DENY list that silences the warning, because that is the
       // only one that confines — an earlier version of this comment argued the
@@ -494,7 +556,8 @@ export class Supervisor implements TeleportHost {
       ...(req.forceReset ? { forceReset: true } : {}),
     }
 
-    const warnings = await resolveIsolation([isolationName]).check(ctx)
+    const floor = floorWarning(isolationName, profile.isolation)
+    const warnings = [...(floor ? [floor] : []), ...(await resolveIsolation([isolationName]).check(ctx))]
     // A briefing is an improvement to the brief, never a precondition for one:
     // an unresolvable initiative warns and spawns anyway. The alternative is a
     // spawn that fails for a reason unrelated to the work.
