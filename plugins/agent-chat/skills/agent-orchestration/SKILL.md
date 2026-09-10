@@ -27,17 +27,22 @@ free, and it's how spawned agents and peers can address you back.
 ## Dispatch vocabulary
 
 Call `agent_profiles` before every `agent_spawn` — profile grants change, and guessing
-a name risks silently granting the wrong tool set. Profile choice fixes the model
-(`explorer`/`reviewer` = sonnet, `implementer`/`peer` = opus); there is no separate
-`model` parameter.
+a name risks silently granting the wrong tool set. That call is also the only place
+user-installed profiles appear: `agent_profiles` reads `~/.agent-chat/profiles/*.json`
+as well as the builtins, so the list is longer than this table and longer than
+anything in the repo.
 
-| Old vocabulary                                  | Now call                                                                                                                                                                                                                                                                                     |
-| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| subagent / hand off / async agent (writes code) | `agent_spawn(profile: "implementer", ...)` (own worktree) or `profile: "peer"` (shares your checkout)                                                                                                                                                                                        |
-| search / find / explore (read-only)             | `agent_spawn(profile: "explorer", ...)`                                                                                                                                                                                                                                                      |
-| review / narrow checks                          | `agent_spawn(profile: "reviewer", ...)`                                                                                                                                                                                                                                                      |
-| plan / design the approach                      | No profile replicates the old `Plan` subagent's read-only, architecture-focused framing. Spawn `explorer` to investigate, then synthesize the plan yourself — don't silently treat another profile as equivalent.                                                                            |
-| **"fork me" / "with your context"**             | **Not currently possible.** Every `agent_spawn` starts a fresh process from only the `brief` text — none inherit a running conversation's context or prompt cache. Say so explicitly rather than substituting a different profile. Tracked as **CC-44** in the `claude-channels` initiative. |
+Profile choice fixes the model (`explorer`/`reviewer`/`implementer-lite` = sonnet,
+`implementer`/`peer` = opus); there is no separate `model` parameter.
+
+| Old vocabulary                                       | Now call                                                                                                                                                                                                                                                                                     |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| subagent / hand off / async agent (writes code)      | `agent_spawn(profile: "implementer", ...)` (own worktree) or `profile: "peer"` (shares your checkout)                                                                                                                                                                                        |
+| the same, but the brief is SMALL and fully specified | `agent_spawn(profile: "implementer-lite", ...)` — sonnet, with `implementer`'s grants and worktree isolation. Pick it when the diff is S-sized, the tests are named, and no design judgement is required. Pick `implementer` (opus) the moment the brief needs a decision made.              |
+| search / find / explore (read-only)                  | `agent_spawn(profile: "explorer", ...)`                                                                                                                                                                                                                                                      |
+| review / narrow checks                               | `agent_spawn(profile: "reviewer", ...)`                                                                                                                                                                                                                                                      |
+| plan / design the approach                           | No profile replicates the old `Plan` subagent's read-only, architecture-focused framing. Spawn `explorer` to investigate, then synthesize the plan yourself — don't silently treat another profile as equivalent.                                                                            |
+| **"fork me" / "with your context"**                  | **Not currently possible.** Every `agent_spawn` starts a fresh process from only the `brief` text — none inherit a running conversation's context or prompt cache. Say so explicitly rather than substituting a different profile. Tracked as **CC-44** in the `claude-channels` initiative. |
 
 Every spawn `brief` contains, in order: task scope (one domain) — context needed to act
 without asking (including exact file:line locations you already found, so the agent
