@@ -442,3 +442,61 @@ describe('registry and composition', () => {
     expect(reasons.every(isWarning)).toBe(true)
   })
 })
+
+/**
+ * CC-72: a worktree the task system assigned is ADOPTED, not allocated.
+ *
+ * The distinction is the whole point. Allocating creates a branch and takes a
+ * budget slot, and releasing it removes the tree — correct for a worktree this
+ * strategy made, destructive for one handed to it that sibling agents may still
+ * be working in.
+ */
+describe('an assigned worktree', () => {
+  const assignedIn = (repo: string): string => {
+    const at = path.join(repo, 'assigned-wt')
+    git(['worktree', 'add', '-b', 'assigned-branch', at], repo)
+    return at
+  }
+
+  it('is used as-is, without creating a branch or taking a budget slot', async () => {
+    const repo = makeRepo()
+    const at = assignedIn(repo)
+    const before = git(['branch', '--list'], repo)
+
+    // Budget of 1, already spent by the assigned tree, proves adoption does not
+    // consume one: an allocating call here would throw WorktreeBudgetExhausted.
+    const strategy = createWorktreeStrategy({ budget: 1 })
+    const alloc = await strategy.allocate(ctxFor(repo, { assignedWorktree: at }))
+
+    expect(alloc.cwd).toBe(at)
+    expect(alloc.ref?.assigned).toBe('true')
+    expect(alloc.ref?.branch).toBe('assigned-branch')
+    expect(git(['branch', '--list'], repo)).toBe(before)
+  })
+
+  it('warns the agent it may be sharing the tree, rather than claiming it owns it', async () => {
+    const repo = makeRepo()
+    const alloc = await worktreeStrategy.allocate(ctxFor(repo, { assignedWorktree: assignedIn(repo) }))
+    expect(alloc.note).toMatch(/sharing it with other agents/)
+  })
+
+  it('refuses a path that does not exist, rather than inventing one', async () => {
+    const repo = makeRepo()
+    await expect(
+      worktreeStrategy.allocate(ctxFor(repo, { assignedWorktree: path.join(repo, 'nope') })),
+    ).rejects.toThrow(/does not exist/)
+  })
+
+  it('survives release, even forced — the task system owns it, not this agent', async () => {
+    const repo = makeRepo()
+    const at = assignedIn(repo)
+    const ctx = ctxFor(repo, { assignedWorktree: at })
+    const alloc = await worktreeStrategy.allocate(ctx)
+
+    // force is for discarding THIS agent's unmerged commits, not for seizing a
+    // resource that was never ours. Both directions must leave the tree standing.
+    expect(await worktreeStrategy.release(ctx, alloc, { force: true })).toBe(true)
+    expect(fs.existsSync(at)).toBe(true)
+    expect(git(['branch', '--list', 'assigned-branch'], repo)).toContain('assigned-branch')
+  })
+})

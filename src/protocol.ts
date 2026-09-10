@@ -665,6 +665,23 @@ export type ClientMessage =
        * arbitrary files read back to it — the broker resolves what it will read.
        */
       briefing?: string
+      /**
+       * A worktree the TASK SYSTEM assigned, rather than one the profile's
+       * isolation strategy chose (CC-72). Isolation is a property of the work,
+       * not of the agent: several tasks can share one worktree under file
+       * ownership, and a child task inherits its parent's. agent-chat's side of
+       * that is ACCEPTING an assignment, never computing one — so this is an
+       * absolute path that must already exist, and the strategy is bypassed
+       * rather than asked.
+       */
+      worktree?: string
+      /**
+       * Path globs, relative to the worktree, that this agent owns (CC-81).
+       * Turns `file-ownership` isolation from a no-op into a real assignment:
+       * they become the agent's claim, checked against what live peers already
+       * hold in the same worktree.
+       */
+      owns?: string[]
       /** Tags and subscriptions the spawned agent starts with, before it runs. */
       tags?: string[]
       subscriptions?: Subscription[]

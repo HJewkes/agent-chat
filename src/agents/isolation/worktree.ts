@@ -245,6 +245,22 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       const gitRoot = await findGitRoot(ctx.baseCwd)
       if (gitRoot === null) throw new Error(`${ctx.baseCwd} is not a git repository`)
 
+      // An assigned worktree is ADOPTED, not allocated (CC-72): no branch is
+      // created, no budget slot is taken, and `assigned` in the ref is what tells
+      // release to leave it alone. The task system owns its lifecycle — removing
+      // a worktree that sibling tasks are still sharing is exactly the damage
+      // this path exists to avoid.
+      if (ctx.assignedWorktree !== undefined) {
+        const assigned = path.resolve(ctx.assignedWorktree)
+        if (!existsSync(assigned)) throw new Error(`assigned worktree ${assigned} does not exist`)
+        const branch = (await gitOrNull(['rev-parse', '--abbrev-ref', 'HEAD'], assigned)) ?? 'HEAD'
+        return {
+          cwd: assigned,
+          note: `You are in a worktree assigned to this task at ${assigned}, on branch ${branch}. You may be sharing it with other agents, so stay inside the paths you were given.`,
+          ref: { branch, worktree: assigned, gitRoot, assigned: 'true' },
+        }
+      }
+
       await pruneStaleWorktrees(gitRoot)
       const allocated = await allocatedPaths(gitRoot, basePath)
       if (allocated.length >= budget) throw new WorktreeBudgetExhaustedError(allocated.length, budget)
@@ -277,6 +293,15 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       const ref = alloc.ref
       if (!ref?.branch || !ref.worktree || !ref.gitRoot) return false
       const { branch, worktree: worktreePath, gitRoot } = ref
+
+      // Release only what this strategy created. An assigned worktree belongs to
+      // the task system, may be shared with sibling agents still working in it,
+      // and may hold a branch someone else opened a PR from — so retiring one
+      // agent must not take it away. `--force` does NOT override this: force
+      // exists to discard THIS agent's unmerged commits, not to seize a resource
+      // that was never ours. Returning true reports the release as complete,
+      // because for this agent it is: there is nothing of ours left to clean up.
+      if (ref.assigned === 'true') return true
 
       if (!releaseOpts.force) {
         if (ctx.exitedAt !== undefined && Date.now() - ctx.exitedAt < RECLAIM_GRACE_MS) return false
