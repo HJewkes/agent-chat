@@ -10,11 +10,11 @@ on:
   # nothing. Every PR is checked, whatever it targets.
   pull_request:
 
-# Named explicitly because THIS repo is private and the sibling it mirrors is
-# public. A default read token on a public repo already covers pull-request
-# metadata; on a private one it covers contents and metadata only, so gitleaks
-# — which lists the PR's commits to decide what to scan — died with
-# "Resource not accessible by integration" on the first run.
+# Named explicitly rather than left to the default token. gitleaks lists a PR's
+# commits to decide what to scan, and needs pull-request read to do it — without
+# this block it died with "Resource not accessible by integration" back when this
+# repo was private. Kept after going public: it costs nothing and the failure it
+# prevents is silent.
 permissions:
   contents: read
   pull-requests: read

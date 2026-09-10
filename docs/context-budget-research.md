@@ -5,16 +5,15 @@ subprocess does not, the transcript on disk records per-message usage but not th
 window, and no API answers "how full is that session". This note establishes exactly what
 _is_ reachable, from where, and how agent-chat exposes it.
 
-Everything below is from Claude Code **2.1.263** (`~/.local/share/claude/versions/2.1.263`,
-`BUILD_TIME 2026-09-06T01:08:56Z`, `GIT_SHA 37ae3f38`). Field names are Claude Code's, and
-a future build may change them without warning; the reader in `src/agents/budget.ts` is
-tolerant by design for that reason.
+Everything below was established against Claude Code **2.1.263** (`BUILD_TIME
+2026-09-06T01:08:56Z`). Field names are Claude Code's, and a future build may change them
+without warning; the reader in `src/agents/budget.ts` is tolerant by design for that
+reason.
 
 ## 1. What the status line is handed
 
-The status-line payload is built by one function in the shipped bundle. It is the only
-place a running session's live context fill leaves the process. Reconstructed from the
-bundle, the payload is:
+The status-line payload is the only place a running session's live context fill leaves the
+process. Observed on the version above, the payload is:
 
 ```
 session_id            string          Claude Code's own session id
@@ -156,16 +155,9 @@ is not part of this change, but it is worth doing.
 
 ### The Fable budget
 
-Claude Code's own display-name table for rate-limit types is:
-
-```
-five_hour                    "session limit"
-seven_day                    "weekly limit"
-seven_day_opus               "Opus limit"
-seven_day_sonnet             "Sonnet limit"
-seven_day_overage_included   "Fable limit"
-overage                      "usage credit limit"
-```
+Alongside the four windows above, Claude Code carries per-model weekly rate-limit types
+(`seven_day_opus`, `seven_day_sonnet`), and it labels `seven_day_overage_included` as the
+Fable limit.
 
 So a separate Fable budget exists and is named `seven_day_overage_included`. Three findings
 follow, and the third is the one that matters:

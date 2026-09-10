@@ -1,26 +1,19 @@
 # Permission relay — verified mechanics
 
-Read out of the Claude Code binary (v2.1.220) and confirmed live on 2026-07-27.
-This documents what the host actually does, as distinct from what `src/server/index.ts`
-declares. Symbol names are minified and will drift between releases; the shapes won't.
+Established against Claude Code v2.1.220 and confirmed live on 2026-07-27. This
+documents what the host actually does, as distinct from what `src/server/index.ts`
+declares. Everything here is behaviour observed from the outside; treat it as a
+description of one release, not a contract.
 
 ## Read this first: the whole feature is behind a remote flag, default off
 
-Permission relay is gated on `tengu_harbor_permissions`, a remotely-evaluated flag
-whose **default is `false`**:
+Permission relay is gated on a remotely-evaluated feature flag whose **default is
+off**. The flag guards the step that installs the channel permission callbacks into
+session state, and those callbacks are what the relay path tests for before sending
+anything. Flag off means the callbacks are absent, which means nothing is ever sent.
+Not degraded: absent.
 
-```js
-function gSd() {
-  return Ke('tengu_harbor_permissions', !1)
-}
-```
-
-It guards the effect that installs the channel permission callbacks into session
-state — `if(!gSd()) return;` — and those callbacks are exactly the `m` that the relay
-block tests (`if (m && !t.tool.requiresUserInteraction?.())`). Flag off means `m` is
-undefined means nothing is ever sent. Not degraded: absent.
-
-It is currently `true` for this account, which is the only reason any of the findings
+It is currently on for this account, which is the only reason any of the findings
 below were observable. It can be revoked server-side, without a release, without a
 version change, and without any local signal — the failure mode is the same silent
 nothing described throughout this document.
@@ -34,18 +27,14 @@ off remotely since the last time anyone checked.
 ## The relay reaches allowlisted plugin channels
 
 It uses the _same_ gate as ordinary channel messages — there is no separate permission
-allowlist. Recipient selection is:
+allowlist. Recipient selection filters the connected MCP clients against the resolved
+`--channels` targets:
 
-```js
-SSd(clients, name => Sft(name, k0()) !== undefined)
-```
-
-- `k0()` returns `Mt.allowedChannels`, the resolved `--channels` targets.
-- `Sft(name, targets)` splits the MCP client name on `:` and matches either
-  `kind:"server"` by exact name, or `plugin:<pluginName>:<serverName>` against a
-  `{kind:"plugin", name}` entry. agent-chat's client name is
-  `plugin:agent-chat:agent-chat`, so it matches the `agent-chat` plugin target.
-- Dev-flag channels are merged into that _same_ array with `dev:true`.
+- The match splits the MCP client name on `:` and accepts either a `server` target by
+  exact name, or `plugin:<pluginName>:<serverName>` against a plugin target. agent-chat's
+  client name is `plugin:agent-chat:agent-chat`, so it matches the `agent-chat` plugin
+  target.
+- Dev-flag channels are merged into that _same_ target list, marked as dev.
 
 So the dev-flag-vs-plugin distinction CC-2 originally asked about does not exist on this
 code path. Both resolve through one list, and whatever gates ordinary channel delivery
@@ -66,9 +55,9 @@ in the broker log and an APPR row in the queue.
 
 ## Two capabilities are required, not one
 
-`SSd` filters on **both** `claude/channel` _and_ `claude/channel/permission` being
-present in `capabilities.experimental`. Declaring only the first gets you messages and
-silently no relay. We declare both.
+Recipient selection filters on **both** `claude/channel` _and_
+`claude/channel/permission` being present in `capabilities.experimental`. Declaring only
+the first gets you messages and silently no relay. We declare both.
 
 ## The request shape we guessed is correct
 
@@ -91,8 +80,8 @@ ever showed `chat_status` prompts would be noise with no signal.
 
 Two skips, both silent:
 
-- `t.tool.requiresUserInteraction?.()` — these never relay.
-- `localDisplayOnly` results — the channel callbacks are undefined, so nothing is sent.
+- Tools that declare they require user interaction — these never relay.
+- Local-display-only results — the channel callbacks are absent, so nothing is sent.
 
 A prompt that never opens obviously relays nothing either. An auto-allowed tool call
 produces no `approval_request`; absence of a row is not evidence the relay is broken.
@@ -103,8 +92,8 @@ rather than an absence:
 
 - the channel was demonstrably **live** — the session quoted back its inbound
   `<channel source="plugin:agent-chat:agent-chat" from="human" …>` token verbatim, and
-  the broker logged the route (`38222d97`, 12:30:51). This confirms the binary read
-  that `--channels` is parsed unconditionally in non-interactive mode.
+  the broker logged the route (`38222d97`, 12:30:51). So `--channels` is honoured in
+  non-interactive mode.
 - a permission denial genuinely **occurred** — `git status` returned "Claude requested
   permissions to use Bash, but you haven't granted it yet", while a `node -e` Bash call
   in the same session ran fine, so it was not a blanket block.
@@ -124,18 +113,12 @@ terminal. See ideas.md I1.
 ## The host _will_ accept a verdict — abstaining is our choice, not its constraint
 
 This is the finding worth carrying forward. The host registers a handler for
-`notifications/claude/channel/permission`:
+`notifications/claude/channel/permission`, taking params
+`{ request_id: string, behavior: "allow" | "deny" }`.
 
-```js
-MHs = z.object({
-  method: z.literal('notifications/claude/channel/permission'),
-  params: z.object({ request_id: z.string(), behavior: z.enum(['allow', 'deny']) }),
-})
-```
-
-On `allow` it calls `buildAllow(input)` and the tool call proceeds; on `deny` it aborts
-with `Denied via channel <serverName>`. It races the local dialog under a `claim()`
-check — **first answer wins**, and it does not persist as an "always allow" rule.
+On `allow` the tool call proceeds; on `deny` it aborts with
+`Denied via channel <serverName>`. It races the local dialog under a claim check —
+**first answer wins**, and it does not persist as an "always allow" rule.
 
 Any server on the channel allowlist can therefore approve another session's tool calls.
 Nothing in Claude Code prevents it. ideas.md R1 argued against building this on the
@@ -165,13 +148,13 @@ Four rows from three concurrent sessions on 2026-07-27 separate the two directio
 | 12:15:37 | cc2-relay | `chat_broadcast` | yes      | ~3min after that entry reached disk      |
 
 The mechanism is not that settings are frozen at launch — they aren't. When a user
-answers "always allow", `persistPermissions` does two independent things: `wfe(d)`
-writes the rule to disk fire-and-forget, and `ste(...)` updates _that session's_
-in-memory permission context. The running session therefore honours its own grants
-immediately, without re-reading anything. What is missing is the other direction:
-settings reads are memoized (`Tqn` over the `E2n` map) with no file watcher, so one
-session's write does not reach another session's cached view. Sessions launched at
-different times, or which have granted different things, disagree indefinitely.
+answers "always allow", the host does two independent things: it writes the rule to
+disk fire-and-forget, and it updates _that session's_ in-memory permission context.
+The running session therefore honours its own grants immediately, without re-reading
+anything. What is missing is the other direction: settings reads are memoized with no
+file watcher, so one session's write does not reach another session's cached view.
+Sessions launched at different times, or which have granted different things, disagree
+indefinitely.
 
 The consequence for anyone reading the log:
 
