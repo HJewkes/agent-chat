@@ -100,8 +100,8 @@ better and replaces it.
   a headless one produces none, ever. Since permissions are no longer bypassed,
   a headless agent blocked on a prompt is _invisible_ to the very view meant to
   unblock it. See `permission-relay.md`.
-- **The relay is behind a remote feature flag** (`tengu_harbor_permissions`,
-  default false, currently true for this account). It can be revoked
+- **The relay is behind a remote feature flag** (default off, currently on for
+  this account). It can be revoked
   server-side, so nothing may depend on it for correctness.
 - **Approvals age out by TTL, not by an event.** When the local dialog wins the
   race, the host sends the channel server nothing at all. A live blockers view
