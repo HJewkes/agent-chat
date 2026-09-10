@@ -455,6 +455,18 @@ describe('broadcast budget', () => {
     // load-bearing — the cost is payload x recipients, so fanout moves this.
     const bulky = `held-probe ${'x'.repeat(3000)}`
 
+    // Fanout is an input to the assertions below, so pin it (CC-90). A server
+    // that provisionally registers itself adds a recipient nobody asked for and
+    // pushes the FIRST broadcast over budget, failing the control half of this
+    // test with an opaque byte count. Naming the roster fails it legibly, and
+    // names the phantom.
+    const roster = await call(erin, 'chat_list')
+    const phantoms = roster
+      .split('\n')
+      .filter(line => /unregistered session in/.test(line))
+      .join('; ')
+    expect(phantoms, 'a harness server registered itself; see src/__tests__/setup-env.ts').toBe('')
+
     const before = bob.inbox.length
     const first = await call(erin, 'chat_broadcast', { text: `first ${bulky}` })
     await settle()
