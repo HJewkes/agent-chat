@@ -16,18 +16,21 @@ next poll. Agents can also escalate to you, and you answer from a terminal.
 canonical, current guide to how the tools fit together. Everything else in
 `docs/` is context, not required reading:
 
-| Doc                            | What it is                                                                                                       |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `working-as-a-team.md`         | Current guide — how the tools compose, day to day.                                                               |
-| `demo-walkthrough.md`          | Current guide — a live runbook for sanity-checking what's shipped.                                               |
-| `permission-relay.md`          | Current guide — verified mechanics of the permission relay, as built.                                            |
-| `cross-agent-communication.md` | Lessons learned from real multi-session runs; the evidence behind the messaging rules in `working-as-a-team.md`. |
-| `teleport.md`                  | Design record — implemented; §14 records where the build diverged from the design.                               |
-| `agent-teams.md`               | Design record — a plan; nothing in it is implemented yet.                                                        |
-| `notes-a4-surfaces.md`         | Implementation notes — what got built for surfaces, and seams left open.                                         |
-| `notes-a5-isolation.md`        | Implementation notes — the isolation strategies, as implemented.                                                 |
-| `priority-inversion.md`        | Explored and rejected — founding observation was refuted the same day; kept for the correction, not the claim.   |
-| `ideas.md`                     | Backlog — ideation only, ranked, nothing implemented.                                                            |
+| Doc                                    | What it is                                                                                                        |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `working-as-a-team.md`                 | Current guide — how the tools compose, day to day.                                                                |
+| `demo-walkthrough.md`                  | Current guide — a live runbook for sanity-checking what's shipped.                                                |
+| `permission-relay.md`                  | Current guide — verified mechanics of the permission relay, as built.                                             |
+| `cross-agent-communication.md`         | Lessons learned from real multi-session runs; the evidence behind the messaging rules in `working-as-a-team.md`.  |
+| `teleport.md`                          | Design record — implemented; §14 records where the build diverged from the design.                                |
+| `agent-teams.md`                       | Design record — Parts 1-2 shipped (identity, spawning, supervision); Part 3 is still a plan. See its §11.         |
+| `notes-a4-surfaces.md`                 | Implementation notes — what got built for surfaces, and seams left open.                                          |
+| `notes-a5-isolation.md`                | Implementation notes — the isolation strategies, as implemented.                                                  |
+| `priority-inversion.md`                | Explored and rejected — founding observation was refuted the same day; kept for the correction, not the claim.    |
+| `context-budget-research.md`           | What a running session can learn about its own context fill and account budget, and where each figure comes from. |
+| `adr-event-store.md`                   | Decision record — why the event log is append-only SQLite with derived views.                                     |
+| `replacing-built-in-agent-dispatch.md` | Why this machine routes agent dispatch through the bundled skill instead of Claude Code's own Agent tool.         |
+| `ideas.md`                             | Backlog — ideation only, ranked, nothing implemented.                                                             |
 
 ## Why it works the way it does
 
@@ -108,18 +111,36 @@ is cheaper for an agent than deciding, and the budget forces triage.
 
 ## Setup
 
-agent-chat ships as a plugin, so no dev flag is needed. Install it from a local
-marketplace, allowlist it in machine-wide managed settings, then launch with
-`--channels`:
+You need Claude Code with the **channels** research preview available to your
+account. Channels are what deliver a message into an already-running session; the
+tools work without them, but every push is silently discarded.
+
+agent-chat ships as a plugin, so no dev flag is needed. Build it, tell the plugin
+where the build lives, allowlist it, then launch with `--channels`:
 
 ```bash
+git clone https://github.com/HJewkes/agent-chat && cd agent-chat
 npm install && npm run build
-claude plugin marketplace add /Users/you/projects/agent-chat
+
+# Claude Code copies an installed plugin into its own cache and will not resolve
+# paths outside that copy, so the plugin shim has to be told where the real
+# checkout is. Without this step it exits with "cannot locate the agent-chat
+# server" and the session comes up with no chat tools.
+mkdir -p ~/.agent-chat && echo "$PWD" > ~/.agent-chat/mcp-home
+
+claude plugin marketplace add "$PWD"
 claude plugin install agent-chat@agent-chat-local
 claude --channels plugin:agent-chat@agent-chat-local
 ```
 
-The allowlist entry lives in `/Library/Application Support/ClaudeCode/managed-settings.json`:
+`AGENT_CHAT_REPO=<repo root>` or `npm link` both work in place of the `mcp-home`
+file; the shim tries them in that order. Note the variable is `AGENT_CHAT_REPO`,
+not `AGENT_CHAT_HOME` — the latter relocates the runtime state directory holding
+the socket, and setting it here would partition sessions from each other.
+
+The allowlist entry lives in machine-wide managed settings, at
+`/Library/Application Support/ClaudeCode/managed-settings.json` on macOS and
+`/etc/claude-code/managed-settings.json` on Linux:
 
 ```json
 {
@@ -210,10 +231,10 @@ agent-chat mcp                  the MCP server (Claude Code spawns this)
 npm run build && npm test
 ```
 
-66 checks across four suites. `registry.test.ts` covers live routing decisions,
-`event-log.test.ts` covers the projections, `routing.test.ts` drives real MCP
-sessions over stdio, and `approvals.test.ts` drives the real permission-request
-notification. The properties that matter:
+Roughly 1,000 checks across 60 files. `registry.test.ts` covers live routing
+decisions, `event-log.test.ts` covers the projections, `routing.test.ts` drives
+real MCP sessions over stdio, and `approvals.test.ts` drives the real
+permission-request notification. The properties that matter:
 
 - a directed message reaches the addressee **and nobody else**
 - an unknown recipient is refused rather than fanned out
@@ -230,6 +251,12 @@ notification. The properties that matter:
 - a stale approval ages out of the queue, while questions never do
 - an over-budget broadcast is held rather than dropped, and stays retrievable
 - a depth-5 chain delivers untouched — the breaker sits far above real work
+
+Two known snags when running the suite on a machine that is itself using
+agent-chat. Sessions inherit `AGENT_CHAT_*` variables that the tests then pass to
+the sessions they spawn, so unset them first. And the broadcast-budget case in
+`routing.test.ts` counts live registered sessions in its fanout, so it fails
+against a running broker — that one is a bug in the test, tracked as CC-90.
 
 ## Limits
 
@@ -284,3 +311,12 @@ evidence across sessions of different vintages. Presence is unaffected.
 
 - Path claims — reusing the lease primitive for files instead of nicknames.
 - A per-pair rate backstop, since `thread_depth` resets on a fresh thread.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+This is a personal proof of concept, published because the mechanics are worth
+reading rather than because it wants maintaining. Expect it to track whatever
+Claude Code build it was last run against; the behaviour it depends on is a
+research preview and is not a stable interface.
