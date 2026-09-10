@@ -252,11 +252,10 @@ permission-request notification. The properties that matter:
 - an over-budget broadcast is held rather than dropped, and stays retrievable
 - a depth-5 chain delivers untouched — the breaker sits far above real work
 
-Two known snags when running the suite on a machine that is itself using
-agent-chat. Sessions inherit `AGENT_CHAT_*` variables that the tests then pass to
-the sessions they spawn, so unset them first. And the broadcast-budget case in
-`routing.test.ts` counts live registered sessions in its fanout, so it fails
-against a running broker — that one is a bug in the test, tracked as CC-90.
+Run it from anywhere, including inside a Claude Code session. Most of the suite
+spawns the real CLI with the ambient environment, which used to mean the
+developer's own `CLAUDE_CODE_SESSION_ID` and `AGENT_CHAT_*` reached the servers
+under test. `src/__tests__/setup-env.ts` strips both before every file.
 
 ## Limits
 
