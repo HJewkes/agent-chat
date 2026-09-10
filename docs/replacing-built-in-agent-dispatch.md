@@ -31,6 +31,14 @@ subagent type, how to reach/check on a peer) lives in the `agent-orchestration` 
 not here — this doc stays narrow to rationale and unwind so the mapping only needs to
 be maintained in one place.
 
+One consequence of routing dispatch through profiles rather than a `model` parameter:
+choosing the model means choosing a profile. `implementer-lite` exists for that reason
+(CC-88) — sonnet, with `implementer`'s exact grants and worktree isolation — so a small,
+fully specified brief does not have to be handed to opus to get a worktree. Reach for it
+when the diff is S-sized and the tests are named; reach for `implementer` the moment the
+brief needs a decision made. It is a user profile in `~/.agent-chat/profiles/`, not a
+builtin, so `agent_profiles` is what proves it is installed on a given machine.
+
 ## The known gap: fork
 
 Every `agent_spawn` profile starts a brand-new `claude` CLI process that begins with
