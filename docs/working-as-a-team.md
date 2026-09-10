@@ -83,9 +83,11 @@ produces worse output rather than blocking — which is the right behavior, but 
 it knowingly. Use headless for read-only work (`explorer`, `reviewer`) and a visible surface for
 anything that writes.
 
-`iterm-pane` is the coordinator view: the first agent splits your pane, and each later one
-stacks beneath it, so your pane keeps its width. `iterm-tab` is for independent peers you are
-not watching.
+`iterm-pane` is the coordinator view, and the default for every writing profile: the first
+agent splits your pane, and each later one stacks beneath it, so your pane keeps its width.
+`iterm-tab` is for an agent you want out of the way — it shows no output until you switch to
+it, which is why `peer` stopped defaulting to it (CC-89): a peer sharing your checkout is the
+one you most need to see working.
 
 **Placement follows the anchor, never focus.** The broker resolves the target pane from the
 _spawning session's own registration_, so an agent lands in the tab you spawned it from even if
