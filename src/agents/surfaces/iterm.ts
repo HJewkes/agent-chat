@@ -71,6 +71,11 @@ const findSessions = (uuid: string, columnUuid: string): string => `
  *
  * Falling back to the vertical split when the column session is gone is what
  * makes a closed agent pane self-healing: the next spawn starts a fresh column.
+ *
+ * There is no depth parameter here and there should not be one (CC-64). A column
+ * is keyed by whose pane is being split, and the anchor is always the requester's
+ * own pane, so an agent's own spawns land beside IT — one step further right, a
+ * column per level, for free. See docs/agent-teams.md § placement.
  */
 const beside = (
   surface: ItermSurfaceName,
