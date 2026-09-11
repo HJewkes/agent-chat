@@ -184,6 +184,19 @@ describe('file-ownership strategy', () => {
     expect(await fileOwnershipStrategy.check(ctx)).toEqual([])
   })
 
+  it('does not see a declared glob that swallows a live concrete claim (CC-92)', async () => {
+    // The asymmetry is the point: a declared FILE under a peer's glob is caught
+    // above, the reverse is not, and that holds only while the manifest is
+    // coordinator-issued. Adopting patternsOverlap here would close it, and
+    // should be a decision rather than a side effect.
+    const ctx = ctxFor('/repo', {
+      declaredPaths: ['src/agents/**'],
+      peers: [peer('bob', '/repo', ['src/agents/isolation/x.ts'])],
+      strict: true,
+    })
+    expect(await fileOwnershipStrategy.check(ctx)).toEqual([])
+  })
+
   it('puts the ownership brief in the allocation without moving the agent', async () => {
     const alloc = await fileOwnershipStrategy.allocate(claimant)
     expect(alloc.cwd).toBe('/repo')

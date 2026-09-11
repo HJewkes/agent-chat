@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { buildOwnershipManifest, checkConflicts } from '../agents/isolation/file-ownership.js'
 import { ClaimLedger, patternsOverlap } from '../broker/claims.js'
 
 /**
@@ -34,6 +35,40 @@ describe('patternsOverlap', () => {
 
   it('does not collide two files that merely share a directory', () => {
     expect(patternsOverlap('src/cli/a.ts', 'src/cli/b.ts')).toBe(false)
+  })
+})
+
+/**
+ * CC-92: the two overlap implementations answer the same question differently on
+ * purpose — `checkConflicts` serves a manifest one coordinator hands out, where
+ * identical strings are the only reachable collision, and `patternsOverlap`
+ * serves agents choosing patterns independently. Until now that was prose
+ * (claims.ts:60-74) with nothing holding it true. These assert the divergence,
+ * so adopting `patternsOverlap` in file-ownership.ts has to be a decision rather
+ * than a silent change that leaves the comment describing code that moved.
+ */
+describe('divergence from file-ownership checkConflicts', () => {
+  const conflictsOn = (a: string, b: string): boolean =>
+    checkConflicts(
+      buildOwnershipManifest([
+        { agentId: 'alice', patterns: [a] },
+        { agentId: 'bob', patterns: [b] },
+      ]),
+    ).length > 0
+
+  it('disagrees where a subtree pattern covers a concrete file', () => {
+    expect(patternsOverlap('src/**', 'src/cli/foo.ts')).toBe(true)
+    expect(conflictsOn('src/**', 'src/cli/foo.ts')).toBe(false)
+  })
+
+  it('disagrees where one subtree pattern contains another', () => {
+    expect(patternsOverlap('src/**', 'src/cli/**')).toBe(true)
+    expect(conflictsOn('src/**', 'src/cli/**')).toBe(false)
+  })
+
+  it('agrees only where the two patterns are the identical string', () => {
+    expect(patternsOverlap('src/a.ts', 'src/a.ts')).toBe(true)
+    expect(conflictsOn('src/a.ts', 'src/a.ts')).toBe(true)
   })
 })
 
