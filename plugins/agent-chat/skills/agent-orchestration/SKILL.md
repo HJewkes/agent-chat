@@ -86,6 +86,35 @@ Monitor(command: "agent-chat watch <your-name>",
 It starts at the log head, so it will not replay a backlog at you. Use
 `agent-chat watch <name> --once --since all` to read what you already missed.
 
+## Budget: what you are spending, and how to find out
+
+`session_budget` answers two different questions, and a coordinator should treat them
+differently.
+
+**Your own context fill** is per session. You do not have to poll for it: when you cross
+70%, 85% or 95%, a `[budget]` line is appended to the next peer message you receive. When
+it appears, act on it at your next natural stopping point rather than finishing one more
+thing — `agent_teleport` ends this session and starts a successor on the current build,
+keeping your name so peers can still reach you. Your transcript does not travel, so the
+handoff you write is all the successor gets. That is why 95% says stop now: past it there
+is not enough room left to write a good one.
+
+**The account rate limit is machine-wide and shared.** It is not billed to you, and nothing
+pushes it — call `session_budget` when you are about to make a decision that spends it.
+`five_hour` recovers within a working session; `seven_day` does not, so it is the one that
+constrains a day's plan. Use it to shape the work rather than to stop:
+
+- Above ~85% on `seven_day`, prefer `implementer-lite` or `explorer` (sonnet) over the opus
+  profiles for anything that does not need judgement, and narrow briefs so an agent does
+  less rediscovery.
+- Spawn fewer agents doing more each, rather than many doing little. Every agent pays full
+  price to rebuild context the brief could have given it.
+- Check before a wave, not after. Finding out at 96% that five agents are queued is worse
+  than finding out at 80% that the wave should be three.
+- The figure a spawned agent reports for ITSELF can be stale: an idle session keeps
+  publishing the fill it had when it stopped. Read `age_seconds` and `stale` before quoting
+  a number back to a human.
+
 ## Return contract
 
 Agents report: `Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`, under 15

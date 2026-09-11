@@ -11,6 +11,7 @@ import { hostIdentity } from './host.js'
 import { observedRegistration } from '../git.js'
 import { disambiguated, provisionalName } from './provisional.js'
 import { exitWhenStdinEnds } from './stdio-lifetime.js'
+import { ContextHinter, withHint } from './context-hint.js'
 
 /**
  * Claude Code sends this when a tool-approval dialog opens in this session.
@@ -354,6 +355,11 @@ export async function startMcpServer(): Promise<void> {
     },
   )
 
+  // One per session, because the "already told them" state is per session and
+  // the process IS the session. Reads the status-line cache lazily, so a machine
+  // without the writer installed simply never hints.
+  const hinter = new ContextHinter(hostIdentity().sessionId)
+
   const deliver = (message: DeliveredMessage): void => {
     const meta: Record<string, string> = { from: message.from, msg_id: message.msgId }
     if (message.inReplyTo) meta.in_reply_to = message.inReplyTo
@@ -371,9 +377,13 @@ export async function startMcpServer(): Promise<void> {
     // them. It comes off a broker-written row and there is no client message
     // that can produce it, so it means the same thing every time it appears.
     if (message.provenance) meta.provenance = message.provenance
+    // The context hint rides this frame rather than being pushed on a timer:
+    // fanout cost is payload x recipients, so telling every session its own
+    // figure on a schedule is the one shape the broadcast budget exists to
+    // prevent. Silent unless a new band was crossed — see `context-hint.ts`.
     void mcp.notification({
       method: 'notifications/claude/channel',
-      params: { content: message.text, meta },
+      params: { content: withHint(message.text, hinter.hint()), meta },
     })
   }
 
