@@ -115,6 +115,26 @@ constrains a day's plan. Use it to shape the work rather than to stop:
   publishing the fill it had when it stopped. Read `age_seconds` and `stale` before quoting
   a number back to a human.
 
+### The coordinator is the most expensive seat
+
+The session doing the coordinating is usually the largest model on the machine and the one
+whose context is read on every subsequent turn. Every low-leverage, high-context read it does
+itself — mining a note corpus, reading a routine PR diff in full, paging through recon output —
+makes every later triage and coordination turn cost more, because the window is fuller. Treat
+its context as the scarce resource, not the agents' time.
+
+- Corpus mining, literature digests, recon over many files: spawn `implementer-lite` (sonnet,
+  `isolation: none` when it must not hold a worktree slot) or `explorer`, have it WRITE a
+  digest file, and read only its <10-line report.
+- PR gating: keep one standing sonnet `reviewer` per wave; send it PR numbers and read its
+  verdict. Read a diff yourself only where the judgement is the point (safety paths, lifecycle
+  and migration changes), not for routine hygiene PRs.
+- Before any read that will return more than ~100 lines, ask whether a sonnet agent could
+  return a 10-line answer instead.
+- `session_budget(name)` returns a PEER's `model_id`, `cost.total_cost_usd` and context
+  fill as well as your own. Use it to see which seats are expensive before deciding who does
+  the next context-heavy job.
+
 ## Return contract
 
 Agents report: `Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`, under 15
