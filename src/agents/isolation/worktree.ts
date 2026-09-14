@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process'
-import { cpSync, existsSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { warn } from './warnings.js'
 import { findGitRoot } from '../../git.js'
+import { home } from '../../paths.js'
 import type { Allocation, IsolationContext, IsolationStrategy, ReleaseOptions } from './index.js'
 
 // Re-exported because this module was its original home and callers (and tests)
@@ -16,11 +17,31 @@ const execFileAsync = promisify(execFile)
 const DEFAULT_BUDGET = 3
 const DEFAULT_BASE_PATH = '.worktrees'
 
-/** Operators raise the per-repo cap with AGENT_CHAT_WORKTREE_BUDGET; junk falls back to the default. */
-export function defaultWorktreeBudget(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env.AGENT_CHAT_WORKTREE_BUDGET
-  const parsed = raw === undefined || raw === '' ? Number.NaN : Number(raw)
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_BUDGET
+/**
+ * Operators raise the per-repo cap with AGENT_CHAT_WORKTREE_BUDGET or a
+ * `worktreeBudget` key in `<home>/config.json`; junk falls back to the default.
+ * Read per call so a running broker honours a change without a restart.
+ */
+export function defaultWorktreeBudget(
+  env: NodeJS.ProcessEnv = process.env,
+  configPath: string = path.join(home(), 'config.json'),
+): number {
+  return (
+    positiveInt(env.AGENT_CHAT_WORKTREE_BUDGET) ?? positiveInt(readConfigBudget(configPath)) ?? DEFAULT_BUDGET
+  )
+}
+
+function positiveInt(raw: unknown): number | null {
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' && raw !== '' ? Number(raw) : Number.NaN
+  return Number.isInteger(n) && n > 0 ? n : null
+}
+
+function readConfigBudget(configPath: string): unknown {
+  try {
+    return (JSON.parse(readFileSync(configPath, 'utf8')) as { worktreeBudget?: unknown }).worktreeBudget
+  } catch {
+    return undefined
+  }
 }
 export const BRANCH_PREFIX = 'agent-chat/'
 
@@ -222,7 +243,7 @@ async function attachWorktree(
 
 export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStrategy {
   const basePath = opts.basePath ?? DEFAULT_BASE_PATH
-  const budget = opts.budget ?? defaultWorktreeBudget()
+  const budgetNow = (): number => opts.budget ?? defaultWorktreeBudget()
 
   return {
     name: 'worktree',
@@ -233,6 +254,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
 
       await pruneStaleWorktrees(gitRoot)
       const allocated = await allocatedPaths(gitRoot, basePath)
+      const budget = budgetNow()
       const reasons: string[] = []
       if (allocated.length >= budget) {
         reasons.push(`worktree budget exhausted: ${allocated.length}/${budget} allocated under ${basePath}`)
@@ -270,6 +292,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
 
       await pruneStaleWorktrees(gitRoot)
       const allocated = await allocatedPaths(gitRoot, basePath)
+      const budget = budgetNow()
       if (allocated.length >= budget) throw new WorktreeBudgetExhaustedError(allocated.length, budget)
 
       const branch = branchFor(ctx.agentName)

@@ -253,11 +253,20 @@ describe('worktree allocate', () => {
 })
 
 describe('worktree budget', () => {
-  it('reads the cap from AGENT_CHAT_WORKTREE_BUDGET and falls back on junk', () => {
-    expect(defaultWorktreeBudget({ AGENT_CHAT_WORKTREE_BUDGET: '8' })).toBe(8)
-    expect(defaultWorktreeBudget({ AGENT_CHAT_WORKTREE_BUDGET: 'lots' })).toBe(3)
-    expect(defaultWorktreeBudget({ AGENT_CHAT_WORKTREE_BUDGET: '0' })).toBe(3)
-    expect(defaultWorktreeBudget({})).toBe(3)
+  it('reads the cap from the env, then config.json, and falls back on junk', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iso-budget-'))
+    tmpdirs.push(dir)
+    const missing = path.join(dir, 'config.json')
+    expect(defaultWorktreeBudget({ AGENT_CHAT_WORKTREE_BUDGET: '8' }, missing)).toBe(8)
+    expect(defaultWorktreeBudget({ AGENT_CHAT_WORKTREE_BUDGET: 'lots' }, missing)).toBe(3)
+    expect(defaultWorktreeBudget({ AGENT_CHAT_WORKTREE_BUDGET: '0' }, missing)).toBe(3)
+    expect(defaultWorktreeBudget({}, missing)).toBe(3)
+
+    fs.writeFileSync(missing, JSON.stringify({ worktreeBudget: 6 }))
+    expect(defaultWorktreeBudget({}, missing)).toBe(6)
+    expect(defaultWorktreeBudget({ AGENT_CHAT_WORKTREE_BUDGET: '8' }, missing)).toBe(8)
+    fs.writeFileSync(missing, '{not json')
+    expect(defaultWorktreeBudget({}, missing)).toBe(3)
   })
 
   it('reports exhaustion from check and throws from allocate', async () => {
