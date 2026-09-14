@@ -15,6 +15,7 @@ import {
 import { matchPattern } from '../agents/isolation/file-ownership.js'
 import {
   createWorktreeStrategy,
+  defaultWorktreeBudget,
   findGitRoot,
   RECLAIM_GRACE_MS,
   WorktreeBudgetExhaustedError,
@@ -252,6 +253,13 @@ describe('worktree allocate', () => {
 })
 
 describe('worktree budget', () => {
+  it('reads the cap from AGENT_CHAT_WORKTREE_BUDGET and falls back on junk', () => {
+    expect(defaultWorktreeBudget({ AGENT_CHAT_WORKTREE_BUDGET: '8' })).toBe(8)
+    expect(defaultWorktreeBudget({ AGENT_CHAT_WORKTREE_BUDGET: 'lots' })).toBe(3)
+    expect(defaultWorktreeBudget({ AGENT_CHAT_WORKTREE_BUDGET: '0' })).toBe(3)
+    expect(defaultWorktreeBudget({})).toBe(3)
+  })
+
   it('reports exhaustion from check and throws from allocate', async () => {
     const repo = makeRepo()
     const strategy = createWorktreeStrategy({ budget: 1 })

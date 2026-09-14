@@ -15,6 +15,13 @@ const execFileAsync = promisify(execFile)
 
 const DEFAULT_BUDGET = 3
 const DEFAULT_BASE_PATH = '.worktrees'
+
+/** Operators raise the per-repo cap with AGENT_CHAT_WORKTREE_BUDGET; junk falls back to the default. */
+export function defaultWorktreeBudget(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.AGENT_CHAT_WORKTREE_BUDGET
+  const parsed = raw === undefined || raw === '' ? Number.NaN : Number(raw)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_BUDGET
+}
 export const BRANCH_PREFIX = 'agent-chat/'
 
 /**
@@ -215,7 +222,7 @@ async function attachWorktree(
 
 export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStrategy {
   const basePath = opts.basePath ?? DEFAULT_BASE_PATH
-  const budget = opts.budget ?? DEFAULT_BUDGET
+  const budget = opts.budget ?? defaultWorktreeBudget()
 
   return {
     name: 'worktree',
