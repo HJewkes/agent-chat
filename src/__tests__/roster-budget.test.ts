@@ -1,8 +1,8 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { STALE_AFTER_SECONDS } from '../agents/budget.js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { accountUsageLine, budgetSegment, readBudget, STALE_AFTER_SECONDS } from '../agents/budget.js'
 import { ToolHandler } from '../server/tools.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { AgentIdentity, ServerMessage, SessionInfo } from '../protocol.js'
@@ -121,6 +121,117 @@ describe('agent_list carries budget per row', () => {
     expect(out).toContain('silent-scout')
     expect(out).toContain('no budget reading')
     expect(out).toContain('Account usage: no budget reading available')
+  })
+
+  /**
+   * A retired or exited identity has no process left to have written a
+   * reading, so its absence is the default, not information — unlike a LIVE
+   * row with no reading, which still prints the segment above. On a machine
+   * with a long agent history nearly every row is in one of these states, so
+   * reading and rendering for them is the exact cost CC-94 must not add.
+   */
+  it('skips both the read and the segment for a non-live agent', async () => {
+    write('sess-retired', payload('sess-retired'))
+    const readFileSpy = vi.spyOn(fs, 'readFileSync')
+
+    const handler = new ToolHandler(
+      stubBroker({
+        t: 'agents_result',
+        agents: [
+          agent({ name: 'retired-scout', state: 'retired', sessionId: 'sess-retired' }),
+          agent({ name: 'exited-scout', state: 'exited', sessionId: 'sess-retired' }),
+          agent({ name: 'fresh-scout', state: 'live', sessionId: 'sess-retired' }),
+        ],
+      }),
+    )
+    const out = textOf(await handler.handle('agent_list', {}))
+    // Read the call history before restoring: mockRestore() also clears it.
+    const readsOfThatSession = readFileSpy.mock.calls.filter(c => String(c[0]).includes('sess-retired'))
+    readFileSpy.mockRestore()
+
+    const retiredLine = out.split('\n').find(line => line.startsWith('- retired-scout'))
+    const exitedLine = out.split('\n').find(line => line.startsWith('- exited-scout'))
+    expect(retiredLine).not.toContain('budget')
+    expect(exitedLine).not.toContain('budget')
+    // The live row shares the same session id, proving the file really was
+    // readable — the other two rows' absence is a filtering choice, not luck.
+    expect(out).toContain('claude-opus-5 · $1.3 · 43.2%/200k')
+    expect(readsOfThatSession).toHaveLength(1)
+  })
+})
+
+describe('agent_list at the scale a long-lived machine actually reaches', () => {
+  // Row shape and lengths lifted from a real agent_list call against the shared
+  // broker on this machine, taken at review time: 216 agents, state distribution
+  // 34 live / 93 detached / 89 exited / 0 retired / 0 spawning, 61,183 characters
+  // total before this fix — already over the tool-result limit on its own.
+  const REALISTIC_CWD = '/Users/hjewkes/projects/voltras-mcp/.worktrees/vw387-milestone-fields'
+  const REALISTIC_SESSION = 'b17eb21b-75f0-49c1-a118-8bf992bbd902'
+
+  const agent = (over: Partial<AgentIdentity>): AgentIdentity => ({
+    agentId: 'a1',
+    name: 'vw387-milestone-fields',
+    profile: 'implementer-lite',
+    state: 'exited',
+    origin: 'spawned',
+    spawnedBy: 'voltras-main',
+    spawnedAt: 0,
+    brief: '',
+    cwd: REALISTIC_CWD,
+    isolation: 'none',
+    surface: 'iterm-pane',
+    sessionId: REALISTIC_SESSION,
+    lastEventAt: 0,
+    generation: 1,
+    ...over,
+  })
+
+  const NON_LIVE = 93 + 89 // detached + exited, from the real distribution above
+  const LIVE = 34
+
+  /**
+   * Reading and rendering a segment on every one of the 182 non-live rows —
+   * the naive version of this fix — would have made an already-over-limit call
+   * worse. This pins that the text this fix adds scales with LIVE rows only.
+   */
+  it('adds text proportional to live rows, not to total rows', async () => {
+    write(REALISTIC_SESSION, payload(REALISTIC_SESSION))
+    const nonLive = Array.from({ length: NON_LIVE }, (_, i) =>
+      agent({ name: `retired-${i}`, agentId: `r${i}`, state: i % 2 === 0 ? 'detached' : 'exited' }),
+    )
+    const live = Array.from({ length: LIVE }, (_, i) =>
+      agent({
+        name: `live-${i}`,
+        agentId: `l${i}`,
+        state: 'live',
+        sessionId: i === 0 ? REALISTIC_SESSION : 'sess-none',
+      }),
+    )
+
+    const handler = new ToolHandler(stubBroker({ t: 'agents_result', agents: [...nonLive, ...live] }))
+    const out = textOf(await handler.handle('agent_list', {}))
+
+    // One live row has a reading, the other 33 do not — every non-live row is
+    // silent either way.
+    expect(out.match(/no budget reading/g)).toHaveLength(LIVE - 1)
+    expect(out).toContain('claude-opus-5 · $1.3 · 43.2%/200k')
+
+    // Measured directly off what this fix actually appends (`, ` + the
+    // segment, once per live row, plus the header line once total) rather than
+    // reconstructing a parallel "before" render, which would drift from the
+    // real formatting and give a false number.
+    const foundSegment = `, ${budgetSegment(readBudget(REALISTIC_SESSION))}`
+    const missingSegment = `, ${budgetSegment(readBudget('sess-none'))}`
+    const header = `${accountUsageLine([{ name: 'x', read: readBudget(REALISTIC_SESSION) }])}\n`
+    const addedChars = foundSegment.length + (LIVE - 1) * missingSegment.length + header.length
+    // eslint-disable-next-line no-console -- measured figures for the PR report, not fixed assertions
+    console.info(
+      `[CC-94] ${NON_LIVE + LIVE}-row agent_list (${LIVE} live, ${NON_LIVE} non-live): ` +
+        `${out.length} chars total, ${addedChars} chars added by this fix ` +
+        `(${foundSegment.length} for the one found reading, ${missingSegment.length} each for ${LIVE - 1} missing, ` +
+        `${header.length} for the header; 0 added per non-live row)`,
+    )
+    expect(addedChars).toBeLessThan(NON_LIVE * missingSegment.length)
   })
 })
 

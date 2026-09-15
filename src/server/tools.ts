@@ -1577,12 +1577,22 @@ export class ToolHandler {
       { t: 'agents_result' }
     >
     if (res.agents.length === 0) return text('No agents.')
-    const budgets = res.agents.map(a => ({ name: a.name, read: readBudget(a.sessionId) }))
+    // A budget reading is only ever meaningful for a live/attached process — a
+    // spawning, detached, exited or retired identity has none to find, and on a
+    // machine with a long agent history nearly every row is one of those. Reading
+    // and rendering "no budget reading" on each would repeat one absence hundreds
+    // of times over, which is worse than the thing CC-94 set out to fix.
+    const budgets = res.agents
+      .filter(a => a.state === 'live')
+      .map(a => ({ name: a.name, read: readBudget(a.sessionId) }))
     const budgetByName = new Map(budgets.map(b => [b.name, b.read]))
     const rows = res.agents.map(a => {
       // One extra segment, CC-94: budget rides in the same bracket as state
-      // rather than adding a whole new line per row.
-      const budgetPart = `, ${budgetSegment(budgetByName.get(a.name)!)}`
+      // rather than adding a whole new line per row. Absent entirely for a
+      // non-live row, rather than "no budget reading" — there, absence is the
+      // default, not information.
+      const read = budgetByName.get(a.name)
+      const budgetPart = read === undefined ? '' : `, ${budgetSegment(read)}`
       return (
         // An adopted identity has no profile and no surface we chose, and its
         // name is self-reported — so it says what it is rather than rendering
