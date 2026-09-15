@@ -324,6 +324,18 @@ describe('every builtin profile, on every surface', () => {
       ).toContain('Bash')
     }
   })
+
+  // CC-97: two spawned agents stalled 6+ minutes on a Monitor permission prompt with
+  // no builtin profile granting it. Catches the grant being dropped from either profile.
+  it('grants the code-writing builtins Monitor, so CI polling never opens a permission prompt', () => {
+    for (const name of ['implementer', 'peer']) {
+      const builtin = BUILTIN_PROFILES.find(p => p.name === name) as AgentProfile
+      expect(builtin.allowedTools).toContain('Monitor')
+      expect(
+        flag(buildLaunchPlan(input({ profile: builtin })).args, '--allowed-tools')?.split(','),
+      ).toContain('Monitor')
+    }
+  })
 })
 
 describe('profiles resolve by name only', () => {
