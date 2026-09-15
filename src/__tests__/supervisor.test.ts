@@ -86,20 +86,43 @@ afterEach(() => {
 })
 
 /**
+ * A child that starts and keeps running — the ordinary case, and the one that
+ * lets the attach path rather than a real process decide what a test sees.
+ *
+ * `once` never fires, so `handle.exited` stays pending. A test that wants a death
+ * supplies its own spawn.
+ */
+const liveChild = (): { pid: number; unref: () => void; once: () => undefined } => ({
+  pid: 4242,
+  unref: () => undefined,
+  once: () => undefined,
+})
+
+/**
  * Launches nothing. The reported platform is forced to a non-macOS one so an
  * `iterm-pane` request refuses deterministically instead of depending on whether
  * the machine running the tests happens to have iTerm open — which it did, and
  * which meant these tests opened real windows on a developer laptop.
+ *
+ * `spawn` is stubbed for the headless equivalent of that, and it is not
+ * cosmetic. Without it every headless spawn here really ran
+ * `node dist/cli.js run-agent <id>`, which really ran `claude`, whose own MCP
+ * server found no socket at the test's `AGENT_CHAT_HOME` and started a DETACHED
+ * BROKER — which then wrote `agent_attached` into the very events.db the test was
+ * asserting against. Two abandoned homes on this machine still hold the
+ * `broker.log` and `ui.token` that proves it. It made `gives the slot back` pass
+ * on a laptop with `claude` installed and fail on CI, where there is none.
  */
 function withStubbedSurface(
   opts: {
     settleMs?: number
+    attachMs?: number
     semaphore?: Semaphore
     spawnRateBudget?: SpawnRateBudget
     hookSpawn?: HookSpawnFn
   } = {},
 ): Supervisor {
-  supervisor = new Supervisor(core, { ...opts, surface: { platform: 'linux' } })
+  supervisor = new Supervisor(core, { ...opts, surface: { platform: 'linux', spawn: liveChild } })
   return supervisor
 }
 
@@ -1545,10 +1568,8 @@ describe('lifecycle hooks', () => {
  */
 describe('reporting a spawn only once the agent has attached', () => {
   /** A supervisor whose attach window is short enough to expire inside a test. */
-  function withAttachWindow(attachMs: number, over: Record<string, unknown> = {}): Supervisor {
-    supervisor = new Supervisor(core, { attachMs, surface: { platform: 'linux' }, ...over })
-    return supervisor
-  }
+  const withAttachWindow = (attachMs: number, over: Record<string, unknown> = {}): Supervisor =>
+    withStubbedSurface({ attachMs, ...over })
 
   it('reports success once the agent registers', async () => {
     const sup = withAttachWindow(1000)
@@ -1592,17 +1613,35 @@ describe('reporting a spawn only once the agent has attached', () => {
     expect(pairPresence(agent as AgentIdentity, { connected: false }).status).toBe('failed')
   })
 
-  /** Freed, or the slot is lost to an agent that never existed. */
-  it('gives the slot back', async () => {
+  /**
+   * Freed, or the slot is lost to an agent that never existed — and with twenty
+   * of them, enough failed spawns stop the machine accepting agents at all. That
+   * is a worse failure than the one this task was opened for.
+   *
+   * Asserted against the semaphore itself rather than against a second spawn
+   * succeeding. The second spawn does not attach either, so its `ok` answers a
+   * different question — and answered it differently depending on whether the
+   * machine running the suite had `claude` installed, which is what made this
+   * green here and red on CI.
+   */
+  it('gives the slot back when the agent never attached', async () => {
     stopAutoAttach()
     const semaphore = new Semaphore(1)
     const sup = withAttachWindow(1000, { semaphore })
 
     const spawning = sup.spawn(spawnReq())
     await vi.advanceTimersByTimeAsync(1000)
-    await spawning
+    const result = await spawning
 
-    expect((await sup.spawn(spawnReq({ name: 'second' }))).ok).toBe(true)
+    expect(result.ok).toBe(false)
+    expect(semaphore.has(result.agentId as string)).toBe(false)
+    expect(semaphore.available).toBe(1)
+
+    // And the slot is usable: the only thing left in a second spawn's way is its
+    // own attach, never the budget.
+    const second = sup.spawn(spawnReq({ name: 'second' }))
+    await vi.advanceTimersByTimeAsync(1000)
+    expect((await second).reason).not.toMatch(/no free agent slots/)
   })
 
   /**
@@ -1660,6 +1699,32 @@ describe('reporting a spawn only once the agent has attached', () => {
 
     expect(result.ok).toBe(false)
     expect(result.reason).toMatch(/exited before registering \(exit code 127\)/)
+    // And the LOG says so too. Two listeners race for a headless child's exit and
+    // `track`'s is registered first; when it won, the row said "exited, code 127"
+    // with no failure marker, `failSpawn` found nothing live to amend, and the
+    // roster read `finished` for a process that never came up.
+    const agent = core.agents.get(result.agentId as string)
+    expect(agent?.exit?.failedToStart).toBe(true)
+    expect(pairPresence(agent as AgentIdentity, { connected: false }).status).toBe('failed')
+  })
+
+  /**
+   * The same race from the other side: an agent that DID register and then
+   * exited is a finished agent, not a failed one. Without this the derivation
+   * above would relabel every normal completion.
+   */
+  it('still reads as finished when an agent that registered then exits', async () => {
+    const sup = withAttachWindow(1000)
+
+    const result = await sup.spawn(spawnReq())
+    await (sup as unknown as { recordExit: (id: string, o: unknown) => Promise<void> }).recordExit(
+      result.agentId as string,
+      { code: 0, signal: null },
+    )
+
+    const agent = core.agents.get(result.agentId as string)
+    expect(agent?.exit?.failedToStart).toBeUndefined()
+    expect(pairPresence(agent as AgentIdentity, { connected: false }).status).toBe('finished')
   })
 
   /**

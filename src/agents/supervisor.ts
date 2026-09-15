@@ -367,16 +367,26 @@ export class Supervisor implements TeleportHost {
     this.live.delete(agentId)
     this.semaphore.release(agentId)
 
+    // An agent that dies without ever having registered FAILED TO START, and the
+    // rule lives here rather than only in `failSpawn` because two listeners race
+    // for a headless child's exit: `track` wires one, `verifyAttach` wires
+    // another, and `track`'s was registered first. When it won, the spawn was
+    // recorded as an ordinary exit, `failSpawn` found no live entry and returned
+    // early, and the roster read `finished` for a process that never came up —
+    // the exact distinction this task exists to draw. Deriving it from the log
+    // makes whichever listener arrives first produce the same terminal state.
+    const failed = outcome.failed ?? this.unattachedExit(entry.name, agentId, outcome)
+
     this.core.append({
       kind: 'agent_exited',
       actor: entry.name,
       ref: agentId,
-      body: outcome.failed ?? (outcome.inferred ? 'exit inferred from presence; no exit code available' : ''),
+      body: failed ?? (outcome.inferred ? 'exit inferred from presence; no exit code available' : ''),
       meta: {
         ...(outcome.code === null ? {} : { code: String(outcome.code) }),
         ...(outcome.signal === null ? {} : { signal: outcome.signal }),
         ...(outcome.inferred ? { inferred: 'true' } : {}),
-        ...(outcome.failed === undefined ? {} : { failed: 'true' }),
+        ...(failed === undefined ? {} : { failed: 'true' }),
       },
     })
     logEvent('agent_exited', { agentId, name: entry.name, code: outcome.code, inferred: outcome.inferred })
@@ -798,6 +808,20 @@ export class Supervisor implements TeleportHost {
   /** Has this identity ever registered? The one fact that settles an attach race. */
   private hasAttached(agentId: string): boolean {
     return this.core.events.agentEvents().some(row => row.kind === 'agent_attached' && row.ref === agentId)
+  }
+
+  /**
+   * The failure line for an exit by an agent that never registered, or undefined
+   * when it had. An INFERRED exit is excluded: that path only exists for an agent
+   * whose presence was being watched, which means it attached at least once.
+   */
+  private unattachedExit(
+    name: string,
+    agentId: string,
+    outcome: { code: number | null; inferred?: boolean },
+  ): string | undefined {
+    if (outcome.inferred === true || this.hasAttached(agentId)) return undefined
+    return `${name} was launched but never registered: claude exited before registering (exit code ${outcome.code ?? 'unknown'})`
   }
 
   /**
