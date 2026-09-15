@@ -84,13 +84,20 @@ function isAlive(pid: number): boolean {
  * Appended on a microtask rather than inline: `onAppend` fires DURING the append
  * that triggered it, and re-entering the log from inside it is a different test
  * than the one anyone here is writing.
+ *
+ * ADOPTED rows are skipped. `core.register` writes an `agent_spawned` row for an
+ * ordinary session it adopts and appends that session's `agent_attached` itself,
+ * so standing in for it here would double the row a test is counting.
  */
 export function autoAttach(core: {
-  onAppend: (watch: (row: { kind: string; msgId?: string; target?: string }) => void) => () => void
+  onAppend: (
+    watch: (row: { kind: string; msgId?: string; target?: string; meta?: Record<string, string> }) => void,
+  ) => () => void
   append: (input: { kind: 'agent_attached'; actor: string; ref: string }) => unknown
 }): () => void {
   return core.onAppend(row => {
     if (row.kind !== 'agent_spawned' || row.msgId === undefined) return
+    if (row.meta?.['origin'] === 'adopted') return
     const ref = row.msgId
     const actor = row.target ?? ''
     queueMicrotask(() => core.append({ kind: 'agent_attached', actor, ref }))

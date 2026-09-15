@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { SURFACE_NAMES } from '../protocol.js'
 import { AGENT_CHAT_TOOLS, buildLaunchPlan, permModeFor } from '../agents/launch-plan.js'
 import { BUILTIN_PROFILES, listProfileNames, loadProfile, parseProfile } from '../agents/profiles.js'
+import { DEFAULT_SURFACE_LIFETIME } from '../agents/types.js'
 import { buildMcpConfig, planPath, readLaunchPlan, writeLaunchFiles } from '../agents/launch-files.js'
 import { oscTitle } from '../agents/run-agent.js'
 import type { AgentProfile, LaunchPlanInput } from '../agents/types.js'
@@ -509,5 +510,75 @@ describe('the terminal title', () => {
 
   it('leaves it unset for a headless agent, which has no terminal either way', () => {
     expect(buildLaunchPlan(input()).env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE).toBeUndefined()
+  })
+})
+
+/**
+ * CC-95. Pane lifetime is a PROFILE decision, not a rule in the exit path — the
+ * human settled it that way after both global answers had been tried and both
+ * were wrong for somebody. Retire-only left four finished agents' panes at
+ * `-zsh` for six and a half hours; closing unconditionally throws away the last
+ * output of a collaborator somebody is reading.
+ */
+describe('how long a profile’s pane outlives it', () => {
+  const lifetimeOf = (name: string): string | undefined =>
+    BUILTIN_PROFILES.find(p => p.name === name)?.surfaceLifetime
+
+  it('closes the pane for the three dispatched profiles', () => {
+    for (const name of ['explorer', 'reviewer', 'implementer']) {
+      expect(lifetimeOf(name)).toBe('close-on-exit')
+    }
+  })
+
+  /**
+   * `peer` is the exception and the reason the field exists: a long-lived
+   * collaborator sharing your checkout is exactly the agent whose last output
+   * someone is still reading when it finishes.
+   */
+  it('keeps the pane for peer', () => {
+    expect(lifetimeOf('peer')).toBe('keep')
+  })
+
+  /** Every builtin states it, so none of them inherits the answer by accident. */
+  it('leaves none of the builtins to the default', () => {
+    for (const builtin of BUILTIN_PROFILES) expect(builtin.surfaceLifetime).toBeDefined()
+  })
+
+  it('defaults a profile file that does not mention it to keeping the pane', () => {
+    const parsed = parseProfile('quiet', {
+      model: 'sonnet',
+      allowedTools: ['Read'],
+      isolation: 'none',
+      surface: 'iterm-pane',
+    })
+
+    expect('error' in parsed).toBe(false)
+    expect((parsed as AgentProfile).surfaceLifetime).toBeUndefined()
+    expect(DEFAULT_SURFACE_LIFETIME).toBe('keep')
+  })
+
+  it('refuses a lifetime it does not recognise rather than guessing one', () => {
+    const parsed = parseProfile('odd', {
+      model: 'sonnet',
+      allowedTools: ['Read'],
+      isolation: 'none',
+      surface: 'iterm-pane',
+      surfaceLifetime: 'close-on-tuesday',
+    })
+
+    expect('error' in parsed).toBe(true)
+    expect((parsed as { error: string }).error).toMatch(/"surfaceLifetime" must be one of/)
+  })
+
+  it('accepts one it does', () => {
+    const parsed = parseProfile('tidy', {
+      model: 'sonnet',
+      allowedTools: ['Read'],
+      isolation: 'none',
+      surface: 'iterm-pane',
+      surfaceLifetime: 'close-on-exit',
+    })
+
+    expect((parsed as AgentProfile).surfaceLifetime).toBe('close-on-exit')
   })
 })

@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type net from 'node:net'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { autoAttach } from './broker-harness.js'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
@@ -29,6 +30,7 @@ import type { SpawnFn } from '../agents/surfaces/options.js'
 const tmpDirs: string[] = []
 let core: BrokerCore
 let supervisor: Supervisor
+let stopAutoAttach: () => void
 
 /** Launches nothing: these tests are about the plan, not about starting claude. */
 const noLaunch: SpawnFn = () => ({ pid: 4242, unref: () => undefined, once: () => undefined })
@@ -82,10 +84,15 @@ const spawnReq = (over: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   core = makeCore()
   process.env.CLAUDE_CONFIG_DIR = tmpDir('agent-chat-cfg-')
+  // `noLaunch` starts a child that never registers, and a spawn is not reported
+  // until one does (CC-95). Without the stand-in registration every `ok` below
+  // waits out the full attach window.
+  stopAutoAttach = autoAttach(core)
   supervisor = new Supervisor(core, { surface: { platform: 'linux', spawn: noLaunch } })
 })
 
 afterEach(() => {
+  stopAutoAttach()
   supervisor?.close()
   delete process.env.AGENT_CHAT_HOME
   delete process.env.CLAUDE_CONFIG_DIR

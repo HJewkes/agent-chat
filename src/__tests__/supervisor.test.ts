@@ -1019,11 +1019,25 @@ describe('retiring an agent that was given a pane', () => {
     return { scripts, sup: supervisor, closes: () => scripts.filter(s => s.includes('to close')) }
   }
 
-  const liveOn = (sup: Supervisor, handle: Record<string, unknown>, id = 'a1'): void => {
+  const liveOn = (
+    sup: Supervisor,
+    handle: Record<string, unknown>,
+    id = 'a1',
+    lifetime = 'close-on-exit',
+  ): void => {
     // No spawn ran, so the stand-in registration must not fire: it would land
     // AFTER the detach these tests append and cancel the settle they depend on.
     stopAutoAttach()
-    core.append({ kind: 'agent_spawned', actor: 'human', target: 'scout', msgId: id, body: 'work' })
+    core.append({
+      kind: 'agent_spawned',
+      actor: 'human',
+      target: 'scout',
+      msgId: id,
+      body: 'work',
+      // The exit path reads the lifetime off this row, so a hand-built agent has
+      // to declare one the way a real spawn does.
+      meta: { surface_lifetime: lifetime },
+    })
     ;(sup as unknown as { live: Map<string, unknown> }).live.set(id, {
       agentId: id,
       name: 'scout',
@@ -1064,7 +1078,7 @@ describe('retiring an agent that was given a pane', () => {
    * visible agent ever gets: nothing calls back into agent-chat when a human
    * types /exit in a pane, so a detach with no reattach is all there is.
    */
-  it('closes the pane when the agent exits, even on an inferred exit', async () => {
+  it('closes the pane when a close-on-exit agent exits, even on an inferred exit', async () => {
     const { sup, closes } = fakeIterm(500)
     liveOn(sup, { surface: 'iterm-pane', paneRef: 'PANE-1', ownsSurface: true })
 
@@ -1074,6 +1088,50 @@ describe('retiring an agent that was given a pane', () => {
     expect(kindsFor('a1')).toContain('agent_exited')
     expect(closes()).toHaveLength(1)
     expect(closes()[0]).toContain('is "PANE-1"')
+  })
+
+  /**
+   * The other lifetime, and the case the retire-only rule was written for: a
+   * long-lived collaborator whose last output somebody is still reading. Its
+   * pane survives the exit — and retire still closes it, as it always has.
+   */
+  it('leaves a keep agent’s pane open when it exits, and still closes it on retire', async () => {
+    const { sup, closes } = fakeIterm(500)
+    liveOn(sup, { surface: 'iterm-pane', paneRef: 'PANE-1', ownsSurface: true }, 'a1', 'keep')
+
+    core.append({ kind: 'agent_detached', actor: 'scout', ref: 'a1' })
+    await vi.advanceTimersByTimeAsync(500)
+
+    expect(kindsFor('a1')).toContain('agent_exited')
+    expect(closes()).toEqual([])
+
+    // `keep` is about the agent's own death, never about retire. Retire is the
+    // explicit "I am done with this agent" and takes the pane with it as before.
+    ;(sup as unknown as { live: Map<string, unknown> }).live.set('a1', {
+      agentId: 'a1',
+      name: 'scout',
+      handle: { surface: 'iterm-pane', paneRef: 'PANE-1', ownsSurface: true },
+      allocation: { cwd: '/tmp' },
+      isolation: 'none',
+    })
+    expect((await sup.retire('scout')).ok).toBe(true)
+    expect(closes()).toHaveLength(1)
+  })
+
+  /**
+   * A profile written before the field existed says nothing, and its pane stays.
+   * A silent upgrade to close-on-exit would start destroying panes belonging to
+   * agents nobody opted in for.
+   */
+  it('keeps the pane when the spawn row names no lifetime at all', async () => {
+    const { sup, closes } = fakeIterm(500)
+    liveOn(sup, { surface: 'iterm-pane', paneRef: 'PANE-1', ownsSurface: true }, 'a1', '')
+
+    core.append({ kind: 'agent_detached', actor: 'scout', ref: 'a1' })
+    await vi.advanceTimersByTimeAsync(500)
+
+    expect(kindsFor('a1')).toContain('agent_exited')
+    expect(closes()).toEqual([])
   })
 
   /** The constraint that did NOT move: an exit closes only what the broker opened. */

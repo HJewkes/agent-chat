@@ -49,7 +49,13 @@ import {
   type TeleportOutcome,
   type TeleportRequest,
 } from './teleport.js'
-import type { AgentProfile, LaunchHandle, LaunchPlan } from './types.js'
+import {
+  DEFAULT_SURFACE_LIFETIME,
+  type AgentProfile,
+  type LaunchHandle,
+  type LaunchPlan,
+  type SurfaceLifetime,
+} from './types.js'
 
 /**
  * Spawn, supervise and retire agents. Runs inside the BROKER, never inside a
@@ -135,6 +141,10 @@ export interface SwitchRequest {
 }
 
 type AttachOutcome = { kind: 'attached' | 'timeout' } | { kind: 'exited'; code: number | null }
+
+/** A profile that predates the field keeps its pane. See {@link DEFAULT_SURFACE_LIFETIME}. */
+const lifetimeOf = (profile: Pick<AgentProfile, 'surfaceLifetime'>): SurfaceLifetime =>
+  profile.surfaceLifetime ?? DEFAULT_SURFACE_LIFETIME
 
 /**
  * The most likely cause of a spawn that never registered, named (CC-95).
@@ -400,7 +410,14 @@ export class Supervisor implements TeleportHost {
     // way; this only makes the agent's own death do it too. Only a surface the
     // broker OPENED is ever a candidate — that constraint is untouched, and it
     // is what still protects a human's own pane and an adopted session's window.
-    await this.closeSurface(entry)
+    // CC-95, as the human settled it: the profile decides, not the exit path.
+    // Both global answers had been tried and both were wrong for somebody —
+    // retire-only left four finished agents' panes at `-zsh` for six and a half
+    // hours, and closing unconditionally throws away the last output of a
+    // collaborator somebody is reading. A row written before the field existed
+    // has no value here and keeps its pane, which is the safe direction: a
+    // silent upgrade would start destroying panes nobody opted in for.
+    if (this.closesOnExit(agentId)) await this.closeSurface(entry)
     this.fireHook('on_complete', {
       agentId,
       code: outcome.code,
@@ -769,6 +786,10 @@ export class Supervisor implements TeleportHost {
         // so a row that names one and not the other under-describes the agent.
         disallowed_tools: (profile.disallowedTools ?? []).join(','),
         perm_mode: permModeFor(surface),
+        // Recorded rather than carried in memory so the exit path can read it
+        // after a broker restart, and so `agent ls`/the log can show what an
+        // agent's pane was promised. See `SurfaceLifetime`.
+        surface_lifetime: lifetimeOf(profile),
         depth: String(depth),
         // Recorded because a fork carries content the profile's tool list says
         // nothing about: reading the row later is the only way to know this
@@ -808,6 +829,17 @@ export class Supervisor implements TeleportHost {
   /** Has this identity ever registered? The one fact that settles an attach race. */
   private hasAttached(agentId: string): boolean {
     return this.core.events.agentEvents().some(row => row.kind === 'agent_attached' && row.ref === agentId)
+  }
+
+  /**
+   * Does this agent's pane go with it when it ends?
+   *
+   * Read from its own `agent_spawned` row rather than held in memory, so it
+   * survives a broker restart and so a reader of the log can see what a pane was
+   * promised. An unrecognised or absent value keeps the pane.
+   */
+  private closesOnExit(agentId: string): boolean {
+    return this.core.agents.spawnMeta(agentId).surface_lifetime === 'close-on-exit'
   }
 
   /**
@@ -1409,6 +1441,7 @@ export class Supervisor implements TeleportHost {
         session_id: sessionId,
         allowed_tools: input.profile.allowedTools.join(','),
         perm_mode: permModeFor(input.surface),
+        surface_lifetime: lifetimeOf(input.profile),
         ...input.meta,
       },
     })
