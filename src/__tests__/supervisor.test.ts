@@ -305,6 +305,7 @@ describe('spawning', () => {
       'Bash(agent-chat dismiss:*)',
       'Bash(agent-chat send:*)',
       'Bash(agent-chat answer:*)',
+      'Bash(agent-chat approve:*)',
       'AskUserQuestion',
     ])
   })

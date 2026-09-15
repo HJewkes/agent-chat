@@ -1304,7 +1304,8 @@ is specific to this repo rather than general caution.
 
 agent-chat has already drawn this line once. It declares
 `claude/channel/permission` and sends a verdict only for what a human typed at
-the 0600 socket (CC-96; the frame is refused from every registered session), and
+the 0600 socket (CC-96; refused from every registered session, and denied to the
+builtin profiles' `Bash`), and
 `docs/ideas.md` R1 argues at length against
 widening who issues verdicts, concluding _"this is a machine for one Claude to
 grant another Claude permissions the user never granted."_ Spawning

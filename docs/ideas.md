@@ -388,9 +388,13 @@ there working, and every session on the channel allowlist can already reach it. 
 
 **Updated 2026-09-14 (CC-96).** The salvageable part above is now built, and only that
 part: `agent-chat approve <id> allow|deny` sends `{request_id, behavior}` for a prompt a
-human read in full at the CLI. R1 itself stays declined and is now declined structurally
-rather than by convention — the broker refuses the frame from any registered connection,
-so a peer session cannot answer a prompt even by shelling out to the verb.
+human read in full at the CLI. R1 itself stays declined, and the decline is enforced in
+three layers with an honest gap at the bottom of them: no MCP tool exposes the frame; the
+broker refuses it from any REGISTERED connection; and the builtin profiles deny
+`Bash(agent-chat approve:*)`, which is the straightforward shell-out. What none of that
+covers is a differently-invoked form — `node dist/cli.js approve`, an absolute path, or a
+raw socket write — because a same-uid process can forge anything on this bus. The OS
+account is the trust boundary, as it is for every other control here.
 
 ### R2. Broker-side deterministic permission policy
 
@@ -475,7 +479,8 @@ Not ideas — things I'd expect to break, several of which have no fix above.
 
 - **Approve tool calls in another session.** The whole of R1, and the reason relay
   shipped observe-only first. The verdict path that exists now (CC-96) is refused
-  from every registered connection, so a peer cannot reach it.
+  from every registered connection and denied to the builtin profiles' `Bash`, so
+  a peer cannot reach it without deliberately working around both.
 - **Register as `human` or `user`** and inherit the user's authority in every other
   session's reading of `from`. ([I9](#i9))
 - **Broadcast an instruction phrased as a user directive.** The `instructions`

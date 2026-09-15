@@ -155,13 +155,25 @@ id `inbox` printed, never the host's `request_id` — which is deliberate, becau
 the thing approved is the thing that was displayed.
 
 **The whole design is the guard.** An AGENT must never answer a permission prompt: that is
-R1 in `ideas.md`, and it stays declined. The frame is refused from any REGISTERED
-connection, the same `isHuman` check `endorse_approve` and `teleport_abort` already use, so
-a session cannot answer its own prompt or a peer's. Shelling out to the CLI does not help
-it either — the builtin profiles deny these verbs to `Bash` (`profiles.ts`), which is what
-stops the common case. `isHuman` carries the residual limit in full: a same-uid process
-that opens its own unregistered socket passes it, as it passes every other control on this
-bus. That boundary is the OS account, not this server.
+R1 in `ideas.md`, and it stays declined. Three layers, and the third one is configuration
+rather than a guarantee — state them separately, because collapsing them into "an agent
+cannot do this" is how the residual gap gets forgotten:
+
+1. **No MCP tool exposes the frame.** A model reaches it only by talking to the socket.
+2. **The broker refuses it from any REGISTERED connection**, the same `isHuman` check
+   `endorse_approve` and `teleport_abort` already use. A session cannot answer its own
+   prompt or a peer's on the connection it legitimately holds.
+3. **The builtin profiles deny `Bash(agent-chat approve:*)`** (`profiles.ts`,
+   `HUMAN_ONLY_CLI_DENY`). This is the layer that matters in practice, because the CLI does
+   not register and therefore passes check 2 — CC-22's adversarial review found exactly
+   this for `endorse`, and the same finding applies here.
+
+What is left uncovered, stated plainly: a differently-invoked form of the same command
+(`node dist/cli.js approve`, an absolute path, `npx agent-chat approve`) is a different
+literal string and does not match the deny pattern, and a raw socket write bypasses the CLI
+entirely. `isHuman` carries this limit in full — a same-uid process can forge anything on
+this bus, so the boundary is the OS account, not this server. These controls stop a confused
+agent, not an adversarial one.
 
 Four properties are unchanged by the verb, and all four are load-bearing:
 

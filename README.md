@@ -300,8 +300,9 @@ a blocked session knowable rather than merely idle-looking. But a headless
 `--print` session resolves denials without ever opening a promptable request, so
 it relays nothing — a background peer is fully addressable for messaging and
 still invisible when stuck. A prompt that did relay can be answered from the
-queue with `agent-chat approve <id> allow|deny` — human-only, refused from every
-registered session; see [docs/permission-relay.md](docs/permission-relay.md).
+queue with `agent-chat approve <id> allow|deny` — human-only: refused from every
+registered session, and denied to the builtin profiles' `Bash` so an agent cannot
+shell out to it; see [docs/permission-relay.md](docs/permission-relay.md).
 
 **"Allowlisted" is per session, not per machine.** A session's permission view is
 read once and memoized with no watcher. Its own grants apply immediately, but
