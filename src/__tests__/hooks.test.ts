@@ -105,3 +105,29 @@ describe('runHooks', () => {
     expect(() => runHooks('on_spawn', { agentId: 'a1' }, { spawn })).not.toThrow()
   })
 })
+
+/**
+ * A hook command that does not exist leaves a stdin pipe with no reader, and the
+ * EPIPE that write produces arrives asynchronously — past the try/catch, out as
+ * an unhandled rejection in whatever the broker was doing at the time. Found
+ * while making an exit close its pane (CC-95), which widened the window enough
+ * for it to land inside a test run.
+ */
+describe('a hook child that dies before reading its stdin', () => {
+  it('does not let the pipe error escape as an unhandled rejection', async () => {
+    writeHooksJson({ on_complete: ['exit 0'] })
+    const rejections: unknown[] = []
+    const onRejection = (err: unknown): void => void rejections.push(err)
+    process.on('unhandledRejection', onRejection)
+    process.on('uncaughtException', onRejection)
+
+    // Past the ~64KB pipe buffer, so the write is still in flight when the child
+    // is already gone. A small payload lands in the buffer and never faults.
+    runHooks('on_complete', { agentId: 'a'.repeat(1024 * 1024) })
+    await new Promise(resolve => setTimeout(resolve, 500))
+
+    process.off('unhandledRejection', onRejection)
+    process.off('uncaughtException', onRejection)
+    expect(rejections).toEqual([])
+  })
+})
