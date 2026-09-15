@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type net from 'node:net'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { autoAttach } from './broker-harness.js'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
@@ -36,6 +37,7 @@ import type { AgentProfile, LaunchPlan } from '../agents/types.js'
 const tmpDirs: string[] = []
 let core: BrokerCore
 let supervisor: Supervisor
+let stopAutoAttach: () => void
 let killed: Array<{ pid: number; signal: string }>
 let delivered: Array<{ conn: Conn; text: string }>
 
@@ -130,10 +132,12 @@ beforeEach(() => {
     return true
   })
   core = makeCore()
+  stopAutoAttach = autoAttach(core)
   makeSupervisor()
 })
 
 afterEach(() => {
+  stopAutoAttach()
   supervisor?.close()
   vi.restoreAllMocks()
   delete process.env.AGENT_CHAT_HOME

@@ -37,6 +37,7 @@ import { checkSpawnCwd } from './spawn-cwd.js'
 import { resolveBriefing, type BriefingResult } from './active-work.js'
 import { findTranscript } from './transcript.js'
 import { SpawnRateBudget } from './spawn-rate.js'
+import { trustGap } from './trust.js'
 import { cliEntry, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
@@ -70,6 +71,27 @@ import type { AgentProfile, LaunchHandle, LaunchPlan } from './types.js'
  * enough that a slow machine is not declared dead.
  */
 export const SETTLE_MS = 30_000
+
+/**
+ * How long a spawn waits for its agent to register before calling the launch a
+ * failure (CC-95).
+ *
+ * The number this replaces was infinity. `agent_spawn` returned "Spawned" as
+ * soon as AppleScript had written a command line into a pane, which says nothing
+ * about whether Claude Code then started: one agent sat in `starting` with no
+ * transcript for six and a half hours, and nothing anywhere surfaced it.
+ *
+ * 30s is the bound, and it is generous on purpose. What has to fit inside it is
+ * a cold Claude Code start plus its MCP servers coming up far enough to call
+ * `register` — seconds on a quiet machine, and this is rarely a quiet machine.
+ * Waiting too long costs a coordinator one slow tool call; not waiting at all
+ * cost six hours of a worktree slot and a coordinator that believed it had help.
+ *
+ * NOTHING BLOCKS THE BROKER HERE. This is a timer and a promise, so the event
+ * loop stays free for every other session while it runs; the only thing held is
+ * the ONE requester's reply, which is the entire point.
+ */
+export const ATTACH_TIMEOUT_MS = 30_000
 
 /** Spawn depth cap. Without it an agent team is a fork bomb with a model picking the branching factor. */
 export const MAX_DEPTH = 2
@@ -110,6 +132,26 @@ export interface SwitchRequest {
   /** The requester's own pane. Decides same-window placement; absent is not an error. */
   anchor?: string
   hostPid?: number
+}
+
+type AttachOutcome = { kind: 'attached' | 'timeout' } | { kind: 'exited'; code: number | null }
+
+/**
+ * The most likely cause of a spawn that never registered, named (CC-95).
+ *
+ * A coordinator has to learn what it can run, and "the spawn failed" teaches it
+ * nothing it can act on. The trust gap is checked first because it is the one
+ * that produces exactly the observed symptom — a pane at a prompt, no
+ * transcript, no exit code — and because `worktree` isolation walks into it by
+ * construction: a freshly created worktree is a path Claude Code has never been
+ * run in, so it has no trust entry by definition.
+ */
+function attachDiagnosis(cwd: string, handle: LaunchHandle, outcome: 'waiting' | 'exited'): string {
+  const trust = trustGap(cwd, outcome)
+  if (trust !== undefined) return trust
+  if (handle.surface !== 'headless' && handle.paneRef === undefined)
+    return 'iTerm2 returned no session id, so nothing was ever launched into a pane.'
+  return `Look at the surface itself (${handle.surface}) and at ~/.claude for this agent's transcript.`
 }
 
 export interface SpawnRequest {
@@ -172,6 +214,8 @@ export interface SupervisorOptions {
   semaphore?: Semaphore
   spawnRateBudget?: SpawnRateBudget
   settleMs?: number
+  /** CC-95's attach window. Shortened in tests; never shortened in production. */
+  attachMs?: number
   /**
    * Merged into every surface built here. Without it a test naming `iterm-pane`
    * reaches the real AppleScript and opens a real window on any machine that
@@ -251,6 +295,9 @@ export class Supervisor implements TeleportHost {
   private readonly semaphore: Semaphore
   private readonly spawnRateBudget: SpawnRateBudget
   private readonly settleMs: number
+  private readonly attachMs: number
+  /** Resolved by `onRow` when the agent's own `agent_attached` lands. Spawn-time only. */
+  private readonly attachWaiters = new Map<string, () => void>()
   private readonly nameFreeMs: number
   private readonly surfaceOptions: SupervisorOptions['surface']
   private readonly hookSpawn: HookSpawnFn | undefined
@@ -264,6 +311,7 @@ export class Supervisor implements TeleportHost {
     this.semaphore = options.semaphore ?? new Semaphore()
     this.spawnRateBudget = options.spawnRateBudget ?? new SpawnRateBudget()
     this.settleMs = options.settleMs ?? SETTLE_MS
+    this.attachMs = options.attachMs ?? ATTACH_TIMEOUT_MS
     this.nameFreeMs = options.nameFreeMs ?? NAME_FREE_TIMEOUT_MS
     this.surfaceOptions = options.surface ?? {}
     this.hookSpawn = options.hookSpawn
@@ -287,9 +335,12 @@ export class Supervisor implements TeleportHost {
     const entry = this.live.get(agentId)
     if (!entry) return
 
-    if (row.kind === 'agent_attached' && entry.settle) {
-      clearTimeout(entry.settle)
-      delete entry.settle
+    if (row.kind === 'agent_attached') {
+      if (entry.settle) {
+        clearTimeout(entry.settle)
+        delete entry.settle
+      }
+      this.attachWaiters.get(agentId)?.()
     }
     if (row.kind === 'agent_detached') this.scheduleSettle(entry)
   }
@@ -299,19 +350,20 @@ export class Supervisor implements TeleportHost {
     entry.settle = setTimeout(() => {
       // Still detached after the window: infer the exit. No code and no cost,
       // and the roster says so rather than showing zeros it did not measure.
-      this.recordExit(entry.agentId, { code: null, signal: null, inferred: true })
+      void this.recordExit(entry.agentId, { code: null, signal: null, inferred: true })
     }, this.settleMs)
     entry.settle.unref?.()
   }
 
   /** Idempotent: a headless child's exit and its detach settle can both arrive. */
-  private recordExit(
+  private async recordExit(
     agentId: string,
-    outcome: { code: number | null; signal: string | null; inferred?: boolean },
-  ): void {
+    outcome: { code: number | null; signal: string | null; inferred?: boolean; failed?: string },
+  ): Promise<void> {
     const entry = this.live.get(agentId)
     if (!entry) return
     if (entry.settle) clearTimeout(entry.settle)
+    this.attachWaiters.delete(agentId)
     this.live.delete(agentId)
     this.semaphore.release(agentId)
 
@@ -319,14 +371,26 @@ export class Supervisor implements TeleportHost {
       kind: 'agent_exited',
       actor: entry.name,
       ref: agentId,
-      body: outcome.inferred ? 'exit inferred from presence; no exit code available' : '',
+      body: outcome.failed ?? (outcome.inferred ? 'exit inferred from presence; no exit code available' : ''),
       meta: {
         ...(outcome.code === null ? {} : { code: String(outcome.code) }),
         ...(outcome.signal === null ? {} : { signal: outcome.signal }),
         ...(outcome.inferred ? { inferred: 'true' } : {}),
+        ...(outcome.failed === undefined ? {} : { failed: 'true' }),
       },
     })
     logEvent('agent_exited', { agentId, name: entry.name, code: outcome.code, inferred: outcome.inferred })
+    // CC-95: the surface goes with the agent, including on an INFERRED exit —
+    // which is the only exit an iTerm agent ever gets, and therefore the only
+    // path that could have closed the panes found sitting at `-zsh` for six
+    // hours. The old rule ("an exit closes nothing; a human reading its last
+    // output should not have the pane vanish") lost to what actually happened:
+    // four agents finished, nobody read anything, and a human retired them by
+    // hand at 12:47Z to reclaim the screen. Retire still closes panes the same
+    // way; this only makes the agent's own death do it too. Only a surface the
+    // broker OPENED is ever a candidate — that constraint is untouched, and it
+    // is what still protects a human's own pane and an adopted session's window.
+    await this.closeSurface(entry)
     this.fireHook('on_complete', {
       agentId,
       code: outcome.code,
@@ -706,6 +770,13 @@ export class Supervisor implements TeleportHost {
     const handle = await this.launchOn(surface, plan, req.anchor)
     this.track(agentId, req.name, handle, allocation, isolationName, req.anchor)
     logEvent('agent_spawned', { agentId, name: req.name, surface: handle.surface, cwd: allocation.cwd })
+
+    // CC-95's first case. Everything above proves a pane was opened, which is
+    // not the claim `agent_spawn` was making. Nothing is reported as spawned
+    // until the agent's own MCP server has said hello.
+    const failure = await this.verifyAttach(agentId, handle, allocation.cwd)
+    if (failure !== undefined) return await this.failSpawn(req, agentId, failure)
+
     this.fireHook('on_spawn', {
       agentId,
       name: req.name,
@@ -722,6 +793,75 @@ export class Supervisor implements TeleportHost {
       ...(warnings.length > 0 ? { warnings } : {}),
       ...(profile.disallowedTools?.length ? { disallowedTools: [...profile.disallowedTools] } : {}),
     }
+  }
+
+  /** Has this identity ever registered? The one fact that settles an attach race. */
+  private hasAttached(agentId: string): boolean {
+    return this.core.events.agentEvents().some(row => row.kind === 'agent_attached' && row.ref === agentId)
+  }
+
+  /**
+   * Wait for the agent to register, and say what went wrong if it does not
+   * (CC-95). Undefined means attached; a string is the reason, ready to hand to
+   * the coordinator verbatim.
+   *
+   * Three outcomes, and the process-exit one is why this is not just a timer:
+   * for a headless agent the wrapper's own exit is direct evidence, arriving in
+   * milliseconds with a code on it, and waiting the full window for something
+   * already known to be dead helps nobody. A visible agent has no such promise —
+   * the broker does not own a pane's process — so there the timeout IS the
+   * evidence, and the diagnosis below is what makes it actionable.
+   */
+  private async verifyAttach(
+    agentId: string,
+    handle: LaunchHandle,
+    cwd: string,
+  ): Promise<string | undefined> {
+    if (this.hasAttached(agentId)) return undefined
+
+    const outcome = await new Promise<AttachOutcome>(resolve => {
+      let timer: NodeJS.Timeout
+      const finish = (result: AttachOutcome): void => {
+        clearTimeout(timer)
+        this.attachWaiters.delete(agentId)
+        resolve(result)
+      }
+      timer = setTimeout(() => finish({ kind: 'timeout' }), this.attachMs)
+      timer.unref?.()
+      this.attachWaiters.set(agentId, () => finish({ kind: 'attached' }))
+      // A headless agent can finish its whole turn inside the window, so an exit
+      // is only a failure when nothing ever registered. Re-checked here rather
+      // than assumed, because both signals can land in the same tick.
+      void handle.exited?.then(({ code }) => {
+        finish(this.hasAttached(agentId) ? { kind: 'attached' } : { kind: 'exited', code })
+      })
+    })
+
+    if (outcome.kind === 'attached') return undefined
+    const cause =
+      outcome.kind === 'exited'
+        ? `claude exited before registering (exit code ${outcome.code ?? 'unknown'})`
+        : `no registration within ${Math.round(this.attachMs / 1000)}s of launching into ${handle.surface}`
+    return `${cause}. ${attachDiagnosis(cwd, handle, outcome.kind === 'exited' ? 'exited' : 'waiting')}`
+  }
+
+  /**
+   * A launch that came up empty: undo it, record it as an exit that FAILED, and
+   * hand the reason back (CC-95, second case).
+   *
+   * The surface goes because leaving it is how the evidence was collected in the
+   * first place — a pane created for an agent that never existed, sitting on a
+   * shell prompt with no owner and no way for anyone to know it was dead. The
+   * `agent_exited` row is what stops the roster reading `starting` forever; it
+   * also reaches the requester, whose spawn auto-subscribed it to exactly this
+   * kind for exactly this reason.
+   */
+  private async failSpawn(req: SpawnRequest, agentId: string, reason: string): Promise<SpawnOutcome> {
+    const full = `${req.name} was launched but never registered: ${reason}`
+    await this.recordExit(agentId, { code: null, signal: null, failed: full })
+    clearRuntimeState(agentId)
+    logEvent('agent_spawn_failed', { agentId, name: req.name, reason })
+    return { ok: false, agentId, name: req.name, reason: full }
   }
 
   /**
@@ -782,7 +922,7 @@ export class Supervisor implements TeleportHost {
     writeRuntimeState(agentId, { handle: handleState, allocation, isolation, ...(anchor ? { anchor } : {}) })
     // Headless only. A visible agent has no such promise, by design, and falls
     // through to the presence-inferred path instead.
-    void handle.exited?.then(outcome => this.recordExit(agentId, outcome))
+    void handle.exited?.then(outcome => void this.recordExit(agentId, outcome))
   }
 
   /**
@@ -945,23 +1085,34 @@ export class Supervisor implements TeleportHost {
   }
 
   /**
-   * Close the pane, tab or window a retiring agent was given.
+   * Close the pane, tab or window an agent was given.
    *
-   * RETIRE ONLY, and the two halves of that are both deliberate. An exit does not
-   * close anything: an agent finishing is not an instruction to throw away what it
-   * printed, and a human reading its last output should not have the pane vanish
-   * from under them. Retire is the explicit "I am done with this agent" — the same
-   * act that frees the name and releases the isolation, so the surface goes with
-   * them. `kill` needs nothing here: it already refuses on any visible surface.
+   * Reached from retire AND from `recordExit` (CC-95). It was retire-only, on the
+   * argument that an agent finishing is not an instruction to throw away what it
+   * printed; six months of panes said otherwise. A finished agent's pane is a
+   * dead shell nobody reads, and a wall of them is what a coordinator has to scan
+   * to find a live one. Retire is still the act that frees the name and destroys
+   * the isolation; it is no longer the only thing that tidies the screen.
    *
-   * What is closed is decided by `ownsSurface`, one layer down. A pane the broker
-   * merely split off, or an adopted session's own window, has no such mark and
-   * survives — which is the whole constraint.
+   * What is closed is decided by `ownsSurface`, one layer down, and THAT is the
+   * constraint that never moved. A pane the broker merely split off, or an adopted
+   * session's own window, has no such mark and survives. `kill` needs nothing
+   * here: it already refuses on any visible surface.
    */
   private async closeSurface(entry: Live): Promise<void> {
     if (entry.handle.ownsSurface !== true) return
-    const closed = await surfaceFor(entry.handle.surface, { ...this.surfaceOptions }).close(entry.handle)
-    logEvent('agent_surface_closed', { name: entry.name, surface: entry.handle.surface, closed })
+    const { closed, reason } = await surfaceFor(entry.handle.surface, { ...this.surfaceOptions }).close(
+      entry.handle,
+    )
+    logEvent('agent_surface_closed', {
+      name: entry.name,
+      surface: entry.handle.surface,
+      closed,
+      // CC-95: `closed:false` used to be a bare boolean nobody could act on, and
+      // `closed:true` used to be a claim nobody had checked. Both are now sourced
+      // from a second read of iTerm2's session list.
+      ...(reason === undefined ? {} : { reason }),
+    })
   }
 
   /**
@@ -1279,6 +1430,7 @@ export class Supervisor implements TeleportHost {
   close(): void {
     this.unwatch()
     this.teleporter.close()
+    this.attachWaiters.clear()
     for (const entry of this.live.values()) if (entry.settle) clearTimeout(entry.settle)
   }
 }

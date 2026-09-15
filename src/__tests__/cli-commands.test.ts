@@ -3,7 +3,18 @@ import os from 'node:os'
 import path from 'node:path'
 import type { Command } from 'commander'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { runChecks, worstStatus, type Check } from '../broker/doctor.js'
+import {
+  checkOrphanSurfaces,
+  runChecks,
+  stuckSpawns,
+  worstStatus,
+  type Check,
+  type SurfaceProbes,
+} from '../broker/doctor.js'
+import { foldAgent } from '../agents/identity.js'
+import { ATTACH_TIMEOUT_MS } from '../agents/supervisor.js'
+import type { AgentEventRow } from '../broker/event-store.js'
+import type { AgentIdentity } from '../protocol.js'
 import { resolveBrief } from '../cli/agents.js'
 import { buildProgram } from '../cli/index.js'
 import { tailLines } from '../cli/service.js'
@@ -228,5 +239,144 @@ describe('doctor', () => {
     expect(worstStatus(checks)).toBe('fail')
     expect(worstStatus(checks.slice(0, 1))).toBe('ok')
     expect(worstStatus(checks.slice(2))).toBe('warn')
+  })
+})
+
+/**
+ * CC-95's sixth case. The two states that produced the evidence — an agent stuck
+ * in `starting`, and a pane outliving its agent — were both invisible until a
+ * human happened to look at the wall of panes. `doctor` is where a state that
+ * gives no error of its own becomes one line of output.
+ *
+ * Driven off the event log, so it works on a machine whose broker has restarted
+ * since the spawn: that is precisely the case the supervisor's own timeout
+ * cannot cover, because there is nothing left in memory waiting on it.
+ */
+describe('agents stuck in starting', () => {
+  const spawnRow = (agentId: string, name: string, ts: number): AgentEventRow => ({
+    kind: 'agent_spawned',
+    ts,
+    actor: 'human',
+    target: name,
+    msgId: agentId,
+    ref: null,
+    body: 'work',
+    meta: { name },
+  })
+
+  const identity = (agentId: string, name: string, ts: number): AgentIdentity =>
+    foldAgent([spawnRow(agentId, name, ts)]) as AgentIdentity
+
+  const NOW = 1_000_000_000
+
+  it('lists one that has been starting longer than the attach window', () => {
+    const stale = identity('a1', 'ff-fp-fix', NOW - ATTACH_TIMEOUT_MS - 1)
+    expect(stuckSpawns([stale], NOW).map(a => a.name)).toEqual(['ff-fp-fix'])
+  })
+
+  it('leaves alone one that is still inside the window', () => {
+    const fresh = identity('a1', 'scout', NOW - 1000)
+    expect(stuckSpawns([fresh], NOW)).toEqual([])
+  })
+
+  /** Attached is the whole point of the check: it is `spawning` that never lands. */
+  it('leaves alone an old agent that did register', () => {
+    const attached = foldAgent([
+      spawnRow('a1', 'scout', NOW - ATTACH_TIMEOUT_MS - 1),
+      {
+        kind: 'agent_attached',
+        ts: NOW - ATTACH_TIMEOUT_MS,
+        actor: 'scout',
+        target: null,
+        msgId: null,
+        ref: 'a1',
+        body: null,
+        meta: {},
+      },
+    ]) as AgentIdentity
+    expect(stuckSpawns([attached], NOW)).toEqual([])
+  })
+
+  /**
+   * A resume puts the identity back into `spawning`, and its clock starts then.
+   * Ageing from `spawnedAt` would report every resumed agent as stuck forever.
+   */
+  it('restarts the clock on a resume rather than ageing from the original spawn', () => {
+    const resumed = foldAgent([
+      spawnRow('a1', 'scout', NOW - 10 * ATTACH_TIMEOUT_MS),
+      {
+        kind: 'agent_resumed',
+        ts: NOW - 1000,
+        actor: 'human',
+        target: 'scout',
+        msgId: null,
+        ref: 'a1',
+        body: null,
+        meta: {},
+      },
+    ]) as AgentIdentity
+    expect(resumed.state).toBe('spawning')
+    expect(stuckSpawns([resumed], NOW)).toEqual([])
+  })
+})
+
+/**
+ * The other half of CC-95's doctor case. `titan-brief-audit` logged
+ * `agent_surface_closed closed:true` at 06:16:03Z and its pane was still open,
+ * sitting at `-zsh`, at 12:45Z. Nothing reported that; a human found it.
+ */
+describe('surfaces that outlive their agent', () => {
+  const exited = (agentId: string, name: string): AgentIdentity =>
+    foldAgent([
+      {
+        kind: 'agent_spawned',
+        ts: 1,
+        actor: 'human',
+        target: name,
+        msgId: agentId,
+        ref: null,
+        body: '',
+        meta: { name },
+      },
+      {
+        kind: 'agent_exited',
+        ts: 2,
+        actor: name,
+        target: null,
+        msgId: null,
+        ref: agentId,
+        body: '',
+        meta: {},
+      },
+    ]) as AgentIdentity
+
+  const probes = (present: boolean | undefined): SurfaceProbes => ({
+    paneOf: () => ({ surface: 'iterm-pane', paneRef: 'ttys023' }),
+    present: async () => present,
+  })
+
+  it('warns about a pane still listed for an agent that has exited', async () => {
+    const checks = await checkOrphanSurfaces([exited('a1', 'titan-brief-audit')], probes(true))
+    expect(checks[0]?.status).toBe('warn')
+    expect(checks[0]?.detail).toContain('titan-brief-audit')
+  })
+
+  it('is quiet when the pane really did go', async () => {
+    const checks = await checkOrphanSurfaces([exited('a1', 'titan-brief-audit')], probes(false))
+    expect(checks[0]?.status).toBe('ok')
+  })
+
+  /** A clean bill of health nobody checked is worse than saying nothing. */
+  it('reports nothing at all when the terminal cannot be asked', async () => {
+    expect(await checkOrphanSurfaces([exited('a1', 'x')], probes(undefined))).toEqual([])
+  })
+
+  /** Only a pane the broker opened is ever ours to speak about. */
+  it('ignores an agent with no recorded pane of its own', async () => {
+    const checks = await checkOrphanSurfaces([exited('a1', 'x')], {
+      paneOf: () => undefined,
+      present: async () => true,
+    })
+    expect(checks).toEqual([])
   })
 })

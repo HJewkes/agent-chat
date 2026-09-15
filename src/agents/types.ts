@@ -141,14 +141,28 @@ export interface LaunchHandle {
   exited?: Promise<{ code: number | null; signal: string | null }>
 }
 
+/**
+ * The outcome of a teardown, and why `closed` alone was not enough (CC-95).
+ *
+ * A surface used to answer "did the close script run", which is a different
+ * question from "is the pane gone" — and the two diverged in the wild: a close
+ * logged `closed:true` at 06:16 and its pane was still sitting at a shell prompt
+ * six and a half hours later. `closed` now means the surface went and looked,
+ * and `reason` is what it saw when the answer is no.
+ */
+export interface CloseOutcome {
+  closed: boolean
+  reason?: string
+}
+
 export interface Surface {
   readonly name: SurfaceName
   readonly interactive: boolean
   launch(plan: LaunchPlan): Promise<LaunchHandle>
   /**
-   * Tear down the surface this handle was launched on, and report whether
-   * anything was closed. A no-op unless `ownsSurface` is set — the check lives
-   * here, in the only layer that knows what a pane is, so no caller can skip it.
+   * Tear down the surface this handle was launched on, and report whether it is
+   * actually gone. A no-op unless `ownsSurface` is set — the check lives here,
+   * in the only layer that knows what a pane is, so no caller can skip it.
    */
-  close(handle: LaunchHandle): Promise<boolean>
+  close(handle: LaunchHandle): Promise<CloseOutcome>
 }

@@ -17,6 +17,7 @@ import type { SurfaceOptions } from './options.js'
 
 export type { AppleScriptRunner, SpawnFn, SurfaceOptions } from './options.js'
 export { SurfaceRefused } from './options.js'
+export { itermSessionPresent } from './iterm.js'
 
 const isIterm = (name: SurfaceName): name is ItermSurfaceName => name !== 'headless'
 

@@ -71,3 +71,28 @@ function isAlive(pid: number): boolean {
     return (err as NodeJS.ErrnoException).code === 'EPERM'
   }
 }
+
+/**
+ * Stand in for the thing a real spawn always does next: the agent's own MCP
+ * server registers, and the broker appends `agent_attached`.
+ *
+ * Needed by every test that spawns, because `Supervisor.spawn` now waits for
+ * that row before it reports success (CC-95). Without it a test is asserting
+ * against a launch that, in production, would be a failure — an agent that never
+ * came up — which is exactly the state this task exists to stop reporting as ok.
+ *
+ * Appended on a microtask rather than inline: `onAppend` fires DURING the append
+ * that triggered it, and re-entering the log from inside it is a different test
+ * than the one anyone here is writing.
+ */
+export function autoAttach(core: {
+  onAppend: (watch: (row: { kind: string; msgId?: string; target?: string }) => void) => () => void
+  append: (input: { kind: 'agent_attached'; actor: string; ref: string }) => unknown
+}): () => void {
+  return core.onAppend(row => {
+    if (row.kind !== 'agent_spawned' || row.msgId === undefined) return
+    const ref = row.msgId
+    const actor = row.target ?? ''
+    queueMicrotask(() => core.append({ kind: 'agent_attached', actor, ref }))
+  })
+}

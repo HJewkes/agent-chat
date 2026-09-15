@@ -56,10 +56,19 @@ and the notice sink are constructor options rather than launch arguments.
   marks `ownsSurface` on a split, tab or window it created and leaves it off a
   pane it merely wrote into, and `Surface.close` refuses without that mark — so
   an anchor, or an adopted session's own window, is never closable from a bus any
-  peer can reach. Teardown fires on `retire` and nowhere else: an exit is not an
-  instruction to throw away what the agent printed. Closing a session covers all
-  three surfaces, since iTerm2 closes the tab with its last session and the window
-  with its last tab.
+  peer can reach. Closing a session covers all three surfaces, since iTerm2 closes
+  the tab with its last session and the window with its last tab.
+- **Teardown fires on `retire` AND on `agent_exited`** (CC-95). It was retire-only,
+  on the argument that an exit is not an instruction to throw away what the agent
+  printed; the panes decided otherwise — four finished agents left their panes at
+  `-zsh` for six and a half hours until a human retired them to reclaim the screen.
+  The inferred exit is the one that matters, because it is the only exit a visible
+  agent ever gets. `ownsSurface` still gates it, unchanged.
+- **`close` reports whether the pane is GONE, not whether the script ran** (CC-95).
+  `@@closed@@` means AppleScript found the session and issued `close`; a teardown
+  logged `closed:true` on that basis and its pane was still open six hours later.
+  `close` now re-reads the session list and returns `{ closed, reason }`, with the
+  reason naming what it saw — still there, could not re-read, iTerm2 unreachable.
 
 ## The two §5.4 lessons, and how the tests pin them
 

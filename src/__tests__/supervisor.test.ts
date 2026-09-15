@@ -10,6 +10,8 @@ import { Registry } from '../broker/registry.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { SpawnRateBudget } from '../agents/spawn-rate.js'
 import { MAX_DEPTH, Supervisor } from '../agents/supervisor.js'
+import { pairPresence } from '../agents/identity.js'
+import type { AgentIdentity } from '../protocol.js'
 import {
   readLaunchPlan,
   readRuntimeState,
@@ -19,6 +21,7 @@ import {
 import { worktreeStrategy } from '../agents/isolation/worktree.js'
 import type { Allocation } from '../agents/isolation/index.js'
 import type { HookProcess, HookSpawnFn } from '../agents/hooks.js'
+import { autoAttach } from './broker-harness.js'
 
 /**
  * A6 — lifecycle. What is being proved is that an agent's slot, isolation and
@@ -29,6 +32,8 @@ import type { HookProcess, HookSpawnFn } from '../agents/hooks.js'
 const tmpDirs: string[] = []
 let core: BrokerCore
 let supervisor: Supervisor
+/** Drop the stand-in registration, for the tests that are about it not arriving. */
+let stopAutoAttach: () => void
 
 function makeCore(): BrokerCore {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-sup-'))
@@ -69,9 +74,11 @@ const kindsFor = (agentId: string): string[] =>
 beforeEach(() => {
   vi.useFakeTimers()
   core = makeCore()
+  stopAutoAttach = autoAttach(core)
 })
 
 afterEach(() => {
+  stopAutoAttach()
   supervisor?.close()
   vi.useRealTimers()
   delete process.env.AGENT_CHAT_HOME
@@ -979,6 +986,9 @@ describe('retiring an agent that was given a pane', () => {
     const runAppleScript = async (script: string): Promise<string> => {
       scripts.push(script)
       if (script.includes('is running')) return 'true'
+      // CC-95: a close is followed by a second read of the session list, and an
+      // iTerm2 that never answers it would make every teardown "unconfirmed".
+      if (script.includes('@@present@@')) return '@@gone@@'
       if (script.includes('to close')) return '@@closed@@'
       return 'PANE-1'
     }
@@ -987,6 +997,9 @@ describe('retiring an agent that was given a pane', () => {
   }
 
   const liveOn = (sup: Supervisor, handle: Record<string, unknown>, id = 'a1'): void => {
+    // No spawn ran, so the stand-in registration must not fire: it would land
+    // AFTER the detach these tests append and cancel the settle they depend on.
+    stopAutoAttach()
     core.append({ kind: 'agent_spawned', actor: 'human', target: 'scout', msgId: id, body: 'work' })
     ;(sup as unknown as { live: Map<string, unknown> }).live.set(id, {
       agentId: id,
@@ -1019,15 +1032,34 @@ describe('retiring an agent that was given a pane', () => {
   })
 
   /**
-   * An agent finishing is not an instruction to throw away what it printed: the
-   * pane stays until a human explicitly retires it.
+   * CC-95, and a reversal. This used to assert the opposite — an agent finishing
+   * is not an instruction to throw away what it printed — and the panes decided
+   * it: four agents reached `finished`, their panes sat at `-zsh` for six and a
+   * half hours, and a human retired them by hand purely to reclaim the screen.
+   *
+   * The inferred path is the one that matters, because it is the ONLY exit a
+   * visible agent ever gets: nothing calls back into agent-chat when a human
+   * types /exit in a pane, so a detach with no reattach is all there is.
    */
-  it('leaves the pane open when the agent merely exits', () => {
+  it('closes the pane when the agent exits, even on an inferred exit', async () => {
     const { sup, closes } = fakeIterm(500)
     liveOn(sup, { surface: 'iterm-pane', paneRef: 'PANE-1', ownsSurface: true })
 
     core.append({ kind: 'agent_detached', actor: 'scout', ref: 'a1' })
-    vi.advanceTimersByTime(500)
+    await vi.advanceTimersByTimeAsync(500)
+
+    expect(kindsFor('a1')).toContain('agent_exited')
+    expect(closes()).toHaveLength(1)
+    expect(closes()[0]).toContain('is "PANE-1"')
+  })
+
+  /** The constraint that did NOT move: an exit closes only what the broker opened. */
+  it('leaves a pane the broker never opened alone when the agent exits', async () => {
+    const { sup, closes } = fakeIterm(500)
+    liveOn(sup, { surface: 'iterm-pane', paneRef: 'HUMANS-OWN-PANE' })
+
+    core.append({ kind: 'agent_detached', actor: 'scout', ref: 'a1' })
+    await vi.advanceTimersByTimeAsync(500)
 
     expect(kindsFor('a1')).toContain('agent_exited')
     expect(closes()).toEqual([])
@@ -1448,10 +1480,11 @@ describe('lifecycle hooks', () => {
     expect(calls).toHaveLength(0)
   })
 
-  it('fires on_complete with the exit code on a real exit', () => {
+  it('fires on_complete with the exit code on a real exit', async () => {
     writeHooksConfig({ on_complete: ['/bin/on-complete.sh'] })
     const { spawn, calls } = capturingHookSpawn()
     const sup = withStubbedSurface({ hookSpawn: spawn })
+    stopAutoAttach()
     core.append({ kind: 'agent_spawned', actor: 'human', target: 'scout', msgId: 'a1', body: 'work' })
     ;(sup as unknown as { live: Map<string, unknown> }).live.set('a1', {
       agentId: 'a1',
@@ -1462,7 +1495,7 @@ describe('lifecycle hooks', () => {
     })
 
     core.append({ kind: 'agent_detached', actor: 'scout', ref: 'a1' })
-    ;(sup as unknown as { recordExit: (id: string, o: unknown) => void }).recordExit('a1', {
+    await (sup as unknown as { recordExit: (id: string, o: unknown) => Promise<void> }).recordExit('a1', {
       code: 0,
       signal: null,
     })
@@ -1476,10 +1509,11 @@ describe('lifecycle hooks', () => {
     })
   })
 
-  it('fires on_complete with inferred: true on a synthesised exit', () => {
+  it('fires on_complete with inferred: true on a synthesised exit', async () => {
     writeHooksConfig({ on_complete: ['/bin/on-complete.sh'] })
     const { spawn, calls } = capturingHookSpawn()
     const sup = withStubbedSurface({ settleMs: 1000, hookSpawn: spawn })
+    stopAutoAttach()
     core.append({ kind: 'agent_spawned', actor: 'human', target: 'scout', msgId: 'a1', body: 'work' })
     ;(sup as unknown as { live: Map<string, unknown> }).live.set('a1', {
       agentId: 'a1',
@@ -1490,7 +1524,7 @@ describe('lifecycle hooks', () => {
     })
 
     core.append({ kind: 'agent_detached', actor: 'scout', ref: 'a1' })
-    vi.advanceTimersByTime(1000)
+    await vi.advanceTimersByTimeAsync(1000)
 
     expect(calls).toHaveLength(1)
     expect(JSON.parse(calls[0]?.stdin ?? '{}')).toEqual({
@@ -1499,5 +1533,153 @@ describe('lifecycle hooks', () => {
       signal: null,
       inferred: true,
     })
+  })
+})
+
+/**
+ * CC-95. `agent_spawn` reported "Spawned" as soon as AppleScript had written a
+ * command line into a pane, which is a claim about iTerm2 rather than about the
+ * agent. The evidence: `ff-fp-fix` spawned at 06:25:46Z, still reading `starting`
+ * at 12:45Z, transcript never written, pane sitting at a bare shell — and the
+ * spawn call had returned success six and a half hours earlier.
+ */
+describe('reporting a spawn only once the agent has attached', () => {
+  /** A supervisor whose attach window is short enough to expire inside a test. */
+  function withAttachWindow(attachMs: number, over: Record<string, unknown> = {}): Supervisor {
+    supervisor = new Supervisor(core, { attachMs, surface: { platform: 'linux' }, ...over })
+    return supervisor
+  }
+
+  it('reports success once the agent registers', async () => {
+    const sup = withAttachWindow(1000)
+
+    const result = await sup.spawn(spawnReq())
+
+    expect(result.ok).toBe(true)
+    expect(kindsFor(result.agentId as string)).toContain('agent_attached')
+  })
+
+  /** The whole defect, in one assertion: a launch that lands nowhere is not a spawn. */
+  it('refuses rather than reporting success when nothing ever registers', async () => {
+    stopAutoAttach()
+    const sup = withAttachWindow(1000)
+
+    const spawning = sup.spawn(spawnReq())
+    await vi.advanceTimersByTimeAsync(1000)
+    const result = await spawning
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/never registered/)
+    expect(result.reason).toMatch(/no registration within 1s/)
+  })
+
+  /**
+   * `starting` is what a coordinator reads on the roster, and it is indefinite:
+   * nothing ages out of it. The failed spawn has to land in a terminal state, and
+   * it has to be distinguishable from an agent that ran and finished.
+   */
+  it('marks the agent failed rather than leaving it starting', async () => {
+    stopAutoAttach()
+    const sup = withAttachWindow(1000)
+
+    const spawning = sup.spawn(spawnReq())
+    await vi.advanceTimersByTimeAsync(1000)
+    const result = await spawning
+
+    const agent = core.agents.get(result.agentId as string)
+    expect(agent?.state).toBe('exited')
+    expect(agent?.exit?.failedToStart).toBe(true)
+    expect(pairPresence(agent as AgentIdentity, { connected: false }).status).toBe('failed')
+  })
+
+  /** Freed, or the slot is lost to an agent that never existed. */
+  it('gives the slot back', async () => {
+    stopAutoAttach()
+    const semaphore = new Semaphore(1)
+    const sup = withAttachWindow(1000, { semaphore })
+
+    const spawning = sup.spawn(spawnReq())
+    await vi.advanceTimersByTimeAsync(1000)
+    await spawning
+
+    expect((await sup.spawn(spawnReq({ name: 'second' }))).ok).toBe(true)
+  })
+
+  /**
+   * The second half of the evidence: a pane was created, claude never started,
+   * and the pane outlived the agent that was never there.
+   */
+  it('closes the pane it opened for an agent that never came up', async () => {
+    stopAutoAttach()
+    const scripts: string[] = []
+    supervisor = new Supervisor(core, {
+      attachMs: 1000,
+      surface: {
+        platform: 'darwin',
+        runAppleScript: async script => {
+          scripts.push(script)
+          if (script.includes('is running')) return 'true'
+          if (script.includes('@@present@@')) return '@@gone@@'
+          if (script.includes('to close')) return '@@closed@@'
+          return 'PANE-1'
+        },
+      },
+    })
+
+    const spawning = supervisor.spawn(spawnReq({ surface: 'iterm-window' }))
+    await vi.advanceTimersByTimeAsync(1000)
+    const result = await spawning
+
+    expect(result.ok).toBe(false)
+    expect(scripts.filter(s => s.includes('to close'))).toHaveLength(1)
+  })
+
+  /**
+   * A headless agent's wrapper exit is direct evidence, and it arrives in
+   * milliseconds — waiting the full window for something already known to be
+   * dead helps nobody, and the exit code is the most useful thing there is to
+   * report.
+   */
+  it('gives up early, with the exit code, when claude dies before registering', async () => {
+    stopAutoAttach()
+    supervisor = new Supervisor(core, {
+      attachMs: 60_000,
+      surface: {
+        platform: 'linux',
+        spawn: () => ({
+          pid: 4242,
+          unref: () => undefined,
+          once: (event: string, listener: (...args: unknown[]) => void) => {
+            if (event === 'exit') queueMicrotask(() => listener(127, null))
+          },
+        }),
+      },
+    })
+
+    const result = await supervisor.spawn(spawnReq())
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/exited before registering \(exit code 127\)/)
+  })
+
+  /**
+   * A freshly created worktree is a path Claude Code has never been run in, so it
+   * has no trust entry — and the first thing it does there is ask a question
+   * nobody in a spawned pane can answer. Named, because "the spawn failed" gives
+   * a coordinator nothing to act on.
+   */
+  it('names the missing trust-dir entry as the likely cause', async () => {
+    stopAutoAttach()
+    const sup = withAttachWindow(1000)
+    const config = path.join(workspace(), '.claude.json')
+    fs.writeFileSync(config, JSON.stringify({ projects: {} }))
+    vi.spyOn(os, 'homedir').mockReturnValue(path.dirname(config))
+
+    const spawning = sup.spawn(spawnReq())
+    await vi.advanceTimersByTimeAsync(1000)
+    const result = await spawning
+
+    expect(result.reason).toMatch(/no accepted trust entry/)
+    expect(result.reason).toMatch(/Do you trust the files in this folder\?/)
   })
 })
