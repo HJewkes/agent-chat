@@ -172,7 +172,12 @@ describe('chat_list renders tags with who applied them', () => {
     const out = await render([session({})])
 
     expect(out).not.toContain('tags:')
-    expect(out).toContain('- cc-relay [working, idle 12s] — narrowing broadcast fanout\n    /repo')
+    // CC-94 adds one more segment inside the bracket when there is no budget
+    // reading, reused from budget.ts's own MISSING handling — the whole row's
+    // contract, not just tags.
+    expect(out).toContain(
+      '- cc-relay [working, idle 12s, no budget reading] — narrowing broadcast fanout\n    /repo',
+    )
   })
 
   it('keeps the tags line beside the declared line, both marked as claims', async () => {

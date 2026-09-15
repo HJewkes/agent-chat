@@ -19,7 +19,15 @@ import { hostIdentity } from './host.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
 import { cliEntry } from '../paths.js'
 import { transcriptLine } from '../agents/transcript.js'
-import { budgetMiss, formatBudget, readBudget, type BudgetRead } from '../agents/budget.js'
+import {
+  accountUsageLine,
+  budgetMiss,
+  budgetSegment,
+  formatBudget,
+  readBudget,
+  type BudgetRead,
+  type NamedBudgetRead,
+} from '../agents/budget.js'
 import { readTurns, type TranscriptRead } from '../agents/turns.js'
 import { findDenials } from '../agents/denials.js'
 import type {
@@ -864,9 +872,15 @@ function observedLine(s: SessionInfo): string {
   return `\n    ${parts.join('  ·  ')}`
 }
 
-function formatSessions(sessions: SessionInfo[], self: string | null, claims: SessionClaim[] = []): string {
+function formatSessions(
+  sessions: SessionInfo[],
+  self: string | null,
+  claims: SessionClaim[] = [],
+  budgets: NamedBudgetRead[] = [],
+): string {
   if (sessions.length === 0) return 'No sessions are registered.'
   const now = Date.now()
+  const budgetByName = new Map(budgets.map(b => [b.name, b.read]))
   const rows = sessions.map(s => {
     const you = s.name === self ? ' (you)' : ''
     const quiet = s.dnd ? ', dnd' : ''
@@ -874,10 +888,14 @@ function formatSessions(sessions: SessionInfo[], self: string | null, claims: Se
     // is working in that directory". Marked so a reader does not mistake it for
     // an identity the session declared.
     const named = s.provisional === true ? ', unnamed' : ''
-    const head = `- ${s.name}${you} [${s.status}${quiet}${named}, idle ${ago(s.idleMs)}] — ${s.workingOn || 'no description'}`
+    const budget = budgetByName.get(s.name)
+    // One extra segment, CC-94: budget goes in the bracket alongside status
+    // rather than adding a whole new line per row.
+    const budgetPart = budget === undefined ? '' : `, ${budgetSegment(budget)}`
+    const head = `- ${s.name}${you} [${s.status}${quiet}${named}, idle ${ago(s.idleMs)}${budgetPart}] — ${s.workingOn || 'no description'}`
     return `${head}${tagsLine(s.tags, now)}${declaredLine(s.declared)}${observedLine(s)}${claimLine(claims, s.name)}`
   })
-  return `Active sessions:\n${rows.join('\n')}${claimsFooter(claims, sessions, self)}`
+  return `Active sessions:\n${accountUsageLine(budgets)}\n${rows.join('\n')}${claimsFooter(claims, sessions, self)}`
 }
 
 /** What this session holds, on its own row, so the roster answers "who has what". */
@@ -1005,6 +1023,16 @@ function formatTurns(who: string, read: TranscriptRead): string {
 
 const renderBudget = (who: string, read: BudgetRead): string =>
   read.found ? formatBudget(who, read) : budgetMiss(who, read)
+
+/**
+ * A raw socket client never sent `CLAUDE_CODE_SESSION_ID` on register, so a
+ * roster row for it has no session id to read a budget from at all — a MISSING
+ * reading like any other, not a distinct case a caller has to branch on.
+ */
+const readBudgetSafe = (sessionId: string | undefined): BudgetRead =>
+  sessionId === undefined
+    ? { found: false, path: '(no session id)', reason: 'no_file' }
+    : readBudget(sessionId)
 
 /** Tracks the registered name purely so chat_list can mark which entry is us. */
 export class ToolHandler {
@@ -1194,7 +1222,11 @@ export class ToolHandler {
       ServerMessage,
       { t: 'list_result' }
     >
-    return text(formatSessions(res.sessions, this.registeredName, res.claims ?? []))
+    const budgets = res.sessions.map(s => ({
+      name: s.name,
+      read: readBudgetSafe(s.observed?.claudeSessionId),
+    }))
+    return text(formatSessions(res.sessions, this.registeredName, res.claims ?? [], budgets))
   }
 
   private async claim(patterns: string[] | undefined, worktreePath: string | undefined) {
@@ -1545,18 +1577,24 @@ export class ToolHandler {
       { t: 'agents_result' }
     >
     if (res.agents.length === 0) return text('No agents.')
-    const rows = res.agents.map(
-      a =>
+    const budgets = res.agents.map(a => ({ name: a.name, read: readBudget(a.sessionId) }))
+    const budgetByName = new Map(budgets.map(b => [b.name, b.read]))
+    const rows = res.agents.map(a => {
+      // One extra segment, CC-94: budget rides in the same bracket as state
+      // rather than adding a whole new line per row.
+      const budgetPart = `, ${budgetSegment(budgetByName.get(a.name)!)}`
+      return (
         // An adopted identity has no profile and no surface we chose, and its
         // name is self-reported — so it says what it is rather than rendering
         // two empty fields and reading like an agent someone spawned.
-        `- ${a.name} [${a.state}, ${a.origin === 'adopted' ? 'human-started session' : `${a.profile}, ${a.surface}`}]` +
+        `- ${a.name} [${a.state}, ${a.origin === 'adopted' ? 'human-started session' : `${a.profile}, ${a.surface}`}${budgetPart}]` +
         ` spawned by ${a.spawnedBy}\n    ${a.cwd}` +
         // A headless agent's output is discarded, so this is the only way to read
         // what it actually did without interrupting it for a report.
-        `\n    ${transcriptLine(a.cwd, a.sessionId)}`,
-    )
-    return text(`Durable agents:\n${rows.join('\n')}`)
+        `\n    ${transcriptLine(a.cwd, a.sessionId)}`
+      )
+    })
+    return text(`Durable agents:\n${accountUsageLine(budgets)}\n${rows.join('\n')}`)
   }
 
   private async agentLogs(name: string, limit: number) {

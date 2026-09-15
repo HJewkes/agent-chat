@@ -301,7 +301,12 @@ describe('chat_list rendering keeps a fact and a claim visually apart', () => {
     const out = await render([session({})])
 
     expect(out).not.toContain('declared:')
-    expect(out).toContain('- cc-relay [working, idle 12s] — narrowing broadcast fanout\n    /repo')
+    // CC-94 adds one more segment inside the bracket when there is no budget
+    // reading — reused from budget.ts's own MISSING handling rather than
+    // smoothed away, so this is the whole row's contract, not just declared.
+    expect(out).toContain(
+      '- cc-relay [working, idle 12s, no budget reading] — narrowing broadcast fanout\n    /repo',
+    )
   })
 })
 

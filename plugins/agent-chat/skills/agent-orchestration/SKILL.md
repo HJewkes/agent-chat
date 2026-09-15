@@ -88,6 +88,12 @@ It starts at the log head, so it will not replay a backlog at you. Use
 
 ## Budget: what you are spending, and how to find out
 
+`agent_list` and `chat_list` rows already carry each peer's model, session cost and context
+fill (CC-94) — that is where to look first when deciding who takes the next context-heavy
+job, since it costs no round-trip. Reach for `session_budget(name)` when you need more than
+the roster's compact segment: token breakdown, cache figures, or the full rate-limit table
+for one peer.
+
 `session_budget` answers two different questions, and a coordinator should treat them
 differently.
 
@@ -100,7 +106,9 @@ handoff you write is all the successor gets. That is why 95% says stop now: past
 is not enough room left to write a good one.
 
 **The account rate limit is machine-wide and shared.** It is not billed to you, and nothing
-pushes it — call `session_budget` when you are about to make a decision that spends it.
+pushes it. `agent_list`/`chat_list` print it once, in the header, from whichever row's
+reading is freshest — never per row, since it is one fact, not N. Call `session_budget`
+when you are about to make a decision that spends it and want a guaranteed-current read.
 `five_hour` recovers within a working session; `seven_day` does not, so it is the one that
 constrains a day's plan. Use it to shape the work rather than to stop:
 
@@ -113,7 +121,8 @@ constrains a day's plan. Use it to shape the work rather than to stop:
   than finding out at 80% that the wave should be three.
 - The figure a spawned agent reports for ITSELF can be stale: an idle session keeps
   publishing the fill it had when it stopped. Read `age_seconds` and `stale` before quoting
-  a number back to a human.
+  a number back to a human — the roster segment marks this too (`[stale Ns]`), rather than
+  smoothing it over.
 
 ### The coordinator is the most expensive seat
 

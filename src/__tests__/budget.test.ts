@@ -6,9 +6,11 @@ import type { Command } from 'commander'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { buildProgram } from '../cli/index.js'
 import {
+  accountUsageLine,
   budgetDir,
   budgetMiss,
   budgetPath,
+  budgetSegment,
   formatBudget,
   parseBudget,
   readBudget,
@@ -170,6 +172,52 @@ describe('rendering a reading for a caller', () => {
     expect(read.found).toBe(true)
     if (!read.found) return
     expect(formatBudget('You', read)).toContain('no account rate-limit windows')
+  })
+})
+
+describe('the compact roster segment (CC-94)', () => {
+  it('packs model, cost and context fill into one segment for a fresh reading', () => {
+    write('abc-123', payload())
+    const read = readBudget('abc-123', 1_700_000_001_000)
+    expect(budgetSegment(read)).toBe('claude-opus-5 · $1.3 · 43.2%/200k')
+  })
+
+  it('flags a stale reading rather than rendering it as current', () => {
+    write('abc-123', payload())
+    const later = (1_700_000_000 + STALE_AFTER_SECONDS + 1) * 1000
+    const read = readBudget('abc-123', later)
+    const segment = budgetSegment(read)
+    expect(segment).toContain('claude-opus-5 · $1.3 · 43.2%/200k')
+    expect(segment).toMatch(/\[stale \d+s\]/)
+  })
+
+  it('says plainly when a row has no reading at all, without throwing', () => {
+    const read = readBudget('never-written')
+    expect(budgetSegment(read)).toBe('no budget reading')
+  })
+})
+
+describe('the account-wide usage line (CC-94)', () => {
+  it('reads rate limits once, from the freshest row, and says whose', () => {
+    write('abc-123', payload())
+    write('def-456', payload({ session_id: 'def-456' }))
+    const stale = readBudget('abc-123', (1_700_000_000 + STALE_AFTER_SECONDS + 1) * 1000)
+    const fresh = readBudget('def-456', 1_700_000_001_000)
+
+    const line = accountUsageLine([
+      { name: 'scout', read: stale },
+      { name: 'relay', read: fresh },
+    ])
+
+    expect(line).toContain("relay's reading")
+    expect(line).toContain('five_hour 21.4%')
+    expect(line).toContain('seven_day 58.1%')
+  })
+
+  it('says plainly when nothing on the roster has a reading', () => {
+    expect(accountUsageLine([{ name: 'scout', read: readBudget('never-written') }])).toContain(
+      'no budget reading available',
+    )
   })
 })
 

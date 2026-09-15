@@ -229,3 +229,53 @@ function contextLine(budget: SessionBudget): string {
 }
 
 const round = (n: number): number => Math.round(n * 10) / 10
+
+/** A row's budget reading paired with the roster name it belongs to (CC-94). */
+export interface NamedBudgetRead {
+  name: string
+  read: BudgetRead
+}
+
+/**
+ * One compact segment for a roster row (CC-94) — model, cost and context fill,
+ * in about as much text as an existing status tag. Rate limits are deliberately
+ * excluded: they are account-wide, not per session, and belong once in the
+ * roster header via {@link accountUsageLine} rather than repeated on every row.
+ *
+ * Staleness is surfaced rather than smoothed over, reusing the same
+ * `age_seconds`/`stale` this module already computes in {@link readBudget} —
+ * an idle session keeps publishing the fill it had when it stopped, and a
+ * reader must be able to tell that from a live number.
+ */
+export function budgetSegment(read: BudgetRead): string {
+  if (!read.found) return 'no budget reading'
+  const { budget, age_seconds, stale } = read
+  const { used_pct, window_size } = budget.context
+  const pct = used_pct === undefined ? undefined : `${round(used_pct)}%`
+  const size = window_size === undefined ? undefined : `${Math.round(window_size / 1000)}k`
+  const context = pct === undefined ? undefined : size === undefined ? pct : `${pct}/${size}`
+  const cost = budget.cost.total_cost_usd === undefined ? undefined : `$${round(budget.cost.total_cost_usd)}`
+  const parts = [budget.model_id, cost, context].filter((p): p is string => p !== undefined)
+  const rendered = parts.length > 0 ? parts.join(' · ') : 'no budget reading'
+  return stale ? `${rendered} [stale ${age_seconds}s]` : rendered
+}
+
+/**
+ * One line for a roster's header. Account rate-limit windows are the same
+ * figure for every session under one account, so printing them per row would
+ * repeat one fact N times rather than report N facts — this reads them once,
+ * from whichever row's reading is freshest, and says whose and how old.
+ */
+export function accountUsageLine(budgets: NamedBudgetRead[]): string {
+  const found = budgets
+    .map(b => (b.read.found ? { name: b.name, ...b.read } : undefined))
+    .filter((b): b is { name: string } & Extract<BudgetRead, { found: true }> => b !== undefined)
+  if (found.length === 0) return 'Account usage: no budget reading available from any row.'
+
+  const freshest = found.reduce((a, b) => (b.age_seconds < a.age_seconds ? b : a))
+  const windows = Object.entries(freshest.budget.rate_limits).map(
+    ([name, w]) => `${name} ${round(w.used_pct)}%`,
+  )
+  const usage = windows.length > 0 ? windows.join(', ') : 'no account rate-limit windows in the payload'
+  return `Account usage (from ${freshest.name}'s reading, ${freshest.age_seconds}s old): ${usage}.`
+}
