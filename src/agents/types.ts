@@ -70,6 +70,22 @@ export interface LaunchPlanInput {
    * for the surfacing case, where the pane IS the deliverable.
    */
   resumeMessage?: string
+  /**
+   * CC-44: an absolute path to the transcript this agent's conversation starts
+   * as a COPY of, rather than starting empty. Mutually exclusive with `resume` —
+   * a fork mints `sessionId` instead of reattaching to it, so the inherited
+   * conversation is branched and the original is never written to.
+   *
+   * A path, not a session id, because `--resume` accepts either and only the path
+   * form works from a cwd that is not the transcript's own project directory —
+   * which is exactly where a forked agent lives.
+   *
+   * What it does NOT buy, since the name invites the assumption: this is still a
+   * separate process paying its own input tokens. The built-in `fork` subagent's
+   * shared prompt cache does not transfer. And a transcript holds only COMPLETED
+   * turns, so the fork cannot see the turn its parent is part way through.
+   */
+  forkFrom?: string
   mcpConfigPath: string
   /** From the isolation strategy: dirs outside cwd the agent may still read. */
   extraDirs?: string[]

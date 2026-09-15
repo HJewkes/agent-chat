@@ -161,29 +161,29 @@ override with `AGENT_CHAT_HOME`.
 
 ## Tools
 
-| Tool                                                            | Purpose                                                                 |
-| --------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `chat_register(name, working_on, declared?)`                    | Announce this session. Call once at start.                              |
-| `chat_status(status, working_on?, dnd?, declared?)`             | `working` / `available` / `blocked`; set `dnd` to hold peer pushes.     |
-| `chat_list()`                                                   | Who's active, their status, work, tags, and where.                      |
-| `chat_send(to \| to_tag, text, in_reply_to?)`                   | Message one session, a named list, or everyone carrying a tag.          |
-| `chat_tag(target?, add?, remove?)`                              | Label yourself or a peer by role, e.g. `owner:src`. Not authorization.  |
-| `chat_activity(name, limit?)`                                   | See what a peer has been doing, without interrupting it.                |
-| `chat_broadcast(text)`                                          | Message everyone else. Use sparingly.                                   |
-| `chat_ask(text)`                                                | Ask the human. Budgeted, non-blocking.                                  |
-| `chat_endorse(to, text)`                                        | Have the human approve a message, then deliver it under your authority. |
-| `chat_notify(text)`                                             | Leave the human a notice needing no answer.                             |
-| `chat_inbox(limit?)`                                            | Re-read recent messages, including answers.                             |
-| `chat_subscribe(scope, target?, kinds?)`                        | Be told when sessions or agents join or leave.                          |
-| `chat_unsubscribe(scope?, target?)`                             | Stop being told; omit both to drop every subscription.                  |
-| `agent_spawn(name, profile, brief, surface?, isolation?, cwd?)` | Spawn a durable agent that joins the bus as a peer.                     |
-| `agent_teleport(handoff, model?)`                               | End this session, starting a successor from the current build.          |
-| `agent_surface(name)`                                           | Pull a headless agent into a visible terminal.                          |
-| `agent_background()`                                            | Send yourself headless, releasing your terminal.                        |
-| `agent_profiles()`                                              | List spawnable profiles: model, tool set, surface, isolation.           |
-| `agent_list()`                                                  | List durable agents with lifecycle state and whether attached.          |
-| `agent_logs(name, limit?)`                                      | Read a headless agent's settings-level permission-denial trace.         |
-| `chat_transcript(name?, limit?)`                                | Recent turns of a session's own transcript.                             |
+| Tool                                                                      | Purpose                                                                                                              |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `chat_register(name, working_on, declared?)`                              | Announce this session. Call once at start.                                                                           |
+| `chat_status(status, working_on?, dnd?, declared?)`                       | `working` / `available` / `blocked`; set `dnd` to hold peer pushes.                                                  |
+| `chat_list()`                                                             | Who's active, their status, work, tags, and where.                                                                   |
+| `chat_send(to \| to_tag, text, in_reply_to?)`                             | Message one session, a named list, or everyone carrying a tag.                                                       |
+| `chat_tag(target?, add?, remove?)`                                        | Label yourself or a peer by role, e.g. `owner:src`. Not authorization.                                               |
+| `chat_activity(name, limit?)`                                             | See what a peer has been doing, without interrupting it.                                                             |
+| `chat_broadcast(text)`                                                    | Message everyone else. Use sparingly.                                                                                |
+| `chat_ask(text)`                                                          | Ask the human. Budgeted, non-blocking.                                                                               |
+| `chat_endorse(to, text)`                                                  | Have the human approve a message, then deliver it under your authority.                                              |
+| `chat_notify(text)`                                                       | Leave the human a notice needing no answer.                                                                          |
+| `chat_inbox(limit?)`                                                      | Re-read recent messages, including answers.                                                                          |
+| `chat_subscribe(scope, target?, kinds?)`                                  | Be told when sessions or agents join or leave.                                                                       |
+| `chat_unsubscribe(scope?, target?)`                                       | Stop being told; omit both to drop every subscription.                                                               |
+| `agent_spawn(name, profile, brief, surface?, isolation?, cwd?, inherit?)` | Spawn a durable agent that joins the bus as a peer; `inherit: "context"` starts it from a copy of YOUR conversation. |
+| `agent_teleport(handoff, model?)`                                         | End this session, starting a successor from the current build.                                                       |
+| `agent_surface(name)`                                                     | Pull a headless agent into a visible terminal.                                                                       |
+| `agent_background()`                                                      | Send yourself headless, releasing your terminal.                                                                     |
+| `agent_profiles()`                                                        | List spawnable profiles: model, tool set, surface, isolation.                                                        |
+| `agent_list()`                                                            | List durable agents with lifecycle state and whether attached.                                                       |
+| `agent_logs(name, limit?)`                                                | Read a headless agent's settings-level permission-denial trace.                                                      |
+| `chat_transcript(name?, limit?)`                                          | Recent turns of a session's own transcript.                                                                          |
 
 `chat_list` splits what it knows about a session by trust, not by topic (CC-11).
 The **observed** half — git branch, checkout, whether that checkout is a linked

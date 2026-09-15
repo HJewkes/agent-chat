@@ -26,6 +26,13 @@
  */
 delete process.env.CLAUDE_CODE_SESSION_ID
 
+/**
+ * `AGENT_CHAT_LIVE` survives, and has to: it is the opt-in switch for the
+ * `live-*` specs, not a pointer at anyone's bus. Stripping it with the rest
+ * silently disabled every live test — they read it at module load, after this
+ * file has run, so `AGENT_CHAT_LIVE=1 npx vitest run live-toolset` reported two
+ * skipped tests and a green suite. Found while wiring `live-fork.test.ts` (CC-44).
+ */
 for (const key of Object.keys(process.env)) {
-  if (key.startsWith('AGENT_CHAT_')) delete process.env[key]
+  if (key.startsWith('AGENT_CHAT_') && key !== 'AGENT_CHAT_LIVE') delete process.env[key]
 }

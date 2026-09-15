@@ -701,6 +701,27 @@ export type ClientMessage =
        * hold in the same worktree.
        */
       owns?: string[]
+      /**
+       * CC-44: start the agent from a COPY of the requester's own conversation
+       * instead of from an empty one. `'context'` is the only value, and there
+       * is deliberately no field naming WHOSE conversation — the broker resolves
+       * that from the requesting connection, the same discipline `anchor` and
+       * `parentAgentId` follow, because a fork hands an entire conversation to a
+       * new process and only the session that owns one may do that.
+       */
+      inherit?: 'context'
+      /**
+       * The Claude Code session id the requester claims to be forking, checked
+       * against the one the broker observed for this connection and REFUSED when
+       * they differ.
+       *
+       * Exists only to make that refusal explicit. The MCP tool never sends it —
+       * a model has no way to name a transcript — but the socket is one client
+       * among several (see `sanitizeSubscriptions` for the same reasoning), and a
+       * raw client asking to fork a peer should be told no rather than quietly
+       * getting its own transcript back.
+       */
+      forkFrom?: string
       /** Tags and subscriptions the spawned agent starts with, before it runs. */
       tags?: string[]
       subscriptions?: Subscription[]
