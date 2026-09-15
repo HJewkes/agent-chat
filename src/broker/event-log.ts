@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { home } from '../paths.js'
 import type { DeliveredMessage, EventKind, Provenance, QueueItem } from '../protocol.js'
 import type { CursoredMessage } from '../protocol.js'
-import type { AgentEventRow, AppendInput, EventStore, LoggedEventRow } from './event-store.js'
+import type { AgentEventRow, AppendInput, EventStore, LoggedEventRow, OpenApproval } from './event-store.js'
 
 /**
  * Append-only event log. Everything that happens on the bus lands here; live
@@ -18,7 +18,7 @@ import type { AgentEventRow, AppendInput, EventStore, LoggedEventRow } from './e
  * tree that knows `node:sqlite` exists.
  */
 
-export type { AgentEventRow, AppendInput, EventStore, LoggedEventRow } from './event-store.js'
+export type { AgentEventRow, AppendInput, EventStore, LoggedEventRow, OpenApproval } from './event-store.js'
 
 interface Row {
   id: number
@@ -303,6 +303,29 @@ export class EventLog implements EventStore {
     const meta = (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>
     if (!meta.recipient) return undefined
     return { composer: row.actor, recipient: meta.recipient, text: row.body ?? '' }
+  }
+
+  /**
+   * A permission prompt the human can still answer (CC-96).
+   *
+   * Carries the SAME `ts` cutoff `humanQueue` applies, so the set of answerable
+   * prompts is exactly the set `inbox` printed. An aged-out row is unanswerable
+   * for the reason it is unlistable: the host sends nothing when the local
+   * dialog wins, so a row this old is presumed already resolved, and answering
+   * it would be a verdict on something nobody is waiting for.
+   */
+  openApproval(msgId: string): OpenApproval | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM events
+         WHERE msg_id = ? AND kind = 'approval_request' AND msg_id NOT IN (${CLOSED}) AND ts > ?
+         LIMIT 1`,
+      )
+      .get(msgId, Date.now() - APPROVAL_TTL_MS) as unknown as Row | undefined
+    if (!row) return undefined
+    const meta = (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>
+    if (!meta.request_id) return undefined
+    return { session: row.actor, requestId: meta.request_id, toolName: meta.tool_name ?? 'a tool' }
   }
 
   /**

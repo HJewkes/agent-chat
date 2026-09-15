@@ -331,6 +331,11 @@ export const NON_KIND_SSE_EVENTS = ['session_status', 'reset'] as const
  * sends the channel server nothing at all.
  */
 
+/** The verdict Claude Code's host accepts on a relayed prompt. Its vocabulary, not ours. */
+export const PERMISSION_BEHAVIORS = ['allow', 'deny'] as const
+
+export type PermissionBehavior = (typeof PERMISSION_BEHAVIORS)[number]
+
 /**
  * How much of a message's authority comes from a human, where `from` alone
  * cannot say. A recipient must be able to tell three states apart:
@@ -633,6 +638,20 @@ export type ClientMessage =
    * socket is the user. Declining is `dismiss`, which already closes any item.
    */
   | { t: 'endorse_approve'; msgId: string }
+  /**
+   * The human answering one relayed permission prompt, by queue id (CC-96).
+   *
+   * Names a `msg_id`, never a `request_id`: the id the human types is the one
+   * `inbox` printed next to the preview they read, and the broker resolves the
+   * request and the session it belongs to from the stored row. A caller
+   * therefore cannot answer a prompt it was never shown.
+   *
+   * The broker refuses this from a REGISTERED connection, the same discipline
+   * `endorse_approve` and `teleport_abort` follow. An agent answering a
+   * permission prompt — its own or a peer's — is the one thing this verb must
+   * never make possible; see docs/ideas.md R1, still declined.
+   */
+  | { t: 'approve_permission'; msgId: string; behavior: PermissionBehavior }
   | { t: 'history'; limit: number }
   /**
    * One poll of a name's inbox for what arrived after `afterId` (CC-73).
@@ -646,7 +665,7 @@ export type ClientMessage =
   | { t: 'activity'; name: string; limit: number }
   /** From the terminal client, which is the human and so never registers. */
   | { t: 'human_send'; to: string; text: string }
-  /** Claude Code opened a permission dialog in this session. Observed, never answered. */
+  /** Claude Code opened a permission dialog in this session. Observed; answered only via `approve_permission`. */
   | { t: 'approval'; requestId: string; toolName: string; description: string; inputPreview: string }
   // Agent teams. Declared ahead of the handlers so the wire shape is frozen
   // before three tracks start building against it; nothing routes these yet.
@@ -795,6 +814,17 @@ export type ServerMessage =
   | { t: 'activity_result'; session?: SessionInfo; events: QueueItem[] }
   | { t: 'deliver'; message: DeliveredMessage }
   /**
+   * The human's verdict on a prompt this session relayed (CC-96). A push, never
+   * a reply: the session never asked the broker anything, and the frame carries
+   * the host's `request_id` rather than our `msg_id` because the MCP server
+   * hands it straight back to Claude Code.
+   *
+   * Arriving late is normal and harmless. The host races this against the local
+   * dialog and takes the first answer, so a verdict for a prompt already
+   * answered in the terminal is simply ignored there.
+   */
+  | { t: 'permission_verdict'; requestId: string; behavior: PermissionBehavior }
+  /**
    * `fatal` means stop, do not reconnect. It exists for exactly one case and the
    * case is not optional: a connection displaced by a resume takeover would
    * otherwise hit its reconnect ladder, replay its registration with the same
@@ -933,7 +963,7 @@ export interface AgentIdentity {
   exit?: { code: number | null; summary: string; costUsd?: number }
 }
 
-export type ReplyType = Exclude<ServerMessage['t'], 'deliver' | 'error'>
+export type ReplyType = Exclude<ServerMessage['t'], 'deliver' | 'error' | 'permission_verdict'>
 
 /**
  * Frames a stream of newline-delimited JSON. Returned callback is fed raw chunks.

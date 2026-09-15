@@ -1,5 +1,13 @@
-import { type QueueItem, type ServerMessage } from '../protocol.js'
+import {
+  PERMISSION_BEHAVIORS,
+  type PermissionBehavior,
+  type QueueItem,
+  type ServerMessage,
+} from '../protocol.js'
 import { ago, fail, withBroker } from './client.js'
+
+const isBehavior = (value: string): value is PermissionBehavior =>
+  (PERMISSION_BEHAVIORS as readonly string[]).includes(value)
 
 const LABEL: Record<string, string> = {
   question: 'ASK  ',
@@ -44,15 +52,18 @@ export async function inbox(): Promise<void> {
     }
     console.log(`      ${item.text}`)
     // For an approval the description is often just "Run shell command", so the
-    // preview is the only place the actual command shows up.
-    if (item.meta.input_preview) console.log(`      ${item.meta.input_preview.slice(0, 200)}`)
+    // preview is the only place the actual command shows up — and since CC-96
+    // this print is what the human decides on, so it is never truncated. A
+    // clipped preview is a human approving bytes they were not shown.
+    if (item.meta.input_preview) console.log(`      ${item.meta.input_preview}`)
   }
   const open = res.items.filter(needsAnswer).length
   const blocked = res.items.filter(i => i.kind === 'approval_request')
   console.log(`\n${res.items.length} waiting, ${open} needing an answer.`)
   if (blocked.length > 0) {
     const who = [...new Set(blocked.map(i => i.from))].join(', ')
-    console.log(`${who} blocked on a permission prompt — answer in that session's terminal.`)
+    console.log(`${who} blocked on a permission prompt — answer here, or in that session's terminal.`)
+    console.log('approve with: agent-chat approve <id> allow|deny')
   }
   if (open > blocked.length) console.log('answer with: agent-chat answer <id> "..."')
   if (res.items.some(i => i.kind === 'endorse_request')) {
@@ -76,6 +87,26 @@ export async function endorse(msgId: string): Promise<void> {
   >
   if (!res.ok) fail(res.reason ?? 'refused')
   console.log(`Endorsed ${msgId}; delivered as written.${res.reason ? ` ${res.reason}` : ''}`)
+}
+
+/**
+ * Answer one relayed permission prompt, allow or deny.
+ *
+ * A CLI verb and nothing else, for the same reason `endorse` is one: the broker
+ * refuses this frame from any registered connection, so the only caller that can
+ * reach it is a person at a 0600 socket. An agent granting a tool call — its own
+ * or a peer's — is the thing this verb must never make reachable (ideas.md R1).
+ *
+ * The id is the one `inbox` printed beside the full, untruncated preview, which
+ * is what makes the thing approved the thing that was read.
+ */
+export async function approve(msgId: string, behavior: string): Promise<void> {
+  if (!isBehavior(behavior)) fail(`usage: agent-chat approve <id> ${PERMISSION_BEHAVIORS.join('|')}`)
+  const res = (await withBroker(b =>
+    b.request({ t: 'approve_permission', msgId, behavior }, 'answer_result'),
+  )) as Extract<ServerMessage, { t: 'answer_result' }>
+  if (!res.ok) fail(res.reason ?? 'refused')
+  console.log(`Sent ${behavior} for ${msgId}.${res.reason ? ` ${res.reason}` : ''}`)
 }
 
 export async function verdict(msgId: string, words: string[], verb: 'answer' | 'dismiss'): Promise<void> {

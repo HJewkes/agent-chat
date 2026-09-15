@@ -129,6 +129,63 @@ The corollary for our own design: when the local dialog wins, the host sends the
 server _nothing_. There is no resolution notification. That is why pending approvals are
 aged out by TTL rather than closed by an event.
 
+## `agent-chat approve <id> allow|deny` — the human, and only the human (CC-96)
+
+Added 2026-09-14. Filed after a spawned agent sat blocked on a `Monitor` prompt for six
+minutes, twice: the prompt was visible in `agent-chat inbox` the whole time, and the only
+way to answer it was to walk to that agent's terminal.
+
+```
+$ agent-chat inbox
+APPR  a3f91c  cc97-monitor   4m ago
+      Bash: Run shell command
+      gh run watch 1841 --exit-status
+cc97-monitor blocked on a permission prompt — answer here, or in that session's terminal.
+approve with: agent-chat approve <id> allow|deny
+
+$ agent-chat approve a3f91c allow
+Sent allow for a3f91c. Bash allow sent to cc97-monitor
+```
+
+What it does: resolves the stored `approval_request` row to the session that raised it and
+its `request_id`, appends a `resolution` row (actor `human`, body `allow`/`deny`), and
+pushes the verdict to that session's MCP server, which emits
+`notifications/claude/channel/permission` on its own stdio pipe. The id typed is the queue
+id `inbox` printed, never the host's `request_id` — which is deliberate, because it means
+the thing approved is the thing that was displayed.
+
+**The whole design is the guard.** An AGENT must never answer a permission prompt: that is
+R1 in `ideas.md`, and it stays declined. The frame is refused from any REGISTERED
+connection, the same `isHuman` check `endorse_approve` and `teleport_abort` already use, so
+a session cannot answer its own prompt or a peer's. Shelling out to the CLI does not help
+it either — the builtin profiles deny these verbs to `Bash` (`profiles.ts`), which is what
+stops the common case. `isHuman` carries the residual limit in full: a same-uid process
+that opens its own unregistered socket passes it, as it passes every other control on this
+bus. That boundary is the OS account, not this server.
+
+Four properties are unchanged by the verb, and all four are load-bearing:
+
+- **First answer wins.** The host races this against the local dialog. Answering in the
+  terminal after typing the verb, or the reverse, is safe; the loser is discarded there.
+- **Nothing persists.** A verdict grants exactly one tool call. There is no "always allow"
+  and no way to ask for one.
+- **The row still ages out by TTL.** `openApproval` applies the same cutoff `humanQueue`
+  does, so the answerable set is exactly the listed set. A prompt older than the TTL is
+  presumed already resolved and is refused, because the host sends nothing when the local
+  dialog wins and there is no way to tell a stale row from a live one.
+- **The preview is printed in full.** `inbox` used to clip `input_preview` at 200
+  characters. It no longer does: a truncated preview is a human approving bytes they were
+  not shown.
+
+Two refusals a caller will see, both of them ordinary: `is not an open permission prompt`
+(answered already, or aged out) and `is no longer connected` (the session exited, and its
+`request_id` was only ever meaningful inside that process).
+
+And everything at the top of this document still applies: the relay is behind a remote flag
+that can be revoked without notice, and headless sessions relay nothing at all. So this
+verb is a faster path to a prompt that _did_ relay. It is not a way to unblock an agent
+that cannot be prompted — for that, `agent-chat surface <name>` is still the answer.
+
 ## An approval row is session-relative — never compare rows across sessions
 
 The broker log records _that a session prompted_, which depends on that session's

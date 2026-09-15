@@ -3,7 +3,13 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { BrokerClient } from '../client/broker-client.js'
-import type { DeliveredMessage, ServerMessage, Subscription, SystemEvent } from '../protocol.js'
+import type {
+  DeliveredMessage,
+  PermissionBehavior,
+  ServerMessage,
+  Subscription,
+  SystemEvent,
+} from '../protocol.js'
 import { cliEntry } from '../paths.js'
 import { TOOL_DEFINITIONS, ToolHandler } from './tools.js'
 import { terminalAnchor } from './anchor.js'
@@ -344,9 +350,10 @@ export async function startMcpServer(): Promise<void> {
       capabilities: {
         experimental: {
           'claude/channel': {},
-          // Observe-only: we surface prompts to the human and never send a verdict.
-          // Routing verdicts between sessions would let one Claude grant another
-          // permissions the user never granted. See docs/ideas.md.
+          // We surface prompts to the human and relay back only what the human
+          // typed at the CLI (CC-96). Routing verdicts between sessions would
+          // let one Claude grant another permissions the user never granted;
+          // that is docs/ideas.md R1, and it stays declined.
           'claude/channel/permission': {},
         },
         tools: {},
@@ -403,10 +410,30 @@ export async function startMcpServer(): Promise<void> {
     })
   }
 
+  /**
+   * Hand the host the human's verdict on a prompt this session relayed (CC-96).
+   *
+   * Reached only by a broker frame the broker itself refuses from any registered
+   * connection, so the authority behind these bytes is a person at the 0600
+   * socket. This process contributes nothing to the decision — it addresses it,
+   * which is the one thing the channel protocol cannot do any other way.
+   */
+  const deliverPermissionVerdict = (requestId: string, behavior: PermissionBehavior): void => {
+    void mcp.notification({
+      method: 'notifications/claude/channel/permission',
+      params: { request_id: requestId, behavior },
+    })
+  }
+
   // A superseded session has nothing left to do: a newer process holds its
   // identity, and Claude Code will see the pipe close. Exiting is the honest
   // outcome, and the only one that does not leave two processes on one name.
-  const broker = new BrokerClient(deliver, () => process.exit(0), deliverSystemEvents)
+  const broker = new BrokerClient(
+    deliver,
+    () => process.exit(0),
+    deliverSystemEvents,
+    deliverPermissionVerdict,
+  )
   const online = await reachBroker(broker)
 
   // A spawned agent registers from its environment, before the model has had a

@@ -28,10 +28,12 @@ import type { BrokerCore } from './core.js'
  * `core.append()` is the single writer, and an HTTP route reaching past it would
  * be the second one.
  *
- * `POST /api/approve` does not exist and never will. Permission verdicts are
- * permanently out of scope for any surface here — the relay is observe-only by
- * construction, and a dashboard write path would be a backdoor around that, not
- * a feature. Its absence is asserted by a test, deliberately.
+ * `POST /api/approve` does not exist and never will. A permission verdict is
+ * answerable only from the 0600 socket (`approve_permission`, CC-96), because
+ * reaching that socket is what stands in for being the human. HTTP is a bearer
+ * token on a network surface and cannot make that claim, so a route here would
+ * be a backdoor around the guard, not a feature. Its absence is asserted by a
+ * test, deliberately.
  *
  * The registry is read IN-PROCESS. It has to be: the live session list is keyed
  * by socket object and exists only in this process's memory, which is the whole
