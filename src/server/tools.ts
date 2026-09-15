@@ -625,6 +625,20 @@ export const TOOL_DEFINITIONS = [
             'about by name. Advisory, like chat_claim — it records who was given what, and cannot stop ' +
             'an agent that writes outside its set.',
         },
+        inherit: {
+          type: 'string',
+          enum: ['context'],
+          description:
+            'Set to "context" to start the agent from a COPY of YOUR OWN conversation instead of an ' +
+            'empty one — the closest thing here to "fork me". It can only ever fork you: there is no ' +
+            'field for whose conversation, and a request to fork a peer is refused. Reach for it when ' +
+            'the agent needs what you have been doing and re-describing it would cost more than it is ' +
+            'worth. KNOW WHAT IT IS NOT: still a separate process paying its own input tokens, so it ' +
+            'is not the cheap built-in fork; and it sees only your COMPLETED turns, never the one you ' +
+            'are in, so do not refer to work you have not finished narrating. Also weigh what it ' +
+            'carries — the agent inherits everything you have said, including anything its profile was ' +
+            'never meant to see. A brief is the narrower and usually better tool.',
+        },
         briefing: {
           type: 'string',
           description:
@@ -1420,6 +1434,9 @@ export class ToolHandler {
     const briefing = optionalString(args, 'briefing')
     const worktree = optionalString(args, 'worktree')
     const owns = optionalPatterns(args, 'owns')
+    // No companion field for WHOSE context: the broker reads that off this
+    // connection, so "fork that agent" has nowhere to be expressed.
+    const inherit = optionalEnum(args, 'inherit', ['context'] as const)
     const res = (await this.call(
       {
         t: 'spawn',
@@ -1432,6 +1449,7 @@ export class ToolHandler {
         ...(briefing === undefined ? {} : { briefing }),
         ...(worktree === undefined ? {} : { worktree }),
         ...(owns === undefined ? {} : { owns }),
+        ...(inherit === undefined ? {} : { inherit }),
       },
       'spawn_result',
     )) as Extract<ServerMessage, { t: 'spawn_result' }>
@@ -1442,9 +1460,16 @@ export class ToolHandler {
     // agent cannot report being stuck (the tool is absent from its schema, not
     // refused), so spawn time is the only place this is knowable with certainty.
     const denied = res.disallowedTools?.length ? `\n  denied tools: ${res.disallowedTools.join(', ')}` : ''
+    // The one caveat a forking session cannot check for itself: its own current
+    // turn is not in the transcript yet, so the fork is behind by whatever this
+    // turn has established but not yet said.
+    const forked =
+      inherit === undefined
+        ? ''
+        : '\n  it holds a copy of your conversation up to your last COMPLETED turn — not this one'
     return text(
       `Spawned "${res.name}" (${res.agentId}). It is a peer now — reach it with chat_send, ` +
-        `not by spawning again.${warnings}${denied}`,
+        `not by spawning again.${forked}${warnings}${denied}`,
     )
   }
 

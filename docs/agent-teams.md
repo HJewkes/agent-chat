@@ -773,6 +773,58 @@ matters:
   CLI — the broker must not need another program installed to spawn an agent —
   and nothing writes. If the layout moves, this degrades to "no briefing found".
 
+#### 5.7 `inherit: "context"`: a spawn that starts from a conversation (CC-44)
+
+`agent_spawn` takes an optional `inherit: "context"`. The agent then starts from a
+**copy of the requesting session's conversation** rather than from its brief alone,
+which is the closest thing here to Claude Code's built-in `fork`.
+
+The mechanism is three flags in one argv, verified on claude 2.1.268:
+
+```
+--session-id <new uuid>  --resume <absolute path to the parent .jsonl>  --fork-session
+```
+
+`--resume` accepts a PATH as well as an id, and the path form is what makes this
+usable: it sidesteps the project-slug lookup, so the child can live in its own
+worktree while inheriting a conversation recorded under a different directory. The
+child's turns land under the NEW id in the CHILD's project directory, and the parent
+transcript is not written to. Every earlier audit of this assumed the process boundary
+made inheritance impossible; it does not, and Claude Code launches this same shape for
+its own background sessions.
+
+**Only a session may fork ITSELF.** There is no field naming whose conversation to
+copy — the broker resolves it from the requesting connection's own registry entry,
+the same discipline `anchor` and `parentAgentId` follow (§5.4, §11.2). A wire-level
+`forkFrom` exists solely so a client that names a session id which is NOT its own is
+**refused** rather than quietly handed its own transcript back. Handing a peer's whole
+conversation to a new process on that peer's behalf is not a spawn; it is exfiltration
+with a profile attached.
+
+Three things this deliberately is NOT, and they belong in any report about it:
+
+- **Not cheap.** It is still a separate `claude` process paying its own input tokens
+  for the inherited conversation. The built-in `fork`'s shared prompt cache does not
+  transfer; an identical prefix may hit the 1-hour cache, which is a discount and not
+  the same economics.
+- **Not current.** A transcript holds COMPLETED turns. The fork therefore sees
+  everything up to the parent's last finished turn and nothing of the turn the parent
+  is taking as it spawns — so a session that forks must not describe work it has not
+  yet finished narrating. `agent_spawn`'s reply says so at the moment it matters.
+- **Not a permission boundary.** The profile's `--allowed-tools` / `--disallowed-tools`
+  still apply, because they are passed at launch — but the inherited conversation may
+  contain content a narrower profile was never meant to see. **The fork inherits
+  context, not clearance.** A written brief stays the narrower instrument and remains
+  the default; `inherit` is for when restating the context costs more than it is worth.
+
+`agent_spawned` records `meta.inherit` and `meta.fork_from`, because a tool list says
+nothing about what an agent was handed, and the log is the only place a reader can
+later learn that this agent started holding someone else's conversation.
+
+Proved in `src/__tests__/live-fork.test.ts` against a real `claude`, not by asserting
+the flag: a nonce is spoken to the parent conversation, never written into the child's
+brief (asserted), and the child must produce it. The arm without `inherit` must not.
+
 ---
 
 ### 6. How a spawned agent becomes a peer

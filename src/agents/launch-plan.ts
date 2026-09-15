@@ -72,6 +72,28 @@ const summaryFor = (input: LaunchPlanInput): string => {
  */
 const titleFor = (input: LaunchPlanInput): string => input.name
 
+/**
+ * Which conversation this process starts in, which is the only thing the three
+ * spawn shapes disagree about.
+ *
+ * `--session-id` MINTS a conversation; `--resume` reattaches to an existing one.
+ * A mode switch is the only caller that wants the second, and wants it for the
+ * reason the feature exists: the agent has to come back knowing what it was
+ * doing, in a different window. Verified against the installed CLI — a transcript
+ * written under `-p` resumes interactively and vice versa.
+ *
+ * A FORK (CC-44) is the third: mint a NEW id whose conversation starts as a copy
+ * of somebody else's. `--resume` takes a PATH as well as an id, which sidesteps
+ * the project-slug lookup entirely and is what lets the child live in a different
+ * cwd from the transcript it inherits. All three flags together, verified on
+ * claude 2.1.268: the child's turns land under the new id in the CHILD's project
+ * dir, and the parent transcript is not written to.
+ */
+const conversationArgs = (input: LaunchPlanInput): string[] =>
+  input.forkFrom === undefined
+    ? [input.resume === true ? '--resume' : '--session-id', input.sessionId]
+    : ['--session-id', input.sessionId, '--resume', input.forkFrom, '--fork-session']
+
 const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   // Read by the child's own MCP server, which registers from them before the
   // model takes a turn. This is what makes a spawned process a durable peer.
@@ -113,13 +135,7 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
   // fields, so this cannot be reached from a profile file.
   const args = [
     ...(profile.model === '' ? [] : ['--model', profile.model]),
-    // `--session-id` MINTS a conversation; `--resume` reattaches to an existing
-    // one. A mode switch is the only caller that wants the second, and wants it
-    // for the reason the feature exists: the agent has to come back knowing what
-    // it was doing, in a different window. Verified against the installed CLI —
-    // a transcript written under `-p` resumes interactively and vice versa.
-    input.resume === true ? '--resume' : '--session-id',
-    input.sessionId,
+    ...conversationArgs(input),
     '--append-system-prompt',
     // Standing context only. The brief is a TASK, and a task has to arrive as a
     // turn — see below.

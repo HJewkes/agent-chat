@@ -39,16 +39,19 @@ when the diff is S-sized and the tests are named; reach for `implementer` the mo
 brief needs a decision made. It is a user profile in `~/.agent-chat/profiles/`, not a
 builtin, so `agent_profiles` is what proves it is installed on a given machine.
 
-## The known gap: fork
+## fork: closed, but not at parity
 
-Every `agent_spawn` profile starts a brand-new `claude` CLI process that begins with
-only the `brief` text you give it — none of the calling session's conversation history.
-The built-in `fork` subagent type is fundamentally different: it shares the parent's
-prompt cache and full context at near-zero marginal cost. Nothing in agent-chat today
-replicates that. Filed as **CC-44** in the `claude-channels` initiative — add fork-like
-mechanics (spawn that inherits/shares context cheaply) to agent-chat's spawn surface.
-Until that lands, tasks that would have used `fork` have no good replacement here; treat
-that as a real capability loss for the duration of this experiment, not just a paper cut.
+`agent_spawn(inherit: "context")` starts an agent from a copy of the requesting
+session's conversation rather than from its `brief` alone (CC-44, landed). That covers
+the case the gap was actually costing: work that needs what you have been doing, where
+restating it in a brief is the expensive part.
+
+What did NOT come across is the economics. The built-in `fork` shares the parent's prompt
+cache at near-zero marginal cost; this is a separate `claude` process that pays its own
+input tokens for the inherited conversation, and only an identical prefix landing inside
+the 1-hour cache window recovers any of that. Reach for a brief first and `inherit` when
+the context genuinely cannot be restated. See `docs/agent-teams.md` §5.7 for the full
+semantics, including the in-flight-turn caveat.
 
 ## Unwinding this
 

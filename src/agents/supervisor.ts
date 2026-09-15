@@ -35,6 +35,7 @@ import { SurfaceRefused, type SurfaceOptions } from './surfaces/options.js'
 import { Semaphore } from './semaphore.js'
 import { checkSpawnCwd } from './spawn-cwd.js'
 import { resolveBriefing, type BriefingResult } from './active-work.js'
+import { findTranscript } from './transcript.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { cliEntry, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
@@ -127,6 +128,10 @@ export interface SpawnRequest {
   worktree?: string
   /** CC-81: path globs inside the worktree this agent owns. */
   owns?: string[]
+  /** CC-44: start from a copy of the REQUESTER's own conversation, not an empty one. */
+  inherit?: 'context'
+  /** The session id the requester claims as its own. Checked, never trusted. */
+  forkFrom?: string
   /** Empty for a human-initiated spawn; otherwise the requesting agent's id. */
   parentAgentId?: string
   requestedBy: string
@@ -504,6 +509,48 @@ export class Supervisor implements TeleportHost {
     })
   }
 
+  /**
+   * CC-44. The transcript a fork starts from, which is ALWAYS the requester's own.
+   *
+   * Resolved from the REGISTRY, exactly as `briefingFor` resolves a cwd and for a
+   * sharper version of the same reason: a fork copies a whole conversation into a
+   * new process, so a request that could name someone else's would be "hand me
+   * that agent's context" wearing a spawn's clothes. The request may only SAY
+   * which session it is, and saying the wrong one is refused rather than
+   * corrected — a client that believes it is forking a peer should learn it is
+   * not, instead of silently getting its own transcript back.
+   */
+  private forkSource(req: SpawnRequest): { path: string; sessionId: string } | { error: string } {
+    const requester = this.core.registry.list().find(session => session.name === req.requestedBy)
+    const own = requester?.observed?.claudeSessionId ?? ''
+    if (requester === undefined || own === '') {
+      return {
+        error:
+          'inherit: "context" forks the conversation of the session that asked for it, and the broker ' +
+          'has no Claude Code session id for you — the human at the CLI has none, and neither does a ' +
+          'client that is not a session. Spawn without it and put what the agent needs in the brief.',
+      }
+    }
+    if (req.forkFrom !== undefined && req.forkFrom !== own) {
+      return {
+        error:
+          `refusing to fork session ${req.forkFrom}: it is not yours. A fork hands an entire ` +
+          'conversation to a new process, so only the session that holds one may fork it — ask that ' +
+          'session to fork itself.',
+      }
+    }
+    const found = findTranscript(requester.cwd, own)
+    if (!found.exists) {
+      return {
+        error:
+          `no transcript on disk for your session yet (${found.path}), so there is nothing to inherit. ` +
+          'A session that has not completed a turn, or one started with --no-session-persistence, ' +
+          'cannot be forked.',
+      }
+    }
+    return { path: found.path, sessionId: own }
+  }
+
   async spawn(req: SpawnRequest): Promise<SpawnOutcome> {
     const depth = this.depthOf(req.parentAgentId)
     const blocked = this.preflight(req, depth)
@@ -513,6 +560,8 @@ export class Supervisor implements TeleportHost {
     if ('error' in profile) return this.refuse(req, profile.error)
     const escalation = this.checkEscalation(req, profile)
     if (escalation) return this.refuse(req, escalation)
+    const fork = req.inherit === 'context' ? this.forkSource(req) : undefined
+    if (fork !== undefined && 'error' in fork) return this.refuse(req, fork.error)
 
     const cwd = req.cwd ?? process.cwd()
     const cwdError = this.checkCwd(cwd, req.requestedBy)
@@ -569,7 +618,7 @@ export class Supervisor implements TeleportHost {
       return this.refuse(req, `no free agent slots (${this.semaphore.summary()}); retire one first`)
 
     try {
-      return await this.launch(req, ctx, agentId, isolationName, warnings, profile, depth, injected)
+      return await this.launch(req, ctx, agentId, isolationName, warnings, profile, depth, injected, fork)
     } catch (err) {
       this.semaphore.release(agentId)
       const reason = err instanceof SurfaceRefused ? err.message : `spawn failed: ${(err as Error).message}`
@@ -587,6 +636,7 @@ export class Supervisor implements TeleportHost {
     profile: AgentProfile,
     depth: number,
     briefing?: { text: string; slug: string },
+    fork?: { path: string; sessionId: string },
   ): Promise<SpawnOutcome> {
     const allocation = await resolveIsolation([isolationName]).allocate(ctx)
     this.core.append({
@@ -611,6 +661,7 @@ export class Supervisor implements TeleportHost {
       ...(allocation.addDirs ? { extraDirs: allocation.addDirs } : {}),
       ...(req.tags?.length ? { tags: req.tags } : {}),
       ...(req.subscriptions?.length ? { subscriptions: req.subscriptions } : {}),
+      ...(fork ? { forkFrom: fork.path } : {}),
       agentChatHome: home(),
     })
     writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry()))
@@ -645,6 +696,10 @@ export class Supervisor implements TeleportHost {
         disallowed_tools: (profile.disallowedTools ?? []).join(','),
         perm_mode: permModeFor(surface),
         depth: String(depth),
+        // Recorded because a fork carries content the profile's tool list says
+        // nothing about: reading the row later is the only way to know this
+        // agent started holding someone else's conversation, and whose.
+        ...(fork ? { inherit: 'context', fork_from: fork.sessionId } : {}),
       },
     })
 
