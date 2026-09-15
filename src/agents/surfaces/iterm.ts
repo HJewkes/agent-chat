@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { SurfaceName } from '../../protocol.js'
-import type { LaunchHandle, LaunchPlan, Surface } from '../types.js'
+import type { CloseOutcome, LaunchHandle, LaunchPlan, Surface } from '../types.js'
 import { runAgentCommand } from './command.js'
 import { SurfaceRefused, type AppleScriptRunner, type SurfaceOptions } from './options.js'
 
@@ -23,6 +23,10 @@ const NO_ANCHOR = '@@no-anchor@@'
 
 /** Returned by the teardown script when it found the session and closed it. */
 const CLOSED = '@@closed@@'
+
+/** Returned by the existence probe. Two sentinels, so a throw can never read as "gone". */
+const PRESENT = '@@present@@'
+const GONE = '@@gone@@'
 
 const execFileAsync = promisify(execFile)
 
@@ -133,6 +137,57 @@ const closeSession = (uuid: string): string => `tell application "iTerm2"${findS
 end tell`
 
 /**
+ * Does iTerm2 still list this session? Re-read rather than inferred (CC-95).
+ *
+ * `closeSession` returning `@@closed@@` only says the script found the session
+ * and issued `close`. It does not say the close took: a pane logged `closed:true`
+ * at 06:16:03Z and was still open, sitting at `-zsh`, at 12:45Z. The only answer
+ * anyone can trust is another look at the session list.
+ */
+const sessionPresent = (uuid: string): string => `tell application "iTerm2"
+  repeat with w in windows
+    repeat with t in tabs of w
+      repeat with s in sessions of t
+        if (unique ID of s) is ${asString(uuid)} then return ${asString(PRESENT)}
+      end repeat
+    end repeat
+  end repeat
+  return ${asString(GONE)}
+end tell`
+
+/**
+ * Whether iTerm2 still holds `uuid`, for callers outside a teardown — `doctor`
+ * asks this about panes recorded for agents that are no longer running.
+ *
+ * Unknown (undefined) is a third answer and not a synonym for either: iTerm2 not
+ * running, a non-Mac, or osascript failing all mean this cannot say, and
+ * collapsing that into "gone" would have doctor report a clean machine it never
+ * looked at.
+ */
+export async function itermSessionPresent(
+  uuid: string,
+  options: SurfaceOptions = {},
+): Promise<boolean | undefined> {
+  const run = options.runAppleScript ?? osascript
+  try {
+    await requireIterm(options, run)
+    return await probeSession(run, uuid)
+  } catch {
+    return undefined
+  }
+}
+
+/** The probe without the `requireIterm` round trip, for a caller that just made one. */
+async function probeSession(run: AppleScriptRunner, uuid: string): Promise<boolean | undefined> {
+  try {
+    const answer = await run(sessionPresent(uuid))
+    return answer === PRESENT ? true : answer === GONE ? false : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Asked without launching it: `is running` is false for an app that is not up,
  * where a `tell` would start iTerm2 and drop a window on an unsuspecting desktop.
  */
@@ -184,21 +239,35 @@ async function launchIterm(
 }
 
 /**
- * Close what this broker opened, and nothing else.
+ * Close what this broker opened, and nothing else — then go and check.
  *
  * Every failure here is benign and none of them should fail a shutdown: iTerm2
  * has quit, the human closed the pane themselves, osascript is unavailable. The
  * agent is going away either way, so a surface that outlives it is untidy rather
- * than wrong.
+ * than wrong. What is NOT acceptable is reporting it closed when it is not, so
+ * each of those outcomes now arrives with the sentence that explains it.
  */
-async function closeIterm(handle: LaunchHandle, options: SurfaceOptions): Promise<boolean> {
-  if (handle.ownsSurface !== true || handle.paneRef === undefined) return false
+async function closeIterm(handle: LaunchHandle, options: SurfaceOptions): Promise<CloseOutcome> {
+  if (handle.ownsSurface !== true)
+    return { closed: false, reason: 'the broker did not open this surface, so it is not ours to close' }
+  if (handle.paneRef === undefined) return { closed: false, reason: 'no pane was recorded for this agent' }
+
   const run = options.runAppleScript ?? osascript
+  const paneRef = handle.paneRef
   try {
     await requireIterm(options, run)
-    return (await run(closeSession(handle.paneRef))) === CLOSED
-  } catch {
-    return false
+    const answer = await run(closeSession(paneRef))
+    if (answer !== CLOSED) return { closed: false, reason: `iTerm2 no longer lists session ${paneRef}` }
+    // The whole point of CC-95's fourth case: `@@closed@@` says the script ran,
+    // not that the pane went. Only the second look decides what gets logged.
+    const present = await probeSession(run, paneRef)
+    if (present === true)
+      return { closed: false, reason: `iTerm2 still lists session ${paneRef} after closing it` }
+    if (present === undefined)
+      return { closed: false, reason: `could not re-read iTerm2 to confirm session ${paneRef} is gone` }
+    return { closed: true }
+  } catch (err) {
+    return { closed: false, reason: `iTerm2 could not be reached: ${(err as Error).message}` }
   }
 }
 
@@ -207,6 +276,6 @@ export function itermSurface(name: ItermSurfaceName, options: SurfaceOptions = {
     name,
     interactive: true,
     launch: (plan: LaunchPlan): Promise<LaunchHandle> => launchIterm(name, plan, options),
-    close: (handle: LaunchHandle): Promise<boolean> => closeIterm(handle, options),
+    close: (handle: LaunchHandle): Promise<CloseOutcome> => closeIterm(handle, options),
   }
 }

@@ -4,7 +4,13 @@ import os from 'node:os'
 import path from 'node:path'
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
 import type { HealthPayload } from '../api-contract.js'
+import type { AgentIdentity } from '../protocol.js'
+import { AgentLog } from '../agents/identity.js'
+import { readRuntimeState } from '../agents/launch-files.js'
+import { itermSessionPresent } from '../agents/surfaces/index.js'
+import { ATTACH_TIMEOUT_MS } from '../agents/supervisor.js'
 import { cliEntry, dashboardDir, defaultPort, home, socketPath } from '../paths.js'
+import { EventLog } from './event-log.js'
 import { probeSocket, readMeta } from './lifecycle.js'
 import { newestBuildMtime, stalenessWarning } from './staleness.js'
 
@@ -247,6 +253,120 @@ function allowlistHas(file: string): boolean {
   }
 }
 
+/**
+ * Agents that were launched and never registered (CC-95).
+ *
+ * Pure, so the rule is testable without a database, and driven off `lastEventAt`
+ * rather than `spawnedAt` so a resume restarts the clock instead of inheriting
+ * the original spawn's age.
+ *
+ * Still worth reporting now that the supervisor fails a spawn at the same
+ * threshold, because the supervisor only covers spawns IT is still waiting on: a
+ * broker that restarted or was killed mid-launch leaves the row in `spawning`
+ * with nothing left to time it out. That is the state the evidence was collected
+ * in — `starting`, six and a half hours old, transcript never written.
+ */
+export function stuckSpawns(
+  agents: AgentIdentity[],
+  now: number,
+  timeoutMs = ATTACH_TIMEOUT_MS,
+): AgentIdentity[] {
+  return agents.filter(agent => agent.state === 'spawning' && now - agent.lastEventAt > timeoutMs)
+}
+
+/** The roster as the log tells it, or null when there is no log to read yet. */
+function readRoster(): AgentIdentity[] | null {
+  const file = path.join(home(), 'events.db')
+  // Same reasoning as `checkDatabase`: opening it to prove it is absent would
+  // create it, and turn a clean install into a lie.
+  if (!fs.existsSync(file)) return null
+  try {
+    const log = new EventLog(file)
+    const agents = new AgentLog(log).roster()
+    log.close()
+    return agents
+  } catch {
+    return null
+  }
+}
+
+function checkStuckSpawns(agents: AgentIdentity[] | null): Check {
+  if (agents === null) return { name: 'stuck spawns', status: 'ok', detail: 'no event log to read yet' }
+  const stuck = stuckSpawns(agents, Date.now())
+  if (stuck.length === 0)
+    return { name: 'stuck spawns', status: 'ok', detail: 'no agent is stuck in starting' }
+  const listed = stuck
+    .map(a => `${a.name} (${a.agentId}, ${Math.round((Date.now() - a.lastEventAt) / 60_000)}m)`)
+    .join(', ')
+  return {
+    name: 'stuck spawns',
+    status: 'warn',
+    detail: `never registered, still reading as starting: ${listed} — retire them to free the slot`,
+  }
+}
+
+/**
+ * Panes recorded for agents that are no longer running (CC-95).
+ *
+ * The runtime-state file is the only record of which pane belongs to whom once
+ * the broker's memory is gone, and `ownsSurface` is the only thing that makes a
+ * pane ours to speak about at all. iTerm2 is then asked whether the session is
+ * still there; an unknown answer (no iTerm2, not a Mac) reports nothing rather
+ * than guessing, because a clean bill of health nobody checked is worse than
+ * silence.
+ */
+export interface SurfaceProbes {
+  /** The pane an agent was recorded as holding, or undefined for no record. */
+  paneOf: (agentId: string) => { surface: string; paneRef: string } | undefined
+  /** Whether the terminal still lists it. Undefined means "cannot say". */
+  present: (paneRef: string) => Promise<boolean | undefined>
+}
+
+const defaultProbes: SurfaceProbes = {
+  paneOf: agentId => {
+    const handle = readRuntimeState(agentId)?.handle
+    if (handle?.ownsSurface !== true || handle.paneRef === undefined) return undefined
+    return { surface: handle.surface, paneRef: handle.paneRef }
+  },
+  present: paneRef => itermSessionPresent(paneRef),
+}
+
+export async function checkOrphanSurfaces(
+  agents: AgentIdentity[] | null,
+  probes: SurfaceProbes = defaultProbes,
+): Promise<Check[]> {
+  if (agents === null) return []
+  const candidates = agents
+    .filter(agent => agent.state === 'exited')
+    .map(agent => ({ agent, pane: probes.paneOf(agent.agentId) }))
+    .filter((row): row is { agent: AgentIdentity; pane: { surface: string; paneRef: string } } => {
+      return row.pane !== undefined
+    })
+    .slice(0, ORPHAN_SCAN_LIMIT)
+  if (candidates.length === 0) return []
+
+  const open: string[] = []
+  for (const { agent, pane } of candidates) {
+    const present = await probes.present(pane.paneRef)
+    // Unknown ends the scan: every later answer would be unknown too, and each
+    // one costs an osascript round trip.
+    if (present === undefined) return []
+    if (present) open.push(`${agent.name} (${pane.surface})`)
+  }
+  return open.length === 0
+    ? [{ name: 'orphan panes', status: 'ok', detail: 'no surface outlives its agent' }]
+    : [
+        {
+          name: 'orphan panes',
+          status: 'warn',
+          detail: `still open for agents that have exited: ${open.join(', ')} — \`agent-chat agent retire <name>\``,
+        },
+      ]
+}
+
+/** One osascript round trip each, so the newest few rather than the whole history. */
+const ORPHAN_SCAN_LIMIT = 20
+
 function checkDashboard(): Check {
   const index = path.join(dashboardDir(), 'index.html')
   return fs.existsSync(index)
@@ -258,6 +378,9 @@ export async function runChecks(): Promise<Check[]> {
   // Probed once and shared: two checks need the answer, and asking twice would
   // let them disagree about whether a broker exists.
   const live = await probeSocket()
+  // Read once and shared for the same reason: two checks fold the same rows, and
+  // folding twice would let them disagree about what the roster says.
+  const agents = readRoster()
   return [
     checkNode(),
     checkStateDir(),
@@ -269,6 +392,8 @@ export async function runChecks(): Promise<Check[]> {
     ...checkFreshness(live),
     checkLauncher(),
     checkChannelAllowlist(),
+    checkStuckSpawns(agents),
+    ...(await checkOrphanSurfaces(agents)),
     checkDashboard(),
   ]
 }

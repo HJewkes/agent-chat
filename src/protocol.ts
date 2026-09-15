@@ -981,7 +981,14 @@ export interface AgentIdentity {
   generation: number
   /** The immediate predecessor's agentId. The rest of the chain is a walk of these. */
   teleportFrom?: string
-  exit?: { code: number | null; summary: string; costUsd?: number }
+  /**
+   * `failedToStart` (CC-95) separates "this agent ran and finished" from "this
+   * agent never came up". Carried on the exit rather than as a sixth lifecycle
+   * because the durable fact IS an exit — the process is gone and the identity is
+   * terminal — and only the roster needs to say WHICH kind, which it does without
+   * every consumer of `AgentLifecycle` growing a case for it.
+   */
+  exit?: { code: number | null; summary: string; costUsd?: number; failedToStart?: boolean }
 }
 
 export type ReplyType = Exclude<ServerMessage['t'], 'deliver' | 'error' | 'permission_verdict'>

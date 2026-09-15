@@ -29,6 +29,9 @@ const exitFrom = (row: AgentEventRow): NonNullable<AgentIdentity['exit']> => {
     code: code ?? null,
     summary: row.body ?? '',
     ...(costUsd === undefined ? {} : { costUsd }),
+    // CC-95: written only by the supervisor's attach verification, so the roster
+    // can say `failed` rather than `finished` for a process that never came up.
+    ...(row.meta.failed === 'true' ? { failedToStart: true } : {}),
   }
 }
 
@@ -137,7 +140,16 @@ function groupByAgent(rows: readonly AgentEventRow[]): Map<string, AgentEventRow
 
 /** How a paired identity and presence should render on the roster. */
 export type RosterStatus =
-  'starting' | 'running' | 'blocked' | 'stalled?' | 'reconnecting' | 'detached' | 'finished' | 'retired'
+  | 'starting'
+  | 'running'
+  | 'blocked'
+  | 'stalled?'
+  | 'reconnecting'
+  | 'detached'
+  | 'finished'
+  /** Spawned, but never registered: the process is gone and did no work (CC-95). */
+  | 'failed'
+  | 'retired'
 
 export interface PresenceInput {
   /** `registry.connFor(name) !== undefined`. */
@@ -203,7 +215,7 @@ export function pairPresence(agent: AgentIdentity, presence: PresenceInput): Ros
             status: connectedStatus(),
             anomaly: 'exited identity holds a live connection; the exit handler fired while a socket lives',
           }
-        : { agent, status: 'finished' }
+        : { agent, status: agent.exit?.failedToStart === true ? 'failed' : 'finished' }
     case 'retired':
       return { agent, status: 'retired' }
   }

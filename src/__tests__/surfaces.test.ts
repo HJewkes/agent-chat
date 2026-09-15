@@ -9,6 +9,8 @@ const ANCHOR = 'w1t0p0:D5C6B476-BD80-4CED-BA27-A660BC1E01F3'
 const UUID = 'D5C6B476-BD80-4CED-BA27-A660BC1E01F3'
 const NO_ANCHOR = '@@no-anchor@@'
 const CLOSED = '@@closed@@'
+const PRESENT = '@@present@@'
+const GONE = '@@gone@@'
 
 const plan = (over: Partial<LaunchPlan> = {}): LaunchPlan => ({
   agentId: 'ag000001',
@@ -21,13 +23,20 @@ const plan = (over: Partial<LaunchPlan> = {}): LaunchPlan => ({
   ...over,
 })
 
-/** An iTerm2 that is up, finds the anchor, and hands back a session UUID. */
-function fakeIterm(found = true) {
+/**
+ * An iTerm2 that is up, finds the anchor, and hands back a session UUID.
+ *
+ * `stillThere` is the CC-95 half: a close now goes back and re-reads the session
+ * list, so a fake that only answers the close script would describe an iTerm2
+ * that never lets go of anything. Default is a session that obeys.
+ */
+function fakeIterm(found = true, stillThere = false) {
   const scripts: string[] = []
   const notices: string[] = []
   const run = async (script: string): Promise<string> => {
     scripts.push(script)
     if (script.includes('is running')) return 'true'
+    if (script.includes(PRESENT)) return stillThere ? PRESENT : GONE
     if (!found && script.includes(NO_ANCHOR)) return NO_ANCHOR
     if (script.includes('to close')) return CLOSED
     return 'NEW-SESSION-UUID'
@@ -333,11 +342,52 @@ describe('tearing a surface down', () => {
     const surface = surfaceFor('iterm-pane', { ...options, anchor: ANCHOR })
     const handle = await surface.launch(plan())
 
-    await expect(surface.close(handle)).resolves.toBe(true)
-    const script = lastScript(scripts)
+    await expect(surface.close(handle)).resolves.toEqual({ closed: true })
+    const script = scripts.find(s => s.includes('to close')) ?? ''
     expect(script).toContain('is "NEW-SESSION-UUID"')
-    expect(script).toContain('to close')
     expect(script).not.toContain('current window')
+    // And then it went back and looked, rather than trusting the close.
+    expect(lastScript(scripts)).toContain(PRESENT)
+  })
+
+  /**
+   * CC-95's fourth case. `@@closed@@` says the close script ran, which is a
+   * different claim from "the pane is gone" — and the two diverged in the wild:
+   * a close logged `closed:true` at 06:16:03Z and its pane was still sitting at
+   * `-zsh` six and a half hours later. The only answer worth logging comes from
+   * a second read of the session list.
+   */
+  it('reports closed:false with a reason when the session survives the close', async () => {
+    const { scripts, options } = fakeIterm(true, true)
+    const surface = surfaceFor('iterm-pane', { ...options, anchor: ANCHOR })
+    const handle = await surface.launch(plan())
+
+    const outcome = await surface.close(handle)
+
+    expect(outcome.closed).toBe(false)
+    expect(outcome.reason).toContain('still lists session NEW-SESSION-UUID')
+    expect(lastScript(scripts)).toContain('@@present@@')
+  })
+
+  it('does not report a close it could not confirm', async () => {
+    let calls = 0
+    const surface = surfaceFor('iterm-pane', {
+      platform: 'darwin',
+      runAppleScript: script => {
+        calls += 1
+        if (script.includes('is running')) return Promise.resolve('true')
+        if (script.includes('to close')) return Promise.resolve(CLOSED)
+        return Promise.reject(new Error('osascript: no answer'))
+      },
+    })
+
+    const outcome = await surface.close({ surface: 'iterm-pane', paneRef: UUID, ownsSurface: true })
+
+    expect(outcome).toEqual({
+      closed: false,
+      reason: `could not re-read iTerm2 to confirm session ${UUID} is gone`,
+    })
+    expect(calls).toBeGreaterThan(2)
   })
 
   it('never closes a pane it did not open, and runs no script at all to decide that', async () => {
@@ -346,7 +396,10 @@ describe('tearing a surface down', () => {
     const handle = await surface.launch(plan())
     const before = scripts.length
 
-    await expect(surface.close(handle)).resolves.toBe(false)
+    const outcome = await surface.close(handle)
+
+    expect(outcome.closed).toBe(false)
+    expect(outcome.reason).toContain('did not open this surface')
     expect(scripts).toHaveLength(before)
   })
 
@@ -355,7 +408,9 @@ describe('tearing a surface down', () => {
     const { scripts, options } = fakeIterm()
     const surface = surfaceFor('iterm-pane', { ...options, anchor: ANCHOR })
 
-    await expect(surface.close({ surface: 'iterm-pane', paneRef: UUID })).resolves.toBe(false)
+    await expect(surface.close({ surface: 'iterm-pane', paneRef: UUID })).resolves.toMatchObject({
+      closed: false,
+    })
     expect(scripts.some(script => script.includes('to close'))).toBe(false)
   })
 
@@ -363,9 +418,10 @@ describe('tearing a surface down', () => {
     const { options } = fakeIterm(false)
     const surface = surfaceFor('iterm-pane', { ...options, anchor: ANCHOR })
 
-    const closed = await surface.close({ surface: 'iterm-pane', paneRef: 'GONE', ownsSurface: true })
+    const outcome = await surface.close({ surface: 'iterm-pane', paneRef: 'GONE', ownsSurface: true })
 
-    expect(closed).toBe(false)
+    expect(outcome.closed).toBe(false)
+    expect(outcome.reason).toContain('no longer lists session GONE')
   })
 
   /** A shutdown must not fail because iTerm2 quit, or because this is not a Mac. */
@@ -376,12 +432,16 @@ describe('tearing a surface down', () => {
     })
     const handle = { surface: 'iterm-pane' as const, paneRef: UUID, ownsSurface: true }
 
-    await expect(surface.close(handle)).resolves.toBe(false)
-    await expect(surfaceFor('iterm-pane', { platform: 'linux' }).close(handle)).resolves.toBe(false)
+    await expect(surface.close(handle)).resolves.toMatchObject({ closed: false })
+    await expect(surfaceFor('iterm-pane', { platform: 'linux' }).close(handle)).resolves.toMatchObject({
+      closed: false,
+    })
   })
 
   it('has nothing to close for a headless agent', async () => {
-    await expect(surfaceFor('headless').close({ surface: 'headless', pid: 42 })).resolves.toBe(false)
+    await expect(surfaceFor('headless').close({ surface: 'headless', pid: 42 })).resolves.toMatchObject({
+      closed: false,
+    })
   })
 })
 

@@ -14,6 +14,29 @@ import {
 import { cliEntry, home, socketPath } from '../paths.js'
 
 const REQUEST_TIMEOUT_MS = 5000
+
+/**
+ * Replies the 5s default is simply wrong for, and why raising it is the right
+ * answer rather than a papering-over (CC-95).
+ *
+ * `spawn_result` answers both `spawn` and `retire`, and each one does real work
+ * before it can say anything: a worktree allocation shells out to git, a launch
+ * talks to iTerm2 over AppleScript, a retire runs `worktree remove` and now a
+ * spawn additionally waits up to `ATTACH_TIMEOUT_MS` for the agent to register.
+ * Two calls already returned "broker did not answer spawn_result" for operations
+ * that had SUCCEEDED, which is the worst possible failure: the caller believes
+ * nothing happened and an agent is running anyway.
+ *
+ * The alternative — keep 5s and answer immediately with a handle to poll — was
+ * rejected because it hands every coordinator the same polling loop to write,
+ * and a loop nobody writes is exactly how a spawn goes unnoticed for six hours.
+ * A bounded wait that ends in a real answer beats an unbounded one that does not.
+ *
+ * 60s = the 30s attach window plus the launch work in front of it, with room for
+ * a loaded machine. It is a ceiling, not a duration: the ordinary spawn answers
+ * in a few seconds and nothing waits for this.
+ */
+const REPLY_TIMEOUT_MS: Partial<Record<ReplyType, number>> = { spawn_result: 60_000 }
 // Front-loaded to catch a broker already starting, tailed off for a cold one; the sum is the give-up budget.
 const RECONNECT_DELAYS_MS = [100, 250, 500, 1000, 2000, 5000]
 
@@ -199,7 +222,7 @@ export class BrokerClient {
           queue.splice(index, 1)
           reject(new Error(`broker did not answer ${replyType}`))
         }
-      }, REQUEST_TIMEOUT_MS)
+      }, REPLY_TIMEOUT_MS[replyType] ?? REQUEST_TIMEOUT_MS)
 
       const waiter: Waiter = msg => {
         clearTimeout(timer)

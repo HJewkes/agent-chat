@@ -1,5 +1,5 @@
 import { spawn as nodeSpawn } from 'node:child_process'
-import type { LaunchHandle, LaunchPlan, Surface } from '../types.js'
+import type { CloseOutcome, LaunchHandle, LaunchPlan, Surface } from '../types.js'
 import { runAgentArgv } from './command.js'
 import type { SurfaceOptions } from './options.js'
 
@@ -54,6 +54,6 @@ export function headlessSurface(options: SurfaceOptions = {}): Surface {
       }
     },
     /** Nothing to close: having no surface is what headless means. */
-    close: async (): Promise<boolean> => false,
+    close: async (): Promise<CloseOutcome> => ({ closed: false, reason: 'headless: no surface to close' }),
   }
 }

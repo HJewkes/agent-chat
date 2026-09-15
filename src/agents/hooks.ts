@@ -46,7 +46,18 @@ function loadHooksConfig(): HooksConfig {
  * without launching a real shell.
  */
 export interface HookProcess {
-  stdin: { write: (chunk: string) => void; end: () => void }
+  /**
+   * `on` is optional here and load-bearing. A hook command that does not exist
+   * gives a child whose stdin is a pipe with no reader, and writing to it throws
+   * EPIPE ASYNCHRONOUSLY — past the try/catch below, straight out as an
+   * unhandled rejection that fails whatever the broker was doing at the time.
+   * The one thing this module promises is that a broken hook cannot do that.
+   */
+  stdin: {
+    write: (chunk: string) => void
+    end: () => void
+    on?: (event: 'error', listener: (err: Error) => void) => void
+  }
   stderr?: { on: (event: 'data', listener: (chunk: Buffer) => void) => void } | null
   on: (event: 'error', listener: (err: Error) => void) => void
 }
@@ -80,6 +91,7 @@ export function runHooks(
       child.stderr?.on('data', (chunk: Buffer) =>
         logEvent('hook_stderr', { event, command, chunk: chunk.toString('utf8').slice(0, 500) }),
       )
+      child.stdin.on?.('error', err => logEvent('hook_failed', { event, command, error: String(err) }))
       child.stdin.write(body)
       child.stdin.end()
     } catch (err) {

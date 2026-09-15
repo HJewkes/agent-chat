@@ -56,10 +56,35 @@ and the notice sink are constructor options rather than launch arguments.
   marks `ownsSurface` on a split, tab or window it created and leaves it off a
   pane it merely wrote into, and `Surface.close` refuses without that mark — so
   an anchor, or an adopted session's own window, is never closable from a bus any
-  peer can reach. Teardown fires on `retire` and nowhere else: an exit is not an
-  instruction to throw away what the agent printed. Closing a session covers all
-  three surfaces, since iTerm2 closes the tab with its last session and the window
-  with its last tab.
+  peer can reach. Closing a session covers all three surfaces, since iTerm2 closes
+  the tab with its last session and the window with its last tab.
+- **Teardown fires on `retire` always, and on `agent_exited` when the PROFILE says
+  so** (CC-95). The retire-only rule was not overturned — it was made per-profile,
+  which is the human's decision and worth recording as theirs. Both global answers
+  had been tried and both were wrong for somebody: retire-only left four finished
+  agents' panes at `-zsh` for six and a half hours until a human reclaimed the
+  screen by hand, and closing unconditionally throws away the last output of a
+  collaborator someone is still reading. In their words: _"it should be part of the
+  profile for launching items. We might be launching totally new agents - new
+  window, independent of session. Might be subagents, new pane to the right, closes
+  when the session in the pane closes."_
+
+  `AgentProfile.surfaceLifetime` is `'close-on-exit' | 'keep'`. `explorer`,
+  `reviewer` and `implementer` close — they are dispatched, do a job and go.
+  `peer` keeps, because a long-lived collaborator sharing your checkout is
+  precisely the case the old argument was written for. Headless profiles have no
+  surface, so the field is inert. The value is recorded on the `agent_spawned`
+  row, so the exit path reads it from the log rather than from memory and a broker
+  restart does not lose it; a row that names none keeps its pane, since a silent
+  upgrade would destroy panes nobody opted in for. The inferred exit is the one
+  that matters, because it is the only exit a visible agent ever gets, and
+  `ownsSurface` still gates all of it, unchanged.
+
+- **`close` reports whether the pane is GONE, not whether the script ran** (CC-95).
+  `@@closed@@` means AppleScript found the session and issued `close`; a teardown
+  logged `closed:true` on that basis and its pane was still open six hours later.
+  `close` now re-reads the session list and returns `{ closed, reason }`, with the
+  reason naming what it saw — still there, could not re-read, iTerm2 unreachable.
 
 ## The two §5.4 lessons, and how the tests pin them
 

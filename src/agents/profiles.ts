@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { profilesDir } from '../paths.js'
 import { ISOLATION_NAMES, SURFACE_NAMES } from '../protocol.js'
-import type { AgentProfile } from './types.js'
+import { SURFACE_LIFETIMES, type AgentProfile, type SurfaceLifetime } from './types.js'
 
 /**
  * The four builtins, layered under anything in `~/.agent-chat/profiles/*.json`.
@@ -81,6 +81,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     disallowedTools: ['Bash', 'Write', 'Edit', ...NO_SELF_QUESTION],
     isolation: 'toolset-limited',
     surface: 'iterm-pane',
+    surfaceLifetime: 'close-on-exit',
     promptPrelude: 'You are a read-only explorer. Report what you find; do not attempt to change anything.',
   },
   {
@@ -94,6 +95,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     disallowedTools: ['Write', 'Edit', ...HUMAN_ONLY_CLI_DENY, ...NO_SELF_QUESTION],
     isolation: 'toolset-limited',
     surface: 'iterm-pane',
+    surfaceLifetime: 'close-on-exit',
     promptPrelude:
       'You are reviewing work you did not write. Report findings with file and line references. ' +
       'Do not fix what you find unless asked.',
@@ -106,6 +108,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     disallowedTools: [...HUMAN_ONLY_CLI_DENY, ...NO_SELF_QUESTION],
     isolation: 'worktree',
     surface: 'iterm-pane',
+    surfaceLifetime: 'close-on-exit',
     promptPrelude:
       'You are implementing in an isolated worktree. Keep diffs small and reviewable, and run the ' +
       "project's tests before reporting done.",
@@ -131,6 +134,11 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     disallowedTools: [...HUMAN_ONLY_CLI_DENY, ...NO_SELF_QUESTION],
     isolation: 'none',
     surface: 'iterm-pane',
+    // `keep`, alone among the builtins, and for the reason the retire-only rule
+    // was written in the first place: a long-lived collaborator sharing your
+    // checkout is exactly the agent whose last output someone is still reading
+    // when it finishes. The other three are dispatched, do a job and go.
+    surfaceLifetime: 'keep',
     promptPrelude:
       'You are a peer working alongside other sessions in a shared checkout. Coordinate over ' +
       'agent-chat before editing files someone else may be holding.',
@@ -168,6 +176,8 @@ export function parseProfile(name: string, raw: unknown): AgentProfile | { error
     return { error: `${name}: "isolation" must be one of ${ISOLATION_NAMES.join(', ')}` }
   if (!SURFACE_NAMES.includes(body.surface as never))
     return { error: `${name}: "surface" must be one of ${SURFACE_NAMES.join(', ')}` }
+  if (body.surfaceLifetime !== undefined && !SURFACE_LIFETIMES.includes(body.surfaceLifetime as never))
+    return { error: `${name}: "surfaceLifetime" must be one of ${SURFACE_LIFETIMES.join(', ')}` }
 
   return {
     name,
@@ -177,6 +187,9 @@ export function parseProfile(name: string, raw: unknown): AgentProfile | { error
     ...(body.disallowedTools === undefined ? {} : { disallowedTools: body.disallowedTools }),
     isolation: body.isolation as AgentProfile['isolation'],
     surface: body.surface as AgentProfile['surface'],
+    ...(body.surfaceLifetime === undefined
+      ? {}
+      : { surfaceLifetime: body.surfaceLifetime as SurfaceLifetime }),
     promptPrelude: typeof body.promptPrelude === 'string' ? body.promptPrelude : '',
     ...(typeof body.mcpServers === 'object' && body.mcpServers !== null
       ? { mcpServers: body.mcpServers as Record<string, unknown> }

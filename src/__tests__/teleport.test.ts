@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type net from 'node:net'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { autoAttach } from './broker-harness.js'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
@@ -28,6 +29,7 @@ import type { LaunchPlan } from '../agents/types.js'
 const tmpDirs: string[] = []
 let core: BrokerCore
 let supervisor: Supervisor
+let stopAutoAttach: () => void
 let killed: Array<{ pid: number; signal: string }>
 /** Everything the broker pushed to a live session, so "was it told?" is answerable. */
 let delivered: Array<{ conn: Conn; text: string }>
@@ -139,10 +141,12 @@ beforeEach(() => {
     return true
   })
   core = makeCore()
+  stopAutoAttach = autoAttach(core)
   makeSupervisor()
 })
 
 afterEach(() => {
+  stopAutoAttach()
   supervisor?.close()
   vi.restoreAllMocks()
   vi.useRealTimers()
@@ -239,6 +243,9 @@ describe('a headless predecessor', () => {
     expect(sequence).toEqual([
       'isolation_allocated',
       'agent_spawned',
+      // The predecessor's own registration, which `spawnAgent` now has to
+      // produce because a spawn is not reported until it lands (CC-95).
+      'agent_attached',
       'agent_handoff',
       'agent_stood_down',
       'agent_retired',
