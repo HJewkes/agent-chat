@@ -5,6 +5,7 @@ import {
   HUMAN,
   type ClientMessage,
   type DeliveredMessage,
+  type PermissionBehavior,
   type ServerMessage,
 } from '../protocol.js'
 import { cliEntry, socketPath } from '../paths.js'
@@ -55,7 +56,8 @@ const reply = (conn: Conn, message: ServerMessage): void => {
  * registration", as opposed to "the human may not do this".
  *
  * The human's own frames — `human_send`, `answer`, `dismiss`, `endorse_approve`,
- * `queue`, `teleport_abort` — are deliberately absent, and must stay absent.
+ * `approve_permission`, `queue`, `teleport_abort` — are deliberately absent, and
+ * must stay absent.
  */
 const SESSION_FRAMES: ReadonlySet<ClientMessage['t']> = new Set([
   'send',
@@ -744,6 +746,59 @@ export class SocketServer {
   }
 
   /**
+   * The human answering a relayed permission prompt (CC-96).
+   *
+   * The guard is the load-bearing part of this verb, not an addition to it: an
+   * agent that could reach this frame could grant itself or a peer any tool
+   * call the human never approved, which is docs/ideas.md R1 and is declined.
+   * Same `isHuman` gate as `endorse_approve` and `teleport_abort`, with the
+   * same limits — see `isHuman`.
+   *
+   * The verdict goes to the prompting session ALONE, because `request_id` is
+   * meaningful only in the process whose dialog is open. Nothing is retried and
+   * nothing is stored against the host: it races the local dialog and the first
+   * answer wins, so a late verdict is discarded there rather than here.
+   */
+  private handleApprovePermission(conn: Conn, msgId: string, behavior: PermissionBehavior): void {
+    if (!this.isHuman(conn)) {
+      this.refuseToSession(conn, 'answer a permission prompt')
+      return reply(conn, {
+        t: 'answer_result',
+        ok: false,
+        reason:
+          'answering a permission prompt is the human’s call; no session may grant a tool call, ' +
+          'its own or a peer’s',
+      })
+    }
+    const { core } = this
+    const request = core.events.openApproval(msgId)
+    if (!request) {
+      return reply(conn, {
+        t: 'answer_result',
+        ok: false,
+        reason: `${msgId} is not an open permission prompt — it may have been answered already, or aged out`,
+      })
+    }
+    const target = core.registry.connFor(request.session)
+    if (!target) {
+      return reply(conn, {
+        t: 'answer_result',
+        ok: false,
+        reason: `${request.session} is no longer connected, so its prompt cannot be answered from here`,
+      })
+    }
+    core.append({ kind: 'resolution', actor: HUMAN, ref: msgId, body: behavior })
+    reply(target, { t: 'permission_verdict', requestId: request.requestId, behavior })
+    core.registry.setAwaitingApproval(target, false)
+    logEvent('permission_verdict', { msgId, to: request.session, tool: request.toolName, behavior })
+    reply(conn, {
+      t: 'answer_result',
+      ok: true,
+      reason: `${request.toolName} ${behavior} sent to ${request.session}`,
+    })
+  }
+
+  /**
    * The human has no registration to route from, so this bypasses the ordinary
    * registry sender check on `send` — which is exactly why it needs its OWN
    * check instead of none at all. CC-22's adversarial review found this had
@@ -784,8 +839,9 @@ export class SocketServer {
   }
 
   /**
-   * A permission dialog opened in this session. Observed only: we never send a
-   * verdict. Because `request_id` is never rendered in the terminal dialog, a
+   * A permission dialog opened in this session. Recorded, never answered from
+   * here: the only verdict path is `approve_permission`, which a session cannot
+   * reach. Because `request_id` is never rendered in the terminal dialog, a
    * channel server is the only thing on the machine that can enumerate these.
    */
   private handleApproval(conn: Conn, msg: Extract<ClientMessage, { t: 'approval' }>): void {
@@ -950,6 +1006,8 @@ export class SocketServer {
         return this.handleAnswer(conn, msg.msgId, msg.text)
       case 'dismiss':
         return this.handleDismiss(conn, msg.msgId)
+      case 'approve_permission':
+        return this.handleApprovePermission(conn, msg.msgId, msg.behavior)
       case 'history':
         return reply(conn, { t: 'history_result', items: core.events.history(msg.limit) })
       case 'inbox_since': {

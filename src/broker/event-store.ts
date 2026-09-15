@@ -18,6 +18,19 @@ export interface AppendInput {
 }
 
 /**
+ * One relayed permission prompt that can still be answered (CC-96).
+ *
+ * `session` is the only session whose host will accept the verdict, since the
+ * request id is meaningful in that process alone. `toolName` is carried so a
+ * verdict can be logged as what it actually permitted.
+ */
+export interface OpenApproval {
+  session: string
+  requestId: string
+  toolName: string
+}
+
+/**
  * A log row in the shape the agent fold consumes: decoded `meta`, camelCase, and
  * no `id`. Deliberately not the sqlite `Row` — nothing downstream of the fold
  * should depend on the storage schema.
@@ -75,6 +88,9 @@ export interface EventStore {
 
   /** The stored text of a still-open endorsement request, with composer and recipient. */
   openEndorsement(msgId: string): { composer: string; recipient: string; text: string } | undefined
+
+  /** A still-open, not-yet-aged-out approval request, with who is blocked on it. */
+  openApproval(msgId: string): OpenApproval | undefined
 
   /** The questions this session still has outstanding, not just how many. */
   openQuestions(actor: string): QueueItem[]

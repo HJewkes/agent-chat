@@ -4,10 +4,10 @@
  * Every shape here comes from `src/api-contract.ts` — deliberately imported
  * rather than restated, so this file cannot drift from the routes serving it.
  *
- * There is no `approve` here and there must never be one. Permission verdicts
- * are answered in the session's own terminal; the relay is observe-only by
- * construction and this file is exactly where a well-meaning backdoor would be
- * added (docs §5).
+ * There is no `approve` here and there must never be one. A permission verdict
+ * is answered in the session's own terminal or by `agent-chat approve` at the
+ * 0600 socket (CC-96), and this file is exactly where a well-meaning backdoor
+ * around that guard would be added (docs §5).
  */
 import { MAX_HISTORY_LIMIT, TOKEN_HEADER } from '../api-contract.js'
 import type {

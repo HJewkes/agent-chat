@@ -1303,8 +1303,10 @@ brain spawns headless agents with `--permission-mode bypassPermissions`
 is specific to this repo rather than general caution.
 
 agent-chat has already drawn this line once. It declares
-`claude/channel/permission` observe-only and never sends a verdict
-(`server/index.ts:45-49`), and `docs/ideas.md` R1 argues at length against
+`claude/channel/permission` and sends a verdict only for what a human typed at
+the 0600 socket (CC-96; refused from every registered session, and denied to the
+builtin profiles' `Bash`), and
+`docs/ideas.md` R1 argues at length against
 widening who issues verdicts, concluding _"this is a machine for one Claude to
 grant another Claude permissions the user never granted."_ Spawning
 `bypassPermissions` agents is **a larger hole than the one R1 refuses**: it does
@@ -1973,12 +1975,12 @@ Constraints that came with the decision, and how each is satisfied:
 
 **Permanently out of scope for the UI:**
 
-- **Permission verdicts.** Approval items render read-only with the message the
-  CLI already prints — _"answer in that session's terminal"_ (`cli.ts:79`). The
-  relay is observe-only by construction: `src/server/index.ts:45-49` declares
-  `claude/channel/permission` and never sends a verdict, and
-  `docs/ideas.md` R1 argues at length against widening who issues verdicts. The
-  dashboard must not become a backdoor around that.
+- **Permission verdicts.** Approval items render read-only, pointing at the
+  session's own terminal or at `agent-chat approve <id> allow|deny`. That verb
+  is answerable only from the 0600 socket (CC-96), where reaching the socket is
+  what stands in for being the human; a bearer token on a network surface cannot
+  make that claim, and `docs/ideas.md` R1 argues at length against widening who
+  issues verdicts. The dashboard must not become a backdoor around that.
 - **Human-initiated `send`.** Composing new messages to sessions stays a CLI
   debug affordance.
 - **Session control** — no kill, no rename, no status override.

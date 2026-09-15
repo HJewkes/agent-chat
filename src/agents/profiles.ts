@@ -36,7 +36,10 @@ import type { AgentProfile } from './types.js'
  *
  * `HUMAN_ONLY_CLI_DENY` below is the same idea aimed at a narrower target: the
  * `agent-chat` CLI verbs that act with the human's own authority (`endorse`,
- * `dismiss`, `send`, `answer` — see `broker/socket.ts`'s `isHuman`). CC-22's
+ * `dismiss`, `send`, `answer`, `approve` — see `broker/socket.ts`'s `isHuman`).
+ * `approve` is the newest and the one with the most to lose (CC-96): it answers a
+ * permission prompt, so an agent that reached it would be granting itself a tool
+ * call the human never approved, which is `docs/ideas.md` R1. CC-22's
  * adversarial review (2026-07-30) found a `Bash`-capable spawned agent could
  * self-approve its own endorsement by simply shelling out to `agent-chat
  * endorse <id>`. Denying the pattern here is CONFIGURATION, not a guarantee —
@@ -52,6 +55,7 @@ const HUMAN_ONLY_CLI_DENY = [
   'Bash(agent-chat dismiss:*)',
   'Bash(agent-chat send:*)',
   'Bash(agent-chat answer:*)',
+  'Bash(agent-chat approve:*)',
 ]
 
 /**

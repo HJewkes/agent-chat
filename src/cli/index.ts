@@ -37,6 +37,12 @@ function addHumanCommands(program: Command): void {
     .action((id: string) => human.verdict(id, [], 'dismiss'))
 
   program
+    .command('approve <id> <allow|deny>')
+    .description("answer an agent's permission prompt from here")
+    .helpGroup(HUMAN)
+    .action(human.approve)
+
+  program
     .command('endorse <id>')
     .description('approve a composed message; delivers it with your authority')
     .helpGroup(HUMAN)

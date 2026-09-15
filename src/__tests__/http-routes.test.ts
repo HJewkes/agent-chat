@@ -317,10 +317,11 @@ describe('write routes', () => {
   })
 
   /**
-   * PERMANENT, not "not yet". Permission verdicts are out of scope for every
-   * surface here: the relay is observe-only by construction and a dashboard
-   * write path would be a backdoor around that. This assertion is the guard that
-   * makes adding one a test failure rather than a review comment.
+   * PERMANENT, not "not yet". A permission verdict is answerable only from the
+   * 0600 socket (CC-96), where reaching the socket is what stands in for being
+   * the human; a bearer token on a network surface cannot make that claim. This
+   * assertion is the guard that makes adding one a test failure rather than a
+   * review comment.
    */
   it('does not serve POST /api/approve, and never will', async () => {
     const res = await app(makeCore()).fetch(new Request('http://127.0.0.1/api/approve', { method: 'POST' }))

@@ -1,7 +1,8 @@
 # What to build on the agent-chat backbone
 
 Ideation only — nothing here is implemented, **except I1 (permission-prompt
-observatory), shipped 2026-07-27** — see the P9 row below and
+observatory), shipped 2026-07-27, and I3 (human verdict from any terminal),
+shipped 2026-09-14** — see the P9 row below and
 `docs/permission-relay.md`. Every idea names the existing primitive it stands
 on. Ranking is at the bottom; the honest kills are in
 [Considered and rejected](#considered-and-rejected).
@@ -61,7 +62,7 @@ these were not in my brief:
 
 ### I1. Permission-prompt observatory (read-only relay) {#i1}
 
-**Shipped 2026-07-27.** The verdict path (I3) is still not built.
+**Shipped 2026-07-27.** The verdict path ([I3](#i3)) shipped 2026-09-14, human-only.
 
 **What.** Declare `claude/channel/permission`, handle
 `notifications/claude/channel/permission_request`, forward it to the broker, and
@@ -132,6 +133,11 @@ an FYI, not an action. This is the point where the design starts leaning toward
 [I3](#i3), which is where it goes wrong.
 
 ### I3. Human verdict from any terminal {#i3}
+
+**Shipped 2026-09-14 (CC-96)**, as one verb rather than three: `agent-chat inbox`
+already lists pending prompts, and `agent-chat approve <id> allow|deny` answers one.
+The sharpest objection below was right about the stale table — a row aged out by TTL
+is refused by name, and so is a verdict for a session that has since exited.
 
 **What.** `agent-chat approvals` lists pending prompts across all sessions;
 `agent-chat allow qxrtm` / `agent-chat deny qxrtm` routes a
@@ -380,6 +386,16 @@ whichever lands first. So none of the above is hypothetical — the mechanism is
 there working, and every session on the channel allowlist can already reach it. See
 `permission-relay.md`. Declining to send a verdict is the only thing stopping us.
 
+**Updated 2026-09-14 (CC-96).** The salvageable part above is now built, and only that
+part: `agent-chat approve <id> allow|deny` sends `{request_id, behavior}` for a prompt a
+human read in full at the CLI. R1 itself stays declined, and the decline is enforced in
+three layers with an honest gap at the bottom of them: no MCP tool exposes the frame; the
+broker refuses it from any REGISTERED connection; and the builtin profiles deny
+`Bash(agent-chat approve:*)`, which is the straightforward shell-out. What none of that
+covers is a differently-invoked form — `node dist/cli.js approve`, an absolute path, or a
+raw socket write — because a same-uid process can forge anything on this bus. The OS
+account is the trust boundary, as it is for every other control here.
+
 ### R2. Broker-side deterministic permission policy
 
 Rules like "auto-allow Read in ~/projects/voltras, always relay Bash to the human"
@@ -462,7 +478,9 @@ Not ideas — things I'd expect to break, several of which have no fix above.
 ## What a peer session could do that a user wouldn't want
 
 - **Approve tool calls in another session.** The whole of R1, and the reason relay
-  should ship observe-only first.
+  shipped observe-only first. The verdict path that exists now (CC-96) is refused
+  from every registered connection and denied to the builtin profiles' `Bash`, so
+  a peer cannot reach it without deliberately working around both.
 - **Register as `human` or `user`** and inherit the user's authority in every other
   session's reading of `from`. ([I9](#i9))
 - **Broadcast an instruction phrased as a user directive.** The `instructions`

@@ -301,6 +301,7 @@ describe('every builtin profile, on every surface', () => {
       'Bash(agent-chat dismiss:*)',
       'Bash(agent-chat send:*)',
       'Bash(agent-chat answer:*)',
+      'Bash(agent-chat approve:*)',
       'AskUserQuestion',
     ])
 
@@ -322,6 +323,29 @@ describe('every builtin profile, on every surface', () => {
       expect(
         flag(buildLaunchPlan(input({ profile: builtin })).args, '--allowed-tools')?.split(','),
       ).toContain('Bash')
+    }
+  })
+
+  /**
+   * CC-96. Written over ALL profiles rather than the two named above, because the
+   * failure this catches is a profile added LATER that grants Bash and forgets
+   * the deny — which is how a code path nobody reviewed again ends up handing an
+   * agent the verb that answers permission prompts.
+   *
+   * It asserts configuration, not a guarantee, exactly as the deny list itself
+   * does: `node dist/cli.js approve`, an absolute path, or a raw socket write are
+   * all different literal strings and none of them match. The broker's `isHuman`
+   * states the same limit from the other side.
+   */
+  it('denies the approve verb on every builtin that can run a shell', () => {
+    const shellCapable = BUILTIN_PROFILES.filter(p => !(p.disallowedTools ?? []).includes('Bash'))
+    expect(shellCapable.map(p => p.name)).toEqual(['reviewer', 'implementer', 'peer'])
+
+    for (const builtin of shellCapable) {
+      expect(builtin.disallowedTools ?? []).toContain('Bash(agent-chat approve:*)')
+      expect(
+        flag(buildLaunchPlan(input({ profile: builtin })).args, '--disallowed-tools')?.split(','),
+      ).toContain('Bash(agent-chat approve:*)')
     }
   })
 

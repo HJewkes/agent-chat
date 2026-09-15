@@ -85,12 +85,12 @@ attribute.
 
 Three kinds of item, distinguished by whether they need an answer:
 
-| Kind         | Needs an answer | Raised by                                       |
-| ------------ | --------------- | ----------------------------------------------- |
-| **question** | yes             | `chat_ask`                                      |
-| **notice**   | no              | `chat_notify`                                   |
-| **message**  | no              | `chat_send(to: "human")`                        |
-| **approval** | no              | permission relay — observe-only, never answered |
+| Kind         | Needs an answer | Raised by                                    |
+| ------------ | --------------- | -------------------------------------------- |
+| **question** | yes             | `chat_ask`                                   |
+| **notice**   | no              | `chat_notify`                                |
+| **message**  | no              | `chat_send(to: "human")`                     |
+| **approval** | yes             | permission relay — `agent-chat approve <id>` |
 
 ```
 $ agent-chat inbox
@@ -218,6 +218,8 @@ from="alice" msg_id="a1b2c3d4" thread_depth="1">`, plus `in_reply_to` and
 agent-chat inbox                what your agents need from you
 agent-chat answer <id> <text>   answer; routes back to the asker
 agent-chat dismiss <id>         close an item without answering
+agent-chat approve <id> allow|deny
+                                answer an agent's permission prompt
 agent-chat send <to> <text>     message a session as the human
 agent-chat ps                   who's registered
 agent-chat history [n]          recent events from the log
@@ -297,8 +299,10 @@ are forwarded to the channel server and surfaced as `approval` rows, which makes
 a blocked session knowable rather than merely idle-looking. But a headless
 `--print` session resolves denials without ever opening a promptable request, so
 it relays nothing — a background peer is fully addressable for messaging and
-still invisible when stuck. We never send a verdict back, though Claude Code
-would accept one; see [docs/permission-relay.md](docs/permission-relay.md).
+still invisible when stuck. A prompt that did relay can be answered from the
+queue with `agent-chat approve <id> allow|deny` — human-only: refused from every
+registered session, and denied to the builtin profiles' `Bash` so an agent cannot
+shell out to it; see [docs/permission-relay.md](docs/permission-relay.md).
 
 **"Allowlisted" is per session, not per machine.** A session's permission view is
 read once and memoized with no watcher. Its own grants apply immediately, but

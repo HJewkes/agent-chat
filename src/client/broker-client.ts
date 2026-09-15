@@ -6,6 +6,7 @@ import {
   lineReader,
   type ClientMessage,
   type DeliveredMessage,
+  type PermissionBehavior,
   type SystemEvent,
   type ReplyType,
   type ServerMessage,
@@ -51,11 +52,15 @@ export class BrokerClient {
     private readonly onDeliver: (message: DeliveredMessage) => void,
     private readonly onFatal?: (reason: string) => void,
     private readonly onSystemEvents?: (events: SystemEvent[]) => void,
+    private readonly onPermissionVerdict?: (requestId: string, behavior: PermissionBehavior) => void,
   ) {}
 
   private handle(msg: ServerMessage): void {
     if (msg.t === 'deliver') return this.onDeliver(msg.message)
     if (msg.t === 'system_events') return this.onSystemEvents?.(msg.events)
+    // A push with no waiter, like the two above: nothing on this side asked for
+    // it, and the CLI leaves the callback unset so it can never be its target.
+    if (msg.t === 'permission_verdict') return this.onPermissionVerdict?.(msg.requestId, msg.behavior)
     if (msg.t === 'error') {
       if (msg.code === 'not_registered') return void this.reregister()
       if (!msg.fatal) return
