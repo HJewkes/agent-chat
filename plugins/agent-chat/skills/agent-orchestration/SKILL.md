@@ -58,6 +58,21 @@ main checkout that a fresh worktree wouldn't see.
 If the ticket rests on an assumption you haven't verified, name it and ask the agent
 to check it before building on it — testing beats assuming.
 
+### Which Claude account the agent spends
+
+A spawned agent runs on **your** account, not the broker's. Its `CLAUDE_CONFIG_DIR` is
+resolved in this order (CC-100): an explicit `config_dir` argument, then your own config
+dir as your MCP server sees it, then the `briefing` initiative's declared `profile:`
+(`~/.claude-profiles/<profile>`), then the broker's. You do not have to pass anything —
+the default is already your account, which is the point: before CC-100 every agent
+inherited whatever dir the detached broker daemon happened to start with, and agents
+spawned from a session on a dedicated account quietly billed `~/.claude` until it hit its
+spend limit. Pass `config_dir` only to bill an account deliberately; it must exist and be
+under your home directory, and a bad value is refused rather than quietly replaced. The
+resolved account shows up on `agent_list` and `chat_list` rows (`account: <name>`), and
+that is also how a peer's transcript and budget stay findable when it is not on your
+account.
+
 ## Talking to a spawned agent or peer
 
 - `chat_send(to: name, text: ...)` — reach a specific peer. Fire-and-forget; no reply

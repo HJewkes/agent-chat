@@ -127,6 +127,13 @@ export interface LaunchPlanInput {
   extraDirs?: string[]
   /** Propagated so a spawned agent joins the same bus rather than a default one. */
   agentChatHome?: string
+  /**
+   * The resolved `CLAUDE_CONFIG_DIR` — the Claude ACCOUNT this agent runs on
+   * (CC-100). Resolved by the supervisor from `config-dir.ts`'s precedence, never
+   * left to the broker's own environment, which is an accident of which session
+   * autostarted the daemon.
+   */
+  configDir?: string
   workingOn?: string
   /** Tags and subscriptions the spawner chose; applied at the agent's own register. */
   tags?: string[]

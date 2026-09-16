@@ -83,6 +83,16 @@ export interface TeleportSubject {
   anchor?: string
   tags: string[]
   subscriptions: Subscription[]
+  /**
+   * The session's own `CLAUDE_CONFIG_DIR`, resolved by the socket layer from this
+   * connection's registration rather than from the request (CC-100).
+   *
+   * A descendant continues its predecessor's work, which means continuing to
+   * spend the same account. Without it a teleport quietly moved a session onto the
+   * broker's account — and for an ADOPTED session it is the only place the answer
+   * exists, since there is no launch plan that ever recorded one.
+   */
+  configDir?: string
 }
 
 export interface TeleportRequest {
@@ -126,6 +136,8 @@ export interface RelaunchInput {
   inherited?: InheritedIsolation
   /** For the descendant's `isolation_allocated` row, so a later release finds the real tree. */
   inheritedFrom?: string
+  /** The account the predecessor was spending, carried across unchanged (CC-100). */
+  configDir?: string
 }
 
 /** What teleport borrows from the supervisor: process control and the launch path. */
@@ -169,6 +181,17 @@ const inheritedProfile = (model: string | undefined): AgentProfile => ({
 
 const isSurfaceName = (value: string): value is SurfaceName =>
   (SURFACE_NAMES as readonly string[]).includes(value)
+
+/**
+ * Which account this session is on: what it is observably running under now,
+ * falling back to what its spawn row recorded (CC-100).
+ *
+ * Observed first because it is the live fact — a session that came back through a
+ * mode switch or a previous teleport is authoritative about its own environment,
+ * and a spawn row several generations old is not.
+ */
+const accountOf = (subject: TeleportSubject, identity: AgentIdentity): string | undefined =>
+  subject.configDir ?? identity.configDir
 
 export class Teleport {
   private readonly pending = new Map<string, Pending>()
@@ -290,7 +313,12 @@ export class Teleport {
     model: string | undefined,
   ): { profile: AgentProfile; surface: SurfaceName } | { error: string } {
     if (identity.origin === 'adopted') {
-      const inherited = inheritedProfile(model ?? observedModel(subject.cwd, identity.sessionId))
+      // The transcript is under the session's OWN config dir, which for a session
+      // on a dedicated account is not the broker's: without it the model could not
+      // be observed and every teleport of such a session silently fell back to the
+      // harness default (CC-100).
+      const observed = observedModel(subject.cwd, identity.sessionId, accountOf(subject, identity))
+      const inherited = inheritedProfile(model ?? observed)
       return { profile: inherited, surface: inherited.surface }
     }
     const profile = loadProfile(identity.profile)
@@ -412,6 +440,9 @@ export class Teleport {
     const { subject } = entry
     const previous = this.core.agents.spawnMeta(subject.agentId)
     const generation = Number.parseInt(previous.generation ?? '1', 10)
+    // Same rule as `accountOf`, against the row rather than the folded identity:
+    // what the predecessor is observably on, then what it was launched on.
+    const configDir = subject.configDir ?? previous.config_dir
     return {
       agentId: entry.descendantId,
       name: subject.name,
@@ -431,6 +462,7 @@ export class Teleport {
         teleport_from: subject.agentId,
         generation: String((Number.isFinite(generation) ? generation : 1) + 1),
       },
+      ...(configDir ? { configDir } : {}),
       ...(subject.tags.length > 0 ? { tags: subject.tags } : {}),
       ...(subject.subscriptions.length > 0 ? { subscriptions: subject.subscriptions } : {}),
       ...(subject.anchor === undefined ? {} : { anchor: subject.anchor, reuseAnchor: true }),

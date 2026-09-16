@@ -35,6 +35,7 @@ import { SurfaceRefused, type SurfaceOptions } from './surfaces/options.js'
 import { Semaphore } from './semaphore.js'
 import { checkSpawnCwd } from './spawn-cwd.js'
 import { resolveBriefing, type BriefingResult } from './active-work.js'
+import { resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
 import { findTranscript } from './transcript.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { trustGap } from './trust.js'
@@ -142,6 +143,17 @@ export interface SwitchRequest {
 
 type AttachOutcome = { kind: 'attached' | 'timeout' } | { kind: 'exited'; code: number | null }
 
+/**
+ * What `spawn` worked out before committing a slot, handed to `launch` as one
+ * noun rather than three trailing optionals.
+ */
+interface Resolved {
+  /** CC-100: the account, already validated. Never absent — there is always an answer. */
+  account: Extract<ConfigDirResolution, { dir: string }>
+  briefing?: { text: string; slug: string }
+  fork?: { path: string; sessionId: string }
+}
+
 /** A profile that predates the field keeps its pane. See {@link DEFAULT_SURFACE_LIFETIME}. */
 const lifetimeOf = (profile: Pick<AgentProfile, 'surfaceLifetime'>): SurfaceLifetime =>
   profile.surfaceLifetime ?? DEFAULT_SURFACE_LIFETIME
@@ -182,6 +194,14 @@ export interface SpawnRequest {
   owns?: string[]
   /** CC-44: start from a copy of the REQUESTER's own conversation, not an empty one. */
   inherit?: 'context'
+  /**
+   * CC-100: the account to run this agent on, named explicitly. Validated and
+   * REFUSED when unusable — see `config-dir.ts` for why this one step does not
+   * fall back.
+   */
+  configDir?: string
+  /** The requester's own `CLAUDE_CONFIG_DIR`, observed rather than claimed (CC-100). */
+  spawnerConfigDir?: string
   /** The session id the requester claims as its own. Checked, never trusted. */
   forkFrom?: string
   /** Empty for a human-initiated spawn; otherwise the requesting agent's id. */
@@ -705,11 +725,26 @@ export class Supervisor implements TeleportHost {
     if (briefing !== undefined && 'warning' in briefing) warnings.push(briefing.warning)
     const injected = briefing !== undefined && 'text' in briefing ? briefing : undefined
 
+    // CC-100. Resolved here rather than at launch time so a bad `config_dir`
+    // refuses before anything is allocated, and so the WARNING from a missing
+    // initiative profile dir reaches the requester with every other spawn warning.
+    const account = resolveConfigDir({
+      ...(req.configDir === undefined ? {} : { explicit: req.configDir }),
+      ...(req.spawnerConfigDir === undefined ? {} : { spawner: req.spawnerConfigDir }),
+      ...(injected?.profile === undefined ? {} : { profile: injected.profile }),
+    })
+    if ('error' in account) return this.refuse(req, account.error)
+    if (account.warning !== undefined) warnings.push(account.warning)
+
     if (!this.semaphore.acquire(agentId))
       return this.refuse(req, `no free agent slots (${this.semaphore.summary()}); retire one first`)
 
     try {
-      return await this.launch(req, ctx, agentId, isolationName, warnings, profile, depth, injected, fork)
+      return await this.launch(req, ctx, agentId, isolationName, warnings, profile, depth, {
+        account,
+        ...(injected ? { briefing: injected } : {}),
+        ...(fork ? { fork } : {}),
+      })
     } catch (err) {
       this.semaphore.release(agentId)
       const reason = err instanceof SurfaceRefused ? err.message : `spawn failed: ${(err as Error).message}`
@@ -726,9 +761,9 @@ export class Supervisor implements TeleportHost {
     warnings: string[],
     profile: AgentProfile,
     depth: number,
-    briefing?: { text: string; slug: string },
-    fork?: { path: string; sessionId: string },
+    resolved: Resolved,
   ): Promise<SpawnOutcome> {
+    const { briefing, fork, account } = resolved
     const allocation = await resolveIsolation([isolationName]).allocate(ctx)
     this.core.append({
       kind: 'isolation_allocated',
@@ -754,6 +789,7 @@ export class Supervisor implements TeleportHost {
       ...(req.subscriptions?.length ? { subscriptions: req.subscriptions } : {}),
       ...(fork ? { forkFrom: fork.path } : {}),
       agentChatHome: home(),
+      configDir: account.dir,
     })
     writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry()))
 
@@ -780,6 +816,13 @@ export class Supervisor implements TeleportHost {
         isolation: isolationName,
         cwd: allocation.cwd,
         session_id: sessionId,
+        // CC-100: the account this agent spends, and where its transcript and
+        // status-cache live. On the row rather than in memory because every later
+        // reader of either — `agent ls`, `agent_list`, `session_budget` — is a
+        // different process from the one that resolved it, and looking in its own
+        // `CLAUDE_CONFIG_DIR` is precisely the bug.
+        config_dir: account.dir,
+        config_dir_source: account.source,
         allowed_tools: profile.allowedTools.join(','),
         // Recorded for symmetry with the allowlist the escalation check reads:
         // the deny list is the half that actually confines (see `profiles.ts`),
@@ -1273,6 +1316,11 @@ export class Supervisor implements TeleportHost {
       mcpConfigPath: mcpConfigPath(agent.agentId),
       ...(allocation.addDirs ? { extraDirs: allocation.addDirs } : {}),
       agentChatHome: home(),
+      // A mode switch is the SAME agent in a different window, so it keeps the
+      // account it was spawned on. Without this the rebuilt plan would drop the
+      // config dir and the agent would come back billing the broker's account,
+      // with its conversation resumed from a transcript it can no longer find.
+      ...(agent.configDir ? { configDir: agent.configDir } : {}),
     })
     writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry()))
 
@@ -1422,6 +1470,7 @@ export class Supervisor implements TeleportHost {
       ...(input.tags?.length ? { tags: input.tags } : {}),
       ...(input.subscriptions?.length ? { subscriptions: input.subscriptions } : {}),
       agentChatHome: home(),
+      ...(input.configDir ? { configDir: input.configDir } : {}),
     })
     writeLaunchFiles(plan, buildMcpConfig(input.profile, cliEntry()))
 
@@ -1442,6 +1491,9 @@ export class Supervisor implements TeleportHost {
         allowed_tools: input.profile.allowedTools.join(','),
         perm_mode: permModeFor(input.surface),
         surface_lifetime: lifetimeOf(input.profile),
+        // Carried across rather than re-resolved: a descendant spends the same
+        // account as the session it continues (CC-100).
+        ...(input.configDir ? { config_dir: input.configDir } : {}),
         ...input.meta,
       },
     })

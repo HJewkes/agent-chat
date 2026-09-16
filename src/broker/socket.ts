@@ -137,6 +137,7 @@ export class SocketServer {
     const requester = this.core.registry.entryFor(conn)
     const anchor = this.core.registry.anchorFor(conn)
     const cwd = msg.cwd ?? this.core.registry.cwdFor(conn)
+    const spawnerConfigDir = msg.spawnerConfigDir ?? this.core.registry.observedFor(conn)?.configDir
     const outcome = await this.supervisor.spawn({
       name: msg.name,
       profile: msg.profile,
@@ -158,6 +159,12 @@ export class SocketServer {
       ...(msg.forkFrom === undefined ? {} : { forkFrom: msg.forkFrom }),
       ...(msg.tags === undefined ? {} : { tags: msg.tags }),
       ...(msg.subscriptions === undefined ? {} : { subscriptions: msg.subscriptions }),
+      // CC-100. The explicit ask is the request's to make; the spawner's own
+      // account is not — it falls back to what this connection REPORTED at
+      // registration, which the broker observed rather than took on trust. The
+      // frame's copy exists for the human at the CLI, who holds no entry to read.
+      ...(msg.configDir === undefined ? {} : { configDir: msg.configDir }),
+      ...(spawnerConfigDir === undefined ? {} : { spawnerConfigDir }),
       ...(requester?.agentId === undefined ? {} : { parentAgentId: requester.agentId }),
       ...(anchor === undefined ? {} : { anchor }),
     })
@@ -287,6 +294,12 @@ export class SocketServer {
         subscriptions: registry.subscriptionsOf(conn),
         ...(entry.hostPid === undefined ? {} : { hostPid: entry.hostPid }),
         ...(registry.anchorFor(conn) === undefined ? {} : { anchor: registry.anchorFor(conn) as string }),
+        // CC-100: read from the registration, not from the message, exactly like
+        // every other field here. A successor continues its predecessor's work and
+        // therefore keeps spending the same account.
+        ...(registry.observedFor(conn)?.configDir === undefined
+          ? {}
+          : { configDir: registry.observedFor(conn)?.configDir as string }),
       },
       handoff: msg.handoff,
       ...(msg.model === undefined ? {} : { model: msg.model }),

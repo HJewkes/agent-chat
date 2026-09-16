@@ -59,6 +59,17 @@ export interface ObservedPresence {
    * the roster the transcript exists and nothing can address it.
    */
   claudeSessionId?: string
+  /**
+   * `CLAUDE_CONFIG_DIR`, and therefore WHICH CLAUDE ACCOUNT this session is
+   * spending (CC-100).
+   *
+   * Observed for the same reason `claudeSessionId` is: the MCP subprocess reads
+   * it from its own environment, so no session can claim to be on someone else's
+   * account. It is also where that session's transcripts and status-cache live,
+   * which is what makes a peer's budget findable at all when it is not on the
+   * broker's own account. Absent means the default `~/.claude`.
+   */
+  configDir?: string
 }
 
 /**
@@ -725,6 +736,25 @@ export type ClientMessage =
       /** Tags and subscriptions the spawned agent starts with, before it runs. */
       tags?: string[]
       subscriptions?: Subscription[]
+      /**
+       * CC-100: the Claude config dir — and therefore the ACCOUNT — this agent
+       * should run on, named explicitly. An absolute path under the user's home
+       * that already exists; anything else is refused rather than corrected,
+       * because running on a different account than the one asked for is the
+       * failure this field exists to prevent.
+       */
+      configDir?: string
+      /**
+       * The REQUESTER's own `CLAUDE_CONFIG_DIR`, observed by its MCP server from
+       * its own environment (CC-100).
+       *
+       * Sent rather than only read from the registry because the human at the CLI
+       * holds no registry entry to read it from, and they are the caller most
+       * likely to have switched accounts in their shell. For a registered session
+       * the broker falls back to what that session reported on `register`, which
+       * is the same value from the same environment.
+       */
+      spawnerConfigDir?: string
     }
   | { t: 'agents'; includeRetired?: boolean }
   /**
@@ -970,6 +1000,16 @@ export interface AgentIdentity {
   surface: string
   /** The uuid passed to --session-id. The resume handle. */
   sessionId: string
+  /**
+   * The Claude config dir this agent was launched on, resolved at spawn (CC-100).
+   *
+   * Recorded rather than recomputed because it is where the agent's transcript and
+   * status-cache actually live: an agent spawned from a session on a dedicated
+   * account writes neither under the broker's own dir, so a reader that assumes
+   * `CLAUDE_CONFIG_DIR` from its own environment finds nothing and reports "not
+   * written yet" forever. Empty for rows written before CC-100.
+   */
+  configDir?: string
   /** Timestamp of the newest row referencing this identity, spawn included. */
   lastEventAt: number
   /**

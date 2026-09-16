@@ -68,7 +68,20 @@ export interface BriefingRequest {
   root?: string
 }
 
-export type BriefingResult = { text: string; slug: string } | { warning: string }
+export type BriefingResult =
+  | {
+      text: string
+      slug: string
+      /**
+       * The initiative's `profile:` frontmatter field — the Claude account its
+       * work is meant to be billed to (CC-100). Read here because this module
+       * already opens `brief.md`, and reported rather than applied: what a config
+       * dir is DONE with is the supervisor's decision, and it sits behind an
+       * explicit argument and the spawner's own account in that precedence.
+       */
+      profile?: string
+    }
+  | { warning: string }
 
 /**
  * Where `active-work` keeps its initiatives. Mirrors `env-paths`, which is what
@@ -111,6 +124,23 @@ const withoutFrontmatter = (text: string): string => {
   if (!text.startsWith('---\n')) return text
   const end = text.indexOf('\n---\n', 3)
   return end === -1 ? text : text.slice(end + 5)
+}
+
+/**
+ * One top-level scalar out of a brief's frontmatter — the bookkeeping the block
+ * above deliberately throws away, of which exactly one field is now needed.
+ *
+ * Line-anchored and unquoted-value only, in the same spirit as `taskScalars`: a
+ * YAML dependency to read one string would be a strange thing for the broker to
+ * carry, and a nested key of the same name must not match.
+ */
+const frontmatterField = (text: string, field: string): string | undefined => {
+  if (!text.startsWith('---\n')) return undefined
+  const end = text.indexOf('\n---\n', 3)
+  const block = end === -1 ? text : text.slice(4, end)
+  const found = new RegExp(`^${field}:[ \\t]*(.+)$`, 'm').exec(block)
+  const value = found?.[1]?.trim().replace(/^['"]|['"]$/g, '')
+  return value === undefined || value === '' ? undefined : value
 }
 
 /**
@@ -227,7 +257,9 @@ export function briefingFor(slug: string, root = activeWorkRoot()): BriefingResu
     `the initiative's own record, read from ${dir}. Treat the assignment below it as the actual task, ` +
     'and this as the context you would otherwise have had to be told.'
 
-  const brief = truncated(withoutFrontmatter(readOr(path.join(dir, 'brief.md'), '')).trim(), BRIEF_MAX)
+  const raw = readOr(path.join(dir, 'brief.md'), '')
+  const profile = frontmatterField(raw, 'profile')
+  const brief = truncated(withoutFrontmatter(raw).trim(), BRIEF_MAX)
   const sections = [
     header,
     brief === '' ? '' : `## Brief (brief.md)\n\n${brief}`,
@@ -236,7 +268,11 @@ export function briefingFor(slug: string, root = activeWorkRoot()): BriefingResu
     notesSection(dir),
   ].filter(section => section !== '')
 
-  return { text: truncated(sections.join('\n\n'), BRIEFING_MAX), slug }
+  return {
+    text: truncated(sections.join('\n\n'), BRIEFING_MAX),
+    slug,
+    ...(profile === undefined ? {} : { profile }),
+  }
 }
 
 /** Resolve the requested briefing to a block of text, or to a reason there is none. */

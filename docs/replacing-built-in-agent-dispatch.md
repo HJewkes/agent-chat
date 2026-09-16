@@ -53,6 +53,26 @@ the 1-hour cache window recovers any of that. Reach for a brief first and `inher
 the context genuinely cannot be restated. See `docs/agent-teams.md` §5.7 for the full
 semantics, including the in-flight-turn caveat.
 
+## The account a dispatched agent spends
+
+A built-in subagent runs inside the session that dispatched it, so it could not be on a
+different Claude account than its parent. Routing dispatch through a broker daemon broke
+that for free: `run-agent` built the child's environment from the BROKER's, and the broker
+is autostarted by whichever session connects first, so every agent inherited that
+session's `CLAUDE_CONFIG_DIR` — usually none. Agents spawned from a session on a dedicated
+account wrote their transcripts under `~/.claude/projects/` and died on that account's
+spend limit.
+
+CC-100 restores the property the built-in tool had by construction. The child's config dir
+is resolved in order: an explicit `config_dir` on `agent_spawn`, the spawning session's own
+dir (observed by its MCP server, forwarded on the spawn frame and re-read from its
+registration), the `briefing` initiative's declared `profile:`
+(`~/.claude-profiles/<profile>`, warn-and-continue if absent), then the broker's own env.
+A teleport successor keeps its predecessor's account the same way. The resolved dir is
+recorded on the agent's `agent_spawned` row, which is what lets `agent ls`, `agent_list`
+and `session_budget` find a transcript or a status-cache reading that is not under the
+reader's own `CLAUDE_CONFIG_DIR`.
+
 ## Unwinding this
 
 If the experiment causes enough pain to abandon, in `~/.claude/settings.json`:

@@ -48,8 +48,8 @@ const detailOf = (content: unknown): string => {
  * One pass, streamed line by line rather than buffered whole — a live
  * transcript can run to megabytes and this may be asked for at any point in it.
  */
-export function findDenials(cwd: string, sessionId: string, limit: number): Denial[] {
-  const found = findTranscript(cwd, sessionId)
+export function findDenials(cwd: string, sessionId: string, limit: number, dir?: string): Denial[] {
+  const found = findTranscript(cwd, sessionId, dir)
   if (!found.exists) return []
 
   const toolNames = new Map<string, string>()

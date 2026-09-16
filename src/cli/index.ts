@@ -133,6 +133,7 @@ function addAgentCommands(program: Command): void {
     .description('start a new agent')
     .option('--briefing <slug|auto>', "prepend an active-work initiative's orientation to the brief")
     .option('--brief-stdin', 'read the brief from stdin, keeping it out of world-readable argv')
+    .option('--config-dir <path>', 'the Claude config dir, and therefore the account, to run it on')
     .action(agents.agentSpawn)
   agent
     .command('retire <name>')
