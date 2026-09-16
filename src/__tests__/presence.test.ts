@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type net from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
-import { observedPresence, type GitRunner } from '../git.js'
+import { observedPresence, observedRegistration, type GitRunner } from '../git.js'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
@@ -95,6 +95,39 @@ describe('observedPresence — derived, never asked of the model', () => {
 
   it('reports nothing at all outside a repository, so `observed` stays absent', async () => {
     expect(await observedPresence('/tmp', fakeGit({}))).toBeUndefined()
+  })
+})
+
+/**
+ * CC-100. Which Claude ACCOUNT a session is on belongs on the observed side of the
+ * trust split for exactly the reason `claudeSessionId` does: the MCP subprocess
+ * reads it from its own environment, and the broker runs detached and cannot see
+ * it. Registration is the only moment it can travel.
+ */
+describe('observedRegistration also reports the account the session is on', () => {
+  const git = fakeGit({
+    [BRANCH]: 'main',
+    [TOPLEVEL]: '/repo',
+    [COMMON]: '/repo/.git',
+    [GITDIR]: '/repo/.git',
+  })
+
+  it('carries CLAUDE_CONFIG_DIR alongside the git facts', async () => {
+    const dir = '/Users/test/.claude-profiles/workout'
+    const { observed } = await observedRegistration('/repo', { CLAUDE_CONFIG_DIR: dir }, git)
+
+    expect(observed).toMatchObject({ gitBranch: 'main', configDir: dir })
+  })
+
+  it('reports the account even for a session that is not in a repository at all', async () => {
+    const dir = '/Users/test/.claude-profiles/workout'
+    const { observed } = await observedRegistration('/tmp', { CLAUDE_CONFIG_DIR: dir }, fakeGit({}))
+
+    expect(observed).toEqual({ configDir: dir })
+  })
+
+  it('stays absent on the default account, so "no dir" and "~/.claude" read the same', async () => {
+    expect(await observedRegistration('/tmp', {}, fakeGit({}))).toEqual({})
   })
 })
 
@@ -271,6 +304,21 @@ describe('chat_list rendering keeps a fact and a claim visually apart', () => {
     // The marker belongs to the claim only: a branch is not self-reported, and
     // labelling it so would teach a reader to discount the one line it can trust.
     expect(out.split('\n').find(line => line.includes('main checkout'))).not.toContain('self-reported')
+  })
+
+  /**
+   * CC-100: the roster is where a human notices that a peer is billing an account
+   * they did not expect. The short name is what they call it; `agent ls` carries
+   * the full path.
+   */
+  it('names the account a session is spending, and omits it on the default one', async () => {
+    const out = await render([
+      session({ observed: { gitBranch: 'main', configDir: '/Users/test/.claude-profiles/workout' } }),
+      session({ name: 'cc-plain', observed: { gitBranch: 'main' } }),
+    ])
+
+    expect(out).toContain('main  ·  account: workout')
+    expect(out.split('\n').filter(line => line.includes('account:'))).toHaveLength(1)
   })
 
   it('distinguishes two sessions on the same initiative by what can be observed', async () => {

@@ -19,6 +19,7 @@ import { hostIdentity } from './host.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
 import { cliEntry } from '../paths.js'
 import { transcriptLine } from '../agents/transcript.js'
+import { accountName } from '../agents/config-dir.js'
 import {
   accountUsageLine,
   budgetMiss,
@@ -647,6 +648,16 @@ export const TOOL_DEFINITIONS = [
             'carries — the agent inherits everything you have said, including anything its profile was ' +
             'never meant to see. A brief is the narrower and usually better tool.',
         },
+        config_dir: {
+          type: 'string',
+          description:
+            'Absolute path of the Claude config dir the agent should run under, and therefore WHICH ' +
+            'ACCOUNT it spends, e.g. "/Users/you/.claude-profiles/agents". Omit it in the ordinary ' +
+            "case: the agent inherits YOUR account automatically, then the briefing initiative's " +
+            "declared profile, then the broker's. Pass it only to bill an account deliberately. It " +
+            'must already exist and be under your home directory; anything else is refused rather than ' +
+            'quietly replaced, because running on the wrong account is the failure this prevents.',
+        },
         briefing: {
           type: 'string',
           description:
@@ -882,6 +893,10 @@ function observedLine(s: SessionInfo): string {
       : s.observed.isLinkedWorktree
         ? 'linked worktree'
         : 'main checkout',
+    // CC-100: which Claude ACCOUNT that session is spending. The last segment is
+    // what a human calls it (`agents`, `workout`); the full path is on `agent ls`,
+    // where there is room for it. Absent means the default `~/.claude`.
+    s.observed?.configDir === undefined ? undefined : `account: ${accountName(s.observed.configDir)}`,
   ].filter((part): part is string => part !== undefined && part !== '')
   return `\n    ${parts.join('  ·  ')}`
 }
@@ -1043,10 +1058,10 @@ const renderBudget = (who: string, read: BudgetRead): string =>
  * roster row for it has no session id to read a budget from at all — a MISSING
  * reading like any other, not a distinct case a caller has to branch on.
  */
-const readBudgetSafe = (sessionId: string | undefined): BudgetRead =>
+const readBudgetSafe = (sessionId: string | undefined, dir?: string): BudgetRead =>
   sessionId === undefined
     ? { found: false, path: '(no session id)', reason: 'no_file' }
-    : readBudget(sessionId)
+    : readBudget(sessionId, Date.now(), dir)
 
 /** Tracks the registered name purely so chat_list can mark which entry is us. */
 export class ToolHandler {
@@ -1238,7 +1253,10 @@ export class ToolHandler {
     >
     const budgets = res.sessions.map(s => ({
       name: s.name,
-      read: readBudgetSafe(s.observed?.claudeSessionId),
+      // The status line writes into the cache of the account its own session runs
+      // on, so a peer on a different one publishes where this process would never
+      // look (CC-100).
+      read: readBudgetSafe(s.observed?.claudeSessionId, s.observed?.configDir),
     }))
     return text(formatSessions(res.sessions, this.registeredName, res.claims ?? [], budgets))
   }
@@ -1469,12 +1487,20 @@ export class ToolHandler {
     // No companion field for WHOSE context: the broker reads that off this
     // connection, so "fork that agent" has nowhere to be expressed.
     const inherit = optionalEnum(args, 'inherit', ['context'] as const)
+    const configDir = optionalString(args, 'config_dir')
+    // CC-100: read from THIS process's environment, never from the model. The
+    // broker is a detached daemon whose own `CLAUDE_CONFIG_DIR` is an accident of
+    // which session autostarted it, so this is the only place the spawning
+    // session's account can be observed.
+    const spawnerConfigDir = process.env.CLAUDE_CONFIG_DIR
     const res = (await this.call(
       {
         t: 'spawn',
         name: requireString(args, 'name'),
         profile: requireString(args, 'profile'),
         brief: requireString(args, 'brief'),
+        ...(configDir === undefined ? {} : { configDir }),
+        ...(spawnerConfigDir === undefined ? {} : { spawnerConfigDir }),
         ...(surface === undefined ? {} : { surface }),
         ...(isolation === undefined ? {} : { isolation }),
         ...(cwd === undefined ? {} : { cwd }),
@@ -1609,7 +1635,9 @@ export class ToolHandler {
     // of times over, which is worse than the thing CC-94 set out to fix.
     const budgets = res.agents
       .filter(a => a.state === 'live')
-      .map(a => ({ name: a.name, read: readBudget(a.sessionId) }))
+      // Under the agent's OWN recorded config dir (CC-100): an agent spawned from
+      // a session on a dedicated account publishes its status there, not here.
+      .map(a => ({ name: a.name, read: readBudget(a.sessionId, Date.now(), a.configDir) }))
     const budgetByName = new Map(budgets.map(b => [b.name, b.read]))
     const rows = res.agents.map(a => {
       // One extra segment, CC-94: budget rides in the same bracket as state
@@ -1626,7 +1654,7 @@ export class ToolHandler {
         ` spawned by ${a.spawnedBy}\n    ${a.cwd}` +
         // A headless agent's output is discarded, so this is the only way to read
         // what it actually did without interrupting it for a report.
-        `\n    ${transcriptLine(a.cwd, a.sessionId)}`
+        `\n    ${transcriptLine(a.cwd, a.sessionId, a.configDir)}`
       )
     })
     return text(`Durable agents:\n${accountUsageLine(budgets)}\n${rows.join('\n')}`)
@@ -1640,7 +1668,7 @@ export class ToolHandler {
     const agent = res.agents.find(a => a.name === name)
     if (agent === undefined) return text(`No agent named "${name}".`)
 
-    const denials = findDenials(agent.cwd, agent.sessionId, limit)
+    const denials = findDenials(agent.cwd, agent.sessionId, limit, agent.configDir)
     if (denials.length === 0)
       return text(
         `No settings-level denials found in "${name}"'s transcript. This does not rule out a ` +
@@ -1683,7 +1711,7 @@ export class ToolHandler {
         `No session or agent named "${name}" has a durable identity, so there is no transcript to ` +
           'read. chat_list shows who is registered; agent_list shows who has an identity.',
       )
-    return text(formatTurns(name, readTurns(agent.cwd, agent.sessionId, limit)))
+    return text(formatTurns(name, readTurns(agent.cwd, agent.sessionId, limit, agent.configDir)))
   }
 
   /**
@@ -1713,6 +1741,6 @@ export class ToolHandler {
         `No session or agent named "${name}" has a durable identity, so there is no session id to ` +
           'look a budget up for. chat_list shows who is registered; agent_list shows who has an identity.',
       )
-    return text(renderBudget(name, readBudget(agent.sessionId)))
+    return text(renderBudget(name, readBudget(agent.sessionId, Date.now(), agent.configDir)))
   }
 }

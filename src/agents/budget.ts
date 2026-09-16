@@ -74,8 +74,15 @@ export type BudgetRead =
   | { found: true; path: string; budget: SessionBudget; age_seconds: number; stale: boolean }
   | { found: false; path: string; reason: BudgetMiss }
 
-export const budgetDir = (): string =>
-  process.env.AGENT_CHAT_STATUS_CACHE ?? path.join(configDir(), 'status-cache', 'sessions')
+/**
+ * `dir` is the Claude config dir to read under, for the same reason
+ * `transcript.ts` takes one: the status line writes into the cache of the account
+ * its own session runs on, so an agent on a different account publishes somewhere
+ * this process's environment does not point (CC-100). Omitted means this process's
+ * own, which is right for the broker's session and for the human at the CLI.
+ */
+export const budgetDir = (dir?: string): string =>
+  process.env.AGENT_CHAT_STATUS_CACHE ?? path.join(dir ?? configDir(), 'status-cache', 'sessions')
 
 /**
  * A session id reaches us from the registry, which got it from a peer's
@@ -83,8 +90,8 @@ export const budgetDir = (): string =>
  * is still a string arriving from another process and it is about to become a
  * path segment, so it is constrained here rather than trusted.
  */
-export const budgetPath = (sessionId: string): string =>
-  path.join(budgetDir(), `${safeSessionId(sessionId)}.json`)
+export const budgetPath = (sessionId: string, dir?: string): string =>
+  path.join(budgetDir(dir), `${safeSessionId(sessionId)}.json`)
 
 const SESSION_ID_SHAPE = /^[A-Za-z0-9_-]{1,128}$/
 
@@ -93,12 +100,12 @@ function safeSessionId(sessionId: string): string {
   return sessionId
 }
 
-export function readBudget(sessionId: string, now = Date.now()): BudgetRead {
+export function readBudget(sessionId: string, now = Date.now(), dir?: string): BudgetRead {
   let file: string
   try {
-    file = budgetPath(sessionId)
+    file = budgetPath(sessionId, dir)
   } catch {
-    return { found: false, path: budgetDir(), reason: 'malformed' }
+    return { found: false, path: budgetDir(dir), reason: 'malformed' }
   }
 
   let raw: string

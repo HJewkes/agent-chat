@@ -108,6 +108,12 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   // Without this a spawned agent under a relocated home would join the default
   // bus instead of its parent's, and be invisible to everyone that spawned it.
   ...(input.agentChatHome === undefined ? {} : { AGENT_CHAT_HOME: input.agentChatHome }),
+  // WHICH CLAUDE ACCOUNT the agent spends (CC-100). It has to travel in
+  // `plan.env` rather than through `agentEnv()`: that function copies the
+  // BROKER's environment, and the broker is a detached daemon carrying whatever
+  // config dir the session that happened to autostart it had. `plan.env` is the
+  // channel for what the SPAWNER chose, which is exactly what this is.
+  ...(input.configDir === undefined ? {} : { CLAUDE_CONFIG_DIR: input.configDir }),
   // `run-agent` writes the agent's name as the terminal title, and Claude Code
   // then overwrites it with a description of whatever it is currently doing —
   // so a wall of panes ends up labelled by activity rather than by WHO, which

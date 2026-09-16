@@ -16,10 +16,18 @@ import path from 'node:path'
  * reaped (`cleanupPeriodDays`, 30 by default). Treat a miss as normal.
  */
 
-/** `CLAUDE_CONFIG_DIR` is Claude Code's own override; honouring it keeps us in step. */
+/**
+ * Whose dir to look in.
+ *
+ * The env-based default answers for THIS process — the broker's own session, and
+ * the human at the CLI. It is the wrong answer for an agent, which may have been
+ * launched on a different account entirely (CC-100): every function below takes
+ * the dir as an optional argument so an agent lookup can pass the one recorded on
+ * the agent's own spawn row. Passing nothing keeps the previous behaviour.
+ */
 export const configDir = (): string => process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude')
 
-const projectsDir = (): string => path.join(configDir(), 'projects')
+const projectsDir = (dir: string = configDir()): string => path.join(dir, 'projects')
 
 /**
  * Derived from 27 real project directories on this machine: every non-alphanumeric
@@ -28,8 +36,8 @@ const projectsDir = (): string => path.join(configDir(), 'projects')
  */
 export const projectSlug = (cwd: string): string => cwd.replace(/[^A-Za-z0-9]/g, '-')
 
-export const transcriptPath = (cwd: string, sessionId: string): string =>
-  path.join(projectsDir(), projectSlug(cwd), `${sessionId}.jsonl`)
+export const transcriptPath = (cwd: string, sessionId: string, dir?: string): string =>
+  path.join(projectsDir(dir), projectSlug(cwd), `${sessionId}.jsonl`)
 
 export interface Transcript {
   path: string
@@ -46,22 +54,22 @@ export interface Transcript {
  * guarantee. The session id is a uuid and therefore unique across every project,
  * which makes scanning for it an exact answer rather than a heuristic one.
  */
-export function findTranscript(cwd: string, sessionId: string): Transcript {
-  const derived = transcriptPath(cwd, sessionId)
+export function findTranscript(cwd: string, sessionId: string, dir?: string): Transcript {
+  const derived = transcriptPath(cwd, sessionId, dir)
   if (sessionId === '') return { path: derived, exists: false }
   if (fs.existsSync(derived)) return { path: derived, exists: true }
 
-  for (const dir of readProjects()) {
-    const candidate = path.join(projectsDir(), dir, `${sessionId}.jsonl`)
+  for (const project of readProjects(dir)) {
+    const candidate = path.join(projectsDir(dir), project, `${sessionId}.jsonl`)
     if (fs.existsSync(candidate)) return { path: candidate, exists: true }
   }
   return { path: derived, exists: false }
 }
 
-function readProjects(): string[] {
+function readProjects(dir?: string): string[] {
   try {
     return fs
-      .readdirSync(projectsDir(), { withFileTypes: true })
+      .readdirSync(projectsDir(dir), { withFileTypes: true })
       .flatMap(e => (e.isDirectory() ? [e.name] : []))
   } catch {
     // No Claude Code config at all is a legitimate state for a broker running
@@ -112,8 +120,8 @@ export function readTail(file: string, bytes = TAIL_BYTES): string | undefined {
  * throw — undefined means "could not tell", and the caller inherits the
  * harness default instead of guessing a model on the human's behalf.
  */
-export function observedModel(cwd: string, sessionId: string): string | undefined {
-  const found = findTranscript(cwd, sessionId)
+export function observedModel(cwd: string, sessionId: string, dir?: string): string | undefined {
+  const found = findTranscript(cwd, sessionId, dir)
   if (!found.exists) return undefined
   const tail = readTail(found.path)
   return tail === undefined ? undefined : newestModel(tail)
@@ -135,8 +143,8 @@ function newestModel(tail: string): string | undefined {
 }
 
 /** One line for a roster: the path, or why there is not one. */
-export const transcriptLine = (cwd: string, sessionId: string): string => {
+export const transcriptLine = (cwd: string, sessionId: string, dir?: string): string => {
   if (sessionId === '') return 'transcript: none recorded for this agent'
-  const found = findTranscript(cwd, sessionId)
+  const found = findTranscript(cwd, sessionId, dir)
   return found.exists ? `transcript: ${found.path}` : `transcript: ${found.path} (not written yet)`
 }

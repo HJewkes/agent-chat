@@ -43,7 +43,11 @@ export async function agentLs(): Promise<void> {
       `${agent.name.padEnd(16)} ${status.padEnd(13)} ${agent.profile.padEnd(12)} ${agent.agentId}${lineage}`,
     )
     console.log(`${' '.repeat(16)} ${agent.cwd}`)
-    console.log(`${' '.repeat(16)} ${transcriptLine(agent.cwd, agent.sessionId)}`)
+    // CC-100: the full dir, not just the account's short name — this is the
+    // operator's view, and "which account, exactly" is the question a spend limit
+    // makes urgent. Omitted when the row predates the field.
+    if (agent.configDir) console.log(`${' '.repeat(16)} account: ${agent.configDir}`)
+    console.log(`${' '.repeat(16)} ${transcriptLine(agent.cwd, agent.sessionId, agent.configDir)}`)
   }
 }
 
@@ -147,7 +151,11 @@ export async function agentSpawn(
   words: string[],
   // CC-63: an active-work initiative slug (or "auto"), prepended to the brief
   // as orientation. Optional, so every call site that predates it still works.
-  options: { briefing?: string; briefStdin?: boolean } = {},
+  // CC-100: `--config-dir` names the Claude account the agent runs on. Absent, the
+  // shell's own `CLAUDE_CONFIG_DIR` is forwarded instead — there is no registry
+  // entry for the human to read one from, and their shell is where the account
+  // they think they are on actually lives.
+  options: { briefing?: string; briefStdin?: boolean; configDir?: string } = {},
 ): Promise<void> {
   let brief: string
   try {
@@ -166,6 +174,10 @@ export async function agentSpawn(
         brief,
         cwd: process.cwd(),
         ...(options.briefing === undefined ? {} : { briefing: options.briefing }),
+        ...(options.configDir === undefined ? {} : { configDir: options.configDir }),
+        ...(process.env.CLAUDE_CONFIG_DIR === undefined
+          ? {}
+          : { spawnerConfigDir: process.env.CLAUDE_CONFIG_DIR }),
       },
       'spawn_result',
     ),
@@ -255,7 +267,7 @@ export async function agentBudget(name?: string): Promise<void> {
     fail(name === undefined ? 'No agents have a durable identity.' : `No agent "${name}".`)
 
   for (const agent of wanted) {
-    const read = readBudget(agent.sessionId)
+    const read = readBudget(agent.sessionId, Date.now(), agent.configDir)
     console.log(read.found ? formatBudget(agent.name, read) : budgetMiss(agent.name, read))
   }
 }

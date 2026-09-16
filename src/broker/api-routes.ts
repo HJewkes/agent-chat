@@ -86,7 +86,14 @@ export function apiRoutes(core: BrokerCore): Hono {
       return c.json(error, 400)
     }
 
-    const found = findTranscript(cwd, sessionId)
+    // CC-100: under the agent's OWN config dir when the log knows one. The route
+    // runs inside the broker, whose `CLAUDE_CONFIG_DIR` is an accident of which
+    // session autostarted it — so for an agent spawned on a dedicated account the
+    // scan below has nothing to find and every transcript reads as absent.
+    const configDir = core.agents
+      .roster({ includeRetired: true })
+      .find(agent => agent.sessionId === sessionId)?.configDir
+    const found = findTranscript(cwd, sessionId, configDir)
     if (!found.exists) {
       // 404 with the full shape, not a bare error: "no transcript yet" is a
       // normal state for an agent that has not written its first turn, and the

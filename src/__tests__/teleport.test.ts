@@ -357,6 +357,34 @@ describe('the descendant', () => {
     expect(semaphore.has(result.agentId as string)).toBe(true)
   })
 
+  /**
+   * CC-100. A successor continues its predecessor's work, so it keeps spending the
+   * same account. Before this, a rebuilt plan dropped the config dir and a teleport
+   * quietly moved a session onto whatever account the broker daemon was on — and
+   * for an adopted session the observed value is the only record there is.
+   */
+  it('keeps the account the predecessor was spending', async () => {
+    const dir = '/Users/test/.claude-profiles/workout'
+    const agentId = await spawnAgent({ spawnerConfigDir: dir })
+
+    const result = await supervisor.teleport({ subject: subject(agentId, { configDir: dir }), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(planFor(result.agentId as string).env.CLAUDE_CONFIG_DIR).toBe(dir)
+    expect(spawnRowFor(result.agentId as string)?.meta.config_dir).toBe(dir)
+  })
+
+  /** The predecessor's own row answers when its connection is gone. */
+  it('falls back to the account recorded on the predecessor’s spawn row', async () => {
+    const dir = '/Users/test/.claude-profiles/workout'
+    const agentId = await spawnAgent({ spawnerConfigDir: dir })
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(planFor(result.agentId as string).env.CLAUDE_CONFIG_DIR).toBe(dir)
+  })
+
   it('carries the predecessor’s tags and subscriptions into its own registration', async () => {
     const agentId = await spawnAgent()
     const subscriptions = [{ selector: { all: true as const }, kinds: ['registered' as const] }]

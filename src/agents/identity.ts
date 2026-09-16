@@ -64,6 +64,10 @@ const spawnedFrom = (row: AgentEventRow, id: string): AgentIdentity => ({
   isolation: row.meta.isolation ?? '',
   surface: row.meta.surface ?? '',
   sessionId: row.meta.session_id ?? '',
+  // CC-100: which account this agent runs on, and therefore where its transcript
+  // and status-cache are. Absent on rows written before the field existed, which
+  // reads as "the broker's own dir" — exactly what those agents actually used.
+  ...(row.meta.config_dir ? { configDir: row.meta.config_dir } : {}),
   lastEventAt: row.ts,
   generation: generationOf(row),
   ...(row.meta.teleport_from ? { teleportFrom: row.meta.teleport_from } : {}),

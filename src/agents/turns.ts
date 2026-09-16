@@ -124,8 +124,8 @@ function toTurn(row: Row): Turn | undefined {
  * another program and may be absent (`--no-session-persistence`), reaped
  * (`cleanupPeriodDays`) or simply not written yet.
  */
-export function readTurns(cwd: string, sessionId: string, limit: number): TranscriptRead {
-  const transcript = findTranscript(cwd, sessionId)
+export function readTurns(cwd: string, sessionId: string, limit: number, dir?: string): TranscriptRead {
+  const transcript = findTranscript(cwd, sessionId, dir)
   if (!transcript.exists) return { transcript, turns: [] }
 
   const tail = readTail(transcript.path, TURN_TAIL_BYTES)
