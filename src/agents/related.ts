@@ -19,7 +19,12 @@ import { activeWorkPort } from '../paths.js'
  * that measured at 0.6% is not a degraded mode worth keeping.
  */
 
-export const RELATED_TIMEOUT_MS = 300
+/**
+ * Set from the live daemon, not guessed: a query it has not seen took 72-512 ms
+ * from a warm Node process, and 5 of 23 sampled briefs exceeded the first 300 ms
+ * budget. Every real brief is new, so the timeout has to cover the cold path.
+ */
+export const RELATED_TIMEOUT_MS = 1_000
 const RELATED_LIMIT = 6
 const RELATED_BUDGET = 1_500
 const RELATED_CLASSES = ['notes', 'sources', 'tasks', 'sessions']

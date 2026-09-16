@@ -778,9 +778,11 @@ matters:
   to read (TP-84, 608 spawns). It is now up to six hits and 1,500 characters from
   the active-work daemon's `POST /rpc/context.related` (`agents/related.ts`),
   queried with the brief text and the resolved slug, rendered with absolute paths
-  and a `[from \`<slug>\`]`label on other initiatives' hits. The one network
-call a spawn makes for its briefing: loopback only, port 7400 (overridable with`AGENT_CHAT_ACTIVE_WORK_PORT`), 300 ms, fail-open. Any failure omits the section
-  and adds one warning; there is deliberately no fallback to the date-ordered list.
+  and a ``[from `<slug>`]`` label on other initiatives' hits. The one network
+  call a spawn makes for its briefing: loopback only, port 7400 (overridable
+  with `AGENT_CHAT_ACTIVE_WORK_PORT`), 1,000 ms, fail-open. Any failure omits the
+  section and adds one warning; there is deliberately no fallback to the
+  date-ordered list.
 
 #### 5.7 `inherit: "context"`: a spawn that starts from a conversation (CC-44)
 

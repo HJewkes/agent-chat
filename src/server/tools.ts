@@ -666,7 +666,7 @@ export const TOOL_DEFINITIONS = [
             'brief, so you do not have to re-describe the project — write the ASSIGNMENT in brief and ' +
             'let this carry the orientation. It also asks the active-work daemon for up to six notes, ' +
             'sources, tasks or sessions ranked against your brief text (any initiative, foreign ones ' +
-            'labelled) and lists them with absolute paths; if the daemon does not answer within 300 ms ' +
+            'labelled) and lists them with absolute paths; if the daemon does not answer within 1 second ' +
             'that list is left out and the spawn carries a warning. So the brief itself is the query: ' +
             'name the specifics. "auto" resolves from your own directory first, then from ' +
             'cwd; if neither is inside an initiative the spawn still succeeds, with a warning and no ' +

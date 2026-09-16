@@ -113,11 +113,11 @@ describe('the related section when the daemon cannot help', () => {
     const result = await resolveSpawnBriefing({ briefing: 'widgets', brief: 'fix it', root, fetch: hang })
 
     const elapsed = Date.now() - started
-    expect(elapsed).toBeGreaterThanOrEqual(250)
-    expect(elapsed).toBeLessThan(700)
+    expect(elapsed).toBeGreaterThanOrEqual(950)
+    expect(elapsed).toBeLessThan(1_400)
     expect(result).toMatchObject({
       text: expectedBlock(root),
-      warning: expect.stringContaining('within 300 ms'),
+      warning: expect.stringContaining('no answer within 1000 ms'),
     })
   })
 
@@ -199,6 +199,19 @@ describe('the related section when the daemon answers', () => {
     expect(text).toContain('## Related to this assignment (6, ranked; open with Read)')
     expect(text).toContain('n5.md')
     expect(text).not.toContain('n6.md')
+  })
+
+  it('does not ask the daemon when the brief is only whitespace', async () => {
+    let asked = false
+    const spy = async () => {
+      asked = true
+      return json(200, hits({ initiative: 'widgets', name: 'a.md' }))
+    }
+
+    const result = await resolveSpawnBriefing({ briefing: 'widgets', brief: ' \n\t ', root, fetch: spy })
+
+    expect(result).toEqual({ text: expectedBlock(root), slug: 'widgets' })
+    expect(asked).toBe(false)
   })
 
   it('does not ask the daemon when the initiative does not exist', async () => {
