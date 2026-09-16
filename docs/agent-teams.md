@@ -741,7 +741,8 @@ brief written by hand has re-described the same orientation context: what the
 initiative is, what is already decided, which files to read first. That context
 already exists on disk, written by `active-work`. `agent_spawn` takes an optional
 `briefing` — an initiative slug, or `auto` — and the broker prepends that
-initiative's `brief.md`, open task list and newest session note to the brief.
+initiative's `brief.md`, open task list and newest session note to the brief,
+followed by a "Related to this assignment" list (CC-101).
 
 Implemented in `agents/active-work.ts` (`resolveBriefing`, `briefingFor`), called
 from `Supervisor.briefingFor`. Shape of the decision, in order of how much it
@@ -772,6 +773,16 @@ matters:
   shallow dependency taken on purpose. Nothing shells out to the `active-work`
   CLI — the broker must not need another program installed to spawn an agent —
   and nothing writes. If the layout moves, this degrades to "no briefing found".
+- **Related, ranked against the brief (CC-101).** The last section used to be the
+  five newest notes by date, which recalled 0.6% of what spawned agents went on
+  to read (TP-84, 608 spawns). It is now up to six hits and 1,500 characters from
+  the active-work daemon's `POST /rpc/context.related` (`agents/related.ts`),
+  queried with the brief text and the resolved slug, rendered with absolute paths
+  and a ``[from `<slug>`]`` label on other initiatives' hits. The one network
+  call a spawn makes for its briefing: loopback only, port 7400 (overridable
+  with `AGENT_CHAT_ACTIVE_WORK_PORT`), 1,000 ms, fail-open. Any failure omits the
+  section and adds one warning; there is deliberately no fallback to the
+  date-ordered list.
 
 #### 5.7 `inherit: "context"`: a spawn that starts from a conversation (CC-44)
 

@@ -34,7 +34,7 @@ import { surfaceFor } from './surfaces/index.js'
 import { SurfaceRefused, type SurfaceOptions } from './surfaces/options.js'
 import { Semaphore } from './semaphore.js'
 import { checkSpawnCwd } from './spawn-cwd.js'
-import { resolveBriefing, type BriefingResult } from './active-work.js'
+import { resolveSpawnBriefing, type BriefingResult } from './active-work.js'
 import { resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
 import { findTranscript } from './transcript.js'
 import { SpawnRateBudget } from './spawn-rate.js'
@@ -610,11 +610,12 @@ export class Supervisor implements TeleportHost {
    * directory that gets read and handed to a new process, so letting the caller
    * assert where it is standing would turn `auto` into "read me any initiative".
    */
-  private briefingFor(req: SpawnRequest, targetCwd: string): BriefingResult | undefined {
+  private async briefingFor(req: SpawnRequest, targetCwd: string): Promise<BriefingResult | undefined> {
     if (req.briefing === undefined) return undefined
     const requester = this.core.registry.list().find(session => session.name === req.requestedBy)
-    return resolveBriefing({
+    return resolveSpawnBriefing({
       briefing: req.briefing,
+      brief: req.brief,
       ...(requester ? { requesterCwd: requester.cwd } : {}),
       targetCwd,
     })
@@ -721,8 +722,8 @@ export class Supervisor implements TeleportHost {
     // A briefing is an improvement to the brief, never a precondition for one:
     // an unresolvable initiative warns and spawns anyway. The alternative is a
     // spawn that fails for a reason unrelated to the work.
-    const briefing = this.briefingFor(req, cwd)
-    if (briefing !== undefined && 'warning' in briefing) warnings.push(briefing.warning)
+    const briefing = await this.briefingFor(req, cwd)
+    if (briefing?.warning !== undefined) warnings.push(briefing.warning)
     const injected = briefing !== undefined && 'text' in briefing ? briefing : undefined
 
     // CC-100. Resolved here rather than at launch time so a bad `config_dir`

@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fetchRelated, relatedSection } from './related.js'
 
 /**
  * CC-63: the onboarding doc a fresh agent never got.
@@ -46,6 +47,12 @@ import path from 'node:path'
  * considered and rejected — it records a repo per tracked branch, several
  * initiatives legitimately name the same repo, and the resolution it produces is
  * therefore ambiguous exactly when it would be relied on.
+ *
+ * ## What to read next (CC-101)
+ *
+ * The last section is ranked against the assignment by the active-work daemon
+ * (`related.ts`). It is the one part fetched over the network, so it is the one
+ * part `resolveSpawnBriefing` awaits; `resolveBriefing` stays file-only.
  */
 
 /** Total budget for an injected briefing. Beyond this it stops being orientation. */
@@ -53,7 +60,6 @@ const BRIEFING_MAX = 9_000
 const BRIEF_MAX = 4_000
 const SESSION_MAX = 1_500
 const MAX_TASKS = 25
-const MAX_NOTES = 5
 
 /** `auto` means "work it out from who asked and where they pointed". */
 export const AUTO_BRIEFING = 'auto'
@@ -72,6 +78,8 @@ export type BriefingResult =
   | {
       text: string
       slug: string
+      /** Set when the block was built but part of it could not be (CC-101). */
+      warning?: string
       /**
        * The initiative's `profile:` frontmatter field — the Claude account its
        * work is meant to be billed to (CC-100). Read here because this module
@@ -235,21 +243,17 @@ const sessionSection = (dir: string): string => {
   return `## Most recent session (${newest})\n\n${body}${earlier}`
 }
 
-const notesSection = (initiativeDir: string): string => {
-  const dirs = [path.join(initiativeDir, 'notes'), path.join(initiativeDir, 'sources', 'notes')]
-  const notes = dirs.flatMap(dir => newestFiles(dir, MAX_NOTES).map(name => path.join(dir, name)))
-  if (notes.length === 0) return ''
-  return `## Notes on disk (read the ones that touch your task)\n\n${notes
-    .slice(0, MAX_NOTES)
-    .map(file => `- ${file}`)
-    .join('\n')}`
-}
+const missingInitiative = (slug: string, root: string): { warning: string } => ({
+  warning: `no active-work initiative "${slug}" under ${root}; spawned without a briefing`,
+})
 
-/** The whole orientation block for one initiative, or a reason there is none. */
-export function briefingFor(slug: string, root = activeWorkRoot()): BriefingResult {
+/**
+ * The whole orientation block for one initiative, or a reason there is none.
+ * `related` is the already-rendered ranked section; it goes last so truncation cuts it first.
+ */
+export function briefingFor(slug: string, root = activeWorkRoot(), related = ''): BriefingResult {
   const dir = path.join(root, slug)
-  if (!isInitiative(root, slug))
-    return { warning: `no active-work initiative "${slug}" under ${root}; spawned without a briefing` }
+  if (!isInitiative(root, slug)) return missingInitiative(slug, root)
 
   const header =
     `# Orientation: active-work initiative "${slug}"\n\n` +
@@ -265,7 +269,7 @@ export function briefingFor(slug: string, root = activeWorkRoot()): BriefingResu
     brief === '' ? '' : `## Brief (brief.md)\n\n${brief}`,
     taskSection(openTasks(path.join(dir, 'tasks'))),
     sessionSection(path.join(dir, 'sessions')),
-    notesSection(dir),
+    related,
   ].filter(section => section !== '')
 
   return {
@@ -275,10 +279,10 @@ export function briefingFor(slug: string, root = activeWorkRoot()): BriefingResu
   }
 }
 
-/** Resolve the requested briefing to a block of text, or to a reason there is none. */
-export function resolveBriefing(req: BriefingRequest): BriefingResult {
-  const root = req.root ?? activeWorkRoot()
-  if (req.briefing !== AUTO_BRIEFING) return briefingFor(req.briefing, root)
+/** Which initiative the request names, or why none can be read. */
+const resolveSlug = (req: BriefingRequest, root: string): { slug: string } | { warning: string } => {
+  if (req.briefing !== AUTO_BRIEFING)
+    return isInitiative(root, req.briefing) ? { slug: req.briefing } : missingInitiative(req.briefing, root)
 
   const slug = slugForPath(req.requesterCwd, root) ?? slugForPath(req.targetCwd, root)
   if (slug === undefined) {
@@ -289,5 +293,37 @@ export function resolveBriefing(req: BriefingRequest): BriefingResult {
         '(briefing: "<slug>") to inject one.',
     }
   }
-  return briefingFor(slug, root)
+  return { slug }
+}
+
+/** Resolve the requested briefing from files alone: no related section, no network. */
+export function resolveBriefing(req: BriefingRequest): BriefingResult {
+  const root = req.root ?? activeWorkRoot()
+  const resolved = resolveSlug(req, root)
+  return 'warning' in resolved ? resolved : briefingFor(resolved.slug, root)
+}
+
+export interface SpawnBriefingRequest extends BriefingRequest {
+  /** The assignment brief, which is the query for the related section. */
+  brief: string
+  /** Injected in tests so no spec reaches the real daemon. */
+  fetch?: typeof fetch
+  timeoutMs?: number
+}
+
+/** The briefing a spawn injects, with the related section fetched from the daemon when it answers. */
+export async function resolveSpawnBriefing(req: SpawnBriefingRequest): Promise<BriefingResult> {
+  const root = req.root ?? activeWorkRoot()
+  const resolved = resolveSlug(req, root)
+  if ('warning' in resolved) return resolved
+
+  const related = await fetchRelated({
+    query: req.brief,
+    initiative: resolved.slug,
+    ...(req.fetch === undefined ? {} : { fetch: req.fetch }),
+    ...(req.timeoutMs === undefined ? {} : { timeoutMs: req.timeoutMs }),
+  })
+  const section = 'hits' in related ? relatedSection(related.hits, resolved.slug, root) : ''
+  const result = briefingFor(resolved.slug, root, section)
+  return 'warning' in related && 'text' in result ? { ...result, warning: related.warning } : result
 }
