@@ -1,3 +1,5 @@
+import net from 'node:net'
+
 /**
  * Strip the ambient session's identity out of the test environment (CC-55, CC-90).
  *
@@ -36,3 +38,13 @@ delete process.env.CLAUDE_CODE_SESSION_ID
 for (const key of Object.keys(process.env)) {
   if (key.startsWith('AGENT_CHAT_') && key !== 'AGENT_CHAT_LIVE') delete process.env[key]
 }
+
+/**
+ * A just-closed loopback port, so a spawn with a briefing fails open fast instead of
+ * asking the developer's real active-work daemon for related context (CC-101).
+ * Not port 1: fetch refuses the spec's "bad ports" before connecting.
+ */
+const closed = net.createServer()
+await new Promise<void>(resolve => closed.listen(0, '127.0.0.1', resolve))
+process.env.AGENT_CHAT_ACTIVE_WORK_PORT = String((closed.address() as net.AddressInfo).port)
+await new Promise(resolve => closed.close(resolve))

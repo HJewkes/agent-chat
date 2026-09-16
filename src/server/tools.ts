@@ -664,7 +664,11 @@ export const TOOL_DEFINITIONS = [
             'Optional active-work initiative slug (e.g. "claude-channels"), or "auto". The broker reads ' +
             "that initiative's brief.md, open tasks and latest session note and prepends them to your " +
             'brief, so you do not have to re-describe the project — write the ASSIGNMENT in brief and ' +
-            'let this carry the orientation. "auto" resolves from your own directory first, then from ' +
+            'let this carry the orientation. It also asks the active-work daemon for up to six notes, ' +
+            'sources, tasks or sessions ranked against your brief text (any initiative, foreign ones ' +
+            'labelled) and lists them with absolute paths; if the daemon does not answer within 300 ms ' +
+            'that list is left out and the spawn carries a warning. So the brief itself is the query: ' +
+            'name the specifics. "auto" resolves from your own directory first, then from ' +
             'cwd; if neither is inside an initiative the spawn still succeeds, with a warning and no ' +
             'briefing. Omit it when the work has no active-work initiative behind it.',
         },

@@ -690,7 +690,8 @@ export type ClientMessage =
       surface?: SurfaceName
       /**
        * An active-work initiative slug, or `auto`, whose brief, open tasks and
-       * latest session are prepended to `brief` by the broker (CC-63). Sent as a
+       * latest session are prepended to `brief` by the broker (CC-63), followed by
+       * what the active-work daemon ranks as related to `brief` (CC-101). Sent as a
        * pointer rather than as text so the requester cannot use it to have
        * arbitrary files read back to it — the broker resolves what it will read.
        */

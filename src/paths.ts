@@ -91,10 +91,17 @@ export const distDir = (): string => path.join(packageRoot(), 'dist')
  */
 export const DEFAULT_PORT = 7600
 
-export const defaultPort = (): number => {
-  const raw = process.env.AGENT_CHAT_PORT
-  if (!raw) return DEFAULT_PORT
+const portFrom = (raw: string | undefined, fallback: number): number => {
+  if (!raw) return fallback
   const parsed = Number.parseInt(raw, 10)
   // A typo'd override silently binding a random port is worse than ignoring it.
-  return Number.isInteger(parsed) && parsed > 0 && parsed < 65536 ? parsed : DEFAULT_PORT
+  return Number.isInteger(parsed) && parsed > 0 && parsed < 65536 ? parsed : fallback
 }
+
+export const defaultPort = (): number => portFrom(process.env.AGENT_CHAT_PORT, DEFAULT_PORT)
+
+/** The active-work daemon the spawn briefing asks for related context (CC-101). */
+export const ACTIVE_WORK_PORT = 7400
+
+export const activeWorkPort = (): number =>
+  portFrom(process.env.AGENT_CHAT_ACTIVE_WORK_PORT, ACTIVE_WORK_PORT)
