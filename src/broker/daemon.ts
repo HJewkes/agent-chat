@@ -3,6 +3,8 @@ import net from 'node:net'
 import { serve, type ServerType } from '@hono/node-server'
 import type { Hono } from 'hono'
 import { defaultPort, home, socketPath } from '../paths.js'
+import { resolveAgentSlots } from '../config.js'
+import { Semaphore } from '../agents/semaphore.js'
 import { BrokerCore } from './core.js'
 import { buildHttpApp } from './http.js'
 import { isEphemeralHome, watchIdle } from './ephemeral.js'
@@ -55,7 +57,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   if (!(await claimSocketPath(sock))) return null
 
   const core = new BrokerCore(deliver)
-  const socketServer = new SocketServer(core)
+  const socketServer = new SocketServer(core, { semaphore: new Semaphore(resolveAgentSlots()) })
   const { server, openConnections } = await listenOn(sock, socketServer)
 
   // Only after the socket is serving, and only ever best-effort.

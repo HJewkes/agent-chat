@@ -13,7 +13,7 @@ import { logEvent } from './log.js'
 import { newMsgId } from './event-log.js'
 import { type Escalation, type RouteResult } from './registry.js'
 import { BrokerCore, type Conn } from './core.js'
-import { Supervisor } from '../agents/supervisor.js'
+import { Supervisor, type SupervisorOptions } from '../agents/supervisor.js'
 import type { SwitchOutcome } from '../agents/mode-switch.js'
 import { SystemEventFeed } from './subscriptions.js'
 import { nextWatchCursor } from './watch-cursor.js'
@@ -107,7 +107,10 @@ export class SocketServer {
   private readonly feed: SystemEventFeed<Conn>
   private readonly unwatch: () => void
 
-  constructor(private readonly core: BrokerCore) {
+  constructor(
+    private readonly core: BrokerCore,
+    supervisorOptions: SupervisorOptions = {},
+  ) {
     this.feed = new SystemEventFeed<Conn>(core.registry, (conn, events) => {
       reply(conn, { t: 'system_events', events })
     })
@@ -118,7 +121,7 @@ export class SocketServer {
     // outlive whoever asked for it, and the semaphore and depth cap need exactly
     // one enforcement point. The anchor comes from the requester's OWN registry
     // entry, so nobody can spawn into a pane they do not hold.
-    this.supervisor = new Supervisor(core)
+    this.supervisor = new Supervisor(core, supervisorOptions)
   }
 
   close(): void {

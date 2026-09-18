@@ -58,6 +58,9 @@ export const profilesDir = (): string => path.join(home(), 'profiles')
  */
 export const hooksPath = (): string => path.join(home(), 'hooks.json')
 
+/** User-editable settings, currently just the standing agent-slot cap (`agentSlots`). */
+export const configPath = (): string => path.join(home(), 'config.json')
+
 /** The package root, reached identically from `dist/paths.js` and `src/paths.ts`. */
 const packageRoot = (): string => path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 
