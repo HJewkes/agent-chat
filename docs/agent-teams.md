@@ -1482,6 +1482,12 @@ Therefore:
   broker start (`config.ts`'s `resolveAgentSlots`); a missing key or an invalid
   value (non-integer, below 1) falls back to `DEFAULT_SLOTS` with a logged
   `config_invalid` event rather than refusing to start.
+- **Worktrees:** worktree isolation is capped PER REPOSITORY (allocations under
+  that repo's `.worktrees/`), default 3. Overridable per machine via
+  `worktreeBudget` in `~/.agent-chat/config.json` (`config.ts`'s
+  `resolveWorktreeBudget`), with the same fallback rule as `agentSlots`. Unlike
+  `agentSlots` it is read on every spawn, so editing it takes effect without a
+  broker restart. An adopted `worktree:` takes no slot.
 - **Depth:** `agent_spawned.meta.depth`, default cap 2. Without this, an agent
   team is a fork bomb with a language model deciding the branching factor.
 - **Rate:** `SpawnRateBudget` (`agents/spawn-rate.ts`), a spawn budget per

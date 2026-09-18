@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { resolveAgentSlots } from '../config.js'
+import { resolveAgentSlots, resolveWorktreeBudget } from '../config.js'
 import { Semaphore, DEFAULT_SLOTS } from '../agents/semaphore.js'
 
 /**
@@ -57,5 +57,23 @@ describe('resolveAgentSlots', () => {
     writeConfigJson({ agentSlots: value })
 
     expect(resolveAgentSlots()).toBe(DEFAULT_SLOTS)
+  })
+})
+
+describe('resolveWorktreeBudget', () => {
+  it('keeps the fallback when config.json does not exist', () => {
+    expect(resolveWorktreeBudget(3)).toBe(3)
+  })
+
+  it('returns a positive integer worktreeBudget from config.json', () => {
+    writeConfigJson({ worktreeBudget: 10 })
+
+    expect(resolveWorktreeBudget(3)).toBe(10)
+  })
+
+  it.each([0, -2, 2.5, '10', null])('falls back when worktreeBudget is %j', value => {
+    writeConfigJson({ worktreeBudget: value })
+
+    expect(resolveWorktreeBudget(3)).toBe(3)
   })
 })

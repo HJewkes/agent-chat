@@ -262,6 +262,26 @@ describe('worktree budget', () => {
     await expect(strategy.allocate(ctx)).rejects.toBeInstanceOf(WorktreeBudgetExhaustedError)
   })
 
+  it('reads the budget from config.json on every spawn when none is passed in', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-budget-'))
+    tmpdirs.push(home)
+    process.env.AGENT_CHAT_HOME = home
+    try {
+      const repo = makeRepo()
+      const strategy = createWorktreeStrategy()
+      fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ worktreeBudget: 1 }))
+      await strategy.allocate(ctxFor(repo))
+      const second = ctxFor(repo, { agentName: 'bob', agentId: 'ag-2' })
+      await expect(strategy.allocate(second)).rejects.toBeInstanceOf(WorktreeBudgetExhaustedError)
+
+      fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ worktreeBudget: 2 }))
+
+      await expect(strategy.allocate(second)).resolves.toBeDefined()
+    } finally {
+      delete process.env.AGENT_CHAT_HOME
+    }
+  })
+
   it('reclaims budget from a worktree whose directory vanished', async () => {
     const repo = makeRepo()
     const strategy = createWorktreeStrategy({ budget: 1 })
