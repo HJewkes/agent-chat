@@ -1,7 +1,8 @@
 import { z } from 'zod'
 import { MAX_MULTICAST_RECIPIENTS, tagProblem } from '../../protocol.js'
 import type { RecipientResult, ServerMessage } from '../../protocol.js'
-import { defineTool, nonBlank, requiredString } from '../command.js'
+import { nonBlank, requiredString } from '../../args.js'
+import { defineTool } from '../command.js'
 
 const RECIPIENTS = 'to must be a non-empty session name, or a list of them'
 
