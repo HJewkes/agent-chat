@@ -3,6 +3,7 @@ import { cpSync, existsSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { warn } from './warnings.js'
+import { resolveWorktreeBudget } from '../../config.js'
 import { findGitRoot } from '../../git.js'
 import type { Allocation, IsolationContext, IsolationStrategy, ReleaseOptions } from './index.js'
 
@@ -215,7 +216,7 @@ async function attachWorktree(
 
 export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStrategy {
   const basePath = opts.basePath ?? DEFAULT_BASE_PATH
-  const budget = opts.budget ?? DEFAULT_BUDGET
+  const budgetNow = (): number => opts.budget ?? resolveWorktreeBudget(DEFAULT_BUDGET)
 
   return {
     name: 'worktree',
@@ -226,6 +227,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
 
       await pruneStaleWorktrees(gitRoot)
       const allocated = await allocatedPaths(gitRoot, basePath)
+      const budget = budgetNow()
       const reasons: string[] = []
       if (allocated.length >= budget) {
         reasons.push(`worktree budget exhausted: ${allocated.length}/${budget} allocated under ${basePath}`)
@@ -263,6 +265,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
 
       await pruneStaleWorktrees(gitRoot)
       const allocated = await allocatedPaths(gitRoot, basePath)
+      const budget = budgetNow()
       if (allocated.length >= budget) throw new WorktreeBudgetExhaustedError(allocated.length, budget)
 
       const branch = branchFor(ctx.agentName)

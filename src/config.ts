@@ -5,6 +5,7 @@ import { configPath } from './paths.js'
 
 interface AgentChatConfig {
   agentSlots?: unknown
+  worktreeBudget?: unknown
 }
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
@@ -34,9 +35,18 @@ function readConfig(): AgentChatConfig {
  * malformed `hooks.json`.
  */
 export function resolveAgentSlots(): number {
-  const { agentSlots } = readConfig()
-  if (agentSlots === undefined) return DEFAULT_SLOTS
-  if (typeof agentSlots === 'number' && Number.isInteger(agentSlots) && agentSlots >= 1) return agentSlots
-  logEvent('config_invalid', { key: 'agentSlots', value: agentSlots, fallback: DEFAULT_SLOTS })
-  return DEFAULT_SLOTS
+  return positiveIntegerFrom('agentSlots', DEFAULT_SLOTS)
+}
+
+/** Per-repository worktree cap (`worktreeBudget`), read per spawn so a new value needs no broker restart. */
+export function resolveWorktreeBudget(fallback: number): number {
+  return positiveIntegerFrom('worktreeBudget', fallback)
+}
+
+function positiveIntegerFrom(key: keyof AgentChatConfig, fallback: number): number {
+  const value = readConfig()[key]
+  if (value === undefined) return fallback
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 1) return value
+  logEvent('config_invalid', { key, value, fallback })
+  return fallback
 }
