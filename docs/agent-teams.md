@@ -1477,7 +1477,11 @@ Therefore:
 #### 11.3 Budget, depth, and the runaway case
 
 - **Concurrency:** `Semaphore` (lifted from `dispatch-loop.ts:57-77`), default
-  3 live agents. Slot released on `agent_exited`.
+  `DEFAULT_SLOTS` live agents. Slot released on `agent_exited`. Overridable per
+  machine via `agentSlots` in `~/.agent-chat/config.json`, resolved once at
+  broker start (`config.ts`'s `resolveAgentSlots`); a missing key or an invalid
+  value (non-integer, below 1) falls back to `DEFAULT_SLOTS` with a logged
+  `config_invalid` event rather than refusing to start.
 - **Depth:** `agent_spawned.meta.depth`, default cap 2. Without this, an agent
   team is a fork bomb with a language model deciding the branching factor.
 - **Rate:** `SpawnRateBudget` (`agents/spawn-rate.ts`), a spawn budget per
