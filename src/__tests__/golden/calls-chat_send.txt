@@ -89,7 +89,7 @@ args: {"to":"bob"}
 [
   {
     "type": "text",
-    "text": "Error: text is required and must be a non-empty string"
+    "text": "Error: Invalid arguments: text: text is required and must be a non-empty string"
   }
 ]
 
@@ -98,7 +98,7 @@ args: {"to":"bob","text":"   "}
 [
   {
     "type": "text",
-    "text": "Error: text is required and must be a non-empty string"
+    "text": "Error: Invalid arguments: text: text is required and must be a non-empty string"
   }
 ]
 
@@ -107,7 +107,7 @@ args: {"to":[],"text":"hi"}
 [
   {
     "type": "text",
-    "text": "Error: to must be a non-empty session name, or a list of them"
+    "text": "Error: Invalid arguments: to: to must be a non-empty session name, or a list of them"
   }
 ]
 
@@ -116,7 +116,7 @@ args: {"to":["bob",""],"text":"hi"}
 [
   {
     "type": "text",
-    "text": "Error: to must be a non-empty session name, or a list of them"
+    "text": "Error: Invalid arguments: to.1: to must be a non-empty session name, or a list of them"
   }
 ]
 

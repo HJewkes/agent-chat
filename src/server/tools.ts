@@ -4,7 +4,6 @@ import {
   DECLARED_MAX_KEYS,
   DECLARED_MAX_VALUE_CHARS,
   ISOLATION_NAMES,
-  MAX_MULTICAST_RECIPIENTS,
   SESSION_STATUSES,
   SUBSCRIBABLE_KINDS,
   SURFACE_NAMES,
@@ -30,13 +29,13 @@ import { readTurns, type TranscriptRead } from '../agents/turns.js'
 import { findDenials } from '../agents/denials.js'
 import { invokeTool, text, toolDefinition, type ToolContext } from './command.js'
 import { chatList } from './commands/chat-list.js'
+import { chatSend } from './commands/chat-send.js'
 import { TOOL_COMMANDS } from './commands/index.js'
 import { ago } from './format.js'
 import type {
   DeclaredPresence,
   DeliveredMessage,
   QueueItem,
-  RecipientResult,
   ServerMessage,
   SessionInfo,
   SessionStatus,
@@ -60,22 +59,6 @@ function requireString(args: Record<string, unknown>, key: string): string {
 }
 
 /**
- * `to` for chat_send, which takes one name or several. Validated here for the
- * same reason `requireString` is: the SDK enforces neither the schema's `anyOf`
- * nor its `maxItems`, so a list of 40 names or one containing `undefined` would
- * otherwise reach the broker and be routed.
- */
-function requireRecipients(args: Record<string, unknown>): string | string[] {
-  const value = args.to
-  if (!Array.isArray(value)) return requireString(args, 'to')
-  const names = value.filter((n): n is string => typeof n === 'string' && n.trim() !== '')
-  if (names.length !== value.length || names.length === 0) {
-    throw new Error('to must be a non-empty session name, or a list of them')
-  }
-  return names
-}
-
-/**
  * A tag list for chat_tag, validated here for the same reason `requireRecipients`
  * is: the SDK enforces nothing in a schema, and a tag is a write into a PEER's
  * presence and into every peer's chat_list output. REJECTS rather than trimming
@@ -95,28 +78,6 @@ function optionalTags(args: Record<string, unknown>, key: string): string[] | un
     if (problem) throw new Error(`${key}: ${problem}`)
   }
   return list as string[]
-}
-
-/**
- * Who a chat_send is aimed at: names, or a tag, and never both.
- *
- * `to_tag` is a SEPARATE parameter rather than a spelling inside `to`, and that
- * is the point: a session may legitimately be named `owner:src`, and a call that
- * had to guess which one was meant would sometimes guess wrong silently.
- */
-function sendTarget(args: Record<string, unknown>): { to?: string | string[]; toTag?: string } {
-  const toTag = optionalString(args, 'to_tag')
-  const named = args.to !== undefined && args.to !== null
-  if (toTag === undefined) return { to: requireRecipients(args) }
-  if (named) {
-    throw new Error(
-      'name recipients in to, or a tag in to_tag, but not both — a tag already resolves to a set ' +
-        'of sessions, and mixing the two hides which one actually decided the recipients',
-    )
-  }
-  const problem = tagProblem(toTag)
-  if (problem) throw new Error(`to_tag: ${problem}`)
-  return { toTag }
 }
 
 /**
@@ -351,50 +312,7 @@ export const TOOL_DEFINITIONS = [
       },
     },
   },
-  {
-    name: 'chat_send',
-    description:
-      'Send a message to one other registered session by name, or to a named list of them. ' +
-      'Fire-and-forget: the recipient sees it on ' +
-      'their next turn and there is no reply unless they send one. Pass in_reply_to with a msg_id to answer ' +
-      "a message. A successful send means the message reached the recipient's session process — NOT that " +
-      'the recipient read or acted on it. Before sending a claim, quote what you OBSERVED rather than what ' +
-      'you CONCLUDED: the raw log line, the exact output. A peer can check evidence; they cannot check your ' +
-      'inference, and a wrong conclusion travels further than the observation that would refute it. ' +
-      `Addressing several names costs the same fanout budget a broadcast does, and past ${MAX_MULTICAST_RECIPIENTS} ` +
-      'names the call is refused — that many recipients is a broadcast, so send one. Each recipient is told ' +
-      'who else received it, so say plainly who should act; otherwise everyone answers or nobody does. ' +
-      'Use to_tag instead of to when you want whoever is doing a job rather than a peer you can name — ' +
-      'it costs exactly what naming those sessions would, and a tag nobody carries is refused rather ' +
-      'than quietly delivered to no one.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        to_tag: {
-          type: 'string',
-          description:
-            'Send to every session carrying this tag instead of naming recipients, e.g. "owner:src". ' +
-            'Mutually exclusive with to. chat_list shows who carries what. A tag is a label, NOT a ' +
-            'permission: whoever carries it chose to, or a peer said so, and neither makes them ' +
-            'responsible for the work you are sending.',
-        },
-        to: {
-          anyOf: [
-            { type: 'string' },
-            { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: MAX_MULTICAST_RECIPIENTS },
-          ],
-          description:
-            'Registered name of the recipient session, or a list of up to ' +
-            `${MAX_MULTICAST_RECIPIENTS} names to tell the same thing once.`,
-        },
-        text: { type: 'string', description: 'Message body' },
-        in_reply_to: { type: 'string', description: 'msg_id of the message being answered, if any' },
-      },
-      // `to` is not listed: exactly one of `to` and `to_tag` is required, which a
-      // flat `required` cannot say. The handler enforces it and names the mistake.
-      required: ['text'],
-    },
-  },
+  toolDefinition(chatSend),
   {
     name: 'chat_tag',
     description:
@@ -870,43 +788,6 @@ function formatInbox(messages: DeliveredMessage[]): string {
   return `Recent messages:\n${rows.join('\n')}`
 }
 
-/** Why one addressee of a multicast got nothing, in words a sender can act on. */
-const MISS_REASON: Record<string, string> = {
-  no_such_session: 'no active session',
-  self: 'that is you',
-  refused: 'refused by the broker',
-}
-
-/**
- * A multicast reports per recipient, because "ok" over a list of names hides the
- * one that failed — and the sender's next move (chase that peer, or not) depends
- * entirely on which one it was.
- */
-function formatFanout(results: RecipientResult[], msgId: string | undefined, reason?: string): string {
-  // `no_channel` counts as taken for the same reason `held` does — the message
-  // is in that session's inbox — but it is called out separately below, because
-  // a sender that reads only the first clause would wait for a reply that
-  // nothing is going to prompt (CC-73).
-  const took = results.filter(r => ['delivered', 'held', 'no_channel'].includes(r.status))
-  const missed = results.filter(r => !took.includes(r))
-  const parts: string[] = []
-  if (took.length > 0) parts.push(`Delivered to ${took.map(r => r.name).join(', ')} (msg_id ${msgId})`)
-  const held = took.filter(r => r.status === 'held')
-  if (held.length > 0) parts.push(`held in the inbox of ${held.map(r => r.name).join(', ')}`)
-  const unwoken = took.filter(r => r.status === 'no_channel')
-  if (unwoken.length > 0)
-    parts.push(
-      `NOT WOKEN: ${unwoken.map(r => r.name).join(', ')} — started without agent-chat on --channels, so the ` +
-        'message sits in the inbox unread until that session next looks. Do not wait on a reply',
-    )
-  if (missed.length > 0) {
-    const each = missed.map(r => `${r.name} (${MISS_REASON[r.status] ?? r.status})`)
-    parts.push(`not delivered to ${each.join(', ')}`)
-  }
-  const tail = reason ? ` ${reason}` : ''
-  return `${parts.join('; ')}. ${took.length} of ${results.length}.${tail}`
-}
-
 /** `2026-07-30T11:04:22.913Z` -> `11:04:22`; anything else renders as nothing. */
 const clock = (iso: string): string => (iso.length >= 19 ? iso.slice(11, 19) : '--:--:--')
 
@@ -996,8 +877,6 @@ export class ToolHandler {
         return this.release(optionalString(args, 'worktree_path'))
       case 'chat_activity':
         return this.activity(requireString(args, 'name'), boundedLimit(args, 'limit', 15, INBOX_MAX))
-      case 'chat_send':
-        return this.send(sendTarget(args), requireString(args, 'text'), optionalString(args, 'in_reply_to'))
       case 'chat_tag':
         return this.tag(
           optionalString(args, 'target'),
@@ -1158,40 +1037,6 @@ export class ToolHandler {
       return text(`No session named "${name}" is registered, and nothing in the log mentions it.`)
     }
     return text(formatActivity(name, res.session, res.events))
-  }
-
-  private async send(target: { to?: string | string[]; toTag?: string }, body: string, inReplyTo?: string) {
-    if (!this.registeredName)
-      return text('Call chat_register before sending, so the recipient knows who you are.')
-    const { to, toTag } = target
-    // A hard cap, not a nudge: past this the call IS a broadcast, and letting it
-    // through under a directed tool's name is how the fanout budget gets routed
-    // around one name at a time.
-    if (Array.isArray(to) && to.length > MAX_MULTICAST_RECIPIENTS) {
-      return text(
-        `Refused: chat_send takes at most ${MAX_MULTICAST_RECIPIENTS} recipients and you named ` +
-          `${to.length}. Use chat_broadcast, or pick the sessions that actually need this.`,
-      )
-    }
-    const res = (await this.call(
-      {
-        t: 'send',
-        ...(to === undefined ? {} : { to }),
-        ...(toTag === undefined ? {} : { toTag }),
-        text: body,
-        ...(inReplyTo === undefined ? {} : { inReplyTo }),
-      },
-      'send_result',
-    )) as Extract<ServerMessage, { t: 'send_result' }>
-    if (!res.ok) return text(`Not delivered: ${res.reason}`)
-    // A tag reports per recipient for the same reason a multicast does, and more
-    // so: the sender never named these sessions and cannot otherwise tell who the
-    // tag actually resolved to.
-    if (toTag !== undefined)
-      return text(`Tag "${toTag}" — ${formatFanout(res.results ?? [], res.msgId, res.reason)}`)
-    if (Array.isArray(to)) return text(formatFanout(res.results ?? [], res.msgId, res.reason))
-    if (res.held) return text(`Held for "${to}" (msg_id ${res.msgId}): ${res.reason}`)
-    return text(`Delivered to "${to}" (msg_id ${res.msgId}).`)
   }
 
   /**
