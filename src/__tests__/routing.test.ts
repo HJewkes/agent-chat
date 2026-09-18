@@ -22,7 +22,7 @@ const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-test-'))
 
 const ChannelNotification = z.object({
   method: z.literal('notifications/claude/channel'),
-  params: z.object({ content: z.string(), meta: z.record(z.string()).optional() }),
+  params: z.object({ content: z.string(), meta: z.record(z.string(), z.string()).optional() }),
 })
 
 type Inbox = z.infer<typeof ChannelNotification>['params'][]
