@@ -6,6 +6,8 @@ import { Command } from 'commander'
 import { VERSION } from '../broker/version.js'
 import { socketPath } from '../paths.js'
 import * as agents from './agents.js'
+import { addVerb } from './command.js'
+import { agentRetire } from './verbs/agent-retire.js'
 import * as debug from './debug.js'
 import { doctor } from './doctor.js'
 import * as human from './human.js'
@@ -135,11 +137,7 @@ function addAgentCommands(program: Command): void {
     .option('--brief-stdin', 'read the brief from stdin, keeping it out of world-readable argv')
     .option('--config-dir <path>', 'the Claude config dir, and therefore the account, to run it on')
     .action(agents.agentSpawn)
-  agent
-    .command('retire <name>')
-    .description('release isolation, end the process, and free the name')
-    .option('--force', 'discard uncommitted or unmerged work the isolation is holding')
-    .action(agents.agentRetire)
+  addVerb(agent, agentRetire)
   agent
     .command('worktrees')
     .description('worktrees agent-chat is holding, and which nobody is using')

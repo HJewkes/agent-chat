@@ -122,3 +122,18 @@ describe('CLI call golden', () => {
     await expect(rendered.join('\n')).toMatchFileSnapshot('./golden/calls-agent-retire.txt')
   })
 })
+
+describe('registry verbs', () => {
+  it('refuses a blank agent name as a usage error before anything reaches the broker', async () => {
+    const rendered = await invoke({ argv: ['agent', 'retire', ' '], reply: retired({}) })
+
+    expect(rendered).toBe(
+      [
+        '=== agent-chat agent retire  ',
+        'stderr: Invalid arguments: name: name is required and must be a non-empty string',
+        'exit 64',
+        '',
+      ].join('\n'),
+    )
+  })
+})
