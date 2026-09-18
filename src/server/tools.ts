@@ -4,8 +4,6 @@ import {
   DECLARED_MAX_KEYS,
   DECLARED_MAX_VALUE_CHARS,
   ISOLATION_NAMES,
-  MAX_MULTICAST_RECIPIENTS,
-  SELF_TAG,
   SESSION_STATUSES,
   SUBSCRIBABLE_KINDS,
   SURFACE_NAMES,
@@ -19,7 +17,6 @@ import { hostIdentity } from './host.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
 import { cliEntry } from '../paths.js'
 import { transcriptLine } from '../agents/transcript.js'
-import { accountName } from '../agents/config-dir.js'
 import {
   accountUsageLine,
   budgetMiss,
@@ -27,20 +24,21 @@ import {
   formatBudget,
   readBudget,
   type BudgetRead,
-  type NamedBudgetRead,
 } from '../agents/budget.js'
 import { readTurns, type TranscriptRead } from '../agents/turns.js'
 import { findDenials } from '../agents/denials.js'
+import { invokeTool, text, toolDefinition, type ToolContext } from './command.js'
+import { chatList } from './commands/chat-list.js'
+import { chatSend } from './commands/chat-send.js'
+import { TOOL_COMMANDS } from './commands/index.js'
+import { ago } from './format.js'
 import type {
   DeclaredPresence,
   DeliveredMessage,
   QueueItem,
-  RecipientResult,
   ServerMessage,
   SessionInfo,
-  SessionClaim,
   SessionStatus,
-  SessionTag,
   SubscribableKind,
   SubscriptionSelector,
 } from '../protocol.js'
@@ -58,22 +56,6 @@ function requireString(args: Record<string, unknown>, key: string): string {
     throw new Error(`${key} is required and must be a non-empty string`)
   }
   return value
-}
-
-/**
- * `to` for chat_send, which takes one name or several. Validated here for the
- * same reason `requireString` is: the SDK enforces neither the schema's `anyOf`
- * nor its `maxItems`, so a list of 40 names or one containing `undefined` would
- * otherwise reach the broker and be routed.
- */
-function requireRecipients(args: Record<string, unknown>): string | string[] {
-  const value = args.to
-  if (!Array.isArray(value)) return requireString(args, 'to')
-  const names = value.filter((n): n is string => typeof n === 'string' && n.trim() !== '')
-  if (names.length !== value.length || names.length === 0) {
-    throw new Error('to must be a non-empty session name, or a list of them')
-  }
-  return names
 }
 
 /**
@@ -96,28 +78,6 @@ function optionalTags(args: Record<string, unknown>, key: string): string[] | un
     if (problem) throw new Error(`${key}: ${problem}`)
   }
   return list as string[]
-}
-
-/**
- * Who a chat_send is aimed at: names, or a tag, and never both.
- *
- * `to_tag` is a SEPARATE parameter rather than a spelling inside `to`, and that
- * is the point: a session may legitimately be named `owner:src`, and a call that
- * had to guess which one was meant would sometimes guess wrong silently.
- */
-function sendTarget(args: Record<string, unknown>): { to?: string | string[]; toTag?: string } {
-  const toTag = optionalString(args, 'to_tag')
-  const named = args.to !== undefined && args.to !== null
-  if (toTag === undefined) return { to: requireRecipients(args) }
-  if (named) {
-    throw new Error(
-      'name recipients in to, or a tag in to_tag, but not both — a tag already resolves to a set ' +
-        'of sessions, and mixing the two hides which one actually decided the recipients',
-    )
-  }
-  const problem = tagProblem(toTag)
-  if (problem) throw new Error(`to_tag: ${problem}`)
-  return { toTag }
 }
 
 /**
@@ -303,17 +263,7 @@ export const TOOL_DEFINITIONS = [
       required: ['status'],
     },
   },
-  {
-    name: 'chat_list',
-    description:
-      'Check who else is active before you start any work that could overlap with someone else — an ' +
-      'independent parallel task, editing a file another session might also touch, or before deciding to ' +
-      'spawn an agent to do something a peer might already be doing. This is free and answers "is anyone ' +
-      'already on this?" in one call. Call it proactively, at the start of a session and again before ' +
-      "diverging into independent work — don't wait to be asked, and don't assume you're the only session " +
-      'in this checkout.',
-    inputSchema: { type: 'object', properties: {} },
-  },
+  toolDefinition(chatList),
   {
     name: 'chat_claim',
     description:
@@ -362,50 +312,7 @@ export const TOOL_DEFINITIONS = [
       },
     },
   },
-  {
-    name: 'chat_send',
-    description:
-      'Send a message to one other registered session by name, or to a named list of them. ' +
-      'Fire-and-forget: the recipient sees it on ' +
-      'their next turn and there is no reply unless they send one. Pass in_reply_to with a msg_id to answer ' +
-      "a message. A successful send means the message reached the recipient's session process — NOT that " +
-      'the recipient read or acted on it. Before sending a claim, quote what you OBSERVED rather than what ' +
-      'you CONCLUDED: the raw log line, the exact output. A peer can check evidence; they cannot check your ' +
-      'inference, and a wrong conclusion travels further than the observation that would refute it. ' +
-      `Addressing several names costs the same fanout budget a broadcast does, and past ${MAX_MULTICAST_RECIPIENTS} ` +
-      'names the call is refused — that many recipients is a broadcast, so send one. Each recipient is told ' +
-      'who else received it, so say plainly who should act; otherwise everyone answers or nobody does. ' +
-      'Use to_tag instead of to when you want whoever is doing a job rather than a peer you can name — ' +
-      'it costs exactly what naming those sessions would, and a tag nobody carries is refused rather ' +
-      'than quietly delivered to no one.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        to_tag: {
-          type: 'string',
-          description:
-            'Send to every session carrying this tag instead of naming recipients, e.g. "owner:src". ' +
-            'Mutually exclusive with to. chat_list shows who carries what. A tag is a label, NOT a ' +
-            'permission: whoever carries it chose to, or a peer said so, and neither makes them ' +
-            'responsible for the work you are sending.',
-        },
-        to: {
-          anyOf: [
-            { type: 'string' },
-            { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: MAX_MULTICAST_RECIPIENTS },
-          ],
-          description:
-            'Registered name of the recipient session, or a list of up to ' +
-            `${MAX_MULTICAST_RECIPIENTS} names to tell the same thing once.`,
-        },
-        text: { type: 'string', description: 'Message body' },
-        in_reply_to: { type: 'string', description: 'msg_id of the message being answered, if any' },
-      },
-      // `to` is not listed: exactly one of `to` and `to_tag` is required, which a
-      // flat `required` cannot say. The handler enforces it and names the mistake.
-      required: ['text'],
-    },
-  },
+  toolDefinition(chatSend),
   {
     name: 'chat_tag',
     description:
@@ -832,8 +739,6 @@ export const TOOL_DEFINITIONS = [
   },
 ] as const
 
-const text = (value: string) => ({ content: [{ type: 'text' as const, text: value }] })
-
 /** Joins and leaves — what someone asking to be told about comings and goings means. */
 const DEFAULT_SUBSCRIBED_KINDS: SubscribableKind[] = [
   'registered',
@@ -850,116 +755,6 @@ const describe = (selector: SubscriptionSelector): string =>
       : 'spawnedBy' in selector
         ? 'agents you spawned'
         : `tag "${selector.tag}"`
-
-const ago = (ms: number): string =>
-  ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)}m`
-
-/**
- * The declared line, and the `(self-reported)` marker is the point of it: a
- * reader must be able to tell a session's claim about its role from a fact about
- * its checkout, and the two sit one line apart. Rendered only when there is
- * something to render, so an undeclared session stays a two-line entry.
- */
-function declaredLine(declared: DeclaredPresence | undefined): string {
-  const pairs = Object.entries(declared ?? {})
-  if (pairs.length === 0) return ''
-  return `\n    declared: ${pairs.map(([key, value]) => `${key}=${value}`).join(', ')}   (self-reported)`
-}
-
-/**
- * The tags line, and the attribution on it is the point (CC-13): `(self)` is a
- * session's own claim about itself and `(by cc-main, 4m ago)` is somebody else's
- * label for it, and those are worth exactly different amounts. Sits beside the
- * declared line for the same reason — both are claims, neither is a fact about
- * the process, and NEITHER IS AUTHORIZATION. A session tagged `owner:src` said
- * so, or a peer said so; nothing here checked anything.
- */
-function tagsLine(tags: SessionTag[] | undefined, now: number): string {
-  if (tags === undefined || tags.length === 0) return ''
-  const rendered = tags.map(t =>
-    t.by === SELF_TAG ? `${t.tag} (self)` : `${t.tag} (by ${t.by}, ${ago(now - t.at)} ago)`,
-  )
-  return `\n    tags: ${rendered.join(', ')}`
-}
-
-/**
- * cwd, then whatever the process could be OBSERVED to be sitting in. Everything
- * on this line is derived from the session's own process rather than typed by
- * it, which is what makes "main checkout" worth reading — two rows on the same
- * worktree are two sessions that will edit the same files.
- */
-function observedLine(s: SessionInfo): string {
-  const parts = [
-    s.cwd,
-    s.observed?.gitBranch,
-    s.observed?.isLinkedWorktree === undefined
-      ? undefined
-      : s.observed.isLinkedWorktree
-        ? 'linked worktree'
-        : 'main checkout',
-    // CC-100: which Claude ACCOUNT that session is spending. The last segment is
-    // what a human calls it (`agents`, `workout`); the full path is on `agent ls`,
-    // where there is room for it. Absent means the default `~/.claude`.
-    s.observed?.configDir === undefined ? undefined : `account: ${accountName(s.observed.configDir)}`,
-  ].filter((part): part is string => part !== undefined && part !== '')
-  return `\n    ${parts.join('  ·  ')}`
-}
-
-function formatSessions(
-  sessions: SessionInfo[],
-  self: string | null,
-  claims: SessionClaim[] = [],
-  budgets: NamedBudgetRead[] = [],
-): string {
-  if (sessions.length === 0) return 'No sessions are registered.'
-  const now = Date.now()
-  const budgetByName = new Map(budgets.map(b => [b.name, b.read]))
-  const rows = sessions.map(s => {
-    const you = s.name === self ? ' (you)' : ''
-    const quiet = s.dnd ? ', dnd' : ''
-    // CC-82: a derived name is not a chosen one, and addressing it means "whoever
-    // is working in that directory". Marked so a reader does not mistake it for
-    // an identity the session declared.
-    const named = s.provisional === true ? ', unnamed' : ''
-    const budget = budgetByName.get(s.name)
-    // One extra segment, CC-94: budget goes in the bracket alongside status
-    // rather than adding a whole new line per row.
-    const budgetPart = budget === undefined ? '' : `, ${budgetSegment(budget)}`
-    const head = `- ${s.name}${you} [${s.status}${quiet}${named}, idle ${ago(s.idleMs)}${budgetPart}] — ${s.workingOn || 'no description'}`
-    return `${head}${tagsLine(s.tags, now)}${declaredLine(s.declared)}${observedLine(s)}${claimLine(claims, s.name)}`
-  })
-  return `Active sessions:\n${accountUsageLine(budgets)}\n${rows.join('\n')}${claimsFooter(claims, sessions, self)}`
-}
-
-/** What this session holds, on its own row, so the roster answers "who has what". */
-function claimLine(claims: SessionClaim[], name: string): string {
-  const mine = claims.filter(c => c.owner === name)
-  if (mine.length === 0) return ''
-  const parts = mine.map(c =>
-    c.kind === 'worktree'
-      ? `holds all of ${c.worktreePath}`
-      : `holds ${c.patterns.join(', ')} in ${c.worktreePath}`,
-  )
-  return `\n    claim: ${parts.join(' | ')}`
-}
-
-/**
- * Named only when the reader could actually collide — same worktree, someone
- * else. A claim in a checkout you are not in is noise, and the whole value of
- * this signal depends on it not becoming noise (CC-56).
- */
-function claimsFooter(claims: SessionClaim[], sessions: SessionInfo[], self: string | null): string {
-  if (self === null) return ''
-  const mine = sessions.find(s => s.name === self)?.observed?.worktreePath
-  if (mine === undefined) return ''
-  const here = claims.filter(c => c.worktreePath === mine && c.owner !== self)
-  if (here.length === 0) return ''
-  return (
-    `\n\nIn your worktree (${mine}), ${here.map(c => `"${c.owner}"`).join(' and ')} ` +
-    `${here.length === 1 ? 'has' : 'have'} claimed work. Message them before editing those paths — ` +
-    `claims are advisory and mark who got there first.`
-  )
-}
 
 function formatActivity(name: string, session: SessionInfo | undefined, events: QueueItem[]): string {
   const header = session
@@ -993,43 +788,6 @@ function formatInbox(messages: DeliveredMessage[]): string {
   return `Recent messages:\n${rows.join('\n')}`
 }
 
-/** Why one addressee of a multicast got nothing, in words a sender can act on. */
-const MISS_REASON: Record<string, string> = {
-  no_such_session: 'no active session',
-  self: 'that is you',
-  refused: 'refused by the broker',
-}
-
-/**
- * A multicast reports per recipient, because "ok" over a list of names hides the
- * one that failed — and the sender's next move (chase that peer, or not) depends
- * entirely on which one it was.
- */
-function formatFanout(results: RecipientResult[], msgId: string | undefined, reason?: string): string {
-  // `no_channel` counts as taken for the same reason `held` does — the message
-  // is in that session's inbox — but it is called out separately below, because
-  // a sender that reads only the first clause would wait for a reply that
-  // nothing is going to prompt (CC-73).
-  const took = results.filter(r => ['delivered', 'held', 'no_channel'].includes(r.status))
-  const missed = results.filter(r => !took.includes(r))
-  const parts: string[] = []
-  if (took.length > 0) parts.push(`Delivered to ${took.map(r => r.name).join(', ')} (msg_id ${msgId})`)
-  const held = took.filter(r => r.status === 'held')
-  if (held.length > 0) parts.push(`held in the inbox of ${held.map(r => r.name).join(', ')}`)
-  const unwoken = took.filter(r => r.status === 'no_channel')
-  if (unwoken.length > 0)
-    parts.push(
-      `NOT WOKEN: ${unwoken.map(r => r.name).join(', ')} — started without agent-chat on --channels, so the ` +
-        'message sits in the inbox unread until that session next looks. Do not wait on a reply',
-    )
-  if (missed.length > 0) {
-    const each = missed.map(r => `${r.name} (${MISS_REASON[r.status] ?? r.status})`)
-    parts.push(`not delivered to ${each.join(', ')}`)
-  }
-  const tail = reason ? ` ${reason}` : ''
-  return `${parts.join('; ')}. ${took.length} of ${results.length}.${tail}`
-}
-
 /** `2026-07-30T11:04:22.913Z` -> `11:04:22`; anything else renders as nothing. */
 const clock = (iso: string): string => (iso.length >= 19 ? iso.slice(11, 19) : '--:--:--')
 
@@ -1056,16 +814,6 @@ function formatTurns(who: string, read: TranscriptRead): string {
 
 const renderBudget = (who: string, read: BudgetRead): string =>
   read.found ? formatBudget(who, read) : budgetMiss(who, read)
-
-/**
- * A raw socket client never sent `CLAUDE_CODE_SESSION_ID` on register, so a
- * roster row for it has no session id to read a budget from at all — a MISSING
- * reading like any other, not a distinct case a caller has to branch on.
- */
-const readBudgetSafe = (sessionId: string | undefined, dir?: string): BudgetRead =>
-  sessionId === undefined
-    ? { found: false, path: '(no session id)', reason: 'no_file' }
-    : readBudget(sessionId, Date.now(), dir)
 
 /** Tracks the registered name purely so chat_list can mark which entry is us. */
 export class ToolHandler {
@@ -1102,7 +850,13 @@ export class ToolHandler {
     return this.broker.request(message, replyType)
   }
 
+  private context(): ToolContext {
+    return { warnings: [], format: 'human', broker: this.broker, registeredName: this.registeredName }
+  }
+
   async handle(name: string, args: Record<string, unknown>) {
+    const tool = TOOL_COMMANDS.get(name)
+    if (tool !== undefined) return invokeTool(tool, args, this.context())
     switch (name) {
       case 'chat_register':
         return this.register(
@@ -1117,16 +871,12 @@ export class ToolHandler {
           typeof args.dnd === 'boolean' ? args.dnd : undefined,
           optionalDeclared(args),
         )
-      case 'chat_list':
-        return this.list()
       case 'chat_claim':
         return this.claim(optionalPatterns(args), optionalString(args, 'worktree_path'))
       case 'chat_release':
         return this.release(optionalString(args, 'worktree_path'))
       case 'chat_activity':
         return this.activity(requireString(args, 'name'), boundedLimit(args, 'limit', 15, INBOX_MAX))
-      case 'chat_send':
-        return this.send(sendTarget(args), requireString(args, 'text'), optionalString(args, 'in_reply_to'))
       case 'chat_tag':
         return this.tag(
           optionalString(args, 'target'),
@@ -1250,21 +1000,6 @@ export class ToolHandler {
     return text(`Status set to "${status}".${quiet}`)
   }
 
-  private async list() {
-    const res = (await this.call({ t: 'list' }, 'list_result')) as Extract<
-      ServerMessage,
-      { t: 'list_result' }
-    >
-    const budgets = res.sessions.map(s => ({
-      name: s.name,
-      // The status line writes into the cache of the account its own session runs
-      // on, so a peer on a different one publishes where this process would never
-      // look (CC-100).
-      read: readBudgetSafe(s.observed?.claudeSessionId, s.observed?.configDir),
-    }))
-    return text(formatSessions(res.sessions, this.registeredName, res.claims ?? [], budgets))
-  }
-
   private async claim(patterns: string[] | undefined, worktreePath: string | undefined) {
     const res = (await this.call(
       {
@@ -1302,40 +1037,6 @@ export class ToolHandler {
       return text(`No session named "${name}" is registered, and nothing in the log mentions it.`)
     }
     return text(formatActivity(name, res.session, res.events))
-  }
-
-  private async send(target: { to?: string | string[]; toTag?: string }, body: string, inReplyTo?: string) {
-    if (!this.registeredName)
-      return text('Call chat_register before sending, so the recipient knows who you are.')
-    const { to, toTag } = target
-    // A hard cap, not a nudge: past this the call IS a broadcast, and letting it
-    // through under a directed tool's name is how the fanout budget gets routed
-    // around one name at a time.
-    if (Array.isArray(to) && to.length > MAX_MULTICAST_RECIPIENTS) {
-      return text(
-        `Refused: chat_send takes at most ${MAX_MULTICAST_RECIPIENTS} recipients and you named ` +
-          `${to.length}. Use chat_broadcast, or pick the sessions that actually need this.`,
-      )
-    }
-    const res = (await this.call(
-      {
-        t: 'send',
-        ...(to === undefined ? {} : { to }),
-        ...(toTag === undefined ? {} : { toTag }),
-        text: body,
-        ...(inReplyTo === undefined ? {} : { inReplyTo }),
-      },
-      'send_result',
-    )) as Extract<ServerMessage, { t: 'send_result' }>
-    if (!res.ok) return text(`Not delivered: ${res.reason}`)
-    // A tag reports per recipient for the same reason a multicast does, and more
-    // so: the sender never named these sessions and cannot otherwise tell who the
-    // tag actually resolved to.
-    if (toTag !== undefined)
-      return text(`Tag "${toTag}" — ${formatFanout(res.results ?? [], res.msgId, res.reason)}`)
-    if (Array.isArray(to)) return text(formatFanout(res.results ?? [], res.msgId, res.reason))
-    if (res.held) return text(`Held for "${to}" (msg_id ${res.msgId}): ${res.reason}`)
-    return text(`Delivered to "${to}" (msg_id ${res.msgId}).`)
   }
 
   /**

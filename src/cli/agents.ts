@@ -189,24 +189,6 @@ export async function agentSpawn(
 }
 
 /**
- * `--force` is the flag the isolation's own refusal has always told people to
- * use, and until CC-79 it did not exist anywhere: no option here, no field on
- * the wire, and `socket.ts` calling `retire(name)` with the parameter left at
- * its default. Someone whose worktree held uncommitted work was told to pass a
- * flag that was silently ignored, and had to remove the worktree by hand.
- */
-export async function agentRetire(name: string, options: { force?: boolean } = {}): Promise<void> {
-  const res = (await withBroker(b =>
-    b.request({ t: 'retire', name, ...(options.force === true ? { force: true } : {}) }, 'spawn_result'),
-  )) as Extract<ServerMessage, { t: 'spawn_result' }>
-  // `reason` on a successful retire is a caveat, not a failure: what the broker
-  // could not do (CC-77). Dropping it is what let a live process go unnoticed.
-  console.log(res.ok ? `Retired ${name}.` : `Not retired: ${res.reason}`)
-  if (res.ok && res.reason !== undefined) console.log(res.reason)
-  process.exit(res.ok ? 0 : 1)
-}
-
-/**
  * Bring a headless agent up where it can be seen and answered.
  *
  * A CLI verb because the human is the one who NOTICES. CC-2 established that a

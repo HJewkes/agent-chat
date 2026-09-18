@@ -1,0 +1,19 @@
+=== chat_list: empty roster
+args: {}
+frame: {"t":"list"}
+[
+  {
+    "type": "text",
+    "text": "No sessions are registered."
+  }
+]
+
+=== chat_list: roster with self, a claim and a colliding peer
+args: {}
+frame: {"t":"list"}
+[
+  {
+    "type": "text",
+    "text": "Active sessions:\nAccount usage: no budget reading available from any row.\n- me (you) [working, idle 5s, no budget reading] — me work\n    /work/me\n- bob [working, dnd, unnamed, idle 5s, no budget reading] — bob work\n    declared: role=reviewer   (self-reported)\n    /work/bob\n    claim: holds src/** in /work/repo\n\nIn your worktree (/work/repo), \"bob\" has claimed work. Message them before editing those paths — claims are advisory and mark who got there first."
+  }
+]

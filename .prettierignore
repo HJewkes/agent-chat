@@ -4,3 +4,6 @@ dist/
 # Written INTO the workspace by the gitleaks action during CI, then picked up by
 # the format step that runs after it. Not ours, not committed, not formattable.
 results.sarif
+
+# Byte-exact captures of what clients see; reformatting them would falsify the pin.
+src/__tests__/golden/
