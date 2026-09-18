@@ -1,0 +1,15 @@
+=== agent-chat agent retire bob
+frame: {"t":"retire","name":"bob"}
+stdout: Retired bob.
+exit 0
+
+=== agent-chat agent retire bob --force
+frame: {"t":"retire","name":"bob","force":true}
+stdout: Retired bob.
+stdout: the process was already gone; nothing to stop
+exit 0
+
+=== agent-chat agent retire bob
+frame: {"t":"retire","name":"bob"}
+stdout: Not retired: worktree has uncommitted work
+exit 1

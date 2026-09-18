@@ -343,6 +343,18 @@ async function registerProvisionally(broker: BrokerClient): Promise<string | und
  * address, so routing is decided by which process emits, not by any field in
  * the notification (the channel protocol has no addressing).
  */
+/** The tool surface every session's client sees; exported so its wire shape can be pinned. */
+export function serveTools(mcp: Server, handler: ToolHandler): void {
+  mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...TOOL_DEFINITIONS] }))
+  mcp.setRequestHandler(CallToolRequestSchema, async request => {
+    try {
+      return await handler.handle(request.params.name, request.params.arguments ?? {})
+    } catch (err) {
+      return { content: [{ type: 'text' as const, text: `Error: ${(err as Error).message}` }] }
+    }
+  })
+}
+
 export async function startMcpServer(): Promise<void> {
   const mcp = new Server(
     { name: 'agent-chat', version: '0.1.0' },
@@ -478,16 +490,7 @@ export async function startMcpServer(): Promise<void> {
   // A readopted session already holds its name, so the handler must know it —
   // otherwise chat_register would look unmade and the model would be told to
   // call it, which is the confusion this whole path exists to remove.
-  const handler = new ToolHandler(broker, spawned?.name, readopted ?? provisional)
-
-  mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...TOOL_DEFINITIONS] }))
-  mcp.setRequestHandler(CallToolRequestSchema, async request => {
-    try {
-      return await handler.handle(request.params.name, request.params.arguments ?? {})
-    } catch (err) {
-      return { content: [{ type: 'text' as const, text: `Error: ${(err as Error).message}` }] }
-    }
-  })
+  serveTools(mcp, new ToolHandler(broker, spawned?.name, readopted ?? provisional))
 
   const transport = new StdioServerTransport()
   // Claude Code closing the pipe means the session is gone. Exit rather than

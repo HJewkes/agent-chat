@@ -1,0 +1,355 @@
+=== agent-chat
+Usage: agent-chat [options] [command]
+
+cross-session messaging for Claude Code
+
+Options:
+  -V, --version              output the version number
+  -h, --help                 display help for command
+
+Human commands:
+  inbox                      what your agents need from you
+  answer <id> <text...>      answer a question; routes back to the asker
+  dismiss <id>               close an item without answering, or decline an endorsement
+  approve <id> <allow|deny>  answer an agent's permission prompt from here
+  endorse <id>               approve a composed message; delivers it with your authority
+
+Commands:
+  service                    run and inspect the broker daemon
+  debug                      diagnostics: sessions, history, routing
+  doctor                     check the things that fail silently
+  help [command]             display help for command
+
+Agent commands:
+  watch [options] <name>     stream messages for a session that cannot receive channel pushes
+  agent                      durable agents
+  teleport                   teleport control
+  profiles                   agent profiles available to spawn with
+
+=== agent-chat inbox
+Usage: agent-chat inbox [options]
+
+what your agents need from you
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat answer
+Usage: agent-chat answer [options] <id> <text...>
+
+answer a question; routes back to the asker
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat dismiss
+Usage: agent-chat dismiss [options] <id>
+
+close an item without answering, or decline an endorsement
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat approve
+Usage: agent-chat approve [options] <id> <allow|deny>
+
+answer an agent's permission prompt from here
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat endorse
+Usage: agent-chat endorse [options] <id>
+
+approve a composed message; delivers it with your authority
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat service
+Usage: agent-chat service [options] [command]
+
+run and inspect the broker daemon
+
+Options:
+  -h, --help         display help for command
+
+Commands:
+  start [options]    start the broker, detached by default
+  stop               SIGTERM the broker, then SIGKILL if it lingers
+  status [options]   socket, pid file and /health, reported separately
+  restart [options]  stop then start, reusing the port from broker.meta.json
+  logs [options]     tail the broker log; no --follow, by design
+  open [options]     open the dashboard, or print its URL when not a TTY
+  help [command]     display help for command
+
+=== agent-chat service start
+Usage: agent-chat service start [options]
+
+start the broker, detached by default
+
+Options:
+  -p, --port <port>  HTTP port to bind
+  -f, --foreground   run in this terminal instead of detaching
+  -h, --help         display help for command
+
+=== agent-chat service stop
+Usage: agent-chat service stop [options]
+
+SIGTERM the broker, then SIGKILL if it lingers
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat service status
+Usage: agent-chat service status [options]
+
+socket, pid file and /health, reported separately
+
+Options:
+  -p, --port <port>  port to probe for /health
+  -h, --help         display help for command
+
+=== agent-chat service restart
+Usage: agent-chat service restart [options]
+
+stop then start, reusing the port from broker.meta.json
+
+Options:
+  -p, --port <port>  bind this port instead of the recorded one
+  -h, --help         display help for command
+
+=== agent-chat service logs
+Usage: agent-chat service logs [options]
+
+tail the broker log; no --follow, by design
+
+Options:
+  -n, --lines <n>  how many lines (default: 50)
+  -h, --help       display help for command
+
+=== agent-chat service open
+Usage: agent-chat service open [options]
+
+open the dashboard, or print its URL when not a TTY
+
+Options:
+  -p, --port <port>  port the dashboard is on
+  -h, --help         display help for command
+
+=== agent-chat debug
+Usage: agent-chat debug [options] [command]
+
+diagnostics: sessions, history, routing
+
+Options:
+  -h, --help           display help for command
+
+Commands:
+  ps                   list registered sessions
+  claims               who holds which worktrees and paths
+  history [n]          recent events from the log (default 30)
+  log [n]              recent routing decisions
+  send <to> <text...>  message a session as the human
+  help [command]       display help for command
+
+=== agent-chat debug ps
+Usage: agent-chat debug ps [options]
+
+list registered sessions
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat debug claims
+Usage: agent-chat debug claims [options]
+
+who holds which worktrees and paths
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat debug history
+Usage: agent-chat debug history [options] [n]
+
+recent events from the log (default 30)
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat debug log
+Usage: agent-chat debug log [options] [n]
+
+recent routing decisions
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat debug send
+Usage: agent-chat debug send [options] <to> <text...>
+
+message a session as the human
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat doctor
+Usage: agent-chat doctor [options]
+
+check the things that fail silently
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat watch
+Usage: agent-chat watch [options] <name>
+
+stream messages for a session that cannot receive channel pushes
+
+Options:
+  --since <id|now|all>  start from a log id, the current head, or the whole backlog (default: "now")
+  --interval <seconds>  how often to poll (default: "2")
+  --once                print what is waiting and exit, instead of following
+  -h, --help            display help for command
+
+=== agent-chat agent
+Usage: agent-chat agent [options] [command]
+
+durable agents
+
+Options:
+  -h, --help                                   display help for command
+
+Commands:
+  ls                                           agents, with lifecycle and presence
+  spawn [options] <name> <profile> [brief...]  start a new agent
+  retire [options] <name>                      release isolation, end the process, and free the name
+  worktrees [options]                          worktrees agent-chat is holding, and which nobody is
+                                               using
+  surface <name>                               bring a headless agent into a window you can answer
+  budget [name]                                context fill and account rate limits, per agent
+  help [command]                               display help for command
+
+=== agent-chat agent ls
+Usage: agent-chat agent ls [options]
+
+agents, with lifecycle and presence
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat agent spawn
+Usage: agent-chat agent spawn [options] <name> <profile> [brief...]
+
+start a new agent
+
+Options:
+  --briefing <slug|auto>  prepend an active-work initiative's orientation to the brief
+  --brief-stdin           read the brief from stdin, keeping it out of world-readable argv
+  --config-dir <path>     the Claude config dir, and therefore the account, to run it on
+  -h, --help              display help for command
+
+=== agent-chat agent retire
+Usage: agent-chat agent retire [options] <name>
+
+release isolation, end the process, and free the name
+
+Options:
+  --force     discard uncommitted or unmerged work the isolation is holding
+  -h, --help  display help for command
+
+=== agent-chat agent worktrees
+Usage: agent-chat agent worktrees [options]
+
+worktrees agent-chat is holding, and which nobody is using
+
+Options:
+  --prune     reclaim the ones nothing would be lost from
+  --force     with --prune, reclaim even those holding work
+  -h, --help  display help for command
+
+=== agent-chat agent surface
+Usage: agent-chat agent surface [options] <name>
+
+bring a headless agent into a window you can answer
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat agent budget
+Usage: agent-chat agent budget [options] [name]
+
+context fill and account rate limits, per agent
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat teleport
+Usage: agent-chat teleport [options] [command]
+
+teleport control
+
+Options:
+  -h, --help      display help for command
+
+Commands:
+  abort <name>    stop a session ending itself for a successor
+  help [command]  display help for command
+
+=== agent-chat teleport abort
+Usage: agent-chat teleport abort [options] <name>
+
+stop a session ending itself for a successor
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat profiles
+Usage: agent-chat profiles [options]
+
+agent profiles available to spawn with
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat broker
+Usage: agent-chat broker [options]
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat mcp
+Usage: agent-chat mcp [options]
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat run-agent
+Usage: agent-chat run-agent [options] <id>
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat ps
+Usage: agent-chat ps [options]
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat history
+Usage: agent-chat history [options] [n]
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat log
+Usage: agent-chat log [options] [n]
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat send
+Usage: agent-chat send [options] <to> <text...>
+
+Options:
+  -h, --help  display help for command
