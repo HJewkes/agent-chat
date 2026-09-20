@@ -19,6 +19,15 @@
 #
 # Set up once:  echo "$PWD" > ~/.agent-chat/mcp-home
 #
+# node is resolved the same way, because PATH is not dependable here: a login
+# shell whose `brew shellenv` failed under load starts Claude Code with no
+# homebrew on PATH, `exec node` dies, and Claude Code then caches the failed
+# connection for 15 minutes for every session on that account. Order:
+#   1. $AGENT_CHAT_NODE     — absolute path to a node binary
+#   2. node on PATH
+#   3. <state dir>/node-path — file whose first line is that path
+#   4. the usual install locations
+#
 # stdout is the MCP stdio transport — every diagnostic here goes to stderr.
 
 set -euo pipefail
@@ -49,4 +58,20 @@ fi
 
 [ -f "$entry" ] || fail "no server at $entry — run \`npm run build\` in the agent-chat repo."
 
-exec node "$entry" "$@"
+resolve_node() {
+  local candidate recorded=""
+  [ -r "$state_dir/node-path" ] && { read -r recorded <"$state_dir/node-path" || recorded=""; }
+  for candidate in "${AGENT_CHAT_NODE:-}" "$(command -v node 2>/dev/null || true)" "$recorded" \
+    /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+node_bin="$(resolve_node)" || fail "cannot find node: it is not on PATH ($PATH).
+Set AGENT_CHAT_NODE, or write its absolute path to $state_dir/node-path."
+
+exec "$node_bin" "$entry" "$@"
