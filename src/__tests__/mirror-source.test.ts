@@ -369,6 +369,62 @@ describe('agentChatQueueSource, against a real in-process broker', () => {
     controller.abort()
   })
 
+  /**
+   * Risk 1 in the plan: row ids are sqlite primary keys and survive a broker
+   * restart, so `Last-Event-ID` should resume with no gap and no replay.
+   * Catches a broker that renumbers ids on restart (the cursor comparison
+   * would fail or go backwards) and, more directly, a `tail()` that silently
+   * drops the `cursor` argument or ignores the header the server sent it back
+   * for (the first row would replay alongside the second).
+   */
+  it('resumes from Last-Event-ID across a broker restart, with no replay of the earlier row', async () => {
+    const firstVerdicts = await unregisteredClient()
+    const firstSource = agentChatQueueSource(options(firstVerdicts))
+    const firstController = new AbortController()
+    const firstIterator = firstSource.tail(undefined, firstController.signal)[Symbol.asyncIterator]()
+    await settle(50) // let the SSE connection establish before anything is appended
+
+    const first = core.append({ kind: 'question', actor: 'alice', target: HUMAN, body: 'first' })
+    const firstEvent = await firstIterator.next()
+    expect(firstEvent.value).toMatchObject({ type: 'opened', item: { id: first.msgId } })
+    const cursor = (firstEvent.value as { cursor: string }).cursor
+    firstController.abort()
+    firstVerdicts.close() // otherwise the open socket keeps `socketServer.close()` below from ever resolving
+    await settle(50)
+
+    // Stop the broker — force-close both servers (the aborted SSE connection can
+    // otherwise keep an ordinary `.close()` waiting), but leave the db file on disk.
+    const closingHttp = httpServer
+    ;(closingHttp as unknown as { closeAllConnections: () => void }).closeAllConnections()
+    await new Promise<void>(resolve => closingHttp.close(() => resolve()))
+    await new Promise<void>(resolve => socketServer.close(() => resolve()))
+    fs.rmSync(path.join(dir, 'chat.sock'), { force: true }) // net.Server.close() does not unlink it
+
+    // A real restart: a fresh core and fresh servers over the SAME events.db file.
+    core = new BrokerCore(() => undefined, {
+      events: new EventLog(path.join(dir, 'events.db')),
+      registry: new Registry<Conn>(),
+    })
+    const freshSocket = new SocketServer(core)
+    socketServer = net.createServer(conn => freshSocket.onConnection(conn))
+    await new Promise<void>(resolve => socketServer.listen(path.join(dir, 'chat.sock'), resolve))
+    const app = buildHttpApp({ core, port: () => port })
+    port = await new Promise<number>(resolve => {
+      httpServer = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 }, info => resolve(info.port))
+    })
+
+    const second = core.append({ kind: 'question', actor: 'bob', target: HUMAN, body: 'second' })
+
+    const secondSource = agentChatQueueSource(options(await unregisteredClient()))
+    const secondController = new AbortController()
+    const secondIterator = secondSource.tail(cursor, secondController.signal)[Symbol.asyncIterator]()
+    const secondEvent = await secondIterator.next()
+
+    expect(secondEvent.value).toMatchObject({ type: 'opened', item: { id: second.msgId } })
+    expect(Number((secondEvent.value as { cursor: string }).cursor)).toBeGreaterThan(Number(cursor))
+    secondController.abort()
+  })
+
   it('resolves a dismiss over an unregistered connection', async () => {
     const source = agentChatQueueSource(options(await unregisteredClient()))
     const { msgId } = core.append({
