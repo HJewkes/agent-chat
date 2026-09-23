@@ -47,16 +47,17 @@ export function resolveWorktreeBudget(fallback: number): number {
 }
 
 /**
- * CC-118's shadow-write flag, read once at broker boot. Off by default until the
- * backfill rehearsal is reviewed. `AGENT_CHAT_LEDGER_SHADOW=0|1` overrides the file.
+ * CC-118's shadow-write flag, read once at broker boot. On by default as of
+ * slice 5, once the backfill rehearsal (slice 3) and the divergence verifier
+ * (slice 4) were both reviewed. `AGENT_CHAT_LEDGER_SHADOW=0|1` overrides the file.
  */
 export function resolveLedgerShadow(): boolean {
   const override = process.env.AGENT_CHAT_LEDGER_SHADOW
   if (override === '0' || override === '1') return override === '1'
   const value = readConfig().ledgerShadow
-  if (value === undefined || typeof value === 'boolean') return value === true
-  logEvent('config_invalid', { key: 'ledgerShadow', value, fallback: false })
-  return false
+  if (value === undefined || typeof value === 'boolean') return value !== false
+  logEvent('config_invalid', { key: 'ledgerShadow', value, fallback: true })
+  return true
 }
 
 /** How long a headless agent's PermissionRequest hook blocks for the human (CC-144); read per spawn. */

@@ -1491,6 +1491,23 @@ Therefore:
   broker restart. An adopted `worktree:` takes no slot.
 - **Depth:** `agent_spawned.meta.depth`, default cap 2. Without this, an agent
   team is a fork bomb with a language model deciding the branching factor.
+- **Lifecycle ledger shadow (CC-118):** `ledgerShadow` in
+  `~/.agent-chat/config.json`, read once at broker boot by `config.ts`'s
+  `resolveLedgerShadow`, `AGENT_CHAT_LEDGER_SHADOW=0|1` as an environment
+  override for tests and the rollback scripts. On by default as of slice 5:
+  the supervisor writes every spawn, attach, exit, retire, resume and
+  teleport beside its own decisions into a `@titan-design/agent-lifecycle`
+  ledger over the same `events.db` connection, write-only from the
+  supervisor's side and read only by the verifier, the backfill and
+  `agent-chat doctor lifecycle`. Turning the flag off creates no table and
+  calls no ledger method; the supervisor's own behaviour is unchanged either
+  way. `agent-chat doctor lifecycle` (`--offline` to compare the ledger, the
+  event log, `runtime.json` and git without a running broker) prints one line
+  per disagreement between the supervisor, the ledger, the event log and git,
+  classified by known cause — a class named `unclassified`, or a nonzero
+  `shadow_errors` count, is the one condition that fails the check.
+  `GET /api/lifecycle` and `/health`'s optional `lifecycle` field carry the
+  same report to the dashboard and to relay.
 - **Rate:** `SpawnRateBudget` (`agents/spawn-rate.ts`), a spawn budget per
   requester per window — 5 attempts per 60s by default — mirroring the
   broadcast budget already in `registry.ts:63-64` and the
@@ -2033,16 +2050,34 @@ Mitigations to build:
   the complexity this design earns its way out of (README: "no heartbeats, no
   TTLs, no stale-entry reaper").
 
-**Checking a rollback target before a restart.** `scripts/rollback-check.sh <sha> [port]`
+**Checking a rollback target before a restart.** `scripts/rollback-check.sh <sha> [port] [--home <seed>]`
 answers "if this restart goes wrong, can the broker come back up on the old revision?"
 without touching the live one. It exports the revision with `git archive` into a temp dir,
 runs `npm ci` and `tsc` there, and starts `agent-chat broker` from that build. The broker
 uses an isolated `AGENT_CHAT_HOME` under `$TMPDIR` and port 7699 by default. The script
-requires `/health` to answer, then stops the broker and deletes the temp dir. It refuses to
-run if the port already answers, so it cannot probe the live broker by mistake. Exit 0 means
-the revision is a usable rollback target, exit 1 means it built but never served, and exit 2
-means bad input. Run it before a planned restart window, against the SHA the live broker runs
-now.
+requires `/health` to answer and `agent-chat agent ls` to print without error, then stops the
+broker and deletes the temp dir. It refuses to run if the port already answers, so it cannot
+probe the live broker by mistake. Exit 0 means the revision is a usable rollback target, exit
+1 means it built but never served (or `agent ls` failed against it), and exit 2 means bad
+input. Run it before a planned restart window, against the SHA the live broker runs now.
+`--home <seed>` copies a pre-built home (an `events.db` that already has CC-118's
+`agent_execution` tables — one is produced by seeding a scratch home with
+`AGENT_CHAT_LEDGER_SHADOW=1` and letting a broker create the tables, or by the slice-3
+backfill) into place first, so the check proves the OLD build still boots over a NEWER
+schema — cutover risk 11.
+
+**Proving a kill -9 restart keeps the ledger intact.** `scripts/ledger-kill9-check.sh [port]`
+starts a broker under an isolated `AGENT_CHAT_HOME` with `AGENT_CHAT_LEDGER_SHADOW=1`, spawns
+one headless agent through the real CLI (a stub `claude` on `PATH` that reconnects and
+re-registers under the same `agentId` on every socket drop, standing in for a real MCP
+subprocess), waits for a steady `/api/lifecycle`, `kill -9`s the broker's own pid
+(`$AGENT_CHAT_HOME/broker.pid`), restarts it over the same `events.db`, and waits for the
+agent to reattach. `agent-chat doctor lifecycle` then has to exit 0 with every divergence
+classified `ledger_only_since_restart` — the class CC-102's boot reconciliation will later
+close, not yet built as of slice 5 — and `sqlite3 events.db 'pragma integrity_check'` has to
+say `ok`. Wrapped as `src/__tests__/live-ledger-kill9.test.ts`, gated by `AGENT_CHAT_LIVE=1`
+like `live-identity.test.ts`. Picks a non-default port itself and refuses to run if it already
+answers, for the same reason `rollback-check.sh` does.
 
 ---
 
