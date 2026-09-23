@@ -231,6 +231,25 @@ export class EventLog implements EventStore {
     }))
   }
 
+  lastMessageFrom(from: string, opts: { to?: string; since: number }): QueueItem | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM events
+         WHERE actor = ? AND kind = 'message' AND ts >= ? AND (? IS NULL OR target = ?)
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get(from, opts.since, opts.to ?? null, opts.to ?? null) as unknown as Row | undefined
+    if (row === undefined) return undefined
+    return {
+      msgId: row.msg_id ?? String(row.id),
+      kind: 'message',
+      from: row.actor,
+      text: row.body ?? '',
+      at: row.ts,
+      meta: row.target ? { target: row.target } : {},
+    }
+  }
+
   /** Open items for the human: addressed to them and not yet answered or dismissed. */
   humanQueue(): QueueItem[] {
     const rows = this.db

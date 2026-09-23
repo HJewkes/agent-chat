@@ -41,6 +41,7 @@ import { checkSpawnCwd } from './spawn-cwd.js'
 import { resolveSpawnBriefing, type BriefingResult } from './active-work.js'
 import { resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
 import { findTranscript } from './transcript.js'
+import { resolvePredecessor, type PredecessorResult } from './predecessor.js'
 import {
   checkResumeSession,
   identityTranscript,
@@ -182,6 +183,8 @@ interface Resolved {
   fork?: { path: string; sessionId: string }
   /** CC-126: an existing conversation to continue, its transcript already checked. */
   resumed?: { sessionId: string; path: string }
+  /** CC-133: the rendered section on the agent this one takes over from. */
+  predecessor?: string
 }
 
 /** A duration as a reader would say it: seconds under a minute, minutes above. */
@@ -245,6 +248,8 @@ export interface SpawnRequest {
   forkFrom?: string
   /** CC-126: continue this Claude session uuid instead of minting one. */
   resumeSession?: string
+  /** CC-133: the agent whose work this one takes over; its last report and branch are briefed. */
+  predecessor?: string
   /** Empty for a human-initiated spawn; otherwise the requesting agent's id. */
   parentAgentId?: string
   requestedBy: string
@@ -844,6 +849,9 @@ export class Supervisor implements TeleportHost {
     if (account.warning !== undefined) warnings.push(account.warning)
     const resumed = this.resumeSource(req, isolationName, cwd, account.dir)
     if (resumed !== undefined && 'error' in resumed) return this.refuse(req, resumed.error)
+    const predecessor = req.predecessor === undefined ? undefined : this.predecessorFor(req.predecessor, req)
+    if (predecessor !== undefined && 'error' in predecessor) return this.refuse(req, predecessor.error)
+    if (predecessor?.warning !== undefined) warnings.push(predecessor.warning)
 
     if (!this.semaphore.acquire(agentId))
       return this.refuse(req, `no free agent slots (${this.semaphore.summary()}); retire one first`)
@@ -854,6 +862,7 @@ export class Supervisor implements TeleportHost {
         ...(injected ? { briefing: injected } : {}),
         ...(fork ? { fork } : {}),
         ...(resumed ? { resumed } : {}),
+        ...(predecessor ? { predecessor: predecessor.text } : {}),
       })
     } catch (err) {
       this.semaphore.release(agentId)
@@ -873,7 +882,7 @@ export class Supervisor implements TeleportHost {
     depth: number,
     resolved: Resolved,
   ): Promise<SpawnOutcome> {
-    const { briefing, fork, account, resumed } = resolved
+    const { briefing, fork, account, resumed, predecessor } = resolved
     const allocation = await resolveIsolation([isolationName]).allocate(ctx)
     this.core.append({
       kind: 'isolation_allocated',
@@ -895,7 +904,7 @@ export class Supervisor implements TeleportHost {
       ...(resumed ? { resume: true } : {}),
       name: req.name,
       profile,
-      brief: [briefing?.text, req.brief, allocation.note].filter(Boolean).join('\n\n'),
+      brief: [briefing?.text, predecessor, req.brief, allocation.note].filter(Boolean).join('\n\n'),
       cwd: allocation.cwd,
       surface,
       mcpConfigPath: mcpConfigPath(agentId),
@@ -954,6 +963,7 @@ export class Supervisor implements TeleportHost {
         // agent started holding someone else's conversation, and whose.
         ...(fork ? { inherit: 'context', fork_from: fork.sessionId } : {}),
         ...(resumed ? { resumed_session: resumed.sessionId, transcript: resumed.path } : {}),
+        ...(req.predecessor === undefined ? {} : { predecessor: req.predecessor }),
       },
     })
 
@@ -991,6 +1001,11 @@ export class Supervisor implements TeleportHost {
       ...(profile.disallowedTools?.length ? { disallowedTools: [...profile.disallowedTools] } : {}),
       ...(resumed ? { transcript: { path: resumed.path, found: true } } : {}),
     }
+  }
+
+  /** CC-133. Refused when unknown or not the requester's; resolved against the log, never the request. */
+  private predecessorFor(name: string, req: SpawnRequest): PredecessorResult {
+    return resolvePredecessor(this.core.agents, this.core.events, name, req.requestedBy)
   }
 
   /** CC-126: the checked transcript a `resume_session` spawn continues, or why it cannot. */

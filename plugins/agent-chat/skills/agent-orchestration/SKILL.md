@@ -101,6 +101,39 @@ Monitor(command: "agent-chat watch <your-name>",
 It starts at the log head, so it will not replay a backlog at you. Use
 `agent-chat watch <name> --once --since all` to read what you already missed.
 
+## Follow-ups: send them to a fresh worker
+
+A worker that has sent its first Status report is usually carrying its whole assignment in
+context, and every later turn pays for all of it again. A follow-up (review fixes, a second
+task on the same branch, a cold wake hours later) costs far less in a new session that starts
+from the report than in the old one. This is advice, not a cap. Use it when both are true:
+
+- the worker has delivered its first Status report, and
+- its context fill (the roster's segment, or `session_budget(name)`) is above its role's
+  advisory threshold. The thresholds are `DEFAULT_CONTEXT_HINTS` in `src/config.ts`,
+  overridable by `contextHints` in `~/.agent-chat/config.json`. At the time of writing:
+  implementer and implementer-lite 200k, peer 250k, any other profile 250k. Explorer,
+  reviewer, researcher and planner have none, so keep their follow-ups in place.
+
+Then spawn the successor with `agent_spawn(..., predecessor: "<old name>")` instead of a
+`chat_send` to the old session. The broker adds a Predecessor section ahead of your brief:
+the old worker's newest `chat_send` to you, its branch and worktree, and its session id and
+transcript path. Your brief only has to say what to do next. Pass the same `worktree` (or
+`cwd`) so the successor works on the existing branch instead of allocating a new one. Only
+the agent's own spawner can name it as a predecessor.
+
+Keep the follow-up in place when it depends on what the worker holds in context and not in
+the report: a debugging trail it has not written down, or a decision it is midway through.
+For a finished worker that is not retired, use `agent_resume`. For a retired one, use
+`agent_spawn resume_session: "<session id>"` (CC-126). Both continue the old conversation
+instead of starting fresh.
+
+The spawn never retires the predecessor. It warns while the old worker is unretired. Once
+the successor registers, retire the old worker, or leave it parked if you might still need
+its conversation. One exception: if the successor adopted a worktree that the predecessor
+allocated, leave the predecessor parked until the successor's branch is merged. Retire
+releases the worktree the retired agent allocated, even while the successor is working in it.
+
 ## Budget: what you are spending, and how to find out
 
 `agent_list` and `chat_list` rows already carry each peer's model, session cost and context

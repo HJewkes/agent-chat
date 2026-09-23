@@ -401,6 +401,10 @@
             "type": "string",
             "description": "A Claude session uuid to CONTINUE instead of starting fresh, e.g. a retired agent's session id from agent_list. Its transcript must already exist under the account (config_dir) and cwd the agent will run in; otherwise the spawn is refused and names the path it checked. The brief becomes its next turn. For an agent that is finished but not retired, agent_resume is simpler."
           },
+          "predecessor": {
+            "type": "string",
+            "description": "Name of an agent YOU spawned whose work this one takes over, for a follow-up assignment sent to a fresh worker instead of the one that did the first piece. The broker adds a section to the brief with the predecessor's last report (its newest chat_send to you), its branch and worktree, and its session id and transcript path, so the brief need only say what to do next. Refused for an agent someone else spawned. It does not retire the predecessor: the spawn warns while it is unretired, and retiring it is yours to do once this one registers."
+          },
           "config_dir": {
             "type": "string",
             "description": "Absolute path of the Claude config dir the agent should run under, and therefore WHICH ACCOUNT it spends, e.g. \"/Users/you/.claude-profiles/agents\". Omit it in the ordinary case: the agent inherits YOUR account automatically, then the briefing initiative's declared profile, then the broker's. Pass it only to bill an account deliberately. It must already exist and be under your home directory; anything else is refused rather than quietly replaced, because running on the wrong account is the failure this prevents."

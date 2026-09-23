@@ -762,6 +762,12 @@ export type ClientMessage =
        * cwd; the broker refuses otherwise and names the path it checked.
        */
       resumeSession?: string
+      /**
+       * CC-133: the name of the agent whose work this one takes over. Sent as a
+       * name, not text: the broker reads its last report, branch and transcript
+       * from the log, and refuses unless the requester spawned it.
+       */
+      predecessor?: string
     }
   | { t: 'agents'; includeRetired?: boolean }
   /**
