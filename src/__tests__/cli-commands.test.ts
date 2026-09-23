@@ -83,6 +83,24 @@ describe('command tree', () => {
  * the only thing standing between a tidy-up rename and a CLI that can no longer
  * start a broker or serve MCP.
  */
+describe('mirror', () => {
+  const mirror = find(buildProgram(), 'mirror') as Command
+
+  it('advertises start, stop and status, and keeps run hidden because launchd types it, not a person', () => {
+    const visible = mirror
+      .createHelp()
+      .visibleCommands(mirror)
+      .map(c => c.name())
+    expect(visible.filter(name => name !== 'help').sort()).toEqual(['start', 'status', 'stop'])
+    expect(names(mirror)).toContain('run')
+  })
+
+  it('offers a dry run on start', () => {
+    const start = find(mirror, 'start') as Command
+    expect(start.options.map(o => o.long)).toContain('--dry-run')
+  })
+})
+
 describe('process-launch contracts', () => {
   const program = buildProgram()
 

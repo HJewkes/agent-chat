@@ -16,6 +16,7 @@ Human commands:
 
 Commands:
   service                    run and inspect the broker daemon
+  mirror                     project the human queue into a Matrix room and fold phone verdicts back
   debug                      diagnostics: sessions, history, routing
   doctor                     check the things that fail silently
   lifecycle                  offline maintenance of the agent lifecycle ledger
@@ -143,6 +144,51 @@ open the dashboard, or print its URL when not a TTY
 Options:
   -p, --port <port>  port the dashboard is on
   -h, --help         display help for command
+
+=== agent-chat mirror
+Usage: agent-chat mirror [options] [command]
+
+project the human queue into a Matrix room and fold phone verdicts back
+
+Options:
+  -h, --help       display help for command
+
+Commands:
+  start [options]  install or refresh the launchd job and start it
+  stop             stop the launchd job and keep it from starting at login
+  status           config, env file mode, launchd state and status-file freshness
+  help [command]   display help for command
+
+=== agent-chat mirror start
+Usage: agent-chat mirror start [options]
+
+install or refresh the launchd job and start it
+
+Options:
+  --dry-run   print the plist and launchctl calls; change nothing
+  -h, --help  display help for command
+
+=== agent-chat mirror stop
+Usage: agent-chat mirror stop [options]
+
+stop the launchd job and keep it from starting at login
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat mirror status
+Usage: agent-chat mirror status [options]
+
+config, env file mode, launchd state and status-file freshness
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat mirror run
+Usage: agent-chat mirror run [options]
+
+Options:
+  -h, --help  display help for command
 
 === agent-chat debug
 Usage: agent-chat debug [options] [command]

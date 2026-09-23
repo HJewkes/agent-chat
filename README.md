@@ -21,6 +21,7 @@ canonical, current guide to how the tools fit together. Everything else in
 | `working-as-a-team.md`                 | Current guide — how the tools compose, day to day.                                                                |
 | `demo-walkthrough.md`                  | Current guide — a live runbook for sanity-checking what's shipped.                                                |
 | `permission-relay.md`                  | Current guide — verified mechanics of the permission relay, as built.                                             |
+| `phone-queue.md`                       | Current guide — `agent-chat mirror`: the human queue in a Matrix room on your phone.                              |
 | `cross-agent-communication.md`         | Lessons learned from real multi-session runs; the evidence behind the messaging rules in `working-as-a-team.md`.  |
 | `teleport.md`                          | Design record — implemented; §14 records where the build diverged from the design.                                |
 | `agent-teams.md`                       | Design record — Parts 1-2 shipped (identity, spawning, supervision); Part 3 is still a plan. See its §11.         |
@@ -106,7 +107,8 @@ $ agent-chat answer f2fa2fcd "mock the BLE layer, keep hardware behind a flag"
 ```
 
 The answer routes back to whoever asked, arriving as a channel message with
-`in_reply_to` set. Sessions are limited to **3 open questions** — "ask the human"
+`in_reply_to` set. To answer from your phone instead, `agent-chat mirror` projects this
+queue into a Matrix room; see [`docs/phone-queue.md`](docs/phone-queue.md). Sessions are limited to **3 open questions** — "ask the human"
 is cheaper for an agent than deciding, and the budget forces triage.
 
 ## Setup
@@ -221,6 +223,8 @@ agent-chat dismiss <id>         close an item without answering
 agent-chat approve <id> allow|deny
                                 answer an agent's permission prompt
 agent-chat send <to> <text>     message a session as the human
+agent-chat mirror start|stop|status
+                                the queue on your phone (docs/phone-queue.md)
 agent-chat ps                   who's registered
 agent-chat history [n]          recent events from the log
 agent-chat broker               run the broker in the foreground
