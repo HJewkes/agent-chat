@@ -1,0 +1,56 @@
+=== chat_unsubscribe: everything
+args: {}
+frame: {"t":"unsubscribe"}
+[
+  {
+    "type": "text",
+    "text": "Dropped every subscription. Holding 0."
+  }
+]
+
+=== chat_unsubscribe: one rule
+args: {"scope":"name","target":"bob"}
+frame: {"t":"unsubscribe","selector":{"name":"bob"}}
+[
+  {
+    "type": "text",
+    "text": "Unsubscribed from agent \"bob\". Holding 1."
+  }
+]
+
+=== chat_unsubscribe: scope spawned
+args: {"scope":"spawned"}
+frame: {"t":"unsubscribe","selector":{"spawnedBy":"self"}}
+[
+  {
+    "type": "text",
+    "text": "Unsubscribed from agents you spawned. Holding 0."
+  }
+]
+
+=== chat_unsubscribe: scope tag, no target
+args: {"scope":"tag"}
+[
+  {
+    "type": "text",
+    "text": "Error: scope \"tag\" needs target set to the tag to watch"
+  }
+]
+
+=== chat_unsubscribe: scope misspelled
+args: {"scope":"everyone"}
+[
+  {
+    "type": "text",
+    "text": "Error: scope must be one of: all, name, tag, spawned"
+  }
+]
+
+=== chat_unsubscribe: scope null
+args: {"scope":null}
+[
+  {
+    "type": "text",
+    "text": "Error: scope is required and must be one of: all, name, tag, spawned"
+  }
+]

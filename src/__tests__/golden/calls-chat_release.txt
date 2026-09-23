@@ -1,0 +1,39 @@
+=== chat_release: everything
+args: {}
+frame: {"t":"release"}
+[
+  {
+    "type": "text",
+    "text": "Released."
+  }
+]
+
+=== chat_release: one worktree
+args: {"worktree_path":"/work/repo"}
+frame: {"t":"release","worktreePath":"/work/repo"}
+[
+  {
+    "type": "text",
+    "text": "Released."
+  }
+]
+
+=== chat_release: blank worktree_path releases everything
+args: {"worktree_path":" "}
+frame: {"t":"release"}
+[
+  {
+    "type": "text",
+    "text": "Released."
+  }
+]
+
+=== chat_release: nothing held there
+args: {"worktree_path":"/work/none"}
+frame: {"t":"release","worktreePath":"/work/none"}
+[
+  {
+    "type": "text",
+    "text": "You were not holding a claim there."
+  }
+]
