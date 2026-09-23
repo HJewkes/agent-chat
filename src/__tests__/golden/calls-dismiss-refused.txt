@@ -1,0 +1,4 @@
+=== agent-chat dismiss m1
+frame: {"t":"dismiss","msgId":"m1"}
+stderr: no such item
+exit 1

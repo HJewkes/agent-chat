@@ -1,0 +1,3 @@
+=== agent-chat approve m1 maybe
+stderr: usage: agent-chat approve <id> allow|deny
+exit 1
