@@ -1,0 +1,13 @@
+=== agent-chat doctor
+stdout: ok    node               v22.0.0
+stdout: FAIL  events.db          boom
+stdout: 
+1 check failed.
+exit 1
+
+=== agent-chat doctor
+stdout: ok    node               v22.0.0
+stdout: warn  events.db          not created yet
+stdout: 
+Nothing broken; the warnings above are states, not faults.
+exit 0

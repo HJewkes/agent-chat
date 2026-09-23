@@ -1,6 +1,7 @@
 import type { Command } from 'commander'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LifecycleReport } from '../api-contract.js'
+import type { Check } from '../broker/doctor.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
 
 /**
@@ -26,6 +27,13 @@ vi.mock('../cli/client.js', async importOriginal => ({
         return broker.reply
       },
     }),
+}))
+
+const doctorChecks = vi.hoisted(() => ({ checks: [] as Check[] }))
+
+vi.mock('../broker/doctor.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../broker/doctor.js')>()),
+  runChecks: async () => doctorChecks.checks,
 }))
 
 const { buildProgram } = await import('../cli/index.js')
@@ -197,5 +205,23 @@ describe('doctor lifecycle golden', () => {
     vi.unstubAllGlobals()
 
     await expect(rendered).toMatchFileSnapshot('./golden/calls-doctor-lifecycle.txt')
+  })
+})
+
+describe('S7b call golden', () => {
+  it('exits 1 on a fail check, and 0 when only warnings are present', async () => {
+    doctorChecks.checks = [
+      { name: 'node', status: 'ok', detail: 'v22.0.0' },
+      { name: 'events.db', status: 'fail', detail: 'boom' },
+    ]
+    const failing = await invoke({ argv: ['doctor'], reply: retired({}) })
+
+    doctorChecks.checks = [
+      { name: 'node', status: 'ok', detail: 'v22.0.0' },
+      { name: 'events.db', status: 'warn', detail: 'not created yet' },
+    ]
+    const warningOnly = await invoke({ argv: ['doctor'], reply: retired({}) })
+
+    await expect([failing, warningOnly].join('\n')).toMatchFileSnapshot('./golden/calls-doctor.txt')
   })
 })

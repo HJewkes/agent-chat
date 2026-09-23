@@ -4,12 +4,20 @@ Status as of 2026-09-23: slice 1 converted `chat_list`, `chat_send` and `agent r
 and `agent resume` were born as registry commands after it. Slice 2 converts the reads that fit
 0.2.0 as-is: `agent_profiles`, `agent_list`, `agent_background`, `agent_surface`, `chat_inbox`,
 `chat_activity`, `agent_logs`, `chat_transcript` and `session_budget`, and deletes `boundedLimit`.
-13 tools and about 31 CLI verbs still use the hand-written path, and both paths run side by side.
-Slice S4 converts `chat_claim`, `chat_release`, `chat_tag`, `chat_subscribe` and `chat_unsubscribe`,
-and deletes `optionalTags`.
-Slice S6 converts `agent_spawn` and `agent_teleport`. `optionalEnum` and `optionalPatterns` lose
-their last caller and are left for S5 to delete with `requireString` and `optionalString`; only
-`chat_register` and `chat_status` remain hand-written.
+Slice 3 converted the human-queue writes: `chat_broadcast`, `chat_ask`, `chat_notify` and
+`chat_endorse`. Slice 4 converts `chat_claim`, `chat_release`, `chat_tag`, `chat_subscribe` and
+`chat_unsubscribe`, and deletes `optionalTags`. Slice 6 converts `agent_spawn` and
+`agent_teleport`; `optionalEnum` and `optionalPatterns` lose their last caller and are left for S5
+to delete with `requireString` and `optionalString`, so only `chat_register` and `chat_status`
+remain hand-written on the MCP side. Slice 7a converted the CLI human and debug reads: `inbox`,
+`dismiss`, `approve`, `endorse`, `debug ps`, `debug claims`, `debug history [n]`,
+`debug log [n]`, plus the hidden `ps`, `history [n]` and `log [n]` aliases, and added
+`Report.errors` and `addVerb`'s `helpGroup`/`hidden` options. Slice 7b converted the remaining CLI
+verbs that fit 0.2.0 as-is: `doctor`, `profiles`, `agent surface`, `agent budget [name]`,
+`agent worktrees` and `teleport abort`; it also made `addVerb` return the mounted `Commander` so
+`doctor lifecycle` stays attached as a subcommand. The CLI verbs blocked on G4-G6 (`answer`,
+`service *`, `debug send`, `watch`, `agent spawn`, hidden `send`, `lifecycle backfill`) plus
+`agent ls` (blocked on CC-107) still use the hand-written path, and both paths run side by side.
 
 ## Why
 

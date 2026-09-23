@@ -42,7 +42,7 @@ export function addVerb<Args>(
   parent: Commander,
   verb: Verb<Args>,
   options: { helpGroup?: string; hidden?: boolean } = {},
-): void {
+): Commander {
   const sub = parent.command(
     commandPath(verb.name).at(-1) ?? verb.name,
     options.hidden ? { hidden: true } : undefined,
@@ -57,6 +57,7 @@ export function addVerb<Args>(
     else sub.option(spec, option.description)
   }
   sub.action(() => runVerb(verb, sub.processedArgs, sub.opts()))
+  return sub
 }
 
 async function runVerb<Args>(verb: Verb<Args>, positionals: unknown[], opts: Record<string, unknown>) {

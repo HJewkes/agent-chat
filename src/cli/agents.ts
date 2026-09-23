@@ -5,6 +5,7 @@ import { reclaim, sweepWorktrees } from '../agents/isolation/sweep.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
 import { transcriptLine } from '../agents/transcript.js'
 import { type ServerMessage } from '../protocol.js'
+import type { Report } from './command.js'
 import { fail, withBroker } from './client.js'
 
 /**
@@ -116,7 +117,7 @@ export function resolveBrief(words: string[], stdin: string | undefined): string
  * else. `--force` overrides that per the same rule `retire --force` follows: a
  * human deciding to throw work away, never an agent.
  */
-export async function agentWorktrees(options: { prune?: boolean; force?: boolean } = {}): Promise<void> {
+export async function agentWorktrees(options: { prune?: boolean; force?: boolean } = {}): Promise<Report> {
   const roster = await withBroker(async b => {
     const result = (await b.request({ t: 'agents' }, 'agents_result')) as Extract<
       ServerMessage,
@@ -127,22 +128,25 @@ export async function agentWorktrees(options: { prune?: boolean; force?: boolean
   const root = await findGitRoot(process.cwd())
   const swept = await sweepWorktrees(roster, { ...(root === null ? {} : { roots: [root] }) })
 
-  if (swept.length === 0) return console.log('No agent-chat worktrees on this machine.')
+  if (swept.length === 0) return { ok: true, lines: ['No agent-chat worktrees on this machine.'] }
+  const lines: string[] = []
   for (const entry of swept) {
-    console.log(`${entry.status.padEnd(12)} ${entry.branch.padEnd(28)} ${entry.worktree}`)
-    console.log(`${' '.repeat(12)} ${entry.detail}`)
+    lines.push(`${entry.status.padEnd(12)} ${entry.branch.padEnd(28)} ${entry.worktree}`)
+    lines.push(`${' '.repeat(12)} ${entry.detail}`)
   }
 
   if (options.prune !== true) {
     const n = swept.filter(e => e.status === 'reclaimable').length
-    return console.log(n === 0 ? '\nNothing to reclaim.' : `\n${n} reclaimable. Reclaim with --prune.`)
+    lines.push(n === 0 ? '\nNothing to reclaim.' : `\n${n} reclaimable. Reclaim with --prune.`)
+    return { ok: true, lines }
   }
 
-  console.log('')
+  lines.push('')
   for (const entry of swept.filter(e => options.force === true || e.status === 'reclaimable')) {
     const result = await reclaim(entry, { ...(options.force === true ? { force: true } : {}) })
-    console.log(result.ok ? `Reclaimed ${entry.branch}.` : `Left ${entry.branch}: ${result.reason}`)
+    lines.push(result.ok ? `Reclaimed ${entry.branch}.` : `Left ${entry.branch}: ${result.reason}`)
   }
+  return { ok: true, lines }
 }
 
 export async function agentSpawn(
@@ -200,18 +204,20 @@ export async function agentSpawn(
  * No anchor: this connection holds no registration and therefore no pane, which
  * the iTerm ladder resolves as a new window rather than an error.
  */
-export async function agentSurface(name: string): Promise<void> {
+export async function agentSurface(name: string): Promise<Report> {
   const res = (await withBroker(b => b.request({ t: 'surface', name }, 'switch_result'))) as Extract<
     ServerMessage,
     { t: 'switch_result' }
   >
-  console.log(
-    res.ok
-      ? `${name} is now in ${res.surface}, resumed on its existing conversation. ` +
+  return {
+    ok: res.ok,
+    lines: [
+      res.ok
+        ? `${name} is now in ${res.surface}, resumed on its existing conversation. ` +
           'The turn it was part way through was interrupted.'
-      : `Not surfaced: ${res.reason}`,
-  )
-  process.exit(res.ok ? 0 : 1)
+        : `Not surfaced: ${res.reason}`,
+    ],
+  }
 }
 
 /**
@@ -220,13 +226,15 @@ export async function agentSurface(name: string): Promise<void> {
  * itself, and a veto any agent could exercise is not a veto. The broker refuses
  * this frame from a registered connection; this one holds no registration.
  */
-export async function teleportAbort(name: string): Promise<void> {
+export async function teleportAbort(name: string): Promise<Report> {
   const res = (await withBroker(b => b.request({ t: 'teleport_abort', name }, 'teleport_result'))) as Extract<
     ServerMessage,
     { t: 'teleport_result' }
   >
-  console.log(res.ok ? `Stopped ${name}'s teleport. It is still live, on the old build.` : res.reason)
-  process.exit(res.ok ? 0 : 1)
+  return {
+    ok: res.ok,
+    lines: [res.ok ? `Stopped ${name}'s teleport. It is still live, on the old build.` : String(res.reason)],
+  }
 }
 
 /**
@@ -235,7 +243,7 @@ export async function teleportAbort(name: string): Promise<void> {
  * reading, because the pacing question is usually "which of these is nearly
  * full", not "how is one of them doing".
  */
-export async function agentBudget(name?: string): Promise<void> {
+export async function agentBudget(name?: string): Promise<Report> {
   const agents = await withBroker(async b => {
     const res = (await b.request({ t: 'agents' }, 'agents_result')) as Extract<
       ServerMessage,
@@ -245,25 +253,33 @@ export async function agentBudget(name?: string): Promise<void> {
   })
 
   const wanted = name === undefined ? agents : agents.filter(a => a.name === name)
-  if (wanted.length === 0)
-    fail(name === undefined ? 'No agents have a durable identity.' : `No agent "${name}".`)
-
-  for (const agent of wanted) {
-    const read = readBudget(agent.sessionId, Date.now(), agent.configDir)
-    console.log(read.found ? formatBudget(agent.name, read) : budgetMiss(agent.name, read))
+  if (wanted.length === 0) {
+    return {
+      ok: false,
+      lines: [],
+      errors: [name === undefined ? 'No agents have a durable identity.' : `No agent "${name}".`],
+    }
   }
+
+  const lines = wanted.map(agent => {
+    const read = readBudget(agent.sessionId, Date.now(), agent.configDir)
+    return read.found ? formatBudget(agent.name, read) : budgetMiss(agent.name, read)
+  })
+  return { ok: true, lines }
 }
 
-export function profiles(): void {
+export function profiles(): Report {
+  const lines: string[] = []
   for (const name of listProfileNames()) {
     const profile = loadProfile(name)
     if ('error' in profile) {
-      console.log(`${name.padEnd(14)} !! ${profile.error}`)
+      lines.push(`${name.padEnd(14)} !! ${profile.error}`)
       continue
     }
-    console.log(
+    lines.push(
       `${name.padEnd(14)} ${profile.model.padEnd(7)} ${profile.surface.padEnd(12)} ${profile.description}`,
     )
-    console.log(`${' '.repeat(14)} tools: ${profile.allowedTools.join(', ')}`)
+    lines.push(`${' '.repeat(14)} tools: ${profile.allowedTools.join(', ')}`)
   }
+  return { ok: true, lines }
 }

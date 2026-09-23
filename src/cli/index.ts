@@ -7,18 +7,23 @@ import { VERSION } from '../broker/version.js'
 import { socketPath } from '../paths.js'
 import * as agents from './agents.js'
 import { addVerb } from './command.js'
+import { agentBudgetVerb } from './verbs/agent-budget.js'
 import { agentRetire } from './verbs/agent-retire.js'
 import { agentResume } from './verbs/agent-resume.js'
+import { agentSurfaceVerb } from './verbs/agent-surface.js'
+import { agentWorktreesVerb } from './verbs/agent-worktrees.js'
 import { approveVerb } from './verbs/approve.js'
 import { debugClaimsVerb } from './verbs/debug-claims.js'
 import { debugHistoryVerb } from './verbs/debug-history.js'
 import { debugLogVerb } from './verbs/debug-log.js'
 import { debugPsVerb } from './verbs/debug-ps.js'
 import { dismissVerb } from './verbs/dismiss.js'
+import { doctorVerb } from './verbs/doctor.js'
 import { endorseVerb } from './verbs/endorse.js'
 import { inboxVerb } from './verbs/inbox.js'
+import { profilesVerb } from './verbs/profiles.js'
+import { teleportAbortVerb } from './verbs/teleport-abort.js'
 import * as debug from './debug.js'
-import { doctor } from './doctor.js'
 import { doctorLifecycleCommand } from './doctor-lifecycle.js'
 import * as human from './human.js'
 import { addLifecycleCommands } from './lifecycle.js'
@@ -139,34 +144,14 @@ function addAgentCommands(program: Command): void {
     .action(agents.agentSpawn)
   addVerb(agent, agentRetire)
   addVerb(agent, agentResume)
-  agent
-    .command('worktrees')
-    .description('worktrees agent-chat is holding, and which nobody is using')
-    .option('--prune', 'reclaim the ones nothing would be lost from')
-    .option('--force', 'with --prune, reclaim even those holding work')
-    .action(agents.agentWorktrees)
-  agent
-    .command('surface <name>')
-    .description('bring a headless agent into a window you can answer')
-    .action(agents.agentSurface)
-  agent
-    .command('budget [name]')
-    .description('context fill and account rate limits, per agent')
-    .action((name?: string) => agents.agentBudget(name))
+  addVerb(agent, agentWorktreesVerb)
+  addVerb(agent, agentSurfaceVerb)
+  addVerb(agent, agentBudgetVerb)
 
-  program
-    .command('teleport')
-    .description('teleport control')
-    .helpGroup(AGENTS)
-    .command('abort <name>')
-    .description('stop a session ending itself for a successor')
-    .action(agents.teleportAbort)
+  const teleport = program.command('teleport').description('teleport control').helpGroup(AGENTS)
+  addVerb(teleport, teleportAbortVerb)
 
-  program
-    .command('profiles')
-    .description('agent profiles available to spawn with')
-    .helpGroup(AGENTS)
-    .action(agents.profiles)
+  addVerb(program, profilesVerb, { helpGroup: AGENTS })
 }
 
 /**
@@ -223,11 +208,7 @@ export function buildProgram(): Command {
   addHumanCommands(program)
   addServiceCommands(program)
   addDebugCommands(program)
-  program
-    .command('doctor')
-    .description('check the things that fail silently')
-    .action(doctor)
-    .addCommand(doctorLifecycleCommand())
+  addVerb(program, doctorVerb).addCommand(doctorLifecycleCommand())
   addLifecycleCommands(program)
   addAgentCommands(program)
   addHiddenCommands(program)
