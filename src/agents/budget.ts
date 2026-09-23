@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { configDir } from './transcript.js'
+import type { SlotUsage } from './semaphore.js'
 
 /**
  * What a Claude Code session is spending — context window and account rate
@@ -312,17 +313,21 @@ export function budgetSegment(read: BudgetRead): string {
  * figure for every session under one account, so printing them per row would
  * repeat one fact N times rather than report N facts — this reads them once,
  * from whichever row's reading is freshest, and says whose and how old.
+ *
+ * `slots` (CC-139) rides on the same line rather than a second one, and is
+ * omitted rather than printed as "unknown" when the broker reply predates it.
  */
-export function accountUsageLine(budgets: NamedBudgetRead[]): string {
+export function accountUsageLine(budgets: NamedBudgetRead[], slots?: SlotUsage): string {
   const found = budgets
     .map(b => (b.read.found ? { name: b.name, ...b.read } : undefined))
     .filter((b): b is { name: string } & Extract<BudgetRead, { found: true }> => b !== undefined)
-  if (found.length === 0) return 'Account usage: no budget reading available from any row.'
+  const suffix = slots === undefined ? '' : ` · slots ${slots.held}/${slots.cap}`
+  if (found.length === 0) return `Account usage: no budget reading available from any row.${suffix}`
 
   const freshest = found.reduce((a, b) => (b.age_seconds < a.age_seconds ? b : a))
   const windows = Object.entries(freshest.budget.rate_limits).map(
     ([name, w]) => `${name} ${round(w.used_pct)}%`,
   )
   const usage = windows.length > 0 ? windows.join(', ') : 'no account rate-limit windows in the payload'
-  return `Account usage (from ${freshest.name}'s reading, ${freshest.age_seconds}s old): ${usage}.`
+  return `Account usage (from ${freshest.name}'s reading, ${freshest.age_seconds}s old): ${usage}.${suffix}`
 }

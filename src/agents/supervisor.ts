@@ -36,7 +36,7 @@ import {
 } from './isolation/index.js'
 import { surfaceFor } from './surfaces/index.js'
 import { SurfaceRefused, type SurfaceOptions } from './surfaces/options.js'
-import { Semaphore } from './semaphore.js'
+import { Semaphore, type SlotUsage } from './semaphore.js'
 import { checkSpawnCwd } from './spawn-cwd.js'
 import { resolveSpawnBriefing, type BriefingResult } from './active-work.js'
 import { resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
@@ -1786,6 +1786,11 @@ export class Supervisor implements TeleportHost {
 
   slots(blocked = 0): string {
     return this.semaphore.summary(blocked)
+  }
+
+  /** Held/cap, for the roster header and `/health` — see `slots()` for the rendered form. */
+  slotUsage(): SlotUsage {
+    return { held: this.semaphore.inUse, cap: this.semaphore.slots }
   }
 
   paneRefFor(name: string): string | undefined {

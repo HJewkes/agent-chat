@@ -833,7 +833,13 @@ export type ServerMessage =
    * question a peer has when reading who is active is what they are holding, and
    * two round trips would let the two answers disagree (CC-56).
    */
-  | { t: 'list_result'; sessions: SessionInfo[]; claims?: SessionClaim[] }
+  /** `slots` is the live semaphore reading (CC-139); absent from an older broker build. */
+  | {
+      t: 'list_result'
+      sessions: SessionInfo[]
+      claims?: SessionClaim[]
+      slots?: { held: number; cap: number }
+    }
   | { t: 'claim_result'; ok: boolean; reason?: string; claim?: SessionClaim; conflicts?: SessionClaim[] }
   | { t: 'release_result'; released: boolean }
   /**
@@ -924,7 +930,8 @@ export type ServerMessage =
       /** CC-126: set on any resume, so the caller is told whether a conversation actually came back. */
       transcript?: { path: string; found: boolean }
     }
-  | { t: 'agents_result'; agents: AgentIdentity[] }
+  /** `slots` is the live semaphore reading (CC-139); absent from an older broker build. */
+  | { t: 'agents_result'; agents: AgentIdentity[]; slots?: { held: number; cap: number } }
   /**
    * Answered as soon as the handoff is recorded and the sequence is committed to,
    * NOT when the descendant is up: a visible predecessor has 30 seconds of

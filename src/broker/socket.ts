@@ -13,6 +13,7 @@ import { logEvent } from './log.js'
 import { newMsgId } from './event-log.js'
 import { type Escalation, type RouteResult } from './registry.js'
 import { BrokerCore, type Conn } from './core.js'
+import type { SlotUsage } from '../agents/semaphore.js'
 import { Supervisor, type SupervisorOptions } from '../agents/supervisor.js'
 import type { SwitchOutcome } from '../agents/mode-switch.js'
 import { SystemEventFeed } from './subscriptions.js'
@@ -128,6 +129,11 @@ export class SocketServer {
     this.unwatch()
     this.feed.close()
     this.supervisor.close()
+  }
+
+  /** For `/health` (CC-139): the broker owns the supervisor, `daemon.ts` does not. */
+  slotUsage(): SlotUsage {
+    return this.supervisor.slotUsage()
   }
 
   /** Spawn on behalf of `conn`, resolving its pane anchor from its own entry. */
@@ -955,6 +961,7 @@ export class SocketServer {
         return reply(conn, {
           t: 'list_result',
           sessions: core.registry.list(),
+          slots: this.supervisor.slotUsage(),
           ...(claims.length === 0 ? {} : { claims }),
         })
       }
@@ -1085,6 +1092,7 @@ export class SocketServer {
         return reply(conn, {
           t: 'agents_result',
           agents: core.agents.roster({ includeRetired: msg.includeRetired ?? false }),
+          slots: this.supervisor.slotUsage(),
         })
       case 'teleport':
         void this.handleTeleport(conn, msg)

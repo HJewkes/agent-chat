@@ -123,6 +123,29 @@ describe('agent_list carries budget per row', () => {
     expect(out).toContain('Account usage: no budget reading available')
   })
 
+  it('appends the slot figure to the header when the broker supplies one', async () => {
+    const handler = new ToolHandler(
+      stubBroker({
+        t: 'agents_result',
+        agents: [agent({ name: 'silent-scout', sessionId: 'sess-ghost' })],
+        slots: { held: 12, cap: 30 },
+      }),
+    )
+    const out = textOf(await handler.handle('agent_list', {}))
+    const header = out.split('\n')[1]
+    // A mutation swapping held/cap (or dropping the segment) would pass a bare
+    // `toContain('slots')` — pin the exact figure and its position on the line.
+    expect(header).toBe('Account usage: no budget reading available from any row. · slots 12/30')
+  })
+
+  it('omits the slot figure when an older broker reply carries none', async () => {
+    const handler = new ToolHandler(
+      stubBroker({ t: 'agents_result', agents: [agent({ name: 'silent-scout', sessionId: 'sess-ghost' })] }),
+    )
+    const out = textOf(await handler.handle('agent_list', {}))
+    expect(out.split('\n')[1]).not.toContain('slots')
+  })
+
   /**
    * A retired or exited identity has no process left to have written a
    * reading, so its absence is the default, not information — unlike a LIVE
@@ -265,5 +288,28 @@ describe('chat_list carries budget per row', () => {
     expect(out).toContain('claude-opus-5 · $1.3 · 43.2%/200k')
     expect(out).toContain('- raw-client')
     expect(out.split('\n').find(line => line.startsWith('- raw-client'))).toContain('no budget reading')
+  })
+
+  it('appends the slot figure to the header when the broker supplies one', async () => {
+    const handler = new ToolHandler(
+      stubBroker({
+        t: 'list_result',
+        sessions: [session({ name: 'raw-client' })],
+        slots: { held: 3, cap: 30 },
+      }),
+    )
+    const out = textOf(await handler.handle('chat_list', {}))
+    // Pin position (header line) and exact wording, not just presence — a
+    // mutation that appended the segment to a row instead of the header would
+    // still pass a bare `toContain`.
+    expect(out.split('\n')[1]).toBe('Account usage: no budget reading available from any row. · slots 3/30')
+  })
+
+  it('omits the slot figure when the broker reply carries none', async () => {
+    const handler = new ToolHandler(
+      stubBroker({ t: 'list_result', sessions: [session({ name: 'raw-client' })] }),
+    )
+    const out = textOf(await handler.handle('chat_list', {}))
+    expect(out.split('\n')[1]).not.toContain('slots')
   })
 })

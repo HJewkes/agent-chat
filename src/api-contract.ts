@@ -31,6 +31,8 @@ export interface HealthPayload {
   socket: string
   sessions: number
   queue_open: number
+  /** Held/cap agent slots (CC-139). Absent from a caller that supplied no reading. */
+  slots?: { held: number; cap: number }
 }
 
 /** `GET /api/queue` — open items only; resolved ones are absent, not flagged. */

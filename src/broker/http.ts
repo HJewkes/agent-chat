@@ -1,5 +1,6 @@
 import { Hono, type Context, type MiddlewareHandler } from 'hono'
 import { TOKEN_HEADER, type ErrorResponse } from '../api-contract.js'
+import type { SlotUsage } from '../agents/semaphore.js'
 import { apiRoutes } from './api-routes.js'
 import type { BrokerCore } from './core.js'
 import { dashboardRoutes, type DashboardOptions } from './dashboard-routes.js'
@@ -45,9 +46,11 @@ export interface HttpAppOptions {
    */
   token?: string | null
   dashboard?: DashboardOptions
+  /** Live getter for `/health` (CC-139); the supervisor lives outside `core`. Absent in tests. */
+  slots?: () => SlotUsage
 }
 
-export function buildHttpApp({ core, port, token = null, dashboard = {} }: HttpAppOptions): Hono {
+export function buildHttpApp({ core, port, token = null, dashboard = {}, slots }: HttpAppOptions): Hono {
   const app = new Hono()
 
   // A browser page from anywhere else may not read this API. Absent Origin is
@@ -67,7 +70,7 @@ export function buildHttpApp({ core, port, token = null, dashboard = {} }: HttpA
   // `requireToken` for why this one also accepts the token in the query.
   app.use('/events', requireToken(token, { allowQuery: true }))
 
-  app.get('/health', c => c.json(buildHealthPayload(core, port())))
+  app.get('/health', c => c.json(buildHealthPayload(core, port(), slots?.())))
 
   app.route('/api', apiRoutes(core))
 
