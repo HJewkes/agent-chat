@@ -4,9 +4,10 @@ import {
   type QueueItem,
   type ServerMessage,
 } from '../protocol.js'
+import type { Report } from './command.js'
 import { ago, fail, withBroker } from './client.js'
 
-const isBehavior = (value: string): value is PermissionBehavior =>
+export const isBehavior = (value: string): value is PermissionBehavior =>
   (PERMISSION_BEHAVIORS as readonly string[]).includes(value)
 
 const LABEL: Record<string, string> = {
@@ -21,54 +22,52 @@ const LABEL: Record<string, string> = {
 const needsAnswer = (i: QueueItem): boolean =>
   i.kind === 'question' || i.kind === 'approval_request' || i.kind === 'endorse_request'
 
-export async function inbox(): Promise<void> {
-  const res = (await withBroker(b => b.request({ t: 'queue' }, 'queue_result'))) as Extract<
-    ServerMessage,
-    { t: 'queue_result' }
-  >
+export function describeInbox(res: Extract<ServerMessage, { t: 'queue_result' }>): Report {
+  const lines: string[] = []
   if (res.items.length === 0) {
-    console.log('Nothing waiting.')
-    return
+    lines.push('Nothing waiting.')
+    return { ok: true, lines }
   }
   const ordered = [...res.items].sort((a, b) => Number(needsAnswer(b)) - Number(needsAnswer(a)))
 
   for (const item of ordered) {
-    console.log(`${LABEL[item.kind] ?? item.kind} ${item.msgId}  ${item.from.padEnd(14)} ${ago(item.at)}`)
+    lines.push(`${LABEL[item.kind] ?? item.kind} ${item.msgId}  ${item.from.padEnd(14)} ${ago(item.at)}`)
     // The exact bytes that will be delivered, in full and untruncated. This
     // print IS the thing being endorsed — anything elided here would be
     // approved unread, which is the failure the whole flow exists to prevent.
     if (item.kind === 'endorse_request') {
-      console.log(`      would be delivered to ${item.meta.recipient} as ${item.from}, with your authority:`)
+      lines.push(`      would be delivered to ${item.meta.recipient} as ${item.from}, with your authority:`)
       // CC-38: any free name is available to whoever registers it first.
       // recipient_durable distinguishes a broker-minted identity from a
       // self-chosen one that could belong to anybody.
       if (item.meta.recipient_durable === 'false') {
         const registeredAt = Number(item.meta.recipient_registered_at ?? Date.now())
-        console.log(
+        lines.push(
           `      warning: "${item.meta.recipient}" has no durable Claude Code identity ` +
             `(registered ${ago(registeredAt)}) — a raw process could have claimed that name.`,
         )
       }
     }
-    console.log(`      ${item.text}`)
+    lines.push(`      ${item.text}`)
     // For an approval the description is often just "Run shell command", so the
     // preview is the only place the actual command shows up — and since CC-96
     // this print is what the human decides on, so it is never truncated. A
     // clipped preview is a human approving bytes they were not shown.
-    if (item.meta.input_preview) console.log(`      ${item.meta.input_preview}`)
+    if (item.meta.input_preview) lines.push(`      ${item.meta.input_preview}`)
   }
   const open = res.items.filter(needsAnswer).length
   const blocked = res.items.filter(i => i.kind === 'approval_request')
-  console.log(`\n${res.items.length} waiting, ${open} needing an answer.`)
+  lines.push(`\n${res.items.length} waiting, ${open} needing an answer.`)
   if (blocked.length > 0) {
     const who = [...new Set(blocked.map(i => i.from))].join(', ')
-    console.log(`${who} blocked on a permission prompt — answer here, or in that session's terminal.`)
-    console.log('approve with: agent-chat approve <id> allow|deny')
+    lines.push(`${who} blocked on a permission prompt — answer here, or in that session's terminal.`)
+    lines.push('approve with: agent-chat approve <id> allow|deny')
   }
-  if (open > blocked.length) console.log('answer with: agent-chat answer <id> "..."')
+  if (open > blocked.length) lines.push('answer with: agent-chat answer <id> "..."')
   if (res.items.some(i => i.kind === 'endorse_request')) {
-    console.log('endorse with: agent-chat endorse <id>   (or dismiss <id> to decline)')
+    lines.push('endorse with: agent-chat endorse <id>   (or dismiss <id> to decline)')
   }
+  return { ok: true, lines }
 }
 
 /**
@@ -80,13 +79,12 @@ export async function inbox(): Promise<void> {
  * are the ones already stored and already shown by `inbox`, which is what makes
  * the delivered message necessarily the one that was read.
  */
-export async function endorse(msgId: string): Promise<void> {
-  const res = (await withBroker(b => b.request({ t: 'endorse_approve', msgId }, 'answer_result'))) as Extract<
-    ServerMessage,
-    { t: 'answer_result' }
-  >
-  if (!res.ok) fail(res.reason ?? 'refused')
-  console.log(`Endorsed ${msgId}; delivered as written.${res.reason ? ` ${res.reason}` : ''}`)
+export function describeEndorse(msgId: string, res: Extract<ServerMessage, { t: 'answer_result' }>): Report {
+  if (!res.ok) return { ok: false, lines: [], errors: [res.reason ?? 'refused'] }
+  return {
+    ok: true,
+    lines: [`Endorsed ${msgId}; delivered as written.${res.reason ? ` ${res.reason}` : ''}`],
+  }
 }
 
 /**
@@ -100,15 +98,25 @@ export async function endorse(msgId: string): Promise<void> {
  * The id is the one `inbox` printed beside the full, untruncated preview, which
  * is what makes the thing approved the thing that was read.
  */
-export async function approve(msgId: string, behavior: string): Promise<void> {
-  if (!isBehavior(behavior)) fail(`usage: agent-chat approve <id> ${PERMISSION_BEHAVIORS.join('|')}`)
-  const res = (await withBroker(b =>
-    b.request({ t: 'approve_permission', msgId, behavior }, 'answer_result'),
-  )) as Extract<ServerMessage, { t: 'answer_result' }>
-  if (!res.ok) fail(res.reason ?? 'refused')
-  console.log(`Sent ${behavior} for ${msgId}.${res.reason ? ` ${res.reason}` : ''}`)
+export function describeApprove(
+  msgId: string,
+  behavior: string,
+  res: Extract<ServerMessage, { t: 'answer_result' }>,
+): Report {
+  if (!res.ok) return { ok: false, lines: [], errors: [res.reason ?? 'refused'] }
+  return { ok: true, lines: [`Sent ${behavior} for ${msgId}.${res.reason ? ` ${res.reason}` : ''}`] }
 }
 
+export function describeDismiss(msgId: string, res: Extract<ServerMessage, { t: 'answer_result' }>): Report {
+  if (!res.ok) return { ok: false, lines: [], errors: [res.reason ?? 'refused'] }
+  return { ok: true, lines: [`Dismissed ${msgId}.`] }
+}
+
+/**
+ * `answer`/`dismiss`, called for `verb === 'answer'` only since S7a moved
+ * `dismiss` onto a registry verb (`describeDismiss`); the `dismiss` branch here
+ * stays reachable, unconverted, until slice 8 converts `answer` too.
+ */
 export async function verdict(msgId: string, words: string[], verb: 'answer' | 'dismiss'): Promise<void> {
   if (verb === 'answer' && words.length === 0) fail('usage: agent-chat answer <id> <text>')
 
