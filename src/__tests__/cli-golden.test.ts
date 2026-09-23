@@ -1,5 +1,6 @@
 import type { Command } from 'commander'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { LifecycleReport } from '../api-contract.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
 
 /**
@@ -135,5 +136,43 @@ describe('registry verbs', () => {
         '',
       ].join('\n'),
     )
+  })
+})
+
+describe('doctor lifecycle golden', () => {
+  const report: LifecycleReport = {
+    checked_at: 1_758_600_000_000,
+    shadow: 'on',
+    divergences: { ledger_only_since_restart: 1, live_only: 1 },
+    unclassified: 1,
+    shadow_errors: 0,
+    items: [
+      {
+        check: 'held',
+        class: 'ledger_only_since_restart',
+        unclassified: false,
+        id: 'exec-a1',
+        name: 'alpha',
+        detail: 'row from before the restart; the agent reattached since (spawn:a1)',
+      },
+      {
+        check: 'held',
+        class: 'live_only',
+        unclassified: true,
+        id: 'b2',
+        name: 'bravo',
+        detail: 'held by the supervisor with no active ledger row',
+      },
+    ],
+    unlisted_repos: ['/repo/slow'],
+  }
+
+  it('prints one line per divergence and exits 1 on an unclassified one', async () => {
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify(report), { status: 200 }))
+
+    const rendered = await invoke({ argv: ['doctor', 'lifecycle'], reply: retired({}) })
+    vi.unstubAllGlobals()
+
+    await expect(rendered).toMatchFileSnapshot('./golden/calls-doctor-lifecycle.txt')
   })
 })

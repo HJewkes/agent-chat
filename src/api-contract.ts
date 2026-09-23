@@ -33,6 +33,41 @@ export interface HealthPayload {
   queue_open: number
   /** Held/cap agent slots (CC-139). Absent from a caller that supplied no reading. */
   slots?: { held: number; cap: number }
+  /** CC-118's last divergence check. Absent while the ledger shadow is off and before its first run. */
+  lifecycle?: LifecycleHealth
+}
+
+/** The summary of one lifecycle verifier run that `/health` carries. */
+export interface LifecycleHealth {
+  checked_at: number
+  shadow: 'on' | 'off'
+  /** Count per divergence class; classes with no member are absent. */
+  divergences: Record<string, number>
+  unclassified: number
+  shadow_errors: number
+}
+
+/** One disagreement between the supervisor, the event log, git and the shadow ledger (CC-118). */
+export interface LifecycleDivergence {
+  check: 'held' | 'slots' | 'allocations' | 'terminal'
+  class: string
+  /** True for a class that no known cause explains; any one fails the check. */
+  unclassified: boolean
+  /** The agent id, execution id or branch the divergence is about. */
+  id: string
+  name?: string
+  detail: string
+}
+
+/**
+ * `GET /api/lifecycle` and `agent-chat doctor lifecycle`. `shadow_errors` is null
+ * offline, where no broker counter exists to read.
+ */
+export interface LifecycleReport extends Omit<LifecycleHealth, 'shadow_errors'> {
+  shadow_errors: number | null
+  items: LifecycleDivergence[]
+  /** Repositories whose `git worktree list` failed or timed out, so their allocations went unchecked. */
+  unlisted_repos: string[]
 }
 
 /** `GET /api/queue` — open items only; resolved ones are absent, not flagged. */

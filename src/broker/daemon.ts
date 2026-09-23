@@ -4,12 +4,12 @@ import { serve, type ServerType } from '@hono/node-server'
 import type { Hono } from 'hono'
 import { defaultPort, home, socketPath } from '../paths.js'
 import { resolveAgentSlots } from '../config.js'
-import { Semaphore, type SlotUsage } from '../agents/semaphore.js'
+import { Semaphore } from '../agents/semaphore.js'
 import { backfillAtBoot } from '../agents/ledger/backfill-run.js'
 import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
 import { BrokerCore } from './core.js'
 import { EventLog } from './event-log.js'
-import { buildHttpApp } from './http.js'
+import { buildHttpApp, type HttpAppOptions } from './http.js'
 import { isEphemeralHome, watchIdle } from './ephemeral.js'
 import { newestBuildMtime } from './staleness.js'
 import {
@@ -63,19 +63,23 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   const core = new BrokerCore(deliver, { events })
   const ledger = shadowLedgerFromConfig(() => events.ledgerHandle())
   if (ledger) backfillAtBoot(events, ledger.fence)
-  const socketServer = new SocketServer(core, {
-    semaphore: new Semaphore(resolveAgentSlots()),
-    ...(ledger === undefined ? {} : { ledger }),
-  })
+  const socketServer = new SocketServer(
+    core,
+    { semaphore: new Semaphore(resolveAgentSlots()), ...(ledger === undefined ? {} : { ledger }) },
+    ledger === undefined ? undefined : events.ledgerHandle(),
+  )
   const { server, openConnections } = await listenOn(sock, socketServer)
+  socketServer.startLifecycleVerifier()
 
   // Only after the socket is serving, and only ever best-effort.
+  const lifecycle = socketServer.lifecycle()
   const http =
     options.http === false
       ? null
-      : await bindHttp(core, options.port ?? defaultPort(), ensureToken(), undefined, undefined, () =>
-          socketServer.slotUsage(),
-        )
+      : await bindHttp(core, options.port ?? defaultPort(), ensureToken(), undefined, undefined, {
+          slots: () => socketServer.slotUsage(),
+          ...(lifecycle === undefined ? {} : { lifecycle }),
+        })
   recordBrokerState(http?.port ?? null)
 
   // The watcher and the shutdown it triggers are mutually referential: shutdown
@@ -207,16 +211,10 @@ export async function bindHttp(
   token: string | null = null,
   attempts: number = BIND_RETRY_ATTEMPTS,
   retryDelayMs: number = BIND_RETRY_DELAY_MS,
-  slots?: () => SlotUsage,
+  readings: Pick<HttpAppOptions, 'slots' | 'lifecycle'> = {},
 ): Promise<{ server: ServerType; port: number } | null> {
   let bound: number | null = null
-  const app = buildHttpApp({
-    core,
-    port: () => bound,
-    token,
-    dashboard: { token: () => token },
-    ...(slots === undefined ? {} : { slots }),
-  })
+  const app = buildHttpApp({ core, port: () => bound, token, dashboard: { token: () => token }, ...readings })
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const result = await tryBindOnce(app, port, attempt, attempts)

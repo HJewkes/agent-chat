@@ -1,4 +1,4 @@
-import type { HealthPayload } from '../api-contract.js'
+import type { HealthPayload, LifecycleHealth } from '../api-contract.js'
 import type { SlotUsage } from '../agents/semaphore.js'
 import { socketPath } from '../paths.js'
 import type { BrokerCore } from './core.js'
@@ -16,9 +16,15 @@ export type { HealthPayload }
  * `slots` (CC-139) comes from the caller because the supervisor lives on
  * `SocketServer`, not on `BrokerCore` — this stays a pure read of what it is given
  * rather than reaching across that boundary itself, and omits the field when a
- * caller (a unit test, say) has none to offer.
+ * caller (a unit test, say) has none to offer. `lifecycle` (CC-118) follows the
+ * same rule, and is also absent while the ledger shadow is off: relay parses this.
  */
-export function buildHealthPayload(core: BrokerCore, port: number | null, slots?: SlotUsage): HealthPayload {
+export function buildHealthPayload(
+  core: BrokerCore,
+  port: number | null,
+  slots?: SlotUsage,
+  lifecycle?: LifecycleHealth,
+): HealthPayload {
   return {
     ok: true,
     version: VERSION,
@@ -29,5 +35,6 @@ export function buildHealthPayload(core: BrokerCore, port: number | null, slots?
     sessions: core.registry.list().length,
     queue_open: core.events.humanQueue().length,
     ...(slots === undefined ? {} : { slots }),
+    ...(lifecycle === undefined ? {} : { lifecycle }),
   }
 }

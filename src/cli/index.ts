@@ -11,6 +11,7 @@ import { agentRetire } from './verbs/agent-retire.js'
 import { agentResume } from './verbs/agent-resume.js'
 import * as debug from './debug.js'
 import { doctor } from './doctor.js'
+import { doctorLifecycleCommand } from './doctor-lifecycle.js'
 import * as human from './human.js'
 import { addLifecycleCommands } from './lifecycle.js'
 import * as service from './service.js'
@@ -224,7 +225,11 @@ export function buildProgram(): Command {
   addHumanCommands(program)
   addServiceCommands(program)
   addDebugCommands(program)
-  program.command('doctor').description('check the things that fail silently').action(doctor)
+  program
+    .command('doctor')
+    .description('check the things that fail silently')
+    .action(doctor)
+    .addCommand(doctorLifecycleCommand())
   addLifecycleCommands(program)
   addAgentCommands(program)
   addHiddenCommands(program)

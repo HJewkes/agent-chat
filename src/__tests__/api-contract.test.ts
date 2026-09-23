@@ -9,7 +9,14 @@ import {
 import { EVENT_KINDS } from '../protocol.js'
 import type { ClientMessage, EventKind, ServerMessage } from '../protocol.js'
 import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { agentDir, agentsDir, cliEntry, profilesDir, tokenPath } from '../paths.js'
+import type { HealthPayload, LifecycleHealth } from '../api-contract.js'
+import { BrokerCore } from '../broker/core.js'
+import { EventLog } from '../broker/event-log.js'
+import { buildHttpApp } from '../broker/http.js'
+import { SocketServer } from '../broker/socket.js'
 
 /**
  * Step 2a freezes the API contract so steps 3, 4 and 5 can be built in parallel
@@ -169,5 +176,93 @@ describe('agent-teams paths', () => {
   it('resolves the CLI entry to a file that exists, from either tree', () => {
     expect(cliEntry().endsWith('/dist/cli.js')).toBe(true)
     expect(fs.existsSync(cliEntry())).toBe(true)
+  })
+})
+
+/**
+ * CC-118: relay parses `/health`, and the ledger shadow is off by default, so
+ * `lifecycle` has to be optional and genuinely absent while the flag is off.
+ */
+describe('/health lifecycle', () => {
+  function flagOffBroker(): { app: ReturnType<typeof buildHttpApp>; close: () => void } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-contract-'))
+    const core = new BrokerCore(() => undefined, { events: new EventLog(path.join(dir, 'events.db')) })
+    // No ledger connection: exactly what `startBroker` passes while `ledgerShadow` is off.
+    const socketServer = new SocketServer(core, {})
+    const lifecycle = socketServer.lifecycle()
+    const app = buildHttpApp({ core, port: () => 7600, ...(lifecycle === undefined ? {} : { lifecycle }) })
+    return {
+      app,
+      close: () => {
+        socketServer.close()
+        core.close()
+        fs.rmSync(dir, { recursive: true, force: true })
+      },
+    }
+  }
+
+  it('lifecycle is optional and absent when the flag is off', async () => {
+    const broker = flagOffBroker()
+
+    const body = (await (
+      await broker.app.fetch(new Request('http://127.0.0.1/health'))
+    ).json()) as HealthPayload
+    const route = await broker.app.fetch(new Request('http://127.0.0.1/api/lifecycle'))
+    broker.close()
+
+    expect('lifecycle' in body).toBe(false)
+    expect(route.status).toBe(404)
+  })
+
+  it('carries the last verifier summary when one exists', async () => {
+    const summary: LifecycleHealth = {
+      checked_at: 1,
+      shadow: 'on',
+      divergences: { live_only_pre_shadow: 1 },
+      unclassified: 0,
+      shadow_errors: 0,
+    }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-contract-'))
+    const core = new BrokerCore(() => undefined, { events: new EventLog(path.join(dir, 'events.db')) })
+    const app = buildHttpApp({
+      core,
+      port: () => 7600,
+      lifecycle: {
+        summary: () => summary,
+        report: async () => ({ ...summary, items: [], unlisted_repos: [] }),
+      },
+    })
+
+    const body = (await (await app.fetch(new Request('http://127.0.0.1/health'))).json()) as HealthPayload
+    core.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+
+    expect(body.lifecycle).toEqual(summary)
+  })
+
+  it('keeps /api/lifecycle behind the API token', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-contract-'))
+    const core = new BrokerCore(() => undefined, { events: new EventLog(path.join(dir, 'events.db')) })
+    const report = async () => ({
+      checked_at: 1,
+      shadow: 'on' as const,
+      divergences: {},
+      unclassified: 0,
+      shadow_errors: 0,
+      items: [],
+      unlisted_repos: [],
+    })
+    const app = buildHttpApp({
+      core,
+      port: () => 7600,
+      token: 's3cret',
+      lifecycle: { summary: () => undefined, report },
+    })
+
+    const res = await app.fetch(new Request('http://127.0.0.1/api/lifecycle'))
+    core.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+
+    expect(res.status).toBe(403)
   })
 })

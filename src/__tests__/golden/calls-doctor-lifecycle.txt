@@ -1,0 +1,6 @@
+=== agent-chat doctor lifecycle
+stdout: ok    ledger_only_since_restart  alpha  exec-a1  row from before the restart; the agent reattached since (spawn:a1)
+stdout: FAIL  live_only  bravo  b2  held by the supervisor with no active ledger row
+stdout: warn  git could not list /repo/slow; its allocations went unchecked
+stdout: shadow on: 2 divergences, 1 unclassified, shadow errors 0
+exit 1
