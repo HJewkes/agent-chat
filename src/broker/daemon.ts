@@ -5,6 +5,7 @@ import type { Hono } from 'hono'
 import { defaultPort, home, socketPath } from '../paths.js'
 import { resolveAgentSlots } from '../config.js'
 import { Semaphore, type SlotUsage } from '../agents/semaphore.js'
+import { backfillAtBoot } from '../agents/ledger/backfill-run.js'
 import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
 import { BrokerCore } from './core.js'
 import { EventLog } from './event-log.js'
@@ -61,6 +62,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   const events = new EventLog()
   const core = new BrokerCore(deliver, { events })
   const ledger = shadowLedgerFromConfig(() => events.ledgerHandle())
+  if (ledger) backfillAtBoot(events, ledger.fence)
   const socketServer = new SocketServer(core, {
     semaphore: new Semaphore(resolveAgentSlots()),
     ...(ledger === undefined ? {} : { ledger }),

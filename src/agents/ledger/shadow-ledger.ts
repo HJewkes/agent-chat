@@ -174,6 +174,9 @@ export function openShadowLedger(db: DatabaseSync, options: ShadowLedgerOptions)
   return new ShadowLedger(ledger, options)
 }
 
+/** The static fence owner; the offline backfill must write rows this broker can later finish. */
+export const shadowSupervisorId = (): string => `agent-chat@${home()}`
+
 /**
  * The broker's one entry point. With the flag off the handle is never asked for,
  * so no table is created and no ledger code runs. A ledger that cannot open is
@@ -182,7 +185,7 @@ export function openShadowLedger(db: DatabaseSync, options: ShadowLedgerOptions)
 export function shadowLedgerFromConfig(handle: () => DatabaseSync): ShadowLedger | undefined {
   if (!resolveLedgerShadow()) return undefined
   try {
-    return openShadowLedger(handle(), { supervisorId: `agent-chat@${home()}` })
+    return openShadowLedger(handle(), { supervisorId: shadowSupervisorId() })
   } catch (err) {
     logEvent('ledger_shadow_error', { kind: 'thrown', op: 'open', reason: String(err) })
     return undefined

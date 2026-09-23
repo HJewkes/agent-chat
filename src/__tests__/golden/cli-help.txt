@@ -18,6 +18,7 @@ Commands:
   service                    run and inspect the broker daemon
   debug                      diagnostics: sessions, history, routing
   doctor                     check the things that fail silently
+  lifecycle                  offline maintenance of the agent lifecycle ledger
   help [command]             display help for command
 
 Agent commands:
@@ -206,6 +207,29 @@ check the things that fail silently
 
 Options:
   -h, --help  display help for command
+
+=== agent-chat lifecycle
+Usage: agent-chat lifecycle [options] [command]
+
+offline maintenance of the agent lifecycle ledger
+
+Options:
+  -h, --help          display help for command
+
+Commands:
+  backfill [options]  write a ledger row for every non-retired spawned agent that has none; refuses
+                      while a broker runs
+  help [command]      display help for command
+
+=== agent-chat lifecycle backfill
+Usage: agent-chat lifecycle backfill [options]
+
+write a ledger row for every non-retired spawned agent that has none; refuses while a broker runs
+
+Options:
+  --dry-run       print one line per agent that would get a row, and write nothing
+  --since <days>  only agents with an event in the last <days> days
+  -h, --help      display help for command
 
 === agent-chat watch
 Usage: agent-chat watch [options] <name>
