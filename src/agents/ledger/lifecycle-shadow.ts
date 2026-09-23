@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
-import type { ExecutionTerminal } from '@titan-design/agent-protocol'
+import type { ExecutionTerminal, LifecycleExecutionTarget } from '@titan-design/agent-protocol'
 import { logEvent } from '../../broker/log.js'
 import type { LaunchHandle } from '../types.js'
 import type { ShadowLedger, ShadowStep } from './shadow-ledger.js'
@@ -15,10 +15,10 @@ export interface ExitOutcome {
 export function exitTerminal(
   outcome: ExitOutcome,
   failed: string | undefined,
-  cancelRequested: boolean,
+  cancelReason: string | undefined,
 ): ExecutionTerminal {
   if (failed !== undefined) return { outcome: 'failed', reason: failed, retryable: false }
-  if (cancelRequested) return { outcome: 'cancelled', reason: 'exited after a cancellation request' }
+  if (cancelReason !== undefined) return { outcome: 'cancelled', reason: cancelReason }
   const inferred = outcome.inferred === true
   if (outcome.code === 0 || inferred)
     return { outcome: 'succeeded', result: { code: outcome.code, signal: outcome.signal, inferred } }
@@ -32,12 +32,25 @@ export function exitTerminal(
  * fault can change a spawn, exit or retire. Without a ledger every call is a no-op.
  */
 export class LifecycleShadow {
+  private lastStamp = 0
+
   constructor(private readonly ledger: ShadowLedger | undefined) {}
 
   /** Opens a fresh execution and returns its id, or undefined when shadowing is off. */
   open(agentId: string, namespace: string): string | undefined {
+    return this.prepare(agentId, `spawn:${agentId}`, { kind: 'fresh', namespace })
+  }
+
+  /** Opens an execution on an existing conversation; each resume gets its own request key. */
+  resume(agentId: string, namespace: string, sessionId: string): string | undefined {
+    const conversation = { harness: 'claude-code', namespace, nativeId: sessionId }
+    return this.prepare(agentId, `resume:${agentId}:${this.stamp()}`, { kind: 'resume', conversation })
+  }
+
+  private prepare(agentId: string, requestKey: string, target: LifecycleExecutionTarget): string | undefined {
     if (this.ledger === undefined) return undefined
     const executionId = randomUUID()
+    const conversation = target.kind === 'resume' ? { conversation: target.conversation } : {}
     this.fire('prepare', ledger =>
       ledger.apply({
         kind: 'prepare',
@@ -45,16 +58,22 @@ export class LifecycleShadow {
         eventId: randomUUID(),
         expectedRevision: 0,
         occurredAt: new Date().toISOString(),
-        execution: { executionId },
+        execution: { executionId, ...conversation },
         agent: { agentId },
         harness: 'claude-code',
-        requestKey: `spawn:${agentId}`,
-        target: { kind: 'fresh', namespace },
+        requestKey,
+        target,
         owner: ledger.newLease(),
       }),
     )
     this.step(executionId, { kind: 'begin_dispatch' })
     return executionId
+  }
+
+  /** `Date.now()`, bumped past the last one issued so two resumes in one millisecond stay distinct. */
+  private stamp(): number {
+    this.lastStamp = Math.max(Date.now(), this.lastStamp + 1)
+    return this.lastStamp
   }
 
   running(executionId: string | undefined, handle: LaunchHandle, sessionId: string, configDir: string): void {

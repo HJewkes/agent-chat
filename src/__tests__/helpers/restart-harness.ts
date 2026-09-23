@@ -48,6 +48,8 @@ export interface HarnessOptions {
   attach?: boolean
   /** Stands in for the headless child; defaults to one that never exits. */
   spawn?: SurfaceSpawn
+  /** Fakes iTerm's AppleScript and runs as darwin, for tests that open a pane. */
+  appleScript?: (script: string) => Promise<string>
   /** CC-118: defaults to what the broker does, so `AGENT_CHAT_LEDGER_SHADOW=1` turns it on. */
   ledger?: (events: EventLog) => ShadowLedger | undefined
 }
@@ -121,7 +123,11 @@ function boot(home: string, options: HarnessOptions): Generation {
     semaphore,
     ...(options.settleMs === undefined ? {} : { settleMs: options.settleMs }),
     ...(ledger === undefined ? {} : { ledger }),
-    surface: { platform: 'linux', spawn: options.spawn ?? liveChild },
+    surface: {
+      platform: options.appleScript === undefined ? 'linux' : 'darwin',
+      spawn: options.spawn ?? liveChild,
+      ...(options.appleScript === undefined ? {} : { runAppleScript: options.appleScript }),
+    },
   })
   const stopAutoAttach = options.attach === false ? () => undefined : autoAttach(core)
   return { core, supervisor, semaphore, stopAutoAttach }
