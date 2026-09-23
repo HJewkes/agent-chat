@@ -130,7 +130,7 @@ export function foldAgent(rows: readonly AgentEventRow[]): AgentIdentity | undef
 }
 
 /** Group rows by the agent id they carry, preserving log order within each group. */
-function groupByAgent(rows: readonly AgentEventRow[]): Map<string, AgentEventRow[]> {
+export function groupByAgent(rows: readonly AgentEventRow[]): Map<string, AgentEventRow[]> {
   const groups = new Map<string, AgentEventRow[]>()
   for (const row of rows) {
     const id = agentIdOf(row)
