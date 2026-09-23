@@ -7,6 +7,7 @@ interface AgentChatConfig {
   agentSlots?: unknown
   worktreeBudget?: unknown
   contextHints?: unknown
+  ledgerShadow?: unknown
 }
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
@@ -42,6 +43,19 @@ export function resolveAgentSlots(): number {
 /** Per-repository worktree cap (`worktreeBudget`), read per spawn so a new value needs no broker restart. */
 export function resolveWorktreeBudget(fallback: number): number {
   return positiveIntegerFrom('worktreeBudget', fallback)
+}
+
+/**
+ * CC-118's shadow-write flag, read once at broker boot. Off by default until the
+ * backfill rehearsal is reviewed. `AGENT_CHAT_LEDGER_SHADOW=0|1` overrides the file.
+ */
+export function resolveLedgerShadow(): boolean {
+  const override = process.env.AGENT_CHAT_LEDGER_SHADOW
+  if (override === '0' || override === '1') return override === '1'
+  const value = readConfig().ledgerShadow
+  if (value === undefined || typeof value === 'boolean') return value === true
+  logEvent('config_invalid', { key: 'ledgerShadow', value, fallback: false })
+  return false
 }
 
 function positiveIntegerFrom(key: keyof AgentChatConfig, fallback: number): number {

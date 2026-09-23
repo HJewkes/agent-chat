@@ -25,6 +25,8 @@
   "dependencies": {
     "@hono/node-server": "^2.0.12",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@titan-design/agent-lifecycle": "^0.1.1",
+    "@titan-design/agent-protocol": "^0.1.0",
     "@titan-design/react-ui": "^0.12.1",
     "@titan-design/registry": "^0.2.0",
     "commander": "^15.0.0",

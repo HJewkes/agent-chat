@@ -5,7 +5,9 @@ import type { Hono } from 'hono'
 import { defaultPort, home, socketPath } from '../paths.js'
 import { resolveAgentSlots } from '../config.js'
 import { Semaphore, type SlotUsage } from '../agents/semaphore.js'
+import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
 import { BrokerCore } from './core.js'
+import { EventLog } from './event-log.js'
 import { buildHttpApp } from './http.js'
 import { isEphemeralHome, watchIdle } from './ephemeral.js'
 import { newestBuildMtime } from './staleness.js'
@@ -56,8 +58,13 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   fs.mkdirSync(home(), { recursive: true })
   if (!(await claimSocketPath(sock))) return null
 
-  const core = new BrokerCore(deliver)
-  const socketServer = new SocketServer(core, { semaphore: new Semaphore(resolveAgentSlots()) })
+  const events = new EventLog()
+  const core = new BrokerCore(deliver, { events })
+  const ledger = shadowLedgerFromConfig(() => events.ledgerHandle())
+  const socketServer = new SocketServer(core, {
+    semaphore: new Semaphore(resolveAgentSlots()),
+    ...(ledger === undefined ? {} : { ledger }),
+  })
   const { server, openConnections } = await listenOn(sock, socketServer)
 
   // Only after the socket is serving, and only ever best-effort.

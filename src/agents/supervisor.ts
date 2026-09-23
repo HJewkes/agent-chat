@@ -56,6 +56,7 @@ import { itermSessionPresent } from './surfaces/iterm.js'
 import { cliEntry, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
+import type { ShadowLedger } from './ledger/shadow-ledger.js'
 import {
   Teleport,
   type InheritedIsolation,
@@ -325,6 +326,8 @@ export interface SupervisorOptions {
    * with which payload, without a real `hooks.json` or a real shell command.
    */
   hookSpawn?: HookSpawnFn
+  /** CC-118's write-only shadow ledger. Present only when `ledgerShadow` is on. */
+  ledger?: ShadowLedger
 }
 
 /**
