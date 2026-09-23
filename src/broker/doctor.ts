@@ -5,6 +5,7 @@ import path from 'node:path'
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
 import type { HealthPayload } from '../api-contract.js'
 import type { AgentIdentity } from '../protocol.js'
+import { budgetDir } from '../agents/budget.js'
 import { resolveClaudeBin } from '../agents/claude-bin.js'
 import { AgentLog } from '../agents/identity.js'
 import { readRuntimeState } from '../agents/launch-files.js'
@@ -14,6 +15,8 @@ import { cliEntry, dashboardDir, defaultPort, home, socketPath } from '../paths.
 import { EventLog } from './event-log.js'
 import { probeSocket, readMeta } from './lifecycle.js'
 import { newestBuildMtime, stalenessWarning } from './staleness.js'
+import { checkStatuslineCache, checkStatuslineHook } from './statusline-check.js'
+import { configDir } from '../agents/transcript.js'
 
 /**
  * Preflight for the failures that cost real time and give no error.
@@ -387,6 +390,15 @@ function checkDashboard(): Check {
     : { name: 'dashboard', status: 'warn', detail: 'not built — the CLI is fully usable without it' }
 }
 
+/** A second /health probe, kept apart from `checkBroker` so this check stays self-contained. */
+async function checkStatusline(live: boolean): Promise<Check[]> {
+  const health = live ? await probeHealth(readMeta()?.port ?? defaultPort()) : null
+  return [
+    checkStatuslineCache({ cacheDir: budgetDir(), now: Date.now(), registeredSessions: health?.sessions }),
+    checkStatuslineHook(path.join(configDir(), 'settings.json')),
+  ]
+}
+
 export async function runChecks(): Promise<Check[]> {
   // Probed once and shared: two checks need the answer, and asking twice would
   // let them disagree about whether a broker exists.
@@ -409,6 +421,7 @@ export async function runChecks(): Promise<Check[]> {
     checkStuckSpawns(agents),
     ...(await checkOrphanSurfaces(agents)),
     checkDashboard(),
+    ...(await checkStatusline(live)),
   ]
 }
 
