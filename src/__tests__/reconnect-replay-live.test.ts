@@ -158,6 +158,20 @@ describe('frames issued while the broker is restarting', () => {
     expect(seen.filter(m => m.t === 'send')).toEqual([])
   })
 
+  it('reports an in-flight request as delivery unknown rather than never sent', async () => {
+    client = await registeredClient('worker')
+    // Written to the socket BEFORE the drop, unlike the held/refused cases above:
+    // the broker may have received and acted on this one, and only the reply is lost.
+    const inFlight = client.request({ t: 'status', status: 'working' }, 'status_result')
+    // Attached before the drop, not after: the rejection lands during `stopBroker`,
+    // and awaiting the expectation only afterwards would leave it briefly unhandled.
+    const expectation = expect(inFlight).rejects.toThrow(/Delivery is unknown.*already have been received/)
+
+    await stopBroker()
+
+    await expectation
+  })
+
   it('surfaces the restart in the chat_send tool result', async () => {
     client = await registeredClient('worker')
     await stopBroker()
@@ -219,5 +233,30 @@ describe('frames issued while the broker is restarting', () => {
 
     expect(serverConns).toEqual([])
     expect(seen).toEqual([])
+  })
+
+  it('joins an in-flight reconnect ladder rather than climbing a second one', async () => {
+    // Awaited rather than slept for, same reasoning as the fire-and-forget-approval
+    // test above: `onDropped` fires synchronously in the same turn `onDrop` starts
+    // its own reconnect, so by the time this resolves `connecting` is already set.
+    let dropped: () => void = () => undefined
+    const socketDown = new Promise<void>(resolve => {
+      dropped = resolve
+    })
+    client = await registeredClient('worker', () => dropped())
+    const tryConnect = vi.spyOn(client as unknown as { tryConnect: () => Promise<net.Socket> }, 'tryConnect')
+
+    await stopBroker()
+    await socketDown
+
+    // A second caller arriving mid-ladder — e.g. retryRegistration's reachBroker —
+    // must join the attempt already running rather than dialing again itself.
+    const callsBeforeJoin = tryConnect.mock.calls.length
+    const joined = client.connect()
+    expect(tryConnect.mock.calls.length).toBe(callsBeforeJoin)
+
+    await listen()
+    await joined
+    expect(await eventually(() => statusOf('worker') !== undefined)).toBe(true)
   })
 })
