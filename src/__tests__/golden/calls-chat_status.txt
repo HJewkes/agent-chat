@@ -1,0 +1,132 @@
+=== chat_status: status only
+args: {"status":"working"}
+frame: {"t":"status","status":"working"}
+[
+  {
+    "type": "text",
+    "text": "Status set to \"working\"."
+  }
+]
+
+=== chat_status: working_on and declared
+args: {"status":"available","working_on":"free","declared":{"role":"implementer","initiative":"claude-channels"}}
+frame: {"t":"status","status":"available","workingOn":"free","declared":{"role":"implementer","initiative":"claude-channels"}}
+[
+  {
+    "type": "text",
+    "text": "Status set to \"available\"."
+  }
+]
+
+=== chat_status: blank working_on
+args: {"status":"working","working_on":" "}
+frame: {"t":"status","status":"working"}
+[
+  {
+    "type": "text",
+    "text": "Status set to \"working\"."
+  }
+]
+
+=== chat_status: dnd on
+args: {"status":"blocked","dnd":true}
+frame: {"t":"status","status":"blocked","dnd":true}
+[
+  {
+    "type": "text",
+    "text": "Status set to \"blocked\". Holding pushes from other sessions; they collect in your inbox."
+  }
+]
+
+=== chat_status: dnd off
+args: {"status":"working","dnd":false}
+frame: {"t":"status","status":"working","dnd":false}
+[
+  {
+    "type": "text",
+    "text": "Status set to \"working\". Taking pushes again."
+  }
+]
+
+=== chat_status: declared {} clears
+args: {"status":"working","declared":{}}
+frame: {"t":"status","status":"working","declared":{}}
+[
+  {
+    "type": "text",
+    "text": "Status set to \"working\"."
+  }
+]
+
+=== chat_status: unregistered
+args: {"status":"working"}
+frame: {"t":"status","status":"working"}
+[
+  {
+    "type": "text",
+    "text": "Call chat_register first."
+  }
+]
+
+=== chat_status: status omitted
+args: {}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: status: status must be one of: working, available, blocked"
+  }
+]
+
+=== chat_status: status misspelled
+args: {"status":"busy"}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: status: status must be one of: working, available, blocked"
+  }
+]
+
+=== chat_status: status omitted, bad declared
+args: {"declared":"x"}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: status: status must be one of: working, available, blocked; declared: declared must be an object of short string labels, e.g. {\"role\": \"implementer\"}"
+  }
+]
+
+=== chat_status: declared 9 keys
+args: {"status":"working","declared":{"k0":"v","k1":"v","k2":"v","k3":"v","k4":"v","k5":"v","k6":"v","k7":"v","k8":"v"}}
+[
+  {
+    "type": "text",
+    "text": "Error: declared may carry at most 8 keys; got 9"
+  }
+]
+
+=== chat_status: declared nested value
+args: {"status":"working","declared":{"role":["a"]}}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: declared: declared.role must be a string — declared carries labels, not nested structure"
+  }
+]
+
+=== chat_status: dnd "true"
+args: {"status":"working","dnd":"true"}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: dnd: Invalid input: expected boolean, received string"
+  }
+]
+
+=== chat_status: working_on not a string
+args: {"status":"working","working_on":4}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: working_on: Invalid input: expected string, received number"
+  }
+]

@@ -18,6 +18,11 @@ verbs that fit 0.2.0 as-is: `doctor`, `profiles`, `agent surface`, `agent budget
 `doctor lifecycle` stays attached as a subcommand. The CLI verbs blocked on G4-G6 (`answer`,
 `service *`, `debug send`, `watch`, `agent spawn`, hidden `send`, `lifecycle backfill`) plus
 `agent ls` (blocked on CC-107) still use the hand-written path, and both paths run side by side.
+Slice S5 converts `chat_register` and `chat_status`, so every MCP tool is now a registry command and
+`ToolHandler.handle` is a `TOOL_COMMANDS` lookup. `declared` publishes unchanged through
+`declaredField` in `server/command.ts`, a product-side G2 adapter to delete when TP-171 ships. It
+deletes `requireStatus`, `optionalDeclared`, `requireString`, `optionalString`, `optionalEnum` and
+`optionalPatterns`.
 
 ## Why
 

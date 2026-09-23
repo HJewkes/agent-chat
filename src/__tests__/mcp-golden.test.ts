@@ -35,11 +35,11 @@ function fakeBroker(reply: ServerMessage | undefined, sent: ClientMessage[]): Br
 }
 
 /** A real Server and Client over an in-memory pipe, recording what the server puts on the wire. */
-async function connect(reply?: ServerMessage, registeredAs?: string): Promise<Wire> {
+async function connect(reply?: ServerMessage, registeredAs?: string, spawnedAs?: string): Promise<Wire> {
   const sent: ClientMessage[] = []
   const responses: JSONRPCMessage[] = []
   const server = new Server({ name: 'agent-chat', version: '0.1.0' }, { capabilities: { tools: {} } })
-  serveTools(server, new ToolHandler(fakeBroker(reply, sent), undefined, registeredAs))
+  serveTools(server, new ToolHandler(fakeBroker(reply, sent), spawnedAs, registeredAs))
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair()
   const send = serverSide.send.bind(serverSide)
   serverSide.send = async message => {
@@ -71,6 +71,8 @@ interface CallCase {
   args: Record<string, unknown>
   reply?: ServerMessage
   registeredAs?: string
+  /** A name the spawn environment fixed, as `ToolHandler`'s `spawnedName`. */
+  spawnedAs?: string
   env?: Record<string, string | undefined>
 }
 
@@ -673,6 +675,155 @@ const AGENT_TELEPORT_CASES: CallCase[] = [
   },
 ]
 
+const registered = (
+  extra: Partial<Extract<ServerMessage, { t: 'register_result' }>> = {},
+): ServerMessage => ({
+  t: 'register_result',
+  ok: true,
+  ...extra,
+})
+
+const BAG = { role: 'implementer', initiative: 'claude-channels' }
+const nineKeys = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`k${i}`, 'v']))
+const overBudget = Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`key${i}`, 'x'.repeat(63)]))
+
+/** CC-106 S5: the declared-bag rejections keep their wording, and a fixed or provisional name keeps its reply. */
+const CHAT_REGISTER_CASES: CallCase[] = [
+  {
+    label: 'fresh session',
+    tool: 'chat_register',
+    args: { name: 'me', working_on: 'S5' },
+    reply: registered(),
+  },
+  { label: 'working_on omitted', tool: 'chat_register', args: { name: 'me' }, reply: registered() },
+  {
+    label: 'working_on blank',
+    tool: 'chat_register',
+    args: { name: 'me', working_on: '  ' },
+    reply: registered(),
+  },
+  {
+    label: 'with declared labels',
+    tool: 'chat_register',
+    args: { name: 'me', working_on: 'S5', declared: BAG },
+    reply: registered(),
+  },
+  {
+    label: 'declared null',
+    tool: 'chat_register',
+    args: { name: 'me', declared: null },
+    reply: registered(),
+  },
+  {
+    label: 'over a provisional name (CC-82)',
+    tool: 'chat_register',
+    registeredAs: 'cc106-s5',
+    args: { name: 'me' },
+    reply: registered(),
+  },
+  {
+    label: 'again under the same name',
+    tool: 'chat_register',
+    registeredAs: 'me',
+    args: { name: 'me' },
+    reply: registered(),
+  },
+  {
+    label: 'refused by the broker',
+    tool: 'chat_register',
+    args: { name: 'bob' },
+    reply: registered({ ok: false, reason: 'name "bob" is taken' }),
+  },
+  { label: 'spawned agent, same name', tool: 'chat_register', spawnedAs: 'scout', args: { name: 'scout' } },
+  { label: 'spawned agent, another name', tool: 'chat_register', spawnedAs: 'scout', args: { name: 'me' } },
+  {
+    label: 'spawned agent, bad declared',
+    tool: 'chat_register',
+    spawnedAs: 'scout',
+    args: { name: 'scout', declared: 'implementer' },
+  },
+  { label: 'name omitted', tool: 'chat_register', args: {} },
+  { label: 'name blank', tool: 'chat_register', args: { name: '   ' } },
+  { label: 'name not a string', tool: 'chat_register', args: { name: 7 } },
+  { label: 'name omitted, bad declared', tool: 'chat_register', args: { declared: [] } },
+  { label: 'declared a string', tool: 'chat_register', args: { name: 'me', declared: 'implementer' } },
+  { label: 'declared an array', tool: 'chat_register', args: { name: 'me', declared: ['implementer'] } },
+  { label: 'declared 9 keys', tool: 'chat_register', args: { name: 'me', declared: nineKeys } },
+  {
+    label: 'declared nested value',
+    tool: 'chat_register',
+    args: { name: 'me', declared: { role: { kind: 'implementer' } } },
+  },
+  {
+    label: 'declared 65-character value',
+    tool: 'chat_register',
+    args: { name: 'me', declared: { role: 'x'.repeat(65) } },
+  },
+  {
+    label: 'declared over the byte budget',
+    tool: 'chat_register',
+    args: { name: 'me', declared: overBudget },
+  },
+  {
+    label: 'working_on not a string',
+    tool: 'chat_register',
+    args: { name: 'me', working_on: 4 },
+    reply: registered(),
+  },
+]
+
+const statused = (ok = true): ServerMessage => ({ t: 'status_result', ok })
+
+const CHAT_STATUS_CASES: CallCase[] = [
+  { label: 'status only', tool: 'chat_status', args: { status: 'working' }, reply: statused() },
+  {
+    label: 'working_on and declared',
+    tool: 'chat_status',
+    args: { status: 'available', working_on: 'free', declared: BAG },
+    reply: statused(),
+  },
+  {
+    label: 'blank working_on',
+    tool: 'chat_status',
+    args: { status: 'working', working_on: ' ' },
+    reply: statused(),
+  },
+  { label: 'dnd on', tool: 'chat_status', args: { status: 'blocked', dnd: true }, reply: statused() },
+  { label: 'dnd off', tool: 'chat_status', args: { status: 'working', dnd: false }, reply: statused() },
+  {
+    label: 'declared {} clears',
+    tool: 'chat_status',
+    args: { status: 'working', declared: {} },
+    reply: statused(),
+  },
+  { label: 'unregistered', tool: 'chat_status', args: { status: 'working' }, reply: statused(false) },
+  { label: 'status omitted', tool: 'chat_status', args: {} },
+  { label: 'status misspelled', tool: 'chat_status', args: { status: 'busy' } },
+  { label: 'status omitted, bad declared', tool: 'chat_status', args: { declared: 'x' } },
+  { label: 'declared 9 keys', tool: 'chat_status', args: { status: 'working', declared: nineKeys } },
+  {
+    label: 'declared nested value',
+    tool: 'chat_status',
+    args: { status: 'working', declared: { role: ['a'] } },
+  },
+  { label: 'dnd "true"', tool: 'chat_status', args: { status: 'working', dnd: 'true' }, reply: statused() },
+  {
+    label: 'working_on not a string',
+    tool: 'chat_status',
+    args: { status: 'working', working_on: 4 },
+    reply: statused(),
+  },
+]
+
+/** Fields `register` reads from this process and its checkout; they vary by machine, so the golden omits them. */
+const PROCESS_FIELDS = ['cwd', 'pid', 'hostPid', 'sessionId', 'termSessionId', 'observed', 'build']
+
+function frameLine(frame: ClientMessage): string {
+  if (frame.t !== 'register') return JSON.stringify(frame)
+  const kept = Object.entries(frame).filter(([key]) => !PROCESS_FIELDS.includes(key))
+  return `${JSON.stringify(Object.fromEntries(kept))} (process fields omitted)`
+}
+
 async function render(c: CallCase): Promise<string> {
   for (const [key, value] of Object.entries(c.env ?? {})) vi.stubEnv(key, value)
   try {
@@ -683,9 +834,9 @@ async function render(c: CallCase): Promise<string> {
 }
 
 async function renderCall(c: CallCase): Promise<string> {
-  const wire = await connect(c.reply, c.registeredAs)
+  const wire = await connect(c.reply, c.registeredAs, c.spawnedAs)
   const result = await wire.client.callTool({ name: c.tool, arguments: c.args })
-  const frames = wire.sent.map(f => `frame: ${JSON.stringify(f)}`).join('\n')
+  const frames = wire.sent.map(f => `frame: ${frameLine(f)}`).join('\n')
   return `=== ${c.tool}: ${c.label}\nargs: ${JSON.stringify(c.args)}\n${frames}${frames ? '\n' : ''}${JSON.stringify(result.content, null, 2)}\n`
 }
 
@@ -708,6 +859,8 @@ describe('tool call golden', () => {
     ['chat_unsubscribe', CHAT_UNSUBSCRIBE_CASES],
     ['agent_spawn', AGENT_SPAWN_CASES],
     ['agent_teleport', AGENT_TELEPORT_CASES],
+    ['chat_register', CHAT_REGISTER_CASES],
+    ['chat_status', CHAT_STATUS_CASES],
   ])('%s answers every pinned case exactly as before', async (tool, cases) => {
     const rendered: string[] = []
     for (const c of cases) rendered.push(await render(c))

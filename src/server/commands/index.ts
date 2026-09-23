@@ -22,8 +22,10 @@ import { chatTag } from './chat-tag.js'
 import { chatSubscribe, chatUnsubscribe } from './subscriptions.js'
 import { agentSpawn } from './agent-spawn.js'
 import { agentTeleport } from './agent-teleport.js'
+import { chatRegister } from './chat-register.js'
+import { chatStatus } from './chat-status.js'
 
-/** Tools already defined through the registry; ToolHandler routes these names here before its switch. */
+/** Every MCP tool; ToolHandler routes each call by name through this registry. */
 export const TOOL_COMMANDS = createRegistry<ToolContext>()
 TOOL_COMMANDS.register(chatList)
 TOOL_COMMANDS.register(chatSend)
@@ -48,3 +50,5 @@ TOOL_COMMANDS.register(chatSubscribe)
 TOOL_COMMANDS.register(chatUnsubscribe)
 TOOL_COMMANDS.register(agentSpawn)
 TOOL_COMMANDS.register(agentTeleport)
+TOOL_COMMANDS.register(chatRegister)
+TOOL_COMMANDS.register(chatStatus)
