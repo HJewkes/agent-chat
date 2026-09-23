@@ -207,6 +207,7 @@ describe('the related section when the daemon answers', () => {
           budget: 1500,
           classes: ['notes', 'sources', 'tasks', 'sessions'],
           exclude: [],
+          trigger: 'spawn',
         },
       },
     ])
