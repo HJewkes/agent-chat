@@ -67,8 +67,8 @@ async function stopBroker(): Promise<void> {
   await settle(20)
 }
 
-async function registeredClient(name: string): Promise<BrokerClient> {
-  const created = new BrokerClient(() => undefined)
+async function registeredClient(name: string, onDropped?: () => void): Promise<BrokerClient> {
+  const created = new BrokerClient(() => undefined, undefined, undefined, undefined, onDropped)
   await created.connect()
   await created.request(
     { t: 'register', name, workingOn: 'testing CC-103', cwd: '/tmp', pid: 1 },
@@ -168,8 +168,18 @@ describe('frames issued while the broker is restarting', () => {
   })
 
   it('refuses a fire-and-forget approval in the gap rather than dropping it silently', async () => {
-    client = await registeredClient('worker')
+    // `onDropped` fires synchronously inside `onDrop`, before `reconnecting` flips
+    // true but in the same turn — so awaiting it (rather than a fixed sleep) is
+    // enough to guarantee `reconnecting` is already true once we proceed. A sleep
+    // races the client's own close-event handling and was observed to let `send`
+    // through to a half-dead socket on a loaded CI runner.
+    let dropped: () => void = () => undefined
+    const socketDown = new Promise<void>(resolve => {
+      dropped = resolve
+    })
+    client = await registeredClient('worker', () => dropped())
     await stopBroker()
+    await socketDown
 
     const approval = client.send({
       t: 'approval',
