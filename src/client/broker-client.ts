@@ -100,6 +100,17 @@ type Identity = Omit<Extract<ClientMessage, { t: 'register' }>, 't'>
 
 const wait = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
+export interface BrokerClientOptions {
+  /**
+   * Spawn a detached broker when none is reachable. Defaults to true.
+   *
+   * A launchd-kept mirror must never resurrect a stopped broker (CC-153): the
+   * stop is a deliberate state, not a crash, so a `KeepAlive` process reviving
+   * it on the next connect attempt would make "stop" mean nothing.
+   */
+  autoStart?: boolean
+}
+
 /**
  * A session's connection to the broker. Reconnects on drop and replays its
  * registration, so a broker restart doesn't strand the session.
@@ -131,6 +142,7 @@ export class BrokerClient {
     private readonly onPermissionVerdict?: (requestId: string, behavior: PermissionBehavior) => void,
     /** Fires once per lost connection, before any reconnect; for a caller whose state died with it (CC-144). */
     private readonly onDropped?: () => void,
+    private readonly options: BrokerClientOptions = {},
   ) {}
 
   private handle(msg: ServerMessage): void {
@@ -304,7 +316,7 @@ export class BrokerClient {
       this.attach(await this.tryConnect())
       return
     } catch {
-      this.spawnBroker()
+      if (this.options.autoStart !== false) this.spawnBroker()
     }
     for (const delay of RECONNECT_DELAYS_MS) {
       await wait(delay)
