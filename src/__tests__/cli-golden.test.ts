@@ -139,6 +139,29 @@ describe('registry verbs', () => {
   })
 })
 
+const answerResult = (extra: Partial<Extract<ServerMessage, { t: 'answer_result' }>>): ServerMessage => ({
+  t: 'answer_result',
+  ok: true,
+  ...extra,
+})
+
+describe('S7a call golden', () => {
+  it('rejects an invalid approve behavior with the legacy usage text and exit 1', async () => {
+    const rendered = await invoke({ argv: ['approve', 'm1', 'maybe'], reply: answerResult({}) })
+
+    await expect(rendered).toMatchFileSnapshot('./golden/calls-approve-usage.txt')
+  })
+
+  it('reports a broker refusal on dismiss on stderr and exits 1', async () => {
+    const rendered = await invoke({
+      argv: ['dismiss', 'm1'],
+      reply: answerResult({ ok: false, reason: 'no such item' }),
+    })
+
+    await expect(rendered).toMatchFileSnapshot('./golden/calls-dismiss-refused.txt')
+  })
+})
+
 describe('doctor lifecycle golden', () => {
   const report: LifecycleReport = {
     checked_at: 1_758_600_000_000,

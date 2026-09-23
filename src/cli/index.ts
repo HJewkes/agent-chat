@@ -9,6 +9,14 @@ import * as agents from './agents.js'
 import { addVerb } from './command.js'
 import { agentRetire } from './verbs/agent-retire.js'
 import { agentResume } from './verbs/agent-resume.js'
+import { approveVerb } from './verbs/approve.js'
+import { debugClaimsVerb } from './verbs/debug-claims.js'
+import { debugHistoryVerb } from './verbs/debug-history.js'
+import { debugLogVerb } from './verbs/debug-log.js'
+import { debugPsVerb } from './verbs/debug-ps.js'
+import { dismissVerb } from './verbs/dismiss.js'
+import { endorseVerb } from './verbs/endorse.js'
+import { inboxVerb } from './verbs/inbox.js'
 import * as debug from './debug.js'
 import { doctor } from './doctor.js'
 import { doctorLifecycleCommand } from './doctor-lifecycle.js'
@@ -27,7 +35,7 @@ const AGENTS = 'Agent commands:'
  * to type when the dashboard is not reachable. The grouping is in the help.
  */
 function addHumanCommands(program: Command): void {
-  program.command('inbox').description('what your agents need from you').helpGroup(HUMAN).action(human.inbox)
+  addVerb(program, inboxVerb, { helpGroup: HUMAN })
 
   program
     .command('answer <id> <text...>')
@@ -35,23 +43,9 @@ function addHumanCommands(program: Command): void {
     .helpGroup(HUMAN)
     .action((id: string, text: string[]) => human.verdict(id, text, 'answer'))
 
-  program
-    .command('dismiss <id>')
-    .description('close an item without answering, or decline an endorsement')
-    .helpGroup(HUMAN)
-    .action((id: string) => human.verdict(id, [], 'dismiss'))
-
-  program
-    .command('approve <id> <allow|deny>')
-    .description("answer an agent's permission prompt from here")
-    .helpGroup(HUMAN)
-    .action(human.approve)
-
-  program
-    .command('endorse <id>')
-    .description('approve a composed message; delivers it with your authority')
-    .helpGroup(HUMAN)
-    .action(human.endorse)
+  addVerb(program, dismissVerb, { helpGroup: HUMAN })
+  addVerb(program, approveVerb, { helpGroup: HUMAN })
+  addVerb(program, endorseVerb, { helpGroup: HUMAN })
 }
 
 const port = (value: string): number => {
@@ -110,16 +104,10 @@ function addServiceCommands(program: Command): void {
 function addDebugCommands(program: Command): void {
   const dbg = program.command('debug').description('diagnostics: sessions, history, routing')
 
-  dbg.command('ps').description('list registered sessions').action(debug.ps)
-  dbg.command('claims').description('who holds which worktrees and paths').action(debug.claims)
-  dbg
-    .command('history [n]')
-    .description('recent events from the log (default 30)')
-    .action((n?: string) => debug.history(Number(n ?? 30)))
-  dbg
-    .command('log [n]')
-    .description('recent routing decisions')
-    .action((n?: string) => debug.routingLog(Number(n ?? 20)))
+  addVerb(dbg, debugPsVerb)
+  addVerb(dbg, debugClaimsVerb)
+  addVerb(dbg, debugHistoryVerb)
+  addVerb(dbg, debugLogVerb)
   dbg.command('send <to> <text...>').description('message a session as the human').action(debug.send)
 }
 
@@ -215,9 +203,10 @@ function addHiddenCommands(program: Command): void {
       await permissionHook(options)
     })
 
-  program.command('ps', { hidden: true }).action(debug.ps)
-  program.command('history [n]', { hidden: true }).action((n?: string) => debug.history(Number(n ?? 30)))
-  program.command('log [n]', { hidden: true }).action((n?: string) => debug.routingLog(Number(n ?? 20)))
+  addVerb(program, debugPsVerb, { hidden: true })
+  addVerb(program, debugHistoryVerb, { hidden: true })
+  addVerb(program, debugLogVerb, { hidden: true })
+
   program.command('send <to> <text...>', { hidden: true }).action(debug.send)
 }
 
