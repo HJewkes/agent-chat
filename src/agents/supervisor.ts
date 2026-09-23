@@ -38,7 +38,8 @@ import { resolveSpawnBriefing, type BriefingResult } from './active-work.js'
 import { resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
 import { findTranscript } from './transcript.js'
 import { SpawnRateBudget } from './spawn-rate.js'
-import { trustGap } from './trust.js'
+import { isTrusted, trustGap } from './trust.js'
+import { itermSessionPresent } from './surfaces/iterm.js'
 import { cliEntry, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
@@ -100,6 +101,17 @@ export const SETTLE_MS = 30_000
  */
 export const ATTACH_TIMEOUT_MS = 30_000
 
+/**
+ * How long a VISIBLE spawn still starting at the attach window keeps its pane
+ * before it is recorded as failed (CC-124).
+ *
+ * The 30s window stays the point at which `agent_spawn` answers; this is how
+ * long the answer "still starting" is allowed to stay true. An iterm-pane agent
+ * into a trusted directory registered 10m18s after launch, and the two spawned
+ * beside it lost their panes at 30s to a prompt nobody could see to answer.
+ */
+export const ATTACH_CEILING_MS = 10 * 60_000
+
 /** Spawn depth cap. Without it an agent team is a fork bomb with a model picking the branching factor. */
 export const MAX_DEPTH = 2
 
@@ -143,6 +155,10 @@ export interface SwitchRequest {
 
 type AttachOutcome = { kind: 'attached' | 'timeout' } | { kind: 'exited'; code: number | null }
 
+/** What the attach window concluded: up, dead, or a visible agent still starting in a pane that exists. */
+type AttachVerdict =
+  { kind: 'attached' } | { kind: 'failed'; reason: string } | { kind: 'pending'; warning: string }
+
 /**
  * What `spawn` worked out before committing a slot, handed to `launch` as one
  * noun rather than three trailing optionals.
@@ -153,6 +169,10 @@ interface Resolved {
   briefing?: { text: string; slug: string }
   fork?: { path: string; sessionId: string }
 }
+
+/** A duration as a reader would say it: seconds under a minute, minutes above. */
+const span = (ms: number): string =>
+  ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)} min`
 
 /** A profile that predates the field keeps its pane. See {@link DEFAULT_SURFACE_LIFETIME}. */
 const lifetimeOf = (profile: Pick<AgentProfile, 'surfaceLifetime'>): SurfaceLifetime =>
@@ -173,6 +193,11 @@ function attachDiagnosis(cwd: string, handle: LaunchHandle, outcome: 'waiting' |
   if (trust !== undefined) return trust
   if (handle.surface !== 'headless' && handle.paneRef === undefined)
     return 'iTerm2 returned no session id, so nothing was ever launched into a pane.'
+  if (outcome === 'waiting' && isTrusted(cwd) === true)
+    return (
+      `The directory is trusted, so this is not the trust prompt; Claude Code is still starting. ` +
+      `Look at the surface itself (${handle.surface}) and at ~/.claude for this agent's transcript.`
+    )
   return `Look at the surface itself (${handle.surface}) and at ~/.claude for this agent's transcript.`
 }
 
@@ -238,6 +263,8 @@ interface Live {
   /** Which anchor this agent was placed beside, so later spawns can stack on it. */
   anchor?: string
   settle?: NodeJS.Timeout
+  /** CC-124: armed while a visible spawn is still starting past the attach window. */
+  attachCeiling?: NodeJS.Timeout
 }
 
 export interface SupervisorOptions {
@@ -246,6 +273,8 @@ export interface SupervisorOptions {
   settleMs?: number
   /** CC-95's attach window. Shortened in tests; never shortened in production. */
   attachMs?: number
+  /** CC-124's ceiling for a visible spawn still starting. Shortened in tests. */
+  attachCeilingMs?: number
   /**
    * Merged into every surface built here. Without it a test naming `iterm-pane`
    * reaches the real AppleScript and opens a real window on any machine that
@@ -326,6 +355,7 @@ export class Supervisor implements TeleportHost {
   private readonly spawnRateBudget: SpawnRateBudget
   private readonly settleMs: number
   private readonly attachMs: number
+  private readonly attachCeilingMs: number
   /** Resolved by `onRow` when the agent's own `agent_attached` lands. Spawn-time only. */
   private readonly attachWaiters = new Map<string, () => void>()
   private readonly nameFreeMs: number
@@ -342,6 +372,7 @@ export class Supervisor implements TeleportHost {
     this.spawnRateBudget = options.spawnRateBudget ?? new SpawnRateBudget()
     this.settleMs = options.settleMs ?? SETTLE_MS
     this.attachMs = options.attachMs ?? ATTACH_TIMEOUT_MS
+    this.attachCeilingMs = options.attachCeilingMs ?? ATTACH_CEILING_MS
     this.nameFreeMs = options.nameFreeMs ?? NAME_FREE_TIMEOUT_MS
     this.surfaceOptions = options.surface ?? {}
     this.hookSpawn = options.hookSpawn
@@ -393,6 +424,7 @@ export class Supervisor implements TeleportHost {
     const entry = this.live.get(agentId)
     if (!entry) return
     if (entry.settle) clearTimeout(entry.settle)
+    if (entry.attachCeiling) clearTimeout(entry.attachCeiling)
     this.attachWaiters.delete(agentId)
     this.live.delete(agentId)
     this.semaphore.release(agentId)
@@ -842,25 +874,32 @@ export class Supervisor implements TeleportHost {
       },
     })
 
+    const launchedAt = Date.now()
     const handle = await this.launchOn(surface, plan, req.anchor)
     this.track(agentId, req.name, handle, allocation, isolationName, req.anchor)
     logEvent('agent_spawned', { agentId, name: req.name, surface: handle.surface, cwd: allocation.cwd })
 
+    const announce = (): void =>
+      this.fireHook('on_spawn', {
+        agentId,
+        name: req.name,
+        session_id: sessionId,
+        cwd: allocation.cwd,
+        parent: req.parentAgentId ?? null,
+        profile: profile.name,
+        briefing: briefing?.slug ?? null,
+      })
+
     // CC-95's first case. Everything above proves a pane was opened, which is
     // not the claim `agent_spawn` was making. Nothing is reported as spawned
-    // until the agent's own MCP server has said hello.
-    const failure = await this.verifyAttach(agentId, handle, allocation.cwd)
-    if (failure !== undefined) return await this.failSpawn(req, agentId, failure)
-
-    this.fireHook('on_spawn', {
-      agentId,
-      name: req.name,
-      session_id: sessionId,
-      cwd: allocation.cwd,
-      parent: req.parentAgentId ?? null,
-      profile: profile.name,
-      briefing: briefing?.slug ?? null,
-    })
+    // until the agent's own MCP server has said hello, or (CC-124) its pane is
+    // still there to say it in.
+    const verdict = await this.verifyAttach(agentId, handle, allocation.cwd)
+    if (verdict.kind === 'failed') return await this.failSpawn(req, agentId, verdict.reason)
+    if (verdict.kind === 'pending') {
+      this.awaitLateAttach(req, agentId, handle, allocation.cwd, launchedAt, announce)
+      warnings.push(verdict.warning)
+    } else announce()
     return {
       ok: true,
       agentId,
@@ -902,24 +941,49 @@ export class Supervisor implements TeleportHost {
 
   /**
    * Wait for the agent to register, and say what went wrong if it does not
-   * (CC-95). Undefined means attached; a string is the reason, ready to hand to
-   * the coordinator verbatim.
+   * (CC-95). A failed verdict's reason is ready to hand to the coordinator verbatim.
    *
-   * Three outcomes, and the process-exit one is why this is not just a timer:
-   * for a headless agent the wrapper's own exit is direct evidence, arriving in
-   * milliseconds with a code on it, and waiting the full window for something
-   * already known to be dead helps nobody. A visible agent has no such promise —
-   * the broker does not own a pane's process — so there the timeout IS the
-   * evidence, and the diagnosis below is what makes it actionable.
+   * The process-exit outcome is why this is not just a timer: for a headless
+   * agent the wrapper's own exit is direct evidence, arriving in milliseconds
+   * with a code on it, and waiting the full window for something already known
+   * to be dead helps nobody. A visible agent has no such promise — the broker
+   * does not own a pane's process — and CC-124 showed the timeout is not
+   * evidence either: one registered after ten minutes. While its pane exists it
+   * is pending, not failed.
    */
-  private async verifyAttach(
-    agentId: string,
-    handle: LaunchHandle,
-    cwd: string,
-  ): Promise<string | undefined> {
-    if (this.hasAttached(agentId)) return undefined
+  private async verifyAttach(agentId: string, handle: LaunchHandle, cwd: string): Promise<AttachVerdict> {
+    if (this.hasAttached(agentId)) return { kind: 'attached' }
 
-    const outcome = await new Promise<AttachOutcome>(resolve => {
+    const outcome = await this.awaitAttach(agentId, handle)
+    if (outcome.kind === 'attached') return { kind: 'attached' }
+    if (outcome.kind === 'exited') {
+      const cause = `claude exited before registering (exit code ${outcome.code ?? 'unknown'})`
+      return { kind: 'failed', reason: `${cause}. ${attachDiagnosis(cwd, handle, 'exited')}` }
+    }
+
+    const window = span(this.attachMs)
+    const diagnosis = attachDiagnosis(cwd, handle, 'waiting')
+    // CC-124: for a visible agent the timeout is not evidence of death while its pane exists.
+    const paneOpen = await this.paneStillOpen(handle)
+    if (this.hasAttached(agentId)) return { kind: 'attached' }
+    if (!paneOpen)
+      return {
+        kind: 'failed',
+        reason: `no registration within ${window} of launching into ${handle.surface}. ${diagnosis}`,
+      }
+    const ceiling = span(this.attachCeilingMs)
+    return {
+      kind: 'pending',
+      warning:
+        `still starting ${window} after launching into ${handle.surface}; the pane was kept open and it will ` +
+        `attach when it registers. ${diagnosis} If it has not registered within ${ceiling} of launch, the ` +
+        'spawn is recorded as failed and you will get its agent_exited.',
+    }
+  }
+
+  /** Registration, exit or the window, whichever lands first. */
+  private awaitAttach(agentId: string, handle: LaunchHandle): Promise<AttachOutcome> {
+    return new Promise<AttachOutcome>(resolve => {
       let timer: NodeJS.Timeout
       const finish = (result: AttachOutcome): void => {
         clearTimeout(timer)
@@ -936,13 +1000,50 @@ export class Supervisor implements TeleportHost {
         finish(this.hasAttached(agentId) ? { kind: 'attached' } : { kind: 'exited', code })
       })
     })
+  }
 
-    if (outcome.kind === 'attached') return undefined
-    const cause =
-      outcome.kind === 'exited'
-        ? `claude exited before registering (exit code ${outcome.code ?? 'unknown'})`
-        : `no registration within ${Math.round(this.attachMs / 1000)}s of launching into ${handle.surface}`
-    return `${cause}. ${attachDiagnosis(cwd, handle, outcome.kind === 'exited' ? 'exited' : 'waiting')}`
+  /** A pane iTerm2 still lists. Unknown counts as gone: keeping a pane needs a positive answer. */
+  private async paneStillOpen(handle: LaunchHandle): Promise<boolean> {
+    if (handle.surface === 'headless' || handle.paneRef === undefined) return false
+    return (await itermSessionPresent(handle.paneRef, { ...this.surfaceOptions })) === true
+  }
+
+  /**
+   * Keep listening for a visible agent past the attach window (CC-124).
+   *
+   * A late registration flips it to attached through the ordinary `onRow` path
+   * and logs how late it was; reaching the ceiling runs the same `failSpawn` a
+   * dead launch gets. A retire or exit in between removes the live entry, and
+   * with it any reason to fail.
+   */
+  private awaitLateAttach(
+    req: SpawnRequest,
+    agentId: string,
+    handle: LaunchHandle,
+    cwd: string,
+    launchedAt: number,
+    onAttached: () => void,
+  ): void {
+    const entry = this.live.get(agentId)
+    if (!entry) return
+    const ceiling = span(this.attachCeilingMs)
+    entry.attachCeiling = setTimeout(
+      () => {
+        this.attachWaiters.delete(agentId)
+        if (!this.live.has(agentId) || this.hasAttached(agentId)) return
+        const reason = `no registration within ${ceiling} of launching into ${handle.surface}. ${attachDiagnosis(cwd, handle, 'waiting')}`
+        void this.failSpawn(req, agentId, reason)
+      },
+      Math.max(0, launchedAt + this.attachCeilingMs - Date.now()),
+    )
+    entry.attachCeiling.unref?.()
+    this.attachWaiters.set(agentId, () => {
+      clearTimeout(entry.attachCeiling)
+      delete entry.attachCeiling
+      this.attachWaiters.delete(agentId)
+      logEvent('agent_attach_late', { agentId, name: req.name, elapsedMs: Date.now() - launchedAt })
+      onAttached()
+    })
   }
 
   /**
@@ -1541,6 +1642,9 @@ export class Supervisor implements TeleportHost {
     this.unwatch()
     this.teleporter.close()
     this.attachWaiters.clear()
-    for (const entry of this.live.values()) if (entry.settle) clearTimeout(entry.settle)
+    for (const entry of this.live.values()) {
+      if (entry.settle) clearTimeout(entry.settle)
+      if (entry.attachCeiling) clearTimeout(entry.attachCeiling)
+    }
   }
 }

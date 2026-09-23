@@ -37,19 +37,23 @@ export const claudeConfigPath = (): string => path.join(os.homedir(), '.claude.j
  * nothing, and reporting a cause it cannot support would send a reader after the
  * wrong thing.
  */
+/** Whether `cwd` has an accepted trust entry, or undefined when the config cannot be read. */
+export function isTrusted(cwd: string, configFile = claudeConfigPath()): boolean | undefined {
+  try {
+    const config = JSON.parse(fs.readFileSync(configFile, 'utf8')) as ClaudeConfig
+    return config.projects?.[cwd]?.[TRUST_FIELD] === true
+  } catch {
+    return undefined
+  }
+}
+
 export function trustGap(
   cwd: string,
   /** `exited` drops the "it is probably waiting" claim: a process that is gone is not waiting. */
   outcome: 'waiting' | 'exited' = 'waiting',
   configFile = claudeConfigPath(),
 ): string | undefined {
-  let config: ClaudeConfig
-  try {
-    config = JSON.parse(fs.readFileSync(configFile, 'utf8')) as ClaudeConfig
-  } catch {
-    return undefined
-  }
-  if (config.projects?.[cwd]?.[TRUST_FIELD] === true) return undefined
+  if (isTrusted(cwd, configFile) !== false) return undefined
   const symptom =
     outcome === 'waiting'
       ? 'so it is probably waiting on "Do you trust the files in this folder?" — a prompt a spawned pane has nobody to answer'
