@@ -29,6 +29,10 @@ import { chatActivity } from './commands/chat-activity.js'
 import { agentLogs } from './commands/agent-logs.js'
 import { chatTranscript } from './commands/chat-transcript.js'
 import { sessionBudget } from './commands/session-budget.js'
+import { chatBroadcast } from './commands/chat-broadcast.js'
+import { chatAsk } from './commands/chat-ask.js'
+import { chatEndorse } from './commands/chat-endorse.js'
+import { chatNotify } from './commands/chat-notify.js'
 import { TOOL_COMMANDS } from './commands/index.js'
 import type {
   DeclaredPresence,
@@ -316,73 +320,10 @@ export const TOOL_DEFINITIONS = [
     },
   },
   toolDefinition(chatActivity),
-  {
-    name: 'chat_broadcast',
-    description:
-      'Send a message to every registered session except this one. Use sparingly: the cost is ' +
-      'the message times the number of sessions, and each one is a derailed turn. The bus is ' +
-      'machine-wide, so recipients include sessions on unrelated initiatives with no stake in ' +
-      'your work. Past a budget a broadcast is held in recipients’ inboxes instead of being ' +
-      'pushed, so prefer chat_send to the sessions that actually need it.',
-    inputSchema: {
-      type: 'object',
-      properties: { text: { type: 'string', description: 'Message body' } },
-      required: ['text'],
-    },
-  },
-  {
-    name: 'chat_ask',
-    description:
-      'Ask the human a question and stop waiting on it. Use ONLY when you genuinely cannot proceed and no ' +
-      'reasonable default exists — prefer deciding and saying what you assumed. The answer arrives later as a ' +
-      'channel message, so continue with other work meanwhile. You may have at most 3 unanswered questions.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        text: { type: 'string', description: 'The question, with enough context to answer it cold' },
-      },
-      required: ['text'],
-    },
-  },
-  {
-    name: 'chat_endorse',
-    description:
-      'Put a message to your human for approval, and on approval have the broker deliver it to a peer ' +
-      'marked as carrying that human’s authority. This does NOT send: your human is shown the exact ' +
-      'bytes below and either approves or declines, and the broker delivers the stored text — you do ' +
-      'not get to send it yourself afterwards. Use it to relay a decision your human has actually made, ' +
-      'when a peer needs it AS a decision; an ordinary chat_send saying "my human wants X" is a peer ' +
-      'reporting a claim, and a peer is right to want more than that before acting. Do NOT use it to ' +
-      'give your own view extra weight — the message arrives under YOUR name with your human’s ' +
-      'authority behind it, so composing something they did not mean and getting it waved through is ' +
-      'laundering your intent into an instruction to someone else. Write what they decided, in their ' +
-      'terms, and no more. One approval covers this one message and nothing else. The recipient is ' +
-      'still entitled to weigh it. You may have 2 waiting at a time.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        to: { type: 'string', description: 'Registered name of the peer who should receive it' },
-        text: {
-          type: 'string',
-          description:
-            'The exact message to deliver. Your human reads this verbatim; whatever you write here is ' +
-            'what arrives, so make it stand on its own — the recipient sees no other context.',
-        },
-      },
-      required: ['to', 'text'],
-    },
-  },
-  {
-    name: 'chat_notify',
-    description:
-      'Leave the human a status notice that needs no answer, e.g. finishing a long task or hitting something ' +
-      'they should know about. It waits in their queue; it does not interrupt them.',
-    inputSchema: {
-      type: 'object',
-      properties: { text: { type: 'string', description: 'One line worth their attention' } },
-      required: ['text'],
-    },
-  },
+  toolDefinition(chatBroadcast),
+  toolDefinition(chatAsk),
+  toolDefinition(chatEndorse),
+  toolDefinition(chatNotify),
   toolDefinition(chatInbox),
   {
     name: 'chat_subscribe',
@@ -681,14 +622,6 @@ export class ToolHandler {
           optionalTags(args, 'add'),
           optionalTags(args, 'remove'),
         )
-      case 'chat_broadcast':
-        return this.broadcast(requireString(args, 'text'))
-      case 'chat_ask':
-        return this.toHuman('ask', requireString(args, 'text'))
-      case 'chat_notify':
-        return this.toHuman('notify', requireString(args, 'text'))
-      case 'chat_endorse':
-        return this.endorse(requireString(args, 'to'), requireString(args, 'text'))
       case 'chat_subscribe':
         return this.subscribe(args)
       case 'chat_unsubscribe':
@@ -840,53 +773,6 @@ export class ToolHandler {
         ? ''
         : ` ${res.subject} was not notified — it will see this on its next chat_list.`
     return text(`${who} now carries: ${held}.${peer} A tag is a label, not a grant of anything.`)
-  }
-
-  private async broadcast(body: string) {
-    if (!this.registeredName) return text('Call chat_register before broadcasting.')
-    const res = (await this.call({ t: 'broadcast', text: body }, 'send_result')) as Extract<
-      ServerMessage,
-      { t: 'send_result' }
-    >
-    if (!res.ok) return text(`Not delivered: ${res.reason}`)
-    if (res.recipients.length === 0) return text('No other sessions are registered, so nobody received it.')
-    if (res.held) return text(`Held for ${res.recipients.join(', ')}: ${res.reason}`)
-    return text(`Broadcast to ${res.recipients.join(', ')} (msg_id ${res.msgId}).`)
-  }
-
-  private async toHuman(kind: 'ask' | 'notify', body: string) {
-    if (!this.registeredName) return text('Call chat_register first.')
-    const res = (await this.call({ t: kind, text: body }, 'send_result')) as Extract<
-      ServerMessage,
-      { t: 'send_result' }
-    >
-    if (!res.ok) return text(`Not queued: ${res.reason}`)
-    return text(
-      kind === 'ask'
-        ? `Question queued for the human (msg_id ${res.msgId}). They may not see it for a while — carry on with other work.`
-        : `Notice left for the human (msg_id ${res.msgId}).`,
-    )
-  }
-
-  /**
-   * There is deliberately no way here to learn the verdict, and no completion to
-   * wait on: the request goes to the human queue and the delivery, if it happens,
-   * happens without this session in the loop. That is what stops "endorse then
-   * send anyway" being a shape the model can reach for.
-   */
-  private async endorse(to: string, body: string) {
-    if (!this.registeredName)
-      return text('Call chat_register before composing an endorsement, so the recipient knows who you are.')
-    const res = (await this.call({ t: 'endorse', to, text: body }, 'send_result')) as Extract<
-      ServerMessage,
-      { t: 'send_result' }
-    >
-    if (!res.ok) return text(`Not queued: ${res.reason}`)
-    return text(
-      `Waiting on your human (msg_id ${res.msgId}). NOTHING has been sent to "${to}" and nothing will ` +
-        'be unless they approve it, at which point the broker delivers exactly the text above. Carry ' +
-        'on with other work; do not send it yourself in the meantime.',
-    )
   }
 
   /**
