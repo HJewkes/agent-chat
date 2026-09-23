@@ -71,10 +71,13 @@ describe('the permission-hook verb', () => {
   it('prints the documented allow decision once the human allows', async () => {
     const hook = runHook('allow-marker')
     const id = await waitForRow('allow-marker')
+    const { stdout: listing } = await cli(['inbox'])
 
     await cli(['approve', id, 'allow'])
     const { code, stdout } = await hook.done
 
+    // A headless agent has no terminal, so the footer must not send the human to one.
+    expect(listing).toContain('scout blocked on a permission prompt — answer here.')
     expect(code).toBe(0)
     expect(stdout).toBe(
       '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}',

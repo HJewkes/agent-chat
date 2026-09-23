@@ -62,7 +62,9 @@ export async function inbox(): Promise<void> {
   console.log(`\n${res.items.length} waiting, ${open} needing an answer.`)
   if (blocked.length > 0) {
     const who = [...new Set(blocked.map(i => i.from))].join(', ')
-    console.log(`${who} blocked on a permission prompt — answer here, or in that session's terminal.`)
+    // A hook-raised prompt (CC-144) comes from a headless agent, which has no terminal to answer in.
+    const terminal = blocked.some(i => i.meta.source !== 'hook') ? ", or in that session's terminal" : ''
+    console.log(`${who} blocked on a permission prompt — answer here${terminal}.`)
     console.log('approve with: agent-chat approve <id> allow|deny')
   }
   if (open > blocked.length) console.log('answer with: agent-chat answer <id> "..."')
