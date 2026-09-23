@@ -280,6 +280,41 @@ describe('spawning', () => {
     })
   })
 
+  /** CC-133. The section is built in `predecessor.ts`; here it must reach the agent and the log. */
+  describe('a successor spawned with a predecessor', () => {
+    it("puts the predecessor's last report ahead of the assignment, and warns that it is unretired", async () => {
+      const sup = withStubbedSurface()
+      expect((await sup.spawn(spawnReq({ name: 'first', requestedBy: 'coord' }))).ok).toBe(true)
+      core.events.append({ kind: 'message', actor: 'first', target: 'coord', body: 'Status: DONE. PR #7.' })
+
+      const result = await sup.spawn(
+        spawnReq({ name: 'second', requestedBy: 'coord', brief: 'address the review', predecessor: 'first' }),
+      )
+
+      expect(result.ok).toBe(true)
+      const delivered = readLaunchPlan(result.agentId as string).stdin ?? ''
+      expect(delivered.indexOf('Status: DONE. PR #7.')).toBeGreaterThan(-1)
+      expect(delivered.indexOf('Status: DONE. PR #7.')).toBeLessThan(delivered.indexOf('address the review'))
+      expect(result.warnings?.join(' ')).toMatch(/predecessor first is live, not retired/)
+      const row = core.events.agentEvents().find(r => r.kind === 'agent_spawned' && r.target === 'second')
+      expect(row?.meta.predecessor).toBe('first')
+      expect(row?.body).toBe('address the review')
+    })
+
+    it("refuses before taking a slot when the predecessor is not the requester's", async () => {
+      const sup = withStubbedSurface()
+      await sup.spawn(spawnReq({ name: 'first', requestedBy: 'other' }))
+
+      const result = await sup.spawn(spawnReq({ name: 'second', requestedBy: 'coord', predecessor: 'first' }))
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/spawned by other, not by you/)
+      expect(core.events.agentEvents().some(r => r.kind === 'agent_spawned' && r.target === 'second')).toBe(
+        false,
+      )
+    })
+  })
+
   it('refuses a reserved name, and records the refusal as an event', async () => {
     const sup = withStubbedSurface()
     const result = await sup.spawn(spawnReq({ name: 'human' }))

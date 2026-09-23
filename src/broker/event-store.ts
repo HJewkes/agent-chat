@@ -77,6 +77,9 @@ export interface EventStore {
   /** Everything one session did or had done to it, newest last. */
   activityFor(name: string, limit: number): QueueItem[]
 
+  /** The newest direct message `from` sent at or after `since`, optionally only those to `to` (CC-133). */
+  lastMessageFrom(from: string, opts: { to?: string; since: number }): QueueItem | undefined
+
   /** Open items for the human: addressed to them and not yet answered or dismissed. */
   humanQueue(): QueueItem[]
 

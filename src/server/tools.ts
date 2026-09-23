@@ -567,6 +567,17 @@ export const TOOL_DEFINITIONS = [
             'path it checked. The brief becomes its next turn. For an agent that is finished but not ' +
             'retired, agent_resume is simpler.',
         },
+        predecessor: {
+          type: 'string',
+          description:
+            'Name of an agent YOU spawned whose work this one takes over, for a follow-up assignment ' +
+            'sent to a fresh worker instead of the one that did the first piece. The broker adds a ' +
+            "section to the brief with the predecessor's last report (its newest chat_send to you), " +
+            'its branch and worktree, and its session id and transcript path, so the brief need only ' +
+            'say what to do next. Refused for an agent someone else spawned. It does not retire the ' +
+            'predecessor: the spawn warns while it is unretired, and retiring it is yours to do once ' +
+            'this one registers.',
+        },
         config_dir: {
           type: 'string',
           description:
@@ -1221,6 +1232,7 @@ export class ToolHandler {
     const inherit = optionalEnum(args, 'inherit', ['context'] as const)
     const configDir = optionalString(args, 'config_dir')
     const resumeSession = optionalString(args, 'resume_session')
+    const predecessor = optionalString(args, 'predecessor')
     // CC-100: read from THIS process's environment, never from the model. The
     // broker is a detached daemon whose own `CLAUDE_CONFIG_DIR` is an accident of
     // which session autostarted it, so this is the only place the spawning
@@ -1242,6 +1254,7 @@ export class ToolHandler {
         ...(owns === undefined ? {} : { owns }),
         ...(inherit === undefined ? {} : { inherit }),
         ...(resumeSession === undefined ? {} : { resumeSession }),
+        ...(predecessor === undefined ? {} : { predecessor }),
       },
       'spawn_result',
     )) as Extract<ServerMessage, { t: 'spawn_result' }>
