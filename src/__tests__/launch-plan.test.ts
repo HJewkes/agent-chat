@@ -346,7 +346,7 @@ describe('every builtin profile, on every surface', () => {
    */
   it('denies the approve verb on every builtin that can run a shell', () => {
     const shellCapable = BUILTIN_PROFILES.filter(p => !(p.disallowedTools ?? []).includes('Bash'))
-    expect(shellCapable.map(p => p.name)).toEqual(['reviewer', 'implementer', 'peer'])
+    expect(shellCapable.map(p => p.name)).toEqual(['reviewer', 'implementer', 'peer', 'planner'])
 
     for (const builtin of shellCapable) {
       expect(builtin.disallowedTools ?? []).toContain('Bash(agent-chat approve:*)')
@@ -369,9 +369,37 @@ describe('every builtin profile, on every surface', () => {
   })
 })
 
+/**
+ * CC-136. The planner shares the lead's checkout, so its confinement is its deny
+ * list: it may write the plan file and run tests, but never edit source or move
+ * git state out from under the session it shares the tree with.
+ */
+describe('the planner builtin', () => {
+  const planner = BUILTIN_PROFILES.find(p => p.name === 'planner') as AgentProfile
+  const deniedOnLaunch = () =>
+    flag(buildLaunchPlan(input({ profile: planner })).args, '--disallowed-tools')?.split(',')
+
+  it('can write its plan file and run tests, in the shared checkout', () => {
+    expect(planner.allowedTools).toEqual(['Read', 'Grep', 'Glob', 'Write', 'Bash'])
+    expect(planner.isolation).toBe('none')
+  })
+
+  it.each([
+    'Edit',
+    'Bash(git commit:*)',
+    'Bash(git push:*)',
+    'Bash(git checkout:*)',
+    'Bash(git reset:*)',
+    'Bash(git stash:*)',
+    'AskUserQuestion',
+  ])('denies %s on launch', tool => {
+    expect(deniedOnLaunch()).toContain(tool)
+  })
+})
+
 describe('profiles resolve by name only', () => {
   it('finds the builtins', () => {
-    expect(listProfileNames(tmpdir())).toEqual(['explorer', 'implementer', 'peer', 'reviewer'])
+    expect(listProfileNames(tmpdir())).toEqual(['explorer', 'implementer', 'peer', 'planner', 'reviewer'])
     expect(loadProfile('explorer', tmpdir())).toMatchObject({ name: 'explorer', model: 'sonnet' })
   })
 
@@ -530,8 +558,8 @@ describe('how long a profile’s pane outlives it', () => {
   const lifetimeOf = (name: string): string | undefined =>
     BUILTIN_PROFILES.find(p => p.name === name)?.surfaceLifetime
 
-  it('closes the pane for the three dispatched profiles', () => {
-    for (const name of ['explorer', 'reviewer', 'implementer']) {
+  it('closes the pane for the dispatched profiles', () => {
+    for (const name of ['explorer', 'reviewer', 'implementer', 'planner']) {
       expect(lifetimeOf(name)).toBe('close-on-exit')
     }
   })
