@@ -15,6 +15,12 @@
 
 export const DEFAULT_SLOTS = 20
 
+/** Held/cap, for the roster header and `/health` (CC-139). */
+export interface SlotUsage {
+  held: number
+  cap: number
+}
+
 export class Semaphore {
   private readonly held = new Set<string>()
 

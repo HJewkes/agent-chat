@@ -198,4 +198,22 @@ describe('buildHealthPayload', () => {
     expect(payload.sessions).toBe(0)
     expect(payload.uptime_ms).toBeLessThan(1000)
   })
+
+  /**
+   * CC-139: the supervisor lives on `SocketServer`, not `BrokerCore`, so this
+   * pins that the payload actually carries whatever the caller passes rather
+   * than silently dropping it. A mutation deleting the `slots` spread would
+   * fail this — and `toMatchObject` without the field-count check below would
+   * still pass if `held`/`cap` were swapped.
+   */
+  it('carries slots when the caller supplies a reading', () => {
+    const payload = buildHealthPayload(makeCore(), null, { held: 12, cap: 30 })
+    expect(payload.slots).toEqual({ held: 12, cap: 30 })
+  })
+
+  it('omits slots when the caller has no reading to offer', () => {
+    const payload = buildHealthPayload(makeCore(), null)
+    expect(payload.slots).toBeUndefined()
+    expect('slots' in payload).toBe(false)
+  })
 })

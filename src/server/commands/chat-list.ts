@@ -74,6 +74,7 @@ function formatSessions(
   self: string | null,
   claims: SessionClaim[] = [],
   budgets: NamedBudgetRead[] = [],
+  slots?: { held: number; cap: number },
 ): string {
   if (sessions.length === 0) return 'No sessions are registered.'
   const now = Date.now()
@@ -92,7 +93,7 @@ function formatSessions(
     const head = `- ${s.name}${you} [${s.status}${quiet}${named}, idle ${ago(s.idleMs)}${budgetPart}] — ${s.workingOn || 'no description'}`
     return `${head}${tagsLine(s.tags, now)}${declaredLine(s.declared)}${observedLine(s)}${claimLine(claims, s.name)}`
   })
-  return `Active sessions:\n${accountUsageLine(budgets)}\n${rows.join('\n')}${claimsFooter(claims, sessions, self)}`
+  return `Active sessions:\n${accountUsageLine(budgets, slots)}\n${rows.join('\n')}${claimsFooter(claims, sessions, self)}`
 }
 
 /** What this session holds, on its own row, so the roster answers "who has what". */
@@ -158,6 +159,6 @@ export const chatList = defineTool({
       // look (CC-100).
       read: readBudgetSafe(s.observed?.claudeSessionId, s.observed?.configDir),
     }))
-    return formatSessions(res.sessions, ctx.registeredName, res.claims ?? [], budgets)
+    return formatSessions(res.sessions, ctx.registeredName, res.claims ?? [], budgets, res.slots)
   },
 })

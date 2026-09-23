@@ -1392,7 +1392,7 @@ export class ToolHandler {
         `\n    ${transcriptLine(a.cwd, a.sessionId, a.configDir)}${resumeHint(a)}`
       )
     })
-    return text(`Durable agents:\n${accountUsageLine(budgets)}\n${rows.join('\n')}`)
+    return text(`Durable agents:\n${accountUsageLine(budgets, res.slots)}\n${rows.join('\n')}`)
   }
 
   private async agentLogs(name: string, limit: number) {

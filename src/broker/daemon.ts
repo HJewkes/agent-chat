@@ -4,7 +4,7 @@ import { serve, type ServerType } from '@hono/node-server'
 import type { Hono } from 'hono'
 import { defaultPort, home, socketPath } from '../paths.js'
 import { resolveAgentSlots } from '../config.js'
-import { Semaphore } from '../agents/semaphore.js'
+import { Semaphore, type SlotUsage } from '../agents/semaphore.js'
 import { BrokerCore } from './core.js'
 import { buildHttpApp } from './http.js'
 import { isEphemeralHome, watchIdle } from './ephemeral.js'
@@ -62,7 +62,16 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
 
   // Only after the socket is serving, and only ever best-effort.
   const http =
-    options.http === false ? null : await bindHttp(core, options.port ?? defaultPort(), ensureToken())
+    options.http === false
+      ? null
+      : await bindHttp(
+          core,
+          options.port ?? defaultPort(),
+          ensureToken(),
+          undefined,
+          undefined,
+          () => socketServer.slotUsage(),
+        )
   recordBrokerState(http?.port ?? null)
 
   // The watcher and the shutdown it triggers are mutually referential: shutdown
@@ -194,9 +203,16 @@ export async function bindHttp(
   token: string | null = null,
   attempts: number = BIND_RETRY_ATTEMPTS,
   retryDelayMs: number = BIND_RETRY_DELAY_MS,
+  slots?: () => SlotUsage,
 ): Promise<{ server: ServerType; port: number } | null> {
   let bound: number | null = null
-  const app = buildHttpApp({ core, port: () => bound, token, dashboard: { token: () => token } })
+  const app = buildHttpApp({
+    core,
+    port: () => bound,
+    token,
+    dashboard: { token: () => token },
+    ...(slots === undefined ? {} : { slots }),
+  })
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const result = await tryBindOnce(app, port, attempt, attempts)
