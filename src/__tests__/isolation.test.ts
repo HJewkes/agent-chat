@@ -8,6 +8,7 @@ import {
   getStrategy,
   isWarning,
   noneStrategy,
+  refusalOf,
   refusalsIn,
   resolve,
   toolsetStrategy,
@@ -429,6 +430,99 @@ describe('worktree release', () => {
     const repo = makeRepo()
     const alien: Allocation = { cwd: repo }
     expect(await worktreeStrategy.release(ctxFor(repo), alien)).toBe(false)
+  })
+})
+
+/**
+ * CC-125. A squash or rebase merge leaves the agent's own commits off main, and
+ * GitHub deletes the remote branch, so the commit count alone called landed work
+ * unmerged and retire refused.
+ */
+describe('worktree release after the work landed', () => {
+  const withRemote = (repo: string): void => {
+    const remote = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'iso-remote-')))
+    tmpdirs.push(remote)
+    git(['init', '--bare', '-b', 'main'], remote)
+    git(['remote', 'add', 'origin', remote], repo)
+    git(['push', 'origin', 'main'], repo)
+  }
+
+  const squashMerge = (repo: string, branch: string): void => {
+    git(['merge', '--squash', branch], repo)
+    git(['commit', '-m', 'squashed'], repo)
+  }
+
+  it('releases a branch that was squash-merged and whose remote branch was deleted', async () => {
+    const repo = makeRepo()
+    withRemote(repo)
+    const ctx = ctxFor(repo)
+    const alloc = await worktreeStrategy.allocate(ctx)
+    commitIn(alloc.cwd, 'feature.ts')
+    commitIn(alloc.cwd, 'more.ts')
+    git(['push', 'origin', 'agent-chat/alice'], alloc.cwd)
+    squashMerge(repo, 'agent-chat/alice')
+    git(['push', 'origin', 'main', ':agent-chat/alice'], repo)
+    git(['fetch', '--prune', 'origin'], repo)
+
+    expect(await worktreeStrategy.release(ctx, alloc)).toBe(true)
+    expect(git(['branch', '--list', 'agent-chat/alice'], repo)).toBe('')
+  })
+
+  it('releases a branch that was rebase-merged onto a base that had moved on', async () => {
+    const repo = makeRepo()
+    const ctx = ctxFor(repo)
+    const alloc = await worktreeStrategy.allocate(ctx)
+    commitIn(alloc.cwd, 'feature.ts')
+    commitIn(repo, 'unrelated.ts')
+    git(['cherry-pick', 'main..agent-chat/alice'], repo)
+
+    expect(await worktreeStrategy.release(ctx, alloc)).toBe(true)
+  })
+
+  it('refuses when only part of the branch landed, and names the missing landing', async () => {
+    const repo = makeRepo()
+    const ctx = ctxFor(repo)
+    const alloc = await worktreeStrategy.allocate(ctx)
+    const first = commitIn(alloc.cwd, 'feature.ts')
+    commitIn(alloc.cwd, 'more.ts')
+    commitIn(repo, 'unrelated.ts')
+    git(['cherry-pick', first], repo)
+
+    expect(await worktreeStrategy.release(ctx, alloc)).toBe(false)
+    expect(refusalOf(alloc)).toMatch(/work not landed on main/)
+  })
+
+  it('names the dirty worktree when that is what refuses', async () => {
+    const repo = makeRepo()
+    const ctx = ctxFor(repo)
+    const alloc = await worktreeStrategy.allocate(ctx)
+    fs.writeFileSync(path.join(alloc.cwd, 'scratch.ts'), 'half-finished\n')
+
+    expect(await worktreeStrategy.release(ctx, alloc)).toBe(false)
+    expect(refusalOf(alloc)).toBe('uncommitted changes in the worktree')
+  })
+
+  it('names the unpushed commit count when a never-merged branch refuses', async () => {
+    const repo = makeRepo()
+    const ctx = ctxFor(repo)
+    const alloc = await worktreeStrategy.allocate(ctx)
+    commitIn(alloc.cwd, 'feature.ts')
+    commitIn(alloc.cwd, 'more.ts')
+
+    expect(await worktreeStrategy.release(ctx, alloc)).toBe(false)
+    expect(refusalOf(alloc)).toMatch(/^2 commit\(s\) not on [0-9a-f]{40}; work not landed on main/)
+    expect(git(['branch', '--list', 'agent-chat/alice'], repo)).toContain('agent-chat/alice')
+  })
+
+  it('still discards a dirty, never-merged branch when forced', async () => {
+    const repo = makeRepo()
+    const ctx = ctxFor(repo)
+    const alloc = await worktreeStrategy.allocate(ctx)
+    commitIn(alloc.cwd, 'feature.ts')
+    fs.writeFileSync(path.join(alloc.cwd, 'scratch.ts'), 'half-finished\n')
+
+    expect(await worktreeStrategy.release(ctx, alloc, { force: true })).toBe(true)
+    expect(git(['branch', '--list', 'agent-chat/alice'], repo)).toBe('')
   })
 })
 

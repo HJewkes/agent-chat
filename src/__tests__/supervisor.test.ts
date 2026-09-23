@@ -802,7 +802,7 @@ describe('retiring reaps the process', () => {
     const result = await sup.retire('scout')
 
     expect(result.ok).toBe(false)
-    expect(result.reason).toMatch(/still holds work/)
+    expect(result.reason).toMatch(/refused release/)
     expect(signals).toEqual([])
   })
 
@@ -868,7 +868,7 @@ describe('runtime state outliving the broker', () => {
     const result = await withStubbedSurface().retire('scout')
 
     expect(result.ok).toBe(false)
-    expect(result.reason).toMatch(/still holds work/)
+    expect(result.reason).toMatch(/refused release \(allocation carries no worktree reference\)/)
   })
 
   it('lets a restarted broker close the pane it did not open', async () => {
