@@ -6,8 +6,11 @@ and `agent resume` were born as registry commands after it. Slice 2 converts the
 `chat_activity`, `agent_logs`, `chat_transcript` and `session_budget`, and deletes `boundedLimit`.
 Slice 3 converted the human-queue writes: `chat_broadcast`, `chat_ask`, `chat_notify` and
 `chat_endorse`. Slice 4 converts `chat_claim`, `chat_release`, `chat_tag`, `chat_subscribe` and
-`chat_unsubscribe`, and deletes `optionalTags`. Slice 7a converted the CLI human and debug reads:
-`inbox`, `dismiss`, `approve`, `endorse`, `debug ps`, `debug claims`, `debug history [n]`,
+`chat_unsubscribe`, and deletes `optionalTags`. Slice 6 converts `agent_spawn` and
+`agent_teleport`; `optionalEnum` and `optionalPatterns` lose their last caller and are left for S5
+to delete with `requireString` and `optionalString`, so only `chat_register` and `chat_status`
+remain hand-written on the MCP side. Slice 7a converted the CLI human and debug reads: `inbox`,
+`dismiss`, `approve`, `endorse`, `debug ps`, `debug claims`, `debug history [n]`,
 `debug log [n]`, plus the hidden `ps`, `history [n]` and `log [n]` aliases, and added
 `Report.errors` and `addVerb`'s `helpGroup`/`hidden` options. Slice 7b converted the remaining CLI
 verbs that fit 0.2.0 as-is: `doctor`, `profiles`, `agent surface`, `agent budget [name]`,
