@@ -2032,6 +2032,17 @@ Mitigations to build:
   the complexity this design earns its way out of (README: "no heartbeats, no
   TTLs, no stale-entry reaper").
 
+**Checking a rollback target before a restart.** `scripts/rollback-check.sh <sha> [port]`
+answers "if this restart goes wrong, can the broker come back up on the old revision?"
+without touching the live one. It exports the revision with `git archive` into a temp dir,
+runs `npm ci` and `tsc` there, and starts `agent-chat broker` from that build. The broker
+uses an isolated `AGENT_CHAT_HOME` under `$TMPDIR` and port 7699 by default. The script
+requires `/health` to answer, then stops the broker and deletes the temp dir. It refuses to
+run if the port already answers, so it cannot probe the live broker by mistake. Exit 0 means
+the revision is a usable rollback target, exit 1 means it built but never served, and exit 2
+means bad input. Run it before a planned restart window, against the SHA the live broker runs
+now.
+
 ---
 
 ### 5. Interactive dashboard — decided

@@ -363,6 +363,8 @@ export class Supervisor implements TeleportHost {
   private readonly attachCeilingMs: number
   /** Resolved by `onRow` when the agent's own `agent_attached` lands. Spawn-time only. */
   private readonly attachWaiters = new Map<string, () => void>()
+  /** CC-109: agents counted on reattach that are not in `live`, with any pending release. */
+  private readonly reattached = new Map<string, NodeJS.Timeout | undefined>()
   private readonly nameFreeMs: number
   private readonly surfaceOptions: SupervisorOptions['surface']
   private readonly hookSpawn: HookSpawnFn | undefined
@@ -399,7 +401,7 @@ export class Supervisor implements TeleportHost {
     const agentId = row.ref
     if (agentId === undefined) return
     const entry = this.live.get(agentId)
-    if (!entry) return
+    if (!entry) return this.onUnwatchedRow(row.kind, agentId)
 
     if (row.kind === 'agent_attached') {
       if (entry.settle) {
@@ -409,6 +411,52 @@ export class Supervisor implements TeleportHost {
       this.attachWaiters.get(agentId)?.()
     }
     if (row.kind === 'agent_detached') this.scheduleSettle(entry)
+  }
+
+  /**
+   * CC-109: slot accounting for a spawned agent this broker did not launch,
+   * which after a restart is every agent that reattaches. Count only: no exit
+   * is inferred and nothing is added to `live`, for the reasons on `rehydrate`.
+   */
+  private onUnwatchedRow(kind: string, agentId: string): void {
+    if (kind === 'agent_attached') return this.countReattach(agentId)
+    if (!this.reattached.has(agentId)) return
+    if (kind === 'agent_detached') this.scheduleReattachRelease(agentId)
+    if (kind === 'agent_exited' || kind === 'agent_retired') this.releaseReattach(agentId)
+  }
+
+  private countReattach(agentId: string): void {
+    if (this.reattached.has(agentId)) {
+      clearTimeout(this.reattached.get(agentId))
+      this.reattached.set(agentId, undefined)
+      return
+    }
+    if (this.semaphore.has(agentId)) return
+    const identity = this.core.agents.get(agentId)
+    if (identity?.origin !== 'spawned' || identity.state === 'retired') return
+    this.semaphore.adopt(agentId)
+    this.reattached.set(agentId, undefined)
+    logEvent('agent_slot_reattached', { agentId, name: identity.name, slots: this.semaphore.summary() })
+  }
+
+  /** The same settle window a watched agent gets, so a reconnect blip keeps its slot. */
+  private scheduleReattachRelease(agentId: string): void {
+    clearTimeout(this.reattached.get(agentId))
+    const timer = setTimeout(() => this.releaseReattach(agentId), this.settleMs)
+    timer.unref?.()
+    this.reattached.set(agentId, timer)
+  }
+
+  private releaseReattach(agentId: string): void {
+    clearTimeout(this.reattached.get(agentId))
+    this.reattached.delete(agentId)
+    this.semaphore.release(agentId)
+  }
+
+  /** A launch takes over the slot, so its release moves to `recordExit`. */
+  private forgetReattach(agentId: string): void {
+    clearTimeout(this.reattached.get(agentId))
+    this.reattached.delete(agentId)
   }
 
   private scheduleSettle(entry: Live): void {
@@ -1117,6 +1165,7 @@ export class Supervisor implements TeleportHost {
     // entry has to cancel the timer that belonged to it.
     const previous = this.live.get(agentId)
     if (previous?.settle) clearTimeout(previous.settle)
+    this.forgetReattach(agentId)
 
     const entry: Live = { agentId, name, handle, allocation, isolation, ...(anchor ? { anchor } : {}) }
     this.live.set(agentId, entry)
@@ -1647,6 +1696,7 @@ export class Supervisor implements TeleportHost {
     this.unwatch()
     this.teleporter.close()
     this.attachWaiters.clear()
+    for (const timer of this.reattached.values()) clearTimeout(timer)
     for (const entry of this.live.values()) {
       if (entry.settle) clearTimeout(entry.settle)
       if (entry.attachCeiling) clearTimeout(entry.attachCeiling)
