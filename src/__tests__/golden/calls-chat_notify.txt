@@ -1,0 +1,37 @@
+=== chat_notify: unregistered sender
+args: {"text":"done with the migration"}
+[
+  {
+    "type": "text",
+    "text": "Call chat_register first."
+  }
+]
+
+=== chat_notify: left for the human
+args: {"text":"done with the migration"}
+frame: {"t":"notify","text":"done with the migration"}
+[
+  {
+    "type": "text",
+    "text": "Notice left for the human (msg_id m-1)."
+  }
+]
+
+=== chat_notify: text blank
+args: {"text":"   "}
+[
+  {
+    "type": "text",
+    "text": "Error: text is required and must be a non-empty string"
+  }
+]
+
+=== chat_notify: refused by the broker
+args: {"text":"done with the migration"}
+frame: {"t":"notify","text":"done with the migration"}
+[
+  {
+    "type": "text",
+    "text": "Not queued: queue is full"
+  }
+]

@@ -1,0 +1,37 @@
+=== chat_endorse: unregistered sender
+args: {"to":"bob","text":"ship it"}
+[
+  {
+    "type": "text",
+    "text": "Call chat_register before composing an endorsement, so the recipient knows who you are."
+  }
+]
+
+=== chat_endorse: waiting on the human
+args: {"to":"bob","text":"ship it"}
+frame: {"t":"endorse","to":"bob","text":"ship it"}
+[
+  {
+    "type": "text",
+    "text": "Waiting on your human (msg_id m-1). NOTHING has been sent to \"bob\" and nothing will be unless they approve it, at which point the broker delivers exactly the text above. Carry on with other work; do not send it yourself in the meantime."
+  }
+]
+
+=== chat_endorse: text blank
+args: {"to":"bob","text":"   "}
+[
+  {
+    "type": "text",
+    "text": "Error: text is required and must be a non-empty string"
+  }
+]
+
+=== chat_endorse: refused by the broker
+args: {"to":"bob","text":"ship it"}
+frame: {"t":"endorse","to":"bob","text":"ship it"}
+[
+  {
+    "type": "text",
+    "text": "Not queued: already have 2 waiting"
+  }
+]

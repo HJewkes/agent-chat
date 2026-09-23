@@ -218,6 +218,83 @@ const AGENT_SURFACE_CASES: CallCase[] = [
   },
 ]
 
+/** CC-106 S3: unregistered, registered, blank text, and a broker refusal, for each human-queue write. */
+const CHAT_BROADCAST_CASES: CallCase[] = [
+  { label: 'unregistered sender', tool: 'chat_broadcast', args: { text: 'hi' } },
+  {
+    label: 'delivered to the roster',
+    tool: 'chat_broadcast',
+    registeredAs: 'me',
+    args: { text: 'hi' },
+    reply: sent({ recipients: ['bob', 'ann'] }),
+  },
+  { label: 'text blank', tool: 'chat_broadcast', registeredAs: 'me', args: { text: '   ' } },
+  {
+    label: 'refused by the broker',
+    tool: 'chat_broadcast',
+    registeredAs: 'me',
+    args: { text: 'hi' },
+    reply: sent({ ok: false, reason: 'broadcast budget exceeded' }),
+  },
+]
+
+const CHAT_ASK_CASES: CallCase[] = [
+  { label: 'unregistered sender', tool: 'chat_ask', args: { text: 'what now?' } },
+  {
+    label: 'queued for the human',
+    tool: 'chat_ask',
+    registeredAs: 'me',
+    args: { text: 'what now?' },
+    reply: sent({}),
+  },
+  { label: 'text blank', tool: 'chat_ask', registeredAs: 'me', args: { text: '   ' } },
+  {
+    label: 'refused by the broker',
+    tool: 'chat_ask',
+    registeredAs: 'me',
+    args: { text: 'what now?' },
+    reply: sent({ ok: false, reason: 'already have 3 unanswered questions' }),
+  },
+]
+
+const CHAT_NOTIFY_CASES: CallCase[] = [
+  { label: 'unregistered sender', tool: 'chat_notify', args: { text: 'done with the migration' } },
+  {
+    label: 'left for the human',
+    tool: 'chat_notify',
+    registeredAs: 'me',
+    args: { text: 'done with the migration' },
+    reply: sent({}),
+  },
+  { label: 'text blank', tool: 'chat_notify', registeredAs: 'me', args: { text: '   ' } },
+  {
+    label: 'refused by the broker',
+    tool: 'chat_notify',
+    registeredAs: 'me',
+    args: { text: 'done with the migration' },
+    reply: sent({ ok: false, reason: 'queue is full' }),
+  },
+]
+
+const CHAT_ENDORSE_CASES: CallCase[] = [
+  { label: 'unregistered sender', tool: 'chat_endorse', args: { to: 'bob', text: 'ship it' } },
+  {
+    label: 'waiting on the human',
+    tool: 'chat_endorse',
+    registeredAs: 'me',
+    args: { to: 'bob', text: 'ship it' },
+    reply: sent({}),
+  },
+  { label: 'text blank', tool: 'chat_endorse', registeredAs: 'me', args: { to: 'bob', text: '   ' } },
+  {
+    label: 'refused by the broker',
+    tool: 'chat_endorse',
+    registeredAs: 'me',
+    args: { to: 'bob', text: 'ship it' },
+    reply: sent({ ok: false, reason: 'already have 2 waiting' }),
+  },
+]
+
 const AGENT_BACKGROUND_CASES: CallCase[] = [
   { label: 'unregistered', tool: 'agent_background', args: {} },
   {
@@ -249,6 +326,10 @@ describe('tool call golden', () => {
     ['chat_send', CHAT_SEND_CASES],
     ['chat_inbox', CHAT_INBOX_CASES],
     ['chat_transcript', CHAT_TRANSCRIPT_CASES],
+    ['chat_broadcast', CHAT_BROADCAST_CASES],
+    ['chat_ask', CHAT_ASK_CASES],
+    ['chat_notify', CHAT_NOTIFY_CASES],
+    ['chat_endorse', CHAT_ENDORSE_CASES],
     ['agent_surface', AGENT_SURFACE_CASES],
     ['agent_background', AGENT_BACKGROUND_CASES],
   ])('%s answers every pinned case exactly as before', async (tool, cases) => {
