@@ -32,6 +32,18 @@ export class Semaphore {
     return true
   }
 
+  /**
+   * Count an agent that is already running, even past the cap (CC-109).
+   *
+   * A reattach after a broker restart is not a request for capacity: the process
+   * exists whether or not it is counted, so refusing it would only hide it from
+   * the budget. Counting it is what keeps new spawns refused until the real
+   * population drops below the cap.
+   */
+  adopt(agentId: string): void {
+    this.held.add(agentId)
+  }
+
   release(agentId: string): void {
     this.held.delete(agentId)
   }
