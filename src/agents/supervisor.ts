@@ -40,7 +40,7 @@ import { Semaphore, type SlotUsage } from './semaphore.js'
 import { checkSpawnCwd } from './spawn-cwd.js'
 import { resolveSpawnBriefing, type BriefingResult } from './active-work.js'
 import { resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
-import { findTranscript } from './transcript.js'
+import { configDir, findTranscript } from './transcript.js'
 import { resolvePredecessor, type PredecessorResult } from './predecessor.js'
 import {
   checkResumeSession,
@@ -136,6 +136,9 @@ const KILL_GRACE_MS = 3000
 /** How long to wait for a stopped agent's socket to go before reclaiming its name. */
 const NAME_FREE_TIMEOUT_MS = 8_000
 const NAME_FREE_POLL_MS = 100
+
+/** CC-118: the cancellation reason a surface switch writes for the process it stops. */
+const MODE_SWITCH = 'mode switch'
 
 /**
  * Did this descendant land in the very pane its predecessor was closing, and was
@@ -302,8 +305,8 @@ interface Live {
   attachCeiling?: NodeJS.Timeout
   /** CC-118: this process's shadow execution; absent when the ledger is off. */
   executionId?: string
-  /** CC-118: someone asked this process to stop, so its exit finishes as cancelled. */
-  cancelRequested?: boolean
+  /** CC-118: someone asked this process to stop, so its exit finishes cancelled with this reason. */
+  cancelReason?: string
   /** CC-118: `observe_running` is written once; a later attach is presence, not lifecycle. */
   runningObserved?: boolean
 }
@@ -458,7 +461,12 @@ export class Supervisor implements TeleportHost {
     if (entry.executionId === undefined || entry.runningObserved) return
     entry.runningObserved = true
     const meta = this.core.agents.spawnMeta(entry.agentId)
-    this.shadow.running(entry.executionId, entry.handle, meta['session_id'] ?? '', meta['config_dir'] ?? '')
+    this.shadow.running(
+      entry.executionId,
+      entry.handle,
+      meta['session_id'] ?? '',
+      meta['config_dir'] ?? configDir(),
+    )
   }
 
   /**
@@ -553,7 +561,7 @@ export class Supervisor implements TeleportHost {
       },
     })
     logEvent('agent_exited', { agentId, name: entry.name, code: outcome.code, inferred: outcome.inferred })
-    this.shadow.finish(entry.executionId, exitTerminal(outcome, failed, entry.cancelRequested === true))
+    this.shadow.finish(entry.executionId, exitTerminal(outcome, failed, entry.cancelReason))
     // CC-95: the surface goes with the agent, including on an INFERRED exit —
     // which is the only exit an iTerm agent ever gets, and therefore the only
     // path that could have closed the panes found sitting at `-zsh` for six
@@ -1035,7 +1043,19 @@ export class Supervisor implements TeleportHost {
     if (entry === undefined || executionId === undefined) return
     entry.executionId = executionId
     // An attach can land before `track` made the entry that `onRow` looks for.
-    if (this.hasAttached(agentId)) this.observeRunning(entry)
+    if (this.attachedSinceLaunch(agentId)) this.observeRunning(entry)
+  }
+
+  /** A resumed agent's attach rows from an earlier life say nothing about the process just launched. */
+  private attachedSinceLaunch(agentId: string): boolean {
+    const latest = this.core.events
+      .agentEvents()
+      .findLast(row =>
+        row.kind === 'agent_spawned'
+          ? row.msgId === agentId
+          : row.ref === agentId && (row.kind === 'agent_attached' || row.kind === 'agent_resumed'),
+      )
+    return latest?.kind === 'agent_attached'
   }
 
   /** CC-133. Refused when unknown or not the requester's; resolved against the log, never the request. */
@@ -1301,7 +1321,7 @@ export class Supervisor implements TeleportHost {
     } catch {
       return { ok: false, reason: `${name} (pid ${pid}) was already gone` }
     }
-    entry.cancelRequested = true
+    entry.cancelReason = 'exited after a cancellation request'
     this.shadow.requestCancellation(entry.executionId, 'kill')
     setTimeout(() => {
       try {
@@ -1516,11 +1536,18 @@ export class Supervisor implements TeleportHost {
     if (!this.semaphore.acquire(identity.agentId))
       return { ok: false, reason: `no free agent slots (${this.semaphore.summary()})`, transcript }
 
+    const executionId = this.shadow.resume(
+      identity.agentId,
+      identity.configDir ?? configDir(),
+      identity.sessionId,
+    )
     try {
-      await this.relaunchResumed(identity, profile, req, transcript)
+      await this.relaunchResumed(identity, profile, req, transcript, executionId)
     } catch (err) {
       this.semaphore.release(identity.agentId)
-      return { ok: false, reason: `resume failed: ${(err as Error).message}`, transcript }
+      const reason = `resume failed: ${(err as Error).message}`
+      this.shadow.finish(executionId, { outcome: 'failed', reason, retryable: false })
+      return { ok: false, reason, transcript }
     }
     const warnings =
       req.message !== undefined && (req.surface ?? 'headless') !== 'headless'
@@ -1535,6 +1562,7 @@ export class Supervisor implements TeleportHost {
     profile: AgentProfile,
     req: ResumeRequest,
     transcript: TranscriptVerdict,
+    executionId: string | undefined,
   ): Promise<void> {
     const state = this.live.get(agent.agentId) ?? readRuntimeState(agent.agentId)
     const allocation = state?.allocation ?? { cwd: agent.cwd }
@@ -1570,6 +1598,7 @@ export class Supervisor implements TeleportHost {
     })
     const handle = await this.launchOn(surface, plan)
     this.track(agent.agentId, agent.name, handle, allocation, isolation)
+    this.bindExecution(agent.agentId, executionId)
   }
 
   /**
@@ -1610,9 +1639,12 @@ export class Supervisor implements TeleportHost {
    * resume below is exactly what it needed anyway.
    */
   private stopFor(req: SwitchRequest, agent: AgentIdentity): { ok: boolean; reason?: string } {
-    if (!this.live.has(agent.agentId)) return { ok: true }
-    if (req.to === 'headless') return this.endSession(req.name, req.hostPid as number)
-    return this.kill(req.name)
+    const entry = this.live.get(agent.agentId)
+    if (entry === undefined) return { ok: true }
+    const stopped =
+      req.to === 'headless' ? this.endSession(req.name, req.hostPid as number) : this.kill(req.name)
+    if (stopped.ok) entry.cancelReason = MODE_SWITCH
+    return stopped
   }
 
   /** Rebuild the plan against the new surface and reattach to the same conversation. */
@@ -1657,13 +1689,28 @@ export class Supervisor implements TeleportHost {
       meta: { session_id: agent.sessionId, surface, from_surface: agent.surface },
     })
 
+    const executionId = this.continueExecution(agent, entry)
     const handle = await this.launchOn(surface, plan, req.anchor)
     this.track(agent.agentId, req.name, handle, allocation, isolation, req.anchor)
+    this.bindExecution(agent.agentId, executionId)
     logEvent('agent_surface_switched', { name: req.name, to: handle.surface, from: agent.surface })
     // Delivered after the relaunch so it lands in the session that came back,
     // rather than the one that was about to be signalled.
     if (req.to !== 'headless') this.tellAgent(req.name, SURFACED_NOTICE)
     return { ok: true, name: req.name, agentId: agent.agentId, surface: handle.surface }
+  }
+
+  /** The stopped process's exit may land after `track` replaced its entry, so its row is closed here too. */
+  private continueExecution(agent: AgentIdentity, stopped: Live | undefined): string | undefined {
+    this.finishSuperseded(agent.agentId, stopped, MODE_SWITCH)
+    return this.shadow.resume(agent.agentId, agent.configDir ?? configDir(), agent.sessionId)
+  }
+
+  /** A second finish on a terminal row is a no-op, so this is safe beside `recordExit`. */
+  private finishSuperseded(agentId: string, held: Live | undefined, reason: string): void {
+    if (held?.executionId !== undefined)
+      return this.shadow.finish(held.executionId, { outcome: 'cancelled', reason })
+    this.shadow.finishByAgent(agentId, { outcome: 'cancelled', reason })
   }
 
   /**
@@ -1820,14 +1867,16 @@ export class Supervisor implements TeleportHost {
       },
     })
 
+    const executionId = this.openSuccessor(input, predecessor)
     // The descendant takes the pane its predecessor vacated, rather than a tab
     // beside it. Safe here and nowhere else: this anchor is the predecessor's
     // own pane, and the predecessor is already gone.
-    const launched = await this.launchOn(input.surface, plan, input.anchor, input.reuseAnchor ?? false)
+    const launched = await this.launchSuccessor(input, plan, executionId)
     const handle = succeedsInto(launched, predecessor?.handle) ? { ...launched, ownsSurface: true } : launched
     // Transfers the allocation to the descendant's id, so ITS eventual retire
     // releases the real strategy rather than a no-op one.
     this.track(input.agentId, input.name, handle, allocation, isolation, input.anchor)
+    this.bindExecution(input.agentId, executionId)
     logEvent('agent_teleported', { agentId: input.agentId, name: input.name, from: input.inheritedFrom })
     this.fireHook('on_spawn', {
       agentId: input.agentId,
@@ -1838,6 +1887,30 @@ export class Supervisor implements TeleportHost {
       profile: input.profile.name,
       briefing: null,
     })
+  }
+
+  /** Two applies, not one atomic write until TP-199: a restart between them is slice 4's `teleport_half_written`. */
+  private openSuccessor(input: RelaunchInput, predecessor: Live | undefined): string | undefined {
+    if (input.inheritedFrom !== undefined)
+      this.finishSuperseded(input.inheritedFrom, predecessor, 'superseded by teleport')
+    return this.shadow.open(input.agentId, input.configDir ?? configDir())
+  }
+
+  private async launchSuccessor(
+    input: RelaunchInput,
+    plan: LaunchPlan,
+    executionId: string | undefined,
+  ): Promise<LaunchHandle> {
+    try {
+      return await this.launchOn(input.surface, plan, input.anchor, input.reuseAnchor ?? false)
+    } catch (err) {
+      this.shadow.finish(executionId, {
+        outcome: 'failed',
+        reason: `teleport failed: ${(err as Error).message}`,
+        retryable: false,
+      })
+      throw err
+    }
   }
 
   /** Live agents, for `agent ls` and the slot summary. */

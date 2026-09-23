@@ -83,6 +83,6 @@ jobs:
 
       # CC-118: the supervisor suites again with the shadow ledger on, which must change no outcome.
       - name: Test with the shadow ledger on
-        run: npx vitest run src/__tests__/supervisor.test.ts src/__tests__/slots-reattach.test.ts src/__tests__/ledger-shadow-supervisor.test.ts
+        run: npx vitest run src/__tests__/supervisor.test.ts src/__tests__/slots-reattach.test.ts src/__tests__/ledger-shadow-supervisor.test.ts src/__tests__/ledger-shadow-continuations.test.ts
         env:
           AGENT_CHAT_LEDGER_SHADOW: '1'
