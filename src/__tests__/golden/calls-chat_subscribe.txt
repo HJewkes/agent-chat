@@ -71,7 +71,7 @@ args: {}
 [
   {
     "type": "text",
-    "text": "Error: scope is required and must be one of: all, name, tag, spawned"
+    "text": "Error: Invalid arguments: scope: scope is required and must be one of: all, name, tag, spawned"
   }
 ]
 
@@ -80,7 +80,7 @@ args: {"scope":"everyone"}
 [
   {
     "type": "text",
-    "text": "Error: scope must be one of: all, name, tag, spawned"
+    "text": "Error: Invalid arguments: scope: scope must be one of: all, name, tag, spawned"
   }
 ]
 
@@ -89,7 +89,7 @@ args: {"scope":"all","kinds":["bogus"]}
 [
   {
     "type": "text",
-    "text": "Error: kinds must all be one of: registered, deregistered, agent_spawned, agent_attached, agent_detached, agent_resumed, agent_exited, agent_retired, agent_spawn_refused"
+    "text": "Error: Invalid arguments: kinds.0: kinds must all be one of: registered, deregistered, agent_spawned, agent_attached, agent_detached, agent_resumed, agent_exited, agent_retired, agent_spawn_refused"
   }
 ]
 
@@ -105,21 +105,19 @@ frame: {"t":"subscribe","subscriptions":[{"selector":{"all":true},"kinds":["regi
 
 === chat_subscribe: kinds as a bare string
 args: {"scope":"all","kinds":"agent_spawned"}
-frame: {"t":"subscribe","subscriptions":[{"selector":{"all":true},"kinds":["registered","deregistered","agent_attached","agent_detached"]}]}
 [
   {
     "type": "text",
-    "text": "Subscribed to everything for registered, deregistered, agent_attached, agent_detached. Holding 1."
+    "text": "Error: Invalid arguments: kinds: Invalid input: expected array, received string"
   }
 ]
 
 === chat_subscribe: kinds null
 args: {"scope":"all","kinds":null}
-frame: {"t":"subscribe","subscriptions":[{"selector":{"all":true},"kinds":["registered","deregistered","agent_attached","agent_detached"]}]}
 [
   {
     "type": "text",
-    "text": "Subscribed to everything for registered, deregistered, agent_attached, agent_detached. Holding 1."
+    "text": "Error: Invalid arguments: kinds: Invalid input: expected array, received null"
   }
 ]
 
@@ -128,6 +126,6 @@ args: {"scope":"name","target":42}
 [
   {
     "type": "text",
-    "text": "Error: scope \"name\" needs target set to the name to watch"
+    "text": "Error: Invalid arguments: target: Invalid input: expected string, received number"
   }
 ]

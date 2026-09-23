@@ -16,6 +16,10 @@ import { chatBroadcast } from './chat-broadcast.js'
 import { chatAsk } from './chat-ask.js'
 import { chatEndorse } from './chat-endorse.js'
 import { chatNotify } from './chat-notify.js'
+import { chatClaim } from './chat-claim.js'
+import { chatRelease } from './chat-release.js'
+import { chatTag } from './chat-tag.js'
+import { chatSubscribe, chatUnsubscribe } from './subscriptions.js'
 
 /** Tools already defined through the registry; ToolHandler routes these names here before its switch. */
 export const TOOL_COMMANDS = createRegistry<ToolContext>()
@@ -35,3 +39,8 @@ TOOL_COMMANDS.register(chatBroadcast)
 TOOL_COMMANDS.register(chatAsk)
 TOOL_COMMANDS.register(chatEndorse)
 TOOL_COMMANDS.register(chatNotify)
+TOOL_COMMANDS.register(chatClaim)
+TOOL_COMMANDS.register(chatRelease)
+TOOL_COMMANDS.register(chatTag)
+TOOL_COMMANDS.register(chatSubscribe)
+TOOL_COMMANDS.register(chatUnsubscribe)

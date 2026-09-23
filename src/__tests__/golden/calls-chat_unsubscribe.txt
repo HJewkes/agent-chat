@@ -42,7 +42,7 @@ args: {"scope":"everyone"}
 [
   {
     "type": "text",
-    "text": "Error: scope must be one of: all, name, tag, spawned"
+    "text": "Error: Invalid arguments: scope: scope must be one of: all, name, tag, spawned"
   }
 ]
 
@@ -51,6 +51,6 @@ args: {"scope":null}
 [
   {
     "type": "text",
-    "text": "Error: scope is required and must be one of: all, name, tag, spawned"
+    "text": "Error: Invalid arguments: scope: scope must be one of: all, name, tag, spawned"
   }
 ]

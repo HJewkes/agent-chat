@@ -5,6 +5,8 @@ import { toolDefinition, type ToolContext } from '../server/command.js'
 import { chatSend } from '../server/commands/chat-send.js'
 import { chatActivity } from '../server/commands/chat-activity.js'
 import { chatEndorse } from '../server/commands/chat-endorse.js'
+import { chatTag } from '../server/commands/chat-tag.js'
+import { chatSubscribe } from '../server/commands/subscriptions.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { ClientMessage } from '../protocol.js'
 
@@ -135,5 +137,28 @@ describe('chat_endorse refuses a missing recipient at the schema boundary', () =
       error: 'Invalid arguments: to: to is required and must be a non-empty string',
     })
     expect(sent).toEqual([])
+  })
+})
+
+/** CC-106 S4: a bare string used to be wrapped into a list or ignored; the schema now refuses it by field. */
+describe('claims, tags and subscriptions refuse a bare string where a list belongs', () => {
+  it.each([
+    ['chat_tag add', chatTag, { add: 'owner:src' }, 'add'],
+    ['chat_subscribe kinds', chatSubscribe, { scope: 'all', kinds: 'agent_spawned' }, 'kinds'],
+  ] as const)('rejects %s before any frame', async (_label, tool, args, field) => {
+    const { broker, sent } = silentBroker()
+
+    const { envelope } = await invokeCommand(tool, args, context(broker))
+
+    expect(envelope).toEqual({
+      ok: false,
+      code: EXIT.DATAERR,
+      error: `Invalid arguments: ${field}: Invalid input: expected array, received string`,
+    })
+    expect(sent).toEqual([])
+  })
+
+  it('publishes scope as the only required chat_subscribe field', () => {
+    expect(toolDefinition(chatSubscribe).inputSchema.required).toEqual(['scope'])
   })
 })

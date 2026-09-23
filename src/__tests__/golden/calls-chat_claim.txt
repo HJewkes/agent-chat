@@ -99,30 +99,27 @@ frame: {"t":"claim"}
 
 === chat_claim: patterns as a bare string
 args: {"patterns":"src/**"}
-frame: {"t":"claim","patterns":["src/**"]}
 [
   {
     "type": "text",
-    "text": "Claimed src/** in /work/repo. Peers see this in chat_list. It is advisory — it marks that you got there first, and does not prevent a write."
+    "text": "Error: Invalid arguments: patterns: Invalid input: expected array, received string"
   }
 ]
 
 === chat_claim: patterns null
 args: {"patterns":null}
-frame: {"t":"claim"}
 [
   {
     "type": "text",
-    "text": "Claimed the whole worktree in /work/repo. Peers see this in chat_list. It is advisory — it marks that you got there first, and does not prevent a write."
+    "text": "Error: Invalid arguments: patterns: Invalid input: expected array, received null"
   }
 ]
 
 === chat_claim: a non-string pattern
 args: {"patterns":["src/**",42]}
-frame: {"t":"claim","patterns":["src/**"]}
 [
   {
     "type": "text",
-    "text": "Claimed src/** in /work/repo. Peers see this in chat_list. It is advisory — it marks that you got there first, and does not prevent a write."
+    "text": "Error: Invalid arguments: patterns.1: Invalid input: expected string, received number"
   }
 ]

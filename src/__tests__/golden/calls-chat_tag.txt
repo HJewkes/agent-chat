@@ -103,21 +103,19 @@ args: {"remove":["ok",""]}
 
 === chat_tag: add as a bare string
 args: {"add":"owner:src"}
-frame: {"t":"tag","add":["owner:src"]}
 [
   {
     "type": "text",
-    "text": "You now carries: owner:src. A tag is a label, not a grant of anything."
+    "text": "Error: Invalid arguments: add: Invalid input: expected array, received string"
   }
 ]
 
 === chat_tag: add null
 args: {"add":null,"remove":["lead"]}
-frame: {"t":"tag","remove":["lead"]}
 [
   {
     "type": "text",
-    "text": "You now carries: no tags. A tag is a label, not a grant of anything."
+    "text": "Error: Invalid arguments: add: Invalid input: expected array, received null"
   }
 ]
 
@@ -126,6 +124,6 @@ args: {"add":[42]}
 [
   {
     "type": "text",
-    "text": "Error: add: a tag must be a non-empty string"
+    "text": "Error: Invalid arguments: add.0: a tag must be a non-empty string"
   }
 ]
