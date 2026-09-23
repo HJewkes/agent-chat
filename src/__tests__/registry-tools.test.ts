@@ -3,6 +3,7 @@ import { EXIT, invokeCommand } from '@titan-design/registry'
 import { ToolHandler } from '../server/tools.js'
 import { toolDefinition, type ToolContext } from '../server/command.js'
 import { chatSend } from '../server/commands/chat-send.js'
+import { chatActivity } from '../server/commands/chat-activity.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { ClientMessage } from '../protocol.js'
 
@@ -97,5 +98,25 @@ describe('agent_resume', () => {
     expect(reply.content[0]?.text).toBe(
       "Not resumed: scout's transcript is gone\nno transcript found at /c/p/s.jsonl",
     )
+  })
+})
+
+/** CC-106 S2: `name` must reject before any frame, not fall through as `undefined` on the wire. */
+describe('chat_activity refuses a missing name at the schema boundary', () => {
+  it.each([
+    ['omitted', {}],
+    ['blank', { name: '  ' }],
+    ['not a string', { name: 42 }],
+  ])('rejects name %s as invalid arguments, not as a failed run', async (_label, args) => {
+    const { broker, sent } = silentBroker()
+
+    const { envelope } = await invokeCommand(chatActivity, args, context(broker))
+
+    expect(envelope).toEqual({
+      ok: false,
+      code: EXIT.DATAERR,
+      error: 'Invalid arguments: name: name is required and must be a non-empty string',
+    })
+    expect(sent).toEqual([])
   })
 })

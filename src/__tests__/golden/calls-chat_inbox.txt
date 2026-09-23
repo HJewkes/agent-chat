@@ -43,7 +43,7 @@ args: {"limit":0}
 [
   {
     "type": "text",
-    "text": "Error: limit must be a positive number"
+    "text": "Error: Invalid arguments: limit: limit must be a positive number"
   }
 ]
 
@@ -52,6 +52,6 @@ args: {"limit":"lots"}
 [
   {
     "type": "text",
-    "text": "Error: limit must be a positive number"
+    "text": "Error: Invalid arguments: limit: limit must be a positive number"
   }
 ]
