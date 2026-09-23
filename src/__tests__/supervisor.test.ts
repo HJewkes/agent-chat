@@ -260,7 +260,7 @@ describe('spawning', () => {
       expect(delivered).toContain('review the parser')
       // CC-101: the test env points the daemon at a refusing port, so the ranked section fails open.
       expect(result.warnings?.join(' ')).toMatch(
-        /related context unavailable \(active-work daemon: ECONNREFUSED\)/,
+        /related context unavailable \(active-work daemon: ECONNREFUSED, after \d+ ms of \d+ ms budget\)/,
       )
       // The log records what was ASKED FOR, with the slug as the pointer.
       const row = core.events.agentEvents().find(r => r.kind === 'agent_spawned')
