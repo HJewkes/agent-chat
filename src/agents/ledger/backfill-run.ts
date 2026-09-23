@@ -3,8 +3,8 @@ import { executionLedgerDdl, SqliteExecutionLedger } from '@titan-design/agent-l
 import type { ExecutionOwnerFence } from '@titan-design/agent-protocol'
 import type { AgentEventRow } from '../../broker/event-store.js'
 import { logEvent } from '../../broker/log.js'
-import { home } from '../../paths.js'
 import { readRuntimeState } from '../launch-files.js'
+import { configDir } from '../transcript.js'
 import { planBackfill, type PlannedRow, type RuntimeRef } from './backfill.js'
 import { ledgerDbOver, type LedgerDb } from './db-shim.js'
 
@@ -54,7 +54,7 @@ export function planFromSource(source: BackfillSource, options: BackfillRunOptio
   return planBackfill(rows, runtimeRefs(rows), existingRequestKeys(source.ledgerHandle()), {
     now: options.now ?? Date.now(),
     fence: options.fence,
-    namespace: home(),
+    configDir: configDir(),
     sinceDays: options.sinceDays,
   })
 }

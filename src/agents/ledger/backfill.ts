@@ -7,6 +7,7 @@ import type {
 import type { AgentEventRow } from '../../broker/event-store.js'
 import type { AgentIdentity } from '../../protocol.js'
 import { foldAgent, groupByAgent } from '../identity.js'
+import { claudeConversation } from './lifecycle-shadow.js'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const LEASE_MS = 30 * DAY_MS
@@ -21,8 +22,8 @@ export interface RuntimeRef {
 export interface BackfillOptions {
   now: number
   fence: ExecutionOwnerFence
-  /** `target.namespace` of the fresh execution: the broker's home. */
-  namespace: string
+  /** The broker's `CLAUDE_CONFIG_DIR`, the namespace of an agent whose spawn row names no `config_dir`. */
+  configDir: string
   /** Skip agents whose last event is older than this many days. Unbounded when absent. */
   sinceDays?: number | undefined
 }
@@ -137,6 +138,7 @@ class RowBuilder {
   private readonly transitions: ExecutionTransition[] = []
   private readonly phases: ExecutionPhase[] = []
   private readonly sources: PlanSource[] = []
+  private readonly namespace: string
   private clock = -Infinity
 
   constructor(
@@ -144,6 +146,7 @@ class RowBuilder {
     private readonly options: BackfillOptions,
   ) {
     this.executionId = backfillRequestKey(agent.agentId)
+    this.namespace = agent.configDir ?? options.configDir
   }
 
   prepare(): void {
@@ -156,7 +159,7 @@ class RowBuilder {
       agent: { agentId: this.agent.agentId },
       harness: 'claude-code',
       requestKey: this.executionId,
-      target: { kind: 'fresh', namespace: this.options.namespace },
+      target: { kind: 'fresh', namespace: this.namespace },
       owner: { ...this.options.fence, leaseUntil: new Date(this.options.now + LEASE_MS).toISOString() },
     })
     this.push('dispatching', { kind: 'begin_dispatch', ...this.fenced('begin_dispatch', occurredAt) })
@@ -164,11 +167,15 @@ class RowBuilder {
 
   running(attachedAt: number, runnerRef: PlanSource): void {
     this.sources.push(runnerRef)
+    const conversation = claudeConversation(this.namespace, this.agent.sessionId)
     this.push('running', {
       kind: 'observe_running',
       ...this.fenced('observe_running', this.at('attachedAt', attachedAt)),
       runnerRef: runnerRef.value,
-      adapterExecution: { executionId: this.agent.sessionId || this.agent.agentId },
+      adapterExecution: {
+        executionId: this.agent.sessionId || this.agent.agentId,
+        ...(conversation && { conversation }),
+      },
       evidence: EVIDENCE,
     })
   }
