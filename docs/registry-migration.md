@@ -7,6 +7,9 @@ and `agent resume` were born as registry commands after it. Slice 2 converts the
 13 tools and about 31 CLI verbs still use the hand-written path, and both paths run side by side.
 Slice S4 converts `chat_claim`, `chat_release`, `chat_tag`, `chat_subscribe` and `chat_unsubscribe`,
 and deletes `optionalTags`.
+Slice S6 converts `agent_spawn` and `agent_teleport`. `optionalEnum` and `optionalPatterns` lose
+their last caller and are left for S5 to delete with `requireString` and `optionalString`; only
+`chat_register` and `chat_status` remain hand-written.
 
 ## Why
 

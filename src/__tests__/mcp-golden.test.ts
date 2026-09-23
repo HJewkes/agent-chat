@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
@@ -71,6 +71,7 @@ interface CallCase {
   args: Record<string, unknown>
   reply?: ServerMessage
   registeredAs?: string
+  env?: Record<string, string | undefined>
 }
 
 const session = (name: string, extra: Partial<SessionInfo> = {}): SessionInfo => ({
@@ -523,7 +524,165 @@ const CHAT_UNSUBSCRIBE_CASES: CallCase[] = [
   { label: 'scope null', tool: 'chat_unsubscribe', args: { scope: null } },
 ]
 
+const spawned = (extra: Partial<Extract<ServerMessage, { t: 'spawn_result' }>> = {}): ServerMessage => ({
+  t: 'spawn_result',
+  ok: true,
+  agentId: 'a-1',
+  name: 'scout',
+  ...extra,
+})
+
+const SPAWN_ARGS = { name: 'scout', profile: 'explorer', brief: 'read the log' }
+const ACCOUNT = { CLAUDE_CONFIG_DIR: '/home/me/.claude' }
+
+const spawnCase = (
+  label: string,
+  args: Record<string, unknown>,
+  extra: Partial<CallCase> = {},
+): CallCase => ({
+  label,
+  tool: 'agent_spawn',
+  registeredAs: 'me',
+  env: ACCOUNT,
+  args,
+  ...extra,
+})
+
+function unregistered(c: CallCase): CallCase {
+  const { registeredAs: _registeredAs, ...rest } = c
+  return rest
+}
+
+const SPAWN_STRINGS = ['cwd', 'briefing', 'worktree', 'config_dir', 'resume_session', 'predecessor']
+
+/** CC-106 S6: every optional string goes through `present()`, so a blank one leaves the frame as `optionalString` did. */
+const AGENT_SPAWN_CASES: CallCase[] = [
+  unregistered(spawnCase('unregistered', SPAWN_ARGS)),
+  unregistered(spawnCase('unregistered, name missing', { profile: 'explorer', brief: 'b' })),
+  spawnCase('minimal', SPAWN_ARGS, { reply: spawned() }),
+  spawnCase('minimal, spawner has no config dir', SPAWN_ARGS, {
+    env: { CLAUDE_CONFIG_DIR: undefined },
+    reply: spawned(),
+  }),
+  spawnCase(
+    'every override set',
+    {
+      ...SPAWN_ARGS,
+      surface: 'iterm-pane',
+      isolation: 'worktree',
+      cwd: '/work/repo',
+      briefing: 'claude-channels',
+      worktree: '/work/repo/.worktrees/x',
+      owns: ['src/broker/**', 'src/protocol.ts'],
+      inherit: 'context',
+      config_dir: '/home/me/.claude-profiles/agents',
+      resume_session: 'uuid-1',
+      predecessor: 'old-scout',
+    },
+    {
+      reply: spawned({
+        warnings: ['predecessor old-scout is not retired'],
+        disallowedTools: ['Bash', 'Write'],
+        transcript: { path: '/home/me/.claude/projects/x/uuid-1.jsonl', found: true },
+      }),
+    },
+  ),
+  ...SPAWN_STRINGS.map(field =>
+    spawnCase(`blank ${field}`, { ...SPAWN_ARGS, [field]: '   ' }, { reply: spawned() }),
+  ),
+  spawnCase(
+    'every optional string blank',
+    Object.fromEntries([...Object.entries(SPAWN_ARGS), ...SPAWN_STRINGS.map(field => [field, ''])]),
+    { reply: spawned() },
+  ),
+  spawnCase('owns trimmed, blanks dropped', { ...SPAWN_ARGS, owns: [' a ', ''] }, { reply: spawned() }),
+  spawnCase('owns []', { ...SPAWN_ARGS, owns: [] }, { reply: spawned() }),
+  spawnCase('owns 25 globs', { ...SPAWN_ARGS, owns: twentyFive }),
+  spawnCase('owns as a bare string', { ...SPAWN_ARGS, owns: 'src/**' }, { reply: spawned() }),
+  spawnCase('owns with a non-string item', { ...SPAWN_ARGS, owns: ['src/**', 42] }, { reply: spawned() }),
+  spawnCase('surface misspelled', { ...SPAWN_ARGS, surface: 'iterm-panes' }),
+  spawnCase('isolation misspelled', { ...SPAWN_ARGS, isolation: 'worktrees' }),
+  spawnCase('inherit misspelled', { ...SPAWN_ARGS, inherit: 'everything' }),
+  spawnCase('surface blank', { ...SPAWN_ARGS, surface: '  ' }),
+  spawnCase('surface null', { ...SPAWN_ARGS, surface: null }, { reply: spawned() }),
+  spawnCase('cwd not a string', { ...SPAWN_ARGS, cwd: 42 }, { reply: spawned() }),
+  spawnCase('name blank', { ...SPAWN_ARGS, name: '  ' }),
+  spawnCase('brief missing', { name: 'scout', profile: 'explorer' }),
+  spawnCase('profile not a string', { ...SPAWN_ARGS, profile: 7 }),
+  spawnCase('refused by the broker', SPAWN_ARGS, {
+    reply: { t: 'spawn_result', ok: false, reason: 'name "scout" is taken' },
+  }),
+  spawnCase(
+    'resumed with no transcript found',
+    { ...SPAWN_ARGS, resume_session: 'uuid-2' },
+    {
+      reply: spawned({ transcript: { path: '/home/me/.claude/projects/x/uuid-2.jsonl', found: false } }),
+    },
+  ),
+]
+
+const teleported = (
+  extra: Partial<Extract<ServerMessage, { t: 'teleport_result' }>> = {},
+): ServerMessage => ({
+  t: 'teleport_result',
+  ok: true,
+  agentId: 'a-2',
+  name: 'me',
+  ...extra,
+})
+
+const AGENT_TELEPORT_CASES: CallCase[] = [
+  { label: 'unregistered', tool: 'agent_teleport', args: { handoff: 'h' } },
+  { label: 'unregistered, handoff missing', tool: 'agent_teleport', args: {} },
+  {
+    label: 'visible, with a countdown and a warning',
+    tool: 'agent_teleport',
+    registeredAs: 'me',
+    args: { handoff: 'mid-way through S6' },
+    reply: teleported({ countdownMs: 30_000, warnings: ['dist is older than src'] }),
+  },
+  {
+    label: 'headless, onto another model',
+    tool: 'agent_teleport',
+    registeredAs: 'me',
+    args: { handoff: 'h', model: 'claude-sonnet-5' },
+    reply: teleported(),
+  },
+  {
+    label: 'blank model',
+    tool: 'agent_teleport',
+    registeredAs: 'me',
+    args: { handoff: 'h', model: '  ' },
+    reply: teleported(),
+  },
+  {
+    label: 'refused by the broker',
+    tool: 'agent_teleport',
+    registeredAs: 'me',
+    args: { handoff: 'h' },
+    reply: { t: 'teleport_result', ok: false, reason: 'answer your open questions first' },
+  },
+  { label: 'handoff blank', tool: 'agent_teleport', registeredAs: 'me', args: { handoff: '  ' } },
+  { label: 'handoff missing', tool: 'agent_teleport', registeredAs: 'me', args: {} },
+  {
+    label: 'model not a string',
+    tool: 'agent_teleport',
+    registeredAs: 'me',
+    args: { handoff: 'h', model: 4 },
+    reply: teleported(),
+  },
+]
+
 async function render(c: CallCase): Promise<string> {
+  for (const [key, value] of Object.entries(c.env ?? {})) vi.stubEnv(key, value)
+  try {
+    return await renderCall(c)
+  } finally {
+    vi.unstubAllEnvs()
+  }
+}
+
+async function renderCall(c: CallCase): Promise<string> {
   const wire = await connect(c.reply, c.registeredAs)
   const result = await wire.client.callTool({ name: c.tool, arguments: c.args })
   const frames = wire.sent.map(f => `frame: ${JSON.stringify(f)}`).join('\n')
@@ -547,6 +706,8 @@ describe('tool call golden', () => {
     ['chat_tag', CHAT_TAG_CASES],
     ['chat_subscribe', CHAT_SUBSCRIBE_CASES],
     ['chat_unsubscribe', CHAT_UNSUBSCRIBE_CASES],
+    ['agent_spawn', AGENT_SPAWN_CASES],
+    ['agent_teleport', AGENT_TELEPORT_CASES],
   ])('%s answers every pinned case exactly as before', async (tool, cases) => {
     const rendered: string[] = []
     for (const c of cases) rendered.push(await render(c))
