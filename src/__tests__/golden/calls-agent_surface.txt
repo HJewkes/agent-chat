@@ -1,0 +1,28 @@
+=== agent_surface: name omitted
+args: {}
+[
+  {
+    "type": "text",
+    "text": "Error: name is required and must be a non-empty string"
+  }
+]
+
+=== agent_surface: surfaced into a pane
+args: {"name":"scout"}
+frame: {"t":"surface","name":"scout"}
+[
+  {
+    "type": "text",
+    "text": "scout is now in a pane in your window, resumed on its existing conversation and keeping its name. The turn it was part way through was interrupted by the switch. If it was stuck on a permission prompt, that prompt is answerable there now — tell your human to look."
+  }
+]
+
+=== agent_surface: refused: already in a terminal
+args: {"name":"scout"}
+frame: {"t":"surface","name":"scout"}
+[
+  {
+    "type": "text",
+    "text": "Not surfacing scout: scout is already in a terminal"
+  }
+]
