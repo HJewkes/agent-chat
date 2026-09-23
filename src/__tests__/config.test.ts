@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { resolveAgentSlots, resolveWorktreeBudget } from '../config.js'
+import { resolveAgentSlots, resolveContextHintPolicy, resolveWorktreeBudget } from '../config.js'
 import { Semaphore, DEFAULT_SLOTS } from '../agents/semaphore.js'
 
 /**
@@ -75,5 +75,52 @@ describe('resolveWorktreeBudget', () => {
     writeConfigJson({ worktreeBudget: value })
 
     expect(resolveWorktreeBudget(3)).toBe(3)
+  })
+})
+
+describe('resolveContextHintPolicy', () => {
+  it('uses the owner-chosen defaults per role when config.json is silent', () => {
+    expect(resolveContextHintPolicy('implementer')?.tokens).toBe(200_000)
+    expect(resolveContextHintPolicy('implementer-lite')?.tokens).toBe(200_000)
+    expect(resolveContextHintPolicy('peer')).toEqual({ tokens: 250_000, boundary: 'assignment boundary' })
+  })
+
+  it('gives a session with no profile the configurable default, phrased at an episode boundary', () => {
+    expect(resolveContextHintPolicy(undefined)).toEqual({ tokens: 250_000, boundary: 'episode boundary' })
+  })
+
+  it.each(['planner', 'researcher', 'explorer', 'reviewer'])('never hints the %s role', profile => {
+    expect(resolveContextHintPolicy(profile)).toBeNull()
+  })
+
+  it('gives an unlisted profile the default', () => {
+    expect(resolveContextHintPolicy('fable-architect')?.tokens).toBe(250_000)
+  })
+
+  it('lets config.json move a role threshold, add a role, and silence one', () => {
+    writeConfigJson({
+      contextHints: {
+        default: { tokens: 300_000 },
+        profiles: {
+          implementer: { tokens: 180_000 },
+          designer: { tokens: 200_000, boundary: 'round boundary' },
+          peer: null,
+        },
+      },
+    })
+
+    expect(resolveContextHintPolicy('implementer')).toEqual({
+      tokens: 180_000,
+      boundary: 'natural stopping point',
+    })
+    expect(resolveContextHintPolicy('designer')).toEqual({ tokens: 200_000, boundary: 'round boundary' })
+    expect(resolveContextHintPolicy('peer')).toBeNull()
+    expect(resolveContextHintPolicy(undefined)).toEqual({ tokens: 300_000, boundary: 'episode boundary' })
+  })
+
+  it('falls back to the built-in value for a malformed entry', () => {
+    writeConfigJson({ contextHints: { profiles: { implementer: { tokens: '200k' } } } })
+
+    expect(resolveContextHintPolicy('implementer')?.tokens).toBe(200_000)
   })
 })
