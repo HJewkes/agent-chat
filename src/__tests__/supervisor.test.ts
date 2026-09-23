@@ -1810,3 +1810,165 @@ describe('reporting a spawn only once the agent has attached', () => {
     expect(result.reason).toMatch(/Do you trust the files in this folder\?/)
   })
 })
+
+/**
+ * CC-124. Three iterm-pane spawns into a trusted directory hit the 30s window on
+ * 2026-09-23. The one whose profile kept its pane registered 10m18s after launch
+ * and worked normally; the two whose panes the broker closed never got the chance.
+ * A timeout is not death while the pane is still there.
+ */
+describe('a visible spawn still starting at the attach window', () => {
+  /** An iTerm2 that opens PANE-1, reports it present until closed, and records every script. */
+  const fakeIterm = () => {
+    const scripts: string[] = []
+    let present = true
+    const runAppleScript = async (script: string): Promise<string> => {
+      scripts.push(script)
+      if (script.includes('is running')) return 'true'
+      if (script.includes('@@present@@')) return present ? '@@present@@' : '@@gone@@'
+      if (script.includes('to close')) {
+        present = false
+        return '@@closed@@'
+      }
+      return 'PANE-1'
+    }
+    return { scripts, runAppleScript, closes: () => scripts.filter(s => s.includes('to close')).length }
+  }
+
+  const visibleSupervisor = (iterm: ReturnType<typeof fakeIterm>): Supervisor => {
+    supervisor = new Supervisor(core, {
+      attachMs: 1000,
+      attachCeilingMs: 10_000,
+      surface: { platform: 'darwin', runAppleScript: iterm.runAppleScript },
+    })
+    return supervisor
+  }
+
+  const brokerLog = (): string => {
+    const file = path.join(process.env.AGENT_CHAT_HOME as string, 'broker.log')
+    return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
+  }
+
+  it('keeps the pane and reports the spawn pending when the pane still exists', async () => {
+    stopAutoAttach()
+    const iterm = fakeIterm()
+    const sup = visibleSupervisor(iterm)
+
+    const spawning = sup.spawn(spawnReq({ surface: 'iterm-window' }))
+    await vi.advanceTimersByTimeAsync(1000)
+    const result = await spawning
+
+    expect(result.ok).toBe(true)
+    expect(result.warnings?.join(' ')).toMatch(/still starting 1s after launching into iterm-window/)
+    expect(result.warnings?.join(' ')).toMatch(/pane was kept open/)
+    expect(iterm.closes()).toBe(0)
+    expect(kindsFor(result.agentId as string)).not.toContain('agent_exited')
+  })
+
+  it('attaches normally on a late registration and logs how late it was', async () => {
+    stopAutoAttach()
+    const sup = visibleSupervisor(fakeIterm())
+    const spawning = sup.spawn(spawnReq({ surface: 'iterm-window' }))
+    await vi.advanceTimersByTimeAsync(1000)
+    const agentId = (await spawning).agentId as string
+
+    await vi.advanceTimersByTimeAsync(4000)
+    core.append({ kind: 'agent_attached', actor: 'scout', ref: agentId })
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    expect(core.agents.get(agentId)?.state).toBe('live')
+    const late = brokerLog()
+      .split('\n')
+      .filter(line => line.includes('"agent_attach_late"'))
+      .map(line => JSON.parse(line) as { agentId: string; elapsedMs: number })
+    expect(late).toEqual([expect.objectContaining({ agentId, elapsedMs: 5000 })])
+  })
+
+  it('fails the spawn as before once the ceiling passes without a registration', async () => {
+    stopAutoAttach()
+    const iterm = fakeIterm()
+    const sup = visibleSupervisor(iterm)
+    const spawning = sup.spawn(spawnReq({ surface: 'iterm-window' }))
+    await vi.advanceTimersByTimeAsync(1000)
+    const agentId = (await spawning).agentId as string
+
+    await vi.advanceTimersByTimeAsync(9000)
+
+    const agent = core.agents.get(agentId)
+    expect(agent?.exit?.failedToStart).toBe(true)
+    expect(agent?.exit?.summary).toMatch(/no registration within 10s of launching into iterm-window/)
+    expect(iterm.closes()).toBe(1)
+  })
+
+  it('still fails a headless spawn at once when claude exits before registering', async () => {
+    stopAutoAttach()
+    supervisor = new Supervisor(core, {
+      attachMs: 60_000,
+      attachCeilingMs: 600_000,
+      surface: {
+        platform: 'linux',
+        spawn: () => ({
+          pid: 4242,
+          unref: () => undefined,
+          once: (event: string, listener: (...args: unknown[]) => void) => {
+            if (event === 'exit') queueMicrotask(() => listener(1, null))
+          },
+        }),
+      },
+    })
+
+    const result = await supervisor.spawn(spawnReq())
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/exited before registering \(exit code 1\)/)
+  })
+
+  it('says the directory is trusted instead of guessing at the trust prompt', async () => {
+    stopAutoAttach()
+    const cwd = workspace()
+    const config = path.join(workspace(), '.claude.json')
+    fs.writeFileSync(config, JSON.stringify({ projects: { [cwd]: { hasTrustDialogAccepted: true } } }))
+    vi.spyOn(os, 'homedir').mockReturnValue(path.dirname(config))
+    const sup = visibleSupervisor(fakeIterm())
+
+    const spawning = sup.spawn(spawnReq({ surface: 'iterm-window', cwd }))
+    await vi.advanceTimersByTimeAsync(1000)
+    const warning = (await spawning).warnings?.join(' ')
+
+    expect(warning).toMatch(
+      /The directory is trusted, so this is not the trust prompt; Claude Code is still starting/,
+    )
+    expect(warning).not.toMatch(/Do you trust the files/)
+  })
+})
+
+describe('a failed spawn and its name', () => {
+  /** The 05:05:15Z refusal: a spawn that failed 40s earlier still held its name. */
+  it('releases the name so the same name can be spawned again', async () => {
+    stopAutoAttach()
+    const sup = withStubbedSurface({ attachMs: 1000 })
+    const failing = sup.spawn(spawnReq({ name: 'retry-me' }))
+    await vi.advanceTimersByTimeAsync(1000)
+    expect((await failing).ok).toBe(false)
+
+    stopAutoAttach = autoAttach(core)
+    const retry = await sup.spawn(spawnReq({ name: 'retry-me' }))
+
+    expect(retry.reason).toBeUndefined()
+    expect(retry.ok).toBe(true)
+  })
+
+  it('still holds the name of an agent that ran and finished', async () => {
+    const sup = withStubbedSurface({ attachMs: 1000 })
+    const first = await sup.spawn(spawnReq({ name: 'done' }))
+    await (sup as unknown as { recordExit: (id: string, o: unknown) => Promise<void> }).recordExit(
+      first.agentId as string,
+      { code: 0, signal: null },
+    )
+
+    const again = await sup.spawn(spawnReq({ name: 'done' }))
+
+    expect(again.ok).toBe(false)
+    expect(again.reason).toMatch(/held by a live agent/)
+  })
+})

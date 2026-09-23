@@ -285,9 +285,19 @@ export class AgentLog {
    * The uniqueness the schema no longer provides: a name is leased for as long
    * as any non-retired identity holds it, so a detached or finished agent still
    * owns its name and stays resumable under it.
+   *
+   * CC-124: except one that failed to start. It never ran, so there is nothing
+   * to resume, and holding its name made the obvious retry refuse until someone
+   * retired a corpse by hand.
    */
   nameIsClaimed(name: string): boolean {
-    return this.byName(name) !== undefined
+    return this.all().some(
+      a =>
+        a.name === name &&
+        a.origin === 'spawned' &&
+        a.state !== 'retired' &&
+        !(a.state === 'exited' && a.exit?.failedToStart === true),
+    )
   }
 
   /**
