@@ -43,3 +43,18 @@ gated on start-reconciliation, a worktree-lease design, a handoff identity in
 `agent-protocol`, and a tested rollback). Session registry, permission profiles, worktree
 isolation, teleport, and plugin packaging stay here. Every broker-affecting step ships in
 a planned restart window.
+
+## Verify before opening a PR
+
+CI runs Format first, then typecheck, then tests, and stops at the first failure. Run
+all three locally, in this order, before `gh pr create`:
+
+1. `npm run format:check` (fix with `npm run format`). Two of three sonnet PRs on
+   2026-09-23 were red only on this step.
+2. `npm run typecheck`.
+3. `npx vitest run`. Not `npm test`: its `pretest` rebuilds `dist/` in the checkout
+   the tests run in, and in the main checkout that swaps code under the live broker.
+   In a fresh worktree run `npm run build` once first, because the live tests read
+   `dist/`.
+
+Never restart the broker from an agent; it serves every session on the machine.
