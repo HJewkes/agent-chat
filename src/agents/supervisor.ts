@@ -29,7 +29,12 @@ import {
   writeRuntimeState,
 } from './launch-files.js'
 import { loadProfile } from './profiles.js'
-import { resolve as resolveIsolation, type Allocation, type IsolationContext } from './isolation/index.js'
+import {
+  refusalOf,
+  resolve as resolveIsolation,
+  type Allocation,
+  type IsolationContext,
+} from './isolation/index.js'
 import { surfaceFor } from './surfaces/index.js'
 import { SurfaceRefused, type SurfaceOptions } from './surfaces/options.js'
 import { Semaphore } from './semaphore.js'
@@ -1083,7 +1088,7 @@ export class Supervisor implements TeleportHost {
       if (!released)
         return {
           ok: false,
-          reason: `${name}'s isolation still holds work. Merge or discard it, or retire with --force.`,
+          reason: `${name}'s isolation refused release (${refusalOf(entry.allocation) ?? 'still holds work'}). Merge or discard it, or retire with --force.`,
         }
       await this.closeSurface(entry)
       this.live.delete(identity.agentId)
