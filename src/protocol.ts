@@ -756,8 +756,19 @@ export type ClientMessage =
        * is the same value from the same environment.
        */
       spawnerConfigDir?: string
+      /**
+       * CC-126: a Claude Code session uuid to continue instead of minting a new
+       * one. Its transcript must already exist under the chosen config dir and
+       * cwd; the broker refuses otherwise and names the path it checked.
+       */
+      resumeSession?: string
     }
   | { t: 'agents'; includeRetired?: boolean }
+  /**
+   * CC-126: bring a listed, non-live agent back on its own conversation.
+   * Headless unless `surface` says otherwise; answered with `spawn_result`.
+   */
+  | { t: 'resume'; name: string; surface?: SurfaceName; message?: string }
   /**
    * `force` bypasses the isolation's dirty/unmerged refusal, and destroys the
    * commits it was protecting. Optional so an older client still type-checks,
@@ -910,6 +921,8 @@ export type ServerMessage =
        * certainty is here, at spawn time, before the agent can fail silently.
        */
       disallowedTools?: string[]
+      /** CC-126: set on any resume, so the caller is told whether a conversation actually came back. */
+      transcript?: { path: string; found: boolean }
     }
   | { t: 'agents_result'; agents: AgentIdentity[] }
   /**
