@@ -248,10 +248,15 @@ A broker restart drops every hook connection, so the next broker closes any hook
 finds open at boot. None of these rows depend on the TTL, so hook rows are exempt from
 it in `humanQueue` and `openApproval`.
 
-**A timeout is a denial.** A hook that exits non-zero with no stdout renders no decision,
-and `-p` then denies the call with a generic message (tp302 step 3b). The spawned agent's
-system prompt says that a denial after a long wait means the owner did not answer, not
-that the action is forbidden, and that it should not retry in a loop.
+**A timeout is a denial, with a reason (CC-154).** When the hook's own deadline passes
+first, it prints the same deny shape as an owner denial, with the message "The owner did
+not answer in time (agent-chat permission-hook deadline)", and exits 0. The model sees
+that reason instead of Claude Code's generic `-p` deny. Every other way of giving up
+(SIGTERM, SIGINT, a lost broker connection, a refused prompt) still exits non-zero with
+no stdout, which `-p` treats as no decision and denies with a generic message (tp302 step
+3b). Either way, the spawned agent's system prompt says that a denial after a long wait
+means the owner did not answer, not that the action is forbidden, and that it should not
+retry in a loop.
 
 **The guard is unchanged.** `approve_permission` is still refused from any registered
 connection, and `HUMAN_ONLY_CLI_DENY` still denies the builtin profiles

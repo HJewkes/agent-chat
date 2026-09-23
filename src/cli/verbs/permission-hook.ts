@@ -5,12 +5,13 @@ import type { ClientMessage, PermissionBehavior, ServerMessage } from '../../pro
  * `agent-chat permission-hook`: the PermissionRequest command hook a headless agent
  * runs (CC-144). It files the prompt in the human queue over an UNREGISTERED
  * connection, blocks until `agent-chat approve` answers, and prints the decision in
- * the shape Claude Code reads. Giving up exits non-zero with nothing on stdout,
- * which `claude -p` treats as no decision and therefore denies.
+ * the shape Claude Code reads. A deadline with no answer (CC-154) prints an explicit
+ * deny decision so the model sees why. Every other way of giving up still exits
+ * non-zero with nothing on stdout, which `claude -p` treats as no decision and denies.
  */
 
 type HookFrame = Extract<ClientMessage, { t: 'permission_hook' }>
-type Outcome = { behavior: PermissionBehavior } | { gaveUp: string }
+type Outcome = { behavior: PermissionBehavior } | { gaveUp: string; deadline?: boolean }
 
 /** The fields read from Claude Code's hook stdin. 2.1.280 sends no `tool_use_id`, so nothing keys on one. */
 export interface HookInput {
@@ -41,12 +42,12 @@ export function hookFrame(input: HookInput, env: NodeJS.ProcessEnv): HookFrame {
   }
 }
 
-/** Exactly the stdout tp302 verified on Claude Code 2.1.280. */
-export function hookOutput(behavior: PermissionBehavior): string {
+/** Exactly the stdout tp302 verified on Claude Code 2.1.280 for allow and owner-denied. */
+export function hookOutput(behavior: PermissionBehavior, denyMessage?: string): string {
   const decision =
     behavior === 'allow'
       ? { behavior: 'allow' }
-      : { behavior: 'deny', message: 'The owner denied this tool call in agent-chat.' }
+      : { behavior: 'deny', message: denyMessage ?? 'The owner denied this tool call in agent-chat.' }
   return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision } })
 }
 
@@ -72,7 +73,10 @@ export async function askHuman(frame: HookFrame, deadlineMs: number): Promise<Ou
       settle({ gaveUp: 'lost the broker connection, so the broker has closed the prompt' })
     },
   )
-  const timer = setTimeout(() => settle({ gaveUp: 'deadline reached with no answer' }), deadlineMs)
+  const timer = setTimeout(
+    () => settle({ gaveUp: 'deadline reached with no answer', deadline: true }),
+    deadlineMs,
+  )
   const onSignal = (): void => settle({ gaveUp: 'terminated before an answer' })
   process.once('SIGTERM', onSignal).once('SIGINT', onSignal)
   try {
@@ -110,5 +114,10 @@ export async function permissionHook(options: { deadline: string }): Promise<voi
     return
   }
   console.error(`agent-chat permission-hook: ${outcome.gaveUp}; Claude Code will deny the call`)
+  if (outcome.deadline) {
+    const message = 'The owner did not answer in time (agent-chat permission-hook deadline).'
+    process.stdout.write(hookOutput('deny', message), () => process.exit(0))
+    return
+  }
   process.exit(1)
 }

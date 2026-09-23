@@ -100,15 +100,23 @@ describe('the permission-hook verb', () => {
     })
   }, 20_000)
 
-  it('withdraws its row and exits non-zero with no decision when its deadline passes', async () => {
+  it('withdraws its row and prints a deny decision naming the deadline when it passes', async () => {
     const hook = runHook('late-marker', 2)
     await waitForRow('late-marker')
 
     const { code, stdout } = await hook.done
     const { stdout: inbox } = await cli(['inbox'])
 
-    expect(code).not.toBe(0)
-    expect(stdout).toBe('')
+    expect(code).toBe(0)
+    expect(JSON.parse(stdout)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: {
+          behavior: 'deny',
+          message: 'The owner did not answer in time (agent-chat permission-hook deadline).',
+        },
+      },
+    })
     expect(inbox).not.toContain('late-marker')
   }, 20_000)
 })
