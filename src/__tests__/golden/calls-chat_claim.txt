@@ -1,0 +1,125 @@
+=== chat_claim: patterns omitted claims the worktree
+args: {}
+frame: {"t":"claim"}
+[
+  {
+    "type": "text",
+    "text": "Claimed the whole worktree in /work/repo. Peers see this in chat_list. It is advisory — it marks that you got there first, and does not prevent a write."
+  }
+]
+
+=== chat_claim: patterns [] claims the worktree
+args: {"patterns":[]}
+frame: {"t":"claim"}
+[
+  {
+    "type": "text",
+    "text": "Claimed the whole worktree in /work/repo. Peers see this in chat_list. It is advisory — it marks that you got there first, and does not prevent a write."
+  }
+]
+
+=== chat_claim: only blank patterns
+args: {"patterns":["  "]}
+frame: {"t":"claim"}
+[
+  {
+    "type": "text",
+    "text": "Claimed the whole worktree in /work/repo. Peers see this in chat_list. It is advisory — it marks that you got there first, and does not prevent a write."
+  }
+]
+
+=== chat_claim: patterns trimmed, blanks dropped
+args: {"patterns":[" src/** ","","docs/*.md"]}
+frame: {"t":"claim","patterns":["src/**","docs/*.md"]}
+[
+  {
+    "type": "text",
+    "text": "Claimed src/**, docs/*.md in /work/repo. Peers see this in chat_list. It is advisory — it marks that you got there first, and does not prevent a write."
+  }
+]
+
+=== chat_claim: 25 globs
+args: {"patterns":["src/g0/**","src/g1/**","src/g2/**","src/g3/**","src/g4/**","src/g5/**","src/g6/**","src/g7/**","src/g8/**","src/g9/**","src/g10/**","src/g11/**","src/g12/**","src/g13/**","src/g14/**","src/g15/**","src/g16/**","src/g17/**","src/g18/**","src/g19/**","src/g20/**","src/g21/**","src/g22/**","src/g23/**","src/g24/**"]}
+[
+  {
+    "type": "text",
+    "text": "Error: patterns may name at most 24 globs; got 25"
+  }
+]
+
+=== chat_claim: another worktree
+args: {"patterns":["src/**"],"worktree_path":"/work/other"}
+frame: {"t":"claim","worktreePath":"/work/other","patterns":["src/**"]}
+[
+  {
+    "type": "text",
+    "text": "Claimed src/** in /work/repo. Peers see this in chat_list. It is advisory — it marks that you got there first, and does not prevent a write."
+  }
+]
+
+=== chat_claim: blank worktree_path
+args: {"worktree_path":"   "}
+frame: {"t":"claim"}
+[
+  {
+    "type": "text",
+    "text": "Claimed the whole worktree in /work/repo. Peers see this in chat_list. It is advisory — it marks that you got there first, and does not prevent a write."
+  }
+]
+
+=== chat_claim: claimed with no claim echoed
+args: {}
+frame: {"t":"claim"}
+[
+  {
+    "type": "text",
+    "text": "Claimed."
+  }
+]
+
+=== chat_claim: refused by a peer
+args: {"patterns":["src/**"]}
+frame: {"t":"claim","patterns":["src/**"]}
+[
+  {
+    "type": "text",
+    "text": "bob already claims src/** in /work/repo"
+  }
+]
+
+=== chat_claim: refused with no reason
+args: {}
+frame: {"t":"claim"}
+[
+  {
+    "type": "text",
+    "text": "Claim refused."
+  }
+]
+
+=== chat_claim: patterns as a bare string
+args: {"patterns":"src/**"}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: patterns: Invalid input: expected array, received string"
+  }
+]
+
+=== chat_claim: patterns null
+args: {"patterns":null}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: patterns: Invalid input: expected array, received null"
+  }
+]
+
+=== chat_claim: a non-string pattern
+args: {"patterns":["src/**",42]}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: patterns.1: Invalid input: expected string, received number"
+  }
+]

@@ -1,0 +1,131 @@
+=== chat_subscribe: scope all, kinds omitted
+args: {"scope":"all"}
+frame: {"t":"subscribe","subscriptions":[{"selector":{"all":true},"kinds":["registered","deregistered","agent_attached","agent_detached"]}]}
+[
+  {
+    "type": "text",
+    "text": "Subscribed to everything for registered, deregistered, agent_attached, agent_detached. Holding 1."
+  }
+]
+
+=== chat_subscribe: scope name with kinds
+args: {"scope":"name","target":"bob","kinds":["agent_spawned","deregistered"]}
+frame: {"t":"subscribe","subscriptions":[{"selector":{"name":"bob"},"kinds":["agent_spawned","deregistered"]}]}
+[
+  {
+    "type": "text",
+    "text": "Subscribed to agent \"bob\" for agent_spawned, deregistered. Holding 2."
+  }
+]
+
+=== chat_subscribe: scope tag
+args: {"scope":"tag","target":"owner:src"}
+frame: {"t":"subscribe","subscriptions":[{"selector":{"tag":"owner:src"},"kinds":["registered","deregistered","agent_attached","agent_detached"]}]}
+[
+  {
+    "type": "text",
+    "text": "Subscribed to tag \"owner:src\" for registered, deregistered, agent_attached, agent_detached. Holding 1."
+  }
+]
+
+=== chat_subscribe: scope spawned
+args: {"scope":"spawned"}
+frame: {"t":"subscribe","subscriptions":[{"selector":{"spawnedBy":"self"},"kinds":["registered","deregistered","agent_attached","agent_detached"]}]}
+[
+  {
+    "type": "text",
+    "text": "Subscribed to agents you spawned for registered, deregistered, agent_attached, agent_detached. Holding 1."
+  }
+]
+
+=== chat_subscribe: empty kinds list
+args: {"scope":"all","kinds":[]}
+frame: {"t":"subscribe","subscriptions":[{"selector":{"all":true},"kinds":[]}]}
+[
+  {
+    "type": "text",
+    "text": "Subscribed to everything for . Holding 1."
+  }
+]
+
+=== chat_subscribe: scope name, no target
+args: {"scope":"name"}
+[
+  {
+    "type": "text",
+    "text": "Error: scope \"name\" needs target set to the name to watch"
+  }
+]
+
+=== chat_subscribe: scope tag, blank target
+args: {"scope":"tag","target":"  "}
+[
+  {
+    "type": "text",
+    "text": "Error: scope \"tag\" needs target set to the tag to watch"
+  }
+]
+
+=== chat_subscribe: scope omitted
+args: {}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: scope: scope is required and must be one of: all, name, tag, spawned"
+  }
+]
+
+=== chat_subscribe: scope misspelled
+args: {"scope":"everyone"}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: scope: scope must be one of: all, name, tag, spawned"
+  }
+]
+
+=== chat_subscribe: unknown kind
+args: {"scope":"all","kinds":["bogus"]}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: kinds.0: kinds must all be one of: registered, deregistered, agent_spawned, agent_attached, agent_detached, agent_resumed, agent_exited, agent_retired, agent_spawn_refused"
+  }
+]
+
+=== chat_subscribe: refused by the broker
+args: {"scope":"all"}
+frame: {"t":"subscribe","subscriptions":[{"selector":{"all":true},"kinds":["registered","deregistered","agent_attached","agent_detached"]}]}
+[
+  {
+    "type": "text",
+    "text": "Not subscribed: at most 16 subscriptions"
+  }
+]
+
+=== chat_subscribe: kinds as a bare string
+args: {"scope":"all","kinds":"agent_spawned"}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: kinds: Invalid input: expected array, received string"
+  }
+]
+
+=== chat_subscribe: kinds null
+args: {"scope":"all","kinds":null}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: kinds: Invalid input: expected array, received null"
+  }
+]
+
+=== chat_subscribe: a non-string target
+args: {"scope":"name","target":42}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: target: Invalid input: expected string, received number"
+  }
+]
