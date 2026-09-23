@@ -111,6 +111,8 @@ export class BrokerClient {
     private readonly onFatal?: (reason: string) => void,
     private readonly onSystemEvents?: (events: SystemEvent[]) => void,
     private readonly onPermissionVerdict?: (requestId: string, behavior: PermissionBehavior) => void,
+    /** Fires once per lost connection, before any reconnect; for a caller whose state died with it (CC-144). */
+    private readonly onDropped?: () => void,
   ) {}
 
   private handle(msg: ServerMessage): void {
@@ -187,6 +189,8 @@ export class BrokerClient {
     if (this.closed || this.socket === null) return
     this.socket = null
     this.failAllWaiters('broker connection lost')
+    this.onDropped?.()
+    if (this.closed) return
     if (await this.reconnect()) await this.replayHeld()
   }
 

@@ -35,12 +35,21 @@ export const PEER_PREAMBLE = [
 ].join(' ')
 
 /**
+ * Only a print-mode run blocks in the PermissionRequest hook (CC-144), and a denial that
+ * follows a long wait there is a timeout rather than a refusal of the action.
+ */
+export const HOOK_DENIAL_NOTE =
+  'A tool call denied after a long wait means the owner did not answer the permission ' +
+  'prompt in time, not that the action is forbidden. Do not retry it in a loop; say you ' +
+  'are blocked on it, then move on or stop.'
+
+/**
  * Standing context, never the brief. Both surfaces now deliver the brief as a
  * turn — positionally for interactive, on stdin for headless — so putting it
  * here as well would only duplicate it.
  */
-const systemPrompt = (input: LaunchPlanInput): string =>
-  [input.preamble ?? PEER_PREAMBLE, input.profile.promptPrelude]
+const systemPrompt = (input: LaunchPlanInput, hooked: boolean): string =>
+  [input.preamble ?? PEER_PREAMBLE, hooked ? HOOK_DENIAL_NOTE : '', input.profile.promptPrelude]
     .filter(part => part.trim() !== '')
     .join('\n\n')
 
@@ -133,6 +142,10 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
   const surface = input.surface ?? input.profile.surface
   const interactive = isInteractiveSurface(surface)
   const { profile } = input
+  // Print mode has no dialog, so the hook cannot hold one closed. A pane's resume with a message also runs -p.
+  const print = !interactive || (input.resume === true && Boolean(input.resumeMessage))
+  const settings = print ? input.hookSettingsPath : undefined
+  const hooked = settings !== undefined
 
   // An empty `model` or `allowedTools` means INHERIT, and only teleport produces
   // one: an ordinary human-started session has no profile to copy, so its
@@ -147,9 +160,10 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     '--append-system-prompt',
     // Standing context only. The brief is a TASK, and a task has to arrive as a
     // turn — see below.
-    systemPrompt(input),
+    systemPrompt(input, hooked),
     '--mcp-config',
     input.mcpConfigPath,
+    ...(settings === undefined ? [] : ['--settings', settings]),
     // Without this, notifications/claude/channel is never negotiated for the
     // child process: the broker's push still "succeeds" as a raw stdio write
     // (chat_send reports delivered), but Claude Code silently discards it —

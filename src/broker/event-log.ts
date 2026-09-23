@@ -63,6 +63,13 @@ const QUEUE_KINDS = ["'message'", "'question'", "'notice'", "'approval_request'"
  */
 export const APPROVAL_TTL_MS = 10 * 60 * 1000
 
+/**
+ * Hook-raised approvals (CC-144) are exempt from the TTL: the hook is still blocking
+ * while the row is open, and the broker closes the row itself when the hook withdraws or
+ * disconnects, so age says nothing about whether anyone is waiting.
+ */
+const AGES_OUT = `(kind != 'approval_request' OR ts > ? OR json_extract(meta, '$.source') = 'hook')`
+
 /** An item is closed once something references it as answered or dismissed. */
 const CLOSED = `SELECT ref FROM events WHERE kind IN ('answer','resolution') AND ref IS NOT NULL`
 
@@ -262,7 +269,7 @@ export class EventLog implements EventStore {
         `SELECT * FROM events
          WHERE target = 'human' AND kind IN (${QUEUE_KINDS})
            AND msg_id NOT IN (${CLOSED})
-           AND (kind != 'approval_request' OR ts > ?)
+           AND ${AGES_OUT}
          ORDER BY id ASC`,
       )
       .all(Date.now() - APPROVAL_TTL_MS) as unknown as Row[]
@@ -336,20 +343,23 @@ export class EventLog implements EventStore {
    * prompts is exactly the set `inbox` printed. An aged-out row is unanswerable
    * for the reason it is unlistable: the host sends nothing when the local
    * dialog wins, so a row this old is presumed already resolved, and answering
-   * it would be a verdict on something nobody is waiting for.
+   * it would be a verdict on something nobody is waiting for. Hook rows are
+   * exempt, for the reason given on `AGES_OUT`.
    */
   openApproval(msgId: string): OpenApproval | undefined {
     const row = this.db
       .prepare(
         `SELECT * FROM events
-         WHERE msg_id = ? AND kind = 'approval_request' AND msg_id NOT IN (${CLOSED}) AND ts > ?
+         WHERE msg_id = ? AND kind = 'approval_request' AND msg_id NOT IN (${CLOSED}) AND ${AGES_OUT}
          LIMIT 1`,
       )
       .get(msgId, Date.now() - APPROVAL_TTL_MS) as unknown as Row | undefined
     if (!row) return undefined
     const meta = (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>
+    const toolName = meta.tool_name ?? 'a tool'
+    if (meta.source === 'hook') return { source: 'hook', session: row.actor, toolName }
     if (!meta.request_id) return undefined
-    return { session: row.actor, requestId: meta.request_id, toolName: meta.tool_name ?? 'a tool' }
+    return { source: 'channel', session: row.actor, requestId: meta.request_id, toolName }
   }
 
   /**

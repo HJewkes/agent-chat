@@ -8,6 +8,7 @@ interface AgentChatConfig {
   worktreeBudget?: unknown
   contextHints?: unknown
   ledgerShadow?: unknown
+  permissionHookTimeoutSeconds?: unknown
 }
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
@@ -56,6 +57,13 @@ export function resolveLedgerShadow(): boolean {
   if (value === undefined || typeof value === 'boolean') return value === true
   logEvent('config_invalid', { key: 'ledgerShadow', value, fallback: false })
   return false
+}
+
+/** How long a headless agent's PermissionRequest hook blocks for the human (CC-144); read per spawn. */
+export const DEFAULT_PERMISSION_HOOK_TIMEOUT_S = 1800
+
+export function resolvePermissionHookTimeout(): number {
+  return positiveIntegerFrom('permissionHookTimeoutSeconds', DEFAULT_PERMISSION_HOOK_TIMEOUT_S)
 }
 
 function positiveIntegerFrom(key: keyof AgentChatConfig, fallback: number): number {
