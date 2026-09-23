@@ -1,0 +1,85 @@
+=== agent_teleport: unregistered
+args: {"handoff":"h"}
+[
+  {
+    "type": "text",
+    "text": "Register with chat_register first: teleport hands your name to a successor, and you do not have one yet."
+  }
+]
+
+=== agent_teleport: unregistered, handoff missing
+args: {}
+[
+  {
+    "type": "text",
+    "text": "Register with chat_register first: teleport hands your name to a successor, and you do not have one yet."
+  }
+]
+
+=== agent_teleport: visible, with a countdown and a warning
+args: {"handoff":"mid-way through S6"}
+frame: {"t":"teleport","handoff":"mid-way through S6"}
+[
+  {
+    "type": "text",
+    "text": "Teleport accepted. Handoff recorded; your successor is a-2 and keeps the name \"me\". Your human has 30s to stop this, then you will be shut down and your successor will open in the same window. Do not start anything new — finish or write down whatever is in flight, because it will not survive this turn.\n  warning: dist is older than src"
+  }
+]
+
+=== agent_teleport: headless, onto another model
+args: {"handoff":"h","model":"claude-sonnet-5"}
+frame: {"t":"teleport","handoff":"h","model":"claude-sonnet-5"}
+[
+  {
+    "type": "text",
+    "text": "Teleport accepted. Handoff recorded; your successor is a-2 and keeps the name \"me\". Your successor is starting now and this session is being shut down. Do not start anything new — finish or write down whatever is in flight, because it will not survive this turn."
+  }
+]
+
+=== agent_teleport: blank model
+args: {"handoff":"h","model":"  "}
+frame: {"t":"teleport","handoff":"h"}
+[
+  {
+    "type": "text",
+    "text": "Teleport accepted. Handoff recorded; your successor is a-2 and keeps the name \"me\". Your successor is starting now and this session is being shut down. Do not start anything new — finish or write down whatever is in flight, because it will not survive this turn."
+  }
+]
+
+=== agent_teleport: refused by the broker
+args: {"handoff":"h"}
+frame: {"t":"teleport","handoff":"h"}
+[
+  {
+    "type": "text",
+    "text": "Not teleporting: answer your open questions first"
+  }
+]
+
+=== agent_teleport: handoff blank
+args: {"handoff":"  "}
+[
+  {
+    "type": "text",
+    "text": "Error: handoff is required and must be a non-empty string"
+  }
+]
+
+=== agent_teleport: handoff missing
+args: {}
+[
+  {
+    "type": "text",
+    "text": "Error: handoff is required and must be a non-empty string"
+  }
+]
+
+=== agent_teleport: model not a string
+args: {"handoff":"h","model":4}
+frame: {"t":"teleport","handoff":"h"}
+[
+  {
+    "type": "text",
+    "text": "Teleport accepted. Handoff recorded; your successor is a-2 and keeps the name \"me\". Your successor is starting now and this session is being shut down. Do not start anything new — finish or write down whatever is in flight, because it will not survive this turn."
+  }
+]

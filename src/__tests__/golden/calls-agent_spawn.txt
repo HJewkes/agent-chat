@@ -1,0 +1,269 @@
+=== agent_spawn: unregistered
+args: {"name":"scout","profile":"explorer","brief":"read the log"}
+[
+  {
+    "type": "text",
+    "text": "Register with chat_register first: a spawn is attributed to the session that asked for it."
+  }
+]
+
+=== agent_spawn: unregistered, name missing
+args: {"profile":"explorer","brief":"b"}
+[
+  {
+    "type": "text",
+    "text": "Register with chat_register first: a spawn is attributed to the session that asked for it."
+  }
+]
+
+=== agent_spawn: minimal
+args: {"name":"scout","profile":"explorer","brief":"read the log"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: minimal, spawner has no config dir
+args: {"name":"scout","profile":"explorer","brief":"read the log"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log"}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: every override set
+args: {"name":"scout","profile":"explorer","brief":"read the log","surface":"iterm-pane","isolation":"worktree","cwd":"/work/repo","briefing":"claude-channels","worktree":"/work/repo/.worktrees/x","owns":["src/broker/**","src/protocol.ts"],"inherit":"context","config_dir":"/home/me/.claude-profiles/agents","resume_session":"uuid-1","predecessor":"old-scout"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","configDir":"/home/me/.claude-profiles/agents","spawnerConfigDir":"/home/me/.claude","surface":"iterm-pane","isolation":"worktree","cwd":"/work/repo","briefing":"claude-channels","worktree":"/work/repo/.worktrees/x","owns":["src/broker/**","src/protocol.ts"],"inherit":"context","resumeSession":"uuid-1","predecessor":"old-scout"}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again.\n  it holds a copy of your conversation up to your last COMPLETED turn — not this one\n  resumed session: transcript found: /home/me/.claude/projects/x/uuid-1.jsonl\n  warning: predecessor old-scout is not retired\n  denied tools: Bash, Write"
+  }
+]
+
+=== agent_spawn: blank cwd
+args: {"name":"scout","profile":"explorer","brief":"read the log","cwd":"   "}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: blank briefing
+args: {"name":"scout","profile":"explorer","brief":"read the log","briefing":"   "}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: blank worktree
+args: {"name":"scout","profile":"explorer","brief":"read the log","worktree":"   "}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: blank config_dir
+args: {"name":"scout","profile":"explorer","brief":"read the log","config_dir":"   "}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: blank resume_session
+args: {"name":"scout","profile":"explorer","brief":"read the log","resume_session":"   "}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: blank predecessor
+args: {"name":"scout","profile":"explorer","brief":"read the log","predecessor":"   "}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: every optional string blank
+args: {"name":"scout","profile":"explorer","brief":"read the log","cwd":"","briefing":"","worktree":"","config_dir":"","resume_session":"","predecessor":""}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: owns trimmed, blanks dropped
+args: {"name":"scout","profile":"explorer","brief":"read the log","owns":[" a ",""]}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","owns":["a"]}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: owns []
+args: {"name":"scout","profile":"explorer","brief":"read the log","owns":[]}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: owns 25 globs
+args: {"name":"scout","profile":"explorer","brief":"read the log","owns":["src/g0/**","src/g1/**","src/g2/**","src/g3/**","src/g4/**","src/g5/**","src/g6/**","src/g7/**","src/g8/**","src/g9/**","src/g10/**","src/g11/**","src/g12/**","src/g13/**","src/g14/**","src/g15/**","src/g16/**","src/g17/**","src/g18/**","src/g19/**","src/g20/**","src/g21/**","src/g22/**","src/g23/**","src/g24/**"]}
+[
+  {
+    "type": "text",
+    "text": "Error: owns may name at most 24 globs; got 25"
+  }
+]
+
+=== agent_spawn: owns as a bare string
+args: {"name":"scout","profile":"explorer","brief":"read the log","owns":"src/**"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","owns":["src/**"]}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: owns with a non-string item
+args: {"name":"scout","profile":"explorer","brief":"read the log","owns":["src/**",42]}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","owns":["src/**"]}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: surface misspelled
+args: {"name":"scout","profile":"explorer","brief":"read the log","surface":"iterm-panes"}
+[
+  {
+    "type": "text",
+    "text": "Error: surface must be one of: headless, iterm-pane, iterm-tab, iterm-window"
+  }
+]
+
+=== agent_spawn: isolation misspelled
+args: {"name":"scout","profile":"explorer","brief":"read the log","isolation":"worktrees"}
+[
+  {
+    "type": "text",
+    "text": "Error: isolation must be one of: none, worktree, file-ownership, toolset-limited"
+  }
+]
+
+=== agent_spawn: inherit misspelled
+args: {"name":"scout","profile":"explorer","brief":"read the log","inherit":"everything"}
+[
+  {
+    "type": "text",
+    "text": "Error: inherit must be one of: context"
+  }
+]
+
+=== agent_spawn: surface blank
+args: {"name":"scout","profile":"explorer","brief":"read the log","surface":"  "}
+[
+  {
+    "type": "text",
+    "text": "Error: surface must be one of: headless, iterm-pane, iterm-tab, iterm-window"
+  }
+]
+
+=== agent_spawn: surface null
+args: {"name":"scout","profile":"explorer","brief":"read the log","surface":null}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: cwd not a string
+args: {"name":"scout","profile":"explorer","brief":"read the log","cwd":42}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: name blank
+args: {"name":"  ","profile":"explorer","brief":"read the log"}
+[
+  {
+    "type": "text",
+    "text": "Error: name is required and must be a non-empty string"
+  }
+]
+
+=== agent_spawn: brief missing
+args: {"name":"scout","profile":"explorer"}
+[
+  {
+    "type": "text",
+    "text": "Error: brief is required and must be a non-empty string"
+  }
+]
+
+=== agent_spawn: profile not a string
+args: {"name":"scout","profile":7,"brief":"read the log"}
+[
+  {
+    "type": "text",
+    "text": "Error: profile is required and must be a non-empty string"
+  }
+]
+
+=== agent_spawn: refused by the broker
+args: {"name":"scout","profile":"explorer","brief":"read the log"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
+[
+  {
+    "type": "text",
+    "text": "Not spawned: name \"scout\" is taken"
+  }
+]
+
+=== agent_spawn: resumed with no transcript found
+args: {"name":"scout","profile":"explorer","brief":"read the log","resume_session":"uuid-2"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","resumeSession":"uuid-2"}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again.\n  resumed session: no transcript found at /home/me/.claude/projects/x/uuid-2.jsonl"
+  }
+]
