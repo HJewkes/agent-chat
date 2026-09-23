@@ -17,6 +17,7 @@ import { hostIdentity } from './host.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
 import { cliEntry } from '../paths.js'
 import { transcriptLine } from '../agents/transcript.js'
+import { verdictLine } from '../agents/resume-session.js'
 import {
   accountUsageLine,
   budgetMiss,
@@ -30,9 +31,11 @@ import { findDenials } from '../agents/denials.js'
 import { invokeTool, text, toolDefinition, type ToolContext } from './command.js'
 import { chatList } from './commands/chat-list.js'
 import { chatSend } from './commands/chat-send.js'
+import { agentResume } from './commands/agent-resume.js'
 import { TOOL_COMMANDS } from './commands/index.js'
 import { ago } from './format.js'
 import type {
+  AgentIdentity,
   DeclaredPresence,
   DeliveredMessage,
   QueueItem,
@@ -555,6 +558,15 @@ export const TOOL_DEFINITIONS = [
             'carries — the agent inherits everything you have said, including anything its profile was ' +
             'never meant to see. A brief is the narrower and usually better tool.',
         },
+        resume_session: {
+          type: 'string',
+          description:
+            "A Claude session uuid to CONTINUE instead of starting fresh, e.g. a retired agent's " +
+            'session id from agent_list. Its transcript must already exist under the account ' +
+            '(config_dir) and cwd the agent will run in; otherwise the spawn is refused and names the ' +
+            'path it checked. The brief becomes its next turn. For an agent that is finished but not ' +
+            'retired, agent_resume is simpler.',
+        },
         config_dir: {
           type: 'string',
           description:
@@ -640,6 +652,7 @@ export const TOOL_DEFINITIONS = [
       required: ['name'],
     },
   },
+  toolDefinition(agentResume),
   {
     name: 'agent_background',
     description:
@@ -664,7 +677,15 @@ export const TOOL_DEFINITIONS = [
     description:
       'List durable agents with their lifecycle state and whether a process is currently attached. ' +
       'An agent can exist without being connected — identity outlives presence.',
-    inputSchema: { type: 'object', properties: {} },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        include_retired: {
+          type: 'boolean',
+          description: 'Also list retired agents, with the session id agent_spawn resume_session needs.',
+        },
+      },
+    },
   },
   {
     name: 'agent_logs',
@@ -815,6 +836,12 @@ function formatTurns(who: string, read: TranscriptRead): string {
 const renderBudget = (who: string, read: BudgetRead): string =>
   read.found ? formatBudget(who, read) : budgetMiss(who, read)
 
+/** CC-126: a retired agent's name is gone, so its row names the session a spawn can continue. */
+const resumeHint = (agent: AgentIdentity): string =>
+  agent.state === 'retired' && agent.sessionId !== ''
+    ? `\n    session: ${agent.sessionId} (agent_spawn resume_session brings it back)`
+    : ''
+
 /** Tracks the registered name purely so chat_list can mark which entry is us. */
 export class ToolHandler {
   private registeredName: string | null
@@ -908,7 +935,7 @@ export class ToolHandler {
       case 'agent_profiles':
         return this.agentProfiles()
       case 'agent_list':
-        return this.agentList()
+        return this.agentList(args.include_retired === true)
       case 'agent_logs':
         return this.agentLogs(requireString(args, 'name'), boundedLimit(args, 'limit', 10, DENIALS_MAX))
       case 'chat_transcript':
@@ -1193,6 +1220,7 @@ export class ToolHandler {
     // connection, so "fork that agent" has nowhere to be expressed.
     const inherit = optionalEnum(args, 'inherit', ['context'] as const)
     const configDir = optionalString(args, 'config_dir')
+    const resumeSession = optionalString(args, 'resume_session')
     // CC-100: read from THIS process's environment, never from the model. The
     // broker is a detached daemon whose own `CLAUDE_CONFIG_DIR` is an accident of
     // which session autostarted it, so this is the only place the spawning
@@ -1213,6 +1241,7 @@ export class ToolHandler {
         ...(worktree === undefined ? {} : { worktree }),
         ...(owns === undefined ? {} : { owns }),
         ...(inherit === undefined ? {} : { inherit }),
+        ...(resumeSession === undefined ? {} : { resumeSession }),
       },
       'spawn_result',
     )) as Extract<ServerMessage, { t: 'spawn_result' }>
@@ -1230,9 +1259,10 @@ export class ToolHandler {
       inherit === undefined
         ? ''
         : '\n  it holds a copy of your conversation up to your last COMPLETED turn — not this one'
+    const resumed = res.transcript === undefined ? '' : `\n  resumed session: ${verdictLine(res.transcript)}`
     return text(
       `Spawned "${res.name}" (${res.agentId}). It is a peer now — reach it with chat_send, ` +
-        `not by spawning again.${forked}${warnings}${denied}`,
+        `not by spawning again.${forked}${resumed}${warnings}${denied}`,
     )
   }
 
@@ -1327,11 +1357,11 @@ export class ToolHandler {
     )
   }
 
-  private async agentList() {
-    const res = (await this.call({ t: 'agents' }, 'agents_result')) as Extract<
-      ServerMessage,
-      { t: 'agents_result' }
-    >
+  private async agentList(includeRetired: boolean) {
+    const res = (await this.call(
+      { t: 'agents', ...(includeRetired ? { includeRetired } : {}) },
+      'agents_result',
+    )) as Extract<ServerMessage, { t: 'agents_result' }>
     if (res.agents.length === 0) return text('No agents.')
     // A budget reading is only ever meaningful for a live/attached process — a
     // spawning, detached, exited or retired identity has none to find, and on a
@@ -1359,7 +1389,7 @@ export class ToolHandler {
         ` spawned by ${a.spawnedBy}\n    ${a.cwd}` +
         // A headless agent's output is discarded, so this is the only way to read
         // what it actually did without interrupting it for a report.
-        `\n    ${transcriptLine(a.cwd, a.sessionId, a.configDir)}`
+        `\n    ${transcriptLine(a.cwd, a.sessionId, a.configDir)}${resumeHint(a)}`
       )
     })
     return text(`Durable agents:\n${accountUsageLine(budgets)}\n${rows.join('\n')}`)

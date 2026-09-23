@@ -160,6 +160,7 @@ export class SocketServer {
       // entry, so the refusals land in the log with every other spawn refusal.
       ...(msg.inherit === undefined ? {} : { inherit: msg.inherit }),
       ...(msg.forkFrom === undefined ? {} : { forkFrom: msg.forkFrom }),
+      ...(msg.resumeSession === undefined ? {} : { resumeSession: msg.resumeSession }),
       ...(msg.tags === undefined ? {} : { tags: msg.tags }),
       ...(msg.subscriptions === undefined ? {} : { subscriptions: msg.subscriptions }),
       // CC-100. The explicit ask is the request's to make; the spawner's own
@@ -196,6 +197,7 @@ export class SocketServer {
       ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
       ...(warnings.length === 0 ? {} : { warnings }),
       ...(outcome.disallowedTools === undefined ? {} : { disallowedTools: outcome.disallowedTools }),
+      ...(outcome.transcript === undefined ? {} : { transcript: outcome.transcript }),
     })
   }
 
@@ -457,6 +459,16 @@ export class SocketServer {
    * gets the agent beside it in the same window, and a background agent surfacing
    * itself has no anchor and opens its own window. Neither can be asked for.
    */
+  /** CC-126. Answered on `spawn_result`, carrying the transcript verdict whatever the outcome. */
+  private async handleResume(conn: Conn, msg: Extract<ClientMessage, { t: 'resume' }>): Promise<void> {
+    const outcome = await this.supervisor.resume(msg.name, {
+      requestedBy: this.core.registry.nameOf(conn) ?? HUMAN,
+      ...(msg.surface === undefined ? {} : { surface: msg.surface }),
+      ...(msg.message === undefined ? {} : { message: msg.message }),
+    })
+    reply(conn, { t: 'spawn_result', ...outcome })
+  }
+
   private async handleSurface(conn: Conn, name: string): Promise<void> {
     const anchor = this.core.registry.anchorFor(conn)
     const outcome = await this.supervisor.switchSurface({
@@ -1084,6 +1096,9 @@ export class SocketServer {
         return
       case 'background':
         void this.handleBackground(conn)
+        return
+      case 'resume':
+        void this.handleResume(conn, msg)
         return
       case 'retire':
         void this.supervisor.retire(msg.name, msg.force === true).then(result =>

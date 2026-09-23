@@ -62,3 +62,40 @@ describe('chat_send refuses a missing message body at the schema boundary', () =
     expect(toolDefinition(chatSend).inputSchema.required).toEqual(['text'])
   })
 })
+
+/** CC-126: the resume reply says whether the conversation came back, on success and refusal alike. */
+describe('agent_resume', () => {
+  const answering = (reply: Record<string, unknown>): { broker: BrokerClient; sent: ClientMessage[] } => {
+    const sent: ClientMessage[] = []
+    const broker = {
+      request: async (message: ClientMessage) => {
+        sent.push(message)
+        return { t: 'spawn_result', ...reply }
+      },
+    } as unknown as BrokerClient
+    return { broker, sent }
+  }
+
+  it('sends a headless resume frame by name and reports the transcript it found', async () => {
+    const { broker, sent } = answering({ ok: true, transcript: { path: '/c/p/s.jsonl', found: true } })
+
+    const reply = await new ToolHandler(broker, undefined, 'me').handle('agent_resume', { name: 'scout' })
+
+    expect(sent).toEqual([{ t: 'resume', name: 'scout' }])
+    expect(reply.content[0]?.text).toContain('transcript found: /c/p/s.jsonl')
+  })
+
+  it('says plainly when the transcript was missing', async () => {
+    const { broker } = answering({
+      ok: false,
+      reason: "scout's transcript is gone",
+      transcript: { path: '/c/p/s.jsonl', found: false },
+    })
+
+    const reply = await new ToolHandler(broker, undefined, 'me').handle('agent_resume', { name: 'scout' })
+
+    expect(reply.content[0]?.text).toBe(
+      "Not resumed: scout's transcript is gone\nno transcript found at /c/p/s.jsonl",
+    )
+  })
+})

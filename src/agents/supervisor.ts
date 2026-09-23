@@ -23,7 +23,6 @@ import {
   buildMcpConfig,
   clearRuntimeState,
   mcpConfigPath,
-  readLaunchPlan,
   readRuntimeState,
   writeLaunchFiles,
   writeRuntimeState,
@@ -42,6 +41,14 @@ import { checkSpawnCwd } from './spawn-cwd.js'
 import { resolveSpawnBriefing, type BriefingResult } from './active-work.js'
 import { resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
 import { findTranscript } from './transcript.js'
+import {
+  checkResumeSession,
+  identityTranscript,
+  missingAgent,
+  RESUMED_BRIEF,
+  resumeBlocker,
+  type TranscriptVerdict,
+} from './resume-session.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { isTrusted, trustGap } from './trust.js'
 import { itermSessionPresent } from './surfaces/iterm.js'
@@ -173,6 +180,8 @@ interface Resolved {
   account: Extract<ConfigDirResolution, { dir: string }>
   briefing?: { text: string; slug: string }
   fork?: { path: string; sessionId: string }
+  /** CC-126: an existing conversation to continue, its transcript already checked. */
+  resumed?: { sessionId: string; path: string }
 }
 
 /** A duration as a reader would say it: seconds under a minute, minutes above. */
@@ -234,6 +243,8 @@ export interface SpawnRequest {
   spawnerConfigDir?: string
   /** The session id the requester claims as its own. Checked, never trusted. */
   forkFrom?: string
+  /** CC-126: continue this Claude session uuid instead of minting one. */
+  resumeSession?: string
   /** Empty for a human-initiated spawn; otherwise the requesting agent's id. */
   parentAgentId?: string
   requestedBy: string
@@ -257,6 +268,16 @@ export interface SpawnOutcome {
   warnings?: string[]
   /** The profile's own deny list. See protocol.ts's `spawn_result` for why this matters. */
   disallowedTools?: string[]
+  /** CC-126: whether the conversation a resume asked for was there. */
+  transcript?: TranscriptVerdict
+}
+
+/** CC-126: how `resume` relaunches. Headless unless the caller asks for a pane. */
+export interface ResumeRequest {
+  surface?: SurfaceName
+  /** The turn a headless resume starts on; {@link RESUMED_BRIEF} when absent. */
+  message?: string
+  requestedBy?: string
 }
 
 interface Live {
@@ -821,6 +842,8 @@ export class Supervisor implements TeleportHost {
     })
     if ('error' in account) return this.refuse(req, account.error)
     if (account.warning !== undefined) warnings.push(account.warning)
+    const resumed = this.resumeSource(req, isolationName, cwd, account.dir)
+    if (resumed !== undefined && 'error' in resumed) return this.refuse(req, resumed.error)
 
     if (!this.semaphore.acquire(agentId))
       return this.refuse(req, `no free agent slots (${this.semaphore.summary()}); retire one first`)
@@ -830,6 +853,7 @@ export class Supervisor implements TeleportHost {
         account,
         ...(injected ? { briefing: injected } : {}),
         ...(fork ? { fork } : {}),
+        ...(resumed ? { resumed } : {}),
       })
     } catch (err) {
       this.semaphore.release(agentId)
@@ -849,7 +873,7 @@ export class Supervisor implements TeleportHost {
     depth: number,
     resolved: Resolved,
   ): Promise<SpawnOutcome> {
-    const { briefing, fork, account } = resolved
+    const { briefing, fork, account, resumed } = resolved
     const allocation = await resolveIsolation([isolationName]).allocate(ctx)
     this.core.append({
       kind: 'isolation_allocated',
@@ -860,10 +884,15 @@ export class Supervisor implements TeleportHost {
     })
 
     const surface = req.surface ?? profile.surface
-    const sessionId = randomUUID()
+    if (resumed && surface !== 'headless')
+      warnings.push(
+        'a visible resume opens on the conversation as it was left; send the brief with chat_send',
+      )
+    const sessionId = resumed?.sessionId ?? randomUUID()
     const plan = buildLaunchPlan({
       agentId,
       sessionId,
+      ...(resumed ? { resume: true } : {}),
       name: req.name,
       profile,
       brief: [briefing?.text, req.brief, allocation.note].filter(Boolean).join('\n\n'),
@@ -924,6 +953,7 @@ export class Supervisor implements TeleportHost {
         // nothing about: reading the row later is the only way to know this
         // agent started holding someone else's conversation, and whose.
         ...(fork ? { inherit: 'context', fork_from: fork.sessionId } : {}),
+        ...(resumed ? { resumed_session: resumed.sessionId, transcript: resumed.path } : {}),
       },
     })
 
@@ -959,7 +989,27 @@ export class Supervisor implements TeleportHost {
       name: req.name,
       ...(warnings.length > 0 ? { warnings } : {}),
       ...(profile.disallowedTools?.length ? { disallowedTools: [...profile.disallowedTools] } : {}),
+      ...(resumed ? { transcript: { path: resumed.path, found: true } } : {}),
     }
+  }
+
+  /** CC-126: the checked transcript a `resume_session` spawn continues, or why it cannot. */
+  private resumeSource(
+    req: SpawnRequest,
+    isolation: IsolationName,
+    cwd: string,
+    configDir: string,
+  ): { sessionId: string; path: string } | { error: string } | undefined {
+    if (req.resumeSession === undefined) return undefined
+    const checked = checkResumeSession({
+      resumeSession: req.resumeSession,
+      ...(req.inherit === undefined ? {} : { inherit: req.inherit }),
+      ...(req.worktree === undefined ? {} : { worktree: req.worktree }),
+      isolation,
+      cwd,
+      configDir,
+    })
+    return 'error' in checked ? checked : { sessionId: req.resumeSession, path: checked.path }
   }
 
   /** Has this identity ever registered? The one fact that settles an attach race. */
@@ -1247,12 +1297,19 @@ export class Supervisor implements TeleportHost {
     const reaped = this.reap(name)
     this.semaphore.release(identity.agentId)
     clearRuntimeState(identity.agentId)
+    // CC-126: retire frees the name, so this row is how the conversation is found again.
+    const transcript = identityTranscript(identity)
     this.core.append({
       kind: 'agent_retired',
       actor: 'human',
       target: name,
       ref: identity.agentId,
-      meta: { reaped },
+      meta: {
+        reaped,
+        session_id: identity.sessionId,
+        transcript: transcript.path,
+        transcript_found: String(transcript.found),
+      },
     })
     return { ok: true, ...(this.retireCaveat(name, entry !== undefined, reaped) ?? {}) }
   }
@@ -1371,39 +1428,87 @@ export class Supervisor implements TeleportHost {
   }
 
   /**
-   * Relaunch an identity against its existing isolation.
+   * Relaunch a listed, non-live identity on its own conversation (CC-126).
    *
-   * Honest about what this restores: `--resume` replays a transcript that lives
-   * in Claude Code's own state, not in agent-chat. If that has been cleaned up
-   * the agent comes back with its identity, brief and worktree but no memory of
-   * the conversation. Durable identity is not durable context, and the caller is
-   * told which one it is getting.
+   * Refused unless the transcript is on disk: `--resume` replays state Claude
+   * Code owns, and an identity without it would come back knowing nothing. The
+   * outcome carries the verdict either way so the caller never has to guess.
    */
-  async resume(name: string): Promise<SpawnOutcome> {
+  async resume(name: string, req: ResumeRequest = {}): Promise<SpawnOutcome> {
     const identity = this.core.agents.byName(name)
-    if (!identity) return { ok: false, reason: `no agent named "${name}"` }
-    if (identity.state === 'live') return { ok: false, reason: `${name} is already live` }
+    if (!identity) {
+      const retired = this.core.agents
+        .roster({ includeRetired: true })
+        .find(a => a.name === name && a.state === 'retired' && a.origin === 'spawned')
+      return { ok: false, reason: missingAgent(name, retired) }
+    }
+    const transcript = identityTranscript(identity)
+    const blocked = resumeBlocker(identity, transcript)
+    if (blocked) return { ok: false, reason: blocked, transcript }
+    const profile = loadProfile(identity.profile)
+    if ('error' in profile)
+      return {
+        ok: false,
+        reason: `cannot reload profile "${identity.profile}": ${profile.error}`,
+        transcript,
+      }
     if (!this.semaphore.acquire(identity.agentId))
-      return { ok: false, reason: `no free agent slots (${this.semaphore.summary()})` }
+      return { ok: false, reason: `no free agent slots (${this.semaphore.summary()})`, transcript }
 
-    const plan = readLaunchPlan(identity.agentId)
-    const args = plan.args.map(arg => arg)
-    const at = args.indexOf('--session-id')
-    if (at !== -1) args[at] = '--resume'
-    const resumed: LaunchPlan = { ...plan, args }
+    try {
+      await this.relaunchResumed(identity, profile, req, transcript)
+    } catch (err) {
+      this.semaphore.release(identity.agentId)
+      return { ok: false, reason: `resume failed: ${(err as Error).message}`, transcript }
+    }
+    const warnings =
+      req.message !== undefined && (req.surface ?? 'headless') !== 'headless'
+        ? ['a visible resume opens on the conversation as it was left; the message was not delivered']
+        : []
+    return { ok: true, agentId: identity.agentId, name, transcript, ...(warnings.length ? { warnings } : {}) }
+  }
 
+  /** The launch half of `resume`. Isolation is reused, never reallocated, so a worktree agent lands back in its own. */
+  private async relaunchResumed(
+    agent: AgentIdentity,
+    profile: AgentProfile,
+    req: ResumeRequest,
+    transcript: TranscriptVerdict,
+  ): Promise<void> {
+    const state = this.live.get(agent.agentId) ?? readRuntimeState(agent.agentId)
+    const allocation = state?.allocation ?? { cwd: agent.cwd }
+    const isolation = state?.isolation ?? (agent.isolation as IsolationName)
+    const surface = req.surface ?? 'headless'
+    const plan = buildLaunchPlan({
+      agentId: agent.agentId,
+      sessionId: agent.sessionId,
+      resume: true,
+      name: agent.name,
+      profile,
+      brief: req.message ?? RESUMED_BRIEF,
+      cwd: allocation.cwd,
+      surface,
+      mcpConfigPath: mcpConfigPath(agent.agentId),
+      ...(allocation.addDirs ? { extraDirs: allocation.addDirs } : {}),
+      agentChatHome: home(),
+      ...(agent.configDir ? { configDir: agent.configDir } : {}),
+    })
+    writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry()))
     this.core.append({
       kind: 'agent_resumed',
-      actor: 'human',
-      target: name,
-      ref: identity.agentId,
-      meta: { session_id: identity.sessionId },
+      actor: req.requestedBy ?? HUMAN,
+      target: agent.name,
+      ref: agent.agentId,
+      body: 'resumed',
+      meta: {
+        session_id: agent.sessionId,
+        surface,
+        from_surface: agent.surface,
+        transcript: transcript.path,
+      },
     })
-    const handle = await this.launchOn(resumed.surface, resumed)
-    // Isolation is deliberately NOT reallocated: the existing handle is reused,
-    // so a resumed worktree agent lands back in its own worktree, branch intact.
-    this.track(identity.agentId, name, handle, { cwd: plan.cwd }, identity.isolation as IsolationName)
-    return { ok: true, agentId: identity.agentId, name }
+    const handle = await this.launchOn(surface, plan)
+    this.track(agent.agentId, agent.name, handle, allocation, isolation)
   }
 
   /**

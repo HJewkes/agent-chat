@@ -22,6 +22,8 @@ import { worktreeStrategy } from '../agents/isolation/worktree.js'
 import type { Allocation } from '../agents/isolation/index.js'
 import type { HookProcess, HookSpawnFn } from '../agents/hooks.js'
 import { autoAttach } from './broker-harness.js'
+import { transcriptPath } from '../agents/transcript.js'
+import { RESUMED_BRIEF } from '../agents/resume-session.js'
 
 /**
  * A6 — lifecycle. What is being proved is that an agent's slot, isolation and
@@ -64,6 +66,14 @@ const spawnReq = (over: Record<string, unknown> = {}) => ({
   surface: 'headless' as const,
   ...over,
 })
+
+/** Puts Claude Code's transcript where it would be for this identity, so a resume has a conversation to find. */
+function writeTranscriptFor(agent: AgentIdentity): string {
+  const file = transcriptPath(agent.cwd, agent.sessionId, agent.configDir)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, '{}\n')
+  return file
+}
 
 const kindsFor = (agentId: string): string[] =>
   core.events
@@ -583,8 +593,10 @@ describe('inferring the exit of a visible agent', () => {
   it('does not let a settle from the previous life kill a resumed agent', async () => {
     const semaphore = new Semaphore(2)
     const sup = withStubbedSurface({ settleMs: 30_000, semaphore })
-    const spawned = await sup.spawn(spawnReq({ name: 'scout' }))
+    const account = workspace()
+    const spawned = await sup.spawn(spawnReq({ name: 'scout', spawnerConfigDir: account }))
     const agentId = spawned.agentId!
+    writeTranscriptFor(core.agents.get(agentId)!)
 
     // Attach, then drop: the settle window is now counting down.
     core.append({ kind: 'agent_attached', actor: 'scout', ref: agentId })
@@ -1970,5 +1982,130 @@ describe('a failed spawn and its name', () => {
 
     expect(again.ok).toBe(false)
     expect(again.reason).toMatch(/held by a live agent/)
+  })
+})
+
+/**
+ * CC-126: a coordinator brings a stopped agent back WITH its conversation, and
+ * is always told whether the transcript was there.
+ */
+describe('resuming an agent on its own conversation', () => {
+  const finishedAgent = async (sup: Supervisor, name = 'scout'): Promise<AgentIdentity> => {
+    const spawned = await sup.spawn(spawnReq({ name, spawnerConfigDir: workspace() }))
+    const exit = (sup as unknown as { recordExit: (id: string, o: unknown) => Promise<void> }).recordExit
+    await exit.call(sup, spawned.agentId as string, { code: 0, signal: null })
+    return core.agents.get(spawned.agentId as string)!
+  }
+
+  it('relaunches a finished agent headless on --resume with its own session id', async () => {
+    const sup = withStubbedSurface()
+    const agent = await finishedAgent(sup)
+    const file = writeTranscriptFor(agent)
+
+    const result = await sup.resume('scout')
+
+    expect(result).toMatchObject({ ok: true, transcript: { path: file, found: true } })
+    const plan = readLaunchPlan(agent.agentId)
+    expect(plan.args[plan.args.indexOf('--resume') + 1]).toBe(agent.sessionId)
+    expect(plan.args).not.toContain('--session-id')
+    expect(plan.surface).toBe('headless')
+    expect(plan.stdin).toBe(RESUMED_BRIEF)
+  })
+
+  it('refuses a live agent', async () => {
+    const sup = withStubbedSurface()
+    const spawned = await sup.spawn(spawnReq({ spawnerConfigDir: workspace() }))
+    writeTranscriptFor(core.agents.get(spawned.agentId as string)!)
+
+    const result = await sup.resume('scout')
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/already live/)
+  })
+
+  it('refuses when the transcript is gone, and names where it looked', async () => {
+    const sup = withStubbedSurface()
+    const agent = await finishedAgent(sup)
+
+    const result = await sup.resume('scout')
+
+    expect(result.ok).toBe(false)
+    expect(result.transcript).toEqual({
+      path: transcriptPath(agent.cwd, agent.sessionId, agent.configDir),
+      found: false,
+    })
+    expect(kindsFor(agent.agentId)).not.toContain('agent_resumed')
+  })
+
+  it('points a retired name at a spawn with its session id', async () => {
+    const sup = withStubbedSurface()
+    const agent = await finishedAgent(sup)
+    await sup.retire('scout')
+
+    const result = await sup.resume('scout')
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain(`resume_session="${agent.sessionId}"`)
+  })
+
+  it('records the session id and transcript path when retiring', async () => {
+    const sup = withStubbedSurface()
+    const agent = await finishedAgent(sup)
+    const file = writeTranscriptFor(agent)
+
+    await sup.retire('scout')
+
+    const row = core.events.agentEvents().find(r => r.kind === 'agent_retired' && r.ref === agent.agentId)
+    expect(row?.meta).toMatchObject({
+      session_id: agent.sessionId,
+      transcript: file,
+      transcript_found: 'true',
+    })
+  })
+})
+
+describe('spawning onto an existing session', () => {
+  const SESSION = '0f8fad5b-d9cb-469f-a165-70867728950e'
+
+  it('refuses a session whose transcript is not under the chosen account and cwd, naming the path', async () => {
+    const sup = withStubbedSurface()
+    const account = workspace()
+    const cwd = workspace()
+
+    const result = await sup.spawn(spawnReq({ cwd, spawnerConfigDir: account, resumeSession: SESSION }))
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain(`no transcript found at ${transcriptPath(cwd, SESSION, account)}`)
+  })
+
+  it('launches on --resume with that session id when the transcript is there', async () => {
+    const sup = withStubbedSurface()
+    const account = workspace()
+    const cwd = workspace()
+    const file = transcriptPath(cwd, SESSION, account)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, '{}\n')
+
+    const result = await sup.spawn(spawnReq({ cwd, spawnerConfigDir: account, resumeSession: SESSION }))
+
+    expect(result).toMatchObject({ ok: true, transcript: { path: file, found: true } })
+    const plan = readLaunchPlan(result.agentId as string)
+    expect(plan.args.slice(plan.args.indexOf('--resume'), plan.args.indexOf('--resume') + 2)).toEqual([
+      '--resume',
+      SESSION,
+    ])
+    expect(plan.args).not.toContain('--session-id')
+    expect(core.agents.get(result.agentId as string)?.sessionId).toBe(SESSION)
+  })
+
+  it('refuses a freshly allocated worktree, which cannot hold the transcript', async () => {
+    const sup = withStubbedSurface()
+
+    const result = await sup.spawn(
+      spawnReq({ isolation: 'worktree', spawnerConfigDir: workspace(), resumeSession: SESSION }),
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/freshly allocated worktree/)
   })
 })
