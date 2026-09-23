@@ -1,8 +1,10 @@
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ExecutionRecord } from '@titan-design/agent-protocol'
+import { reduceExecutionTransition, type ExecutionRecord } from '@titan-design/agent-protocol'
+import { planBackfill } from '../agents/ledger/backfill.js'
 import { openShadowLedger, type ShadowLedger } from '../agents/ledger/shadow-ledger.js'
+import { configDir } from '../agents/transcript.js'
 import type { EventLog } from '../broker/event-log.js'
 import {
   startSupervisor,
@@ -118,6 +120,26 @@ describe('spawn and attach', () => {
       runnerRef: '4242',
       surface: { kind: 'headless', nativeId: '4242', owned: false },
     })
+  })
+
+  it('a live row and a backfilled row for the same spawn agree on namespace and conversation', async () => {
+    const h = start()
+    await h.spawnAgent('scout')
+    await drain()
+    const live = only(h)
+
+    const [planned] = planBackfill(h.core.events.agentEvents(), new Map(), new Set(), {
+      now: Date.now(),
+      fence: { supervisorId: 'agent-chat@backfill', generation: 1 },
+      configDir: configDir(),
+    })
+    const backfilled = planned?.transitions.reduce<ExecutionRecord | undefined>(
+      (record, transition) => reduceExecutionTransition(record, transition),
+      undefined,
+    )
+
+    expect(backfilled?.target).toEqual(live.target)
+    expect(backfilled?.adapterExecution?.conversation).toEqual(live.adapterExecution?.conversation)
   })
 
   it('reattach after a restart writes no transition', async () => {

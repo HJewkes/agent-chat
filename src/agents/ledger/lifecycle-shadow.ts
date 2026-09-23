@@ -1,9 +1,23 @@
 import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
-import type { ExecutionTerminal, LifecycleExecutionTarget } from '@titan-design/agent-protocol'
+import type {
+  ConversationIdentity,
+  ExecutionTerminal,
+  LifecycleExecutionTarget,
+} from '@titan-design/agent-protocol'
 import { logEvent } from '../../broker/log.js'
 import type { LaunchHandle } from '../types.js'
 import type { ShadowLedger, ShadowStep } from './shadow-ledger.js'
+
+/**
+ * CC-147: a fresh execution's `target.namespace` is the agent's `CLAUDE_CONFIG_DIR`, the corpus its
+ * transcript lives in, because the reducer requires it to equal the observed conversation's namespace.
+ * Live and backfilled rows both build it here; an unknown session id yields no conversation, since
+ * the reducer rejects an empty `nativeId`.
+ */
+export function claudeConversation(configDir: string, sessionId: string): ConversationIdentity | undefined {
+  return sessionId === '' ? undefined : { harness: 'claude-code', namespace: configDir, nativeId: sessionId }
+}
 
 export interface ExitOutcome {
   code: number | null
@@ -78,11 +92,11 @@ export class LifecycleShadow {
 
   running(executionId: string | undefined, handle: LaunchHandle, sessionId: string, configDir: string): void {
     const nativeId = handle.paneRef ?? String(handle.pid)
-    const conversation = { harness: 'claude-code', namespace: configDir, nativeId: sessionId }
+    const conversation = claudeConversation(configDir, sessionId)
     this.step(executionId, {
       kind: 'observe_running',
       runnerRef: nativeId,
-      adapterExecution: { executionId: sessionId, conversation },
+      adapterExecution: { executionId: sessionId, ...(conversation && { conversation }) },
       surface: { kind: handle.surface, host: hostname(), nativeId, owned: handle.ownsSurface === true },
       evidence: 'agent_attached row',
     })

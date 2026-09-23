@@ -28,7 +28,7 @@ const DAY_MS = 24 * 60 * 60 * 1000
 const NOW = Date.parse('2026-09-23T12:00:00.000Z')
 const T0 = NOW - 10 * DAY_MS
 const FENCE = { supervisorId: 'agent-chat@test', generation: 1 }
-const OPTIONS: BackfillOptions = { now: NOW, fence: FENCE, namespace: '/home/test' }
+const OPTIONS: BackfillOptions = { now: NOW, fence: FENCE, configDir: '/config/test' }
 
 const row = (
   kind: EventKind,
@@ -126,6 +126,30 @@ describe('planBackfill', () => {
 
     expect(planned[0]?.phases).toEqual(['prepared', 'dispatching'])
     expect(applyAll(planned)[0]?.phase).toBe('dispatching')
+  })
+
+  it("names the conversation by the spawn row's config dir, else the broker's, and omits it without a session id", () => {
+    const rows = [
+      ...finished('a1', T0),
+      spawned('a2', T0, { config_dir: '/config/other' }),
+      row('agent_attached', 'a2', T0 + 1000),
+      spawned('a3', T0, { session_id: '' }),
+      row('agent_attached', 'a3', T0 + 1000),
+    ]
+
+    const records = applyAll(plan(rows))
+
+    expect(records.map(r => [r.target, r.adapterExecution?.conversation])).toEqual([
+      [
+        { kind: 'fresh', namespace: '/config/test' },
+        { harness: 'claude-code', namespace: '/config/test', nativeId: 's-a1' },
+      ],
+      [
+        { kind: 'fresh', namespace: '/config/other' },
+        { harness: 'claude-code', namespace: '/config/other', nativeId: 's-a2' },
+      ],
+      [{ kind: 'fresh', namespace: '/config/test' }, undefined],
+    ])
   })
 
   it('gives a retired identity no row', () => {
