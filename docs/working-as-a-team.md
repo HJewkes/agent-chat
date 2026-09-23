@@ -64,6 +64,13 @@ call needed — so you learn the moment it actually attaches rather than polling
 **`chat_send`** addresses it by name. A spawned agent is an ordinary peer on the bus — there is
 no separate channel for "your" agents, and no privileged relationship.
 
+**Bringing one back with its conversation (CC-126).** A finished or detached agent still holds
+its name: `agent_resume <name>` (CLI `agent-chat agent resume <name>`) relaunches it headless on
+`--resume`, with an optional `message` as its next turn. A retired agent gave its name up, so
+it comes back as a new agent: `agent_list include_retired` shows its session id, and
+`agent_spawn resume_session=<id>` continues it, provided the transcript is under the same account
+and cwd. Both refuse when the transcript is gone, and both say whether it was found.
+
 ---
 
 ## 3. Choosing a surface

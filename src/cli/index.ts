@@ -8,6 +8,7 @@ import { socketPath } from '../paths.js'
 import * as agents from './agents.js'
 import { addVerb } from './command.js'
 import { agentRetire } from './verbs/agent-retire.js'
+import { agentResume } from './verbs/agent-resume.js'
 import * as debug from './debug.js'
 import { doctor } from './doctor.js'
 import * as human from './human.js'
@@ -138,6 +139,7 @@ function addAgentCommands(program: Command): void {
     .option('--config-dir <path>', 'the Claude config dir, and therefore the account, to run it on')
     .action(agents.agentSpawn)
   addVerb(agent, agentRetire)
+  addVerb(agent, agentResume)
   agent
     .command('worktrees')
     .description('worktrees agent-chat is holding, and which nobody is using')

@@ -397,6 +397,10 @@
             ],
             "description": "Set to \"context\" to start the agent from a COPY of YOUR OWN conversation instead of an empty one — the closest thing here to \"fork me\". It can only ever fork you: there is no field for whose conversation, and a request to fork a peer is refused. Reach for it when the agent needs what you have been doing and re-describing it would cost more than it is worth. KNOW WHAT IT IS NOT: still a separate process paying its own input tokens, so it is not the cheap built-in fork; and it sees only your COMPLETED turns, never the one you are in, so do not refer to work you have not finished narrating. Also weigh what it carries — the agent inherits everything you have said, including anything its profile was never meant to see. A brief is the narrower and usually better tool."
           },
+          "resume_session": {
+            "type": "string",
+            "description": "A Claude session uuid to CONTINUE instead of starting fresh, e.g. a retired agent's session id from agent_list. Its transcript must already exist under the account (config_dir) and cwd the agent will run in; otherwise the spawn is refused and names the path it checked. The brief becomes its next turn. For an agent that is finished but not retired, agent_resume is simpler."
+          },
           "config_dir": {
             "type": "string",
             "description": "Absolute path of the Claude config dir the agent should run under, and therefore WHICH ACCOUNT it spends, e.g. \"/Users/you/.claude-profiles/agents\". Omit it in the ordinary case: the agent inherits YOUR account automatically, then the briefing initiative's declared profile, then the broker's. Pass it only to bill an account deliberately. It must already exist and be under your home directory; anything else is refused rather than quietly replaced, because running on the wrong account is the failure this prevents."
@@ -450,6 +454,36 @@
       }
     },
     {
+      "name": "agent_resume",
+      "description": "Bring back a finished, detached or failed agent WITH its conversation, under the same name and identity, headless by default. Use it for a follow-up to an agent that already knows the work. It is refused for a live agent (message it instead) and when its transcript is gone, and the reply always says whether the transcript was found. A RETIRED agent gave up its name: agent_list shows its session id, and agent_spawn with resume_session brings it back as a new agent.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The agent to resume, as shown by agent_list."
+          },
+          "message": {
+            "description": "The turn it resumes on: what to do next. Omit for a generic \"check your inbox and continue\".",
+            "type": "string"
+          },
+          "surface": {
+            "description": "Where it comes back. Defaults to headless; a visible surface opens a pane and drops message.",
+            "type": "string",
+            "enum": [
+              "headless",
+              "iterm-pane",
+              "iterm-tab",
+              "iterm-window"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
       "name": "agent_background",
       "description": "Send YOURSELF headless, releasing the terminal window you are in. This names no agent and cannot be aimed at one: you may only background yourself. Your name, identity and conversation all survive. Understand what you are giving up before calling it — headless sessions are never shown permission prompts, so anything needing approval will be denied outright rather than asked about, and nobody is watching a pane for you. Do not background yourself while you are blocked on something, or expect to be.",
       "inputSchema": {
@@ -470,7 +504,12 @@
       "description": "List durable agents with their lifecycle state and whether a process is currently attached. An agent can exist without being connected — identity outlives presence.",
       "inputSchema": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "include_retired": {
+            "type": "boolean",
+            "description": "Also list retired agents, with the session id agent_spawn resume_session needs."
+          }
+        }
       }
     },
     {

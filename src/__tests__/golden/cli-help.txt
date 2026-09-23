@@ -224,6 +224,8 @@ Commands:
   ls                                           agents, with lifecycle and presence
   spawn [options] <name> <profile> [brief...]  start a new agent
   retire [options] <name>                      release isolation, end the process, and free the name
+  resume [options] <name>                      bring a stopped agent back on its own conversation
+                                               (headless by default)
   worktrees [options]                          worktrees agent-chat is holding, and which nobody is
                                                using
   surface <name>                               bring a headless agent into a window you can answer
@@ -257,6 +259,16 @@ release isolation, end the process, and free the name
 Options:
   --force     discard uncommitted or unmerged work the isolation is holding
   -h, --help  display help for command
+
+=== agent-chat agent resume
+Usage: agent-chat agent resume [options] <name>
+
+bring a stopped agent back on its own conversation (headless by default)
+
+Options:
+  --message <value>  the turn it resumes on
+  --surface <value>  where it comes back: headless, iterm-pane, iterm-tab, iterm-window
+  -h, --help         display help for command
 
 === agent-chat agent worktrees
 Usage: agent-chat agent worktrees [options]
