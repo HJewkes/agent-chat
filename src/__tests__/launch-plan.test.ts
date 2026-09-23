@@ -95,6 +95,12 @@ describe('the argv every surface shares', () => {
     expect(plan.env.AGENT_CHAT_NAME).toBe('scout')
   })
 
+  it('tells the child which profile it runs under, so its context hint fits the role', () => {
+    const plan = buildLaunchPlan(input())
+
+    expect(plan.env.AGENT_CHAT_PROFILE).toBe(input().profile.name)
+  })
+
   it('propagates a relocated home, or the agent would join a different bus', () => {
     const plan = buildLaunchPlan(input({ agentChatHome: '/state' }))
     expect(plan.env.AGENT_CHAT_HOME).toBe('/state')

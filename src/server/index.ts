@@ -17,6 +17,7 @@ import { hostIdentity } from './host.js'
 import { observedRegistration } from '../git.js'
 import { disambiguated, provisionalName } from './provisional.js'
 import { exitWhenStdinEnds } from './stdio-lifetime.js'
+import { resolveContextHintPolicy } from '../config.js'
 import { ContextHinter, withHint } from './context-hint.js'
 
 /**
@@ -376,8 +377,11 @@ export async function startMcpServer(): Promise<void> {
 
   // One per session, because the "already told them" state is per session and
   // the process IS the session. Reads the status-line cache lazily, so a machine
-  // without the writer installed simply never hints.
-  const hinter = new ContextHinter(hostIdentity().sessionId)
+  // without the writer installed simply never hints. Advisory only: it never stops anything.
+  const hinter = new ContextHinter(
+    hostIdentity().sessionId,
+    resolveContextHintPolicy(process.env.AGENT_CHAT_PROFILE),
+  )
 
   const deliver = (message: DeliveredMessage): void => {
     const meta: Record<string, string> = { from: message.from, msg_id: message.msgId }
@@ -399,7 +403,7 @@ export async function startMcpServer(): Promise<void> {
     // The context hint rides this frame rather than being pushed on a timer:
     // fanout cost is payload x recipients, so telling every session its own
     // figure on a schedule is the one shape the broadcast budget exists to
-    // prevent. Silent unless a new band was crossed — see `context-hint.ts`.
+    // prevent. Silent unless the threshold was newly crossed — see `context-hint.ts`.
     void mcp.notification({
       method: 'notifications/claude/channel',
       params: { content: withHint(message.text, hinter.hint()), meta },

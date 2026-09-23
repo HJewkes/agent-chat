@@ -51,7 +51,11 @@ printf '%s' "$input" | jq -c --argjson now "$(date +%s)" '{
         lines_added: (.cost.total_lines_added // null),
         lines_removed: (.cost.total_lines_removed // null)
     },
-    rate_limits: (.rate_limits // {})
+    rate_limits: (.rate_limits // {}),
+    effort: (.effort.level // null),
+    prompt_cache: (.prompt_cache | if type == "object"
+        then {warm, caching_observed, ttl, expires_at}
+        else null end)
 }' >"$tmp" 2>/dev/null && mv -f "$tmp" "$CACHE_DIR/$session_id.json" 2>/dev/null
 rm -f "$tmp" 2>/dev/null
 

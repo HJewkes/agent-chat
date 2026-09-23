@@ -59,6 +59,21 @@ export interface SessionBudget {
    * should surface it here without a code change on this side.
    */
   rate_limits: Record<string, BudgetWindow>
+  /** Reasoning effort level, present only when the model supports it. */
+  effort?: string
+  /** Absent before the session's first API response and on Claude Code builds that predate it. */
+  prompt_cache?: PromptCache
+}
+
+/** The subset of Claude Code's `prompt_cache` status-line object the writer keeps. */
+export interface PromptCache {
+  /** As of the write, not now: pair it with `expires_at` before trusting it. */
+  warm?: boolean
+  caching_observed?: boolean
+  /** `5m` or `1h` as observed on 2.1.280. */
+  ttl?: string
+  /** Unix seconds. */
+  expires_at?: number
 }
 
 /**
@@ -150,7 +165,30 @@ export function parseBudget(raw: string): SessionBudget | null {
     context: parseContext(context),
     cost: parseCost(cost),
     rate_limits: parseWindows(doc.rate_limits),
+    ...defined('effort', str(doc.effort)),
+    ...defined('prompt_cache', parsePromptCache(doc.prompt_cache)),
   }
+}
+
+function parsePromptCache(raw: unknown): PromptCache | undefined {
+  if (!isRecord(raw)) return undefined
+  return {
+    ...defined('warm', bool(raw.warm)),
+    ...defined('caching_observed', bool(raw.caching_observed)),
+    ...defined('ttl', str(raw.ttl)),
+    ...defined('expires_at', num(raw.expires_at)),
+  }
+}
+
+/**
+ * Tokens in the context right now. `input_tokens` is Claude Code's
+ * `total_input_tokens`, which 2.1.280 computes as input + cache_creation +
+ * cache_read of the latest usage, so it is exact; the percentage is 1% steps.
+ */
+export function contextTokens(context: SessionBudget['context']): number | undefined {
+  if (context.input_tokens !== undefined && context.input_tokens > 0) return context.input_tokens
+  if (context.used_pct === undefined || context.window_size === undefined) return undefined
+  return Math.round((context.used_pct / 100) * context.window_size)
 }
 
 function parseContext(raw: Record<string, unknown>): SessionBudget['context'] {
@@ -191,6 +229,8 @@ function parseWindows(raw: unknown): Record<string, BudgetWindow> {
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined)
+
+const bool = (v: unknown): boolean | undefined => (typeof v === 'boolean' ? v : undefined)
 
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
 

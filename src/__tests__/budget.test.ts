@@ -11,6 +11,7 @@ import {
   budgetMiss,
   budgetPath,
   budgetSegment,
+  contextTokens,
   formatBudget,
   parseBudget,
   readBudget,
@@ -86,6 +87,22 @@ describe('parsing a status-line budget document', () => {
     expect(budget?.cost.total_cost_usd).toBeUndefined()
   })
 
+  it('round-trips the optional effort and prompt-cache fields, keeping a false warm flag', () => {
+    const cache = { warm: false, caching_observed: true, ttl: '1h', expires_at: 1_700_003_600 }
+
+    const budget = parseBudget(JSON.stringify(payload({ effort: 'high', prompt_cache: cache })))
+
+    expect(budget?.effort).toBe('high')
+    expect(budget?.prompt_cache).toEqual(cache)
+  })
+
+  it('leaves effort and prompt cache absent when an older writer sent null', () => {
+    const budget = parseBudget(JSON.stringify(payload({ effort: null, prompt_cache: null })))
+
+    expect(budget).not.toHaveProperty('effort')
+    expect(budget).not.toHaveProperty('prompt_cache')
+  })
+
   it('rejects a document with no session id or no timestamp', () => {
     expect(parseBudget(JSON.stringify(payload({ session_id: undefined })))).toBeNull()
     expect(parseBudget(JSON.stringify(payload({ written_at: 'soon' })))).toBeNull()
@@ -95,6 +112,22 @@ describe('parsing a status-line budget document', () => {
     expect(parseBudget('')).toBeNull()
     expect(parseBudget('half a fi')).toBeNull()
     expect(parseBudget('[1,2,3]')).toBeNull()
+  })
+})
+
+describe('absolute context tokens', () => {
+  it('prefers the exact token count over the rounded percentage', () => {
+    expect(
+      contextTokens({ used_pct: 15, window_size: 1_000_000, input_tokens: 154_532, exceeds_200k: false }),
+    ).toBe(154_532)
+  })
+
+  it('derives tokens from percent of window when no count was written', () => {
+    expect(contextTokens({ used_pct: 15, window_size: 1_000_000, exceeds_200k: false })).toBe(150_000)
+  })
+
+  it('reports unknown rather than zero when neither figure is there', () => {
+    expect(contextTokens({ used_pct: 15, exceeds_200k: false })).toBeUndefined()
   })
 })
 
@@ -249,6 +282,15 @@ describe('the status-line writer and this reader agree on a shape', () => {
       remaining_percentage: 56.4,
     },
     exceeds_200k_tokens: false,
+    effort: { level: 'high' },
+    prompt_cache: {
+      warm: false,
+      caching_observed: true,
+      ttl: '5m',
+      expires_at: null,
+      requests: 4,
+      misses: 1,
+    },
     rate_limits: {
       five_hour: { used_percentage: 21.4, resets_at: 1_700_001_000 },
       seven_day: { used_percentage: 58.1, resets_at: 1_700_500_000 },
@@ -274,6 +316,8 @@ describe('the status-line writer and this reader agree on a shape', () => {
     expect(read.budget.cost.lines_added).toBe(31)
     expect(read.budget.rate_limits.seven_day?.used_pct).toBe(58.1)
     expect(read.stale).toBe(false)
+    expect(read.budget.effort).toBe('high')
+    expect(read.budget.prompt_cache).toEqual({ warm: false, caching_observed: true, ttl: '5m' })
   })
 
   it('writes nothing at all rather than a partial file when the payload has no session id', () => {
