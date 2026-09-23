@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { cpSync, existsSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
+import { clearRefusal, recordRefusal } from './refusals.js'
 import { warn } from './warnings.js'
 import { resolveWorktreeBudget } from '../../config.js'
 import { findGitRoot } from '../../git.js'
@@ -89,10 +90,95 @@ export async function pruneStaleWorktrees(gitRoot: string): Promise<void> {
   await gitOrNull(['worktree', 'prune'], gitRoot)
 }
 
+export interface ReleaseCheck {
+  name: 'dirty' | 'pushed' | 'landed' | 'gh'
+  ok: boolean
+  detail: string
+}
+
 export interface WorktreeReleaseSafety {
   dirty: boolean
-  /** Commits that exist nowhere else: not on the remote, not in the base ref. */
+  /** Commits that exist nowhere else: not on the remote, not in the base ref, and not landed. */
   unmerged: boolean
+  /** Every file the branch changed already matches the current base: a squash or rebase merge. */
+  landed: boolean
+  /** Commits on the branch but not on `compareTo`; null when the range could not be counted. */
+  ahead: number | null
+  checked: ReleaseCheck[]
+}
+
+/** The checkout's current branch, and the remote default if one is known locally. */
+async function landingTargets(gitRoot: string): Promise<string[]> {
+  const head = await gitOrNull(['symbolic-ref', '--quiet', '--short', 'HEAD'], gitRoot)
+  const remoteHead = await gitOrNull(['rev-parse', '--verify', '--quiet', 'origin/HEAD'], gitRoot)
+  return [head ?? 'HEAD', ...(remoteHead === null ? [] : ['origin/HEAD'])]
+}
+
+/**
+ * Has the branch's content reached `target`, whatever the commit ids say?
+ *
+ * A squash or rebase merge leaves the branch's own commits unreachable from the
+ * base, so the commit count calls them unmerged. What matters is the content:
+ * if every file the branch changed since it forked is identical on `target`,
+ * nothing is lost by deleting the branch. A later edit on `target` to one of
+ * those files makes this refuse, which is the over-refusal we accept.
+ */
+async function hasLanded(gitRoot: string, branch: string, target: string): Promise<boolean> {
+  if ((await gitOrNull(['diff', '--quiet', target, branch], gitRoot)) !== null) return true
+  const base = await gitOrNull(['merge-base', target, branch], gitRoot)
+  if (base === null) return false
+  const files = await gitOrNull(['diff', '--no-renames', '--name-only', base, branch], gitRoot)
+  if (files === null) return false
+  const touched = files.split('\n').filter(Boolean)
+  if (touched.length === 0) return true
+  return (await gitOrNull(['diff', '--quiet', target, branch, '--', ...touched], gitRoot)) !== null
+}
+
+async function landedOn(gitRoot: string, branch: string): Promise<string | null> {
+  for (const target of await landingTargets(gitRoot)) {
+    if (await hasLanded(gitRoot, branch, target)) return target
+  }
+  return null
+}
+
+const GH_TIMEOUT_MS = 3_000
+
+/** Advisory only: never required, never allowed to change the git answer. */
+async function ghPrState(gitRoot: string, branch: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      'gh',
+      ['pr', 'view', branch, '--json', 'state', '--jq', '.state'],
+      {
+        cwd: gitRoot,
+        encoding: 'utf8',
+        timeout: GH_TIMEOUT_MS,
+      },
+    )
+    return stdout.trim() || null
+  } catch {
+    return null
+  }
+}
+
+function dirtyCheck(dirty: boolean): ReleaseCheck {
+  return {
+    name: 'dirty',
+    ok: !dirty,
+    detail: dirty ? 'uncommitted changes in the worktree' : 'worktree clean',
+  }
+}
+
+function pushedCheck(ahead: number | null, compareTo: string): ReleaseCheck {
+  if (ahead === null)
+    return { name: 'pushed', ok: false, detail: `could not count commits against ${compareTo}` }
+  return { name: 'pushed', ok: ahead === 0, detail: `${ahead} commit(s) not on ${compareTo}` }
+}
+
+function landedCheck(target: string | null, targets: readonly string[]): ReleaseCheck {
+  return target === null
+    ? { name: 'landed', ok: false, detail: `work not landed on ${targets.join(' or ')}` }
+    : { name: 'landed', ok: true, detail: `work landed on ${target}` }
 }
 
 /**
@@ -104,6 +190,11 @@ export interface WorktreeReleaseSafety {
  * remote at all, where that reading would silently delete every commit the agent
  * made. So the comparison falls back to the commit the branch forked from, and
  * over-refusal is the failure mode we accept — `force` is one flag away.
+ *
+ * CC-125: commits that fail that count are still safe when their content has
+ * landed on the checkout's current branch (or `origin/HEAD`), which is how a
+ * squash-merged PR looks once GitHub deletes the remote branch. Nothing is
+ * fetched: a stale local main makes this refuse until someone pulls.
  */
 export async function inspectForRelease(
   gitRoot: string,
@@ -113,15 +204,34 @@ export async function inspectForRelease(
 ): Promise<WorktreeReleaseSafety> {
   const status = existsSync(worktreePath) ? await gitOrNull(['status', '--porcelain'], worktreePath) : null
   const dirty = (status ?? '').length > 0
+  const checked = [dirtyCheck(dirty)]
 
   if ((await gitOrNull(['rev-parse', '--verify', branch], gitRoot)) === null)
-    return { dirty, unmerged: false }
+    return { dirty, unmerged: false, landed: false, ahead: 0, checked }
 
   const remote = await gitOrNull(['rev-parse', '--verify', `origin/${branch}`], gitRoot)
   const compareTo = remote === null ? baseRef : `origin/${branch}`
-  const ahead = await gitOrNull(['rev-list', '--count', `${compareTo}..${branch}`], gitRoot)
+  const count = await gitOrNull(['rev-list', '--count', `${compareTo}..${branch}`], gitRoot)
   // An uncountable range means we cannot prove the commits are safe elsewhere.
-  return { dirty, unmerged: ahead === null || Number.parseInt(ahead, 10) > 0 }
+  const ahead = count === null ? null : Number.parseInt(count, 10)
+  checked.push(pushedCheck(ahead, compareTo))
+  if (ahead === 0) return { dirty, unmerged: false, landed: false, ahead, checked }
+
+  const targets = await landingTargets(gitRoot)
+  const target = await landedOn(gitRoot, branch)
+  checked.push(landedCheck(target, targets))
+  if (target === null) {
+    const state = await ghPrState(gitRoot, branch)
+    if (state !== null) checked.push({ name: 'gh', ok: true, detail: `gh reports the PR as ${state}` })
+  }
+  return { dirty, unmerged: target === null, landed: target !== null, ahead, checked }
+}
+
+/** The failed checks, as one line a coordinator can act on. */
+export function describeRefusal(safety: WorktreeReleaseSafety): string {
+  const failed = safety.checked.filter(c => !c.ok && !(c.name === 'pushed' && safety.landed))
+  const advisory = safety.checked.filter(c => c.name === 'gh').map(c => c.detail)
+  return [...failed.map(c => c.detail), ...advisory].join('; ')
 }
 
 /**
@@ -214,6 +324,20 @@ async function attachWorktree(
   return safety.unmerged
 }
 
+/** Null when release may proceed, otherwise the reason it may not. */
+async function refuseRelease(
+  ctx: IsolationContext,
+  gitRoot: string,
+  worktreePath: string,
+  branch: string,
+  baseRef: string,
+): Promise<string | null> {
+  if (ctx.exitedAt !== undefined && Date.now() - ctx.exitedAt < RECLAIM_GRACE_MS)
+    return `agent exited less than ${RECLAIM_GRACE_MS / 1000}s ago; inside the reclaim grace window`
+  const safety = await inspectForRelease(gitRoot, worktreePath, branch, baseRef)
+  return safety.dirty || safety.unmerged ? describeRefusal(safety) : null
+}
+
 export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStrategy {
   const basePath = opts.basePath ?? DEFAULT_BASE_PATH
   const budgetNow = (): number => opts.budget ?? resolveWorktreeBudget(DEFAULT_BUDGET)
@@ -293,8 +417,12 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       alloc: Allocation,
       releaseOpts: ReleaseOptions = {},
     ): Promise<boolean> {
+      clearRefusal(alloc)
       const ref = alloc.ref
-      if (!ref?.branch || !ref.worktree || !ref.gitRoot) return false
+      if (!ref?.branch || !ref.worktree || !ref.gitRoot) {
+        recordRefusal(alloc, 'allocation carries no worktree reference')
+        return false
+      }
       const { branch, worktree: worktreePath, gitRoot } = ref
 
       // Release only what this strategy created. An assigned worktree belongs to
@@ -307,9 +435,11 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       if (ref.assigned === 'true') return true
 
       if (!releaseOpts.force) {
-        if (ctx.exitedAt !== undefined && Date.now() - ctx.exitedAt < RECLAIM_GRACE_MS) return false
-        const safety = await inspectForRelease(gitRoot, worktreePath, branch, ref.base ?? 'HEAD')
-        if (safety.dirty || safety.unmerged) return false
+        const refusal = await refuseRelease(ctx, gitRoot, worktreePath, branch, ref.base ?? 'HEAD')
+        if (refusal !== null) {
+          recordRefusal(alloc, refusal)
+          return false
+        }
       }
 
       if ((await gitOrNull(['worktree', 'remove', worktreePath], gitRoot)) === null) {

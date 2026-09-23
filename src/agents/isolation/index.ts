@@ -75,7 +75,7 @@ export interface IsolationStrategy {
   /** Pre-flight. Empty array = safe to proceed. Non-empty = reasons, shown to the requester. */
   check(ctx: IsolationContext): Promise<string[]>
   allocate(ctx: IsolationContext): Promise<Allocation>
-  /** Returns false when it refused (dirty/unmerged) rather than failed. */
+  /** Returns false when it refused (dirty/unmerged) rather than failed; `refusalOf(alloc)` says why. */
   release(ctx: IsolationContext, alloc: Allocation, opts?: ReleaseOptions): Promise<boolean>
 }
 
@@ -174,3 +174,4 @@ function composite(strategies: readonly IsolationStrategy[]): IsolationStrategy 
 
 export { noneStrategy, worktreeStrategy, fileOwnershipStrategy, toolsetStrategy }
 export { WARNING_PREFIX, isWarning, refusalsIn } from './warnings.js'
+export { refusalOf } from './refusals.js'
