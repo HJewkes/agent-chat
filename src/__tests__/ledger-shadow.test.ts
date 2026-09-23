@@ -161,6 +161,7 @@ describe('ShadowLedger maintenance writes', () => {
 
 describe('the ledgerShadow flag', () => {
   it('with the flag off no table exists and no ledger method is called', () => {
+    process.env.AGENT_CHAT_LEDGER_SHADOW = '0'
     const handle = vi.fn(() => events.ledgerHandle())
     const methods = (['apply', 'get', 'listRecoverable'] as const).map(name =>
       vi.spyOn(SqliteExecutionLedger.prototype, name),
@@ -186,11 +187,11 @@ describe('the ledgerShadow flag', () => {
   })
 
   it.each([
-    ['no config and no override', undefined, undefined, false],
-    ['config true', { ledgerShadow: true }, undefined, true],
-    ['config true, override 0', { ledgerShadow: true }, '0', false],
-    ['config absent, override 1', {}, '1', true],
-    ['a non-boolean value', { ledgerShadow: 'yes' }, undefined, false],
+    ['no config and no override', undefined, undefined, true],
+    ['config false', { ledgerShadow: false }, undefined, false],
+    ['config false, override 1', { ledgerShadow: false }, '1', true],
+    ['config absent, override 0', {}, '0', false],
+    ['a non-boolean value', { ledgerShadow: 'yes' }, undefined, true],
   ])('resolves %s', (_scenario, config, override, expected) => {
     if (config !== undefined) fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(config))
     if (override !== undefined) process.env.AGENT_CHAT_LEDGER_SHADOW = override
