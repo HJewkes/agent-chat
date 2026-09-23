@@ -194,9 +194,6 @@ function addHiddenCommands(program: Command): void {
     await runAgent(id)
   })
 
-  addVerb(program, debugPsVerb, { hidden: true })
-  addVerb(program, debugHistoryVerb, { hidden: true })
-  addVerb(program, debugLogVerb, { hidden: true })
   // Run by Claude Code as a headless agent's PermissionRequest hook (CC-144), never by a person.
   program
     .command('permission-hook', { hidden: true })
@@ -205,6 +202,10 @@ function addHiddenCommands(program: Command): void {
       const { permissionHook } = await import('./verbs/permission-hook.js')
       await permissionHook(options)
     })
+
+  addVerb(program, debugPsVerb, { hidden: true })
+  addVerb(program, debugHistoryVerb, { hidden: true })
+  addVerb(program, debugLogVerb, { hidden: true })
 
   program.command('send <to> <text...>', { hidden: true }).action(debug.send)
 }
