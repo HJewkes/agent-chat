@@ -4,7 +4,15 @@ Status as of 2026-09-23: slice 1 converted `chat_list`, `chat_send` and `agent r
 and `agent resume` were born as registry commands after it. Slice 2 converts the reads that fit
 0.2.0 as-is: `agent_profiles`, `agent_list`, `agent_background`, `agent_surface`, `chat_inbox`,
 `chat_activity`, `agent_logs`, `chat_transcript` and `session_budget`, and deletes `boundedLimit`.
-13 tools and about 31 CLI verbs still use the hand-written path, and both paths run side by side.
+Slice 7a converted the CLI human and debug reads: `inbox`, `dismiss`, `approve`, `endorse`,
+`debug ps`, `debug claims`, `debug history [n]`, `debug log [n]`, plus the hidden `ps`,
+`history [n]` and `log [n]` aliases, and added `Report.errors` and `addVerb`'s `helpGroup`/`hidden`
+options. Slice 7b converted the remaining CLI verbs that fit 0.2.0 as-is: `doctor`, `profiles`,
+`agent surface`, `agent budget [name]`, `agent worktrees` and `teleport abort`; it also made
+`addVerb` return the mounted `Commander` so `doctor lifecycle` stays attached as a subcommand.
+13 tools and the CLI verbs blocked on G4-G6 (`answer`, `service *`, `debug send`, `watch`,
+`agent spawn`, hidden `send`, `lifecycle backfill`) plus `agent ls` (blocked on CC-107) still use
+the hand-written path, and both paths run side by side.
 
 ## Why
 
