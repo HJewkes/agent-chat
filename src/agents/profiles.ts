@@ -5,9 +5,9 @@ import { ISOLATION_NAMES, SURFACE_NAMES } from '../protocol.js'
 import { SURFACE_LIFETIMES, type AgentProfile, type SurfaceLifetime } from './types.js'
 
 /**
- * The four builtins, layered under anything in `~/.agent-chat/profiles/*.json`.
+ * The five builtins, layered under anything in `~/.agent-chat/profiles/*.json`.
  *
- * All four builtins default to a VISIBLE surface (`iterm-pane`), and that is a
+ * All five builtins default to a VISIBLE surface (`iterm-pane`), and that is a
  * permissions decision rather than an aesthetic one. A visible agent that hits
  * a permission prompt has a human-answerable dialog sitting right there in its
  * pane; a headless one does not, and cannot be unblocked by anyone. The
@@ -137,11 +137,37 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     // `keep`, alone among the builtins, and for the reason the retire-only rule
     // was written in the first place: a long-lived collaborator sharing your
     // checkout is exactly the agent whose last output someone is still reading
-    // when it finishes. The other three are dispatched, do a job and go.
+    // when it finishes. The others are dispatched, do a job and go.
     surfaceLifetime: 'keep',
     promptPrelude:
       'You are a peer working alongside other sessions in a shared checkout. Coordinate over ' +
       'agent-chat before editing files someone else may be holding.',
+  },
+  {
+    // CC-136: the explore half of an explore-then-implement split. It shares the
+    // checkout, so Write is granted for the plan file but Edit and every
+    // state-changing git verb are denied: it reads and runs tests, never alters.
+    name: 'planner',
+    description: 'Explores a codebase and writes an implementation plan file. Never edits source.',
+    model: 'opus',
+    allowedTools: ['Read', 'Grep', 'Glob', 'Write', 'Bash'],
+    disallowedTools: [
+      'Edit',
+      'Bash(git commit:*)',
+      'Bash(git push:*)',
+      'Bash(git checkout:*)',
+      'Bash(git reset:*)',
+      'Bash(git stash:*)',
+      ...HUMAN_ONLY_CLI_DENY,
+      ...NO_SELF_QUESTION,
+    ],
+    isolation: 'none',
+    surface: 'iterm-pane',
+    surfaceLifetime: 'close-on-exit',
+    promptPrelude:
+      'You are planning, not implementing. Write only the plan file named in your brief; Edit is ' +
+      'denied and you must not modify existing files. You share this checkout, so never run a ' +
+      'state-changing git command. The plan file is your deliverable: write it even if you get blocked.',
   },
 ]
 

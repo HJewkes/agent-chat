@@ -33,7 +33,7 @@ as well as the builtins, so the list is longer than this table and longer than
 anything in the repo.
 
 Profile choice fixes the model (`explorer`/`reviewer`/`implementer-lite` = sonnet,
-`implementer`/`peer` = opus); there is no separate `model` parameter.
+`implementer`/`peer`/`planner` = opus); there is no separate `model` parameter.
 
 | Old vocabulary                                       | Now call                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -41,7 +41,7 @@ Profile choice fixes the model (`explorer`/`reviewer`/`implementer-lite` = sonne
 | the same, but the brief is SMALL and fully specified | `agent_spawn(profile: "implementer-lite", ...)` — sonnet, with `implementer`'s grants and worktree isolation. Pick it when the diff is S-sized, the tests are named, and no design judgement is required. Pick `implementer` (opus) the moment the brief needs a decision made.                                                                                                                                                                                                                                                                          |
 | search / find / explore (read-only)                  | `agent_spawn(profile: "explorer", ...)`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | review / narrow checks                               | `agent_spawn(profile: "reviewer", ...)`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| plan / design the approach                           | No profile replicates the old `Plan` subagent's read-only, architecture-focused framing. Spawn `explorer` to investigate, then synthesize the plan yourself — don't silently treat another profile as equivalent.                                                                                                                                                                                                                                                                                                                                        |
+| plan / design the approach                           | `agent_spawn(profile: "planner", ...)` — opus, shares your checkout, may write its plan file and run tests, but Edit and state-changing git verbs are denied. Its deliverable is a plan file, not code; see "Splitting a large assignment" below.                                                                                                                                                                                                                                                                                                        |
 | **"fork me" / "with your context"**                  | `agent_spawn(inherit: "context", ...)` — the agent starts from a copy of YOUR conversation instead of an empty one (CC-44). It can only fork you: there is no field for whose context, and forking a peer is refused. Not the cheap built-in `fork` — it is a separate process paying its own input tokens — and it sees only your COMPLETED turns, never the one you are in. It also inherits everything you have said, including what its profile was never meant to see, so prefer a written `brief` unless the context genuinely cannot be restated. |
 
 Every spawn `brief` contains, in order: task scope (one domain) — context needed to act
@@ -72,6 +72,63 @@ under your home directory, and a bad value is refused rather than quietly replac
 resolved account shows up on `agent_list` and `chat_list` rows (`account: <name>`), and
 that is also how a peer's transcript and budget stay findable when it is not on your
 account.
+
+### Splitting a large assignment: explore, then implement
+
+In worker forensics over 411 assignments (2026-09), 43% were past 150k context at their
+first deliverable, and removing avoidable reads would have moved only 16% of those under
+it. The explore phase alone reached a median of 142k before the first edit. So the
+cheapest cut is not a cap mid-implementation. It is two agents: a `planner` that reads
+the code and writes a plan file, and a fresh `implementer` whose brief is that plan.
+Source: `claude-channels/sources/long-horizon-research/worker-forensics-report.md` §8.
+
+**When to split.** Split when either signal holds at spawn time:
+
+- The active-work task `estimate` is **3 or more**. This threshold is PROVISIONAL.
+  Estimate ≥ 2 had a lift of only 1.20 in the forensics, and 2 is the most common value,
+  so it would split too much. CC-137 populates estimates so the number can be calibrated.
+- The brief matches a signal with lift above 1.5: it says "screenshot" (lift 1.81, 77%
+  precision), the repo is `voltras-mcp` (1.61), or it asks to migrate or port code in
+  `voltras-mcp` (81% precision). "round", "storybook" and brief length fall below 1.5 and
+  do not trigger a split on their own.
+
+Otherwise dispatch a single `implementer` as before. There is no hard context limit: a
+split happens at the explore-to-implement seam or not at all, never mid-task. The human
+reviews the measured results (context at first deliverable for split assignments against
+the 142k baseline) before the split becomes the default.
+
+**The planner brief.** Spawn `planner` with `cwd` set to the target repo. It shares that
+checkout and holds no worktree slot, so tell it which commit to read (for example
+`git fetch` then `git show origin/main:<path>` when the checkout lags). The brief names
+the plan file path, in the initiative's `sources/` directory:
+`~/Library/Application Support/active-work/<initiative>/sources/<task-id>-plan.md`.
+The plan file must contain:
+
+1. **Goal and done-when**, restated from the task in one paragraph.
+2. **Touch points** as `file:line`, each with the change it needs in one line.
+3. **Slices**, each PR-sized (one logical change, reviewable alone), with the touch points
+   it owns and what it must not touch.
+4. **Tests per slice**: the test file, the scenario, and one mutation the test catches.
+5. **Risks and unverified assumptions**, each with how the implementer should check it.
+6. **Ordered dispatch**: which slices run in sequence and which can run in parallel, with
+   any overlapping files named.
+
+The planner reports the plan path via `chat_send` with the usual return contract. Read
+the plan before dispatching; editing it is cheaper than a wrong implementation.
+
+**The implementer brief.** One `implementer` per slice, or one for the whole plan when
+the slices are sequential and small. The brief is short because the plan carries the
+context:
+
+```
+Your brief is this plan file: <absolute path to plan>.
+Implement slice <N> ("<slice title>") only. Read the plan first; do not re-explore
+beyond the touch points it names unless one proves wrong, and if one does, say so in
+your report rather than silently widening scope.
+Constraints: <anything not in the plan: files other agents hold, branch naming>.
+Report via chat_send to <your name>: Status, PR number, the mutation its test catches,
+and any plan assumption that turned out false.
+```
 
 ## Talking to a spawned agent or peer
 
