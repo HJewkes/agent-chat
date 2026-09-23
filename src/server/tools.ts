@@ -3,15 +3,12 @@ import {
   DECLARED_MAX_BYTES,
   DECLARED_MAX_KEYS,
   DECLARED_MAX_VALUE_CHARS,
-  ISOLATION_NAMES,
   SESSION_STATUSES,
-  SURFACE_NAMES,
 } from '../protocol.js'
 import { observedRegistration } from '../git.js'
 import { terminalAnchor } from './anchor.js'
 import { hostIdentity } from './host.js'
 import { cliEntry } from '../paths.js'
-import { verdictLine } from '../agents/resume-session.js'
 import { CLAIM_MAX_PATTERNS } from '../args.js'
 import { invokeTool, text, toolDefinition, type ToolContext } from './command.js'
 import { chatList } from './commands/chat-list.js'
@@ -34,6 +31,8 @@ import { chatClaim } from './commands/chat-claim.js'
 import { chatRelease } from './commands/chat-release.js'
 import { chatTag } from './commands/chat-tag.js'
 import { chatSubscribe, chatUnsubscribe } from './commands/subscriptions.js'
+import { agentSpawn } from './commands/agent-spawn.js'
+import { agentTeleport } from './commands/agent-teleport.js'
 import { TOOL_COMMANDS } from './commands/index.js'
 import type { DeclaredPresence, ServerMessage, SessionStatus } from '../protocol.js'
 
@@ -216,167 +215,8 @@ export const TOOL_DEFINITIONS = [
   toolDefinition(chatInbox),
   toolDefinition(chatSubscribe),
   toolDefinition(chatUnsubscribe),
-  {
-    name: 'agent_spawn',
-    description:
-      'Spawn a durable agent that runs as its own Claude Code session and joins the bus as an ordinary ' +
-      'peer, addressable by name with chat_send. Reach for this — without being asked — when work needs a ' +
-      'second, longer-lived context: a review that should run while you keep working, an exploration whose ' +
-      "search shouldn't clutter your own context, or a task that must outlive your session. Do NOT spawn " +
-      'to parallelise something you could just finish yourself, or to look busy. ' +
-      'Register first — the spawn is attributed to you, and a ' +
-      'visible agent is placed in YOUR terminal, which the broker resolves from your own registration ' +
-      'rather than from anything you pass here. The agent outlives this session: it belongs to the ' +
-      'broker, not to you, so spawning is not a way to get work done before your turn ends. The profile ' +
-      'decides the model, the tool set and where the agent appears — read agent_profiles before choosing ' +
-      'one, and prefer the narrowest that fits.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        name: {
-          type: 'string',
-          description: 'Short handle for the agent, e.g. "auth-review". Must be free.',
-        },
-        profile: { type: 'string', description: 'Profile name; see agent_profiles for what each grants.' },
-        brief: {
-          type: 'string',
-          description:
-            'What the agent should do, in full. It starts with only this — it does not inherit your ' +
-            'conversation, so state the task, the context needed to act, and what to report back.',
-        },
-        surface: {
-          type: 'string',
-          enum: [...SURFACE_NAMES],
-          description:
-            "Overrides the profile's surface. Visible surfaces land in your window and can answer " +
-            'permission prompts; headless cannot be prompted at all.',
-        },
-        isolation: {
-          type: 'string',
-          enum: [...ISOLATION_NAMES],
-          description: "Overrides the profile's isolation, e.g. worktree to keep it out of your checkout.",
-        },
-        cwd: { type: 'string', description: 'Working directory. Defaults to yours.' },
-        worktree: {
-          type: 'string',
-          description:
-            'Absolute path of a worktree the TASK SYSTEM already assigned to this work. Pass it when ' +
-            'something upstream decided where this task runs — a parent task, a wave plan — rather than ' +
-            'letting the profile pick. It is ADOPTED, not created: it must already exist, no branch is ' +
-            'made, no worktree-budget slot is taken, and retiring the agent leaves it in place, because ' +
-            'sibling agents may still be working in it. Do not pass a path you invented; if nobody ' +
-            'assigned a worktree, omit this and let the profile decide.',
-        },
-        owns: {
-          type: 'array',
-          items: { type: 'string' },
-          description:
-            'Path globs INSIDE the worktree that this agent owns, e.g. ["src/broker/**", ' +
-            '"src/protocol.ts"]. This is what lets several agents share one worktree: each is given a ' +
-            'disjoint set of paths, and a spawn overlapping what a live peer already holds is warned ' +
-            'about by name. Advisory, like chat_claim — it records who was given what, and cannot stop ' +
-            'an agent that writes outside its set.',
-        },
-        inherit: {
-          type: 'string',
-          enum: ['context'],
-          description:
-            'Set to "context" to start the agent from a COPY of YOUR OWN conversation instead of an ' +
-            'empty one — the closest thing here to "fork me". It can only ever fork you: there is no ' +
-            'field for whose conversation, and a request to fork a peer is refused. Reach for it when ' +
-            'the agent needs what you have been doing and re-describing it would cost more than it is ' +
-            'worth. KNOW WHAT IT IS NOT: still a separate process paying its own input tokens, so it ' +
-            'is not the cheap built-in fork; and it sees only your COMPLETED turns, never the one you ' +
-            'are in, so do not refer to work you have not finished narrating. Also weigh what it ' +
-            'carries — the agent inherits everything you have said, including anything its profile was ' +
-            'never meant to see. A brief is the narrower and usually better tool.',
-        },
-        resume_session: {
-          type: 'string',
-          description:
-            "A Claude session uuid to CONTINUE instead of starting fresh, e.g. a retired agent's " +
-            'session id from agent_list. Its transcript must already exist under the account ' +
-            '(config_dir) and cwd the agent will run in; otherwise the spawn is refused and names the ' +
-            'path it checked. The brief becomes its next turn. For an agent that is finished but not ' +
-            'retired, agent_resume is simpler.',
-        },
-        predecessor: {
-          type: 'string',
-          description:
-            'Name of an agent YOU spawned whose work this one takes over, for a follow-up assignment ' +
-            'sent to a fresh worker instead of the one that did the first piece. The broker adds a ' +
-            "section to the brief with the predecessor's last report (its newest chat_send to you), " +
-            'its branch and worktree, and its session id and transcript path, so the brief need only ' +
-            'say what to do next. Refused for an agent someone else spawned. It does not retire the ' +
-            'predecessor: the spawn warns while it is unretired, and retiring it is yours to do once ' +
-            'this one registers.',
-        },
-        config_dir: {
-          type: 'string',
-          description:
-            'Absolute path of the Claude config dir the agent should run under, and therefore WHICH ' +
-            'ACCOUNT it spends, e.g. "/Users/you/.claude-profiles/agents". Omit it in the ordinary ' +
-            "case: the agent inherits YOUR account automatically, then the briefing initiative's " +
-            "declared profile, then the broker's. Pass it only to bill an account deliberately. It " +
-            'must already exist and be under your home directory; anything else is refused rather than ' +
-            'quietly replaced, because running on the wrong account is the failure this prevents.',
-        },
-        briefing: {
-          type: 'string',
-          description:
-            'Optional active-work initiative slug (e.g. "claude-channels"), or "auto". The broker reads ' +
-            "that initiative's brief.md, open tasks and latest session note and prepends them to your " +
-            'brief, so you do not have to re-describe the project — write the ASSIGNMENT in brief and ' +
-            'let this carry the orientation. It also asks the active-work daemon for up to six notes, ' +
-            'sources, tasks or sessions ranked against your brief text (any initiative, foreign ones ' +
-            'labelled) and lists them with absolute paths; if the daemon does not answer within 1 second ' +
-            'that list is left out and the spawn carries a warning. So the brief itself is the query: ' +
-            'name the specifics. "auto" resolves from your own directory first, then from ' +
-            'cwd; if neither is inside an initiative the spawn still succeeds, with a warning and no ' +
-            'briefing. Omit it when the work has no active-work initiative behind it.',
-        },
-      },
-      required: ['name', 'profile', 'brief'],
-    },
-  },
-  {
-    name: 'agent_teleport',
-    description:
-      'End this session and start a successor that boots from the CURRENT build, keeping your name, ' +
-      'your peers, your tags and your working directory. Use it when your own instructions or the code ' +
-      'you run on have moved since you started — the alternative is exiting (losing what you know) or ' +
-      'staying useful and stale. BUILD FIRST: the successor execs whatever `npm run build` last ' +
-      'produced, so a teleport that skips the build achieves nothing at real cost. This is not a resume ' +
-      'and not a subagent: your transcript does not come with you, the handoff below is all your ' +
-      'successor gets, and you will be shut down. If you are visible in a terminal, your human gets 30 ' +
-      'seconds to stop it; if you are headless it happens immediately. You cannot cancel it yourself. ' +
-      'Answer or dismiss any open questions to the human first — teleport refuses while any are open.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        handoff: {
-          type: 'string',
-          description:
-            'Everything your successor needs, written by you, stored verbatim, 8 KB max (refused, not ' +
-            'truncated). Cover, in this order: (1) what you were mid-way through, in enough detail to ' +
-            'resume without you; (2) state on disk — branch, uncommitted files, what builds and what ' +
-            'does not; (3) what you would have done next, and why that and not the alternative; (4) ' +
-            'what you already tried that did NOT work, which is the most expensive thing to lose; (5) ' +
-            'who you owe a reply to and what you promised; (6) files to read first, in order, as ' +
-            '@-prefixed absolute paths — Claude Code expands those into your successor’s first turn, ' +
-            'so point at files instead of pasting them.',
-        },
-        model: {
-          type: 'string',
-          description:
-            'Optional. Omit to keep running on the model you are on now, which is the usual case. Set ' +
-            'it only to succeed yourself onto a different one deliberately — a cheaper model for a ' +
-            'long grind, a stronger one for what is left.',
-        },
-      },
-      required: ['handoff'],
-    },
-  },
+  toolDefinition(agentSpawn),
+  toolDefinition(agentTeleport),
   toolDefinition(agentSurface),
   toolDefinition(agentResume),
   toolDefinition(agentBackground),
@@ -443,10 +283,6 @@ export class ToolHandler {
           typeof args.dnd === 'boolean' ? args.dnd : undefined,
           optionalDeclared(args),
         )
-      case 'agent_spawn':
-        return this.spawnAgent(args)
-      case 'agent_teleport':
-        return this.teleport(args)
       default:
         throw new Error(`unknown tool: ${name}`)
     }
@@ -530,108 +366,5 @@ export class ToolHandler {
           ? ' Holding pushes from other sessions; they collect in your inbox.'
           : ' Taking pushes again.'
     return text(`Status set to "${status}".${quiet}`)
-  }
-
-  /**
-   * The anchor is deliberately absent from the request. The broker resolves it
-   * from THIS session's registry entry, so a spawn cannot be aimed at a pane the
-   * caller does not hold — and passing one here would be ignored anyway (§5.4).
-   */
-  private async spawnAgent(args: Record<string, unknown>) {
-    if (this.registeredName === null) {
-      return text(
-        'Register with chat_register first: a spawn is attributed to the session that asked for it.',
-      )
-    }
-    const surface = optionalEnum(args, 'surface', SURFACE_NAMES)
-    const isolation = optionalEnum(args, 'isolation', ISOLATION_NAMES)
-    const cwd = optionalString(args, 'cwd')
-    const briefing = optionalString(args, 'briefing')
-    const worktree = optionalString(args, 'worktree')
-    const owns = optionalPatterns(args, 'owns')
-    // No companion field for WHOSE context: the broker reads that off this
-    // connection, so "fork that agent" has nowhere to be expressed.
-    const inherit = optionalEnum(args, 'inherit', ['context'] as const)
-    const configDir = optionalString(args, 'config_dir')
-    const resumeSession = optionalString(args, 'resume_session')
-    const predecessor = optionalString(args, 'predecessor')
-    // CC-100: read from THIS process's environment, never from the model. The
-    // broker is a detached daemon whose own `CLAUDE_CONFIG_DIR` is an accident of
-    // which session autostarted it, so this is the only place the spawning
-    // session's account can be observed.
-    const spawnerConfigDir = process.env.CLAUDE_CONFIG_DIR
-    const res = (await this.call(
-      {
-        t: 'spawn',
-        name: requireString(args, 'name'),
-        profile: requireString(args, 'profile'),
-        brief: requireString(args, 'brief'),
-        ...(configDir === undefined ? {} : { configDir }),
-        ...(spawnerConfigDir === undefined ? {} : { spawnerConfigDir }),
-        ...(surface === undefined ? {} : { surface }),
-        ...(isolation === undefined ? {} : { isolation }),
-        ...(cwd === undefined ? {} : { cwd }),
-        ...(briefing === undefined ? {} : { briefing }),
-        ...(worktree === undefined ? {} : { worktree }),
-        ...(owns === undefined ? {} : { owns }),
-        ...(inherit === undefined ? {} : { inherit }),
-        ...(resumeSession === undefined ? {} : { resumeSession }),
-        ...(predecessor === undefined ? {} : { predecessor }),
-      },
-      'spawn_result',
-    )) as Extract<ServerMessage, { t: 'spawn_result' }>
-
-    if (!res.ok) return text(`Not spawned: ${res.reason}`)
-    const warnings = (res.warnings ?? []).map(w => `\n  warning: ${w}`).join('')
-    // Told here, not just in the spawned agent's own brief: a toolset-confined
-    // agent cannot report being stuck (the tool is absent from its schema, not
-    // refused), so spawn time is the only place this is knowable with certainty.
-    const denied = res.disallowedTools?.length ? `\n  denied tools: ${res.disallowedTools.join(', ')}` : ''
-    // The one caveat a forking session cannot check for itself: its own current
-    // turn is not in the transcript yet, so the fork is behind by whatever this
-    // turn has established but not yet said.
-    const forked =
-      inherit === undefined
-        ? ''
-        : '\n  it holds a copy of your conversation up to your last COMPLETED turn — not this one'
-    const resumed = res.transcript === undefined ? '' : `\n  resumed session: ${verdictLine(res.transcript)}`
-    return text(
-      `Spawned "${res.name}" (${res.agentId}). It is a peer now — reach it with chat_send, ` +
-        `not by spawning again.${forked}${resumed}${warnings}${denied}`,
-    )
-  }
-
-  /**
-   * Hand off and end this session.
-   *
-   * Nothing here names the subject: the broker resolves it from this
-   * connection's own registry entry, which is what makes "teleport someone else"
-   * unrepresentable rather than merely refused.
-   */
-  private async teleport(args: Record<string, unknown>) {
-    if (this.registeredName === null) {
-      return text(
-        'Register with chat_register first: teleport hands your name to a successor, and you do not ' +
-          'have one yet.',
-      )
-    }
-    const model = optionalString(args, 'model')
-    const res = (await this.call(
-      { t: 'teleport', handoff: requireString(args, 'handoff'), ...(model === undefined ? {} : { model }) },
-      'teleport_result',
-    )) as Extract<ServerMessage, { t: 'teleport_result' }>
-
-    if (!res.ok) return text(`Not teleporting: ${res.reason}`)
-    const warnings = (res.warnings ?? []).map(w => `\n  warning: ${w}`).join('')
-    const when =
-      res.countdownMs === undefined
-        ? 'Your successor is starting now and this session is being shut down.'
-        : `Your human has ${Math.round(res.countdownMs / 1000)}s to stop this, then you will be shut ` +
-          'down and your successor will open in the same window.'
-    return text(
-      `Teleport accepted. Handoff recorded; your successor is ${res.agentId} and keeps the name ` +
-        `"${res.name}". ${when} Do not start anything new — finish or write down whatever is in ` +
-        `flight, because it will not survive this turn.${warnings}`,
-    )
   }
 }

@@ -12,7 +12,7 @@ args: {}
 [
   {
     "type": "text",
-    "text": "Register with chat_register first: teleport hands your name to a successor, and you do not have one yet."
+    "text": "Error: Invalid arguments: handoff: handoff is required and must be a non-empty string"
   }
 ]
 
@@ -61,7 +61,7 @@ args: {"handoff":"  "}
 [
   {
     "type": "text",
-    "text": "Error: handoff is required and must be a non-empty string"
+    "text": "Error: Invalid arguments: handoff: handoff is required and must be a non-empty string"
   }
 ]
 
@@ -70,16 +70,15 @@ args: {}
 [
   {
     "type": "text",
-    "text": "Error: handoff is required and must be a non-empty string"
+    "text": "Error: Invalid arguments: handoff: handoff is required and must be a non-empty string"
   }
 ]
 
 === agent_teleport: model not a string
 args: {"handoff":"h","model":4}
-frame: {"t":"teleport","handoff":"h"}
 [
   {
     "type": "text",
-    "text": "Teleport accepted. Handoff recorded; your successor is a-2 and keeps the name \"me\". Your successor is starting now and this session is being shut down. Do not start anything new — finish or write down whatever is in flight, because it will not survive this turn."
+    "text": "Error: Invalid arguments: model: Invalid input: expected string, received number"
   }
 ]

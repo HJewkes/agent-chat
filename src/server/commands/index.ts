@@ -20,6 +20,8 @@ import { chatClaim } from './chat-claim.js'
 import { chatRelease } from './chat-release.js'
 import { chatTag } from './chat-tag.js'
 import { chatSubscribe, chatUnsubscribe } from './subscriptions.js'
+import { agentSpawn } from './agent-spawn.js'
+import { agentTeleport } from './agent-teleport.js'
 
 /** Tools already defined through the registry; ToolHandler routes these names here before its switch. */
 export const TOOL_COMMANDS = createRegistry<ToolContext>()
@@ -44,3 +46,5 @@ TOOL_COMMANDS.register(chatRelease)
 TOOL_COMMANDS.register(chatTag)
 TOOL_COMMANDS.register(chatSubscribe)
 TOOL_COMMANDS.register(chatUnsubscribe)
+TOOL_COMMANDS.register(agentSpawn)
+TOOL_COMMANDS.register(agentTeleport)

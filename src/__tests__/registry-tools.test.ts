@@ -7,6 +7,8 @@ import { chatActivity } from '../server/commands/chat-activity.js'
 import { chatEndorse } from '../server/commands/chat-endorse.js'
 import { chatTag } from '../server/commands/chat-tag.js'
 import { chatSubscribe } from '../server/commands/subscriptions.js'
+import { agentSpawn } from '../server/commands/agent-spawn.js'
+import { agentTeleport } from '../server/commands/agent-teleport.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { ClientMessage } from '../protocol.js'
 
@@ -160,5 +162,44 @@ describe('claims, tags and subscriptions refuse a bare string where a list belon
 
   it('publishes scope as the only required chat_subscribe field', () => {
     expect(toolDefinition(chatSubscribe).inputSchema.required).toEqual(['scope'])
+  })
+})
+
+/** CC-106 S6: validation now runs before the registration guard, so a missing field is named even unregistered. */
+describe('agent_spawn and agent_teleport refuse a missing required field at the schema boundary', () => {
+  it.each([
+    ['agent_spawn name', agentSpawn, { profile: 'explorer', brief: 'b' }, 'name'],
+    ['agent_teleport handoff', agentTeleport, {}, 'handoff'],
+  ] as const)('rejects %s for an unregistered caller before any frame', async (_label, tool, args, field) => {
+    const { broker, sent } = silentBroker()
+
+    const { envelope } = await invokeCommand(tool, args, { ...context(broker), registeredName: null })
+
+    expect(envelope).toEqual({
+      ok: false,
+      code: EXIT.DATAERR,
+      error: `Invalid arguments: ${field}: ${field} is required and must be a non-empty string`,
+    })
+    expect(sent).toEqual([])
+  })
+
+  it('publishes name, profile and brief as the required agent_spawn fields', () => {
+    expect(toolDefinition(agentSpawn).inputSchema.required).toEqual(['name', 'profile', 'brief'])
+  })
+
+  it('rejects a bare-string owns rather than wrapping it into a list', async () => {
+    const { broker, sent } = silentBroker()
+
+    const { envelope } = await invokeCommand(
+      agentSpawn,
+      { name: 'scout', profile: 'explorer', brief: 'b', owns: 'src/**' },
+      context(broker),
+    )
+
+    expect(envelope).toMatchObject({
+      ok: false,
+      error: 'Invalid arguments: owns: Invalid input: expected array, received string',
+    })
+    expect(sent).toEqual([])
   })
 })

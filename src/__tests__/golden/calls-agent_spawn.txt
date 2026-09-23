@@ -12,7 +12,7 @@ args: {"profile":"explorer","brief":"b"}
 [
   {
     "type": "text",
-    "text": "Register with chat_register first: a spawn is attributed to the session that asked for it."
+    "text": "Error: Invalid arguments: name: name is required and must be a non-empty string"
   }
 ]
 
@@ -147,21 +147,19 @@ args: {"name":"scout","profile":"explorer","brief":"read the log","owns":["src/g
 
 === agent_spawn: owns as a bare string
 args: {"name":"scout","profile":"explorer","brief":"read the log","owns":"src/**"}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","owns":["src/**"]}
 [
   {
     "type": "text",
-    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+    "text": "Error: Invalid arguments: owns: Invalid input: expected array, received string"
   }
 ]
 
 === agent_spawn: owns with a non-string item
 args: {"name":"scout","profile":"explorer","brief":"read the log","owns":["src/**",42]}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","owns":["src/**"]}
 [
   {
     "type": "text",
-    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+    "text": "Error: Invalid arguments: owns.1: Invalid input: expected string, received number"
   }
 ]
 
@@ -170,7 +168,7 @@ args: {"name":"scout","profile":"explorer","brief":"read the log","surface":"ite
 [
   {
     "type": "text",
-    "text": "Error: surface must be one of: headless, iterm-pane, iterm-tab, iterm-window"
+    "text": "Error: Invalid arguments: surface: surface must be one of: headless, iterm-pane, iterm-tab, iterm-window"
   }
 ]
 
@@ -179,7 +177,7 @@ args: {"name":"scout","profile":"explorer","brief":"read the log","isolation":"w
 [
   {
     "type": "text",
-    "text": "Error: isolation must be one of: none, worktree, file-ownership, toolset-limited"
+    "text": "Error: Invalid arguments: isolation: isolation must be one of: none, worktree, file-ownership, toolset-limited"
   }
 ]
 
@@ -188,7 +186,7 @@ args: {"name":"scout","profile":"explorer","brief":"read the log","inherit":"eve
 [
   {
     "type": "text",
-    "text": "Error: inherit must be one of: context"
+    "text": "Error: Invalid arguments: inherit: inherit must be one of: context"
   }
 ]
 
@@ -197,27 +195,25 @@ args: {"name":"scout","profile":"explorer","brief":"read the log","surface":"  "
 [
   {
     "type": "text",
-    "text": "Error: surface must be one of: headless, iterm-pane, iterm-tab, iterm-window"
+    "text": "Error: Invalid arguments: surface: surface must be one of: headless, iterm-pane, iterm-tab, iterm-window"
   }
 ]
 
 === agent_spawn: surface null
 args: {"name":"scout","profile":"explorer","brief":"read the log","surface":null}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
 [
   {
     "type": "text",
-    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+    "text": "Error: Invalid arguments: surface: surface must be one of: headless, iterm-pane, iterm-tab, iterm-window"
   }
 ]
 
 === agent_spawn: cwd not a string
 args: {"name":"scout","profile":"explorer","brief":"read the log","cwd":42}
-frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude"}
 [
   {
     "type": "text",
-    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+    "text": "Error: Invalid arguments: cwd: Invalid input: expected string, received number"
   }
 ]
 
@@ -226,7 +222,7 @@ args: {"name":"  ","profile":"explorer","brief":"read the log"}
 [
   {
     "type": "text",
-    "text": "Error: name is required and must be a non-empty string"
+    "text": "Error: Invalid arguments: name: name is required and must be a non-empty string"
   }
 ]
 
@@ -235,7 +231,7 @@ args: {"name":"scout","profile":"explorer"}
 [
   {
     "type": "text",
-    "text": "Error: brief is required and must be a non-empty string"
+    "text": "Error: Invalid arguments: brief: brief is required and must be a non-empty string"
   }
 ]
 
@@ -244,7 +240,7 @@ args: {"name":"scout","profile":7,"brief":"read the log"}
 [
   {
     "type": "text",
-    "text": "Error: profile is required and must be a non-empty string"
+    "text": "Error: Invalid arguments: profile: profile is required and must be a non-empty string"
   }
 ]
 
