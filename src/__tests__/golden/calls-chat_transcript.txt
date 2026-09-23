@@ -1,0 +1,8 @@
+=== chat_transcript: blank name reads own transcript
+args: {"name":"   "}
+[
+  {
+    "type": "text",
+    "text": "No CLAUDE_CODE_SESSION_ID in this process, so there is no transcript to point at. That means this is not a Claude Code session, or it was started with --no-session-persistence."
+  }
+]

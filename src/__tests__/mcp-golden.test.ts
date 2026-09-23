@@ -185,6 +185,57 @@ const CHAT_SEND_CASES: CallCase[] = [
   },
 ]
 
+const inboxReply = (): ServerMessage => ({ t: 'inbox_result', messages: [] })
+
+/** CC-106 S2: `limit` moves from `boundedLimit` to `positiveLimit` + `clampLimit`. */
+const CHAT_INBOX_CASES: CallCase[] = [
+  { label: 'limit omitted', tool: 'chat_inbox', args: {}, reply: inboxReply() },
+  { label: 'limit "5"', tool: 'chat_inbox', args: { limit: '5' }, reply: inboxReply() },
+  { label: 'limit 5.7', tool: 'chat_inbox', args: { limit: 5.7 }, reply: inboxReply() },
+  { label: 'limit 999', tool: 'chat_inbox', args: { limit: 999 }, reply: inboxReply() },
+  { label: 'limit 0', tool: 'chat_inbox', args: { limit: 0 } },
+  { label: 'limit "lots"', tool: 'chat_inbox', args: { limit: 'lots' } },
+]
+
+/** CC-106 S2: a blank `name` must still read the caller's own transcript, via `present()`. */
+const CHAT_TRANSCRIPT_CASES: CallCase[] = [
+  { label: 'blank name reads own transcript', tool: 'chat_transcript', args: { name: '   ' } },
+]
+
+const AGENT_SURFACE_CASES: CallCase[] = [
+  { label: 'name omitted', tool: 'agent_surface', args: {} },
+  {
+    label: 'surfaced into a pane',
+    tool: 'agent_surface',
+    args: { name: 'scout' },
+    reply: { t: 'switch_result', ok: true, name: 'scout', surface: 'iterm-pane' },
+  },
+  {
+    label: 'refused: already in a terminal',
+    tool: 'agent_surface',
+    args: { name: 'scout' },
+    reply: { t: 'switch_result', ok: false, reason: 'scout is already in a terminal' },
+  },
+]
+
+const AGENT_BACKGROUND_CASES: CallCase[] = [
+  { label: 'unregistered', tool: 'agent_background', args: {} },
+  {
+    label: 'going headless',
+    tool: 'agent_background',
+    registeredAs: 'me',
+    args: {},
+    reply: { t: 'switch_result', ok: true },
+  },
+  {
+    label: 'refused',
+    tool: 'agent_background',
+    registeredAs: 'me',
+    args: {},
+    reply: { t: 'switch_result', ok: false, reason: 'no headless surface available' },
+  },
+]
+
 async function render(c: CallCase): Promise<string> {
   const wire = await connect(c.reply, c.registeredAs)
   const result = await wire.client.callTool({ name: c.tool, arguments: c.args })
@@ -196,6 +247,10 @@ describe('tool call golden', () => {
   it.each([
     ['chat_list', CHAT_LIST_CASES],
     ['chat_send', CHAT_SEND_CASES],
+    ['chat_inbox', CHAT_INBOX_CASES],
+    ['chat_transcript', CHAT_TRANSCRIPT_CASES],
+    ['agent_surface', AGENT_SURFACE_CASES],
+    ['agent_background', AGENT_BACKGROUND_CASES],
   ])('%s answers every pinned case exactly as before', async (tool, cases) => {
     const rendered: string[] = []
     for (const c of cases) rendered.push(await render(c))
