@@ -67,7 +67,13 @@ function addServiceCommands(program: Command): void {
     .option('-f, --foreground', 'run in this terminal instead of detaching')
     .action(service.start)
 
-  svc.command('stop').description('SIGTERM the broker, then SIGKILL if it lingers').action(service.stop)
+  svc
+    .command('stop')
+    .description(
+      'SIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is mid-spawn or an ask is unanswered',
+    )
+    .option('--force', 'stop even if a spawn or an unanswered ask would be lost')
+    .action(service.stop)
 
   svc
     .command('status')
@@ -77,8 +83,11 @@ function addServiceCommands(program: Command): void {
 
   svc
     .command('restart')
-    .description('stop then start, reusing the port from broker.meta.json')
+    .description(
+      'stop then start, reusing the port from broker.meta.json; refuses while an agent is mid-spawn or an ask is unanswered',
+    )
     .option('-p, --port <port>', 'bind this port instead of the recorded one', port)
+    .option('--force', 'restart even if a spawn or an unanswered ask would be lost')
     .action(service.restart)
 
   svc
