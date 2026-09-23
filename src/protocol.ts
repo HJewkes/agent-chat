@@ -678,6 +678,20 @@ export type ClientMessage =
   | { t: 'human_send'; to: string; text: string }
   /** Claude Code opened a permission dialog in this session. Observed; answered only via `approve_permission`. */
   | { t: 'approval'; requestId: string; toolName: string; description: string; inputPreview: string }
+  /**
+   * A headless agent's `PermissionRequest` hook asking the human (CC-144).
+   *
+   * Sent from an UNREGISTERED connection, and refused from a registered one: the
+   * hook process holds no name, so it cannot send or spawn, and a session cannot
+   * use this frame to put a prompt in the queue under another session's name
+   * from its own connection. `session` is therefore a label the hook supplies,
+   * not an identity the broker vouches for. Answered at once by
+   * `permission_hook_result`, then by a `permission_verdict` whose `requestId`
+   * is the row's msg_id once the human decides.
+   */
+  | { t: 'permission_hook'; session: string; toolName: string; toolInput: unknown; description?: string }
+  /** The hook gave up before a verdict (its deadline or SIGTERM); closes the row. */
+  | { t: 'permission_hook_withdrawn'; msgId: string }
   // Agent teams. Declared ahead of the handlers so the wire shape is frozen
   // before three tracks start building against it; nothing routes these yet.
   | {
@@ -899,6 +913,8 @@ export type ServerMessage =
    * answered in the terminal is simply ignored there.
    */
   | { t: 'permission_verdict'; requestId: string; behavior: PermissionBehavior }
+  /** The immediate answer to `permission_hook`: the queue id it was filed under, or why not. */
+  | { t: 'permission_hook_result'; ok: boolean; msgId?: string; reason?: string }
   /**
    * `fatal` means stop, do not reconnect. It exists for exactly one case and the
    * case is not optional: a connection displaced by a resume takeover would

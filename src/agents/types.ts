@@ -123,6 +123,8 @@ export interface LaunchPlanInput {
    */
   forkFrom?: string
   mcpConfigPath: string
+  /** The PermissionRequest hook's `--settings` file, passed only to a print-mode run (CC-144). */
+  hookSettingsPath?: string
   /** From the isolation strategy: dirs outside cwd the agent may still read. */
   extraDirs?: string[]
   /** Propagated so a spawned agent joins the same bus rather than a default one. */

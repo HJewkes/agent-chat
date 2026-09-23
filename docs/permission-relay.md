@@ -110,6 +110,10 @@ are addressable for messaging but invisible when blocked — and they are exactl
 population you would most want an observatory for, since nobody is watching their
 terminal. See ideas.md I1.
 
+Since CC-144 (2026-09-23), agents that agent-chat spawns in print mode reach the queue by a
+different path, the `PermissionRequest` hook described below. The finding above still holds
+for the channel relay and for any `--print` session agent-chat did not spawn.
+
 ## The host _will_ accept a verdict — abstaining is our choice, not its constraint
 
 This is the finding worth carrying forward. The host registers a handler for
@@ -197,6 +201,64 @@ And everything at the top of this document still applies: the relay is behind a 
 that can be revoked without notice, and headless sessions relay nothing at all. So this
 verb is a faster path to a prompt that _did_ relay. It is not a way to unblock an agent
 that cannot be prompted — for that, `agent-chat surface <name>` is still the answer.
+
+## Headless agents: the `PermissionRequest` hook (CC-144)
+
+Added 2026-09-23. A spawned agent that runs `claude -p` (surface `headless`, or a pane
+resume that carries a message) gets `--settings <agent dir>/settings.json`. That file
+installs one `PermissionRequest` command hook, `agent-chat permission-hook`, with a
+timeout of `permissionHookTimeoutSeconds` from `~/.agent-chat/config.json` (default
+1800). Claude Code documents this hook and it needs no flag. It fires in `-p` before any
+permission flow and blocks the tool call until it prints a decision (verified on 2.1.280,
+spike tp302). Interactive spawns do not get it: a blocking hook would hold their local
+dialog closed, so they keep the channel relay above.
+
+The path, end to end:
+
+1. The hook reads Claude Code's JSON from stdin (`session_id`, `tool_name`, `tool_input`;
+   2.1.280 sends no `tool_use_id`). It connects to the broker socket **without
+   registering** and sends `permission_hook {session, toolName, toolInput, description}`.
+   `session` is `AGENT_CHAT_NAME` from the spawn's environment.
+2. The broker appends an ordinary `approval_request` with `meta.source = hook` and the
+   whole `tool_input` as `input_preview`. It answers `permission_hook_result {ok, msgId}`
+   and keeps the hook's connection in a map keyed by that msgId. No new event kind exists.
+3. `agent-chat inbox` lists it as `APPR` like any other prompt. `agent-chat approve <id>
+allow|deny` writes the `resolution` and sends `permission_verdict {requestId: msgId}`
+   on the **hook's** connection, not on `registry.connFor(session)`. A headless agent's
+   MCP server never asked, and may not be connected at all. `dismiss` sends the hook a deny.
+4. The hook prints
+   `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`
+   (or `"behavior":"deny","message":"..."`) and exits 0.
+
+How it differs from the channel relay:
+
+|                               | Channel relay (interactive)                                | Hook (spawned `-p`)                              |
+| ----------------------------- | ---------------------------------------------------------- | ------------------------------------------------ |
+| Who files the row             | the session's registered MCP server (`approval`)           | an unregistered hook process (`permission_hook`) |
+| Where the verdict goes        | the session's connection, keyed by the host's `request_id` | the hook's connection, keyed by the row's msgId  |
+| Racing a local dialog         | yes, first answer wins                                     | no dialog exists; the hook is the only answer    |
+| How the row closes unanswered | ages out after `APPROVAL_TTL_MS`                           | closed explicitly, never by the TTL              |
+| Remote flag                   | required                                                   | not involved                                     |
+
+**Rows close explicitly.** The hook gives up 10 s before Claude Code's timeout and on
+SIGTERM or SIGINT. It sends `permission_hook_withdrawn {msgId}`, and the broker appends a
+`resolution` with body `withdrawn`. When the hook's connection closes first (killed,
+crashed, broker connection lost), the broker writes the same row from its close handler.
+A broker restart drops every hook connection, so the next broker closes any hook row it
+finds open at boot. None of these rows depend on the TTL, so hook rows are exempt from
+it in `humanQueue` and `openApproval`.
+
+**A timeout is a denial.** A hook that exits non-zero with no stdout renders no decision,
+and `-p` then denies the call with a generic message (tp302 step 3b). The spawned agent's
+system prompt says that a denial after a long wait means the owner did not answer, not
+that the action is forbidden, and that it should not retry in a loop.
+
+**The guard is unchanged.** `approve_permission` is still refused from any registered
+connection, and `HUMAN_ONLY_CLI_DENY` still denies the builtin profiles
+`Bash(agent-chat approve:*)`. `permission_hook` is refused from a registered connection,
+so a session cannot use its own connection to file prompts under another name. An
+unregistered process can still file a prompt under any `session` label. That grants
+nothing: the verdict goes back only to the connection that filed it.
 
 ## An approval row is session-relative — never compare rows across sessions
 

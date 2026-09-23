@@ -2,7 +2,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { resolveAgentSlots, resolveContextHintPolicy, resolveWorktreeBudget } from '../config.js'
+import {
+  DEFAULT_PERMISSION_HOOK_TIMEOUT_S,
+  resolveAgentSlots,
+  resolveContextHintPolicy,
+  resolvePermissionHookTimeout,
+  resolveWorktreeBudget,
+} from '../config.js'
 import { Semaphore, DEFAULT_SLOTS } from '../agents/semaphore.js'
 
 /**
@@ -122,5 +128,24 @@ describe('resolveContextHintPolicy', () => {
     writeConfigJson({ contextHints: { profiles: { implementer: { tokens: '200k' } } } })
 
     expect(resolveContextHintPolicy('implementer')?.tokens).toBe(200_000)
+  })
+})
+
+describe('resolvePermissionHookTimeout', () => {
+  it('defaults to thirty minutes, long enough to answer from a phone', () => {
+    expect(resolvePermissionHookTimeout()).toBe(DEFAULT_PERMISSION_HOOK_TIMEOUT_S)
+    expect(DEFAULT_PERMISSION_HOOK_TIMEOUT_S).toBe(1800)
+  })
+
+  it('reads permissionHookTimeoutSeconds from config.json', () => {
+    writeConfigJson({ permissionHookTimeoutSeconds: 600 })
+
+    expect(resolvePermissionHookTimeout()).toBe(600)
+  })
+
+  it('falls back to the default on a value that is not a positive integer', () => {
+    writeConfigJson({ permissionHookTimeoutSeconds: 'soon' })
+
+    expect(resolvePermissionHookTimeout()).toBe(DEFAULT_PERMISSION_HOOK_TIMEOUT_S)
   })
 })

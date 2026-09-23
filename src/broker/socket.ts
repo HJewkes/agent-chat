@@ -78,6 +78,15 @@ const SESSION_FRAMES: ReadonlySet<ClientMessage['t']> = new Set([
   'approval',
 ])
 
+/** A blocked PermissionRequest hook (CC-144): the connection its verdict goes back on, and who it asked for. */
+interface HookWait {
+  conn: Conn
+  session: string
+}
+
+/** The body a hook row closes with when nobody answered it; the mirror renders it as expired at the agent. */
+const HOOK_WITHDRAWN = 'withdrawn'
+
 /**
  * The transport half of `BrokerCore`'s injected `deliver`. Exported because
  * `daemon.ts` is what composes a core with this server — the core must stay free
@@ -111,6 +120,8 @@ export class SocketServer {
   private readonly feed: SystemEventFeed<Conn>
   private readonly unwatch: () => void
   private readonly verifier: LifecycleVerifier | undefined
+  /** Open hook rows by msg_id. Memory only: a restart drops every hook connection, so none can outlive it. */
+  private readonly hooks = new Map<string, HookWait>()
 
   /** `ledgerDb` is the shadow ledger's connection, passed only while `ledgerShadow` is on. */
   constructor(
@@ -130,6 +141,21 @@ export class SocketServer {
     // entry, so nobody can spawn into a pane they do not hold.
     this.supervisor = new Supervisor(core, supervisorOptions)
     this.verifier = ledgerDb && this.lifecycleVerifier(ledgerDb, supervisorOptions.ledger)
+    this.closeOrphanedHookRows()
+  }
+
+  /** Hook rows open at boot belong to connections the previous broker held; nothing can answer them now. */
+  private closeOrphanedHookRows(): void {
+    for (const item of this.core.events.humanQueue()) {
+      if (item.kind !== 'approval_request' || item.meta.source !== 'hook') continue
+      this.core.append({
+        kind: 'resolution',
+        actor: item.from,
+        ref: item.msgId,
+        body: HOOK_WITHDRAWN,
+        meta: { reason: 'broker restarted' },
+      })
+    }
   }
 
   private lifecycleVerifier(db: DatabaseSync, ledger: SupervisorOptions['ledger']): LifecycleVerifier {
@@ -787,6 +813,7 @@ export class SocketServer {
       })
     }
     const result = this.core.dismiss(msgId)
+    if (result.ok) this.settleHook(msgId, 'deny')
     reply(conn, {
       t: 'answer_result',
       ok: result.ok,
@@ -851,6 +878,7 @@ export class SocketServer {
         reason: `${msgId} is not an open permission prompt — it may have been answered already, or aged out`,
       })
     }
+    if (request.source === 'hook') return this.answerHook(conn, msgId, request.toolName, behavior)
     const target = core.registry.connFor(request.session)
     if (!target) {
       return reply(conn, {
@@ -868,6 +896,100 @@ export class SocketServer {
       ok: true,
       reason: `${request.toolName} ${behavior} sent to ${request.session}`,
     })
+  }
+
+  /** The verdict on a hook-raised row goes to the hook's own connection; the session's MCP server never asked. */
+  private answerHook(conn: Conn, msgId: string, toolName: string, behavior: PermissionBehavior): void {
+    const wait = this.hooks.get(msgId)
+    if (!wait) {
+      return reply(conn, {
+        t: 'answer_result',
+        ok: false,
+        reason: `${msgId} has no hook waiting on it any more, so the verdict has nowhere to go`,
+      })
+    }
+    this.core.append({ kind: 'resolution', actor: HUMAN, ref: msgId, body: behavior })
+    this.settleHook(msgId, behavior)
+    logEvent('permission_verdict', { msgId, to: wait.session, tool: toolName, behavior, source: 'hook' })
+    reply(conn, { t: 'answer_result', ok: true, reason: `${toolName} ${behavior} sent to ${wait.session}` })
+  }
+
+  /** Release a waiting hook with `behavior`, if one is waiting on `msgId`. The row is closed by the caller. */
+  private settleHook(msgId: string, behavior: PermissionBehavior): void {
+    const wait = this.hooks.get(msgId)
+    if (!wait) return
+    this.hooks.delete(msgId)
+    reply(wait.conn, { t: 'permission_verdict', requestId: msgId, behavior })
+    const session = this.core.registry.connFor(wait.session)
+    if (session) this.core.registry.setAwaitingApproval(session, false)
+  }
+
+  /**
+   * A headless agent's PermissionRequest hook, asking the human (CC-144).
+   *
+   * Only from an UNREGISTERED connection. The hook never registers, so it holds no
+   * name to send or spawn with; a registered session is refused because it would be
+   * using its own connection to file a prompt under whatever `session` it typed.
+   */
+  private handlePermissionHook(conn: Conn, msg: Extract<ClientMessage, { t: 'permission_hook' }>): void {
+    if (!this.isHuman(conn)) {
+      this.refuseToSession(conn, 'raise a permission prompt through the hook frame')
+      return reply(conn, {
+        t: 'permission_hook_result',
+        ok: false,
+        reason:
+          'permission_hook comes from a PermissionRequest hook, which never registers; a session cannot send it',
+      })
+    }
+    const { core } = this
+    const { msgId } = core.append({
+      kind: 'approval_request',
+      actor: msg.session,
+      target: HUMAN,
+      body: `${msg.toolName}: ${msg.description ?? ''}`,
+      meta: { source: 'hook', tool_name: msg.toolName, input_preview: JSON.stringify(msg.toolInput) },
+    })
+    this.hooks.set(msgId, { conn, session: msg.session })
+    const session = core.registry.connFor(msg.session)
+    if (session) core.registry.setAwaitingApproval(session, true)
+    logEvent('approval_request', { msgId, from: msg.session, tool: msg.toolName, source: 'hook' })
+    reply(conn, { t: 'permission_hook_result', ok: true, msgId })
+  }
+
+  /** Only the connection that raised a row may withdraw it; anyone else learns nothing about it. */
+  private handlePermissionHookWithdrawn(conn: Conn, msgId: string): void {
+    if (this.hooks.get(msgId)?.conn !== conn) {
+      return reply(conn, {
+        t: 'permission_hook_result',
+        ok: false,
+        reason: `${msgId} is not a prompt you raised`,
+      })
+    }
+    this.withdrawHook(msgId, 'hook withdrew')
+    reply(conn, { t: 'permission_hook_result', ok: true, msgId })
+  }
+
+  /** Close a hook row nobody answered, so it never waits on APPROVAL_TTL_MS to leave the queue. */
+  private withdrawHook(msgId: string, reason: string): void {
+    const wait = this.hooks.get(msgId)
+    if (!wait) return
+    this.hooks.delete(msgId)
+    if (this.core.events.isOpen(msgId))
+      this.core.append({
+        kind: 'resolution',
+        actor: wait.session,
+        ref: msgId,
+        body: HOOK_WITHDRAWN,
+        meta: { reason },
+      })
+    const session = this.core.registry.connFor(wait.session)
+    if (session) this.core.registry.setAwaitingApproval(session, false)
+    logEvent('permission_hook_withdrawn', { msgId, session: wait.session, reason })
+  }
+
+  private dropHooks(conn: Conn): void {
+    for (const [msgId, wait] of this.hooks)
+      if (wait.conn === conn) this.withdrawHook(msgId, 'hook disconnected')
   }
 
   /**
@@ -1118,6 +1240,10 @@ export class SocketServer {
         return this.handleHumanSend(conn, msg.to, msg.text)
       case 'approval':
         return this.handleApproval(conn, msg)
+      case 'permission_hook':
+        return this.handlePermissionHook(conn, msg)
+      case 'permission_hook_withdrawn':
+        return this.handlePermissionHookWithdrawn(conn, msg.msgId)
       case 'spawn':
         void this.handleSpawn(conn, msg)
         return
@@ -1161,7 +1287,10 @@ export class SocketServer {
     )
     conn.on('data', read)
 
-    const drop = (): void => core.drop(conn)
+    const drop = (): void => {
+      this.dropHooks(conn)
+      core.drop(conn)
+    }
     conn.on('close', drop)
     conn.on('error', drop)
   }

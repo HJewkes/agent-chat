@@ -385,6 +385,13 @@ Usage: agent-chat run-agent [options] <id>
 Options:
   -h, --help  display help for command
 
+=== agent-chat permission-hook
+Usage: agent-chat permission-hook [options]
+
+Options:
+  --deadline <seconds>  give up and withdraw the prompt after this long (default: "1790")
+  -h, --help            display help for command
+
 === agent-chat ps
 Usage: agent-chat ps [options]
 
