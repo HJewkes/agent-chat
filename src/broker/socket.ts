@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import type { DatabaseSync } from 'node:sqlite'
 import {
   encode,
   lineReader,
@@ -9,12 +10,14 @@ import {
   type ServerMessage,
 } from '../protocol.js'
 import { cliEntry, socketPath } from '../paths.js'
-import { logEvent } from './log.js'
+import { logEvent, loggedCount } from './log.js'
 import { newMsgId } from './event-log.js'
 import { type Escalation, type RouteResult } from './registry.js'
 import { BrokerCore, type Conn } from './core.js'
 import type { SlotUsage } from '../agents/semaphore.js'
 import { Supervisor, type SupervisorOptions } from '../agents/supervisor.js'
+import { gather, LifecycleVerifier } from '../agents/ledger/verifier.js'
+import type { HttpAppOptions } from './http.js'
 import type { SwitchOutcome } from '../agents/mode-switch.js'
 import { SystemEventFeed } from './subscriptions.js'
 import { nextWatchCursor } from './watch-cursor.js'
@@ -107,10 +110,13 @@ export class SocketServer {
   private readonly supervisor: Supervisor
   private readonly feed: SystemEventFeed<Conn>
   private readonly unwatch: () => void
+  private readonly verifier: LifecycleVerifier | undefined
 
+  /** `ledgerDb` is the shadow ledger's connection, passed only while `ledgerShadow` is on. */
   constructor(
     private readonly core: BrokerCore,
     supervisorOptions: SupervisorOptions = {},
+    ledgerDb?: DatabaseSync,
   ) {
     this.feed = new SystemEventFeed<Conn>(core.registry, (conn, events) => {
       reply(conn, { t: 'system_events', events })
@@ -123,9 +129,35 @@ export class SocketServer {
     // one enforcement point. The anchor comes from the requester's OWN registry
     // entry, so nobody can spawn into a pane they do not hold.
     this.supervisor = new Supervisor(core, supervisorOptions)
+    this.verifier = ledgerDb && this.lifecycleVerifier(ledgerDb, supervisorOptions.ledger)
+  }
+
+  private lifecycleVerifier(db: DatabaseSync, ledger: SupervisorOptions['ledger']): LifecycleVerifier {
+    const broker = {
+      liveIds: () => this.supervisor.liveIds(),
+      slotIds: () => this.supervisor.slotIds(),
+      bootAt: this.core.startedAt,
+    }
+    return new LifecycleVerifier({
+      gather: () => gather({ db, events: this.core.events, broker }),
+      shadowErrors: () => loggedCount('ledger_shadow_error'),
+      ...(ledger === undefined ? {} : { renew: () => ledger.renewIfDue() }),
+    })
+  }
+
+  /** Called once the socket is listening; a no-op while the ledger shadow is off. */
+  startLifecycleVerifier(): void {
+    this.verifier?.start()
+  }
+
+  /** `/health` and `/api/lifecycle` readings, absent while the ledger shadow is off. */
+  lifecycle(): HttpAppOptions['lifecycle'] {
+    const verifier = this.verifier
+    return verifier && { summary: () => verifier.summary(), report: () => verifier.run() }
   }
 
   close(): void {
+    this.verifier?.stop()
     this.unwatch()
     this.feed.close()
     this.supervisor.close()

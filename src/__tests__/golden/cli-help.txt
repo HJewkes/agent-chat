@@ -201,11 +201,24 @@ Options:
   -h, --help  display help for command
 
 === agent-chat doctor
-Usage: agent-chat doctor [options]
+Usage: agent-chat doctor [options] [command]
 
 check the things that fail silently
 
 Options:
+  -h, --help           display help for command
+
+Commands:
+  lifecycle [options]  compare the shadow lifecycle ledger with the supervisor, the event log and
+                       git
+
+=== agent-chat doctor lifecycle
+Usage: agent-chat doctor lifecycle [options]
+
+compare the shadow lifecycle ledger with the supervisor, the event log and git
+
+Options:
+  --offline   skip the broker: compare the ledger, the event log, runtime.json and git only
   -h, --help  display help for command
 
 === agent-chat lifecycle

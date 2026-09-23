@@ -1,5 +1,10 @@
 import { Hono, type Context, type MiddlewareHandler } from 'hono'
-import { TOKEN_HEADER, type ErrorResponse } from '../api-contract.js'
+import {
+  TOKEN_HEADER,
+  type ErrorResponse,
+  type LifecycleHealth,
+  type LifecycleReport,
+} from '../api-contract.js'
 import type { SlotUsage } from '../agents/semaphore.js'
 import { apiRoutes } from './api-routes.js'
 import type { BrokerCore } from './core.js'
@@ -48,9 +53,18 @@ export interface HttpAppOptions {
   dashboard?: DashboardOptions
   /** Live getter for `/health` (CC-139); the supervisor lives outside `core`. Absent in tests. */
   slots?: () => SlotUsage
+  /** CC-118's verifier: the last run for `/health`, a fresh one for `/api/lifecycle`. Absent while the shadow is off. */
+  lifecycle?: { summary: () => LifecycleHealth | undefined; report: () => Promise<LifecycleReport> }
 }
 
-export function buildHttpApp({ core, port, token = null, dashboard = {}, slots }: HttpAppOptions): Hono {
+export function buildHttpApp({
+  core,
+  port,
+  token = null,
+  dashboard = {},
+  slots,
+  lifecycle,
+}: HttpAppOptions): Hono {
   const app = new Hono()
 
   // A browser page from anywhere else may not read this API. Absent Origin is
@@ -70,7 +84,13 @@ export function buildHttpApp({ core, port, token = null, dashboard = {}, slots }
   // `requireToken` for why this one also accepts the token in the query.
   app.use('/events', requireToken(token, { allowQuery: true }))
 
-  app.get('/health', c => c.json(buildHealthPayload(core, port(), slots?.())))
+  app.get('/health', c => c.json(buildHealthPayload(core, port(), slots?.(), lifecycle?.summary())))
+
+  app.get('/api/lifecycle', async c =>
+    lifecycle === undefined
+      ? c.json<ErrorResponse>({ error: 'the lifecycle ledger shadow is off (ledgerShadow)' }, 404)
+      : c.json(await lifecycle.report()),
+  )
 
   app.route('/api', apiRoutes(core))
 

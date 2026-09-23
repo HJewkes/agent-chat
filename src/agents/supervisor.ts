@@ -1845,6 +1845,11 @@ export class Supervisor implements TeleportHost {
     return [...this.live.keys()]
   }
 
+  /** Slot holders, reattached agents included: CC-118's verifier compares them with the ledger. */
+  slotIds(): string[] {
+    return this.semaphore.ids()
+  }
+
   slots(blocked = 0): string {
     return this.semaphore.summary(blocked)
   }
