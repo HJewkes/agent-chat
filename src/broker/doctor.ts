@@ -5,6 +5,7 @@ import path from 'node:path'
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
 import type { HealthPayload } from '../api-contract.js'
 import type { AgentIdentity } from '../protocol.js'
+import { resolveClaudeBin } from '../agents/claude-bin.js'
 import { AgentLog } from '../agents/identity.js'
 import { readRuntimeState } from '../agents/launch-files.js'
 import { itermSessionPresent } from '../agents/surfaces/index.js'
@@ -150,6 +151,18 @@ function checkCliOnPath(): Check {
     status: 'warn',
     detail: 'agent-chat is not on PATH — `npm link` in the repo, or call dist/cli.js directly',
   }
+}
+
+/**
+ * Same resolver `run-agent` uses at launch time, so `doctor` catches CC-132
+ * before a headless spawn does — using the BROKER's own env, since that is
+ * whose minimal `PATH` caused the outage.
+ */
+function checkClaudeBin(): Check {
+  const resolution = resolveClaudeBin({ env: process.env, stateDir: home() })
+  return 'error' in resolution
+    ? { name: 'claude binary', status: 'fail', detail: resolution.error }
+    : { name: 'claude binary', status: 'ok', detail: `${resolution.bin} (via ${resolution.source})` }
 }
 
 function checkBuild(): Check {
@@ -388,6 +401,7 @@ export async function runChecks(): Promise<Check[]> {
     checkDatabase(),
     ...(await checkBroker(live)),
     checkCliOnPath(),
+    checkClaudeBin(),
     checkBuild(),
     ...checkFreshness(live),
     checkLauncher(),
