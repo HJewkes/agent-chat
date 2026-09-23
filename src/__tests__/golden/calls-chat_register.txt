@@ -1,0 +1,206 @@
+=== chat_register: fresh session
+args: {"name":"me","working_on":"S5"}
+frame: {"t":"register","name":"me","workingOn":"S5"} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Registered as \"me\". Other sessions can reach you by that name until this session exits."
+  }
+]
+
+=== chat_register: working_on omitted
+args: {"name":"me"}
+frame: {"t":"register","name":"me","workingOn":""} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Registered as \"me\". Other sessions can reach you by that name until this session exits."
+  }
+]
+
+=== chat_register: working_on blank
+args: {"name":"me","working_on":"  "}
+frame: {"t":"register","name":"me","workingOn":""} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Registered as \"me\". Other sessions can reach you by that name until this session exits."
+  }
+]
+
+=== chat_register: with declared labels
+args: {"name":"me","working_on":"S5","declared":{"role":"implementer","initiative":"claude-channels"}}
+frame: {"t":"register","name":"me","workingOn":"S5","declared":{"role":"implementer","initiative":"claude-channels"}} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Registered as \"me\". Other sessions can reach you by that name until this session exits."
+  }
+]
+
+=== chat_register: declared null
+args: {"name":"me","declared":null}
+frame: {"t":"register","name":"me","workingOn":""} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Registered as \"me\". Other sessions can reach you by that name until this session exits."
+  }
+]
+
+=== chat_register: over a provisional name (CC-82)
+args: {"name":"me"}
+frame: {"t":"register","name":"me","workingOn":""} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Registered as \"me\", replacing the provisional name \"cc106-s5\" your MCP server assigned from this directory. Peers addressing the old name will need the new one."
+  }
+]
+
+=== chat_register: again under the same name
+args: {"name":"me"}
+frame: {"t":"register","name":"me","workingOn":""} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Registered as \"me\". Other sessions can reach you by that name until this session exits."
+  }
+]
+
+=== chat_register: refused by the broker
+args: {"name":"bob"}
+frame: {"t":"register","name":"bob","workingOn":""} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Registration failed: name \"bob\" is taken"
+  }
+]
+
+=== chat_register: spawned agent, same name
+args: {"name":"scout"}
+[
+  {
+    "type": "text",
+    "text": "Already registered as \"scout\" by the agent that spawned you."
+  }
+]
+
+=== chat_register: spawned agent, another name
+args: {"name":"me"}
+[
+  {
+    "type": "text",
+    "text": "You are already registered as \"scout\" (spawned agent); that name is fixed for this session."
+  }
+]
+
+=== chat_register: spawned agent, bad declared
+args: {"name":"scout","declared":"implementer"}
+[
+  {
+    "type": "text",
+    "text": "Error: declared must be an object of short string labels, e.g. {\"role\": \"implementer\"}"
+  }
+]
+
+=== chat_register: name omitted
+args: {}
+[
+  {
+    "type": "text",
+    "text": "Error: name is required and must be a non-empty string"
+  }
+]
+
+=== chat_register: name blank
+args: {"name":"   "}
+[
+  {
+    "type": "text",
+    "text": "Error: name is required and must be a non-empty string"
+  }
+]
+
+=== chat_register: name not a string
+args: {"name":7}
+[
+  {
+    "type": "text",
+    "text": "Error: name is required and must be a non-empty string"
+  }
+]
+
+=== chat_register: name omitted, bad declared
+args: {"declared":[]}
+[
+  {
+    "type": "text",
+    "text": "Error: name is required and must be a non-empty string"
+  }
+]
+
+=== chat_register: declared a string
+args: {"name":"me","declared":"implementer"}
+[
+  {
+    "type": "text",
+    "text": "Error: declared must be an object of short string labels, e.g. {\"role\": \"implementer\"}"
+  }
+]
+
+=== chat_register: declared an array
+args: {"name":"me","declared":["implementer"]}
+[
+  {
+    "type": "text",
+    "text": "Error: declared must be an object of short string labels, e.g. {\"role\": \"implementer\"}"
+  }
+]
+
+=== chat_register: declared 9 keys
+args: {"name":"me","declared":{"k0":"v","k1":"v","k2":"v","k3":"v","k4":"v","k5":"v","k6":"v","k7":"v","k8":"v"}}
+[
+  {
+    "type": "text",
+    "text": "Error: declared may carry at most 8 keys; got 9"
+  }
+]
+
+=== chat_register: declared nested value
+args: {"name":"me","declared":{"role":{"kind":"implementer"}}}
+[
+  {
+    "type": "text",
+    "text": "Error: declared.role must be a string — declared carries labels, not nested structure"
+  }
+]
+
+=== chat_register: declared 65-character value
+args: {"name":"me","declared":{"role":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}}
+[
+  {
+    "type": "text",
+    "text": "Error: declared.role must be at most 64 characters"
+  }
+]
+
+=== chat_register: declared over the byte budget
+args: {"name":"me","declared":{"key0":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","key1":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","key2":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","key3":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","key4":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","key5":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","key6":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","key7":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}}
+[
+  {
+    "type": "text",
+    "text": "Error: declared is 536 bytes, over the 512-byte budget. Every session on this machine reads it in chat_list; keep it to short labels."
+  }
+]
+
+=== chat_register: working_on not a string
+args: {"name":"me","working_on":4}
+frame: {"t":"register","name":"me","workingOn":""} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Registered as \"me\". Other sessions can reach you by that name until this session exits."
+  }
+]
