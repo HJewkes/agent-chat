@@ -24,7 +24,8 @@ import { BrokerCore, type Conn } from '../../broker/core.js'
 import { EventLog } from '../../broker/event-log.js'
 import { Registry } from '../../broker/registry.js'
 import { Semaphore } from '../../agents/semaphore.js'
-import { Supervisor, type SpawnOutcome } from '../../agents/supervisor.js'
+import { Supervisor, type SpawnOutcome, type SupervisorOptions } from '../../agents/supervisor.js'
+import { shadowLedgerFromConfig, type ShadowLedger } from '../../agents/ledger/shadow-ledger.js'
 import { autoAttach } from '../broker-harness.js'
 
 export interface RestartHarness {
@@ -38,9 +39,17 @@ export interface RestartHarness {
   close(): void
 }
 
+export type SurfaceSpawn = NonNullable<NonNullable<SupervisorOptions['surface']>['spawn']>
+
 export interface HarnessOptions {
   slots?: number
   settleMs?: number
+  /** False drops the stand-in registration, for a spawn that must never attach. */
+  attach?: boolean
+  /** Stands in for the headless child; defaults to one that never exits. */
+  spawn?: SurfaceSpawn
+  /** CC-118: defaults to what the broker does, so `AGENT_CHAT_LEDGER_SHADOW=1` turns it on. */
+  ledger?: (events: EventLog) => ShadowLedger | undefined
 }
 
 /** A child that starts and never exits, so the attach path decides what a test sees. */
@@ -104,17 +113,18 @@ interface Generation {
 }
 
 function boot(home: string, options: HarnessOptions): Generation {
-  const core = new BrokerCore(() => undefined, {
-    events: new EventLog(path.join(home, 'events.db')),
-    registry: new Registry<Conn>(),
-  })
+  const events = new EventLog(path.join(home, 'events.db'))
+  const core = new BrokerCore(() => undefined, { events, registry: new Registry<Conn>() })
   const semaphore = new Semaphore(options.slots)
+  const ledger = (options.ledger ?? (log => shadowLedgerFromConfig(() => log.ledgerHandle())))(events)
   const supervisor = new Supervisor(core, {
     semaphore,
     ...(options.settleMs === undefined ? {} : { settleMs: options.settleMs }),
-    surface: { platform: 'linux', spawn: liveChild },
+    ...(ledger === undefined ? {} : { ledger }),
+    surface: { platform: 'linux', spawn: options.spawn ?? liveChild },
   })
-  return { core, supervisor, semaphore, stopAutoAttach: autoAttach(core) }
+  const stopAutoAttach = options.attach === false ? () => undefined : autoAttach(core)
+  return { core, supervisor, semaphore, stopAutoAttach }
 }
 
 function shutdown(generation: Generation): void {
