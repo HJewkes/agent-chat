@@ -3,10 +3,17 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { SURFACE_NAMES } from '../protocol.js'
-import { AGENT_CHAT_TOOLS, buildLaunchPlan, permModeFor } from '../agents/launch-plan.js'
+import { AGENT_CHAT_TOOLS, buildLaunchPlan, HOOK_DENIAL_NOTE, permModeFor } from '../agents/launch-plan.js'
 import { BUILTIN_PROFILES, listProfileNames, loadProfile, parseProfile } from '../agents/profiles.js'
 import { DEFAULT_SURFACE_LIFETIME } from '../agents/types.js'
-import { buildMcpConfig, planPath, readLaunchPlan, writeLaunchFiles } from '../agents/launch-files.js'
+import {
+  buildHookSettings,
+  buildMcpConfig,
+  hookSettingsPath,
+  planPath,
+  readLaunchPlan,
+  writeLaunchFiles,
+} from '../agents/launch-files.js'
 import { oscTitle } from '../agents/run-agent.js'
 import type { AgentProfile, LaunchPlanInput } from '../agents/types.js'
 
@@ -614,5 +621,57 @@ describe('how long a profile’s pane outlives it', () => {
     })
 
     expect((parsed as AgentProfile).surfaceLifetime).toBe('close-on-exit')
+  })
+})
+
+describe('the PermissionRequest hook (CC-144)', () => {
+  const SETTINGS = '/state/agents/ag000001/settings.json'
+
+  it('installs the hook on a headless run and tells the agent what a late denial means', () => {
+    const { args } = buildLaunchPlan(input({ hookSettingsPath: SETTINGS }))
+
+    expect(flag(args, '--settings')).toBe(SETTINGS)
+    expect(flag(args, '--append-system-prompt')).toContain(HOOK_DENIAL_NOTE)
+  })
+
+  it('leaves every interactive surface alone, where a blocking hook would hold the dialog closed', () => {
+    for (const surface of SURFACE_NAMES.filter(s => s !== 'headless')) {
+      const { args } = buildLaunchPlan(input({ surface, hookSettingsPath: SETTINGS }))
+
+      expect(args).not.toContain('--settings')
+      expect(flag(args, '--append-system-prompt')).not.toContain(HOOK_DENIAL_NOTE)
+    }
+  })
+
+  it('installs it on a pane resume that carries a message, which runs -p', () => {
+    const { args } = buildLaunchPlan(
+      input({ surface: 'iterm-pane', resume: true, resumeMessage: 'continue', hookSettingsPath: SETTINGS }),
+    )
+
+    expect(flag(args, '--settings')).toBe(SETTINGS)
+  })
+
+  it('points the hook at the CLI entry with the timeout, and gives up before Claude Code would', () => {
+    const settings = buildHookSettings('/Application Support/dist/cli.js', 1800) as {
+      hooks: { PermissionRequest: { matcher: string; hooks: { command: string; timeout: number }[] }[] }
+    }
+    const [entry] = settings.hooks.PermissionRequest
+
+    expect(entry?.matcher).toBe('*')
+    expect(entry?.hooks[0]?.timeout).toBe(1800)
+    expect(entry?.hooks[0]?.command).toMatch(
+      /'\/Application Support\/dist\/cli\.js' permission-hook --deadline 1790$/,
+    )
+  })
+
+  it('writes the settings file owner-only beside the plan, only when the plan uses it', () => {
+    process.env.AGENT_CHAT_HOME = tmpdir()
+    writeLaunchFiles(buildLaunchPlan(input({ surface: 'iterm-pane', hookSettingsPath: '/x' })), {})
+    expect(fs.existsSync(hookSettingsPath('ag000001'))).toBe(false)
+
+    writeLaunchFiles(buildLaunchPlan(input({ hookSettingsPath: hookSettingsPath('ag000001') })), {})
+
+    expect(fs.statSync(hookSettingsPath('ag000001')).mode & 0o777).toBe(0o600)
+    expect(fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')).toContain('"timeout": 1800')
   })
 })

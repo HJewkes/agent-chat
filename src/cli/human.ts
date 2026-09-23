@@ -60,7 +60,9 @@ export function describeInbox(res: Extract<ServerMessage, { t: 'queue_result' }>
   lines.push(`\n${res.items.length} waiting, ${open} needing an answer.`)
   if (blocked.length > 0) {
     const who = [...new Set(blocked.map(i => i.from))].join(', ')
-    lines.push(`${who} blocked on a permission prompt — answer here, or in that session's terminal.`)
+    // A hook-raised prompt (CC-144) comes from a headless agent, which has no terminal to answer in.
+    const terminal = blocked.some(i => i.meta.source !== 'hook') ? ", or in that session's terminal" : ''
+    lines.push(`${who} blocked on a permission prompt — answer here${terminal}.`)
     lines.push('approve with: agent-chat approve <id> allow|deny')
   }
   if (open > blocked.length) lines.push('answer with: agent-chat answer <id> "..."')

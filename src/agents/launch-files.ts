@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { agentDir } from '../paths.js'
+import { resolvePermissionHookTimeout } from '../config.js'
+import { agentDir, cliEntry } from '../paths.js'
 import type { IsolationName } from '../protocol.js'
 import type { Allocation } from './isolation/index.js'
 import type { AgentProfile, LaunchHandle, LaunchPlan } from './types.js'
@@ -55,6 +56,28 @@ export function buildMcpConfig(profile: AgentProfile, _entry: string): Record<st
   }
 }
 
+export const hookSettingsPath = (agentId: string): string => path.join(agentDir(agentId), 'settings.json')
+
+/** The hook gives up this long before Claude Code would kill it, so it can withdraw its row itself. */
+const HOOK_DEADLINE_MARGIN_S = 10
+
+const shellQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
+
+/**
+ * The `--settings` file a print-mode agent runs with (CC-144): one PermissionRequest
+ * hook that files each prompt in the human queue and blocks for the verdict. Claude
+ * Code runs hook commands through a shell, and both paths can contain spaces.
+ */
+export function buildHookSettings(entry: string, timeoutSeconds: number): Record<string, unknown> {
+  const deadline = Math.max(1, timeoutSeconds - HOOK_DEADLINE_MARGIN_S)
+  const command = `${shellQuote(process.execPath)} ${shellQuote(entry)} permission-hook --deadline ${deadline}`
+  return {
+    hooks: {
+      PermissionRequest: [{ matcher: '*', hooks: [{ type: 'command', command, timeout: timeoutSeconds }] }],
+    },
+  }
+}
+
 function writePrivate(file: string, body: string): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: DIR_MODE })
   fs.writeFileSync(file, body, { mode: FILE_MODE })
@@ -66,6 +89,10 @@ function writePrivate(file: string, body: string): void {
 export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknown>): void {
   writePrivate(mcpConfigPath(plan.agentId), JSON.stringify(config, null, 2))
   writePrivate(planPath(plan.agentId), JSON.stringify(plan, null, 2))
+  if (plan.args.includes('--settings')) {
+    const settings = buildHookSettings(cliEntry(), resolvePermissionHookTimeout())
+    writePrivate(hookSettingsPath(plan.agentId), JSON.stringify(settings, null, 2))
+  }
 }
 
 export function readLaunchPlan(agentId: string): LaunchPlan {

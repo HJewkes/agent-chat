@@ -22,6 +22,7 @@ import { buildLaunchPlan, permModeFor } from './launch-plan.js'
 import {
   buildMcpConfig,
   clearRuntimeState,
+  hookSettingsPath,
   mcpConfigPath,
   readRuntimeState,
   writeLaunchFiles,
@@ -520,18 +521,31 @@ export class Supervisor implements TeleportHost {
     entry.settle = setTimeout(() => {
       // Still detached after the window: infer the exit. No code and no cost,
       // and the roster says so rather than showing zeros it did not measure.
-      void this.recordExit(entry.agentId, { code: null, signal: null, inferred: true })
+      void this.recordExit(entry.agentId, { code: null, signal: null, inferred: true }, entry)
     }, this.settleMs)
     entry.settle.unref?.()
   }
 
-  /** Idempotent: a headless child's exit and its detach settle can both arrive. */
+  /**
+   * Idempotent: a headless child's exit and its detach settle can both arrive.
+   *
+   * `launch`, when given, is the exact `Live` object this exit belongs to —
+   * captured at `track()` time, when the process it reports on was started.
+   * A mode switch replaces `this.live`'s entry for the same agentId with a NEW
+   * launch before the OLD process has actually exited; when it finally does,
+   * this callback still fires with the OLD `agentId`, and without the identity
+   * check below it would delete and record-exited the agent that replaced it —
+   * one that is live and well. Comparing against the CURRENT entry, rather than
+   * trusting `agentId` alone, is what makes a stale exit a no-op.
+   */
   private async recordExit(
     agentId: string,
     outcome: { code: number | null; signal: string | null; inferred?: boolean; failed?: string },
+    launch?: Live,
   ): Promise<void> {
     const entry = this.live.get(agentId)
     if (!entry) return
+    if (launch !== undefined && launch !== entry) return
     if (entry.settle) clearTimeout(entry.settle)
     if (entry.attachCeiling) clearTimeout(entry.attachCeiling)
     this.attachWaiters.delete(agentId)
@@ -942,6 +956,7 @@ export class Supervisor implements TeleportHost {
       cwd: allocation.cwd,
       surface,
       mcpConfigPath: mcpConfigPath(agentId),
+      hookSettingsPath: hookSettingsPath(agentId),
       ...(allocation.addDirs ? { extraDirs: allocation.addDirs } : {}),
       ...(req.tags?.length ? { tags: req.tags } : {}),
       ...(req.subscriptions?.length ? { subscriptions: req.subscriptions } : {}),
@@ -1297,7 +1312,7 @@ export class Supervisor implements TeleportHost {
     writeRuntimeState(agentId, { handle: handleState, allocation, isolation, ...(anchor ? { anchor } : {}) })
     // Headless only. A visible agent has no such promise, by design, and falls
     // through to the presence-inferred path instead.
-    void handle.exited?.then(outcome => void this.recordExit(agentId, outcome))
+    void handle.exited?.then(outcome => void this.recordExit(agentId, outcome, entry))
   }
 
   /**
@@ -1578,6 +1593,7 @@ export class Supervisor implements TeleportHost {
       cwd: allocation.cwd,
       surface,
       mcpConfigPath: mcpConfigPath(agent.agentId),
+      hookSettingsPath: hookSettingsPath(agent.agentId),
       ...(allocation.addDirs ? { extraDirs: allocation.addDirs } : {}),
       agentChatHome: home(),
       ...(agent.configDir ? { configDir: agent.configDir } : {}),
@@ -1668,6 +1684,7 @@ export class Supervisor implements TeleportHost {
       cwd: allocation.cwd,
       surface,
       mcpConfigPath: mcpConfigPath(agent.agentId),
+      hookSettingsPath: hookSettingsPath(agent.agentId),
       ...(allocation.addDirs ? { extraDirs: allocation.addDirs } : {}),
       agentChatHome: home(),
       // A mode switch is the SAME agent in a different window, so it keeps the
@@ -1835,6 +1852,7 @@ export class Supervisor implements TeleportHost {
       surface: input.surface,
       preamble: input.preamble,
       mcpConfigPath: mcpConfigPath(input.agentId),
+      hookSettingsPath: hookSettingsPath(input.agentId),
       ...(allocation.addDirs ? { extraDirs: allocation.addDirs } : {}),
       ...(input.tags?.length ? { tags: input.tags } : {}),
       ...(input.subscriptions?.length ? { subscriptions: input.subscriptions } : {}),

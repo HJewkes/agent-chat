@@ -1,0 +1,57 @@
+=== chat_inbox: limit omitted
+args: {}
+frame: {"t":"inbox","limit":10}
+[
+  {
+    "type": "text",
+    "text": "No messages yet."
+  }
+]
+
+=== chat_inbox: limit "5"
+args: {"limit":"5"}
+frame: {"t":"inbox","limit":5}
+[
+  {
+    "type": "text",
+    "text": "No messages yet."
+  }
+]
+
+=== chat_inbox: limit 5.7
+args: {"limit":5.7}
+frame: {"t":"inbox","limit":5}
+[
+  {
+    "type": "text",
+    "text": "No messages yet."
+  }
+]
+
+=== chat_inbox: limit 999
+args: {"limit":999}
+frame: {"t":"inbox","limit":50}
+[
+  {
+    "type": "text",
+    "text": "No messages yet."
+  }
+]
+
+=== chat_inbox: limit 0
+args: {"limit":0}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: limit: limit must be a positive number"
+  }
+]
+
+=== chat_inbox: limit "lots"
+args: {"limit":"lots"}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: limit: limit must be a positive number"
+  }
+]

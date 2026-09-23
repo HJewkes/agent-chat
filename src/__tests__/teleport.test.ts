@@ -509,8 +509,12 @@ describe('a visible predecessor', () => {
 
     const launch = scripts[scripts.length - 1] ?? ''
     expect(launch).toContain('tell anchorSession to write text')
-    expect(launch).not.toContain('create tab')
-    expect(launch).not.toContain('split')
+    // Anchored on the AppleScript verbs themselves, not a bare substring: a
+    // checkout path containing "split" (e.g. a worktree named "*-split-*")
+    // would otherwise leak into the embedded command and fail this on an
+    // unrelated basis.
+    expect(launch).not.toMatch(/create tab with default profile/)
+    expect(launch).not.toMatch(/split (horizontally|vertically) with default profile/)
   })
 
   it('cannot be aborted once the countdown has already run out', async () => {

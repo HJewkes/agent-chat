@@ -1,0 +1,28 @@
+=== agent_background: unregistered
+args: {}
+[
+  {
+    "type": "text",
+    "text": "Register with chat_register first: going headless keeps your identity, and you have none yet."
+  }
+]
+
+=== agent_background: going headless
+args: {}
+frame: {"t":"background"}
+[
+  {
+    "type": "text",
+    "text": "Going headless. This session is being shut down and resumed without a window, keeping your name and your conversation. Do not start anything new — the turn you are in now will not survive it."
+  }
+]
+
+=== agent_background: refused
+args: {}
+frame: {"t":"background"}
+[
+  {
+    "type": "text",
+    "text": "Not going headless: no headless surface available"
+  }
+]

@@ -136,8 +136,20 @@ describe('classify', () => {
       ledgerTerminalByAgent: new Map([['a', 'cancelled']]),
     }
 
+    expect(classes(input)).toEqual([['teleport_half_written', false]])
+  })
+
+  it('a successor slot with no row is still slot_without_row when its predecessor was not handed off', () => {
+    const input = {
+      ...consistent(),
+      broker: { ...consistent().broker!, liveIds: ['b'], slotIds: ['b'] },
+      fold: [agent('a', { state: 'retired' }), agent('b', { teleportFrom: 'a' })],
+      ledgerActive: [],
+      ledgerTerminalByAgent: new Map([['a', 'cancelled']]),
+    }
+
     expect(classes(input)).toEqual([
-      ['teleport_half_written', false],
+      ['live_only', true],
       ['slot_without_row', true],
     ])
   })

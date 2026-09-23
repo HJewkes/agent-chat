@@ -197,6 +197,15 @@ function addHiddenCommands(program: Command): void {
   addVerb(program, debugPsVerb, { hidden: true })
   addVerb(program, debugHistoryVerb, { hidden: true })
   addVerb(program, debugLogVerb, { hidden: true })
+  // Run by Claude Code as a headless agent's PermissionRequest hook (CC-144), never by a person.
+  program
+    .command('permission-hook', { hidden: true })
+    .option('--deadline <seconds>', 'give up and withdraw the prompt after this long', '1790')
+    .action(async (options: { deadline: string }) => {
+      const { permissionHook } = await import('./verbs/permission-hook.js')
+      await permissionHook(options)
+    })
+
   program.command('send <to> <text...>', { hidden: true }).action(debug.send)
 }
 

@@ -65,7 +65,23 @@ const brokerRestartingError = (kind: ClientMessage['t']): Error =>
       `This ${kind} was NOT sent; retry it within ${RETRY_WINDOW_S} s.`,
   )
 
-type Waiter = (msg: ServerMessage) => void
+/**
+ * For a request whose frame was already WRITTEN to the socket before the drop —
+ * distinct from `brokerRestartingError`, which is for one that never left the
+ * client. The broker may have received and even acted on this one; the only
+ * thing lost is the reply, so "not sent" would be a claim this code cannot back up.
+ */
+const deliveryUnknownError = (): Error =>
+  new Error(
+    `broker restarting: the connection to the agent-chat broker was lost before its reply arrived. ` +
+      `Delivery is unknown — it may already have been received and acted on. Check before retrying; ` +
+      `the broker should be reachable again within ${RETRY_WINDOW_S} s.`,
+  )
+
+interface Waiter {
+  resolve: (msg: ServerMessage) => void
+  reject: (err: Error) => void
+}
 
 interface HeldFrame {
   message: ClientMessage
@@ -92,6 +108,8 @@ export class BrokerClient {
   private socket: net.Socket | null = null
   private identity: Identity | null = null
   private closed = false
+  /** The in-flight connect attempt, if any, so a second caller joins it instead of starting its own ladder. */
+  private connecting: Promise<void> | null = null
   /** Guards against concurrent CC-83 recoveries racing for the same name. */
   private reregistering = false
   /** True between a drop and the reconnect's outcome: the gap frames are held or refused in. */
@@ -111,6 +129,8 @@ export class BrokerClient {
     private readonly onFatal?: (reason: string) => void,
     private readonly onSystemEvents?: (events: SystemEvent[]) => void,
     private readonly onPermissionVerdict?: (requestId: string, behavior: PermissionBehavior) => void,
+    /** Fires once per lost connection, before any reconnect; for a caller whose state died with it (CC-144). */
+    private readonly onDropped?: () => void,
   ) {}
 
   private handle(msg: ServerMessage): void {
@@ -127,12 +147,13 @@ export class BrokerClient {
       this.closed = true
       this.socket?.destroy()
       this.socket = null
-      this.failAllWaiters(msg.reason)
+      // The broker answered here, so unlike onDrop's failure this one is known.
+      this.failAllWaiters(new Error(msg.reason))
       this.onFatal?.(msg.reason)
       return
     }
     const queue = this.waiters.get(msg.t)
-    queue?.shift()?.(msg)
+    queue?.shift()?.resolve(msg)
   }
 
   private attach(socket: net.Socket): void {
@@ -186,7 +207,9 @@ export class BrokerClient {
   private async onDrop(): Promise<void> {
     if (this.closed || this.socket === null) return
     this.socket = null
-    this.failAllWaiters('broker connection lost')
+    this.failAllWaiters(deliveryUnknownError())
+    this.onDropped?.()
+    if (this.closed) return
     if (await this.reconnect()) await this.replayHeld()
   }
 
@@ -236,9 +259,9 @@ export class BrokerClient {
     for (const frame of this.held.splice(0)) frame.reject(err)
   }
 
-  private failAllWaiters(reason: string): void {
+  private failAllWaiters(err: Error): void {
     for (const queue of this.waiters.values()) {
-      while (queue.length > 0) queue.shift()?.({ t: 'error', reason } as ServerMessage)
+      while (queue.length > 0) queue.shift()?.reject(err)
     }
   }
 
@@ -256,11 +279,27 @@ export class BrokerClient {
     spawn(process.execPath, [cliEntry(), 'broker'], { detached: true, stdio: 'ignore' }).unref()
   }
 
+  /**
+   * A caller retrying its way back onto the bus cannot see whether a drop
+   * already reconnected underneath it, or is already climbing the ladder for
+   * it — `onDrop`'s reconnect and an external caller like `retryRegistration`
+   * can both call this while the socket is still null. Attaching a second
+   * socket would strand the first one, which is the one holding this
+   * session's registration, so a caller that arrives mid-ladder joins the
+   * attempt already running instead of starting a second one alongside it.
+   */
   async connect(): Promise<void> {
-    // A caller retrying its way back onto the bus cannot see whether a drop
-    // already reconnected underneath it. Attaching a second socket would strand
-    // the first one, which is the one holding this session's registration.
     if (this.socket !== null) return
+    if (this.connecting) return this.connecting
+    this.connecting = this.climbLadder()
+    try {
+      await this.connecting
+    } finally {
+      this.connecting = null
+    }
+  }
+
+  private async climbLadder(): Promise<void> {
     try {
       this.attach(await this.tryConnect())
       return
@@ -307,9 +346,15 @@ export class BrokerClient {
         }
       }, REPLY_TIMEOUT_MS[replyType] ?? REQUEST_TIMEOUT_MS)
 
-      const waiter: Waiter = msg => {
-        clearTimeout(timer)
-        resolve(msg)
+      const waiter: Waiter = {
+        resolve: msg => {
+          clearTimeout(timer)
+          resolve(msg)
+        },
+        reject: err => {
+          clearTimeout(timer)
+          reject(err)
+        },
       }
       queue.push(waiter)
       this.waiters.set(replyType, queue)

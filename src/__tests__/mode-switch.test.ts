@@ -330,6 +330,51 @@ describe('surfacing a headless agent', () => {
     expect(result.ok).toBe(false)
     expect(result.reason).toMatch(/no agent named/)
   })
+
+  /**
+   * CC-149. `stopFor` signals the old headless process but does not wait for it
+   * to actually die; `resumeOnto` tracks the new (interactive) entry over the
+   * same agentId immediately after. The old process's exit is a real OS event
+   * that lands whenever it lands — here, deliberately held back until after the
+   * switch has completed, to prove it cannot retroactively kill the entry that
+   * replaced it.
+   */
+  it('ignores the old process exiting after a switch already replaced it', async () => {
+    let oldExit: ((code: number | null, signal: string | null) => void) | undefined
+    supervisor.close()
+    supervisor = new Supervisor(core, {
+      nameFreeMs: 200,
+      surface: {
+        platform: 'darwin',
+        spawn: () => ({
+          pid: 4242,
+          unref: () => undefined,
+          once: (event: string, cb: (code: number | null, signal: string | null) => void) => {
+            if (event === 'exit') oldExit = cb
+          },
+        }),
+        runAppleScript: script => Promise.resolve(script.includes('is running') ? 'true' : 'fake-pane-uuid'),
+      },
+    })
+    const agentId = await spawnAgent()
+    expect(supervisor.slotIds()).toContain(agentId)
+
+    const result = await supervisor.switchSurface({
+      name: 'scout',
+      to: 'interactive',
+      requestedBy: 'coordinator',
+      anchor: 'w0t1p2:UUID',
+    })
+    expect(result.ok).toBe(true)
+
+    // The old process's exit, arriving late — after the new entry is already tracked.
+    oldExit?.(0, null)
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(core.agents.get(agentId)?.state).not.toBe('exited')
+    expect(rowsFor(agentId).some(r => r.kind === 'agent_exited')).toBe(false)
+    expect(supervisor.slotIds()).toContain(agentId)
+  })
 })
 
 describe('an agent sending itself headless', () => {

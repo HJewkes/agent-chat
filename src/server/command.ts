@@ -26,7 +26,7 @@ const NAMING = { prefix: '' }
 
 export function toolDefinition<Args>(tool: Tool<Args>): McpToolDescriptor {
   const { name, description, inputSchema } = commandToTool(tool, NAMING)
-  // registry 0.2.0 closes the root object, which no hand-written tool did and zod does not enforce.
+  // G1 (TP-171): registry closes the root object; delete this strip when commandToTool takes io: 'input'.
   const { additionalProperties, ...open } = inputSchema
   return { name, description, inputSchema: additionalProperties === false ? open : inputSchema }
 }
