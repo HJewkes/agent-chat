@@ -76,9 +76,11 @@ Options:
 
 Commands:
   start [options]    start the broker, detached by default
-  stop               SIGTERM the broker, then SIGKILL if it lingers
+  stop [options]     SIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is
+                     mid-spawn or an ask is unanswered
   status [options]   socket, pid file and /health, reported separately
-  restart [options]  stop then start, reusing the port from broker.meta.json
+  restart [options]  stop then start, reusing the port from broker.meta.json; refuses while an agent
+                     is mid-spawn or an ask is unanswered
   logs [options]     tail the broker log; no --follow, by design
   open [options]     open the dashboard, or print its URL when not a TTY
   help [command]     display help for command
@@ -96,9 +98,11 @@ Options:
 === agent-chat service stop
 Usage: agent-chat service stop [options]
 
-SIGTERM the broker, then SIGKILL if it lingers
+SIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is mid-spawn or an ask is
+unanswered
 
 Options:
+  --force     stop even if a spawn or an unanswered ask would be lost
   -h, --help  display help for command
 
 === agent-chat service status
@@ -113,10 +117,12 @@ Options:
 === agent-chat service restart
 Usage: agent-chat service restart [options]
 
-stop then start, reusing the port from broker.meta.json
+stop then start, reusing the port from broker.meta.json; refuses while an agent is mid-spawn or an
+ask is unanswered
 
 Options:
   -p, --port <port>  bind this port instead of the recorded one
+  --force            restart even if a spawn or an unanswered ask would be lost
   -h, --help         display help for command
 
 === agent-chat service logs

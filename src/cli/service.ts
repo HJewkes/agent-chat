@@ -5,7 +5,8 @@ import { probeHealth } from '../broker/doctor.js'
 import { isProcessAlive, probeSocket, readMeta, readPidFile, removeStateFiles } from '../broker/lifecycle.js'
 import { cliEntry, defaultPort, logPath, socketPath } from '../paths.js'
 import { type ServerMessage } from '../protocol.js'
-import { withBroker } from './client.js'
+import { fail, withBroker } from './client.js'
+import { brokerSource, guardRestart } from './restart-guard.js'
 
 /** How long `stop` waits for a polite exit before it stops being polite. */
 const TERM_GRACE_MS = 3_000
@@ -96,7 +97,19 @@ export async function start(options: { port?: number; foreground?: boolean }): P
   console.log(`Broker up on ${socketPath()}${meta?.port ? ` and port ${meta.port}` : ''}.`)
 }
 
-export async function stop(): Promise<void> {
+/** Refuse before signalling, and only ask a broker that is already up: connecting would start one. */
+async function refuseIfBusy(verb: string, force: boolean | undefined): Promise<void> {
+  if (force || !(await probeSocket())) return
+  const refusal = await withBroker(b => guardRestart(verb, brokerSource(b)))
+  if (refusal !== null) fail(refusal)
+}
+
+export async function stop(options: { force?: boolean } = {}): Promise<void> {
+  await refuseIfBusy('stop', options.force)
+  await stopBroker()
+}
+
+async function stopBroker(): Promise<void> {
   const attached = await attachedSessions()
   const pid = readPidFile()
   if (pid === null || !isProcessAlive(pid)) {
@@ -126,9 +139,10 @@ export async function stop(): Promise<void> {
   }
 }
 
-export async function restart(options: { port?: number }): Promise<void> {
+export async function restart(options: { port?: number; force?: boolean }): Promise<void> {
+  await refuseIfBusy('restart', options.force)
   const previous = readMeta()?.port ?? undefined
-  await stop()
+  await stopBroker()
   // §4.5: the registry is in-memory, so process lifetime IS the registration
   // lease. Everything durable survives; presence does not, briefly.
   console.log('Registrations are in-memory: every session shows as reconnecting for a few seconds.')
