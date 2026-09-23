@@ -20,11 +20,13 @@ import { activeWorkPort } from '../paths.js'
  */
 
 /**
- * Set from the live daemon, not guessed: a query it has not seen took 72-512 ms
- * from a warm Node process, and 5 of 23 sampled briefs exceeded the first 300 ms
- * budget. Every real brief is new, so the timeout has to cover the cold path.
+ * CC-138: measured against the live daemon on 2026-09-23 (load average 4.98,
+ * `docs/measurements/cc138-related-latency.md`) with 20 distinct, never-before-seen
+ * `context.related` queries: min 354 ms, median 1105 ms, p95 2247 ms. 2500 ms covers
+ * that p95 with margin while staying under the 3 s hard cap on how long a spawn may
+ * wait for this section.
  */
-export const RELATED_TIMEOUT_MS = 1_000
+export const RELATED_TIMEOUT_MS = 2_500
 const RELATED_LIMIT = 6
 const RELATED_BUDGET = 1_500
 const RELATED_CLASSES = ['notes', 'sources', 'tasks', 'sessions']
@@ -51,8 +53,10 @@ export interface RelatedQuery {
 
 class DaemonError extends Error {}
 
-const unavailable = (reason: string): RelatedResult => ({
-  warning: `related context unavailable (active-work daemon: ${reason}); briefing rendered without it`,
+const unavailable = (reason: string, elapsedMs: number, timeoutMs: number): RelatedResult => ({
+  warning:
+    `related context unavailable (active-work daemon: ${reason}, after ${elapsedMs} ms of ` +
+    `${timeoutMs} ms budget); briefing rendered without it`,
 })
 
 const reasonFor = (err: unknown, timeoutMs: number): string => {
@@ -118,11 +122,12 @@ export async function fetchRelated(q: RelatedQuery): Promise<RelatedResult> {
   if (query === '') return { hits: [] }
   const timeoutMs = q.timeoutMs ?? RELATED_TIMEOUT_MS
   const signal = AbortSignal.timeout(timeoutMs)
+  const startedAt = Date.now()
   try {
     const hits = await Promise.race([postRelated(q, query, signal), aborted(signal)])
     return { hits: (hits as unknown[]).filter(isHit) }
   } catch (err) {
-    return unavailable(reasonFor(err, timeoutMs))
+    return unavailable(reasonFor(err, timeoutMs), Date.now() - startedAt, timeoutMs)
   }
 }
 

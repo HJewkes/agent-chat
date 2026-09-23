@@ -95,10 +95,12 @@ describe('the related section when the daemon cannot help', () => {
 
     const result = await resolveSpawnBriefing({ briefing: 'widgets', brief: 'fix the parser', root })
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       text: expectedBlock(root),
       slug: 'widgets',
-      warning: 'related context unavailable (active-work daemon: ECONNREFUSED); briefing rendered without it',
+      warning: expect.stringMatching(
+        /^related context unavailable \(active-work daemon: ECONNREFUSED, after \d+ ms of 2500 ms budget\); briefing rendered without it$/,
+      ),
     })
     expect(resolveBriefing({ briefing: 'widgets', root })).toEqual({
       text: expectedBlock(root),
@@ -113,11 +115,11 @@ describe('the related section when the daemon cannot help', () => {
     const result = await resolveSpawnBriefing({ briefing: 'widgets', brief: 'fix it', root, fetch: hang })
 
     const elapsed = Date.now() - started
-    expect(elapsed).toBeGreaterThanOrEqual(950)
-    expect(elapsed).toBeLessThan(1_400)
+    expect(elapsed).toBeGreaterThanOrEqual(2_450)
+    expect(elapsed).toBeLessThan(2_900)
     expect(result).toMatchObject({
       text: expectedBlock(root),
-      warning: expect.stringContaining('no answer within 1000 ms'),
+      warning: expect.stringMatching(/no answer within 2500 ms, after \d+ ms of 2500 ms budget/),
     })
   })
 
@@ -141,6 +143,27 @@ describe('the related section when the daemon cannot help', () => {
       text: expectedBlock(root),
       warning: expect.stringContaining('malformed JSON'),
     })
+  })
+
+  it('reports how long the daemon actually ran before the failure it hit', async () => {
+    const slowThenRefuse = async () => {
+      await new Promise(resolve => setTimeout(resolve, 300))
+      return json(400, { ok: false, error: 'Invalid arguments: classes', code: 65 })
+    }
+
+    const result = await resolveSpawnBriefing({
+      briefing: 'widgets',
+      brief: 'fix it',
+      root,
+      fetch: slowThenRefuse,
+    })
+
+    const warning = (result as { warning: string }).warning
+    const match = warning.match(/after (\d+) ms of 2500 ms budget/)
+    expect(match).not.toBeNull()
+    const elapsedMs = Number(match?.[1])
+    expect(elapsedMs).toBeGreaterThanOrEqual(300)
+    expect(elapsedMs).toBeLessThan(900)
   })
 
   it('omits the section without a warning when nothing relates', async () => {
