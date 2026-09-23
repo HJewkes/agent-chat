@@ -1,0 +1,37 @@
+=== chat_ask: unregistered sender
+args: {"text":"what now?"}
+[
+  {
+    "type": "text",
+    "text": "Call chat_register first."
+  }
+]
+
+=== chat_ask: queued for the human
+args: {"text":"what now?"}
+frame: {"t":"ask","text":"what now?"}
+[
+  {
+    "type": "text",
+    "text": "Question queued for the human (msg_id m-1). They may not see it for a while — carry on with other work."
+  }
+]
+
+=== chat_ask: text blank
+args: {"text":"   "}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: text: text is required and must be a non-empty string"
+  }
+]
+
+=== chat_ask: refused by the broker
+args: {"text":"what now?"}
+frame: {"t":"ask","text":"what now?"}
+[
+  {
+    "type": "text",
+    "text": "Not queued: already have 3 unanswered questions"
+  }
+]

@@ -1,0 +1,37 @@
+=== chat_broadcast: unregistered sender
+args: {"text":"hi"}
+[
+  {
+    "type": "text",
+    "text": "Call chat_register before broadcasting."
+  }
+]
+
+=== chat_broadcast: delivered to the roster
+args: {"text":"hi"}
+frame: {"t":"broadcast","text":"hi"}
+[
+  {
+    "type": "text",
+    "text": "Broadcast to bob, ann (msg_id m-1)."
+  }
+]
+
+=== chat_broadcast: text blank
+args: {"text":"   "}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: text: text is required and must be a non-empty string"
+  }
+]
+
+=== chat_broadcast: refused by the broker
+args: {"text":"hi"}
+frame: {"t":"broadcast","text":"hi"}
+[
+  {
+    "type": "text",
+    "text": "Not delivered: broadcast budget exceeded"
+  }
+]

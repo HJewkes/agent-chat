@@ -1,0 +1,129 @@
+=== chat_tag: unregistered
+args: {"add":["owner:src"]}
+[
+  {
+    "type": "text",
+    "text": "Call chat_register before tagging: a tag records WHO applied it, and you have no name yet."
+  }
+]
+
+=== chat_tag: unregistered with a bad tag
+args: {"add":["owner of src"]}
+[
+  {
+    "type": "text",
+    "text": "Error: add: \"owner of src\" has characters a tag may not use; allowed are letters, digits, and _ : . -"
+  }
+]
+
+=== chat_tag: nothing to add or remove
+args: {}
+[
+  {
+    "type": "text",
+    "text": "Name at least one tag to add or remove."
+  }
+]
+
+=== chat_tag: empty add list
+args: {"add":[]}
+[
+  {
+    "type": "text",
+    "text": "Name at least one tag to add or remove."
+  }
+]
+
+=== chat_tag: tag self
+args: {"add":["owner:src"]}
+frame: {"t":"tag","add":["owner:src"]}
+[
+  {
+    "type": "text",
+    "text": "You now carries: owner:src. A tag is a label, not a grant of anything."
+  }
+]
+
+=== chat_tag: tag a peer, blank target is self
+args: {"target":"  ","remove":["lead"]}
+frame: {"t":"tag","remove":["lead"]}
+[
+  {
+    "type": "text",
+    "text": "You now carries: no tags. A tag is a label, not a grant of anything."
+  }
+]
+
+=== chat_tag: tag a peer
+args: {"target":"bob","add":["owner:docs"],"remove":["lead"]}
+frame: {"t":"tag","target":"bob","add":["owner:docs"],"remove":["lead"]}
+[
+  {
+    "type": "text",
+    "text": "bob now carries: owner:docs. bob was not notified — it will see this on its next chat_list. A tag is a label, not a grant of anything."
+  }
+]
+
+=== chat_tag: refused by the broker
+args: {"target":"bob","remove":["lead"]}
+frame: {"t":"tag","target":"bob","remove":["lead"]}
+[
+  {
+    "type": "text",
+    "text": "Not tagged: bob carries no tag \"lead\" that you applied"
+  }
+]
+
+=== chat_tag: 17 tags
+args: {"add":["t0","t1","t2","t3","t4","t5","t6","t7","t8","t9","t10","t11","t12","t13","t14","t15","t16"]}
+[
+  {
+    "type": "text",
+    "text": "Error: add may name at most 16 tags; got 17"
+  }
+]
+
+=== chat_tag: 33-character tag
+args: {"add":["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]}
+[
+  {
+    "type": "text",
+    "text": "Error: add: \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\" is 33 characters; the limit is 32"
+  }
+]
+
+=== chat_tag: blank tag in remove
+args: {"remove":["ok",""]}
+[
+  {
+    "type": "text",
+    "text": "Error: remove: a tag must be a non-empty string"
+  }
+]
+
+=== chat_tag: add as a bare string
+args: {"add":"owner:src"}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: add: Invalid input: expected array, received string"
+  }
+]
+
+=== chat_tag: add null
+args: {"add":null,"remove":["lead"]}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: add: Invalid input: expected array, received null"
+  }
+]
+
+=== chat_tag: a non-string tag
+args: {"add":[42]}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: add.0: a tag must be a non-empty string"
+  }
+]

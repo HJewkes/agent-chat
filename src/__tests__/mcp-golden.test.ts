@@ -218,6 +218,83 @@ const AGENT_SURFACE_CASES: CallCase[] = [
   },
 ]
 
+/** CC-106 S3: unregistered, registered, blank text, and a broker refusal, for each human-queue write. */
+const CHAT_BROADCAST_CASES: CallCase[] = [
+  { label: 'unregistered sender', tool: 'chat_broadcast', args: { text: 'hi' } },
+  {
+    label: 'delivered to the roster',
+    tool: 'chat_broadcast',
+    registeredAs: 'me',
+    args: { text: 'hi' },
+    reply: sent({ recipients: ['bob', 'ann'] }),
+  },
+  { label: 'text blank', tool: 'chat_broadcast', registeredAs: 'me', args: { text: '   ' } },
+  {
+    label: 'refused by the broker',
+    tool: 'chat_broadcast',
+    registeredAs: 'me',
+    args: { text: 'hi' },
+    reply: sent({ ok: false, reason: 'broadcast budget exceeded' }),
+  },
+]
+
+const CHAT_ASK_CASES: CallCase[] = [
+  { label: 'unregistered sender', tool: 'chat_ask', args: { text: 'what now?' } },
+  {
+    label: 'queued for the human',
+    tool: 'chat_ask',
+    registeredAs: 'me',
+    args: { text: 'what now?' },
+    reply: sent({}),
+  },
+  { label: 'text blank', tool: 'chat_ask', registeredAs: 'me', args: { text: '   ' } },
+  {
+    label: 'refused by the broker',
+    tool: 'chat_ask',
+    registeredAs: 'me',
+    args: { text: 'what now?' },
+    reply: sent({ ok: false, reason: 'already have 3 unanswered questions' }),
+  },
+]
+
+const CHAT_NOTIFY_CASES: CallCase[] = [
+  { label: 'unregistered sender', tool: 'chat_notify', args: { text: 'done with the migration' } },
+  {
+    label: 'left for the human',
+    tool: 'chat_notify',
+    registeredAs: 'me',
+    args: { text: 'done with the migration' },
+    reply: sent({}),
+  },
+  { label: 'text blank', tool: 'chat_notify', registeredAs: 'me', args: { text: '   ' } },
+  {
+    label: 'refused by the broker',
+    tool: 'chat_notify',
+    registeredAs: 'me',
+    args: { text: 'done with the migration' },
+    reply: sent({ ok: false, reason: 'queue is full' }),
+  },
+]
+
+const CHAT_ENDORSE_CASES: CallCase[] = [
+  { label: 'unregistered sender', tool: 'chat_endorse', args: { to: 'bob', text: 'ship it' } },
+  {
+    label: 'waiting on the human',
+    tool: 'chat_endorse',
+    registeredAs: 'me',
+    args: { to: 'bob', text: 'ship it' },
+    reply: sent({}),
+  },
+  { label: 'text blank', tool: 'chat_endorse', registeredAs: 'me', args: { to: 'bob', text: '   ' } },
+  {
+    label: 'refused by the broker',
+    tool: 'chat_endorse',
+    registeredAs: 'me',
+    args: { to: 'bob', text: 'ship it' },
+    reply: sent({ ok: false, reason: 'already have 2 waiting' }),
+  },
+]
+
 const AGENT_BACKGROUND_CASES: CallCase[] = [
   { label: 'unregistered', tool: 'agent_background', args: {} },
   {
@@ -236,6 +313,216 @@ const AGENT_BACKGROUND_CASES: CallCase[] = [
   },
 ]
 
+const claimed = (patterns?: string[]): ServerMessage => ({
+  t: 'claim_result',
+  ok: true,
+  claim: {
+    owner: 'me',
+    kind: patterns === undefined ? 'worktree' : 'files',
+    patterns: patterns ?? [],
+    worktreePath: '/work/repo',
+    at: 0,
+  },
+})
+
+const twentyFive = Array.from({ length: 25 }, (_, i) => `src/g${i}/**`)
+
+/** CC-106 S4: `patterns` moves from `optionalPatterns` to `patternList`; `[]` still means the whole worktree (CC-56). */
+const CHAT_CLAIM_CASES: CallCase[] = [
+  { label: 'patterns omitted claims the worktree', tool: 'chat_claim', args: {}, reply: claimed() },
+  { label: 'patterns [] claims the worktree', tool: 'chat_claim', args: { patterns: [] }, reply: claimed() },
+  { label: 'only blank patterns', tool: 'chat_claim', args: { patterns: ['  '] }, reply: claimed() },
+  {
+    label: 'patterns trimmed, blanks dropped',
+    tool: 'chat_claim',
+    args: { patterns: [' src/** ', '', 'docs/*.md'] },
+    reply: claimed(['src/**', 'docs/*.md']),
+  },
+  { label: '25 globs', tool: 'chat_claim', args: { patterns: twentyFive } },
+  {
+    label: 'another worktree',
+    tool: 'chat_claim',
+    args: { patterns: ['src/**'], worktree_path: '/work/other' },
+    reply: claimed(['src/**']),
+  },
+  { label: 'blank worktree_path', tool: 'chat_claim', args: { worktree_path: '   ' }, reply: claimed() },
+  {
+    label: 'claimed with no claim echoed',
+    tool: 'chat_claim',
+    args: {},
+    reply: { t: 'claim_result', ok: true },
+  },
+  {
+    label: 'refused by a peer',
+    tool: 'chat_claim',
+    args: { patterns: ['src/**'] },
+    reply: { t: 'claim_result', ok: false, reason: 'bob already claims src/** in /work/repo' },
+  },
+  {
+    label: 'refused with no reason',
+    tool: 'chat_claim',
+    args: {},
+    reply: { t: 'claim_result', ok: false },
+  },
+  {
+    label: 'patterns as a bare string',
+    tool: 'chat_claim',
+    args: { patterns: 'src/**' },
+    reply: claimed(['src/**']),
+  },
+  { label: 'patterns null', tool: 'chat_claim', args: { patterns: null }, reply: claimed() },
+  {
+    label: 'a non-string pattern',
+    tool: 'chat_claim',
+    args: { patterns: ['src/**', 42] },
+    reply: claimed(['src/**']),
+  },
+]
+
+const CHAT_RELEASE_CASES: CallCase[] = [
+  { label: 'everything', tool: 'chat_release', args: {}, reply: { t: 'release_result', released: true } },
+  {
+    label: 'one worktree',
+    tool: 'chat_release',
+    args: { worktree_path: '/work/repo' },
+    reply: { t: 'release_result', released: true },
+  },
+  {
+    label: 'blank worktree_path releases everything',
+    tool: 'chat_release',
+    args: { worktree_path: ' ' },
+    reply: { t: 'release_result', released: true },
+  },
+  {
+    label: 'nothing held there',
+    tool: 'chat_release',
+    args: { worktree_path: '/work/none' },
+    reply: { t: 'release_result', released: false },
+  },
+]
+
+const tagged = (subject: string, ...tags: string[]): ServerMessage => ({
+  t: 'tag_result',
+  ok: true,
+  subject,
+  tags: tags.map(tag => ({ tag, by: 'me', at: 0 })),
+})
+
+const seventeen = Array.from({ length: 17 }, (_, i) => `t${i}`)
+
+/** CC-106 S4: `add`/`remove` move from `optionalTags` to `tagList`; tag rules keep their wording. */
+const CHAT_TAG_CASES: CallCase[] = [
+  { label: 'unregistered', tool: 'chat_tag', args: { add: ['owner:src'] } },
+  { label: 'unregistered with a bad tag', tool: 'chat_tag', args: { add: ['owner of src'] } },
+  { label: 'nothing to add or remove', tool: 'chat_tag', registeredAs: 'me', args: {} },
+  { label: 'empty add list', tool: 'chat_tag', registeredAs: 'me', args: { add: [] } },
+  {
+    label: 'tag self',
+    tool: 'chat_tag',
+    registeredAs: 'me',
+    args: { add: ['owner:src'] },
+    reply: tagged('me', 'owner:src'),
+  },
+  {
+    label: 'tag a peer, blank target is self',
+    tool: 'chat_tag',
+    registeredAs: 'me',
+    args: { target: '  ', remove: ['lead'] },
+    reply: tagged('me'),
+  },
+  {
+    label: 'tag a peer',
+    tool: 'chat_tag',
+    registeredAs: 'me',
+    args: { target: 'bob', add: ['owner:docs'], remove: ['lead'] },
+    reply: tagged('bob', 'owner:docs'),
+  },
+  {
+    label: 'refused by the broker',
+    tool: 'chat_tag',
+    registeredAs: 'me',
+    args: { target: 'bob', remove: ['lead'] },
+    reply: { t: 'tag_result', ok: false, reason: 'bob carries no tag "lead" that you applied', tags: [] },
+  },
+  { label: '17 tags', tool: 'chat_tag', registeredAs: 'me', args: { add: seventeen } },
+  { label: '33-character tag', tool: 'chat_tag', registeredAs: 'me', args: { add: ['x'.repeat(33)] } },
+  { label: 'blank tag in remove', tool: 'chat_tag', registeredAs: 'me', args: { remove: ['ok', ''] } },
+  {
+    label: 'add as a bare string',
+    tool: 'chat_tag',
+    registeredAs: 'me',
+    args: { add: 'owner:src' },
+    reply: tagged('me', 'owner:src'),
+  },
+  {
+    label: 'add null',
+    tool: 'chat_tag',
+    registeredAs: 'me',
+    args: { add: null, remove: ['lead'] },
+    reply: tagged('me'),
+  },
+  { label: 'a non-string tag', tool: 'chat_tag', registeredAs: 'me', args: { add: [42] } },
+]
+
+const subscribed = (held = 1): ServerMessage => ({ t: 'subscribe_result', ok: true, held })
+
+/** CC-106 S4: the scope/target rule stays in `run`; absent `kinds` still means joins and leaves. */
+const CHAT_SUBSCRIBE_CASES: CallCase[] = [
+  { label: 'scope all, kinds omitted', tool: 'chat_subscribe', args: { scope: 'all' }, reply: subscribed() },
+  {
+    label: 'scope name with kinds',
+    tool: 'chat_subscribe',
+    args: { scope: 'name', target: 'bob', kinds: ['agent_spawned', 'deregistered'] },
+    reply: subscribed(2),
+  },
+  {
+    label: 'scope tag',
+    tool: 'chat_subscribe',
+    args: { scope: 'tag', target: 'owner:src' },
+    reply: subscribed(),
+  },
+  { label: 'scope spawned', tool: 'chat_subscribe', args: { scope: 'spawned' }, reply: subscribed() },
+  {
+    label: 'empty kinds list',
+    tool: 'chat_subscribe',
+    args: { scope: 'all', kinds: [] },
+    reply: subscribed(),
+  },
+  { label: 'scope name, no target', tool: 'chat_subscribe', args: { scope: 'name' } },
+  { label: 'scope tag, blank target', tool: 'chat_subscribe', args: { scope: 'tag', target: '  ' } },
+  { label: 'scope omitted', tool: 'chat_subscribe', args: {} },
+  { label: 'scope misspelled', tool: 'chat_subscribe', args: { scope: 'everyone' } },
+  { label: 'unknown kind', tool: 'chat_subscribe', args: { scope: 'all', kinds: ['bogus'] } },
+  {
+    label: 'refused by the broker',
+    tool: 'chat_subscribe',
+    args: { scope: 'all' },
+    reply: { t: 'subscribe_result', ok: false, held: 16, reason: 'at most 16 subscriptions' },
+  },
+  {
+    label: 'kinds as a bare string',
+    tool: 'chat_subscribe',
+    args: { scope: 'all', kinds: 'agent_spawned' },
+    reply: subscribed(),
+  },
+  { label: 'kinds null', tool: 'chat_subscribe', args: { scope: 'all', kinds: null }, reply: subscribed() },
+  { label: 'a non-string target', tool: 'chat_subscribe', args: { scope: 'name', target: 42 } },
+]
+
+const CHAT_UNSUBSCRIBE_CASES: CallCase[] = [
+  { label: 'everything', tool: 'chat_unsubscribe', args: {}, reply: subscribed(0) },
+  {
+    label: 'one rule',
+    tool: 'chat_unsubscribe',
+    args: { scope: 'name', target: 'bob' },
+    reply: subscribed(1),
+  },
+  { label: 'scope spawned', tool: 'chat_unsubscribe', args: { scope: 'spawned' }, reply: subscribed(0) },
+  { label: 'scope tag, no target', tool: 'chat_unsubscribe', args: { scope: 'tag' } },
+  { label: 'scope misspelled', tool: 'chat_unsubscribe', args: { scope: 'everyone' } },
+  { label: 'scope null', tool: 'chat_unsubscribe', args: { scope: null } },
+]
+
 async function render(c: CallCase): Promise<string> {
   const wire = await connect(c.reply, c.registeredAs)
   const result = await wire.client.callTool({ name: c.tool, arguments: c.args })
@@ -249,8 +536,17 @@ describe('tool call golden', () => {
     ['chat_send', CHAT_SEND_CASES],
     ['chat_inbox', CHAT_INBOX_CASES],
     ['chat_transcript', CHAT_TRANSCRIPT_CASES],
+    ['chat_broadcast', CHAT_BROADCAST_CASES],
+    ['chat_ask', CHAT_ASK_CASES],
+    ['chat_notify', CHAT_NOTIFY_CASES],
+    ['chat_endorse', CHAT_ENDORSE_CASES],
     ['agent_surface', AGENT_SURFACE_CASES],
     ['agent_background', AGENT_BACKGROUND_CASES],
+    ['chat_claim', CHAT_CLAIM_CASES],
+    ['chat_release', CHAT_RELEASE_CASES],
+    ['chat_tag', CHAT_TAG_CASES],
+    ['chat_subscribe', CHAT_SUBSCRIBE_CASES],
+    ['chat_unsubscribe', CHAT_UNSUBSCRIBE_CASES],
   ])('%s answers every pinned case exactly as before', async (tool, cases) => {
     const rendered: string[] = []
     for (const c of cases) rendered.push(await render(c))
