@@ -4,6 +4,7 @@ import { ToolHandler } from '../server/tools.js'
 import { toolDefinition, type ToolContext } from '../server/command.js'
 import { chatSend } from '../server/commands/chat-send.js'
 import { chatActivity } from '../server/commands/chat-activity.js'
+import { chatEndorse } from '../server/commands/chat-endorse.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { ClientMessage } from '../protocol.js'
 
@@ -116,6 +117,22 @@ describe('chat_activity refuses a missing name at the schema boundary', () => {
       ok: false,
       code: EXIT.DATAERR,
       error: 'Invalid arguments: name: name is required and must be a non-empty string',
+    })
+    expect(sent).toEqual([])
+  })
+})
+
+/** CC-106 S3: a missing `to` must name `to`, not `text`, so the model fixes the right field. */
+describe('chat_endorse refuses a missing recipient at the schema boundary', () => {
+  it('rejects to omitted as invalid arguments naming to, not as a failed run', async () => {
+    const { broker, sent } = silentBroker()
+
+    const { envelope } = await invokeCommand(chatEndorse, { text: 'ship it' }, context(broker))
+
+    expect(envelope).toEqual({
+      ok: false,
+      code: EXIT.DATAERR,
+      error: 'Invalid arguments: to: to is required and must be a non-empty string',
     })
     expect(sent).toEqual([])
   })

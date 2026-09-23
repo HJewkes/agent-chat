@@ -22,7 +22,7 @@ args: {"text":"   "}
 [
   {
     "type": "text",
-    "text": "Error: text is required and must be a non-empty string"
+    "text": "Error: Invalid arguments: text: text is required and must be a non-empty string"
   }
 ]
 

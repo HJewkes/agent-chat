@@ -12,6 +12,10 @@ import { chatActivity } from './chat-activity.js'
 import { agentLogs } from './agent-logs.js'
 import { chatTranscript } from './chat-transcript.js'
 import { sessionBudget } from './session-budget.js'
+import { chatBroadcast } from './chat-broadcast.js'
+import { chatAsk } from './chat-ask.js'
+import { chatEndorse } from './chat-endorse.js'
+import { chatNotify } from './chat-notify.js'
 
 /** Tools already defined through the registry; ToolHandler routes these names here before its switch. */
 export const TOOL_COMMANDS = createRegistry<ToolContext>()
@@ -27,3 +31,7 @@ TOOL_COMMANDS.register(chatActivity)
 TOOL_COMMANDS.register(agentLogs)
 TOOL_COMMANDS.register(chatTranscript)
 TOOL_COMMANDS.register(sessionBudget)
+TOOL_COMMANDS.register(chatBroadcast)
+TOOL_COMMANDS.register(chatAsk)
+TOOL_COMMANDS.register(chatEndorse)
+TOOL_COMMANDS.register(chatNotify)
