@@ -834,7 +834,12 @@ export type ServerMessage =
    * two round trips would let the two answers disagree (CC-56).
    */
   /** `slots` is the live semaphore reading (CC-139); absent from an older broker build. */
-  | { t: 'list_result'; sessions: SessionInfo[]; claims?: SessionClaim[]; slots?: { held: number; cap: number } }
+  | {
+      t: 'list_result'
+      sessions: SessionInfo[]
+      claims?: SessionClaim[]
+      slots?: { held: number; cap: number }
+    }
   | { t: 'claim_result'; ok: boolean; reason?: string; claim?: SessionClaim; conflicts?: SessionClaim[] }
   | { t: 'release_result'; released: boolean }
   /**

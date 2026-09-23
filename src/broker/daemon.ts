@@ -64,13 +64,8 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   const http =
     options.http === false
       ? null
-      : await bindHttp(
-          core,
-          options.port ?? defaultPort(),
-          ensureToken(),
-          undefined,
-          undefined,
-          () => socketServer.slotUsage(),
+      : await bindHttp(core, options.port ?? defaultPort(), ensureToken(), undefined, undefined, () =>
+          socketServer.slotUsage(),
         )
   recordBrokerState(http?.port ?? null)
 
