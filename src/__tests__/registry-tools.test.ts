@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { EXIT, invokeCommand } from '@titan-design/registry'
-import { ToolHandler } from '../server/tools.js'
+import { TOOL_DEFINITIONS, ToolHandler } from '../server/tools.js'
 import { toolDefinition, type ToolContext } from '../server/command.js'
 import { chatSend } from '../server/commands/chat-send.js'
 import { chatActivity } from '../server/commands/chat-activity.js'
@@ -9,6 +9,8 @@ import { chatTag } from '../server/commands/chat-tag.js'
 import { chatSubscribe } from '../server/commands/subscriptions.js'
 import { agentSpawn } from '../server/commands/agent-spawn.js'
 import { agentTeleport } from '../server/commands/agent-teleport.js'
+import { chatRegister } from '../server/commands/chat-register.js'
+import { chatStatus } from '../server/commands/chat-status.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { ClientMessage } from '../protocol.js'
 
@@ -29,6 +31,7 @@ const context = (broker: BrokerClient): ToolContext => ({
   format: 'human',
   broker,
   registeredName: 'me',
+  session: { name: () => 'me', fixed: false, adopt: () => undefined },
 })
 
 /**
@@ -201,5 +204,59 @@ describe('agent_spawn and agent_teleport refuse a missing required field at the 
       error: 'Invalid arguments: owns: Invalid input: expected array, received string',
     })
     expect(sent).toEqual([])
+  })
+})
+
+/** CC-106 S5: `declared` keeps its hand-written schema (G2), and a spawned agent's name never moves. */
+describe('chat_register and chat_status', () => {
+  it.each(['chat_register', 'chat_status'])(
+    '%s publishes declared as an open bag of strings, without propertyNames',
+    name => {
+      const tool = TOOL_DEFINITIONS.find(definition => definition.name === name)
+      const { declared } = tool?.inputSchema.properties as Record<string, Record<string, unknown>>
+
+      expect(Object.keys(declared ?? {})).toEqual(['type', 'additionalProperties', 'description'])
+      expect(declared).toMatchObject({ type: 'object', additionalProperties: { type: 'string' } })
+    },
+  )
+
+  it('rejects a misspelled status before any frame', async () => {
+    const { broker, sent } = silentBroker()
+
+    const { envelope } = await invokeCommand(chatStatus, { status: 'busy' }, context(broker))
+
+    expect(envelope).toMatchObject({
+      ok: false,
+      error: 'Invalid arguments: status: status must be one of: working, available, blocked',
+    })
+    expect(sent).toEqual([])
+  })
+
+  it('never adopts a new name for a spawned agent', async () => {
+    const { broker, sent } = silentBroker()
+    const adopted: string[] = []
+    const session = { name: () => 'scout', fixed: true, adopt: (name: string) => void adopted.push(name) }
+
+    const { envelope } = await invokeCommand(chatRegister, { name: 'other' }, { ...context(broker), session })
+
+    expect(envelope).toMatchObject({ ok: true })
+    expect(adopted).toEqual([])
+    expect(sent).toEqual([])
+  })
+
+  it('keeps the registered name through a later chat_send', async () => {
+    const sent: ClientMessage[] = []
+    const broker = {
+      request: async (message: ClientMessage) => {
+        sent.push(message)
+        return message.t === 'register' ? { t: 'register_result', ok: true } : { t: 'send_result', ok: true }
+      },
+    } as unknown as BrokerClient
+    const handler = new ToolHandler(broker)
+
+    await handler.handle('chat_register', { name: 'me' })
+    await handler.handle('chat_send', { to: 'bob', text: 'hi' })
+
+    expect(sent.map(frame => frame.t)).toEqual(['register', 'send'])
   })
 })

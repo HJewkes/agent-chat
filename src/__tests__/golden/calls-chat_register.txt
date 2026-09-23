@@ -101,7 +101,7 @@ args: {"name":"scout","declared":"implementer"}
 [
   {
     "type": "text",
-    "text": "Error: declared must be an object of short string labels, e.g. {\"role\": \"implementer\"}"
+    "text": "Error: Invalid arguments: declared: declared must be an object of short string labels, e.g. {\"role\": \"implementer\"}"
   }
 ]
 
@@ -110,7 +110,7 @@ args: {}
 [
   {
     "type": "text",
-    "text": "Error: name is required and must be a non-empty string"
+    "text": "Error: Invalid arguments: name: name is required and must be a non-empty string"
   }
 ]
 
@@ -119,7 +119,7 @@ args: {"name":"   "}
 [
   {
     "type": "text",
-    "text": "Error: name is required and must be a non-empty string"
+    "text": "Error: Invalid arguments: name: name is required and must be a non-empty string"
   }
 ]
 
@@ -128,7 +128,7 @@ args: {"name":7}
 [
   {
     "type": "text",
-    "text": "Error: name is required and must be a non-empty string"
+    "text": "Error: Invalid arguments: name: name is required and must be a non-empty string"
   }
 ]
 
@@ -137,7 +137,7 @@ args: {"declared":[]}
 [
   {
     "type": "text",
-    "text": "Error: name is required and must be a non-empty string"
+    "text": "Error: Invalid arguments: name: name is required and must be a non-empty string; declared: declared must be an object of short string labels, e.g. {\"role\": \"implementer\"}"
   }
 ]
 
@@ -146,7 +146,7 @@ args: {"name":"me","declared":"implementer"}
 [
   {
     "type": "text",
-    "text": "Error: declared must be an object of short string labels, e.g. {\"role\": \"implementer\"}"
+    "text": "Error: Invalid arguments: declared: declared must be an object of short string labels, e.g. {\"role\": \"implementer\"}"
   }
 ]
 
@@ -155,7 +155,7 @@ args: {"name":"me","declared":["implementer"]}
 [
   {
     "type": "text",
-    "text": "Error: declared must be an object of short string labels, e.g. {\"role\": \"implementer\"}"
+    "text": "Error: Invalid arguments: declared: declared must be an object of short string labels, e.g. {\"role\": \"implementer\"}"
   }
 ]
 
@@ -173,7 +173,7 @@ args: {"name":"me","declared":{"role":{"kind":"implementer"}}}
 [
   {
     "type": "text",
-    "text": "Error: declared.role must be a string — declared carries labels, not nested structure"
+    "text": "Error: Invalid arguments: declared: declared.role must be a string — declared carries labels, not nested structure"
   }
 ]
 
@@ -197,10 +197,9 @@ args: {"name":"me","declared":{"key0":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 === chat_register: working_on not a string
 args: {"name":"me","working_on":4}
-frame: {"t":"register","name":"me","workingOn":""} (process fields omitted)
 [
   {
     "type": "text",
-    "text": "Registered as \"me\". Other sessions can reach you by that name until this session exits."
+    "text": "Error: Invalid arguments: working_on: Invalid input: expected string, received number"
   }
 ]

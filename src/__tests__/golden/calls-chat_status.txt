@@ -73,7 +73,7 @@ args: {}
 [
   {
     "type": "text",
-    "text": "Error: status must be one of: working, available, blocked"
+    "text": "Error: Invalid arguments: status: status must be one of: working, available, blocked"
   }
 ]
 
@@ -82,7 +82,7 @@ args: {"status":"busy"}
 [
   {
     "type": "text",
-    "text": "Error: status must be one of: working, available, blocked"
+    "text": "Error: Invalid arguments: status: status must be one of: working, available, blocked"
   }
 ]
 
@@ -91,7 +91,7 @@ args: {"declared":"x"}
 [
   {
     "type": "text",
-    "text": "Error: status must be one of: working, available, blocked"
+    "text": "Error: Invalid arguments: status: status must be one of: working, available, blocked; declared: declared must be an object of short string labels, e.g. {\"role\": \"implementer\"}"
   }
 ]
 
@@ -109,26 +109,24 @@ args: {"status":"working","declared":{"role":["a"]}}
 [
   {
     "type": "text",
-    "text": "Error: declared.role must be a string — declared carries labels, not nested structure"
+    "text": "Error: Invalid arguments: declared: declared.role must be a string — declared carries labels, not nested structure"
   }
 ]
 
 === chat_status: dnd "true"
 args: {"status":"working","dnd":"true"}
-frame: {"t":"status","status":"working"}
 [
   {
     "type": "text",
-    "text": "Status set to \"working\"."
+    "text": "Error: Invalid arguments: dnd: Invalid input: expected boolean, received string"
   }
 ]
 
 === chat_status: working_on not a string
 args: {"status":"working","working_on":4}
-frame: {"t":"status","status":"working"}
 [
   {
     "type": "text",
-    "text": "Status set to \"working\"."
+    "text": "Error: Invalid arguments: working_on: Invalid input: expected string, received number"
   }
 ]

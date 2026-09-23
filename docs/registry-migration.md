@@ -10,6 +10,11 @@ and deletes `optionalTags`.
 Slice S6 converts `agent_spawn` and `agent_teleport`. `optionalEnum` and `optionalPatterns` lose
 their last caller and are left for S5 to delete with `requireString` and `optionalString`; only
 `chat_register` and `chat_status` remain hand-written.
+Slice S5 converts `chat_register` and `chat_status`, so every MCP tool is now a registry command and
+`ToolHandler.handle` is a `TOOL_COMMANDS` lookup. `declared` publishes unchanged through
+`declaredField` in `server/command.ts`, a product-side G2 adapter to delete when TP-171 ships. It
+deletes `requireStatus`, `optionalDeclared`, `requireString`, `optionalString`, `optionalEnum` and
+`optionalPatterns`.
 
 ## Why
 
