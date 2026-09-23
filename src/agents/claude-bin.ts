@@ -67,7 +67,10 @@ const wellKnownLocations = (home: string): string[] =>
 
 /** Walks every `PATH` dir rather than stopping at the first, matching `checkCliOnPath` in doctor.ts. */
 const pathCandidates = (env: NodeJS.ProcessEnv): string[] =>
-  (env.PATH ?? '').split(path.delimiter).filter(dir => dir !== '').map(dir => path.join(dir, 'claude'))
+  (env.PATH ?? '')
+    .split(path.delimiter)
+    .filter(dir => dir !== '')
+    .map(dir => path.join(dir, 'claude'))
 
 export function resolveClaudeBin(req: ClaudeBinRequest): ClaudeBinResolution {
   const exists = req.exists ?? realExists
@@ -88,7 +91,8 @@ export function resolveClaudeBin(req: ClaudeBinRequest): ClaudeBinResolution {
   const stateFile = claudePathFile(req.stateDir)
   tried.push(stateFile)
   const fromStateFile = readFirstLine(stateFile)
-  if (fromStateFile !== undefined && exists(fromStateFile)) return { bin: fromStateFile, source: 'state-file' }
+  if (fromStateFile !== undefined && exists(fromStateFile))
+    return { bin: fromStateFile, source: 'state-file' }
 
   for (const candidate of wellKnownLocations(home)) {
     tried.push(candidate)
@@ -104,7 +108,11 @@ export function resolveClaudeBin(req: ClaudeBinRequest): ClaudeBinResolution {
  * mechanism `node-path` already provides for node. Never fatal: a write failure
  * here must not fail a spawn that otherwise succeeded.
  */
-export function recordClaudeBin(stateDir: string, bin: string, write: (file: string, data: string) => void = fs.writeFileSync): void {
+export function recordClaudeBin(
+  stateDir: string,
+  bin: string,
+  write: (file: string, data: string) => void = fs.writeFileSync,
+): void {
   try {
     write(claudePathFile(stateDir), `${bin}\n`)
   } catch {
