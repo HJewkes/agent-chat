@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process'
+import { home } from '../paths.js'
 import { agentEnv } from './agent-env.js'
+import { recordClaudeBin, resolveClaudeBin } from './claude-bin.js'
 import { readLaunchPlan } from './launch-files.js'
 import type { LaunchPlan } from './types.js'
 
@@ -24,8 +26,29 @@ export function runAgent(agentId: string): void {
   exec(plan)
 }
 
+/**
+ * Resolve `plan.bin` to an absolute path before spawning, without depending on
+ * `PATH` (CC-132). Only `'claude'` is resolved this way — the plan itself keeps
+ * `bin: 'claude'` so a stored plan stays readable, and resolution happens here,
+ * in the process that actually execs, so it always sees this process's real env.
+ *
+ * On resolution failure, prints what was tried and exits 127 — the same code a
+ * bare `spawn('claude', ...)` would already exit with on ENOENT.
+ */
+function resolvedBin(bin: string): string {
+  if (bin !== 'claude') return bin
+  const resolution = resolveClaudeBin({ env: process.env, stateDir: home() })
+  if ('error' in resolution) {
+    process.stderr.write(`agent-chat run-agent: ${resolution.error}\n`)
+    process.exit(127)
+  }
+  if (resolution.source === 'path') recordClaudeBin(home(), resolution.bin)
+  return resolution.bin
+}
+
 function exec(plan: LaunchPlan): void {
-  const child = spawn(plan.bin, plan.args, {
+  const bin = resolvedBin(plan.bin)
+  const child = spawn(bin, plan.args, {
     cwd: plan.cwd,
     // `agentEnv()`, not `process.env`: an agent inherited every credential
     // exported by whatever shell started the broker, which is relay's T7/M8
@@ -45,7 +68,7 @@ function exec(plan: LaunchPlan): void {
   }
 
   child.on('error', err => {
-    process.stderr.write(`agent-chat run-agent: could not start ${plan.bin}: ${err.message}\n`)
+    process.stderr.write(`agent-chat run-agent: could not start ${bin}: ${err.message}\n`)
     process.exit(127)
   })
   // Exit the way the child did, so whatever is watching the surface sees the
