@@ -1,6 +1,9 @@
 # ADR: the latency model of `EventStore`
 
-Status: proposed. Supersedes nothing. Gates any work on a remote/cloud-backed store.
+Status: proposed. Supersedes nothing. Gates any work on a remote/cloud-backed store. Note (2026-09-23,
+CC-118): `src/agents/ledger/db-shim.ts` is now the second file allowed to name `node:sqlite`.
+It serves the lifecycle ledger's tables over the event log's connection
+(`EventLog.ledgerHandle()`) until store-sqlite ships a `node:sqlite` adapter (TP-197).
 
 ## Context
 

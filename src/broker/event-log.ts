@@ -14,8 +14,8 @@ import type { AgentEventRow, AppendInput, EventStore, LoggedEventRow, OpenApprov
  * the human queue) is a query, never a stored aggregate — which is why the
  * inbox now survives a broker restart and why "resolved" is itself an event.
  *
- * The sqlite-backed implementation of `EventStore`, and the only file in the
- * tree that knows `node:sqlite` exists.
+ * The sqlite-backed implementation of `EventStore`. With the ledger shim
+ * (`agents/ledger/db-shim.ts`), one of two files that know `node:sqlite` exists.
  */
 
 export type { AgentEventRow, AppendInput, EventStore, LoggedEventRow, OpenApproval } from './event-store.js'
@@ -153,6 +153,11 @@ export class EventLog implements EventStore {
     this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec(SCHEMA)
     restrictToOwner(file)
+  }
+
+  /** CC-118: the lifecycle ledger's tables share this connection, so shadow writes never meet `SQLITE_BUSY`. */
+  ledgerHandle(): DatabaseSyncType {
+    return this.db
   }
 
   append(input: AppendInput): { id: number; msgId: string } {
