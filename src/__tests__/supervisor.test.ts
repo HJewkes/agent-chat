@@ -9,7 +9,8 @@ import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { SpawnRateBudget } from '../agents/spawn-rate.js'
-import { MAX_DEPTH, Supervisor } from '../agents/supervisor.js'
+import { MAX_DEPTH, Supervisor, type SupervisorOptions } from '../agents/supervisor.js'
+import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
 import { pairPresence } from '../agents/identity.js'
 import type { AgentIdentity } from '../protocol.js'
 import {
@@ -34,6 +35,7 @@ import { RESUMED_BRIEF } from '../agents/resume-session.js'
 const tmpDirs: string[] = []
 let core: BrokerCore
 let supervisor: Supervisor
+let events: EventLog
 /** Drop the stand-in registration, for the tests that are about it not arriving. */
 let stopAutoAttach: () => void
 
@@ -41,10 +43,14 @@ function makeCore(): BrokerCore {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-sup-'))
   tmpDirs.push(dir)
   process.env.AGENT_CHAT_HOME = dir
-  return new BrokerCore(() => undefined, {
-    events: new EventLog(path.join(dir, 'events.db')),
-    registry: new Registry<Conn>(),
-  })
+  events = new EventLog(path.join(dir, 'events.db'))
+  return new BrokerCore(() => undefined, { events, registry: new Registry<Conn>() })
+}
+
+/** CC-118: CI runs this suite again with `AGENT_CHAT_LEDGER_SHADOW=1`, which must change nothing. */
+function withShadow(options: SupervisorOptions): SupervisorOptions {
+  const ledger = shadowLedgerFromConfig(() => events.ledgerHandle())
+  return ledger === undefined ? options : { ...options, ledger }
 }
 
 const fakeConn = (): Conn => ({}) as unknown as net.Socket
@@ -132,7 +138,7 @@ function withStubbedSurface(
     hookSpawn?: HookSpawnFn
   } = {},
 ): Supervisor {
-  supervisor = new Supervisor(core, { ...opts, surface: { platform: 'linux', spawn: liveChild } })
+  supervisor = new Supervisor(core, withShadow({ ...opts, surface: { platform: 'linux', spawn: liveChild } }))
   return supervisor
 }
 
@@ -402,7 +408,7 @@ describe('spawning', () => {
       if (script.includes('is running')) return 'true'
       return `PANE-${scripts.length}`
     }
-    supervisor = new Supervisor(core, { surface: { platform: 'darwin', runAppleScript } })
+    supervisor = new Supervisor(core, withShadow({ surface: { platform: 'darwin', runAppleScript } }))
 
     const first = await supervisor.spawn(spawnReq({ name: 'one', surface: 'iterm-pane', anchor: 'w0t0p0:A' }))
     const second = await supervisor.spawn(
@@ -926,19 +932,22 @@ describe('runtime state outliving the broker', () => {
       isolation: 'none',
     })
     const scripts: string[] = []
-    supervisor = new Supervisor(core, {
-      surface: {
-        platform: 'darwin',
-        runAppleScript: async (script: string): Promise<string> => {
-          scripts.push(script)
-          return script.includes('is running')
-            ? 'true'
-            : script.includes('to close')
-              ? '@@closed@@'
-              : 'PANE-1'
+    supervisor = new Supervisor(
+      core,
+      withShadow({
+        surface: {
+          platform: 'darwin',
+          runAppleScript: async (script: string): Promise<string> => {
+            scripts.push(script)
+            return script.includes('is running')
+              ? 'true'
+              : script.includes('to close')
+                ? '@@closed@@'
+                : 'PANE-1'
+          },
         },
-      },
-    })
+      }),
+    )
 
     expect((await supervisor.retire('scout')).ok).toBe(true)
     expect(scripts.filter(s => s.includes('to close'))[0]).toContain('is "PANE-1"')
@@ -1066,7 +1075,10 @@ describe('retiring an agent that was given a pane', () => {
       if (script.includes('to close')) return '@@closed@@'
       return 'PANE-1'
     }
-    supervisor = new Supervisor(core, { settleMs, surface: { platform: 'darwin', runAppleScript } })
+    supervisor = new Supervisor(
+      core,
+      withShadow({ settleMs, surface: { platform: 'darwin', runAppleScript } }),
+    )
     return { scripts, sup: supervisor, closes: () => scripts.filter(s => s.includes('to close')) }
   }
 
@@ -1760,19 +1772,22 @@ describe('reporting a spawn only once the agent has attached', () => {
   it('closes the pane it opened for an agent that never came up', async () => {
     stopAutoAttach()
     const scripts: string[] = []
-    supervisor = new Supervisor(core, {
-      attachMs: 1000,
-      surface: {
-        platform: 'darwin',
-        runAppleScript: async script => {
-          scripts.push(script)
-          if (script.includes('is running')) return 'true'
-          if (script.includes('@@present@@')) return '@@gone@@'
-          if (script.includes('to close')) return '@@closed@@'
-          return 'PANE-1'
+    supervisor = new Supervisor(
+      core,
+      withShadow({
+        attachMs: 1000,
+        surface: {
+          platform: 'darwin',
+          runAppleScript: async script => {
+            scripts.push(script)
+            if (script.includes('is running')) return 'true'
+            if (script.includes('@@present@@')) return '@@gone@@'
+            if (script.includes('to close')) return '@@closed@@'
+            return 'PANE-1'
+          },
         },
-      },
-    })
+      }),
+    )
 
     const spawning = supervisor.spawn(spawnReq({ surface: 'iterm-window' }))
     await vi.advanceTimersByTimeAsync(1000)
@@ -1790,19 +1805,22 @@ describe('reporting a spawn only once the agent has attached', () => {
    */
   it('gives up early, with the exit code, when claude dies before registering', async () => {
     stopAutoAttach()
-    supervisor = new Supervisor(core, {
-      attachMs: 60_000,
-      surface: {
-        platform: 'linux',
-        spawn: () => ({
-          pid: 4242,
-          unref: () => undefined,
-          once: (event: string, listener: (...args: unknown[]) => void) => {
-            if (event === 'exit') queueMicrotask(() => listener(127, null))
-          },
-        }),
-      },
-    })
+    supervisor = new Supervisor(
+      core,
+      withShadow({
+        attachMs: 60_000,
+        surface: {
+          platform: 'linux',
+          spawn: () => ({
+            pid: 4242,
+            unref: () => undefined,
+            once: (event: string, listener: (...args: unknown[]) => void) => {
+              if (event === 'exit') queueMicrotask(() => listener(127, null))
+            },
+          }),
+        },
+      }),
+    )
 
     const result = await supervisor.spawn(spawnReq())
 
@@ -1883,11 +1901,14 @@ describe('a visible spawn still starting at the attach window', () => {
   }
 
   const visibleSupervisor = (iterm: ReturnType<typeof fakeIterm>): Supervisor => {
-    supervisor = new Supervisor(core, {
-      attachMs: 1000,
-      attachCeilingMs: 10_000,
-      surface: { platform: 'darwin', runAppleScript: iterm.runAppleScript },
-    })
+    supervisor = new Supervisor(
+      core,
+      withShadow({
+        attachMs: 1000,
+        attachCeilingMs: 10_000,
+        surface: { platform: 'darwin', runAppleScript: iterm.runAppleScript },
+      }),
+    )
     return supervisor
   }
 
@@ -1949,20 +1970,23 @@ describe('a visible spawn still starting at the attach window', () => {
 
   it('still fails a headless spawn at once when claude exits before registering', async () => {
     stopAutoAttach()
-    supervisor = new Supervisor(core, {
-      attachMs: 60_000,
-      attachCeilingMs: 600_000,
-      surface: {
-        platform: 'linux',
-        spawn: () => ({
-          pid: 4242,
-          unref: () => undefined,
-          once: (event: string, listener: (...args: unknown[]) => void) => {
-            if (event === 'exit') queueMicrotask(() => listener(1, null))
-          },
-        }),
-      },
-    })
+    supervisor = new Supervisor(
+      core,
+      withShadow({
+        attachMs: 60_000,
+        attachCeilingMs: 600_000,
+        surface: {
+          platform: 'linux',
+          spawn: () => ({
+            pid: 4242,
+            unref: () => undefined,
+            once: (event: string, listener: (...args: unknown[]) => void) => {
+              if (event === 'exit') queueMicrotask(() => listener(1, null))
+            },
+          }),
+        },
+      }),
+    )
 
     const result = await supervisor.spawn(spawnReq())
 

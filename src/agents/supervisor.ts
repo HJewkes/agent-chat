@@ -57,6 +57,7 @@ import { cliEntry, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { ShadowLedger } from './ledger/shadow-ledger.js'
+import { exitTerminal, LifecycleShadow } from './ledger/lifecycle-shadow.js'
 import {
   Teleport,
   type InheritedIsolation,
@@ -186,6 +187,8 @@ interface Resolved {
   resumed?: { sessionId: string; path: string }
   /** CC-133: the rendered section on the agent this one takes over from. */
   predecessor?: string
+  /** CC-118: the shadow execution this launch belongs to, when the ledger is on. */
+  executionId?: string
 }
 
 /** A duration as a reader would say it: seconds under a minute, minutes above. */
@@ -297,6 +300,12 @@ interface Live {
   settle?: NodeJS.Timeout
   /** CC-124: armed while a visible spawn is still starting past the attach window. */
   attachCeiling?: NodeJS.Timeout
+  /** CC-118: this process's shadow execution; absent when the ledger is off. */
+  executionId?: string
+  /** CC-118: someone asked this process to stop, so its exit finishes as cancelled. */
+  cancelRequested?: boolean
+  /** CC-118: `observe_running` is written once; a later attach is presence, not lifecycle. */
+  runningObserved?: boolean
 }
 
 export interface SupervisorOptions {
@@ -399,6 +408,7 @@ export class Supervisor implements TeleportHost {
   private readonly hookSpawn: HookSpawnFn | undefined
   private readonly unwatch: () => void
   private readonly teleporter: Teleport
+  private readonly shadow: LifecycleShadow
 
   constructor(
     private readonly core: BrokerCore,
@@ -414,6 +424,7 @@ export class Supervisor implements TeleportHost {
     this.hookSpawn = options.hookSpawn
     this.unwatch = core.onAppend(row => this.onRow(row))
     this.teleporter = new Teleport(core, this, options.countdownMs)
+    this.shadow = new LifecycleShadow(options.ledger)
   }
 
   private fireHook(event: HookEvent, payload: Record<string, unknown>): void {
@@ -438,8 +449,16 @@ export class Supervisor implements TeleportHost {
         delete entry.settle
       }
       this.attachWaiters.get(agentId)?.()
+      this.observeRunning(entry)
     }
     if (row.kind === 'agent_detached') this.scheduleSettle(entry)
+  }
+
+  private observeRunning(entry: Live): void {
+    if (entry.executionId === undefined || entry.runningObserved) return
+    entry.runningObserved = true
+    const meta = this.core.agents.spawnMeta(entry.agentId)
+    this.shadow.running(entry.executionId, entry.handle, meta['session_id'] ?? '', meta['config_dir'] ?? '')
   }
 
   /**
@@ -534,6 +553,7 @@ export class Supervisor implements TeleportHost {
       },
     })
     logEvent('agent_exited', { agentId, name: entry.name, code: outcome.code, inferred: outcome.inferred })
+    this.shadow.finish(entry.executionId, exitTerminal(outcome, failed, entry.cancelRequested === true))
     // CC-95: the surface goes with the agent, including on an INFERRED exit —
     // which is the only exit an iTerm agent ever gets, and therefore the only
     // path that could have closed the panes found sitting at `-zsh` for six
@@ -858,6 +878,7 @@ export class Supervisor implements TeleportHost {
 
     if (!this.semaphore.acquire(agentId))
       return this.refuse(req, `no free agent slots (${this.semaphore.summary()}); retire one first`)
+    const executionId = this.shadow.open(agentId, account.dir)
 
     try {
       return await this.launch(req, ctx, agentId, isolationName, warnings, profile, depth, {
@@ -866,10 +887,12 @@ export class Supervisor implements TeleportHost {
         ...(fork ? { fork } : {}),
         ...(resumed ? { resumed } : {}),
         ...(predecessor ? { predecessor: predecessor.text } : {}),
+        ...(executionId ? { executionId } : {}),
       })
     } catch (err) {
       this.semaphore.release(agentId)
       const reason = err instanceof SurfaceRefused ? err.message : `spawn failed: ${(err as Error).message}`
+      this.shadow.finish(executionId, { outcome: 'failed', reason, retryable: false })
       return this.refuse(req, reason)
     }
   }
@@ -973,6 +996,7 @@ export class Supervisor implements TeleportHost {
     const launchedAt = Date.now()
     const handle = await this.launchOn(surface, plan, req.anchor)
     this.track(agentId, req.name, handle, allocation, isolationName, req.anchor)
+    this.bindExecution(agentId, resolved.executionId)
     logEvent('agent_spawned', { agentId, name: req.name, surface: handle.surface, cwd: allocation.cwd })
 
     const announce = (): void =>
@@ -1004,6 +1028,14 @@ export class Supervisor implements TeleportHost {
       ...(profile.disallowedTools?.length ? { disallowedTools: [...profile.disallowedTools] } : {}),
       ...(resumed ? { transcript: { path: resumed.path, found: true } } : {}),
     }
+  }
+
+  private bindExecution(agentId: string, executionId: string | undefined): void {
+    const entry = this.live.get(agentId)
+    if (entry === undefined || executionId === undefined) return
+    entry.executionId = executionId
+    // An attach can land before `track` made the entry that `onRow` looks for.
+    if (this.hasAttached(agentId)) this.observeRunning(entry)
   }
 
   /** CC-133. Refused when unknown or not the requester's; resolved against the log, never the request. */
@@ -1269,6 +1301,8 @@ export class Supervisor implements TeleportHost {
     } catch {
       return { ok: false, reason: `${name} (pid ${pid}) was already gone` }
     }
+    entry.cancelRequested = true
+    this.shadow.requestCancellation(entry.executionId, 'kill')
     setTimeout(() => {
       try {
         process.kill(pid, 'SIGKILL')
@@ -1299,7 +1333,8 @@ export class Supervisor implements TeleportHost {
   async retire(name: string, force = false): Promise<{ ok: boolean; reason?: string }> {
     const identity = this.core.agents.byName(name)
     if (!identity) return { ok: false, reason: `no agent named "${name}"` }
-    const entry = this.live.get(identity.agentId) ?? this.rehydrate(identity.agentId, name)
+    const held = this.live.get(identity.agentId)
+    const entry = held ?? this.rehydrate(identity.agentId, name)
 
     if (entry) {
       const released = await this.releaseIsolation(identity, name, entry, force)
@@ -1329,7 +1364,15 @@ export class Supervisor implements TeleportHost {
         transcript_found: String(transcript.found),
       },
     })
+    this.finishRetired(identity.agentId, held)
     return { ok: true, ...(this.retireCaveat(name, entry !== undefined, reaped) ?? {}) }
+  }
+
+  /** A row the pre-restart broker opened has no `Live` here, so it is found by agent instead. */
+  private finishRetired(agentId: string, held: Live | undefined): void {
+    if (held?.executionId !== undefined)
+      return this.shadow.finish(held.executionId, { outcome: 'cancelled', reason: 'retired' })
+    this.shadow.finishByAgent(agentId, { outcome: 'cancelled', reason: 'retired after restart' })
   }
 
   /**

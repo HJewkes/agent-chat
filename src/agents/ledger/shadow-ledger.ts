@@ -41,6 +41,11 @@ export interface ShadowLedgerOptions {
 
 type Step = () => MaybePromise<ApplyExecutionTransitionResult | undefined>
 
+type Envelope = 'executionId' | 'eventId' | 'expectedRevision' | 'occurredAt' | 'fence'
+type WithoutEnvelope<T> = T extends { fence: ExecutionOwnerFence } ? Omit<T, Envelope> : never
+/** A fenced transition as the caller states it; the ledger fills in the revision it was issued against. */
+export type ShadowStep = WithoutEnvelope<ExecutionTransition>
+
 /**
  * CC-118's write-beside ledger. Write-only by construction: no method returns a
  * record, so nothing the supervisor holds can read lifecycle state back. Every
@@ -65,6 +70,17 @@ export class ShadowLedger {
 
   apply(transition: ExecutionTransition): Promise<void> {
     return this.enqueue(transition.executionId, transition.kind, () => this.port.apply(transition))
+  }
+
+  /** Applies a fenced step to a row's current revision, so the caller never tracks revisions itself. */
+  advance(executionId: string, step: ShadowStep): Promise<void> {
+    return this.enqueue(executionId, step.kind, () =>
+      this.applyToCurrent(
+        executionId,
+        () => true,
+        current => ({ ...this.envelope(current), fence: this.fence, ...step }) as ExecutionTransition,
+      ),
+    )
   }
 
   newLease(): ExecutionOwnerLease {
