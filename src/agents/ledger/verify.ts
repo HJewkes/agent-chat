@@ -150,10 +150,19 @@ function checkHeld(index: Index): LifecycleDivergence[] {
   return [...liveSide, ...ledgerSide]
 }
 
+/** The handed-off, finished predecessor of a successor with no row of its own, if there is one. */
+function halfWrittenPredecessor(index: Index, agentId: string): FoldEntry | undefined {
+  const from = index.fold.get(agentId)?.teleportFrom
+  const predecessor = from === undefined ? undefined : index.fold.get(from)
+  const terminal = index.input.ledgerTerminalByAgent
+  if (!predecessor?.handedOff || !terminal.has(predecessor.agentId)) return undefined
+  return index.active.has(agentId) || terminal.has(agentId) ? undefined : predecessor
+}
+
 function liveWithoutRow(index: Index, agentId: string, broker: BrokerSide): LifecycleDivergence {
   const agent = index.fold.get(agentId)
-  const predecessor = agent?.teleportFrom === undefined ? undefined : index.fold.get(agent.teleportFrom)
-  if (predecessor?.handedOff && index.input.ledgerTerminalByAgent.has(predecessor.agentId))
+  const predecessor = halfWrittenPredecessor(index, agentId)
+  if (predecessor)
     return divergence(
       'held',
       'teleport_half_written',
@@ -199,9 +208,11 @@ function checkSlots(index: Index): LifecycleDivergence[] {
   const name = (id: string) => index.fold.get(id)?.name
   const slotSide = broker.slotIds
     .filter(id => !index.active.has(id))
-    .map(id => {
+    .flatMap(id => {
       if (!live.has(id))
         return divergence('slots', 'slot_reattached_no_row', id, name(id), 'slot adopted on reattach')
+      // The held check already reports this successor as teleport_half_written.
+      if (halfWrittenPredecessor(index, id)) return []
       if (preShadow(index, id, broker))
         return divergence(
           'slots',
