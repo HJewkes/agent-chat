@@ -269,12 +269,10 @@ describe('teleport', () => {
       agent: { agentId: predecessor },
       terminal: { outcome: 'cancelled', reason: 'superseded by teleport' },
     })
-    // The slot check also reports the successor, as slot_without_row; that class is slice 4's to refine.
-    expect(beforeRestart).toContainEqual({
-      class: 'teleport_half_written',
-      id: 'descendant-1',
-      unclassified: false,
-    })
+    // No unclassified item, so `doctor lifecycle` exits 0 on this state.
+    expect(beforeRestart).toEqual([
+      { class: 'teleport_half_written', id: 'descendant-1', unclassified: false },
+    ])
     // The new broker does not hold the successor; it holds only the slot its reattach adopted.
     expect(afterRestart).toEqual([
       { class: 'slot_reattached_no_row', id: 'descendant-1', unclassified: false },
