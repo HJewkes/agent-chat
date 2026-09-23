@@ -39,8 +39,40 @@ const REQUEST_TIMEOUT_MS = 5000
 const REPLY_TIMEOUT_MS: Partial<Record<ReplyType, number>> = { spawn_result: 60_000 }
 // Front-loaded to catch a broker already starting, tailed off for a cold one; the sum is the give-up budget.
 const RECONNECT_DELAYS_MS = [100, 250, 500, 1000, 2000, 5000]
+const RETRY_WINDOW_S = Math.ceil(RECONNECT_DELAYS_MS.reduce((sum, ms) => sum + ms, 0) / 1000)
+
+/**
+ * Frames safe to hold across a reconnect and send afterwards (CC-103).
+ *
+ * Each one states where the session should BE rather than asking for something to
+ * happen, so sending it late, or after the reconnect's own registration, lands the
+ * same state. `status` is the session's liveness and presence report, the nearest
+ * thing this protocol has to a heartbeat. Nothing that delivers content is here:
+ * a held `send` that the caller also retried would reach its recipient twice.
+ */
+const REPLAYABLE: ReadonlySet<ClientMessage['t']> = new Set([
+  'register',
+  'status',
+  'subscribe',
+  'unsubscribe',
+])
+// Bounded so a broker that never returns cannot grow this without limit.
+const MAX_HELD_FRAMES = 32
+
+const brokerRestartingError = (kind: ClientMessage['t']): Error =>
+  new Error(
+    `broker restarting: the connection to the agent-chat broker was lost and is being re-established. ` +
+      `This ${kind} was NOT sent; retry it within ${RETRY_WINDOW_S} s.`,
+  )
 
 type Waiter = (msg: ServerMessage) => void
+
+interface HeldFrame {
+  message: ClientMessage
+  replyType: ReplyType
+  resolve: (msg: ServerMessage) => void
+  reject: (err: Error) => void
+}
 
 /**
  * What gets replayed on reconnect. `agentId` is in here deliberately: a broker
@@ -62,6 +94,9 @@ export class BrokerClient {
   private closed = false
   /** Guards against concurrent CC-83 recoveries racing for the same name. */
   private reregistering = false
+  /** True between a drop and the reconnect's outcome: the gap frames are held or refused in. */
+  private reconnecting = false
+  private held: HeldFrame[] = []
   /** FIFO per reply type; the socket answers in order, so this stays aligned. */
   private readonly waiters = new Map<ReplyType, Waiter[]>()
 
@@ -152,8 +187,53 @@ export class BrokerClient {
     if (this.closed || this.socket === null) return
     this.socket = null
     this.failAllWaiters('broker connection lost')
-    await this.connect()
-    if (this.identity) await this.request({ t: 'register', ...this.identity }, 'register_result')
+    if (await this.reconnect()) await this.replayHeld()
+  }
+
+  private async reconnect(): Promise<boolean> {
+    this.reconnecting = true
+    try {
+      await this.connect()
+    } catch (err) {
+      this.rejectHeld(err as Error)
+      return false
+    } finally {
+      this.reconnecting = false
+    }
+    if (!this.closed) return true
+    // Closed mid-ladder: the socket that just attached belongs to nobody.
+    this.socket?.destroy()
+    return false
+  }
+
+  /**
+   * Registration first, so the held frames land on a connection the broker knows.
+   * A held `register` is answered by that same registration rather than sent again:
+   * `request` already made it the identity being replayed.
+   */
+  private async replayHeld(): Promise<void> {
+    const registration = this.identity
+      ? this.request({ t: 'register', ...this.identity }, 'register_result')
+      : undefined
+    const reply = await registration?.catch((err: Error) => err)
+    for (const frame of this.held.splice(0)) {
+      if (frame.message.t !== 'register')
+        this.request(frame.message, frame.replyType).then(frame.resolve, frame.reject)
+      else if (reply instanceof Error || reply === undefined)
+        frame.reject(reply ?? new Error('no identity to register'))
+      else frame.resolve(reply)
+    }
+  }
+
+  private hold(message: ClientMessage, replyType: ReplyType): Promise<ServerMessage> {
+    if (!REPLAYABLE.has(message.t) || this.held.length >= MAX_HELD_FRAMES) {
+      return Promise.reject(brokerRestartingError(message.t))
+    }
+    return new Promise((resolve, reject) => this.held.push({ message, replyType, resolve, reject }))
+  }
+
+  private rejectHeld(err: Error): void {
+    for (const frame of this.held.splice(0)) frame.reject(err)
   }
 
   private failAllWaiters(reason: string): void {
@@ -189,6 +269,7 @@ export class BrokerClient {
     }
     for (const delay of RECONNECT_DELAYS_MS) {
       await wait(delay)
+      if (this.closed) throw new Error('broker client closed')
       try {
         this.attach(await this.tryConnect())
         return
@@ -201,6 +282,7 @@ export class BrokerClient {
 
   /** Fire-and-forget: for messages the broker does not answer. */
   async send(message: ClientMessage): Promise<void> {
+    if (this.reconnecting) throw brokerRestartingError(message.t)
     this.socket?.write(encode(message))
   }
 
@@ -209,6 +291,7 @@ export class BrokerClient {
       const { t: _kind, ...identity } = message
       this.identity = identity
     }
+    if (this.reconnecting) return this.hold(message, replyType)
     return new Promise((resolve, reject) => {
       const socket = this.socket
       if (!socket) return reject(new Error('not connected to the broker'))
@@ -237,5 +320,6 @@ export class BrokerClient {
   close(): void {
     this.closed = true
     this.socket?.destroy()
+    this.rejectHeld(new Error('broker client closed'))
   }
 }
