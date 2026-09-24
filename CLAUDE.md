@@ -30,6 +30,9 @@ Products never depend on another product's source. They talk over a process boun
 leaves the original copy in place creates two diverging implementations. The swap-back is
 part of the same task.
 
+Long form, with the mechanism-versus-policy table, the front-end split, and the rules for
+port pull requests: `titan-platform/site/guides/where-code-goes.md`.
+
 Full roadmap and evidence:
 `active-work/titan-platform/sources/design-consolidation-roadmap.md` (2026-09-18).
 
