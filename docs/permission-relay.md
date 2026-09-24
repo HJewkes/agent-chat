@@ -202,6 +202,10 @@ that can be revoked without notice, and headless sessions relay nothing at all. 
 verb is a faster path to a prompt that _did_ relay. It is not a way to unblock an agent
 that cannot be prompted — for that, `agent-chat surface <name>` is still the answer.
 
+The same verdict can come from a phone: `agent-chat mirror` posts each approval to a
+Matrix room and sends ✅ or ❌ back as this `approve_permission` frame, over an
+unregistered connection. See [`phone-queue.md`](phone-queue.md).
+
 ## Headless agents: the `PermissionRequest` hook (CC-144)
 
 Added 2026-09-23. A spawned agent that runs `claude -p` (surface `headless`, or a pane

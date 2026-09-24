@@ -61,6 +61,27 @@ export const hooksPath = (): string => path.join(home(), 'hooks.json')
 /** User-editable settings: the agent-slot cap (`agentSlots`) and the per-repo worktree cap (`worktreeBudget`). */
 export const configPath = (): string => path.join(home(), 'config.json')
 
+/** The launchd label for `agent-chat mirror`; the plist and every `launchctl` call use it. */
+export const MIRROR_LABEL = 'dev.hjewkes.agent-chat-mirror'
+
+/** Homeserver, owner and room for `agent-chat mirror`; 0600 but holds no secret. */
+export const mirrorConfigPath = (): string => path.join(home(), 'mirror.json')
+
+/** `EDGE1_AS_TOKEN=...`, 0600. Only `agent-chat mirror run` reads it; nothing copies it into env or the plist. */
+export const mirrorEnvPath = (): string => path.join(home(), 'mirror.env')
+
+/** The mirror's own sqlite state (posted items, cursors), separate from `events.db`. */
+export const mirrorStatePath = (): string => path.join(home(), 'mirror.db')
+
+/** Rewritten every few seconds by a running mirror; `doctor` and `mirror status` read it. */
+export const mirrorStatusPath = (): string => path.join(home(), 'mirror.status.json')
+
+/** launchd reads agents from the real home, so this ignores `AGENT_CHAT_HOME`. */
+export const mirrorPlistPath = (): string =>
+  path.join(os.homedir(), 'Library', 'LaunchAgents', `${MIRROR_LABEL}.plist`)
+
+export const mirrorLogDir = (): string => path.join(os.homedir(), 'Library', 'Logs', 'agent-chat-mirror')
+
 /** The package root, reached identically from `dist/paths.js` and `src/paths.ts`. */
 const packageRoot = (): string => path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 

@@ -11,6 +11,7 @@ import { AgentLog } from '../agents/identity.js'
 import { readRuntimeState } from '../agents/launch-files.js'
 import { itermSessionPresent } from '../agents/surfaces/index.js'
 import { ATTACH_TIMEOUT_MS } from '../agents/supervisor.js'
+import { describeMirror, readMirrorFacts } from '../mirror/status.js'
 import { cliEntry, dashboardDir, defaultPort, home, socketPath } from '../paths.js'
 import { EventLog } from './event-log.js'
 import { probeSocket, readMeta } from './lifecycle.js'
@@ -399,6 +400,9 @@ async function checkStatusline(live: boolean): Promise<Check[]> {
   ]
 }
 
+/** Files only; a missing config is a state, not a fault. */
+const checkMirror = (): Check => describeMirror(readMirrorFacts())
+
 export async function runChecks(): Promise<Check[]> {
   // Probed once and shared: two checks need the answer, and asking twice would
   // let them disagree about whether a broker exists.
@@ -422,6 +426,7 @@ export async function runChecks(): Promise<Check[]> {
     ...(await checkOrphanSurfaces(agents)),
     checkDashboard(),
     ...(await checkStatusline(live)),
+    checkMirror(),
   ]
 }
 
