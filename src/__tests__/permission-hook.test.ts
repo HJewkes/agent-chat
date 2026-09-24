@@ -241,6 +241,15 @@ describe('the hook process contract', () => {
     expect(decision).toMatchObject({ behavior: 'deny', message: expect.any(String) })
   })
 
+  it('prints a deny decision with a caller-supplied reason, for the deadline path (CC-154)', () => {
+    expect(JSON.parse(hookOutput('deny', 'owner did not answer in time'))).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: 'deny', message: 'owner did not answer in time' },
+      },
+    })
+  })
+
   it('files under the spawned name, falling back to the Claude session id', () => {
     const input = parseHookInput(
       JSON.stringify({ session_id: 'f91c0f3a-4584', tool_name: 'Bash', tool_input: { command: 'ls' } }),
