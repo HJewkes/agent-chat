@@ -110,6 +110,7 @@ async function postRelated(q: RelatedQuery, query: string, signal: AbortSignal):
       budget: RELATED_BUDGET,
       classes: RELATED_CLASSES,
       exclude: [],
+      trigger: 'spawn',
     }),
     signal,
   })
