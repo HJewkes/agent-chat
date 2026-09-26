@@ -178,8 +178,8 @@ override with `AGENT_CHAT_HOME`.
 | `chat_inbox(limit?)`                                                      | Re-read recent messages, including answers.                                                                          |
 | `chat_subscribe(scope, target?, kinds?)`                                  | Be told when sessions or agents join or leave.                                                                       |
 | `chat_unsubscribe(scope?, target?)`                                       | Stop being told; omit both to drop every subscription.                                                               |
-| `agent_spawn(name, profile, brief, surface?, isolation?, cwd?, inherit?)` | Spawn a durable agent that joins the bus as a peer; `inherit: "context"` starts it from a copy of YOUR conversation. |
-| `agent_teleport(handoff, model?)`                                         | End this session, starting a successor from the current build.                                                       |
+| `agent_spawn(name, profile, brief, inherit?, worktree?, remote_control?)` | Spawn a durable peer. `inherit: "context"` copies YOUR conversation; `remote_control: true` opts in (headless: n/a). |
+| `agent_teleport(handoff, model?, remote_control?)`                        | End this session for a successor on the current build. Keeps a `--remote-control` launch; the arg overrides.         |
 | `agent_surface(name)`                                                     | Pull a headless agent into a visible terminal.                                                                       |
 | `agent_background()`                                                      | Send yourself headless, releasing your terminal.                                                                     |
 | `agent_profiles()`                                                        | List spawnable profiles: model, tool set, surface, isolation.                                                        |

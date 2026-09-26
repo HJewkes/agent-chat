@@ -53,9 +53,17 @@ export const agentTeleport = defineTool({
           'long grind, a stronger one for what is left.',
       )
       .optional(),
+    remote_control: z
+      .boolean()
+      .describe(
+        'Optional. Omit to carry Remote Control across when this session was launched with ' +
+          '--remote-control. Set true if you turned it on mid-session with /remote-control, which ' +
+          'the broker cannot see; set false to drop it. Headless successors ignore it.',
+      )
+      .optional(),
   }),
   result: z.string(),
-  async run({ handoff, model: requested }, ctx) {
+  async run({ handoff, model: requested, remote_control: remoteControl }, ctx) {
     if (ctx.registeredName === null)
       return (
         'Register with chat_register first: teleport hands your name to a successor, and you do not ' +
@@ -63,7 +71,12 @@ export const agentTeleport = defineTool({
       )
     const model = present(requested)
     const res = (await ctx.broker.request(
-      { t: 'teleport', handoff, ...(model === undefined ? {} : { model }) },
+      {
+        t: 'teleport',
+        handoff,
+        ...(model === undefined ? {} : { model }),
+        ...(remoteControl === undefined ? {} : { remoteControl }),
+      },
       'teleport_result',
     )) as Extract<ServerMessage, { t: 'teleport_result' }>
     return describeTeleport(res)

@@ -223,6 +223,7 @@ export class SocketServer {
       // copies is decided in the supervisor, from this requester's own registry
       // entry, so the refusals land in the log with every other spawn refusal.
       ...(msg.inherit === undefined ? {} : { inherit: msg.inherit }),
+      ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
       ...(msg.forkFrom === undefined ? {} : { forkFrom: msg.forkFrom }),
       ...(msg.resumeSession === undefined ? {} : { resumeSession: msg.resumeSession }),
       ...(msg.predecessor === undefined ? {} : { predecessor: msg.predecessor }),
@@ -373,6 +374,7 @@ export class SocketServer {
       },
       handoff: msg.handoff,
       ...(msg.model === undefined ? {} : { model: msg.model }),
+      ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
     })
     reply(conn, {
       t: 'teleport_result',

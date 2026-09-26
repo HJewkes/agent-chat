@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { channelStatusFromArgv, hostChannelStatus, psArgvReader } from '../broker/host-channels.js'
+import {
+  channelStatusFromArgv,
+  hostChannelStatus,
+  hostRemoteControl,
+  psArgvReader,
+  remoteControlFromArgv,
+} from '../broker/host-channels.js'
 
 /**
  * CC-73. The verdict these tests protect is the one `chat_send` reports, so a
@@ -94,5 +100,26 @@ describe('hostChannelStatus', () => {
     // are right on this platform, which a stubbed reader can never show.
     expect(psArgvReader(process.pid)).toMatch(/node|vitest/i)
     expect(hostChannelStatus(process.pid)).toBe('no')
+  })
+})
+
+describe('remote control from a host argv (H-12)', () => {
+  it.each([
+    [['claude', '--remote-control'], true],
+    [['claude', '--remote-control=phone', '--', 'brief'], true],
+    [['claude', '--remote-control-session-name-prefix', 'mac'], false],
+    [['claude', '--', '--remote-control'], false],
+    [['claude'], false],
+  ])('reads %j as %s', (argv, expected) => {
+    expect(remoteControlFromArgv(argv)).toBe(expected)
+  })
+
+  it('reports unknown, not off, when the argv cannot be read', () => {
+    expect(hostRemoteControl(4242, () => undefined)).toBeUndefined()
+    expect(hostRemoteControl(undefined, () => 'claude --remote-control')).toBeUndefined()
+  })
+
+  it('reads the live process it is pointed at', () => {
+    expect(hostRemoteControl(4242, () => 'claude --remote-control -- go')).toBe(true)
   })
 })

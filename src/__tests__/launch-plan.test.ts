@@ -187,6 +187,32 @@ describe('the one thing surfaces are allowed to differ on', () => {
   })
 })
 
+/** H-12: a primary keeps Remote Control across teleport; nothing else gets it by default. */
+describe('remote control', () => {
+  const pane = (over: Partial<LaunchPlanInput> = {}) =>
+    buildLaunchPlan(input({ surface: 'iterm-pane', ...over })).args
+
+  it('is off unless asked for, so a spawned agent never exposes itself by default', () => {
+    expect(pane()).not.toContain('--remote-control')
+  })
+
+  it('sits directly before the brief separator, where nothing can be read as its optional name', () => {
+    const args = pane({ remoteControl: true })
+    expect(args.slice(-3)).toEqual(['--remote-control', '--', 'find every caller of foo()'])
+  })
+
+  it('ends the argv on a bare resume, which has no separator to sit before', () => {
+    expect(pane({ remoteControl: true, resume: true }).at(-1)).toBe('--remote-control')
+  })
+
+  it('is dropped wherever the run is print mode, which cannot host Remote Control', () => {
+    const headless = buildLaunchPlan(input({ surface: 'headless', remoteControl: true })).args
+    const printedResume = pane({ remoteControl: true, resume: true, resumeMessage: 'carry on' })
+    expect(headless).not.toContain('--remote-control')
+    expect(printedResume).not.toContain('--remote-control')
+  })
+})
+
 /**
  * R-59. A resume normally takes no turn at all — that is what makes surfacing a
  * pane the human can answer in rather than a turn answered on their behalf. A

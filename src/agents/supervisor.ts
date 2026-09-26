@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import type { BrokerCore } from '../broker/core.js'
+import type { ArgvReader } from '../broker/host-channels.js'
 import { newMsgId } from '../broker/event-log.js'
 import {
   HUMAN,
@@ -244,6 +245,8 @@ export interface SpawnRequest {
   owns?: string[]
   /** CC-44: start from a copy of the REQUESTER's own conversation, not an empty one. */
   inherit?: 'context'
+  /** H-12: explicit opt-in to `--remote-control`; a spawned agent never gets it otherwise. */
+  remoteControl?: boolean
   /**
    * CC-100: the account to run this agent on, named explicitly. Validated and
    * REFUSED when unusable — see `config-dir.ts` for why this one step does not
@@ -328,6 +331,8 @@ export interface SupervisorOptions {
   surface?: Pick<SurfaceOptions, 'runAppleScript' | 'spawn' | 'platform'>
   /** Teleport's human-veto window. Shortened in tests; never shortened in production. */
   countdownMs?: number
+  /** How teleport reads a predecessor's argv for `--remote-control`. Faked in tests. */
+  argvReader?: ArgvReader
   /**
    * How long a mode switch waits for the stopped process's socket to go before
    * reclaiming its name. Shortened in tests, where nothing ever closes a fake
@@ -427,7 +432,7 @@ export class Supervisor implements TeleportHost {
     this.surfaceOptions = options.surface ?? {}
     this.hookSpawn = options.hookSpawn
     this.unwatch = core.onAppend(row => this.onRow(row))
-    this.teleporter = new Teleport(core, this, options.countdownMs)
+    this.teleporter = new Teleport(core, this, options.countdownMs, options.argvReader)
     this.shadow = new LifecycleShadow(options.ledger)
   }
 
@@ -961,6 +966,7 @@ export class Supervisor implements TeleportHost {
       ...(req.tags?.length ? { tags: req.tags } : {}),
       ...(req.subscriptions?.length ? { subscriptions: req.subscriptions } : {}),
       ...(fork ? { forkFrom: fork.path } : {}),
+      ...(req.remoteControl ? { remoteControl: true } : {}),
       agentChatHome: home(),
       configDir: account.dir,
     })
@@ -1858,6 +1864,7 @@ export class Supervisor implements TeleportHost {
       ...(input.subscriptions?.length ? { subscriptions: input.subscriptions } : {}),
       agentChatHome: home(),
       ...(input.configDir ? { configDir: input.configDir } : {}),
+      ...(input.remoteControl ? { remoteControl: true } : {}),
     })
     writeLaunchFiles(plan, buildMcpConfig(input.profile, cliEntry()))
 

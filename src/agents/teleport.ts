@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { BrokerCore } from '../broker/core.js'
+import { hostRemoteControl, psArgvReader, type ArgvReader } from '../broker/host-channels.js'
 import { newMsgId } from '../broker/event-log.js'
 import { logEvent } from '../broker/log.js'
 import {
@@ -100,6 +101,8 @@ export interface TeleportRequest {
   handoff: string
   /** The one negotiable field: succeeding yourself onto a different model, on purpose. */
   model?: string
+  /** Overrides argv detection, for a session that enabled Remote Control with `/remote-control` (H-12). */
+  remoteControl?: boolean
 }
 
 export interface TeleportOutcome {
@@ -138,6 +141,7 @@ export interface RelaunchInput {
   inheritedFrom?: string
   /** The account the predecessor was spending, carried across unchanged (CC-100). */
   configDir?: string
+  remoteControl?: boolean
 }
 
 /** What teleport borrows from the supervisor: process control and the launch path. */
@@ -155,6 +159,7 @@ interface Pending {
   surface: SurfaceName
   handoff: string
   inherited: InheritedIsolation | undefined
+  remoteControl: boolean
   timer?: NodeJS.Timeout
 }
 
@@ -200,6 +205,7 @@ export class Teleport {
     private readonly core: BrokerCore,
     private readonly host: TeleportHost,
     private readonly countdownMs: number = COUNTDOWN_MS,
+    private readonly readArgv: ArgvReader = psArgvReader,
   ) {}
 
   /**
@@ -236,6 +242,7 @@ export class Teleport {
       profile: config.profile,
       surface: config.surface,
       inherited: this.host.inheritedIsolation(subject.agentId),
+      remoteControl: req.remoteControl ?? this.predecessorRemoteControl(subject),
     }
     this.pending.set(subject.agentId, entry)
     logEvent('teleport_started', { name: subject.name, from: subject.agentId, to: descendantId })
@@ -258,6 +265,17 @@ export class Teleport {
     entry.timer = setTimeout(() => void this.finish(subject.agentId), this.countdownMs)
     entry.timer.unref?.()
     return { ...result, countdownMs: this.countdownMs }
+  }
+
+  /** Read now, while the predecessor is still running: once it ends there is no argv left to read. */
+  private predecessorRemoteControl(subject: TeleportSubject): boolean {
+    const found = hostRemoteControl(subject.hostPid, this.readArgv)
+    if (found === undefined)
+      logEvent('teleport_remote_control_unknown', {
+        name: subject.name,
+        reason: `could not read the argv of pid ${subject.hostPid}; successor starts without Remote Control`,
+      })
+    return found ?? false
   }
 
   /** Everything checkable before the handoff is written and the sequence is entered. */
@@ -463,6 +481,7 @@ export class Teleport {
         generation: String((Number.isFinite(generation) ? generation : 1) + 1),
       },
       ...(configDir ? { configDir } : {}),
+      ...(entry.remoteControl ? { remoteControl: true } : {}),
       ...(subject.tags.length > 0 ? { tags: subject.tags } : {}),
       ...(subject.subscriptions.length > 0 ? { subscriptions: subject.subscriptions } : {}),
       ...(subject.anchor === undefined ? {} : { anchor: subject.anchor, reuseAnchor: true }),

@@ -36,6 +36,26 @@ frame: {"t":"teleport","handoff":"h","model":"claude-sonnet-5"}
   }
 ]
 
+=== agent_teleport: remote_control forced on
+args: {"handoff":"h","remote_control":true}
+frame: {"t":"teleport","handoff":"h","remoteControl":true}
+[
+  {
+    "type": "text",
+    "text": "Teleport accepted. Handoff recorded; your successor is a-2 and keeps the name \"me\". Your successor is starting now and this session is being shut down. Do not start anything new — finish or write down whatever is in flight, because it will not survive this turn."
+  }
+]
+
+=== agent_teleport: remote_control forced off
+args: {"handoff":"h","remote_control":false}
+frame: {"t":"teleport","handoff":"h","remoteControl":false}
+[
+  {
+    "type": "text",
+    "text": "Teleport accepted. Handoff recorded; your successor is a-2 and keeps the name \"me\". Your successor is starting now and this session is being shut down. Do not start anything new — finish or write down whatever is in flight, because it will not survive this turn."
+  }
+]
+
 === agent_teleport: blank model
 args: {"handoff":"h","model":"  "}
 frame: {"t":"teleport","handoff":"h"}
