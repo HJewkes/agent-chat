@@ -104,6 +104,10 @@ the plan file path, in the initiative's `sources/` directory:
 `~/Library/Application Support/active-work/<initiative>/sources/<task-id>-plan.md`.
 The plan file must contain:
 
+0. **Inventory**, before any design: for each need, the existing unit it reuses (a row in
+   titan-platform's `CAPABILITIES.md`, or `file:line` elsewhere) or the gap and its task id;
+   and for every model or tool call, the runtime path, the credential it needs, and the
+   smoke check that proved it. A plan without this section is returned, not dispatched.
 1. **Goal and done-when**, restated from the task in one paragraph.
 2. **Touch points** as `file:line`, each with the change it needs in one line.
 3. **Slices**, each PR-sized (one logical change, reviewable alone), with the touch points
