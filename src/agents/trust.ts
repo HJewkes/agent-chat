@@ -63,3 +63,23 @@ export function trustGap(
     'Run `claude` there once and accept it, or spawn into a directory already trusted.'
   )
 }
+
+/** Where Claude Code keeps trust entries for an account whose `CLAUDE_CONFIG_DIR` is set, as every spawn's is. */
+export const accountConfigPath = (configDir: string): string => path.join(configDir, '.claude.json')
+
+/**
+ * Whether `cwd` or any ancestor has an accepted trust entry, or undefined when the config cannot be read.
+ * Ancestors count because a fresh worktree has no entry of its own and still launches under a trusted repo.
+ */
+export function isTrustedUnder(cwd: string, configFile: string): boolean | undefined {
+  let projects: ClaudeConfig['projects']
+  try {
+    projects = (JSON.parse(fs.readFileSync(configFile, 'utf8')) as ClaudeConfig).projects
+  } catch {
+    return undefined
+  }
+  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
+    if (projects?.[dir]?.[TRUST_FIELD] === true) return true
+    if (dir === path.dirname(dir)) return false
+  }
+}
