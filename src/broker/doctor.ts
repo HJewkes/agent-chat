@@ -12,7 +12,9 @@ import { readRuntimeState } from '../agents/launch-files.js'
 import { itermSessionPresent } from '../agents/surfaces/index.js'
 import { ATTACH_TIMEOUT_MS } from '../agents/supervisor.js'
 import { describeMirror, readMirrorFacts } from '../mirror/status.js'
-import { cliEntry, dashboardDir, defaultPort, home, socketPath } from '../paths.js'
+import { readLedger } from '../agents/burndown/ledger.js'
+import { eligibleCount } from '../agents/burndown/tick.js'
+import { burndownLedgerPath, cliEntry, dashboardDir, defaultPort, home, socketPath } from '../paths.js'
 import { EventLog } from './event-log.js'
 import { probeSocket, readMeta } from './lifecycle.js'
 import { newestBuildMtime, stalenessWarning } from './staleness.js'
@@ -403,6 +405,16 @@ async function checkStatusline(live: boolean): Promise<Check[]> {
 /** Files only; a missing config is a state, not a fault. */
 const checkMirror = (): Check => describeMirror(readMirrorFacts())
 
+/** Dry-run only in this build, so `last tick` stays `never` until the tick spawns. */
+function checkBurndown(): Check {
+  try {
+    const lastTick = readLedger(burndownLedgerPath()).lastTickAt ?? 'never'
+    return { name: 'burndown', status: 'ok', detail: `${eligibleCount()} eligible, last tick at ${lastTick}` }
+  } catch (err) {
+    return { name: 'burndown', status: 'warn', detail: err instanceof Error ? err.message : String(err) }
+  }
+}
+
 export async function runChecks(): Promise<Check[]> {
   // Probed once and shared: two checks need the answer, and asking twice would
   // let them disagree about whether a broker exists.
@@ -427,6 +439,7 @@ export async function runChecks(): Promise<Check[]> {
     checkDashboard(),
     ...(await checkStatusline(live)),
     checkMirror(),
+    checkBurndown(),
   ]
 }
 

@@ -142,13 +142,87 @@ const withoutFrontmatter = (text: string): string => {
  * YAML dependency to read one string would be a strange thing for the broker to
  * carry, and a nested key of the same name must not match.
  */
-const frontmatterField = (text: string, field: string): string | undefined => {
-  if (!text.startsWith('---\n')) return undefined
+export const frontmatterField = (text: string, field: string): string | undefined =>
+  scalarField(frontmatterBlock(text), field)
+
+const frontmatterBlock = (text: string): string => {
+  if (!text.startsWith('---\n')) return ''
   const end = text.indexOf('\n---\n', 3)
-  const block = end === -1 ? text : text.slice(4, end)
+  return end === -1 ? text : text.slice(4, end)
+}
+
+const unquote = (value: string): string => value.trim().replace(/^['"]|['"]$/g, '')
+
+const stripComment = (line: string): string => line.replace(/(^|\s)#.*$/, '').trimEnd()
+
+const scalarField = (block: string, field: string): string | undefined => {
   const found = new RegExp(`^${field}:[ \\t]*(.+)$`, 'm').exec(block)
-  const value = found?.[1]?.trim().replace(/^['"]|['"]$/g, '')
+  const value = found?.[1] === undefined ? undefined : unquote(stripComment(found[1]))
   return value === undefined || value === '' ? undefined : value
+}
+
+/** A nested mapping's body with its indent removed, or undefined when `key:` is absent. */
+const nestedBlock = (text: string, key: string): string | undefined => {
+  const lines = text.split('\n')
+  const start = lines.findIndex(line => stripComment(line) === `${key}:`)
+  if (start === -1) return undefined
+  const body: string[] = []
+  for (const line of lines.slice(start + 1)) {
+    if (line.trim() === '') continue
+    if (!/^\s/.test(line)) break
+    body.push(line)
+  }
+  const indent = Math.min(...body.map(line => line.length - line.trimStart().length))
+  return body.map(line => line.slice(indent)).join('\n')
+}
+
+/** A top-level list in flow (`[a, b]`) or block (`- a`) form; empty when absent. */
+export const listField = (text: string, key: string): string[] => {
+  const lines = text.split('\n').map(stripComment)
+  const at = lines.findIndex(line => line.startsWith(`${key}:`))
+  if (at === -1) return []
+  const inline = (lines[at] ?? '').slice(key.length + 1).trim()
+  if (inline.startsWith('['))
+    return inline
+      .replace(/^\[|\]$/g, '')
+      .split(',')
+      .map(unquote)
+      .filter(item => item !== '')
+  if (inline !== '') return [unquote(inline)]
+  const items: string[] = []
+  for (const line of lines.slice(at + 1)) {
+    const item = /^\s*-\s+(.*)$/.exec(line)?.[1]
+    if (item === undefined) break
+    items.push(unquote(item))
+  }
+  return items
+}
+
+/** An initiative's opt-in to unattended dispatch: the `autonomy:` block in its brief. */
+export interface Autonomy {
+  mode: 'burndown'
+  /** Concurrent agents this initiative may hold. */
+  lanes: number
+  /** Accounts it may spend; empty means the initiative's own `profile`. */
+  accounts: string[]
+  grants: string[]
+  /** The checkout its tasks are worked in, which is where a worktree would be cut. */
+  repo?: string
+}
+
+/** Absent, or any mode but `burndown`, means the initiative is never auto-dispatched. */
+export function parseAutonomy(briefText: string): Autonomy | undefined {
+  const block = nestedBlock(frontmatterBlock(briefText), 'autonomy')
+  if (block === undefined || scalarField(block, 'mode') !== 'burndown') return undefined
+  const lanes = Number.parseInt(scalarField(block, 'lanes') ?? '1', 10)
+  const repo = scalarField(block, 'repo')
+  return {
+    mode: 'burndown',
+    lanes: Number.isInteger(lanes) && lanes > 0 ? lanes : 1,
+    accounts: listField(block, 'accounts'),
+    grants: listField(block, 'grants'),
+    ...(repo === undefined ? {} : { repo }),
+  }
 }
 
 /**
@@ -160,7 +234,7 @@ const frontmatterField = (text: string, field: string): string | undefined => {
  * folded so a wrapped `title` survives; anything nested lands harmlessly in a
  * key nobody reads.
  */
-const taskScalars = (text: string): Record<string, string> => {
+export const taskScalars = (text: string): Record<string, string> => {
   const out: Record<string, string> = {}
   let key: string | undefined
   for (const line of text.split('\n')) {

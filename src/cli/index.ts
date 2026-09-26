@@ -22,6 +22,7 @@ import { doctorVerb } from './verbs/doctor.js'
 import { endorseVerb } from './verbs/endorse.js'
 import { inboxVerb } from './verbs/inbox.js'
 import { addMirrorCommands } from './verbs/mirror.js'
+import { addBurndownCommands } from './verbs/burndown.js'
 import { profilesVerb } from './verbs/profiles.js'
 import { teleportAbortVerb } from './verbs/teleport-abort.js'
 import * as debug from './debug.js'
@@ -209,6 +210,7 @@ export function buildProgram(): Command {
   addHumanCommands(program)
   addServiceCommands(program)
   addMirrorCommands(program)
+  addBurndownCommands(program)
   addDebugCommands(program)
   addVerb(program, doctorVerb).addCommand(doctorLifecycleCommand())
   addLifecycleCommands(program)

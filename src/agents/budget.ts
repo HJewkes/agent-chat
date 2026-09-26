@@ -331,3 +331,23 @@ export function accountUsageLine(budgets: NamedBudgetRead[], slots?: SlotUsage):
   const usage = windows.length > 0 ? windows.join(', ') : 'no account rate-limit windows in the payload'
   return `Account usage (from ${freshest.name}'s reading, ${freshest.age_seconds}s old): ${usage}.${suffix}`
 }
+
+/**
+ * The account-level figure for one config dir: the freshest reading of any
+ * session under it, since rate-limit windows are the same for all of them.
+ * A stale reading is still returned; usage only falls at resets, so it errs high.
+ */
+export function readAccountBudget(dir: string, now = Date.now()): BudgetRead {
+  const cache = budgetDir(dir)
+  let files: string[]
+  try {
+    files = fs.readdirSync(cache).filter(name => name.endsWith('.json'))
+  } catch {
+    return { found: false, path: cache, reason: 'no_file' }
+  }
+  const reads = files
+    .map(name => readBudget(name.slice(0, -'.json'.length), now, dir))
+    .filter((read): read is Extract<BudgetRead, { found: true }> => read.found)
+  if (reads.length === 0) return { found: false, path: cache, reason: 'no_file' }
+  return reads.reduce((a, b) => (b.budget.written_at > a.budget.written_at ? b : a))
+}
