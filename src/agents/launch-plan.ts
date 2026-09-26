@@ -225,6 +225,10 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     // so the message is an ordinary positional prompt behind the same load-bearing
     // `--` — and it turns this run into a one-shot print rather than a pane to
     // type in, which is why it is opt-in and never set by surfacing.
+    //
+    // `--remote-control [name]` takes an OPTIONAL name, so it goes last among the
+    // options: directly before `--`, or at the very end, nothing can be read as its name.
+    if (input.remoteControl === true && !print) args.push('--remote-control')
     if (input.resume !== true) args.push('--', input.brief)
     else if (input.resumeMessage) args.push('-p', '--', input.resumeMessage)
   }

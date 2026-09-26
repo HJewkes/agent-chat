@@ -147,6 +147,8 @@ export interface LaunchPlanInput {
    * origin is how it ends up reporting to a predecessor that no longer exists.
    */
   preamble?: string
+  /** Emit `--remote-control` on an interactive run; a print-mode run cannot use it and ignores this. */
+  remoteControl?: boolean
 }
 
 export interface LaunchPlan {

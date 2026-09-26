@@ -109,3 +109,26 @@ export function hostChannelStatus(
   if (line === undefined) return 'unknown'
   return channelStatusFromArgv(line.split(/\s+/), server)
 }
+
+/** Whether an argv started Remote Control; stops at `--` so a prompt naming the flag grants nothing. */
+export function remoteControlFromArgv(argv: readonly string[]): boolean {
+  for (const token of argv) {
+    if (token === '--') return false
+    if (token === '--remote-control' || token.startsWith('--remote-control=')) return true
+  }
+  return false
+}
+
+/**
+ * Whether the Claude Code process at `pid` was launched with `--remote-control` (H-12).
+ * `undefined` when the argv cannot be read, which callers must not read as "no".
+ * A session that enabled it later with `/remote-control` does not show here.
+ */
+export function hostRemoteControl(
+  pid: number | undefined,
+  read: ArgvReader = psArgvReader,
+): boolean | undefined {
+  if (pid === undefined || !Number.isInteger(pid) || pid <= 1) return undefined
+  const line = read(pid)
+  return line === undefined ? undefined : remoteControlFromArgv(line.split(/\s+/))
+}

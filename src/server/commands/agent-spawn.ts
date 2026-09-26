@@ -65,6 +65,14 @@ const args = z.object({
         'never meant to see. A brief is the narrower and usually better tool.',
     )
     .optional(),
+  remote_control: z
+    .boolean()
+    .describe(
+      'Start the agent with Claude Code Remote Control, so it can be driven from claude.ai or a ' +
+        'phone. Explicit opt-in, default false: a spawned agent never gets it otherwise. Headless ' +
+        'surfaces ignore it, because a print-mode run cannot host Remote Control.',
+    )
+    .optional(),
   resume_session: z
     .string()
     .describe(
@@ -142,6 +150,7 @@ function spawnFrame(input: SpawnArgs): ClientMessage {
     ...(worktree === undefined ? {} : { worktree }),
     ...(owns === undefined ? {} : { owns }),
     ...(input.inherit === undefined ? {} : { inherit: input.inherit }),
+    ...(input.remote_control === undefined ? {} : { remoteControl: input.remote_control }),
     ...(resumeSession === undefined ? {} : { resumeSession }),
     ...(predecessor === undefined ? {} : { predecessor }),
   }

@@ -736,6 +736,8 @@ export type ClientMessage =
        * new process and only the session that owns one may do that.
        */
       inherit?: 'context'
+      /** H-12: explicit opt-in to `--remote-control` for an interactive agent; headless ignores it. */
+      remoteControl?: boolean
       /**
        * The Claude Code session id the requester claims to be forking, checked
        * against the one the broker observed for this connection and REFUSED when
@@ -809,7 +811,7 @@ export type ClientMessage =
    * deliberately succeed itself onto a cheaper or stronger model. Absent means
    * "whatever this session is running on now", which is the point of teleport.
    */
-  | { t: 'teleport'; handoff: string; model?: string }
+  | { t: 'teleport'; handoff: string; model?: string; remoteControl?: boolean }
   /**
    * Stop a countdown that has not fired yet. The human's veto, and it has no
    * MCP tool — see `docs/teleport.md` §4.2. The broker refuses it from a

@@ -190,6 +190,35 @@ args: {"name":"scout","profile":"explorer","brief":"read the log","inherit":"eve
   }
 ]
 
+=== agent_spawn: remote_control on
+args: {"name":"scout","profile":"explorer","brief":"read the log","remote_control":true}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","remoteControl":true}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: remote_control off
+args: {"name":"scout","profile":"explorer","brief":"read the log","remote_control":false}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","remoteControl":false}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: remote_control not a boolean
+args: {"name":"scout","profile":"explorer","brief":"read the log","remote_control":"yes"}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: remote_control: Invalid input: expected boolean, received string"
+  }
+]
+
 === agent_spawn: surface blank
 args: {"name":"scout","profile":"explorer","brief":"read the log","surface":"  "}
 [

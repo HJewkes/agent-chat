@@ -12,6 +12,7 @@ import { Supervisor } from '../agents/supervisor.js'
 import { HANDOFF_MAX_BYTES, PANE_SETTLE_MS } from '../agents/teleport.js'
 import { planPath } from '../agents/launch-files.js'
 import type { LaunchPlan } from '../agents/types.js'
+import type { ArgvReader } from '../broker/host-channels.js'
 
 /**
  * CC-20 — teleport. What is being proved is that a session can end itself into a
@@ -61,9 +62,10 @@ const fakeConn = (): Conn => ({}) as unknown as net.Socket
  * and hands back a pane id. No AppleScript reaches the machine, and no window
  * opens on whatever laptop is running the suite.
  */
-function makeSupervisor(semaphore?: Semaphore): Supervisor {
+function makeSupervisor(semaphore?: Semaphore, argvReader: ArgvReader = () => 'claude'): Supervisor {
   supervisor = new Supervisor(core, {
     countdownMs: COUNTDOWN_MS,
+    argvReader,
     ...(semaphore ? { semaphore } : {}),
     surface: {
       platform: 'darwin',
@@ -588,5 +590,64 @@ describe('an ordinary human-started session', () => {
 
     const { args } = planFor(result.agentId as string)
     expect(args[args.indexOf('--model') + 1]).toBe('claude-sonnet-5')
+  })
+})
+
+/** H-12: a primary keeps Remote Control across teleport, read from its own argv or stated outright. */
+describe('remote control across a teleport', () => {
+  const PRIMARY = 'claude --remote-control --channels plugin:agent-chat@agent-chat-local'
+  const readers: number[] = []
+
+  async function successorArgs(argv: string | undefined, remoteControl?: boolean): Promise<string[]> {
+    supervisor.close()
+    makeSupervisor(undefined, pid => {
+      readers.push(pid)
+      return argv
+    })
+    const cwd = workspace()
+    const agentId = adoptSession('cc27', cwd)
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27', cwd }),
+      handoff: 'h',
+      ...(remoteControl === undefined ? {} : { remoteControl }),
+    })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    return planFor(result.agentId as string).args
+  }
+
+  beforeEach(() => {
+    readers.length = 0
+  })
+
+  it("keeps it when the predecessor's own argv started it", async () => {
+    const args = await successorArgs(PRIMARY)
+    expect(args).toContain('--remote-control')
+    expect(readers).toEqual([9999])
+  })
+
+  it('leaves it off for a predecessor launched without it', async () => {
+    expect(await successorArgs('claude --channels plugin:agent-chat@agent-chat-local')).not.toContain(
+      '--remote-control',
+    )
+  })
+
+  it('does not count a --remote-control that sits inside the prompt', async () => {
+    expect(await successorArgs('claude -- --remote-control')).not.toContain('--remote-control')
+  })
+
+  it('defaults off when the argv cannot be read, rather than guessing', async () => {
+    expect(await successorArgs(undefined)).not.toContain('--remote-control')
+  })
+
+  it('reaches a spawned agent only when the spawner asks for it', async () => {
+    const asked = await spawnAgent({ name: 'rc-on', surface: 'iterm-pane', remoteControl: true })
+    const plain = await spawnAgent({ name: 'rc-off', surface: 'iterm-pane' })
+    expect(planFor(asked).args).toContain('--remote-control')
+    expect(planFor(plain).args).not.toContain('--remote-control')
+  })
+
+  it('lets the session say so itself, for Remote Control switched on mid-session', async () => {
+    expect(await successorArgs('claude', true)).toContain('--remote-control')
+    expect(await successorArgs(PRIMARY, false)).not.toContain('--remote-control')
   })
 })

@@ -397,6 +397,10 @@
             ],
             "description": "Set to \"context\" to start the agent from a COPY of YOUR OWN conversation instead of an empty one — the closest thing here to \"fork me\". It can only ever fork you: there is no field for whose conversation, and a request to fork a peer is refused. Reach for it when the agent needs what you have been doing and re-describing it would cost more than it is worth. KNOW WHAT IT IS NOT: still a separate process paying its own input tokens, so it is not the cheap built-in fork; and it sees only your COMPLETED turns, never the one you are in, so do not refer to work you have not finished narrating. Also weigh what it carries — the agent inherits everything you have said, including anything its profile was never meant to see. A brief is the narrower and usually better tool."
           },
+          "remote_control": {
+            "type": "boolean",
+            "description": "Start the agent with Claude Code Remote Control, so it can be driven from claude.ai or a phone. Explicit opt-in, default false: a spawned agent never gets it otherwise. Headless surfaces ignore it, because a print-mode run cannot host Remote Control."
+          },
           "resume_session": {
             "type": "string",
             "description": "A Claude session uuid to CONTINUE instead of starting fresh, e.g. a retired agent's session id from agent_list. Its transcript must already exist under the account (config_dir) and cwd the agent will run in; otherwise the spawn is refused and names the path it checked. The brief becomes its next turn. For an agent that is finished but not retired, agent_resume is simpler."
@@ -434,6 +438,10 @@
           "model": {
             "type": "string",
             "description": "Optional. Omit to keep running on the model you are on now, which is the usual case. Set it only to succeed yourself onto a different one deliberately — a cheaper model for a long grind, a stronger one for what is left."
+          },
+          "remote_control": {
+            "type": "boolean",
+            "description": "Optional. Omit to carry Remote Control across when this session was launched with --remote-control. Set true if you turned it on mid-session with /remote-control, which the broker cannot see; set false to drop it. Headless successors ignore it."
           }
         },
         "required": [
