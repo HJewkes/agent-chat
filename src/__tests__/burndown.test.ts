@@ -15,6 +15,7 @@ import {
   type Claim,
 } from '../agents/burndown/ledger.js'
 import { planFromDisk } from '../agents/burndown/tick.js'
+import { TRUST_RULE_CLI_VERSION } from '../agents/trust.js'
 
 /**
  * The dry-run tick over a fixture world: an active-work root, a profile root
@@ -55,6 +56,18 @@ function account(name: string, usage: { seven_day: number; five_hour: number }, 
 
 const repo = (): string => path.join(world, 'repo')
 
+/** Points `AGENT_CHAT_CLAUDE` at a symlink into `versions/<name>`, the shape of a native install. */
+function installClaude(version: string): void {
+  const target = path.join(world, 'claude', 'versions', version)
+  write(target, '')
+  fs.chmodSync(target, 0o755)
+  const link = path.join(world, 'bin', 'claude')
+  fs.rmSync(link, { force: true })
+  fs.mkdirSync(path.dirname(link), { recursive: true })
+  fs.symlinkSync(target, link)
+  process.env.AGENT_CHAT_CLAUDE = link
+}
+
 function initiative(slug: string, autonomy: string, tasks: Record<string, string>): void {
   write(path.join(world, 'aw', slug, 'brief.md'), brief(autonomy.replace('REPO', repo())))
   for (const [id, text] of Object.entries(tasks))
@@ -67,6 +80,8 @@ beforeEach(() => {
   process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = path.join(world, 'aw')
   process.env.CLAUDE_PROFILE_ROOT = path.join(world, 'profiles')
   delete process.env.AGENT_CHAT_STATUS_CACHE
+  fs.mkdirSync(path.join(repo(), '.git'), { recursive: true })
+  installClaude(TRUST_RULE_CLI_VERSION)
 })
 
 afterEach(() => {
@@ -122,6 +137,56 @@ describe('burndown plan', () => {
         kind: 'trust',
         reason: expect.stringContaining('no accepted trust entry'),
       }),
+    ])
+  })
+
+  // Claude Code 2.1.283 bundle, minified oS/iS: the ancestor walk stops at the cwd's git root, and a worktree is its own.
+  it('refuses a worktree when only a folder above the repo is trusted, per CLI 2.1.283 oS/iS', () => {
+    initiative('demo', OPTED_IN, { 'DM-1': task('DM-1') })
+    account('agents', { seven_day: 40, five_hour: 10 }, [world])
+
+    const result = planFromDisk(NOON)
+
+    expect(result.dispatch).toEqual([])
+    expect(result.refusals).toEqual([
+      expect.objectContaining({
+        task: 'DM-1',
+        kind: 'trust',
+        reason: expect.stringContaining('no accepted trust entry'),
+      }),
+    ])
+  })
+
+  // Claude Code 2.1.283 bundle, minified MTe/Qt: a linked worktree's config key is its main checkout.
+  it('trusts a worktree cut from a linked worktree whose main checkout is trusted, per CLI 2.1.283 MTe/Qt', () => {
+    const main = path.join(world, 'main')
+    const linked = path.join(world, 'linked')
+    const gitDir = path.join(main, '.git', 'worktrees', 'linked')
+    write(path.join(gitDir, 'commondir'), '../..\n')
+    write(path.join(gitDir, 'gitdir'), `${path.join(linked, '.git')}\n`)
+    write(path.join(linked, '.git'), `gitdir: ${gitDir}\n`)
+    initiative('demo', OPTED_IN.replace('REPO', linked), { 'DM-1': task('DM-1') })
+    account('agents', { seven_day: 40, five_hour: 10 }, [main])
+
+    const result = planFromDisk(NOON)
+
+    expect(result.refusals).toEqual([])
+    expect(result.dispatch.map(d => d.cwd)).toEqual([path.join(linked, '.worktrees', 'bd-dm-1')])
+  })
+
+  it.each([
+    ['a different release', '2.1.284', 'differs from'],
+    ['no readable version', 'claude', 'cannot determine'],
+  ])('refuses on trust when the installed CLI has %s, even under a trusted repo', (_, installed, reason) => {
+    installClaude(installed)
+    initiative('demo', OPTED_IN, { 'DM-1': task('DM-1') })
+    account('agents', { seven_day: 40, five_hour: 10 }, [repo()])
+
+    const result = planFromDisk(NOON)
+
+    expect(result.dispatch).toEqual([])
+    expect(result.refusals).toEqual([
+      expect.objectContaining({ task: 'DM-1', kind: 'trust', reason: expect.stringContaining(reason) }),
     ])
   })
 

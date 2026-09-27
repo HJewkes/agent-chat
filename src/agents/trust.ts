@@ -64,22 +64,67 @@ export function trustGap(
   )
 }
 
-/** Where Claude Code keeps trust entries for an account whose `CLAUDE_CONFIG_DIR` is set, as every spawn's is. */
-export const accountConfigPath = (configDir: string): string => path.join(configDir, '.claude.json')
+/**
+ * Claude Code's own startup trust check, reproduced from the bundled 2.1.283 CLI
+ * (`~/.local/share/claude/versions/2.1.283`, minified `iN`, `MTe`, `oS`, `iS`, `Qt`).
+ * A folder is trusted when either key below has `hasTrustDialogAccepted`:
+ * the canonical repo root (a linked worktree resolves through `.git` to its main
+ * checkout), or the folder itself or an ancestor no higher than its git root.
+ * Any other release may differ, so callers must refuse on a version mismatch.
+ */
+export const TRUST_RULE_CLI_VERSION = '2.1.283'
+
+/** The global config the CLI reads under `CLAUDE_CONFIG_DIR`: a legacy `.config.json` there wins over `.claude.json`. */
+export function accountConfigPath(configDir: string): string {
+  const legacy = path.join(configDir, '.config.json')
+  return fs.existsSync(legacy) ? legacy : path.join(configDir, '.claude.json')
+}
+
+/** The nearest directory at or above `dir` holding a `.git` file or directory, as the CLI's `findGitRoot`. */
+export function gitRootOf(dir: string): string | undefined {
+  for (let at = path.resolve(dir); ; at = path.dirname(at)) {
+    if (fs.existsSync(path.join(at, '.git'))) return at
+    if (at === path.dirname(at)) return undefined
+  }
+}
+
+const readTrimmed = (file: string): string => fs.readFileSync(file, 'utf8').trim()
+
+/** The main checkout behind a linked worktree's git root, or the git root itself when any link fails to check out. */
+export function canonicalRootOf(gitRoot: string): string {
+  try {
+    const pointer = readTrimmed(path.join(gitRoot, '.git'))
+    if (!pointer.startsWith('gitdir:')) return gitRoot
+    const gitDir = path.resolve(gitRoot, pointer.slice('gitdir:'.length).trim())
+    const common = path.resolve(gitDir, readTrimmed(path.join(gitDir, 'commondir')))
+    if (path.dirname(gitDir) !== path.join(common, 'worktrees')) return gitRoot
+    if (path.resolve(gitDir, readTrimmed(path.join(gitDir, 'gitdir'))) !== path.join(gitRoot, '.git'))
+      return gitRoot
+    if (path.basename(common) !== '.git') return fs.existsSync(path.join(common, '.git')) ? gitRoot : common
+    return path.dirname(common)
+  } catch {
+    return gitRoot
+  }
+}
 
 /**
- * Whether `cwd` or any ancestor has an accepted trust entry, or undefined when the config cannot be read.
- * Ancestors count because a fresh worktree has no entry of its own and still launches under a trusted repo.
+ * The keys the CLI would try for a worktree not yet cut from `repo`: the new
+ * worktree is its own git root, so the ancestor walk ends at the worktree and
+ * the repo counts only as the canonical root.
  */
-export function isTrustedUnder(cwd: string, configFile: string): boolean | undefined {
+export function plannedWorktreeTrustKeys(repo: string, worktree: string): string[] | undefined {
+  const repoRoot = gitRootOf(repo)
+  if (repoRoot === undefined) return undefined
+  return [canonicalRootOf(repoRoot), path.resolve(worktree)].map(key => key.normalize('NFC'))
+}
+
+/** Whether any key has an accepted trust entry in `configFile`, or undefined when the config cannot be read. */
+export function hasTrustEntry(keys: string[], configFile: string): boolean | undefined {
   let projects: ClaudeConfig['projects']
   try {
     projects = (JSON.parse(fs.readFileSync(configFile, 'utf8')) as ClaudeConfig).projects
   } catch {
     return undefined
   }
-  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
-    if (projects?.[dir]?.[TRUST_FIELD] === true) return true
-    if (dir === path.dirname(dir)) return false
-  }
+  return keys.some(key => projects?.[key]?.[TRUST_FIELD] === true)
 }

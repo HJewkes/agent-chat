@@ -5,7 +5,7 @@ import { taskRefusal, type Initiative } from './eligibility.js'
 import { heldClaims, isStalled, readLedger, type Ledger } from './ledger.js'
 import { plan, type Plan } from './plan.js'
 import { accountDir, loadRules, readInitiatives, readReadings, readTasks } from './source.js'
-import { trustRefusal } from './trust-gate.js'
+import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
 
 /** The dry-run tick over the live files, and its two renderings: `burndown plan` and `burndown status`. */
 
@@ -26,6 +26,7 @@ const accountsOf = (initiatives: Initiative[]): string[] => [
 export function planFromDisk(now = new Date(), root = activeWorkRoot()): Plan {
   const initiatives = readInitiatives(root)
   const rules = loadRules(burndownConfigPath())
+  const cliVersion = installedClaudeVersion()
   return plan({
     initiatives,
     tasks: new Map(initiatives.map(i => [i.slug, i.autonomy === undefined ? [] : readTasks(root, i.slug)])),
@@ -34,7 +35,7 @@ export function planFromDisk(now = new Date(), root = activeWorkRoot()): Plan {
     readings: readReadings([...new Set([...accountsOf(initiatives), ...Object.keys(rules)])], now.getTime()),
     // No human-presence signal exists yet, so the gate assumes the human is here: day rules, capped ceiling.
     gate: { now },
-    trust: (cwd, account) => trustRefusal(cwd, accountDir(account)),
+    trust: (repo, cwd, account) => trustRefusal(repo, cwd, accountDir(account), cliVersion),
   })
 }
 

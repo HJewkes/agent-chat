@@ -34,7 +34,7 @@ export interface PlanInputs {
   readings: ReadonlyMap<string, AccountReading>
   gate: GateContext
   /** Why `cwd` cannot be spawned into on `account`, or undefined when it can. */
-  trust: (cwd: string, account: string) => string | undefined
+  trust: (repo: string, cwd: string, account: string) => string | undefined
 }
 
 export interface Plan {
@@ -107,7 +107,7 @@ function placeTask(
   const repo = initiative.autonomy.repo
   if (repo === undefined) return { kind: 'trust', reason: 'no autonomy.repo, so no worktree path to check' }
   const cwd = worktreePathFor(repo, agentNameFor(task.id))
-  const untrusted = inputs.trust(cwd, chosen.account)
+  const untrusted = inputs.trust(repo, cwd, chosen.account)
   if (untrusted !== undefined) return { kind: 'trust', reason: untrusted }
 
   const reason = `priority ${task.priority ?? '-'}, estimate ${task.estimate}; ${chosen.account} ${chosen.reason}`
