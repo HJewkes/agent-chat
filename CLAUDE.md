@@ -61,3 +61,8 @@ all three locally, in this order, before `gh pr create`:
    `dist/`.
 
 Never restart the broker from an agent; it serves every session on the machine.
+
+## Gotchas
+
+- Establish behaviour and security claims by running the system and observing processes, event-log rows and transcripts, not by reading source; label anything unobserved UNVERIFIED. The source has repeatedly looked right while being wrong.
+- Several sessions may share one checkout, so never `git commit --amend` or rebase there: HEAD may be a peer's commit. Land corrections as a new commit.
