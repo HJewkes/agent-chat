@@ -258,6 +258,10 @@ export const EVENT_KINDS = [
   // already retires an item — an `endorse_verdict` kind would leave it open
   // forever until someone also taught CLOSED about it.
   'endorse_request',
+  // Autonomy slice 3. The decider's answer to a human-queue question, written
+  // only by the broker for the one configured decider identity. It leaves the
+  // question open so the human can still overrule it with `answer`.
+  'decided',
 ] as const
 
 export type EventKind = (typeof EVENT_KINDS)[number]
@@ -349,7 +353,7 @@ export type PermissionBehavior = (typeof PERMISSION_BEHAVIORS)[number]
 
 /**
  * How much of a message's authority comes from a human, where `from` alone
- * cannot say. A recipient must be able to tell three states apart:
+ * cannot say. A recipient must be able to tell four states apart:
  *
  * 1. human-authored — `from` is HUMAN and no provenance. The human typed it.
  * 2. agent-authored — `from` is a peer and no provenance. That peer's own words.
@@ -358,6 +362,10 @@ export type PermissionBehavior = (typeof PERMISSION_BEHAVIORS)[number]
  *    them. Same authority as (1), deliberately not the same provenance: `from`
  *    stays the composer so an agent's phrasing never acquires the appearance of
  *    a human's own words.
+ * 4. decided — `from` is the configured decider AND provenance is `decided`.
+ *    It answers a question the recipient put to the human, on the human's
+ *    behalf, citing a precedent. Weaker than (3): no human read these words,
+ *    and it is never authority for anything on the unlock table.
  *
  * BROKER-SET ONLY, and that is the whole value. No ClientMessage carries this
  * field and no tool parameter reaches it — the same lesson `source` teaches over
@@ -367,7 +375,26 @@ export type PermissionBehavior = (typeof PERMISSION_BEHAVIORS)[number]
  * It raises provenance, never obligation: an endorsed message is still a message
  * the recipient weighs, not an instruction its tooling obeys.
  */
-export type Provenance = 'human-endorsed'
+export type Provenance = 'human-endorsed' | 'decided'
+
+/** How a decision rests on its citation: a policy clause, prior answers, or the brief or task. */
+export const DECISION_BASES = ['policy', 'precedent', 'context'] as const
+
+export type DecisionBasis = (typeof DECISION_BASES)[number]
+
+/** What a decider cites and how to undo it, stored on the `decided` row. */
+export interface DecisionCitation {
+  precedent: string
+  class: string
+  basis: DecisionBasis
+  reversible: string
+}
+
+/** A question the decider answered, shown to the human for audit. */
+export interface DecidedItem {
+  question: QueueItem
+  decision: DecisionCitation & { msgId: string; by: string; text: string; at: number }
+}
 
 export interface DeliveredMessage {
   msgId: string
@@ -631,6 +658,12 @@ export type ClientMessage =
   | { t: 'notify'; text: string }
   | { t: 'queue' }
   | { t: 'answer'; msgId: string; text: string }
+  /**
+   * The decider answering an open `question` (autonomy slice 3). Accepted only
+   * from a registered connection whose durable agent id is `decider.agentId` in
+   * config.json. Carries no provenance: the broker sets `decided` itself.
+   */
+  | ({ t: 'decided'; msgId: string; text: string } & DecisionCitation)
   | { t: 'dismiss'; msgId: string }
   /**
    * Compose a message for `to` and put it to the human for endorsement. It is
@@ -835,6 +868,9 @@ export type ClientMessage =
   | { t: 'background' }
 
 /** Broker -> session. */
+/** Why the broker refused a `decided` frame; `not_decider` is the identity gate. */
+export type DecidedRefusal = 'not_decider' | 'not_decidable' | 'unlock_table' | 'bad_citation'
+
 export type ServerMessage =
   /**
    * `name` is set only by a readopt, where the CLIENT did not know it — the
@@ -886,7 +922,9 @@ export type ServerMessage =
   /** `tags` is the subject's full set after the change, so a caller sees the result. */
   | { t: 'tag_result'; ok: boolean; reason?: string; subject?: string; tags: SessionTag[] }
   | { t: 'inbox_result'; messages: DeliveredMessage[] }
-  | { t: 'queue_result'; items: QueueItem[] }
+  /** `decided` lists questions the decider answered in the last 24 hours, for the human to audit. */
+  | { t: 'queue_result'; items: QueueItem[]; decided?: DecidedItem[] }
+  | { t: 'decided_result'; ok: boolean; reason?: string; code?: DecidedRefusal }
   | { t: 'answer_result'; ok: boolean; reason?: string }
   | { t: 'history_result'; items: QueueItem[] }
   /**

@@ -1,4 +1,4 @@
-import type { CursoredMessage, DeliveredMessage, EventKind, QueueItem } from '../protocol.js'
+import type { CursoredMessage, DecidedItem, DeliveredMessage, EventKind, QueueItem } from '../protocol.js'
 
 /**
  * The storage seam. Everything downstream of the broker depends on this
@@ -28,6 +28,9 @@ export type OpenApproval =
   | { source: 'channel'; session: string; requestId: string; toolName: string }
   /** CC-144: raised by a PermissionRequest hook; the verdict goes to the hook's connection, not the session's. */
   | { source: 'hook'; session: string; toolName: string }
+
+/** A decider's answer to one question, with the human answer that overruled it (autonomy slice 3). */
+export type Decision = DecidedItem['decision'] & { overruledBy?: string }
 
 /**
  * A log row in the shape the agent fold consumes: decoded `meta`, camelCase, and
@@ -99,6 +102,15 @@ export interface EventStore {
 
   /** Peer traffic that landed in `name`'s inbox since `since`. */
   inboxCountSince(name: string, since: number): number
+
+  /** An open `question` nobody has decided yet: the only thing a decider may answer. */
+  undecidedQuestion(msgId: string): QueueItem | undefined
+
+  /** The decider's answer to `questionId`, and the human answer that overruled it, if any. */
+  decisionFor(questionId: string): Decision | undefined
+
+  /** Decisions from the last 24 hours the human has neither overruled nor dismissed, oldest first. */
+  decidedQueue(): DecidedItem[]
 
   /** The session that raised `msgId`, so an answer knows where to go back to. */
   authorOf(msgId: string): string | undefined

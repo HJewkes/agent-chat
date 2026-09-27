@@ -4,9 +4,24 @@ import { createRequire } from 'node:module'
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { home } from '../paths.js'
-import type { DeliveredMessage, EventKind, Provenance, QueueItem } from '../protocol.js'
-import type { CursoredMessage } from '../protocol.js'
-import type { AgentEventRow, AppendInput, EventStore, LoggedEventRow, OpenApproval } from './event-store.js'
+import type {
+  DecidedItem,
+  DecisionBasis,
+  DeliveredMessage,
+  EventKind,
+  Provenance,
+  QueueItem,
+} from '../protocol.js'
+import type { CursoredMessage, DecisionCitation } from '../protocol.js'
+import { DECISION_AUDIT_MS, decidedText, overruleText } from './decisions.js'
+import type {
+  AgentEventRow,
+  AppendInput,
+  Decision,
+  EventStore,
+  LoggedEventRow,
+  OpenApproval,
+} from './event-store.js'
 
 /**
  * Append-only event log. Everything that happens on the bus lands here; live
@@ -18,7 +33,23 @@ import type { AgentEventRow, AppendInput, EventStore, LoggedEventRow, OpenApprov
  * (`agents/ledger/db-shim.ts`), one of two files that know `node:sqlite` exists.
  */
 
-export type { AgentEventRow, AppendInput, EventStore, LoggedEventRow, OpenApproval } from './event-store.js'
+export type {
+  AgentEventRow,
+  AppendInput,
+  Decision,
+  EventStore,
+  LoggedEventRow,
+  OpenApproval,
+} from './event-store.js'
+
+/** The question's columns, aliased beside a `decided` row in `decidedQueue`. */
+interface QuestionColumns {
+  q_msg_id: string
+  q_actor: string
+  q_body: string | null
+  q_ts: number
+  q_meta: string | null
+}
 
 interface Row {
   id: number
@@ -51,7 +82,7 @@ CREATE INDEX IF NOT EXISTS events_kind ON events(kind, id);
 `
 
 /** Kinds that a recipient should see in their inbox. */
-const INBOX_KINDS = ["'message'", "'broadcast'", "'answer'"].join(',')
+const INBOX_KINDS = ["'message'", "'broadcast'", "'answer'", "'decided'"].join(',')
 /** Kinds that need the human to look at them. */
 const QUEUE_KINDS = ["'message'", "'question'", "'notice'", "'approval_request'", "'endorse_request'"].join(
   ',',
@@ -72,6 +103,12 @@ const AGES_OUT = `(kind != 'approval_request' OR ts > ? OR json_extract(meta, '$
 
 /** An item is closed once something references it as answered or dismissed. */
 const CLOSED = `SELECT ref FROM events WHERE kind IN ('answer','resolution') AND ref IS NOT NULL`
+
+/**
+ * Questions the decider answered. Still open to the human, who may overrule,
+ * but answered as far as the asker and the "needs an answer" queue are concerned.
+ */
+const DECIDED = `SELECT ref FROM events WHERE kind = 'decided' AND ref IS NOT NULL`
 
 /**
  * Kinds the agent read model folds over. `agent_spawn_refused` and
@@ -101,12 +138,28 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
 
 export const newMsgId = (): string => randomUUID().slice(0, 8)
 
+const citationOf = (meta: Record<string, string>): DecisionCitation => ({
+  precedent: meta.precedent ?? '',
+  class: meta.class ?? '',
+  basis: (meta.basis ?? '') as DecisionBasis,
+  reversible: meta.reversible ?? '',
+})
+
+/** Replays rebuild the same text the live push carried, so an inbox read matches the channel. */
+function messageText(row: Row, meta: Record<string, string>): string {
+  const body = row.body ?? ''
+  if (row.kind === 'decided') return decidedText(body, row.actor, citationOf(meta))
+  if (row.kind === 'answer' && meta.overrules) return overruleText(body, meta)
+  return body
+}
+
 const toMessage = (row: Row): DeliveredMessage => {
   const meta = (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>
+  const decided = row.kind === 'decided'
   return {
     msgId: row.msg_id ?? String(row.id),
     from: row.actor,
-    text: row.body ?? '',
+    text: messageText(row, meta),
     at: row.ts,
     ...(row.ref ? { inReplyTo: row.ref } : {}),
     ...(row.kind === 'broadcast' ? { broadcast: true } : {}),
@@ -116,8 +169,19 @@ const toMessage = (row: Row): DeliveredMessage => {
     // reaches `meta`, which is what keeps this as trustworthy on the way out as
     // it was on the way in.
     ...(meta.provenance === 'human-endorsed' ? { provenance: 'human-endorsed' as Provenance } : {}),
+    // From the kind rather than `meta`: only `BrokerCore.decide` writes this kind.
+    ...(decided ? { provenance: 'decided' as Provenance, event: 'decided' } : {}),
   }
 }
+
+const toQueueItem = (row: Row): QueueItem => ({
+  msgId: row.msg_id ?? String(row.id),
+  kind: row.kind as QueueItem['kind'],
+  from: row.actor,
+  text: row.body ?? '',
+  at: row.ts,
+  meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
+})
 
 /**
  * 0600 on the log and its WAL sidecars, for the same reason `token.ts` and
@@ -269,6 +333,7 @@ export class EventLog implements EventStore {
         `SELECT * FROM events
          WHERE target = 'human' AND kind IN (${QUEUE_KINDS})
            AND msg_id NOT IN (${CLOSED})
+           AND msg_id NOT IN (${DECIDED})
            AND ${AGES_OUT}
          ORDER BY id ASC`,
       )
@@ -288,7 +353,7 @@ export class EventLog implements EventStore {
     const row = this.db
       .prepare(
         `SELECT COUNT(*) AS n FROM events
-         WHERE actor = ? AND kind = ? AND msg_id NOT IN (${CLOSED})`,
+         WHERE actor = ? AND kind = ? AND msg_id NOT IN (${CLOSED}) AND msg_id NOT IN (${DECIDED})`,
       )
       .get(actor, kind) as unknown as { n: number }
     return row.n
@@ -306,7 +371,9 @@ export class EventLog implements EventStore {
    */
   openCountByAgent(agentId: string, kind: EventKind): number {
     const rows = this.db
-      .prepare(`SELECT meta FROM events WHERE kind = ? AND msg_id NOT IN (${CLOSED})`)
+      .prepare(
+        `SELECT meta FROM events WHERE kind = ? AND msg_id NOT IN (${CLOSED}) AND msg_id NOT IN (${DECIDED})`,
+      )
       .all(kind) as unknown as { meta: string | null }[]
     return rows.filter(row => {
       const meta = (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>
@@ -374,7 +441,7 @@ export class EventLog implements EventStore {
     const rows = this.db
       .prepare(
         `SELECT * FROM events
-         WHERE actor = ? AND kind = 'question' AND msg_id NOT IN (${CLOSED})
+         WHERE actor = ? AND kind = 'question' AND msg_id NOT IN (${CLOSED}) AND msg_id NOT IN (${DECIDED})
          ORDER BY id ASC`,
       )
       .all(actor) as unknown as Row[]
@@ -404,6 +471,72 @@ export class EventLog implements EventStore {
       )
       .get(name, since) as unknown as { n: number }
     return row.n
+  }
+
+  /** An open `question` nobody has decided yet: the only thing a decider may answer. */
+  undecidedQuestion(msgId: string): QueueItem | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM events
+         WHERE msg_id = ? AND kind = 'question' AND target = 'human'
+           AND msg_id NOT IN (${CLOSED}) AND msg_id NOT IN (${DECIDED})
+         LIMIT 1`,
+      )
+      .get(msgId) as unknown as Row | undefined
+    return row && toQueueItem(row)
+  }
+
+  /** The decider's answer to `questionId`, and the human answer that overruled it, if any. */
+  decisionFor(questionId: string): Decision | undefined {
+    const row = this.db
+      .prepare(`SELECT * FROM events WHERE kind = 'decided' AND ref = ? ORDER BY id ASC LIMIT 1`)
+      .get(questionId) as unknown as Row | undefined
+    if (!row) return undefined
+    // Append-only, so `overruled_by` is the human answer written after the decision, not a column.
+    const overrule = this.db
+      .prepare(
+        `SELECT msg_id FROM events WHERE kind = 'answer' AND ref = ? AND id > ? ORDER BY id ASC LIMIT 1`,
+      )
+      .get(questionId, row.id) as unknown as { msg_id: string } | undefined
+    return {
+      ...this.decisionOf(row),
+      ...(overrule ? { overruledBy: overrule.msg_id } : {}),
+    }
+  }
+
+  /** Decisions from the last 24 hours the human has neither overruled nor dismissed, oldest first. */
+  decidedQueue(): DecidedItem[] {
+    const rows = this.db
+      .prepare(
+        `SELECT d.*, q.msg_id AS q_msg_id, q.actor AS q_actor, q.body AS q_body, q.ts AS q_ts, q.meta AS q_meta
+         FROM events d JOIN events q ON q.msg_id = d.ref AND q.kind = 'question'
+         WHERE d.kind = 'decided' AND d.ts > ? AND d.ref NOT IN (${CLOSED})
+         ORDER BY d.id ASC`,
+      )
+      .all(Date.now() - DECISION_AUDIT_MS) as unknown as (Row & QuestionColumns)[]
+    return rows.map(row => ({
+      question: toQueueItem({
+        ...row,
+        kind: 'question',
+        msg_id: row.q_msg_id,
+        actor: row.q_actor,
+        body: row.q_body,
+        ts: row.q_ts,
+        meta: row.q_meta,
+      }),
+      decision: this.decisionOf(row),
+    }))
+  }
+
+  private decisionOf(row: Row): DecidedItem['decision'] {
+    const meta = (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>
+    return {
+      ...citationOf(meta),
+      msgId: row.msg_id ?? String(row.id),
+      by: row.actor,
+      text: row.body ?? '',
+      at: row.ts,
+    }
   }
 
   /** The session that raised `msgId`, so an answer knows where to go back to. */

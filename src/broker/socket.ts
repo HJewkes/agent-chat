@@ -24,6 +24,7 @@ import { nextWatchCursor } from './watch-cursor.js'
 import { newestBuildMtime, stalenessWarning } from './staleness.js'
 import { findGitRoot } from '../git.js'
 import { readMeta } from './lifecycle.js'
+import { resolveDeciderAgentId } from '../config.js'
 
 /**
  * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
@@ -76,6 +77,7 @@ const SESSION_FRAMES: ReadonlySet<ClientMessage['t']> = new Set([
   'release',
   'status',
   'approval',
+  'decided',
 ])
 
 /** A blocked PermissionRequest hook (CC-144): the connection its verdict goes back on, and who it asked for. */
@@ -797,6 +799,38 @@ export class SocketServer {
   }
 
   /**
+   * The decider answering a question (autonomy slice 3). The gate is the
+   * durable agent id the broker bound to this connection at registration,
+   * compared with `decider.agentId` in config.json. A name is not enough: names
+   * are first come, first served. An unregistered connection has no id, so the
+   * CLI cannot decide either; the human answers instead.
+   */
+  private handleDecided(conn: Conn, msg: Extract<ClientMessage, { t: 'decided' }>): void {
+    const entry = this.core.registry.entryFor(conn)
+    const deciderId = resolveDeciderAgentId()
+    if (!entry || deciderId === undefined || entry.agentId !== deciderId) {
+      this.refuseToSession(conn, 'decide a question without being the configured decider')
+      return reply(conn, {
+        t: 'decided_result',
+        ok: false,
+        code: 'not_decider',
+        reason:
+          'only the configured decider may decide; file chat_ask and let the human or the decider answer',
+      })
+    }
+    const { msgId, text, precedent, basis, reversible } = msg
+    const result = this.core.decide(entry.name, msgId, text, {
+      precedent,
+      class: msg.class,
+      basis,
+      reversible,
+    })
+    if (!result.ok)
+      this.core.append({ kind: 'verdict_refused', actor: entry.name, ref: msgId, body: result.reason })
+    reply(conn, { t: 'decided_result', ...result })
+  }
+
+  /**
    * Close a queue item without answering it. Unlike `answer`, the item's own
    * AUTHOR may withdraw its own request — declining someone else's is still
    * human-only. CC-22's adversarial review found neither check present: any
@@ -1198,7 +1232,13 @@ export class SocketServer {
         return reply(conn, { t: 'inbox_result', messages: name ? core.events.inboxFor(name, msg.limit) : [] })
       }
       case 'queue':
-        return reply(conn, { t: 'queue_result', items: core.events.humanQueue() })
+        return reply(conn, {
+          t: 'queue_result',
+          items: core.events.humanQueue(),
+          decided: core.events.decidedQueue(),
+        })
+      case 'decided':
+        return this.handleDecided(conn, msg)
       case 'answer':
         return this.handleAnswer(conn, msg.msgId, msg.text)
       case 'dismiss':
