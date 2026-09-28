@@ -1,0 +1,209 @@
+import type { AgentLifecycle, DeliveredMessage } from '../../protocol.js'
+import { addClaim, isStalled, sameClaim, type AgentPhase, type Claim, type Ledger } from './ledger.js'
+import { agentNameFor, reviewerNameFor, successorNameFor } from './plan.js'
+import type { PlannedSlice, Report } from './report.js'
+
+/**
+ * The tick's phase machine: given every claim and what the tick observed
+ * about it, the actions that move each claim one phase. Pure: the caller
+ * reads the roster, inbox, transcript, diff and PR, and executes the actions
+ * in order, writing each `update` before the `spawn` that follows it.
+ */
+
+export type ClaimKey = Pick<Claim, 'taskId' | 'slice'>
+export type InboxMessage = Pick<DeliveredMessage, 'msgId' | 'from' | 'text' | 'provenance' | 'inReplyTo'>
+
+export interface Observation {
+  /** The roster row named `claim.agentName`, absent when there is none. */
+  agent?: { id: string; state: AgentLifecycle }
+  /** The parsed final message of that agent. */
+  report?: Report
+  /** Messages to the parked worker since the claim's inbox cursor. */
+  inbox?: InboxMessage[]
+  /** A finished planner's slices, parsed from its plan file. */
+  slices?: PlannedSlice[]
+  diff?: { reviewable: boolean; reason: string }
+  pr?: { state: 'open' | 'merged' | 'closed'; checks: 'pass' | 'fail' | 'pending' }
+}
+
+export type SpawnContext =
+  { kind: 'answer'; questionId: string; answer: InboxMessage } | { kind: 'review'; review: string }
+
+type ClaimPatch = Partial<Omit<Claim, 'taskId' | 'slice' | 'initiative'>>
+
+export type Action =
+  | { kind: 'update'; key: ClaimKey; patch: ClaimPatch }
+  | {
+      kind: 'spawn'
+      key: ClaimKey
+      role: 'reviewer' | 'successor'
+      name: string
+      predecessor?: string
+      worktree?: string
+      context?: SpawnContext
+    }
+  /** Retire in the order given: successors and reviewers first, the original agent last (CC-141). */
+  | { kind: 'retire'; key: ClaimKey; names: string[] }
+  | { kind: 'add'; claims: Claim[] }
+
+export const claimKey = (c: ClaimKey): string => `${c.taskId}#${c.slice ?? ''}`
+
+export function advance(
+  claims: Claim[],
+  observations: ReadonlyMap<string, Observation>,
+  now: Date,
+): Action[] {
+  return claims.flatMap(claim => advanceClaim(claim, observations.get(claimKey(claim)) ?? {}, now))
+}
+
+type Step = (claim: Claim, obs: Observation, now: Date) => Action[]
+
+const STEPS: Partial<Record<Claim['phase'], Step>> = {
+  spawning: (claim, obs) => (obs.agent === undefined ? [] : [landed(claim, obs.agent.id)]),
+  planning: (claim, obs, now) => (finished(obs) ? afterPlanner(claim, obs, now) : []),
+  implementing: (claim, obs) => (finished(obs) ? afterWorker(claim, obs) : []),
+  parked: afterAnswer,
+  reviewing: (claim, obs) => (finished(obs) ? afterReviewer(claim, obs) : []),
+  'awaiting-merge': afterMerge,
+}
+
+function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
+  if (claim.phase === 'done' || claim.stalledReason !== undefined) return []
+  const actions = STEPS[claim.phase]?.(claim, obs, now) ?? []
+  if (actions.length > 0 || !isStalled(claim, now)) return actions
+  return [
+    claim.phase === 'spawning'
+      ? stall(claim, `no agent row named ${claim.agentName ?? '?'}; the spawn failed or never landed`)
+      : stall(claim, `${claim.phase} past its timeout`),
+  ]
+}
+
+const finished = (obs: Observation): boolean =>
+  obs.agent?.state === 'exited' || obs.agent?.state === 'retired'
+
+const update = (claim: Claim, patch: ClaimPatch): Action => ({ kind: 'update', key: keyOf(claim), patch })
+
+const stall = (claim: Claim, reason: string): Action => update(claim, { stalledReason: reason })
+
+const keyOf = (claim: Claim): ClaimKey => ({ taskId: claim.taskId, slice: claim.slice })
+
+const landed = (claim: Claim, agentId: string): Action =>
+  update(claim, { phase: claim.nextPhase ?? 'implementing', agentId, nextPhase: undefined })
+
+function afterPlanner(claim: Claim, obs: Observation, now: Date): Action[] {
+  if (obs.slices === undefined) return [stall(claim, 'planner left no machine-readable slices')]
+  const at = now.toISOString()
+  const slices: Claim[] = obs.slices.map(s => ({
+    taskId: claim.taskId,
+    initiative: claim.initiative,
+    spawnedAt: at,
+    phase: 'queued',
+    phaseAt: at,
+    slice: s.n,
+    dependsOn: s.dependsOn,
+  }))
+  return [update(claim, { phase: 'done' }), { kind: 'add', claims: slices }, retireAll(claim)]
+}
+
+function afterWorker(claim: Claim, obs: Observation): Action[] {
+  const report = obs.report
+  const lastReport = report?.firstLine
+  if (report?.parked !== undefined)
+    return [update(claim, { phase: 'parked', questionId: report.parked, lastReport })]
+  if (report?.status === 'BLOCKED' || report?.status === 'NEEDS_CONTEXT')
+    return [stall(claim, report.firstLine)]
+  if (obs.diff?.reviewable === true) {
+    const name = reviewerNameFor(claim.taskId, claim.reviewRound ?? 0, claim.slice)
+    return spawn(claim, { role: 'reviewer', name }, 'reviewing', { lastReport, pr: report?.pr ?? claim.pr })
+  }
+  if (report?.status === 'DONE') return [update(claim, { phase: 'done', lastReport }), retireAll(claim)]
+  return [stall(claim, lastReport === undefined || lastReport === '' ? 'no final report' : lastReport)]
+}
+
+function afterAnswer(claim: Claim, obs: Observation): Action[] {
+  const answer = obs.inbox?.find(m => claim.questionId !== undefined && m.inReplyTo === claim.questionId)
+  if (answer === undefined || claim.questionId === undefined) return []
+  const context: SpawnContext = { kind: 'answer', questionId: claim.questionId, answer }
+  return successor(claim, context, { questionId: undefined })
+}
+
+function afterReviewer(claim: Claim, obs: Observation): Action[] {
+  const verdict = obs.report?.verdict
+  const pr = obs.pr
+  const approved = verdict === 'APPROVE' && pr !== undefined && pr.state !== 'closed'
+  if (approved && pr.checks === 'pass')
+    return [update(claim, { phase: 'awaiting-merge', lastReport: obs.report?.firstLine })]
+  if (approved && pr.checks === 'pending') return []
+  const why = `verdict ${verdict ?? 'unreadable'}, checks ${pr?.checks ?? 'no PR'}`
+  const round = claim.reviewRound ?? 0
+  if (round >= 1) return [stall(claim, `second failed review (${why})`)]
+  return successor(claim, { kind: 'review', review: obs.report?.text ?? why }, { reviewRound: round + 1 })
+}
+
+function afterMerge(claim: Claim, obs: Observation): Action[] {
+  if (obs.pr?.state === 'merged') return [update(claim, { phase: 'done' }), retireAll(claim)]
+  if (obs.pr?.state === 'closed') return [stall(claim, 'PR closed without merging')]
+  return []
+}
+
+/** The worker the claim's next successor takes over from: the latest successor, else the original. */
+const workerOf = (claim: Claim): string =>
+  (claim.attempt ?? 0) > 0
+    ? successorNameFor(claim.taskId, claim.attempt ?? 0, claim.slice)
+    : agentNameFor(claim.taskId, claim.slice)
+
+function successor(claim: Claim, context: SpawnContext, patch: ClaimPatch): Action[] {
+  if (claim.worktree === undefined) return [stall(claim, 'no worktree recorded for a successor to adopt')]
+  const attempt = (claim.attempt ?? 0) + 1
+  const name = successorNameFor(claim.taskId, attempt, claim.slice)
+  const request = {
+    role: 'successor' as const,
+    name,
+    predecessor: workerOf(claim),
+    worktree: claim.worktree,
+    context,
+  }
+  return spawn(claim, request, 'implementing', { ...patch, attempt })
+}
+
+type SpawnRequest = Omit<Extract<Action, { kind: 'spawn' }>, 'kind' | 'key'>
+
+/** The claim moves to `spawning` before the frame goes out, so a crash between the two is reconciled by name. */
+function spawn(claim: Claim, request: SpawnRequest, nextPhase: AgentPhase, patch: ClaimPatch): Action[] {
+  const spawned = [...(claim.spawned ?? []), request.name]
+  const intent = {
+    ...patch,
+    phase: 'spawning' as const,
+    nextPhase,
+    agentName: request.name,
+    agentId: undefined,
+    spawned,
+  }
+  return [update(claim, intent), { kind: 'spawn', key: keyOf(claim), ...request }]
+}
+
+function retireAll(claim: Claim): Action {
+  const names = [
+    ...new Set([...(claim.spawned ?? [])].reverse().concat(agentNameFor(claim.taskId, claim.slice))),
+  ]
+  return { kind: 'retire', key: keyOf(claim), names }
+}
+
+/** The ledger after `actions`; a phase change restarts the phase clock. */
+export function applyActions(ledger: Ledger, actions: Action[], now: Date): Ledger {
+  const at = now.toISOString()
+  return actions.reduce<Ledger>((current, action) => {
+    if (action.kind === 'add') return action.claims.reduce(addClaim, current)
+    if (action.kind !== 'update') return current
+    const claims = current.claims.map(c =>
+      c.phase !== 'done' && sameClaim(c, action.key) ? patched(c, action.patch, at) : c,
+    )
+    return { ...current, claims }
+  }, ledger)
+}
+
+const patched = (claim: Claim, patch: ClaimPatch, at: string): Claim => ({
+  ...claim,
+  ...patch,
+  phaseAt: patch.phase !== undefined && patch.phase !== claim.phase ? at : claim.phaseAt,
+})

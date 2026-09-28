@@ -11,6 +11,7 @@ import {
   EMPTY_LEDGER,
   isStalled,
   readLedger,
+  withLedgerLock,
   writeLedger,
   type Claim,
 } from '../agents/burndown/ledger.js'
@@ -101,7 +102,7 @@ describe('burndown plan', () => {
       expect.objectContaining({
         initiative: 'demo',
         task: 'DM-1',
-        profile: 'implementer-lite',
+        profile: 'bd-implementer-lite',
         account: 'agents',
         cwd: path.join(repo(), '.worktrees', 'bd-dm-1'),
       }),
@@ -220,6 +221,42 @@ describe('burndown plan', () => {
     )
   })
 
+  it('dispatches a planner into the repo itself and an implementer into its own worktree', () => {
+    initiative('demo', OPTED_IN.replace('lanes: 1', 'lanes: 2'), {
+      'DM-1': task('DM-1').replace('estimate: 1', 'estimate: 3'),
+    })
+    initiative('other', OPTED_IN, { 'OT-1': task('OT-1').replace('estimate: 1', 'estimate: 2') })
+    account('agents', { seven_day: 40, five_hour: 10 }, [repo()])
+
+    const result = planFromDisk(NOON)
+
+    expect(result.dispatch.map(d => [d.task, d.profile, d.cwd])).toEqual(
+      expect.arrayContaining([
+        ['DM-1', 'bd-planner', repo()],
+        ['OT-1', 'bd-implementer', path.join(repo(), '.worktrees', 'bd-ot-1')],
+      ]),
+    )
+  })
+
+  it('does not count parked or awaiting-merge claims against the lanes', () => {
+    initiative('demo', OPTED_IN, { 'DM-1': task('DM-1'), 'DM-2': task('DM-2'), 'DM-3': task('DM-3') })
+    account('agents', { seven_day: 40, five_hour: 10 }, [repo()])
+    const held = (taskId: string, phase: Claim['phase']): Claim => ({
+      taskId,
+      initiative: 'demo',
+      agentId: taskId,
+      spawnedAt: NOON.toISOString(),
+      phase,
+      phaseAt: NOON.toISOString(),
+    })
+    const ledger = { ...EMPTY_LEDGER, claims: [held('DM-1', 'parked'), held('DM-2', 'awaiting-merge')] }
+    writeLedger(path.join(world, 'home', 'burndown.json'), ledger)
+
+    const result = planFromDisk(NOON)
+
+    expect(result.dispatch.map(d => d.task)).toEqual(['DM-3'])
+  })
+
   it('never reads an initiative without an autonomy block', () => {
     initiative('demo', '', { 'DM-1': task('DM-1') })
     account('agents', { seven_day: 40, five_hour: 10 }, [repo()])
@@ -322,6 +359,30 @@ describe('claim ledger', () => {
 
     expect(read.claims).toEqual([claim])
     expect(() => addClaim(read, claim)).toThrow('already claimed')
+  })
+
+  it('holds one claim per slice of a task and refuses the same slice twice', () => {
+    const a = { ...claim, slice: 'a' }
+    const ledger = addClaim(addClaim(EMPTY_LEDGER, a), { ...claim, slice: 'b' })
+
+    expect(ledger.claims.map(c => c.slice)).toEqual(['a', 'b'])
+    expect(() => addClaim(ledger, a)).toThrow('slice a is already claimed')
+  })
+
+  it('runs under the ledger lock and refuses a second holder while the first is alive', async () => {
+    const file = path.join(world, 'home', 'burndown.json')
+
+    const nested = await withLedgerLock(file, () => withLedgerLock(file, () => 'second'))
+
+    expect(nested).toEqual({ ran: true, value: { ran: false, holder: process.pid } })
+    expect(fs.existsSync(`${file}.lock`)).toBe(false)
+  })
+
+  it('takes over a lock left by a dead process', async () => {
+    const file = path.join(world, 'home', 'burndown.json')
+    write(`${file}.lock`, '999999\n')
+
+    expect(await withLedgerLock(file, () => 'ran')).toEqual({ ran: true, value: 'ran' })
   })
 
   it('marks an implementing claim stalled after four hours', () => {
