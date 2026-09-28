@@ -64,7 +64,7 @@ export function renderStatus(ledger: Ledger, now: Date): string[] {
   ]
   for (const c of held)
     lines.push(
-      `${c.taskId} (${c.initiative}) ${c.agentId} ${c.phase} since ${c.phaseAt}${isStalled(c, now) ? ' STALLED' : ''}`,
+      `${c.taskId} (${c.initiative}) ${c.agentId ?? c.agentName ?? 'unspawned'} ${c.phase} since ${c.phaseAt}${isStalled(c, now) ? ' STALLED' : ''}`,
     )
   for (const account of Object.keys(rules)) {
     const gate = gateAccount(account, rules[account], readings.get(account), { now })

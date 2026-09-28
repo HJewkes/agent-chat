@@ -114,16 +114,18 @@ export function pickTask(
   return task === undefined ? { refusals } : { task, refusals }
 }
 
-/** The CC-136 split: big work plans first, small work that names its tests goes to the sonnet profile. */
+export const PLANNER_PROFILE = 'bd-planner'
+
+/** The CC-136 split onto the lean burndown profiles: big work plans first, small work that names its tests goes to sonnet. */
 export function profileFor(task: Task): string {
   const estimate = task.estimate ?? Infinity
-  if (estimate >= 3) return 'planner'
-  if (estimate <= 1 && /\btests?\b/i.test(task.doneWhen ?? '')) return 'implementer-lite'
-  return 'implementer'
+  if (estimate >= 3) return PLANNER_PROFILE
+  if (estimate <= 1 && /\btests?\b/i.test(task.doneWhen ?? '')) return 'bd-implementer-lite'
+  return 'bd-implementer'
 }
 
 /** Profiles that run on sonnet, which is all the tick may use above 85% `seven_day`. */
-export const SONNET_PROFILES = new Set(['implementer-lite'])
+export const SONNET_PROFILES = new Set(['implementer-lite', 'bd-implementer-lite'])
 
 export const byRank = (a: Initiative, b: Initiative): number =>
   (a.rank ?? Infinity) - (b.rank ?? Infinity) || a.slug.localeCompare(b.slug)

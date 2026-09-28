@@ -3,13 +3,14 @@ import { pickAccount, type AccountReading, type AccountRule, type GateContext } 
 import {
   byRank,
   pickTask,
+  PLANNER_PROFILE,
   profileFor,
   SONNET_PROFILES,
   type Initiative,
   type Refusal,
   type Task,
 } from './eligibility.js'
-import { heldClaims, type Ledger } from './ledger.js'
+import { heldClaims, laneClaims, type Ledger } from './ledger.js'
 import { worktreePathFor } from './trust-gate.js'
 
 /**
@@ -44,8 +45,16 @@ export interface Plan {
   notOptedIn: string[]
 }
 
-/** The agent name, and so the worktree directory, a tick spawn for `taskId` would use. */
-export const agentNameFor = (taskId: string): string => `bd-${taskId.toLowerCase()}`
+/** The agent name, and so the worktree directory, a tick spawn for `taskId` (and `slice`) would use. */
+export const agentNameFor = (taskId: string, slice?: string): string =>
+  `bd-${taskId.toLowerCase()}${slice === undefined ? '' : `-${slice.toLowerCase()}`}`
+
+/** The `attempt`th successor, which adopts the original's worktree rather than cutting its own. */
+export const successorNameFor = (taskId: string, attempt: number, slice?: string): string =>
+  `${agentNameFor(taskId, slice)}-s${attempt}`
+
+export const reviewerNameFor = (taskId: string, round: number, slice?: string): string =>
+  `${agentNameFor(taskId, slice)}-r${round}`
 
 type OptedIn = Initiative & { autonomy: Autonomy }
 
@@ -70,7 +79,7 @@ function planInitiative(
   inputs: PlanInputs,
 ): { dispatch?: Dispatch; refusals: Refusal[] } {
   const held = heldClaims(inputs.ledger)
-  const lanesHeld = held.filter(c => c.initiative === initiative.slug).length
+  const lanesHeld = laneClaims(inputs.ledger).filter(c => c.initiative === initiative.slug).length
   if (lanesHeld >= initiative.autonomy.lanes) {
     const reason = `${lanesHeld} of ${initiative.autonomy.lanes} lanes held`
     return { refusals: [{ initiative: initiative.slug, kind: 'lanes-full', reason }] }
@@ -106,7 +115,8 @@ function placeTask(
 
   const repo = initiative.autonomy.repo
   if (repo === undefined) return { kind: 'trust', reason: 'no autonomy.repo, so no worktree path to check' }
-  const cwd = worktreePathFor(repo, agentNameFor(task.id))
+  // A planner runs with isolation none in the checkout itself, so trust is checked on the repo.
+  const cwd = profile === PLANNER_PROFILE ? repo : worktreePathFor(repo, agentNameFor(task.id))
   const untrusted = inputs.trust(repo, cwd, chosen.account)
   if (untrusted !== undefined) return { kind: 'trust', reason: untrusted }
 
