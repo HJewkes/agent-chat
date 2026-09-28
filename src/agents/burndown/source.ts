@@ -74,20 +74,60 @@ export function readTasks(root: string, slug: string): Task[] {
   })
 }
 
+/** The task file's text for `id`, verbatim, for a brief; undefined when no file carries that id. */
+export function readTaskText(root: string, slug: string, id: string): string | undefined {
+  const dir = path.join(root, slug, 'tasks')
+  let files: string[]
+  try {
+    files = fs.readdirSync(dir).filter(name => name.endsWith('.yml'))
+  } catch {
+    return undefined
+  }
+  for (const file of files) {
+    const text = readText(path.join(dir, file))
+    if (text !== undefined && parseTask(text, file.replace(/\.yml$/, '')).id === id) return text
+  }
+  return undefined
+}
+
 const Rule = z.object({
   reserve_seven_day: z.number().min(0).max(100),
   ceiling_five_hour: z.number().min(0).max(100),
   night: z.object({ reserve_seven_day: z.number().min(0).max(100) }).optional(),
 })
-const Config = z.object({ accounts: z.record(z.string(), Rule) })
+const count = z.number().int().nonnegative()
+const Config = z.object({
+  accounts: z.record(z.string(), Rule).optional(),
+  enabled: z.boolean().default(false),
+  /** Burndown agents alive at once, across every initiative. */
+  maxAgents: count.default(3),
+  /** Broker agent slots the tick leaves free for the human's own spawns. */
+  reserveSlots: count.default(2),
+  maxWorktreesPerRepo: count.default(3),
+  /** Worktrees under each repo's budget the tick never takes. */
+  reserveWorktrees: count.default(3),
+  /** The registered session a spawned agent `chat_send`s its report to; the tick itself reads the transcript. */
+  reportTo: z.string().min(1).optional(),
+})
+export type TickConfig = Omit<z.infer<typeof Config>, 'accounts'>
 
-/** The design's starting numbers when no config file exists; a malformed file throws. */
-export function loadRules(file: string): Record<string, AccountRule> {
+function parseConfig(file: string): z.infer<typeof Config> | undefined {
   const raw = readText(file)
-  if (raw === undefined) return DEFAULT_RULES
+  if (raw === undefined) return undefined
   const parsed = Config.safeParse(JSON.parse(raw))
   if (!parsed.success) throw new Error(`burndown config ${file} is malformed: ${parsed.error.message}`)
-  return parsed.data.accounts as Record<string, AccountRule>
+  return parsed.data
+}
+
+/** The design's starting numbers when no config file or no `accounts` exists; a malformed file throws. */
+export function loadRules(file: string): Record<string, AccountRule> {
+  return (parseConfig(file)?.accounts as Record<string, AccountRule> | undefined) ?? DEFAULT_RULES
+}
+
+/** The tick's switches and ceilings; absent means disabled. */
+export function loadTickConfig(file: string): TickConfig {
+  const { accounts: _accounts, ...config } = parseConfig(file) ?? Config.parse({})
+  return config
 }
 
 /** The Claude config dir an account name resolves to, the way a spawn's `profile` would. */

@@ -1,0 +1,145 @@
+import { applyActions, claimKey, type Action, type ClaimKey } from './advance.js'
+import { sameClaim, writeLedger, type Ledger } from './ledger.js'
+
+/**
+ * Carries out a tick's steps against the ledger and the broker, intent first:
+ * every spawn's claim is on disk in `spawning`, and the intent is logged,
+ * before the frame goes out. A crash between the two leaves a claim the next
+ * tick reconciles by name (or stalls after ten minutes), never an agent the
+ * ledger does not know about.
+ */
+
+/** The only spawn shape the tick sends: headless, on an account named explicitly, tagged as burndown's. */
+export interface SpawnFrame {
+  t: 'spawn'
+  name: string
+  profile: string
+  brief: string
+  cwd: string
+  /** Always set: an unset one falls through to the initiative profile or the broker's own account. */
+  configDir: string
+  surface: 'headless'
+  briefing: string
+  tags: string[]
+  predecessor?: string
+  worktree?: string
+}
+
+export interface SpawnSpec {
+  name: string
+  profile: string
+  brief: string
+  cwd: string
+  configDir: string
+  initiative: string
+  taskId: string
+  predecessor?: string
+  worktree?: string
+}
+
+export function spawnFrame(s: SpawnSpec): SpawnFrame {
+  return {
+    t: 'spawn',
+    name: s.name,
+    profile: s.profile,
+    brief: s.brief,
+    cwd: s.cwd,
+    configDir: s.configDir,
+    surface: 'headless',
+    briefing: s.initiative,
+    tags: ['burndown', `task:${s.taskId}`],
+    ...(s.predecessor === undefined ? {} : { predecessor: s.predecessor }),
+    ...(s.worktree === undefined ? {} : { worktree: s.worktree }),
+  }
+}
+
+export type Step =
+  | { kind: 'ledger'; actions: Action[] }
+  | { kind: 'spawn'; key: ClaimKey; frame: SpawnFrame }
+  | { kind: 'retire'; key: ClaimKey; names: string[] }
+
+export interface SpawnReply {
+  ok: boolean
+  agentId?: string
+  reason?: string
+}
+
+export interface ExecuteDeps {
+  ledgerFile: string
+  spawn: (frame: SpawnFrame) => Promise<SpawnReply>
+  retire: (name: string) => Promise<SpawnReply>
+  log: (event: string, detail: Record<string, unknown>) => void
+  now: Date
+}
+
+export interface Executed {
+  ledger: Ledger
+  lines: string[]
+}
+
+export async function execute(steps: Step[], start: Ledger, deps: ExecuteDeps): Promise<Executed> {
+  let ledger = start
+  const lines: string[] = []
+  const commit = (actions: Action[]): void => {
+    ledger = applyActions(ledger, actions, deps.now)
+    writeLedger(deps.ledgerFile, ledger)
+  }
+  for (const step of steps) {
+    if (step.kind === 'ledger') commit(step.actions)
+    else if (step.kind === 'retire') lines.push(...(await retireAll(step, deps)))
+    else lines.push(await spawnOne(step, ledger, commit, deps))
+  }
+  return { ledger, lines }
+}
+
+/** A spawn whose claim is not already recorded in `spawning` under this name is refused, whatever built the steps. */
+function intentRecorded(ledger: Ledger, key: ClaimKey, name: string): boolean {
+  return ledger.claims.some(c => c.phase === 'spawning' && c.agentName === name && sameClaim(c, key))
+}
+
+async function spawnOne(
+  step: Extract<Step, { kind: 'spawn' }>,
+  ledger: Ledger,
+  commit: (actions: Action[]) => void,
+  deps: ExecuteDeps,
+): Promise<string> {
+  const { frame, key } = step
+  const { brief, ...shown } = frame
+  if (!intentRecorded(ledger, key, frame.name))
+    return `not spawned ${frame.name}: no spawning claim recorded for ${claimKey(key)}`
+  deps.log('burndown_spawn_intent', { ...shown, briefChars: brief.length })
+  let reply: SpawnReply
+  try {
+    reply = await deps.spawn(frame)
+  } catch (err) {
+    // The frame may have landed; the claim stays `spawning` and the next tick finds the row by name.
+    return `spawn ${frame.name} unanswered (${(err as Error).message}); left spawning for the next tick`
+  }
+  deps.log('burndown_spawn_result', { name: frame.name, ok: reply.ok, reason: reply.reason })
+  if (reply.ok) {
+    commit([{ kind: 'update', key, patch: { agentId: reply.agentId } }])
+    return `spawned ${frame.name} (${reply.agentId ?? '?'}) as ${frame.profile} on ${frame.configDir}`
+  }
+  const stalledReason = refusalReason(frame, reply.reason ?? 'refused without a reason')
+  commit([{ kind: 'update', key, patch: { stalledReason } }])
+  return `not spawned ${frame.name}: ${stalledReason}`
+}
+
+/** A refusal after allocation leaves the worktree behind (the supervisor releases the slot only), so name it. */
+export function refusalReason(frame: SpawnFrame, reason: string): string {
+  if (!reason.startsWith('spawn failed:')) return `spawn refused: ${reason}`
+  const leftover = frame.worktree === undefined ? `${frame.cwd}/.worktrees/${frame.name}` : undefined
+  return leftover === undefined
+    ? `spawn refused: ${reason}`
+    : `spawn refused: ${reason}; the worktree ${leftover} may be left behind, reclaim it by hand`
+}
+
+async function retireAll(step: Extract<Step, { kind: 'retire' }>, deps: ExecuteDeps): Promise<string[]> {
+  const lines: string[] = []
+  for (const name of step.names) {
+    const reply = await deps.retire(name).catch((err: Error) => ({ ok: false, reason: err.message }))
+    deps.log('burndown_retire', { name, ok: reply.ok, reason: reply.reason })
+    lines.push(reply.ok ? `retired ${name}` : `left ${name}: ${reply.reason ?? 'refused'}`)
+  }
+  return lines
+}

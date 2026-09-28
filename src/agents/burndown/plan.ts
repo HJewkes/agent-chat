@@ -2,6 +2,7 @@ import type { Autonomy } from '../active-work.js'
 import { pickAccount, type AccountReading, type AccountRule, type GateContext } from './budget-gate.js'
 import {
   byRank,
+  IMPLEMENTER_PROFILE,
   pickTask,
   PLANNER_PROFILE,
   profileFor,
@@ -10,7 +11,7 @@ import {
   type Refusal,
   type Task,
 } from './eligibility.js'
-import { heldClaims, laneClaims, type Ledger } from './ledger.js'
+import { heldClaims, laneClaims, readySlices, type Ledger } from './ledger.js'
 import { worktreePathFor } from './trust-gate.js'
 
 /**
@@ -21,10 +22,34 @@ import { worktreePathFor } from './trust-gate.js'
 export interface Dispatch {
   initiative: string
   task: string
+  /** A planner's slice, dispatched from a `queued` claim rather than a task file. */
+  slice?: string
   profile: string
   account: string
+  /** Where trust was checked: the repo for a planner, the worktree the spawn will cut otherwise. */
   cwd: string
+  repo: string
+  agentName: string
+  /** The worktree the spawn cuts; absent for a planner, which shares the checkout. */
+  worktree?: string
   reason: string
+}
+
+/** Worktrees under one repo's `.worktrees`: every one, and those the tick's own agents hold. */
+export interface WorktreeUse {
+  total: number
+  ours: number
+  /** The broker's per-repo budget less the reserve the tick never takes. */
+  totalCeiling: number
+  oursCeiling: number
+}
+
+/** The tick's own ceilings, under the broker's; `burndown plan` never spawns and passes none. */
+export interface Capacity {
+  /** New agents this run may still start, after `maxAgents` and the broker's free slots. */
+  agents: number
+  agentsReason: string
+  worktrees: (repo: string) => WorktreeUse
 }
 
 export interface PlanInputs {
@@ -36,6 +61,9 @@ export interface PlanInputs {
   gate: GateContext
   /** Why `cwd` cannot be spawned into on `account`, or undefined when it can. */
   trust: (repo: string, cwd: string, account: string) => string | undefined
+  capacity?: Capacity
+  /** A leftover branch or worktree named for `agentName` that no claim accounts for. */
+  orphan?: (repo: string, agentName: string) => string | undefined
 }
 
 export interface Plan {
@@ -58,6 +86,11 @@ export const reviewerNameFor = (taskId: string, round: number, slice?: string): 
 
 type OptedIn = Initiative & { autonomy: Autonomy }
 
+interface Tally {
+  agents: number
+  worktrees: Map<string, number>
+}
+
 export function plan(inputs: PlanInputs): Plan {
   const focused = inputs.initiatives.filter(i => i.state === 'focused').sort(byRank)
   const optedIn = focused.filter((i): i is OptedIn => i.autonomy !== undefined)
@@ -66,8 +99,9 @@ export function plan(inputs: PlanInputs): Plan {
     refusals: [],
     notOptedIn: focused.filter(i => i.autonomy === undefined).map(i => i.slug),
   }
+  const tally: Tally = { agents: 0, worktrees: new Map() }
   for (const initiative of optedIn) {
-    const outcome = planInitiative(initiative, inputs)
+    const outcome = planInitiative(initiative, inputs, tally)
     result.refusals.push(...outcome.refusals)
     if (outcome.dispatch !== undefined) result.dispatch.push(outcome.dispatch)
   }
@@ -77,26 +111,76 @@ export function plan(inputs: PlanInputs): Plan {
 function planInitiative(
   initiative: OptedIn,
   inputs: PlanInputs,
+  tally: Tally,
 ): { dispatch?: Dispatch; refusals: Refusal[] } {
-  const held = heldClaims(inputs.ledger)
   const lanesHeld = laneClaims(inputs.ledger).filter(c => c.initiative === initiative.slug).length
   if (lanesHeld >= initiative.autonomy.lanes) {
     const reason = `${lanesHeld} of ${initiative.autonomy.lanes} lanes held`
     return { refusals: [{ initiative: initiative.slug, kind: 'lanes-full', reason }] }
   }
-  const claimed = new Set(held.map(c => c.taskId))
-  const { task, refusals } = pickTask(initiative, inputs.tasks.get(initiative.slug) ?? [], claimed)
-  if (task === undefined) return { refusals }
-  const placed = placeTask(initiative, task, inputs)
-  if ('kind' in placed)
-    return { refusals: [...refusals, { initiative: initiative.slug, task: task.id, ...placed }] }
+  const { work, refusals } = nextWork(initiative, inputs)
+  if (work === undefined) return { refusals }
+  const refuse = (r: Pick<Refusal, 'kind' | 'reason'>): Refusal => ({
+    initiative: initiative.slug,
+    task: work.taskId,
+    ...r,
+  })
+  const placed = place(initiative, work, inputs)
+  if ('kind' in placed) return { refusals: [...refusals, refuse(placed)] }
+  const capped = capacityRefusal(placed, inputs.capacity, tally)
+  if (capped !== undefined) return { refusals: [...refusals, refuse(capped)] }
+  tally.agents += 1
+  if (placed.worktree !== undefined)
+    tally.worktrees.set(placed.repo, (tally.worktrees.get(placed.repo) ?? 0) + 1)
   return { dispatch: placed, refusals }
 }
 
-/** The account, profile and worktree for an eligible task, or why there is none. */
-function placeTask(
+interface Work {
+  taskId: string
+  slice?: string
+  profile: string
+}
+
+/** A ready slice first, since its task is already underway; else the best eligible task with no orphan. */
+function nextWork(initiative: OptedIn, inputs: PlanInputs): { work?: Work; refusals: Refusal[] } {
+  const [ready] = readySlices(inputs.ledger).filter(c => c.initiative === initiative.slug)
+  if (ready?.slice !== undefined)
+    return { work: { taskId: ready.taskId, slice: ready.slice, profile: IMPLEMENTER_PROFILE }, refusals: [] }
+  const claimed = new Set(heldClaims(inputs.ledger).map(c => c.taskId))
+  const tasks = inputs.tasks.get(initiative.slug) ?? []
+  const orphaned: Refusal[] = []
+  for (;;) {
+    const skip = new Set(orphaned.map(r => r.task))
+    const { task, refusals } = pickTask(
+      initiative,
+      tasks.filter(t => !skip.has(t.id)),
+      claimed,
+    )
+    if (task === undefined) return { refusals: [...orphaned, ...refusals] }
+    const profile = profileFor(task)
+    const orphan = orphanOf(initiative, task.id, profile, inputs)
+    if (orphan === undefined)
+      return { work: { taskId: task.id, profile }, refusals: [...orphaned, ...refusals] }
+    orphaned.push({ initiative: initiative.slug, task: task.id, kind: 'orphan', reason: orphan })
+  }
+}
+
+/** A failed spawn leaves its branch and worktree with no claim; dispatching onto it would adopt stale work. */
+function orphanOf(
   initiative: OptedIn,
-  task: Task,
+  taskId: string,
+  profile: string,
+  inputs: PlanInputs,
+): string | undefined {
+  const repo = initiative.autonomy.repo
+  if (profile === PLANNER_PROFILE || repo === undefined || inputs.orphan === undefined) return undefined
+  return inputs.orphan(repo, agentNameFor(taskId))
+}
+
+/** The account, profile and worktree for eligible work, or why there is none. */
+function place(
+  initiative: OptedIn,
+  work: Work,
   inputs: PlanInputs,
 ): Dispatch | Pick<Refusal, 'kind' | 'reason'> {
   const named = initiative.autonomy.accounts.length > 0 ? initiative.autonomy.accounts : [initiative.profile]
@@ -106,7 +190,7 @@ function placeTask(
   const { chosen, closed } = pickAccount(allowed, inputs.rules, inputs.readings, inputs.gate)
   if (chosen === undefined)
     return { kind: 'budget', reason: closed.map(c => `${c.account}: ${c.reason}`).join('; ') }
-  const profile = profileFor(task)
+  const { profile } = work
   if (chosen.sonnetOnly && !SONNET_PROFILES.has(profile))
     return {
       kind: 'budget',
@@ -115,11 +199,49 @@ function placeTask(
 
   const repo = initiative.autonomy.repo
   if (repo === undefined) return { kind: 'trust', reason: 'no autonomy.repo, so no worktree path to check' }
+  const agentName = agentNameFor(work.taskId, work.slice)
   // A planner runs with isolation none in the checkout itself, so trust is checked on the repo.
-  const cwd = profile === PLANNER_PROFILE ? repo : worktreePathFor(repo, agentNameFor(task.id))
+  const worktree = profile === PLANNER_PROFILE ? undefined : worktreePathFor(repo, agentName)
+  const cwd = worktree ?? repo
   const untrusted = inputs.trust(repo, cwd, chosen.account)
   if (untrusted !== undefined) return { kind: 'trust', reason: untrusted }
 
-  const reason = `priority ${task.priority ?? '-'}, estimate ${task.estimate}; ${chosen.account} ${chosen.reason}`
-  return { initiative: initiative.slug, task: task.id, profile, account: chosen.account, cwd, reason }
+  const task = inputs.tasks.get(initiative.slug)?.find(t => t.id === work.taskId)
+  const reason = `priority ${task?.priority ?? '-'}, estimate ${task?.estimate ?? '-'}; ${chosen.account} ${chosen.reason}`
+  return {
+    initiative: initiative.slug,
+    task: work.taskId,
+    ...(work.slice === undefined ? {} : { slice: work.slice }),
+    profile,
+    account: chosen.account,
+    cwd,
+    repo,
+    agentName,
+    ...(worktree === undefined ? {} : { worktree }),
+    reason,
+  }
+}
+
+function capacityRefusal(
+  d: Dispatch,
+  capacity: Capacity | undefined,
+  tally: Tally,
+): Pick<Refusal, 'kind' | 'reason'> | undefined {
+  if (capacity === undefined) return undefined
+  if (tally.agents >= capacity.agents) return { kind: 'slots', reason: capacity.agentsReason }
+  if (d.worktree === undefined) return undefined
+  const use = capacity.worktrees(d.repo)
+  const added = tally.worktrees.get(d.repo) ?? 0
+  const where = `${d.repo}/.worktrees`
+  if (use.total + added >= use.totalCeiling)
+    return {
+      kind: 'worktrees',
+      reason: `${use.total + added} worktrees under ${where}; the tick stops at ${use.totalCeiling} (budget less reserve)`,
+    }
+  if (use.ours + added >= use.oursCeiling)
+    return {
+      kind: 'worktrees',
+      reason: `${use.ours + added} burndown worktrees under ${where}; maxWorktreesPerRepo is ${use.oursCeiling}`,
+    }
+  return undefined
 }

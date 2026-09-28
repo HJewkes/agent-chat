@@ -347,6 +347,8 @@ describe('Next', () => {
           profile: 'implementer',
           account: 'agents',
           cwd: '/w',
+          repo: '/r',
+          agentName: 'bd-cc-4',
           reason: 'priority 2, estimate 1',
         },
       ],

@@ -3,7 +3,7 @@ import { activeWorkRoot } from '../active-work.js'
 import { gateAccount } from './budget-gate.js'
 import { taskRefusal, type Initiative } from './eligibility.js'
 import { heldClaims, isStalled, readLedger, type Ledger } from './ledger.js'
-import { plan, type Plan } from './plan.js'
+import { plan, type Plan, type PlanInputs } from './plan.js'
 import { accountDir, loadRules, readInitiatives, readReadings, readTasks } from './source.js'
 import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
 
@@ -23,20 +23,26 @@ const accountsOf = (initiatives: Initiative[]): string[] => [
   ),
 ]
 
-export function planFromDisk(now = new Date(), root = activeWorkRoot()): Plan {
+/** Everything `plan` reads off disk, which the tick also needs for briefs and the account gate. */
+export type World = Omit<PlanInputs, 'ledger' | 'capacity' | 'orphan'>
+
+export function loadWorld(now: Date, root: string): World {
   const initiatives = readInitiatives(root)
   const rules = loadRules(burndownConfigPath())
   const cliVersion = installedClaudeVersion()
-  return plan({
+  return {
     initiatives,
     tasks: new Map(initiatives.map(i => [i.slug, i.autonomy === undefined ? [] : readTasks(root, i.slug)])),
-    ledger: readLedger(burndownLedgerPath()),
     rules,
     readings: readReadings([...new Set([...accountsOf(initiatives), ...Object.keys(rules)])], now.getTime()),
     // No human-presence signal exists yet, so the gate assumes the human is here: day rules, capped ceiling.
     gate: { now },
     trust: (repo, cwd, account) => trustRefusal(repo, cwd, accountDir(account), cliVersion),
-  })
+  }
+}
+
+export function planFromDisk(now = new Date(), root = activeWorkRoot()): Plan {
+  return plan({ ...loadWorld(now, root), ledger: readLedger(burndownLedgerPath()) })
 }
 
 export function renderPlan(result: Plan, now: Date): string[] {

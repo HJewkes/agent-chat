@@ -15,7 +15,7 @@ export { findGitRoot }
 
 const execFileAsync = promisify(execFile)
 
-const DEFAULT_BUDGET = 3
+export const DEFAULT_WORKTREE_BUDGET = 3
 const DEFAULT_BASE_PATH = '.worktrees'
 export const BRANCH_PREFIX = 'agent-chat/'
 
@@ -340,7 +340,7 @@ async function refuseRelease(
 
 export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStrategy {
   const basePath = opts.basePath ?? DEFAULT_BASE_PATH
-  const budgetNow = (): number => opts.budget ?? resolveWorktreeBudget(DEFAULT_BUDGET)
+  const budgetNow = (): number => opts.budget ?? resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET)
 
   return {
     name: 'worktree',
