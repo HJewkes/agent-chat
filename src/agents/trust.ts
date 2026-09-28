@@ -65,14 +65,14 @@ export function trustGap(
 }
 
 /**
- * Claude Code's own startup trust check, reproduced from the bundled 2.1.283 CLI
- * (`~/.local/share/claude/versions/2.1.283`, minified `iN`, `MTe`, `oS`, `iS`, `Qt`).
+ * Claude Code's own startup trust check, reproduced from the bundled 2.1.284 CLI
+ * (`~/.local/share/claude/versions/2.1.284`, minified `sF`, `VRe`, `hS`, `yS`, `Qt`).
  * A folder is trusted when either key below has `hasTrustDialogAccepted`:
  * the canonical repo root (a linked worktree resolves through `.git` to its main
  * checkout), or the folder itself or an ancestor no higher than its git root.
  * Any other release may differ, so callers must refuse on a version mismatch.
  */
-export const TRUST_RULE_CLI_VERSION = '2.1.283'
+export const TRUST_RULE_CLI_VERSION = '2.1.284'
 
 /** The global config the CLI reads under `CLAUDE_CONFIG_DIR`: a legacy `.config.json` there wins over `.claude.json`. */
 export function accountConfigPath(configDir: string): string {
