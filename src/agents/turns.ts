@@ -96,3 +96,30 @@ export function readTurns(cwd: string, sessionId: string, limit: number, dir?: s
     ? { transcript, turns, branch: recent.branch.value }
     : { transcript, turns }
 }
+
+/** Long enough for a full agent report, which a brief caps at 15 lines. */
+const REPORT_CHARS = 20_000
+
+/**
+ * The last assistant message of a session's own thread, which is where a
+ * headless agent leaves its report. Undefined when there is no transcript or
+ * no such message yet.
+ */
+export function finalAssistantText(cwd: string, sessionId: string, dir?: string): string | undefined {
+  const transcript = findTranscript(cwd, sessionId, dir)
+  if (!transcript.exists) return undefined
+  let recent: RecentSessionTurns
+  try {
+    recent = readRecentSessionTurnsSync(claudeSourceFromPath(transcript.path, 'local'), {
+      maxBytes: TURN_TAIL_BYTES,
+      maxTurns: 20,
+      maxCharsPerTurn: REPORT_CHARS,
+      projection: 'text',
+    })
+  } catch (error) {
+    if (error instanceof TypeError) return undefined
+    throw error
+  }
+  const own = recent.turns.filter(t => t.role === 'assistant' && t.sidechain !== true && t.kind === 'message')
+  return own.at(-1)?.text
+}

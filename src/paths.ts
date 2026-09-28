@@ -88,6 +88,9 @@ export const burndownLedgerPath = (): string => path.join(home(), 'burndown.json
 /** Per-account reserve and ceiling for `agent-chat burndown`; the design's defaults apply when absent. */
 export const burndownConfigPath = (): string => path.join(home(), 'burndown.config.json')
 
+/** Present means `burndown tick` spawns nothing; written by `burndown pause`, removed by `burndown resume`. */
+export const burndownPausePath = (): string => path.join(home(), 'burndown.paused')
+
 /** The package root, reached identically from `dist/paths.js` and `src/paths.ts`. */
 const packageRoot = (): string => path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 

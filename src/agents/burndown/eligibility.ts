@@ -40,6 +40,9 @@ export type RefusalKind =
   | 'no-account'
   | 'budget'
   | 'trust'
+  | 'orphan'
+  | 'slots'
+  | 'worktrees'
 
 export interface Refusal {
   initiative: string
@@ -115,13 +118,14 @@ export function pickTask(
 }
 
 export const PLANNER_PROFILE = 'bd-planner'
+export const IMPLEMENTER_PROFILE = 'bd-implementer'
 
 /** The CC-136 split onto the lean burndown profiles: big work plans first, small work that names its tests goes to sonnet. */
 export function profileFor(task: Task): string {
   const estimate = task.estimate ?? Infinity
   if (estimate >= 3) return PLANNER_PROFILE
   if (estimate <= 1 && /\btests?\b/i.test(task.doneWhen ?? '')) return 'bd-implementer-lite'
-  return 'bd-implementer'
+  return IMPLEMENTER_PROFILE
 }
 
 /** Profiles that run on sonnet, which is all the tick may use above 85% `seven_day`. */

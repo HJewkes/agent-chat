@@ -12,9 +12,19 @@ import { readRuntimeState } from '../agents/launch-files.js'
 import { itermSessionPresent } from '../agents/surfaces/index.js'
 import { ATTACH_TIMEOUT_MS } from '../agents/supervisor.js'
 import { describeMirror, readMirrorFacts } from '../mirror/status.js'
-import { readLedger } from '../agents/burndown/ledger.js'
+import { heldClaims, isStalled, readLedger } from '../agents/burndown/ledger.js'
+import { loadTickConfig } from '../agents/burndown/source.js'
 import { eligibleCount } from '../agents/burndown/tick.js'
-import { burndownLedgerPath, cliEntry, dashboardDir, defaultPort, home, socketPath } from '../paths.js'
+import {
+  burndownConfigPath,
+  burndownLedgerPath,
+  burndownPausePath,
+  cliEntry,
+  dashboardDir,
+  defaultPort,
+  home,
+  socketPath,
+} from '../paths.js'
 import { EventLog } from './event-log.js'
 import { probeSocket, readMeta } from './lifecycle.js'
 import { newestBuildMtime, stalenessWarning } from './staleness.js'
@@ -405,11 +415,17 @@ async function checkStatusline(live: boolean): Promise<Check[]> {
 /** Files only; a missing config is a state, not a fault. */
 const checkMirror = (): Check => describeMirror(readMirrorFacts())
 
-/** Dry-run only in this build, so `last tick` stays `never` until the tick spawns. */
+/** Whether the tick may act, what the ledger holds, and how many claims wait on the human. */
 function checkBurndown(): Check {
   try {
-    const lastTick = readLedger(burndownLedgerPath()).lastTickAt ?? 'never'
-    return { name: 'burndown', status: 'ok', detail: `${eligibleCount()} eligible, last tick at ${lastTick}` }
+    const now = new Date()
+    const ledger = readLedger(burndownLedgerPath())
+    const held = heldClaims(ledger)
+    const stalled = held.filter(c => isStalled(c, now)).length
+    const config = loadTickConfig(burndownConfigPath())
+    const mode = config.enabled ? (fs.existsSync(burndownPausePath()) ? 'paused' : 'enabled') : 'disabled'
+    const detail = `${mode}, ${held.length} held, ${stalled} stalled, ${eligibleCount()} eligible, last tick at ${ledger.lastTickAt ?? 'never'}`
+    return { name: 'burndown', status: stalled > 0 ? 'warn' : 'ok', detail }
   } catch (err) {
     return { name: 'burndown', status: 'warn', detail: err instanceof Error ? err.message : String(err) }
   }
