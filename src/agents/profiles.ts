@@ -178,6 +178,11 @@ const FORBIDDEN_FIELDS: Record<string, string> = {
   permission_mode: 'see permissionMode',
 }
 
+const LEAN_FLAGS = ['strictMcpConfig', 'disableSlashCommands'] as const
+
+const leanFlags = (body: Record<string, unknown>): Partial<AgentProfile> =>
+  Object.fromEntries(LEAN_FLAGS.filter(field => body[field] !== undefined).map(field => [field, body[field]]))
+
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every(entry => typeof entry === 'string')
 
@@ -204,6 +209,9 @@ export function parseProfile(name: string, raw: unknown): AgentProfile | { error
     return { error: `${name}: "surface" must be one of ${SURFACE_NAMES.join(', ')}` }
   if (body.surfaceLifetime !== undefined && !SURFACE_LIFETIMES.includes(body.surfaceLifetime as never))
     return { error: `${name}: "surfaceLifetime" must be one of ${SURFACE_LIFETIMES.join(', ')}` }
+  for (const field of LEAN_FLAGS)
+    if (body[field] !== undefined && typeof body[field] !== 'boolean')
+      return { error: `${name}: "${field}" must be true or false` }
 
   return {
     name,
@@ -220,6 +228,7 @@ export function parseProfile(name: string, raw: unknown): AgentProfile | { error
     ...(typeof body.mcpServers === 'object' && body.mcpServers !== null
       ? { mcpServers: body.mcpServers as Record<string, unknown> }
       : {}),
+    ...leanFlags(body),
   }
 }
 

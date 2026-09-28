@@ -26,6 +26,9 @@ const FILE_MODE = 0o600
 
 export const planPath = (agentId: string): string => path.join(agentDir(agentId), 'plan.json')
 
+/** Named as the plugin names it, so its tools still match the AGENT_CHAT_TOOLS grant. */
+const AGENT_CHAT_SERVER = 'plugin:agent-chat:agent-chat'
+
 export const mcpConfigPath = (agentId: string): string => path.join(agentDir(agentId), 'mcp.json')
 
 /**
@@ -47,10 +50,18 @@ export const mcpConfigPath = (agentId: string): string => path.join(agentDir(age
  * unverified fix under test. If this breaks agent-chat tool access — e.g. a
  * setup where the plugin isn't installed, only `npm link`ed — that is the
  * regression to watch for and the reason this used to be unconditional.
+ *
+ * A `strictMcpConfig` profile is the exception: --strict-mcp-config drops the
+ * plugin's server along with every other one (observed 2026-09-28: `mcp_servers`
+ * was empty even with --channels), so the entry comes back for it, and that
+ * agent reaches the bus by tools and polling rather than live pushes.
  */
-export function buildMcpConfig(profile: AgentProfile, _entry: string): Record<string, unknown> {
+export function buildMcpConfig(profile: AgentProfile, entry: string): Record<string, unknown> {
   return {
     mcpServers: {
+      ...(profile.strictMcpConfig === true
+        ? { [AGENT_CHAT_SERVER]: { command: process.execPath, args: [entry, 'mcp'] } }
+        : {}),
       ...(profile.mcpServers ?? {}),
     },
   }

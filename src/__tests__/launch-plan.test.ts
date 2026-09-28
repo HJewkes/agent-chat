@@ -701,3 +701,48 @@ describe('the PermissionRequest hook (CC-144)', () => {
     expect(fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')).toContain('"timeout": 1800')
   })
 })
+
+describe('a lean profile', () => {
+  const lean = profile({ strictMcpConfig: true, disableSlashCommands: true })
+
+  // Mutation caught: emitting --strict-mcp-config unconditionally, which strips every normal spawn.
+  it('drops the ambient MCP servers and skills only when the profile asks', () => {
+    const leanArgs = buildLaunchPlan(input({ profile: lean })).args
+    const plainArgs = buildLaunchPlan(input()).args
+
+    expect(leanArgs.indexOf('--strict-mcp-config')).toBe(leanArgs.indexOf('--mcp-config') + 2)
+    expect(leanArgs).toContain('--disable-slash-commands')
+    expect(plainArgs).not.toContain('--strict-mcp-config')
+    expect(plainArgs).not.toContain('--disable-slash-commands')
+  })
+
+  it('keeps agent-chat in its own MCP config, since strict mode drops the plugin', () => {
+    const leanServers = buildMcpConfig(lean, '/repo/dist/cli.js').mcpServers as Record<string, unknown>
+    const plainServers = buildMcpConfig(profile(), '/repo/dist/cli.js').mcpServers as Record<string, unknown>
+
+    expect(leanServers['plugin:agent-chat:agent-chat']).toMatchObject({ args: ['/repo/dist/cli.js', 'mcp'] })
+    expect(plainServers).toEqual({})
+  })
+
+  it('refuses a lean flag that is not a boolean rather than coercing it', () => {
+    const base = { model: 'opus', allowedTools: ['Read'], isolation: 'none', surface: 'headless' }
+
+    expect(parseProfile('bad', { ...base, strictMcpConfig: 'yes' })).toHaveProperty('error')
+    expect(parseProfile('bad', { ...base, disableSlashCommands: 1 })).toHaveProperty('error')
+    expect(parseProfile('ok', { ...base, strictMcpConfig: false })).toMatchObject({ strictMcpConfig: false })
+  })
+
+  it.each(['bd-planner', 'bd-implementer', 'bd-implementer-lite', 'bd-reviewer'])(
+    'ships %s headless, lean, and with active-work',
+    name => {
+      const parsed = loadProfile(name, path.join(__dirname, '../../profiles'))
+
+      if ('error' in parsed) throw new Error(parsed.error)
+      expect(parsed).toMatchObject({ surface: 'headless', strictMcpConfig: true, disableSlashCommands: true })
+      expect(Object.keys(parsed.mcpServers ?? {})).toEqual(['active-work'])
+      expect(parsed.disallowedTools).toEqual(
+        expect.arrayContaining(['AskUserQuestion', 'Bash(agent-chat approve:*)']),
+      )
+    },
+  )
+})

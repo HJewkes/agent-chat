@@ -1,0 +1,25 @@
+{
+  "description": "Burndown implementer for small, fully specified briefs: implementer-lite's model (sonnet), headless, in its own worktree, on a lean bootstrap (only agent-chat and active-work MCP, no skills).",
+  "model": "sonnet",
+  "allowedTools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "Monitor"],
+  "disallowedTools": [
+    "Bash(agent-chat endorse:*)",
+    "Bash(agent-chat dismiss:*)",
+    "Bash(agent-chat send:*)",
+    "Bash(agent-chat answer:*)",
+    "Bash(agent-chat approve:*)",
+    "AskUserQuestion"
+  ],
+  "isolation": "worktree",
+  "surface": "headless",
+  "surfaceLifetime": "close-on-exit",
+  "promptPrelude": "You are headless: no one is watching and no pane can answer a permission prompt. You are implementing a small, fully specified change in an isolated worktree. Follow the brief literally: the tests it names are the acceptance criteria, so write them first and make them pass. Do not redesign, widen scope, or touch files outside the ownership set the brief gives you; if the brief is ambiguous or the change turns out larger than described, stop and report BLOCKED with what you found instead of guessing. Run the project's full gates before reporting done.",
+  "strictMcpConfig": true,
+  "disableSlashCommands": true,
+  "mcpServers": {
+    "active-work": {
+      "type": "http",
+      "url": "http://127.0.0.1:7400/mcp"
+    }
+  }
+}

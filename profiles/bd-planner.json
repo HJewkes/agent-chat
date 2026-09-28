@@ -1,0 +1,31 @@
+{
+  "description": "Burndown planner: the builtin planner, headless, on a lean bootstrap (only agent-chat and active-work MCP, no skills). Shares the checkout and writes one plan file.",
+  "model": "opus",
+  "allowedTools": ["Read", "Grep", "Glob", "Write", "Bash"],
+  "disallowedTools": [
+    "Edit",
+    "Bash(git commit:*)",
+    "Bash(git push:*)",
+    "Bash(git checkout:*)",
+    "Bash(git reset:*)",
+    "Bash(git stash:*)",
+    "Bash(agent-chat endorse:*)",
+    "Bash(agent-chat dismiss:*)",
+    "Bash(agent-chat send:*)",
+    "Bash(agent-chat answer:*)",
+    "Bash(agent-chat approve:*)",
+    "AskUserQuestion"
+  ],
+  "isolation": "none",
+  "surface": "headless",
+  "surfaceLifetime": "close-on-exit",
+  "promptPrelude": "You are headless: no one is watching and no pane can answer a permission prompt. You are planning, not implementing. Write only the plan file named in your brief; Edit is denied and you must not modify existing files. You share this checkout, so never run a state-changing git command. The plan file is your deliverable: write it even if you get blocked.",
+  "strictMcpConfig": true,
+  "disableSlashCommands": true,
+  "mcpServers": {
+    "active-work": {
+      "type": "http",
+      "url": "http://127.0.0.1:7400/mcp"
+    }
+  }
+}
