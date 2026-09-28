@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { SpawnOptions } from 'node:child_process'
+import type { LaunchCheckTiming, ProcessProbe } from './launch-check.js'
 
 /**
  * Runs one AppleScript and resolves with its trimmed output. Injected so tests
@@ -57,6 +58,10 @@ export interface SurfaceOptions {
   /** Told when a surface silently downgrades, e.g. the anchor pane has closed. */
   onNotice?: (message: string) => void
   runAppleScript?: AppleScriptRunner
+  /** Lists what runs on a pane's tty, for CC-175's launch check. Injected so tests need no `ps`. */
+  probeProcesses?: ProcessProbe
+  /** How long, and how often, the launch check looks for `run-agent`. Shortened in tests. */
+  launchCheck?: LaunchCheckTiming
   spawn?: SpawnFn
   platform?: NodeJS.Platform
 }

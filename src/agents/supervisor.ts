@@ -173,7 +173,10 @@ export interface SwitchRequest {
   hostPid?: number
 }
 
-type AttachOutcome = { kind: 'attached' | 'timeout' } | { kind: 'exited'; code: number | null }
+type AttachOutcome =
+  | { kind: 'attached' | 'timeout' }
+  | { kind: 'exited'; code: number | null }
+  | { kind: 'launch_failed'; reason: string }
 
 /** What the attach window concluded: up, dead, or a visible agent still starting in a pane that exists. */
 type AttachVerdict =
@@ -328,7 +331,7 @@ export interface SupervisorOptions {
    * reaches the real AppleScript and opens a real window on any machine that
    * happens to be running iTerm — passing on CI and spawning panes on a laptop.
    */
-  surface?: Pick<SurfaceOptions, 'runAppleScript' | 'spawn' | 'platform'>
+  surface?: Pick<SurfaceOptions, 'runAppleScript' | 'spawn' | 'platform' | 'probeProcesses' | 'launchCheck'>
   /** Teleport's human-veto window. Shortened in tests; never shortened in production. */
   countdownMs?: number
   /** How teleport reads a predecessor's argv for `--remote-control`. Faked in tests. */
@@ -1154,6 +1157,7 @@ export class Supervisor implements TeleportHost {
       const cause = `claude exited before registering (exit code ${outcome.code ?? 'unknown'})`
       return { kind: 'failed', reason: `${cause}. ${attachDiagnosis(cwd, handle, 'exited')}` }
     }
+    if (outcome.kind === 'launch_failed') return { kind: 'failed', reason: outcome.reason }
 
     const window = span(this.attachMs)
     const diagnosis = attachDiagnosis(cwd, handle, 'waiting')
@@ -1192,6 +1196,10 @@ export class Supervisor implements TeleportHost {
       // than assumed, because both signals can land in the same tick.
       void handle.exited?.then(({ code }) => {
         finish(this.hasAttached(agentId) ? { kind: 'attached' } : { kind: 'exited', code })
+      })
+      // CC-175: a pane whose run-agent never started fails in seconds, not at the ceiling.
+      void handle.launchFailed?.then(reason => {
+        finish(this.hasAttached(agentId) ? { kind: 'attached' } : { kind: 'launch_failed', reason })
       })
     })
   }
@@ -1313,8 +1321,8 @@ export class Supervisor implements TeleportHost {
     // CC-78: the same facts on disk, so a retire that outlives this broker can
     // still release the worktree and close the pane. `exited` is dropped because
     // a Promise cannot be persisted, which is also what makes the persisted copy
-    // safe to use only where an exit callback is irrelevant.
-    const { exited: _exited, ...handleState } = handle
+    // safe to use only where an exit callback is irrelevant. `launchFailed` likewise.
+    const { exited: _exited, launchFailed: _launchFailed, ...handleState } = handle
     writeRuntimeState(agentId, { handle: handleState, allocation, isolation, ...(anchor ? { anchor } : {}) })
     // Headless only. A visible agent has no such promise, by design, and falls
     // through to the presence-inferred path instead.

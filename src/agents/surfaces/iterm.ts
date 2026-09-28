@@ -2,7 +2,8 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { SurfaceName } from '../../protocol.js'
 import type { CloseOutcome, LaunchHandle, LaunchPlan, Surface } from '../types.js'
-import { runAgentCommand } from './command.js'
+import { paneCommand, runAgentCommand } from './command.js'
+import { psProbe, watchLaunch, type PaneReader } from './launch-check.js'
 import { SurfaceRefused, type AppleScriptRunner, type SurfaceOptions } from './options.js'
 
 /**
@@ -27,6 +28,9 @@ const CLOSED = '@@closed@@'
 /** Returned by the existence probe. Two sentinels, so a throw can never read as "gone". */
 const PRESENT = '@@present@@'
 const GONE = '@@gone@@'
+
+/** Kill-line in zsh and bash, for a prompt that already holds stray keys. */
+const CTRL_U = 21
 
 const execFileAsync = promisify(execFile)
 
@@ -67,6 +71,26 @@ const findSessions = (uuid: string, columnUuid: string): string => `
   if anchorSession is missing value then return ${asString(NO_ANCHOR)}`
 
 /**
+ * Where the human's keystrokes were going, read before a surface opens and put
+ * back after it (CC-175). Read only, never used to place anything.
+ *
+ * `create tab` makes its window key and `create window` activates iTerm2, so
+ * without this the next keystroke lands in the agent's pane. `select` on a
+ * window is `makeKeyAndOrderFront`, which does not activate iTerm2 when some
+ * other app is in front.
+ */
+const rememberFocus = `  set priorWindow to missing value
+  try
+    set priorWindow to current window
+  end try`
+
+const restoreFocus = `  if priorWindow is not missing value then
+    try
+      select priorWindow
+    end try
+  end if`
+
+/**
  * Agents stack in a column beside the anchor, rather than each one splitting the
  * anchor again — which halved the coordinator's pane on every spawn and left a
  * row of equal columns. The first agent splits the anchor VERTICALLY, taking one
@@ -80,6 +104,9 @@ const findSessions = (uuid: string, columnUuid: string): string => `
  * is keyed by whose pane is being split, and the anchor is always the requester's
  * own pane, so an agent's own spawns land beside IT — one step further right, a
  * column per level, for free. See docs/agent-teams.md § placement.
+ *
+ * The anchor window's tab and session are re-selected afterwards because a
+ * split selects the anchor's tab and a new tab selects itself.
  */
 const beside = (
   surface: ItermSurfaceName,
@@ -87,17 +114,23 @@ const beside = (
   command: string,
   columnUuid: string = '',
 ): string => {
+  const withCommand = `with default profile command ${asString(command)}`
   const open =
     surface === 'iterm-pane'
       ? `  if columnSession is not missing value then
-    tell columnSession to set spawned to (split horizontally with default profile)
+    tell columnSession to set spawned to (split horizontally ${withCommand})
   else
-    tell anchorSession to set spawned to (split vertically with default profile)
+    tell anchorSession to set spawned to (split vertically ${withCommand})
   end if`
-      : '  tell anchorWindow to set spawned to (current session of (create tab with default profile))'
+      : `  tell anchorWindow to set spawned to (current session of (create tab ${withCommand}))`
   return `tell application "iTerm2"${findSessions(uuid, columnUuid)}
+${rememberFocus}
+  set anchorTab to current tab of anchorWindow
+  set anchorWindowSession to current session of anchorWindow
 ${open}
-  tell spawned to write text ${asString(command)}
+  select anchorTab
+  select anchorWindowSession
+${restoreFocus}
   return unique ID of spawned
 end tell`
 }
@@ -110,16 +143,22 @@ end tell`
  * descendant lands exactly where the session it continues was sitting — same
  * window, same split, same place in the human's layout. Opening a tab instead
  * left a dead pane behind and moved the work somewhere nobody was looking.
+ *
+ * An existing shell cannot be given a command at creation, so this one is still
+ * typed. Ctrl-U first clears anything already on the prompt line; keys typed
+ * between the two writes, or after, still join it (CC-175).
  */
 const inPlace = (uuid: string, command: string): string => `tell application "iTerm2"${findSessions(uuid, '')}
+  tell anchorSession to write text (character id ${CTRL_U}) newline no
   tell anchorSession to write text ${asString(command)}
   return unique ID of anchorSession
 end tell`
 
 /** The fallback everything lands on: needs no anchor, so it cannot fail to find one. */
 const newWindow = (command: string): string => `tell application "iTerm2"
-  set spawned to (current session of (create window with default profile))
-  tell spawned to write text ${asString(command)}
+${rememberFocus}
+  set spawned to (current session of (create window with default profile command ${asString(command)}))
+${restoreFocus}
   return unique ID of spawned
 end tell`
 
@@ -206,6 +245,48 @@ async function requireIterm(options: SurfaceOptions, run: AppleScriptRunner): Pr
   if (!(await itermRunning(run))) throw new SurfaceRefused("iTerm2 is not running; use surface 'headless'")
 }
 
+/** One field of one session, or `@@gone@@` when iTerm2 no longer lists it. */
+const sessionField = (uuid: string, field: 'tty' | 'contents'): string => `tell application "iTerm2"
+  repeat with w in windows
+    repeat with t in tabs of w
+      repeat with s in sessions of t
+        if (unique ID of s) is ${asString(uuid)} then return ${field} of s
+      end repeat
+    end repeat
+  end repeat
+  return ${asString(GONE)}
+end tell`
+
+const paneReader = (run: AppleScriptRunner, uuid: string): PaneReader => ({
+  tty: async () => {
+    const tty = await run(sessionField(uuid, 'tty'))
+    return tty === GONE ? undefined : tty
+  },
+  contents: async () => {
+    const contents = await run(sessionField(uuid, 'contents'))
+    return contents === GONE ? '' : contents
+  },
+})
+
+/**
+ * A pane the broker opened, with CC-175's check that `run-agent` started in it.
+ * Not armed for a pane only written into: teleport has no attach wait to race it.
+ */
+const watched = (
+  handle: LaunchHandle & { paneRef: string },
+  agentId: string,
+  options: SurfaceOptions,
+  run: AppleScriptRunner,
+): LaunchHandle => ({
+  ...handle,
+  launchFailed: watchLaunch(
+    paneReader(run, handle.paneRef),
+    options.probeProcesses ?? psProbe,
+    agentId,
+    options.launchCheck,
+  ),
+})
+
 /**
  * The ladder of §5.4, in order: no anchor -> a window; anchor recorded but gone
  * -> a window plus a notice; no iTerm2 at all -> refuse, naming headless.
@@ -217,8 +298,9 @@ async function launchIterm(
 ): Promise<LaunchHandle> {
   const run = options.runAppleScript ?? osascript
   await requireIterm(options, run)
-  const command = runAgentCommand(plan.agentId)
   const uuid = anchorUuid(options.anchor)
+  const opened = (at: ItermSurfaceName, paneRef: string): LaunchHandle =>
+    watched({ surface: at, paneRef, ownsSurface: true }, plan.agentId, options, run)
 
   // Reuse is tried first and falls through to the ordinary ladder when the pane
   // has closed — a human who quit the whole window during the countdown should
@@ -227,15 +309,15 @@ async function launchIterm(
     // No `ownsSurface`: this pane was already open and this launch only wrote
     // into it. Whether the broker opened it in an earlier life is a question
     // about the PREDECESSOR, which only the supervisor can answer.
-    const paneRef = await run(inPlace(uuid, command))
+    const paneRef = await run(inPlace(uuid, runAgentCommand(plan.agentId)))
     if (paneRef !== NO_ANCHOR) return { surface, paneRef }
     options.onNotice?.(`pane ${uuid} is gone; opening an iTerm window rather than reusing it`)
   } else if (surface !== 'iterm-window' && uuid !== undefined) {
-    const paneRef = await run(beside(surface, uuid, command, options.columnAfter))
-    if (paneRef !== NO_ANCHOR) return { surface, paneRef, ownsSurface: true }
+    const paneRef = await run(beside(surface, uuid, paneCommand(plan.agentId), options.columnAfter))
+    if (paneRef !== NO_ANCHOR) return opened(surface, paneRef)
     options.onNotice?.(`anchor session ${uuid} is gone; opening an iTerm window instead of ${surface}`)
   }
-  return { surface: 'iterm-window', paneRef: await run(newWindow(command)), ownsSurface: true }
+  return opened('iterm-window', await run(newWindow(paneCommand(plan.agentId))))
 }
 
 /**

@@ -190,6 +190,12 @@ export interface LaunchHandle {
    * detach with no reattach — which is why it can never carry an exit code.
    */
   exited?: Promise<{ code: number | null; signal: string | null }>
+  /**
+   * Visible only, for a pane the broker opened: resolves with a reason once the
+   * surface has seen the launch fail before the agent could register (CC-175),
+   * and never resolves otherwise. Like `exited`, it cannot be persisted.
+   */
+  launchFailed?: Promise<string>
 }
 
 /**
