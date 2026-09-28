@@ -1952,6 +1952,40 @@ describe('a visible spawn still starting at the attach window', () => {
     expect(late).toEqual([expect.objectContaining({ agentId, elapsedMs: 5000 })])
   })
 
+  /** CC-175: the pane whose shell ran `s aAGENT_CHAT_HOME=...` and was then waited on for ten minutes. */
+  it('fails at once, quoting the pane, when run-agent never started in it', async () => {
+    stopAutoAttach()
+    const iterm = fakeIterm()
+    supervisor = new Supervisor(
+      core,
+      withShadow({
+        attachMs: 30_000,
+        attachCeilingMs: 600_000,
+        surface: {
+          platform: 'darwin',
+          runAppleScript: async script => {
+            if (script.includes('return tty of s')) return '/dev/ttys042'
+            if (script.includes('return contents of s'))
+              return '% s aAGENT_CHAT_HOME=/x node cli.js\nzsh: command not found: s'
+            return iterm.runAppleScript(script)
+          },
+          probeProcesses: async () => ['-zsh'],
+          launchCheck: { deadlineMs: 5000, pollMs: 500 },
+        },
+      }),
+    )
+
+    const spawning = supervisor.spawn(spawnReq({ surface: 'iterm-window' }))
+    await vi.advanceTimersByTimeAsync(5000)
+    const result = await spawning
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/run-agent \w+ was not running in its pane 5s after launch/)
+    expect(result.reason).toContain('zsh: command not found: s')
+    expect(core.agents.get(result.agentId as string)?.exit?.failedToStart).toBe(true)
+    expect(iterm.closes()).toBe(1)
+  })
+
   it('fails the spawn as before once the ceiling passes without a registration', async () => {
     stopAutoAttach()
     const iterm = fakeIterm()

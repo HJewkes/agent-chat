@@ -129,7 +129,7 @@ export const runtimeStatePath = (agentId: string): string => path.join(agentDir(
  * Its absence is already the signal for "infer this agent's exit from presence".
  */
 export interface RuntimeState {
-  handle: Omit<LaunchHandle, 'exited'>
+  handle: Omit<LaunchHandle, 'exited' | 'launchFailed'>
   allocation: Allocation
   isolation: IsolationName
   anchor?: string

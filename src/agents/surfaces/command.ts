@@ -31,3 +31,28 @@ export const runAgentCommand = (agentId: string): string =>
     `AGENT_CHAT_HOME=${shellQuote(home())}`,
     ...[process.execPath, ...runAgentArgv(agentId)].map(shellQuote),
   ].join(' ')
+
+/**
+ * One word of iTerm2's `command` parameter, which iTerm splits into argv itself
+ * (`componentsInShellCommand`), with no shell and its own escape rules: `\n`,
+ * `\t`, `\a` and `\r` become control characters even inside single quotes, and
+ * the string is first evaluated as an interpolated "swifty" string where `\(`
+ * starts an expression. So a word is double-quoted and may hold no backslash
+ * and no double quote at all, rather than trusting an escape to survive both.
+ */
+const itermWord = (word: string): string => {
+  if (/["\\]/.test(word))
+    throw new Error(`cannot hand iTerm2 a command containing a double quote or backslash: ${word}`)
+  return `"${word}"`
+}
+
+/**
+ * For a pane the broker opens (CC-175): the command is given to iTerm at
+ * creation, so it is never typed into a shell whose input the human can reach.
+ *
+ * `zsh -lic` for the environment a typed command used to get: `-l` for PATH from
+ * .zprofile, `-i` for whatever .zshrc exports. `exec /bin/zsh -l` afterwards
+ * keeps the pane, and whatever run-agent printed, open after it exits or crashes.
+ */
+export const paneCommand = (agentId: string): string =>
+  ['/bin/zsh', '-lic', `${runAgentCommand(agentId)}; exec /bin/zsh -l`].map(itermWord).join(' ')

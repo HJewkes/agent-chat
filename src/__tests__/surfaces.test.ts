@@ -51,6 +51,13 @@ function fakeIterm(found = true, stillThere = false) {
 
 const lastScript = (scripts: string[]): string => scripts[scripts.length - 1] ?? ''
 
+/** The lines that open a surface. Focus is read elsewhere in the script, to be put back, never to place. */
+const placement = (script: string): string =>
+  script
+    .split('\n')
+    .filter(line => line.includes('set spawned to'))
+    .join('\n')
+
 describe('surface registry', () => {
   it('resolves every declared surface name and reports interactivity', () => {
     for (const name of SURFACE_NAMES) {
@@ -148,12 +155,12 @@ describe('iterm surfaces', () => {
     const { scripts, options } = fakeIterm()
     const handle = await surfaceFor('iterm-pane', { ...options, anchor: ANCHOR }).launch(plan())
 
-    expect(handle).toEqual({ surface: 'iterm-pane', paneRef: 'NEW-SESSION-UUID', ownsSurface: true })
+    expect(handle).toMatchObject({ surface: 'iterm-pane', paneRef: 'NEW-SESSION-UUID', ownsSurface: true })
     const script = lastScript(scripts)
     expect(script).toContain(`is "${UUID}"`)
     expect(script).toContain('split vertically with default profile')
     // The lesson from iterm-panes.sh: focus must never decide where a pane lands.
-    expect(script).not.toContain('current window')
+    expect(placement(script)).not.toContain('current window')
   })
 
   /**
@@ -174,7 +181,7 @@ describe('iterm surfaces', () => {
     expect(script).toContain('is "FIRST-AGENT-PANE"')
     expect(script).toContain('split horizontally with default profile')
     // Still resolved by uuid, never by focus — the column must not change that.
-    expect(script).not.toContain('current window')
+    expect(placement(script)).not.toContain('current window')
   })
 
   it('starts a fresh column when the previous agent pane has been closed', async () => {
@@ -233,7 +240,7 @@ describe('iterm surfaces', () => {
     const { scripts, notices, options } = fakeIterm()
     const handle = await surfaceFor('iterm-pane', options).launch(plan())
 
-    expect(handle).toEqual({ surface: 'iterm-window', paneRef: 'NEW-SESSION-UUID', ownsSurface: true })
+    expect(handle).toMatchObject({ surface: 'iterm-window', paneRef: 'NEW-SESSION-UUID', ownsSurface: true })
     expect(lastScript(scripts)).toContain('create window with default profile')
     expect(notices).toEqual([])
   })
@@ -242,7 +249,7 @@ describe('iterm surfaces', () => {
     const { scripts, notices, options } = fakeIterm(false)
     const handle = await surfaceFor('iterm-pane', { ...options, anchor: ANCHOR }).launch(plan())
 
-    expect(handle).toEqual({ surface: 'iterm-window', paneRef: 'NEW-SESSION-UUID', ownsSurface: true })
+    expect(handle).toMatchObject({ surface: 'iterm-window', paneRef: 'NEW-SESSION-UUID', ownsSurface: true })
     expect(lastScript(scripts)).toContain('create window with default profile')
     expect(notices).toHaveLength(1)
     expect(notices[0]).toContain(UUID)
@@ -485,5 +492,183 @@ describe('the command a visible surface hands to a shell', () => {
       if (previous === undefined) delete process.env.AGENT_CHAT_HOME
       else process.env.AGENT_CHAT_HOME = previous
     }
+  })
+})
+
+/**
+ * CC-175. A pane was opened, iTerm made it active, and the command was then typed
+ * into its shell with `write text` — so the human's keystrokes joined it. Seen
+ * live on 2026-09-28: the pane ran `s aAGENT_CHAT_HOME=...`, zsh answered
+ * "command not found: s", and the broker waited ten minutes to call it failed.
+ */
+describe('a pane the broker opens (CC-175)', () => {
+  const TTY = '/dev/ttys042'
+
+  /** An iTerm2 whose new pane has a tty and some text on screen. */
+  function paneIterm(contents = 'Last login: Mon\n\nzsh: command not found: s\n\n') {
+    const { scripts, options } = fakeIterm()
+    const base = options.runAppleScript as (script: string) => Promise<string>
+    const runAppleScript = async (script: string): Promise<string> => {
+      if (script.includes('return tty of s')) return (scripts.push(script), TTY)
+      if (script.includes('return contents of s')) return (scripts.push(script), contents)
+      return base(script)
+    }
+    return { scripts, options: { ...options, runAppleScript, launchCheck: { deadlineMs: 20, pollMs: 5 } } }
+  }
+
+  const never = <T>(promise: Promise<T> | undefined, ms = 60): Promise<T | 'still pending'> =>
+    Promise.race([
+      promise ?? new Promise<T>(() => undefined),
+      new Promise<'still pending'>(r => setTimeout(() => r('still pending'), ms)),
+    ])
+
+  const openings: [string, SurfaceName, Partial<SurfaceOptions>][] = [
+    ['a pane beside the anchor', 'iterm-pane', { anchor: ANCHOR }],
+    ['a pane stacked in the column', 'iterm-pane', { anchor: ANCHOR, columnAfter: 'FIRST-AGENT-PANE' }],
+    ['a tab', 'iterm-tab', { anchor: ANCHOR }],
+    ['a window', 'iterm-window', {}],
+  ]
+
+  it.each(openings)(
+    'never types the command into %s, handing it to iTerm at creation',
+    async (_, name, over) => {
+      const { scripts, options } = fakeIterm()
+      await surfaceFor(name, { ...options, ...over }).launch(plan())
+
+      const script = lastScript(scripts)
+      expect(script).not.toContain('write text')
+      expect(script).toMatch(/with default profile command "/)
+      expect(script).toContain('run-agent')
+    },
+  )
+
+  it('wraps the command in a login shell that keeps the pane after it exits', async () => {
+    const { scripts, options } = fakeIterm()
+    await surfaceFor('iterm-pane', { ...options, anchor: ANCHOR }).launch(plan())
+
+    // Undo the AppleScript string, then iTerm's own word splitting: double-quoted words, no escapes.
+    const quoted = /command "((?:[^"\\]|\\.)*)"/.exec(lastScript(scripts))?.[1] ?? ''
+    const argv = [...quoted.replaceAll('\\"', '"').matchAll(/"([^"\\]*)"/g)].map(match => match[1])
+
+    expect(argv.slice(0, 2)).toEqual(['/bin/zsh', '-lic'])
+    expect(argv[2]).toMatch(
+      /^AGENT_CHAT_HOME='[^']*' '[^']*node[^']*' '[^']*' 'run-agent' 'ag000001'; exec \/bin\/zsh -l$/,
+    )
+    expect(argv).toHaveLength(3)
+  })
+
+  it('refuses a path iTerm2 could not carry intact, rather than launching a mangled one', async () => {
+    const previous = process.env.AGENT_CHAT_HOME
+    process.env.AGENT_CHAT_HOME = '/tmp/a "quoted" home'
+    try {
+      const { options } = fakeIterm()
+      await expect(surfaceFor('iterm-tab', { ...options, anchor: ANCHOR }).launch(plan())).rejects.toThrow(
+        /double quote or backslash/,
+      )
+    } finally {
+      if (previous === undefined) delete process.env.AGENT_CHAT_HOME
+      else process.env.AGENT_CHAT_HOME = previous
+    }
+  })
+
+  it.each(openings.slice(0, 3))(
+    'gives focus back to the anchor window after opening %s',
+    async (_, name, over) => {
+      const { scripts, options } = fakeIterm()
+      await surfaceFor(name, { ...options, ...over }).launch(plan())
+
+      const script = lastScript(scripts)
+      const opened = script.indexOf('set spawned to')
+      expect(script.indexOf('set anchorTab to current tab of anchorWindow')).toBeLessThan(opened)
+      expect(script.indexOf('select anchorTab')).toBeGreaterThan(opened)
+      expect(script.indexOf('select anchorWindowSession')).toBeGreaterThan(opened)
+      expect(script.indexOf('select priorWindow')).toBeGreaterThan(opened)
+    },
+  )
+
+  it('gives focus back to the window the human was in after opening a window', async () => {
+    const { scripts, options } = fakeIterm()
+    await surfaceFor('iterm-window', options).launch(plan())
+
+    const script = lastScript(scripts)
+    expect(script.indexOf('set priorWindow to current window')).toBeLessThan(script.indexOf('set spawned to'))
+    expect(script.indexOf('select priorWindow')).toBeGreaterThan(script.indexOf('set spawned to'))
+  })
+
+  it('clears the prompt line before typing into a reused pane, the one case that still types', async () => {
+    const { scripts, options } = fakeIterm()
+    await surfaceFor('iterm-tab', { ...options, anchor: ANCHOR, reuseAnchor: true }).launch(plan())
+
+    const script = lastScript(scripts)
+    const clear = script.indexOf('write text (character id 21) newline no')
+    expect(clear).toBeGreaterThan(-1)
+    expect(clear).toBeLessThan(script.indexOf('write text "'))
+  })
+
+  it('fails the launch within the check window, quoting the pane, when run-agent never started', async () => {
+    const { options } = paneIterm()
+    const probed: string[] = []
+    const handle = await surfaceFor('iterm-pane', {
+      ...options,
+      anchor: ANCHOR,
+      probeProcesses: async tty => (probed.push(tty), ['-zsh', '/bin/zsh -l']),
+    }).launch(plan())
+
+    const reason = await never(handle.launchFailed, 1000)
+
+    expect(reason).toMatch(/run-agent ag000001 was not running in its pane/)
+    expect(reason).toContain("The pane's last lines:\nLast login: Mon\nzsh: command not found: s")
+    expect(probed[0]).toBe('ttys042')
+  })
+
+  it('stays quiet once run-agent is seen on the pane’s tty', async () => {
+    const { options } = paneIterm()
+    const handle = await surfaceFor('iterm-pane', {
+      ...options,
+      anchor: ANCHOR,
+      probeProcesses: async () => ['-zsh', `/opt/node /x/dist/cli.js run-agent ag000001`],
+    }).launch(plan())
+
+    await expect(never(handle.launchFailed)).resolves.toBe('still pending')
+  })
+
+  it('does not count the zsh wrapper, whose -c string quotes the same words, as run-agent', async () => {
+    const { options } = paneIterm()
+    const handle = await surfaceFor('iterm-pane', {
+      ...options,
+      anchor: ANCHOR,
+      probeProcesses: async () => [
+        `/bin/zsh -lic AGENT_CHAT_HOME='/h' '/opt/node' 'cli.js' 'run-agent' 'ag000001'; exec /bin/zsh -l`,
+      ],
+    }).launch(plan())
+
+    await expect(never(handle.launchFailed, 1000)).resolves.toMatch(/was not running/)
+  })
+
+  it('fails nothing when it cannot tell: ps erroring, or no tty it recognises', async () => {
+    const erroring = await surfaceFor('iterm-pane', {
+      ...paneIterm().options,
+      anchor: ANCHOR,
+      probeProcesses: () => Promise.reject(new Error('ps: not permitted')),
+    }).launch(plan())
+    const { options } = fakeIterm()
+    const noTty = await surfaceFor('iterm-pane', {
+      ...options,
+      anchor: ANCHOR,
+      launchCheck: { deadlineMs: 20, pollMs: 5 },
+      probeProcesses: async () => [],
+    }).launch(plan())
+
+    await expect(never(erroring.launchFailed)).resolves.toBe('still pending')
+    await expect(never(noTty.launchFailed)).resolves.toBe('still pending')
+  })
+
+  it('does not arm the check for a pane it only typed into', async () => {
+    const { options } = paneIterm()
+    const handle = await surfaceFor('iterm-tab', { ...options, anchor: ANCHOR, reuseAnchor: true }).launch(
+      plan(),
+    )
+
+    expect(handle.launchFailed).toBeUndefined()
   })
 })
