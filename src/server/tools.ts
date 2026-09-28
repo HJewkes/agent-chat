@@ -17,6 +17,7 @@ import { sessionBudget } from './commands/session-budget.js'
 import { chatBroadcast } from './commands/chat-broadcast.js'
 import { chatAsk } from './commands/chat-ask.js'
 import { chatEndorse } from './commands/chat-endorse.js'
+import { chatDecide } from './commands/chat-decide.js'
 import { chatNotify } from './commands/chat-notify.js'
 import { chatClaim } from './commands/chat-claim.js'
 import { chatRelease } from './commands/chat-release.js'
@@ -38,6 +39,7 @@ export const TOOL_DEFINITIONS = [
   toolDefinition(chatBroadcast),
   toolDefinition(chatAsk),
   toolDefinition(chatEndorse),
+  toolDefinition(chatDecide),
   toolDefinition(chatNotify),
   toolDefinition(chatInbox),
   toolDefinition(chatSubscribe),

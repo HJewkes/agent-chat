@@ -16,6 +16,10 @@ function formatInbox(messages: DeliveredMessage[]): string {
       // Named the same way here as in the channel attribute, so a model reading
       // a replayed message reaches the same conclusion as one reading it live.
       m.provenance === 'human-endorsed' ? 'human-endorsed: their human approved these exact words' : null,
+      m.provenance === 'decided'
+        ? 'decided: answers your question on your human’s behalf; they may overrule'
+        : null,
+      m.event === 'overrule' ? 'overrule: your human replaced an earlier decision' : null,
     ].filter(Boolean)
     const suffix = tags.length > 0 ? ` (${tags.join(', ')})` : ''
     return `- [${m.msgId}] from ${m.from}${suffix}: ${m.text}`

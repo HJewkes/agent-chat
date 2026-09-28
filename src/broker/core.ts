@@ -1,5 +1,12 @@
 import type net from 'node:net'
-import { HUMAN, type ClientMessage, type DeliveredMessage } from '../protocol.js'
+import {
+  HUMAN,
+  type ClientMessage,
+  type DecidedRefusal,
+  type DecisionCitation,
+  type DeliveredMessage,
+} from '../protocol.js'
+import { checkDecision, decidedText, overruleText } from './decisions.js'
 import { AgentLog } from '../agents/identity.js'
 import { logEvent } from './log.js'
 import { EventLog, newMsgId } from './event-log.js'
@@ -290,13 +297,22 @@ export class BrokerCore<C = Conn> {
     const author = this.events.authorOf(msgId)
     if (!author) return { ok: false, reason: `no item with id ${msgId}` }
 
+    // An answer on a decided question overrules the decider; the asker must be told which one stands.
+    const decision = this.events.decisionFor(msgId)
+    const overrule = decision && {
+      event: 'overrule',
+      overrules: decision.msgId,
+      overruled_decider: decision.by,
+    }
     const message: DeliveredMessage = {
       msgId: newMsgId(),
       from: HUMAN,
-      text,
+      text: overrule ? overruleText(text, overrule) : text,
       inReplyTo: msgId,
+      ...(overrule ? { event: 'overrule' } : {}),
       at: Date.now(),
     }
+    // The body stays the human's own words: slice 1's precedent extract reads it as the answer.
     this.append({
       kind: 'answer',
       actor: HUMAN,
@@ -304,6 +320,7 @@ export class BrokerCore<C = Conn> {
       msgId: message.msgId,
       ref: msgId,
       body: text,
+      ...(overrule ? { meta: overrule } : {}),
     })
 
     const live = this.deliverTo(author, message)
@@ -316,6 +333,52 @@ export class BrokerCore<C = Conn> {
       ref: msgId,
     })
     return { ok: true, ...(live ? {} : { reason: `${author} is offline; queued in its inbox` }) }
+  }
+
+  /**
+   * The decider answering a question on the human's behalf (autonomy slice 3).
+   *
+   * The second place `provenance` is set, mirroring `endorse`: the caller has
+   * already proved the decider identity, the question text comes from the
+   * stored row, and the marker comes from this method rather than any field
+   * the decider sent. The question stays open so `answer` can overrule it.
+   */
+  decide(decider: string, msgId: string, text: string, citation: DecisionCitation): DecideResult {
+    const question = this.events.undecidedQuestion(msgId)
+    if (!question)
+      return { ok: false, code: 'not_decidable', reason: `${msgId} is not an open, undecided question` }
+    const check = checkDecision(question.text, text, citation)
+    if (!check.ok) return check
+
+    const message: DeliveredMessage = {
+      msgId: newMsgId(),
+      from: decider,
+      text: decidedText(text, decider, citation),
+      inReplyTo: msgId,
+      provenance: 'decided',
+      event: 'decided',
+      at: Date.now(),
+    }
+    this.append({
+      kind: 'decided',
+      actor: decider,
+      target: question.from,
+      msgId: message.msgId,
+      ref: msgId,
+      body: text,
+      meta: { ...citation },
+    })
+    const live = this.deliverTo(question.from, message)
+    logEvent('route', {
+      kind: 'decided',
+      msgId: message.msgId,
+      from: decider,
+      to: question.from,
+      delivered: live,
+      provenance: 'decided',
+      ref: msgId,
+    })
+    return { ok: true, ...(live ? {} : { reason: `${question.from} is offline; queued in its inbox` }) }
   }
 
   /**
@@ -387,6 +450,8 @@ export interface VerdictResult {
   ok: boolean
   reason?: string
 }
+
+export type DecideResult = { ok: true; reason?: string } | { ok: false; code: DecidedRefusal; reason: string }
 
 export interface BrokerCoreOptions<C = Conn> {
   registry?: Registry<C>

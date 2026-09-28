@@ -15,6 +15,7 @@ import { sessionBudget } from './session-budget.js'
 import { chatBroadcast } from './chat-broadcast.js'
 import { chatAsk } from './chat-ask.js'
 import { chatEndorse } from './chat-endorse.js'
+import { chatDecide } from './chat-decide.js'
 import { chatNotify } from './chat-notify.js'
 import { chatClaim } from './chat-claim.js'
 import { chatRelease } from './chat-release.js'
@@ -42,6 +43,7 @@ TOOL_COMMANDS.register(sessionBudget)
 TOOL_COMMANDS.register(chatBroadcast)
 TOOL_COMMANDS.register(chatAsk)
 TOOL_COMMANDS.register(chatEndorse)
+TOOL_COMMANDS.register(chatDecide)
 TOOL_COMMANDS.register(chatNotify)
 TOOL_COMMANDS.register(chatClaim)
 TOOL_COMMANDS.register(chatRelease)

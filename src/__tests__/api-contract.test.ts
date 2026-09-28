@@ -69,6 +69,11 @@ const KINDS_AT_FREEZE = [
   // request is precisely something needing an answer), and the log view renders
   // any kind generically. Not subscribable: its body is message content.
   'endorse_request',
+  // Autonomy slice 3, added through this test. The human queue does NOT carry it
+  // as an item needing an answer: it moves its question into queue_result's
+  // `decided` audit section instead. The log view renders it generically. Not
+  // subscribable: its body is an answer to someone's question.
+  'decided',
 ]
 
 describe('SSE event names cover every EventKind', () => {

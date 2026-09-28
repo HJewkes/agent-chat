@@ -1,5 +1,6 @@
 import {
   PERMISSION_BEHAVIORS,
+  type DecidedItem,
   type PermissionBehavior,
   type QueueItem,
   type ServerMessage,
@@ -22,10 +23,30 @@ const LABEL: Record<string, string> = {
 const needsAnswer = (i: QueueItem): boolean =>
   i.kind === 'question' || i.kind === 'approval_request' || i.kind === 'endorse_request'
 
+/**
+ * Questions the decider answered, each with the citation it rests on, so the
+ * human can audit them cold. `answer` on the id overrules; `dismiss` accepts.
+ */
+export function describeDecided(decided: DecidedItem[]): string[] {
+  if (decided.length === 0) return []
+  const lines = [`Decided for you, awaiting your audit (${decided.length}):`]
+  for (const { question, decision } of decided) {
+    lines.push(`DCD   ${question.msgId}  ${question.from.padEnd(14)} ${ago(decision.at)} by ${decision.by}`)
+    lines.push(`      Q: ${question.text}`)
+    lines.push(`      A: ${decision.text}`)
+    lines.push(`      cites (${decision.class}, ${decision.basis}): ${decision.precedent}`)
+    lines.push(`      to undo: ${decision.reversible}`)
+  }
+  lines.push('overrule with: agent-chat answer <id> "..."   (or dismiss <id> to accept)')
+  return lines
+}
+
 export function describeInbox(res: Extract<ServerMessage, { t: 'queue_result' }>): Report {
+  const decided = describeDecided(res.decided ?? [])
   const lines: string[] = []
   if (res.items.length === 0) {
     lines.push('Nothing waiting.')
+    if (decided.length > 0) lines.push('', ...decided)
     return { ok: true, lines }
   }
   const ordered = [...res.items].sort((a, b) => Number(needsAnswer(b)) - Number(needsAnswer(a)))
@@ -69,6 +90,7 @@ export function describeInbox(res: Extract<ServerMessage, { t: 'queue_result' }>
   if (res.items.some(i => i.kind === 'endorse_request')) {
     lines.push('endorse with: agent-chat endorse <id>   (or dismiss <id> to decline)')
   }
+  if (decided.length > 0) lines.push('', ...decided)
   return { ok: true, lines }
 }
 

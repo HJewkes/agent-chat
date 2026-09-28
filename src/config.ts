@@ -9,6 +9,7 @@ interface AgentChatConfig {
   contextHints?: unknown
   ledgerShadow?: unknown
   permissionHookTimeoutSeconds?: unknown
+  decider?: unknown
 }
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
@@ -58,6 +59,20 @@ export function resolveLedgerShadow(): boolean {
   if (value === undefined || typeof value === 'boolean') return value !== false
   logEvent('config_invalid', { key: 'ledgerShadow', value, fallback: true })
   return true
+}
+
+/**
+ * The one durable agent id allowed to send `decided` (autonomy slice 3), from
+ * `config.json`'s `decider.agentId`. Read per frame, so the burndown tick can
+ * point it at a fresh decider without a broker restart. Absent means no decider.
+ */
+export function resolveDeciderAgentId(): string | undefined {
+  const decider = readConfig().decider
+  if (decider === undefined) return undefined
+  const agentId = isObject(decider) ? decider.agentId : undefined
+  if (typeof agentId === 'string' && agentId !== '') return agentId
+  logEvent('config_invalid', { key: 'decider.agentId', value: agentId, fallback: 'no decider' })
+  return undefined
 }
 
 /** How long a headless agent's PermissionRequest hook blocks for the human (CC-144); read per spawn. */

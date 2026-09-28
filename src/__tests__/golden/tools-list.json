@@ -244,6 +244,52 @@
       }
     },
     {
+      "name": "chat_decide",
+      "description": "Decider profile only: answer one open human-queue question on the human’s behalf, citing the precedent it rests on. The broker refuses unless you are the configured decider, the question is still open and undecided, the class is decidable, and neither question nor answer touches the unlock table (merges, publishing, deploys, money, external accounts, deletions and the rest). A refused question stays queued for the human; do not rephrase it to get past the check. The asker receives your answer marked provenance=\"decided\" and the human sees it for audit and may overrule it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "msg_id": {
+            "type": "string",
+            "description": "The msg_id of the open question, from agent-chat inbox"
+          },
+          "text": {
+            "type": "string",
+            "description": "The answer the asker receives, standing on its own"
+          },
+          "precedent": {
+            "type": "string",
+            "description": "The citation, verbatim from precedent search or a policy file with its heading"
+          },
+          "class": {
+            "type": "string",
+            "description": "The question class, in precedent search’s vocabulary"
+          },
+          "basis": {
+            "type": "string",
+            "enum": [
+              "policy",
+              "precedent",
+              "context"
+            ],
+            "description": "policy, precedent (two or more agreeing answers), or context"
+          },
+          "reversible": {
+            "type": "string",
+            "description": "How to undo this decision if the human overrules it"
+          }
+        },
+        "required": [
+          "msg_id",
+          "text",
+          "precedent",
+          "class",
+          "basis",
+          "reversible"
+        ]
+      }
+    },
+    {
       "name": "chat_notify",
       "description": "Leave the human a status notice that needs no answer, e.g. finishing a long task or hitting something they should know about. It waits in their queue; it does not interrupt them.",
       "inputSchema": {
