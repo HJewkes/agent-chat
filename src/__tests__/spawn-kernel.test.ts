@@ -48,8 +48,6 @@ describe('the spawn-kernel subpath', () => {
     expect(typeof kernel.findTranscript).toBe('function')
     expect(typeof kernel.transcriptPath).toBe('function')
     expect(typeof kernel.projectSlug).toBe('function')
-    expect(typeof kernel.readTail).toBe('function')
-    expect(typeof kernel.observedModel).toBe('function')
     expect(typeof kernel.transcriptLine).toBe('function')
     expect(typeof kernel.findDenials).toBe('function')
   })

@@ -1,6 +1,11 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import {
+  claudeSourceFromPath,
+  readRecentSessionTurnsSync,
+  type RecentObservedValue,
+} from '@titan-design/session-read'
 
 /**
  * Where Claude Code's own per-session transcript lives, for an agent we spawned.
@@ -78,68 +83,35 @@ function readProjects(dir?: string): string[] {
   }
 }
 
-/** Only the tail is read: a long session's transcript runs to megabytes. */
-const TAIL_BYTES = 256 * 1024
-
 /**
- * The last `bytes` of a file as text, or undefined if it cannot be read.
- *
- * Reading from an offset almost always lands mid-row, so the first line of what
- * comes back is usually half a JSON object. Every caller drops it; that is the
- * price of not reading the whole file, not a parse failure worth reporting.
- */
-export function readTail(file: string, bytes = TAIL_BYTES): string | undefined {
-  try {
-    const handle = fs.openSync(file, 'r')
-    try {
-      const size = fs.fstatSync(handle).size
-      const length = Math.min(size, bytes)
-      const buffer = Buffer.alloc(length)
-      fs.readSync(handle, buffer, 0, length, size - length)
-      return buffer.toString('utf8')
-    } finally {
-      fs.closeSync(handle)
-    }
-  } catch {
-    return undefined
-  }
-}
-
-/**
- * The model the newest assistant turn actually ran on.
- *
- * Teleport's rule is that a descendant replicates the configuration its
- * predecessor is running under, and for an ordinary human-started session there
- * is no profile to copy it from — the model is not in the environment either
- * (`CLAUDE_CODE_SESSION_ID` and the rest are, this is not). It IS on every
- * assistant row of Claude Code's own transcript, as `message.model`. Observed on
- * a live transcript, not inferred: `claude-opus-5` on 39 of 39 assistant rows of
- * the session that wrote this.
- *
- * Telemetry owned by another program, so every failure is a miss rather than a
- * throw — undefined means "could not tell", and the caller inherits the
- * harness default instead of guessing a model on the human's behalf.
+ * The model the newest real assistant turn ran on, from `message.model` on
+ * Claude Code's own transcript; teleport copies it for a human-started session.
+ * Telemetry owned by another program, so undefined means "could not tell" and
+ * the caller inherits the harness default. session-read skips `<synthetic>`.
  */
 export function observedModel(cwd: string, sessionId: string, dir?: string): string | undefined {
   const found = findTranscript(cwd, sessionId, dir)
   if (!found.exists) return undefined
-  const tail = readTail(found.path)
-  return tail === undefined ? undefined : newestModel(tail)
+  const model = readModel(found.path)
+  return model?.status === 'observed' ? model.value : undefined
 }
 
-function newestModel(tail: string): string | undefined {
-  const lines = tail.split('\n')
-  // Newest first, and the first line is skipped — see readTail.
-  for (let at = lines.length - 1; at > 0; at--) {
-    try {
-      const row = JSON.parse(lines[at] ?? '') as { message?: { model?: unknown } }
-      const model = row.message?.model
-      if (typeof model === 'string' && model !== '') return model
-    } catch {
-      continue
-    }
+/** Only the tail is read: a long session's transcript runs to megabytes. */
+const MODEL_TAIL_BYTES = 256 * 1024
+
+/** session-read throws `TypeError` on a window that names another session; that is a miss here. */
+const FOREIGN_SESSION =
+  /^Claude (transcript record belongs to native session|sidechain window names multiple)/
+
+function readModel(file: string): RecentObservedValue<string> | undefined {
+  try {
+    const source = claudeSourceFromPath(file, 'local')
+    return readRecentSessionTurnsSync(source, { maxBytes: MODEL_TAIL_BYTES, maxTurns: 1, maxCharsPerTurn: 1 })
+      .model
+  } catch (error) {
+    if (error instanceof TypeError && FOREIGN_SESSION.test(error.message)) return undefined
+    throw error
   }
-  return undefined
 }
 
 /** One line for a roster: the path, or why there is not one. */

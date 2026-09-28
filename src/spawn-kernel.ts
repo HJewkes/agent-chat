@@ -50,14 +50,7 @@
  * environment it spawned with.
  */
 
-export {
-  findTranscript,
-  observedModel,
-  projectSlug,
-  readTail,
-  transcriptLine,
-  transcriptPath,
-} from './agents/transcript.js'
+export { findTranscript, projectSlug, transcriptLine, transcriptPath } from './agents/transcript.js'
 export type { Transcript } from './agents/transcript.js'
 
 export { findDenials } from './agents/denials.js'
