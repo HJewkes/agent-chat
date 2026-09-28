@@ -24,7 +24,8 @@ import { tickBroker } from '../burndown-broker.js'
 /** How often launchd fires `burndown tick --once`; independent of any phase timeout. */
 const TICK_INTERVAL_SECONDS = 600
 
-const control = (dryRun = false): JobControl => ({
+/** Production control; every verb below takes one as a parameter so tests can inject a stub. */
+const defaultControl = (dryRun = false): JobControl => ({
   launchctl: systemLaunchctl,
   uid: process.getuid?.() ?? 0,
   dryRun,
@@ -161,6 +162,27 @@ export const burndownReleaseVerb = defineVerb({
   },
 })
 
+/** The install verb's body, taking its `JobControl` explicitly so a test can inject a stub. */
+export function burndownInstall(dryRun: boolean, control: JobControl): Report {
+  const lines = [...SIGN_OFF_CHECKLIST]
+  if (!loadTickConfig(burndownConfigPath()).enabled) {
+    return { ok: false, lines, errors: ['refused: burndown.config.json has enabled: false'] }
+  }
+  const plist = renderBurndownPlist({
+    label: BURNDOWN_LABEL,
+    nodePath: process.execPath,
+    cliEntry: cliEntry(),
+    logDir: burndownLogDir(),
+    env: jobEnv(process.env),
+    intervalSeconds: TICK_INTERVAL_SECONDS,
+  })
+  const paths = { plist: burndownPlistPath(), logDir: burndownLogDir() }
+  const result = startJob(paths, plist, control)
+  return dryRun
+    ? { ok: true, lines: [...lines, plist, ...result.lines] }
+    : { ...result, lines: [...lines, ...result.lines] }
+}
+
 export const burndownInstallVerb = defineVerb({
   name: 'burndown.install',
   description: 'print the sign-off checklist, then install and start the launchd tick job',
@@ -172,25 +194,14 @@ export const burndownInstallVerb = defineVerb({
     },
   },
   async run({ dryRun }) {
-    const lines = [...SIGN_OFF_CHECKLIST]
-    if (!loadTickConfig(burndownConfigPath()).enabled) {
-      return { ok: false, lines, errors: ['refused: burndown.config.json has enabled: false'] }
-    }
-    const plist = renderBurndownPlist({
-      label: BURNDOWN_LABEL,
-      nodePath: process.execPath,
-      cliEntry: cliEntry(),
-      logDir: burndownLogDir(),
-      env: jobEnv(process.env),
-      intervalSeconds: TICK_INTERVAL_SECONDS,
-    })
-    const paths = { plist: burndownPlistPath(), logDir: burndownLogDir() }
-    const result = startJob(paths, plist, control(dryRun === true))
-    return dryRun === true
-      ? { ok: true, lines: [...lines, plist, ...result.lines] }
-      : { ...result, lines: [...lines, ...result.lines] }
+    return burndownInstall(dryRun === true, defaultControl(dryRun === true))
   },
 })
+
+/** The uninstall verb's body, taking its `JobControl` explicitly so a test can inject a stub. */
+export function burndownUninstall(control: JobControl): Report {
+  return stopJob(control)
+}
 
 export const burndownUninstallVerb = defineVerb({
   name: 'burndown.uninstall',
@@ -198,9 +209,26 @@ export const burndownUninstallVerb = defineVerb({
   args: z.object({}),
   result: Report,
   async run() {
-    return stopJob(control())
+    return burndownUninstall(defaultControl())
   },
 })
+
+/** The job-status verb's body, taking its `JobControl` explicitly so a test can inject a stub. */
+export function burndownJobStatus(control: JobControl): Report {
+  const job = jobState(control)
+  const config = loadTickConfig(burndownConfigPath())
+  const launchd = job.loaded
+    ? `loaded${job.pid === null ? ', not running' : `, pid ${job.pid}`}`
+    : 'not loaded'
+  return {
+    ok: true,
+    lines: [
+      `launchd ${launchd}`,
+      `plist ${burndownPlistPath()}`,
+      `config enabled=${config.enabled} paused=${fs.existsSync(burndownPausePath())}`,
+    ],
+  }
+}
 
 export const burndownJobStatusVerb = defineVerb({
   name: 'burndown.job-status',
@@ -208,19 +236,7 @@ export const burndownJobStatusVerb = defineVerb({
   args: z.object({}),
   result: Report,
   async run() {
-    const job = jobState(control())
-    const config = loadTickConfig(burndownConfigPath())
-    const launchd = job.loaded
-      ? `loaded${job.pid === null ? ', not running' : `, pid ${job.pid}`}`
-      : 'not loaded'
-    return {
-      ok: true,
-      lines: [
-        `launchd ${launchd}`,
-        `plist ${burndownPlistPath()}`,
-        `config enabled=${config.enabled} paused=${fs.existsSync(burndownPausePath())}`,
-      ],
-    }
+    return burndownJobStatus(defaultControl())
   },
 })
 
