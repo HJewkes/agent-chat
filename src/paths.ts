@@ -91,6 +91,15 @@ export const burndownConfigPath = (): string => path.join(home(), 'burndown.conf
 /** Present means `burndown tick` spawns nothing; written by `burndown pause`, removed by `burndown resume`. */
 export const burndownPausePath = (): string => path.join(home(), 'burndown.paused')
 
+/** The launchd label for `agent-chat burndown tick --once`; the plist and every `launchctl` call use it. */
+export const BURNDOWN_LABEL = 'dev.hjewkes.agent-chat-burndown'
+
+/** launchd reads agents from the real home, so this ignores `AGENT_CHAT_HOME`. */
+export const burndownPlistPath = (): string =>
+  path.join(os.homedir(), 'Library', 'LaunchAgents', `${BURNDOWN_LABEL}.plist`)
+
+export const burndownLogDir = (): string => path.join(os.homedir(), 'Library', 'Logs', 'agent-chat-burndown')
+
 /** The package root, reached identically from `dist/paths.js` and `src/paths.ts`. */
 const packageRoot = (): string => path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 

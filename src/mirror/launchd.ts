@@ -1,7 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { MIRROR_LABEL } from '../paths.js'
 
 export interface LaunchctlResult {
   code: number
@@ -26,10 +25,12 @@ export interface JobControl {
   launchctl: Launchctl
   uid: number
   dryRun: boolean
+  /** The launchd label this control governs; mirror and burndown each pass their own. */
+  label: string
 }
 
 const domain = (uid: number): string => `gui/${uid}`
-const service = (uid: number): string => `${domain(uid)}/${MIRROR_LABEL}`
+const service = (label: string, uid: number): string => `${domain(uid)}/${label}`
 
 export interface JobState {
   loaded: boolean
@@ -37,8 +38,8 @@ export interface JobState {
 }
 
 /** `launchctl print` exits non-zero for an unknown service; a loaded one reports `pid = N` while running. */
-export function jobState(control: Pick<JobControl, 'launchctl' | 'uid'>): JobState {
-  const printed = control.launchctl(['print', service(control.uid)])
+export function jobState(control: Pick<JobControl, 'launchctl' | 'uid' | 'label'>): JobState {
+  const printed = control.launchctl(['print', service(control.label, control.uid)])
   if (printed.code !== 0) return { loaded: false, pid: null }
   const pid = /^\s*pid = (\d+)/m.exec(printed.stdout)?.[1]
   return { loaded: true, pid: pid === undefined ? null : Number.parseInt(pid, 10) }
@@ -73,13 +74,13 @@ export function startJob(
   const lines: string[] = []
   const changed = writePlist(paths, rendered, control.dryRun, lines)
   const { loaded } = jobState(control)
-  if (loaded && changed) run(control, ['bootout', service(control.uid)], lines)
-  run(control, ['enable', service(control.uid)], lines)
+  if (loaded && changed) run(control, ['bootout', service(control.label, control.uid)], lines)
+  run(control, ['enable', service(control.label, control.uid)], lines)
   if (!loaded || changed) {
     const boot = run(control, ['bootstrap', domain(control.uid), paths.plist], lines)
     if (boot.code !== 0) return { ok: false, lines }
   }
-  const kick = run(control, ['kickstart', service(control.uid)], lines)
+  const kick = run(control, ['kickstart', service(control.label, control.uid)], lines)
   return { ok: kick.code === 0, lines }
 }
 
@@ -87,7 +88,7 @@ export function startJob(
 export function stopJob(control: JobControl): { ok: boolean; lines: string[] } {
   const lines: string[] = []
   if (!jobState(control).loaded) lines.push('not loaded')
-  else run(control, ['bootout', service(control.uid)], lines)
-  run(control, ['disable', service(control.uid)], lines)
+  else run(control, ['bootout', service(control.label, control.uid)], lines)
+  run(control, ['disable', service(control.label, control.uid)], lines)
   return { ok: true, lines }
 }
