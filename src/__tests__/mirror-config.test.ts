@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadMirrorConfig, parseEnvFile, readAsToken } from '../mirror/config.js'
 import { mirrorJobEnv, renderMirrorPlist } from '../mirror/plist.js'
+import { MIRROR_LABEL } from '../paths.js'
 
 let dir: string
 
@@ -93,6 +94,7 @@ describe('renderMirrorPlist', () => {
   }
   const render = (env: NodeJS.ProcessEnv) =>
     renderMirrorPlist({
+      label: MIRROR_LABEL,
       nodePath: '/opt/node',
       cliEntry: '/repo/dist/cli.js',
       logDir: '/Users/o/Library/Logs/agent-chat-mirror',
@@ -123,7 +125,13 @@ describe('renderMirrorPlist', () => {
   })
 
   it('escapes XML in paths', () => {
-    const plist = renderMirrorPlist({ nodePath: '/a&b/<node>', cliEntry: '/c', logDir: '/l', env: {} })
+    const plist = renderMirrorPlist({
+      label: MIRROR_LABEL,
+      nodePath: '/a&b/<node>',
+      cliEntry: '/c',
+      logDir: '/l',
+      env: {},
+    })
     expect(plist).toContain('<string>/a&amp;b/&lt;node&gt;</string>')
   })
 })

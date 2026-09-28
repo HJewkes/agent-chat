@@ -227,6 +227,8 @@ agent-chat mirror start|stop|status
                                 the queue on your phone (docs/phone-queue.md)
 agent-chat burndown plan|status dry run: the task each opted-in initiative
                                 would dispatch next, and every refusal
+agent-chat burndown install|uninstall|job-status
+                                the launchd tick job (docs/burndown.md)
 agent-chat ps                   who's registered
 agent-chat history [n]          recent events from the log
 agent-chat broker               run the broker in the foreground

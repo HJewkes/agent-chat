@@ -1,6 +1,6 @@
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
-import { cliEntry, mirrorLogDir, mirrorPlistPath } from '../../paths.js'
+import { MIRROR_LABEL, cliEntry, mirrorLogDir, mirrorPlistPath } from '../../paths.js'
 import { loadMirrorConfig, readAsToken } from '../../mirror/config.js'
 import { jobState, startJob, stopJob, systemLaunchctl, type JobControl } from '../../mirror/launchd.js'
 import { mirrorJobEnv, renderMirrorPlist } from '../../mirror/plist.js'
@@ -11,6 +11,7 @@ const control = (dryRun = false): JobControl => ({
   launchctl: systemLaunchctl,
   uid: process.getuid?.() ?? 0,
   dryRun,
+  label: MIRROR_LABEL,
 })
 
 /** The config and the env file are checked here, so a broken setup fails now rather than in a crash loop. */
@@ -26,6 +27,7 @@ function preflight(): string | null {
 
 export const renderPlist = (): string =>
   renderMirrorPlist({
+    label: MIRROR_LABEL,
     nodePath: process.execPath,
     cliEntry: cliEntry(),
     logDir: mirrorLogDir(),

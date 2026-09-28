@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { openMirrorState } from '../mirror/run.js'
 import { jobState, startJob, stopJob, type JobPaths, type Launchctl } from '../mirror/launchd.js'
 
-const SERVICE = 'gui/501/dev.hjewkes.agent-chat-mirror'
+const LABEL = 'dev.hjewkes.agent-chat-mirror'
+const SERVICE = `gui/501/${LABEL}`
 
 /** A launchd stand-in: records every call and answers `print` from `loaded`. */
 function fakeLaunchctl(loaded: boolean): { launchctl: Launchctl; calls: string[] } {
@@ -37,7 +38,7 @@ afterEach(() => {
 describe('startJob', () => {
   it('writes the plist, then enables, bootstraps and kickstarts a job that is not loaded', () => {
     const { launchctl, calls } = fakeLaunchctl(false)
-    const result = startJob(paths, '<plist/>', { launchctl, uid: 501, dryRun: false })
+    const result = startJob(paths, '<plist/>', { launchctl, uid: 501, dryRun: false, label: LABEL })
 
     expect(result.ok).toBe(true)
     expect(fs.readFileSync(paths.plist, 'utf8')).toBe('<plist/>')
@@ -54,7 +55,7 @@ describe('startJob', () => {
     fs.mkdirSync(path.dirname(paths.plist), { recursive: true })
     fs.writeFileSync(paths.plist, '<old/>')
     const { launchctl, calls } = fakeLaunchctl(true)
-    startJob(paths, '<new/>', { launchctl, uid: 501, dryRun: false })
+    startJob(paths, '<new/>', { launchctl, uid: 501, dryRun: false, label: LABEL })
     expect(calls.slice(1, 3)).toEqual([`bootout ${SERVICE}`, `enable ${SERVICE}`])
     expect(calls).toContain(`bootstrap gui/501 ${paths.plist}`)
   })
@@ -63,13 +64,13 @@ describe('startJob', () => {
     fs.mkdirSync(path.dirname(paths.plist), { recursive: true })
     fs.writeFileSync(paths.plist, '<same/>')
     const { launchctl, calls } = fakeLaunchctl(true)
-    startJob(paths, '<same/>', { launchctl, uid: 501, dryRun: false })
+    startJob(paths, '<same/>', { launchctl, uid: 501, dryRun: false, label: LABEL })
     expect(calls).toEqual([`print ${SERVICE}`, `enable ${SERVICE}`, `kickstart ${SERVICE}`])
   })
 
   it('changes nothing on a dry run and reports what it would do', () => {
     const { launchctl, calls } = fakeLaunchctl(false)
-    const result = startJob(paths, '<plist/>', { launchctl, uid: 501, dryRun: true })
+    const result = startJob(paths, '<plist/>', { launchctl, uid: 501, dryRun: true, label: LABEL })
     expect(fs.existsSync(paths.plist)).toBe(false)
     expect(calls).toEqual([`print ${SERVICE}`])
     expect(result.lines).toContain(`write ${paths.plist}`)
@@ -85,7 +86,7 @@ describe('startJob', () => {
         return { code: 5, stdout: '', stderr: 'Bootstrap failed: 5: Input/output error\n' }
       return { code: 0, stdout: '', stderr: '' }
     }
-    const result = startJob(paths, '<plist/>', { launchctl, uid: 501, dryRun: false })
+    const result = startJob(paths, '<plist/>', { launchctl, uid: 501, dryRun: false, label: LABEL })
     expect(result.ok).toBe(false)
     expect(result.lines.at(-1)).toBe('  exit 5: Bootstrap failed: 5: Input/output error')
     expect(calls).not.toContain('kickstart')
@@ -95,16 +96,16 @@ describe('startJob', () => {
 describe('stopJob and jobState', () => {
   it('boots out and disables, so the job does not return at the next login', () => {
     const { launchctl, calls } = fakeLaunchctl(true)
-    stopJob({ launchctl, uid: 501, dryRun: false })
+    stopJob({ launchctl, uid: 501, dryRun: false, label: LABEL })
     expect(calls).toEqual([`print ${SERVICE}`, `bootout ${SERVICE}`, `disable ${SERVICE}`])
   })
 
   it('reads the pid of a running job', () => {
-    expect(jobState({ launchctl: fakeLaunchctl(true).launchctl, uid: 501 })).toEqual({
+    expect(jobState({ launchctl: fakeLaunchctl(true).launchctl, uid: 501, label: LABEL })).toEqual({
       loaded: true,
       pid: 777,
     })
-    expect(jobState({ launchctl: fakeLaunchctl(false).launchctl, uid: 501 })).toEqual({
+    expect(jobState({ launchctl: fakeLaunchctl(false).launchctl, uid: 501, label: LABEL })).toEqual({
       loaded: false,
       pid: null,
     })
