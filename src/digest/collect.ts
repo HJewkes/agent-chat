@@ -2,7 +2,14 @@ import path from 'node:path'
 import { burndownConfigPath, burndownLedgerPath, home } from '../paths.js'
 import { activeWorkRoot } from '../agents/active-work.js'
 import { DEFAULT_RULES } from '../agents/burndown/budget-gate.js'
-import { EMPTY_LEDGER, heldClaims, isStalled, readLedger, type Ledger } from '../agents/burndown/ledger.js'
+import {
+  EMPTY_LEDGER,
+  heldClaims,
+  isStalled,
+  readLedger,
+  type Claim,
+  type Ledger,
+} from '../agents/burndown/ledger.js'
 import type { Plan } from '../agents/burndown/plan.js'
 import { accountDir, loadRules } from '../agents/burndown/source.js'
 import { planFromDisk } from '../agents/burndown/tick.js'
@@ -36,12 +43,15 @@ function attempt<T>(gaps: string[], source: string, fallback: T, read: () => T):
 
 const eventsDbPath = (): string => path.join(home(), 'events.db')
 
+/** A claim still `spawning` has no agent id yet, only the name it asked for. */
+const agentOf = (c: Claim): string => c.agentId ?? c.agentName ?? 'unspawned'
+
 const awaitingMerge = (ledger: Ledger): NamedItem[] =>
   heldClaims(ledger)
     .filter(c => c.phase === 'awaiting-merge')
     .map(c => ({
       label: c.taskId,
-      detail: `${c.initiative}, ${c.agentId} awaiting merge since ${c.phaseAt}`,
+      detail: `${c.initiative}, ${agentOf(c)} awaiting merge since ${c.phaseAt}`,
     }))
 
 export function collectDigest(options: CollectOptions): Digest {
@@ -65,7 +75,9 @@ export function collectDigest(options: CollectOptions): Digest {
       .map(r => ({ label: `${r.initiative} ${r.task ?? ''}`.trim(), detail: r.reason })),
     done: attempt(gaps, 'active-work tasks', [], () => doneTasks(activeWorkRoot(), sinceMs)),
     mergedPrs: prs.merged,
-    stalled: heldClaims(claims).filter(c => isStalled(c, new Date(now))),
+    stalled: heldClaims(claims)
+      .filter(c => isStalled(c, new Date(now)))
+      .map(c => ({ ...c, agentId: agentOf(c) })),
     spend: Object.keys(rules).map(account => accountSpend(account, accountDir(account), sinceMs, now)),
     next: {
       picks: planned?.dispatch ?? [],
