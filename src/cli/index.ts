@@ -17,6 +17,7 @@ import { debugClaimsVerb } from './verbs/debug-claims.js'
 import { debugHistoryVerb } from './verbs/debug-history.js'
 import { debugLogVerb } from './verbs/debug-log.js'
 import { debugPsVerb } from './verbs/debug-ps.js'
+import { digestVerb } from './verbs/digest.js'
 import { dismissVerb } from './verbs/dismiss.js'
 import { doctorVerb } from './verbs/doctor.js'
 import { endorseVerb } from './verbs/endorse.js'
@@ -53,6 +54,7 @@ function addHumanCommands(program: Command): void {
   addVerb(program, dismissVerb, { helpGroup: HUMAN })
   addVerb(program, approveVerb, { helpGroup: HUMAN })
   addVerb(program, endorseVerb, { helpGroup: HUMAN })
+  addVerb(program, digestVerb, { helpGroup: HUMAN })
 }
 
 const port = (value: string): number => {

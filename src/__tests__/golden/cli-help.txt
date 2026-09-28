@@ -13,6 +13,7 @@ Human commands:
   dismiss <id>               close an item without answering, or decline an endorsement
   approve <id> <allow|deny>  answer an agent's permission prompt from here
   endorse <id>               approve a composed message; delivers it with your authority
+  digest [options]           morning digest: asks, decisions, done, stalled, spend and next picks
 
 Commands:
   service                    run and inspect the broker daemon
@@ -69,6 +70,17 @@ approve a composed message; delivers it with your authority
 
 Options:
   -h, --help  display help for command
+
+=== agent-chat digest
+Usage: agent-chat digest [options]
+
+morning digest: asks, decisions, done, stalled, spend and next picks
+
+Options:
+  --since <value>     window to report on, like 90m, 24h or 3d (default 24h)
+  --markdown <value>  write the digest as markdown to this file instead
+  --prs               also ask GitHub for approved and merged PRs (time-boxed)
+  -h, --help          display help for command
 
 === agent-chat service
 Usage: agent-chat service [options] [command]
