@@ -141,8 +141,8 @@ describe('burndown plan', () => {
     ])
   })
 
-  // Claude Code 2.1.283 bundle, minified oS/iS: the ancestor walk stops at the cwd's git root, and a worktree is its own.
-  it('refuses a worktree when only a folder above the repo is trusted, per CLI 2.1.283 oS/iS', () => {
+  // Claude Code 2.1.284 bundle, minified hS/yS: the ancestor walk stops at the cwd's git root, and a worktree is its own.
+  it('refuses a worktree when only a folder above the repo is trusted, per CLI 2.1.284 hS/yS', () => {
     initiative('demo', OPTED_IN, { 'DM-1': task('DM-1') })
     account('agents', { seven_day: 40, five_hour: 10 }, [world])
 
@@ -158,8 +158,8 @@ describe('burndown plan', () => {
     ])
   })
 
-  // Claude Code 2.1.283 bundle, minified MTe/Qt: a linked worktree's config key is its main checkout.
-  it('trusts a worktree cut from a linked worktree whose main checkout is trusted, per CLI 2.1.283 MTe/Qt', () => {
+  // Claude Code 2.1.284 bundle, minified VRe/Qt: a linked worktree's config key is its main checkout.
+  it('trusts a worktree cut from a linked worktree whose main checkout is trusted, per CLI 2.1.284 VRe/Qt', () => {
     const main = path.join(world, 'main')
     const linked = path.join(world, 'linked')
     const gitDir = path.join(main, '.git', 'worktrees', 'linked')
@@ -176,7 +176,7 @@ describe('burndown plan', () => {
   })
 
   it.each([
-    ['a different release', '2.1.284', 'differs from'],
+    ['a different release', '2.1.285', 'differs from'],
     ['no readable version', 'claude', 'cannot determine'],
   ])('refuses on trust when the installed CLI has %s, even under a trusted repo', (_, installed, reason) => {
     installClaude(installed)
