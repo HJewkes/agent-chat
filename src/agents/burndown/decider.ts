@@ -41,12 +41,13 @@ export interface DeciderInputs {
 export type DeciderVerdict =
   { wake: true; message: string; waiting: number } | { wake: false; reason: string; record: boolean }
 
+/** Identity first, so a dry run confirms the setup even with an empty queue. */
 export function deciderVerdict(input: DeciderInputs): DeciderVerdict {
+  const identity = identityRefusal(input.config.name, input.agentId, input.roster)
+  if (identity !== undefined) return { wake: false, reason: identity, record: true }
   const waiting = waitingQuestions(input.queue, input.state, input.now)
   if (waiting.length === 0)
     return { wake: false, reason: 'no open question older than 5 minutes since the last wake', record: false }
-  const identity = identityRefusal(input.config.name, input.agentId, input.roster)
-  if (identity !== undefined) return { wake: false, reason: identity, record: true }
   const active = activeState(input.config.name, input.roster)
   if (active !== undefined)
     return {

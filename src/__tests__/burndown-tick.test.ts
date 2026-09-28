@@ -453,6 +453,15 @@ describe('burndown tick wakes the decider', () => {
     expect(lines.join('\n')).toContain('no open question older than 5 minutes')
   })
 
+  it('reports a mismatched id on a dry run even with an empty queue', async () => {
+    deciderSetup('id-configured')
+    const fake = fakeBroker({ agents: [deciderRow('exited', 'id-imposter')] })
+
+    const lines = await tick(fake, true)
+
+    expect(lines.join('\n')).toContain('config.json names id-configured')
+  })
+
   it('does not wake again for a question the decider already saw at its last wake', async () => {
     deciderSetup()
     writeLedger(burndownLedgerPath(), { version: 1, claims: [], decider: { wakes: wakesAgo([90]) } })

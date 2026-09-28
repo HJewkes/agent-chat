@@ -46,9 +46,11 @@ Add the block to `~/.agent-chat/burndown.config.json`:
 "decider": { "name": "decider", "maxPerHour": 4, "maxPerDay": 24 }
 ```
 
-When the human queue holds an open `question` older than 5 minutes that arrived after the
-last wake, the tick resumes that name headless with a message telling it to process the
-open queue and end its turn. It skips the wake, and says why, when:
+Every tick first checks the decider's identity, so `agent-chat burndown tick --once --dry-run`
+confirms the setup even with an empty queue. When the human queue holds an open `question`
+older than 5 minutes that arrived after the last wake, the tick resumes that name headless
+with a message telling it to process the open queue and end its turn. It skips the wake,
+and says why, when:
 
 - the roster's agentId for the name differs from `decider.agentId`, the name is retired or
   missing, or `decider.agentId` is unset. These are recorded in the ledger's `decider.refused`
