@@ -111,8 +111,8 @@ describe('rendering content blocks', () => {
   it('truncates one enormous turn instead of handing it to the caller whole', () => {
     write([say('assistant', 'y'.repeat(5000))])
     const rendered = readTurns(CWD, SESSION, 1).turns[0]?.text ?? ''
-    expect(rendered.length).toBeLessThan(800)
-    expect(rendered).toContain('more chars)')
+    expect(Array.from(rendered)).toHaveLength(700)
+    expect(rendered.endsWith('…')).toBe(true)
   })
 
   it('drops a row whose content is missing or an unexpected shape', () => {
@@ -128,6 +128,13 @@ describe('when there is nothing to read', () => {
   it('treats an absent transcript as a miss rather than an error', () => {
     const read = readTurns(CWD, SESSION, 10)
     expect(read.transcript.exists).toBe(false)
+    expect(read.turns).toEqual([])
+  })
+
+  it('returns no turns rather than throwing when the rows name a different session', () => {
+    write([say('user', 'not this session', { sessionId: '99999999-9999-4999-8999-999999999999' })])
+    const read = readTurns(CWD, SESSION, 10)
+    expect(read.transcript.exists).toBe(true)
     expect(read.turns).toEqual([])
   })
 })
@@ -200,6 +207,16 @@ describe('the chat_transcript tool', () => {
     const rendered = textOf(await handler.handle('chat_transcript', { name: 'peer', limit: 5 }))
     expect(rendered).toContain('a peer at work')
     expect(rendered).toContain('peer:')
+  })
+
+  it('renders a row with no timestamp as --:--:-- and a row with no isSidechain as the main thread', async () => {
+    const { timestamp: _dropped, ...undated } = say('assistant', 'undated turn')
+    write([undated])
+    const handler = new ToolHandler(stubBroker({ t: 'agents_result', agents: [agent({ name: 'peer' })] }))
+
+    const rendered = textOf(await handler.handle('chat_transcript', { name: 'peer' }))
+    expect(rendered).toContain('  --:--:-- assistant: undated turn')
+    expect(rendered).not.toContain('(subagent)')
   })
 
   it('reports a miss for a name with no durable identity rather than failing', async () => {

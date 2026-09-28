@@ -1,4 +1,10 @@
-import { findTranscript, readTail, type Transcript } from './transcript.js'
+import {
+  claudeSourceFromPath,
+  readRecentSessionTurnsSync,
+  type RecentSessionTurn,
+  type RecentSessionTurns,
+} from '@titan-design/session-read'
+import { findTranscript, type Transcript } from './transcript.js'
 
 /**
  * Reading the recent turns of a Claude Code session's own transcript — CC-19.
@@ -50,70 +56,24 @@ const TURN_TAIL_BYTES = 1024 * 1024
 /** Per-turn cap, so one enormous tool result cannot fill the caller's context. */
 const TURN_CHARS = 700
 
-type Row = Record<string, unknown>
+const toTurn = (turn: RecentSessionTurn): Turn => ({
+  role: turn.role,
+  at: turn.timestamp ?? '',
+  text: turn.text,
+  sidechain: turn.sidechain ?? false,
+})
 
-const isRecord = (value: unknown): value is Row => typeof value === 'object' && value !== null
-
-const str = (value: unknown): string => (typeof value === 'string' ? value : '')
-
-/**
- * Every field below is external data: Claude Code writes these files, this
- * codebase does not, and the format is undocumented and free to change. So each
- * row is narrowed rather than cast (CC-8), and anything unrecognised is skipped
- * instead of being rendered as `undefined` at the caller.
- */
-function roleOf(row: Row): Turn['role'] | undefined {
-  const type = row.type
-  return type === 'user' || type === 'assistant' || type === 'system' ? type : undefined
-}
-
-const truncate = (value: string, max: number): string =>
-  value.length <= max ? value : `${value.slice(0, max)}… (${value.length - max} more chars)`
-
-/** One line per content block, named by kind so a reader can tell text from tooling. */
-function renderBlock(block: unknown): string {
-  if (typeof block === 'string') return block
-  if (!isRecord(block)) return ''
-  switch (block.type) {
-    case 'text':
-      return str(block.text)
-    // Deliberately summarised, not reproduced. Reading a peer's reasoning verbatim
-    // is permitted, but it is the least summarisable and most voluminous part of a
-    // transcript, and this tool exists to answer "what has it been doing".
-    case 'thinking':
-      return `[thinking, ${str(block.thinking).length} chars]`
-    case 'tool_use':
-      return `[tool ${str(block.name) || '?'}] ${truncate(oneLine(JSON.stringify(block.input ?? {})), 200)}`
-    case 'tool_result':
-      return `[tool result${block.is_error === true ? ', error' : ''}] ${truncate(renderContent(block.content), 300)}`
-    case 'image':
-      return '[image]'
-    default:
-      return typeof block.type === 'string' ? `[${block.type}]` : ''
-  }
-}
-
-function renderContent(content: unknown): string {
-  if (typeof content === 'string') return oneLine(content)
-  if (!Array.isArray(content)) return ''
-  return content.map(renderBlock).filter(Boolean).join('\n')
-}
-
-const oneLine = (value: string): string => value.replace(/\s+/g, ' ').trim()
-
-function toTurn(row: Row): Turn | undefined {
-  const role = roleOf(row)
-  if (role === undefined) return undefined
-  const message = isRecord(row.message) ? row.message : undefined
-  // A system row carries its body at the top level; user and assistant rows carry
-  // it under `message`. Neither shape is guaranteed, hence both are optional.
-  const body = message === undefined ? renderContent(row.content) : renderContent(message.content)
-  if (body.trim() === '') return undefined
-  return {
-    role,
-    at: str(row.timestamp),
-    text: truncate(body, TURN_CHARS),
-    sidechain: row.isSidechain === true,
+/** session-read throws `TypeError` on a window that names another session; that is an empty read here. */
+function readRecent(transcriptPath: string, limit: number): RecentSessionTurns | undefined {
+  try {
+    return readRecentSessionTurnsSync(claudeSourceFromPath(transcriptPath, 'local'), {
+      maxBytes: TURN_TAIL_BYTES,
+      maxTurns: limit,
+      maxCharsPerTurn: TURN_CHARS,
+    })
+  } catch (error) {
+    if (error instanceof TypeError) return undefined
+    throw error
   }
 }
 
@@ -128,29 +88,11 @@ export function readTurns(cwd: string, sessionId: string, limit: number, dir?: s
   const transcript = findTranscript(cwd, sessionId, dir)
   if (!transcript.exists) return { transcript, turns: [] }
 
-  const tail = readTail(transcript.path, TURN_TAIL_BYTES)
-  if (tail === undefined) return { transcript, turns: [] }
+  const recent = readRecent(transcript.path, limit)
+  if (recent === undefined || recent.status === 'unavailable') return { transcript, turns: [] }
 
-  const lines = tail.split('\n')
-  // Skip line 0 when we read from an offset: it is usually half a row (readTail).
-  const from = tail.length < TURN_TAIL_BYTES ? 0 : 1
-  const turns: Turn[] = []
-  let branch: string | undefined
-
-  for (let at = from; at < lines.length; at++) {
-    const line = lines[at] ?? ''
-    if (line.trim() === '') continue
-    let row: unknown
-    try {
-      row = JSON.parse(line)
-    } catch {
-      continue // a partially flushed final line is normal on a live tail
-    }
-    if (!isRecord(row)) continue
-    if (typeof row.gitBranch === 'string' && row.gitBranch !== '') branch = row.gitBranch
-    const turn = toTurn(row)
-    if (turn !== undefined) turns.push(turn)
-  }
-
-  return { transcript, turns: turns.slice(-limit), ...(branch === undefined ? {} : { branch }) }
+  const turns = recent.turns.map(toTurn)
+  return recent.branch.status === 'observed'
+    ? { transcript, turns, branch: recent.branch.value }
+    : { transcript, turns }
 }
