@@ -138,9 +138,9 @@ export function prState(url: string, exec: Runner = run): Observation['pr'] | un
   return result.status === 0 ? readRollup(result.stdout) : undefined
 }
 
-/** Live roster rows this tick's ledger spawned, plus spawns still waiting for their row. */
-export function liveBurndownAgents(claims: Claim[], roster: Roster): number {
-  const ours = new Set(claims.flatMap(c => c.spawned ?? []))
+/** Live roster rows this tick's ledger spawned or `others` names (the decider), plus spawns still waiting for their row. */
+export function liveBurndownAgents(claims: Claim[], roster: Roster, others: string[] = []): number {
+  const ours = new Set([...claims.flatMap(c => c.spawned ?? []), ...others])
   const live = roster.agents.filter(a => ours.has(a.name) && LIVE.has(a.state)).length
   const pending = claims.filter(
     c => c.phase === 'spawning' && rowNamed(roster, c.agentName) === undefined,

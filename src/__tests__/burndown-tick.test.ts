@@ -8,8 +8,10 @@ import { execute, spawnFrame, type SpawnFrame, type SpawnReply } from '../agents
 import { readLedger, writeLedger, type Claim } from '../agents/burndown/ledger.js'
 import { tickFromDisk, type TickBroker } from '../agents/burndown/run-tick.js'
 import { TRUST_RULE_CLI_VERSION } from '../agents/trust.js'
-import { burndownLedgerPath, burndownPausePath } from '../paths.js'
-import type { AgentIdentity } from '../protocol.js'
+import { burndownLedgerPath, burndownPausePath, configPath } from '../paths.js'
+import { tickBroker } from '../cli/burndown-broker.js'
+import type { BrokerClient } from '../client/broker-client.js'
+import type { AgentIdentity, QueueItem } from '../protocol.js'
 
 /**
  * `burndown tick` over a fixture world: a real git repo, an active-work root,
@@ -92,6 +94,7 @@ interface Fake {
   broker: TickBroker
   frames: SpawnFrame[]
   rosterCalls: number
+  resumes: { name: string; message: string }[]
 }
 
 function fakeBroker(
@@ -99,11 +102,14 @@ function fakeBroker(
     agents?: AgentIdentity[]
     slots?: { held: number; cap: number }
     spawn?: (frame: SpawnFrame) => SpawnReply
+    queue?: QueueItem[]
+    resume?: (name: string) => SpawnReply
   } = {},
 ): Fake {
   const fake: Fake = {
     frames: [],
     rosterCalls: 0,
+    resumes: [],
     broker: {
       roster: async () => {
         fake.rosterCalls += 1
@@ -115,6 +121,11 @@ function fakeBroker(
         return opts.spawn?.(frame) ?? { ok: true, agentId: `id-${frame.name}` }
       },
       retire: async () => ({ ok: true }),
+      queue: async () => opts.queue ?? [],
+      resume: async (name, message) => {
+        fake.resumes.push({ name, message })
+        return opts.resume?.(name) ?? { ok: true, agentId: `id-${name}` }
+      },
     },
   }
   return fake
@@ -374,5 +385,245 @@ describe('tick subprocesses', () => {
     expect(env).not.toContain('AGENT_CHAT_NAME')
     expect(env).not.toContain('AGENT_CHAT_AGENT_ID')
     expect(env).toContain('AGENT_CHAT_HOME')
+  })
+})
+
+const MINUTE = 60_000
+
+const question = (minutesAgo: number, msgId = 'q1'): QueueItem => ({
+  msgId,
+  kind: 'question',
+  from: 'bd-dm-1',
+  text: 'which branch?',
+  at: NOON.getTime() - minutesAgo * MINUTE,
+  meta: {},
+})
+
+function deciderSetup(agentId = 'id-decider', extra: Record<string, unknown> = {}): void {
+  config({ decider: { name: 'decider' }, ...extra })
+  write(configPath(), JSON.stringify({ worktreeBudget: 10, decider: { agentId } }))
+}
+
+const deciderRow = (state: AgentIdentity['state'], agentId = 'id-decider'): AgentIdentity => ({
+  ...row('decider', state),
+  agentId,
+  profile: 'decider',
+  isolation: 'none',
+})
+
+const wakesAgo = (minutes: number[]): string[] =>
+  minutes.map(m => new Date(NOON.getTime() - m * MINUTE).toISOString())
+
+describe('burndown tick wakes the decider', () => {
+  it('resumes the configured decider when a question has waited over 5 minutes', async () => {
+    deciderSetup()
+    const fake = fakeBroker({ agents: [deciderRow('exited')], queue: [question(6)] })
+
+    const lines = await tick(fake)
+
+    expect(fake.resumes.map(r => r.name)).toEqual(['decider'])
+    expect(fake.resumes[0]?.message).toContain('`agent-chat inbox`')
+    expect(fake.resumes[0]?.message).toContain('end your turn')
+    expect(fake.resumes[0]?.message).not.toContain('which branch?')
+    expect(fake.frames).toEqual([])
+    expect(lines.join('\n')).toContain('woke decider decider')
+  })
+
+  it('sends the broker resume frame headless with the wake message', async () => {
+    const sent: unknown[] = []
+    const client = {
+      request: async (frame: unknown) => {
+        sent.push(frame)
+        return { t: 'spawn_result', ok: true, agentId: 'id-decider' }
+      },
+    } as unknown as BrokerClient
+
+    await tickBroker(client).resume('decider', 'wake up')
+
+    expect(sent).toEqual([{ t: 'resume', name: 'decider', surface: 'headless', message: 'wake up' }])
+  })
+
+  it('does not wake for a question younger than 5 minutes', async () => {
+    deciderSetup()
+    const fake = fakeBroker({ agents: [deciderRow('exited')], queue: [question(4)] })
+
+    const lines = await tick(fake)
+
+    expect(fake.resumes).toEqual([])
+    expect(lines.join('\n')).toContain('no open question older than 5 minutes')
+  })
+
+  it('does not wake again for a question the decider already saw at its last wake', async () => {
+    deciderSetup()
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [], decider: { wakes: wakesAgo([90]) } })
+    const fake = fakeBroker({ agents: [deciderRow('exited')], queue: [question(120)] })
+
+    await tick(fake)
+
+    expect(fake.resumes).toEqual([])
+  })
+
+  it('refuses and records it when the roster agentId differs from config.json', async () => {
+    deciderSetup('id-configured')
+    const fake = fakeBroker({ agents: [deciderRow('exited', 'id-imposter')], queue: [question(6)] })
+
+    const lines = await tick(fake)
+
+    expect(fake.resumes).toEqual([])
+    expect(lines.join('\n')).toContain('config.json names id-configured')
+    expect(readLedger(burndownLedgerPath()).decider?.refused?.reason).toContain('id-imposter')
+  })
+
+  it('refuses and records it when the decider is retired', async () => {
+    deciderSetup()
+    const fake = fakeBroker({ agents: [deciderRow('retired')], queue: [question(6)] })
+
+    const lines = await tick(fake)
+
+    expect(fake.resumes).toEqual([])
+    expect(lines.join('\n')).toContain('decider decider is retired')
+    expect(readLedger(burndownLedgerPath()).decider?.refused?.reason).toContain('retired')
+  })
+
+  it('refuses and records it when no agent holds the decider name', async () => {
+    deciderSetup()
+    const fake = fakeBroker({ queue: [question(6)] })
+
+    const lines = await tick(fake)
+
+    expect(fake.resumes).toEqual([])
+    expect(lines.join('\n')).toContain('no agent named decider')
+    expect(readLedger(burndownLedgerPath()).decider?.refused).toBeDefined()
+  })
+
+  it('does not re-wake a decider that is already live', async () => {
+    deciderSetup()
+    const fake = fakeBroker({ agents: [deciderRow('live')], queue: [question(6)] })
+
+    const lines = await tick(fake)
+
+    expect(fake.resumes).toEqual([])
+    expect(lines.join('\n')).toContain('already live')
+    expect(readLedger(burndownLedgerPath()).decider).toBeUndefined()
+  })
+
+  it('stops at maxPerHour wakes in the last hour', async () => {
+    deciderSetup()
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [],
+      decider: { wakes: wakesAgo([50, 40, 30, 20]) },
+    })
+    const fake = fakeBroker({ agents: [deciderRow('exited')], queue: [question(10)] })
+
+    const lines = await tick(fake)
+
+    expect(fake.resumes).toEqual([])
+    expect(lines.join('\n')).toContain('4 times in the last hour (maxPerHour 4)')
+  })
+
+  it('stops at maxPerDay wakes in the last day', async () => {
+    deciderSetup()
+    const day = Array.from({ length: 24 }, (_, i) => 70 + i * 55)
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [], decider: { wakes: wakesAgo(day.reverse()) } })
+    const fake = fakeBroker({ agents: [deciderRow('exited')], queue: [question(10)] })
+
+    const lines = await tick(fake)
+
+    expect(fake.resumes).toEqual([])
+    expect(lines.join('\n')).toContain('24 times in the last day (maxPerDay 24)')
+  })
+
+  it('counts the wake in the ledger, under the ledger lock, before the frame is sent', async () => {
+    deciderSetup()
+    let seen: { wakes: string[] | undefined; locked: boolean } | undefined
+    const fake = fakeBroker({
+      agents: [deciderRow('exited')],
+      queue: [question(6)],
+      resume: () => {
+        seen = {
+          wakes: readLedger(burndownLedgerPath()).decider?.wakes,
+          locked: fs.existsSync(`${burndownLedgerPath()}.lock`),
+        }
+        return { ok: true }
+      },
+    })
+
+    await tick(fake)
+
+    expect(seen).toEqual({ wakes: [NOON.toISOString()], locked: true })
+  })
+
+  it('does not wake when maxAgents is already reached', async () => {
+    deciderSetup(undefined, { maxAgents: 1 })
+    const done: Claim = {
+      taskId: 'OLD',
+      initiative: 'other',
+      spawnedAt: NOON.toISOString(),
+      phase: 'done',
+      phaseAt: NOON.toISOString(),
+      spawned: ['bd-old'],
+    }
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [done] })
+    const fake = fakeBroker({ agents: [row('bd-old', 'live'), deciderRow('exited')], queue: [question(6)] })
+
+    const lines = await tick(fake)
+
+    expect(fake.resumes).toEqual([])
+    expect(lines.join('\n')).toContain('no agent capacity: 1 of maxAgents 1')
+  })
+
+  it('takes the maxAgents slot a new task would have used, and a live decider holds it too', async () => {
+    deciderSetup(undefined, { maxAgents: 1 })
+    initiative({ 'DM-1': task('DM-1') })
+
+    const waking = fakeBroker({ agents: [deciderRow('exited')], queue: [question(6)] })
+    await tick(waking)
+    const live = fakeBroker({ agents: [deciderRow('live')] })
+    const lines = await tick(live)
+
+    expect(waking.resumes.map(r => r.name)).toEqual(['decider'])
+    expect(waking.frames).toEqual([])
+    expect(live.frames).toEqual([])
+    expect(lines.join('\n')).toContain('1 of maxAgents 1 burndown agents alive')
+  })
+
+  it('dry run names the wake and sends and writes nothing', async () => {
+    deciderSetup()
+    const fake = fakeBroker({ agents: [deciderRow('exited')], queue: [question(6)] })
+
+    const lines = await tick(fake, true)
+
+    expect(lines.join('\n')).toContain('would wake decider decider (headless) for 1 waiting question(s)')
+    expect(fake.resumes).toEqual([])
+    expect(fs.existsSync(burndownLedgerPath())).toBe(false)
+  })
+})
+
+describe('the tick and config.json', () => {
+  it('leaves config.json byte-identical across a wake and a refusal', async () => {
+    deciderSetup()
+    const before = fs.readFileSync(configPath())
+    const mtime = fs.statSync(configPath()).mtimeMs
+
+    await tick(fakeBroker({ agents: [deciderRow('exited')], queue: [question(6)] }))
+    await tick(fakeBroker({ agents: [deciderRow('exited', 'id-other')], queue: [question(6, 'q2')] }))
+
+    expect(fs.readFileSync(configPath())).toEqual(before)
+    expect(fs.statSync(configPath()).mtimeMs).toBe(mtime)
+  })
+
+  it('no burndown module can reach the config.json path', () => {
+    const dir = path.join(__dirname, '..', 'agents', 'burndown')
+    const files = [
+      ...fs.readdirSync(dir).map(f => path.join(dir, f)),
+      path.join(__dirname, '..', 'cli', 'burndown-broker.ts'),
+    ]
+
+    const reaching = files.filter(f =>
+      /\bconfigPath\b|\bwriteConfig\b|['"]config\.json['"]/.test(fs.readFileSync(f, 'utf8')),
+    )
+
+    expect(reaching).toEqual([])
   })
 })

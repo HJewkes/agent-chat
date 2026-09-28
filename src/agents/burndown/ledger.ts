@@ -58,10 +58,19 @@ const Claim = z.object({
 })
 export type Claim = z.infer<typeof Claim>
 
+const DeciderState = z.object({
+  /** Every wake the tick sent, oldest first, pruned to the last day; the rate caps count these. */
+  wakes: z.array(z.string()),
+  /** Why the last wake was refused; cleared by the next wake the broker accepts. */
+  refused: z.object({ reason: z.string(), at: z.string() }).optional(),
+})
+export type DeciderState = z.infer<typeof DeciderState>
+
 const Ledger = z.object({
   version: z.literal(1),
   lastTickAt: z.string().optional(),
   claims: z.array(Claim),
+  decider: DeciderState.optional(),
 })
 export type Ledger = z.infer<typeof Ledger>
 

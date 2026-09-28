@@ -108,6 +108,10 @@ const Config = z.object({
   reserveWorktrees: count.default(3),
   /** The registered session a spawned agent `chat_send`s its report to; the tick itself reads the transcript. */
   reportTo: z.string().min(1).optional(),
+  /** The durable decider the tick wakes for waiting questions; the human spawns it and sets its id once. */
+  decider: z
+    .object({ name: z.string().min(1), maxPerHour: count.default(4), maxPerDay: count.default(24) })
+    .optional(),
 })
 export type TickConfig = Omit<z.infer<typeof Config>, 'accounts'>
 
