@@ -35,3 +35,29 @@ accepts the decision and clears it from the section.
    `"decider": { "agentId": "<id from agent-chat agent ls>" }`. The broker reads this
    on every frame, so changing it needs no restart. Leave the key absent to disable
    deciding entirely.
+
+## Woken by the burndown tick (slice 4f)
+
+One durable decider serves every wake. The human spawns it once and sets `decider.agentId`
+once; the tick never spawns, retires or reconfigures it, and never writes `config.json`.
+Add the block to `~/.agent-chat/burndown.config.json`:
+
+```json
+"decider": { "name": "decider", "maxPerHour": 4, "maxPerDay": 24 }
+```
+
+Every tick first checks the decider's identity, so `agent-chat burndown tick --once --dry-run`
+confirms the setup even with an empty queue. When the human queue holds an open `question`
+older than 5 minutes that arrived after the last wake, the tick resumes that name headless
+with a message telling it to process the open queue and end its turn. It skips the wake,
+and says why, when:
+
+- the roster's agentId for the name differs from `decider.agentId`, the name is retired or
+  missing, or `decider.agentId` is unset. These are recorded in the ledger's `decider.refused`
+  and shown by `agent-chat burndown status`;
+- the decider is already running;
+- the wakes in the last hour or day reach `maxPerHour` or `maxPerDay`, counted from
+  `decider.wakes` in the ledger, which the tick writes under the ledger lock before it
+  sends the frame;
+- `maxAgents` or the broker's free slots leave no room. A running decider counts against
+  `maxAgents`. The budget reserve does not apply to it.

@@ -1,13 +1,15 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { logEvent } from '../../broker/log.js'
-import { resolveWorktreeBudget } from '../../config.js'
+import { resolveDeciderAgentId, resolveWorktreeBudget } from '../../config.js'
 import { burndownConfigPath, burndownLedgerPath, burndownPausePath } from '../../paths.js'
+import type { QueueItem } from '../../protocol.js'
 import { activeWorkRoot } from '../active-work.js'
 import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
 import { advance, applyActions, type InboxMessage } from './advance.js'
 import { verifySection } from './brief.js'
 import { pickAccount } from './budget-gate.js'
+import { deciderVerdict, recordRefusal, wakeDecider, type DeciderVerdict } from './decider.js'
 import type { Initiative } from './eligibility.js'
 import { execute, type SpawnFrame, type SpawnReply, type Step } from './execute.js'
 import { heldClaims, readLedger, withLedgerLock, writeLedger, type Claim, type Ledger } from './ledger.js'
@@ -37,6 +39,9 @@ export interface TickBroker {
   inboxSince: (name: string, afterId: number) => Promise<InboxMessage[]>
   spawn: (frame: SpawnFrame) => Promise<SpawnReply>
   retire: (name: string) => Promise<SpawnReply>
+  /** The human queue's open items; read only when a decider is configured. */
+  queue: () => Promise<QueueItem[]>
+  resume: (name: string, message: string) => Promise<SpawnReply>
 }
 
 export interface TickOptions {
@@ -73,18 +78,59 @@ export async function tickFromDisk(opts: TickOptions): Promise<string[]> {
 async function runTick(config: TickConfig, opts: TickOptions): Promise<string[]> {
   const now = opts.now ?? new Date()
   const ledger = readLedger(burndownLedgerPath())
-  const { steps, notes } = await decide(config, opts, ledger, now)
+  const { steps, notes, decider } = await decide(config, opts, ledger, now)
   if (opts.dryRun)
-    return [`burndown tick at ${now.toISOString()} (dry run)`, ...steps.map(describe), ...notes]
+    return [
+      `burndown tick at ${now.toISOString()} (dry run)`,
+      ...steps.map(describe),
+      ...describeDecider(config, decider),
+      ...notes,
+    ]
+  const log = opts.log ?? logEvent
   const executed = await execute(steps, ledger, {
     ledgerFile: burndownLedgerPath(),
     spawn: opts.broker.spawn,
     retire: opts.broker.retire,
-    log: opts.log ?? logEvent,
+    log,
     now,
   })
-  writeLedger(burndownLedgerPath(), { ...executed.ledger, lastTickAt: now.toISOString() })
-  return [`burndown tick at ${now.toISOString()}`, ...executed.lines, ...notes]
+  const woken = await actOnDecider(config, decider, executed.ledger, { broker: opts.broker, log, now })
+  writeLedger(burndownLedgerPath(), { ...woken.ledger, lastTickAt: now.toISOString() })
+  return [`burndown tick at ${now.toISOString()}`, ...executed.lines, ...woken.lines, ...notes]
+}
+
+/** Wakes the decider, or records why not when the human has something to fix. */
+async function actOnDecider(
+  config: TickConfig,
+  verdict: DeciderVerdict | undefined,
+  ledger: Ledger,
+  deps: { broker: TickBroker; log: (event: string, detail: Record<string, unknown>) => void; now: Date },
+): Promise<{ ledger: Ledger; lines: string[] }> {
+  const name = config.decider?.name
+  if (verdict === undefined || name === undefined) return { ledger, lines: [] }
+  if (verdict.wake) {
+    const write = (l: Ledger): void => writeLedger(burndownLedgerPath(), l)
+    const woken = await wakeDecider(name, verdict.message, ledger, {
+      resume: deps.broker.resume,
+      write,
+      ...deps,
+    })
+    return { ledger: woken.ledger, lines: [woken.line] }
+  }
+  if (!verdict.record) return { ledger, lines: [`decider ${name} not woken: ${verdict.reason}`] }
+  deps.log('burndown_decider_refused', { name, reason: verdict.reason })
+  return {
+    ledger: recordRefusal(ledger, verdict.reason, deps.now),
+    lines: [`decider ${name} not woken: ${verdict.reason}`],
+  }
+}
+
+function describeDecider(config: TickConfig, verdict: DeciderVerdict | undefined): string[] {
+  const name = config.decider?.name
+  if (verdict === undefined || name === undefined) return []
+  if (verdict.wake)
+    return [`would wake decider ${name} (headless) for ${verdict.waiting} waiting question(s)`]
+  return [`decider ${name} not woken: ${verdict.reason}`]
 }
 
 /** Observe, advance and plan: every step the tick would take, in order, and a note for everything it would not. */
@@ -93,14 +139,16 @@ async function decide(
   opts: TickOptions,
   ledger: Ledger,
   now: Date,
-): Promise<{ steps: Step[]; notes: string[] }> {
+): Promise<{ steps: Step[]; notes: string[]; decider?: DeciderVerdict }> {
   const root = opts.root ?? activeWorkRoot()
   const roster = await opts.broker.roster()
   const world = loadWorld(now, root)
   const held = heldClaims(ledger)
   const { observations, unread } = await observe(held, roster, { inboxSince: opts.broker.inboxSince, root })
   const ctx = stepContext(world, config, now, root)
-  const agents = agentCapacity(config, ledger.claims, roster)
+  const capacity = agentCapacity(config, ledger.claims, roster)
+  const decider = await deciderFor(config, opts, ledger, roster, capacity, now)
+  const agents = decider?.wake === true ? { ...capacity, agents: capacity.agents - 1 } : capacity
   const advanced = stepsForActions(advance(held, observations, now), ledger, ctx, agents.agents)
   const kept = advanced.steps.flatMap(s => (s.kind === 'ledger' ? s.actions : []))
   const planned = plan({
@@ -116,7 +164,30 @@ async function decide(
     ...dispatched.flatMap(d => (typeof d === 'string' ? [`not dispatched: ${d}`] : [])),
     ...refusalLines(planned),
   ]
-  return { steps: [...advanced.steps, ...dispatched.flatMap(d => (typeof d === 'string' ? [] : d))], notes }
+  const steps = [...advanced.steps, ...dispatched.flatMap(d => (typeof d === 'string' ? [] : d))]
+  return { steps, notes, ...(decider === undefined ? {} : { decider }) }
+}
+
+/** The decider goes first: answering is what lets parked agents finish, so it takes capacity before new work. */
+async function deciderFor(
+  config: TickConfig,
+  opts: TickOptions,
+  ledger: Ledger,
+  roster: Roster,
+  capacity: Pick<Capacity, 'agents' | 'agentsReason'>,
+  now: Date,
+): Promise<DeciderVerdict | undefined> {
+  if (config.decider === undefined) return undefined
+  return deciderVerdict({
+    config: config.decider,
+    agentId: resolveDeciderAgentId(),
+    roster,
+    queue: await opts.broker.queue(),
+    state: ledger.decider,
+    capacity: capacity.agents,
+    capacityReason: capacity.agentsReason,
+    now,
+  })
 }
 
 /** New agents this tick may start: under `maxAgents`, and under the broker's free slots less a reserve. */
@@ -125,7 +196,7 @@ export function agentCapacity(
   claims: Claim[],
   roster: Roster,
 ): Pick<Capacity, 'agents' | 'agentsReason'> {
-  const live = liveBurndownAgents(claims, roster)
+  const live = liveBurndownAgents(claims, roster, config.decider === undefined ? [] : [config.decider.name])
   const slots = roster.slots
   const free = slots === undefined ? 0 : slots.cap - slots.held - config.reserveSlots
   const broker =

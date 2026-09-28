@@ -2,7 +2,7 @@ import type { BrokerClient } from '../client/broker-client.js'
 import type { ServerMessage } from '../protocol.js'
 import type { TickBroker } from '../agents/burndown/run-tick.js'
 
-/** The tick's four broker calls over one unregistered connection, which the broker treats as the human. */
+/** The tick's broker calls over one unregistered connection, which the broker treats as the human. */
 
 const INBOX_PAGE = 200
 
@@ -31,6 +31,14 @@ export function tickBroker(client: BrokerClient): TickBroker {
     async spawn(frame) {
       const res = (await client.request(frame, 'spawn_result')) as Reply<'spawn_result'>
       return spawnReply(res)
+    },
+    async queue() {
+      const res = (await client.request({ t: 'queue' }, 'queue_result')) as Reply<'queue_result'>
+      return res.items
+    },
+    async resume(name, message) {
+      const frame = { t: 'resume' as const, name, surface: 'headless' as const, message }
+      return spawnReply((await client.request(frame, 'spawn_result')) as Reply<'spawn_result'>)
     },
     async retire(name) {
       const res = (await client.request({ t: 'retire', name }, 'spawn_result')) as Reply<'spawn_result'>

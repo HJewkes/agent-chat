@@ -63,8 +63,9 @@ export function resolveLedgerShadow(): boolean {
 
 /**
  * The one durable agent id allowed to send `decided` (autonomy slice 3), from
- * `config.json`'s `decider.agentId`. Read per frame, so the burndown tick can
- * point it at a fresh decider without a broker restart. Absent means no decider.
+ * `config.json`'s `decider.agentId`, set once by the human for one durable
+ * decider (slice 4f option c); the burndown tick only reads it. Read per frame.
+ * Absent means no decider.
  */
 export function resolveDeciderAgentId(): string | undefined {
   const decider = readConfig().decider

@@ -2,7 +2,7 @@ import { burndownConfigPath, burndownLedgerPath } from '../../paths.js'
 import { activeWorkRoot } from '../active-work.js'
 import { gateAccount } from './budget-gate.js'
 import { taskRefusal, type Initiative } from './eligibility.js'
-import { heldClaims, isStalled, readLedger, type Ledger } from './ledger.js'
+import { heldClaims, isStalled, readLedger, type DeciderState, type Ledger } from './ledger.js'
 import { plan, type Plan, type PlanInputs } from './plan.js'
 import { accountDir, loadRules, readInitiatives, readReadings, readTasks } from './source.js'
 import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
@@ -72,11 +72,19 @@ export function renderStatus(ledger: Ledger, now: Date): string[] {
     lines.push(
       `${c.taskId} (${c.initiative}) ${c.agentId ?? c.agentName ?? 'unspawned'} ${c.phase} since ${c.phaseAt}${isStalled(c, now) ? ' STALLED' : ''}`,
     )
+  if (ledger.decider !== undefined) lines.push(deciderStatus(ledger.decider, now))
   for (const account of Object.keys(rules)) {
     const gate = gateAccount(account, rules[account], readings.get(account), { now })
     lines.push(`account ${account}: ${gate.open ? 'open' : 'closed'}, ${gate.reason}`)
   }
   return lines
+}
+
+function deciderStatus(state: DeciderState, now: Date): string {
+  const lastDay = state.wakes.filter(w => now.getTime() - Date.parse(w) < 24 * 60 * 60_000).length
+  const refused =
+    state.refused === undefined ? '' : `; REFUSED at ${state.refused.at}: ${state.refused.reason}`
+  return `decider: ${lastDay} wakes in the last day, last ${state.wakes.at(-1) ?? 'never'}${refused}`
 }
 
 /** Tasks that pass eligibility across opted-in initiatives, before budget and trust; the doctor line's `n`. */
