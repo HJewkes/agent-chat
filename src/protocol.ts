@@ -390,6 +390,21 @@ export interface DecisionCitation {
   reversible: string
 }
 
+/** What `meta.kind` may say on a queued item (autonomy design section 4). */
+export const QUEUE_ITEM_KINDS = ['decision', 'needs-grant', 'stalled', 'ready-to-merge'] as const
+export type QueueItemKind = (typeof QUEUE_ITEM_KINDS)[number]
+
+/** Optional fields an agent attaches to a queued item so the human can answer it cold. */
+export interface ItemShape {
+  kind?: QueueItemKind | undefined
+  /** The task id the agent was working on. */
+  task?: string | undefined
+  options?: string[] | undefined
+  recommended?: string | undefined
+  /** What happens if nobody answers: the default taken, or "parked". */
+  onNoAnswer?: string | undefined
+}
+
 /** A question the decider answered, shown to the human for audit. */
 export interface DecidedItem {
   question: QueueItem
@@ -654,8 +669,8 @@ export type ClientMessage =
   | { t: 'tag'; target?: string; add?: string[]; remove?: string[] }
   | { t: 'broadcast'; text: string }
   | { t: 'inbox'; limit: number }
-  | { t: 'ask'; text: string }
-  | { t: 'notify'; text: string }
+  | ({ t: 'ask'; text: string } & ItemShape)
+  | ({ t: 'notify'; text: string } & Pick<ItemShape, 'kind' | 'task'>)
   | { t: 'queue' }
   | { t: 'answer'; msgId: string; text: string }
   /**

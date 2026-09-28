@@ -215,6 +215,35 @@
           "text": {
             "type": "string",
             "description": "The question, with enough context to answer it cold"
+          },
+          "kind": {
+            "description": "What sort of item this is, for grouping",
+            "type": "string",
+            "enum": [
+              "decision",
+              "needs-grant",
+              "stalled",
+              "ready-to-merge"
+            ]
+          },
+          "task": {
+            "description": "The task id you were working on",
+            "type": "string"
+          },
+          "options": {
+            "description": "The choices, if the answer is one of a few",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "recommended": {
+            "description": "The answer you would pick; shown first",
+            "type": "string"
+          },
+          "onNoAnswer": {
+            "description": "What you will do if nobody answers, or \"parked\"",
+            "type": "string"
           }
         },
         "required": [
@@ -298,6 +327,20 @@
           "text": {
             "type": "string",
             "description": "One line worth their attention"
+          },
+          "kind": {
+            "description": "What sort of item this is, for grouping",
+            "type": "string",
+            "enum": [
+              "decision",
+              "needs-grant",
+              "stalled",
+              "ready-to-merge"
+            ]
+          },
+          "task": {
+            "description": "The task id it concerns",
+            "type": "string"
           }
         },
         "required": [

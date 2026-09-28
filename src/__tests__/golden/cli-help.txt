@@ -8,7 +8,7 @@ Options:
   -h, --help                 display help for command
 
 Human commands:
-  inbox                      what your agents need from you
+  inbox [options]            what your agents need from you
   answer <id> <text...>      answer a question; routes back to the asker
   dismiss <id>               close an item without answering, or decline an endorsement
   approve <id> <allow|deny>  answer an agent's permission prompt from here
@@ -36,7 +36,9 @@ Usage: agent-chat inbox [options]
 what your agents need from you
 
 Options:
-  -h, --help  display help for command
+  --batch            every open item numbered, to answer in one go
+  --answers <value>  with --batch, a file of "N: answer" lines, or - for stdin
+  -h, --help         display help for command
 
 === agent-chat answer
 Usage: agent-chat answer [options] <id> <text...>

@@ -1,9 +1,14 @@
 import type { BrokerClient } from '../../client/broker-client.js'
-import type { ServerMessage } from '../../protocol.js'
+import type { ItemShape, ServerMessage } from '../../protocol.js'
 
 /** Shared by chat_ask and chat_notify: both queue a message for the human, differing only in kind. */
-export async function toHuman(broker: BrokerClient, kind: 'ask' | 'notify', body: string): Promise<string> {
-  const res = (await broker.request({ t: kind, text: body }, 'send_result')) as Extract<
+export async function toHuman(
+  broker: BrokerClient,
+  kind: 'ask' | 'notify',
+  body: string,
+  shape: ItemShape = {},
+): Promise<string> {
+  const res = (await broker.request({ t: kind, text: body, ...shape }, 'send_result')) as Extract<
     ServerMessage,
     { t: 'send_result' }
   >
