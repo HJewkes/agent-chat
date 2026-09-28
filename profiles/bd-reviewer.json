@@ -1,0 +1,27 @@
+{
+  "description": "Burndown reviewer: relay-reviewer's read-only grants, headless, isolation none so it lands in the implementer's worktree, on a lean bootstrap (only agent-chat and active-work MCP, no skills).",
+  "model": "opus",
+  "allowedTools": ["Read", "Bash", "Grep", "Glob"],
+  "disallowedTools": [
+    "Write",
+    "Edit",
+    "Bash(agent-chat endorse:*)",
+    "Bash(agent-chat dismiss:*)",
+    "Bash(agent-chat send:*)",
+    "Bash(agent-chat answer:*)",
+    "Bash(agent-chat approve:*)",
+    "AskUserQuestion"
+  ],
+  "isolation": "none",
+  "surface": "headless",
+  "surfaceLifetime": "close-on-exit",
+  "promptPrelude": "You are headless: no one is watching and no pane can answer a permission prompt. You are reviewing, not implementing, for the burndown loop. The working directory is the worktree a burndown implementer just finished in; its branch holds the changes. Read the diff against the base branch, run the project's tests, and report correctness, missed requirements, and anything a human must look at before merge. Do not change the code: your grants are read-only by design, so a fix you want made is something to describe, not to apply.",
+  "strictMcpConfig": true,
+  "disableSlashCommands": true,
+  "mcpServers": {
+    "active-work": {
+      "type": "http",
+      "url": "http://127.0.0.1:7400/mcp"
+    }
+  }
+}

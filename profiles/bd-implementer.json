@@ -1,0 +1,25 @@
+{
+  "description": "Burndown implementer: the builtin implementer (opus), headless, in its own worktree, on a lean bootstrap (only agent-chat and active-work MCP, no skills).",
+  "model": "opus",
+  "allowedTools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "Monitor"],
+  "disallowedTools": [
+    "Bash(agent-chat endorse:*)",
+    "Bash(agent-chat dismiss:*)",
+    "Bash(agent-chat send:*)",
+    "Bash(agent-chat answer:*)",
+    "Bash(agent-chat approve:*)",
+    "AskUserQuestion"
+  ],
+  "isolation": "worktree",
+  "surface": "headless",
+  "surfaceLifetime": "close-on-exit",
+  "promptPrelude": "You are headless: no one is watching and no pane can answer a permission prompt. You are implementing in an isolated worktree. Keep diffs small and reviewable, and run the project's tests before reporting done.",
+  "strictMcpConfig": true,
+  "disableSlashCommands": true,
+  "mcpServers": {
+    "active-work": {
+      "type": "http",
+      "url": "http://127.0.0.1:7400/mcp"
+    }
+  }
+}

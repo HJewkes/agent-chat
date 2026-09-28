@@ -163,6 +163,8 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     systemPrompt(input, hooked),
     '--mcp-config',
     input.mcpConfigPath,
+    ...(profile.strictMcpConfig === true ? ['--strict-mcp-config'] : []),
+    ...(profile.disableSlashCommands === true ? ['--disable-slash-commands'] : []),
     ...(settings === undefined ? [] : ['--settings', settings]),
     // Without this, notifications/claude/channel is never negotiated for the
     // child process: the broker's push still "succeeds" as a raw stdio write

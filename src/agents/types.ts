@@ -64,6 +64,10 @@ export interface AgentProfile {
   promptPrelude: string
   /** Extra MCP servers merged into the generated --mcp-config. */
   mcpServers?: Record<string, unknown>
+  /** Load only the generated --mcp-config, dropping user-scope and plugin MCP servers. */
+  strictMcpConfig?: boolean
+  /** Drop every skill and slash command, which otherwise load into each turn. */
+  disableSlashCommands?: boolean
 }
 
 /**
