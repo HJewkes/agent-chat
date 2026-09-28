@@ -6,6 +6,7 @@ import {
   HUMAN,
   type ClientMessage,
   type DeliveredMessage,
+  type ItemShape,
   type PermissionBehavior,
   type ServerMessage,
 } from '../protocol.js'
@@ -25,6 +26,7 @@ import { newestBuildMtime, stalenessWarning } from './staleness.js'
 import { findGitRoot } from '../git.js'
 import { readMeta } from './lifecycle.js'
 import { resolveDeciderAgentId } from '../config.js'
+import { shapeMeta } from '../inbox/item-shape.js'
 
 /**
  * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
@@ -693,7 +695,12 @@ export class SocketServer {
   }
 
   /** Messages to the human are logged, never delivered — nothing holds that socket. */
-  private enqueueForHuman(conn: Conn, kind: 'message' | 'question' | 'notice', text: string): void {
+  private enqueueForHuman(
+    conn: Conn,
+    kind: 'message' | 'question' | 'notice',
+    text: string,
+    shape: ItemShape = {},
+  ): void {
     const { core } = this
     const from = core.registry.nameOf(conn)
     if (!from) return reply(conn, { t: 'send_result', ok: false, recipients: [], reason: 'not registered' })
@@ -703,7 +710,14 @@ export class SocketServer {
       return reply(conn, { t: 'send_result', ok: false, recipients: [], reason })
     }
 
-    const { msgId } = core.append({ kind, actor: from, target: HUMAN, body: text })
+    const meta = shapeMeta(shape)
+    const { msgId } = core.append({
+      kind,
+      actor: from,
+      target: HUMAN,
+      body: text,
+      ...(Object.keys(meta).length > 0 ? { meta } : {}),
+    })
     logEvent('route', { kind, msgId, from, to: HUMAN, delivered: true, recipients: [HUMAN] })
     reply(conn, { t: 'send_result', ok: true, msgId, recipients: [HUMAN] })
   }
@@ -1220,9 +1234,9 @@ export class SocketServer {
       case 'broadcast':
         return this.handleRoute(conn, core.registry.broadcast(conn, msg.text), 'broadcast', '*')
       case 'ask':
-        return this.enqueueForHuman(conn, 'question', msg.text)
+        return this.enqueueForHuman(conn, 'question', msg.text, msg)
       case 'notify':
-        return this.enqueueForHuman(conn, 'notice', msg.text)
+        return this.enqueueForHuman(conn, 'notice', msg.text, { kind: msg.kind, task: msg.task })
       case 'endorse':
         return this.handleEndorseRequest(conn, msg)
       case 'endorse_approve':
