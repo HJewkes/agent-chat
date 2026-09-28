@@ -82,6 +82,12 @@ export const mirrorPlistPath = (): string =>
 
 export const mirrorLogDir = (): string => path.join(os.homedir(), 'Library', 'Logs', 'agent-chat-mirror')
 
+/** The burndown claim ledger: which task each tick-spawned agent holds, and in what phase. */
+export const burndownLedgerPath = (): string => path.join(home(), 'burndown.json')
+
+/** Per-account reserve and ceiling for `agent-chat burndown`; the design's defaults apply when absent. */
+export const burndownConfigPath = (): string => path.join(home(), 'burndown.config.json')
+
 /** The package root, reached identically from `dist/paths.js` and `src/paths.ts`. */
 const packageRoot = (): string => path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 

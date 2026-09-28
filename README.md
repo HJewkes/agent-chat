@@ -225,6 +225,8 @@ agent-chat approve <id> allow|deny
 agent-chat send <to> <text>     message a session as the human
 agent-chat mirror start|stop|status
                                 the queue on your phone (docs/phone-queue.md)
+agent-chat burndown plan|status dry run: the task each opted-in initiative
+                                would dispatch next, and every refusal
 agent-chat ps                   who's registered
 agent-chat history [n]          recent events from the log
 agent-chat broker               run the broker in the foreground
