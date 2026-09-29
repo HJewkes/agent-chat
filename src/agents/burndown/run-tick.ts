@@ -8,7 +8,7 @@ import { activeWorkRoot } from '../active-work.js'
 import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
 import { advance, applyActions, claimKey, type InboxMessage } from './advance.js'
 import { verifySection } from './brief.js'
-import { pickAccount } from './budget-gate.js'
+import { gatePool, pickAccount } from './budget-gate.js'
 import { collisionCheck, type BrokerView, type CollisionReader } from './collision.js'
 import { deciderVerdict, recordRefusal, wakeDecider, type DeciderVerdict } from './decider.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
@@ -36,7 +36,14 @@ import {
 import { DEFAULT_NAME_PREFIX, plan, type Capacity, type Dispatch, type PlanInputs } from './plan.js'
 import { defaultAutonomyRoot } from './policy.js'
 import { diskSeatDeps, loadSeats, planSeats, type LoadedSeats, type SkippedSeat } from './seat-tick.js'
-import { accountDir, loadTickConfig, readInitiatives, readTaskText, type TickConfig } from './source.js'
+import {
+  accountDir,
+  loadTickConfig,
+  readInitiatives,
+  readTaskText,
+  readTasks,
+  type TickConfig,
+} from './source.js'
 import { retrySteps, stepsForActions, stepsForDispatch, type StepContext } from './steps.js'
 import { loadWorld, type World } from './tick.js'
 import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
@@ -202,7 +209,11 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     root,
     pr: url => prState(url, opts.exec ?? run),
   })
-  const ctx = stepContext(world, config, now, root)
+  const ctx = {
+    ...stepContext(world, config, now, root),
+    ...(seats === undefined ? {} : { seat: seatLookup(seats) }),
+    tasks: new Map([...world.tasks, ...seatClaimTasks(held, world, root)]),
+  }
   const capacity = agentCapacity(config, ledger.claims, roster)
   const decider = await deciderFor(config, opts, ledger, roster, capacity, now)
   const agents = decider?.wake === true ? { ...capacity, agents: capacity.agents - 1 } : capacity
@@ -357,6 +368,32 @@ function worktreeCapacity(
       cache.set(repo, known)
       return known
     },
+  }
+}
+
+/** A seat's initiative has no autonomy block, so the world has not read its task files; a seat claim's spawn needs them. */
+function seatClaimTasks(held: readonly Claim[], world: World, root: string): Map<string, Task[]> {
+  const slugs = new Set(held.filter(c => c.seat !== undefined).map(c => c.initiative))
+  return new Map(
+    [...slugs]
+      .filter(slug => (world.tasks.get(slug) ?? []).length === 0)
+      .map(slug => [slug, readTasks(root, slug)]),
+  )
+}
+
+/** The seats mode inputs for a claim's spawn: the pool gate is read from this tick's sample. */
+function seatLookup(seats: LoadedSeats): NonNullable<StepContext['seat']> {
+  const cliVersion = installedClaudeVersion()
+  return name => {
+    const loaded = seats.loaded.find(s => s.dispatch.seat === name)
+    if (loaded !== undefined)
+      return {
+        dispatch: loaded.dispatch,
+        gate: gatePool(loaded.budget),
+        trust: (repo, cwd, configDir) => trustRefusal(repo, cwd, configDir, cliVersion),
+      }
+    const skipped = seats.skipped.find(s => s.seat === name)
+    return skipped === undefined ? undefined : { skipped: skipped.reason }
   }
 }
 

@@ -788,6 +788,79 @@ describe('burndown tick in seats mode', () => {
   })
 })
 
+describe('burndown tick advances a seat claim', () => {
+  const seatClaim = (seat: string): { claim: Claim; worktree: string } => {
+    const worktree = path.join(repo(), '.worktrees', 'st-dm-1')
+    git(repo(), 'worktree', 'add', '-q', '-b', 'agent-chat/st-dm-1', worktree)
+    git(worktree, 'commit', '-q', '--allow-empty', '-m', 'work')
+    const claim: Claim = {
+      taskId: 'DM-1',
+      initiative: 'demo',
+      seat,
+      namePrefix: 'st',
+      spawnedAt: NOON.toISOString(),
+      phase: 'implementing',
+      phaseAt: NOON.toISOString(),
+      agentName: 'st-dm-1',
+      spawned: ['st-dm-1'],
+      worktree,
+    }
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [claim] })
+    return { claim, worktree }
+  }
+
+  beforeEach(() => {
+    seatPolicy()
+    config({ seats: ['seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+  })
+
+  it("spawns the reviewer on the seat's pool config dir without an autonomy block", async () => {
+    const { worktree } = seatClaim('seat-t')
+    const fake = fakeBroker({ agents: [row('st-dm-1', 'exited', worktree)] })
+
+    await tick(fake)
+
+    expect(fake.frames).toEqual([
+      expect.objectContaining({
+        name: 'st-dm-1-r0',
+        profile: 'bd-reviewer',
+        cwd: worktree,
+        configDir: accountPath(),
+      }),
+    ])
+    expect(readLedger(burndownLedgerPath()).claims[0]).toMatchObject({
+      phase: 'spawning',
+      nextPhase: 'reviewing',
+    })
+  })
+
+  it('does not spawn the reviewer while the seat pool gate is closed', async () => {
+    const { worktree } = seatClaim('seat-t')
+    sevenDayAt(75)
+    const fake = fakeBroker({ agents: [row('st-dm-1', 'exited', worktree)] })
+
+    const lines = await tick(fake)
+
+    expect(fake.frames).toEqual([])
+    expect(lines.join('\n')).toContain('deferred DM-1#: budget: BUDGET-PAUSE pool pool-t')
+    expect(readLedger(burndownLedgerPath()).claims[0]?.stalledReason).toBeUndefined()
+  })
+
+  it('stalls the claim once, without spawning, when its seat is no longer in the config', async () => {
+    const { worktree } = seatClaim('seat-gone')
+    const fake = fakeBroker({ agents: [row('st-dm-1', 'exited', worktree)] })
+
+    await tick(fake)
+    await tick(fake)
+
+    expect(fake.frames).toEqual([])
+    expect(readLedger(burndownLedgerPath()).claims[0]?.stalledReason).toBe(
+      'seat seat-gone is no longer in the burndown config; left for the owner',
+    )
+  })
+})
+
 describe('tick subprocesses', () => {
   it('never pass the agent-chat identity to a child', () => {
     process.env.AGENT_CHAT_NAME = 'parent'
