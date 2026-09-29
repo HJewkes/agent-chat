@@ -362,3 +362,61 @@ describe('runBackfill against an events.db', () => {
     await new Promise(resolve => server.close(resolve))
   })
 })
+
+describe('runBackfill per-row rollback', () => {
+  let dir: string
+  let events: EventLog
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-backfill-rollback-'))
+    process.env.AGENT_CHAT_HOME = dir
+    events = new EventLog(path.join(dir, 'events.db'))
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    events.close()
+    delete process.env.AGENT_CHAT_HOME
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('rolls back a row rejected after a partial write and commits the rows around it', () => {
+    let alreadyRefused = false
+    const [, betaId] = ['alpha', 'beta', 'gamma'].map(
+      name =>
+        events.append({
+          kind: 'agent_spawned',
+          actor: 'human',
+          target: name,
+          meta: { session_id: `s-${name}` },
+        }).msgId,
+    )
+    const realApply = SqliteExecutionLedger.prototype.apply
+    // Beta's first transition is written, then its second is refused.
+    vi.spyOn(SqliteExecutionLedger.prototype, 'apply').mockImplementation(function (
+      this: SqliteExecutionLedger,
+      transition,
+    ) {
+      const betaWritten = events
+        .ledgerHandle()
+        .prepare('SELECT 1 FROM agent_execution WHERE request_key = ?')
+        .get(`backfill:${betaId}`)
+      if (betaWritten !== undefined && transition.kind !== 'prepare' && !alreadyRefused) {
+        alreadyRefused = true
+        return { ok: false, kind: 'invalid_transition', reason: 'forced' } as never
+      }
+      return realApply.call(this, transition)
+    })
+
+    const outcome = runBackfill(events, { fence: FENCE })
+
+    expect(outcome.rejected.map(r => r.kind)).toEqual(['invalid_transition'])
+    const keys = (
+      events.ledgerHandle().prepare('SELECT request_key FROM agent_execution ORDER BY request_key').all() as {
+        request_key: string
+      }[]
+    ).map(r => r.request_key)
+    expect(keys).toHaveLength(2)
+    expect(keys).not.toContain(`backfill:${betaId}`)
+  })
+})
