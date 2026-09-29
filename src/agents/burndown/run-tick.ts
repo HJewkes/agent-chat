@@ -11,10 +11,18 @@ import { verifySection } from './brief.js'
 import { pickAccount } from './budget-gate.js'
 import { collisionCheck, type BrokerView, type CollisionReader } from './collision.js'
 import { deciderVerdict, recordRefusal, wakeDecider, type DeciderVerdict } from './decider.js'
-import type { Initiative } from './eligibility.js'
+import type { Initiative, Refusal, Task } from './eligibility.js'
 import { run, type Runner } from './exec.js'
 import { execute, type SpawnFrame, type SpawnReply, type Step } from './execute.js'
-import { heldClaims, readLedger, withLedgerLock, writeLedger, type Claim, type Ledger } from './ledger.js'
+import {
+  heldClaims,
+  readLedger,
+  withLedgerLock,
+  writeLedger,
+  type Claim,
+  type Ledger,
+  type SeatState,
+} from './ledger.js'
 import {
   defaultBranch,
   liveBurndownAgents,
@@ -25,12 +33,13 @@ import {
   worktreeUse,
   type Roster,
 } from './observe.js'
-import { plan, type Capacity, type Plan, type PlanInputs } from './plan.js'
-import { defaultAutonomyRoot, loadPolicy } from './policy.js'
-import { tickPrefixes } from './seat-dispatch.js'
-import { accountDir, loadTickConfig, readTaskText, type TickConfig } from './source.js'
+import { DEFAULT_NAME_PREFIX, plan, type Capacity, type Dispatch, type PlanInputs } from './plan.js'
+import { defaultAutonomyRoot } from './policy.js'
+import { diskSeatDeps, loadSeats, planSeats, type LoadedSeats, type SkippedSeat } from './seat-tick.js'
+import { accountDir, loadTickConfig, readInitiatives, readTaskText, type TickConfig } from './source.js'
 import { retrySteps, stepsForActions, stepsForDispatch, type StepContext } from './steps.js'
 import { loadWorld, type World } from './tick.js'
+import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
 
 /**
  * `agent-chat burndown tick --once`: one pass under the ledger lock. Observe
@@ -80,11 +89,21 @@ export function stopReason(config: TickConfig, paused: boolean): string | undefi
   return undefined
 }
 
+/** CC-205 D2: seats mode and a brief's `autonomy:` block could dispatch one initiative twice, so both is a config error. */
+export function modeConflict(config: TickConfig, initiatives: readonly Initiative[]): string | undefined {
+  if (config.seats.length === 0) return undefined
+  const optedIn = initiatives.filter(i => i.autonomy !== undefined).map(i => i.slug)
+  if (optedIn.length === 0) return undefined
+  return `config error: ${burndownConfigPath()} lists seats, and brief.md of ${optedIn.join(', ')} has an autonomy: block; remove one, since both modes would dispatch the same work`
+}
+
 export async function tickFromDisk(opts: TickOptions): Promise<string[]> {
   const config = loadTickConfig(burndownConfigPath())
   const stop = stopReason(config, fs.existsSync(burndownPausePath()))
   if (stop !== undefined && !opts.dryRun) return [stop]
   const head = stop === undefined ? [] : [`${stop}; dry run proceeds anyway`]
+  const conflict = modeConflict(config, readInitiatives(opts.root ?? activeWorkRoot()))
+  if (conflict !== undefined) return [...head, conflict]
   const locked = await withLedgerLock(burndownLedgerPath(), () => runTick(config, opts))
   if (!locked.ran) return [...head, `another tick holds the ledger lock (pid ${locked.holder}); did nothing`]
   return [...head, ...locked.value]
@@ -93,7 +112,12 @@ export async function tickFromDisk(opts: TickOptions): Promise<string[]> {
 async function runTick(config: TickConfig, opts: TickOptions): Promise<string[]> {
   const now = opts.now ?? new Date()
   const ledger = readLedger(burndownLedgerPath())
-  const { steps, notes, decider, failures, unchecked } = await decide(config, opts, ledger, now)
+  const { steps, notes, decider, failures, unchecked, seatStates, skippedSeats } = await decide(
+    config,
+    opts,
+    ledger,
+    now,
+  )
   if (opts.dryRun)
     return [
       `burndown tick at ${now.toISOString()} (dry run)`,
@@ -104,7 +128,9 @@ async function runTick(config: TickConfig, opts: TickOptions): Promise<string[]>
   const log = opts.log ?? logEvent
   for (const failure of failures) log('burndown_collision_reader_failed', { ...failure })
   for (const initiative of unchecked) log('burndown_collision_skipped', { initiative, reason: 'no repo' })
-  const executed = await execute(steps, ledger, {
+  for (const skipped of skippedSeats) log('burndown_seat_skipped', { ...skipped })
+  const sampled = seatStates === undefined ? ledger : { ...ledger, seats: seatStates }
+  const executed = await execute(steps, sampled, {
     ledgerFile: burndownLedgerPath(),
     spawn: opts.broker.spawn,
     retire: opts.broker.retire,
@@ -150,22 +176,26 @@ function describeDecider(config: TickConfig, verdict: DeciderVerdict | undefined
   return [`decider ${name} not woken: ${verdict.reason}`]
 }
 
-/** Observe, advance and plan: every step the tick would take, in order, and a note for everything it would not. */
-async function decide(
-  config: TickConfig,
-  opts: TickOptions,
-  ledger: Ledger,
-  now: Date,
-): Promise<{
+interface Decided {
   steps: Step[]
   notes: string[]
   decider?: DeciderVerdict
   failures: ReaderFailure[]
   unchecked: string[]
-}> {
+  /** Seats mode only: every seat's pool samples, this tick's included. */
+  seatStates?: Record<string, SeatState>
+  skippedSeats: SkippedSeat[]
+}
+
+/** Observe, advance and plan: every step the tick would take, in order, and a note for everything it would not. */
+async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now: Date): Promise<Decided> {
   const root = opts.root ?? activeWorkRoot()
   const roster = await opts.broker.roster()
   const world = loadWorld(now, root)
+  const seats =
+    config.seats.length === 0
+      ? undefined
+      : loadSeats(config.seats, ledger, diskSeatDeps(defaultAutonomyRoot(root), root, now))
   const held = heldClaims(ledger)
   const { observations, unread } = await observe(held, roster, {
     inboxSince: opts.broker.inboxSince,
@@ -180,23 +210,21 @@ async function decide(
   const kept = advanced.steps.flatMap(s => (s.kind === 'ledger' ? s.actions : []))
   const planLedger = applyActions(ledger, kept, now)
   const { check, failures } = await tickCollision(planLedger, opts)
-  const planned = plan({
-    ...world,
+  const prefixes = [DEFAULT_NAME_PREFIX, ...(seats?.loaded.map(s => s.dispatch.prefix) ?? [])]
+  const planned = planNew(world, seats, root, {
     ledger: planLedger,
-    capacity: worktreeCapacity(
-      config,
-      { ...agents, agents: agents.agents - advanced.spawns },
-      tickPrefixes(config.seats, seat => loadPolicy(defaultAutonomyRoot(root), seat)),
-    ),
+    capacity: worktreeCapacity(config, { ...agents, agents: agents.agents - advanced.spawns }, prefixes),
     orphan: (repo, name) => orphanAt(repo, name),
     collision: check,
   })
-  const dispatched = planned.dispatch.map(d => stepsForDispatch(d, ctx))
+  const dispatchCtx = { ...ctx, tasks: new Map([...ctx.tasks, ...planned.tasks]) }
+  const dispatched = planned.dispatch.map(d => stepsForDispatch(d, dispatchCtx))
   const notes = [
     ...unread.map(u => `unread ${u}`),
     ...advanced.deferred.map(d => `deferred ${d}`),
     ...dispatched.flatMap(d => (typeof d === 'string' ? [`not dispatched: ${d}`] : [])),
-    ...refusalLines(planned),
+    ...refusalLines(planned.refusals),
+    ...planned.skipped.map(s => `seat ${s.seat} skipped: ${s.reason}`),
   ]
   const steps = [
     ...retrySteps(ledger, roster),
@@ -206,8 +234,48 @@ async function decide(
   const unchecked = world.initiatives
     .filter(i => i.state === 'focused' && i.autonomy !== undefined && i.autonomy.repo === undefined)
     .map(i => i.slug)
-  return { steps, notes, failures, unchecked, ...(decider === undefined ? {} : { decider }) }
+  const seatStates = seats === undefined ? undefined : samplesAfter(ledger, seats)
+  return {
+    steps,
+    notes,
+    failures,
+    unchecked,
+    skippedSeats: planned.skipped,
+    ...(decider === undefined ? {} : { decider }),
+    ...(seatStates === undefined ? {} : { seatStates }),
+  }
 }
+
+type NewWork = Required<Pick<PlanInputs, 'ledger' | 'capacity' | 'orphan' | 'collision'>>
+
+interface Planned {
+  dispatch: Dispatch[]
+  refusals: Refusal[]
+  skipped: SkippedSeat[]
+  /** Task files seats mode read beyond the world's, for the dispatch briefs. */
+  tasks: Map<string, Task[]>
+}
+
+/** Without seats, `plan()` over the briefs' autonomy blocks; with seats, `planSeat` for each loaded seat. */
+function planNew(world: World, seats: LoadedSeats | undefined, root: string, work: NewWork): Planned {
+  if (seats === undefined) return { ...plan({ ...world, ...work }), skipped: [], tasks: new Map() }
+  const cliVersion = installedClaudeVersion()
+  const planned = planSeats(
+    seats.loaded,
+    {
+      ...work,
+      initiatives: world.initiatives,
+      trust: (repo, cwd, configDir) => trustRefusal(repo, cwd, configDir, cliVersion),
+    },
+    root,
+  )
+  return { ...planned, skipped: [...seats.skipped, ...planned.skipped] }
+}
+
+const samplesAfter = (ledger: Ledger, seats: LoadedSeats): Record<string, SeatState> => ({
+  ...ledger.seats,
+  ...Object.fromEntries(seats.loaded.map(s => [s.dispatch.seat, s.state])),
+})
 
 /** The CC-202 check over this tick's ledger, collecting each failed reader for the event log. */
 async function tickCollision(
@@ -352,8 +420,8 @@ function describe(step: Step): string {
   return `would spawn ${f.name} as ${f.profile} (${f.surface}) on ${f.configDir} in ${f.cwd}${extra.length > 0 ? `, ${extra.join(', ')}` : ''}; brief ${f.brief.length} chars`
 }
 
-function refusalLines(planned: Plan): string[] {
-  return planned.refusals.map(
+function refusalLines(refusals: readonly Refusal[]): string[] {
+  return refusals.map(
     r => `refused ${r.initiative}${r.task === undefined ? '' : ` ${r.task}`} [${r.kind}]: ${r.reason}`,
   )
 }

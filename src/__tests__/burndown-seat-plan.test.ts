@@ -10,7 +10,7 @@ import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger
 import type { Capacity, Dispatch } from '../agents/burndown/plan.js'
 import { checkSeatPrefixes, loadPolicy, type SeatPolicy } from '../agents/burndown/policy.js'
 import type { ScoreRow, ScoringDefaults } from '../agents/burndown/score.js'
-import { tickPrefixes, type SeatDispatch } from '../agents/burndown/seat-dispatch.js'
+import type { SeatDispatch } from '../agents/burndown/seat-dispatch.js'
 import { planSeat, priorPicksOf, type SeatPlanInputs } from '../agents/burndown/seat-plan.js'
 import { stepsForDispatch, type StepContext } from '../agents/burndown/steps.js'
 
@@ -386,19 +386,6 @@ describe('seat seams from the CC-246 review', () => {
         frame: expect.objectContaining({ name: 'sa-a-1', configDir: '/tmp/pool-x' }),
       }),
     ])
-  })
-
-  it('(d) lists bd and every configured seat prefix for the tick', () => {
-    const policy = loadPolicy(FIXTURE, 'seat-a')
-
-    expect(tickPrefixes([], () => policy)).toEqual(['bd'])
-    expect(tickPrefixes(['seat-a', 'seat-b'], () => policy)).toEqual(['bd', 'sa', 'sb'])
-  })
-
-  it('(d) refuses a configured seat that cannot dispatch', () => {
-    const policy = loadPolicy(FIXTURE, 'seat-a')
-
-    expect(() => tickPrefixes(['seat-hub'], () => policy)).toThrow('seat-hub is the hub seat')
   })
 })
 

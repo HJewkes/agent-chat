@@ -112,7 +112,7 @@ export interface SevenDaySample {
   at: number
   sevenDay: number
   /** Epoch ms the seven_day window resets, from the status file; a sample after it starts a new window. */
-  resetsAt?: number
+  resetsAt?: number | undefined
 }
 
 export interface PoolGateInput {
