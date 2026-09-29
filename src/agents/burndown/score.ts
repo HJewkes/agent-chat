@@ -149,7 +149,7 @@ export function namedDependencies(task: ScoredTask): Set<string> {
   const ids = new Set<string>()
   for (const sentence of body.split(/(?<=[.;])\s+/)) {
     if (!DEP.test(sentence)) continue
-    for (const match of sentence.matchAll(ID)) ids.add(match[1])
+    for (const id of sentence.match(ID) ?? []) ids.add(id)
   }
   ids.delete(task.id)
   return ids
@@ -181,7 +181,7 @@ export function unblocksTerm(unblockCount: number): number {
 function parseIsoDay(value: string): number | undefined {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
   if (!match) return undefined
-  const [year, month, day] = match.slice(1).map(Number)
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])]
   const ms = Date.UTC(year, month - 1, day)
   const roundTrips = new Date(ms).getUTCMonth() === month - 1 && new Date(ms).getUTCDate() === day
   return roundTrips ? ms / DAY_MS : undefined
