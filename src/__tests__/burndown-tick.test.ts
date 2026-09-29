@@ -116,6 +116,7 @@ interface Fake {
   resumes: { name: string; message: string }[]
   retires: string[]
   sends: { to: string; text: string }[]
+  notices: string[]
   senders: { opened: number; closed: number }
 }
 
@@ -137,6 +138,7 @@ function fakeBroker(
     resumes: [],
     retires: [],
     sends: [],
+    notices: [],
     senders: { opened: 0, closed: 0 },
     broker: {
       roster: async () => {
@@ -164,6 +166,10 @@ function fakeBroker(
           send: async (to, text) => {
             fake.sends.push({ to, text })
             return opts.sendAs?.(to) ?? { ok: true }
+          },
+          notify: async text => {
+            fake.notices.push(text)
+            return { ok: true }
           },
           close: () => {
             fake.senders.closed += 1
@@ -1134,6 +1140,113 @@ describe('burndown tick advances a seat claim', () => {
     expect(readLedger(burndownLedgerPath()).claims[0]?.stalledReason).toBe(
       'seat seat-gone is no longer in the burndown config; left for the owner',
     )
+  })
+})
+
+describe('burndown tick leak check', () => {
+  const PR = 'https://github.com/example/demo/pull/7'
+  const PRIVATE = 'quokkaproject'
+
+  beforeEach(() => {
+    seatPolicy()
+    config({ seats: ['seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    write(path.join(world, 'home', 'private-denylist.json'), JSON.stringify({ 'private-name': [PRIVATE] }))
+  })
+
+  function claimWithPr(): string {
+    const worktree = path.join(repo(), '.worktrees', 'st-dm-1')
+    git(repo(), 'worktree', 'add', '-q', '-b', 'agent-chat/st-dm-1', worktree)
+    git(worktree, 'commit', '-q', '--allow-empty', '-m', 'work')
+    git(worktree, 'push', '-q', 'origin', 'agent-chat/st-dm-1')
+    const claim: Claim = {
+      taskId: 'DM-1',
+      initiative: 'demo',
+      seat: 'seat-t',
+      namePrefix: 'st',
+      spawnedAt: NOON.toISOString(),
+      phase: 'implementing',
+      phaseAt: NOON.toISOString(),
+      agentName: 'st-dm-1',
+      spawned: ['st-dm-1'],
+      worktree,
+      pr: PR,
+      notified: ['dispatched'],
+    }
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [claim] })
+    return worktree
+  }
+
+  const pulls = (...rows: Record<string, unknown>[]): Runner =>
+    stubGh(args =>
+      args[2]?.startsWith('repos/example/demo/pulls') === true
+        ? { status: 0, stdout: rows.map(r => JSON.stringify(r)).join('\n') }
+        : { status: 0, stdout: '' },
+    )
+
+  const openPr = (over: Record<string, unknown> = {}) => ({
+    number: 7,
+    url: PR,
+    title: 'Add a thing',
+    body: '',
+    branch: 'agent-chat/st-dm-1',
+    headRepo: 'example/demo',
+    base: 'main',
+    private: false,
+    ...over,
+  })
+
+  it('delivers one redacted leak event to the seat, and nothing new on the next tick', async () => {
+    const worktree = claimWithPr()
+    const fake = fakeBroker({ agents: [row('st-dm-1', 'live', worktree)] })
+    const exec = pulls(openPr({ body: `Imports the ${PRIVATE} tables` }))
+
+    await tick(fake, false, () => {}, exec)
+    await tick(fake, false, () => {}, exec)
+
+    expect(fake.sends).toHaveLength(1)
+    expect(fake.sends[0]?.to).toBe('seat-t')
+    expect(fake.sends[0]?.text).toContain(`leak DM-1: ${PR}: body:1 private-name`)
+    expect(fake.sends[0]?.text).not.toContain(PRIVATE)
+    expect(readLedger(burndownLedgerPath()).claims[0]?.notified).toEqual(['dispatched', 'leak'])
+  })
+
+  it('scans the pushed branch through private refs, leaving origin/* and no scan refs behind', async () => {
+    const worktree = claimWithPr()
+    write(path.join(worktree, 'notes.md'), `see ${PRIVATE}\n`)
+    git(worktree, 'add', 'notes.md')
+    git(worktree, 'commit', '-q', '-m', 'notes')
+    git(worktree, 'push', '-q', 'origin', 'agent-chat/st-dm-1')
+    git(repo(), 'update-ref', '-d', 'refs/remotes/origin/agent-chat/st-dm-1')
+    const refsBefore = git(repo(), 'for-each-ref', '--format=%(refname) %(objectname)')
+    const fake = fakeBroker({ agents: [row('st-dm-1', 'live', worktree)] })
+
+    await tick(fake, false, () => {}, pulls(openPr()))
+
+    expect(fake.sends).toHaveLength(1)
+    expect(fake.sends[0]?.text).toMatch(/leak DM-1: .*: [0-9a-f]{12} notes\.md:1 private-name/)
+    expect(fake.sends[0]?.text).not.toContain(PRIVATE)
+    expect(git(repo(), 'for-each-ref', '--format=%(refname) %(objectname)')).toBe(refsBefore)
+  })
+
+  it('files one human-queue item for an unclaimed agent PR', async () => {
+    const worktree = claimWithPr()
+    const fake = fakeBroker({ agents: [row('st-dm-1', 'live', worktree)] })
+    const stray = openPr({
+      number: 9,
+      url: PR.replace('/7', '/9'),
+      branch: 'agent-chat/lone',
+      title: PRIVATE,
+    })
+    const exec = pulls(openPr(), stray)
+
+    await tick(fake, false, () => {}, exec)
+    await tick(fake, false, () => {}, exec)
+
+    expect(fake.notices).toHaveLength(1)
+    expect(fake.notices[0]).toContain('title private-name')
+    expect(fake.notices[0]).not.toContain(PRIVATE)
+    expect(fake.sends).toEqual([])
   })
 })
 
