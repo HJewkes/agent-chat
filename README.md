@@ -235,11 +235,17 @@ agent-chat burndown plan|status dry run: the task each opted-in initiative
                                 would dispatch next, and every refusal
 agent-chat burndown install|uninstall|job-status
                                 the launchd tick job (docs/burndown.md)
+agent-chat gh-write -- <gh args...>
+                                one gh write, spaced machine-wide (config.json
+                                ghWriteGapSeconds, default 3) and retried on
+                                GitHub's secondary rate limit (60 s, 120 s, 300 s)
 agent-chat ps                   who's registered
 agent-chat history [n]          recent events from the log
 agent-chat broker               run the broker in the foreground
 agent-chat mcp                  the MCP server (Claude Code spawns this)
 ```
+
+Implementer briefs should use `agent-chat gh-write --` for merge PUTs, PR creates, comments and PR body PATCHes, since every seat and agent shares one GitHub user and so one secondary rate limit. It passes gh's stdout, stderr and exit code through; stdin is not forwarded, so send bodies with `-f`/`-F` or `--input <file>`.
 
 ## Tests
 

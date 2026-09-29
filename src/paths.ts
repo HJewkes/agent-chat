@@ -64,6 +64,11 @@ export const hooksPath = (): string => path.join(home(), 'hooks.json')
 /** User-editable settings: the agent-slot cap (`agentSlots`) and the per-repo worktree cap (`worktreeBudget`). */
 export const configPath = (): string => path.join(home(), 'config.json')
 
+/** `agent-chat gh-write`'s machine-wide lock (a directory) and the time the next write may start. */
+export const ghWriteLockPath = (): string => path.join(home(), 'gh-write.lock')
+
+export const ghWriteStampPath = (): string => path.join(home(), 'gh-write.stamp.json')
+
 /** The launchd label for `agent-chat mirror`; the plist and every `launchctl` call use it. */
 export const MIRROR_LABEL = 'dev.hjewkes.agent-chat-mirror'
 
