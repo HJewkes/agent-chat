@@ -54,6 +54,7 @@ import {
   type TranscriptVerdict,
 } from './resume-session.js'
 import { SpawnRateBudget } from './spawn-rate.js'
+import { loginGap, readOutputTail } from './launch-output.js'
 import { isTrusted, trustGap } from './trust.js'
 import { itermSessionPresent } from './surfaces/iterm.js'
 import { cliEntry, home } from '../paths.js'
@@ -224,7 +225,15 @@ interface LaunchSite {
  * construction: a freshly created worktree is a path Claude Code has never been
  * run in, so it has no trust entry by definition.
  */
-function attachDiagnosis(site: LaunchSite, handle: LaunchHandle, outcome: 'waiting' | 'exited'): string {
+function attachDiagnosis(
+  site: LaunchSite,
+  handle: LaunchHandle,
+  outcome: 'waiting' | 'exited',
+  /** What the launched claude printed before it exited, when the surface could keep it. */
+  output?: string,
+): string {
+  const login = loginGap(output, site.configDir)
+  if (login !== undefined) return login
   const trust = trustGap(site.cwd, outcome, site.configDir)
   if (trust !== undefined) return trust
   if (handle.surface !== 'headless' && handle.paneRef === undefined)
@@ -1180,7 +1189,8 @@ export class Supervisor implements TeleportHost {
     if (outcome.kind === 'attached') return { kind: 'attached' }
     if (outcome.kind === 'exited') {
       const cause = `claude exited before registering (exit code ${outcome.code ?? 'unknown'})`
-      return { kind: 'failed', reason: `${cause}. ${attachDiagnosis(site, handle, 'exited')}` }
+      const output = readOutputTail(agentId)
+      return { kind: 'failed', reason: `${cause}. ${attachDiagnosis(site, handle, 'exited', output)}` }
     }
     if (outcome.kind === 'launch_failed') return { kind: 'failed', reason: outcome.reason }
 

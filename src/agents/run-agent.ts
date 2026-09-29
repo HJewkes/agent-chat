@@ -3,6 +3,7 @@ import { home } from '../paths.js'
 import { agentEnv } from './agent-env.js'
 import { recordClaudeBin, resolveClaudeBin } from './claude-bin.js'
 import { readLaunchPlan } from './launch-files.js'
+import { tailKeeper, writeOutputTail } from './launch-output.js'
 import type { LaunchPlan } from './types.js'
 
 /**
@@ -70,7 +71,13 @@ function exec(plan: LaunchPlan): void {
     env: launchEnv(plan.env),
     // The brief goes in on stdin for headless; an interactive surface hands the
     // terminal straight through so the human can type into the pane.
-    stdio: plan.stdin === undefined ? 'inherit' : ['pipe', 'inherit', 'inherit'],
+    stdio: plan.stdin === undefined ? 'inherit' : ['pipe', 'inherit', 'pipe'],
+  })
+  const stderrTail = tailKeeper()
+  // Headless only. Drained and passed on so the pipe never fills; the tail is what CC-161 reads.
+  child.stderr?.on('data', (chunk: Buffer) => {
+    stderrTail.append(chunk.toString('utf8'))
+    process.stderr.write(chunk)
   })
 
   if (plan.stdin !== undefined) {
@@ -83,7 +90,8 @@ function exec(plan: LaunchPlan): void {
   })
   // Exit the way the child did, so whatever is watching the surface sees the
   // agent's own outcome rather than this wrapper's.
-  child.on('exit', (code, signal) => {
+  child.on('close', (code, signal) => {
+    writeOutputTail(plan.agentId, stderrTail.text())
     process.exit(signal !== null ? 128 : (code ?? 0))
   })
 }
