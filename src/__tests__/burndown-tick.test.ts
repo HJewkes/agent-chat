@@ -555,6 +555,8 @@ describe('burndown tick gates', () => {
   })
 
   it('pins the dry-run output of a tick with no seats configured', async () => {
+    // The brief names the fixture repo twice, so its length moves with the temp dir.
+    const BRIEF_CHARS_BESIDE_PATHS = 1246
     initiative({ 'DM-1': task('DM-1', 1), 'DM-2': task('DM-2', 2), 'DM-3': 'id: DM-3\nstatus: open\n' })
     writeLedger(burndownLedgerPath(), {
       version: 1,
@@ -574,11 +576,10 @@ describe('burndown tick gates', () => {
     expect(lines).toEqual([
       `burndown tick at ${NOON.toISOString()} (dry run)`,
       `would record add DM-1`,
-      `would spawn bd-dm-1 as bd-implementer-lite (headless) on ${accountPath()} in ${repo()}; brief ${lines[2]?.split('brief ')[1]}`,
+      `would spawn bd-dm-1 as bd-implementer-lite (headless) on ${accountPath()} in ${repo()}; brief ${BRIEF_CHARS_BESIDE_PATHS + 2 * world.length} chars`,
       'refused demo DM-2 [claimed]: held in the burndown claim ledger',
       'refused demo DM-3 [no-done-when]: no done_when, so no return contract',
     ])
-    expect(lines[2]).toMatch(/; brief \d+ chars$/)
   })
 })
 
@@ -631,9 +632,9 @@ const DEFAULTS = `defaults:
   worktrees_left_free_per_repo: 0`
 
 /** A synthetic charter with seat `seat-t` (prefix `st`) on pool `pool-t`, whose config dir is the fixture account. */
-function seatPolicy({ implementers = 2, extraSeats = '' } = {}): void {
+function seatPolicy({ implementers = 2, extraSeats = '', poolExtra = '' } = {}): void {
   const root = path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy')
-  const pool = `pool-t: {config_dir: ${accountPath()}, human_uses: false, reserve_seven_day: 30, ceiling_five_hour: 75}`
+  const pool = `pool-t: {config_dir: ${accountPath()}, human_uses: false, reserve_seven_day: 30, ceiling_five_hour: 75${poolExtra}}`
   write(
     path.join(root, 'charter.md'),
     `---\nseats: [seat-t, seat-e${extraSeats}]\n${DEFAULTS}\npools:\n  ${pool}\n---\n`,
@@ -895,6 +896,75 @@ describe('burndown tick in seats mode', () => {
     expect(fake.senders.opened).toBe(0)
     expect(dry.join('\n')).not.toContain('would send')
     expect(readLedger(burndownLedgerPath()).claims[0]?.notified).toBeUndefined()
+  })
+})
+
+describe('burndown tick with two seats on one pool (CC-275)', () => {
+  const autonomy = () => path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy')
+  /** seat-u (prefix `su`) on pool-t with seat-t's scope and repo. */
+  function secondSeat(): void {
+    const concurrency = 'concurrency: {implementers: 2, reviewers: 1, planners: 1}'
+    write(
+      path.join(autonomy(), 'seats', 'seat-u.md'),
+      `---\nprefix: su\npool: pool-t\ninitiatives: {demo: 1.0}\nrepos:\n  - {path: ${repo()}, initiatives: [demo]}\n${concurrency}\n---\n`,
+    )
+    config({ seats: ['seat-t', 'seat-u'] })
+  }
+  const queued = (taskId: string, seat: string, owns: string[]): Claim => ({
+    taskId,
+    initiative: 'demo',
+    seat,
+    namePrefix: seat === 'seat-t' ? 'st' : 'su',
+    slice: 'a',
+    owns,
+    spawnedAt: NOON.toISOString(),
+    phase: 'queued',
+    phaseAt: NOON.toISOString(),
+  })
+
+  it("charges the first seat's dispatch against the pool, so the second seat cannot overshoot per_day", async () => {
+    seatPolicy({
+      implementers: 1,
+      extraSeats: ', seat-u',
+      poolExtra: ', per_day_points: 3, dispatch_seven_day_points: 2',
+    })
+    secondSeat()
+    seatInitiative({ 'DM-1': seatTask('DM-1'), 'DM-2': seatTask('DM-2') })
+    const before7 = { at: NOON.getTime() - 6 * 3_600_000, sevenDay: 39 }
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [],
+      seats: { 'seat-t': { samples: [before7] }, 'seat-u': { samples: [before7] } },
+    })
+    const fake = fakeBroker()
+
+    const lines = await tick(fake)
+
+    expect(fake.frames.map(f => f.name)).toEqual(['st-dm-1'])
+    expect(lines).toContain(
+      'refused demo DM-1 [claimed]: seat seat-t dispatched it earlier this tick as st-dm-1',
+    )
+    expect(lines).toContain(
+      "refused demo DM-2 [budget]: BUDGET-PAUSE pool pool-t: day spend 3 points since 07:00 at or above the pool pool-t's per_day_points 3; charged 1 dispatch(es) this tick at +2 seven_day, +10 five_hour",
+    )
+  })
+
+  it("refuses the second seat's slice whose owns overlap the first seat's same-tick slice", async () => {
+    seatPolicy({ extraSeats: ', seat-u' })
+    secondSeat()
+    seatInitiative({ 'DM-1': seatTask('DM-1'), 'DM-2': seatTask('DM-2') })
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [queued('DM-1', 'seat-t', ['src/x.ts']), queued('DM-2', 'seat-u', ['src/**'])],
+    })
+    const fake = fakeBroker()
+
+    const lines = await tick(fake)
+
+    expect(fake.frames.map(f => f.name)).toEqual(['st-dm-1-a'])
+    expect(lines).toContain(
+      "refused demo DM-2 [claimed]: src/** is under st-dm-1-a's owns, dispatched by seat seat-t earlier this tick",
+    )
   })
 })
 

@@ -30,6 +30,14 @@ export interface CollisionWork {
   owns: string[]
 }
 
+/** A dispatch planned this tick with the work its collision check saw, so a later seat's check sees it too. */
+export interface SameTickClaim {
+  seat: string
+  repo: string
+  agentName: string
+  work: CollisionWork
+}
+
 export interface OpenPr {
   number: number
   title: string
@@ -112,6 +120,29 @@ function fileOverlap(work: CollisionWork, facts: CollisionFacts): Collision | un
       return { kind: 'file-overlap', reason: `reader gh-pull-files failed: no file list for #${pr.number}` }
     const path = overlapping(work.owns, files)
     if (path !== undefined) return { kind: 'file-overlap', reason: `#${pr.number} touches ${path}` }
+  }
+  return undefined
+}
+
+/** Another seat's dispatch this tick, which no reader below can see yet: the same task, or an overlapping declared path. */
+export function sameTickCollision(
+  earlier: readonly SameTickClaim[],
+  repo: string,
+  work: CollisionWork,
+): Collision | undefined {
+  const task = earlier.find(c => c.work.taskId === work.taskId)
+  if (task !== undefined)
+    return {
+      kind: 'claimed',
+      reason: `seat ${task.seat} dispatched it earlier this tick as ${task.agentName}`,
+    }
+  for (const claim of earlier.filter(c => c.repo === repo)) {
+    const path = overlapping(work.owns, claim.work.owns)
+    if (path !== undefined)
+      return {
+        kind: 'claimed',
+        reason: `${path} is under ${claim.agentName}'s owns, dispatched by seat ${claim.seat} earlier this tick`,
+      }
   }
   return undefined
 }

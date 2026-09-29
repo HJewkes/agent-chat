@@ -100,7 +100,13 @@ export interface PoolRule {
   ceiling_five_hour?: number | undefined
   night_reserve_seven_day?: number | undefined
   per_day_points?: number | undefined
+  /** What one dispatch is expected to spend, charged before the next gate in the same tick. */
+  dispatch_seven_day_points?: number | undefined
+  dispatch_five_hour_points?: number | undefined
 }
+
+/** The charge for a pool that prices no dispatch; the charter should set its own. */
+export const DEFAULT_DISPATCH_COST = { sevenDay: 2, fiveHour: 10 }
 
 /** The seat file's `spend:` caps, in seven_day points; an absent cap never stops. */
 export interface SpendCaps {
@@ -124,6 +130,8 @@ export interface PoolGateInput {
   /** Epoch ms of the owner's last message to the seat; a run is capped at 12 hours. */
   runStartAt: number
   ctx: GateContext
+  /** Dispatches already planned on this pool this tick, by any seat; each is charged at the pool's dispatch cost. */
+  dispatched?: number
 }
 
 export type PoolGateResult =
@@ -214,6 +222,22 @@ function spendStop(input: PoolGateInput, now: SevenDaySample): string | undefine
     : `day spend ${day} points since 07:00 at or above the ${hit.whose} ${hit.cap}`
 }
 
+/** The reading plus this tick's charged dispatches, so seats sharing a pool cannot pass one gate together. */
+function chargedReading(
+  pool: PoolRule,
+  reading: { sevenDay: number; fiveHour: number },
+  dispatched: number,
+): { sevenDay: number; fiveHour: number; note: string } {
+  if (dispatched === 0) return { ...reading, note: '' }
+  const sevenDay = dispatched * (pool.dispatch_seven_day_points ?? DEFAULT_DISPATCH_COST.sevenDay)
+  const fiveHour = dispatched * (pool.dispatch_five_hour_points ?? DEFAULT_DISPATCH_COST.fiveHour)
+  return {
+    sevenDay: reading.sevenDay + sevenDay,
+    fiveHour: reading.fiveHour + fiveHour,
+    note: `; charged ${dispatched} dispatch(es) this tick at +${sevenDay} seven_day, +${fiveHour} five_hour`,
+  }
+}
+
 /** Charter section 4's budget stops for one seat on its pool; a closed result's reason is the `BUDGET-PAUSE` line. */
 export function gatePool(
   input: PoolGateInput,
@@ -232,19 +256,37 @@ export function gatePool(
     return closed('no seven_day and five_hour reading for this pool')
   const stale = staleReason(reading.ageSeconds, maxReadingAgeSeconds)
   if (stale !== undefined) return closed(stale)
+  const priced = {
+    ...pool,
+    reserve_seven_day: pool.reserve_seven_day,
+    ceiling_five_hour: pool.ceiling_five_hour,
+  }
+  return gateWindows(input, priced, { sevenDay: reading.sevenDay, fiveHour: reading.fiveHour }, closed)
+}
+
+type PricedPool = PoolRule & { reserve_seven_day: number; ceiling_five_hour: number }
+
+function gateWindows(
+  input: PoolGateInput,
+  pool: PricedPool,
+  reading: { sevenDay: number; fiveHour: number },
+  closed: (why: string) => PoolGateResult,
+): PoolGateResult {
+  const { ctx } = input
   const { ceiling, line, note } = windowLines(pool, pool.reserve_seven_day, pool.ceiling_five_hour, ctx)
-  const { fiveHour, sevenDay } = reading
-  const why = note === '' ? '' : ` (${note})`
+  const charged = chargedReading(pool, reading, input.dispatched ?? 0)
+  const { fiveHour, sevenDay } = charged
+  const why = note === '' ? charged.note : ` (${note})${charged.note}`
   if (fiveHour >= ceiling) return closed(`five_hour ${fiveHour}% at or above ceiling ${ceiling}%${why}`)
   if (sevenDay >= line) return closed(`seven_day ${sevenDay}% at or above line ${line}%${why}`)
   const stop = spendStop(input, { at: ctx.now.getTime(), sevenDay })
-  if (stop !== undefined) return closed(stop)
+  if (stop !== undefined) return closed(`${stop}${charged.note}`)
   const sonnetOnly = fiveHour >= ceiling - SONNET_BAND_POINTS || sevenDay >= line - SONNET_BAND_POINTS
   return {
     open: true,
-    pool: name,
+    pool: pool.name,
     sonnetOnly,
-    reason: `pool ${name}: five_hour ${fiveHour}% vs ceiling ${ceiling}%, seven_day ${sevenDay}% vs line ${line}%${why}${sonnetOnly ? '; within 10 points, sonnet only' : ''}`,
+    reason: `pool ${pool.name}: five_hour ${fiveHour}% vs ceiling ${ceiling}%, seven_day ${sevenDay}% vs line ${line}%${why}${sonnetOnly ? '; within 10 points, sonnet only' : ''}`,
   }
 }
 

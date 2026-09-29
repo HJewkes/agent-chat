@@ -415,6 +415,85 @@ describe('planSeat follow-ups from the #199 review', () => {
   })
 })
 
+describe('planSeat pool charges and same-tick claims (CC-275)', () => {
+  const queued = (taskId: string, patch: Partial<Claim> = {}): Claim =>
+    claim(taskId, { phase: 'queued', slice: 'b', owns: ['src/x.ts'], ...patch })
+
+  it('refuses a ready slice with budget when the pool gate is closed', () => {
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: [queued('A-1')] }
+    const budget = { ...openPool(), reading: undefined }
+
+    const plan = planSeat(inputs([], [task('A-1')], { ledger, budget }))
+
+    expect(plan.dispatch).toEqual([])
+    expect(plan.refusals).toEqual([
+      expect.objectContaining({
+        task: 'A-1',
+        kind: 'budget',
+        reason: expect.stringMatching(/^BUDGET-PAUSE /),
+      }),
+    ])
+  })
+
+  it('charges each dispatch against the pool before gating the next', () => {
+    const seat = { ...SEAT, pool: { ...SEAT.pool, dispatch_seven_day_points: 40 } }
+    const budget = { ...openPool(), pool: seat.pool }
+
+    const plan = planSeat(
+      inputs([row('A-1', 60), row('A-2', 50)], [task('A-1'), task('A-2')], { seat, budget }),
+    )
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+    expect(plan.refusals).toEqual([
+      expect.objectContaining({
+        task: 'A-2',
+        kind: 'budget',
+        reason: expect.stringContaining('seven_day 80% at or above line 80%'),
+      }),
+    ])
+  })
+
+  it('keeps charging from the earlier seats count after its own dispatch', () => {
+    const seat = { ...SEAT, pool: { ...SEAT.pool, dispatch_seven_day_points: 20 } }
+    const budget = { ...openPool(), pool: seat.pool, dispatched: 1 }
+
+    const plan = planSeat(
+      inputs([row('A-1', 60), row('A-2', 50)], [task('A-1'), task('A-2')], { seat, budget }),
+    )
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+    expect(refusalOf(plan)).toEqual([['A-2', 'budget']])
+  })
+
+  it('starts from the dispatches earlier seats charged to the pool', () => {
+    const budget = { ...openPool(), dispatched: 20 }
+
+    expect(refusalOf(one('A-1', {}, {}, { budget }))).toEqual([['A-1', 'budget']])
+  })
+
+  it('returns each dispatch with the slice, tags and owns its collision check saw', () => {
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: [queued('A-1')] }
+    const tasks = [task('A-1', { tags: ['ui'] }), task('A-5', { tags: ['api'] })]
+    const seen: unknown[] = []
+    const collision = (_repo: string, work: unknown) => (seen.push(work), undefined)
+
+    const plan = planSeat(
+      inputs([row('A-5', 50)], tasks, { ledger, collision, tasks: new Map([['alpha', tasks]]) }),
+    )
+
+    expect(plan.claims).toEqual([
+      {
+        seat: 'seat-a',
+        repo: REPO,
+        agentName: 'sa-a-1-b',
+        work: { taskId: 'A-1', slice: 'b', tags: ['ui'], owns: ['src/x.ts'] },
+      },
+      { seat: 'seat-a', repo: REPO, agentName: 'sa-a-5', work: { taskId: 'A-5', tags: ['api'], owns: [] } },
+    ])
+    expect(seen).toEqual(plan.claims.map(c => c.work))
+  })
+})
+
 describe('seat seams from the CC-246 review', () => {
   it("(a) gives a seat planner's slices the planner's seat and prefix", () => {
     const planner = claim('X-1', { phase: 'planning', agentName: 'sa-x-1' })
