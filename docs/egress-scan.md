@@ -17,6 +17,22 @@ when that worktree has none: the push is refused with `titan-egress-scan: not in
 worktree`. Run `npm ci` in that worktree and push again. The message names `pnpm`; `npm ci` is the
 equivalent here.
 
+Worktrees that agent-chat creates for spawned agents get that install automatically (CC-313).
+`.agent-chat/worktree.json` declares a setup step, and after agent-chat adds a worktree, or
+re-creates a parked one on `agent resume`, it runs the step in that worktree before the agent
+launches:
+
+```json
+{ "setup": { "command": ["npm", "ci", "--no-audit", "--no-fund"], "timeoutMs": 300000 } }
+```
+
+`command` is an argv array run without a shell; `timeoutMs` defaults to five minutes and caps at
+thirty. A repository with no such file gets no setup. A step that fails, times out, or is
+malformed becomes a spawn warning that names the step and its exit, and the spawn proceeds; the
+hook then fails closed as before. The step's `npm ci` runs `prepare` in the new worktree, which
+rewrites the shared hook only when its managed body differs, leaves a foreign hook alone, and
+otherwise reports it unchanged.
+
 When the private term list is missing, egress-scan's own hook prints `private term list not found;
 generic rules only` and still scans with the generic rules. It refuses only when
 `TITAN_EGRESS_REQUIRE_TERMS=1` is set.

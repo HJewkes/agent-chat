@@ -1,0 +1,6 @@
+{
+  "setup": {
+    "command": ["npm", "ci", "--no-audit", "--no-fund"],
+    "timeoutMs": 300000
+  }
+}
