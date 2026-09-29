@@ -76,7 +76,8 @@ const realOf = (dir: string): string | undefined => {
   }
 }
 
-const isAtOrUnder = (real: string, root: string): boolean => real === root || real.startsWith(root + path.sep)
+export const isAtOrUnder = (real: string, root: string): boolean =>
+  real === root || real.startsWith(root + path.sep)
 
 const isStrictlyUnder = (real: string, root: string): boolean => real.startsWith(root + path.sep)
 

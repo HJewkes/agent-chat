@@ -193,7 +193,10 @@ The spawn never retires the predecessor. It warns while the old worker is unreti
 the successor registers, retire the old worker, or leave it parked if you might still need
 its conversation. One exception: if the successor adopted a worktree that the predecessor
 allocated, leave the predecessor parked until the successor's branch is merged. Retire
-releases the worktree the retired agent allocated, even while the successor is working in it.
+releases the worktree the retired agent allocated, so `agent retire` refuses while any
+non-retired agent works in it and names that agent (CC-141). `--force` releases it anyway
+and warns which worktree and branch it removed; do not use it while the successor still
+needs the branch.
 
 ## Budget: what you are spending, and how to find out
 

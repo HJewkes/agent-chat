@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
+import path from 'node:path'
 import type { BrokerCore } from '../broker/core.js'
 import type { ArgvReader } from '../broker/host-channels.js'
 import { newMsgId } from '../broker/event-log.js'
@@ -39,7 +40,7 @@ import {
 import { surfaceFor } from './surfaces/index.js'
 import { SurfaceRefused, type SurfaceOptions } from './surfaces/options.js'
 import { Semaphore, type SlotUsage } from './semaphore.js'
-import { checkSpawnCwd } from './spawn-cwd.js'
+import { checkSpawnCwd, isAtOrUnder } from './spawn-cwd.js'
 import { resolveSpawnBriefing, type BriefingResult } from './active-work.js'
 import { resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
 import { configDir, findTranscript } from './transcript.js'
@@ -1394,6 +1395,8 @@ export class Supervisor implements TeleportHost {
     if (!identity) return { ok: false, reason: `no agent named "${name}"` }
     const held = this.live.get(identity.agentId)
     const entry = held ?? this.rehydrate(identity.agentId, name)
+    const tenancy = entry ? this.worktreeTenancy(identity.agentId, name, entry, force) : undefined
+    if (tenancy?.refusal) return { ok: false, reason: tenancy.refusal }
 
     if (entry) {
       const released = await this.releaseIsolation(identity, name, entry, force)
@@ -1424,7 +1427,41 @@ export class Supervisor implements TeleportHost {
       },
     })
     this.finishRetired(identity.agentId, held)
-    return { ok: true, ...(this.retireCaveat(name, entry !== undefined, reaped) ?? {}) }
+    return { ok: true, ...(this.retireCaveat(name, entry !== undefined, reaped, tenancy?.warning) ?? {}) }
+  }
+
+  /**
+   * CC-141: a successor spawned with `worktree:` adopts its predecessor's tree, and
+   * adoption leaves ownership with the predecessor, so retiring it would pull the
+   * tree out from under the successor. "Still working" means any identity that is
+   * not retired, the same test `byName` and the name lease use: an exited or
+   * detached agent can still be resumed into that cwd.
+   */
+  private worktreeTenancy(
+    agentId: string,
+    name: string,
+    entry: Live,
+    force: boolean,
+  ): { refusal?: string; warning?: string } | undefined {
+    const ref = entry.allocation.ref
+    if (entry.isolation !== 'worktree' || ref?.assigned === 'true' || !ref?.worktree) return undefined
+    const tree = path.resolve(ref.worktree)
+    const tenants = this.core.agents
+      .roster()
+      .filter(a => a.agentId !== agentId && a.cwd !== '' && isAtOrUnder(path.resolve(a.cwd), tree))
+      .map(a => a.name)
+    if (tenants.length === 0) return undefined
+    const who = tenants.join(', ')
+    if (!force)
+      return {
+        refusal:
+          `${name} allocated the worktree ${tree}, and ${who} (not retired) is working in it. ` +
+          `Retire ${who} first, or leave ${name} parked until that branch merges. ` +
+          'Retire with --force to release it anyway.',
+      }
+    return {
+      warning: `--force released the worktree ${tree} and branch ${ref.branch ?? '(unknown)'} while ${who} was still working in it`,
+    }
   }
 
   /** A row the pre-restart broker opened has no `Live` here, so it is found by agent instead. */
@@ -1500,8 +1537,13 @@ export class Supervisor implements TeleportHost {
    * is freed either way — but returning a bare ok is what let a live process and
    * an unreleased worktree go unnoticed for three days.
    */
-  private retireCaveat(name: string, hadHandle: boolean, reaped: string): { reason: string } | undefined {
-    const notes: string[] = []
+  private retireCaveat(
+    name: string,
+    hadHandle: boolean,
+    reaped: string,
+    tenancyWarning: string | undefined,
+  ): { reason: string } | undefined {
+    const notes: string[] = tenancyWarning === undefined ? [] : [tenancyWarning]
     if (!hadHandle)
       notes.push(
         `the broker has no record of what ${name} held, in memory or on disk (spawned before ` +
