@@ -12,6 +12,7 @@ import { gatePool, pickAccount } from './budget-gate.js'
 import { collisionCheck, type BrokerView, type CollisionReader } from './collision.js'
 import { deciderVerdict, recordRefusal, wakeDecider, type DeciderVerdict } from './decider.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
+import { leakCheck } from './leak-check.js'
 import { run, type Runner } from './exec.js'
 import { execute, type SpawnFrame, type SpawnReply, type Step } from './execute.js'
 import {
@@ -145,7 +146,7 @@ async function runTick(config: TickConfig, opts: TickOptions): Promise<string[]>
   return [`burndown tick at ${now.toISOString()}`, ...lines, ...notes]
 }
 
-/** Executes the steps, wakes the decider, then tells each seat what changed, writing the ledger last. */
+/** Executes the steps, wakes the decider, scans claimed PRs for leaks, then tells each seat what changed, writing the ledger last. */
 async function actOn(
   config: TickConfig,
   opts: TickOptions,
@@ -167,10 +168,11 @@ async function actOn(
     now,
   })
   const woken = await actOnDecider(config, decider, executed.ledger, { broker: opts.broker, log, now })
-  const diff = { seats: config.seats, before: ledger, after: woken.ledger, spawns }
+  const leaks = await leakCheck(woken.ledger, { exec: opts.exec ?? run, log, seats: config.seats })
+  const diff = { seats: config.seats, before: ledger, after: leaks.ledger, spawns, human: leaks.human }
   const told = await deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now })
   writeLedger(burndownLedgerPath(), { ...told.ledger, lastTickAt: now.toISOString() })
-  return [...executed.lines, ...woken.lines, ...told.lines]
+  return [...executed.lines, ...woken.lines, ...leaks.lines, ...told.lines]
 }
 
 /** Spawns through the broker and records which claim each answered spawn was for. */
