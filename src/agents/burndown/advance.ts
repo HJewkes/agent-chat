@@ -114,7 +114,7 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
   if (report?.status === 'BLOCKED' || report?.status === 'NEEDS_CONTEXT')
     return [stall(claim, report.firstLine)]
   if (obs.diff?.reviewable === true) {
-    const name = reviewerNameFor(claim.taskId, claim.reviewRound ?? 0, claim.slice)
+    const name = reviewerNameFor(claim.taskId, claim.reviewRound ?? 0, claim.slice, claim.namePrefix)
     return spawn(claim, { role: 'reviewer', name }, 'reviewing', { lastReport, pr: report?.pr ?? claim.pr })
   }
   if (report?.status === 'DONE') return [update(claim, { phase: 'done', lastReport }), retireAll(claim)]
@@ -150,13 +150,13 @@ function afterMerge(claim: Claim, obs: Observation): Action[] {
 /** The worker the claim's next successor takes over from: the latest successor, else the original. */
 const workerOf = (claim: Claim): string =>
   (claim.attempt ?? 0) > 0
-    ? successorNameFor(claim.taskId, claim.attempt ?? 0, claim.slice)
-    : agentNameFor(claim.taskId, claim.slice)
+    ? successorNameFor(claim.taskId, claim.attempt ?? 0, claim.slice, claim.namePrefix)
+    : agentNameFor(claim.taskId, claim.slice, claim.namePrefix)
 
 function successor(claim: Claim, context: SpawnContext, patch: ClaimPatch): Action[] {
   if (claim.worktree === undefined) return [stall(claim, 'no worktree recorded for a successor to adopt')]
   const attempt = (claim.attempt ?? 0) + 1
-  const name = successorNameFor(claim.taskId, attempt, claim.slice)
+  const name = successorNameFor(claim.taskId, attempt, claim.slice, claim.namePrefix)
   const request = {
     role: 'successor' as const,
     name,
@@ -185,7 +185,9 @@ function spawn(claim: Claim, request: SpawnRequest, nextPhase: AgentPhase, patch
 
 function retireAll(claim: Claim): Action {
   const names = [
-    ...new Set([...(claim.spawned ?? [])].reverse().concat(agentNameFor(claim.taskId, claim.slice))),
+    ...new Set(
+      [...(claim.spawned ?? [])].reverse().concat(agentNameFor(claim.taskId, claim.slice, claim.namePrefix)),
+    ),
   ]
   return { kind: 'retire', key: keyOf(claim), names }
 }

@@ -380,6 +380,20 @@ describe('burndown plan collision check (CC-202)', () => {
     expect(result.dispatch).toEqual([expect.objectContaining({ task: 'DM-1', slice: 'b' })])
   })
 
+  it("names a ready slice's implementer and worktree with its claim's seat prefix", () => {
+    ledgerOf(sliceClaim('b', { seat: 'seat-a', namePrefix: 'tc' }))
+
+    const result = planWith({})
+
+    expect(result.dispatch).toEqual([
+      expect.objectContaining({
+        slice: 'b',
+        agentName: 'tc-dm-1-b',
+        worktree: path.join(repo(), '.worktrees', 'tc-dm-1-b'),
+      }),
+    ])
+  })
+
   it("lets a ready slice past its held sibling's open PR and live agent", () => {
     ledgerOf(
       sliceClaim('a', { phase: 'awaiting-merge', agentName: 'bd-dm-1-a', spawned: ['bd-dm-1-a'] }),
@@ -570,6 +584,40 @@ describe('claim ledger', () => {
   it('marks an implementing claim stalled after four hours', () => {
     expect(isStalled(claim, new Date('2026-09-26T11:59:00.000Z'))).toBe(false)
     expect(isStalled(claim, new Date('2026-09-26T12:01:00.000Z'))).toBe(true)
+  })
+
+  it('parses a ledger written before seats unchanged', () => {
+    const file = path.join(world, 'home', 'burndown.json')
+    const before = {
+      version: 1,
+      lastTickAt: '2026-09-26T08:00:00.000Z',
+      claims: [
+        { ...claim, agentName: 'bd-dm-1', spawned: ['bd-dm-1'], worktree: '/repo/.worktrees/bd-dm-1' },
+      ],
+      decider: { wakes: ['2026-09-26T07:00:00.000Z'] },
+    }
+    write(file, JSON.stringify(before, null, 2))
+
+    expect(readLedger(file)).toStrictEqual(before)
+  })
+
+  it('round-trips seat claims and per-seat pool samples', () => {
+    const file = path.join(world, 'home', 'burndown.json')
+    const seatClaim: Claim = { ...claim, seat: 'seat-a', namePrefix: 'tc', notified: ['dispatched'] }
+    const ledger = {
+      ...addClaim(EMPTY_LEDGER, seatClaim),
+      seats: {
+        'seat-a': {
+          samples: [
+            { at: 1, sevenDay: 40, resetsAt: 2 },
+            { at: 3, sevenDay: 41 },
+          ],
+        },
+      },
+    }
+    writeLedger(file, ledger)
+
+    expect(readLedger(file)).toStrictEqual(ledger)
   })
 
   it('refuses to read a malformed ledger rather than treating it as empty', () => {

@@ -68,6 +68,12 @@ const Claim = z.object({
       }),
     )
     .optional(),
+  /** The seat that dispatched the claim (CC-205); absent for a claim from an initiative's autonomy block. */
+  seat: z.string().optional(),
+  /** Prefix of every agent name the claim spawns; absent means `bd`. */
+  namePrefix: z.string().optional(),
+  /** Event kinds already delivered to the claim's seat, so a delivered event is never re-sent. */
+  notified: z.array(z.string()).optional(),
 })
 export type Claim = z.infer<typeof Claim>
 
@@ -79,11 +85,23 @@ const DeciderState = z.object({
 })
 export type DeciderState = z.infer<typeof DeciderState>
 
+/** Matches `SevenDaySample` in budget-gate.ts; the seat's pool gate reads these as its history. */
+const SeatSample = z.object({
+  at: z.number(),
+  sevenDay: z.number(),
+  resetsAt: z.number().optional(),
+})
+
+const SeatState = z.object({ samples: z.array(SeatSample) })
+export type SeatState = z.infer<typeof SeatState>
+
 const Ledger = z.object({
   version: z.literal(1),
   lastTickAt: z.string().optional(),
   claims: z.array(Claim),
   decider: DeciderState.optional(),
+  /** Per-seat pool samples, keyed by seat name (CC-205). */
+  seats: z.record(z.string(), SeatState).optional(),
 })
 export type Ledger = z.infer<typeof Ledger>
 
