@@ -94,10 +94,7 @@ export const burndownPlanVerb = defineVerb({
   result: Report,
   cli: {
     options: {
-      seat: {
-        long: '--seat',
-        description: 'autonomy seat whose dry-run dispatch plan (or, with --scored, scored order) to print',
-      },
+      seat: { long: '--seat', description: 'autonomy seat whose dry-run dispatch plan to print' },
       scored: { long: '--scored', description: "print the seat's scored dispatch order with components" },
       top: { long: '--top', description: `picks to print with --scored (default ${DEFAULT_TOP})` },
       autonomyRoot: { long: '--autonomy-root', description: 'directory holding charter.md and seats/' },
