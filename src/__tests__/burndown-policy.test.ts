@@ -18,7 +18,7 @@ import { scoreAll } from '../agents/burndown/score.js'
 /** CC-228: charter and seat frontmatter, the score.py default merge and seat scope, and the scorer's task reader. */
 
 const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'autonomy-2026-09-29')
-const SEATS = ['hjewkes-surplus', 'titan-coord', 'voltras-coord', 'self-improve']
+const SEATS = ['seat-a', 'seat-b', 'seat-c', 'seat-hub']
 
 describe('frontmatter', () => {
   it.each([
@@ -32,10 +32,10 @@ describe('frontmatter', () => {
   })
 })
 
-describe('the real charter and seats (frontmatter copies from 2026-09-29)', () => {
+describe('the synthetic charter and seats', () => {
   let policy: Policy
   beforeEach(() => {
-    policy = loadPolicy(FIXTURE, 'titan-coord')
+    policy = loadPolicy(FIXTURE, 'seat-b')
   })
 
   it('parses every seat the charter lists', () => {
@@ -44,7 +44,7 @@ describe('the real charter and seats (frontmatter copies from 2026-09-29)', () =
 
   it('reads the charter keys the scorer uses', () => {
     expect(policy.charter.hard_stops).toContain('broker-restart')
-    expect(policy.charter.human_only_initiatives).toContain('chatgpt-archive')
+    expect(policy.charter.human_only_initiatives).toContain('init-private')
     expect(policy.defaults.score_terms).toEqual({
       severity: 0.4,
       priority_pct: 0.3,
@@ -55,15 +55,16 @@ describe('the real charter and seats (frontmatter copies from 2026-09-29)', () =
 
   it('reads each seat the way score.py does', () => {
     const { seats } = policy
-    expect(seats['titan-coord']?.initiatives.relay).toBe(1)
-    expect(seats['titan-coord']?.unclaimed_engineering).toBe(true)
-    expect(seats['self-improve']?.initiatives).toEqual({})
-    expect(seats['voltras-coord']?.excluded_title_patterns).toContain('\\blabs?\\b')
-    expect(seats['hjewkes-surplus']?.unclaimed_weight).toBe(0.5)
+    expect(seats['seat-b']?.initiatives['init-beta']).toBe(1)
+    expect(seats['seat-b']?.unclaimed_engineering).toBe(true)
+    expect(seats['seat-b']?.unclaimed_weight).toBe(0.6)
+    expect(seats['seat-hub']?.initiatives).toEqual({})
+    expect(seats['seat-c']?.excluded_title_patterns).toContain('\\bdraft\\b')
+    expect(seats['seat-a']?.unclaimed_weight).toBe(0.5)
   })
 
   it('merges the owner seat kind weights and share caps over the charter defaults', () => {
-    const { defaults } = loadPolicy(FIXTURE, 'hjewkes-surplus')
+    const { defaults } = loadPolicy(FIXTURE, 'seat-a')
     expect(defaults.kind_weights['agent-tooling']).toBe(1)
     expect(defaults.kind_weights.security).toBe(1)
     expect(defaults.share_caps).toEqual({ 'agent-tooling': 1, nit: 0.2, discovery: 0.25 })
@@ -145,16 +146,21 @@ describe('seatScope', () => {
     expect(() => seatScope(charter, seats, 'hub', briefs)).toThrow('hub has no dispatch scope (hub seat)')
   })
 
-  it('scopes the real titan-coord seat over its nine initiatives plus unclaimed focused ones', () => {
-    const policy = loadPolicy(FIXTURE, 'titan-coord')
-    const scope = seatScope(policy.charter, policy.seats, 'titan-coord', [
-      { slug: 'claude-channels', state: 'focused' },
-      { slug: 'finances', state: 'focused' },
-      { slug: 'new-engine', state: 'focused' },
+  it('scopes the fixture seat over its own initiatives plus unclaimed, non-human-only focused ones', () => {
+    const policy = loadPolicy(FIXTURE, 'seat-b')
+    const scope = seatScope(policy.charter, policy.seats, 'seat-b', [
+      { slug: 'init-alpha', state: 'focused' },
+      { slug: 'init-private', state: 'focused' },
+      { slug: 'init-new', state: 'focused' },
     ])
-    expect(Object.keys(scope)).toHaveLength(10)
-    expect(scope['new-engine']).toBe(0.5)
-    expect(scope.hermes).toBe(0.4)
+    expect(scope).toEqual({ 'init-beta': 1, 'init-gamma': 0.8, 'init-delta': 0.4, 'init-new': 0.6 })
+  })
+
+  it('throws for the fixture hub seat', () => {
+    const policy = loadPolicy(FIXTURE, 'seat-hub')
+    expect(() => seatScope(policy.charter, policy.seats, 'seat-hub', [])).toThrow(
+      'seat-hub has no dispatch scope (hub seat)',
+    )
   })
 })
 
@@ -182,7 +188,7 @@ const EXPECTED = {
   tags: ['kind:security', '7'],
   created: '2026-09-18',
   updated: '2026-09-20',
-  slug: 'claude-channels',
+  slug: 'init-alpha',
 }
 
 describe('score-source', () => {
@@ -195,7 +201,7 @@ describe('score-source', () => {
   })
 
   it('reads a task file with a real YAML parser and drops null keys', () => {
-    expect(parseScoredTask(TASK, 'claude-channels')).toEqual(EXPECTED)
+    expect(parseScoredTask(TASK, 'init-alpha')).toEqual(EXPECTED)
   })
 
   it.each([
@@ -213,12 +219,12 @@ describe('score-source', () => {
   })
 
   it('reads only open tasks from each scoped initiative', () => {
-    const dir = path.join(root, 'claude-channels', 'tasks')
+    const dir = path.join(root, 'init-alpha', 'tasks')
     fs.mkdirSync(dir, { recursive: true })
     fs.writeFileSync(path.join(dir, 'CC-1.yml'), TASK)
     fs.writeFileSync(path.join(dir, 'CC-2.yml'), TASK.replace('status: open', 'status: done'))
     fs.writeFileSync(path.join(dir, 'README.md'), 'not a task')
-    expect(readScoredTasks(root, ['claude-channels', 'absent'])).toEqual([EXPECTED])
+    expect(readScoredTasks(root, ['init-alpha', 'absent'])).toEqual([EXPECTED])
   })
 
   it('produces the same objects from task list JSON as from the task file', () => {
@@ -237,12 +243,12 @@ describe('score-source', () => {
 })
 
 describe('policy and task reader feeding scoreAll', () => {
-  it('scores a task read from YAML under the real titan-coord defaults', () => {
-    const { charter, seat, defaults } = loadPolicy(FIXTURE, 'titan-coord')
-    const task = parseScoredTask(TASK, 'claude-channels')
+  it('scores a task read from YAML under the fixture seat defaults', () => {
+    const { charter, seat, defaults } = loadPolicy(FIXTURE, 'seat-b')
+    const task = parseScoredTask(TASK, 'init-alpha')
     const { rows } = scoreAll(
       task === undefined ? [] : [task],
-      { 'claude-channels': 1 },
+      { 'init-alpha': 1 },
       defaults,
       { tags: seat.excluded_tags, titlePatterns: seat.excluded_title_patterns },
       charter.hard_stops,

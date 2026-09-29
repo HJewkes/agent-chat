@@ -178,7 +178,7 @@ describe('GET /api/history', () => {
 
 describe('GET /api/transcript', () => {
   const SESSION = 'test-session-001'
-  const CWD = '/Users/test/project'
+  const CWD = '/tmp/test/project'
 
   /** Plant the sample transcript where `findTranscript` looks for it. */
   function plantTranscript(): void {
