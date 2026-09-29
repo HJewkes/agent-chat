@@ -8,7 +8,7 @@ import { projectSlug } from '../agents/transcript.js'
 /** Same discipline as transcript.test.ts: a fake `~/.claude`, never the real one. */
 let configDir: string
 
-const CWD = '/Users/hjewkes/projects/agent-chat'
+const CWD = '/Users/alice/projects/agent-chat'
 const SESSION = '90b4944a-2f7e-4142-93e8-572847efd6d3'
 
 const writeTranscript = (rows: unknown[]): void => {

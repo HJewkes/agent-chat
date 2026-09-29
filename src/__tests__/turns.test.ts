@@ -20,7 +20,7 @@ import type { AgentIdentity, ServerMessage } from '../protocol.js'
  */
 let configDir: string
 
-const CWD = '/Users/hjewkes/projects/agent-chat'
+const CWD = '/Users/alice/projects/agent-chat'
 const SESSION = '4dea7315-2125-4326-b31b-4f2d0ee6fbcc'
 
 const write = (rows: unknown[], trailing = ''): void => {

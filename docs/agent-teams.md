@@ -134,9 +134,9 @@ the initiative would separate the design from the evidence that motivates it.
 # Part 2 — The agent-teams plan
 
 **Status:** plan only. No code, config, or docs were modified producing this.
-**Written:** 2026-07-27. **Repo:** `/Users/hjewkes/projects/agent-chat` (branch
+**Written:** 2026-07-27. **Repo:** `~/projects/agent-chat` (branch
 `main`, HEAD `5ca0ac0`, clean). Source read: this repo in full, and
-`/Users/hjewkes/projects/brain` (`src/commands/launch.ts`, `src/server/dispatch.ts`,
+`~/projects/brain` (`src/commands/launch.ts`, `src/server/dispatch.ts`,
 `src/modules/agents/*`).
 
 **Companion document:** `agent-teams-plan.md` assumes
@@ -1771,7 +1771,7 @@ complaint if the CLI does not say which one it is giving you.
 # Part 3 — The service, HTTP and dashboard plan
 
 **Status:** plan only. No code, config, or docs were modified producing this.
-**Written:** 2026-07-26. **Repo:** `/Users/hjewkes/projects/agent-chat`, branch
+**Written:** 2026-07-26. **Repo:** `~/projects/agent-chat`, branch
 `feat/plugin-packaging` (HEAD `a027926`, pushed). 48 tests passing.
 
 **This work is not starting immediately.** The live multi-session routing test
@@ -1779,8 +1779,8 @@ complaint if the CLI does not say which one it is giving you.
 memory of the conversation that produced it: every claim about current
 behaviour cites `file:line`, and every step states its own preconditions.
 
-References read: `/Users/hjewkes/projects/active-work` (primary),
-`/Users/hjewkes/projects/brain`, and voltras (via research report).
+References read: `~/projects/active-work` (primary),
+`~/projects/brain`, and voltras (via research report).
 
 ---
 
