@@ -39,6 +39,7 @@ export function advanceMeter(
     since: previous.since,
     last: sevenDay,
     spent: previous.spent + Math.max(0, sevenDay - previous.last),
+    ...(previous.before === undefined ? {} : { before: previous.before }),
   }
 }
 

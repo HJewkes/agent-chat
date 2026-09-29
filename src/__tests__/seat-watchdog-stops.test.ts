@@ -122,6 +122,18 @@ describe('meterHistory', () => {
       expect(verdict.reason).toContain('day spend 15 points')
     })
 
+    it('stays closed on every later pass of the day, not only the pass that starts the meter', () => {
+      const opened = advanceMeter({ since: at(6), last: 20, spent: 0 }, 30, at(9), sameSpendDay)
+      const passes = [at(9, 5), at(9, 10), at(9, 15)]
+      const meters = passes.reduce<SpendMeter[]>(
+        (chain, nowMs) => [...chain, advanceMeter(chain.at(-1), 35, nowMs, sameSpendDay) as SpendMeter],
+        [opened as SpendMeter],
+      )
+      const verdicts = meters.slice(1).map(day => gate(day))
+      expect(verdicts.map(v => v.open)).toEqual([false, false, false])
+      expect(meters.every(m => m.before === 20)).toBe(true)
+    })
+
     it('counts from the first sample when no earlier reading exists', () => {
       expect(gate({ since: at(9), last: 35, spent: 5 }).open).toBe(true)
     })
