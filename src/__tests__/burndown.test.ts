@@ -516,7 +516,7 @@ describe('budget gate', () => {
   })
 
   it('closes on a reading older than the staleness limit and names its age', () => {
-    const stale = { ...reading, ageSeconds: MAX_READING_AGE_SECONDS + 1 }
+    const stale = { sevenDay: 10, fiveHour: 10, ageSeconds: MAX_READING_AGE_SECONDS + 1 }
 
     const result = gateAccount('agents', rule, stale, { now: NOON, humanLastTurnAt: 0 })
 
@@ -525,7 +525,7 @@ describe('budget gate', () => {
   })
 
   it('opens on a reading exactly at the staleness limit', () => {
-    const fresh = { ...reading, ageSeconds: MAX_READING_AGE_SECONDS }
+    const fresh = { sevenDay: 10, fiveHour: 10, ageSeconds: MAX_READING_AGE_SECONDS }
 
     expect(gateAccount('agents', rule, fresh, { now: NOON, humanLastTurnAt: 0 }).open).toBe(true)
   })
