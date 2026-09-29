@@ -19,7 +19,7 @@ import {
   runtimeStatePath,
   writeRuntimeState,
 } from '../agents/launch-files.js'
-import { worktreeStrategy } from '../agents/isolation/worktree.js'
+import { RECLAIM_GRACE_MS, worktreeStrategy } from '../agents/isolation/worktree.js'
 import type { Allocation } from '../agents/isolation/index.js'
 import type { HookProcess, HookSpawnFn } from '../agents/hooks.js'
 import { autoAttach } from './broker-harness.js'
@@ -1043,6 +1043,34 @@ describe('retiring with force', () => {
     expect(result.ok).toBe(false)
     expect(result.reason).toMatch(/retire with --force/)
     expect(fs.existsSync(allocation.cwd)).toBe(true)
+  })
+
+  /** CC-188: cc181 was refused at +85s, then again at +124s because the first refusal's row restarted the clock. */
+  it('releases a clean worktree once the grace window after the exit has passed, despite an earlier refusal', async () => {
+    const sup = withStubbedSurface()
+    core.append({ kind: 'agent_spawned', actor: 'human', target: 'scout', msgId: 'a1', body: 'work' })
+    const allocation = await worktreeStrategy.allocate({
+      agentId: 'a1',
+      agentName: 'scout',
+      baseCwd: makeRepo(),
+    })
+    ;(sup as unknown as { live: Map<string, unknown> }).live.set('a1', {
+      agentId: 'a1',
+      name: 'scout',
+      handle: { surface: 'headless' },
+      allocation,
+      isolation: 'worktree',
+    })
+    core.append({ kind: 'agent_exited', actor: 'scout', ref: 'a1', meta: { code: '0' } })
+
+    vi.advanceTimersByTime(85_000)
+    const early = await sup.retire('scout')
+    vi.advanceTimersByTime(RECLAIM_GRACE_MS - 85_000 + 4_000)
+    const late = await sup.retire('scout')
+
+    expect(early.reason).toMatch(/inside the reclaim grace window/)
+    expect(late).toEqual({ ok: true })
+    expect(fs.existsSync(allocation.cwd)).toBe(false)
   })
 
   it('destroys them when the human says so', async () => {

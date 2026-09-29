@@ -1112,6 +1112,8 @@ export interface AgentIdentity {
   configDir?: string
   /** Timestamp of the newest row referencing this identity, spawn included. */
   lastEventAt: number
+  /** Timestamp of the `agent_exited` row, cleared by a resume; the reclaim grace window's start. */
+  exitedAt?: number
   /**
    * How many teleports deep this identity is: 1 for one that has never
    * teleported, incrementing per hop. Broker-derived, like `teleportFrom` —
