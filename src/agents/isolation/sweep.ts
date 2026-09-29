@@ -115,7 +115,7 @@ function classifyByAgent(
 ): { status: SweepStatus; detail: string } | undefined {
   if (agent === undefined) return undefined
   if (isLive(agent.state)) return { status: 'held', detail: `${agent.name} is ${agent.state}` }
-  const since = now - agent.lastEventAt
+  const since = now - (agent.exitedAt ?? agent.lastEventAt)
   if (since < RECLAIM_GRACE_MS)
     return {
       status: 'in-grace',
