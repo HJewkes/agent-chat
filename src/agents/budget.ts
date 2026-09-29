@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { configDir } from './transcript.js'
+import { readTranscriptUsage, type TranscriptUsage } from './transcript-usage.js'
 import type { SlotUsage } from './semaphore.js'
 
 /**
@@ -86,9 +87,19 @@ export const STALE_AFTER_SECONDS = 120
 
 export type BudgetMiss = 'no_file' | 'unreadable' | 'malformed'
 
+/** Absent means the status line wrote it; `transcript` means it was derived from usage (CC-179). */
+export type BudgetSource = 'transcript'
+
 export type BudgetRead =
-  | { found: true; path: string; budget: SessionBudget; age_seconds: number; stale: boolean }
-  | { found: false; path: string; reason: BudgetMiss }
+  | {
+      found: true
+      path: string
+      budget: SessionBudget
+      age_seconds: number
+      stale: boolean
+      source?: BudgetSource
+    }
+  | { found: false; path: string; reason: BudgetMiss; transcript_miss?: string }
 
 /**
  * `dir` is the Claude config dir to read under, for the same reason
@@ -116,7 +127,48 @@ function safeSessionId(sessionId: string): string {
   return sessionId
 }
 
-export function readBudget(sessionId: string, now = Date.now(), dir?: string): BudgetRead {
+/**
+ * A status-line reading when there is one, else the transcript's last usage
+ * record (CC-179), so a headless agent that never draws a status line still
+ * reports its fill. Account-level readers use {@link readStatusLineBudget}
+ * instead, because a transcript carries no rate limits.
+ */
+export function readBudget(sessionId: string, now = Date.now(), dir?: string, cwd?: string): BudgetRead {
+  const statusLine = readStatusLineBudget(sessionId, now, dir)
+  if (statusLine.found || !SESSION_ID_SHAPE.test(sessionId)) return statusLine
+  const usage = readTranscriptUsage(sessionId, dir, cwd)
+  if (!usage.ok) return { ...statusLine, transcript_miss: `${usage.reason} (${usage.path})` }
+  const age = Math.max(0, Math.round(now / 1000 - usage.recorded_at))
+  return {
+    found: true,
+    path: usage.path,
+    budget: transcriptBudget(sessionId, usage),
+    age_seconds: age,
+    stale: age > STALE_AFTER_SECONDS,
+    source: 'transcript',
+  }
+}
+
+/** No window size: nothing in this codebase maps a model id to one, so the percentage stays unknown. */
+function transcriptBudget(sessionId: string, usage: TranscriptUsage): SessionBudget {
+  const total = usage.input_tokens + usage.cache_read_tokens + usage.cache_creation_tokens
+  return {
+    session_id: sessionId,
+    ...defined('model_id', usage.model),
+    written_at: usage.recorded_at,
+    context: {
+      input_tokens: total,
+      output_tokens: usage.output_tokens,
+      cache_read_tokens: usage.cache_read_tokens,
+      cache_creation_tokens: usage.cache_creation_tokens,
+      exceeds_200k: total > 200_000,
+    },
+    cost: {},
+    rate_limits: {},
+  }
+}
+
+export function readStatusLineBudget(sessionId: string, now = Date.now(), dir?: string): BudgetRead {
   let file: string
   try {
     file = budgetPath(sessionId, dir)
@@ -250,10 +302,13 @@ export function budgetMiss(who: string, read: Extract<BudgetRead, { found: false
       ? 'Nothing has written it. Either that session has no status line, or the status-line writer ' +
         'is not installed — see docs/context-budget-research.md for the one line it needs.'
       : `The file is present but ${read.reason}; treat this as no reading rather than as zero usage.`
-  return `NOT_FOUND: no budget reading for ${who} (${read.path}). ${tail}`
+  const transcript =
+    read.transcript_miss === undefined ? '' : ` Transcript fallback: ${read.transcript_miss}.`
+  return `NOT_FOUND: no budget reading for ${who} (${read.path}). ${tail}${transcript}`
 }
 
 export function formatBudget(who: string, read: Extract<BudgetRead, { found: true }>): string {
+  if (read.source === 'transcript') return formatTranscriptBudget(who, read)
   const { budget, age_seconds, stale } = read
   const freshness = stale
     ? `STALE — last written ${age_seconds}s ago, so this is what ${who} was spending when it last redrew`
@@ -266,6 +321,22 @@ export function formatBudget(who: string, read: Extract<BudgetRead, { found: tru
     `json: ${JSON.stringify({ ...budget, age_seconds, stale })}`,
   ].join('\n')
 }
+
+function formatTranscriptBudget(who: string, read: Extract<BudgetRead, { found: true }>): string {
+  const { budget, age_seconds, stale, source } = read
+  const freshness = stale
+    ? `STALE — last usage record ${age_seconds}s ago, so this is the fill as of ${who}'s last API response`
+    : `last usage record ${age_seconds}s old`
+  return [
+    `${who}: ${transcriptContext(budget)} (source: transcript, ${freshness}).`,
+    'Account: rate limits are not observable from a transcript.',
+    `json: ${JSON.stringify({ ...budget, age_seconds, stale, source })}`,
+  ].join('\n')
+}
+
+const transcriptContext = (budget: SessionBudget): string =>
+  `${Math.round((budget.context.input_tokens ?? 0) / 1000)}k tokens of context, window unknown` +
+  (budget.context.exceeds_200k ? ', past 200k' : '')
 
 function contextLine(budget: SessionBudget): string {
   const { used_pct, window_size, cache_read_tokens, cache_creation_tokens } = budget.context
@@ -298,6 +369,10 @@ export interface NamedBudgetRead {
 export function budgetSegment(read: BudgetRead): string {
   if (!read.found) return 'no budget reading'
   const { budget, age_seconds, stale } = read
+  if (read.source === 'transcript') {
+    const parts = [budget.model_id, transcriptContext(budget)].filter((p): p is string => p !== undefined)
+    return `${parts.join(' · ')} [transcript${stale ? `, stale ${age_seconds}s` : ''}]`
+  }
   const { used_pct, window_size } = budget.context
   const pct = used_pct === undefined ? undefined : `${round(used_pct)}%`
   const size = window_size === undefined ? undefined : `${Math.round(window_size / 1000)}k`
@@ -319,7 +394,7 @@ export function budgetSegment(read: BudgetRead): string {
  */
 export function accountUsageLine(budgets: NamedBudgetRead[], slots?: SlotUsage): string {
   const found = budgets
-    .map(b => (b.read.found ? { name: b.name, ...b.read } : undefined))
+    .map(b => (b.read.found && b.read.source === undefined ? { name: b.name, ...b.read } : undefined))
     .filter((b): b is { name: string } & Extract<BudgetRead, { found: true }> => b !== undefined)
   const suffix = slots === undefined ? '' : ` · slots ${slots.held}/${slots.cap}`
   if (found.length === 0) return `Account usage: no budget reading available from any row.${suffix}`
@@ -346,7 +421,7 @@ export function readAccountBudget(dir: string, now = Date.now()): BudgetRead {
     return { found: false, path: cache, reason: 'no_file' }
   }
   const reads = files
-    .map(name => readBudget(name.slice(0, -'.json'.length), now, dir))
+    .map(name => readStatusLineBudget(name.slice(0, -'.json'.length), now, dir))
     .filter((read): read is Extract<BudgetRead, { found: true }> => read.found)
   if (reads.length === 0) return { found: false, path: cache, reason: 'no_file' }
   return reads.reduce((a, b) => (b.budget.written_at > a.budget.written_at ? b : a))

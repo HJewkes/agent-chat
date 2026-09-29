@@ -38,7 +38,7 @@ export const agentList = defineTool({
       .filter(a => a.state === 'live')
       // Under the agent's OWN recorded config dir (CC-100): an agent spawned from
       // a session on a dedicated account publishes its status there, not here.
-      .map(a => ({ name: a.name, read: readBudget(a.sessionId, Date.now(), a.configDir) }))
+      .map(a => ({ name: a.name, read: readBudget(a.sessionId, Date.now(), a.configDir, a.cwd) }))
     const budgetByName = new Map(budgets.map(b => [b.name, b.read]))
     const rows = res.agents.map(a => {
       // One extra segment, CC-94: budget rides in the same bracket as state
