@@ -125,13 +125,16 @@ describe('brokers auto-started together after a stop', () => {
   })
 
   it('skip the backfill when another writer completes it while this broker waits for the lock', async () => {
-    seedAgents()
     const previous = process.env.AGENT_CHAT_HOME
     process.env.AGENT_CHAT_HOME = dir
     const events = new EventLog(eventsFile())
+    const fence = { supervisorId: `agent-chat@${dir}`, generation: 1 }
+    // A bounded run over no agents commits the ledger tables, so the broker's DDL never waits on our lock.
+    runBackfill(events, { fence, sinceDays: 1 })
+    seedAgents()
     const db = events.ledgerHandle()
     db.exec('BEGIN IMMEDIATE')
-    runBackfill(events, { fence: { supervisorId: `agent-chat@${dir}`, generation: 1 } })
+    runBackfill(events, { fence })
 
     await launchBrokers(1)
     const sockUp = await until(() => fs.existsSync(path.join(dir, 'chat.sock')), 5_000)
