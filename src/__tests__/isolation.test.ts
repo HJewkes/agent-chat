@@ -536,7 +536,8 @@ describe('concurrent worktree adds (CC-224)', () => {
       ['w1', 'w2'].map(name => strategy.allocate(ctxFor(repo, { agentName: name }))),
     )
 
-    expect(settled.map(s => s.status)).toEqual(['rejected', 'fulfilled'])
+    // Either name may reach the add lock first, so only the outcome set is fixed.
+    expect(settled.map(s => s.status).sort()).toEqual(['fulfilled', 'rejected'])
   })
 
   it('does not make adds in different repositories wait for each other', async () => {
