@@ -49,7 +49,8 @@ const NOT_RUN = 'leak-scan: guard NOT run, this push was not scanned'
 
 /**
  * node and agent-chat are found on PATH when the hook runs, never baked in: a versioned node or a
- * worktree's dist goes away and would refuse every push. A missing one warns and lets the push go.
+ * worktree's dist goes away and would refuse every push. A missing one, or an installed CLI whose
+ * help works but lacks `--pre-push`, warns and lets the push go. A CLI that crashes still refuses.
  * The scan's refusal does not skip the repo's own hook; either one failing refuses the push.
  */
 const PRE_PUSH_SHIM = `${HEADER}refs=$(mktemp) || exit 1
@@ -60,9 +61,18 @@ if ! command -v node >/dev/null 2>&1; then
   echo "${NOT_RUN}: no node on PATH. Put node on the agent's PATH; see docs/leak-guard.md." >&2
 elif ! command -v agent-chat >/dev/null 2>&1; then
   echo "${NOT_RUN}: no agent-chat on PATH. Run npm link in the agent-chat checkout; see docs/leak-guard.md." >&2
+elif ! help=$(agent-chat leak-scan --help 2>&1); then
+  printf '%s\\n' "$help" >&2
+  echo "leak-scan: agent-chat failed while checking for leak-scan --pre-push, so the push is refused." >&2
+  scan=2
 else
-  agent-chat leak-scan --pre-push "--remote=$1" "--url=$2" < "$refs"
-  scan=$?
+  case $help in
+  *--pre-push*)
+    agent-chat leak-scan --pre-push "--remote=$1" "--url=$2" < "$refs"
+    scan=$? ;;
+  *)
+    echo "${NOT_RUN}: the agent-chat on PATH has no leak-scan --pre-push. Rebuild the linked checkout (npm run build); see docs/leak-guard.md." >&2 ;;
+  esac
 fi
 ${FIND_REPO_HOOK}
 own_status=0

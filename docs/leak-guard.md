@@ -107,6 +107,13 @@ fails open on purpose: a missing guard must not refuse every push from every age
 burndown backstop (a later slice) still reports a leak that got through. The fix is to put node on
 the agent's `PATH` or run `npm link` in the agent-chat checkout.
 
+Before scanning, the hook runs `agent-chat leak-scan --help` and looks for `--pre-push`. That
+costs one CLI start per push. An `agent-chat` whose help works but lacks the flag, such as a
+linked checkout built before this change, fails open with the same `guard NOT run` line and the
+fix: rebuild the linked checkout with `npm run build`. An `agent-chat` whose help check fails, or
+that passes it and then fails the scan, refuses the push, because a guard that starts and then
+crashes has not shown the push is clean.
+
 Each shim costs a shell and one git call, so only hooks that gate something are chained:
 `pre-commit`, `commit-msg`, `pre-merge-commit`, `pre-rebase`, `post-checkout`, `post-merge`,
 `post-rewrite`, the three `applypatch` hooks, `pre-auto-gc` and `sendemail-validate`.

@@ -414,6 +414,50 @@ describe('git push when the guard cannot run', () => {
       expect(repoHookRuns(f)).toEqual(['origin refs/heads/leaky'])
     },
   )
+
+  /** A PATH whose agent-chat is a stub script, ahead of node and git. */
+  const pathWithStub = (script: string): string => {
+    const dir = binWith({ node: true, git: true })
+    fs.writeFileSync(path.join(dir, 'agent-chat'), `#!/bin/sh\n${script}\n`, { mode: 0o755 })
+    return [dir, SYSTEM_PATH].join(':')
+  }
+
+  // Regression: a linked checkout built before leak-scan prints its top-level help, which refused clean pushes.
+  const STALE_CLI = `[ "$2" = --help ] && { echo 'Usage: agent-chat [options] [command]'; exit 0; }
+echo "error: unknown command '$1'" >&2; exit 1`
+
+  it('lets a clean push through with one loud line when the installed CLI predates leak-scan --pre-push', () => {
+    const f = fixture({ denylist: LIST_JSON, visibility: 'public' })
+    f.agentEnv.PATH = pathWithStub(STALE_CLI)
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run.code).toBe(0)
+    expect(run.stderr.trim().split('\n')).toEqual([
+      'leak-scan: guard NOT run, this push was not scanned: the agent-chat on PATH has no leak-scan --pre-push. Rebuild the linked checkout (npm run build); see docs/leak-guard.md.',
+    ])
+    expect(remoteHas(f, 'clean')).toBe(true)
+    expect(repoHookRuns(f)).toEqual(['origin refs/heads/clean'])
+  })
+
+  it.each([
+    ['its help check crashes', 'echo boom >&2; exit 1'],
+    [
+      'it passes the help check and then crashes',
+      '[ "$2" = --help ] && { echo "  --pre-push"; exit 0; }; exit 1',
+    ],
+  ])('refuses a clean push when the installed CLI %s', (_, script) => {
+    const f = fixture({ denylist: LIST_JSON, visibility: 'public' })
+    f.agentEnv.PATH = pathWithStub(script)
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).not.toContain('guard NOT run')
+    expect(remoteHas(f, 'clean')).toBe(false)
+  })
 })
 
 describe('leakPrePush visibility failures', () => {
