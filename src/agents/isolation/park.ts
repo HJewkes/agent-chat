@@ -91,16 +91,55 @@ async function unpushed(target: ParkTarget): Promise<string | undefined> {
   return count === 0 ? undefined : `${count} commit(s) in ${worktree} are not on origin/${branch}; push first`
 }
 
-/** Refuse a dirty or unpushed tree; otherwise remove it without --force and keep the branch. Returns the parked head. */
+/** A commit on a detached HEAD or another branch would be unreachable once the tree is gone, since only `branch` is kept. */
+async function offBranch(target: ParkTarget): Promise<string | undefined> {
+  const head = await gitOrNull(['symbolic-ref', '--quiet', '--short', 'HEAD'], target.worktree)
+  if (head === target.branch) return undefined
+  const where = head === null ? 'detached' : `on ${head}`
+  return `HEAD in ${target.worktree} is ${where}, not on ${target.branch}; check out ${target.branch} first`
+}
+
+/** Ignored paths `git worktree remove` would delete that a build or agent-chat's own re-attach puts back. */
+const REGENERABLE_DIRS = ['node_modules', 'dist', 'coverage', '.turbo']
+
+/** `.claude` only at the top, since re-attach copies it from the repository root. */
+const isRegenerable = (entry: string): boolean => {
+  const segments = entry.split('/').filter(Boolean)
+  return segments[0] === '.claude' || segments.some(segment => REGENERABLE_DIRS.includes(segment))
+}
+
+/** `-uall` so `status.showUntrackedFiles=no` cannot hide an untracked file the removal would take. */
+async function unsaved(worktree: string): Promise<string | undefined> {
+  const status = await gitOrNull(['status', '--porcelain', '-uall'], worktree)
+  if (status === null) return `could not read git status in ${worktree}`
+  if (status !== '') return `uncommitted or untracked changes in ${worktree}`
+  const ignored = await gitOrNull(
+    ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory'],
+    worktree,
+  )
+  if (ignored === null) return `could not list ignored files in ${worktree}`
+  const kept = ignored.split('\n').filter(entry => entry !== '' && !isRegenerable(entry))
+  if (kept.length === 0) return undefined
+  return (
+    `ignored files in ${worktree} would be deleted (${kept.slice(0, 3).join(', ')}); ` +
+    `park removes only ignored ${REGENERABLE_DIRS.join(', ')} and a top-level .claude`
+  )
+}
+
+/**
+ * Refuse a tree that would lose anything; otherwise remove it without --force and keep the branch.
+ * `recheck` runs after the git checks and right before the removal, so a spawn or resume that
+ * started meanwhile is caught. Returns the parked head.
+ */
 export async function parkWorktree(
   target: ParkTarget,
+  recheck: () => string | undefined,
 ): Promise<{ ok: true; head: string } | { ok: false; reason: string }> {
-  const status = await gitOrNull(['status', '--porcelain'], target.worktree)
-  if (status === null) return { ok: false, reason: `could not read git status in ${target.worktree}` }
-  if (status !== '') return { ok: false, reason: `uncommitted changes in ${target.worktree}` }
-  const notPushed = await unpushed(target)
-  if (notPushed) return { ok: false, reason: notPushed }
+  const refusal = (await offBranch(target)) ?? (await unsaved(target.worktree)) ?? (await unpushed(target))
+  if (refusal) return { ok: false, reason: refusal }
   const head = await git(['rev-parse', 'HEAD'], target.worktree)
+  const late = recheck()
+  if (late) return { ok: false, reason: late }
   try {
     await git(['worktree', 'remove', target.worktree], target.gitRoot)
   } catch (err) {

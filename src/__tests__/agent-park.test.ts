@@ -191,7 +191,10 @@ describe('refusing to park', () => {
 
     const parked = await sup.park('worker-a')
 
-    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/uncommitted changes/) })
+    expect(parked).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/uncommitted or untracked changes/),
+    })
     expect(fs.existsSync(agent.cwd)).toBe(true)
     expect(parkedRows(agent.agentId)).toHaveLength(0)
   })
@@ -270,5 +273,139 @@ describe('refusing to park', () => {
 
     expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/was adopted by worker-a/) })
     expect(fs.existsSync(assigned)).toBe(true)
+  })
+})
+
+describe('refusing to park what the removal would lose', () => {
+  it('refuses a commit on a detached HEAD in a repository with no remote', async () => {
+    const repo = makeRepo()
+    const agent = await spawnIn('worker-a', repo)
+    git(['checkout', '-q', '--detach'], agent.cwd)
+    const orphan = commitIn(agent.cwd, 'feature.ts')
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/HEAD in .* is detached/) })
+    expect(git(['rev-parse', 'HEAD'], agent.cwd)).toBe(orphan)
+  })
+
+  it('refuses a tree checked out on a different branch', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    git(['checkout', '-q', '-b', 'side'], agent.cwd)
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/is on side, not on agent-chat\/worker-a/),
+    })
+    expect(fs.existsSync(agent.cwd)).toBe(true)
+  })
+
+  it('refuses an untracked file that status.showUntrackedFiles=no hides', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    git(['config', 'status.showUntrackedFiles', 'no'], agent.cwd)
+    fs.writeFileSync(path.join(agent.cwd, 'notes.txt'), 'draft\n')
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/untracked changes/) })
+    expect(fs.existsSync(path.join(agent.cwd, 'notes.txt'))).toBe(true)
+  })
+
+  it('refuses an ignored file outside the regenerable set, naming the rule', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, '.gitignore'), '.env\nnode_modules/\n')
+    git(['add', '.gitignore'], agent.cwd)
+    git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+    fs.writeFileSync(path.join(agent.cwd, '.env'), 'TOKEN=synthetic\n')
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(
+        /ignored files .* \(\.env\); park removes only ignored node_modules, dist/,
+      ),
+    })
+    expect(fs.existsSync(path.join(agent.cwd, '.env'))).toBe(true)
+  })
+
+  it('parks a tree whose only ignored files are regenerable', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, '.gitignore'), 'node_modules/\ndist/\n')
+    git(['add', '.gitignore'], agent.cwd)
+    git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+    fs.mkdirSync(path.join(agent.cwd, 'node_modules', 'dep'), { recursive: true })
+    fs.writeFileSync(path.join(agent.cwd, 'node_modules', 'dep', 'index.js'), '\n')
+    fs.mkdirSync(path.join(agent.cwd, 'dist'))
+    fs.writeFileSync(path.join(agent.cwd, 'dist', 'cli.js'), '\n')
+    await exit(agent)
+
+    expect((await sup.park('worker-a')).ok).toBe(true)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+  })
+})
+
+describe('refusing to park a running or shared agent', () => {
+  it('refuses a detached agent, which may still be running in the tree', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    core.append({ kind: 'agent_detached', actor: 'worker-a', ref: agent.agentId, body: 'connection closed' })
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/worker-a is detached/) })
+    expect(fs.existsSync(agent.cwd)).toBe(true)
+  })
+
+  it('refuses an exited agent whose process this broker still tracks', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    core.append({ kind: 'agent_exited', actor: 'worker-a', ref: agent.agentId, body: '' })
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/still tracked as running/) })
+    expect(fs.existsSync(agent.cwd)).toBe(true)
+  })
+
+  it('lets a worker park only agents it spawned', async () => {
+    const repo = makeRepo()
+    const agent = await finishedIn('worker-a', repo)
+    const worker = await spawnIn('worker-b', repo, { isolation: 'none', cwd: tmp('park-ws-') })
+
+    const parked = await sup.park('worker-a', { requestedBy: 'worker-b', requesterAgentId: worker.agentId })
+
+    expect(parked).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/can park only agents it spawned/),
+    })
+    expect(fs.existsSync(agent.cwd)).toBe(true)
+  })
+
+  it('refuses a resume that arrives while the park is in flight, and resume works once it finishes', async () => {
+    const agent = await finishedIn('worker-a', makeRepo())
+
+    const parking = sup.park('worker-a')
+    const during = await sup.resume('worker-a')
+    const parked = await parking
+
+    expect(during).toMatchObject({ ok: false, reason: expect.stringMatching(/is being parked/) })
+    expect(parked.ok).toBe(true)
+    expect((await sup.resume('worker-a')).ok).toBe(true)
+    expect(fs.existsSync(agent.cwd)).toBe(true)
+  })
+
+  it('refuses a spawn that adopts the tree while the park is in flight', async () => {
+    const agent = await finishedIn('worker-a', makeRepo())
+
+    const parking = sup.park('worker-a')
+    const during = await sup.spawn(spawnReq('worker-b', agent.cwd, { worktree: agent.cwd }))
+    await parking
+
+    expect(during).toMatchObject({ ok: false, reason: expect.stringMatching(/is being parked/) })
   })
 })
