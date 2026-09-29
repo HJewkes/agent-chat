@@ -1247,9 +1247,11 @@ export class Supervisor implements TeleportHost {
         finish(this.hasAttached(agentId) ? { kind: 'attached' } : { kind: 'exited', code })
       })
       // CC-175: a pane whose run-agent never started fails in seconds, not at the ceiling.
-      void handle.launchFailed?.then(reason => {
-        finish(this.hasAttached(agentId) ? { kind: 'attached' } : { kind: 'launch_failed', reason })
-      })
+      handle.launchFailed
+        ?.then(reason => {
+          finish(this.hasAttached(agentId) ? { kind: 'attached' } : { kind: 'launch_failed', reason })
+        })
+        .catch(err => logEvent('launch_failed_watch_error', { agentId, error: (err as Error).message }))
     })
   }
 
@@ -2047,7 +2049,11 @@ export class Supervisor implements TeleportHost {
     // releases the real strategy rather than a no-op one.
     this.track(input.agentId, input.name, handle, allocation, isolation, input.anchor)
     this.bindExecution(input.agentId, executionId)
-    void handle.launchFailed?.then(reason => this.reportDeadSuccessor(input, reason))
+    handle.launchFailed
+      ?.then(reason => this.reportDeadSuccessor(input, reason))
+      .catch(err =>
+        logEvent('teleport_failed_report_error', { name: input.name, error: (err as Error).message }),
+      )
     logEvent('agent_teleported', { agentId: input.agentId, name: input.name, from: input.inheritedFrom })
     this.fireHook('on_spawn', {
       agentId: input.agentId,
@@ -2067,7 +2073,7 @@ export class Supervisor implements TeleportHost {
       kind: 'notice',
       actor: 'agent-chat',
       target: HUMAN,
-      body: `${input.name} shut down for a teleport and its successor did not start: ${reason}`,
+      body: `${input.name} shut down for a teleport and its successor was not running after 5s: ${reason}`,
     })
     logEvent('teleport_failed', { name: input.name, from: input.inheritedFrom, reason })
   }

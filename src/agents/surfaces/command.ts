@@ -65,7 +65,8 @@ export const relaunchScriptPath = (agentId: string): string => path.join(agentDi
  * The only thing still typed into a shell (CC-191): a reused pane has no creation
  * `command` to take, so teleport types this short fixed path instead of the full
  * command line. Keys that join it in front make it a different, failing command;
- * keys after it arrive as arguments, which a correct invocation never has.
+ * keys typed between it and the newline become arguments, which a correct
+ * invocation never has.
  */
 export const relaunchCommand = (agentId: string): string => shellQuote(relaunchScriptPath(agentId))
 
