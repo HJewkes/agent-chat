@@ -312,6 +312,19 @@ describe('the ledgerShadow flag', () => {
     expect(ledgerTables(h)).toEqual([])
   })
 
+  it('with no ledger injected a spawn, retire and restart leave no ledger table behind', async () => {
+    const h = startSupervisor({ ledger: () => undefined })
+    harnesses.push(h)
+
+    await h.spawnAgent('scout')
+    await h.spawnAgent('keeper')
+    const retired = await h.supervisor.retire('scout')
+    h.restart({ ledger: () => undefined })
+
+    expect(retired.ok).toBe(true)
+    expect(ledgerTables(h)).toEqual([])
+  })
+
   it('AGENT_CHAT_LEDGER_SHADOW=1 turns the shadow on for the restart harness', async () => {
     process.env.AGENT_CHAT_LEDGER_SHADOW = '1'
     const h = startSupervisor()
