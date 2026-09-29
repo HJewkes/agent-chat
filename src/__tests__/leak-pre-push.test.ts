@@ -2,8 +2,15 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
-import { gitHooksEnv, hookScripts, writeGitHooks } from '../leak-guard/hooks-dir.js'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  defaultScanInputs,
+  gitHooksEnv,
+  hookScripts,
+  MISSING_TERMS_REFUSES,
+  termsFileFor,
+  writeGitHooks,
+} from '../leak-guard/hooks-dir.js'
 
 const SCRATCH = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-prepush-')))
 
@@ -59,6 +66,8 @@ const SYSTEM_PATH = '/usr/bin:/bin'
 const GUARD_PATH = `${binWith({ node: true, git: true, egress: EGRESS_STUB })}:${SYSTEM_PATH}`
 
 describe('hookScripts', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
   // Regression: a baked Cellar node or worktree dist path refused every push once it went away.
   it('bakes in no node or cli path, finding both on PATH when the hook runs', () => {
     const shim = hookScripts().get('pre-push') ?? ''
@@ -66,6 +75,16 @@ describe('hookScripts', () => {
     expect(shim).not.toContain(process.execPath)
     expect(shim).not.toContain('cli.js')
     expect(shim).toContain('titan-egress-scan pre-push "$1"')
+  })
+
+  it('bakes in the passwd home and only the absolute entries of the broker PATH', () => {
+    vi.stubEnv('HOME', HOME)
+    vi.stubEnv('PATH', `/opt/zq7/bin:relative/bin:.:${SYSTEM_PATH}`)
+
+    const inputs = defaultScanInputs()
+
+    expect(inputs.home).toBe(os.userInfo().homedir)
+    expect(inputs.path).toBe(`/opt/zq7/bin:${SYSTEM_PATH}`)
   })
 
   it('writes executable shims for pre-push and the gating commit hooks only', () => {
@@ -122,14 +141,21 @@ function initRepos(root: string): { work: string; remote: string } {
   return { work, remote }
 }
 
+interface FixtureOpts {
+  terms?: boolean
+  missingTermsRefuses?: boolean
+  /** The broker PATH baked into the hook; the agent's own PATH never reaches the scan. */
+  scanPath?: string
+}
+
 /** A work repo whose origin is a local bare repo, with the guard hooks and a repo-local pre-push hook. */
-function fixture(opts: { terms?: boolean; missingTermsRefuses?: boolean } = {}): Fixture {
+function fixture(opts: FixtureOpts = {}): Fixture {
   const root = fs.mkdtempSync(path.join(SCRATCH, 'repo-'))
   const { work, remote } = initRepos(root)
   const chatHome = path.join(root, 'chat')
   const marker = path.join(root, 'repo-hook-ran')
-  const configHome = path.join(root, 'config')
-  const termsFile = path.join(configHome, 'titan-egress', 'private-terms')
+  const ownerHome = path.join(root, 'owner-home')
+  const termsFile = termsFileFor(ownerHome)
   if (opts.terms !== false) {
     fs.mkdirSync(path.dirname(termsFile), { recursive: true })
     fs.writeFileSync(termsFile, `${LEAK}\n`, { mode: 0o600 })
@@ -140,15 +166,13 @@ function fixture(opts: { terms?: boolean; missingTermsRefuses?: boolean } = {}):
     { mode: 0o755 },
   )
   const hooksDir = path.join(chatHome, 'git-hooks')
-  writeGitHooks(hooksDir, opts.missingTermsRefuses)
+  writeGitHooks(hooksDir, {
+    missingTermsRefuses: opts.missingTermsRefuses ?? MISSING_TERMS_REFUSES,
+    home: ownerHome,
+    path: opts.scanPath ?? GUARD_PATH,
+  })
   const stubLog = path.join(root, 'stub.log')
-  const agentEnv = {
-    ...baseEnv(),
-    ...gitHooksEnv(hooksDir),
-    PATH: GUARD_PATH,
-    XDG_CONFIG_HOME: configHome,
-    STUB_LOG: stubLog,
-  }
+  const agentEnv = { ...baseEnv(), ...gitHooksEnv(hooksDir), STUB_LOG: stubLog }
   return { work, remote, chatHome, marker, stubLog, termsFile, agentEnv }
 }
 
@@ -320,21 +344,20 @@ describe('git push when the guard cannot run', () => {
   // Fail open: a guard that cannot start must not refuse every push; S3's tick backstop still reports leaks.
   it.each([
     ['titan-egress-scan', 'Run npm i -g @titan-design/egress-scan; see docs/leak-guard.md.'],
-    ['node', "Put node on the agent's PATH; see docs/leak-guard.md."],
+    ['node', 'Put node on it and restart the broker; see docs/leak-guard.md.'],
   ] as const)(
-    'lets the push through with one loud line when %s is not on PATH, and runs the repo hook',
+    "lets the push through with one loud line when %s is not on the broker's PATH, and runs the repo hook",
     (tool, hint) => {
       const onSystemPath = SYSTEM_PATH.split(':').some(dir => fs.existsSync(path.join(dir, tool)))
       if (onSystemPath) return
-      const f = fixture()
-      f.agentEnv.PATH = pathWithout(tool)
+      const f = fixture({ scanPath: pathWithout(tool) })
       commitFile(f, 'leaky', 'notes.md', `the ${LEAK} seat`)
 
       const run = push(f, 'leaky')
 
       expect(run.code).toBe(0)
       expect(run.stderr.trim().split('\n')).toEqual([
-        `leak-scan: guard NOT run, this push was not scanned: no ${tool} on PATH. ${hint}`,
+        `leak-scan: guard NOT run, this push was not scanned: no ${tool} on the broker's PATH. ${hint}`,
       ])
       expect(repoHookRuns(f)).toEqual(['origin refs/heads/leaky'])
     },
@@ -345,15 +368,14 @@ describe('git push when the guard cannot run', () => {
 echo "titan-egress-scan: unknown command" >&2; exit 2`
 
   it('lets a clean push through with one loud line when the installed scanner has no pre-push', () => {
-    const f = fixture()
-    f.agentEnv.PATH = pathWithStub(STALE_SCANNER)
+    const f = fixture({ scanPath: pathWithStub(STALE_SCANNER) })
     commitFile(f, 'clean', 'notes.md', 'fine')
 
     const run = push(f, 'clean')
 
     expect(run.code).toBe(0)
     expect(run.stderr.trim().split('\n')).toEqual([
-      'leak-scan: guard NOT run, this push was not scanned: the titan-egress-scan on PATH has no pre-push command. Run npm i -g @titan-design/egress-scan; see docs/leak-guard.md.',
+      "leak-scan: guard NOT run, this push was not scanned: the titan-egress-scan on the broker's PATH has no pre-push command. Run npm i -g @titan-design/egress-scan; see docs/leak-guard.md.",
     ])
     expect(remoteHas(f, 'clean')).toBe(true)
     expect(repoHookRuns(f)).toEqual(['origin refs/heads/clean'])
@@ -366,8 +388,7 @@ echo "titan-egress-scan: unknown command" >&2; exit 2`
       `[ "$1" = --help ] && { echo '  pre-push <remote>'; exit 0; }; exit 2`,
     ],
   ])('refuses a clean push when the installed scanner %s', (_, script) => {
-    const f = fixture()
-    f.agentEnv.PATH = pathWithStub(script)
+    const f = fixture({ scanPath: pathWithStub(script) })
     commitFile(f, 'clean', 'notes.md', 'fine')
 
     const run = push(f, 'clean')

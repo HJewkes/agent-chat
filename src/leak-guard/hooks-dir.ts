@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
 /**
@@ -55,46 +56,99 @@ export const MISSING_TERMS_REFUSES = true
 // egress-scan's own stderr line; its exit code (2) is shared with every config error.
 const MISSING_TERMS_LINE = 'private term list not found'
 
-// Never read from TITAN_EGRESS_TERMS: an inherited value could point the scan at an empty file (CC-302).
-const TERMS_FILE = '${XDG_CONFIG_HOME:-$HOME/.config}/titan-egress/private-terms'
+/** What the pre-push shim bakes in when it is written, so nothing the agent's environment holds is trusted. */
+export interface ScanInputs {
+  missingTermsRefuses: boolean
+  /** The owner's home from the passwd entry; derives the term list's path and the scanner's HOME. */
+  home: string
+  /** The broker's own PATH, absolute entries only; the scan never sees the agent's PATH. */
+  path: string
+}
 
-const missingTermsNote = (refuses: boolean): string =>
+// os.userInfo() reads the passwd entry, not $HOME; os.homedir() is the fallback when there is none.
+function passwdHome(): string {
+  try {
+    return os.userInfo().homedir
+  } catch {
+    return os.homedir()
+  }
+}
+
+const absolutePath = (value: string | undefined): string =>
+  (value ?? '')
+    .split(':')
+    .filter(dir => path.isAbsolute(dir))
+    .join(':')
+
+export const defaultScanInputs = (): ScanInputs => ({
+  missingTermsRefuses: MISSING_TERMS_REFUSES,
+  home: passwdHome(),
+  path: absolutePath(process.env.PATH),
+})
+
+export const termsFileFor = (home: string): string => path.join(home, '.config', 'titan-egress', 'private-terms')
+
+const shQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
+
+const missingTermsNote = (refuses: boolean, termsFile: string): string =>
   refuses
-    ? `leak-scan: push refused: no private term list at ${TERMS_FILE}. Create it, one term per line, chmod 600; see docs/leak-guard.md.`
-    : `leak-scan: WARNING: no private term list at ${TERMS_FILE}, so this push was scanned with generic rules only. Create it; see docs/leak-guard.md.`
+    ? `leak-scan: push refused: no private term list at ${termsFile}. Create it, one term per line, chmod 600; see docs/leak-guard.md.`
+    : `leak-scan: WARNING: no private term list at ${termsFile}, so this push was scanned with generic rules only. Create it; see docs/leak-guard.md.`
+
+// egress-scan honours an uncommitted .egress-allow in the worktree, so an agent could write one to silence it.
+const ALLOW_CHECK = `top=$(git rev-parse --show-toplevel 2>/dev/null)
+if [ -n "$top" ] && { [ -e "$top/.egress-allow" ] || [ -L "$top/.egress-allow" ]; }; then
+  git -C "$top" ls-files --error-unmatch -- .egress-allow >/dev/null 2>&1 && git -C "$top" diff --quiet HEAD -- .egress-allow || {
+    echo "leak-scan: push refused: .egress-allow differs from the committed copy, and only a committed one may allow findings. Commit it or remove it; see docs/leak-guard.md." >&2
+    exit 2
+  }
+fi`
 
 /**
- * node and titan-egress-scan are found on PATH when the hook runs, never baked in: a versioned node
- * goes away and would refuse every push. A missing one, or a scanner whose help lacks `pre-push`,
- * warns and lets the push go. A scanner that crashes still refuses. `CI=` stops egress-scan skipping
- * the term list, and TITAN_EGRESS_TERMS is overwritten with the default path so an inherited value cannot swap it. The scan's refusal does not skip the repo's own hook; either one failing refuses.
+ * The scan runs in a subshell under the broker's PATH and the passwd home, both baked in at spawn,
+ * with node's code-loading variables cleared, so the agent's environment cannot swap or silence the
+ * scanner. A missing node or scanner, or one whose help lacks `pre-push`, warns and lets the push
+ * go. A scanner that crashes still refuses. `CI=` stops egress-scan skipping the term list. The
+ * scan's refusal does not skip the repo's own hook; either one failing refuses.
  */
-const prePushShim = (refuses: boolean): string => `${HEADER}refs=$(mktemp) || exit 1
-errs=$(mktemp) || exit 1
-trap 'rm -f "$refs" "$errs"' EXIT
-cat > "$refs"
-scan=0
+const scanStep = ({ missingTermsRefuses: refuses, home, path: scanPath }: ScanInputs): string => {
+  const termsFile = termsFileFor(home)
+  return `(
+PATH=${shQuote(scanPath)}; export PATH
+HOME=${shQuote(home)}; export HOME
+unset NODE_OPTIONS NODE_PATH XDG_CONFIG_HOME LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH
+${ALLOW_CHECK}
 if ! command -v node >/dev/null 2>&1; then
-  echo "${NOT_RUN}: no node on PATH. Put node on the agent's PATH; see docs/leak-guard.md." >&2
+  echo "${NOT_RUN}: no node on the broker's PATH. Put node on it and restart the broker; see docs/leak-guard.md." >&2
 elif ! command -v titan-egress-scan >/dev/null 2>&1; then
-  echo "${NOT_RUN}: no titan-egress-scan on PATH. ${INSTALL_HINT}" >&2
+  echo "${NOT_RUN}: no titan-egress-scan on the broker's PATH. ${INSTALL_HINT}" >&2
 elif ! help=$(titan-egress-scan --help 2>&1); then
   printf '%s\\n' "$help" >&2
   echo "leak-scan: titan-egress-scan failed while checking for its pre-push command, so the push is refused." >&2
-  scan=2
+  exit 2
 else
   case $help in
   *pre-push*)
-    CI= TITAN_EGRESS_TERMS="${TERMS_FILE}" TITAN_EGRESS_REQUIRE_TERMS=${refuses ? '1' : ''} titan-egress-scan pre-push "$1" < "$refs" 2> "$errs"
+    CI= TITAN_EGRESS_TERMS=${shQuote(termsFile)} TITAN_EGRESS_REQUIRE_TERMS=${refuses ? '1' : ''} titan-egress-scan pre-push "$1" < "$refs" 2> "$errs"
     scan=$?
     cat "$errs" >&2
     if grep -q '${MISSING_TERMS_LINE}' "$errs"; then
-      echo "${missingTermsNote(refuses)}" >&2
-    fi ;;
+      echo ${shQuote(missingTermsNote(refuses, termsFile))} >&2
+    fi
+    exit "$scan" ;;
   *)
-    echo "${NOT_RUN}: the titan-egress-scan on PATH has no pre-push command. ${INSTALL_HINT}" >&2 ;;
+    echo "${NOT_RUN}: the titan-egress-scan on the broker's PATH has no pre-push command. ${INSTALL_HINT}" >&2 ;;
   esac
 fi
+)`
+}
+
+const prePushShim = (inputs: ScanInputs): string => `${HEADER}refs=$(mktemp) || exit 1
+errs=$(mktemp) || exit 1
+trap 'rm -f "$refs" "$errs"' EXIT
+cat > "$refs"
+${scanStep(inputs)}
+scan=$?
 ${FIND_REPO_HOOK}
 own_status=0
 if [ -n "$hook" ]; then "$hook" "$@" < "$refs"; own_status=$?; fi
@@ -102,9 +156,9 @@ if [ -n "$hook" ]; then "$hook" "$@" < "$refs"; own_status=$?; fi
 exit "$own_status"
 `
 
-export function hookScripts(missingTermsRefuses = MISSING_TERMS_REFUSES): Map<string, string> {
+export function hookScripts(inputs: ScanInputs = defaultScanInputs()): Map<string, string> {
   return new Map([
-    ['pre-push', prePushShim(missingTermsRefuses)],
+    ['pre-push', prePushShim(inputs)],
     ...CHAINED_HOOKS.map(name => [name, CHAIN_SHIM] as const),
   ])
 }
@@ -122,7 +176,7 @@ function writeIfChanged(file: string, body: string): void {
   fs.renameSync(tmp, file)
 }
 
-export function writeGitHooks(dir: string, missingTermsRefuses = MISSING_TERMS_REFUSES): void {
+export function writeGitHooks(dir: string, inputs: ScanInputs = defaultScanInputs()): void {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-  for (const [name, body] of hookScripts(missingTermsRefuses)) writeIfChanged(path.join(dir, name), body)
+  for (const [name, body] of hookScripts(inputs)) writeIfChanged(path.join(dir, name), body)
 }
