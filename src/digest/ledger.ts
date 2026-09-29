@@ -1,6 +1,8 @@
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
+import { NOTICE_LIVE } from '../broker/notice-expiry.js'
+import { resolveNoticeTtlMs } from '../config.js'
 import type {
   ClassReversal,
   DecidedEntry,
@@ -52,11 +54,16 @@ const metaOf = (row: { meta: string | null }): Record<string, string> => {
   }
 }
 
-export function readLedgerFacts(dbPath: string, sinceMs: number, now: number): LedgerFacts {
+export function readLedgerFacts(
+  dbPath: string,
+  sinceMs: number,
+  now: number,
+  noticeTtlMs = resolveNoticeTtlMs(),
+): LedgerFacts {
   if (!fs.existsSync(dbPath)) return EMPTY_FACTS
   const db = new DatabaseSync(dbPath, { readOnly: true })
   try {
-    const open = openQueue(db, now)
+    const open = openQueue(db, now, noticeTtlMs)
     return {
       available: true,
       escalations: open.filter(e => e.kind !== 'notice' || e.itemKind !== undefined),
@@ -71,16 +78,17 @@ export function readLedgerFacts(dbPath: string, sinceMs: number, now: number): L
 }
 
 /** The human queue as `humanQueue()` computes it, minus plain messages, which are not asks. */
-function openQueue(db: DatabaseSyncType, now: number): QueueEntry[] {
+function openQueue(db: DatabaseSyncType, now: number, noticeTtlMs: number): QueueEntry[] {
   const rows = db
     .prepare(
       `SELECT * FROM events
        WHERE target = 'human' AND kind IN ('question','notice','approval_request','endorse_request')
          AND msg_id NOT IN (${CLOSED}) AND msg_id NOT IN (${DECIDED})
          AND (kind != 'approval_request' OR ts > ? OR json_extract(meta, '$.source') = 'hook')
+         AND ${NOTICE_LIVE}
        ORDER BY id ASC`,
     )
-    .all(now - APPROVAL_TTL_MS) as unknown as Row[]
+    .all(now - APPROVAL_TTL_MS, now - noticeTtlMs) as unknown as Row[]
   return rows.map(row => {
     const itemKind = metaOf(row).kind
     return {

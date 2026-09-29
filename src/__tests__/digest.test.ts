@@ -120,6 +120,51 @@ describe('an empty world', () => {
 })
 
 describe('Needs you', () => {
+  it('counts only plain notices younger than the notice TTL, while old asks stay listed', () => {
+    const tenDays = 10 * 24 * HOUR
+    ledger([
+      {
+        at: NOW - tenDays,
+        kind: 'question',
+        actor: 'worker-a',
+        target: 'human',
+        msgId: 'q-old',
+        body: 'Still?',
+      },
+      {
+        at: NOW - tenDays,
+        kind: 'notice',
+        actor: 'worker-a',
+        target: 'human',
+        msgId: 'n-stale',
+        body: 'old fyi',
+      },
+      {
+        at: NOW - tenDays,
+        kind: 'notice',
+        actor: 'tick',
+        target: 'human',
+        msgId: 'n-stalled',
+        body: 'worker stalled',
+        meta: { kind: 'stalled' },
+      },
+      {
+        at: NOW - HOUR,
+        kind: 'notice',
+        actor: 'worker-b',
+        target: 'human',
+        msgId: 'n-live',
+        body: 'new fyi',
+      },
+    ])
+
+    const needs = section(text(), 'Needs you')
+
+    expect(needs).toContain('q-old')
+    expect(needs).toContain('n-stalled')
+    expect(needs).toContain('plus 1 open notices')
+  })
+
   it('numbers open asks, kinded notices, awaiting-merge claims and needs-grant tasks in one sequence', () => {
     ledger([
       {
