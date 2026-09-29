@@ -542,21 +542,28 @@ describe('concurrent worktree adds (CC-224)', () => {
 
   it('does not make adds in different repositories wait for each other', async () => {
     const [left, right] = [makeRepo(), makeRepo()]
+    let leftStarted!: () => void
     let rightStarted!: () => void
+    const leftHasStarted = new Promise<void>(resolve => (leftStarted = resolve))
     const rightHasStarted = new Promise<void>(resolve => (rightStarted = resolve))
     let timer: NodeJS.Timeout | undefined
     const giveUp = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new Error('the add in the other repository never started')), 2_000)
     })
     onTestFinished(() => clearTimeout(timer))
-    const leftWaitsForRight: GitRunner = async (args, cwd) => {
-      if (cwd === left) await Promise.race([rightHasStarted, giveUp])
-      else rightStarted()
+    const leftHoldsItsAddOpen: GitRunner = async (args, cwd) => {
+      if (cwd === left) {
+        leftStarted()
+        await Promise.race([rightHasStarted, giveUp])
+      } else rightStarted()
       return realAdd(args, cwd)
     }
-    const strategy = createWorktreeStrategy({ runWorktreeAdd: leftWaitsForRight })
+    const strategy = createWorktreeStrategy({ runWorktreeAdd: leftHoldsItsAddOpen })
 
-    const allocs = await Promise.all([left, right].map(repo => strategy.allocate(ctxFor(repo))))
+    const allocs = await Promise.all([
+      strategy.allocate(ctxFor(left)),
+      leftHasStarted.then(() => strategy.allocate(ctxFor(right))),
+    ])
 
     expect(allocs.map(a => a.ref?.gitRoot)).toEqual([left, right])
   })
