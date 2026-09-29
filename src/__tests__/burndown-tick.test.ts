@@ -1197,7 +1197,7 @@ describe('burndown tick leak check', () => {
 
   it('delivers one redacted leak event to the seat, and nothing new on the next tick', async () => {
     const worktree = claimWithPr()
-    const fake = fakeBroker({ agents: [row('st-dm-1', 'running', worktree)] })
+    const fake = fakeBroker({ agents: [row('st-dm-1', 'live', worktree)] })
     const exec = pulls(openPr({ body: `Imports the ${PRIVATE} tables` }))
 
     await tick(fake, false, () => {}, exec)
@@ -1212,7 +1212,7 @@ describe('burndown tick leak check', () => {
 
   it('files one human-queue item for an unclaimed agent PR', async () => {
     const worktree = claimWithPr()
-    const fake = fakeBroker({ agents: [row('st-dm-1', 'running', worktree)] })
+    const fake = fakeBroker({ agents: [row('st-dm-1', 'live', worktree)] })
     const stray = openPr({
       number: 9,
       url: PR.replace('/7', '/9'),
