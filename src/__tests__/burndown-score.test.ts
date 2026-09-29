@@ -288,7 +288,7 @@ describe('row order', () => {
     [
       'ID number exactly, past 2^53',
       row('R-9007199254740992', 'r', 50, 1),
-      row('R-9007199254740993', 'r', 50, 1),
+      row('R-09007199254740993', 'r', 50, 1),
     ],
     ['a numeric ID before a non-numeric suffix', row('A-10', 'r', 50, 1), row('A-1z', 'r', 50, 1)],
     ['slug by code point, not locale', row('X-1', 'Zeta', 50, 1), row('X-1', 'alpha', 50, 1)],
