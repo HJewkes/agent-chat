@@ -1,5 +1,5 @@
 import { isInteractiveSurface } from '../protocol.js'
-import type { LaunchPlan, LaunchPlanInput } from './types.js'
+import type { AgentProfile, LaunchPlan, LaunchPlanInput } from './types.js'
 
 /**
  * The ONE argv builder, for every surface.
@@ -103,7 +103,14 @@ const conversationArgs = (input: LaunchPlanInput): string[] =>
     ? [input.resume === true ? '--resume' : '--session-id', input.sessionId]
     : ['--session-id', input.sessionId, '--resume', input.forkFrom, '--fork-session']
 
+const RESERVED_ENV = /^(AGENT_CHAT_|CLAUDE_CONFIG_DIR$)/
+
+// Beneath the spawner's own keys, and stripped of the reserved ones so an unset CLAUDE_CONFIG_DIR stays unset.
+const profileEnv = (profile: AgentProfile): Record<string, string> =>
+  Object.fromEntries(Object.entries(profile.env ?? {}).filter(([key]) => !RESERVED_ENV.test(key)))
+
 const envFor = (input: LaunchPlanInput): Record<string, string> => ({
+  ...profileEnv(input.profile),
   // Read by the child's own MCP server, which registers from them before the
   // model takes a turn. This is what makes a spawned process a durable peer.
   AGENT_CHAT_AGENT_ID: input.agentId,

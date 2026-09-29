@@ -553,6 +553,14 @@ template engine for MVP** — `promptPrelude` plus the brief covers it, and brai
 renderer throws on unfilled placeholders, which is a footgun when the variable
 source is a peer model rather than a PM database.
 
+**A profile may set `env`**, an object of string values added to the launched
+process's environment. A user profile in `~/.agent-chat/profiles/<name>.json`
+can set it too. Any non-string value fails the load with an error naming the
+profile. `env` sits beneath the spawner's own keys: `AGENT_CHAT_*` and
+`CLAUDE_CONFIG_DIR` in a profile are dropped. The built-in `reviewer` sets
+`CLAUDE_CODE_PROMPT_CACHE_TTL=5m`; other profiles keep the 1 h default because
+they wait over 5 minutes on CI.
+
 ---
 
 ### 5. Spawning: one interface, surface as a parameter

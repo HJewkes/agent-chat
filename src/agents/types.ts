@@ -85,6 +85,8 @@ export interface AgentProfile {
   strictMcpConfig?: boolean
   /** Drop every skill and slash command, which otherwise load into each turn. */
   disableSlashCommands?: boolean
+  /** Extra environment for the launched process. Never overrides AGENT_CHAT_* or CLAUDE_CONFIG_DIR. */
+  env?: Record<string, string>
 }
 
 /**

@@ -112,6 +112,8 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     isolation: 'toolset-limited',
     surface: 'iterm-pane',
     surfaceLifetime: 'close-on-exit',
+    // A reviewer finishes inside 5 minutes, so the 1 h cache write premium buys nothing.
+    env: { CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' },
     promptPrelude:
       'You are reviewing work you did not write. Report findings with file and line references. ' +
       'Do not fix what you find unless asked.',
@@ -205,6 +207,12 @@ const isRole = (value: unknown): value is AgentRole => AGENT_ROLES.includes(valu
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every(entry => typeof entry === 'string')
 
+const isStringRecord = (value: unknown): value is Record<string, string> =>
+  typeof value === 'object' &&
+  value !== null &&
+  !Array.isArray(value) &&
+  Object.values(value).every(entry => typeof entry === 'string')
+
 /**
  * Validate a parsed profile file. Returns the profile or an explanatory error —
  * never a partially-trusted object, because a profile that half-loaded would
@@ -232,6 +240,8 @@ export function parseProfile(name: string, raw: unknown): AgentProfile | { error
     return { error: `${name}: "role" must be one of ${AGENT_ROLES.join(', ')}` }
   if (body.effort !== undefined && !EFFORT_LEVELS.includes(body.effort as never))
     return { error: `${name}: "effort" must be one of ${EFFORT_LEVELS.join(', ')}` }
+  if (body.env !== undefined && !isStringRecord(body.env))
+    return { error: `${name}: "env" must be an object whose values are all strings` }
   for (const field of LEAN_FLAGS)
     if (body[field] !== undefined && typeof body[field] !== 'boolean')
       return { error: `${name}: "${field}" must be true or false` }
@@ -253,6 +263,7 @@ export function parseProfile(name: string, raw: unknown): AgentProfile | { error
     ...(typeof body.mcpServers === 'object' && body.mcpServers !== null
       ? { mcpServers: body.mcpServers as Record<string, unknown> }
       : {}),
+    ...(body.env === undefined ? {} : { env: body.env }),
     ...leanFlags(body),
   }
 }
