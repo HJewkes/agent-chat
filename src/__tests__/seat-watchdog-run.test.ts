@@ -26,8 +26,8 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
 }
 
 const CHARTER = `---
-owner_seat: hjewkes-surplus
-seats: [hjewkes-surplus, unconfigured, ../escape]
+owner_seat: seat-a
+seats: [seat-a, unconfigured, ../escape]
 pools:
   claude:  {config_dir: /Users/o/.claude, human_uses: true, reserve_seven_day: 35, ceiling_five_hour: 70, per_day_points: 13}
 ---
@@ -82,7 +82,7 @@ function harness(roster: Roster, fiveHour = 41, start = new Date(2026, 8, 29, 8,
     deps: {
       now: () => new Date(now),
       readCharter: () => CHARTER,
-      readSeatFile: seat => (seat === 'hjewkes-surplus' ? SEAT : undefined),
+      readSeatFile: seat => (seat === 'seat-a' ? SEAT : undefined),
       readSeatLog: (_seat, at) => (at.getDate() === new Date(now).getDate() ? h.seatLog : h.priorLog),
       readBudget: () => budget(h.fiveHour, h.sevenDay),
       ownerMessages: () => h.ownerMessages,
@@ -100,9 +100,9 @@ function harness(roster: Roster, fiveHour = 41, start = new Date(2026, 8, 29, 8,
   return h
 }
 
-const IDLE: Roster = { agents: [], connected: ['hjewkes-surplus'] }
+const IDLE: Roster = { agents: [], connected: ['seat-a'] }
 
-const ONE = { seats: ['hjewkes-surplus'], dryRun: false }
+const ONE = { seats: ['seat-a'], dryRun: false }
 
 /** `count` watchdog runs 15 minutes apart; returns how many woke the seat. */
 async function runs(h: Harness, count: number, before?: (i: number) => void): Promise<number> {
@@ -126,49 +126,47 @@ const GAP_LINE =
 describe('runWatchdog', () => {
   it('wakes a connected seat with the Discovery message on the second idle run, and logs it', async () => {
     const h = harness(IDLE)
-    const first = await runWatchdog(h.deps, { seats: ['hjewkes-surplus'], dryRun: false })
+    const first = await runWatchdog(h.deps, { seats: ['seat-a'], dryRun: false })
     h.tick()
-    const second = await runWatchdog(h.deps, { seats: ['hjewkes-surplus'], dryRun: false })
+    const second = await runWatchdog(h.deps, { seats: ['seat-a'], dryRun: false })
     expect(first).toEqual([GAP_LINE])
     expect(h.wakes).toEqual([
-      { seat: 'hjewkes-surplus', message: 'Watchdog: 0 implementers, run Discovery', connected: true },
+      { seat: 'seat-a', message: 'Watchdog: 0 implementers, run Discovery', connected: true },
     ])
     expect(h.logs).toHaveLength(1)
-    expect(h.logs[0]).toMatch(
-      /^hjewkes-surplus: Watchdog: 0 implementers, budget open .*7 eligible; woke hjewkes-surplus/,
-    )
+    expect(h.logs[0]).toMatch(/^seat-a: Watchdog: 0 implementers, budget open .*7 eligible; woke seat-a/)
     expect(second).toHaveLength(1)
   })
 
   it('resumes a seat that has no connected session', async () => {
     const h = harness({ agents: [], connected: [] })
-    await runWatchdog(h.deps, { seats: ['hjewkes-surplus'], dryRun: false })
+    await runWatchdog(h.deps, { seats: ['seat-a'], dryRun: false })
     h.tick()
-    await runWatchdog(h.deps, { seats: ['hjewkes-surplus'], dryRun: false })
+    await runWatchdog(h.deps, { seats: ['seat-a'], dryRun: false })
     expect(h.wakes[0]?.connected).toBe(false)
   })
 
   it('is silent while an implementer runs: no wake, no log line, only the one-time gap line', async () => {
     const busy: Roster = {
-      agents: [{ name: 'hs-cc-1-x', profile: 'implementer', state: 'live', spawnedBy: 'hjewkes-surplus' }],
+      agents: [{ name: 'sa-x-1', profile: 'implementer', state: 'live', spawnedBy: 'seat-a' }],
       connected: [],
     }
     const h = harness(busy)
     const out = [
-      ...(await runWatchdog(h.deps, { seats: ['hjewkes-surplus'], dryRun: false })),
-      ...(h.tick(), await runWatchdog(h.deps, { seats: ['hjewkes-surplus'], dryRun: false })),
+      ...(await runWatchdog(h.deps, { seats: ['seat-a'], dryRun: false })),
+      ...(h.tick(), await runWatchdog(h.deps, { seats: ['seat-a'], dryRun: false })),
     ]
     expect([out, h.wakes, h.logs]).toEqual([[GAP_LINE], [], []])
-    expect(h.doc.seats['hjewkes-surplus']?.idleRuns).toBe(0)
+    expect(h.doc.seats['seat-a']?.idleRuns).toBe(0)
   })
 
   it('holds a seat over the five-hour ceiling and logs the BUDGET-PAUSE once, not every run', async () => {
     const h = harness(IDLE, 70)
     expect(await runs(h, 4)).toBe(0)
     expect(h.logs).toEqual([
-      'hjewkes-surplus: Watchdog: BUDGET-PAUSE pool claude: five_hour 70% at or above ceiling 70%',
+      'seat-a: Watchdog: BUDGET-PAUSE pool claude: five_hour 70% at or above ceiling 70%',
     ])
-    expect(h.doc.seats['hjewkes-surplus']?.budgetPaused).toBe(true)
+    expect(h.doc.seats['seat-a']?.budgetPaused).toBe(true)
   })
 
   it('releases a held seat once its pool reopens, logging the change once, and wakes it', async () => {
@@ -177,7 +175,7 @@ describe('runWatchdog', () => {
     h.fiveHour = 41
     expect(await runs(h, 3)).toBe(1)
     expect(h.logs.filter(l => l.includes('budget open again'))).toEqual([
-      'hjewkes-surplus: Watchdog: budget open again: pool claude: five_hour 41% vs ceiling 70%, seven_day 19% vs line 65%',
+      'seat-a: Watchdog: budget open again: pool claude: five_hour 41% vs ceiling 70%, seven_day 19% vs line 65%',
     ])
     expect(h.logs.filter(l => l.includes('BUDGET-PAUSE'))).toHaveLength(1)
   })
@@ -194,14 +192,14 @@ describe('runWatchdog', () => {
 
   it('under --dry-run reports every charter seat and wakes, logs and saves nothing', async () => {
     const h = harness(IDLE)
-    h.doc.seats = { 'hjewkes-surplus': { idleRuns: 1, at: h.now() - 8 * 60_000 } }
+    h.doc.seats = { 'seat-a': { idleRuns: 1, at: h.now() - 8 * 60_000 } }
     const out = await runWatchdog(h.deps, { dryRun: true })
-    expect(out[0]).toMatch(/^hjewkes-surplus: WOULD FIRE: 0 implementers/)
+    expect(out[0]).toMatch(/^seat-a: WOULD FIRE: 0 implementers/)
     expect(out[1]).toMatch(/^unconfigured: skipped, seats\/unconfigured.md has no prefix or pool/)
     expect(out[2]).toBe('../escape: skipped, not a seat name')
     expect(h.wakes).toEqual([])
     expect(h.logs).toEqual([])
-    expect(h.doc.seats['hjewkes-surplus']?.idleRuns).toBe(1)
+    expect(h.doc.seats['seat-a']?.idleRuns).toBe(1)
   })
 
   it('wakes at most twice through a long idle stretch with no implementer appearing', async () => {
@@ -217,7 +215,7 @@ describe('runWatchdog', () => {
     h.seatLog = `${hhmm(h.now())} dispatch refused: no worktree slot\n`
     expect(await runs(h, 8)).toBe(0)
     const busy: Roster = {
-      agents: [{ name: 'hs-cc-1-x', profile: 'implementer', state: 'live', spawnedBy: 'hjewkes-surplus' }],
+      agents: [{ name: 'sa-x-1', profile: 'implementer', state: 'live', spawnedBy: 'seat-a' }],
       connected: [],
     }
     await runWatchdog({ ...h.deps, roster: async () => busy }, ONE)
@@ -233,10 +231,10 @@ describe('runWatchdog', () => {
 
   it('never wakes a seat the owner stopped in seat-watchdog.json', async () => {
     const h = harness(IDLE)
-    h.doc.stopped = { 'hjewkes-surplus': 'away for the weekend' }
+    h.doc.stopped = { 'seat-a': 'away for the weekend' }
     expect(await runs(h, 4)).toBe(0)
     const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
-    expect(out[0]).toBe('hjewkes-surplus: skip: held: stopped by the owner: away for the weekend')
+    expect(out[0]).toBe('seat-a: skip: held: stopped by the owner: away for the weekend')
   })
 
   it('never wakes a seat whose latest log line is BUDGET-PAUSE', async () => {
@@ -251,7 +249,7 @@ describe('runWatchdog', () => {
     h.sevenDay = 20
     expect(await runs(h, 4)).toBe(0)
     expect(h.doc.pools.claude?.spent).toBe(10)
-    expect(h.doc.seats['hjewkes-surplus']?.run?.spent).toBe(0)
+    expect(h.doc.seats['seat-a']?.run?.spent).toBe(0)
     const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
     expect(out[0]).toMatch(
       /budget closed: BUDGET-PAUSE pool claude: day spend 10 points since 07:00 at or above the seat's per_day_points 10$/,
@@ -261,7 +259,7 @@ describe('runWatchdog', () => {
   it('holds a seat at its per_run_points stop even with the day cap open', async () => {
     const h = harness(IDLE)
     h.doc.seats = {
-      'hjewkes-surplus': {
+      'seat-a': {
         idleRuns: 1,
         at: h.now() - 15 * 60_000,
         run: { since: h.now() - 3_600_000, last: 19, spent: 6 },
@@ -275,9 +273,9 @@ describe('runWatchdog', () => {
 
   it('never wakes any seat inside an open restart window', async () => {
     const h = harness(IDLE)
-    h.ownerMessages = [{ ts: h.now() - 5 * 60_000, body: 'hjewkes-surplus: restart at 08:45' }]
+    h.ownerMessages = [{ ts: h.now() - 5 * 60_000, body: 'seat-a: restart at 08:45' }]
     expect(await runs(h, 3)).toBe(0)
-    h.ownerMessages.push({ ts: h.now(), body: 'hjewkes-surplus: restart done' })
+    h.ownerMessages.push({ ts: h.now(), body: 'seat-a: restart done' })
     expect(await runs(h, 2)).toBe(1)
   })
 
@@ -286,9 +284,7 @@ describe('runWatchdog', () => {
     h.deps.ownerMessages = () => undefined
     expect(await runs(h, 3)).toBe(0)
     const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
-    expect(out[0]).toBe(
-      'hjewkes-surplus: skip: held: events.db unreadable, so a restart window cannot be ruled out',
-    )
+    expect(out[0]).toBe('seat-a: skip: held: events.db unreadable, so a restart window cannot be ruled out')
   })
 })
 

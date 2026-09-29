@@ -39,7 +39,7 @@ const hhmm = (at: number): string => new Date(at).toISOString().slice(11, 16)
 describe('replay of 2026-09-29, the 3h52m idle night', () => {
   const rows = replay(
     {
-      seat: { name: 'seat-a', prefix: 'hs', pool: 'claude', spend: {} },
+      seat: { name: 'seat-a', prefix: 'sa', pool: 'claude', spend: {} },
       pool: parsePools(CHARTER).get('claude'),
       events: ROWS,
       readings: READINGS,
