@@ -90,6 +90,9 @@ export const mirrorPlistPath = (): string =>
 
 export const mirrorLogDir = (): string => path.join(os.homedir(), 'Library', 'Logs', 'agent-chat-mirror')
 
+/** The owner's private leak-guard deny-list (CC-265), hand-edited, 0600, never in any repo. */
+export const denylistPath = (): string => path.join(home(), 'private-denylist.json')
+
 /** The burndown claim ledger: which task each tick-spawned agent holds, and in what phase. */
 export const burndownLedgerPath = (): string => path.join(home(), 'burndown.json')
 
