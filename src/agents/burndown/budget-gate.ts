@@ -54,6 +54,13 @@ const isNight = (ctx: GateContext): boolean => {
   return nightHour && humanAbsentFor(ctx, NIGHT_ABSENCE_MS)
 }
 
+/** An unusable age closes the gate; only an explicit infinite limit skips the check. */
+function staleReason(age: number, max: number): string | undefined {
+  if (max === Number.POSITIVE_INFINITY) return undefined
+  if (!Number.isFinite(age)) return 'reading has no age'
+  return age > max ? `reading is ${age}s old, over the ${max}s limit` : undefined
+}
+
 export function gateAccount(
   account: string,
   rule: AccountRule | undefined,
@@ -64,12 +71,8 @@ export function gateAccount(
   if (rule === undefined) return { open: false, account, reason: 'no budget rule for this account' }
   if (reading?.sevenDay === undefined || reading.fiveHour === undefined)
     return { open: false, account, reason: 'no seven_day and five_hour reading under this account' }
-  if (reading.ageSeconds > maxReadingAgeSeconds)
-    return {
-      open: false,
-      account,
-      reason: `reading is ${reading.ageSeconds}s old, over the ${maxReadingAgeSeconds}s limit`,
-    }
+  const stale = staleReason(reading.ageSeconds, maxReadingAgeSeconds)
+  if (stale !== undefined) return { open: false, account, reason: stale }
 
   const night = isNight(ctx) && rule.night !== undefined
   const reserve = night ? (rule.night?.reserve_seven_day ?? rule.reserve_seven_day) : rule.reserve_seven_day

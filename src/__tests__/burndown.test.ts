@@ -533,6 +533,26 @@ describe('budget gate', () => {
     expect(result.open).toBe(true)
   })
 
+  it.each([Number.NaN, undefined])('closes on a reading whose age is %s', age => {
+    const unaged = { sevenDay: 10, fiveHour: 10, ageSeconds: age as number }
+
+    const result = gateAccount('agents', rule, unaged, { now: NOON, humanLastTurnAt: 0 })
+
+    expect(result.open).toBe(false)
+    expect(result.reason).toContain('no age')
+  })
+
+  it('opens on a reading with no age when the caller sets an infinite max age', () => {
+    const unaged = { sevenDay: 10, fiveHour: 10, ageSeconds: Number.NaN }
+    const ctx = { now: NOON, humanLastTurnAt: 0 }
+
+    const result = gateAccount('agents', rule, unaged, ctx, {
+      maxReadingAgeSeconds: Number.POSITIVE_INFINITY,
+    })
+
+    expect(result.open).toBe(true)
+  })
+
   it('opens on a reading exactly at the staleness limit', () => {
     const fresh = { sevenDay: 10, fiveHour: 10, ageSeconds: MAX_READING_AGE_SECONDS }
 
