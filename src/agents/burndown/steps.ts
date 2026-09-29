@@ -15,6 +15,8 @@ import { heldClaims, sameClaim, type Claim, type Ledger } from './ledger.js'
 import { rowNamed, type Roster } from './observe.js'
 import type { Dispatch } from './plan.js'
 import { parseSlices } from './report.js'
+import type { PoolGateResult } from './budget-gate.js'
+import type { SeatDispatch } from './seat-dispatch.js'
 
 /**
  * Turns what `advance` and `plan` decided into executable steps: a brief built
@@ -37,6 +39,14 @@ export interface StepContext {
   trust: (repo: string, cwd: string, account: string) => string | undefined
   taskText: (slug: string, taskId: string) => string | undefined
   readFile: (file: string) => string | undefined
+  /** Seats mode only: a listed seat's spawn inputs, why a listed seat is out this tick, or undefined for a seat not listed. */
+  seat?: (name: string) => SeatSpawn | { skipped: string } | undefined
+}
+
+export interface SeatSpawn {
+  dispatch: SeatDispatch
+  gate: PoolGateResult
+  trust: (repo: string, cwd: string, configDir: string) => string | undefined
 }
 
 export interface Resolved {
@@ -99,24 +109,69 @@ function plainSteps(actions: Action[]): Step[] {
   })
 }
 
+/** What a spawn for a held claim runs on: its placement, the gate's verdict, and the trust check. */
+interface SpawnSetup {
+  initiative: Initiative
+  repo: string | undefined
+  placement: (account: string) => Placement
+  gate: { account: string } | { closed: string }
+  trust: (repo: string, cwd: string, account: string) => string | undefined
+}
+
+function autonomySetup(initiative: Initiative, ctx: StepContext): SpawnSetup {
+  const repo = initiative.autonomy?.repo
+  return {
+    initiative,
+    repo,
+    placement: account => autonomyPlacement(repo, account, initiative, ctx),
+    gate: ctx.account(initiative),
+    trust: ctx.trust,
+  }
+}
+
+/** A seat claim's placement and pool gate come from the seat; reviewers and successors run on opus, so sonnet-only closes them. */
+function seatSetup(claim: Claim, seat: SeatSpawn, initiative: Initiative): SpawnSetup {
+  const { dispatch, gate } = seat
+  const repos = dispatch.repos[initiative.slug] ?? []
+  const repo = repos.find(r => claim.worktree?.startsWith(`${r}${path.sep}`)) ?? repos[0]
+  const placement: Placement = { repo, configDir: dispatch.configDir, grants: dispatch.grants }
+  const closed = !gate.open
+    ? gate.reason
+    : gate.sonnetOnly
+      ? `${gate.pool} is within 10 points of a stop, sonnet only`
+      : undefined
+  return {
+    initiative,
+    repo,
+    placement: () => placement,
+    gate: closed === undefined ? { account: dispatch.configDir } : { closed },
+    trust: (r, cwd) => seat.trust(r, cwd, dispatch.configDir),
+  }
+}
+
+function spawnSetup(claim: Claim, ctx: StepContext): SpawnSetup | { stall: string } | { defer: string } {
+  const initiative = ctx.initiatives.get(claim.initiative)
+  if (initiative === undefined) return { stall: 'initiative is no longer opted in with a repo' }
+  if (claim.seat === undefined) return autonomySetup(initiative, ctx)
+  const seat = ctx.seat?.(claim.seat)
+  if (seat === undefined)
+    return { stall: `seat ${claim.seat} is no longer in the burndown config; left for the owner` }
+  if ('skipped' in seat) return { defer: `seat ${claim.seat} skipped this tick: ${seat.skipped}` }
+  return seatSetup(claim, seat, initiative)
+}
+
 function resolveSpawn(action: SpawnAction, ledger: Ledger, ctx: StepContext): Outcome {
   const claim = heldClaims(ledger).find(c => sameClaim(c, action.key))
-  const initiative = claim === undefined ? undefined : ctx.initiatives.get(claim.initiative)
-  const repo = initiative?.autonomy?.repo
-  if (claim === undefined || initiative === undefined || repo === undefined)
-    return { stall: 'initiative is no longer opted in with a repo' }
+  if (claim === undefined) return { stall: 'initiative is no longer opted in with a repo' }
+  const setup = spawnSetup(claim, ctx)
+  if ('stall' in setup || 'defer' in setup) return setup
+  const { initiative, repo, gate } = setup
+  if (repo === undefined) return { stall: 'initiative is no longer opted in with a repo' }
   if (claim.worktree === undefined) return { stall: 'no worktree recorded for the claim' }
-  const gate = ctx.account(initiative)
   if ('closed' in gate) return { defer: `budget: ${gate.closed}` }
-  const untrusted = ctx.trust(repo, claim.worktree, gate.account)
+  const untrusted = setup.trust(repo, claim.worktree, gate.account)
   if (untrusted !== undefined) return { stall: `trust: ${untrusted}` }
-  const t = taskBrief(
-    claim.taskId,
-    claim.slice,
-    initiative,
-    autonomyPlacement(repo, gate.account, initiative, ctx),
-    ctx,
-  )
+  const t = taskBrief(claim.taskId, claim.slice, initiative, setup.placement(gate.account), ctx)
   if (typeof t === 'string') return { stall: t }
   const spec = {
     name: action.name,

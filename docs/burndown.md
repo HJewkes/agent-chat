@@ -73,10 +73,11 @@ or whose scope cannot be scored, is skipped with a `seat <name> skipped: <why>` 
 `burndown_seat_skipped` event; the tick still advances every held claim and plans the
 other seats.
 
-Known gap: a seat claim's reviewer and successor spawns still resolve their repo and
-account through the brief's `autonomy:` block, so in seats mode they stall with
-"initiative is no longer opted in with a repo" until a follow-up gives `advance` the
-seat's placement.
+A seat claim's reviewer and successor spawns (CC-274) take the repo, `config_dir` and grants
+from the seat, and pass the seat's pool gate: a closed gate, or a pool within 10 points of a
+stop (those spawns run on opus), defers the spawn with the `BUDGET-PAUSE` reason. A claim
+whose seat is no longer listed in `seats` stalls once and is left for the owner; a listed
+seat that could not load this tick defers instead.
 
 ## The launchd job
 
