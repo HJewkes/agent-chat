@@ -34,7 +34,7 @@ afterEach(() => {
   fs.rmSync(stateDir, { recursive: true, force: true })
 })
 
-function writePlan(agentId: string, env: Record<string, string> = {}): void {
+function writePlan(agentId: string, env: Record<string, string> = {}, stdin?: string): void {
   const plan: LaunchPlan = {
     agentId,
     bin: 'claude',
@@ -43,6 +43,7 @@ function writePlan(agentId: string, env: Record<string, string> = {}): void {
     env,
     title: agentId,
     surface: 'headless',
+    ...(stdin === undefined ? {} : { stdin }),
   }
   const agentDir = path.join(stateDir, 'agents', agentId)
   fs.mkdirSync(agentDir, { recursive: true })
@@ -78,5 +79,33 @@ describe('run-agent stamping the launched process', () => {
 
     const [launcher, parent] = JSON.parse(result.stdout) as [string, string]
     expect(launcher).toBe(parent)
+  })
+})
+
+describe('run-agent keeping the stderr tail of a headless claude (CC-161)', () => {
+  const tailFile = () => path.join(stateDir, 'agents', 'agt-test', 'stderr-tail.txt')
+
+  it('leaves only the bounded tail of what claude wrote to stderr, and still passes it on', () => {
+    fs.writeFileSync(
+      fakeClaude,
+      "process.stderr.write('x'.repeat(100000) + 'Not logged in · Please run /login\\n'); process.exitCode = 1\n",
+    )
+    writePlan('agt-test', {}, 'the brief')
+
+    const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
+
+    const tail = fs.readFileSync(tailFile(), 'utf8')
+    expect(tail).toMatch(/Not logged in · Please run \/login\n$/)
+    expect(tail.length).toBeLessThanOrEqual(4096)
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('Not logged in')
+  })
+
+  it('writes no tail file when claude says nothing on stderr', () => {
+    writePlan('agt-test', {}, 'the brief')
+
+    runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
+
+    expect(fs.existsSync(tailFile())).toBe(false)
   })
 })
