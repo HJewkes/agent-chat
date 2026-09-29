@@ -68,6 +68,7 @@ const spawnedFrom = (row: AgentEventRow, id: string): AgentIdentity => ({
   // and status-cache are. Absent on rows written before the field existed, which
   // reads as "the broker's own dir" — exactly what those agents actually used.
   ...(row.meta.config_dir ? { configDir: row.meta.config_dir } : {}),
+  ...(row.meta.config_dir_unset === 'true' ? { configDirUnset: true } : {}),
   lastEventAt: row.ts,
   generation: generationOf(row),
   ...(row.meta.teleport_from ? { teleportFrom: row.meta.teleport_from } : {}),

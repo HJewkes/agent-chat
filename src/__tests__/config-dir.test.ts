@@ -1,6 +1,12 @@
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { accountName, checkConfigDir, profileDir, resolveConfigDir } from '../agents/config-dir.js'
+import {
+  accountName,
+  checkConfigDir,
+  childConfigDir,
+  profileDir,
+  resolveConfigDir,
+} from '../agents/config-dir.js'
 
 /**
  * CC-100. The bug was not that the precedence was wrong — there was no
@@ -152,13 +158,28 @@ describe('a spawner that is a known Claude session with no CLAUDE_CONFIG_DIR', (
       isDirectory: exists(`${HOME}/.claude-profiles/agents`),
     })
 
-    expect(resolved).toEqual({ dir: `${HOME}/.claude`, source: 'spawner' })
+    expect(resolved).toEqual({ dir: `${HOME}/.claude`, source: 'spawner', unset: true })
+  })
+
+  it('names the explicit config_dir without the unset marker, even when it is ~/.claude (CC-200)', () => {
+    const explicit = `${HOME}/.claude`
+
+    const resolved = dirOf({ explicit, spawnerIsSession: true, isDirectory: exists(explicit) })
+
+    expect(resolved).toEqual({ dir: explicit, source: 'explicit' })
   })
 
   it('still yields to the spawner’s own dir when one was observed', () => {
     const spawner = `${HOME}/.claude-profiles/workout`
 
     expect(dirOf({ spawner, spawnerIsSession: true })).toEqual({ dir: spawner, source: 'spawner' })
+  })
+})
+
+describe('the CLAUDE_CONFIG_DIR a child process sees', () => {
+  it('is nothing at all for an unset account, and the dir otherwise', () => {
+    expect(childConfigDir({ dir: `${HOME}/.claude`, unset: true })).toBeUndefined()
+    expect(childConfigDir({ dir: `${HOME}/.claude` })).toBe(`${HOME}/.claude`)
   })
 })
 

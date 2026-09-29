@@ -34,8 +34,14 @@ afterEach(() => {
   fs.rmSync(stateDir, { recursive: true, force: true })
 })
 
-function writePlan(agentId: string, env: Record<string, string> = {}, stdin?: string): void {
+function writePlan(
+  agentId: string,
+  env: Record<string, string> = {},
+  stdin?: string,
+  extra: Partial<LaunchPlan> = {},
+): void {
   const plan: LaunchPlan = {
+    ...extra,
     agentId,
     bin: 'claude',
     args: [fakeClaude],
@@ -79,6 +85,17 @@ describe('run-agent stamping the launched process', () => {
 
     const [launcher, parent] = JSON.parse(result.stdout) as [string, string]
     expect(launcher).toBe(parent)
+  })
+})
+
+describe('run-agent honouring an unset marker in the plan (CC-200)', () => {
+  it('launches claude with CLAUDE_CONFIG_DIR absent, though its own environment had one', () => {
+    fs.writeFileSync(fakeClaude, "process.stdout.write(String('CLAUDE_CONFIG_DIR' in process.env))\n")
+    writePlan('agt-test', {}, undefined, { unsetEnv: ['CLAUDE_CONFIG_DIR'] })
+
+    const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath, CLAUDE_CONFIG_DIR: stateDir })
+
+    expect(result.stdout).toBe('false')
   })
 })
 

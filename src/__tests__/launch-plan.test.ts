@@ -840,3 +840,19 @@ describe('a lean profile', () => {
     },
   )
 })
+
+describe('the account a plan hands the launched process (CC-200)', () => {
+  it('sets CLAUDE_CONFIG_DIR to the resolved dir', () => {
+    const plan = buildLaunchPlan(input({ configDir: '/Users/test/.claude-profiles/agents' }))
+
+    expect(plan.env.CLAUDE_CONFIG_DIR).toBe('/Users/test/.claude-profiles/agents')
+    expect(plan.unsetEnv).toBeUndefined()
+  })
+
+  it('marks CLAUDE_CONFIG_DIR for deletion, not an empty value, when the spawner ran with it unset', () => {
+    const plan = buildLaunchPlan(input({ configDir: '/Users/test/.claude', configDirUnset: true }))
+
+    expect('CLAUDE_CONFIG_DIR' in plan.env).toBe(false)
+    expect(plan.unsetEnv).toEqual(['CLAUDE_CONFIG_DIR'])
+  })
+})

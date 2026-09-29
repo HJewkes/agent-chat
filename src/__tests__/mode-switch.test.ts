@@ -273,6 +273,15 @@ describe('the roster after a switch', () => {
 })
 
 describe('surfacing a headless agent', () => {
+  it('keeps CLAUDE_CONFIG_DIR unset for an agent a default-account session spawned (CC-200)', async () => {
+    const agentId = await spawnAgent({ spawnerIsSession: true })
+
+    await supervisor.switchSurface({ name: 'scout', to: 'interactive', requestedBy: 'human' })
+
+    expect('CLAUDE_CONFIG_DIR' in planFor(agentId).env).toBe(false)
+    expect(planFor(agentId).unsetEnv).toEqual(['CLAUDE_CONFIG_DIR'])
+  })
+
   it('keeps the identity, the name and the conversation', async () => {
     const agentId = await spawnAgent()
     const before = core.agents.get(agentId)

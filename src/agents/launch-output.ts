@@ -50,10 +50,11 @@ export function readOutputTail(agentId: string): string | undefined {
 const NOT_LOGGED_IN = /not logged in|please run \/login/i
 
 /** The login diagnosis when `output` carries claude's not-logged-in signature, else undefined. */
-export function loginGap(output: string | undefined, configDir: string): string | undefined {
+export function loginGap(output: string | undefined, configDir: string | undefined): string | undefined {
   if (output === undefined || !NOT_LOGGED_IN.test(output)) return undefined
+  const env = configDir === undefined ? 'CLAUDE_CONFIG_DIR unset' : `CLAUDE_CONFIG_DIR=${configDir}`
   return (
-    `Claude Code reported it is not logged in. Run \`claude /login\` with CLAUDE_CONFIG_DIR=${configDir} ` +
+    `Claude Code reported it is not logged in. Run \`claude /login\` with ${env} ` +
     'so the login lands in the config dir this agent uses.'
   )
 }

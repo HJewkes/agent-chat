@@ -404,6 +404,30 @@ describe('the descendant', () => {
     expect(spawnRowFor(result.agentId as string)?.meta.config_dir).toBe(dir)
   })
 
+  // CC-200: an unset predecessor's row carries the marker, and the successor's row carries it on to the next hop.
+  it('keeps CLAUDE_CONFIG_DIR unset for a predecessor a default-account session spawned', async () => {
+    const agentId = await spawnAgent({ spawnerIsSession: true })
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    const plan = planFor(result.agentId as string)
+    expect('CLAUDE_CONFIG_DIR' in plan.env).toBe(false)
+    expect(plan.unsetEnv).toEqual(['CLAUDE_CONFIG_DIR'])
+    expect(spawnRowFor(result.agentId as string)?.meta.config_dir_unset).toBe('true')
+  })
+
+  it('sets the dir a formerly unset predecessor is now observably running on', async () => {
+    const dir = '/Users/test/.claude-profiles/workout'
+    const agentId = await spawnAgent({ spawnerIsSession: true })
+
+    const result = await supervisor.teleport({ subject: subject(agentId, { configDir: dir }), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(planFor(result.agentId as string).env.CLAUDE_CONFIG_DIR).toBe(dir)
+    expect(planFor(result.agentId as string).unsetEnv).toBeUndefined()
+  })
+
   /** The predecessor's own row answers when its connection is gone. */
   it('falls back to the account recorded on the predecessor’s spawn row', async () => {
     const dir = '/Users/test/.claude-profiles/workout'

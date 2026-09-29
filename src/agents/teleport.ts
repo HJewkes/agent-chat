@@ -141,6 +141,8 @@ export interface RelaunchInput {
   inheritedFrom?: string
   /** The account the predecessor was spending, carried across unchanged (CC-100). */
   configDir?: string
+  /** CC-200: the predecessor ran with `CLAUDE_CONFIG_DIR` unset, so its successor does too. */
+  configDirUnset?: boolean
   remoteControl?: boolean
 }
 
@@ -469,6 +471,7 @@ export class Teleport {
     // Same rule as `accountOf`, against the row rather than the folded identity:
     // what the predecessor is observably on, then what it was launched on.
     const configDir = subject.configDir ?? previous.config_dir
+    const unset = subject.configDir === undefined && previous.config_dir_unset === 'true'
     return {
       agentId: entry.descendantId,
       name: subject.name,
@@ -491,6 +494,7 @@ export class Teleport {
         generation: String((Number.isFinite(generation) ? generation : 1) + 1),
       },
       ...(configDir ? { configDir } : {}),
+      ...(unset ? { configDirUnset: true } : {}),
       ...(entry.remoteControl ? { remoteControl: true } : {}),
       ...(subject.tags.length > 0 ? { tags: subject.tags } : {}),
       ...(subject.subscriptions.length > 0 ? { subscriptions: subject.subscriptions } : {}),

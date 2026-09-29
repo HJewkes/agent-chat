@@ -77,9 +77,10 @@ function connection(): { conn: Conn; replies: ServerMessage[] } {
   return { conn: { write, end: () => undefined } as unknown as Conn, replies }
 }
 
-async function spawnFrom(conn: Conn, replies: ServerMessage[]): Promise<string> {
+async function spawnFrom(conn: Conn, replies: ServerMessage[], configDir?: string): Promise<string> {
   server.handleMessage(conn, {
     t: 'spawn',
+    ...(configDir === undefined ? {} : { configDir }),
     name: 'scout',
     profile: 'explorer',
     brief: 'read the log',
@@ -97,24 +98,43 @@ async function spawnFrom(conn: Conn, replies: ServerMessage[]): Promise<string> 
   return result.agentId as string
 }
 
+function registerSession(conn: Conn): void {
+  server.handleMessage(conn, {
+    t: 'register',
+    name: 'human-default',
+    workingOn: 'spawning',
+    cwd: tmp('agent-chat-ws-'),
+    pid: 1,
+    sessionId: '11111111-1111-4111-8111-111111111111',
+  })
+}
+
 describe('a spawn from a Claude session with no CLAUDE_CONFIG_DIR', () => {
   // Mutation caught: dropping the spawnerIsSession step in resolveConfigDir runs this child on `agents`.
-  it('runs the child on ~/.claude, not the briefing profile', async () => {
+  it('runs the child with CLAUDE_CONFIG_DIR unset, not on the briefing profile', async () => {
     const { conn, replies } = connection()
-    server.handleMessage(conn, {
-      t: 'register',
-      name: 'human-default',
-      workingOn: 'spawning',
-      cwd: tmp('agent-chat-ws-'),
-      pid: 1,
-      sessionId: '11111111-1111-4111-8111-111111111111',
-    })
+    registerSession(conn)
 
     const agentId = await spawnFrom(conn, replies)
 
-    const defaultDir = path.join(process.env.HOME as string, '.claude')
-    expect(readLaunchPlan(agentId).env.CLAUDE_CONFIG_DIR).toBe(defaultDir)
-    expect(core.agents.get(agentId)?.configDir).toBe(defaultDir)
+    const plan = readLaunchPlan(agentId)
+    expect('CLAUDE_CONFIG_DIR' in plan.env).toBe(false)
+    expect(plan.unsetEnv).toEqual(['CLAUDE_CONFIG_DIR'])
+    expect(core.agents.get(agentId)?.configDir).toBe(path.join(process.env.HOME as string, '.claude'))
+    expect(core.agents.get(agentId)?.configDirUnset).toBe(true)
+  })
+
+  it('still runs on an explicit config_dir, set rather than unset', async () => {
+    const { conn, replies } = connection()
+    registerSession(conn)
+    const explicit = path.join(process.env.HOME as string, '.claude-profiles', 'agents')
+
+    const agentId = await spawnFrom(conn, replies, explicit)
+
+    const plan = readLaunchPlan(agentId)
+    expect(plan.env.CLAUDE_CONFIG_DIR).toBe(explicit)
+    expect(plan.unsetEnv).toBeUndefined()
+    expect(core.agents.get(agentId)?.configDirUnset).toBeUndefined()
   })
 })
 
@@ -124,8 +144,10 @@ describe('a spawn from an unknown caller with no CLAUDE_CONFIG_DIR', () => {
 
     const agentId = await spawnFrom(conn, replies)
 
-    expect(readLaunchPlan(agentId).env.CLAUDE_CONFIG_DIR).toBe(
+    const plan = readLaunchPlan(agentId)
+    expect(plan.env.CLAUDE_CONFIG_DIR).toBe(
       path.join(process.env.HOME as string, '.claude-profiles', 'agents'),
     )
+    expect(plan.unsetEnv).toBeUndefined()
   })
 })

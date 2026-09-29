@@ -124,7 +124,9 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   // BROKER's environment, and the broker is a detached daemon carrying whatever
   // config dir the session that happened to autostart it had. `plan.env` is the
   // channel for what the SPAWNER chose, which is exactly what this is.
-  ...(input.configDir === undefined ? {} : { CLAUDE_CONFIG_DIR: input.configDir }),
+  ...(input.configDir === undefined || input.configDirUnset === true
+    ? {}
+    : { CLAUDE_CONFIG_DIR: input.configDir }),
   // `run-agent` writes the agent's name as the terminal title, and Claude Code
   // then overwrites it with a description of whatever it is currently doing —
   // so a wall of panes ends up labelled by activity rather than by WHO, which
@@ -242,6 +244,7 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     args,
     cwd: input.cwd,
     env: envFor(input),
+    ...(input.configDirUnset === true ? { unsetEnv: ['CLAUDE_CONFIG_DIR'] } : {}),
     // Headless already delivers its turn on stdin, so a resume message needs no
     // extra flag here — it just displaces the brief, which on a resume would
     // restart the work instead of continuing it.
