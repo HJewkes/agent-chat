@@ -68,7 +68,20 @@ For each listed seat, in order, the tick:
   new claims carry `seat` and `namePrefix`.
 
 Seats share the tick's `maxAgents`, broker slots and per-repo worktree ceilings; an
-earlier seat's dispatches count against a later one. A seat whose files cannot be loaded,
+earlier seat's dispatches count against a later one. They share their pool too (CC-275):
+the pool reading does not move within a tick, so each dispatch planned on a pool, by any
+seat, is charged before the next gate at the pool's `dispatch_seven_day_points` and
+`dispatch_five_hour_points` (2 and 10 when the charter sets neither). The charge counts
+toward the five-hour ceiling, the seven-day line, `per_day_points` and `per_run_points`.
+A later seat's collision check also sees an earlier seat's dispatches this tick: the same
+task, or a slice whose `owns` overlap one it dispatched in the same repo, is refused as
+`claimed`. The charge covers new dispatches only, not the reviewer and successor spawns
+below.
+
+A queued slice from before the switch to seats mode has no `seat`, and seats mode
+dispatches only its own seats' slices, so it stays queued. Let such slices finish before
+switching, or set `seat` and `namePrefix` on the queued claims in the ledger to hand them
+to a seat. A seat whose files cannot be loaded,
 or whose scope cannot be scored, is skipped with a `seat <name> skipped: <why>` line and a
 `burndown_seat_skipped` event; the tick still advances every held claim and plans the
 other seats.

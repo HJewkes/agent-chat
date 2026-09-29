@@ -2,6 +2,7 @@ import { readAccountBudget } from '../budget.js'
 import { loadDoc } from '../seats/io.js'
 import { accountReading } from '../seats/watchdog.js'
 import { runStartAt, type PoolGateInput, type SevenDaySample } from './budget-gate.js'
+import { sameTickCollision, type SameTickClaim } from './collision.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
 import type { Ledger, SeatState } from './ledger.js'
 import type { Capacity, Dispatch, PlanInputs } from './plan.js'
@@ -130,7 +131,13 @@ function lessDispatched(capacity: Capacity | undefined, taken: readonly Dispatch
   }
 }
 
-function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, taken: readonly Dispatch[]) {
+/** What earlier seats planned this tick: their dispatches and the work each one's collision check saw. */
+interface Taken {
+  dispatch: Dispatch[]
+  claims: SameTickClaim[]
+}
+
+function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, taken: Taken) {
   const { charter, seats, defaults } = seat.policy
   const name = seat.dispatch.seat
   const weights = seatScope(charter, seats, name, deps.initiatives)
@@ -149,14 +156,16 @@ function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, taken: r
     today,
   )
   const tasks = new Map(slugs.map(slug => [slug, readTasks(root, slug)]))
+  const pool = seat.dispatch.pool.name
   const planned = planSeat({
     seat: seat.dispatch,
     rows,
     defaults,
     tasks,
     ledger: deps.ledger,
-    budget: seat.budget,
-    ...optional(deps, lessDispatched(deps.capacity, taken)),
+    budget: { ...seat.budget, dispatched: taken.dispatch.filter(d => d.account === pool).length },
+    collision: (repo, work) => sameTickCollision(taken.claims, repo, work) ?? deps.collision?.(repo, work),
+    ...optional(deps, lessDispatched(deps.capacity, taken.dispatch)),
   })
   return { planned, tasks }
 }
@@ -165,7 +174,6 @@ function optional(deps: SeatPlanDeps, capacity: Capacity | undefined) {
   return {
     ...(capacity === undefined ? {} : { capacity }),
     ...(deps.orphan === undefined ? {} : { orphan: deps.orphan }),
-    ...(deps.collision === undefined ? {} : { collision: deps.collision }),
     ...(deps.trust === undefined ? {} : { trust: deps.trust }),
   }
 }
@@ -174,27 +182,17 @@ function optional(deps: SeatPlanDeps, capacity: Capacity | undefined) {
 export const localDate = (now: Date): string =>
   [now.getFullYear(), now.getMonth() + 1, now.getDate()].map(n => String(n).padStart(2, '0')).join('-')
 
-const taskKey = (d: Pick<Dispatch, 'task' | 'slice'>): string => `${d.task}#${d.slice ?? ''}`
-
-/** Each loaded seat in config order, sharing the tick's ceilings; a seat whose planning throws is skipped. */
+/** Each loaded seat in config order, sharing the tick's ceilings, pool charges and claims; a seat whose planning throws is skipped. */
 export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root: string): SeatsPlan {
   const result: SeatsPlan = { dispatch: [], refusals: [], skipped: [], tasks: new Map() }
+  const claims: SameTickClaim[] = []
   for (const seat of seats) {
     try {
-      const { planned, tasks } = planLoaded(seat, deps, root, result.dispatch)
+      const { planned, tasks } = planLoaded(seat, deps, root, { dispatch: result.dispatch, claims })
       for (const [slug, list] of tasks) result.tasks.set(slug, list)
       result.refusals.push(...planned.refusals)
-      for (const d of planned.dispatch) {
-        const other = result.dispatch.find(x => taskKey(x) === taskKey(d))
-        if (other === undefined) result.dispatch.push(d)
-        else
-          result.refusals.push({
-            initiative: d.initiative,
-            task: d.task,
-            kind: 'claimed',
-            reason: `seat ${other.seat ?? '?'} dispatched it earlier this tick`,
-          })
-      }
+      result.dispatch.push(...planned.dispatch)
+      claims.push(...planned.claims)
     } catch (err) {
       result.skipped.push({ seat: seat.dispatch.seat, reason: message(err) })
     }
