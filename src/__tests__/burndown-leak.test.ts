@@ -1,8 +1,9 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { Runner } from '../agents/burndown/exec.js'
+import { run, type Runner } from '../agents/burndown/exec.js'
 import { leakCheck, type LeakDeps } from '../agents/burndown/leak-check.js'
 import { GIT_BIN } from '../agents/burndown/review-diff.js'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
@@ -184,6 +185,7 @@ describe('the tick leak check on a claimed PR', () => {
     expect(text).toContain(`${'a'.repeat(12)} src/a.ts:3 home-path`)
     expectNoEntry(text)
     expect(w.calls.filter(c => c.bin === GIT_BIN).map(c => c.args)).toEqual([
+      ['for-each-ref', '--format=%(refname)', 'refs/agent-chat/leak-scan/'],
       [
         'fetch',
         '--quiet',
@@ -241,6 +243,37 @@ describe('the tick leak check on a claimed PR', () => {
 
     expect(leakSends(w)).toHaveLength(1)
     expect(leakSends(w)[0]?.text).toContain('leak DM-1')
+  })
+})
+
+describe('the tick leak check on head repo and claim repo names', () => {
+  it.each([
+    ['a head repo differing in case', 'Example/Demo', PR],
+    ['a claim PR URL differing in case', 'example/demo', 'https://github.com/Example/Demo/pull/7'],
+  ])('still scans a PR from the base repo with %s', async (_name, headRepo, url) => {
+    const w = newWorld([pull({ title: NAME, headRepo, url })])
+
+    await tick(w, ledgerOf(claim({ pr: url })))
+
+    expect(leakSends(w)).toHaveLength(1)
+  })
+
+  it('does not let a same-named agent branch in another claimed repo clear a leak', async () => {
+    const elsewhere = 'https://github.com/example/other/pull/3'
+    const leaking = pull({ title: NAME })
+    const clean = pull({ number: 3, url: `${elsewhere}0`, headRepo: 'example/other' })
+    const w = newWorld([])
+    const byRepo: Runner = (bin, args, cwd) => {
+      if (bin !== 'gh') return exec(w)(bin, args, cwd)
+      const own = args[2]?.startsWith('repos/example/demo/') ? leaking : clean
+      return { status: 0, stdout: JSON.stringify(own) }
+    }
+    const claims = ledgerOf(claim(), claim({ taskId: 'DM-2', pr: elsewhere, spawned: ['st-dm-2'] }))
+
+    const after = await tick(w, claims, { exec: byRepo })
+
+    expect(after.claims[0]?.leak?.findings).toEqual(['title private-name'])
+    expect(leakSends(w)).toHaveLength(1)
   })
 })
 
@@ -470,5 +503,44 @@ describe('the tick leak check when it cannot read', () => {
 
     expect(leaks.lines).toEqual(['leak check skipped the branch of DM-1: no local checkout'])
     expect(leaks.ledger.claims[0]?.leak?.findings).toEqual(['title private-name'])
+  })
+})
+
+describe('the tick leak check sweep of stale scan refs', () => {
+  const git = (cwd: string, ...args: string[]): string =>
+    execFileSync('git', ['-c', 'user.name=Probe', '-c', 'user.email=probe@example.com', ...args], {
+      cwd,
+      encoding: 'utf8',
+      env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+    }).trim()
+
+  it('deletes refs a crashed scan left and moves no other ref', async () => {
+    git(checkout, 'init', '-q', '-b', 'main')
+    git(checkout, 'commit', '-q', '--allow-empty', '-m', 'first')
+    const sha = git(checkout, 'rev-parse', 'HEAD')
+    git(checkout, 'update-ref', 'refs/agent-chat/leak-scan/7/head', sha)
+    git(checkout, 'update-ref', 'refs/agent-chat/leak-scan/7/base', sha)
+    git(checkout, 'update-ref', 'refs/heads/agent-chat/keep', sha)
+    git(checkout, 'update-ref', 'refs/agent-chat/other/keep', sha)
+    const before = git(
+      checkout,
+      'for-each-ref',
+      '--format=%(refname)',
+      'refs/heads/',
+      'refs/agent-chat/other/',
+    )
+
+    await leakCheck(ledgerOf(claim()), {
+      exec: (bin, args, cwd) => (bin === 'gh' ? { status: 0, stdout: '' } : run(bin, args, cwd)),
+      log: () => undefined,
+      seats: ['seat-t'],
+      home: HOME,
+      denylist: DENYLIST,
+    })
+
+    expect(git(checkout, 'for-each-ref', '--format=%(refname)', 'refs/agent-chat/leak-scan/')).toBe('')
+    expect(
+      git(checkout, 'for-each-ref', '--format=%(refname)', 'refs/heads/', 'refs/agent-chat/other/'),
+    ).toBe(before)
   })
 })
