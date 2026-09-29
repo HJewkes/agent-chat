@@ -634,6 +634,26 @@ Options:
   --deadline <seconds>  give up and withdraw the prompt after this long (default: "1790")
   -h, --help            display help for command
 
+=== agent-chat leak-guard
+Usage: agent-chat leak-guard [options] [command]
+
+hooks Claude Code runs for the leak guard
+
+Options:
+  -h, --help      display help for command
+
+Commands:
+  pretool         deny a tool call that would bypass the leak scan or post a finding
+  help [command]  display help for command
+
+=== agent-chat leak-guard pretool
+Usage: agent-chat leak-guard pretool [options]
+
+deny a tool call that would bypass the leak scan or post a finding
+
+Options:
+  -h, --help  display help for command
+
 === agent-chat ps
 Usage: agent-chat ps [options]
 

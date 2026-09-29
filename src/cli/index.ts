@@ -233,6 +233,17 @@ function addHiddenCommands(program: Command): void {
       await permissionHook(options)
     })
 
+  // Run by Claude Code as every spawned agent's PreToolUse hook (CC-270), never by a person.
+  program
+    .command('leak-guard', { hidden: true })
+    .description('hooks Claude Code runs for the leak guard')
+    .command('pretool')
+    .description('deny a tool call that would bypass the leak scan or post a finding')
+    .action(async () => {
+      const { leakPretool } = await import('./verbs/leak-pretool.js')
+      await leakPretool()
+    })
+
   addVerb(program, debugPsVerb, { hidden: true })
   addVerb(program, debugHistoryVerb, { hidden: true })
   addVerb(program, debugLogVerb, { hidden: true })

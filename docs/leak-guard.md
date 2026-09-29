@@ -2,9 +2,9 @@
 
 agent-chat is a public repository, and a branch is public the moment it is pushed. The leak
 guard scans text before it leaves the machine and refuses when it finds private data. This page
-covers slices 1 and 2 of CC-265: the deny-list, the scanner, `agent-chat leak-scan` and the
-pre-push hook on every spawned agent. The PreToolUse guard, the burndown backstop and the owner
-override are later slices. The pre-push hook calls `titan-egress-scan` from
+covers slices 1, 2 and part of 4 of CC-265: the deny-list, the scanner, `agent-chat leak-scan`,
+the pre-push hook on every spawned agent and the PreToolUse bypass guard. The burndown backstop
+and a per-finding owner override are not built yet. The pre-push hook calls `titan-egress-scan` from
 `@titan-design/egress-scan`, not `agent-chat leak-scan`: egress-scan is the scanning engine going
 forward (CC-298), and this repository's scanner stays only until its remaining callers move.
 
@@ -151,4 +151,69 @@ The owner's escape hatch for an emergency is `git push` from their own shell, wh
 
 The hook alone does not stop an agent that tries to skip it. `git push --no-verify` skips every
 pre-push hook, and `git -c core.hooksPath=<dir> push` points git elsewhere, since command-line
-config overrides the environment. The PreToolUse bypass guard in a later slice (S4) denies both.
+config overrides the environment. The PreToolUse bypass guard below denies both.
+
+## The PreToolUse bypass guard
+
+Every spawned agent runs with a `--settings` file holding a PreToolUse hook,
+`agent-chat leak-guard pretool`, on `Bash`, `Edit`, `Write`, `MultiEdit` and `NotebookEdit`.
+A headless agent's file also holds its PermissionRequest hook. An interactive agent gets the
+PreToolUse hook only, and its `--settings` flag is added when the launch plan is written.
+
+**This guard is a speed bump, not a boundary.** It reads a command line with a small shell
+splitter and denies the ordinary spellings of a bypass. An agent that wants to get past it can,
+for example by writing a script file and running it. It exists so that an agent does not skip
+the scan by habit or by following a stale instruction. The pre-push hook and, once built, the
+burndown backstop are what catch a leak.
+
+It denies a Bash command when any simple command in it, after `env`, `command`, `exec`, `nohup`,
+`nice`, `timeout`, `if`/`then` and other prefixes are stripped, is one of these:
+
+| Denied                                                                                                 | Why                                               |
+| ------------------------------------------------------------------------------------------------------ | ------------------------------------------------- |
+| `git push` with `--no-verify`, or its abbreviations `--no-veri` and `--no-verif`, anywhere before `--` | skips the pre-push hook                           |
+| `git -c` or `--config-env` on `core.hooksPath` or any `alias.*` key                                    | command-line config beats the guard's environment |
+| a `GIT_CONFIG*` assignment, `export`, `export -n`, `unset`, `declare` or `env -u`                      | removes or overrides the guard's `core.hooksPath` |
+| `env -i` or `env -`                                                                                    | clears the environment, guard included            |
+| `git config` writing or unsetting `core.hooksPath`, or writing a value that holds `--no-verify`        | a hooks path or alias in shared repo config       |
+| any mention of the guard's hook directory or the private term list; an edit tool writing to either     | rewriting the hook or emptying the term list      |
+| `gh pr` or `gh issue` `create`, `edit`, `comment` or `review` whose title or body has a finding        | the text is public the moment it is posted        |
+| `gh api` whose `-f`, `-F` or `--input` values have a finding                                           | the same text by another route                    |
+
+The splitter looks inside `$(...)`, backticks, `sh -c`/`bash -c` strings, `eval`, `env -S` and a
+heredoc fed to a shell. `agent-chat gh-write -- <gh args>` is checked like `gh`. `git push -n` is
+`--dry-run`, which pushes nothing, so it is allowed. `git commit --no-verify` is allowed too:
+it skips only the repository's own commit hooks, and the push is still scanned.
+
+The PR pre-check runs egress-scan's rules on each line of the title, the body, a `--body-file`
+(read relative to the working directory, following `cd`) or a heredoc passed as `--body-file -`.
+It reads the private term list from the default path only, never from `TITAN_EGRESS_TERMS`, like
+the pre-push hook. A deny names `title line 1 private-term #3` or `body line 4 home-path` and never
+the matched text. It also denies when it cannot check: a body piped from another command, a body
+file it cannot read, or a missing or unreadable term list while `MISSING_TERMS_REFUSES` is set.
+
+A tool call the guard cannot parse is denied only when it mentions `git`, `gh` or `GIT_CONFIG`,
+so a bug in the guard cannot block every command an agent runs.
+
+Not covered, by design or by cost:
+
+- a script file (`bash push.sh`, `make push`, an npm script) or `xargs`, whose commands the guard
+  never sees;
+- a different `git` on `PATH`, `GIT_EXEC_PATH`, or `--exec-path`;
+- pushing without git at all, for example over the GitHub API with `curl`;
+- an alias that was already in git config before the agent started;
+- shell syntax the splitter misreads, such as `&>` or `case` patterns.
+
+## Owner override and its trust limit
+
+The owner's override today is a `git push` from their own shell. That shell carries no
+`GIT_CONFIG_*` variables, runs no guard hook and has no PreToolUse hook. There is no way yet to
+let one flagged line through for an agent. The plan's `agent-chat leak-allow` verb, with a
+fingerprint the pre-push scan skips, is on hold: egress-scan's findings carry no fingerprint,
+its only allow file is `.egress-allow` inside the repository, which an agent can write, and it
+never allows a `private-term` finding.
+
+The trust boundary is the OS account, not this guard. Any process running as the owner can edit
+the hook directory, the term list or a settings file, as it could forge any other local frame.
+The guard denies the ordinary routes to those files for agents. The pushed history and PR text
+remain the record of anything that got through.

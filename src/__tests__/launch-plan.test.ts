@@ -596,7 +596,7 @@ describe('the launch files', () => {
   it('round-trips the plan, so a resume needs no rebuild', () => {
     const home = tmpdir()
     process.env.AGENT_CHAT_HOME = home
-    const plan = buildLaunchPlan(input())
+    const plan = buildLaunchPlan(input({ hookSettingsPath: hookSettingsPath('ag000001') }))
 
     writeLaunchFiles(plan, buildMcpConfig(profile(), '/repo/dist/cli.js'))
 
@@ -834,15 +834,46 @@ describe('the PermissionRequest hook (CC-144)', () => {
     )
   })
 
-  it('writes the settings file owner-only beside the plan, only when the plan uses it', () => {
+  it('writes the settings file owner-only beside the plan, with the permission hook only for a print run', () => {
     process.env.AGENT_CHAT_HOME = tmpdir()
+    const read = (): string => fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')
     writeLaunchFiles(buildLaunchPlan(input({ surface: 'iterm-pane', hookSettingsPath: '/x' })), {})
-    expect(fs.existsSync(hookSettingsPath('ag000001'))).toBe(false)
+    expect(read()).not.toContain('PermissionRequest')
 
     writeLaunchFiles(buildLaunchPlan(input({ hookSettingsPath: hookSettingsPath('ag000001') })), {})
 
     expect(fs.statSync(hookSettingsPath('ag000001')).mode & 0o777).toBe(0o600)
-    expect(fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')).toContain('"timeout": 1800')
+    expect(read()).toContain('"timeout": 1800')
+  })
+})
+
+describe('the leak guard PreToolUse hook (CC-270)', () => {
+  it('goes to every agent, alongside the permission hook on a print run', () => {
+    for (const timeout of [undefined, 1800]) {
+      const settings = buildHookSettings('/Application Support/dist/cli.js', timeout) as {
+        hooks: { PreToolUse: { matcher: string; hooks: { command: string }[] }[] }
+      }
+      const [entry] = settings.hooks.PreToolUse
+
+      expect(entry?.matcher).toBe('Bash|Edit|Write|MultiEdit|NotebookEdit')
+      expect(entry?.hooks[0]?.command).toMatch(/'\/Application Support\/dist\/cli\.js' leak-guard pretool$/)
+    }
+  })
+
+  it('adds --settings to an interactive plan on disk, ahead of the prompt', () => {
+    process.env.AGENT_CHAT_HOME = tmpdir()
+    for (const surface of SURFACE_NAMES) {
+      writeLaunchFiles(
+        buildLaunchPlan(input({ surface, hookSettingsPath: hookSettingsPath('ag000001') })),
+        {},
+      )
+      const { args } = readLaunchPlan('ag000001')
+
+      expect(args.filter(a => a === '--settings')).toHaveLength(1)
+      expect(flag(args, '--settings')).toBe(hookSettingsPath('ag000001'))
+      if (args.includes('--')) expect(args.indexOf('--settings')).toBeLessThan(args.indexOf('--'))
+      expect(fs.readFileSync(hookSettingsPath('ag000001'), 'utf8')).toContain('leak-guard pretool')
+    }
   })
 })
 
