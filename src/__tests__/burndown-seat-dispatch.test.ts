@@ -121,6 +121,10 @@ describe('repoForTask', () => {
     expect(repoForTask(dispatch, 'init-alpha', ['product'])).toBe('/tmp/repos/alpha-app')
   })
 
+  it('ignores a tag of another key when choosing the first listed repo', () => {
+    expect(repoForTask(dispatch, 'init-alpha', ['kind:alpha-docs'])).toBe('/tmp/repos/alpha-app')
+  })
+
   it('uses the repo whose basename a repo tag names', () => {
     expect(repoForTask(dispatch, 'init-alpha', ['product', 'repo:alpha-docs'])).toBe('/tmp/repos/alpha-docs')
   })
