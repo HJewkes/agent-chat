@@ -1343,6 +1343,15 @@ export class SocketServer {
       case 'resume':
         void this.handleResume(conn, msg)
         return
+      case 'park':
+        void this.supervisor.park(msg.name).then(result =>
+          reply(conn, {
+            t: 'spawn_result',
+            ok: result.ok,
+            ...(result.reason === undefined ? {} : { reason: result.reason }),
+          }),
+        )
+        return
       case 'retire':
         void this.supervisor.retire(msg.name, msg.force === true).then(result =>
           reply(conn, {

@@ -57,6 +57,7 @@ import {
   type TranscriptVerdict,
 } from './resume-session.js'
 import { reattachWorktree, type WorktreeRecord } from './isolation/worktree.js'
+import { allocatedWorktree, parkBlocker, parkWorktree } from './isolation/park.js'
 import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { loginGap, readOutputTail } from './launch-output.js'
@@ -1669,6 +1670,33 @@ export class Supervisor implements TeleportHost {
     })
     this.finishRetired(identity.agentId, held)
     return { ok: true, ...(this.retireCaveat(name, entry !== undefined, reaped, tenancy?.warning) ?? {}) }
+  }
+
+  /**
+   * CC-282: remove an exited agent's clean, pushed worktree and keep its branch.
+   *
+   * Runs here rather than in the CLI so the occupancy check, the removal and the
+   * `isolation_parked` row happen in the process that also serialises spawns into
+   * that tree, and so the row lands in the log `agent resume` reads it back from.
+   */
+  async park(name: string): Promise<{ ok: boolean; reason?: string }> {
+    const identity = this.core.agents.byName(name)
+    if (!identity) return { ok: false, reason: `no agent named "${name}"` }
+    const target = allocatedWorktree(this.core.events.agentEvents(), identity.agentId)
+    const tracked = this.live.has(identity.agentId)
+    const blocked = parkBlocker(identity, tracked, target, this.core.agents.roster())
+    if (blocked !== undefined || target === undefined) return { ok: false, reason: blocked ?? 'no worktree' }
+    const parked = await parkWorktree(target)
+    if (!parked.ok) return parked
+    const { gitRoot, worktree, branch } = target
+    this.core.append({
+      kind: 'isolation_parked',
+      actor: name,
+      ref: identity.agentId,
+      body: '',
+      meta: { strategy: 'worktree', gitRoot, worktree, branch, head: parked.head },
+    })
+    return { ok: true, reason: `Parked ${worktree}; branch ${branch} kept at ${parked.head}.` }
   }
 
   /**

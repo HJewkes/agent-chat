@@ -483,6 +483,8 @@ Commands:
   ls [options]                                 agents, with lifecycle and presence
   spawn [options] <name> <profile> [brief...]  start a new agent
   retire [options] <name>                      release isolation, end the process, and free the name
+  park <name>                                  remove an exited agent's clean, pushed worktree and
+                                               keep its branch
   resume [options] <name>                      bring a stopped agent back on its own conversation
                                                (headless by default)
   worktrees [options]                          worktrees agent-chat is holding, and which nobody is
@@ -521,6 +523,14 @@ release isolation, end the process, and free the name
 
 Options:
   --force     discard uncommitted or unmerged work the isolation is holding
+  -h, --help  display help for command
+
+=== agent-chat agent park
+Usage: agent-chat agent park [options] <name>
+
+remove an exited agent's clean, pushed worktree and keep its branch
+
+Options:
   -h, --help  display help for command
 
 === agent-chat agent resume
