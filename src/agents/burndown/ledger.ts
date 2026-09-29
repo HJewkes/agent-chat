@@ -41,6 +41,8 @@ const Claim = z.object({
   slice: z.string().optional(),
   /** Slices of the same task that must reach `done` first. */
   dependsOn: z.array(z.string()).optional(),
+  /** The paths a planner's slice declares it touches; the collision check compares them to open PRs and file claims. */
+  owns: z.array(z.string()).optional(),
   /** The agent the claim is waiting on now. */
   agentName: z.string().optional(),
   /** Every agent spawned for this claim, oldest first; retired newest first. */

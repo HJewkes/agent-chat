@@ -11,6 +11,7 @@ import {
   burndownPlistPath,
   cliEntry,
 } from '../../paths.js'
+import { collisionCheck, type BrokerView } from '../../agents/burndown/collision.js'
 import { readLedger, withLedgerLock, writeLedger } from '../../agents/burndown/ledger.js'
 import { loadTickConfig } from '../../agents/burndown/source.js'
 import { tickFromDisk } from '../../agents/burndown/run-tick.js'
@@ -19,7 +20,7 @@ import { BrokerClient } from '../../client/broker-client.js'
 import { jobState, startJob, stopJob, systemLaunchctl, type JobControl } from '../../mirror/launchd.js'
 import { jobEnv, renderBurndownPlist } from '../../mirror/plist.js'
 import { addVerb, defineVerb, Report } from '../command.js'
-import { tickBroker } from '../burndown-broker.js'
+import { collisionView, tickBroker } from '../burndown-broker.js'
 
 /** How often launchd fires `burndown tick --once`; independent of any phase timeout. */
 const TICK_INTERVAL_SECONDS = 600
@@ -63,12 +64,29 @@ export const burndownPlanVerb = defineVerb({
   async run() {
     const now = new Date()
     try {
-      return { ok: true, lines: renderPlan(planFromDisk(now), now) }
+      const broker = await readCollisionView()
+      const planned = planFromDisk(now, undefined, ledger => collisionCheck(ledger, broker))
+      return { ok: true, lines: renderPlan(planned, now) }
     } catch (err) {
       return refused(err)
     }
   },
 })
+
+/** Undefined when no broker answers, which the collision check reports as a `claimed` refusal it could not rule out. */
+async function readCollisionView(): Promise<BrokerView | undefined> {
+  const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
+    autoStart: false,
+  })
+  try {
+    await client.connect()
+    return await collisionView(client)
+  } catch {
+    return undefined
+  } finally {
+    client.close()
+  }
+}
 
 export const burndownStatusVerb = defineVerb({
   name: 'burndown.status',

@@ -1,6 +1,8 @@
 import type { BrokerClient } from '../client/broker-client.js'
 import type { ServerMessage } from '../protocol.js'
 import type { TickBroker } from '../agents/burndown/run-tick.js'
+import type { BrokerView } from '../agents/burndown/collision.js'
+import { LIVE } from '../agents/burndown/observe.js'
 
 /** The tick's broker calls over one unregistered connection, which the broker treats as the human. */
 
@@ -52,3 +54,16 @@ const spawnReply = (res: Reply<'spawn_result'>): { ok: boolean; agentId?: string
   ...(res.agentId === undefined ? {} : { agentId: res.agentId }),
   ...(res.reason === undefined ? {} : { reason: res.reason }),
 })
+
+/** Live agent and session names and every `files` claim, for `burndown plan`'s collision check (CC-202). */
+export async function collisionView(client: BrokerClient): Promise<BrokerView> {
+  const roster = (await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>
+  const list = (await client.request({ t: 'list' }, 'list_result')) as Reply<'list_result'>
+  const agents = roster.agents.filter(a => LIVE.has(a.state)).map(a => a.name)
+  return {
+    names: [...new Set([...agents, ...list.sessions.map(s => s.name)])],
+    claims: (list.claims ?? [])
+      .filter(c => c.kind === 'files')
+      .map(c => ({ owner: c.owner, repo: c.repoPath ?? c.worktreePath, patterns: c.patterns })),
+  }
+}
