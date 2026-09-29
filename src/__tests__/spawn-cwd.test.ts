@@ -68,6 +68,18 @@ describe('the cwd policy a peer spawn has to pass', () => {
     )
   })
 
+  it('refuses the home directory itself when home sits under the tmp root', () => {
+    const tmp = fakeHome()
+    const home = dirUnder(tmp, 'home')
+
+    expect(checkSpawnCwd(home, { sessionRoots: [], homeDir: home, tmpDir: tmp })).toMatch(
+      /must be under your home directory/,
+    )
+    expect(
+      checkSpawnCwd(dirUnder(home, 'work'), { sessionRoots: [], homeDir: home, tmpDir: tmp }),
+    ).toBeUndefined()
+  })
+
   it('resolves through realpath, so .. and a symlink out of the workspace are caught', () => {
     const home = fakeHome()
     const outside = fakeHome()

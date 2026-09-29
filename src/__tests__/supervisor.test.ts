@@ -63,20 +63,13 @@ function workspace(): string {
   return dir
 }
 
-/**
- * A home directory the cwd policy really treats as home. When HOME sits under the
- * tmp root (a sandboxed run), the policy allows it as a tmp workspace, so the
- * tmp root is moved to a sibling directory too.
- */
+/** A home directory the cwd policy really treats as home, even when it sits under the tmp root. */
 function isolatedHome(): string {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-home-'))
   tmpDirs.push(base)
   const home = path.join(base, 'home')
-  const tmp = path.join(base, 'tmp')
   fs.mkdirSync(home)
-  fs.mkdirSync(tmp)
   vi.spyOn(os, 'homedir').mockReturnValue(home)
-  vi.spyOn(os, 'tmpdir').mockReturnValue(tmp)
   return home
 }
 
