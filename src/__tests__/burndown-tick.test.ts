@@ -952,4 +952,63 @@ describe('burndown tick collision check', () => {
     expect(fake.frames).toEqual([])
     expect(lines.join('\n')).toContain('refused demo DM-1 [claimed]: live agent hs-dm-1-by-hand carries DM-1')
   })
+
+  it('refuses a task whose claim finished this tick while its agent is still live', async () => {
+    initiative({ 'DM-1': task('DM-1') })
+    const merging: Claim = {
+      taskId: 'DM-1',
+      initiative: 'demo',
+      spawnedAt: NOON.toISOString(),
+      phase: 'awaiting-merge',
+      phaseAt: NOON.toISOString(),
+      agentName: 'bd-dm-1',
+      spawned: ['bd-dm-1'],
+      pr: 'https://example.test/demo/repo/pull/5',
+    }
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [merging] })
+    const merged = (args: string[]) =>
+      args[0] === 'pr'
+        ? { status: 0, stdout: JSON.stringify({ state: 'MERGED' }) }
+        : { status: 0, stdout: '' }
+    const fake = fakeBroker({
+      agents: [row('bd-dm-1', 'live')],
+      view: () => ({ names: ['bd-dm-1'], claims: [] }),
+    })
+
+    const lines = await tick(fake, false, () => {}, stubGh(merged))
+
+    expect(readLedger(burndownLedgerPath()).claims[0]?.phase).toBe('done')
+    expect(fake.frames).toEqual([])
+    expect(lines.join('\n')).toContain('refused demo DM-1 [claimed]: live agent bd-dm-1 carries DM-1')
+  })
+
+  it('logs a failed broker-view reader once per tick, not once per repo', async () => {
+    const other = secondRepo()
+    initiative({ 'DM-1': task('DM-1') })
+    initiative({ 'OT-1': task('OT-1') }, { slug: 'other', at: other, rank: 2 })
+    const logged: { event: string; detail: Record<string, unknown> }[] = []
+    const fake = fakeBroker({
+      view: () => {
+        throw new Error('broker gone')
+      },
+    })
+
+    await tick(fake, false, (event, detail) => logged.push({ event, detail }))
+
+    expect(logged.filter(l => l.detail.reader === 'broker-view')).toHaveLength(1)
+  })
+
+  it('logs each opted-in initiative with no repo as skipping the collision check', async () => {
+    write(
+      path.join(world, 'aw', 'norepo', 'brief.md'),
+      '---\ntitle: norepo\nstate: focused\nrank: 1\nprofile: agents\nautonomy:\n  mode: burndown\n  lanes: 1\n  accounts: [agents]\n  grants: []\n---\n# norepo\n',
+    )
+    const logged: { event: string; detail: Record<string, unknown> }[] = []
+
+    await tick(fakeBroker(), false, (event, detail) => logged.push({ event, detail }))
+
+    expect(logged.filter(l => l.event === 'burndown_collision_skipped')).toEqual([
+      { event: 'burndown_collision_skipped', detail: { initiative: 'norepo', reason: 'no repo' } },
+    ])
+  })
 })
