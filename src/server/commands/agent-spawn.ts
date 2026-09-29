@@ -29,7 +29,10 @@ const args = z.object({
     .enum(ISOLATION_NAMES, oneOf('isolation', ISOLATION_NAMES))
     .describe("Overrides the profile's isolation, e.g. worktree to keep it out of your checkout.")
     .optional(),
-  cwd: z.string().describe('Working directory. Defaults to yours.').optional(),
+  cwd: z
+    .string()
+    .describe('Working directory. Defaults to the worktree when one is given, otherwise to yours.')
+    .optional(),
   worktree: z
     .string()
     .describe(
