@@ -16,7 +16,7 @@ import {
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
-/** Every lifecycle row of an agent a seat spawned on 2026-09-29 before noon UTC, from events.db. */
+/** Every lifecycle row of the agents a seat spawned on 2026-09-29 before noon UTC, from events.db. */
 const ROWS = JSON.parse(
   fs.readFileSync(path.join(here, 'fixtures', 'watchdog-2026-09-29.json'), 'utf8'),
 ) as AgentEventRow[]
