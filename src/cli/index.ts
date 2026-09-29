@@ -135,6 +135,7 @@ function addAgentCommands(program: Command): void {
   agent
     .command('ls', { isDefault: true })
     .description('agents, with lifecycle and presence')
+    .option('--json', 'print one JSON array, one object per agent')
     .action(agents.agentLs)
   agent
     // The brief is OPTIONAL in argv only because `--brief-stdin` is the other
