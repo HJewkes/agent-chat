@@ -2,8 +2,9 @@
 
 agent-chat is a public repository, and a branch is public the moment it is pushed. The leak
 guard scans text before it leaves the machine and refuses when it finds private data. This page
-covers slice 1 of CC-265: the deny-list, the scanner and `agent-chat leak-scan`. The pre-push
-hook, the PreToolUse guard, the burndown backstop and the owner override are later slices.
+covers slices 1 and 2 of CC-265: the deny-list, the scanner, `agent-chat leak-scan` and the
+pre-push hook on every spawned agent. The PreToolUse guard, the burndown backstop and the owner
+override are later slices.
 
 ## The deny-list
 
@@ -82,3 +83,45 @@ wrong shape.
 ```sh
 agent-chat leak-scan --range origin/main..HEAD
 ```
+
+## The pre-push hook on every spawned agent
+
+Every agent the broker spawns carries `GIT_CONFIG_COUNT=1`, `GIT_CONFIG_KEY_0=core.hooksPath` and
+`GIT_CONFIG_VALUE_0=<agent-chat home>/git-hooks` in its environment. git reads these as
+command-line config, so every repository the agent pushes from uses the guard's hooks, and no
+repository's `.git/config` is written. A profile's `env` cannot set any `GIT_CONFIG_*` key. A
+human's own shell has none of these variables, so the owner's pushes are unaffected.
+
+The broker rewrites `git-hooks/` at each spawn. `pre-push` runs
+`agent-chat leak-scan --pre-push --remote=<name> --url=<url>` with git's ref lines on stdin, then
+runs the repository's own `pre-push` with the same arguments and stdin. The push is refused if
+either one fails, and the repository's hook runs even when the scan has already refused. Every
+other hook name is a shim that only runs the repository's hook of that name, so `pre-commit` or
+`commit-msg` hooks keep working. The repository's hook is found by reading `core.hooksPath` with
+the guard's variables removed, falling back to `$(git rev-parse --git-common-dir)/hooks`.
+
+For each pushed ref the scan covers the commits the remote does not have yet: those not reachable
+from the remote's tracking refs or from the sha the remote reports for that ref. A deleted ref
+pushes nothing and is not scanned.
+
+| Deny-list                  | Clean push                           | Findings, private remote | Findings, public or unknown remote |
+| -------------------------- | ------------------------------------ | ------------------------ | ---------------------------------- |
+| readable                   | allowed                              | warned, allowed          | refused                            |
+| missing or with no entries | allowed                              | warned, allowed          | refused (home-path only)           |
+| present but unreadable     | refused unless the remote is private | warned, allowed          | refused                            |
+
+A missing or empty deny-list prints one line naming the file and pointing here, and checks
+`home-path` only. That lets the hook ship before the owner writes the file. An unreadable one
+refuses, because a file that exists was meant to be enforced.
+
+Visibility comes from `gh api repos/<owner>/<repo> --jq .visibility` (REST, never GraphQL) and is
+cached for 24 hours in `repo-visibility.json` in the agent-chat home. `internal` counts as
+private. A failed lookup, an unexpected answer or a non-GitHub remote is unknown, which refuses
+on findings exactly as public does. Only known answers are cached, so a failed lookup is retried
+on the next push. Lookups happen only when there is something to refuse.
+
+A refusal prints each finding as `file:line  category` on stderr, and never the remote URL or a
+deny-list entry.
+
+The owner's escape hatch for an emergency is `git push` from their own shell, which carries no
+`GIT_CONFIG_*` variables and so runs no guard hook.

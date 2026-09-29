@@ -93,6 +93,12 @@ export const mirrorLogDir = (): string => path.join(os.homedir(), 'Library', 'Lo
 /** The owner's private leak-guard deny-list (CC-265), hand-edited, 0600, never in any repo. */
 export const denylistPath = (): string => path.join(home(), 'private-denylist.json')
 
+/** The `core.hooksPath` every spawned agent's git runs with; rewritten at each spawn (CC-268). */
+export const gitHooksDir = (): string => path.join(home(), 'git-hooks')
+
+/** Remote visibility answers for the pre-push guard, cached for a day. */
+export const visibilityCachePath = (): string => path.join(home(), 'repo-visibility.json')
+
 /** The burndown claim ledger: which task each tick-spawned agent holds, and in what phase. */
 export const burndownLedgerPath = (): string => path.join(home(), 'burndown.json')
 

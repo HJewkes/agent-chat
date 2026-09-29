@@ -601,6 +601,10 @@ Options:
   --range <from..to>  scan added lines, added file names and commit messages in this range
   --text-file <file>  scan every line of a file, such as a PR body
   --json              print one JSON object with the findings
+  --pre-push          run as git pre-push hook: ref lines on stdin, refuse on public or unknown
+                      remotes
+  --remote <name>     with --pre-push: the remote name git passes as $1
+  --url <url>         with --pre-push: the remote URL git passes as $2
   -h, --help          display help for command
 
 === agent-chat broker

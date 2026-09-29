@@ -62,7 +62,7 @@ import { SpawnRateBudget } from './spawn-rate.js'
 import { loginGap, readOutputTail } from './launch-output.js'
 import { isTrusted, trustGap } from './trust.js'
 import { itermSessionPresent } from './surfaces/iterm.js'
-import { cliEntry, home } from '../paths.js'
+import { cliEntry, gitHooksDir, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { ShadowLedger } from './ledger/shadow-ledger.js'
@@ -1088,6 +1088,7 @@ export class Supervisor implements TeleportHost {
       ...(fork ? { forkFrom: fork.path } : {}),
       ...(req.remoteControl ? { remoteControl: true } : {}),
       agentChatHome: home(),
+      gitHooksDir: gitHooksDir(),
       configDir: account.dir,
       ...(account.unset ? { configDirUnset: true } : {}),
     })
@@ -1927,6 +1928,7 @@ export class Supervisor implements TeleportHost {
       hookSettingsPath: hookSettingsPath(agent.agentId),
       ...(allocation.addDirs ? { extraDirs: allocation.addDirs } : {}),
       agentChatHome: home(),
+      gitHooksDir: gitHooksDir(),
       ...(agent.configDir ? { configDir: agent.configDir } : {}),
       ...(agent.configDirUnset ? { configDirUnset: true } : {}),
     })
@@ -2022,6 +2024,7 @@ export class Supervisor implements TeleportHost {
       hookSettingsPath: hookSettingsPath(agent.agentId),
       ...(allocation.addDirs ? { extraDirs: allocation.addDirs } : {}),
       agentChatHome: home(),
+      gitHooksDir: gitHooksDir(),
       // A mode switch is the SAME agent in a different window, so it keeps the
       // account it was spawned on. Without this the rebuilt plan would drop the
       // config dir and the agent would come back billing the broker's account,
@@ -2193,6 +2196,7 @@ export class Supervisor implements TeleportHost {
       ...(input.tags?.length ? { tags: input.tags } : {}),
       ...(input.subscriptions?.length ? { subscriptions: input.subscriptions } : {}),
       agentChatHome: home(),
+      gitHooksDir: gitHooksDir(),
       ...(input.configDir ? { configDir: input.configDir } : {}),
       ...(input.configDirUnset ? { configDirUnset: true } : {}),
       ...(input.remoteControl ? { remoteControl: true } : {}),

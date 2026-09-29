@@ -28,7 +28,7 @@ export const EXIT_FINDINGS = 1
 export const EXIT_CANNOT_PASS = 2
 
 /** Thrown with a fixed message: git's own stderr can quote file content, so it is never relayed. */
-class ScanError extends Error {}
+export class ScanError extends Error {}
 
 /** Two dots only: `a...b` means different commits to `git log` and `git diff`. */
 const isTwoDotRange = (r: string): boolean => /^[^-\s.][^\s]*\.\.[^-\s.][^\s]*$/.test(r) && !r.includes('...')
@@ -98,14 +98,20 @@ function parseMessages(raw: string): { sha: string; body: string }[] {
     })
 }
 
-export function gitRangeSource(cwd: string): RangeSource {
-  const log = (range: string, ...args: string[]): string[] => [
-    'log',
-    ...PER_COMMIT,
-    ...args,
-    '--end-of-options',
-    range,
-  ]
+/** Pseudo-options such as `--remotes` must come before `--end-of-options`; revisions after it. */
+export interface RevSpec {
+  options: string[]
+  revs: string[]
+}
+
+export function gitRangeSource(
+  cwd: string,
+  toRevs: (range: string) => RevSpec = range => ({ options: [], revs: [range] }),
+): RangeSource {
+  const log = (range: string, ...args: string[]): string[] => {
+    const { options, revs } = toRevs(range)
+    return ['log', ...PER_COMMIT, ...args, ...options, '--end-of-options', ...revs]
+  }
   return {
     diffLines: range => gitLines(log(range, '-p', '--text', '--unified=0', '--format=%x00%H'), cwd),
     addedPaths: async range =>
@@ -139,7 +145,7 @@ export interface LeakScanIo {
   cwd: string
 }
 
-const defaultIo = (): LeakScanIo => ({
+export const defaultIo = (): LeakScanIo => ({
   out: line => process.stdout.write(`${line}\n`),
   err: line => process.stderr.write(`${line}\n`),
   home: os.homedir(),

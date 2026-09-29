@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { resolvePermissionHookTimeout } from '../config.js'
+import { hooksDirOf, writeGitHooks } from '../leak-guard/hooks-dir.js'
 import { agentDir, cliEntry } from '../paths.js'
 import type { IsolationName } from '../protocol.js'
 import type { Allocation } from './isolation/index.js'
@@ -103,6 +104,8 @@ export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknow
   writePrivate(mcpConfigPath(plan.agentId), JSON.stringify(config, null, 2))
   writePrivate(planPath(plan.agentId), JSON.stringify(plan, null, 2))
   writePrivate(relaunchScriptPath(plan.agentId), relaunchScript(plan.agentId), SCRIPT_MODE)
+  const hooksDir = hooksDirOf(plan.env)
+  if (hooksDir !== undefined) writeGitHooks(hooksDir, process.execPath, cliEntry())
   if (plan.args.includes('--settings')) {
     const settings = buildHookSettings(cliEntry(), resolvePermissionHookTimeout())
     writePrivate(hookSettingsPath(plan.agentId), JSON.stringify(settings, null, 2))
