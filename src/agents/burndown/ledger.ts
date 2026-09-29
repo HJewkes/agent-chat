@@ -75,7 +75,7 @@ const Claim = z.object({
   /** Event kinds already delivered to the claim's seat, so a delivered event is never re-sent. */
   notified: z.array(z.string()).optional(),
   /** The claim's PR as the last leak check found it: redacted `file:line category` rows, never matched text (CC-269). */
-  leak: z.object({ url: z.string(), findings: z.array(z.string()) }).optional(),
+  leak: z.object({ repo: z.string(), url: z.string(), findings: z.array(z.string()) }).optional(),
 })
 export type Claim = z.infer<typeof Claim>
 

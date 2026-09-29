@@ -1190,6 +1190,7 @@ describe('burndown tick leak check', () => {
     title: 'Add a thing',
     body: '',
     branch: 'agent-chat/st-dm-1',
+    headRepo: 'example/demo',
     base: 'main',
     private: false,
     ...over,
@@ -1208,6 +1209,24 @@ describe('burndown tick leak check', () => {
     expect(fake.sends[0]?.text).toContain(`leak DM-1: ${PR}: body:1 private-name`)
     expect(fake.sends[0]?.text).not.toContain(PRIVATE)
     expect(readLedger(burndownLedgerPath()).claims[0]?.notified).toEqual(['dispatched', 'leak'])
+  })
+
+  it('scans the pushed branch through private refs, leaving origin/* and no scan refs behind', async () => {
+    const worktree = claimWithPr()
+    write(path.join(worktree, 'notes.md'), `see ${PRIVATE}\n`)
+    git(worktree, 'add', 'notes.md')
+    git(worktree, 'commit', '-q', '-m', 'notes')
+    git(worktree, 'push', '-q', 'origin', 'agent-chat/st-dm-1')
+    git(repo(), 'update-ref', '-d', 'refs/remotes/origin/agent-chat/st-dm-1')
+    const refsBefore = git(repo(), 'for-each-ref', '--format=%(refname) %(objectname)')
+    const fake = fakeBroker({ agents: [row('st-dm-1', 'live', worktree)] })
+
+    await tick(fake, false, () => {}, pulls(openPr()))
+
+    expect(fake.sends).toHaveLength(1)
+    expect(fake.sends[0]?.text).toMatch(/leak DM-1: .*: [0-9a-f]{12} notes\.md:1 private-name/)
+    expect(fake.sends[0]?.text).not.toContain(PRIVATE)
+    expect(git(repo(), 'for-each-ref', '--format=%(refname) %(objectname)')).toBe(refsBefore)
   })
 
   it('files one human-queue item for an unclaimed agent PR', async () => {
