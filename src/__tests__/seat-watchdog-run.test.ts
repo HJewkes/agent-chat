@@ -32,7 +32,7 @@ pools:
   claude:  {config_dir: /Users/o/.claude, human_uses: true, reserve_seven_day: 35, ceiling_five_hour: 70, per_day_points: 13}
 ---
 `
-const SEAT = '---\nprefix: hs\npool: claude\nspend:\n  per_run_points: 6\n  per_day_points: 10\n---\n'
+const SEAT = '---\nprefix: sa\npool: claude\nspend:\n  per_run_points: 6\n  per_day_points: 10\n---\n'
 
 const budget = (fiveHour: number, sevenDay = 19): BudgetRead => ({
   found: true,
