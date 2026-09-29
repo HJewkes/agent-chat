@@ -3,7 +3,7 @@ import path from 'node:path'
 import { home } from '../../paths.js'
 import { resolveClaudeBin } from '../claude-bin.js'
 import {
-  accountConfigPath,
+  claudeConfigPath,
   hasTrustEntry,
   plannedWorktreeTrustKeys,
   TRUST_RULE_CLI_VERSION,
@@ -43,7 +43,7 @@ export function trustRefusal(
     return `installed Claude Code ${cliVersion} differs from ${TRUST_RULE_CLI_VERSION}, the release whose trust rule this gate reproduces`
   const keys = plannedWorktreeTrustKeys(repo, cwd)
   if (keys === undefined) return `${repo} is not inside a git repository, so no worktree can be cut there`
-  const file = accountConfigPath(configDir)
+  const file = claudeConfigPath(configDir)
   const trusted = hasTrustEntry(keys, file)
   if (trusted === true) return undefined
   if (trusted === undefined) return `cannot read ${file}, so trust for ${cwd} is unknown`
