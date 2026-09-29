@@ -33,7 +33,7 @@ export const agentList = defineTool({
       'agents_result',
     )) as Extract<ServerMessage, { t: 'agents_result' }>
     const agents = filterRoster(res.agents, {
-      ...(mine === true ? { mine: callerName({ AGENT_CHAT_NAME: ctx.registeredName ?? undefined }) } : {}),
+      ...(mine === true ? { spawner: callerName({ AGENT_CHAT_NAME: ctx.registeredName ?? undefined }) } : {}),
       ...(prefix === undefined ? {} : { prefix }),
     })
     if (agents.length === 0) return 'No agents.'

@@ -14,6 +14,7 @@ export const agentBudgetVerb = defineVerb({
   args: z.object({
     name: z.string().optional(),
     mine: z.boolean().optional(),
+    spawner: z.string().optional(),
     prefix: z.string().optional(),
   }),
   result: Report,
@@ -21,12 +22,14 @@ export const agentBudgetVerb = defineVerb({
     positional: ['name'],
     options: {
       mine: { long: '--mine', description: 'only agents you spawned (needs a registered session name)' },
+      spawner: { long: '--spawner <name>', description: 'only agents spawned by <name>' },
       prefix: { long: '--prefix <p>', description: 'only agents whose name starts with <p>' },
     },
   },
-  async run({ name, mine, prefix }) {
+  async run({ name, mine, spawner, prefix }) {
     return agentBudget(name, {
       ...(mine === undefined ? {} : { mine }),
+      ...(spawner === undefined ? {} : { spawner }),
       ...(prefix === undefined ? {} : { prefix }),
     })
   },

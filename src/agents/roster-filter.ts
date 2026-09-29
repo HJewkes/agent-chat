@@ -1,15 +1,15 @@
 import type { AgentIdentity } from '../protocol.js'
 
 export interface RosterFilter {
-  /** The caller's registered name; keeps only agents it spawned. */
-  mine?: string
+  /** Keeps only agents spawned by this name; a successor sharing the name counts. */
+  spawner?: string
   prefix?: string
 }
 
 export function filterRoster(agents: AgentIdentity[], filter: RosterFilter): AgentIdentity[] {
   return agents.filter(
     a =>
-      (filter.mine === undefined || a.spawnedBy === filter.mine) &&
+      (filter.spawner === undefined || a.spawnedBy === filter.spawner) &&
       (filter.prefix === undefined || a.name.startsWith(filter.prefix)),
   )
 }
@@ -19,8 +19,8 @@ export function callerName(env: NodeJS.ProcessEnv = process.env): string {
   const name = env.AGENT_CHAT_NAME
   if (!name) {
     throw new Error(
-      '--mine needs a registered session name (AGENT_CHAT_NAME), and this shell has none. ' +
-        'Use --prefix <p> instead, or run it from an agent session.',
+      '--mine needs AGENT_CHAT_NAME, which only spawned agents have, and this shell has none. ' +
+        'Use --spawner <your registered name> instead.',
     )
   }
   return name

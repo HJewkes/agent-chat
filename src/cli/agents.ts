@@ -17,7 +17,7 @@ import { fail, withBroker } from './client.js'
  * query over the log and only presence depends on a socket being up.
  */
 export async function agentLs(
-  options: { json?: boolean; mine?: boolean; prefix?: string } = {},
+  options: { json?: boolean; mine?: boolean; spawner?: string; prefix?: string } = {},
 ): Promise<void> {
   const filter = rosterFilter(options)
   const [all, sessions] = await withBroker(async b => {
@@ -67,11 +67,12 @@ export async function agentLs(
   }
 }
 
-/** `--mine` resolves the caller or exits; printing everything instead would defeat the flag. */
-function rosterFilter(options: { mine?: boolean; prefix?: string }): RosterFilter {
+/** `--spawner` names the spawner outright; `--mine` resolves the caller or exits; printing everything instead would defeat the flag. */
+function rosterFilter(options: { mine?: boolean; spawner?: string; prefix?: string }): RosterFilter {
   try {
+    const spawner = options.spawner ?? (options.mine === true ? callerName() : undefined)
     return {
-      ...(options.mine === true ? { mine: callerName() } : {}),
+      ...(spawner === undefined ? {} : { spawner }),
       ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
     }
   } catch (err) {
@@ -305,7 +306,7 @@ export async function teleportAbort(name: string): Promise<Report> {
  */
 export async function agentBudget(
   name?: string,
-  options: { mine?: boolean; prefix?: string } = {},
+  options: { mine?: boolean; spawner?: string; prefix?: string } = {},
 ): Promise<Report> {
   const filter = rosterFilter(options)
   const all = await withBroker(async b => {

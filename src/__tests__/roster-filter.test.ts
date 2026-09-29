@@ -35,17 +35,19 @@ const agent = (name: string, spawnedBy: string): AgentIdentity => ({
   generation: 1,
 })
 
-// Ten agents across three spawners; "boss" owns three, two of them under the "cc-" prefix.
+// Eleven agents across three spawners; "boss" owns three, two of them under the "cc-" prefix.
 const TEN = [
   ...['cc-a', 'cc-b', 'x-c'].map(n => agent(n, 'boss')),
   ...['cc-d', 'y-e', 'y-f', 'y-g'].map(n => agent(n, 'other')),
   ...['z-h', 'z-i', 'cc-j'].map(n => agent(n, 'human')),
+  // Contains the prefix without starting with it: a substring match would wrongly keep it.
+  agent('old-cc-k', 'human'),
 ]
 const names = (agents: AgentIdentity[]) => agents.map(a => a.name)
 
 describe('filterRoster', () => {
-  it('keeps only the three agents the caller spawned out of ten', () => {
-    expect(names(filterRoster(TEN, { mine: 'boss' }))).toEqual(['cc-a', 'cc-b', 'x-c'])
+  it('keeps only the three agents the caller spawned out of eleven', () => {
+    expect(names(filterRoster(TEN, { spawner: 'boss' }))).toEqual(['cc-a', 'cc-b', 'x-c'])
   })
 
   it('keeps only agents whose name starts with the prefix', () => {
@@ -53,17 +55,24 @@ describe('filterRoster', () => {
   })
 
   it('combines mine and prefix', () => {
-    expect(names(filterRoster(TEN, { mine: 'boss', prefix: 'cc-' }))).toEqual(['cc-a', 'cc-b'])
+    expect(names(filterRoster(TEN, { spawner: 'boss', prefix: 'cc-' }))).toEqual(['cc-a', 'cc-b'])
+  })
+
+  it('counts an agent spawned by a predecessor sharing the callers name as the callers', () => {
+    const predecessor = { ...agent('boss', 'human'), state: 'retired' as const }
+    const successor = agent('boss', 'human')
+    const child = agent('child', 'boss')
+    expect(names(filterRoster([predecessor, successor, child], { spawner: 'boss' }))).toEqual(['child'])
   })
 
   it('returns everything with no filter', () => {
-    expect(filterRoster(TEN, {})).toHaveLength(10)
+    expect(filterRoster(TEN, {})).toHaveLength(11)
   })
 })
 
 describe('callerName', () => {
-  it('fails clearly when the shell has no registered session name', () => {
-    expect(() => callerName({})).toThrow(/--mine needs a registered session name/)
+  it('fails clearly, pointing at --spawner, when the shell has no session name', () => {
+    expect(() => callerName({})).toThrow(/--spawner <your registered name>/)
   })
 })
 
@@ -86,6 +95,22 @@ describe('agent ls / budget filters', () => {
     expect(JSON.parse(logs.join('\n')).map((r: { name: string }) => r.name)).toEqual(['cc-a', 'cc-b', 'x-c'])
   })
 
+  it('ls --spawner works from a shell with no AGENT_CHAT_NAME', async () => {
+    vi.stubEnv('AGENT_CHAT_NAME', '')
+    await run('ls', '--spawner', 'other', '--json')
+    expect(JSON.parse(logs.join('\n')).map((r: { name: string }) => r.name)).toEqual([
+      'cc-d',
+      'y-e',
+      'y-f',
+      'y-g',
+    ])
+  })
+
+  it('ls --spawner combines with --prefix', async () => {
+    await run('ls', '--spawner', 'human', '--prefix', 'cc-', '--json')
+    expect(JSON.parse(logs.join('\n')).map((r: { name: string }) => r.name)).toEqual(['cc-j'])
+  })
+
   it('ls --prefix --json prints only matching names', async () => {
     await run('ls', '--prefix', 'y-', '--json')
     expect(JSON.parse(logs.join('\n')).map((r: { name: string }) => r.name)).toEqual(['y-e', 'y-f', 'y-g'])
@@ -99,8 +124,15 @@ describe('agent ls / budget filters', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     await expect(run('ls', '--mine')).rejects.toThrow('exit')
     expect(exit).toHaveBeenCalledWith(1)
-    expect(err.mock.calls.join('\n')).toMatch(/--mine needs a registered session name/)
+    expect(err.mock.calls.join('\n')).toMatch(/--spawner <your registered name>/)
     expect(logs).toEqual([])
+  })
+
+  it('budget --spawner reports only that spawners agents', async () => {
+    const { agentBudget } = await import('../cli/agents.js')
+    const report = await agentBudget(undefined, { spawner: 'boss' })
+    expect(report.lines).toHaveLength(3)
+    expect(report.lines.join('\n')).not.toContain('y-e')
   })
 
   it('budget --mine reports only the callers agents', async () => {
@@ -131,6 +163,6 @@ describe('agent_list tool filters', () => {
   })
 
   it('mine refuses when the session holds no name', async () => {
-    await expect(agentList.run({ mine: true }, ctx(null))).rejects.toThrow(/registered session name/)
+    await expect(agentList.run({ mine: true }, ctx(null))).rejects.toThrow(/--mine needs AGENT_CHAT_NAME/)
   })
 })

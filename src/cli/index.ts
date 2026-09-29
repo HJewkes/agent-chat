@@ -151,6 +151,7 @@ function addAgentCommands(program: Command): void {
     .description('agents, with lifecycle and presence')
     .option('--json', 'print one JSON array, one object per agent')
     .option('--mine', 'only agents you spawned (needs a registered session name)')
+    .option('--spawner <name>', 'only agents spawned by <name>')
     .option('--prefix <p>', 'only agents whose name starts with <p>')
     .action(agents.agentLs)
   agent
