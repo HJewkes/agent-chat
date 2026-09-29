@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
@@ -248,6 +249,16 @@ describe('runWatchdog', () => {
     h.ownerMessages.push({ ts: h.now(), body: 'hjewkes-surplus: restart done' })
     expect(await runs(h, 2)).toBe(1)
   })
+
+  it('holds every seat when events.db cannot be read, since a restart window cannot be ruled out', async () => {
+    const h = harness(IDLE)
+    h.deps.ownerMessages = () => undefined
+    expect(await runs(h, 3)).toBe(0)
+    const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+    expect(out[0]).toBe(
+      'hjewkes-surplus: skip: held: events.db unreadable, so a restart window cannot be ruled out',
+    )
+  })
 })
 
 describe('wakeSeat', () => {
@@ -382,6 +393,31 @@ describe('readOwnerMessages', () => {
         { ts: 8, body: 'restart done' },
       ])
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("waits out another process's write lock instead of failing", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-seat-watchdog-db-'))
+    const file = path.join(dir, 'events.db')
+    const db = new DatabaseSync(file)
+    db.exec(
+      'CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, kind TEXT, actor TEXT, body TEXT)',
+    )
+    db.close()
+    const holder = spawn(process.execPath, [
+      '-e',
+      `const { DatabaseSync } = require('node:sqlite')
+       const db = new DatabaseSync(${JSON.stringify(file)})
+       db.exec('BEGIN EXCLUSIVE')
+       process.stdout.write('locked\\n')
+       setTimeout(() => { db.exec('COMMIT'); db.close() }, 400)`,
+    ])
+    try {
+      await new Promise<void>(resolve => holder.stdout.once('data', () => resolve()))
+      expect(readOwnerMessages(file, 'owner', 0)).toEqual([])
+    } finally {
+      holder.kill()
       fs.rmSync(dir, { recursive: true, force: true })
     }
   })

@@ -138,7 +138,7 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
   DatabaseSync: new (path: string, options?: { timeout?: number }) => DatabaseSyncType
 }
 
-const BUSY_TIMEOUT_MS = 5_000
+export const BUSY_TIMEOUT_MS = 5_000
 
 export const newMsgId = (): string => randomUUID().slice(0, 8)
 

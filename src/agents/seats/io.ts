@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
 import path from 'node:path'
+import { BUSY_TIMEOUT_MS } from '../../broker/event-log.js'
 import type { AgentEventRow } from '../../broker/event-store.js'
 import { home } from '../../paths.js'
 import type { EventKind } from '../../protocol.js'
@@ -13,8 +14,12 @@ import type { SeatState } from './watchdog.js'
 /** The watchdog's disk: autonomy files, the scorer, its own state, seat logs and events.db (read-only). */
 
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
-  DatabaseSync: new (path: string, options?: { readOnly?: boolean }) => DatabaseSyncType
+  DatabaseSync: new (path: string, options?: { readOnly?: boolean; timeout?: number }) => DatabaseSyncType
 }
+
+/** Read-only and never migrated; waits out the broker's write lock like the broker's own connection does. */
+const openEvents = (dbPath: string): DatabaseSyncType =>
+  new DatabaseSync(dbPath, { readOnly: true, timeout: BUSY_TIMEOUT_MS })
 
 export const defaultAutonomyRoot = (): string =>
   path.join(activeWorkRoot(), 'claude-channels', 'sources', 'autonomy')
@@ -126,9 +131,9 @@ const toAgentRow = (row: Row): AgentEventRow => ({
   meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
 })
 
-/** Every agent lifecycle row before `untilMs`, in log order. Opened read-only; never migrates. */
+/** Every agent lifecycle row before `untilMs`, in log order. */
 export function readAgentEvents(dbPath: string, untilMs: number): AgentEventRow[] {
-  const db = new DatabaseSync(dbPath, { readOnly: true })
+  const db = openEvents(dbPath)
   try {
     const marks = AGENT_KINDS.map(() => '?').join(',')
     const rows = db
@@ -140,9 +145,9 @@ export function readAgentEvents(dbPath: string, untilMs: number): AgentEventRow[
   }
 }
 
-/** The owner seat's messages since `sinceMs` that mention a restart. Opened read-only. */
+/** The owner seat's messages since `sinceMs` that mention a restart. Throws when events.db cannot be read. */
 export function readOwnerMessages(dbPath: string, owner: string, sinceMs: number): OwnerMessage[] {
-  const db = new DatabaseSync(dbPath, { readOnly: true })
+  const db = openEvents(dbPath)
   try {
     const rows = db
       .prepare(

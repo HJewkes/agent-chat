@@ -78,7 +78,7 @@ export async function wakeSeat(
   return res.ok ? { ok: true, detail: 'resumed' } : { ok: false, detail: res.reason ?? 'resume refused' }
 }
 
-/** Undefined when events.db cannot be opened, so the caller says it could not see a restart window. */
+/** Undefined when events.db cannot be read, so the caller holds every seat rather than risk a restart window. */
 function ownerMessages(owner: string, sinceMs: number): OwnerMessage[] | undefined {
   try {
     return readOwnerMessages(path.join(home(), 'events.db'), owner, sinceMs)

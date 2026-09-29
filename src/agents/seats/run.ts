@@ -52,7 +52,7 @@ export interface WatchdogDeps {
   /** The seat's log for the local day of `at`. */
   readSeatLog: (seat: string, at: Date) => string | undefined
   readBudget: (configDir: string, nowMs: number) => BudgetRead
-  /** The owner seat's restart messages since `sinceMs`; undefined when events.db cannot be read. */
+  /** The owner seat's restart messages since `sinceMs`; undefined when events.db cannot be read, which holds every seat. */
   ownerMessages: (owner: string, sinceMs: number) => OwnerMessage[] | undefined
   roster: () => Promise<Roster>
   eligible: (seat: string) => number | undefined
@@ -96,7 +96,8 @@ function openRestartWindow(deps: WatchdogDeps, charter: string, now: Date): stri
   const owner = charterOwnerSeat(charter)
   if (owner === undefined) return undefined
   const messages = deps.ownerMessages(owner, now.getTime() - RESTART_WINDOW_MAX_MS)
-  return restartWindow(messages ?? [], now.getTime())
+  if (messages === undefined) return 'events.db unreadable, so a restart window cannot be ruled out'
+  return restartWindow(messages, now.getTime())
 }
 
 /** Logs are per local day, so just after midnight the seat's newest line is in yesterday's file. */
