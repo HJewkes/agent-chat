@@ -2144,6 +2144,16 @@ describe('a visible spawn still starting at the attach window', () => {
     expect(result.reason).not.toMatch(/trust/i)
   })
 
+  it('names the missing login when only the /login instruction is printed', async () => {
+    const configDir = path.join(workspace(), 'account')
+    fs.mkdirSync(configDir)
+    const sup = headlessExitingWith('Please run /login\n', configDir)
+
+    const result = await sup.spawn(spawnReq({ configDir }))
+
+    expect(result.reason).toMatch(/not logged in/)
+  })
+
   it('still gives trust advice when claude exits without a login complaint in an untrusted folder', async () => {
     const configDir = path.join(workspace(), 'account')
     fs.mkdirSync(configDir)

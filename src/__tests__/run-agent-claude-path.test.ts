@@ -108,4 +108,29 @@ describe('run-agent keeping the stderr tail of a headless claude (CC-161)', () =
 
     expect(fs.existsSync(tailFile())).toBe(false)
   })
+
+  it("exits promptly when a grandchild keeps holding claude's stderr", () => {
+    fs.writeFileSync(
+      fakeClaude,
+      "require('node:child_process').spawn('sleep', ['4'], { stdio: ['ignore', 'ignore', 'inherit'], detached: true }).unref(); process.stderr.write('Not logged in\\n'); process.exitCode = 3\n",
+    )
+    writePlan('agt-test', {}, 'the brief')
+
+    const started = Date.now()
+    const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
+
+    expect(Date.now() - started).toBeLessThan(2500)
+    expect(result.status).toBe(3)
+    expect(fs.readFileSync(tailFile(), 'utf8')).toContain('Not logged in')
+  })
+
+  it('discards a tail left by an earlier launch of the same agent', () => {
+    fs.mkdirSync(path.dirname(tailFile()), { recursive: true })
+    fs.writeFileSync(tailFile(), 'Not logged in\n')
+    writePlan('agt-test', {}, 'the brief')
+
+    runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
+
+    expect(fs.existsSync(tailFile())).toBe(false)
+  })
 })

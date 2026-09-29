@@ -33,6 +33,11 @@ export function writeOutputTail(agentId: string, text: string): void {
   fs.writeFileSync(outputTailPath(agentId), text, { mode: 0o600 })
 }
 
+/** Resume reuses the agent dir, so a tail from an earlier launch must not outlive it. */
+export function clearOutputTail(agentId: string): void {
+  fs.rmSync(outputTailPath(agentId), { force: true })
+}
+
 export function readOutputTail(agentId: string): string | undefined {
   try {
     return fs.readFileSync(outputTailPath(agentId), 'utf8')
