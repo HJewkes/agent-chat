@@ -69,7 +69,14 @@ its name: `agent_resume <name>` (CLI `agent-chat agent resume <name>`) relaunche
 `--resume`, with an optional `message` as its next turn. A retired agent gave its name up, so
 it comes back as a new agent: `agent_list include_retired` shows its session id, and
 `agent_spawn resume_session=<id>` continues it, provided the transcript is under the same account
-and cwd. Both refuse when the transcript is gone, and both say whether it was found.
+and cwd. Both refuse when the transcript is gone, and both say whether it was found. When the
+agent ran in a worktree agent-chat created and that worktree has since been removed (retire
+always removes it), both re-create it at its old path first (CC-140), because `claude --resume`
+only looks under the project dir of the cwd it starts in. The re-attach counts against the
+worktree budget like a spawn. It takes the local branch if one is left, then `origin/<branch>`,
+and otherwise cuts a fresh branch of the same name from origin's default branch with a warning,
+which is the usual case once a squash merge has deleted the branch. For the spawn route pass
+`isolation="worktree"` and the repository as `cwd`.
 
 ---
 

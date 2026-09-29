@@ -47,12 +47,16 @@ import { configDir, findTranscript } from './transcript.js'
 import { resolvePredecessor, type PredecessorResult } from './predecessor.js'
 import {
   checkResumeSession,
+  goneWorktree,
   identityTranscript,
   missingAgent,
   RESUMED_BRIEF,
   resumeBlocker,
+  retiredWorktree,
   type TranscriptVerdict,
 } from './resume-session.js'
+import { reattachWorktree, type WorktreeRecord } from './isolation/worktree.js'
+import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { loginGap, readOutputTail } from './launch-output.js'
 import { isTrusted, trustGap } from './trust.js'
@@ -193,13 +197,20 @@ type AttachVerdict =
  * What `spawn` worked out before committing a slot, handed to `launch` as one
  * noun rather than three trailing optionals.
  */
+/** CC-126: an existing conversation to continue; CC-140: with the removed worktree it ran in. */
+interface ResumedSession {
+  sessionId: string
+  path: string
+  reattach?: WorktreeRecord
+}
+
 interface Resolved {
   /** CC-100: the account, already validated. Never absent — there is always an answer. */
   account: Extract<ConfigDirResolution, { dir: string }>
   briefing?: { text: string; slug: string }
   fork?: { path: string; sessionId: string }
   /** CC-126: an existing conversation to continue, its transcript already checked. */
-  resumed?: { sessionId: string; path: string }
+  resumed?: ResumedSession
   /** CC-133: the rendered section on the agent this one takes over from. */
   predecessor?: string
   /** CC-118: the shadow execution this launch belongs to, when the ledger is on. */
@@ -932,7 +943,7 @@ export class Supervisor implements TeleportHost {
     })
     if ('error' in account) return this.refuse(req, account.error)
     if (account.warning !== undefined) warnings.push(account.warning)
-    const resumed = this.resumeSource(req, isolationName, cwd, account.dir)
+    const resumed = await this.resumeSource(req, isolationName, cwd, account.dir)
     if (resumed !== undefined && 'error' in resumed) return this.refuse(req, resumed.error)
     const predecessor = req.predecessor === undefined ? undefined : this.predecessorFor(req.predecessor, req)
     if (predecessor !== undefined && 'error' in predecessor) return this.refuse(req, predecessor.error)
@@ -972,7 +983,9 @@ export class Supervisor implements TeleportHost {
     resolved: Resolved,
   ): Promise<SpawnOutcome> {
     const { briefing, fork, account, resumed, predecessor } = resolved
-    const allocation = await resolveIsolation([isolationName]).allocate(ctx)
+    const allocation = resumed?.reattach
+      ? await reattachWorktree(resumed.reattach)
+      : await resolveIsolation([isolationName]).allocate(ctx)
     warnings.push(...(allocation.warnings ?? []))
     this.core.append({
       kind: 'isolation_allocated',
@@ -1126,22 +1139,47 @@ export class Supervisor implements TeleportHost {
   }
 
   /** CC-126: the checked transcript a `resume_session` spawn continues, or why it cannot. */
-  private resumeSource(
+  private async resumeSource(
     req: SpawnRequest,
     isolation: IsolationName,
     cwd: string,
     configDir: string,
-  ): { sessionId: string; path: string } | { error: string } | undefined {
+  ): Promise<ResumedSession | { error: string } | undefined> {
     if (req.resumeSession === undefined) return undefined
+    const reattach =
+      isolation === 'worktree' ? await this.reattachFor(req.resumeSession, req.worktree, cwd) : undefined
+    if (reattach !== undefined && 'error' in reattach) return reattach
     const checked = checkResumeSession({
       resumeSession: req.resumeSession,
       ...(req.inherit === undefined ? {} : { inherit: req.inherit }),
       ...(req.worktree === undefined ? {} : { worktree: req.worktree }),
+      ...(reattach === undefined ? {} : { reattach }),
       isolation,
       cwd,
       configDir,
     })
-    return 'error' in checked ? checked : { sessionId: req.resumeSession, path: checked.path }
+    if ('error' in checked) return checked
+    return { sessionId: req.resumeSession, path: checked.path, ...(reattach ? { reattach } : {}) }
+  }
+
+  /** CC-140: a retired agent's removed worktree, unless the caller named a different one or another repository. */
+  private async reattachFor(
+    sessionId: string,
+    worktree: string | undefined,
+    cwd: string,
+  ): Promise<WorktreeRecord | { error: string } | undefined> {
+    const retired = this.core.agents.roster({ includeRetired: true })
+    const gone = retiredWorktree(retired, this.core.events.agentEvents(), sessionId)
+    if (gone === undefined || (worktree !== undefined && path.resolve(worktree) !== gone.worktree))
+      return undefined
+    const root = await findGitRoot(cwd)
+    if (root === null || canonicalPath(root) !== canonicalPath(gone.gitRoot))
+      return {
+        error:
+          `session ${sessionId} ran in a worktree of ${gone.gitRoot}, but cwd ${cwd} is in ` +
+          `${root ?? 'no git repository'}. Pass a cwd inside ${gone.gitRoot}. Not spawned`,
+      }
+    return gone
   }
 
   /** Has this identity ever registered? The one fact that settles an attach race. */
@@ -1685,14 +1723,10 @@ export class Supervisor implements TeleportHost {
    */
   async resume(name: string, req: ResumeRequest = {}): Promise<SpawnOutcome> {
     const identity = this.core.agents.byName(name)
-    if (!identity) {
-      const retired = this.core.agents
-        .roster({ includeRetired: true })
-        .find(a => a.name === name && a.state === 'retired' && a.origin === 'spawned')
-      return { ok: false, reason: missingAgent(name, retired) }
-    }
+    if (!identity) return { ok: false, reason: this.missingReason(name) }
     const transcript = identityTranscript(identity)
-    const blocked = resumeBlocker(identity, transcript)
+    const gone = this.goneCwd(identity)
+    const blocked = resumeBlocker(identity, transcript, gone)
     if (blocked) return { ok: false, reason: blocked, transcript }
     const profile = loadProfile(identity.profile)
     if ('error' in profile)
@@ -1709,19 +1743,53 @@ export class Supervisor implements TeleportHost {
       identity.configDir ?? configDir(),
       identity.sessionId,
     )
+    const warnings: string[] = []
     try {
-      await this.relaunchResumed(identity, profile, req, transcript, executionId)
+      const reattached = gone ? await this.reattachForResume(identity, gone, req) : undefined
+      warnings.push(...(reattached?.warnings ?? []))
+      await this.relaunchResumed(identity, profile, req, transcript, executionId, reattached)
     } catch (err) {
       this.semaphore.release(identity.agentId)
       const reason = `resume failed: ${(err as Error).message}`
       this.shadow.finish(executionId, { outcome: 'failed', reason, retryable: false })
       return { ok: false, reason, transcript }
     }
-    const warnings =
-      req.message !== undefined && (req.surface ?? 'headless') !== 'headless'
-        ? ['a visible resume opens on the conversation as it was left; the message was not delivered']
-        : []
+    if (req.message !== undefined && (req.surface ?? 'headless') !== 'headless')
+      warnings.push(
+        'a visible resume opens on the conversation as it was left; the message was not delivered',
+      )
     return { ok: true, agentId: identity.agentId, name, transcript, ...(warnings.length ? { warnings } : {}) }
+  }
+
+  /** The refusal for a name nothing live holds, with the retired agent's removed worktree when it can come back. */
+  private missingReason(name: string): string {
+    const roster = this.core.agents.roster({ includeRetired: true })
+    const retired = roster.find(a => a.name === name && a.state === 'retired' && a.origin === 'spawned')
+    const gone = retired && retiredWorktree(roster, this.core.events.agentEvents(), retired.sessionId)
+    return missingAgent(name, retired, gone)
+  }
+
+  /** CC-140: the removed worktree an identity's cwd was, when agent-chat can re-create it. */
+  private goneCwd(identity: AgentIdentity): WorktreeRecord | undefined {
+    const gone = goneWorktree(this.core.events.agentEvents(), identity.agentId)
+    return gone !== undefined && gone.worktree === path.resolve(identity.cwd) ? gone : undefined
+  }
+
+  /** Re-create the worktree and record it, so a later retire releases it like any allocation. */
+  private async reattachForResume(
+    identity: AgentIdentity,
+    gone: WorktreeRecord,
+    req: ResumeRequest,
+  ): Promise<Allocation> {
+    const allocation = await reattachWorktree(gone)
+    this.core.append({
+      kind: 'isolation_allocated',
+      actor: req.requestedBy ?? HUMAN,
+      ref: identity.agentId,
+      body: allocation.note ?? '',
+      meta: { strategy: 'worktree', ...(allocation.ref ?? {}) },
+    })
+    return allocation
   }
 
   /** The launch half of `resume`. Isolation is reused, never reallocated, so a worktree agent lands back in its own. */
@@ -1731,10 +1799,11 @@ export class Supervisor implements TeleportHost {
     req: ResumeRequest,
     transcript: TranscriptVerdict,
     executionId: string | undefined,
+    reattached?: Allocation,
   ): Promise<void> {
     const state = this.live.get(agent.agentId) ?? readRuntimeState(agent.agentId)
-    const allocation = state?.allocation ?? { cwd: agent.cwd }
-    const isolation = state?.isolation ?? (agent.isolation as IsolationName)
+    const allocation = reattached ?? state?.allocation ?? { cwd: agent.cwd }
+    const isolation = reattached ? 'worktree' : (state?.isolation ?? (agent.isolation as IsolationName))
     const surface = req.surface ?? 'headless'
     const plan = buildLaunchPlan({
       agentId: agent.agentId,

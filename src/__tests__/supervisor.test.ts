@@ -2704,3 +2704,237 @@ describe('spawning onto an existing session', () => {
     expect(result.reason).toMatch(/freshly allocated worktree/)
   })
 })
+
+/**
+ * CC-140: retire removes an agent's worktree, and `claude --resume` finds a
+ * transcript only under the project dir of the cwd it starts in, so the
+ * worktree comes back at its recorded path before the session does.
+ */
+describe('resuming an agent whose worktree was removed', () => {
+  const SCOUT_BRANCH = 'agent-chat/scout'
+
+  beforeEach(() => vi.useRealTimers())
+
+  const branchExists = (repo: string, branch: string): boolean =>
+    git(['branch', '--list', branch], repo) !== ''
+
+  /** A worktree agent that ran, wrote its transcript, and finished. */
+  async function finishedInWorktree(
+    sup: Supervisor,
+    repo: string,
+    account: string,
+    over: Record<string, unknown> = {},
+  ): Promise<AgentIdentity> {
+    const spawned = await sup.spawn(
+      spawnReq({ cwd: repo, isolation: 'worktree', spawnerConfigDir: account, ...over }),
+    )
+    expect(spawned.reason).toBeUndefined()
+    const agent = core.agents.get(spawned.agentId as string)!
+    writeTranscriptFor(agent)
+    const exit = (sup as unknown as { recordExit: (id: string, o: unknown) => Promise<void> }).recordExit
+    await exit.call(sup, agent.agentId, { code: 0, signal: null })
+    return agent
+  }
+
+  const commitIn = (dir: string, file: string): string => {
+    fs.writeFileSync(path.join(dir, file), 'work\n')
+    git(['add', file], dir)
+    git(['commit', '-m', `add ${file}`], dir)
+    return git(['rev-parse', 'HEAD'], dir)
+  }
+
+  const resumeSpawn = (sup: Supervisor, repo: string, account: string, sessionId: string) =>
+    sup.spawn(
+      spawnReq({ cwd: repo, isolation: 'worktree', spawnerConfigDir: account, resumeSession: sessionId }),
+    )
+
+  it('re-creates the worktree on a fresh branch when retire deleted the branch', async () => {
+    const sup = withStubbedSurface()
+    const repo = makeRepo()
+    const account = workspace()
+    const agent = await finishedInWorktree(sup, repo, account)
+    expect((await sup.retire('scout', true)).ok).toBe(true)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+    expect(branchExists(repo, SCOUT_BRANCH)).toBe(false)
+
+    const result = await resumeSpawn(sup, repo, account, agent.sessionId)
+
+    expect(result).toMatchObject({ ok: true, transcript: { found: true } })
+    expect(core.agents.get(result.agentId as string)?.cwd).toBe(agent.cwd)
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], agent.cwd)).toBe(SCOUT_BRANCH)
+    expect(result.warnings?.join('\n')).toMatch(/no longer exists locally or on origin/)
+    expect(result.warnings?.join('\n')).toMatch(/because the repository has no origin remote/)
+    const plan = readLaunchPlan(result.agentId as string)
+    expect(plan.args[plan.args.indexOf('--resume') + 1]).toBe(agent.sessionId)
+    expect(plan.cwd).toBe(agent.cwd)
+  })
+
+  it('adopts the branch origin still holds after retire deleted the local one', async () => {
+    const sup = withStubbedSurface()
+    const repo = repoWithOrigin()
+    const account = workspace()
+    const agent = await finishedInWorktree(sup, repo, account)
+    const pushed = commitIn(agent.cwd, 'feature.ts')
+    git(['push', '-q', 'origin', SCOUT_BRANCH], agent.cwd)
+    expect((await sup.retire('scout', true)).ok).toBe(true)
+
+    const result = await resumeSpawn(sup, repo, account, agent.sessionId)
+
+    expect(result.reason).toBeUndefined()
+    expect(git(['rev-parse', 'HEAD'], agent.cwd)).toBe(pushed)
+    expect(result.warnings?.join('\n') ?? '').not.toMatch(/no longer exists/)
+  })
+
+  /** A repository whose origin holds main, for a worktree agent to push its branch to. */
+  function repoWithOrigin(): string {
+    const repo = makeRepo()
+    const origin = workspace()
+    git(['init', '--bare', '-b', 'main'], origin)
+    git(['remote', 'add', 'origin', origin], repo)
+    git(['push', '-q', 'origin', 'main'], repo)
+    return repo
+  }
+
+  it('refuses rather than forking fresh when origin cannot be reached to look for the branch', async () => {
+    const sup = withStubbedSurface()
+    const repo = repoWithOrigin()
+    const account = workspace()
+    const agent = await finishedInWorktree(sup, repo, account)
+    commitIn(agent.cwd, 'feature.ts')
+    git(['push', '-q', 'origin', SCOUT_BRANCH], agent.cwd)
+    expect((await sup.retire('scout', true)).ok).toBe(true)
+    git(['remote', 'set-url', 'origin', path.join(workspace(), 'nonexistent', 'x.git')], repo)
+
+    const result = await resumeSpawn(sup, repo, account, agent.sessionId)
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/cannot reach origin to look for branch agent-chat\/scout/)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+    expect(branchExists(repo, SCOUT_BRANCH)).toBe(false)
+  })
+
+  it('refuses a recorded worktree outside the repository worktree base', async () => {
+    const sup = withStubbedSurface()
+    const repo = makeRepo()
+    const account = workspace()
+    const agent = await finishedInWorktree(sup, repo, account)
+    await sup.retire('scout', true)
+    const elsewhere = path.join(workspace(), 'elsewhere')
+    const meta = { strategy: 'worktree', gitRoot: repo, worktree: elsewhere, branch: SCOUT_BRANCH }
+    core.append({ kind: 'isolation_allocated', actor: 'human', ref: agent.agentId, body: '', meta })
+    writeTranscriptFor({ ...agent, cwd: elsewhere })
+
+    const result = await resumeSpawn(sup, repo, account, agent.sessionId)
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/is not under/)
+    expect(fs.existsSync(elsewhere)).toBe(false)
+  })
+
+  it('refuses a spawn whose cwd is in a different repository from the recorded worktree', async () => {
+    const sup = withStubbedSurface()
+    const repo = makeRepo()
+    const account = workspace()
+    const agent = await finishedInWorktree(sup, repo, account)
+    await sup.retire('scout', true)
+
+    const result = await resumeSpawn(sup, makeRepo(), account, agent.sessionId)
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain(`ran in a worktree of ${repo}`)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+  })
+
+  it('never re-creates a worktree the task system assigned', async () => {
+    const sup = withStubbedSurface()
+    const repo = makeRepo()
+    const assigned = path.join(repo, '.worktrees', 'task')
+    git(['worktree', 'add', '-q', '-b', 'task', assigned], repo)
+    const agent = await finishedInWorktree(sup, repo, workspace(), { worktree: assigned })
+    git(['worktree', 'remove', '--force', assigned], repo)
+
+    const result = await sup.resume('scout')
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/no longer exists/)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+  })
+
+  it('records an agent_resume re-attach, and a later retire releases it', async () => {
+    const sup = withStubbedSurface()
+    const repo = makeRepo()
+    const agent = await finishedInWorktree(sup, repo, workspace())
+    git(['worktree', 'remove', '--force', agent.cwd], repo)
+    expect((await sup.resume('scout')).ok).toBe(true)
+
+    const rows = core.events
+      .agentEvents()
+      .filter(r => r.kind === 'isolation_allocated' && r.ref === agent.agentId)
+    expect(rows.at(-1)?.meta).toMatchObject({
+      strategy: 'worktree',
+      worktree: agent.cwd,
+      reattached: 'local',
+    })
+    expect((await sup.retire('scout', true)).ok).toBe(true)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+    expect(branchExists(repo, SCOUT_BRANCH)).toBe(false)
+  })
+
+  it('brings back a finished agent through agent_resume on the branch its removed worktree left behind', async () => {
+    const sup = withStubbedSurface()
+    const repo = makeRepo()
+    const agent = await finishedInWorktree(sup, repo, workspace())
+    const committed = commitIn(agent.cwd, 'feature.ts')
+    git(['worktree', 'remove', '--force', agent.cwd], repo)
+
+    const result = await sup.resume('scout')
+
+    expect(result.reason).toBeUndefined()
+    expect(result.ok).toBe(true)
+    expect(git(['rev-parse', 'HEAD'], agent.cwd)).toBe(committed)
+    expect(readLaunchPlan(agent.agentId).cwd).toBe(agent.cwd)
+  })
+
+  it('refuses when the worktree budget is full, as a spawn would', async () => {
+    const sup = withStubbedSurface()
+    const repo = makeRepo()
+    const account = workspace()
+    const agent = await finishedInWorktree(sup, repo, account)
+    expect((await sup.retire('scout', true)).ok).toBe(true)
+    fs.writeFileSync(path.join(process.env.AGENT_CHAT_HOME!, 'config.json'), '{"worktreeBudget": 1}')
+    await worktreeStrategy.allocate({ agentId: 'other', agentName: 'other', baseCwd: repo })
+
+    const result = await resumeSpawn(sup, repo, account, agent.sessionId)
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/budget exhausted/)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+  })
+
+  it('still refuses when the transcript itself is gone', async () => {
+    const sup = withStubbedSurface()
+    const repo = makeRepo()
+    const account = workspace()
+    const agent = await finishedInWorktree(sup, repo, account)
+    expect((await sup.retire('scout', true)).ok).toBe(true)
+    fs.rmSync(transcriptPath(agent.cwd, agent.sessionId, agent.configDir))
+
+    const result = await resumeSpawn(sup, repo, account, agent.sessionId)
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/no transcript found/)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+  })
+
+  it('points a retired worktree agent at its repository, not its removed worktree', async () => {
+    const sup = withStubbedSurface()
+    const repo = makeRepo()
+    const agent = await finishedInWorktree(sup, repo, workspace())
+    await sup.retire('scout', true)
+
+    const result = await sup.resume('scout')
+
+    expect(result.reason).toContain(`resume_session="${agent.sessionId}" and isolation="worktree"`)
+    expect(result.reason).toContain(`cwd="${repo}"`)
+  })
+})

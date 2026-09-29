@@ -1,5 +1,7 @@
 import fs from 'node:fs'
+import type { AgentEventRow } from '../broker/event-store.js'
 import type { AgentIdentity, IsolationName } from '../protocol.js'
+import type { WorktreeRecord } from './isolation/worktree.js'
 import { findTranscript, transcriptPath } from './transcript.js'
 
 /**
@@ -41,24 +43,61 @@ export function identityTranscript(agent: AgentIdentity): TranscriptVerdict {
   return { path: found.path, found: found.exists }
 }
 
-/** Why an identity cannot be resumed, or undefined when it can. */
-export function resumeBlocker(agent: AgentIdentity, transcript: TranscriptVerdict): string | undefined {
+/**
+ * CC-140: the worktree an agent ran in, when it is gone from disk and agent-chat created it.
+ *
+ * An assigned worktree belongs to the task system, so it is never re-created here.
+ */
+export function goneWorktree(rows: readonly AgentEventRow[], agentId: string): WorktreeRecord | undefined {
+  const meta = rows.findLast(row => row.kind === 'isolation_allocated' && row.ref === agentId)?.meta
+  if (meta?.strategy !== 'worktree' || meta.assigned === 'true') return undefined
+  const { gitRoot, worktree, branch } = meta
+  if (!gitRoot || !worktree || !branch || fs.existsSync(worktree) || !fs.existsSync(gitRoot)) return undefined
+  return { gitRoot, worktree, branch }
+}
+
+/** The removed worktree of the newest retired agent that ran this session, if there is one to re-create. */
+export function retiredWorktree(
+  retired: readonly AgentIdentity[],
+  rows: readonly AgentEventRow[],
+  sessionId: string,
+): WorktreeRecord | undefined {
+  const owner = retired
+    .filter(a => a.state === 'retired' && a.sessionId === sessionId)
+    .sort((a, b) => b.lastEventAt - a.lastEventAt)[0]
+  return owner === undefined ? undefined : goneWorktree(rows, owner.agentId)
+}
+
+/** Why an identity cannot be resumed, or undefined when it can. `reattach` says its gone worktree can come back. */
+export function resumeBlocker(
+  agent: AgentIdentity,
+  transcript: TranscriptVerdict,
+  reattach?: WorktreeRecord,
+): string | undefined {
   if (agent.state === 'live') return `${agent.name} is already live; message it instead`
   if (agent.sessionId === '')
     return `${agent.name} has no recorded session id, so there is no conversation to resume`
   if (!transcript.found)
     return `${agent.name}'s transcript is gone, so it would come back with no conversation`
-  if (!fs.existsSync(agent.cwd))
+  if (reattach === undefined && !fs.existsSync(agent.cwd))
     return `${agent.name}'s working directory ${agent.cwd} no longer exists. Not resumed`
   return undefined
 }
 
 /** The refusal for a name nothing live holds, pointing a retired one at the spawn route. */
-export function missingAgent(name: string, retired: AgentIdentity | undefined): string {
+export function missingAgent(
+  name: string,
+  retired: AgentIdentity | undefined,
+  gone?: WorktreeRecord,
+): string {
   if (retired === undefined) return `no agent named "${name}"`
+  const where =
+    gone === undefined
+      ? `cwd="${retired.cwd}"`
+      : `isolation="worktree" and cwd="${gone.gitRoot}"; its removed worktree ${gone.worktree} is re-created`
   return (
     `${name} was retired, which gave up its name. Its session was ${retired.sessionId}; bring it back ` +
-    `as a new agent with agent_spawn resume_session="${retired.sessionId}" and cwd="${retired.cwd}"`
+    `as a new agent with agent_spawn resume_session="${retired.sessionId}" and ${where}`
   )
 }
 
@@ -66,6 +105,8 @@ export interface ResumeSessionInput {
   resumeSession: string
   inherit?: 'context'
   worktree?: string
+  /** CC-140: a retired agent's removed worktree, re-created at launch, so its path is where the transcript is. */
+  reattach?: WorktreeRecord
   isolation: IsolationName
   cwd: string
   configDir: string
@@ -83,13 +124,13 @@ export function checkResumeSession(input: ResumeSessionInput): { path: string } 
   if (!SESSION_UUID.test(id)) return { error: `resume_session must be a Claude session uuid, got "${id}"` }
   if (input.inherit !== undefined)
     return { error: 'resume_session and inherit: "context" both choose the conversation; pass one' }
-  if (input.isolation === 'worktree' && input.worktree === undefined)
+  if (input.isolation === 'worktree' && input.worktree === undefined && input.reattach === undefined)
     return {
       error:
         'resume_session cannot run in a freshly allocated worktree: the transcript lives under the ' +
         'directory the session ran in. Pass worktree=<that directory> or isolation "none"',
     }
-  const runsIn = input.worktree ?? input.cwd
+  const runsIn = input.reattach?.worktree ?? input.worktree ?? input.cwd
   const path = transcriptPath(runsIn, id, input.configDir)
   if (!fs.existsSync(path))
     return { error: `no transcript found at ${path} for resume_session ${id}. Not spawned` }

@@ -401,6 +401,127 @@ async function attachWorktree(
   return safety.unmerged
 }
 
+/** Where a worktree this strategy created sat, read back from its `isolation_allocated` row. */
+export interface WorktreeRecord {
+  gitRoot: string
+  worktree: string
+  branch: string
+}
+
+/** How a re-attached worktree got its branch back. */
+type BranchSource = 'local' | 'origin' | 'fresh'
+
+/** Origin could not answer whether it holds the branch, so a fresh fork might discard real work. */
+export class OriginUnreachableError extends Error {
+  constructor(
+    readonly branch: string,
+    detail: string,
+  ) {
+    super(
+      `cannot reach origin to look for branch ${branch} (${detail}); it may still hold the agent's work, ` +
+        'so the worktree was not re-created. Fix the remote and resume again.',
+    )
+    this.name = 'OriginUnreachableError'
+  }
+}
+
+/** `ls-remote --exit-code` exits 2 only when the ref is absent; anything else is a failed lookup. */
+async function originHasBranch(gitRoot: string, branch: string, timeoutMs: number): Promise<boolean> {
+  try {
+    await git(['ls-remote', '--exit-code', '--heads', 'origin', `refs/heads/${branch}`], gitRoot, timeoutMs)
+    return true
+  } catch (err) {
+    if ((err as { code?: unknown }).code === 2) return false
+    throw new OriginUnreachableError(branch, firstLine(err))
+  }
+}
+
+const firstLine = (err: unknown): string =>
+  String((err as { stderr?: unknown }).stderr || (err as Error).message)
+    .trim()
+    .split('\n')[0] ?? 'unknown error'
+
+/** Local first, since it may hold commits origin never saw; a squash merge deletes both. */
+async function branchSource(gitRoot: string, branch: string, timeoutMs: number): Promise<BranchSource> {
+  if ((await gitOrNull(['rev-parse', '--verify', branch], gitRoot)) !== null) return 'local'
+  if ((await gitOrNull(['remote', 'get-url', 'origin'], gitRoot)) === null) return 'fresh'
+  if (!(await originHasBranch(gitRoot, branch, timeoutMs))) return 'fresh'
+  if ((await fetchTip(gitRoot, branch, timeoutMs)) === null)
+    throw new OriginUnreachableError(branch, 'origin lists it but fetching it failed')
+  return 'origin'
+}
+
+function addArgs(record: WorktreeRecord, source: BranchSource, base: string): string[] {
+  const { worktree, branch } = record
+  if (source === 'local') return ['worktree', 'add', worktree, branch]
+  return ['worktree', 'add', '-b', branch, worktree, source === 'origin' ? `origin/${branch}` : base]
+}
+
+/** A concurrent re-attach of the same record loses the race here; say so rather than pass git's text on. */
+async function addForSource(record: WorktreeRecord, source: BranchSource, base: string): Promise<void> {
+  try {
+    await git(addArgs(record, source, base), record.gitRoot)
+  } catch (err) {
+    const holder = await checkoutOf(record.gitRoot, record.branch)
+    if (holder !== null || existsSync(record.worktree))
+      throw new WorktreeInUseError(record.branch, holder ?? record.worktree)
+    throw err
+  }
+}
+
+function reattachWarnings(record: WorktreeRecord, source: BranchSource, base: BranchBase): string[] {
+  const inherited = base.warning === undefined ? [] : [base.warning]
+  if (source !== 'fresh') return inherited
+  const fresh =
+    `branch ${record.branch} no longer exists locally or on origin (a squash merge deletes it), so ` +
+    `${record.worktree} was re-created on a fresh ${record.branch} from ${base.ref} ${base.sha}; ` +
+    'commits the conversation mentions may be merged or gone'
+  return [fresh, ...inherited]
+}
+
+/** The record comes from the event log, so it may only name a tree under this repository's worktree base. */
+function checkRecordPlacement(record: WorktreeRecord, basePath: string): void {
+  const base = path.resolve(record.gitRoot, basePath) + path.sep
+  if (!path.resolve(record.worktree).startsWith(base))
+    throw new Error(`recorded worktree ${record.worktree} is not under ${base}; not re-created`)
+}
+
+/**
+ * CC-140: put a removed worktree back at its recorded path, under the spawn's budget.
+ *
+ * `claude --resume` finds a transcript only under the project dir of the cwd it
+ * starts in, and that dir is derived from the worktree path, so the path must be
+ * the original one. Every file path in the conversation points there too.
+ */
+export async function reattachWorktree(
+  record: WorktreeRecord,
+  opts: WorktreeOptions = {},
+): Promise<Allocation> {
+  const { gitRoot, worktree, branch } = record
+  const basePath = opts.basePath ?? DEFAULT_BASE_PATH
+  checkRecordPlacement(record, basePath)
+  if (existsSync(worktree)) throw new WorktreeInUseError(branch, worktree)
+  await pruneStaleWorktrees(gitRoot)
+  const allocated = await allocatedPaths(gitRoot, basePath)
+  const budget = opts.budget ?? resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET)
+  if (allocated.length >= budget) throw new WorktreeBudgetExhaustedError(allocated.length, budget)
+  const holder = await checkoutOf(gitRoot, branch)
+  if (holder !== null) throw new WorktreeInUseError(branch, holder)
+
+  const timeoutMs = opts.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS
+  const base = await resolveBranchBase(gitRoot, timeoutMs)
+  const source = await branchSource(gitRoot, branch, timeoutMs)
+  await addForSource(record, source, base.sha)
+  copyClaudeDir(gitRoot, worktree)
+  const warnings = reattachWarnings(record, source, base)
+  return {
+    cwd: worktree,
+    note: `Your worktree at ${worktree} had been removed and was re-created on branch ${branch}. Commit your work there; nothing outside it is yours to change.`,
+    ref: { branch, worktree, gitRoot, base: base.sha, base_ref: base.ref, reattached: source },
+    ...(warnings.length === 0 ? {} : { warnings }),
+  }
+}
+
 /** Null when release may proceed, otherwise the reason it may not. */
 async function refuseRelease(
   ctx: IsolationContext,

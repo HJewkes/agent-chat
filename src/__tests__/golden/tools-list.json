@@ -492,7 +492,7 @@
           },
           "resume_session": {
             "type": "string",
-            "description": "A Claude session uuid to CONTINUE instead of starting fresh, e.g. a retired agent's session id from agent_list. Its transcript must already exist under the account (config_dir) and cwd the agent will run in; otherwise the spawn is refused and names the path it checked. The brief becomes its next turn. For an agent that is finished but not retired, agent_resume is simpler."
+            "description": "A Claude session uuid to CONTINUE instead of starting fresh, e.g. a retired agent's session id from agent_list. Its transcript must already exist under the account (config_dir) and cwd the agent will run in; otherwise the spawn is refused and names the path it checked. A retired worktree agent's removed worktree is re-created at its old path under the worktree budget, so pass isolation \"worktree\" and the repository as cwd. The brief becomes its next turn. For an agent that is finished but not retired, agent_resume is simpler."
           },
           "predecessor": {
             "type": "string",
