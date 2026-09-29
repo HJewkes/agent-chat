@@ -1,9 +1,9 @@
-import { execFile, execFileSync } from 'node:child_process'
+import { execFile, execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { afterEach, describe, expect, it, onTestFinished } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import {
   fileOwnershipStrategy,
   getStrategy,
@@ -539,6 +539,88 @@ describe('concurrent worktree adds (CC-224)', () => {
     // Either name may reach the add lock first, so only the outcome set is fixed.
     expect(settled.map(s => s.status).sort()).toEqual(['fulfilled', 'rejected'])
   })
+
+  it('rejects an add that never resolves, naming the repo and timeout, and lets the next add run', async () => {
+    const repo = makeRepo()
+    let calls = 0
+    const hangFirst: GitRunner = (args, cwd) =>
+      calls++ === 0 ? new Promise<string>(() => {}) : realAdd(args, cwd)
+    const strategy = createWorktreeStrategy({ budget: 10, addTimeoutMs: 200, runWorktreeAdd: hangFirst })
+
+    const first = strategy.allocate(ctxFor(repo, { agentName: 'w1' }))
+    const second = strategy.allocate(ctxFor(repo, { agentName: 'w2' }))
+    const settled = await Promise.allSettled([first, second])
+
+    // Either name may reach the add lock first, so only the outcome set is fixed.
+    expect(settled.map(s => s.status).sort()).toEqual(['fulfilled', 'rejected'])
+    const reason = (settled.find(s => s.status === 'rejected') as PromiseRejectedResult).reason as Error
+    expect(reason.message).toContain(repo)
+    expect(reason.message).toContain('200ms')
+  })
+
+  it('removes the half-created directory and registration after a killed add', async () => {
+    const repo = makeRepo()
+    const halfWritten: GitRunner = async (args, cwd) => {
+      await realAdd(args, cwd)
+      return new Promise<string>(() => {})
+    }
+    const strategy = createWorktreeStrategy({ addTimeoutMs: 300, runWorktreeAdd: halfWritten })
+
+    await expect(strategy.allocate(ctxFor(repo, { agentName: 'w1' }))).rejects.toThrow('timed out')
+
+    expect(fs.existsSync(path.join(repo, '.worktrees', 'w1'))).toBe(false)
+    expect(git(['worktree', 'list', '--porcelain'], repo)).not.toContain('.worktrees/w1')
+    const retry = await createWorktreeStrategy({}).allocate(ctxFor(repo, { agentName: 'w1' }))
+    expect(fs.existsSync(retry.cwd)).toBe(true)
+  })
+
+  it('leaves a directory that existed before the add alone when the add times out', async () => {
+    const repo = makeRepo()
+    const target = path.join(repo, '.worktrees', 'w1')
+    fs.mkdirSync(target, { recursive: true })
+    fs.writeFileSync(path.join(target, 'sentinel'), 'keep')
+    const strategy = createWorktreeStrategy({
+      addTimeoutMs: 200,
+      runWorktreeAdd: () => new Promise<string>(() => {}),
+    })
+
+    await expect(strategy.allocate(ctxFor(repo, { agentName: 'w1' }))).rejects.toThrow('timed out')
+
+    expect(fs.readFileSync(path.join(target, 'sentinel'), 'utf8')).toBe('keep')
+  })
+
+  it('discards a worktree an add created after its timeout, once the late add finishes', async () => {
+    const repo = makeRepo()
+    const target = path.join(repo, '.worktrees', 'w1')
+    const late: GitRunner = async (args, cwd) => {
+      await new Promise(resolve => setTimeout(resolve, 400))
+      return realAdd(args, cwd)
+    }
+    const strategy = createWorktreeStrategy({ addTimeoutMs: 100, runWorktreeAdd: late })
+
+    await expect(strategy.allocate(ctxFor(repo, { agentName: 'w1' }))).rejects.toThrow('timed out')
+
+    await vi.waitFor(() => expect(fs.existsSync(target)).toBe(false), { timeout: 5_000 })
+    await vi.waitFor(() => expect(git(['worktree', 'list', '--porcelain'], repo)).not.toContain('w1'), {
+      timeout: 5_000,
+    })
+  })
+
+  it('kills the hook a timed-out add spawned, and cleans up only after it is gone', async () => {
+    const repo = makeRepo()
+    const target = path.join(repo, '.worktrees', 'w1')
+    const marker = 'sleep 61'
+    const hook = path.join(repo, '.git', 'hooks', 'post-checkout')
+    fs.mkdirSync(path.dirname(hook), { recursive: true })
+    fs.writeFileSync(hook, `#!/bin/sh\n${marker} &\nwait\n`, { mode: 0o755 })
+    const strategy = createWorktreeStrategy({ addTimeoutMs: 1_500 })
+
+    await expect(strategy.allocate(ctxFor(repo, { agentName: 'w1' }))).rejects.toThrow('timed out')
+
+    const survivors = spawnSync('pgrep', ['-f', marker]).stdout.toString().trim()
+    expect(survivors).toBe('')
+    expect(fs.existsSync(target)).toBe(false)
+  }, 20_000)
 
   it('does not make adds in different repositories wait for each other', async () => {
     const [left, right] = [makeRepo(), makeRepo()]
