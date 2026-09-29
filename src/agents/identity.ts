@@ -121,7 +121,11 @@ export function foldAgent(rows: readonly AgentEventRow[]): AgentIdentity | undef
     // carries it, and only when a switch actually changed it — an ordinary resume
     // omits the field and leaves this alone.
     if (row.kind === 'agent_resumed' && row.meta.surface) agent.surface = row.meta.surface
-    if (row.kind === 'agent_exited') agent.exit = exitFrom(row)
+    if (row.kind === 'agent_exited') {
+      agent.exit = exitFrom(row)
+      agent.exitedAt = row.ts
+    }
+    if (row.kind === 'agent_resumed') delete agent.exitedAt
     const next = TRANSITIONS[row.kind]
     if (next !== undefined) agent.state = next
   }

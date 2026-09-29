@@ -13,6 +13,7 @@ import {
   type ResetFrameData,
 } from '../api-contract.js'
 import { APPROVAL_TTL_MS } from '../broker/event-log.js'
+import { resolveNoticeTtlMs } from '../config.js'
 import { HUMAN, type ClientMessage, type EventKind, type ServerMessage } from '../protocol.js'
 import { readSseFrames } from './sse-reader.js'
 
@@ -82,6 +83,8 @@ export function toQueueItem(row: QueueRow, machine: string): QueueItem | null {
     if (row.meta['tool_name'] !== undefined) item.toolName = row.meta['tool_name']
     if (row.meta['input_preview'] !== undefined) item.inputPreview = row.meta['input_preview']
     if (row.meta['source'] !== 'hook') item.expiresAt = row.at + APPROVAL_TTL_MS
+  } else if (row.kind === 'notice' && row.meta['kind'] === undefined) {
+    item.expiresAt = row.at + resolveNoticeTtlMs()
   }
   return item
 }

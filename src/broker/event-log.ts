@@ -13,7 +13,9 @@ import type {
   QueueItem,
 } from '../protocol.js'
 import type { CursoredMessage, DecisionCitation } from '../protocol.js'
+import { resolveNoticeTtlMs } from '../config.js'
 import { DECISION_AUDIT_MS, decidedText, overruleText } from './decisions.js'
+import { NOTICE_LIVE } from './notice-expiry.js'
 import type {
   AgentEventRow,
   AppendInput,
@@ -216,8 +218,10 @@ function restrictToOwner(file: string): void {
 
 export class EventLog implements EventStore {
   private readonly db: DatabaseSyncType
+  private readonly noticeTtlMs: () => number
 
-  constructor(dbPath?: string) {
+  constructor(dbPath?: string, options: { noticeTtlMs?: () => number } = {}) {
+    this.noticeTtlMs = options.noticeTtlMs ?? resolveNoticeTtlMs
     const file = dbPath ?? path.join(home(), 'events.db')
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
     this.db = new DatabaseSync(file)
@@ -326,8 +330,9 @@ export class EventLog implements EventStore {
     }
   }
 
-  /** Open items for the human: addressed to them and not yet answered or dismissed. */
+  /** Open items for the human: addressed to them, not yet answered or dismissed, and not aged out. */
   humanQueue(): QueueItem[] {
+    const now = Date.now()
     const rows = this.db
       .prepare(
         `SELECT * FROM events
@@ -335,9 +340,10 @@ export class EventLog implements EventStore {
            AND msg_id NOT IN (${CLOSED})
            AND msg_id NOT IN (${DECIDED})
            AND ${AGES_OUT}
+           AND ${NOTICE_LIVE}
          ORDER BY id ASC`,
       )
-      .all(Date.now() - APPROVAL_TTL_MS) as unknown as Row[]
+      .all(now - APPROVAL_TTL_MS, now - this.noticeTtlMs()) as unknown as Row[]
     return rows.map(row => ({
       msgId: row.msg_id ?? String(row.id),
       kind: row.kind as QueueItem['kind'],

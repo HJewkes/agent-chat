@@ -10,6 +10,7 @@ interface AgentChatConfig {
   ledgerShadow?: unknown
   permissionHookTimeoutSeconds?: unknown
   decider?: unknown
+  noticeTtlHours?: unknown
 }
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
@@ -81,6 +82,14 @@ export const DEFAULT_PERMISSION_HOOK_TIMEOUT_S = 1800
 
 export function resolvePermissionHookTimeout(): number {
   return positiveIntegerFrom('permissionHookTimeoutSeconds', DEFAULT_PERMISSION_HOOK_TIMEOUT_S)
+}
+
+/** How long a plain notice stays in the human queue before it counts as expired (CC-173). */
+export const DEFAULT_NOTICE_TTL_HOURS = 72
+
+/** `noticeTtlHours` in `config.json`, in milliseconds; read per query so an edit needs no broker restart. */
+export function resolveNoticeTtlMs(): number {
+  return positiveIntegerFrom('noticeTtlHours', DEFAULT_NOTICE_TTL_HOURS) * 3_600_000
 }
 
 function positiveIntegerFrom(key: keyof AgentChatConfig, fallback: number): number {

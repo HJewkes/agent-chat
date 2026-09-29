@@ -108,6 +108,20 @@ describe('finding what nobody is using', () => {
     expect(swept[0]?.detail).toMatch(/reclaimable after 120s/)
   })
 
+  it('times the grace window from the exit, not from a later row such as a refused retire', async () => {
+    const repo = makeRepo()
+    await abandonedWorktree(repo)
+    const exitedAt = 1000
+    const refusedRetireAt = exitedAt + 85_000
+
+    const swept = await sweepWorktrees([identity({ exitedAt, lastEventAt: refusedRetireAt })], {
+      list: lister,
+      now: () => exitedAt + RECLAIM_GRACE_MS + 1,
+    })
+
+    expect(swept[0]?.status).toBe('reclaimable')
+  })
+
   it('refuses one holding commits that exist nowhere else', async () => {
     const repo = makeRepo()
     const worktree = await abandonedWorktree(repo)

@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { describeJob } from '../cli/verbs/mirror.js'
 import { openMirrorState } from '../mirror/run.js'
 import { jobState, startJob, stopJob, type JobPaths, type Launchctl } from '../mirror/launchd.js'
 
@@ -21,6 +22,20 @@ function fakeLaunchctl(loaded: boolean): { launchctl: Launchctl; calls: string[]
     return { code: 0, stdout: '', stderr: '' }
   }
   return { launchctl, calls }
+}
+
+/** `loaded` answers `print`; `disabledLine` is what `print-disabled` lists for the label. */
+function fakeStopped(loaded: boolean, state: 'disabled' | 'enabled' | null): Launchctl {
+  return args => {
+    if (args[0] === 'print') {
+      return loaded
+        ? { code: 0, stdout: '\tstate = waiting\n', stderr: '' }
+        : { code: 113, stdout: '', stderr: '' }
+    }
+    const other = '\t\t"com.other.job" => disabled\n'
+    const own = state === null ? '' : `\t\t"${LABEL}" => ${state}\n`
+    return { code: 0, stdout: `disabled services = {\n${other}${own}}\n`, stderr: '' }
+  }
 }
 
 let dir: string
@@ -104,11 +119,36 @@ describe('stopJob and jobState', () => {
     expect(jobState({ launchctl: fakeLaunchctl(true).launchctl, uid: 501, label: LABEL })).toEqual({
       loaded: true,
       pid: 777,
+      disabled: false,
     })
     expect(jobState({ launchctl: fakeLaunchctl(false).launchctl, uid: 501, label: LABEL })).toEqual({
       loaded: false,
       pid: null,
+      disabled: false,
     })
+  })
+
+  it('reports a disabled label as disabled, whether or not it is loaded', () => {
+    const state = (loaded: boolean, listed: 'disabled' | 'enabled' | null) =>
+      jobState({ launchctl: fakeStopped(loaded, listed), uid: 501, label: LABEL })
+    expect(state(false, 'disabled')).toEqual({ loaded: false, pid: null, disabled: true })
+    expect(state(true, 'disabled').disabled).toBe(true)
+  })
+
+  it('does not call a crashed or never-started job disabled', () => {
+    const state = (loaded: boolean, listed: 'disabled' | 'enabled' | null) =>
+      jobState({ launchctl: fakeStopped(loaded, listed), uid: 501, label: LABEL })
+    expect(state(true, 'enabled').disabled).toBe(false)
+    expect(state(false, null).disabled).toBe(false)
+  })
+})
+
+describe('describeJob (the status line)', () => {
+  it('tells a stopped job from a crashed one and from one that never loaded', () => {
+    expect(describeJob({ loaded: false, pid: null, disabled: true })).toBe('stopped (disabled)')
+    expect(describeJob({ loaded: true, pid: null, disabled: false })).toBe('loaded, not running')
+    expect(describeJob({ loaded: false, pid: null, disabled: false })).toBe('not loaded')
+    expect(describeJob({ loaded: true, pid: 9, disabled: false })).toBe('loaded, pid 9')
   })
 })
 

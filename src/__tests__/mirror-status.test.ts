@@ -38,6 +38,7 @@ const facts = (over: Partial<MirrorFacts> = {}): MirrorFacts => ({
   plistLeaksToken: false,
   status: running(),
   pidAlive: true,
+  disabled: false,
   roomAlias: '#queue:example.org',
   now: NOW,
   ...over,
@@ -86,6 +87,15 @@ describe('describeMirror (the doctor line)', () => {
     })
   })
 
+  it('says stopped (disabled) for a job that mirror stop disabled, not not running', () => {
+    const dead = running({ lastError: 'old' })
+    const stopped = describeMirror(facts({ status: dead, pidAlive: false, disabled: true }))
+    expect(stopped).toMatchObject({ status: 'warn', detail: 'stopped (disabled)' })
+    expect(describeMirror(facts({ status: dead, pidAlive: false })).detail).toMatch(
+      /^configured but not running/,
+    )
+  })
+
   it('does not call a status just inside the window stale', () => {
     const edge = running({ writtenAt: NOW - STATUS_STALE_MS })
     expect(describeMirror(facts({ status: edge })).status).toBe('ok')
@@ -114,7 +124,7 @@ describe('readMirrorFacts', () => {
     fs.writeFileSync(files.config, '{}')
     fs.writeFileSync(files.env, 'EDGE1_AS_TOKEN=as-opaque-9f8e\n', { mode: 0o600 })
     fs.writeFileSync(files.plist, '<string>as-opaque-9f8e</string>')
-    expect(readMirrorFacts(files, NOW).plistLeaksToken).toBe(true)
+    expect(readMirrorFacts(files, NOW, () => false).plistLeaksToken).toBe(true)
   })
 
   it('reads a status file the writer produced', () => {
@@ -124,7 +134,11 @@ describe('readMirrorFacts', () => {
     stop()
     expect(readStatus(files.status)).toMatchObject({ pid: process.pid, lastSyncAt: NOW, open: 2 })
     expect(fs.statSync(files.status).mode & 0o777).toBe(0o600)
-    expect(readMirrorFacts(files, NOW)).toMatchObject({ configPresent: false, pidAlive: true, envMode: null })
+    expect(readMirrorFacts(files, NOW, () => false)).toMatchObject({
+      configPresent: false,
+      pidAlive: true,
+      envMode: null,
+    })
   })
 })
 

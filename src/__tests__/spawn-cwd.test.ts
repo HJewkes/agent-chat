@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { checkSpawnCwd } from '../agents/spawn-cwd.js'
+import { canonicalPath, checkSpawnCwd } from '../agents/spawn-cwd.js'
 
 /**
  * CC-62. The old rule refused any `cwd` no registered session was already
@@ -91,5 +91,16 @@ describe('the cwd policy a peer spawn has to pass', () => {
       /does not exist/,
     )
     expect(checkSpawnCwd(file, { sessionRoots: [], homeDir: home })).toMatch(/not a directory/)
+  })
+})
+
+/** CC-185: retire's tenancy guard compares these, and a gone worktree must still resolve to its real location. */
+describe('canonicalPath', () => {
+  it('keeps the missing tail of a gone path when its parent is reached through a symlink', () => {
+    const real = fakeHome()
+    const link = path.join(fakeHome(), 'link')
+    fs.symlinkSync(real, link)
+
+    expect(canonicalPath(path.join(link, 'gone', 'deeper'))).toBe(path.join(real, 'gone', 'deeper'))
   })
 })

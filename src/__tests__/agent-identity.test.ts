@@ -144,6 +144,14 @@ describe('the lifecycle fold', () => {
     expect(agent?.state).toBe('live')
     expect(agent?.lastEventAt).toBe(allocated.ts)
   })
+
+  it('keeps the exit time when later rows arrive, and forgets it on resume', () => {
+    const exited = row('agent_exited')
+    const refused = row('isolation_released', { meta: { released: 'false' } })
+
+    expect(foldAgent([spawned(), exited, refused])?.exitedAt).toBe(exited.ts)
+    expect(foldAgent([spawned(), exited, row('agent_resumed')])?.exitedAt).toBeUndefined()
+  })
 })
 
 describe('pairing identity with presence', () => {

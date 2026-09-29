@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EventLog } from '../broker/event-log.js'
 
 const dirs: string[] = []
@@ -18,6 +18,82 @@ afterEach(() => {
 
 const ask = (log: EventLog, actor: string, body: string) =>
   log.append({ kind: 'question', actor, target: 'human', body }).msgId
+
+describe('notice expiry (CC-173)', () => {
+  const HOUR = 3_600_000
+  const T0 = new Date(2026, 8, 1, 9, 0).getTime()
+
+  function logWithTtl(hours: number): EventLog {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-log-'))
+    dirs.push(dir)
+    return new EventLog(path.join(dir, 'events.db'), { noticeTtlMs: () => hours * HOUR })
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('reads the TTL per query, not at construction', () => {
+    vi.useFakeTimers({ now: T0 })
+    const priorHome = process.env.AGENT_CHAT_HOME
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-log-ttl-'))
+    dirs.push(home)
+    process.env.AGENT_CHAT_HOME = home
+    try {
+      const log = new EventLog(path.join(home, 'events.db'))
+      log.append({ kind: 'notice', actor: 'bob', target: 'human', body: 'migration finished' })
+      vi.setSystemTime(T0 + 10 * HOUR)
+      expect(log.humanQueue()).toHaveLength(1)
+
+      fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ noticeTtlHours: 6 }))
+
+      expect(log.humanQueue()).toHaveLength(0)
+    } finally {
+      if (priorHome === undefined) delete process.env.AGENT_CHAT_HOME
+      else process.env.AGENT_CHAT_HOME = priorHome
+    }
+  })
+
+  it('drops a plain notice from the queue once it is older than the TTL, without writing a row', () => {
+    vi.useFakeTimers({ now: T0 })
+    const log = logWithTtl(24)
+    log.append({ kind: 'notice', actor: 'bob', target: 'human', body: 'migration finished' })
+    const rowsBefore = log.latestId()
+
+    vi.setSystemTime(T0 + 23 * HOUR)
+    expect(log.humanQueue().map(i => i.text)).toEqual(['migration finished'])
+
+    vi.setSystemTime(T0 + 25 * HOUR)
+    expect(log.humanQueue()).toEqual([])
+    expect(log.latestId()).toBe(rowsBefore)
+  })
+
+  it('never expires a question, a kinded notice or a hook approval, however old', () => {
+    vi.useFakeTimers({ now: T0 })
+    const log = logWithTtl(1)
+    ask(log, 'alice', 'which branch?')
+    log.append({
+      kind: 'notice',
+      actor: 'tick',
+      target: 'human',
+      body: 'PR #9',
+      meta: { kind: 'ready-to-merge' },
+    })
+    log.append({
+      kind: 'approval_request',
+      actor: 'w',
+      target: 'human',
+      body: 'Bash',
+      meta: { source: 'hook' },
+    })
+    log.append({ kind: 'notice', actor: 'bob', target: 'human', body: 'fyi' })
+
+    vi.setSystemTime(T0 + 30 * 24 * HOUR)
+
+    expect(log.humanQueue().map(i => i.kind)).toEqual(['question', 'notice', 'approval_request'])
+    expect(log.humanQueue().find(i => i.kind === 'notice')?.meta.kind).toBe('ready-to-merge')
+  })
+})
 
 describe('inbox as a projection', () => {
   it('returns only what was addressed to that session', () => {

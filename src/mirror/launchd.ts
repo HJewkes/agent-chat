@@ -35,14 +35,28 @@ const service = (label: string, uid: number): string => `${domain(uid)}/${label}
 export interface JobState {
   loaded: boolean
   pid: number | null
+  /** `mirror stop` disables the label; a disabled job stays down at login and never counts as a crash. */
+  disabled: boolean
+}
+
+function labelDisabled(control: Pick<JobControl, 'launchctl' | 'uid' | 'label'>): boolean {
+  const listed = control.launchctl(['print-disabled', domain(control.uid)])
+  if (listed.code !== 0) return false
+  const escaped = control.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`"${escaped}"\\s*=>\\s*(disabled|true)\\b`).test(listed.stdout)
 }
 
 /** `launchctl print` exits non-zero for an unknown service; a loaded one reports `pid = N` while running. */
-export function jobState(control: Pick<JobControl, 'launchctl' | 'uid' | 'label'>): JobState {
+function loadedState(control: Pick<JobControl, 'launchctl' | 'uid' | 'label'>): Omit<JobState, 'disabled'> {
   const printed = control.launchctl(['print', service(control.label, control.uid)])
-  if (printed.code !== 0) return { loaded: false, pid: null }
-  const pid = /^\s*pid = (\d+)/m.exec(printed.stdout)?.[1]
-  return { loaded: true, pid: pid === undefined ? null : Number.parseInt(pid, 10) }
+  const pidText = printed.code === 0 ? /^\s*pid = (\d+)/m.exec(printed.stdout)?.[1] : undefined
+  return { loaded: printed.code === 0, pid: pidText === undefined ? null : Number.parseInt(pidText, 10) }
+}
+
+export function jobState(control: Pick<JobControl, 'launchctl' | 'uid' | 'label'>): JobState {
+  const state = loadedState(control)
+  // A running job is not stopped, so the extra launchctl call is only for one that is down.
+  return { ...state, disabled: state.pid === null && labelDisabled(control) }
 }
 
 function run(control: JobControl, args: string[], lines: string[]): LaunchctlResult {
@@ -73,7 +87,7 @@ export function startJob(
 ): { ok: boolean; lines: string[] } {
   const lines: string[] = []
   const changed = writePlist(paths, rendered, control.dryRun, lines)
-  const { loaded } = jobState(control)
+  const { loaded } = loadedState(control)
   if (loaded && changed) run(control, ['bootout', service(control.label, control.uid)], lines)
   run(control, ['enable', service(control.label, control.uid)], lines)
   if (!loaded || changed) {
@@ -87,7 +101,7 @@ export function startJob(
 /** Boots the job out and disables it, so a later login does not bring it back. */
 export function stopJob(control: JobControl): { ok: boolean; lines: string[] } {
   const lines: string[] = []
-  if (!jobState(control).loaded) lines.push('not loaded')
+  if (!loadedState(control).loaded) lines.push('not loaded')
   else run(control, ['bootout', service(control.label, control.uid)], lines)
   run(control, ['disable', service(control.label, control.uid)], lines)
   return { ok: true, lines }
