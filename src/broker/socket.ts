@@ -10,6 +10,7 @@ import {
   type PermissionBehavior,
   type ServerMessage,
   type WakeSource,
+  wakeSource,
 } from '../protocol.js'
 import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
@@ -539,12 +540,13 @@ export class SocketServer {
   /** CC-126. Answered on `spawn_result`, carrying the transcript verdict whatever the outcome. */
   private async handleResume(conn: Conn, msg: Extract<ClientMessage, { t: 'resume' }>): Promise<void> {
     const requester = this.core.registry.entryFor(conn)
+    const source = wakeSource(msg.source)
     const outcome = await this.supervisor.resume(msg.name, {
       requestedBy: requester?.name ?? HUMAN,
       ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
       ...(msg.surface === undefined ? {} : { surface: msg.surface }),
       ...(msg.message === undefined ? {} : { message: msg.message }),
-      ...(msg.source === undefined ? {} : { source: msg.source }),
+      ...(source === undefined ? {} : { source }),
     })
     reply(conn, { t: 'spawn_result', ...outcome })
   }
@@ -1309,7 +1311,7 @@ export class SocketServer {
         })
       }
       case 'human_send':
-        return this.handleHumanSend(conn, msg.to, msg.text, msg.source)
+        return this.handleHumanSend(conn, msg.to, msg.text, wakeSource(msg.source))
       case 'approval':
         return this.handleApproval(conn, msg)
       case 'permission_hook':

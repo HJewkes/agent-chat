@@ -6,7 +6,7 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import { SocketServer } from '../broker/socket.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
-import type { ServerMessage } from '../protocol.js'
+import type { ClientMessage, ServerMessage } from '../protocol.js'
 import { autoAttach } from './broker-harness.js'
 
 /**
@@ -118,5 +118,21 @@ describe('resume asked for over the socket', () => {
     const result = await spawnResult(replies)
     expect(result.reason).not.toMatch(/is a worker/)
     expect(result.reason).toMatch(/already live/)
+  })
+
+  it.each([
+    ['keeps a watchdog source', 'watchdog', 'watchdog'],
+    ['drops any other source', 'owner-approved', undefined],
+  ])('%s on the resume it passes to the supervisor (CC-203)', async (_name, sent, passed) => {
+    const resume = vi
+      .spyOn((server as unknown as { supervisor: { resume: () => Promise<unknown> } }).supervisor, 'resume')
+      .mockResolvedValue({ ok: false, reason: 'stubbed' })
+    const { conn, replies } = connection()
+
+    server.handleMessage(conn, { t: 'resume', name: 'scout', source: sent } as unknown as ClientMessage)
+
+    await spawnResult(replies)
+    expect(resume.mock.calls[0]?.at(1)).toMatchObject({ requestedBy: 'human' })
+    expect((resume.mock.calls[0]?.at(1) as { source?: string }).source).toBe(passed)
   })
 })

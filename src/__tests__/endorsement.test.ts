@@ -7,7 +7,7 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import { SocketServer } from '../broker/socket.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
-import { HUMAN, type DeliveredMessage, type ServerMessage } from '../protocol.js'
+import { HUMAN, type ClientMessage, type DeliveredMessage, type ServerMessage } from '../protocol.js'
 
 /**
  * CC-22 — a message an agent composed and a human endorsed.
@@ -523,6 +523,19 @@ describe('closing the authorization gaps a same-uid session could reach on its o
         ['Watchdog: wake', 'watchdog'],
         ['typed', undefined],
       ])
+    })
+
+    it('drops a source other than watchdog, so a client cannot invent one', () => {
+      const { core, server, wire } = makeServer()
+      const human = wire()
+      const beta = wire()
+      register(server, beta.conn, 'beta')
+
+      const frame = { t: 'human_send', to: 'beta', text: 'hi', source: 'owner-approved' }
+      server.handleMessage(human.conn, frame as unknown as ClientMessage)
+
+      const sent = core.events.since(0, 100).filter(row => row.kind === 'message')
+      expect(sent.map(row => [row.body, row.meta.source])).toEqual([['hi', undefined]])
     })
   })
 

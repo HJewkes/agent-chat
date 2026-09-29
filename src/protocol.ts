@@ -512,6 +512,10 @@ export const isInteractiveSurface = (surface: SurfaceName): boolean => surface !
 /** CC-203: marks a send or resume the seat watchdog made, so its event row is not read as the human typing. */
 export type WakeSource = 'watchdog'
 
+/** A frame's `source` is untrusted wire input, so anything but a known source is dropped. */
+export const wakeSource = (value: unknown): WakeSource | undefined =>
+  value === 'watchdog' ? value : undefined
+
 /** Session -> broker. */
 export type ClientMessage =
   /**
