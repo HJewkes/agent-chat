@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fetchRelated, relatedSection } from './related.js'
+import { fetchRelated, relatedSection, type RelatedQuery } from './related.js'
 
 /**
  * CC-63: the onboarding doc a fresh agent never got.
@@ -53,6 +53,11 @@ import { fetchRelated, relatedSection } from './related.js'
  * The last section is ranked against the assignment by the active-work daemon
  * (`related.ts`). It is the one part fetched over the network, so it is the one
  * part `resolveSpawnBriefing` awaits; `resolveBriefing` stays file-only.
+ *
+ * It keeps its own reserve (CC-164): the task list shrinks, then the session
+ * excerpt, before Related loses a line. The daemon logs every hit it returns as
+ * served, so the ranking call carries no trigger and a second call records only
+ * the prefix that rendered.
  */
 
 /** Total budget for an injected briefing. Beyond this it stops being orientation. */
@@ -124,8 +129,10 @@ const slugForPath = (dir: string | undefined, root: string): string | undefined 
   return slug !== undefined && isInitiative(root, slug) ? slug : undefined
 }
 
+const TRUNCATION_MARK = '\n… (truncated)'
+
 const truncated = (body: string, max: number): string =>
-  body.length <= max ? body : `${body.slice(0, max)}\n… (truncated)`
+  body.length <= max ? body : `${body.slice(0, max)}${TRUNCATION_MARK}`
 
 /** Drop YAML frontmatter, which is bookkeeping rather than orientation. */
 const withoutFrontmatter = (text: string): string => {
@@ -302,52 +309,83 @@ const readOr = (file: string, fallback: string): string => {
   }
 }
 
-const taskSection = (tasks: TaskLine[]): string => {
+const taskSection = (tasks: TaskLine[], limit: number): string => {
   if (tasks.length === 0) return '## Open tasks\n\nNone recorded.'
-  const shown = tasks.slice(0, MAX_TASKS).map(task => `- ${task.id}: ${task.title}`)
-  const more = tasks.length > MAX_TASKS ? `\n- … and ${tasks.length - MAX_TASKS} more` : ''
-  return `## Open tasks (${tasks.length}, highest priority first)\n\n${shown.join('\n')}${more}`
+  const lines = tasks.slice(0, limit).map(task => `- ${task.id}: ${task.title}`)
+  if (tasks.length > limit) lines.push(`- … and ${tasks.length - limit} more`)
+  return `## Open tasks (${tasks.length}, highest priority first)\n\n${lines.join('\n')}`
 }
 
-const sessionSection = (dir: string): string => {
+interface Session {
+  name: string
+  body: string
+  older: string[]
+}
+
+const latestSession = (dir: string): Session | undefined => {
   const [newest, ...older] = newestFiles(dir, 3)
-  if (newest === undefined) return ''
-  const body = truncated(withoutFrontmatter(readOr(path.join(dir, newest), '')).trim(), SESSION_MAX)
-  const earlier = older.length === 0 ? '' : `\n\nEarlier sessions on disk: ${older.join(', ')}`
-  return `## Most recent session (${newest})\n\n${body}${earlier}`
+  if (newest === undefined) return undefined
+  return { name: newest, body: withoutFrontmatter(readOr(path.join(dir, newest), '')).trim(), older }
+}
+
+const sessionSection = (session: Session | undefined, max: number): string => {
+  if (session === undefined) return ''
+  const earlier =
+    session.older.length === 0 ? '' : `\n\nEarlier sessions on disk: ${session.older.join(', ')}`
+  return `## Most recent session (${session.name})\n\n${truncated(session.body, max)}${earlier}`
+}
+
+const joined = (sections: string[]): string => sections.filter(section => section !== '').join('\n\n')
+
+/** Drop task lines, then trim the session excerpt, until everything including Related fits the cap. */
+const fitted = (
+  fixed: string[],
+  tasks: TaskLine[],
+  session: Session | undefined,
+  related: string,
+): string => {
+  const compose = (taskLimit: number, sessionMax: number): string =>
+    joined([...fixed, taskSection(tasks, taskLimit), sessionSection(session, sessionMax), related])
+  let taskLimit = Math.min(tasks.length, MAX_TASKS)
+  while (taskLimit > 0 && compose(taskLimit, SESSION_MAX).length > BRIEFING_MAX) taskLimit--
+  const text = compose(taskLimit, SESSION_MAX)
+  const overflow = text.length - BRIEFING_MAX
+  if (overflow <= 0 || session === undefined) return text
+  const shown = Math.min(session.body.length, SESSION_MAX)
+  return compose(0, Math.max(0, shown - overflow - TRUNCATION_MARK.length))
 }
 
 const missingInitiative = (slug: string, root: string): { warning: string } => ({
   warning: `no active-work initiative "${slug}" under ${root}; spawned without a briefing`,
 })
 
+const orientationHeader = (slug: string, dir: string): string =>
+  `# Orientation: active-work initiative "${slug}"\n\n` +
+  'Injected automatically by `agent_spawn`. Your coordinator did not write this section — it is ' +
+  `the initiative's own record, read from ${dir}. Treat the assignment below it as the actual task, ` +
+  'and this as the context you would otherwise have had to be told.'
+
 /**
  * The whole orientation block for one initiative, or a reason there is none.
- * `related` is the already-rendered ranked section; it goes last so truncation cuts it first.
+ * `related` is the already-rendered ranked section; tasks and session shrink before it does.
  */
 export function briefingFor(slug: string, root = activeWorkRoot(), related = ''): BriefingResult {
   const dir = path.join(root, slug)
   if (!isInitiative(root, slug)) return missingInitiative(slug, root)
 
-  const header =
-    `# Orientation: active-work initiative "${slug}"\n\n` +
-    'Injected automatically by `agent_spawn`. Your coordinator did not write this section — it is ' +
-    `the initiative's own record, read from ${dir}. Treat the assignment below it as the actual task, ` +
-    'and this as the context you would otherwise have had to be told.'
-
   const raw = readOr(path.join(dir, 'brief.md'), '')
   const profile = frontmatterField(raw, 'profile')
   const brief = truncated(withoutFrontmatter(raw).trim(), BRIEF_MAX)
-  const sections = [
-    header,
-    brief === '' ? '' : `## Brief (brief.md)\n\n${brief}`,
-    taskSection(openTasks(path.join(dir, 'tasks'))),
-    sessionSection(path.join(dir, 'sessions')),
+  const fixed = [orientationHeader(slug, dir), brief === '' ? '' : `## Brief (brief.md)\n\n${brief}`]
+  const text = fitted(
+    fixed,
+    openTasks(path.join(dir, 'tasks')),
+    latestSession(path.join(dir, 'sessions')),
     related,
-  ].filter(section => section !== '')
+  )
 
   return {
-    text: truncated(sections.join('\n\n'), BRIEFING_MAX),
+    text: truncated(text, BRIEFING_MAX),
     slug,
     ...(profile === undefined ? {} : { profile }),
   }
@@ -383,6 +421,7 @@ export interface SpawnBriefingRequest extends BriefingRequest {
   /** Injected in tests so no spec reaches the real daemon. */
   fetch?: typeof fetch
   timeoutMs?: number
+  now?: () => number
 }
 
 /** The briefing a spawn injects, with the related section fetched from the daemon when it answers. */
@@ -391,13 +430,28 @@ export async function resolveSpawnBriefing(req: SpawnBriefingRequest): Promise<B
   const resolved = resolveSlug(req, root)
   if ('warning' in resolved) return resolved
 
-  const related = await fetchRelated({
+  const query: RelatedQuery = {
     query: req.brief,
     initiative: resolved.slug,
     ...(req.fetch === undefined ? {} : { fetch: req.fetch }),
     ...(req.timeoutMs === undefined ? {} : { timeoutMs: req.timeoutMs }),
-  })
-  const section = 'hits' in related ? relatedSection(related.hits, resolved.slug, root) : ''
-  const result = briefingFor(resolved.slug, root, section)
+    ...(req.now === undefined ? {} : { now: req.now }),
+  }
+  const related = await fetchRelated(query)
+  const section =
+    'hits' in related ? relatedSection(related.hits, resolved.slug, root) : { text: '', lines: [] }
+  const result = briefingFor(resolved.slug, root, section.text)
+  if ('text' in result) logServed(query, countRendered(section.lines, result.text))
   return 'warning' in related && 'text' in result ? { ...result, warning: related.warning } : result
+}
+
+/** Rendered lines are a ranked prefix, so the count is enough to name them. */
+const countRendered = (lines: string[], text: string): number => {
+  const missing = lines.findIndex(line => !text.includes(line))
+  return missing === -1 ? lines.length : missing
+}
+
+/** Fire and forget: the daemon re-ranks the same query and logs the top `rendered` hits as served. */
+const logServed = (query: RelatedQuery, rendered: number): void => {
+  if (rendered > 0) void fetchRelated({ ...query, limit: rendered, trigger: 'spawn' })
 }

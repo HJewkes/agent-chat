@@ -28,7 +28,15 @@ import { activeWorkPort } from '../paths.js'
  */
 export const RELATED_TIMEOUT_MS = 2_500
 const RELATED_LIMIT = 6
+/** What the daemon counts against, rendered its own way (ref, title, relative path, excerpt). */
 const RELATED_BUDGET = 1_500
+/**
+ * CC-164: what the rendered section may use, and what the briefing keeps free for it.
+ * Six lines at 420 chars (an 80-char title, the longest source path on disk at 278, a
+ * ref and a foreign tag) plus the heading. The median path is 144, so six typical
+ * lines take about 1,650.
+ */
+export const RELATED_RESERVE = 2_600
 const RELATED_CLASSES = ['notes', 'sources', 'tasks', 'sessions']
 const TITLE_MAX = 80
 
@@ -49,6 +57,11 @@ export interface RelatedQuery {
   fetch?: typeof fetch
   port?: number
   timeoutMs?: number
+  /** Most hits to return; defaults to the six the section shows. */
+  limit?: number
+  /** Set only on the call that records what was rendered: the daemon logs every hit it returns as served. */
+  trigger?: 'spawn'
+  now?: () => number
 }
 
 class DaemonError extends Error {}
@@ -106,11 +119,11 @@ async function postRelated(q: RelatedQuery, query: string, signal: AbortSignal):
     body: JSON.stringify({
       for: query,
       initiative: q.initiative,
-      limit: RELATED_LIMIT,
+      limit: q.limit ?? RELATED_LIMIT,
       budget: RELATED_BUDGET,
       classes: RELATED_CLASSES,
       exclude: [],
-      trigger: 'spawn',
+      ...(q.trigger === undefined ? {} : { trigger: q.trigger }),
     }),
     signal,
   })
@@ -122,13 +135,14 @@ export async function fetchRelated(q: RelatedQuery): Promise<RelatedResult> {
   const query = q.query.trim()
   if (query === '') return { hits: [] }
   const timeoutMs = q.timeoutMs ?? RELATED_TIMEOUT_MS
+  const now = q.now ?? Date.now
   const signal = AbortSignal.timeout(timeoutMs)
-  const startedAt = Date.now()
+  const startedAt = now()
   try {
     const hits = await Promise.race([postRelated(q, query, signal), aborted(signal)])
     return { hits: (hits as unknown[]).filter(isHit) }
   } catch (err) {
-    return unavailable(reasonFor(err, timeoutMs), Date.now() - startedAt, timeoutMs)
+    return unavailable(reasonFor(err, timeoutMs), now() - startedAt, timeoutMs)
   }
 }
 
@@ -140,16 +154,23 @@ const hitLine = (hit: RelatedHit, slug: string, root: string): string => {
   return `- ${foreign}${hit.ref} "${shortTitle(hit.title)}" ${path.join(root, hit.path)}`
 }
 
-/** The ranked section, or nothing when there are no hits to show. */
-export function relatedSection(hits: RelatedHit[], slug: string, root: string): string {
+export interface RenderedRelated {
+  text: string
+  /** The ranked prefix of the hits that made it into `text`, one line each. */
+  lines: string[]
+}
+
+/** The ranked section within the reserve, or nothing when there are no hits to show. */
+export function relatedSection(hits: RelatedHit[], slug: string, root: string): RenderedRelated {
+  const heading = (count: number) => `## Related to this assignment (${count}, ranked; open with Read)\n\n`
   const lines: string[] = []
-  let used = 0
+  let used = heading(RELATED_LIMIT).length
   for (const hit of hits.slice(0, RELATED_LIMIT)) {
     const line = hitLine(hit, slug, root)
-    if (used + line.length + 1 > RELATED_BUDGET) break
+    if (used + line.length + 1 > RELATED_RESERVE) break
     lines.push(line)
     used += line.length + 1
   }
-  if (lines.length === 0) return ''
-  return `## Related to this assignment (${lines.length}, ranked; open with Read)\n\n${lines.join('\n')}`
+  if (lines.length === 0) return { text: '', lines }
+  return { text: `${heading(lines.length)}${lines.join('\n')}`, lines }
 }
