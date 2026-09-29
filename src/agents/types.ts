@@ -32,6 +32,15 @@ export type SurfaceLifetime = (typeof SURFACE_LIFETIMES)[number]
 export const DEFAULT_SURFACE_LIFETIME: SurfaceLifetime = 'keep'
 
 /**
+ * CC-163: what an agent is allowed to do with the bus beyond its own work.
+ * A coordinator may spawn agents and run with Remote Control; a worker may
+ * do neither and reports needs to its spawner instead.
+ */
+export const AGENT_ROLES = ['coordinator', 'worker'] as const
+
+export type AgentRole = (typeof AGENT_ROLES)[number]
+
+/**
  * A profile bundles the things that always travel together, so a spawn is one
  * noun rather than six flags.
  *
@@ -60,6 +69,8 @@ export interface AgentProfile {
    * headless profile, which has no surface to close. See {@link SurfaceLifetime}.
    */
   surfaceLifetime?: SurfaceLifetime
+  /** Absent means `worker`: spawning and Remote Control are opted into, never granted by omission. */
+  role?: AgentRole
   /** Appended via --append-system-prompt, after the standard peer preamble. */
   promptPrelude: string
   /** Extra MCP servers merged into the generated --mcp-config. */

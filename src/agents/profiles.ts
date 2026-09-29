@@ -2,7 +2,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { profilesDir } from '../paths.js'
 import { ISOLATION_NAMES, SURFACE_NAMES } from '../protocol.js'
-import { SURFACE_LIFETIMES, type AgentProfile, type SurfaceLifetime } from './types.js'
+import {
+  AGENT_ROLES,
+  SURFACE_LIFETIMES,
+  type AgentProfile,
+  type AgentRole,
+  type SurfaceLifetime,
+} from './types.js'
 
 /**
  * The five builtins, layered under anything in `~/.agent-chat/profiles/*.json`.
@@ -183,6 +189,8 @@ const LEAN_FLAGS = ['strictMcpConfig', 'disableSlashCommands'] as const
 const leanFlags = (body: Record<string, unknown>): Partial<AgentProfile> =>
   Object.fromEntries(LEAN_FLAGS.filter(field => body[field] !== undefined).map(field => [field, body[field]]))
 
+const isRole = (value: unknown): value is AgentRole => AGENT_ROLES.includes(value as never)
+
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every(entry => typeof entry === 'string')
 
@@ -209,6 +217,8 @@ export function parseProfile(name: string, raw: unknown): AgentProfile | { error
     return { error: `${name}: "surface" must be one of ${SURFACE_NAMES.join(', ')}` }
   if (body.surfaceLifetime !== undefined && !SURFACE_LIFETIMES.includes(body.surfaceLifetime as never))
     return { error: `${name}: "surfaceLifetime" must be one of ${SURFACE_LIFETIMES.join(', ')}` }
+  if (body.role !== undefined && !isRole(body.role))
+    return { error: `${name}: "role" must be one of ${AGENT_ROLES.join(', ')}` }
   for (const field of LEAN_FLAGS)
     if (body[field] !== undefined && typeof body[field] !== 'boolean')
       return { error: `${name}: "${field}" must be true or false` }
@@ -224,6 +234,7 @@ export function parseProfile(name: string, raw: unknown): AgentProfile | { error
     ...(body.surfaceLifetime === undefined
       ? {}
       : { surfaceLifetime: body.surfaceLifetime as SurfaceLifetime }),
+    ...(isRole(body.role) ? { role: body.role } : {}),
     promptPrelude: typeof body.promptPrelude === 'string' ? body.promptPrelude : '',
     ...(typeof body.mcpServers === 'object' && body.mcpServers !== null
       ? { mcpServers: body.mcpServers as Record<string, unknown> }
@@ -263,4 +274,23 @@ export function listProfileNames(dir: string = profilesDir()): string[] {
         .map(f => path.basename(f, '.json'))
     : []
   return [...new Set([...BUILTIN_PROFILES.map(p => p.name), ...user])].sort()
+}
+
+/** CC-163: fail closed, so a profile written before roles existed cannot spawn or take Remote Control. */
+export const roleOf = (profile: AgentProfile): AgentRole => profile.role ?? 'worker'
+
+/**
+ * The role an `agent_spawned` row grants, read from the row so it survives the
+ * agent's spawner. A row written before roles existed resolves its profile name
+ * against the current set; an adopted session is a human's own and coordinates.
+ */
+export function recordedRole(
+  meta: Record<string, string | undefined>,
+  dir: string = profilesDir(),
+): AgentRole {
+  if (meta.origin === 'adopted') return 'coordinator'
+  if (isRole(meta.role)) return meta.role
+  if (meta.profile === undefined || meta.profile === '') return 'worker'
+  const profile = loadProfile(meta.profile, dir)
+  return 'error' in profile ? 'worker' : roleOf(profile)
 }

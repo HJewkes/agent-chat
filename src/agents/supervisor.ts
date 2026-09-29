@@ -30,7 +30,7 @@ import {
   writeLaunchFiles,
   writeRuntimeState,
 } from './launch-files.js'
-import { loadProfile } from './profiles.js'
+import { loadProfile, recordedRole, roleOf } from './profiles.js'
 import {
   refusalOf,
   resolve as resolveIsolation,
@@ -77,6 +77,7 @@ import {
 import {
   DEFAULT_SURFACE_LIFETIME,
   type AgentProfile,
+  type AgentRole,
   type LaunchHandle,
   type LaunchPlan,
   type SurfaceLifetime,
@@ -135,8 +136,12 @@ export const ATTACH_TIMEOUT_MS = 30_000
  */
 export const ATTACH_CEILING_MS = 10 * 60_000
 
-/** Spawn depth cap. Without it an agent team is a fork bomb with a model picking the branching factor. */
-export const MAX_DEPTH = 2
+/**
+ * CC-163: the longest coordinator-to-coordinator chain. Without a cap an agent
+ * team is a fork bomb with a model picking the branching factor; workers cannot
+ * spawn at all, so only coordinator links need counting.
+ */
+export const MAX_COORDINATOR_DEPTH = 3
 
 /** How long a process gets to exit on SIGTERM before the ladder reaches SIGKILL. */
 const KILL_GRACE_MS = 3000
@@ -202,6 +207,20 @@ interface ResumedSession {
   sessionId: string
   path: string
   reattach?: WorktreeRecord
+}
+
+/** Who is asking for a spawn, as its own `agent_spawned` row recorded it. */
+interface Requester {
+  role: AgentRole
+  /** Coordinator links above the requester; a human-started root is 0. */
+  coordinatorDepth: number
+  profile: string
+}
+
+/** Where a new agent sits: its spawn-tree depth and its coordinator depth. */
+interface Lineage {
+  depth: number
+  coordinatorDepth: number
 }
 
 interface Resolved {
@@ -691,14 +710,18 @@ export class Supervisor implements TeleportHost {
   }
 
   /** Everything checkable before anything is allocated or written. */
-  private preflight(req: SpawnRequest, depth: number): string | undefined {
+  private preflight(req: SpawnRequest, requester: Requester): string | undefined {
     if (RESERVED_NAMES.has(req.name.toLowerCase()))
       return `"${req.name}" is reserved and cannot be used as an agent name`
     if (this.core.agents.nameIsClaimed(req.name))
       return `the name "${req.name}" is held by a live agent; retire it or choose another`
     if (this.core.registry.connFor(req.name) !== undefined)
       return `a session is already registered as "${req.name}"`
-    if (depth > MAX_DEPTH) return `spawn depth ${depth} exceeds the cap of ${MAX_DEPTH}`
+    if (req.requestedBy !== HUMAN && requester.role === 'worker')
+      return (
+        `${req.requestedBy} is a worker (profile ${requester.profile || 'unknown'}) and cannot spawn ` +
+        'agents; report the need to your spawner via chat_send'
+      )
     // Checked last of the cheap gates and first of the stateful ones: the human
     // at the CLI is exempt, same reasoning as checkCwd's exemption — they hold
     // no registry entry to be rate-limited by and reaching the socket already
@@ -716,15 +739,47 @@ export class Supervisor implements TeleportHost {
   }
 
   /**
-   * Depth of a spawn requested by `parentAgentId`, read from the parent's own
-   * recorded depth rather than recomputed by walking the chain — the parent may
-   * itself be retired, and a cap that stops working once an ancestor is gone is
-   * not a cap.
+   * Spawn-tree depth of a spawn requested by `parentAgentId`, read from the
+   * parent's own recorded depth rather than recomputed by walking the chain,
+   * because the parent may itself be retired. Placement reads it; the cap is
+   * `MAX_COORDINATOR_DEPTH`, counted by `requesterOf`.
    */
   private depthOf(parentAgentId: string | undefined): number {
     if (!parentAgentId) return 1
     const parentDepth = Number.parseInt(this.spawnEventOf(parentAgentId)?.meta.depth ?? '1', 10)
     return (Number.isFinite(parentDepth) ? parentDepth : 1) + 1
+  }
+
+  /**
+   * The requester's role and coordinator depth, read from its own spawn row so
+   * both survive its spawner. No parent is a human-started root; a parent with
+   * no row resolves to a worker, because a cap that opens on missing data is not one.
+   */
+  private requesterOf(parentAgentId: string | undefined): Requester {
+    if (!parentAgentId) return { role: 'coordinator', coordinatorDepth: 0, profile: '' }
+    const meta = this.spawnEventOf(parentAgentId)?.meta ?? {}
+    // A row from before CC-163 has only `depth`, which counts every link and so never undercounts.
+    const recorded = Number.parseInt(meta.coordinator_depth ?? meta.depth ?? '1', 10)
+    return {
+      role: recordedRole(meta),
+      coordinatorDepth: Number.isFinite(recorded) ? recorded : 1,
+      profile: meta.profile ?? '',
+    }
+  }
+
+  /** CC-163: what the TARGET profile's role allows, checked once the profile is loaded. */
+  private checkRole(req: SpawnRequest, profile: AgentProfile, coordinatorDepth: number): string | undefined {
+    if (req.remoteControl && roleOf(profile) === 'worker')
+      return (
+        `profile "${profile.name}" is a worker and cannot run with Remote Control; only a ` +
+        'coordinator profile may. Spawn without remote_control, or choose a coordinator profile'
+      )
+    if (coordinatorDepth > MAX_COORDINATOR_DEPTH)
+      return (
+        `coordinator depth ${coordinatorDepth} exceeds the cap of ${MAX_COORDINATOR_DEPTH}; spawn a ` +
+        'worker profile instead, or ask the human to start this coordinator'
+      )
+    return undefined
   }
 
   /**
@@ -870,12 +925,18 @@ export class Supervisor implements TeleportHost {
   }
 
   async spawn(req: SpawnRequest): Promise<SpawnOutcome> {
-    const depth = this.depthOf(req.parentAgentId)
-    const blocked = this.preflight(req, depth)
+    const requester = this.requesterOf(req.parentAgentId)
+    const blocked = this.preflight(req, requester)
     if (blocked) return this.refuse(req, blocked)
 
     const profile = loadProfile(req.profile)
     if ('error' in profile) return this.refuse(req, profile.error)
+    const lineage: Lineage = {
+      depth: this.depthOf(req.parentAgentId),
+      coordinatorDepth: requester.coordinatorDepth + (roleOf(profile) === 'coordinator' ? 1 : 0),
+    }
+    const roleBlocked = this.checkRole(req, profile, lineage.coordinatorDepth)
+    if (roleBlocked) return this.refuse(req, roleBlocked)
     const escalation = this.checkEscalation(req, profile)
     if (escalation) return this.refuse(req, escalation)
     const fork = req.inherit === 'context' ? this.forkSource(req) : undefined
@@ -954,7 +1015,7 @@ export class Supervisor implements TeleportHost {
     const executionId = this.shadow.open(agentId, account.dir)
 
     try {
-      return await this.launch(req, ctx, agentId, isolationName, warnings, profile, depth, {
+      return await this.launch(req, ctx, agentId, isolationName, warnings, profile, lineage, {
         account,
         ...(injected ? { briefing: injected } : {}),
         ...(fork ? { fork } : {}),
@@ -979,7 +1040,7 @@ export class Supervisor implements TeleportHost {
     isolationName: IsolationName,
     warnings: string[],
     profile: AgentProfile,
-    depth: number,
+    lineage: Lineage,
     resolved: Resolved,
   ): Promise<SpawnOutcome> {
     const { briefing, fork, account, resumed, predecessor } = resolved
@@ -1064,7 +1125,10 @@ export class Supervisor implements TeleportHost {
         // after a broker restart, and so `agent ls`/the log can show what an
         // agent's pane was promised. See `SurfaceLifetime`.
         surface_lifetime: lifetimeOf(profile),
-        depth: String(depth),
+        depth: String(lineage.depth),
+        // CC-163: on the row so the agent's own spawns are judged by it after its spawner is gone.
+        role: roleOf(profile),
+        coordinator_depth: String(lineage.coordinatorDepth),
         // Recorded because a fork carries content the profile's tool list says
         // nothing about: reading the row later is the only way to know this
         // agent started holding someone else's conversation, and whose.

@@ -11,7 +11,7 @@ import { Semaphore } from '../agents/semaphore.js'
 import { Supervisor } from '../agents/supervisor.js'
 import { HANDOFF_MAX_BYTES, PANE_SETTLE_MS } from '../agents/teleport.js'
 import { planPath } from '../agents/launch-files.js'
-import { logPath } from '../paths.js'
+import { logPath, profilesDir } from '../paths.js'
 import type { LaunchPlan } from '../agents/types.js'
 import type { ArgvReader } from '../broker/host-channels.js'
 
@@ -91,6 +91,20 @@ async function spawnAgent(over: Record<string, unknown> = {}): Promise<string> {
   })
   expect(result.ok).toBe(true)
   return result.agentId as string
+}
+
+/** Installs a coordinator profile, the only kind that may run with Remote Control (CC-163). */
+function installCoordinatorProfile(): string {
+  fs.mkdirSync(profilesDir(), { recursive: true })
+  const profile = {
+    model: 'opus',
+    allowedTools: ['Read'],
+    isolation: 'none',
+    surface: 'iterm-pane',
+    role: 'coordinator',
+  }
+  fs.writeFileSync(path.join(profilesDir(), 'lead.json'), JSON.stringify(profile))
+  return 'lead'
 }
 
 /** An ordinary human-started session, adopted the way `chat_register` adopts one. */
@@ -765,10 +779,34 @@ describe('remote control across a teleport', () => {
   })
 
   it('reaches a spawned agent only when the spawner asks for it', async () => {
-    const asked = await spawnAgent({ name: 'rc-on', surface: 'iterm-pane', remoteControl: true })
-    const plain = await spawnAgent({ name: 'rc-off', surface: 'iterm-pane' })
+    const profile = installCoordinatorProfile()
+    const asked = await spawnAgent({ name: 'rc-on', profile, surface: 'iterm-pane', remoteControl: true })
+    const plain = await spawnAgent({ name: 'rc-off', profile, surface: 'iterm-pane' })
     expect(planFor(asked).args).toContain('--remote-control')
     expect(planFor(plain).args).not.toContain('--remote-control')
+  })
+
+  it("never carries it onto a worker's successor, even when the worker's argv has it", async () => {
+    supervisor.close()
+    makeSupervisor(undefined, () => PRIMARY)
+    const agentId = await spawnAgent({ surface: 'iterm-pane' })
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+
+    expect(result.ok).toBe(true)
+    expect(planFor(result.agentId as string).args).not.toContain('--remote-control')
+    expect(spawnRowFor(result.agentId as string)?.meta.role).toBe('worker')
+  })
+
+  it('refuses a worker that asks for it outright, before writing a handoff', async () => {
+    const agentId = await spawnAgent({ surface: 'iterm-pane' })
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h', remoteControl: true })
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/scout is a worker, so its successor cannot run with Remote Control/)
+    expect(kinds()).not.toContain('agent_handoff')
   })
 
   it('lets the session say so itself, for Remote Control switched on mid-session', async () => {

@@ -114,9 +114,10 @@ successor build — it ends the current session, which makes it disruptive mid-d
 
 **Escalation guard (CC-39 / CC-40).** From **scout** (the explorer you just spawned,
 profile denies `Bash`/`Write`/`Edit`), try: `Spawn a peer-profile agent named
-"shell-buddy".` It should **refuse**, citing tools scout was never granted (CC-39,
-allow-side). This is the sharpest live check available: a read-only agent asking for
-a shell-capable peer, denied at the one enforcement point that matters.
+"shell-buddy".` It should **refuse**: scout is a worker profile, and workers cannot
+spawn at all (CC-163). The CC-39 allow-side check behind it, which refuses a spawn
+granting tools the requester was never granted, now only applies between
+coordinators and is covered by the regression tests in `supervisor.test.ts`.
 
 CC-40 (deny-side) needs a custom profile with the same `allowedTools` as scout but a
 weaker `disallowedTools` to trigger — not naturally reachable with the four builtin

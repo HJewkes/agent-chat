@@ -13,7 +13,7 @@ import {
   type SurfaceName,
 } from '../protocol.js'
 import type { Allocation } from './isolation/index.js'
-import { loadProfile } from './profiles.js'
+import { loadProfile, recordedRole } from './profiles.js'
 import { observedModel } from './transcript.js'
 import type { AgentProfile } from './types.js'
 
@@ -181,6 +181,7 @@ const inheritedProfile = (model: string | undefined): AgentProfile => ({
   allowedTools: [],
   isolation: 'none',
   surface: 'iterm-tab',
+  role: 'coordinator',
   promptPrelude: '',
 })
 
@@ -223,6 +224,12 @@ export class Teleport {
 
     const config = this.configFor(identity, subject, req.model)
     if ('error' in config) return { ok: false, reason: config.error }
+    const worker = recordedRole(this.core.agents.spawnMeta(subject.agentId)) === 'worker'
+    if (worker && req.remoteControl === true)
+      return {
+        ok: false,
+        reason: `${subject.name} is a worker, so its successor cannot run with Remote Control; only a coordinator may`,
+      }
 
     const descendantId = newMsgId()
     // Stored verbatim, and the broker templates nothing: the moment it does, a
@@ -242,7 +249,8 @@ export class Teleport {
       profile: config.profile,
       surface: config.surface,
       inherited: this.host.inheritedIsolation(subject.agentId),
-      remoteControl: req.remoteControl ?? this.predecessorRemoteControl(subject),
+      // CC-163: a worker's successor never inherits Remote Control, even one its argv shows.
+      remoteControl: worker ? false : (req.remoteControl ?? this.predecessorRemoteControl(subject)),
     }
     this.pending.set(subject.agentId, entry)
     logEvent('teleport_started', { name: subject.name, from: subject.agentId, to: descendantId })
@@ -475,6 +483,8 @@ export class Teleport {
         // long-running agent loses the ability to pick up its own improvements
         // precisely because it has run long enough to need it.
         depth: previous.depth ?? '1',
+        role: recordedRole(previous),
+        coordinator_depth: previous.coordinator_depth ?? previous.depth ?? '1',
         parent: previous.parent ?? '',
         origin: previous.origin === 'adopted' ? 'adopted' : 'spawned',
         teleport_from: subject.agentId,
