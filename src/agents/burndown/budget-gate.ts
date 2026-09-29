@@ -130,7 +130,7 @@ export type PoolGateResult =
   | { open: true; pool: string; sonnetOnly: boolean; reason: string }
   | { open: false; pool: string; reason: string }
 
-const RUN_CAP_MS = 12 * 3_600_000
+export const RUN_CAP_MS = 12 * 3_600_000
 const DAY_START_HOUR = 7
 const SONNET_BAND_POINTS = 10
 
@@ -163,6 +163,16 @@ export function dayStart(now: Date): number {
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), DAY_START_HOUR)
   if (start.getTime() > now.getTime()) start.setDate(start.getDate() - 1)
   return start.getTime()
+}
+
+/**
+ * The run-start convention the watchdog and the tick share: a run starts at the later of the owner's
+ * last message to the seat and the watchdog's recorded run start, and is at most 12 hours old.
+ * The spend day starts at 07:00 local (`dayStart`).
+ */
+export function runStartAt(now: Date, starts: { ownerMessageAt?: number; recordedAt?: number } = {}): number {
+  const known = [starts.ownerMessageAt, starts.recordedAt].filter((t): t is number => t !== undefined)
+  return Math.max(now.getTime() - RUN_CAP_MS, ...known)
 }
 
 interface WindowLines {
@@ -205,7 +215,10 @@ function spendStop(input: PoolGateInput, now: SevenDaySample): string | undefine
 }
 
 /** Charter section 4's budget stops for one seat on its pool; a closed result's reason is the `BUDGET-PAUSE` line. */
-export function gatePool(input: PoolGateInput): PoolGateResult {
+export function gatePool(
+  input: PoolGateInput,
+  { maxReadingAgeSeconds = MAX_READING_AGE_SECONDS }: { maxReadingAgeSeconds?: number } = {},
+): PoolGateResult {
   const { pool, reading, ctx } = input
   const name = pool?.name ?? 'unknown'
   const closed = (why: string): PoolGateResult => ({
@@ -217,8 +230,8 @@ export function gatePool(input: PoolGateInput): PoolGateResult {
     return closed('no reserve_seven_day and ceiling_five_hour for this pool in the charter')
   if (reading?.sevenDay === undefined || reading.fiveHour === undefined)
     return closed('no seven_day and five_hour reading for this pool')
-  if (reading.ageSeconds > MAX_READING_AGE_SECONDS)
-    return closed(`reading is ${reading.ageSeconds}s old, over the ${MAX_READING_AGE_SECONDS}s limit`)
+  const stale = staleReason(reading.ageSeconds, maxReadingAgeSeconds)
+  if (stale !== undefined) return closed(stale)
   const { ceiling, line, note } = windowLines(pool, pool.reserve_seven_day, pool.ceiling_five_hour, ctx)
   const { fiveHour, sevenDay } = reading
   const why = note === '' ? '' : ` (${note})`
