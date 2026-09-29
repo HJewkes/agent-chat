@@ -41,7 +41,6 @@ function writePlan(
   extra: Partial<LaunchPlan> = {},
 ): void {
   const plan: LaunchPlan = {
-    ...extra,
     agentId,
     bin: 'claude',
     args: [fakeClaude],
@@ -50,6 +49,7 @@ function writePlan(
     title: agentId,
     surface: 'headless',
     ...(stdin === undefined ? {} : { stdin }),
+    ...extra,
   }
   const agentDir = path.join(stateDir, 'agents', agentId)
   fs.mkdirSync(agentDir, { recursive: true })
@@ -89,14 +89,22 @@ describe('run-agent stamping the launched process', () => {
 })
 
 describe('run-agent honouring an unset marker in the plan (CC-200)', () => {
-  it('launches claude with CLAUDE_CONFIG_DIR absent, though its own environment had one', () => {
-    fs.writeFileSync(fakeClaude, "process.stdout.write(String('CLAUDE_CONFIG_DIR' in process.env))\n")
-    writePlan('agt-test', {}, undefined, { unsetEnv: ['CLAUDE_CONFIG_DIR'] })
+  // The deletion must not be gated on the surface: only a headless plan was ever tested (CC-221).
+  it.each(['headless', 'iterm-pane', 'iterm-tab'] as const)(
+    'launches claude on %s with CLAUDE_CONFIG_DIR absent, though its own environment had one',
+    surface => {
+      const seen = path.join(stateDir, 'seen.txt')
+      fs.writeFileSync(
+        fakeClaude,
+        `require('node:fs').writeFileSync(${JSON.stringify(seen)}, String('CLAUDE_CONFIG_DIR' in process.env))\n`,
+      )
+      writePlan('agt-test', {}, undefined, { surface, unsetEnv: ['CLAUDE_CONFIG_DIR'] })
 
-    const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath, CLAUDE_CONFIG_DIR: stateDir })
+      runAgent({ AGENT_CHAT_CLAUDE: process.execPath, CLAUDE_CONFIG_DIR: stateDir })
 
-    expect(result.stdout).toBe('false')
-  })
+      expect(fs.readFileSync(seen, 'utf8')).toBe('false')
+    },
+  )
 })
 
 describe('run-agent keeping the stderr tail of a headless claude (CC-161)', () => {
