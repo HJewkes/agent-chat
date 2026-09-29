@@ -19,6 +19,9 @@ export const DEFAULT_WORKTREE_BUDGET = 3
 const DEFAULT_BASE_PATH = '.worktrees'
 export const BRANCH_PREFIX = 'agent-chat/'
 
+/** Five minutes: a cold checkout of a multi-gigabyte repo takes tens of seconds, so only a hang reaches it. */
+export const WORKTREE_ADD_TIMEOUT_MS = 300_000
+
 /**
  * Grace window between an agent exiting and its worktree becoming reclaimable.
  *
@@ -51,6 +54,8 @@ export interface WorktreeOptions {
   budget?: number
   /** Bound on fetching origin's default branch before cutting a new one. */
   fetchTimeoutMs?: number
+  /** Bound on one `git worktree add`; the add is killed and the repo's queue moves on when it passes. */
+  addTimeoutMs?: number
   /** Runs each `git worktree add`; tests inject one to observe how adds interleave. */
   runWorktreeAdd?: GitRunner
 }
@@ -360,6 +365,47 @@ function addWorktree(gitRoot: string, args: readonly string[], run: GitRunner = 
   return adding
 }
 
+const addTarget = (args: readonly string[]): string | undefined => (args[2] === '-b' ? args[4] : args[2])
+
+/**
+ * A killed add can leave a half-written directory and a registration under
+ * `.git/worktrees`. Both are removed inside the queue slot so the next add, and
+ * the next attach of this name, start clean. The branch a `-b` add created is
+ * kept: it holds no commits, so the next attach resets it.
+ */
+async function discardHalfCreated(gitRoot: string, args: readonly string[]): Promise<void> {
+  const target = addTarget(args)
+  if (target !== undefined) {
+    await gitOrNull(['worktree', 'remove', '--force', target], gitRoot, CLEANUP_TIMEOUT_MS)
+    rmSync(target, { recursive: true, force: true })
+  }
+  await gitOrNull(['worktree', 'prune'], gitRoot, CLEANUP_TIMEOUT_MS)
+}
+
+const CLEANUP_TIMEOUT_MS = 30_000
+
+/** CC-239: one hung add (a hook, a filter) must not hold the repo's queue forever. */
+function boundedAdd(run: GitRunner | undefined, timeoutMs: number): GitRunner {
+  const inner = run ?? ((args, cwd) => git(args, cwd, timeoutMs))
+  return async (args, cwd) => {
+    let timer: NodeJS.Timeout | undefined
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new AddTimedOut()), timeoutMs)
+    })
+    try {
+      return await Promise.race([inner(args, cwd), expired])
+    } catch (err) {
+      if (!(err instanceof AddTimedOut) && (err as { killed?: unknown }).killed !== true) throw err
+      await discardHalfCreated(cwd, args)
+      throw new Error(`git worktree add in ${cwd} timed out after ${timeoutMs}ms and was killed`)
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+}
+
+class AddTimedOut extends Error {}
+
 /** Hooks and settings live in gitignored .claude/, so a fresh worktree runs unhooked without this. */
 function copyClaudeDir(gitRoot: string, worktreePath: string): void {
   const source = path.resolve(gitRoot, '.claude')
@@ -546,7 +592,12 @@ export async function reattachWorktree(
   const timeoutMs = opts.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS
   const base = await resolveBranchBase(gitRoot, timeoutMs)
   const source = await branchSource(gitRoot, branch, timeoutMs)
-  await addForSource(record, source, base.sha, opts.runWorktreeAdd)
+  await addForSource(
+    record,
+    source,
+    base.sha,
+    boundedAdd(opts.runWorktreeAdd, opts.addTimeoutMs ?? WORKTREE_ADD_TIMEOUT_MS),
+  )
   copyClaudeDir(gitRoot, worktree)
   const warnings = reattachWarnings(record, source, base)
   return {
@@ -631,7 +682,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       const reused = await attachWorktree(gitRoot, branch, worktreePath, {
         base: base.sha,
         force: ctx.forceReset === true,
-        run: opts.runWorktreeAdd,
+        run: boundedAdd(opts.runWorktreeAdd, opts.addTimeoutMs ?? WORKTREE_ADD_TIMEOUT_MS),
       })
 
       const carried = reused ? ' It already carries commits from an earlier run under this name.' : ''

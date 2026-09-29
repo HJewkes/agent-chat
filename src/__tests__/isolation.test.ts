@@ -540,6 +540,40 @@ describe('concurrent worktree adds (CC-224)', () => {
     expect(settled.map(s => s.status).sort()).toEqual(['fulfilled', 'rejected'])
   })
 
+  it('rejects an add that never resolves, naming the repo and timeout, and lets the next add run', async () => {
+    const repo = makeRepo()
+    let calls = 0
+    const hangFirst: GitRunner = (args, cwd) =>
+      calls++ === 0 ? new Promise<string>(() => {}) : realAdd(args, cwd)
+    const strategy = createWorktreeStrategy({ budget: 10, addTimeoutMs: 200, runWorktreeAdd: hangFirst })
+
+    const first = strategy.allocate(ctxFor(repo, { agentName: 'w1' }))
+    const second = strategy.allocate(ctxFor(repo, { agentName: 'w2' }))
+    const settled = await Promise.allSettled([first, second])
+
+    // Either name may reach the add lock first, so only the outcome set is fixed.
+    expect(settled.map(s => s.status).sort()).toEqual(['fulfilled', 'rejected'])
+    const reason = (settled.find(s => s.status === 'rejected') as PromiseRejectedResult).reason as Error
+    expect(reason.message).toContain(repo)
+    expect(reason.message).toContain('200ms')
+  })
+
+  it('removes the half-created directory and registration after a killed add', async () => {
+    const repo = makeRepo()
+    const halfWritten: GitRunner = async (args, cwd) => {
+      await realAdd(args, cwd)
+      return new Promise<string>(() => {})
+    }
+    const strategy = createWorktreeStrategy({ addTimeoutMs: 300, runWorktreeAdd: halfWritten })
+
+    await expect(strategy.allocate(ctxFor(repo, { agentName: 'w1' }))).rejects.toThrow('timed out')
+
+    expect(fs.existsSync(path.join(repo, '.worktrees', 'w1'))).toBe(false)
+    expect(git(['worktree', 'list', '--porcelain'], repo)).not.toContain('.worktrees/w1')
+    const retry = await createWorktreeStrategy({}).allocate(ctxFor(repo, { agentName: 'w1' }))
+    expect(fs.existsSync(retry.cwd)).toBe(true)
+  })
+
   it('does not make adds in different repositories wait for each other', async () => {
     const [left, right] = [makeRepo(), makeRepo()]
     let leftStarted!: () => void
