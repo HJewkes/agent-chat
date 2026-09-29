@@ -2132,7 +2132,7 @@ describe('a visible spawn still starting at the attach window', () => {
   it('names the missing login, with the config dir, when claude exits saying it is not logged in', async () => {
     const configDir = path.join(workspace(), 'account')
     fs.mkdirSync(configDir)
-    const sup = headlessExitingWith('Not logged in · Please run /login\n', configDir)
+    const sup = headlessExitingWith('Not logged in\n', configDir)
 
     const result = await sup.spawn(spawnReq({ configDir }))
 
