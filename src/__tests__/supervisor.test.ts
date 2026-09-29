@@ -24,6 +24,7 @@ import type { Allocation } from '../agents/isolation/index.js'
 import type { HookProcess, HookSpawnFn } from '../agents/hooks.js'
 import { autoAttach } from './broker-harness.js'
 import { transcriptPath } from '../agents/transcript.js'
+import { writeOutputTail } from '../agents/launch-output.js'
 import { RESUMED_BRIEF } from '../agents/resume-session.js'
 
 /**
@@ -2374,6 +2375,100 @@ describe('a visible spawn still starting at the attach window', () => {
 
     expect(result.ok).toBe(false)
     expect(result.reason).toMatch(/exited before registering \(exit code 1\)/)
+  })
+
+  /** CC-161: a headless claude that exits with `stderr` on the wrapper's tail file, in a folder with the given config. */
+  const headlessExitingWith = (stderr: string, configDir: string) => {
+    stopAutoAttach()
+    fs.writeFileSync(path.join(configDir, '.claude.json'), JSON.stringify({ projects: {} }))
+    vi.spyOn(os, 'homedir').mockReturnValue(path.dirname(configDir))
+    return new Supervisor(
+      core,
+      withShadow({
+        attachMs: 60_000,
+        surface: {
+          platform: 'linux',
+          spawn: (_bin: string, argv: string[]) => {
+            if (stderr !== '') writeOutputTail(argv[argv.length - 1] as string, stderr)
+            return {
+              pid: 4242,
+              unref: () => undefined,
+              once: (event: string, listener: (...args: unknown[]) => void) => {
+                if (event === 'exit') queueMicrotask(() => listener(1, null))
+              },
+            }
+          },
+        },
+      }),
+    )
+  }
+
+  it('names the missing login, with the config dir, when claude exits saying it is not logged in', async () => {
+    const configDir = path.join(workspace(), 'account')
+    fs.mkdirSync(configDir)
+    const sup = headlessExitingWith('Not logged in\n', configDir)
+
+    const result = await sup.spawn(spawnReq({ configDir }))
+
+    expect(result.reason).toMatch(
+      /exited before registering \(exit code 1\)\. Claude Code reported it is not logged in/,
+    )
+    expect(result.reason).toContain(`claude /login`)
+    expect(result.reason).toContain(configDir)
+    expect(result.reason).not.toMatch(/trust/i)
+  })
+
+  it('names the missing login when only the /login instruction is printed', async () => {
+    const configDir = path.join(workspace(), 'account')
+    fs.mkdirSync(configDir)
+    const sup = headlessExitingWith('Please run /login\n', configDir)
+
+    const result = await sup.spawn(spawnReq({ configDir }))
+
+    expect(result.reason).toMatch(/not logged in/)
+  })
+
+  it('still gives trust advice when claude exits without a login complaint in an untrusted folder', async () => {
+    const configDir = path.join(workspace(), 'account')
+    fs.mkdirSync(configDir)
+    const sup = headlessExitingWith('something else went wrong\n', configDir)
+
+    const result = await sup.spawn(spawnReq({ configDir }))
+
+    expect(result.reason).toMatch(/no accepted trust entry/)
+    expect(result.reason).not.toMatch(/logged in/)
+  })
+
+  it('falls back to the generic message when claude exits with unrecognised output and trust is unknown', async () => {
+    stopAutoAttach()
+    const configDir = path.join(workspace(), 'account')
+    fs.mkdirSync(configDir)
+    vi.spyOn(os, 'homedir').mockReturnValue(path.dirname(configDir))
+    const sup = new Supervisor(
+      core,
+      withShadow({
+        attachMs: 60_000,
+        surface: {
+          platform: 'linux',
+          spawn: (_bin: string, argv: string[]) => {
+            writeOutputTail(argv[argv.length - 1] as string, 'segfault\n')
+            return {
+              pid: 4242,
+              unref: () => undefined,
+              once: (event: string, listener: (...args: unknown[]) => void) => {
+                if (event === 'exit') queueMicrotask(() => listener(1, null))
+              },
+            }
+          },
+        },
+      }),
+    )
+
+    const result = await sup.spawn(spawnReq({ configDir }))
+
+    expect(result.reason).toContain(
+      "claude exited before registering (exit code 1). Look at the surface itself (headless) and at ~/.claude for this agent's transcript.",
+    )
   })
 
   it('says the directory is trusted instead of guessing at the trust prompt', async () => {

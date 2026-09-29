@@ -3,6 +3,7 @@ import { home } from '../paths.js'
 import { agentEnv } from './agent-env.js'
 import { recordClaudeBin, resolveClaudeBin } from './claude-bin.js'
 import { readLaunchPlan } from './launch-files.js'
+import { clearOutputTail, tailKeeper, writeOutputTail } from './launch-output.js'
 import type { LaunchPlan } from './types.js'
 
 /**
@@ -56,7 +57,11 @@ function resolvedBin(bin: string): string {
   return resolution.bin
 }
 
+/** Longest the wrapper waits for stderr to drain after claude exits; a grandchild holding fd 2 must not stall it. */
+const STDERR_FLUSH_MS = 250
+
 function exec(plan: LaunchPlan): void {
+  clearOutputTail(plan.agentId)
   const bin = resolvedBin(plan.bin)
   const child = spawn(bin, plan.args, {
     cwd: plan.cwd,
@@ -70,7 +75,13 @@ function exec(plan: LaunchPlan): void {
     env: launchEnv(plan.env),
     // The brief goes in on stdin for headless; an interactive surface hands the
     // terminal straight through so the human can type into the pane.
-    stdio: plan.stdin === undefined ? 'inherit' : ['pipe', 'inherit', 'inherit'],
+    stdio: plan.stdin === undefined ? 'inherit' : ['pipe', 'inherit', 'pipe'],
+  })
+  const stderrTail = tailKeeper()
+  // Headless only. Drained and passed on so the pipe never fills; the tail is what CC-161 reads.
+  child.stderr?.on('data', (chunk: Buffer) => {
+    stderrTail.append(chunk.toString('utf8'))
+    process.stderr.write(chunk)
   })
 
   if (plan.stdin !== undefined) {
@@ -84,6 +95,12 @@ function exec(plan: LaunchPlan): void {
   // Exit the way the child did, so whatever is watching the surface sees the
   // agent's own outcome rather than this wrapper's.
   child.on('exit', (code, signal) => {
-    process.exit(signal !== null ? 128 : (code ?? 0))
+    const finish = (): never => {
+      writeOutputTail(plan.agentId, stderrTail.text())
+      process.exit(signal !== null ? 128 : (code ?? 0))
+    }
+    if (child.stderr === null || child.stderr.readableEnded) return finish()
+    child.stderr.once('end', finish)
+    setTimeout(finish, STDERR_FLUSH_MS)
   })
 }
