@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { RUN_CAP_MS } from '../agents/burndown/budget-gate.js'
+import { RUN_CAP_MS, dayStart } from '../agents/burndown/budget-gate.js'
 import {
   RESTART_WINDOW_MAX_MS,
   advanceMeter,
@@ -10,6 +10,7 @@ import {
   withinRun,
   type SpendMeter,
 } from '../agents/seats/stops.js'
+import { poolBudget } from '../agents/seats/watchdog.js'
 
 const at = (hour: number, minute = 0, date = 29): number => new Date(2026, 8, date, hour, minute).getTime()
 
@@ -37,7 +38,7 @@ describe('spend meters', () => {
     expect(sameSpendDay({ since: at(6, 59), last: 0, spent: 0 }, at(7))).toBe(false)
     expect(sameSpendDay({ since: at(7), last: 0, spent: 0 }, at(6, 59, 30))).toBe(true)
     const meter = advanceMeter({ since: at(6), last: 19, spent: 9 }, 25, at(7, 8), sameSpendDay)
-    expect(meter).toEqual({ since: at(7, 8), last: 25, spent: 0 })
+    expect(meter).toEqual({ since: at(7, 8), last: 25, spent: 0, before: 19 })
   })
 
   it('starts a new run after the 12-hour cap', () => {
@@ -86,6 +87,44 @@ describe('meterHistory', () => {
 
   it('skips a window with no meter', () => {
     expect(meterHistory([{ at: at(7), meter: undefined }], at(9))).toEqual([])
+  })
+
+  it("dates the prior day's last reading at 07:00 when the day meter's first sample comes later", () => {
+    const history = meterHistory([{ at: at(7), meter: { ...meter(at(9), 30, 0), before: 20 } }], at(10))
+    expect(history).toEqual([
+      { at: at(7), sevenDay: 20 },
+      { at: at(9), sevenDay: 30 },
+    ])
+  })
+
+  describe('the day gate when the first sample is after 07:00', () => {
+    const pool = {
+      name: 'agents',
+      configDir: '/pool',
+      humanUses: false,
+      rule: { reserve_seven_day: 25, ceiling_five_hour: 70 },
+      perDayPoints: 13,
+    }
+    const now = new Date(2026, 8, 29, 10)
+    const gate = (day: SpendMeter) =>
+      poolBudget({
+        pool,
+        spend: {},
+        reading: { ageSeconds: 0, fiveHour: 5, sevenDay: 35 },
+        history: meterHistory([{ at: dayStart(now), meter: day }], now.getTime()),
+        runStartAt: at(9),
+        now,
+      })
+
+    it('closes on spend since the 07:00 reading, not since the first sample', () => {
+      const verdict = gate({ since: at(9), last: 35, spent: 5, before: 20 })
+      expect(verdict.open).toBe(false)
+      expect(verdict.reason).toContain('day spend 15 points')
+    })
+
+    it('counts from the first sample when no earlier reading exists', () => {
+      expect(gate({ since: at(9), last: 35, spent: 5 }).open).toBe(true)
+    })
   })
 })
 

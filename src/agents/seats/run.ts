@@ -80,6 +80,8 @@ interface Pass {
   restart: string | undefined
   readings: Map<string, AccountReading | undefined>
   fireCap: number | undefined
+  /** Pools whose day meter started with no reading at or before 07:00, reported once when it starts. */
+  gaps: string[]
 }
 
 function poolReading(pass: Pass, pool: Pool): AccountReading | undefined {
@@ -88,7 +90,11 @@ function poolReading(pass: Pass, pool: Pool): AccountReading | undefined {
     const reading = accountReading(pass.deps.readBudget(pool.configDir, nowMs), nowMs)
     pass.readings.set(pool.name, reading)
     const meter = advanceMeter(pass.doc.pools[pool.name], reading?.sevenDay, nowMs, sameSpendDay)
-    if (meter !== undefined) pass.doc.pools[pool.name] = meter
+    if (meter !== undefined) {
+      const started = pass.doc.pools[pool.name] !== meter && meter.since === nowMs
+      if (started && meter.before === undefined) pass.gaps.push(pool.name)
+      pass.doc.pools[pool.name] = meter
+    }
   }
   return pass.readings.get(pool.name)
 }
@@ -203,6 +209,7 @@ async function startPass(deps: WatchdogDeps, options: WatchdogOptions): Promise<
     restart: openRestartWindow(deps, charter, now),
     readings: new Map(),
     fireCap: options.fireCap,
+    gaps: [],
   }
   return [pass, charter]
 }
@@ -224,6 +231,10 @@ export async function runWatchdog(deps: WatchdogDeps, options: WatchdogOptions):
     if (options.dryRun) lines.push(`${name}: ${decision.fire ? 'WOULD FIRE' : 'skip'}: ${decision.reason}`)
     else if (decision.fire) lines.push(await act(pass, name, decision))
   }
+  for (const pool of pass.gaps)
+    lines.push(
+      `pool ${pool}: no seven_day reading at or before 07:00, so the day's spend counts from the first sample`,
+    )
   if (!options.dryRun) deps.saveDoc({ seats: pass.doc.seats, pools: pass.doc.pools })
   return lines
 }

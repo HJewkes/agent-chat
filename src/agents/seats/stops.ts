@@ -12,6 +12,8 @@ export interface SpendMeter {
   since: number
   last: number
   spent: number
+  /** The reading of the meter this one replaced, taken before this window began. */
+  before?: number
 }
 
 /** A restart announcement with no "restart done" is ignored after this, so a lost reply cannot park every seat. */
@@ -31,7 +33,8 @@ export function advanceMeter(
   current: (meter: SpendMeter, nowMs: number) => boolean,
 ): SpendMeter | undefined {
   if (sevenDay === undefined) return previous
-  if (previous === undefined || !current(previous, nowMs)) return { since: nowMs, last: sevenDay, spent: 0 }
+  if (previous === undefined) return { since: nowMs, last: sevenDay, spent: 0 }
+  if (!current(previous, nowMs)) return { since: nowMs, last: sevenDay, spent: 0, before: previous.last }
   return {
     since: previous.since,
     last: sevenDay,
@@ -46,15 +49,21 @@ export interface MeterStart {
 
 /**
  * The meters as `gatePool` history, each dated at its window's start. A meter's first sample may come
- * after that start, so the day window counts spend from the first sample on or after 07:00. The chain
- * never drops, so two meters that disagree overcount the earlier window.
+ * after that start; the reading it replaced then stands at the start, and with none the window counts
+ * from the first sample. The chain never drops, so two meters that disagree overcount the earlier window.
  */
 export function meterHistory(starts: readonly MeterStart[], nowMs: number): SevenDaySample[] {
   const latestFirst = starts
-    .flatMap(({ at, meter }) =>
+    .flatMap(({ at, meter }) => {
+      if (meter === undefined) return []
       // gatePool reads only samples before now, and a meter started this pass still holds its window's opening reading.
-      meter === undefined ? [] : [{ at: Math.min(at, nowMs - 1), sevenDay: meter.last - meter.spent }],
-    )
+      const opening = { at: Math.min(at, nowMs - 1), sevenDay: meter.last - meter.spent }
+      if (meter.before === undefined || meter.since <= at) return [opening]
+      return [
+        { at: Math.min(meter.since, nowMs - 1), sevenDay: opening.sevenDay },
+        { at, sevenDay: meter.before },
+      ]
+    })
     .sort((a, b) => b.at - a.at)
   const chain: SevenDaySample[] = []
   let floor = Number.POSITIVE_INFINITY

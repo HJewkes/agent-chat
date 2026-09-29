@@ -120,13 +120,16 @@ const hhmm = (ms: number): string => {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+const GAP_LINE =
+  "pool claude: no seven_day reading at or before 07:00, so the day's spend counts from the first sample"
+
 describe('runWatchdog', () => {
   it('wakes a connected seat with the Discovery message on the second idle run, and logs it', async () => {
     const h = harness(IDLE)
     const first = await runWatchdog(h.deps, { seats: ['hjewkes-surplus'], dryRun: false })
     h.tick()
     const second = await runWatchdog(h.deps, { seats: ['hjewkes-surplus'], dryRun: false })
-    expect(first).toEqual([])
+    expect(first).toEqual([GAP_LINE])
     expect(h.wakes).toEqual([
       { seat: 'hjewkes-surplus', message: 'Watchdog: 0 implementers, run Discovery', connected: true },
     ])
@@ -145,7 +148,7 @@ describe('runWatchdog', () => {
     expect(h.wakes[0]?.connected).toBe(false)
   })
 
-  it('is silent while an implementer runs: no wake, no log line, no output', async () => {
+  it('is silent while an implementer runs: no wake, no log line, only the one-time gap line', async () => {
     const busy: Roster = {
       agents: [{ name: 'hs-cc-1-x', profile: 'implementer', state: 'live', spawnedBy: 'hjewkes-surplus' }],
       connected: [],
@@ -155,7 +158,7 @@ describe('runWatchdog', () => {
       ...(await runWatchdog(h.deps, { seats: ['hjewkes-surplus'], dryRun: false })),
       ...(h.tick(), await runWatchdog(h.deps, { seats: ['hjewkes-surplus'], dryRun: false })),
     ]
-    expect([out, h.wakes, h.logs]).toEqual([[], [], []])
+    expect([out, h.wakes, h.logs]).toEqual([[GAP_LINE], [], []])
     expect(h.doc.seats['hjewkes-surplus']?.idleRuns).toBe(0)
   })
 
