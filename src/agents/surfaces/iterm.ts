@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { SurfaceName } from '../../protocol.js'
 import type { CloseOutcome, LaunchHandle, LaunchPlan, Surface } from '../types.js'
-import { paneCommand, runAgentCommand } from './command.js'
+import { paneCommand, relaunchCommand } from './command.js'
 import { psProbe, watchLaunch, type PaneReader } from './launch-check.js'
 import { SurfaceRefused, type AppleScriptRunner, type SurfaceOptions } from './options.js'
 
@@ -145,12 +145,12 @@ end tell`
  * left a dead pane behind and moved the work somewhere nobody was looking.
  *
  * An existing shell cannot be given a command at creation, so this one is still
- * typed. Ctrl-U first clears anything already on the prompt line; keys typed
- * between the two writes, or after, still join it (CC-175).
+ * typed (CC-191). It is one write, Ctrl-U and then the short relaunch path, so no
+ * gap is left between clearing the line and filling it; see `relaunchCommand`
+ * for what catches keys that still land in front of it or after it.
  */
 const inPlace = (uuid: string, command: string): string => `tell application "iTerm2"${findSessions(uuid, '')}
-  tell anchorSession to write text (character id ${CTRL_U}) newline no
-  tell anchorSession to write text ${asString(command)}
+  tell anchorSession to write text ((character id ${CTRL_U}) & ${asString(command)})
   return unique ID of anchorSession
 end tell`
 
@@ -269,8 +269,8 @@ const paneReader = (run: AppleScriptRunner, uuid: string): PaneReader => ({
 })
 
 /**
- * A pane the broker opened, with CC-175's check that `run-agent` started in it.
- * Not armed for a pane only written into: teleport has no attach wait to race it.
+ * A pane with CC-175's check that `run-agent` started in it: one the broker
+ * opened, or teleport's reused pane, where the command is still typed (CC-191).
  */
 const watched = (
   handle: LaunchHandle & { paneRef: string },
@@ -309,8 +309,8 @@ async function launchIterm(
     // No `ownsSurface`: this pane was already open and this launch only wrote
     // into it. Whether the broker opened it in an earlier life is a question
     // about the PREDECESSOR, which only the supervisor can answer.
-    const paneRef = await run(inPlace(uuid, runAgentCommand(plan.agentId)))
-    if (paneRef !== NO_ANCHOR) return { surface, paneRef }
+    const paneRef = await run(inPlace(uuid, relaunchCommand(plan.agentId)))
+    if (paneRef !== NO_ANCHOR) return watched({ surface, paneRef }, plan.agentId, options, run)
     options.onNotice?.(`pane ${uuid} is gone; opening an iTerm window rather than reusing it`)
   } else if (surface !== 'iterm-window' && uuid !== undefined) {
     const paneRef = await run(beside(surface, uuid, paneCommand(plan.agentId), options.columnAfter))
