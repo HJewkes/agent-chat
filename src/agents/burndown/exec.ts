@@ -18,6 +18,8 @@ export function childEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEn
 export interface RunResult {
   status: number | null
   stdout: string
+  /** Read only to classify a failure (an HTTP status); never relayed, since it can quote content. */
+  stderr?: string
 }
 
 export type Runner = (bin: string, args: string[], cwd?: string) => RunResult
@@ -33,5 +35,9 @@ export const run: Runner = (bin, args, cwd) => {
     timeout: TIMEOUT_MS,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
-  return { status: result.error === undefined ? result.status : null, stdout: result.stdout ?? '' }
+  return {
+    status: result.error === undefined ? result.status : null,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+  }
 }
