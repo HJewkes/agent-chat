@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { parseAutonomy } from '../agents/active-work.js'
 import { readAccountBudget } from '../agents/budget.js'
 import { gateAccount } from '../agents/burndown/budget-gate.js'
+import { collisionCheck, type BrokerView } from '../agents/burndown/collision.js'
 import { grantGap } from '../agents/burndown/eligibility.js'
+import type { Runner } from '../agents/burndown/exec.js'
 import {
   addClaim,
   EMPTY_LEDGER,
@@ -15,7 +17,7 @@ import {
   writeLedger,
   type Claim,
 } from '../agents/burndown/ledger.js'
-import { planFromDisk } from '../agents/burndown/tick.js'
+import { planFromDisk, renderPlan } from '../agents/burndown/tick.js'
 import { TRUST_RULE_CLI_VERSION } from '../agents/trust.js'
 
 /**
@@ -264,6 +266,161 @@ describe('burndown plan', () => {
     const result = planFromDisk(NOON)
 
     expect(result).toEqual({ dispatch: [], refusals: [], notOptedIn: ['demo'] })
+  })
+})
+
+describe('burndown plan collision check (CC-202)', () => {
+  interface Seen {
+    subjects?: string[]
+    prs?: { number: number; title: string; branch: string; body: string }[]
+    files?: string[]
+  }
+  /** `git` and `gh` as the check calls them; `origin/HEAD` is unset, so the default branch is main. */
+  const stub =
+    (seen: Seen): Runner =>
+    (bin, args) => {
+      if (bin === 'gh' && args.some(a => a.includes('/files')))
+        return { status: 0, stdout: (seen.files ?? []).join('\n') }
+      if (bin === 'gh') return { status: 0, stdout: (seen.prs ?? []).map(p => JSON.stringify(p)).join('\n') }
+      if (args[0] === 'fetch') return { status: 0, stdout: '' }
+      if (args[0] === 'log') return { status: 0, stdout: (seen.subjects ?? []).join('\n') }
+      return { status: 1, stdout: '' }
+    }
+  const noBroker: BrokerView = { names: [], claims: [] }
+  const planWith = (seen: Seen, broker: BrokerView = noBroker) =>
+    planFromDisk(NOON, undefined, ledger => collisionCheck(ledger, broker, stub(seen)))
+  const pr = { number: 9, title: 'Unrelated', branch: 'feat/unrelated', body: '' }
+
+  beforeEach(() => {
+    initiative('demo', OPTED_IN, {
+      'DM-1': task('DM-1'),
+      'DM-2': task('DM-2').replace('priority: 3', 'priority: 4'),
+    })
+    account('agents', { seven_day: 40, five_hour: 10 }, [repo()])
+  })
+
+  it('refuses a task a default-branch subject names as landed and dispatches the next', () => {
+    const result = planWith({ subjects: ['Ship DM-1 (#4)', 'Mention DM-10 in passing'] })
+
+    expect(result.dispatch.map(d => d.task)).toEqual(['DM-2'])
+    expect(renderPlan(result, NOON)).toContain(
+      'refused demo DM-1 [landed]: "Ship DM-1 (#4)" is on the default branch; reconcile it, then tag it reconciled',
+    )
+  })
+
+  it('refuses a task an open PR names as open-pr', () => {
+    const result = planWith({ prs: [{ ...pr, body: 'Implements DM-1.' }] })
+
+    expect(result.dispatch.map(d => d.task)).toEqual(['DM-2'])
+    expect(result.refusals).toEqual([expect.objectContaining({ task: 'DM-1', kind: 'open-pr' })])
+  })
+
+  it("refuses a task a live agent's name carries as claimed", () => {
+    const result = planWith({}, { names: ['hs-dm-1-collision-check'], claims: [] })
+
+    expect(result.dispatch.map(d => d.task)).toEqual(['DM-2'])
+    expect(result.refusals).toEqual([
+      expect.objectContaining({
+        task: 'DM-1',
+        kind: 'claimed',
+        reason: 'live agent hs-dm-1-collision-check carries DM-1',
+      }),
+    ])
+  })
+
+  const sliceClaim = (slice: string, over: Partial<Claim> = {}): Claim => ({
+    taskId: 'DM-1',
+    initiative: 'demo',
+    spawnedAt: NOON.toISOString(),
+    phase: 'queued',
+    phaseAt: NOON.toISOString(),
+    slice,
+    ...over,
+  })
+  const ledgerOf = (...claims: Claim[]): void => {
+    writeLedger(
+      path.join(world, 'home', 'burndown.json'),
+      claims.reduce((l, c) => addClaim(l, c), EMPTY_LEDGER),
+    )
+  }
+
+  it('dispatches slice b after slice a landed under the parent id', () => {
+    ledgerOf(
+      sliceClaim('a', { phase: 'done', spawned: ['bd-dm-1-a'] }),
+      sliceClaim('b', { dependsOn: ['a'] }),
+    )
+
+    const result = planWith({ subjects: ['Ship the scorer (DM-1) (#190)'] })
+
+    expect(result.dispatch).toEqual([expect.objectContaining({ task: 'DM-1', slice: 'b' })])
+  })
+
+  it("lets a ready slice past its held sibling's open PR and live agent", () => {
+    ledgerOf(
+      sliceClaim('a', { phase: 'awaiting-merge', agentName: 'bd-dm-1-a', spawned: ['bd-dm-1-a'] }),
+      sliceClaim('b'),
+    )
+
+    const result = planWith(
+      { prs: [{ ...pr, branch: 'agent-chat/bd-dm-1-a', title: 'Slice a (DM-1)' }] },
+      { names: ['bd-dm-1-a'], claims: [] },
+    )
+
+    expect(result.dispatch).toEqual([expect.objectContaining({ task: 'DM-1', slice: 'b' })])
+  })
+
+  it.each([
+    [
+      'open PR',
+      { prs: [{ ...pr, branch: 'agent-chat/bd-dm-1', title: 'Old try (DM-1)' }] },
+      noBroker,
+      'open-pr',
+    ],
+    ['live agent', {}, { names: ['bd-dm-1'], claims: [] }, 'claimed'],
+  ])("refuses a re-pick while a done claim's %s is still out", (_, seen, broker, kind) => {
+    ledgerOf({
+      ...sliceClaim('x'),
+      slice: undefined,
+      phase: 'done',
+      agentName: 'bd-dm-1',
+      spawned: ['bd-dm-1'],
+    })
+
+    const result = planWith(seen, broker)
+
+    expect(result.dispatch.map(d => d.task)).toEqual(['DM-2'])
+    expect(result.refusals).toEqual([expect.objectContaining({ task: 'DM-1', kind })])
+  })
+
+  it('names the failed reader in the refusal', () => {
+    const failing: Runner = bin => ({ status: bin === 'gh' ? 1 : 0, stdout: '' })
+
+    const result = planFromDisk(NOON, undefined, ledger => collisionCheck(ledger, noBroker, failing))
+
+    expect(result.refusals.map(r => r.reason)).toEqual([
+      expect.stringContaining('reader gh-pulls failed'),
+      expect.stringContaining('reader gh-pulls failed'),
+    ])
+  })
+
+  it('refuses a ready slice whose declared files an open PR touches as file-overlap', () => {
+    const slice: Claim = {
+      taskId: 'DM-1',
+      initiative: 'demo',
+      spawnedAt: NOON.toISOString(),
+      phase: 'queued',
+      phaseAt: NOON.toISOString(),
+      slice: 'a',
+      owns: ['src/cli/**'],
+    }
+    writeLedger(path.join(world, 'home', 'burndown.json'), addClaim(EMPTY_LEDGER, slice))
+
+    const result = planWith({ prs: [pr], files: ['src/cli/index.ts'] })
+
+    expect(result.dispatch).toEqual([])
+    expect(result.refusals).toEqual([
+      expect.objectContaining({ task: 'DM-1', kind: 'file-overlap', reason: '#9 touches src/cli/**' }),
+    ])
   })
 })
 

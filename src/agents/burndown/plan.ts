@@ -1,4 +1,5 @@
 import type { Autonomy } from '../active-work.js'
+import type { Collision, CollisionWork } from './collision.js'
 import { pickAccount, type AccountReading, type AccountRule, type GateContext } from './budget-gate.js'
 import {
   byRank,
@@ -64,6 +65,8 @@ export interface PlanInputs {
   capacity?: Capacity
   /** A leftover branch or worktree named for `agentName` that no claim accounts for. */
   orphan?: (repo: string, agentName: string) => string | undefined
+  /** Why `work` collides with work landed, open or held in `repo` (CC-202), or undefined when it does not. */
+  collision?: (repo: string, work: CollisionWork) => Collision | undefined
 }
 
 export interface Plan {
@@ -141,28 +144,42 @@ interface Work {
   profile: string
 }
 
-/** A ready slice first, since its task is already underway; else the best eligible task with no orphan. */
+/** A ready slice first, since its task is already underway; else the best eligible task with no orphan or collision. */
 function nextWork(initiative: OptedIn, inputs: PlanInputs): { work?: Work; refusals: Refusal[] } {
-  const [ready] = readySlices(inputs.ledger).filter(c => c.initiative === initiative.slug)
-  if (ready?.slice !== undefined)
-    return { work: { taskId: ready.taskId, slice: ready.slice, profile: IMPLEMENTER_PROFILE }, refusals: [] }
-  const claimed = new Set(heldClaims(inputs.ledger).map(c => c.taskId))
   const tasks = inputs.tasks.get(initiative.slug) ?? []
-  const orphaned: Refusal[] = []
+  const [ready] = readySlices(inputs.ledger).filter(c => c.initiative === initiative.slug)
+  if (ready?.slice !== undefined) {
+    const tags = tasks.find(t => t.id === ready.taskId)?.tags ?? []
+    const work = { taskId: ready.taskId, slice: ready.slice, tags, owns: ready.owns ?? [] }
+    const collided = collisionOf(initiative, work, inputs)
+    if (collided !== undefined) return { refusals: [collided] }
+    return { work: { taskId: ready.taskId, slice: ready.slice, profile: IMPLEMENTER_PROFILE }, refusals: [] }
+  }
+  const claimed = new Set(heldClaims(inputs.ledger).map(c => c.taskId))
+  const blocked: Refusal[] = []
   for (;;) {
-    const skip = new Set(orphaned.map(r => r.task))
+    const skip = new Set(blocked.map(r => r.task))
     const { task, refusals } = pickTask(
       initiative,
       tasks.filter(t => !skip.has(t.id)),
       claimed,
     )
-    if (task === undefined) return { refusals: [...orphaned, ...refusals] }
+    if (task === undefined) return { refusals: [...blocked, ...refusals] }
     const profile = profileFor(task)
-    const orphan = orphanOf(initiative, task.id, profile, inputs)
-    if (orphan === undefined)
-      return { work: { taskId: task.id, profile }, refusals: [...orphaned, ...refusals] }
-    orphaned.push({ initiative: initiative.slug, task: task.id, kind: 'orphan', reason: orphan })
+    const refusal =
+      collisionOf(initiative, { taskId: task.id, tags: task.tags, owns: [] }, inputs) ??
+      orphanOf(initiative, task.id, profile, inputs)
+    if (refusal === undefined)
+      return { work: { taskId: task.id, profile }, refusals: [...blocked, ...refusals] }
+    blocked.push(refusal)
   }
+}
+
+function collisionOf(initiative: OptedIn, work: CollisionWork, inputs: PlanInputs): Refusal | undefined {
+  const repo = initiative.autonomy.repo
+  if (repo === undefined || inputs.collision === undefined) return undefined
+  const found = inputs.collision(repo, work)
+  return found === undefined ? undefined : { initiative: initiative.slug, task: work.taskId, ...found }
 }
 
 /** A failed spawn leaves its branch and worktree with no claim; dispatching onto it would adopt stale work. */
@@ -171,10 +188,13 @@ function orphanOf(
   taskId: string,
   profile: string,
   inputs: PlanInputs,
-): string | undefined {
+): Refusal | undefined {
   const repo = initiative.autonomy.repo
   if (profile === PLANNER_PROFILE || repo === undefined || inputs.orphan === undefined) return undefined
-  return inputs.orphan(repo, agentNameFor(taskId))
+  const reason = inputs.orphan(repo, agentNameFor(taskId))
+  return reason === undefined
+    ? undefined
+    : { initiative: initiative.slug, task: taskId, kind: 'orphan', reason }
 }
 
 /** The account, profile and worktree for eligible work, or why there is none. */

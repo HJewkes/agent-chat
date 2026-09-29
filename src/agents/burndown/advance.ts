@@ -101,6 +101,7 @@ function afterPlanner(claim: Claim, obs: Observation, now: Date): Action[] {
     phaseAt: at,
     slice: s.n,
     dependsOn: s.dependsOn,
+    ...(s.owns.length === 0 ? {} : { owns: s.owns }),
   }))
   return [update(claim, { phase: 'done' }), { kind: 'add', claims: slices }, retireAll(claim)]
 }

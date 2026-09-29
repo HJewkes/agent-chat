@@ -43,6 +43,9 @@ export type RefusalKind =
   | 'orphan'
   | 'slots'
   | 'worktrees'
+  | 'landed'
+  | 'open-pr'
+  | 'file-overlap'
 
 export interface Refusal {
   initiative: string
