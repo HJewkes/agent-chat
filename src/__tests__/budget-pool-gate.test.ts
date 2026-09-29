@@ -29,7 +29,7 @@ const SEAT_B = budgetOf('seat-b')
 const SEAT_A = budgetOf('seat-a')
 
 interface Case {
-  budget?: { pool?: PoolRule; spend: PoolGateInput['spend'] }
+  budget?: Pick<PoolGateInput, 'pool' | 'spend'>
   now?: Date
   fiveHour?: number
   sevenDay?: number

@@ -120,12 +120,13 @@ export function loadPolicy(root: string, seatName: string): Policy {
 }
 
 /** The seat's pool from the charter and its own spend caps, as `gatePool` reads them; an unknown pool is undefined, which closes the gate. */
-export function seatBudget(charter: CharterPolicy, seat: SeatPolicy): { pool?: PoolRule; spend: SpendCaps } {
+export function seatBudget(
+  charter: CharterPolicy,
+  seat: SeatPolicy,
+): { pool: PoolRule | undefined; spend: SpendCaps } {
   const found = seat.pool === undefined ? undefined : charter.pools[seat.pool]
   const spend = { per_run_points: seat.spend.per_run_points, per_day_points: seat.spend.per_day_points }
-  return found === undefined || seat.pool === undefined
-    ? { spend }
-    : { pool: { ...found, name: seat.pool }, spend }
+  return { pool: found === undefined ? undefined : { ...found, name: seat.pool ?? '' }, spend }
 }
 
 /** score.py `seat_initiatives`: slug to scope weight, adding focused unclaimed initiatives when the seat takes them. */
