@@ -266,6 +266,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     capacity: worktreeCapacity(config, { ...agents, agents: agents.agents - advanced.spawns }, prefixes),
     orphan: (repo, name) => orphanAt(repo, name),
     collision: check,
+    charged: advanced.charged,
   })
   const dispatchCtx = { ...ctx, tasks: new Map([...ctx.tasks, ...planned.tasks]) }
   const dispatched = planned.dispatch.map(d => stepsForDispatch(d, dispatchCtx))
@@ -296,7 +297,9 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   }
 }
 
-type NewWork = Required<Pick<PlanInputs, 'ledger' | 'capacity' | 'orphan' | 'collision'>>
+type NewWork = Required<Pick<PlanInputs, 'ledger' | 'capacity' | 'orphan' | 'collision'>> & {
+  charged: readonly string[]
+}
 
 interface Planned {
   dispatch: Dispatch[]
@@ -428,7 +431,7 @@ function seatLookup(seats: LoadedSeats): NonNullable<StepContext['seat']> {
     if (loaded !== undefined)
       return {
         dispatch: loaded.dispatch,
-        gate: gatePool(loaded.budget),
+        gate: dispatched => gatePool({ ...loaded.budget, dispatched }),
         trust: (repo, cwd, configDir) => trustRefusal(repo, cwd, configDir, cliVersion),
       }
     const skipped = seats.skipped.find(s => s.seat === name)

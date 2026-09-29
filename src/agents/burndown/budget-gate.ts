@@ -108,6 +108,10 @@ export interface PoolRule {
 /** The charge for a pool that prices no dispatch; the charter should set its own. */
 export const DEFAULT_DISPATCH_COST = { sevenDay: 2, fiveHour: 10 }
 
+/** How many of this tick's charged spawns, listed by pool name, bill `pool`. */
+export const chargesOn = (pool: string, charged: readonly string[]): number =>
+  charged.filter(p => p === pool).length
+
 /** The seat file's `spend:` caps, in seven_day points; an absent cap never stops. */
 export interface SpendCaps {
   per_run_points?: number | undefined

@@ -1,7 +1,7 @@
 import { readAccountBudget } from '../budget.js'
 import { loadDoc } from '../seats/io.js'
 import { accountReading } from '../seats/watchdog.js'
-import { runStartAt, type PoolGateInput, type SevenDaySample } from './budget-gate.js'
+import { chargesOn, runStartAt, type PoolGateInput, type SevenDaySample } from './budget-gate.js'
 import { sameTickCollision, type SameTickClaim } from './collision.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
 import type { Ledger, SeatState } from './ledger.js'
@@ -107,6 +107,8 @@ export interface SeatPlanDeps {
   orphan?: PlanInputs['orphan']
   collision?: PlanInputs['collision']
   trust?: (repo: string, cwd: string, configDir: string) => string | undefined
+  /** Pools already charged this tick by claims' reviewer and successor spawns, one entry per spawn. */
+  charged?: readonly string[]
 }
 
 export interface SeatsPlan {
@@ -135,6 +137,7 @@ function lessDispatched(capacity: Capacity | undefined, taken: readonly Dispatch
 interface Taken {
   dispatch: Dispatch[]
   claims: SameTickClaim[]
+  charged: readonly string[]
 }
 
 function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, taken: Taken) {
@@ -163,7 +166,10 @@ function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, taken: T
     defaults,
     tasks,
     ledger: deps.ledger,
-    budget: { ...seat.budget, dispatched: taken.dispatch.filter(d => d.account === pool).length },
+    budget: {
+      ...seat.budget,
+      dispatched: chargesOn(pool, [...taken.charged, ...taken.dispatch.map(d => d.account)]),
+    },
     collision: (repo, work) => sameTickCollision(taken.claims, repo, work) ?? deps.collision?.(repo, work),
     ...optional(deps, lessDispatched(deps.capacity, taken.dispatch)),
   })
@@ -188,7 +194,8 @@ export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root
   const claims: SameTickClaim[] = []
   for (const seat of seats) {
     try {
-      const { planned, tasks } = planLoaded(seat, deps, root, { dispatch: result.dispatch, claims })
+      const taken = { dispatch: result.dispatch, claims, charged: deps.charged ?? [] }
+      const { planned, tasks } = planLoaded(seat, deps, root, taken)
       for (const [slug, list] of tasks) result.tasks.set(slug, list)
       result.refusals.push(...planned.refusals)
       result.dispatch.push(...planned.dispatch)
