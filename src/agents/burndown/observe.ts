@@ -7,7 +7,7 @@ import { claimKey, type InboxMessage, type Observation } from './advance.js'
 import { planPathFor } from './brief.js'
 import { run, type Runner } from './exec.js'
 import type { Claim } from './ledger.js'
-import type { WorktreeUse } from './plan.js'
+import { DEFAULT_NAME_PREFIX, type WorktreeUse } from './plan.js'
 import { parseReport, parseSlices } from './report.js'
 import { assessDiff, GIT_BIN, type DiffVerdict } from './review-diff.js'
 import { worktreePathFor } from './trust-gate.js'
@@ -161,18 +161,22 @@ export function worktreesUnder(repo: string, exec: Runner = run): string[] | und
     .map(p => path.basename(p))
 }
 
-/** Counts against the tick's ceilings; an unreadable repo counts as full, so the tick cuts nothing there. */
+/**
+ * Counts against the tick's ceilings; an unreadable repo counts as full, so the tick cuts nothing there.
+ * `prefixes` is every agent-name prefix the tick spawns under: `bd` plus each enabled seat's (CC-205).
+ */
 export function worktreeUse(
   names: string[] | undefined,
   budget: number,
   config: { maxWorktreesPerRepo: number; reserveWorktrees: number },
+  prefixes: readonly string[] = [DEFAULT_NAME_PREFIX],
 ): WorktreeUse {
   const totalCeiling = Math.max(0, budget - config.reserveWorktrees)
   if (names === undefined)
     return { total: totalCeiling, ours: 0, totalCeiling, oursCeiling: config.maxWorktreesPerRepo }
   return {
     total: names.length,
-    ours: names.filter(n => n.startsWith('bd-')).length,
+    ours: names.filter(n => prefixes.some(p => n.startsWith(`${p}-`))).length,
     totalCeiling,
     oursCeiling: config.maxWorktreesPerRepo,
   }

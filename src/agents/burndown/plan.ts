@@ -76,16 +76,27 @@ export interface Plan {
   notOptedIn: string[]
 }
 
+/** A claim with no `namePrefix` names its agents `bd-...`, as every claim did before seats (CC-205). */
+export const DEFAULT_NAME_PREFIX = 'bd'
+
 /** The agent name, and so the worktree directory, a tick spawn for `taskId` (and `slice`) would use. */
-export const agentNameFor = (taskId: string, slice?: string): string =>
-  `bd-${taskId.toLowerCase()}${slice === undefined ? '' : `-${slice.toLowerCase()}`}`
+export const agentNameFor = (taskId: string, slice?: string, prefix = DEFAULT_NAME_PREFIX): string =>
+  `${prefix}-${taskId.toLowerCase()}${slice === undefined ? '' : `-${slice.toLowerCase()}`}`
 
 /** The `attempt`th successor, which adopts the original's worktree rather than cutting its own. */
-export const successorNameFor = (taskId: string, attempt: number, slice?: string): string =>
-  `${agentNameFor(taskId, slice)}-s${attempt}`
+export const successorNameFor = (
+  taskId: string,
+  attempt: number,
+  slice?: string,
+  prefix = DEFAULT_NAME_PREFIX,
+): string => `${agentNameFor(taskId, slice, prefix)}-s${attempt}`
 
-export const reviewerNameFor = (taskId: string, round: number, slice?: string): string =>
-  `${agentNameFor(taskId, slice)}-r${round}`
+export const reviewerNameFor = (
+  taskId: string,
+  round: number,
+  slice?: string,
+  prefix = DEFAULT_NAME_PREFIX,
+): string => `${agentNameFor(taskId, slice, prefix)}-r${round}`
 
 type OptedIn = Initiative & { autonomy: Autonomy }
 
@@ -142,6 +153,8 @@ interface Work {
   taskId: string
   slice?: string
   profile: string
+  /** A queued slice's claim prefix, so its implementer shares the planner's seat prefix. */
+  namePrefix?: string
 }
 
 /** A ready slice first, since its task is already underway; else the best eligible task with no orphan or collision. */
@@ -153,7 +166,11 @@ function nextWork(initiative: OptedIn, inputs: PlanInputs): { work?: Work; refus
     const work = { taskId: ready.taskId, slice: ready.slice, tags, owns: ready.owns ?? [] }
     const collided = collisionOf(initiative, work, inputs)
     if (collided !== undefined) return { refusals: [collided] }
-    return { work: { taskId: ready.taskId, slice: ready.slice, profile: IMPLEMENTER_PROFILE }, refusals: [] }
+    const prefix = ready.namePrefix === undefined ? {} : { namePrefix: ready.namePrefix }
+    return {
+      work: { taskId: ready.taskId, slice: ready.slice, profile: IMPLEMENTER_PROFILE, ...prefix },
+      refusals: [],
+    }
   }
   const claimed = new Set(heldClaims(inputs.ledger).map(c => c.taskId))
   const blocked: Refusal[] = []
@@ -219,7 +236,7 @@ function place(
 
   const repo = initiative.autonomy.repo
   if (repo === undefined) return { kind: 'trust', reason: 'no autonomy.repo, so no worktree path to check' }
-  const agentName = agentNameFor(work.taskId, work.slice)
+  const agentName = agentNameFor(work.taskId, work.slice, work.namePrefix)
   // A planner runs with isolation none in the checkout itself, so trust is checked on the repo.
   const worktree = profile === PLANNER_PROFILE ? undefined : worktreePathFor(repo, agentName)
   const cwd = worktree ?? repo
