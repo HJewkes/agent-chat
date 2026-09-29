@@ -133,7 +133,7 @@ const AGENT_KINDS = [
 const AGENT_KINDS_SQL = AGENT_KINDS.map(k => `'${k}'`).join(',')
 
 /** A return-contract report: `Status:` or a reviewer's `Verdict:`, after any markdown decoration (CC-266). */
-const REPORT_OPENING = /^[\s*_`#>]*(status|verdict)[*_`]*\s*(:|\n)/i
+const REPORT_OPENING = /^[\s*_`#>]*(status|verdict)[*_`]*\s*:/i
 
 // Loaded through require so Vite/vitest don't try to pre-bundle a builtin they
 // don't yet know about. The type import above is erased, so it costs nothing.
