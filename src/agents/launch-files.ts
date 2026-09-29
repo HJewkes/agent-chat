@@ -105,7 +105,7 @@ export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknow
   writePrivate(planPath(plan.agentId), JSON.stringify(plan, null, 2))
   writePrivate(relaunchScriptPath(plan.agentId), relaunchScript(plan.agentId), SCRIPT_MODE)
   const hooksDir = hooksDirOf(plan.env)
-  if (hooksDir !== undefined) writeGitHooks(hooksDir, process.execPath, cliEntry())
+  if (hooksDir !== undefined) writeGitHooks(hooksDir)
   if (plan.args.includes('--settings')) {
     const settings = buildHookSettings(cliEntry(), resolvePermissionHookTimeout())
     writePrivate(hookSettingsPath(plan.agentId), JSON.stringify(settings, null, 2))

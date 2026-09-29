@@ -95,10 +95,24 @@ human's own shell has none of these variables, so the owner's pushes are unaffec
 The broker rewrites `git-hooks/` at each spawn. `pre-push` runs
 `agent-chat leak-scan --pre-push --remote=<name> --url=<url>` with git's ref lines on stdin, then
 runs the repository's own `pre-push` with the same arguments and stdin. The push is refused if
-either one fails, and the repository's hook runs even when the scan has already refused. Every
-other hook name is a shim that only runs the repository's hook of that name, so `pre-commit` or
-`commit-msg` hooks keep working. The repository's hook is found by reading `core.hooksPath` with
-the guard's variables removed, falling back to `$(git rev-parse --git-common-dir)/hooks`.
+either one fails, and the repository's hook runs even when the scan has already refused. The
+repository's hook is found with `git rev-parse --git-path hooks` with the guard's variables
+removed, so a repository's own `core.hooksPath` (husky, lefthook) is honoured.
+
+`node` and `agent-chat` are found on the agent's `PATH` when the hook runs. The hook never bakes
+in a path, because a versioned node or a worktree's `dist/` can disappear. If either is missing,
+the hook prints one line starting `leak-scan: guard NOT run, this push was not scanned` that names
+the missing tool. It then lets the push go ahead, still running the repository's own hook. This
+fails open on purpose: a missing guard must not refuse every push from every agent, and the
+burndown backstop (a later slice) still reports a leak that got through. The fix is to put node on
+the agent's `PATH` or run `npm link` in the agent-chat checkout.
+
+Each shim costs a shell and one git call, so only hooks that gate something are chained:
+`pre-commit`, `commit-msg`, `pre-merge-commit`, `pre-rebase`, `post-checkout`, `post-merge`,
+`post-rewrite`, the three `applypatch` hooks, `pre-auto-gc` and `sendemail-validate`.
+`reference-transaction`, `post-index-change`, `prepare-commit-msg` and `post-commit` fire on every
+commit without gating it and are not chained, so a repository's own copies of those do not run
+for agents. Server-side hooks never run in an agent's repository.
 
 For each pushed ref the scan covers the commits the remote does not have yet: those not reachable
 from the remote's tracking refs or from the sha the remote reports for that ref. A deleted ref
@@ -112,7 +126,8 @@ pushes nothing and is not scanned.
 
 A missing or empty deny-list prints one line naming the file and pointing here, and checks
 `home-path` only. That lets the hook ship before the owner writes the file. An unreadable one
-refuses, because a file that exists was meant to be enforced.
+refuses, because a file that exists was meant to be enforced. Its message says to fix the file's
+permissions or delete it.
 
 Visibility comes from `gh api repos/<owner>/<repo> --jq .visibility` (REST, never GraphQL) and is
 cached for 24 hours in `repo-visibility.json` in the agent-chat home. `internal` counts as
@@ -125,3 +140,7 @@ deny-list entry.
 
 The owner's escape hatch for an emergency is `git push` from their own shell, which carries no
 `GIT_CONFIG_*` variables and so runs no guard hook.
+
+The hook alone does not stop an agent that tries to skip it. `git push --no-verify` skips every
+pre-push hook, and `git -c core.hooksPath=<dir> push` points git elsewhere, since command-line
+config overrides the environment. The PreToolUse bypass guard in a later slice (S4) denies both.

@@ -2,15 +2,37 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
-import { parseRefUpdates } from '../cli/verbs/leak-pre-push.js'
+import { afterAll, afterEach, describe, expect, it } from 'vitest'
+import { leakPrePush, parseRefUpdates } from '../cli/verbs/leak-pre-push.js'
 import { gitHooksEnv, hookScripts, writeGitHooks } from '../leak-guard/hooks-dir.js'
-import { cachedVisibility, gitHubRepo, VISIBILITY_TTL_MS } from '../leak-guard/visibility.js'
+import {
+  cachedVisibility,
+  gitHubRepo,
+  VISIBILITY_TTL_MS,
+  type VisibilityReader,
+} from '../leak-guard/visibility.js'
 
 const CLI = path.resolve(import.meta.dirname, '../../dist/cli.js')
 const SCRATCH = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-prepush-')))
 
 afterAll(() => fs.rmSync(SCRATCH, { recursive: true, force: true }))
+
+/** A PATH dir holding only the named tools, so a test controls what the hook can find. */
+function binWith(tools: { node?: boolean; agentChat?: boolean; git?: boolean }): string {
+  const dir = fs.mkdtempSync(path.join(SCRATCH, 'bin-'))
+  if (tools.node) fs.symlinkSync(process.execPath, path.join(dir, 'node'))
+  if (tools.git)
+    fs.symlinkSync(
+      execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim(),
+      path.join(dir, 'git'),
+    )
+  if (tools.agentChat)
+    fs.writeFileSync(path.join(dir, 'agent-chat'), `#!/bin/sh\nexec node '${CLI}' "$@"\n`, { mode: 0o755 })
+  return dir
+}
+
+const SYSTEM_PATH = '/usr/bin:/bin'
+const GUARD_PATH = `${binWith({ node: true, agentChat: true })}:${process.env.PATH ?? SYSTEM_PATH}`
 
 // Every fixture is synthetic: a made-up home, a made-up TLD and made-up names.
 const HOME = '/Users/zq7-probe-home'
@@ -119,18 +141,23 @@ describe('cachedVisibility', () => {
 })
 
 describe('hookScripts', () => {
-  it('shell-quotes the node and cli paths in the pre-push shim', () => {
-    const shim = hookScripts("/opt/no de/node's", '/x/cli.js').get('pre-push') ?? ''
+  // Regression: a baked Cellar node or worktree dist path refused every push once it went away.
+  it('bakes in no node or cli path, finding both on PATH when the hook runs', () => {
+    const shim = hookScripts().get('pre-push') ?? ''
 
-    expect(shim).toContain(`'/opt/no de/node'\\''s' '/x/cli.js' leak-scan --pre-push`)
+    expect(shim).not.toContain(process.execPath)
+    expect(shim).not.toContain('cli.js')
+    expect(shim).toContain('agent-chat leak-scan --pre-push')
   })
 
-  it('writes an executable shim for every hook name', () => {
+  it('writes executable shims for pre-push and the gating commit hooks only', () => {
     const dir = path.join(SCRATCH, 'hooks-perm')
-    writeGitHooks(dir, process.execPath, CLI)
+    writeGitHooks(dir)
 
     for (const name of ['pre-push', 'pre-commit', 'commit-msg'])
       expect(fs.statSync(path.join(dir, name)).mode & 0o777).toBe(0o755)
+    for (const hot of ['reference-transaction', 'post-index-change', 'post-commit', 'pre-receive', 'update'])
+      expect(fs.existsSync(path.join(dir, hot))).toBe(false)
   })
 })
 
@@ -194,8 +221,8 @@ function fixture(opts: { denylist?: string; visibility: Visibility }): Fixture {
     mode: 0o755,
   })
   const hooksDir = path.join(chatHome, 'git-hooks')
-  writeGitHooks(hooksDir, process.execPath, CLI)
-  const agentEnv = { ...baseEnv(), ...gitHooksEnv(hooksDir), AGENT_CHAT_HOME: chatHome }
+  writeGitHooks(hooksDir)
+  const agentEnv = { ...baseEnv(), ...gitHooksEnv(hooksDir), AGENT_CHAT_HOME: chatHome, PATH: GUARD_PATH }
   return { work, remote, chatHome, marker, agentEnv }
 }
 
@@ -357,6 +384,68 @@ describe('git push with no deny-list yet', () => {
 
     expect(run.code).not.toBe(0)
     expect(run.stderr).toContain('is not valid JSON, so the push is refused unless the remote is private')
+    expect(run.stderr).toContain('Fix its permissions or delete it')
     expectNoEntry(run.stderr)
+  })
+})
+
+describe('git push when the guard cannot run', () => {
+  const pathWithout = (tool: 'node' | 'agent-chat'): string =>
+    [binWith({ git: true, node: tool !== 'node', agentChat: tool !== 'agent-chat' }), SYSTEM_PATH].join(':')
+
+  // Fail open: a guard that cannot start must not refuse every push; S3's tick backstop still reports leaks.
+  it.each(['agent-chat', 'node'] as const)(
+    'lets the push through with one loud line when %s is not on PATH, and still runs the repo hook',
+    tool => {
+      const onSystemPath = SYSTEM_PATH.split(':').some(dir => fs.existsSync(path.join(dir, tool)))
+      if (onSystemPath) return
+      const f = fixture({ denylist: LIST_JSON, visibility: 'public' })
+      f.agentEnv.PATH = pathWithout(tool)
+      commitFile(f, 'leaky', 'notes.md', `ping ${EMAIL}`)
+
+      const run = push(f, 'leaky')
+
+      expect(run.code).toBe(0)
+      expect(run.stderr.trim().split('\n')).toEqual([
+        expect.stringMatching(
+          new RegExp(`^leak-scan: guard NOT run, this push was not scanned: no ${tool} on PATH\\.`),
+        ),
+      ])
+      expect(repoHookRuns(f)).toEqual(['origin refs/heads/leaky'])
+    },
+  )
+})
+
+describe('leakPrePush visibility failures', () => {
+  const saved = process.env.AGENT_CHAT_HOME
+  afterEach(() => {
+    if (saved === undefined) delete process.env.AGENT_CHAT_HOME
+    else process.env.AGENT_CHAT_HOME = saved
+  })
+
+  const throwing: Record<string, VisibilityReader> = {
+    rejects: () => Promise.reject(new Error('gh exploded')),
+    throws: () => {
+      throw new Error('gh exploded')
+    },
+  }
+
+  // Mutation M9: a reader that throws was treated as private.
+  it.each(Object.keys(throwing))('counts a reader that %s as unknown and refuses the leak', async kind => {
+    const f = fixture({ denylist: LIST_JSON, visibility: undefined })
+    commitFile(f, 'leaky', 'notes.md', `ping ${EMAIL}`)
+    process.env.AGENT_CHAT_HOME = f.chatHome
+    const sha = git(f.work, baseEnv(), 'rev-parse', 'leaky')
+    const err: string[] = []
+    const io = { out: () => undefined, err: (l: string) => err.push(l), home: HOME, cwd: f.work }
+
+    const code = await leakPrePush(
+      { remote: 'origin', url: f.remote },
+      `refs/heads/leaky ${sha} refs/heads/leaky ${ZERO}\n`,
+      { io, visibility: throwing[kind]! },
+    )
+
+    expect(code).toBe(1)
+    expect(err.at(-1)).toBe('leak-scan: push refused: the remote is of unknown visibility.')
   })
 })

@@ -85,7 +85,7 @@ function denylistNote(load: DenylistLoad, io: LeakScanIo): string | undefined {
   if (load.kind === 'missing' || load.kind === 'empty')
     return `leak-scan: no deny-list ${load.kind === 'empty' ? 'entries ' : ''}at ${where}, so only home-path was checked. See docs/leak-guard.md.`
   if (load.kind === 'unreadable')
-    return `leak-scan: the deny-list at ${where} ${load.reason}, so the push is refused unless the remote is private. See docs/leak-guard.md.`
+    return `leak-scan: the deny-list at ${where} ${load.reason}, so the push is refused unless the remote is private. Fix its permissions or delete it; see docs/leak-guard.md.`
   return undefined
 }
 
@@ -108,7 +108,10 @@ export async function leakPrePush(opts: PrePushOptions, stdin: string, deps: Pre
   if (note) io.err(note)
   if (findings.length === 0 && load.kind !== 'unreadable') return EXIT_CLEAN
   renderFindings(findings).forEach(io.err)
-  const visibility = await deps.visibility(opts.url).catch(() => 'unknown' as const)
+  // A reader that throws, even synchronously, has not shown the remote is private.
+  const visibility = await Promise.resolve()
+    .then(() => deps.visibility(opts.url))
+    .catch(() => 'unknown' as const)
   if (visibility === 'private') {
     io.err('leak-scan: the remote is private, so this is a warning and the push goes ahead.')
     return EXIT_CLEAN

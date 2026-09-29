@@ -2,33 +2,24 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 /**
- * Every hook git runs by name from `core.hooksPath`. Overriding the hooks path hides the repo's
- * own hooks, so each name gets a shim that chains to the repo's hook of the same name.
+ * Client hooks shimmed to chain to the repo's own hook, since overriding the hooks path hides it.
+ * Each shim costs a shell and a git call, so the hooks that fire on every commit without gating it
+ * (`reference-transaction`, `post-index-change`, `prepare-commit-msg`, `post-commit`) are not
+ * chained and do not run for agents. Server-side names never run in an agent's repo.
  */
-export const HOOK_NAMES = [
+export const CHAINED_HOOKS = [
   'applypatch-msg',
   'pre-applypatch',
   'post-applypatch',
   'pre-commit',
   'pre-merge-commit',
-  'prepare-commit-msg',
   'commit-msg',
-  'post-commit',
   'pre-rebase',
   'post-checkout',
   'post-merge',
-  'pre-push',
-  'pre-receive',
-  'update',
-  'proc-receive',
-  'post-receive',
-  'post-update',
-  'reference-transaction',
-  'push-to-checkout',
-  'pre-auto-gc',
   'post-rewrite',
+  'pre-auto-gc',
   'sendemail-validate',
-  'post-index-change',
 ] as const
 
 const HOOKS_PATH_KEY = 'core.hooksPath'
@@ -44,39 +35,44 @@ export const gitHooksEnv = (dir: string): Record<string, string> => ({
 export const hooksDirOf = (env: Record<string, string>): string | undefined =>
   env.GIT_CONFIG_COUNT === '1' && env.GIT_CONFIG_KEY_0 === HOOKS_PATH_KEY ? env.GIT_CONFIG_VALUE_0 : undefined
 
-const shellQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`
-
-// The repo's own hooks dir, read with the guard's env override removed; a relative path is relative to the hook's cwd, as git reads it.
-const FIND_REPO_HOOK = `own=$(env -u GIT_CONFIG_COUNT git config --type=path core.hooksPath 2>/dev/null)
-[ -n "$own" ] || own="$(git rev-parse --git-common-dir)/hooks"
-guard=$(cd "$(dirname "$0")" && pwd -P)
-[ "$(cd "$own" 2>/dev/null && pwd -P)" = "$guard" ] && own=
-hook="$own/$(basename "$0")"
-[ -n "$own" ] && [ -f "$hook" ] && [ -x "$hook" ] || hook=`
+// One git call: `--git-path hooks` honours the repo's own core.hooksPath once the guard's override is removed.
+const FIND_REPO_HOOK = `own=$(env -u GIT_CONFIG_COUNT git rev-parse --git-path hooks 2>/dev/null)
+hook="$own/\${0##*/}"
+[ -n "$own" ] && [ -f "$hook" ] && [ -x "$hook" ] || hook=
+[ -n "$hook" ] && [ "$(cd "$own" && pwd -P)" = "$(cd "\${0%/*}" && pwd -P)" ] && hook=`
 
 const HEADER = '#!/bin/sh\n# Written by agent-chat at each spawn (CC-268); local edits are overwritten.\n'
 
-function chainShim(): string {
-  return `${HEADER}${FIND_REPO_HOOK}\n[ -n "$hook" ] || exit 0\nexec "$hook" "$@"\n`
-}
+const CHAIN_SHIM = `${HEADER}${FIND_REPO_HOOK}\n[ -n "$hook" ] || exit 0\nexec "$hook" "$@"\n`
 
-/** The scan's refusal does not skip the repo's own hook; either one failing refuses the push. */
-function prePushShim(node: string, cli: string): string {
-  return `${HEADER}refs=$(mktemp) || exit 1
+const NOT_RUN = 'leak-scan: guard NOT run, this push was not scanned'
+
+/**
+ * node and agent-chat are found on PATH when the hook runs, never baked in: a versioned node or a
+ * worktree's dist goes away and would refuse every push. A missing one warns and lets the push go.
+ * The scan's refusal does not skip the repo's own hook; either one failing refuses the push.
+ */
+const PRE_PUSH_SHIM = `${HEADER}refs=$(mktemp) || exit 1
 trap 'rm -f "$refs"' EXIT
 cat > "$refs"
-${shellQuote(node)} ${shellQuote(cli)} leak-scan --pre-push "--remote=$1" "--url=$2" < "$refs"
-scan=$?
+scan=0
+if ! command -v node >/dev/null 2>&1; then
+  echo "${NOT_RUN}: no node on PATH. Put node on the agent's PATH; see docs/leak-guard.md." >&2
+elif ! command -v agent-chat >/dev/null 2>&1; then
+  echo "${NOT_RUN}: no agent-chat on PATH. Run npm link in the agent-chat checkout; see docs/leak-guard.md." >&2
+else
+  agent-chat leak-scan --pre-push "--remote=$1" "--url=$2" < "$refs"
+  scan=$?
+fi
 ${FIND_REPO_HOOK}
 own_status=0
 if [ -n "$hook" ]; then "$hook" "$@" < "$refs"; own_status=$?; fi
 [ "$scan" -eq 0 ] || exit "$scan"
 exit "$own_status"
 `
-}
 
-export function hookScripts(node: string, cli: string): Map<string, string> {
-  return new Map(HOOK_NAMES.map(name => [name, name === 'pre-push' ? prePushShim(node, cli) : chainShim()]))
+export function hookScripts(): Map<string, string> {
+  return new Map([['pre-push', PRE_PUSH_SHIM], ...CHAINED_HOOKS.map(name => [name, CHAIN_SHIM] as const)])
 }
 
 /** Replaced by rename, so a hook git is running at that moment never reads a half-written file. */
@@ -92,7 +88,7 @@ function writeIfChanged(file: string, body: string): void {
   fs.renameSync(tmp, file)
 }
 
-export function writeGitHooks(dir: string, node: string, cli: string): void {
+export function writeGitHooks(dir: string): void {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-  for (const [name, body] of hookScripts(node, cli)) writeIfChanged(path.join(dir, name), body)
+  for (const [name, body] of hookScripts()) writeIfChanged(path.join(dir, name), body)
 }
