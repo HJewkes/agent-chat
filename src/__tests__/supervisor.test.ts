@@ -19,6 +19,7 @@ import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
 import { pairPresence } from '../agents/identity.js'
 import type { AgentIdentity } from '../protocol.js'
 import {
+  planPath,
   readLaunchPlan,
   readRuntimeState,
   runtimeStatePath,
@@ -2772,6 +2773,26 @@ describe('resuming an agent on its own conversation', () => {
     expect(plan.args).not.toContain('--session-id')
     expect(plan.surface).toBe('headless')
     expect(plan.stdin).toBe(RESUMED_BRIEF)
+  })
+
+  it('carries the profile env onto the resumed plan (CC-264)', async () => {
+    const dir = path.join(process.env.AGENT_CHAT_HOME as string, 'profiles')
+    fs.mkdirSync(dir, { recursive: true })
+    const body = { model: 'opus', allowedTools: ['Read'], isolation: 'none', surface: 'headless' }
+    fs.writeFileSync(path.join(dir, 'envy.json'), JSON.stringify({ ...body, env: { PROFILE_MARKER: 'on' } }))
+    const sup = withStubbedSurface()
+    const spawned = await sup.spawn(spawnReq({ profile: 'envy', spawnerConfigDir: workspace() }))
+    await (sup as unknown as { recordExit: (id: string, o: unknown) => Promise<void> }).recordExit(
+      spawned.agentId as string,
+      { code: 0, signal: null },
+    )
+    writeTranscriptFor(core.agents.get(spawned.agentId as string)!)
+    expect(readLaunchPlan(spawned.agentId as string).env.PROFILE_MARKER).toBe('on')
+    fs.rmSync(planPath(spawned.agentId as string))
+
+    expect((await sup.resume('scout')).ok).toBe(true)
+
+    expect(readLaunchPlan(spawned.agentId as string).env.PROFILE_MARKER).toBe('on')
   })
 
   it('tags a resume the seat watchdog asked for in the agent_resumed meta (CC-203)', async () => {
