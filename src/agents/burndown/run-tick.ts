@@ -20,6 +20,7 @@ import {
   liveBurndownAgents,
   observe,
   orphanAt,
+  prState,
   worktreesUnder,
   worktreeUse,
   type Roster,
@@ -90,7 +91,7 @@ export async function tickFromDisk(opts: TickOptions): Promise<string[]> {
 async function runTick(config: TickConfig, opts: TickOptions): Promise<string[]> {
   const now = opts.now ?? new Date()
   const ledger = readLedger(burndownLedgerPath())
-  const { steps, notes, decider, failures } = await decide(config, opts, ledger, now)
+  const { steps, notes, decider, failures, unchecked } = await decide(config, opts, ledger, now)
   if (opts.dryRun)
     return [
       `burndown tick at ${now.toISOString()} (dry run)`,
@@ -100,6 +101,7 @@ async function runTick(config: TickConfig, opts: TickOptions): Promise<string[]>
     ]
   const log = opts.log ?? logEvent
   for (const failure of failures) log('burndown_collision_reader_failed', { ...failure })
+  for (const initiative of unchecked) log('burndown_collision_skipped', { initiative, reason: 'no repo' })
   const executed = await execute(steps, ledger, {
     ledgerFile: burndownLedgerPath(),
     spawn: opts.broker.spawn,
@@ -152,12 +154,22 @@ async function decide(
   opts: TickOptions,
   ledger: Ledger,
   now: Date,
-): Promise<{ steps: Step[]; notes: string[]; decider?: DeciderVerdict; failures: ReaderFailure[] }> {
+): Promise<{
+  steps: Step[]
+  notes: string[]
+  decider?: DeciderVerdict
+  failures: ReaderFailure[]
+  unchecked: string[]
+}> {
   const root = opts.root ?? activeWorkRoot()
   const roster = await opts.broker.roster()
   const world = loadWorld(now, root)
   const held = heldClaims(ledger)
-  const { observations, unread } = await observe(held, roster, { inboxSince: opts.broker.inboxSince, root })
+  const { observations, unread } = await observe(held, roster, {
+    inboxSince: opts.broker.inboxSince,
+    root,
+    pr: url => prState(url, opts.exec ?? run),
+  })
   const ctx = stepContext(world, config, now, root)
   const capacity = agentCapacity(config, ledger.claims, roster)
   const decider = await deciderFor(config, opts, ledger, roster, capacity, now)
@@ -185,7 +197,10 @@ async function decide(
     ...advanced.steps,
     ...dispatched.flatMap(d => (typeof d === 'string' ? [] : d)),
   ]
-  return { steps, notes, failures, ...(decider === undefined ? {} : { decider }) }
+  const unchecked = world.initiatives
+    .filter(i => i.state === 'focused' && i.autonomy !== undefined && i.autonomy.repo === undefined)
+    .map(i => i.slug)
+  return { steps, notes, failures, unchecked, ...(decider === undefined ? {} : { decider }) }
 }
 
 /** The CC-202 check over this tick's ledger, collecting each failed reader for the event log. */
@@ -195,6 +210,8 @@ async function tickCollision(
 ): Promise<{ check: NonNullable<PlanInputs['collision']>; failures: ReaderFailure[] }> {
   const failures: ReaderFailure[] = []
   const record = (reader: CollisionReader, repo: string, detail?: string): void => {
+    // The broker is shared by every repo, so its failure is one event per tick.
+    if (reader === 'broker-view' && failures.some(f => f.reader === reader)) return
     failures.push({ reader, repo, ...(detail === undefined ? {} : { detail }) })
   }
   const check = collisionCheck(ledger, await readView(opts.broker), opts.exec ?? run, record)
