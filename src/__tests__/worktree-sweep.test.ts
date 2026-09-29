@@ -122,6 +122,19 @@ describe('finding what nobody is using', () => {
     expect(swept[0]?.status).toBe('reclaimable')
   })
 
+  it('times the grace window from the last event for a detached agent that never exited', async () => {
+    const repo = makeRepo()
+    await abandonedWorktree(repo)
+    const lastEventAt = 1_000_000
+
+    const swept = await sweepWorktrees([identity({ state: 'detached', lastEventAt })], {
+      list: lister,
+      now: () => lastEventAt + RECLAIM_GRACE_MS / 2,
+    })
+
+    expect(swept[0]?.status).toBe('in-grace')
+  })
+
   it('refuses one holding commits that exist nowhere else', async () => {
     const repo = makeRepo()
     const worktree = await abandonedWorktree(repo)

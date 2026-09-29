@@ -1073,6 +1073,52 @@ describe('retiring with force', () => {
     expect(fs.existsSync(allocation.cwd)).toBe(false)
   })
 
+  /** CC-189: an explicit retire ends the agent, live or not, so a resume must not make the tree unreleasable. */
+  describe('an agent that exited and was resumed', () => {
+    async function resumedAgentWithCleanTree(sup: Supervisor): Promise<Allocation> {
+      core.append({ kind: 'agent_spawned', actor: 'human', target: 'scout', msgId: 'a1', body: 'work' })
+      const allocation = await worktreeStrategy.allocate({
+        agentId: 'a1',
+        agentName: 'scout',
+        baseCwd: makeRepo(),
+      })
+      ;(sup as unknown as { live: Map<string, unknown> }).live.set('a1', {
+        agentId: 'a1',
+        name: 'scout',
+        handle: { surface: 'headless' },
+        allocation,
+        isolation: 'worktree',
+      })
+      core.append({ kind: 'agent_exited', actor: 'scout', ref: 'a1', meta: { code: '0' } })
+      core.append({ kind: 'agent_resumed', actor: 'human', target: 'scout', ref: 'a1' })
+      core.append({ kind: 'agent_attached', actor: 'scout', ref: 'a1' })
+      return allocation
+    }
+
+    it('releases a clean tree without force', async () => {
+      const sup = withStubbedSurface()
+      const allocation = await resumedAgentWithCleanTree(sup)
+      expect(core.agents.byName('scout')?.state).toBe('live')
+
+      const result = await sup.retire('scout')
+
+      expect(result).toEqual({ ok: true })
+      expect(fs.existsSync(allocation.cwd)).toBe(false)
+    })
+
+    it('refuses a tree with an uncommitted file, naming the dirty reason', async () => {
+      const sup = withStubbedSurface()
+      const allocation = await resumedAgentWithCleanTree(sup)
+      fs.writeFileSync(path.join(allocation.cwd, 'wip.ts'), 'unsaved\n')
+
+      const result = await sup.retire('scout')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/uncommitted/)
+      expect(fs.existsSync(allocation.cwd)).toBe(true)
+    })
+  })
+
   it('destroys them when the human says so', async () => {
     const sup = withStubbedSurface()
     const allocation = await agentHoldingUnmergedWork(sup)
