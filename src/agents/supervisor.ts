@@ -183,6 +183,8 @@ export interface SwitchRequest {
   /** The requester's own pane. Decides same-window placement; absent is not an error. */
   anchor?: string
   hostPid?: number
+  /** CC-225: the requester's own agent id, resolved by the broker from its connection. */
+  requesterAgentId?: string
 }
 
 type AttachOutcome =
@@ -1839,12 +1841,31 @@ export class Supervisor implements TeleportHost {
    * relaunch a coordinator or a peer's agent on a message of its own choosing.
    */
   private checkResumer(identity: AgentIdentity, req: ResumeRequest): string | undefined {
-    const requester = this.requesterOf(req.requesterAgentId)
+    return this.checkOwnership(identity, req.requesterAgentId, req.requestedBy, 'resume')
+  }
+
+  /** CC-225: surfacing stops the running process, so it takes resume's rule; surfacing yourself is always allowed. */
+  private checkSurfacer(identity: AgentIdentity, req: SwitchRequest): string | undefined {
+    if (identity.agentId === req.requesterAgentId) return undefined
+    return this.checkOwnership(identity, req.requesterAgentId, req.requestedBy, 'surface')
+  }
+
+  /**
+   * CC-216/CC-225: a registered worker may act only on agents it spawned.
+   * Coordinators, human-started sessions and the unregistered human pass.
+   */
+  private checkOwnership(
+    identity: AgentIdentity,
+    requesterAgentId: string | undefined,
+    requestedBy: string | undefined,
+    verb: 'resume' | 'surface',
+  ): string | undefined {
+    const requester = this.requesterOf(requesterAgentId)
     if (requester.role !== 'worker') return undefined
-    if (this.spawnEventOf(identity.agentId)?.meta.parent === req.requesterAgentId) return undefined
+    if (this.spawnEventOf(identity.agentId)?.meta.parent === requesterAgentId) return undefined
     return (
-      `${req.requestedBy ?? 'the requester'} is a worker (profile ${requester.profile || 'unknown'}) ` +
-      `and can resume only agents it spawned; ${identity.name} was not. Report the need to your ` +
+      `${requestedBy ?? 'the requester'} is a worker (profile ${requester.profile || 'unknown'}) ` +
+      `and can ${verb} only agents it spawned; ${identity.name} was not. Report the need to your ` +
       'spawner via chat_send'
     )
   }
@@ -1943,6 +1964,8 @@ export class Supervisor implements TeleportHost {
     if (blocked) return { ok: false, reason: blocked }
 
     const agent = identity as AgentIdentity
+    const refused = req.to === 'interactive' ? this.checkSurfacer(agent, req) : undefined
+    if (refused) return { ok: false, reason: refused }
     const profile = loadProfile(agent.profile)
     if ('error' in profile)
       return { ok: false, reason: `cannot reload profile "${agent.profile}": ${profile.error}` }
