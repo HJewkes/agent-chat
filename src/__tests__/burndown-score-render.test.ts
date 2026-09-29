@@ -29,17 +29,18 @@ interface Expected {
 const snapshot = JSON.parse(read('tasks.json')) as Snapshot
 const expected = JSON.parse(read('expected-sample-seat.json')) as Expected
 
-function fixturePlan() {
+function fixturePlan(top = 10, shareCaps: Record<string, number> = {}) {
   const charter = parseCharter(read('charter.md'))
   const seat = parseSeat(read('seats/sample-seat.md'), 'sample-seat')
+  const defaults = mergeDefaults(charter, seat)
   return scoredPlan({
     tasks: tasksFromList(snapshot),
     weights: expected.initiatives,
-    defaults: mergeDefaults(charter, seat),
+    defaults: { ...defaults, share_caps: { ...defaults.share_caps, ...shareCaps } },
     exclusions: { tags: seat.excluded_tags, titlePatterns: seat.excluded_title_patterns },
     hardStops: charter.hard_stops,
     today: snapshot.today,
-    top: 10,
+    top,
   })
 }
 
@@ -78,6 +79,16 @@ describe('scored plan rendering of the parity fixture', () => {
     expect(lines).toHaveLength(11)
     expect(lines.at(-1)).toBe(
       `scope=5 initiatives, ${open} open, refused={excluded-tag: 4, excluded-pattern: 1}`,
+    )
+  })
+})
+
+describe('scored plan refusal counts', () => {
+  it('adds share-cap skips from the dispatch order after the scoring exclusions', () => {
+    const plan = fixturePlan(60, { product: 0.01 })
+
+    expect(renderScored(plan).at(-1)).toBe(
+      `scope=5 initiatives, ${plan.open} open, refused={excluded-tag: 4, excluded-pattern: 1, share-cap:product: 6}`,
     )
   })
 })
