@@ -245,7 +245,7 @@ agent-chat broker               run the broker in the foreground
 agent-chat mcp                  the MCP server (Claude Code spawns this)
 ```
 
-Implementer briefs should use `agent-chat gh-write --` for merge PUTs, PR creates, comments and PR body PATCHes, since every seat and agent shares one GitHub user and so one secondary rate limit. It passes gh's stdout, stderr and exit code through; stdin is not forwarded, so send bodies with `-f`/`-F` or `--input <file>`.
+Implementer briefs should use `agent-chat gh-write --` for merge PUTs, PR creates, comments and PR body PATCHes, since every seat and agent shares one GitHub user and so one secondary rate limit. It passes gh's stdout, stderr and exit code through; stdin is not forwarded, so send bodies with `-f`/`-F` or `--input <file>`. GitHub rejects a secondary-rate-limited request without performing it, so retrying after a rate-limit response cannot apply a write twice. Any other failure is never retried, because repeating a non-idempotent POST could duplicate it. Nothing sleeps while holding the lock: a writer that must wait records when the next write may start, releases the lock, and waits outside it.
 
 ## Tests
 

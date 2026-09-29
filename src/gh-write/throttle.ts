@@ -1,11 +1,12 @@
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { backoffDelay, classifyFailure, parseRetryAfter } from './policy.js'
 
 export interface GhResult {
   code: number
-  stdout: string
-  stderr: string
+  stdout: Buffer
+  stderr: Buffer
 }
 
 export interface ThrottleDeps {
@@ -21,31 +22,46 @@ export interface ThrottleDeps {
 }
 
 const LOCK_POLL_MS = 100
-/** Longer than the largest backoff plus a slow gh call; an owner holding it this long has hung. */
+/** The lock is held for one gh call only, so an owner holding it this long has hung. */
 const STALE_LOCK_MS = 10 * 60_000
 const OWNERLESS_GRACE_MS = 10_000
+const TOKEN_FILE = 'owner'
+
+interface Token {
+  pid: number
+  nonce: string
+  at: number
+}
 
 /**
  * Runs one gh write under the machine-wide lock, spaced from the previous one,
  * retrying the secondary rate limit. Returns the final attempt's result as gh gave it.
  */
 export async function ghWrite(args: string[], deps: ThrottleDeps): Promise<GhResult> {
-  for (let attempt = 0; ; attempt++) {
-    const { result, retryInMs } = await withLock(deps, () => spacedAttempt(args, attempt, deps))
-    if (retryInMs === undefined) return result
+  for (let attempt = 0; ;) {
+    const outcome = await withLock(deps, () => attemptWhenDue(args, attempt, deps))
+    if (outcome.kind === 'wait') {
+      await deps.sleep(outcome.ms)
+      continue
+    }
+    if (outcome.retryInMs === undefined) return outcome.result
+    attempt++
     deps.notice(
-      `gh-write: GitHub secondary rate limit; retrying in ${Math.round(retryInMs / 1000)}s (retry ${attempt + 1})`,
+      `gh-write: GitHub secondary rate limit; retrying in ${Math.round(outcome.retryInMs / 1000)}s (retry ${attempt})`,
     )
   }
 }
 
-async function spacedAttempt(args: string[], attempt: number, deps: ThrottleDeps) {
+type Outcome = { kind: 'wait'; ms: number } | { kind: 'ran'; result: GhResult; retryInMs: number | undefined }
+
+/** Nothing sleeps under the lock: a writer that is not yet due releases it and waits outside. */
+async function attemptWhenDue(args: string[], attempt: number, deps: ThrottleDeps): Promise<Outcome> {
   const wait = readNotBefore(deps.stampPath) - deps.now()
-  if (wait > 0) await deps.sleep(wait)
+  if (wait > 0) return { kind: 'wait', ms: wait }
   const result = await deps.runGh(args)
   const retryInMs = await retryDelay(result, attempt, deps)
   writeNotBefore(deps.stampPath, deps.now() + Math.max(deps.gapMs, retryInMs ?? 0))
-  return { result, retryInMs }
+  return { kind: 'ran', result, retryInMs }
 }
 
 async function retryDelay(
@@ -54,7 +70,7 @@ async function retryDelay(
   deps: ThrottleDeps,
 ): Promise<number | undefined> {
   if (result.code === 0) return undefined
-  const output = `${result.stdout}\n${result.stderr}`
+  const output = `${result.stdout.toString()}\n${result.stderr.toString()}`
   const kind = classifyFailure(output)
   if (kind === 'other') return undefined
   if (kind === 'ambiguous' && (await deps.coreRemaining()) === 0) return undefined
@@ -76,40 +92,101 @@ function writeNotBefore(stampPath: string, notBefore: number): void {
 }
 
 async function withLock<T>(deps: ThrottleDeps, body: () => Promise<T>): Promise<T> {
-  await acquire(deps)
+  const nonce = await acquire(deps)
   try {
     return await body()
   } finally {
-    fs.rmSync(deps.lockDir, { recursive: true, force: true })
+    release(deps.lockDir, nonce)
   }
 }
 
 /** `mkdir` is atomic, so whoever creates the directory owns the lock. */
-async function acquire(deps: ThrottleDeps): Promise<void> {
+async function acquire(deps: ThrottleDeps): Promise<string> {
   fs.mkdirSync(path.dirname(deps.lockDir), { recursive: true })
   for (;;) {
-    try {
-      fs.mkdirSync(deps.lockDir)
-      fs.writeFileSync(path.join(deps.lockDir, 'owner'), JSON.stringify({ pid: process.pid, at: deps.now() }))
-      return
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
-    }
-    if (isStale(deps)) fs.rmSync(deps.lockDir, { recursive: true, force: true })
-    else await deps.sleep(LOCK_POLL_MS)
+    const nonce = tryCreate(deps)
+    if (nonce !== undefined) return nonce
+    const stale = staleToken(deps)
+    if (stale === undefined || !takeOver(deps.lockDir, stale)) await deps.sleep(LOCK_POLL_MS)
   }
 }
 
-function isStale(deps: ThrottleDeps): boolean {
-  let owner: { pid?: unknown; at?: unknown }
+function tryCreate(deps: ThrottleDeps): string | undefined {
   try {
-    owner = JSON.parse(fs.readFileSync(path.join(deps.lockDir, 'owner'), 'utf8')) as typeof owner
-  } catch {
-    // The owner file lands just after the mkdir; missing for long means that owner died in between.
-    return ownerlessFor(deps.lockDir) > OWNERLESS_GRACE_MS
+    fs.mkdirSync(deps.lockDir)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return undefined
+    throw err
   }
-  if (typeof owner.at === 'number' && deps.now() - owner.at > STALE_LOCK_MS) return true
-  return typeof owner.pid === 'number' && !isAlive(owner.pid)
+  const token: Token = { pid: process.pid, nonce: randomUUID(), at: deps.now() }
+  fs.writeFileSync(path.join(deps.lockDir, TOKEN_FILE), JSON.stringify(token))
+  return token.nonce
+}
+
+/** Removes the lock only while it is still ours; after a takeover it belongs to someone else. */
+function release(lockDir: string, nonce: string): void {
+  if (readToken(lockDir)?.nonce !== nonce) return
+  removeQuietly(lockDir)
+}
+
+/** The raw token text of a lock that may be taken over, '' for one with no token, else undefined. */
+function staleToken(deps: ThrottleDeps): string | undefined {
+  const raw = readRaw(deps.lockDir)
+  const token = raw === undefined ? undefined : parseToken(raw)
+  // A token mid-write reads as missing or truncated; only a long-ownerless lock is stale.
+  if (token === undefined) return ownerlessFor(deps.lockDir) > OWNERLESS_GRACE_MS ? (raw ?? '') : undefined
+  const expired = deps.now() - token.at > STALE_LOCK_MS
+  return expired || !isAlive(token.pid) ? raw : undefined
+}
+
+/**
+ * Renames the stale lock aside, then deletes it. Only one contender's rename
+ * can succeed; the losers see ENOENT and go back to acquiring.
+ */
+function takeOver(lockDir: string, seen: string): boolean {
+  if ((readRaw(lockDir) ?? '') !== seen) return false
+  const aside = `${lockDir}.stale.${randomUUID()}`
+  try {
+    fs.renameSync(lockDir, aside)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTEMPTY' || code === 'EEXIST') return false
+    throw err
+  }
+  removeQuietly(aside)
+  return true
+}
+
+function removeQuietly(target: string): void {
+  try {
+    fs.rmSync(target, { recursive: true, force: true })
+  } catch {
+    // A leftover directory costs nothing; failing the write over it would.
+  }
+}
+
+function readRaw(lockDir: string): string | undefined {
+  try {
+    return fs.readFileSync(path.join(lockDir, TOKEN_FILE), 'utf8')
+  } catch {
+    return undefined
+  }
+}
+
+function readToken(lockDir: string): Token | undefined {
+  const raw = readRaw(lockDir)
+  return raw === undefined ? undefined : parseToken(raw)
+}
+
+function parseToken(raw: string): Token | undefined {
+  try {
+    const parsed = JSON.parse(raw) as Partial<Token>
+    const valid =
+      typeof parsed.pid === 'number' && typeof parsed.nonce === 'string' && typeof parsed.at === 'number'
+    return valid ? (parsed as Token) : undefined
+  } catch {
+    return undefined
+  }
 }
 
 function ownerlessFor(lockDir: string): number {

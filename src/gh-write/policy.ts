@@ -21,8 +21,11 @@ export function parseRetryAfter(output: string): number | undefined {
 
 export const BACKOFF_MS = [60_000, 120_000, 300_000] as const
 
+export const MAX_RETRY_AFTER_MS = 300_000
+
 /** How long to wait before retry number `attempt + 1`, or undefined to give up. */
 export function backoffDelay(attempt: number, retryAfterSeconds: number | undefined): number | undefined {
   if (attempt >= BACKOFF_MS.length) return undefined
-  return retryAfterSeconds !== undefined ? retryAfterSeconds * 1000 : BACKOFF_MS[attempt]
+  if (retryAfterSeconds === undefined) return BACKOFF_MS[attempt]
+  return Math.min(retryAfterSeconds * 1000, MAX_RETRY_AFTER_MS)
 }

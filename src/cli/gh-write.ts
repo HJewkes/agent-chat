@@ -11,18 +11,23 @@ import { ghWriteLockPath, ghWriteStampPath } from '../paths.js'
 function runGh(args: string[]): Promise<GhResult> {
   return new Promise(resolve => {
     const child = spawn('gh', args, { stdio: ['ignore', 'pipe', 'pipe'] })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()))
-    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()))
-    child.on('error', err => resolve({ code: 127, stdout, stderr: `${stderr}gh-write: ${err.message}\n` }))
-    child.on('close', code => resolve({ code: code ?? 1, stdout, stderr }))
+    const stdout: Buffer[] = []
+    const stderr: Buffer[] = []
+    child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk))
+    child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk))
+    const collected = (code: number, extra = '') => ({
+      code,
+      stdout: Buffer.concat(stdout),
+      stderr: Buffer.concat([...stderr, Buffer.from(extra)]),
+    })
+    child.on('error', err => resolve(collected(127, `gh-write: ${err.message}\n`)))
+    child.on('close', code => resolve(collected(code ?? 1)))
   })
 }
 
 async function coreRemaining(): Promise<number | undefined> {
   const { code, stdout } = await runGh(['api', 'rate_limit', '--jq', '.resources.core.remaining'])
-  const remaining = Number.parseInt(stdout, 10)
+  const remaining = Number.parseInt(stdout.toString(), 10)
   return code === 0 && Number.isInteger(remaining) ? remaining : undefined
 }
 
