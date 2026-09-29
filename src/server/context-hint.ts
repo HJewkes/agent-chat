@@ -1,4 +1,4 @@
-import { contextTokens, readBudget, type PromptCache } from '../agents/budget.js'
+import { contextTokens, readStatusLineBudget, type PromptCache } from '../agents/budget.js'
 import type { ContextHintPolicy } from '../config.js'
 
 /**
@@ -69,7 +69,7 @@ export class ContextHinter {
   constructor(
     private readonly sessionId: string | undefined,
     private readonly policy: ContextHintPolicy | null,
-    private readonly read: typeof readBudget = readBudget,
+    private readonly read: typeof readStatusLineBudget = readStatusLineBudget,
     private readonly now: () => number = Date.now,
   ) {}
 

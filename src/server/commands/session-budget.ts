@@ -17,7 +17,9 @@ export const sessionBudget = defineTool({
     'weekly window is nearly spent. Both are cheap early and impossible late. The numbers come from ' +
     'the status line, which Claude Code hands the real figures and which is the only place they leave ' +
     'the session — so a reading may be MISSING (nothing has written one) or STALE (that session has ' +
-    'not redrawn since it went idle), and both are reported rather than smoothed over. Never read ' +
+    'not redrawn since it went idle), and both are reported rather than smoothed over. A headless ' +
+    'agent draws no status line, so its context fill comes from its transcript instead, marked ' +
+    'source: transcript, with no window size and no rate limits. Never read ' +
     'stale as current: an idle peer keeps publishing the fill it had when it stopped.',
   args: z.object({
     name: z

@@ -1,5 +1,5 @@
 import fs from 'node:fs'
-import { budgetDir, readBudget, type BudgetRead } from '../agents/budget.js'
+import { budgetDir, readStatusLineBudget, type BudgetRead } from '../agents/budget.js'
 import type { AccountSpend, Reading } from './types.js'
 
 /**
@@ -22,7 +22,7 @@ function readingsUnder(dir: string, now: number): Found[] {
     return []
   }
   return files
-    .map(name => readBudget(name.slice(0, -'.json'.length), now, dir))
+    .map(name => readStatusLineBudget(name.slice(0, -'.json'.length), now, dir))
     .filter((read): read is Found => read.found)
 }
 
