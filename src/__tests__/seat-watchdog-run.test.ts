@@ -315,7 +315,7 @@ describe('state-change log lines', () => {
 
   it('logs a restart window hold once across its runs', async () => {
     const h = harness(IDLE)
-    h.ownerMessages = [{ ts: h.now() - 5 * 60_000, body: 'hjewkes-surplus: restart at 08:45' }]
+    h.ownerMessages = [{ ts: h.now() - 5 * 60_000, body: 'seat-a: restart at 08:45' }]
     const out = (await outputs(h, 3)).filter(l => HOLD_ON.test(l))
     expect(out).toHaveLength(1)
   })
@@ -327,18 +327,18 @@ describe('state-change log lines', () => {
     expect(engaged).toHaveLength(1)
     expect(engaged[0]).toContain('fire cap engaged: 2 wake(s)')
     const busy: Roster = {
-      agents: [{ name: 'hs-cc-1-x', profile: 'implementer', state: 'live', spawnedBy: 'hjewkes-surplus' }],
+      agents: [{ name: 'sa-x-2', profile: 'implementer', state: 'live', spawnedBy: 'seat-a' }],
       connected: [],
     }
     const lifted = capLines(await runWatchdog({ ...h.deps, roster: async () => busy }, ONE))
-    expect(lifted).toEqual(['hjewkes-surplus: Watchdog: fire cap lifted: an implementer ran'])
+    expect(lifted).toEqual(['seat-a: Watchdog: fire cap lifted: an implementer ran'])
     expect(h.logs.filter(l => /fire cap (engaged|lifted)/.test(l))).toHaveLength(2)
   })
 
   it('reads a state file from before these fields as no hold and no cap', async () => {
     const h = harness(IDLE)
     h.doc = {
-      seats: { 'hjewkes-surplus': { idleRuns: 0, at: h.now() - 60_000, fires: 0 } },
+      seats: { 'seat-a': { idleRuns: 0, at: h.now() - 60_000, fires: 0 } },
       pools: {},
       stopped: {},
     }
