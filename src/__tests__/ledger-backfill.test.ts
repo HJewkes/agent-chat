@@ -12,7 +12,7 @@ import {
   type PlannedRow,
   type RuntimeRef,
 } from '../agents/ledger/backfill.js'
-import { backfillAtBoot, backfillDoneAt, runBackfill } from '../agents/ledger/backfill-run.js'
+import { backfillAtBoot, backfillDoneAt, logRejected, runBackfill } from '../agents/ledger/backfill-run.js'
 import { ledgerDbOver } from '../agents/ledger/db-shim.js'
 import { writeRuntimeState } from '../agents/launch-files.js'
 import { EventLog, type AgentEventRow } from '../broker/event-log.js'
@@ -325,6 +325,21 @@ describe('runBackfill against an events.db', () => {
     backfillAtBoot(events, FENCE)
 
     expect(phases()).toEqual(['dispatching'])
+  })
+
+  it('logs a duplicate row as information and any other rejection as a shadow error', () => {
+    logRejected({ agentId: 'alpha', kind: 'event_conflict', reason: 'prepare: event_conflict: dup' })
+    logRejected({ agentId: 'beta', kind: 'invalid_transition', reason: 'prepare: invalid_transition: bad' })
+
+    const lines = fs
+      .readFileSync(path.join(dir, 'broker.log'), 'utf8')
+      .trim()
+      .split('\n')
+      .map(line => JSON.parse(line) as Record<string, unknown>)
+    expect(lines.map(line => [line.event, line.agentId])).toEqual([
+      ['ledger_backfill_duplicate', 'alpha'],
+      ['ledger_shadow_error', 'beta'],
+    ])
   })
 
   it('the CLI refuses while a broker holds the socket', async () => {

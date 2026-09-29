@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import type { HealthPayload } from '../api-contract.js'
 import { probeHealth } from '../broker/doctor.js'
+import { activeHold, clearHold, writeHold } from '../broker/hold.js'
 import { isProcessAlive, probeSocket, readMeta, readPidFile, removeStateFiles } from '../broker/lifecycle.js'
 import { cliEntry, defaultPort, logPath, socketPath } from '../paths.js'
 import { type ServerMessage } from '../protocol.js'
@@ -79,9 +80,12 @@ export async function start(options: { port?: number; foreground?: boolean }): P
     if (port !== undefined) process.env.AGENT_CHAT_PORT = String(port)
     const { startBroker } = await import('../broker/index.js')
     const server = await startBroker()
-    if (!server) console.error(`a broker is already listening on ${socketPath()}`)
+    if (!server) console.error(refusedStart())
     return
   }
+
+  // Only the detached start lifts a hold: `agent-chat broker`, which every auto-start runs, is the foreground path.
+  clearHold()
 
   // Detached, matching `spawnBroker` (`broker-client.ts:90`) — the broker must
   // outlive whichever process happened to want it first.
@@ -97,6 +101,12 @@ export async function start(options: { port?: number; foreground?: boolean }): P
   console.log(`Broker up on ${socketPath()}${meta?.port ? ` and port ${meta.port}` : ''}.`)
 }
 
+function refusedStart(): string {
+  const until = activeHold()
+  if (until === undefined) return `a broker is already listening on ${socketPath()}`
+  return `held until ${new Date(until).toISOString()}; \`agent-chat service start\` lifts it`
+}
+
 /** Refuse before signalling, and only ask a broker that is already up: connecting would start one. */
 async function refuseIfBusy(verb: string, force: boolean | undefined): Promise<void> {
   if (force || !(await probeSocket())) return
@@ -104,12 +114,20 @@ async function refuseIfBusy(verb: string, force: boolean | undefined): Promise<v
   if (refusal !== null) fail(refusal)
 }
 
-export async function stop(options: { force?: boolean } = {}): Promise<void> {
+export async function stop(options: { force?: boolean; hold?: number } = {}): Promise<void> {
   await refuseIfBusy('stop', options.force)
-  await stopBroker()
+  // Written before the SIGTERM, so the auto-restarts it provokes already see it.
+  const heldUntil = options.hold === undefined ? undefined : writeHold(options.hold)
+  await stopBroker(heldUntil !== undefined)
+  if (heldUntil !== undefined) {
+    console.log(
+      `Held until ${new Date(heldUntil).toISOString()}: brokers refuse to start until then. ` +
+        '`agent-chat service start` lifts it early.',
+    )
+  }
 }
 
-async function stopBroker(): Promise<void> {
+async function stopBroker(held = false): Promise<void> {
   const attached = await attachedSessions()
   const pid = readPidFile()
   if (pid === null || !isProcessAlive(pid)) {
@@ -131,7 +149,7 @@ async function stopBroker(): Promise<void> {
   // §4.4: stop is not sticky. Any live session's MCP subprocess reconnects and
   // resurrects the broker within ~100ms, so with sessions attached this was
   // functionally a restart. Saying so beats letting the user rediscover it.
-  if (attached !== null && attached > 0) {
+  if (!held && attached !== null && attached > 0) {
     console.log(
       `${attached} session${attached === 1 ? ' was' : 's were'} attached — ` +
         'each will auto-restart the broker on its next message. `stop` is not sticky.',

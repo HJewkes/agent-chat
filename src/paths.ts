@@ -15,6 +15,9 @@ export const logPath = (): string => path.join(home(), 'broker.log')
 /** Diagnostic only. `service status` answers "is it running" from the socket, never from this. */
 export const pidPath = (): string => path.join(home(), 'broker.pid')
 
+/** Expiry in epoch ms written by `service stop --hold`; a broker refuses to start before it. */
+export const holdPath = (): string => path.join(home(), 'broker.hold')
+
 /** `{port, version, started}` — what `restart` reads to reuse the port it was on. */
 export const metaPath = (): string => path.join(home(), 'broker.meta.json')
 

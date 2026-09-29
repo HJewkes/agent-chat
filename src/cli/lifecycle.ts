@@ -37,7 +37,8 @@ export function addLifecycleCommands(program: Command): void {
 /** Offline only: the broker's own boot hook covers the online case, and two writers would race. */
 async function backfill(opts: BackfillOptions): Promise<void> {
   const file = path.join(home(), 'events.db')
-  if (await probeSocket()) fail('a broker holds the socket; stop it first (agent-chat service stop)')
+  if (await probeSocket())
+    fail('a broker holds the socket; stop it first (agent-chat service stop --hold 300)')
   if (!fs.existsSync(file)) fail(`${file} does not exist; nothing to backfill`)
   const events = new EventLog(file)
   try {

@@ -3,6 +3,7 @@
 import './warnings.js'
 
 import { Command } from 'commander'
+import { MAX_HOLD_SECONDS } from '../broker/hold.js'
 import { VERSION } from '../broker/version.js'
 import { socketPath } from '../paths.js'
 import * as agents from './agents.js'
@@ -63,6 +64,13 @@ const port = (value: string): number => {
   return parsed
 }
 
+const holdSeconds = (value: string): number => {
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > MAX_HOLD_SECONDS)
+    throw new Error(`bad --hold: ${value} (whole seconds, 1 to ${MAX_HOLD_SECONDS})`)
+  return parsed
+}
+
 function addServiceCommands(program: Command): void {
   const svc = program.command('service').description('run and inspect the broker daemon')
 
@@ -76,9 +84,14 @@ function addServiceCommands(program: Command): void {
   svc
     .command('stop')
     .description(
-      'SIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is mid-spawn or an ask is unanswered',
+      'SIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is mid-spawn or an ask is unanswered; --hold keeps auto-starts off for a while',
     )
     .option('--force', 'stop even if a spawn or an unanswered ask would be lost')
+    .option(
+      '--hold <seconds>',
+      `refuse broker starts, including auto-starts, for this long (at most ${MAX_HOLD_SECONDS})`,
+      holdSeconds,
+    )
     .action(service.stop)
 
   svc
