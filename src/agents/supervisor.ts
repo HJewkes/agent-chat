@@ -56,6 +56,7 @@ import {
   type TranscriptVerdict,
 } from './resume-session.js'
 import { reattachWorktree, type WorktreeRecord } from './isolation/worktree.js'
+import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { loginGap, readOutputTail } from './launch-output.js'
 import { isTrusted, trustGap } from './trust.js'
@@ -942,7 +943,7 @@ export class Supervisor implements TeleportHost {
     })
     if ('error' in account) return this.refuse(req, account.error)
     if (account.warning !== undefined) warnings.push(account.warning)
-    const resumed = this.resumeSource(req, isolationName, cwd, account.dir)
+    const resumed = await this.resumeSource(req, isolationName, cwd, account.dir)
     if (resumed !== undefined && 'error' in resumed) return this.refuse(req, resumed.error)
     const predecessor = req.predecessor === undefined ? undefined : this.predecessorFor(req.predecessor, req)
     if (predecessor !== undefined && 'error' in predecessor) return this.refuse(req, predecessor.error)
@@ -1138,14 +1139,16 @@ export class Supervisor implements TeleportHost {
   }
 
   /** CC-126: the checked transcript a `resume_session` spawn continues, or why it cannot. */
-  private resumeSource(
+  private async resumeSource(
     req: SpawnRequest,
     isolation: IsolationName,
     cwd: string,
     configDir: string,
-  ): ResumedSession | { error: string } | undefined {
+  ): Promise<ResumedSession | { error: string } | undefined> {
     if (req.resumeSession === undefined) return undefined
-    const reattach = isolation === 'worktree' ? this.reattachFor(req.resumeSession, req.worktree) : undefined
+    const reattach =
+      isolation === 'worktree' ? await this.reattachFor(req.resumeSession, req.worktree, cwd) : undefined
+    if (reattach !== undefined && 'error' in reattach) return reattach
     const checked = checkResumeSession({
       resumeSession: req.resumeSession,
       ...(req.inherit === undefined ? {} : { inherit: req.inherit }),
@@ -1159,12 +1162,23 @@ export class Supervisor implements TeleportHost {
     return { sessionId: req.resumeSession, path: checked.path, ...(reattach ? { reattach } : {}) }
   }
 
-  /** CC-140: a retired agent's removed worktree, unless the caller named a different one. */
-  private reattachFor(sessionId: string, worktree: string | undefined): WorktreeRecord | undefined {
+  /** CC-140: a retired agent's removed worktree, unless the caller named a different one or another repository. */
+  private async reattachFor(
+    sessionId: string,
+    worktree: string | undefined,
+    cwd: string,
+  ): Promise<WorktreeRecord | { error: string } | undefined> {
     const retired = this.core.agents.roster({ includeRetired: true })
     const gone = retiredWorktree(retired, this.core.events.agentEvents(), sessionId)
     if (gone === undefined || (worktree !== undefined && path.resolve(worktree) !== gone.worktree))
       return undefined
+    const root = await findGitRoot(cwd)
+    if (root === null || canonicalPath(root) !== canonicalPath(gone.gitRoot))
+      return {
+        error:
+          `session ${sessionId} ran in a worktree of ${gone.gitRoot}, but cwd ${cwd} is in ` +
+          `${root ?? 'no git repository'}. Pass a cwd inside ${gone.gitRoot}. Not spawned`,
+      }
     return gone
   }
 
