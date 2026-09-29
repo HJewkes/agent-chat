@@ -88,7 +88,7 @@ describe('run-agent keeping the stderr tail of a headless claude (CC-161)', () =
   it('leaves only the bounded tail of what claude wrote to stderr, and still passes it on', () => {
     fs.writeFileSync(
       fakeClaude,
-      "process.stderr.write('x'.repeat(100000) + 'Not logged in · Please run /login\\n'); process.exitCode = 1\n",
+      "process.stdin.resume(); process.stderr.write('x'.repeat(100000) + 'Not logged in · Please run /login\\n'); process.exitCode = 1\n",
     )
     writePlan('agt-test', {}, 'the brief')
 
@@ -112,7 +112,7 @@ describe('run-agent keeping the stderr tail of a headless claude (CC-161)', () =
   it("exits promptly when a grandchild keeps holding claude's stderr", () => {
     fs.writeFileSync(
       fakeClaude,
-      "require('node:child_process').spawn('sleep', ['4'], { stdio: ['ignore', 'ignore', 'inherit'], detached: true }).unref(); process.stderr.write('Not logged in\\n'); process.exitCode = 3\n",
+      "process.stdin.resume(); require('node:child_process').spawn('sleep', ['4'], { stdio: ['ignore', 'ignore', 'inherit'], detached: true }).unref(); process.stderr.write('Not logged in\\n'); process.exitCode = 3\n",
     )
     writePlan('agt-test', {}, 'the brief')
 
@@ -127,7 +127,7 @@ describe('run-agent keeping the stderr tail of a headless claude (CC-161)', () =
   it('waits for stderr that lands just after claude exits, so the tail keeps it', () => {
     fs.writeFileSync(
       fakeClaude,
-      "require('node:child_process').spawn(process.execPath, ['-e', \"setTimeout(() => process.stderr.write('late words\\\\n'), 100)\"], { stdio: ['ignore', 'ignore', 'inherit'], detached: true }).unref(); process.exitCode = 2\n",
+      "process.stdin.resume(); require('node:child_process').spawn(process.execPath, ['-e', \"setTimeout(() => process.stderr.write('late words\\\\n'), 100)\"], { stdio: ['ignore', 'ignore', 'inherit'], detached: true }).unref(); process.exitCode = 2\n",
     )
     writePlan('agt-test', {}, 'the brief')
 
@@ -135,6 +135,16 @@ describe('run-agent keeping the stderr tail of a headless claude (CC-161)', () =
 
     expect(result.status).toBe(2)
     expect(fs.readFileSync(tailFile(), 'utf8')).toContain('late words')
+  })
+
+  it('exits with the claude exit code when claude closes stdin before reading its brief (CC-197)', () => {
+    fs.writeFileSync(fakeClaude, 'process.stdin.destroy(); process.exit(7)\n')
+    writePlan('agt-test', {}, 'x'.repeat(4 * 1024 * 1024))
+
+    const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
+
+    expect(result.status).toBe(7)
+    expect(result.stderr).not.toMatch(/EPIPE|Unhandled|node:events/)
   })
 
   it('discards a tail left by an earlier launch of the same agent', () => {
