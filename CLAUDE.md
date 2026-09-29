@@ -53,9 +53,12 @@ Before `gh pr create`, run `npm run verify` in your worktree and report its last
 The PR merges when the `check` context is green; if it is red, read `gh pr checks <n>`
 and the failing job's log, fix, and push to the same PR.
 
-`verify` runs format:check (fix with `npm run format`), typecheck, build, `vitest run`,
-then the shadow-ledger rerun. CI's `std / verify` job runs exactly this script. CI also
-runs gitleaks and `npm audit`, which `verify` does not.
+`verify` runs format:check (fix with `npm run format`), typecheck, build, and `vitest run`.
+`setupFiles` deletes every `AGENT_CHAT_*` variable but `AGENT_CHAT_LIVE`,
+so an env-flag rerun of a suite is a no-op. Cover a flag by config or injection instead:
+`ledgerShadow` defaults on, so `vitest run` exercises on, and the off path has its own
+tests. CI's `std / verify` job runs exactly this script. CI also runs gitleaks and
+`npm audit`, which `verify` does not.
 
 Run `verify` in a worktree, never in the main checkout: its build rewrites `dist/`,
 and in the main checkout that swaps code under the live broker. For the same reason

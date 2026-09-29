@@ -175,6 +175,17 @@ describe('the ledgerShadow flag', () => {
     for (const method of methods) expect(method).not.toHaveBeenCalled()
   })
 
+  it('with ledgerShadow false in config.json no table exists and the handle is never opened', () => {
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ ledgerShadow: false }))
+    const handle = vi.fn(() => events.ledgerHandle())
+
+    const ledger = shadowLedgerFromConfig(handle)
+
+    expect(ledger).toBeUndefined()
+    expect(handle).not.toHaveBeenCalled()
+    expect(tableNames()).not.toContain('agent_execution')
+  })
+
   it('with the flag on the ledger tables are created in events.db', () => {
     process.env.AGENT_CHAT_LEDGER_SHADOW = '1'
 
