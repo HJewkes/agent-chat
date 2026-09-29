@@ -208,6 +208,15 @@ describe('the tick leak check on a claimed PR', () => {
     expect(leakSends(w)).toHaveLength(2)
   })
 
+  it('matches a claim by its recorded PR even on a branch no agent of it pushed', async () => {
+    const w = newWorld([pull({ branch: 'owner/manual', title: NAME })])
+
+    await tick(w, ledgerOf(claim()))
+
+    expect(leakSends(w)).toHaveLength(1)
+    expect(w.notices).toEqual([])
+  })
+
   it('matches a claim without a recorded PR by its agent branch', async () => {
     const w = newWorld([pull({ title: NAME })])
     const other = claim({ taskId: 'DM-2', pr: `${PR}0`, spawned: ['st-dm-2'], agentName: 'st-dm-2' })
