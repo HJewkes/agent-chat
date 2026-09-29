@@ -128,8 +128,8 @@ export function mergeDefaults(charter: CharterPolicy, seat: SeatPolicy): Scoring
   }
 }
 
-export const defaultAutonomyRoot = (): string =>
-  path.join(activeWorkRoot(), 'claude-channels', 'sources', 'autonomy')
+export const defaultAutonomyRoot = (root = activeWorkRoot()): string =>
+  path.join(root, 'claude-channels', 'sources', 'autonomy')
 
 /** Reads `charter.md` and every seat it lists under `seats/`; throws on a seat the charter does not list. */
 export function loadPolicy(root: string, seatName: string): Policy {
@@ -139,8 +139,26 @@ export function loadPolicy(root: string, seatName: string): Policy {
   const seats = Object.fromEntries(
     charter.seats.map(s => [s, parseSeat(read(path.join('seats', `${s}.md`)), s)]),
   )
+  checkSeatPrefixes(seats)
   const seat = seats[seatName] as SeatPolicy
   return { charter, seats, seat, defaults: mergeDefaults(charter, seat) }
+}
+
+/** The tick's own agents are `bd-...`; seat agents must never share a name with them or with another seat's. */
+const RESERVED_PREFIX = 'bd'
+const PREFIX_CHARS = /^[a-z0-9]+$/
+
+/** Throws on a seat prefix equal to `bd`, used twice, or outside [a-z0-9], which also refuses `<other>-...`. */
+export function checkSeatPrefixes(seats: Readonly<Record<string, SeatPolicy>>): void {
+  const owner = new Map<string, string>()
+  for (const [name, { prefix }] of Object.entries(seats)) {
+    if (prefix === undefined) continue
+    if (!PREFIX_CHARS.test(prefix)) throw new Error(`seat ${name} prefix ${prefix} is not [a-z0-9]+`)
+    if (prefix === RESERVED_PREFIX) throw new Error(`seat ${name} prefix ${prefix} is the tick's own`)
+    const taken = owner.get(prefix)
+    if (taken !== undefined) throw new Error(`seats ${taken} and ${name} share prefix ${prefix}`)
+    owner.set(prefix, name)
+  }
 }
 
 /** The seat's pool from the charter and its own spend caps, as `gatePool` reads them; an unknown pool is undefined, which closes the gate. */

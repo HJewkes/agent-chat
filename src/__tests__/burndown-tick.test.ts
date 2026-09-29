@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { BrokerView } from '../agents/burndown/collision.js'
 import { run, type Runner } from '../agents/burndown/exec.js'
@@ -481,6 +482,20 @@ describe('burndown tick ceilings', () => {
 
     expect(fake.frames).toEqual([])
     expect(lines.join('\n')).toContain('refused demo DM-1 [worktrees]: 7 worktrees')
+  })
+
+  it("counts a configured seat's prefixed worktrees against maxWorktreesPerRepo", async () => {
+    const fixture = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'autonomy-2026-09-29')
+    fs.cpSync(fixture, path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy'), { recursive: true })
+    config({ seats: ['seat-a'], maxWorktreesPerRepo: 1 })
+    initiative({ 'DM-1': task('DM-1') })
+    git(repo(), 'worktree', 'add', '-q', '-b', 'sa-x-9', path.join('.worktrees', 'sa-x-9'))
+    const fake = fakeBroker()
+
+    const lines = await tick(fake)
+
+    expect(fake.frames).toEqual([])
+    expect(lines.join('\n')).toContain('1 burndown worktrees under')
   })
 
   it('reports a branch left by a failed spawn and dispatches the next task instead', async () => {

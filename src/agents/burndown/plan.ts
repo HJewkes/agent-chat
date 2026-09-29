@@ -34,6 +34,12 @@ export interface Dispatch {
   /** The worktree the spawn cuts; absent for a planner, which shares the checkout. */
   worktree?: string
   reason: string
+  /** The seat that dispatched it (CC-205); absent for an initiative's autonomy block. */
+  seat?: string
+  /** Prefix of the agent names the claim spawns; absent means `bd`. */
+  namePrefix?: string
+  /** The seat pool's Claude config dir; absent means the account's. */
+  configDir?: string
 }
 
 /** Worktrees under one repo's `.worktrees`: every one, and those the tick's own agents hold. */
@@ -100,7 +106,7 @@ export const reviewerNameFor = (
 
 type OptedIn = Initiative & { autonomy: Autonomy }
 
-interface Tally {
+export interface Tally {
   agents: number
   worktrees: Map<string, number>
 }
@@ -153,8 +159,9 @@ interface Work {
   taskId: string
   slice?: string
   profile: string
-  /** A queued slice's claim prefix, so its implementer shares the planner's seat prefix. */
+  /** A queued slice's claim prefix and seat, so its implementer shares the planner's. */
   namePrefix?: string
+  seat?: string
 }
 
 /** A ready slice first, since its task is already underway; else the best eligible task with no orphan or collision. */
@@ -166,9 +173,12 @@ function nextWork(initiative: OptedIn, inputs: PlanInputs): { work?: Work; refus
     const work = { taskId: ready.taskId, slice: ready.slice, tags, owns: ready.owns ?? [] }
     const collided = collisionOf(initiative, work, inputs)
     if (collided !== undefined) return { refusals: [collided] }
-    const prefix = ready.namePrefix === undefined ? {} : { namePrefix: ready.namePrefix }
+    const identity = {
+      ...(ready.namePrefix === undefined ? {} : { namePrefix: ready.namePrefix }),
+      ...(ready.seat === undefined ? {} : { seat: ready.seat }),
+    }
     return {
-      work: { taskId: ready.taskId, slice: ready.slice, profile: IMPLEMENTER_PROFILE, ...prefix },
+      work: { taskId: ready.taskId, slice: ready.slice, profile: IMPLEMENTER_PROFILE, ...identity },
       refusals: [],
     }
   }
@@ -185,7 +195,12 @@ function nextWork(initiative: OptedIn, inputs: PlanInputs): { work?: Work; refus
     const profile = profileFor(task)
     const refusal =
       collisionOf(initiative, { taskId: task.id, tags: task.tags, owns: [] }, inputs) ??
-      orphanOf(initiative, task.id, profile, inputs)
+      orphanRefusal(
+        { initiative: initiative.slug, repo: initiative.autonomy.repo },
+        task.id,
+        profile,
+        inputs.orphan,
+      )
     if (refusal === undefined)
       return { work: { taskId: task.id, profile }, refusals: [...blocked, ...refusals] }
     blocked.push(refusal)
@@ -200,18 +215,17 @@ function collisionOf(initiative: OptedIn, work: CollisionWork, inputs: PlanInput
 }
 
 /** A failed spawn leaves its branch and worktree with no claim; dispatching onto it would adopt stale work. */
-function orphanOf(
-  initiative: OptedIn,
+export function orphanRefusal(
+  at: { initiative: string; repo: string | undefined; prefix?: string | undefined },
   taskId: string,
   profile: string,
-  inputs: PlanInputs,
+  orphan: PlanInputs['orphan'],
 ): Refusal | undefined {
-  const repo = initiative.autonomy.repo
-  if (profile === PLANNER_PROFILE || repo === undefined || inputs.orphan === undefined) return undefined
-  const reason = inputs.orphan(repo, agentNameFor(taskId))
+  if (profile === PLANNER_PROFILE || at.repo === undefined || orphan === undefined) return undefined
+  const reason = orphan(at.repo, agentNameFor(taskId, undefined, at.prefix))
   return reason === undefined
     ? undefined
-    : { initiative: initiative.slug, task: taskId, kind: 'orphan', reason }
+    : { initiative: at.initiative, task: taskId, kind: 'orphan', reason }
 }
 
 /** The account, profile and worktree for eligible work, or why there is none. */
@@ -256,11 +270,13 @@ function place(
     agentName,
     ...(worktree === undefined ? {} : { worktree }),
     reason,
+    ...(work.namePrefix === undefined ? {} : { namePrefix: work.namePrefix }),
+    ...(work.seat === undefined ? {} : { seat: work.seat }),
   }
 }
 
-function capacityRefusal(
-  d: Dispatch,
+export function capacityRefusal(
+  d: Pick<Dispatch, 'repo' | 'worktree'>,
   capacity: Capacity | undefined,
   tally: Tally,
 ): Pick<Refusal, 'kind' | 'reason'> | undefined {

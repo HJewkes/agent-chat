@@ -312,17 +312,19 @@ function kindLimits(shareCaps: Readonly<Record<string, number>>, n: number): Map
 /**
  * score.py's greedy `dispatch_order`, plus share caps (CC-201 plan section
  * 1.2). Each pick decays its initiative's later candidates by
- * `initiative_decay`; blocked rows never enter the order.
+ * `initiative_decay`; blocked rows never enter the order. `priorPicks` counts
+ * each initiative's claims already dispatched this run, so decay starts at `decay^k`.
  */
 export function dispatchOrder(
   rows: readonly ScoreRow[],
   defaults: ScoringDefaults,
   n: number,
+  priorPicks: Readonly<Record<string, number>> = {},
 ): { order: DispatchRow[]; refused: ShareCapRefusals } {
   const pool = rows.filter(row => row.blocked.length === 0)
   const decay = new Set(pool.map(row => row.initiative)).size > 1 ? defaults.initiative_decay : 1
   const limits = kindLimits(defaults.share_caps, n)
-  const picksIn = new Map<string, number>()
+  const picksIn = new Map<string, number>(Object.entries(priorPicks))
   const picksOf = new Map<string, number>()
   const raw = (row: ScoreRow) => row.score * decay ** (picksIn.get(row.initiative) ?? 0)
   const order: DispatchRow[] = []

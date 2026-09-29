@@ -514,6 +514,31 @@ describe('dispatchOrder', () => {
     expect(result.order.map(r => [r.id, r.effective])).toEqual(expected)
     expect(result.refused).toEqual(refused)
   })
+
+  it('starts an initiative with prior picks at decay^k', () => {
+    const input = rows([
+      { id: 'A-1', score: 80 },
+      { id: 'B-1', in: 'b', score: 70 },
+    ])
+
+    const result = dispatchOrder(input, { ...DEFAULTS, share_caps: {} }, 2, { a: 2 })
+
+    expect(result.order.map(r => [r.id, r.effective])).toEqual([
+      ['B-1', 70],
+      ['A-1', 57.8],
+    ])
+  })
+
+  it('orders exactly as before when prior picks are empty', () => {
+    const input = rows([
+      { id: 'A-1', score: 60 },
+      { id: 'A-2', score: 55 },
+      { id: 'B-1', in: 'b', score: 50 },
+    ])
+    const defaults = { ...DEFAULTS, share_caps: {} }
+
+    expect(dispatchOrder(input, defaults, 3, {})).toEqual(dispatchOrder(input, defaults, 3))
+  })
 })
 
 describe('scoreAll', () => {
