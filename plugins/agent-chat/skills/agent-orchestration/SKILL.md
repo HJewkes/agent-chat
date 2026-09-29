@@ -262,9 +262,13 @@ its context as the scarce resource, not the agents' time.
 - Corpus mining, literature digests, recon over many files: spawn `implementer-lite` (sonnet,
   `isolation: none` when it must not hold a worktree slot) or `explorer`, have it WRITE a
   digest file, and read only its <10-line report.
-- PR gating: keep one standing sonnet `reviewer` per wave; send it PR numbers and read its
-  verdict. Read a diff yourself only where the judgement is the point (safety paths, lifecycle
-  and migration changes), not for routine hygiene PRs.
+- PR gating: spawn one fresh, short-lived `reviewer` per PR when it reports green CI. Run
+  reviewers in parallel up to the reviewers cap. A re-review of the same PR resumes that
+  PR's reviewer while it is warm; a new PR never reuses a reviewer. Retire the reviewer when
+  its PR merges or closes. A reviewer reviews in a detached worktree at the head under
+  `$TMPDIR/<reviewer name>`, never under `<repo>/.worktrees` and never in the implementer's
+  tree, and removes it at verdict. Read a diff yourself only where the judgement is the point
+  (safety paths, lifecycle and migration changes), not for routine hygiene PRs.
 - Before any read that will return more than ~100 lines, ask whether a sonnet agent could
   return a 10-line answer instead.
 - `session_budget(name)` returns a PEER's `model_id`, `cost.total_cost_usd` and context
@@ -283,13 +287,20 @@ implementer reports; reviewers follow the verdict block below.
 ### Implementer contract: end every code brief with this block
 
 ```
-First run `git log origin/<default> --oneline --grep <ID>` and stop if it has landed.
-Branch from origin/<default>; check `git log origin/<default>..HEAD`. Commit before
+Check `gh api repos/<owner>/<repo> --jq .visibility`. In a public repo, never commit or
+paste captured real data into code, fixtures, PR bodies or comments: task lists, charter or
+seat files, /Users paths, emails, or IDs and text from private repos. Use synthetic
+fixtures. First run `git log origin/<default> --oneline --grep <ID>` and stop if it has
+landed. Branch from origin/<default>; check `git log origin/<default>..HEAD`. Commit before
 mutating; never `git checkout` uncommitted work. Scratch files go in the worktree or
-`$TMPDIR/<your name>`. Wait for CI with `gh run watch <id> --exit-status`. Load tests
-kill burners with `pkill -f '<pattern>'` and confirm with pgrep. A PR that narrows a
-timeout reports per-case CI times against the new limit. You are NOT done at "PR
-opened". Your LAST action must be chat_send to <spawner> starting with
+`$TMPDIR/<your name>`. Make GitHub writes (merge PUT, PR create, comment, PR body PATCH)
+through `agent-chat gh-write -- <gh args>` when `agent-chat gh-write --help` works;
+otherwise, on a 403 "API rate limit exceeded" with core quota left, wait 5 minutes and retry
+once. Wait for CI with `gh run watch <id> --exit-status` in the foreground. Never end a turn
+on a background task, a sleep or a ScheduleWakeup: a headless agent exits at turn end and
+the task dies with it. Load tests kill burners with `pkill -f '<pattern>'` and confirm with
+pgrep. A PR that narrows a timeout reports per-case CI times against the new limit. You are
+NOT done at "PR opened". Your LAST action must be chat_send to <seat> starting with
 `Status: DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT`, `PR: <owner>/<repo>#<n>` and
 `Head: <full sha>` lines, then CI status.
 ```
