@@ -82,6 +82,9 @@ export interface EventStore {
   /** The newest direct message `from` sent at or after `since`, optionally only those to `to` (CC-133). */
   lastMessageFrom(from: string, opts: { to?: string; since: number }): QueueItem | undefined
 
+  /** Whether `from` sent `to` a direct message opening with `Status:` at or after `since` (CC-266). */
+  hasStatusReport(from: string, to: string, since: number): boolean
+
   /** Open items for the human: addressed to them and not yet answered or dismissed. */
   humanQueue(): QueueItem[]
 

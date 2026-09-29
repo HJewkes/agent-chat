@@ -333,6 +333,18 @@ export class EventLog implements EventStore {
     }
   }
 
+  hasStatusReport(from: string, to: string, since: number): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM events
+         WHERE actor = ? AND target = ? AND kind = 'message' AND ts >= ?
+           AND ltrim(body, ' ' || char(9, 10, 13) || '*') LIKE 'status:%'
+         LIMIT 1`,
+      )
+      .get(from, to, since)
+    return row !== undefined
+  }
+
   /** Open items for the human: addressed to them, not yet answered or dismissed, and not aged out. */
   humanQueue(): QueueItem[] {
     const now = Date.now()
