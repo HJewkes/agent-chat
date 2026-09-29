@@ -3,16 +3,21 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
-/** CC-235: this repo is public, so committed fixtures must hold no home-directory paths or email addresses. */
+/** CC-235: this repo is public, so committed fixtures must hold no home-directory paths, email addresses or real seat names. */
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures')
 const HOME_PATH = /\/Users\//
+const REAL_SEATS = ['hjewkes-surplus', 'titan-coord', 'voltras-coord', 'self-improve', 'tp450-herald']
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/
 
 function leaks(text: string): string[] {
   return text
     .split('\n')
-    .flatMap((line, i) => (HOME_PATH.test(line) || EMAIL.test(line) ? [`line ${i + 1}`] : []))
+    .flatMap((line, i) =>
+      HOME_PATH.test(line) || EMAIL.test(line) || REAL_SEATS.some(n => line.includes(n))
+        ? [`line ${i + 1}`]
+        : [],
+    )
 }
 
 function walk(dir: string): string[] {
@@ -25,6 +30,7 @@ describe('fixture privacy guard', () => {
   it.each([
     ['a home-directory path', 'cwd: /Users/someone/projects'],
     ['an email address', 'author: someone@example.com'],
+    ['a real seat name', '{"actor":"titan-coord"}'],
   ])('flags %s', (_name, text) => {
     expect(leaks(`ok\n${text}`)).toEqual(['line 2'])
   })

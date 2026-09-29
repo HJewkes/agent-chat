@@ -16,7 +16,7 @@ import {
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 
-/** Every lifecycle row of an agent hjewkes-surplus spawned on 2026-09-29 before noon UTC, from events.db. */
+/** Every lifecycle row of an agent a seat spawned on 2026-09-29 before noon UTC, from events.db. */
 const ROWS = JSON.parse(
   fs.readFileSync(path.join(here, 'fixtures', 'watchdog-2026-09-29.json'), 'utf8'),
 ) as AgentEventRow[]
@@ -39,7 +39,7 @@ const hhmm = (at: number): string => new Date(at).toISOString().slice(11, 16)
 describe('replay of 2026-09-29, the 3h52m idle night', () => {
   const rows = replay(
     {
-      seat: { name: 'hjewkes-surplus', prefix: 'hs', pool: 'claude', spend: {} },
+      seat: { name: 'seat-a', prefix: 'hs', pool: 'claude', spend: {} },
       pool: parsePools(CHARTER).get('claude'),
       events: ROWS,
       readings: READINGS,
@@ -61,7 +61,7 @@ describe('replay of 2026-09-29, the 3h52m idle night', () => {
 
   it('sees the night shift running implementers before the idle began', () => {
     const at0553 = rows.find(r => hhmm(r.at) === '05:53')
-    expect(at0553?.implementers).toEqual(['tp457-titan-nits'])
+    expect(at0553?.implementers).toEqual(['agent-64'])
   })
 })
 
