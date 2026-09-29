@@ -135,8 +135,10 @@ const AGENT_KINDS_SQL = AGENT_KINDS.map(k => `'${k}'`).join(',')
 // Loaded through require so Vite/vitest don't try to pre-bundle a builtin they
 // don't yet know about. The type import above is erased, so it costs nothing.
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
-  DatabaseSync: new (path: string) => DatabaseSyncType
+  DatabaseSync: new (path: string, options?: { timeout?: number }) => DatabaseSyncType
 }
+
+const BUSY_TIMEOUT_MS = 5_000
 
 export const newMsgId = (): string => randomUUID().slice(0, 8)
 
@@ -224,7 +226,8 @@ export class EventLog implements EventStore {
     this.noticeTtlMs = options.noticeTtlMs ?? resolveNoticeTtlMs
     const file = dbPath ?? path.join(home(), 'events.db')
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
-    this.db = new DatabaseSync(file)
+    // Another process's write lock (a CLI, or a broker losing the boot race) is waited out, not thrown.
+    this.db = new DatabaseSync(file, { timeout: BUSY_TIMEOUT_MS })
     this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec(SCHEMA)
     restrictToOwner(file)

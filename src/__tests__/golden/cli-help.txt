@@ -94,7 +94,7 @@ Options:
 Commands:
   start [options]    start the broker, detached by default
   stop [options]     SIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is
-                     mid-spawn or an ask is unanswered
+                     mid-spawn or an ask is unanswered; --hold keeps auto-starts off for a while
   status [options]   socket, pid file and /health, reported separately
   restart [options]  stop then start, reusing the port from broker.meta.json; refuses while an agent
                      is mid-spawn or an ask is unanswered
@@ -116,11 +116,12 @@ Options:
 Usage: agent-chat service stop [options]
 
 SIGTERM the broker, then SIGKILL if it lingers; refuses while an agent is mid-spawn or an ask is
-unanswered
+unanswered; --hold keeps auto-starts off for a while
 
 Options:
-  --force     stop even if a spawn or an unanswered ask would be lost
-  -h, --help  display help for command
+  --force           stop even if a spawn or an unanswered ask would be lost
+  --hold <seconds>  refuse broker starts, including auto-starts, for this long (at most 3600)
+  -h, --help        display help for command
 
 === agent-chat service status
 Usage: agent-chat service status [options]

@@ -26,7 +26,7 @@ export interface BackfillRunOptions {
 export interface BackfillOutcome {
   planned: PlannedRow[]
   applied: number
-  rejected: { agentId: string; reason: string }[]
+  rejected: { agentId: string; kind: string; reason: string }[]
 }
 
 const tableExists = (db: DatabaseSync, name: string): boolean =>
@@ -59,7 +59,14 @@ export function planFromSource(source: BackfillSource, options: BackfillRunOptio
   })
 }
 
-class RowRejected extends Error {}
+class RowRejected extends Error {
+  constructor(
+    readonly kind: string,
+    message: string,
+  ) {
+    super(message)
+  }
+}
 
 /** One transaction per agent, so a rejected transition leaves no half-written row. */
 function applyRow(ledgerDb: LedgerDb, ledger: SqliteExecutionLedger, row: PlannedRow): void {
@@ -67,7 +74,8 @@ function applyRow(ledgerDb: LedgerDb, ledger: SqliteExecutionLedger, row: Planne
     .transaction(() => {
       for (const transition of row.transitions) {
         const result = ledger.apply(transition)
-        if (!result.ok) throw new RowRejected(`${transition.kind}: ${result.kind}: ${result.reason}`)
+        if (!result.ok)
+          throw new RowRejected(result.kind, `${transition.kind}: ${result.kind}: ${result.reason}`)
       }
     })
     .immediate()
@@ -87,7 +95,7 @@ export function runBackfill(source: BackfillSource, options: BackfillRunOptions)
       outcome.applied += 1
     } catch (err) {
       if (!(err instanceof RowRejected)) throw err
-      outcome.rejected.push({ agentId: row.agentId, reason: err.message })
+      outcome.rejected.push({ agentId: row.agentId, kind: err.kind, reason: err.message })
     }
   }
   // A bounded run leaves older agents unplanned, so only an unbounded one completes the backfill.
@@ -109,14 +117,29 @@ export function backfillDoneAt(db: DatabaseSync): string | undefined {
   return row?.value
 }
 
+/** Checks `backfill_done_at` and runs under one write lock, so a racing broker waits, then finds it done. */
+function runOnce(source: BackfillSource, fence: ExecutionOwnerFence): BackfillOutcome | undefined {
+  const db = source.ledgerHandle()
+  return ledgerDbOver(db)
+    .transaction(() => (backfillDoneAt(db) === undefined ? runBackfill(source, { fence }) : undefined))
+    .immediate()
+}
+
 /** The broker's once-per-home backfill; a failure is logged, never allowed to stop the boot. */
 export function backfillAtBoot(source: BackfillSource, fence: ExecutionOwnerFence): void {
   try {
-    if (backfillDoneAt(source.ledgerHandle()) !== undefined) return
-    const { planned, applied, rejected } = runBackfill(source, { fence })
+    const outcome = runOnce(source, fence)
+    if (outcome === undefined) return
+    const { planned, applied, rejected } = outcome
     logEvent('ledger_backfill', { planned: planned.length, applied, rejected: rejected.length })
-    for (const miss of rejected) logEvent('ledger_shadow_error', { kind: 'backfill_rejected', ...miss })
+    for (const miss of rejected) logRejected(miss)
   } catch (err) {
     logEvent('ledger_shadow_error', { kind: 'thrown', op: 'backfill', reason: String(err) })
   }
+}
+
+/** An `event_conflict` means another writer already recorded this agent's row, so it is not an error. */
+export function logRejected(miss: BackfillOutcome['rejected'][number]): void {
+  if (miss.kind === 'event_conflict') logEvent('ledger_backfill_duplicate', miss)
+  else logEvent('ledger_shadow_error', { ...miss, kind: 'backfill_rejected', rejection: miss.kind })
 }

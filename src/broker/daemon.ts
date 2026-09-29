@@ -9,6 +9,7 @@ import { backfillAtBoot } from '../agents/ledger/backfill-run.js'
 import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
 import { BrokerCore } from './core.js'
 import { EventLog } from './event-log.js'
+import { activeHold } from './hold.js'
 import { buildHttpApp, type HttpAppOptions } from './http.js'
 import { isEphemeralHome, watchIdle } from './ephemeral.js'
 import { newestBuildMtime } from './staleness.js'
@@ -57,19 +58,14 @@ export interface StartBrokerOptions {
 export async function startBroker(options: StartBrokerOptions = {}): Promise<net.Server | null> {
   const sock = socketPath()
   fs.mkdirSync(home(), { recursive: true })
-  if (!(await claimSocketPath(sock))) return null
+  if (isHeld() || !(await claimSocketPath(sock))) return null
+  const listener = await listenOn(sock)
+  if (listener === null) return null
 
-  const events = new EventLog()
-  const core = new BrokerCore(deliver, { events })
-  const ledger = shadowLedgerFromConfig(() => events.ledgerHandle())
-  if (ledger) backfillAtBoot(events, ledger.fence)
-  const socketServer = new SocketServer(
-    core,
-    { semaphore: new Semaphore(resolveAgentSlots()), ...(ledger === undefined ? {} : { ledger }) },
-    ledger === undefined ? undefined : events.ledgerHandle(),
-  )
-  const { server, openConnections } = await listenOn(sock, socketServer)
+  const { core, socketServer } = openServices()
+  listener.serve(socketServer)
   socketServer.startLifecycleVerifier()
+  const { server, openConnections } = listener
 
   // Only after the socket is serving, and only ever best-effort.
   const lifecycle = socketServer.lifecycle()
@@ -146,18 +142,50 @@ async function claimSocketPath(sock: string): Promise<boolean> {
   return true
 }
 
+/** `service stop --hold` (CC-153): refuse to start until the hold expires, so an offline job can run. */
+function isHeld(): boolean {
+  const until = activeHold()
+  if (until === undefined) return false
+  logEvent('broker_exit', { reason: 'held by service stop --hold', until: new Date(until).toISOString() })
+  return true
+}
+
 /**
- * Bind the listener and hand connections to `socketServer`.
+ * Everything that reads or writes `events.db`, opened only by the broker that won
+ * the listen. Siblings that raced it through the probe exit having touched nothing,
+ * which is what keeps the boot backfill to one writer (CC-153).
+ */
+function openServices(): { core: BrokerCore; socketServer: SocketServer } {
+  const events = new EventLog()
+  const core = new BrokerCore(deliver, { events })
+  const ledger = shadowLedgerFromConfig(() => events.ledgerHandle())
+  if (ledger) backfillAtBoot(events, ledger.fence)
+  const socketServer = new SocketServer(
+    core,
+    { semaphore: new Semaphore(resolveAgentSlots()), ...(ledger === undefined ? {} : { ledger }) },
+    ledger === undefined ? undefined : events.ledgerHandle(),
+  )
+  return { core, socketServer }
+}
+
+interface Listener {
+  server: net.Server
+  openConnections: () => number
+  /** Hands connections to `socketServer`, including any accepted before it existed. */
+  serve: (socketServer: SocketServer) => void
+}
+
+/**
+ * Bind the listener, or return null when a sibling broker bound the path first.
  *
  * Counts open connections as it goes. `server.getConnections` would answer the
  * same question, but only through a callback, which would make the idle reaper's
  * timer async for no gain — and a counter is something a test can state outright.
  */
-async function listenOn(
-  sock: string,
-  socketServer: SocketServer,
-): Promise<{ server: net.Server; openConnections: () => number }> {
+async function listenOn(sock: string): Promise<Listener | null> {
   let open = 0
+  let handle: ((conn: net.Socket) => void) | undefined
+  const early: net.Socket[] = []
   const server = net.createServer(conn => {
     open++
     // `close` rather than `end`: a half-open connection is still a client, and
@@ -165,14 +193,38 @@ async function listenOn(
     conn.on('close', () => {
       open--
     })
-    socketServer.onConnection(conn)
+    if (handle) handle(conn)
+    else early.push(conn)
   })
-  server.on('error', err => logEvent('broker_error', { error: String(err) }))
 
-  await new Promise<void>(resolve => server.listen(sock, resolve))
+  if (!(await bind(server, sock))) return null
+  server.on('error', err => logEvent('broker_error', { error: String(err) }))
   fs.chmodSync(sock, 0o600) // this user only; the trust boundary is the OS account
   logEvent('broker_started', { pid: process.pid, sock })
-  return { server, openConnections: () => open }
+  const serve = (socketServer: SocketServer): void => {
+    handle = conn => socketServer.onConnection(conn)
+    for (const conn of early.splice(0)) handle(conn)
+  }
+  return { server, openConnections: () => open, serve }
+}
+
+/** Both codes mean the path is taken; which one a lost bind gets depends on the race. */
+const PATH_TAKEN = new Set(['EADDRINUSE', 'EEXIST'])
+
+/** False when a sibling that passed the socket probe alongside us listened first. */
+function bind(server: net.Server, sock: string): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const onError = (err: NodeJS.ErrnoException): void => {
+      if (!PATH_TAKEN.has(err.code ?? '')) return reject(err)
+      logEvent('broker_exit', { reason: 'another broker is already listening' })
+      resolve(false)
+    }
+    server.once('error', onError)
+    server.listen(sock, () => {
+      server.off('error', onError)
+      resolve(true)
+    })
+  })
 }
 
 /**
