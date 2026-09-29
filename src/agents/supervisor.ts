@@ -217,12 +217,18 @@ const lifetimeOf = (profile: Pick<AgentProfile, 'surfaceLifetime'>): SurfaceLife
  * construction: a freshly created worktree is a path Claude Code has never been
  * run in, so it has no trust entry by definition.
  */
-function attachDiagnosis(cwd: string, handle: LaunchHandle, outcome: 'waiting' | 'exited'): string {
-  const trust = trustGap(cwd, outcome)
+/** Where an agent was launched: its folder and the `CLAUDE_CONFIG_DIR` whose trust entries it reads. */
+interface LaunchSite {
+  cwd: string
+  configDir: string
+}
+
+function attachDiagnosis(site: LaunchSite, handle: LaunchHandle, outcome: 'waiting' | 'exited'): string {
+  const trust = trustGap(site.cwd, outcome, site.configDir)
   if (trust !== undefined) return trust
   if (handle.surface !== 'headless' && handle.paneRef === undefined)
     return 'iTerm2 returned no session id, so nothing was ever launched into a pane.'
-  if (outcome === 'waiting' && isTrusted(cwd) === true)
+  if (outcome === 'waiting' && isTrusted(site.cwd, site.configDir) === true)
     return (
       `The directory is trusted, so this is not the trust prompt; Claude Code is still starting. ` +
       `Look at the surface itself (${handle.surface}) and at ~/.claude for this agent's transcript.`
@@ -1055,10 +1061,11 @@ export class Supervisor implements TeleportHost {
     // not the claim `agent_spawn` was making. Nothing is reported as spawned
     // until the agent's own MCP server has said hello, or (CC-124) its pane is
     // still there to say it in.
-    const verdict = await this.verifyAttach(agentId, handle, allocation.cwd)
+    const site = { cwd: allocation.cwd, configDir: account.dir }
+    const verdict = await this.verifyAttach(agentId, handle, site)
     if (verdict.kind === 'failed') return await this.failSpawn(req, agentId, verdict.reason)
     if (verdict.kind === 'pending') {
-      this.awaitLateAttach(req, agentId, handle, allocation.cwd, launchedAt, announce)
+      this.awaitLateAttach(req, agentId, handle, site, launchedAt, announce)
       warnings.push(verdict.warning)
     } else announce()
     return {
@@ -1158,19 +1165,23 @@ export class Supervisor implements TeleportHost {
    * evidence either: one registered after ten minutes. While its pane exists it
    * is pending, not failed.
    */
-  private async verifyAttach(agentId: string, handle: LaunchHandle, cwd: string): Promise<AttachVerdict> {
+  private async verifyAttach(
+    agentId: string,
+    handle: LaunchHandle,
+    site: LaunchSite,
+  ): Promise<AttachVerdict> {
     if (this.hasAttached(agentId)) return { kind: 'attached' }
 
     const outcome = await this.awaitAttach(agentId, handle)
     if (outcome.kind === 'attached') return { kind: 'attached' }
     if (outcome.kind === 'exited') {
       const cause = `claude exited before registering (exit code ${outcome.code ?? 'unknown'})`
-      return { kind: 'failed', reason: `${cause}. ${attachDiagnosis(cwd, handle, 'exited')}` }
+      return { kind: 'failed', reason: `${cause}. ${attachDiagnosis(site, handle, 'exited')}` }
     }
     if (outcome.kind === 'launch_failed') return { kind: 'failed', reason: outcome.reason }
 
     const window = span(this.attachMs)
-    const diagnosis = attachDiagnosis(cwd, handle, 'waiting')
+    const diagnosis = attachDiagnosis(site, handle, 'waiting')
     // CC-124: for a visible agent the timeout is not evidence of death while its pane exists.
     const paneOpen = await this.paneStillOpen(handle)
     if (this.hasAttached(agentId)) return { kind: 'attached' }
@@ -1232,7 +1243,7 @@ export class Supervisor implements TeleportHost {
     req: SpawnRequest,
     agentId: string,
     handle: LaunchHandle,
-    cwd: string,
+    site: LaunchSite,
     launchedAt: number,
     onAttached: () => void,
   ): void {
@@ -1243,7 +1254,7 @@ export class Supervisor implements TeleportHost {
       () => {
         this.attachWaiters.delete(agentId)
         if (!this.live.has(agentId) || this.hasAttached(agentId)) return
-        const reason = `no registration within ${ceiling} of launching into ${handle.surface}. ${attachDiagnosis(cwd, handle, 'waiting')}`
+        const reason = `no registration within ${ceiling} of launching into ${handle.surface}. ${attachDiagnosis(site, handle, 'waiting')}`
         void this.failSpawn(req, agentId, reason)
       },
       Math.max(0, launchedAt + this.attachCeilingMs - Date.now()),

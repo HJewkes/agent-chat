@@ -1863,11 +1863,12 @@ describe('reporting a spawn only once the agent has attached', () => {
   it('names the missing trust-dir entry as the likely cause', async () => {
     stopAutoAttach()
     const sup = withAttachWindow(1000)
-    const config = path.join(workspace(), '.claude.json')
-    fs.writeFileSync(config, JSON.stringify({ projects: {} }))
-    vi.spyOn(os, 'homedir').mockReturnValue(path.dirname(config))
+    const configDir = path.join(workspace(), 'account')
+    fs.mkdirSync(configDir)
+    fs.writeFileSync(path.join(configDir, '.claude.json'), JSON.stringify({ projects: {} }))
+    vi.spyOn(os, 'homedir').mockReturnValue(path.dirname(configDir))
 
-    const spawning = sup.spawn(spawnReq())
+    const spawning = sup.spawn(spawnReq({ configDir }))
     await vi.advanceTimersByTimeAsync(1000)
     const result = await spawning
 
@@ -2031,12 +2032,14 @@ describe('a visible spawn still starting at the attach window', () => {
   it('says the directory is trusted instead of guessing at the trust prompt', async () => {
     stopAutoAttach()
     const cwd = workspace()
-    const config = path.join(workspace(), '.claude.json')
-    fs.writeFileSync(config, JSON.stringify({ projects: { [cwd]: { hasTrustDialogAccepted: true } } }))
-    vi.spyOn(os, 'homedir').mockReturnValue(path.dirname(config))
+    const configDir = path.join(workspace(), 'account')
+    fs.mkdirSync(configDir)
+    const trusted = JSON.stringify({ projects: { [cwd]: { hasTrustDialogAccepted: true } } })
+    fs.writeFileSync(path.join(configDir, '.claude.json'), trusted)
+    vi.spyOn(os, 'homedir').mockReturnValue(path.dirname(configDir))
     const sup = visibleSupervisor(fakeIterm())
 
-    const spawning = sup.spawn(spawnReq({ surface: 'iterm-window', cwd }))
+    const spawning = sup.spawn(spawnReq({ surface: 'iterm-window', cwd, configDir }))
     await vi.advanceTimersByTimeAsync(1000)
     const warning = (await spawning).warnings?.join(' ')
 

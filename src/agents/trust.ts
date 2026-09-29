@@ -5,7 +5,7 @@ import path from 'node:path'
 /**
  * Why a pane can sit on a bare prompt forever with nothing wrong anywhere else.
  *
- * Claude Code records one entry per working directory in `~/.claude.json` and
+ * Claude Code records one entry per working directory in its global config and
  * asks "Do you trust the files in this folder?" the first time it runs in a
  * directory that has none. In a spawned pane there is nobody to answer, so the
  * process blocks before it loads a single MCP server — no registration, no
@@ -28,7 +28,20 @@ interface ClaudeConfig {
   projects?: Record<string, { [TRUST_FIELD]?: boolean } | undefined>
 }
 
-export const claudeConfigPath = (): string => path.join(os.homedir(), '.claude.json')
+/**
+ * The global config the CLI reads, as its 2.1.284 `getGlobalClaudeFile`: a legacy
+ * `.config.json` in the config home wins, else `.claude.json` in `CLAUDE_CONFIG_DIR`,
+ * else in the home directory. So `~/.claude` as a config dir reads `~/.claude/.claude.json`.
+ */
+export function claudeConfigPath(configDir?: string): string {
+  const legacy = path.join(configDir ?? path.join(os.homedir(), '.claude'), '.config.json')
+  return fs.existsSync(legacy) ? legacy : path.join(configDir ?? os.homedir(), '.claude.json')
+}
+
+/** Whether `cwd` is trusted by the CLI's rule, or undefined when the config cannot be read. */
+export function isTrusted(cwd: string, configDir?: string): boolean | undefined {
+  return hasTrustEntry(trustKeysFor(cwd), claudeConfigPath(configDir))
+}
 
 /**
  * The sentence to add when `cwd` has no accepted trust entry, or undefined when
@@ -37,29 +50,20 @@ export const claudeConfigPath = (): string => path.join(os.homedir(), '.claude.j
  * nothing, and reporting a cause it cannot support would send a reader after the
  * wrong thing.
  */
-/** Whether `cwd` has an accepted trust entry, or undefined when the config cannot be read. */
-export function isTrusted(cwd: string, configFile = claudeConfigPath()): boolean | undefined {
-  try {
-    const config = JSON.parse(fs.readFileSync(configFile, 'utf8')) as ClaudeConfig
-    return config.projects?.[cwd]?.[TRUST_FIELD] === true
-  } catch {
-    return undefined
-  }
-}
-
 export function trustGap(
   cwd: string,
   /** `exited` drops the "it is probably waiting" claim: a process that is gone is not waiting. */
   outcome: 'waiting' | 'exited' = 'waiting',
-  configFile = claudeConfigPath(),
+  /** The agent's `CLAUDE_CONFIG_DIR`; undefined means the CLI's default location. */
+  configDir?: string,
 ): string | undefined {
-  if (isTrusted(cwd, configFile) !== false) return undefined
+  if (isTrusted(cwd, configDir) !== false) return undefined
   const symptom =
     outcome === 'waiting'
       ? 'so it is probably waiting on "Do you trust the files in this folder?" — a prompt a spawned pane has nobody to answer'
       : 'and it will not run in a directory it has not been trusted in'
   return (
-    `Claude Code has no accepted trust entry for ${cwd} in ${configFile}, ${symptom}. ` +
+    `Claude Code has no accepted trust entry for ${cwd} in ${claudeConfigPath(configDir)}, ${symptom}. ` +
     'Run `claude` there once and accept it, or spawn into a directory already trusted.'
   )
 }
@@ -73,12 +77,6 @@ export function trustGap(
  * Any other release may differ, so callers must refuse on a version mismatch.
  */
 export const TRUST_RULE_CLI_VERSION = '2.1.284'
-
-/** The global config the CLI reads under `CLAUDE_CONFIG_DIR`: a legacy `.config.json` there wins over `.claude.json`. */
-export function accountConfigPath(configDir: string): string {
-  const legacy = path.join(configDir, '.config.json')
-  return fs.existsSync(legacy) ? legacy : path.join(configDir, '.claude.json')
-}
 
 /** The nearest directory at or above `dir` holding a `.git` file or directory, as the CLI's `findGitRoot`. */
 export function gitRootOf(dir: string): string | undefined {
@@ -116,6 +114,21 @@ export function plannedWorktreeTrustKeys(repo: string, worktree: string): string
   const repoRoot = gitRootOf(repo)
   if (repoRoot === undefined) return undefined
   return [canonicalRootOf(repoRoot), path.resolve(worktree)].map(key => key.normalize('NFC'))
+}
+
+/**
+ * The keys the CLI tries for an existing folder: its canonical repo root, then
+ * the folder and each ancestor up to its git root, or up to `/` outside git.
+ */
+export function trustKeysFor(cwd: string): string[] {
+  const dir = path.resolve(cwd)
+  const gitRoot = gitRootOf(dir)
+  const keys = gitRoot === undefined ? [] : [canonicalRootOf(gitRoot)]
+  for (let at = dir; ; at = path.dirname(at)) {
+    keys.push(at)
+    if (at === gitRoot || at === path.dirname(at)) break
+  }
+  return keys.map(key => key.normalize('NFC'))
 }
 
 /** Whether any key has an accepted trust entry in `configFile`, or undefined when the config cannot be read. */
