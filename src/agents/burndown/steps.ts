@@ -11,7 +11,7 @@ import {
 } from './brief.js'
 import { IMPLEMENTER_PROFILE, PLANNER_PROFILE, type Initiative, type Task } from './eligibility.js'
 import { spawnFrame, type SpawnFrame, type Step } from './execute.js'
-import { heldClaims, sameClaim, type Ledger } from './ledger.js'
+import { heldClaims, sameClaim, type Claim, type Ledger } from './ledger.js'
 import { rowNamed, type Roster } from './observe.js'
 import type { Dispatch } from './plan.js'
 import { parseSlices } from './report.js'
@@ -199,23 +199,26 @@ function sliceInfo(
 
 /**
  * CC-182: a done claim's refused retires, tried again in their recorded order. A name
- * already retired by hand, or reused by a held claim (which only a retire allows), is
- * dropped, and a step with no names left just clears the record.
+ * already retired by hand, reused by a held claim, or now carried by an agent spawned
+ * after the refusal (CC-185) is dropped, and a step with no names left just clears the record.
  */
 export function retrySteps(ledger: Ledger, roster: Roster): Step[] {
   const reused = new Set(heldClaims(ledger).flatMap(c => c.spawned ?? []))
-  const pending = (name: string): boolean => {
-    const row = rowNamed(roster, name)
-    return !reused.has(name) && row !== undefined && row.state !== 'retired'
+  const pending = (u: Unretired): boolean => {
+    const row = rowNamed(roster, u.name)
+    if (reused.has(u.name) || row === undefined || row.state === 'retired') return false
+    return u.at === undefined || row.spawnedAt <= Date.parse(u.at)
   }
   return ledger.claims
     .filter(c => c.phase === 'done' && (c.unretired?.length ?? 0) > 0)
     .map(c => ({
       kind: 'retire',
       key: c.slice === undefined ? { taskId: c.taskId } : { taskId: c.taskId, slice: c.slice },
-      names: (c.unretired ?? []).map(u => u.name).filter(pending),
+      names: (c.unretired ?? []).filter(pending).map(u => u.name),
     }))
 }
+
+type Unretired = NonNullable<Claim['unretired']>[number]
 
 /** A new claim (or a queued slice moved to `spawning`), then its spawn; or why it cannot go. */
 export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string {

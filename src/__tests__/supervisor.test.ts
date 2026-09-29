@@ -1130,6 +1130,23 @@ describe('retiring with force', () => {
       expect(fs.existsSync(allocation.cwd)).toBe(true)
     })
 
+    it('refuses when the predecessor recorded its worktree through a symlink', async () => {
+      const sup = withStubbedSurface()
+      const allocation = await predecessorWithCleanWorktree(sup)
+      const link = path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'sup-link-'))), 'tree')
+      tmpDirs.push(path.dirname(link))
+      fs.symlinkSync(allocation.cwd, link)
+      const entry = (sup as unknown as { live: Map<string, { allocation: Allocation }> }).live.get('a1')
+      if (entry?.allocation.ref) entry.allocation.ref.worktree = link
+      successorIn(allocation.cwd)
+
+      const result = await sup.retire('scout')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/heir \(not retired\) is working in it/)
+      expect(fs.existsSync(allocation.cwd)).toBe(true)
+    })
+
     it('does not count an agent in a sibling worktree whose name extends this one', async () => {
       const sup = withStubbedSurface()
       const allocation = await predecessorWithCleanWorktree(sup)

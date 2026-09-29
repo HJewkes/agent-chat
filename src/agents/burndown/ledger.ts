@@ -56,7 +56,16 @@ const Claim = z.object({
   lastReport: z.string().optional(),
   stalledReason: z.string().optional(),
   /** Agents whose retire refused after the claim finished, in retire order; each tick retries them (CC-182). */
-  unretired: z.array(z.object({ name: z.string(), reason: z.string() })).optional(),
+  unretired: z
+    .array(
+      z.object({
+        name: z.string(),
+        reason: z.string(),
+        /** When it refused; a row with this name spawned later is a different agent (CC-185). Absent before CC-185. */
+        at: z.string().optional(),
+      }),
+    )
+    .optional(),
 })
 export type Claim = z.infer<typeof Claim>
 
