@@ -9,6 +9,7 @@ import {
   type ItemShape,
   type PermissionBehavior,
   type ServerMessage,
+  type WakeSource,
 } from '../protocol.js'
 import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
@@ -543,6 +544,7 @@ export class SocketServer {
       ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
       ...(msg.surface === undefined ? {} : { surface: msg.surface }),
       ...(msg.message === undefined ? {} : { message: msg.message }),
+      ...(msg.source === undefined ? {} : { source: msg.source }),
     })
     reply(conn, { t: 'spawn_result', ...outcome })
   }
@@ -1057,7 +1059,7 @@ export class SocketServer {
    * override do-not-disturb, with no CLI or endorsement flow involved. See
    * `isHuman` for what the fix below does and does not guarantee.
    */
-  private handleHumanSend(conn: Conn, to: string, text: string): void {
+  private handleHumanSend(conn: Conn, to: string, text: string, source?: WakeSource): void {
     if (!this.isHuman(conn)) {
       this.refuseToSession(conn, 'send a message as the human')
       return reply(conn, {
@@ -1080,7 +1082,14 @@ export class SocketServer {
         reason: `no active session named "${to}"`,
       })
     }
-    core.append({ kind: 'message', actor: HUMAN, target: to, msgId, body: text })
+    core.append({
+      kind: 'message',
+      actor: HUMAN,
+      target: to,
+      msgId,
+      body: text,
+      ...(source === undefined ? {} : { meta: { source } }),
+    })
     // The human overrides do-not-disturb and no agent can. Scarcity has to be
     // structural: if any peer could mark a message urgent, every message would be
     // urgent within a day. There is simply no parameter for it on the agent path.
@@ -1300,7 +1309,7 @@ export class SocketServer {
         })
       }
       case 'human_send':
-        return this.handleHumanSend(conn, msg.to, msg.text)
+        return this.handleHumanSend(conn, msg.to, msg.text, msg.source)
       case 'approval':
         return this.handleApproval(conn, msg)
       case 'permission_hook':

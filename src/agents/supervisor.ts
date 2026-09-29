@@ -11,6 +11,7 @@ import {
   type IsolationName,
   type Subscription,
   type SurfaceName,
+  type WakeSource,
 } from '../protocol.js'
 import {
   BACKGROUNDED_BRIEF,
@@ -351,6 +352,8 @@ export interface ResumeRequest {
   surface?: SurfaceName
   /** The turn a headless resume starts on; {@link RESUMED_BRIEF} when absent. */
   message?: string
+  /** CC-203: who asked for the wake, when it was not the human; written to `agent_resumed` meta. */
+  source?: WakeSource
   requestedBy?: string
   /** CC-216: the requester's own agent id, resolved by the broker from its connection. */
   requesterAgentId?: string
@@ -1918,6 +1921,7 @@ export class Supervisor implements TeleportHost {
         surface,
         from_surface: agent.surface,
         transcript: transcript.path,
+        ...(req.source === undefined ? {} : { source: req.source }),
       },
     })
     const handle = await this.launchOn(surface, plan)

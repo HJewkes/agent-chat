@@ -2774,6 +2774,16 @@ describe('resuming an agent on its own conversation', () => {
     expect(plan.stdin).toBe(RESUMED_BRIEF)
   })
 
+  it('tags a resume the seat watchdog asked for in the agent_resumed meta (CC-203)', async () => {
+    const sup = withStubbedSurface()
+    writeTranscriptFor(await finishedAgent(sup))
+
+    expect((await sup.resume('scout', { message: 'Watchdog: wake', source: 'watchdog' })).ok).toBe(true)
+
+    const resumed = core.events.agentEvents().filter(row => row.kind === 'agent_resumed')
+    expect(resumed.map(row => row.meta.source)).toEqual(['watchdog'])
+  })
+
   it('keeps CLAUDE_CONFIG_DIR unset for an agent a default-account session spawned (CC-200)', async () => {
     vi.spyOn(os, 'homedir').mockReturnValue(workspace())
     const sup = withStubbedSurface()

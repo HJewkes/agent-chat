@@ -509,6 +509,9 @@ export type SurfaceName = (typeof SURFACE_NAMES)[number]
 /** The surfaces that put the agent in front of a human who can answer a prompt. */
 export const isInteractiveSurface = (surface: SurfaceName): boolean => surface !== 'headless'
 
+/** CC-203: marks a send or resume the seat watchdog made, so its event row is not read as the human typing. */
+export type WakeSource = 'watchdog'
+
 /** Session -> broker. */
 export type ClientMessage =
   /**
@@ -723,7 +726,7 @@ export type ClientMessage =
   /** Read one session's trail. Never delivers anything to the session being read. */
   | { t: 'activity'; name: string; limit: number }
   /** From the terminal client, which is the human and so never registers. */
-  | { t: 'human_send'; to: string; text: string }
+  | { t: 'human_send'; to: string; text: string; source?: WakeSource }
   /** Claude Code opened a permission dialog in this session. Observed; answered only via `approve_permission`. */
   | { t: 'approval'; requestId: string; toolName: string; description: string; inputPreview: string }
   /**
@@ -838,7 +841,7 @@ export type ClientMessage =
    * CC-126: bring a listed, non-live agent back on its own conversation.
    * Headless unless `surface` says otherwise; answered with `spawn_result`.
    */
-  | { t: 'resume'; name: string; surface?: SurfaceName; message?: string }
+  | { t: 'resume'; name: string; surface?: SurfaceName; message?: string; source?: WakeSource }
   /**
    * `force` bypasses the isolation's dirty/unmerged refusal, and destroys the
    * commits it was protecting. Optional so an older client still type-checks,

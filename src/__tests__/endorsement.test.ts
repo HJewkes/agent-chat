@@ -503,6 +503,27 @@ describe('closing the authorization gaps a same-uid session could reach on its o
       expect(message?.text).toBe('the real thing')
       expect(message?.from).toBe(HUMAN)
     })
+
+    it('records a watchdog wake with meta.source, so it is not read as the human typing (CC-203)', () => {
+      const { core, server, wire } = makeServer()
+      const human = wire()
+      const beta = wire()
+      register(server, beta.conn, 'beta')
+
+      server.handleMessage(human.conn, {
+        t: 'human_send',
+        to: 'beta',
+        text: 'Watchdog: wake',
+        source: 'watchdog',
+      })
+      server.handleMessage(human.conn, { t: 'human_send', to: 'beta', text: 'typed' })
+
+      const sent = core.events.since(0, 100).filter(row => row.kind === 'message')
+      expect(sent.map(row => [row.body, row.meta.source])).toEqual([
+        ['Watchdog: wake', 'watchdog'],
+        ['typed', undefined],
+      ])
+    })
   })
 
   describe('answer', () => {
