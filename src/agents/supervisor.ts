@@ -2051,7 +2051,9 @@ export class Supervisor implements TeleportHost {
     this.bindExecution(input.agentId, executionId)
     handle.launchFailed
       ?.then(reason => this.reportDeadSuccessor(input, reason))
-      .catch(err => logEvent('teleport_failed_report_error', { name: input.name, error: (err as Error).message }))
+      .catch(err =>
+        logEvent('teleport_failed_report_error', { name: input.name, error: (err as Error).message }),
+      )
     logEvent('agent_teleported', { agentId: input.agentId, name: input.name, from: input.inheritedFrom })
     this.fireHook('on_spawn', {
       agentId: input.agentId,

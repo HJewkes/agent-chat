@@ -558,7 +558,9 @@ describe('a visible predecessor', () => {
     await supervisor.teleport({ subject: subject(agentId, { anchor: 'w0t1p0:ANCHOR-UUID' }), handoff: 'h' })
     await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS + 1_500)
 
-    const notice = core.events.humanQueue().find(item => item.text.includes('successor was not running after 5s'))
+    const notice = core.events
+      .humanQueue()
+      .find(item => item.text.includes('successor was not running after 5s'))
     expect(notice?.text).toContain('command not found: sa/relaunch')
   })
 
@@ -590,7 +592,7 @@ describe('a visible predecessor', () => {
     stopAutoAttach()
     const append = core.append.bind(core)
     vi.spyOn(core, 'append').mockImplementation(input => {
-      if (input.kind === 'notice' && input.body.includes('successor')) throw new Error('disk full')
+      if (input.kind === 'notice' && input.body?.includes('successor')) throw new Error('disk full')
       return append(input)
     })
 
