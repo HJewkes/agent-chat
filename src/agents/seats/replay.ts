@@ -1,6 +1,6 @@
 import type { AgentEventRow } from '../../broker/event-store.js'
 import type { AgentIdentity } from '../../protocol.js'
-import type { AccountReading } from '../burndown/budget-gate.js'
+import { runStartAt, type AccountReading, type SevenDaySample } from '../burndown/budget-gate.js'
 import { foldAgent, groupByAgent } from '../identity.js'
 import type { Pool, Seat } from './charter.js'
 import {
@@ -99,9 +99,20 @@ export interface ReplayInput {
 
 export function replay(input: ReplayInput, times: number[]): ReplayRow[] {
   let state: SeatState | undefined
+  const history = input.readings.flatMap((r): SevenDaySample[] =>
+    r.sevenDay === undefined ? [] : [{ at: r.at, sevenDay: r.sevenDay }],
+  )
   return times.map(at => {
     const implementers = runningImplementers(agentsAt(input.events, at), input.seat)
-    const budget = poolBudget(input.pool, readingAt(input.readings, at), new Date(at))
+    const now = new Date(at)
+    const budget = poolBudget({
+      pool: input.pool,
+      spend: input.seat.spend,
+      reading: readingAt(input.readings, at),
+      history,
+      runStartAt: runStartAt(now),
+      now,
+    })
     const decision = decide(
       { budget, implementers: implementers.length, eligible: input.eligible },
       state,

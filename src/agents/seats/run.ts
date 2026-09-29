@@ -1,5 +1,5 @@
 import type { BudgetRead } from '../budget.js'
-import type { AccountReading } from '../burndown/budget-gate.js'
+import { dayStart, runStartAt, type AccountReading } from '../burndown/budget-gate.js'
 import {
   charterOwnerSeat,
   charterSeats,
@@ -13,10 +13,10 @@ import type { SeatRecord, WatchdogDoc } from './io.js'
 import {
   RESTART_WINDOW_MAX_MS,
   advanceMeter,
+  meterHistory,
   readSeatLog,
   restartWindow,
   sameSpendDay,
-  spendStop,
   withinRun,
   type LogVerdict,
   type OwnerMessage,
@@ -28,6 +28,7 @@ import {
   decide,
   poolBudget,
   runningImplementers,
+  type BudgetVerdict,
   type Decision,
   type SeatAgent,
 } from './watchdog.js'
@@ -108,25 +109,40 @@ function seatLogVerdict(deps: WatchdogDeps, seat: string, now: Date): LogVerdict
   return readSeatLog(deps.readSeatLog(seat, yesterday) ?? '', yesterday)
 }
 
-/** Owner stop first, then the restart window, the seat's own pause line, and last the spend stops. */
-function holdFor(
-  pass: Pass,
-  seat: Seat,
-  run: SpendMeter | undefined,
-  logStop: string | undefined,
-): string | undefined {
-  const pool = pass.pools.get(seat.pool)
+/** Owner stop first, then the restart window, then the seat's own pause line. */
+function holdFor(pass: Pass, seat: Seat, logStop: string | undefined): string | undefined {
   const ownerStop = pass.doc.stopped[seat.name]
   return (
-    (ownerStop === undefined ? undefined : `stopped by the owner: ${ownerStop}`) ??
-    pass.restart ??
-    logStop ??
-    spendStop(seat, pool, pool === undefined ? undefined : pass.doc.pools[pool.name], run)
+    (ownerStop === undefined ? undefined : `stopped by the owner: ${ownerStop}`) ?? pass.restart ?? logStop
   )
 }
 
+/** gatePool on the seat's pool, reading the run and day meters as the spend at each window's start. */
+function seatBudget(
+  pass: Pass,
+  seat: Seat,
+  reading: AccountReading | undefined,
+  run: SpendMeter | undefined,
+): BudgetVerdict {
+  const pool = pass.pools.get(seat.pool)
+  const day = pool === undefined ? undefined : pass.doc.pools[pool.name]
+  const runStart = runStartAt(pass.now, run === undefined ? {} : { recordedAt: run.since })
+  const starts = [
+    { at: runStart, meter: run },
+    { at: dayStart(pass.now), meter: day },
+  ]
+  const history = meterHistory(starts, pass.now.getTime())
+  return poolBudget({ pool, spend: seat.spend, reading, history, runStartAt: runStart, now: pass.now })
+}
+
+interface Judgement {
+  decision: Decision
+  budget: BudgetVerdict
+  record: SeatRecord
+}
+
 /** A seat's decision plus the record to save for it. */
-function judgeSeat(pass: Pass, seat: Seat): { decision: Decision; record: SeatRecord } {
+function judgeSeat(pass: Pass, seat: Seat): Judgement {
   const { deps, now } = pass
   const nowMs = now.getTime()
   const pool = pass.pools.get(seat.pool)
@@ -134,9 +150,9 @@ function judgeSeat(pass: Pass, seat: Seat): { decision: Decision; record: SeatRe
   const previous = pass.doc.seats[seat.name]
   const run = advanceMeter(previous?.run, reading?.sevenDay, nowMs, withinRun)
   const log = seatLogVerdict(deps, seat.name, now)
-  const hold = holdFor(pass, seat, run, log.stop)
+  const hold = holdFor(pass, seat, log.stop)
   const implementers = runningImplementers(pass.roster.agents, seat).length
-  const budget = poolBudget(pool, reading, now)
+  const budget = seatBudget(pass, seat, reading, run)
   const eligible =
     implementers === 0 && hold === undefined && budget.open ? deps.eligible(seat.name) : undefined
   const obs = {
@@ -147,7 +163,17 @@ function judgeSeat(pass: Pass, seat: Seat): { decision: Decision; record: SeatRe
     ...(log.activityAt === undefined ? {} : { activityAt: log.activityAt }),
   }
   const decision = decide(obs, previous, nowMs, pass.fireCap)
-  return { decision, record: { ...decision.next, ...(run === undefined ? {} : { run }) } }
+  const record = { ...decision.next, ...(run === undefined ? {} : { run }), budgetPaused: !budget.open }
+  return { decision, budget, record }
+}
+
+/** A BUDGET-PAUSE and its lifting are each logged once, on the run that sees the gate change. */
+function budgetChange(pass: Pass, seat: string, budget: BudgetVerdict): string | undefined {
+  const wasPaused = pass.doc.seats[seat]?.budgetPaused ?? false
+  if (wasPaused === !budget.open) return undefined
+  const line = budget.open ? `Watchdog: budget open again: ${budget.reason}` : `Watchdog: ${budget.reason}`
+  pass.deps.appendLog(seat, pass.now, line)
+  return `${seat}: ${line}`
 }
 
 async function act(pass: Pass, seat: string, decision: Decision): Promise<string> {
@@ -191,7 +217,9 @@ export async function runWatchdog(deps: WatchdogDeps, options: WatchdogOptions):
       lines.push(seat)
       continue
     }
-    const { decision, record } = judgeSeat(pass, seat)
+    const { decision, budget, record } = judgeSeat(pass, seat)
+    const change = options.dryRun ? undefined : budgetChange(pass, name, budget)
+    if (change !== undefined) lines.push(change)
     pass.doc.seats[name] = record
     if (options.dryRun) lines.push(`${name}: ${decision.fire ? 'WOULD FIRE' : 'skip'}: ${decision.reason}`)
     else if (decision.fire) lines.push(await act(pass, name, decision))

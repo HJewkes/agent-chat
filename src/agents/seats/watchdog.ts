@@ -1,6 +1,6 @@
 import type { BudgetRead, BudgetWindow } from '../budget.js'
-import { gateAccount, type AccountReading } from '../burndown/budget-gate.js'
-import type { Pool, Seat } from './charter.js'
+import { gatePool, type AccountReading, type PoolRule, type SevenDaySample } from '../burndown/budget-gate.js'
+import type { Pool, Seat, SeatSpend } from './charter.js'
 
 /**
  * The idle watchdog's decision (CC-203): wake a seat that has no implementer
@@ -91,21 +91,39 @@ export function accountReading(read: BudgetRead, nowMs: number): AccountReading 
   }
 }
 
-/** Charter section 4's window stops, with the owner assumed present because nothing here can tell. */
-export function poolBudget(
-  pool: Pool | undefined,
-  reading: AccountReading | undefined,
-  now: Date,
-): BudgetVerdict {
-  // A woken seat takes its own reading before it dispatches; freshness waits on CC-240.
-  const gate = gateAccount(
-    pool?.name ?? 'unknown pool',
-    pool?.rule,
-    reading,
-    { now },
+export interface PoolBudgetInput {
+  pool: Pool | undefined
+  spend: SeatSpend
+  reading: AccountReading | undefined
+  /** The pool's seven_day readings at or before the run start and the day start. */
+  history: readonly SevenDaySample[]
+  runStartAt: number
+  now: Date
+}
+
+const poolRule = (pool: Pool): PoolRule => ({
+  name: pool.name,
+  human_uses: pool.humanUses,
+  reserve_seven_day: pool.rule.reserve_seven_day,
+  ceiling_five_hour: pool.rule.ceiling_five_hour,
+  night_reserve_seven_day: pool.rule.night?.reserve_seven_day,
+  per_day_points: pool.perDayPoints,
+})
+
+/** Charter section 4's budget stops for the seat, with the owner assumed present because nothing here can tell. */
+export function poolBudget(input: PoolBudgetInput): BudgetVerdict {
+  const { pool, spend, reading, history, runStartAt, now } = input
+  const gate = gatePool(
     {
-      maxReadingAgeSeconds: Number.POSITIVE_INFINITY,
+      pool: pool === undefined ? undefined : poolRule(pool),
+      spend: { per_run_points: spend.perRunPoints, per_day_points: spend.perDayPoints },
+      reading,
+      history,
+      runStartAt,
+      ctx: { now },
     },
+    // An idle pool's status line never redraws, and a woken seat takes its own fresh reading before it dispatches.
+    { maxReadingAgeSeconds: Number.POSITIVE_INFINITY },
   )
   return { open: gate.open, reason: gate.reason }
 }

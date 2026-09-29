@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BudgetRead } from '../agents/budget.js'
+import { dayStart, type AccountReading } from '../agents/burndown/budget-gate.js'
 import {
   charterOwnerSeat,
   charterSeats,
@@ -282,14 +283,32 @@ describe('poolBudget', () => {
     ['closed without a reading', claude, undefined, false],
     ['closed for a pool the charter does not define', undefined, { fiveHour: 0, sevenDay: 0 }, false],
   ]
+  const verdict = (pool: Pool | undefined, reading: AccountReading | undefined) =>
+    poolBudget({
+      pool,
+      spend: {},
+      reading,
+      history: [{ at: dayStart(at), sevenDay: reading?.sevenDay ?? 0 }],
+      runStartAt: NOW - 3_600_000,
+      now: at,
+    })
   it.each(cases)('%s', (_name, pool, reading, open) => {
-    const verdict = poolBudget(pool, reading === undefined ? undefined : { ageSeconds: 0, ...reading }, at)
-    expect(verdict.open).toBe(open)
+    expect(verdict(pool, reading === undefined ? undefined : { ageSeconds: 0, ...reading }).open).toBe(open)
   })
 
-  it('holds a human-free pool to 70 on five_hour, because owner presence is unknown', () => {
-    const agents = pools.get('agents')
-    expect(poolBudget(agents, { ageSeconds: 0, fiveHour: 75, sevenDay: 10 }, at).open).toBe(false)
+  it('keeps the full ceiling on a pool the owner does not use', () => {
+    expect(verdict(pools.get('agents'), { ageSeconds: 0, fiveHour: 75, sevenDay: 10 }).open).toBe(true)
+    expect(verdict(claude, { ageSeconds: 0, fiveHour: 70, sevenDay: 10 }).open).toBe(false)
+  })
+
+  it('stays open on an idle pool whose reading is hours old', () => {
+    expect(verdict(claude, { ageSeconds: 6 * 3600, fiveHour: 0, sevenDay: 19 }).open).toBe(true)
+  })
+
+  it("closes with charter section 4's BUDGET-PAUSE line", () => {
+    expect(verdict(claude, { ageSeconds: 0, fiveHour: 70, sevenDay: 19 }).reason).toBe(
+      'BUDGET-PAUSE pool claude: five_hour 70% at or above ceiling 70%',
+    )
   })
 })
 
@@ -299,12 +318,14 @@ describe('charter and seat parsing', () => {
     expect(pools.get('claude')).toEqual({
       name: 'claude',
       configDir: '/Users/o/.claude',
+      humanUses: true,
       rule: { reserve_seven_day: 35, ceiling_five_hour: 70 },
       perDayPoints: 13,
     })
     expect(pools.get('agents')).toEqual({
       name: 'agents',
       configDir: '/Users/o/.claude-profiles/agents',
+      humanUses: false,
       rule: { reserve_seven_day: 25, ceiling_five_hour: 85, night: { reserve_seven_day: 10 } },
     })
   })

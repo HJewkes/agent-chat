@@ -57,6 +57,7 @@ interface Harness {
   seatLog: string
   /** The seat's log for the day before. */
   priorLog: string
+  fiveHour: number
   sevenDay: number
   ownerMessages: OwnerMessage[]
   now: () => number
@@ -73,6 +74,7 @@ function harness(roster: Roster, fiveHour = 41, start = new Date(2026, 8, 29, 8,
     doc: emptyDoc(),
     seatLog: '',
     priorLog: '',
+    fiveHour,
     sevenDay: 19,
     ownerMessages: [],
     now: () => now,
@@ -82,7 +84,7 @@ function harness(roster: Roster, fiveHour = 41, start = new Date(2026, 8, 29, 8,
       readCharter: () => CHARTER,
       readSeatFile: seat => (seat === 'hjewkes-surplus' ? SEAT : undefined),
       readSeatLog: (_seat, at) => (at.getDate() === new Date(now).getDate() ? h.seatLog : h.priorLog),
-      readBudget: () => budget(fiveHour, h.sevenDay),
+      readBudget: () => budget(h.fiveHour, h.sevenDay),
       ownerMessages: () => h.ownerMessages,
       roster: async () => roster,
       eligible: () => 7,
@@ -157,12 +159,34 @@ describe('runWatchdog', () => {
     expect(h.doc.seats['hjewkes-surplus']?.idleRuns).toBe(0)
   })
 
-  it('stays silent over the five-hour ceiling', async () => {
+  it('holds a seat over the five-hour ceiling and logs the BUDGET-PAUSE once, not every run', async () => {
     const h = harness(IDLE, 70)
-    await runWatchdog(h.deps, { seats: ['hjewkes-surplus'], dryRun: false })
-    h.tick()
-    await runWatchdog(h.deps, { seats: ['hjewkes-surplus'], dryRun: false })
-    expect(h.wakes).toEqual([])
+    expect(await runs(h, 4)).toBe(0)
+    expect(h.logs).toEqual([
+      'hjewkes-surplus: Watchdog: BUDGET-PAUSE pool claude: five_hour 70% at or above ceiling 70%',
+    ])
+    expect(h.doc.seats['hjewkes-surplus']?.budgetPaused).toBe(true)
+  })
+
+  it('releases a held seat once its pool reopens, logging the change once, and wakes it', async () => {
+    const h = harness(IDLE, 70)
+    await runs(h, 2)
+    h.fiveHour = 41
+    expect(await runs(h, 3)).toBe(1)
+    expect(h.logs.filter(l => l.includes('budget open again'))).toEqual([
+      'hjewkes-surplus: Watchdog: budget open again: pool claude: five_hour 41% vs ceiling 70%, seven_day 19% vs line 65%',
+    ])
+    expect(h.logs.filter(l => l.includes('BUDGET-PAUSE'))).toHaveLength(1)
+  })
+
+  it('logs nothing for an open pool and records nothing under --dry-run', async () => {
+    const open = harness({ agents: [], connected: [] }, 41)
+    open.deps.eligible = () => 0
+    await runs(open, 3)
+    expect(open.logs).toEqual([])
+    const held = harness(IDLE, 70)
+    await runWatchdog(held.deps, { ...ONE, dryRun: true })
+    expect([held.logs, held.doc.seats]).toEqual([[], {}])
   })
 
   it('under --dry-run reports every charter seat and wakes, logs and saves nothing', async () => {
@@ -226,7 +250,9 @@ describe('runWatchdog', () => {
     expect(h.doc.pools.claude?.spent).toBe(10)
     expect(h.doc.seats['hjewkes-surplus']?.run?.spent).toBe(0)
     const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
-    expect(out[0]).toMatch(/held: per_day_points stop: pool claude spent 10 of 10/)
+    expect(out[0]).toMatch(
+      /budget closed: BUDGET-PAUSE pool claude: day spend 10 points since 07:00 at or above the seat's per_day_points 10$/,
+    )
   })
 
   it('holds a seat at its per_run_points stop even with the day cap open', async () => {
@@ -239,7 +265,9 @@ describe('runWatchdog', () => {
       },
     }
     const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
-    expect(out[0]).toMatch(/held: per_run_points stop: 6 of 6/)
+    expect(out[0]).toMatch(
+      /BUDGET-PAUSE pool claude: run spend 6 points at or above the seat's per_run_points 6$/,
+    )
   })
 
   it('never wakes any seat inside an open restart window', async () => {

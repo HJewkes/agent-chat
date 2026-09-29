@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'vitest'
+import { RUN_CAP_MS } from '../agents/burndown/budget-gate.js'
 import {
   RESTART_WINDOW_MAX_MS,
-  RUN_CAP_MS,
   advanceMeter,
+  meterHistory,
   readSeatLog,
   restartWindow,
   sameSpendDay,
-  spendDay,
-  spendStop,
   withinRun,
   type SpendMeter,
 } from '../agents/seats/stops.js'
@@ -35,8 +34,8 @@ describe('spend meters', () => {
   })
 
   it('starts a new day at 07:00 local', () => {
-    expect(spendDay(at(6, 59))).not.toBe(spendDay(at(7)))
-    expect(spendDay(at(7))).toBe(spendDay(at(6, 59, 30)))
+    expect(sameSpendDay({ since: at(6, 59), last: 0, spent: 0 }, at(7))).toBe(false)
+    expect(sameSpendDay({ since: at(7), last: 0, spent: 0 }, at(6, 59, 30))).toBe(true)
     const meter = advanceMeter({ since: at(6), last: 19, spent: 9 }, 25, at(7, 8), sameSpendDay)
     expect(meter).toEqual({ since: at(7, 8), last: 25, spent: 0 })
   })
@@ -48,26 +47,45 @@ describe('spend meters', () => {
   })
 })
 
-describe('spendStop', () => {
-  const seat = { spend: { perRunPoints: 6, perDayPoints: 10 } }
-  const pool = { name: 'claude', perDayPoints: 13 }
-  const meter = (spent: number): SpendMeter => ({ since: at(7), last: 30, spent })
+describe('meterHistory', () => {
+  const meter = (since: number, last: number, spent: number): SpendMeter => ({ since, last, spent })
 
-  it('holds at the lower of the seat and pool day caps', () => {
-    expect(spendStop(seat, pool, meter(10), meter(0))).toMatch(
-      /^per_day_points stop: pool claude spent 10 of 10 since 07:00/,
+  it("reads each meter as the pool's reading at its window's start", () => {
+    const history = meterHistory(
+      [
+        { at: at(8), meter: meter(at(8), 30, 6) },
+        { at: at(7), meter: meter(at(7, 8), 30, 10) },
+      ],
+      at(9),
     )
-    expect(spendStop({ spend: { perDayPoints: 20 } }, pool, meter(13), undefined)).toMatch(/13 of 13/)
+    expect(history).toEqual([
+      { at: at(7), sevenDay: 20 },
+      { at: at(8), sevenDay: 24 },
+    ])
   })
 
-  it('holds at the seat run cap', () => {
-    expect(spendStop(seat, pool, meter(3), meter(6))).toMatch(/^per_run_points stop: 6 of 6/)
+  it("dates a meter started this pass just before now, so it still counts as the window's opening reading", () => {
+    expect(meterHistory([{ at: at(9), meter: meter(at(9), 30, 0) }], at(9))).toEqual([
+      { at: at(9) - 1, sevenDay: 30 },
+    ])
   })
 
-  it('is open below both caps, and without caps or meters', () => {
-    expect(spendStop(seat, pool, meter(9), meter(5))).toBeUndefined()
-    expect(spendStop({ spend: {} }, { name: 'p' }, meter(99), meter(99))).toBeUndefined()
-    expect(spendStop(seat, pool, undefined, undefined)).toBeUndefined()
+  it('lowers an earlier start that disagrees with a later one, so the chain never reads as a reset', () => {
+    const history = meterHistory(
+      [
+        { at: at(5), meter: meter(at(5), 30, 4) },
+        { at: at(7), meter: meter(at(7, 8), 30, 12) },
+      ],
+      at(9),
+    )
+    expect(history).toEqual([
+      { at: at(5), sevenDay: 18 },
+      { at: at(7), sevenDay: 18 },
+    ])
+  })
+
+  it('skips a window with no meter', () => {
+    expect(meterHistory([{ at: at(7), meter: undefined }], at(9))).toEqual([])
   })
 })
 
