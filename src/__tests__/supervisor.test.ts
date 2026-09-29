@@ -2831,6 +2831,84 @@ describe('resuming an agent whose worktree was removed', () => {
     expect(fs.existsSync(elsewhere)).toBe(false)
   })
 
+  it('refuses a recorded worktree at a sibling of the worktree base that shares its name prefix', async () => {
+    const sup = withStubbedSurface()
+    const repo = makeRepo()
+    const account = workspace()
+    const agent = await finishedInWorktree(sup, repo, account)
+    await sup.retire('scout', true)
+    const sibling = path.join(repo, '.worktrees-x', 'f')
+    const meta = { strategy: 'worktree', gitRoot: repo, worktree: sibling, branch: SCOUT_BRANCH }
+    core.append({ kind: 'isolation_allocated', actor: 'human', ref: agent.agentId, body: '', meta })
+    writeTranscriptFor({ ...agent, cwd: sibling })
+
+    const result = await resumeSpawn(sup, repo, account, agent.sessionId)
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/is not under/)
+    expect(fs.existsSync(sibling)).toBe(false)
+    expect(branchExists(repo, SCOUT_BRANCH)).toBe(false)
+  })
+
+  /** Origin still lists the branch, but a lock on its tracking ref makes the fetch that follows the listing fail. */
+  async function retiredWithUnfetchableOrigin(sup: Supervisor, staleTracking: boolean) {
+    const repo = repoWithOrigin()
+    const account = workspace()
+    const agent = await finishedInWorktree(sup, repo, account)
+    commitIn(agent.cwd, 'feature.ts')
+    git(['push', '-q', 'origin', SCOUT_BRANCH], agent.cwd)
+    expect((await sup.retire('scout', true)).ok).toBe(true)
+    const tracking = `refs/remotes/origin/${SCOUT_BRANCH}`
+    // The agent's push already created the tracking ref; leave it stale or remove it, never current.
+    if (staleTracking) git(['update-ref', tracking, git(['rev-parse', 'main'], repo)], repo)
+    else git(['update-ref', '-d', tracking], repo)
+    const gitDir = path.resolve(repo, git(['rev-parse', '--git-common-dir'], repo))
+    fs.mkdirSync(path.join(gitDir, path.dirname(tracking)), { recursive: true })
+    fs.writeFileSync(path.join(gitDir, `${tracking}.lock`), '')
+    return { repo, account, agent }
+  }
+
+  it('refuses and creates nothing when origin lists the branch but fetching it fails', async () => {
+    const sup = withStubbedSurface()
+    const { repo, account, agent } = await retiredWithUnfetchableOrigin(sup, false)
+
+    const result = await resumeSpawn(sup, repo, account, agent.sessionId)
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/origin lists it but fetching it failed/)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+    expect(branchExists(repo, SCOUT_BRANCH)).toBe(false)
+  })
+
+  it('does not fall back to a stale origin tracking ref when the fetch fails', async () => {
+    const sup = withStubbedSurface()
+    const { repo, account, agent } = await retiredWithUnfetchableOrigin(sup, true)
+
+    const result = await resumeSpawn(sup, repo, account, agent.sessionId)
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/origin lists it but fetching it failed/)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+    expect(branchExists(repo, SCOUT_BRANCH)).toBe(false)
+  })
+
+  it('releases the agent slot when the re-attach fails', async () => {
+    const semaphore = new Semaphore(1)
+    const sup = withStubbedSurface({ semaphore })
+    const repo = makeRepo()
+    const agent = await finishedInWorktree(sup, repo, workspace())
+    git(['worktree', 'remove', '--force', agent.cwd], repo)
+    fs.writeFileSync(path.join(process.env.AGENT_CHAT_HOME!, 'config.json'), '{"worktreeBudget": 1}')
+    await worktreeStrategy.allocate({ agentId: 'other', agentName: 'other', baseCwd: repo })
+
+    const result = await sup.resume('scout')
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/resume failed: .*budget exhausted/)
+    expect(semaphore.has(agent.agentId)).toBe(false)
+    expect(semaphore.available).toBe(1)
+  })
+
   it('refuses a spawn whose cwd is in a different repository from the recorded worktree', async () => {
     const sup = withStubbedSurface()
     const repo = makeRepo()
