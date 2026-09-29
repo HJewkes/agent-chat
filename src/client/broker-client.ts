@@ -377,6 +377,9 @@ export class BrokerClient {
   close(): void {
     this.closed = true
     this.socket?.destroy()
-    this.rejectHeld(new Error('broker client closed'))
+    const err = new Error('broker client closed')
+    this.rejectHeld(err)
+    // onDrop returns early once closed, so a waiter still queued would only fail at its reply timeout.
+    this.failAllWaiters(err)
   }
 }
