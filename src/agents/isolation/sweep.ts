@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { gitChildEnv } from '../../git.js'
 import { agentsDir } from '../../paths.js'
+import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import { readRuntimeState, runtimeStatePath } from '../launch-files.js'
 import { BRANCH_PREFIX, inspectForRelease, RECLAIM_GRACE_MS, worktreeStrategy } from './worktree.js'
 import type { Allocation } from './index.js'
@@ -109,6 +110,12 @@ export async function agentWorktreesIn(
 /** Live means someone is in it; anything else has stopped and may be reclaimable. */
 const isLive = (state: string): boolean => state === 'live' || state === 'spawning'
 
+/** A live agent whose cwd is the tree or anywhere inside it, whatever its name or branch (CC-277). */
+function occupantOf(worktree: string, roster: readonly AgentIdentity[]): AgentIdentity | undefined {
+  const tree = canonicalPath(worktree)
+  return roster.find(agent => isLive(agent.state) && agent.cwd && isAtOrUnder(canonicalPath(agent.cwd), tree))
+}
+
 function classifyByAgent(
   agent: AgentIdentity | undefined,
   now: number,
@@ -164,14 +171,15 @@ export async function sweepWorktrees(
   const swept: SweptWorktree[] = []
   for (const gitRoot of roots) {
     for (const { worktree, branch } of await agentWorktreesIn(gitRoot, list)) {
-      swept.push(await classify({ gitRoot, worktree, branch }, byBranch.get(branch), held, now))
+      const agent = occupantOf(worktree, roster) ?? byBranch.get(branch)
+      swept.push(await classify({ gitRoot, worktree, branch }, agent, held, now))
     }
   }
   return swept
 }
 
 /**
- * Ownership is joined on the branch, so `agent` is absent for a worktree whose
+ * Ownership is joined on the branch, or on a live agent's cwd (CC-277), so `agent` is absent for a worktree whose
  * agent predates the log or was pruned from it. That is reported rather than
  * assumed either way: an unknown owner is not a reason to destroy commits, and
  * the dirty/unmerged check below is what actually decides.
