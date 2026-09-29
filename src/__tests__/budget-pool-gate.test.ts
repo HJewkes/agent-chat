@@ -357,4 +357,12 @@ describe('run start', () => {
     expect(runStartAt(now, { recordedAt: now.getTime() - 20 * HOUR })).toBe(now.getTime() - RUN_CAP_MS)
     expect(runStartAt(now)).toBe(now.getTime() - RUN_CAP_MS)
   })
+
+  it('treats a non-finite start as absent', () => {
+    const recordedAt = at(16).getTime()
+    expect(runStartAt(now, { ownerMessageAt: Number.NaN, recordedAt: Number.NaN })).toBe(
+      now.getTime() - RUN_CAP_MS,
+    )
+    expect(runStartAt(now, { ownerMessageAt: Number.NaN, recordedAt })).toBe(recordedAt)
+  })
 })

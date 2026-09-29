@@ -45,8 +45,9 @@ export interface MeterStart {
 }
 
 /**
- * The meters as `gatePool` history: each is the pool's reading at its window's start. The chain never
- * drops, so two meters that disagree overcount a window rather than undercount it.
+ * The meters as `gatePool` history, each dated at its window's start. A meter's first sample may come
+ * after that start, so the day window counts spend from the first sample on or after 07:00. The chain
+ * never drops, so two meters that disagree overcount the earlier window.
  */
 export function meterHistory(starts: readonly MeterStart[], nowMs: number): SevenDaySample[] {
   const latestFirst = starts

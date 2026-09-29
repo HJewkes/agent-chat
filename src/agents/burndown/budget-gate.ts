@@ -171,7 +171,7 @@ export function dayStart(now: Date): number {
  * The spend day starts at 07:00 local (`dayStart`).
  */
 export function runStartAt(now: Date, starts: { ownerMessageAt?: number; recordedAt?: number } = {}): number {
-  const known = [starts.ownerMessageAt, starts.recordedAt].filter((t): t is number => t !== undefined)
+  const known = [starts.ownerMessageAt, starts.recordedAt].filter((t): t is number => Number.isFinite(t))
   return Math.max(now.getTime() - RUN_CAP_MS, ...known)
 }
 

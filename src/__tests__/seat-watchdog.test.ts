@@ -301,6 +301,13 @@ describe('poolBudget', () => {
     expect(verdict(claude, { ageSeconds: 0, fiveHour: 70, sevenDay: 10 }).open).toBe(false)
   })
 
+  it('caps a pool the owner uses at 70 on five_hour even when its own ceiling is higher', () => {
+    const shared: Pool = { ...(pools.get('agents') as Pool), humanUses: true }
+    const result = verdict(shared, { ageSeconds: 0, fiveHour: 75, sevenDay: 10 })
+    expect(result.open).toBe(false)
+    expect(result.reason).toMatch(/five_hour 75% at or above ceiling 70%/)
+  })
+
   it('stays open on an idle pool whose reading is hours old', () => {
     expect(verdict(claude, { ageSeconds: 6 * 3600, fiveHour: 0, sevenDay: 19 }).open).toBe(true)
   })
