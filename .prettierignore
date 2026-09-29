@@ -7,3 +7,6 @@ results.sarif
 
 # Byte-exact captures of what clients see; reformatting them would falsify the pin.
 src/__tests__/golden/
+
+# One events.db row per line, so a diff of the replay fixture stays reviewable.
+src/__tests__/fixtures/watchdog-2026-09-29.json

@@ -19,6 +19,7 @@ Commands:
   service                    run and inspect the broker daemon
   mirror                     project the human queue into a Matrix room and fold phone verdicts back
   burndown                   pick and run unattended work for opted-in initiatives
+  seats                      autonomy seats: the idle watchdog
   debug                      diagnostics: sessions, history, routing
   doctor                     check the things that fail silently
   lifecycle                  offline maintenance of the agent lifecycle ledger
@@ -299,6 +300,43 @@ Usage: agent-chat burndown job-status [options]
 launchd state for the tick job: loaded, pid, and whether it may spawn
 
 Options:
+  -h, --help  display help for command
+
+=== agent-chat seats
+Usage: agent-chat seats [options] [command]
+
+autonomy seats: the idle watchdog
+
+Options:
+  -h, --help                  display help for command
+
+Commands:
+  watchdog [options]          wake an autonomy seat idle with budget and eligible work (CC-203);
+                              silent otherwise
+  watchdog-install [options]  install and start the launchd job that runs `seats watchdog` four
+                              times an hour
+  help [command]              display help for command
+
+=== agent-chat seats watchdog
+Usage: agent-chat seats watchdog [options]
+
+wake an autonomy seat idle with budget and eligible work (CC-203); silent otherwise
+
+Options:
+  --dry-run          print each seat decision; wake nothing, write nothing
+  --replay <value>   run a past UTC day (YYYY-MM-DD) from events.db, read-only
+  --seat <value>     only this seat (repeatable); default every seat in the charter
+  --reading <value>  replay budget reading <ISO>=<five_hour>/<seven_day> (repeatable)
+  --root <value>     autonomy directory holding charter.md, seats/ and logs/
+  -h, --help         display help for command
+
+=== agent-chat seats watchdog-install
+Usage: agent-chat seats watchdog-install [options]
+
+install and start the launchd job that runs `seats watchdog` four times an hour
+
+Options:
+  --dry-run   print the plist and launchctl calls; load nothing
   -h, --help  display help for command
 
 === agent-chat debug
