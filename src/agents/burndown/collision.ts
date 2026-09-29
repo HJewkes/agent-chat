@@ -158,30 +158,47 @@ export interface BrokerView {
   claims: FileClaim[]
 }
 
+/** The four readers a refusal reason names when its fact could not be read. */
+export type CollisionReader = 'git-subjects' | 'gh-pulls' | 'gh-pull-files' | 'broker-view'
+
+export type ReaderFailed = (reader: CollisionReader, repo: string, detail?: string) => void
+
 /** The check `plan` takes, reading each repo's facts once; `broker` undefined means it could not be reached. */
 export function collisionCheck(
   ledger: Ledger,
   broker: BrokerView | undefined,
   exec: Runner = run,
+  failed: ReaderFailed = () => {},
 ): (repo: string, work: CollisionWork) => Collision | undefined {
   const perRepo = new Map<string, CollisionFacts>()
-  const factsFor = (repo: string): CollisionFacts => {
-    const files = new Map<number, string[] | undefined>()
-    return {
-      repo,
-      subjects: readSubjects(repo, defaultBranch(repo, exec), exec),
-      prs: readOpenPrs(repo, exec),
-      prFiles: pr => (files.has(pr) ? files.get(pr) : files.set(pr, readPrFiles(repo, pr, exec)).get(pr)),
-      names: broker?.names,
-      claims: broker?.claims,
-      ours: new Set(),
-    }
-  }
   return (repo, work) => {
-    const facts = perRepo.get(repo) ?? factsFor(repo)
+    const facts = perRepo.get(repo) ?? readFacts(repo, broker, exec, failed)
     perRepo.set(repo, facts)
     return collision(work, { ...facts, ours: oursFor(ledger, work.taskId) })
   }
+}
+
+/** One repo's facts, reporting each reader that fails once, so the caller can log it by name. */
+function readFacts(
+  repo: string,
+  broker: BrokerView | undefined,
+  exec: Runner,
+  failed: ReaderFailed,
+): CollisionFacts {
+  const subjects = readSubjects(repo, defaultBranch(repo, exec), exec)
+  const prs = readOpenPrs(repo, exec)
+  if (subjects === undefined) failed('git-subjects', repo)
+  if (prs === undefined) failed('gh-pulls', repo)
+  if (broker === undefined) failed('broker-view', repo)
+  const files = new Map<number, string[] | undefined>()
+  const prFiles = (pr: number): string[] | undefined => {
+    if (files.has(pr)) return files.get(pr)
+    const read = readPrFiles(repo, pr, exec)
+    files.set(pr, read)
+    if (read === undefined) failed('gh-pull-files', repo, `#${pr}`)
+    return read
+  }
+  return { repo, subjects, prs, prFiles, names: broker?.names, claims: broker?.claims, ours: new Set() }
 }
 
 /** A done claim's agents and PR are not ours any more: a re-pick must see them as someone else's. */

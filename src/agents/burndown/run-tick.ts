@@ -9,8 +9,10 @@ import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
 import { advance, applyActions, claimKey, type InboxMessage } from './advance.js'
 import { verifySection } from './brief.js'
 import { pickAccount } from './budget-gate.js'
+import { collisionCheck, type BrokerView, type CollisionReader } from './collision.js'
 import { deciderVerdict, recordRefusal, wakeDecider, type DeciderVerdict } from './decider.js'
 import type { Initiative } from './eligibility.js'
+import { run, type Runner } from './exec.js'
 import { execute, type SpawnFrame, type SpawnReply, type Step } from './execute.js'
 import { heldClaims, readLedger, withLedgerLock, writeLedger, type Claim, type Ledger } from './ledger.js'
 import {
@@ -22,7 +24,7 @@ import {
   worktreeUse,
   type Roster,
 } from './observe.js'
-import { plan, type Capacity, type Plan } from './plan.js'
+import { plan, type Capacity, type Plan, type PlanInputs } from './plan.js'
 import { accountDir, loadTickConfig, readTaskText, type TickConfig } from './source.js'
 import { retrySteps, stepsForActions, stepsForDispatch, type StepContext } from './steps.js'
 import { loadWorld, type World } from './tick.js'
@@ -42,6 +44,8 @@ export interface TickBroker {
   /** The human queue's open items; read only when a decider is configured. */
   queue: () => Promise<QueueItem[]>
   resume: (name: string, message: string) => Promise<SpawnReply>
+  /** Live agent and session names and every `files` claim, for the CC-202 collision check. */
+  collisionView: () => Promise<BrokerView>
 }
 
 export interface TickOptions {
@@ -50,6 +54,14 @@ export interface TickOptions {
   now?: Date
   root?: string
   log?: (event: string, detail: Record<string, unknown>) => void
+  /** Runs the collision check's `git` and `gh` readers; a test injects one that never reaches GitHub. */
+  exec?: Runner
+}
+
+interface ReaderFailure {
+  reader: CollisionReader
+  repo: string
+  detail?: string
 }
 
 /** Shown in dry-run briefs when no `reportTo` is configured; a real tick refuses instead. */
@@ -78,7 +90,7 @@ export async function tickFromDisk(opts: TickOptions): Promise<string[]> {
 async function runTick(config: TickConfig, opts: TickOptions): Promise<string[]> {
   const now = opts.now ?? new Date()
   const ledger = readLedger(burndownLedgerPath())
-  const { steps, notes, decider } = await decide(config, opts, ledger, now)
+  const { steps, notes, decider, failures } = await decide(config, opts, ledger, now)
   if (opts.dryRun)
     return [
       `burndown tick at ${now.toISOString()} (dry run)`,
@@ -87,6 +99,7 @@ async function runTick(config: TickConfig, opts: TickOptions): Promise<string[]>
       ...notes,
     ]
   const log = opts.log ?? logEvent
+  for (const failure of failures) log('burndown_collision_reader_failed', { ...failure })
   const executed = await execute(steps, ledger, {
     ledgerFile: burndownLedgerPath(),
     spawn: opts.broker.spawn,
@@ -139,7 +152,7 @@ async function decide(
   opts: TickOptions,
   ledger: Ledger,
   now: Date,
-): Promise<{ steps: Step[]; notes: string[]; decider?: DeciderVerdict }> {
+): Promise<{ steps: Step[]; notes: string[]; decider?: DeciderVerdict; failures: ReaderFailure[] }> {
   const root = opts.root ?? activeWorkRoot()
   const roster = await opts.broker.roster()
   const world = loadWorld(now, root)
@@ -151,11 +164,14 @@ async function decide(
   const agents = decider?.wake === true ? { ...capacity, agents: capacity.agents - 1 } : capacity
   const advanced = stepsForActions(advance(held, observations, now), ledger, ctx, agents.agents)
   const kept = advanced.steps.flatMap(s => (s.kind === 'ledger' ? s.actions : []))
+  const planLedger = applyActions(ledger, kept, now)
+  const { check, failures } = await tickCollision(planLedger, opts)
   const planned = plan({
     ...world,
-    ledger: applyActions(ledger, kept, now),
+    ledger: planLedger,
     capacity: worktreeCapacity(config, { ...agents, agents: agents.agents - advanced.spawns }),
     orphan: (repo, name) => orphanAt(repo, name),
+    collision: check,
   })
   const dispatched = planned.dispatch.map(d => stepsForDispatch(d, ctx))
   const notes = [
@@ -169,7 +185,29 @@ async function decide(
     ...advanced.steps,
     ...dispatched.flatMap(d => (typeof d === 'string' ? [] : d)),
   ]
-  return { steps, notes, ...(decider === undefined ? {} : { decider }) }
+  return { steps, notes, failures, ...(decider === undefined ? {} : { decider }) }
+}
+
+/** The CC-202 check over this tick's ledger, collecting each failed reader for the event log. */
+async function tickCollision(
+  ledger: Ledger,
+  opts: TickOptions,
+): Promise<{ check: NonNullable<PlanInputs['collision']>; failures: ReaderFailure[] }> {
+  const failures: ReaderFailure[] = []
+  const record = (reader: CollisionReader, repo: string, detail?: string): void => {
+    failures.push({ reader, repo, ...(detail === undefined ? {} : { detail }) })
+  }
+  const check = collisionCheck(ledger, await readView(opts.broker), opts.exec ?? run, record)
+  return { check, failures }
+}
+
+/** Undefined when the broker cannot answer, which the check turns into a `claimed` refusal per repo. */
+async function readView(broker: TickBroker): Promise<BrokerView | undefined> {
+  try {
+    return await broker.collisionView()
+  } catch {
+    return undefined
+  }
 }
 
 /** The decider goes first: answering is what lets parked agents finish, so it takes capacity before new work. */

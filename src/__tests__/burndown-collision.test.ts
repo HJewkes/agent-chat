@@ -5,6 +5,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   collision,
+  collisionCheck,
   namesId,
   readOpenPrs,
   readSubjects,
@@ -204,5 +205,42 @@ describe('readOpenPrs', () => {
 
   it('reports a failed gh call as undefined', () => {
     expect(readOpenPrs('/repo', () => ({ status: 1, stdout: '' }))).toBeUndefined()
+  })
+})
+
+describe('collisionCheck reader failures', () => {
+  const gitOk = (args: string[]): { status: number; stdout: string } =>
+    args[0] === 'log' ? { status: 0, stdout: 'init\n' } : { status: 0, stdout: '' }
+
+  it('reports a failed gh-pull-files read once per PR, naming the repo and the PR', () => {
+    const failed: unknown[][] = []
+    const exec: Runner = (bin, args) => {
+      if (bin !== 'gh') return gitOk(args)
+      if (args[2]?.includes('/files')) return { status: 1, stdout: '' }
+      return { status: 0, stdout: JSON.stringify(pr(4)) }
+    }
+    const check = collisionCheck({ version: 1, claims: [] }, { names: [], claims: [] }, exec, (...a) =>
+      failed.push(a),
+    )
+
+    const first = check('/repo', work('CC-9', { slice: 'a', owns: ['src/a.ts'] }))
+    check('/repo', work('CC-9', { slice: 'b', owns: ['src/b.ts'] }))
+
+    expect(first).toEqual({
+      kind: 'file-overlap',
+      reason: 'reader gh-pull-files failed: no file list for #4',
+    })
+    expect(failed).toEqual([['gh-pull-files', '/repo', '#4']])
+  })
+
+  it('reports nothing when every reader answers', () => {
+    const failed: unknown[][] = []
+    const exec: Runner = (bin, args) => (bin === 'gh' ? { status: 0, stdout: '' } : gitOk(args))
+    const check = collisionCheck({ version: 1, claims: [] }, { names: [], claims: [] }, exec, (...a) =>
+      failed.push(a),
+    )
+
+    expect(check('/repo', work('CC-9'))).toBeUndefined()
+    expect(failed).toEqual([])
   })
 })
