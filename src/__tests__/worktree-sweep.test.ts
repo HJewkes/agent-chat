@@ -237,6 +237,73 @@ describe('a worktree someone is standing in', () => {
     expect(swept[0]?.status).toBe('held')
   })
 
+  it('is held for an agent whose cwd is a subdirectory of the tree', async () => {
+    const repo = makeRepo()
+    const worktree = await abandonedWorktree(repo)
+    const sub = path.join(worktree, 'packages', 'app')
+    fs.mkdirSync(sub, { recursive: true })
+
+    const swept = await sweepWorktrees(
+      [identity(), identity({ agentId: 'a2', name: 'reviewer', state: 'live', cwd: sub })],
+      {
+        list: lister,
+        now,
+      },
+    )
+
+    expect(swept[0]?.status).toBe('held')
+  })
+
+  it('is not held for an agent in a sibling path that shares the tree name as a prefix', async () => {
+    const repo = makeRepo()
+    const worktree = await abandonedWorktree(repo)
+    const sibling = `${worktree}b`
+    fs.mkdirSync(sibling)
+    tmpDirs.push(sibling)
+
+    const swept = await sweepWorktrees(
+      [identity(), identity({ agentId: 'a2', name: 'reviewer', state: 'live', cwd: sibling })],
+      {
+        list: lister,
+        now,
+      },
+    )
+
+    expect(swept[0]?.status).toBe('reclaimable')
+  })
+
+  it('neither throws nor holds for an agent whose cwd no longer exists', async () => {
+    const repo = makeRepo()
+    const worktree = await abandonedWorktree(repo)
+    const vanished = path.join(os.tmpdir(), `sweep-vanished-${process.pid}`, 'gone')
+
+    const swept = await sweepWorktrees(
+      [identity(), identity({ agentId: 'a2', name: 'reviewer', state: 'live', cwd: vanished })],
+      {
+        list: lister,
+        now,
+      },
+    )
+
+    expect(swept[0]?.status).toBe('reclaimable')
+    expect(swept[0]?.worktree).toBe(worktree)
+  })
+
+  it('does not hold a tree for a detached agent, which counts as finished', async () => {
+    const repo = makeRepo()
+    const worktree = await abandonedWorktree(repo)
+
+    const swept = await sweepWorktrees(
+      [identity(), identity({ agentId: 'a2', name: 'reviewer', state: 'detached', cwd: worktree })],
+      {
+        list: lister,
+        now,
+      },
+    )
+
+    expect(swept[0]?.status).toBe('reclaimable')
+  })
+
   it('does not hold a tree for an agent that has exited', async () => {
     const repo = makeRepo()
     const worktree = await abandonedWorktree(repo)

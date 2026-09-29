@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { gitChildEnv } from '../../git.js'
 import { agentsDir } from '../../paths.js'
+import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import { readRuntimeState, runtimeStatePath } from '../launch-files.js'
 import { BRANCH_PREFIX, inspectForRelease, RECLAIM_GRACE_MS, worktreeStrategy } from './worktree.js'
 import type { Allocation } from './index.js'
@@ -109,19 +110,10 @@ export async function agentWorktreesIn(
 /** Live means someone is in it; anything else has stopped and may be reclaimable. */
 const isLive = (state: string): boolean => state === 'live' || state === 'spawning'
 
-const realPath = (p: string): string => {
-  try {
-    return fs.realpathSync(p)
-  } catch {
-    return path.resolve(p)
-  }
-}
-
-/** Live agents keyed by the real path they run in, whatever their name or branch (CC-277). */
-function liveOccupants(roster: readonly AgentIdentity[]): Map<string, AgentIdentity> {
-  const occupants = new Map<string, AgentIdentity>()
-  for (const agent of roster) if (isLive(agent.state) && agent.cwd) occupants.set(realPath(agent.cwd), agent)
-  return occupants
+/** A live agent whose cwd is the tree or anywhere inside it, whatever its name or branch (CC-277). */
+function occupantOf(worktree: string, roster: readonly AgentIdentity[]): AgentIdentity | undefined {
+  const tree = canonicalPath(worktree)
+  return roster.find(agent => isLive(agent.state) && agent.cwd && isAtOrUnder(canonicalPath(agent.cwd), tree))
 }
 
 function classifyByAgent(
@@ -171,7 +163,6 @@ export async function sweepWorktrees(
   const list = options.list ?? porcelain
   const now = (options.now ?? Date.now)()
   const held = heldByRuntimeState()
-  const occupants = liveOccupants(roster)
   const byBranch = new Map(roster.map(agent => [`${BRANCH_PREFIX}${agent.name}`, agent]))
 
   const roots = new Set<string>(options.roots ?? [])
@@ -180,7 +171,7 @@ export async function sweepWorktrees(
   const swept: SweptWorktree[] = []
   for (const gitRoot of roots) {
     for (const { worktree, branch } of await agentWorktreesIn(gitRoot, list)) {
-      const agent = occupants.get(realPath(worktree)) ?? byBranch.get(branch)
+      const agent = occupantOf(worktree, roster) ?? byBranch.get(branch)
       swept.push(await classify({ gitRoot, worktree, branch }, agent, held, now))
     }
   }
