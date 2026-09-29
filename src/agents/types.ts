@@ -152,6 +152,8 @@ export interface LaunchPlanInput {
   extraDirs?: string[]
   /** Propagated so a spawned agent joins the same bus rather than a default one. */
   agentChatHome?: string
+  /** The leak guard's hooks dir, set as the agent's `core.hooksPath` through `GIT_CONFIG_*` (CC-268). */
+  gitHooksDir?: string
   /**
    * The resolved `CLAUDE_CONFIG_DIR` — the Claude ACCOUNT this agent runs on
    * (CC-100). Resolved by the supervisor from `config-dir.ts`'s precedence, never

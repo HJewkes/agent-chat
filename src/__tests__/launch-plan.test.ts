@@ -117,6 +117,43 @@ describe('the argv every surface shares', () => {
     expect(buildLaunchPlan(input()).env.AGENT_CHAT_HOME).toBeUndefined()
   })
 
+  it('points the agent git at the leak guard hooks through GIT_CONFIG_*, and only when asked', () => {
+    const plan = buildLaunchPlan(input({ gitHooksDir: '/state/git-hooks' }))
+
+    expect(plan.env).toMatchObject({
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'core.hooksPath',
+      GIT_CONFIG_VALUE_0: '/state/git-hooks',
+    })
+    expect('GIT_CONFIG_COUNT' in buildLaunchPlan(input()).env).toBe(false)
+  })
+
+  it('observes core.hooksPath at the guard dir from a git child of the launch env', () => {
+    const cwd = tmpdir()
+    spawnSync('git', ['init', '-q', cwd])
+    const plan = buildLaunchPlan(input({ gitHooksDir: '/state/git-hooks' }))
+
+    const run = spawnSync('git', ['config', 'core.hooksPath'], {
+      cwd,
+      env: { ...process.env, ...plan.env },
+      encoding: 'utf8',
+    })
+
+    expect(run.stdout.trim()).toBe('/state/git-hooks')
+  })
+
+  it('writes the guard hooks when the plan points git at them', () => {
+    process.env.AGENT_CHAT_HOME = tmpdir()
+    const hooks = path.join(process.env.AGENT_CHAT_HOME, 'git-hooks')
+    writeLaunchFiles(buildLaunchPlan(input()), {})
+    expect(fs.existsSync(hooks)).toBe(false)
+
+    writeLaunchFiles(buildLaunchPlan(input({ gitHooksDir: hooks })), {})
+
+    expect(fs.statSync(path.join(hooks, 'pre-push')).mode & 0o777).toBe(0o755)
+    expect(fs.readFileSync(path.join(hooks, 'pre-push'), 'utf8')).toContain('titan-egress-scan pre-push')
+  })
+
   it('passes isolation extra dirs through as --add-dir', () => {
     const args = buildLaunchPlan(input({ extraDirs: ['/repo/shared', '/repo/docs'] })).args
     expect(args.filter((_, i) => args[i - 1] === '--add-dir')).toEqual(['/repo/shared', '/repo/docs'])
@@ -897,6 +934,24 @@ describe('per-profile env (CC-259)', () => {
     expect(set.env.CLAUDE_CONFIG_DIR).toBe('/good')
     expect('AGENT_CHAT_HOME' in set.env).toBe(false)
     expect('CLAUDE_CONFIG_DIR' in unset.env).toBe(false)
+  })
+
+  it('cannot override or disable the leak guard hooksPath through GIT_CONFIG_*', () => {
+    const hostile = profile({
+      env: {
+        GIT_CONFIG_COUNT: '2',
+        GIT_CONFIG_KEY_1: 'core.hooksPath',
+        GIT_CONFIG_VALUE_1: '/dev/null',
+        GIT_CONFIG_PARAMETERS: "'core.hooksPath'='/dev/null'",
+      },
+    })
+
+    const plan = buildLaunchPlan(input({ profile: hostile, gitHooksDir: '/state/git-hooks' }))
+
+    expect(plan.env.GIT_CONFIG_COUNT).toBe('1')
+    expect(plan.env.GIT_CONFIG_VALUE_0).toBe('/state/git-hooks')
+    for (const key of ['GIT_CONFIG_KEY_1', 'GIT_CONFIG_VALUE_1', 'GIT_CONFIG_PARAMETERS'])
+      expect(key in plan.env).toBe(false)
   })
 
   // Mutation caught: spreading profile.env last in envFor.
