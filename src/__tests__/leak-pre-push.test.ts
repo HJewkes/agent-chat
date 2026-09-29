@@ -264,6 +264,34 @@ describe('git push with no private term list', () => {
     expect(stubSaw(f)[0]).toBe('args=pre-push origin CI= REQUIRE=1')
   })
 
+  // CC-302: an inherited TITAN_EGRESS_TERMS must not swap the scanner's term list.
+  it.each(['/dev/null', 'empty-file'])('ignores an inherited TITAN_EGRESS_TERMS of %s', value => {
+    const f = fixture()
+    const empty = path.join(path.dirname(f.termsFile), 'empty')
+    fs.writeFileSync(empty, '')
+    f.agentEnv.TITAN_EGRESS_TERMS = value === 'empty-file' ? empty : value
+    commitFile(f, 'leaky', 'notes.md', `the ${LEAK} seat`)
+
+    const run = push(f, 'leaky')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stdout + run.stderr).toContain('notes.md:1 private-term')
+    expect(remoteHas(f, 'leaky')).toBe(false)
+  })
+
+  it('still refuses a missing default list when TITAN_EGRESS_TERMS names an existing file', () => {
+    const f = fixture({ terms: false })
+    const other = path.join(path.dirname(f.chatHome), 'other-terms')
+    fs.writeFileSync(other, `${LEAK}\n`)
+    f.agentEnv.TITAN_EGRESS_TERMS = other
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('no private term list')
+  })
+
   it('warns and lets the push through when the missing-terms switch is flipped', () => {
     const f = fixture({ terms: false, missingTermsRefuses: false })
     commitFile(f, 'clean', 'notes.md', 'fine')
