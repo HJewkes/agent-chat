@@ -3,7 +3,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { run } from '../agents/burndown/exec.js'
+import type { BrokerView } from '../agents/burndown/collision.js'
+import { run, type Runner } from '../agents/burndown/exec.js'
 import { execute, spawnFrame, type SpawnFrame, type SpawnReply } from '../agents/burndown/execute.js'
 import { readLedger, writeLedger, type Claim } from '../agents/burndown/ledger.js'
 import { tickFromDisk, type TickBroker } from '../agents/burndown/run-tick.js'
@@ -38,14 +39,29 @@ const accountPath = (): string => path.join(world, 'profiles', 'agents')
 const task = (id: string, priority = 3): string =>
   `id: ${id}\ntitle: Do ${id}\npriority: ${priority}\nestimate: 1\ndone_when: unit tests cover the new branch\nstatus: open\ntags:\n  - agent-chat\n`
 
-function initiative(tasks: Record<string, string>): void {
-  const autonomy = `autonomy:\n  mode: burndown\n  lanes: 1\n  accounts: [agents]\n  grants: []\n  repo: ${repo()}\n`
+function initiative(
+  tasks: Record<string, string>,
+  { slug = 'demo', at = repo(), lanes = 1, rank = 1 } = {},
+): void {
+  const autonomy = `autonomy:\n  mode: burndown\n  lanes: ${lanes}\n  accounts: [agents]\n  grants: []\n  repo: ${at}\n`
   write(
-    path.join(world, 'aw', 'demo', 'brief.md'),
-    `---\ntitle: Demo\nstate: focused\nrank: 1\nprofile: agents\n${autonomy}---\n# Demo\n`,
+    path.join(world, 'aw', slug, 'brief.md'),
+    `---\ntitle: ${slug}\nstate: focused\nrank: ${rank}\nprofile: agents\n${autonomy}---\n# ${slug}\n`,
   )
   for (const [id, text] of Object.entries(tasks))
-    write(path.join(world, 'aw', 'demo', 'tasks', `${id}.yml`), text)
+    write(path.join(world, 'aw', slug, 'tasks', `${id}.yml`), text)
+}
+
+/** A second repo with its own bare origin, for checks that must stay scoped to one repo. */
+function secondRepo(): string {
+  const at = path.join(world, 'repo2')
+  fs.mkdirSync(at, { recursive: true })
+  git(at, 'init', '-q', '-b', 'main')
+  git(at, 'commit', '-q', '--allow-empty', '-m', 'init')
+  git(world, 'init', '-q', '--bare', '-b', 'main', 'origin2.git')
+  git(at, 'remote', 'add', 'origin', path.join(world, 'origin2.git'))
+  git(at, 'push', '-q', 'origin', 'main')
+  return at
 }
 
 function account(): void {
@@ -54,7 +70,8 @@ function account(): void {
     path.join(accountPath(), 'status-cache', 'sessions', 's1.json'),
     JSON.stringify({ session_id: 's1', written_at: NOON.getTime() / 1000 - 30, rate_limits }),
   )
-  const projects = { [repo()]: { hasTrustDialogAccepted: true } }
+  const trusted = { hasTrustDialogAccepted: true }
+  const projects = { [repo()]: trusted, [path.join(world, 'repo2')]: trusted }
   write(path.join(accountPath(), '.claude.json'), JSON.stringify({ projects }))
 }
 
@@ -107,6 +124,7 @@ function fakeBroker(
     queue?: QueueItem[]
     resume?: (name: string) => SpawnReply
     retire?: (name: string) => SpawnReply
+    view?: () => BrokerView
   } = {},
 ): Fake {
   const fake: Fake = {
@@ -133,13 +151,29 @@ function fakeBroker(
         fake.resumes.push({ name, message })
         return opts.resume?.(name) ?? { ok: true, agentId: `id-${name}` }
       },
+      collisionView: async () => opts.view?.() ?? { names: [], claims: [] },
     },
   }
   return fake
 }
 
-const tick = (fake: Fake, dryRun = false, log: (e: string, d: Record<string, unknown>) => void = () => {}) =>
-  tickFromDisk({ dryRun, broker: fake.broker, now: NOON, log })
+/** `gh` answers per call from `gh`; `git` runs for real against the fixture repo and its bare origin. */
+const stubGh =
+  (
+    gh: (args: string[], cwd?: string) => { status: number; stdout: string } = () => ({
+      status: 0,
+      stdout: '',
+    }),
+  ): Runner =>
+  (bin, args, cwd) =>
+    bin === 'gh' ? gh(args, cwd) : run(bin, args, cwd)
+
+const tick = (
+  fake: Fake,
+  dryRun = false,
+  log: (e: string, d: Record<string, unknown>) => void = () => {},
+  exec: Runner = stubGh(),
+) => tickFromDisk({ dryRun, broker: fake.broker, now: NOON, log, exec })
 
 beforeEach(() => {
   world = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-tick-')))
@@ -152,6 +186,9 @@ beforeEach(() => {
   fs.mkdirSync(repo(), { recursive: true })
   git(repo(), 'init', '-q', '-b', 'main')
   git(repo(), 'commit', '-q', '--allow-empty', '-m', 'init')
+  git(world, 'init', '-q', '--bare', '-b', 'main', 'origin.git')
+  git(repo(), 'remote', 'add', 'origin', path.join(world, 'origin.git'))
+  git(repo(), 'push', '-q', 'origin', 'main')
   installClaude()
   account()
   config()
@@ -795,5 +832,124 @@ describe('the tick and config.json', () => {
     )
 
     expect(reaching).toEqual([])
+  })
+})
+
+/** CC-231: the tick runs the CC-202 collision check before it dispatches. */
+describe('burndown tick collision check', () => {
+  const pulls =
+    (prs: { number: number; title: string; branch: string; body: string }[], failIn?: string) =>
+    (args: string[], cwd?: string) =>
+      cwd === failIn
+        ? { status: 1, stdout: '' }
+        : { status: 0, stdout: prs.map(p => JSON.stringify(p)).join('\n') }
+
+  it('refuses a task a commit subject on the default branch names', async () => {
+    initiative({ 'DM-1': task('DM-1') })
+    git(repo(), 'commit', '-q', '--allow-empty', '-m', 'Do the thing (DM-1) (#7)')
+    git(repo(), 'push', '-q', 'origin', 'main')
+    const fake = fakeBroker()
+
+    const lines = await tick(fake)
+
+    expect(fake.frames).toEqual([])
+    expect(lines.join('\n')).toContain('refused demo DM-1 [landed]: "Do the thing (DM-1) (#7)"')
+  })
+
+  it("refuses when another task's held agent opened the PR that names this id", async () => {
+    initiative({ 'DM-1': task('DM-1', 1), 'DM-2': task('DM-2', 2) }, { lanes: 2 })
+    const held: Claim = {
+      taskId: 'DM-2',
+      initiative: 'demo',
+      spawnedAt: NOON.toISOString(),
+      phase: 'implementing',
+      phaseAt: NOON.toISOString(),
+      agentName: 'bd-dm-2',
+      spawned: ['bd-dm-2'],
+    }
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [held] })
+    const pr = { number: 9, title: 'Do DM-2', branch: 'agent-chat/bd-dm-2', body: 'Also fixes DM-1.' }
+    const fake = fakeBroker({ agents: [row('bd-dm-2', 'live')] })
+
+    const lines = await tick(fake, false, () => {}, stubGh(pulls([pr])))
+
+    expect(fake.frames).toEqual([])
+    expect(lines.join('\n')).toContain('refused demo DM-1 [open-pr]: #9 (agent-chat/bd-dm-2) names DM-1')
+  })
+
+  it("does not refuse on the PR of this task's own held claim", async () => {
+    initiative({ 'DM-1': task('DM-1', 1), 'DM-2': task('DM-2', 2) }, { lanes: 2 })
+    const pr = { number: 9, title: 'Do DM-2', branch: 'agent-chat/bd-dm-2', body: '' }
+    const fake = fakeBroker()
+
+    await tick(fake, false, () => {}, stubGh(pulls([pr])))
+
+    expect(fake.frames.map(f => f.name)).toEqual(['bd-dm-1'])
+  })
+
+  it('logs a failed gh-pulls reader by name and refuses only that repo', async () => {
+    const other = secondRepo()
+    initiative({ 'DM-1': task('DM-1') })
+    initiative({ 'OT-1': task('OT-1') }, { slug: 'other', at: other, rank: 2 })
+    const logged: { event: string; detail: Record<string, unknown> }[] = []
+    const fake = fakeBroker()
+
+    const lines = await tick(
+      fake,
+      false,
+      (event, detail) => logged.push({ event, detail }),
+      stubGh(pulls([], repo())),
+    )
+
+    expect(logged.filter(l => l.event === 'burndown_collision_reader_failed')).toEqual([
+      { event: 'burndown_collision_reader_failed', detail: { reader: 'gh-pulls', repo: repo() } },
+    ])
+    expect(lines.join('\n')).toContain('refused demo DM-1 [open-pr]: reader gh-pulls failed')
+    expect(fake.frames.map(f => f.name)).toEqual(['bd-ot-1'])
+  })
+
+  it('logs a failed git-subjects reader by name and refuses only that repo', async () => {
+    const other = secondRepo()
+    initiative({ 'DM-1': task('DM-1') })
+    initiative({ 'OT-1': task('OT-1') }, { slug: 'other', at: other, rank: 2 })
+    git(other, 'remote', 'remove', 'origin')
+    const logged: { event: string; detail: Record<string, unknown> }[] = []
+    const fake = fakeBroker()
+
+    const lines = await tick(fake, false, (event, detail) => logged.push({ event, detail }))
+
+    expect(logged.filter(l => l.event === 'burndown_collision_reader_failed')).toEqual([
+      { event: 'burndown_collision_reader_failed', detail: { reader: 'git-subjects', repo: other } },
+    ])
+    expect(lines.join('\n')).toContain('refused other OT-1 [landed]: reader git-subjects failed')
+    expect(fake.frames.map(f => f.name)).toEqual(['bd-dm-1'])
+  })
+
+  it('logs a failed broker-view reader by name and refuses as claimed', async () => {
+    initiative({ 'DM-1': task('DM-1') })
+    const logged: { event: string; detail: Record<string, unknown> }[] = []
+    const fake = fakeBroker({
+      view: () => {
+        throw new Error('broker gone')
+      },
+    })
+
+    const lines = await tick(fake, false, (event, detail) => logged.push({ event, detail }))
+
+    expect(logged.filter(l => l.event === 'burndown_collision_reader_failed')).toEqual([
+      { event: 'burndown_collision_reader_failed', detail: { reader: 'broker-view', repo: repo() } },
+    ])
+    expect(lines.join('\n')).toContain('refused demo DM-1 [claimed]: reader broker-view failed')
+    expect(fake.frames).toEqual([])
+  })
+
+  it('refuses a task a live agent outside the ledger carries', async () => {
+    initiative({ 'DM-1': task('DM-1') })
+    const fake = fakeBroker({ view: () => ({ names: ['hs-dm-1-by-hand'], claims: [] }) })
+
+    const lines = await tick(fake)
+
+    expect(fake.frames).toEqual([])
+    expect(lines.join('\n')).toContain('refused demo DM-1 [claimed]: live agent hs-dm-1-by-hand carries DM-1')
   })
 })

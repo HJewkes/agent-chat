@@ -46,6 +46,7 @@ export function tickBroker(client: BrokerClient): TickBroker {
       const res = (await client.request({ t: 'retire', name }, 'spawn_result')) as Reply<'spawn_result'>
       return spawnReply(res)
     },
+    collisionView: () => collisionView(client),
   }
 }
 
