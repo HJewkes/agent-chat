@@ -23,6 +23,7 @@ import {
   type SpendMeter,
 } from './stops.js'
 import {
+  FIRE_CAP,
   WAKE_MESSAGE,
   accountReading,
   decide,
@@ -169,7 +170,13 @@ function judgeSeat(pass: Pass, seat: Seat): Judgement {
     ...(log.activityAt === undefined ? {} : { activityAt: log.activityAt }),
   }
   const decision = decide(obs, previous, nowMs, pass.fireCap)
-  const record = { ...decision.next, ...(run === undefined ? {} : { run }), budgetPaused: !budget.open }
+  const capped = (decision.next.fires ?? 0) >= (pass.fireCap ?? FIRE_CAP)
+  const record = {
+    ...decision.next,
+    ...(run === undefined ? {} : { run }),
+    budgetPaused: !budget.open,
+    capped,
+  }
   return { decision, budget, record }
 }
 
@@ -180,6 +187,27 @@ function budgetChange(pass: Pass, seat: string, budget: BudgetVerdict): string |
   const line = budget.open ? `Watchdog: budget open again: ${budget.reason}` : `Watchdog: ${budget.reason}`
   pass.deps.appendLog(seat, pass.now, line)
   return `${seat}: ${line}`
+}
+
+/** A fire cap engaging and lifting are each logged once, on the run that sees the change. */
+function capChange(pass: Pass, seat: string, record: SeatRecord): string | undefined {
+  const wasCapped = pass.doc.seats[seat]?.capped ?? false
+  const capped = record.capped ?? false
+  if (wasCapped === capped) return undefined
+  const line = capped
+    ? `Watchdog: fire cap engaged: ${record.fires} wake(s) with no implementer; waiting for a dispatch`
+    : 'Watchdog: fire cap lifted: an implementer ran'
+  pass.deps.appendLog(seat, pass.now, line)
+  return `${seat}: ${line}`
+}
+
+/** A hold on every seat starting or ending is logged once, in the run output. */
+function holdChange(pass: Pass): string | undefined {
+  const wasHeld = pass.doc.held ?? false
+  const held = pass.restart !== undefined
+  pass.doc.held = held
+  if (wasHeld === held) return undefined
+  return held ? `Watchdog: hold on every seat: ${pass.restart}` : 'Watchdog: hold on every seat lifted'
 }
 
 async function act(pass: Pass, seat: string, decision: Decision): Promise<string> {
@@ -218,6 +246,8 @@ async function startPass(deps: WatchdogDeps, options: WatchdogOptions): Promise<
 export async function runWatchdog(deps: WatchdogDeps, options: WatchdogOptions): Promise<string[]> {
   const [pass, charter] = await startPass(deps, options)
   const lines: string[] = []
+  const hold = options.dryRun ? undefined : holdChange(pass)
+  if (hold !== undefined) lines.push(hold)
   for (const name of options.seats ?? charterSeats(charter)) {
     const seat = seatOrSkip(deps, name)
     if (typeof seat === 'string') {
@@ -227,6 +257,8 @@ export async function runWatchdog(deps: WatchdogDeps, options: WatchdogOptions):
     const { decision, budget, record } = judgeSeat(pass, seat)
     const change = options.dryRun ? undefined : budgetChange(pass, name, budget)
     if (change !== undefined) lines.push(change)
+    const capLine = options.dryRun ? undefined : capChange(pass, name, record)
+    if (capLine !== undefined) lines.push(capLine)
     pass.doc.seats[name] = record
     if (options.dryRun) lines.push(`${name}: ${decision.fire ? 'WOULD FIRE' : 'skip'}: ${decision.reason}`)
     else if (decision.fire) lines.push(await act(pass, name, decision))
@@ -235,6 +267,11 @@ export async function runWatchdog(deps: WatchdogDeps, options: WatchdogOptions):
     lines.push(
       `pool ${pool}: no seven_day reading at or before 07:00, so the day's spend counts from the first sample`,
     )
-  if (!options.dryRun) deps.saveDoc({ seats: pass.doc.seats, pools: pass.doc.pools })
+  if (!options.dryRun)
+    deps.saveDoc({
+      seats: pass.doc.seats,
+      pools: pass.doc.pools,
+      ...(pass.doc.held === undefined ? {} : { held: pass.doc.held }),
+    })
   return lines
 }

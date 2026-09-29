@@ -292,6 +292,65 @@ describe('runWatchdog', () => {
   })
 })
 
+describe('state-change log lines', () => {
+  const HOLD_ON = /^Watchdog: hold on every seat: /
+  const HOLD_OFF = 'Watchdog: hold on every seat lifted'
+
+  async function outputs(h: Harness, count: number): Promise<string[]> {
+    const out: string[] = []
+    for (let i = 0; i < count; i++) {
+      out.push(...(await runWatchdog(h.deps, ONE)))
+      h.tick()
+    }
+    return out
+  }
+
+  it('logs a hold on every seat when it starts and when it ends, not every run', async () => {
+    const h = harness(IDLE)
+    h.deps.ownerMessages = () => undefined
+    const first = await outputs(h, 2)
+    h.deps.ownerMessages = () => []
+    const last = await outputs(h, 1)
+    const lines = [...first, ...last].filter(l => l !== GAP_LINE)
+    expect(lines).toHaveLength(2)
+    expect(lines[0]).toMatch(HOLD_ON)
+    expect(lines[1]).toBe(HOLD_OFF)
+  })
+
+  it('logs a restart window hold once across its runs', async () => {
+    const h = harness(IDLE)
+    h.ownerMessages = [{ ts: h.now() - 5 * 60_000, body: 'hjewkes-surplus: restart at 08:45' }]
+    const out = (await outputs(h, 3)).filter(l => HOLD_ON.test(l))
+    expect(out).toHaveLength(1)
+  })
+
+  it('logs a fire cap engaging once and lifting once', async () => {
+    const h = harness(IDLE)
+    const capLines = (lines: string[]): string[] => lines.filter(l => /fire cap (engaged|lifted)/.test(l))
+    const engaged = capLines(await outputs(h, 8))
+    expect(engaged).toHaveLength(1)
+    expect(engaged[0]).toContain('fire cap engaged: 2 wake(s)')
+    const busy: Roster = {
+      agents: [{ name: 'hs-cc-1-x', profile: 'implementer', state: 'live', spawnedBy: 'hjewkes-surplus' }],
+      connected: [],
+    }
+    const lifted = capLines(await runWatchdog({ ...h.deps, roster: async () => busy }, ONE))
+    expect(lifted).toEqual(['hjewkes-surplus: Watchdog: fire cap lifted: an implementer ran'])
+    expect(h.logs.filter(l => /fire cap (engaged|lifted)/.test(l))).toHaveLength(2)
+  })
+
+  it('reads a state file from before these fields as no hold and no cap', async () => {
+    const h = harness(IDLE)
+    h.doc = {
+      seats: { 'hjewkes-surplus': { idleRuns: 0, at: h.now() - 60_000, fires: 0 } },
+      pools: {},
+      stopped: {},
+    }
+    const out = await outputs(h, 2)
+    expect(out.filter(l => l !== GAP_LINE && !/woke/.test(l))).toEqual([])
+  })
+})
+
 describe('wakeSeat', () => {
   function client(reply: Record<string, unknown>): { frames: unknown[]; client: BrokerClient } {
     const frames: unknown[] = []
