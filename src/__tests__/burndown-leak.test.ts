@@ -66,7 +66,7 @@ const pull = (over: PullStub = {}) => ({
 interface World {
   pulls: ReturnType<typeof pull>[]
   /** gh's stderr for a failed list; undefined means the list succeeds. */
-  ghFails?: string
+  ghFails?: string | undefined
   calls: { bin: string; args: string[] }[]
   sent: { to: string; text: string }[]
   notices: string[]
