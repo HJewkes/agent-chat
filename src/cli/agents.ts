@@ -62,6 +62,15 @@ export async function agentLs(options: { json?: boolean } = {}): Promise<void> {
   }
 }
 
+/** A transcript that cannot be read costs that row its model, not the whole listing. */
+function modelOrNull(agent: AgentIdentity): string | null {
+  try {
+    return observedModel(agent.cwd, agent.sessionId, agent.configDir) ?? null
+  } catch {
+    return null
+  }
+}
+
 /** One roster row for `agent ls --json`: everything the text view shows, as fields. */
 function lsJsonRow(agent: AgentIdentity, connected: boolean) {
   const { status } = pairPresence(agent, { connected })
@@ -74,7 +83,7 @@ function lsJsonRow(agent: AgentIdentity, connected: boolean) {
     status,
     profile: agent.profile,
     surface: agent.surface,
-    model: observedModel(agent.cwd, agent.sessionId, agent.configDir) ?? null,
+    model: modelOrNull(agent),
     cwd: agent.cwd,
     sessionId: agent.sessionId,
     transcriptPath: agent.sessionId === '' ? null : transcript.path,
