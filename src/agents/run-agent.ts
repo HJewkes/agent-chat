@@ -13,6 +13,9 @@ import type { LaunchPlan } from './types.js'
  * model-authored brief to be in the plan at all.
  */
 
+/** Set to run-agent's own pid, so the process it launched can tell itself apart from that process's descendants. */
+export const LAUNCHER_PID_ENV = 'AGENT_CHAT_LAUNCHER_PID'
+
 /**
  * Title via OSC 0 rather than iTerm's `set name`, which does not stick — iTerm
  * overwrites it with the running job. Here it is a plain stdout write instead of
@@ -57,7 +60,9 @@ function exec(plan: LaunchPlan): void {
     //
     // `plan.env` still wins, and deliberately: it is what the SPAWNER chose for
     // this agent, which is the bounded thing the clause asks for.
-    env: { ...agentEnv(), ...plan.env },
+    //
+    // The launcher pid comes last so no plan can forge it (CC-174).
+    env: { ...agentEnv(), ...plan.env, [LAUNCHER_PID_ENV]: String(process.pid) },
     // The brief goes in on stdin for headless; an interactive surface hands the
     // terminal straight through so the human can type into the pane.
     stdio: plan.stdin === undefined ? 'inherit' : ['pipe', 'inherit', 'inherit'],

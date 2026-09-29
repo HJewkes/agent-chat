@@ -1,3 +1,6 @@
+import { execFileSync } from 'node:child_process'
+import { LAUNCHER_PID_ENV } from '../agents/run-agent.js'
+
 /**
  * What this process knows about the Claude Code session it belongs to, without
  * asking the model anything.
@@ -31,4 +34,42 @@ export function hostIdentity(env: NodeJS.ProcessEnv = process.env, ppid = proces
     // and the handle would point at something that is not the session.
     ...(Number.isInteger(ppid) && ppid > 1 ? { hostPid: ppid } : {}),
   }
+}
+
+export type ParentOf = (pid: number) => number | undefined
+
+export const psParentOf: ParentOf = pid => {
+  try {
+    const out = execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    const ppid = Number.parseInt(out.trim(), 10)
+    return Number.isInteger(ppid) ? ppid : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Is this server's Claude Code process the one `run-agent` launched, rather than
+ * a `claude` started from inside it (CC-174)?
+ *
+ * The spawn identity rides in the environment, and every process the agent
+ * starts inherits it: a nested `claude -p` would otherwise register as its parent
+ * and the broker's same-agentId takeover would evict the parent. Only the launched
+ * process has `run-agent` as its direct parent. An unanswerable check fails
+ * closed, because a lost name is recoverable and a killed parent is not.
+ *
+ * No launcher pid at all means an older `run-agent`, which is trusted as before.
+ */
+export function isLaunchedProcess(
+  env: NodeJS.ProcessEnv = process.env,
+  hostPid: number | undefined = hostIdentity(env).hostPid,
+  parentOf: ParentOf = psParentOf,
+): boolean {
+  const launcher = env[LAUNCHER_PID_ENV]
+  if (launcher === undefined || launcher === '') return true
+  if (hostPid === undefined) return false
+  return parentOf(hostPid) === Number(launcher)
 }

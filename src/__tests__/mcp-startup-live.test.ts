@@ -65,6 +65,8 @@ function initialize(): Promise<{ answered: boolean; alive: boolean; stderr: stri
       AGENT_CHAT_HOME: dir,
       AGENT_CHAT_AGENT_ID: 'probe1234',
       AGENT_CHAT_NAME: 'probe-agent',
+      // This process is the host, so its parent plays run-agent (CC-174).
+      AGENT_CHAT_LAUNCHER_PID: String(process.ppid),
       CLAUDE_CODE_SESSION_ID: SESSION_ID,
     },
   })

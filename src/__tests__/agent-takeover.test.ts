@@ -33,6 +33,8 @@ async function startAgent(name: string, agentId: string = AGENT_ID): Promise<Std
       AGENT_CHAT_HOME: TEST_HOME,
       AGENT_CHAT_AGENT_ID: agentId,
       AGENT_CHAT_NAME: name,
+      // This process is the host, so its parent plays run-agent (CC-174).
+      AGENT_CHAT_LAUNCHER_PID: String(process.ppid),
     },
   })
   const client = new Client({ name: `test-${name}`, version: '0.0.1' }, { capabilities: {} })

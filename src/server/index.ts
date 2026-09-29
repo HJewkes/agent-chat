@@ -13,7 +13,7 @@ import type {
 import { cliEntry } from '../paths.js'
 import { TOOL_DEFINITIONS, ToolHandler } from './tools.js'
 import { terminalAnchor } from './anchor.js'
-import { hostIdentity } from './host.js'
+import { hostIdentity, isLaunchedProcess } from './host.js'
 import { observedRegistration } from '../git.js'
 import { disambiguated, provisionalName } from './provisional.js'
 import { exitWhenStdinEnds } from './stdio-lifetime.js'
@@ -463,7 +463,8 @@ export async function startMcpServer(): Promise<void> {
   // to call chat_register would make peer reachability depend on it complying
   // with an instruction — a race that will sometimes lose, and which fails by
   // leaving the agent invisible to everyone told to talk to it.
-  const spawned = spawnedIdentity()
+  // A `claude` started from inside an agent inherits its identity; it joins as an ordinary session instead.
+  const spawned = isLaunchedProcess() ? spawnedIdentity() : undefined
   const spawnedRegistered = spawned !== undefined && online && (await registerSpawned(broker, spawned))
   if (spawned && !spawnedRegistered) retryRegistration(broker, spawned)
 
