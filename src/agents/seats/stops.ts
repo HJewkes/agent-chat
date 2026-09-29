@@ -1,8 +1,9 @@
-import type { Pool, Seat } from './charter.js'
+import { RUN_CAP_MS, dayStart, type SevenDaySample } from '../burndown/budget-gate.js'
 
 /**
  * Why the watchdog holds a seat it would otherwise wake (CC-203 review): the
- * charter's spend stops, the seat's own pause line, and an open restart window.
+ * seat's own pause line and an open restart window. The spend stops are `gatePool`'s;
+ * this file keeps the meters that give it the run-start and day-start readings.
  * Pure: the live run reads the disk and passes what it read.
  */
 
@@ -13,22 +14,12 @@ export interface SpendMeter {
   spent: number
 }
 
-/** The charter's run is at most 12 hours; the watchdog cannot see the owner's messages that start one. */
-export const RUN_CAP_MS = 12 * 3_600_000
-
 /** A restart announcement with no "restart done" is ignored after this, so a lost reply cannot park every seat. */
 export const RESTART_WINDOW_MAX_MS = 2 * 3_600_000
 
-const DAY_START_HOUR = 7
-
-/** The charter's spend day runs from 07:00 local to 07:00 local. */
-export function spendDay(at: number): string {
-  const d = new Date(at - DAY_START_HOUR * 3_600_000)
-  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
-}
-
+/** Both meters start where the shared convention says a run and a spend day start. */
 export const sameSpendDay = (meter: SpendMeter, nowMs: number): boolean =>
-  spendDay(meter.since) === spendDay(nowMs)
+  meter.since >= dayStart(new Date(nowMs))
 
 export const withinRun = (meter: SpendMeter, nowMs: number): boolean => nowMs - meter.since < RUN_CAP_MS
 
@@ -48,21 +39,30 @@ export function advanceMeter(
   }
 }
 
-/** Charter section 4: the day stop is the lower of the pool's and the seat's `per_day_points`. */
-export function spendStop(
-  seat: Pick<Seat, 'spend'>,
-  pool: Pick<Pool, 'name' | 'perDayPoints'> | undefined,
-  day: SpendMeter | undefined,
-  run: SpendMeter | undefined,
-): string | undefined {
-  const caps = [pool?.perDayPoints, seat.spend.perDayPoints].filter((n): n is number => n !== undefined)
-  const dayCap = caps.length === 0 ? undefined : Math.min(...caps)
-  if (day !== undefined && dayCap !== undefined && day.spent >= dayCap)
-    return `per_day_points stop: pool ${pool?.name ?? '?'} spent ${day.spent} of ${dayCap} since 07:00`
-  const runCap = seat.spend.perRunPoints
-  if (run !== undefined && runCap !== undefined && run.spent >= runCap)
-    return `per_run_points stop: ${run.spent} of ${runCap} spent this run`
-  return undefined
+export interface MeterStart {
+  at: number
+  meter: SpendMeter | undefined
+}
+
+/**
+ * The meters as `gatePool` history, each dated at its window's start. A meter's first sample may come
+ * after that start, so the day window counts spend from the first sample on or after 07:00. The chain
+ * never drops, so two meters that disagree overcount the earlier window.
+ */
+export function meterHistory(starts: readonly MeterStart[], nowMs: number): SevenDaySample[] {
+  const latestFirst = starts
+    .flatMap(({ at, meter }) =>
+      // gatePool reads only samples before now, and a meter started this pass still holds its window's opening reading.
+      meter === undefined ? [] : [{ at: Math.min(at, nowMs - 1), sevenDay: meter.last - meter.spent }],
+    )
+    .sort((a, b) => b.at - a.at)
+  const chain: SevenDaySample[] = []
+  let floor = Number.POSITIVE_INFINITY
+  for (const sample of latestFirst) {
+    floor = Math.min(floor, sample.sevenDay)
+    chain.unshift({ at: sample.at, sevenDay: floor })
+  }
+  return chain
 }
 
 /** A seat log line the seat wrote itself, as the charter's `HH:MM <text>`; the watchdog's own lines are not the seat's. */

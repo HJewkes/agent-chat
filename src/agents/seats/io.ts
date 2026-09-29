@@ -54,8 +54,8 @@ export function scorerEligible(root: string, seat: string): number | undefined {
   }
 }
 
-/** A seat's watchdog state plus its run spend meter. */
-export type SeatRecord = SeatState & { run?: SpendMeter }
+/** A seat's watchdog state, its run spend meter, and whether its pool gate was closed at the last run. */
+export type SeatRecord = SeatState & { run?: SpendMeter; budgetPaused?: boolean }
 
 /**
  * `seat-watchdog.json`. `stopped` is the owner's switch: a seat named there is

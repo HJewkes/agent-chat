@@ -7,6 +7,8 @@ import type { AccountRule } from '../burndown/budget-gate.js'
 export interface Pool {
   name: string
   configDir: string
+  /** Unset reads as true, which keeps the stricter five_hour ceiling while the owner may be typing. */
+  humanUses: boolean
   rule: AccountRule
   /** Charter section 4's daily cap on the pool's seven_day points, counted from 07:00 local. */
   perDayPoints?: number
@@ -54,6 +56,7 @@ function poolFrom(name: string, fields: Record<string, string>, home: string): P
   return {
     name,
     configDir: expandHome(fields.config_dir, home),
+    humanUses: fields.human_uses !== 'false',
     rule: {
       reserve_seven_day: reserve,
       ceiling_five_hour: ceiling,

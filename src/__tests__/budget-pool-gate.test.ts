@@ -3,8 +3,11 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   dayStart,
+  RUN_CAP_MS,
   gatePool,
   pointsSpent,
+  runStartAt,
+  type AccountReading,
   type PoolGateInput,
   type PoolRule,
   type SevenDaySample,
@@ -37,26 +40,30 @@ interface Case {
   runStartAt?: number
   ownerTypedMinAgo?: number
   ageSeconds?: number
+  maxReadingAgeSeconds?: number
 }
 
 function gate(c: Case) {
   const now = c.now ?? at(15)
   const sevenDay = c.sevenDay ?? 40
   const budget = c.budget ?? SEAT_B
-  return gatePool({
-    pool: budget.pool,
-    spend: budget.spend,
-    reading: { fiveHour: c.fiveHour ?? 10, sevenDay, ageSeconds: c.ageSeconds ?? 5 },
-    history: c.history ?? [
-      { at: dayStart(now) - HOUR, sevenDay },
-      { at: now.getTime() - HOUR, sevenDay },
-    ],
-    runStartAt: c.runStartAt ?? now.getTime() - HOUR,
-    ctx: {
-      now,
-      humanLastTurnAt: now.getTime() - (c.ownerTypedMinAgo ?? 120) * MIN,
+  return gatePool(
+    {
+      pool: budget.pool,
+      spend: budget.spend,
+      reading: { fiveHour: c.fiveHour ?? 10, sevenDay, ageSeconds: c.ageSeconds ?? 5 },
+      history: c.history ?? [
+        { at: dayStart(now) - HOUR, sevenDay },
+        { at: now.getTime() - HOUR, sevenDay },
+      ],
+      runStartAt: c.runStartAt ?? now.getTime() - HOUR,
+      ctx: {
+        now,
+        humanLastTurnAt: now.getTime() - (c.ownerTypedMinAgo ?? 120) * MIN,
+      },
     },
-  })
+    c.maxReadingAgeSeconds === undefined ? {} : { maxReadingAgeSeconds: c.maxReadingAgeSeconds },
+  )
 }
 
 describe('seat budget from the charter and seat file', () => {
@@ -268,6 +275,28 @@ describe('reading age', () => {
       'BUDGET-PAUSE pool pool-y: reading is 901s old, over the 900s limit',
     )
   })
+
+  it('closes on a reading with no usable age', () => {
+    const noAge = 'BUDGET-PAUSE pool pool-y: reading has no age'
+    expect(gate({ ageSeconds: Number.NaN }).reason).toBe(noAge)
+    const undatedReading = { fiveHour: 10, sevenDay: 40 } as AccountReading
+    const undated = gatePool({
+      ...SEAT_B,
+      reading: undatedReading,
+      history: [],
+      runStartAt: 0,
+      ctx: { now: at(15) },
+    })
+    expect(undated.reason).toBe(noAge)
+  })
+
+  it('honours a caller limit and skips the check only for an infinite one', () => {
+    expect(gate({ ageSeconds: 61, maxReadingAgeSeconds: 60 }).reason).toBe(
+      'BUDGET-PAUSE pool pool-y: reading is 61s old, over the 60s limit',
+    )
+    expect(gate({ ageSeconds: 86_400, maxReadingAgeSeconds: Number.POSITIVE_INFINITY }).open).toBe(true)
+    expect(gate({ ageSeconds: Number.NaN, maxReadingAgeSeconds: Number.POSITIVE_INFINITY }).open).toBe(true)
+  })
 })
 
 describe('sonnet-only band', () => {
@@ -311,5 +340,29 @@ describe('spend day', () => {
 
   it('starts at 07:00 local yesterday before 07:00', () => {
     expect(dayStart(at(6, 59))).toBe(new Date(2026, 8, 28, 7).getTime())
+  })
+})
+
+describe('run start', () => {
+  const now = at(20)
+
+  it('is the later of the owner message and the recorded start', () => {
+    const ownerMessageAt = at(15).getTime()
+    const recordedAt = at(16).getTime()
+    expect(runStartAt(now, { ownerMessageAt, recordedAt })).toBe(recordedAt)
+    expect(runStartAt(now, { ownerMessageAt: at(17).getTime(), recordedAt })).toBe(at(17).getTime())
+  })
+
+  it('is never more than 12 hours ago, and is 12 hours ago with nothing recorded', () => {
+    expect(runStartAt(now, { recordedAt: now.getTime() - 20 * HOUR })).toBe(now.getTime() - RUN_CAP_MS)
+    expect(runStartAt(now)).toBe(now.getTime() - RUN_CAP_MS)
+  })
+
+  it('treats a non-finite start as absent', () => {
+    const recordedAt = at(16).getTime()
+    expect(runStartAt(now, { ownerMessageAt: Number.NaN, recordedAt: Number.NaN })).toBe(
+      now.getTime() - RUN_CAP_MS,
+    )
+    expect(runStartAt(now, { ownerMessageAt: Number.NaN, recordedAt })).toBe(recordedAt)
   })
 })
