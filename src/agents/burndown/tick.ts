@@ -4,6 +4,7 @@ import { gateAccount } from './budget-gate.js'
 import { taskRefusal, type Initiative } from './eligibility.js'
 import { heldClaims, isStalled, readLedger, type DeciderState, type Ledger } from './ledger.js'
 import { plan, type Plan, type PlanInputs } from './plan.js'
+import { diskSeatDeps, loadSeats, planSeats } from './seat-tick.js'
 import { accountDir, loadRules, readInitiatives, readReadings, readTasks } from './source.js'
 import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
 
@@ -50,6 +51,33 @@ export function planFromDisk(
   const ledger = readLedger(burndownLedgerPath())
   const check = collision?.(ledger)
   return plan({ ...loadWorld(now, root), ledger, ...(check === undefined ? {} : { collision: check }) })
+}
+
+/** `burndown plan --seat <name>`: one seat's dispatches as the tick would plan them, without the tick's live ceilings. */
+export function seatPlanFromDisk(opts: {
+  seat: string
+  now: Date
+  root: string
+  autonomyRoot: string
+  collision?: (ledger: Ledger) => PlanInputs['collision']
+}): Plan {
+  const ledger = readLedger(burndownLedgerPath())
+  const seats = loadSeats([opts.seat], ledger, diskSeatDeps(opts.autonomyRoot, opts.root, opts.now))
+  const check = opts.collision?.(ledger)
+  const cliVersion = installedClaudeVersion()
+  const planned = planSeats(
+    seats.loaded,
+    {
+      ledger,
+      initiatives: readInitiatives(opts.root),
+      trust: (repo, cwd, configDir) => trustRefusal(repo, cwd, configDir, cliVersion),
+      ...(check === undefined ? {} : { collision: check }),
+    },
+    opts.root,
+  )
+  const [skipped] = [...seats.skipped, ...planned.skipped]
+  if (skipped !== undefined) throw new Error(skipped.reason)
+  return { dispatch: planned.dispatch, refusals: planned.refusals, notOptedIn: [] }
 }
 
 export function renderPlan(result: Plan, now: Date): string[] {

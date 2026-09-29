@@ -135,9 +135,19 @@ function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, taken: r
   const name = seat.dispatch.seat
   const weights = seatScope(charter, seats, name, deps.initiatives)
   const slugs = Object.keys(weights)
-  const exclusions = { tags: seat.policy.seat.excluded_tags, titlePatterns: seat.policy.seat.excluded_title_patterns }
+  const exclusions = {
+    tags: seat.policy.seat.excluded_tags,
+    titlePatterns: seat.policy.seat.excluded_title_patterns,
+  }
   const today = localDate(seat.budget.ctx.now)
-  const { rows } = scoreAll(readScoredTasks(root, slugs), weights, defaults, exclusions, charter.hard_stops, today)
+  const { rows } = scoreAll(
+    readScoredTasks(root, slugs),
+    weights,
+    defaults,
+    exclusions,
+    charter.hard_stops,
+    today,
+  )
   const tasks = new Map(slugs.map(slug => [slug, readTasks(root, slug)]))
   const planned = planSeat({
     seat: seat.dispatch,

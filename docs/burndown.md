@@ -37,9 +37,46 @@ agent-chat burndown uninstall          stop the launchd job and keep it from sta
 agent-chat burndown job-status         launchd state: loaded, pid, and whether the tick may spawn
 ```
 
+`agent-chat burndown plan --seat <name>` prints one seat's dry-run dispatch plan and its
+refusals, as seats mode would plan it without the tick's live slot and worktree ceilings.
+Add `--scored` for the seat's scored order with every component (`--top` and `--today`
+apply only then); `--autonomy-root` points at another charter.
+
 `agent-chat burndown pause` is the kill switch that takes effect fastest: the next tick
 sees the pause marker and spawns nothing, but a running agent finishes on its own.
 `agent-chat burndown uninstall` also removes the scheduled job itself.
+
+## Seats mode (CC-205)
+
+When `burndown.config.json` lists `seats`, the tick dispatches for those autonomy seats
+instead of for briefs' `autonomy:` blocks. It reads the charter and seat files under
+`claude-channels/sources/autonomy/` once per tick. Seats and a brief with an `autonomy:`
+block together are a config error: the tick refuses before it reads the roster, since
+both modes could dispatch the same work.
+
+For each listed seat, in order, the tick:
+
+- takes one sample of the seat pool's `seven_day` reading from the status file under the
+  pool's `config_dir`, and keeps the seat's samples for 26 hours in the ledger's `seats`;
+- gates the pool with `gatePool`, using the run start the seat watchdog shares
+  (`runStartAt`, capped at 12 hours) and the samples as history;
+- dispatches the seat planners' ready slices first, then scores the seat's scope and walks
+  the order through `planSeat`: eligibility, route, repo, the post-advance collision
+  check, orphan, trust on the pool's `config_dir`, role caps, worktree caps, then the pool
+  gate;
+- spawns on the pool's `config_dir` under the seat's prefix (`<prefix>-<task>`), and the
+  new claims carry `seat` and `namePrefix`.
+
+Seats share the tick's `maxAgents`, broker slots and per-repo worktree ceilings; an
+earlier seat's dispatches count against a later one. A seat whose files cannot be loaded,
+or whose scope cannot be scored, is skipped with a `seat <name> skipped: <why>` line and a
+`burndown_seat_skipped` event; the tick still advances every held claim and plans the
+other seats.
+
+Known gap: a seat claim's reviewer and successor spawns still resolve their repo and
+account through the brief's `autonomy:` block, so in seats mode they stall with
+"initiative is no longer opted in with a repo" until a follow-up gives `advance` the
+seat's placement.
 
 ## The launchd job
 

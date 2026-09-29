@@ -180,7 +180,12 @@ function consider(row: DispatchRow, walk: Walk): { dispatch: Dispatch; role: Rol
   if (repo === undefined)
     return { kind: 'no-repo', reason: `seat ${seat.seat} lists no repo for ${row.initiative}` }
   const reason = `score ${row.score}, effective ${row.effective}`
-  const dispatch = dispatchFor({ initiative: row.initiative, task: row.id, profile: route.profile }, repo, reason, walk)
+  const dispatch = dispatchFor(
+    { initiative: row.initiative, task: row.id, profile: route.profile },
+    repo,
+    reason,
+    walk,
+  )
   return blocker(dispatch, task.tags, [], route.role, walk) ?? { dispatch, role: route.role }
 }
 
@@ -233,13 +238,7 @@ function dispatchFor(work: Work, repo: string, reason: string, walk: Walk): Disp
 }
 
 /** In D6's order: collision, orphan, trust, role cap, worktree caps, then the pool gate. */
-function blocker(
-  d: Dispatch,
-  tags: string[],
-  owns: string[],
-  role: Role,
-  walk: Walk,
-): Refused | undefined {
+function blocker(d: Dispatch, tags: string[], owns: string[], role: Role, walk: Walk): Refused | undefined {
   const { inputs } = walk
   const at = { initiative: d.initiative, repo: d.repo, prefix: d.namePrefix }
   const untrusted = (): Refused | undefined => {

@@ -110,7 +110,13 @@ function resolveSpawn(action: SpawnAction, ledger: Ledger, ctx: StepContext): Ou
   if ('closed' in gate) return { defer: `budget: ${gate.closed}` }
   const untrusted = ctx.trust(repo, claim.worktree, gate.account)
   if (untrusted !== undefined) return { stall: `trust: ${untrusted}` }
-  const t = taskBrief(claim.taskId, claim.slice, initiative, autonomyPlacement(repo, gate.account, initiative, ctx), ctx)
+  const t = taskBrief(
+    claim.taskId,
+    claim.slice,
+    initiative,
+    autonomyPlacement(repo, gate.account, initiative, ctx),
+    ctx,
+  )
   if (typeof t === 'string') return { stall: t }
   const spec = {
     name: action.name,

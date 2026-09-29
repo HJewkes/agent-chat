@@ -14,11 +14,12 @@ import {
 import { activeWorkRoot } from '../../agents/active-work.js'
 import { defaultAutonomyRoot } from '../../agents/burndown/policy.js'
 import { renderScored, scoredPlanFromDisk } from '../../agents/burndown/score-render.js'
+import { localDate } from '../../agents/burndown/seat-tick.js'
 import { collisionCheck, type BrokerView } from '../../agents/burndown/collision.js'
 import { readLedger, withLedgerLock, writeLedger } from '../../agents/burndown/ledger.js'
 import { loadTickConfig } from '../../agents/burndown/source.js'
 import { tickFromDisk } from '../../agents/burndown/run-tick.js'
-import { planFromDisk, renderPlan, renderStatus } from '../../agents/burndown/tick.js'
+import { planFromDisk, renderPlan, renderStatus, seatPlanFromDisk } from '../../agents/burndown/tick.js'
 import { BrokerClient } from '../../client/broker-client.js'
 import { jobState, startJob, stopJob, systemLaunchctl, type JobControl } from '../../mirror/launchd.js'
 import { jobEnv, renderBurndownPlist } from '../../mirror/plist.js'
@@ -74,14 +75,13 @@ type PlanArgs = z.infer<typeof PlanArgs>
 /** score.py's default `--top`. */
 const DEFAULT_TOP = 20
 
-/** The local calendar date, as score.py's `date.today()` reads it. */
-const localDate = (now: Date): string =>
-  [now.getFullYear(), now.getMonth() + 1, now.getDate()].map(n => String(n).padStart(2, '0')).join('-')
-
 /** Refuses scored-only flags without `--scored`, so a plain `burndown plan` never changes meaning. */
 export function planFlagError({ seat, scored, top, autonomyRoot, today }: PlanArgs): string | undefined {
   if (scored === true) return seat === undefined ? 'burndown plan --scored needs --seat <name>' : undefined
-  if (seat !== undefined) return 'burndown plan --seat needs --scored; the tick does not read seat scores yet'
+  if (seat !== undefined)
+    return top === undefined && today === undefined
+      ? undefined
+      : 'burndown plan --top and --today apply only with --seat <name> --scored'
   if (top !== undefined || autonomyRoot !== undefined || today !== undefined)
     return 'burndown plan --top, --autonomy-root and --today apply only with --seat <name> --scored'
   return undefined
@@ -94,7 +94,10 @@ export const burndownPlanVerb = defineVerb({
   result: Report,
   cli: {
     options: {
-      seat: { long: '--seat', description: 'autonomy seat whose scored order to print (with --scored)' },
+      seat: {
+        long: '--seat',
+        description: 'autonomy seat whose dry-run dispatch plan (or, with --scored, scored order) to print',
+      },
       scored: { long: '--scored', description: "print the seat's scored dispatch order with components" },
       top: { long: '--top', description: `picks to print with --scored (default ${DEFAULT_TOP})` },
       autonomyRoot: { long: '--autonomy-root', description: 'directory holding charter.md and seats/' },
@@ -105,7 +108,9 @@ export const burndownPlanVerb = defineVerb({
     const flagError = planFlagError(args)
     if (flagError !== undefined) return refused(new Error(flagError))
     try {
-      return args.seat === undefined ? await plainPlan() : { ok: true, lines: seatPlan(args.seat, args) }
+      if (args.seat === undefined) return await plainPlan()
+      if (args.scored === true) return { ok: true, lines: scoredSeatPlan(args.seat, args) }
+      return await seatDispatchPlan(args.seat, args.autonomyRoot)
     } catch (err) {
       return refused(err)
     }
@@ -119,7 +124,21 @@ async function plainPlan(): Promise<Report> {
   return { ok: true, lines: renderPlan(planned, now) }
 }
 
-function seatPlan(seat: string, { top, autonomyRoot, today }: PlanArgs): string[] {
+async function seatDispatchPlan(seat: string, autonomyRoot: string | undefined): Promise<Report> {
+  const now = new Date()
+  const broker = await readCollisionView()
+  const root = activeWorkRoot()
+  const planned = seatPlanFromDisk({
+    seat,
+    now,
+    root,
+    autonomyRoot: autonomyRoot ?? defaultAutonomyRoot(root),
+    collision: ledger => collisionCheck(ledger, broker),
+  })
+  return { ok: true, lines: renderPlan(planned, now) }
+}
+
+function scoredSeatPlan(seat: string, { top, autonomyRoot, today }: PlanArgs): string[] {
   const plan = scoredPlanFromDisk({
     seat,
     top: top ?? DEFAULT_TOP,

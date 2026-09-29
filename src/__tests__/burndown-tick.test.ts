@@ -9,7 +9,7 @@ import { run, type Runner } from '../agents/burndown/exec.js'
 import { execute, spawnFrame, type SpawnFrame, type SpawnReply } from '../agents/burndown/execute.js'
 import { readLedger, writeLedger, type Claim } from '../agents/burndown/ledger.js'
 import { tickFromDisk, type TickBroker } from '../agents/burndown/run-tick.js'
-import { renderStatus } from '../agents/burndown/tick.js'
+import { renderPlan, renderStatus, seatPlanFromDisk } from '../agents/burndown/tick.js'
 import { TRUST_RULE_CLI_VERSION } from '../agents/trust.js'
 import { burndownLedgerPath, burndownPausePath, configPath } from '../paths.js'
 import { tickBroker } from '../cli/burndown-broker.js'
@@ -756,6 +756,24 @@ describe('burndown tick in seats mode', () => {
     ])
     expect(readLedger(burndownLedgerPath()).claims.find(c => c.taskId === 'DM-9')?.phase).toBe('implementing')
     expect(fake.frames.map(f => f.name)).toEqual(['st-dm-1'])
+  })
+
+  it('burndown plan --seat prints the seat dispatch plan and its refusals', () => {
+    seatInitiative({ 'DM-1': seatTask('DM-1'), 'DM-2': seatTask('DM-2'), 'DM-3': seatTask('DM-3') })
+    const root = path.join(world, 'aw')
+    const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
+
+    const lines = renderPlan(seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot }), NOON)
+
+    expect(lines.map(l => l.replace(/: score .*$/, ''))).toEqual([
+      `burndown plan at ${NOON.toISOString()} (dry run: nothing spawned, nothing claimed)`,
+      `would dispatch demo DM-1 as bd-implementer on pool-t in ${repo()}/.worktrees/st-dm-1`,
+      `would dispatch demo DM-2 as bd-implementer on pool-t in ${repo()}/.worktrees/st-dm-2`,
+      'refused demo DM-3 [role-cap]: seat seat-t holds 2 of 2 implementers',
+    ])
+    expect(() => seatPlanFromDisk({ seat: 'seat-e', now: NOON, root, autonomyRoot })).toThrow(
+      'seat-e has no dispatch scope',
+    )
   })
 
   it('dry run prints the seat dispatch and writes nothing', async () => {
