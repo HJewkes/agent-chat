@@ -3,7 +3,8 @@ import path from 'node:path'
 import type { MirrorBus, QueueSource } from '@titan-design/queue-mirror'
 import type { Check } from '../broker/doctor.js'
 import { isProcessAlive } from '../broker/lifecycle.js'
-import { mirrorConfigPath, mirrorEnvPath, mirrorPlistPath, mirrorStatusPath } from '../paths.js'
+import { MIRROR_LABEL, mirrorConfigPath, mirrorEnvPath, mirrorPlistPath, mirrorStatusPath } from '../paths.js'
+import { jobState, systemLaunchctl } from './launchd.js'
 import { AS_TOKEN_KEY, fileMode, formatMode, isPrivateMode, loadMirrorConfig, readAsToken } from './config.js'
 
 /** What a running mirror writes to `mirror.status.json` every few seconds. */
@@ -129,6 +130,8 @@ export interface MirrorFacts {
   plistLeaksToken: boolean
   status: MirrorStatus | null
   pidAlive: boolean
+  /** The launchd label is disabled, which is what `mirror stop` leaves behind. */
+  disabled: boolean
   roomAlias: string | null
   now: number
 }
@@ -155,6 +158,7 @@ export function describeMirror(facts: MirrorFacts): Check {
 
 function describeRunning(facts: MirrorFacts): Check {
   const { status } = facts
+  if (facts.disabled) return check('warn', 'stopped (disabled)')
   const error = status?.lastError ? ` (last error: ${status.lastError})` : ''
   if (status === null || !facts.pidAlive) return check('warn', `configured but not running${error}`)
   const age = facts.now - status.writtenAt
@@ -208,8 +212,15 @@ function readRoomAlias(file: string): string | null {
   }
 }
 
-/** Files only: no Matrix call and no broker connection, so `doctor` stays offline and cheap. */
-export function readMirrorFacts(files = defaultMirrorFiles(), now = Date.now()): MirrorFacts {
+const launchdDisabled = (): boolean =>
+  jobState({ launchctl: systemLaunchctl, uid: process.getuid?.() ?? 0, label: MIRROR_LABEL }).disabled
+
+/** Files only, plus one read-only `launchctl print-disabled`: no Matrix call and no broker connection, so `doctor` stays offline and cheap. */
+export function readMirrorFacts(
+  files = defaultMirrorFiles(),
+  now = Date.now(),
+  jobDisabled: () => boolean = launchdDisabled,
+): MirrorFacts {
   const status = readStatus(files.status)
   return {
     configPresent: fs.existsSync(files.config),
@@ -218,6 +229,7 @@ export function readMirrorFacts(files = defaultMirrorFiles(), now = Date.now()):
     plistLeaksToken: readPlistLeak(files),
     status,
     pidAlive: status !== null && isProcessAlive(status.pid),
+    disabled: jobDisabled(),
     roomAlias: readRoomAlias(files.config),
     now,
   }
