@@ -34,13 +34,13 @@ afterEach(() => {
   fs.rmSync(stateDir, { recursive: true, force: true })
 })
 
-function writePlan(agentId: string): void {
+function writePlan(agentId: string, env: Record<string, string> = {}): void {
   const plan: LaunchPlan = {
     agentId,
     bin: 'claude',
     args: [fakeClaude],
     cwd: stateDir,
-    env: {},
+    env,
     title: agentId,
     surface: 'headless',
   }
@@ -63,5 +63,20 @@ describe('run-agent resolving claude without a usable PATH', () => {
 
     expect(result.stdout).toBe('fake-claude-ran')
     expect(result.status).toBe(0)
+  })
+})
+
+describe('run-agent stamping the launched process', () => {
+  it('hands the launched process its own pid as the launcher, over anything the plan says', () => {
+    fs.writeFileSync(
+      fakeClaude,
+      'process.stdout.write(JSON.stringify([process.env.AGENT_CHAT_LAUNCHER_PID, String(process.ppid)]))\n',
+    )
+    writePlan('agt-test', { AGENT_CHAT_LAUNCHER_PID: '1' })
+
+    const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
+
+    const [launcher, parent] = JSON.parse(result.stdout) as [string, string]
+    expect(launcher).toBe(parent)
   })
 })
