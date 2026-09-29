@@ -524,6 +524,15 @@ describe('budget gate', () => {
     expect(result.reason).toContain(`${MAX_READING_AGE_SECONDS + 1}s old`)
   })
 
+  it('lets a stale reading through when the caller sets an infinite max age', () => {
+    const stale = { sevenDay: 10, fiveHour: 10, ageSeconds: MAX_READING_AGE_SECONDS * 100 }
+    const ctx = { now: NOON, humanLastTurnAt: 0 }
+
+    const result = gateAccount('agents', rule, stale, ctx, { maxReadingAgeSeconds: Number.POSITIVE_INFINITY })
+
+    expect(result.open).toBe(true)
+  })
+
   it('opens on a reading exactly at the staleness limit', () => {
     const fresh = { sevenDay: 10, fiveHour: 10, ageSeconds: MAX_READING_AGE_SECONDS }
 

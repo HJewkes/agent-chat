@@ -59,15 +59,16 @@ export function gateAccount(
   rule: AccountRule | undefined,
   reading: AccountReading | undefined,
   ctx: GateContext,
+  { maxReadingAgeSeconds = MAX_READING_AGE_SECONDS }: { maxReadingAgeSeconds?: number } = {},
 ): GateResult {
   if (rule === undefined) return { open: false, account, reason: 'no budget rule for this account' }
   if (reading?.sevenDay === undefined || reading.fiveHour === undefined)
     return { open: false, account, reason: 'no seven_day and five_hour reading under this account' }
-  if (reading.ageSeconds > MAX_READING_AGE_SECONDS)
+  if (reading.ageSeconds > maxReadingAgeSeconds)
     return {
       open: false,
       account,
-      reason: `reading is ${reading.ageSeconds}s old, over the ${MAX_READING_AGE_SECONDS}s limit`,
+      reason: `reading is ${reading.ageSeconds}s old, over the ${maxReadingAgeSeconds}s limit`,
     }
 
   const night = isNight(ctx) && rule.night !== undefined
