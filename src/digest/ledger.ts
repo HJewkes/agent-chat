@@ -10,6 +10,7 @@ import type {
   QueueEntry,
   ReportStatus,
   StatusReport,
+  UnreportedExitGroup,
 } from './types.js'
 
 /** Read-only queries over the broker's events.db for the digest. Never writes, never migrates. */
@@ -44,6 +45,7 @@ export const EMPTY_FACTS: LedgerFacts = {
   decided: [],
   reversals: [],
   reports: [],
+  unreportedExits: [],
 }
 
 const metaOf = (row: { meta: string | null }): Record<string, string> => {
@@ -71,6 +73,7 @@ export function readLedgerFacts(
       decided: decidedSince(db, sinceMs),
       reversals: reversals(db, now - WEEK_MS),
       reports: reportsSince(db, sinceMs),
+      unreportedExits: unreportedExitsSince(db, sinceMs),
     }
   } finally {
     db.close()
@@ -175,4 +178,34 @@ function reportsSince(db: DatabaseSyncType, sinceMs: number): StatusReport[] {
     const to = row.target ?? '(broadcast)'
     return [{ msgId: row.msg_id ?? String(row.id), from: row.actor, to, at: row.ts, ...found }]
   })
+}
+
+interface UnreportedRow {
+  day: string
+  last_action: string
+  count: number
+  agents: string
+}
+
+/** Written by the supervisor as a message from agent-chat with `meta.event = 'unreported-exit'`. */
+function unreportedExitsSince(db: DatabaseSyncType, sinceMs: number): UnreportedExitGroup[] {
+  const rows = db
+    .prepare(
+      `SELECT date(ts / 1000, 'unixepoch') AS day,
+         COALESCE(json_extract(meta, '$.last_action'), 'unknown') AS last_action,
+         COUNT(*) AS count,
+         group_concat(DISTINCT COALESCE(json_extract(meta, '$.agent'), '?')) AS agents
+       FROM events
+       WHERE kind = 'message' AND actor = 'agent-chat' AND ts >= ?
+         AND json_extract(meta, '$.event') = 'unreported-exit'
+       GROUP BY day, last_action
+       ORDER BY day ASC, count DESC, last_action ASC`,
+    )
+    .all(sinceMs) as unknown as UnreportedRow[]
+  return rows.map(row => ({
+    day: row.day,
+    lastAction: row.last_action,
+    count: Number(row.count),
+    agents: row.agents.split(',').sort(),
+  }))
 }

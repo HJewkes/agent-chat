@@ -27,13 +27,21 @@ export type SeatEvents = Record<string, SeatEvent[]>
 
 export const MESSAGE_LIMIT = 1500
 
+/** A longer seat name is cut in the header, which would otherwise crowd out every event line. */
+const SEAT_SHOWN = 100
+
 const at = (ledger: Ledger, key: ClaimKey): Claim | undefined =>
   ledger.claims.find(c => claimKey(c) === claimKey(key))
 
 /** Phases compared as strings: a claim read from an older ledger may carry `shepherding`. */
-const transitioned = (before: Claim | undefined, after: Claim, to: string): boolean =>
-  after.phase === to && (before?.phase as string | undefined) !== to
+const MERGE_PHASES: readonly string[] = ['awaiting-merge', 'shepherding']
 
+/** Only a merge moves a claim from awaiting-merge to done, so a delivered ready-to-merge on a done claim means merged. */
+const merged = (before: Claim | undefined, after: Claim): boolean =>
+  after.phase === 'done' &&
+  (MERGE_PHASES.includes(before?.phase ?? '') || after.notified?.includes('ready-to-merge') === true)
+
+/** Kinds the claim's state holds now; `notified` drops the delivered ones, so an undelivered kind is due again next tick. */
 function kindsOf(before: Claim | undefined, after: Claim, spawned: boolean): SeatEvent[] {
   const event = (kind: EventKind, detail?: string): SeatEvent => ({
     kind,
@@ -42,26 +50,58 @@ function kindsOf(before: Claim | undefined, after: Claim, spawned: boolean): Sea
     ...(detail === undefined ? {} : { detail }),
   })
   const events: SeatEvent[] = []
-  if (spawned) events.push(event('dispatched'))
-  if (transitioned(before, after, 'awaiting-merge')) events.push(event('ready-to-merge', after.pr))
-  if (transitioned(before, after, 'done')) events.push(event('merged', after.pr))
-  if (after.stalledReason !== undefined && before?.stalledReason === undefined) {
-    events.push(event('stalled', after.stalledReason))
-  }
-  if (transitioned(before, after, 'parked')) events.push(event('parked'))
+  if (spawned || after.agentId !== undefined) events.push(event('dispatched'))
+  if (after.phase === 'awaiting-merge') events.push(event('ready-to-merge', after.pr))
+  if (merged(before, after)) events.push(event('merged', after.pr))
+  if (after.stalledReason !== undefined) events.push(event('stalled', after.stalledReason))
+  if (after.phase === 'parked') events.push(event('parked'))
   return events
 }
 
-/** Events for claims with a seat whose `notified` lacks that kind; a claim without a seat yields none. */
+/** Whether a delivered kind still describes the claim; once it does not, the kind may fire again (a second park). */
+function stillHolds(claim: Claim, kind: string): boolean {
+  if (kind === 'parked') return claim.phase === 'parked'
+  if (kind === 'stalled') return claim.stalledReason !== undefined
+  // ready-to-merge stays on a done claim: `merged` reads it there.
+  return true
+}
+
+const heldNotified = (claim: Claim): string[] => (claim.notified ?? []).filter(k => stillHolds(claim, k))
+
+/** Drops each delivered kind the claim has since left, so the ledger keeps only what still holds. */
+export function settleNotified(ledger: Ledger): Ledger {
+  const claims = ledger.claims.map(c => {
+    if (c.notified === undefined) return c
+    const held = heldNotified(c)
+    if (held.length === c.notified.length) return c
+    const { notified: _dropped, ...rest } = c
+    return held.length === 0 ? rest : { ...rest, notified: held }
+  })
+  return { ...ledger, claims }
+}
+
+/** Events for claims with a seat whose held `notified` lacks that kind; a claim without a seat yields none. */
 export function seatEvents(before: Ledger, after: Ledger, spawnResults: readonly SpawnResult[]): SeatEvents {
   const out: SeatEvents = {}
   for (const claim of after.claims) {
     if (claim.seat === undefined) continue
     const spawned = spawnResults.some(r => r.ok && claimKey(r.key) === claimKey(claim))
-    const fresh = kindsOf(at(before, claim), claim, spawned).filter(e => !claim.notified?.includes(e.kind))
+    const told = heldNotified(claim)
+    const fresh = kindsOf(at(before, claim), claim, spawned).filter(e => !told.includes(e.kind))
     if (fresh.length > 0) (out[claim.seat] ??= []).push(...fresh)
   }
   return out
+}
+
+/** Records a seat's delivered events on their claims, so the next tick does not send them again. */
+export function markNotified(ledger: Ledger, seat: string, delivered: readonly SeatEvent[]): Ledger {
+  const claims = ledger.claims.map(c => {
+    if (c.seat !== seat) return c
+    const kinds = delivered.filter(e => claimKey(e) === claimKey(c)).map(e => e.kind)
+    if (kinds.length === 0) return c
+    return { ...c, notified: [...new Set([...(c.notified ?? []), ...kinds])] }
+  })
+  return { ...ledger, claims }
 }
 
 const line = (e: SeatEvent): string => {
@@ -73,12 +113,13 @@ function overflowLine(rest: readonly SeatEvent[]): string {
   const counts = EVENT_KINDS.map(k => [k, rest.filter(e => e.kind === k).length] as const).filter(
     ([, n]) => n > 0,
   )
-  return `and ${rest.length} more: ${counts.map(([k, n]) => `${n} ${k}`).join(', ')}`
+  return `and ${rest.length} more: ${counts.map(([k, n]) => `${n} ${k}`).join(', ')}; run burndown status for them`
 }
 
-/** One message for a seat: a header, one line per event, and counts for whatever will not fit. */
+/** One message for a seat: a header, one line per event, and counts for whatever will not fit; the counted ones count as told. */
 export function renderSeatEvents(seat: string, events: readonly SeatEvent[], now: Date): string {
-  const header = `Burndown events for ${seat} at ${now.toISOString()}`
+  const shown = seat.length > SEAT_SHOWN ? `${seat.slice(0, SEAT_SHOWN)}...` : seat
+  const header = `Burndown events for ${shown} at ${now.toISOString()}`
   const lines: string[] = []
   let used = header.length
   for (const [i, e] of events.entries()) {

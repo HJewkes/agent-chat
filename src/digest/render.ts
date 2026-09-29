@@ -1,6 +1,6 @@
 import type { AccountSpend, Digest, NamedItem, QueueEntry, Reading } from './types.js'
 
-/** Renders a collected digest as terminal text or markdown; the six sections of design section 8, empty ones named once at the end. */
+/** Renders a collected digest as terminal text or markdown; the sections of design section 8 plus CC-266's unreported exits, empty ones named once at the end. */
 
 export type Format = 'text' | 'markdown'
 
@@ -101,6 +101,13 @@ function stalled(d: Digest): Section {
   return { title: `Stalled or failed (${lines.length})`, lines }
 }
 
+function unreported(d: Digest): Section {
+  const groups = d.ledger.unreportedExits
+  const lines = groups.map(g => `- ${g.day} ${g.lastAction} x${g.count}: ${g.agents.join(', ')}`)
+  const total = groups.reduce((sum, g) => sum + g.count, 0)
+  return { title: `Exited with no Status report (${total})`, lines }
+}
+
 const pct = (value: number | undefined): string => (value === undefined ? '?' : `${Math.round(value)}%`)
 
 const windows = (r: Reading): string => `seven_day ${pct(r.sevenDay)}, five_hour ${pct(r.fiveHour)}`
@@ -139,7 +146,7 @@ const headline = (d: Digest): string =>
 
 export function renderDigest(d: Digest, format: Format): string[] {
   const s = STYLES[format]
-  const sections = [needsYou(d, s), decided(d, s), done(d), stalled(d), spend(d), next(d, s)]
+  const sections = [needsYou(d, s), decided(d, s), done(d), stalled(d), unreported(d), spend(d), next(d, s)]
   const out = [format === 'markdown' ? `# ${headline(d)}` : headline(d)]
   const empty: string[] = []
   for (const section of sections) {

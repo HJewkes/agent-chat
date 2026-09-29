@@ -62,11 +62,13 @@ import { SpawnRateBudget } from './spawn-rate.js'
 import { loginGap, readOutputTail } from './launch-output.js'
 import { isTrusted, trustGap } from './trust.js'
 import { itermSessionPresent } from './surfaces/iterm.js'
-import { cliEntry, gitHooksDir, home } from '../paths.js'
+import { burndownConfigPath, cliEntry, gitHooksDir, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { ShadowLedger } from './ledger/shadow-ledger.js'
 import { exitTerminal, LifecycleShadow } from './ledger/lifecycle-shadow.js'
+import { readExitTail, unreportedExitText, UNREPORTED_EXIT } from './exit-report.js'
+import { loadTickConfig } from './burndown/source.js'
 import {
   Teleport,
   type InheritedIsolation,
@@ -420,6 +422,16 @@ export interface SupervisorOptions {
  * denied `Bash(x:*)`. Checked one level: a child denying the tool's base name
  * (the part before its first `(`) covers any of that tool's scoped variants.
  */
+/** Burndown spawns as the human, but its agents report to the configured `reportTo` (CC-266). */
+function burndownReportTo(): string[] {
+  try {
+    const { reportTo } = loadTickConfig(burndownConfigPath())
+    return reportTo === undefined ? [] : [reportTo]
+  } catch {
+    return []
+  }
+}
+
 function stillDenied(childDenied: Set<string>, tool: string): boolean {
   if (childDenied.has(tool)) return true
   const base = tool.split('(')[0] ?? tool
@@ -651,6 +663,8 @@ export class Supervisor implements TeleportHost {
       },
     })
     logEvent('agent_exited', { agentId, name: entry.name, code: outcome.code, inferred: outcome.inferred })
+    if (failed === undefined && entry.cancelReason === undefined && entry.handle.surface === 'headless')
+      this.reportIfUnreported(agentId, entry.name)
     this.shadow.finish(entry.executionId, exitTerminal(outcome, failed, entry.cancelReason))
     // CC-95: the surface goes with the agent, including on an INFERRED exit —
     // which is the only exit an iTerm agent ever gets, and therefore the only
@@ -676,6 +690,46 @@ export class Supervisor implements TeleportHost {
       signal: outcome.signal,
       inferred: outcome.inferred ?? false,
     })
+  }
+
+  /**
+   * CC-266: a headless agent that ended its run without a report to its spawner
+   * or to burndown's `reportTo` gets one written for it, naming its last action.
+   */
+  private reportIfUnreported(agentId: string, name: string): void {
+    const identity = this.core.agents.get(agentId)
+    if (identity === undefined) return
+    const spawner = identity.spawnedBy
+    const recipients = [spawner, ...burndownReportTo()]
+    if (this.core.events.hasStatusReport(name, recipients, this.runStartedAt(identity))) return
+    const tail = readExitTail(identity.sessionId ? identityTranscript(identity).path : undefined)
+    const body = unreportedExitText(name, tail)
+    const { msgId } = this.core.append({
+      kind: 'message',
+      actor: 'agent-chat',
+      target: spawner,
+      body,
+      meta: {
+        event: UNREPORTED_EXIT,
+        agent: name,
+        agent_id: agentId,
+        last_action: tail.lastAction,
+        ...(tail.pendingBackground ? { pending_background: 'true' } : {}),
+      },
+    })
+    this.core.deliverTo(spawner, {
+      msgId,
+      from: 'agent-chat',
+      text: body,
+      at: Date.now(),
+      event: UNREPORTED_EXIT,
+    })
+    logEvent(UNREPORTED_EXIT, { agentId, name, spawner, lastAction: tail.lastAction })
+  }
+
+  /** A resume starts a new run, and only a report made in this run counts. */
+  private runStartedAt(identity: AgentIdentity): number {
+    return this.core.events.lastAgentEventAt(identity.agentId, 'agent_resumed') ?? identity.spawnedAt
   }
 
   private refuse(req: SpawnRequest, reason: string): SpawnOutcome {

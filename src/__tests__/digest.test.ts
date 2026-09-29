@@ -102,7 +102,9 @@ describe('an empty world', () => {
   it('names every empty section once and says which sources were missing', () => {
     const rendered = text()
 
-    expect(rendered).toContain('Nothing in: Needs you, Decided while you were away, Done, Stalled or failed.')
+    expect(rendered).toContain(
+      'Nothing in: Needs you, Decided while you were away, Done, Stalled or failed, Exited with no Status report.',
+    )
     expect(rendered).toContain('events.db: not found')
     expect(section(rendered, 'Spend')).toContain('- agents: no reading at all')
     expect(section(rendered, 'Next')).toContain(
@@ -354,6 +356,50 @@ describe('Stalled or failed', () => {
     expect(reportStatus('Status TP-381 (F6): BLOCKED on running.')?.status).toBe('BLOCKED')
     expect(reportStatus('TP-166 status: NEEDS_CONTEXT. No PR opened')?.status).toBe('NEEDS_CONTEXT')
     expect(reportStatus('mergeStateStatus BLOCKED (pending checks)')).toBeUndefined()
+  })
+})
+
+describe('Exited with no Status report', () => {
+  const exit = (at: number, agent: string, lastAction: string) => ({
+    at,
+    kind: 'message' as const,
+    actor: 'agent-chat',
+    target: 'coord',
+    body: `${agent} exited with no Status report; last action: ${lastAction}`,
+    meta: { event: 'unreported-exit', agent, agent_id: `id-${agent}`, last_action: lastAction },
+  })
+
+  it('groups unreported exits by UTC day and last action, with counts and agent names', () => {
+    const today = NOW - HOUR
+    const yesterday = NOW - 20 * HOUR
+    ledger([
+      exit(yesterday, 'w-old', 'Bash(run_in_background)'),
+      exit(today, 'w-b', 'Bash(run_in_background)'),
+      exit(today, 'w-a', 'Bash(run_in_background)'),
+      exit(today, 'w-c', 'ScheduleWakeup'),
+      exit(NOW - 30 * HOUR, 'w-outside', 'ScheduleWakeup'),
+      { at: today, kind: 'message', actor: 'agent-chat', target: 'coord', body: 'unrelated' },
+    ])
+    const day = (at: number): string => new Date(at).toISOString().slice(0, 10)
+
+    const groups = digest().ledger.unreportedExits
+
+    expect(groups).toContainEqual({
+      day: day(today),
+      lastAction: 'Bash(run_in_background)',
+      count: day(today) === day(yesterday) ? 3 : 2,
+      agents: day(today) === day(yesterday) ? ['w-a', 'w-b', 'w-old'] : ['w-a', 'w-b'],
+    })
+    expect(groups).toContainEqual({
+      day: day(today),
+      lastAction: 'ScheduleWakeup',
+      count: 1,
+      agents: ['w-c'],
+    })
+    expect(groups.flatMap(g => g.agents)).not.toContain('w-outside')
+    const rendered = section(text(), 'Exited with no Status report')
+    expect(rendered).toContain('== Exited with no Status report (4)')
+    expect(rendered).toContain(`- ${day(today)} ScheduleWakeup x1: w-c`)
   })
 })
 
