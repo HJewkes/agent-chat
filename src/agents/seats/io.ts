@@ -59,7 +59,7 @@ export function scorerEligible(
 }
 
 /** A seat's watchdog state, its run spend meter, and whether its pool gate was closed at the last run. */
-export type SeatRecord = SeatState & { run?: SpendMeter; budgetPaused?: boolean }
+export type SeatRecord = SeatState & { run?: SpendMeter; budgetPaused?: boolean; capped?: boolean }
 
 /**
  * `seat-watchdog.json`. `stopped` is the owner's switch: a seat named there is
@@ -69,12 +69,19 @@ export interface WatchdogDoc {
   seats: Record<string, SeatRecord>
   pools: Record<string, SpendMeter>
   stopped: Record<string, string>
+  /** Whether a hold on every seat (restart window, unreadable events.db) was open at the last run. */
+  held?: boolean
 }
 
 export function loadDoc(file = watchdogStatePath()): WatchdogDoc {
   try {
     const doc = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<WatchdogDoc>
-    return { seats: doc.seats ?? {}, pools: doc.pools ?? {}, stopped: doc.stopped ?? {} }
+    return {
+      seats: doc.seats ?? {},
+      pools: doc.pools ?? {},
+      stopped: doc.stopped ?? {},
+      ...(doc.held === undefined ? {} : { held: doc.held }),
+    }
   } catch {
     return { seats: {}, pools: {}, stopped: {} }
   }
