@@ -24,9 +24,11 @@ const stringTag = (value: string): string => `<string>${escapeXml(value)}</strin
 const keyString = (key: string, value: string, indent: string): string =>
   `${indent}<key>${escapeXml(key)}</key>\n${indent}${stringTag(value)}`
 
-/** `KeepAlive` for a process that should stay up, or `StartInterval` for a periodic one. */
+/** `KeepAlive` for a process that should stay up, `StartInterval` for a periodic one, or fixed minutes past each hour. */
 export type PlistSchedule =
-  { kind: 'keep-alive'; throttleIntervalSeconds: number } | { kind: 'interval'; seconds: number }
+  | { kind: 'keep-alive'; throttleIntervalSeconds: number }
+  | { kind: 'interval'; seconds: number }
+  | { kind: 'minutes'; minutes: readonly number[] }
 
 interface PlistInput {
   label: string
@@ -37,13 +39,19 @@ interface PlistInput {
   env: Record<string, string>
 }
 
-const scheduleLines = (schedule: PlistSchedule): string[] =>
-  schedule.kind === 'keep-alive'
-    ? [
-        '  <key>KeepAlive</key>\n  <true/>',
-        `  <key>ThrottleInterval</key>\n  <integer>${schedule.throttleIntervalSeconds}</integer>`,
-      ]
-    : [`  <key>StartInterval</key>\n  <integer>${schedule.seconds}</integer>`]
+function scheduleLines(schedule: PlistSchedule): string[] {
+  if (schedule.kind === 'keep-alive')
+    return [
+      '  <key>KeepAlive</key>\n  <true/>',
+      `  <key>ThrottleInterval</key>\n  <integer>${schedule.throttleIntervalSeconds}</integer>`,
+    ]
+  if (schedule.kind === 'interval')
+    return [`  <key>StartInterval</key>\n  <integer>${schedule.seconds}</integer>`]
+  const entries = schedule.minutes.map(
+    m => `    <dict>\n      <key>Minute</key>\n      <integer>${m}</integer>\n    </dict>`,
+  )
+  return ['  <key>StartCalendarInterval</key>', '  <array>', ...entries, '  </array>']
+}
 
 /** Pure: the shared shape of every agent-chat launchd job. It holds no token. */
 function renderPlist(input: PlistInput): string {
@@ -109,6 +117,27 @@ export function renderBurndownPlist(input: BurndownPlistInput): string {
     logFile: path.join(input.logDir, 'burndown.log'),
     runAtLoad: false,
     schedule: { kind: 'interval', seconds: input.intervalSeconds },
+    env: input.env,
+  })
+}
+
+export interface WatchdogPlistInput {
+  label: string
+  nodePath: string
+  cliEntry: string
+  logDir: string
+  env: Record<string, string>
+  minutes: readonly number[]
+}
+
+/** `agent-chat seats watchdog` at fixed minutes, so a replay's run times are the installed job's. */
+export function renderWatchdogPlist(input: WatchdogPlistInput): string {
+  return renderPlist({
+    label: input.label,
+    args: [input.nodePath, input.cliEntry, 'seats', 'watchdog'],
+    logFile: path.join(input.logDir, 'watchdog.log'),
+    runAtLoad: false,
+    schedule: { kind: 'minutes', minutes: input.minutes },
     env: input.env,
   })
 }

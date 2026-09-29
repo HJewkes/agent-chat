@@ -79,11 +79,12 @@ function writePlist(paths: JobPaths, rendered: string, dryRun: boolean, lines: s
   return true
 }
 
-/** Writes the plist if absent or changed, reloads a stale job, then bootstraps and kickstarts. */
+/** Writes the plist if absent or changed, reloads a stale job, then bootstraps and, unless told not to, kickstarts. */
 export function startJob(
   paths: JobPaths,
   rendered: string,
   control: JobControl,
+  options: { kickstart?: boolean } = {},
 ): { ok: boolean; lines: string[] } {
   const lines: string[] = []
   const changed = writePlist(paths, rendered, control.dryRun, lines)
@@ -94,6 +95,7 @@ export function startJob(
     const boot = run(control, ['bootstrap', domain(control.uid), paths.plist], lines)
     if (boot.code !== 0) return { ok: false, lines }
   }
+  if (options.kickstart === false) return { ok: true, lines }
   const kick = run(control, ['kickstart', service(control.label, control.uid)], lines)
   return { ok: kick.code === 0, lines }
 }
