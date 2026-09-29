@@ -587,20 +587,23 @@ describe('a visible predecessor', () => {
     const unhandled: unknown[] = []
     const onUnhandled = (reason: unknown) => unhandled.push(reason)
     process.on('unhandledRejection', onUnhandled)
-    const fail = controlLaunchFailed()
-    const agentId = await spawnAgent(visible)
-    stopAutoAttach()
-    const append = core.append.bind(core)
-    vi.spyOn(core, 'append').mockImplementation(input => {
-      if (input.kind === 'notice' && input.body?.includes('successor')) throw new Error('disk full')
-      return append(input)
-    })
+    try {
+      const fail = controlLaunchFailed()
+      const agentId = await spawnAgent(visible)
+      stopAutoAttach()
+      const append = core.append.bind(core)
+      vi.spyOn(core, 'append').mockImplementation(input => {
+        if (input.kind === 'notice' && input.body?.includes('successor')) throw new Error('disk full')
+        return append(input)
+      })
 
-    await supervisor.teleport({ subject: subject(agentId, { anchor: 'w0t1p0:ANCHOR-UUID' }), handoff: 'h' })
-    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS)
-    fail('run-agent never started')
-    await vi.advanceTimersByTimeAsync(0)
-    process.off('unhandledRejection', onUnhandled)
+      await supervisor.teleport({ subject: subject(agentId, { anchor: 'w0t1p0:ANCHOR-UUID' }), handoff: 'h' })
+      await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS)
+      fail('run-agent never started')
+      await vi.advanceTimersByTimeAsync(0)
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
 
     expect(unhandled).toEqual([])
     expect(readBrokerLog()).toContain('"event":"teleport_failed_report_error"')
@@ -610,25 +613,29 @@ describe('a visible predecessor', () => {
     const unhandled: unknown[] = []
     const onUnhandled = (reason: unknown) => unhandled.push(reason)
     process.on('unhandledRejection', onUnhandled)
-    const fail = controlLaunchFailed()
-    stopAutoAttach()
+    let spawning: Promise<unknown>
+    try {
+      const fail = controlLaunchFailed()
+      stopAutoAttach()
 
-    const spawning = supervisor.spawn({
-      name: 'scout',
-      profile: 'explorer',
-      brief: 'read the log',
-      requestedBy: 'human',
-      cwd: workspace(),
-      isolation: 'none',
-      surface: 'iterm-tab',
-    })
-    await vi.advanceTimersByTimeAsync(0)
-    vi.spyOn(core.events, 'agentEvents').mockImplementation(() => {
-      throw new Error('db locked')
-    })
-    fail('run-agent never started')
-    await vi.advanceTimersByTimeAsync(0)
-    process.off('unhandledRejection', onUnhandled)
+      spawning = supervisor.spawn({
+        name: 'scout',
+        profile: 'explorer',
+        brief: 'read the log',
+        requestedBy: 'human',
+        cwd: workspace(),
+        isolation: 'none',
+        surface: 'iterm-tab',
+      })
+      await vi.advanceTimersByTimeAsync(0)
+      vi.spyOn(core.events, 'agentEvents').mockImplementation(() => {
+        throw new Error('db locked')
+      })
+      fail('run-agent never started')
+      await vi.advanceTimersByTimeAsync(0)
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
     vi.restoreAllMocks()
     await vi.advanceTimersByTimeAsync(120_000)
     await spawning

@@ -4,7 +4,14 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { describeJob } from '../cli/verbs/mirror.js'
 import { openMirrorState } from '../mirror/run.js'
-import { jobState, startJob, stopJob, type JobPaths, type Launchctl } from '../mirror/launchd.js'
+import {
+  jobState,
+  startJob,
+  stopJob,
+  type JobPaths,
+  type Launchctl,
+  type LaunchctlResult,
+} from '../mirror/launchd.js'
 
 const LABEL = 'dev.hjewkes.agent-chat-mirror'
 const SERVICE = `gui/501/${LABEL}`
@@ -140,6 +147,56 @@ describe('stopJob and jobState', () => {
       jobState({ launchctl: fakeStopped(loaded, listed), uid: 501, label: LABEL })
     expect(state(true, 'enabled').disabled).toBe(false)
     expect(state(false, null).disabled).toBe(false)
+  })
+})
+
+describe('jobState reading print-disabled (CC-155)', () => {
+  /** A `print` that finds the job down, and a `print-disabled` that answers with `listing`. */
+  function withListing(listing: LaunchctlResult, label = LABEL, pid: number | null = null) {
+    const calls: string[] = []
+    const launchctl: Launchctl = args => {
+      calls.push(args[0] as string)
+      if (args[0] === 'print') {
+        return { code: 0, stdout: pid === null ? '\tstate = waiting\n' : `\tpid = ${pid}\n`, stderr: '' }
+      }
+      return listing
+    }
+    return { state: jobState({ launchctl, uid: 501, label }), calls }
+  }
+  const listing = (body: string): LaunchctlResult => ({
+    code: 0,
+    stdout: `disabled services = {\n${body}}\n`,
+    stderr: '',
+  })
+
+  it('does not ask print-disabled about a job that is running, even if it lists the label as disabled', () => {
+    const { state, calls } = withListing(listing(`\t\t"${LABEL}" => disabled\n`), LABEL, 42)
+
+    expect(state.disabled).toBe(false)
+    expect(calls).toEqual(['print'])
+  })
+
+  it('reads the legacy `=> true` form as disabled and `=> false` as enabled', () => {
+    expect(withListing(listing(`\t\t"${LABEL}" => true\n`)).state.disabled).toBe(true)
+    expect(withListing(listing(`\t\t"${LABEL}" => false\n`)).state.disabled).toBe(false)
+  })
+
+  it('matches the label literally, so a dot is not a wildcard', () => {
+    const { state } = withListing(listing('\t\t"dev-hjewkes-agent-chat-mirror" => disabled\n'))
+
+    expect(state.disabled).toBe(false)
+  })
+
+  it('does not mistake a longer label that starts with this one for this one', () => {
+    const { state } = withListing(listing(`\t\t"${LABEL}-2" => disabled\n`))
+
+    expect(state.disabled).toBe(false)
+  })
+
+  it('does not call a job disabled when launchctl print-disabled fails', () => {
+    const failed = { code: 1, stdout: `\t\t"${LABEL}" => disabled\n`, stderr: 'boom' }
+
+    expect(withListing(failed).state.disabled).toBe(false)
   })
 })
 
