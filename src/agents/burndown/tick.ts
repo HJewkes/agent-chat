@@ -3,6 +3,7 @@ import { activeWorkRoot } from '../active-work.js'
 import { gateAccount } from './budget-gate.js'
 import { taskRefusal, type Initiative } from './eligibility.js'
 import { heldClaims, isStalled, readLedger, type DeciderState, type Ledger } from './ledger.js'
+import type { Roster } from './observe.js'
 import { plan, type Plan, type PlanInputs } from './plan.js'
 import { diskSeatDeps, loadSeats, planSeats } from './seat-tick.js'
 import { accountDir, loadRules, readInitiatives, readReadings, readTasks } from './source.js'
@@ -53,13 +54,15 @@ export function planFromDisk(
   return plan({ ...loadWorld(now, root), ledger, ...(check === undefined ? {} : { collision: check }) })
 }
 
-/** `burndown plan --seat <name>`: one seat's dispatches as the tick would plan them, without the tick's live ceilings. */
+/** `burndown plan --seat <name>`: one seat's dispatches as the tick would plan them, without the tick's live ceilings; with no roster it counts every held tree. */
 export function seatPlanFromDisk(opts: {
   seat: string
   now: Date
   root: string
   autonomyRoot: string
   collision?: (ledger: Ledger) => PlanInputs['collision']
+  /** The broker's roster; with it only active trees count against the seat's cap, as the tick counts them. */
+  roster?: Roster
 }): Plan {
   const ledger = readLedger(burndownLedgerPath())
   const seats = loadSeats([opts.seat], ledger, diskSeatDeps(opts.autonomyRoot, opts.root, opts.now))
@@ -72,6 +75,7 @@ export function seatPlanFromDisk(opts: {
       initiatives: readInitiatives(opts.root),
       trust: (repo, cwd, configDir) => trustRefusal(repo, cwd, configDir, cliVersion),
       ...(check === undefined ? {} : { collision: check }),
+      ...(opts.roster === undefined ? {} : { roster: opts.roster }),
     },
     opts.root,
   )

@@ -123,7 +123,11 @@ async function plainPlan(): Promise<Report> {
 
 async function seatDispatchPlan(seat: string, autonomyRoot: string | undefined): Promise<Report> {
   const now = new Date()
-  const broker = await readCollisionView()
+  const facts = await readBroker(async client => ({
+    view: await collisionView(client),
+    roster: await tickBroker(client).roster(),
+  }))
+  const broker = facts?.view
   const root = activeWorkRoot()
   const planned = seatPlanFromDisk({
     seat,
@@ -131,6 +135,7 @@ async function seatDispatchPlan(seat: string, autonomyRoot: string | undefined):
     root,
     autonomyRoot: autonomyRoot ?? defaultAutonomyRoot(root),
     collision: ledger => collisionCheck(ledger, broker),
+    ...(facts === undefined ? {} : { roster: facts.roster }),
   })
   return { ok: true, lines: renderPlan(planned, now) }
 }
@@ -146,14 +151,16 @@ function scoredSeatPlan(seat: string, { top, autonomyRoot, today }: PlanArgs): s
   return renderScored(plan)
 }
 
+const readCollisionView = (): Promise<BrokerView | undefined> => readBroker(collisionView)
+
 /** Undefined when no broker answers, which the collision check reports as a `claimed` refusal it could not rule out. */
-async function readCollisionView(): Promise<BrokerView | undefined> {
+async function readBroker<T>(read: (client: BrokerClient) => Promise<T>): Promise<T | undefined> {
   const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
     autoStart: false,
   })
   try {
     await client.connect()
-    return await collisionView(client)
+    return await read(client)
   } catch {
     return undefined
   } finally {

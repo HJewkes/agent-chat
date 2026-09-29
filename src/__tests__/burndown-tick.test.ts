@@ -821,6 +821,40 @@ describe('burndown tick in seats mode', () => {
     expect(ticked).toContain('seat seat-t scorer skipped: 1 (demo/DM-2.yml)')
   })
 
+  it('burndown plan --seat counts only active trees when it has a roster, and every held tree without one', () => {
+    seatPolicy({ implementers: 1 })
+    seatInitiative({ 'DM-2': seatTask('DM-2') })
+    const root = path.join(world, 'aw')
+    const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
+    const worktree = path.join(repo(), '.worktrees', 'st-dm-1')
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [
+        {
+          taskId: 'DM-1',
+          initiative: 'demo',
+          seat: 'seat-t',
+          namePrefix: 'st',
+          spawnedAt: NOON.toISOString(),
+          phase: 'awaiting-merge',
+          phaseAt: NOON.toISOString(),
+          agentName: 'st-dm-1',
+          spawned: ['st-dm-1'],
+          worktree,
+        },
+      ],
+    })
+    const dry = (roster?: { agents: AgentIdentity[] }) =>
+      seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot, ...(roster ? { roster } : {}) })
+
+    expect(dry().refusals.map(r => r.kind)).toEqual(['worktrees'])
+    const parked = dry({ agents: [row('st-dm-1', 'exited', worktree)] })
+    expect(parked.dispatch.map(d => d.task)).toEqual(['DM-2'])
+    expect(dry({ agents: [row('st-dm-1', 'live', worktree)] }).refusals.map(r => r.kind)).toEqual([
+      'worktrees',
+    ])
+  })
+
   it('dry run prints the seat dispatch and writes nothing', async () => {
     seatInitiative({ 'DM-1': seatTask('DM-1') })
 
