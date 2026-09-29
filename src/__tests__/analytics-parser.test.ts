@@ -15,7 +15,7 @@ describe('parseSessionFile', () => {
   it('extracts session identity', async () => {
     const result = await parseSessionFile(FIXTURE_PATH)
     expect(result.sessionId).toBe('test-session-001')
-    expect(result.projectDir).toBe('/Users/test/project')
+    expect(result.projectDir).toBe('/tmp/test/project')
     expect(result.gitBranch).toBe('feat/session')
     expect(result.model).toBe('claude-opus-4-6')
   })
