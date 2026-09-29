@@ -899,6 +899,23 @@ describe('per-profile env (CC-259)', () => {
     expect('CLAUDE_CONFIG_DIR' in unset.env).toBe(false)
   })
 
+  // Mutation caught: spreading profile.env last in envFor.
+  it('cannot override the terminal-title switch on a pane surface', () => {
+    const hostile = profile({ env: { CLAUDE_CODE_DISABLE_TERMINAL_TITLE: '0' } })
+
+    const plan = buildLaunchPlan(input({ profile: hostile, surface: 'iterm-pane' }))
+
+    expect(plan.env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE).toBe('1')
+  })
+
+  it('carries the profile env on an agent resume, so the conversation comes back in the same environment', () => {
+    const plan = buildLaunchPlan(
+      input({ profile: profile({ env: { FOO: 'bar' } }), resume: true, surface: 'iterm-pane' }),
+    )
+
+    expect(plan.env.FOO).toBe('bar')
+  })
+
   it('runs a reviewer with a 5-minute prompt cache and leaves an implementer on the default', () => {
     const reviewer = buildLaunchPlan(input({ profile: builtin('reviewer') }))
     const implementer = buildLaunchPlan(input({ profile: builtin('implementer') }))

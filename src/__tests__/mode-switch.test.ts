@@ -273,6 +273,19 @@ describe('the roster after a switch', () => {
 })
 
 describe('surfacing a headless agent', () => {
+  it('carries the profile env onto the rebuilt plan (CC-264)', async () => {
+    const dir = path.join(process.env.AGENT_CHAT_HOME as string, 'profiles')
+    fs.mkdirSync(dir, { recursive: true })
+    const body = { model: 'opus', allowedTools: ['Read'], isolation: 'none', surface: 'headless' }
+    fs.writeFileSync(path.join(dir, 'envy.json'), JSON.stringify({ ...body, env: { PROFILE_MARKER: 'on' } }))
+    const agentId = await spawnAgent({ profile: 'envy' })
+    expect(planFor(agentId).env.PROFILE_MARKER).toBe('on')
+
+    await supervisor.switchSurface({ name: 'scout', to: 'interactive', requestedBy: 'human' })
+
+    expect(planFor(agentId).env.PROFILE_MARKER).toBe('on')
+  })
+
   it('keeps CLAUDE_CONFIG_DIR unset for an agent a default-account session spawned (CC-200)', async () => {
     const agentId = await spawnAgent({ spawnerIsSession: true })
 
