@@ -161,6 +161,15 @@ describe('staleness A', () => {
   })
 
   it.each([
+    ['2026-02-30', 'today is an invalid date, got 2026-02-30'],
+    ['2026-13-45', 'today is an invalid date, got 2026-13-45'],
+    ['29/09/2026', 'today must be YYYY-MM-DD, got 29/09/2026'],
+    ['20260929', 'today must be YYYY-MM-DD, got 20260929'],
+  ])('refuses --today %s with a distinct message', (today, message) => {
+    expect(() => ageDays(task({ created: '2026-09-14' }), today)).toThrow(message)
+  })
+
+  it.each([
     [0, 0],
     [15, 0.5],
     [30, 1],

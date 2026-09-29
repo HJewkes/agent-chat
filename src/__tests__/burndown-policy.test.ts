@@ -227,6 +227,31 @@ describe('score-source', () => {
     expect(readScoredTasks(root, ['init-alpha', 'absent'])).toEqual([EXPECTED])
   })
 
+  it('normalizes compact YYYYMMDD dates to ISO', () => {
+    const compact = TASK.replace('created: 2026-09-18', 'created: 20260918').replace(
+      "updated: '2026-09-20'",
+      'updated: 20260920',
+    )
+    expect(parseScoredTask(compact, 'init-alpha')).toEqual(EXPECTED)
+  })
+
+  it.each(['..', '../escape', 'a/b', 'a\\b', '', '/abs'])('refuses initiative slug %j', slug => {
+    expect(() => readScoredTasks(root, [slug])).toThrow('unsafe initiative slug name')
+  })
+
+  it('reports and skips one malformed open task without dropping the rest', () => {
+    const dir = path.join(root, 'init-alpha', 'tasks')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'CC-1.yml'), TASK)
+    fs.writeFileSync(path.join(dir, 'CC-2.yml'), TASK.replace('priority: 3\n', ''))
+    fs.writeFileSync(path.join(dir, 'CC-3.yml'), 'id: [unclosed')
+    const skipped: string[] = []
+    expect(readScoredTasks(root, ['init-alpha'], m => skipped.push(m))).toEqual([EXPECTED])
+    expect(skipped).toHaveLength(2)
+    expect(skipped[0]).toContain('init-alpha/CC-2.yml')
+    expect(skipped[1]).toContain('init-alpha/CC-3.yml')
+  })
+
   it('produces the same objects from task list JSON as from the task file', () => {
     const entry = { ...EXPECTED, tags: ['kind:security', 7], status: 'open', notes: null, done_at: null }
     const done = { ...entry, id: 'CC-2', status: 'done' }

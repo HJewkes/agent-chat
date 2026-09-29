@@ -178,8 +178,10 @@ export function unblocksTerm(unblockCount: number): number {
   return Math.min(1, unblockCount / 3)
 }
 
+const ISO_DAY = /^(\d{4})-(\d{2})-(\d{2})$/
+
 function parseIsoDay(value: string): number | undefined {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  const match = ISO_DAY.exec(value)
   if (!match) return undefined
   const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])]
   const ms = Date.UTC(year, month - 1, day)
@@ -191,7 +193,10 @@ function parseIsoDay(value: string): number | undefined {
 export function ageDays(task: ScoredTask, today: string): number {
   const stamp = parseIsoDay(String(task.updated || task.created).slice(0, 10))
   const now = parseIsoDay(today)
-  if (now === undefined) throw new Error(`today must be YYYY-MM-DD, got ${today}`)
+  if (now === undefined) {
+    const shape = ISO_DAY.test(today) ? 'is an invalid date' : 'must be YYYY-MM-DD'
+    throw new Error(`today ${shape}, got ${today}`)
+  }
   return stamp === undefined ? 0 : now - stamp
 }
 

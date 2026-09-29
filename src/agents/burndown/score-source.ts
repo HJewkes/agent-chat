@@ -28,6 +28,19 @@ const TaskFields = z.looseObject({
   updated: text,
 })
 
+const COMPACT_DATE = /^(\d{4})(\d{2})(\d{2})$/
+
+/** YAML reads an unquoted `20260918` as a number; ISO-shape it so the age term can parse it. */
+const isoDate = (v: string | undefined): string | undefined => v?.replace(COMPACT_DATE, '$1-$2-$3')
+
+const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+/** Refuses names that could leave the root: separators, `..`, empty. */
+export function assertSafeName(kind: string, name: string): void {
+  if (!SAFE_NAME.test(name) || name.includes('..'))
+    throw new Error(`unsafe ${kind} name: ${JSON.stringify(name)}`)
+}
+
 const KEYS = ['severity', 'estimate', 'done_when', 'notes', 'tags', 'created', 'updated'] as const
 
 function toScoredTask(raw: unknown, slug: string, where: string): ScoredTask {
@@ -37,7 +50,10 @@ function toScoredTask(raw: unknown, slug: string, where: string): ScoredTask {
   const optional = Object.fromEntries(
     KEYS.flatMap(k => (t[k] === undefined || t[k] === null ? [] : [[k, t[k]]])),
   )
-  return { id: t.id, title: t.title, priority: t.priority, ...optional, slug }
+  const dates = Object.fromEntries(
+    (['created', 'updated'] as const).flatMap(k => (t[k] === undefined ? [] : [[k, isoDate(t[k])]])),
+  )
+  return { id: t.id, title: t.title, priority: t.priority, ...optional, ...dates, slug }
 }
 
 const isOpen = (raw: unknown): raw is Record<string, unknown> =>
@@ -69,9 +85,18 @@ export function tasksFromList(json: unknown): ScoredTask[] {
   })
 }
 
-/** Open tasks under `<root>/<slug>/tasks/*.yml` for each slug, files in name order. */
-export function readScoredTasks(root: string, slugs: Iterable<string>): ScoredTask[] {
+const reportSkip = (message: string): void => {
+  process.stderr.write(`${message}\n`)
+}
+
+/** Open tasks under `<root>/<slug>/tasks/*.yml` for each slug, files in name order; a malformed open task is reported and skipped. */
+export function readScoredTasks(
+  root: string,
+  slugs: Iterable<string>,
+  onSkip: (message: string) => void = reportSkip,
+): ScoredTask[] {
   return [...slugs].flatMap(slug => {
+    assertSafeName('initiative slug', slug)
     const dir = path.join(root, slug, 'tasks')
     let files: string[]
     try {
@@ -80,8 +105,13 @@ export function readScoredTasks(root: string, slugs: Iterable<string>): ScoredTa
       return []
     }
     return files.sort().flatMap(file => {
-      const task = parseScoredTask(fs.readFileSync(path.join(dir, file), 'utf8'), slug, `${slug}/${file}`)
-      return task === undefined ? [] : [task]
+      try {
+        const task = parseScoredTask(fs.readFileSync(path.join(dir, file), 'utf8'), slug, `${slug}/${file}`)
+        return task === undefined ? [] : [task]
+      } catch (err) {
+        onSkip(`skipping ${slug}/${file}: ${err instanceof Error ? err.message : String(err)}`)
+        return []
+      }
     })
   })
 }
