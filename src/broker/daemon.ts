@@ -208,11 +208,14 @@ async function listenOn(sock: string): Promise<Listener | null> {
   return { server, openConnections: () => open, serve }
 }
 
-/** False on `EADDRINUSE`: a sibling that passed the socket probe alongside us listened first. */
+/** Both codes mean the path is taken; which one a lost bind gets depends on the race. */
+const PATH_TAKEN = new Set(['EADDRINUSE', 'EEXIST'])
+
+/** False when a sibling that passed the socket probe alongside us listened first. */
 function bind(server: net.Server, sock: string): Promise<boolean> {
   return new Promise((resolve, reject) => {
     const onError = (err: NodeJS.ErrnoException): void => {
-      if (err.code !== 'EADDRINUSE') return reject(err)
+      if (!PATH_TAKEN.has(err.code ?? '')) return reject(err)
       logEvent('broker_exit', { reason: 'another broker is already listening' })
       resolve(false)
     }

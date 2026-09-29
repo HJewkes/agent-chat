@@ -82,8 +82,8 @@ const logLines = (): Record<string, unknown>[] => {
 
 const logged = (event: string): Record<string, unknown>[] => logLines().filter(line => line.event === event)
 
-const lostRace = (): number =>
-  logged('broker_exit').filter(line => line.reason === 'another broker is already listening').length
+/** A loser exits through `service start`'s probe or `startBroker`'s bind, and either way exits 0. */
+const exitedCleanly = (): number => children.filter(child => child.exitCode === 0).length
 
 async function until(check: () => boolean, budgetMs: number): Promise<boolean> {
   const deadline = Date.now() + budgetMs
@@ -110,7 +110,7 @@ describe('brokers auto-started together after a stop', () => {
     lock.exec('BEGIN IMMEDIATE')
 
     await launchBrokers(BROKERS)
-    const losersExitedUnderLock = await until(() => lostRace() === BROKERS - 1, LOCK_HOLD_MS)
+    const losersExitedUnderLock = await until(() => exitedCleanly() === BROKERS - 1, LOCK_HOLD_MS)
     lock.exec('COMMIT')
     lock.close()
     const sockUp = await until(() => fs.existsSync(path.join(dir, 'chat.sock')), 5_000)
