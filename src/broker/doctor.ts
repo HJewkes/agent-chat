@@ -57,7 +57,14 @@ const MIN_NODE_MAJOR = 22
 /** The marketplace/plugin pair that must be allow-listed for channel pushes to land. */
 const CHANNEL_PLUGIN = { marketplace: 'agent-chat-local', plugin: 'agent-chat' }
 
-const MANAGED_SETTINGS = '/Library/Application Support/ClaudeCode/managed-settings.json'
+const MANAGED_SETTINGS_BY_PLATFORM: Partial<Record<NodeJS.Platform, string>> = {
+  darwin: '/Library/Application Support/ClaudeCode/managed-settings.json',
+  linux: '/etc/claude-code/managed-settings.json',
+}
+
+/** Undefined where Claude Code has no known managed-settings location. */
+export const managedSettingsPath = (platform: NodeJS.Platform): string | undefined =>
+  MANAGED_SETTINGS_BY_PLATFORM[platform]
 
 /**
  * `GET /health` with a hard timeout, returning null for every failure mode.
@@ -251,10 +258,22 @@ function readFirstLine(file: string): string | null {
  * `delivered:true` while the peer session sees no `<channel>` tag at all. Silent,
  * and expensive to diagnose from either end.
  */
-function checkChannelAllowlist(): Check {
-  const files = [MANAGED_SETTINGS, path.join(os.homedir(), '.claude', 'settings.json')]
+export function checkChannelAllowlist(
+  platform: NodeJS.Platform = process.platform,
+  read: (file: string) => string = file => fs.readFileSync(file, 'utf8'),
+): Check {
+  const managed = managedSettingsPath(platform)
+  const files = [...(managed ? [managed] : []), path.join(os.homedir(), '.claude', 'settings.json')]
   for (const file of files) {
-    if (allowlistHas(file)) return { name: 'channel allowlist', status: 'ok', detail: `listed in ${file}` }
+    if (allowlistHas(file, read))
+      return { name: 'channel allowlist', status: 'ok', detail: `listed in ${file}` }
+  }
+  if (!managed) {
+    return {
+      name: 'channel allowlist',
+      status: 'warn',
+      detail: `skipped: no known managed-settings path on ${platform}, and the user settings do not list it`,
+    }
   }
   return {
     name: 'channel allowlist',
@@ -265,9 +284,9 @@ function checkChannelAllowlist(): Check {
   }
 }
 
-function allowlistHas(file: string): boolean {
+function allowlistHas(file: string, read: (file: string) => string): boolean {
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as {
+    const parsed = JSON.parse(read(file)) as {
       allowedChannelPlugins?: unknown[]
     }
     return (parsed.allowedChannelPlugins ?? []).some(entry => {
