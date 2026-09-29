@@ -10,79 +10,29 @@ on:
   # nothing. Every PR is checked, whatever it targets.
   pull_request:
 
-# Named explicitly rather than left to the default token. gitleaks lists a PR's
-# commits to decide what to scan, and needs pull-request read to do it — without
-# this block it died with "Resource not accessible by integration" back when this
-# repo was private. Kept after going public: it costs nothing and the failure it
-# prevents is silent.
+# The whole grant. A called workflow can never hold more than its caller grants,
+# and node.yml asks for nothing beyond this.
 permissions:
   contents: read
-  pull-requests: read
 
-# One job, named `check`, because that is the context name the branch
-# protection on these repos requires. Splitting it into lint/test/build jobs
-# would rename the context and silently satisfy protection with nothing.
+# The shared standard (HJewkes/ci): `std` runs secrets (gitleaks, full history),
+# audit, and `npm run verify`, which is format, typecheck, build, the tests, and
+# the shadow-ledger rerun. No compat matrix: this package is private, not a
+# published library. The live suites (AGENT_CHAT_LIVE) stay skipped: they drive
+# real Claude Code sessions and iTerm windows, neither of which exists on a runner.
 jobs:
+  std:
+    uses: HJewkes/ci/.github/workflows/node.yml@v1
+    with:
+      node-version: '22'
+
+  # The ruleset requires the context `check`, so the aggregator carries that name
+  # and no other job may. all-green also fails if a job here is missing from needs.
   check:
+    if: always()
+    needs: [std]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: HJewkes/ci/actions/all-green@v1
         with:
-          fetch-depth: 0 # full history so gitleaks can scan every commit
-
-      # Fail the build if a credential was ever committed, not just if one is
-      # present now — hence the full history above.
-      - name: Scan for secrets (gitleaks)
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install
-        run: npm ci
-
-      - name: Security audit
-        run: npm audit --audit-level=critical
-
-      # No lint step: this repo has no eslint config, and prettier is the whole
-      # of its style enforcement. Saying so beats a step that runs nothing.
-      - name: Format
-        run: npm run format:check
-
-      # Covers the test files too — tsconfig.test.json exists precisely because
-      # the main tsconfig excludes them, which once let a broken test typecheck.
-      - name: Typecheck
-        run: npm run typecheck
-
-      # BEFORE the tests, not after. The integration suites spawn
-      # `node dist/cli.js` as a real subprocess — an MCP server, a broker, a
-      # planned agent — so an unbuilt dist is not a late failure, it is every
-      # one of those tests failing for a reason that looks like something else.
-      #
-      # `npm test` now also triggers a build via the `pretest` script, so this
-      # explicit step is redundant in the happy path. It stays anyway: `pretest`
-      # only protects `npm test` (npm lifecycle scripts don't fire for a direct
-      # `vitest` invocation), and a `pretest` build failure would otherwise be
-      # buried inside the "Test" step's log under a generic npm error instead of
-      # failing here, at a step named for exactly what broke.
-      - name: Build
-        run: npm run build
-
-      - name: Verify build output
-        run: test -f dist/cli.js || (echo "Build output missing" && exit 1)
-
-      # The live suites (AGENT_CHAT_LIVE) stay skipped here and are meant to:
-      # they drive real Claude Code sessions and real iTerm windows, neither of
-      # which exists on a runner.
-      - name: Test
-        run: npm test
-
-      # CC-118: the supervisor suites again with the shadow ledger on, which must change no outcome.
-      - name: Test with the shadow ledger on
-        run: npx vitest run src/__tests__/supervisor.test.ts src/__tests__/slots-reattach.test.ts src/__tests__/ledger-shadow-supervisor.test.ts src/__tests__/ledger-shadow-continuations.test.ts
-        env:
-          AGENT_CHAT_LEDGER_SHADOW: '1'
+          needs: ${{ toJSON(needs) }}

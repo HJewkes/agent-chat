@@ -49,16 +49,17 @@ a planned restart window.
 
 ## Verify before opening a PR
 
-CI runs Format first, then typecheck, then tests, and stops at the first failure. Run
-all three locally, in this order, before `gh pr create`:
+Before `gh pr create`, run `npm run verify` in your worktree and report its last lines.
+The PR merges when the `check` context is green; if it is red, read `gh pr checks <n>`
+and the failing job's log, fix, and push to the same PR.
 
-1. `npm run format:check` (fix with `npm run format`). Two of three sonnet PRs on
-   2026-09-23 were red only on this step.
-2. `npm run typecheck`.
-3. `npx vitest run`. Not `npm test`: its `pretest` rebuilds `dist/` in the checkout
-   the tests run in, and in the main checkout that swaps code under the live broker.
-   In a fresh worktree run `npm run build` once first, because the live tests read
-   `dist/`.
+`verify` runs format:check (fix with `npm run format`), typecheck, build, `vitest run`,
+then the shadow-ledger rerun. CI's `std / verify` job runs exactly this script. CI also
+runs gitleaks and `npm audit`, which `verify` does not.
+
+Run `verify` in a worktree, never in the main checkout: its build rewrites `dist/`,
+and in the main checkout that swaps code under the live broker. For the same reason
+never run `npm test` there, since its `pretest` rebuilds `dist/` too.
 
 Never restart the broker from an agent; it serves every session on the machine.
 
