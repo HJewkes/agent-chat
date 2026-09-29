@@ -22,7 +22,7 @@ permissions:
 # real Claude Code sessions and iTerm windows, neither of which exists on a runner.
 jobs:
   std:
-    uses: HJewkes/ci/.github/workflows/node.yml@v1
+    uses: HJewkes/ci/.github/workflows/node.yml@660e273ea1a0ebaa8a7fd73427f3f6a0a812c99e
     with:
       node-version: '22'
 
@@ -33,6 +33,6 @@ jobs:
     needs: [std]
     runs-on: ubuntu-latest
     steps:
-      - uses: HJewkes/ci/actions/all-green@v1
+      - uses: HJewkes/ci/actions/all-green@660e273ea1a0ebaa8a7fd73427f3f6a0a812c99e
         with:
           needs: ${{ toJSON(needs) }}
