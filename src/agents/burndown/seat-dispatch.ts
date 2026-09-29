@@ -1,6 +1,7 @@
 import os from 'node:os'
 import path from 'node:path'
 import type { PoolRule } from './budget-gate.js'
+import { DEFAULT_NAME_PREFIX } from './plan.js'
 import type { CharterPolicy, Policy, SeatPolicy } from './policy.js'
 
 /** CC-205 D6: what the tick needs to dispatch for one seat, resolved from the charter and seat file. CLI-only. */
@@ -69,6 +70,14 @@ export function resolveSeatDispatch(policy: Policy, name: string, home = os.home
     excludedTags: seat.excluded_tags,
     grants: seat.grants_extra,
   }
+}
+
+/** Every agent-name prefix the tick spawns under: `bd`, then each configured seat's; throws on a seat that cannot dispatch. */
+export function tickPrefixes(seats: readonly string[], load: (seat: string) => Policy): string[] {
+  const [first] = seats
+  if (first === undefined) return [DEFAULT_NAME_PREFIX]
+  const policy = load(first)
+  return [DEFAULT_NAME_PREFIX, ...seats.map(s => resolveSeatDispatch(policy, s).prefix)]
 }
 
 /** The checkout for a task: a `repo:<basename>` tag picks among the initiative's repos, else the first listed; undefined is `no-repo`. */

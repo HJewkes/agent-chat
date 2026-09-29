@@ -1,0 +1,247 @@
+import path from 'node:path'
+import { gatePool, type PoolGateInput, type PoolGateResult } from './budget-gate.js'
+import {
+  IMPLEMENTER_PROFILE,
+  PLANNER_PROFILE,
+  SONNET_PROFILES,
+  taskRefusal,
+  type Refusal,
+  type Task,
+} from './eligibility.js'
+import { heldClaims, type Claim, type Ledger } from './ledger.js'
+import {
+  agentNameFor,
+  capacityRefusal,
+  orphanRefusal,
+  type Capacity,
+  type Dispatch,
+  type PlanInputs,
+  type Tally,
+} from './plan.js'
+import {
+  dispatchOrder,
+  type DispatchRow,
+  type Route,
+  type ScoreRow,
+  type ScoringDefaults,
+  type ShareCapRefusals,
+} from './score.js'
+import { repoForTask, type SeatDispatch } from './seat-dispatch.js'
+import { worktreePathFor } from './trust-gate.js'
+
+/**
+ * CC-205 D2: one seat's dispatches for a tick. Walks the seat's scored order
+ * and gives each row a dispatch or its first refusal. Pure: the caller scores
+ * the scope, reads the ledger and the pool, and injects the collision and
+ * orphan checks.
+ */
+
+export interface SeatPlanInputs {
+  seat: SeatDispatch
+  /** `scoreAll` rows over the seat's scope. */
+  rows: readonly ScoreRow[]
+  defaults: ScoringDefaults
+  /** Task files by initiative, for the eligibility checks the scorer does not make. */
+  tasks: ReadonlyMap<string, Task[]>
+  ledger: Ledger
+  /** The seat's pool gate; its `runStartAt` also bounds the prior picks. */
+  budget: PoolGateInput
+  capacity?: Capacity
+  orphan?: PlanInputs['orphan']
+  collision?: PlanInputs['collision']
+}
+
+export interface SeatPlan {
+  dispatch: Dispatch[]
+  refusals: Refusal[]
+  priorPicks: Record<string, number>
+  shareCapped: ShareCapRefusals
+}
+
+type Role = keyof SeatDispatch['caps']
+type Refused = Pick<Refusal, 'kind' | 'reason'>
+
+const ROUTES: Partial<Record<Route, { role: Role; profile: string }>> = {
+  planner: { role: 'planners', profile: PLANNER_PROFILE },
+  implementer: { role: 'implementers', profile: IMPLEMENTER_PROFILE },
+  'implementer-lite': { role: 'implementers', profile: 'bd-implementer-lite' },
+}
+
+const ROLE_OF_PHASE: Partial<Record<Claim['phase'], Role>> = {
+  planning: 'planners',
+  implementing: 'implementers',
+  reviewing: 'reviewers',
+}
+
+/** A spawning claim counts toward the role it lands in. */
+const roleOf = (claim: Claim): Role | undefined =>
+  ROLE_OF_PHASE[claim.phase === 'spawning' ? (claim.nextPhase ?? 'spawning') : claim.phase]
+
+/** The seat's whole-task claims dispatched since `runStartAt`, by initiative; a planner's slices are the same pick. */
+export function priorPicksOf(ledger: Ledger, seat: string, runStartAt: number): Record<string, number> {
+  const picks: Record<string, number> = {}
+  for (const c of ledger.claims) {
+    if (c.seat === seat && c.slice === undefined && Date.parse(c.spawnedAt) >= runStartAt)
+      picks[c.initiative] = (picks[c.initiative] ?? 0) + 1
+  }
+  return picks
+}
+
+interface Walk {
+  inputs: SeatPlanInputs
+  gate: PoolGateResult
+  claimed: Set<string>
+  roles: Record<Role, number>
+  /** The seat's worktrees per repo: held claims plus this plan's dispatches. */
+  seatWorktrees: Map<string, number>
+  /** The broker-wide ceilings, with the charter's worktrees_left_free_per_repo added to the reserve. */
+  capacity: Capacity | undefined
+  tally: Tally
+}
+
+export function planSeat(inputs: SeatPlanInputs): SeatPlan {
+  const priorPicks = priorPicksOf(inputs.ledger, inputs.seat.seat, inputs.budget.runStartAt)
+  const { order, refused } = dispatchOrder(inputs.rows, inputs.defaults, inputs.rows.length, priorPicks)
+  const walk = startWalk(inputs)
+  const plan: SeatPlan = { dispatch: [], refusals: [], priorPicks, shareCapped: refused }
+  for (const row of order) {
+    const outcome = consider(row, walk)
+    if ('kind' in outcome) plan.refusals.push({ initiative: row.initiative, task: row.id, ...outcome })
+    else {
+      plan.dispatch.push(outcome.dispatch)
+      record(outcome.dispatch, outcome.role, walk)
+    }
+  }
+  return plan
+}
+
+function startWalk(inputs: SeatPlanInputs): Walk {
+  const held = heldClaims(inputs.ledger)
+  const ours = held.filter(c => c.seat === inputs.seat.seat)
+  const roles: Record<Role, number> = { implementers: 0, reviewers: 0, planners: 0 }
+  const seatWorktrees = new Map<string, number>()
+  for (const claim of ours) {
+    const role = roleOf(claim)
+    if (role !== undefined) roles[role] += 1
+    if (claim.worktree !== undefined) bump(seatWorktrees, path.dirname(path.dirname(claim.worktree)))
+  }
+  return {
+    inputs,
+    gate: gatePool(inputs.budget),
+    claimed: new Set(held.map(c => c.taskId)),
+    roles,
+    seatWorktrees,
+    capacity: withLeftFree(inputs.capacity, inputs.seat.worktrees.leftFreePerRepo),
+    tally: { agents: 0, worktrees: new Map() },
+  }
+}
+
+const bump = (counts: Map<string, number>, key: string): void => {
+  counts.set(key, (counts.get(key) ?? 0) + 1)
+}
+
+function withLeftFree(capacity: Capacity | undefined, free: number): Capacity | undefined {
+  if (capacity === undefined) return undefined
+  return {
+    ...capacity,
+    worktrees: repo => {
+      const use = capacity.worktrees(repo)
+      return { ...use, totalCeiling: Math.max(0, use.totalCeiling - free) }
+    },
+  }
+}
+
+function record(d: Dispatch, role: Role, walk: Walk): void {
+  walk.roles[role] += 1
+  walk.claimed.add(d.task)
+  walk.tally.agents += 1
+  if (d.worktree === undefined) return
+  bump(walk.tally.worktrees, d.repo)
+  bump(walk.seatWorktrees, d.repo)
+}
+
+function consider(row: DispatchRow, walk: Walk): { dispatch: Dispatch; role: Role } | Refused {
+  const { seat, tasks } = walk.inputs
+  const task = tasks.get(row.initiative)?.find(t => t.id === row.id)
+  if (task === undefined) return { kind: 'not-open', reason: 'scored, but no open task file was read for it' }
+  const ineligible = eligibility(row, task, walk)
+  if (ineligible !== undefined) return ineligible
+  const route = ROUTES[row.route]
+  if (route === undefined)
+    return { kind: 'untriaged', reason: "route triage; triage stays with the seat's Discovery" }
+  const repo = repoForTask(seat, row.initiative, task.tags)
+  if (repo === undefined)
+    return { kind: 'no-repo', reason: `seat ${seat.seat} lists no repo for ${row.initiative}` }
+  const dispatch = dispatchFor(row, route.profile, repo, walk)
+  return blocker(dispatch, task, route.role, walk) ?? { dispatch, role: route.role }
+}
+
+function eligibility(row: DispatchRow, task: Task, walk: Walk): Refused | undefined {
+  const refused = taskRefusal(task, walk.inputs.seat.grants, walk.claimed)
+  if (refused?.kind === 'no-done-when' || refused?.kind === 'no-estimate')
+    return { kind: 'untriaged', reason: `${refused.reason}; triage stays with the seat's Discovery` }
+  if (refused !== undefined) return refused
+  if (row.stopShort.length > 0)
+    return { kind: 'stop-short', reason: `done_when stops short at ${row.stopShort.join(', ')}` }
+  return undefined
+}
+
+function dispatchFor(row: DispatchRow, profile: string, repo: string, walk: Walk): Dispatch {
+  const { seat } = walk.inputs
+  const agentName = agentNameFor(row.id, undefined, seat.prefix)
+  const worktree = profile === PLANNER_PROFILE ? undefined : worktreePathFor(repo, agentName)
+  return {
+    initiative: row.initiative,
+    task: row.id,
+    profile,
+    account: seat.pool.name,
+    cwd: worktree ?? repo,
+    repo,
+    agentName,
+    ...(worktree === undefined ? {} : { worktree }),
+    reason: `score ${row.score}, effective ${row.effective}; ${walk.gate.reason}`,
+    seat: seat.seat,
+    namePrefix: seat.prefix,
+    configDir: seat.configDir,
+  }
+}
+
+/** In D6's order: collision, orphan, role cap, worktree caps, then the pool gate. */
+function blocker(d: Dispatch, task: Task, role: Role, walk: Walk): Refused | undefined {
+  const { inputs } = walk
+  const at = { initiative: d.initiative, repo: d.repo, prefix: d.namePrefix }
+  return (
+    inputs.collision?.(d.repo, { taskId: d.task, tags: task.tags, owns: [] }) ??
+    orphanRefusal(at, d.task, d.profile, inputs.orphan) ??
+    roleCap(role, walk) ??
+    worktreeCap(d, walk) ??
+    budgetRefusal(d.profile, walk.gate)
+  )
+}
+
+function roleCap(role: Role, walk: Walk): Refused | undefined {
+  const { seat } = walk.inputs
+  const used = walk.roles[role]
+  const cap = seat.caps[role]
+  return used < cap
+    ? undefined
+    : { kind: 'role-cap', reason: `seat ${seat.seat} holds ${used} of ${cap} ${role}` }
+}
+
+function worktreeCap(d: Dispatch, walk: Walk): Refused | undefined {
+  const { perRepoPerSeat } = walk.inputs.seat.worktrees
+  const ours = walk.seatWorktrees.get(d.repo) ?? 0
+  if (d.worktree !== undefined && ours >= perRepoPerSeat)
+    return {
+      kind: 'worktrees',
+      reason: `seat ${d.seat ?? '?'} holds ${ours} worktrees under ${d.repo}/.worktrees; worktrees_per_repo_per_seat is ${perRepoPerSeat}`,
+    }
+  return capacityRefusal(d, walk.capacity, walk.tally)
+}
+
+function budgetRefusal(profile: string, gate: PoolGateResult): Refused | undefined {
+  if (!gate.open) return { kind: 'budget', reason: gate.reason }
+  if (gate.sonnetOnly && !SONNET_PROFILES.has(profile))
+    return { kind: 'budget', reason: `${gate.reason}; task needs ${profile}` }
+  return undefined
+}

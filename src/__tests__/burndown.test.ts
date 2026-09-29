@@ -390,6 +390,8 @@ describe('burndown plan collision check (CC-202)', () => {
         slice: 'b',
         agentName: 'tc-dm-1-b',
         worktree: path.join(repo(), '.worktrees', 'tc-dm-1-b'),
+        seat: 'seat-a',
+        namePrefix: 'tc',
       }),
     ])
   })

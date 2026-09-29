@@ -102,9 +102,16 @@ function afterPlanner(claim: Claim, obs: Observation, now: Date): Action[] {
     slice: s.n,
     dependsOn: s.dependsOn,
     ...(s.owns.length === 0 ? {} : { owns: s.owns }),
+    ...seatOf(claim),
   }))
   return [update(claim, { phase: 'done' }), { kind: 'add', claims: slices }, retireAll(claim)]
 }
+
+/** A slice keeps its planner's seat and name prefix, so its agents are named and counted as the seat's. */
+const seatOf = (claim: Claim): Pick<Claim, 'seat' | 'namePrefix'> => ({
+  ...(claim.seat === undefined ? {} : { seat: claim.seat }),
+  ...(claim.namePrefix === undefined ? {} : { namePrefix: claim.namePrefix }),
+})
 
 function afterWorker(claim: Claim, obs: Observation): Action[] {
   const report = obs.report

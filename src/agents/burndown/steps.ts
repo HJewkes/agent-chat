@@ -237,6 +237,8 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
     agentName: d.agentName,
     spawned: [d.agentName],
     ...(d.worktree === undefined ? {} : { worktree: d.worktree }),
+    ...(d.seat === undefined ? {} : { seat: d.seat }),
+    ...(d.namePrefix === undefined ? {} : { namePrefix: d.namePrefix }),
   }
   const write: Action =
     d.slice === undefined
@@ -247,7 +249,7 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
     profile: d.profile,
     brief: planner ? plannerBrief(t) : workerBrief(t),
     cwd: d.repo,
-    configDir: t.configDir,
+    configDir: d.configDir ?? t.configDir,
     initiative: d.initiative,
     taskId: d.task,
   })

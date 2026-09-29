@@ -26,6 +26,8 @@ import {
   type Roster,
 } from './observe.js'
 import { plan, type Capacity, type Plan, type PlanInputs } from './plan.js'
+import { defaultAutonomyRoot, loadPolicy } from './policy.js'
+import { tickPrefixes } from './seat-dispatch.js'
 import { accountDir, loadTickConfig, readTaskText, type TickConfig } from './source.js'
 import { retrySteps, stepsForActions, stepsForDispatch, type StepContext } from './steps.js'
 import { loadWorld, type World } from './tick.js'
@@ -181,7 +183,11 @@ async function decide(
   const planned = plan({
     ...world,
     ledger: planLedger,
-    capacity: worktreeCapacity(config, { ...agents, agents: agents.agents - advanced.spawns }),
+    capacity: worktreeCapacity(
+      config,
+      { ...agents, agents: agents.agents - advanced.spawns },
+      tickPrefixes(config.seats, seat => loadPolicy(defaultAutonomyRoot(root), seat)),
+    ),
     orphan: (repo, name) => orphanAt(repo, name),
     collision: check,
   })
@@ -268,14 +274,18 @@ export function agentCapacity(
   }
 }
 
-function worktreeCapacity(config: TickConfig, agents: Pick<Capacity, 'agents' | 'agentsReason'>): Capacity {
+function worktreeCapacity(
+  config: TickConfig,
+  agents: Pick<Capacity, 'agents' | 'agentsReason'>,
+  prefixes: readonly string[],
+): Capacity {
   const budget = resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET)
   const cache = new Map<string, ReturnType<Capacity['worktrees']>>()
   return {
     ...agents,
     agents: Math.max(0, agents.agents),
     worktrees: repo => {
-      const known = cache.get(repo) ?? worktreeUse(worktreesUnder(repo), budget, config)
+      const known = cache.get(repo) ?? worktreeUse(worktreesUnder(repo), budget, config, prefixes)
       cache.set(repo, known)
       return known
     },
