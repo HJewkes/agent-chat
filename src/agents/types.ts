@@ -21,6 +21,10 @@ export const SURFACE_LIFETIMES = ['close-on-exit', 'keep'] as const
 
 export type SurfaceLifetime = (typeof SURFACE_LIFETIMES)[number]
 
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+
+export type EffortLevel = (typeof EFFORT_LEVELS)[number]
+
 /**
  * The default for a profile that does not say, and for every profile file
  * written before the field existed.
@@ -71,6 +75,8 @@ export interface AgentProfile {
   surfaceLifetime?: SurfaceLifetime
   /** Absent means `worker`: spawning and Remote Control are opted into, never granted by omission. */
   role?: AgentRole
+  /** Passed as --effort when set; unset leaves the harness default. */
+  effort?: EffortLevel
   /** Appended via --append-system-prompt, after the standard peer preamble. */
   promptPrelude: string
   /** Extra MCP servers merged into the generated --mcp-config. */
