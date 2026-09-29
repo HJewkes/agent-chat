@@ -8,16 +8,24 @@ import { describe, expect, it } from 'vitest'
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures')
 const HOME_PATH = /\/Users\//
 const REAL_SEATS = ['hjewkes-surplus', 'titan-coord', 'voltras-coord', 'self-improve', 'tp450-herald']
+const SEAT_TASK_NAME = /\b(hs|tc|vc|si)-(cc|tp|vw|r)-[0-9]+/
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/
 
 function leaks(text: string): string[] {
   return text
     .split('\n')
     .flatMap((line, i) =>
-      HOME_PATH.test(line) || EMAIL.test(line) || REAL_SEATS.some(n => line.includes(n))
+      HOME_PATH.test(line) ||
+      taskNameLeaks(line) ||
+      EMAIL.test(line) ||
+      REAL_SEATS.some(n => line.includes(n))
         ? [`line ${i + 1}`]
         : [],
     )
+}
+
+function taskNameLeaks(text: string): boolean {
+  return SEAT_TASK_NAME.test(text)
 }
 
 function walk(dir: string): string[] {
@@ -31,6 +39,7 @@ describe('fixture privacy guard', () => {
     ['a home-directory path', 'cwd: /Users/someone/projects'],
     ['an email address', 'author: someone@example.com'],
     ['a real seat name', '{"actor":"titan-coord"}'],
+    ['a seat-prefixed task-ID name', 'name: hs-cc-123-foo'],
   ])('flags %s', (_name, text) => {
     expect(leaks(`ok\n${text}`)).toEqual(['line 2'])
   })
@@ -46,6 +55,21 @@ describe('fixture privacy guard', () => {
     const found = walk(FIXTURES).flatMap(file =>
       leaks(fs.readFileSync(file, 'utf8')).map(where => `${path.relative(FIXTURES, file)} ${where}`),
     )
+    expect(found).toEqual([])
+  })
+})
+
+describe('test source privacy guard', () => {
+  it('finds no real seat name or seat-prefixed task-ID name in any other test file', () => {
+    const dir = path.dirname(fileURLToPath(import.meta.url))
+    const self = fileURLToPath(import.meta.url)
+    const found = walk(dir)
+      .filter(f => f.endsWith('.ts') && f !== self && !f.startsWith(FIXTURES))
+      .filter(f => {
+        const text = fs.readFileSync(f, 'utf8')
+        return taskNameLeaks(text) || REAL_SEATS.some(n => text.includes(n))
+      })
+      .map(f => path.relative(dir, f))
     expect(found).toEqual([])
   })
 })

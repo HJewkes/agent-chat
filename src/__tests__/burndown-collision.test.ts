@@ -47,8 +47,8 @@ describe('namesId', () => {
   it.each([
     ['Add scorer (TP-400) (#12)', 'TP-400', true],
     ['Add scorer (TP-400) (#12)', 'TP-40', false],
-    ['agent-chat/hs-cc-202-collision-check', 'CC-202', true],
-    ['agent-chat/hs-cc-2020-thing', 'CC-202', false],
+    ['agent-chat/sa-cc-202-collision-check', 'CC-202', true],
+    ['agent-chat/sa-cc-2020-thing', 'CC-202', false],
     ['XTP-40 is a different prefix', 'TP-40', false],
   ])('%s names %s: %s', (text, id, expected) => {
     expect(namesId(text, id)).toBe(expected)
@@ -73,7 +73,7 @@ describe('collision', () => {
     ],
     ['unreadable subjects', work('TP-1'), { subjects: undefined }, 'landed'],
     ['an open PR title', work('R-48'), { prs: [pr(3, { title: 'Fix R-48 paging' })] }, 'open-pr'],
-    ['an open PR branch', work('CC-202'), { prs: [pr(3, { branch: 'agent-chat/hs-cc-202-x' })] }, 'open-pr'],
+    ['an open PR branch', work('CC-202'), { prs: [pr(3, { branch: 'agent-chat/sa-cc-202-x' })] }, 'open-pr'],
     ['an open PR body', work('R-48'), { prs: [pr(3, { body: 'Closes R-48.' })] }, 'open-pr'],
     [
       "the ledger's own agent branch",
@@ -82,7 +82,7 @@ describe('collision', () => {
       undefined,
     ],
     ['unlistable PRs', work('R-48'), { prs: undefined }, 'open-pr'],
-    ['a live agent carrying the id', work('CC-202'), { names: ['hs-cc-202-collision-check'] }, 'claimed'],
+    ['a live agent carrying the id', work('CC-202'), { names: ['sa-cc-202-collision-check'] }, 'claimed'],
     [
       "the ledger's own live agent",
       work('CC-202'),
