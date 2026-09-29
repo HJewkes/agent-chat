@@ -11,6 +11,9 @@ import {
   burndownPlistPath,
   cliEntry,
 } from '../../paths.js'
+import { activeWorkRoot } from '../../agents/active-work.js'
+import { defaultAutonomyRoot } from '../../agents/burndown/policy.js'
+import { renderScored, scoredPlanFromDisk } from '../../agents/burndown/score-render.js'
 import { collisionCheck, type BrokerView } from '../../agents/burndown/collision.js'
 import { readLedger, withLedgerLock, writeLedger } from '../../agents/burndown/ledger.js'
 import { loadTickConfig } from '../../agents/burndown/source.js'
@@ -56,22 +59,76 @@ const refused = (err: unknown): Report => ({
   errors: [err instanceof Error ? err.message : String(err)],
 })
 
+const PlanArgs = z.object({
+  seat: z.string().optional(),
+  scored: z.boolean().optional(),
+  top: z.coerce.number().int().positive().optional(),
+  autonomyRoot: z.string().optional(),
+  today: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD')
+    .optional(),
+})
+type PlanArgs = z.infer<typeof PlanArgs>
+
+/** score.py's default `--top`. */
+const DEFAULT_TOP = 20
+
+/** The local calendar date, as score.py's `date.today()` reads it. */
+const localDate = (now: Date): string =>
+  [now.getFullYear(), now.getMonth() + 1, now.getDate()].map(n => String(n).padStart(2, '0')).join('-')
+
+/** Refuses scored-only flags without `--scored`, so a plain `burndown plan` never changes meaning. */
+export function planFlagError({ seat, scored, top, autonomyRoot, today }: PlanArgs): string | undefined {
+  if (scored === true) return seat === undefined ? 'burndown plan --scored needs --seat <name>' : undefined
+  if (seat !== undefined) return 'burndown plan --seat needs --scored; the tick does not read seat scores yet'
+  if (top !== undefined || autonomyRoot !== undefined || today !== undefined)
+    return 'burndown plan --top, --autonomy-root and --today apply only with --seat <name> --scored'
+  return undefined
+}
+
 export const burndownPlanVerb = defineVerb({
   name: 'burndown.plan',
   description: 'dry run: what the tick would dispatch now, and why every other task was refused',
-  args: z.object({}),
+  args: PlanArgs,
   result: Report,
-  async run() {
-    const now = new Date()
+  cli: {
+    options: {
+      seat: { long: '--seat', description: 'autonomy seat whose scored order to print (with --scored)' },
+      scored: { long: '--scored', description: "print the seat's scored dispatch order with components" },
+      top: { long: '--top', description: `picks to print with --scored (default ${DEFAULT_TOP})` },
+      autonomyRoot: { long: '--autonomy-root', description: 'directory holding charter.md and seats/' },
+      today: { long: '--today', description: 'pin the staleness clock (YYYY-MM-DD) with --scored' },
+    },
+  },
+  async run(args) {
+    const flagError = planFlagError(args)
+    if (flagError !== undefined) return refused(new Error(flagError))
     try {
-      const broker = await readCollisionView()
-      const planned = planFromDisk(now, undefined, ledger => collisionCheck(ledger, broker))
-      return { ok: true, lines: renderPlan(planned, now) }
+      return args.seat === undefined ? await plainPlan() : { ok: true, lines: seatPlan(args.seat, args) }
     } catch (err) {
       return refused(err)
     }
   },
 })
+
+async function plainPlan(): Promise<Report> {
+  const now = new Date()
+  const broker = await readCollisionView()
+  const planned = planFromDisk(now, undefined, ledger => collisionCheck(ledger, broker))
+  return { ok: true, lines: renderPlan(planned, now) }
+}
+
+function seatPlan(seat: string, { top, autonomyRoot, today }: PlanArgs): string[] {
+  const plan = scoredPlanFromDisk({
+    seat,
+    top: top ?? DEFAULT_TOP,
+    today: today ?? localDate(new Date()),
+    autonomyRoot: autonomyRoot ?? defaultAutonomyRoot(),
+    activeWorkRoot: activeWorkRoot(),
+  })
+  return renderScored(plan)
+}
 
 /** Undefined when no broker answers, which the collision check reports as a `claimed` refusal it could not rule out. */
 async function readCollisionView(): Promise<BrokerView | undefined> {

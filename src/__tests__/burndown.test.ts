@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseAutonomy } from '../agents/active-work.js'
 import { readAccountBudget } from '../agents/budget.js'
 import { gateAccount } from '../agents/burndown/budget-gate.js'
@@ -19,6 +19,9 @@ import {
 } from '../agents/burndown/ledger.js'
 import { planFromDisk, renderPlan } from '../agents/burndown/tick.js'
 import { TRUST_RULE_CLI_VERSION } from '../agents/trust.js'
+import { BrokerClient } from '../client/broker-client.js'
+import { withBroker } from '../cli/client.js'
+import { burndownPlanVerb } from '../cli/verbs/burndown.js'
 
 /**
  * The dry-run tick over a fixture world: an active-work root, a profile root
@@ -266,6 +269,28 @@ describe('burndown plan', () => {
     const result = planFromDisk(NOON)
 
     expect(result).toEqual({ dispatch: [], refusals: [], notOptedIn: ['demo'] })
+  })
+
+  it('prints the unscored plan unchanged when neither --seat nor --scored is passed (CC-230)', async () => {
+    initiative('demo', '', { 'DM-1': task('DM-1') })
+    vi.useFakeTimers({ toFake: ['Date'], now: NOON })
+    const connect = vi.spyOn(BrokerClient.prototype, 'connect').mockRejectedValue(new Error('no broker'))
+
+    try {
+      const report = await burndownPlanVerb.run({}, { warnings: [], format: 'human', withBroker })
+
+      expect(report).toEqual({
+        ok: true,
+        lines: [
+          `burndown plan at ${NOON.toISOString()} (dry run: nothing spawned, nothing claimed)`,
+          'would dispatch: nothing',
+          'not opted in (1 focused, no autonomy.mode: burndown): demo',
+        ],
+      })
+    } finally {
+      connect.mockRestore()
+      vi.useRealTimers()
+    }
   })
 })
 
