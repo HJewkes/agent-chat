@@ -104,8 +104,9 @@ const conversationArgs = (input: LaunchPlanInput): string[] =>
     ? [input.resume === true ? '--resume' : '--session-id', input.sessionId]
     : ['--session-id', input.sessionId, '--resume', input.forkFrom, '--fork-session']
 
-// A profile's GIT_CONFIG_* could otherwise override or disable the leak guard's hooksPath.
-const RESERVED_ENV = /^(AGENT_CHAT_|CLAUDE_CONFIG_DIR$|GIT_CONFIG_(COUNT|PARAMETERS|KEY_\d+|VALUE_\d+)$)/
+// A profile's GIT_CONFIG_* could otherwise disable the leak guard's hooksPath; TITAN_EGRESS_TERMS could empty its term list.
+const RESERVED_ENV =
+  /^(AGENT_CHAT_|CLAUDE_CONFIG_DIR$|TITAN_EGRESS_TERMS$|GIT_CONFIG_(COUNT|PARAMETERS|KEY_\d+|VALUE_\d+)$)/
 
 // Beneath the spawner's own keys, and stripped of the reserved ones so an unset CLAUDE_CONFIG_DIR stays unset.
 const profileEnv = (profile: AgentProfile): Record<string, string> =>

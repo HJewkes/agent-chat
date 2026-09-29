@@ -133,6 +133,11 @@ never in any repository. The hook sets `TITAN_EGRESS_REQUIRE_TERMS=1`, so while 
 missing every agent push is refused with one line naming the file to create. The hook also clears
 `CI`, because egress-scan never reads the term list when `CI` is set.
 
+The hook ignores an inherited `TITAN_EGRESS_TERMS`. It overwrites the variable with the default
+path for the scanner call, so pointing it at `/dev/null` or an empty file cannot switch the scan
+off, and a missing default file still refuses the push. A profile's `env` cannot pass
+`TITAN_EGRESS_TERMS` either: it is reserved, like `GIT_CONFIG_*`.
+
 `MISSING_TERMS_REFUSES` in `src/leak-guard/hooks-dir.ts` is the switch. Set to `false`, the hook
 stops requiring the list, and a push with no list goes ahead, scanned with the generic rules only,
 after a `leak-scan: WARNING` line naming the file.

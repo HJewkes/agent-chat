@@ -28,16 +28,16 @@ exit 0; }
 [ "$1" = pre-push ] || exit 2
 refs=$(cat)
 printf 'args=%s CI=%s REQUIRE=%s\\n%s\\n' "$*" "\${CI-unset}" "\${TITAN_EGRESS_REQUIRE_TERMS-unset}" "$refs" > "\${STUB_LOG:-/dev/null}"
+terms=\${TITAN_EGRESS_TERMS:-\${XDG_CONFIG_HOME:-$HOME/.config}/titan-egress/private-terms}
 case \${CI:-} in
 '' | false | 0)
-  terms=\${TITAN_EGRESS_TERMS:-\${XDG_CONFIG_HOME:-$HOME/.config}/titan-egress/private-terms}
   if [ ! -f "$terms" ]; then
     [ "\${TITAN_EGRESS_REQUIRE_TERMS:-}" = 1 ] && { echo 'titan-egress-scan: private term list not found and TITAN_EGRESS_REQUIRE_TERMS=1' >&2; exit 2; }
     echo 'titan-egress-scan: private term list not found; generic rules only' >&2
   fi ;;
 esac
 for sha in $(printf '%s\\n' "$refs" | awk '{ print $2 }'); do
-  git show "$sha" | grep -q ${LEAK} && { echo 'commit 1 notes.md:1 private-term'; exit 1; }
+  grep -q ${LEAK} "$terms" 2>/dev/null && git show "$sha" | grep -q ${LEAK} && { echo 'commit 1 notes.md:1 private-term'; exit 1; }
 done
 exit 0`
 
@@ -262,6 +262,34 @@ describe('git push with no private term list', () => {
     expect(run.code).not.toBe(0)
     expect(run.stderr).toContain(pointer(f))
     expect(stubSaw(f)[0]).toBe('args=pre-push origin CI= REQUIRE=1')
+  })
+
+  // CC-302: an inherited TITAN_EGRESS_TERMS must not swap the scanner's term list.
+  it.each(['/dev/null', 'empty-file'])('ignores an inherited TITAN_EGRESS_TERMS of %s', value => {
+    const f = fixture()
+    const empty = path.join(path.dirname(f.termsFile), 'empty')
+    fs.writeFileSync(empty, '')
+    f.agentEnv.TITAN_EGRESS_TERMS = value === 'empty-file' ? empty : value
+    commitFile(f, 'leaky', 'notes.md', `the ${LEAK} seat`)
+
+    const run = push(f, 'leaky')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stdout + run.stderr).toContain('notes.md:1 private-term')
+    expect(remoteHas(f, 'leaky')).toBe(false)
+  })
+
+  it('still refuses a missing default list when TITAN_EGRESS_TERMS names an existing file', () => {
+    const f = fixture({ terms: false })
+    const other = path.join(path.dirname(f.chatHome), 'other-terms')
+    fs.writeFileSync(other, `${LEAK}\n`)
+    f.agentEnv.TITAN_EGRESS_TERMS = other
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('no private term list')
   })
 
   it('warns and lets the push through when the missing-terms switch is flipped', () => {

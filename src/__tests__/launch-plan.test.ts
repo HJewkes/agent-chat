@@ -936,6 +936,12 @@ describe('per-profile env (CC-259)', () => {
     expect('CLAUDE_CONFIG_DIR' in unset.env).toBe(false)
   })
 
+  it('cannot pass TITAN_EGRESS_TERMS, which could point the leak scan at an empty term list', () => {
+    const plan = buildLaunchPlan(input({ profile: profile({ env: { TITAN_EGRESS_TERMS: '/dev/null' } }) }))
+
+    expect('TITAN_EGRESS_TERMS' in plan.env).toBe(false)
+  })
+
   it('cannot override or disable the leak guard hooksPath through GIT_CONFIG_*', () => {
     const hostile = profile({
       env: {

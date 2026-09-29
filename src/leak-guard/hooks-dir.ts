@@ -55,7 +55,8 @@ export const MISSING_TERMS_REFUSES = true
 // egress-scan's own stderr line; its exit code (2) is shared with every config error.
 const MISSING_TERMS_LINE = 'private term list not found'
 
-const TERMS_FILE = '${TITAN_EGRESS_TERMS:-${XDG_CONFIG_HOME:-$HOME/.config}/titan-egress/private-terms}'
+// Never read from TITAN_EGRESS_TERMS: an inherited value could point the scan at an empty file (CC-302).
+const TERMS_FILE = '${XDG_CONFIG_HOME:-$HOME/.config}/titan-egress/private-terms'
 
 const missingTermsNote = (refuses: boolean): string =>
   refuses
@@ -66,7 +67,7 @@ const missingTermsNote = (refuses: boolean): string =>
  * node and titan-egress-scan are found on PATH when the hook runs, never baked in: a versioned node
  * goes away and would refuse every push. A missing one, or a scanner whose help lacks `pre-push`,
  * warns and lets the push go. A scanner that crashes still refuses. `CI=` stops egress-scan skipping
- * the term list. The scan's refusal does not skip the repo's own hook; either one failing refuses.
+ * the term list, and TITAN_EGRESS_TERMS is overwritten with the default path so an inherited value cannot swap it. The scan's refusal does not skip the repo's own hook; either one failing refuses.
  */
 const prePushShim = (refuses: boolean): string => `${HEADER}refs=$(mktemp) || exit 1
 errs=$(mktemp) || exit 1
@@ -84,7 +85,7 @@ elif ! help=$(titan-egress-scan --help 2>&1); then
 else
   case $help in
   *pre-push*)
-    CI= TITAN_EGRESS_REQUIRE_TERMS=${refuses ? '1' : ''} titan-egress-scan pre-push "$1" < "$refs" 2> "$errs"
+    CI= TITAN_EGRESS_TERMS="${TERMS_FILE}" TITAN_EGRESS_REQUIRE_TERMS=${refuses ? '1' : ''} titan-egress-scan pre-push "$1" < "$refs" 2> "$errs"
     scan=$?
     cat "$errs" >&2
     if grep -q '${MISSING_TERMS_LINE}' "$errs"; then
