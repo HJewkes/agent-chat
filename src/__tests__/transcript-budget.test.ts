@@ -136,6 +136,17 @@ describe('a headless agent with no status line', () => {
 
     expect(readBudget(SESSION, NOW_S * 1000, configDir)).toMatchObject({ found: true, source: 'transcript' })
   })
+
+  it('ignores a newer subagent sidechain record and reports the last main-chain usage', async () => {
+    const sidechain = { ...JSON.parse(assistant(NOW_S - 2, { input_tokens: 3_000 })), isSidechain: true }
+    writeTranscript([assistant(NOW_S - 20, { input_tokens: 120_000 }), JSON.stringify(sidechain)])
+
+    const out = await callTool('session_budget', NOW_S)
+
+    expect(out).toContain(
+      'worker: 120k tokens of context, window unknown (source: transcript, last usage record 20s old)',
+    )
+  })
 })
 
 describe('when both sources exist', () => {

@@ -133,10 +133,10 @@ function safeSessionId(sessionId: string): string {
  * reports its fill. Account-level readers use {@link readStatusLineBudget}
  * instead, because a transcript carries no rate limits.
  */
-export function readBudget(sessionId: string, now = Date.now(), dir?: string): BudgetRead {
+export function readBudget(sessionId: string, now = Date.now(), dir?: string, cwd?: string): BudgetRead {
   const statusLine = readStatusLineBudget(sessionId, now, dir)
   if (statusLine.found || !SESSION_ID_SHAPE.test(sessionId)) return statusLine
-  const usage = readTranscriptUsage(sessionId, dir)
+  const usage = readTranscriptUsage(sessionId, dir, cwd)
   if (!usage.ok) return { ...statusLine, transcript_miss: `${usage.reason} (${usage.path})` }
   const age = Math.max(0, Math.round(now / 1000 - usage.recorded_at))
   return {

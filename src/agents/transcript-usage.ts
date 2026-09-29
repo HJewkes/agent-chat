@@ -28,10 +28,11 @@ export interface TranscriptUsage {
 export type TranscriptUsageRead = TranscriptUsage | { ok: false; path: string; reason: string }
 
 /** Never throws: the transcript belongs to another program and may be anything. */
-export function readTranscriptUsage(sessionId: string, dir?: string): TranscriptUsageRead {
+/** A known `cwd` hits the derived path first; without one every project dir is scanned. */
+export function readTranscriptUsage(sessionId: string, dir?: string, cwd = ''): TranscriptUsageRead {
   let file = '(transcript)'
   try {
-    const found = findTranscript('', sessionId, dir)
+    const found = findTranscript(cwd, sessionId, dir)
     file = found.path
     if (!found.exists) return { ok: false, path: file, reason: 'no transcript written' }
     const usage = lastUsage(readTail(file))
@@ -65,11 +66,12 @@ function lastUsage(tail: string): Omit<TranscriptUsage, 'ok' | 'path'> | undefin
   return undefined
 }
 
+/** A sidechain record is a subagent's turn, whose usage is its own context, not the agent's. */
 function usageOf(line: string): Omit<TranscriptUsage, 'ok' | 'path'> | undefined {
   const record = parseLine(line)
   const message = isRecord(record?.message) ? record.message : undefined
-  if (record?.type !== 'assistant' || message === undefined || message.model === '<synthetic>')
-    return undefined
+  if (record?.type !== 'assistant' || record.isSidechain === true) return undefined
+  if (message === undefined || message.model === '<synthetic>') return undefined
   const usage = isRecord(message.usage) ? message.usage : undefined
   const recordedMs = typeof record.timestamp === 'string' ? Date.parse(record.timestamp) : NaN
   const input = count(usage?.input_tokens)

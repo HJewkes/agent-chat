@@ -51,6 +51,6 @@ export const sessionBudget = defineTool({
         `No session or agent named "${name}" has a durable identity, so there is no session id to ` +
         'look a budget up for. chat_list shows who is registered; agent_list shows who has an identity.'
       )
-    return renderBudget(name, readBudget(agent.sessionId, Date.now(), agent.configDir))
+    return renderBudget(name, readBudget(agent.sessionId, Date.now(), agent.configDir, agent.cwd))
   },
 })
