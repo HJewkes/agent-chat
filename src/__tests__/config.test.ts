@@ -11,6 +11,7 @@ import {
   resolvePermissionHookTimeout,
   resolveWorktreeBudget,
 } from '../config.js'
+import { newAgentSlots } from '../broker/daemon.js'
 import { Semaphore, DEFAULT_SLOTS } from '../agents/semaphore.js'
 
 /**
@@ -98,6 +99,20 @@ describe('agent slot cap read per spawn (CC-159)', () => {
     expect(semaphore.acquire('a4')).toBe(false)
     semaphore.release('a3')
     expect(semaphore.acquire('a4')).toBe(true)
+  })
+})
+
+describe("the broker's own slot semaphore (CC-159)", () => {
+  it('sees an agentSlots edit made after the broker built it', () => {
+    writeConfigJson({ agentSlots: 2 })
+    const semaphore = newAgentSlots()
+    semaphore.acquire('a1')
+    semaphore.acquire('a2')
+    expect(semaphore.acquire('a3')).toBe(false)
+
+    writeConfigJson({ agentSlots: 3 })
+
+    expect(semaphore.acquire('a3')).toBe(true)
   })
 })
 
