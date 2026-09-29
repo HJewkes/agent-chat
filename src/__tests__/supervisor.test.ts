@@ -63,6 +63,23 @@ function workspace(): string {
   return dir
 }
 
+/**
+ * A home directory the cwd policy really treats as home. When HOME sits under the
+ * tmp root (a sandboxed run), the policy allows it as a tmp workspace, so the
+ * tmp root is moved to a sibling directory too.
+ */
+function isolatedHome(): string {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-home-'))
+  tmpDirs.push(base)
+  const home = path.join(base, 'home')
+  const tmp = path.join(base, 'tmp')
+  fs.mkdirSync(home)
+  fs.mkdirSync(tmp)
+  vi.spyOn(os, 'homedir').mockReturnValue(home)
+  vi.spyOn(os, 'tmpdir').mockReturnValue(tmp)
+  return home
+}
+
 const spawnReq = (over: Record<string, unknown> = {}) => ({
   name: 'scout',
   profile: 'explorer',
@@ -98,6 +115,7 @@ afterEach(() => {
   stopAutoAttach()
   supervisor?.close()
   vi.useRealTimers()
+  vi.restoreAllMocks()
   delete process.env.AGENT_CHAT_HOME
   for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
@@ -171,7 +189,7 @@ describe('spawning', () => {
       const sup = withStubbedSurface()
       core.register(fakeConn(), { t: 'register', name: 'peer', workingOn: '', cwd: workspace(), pid: 1 })
 
-      const result = await sup.spawn(spawnReq({ requestedBy: 'peer', cwd: os.homedir() }))
+      const result = await sup.spawn(spawnReq({ requestedBy: 'peer', cwd: isolatedHome() }))
 
       expect(result.ok).toBe(false)
       expect(result.reason).toMatch(/must be under your home directory/)
@@ -2002,7 +2020,7 @@ describe('lifecycle hooks', () => {
     const { spawn, calls } = capturingHookSpawn()
     const sup = withStubbedSurface({ hookSpawn: spawn })
 
-    const result = await sup.spawn(spawnReq({ requestedBy: 'peer', cwd: os.homedir() }))
+    const result = await sup.spawn(spawnReq({ requestedBy: 'peer', cwd: isolatedHome() }))
 
     expect(result.ok).toBe(false)
     expect(calls).toHaveLength(0)
