@@ -474,8 +474,18 @@ describe('profiles resolve by name only', () => {
       { model: 'opus', allowedTools: ['Read'], isolation: 'chroot', surface: 'headless' },
       { model: 'opus', allowedTools: ['Read'], isolation: 'none', surface: 'tmux' },
       { allowedTools: ['Read'], isolation: 'none', surface: 'headless' },
+      { model: 'opus', allowedTools: ['Read'], isolation: 'none', surface: 'headless', role: 'boss' },
     ]
     for (const body of bad) expect(parseProfile('bad', body)).toHaveProperty('error')
+  })
+
+  it('reads a declared coordinator role and leaves every builtin without one', () => {
+    const body = { model: 'opus', allowedTools: ['Read'], isolation: 'none', surface: 'headless' }
+
+    const lead = parseProfile('lead', { ...body, role: 'coordinator' })
+
+    expect(lead).toMatchObject({ role: 'coordinator' })
+    expect(BUILTIN_PROFILES.every(profile => profile.role === undefined)).toBe(true)
   })
 
   it('reports a malformed file instead of falling back to the builtin', () => {

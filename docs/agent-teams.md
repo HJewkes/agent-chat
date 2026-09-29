@@ -1489,8 +1489,13 @@ Therefore:
   `resolveWorktreeBudget`), with the same fallback rule as `agentSlots`. Unlike
   `agentSlots` it is read on every spawn, so editing it takes effect without a
   broker restart. An adopted `worktree:` takes no slot.
-- **Depth:** `agent_spawned.meta.depth`, default cap 2. Without this, an agent
-  team is a fork bomb with a language model deciding the branching factor.
+- **Roles and depth (CC-163):** only a `coordinator` profile may spawn; a
+  worker (any profile without `"role": "coordinator"`) is refused. The cap
+  counts coordinator links only: `agent_spawned.meta.coordinator_depth`, capped
+  at `MAX_COORDINATOR_DEPTH` (3), with a human-started root at 0. Workers are
+  leaves and cost no depth. `meta.depth` still records spawn-tree depth for
+  placement. Without the cap, an agent team is a fork bomb with a language
+  model deciding the branching factor.
 - **Lifecycle ledger shadow (CC-118):** `ledgerShadow` in
   `~/.agent-chat/config.json`, read once at broker boot by `config.ts`'s
   `resolveLedgerShadow`, `AGENT_CHAT_LEDGER_SHADOW=0|1` as an environment

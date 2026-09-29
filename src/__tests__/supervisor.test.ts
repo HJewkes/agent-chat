@@ -9,7 +9,12 @@ import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { SpawnRateBudget } from '../agents/spawn-rate.js'
-import { MAX_DEPTH, Supervisor, type SpawnOutcome, type SupervisorOptions } from '../agents/supervisor.js'
+import {
+  MAX_COORDINATOR_DEPTH,
+  Supervisor,
+  type SpawnOutcome,
+  type SupervisorOptions,
+} from '../agents/supervisor.js'
 import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
 import { pairPresence } from '../agents/identity.js'
 import type { AgentIdentity } from '../protocol.js'
@@ -1700,23 +1705,6 @@ describe('retiring an agent that was given a pane', () => {
 })
 
 describe('spawn depth', () => {
-  it('caps a chain of agents spawning agents', async () => {
-    const sup = withStubbedSurface()
-    // A parent already at the cap: its child would be MAX_DEPTH + 1.
-    core.append({
-      kind: 'agent_spawned',
-      actor: 'human',
-      target: 'parent',
-      msgId: 'p1',
-      meta: { depth: String(MAX_DEPTH) },
-    })
-
-    const result = await sup.spawn(spawnReq({ parentAgentId: 'p1' }))
-
-    expect(result.ok).toBe(false)
-    expect(result.reason).toMatch(new RegExp(`exceeds the cap of ${MAX_DEPTH}`))
-  })
-
   it('treats a human-initiated spawn as depth 1', async () => {
     const sup = withStubbedSurface()
     await sup.spawn(spawnReq({ surface: 'iterm-pane' }))
@@ -1751,6 +1739,140 @@ describe('spawn depth', () => {
 })
 
 /**
+ * CC-163. On 2026-09-26 a coordinator two coordinators deep could not spawn at
+ * all under a flat depth cap of 2, while any depth-1 worker still could. The
+ * bound belongs to the role: workers never spawn, and only coordinator links count.
+ */
+describe('agent roles', () => {
+  /** Installs a profile whose only notable property is its role. */
+  const installProfile = (name: string, role?: string): string => {
+    const dir = path.join(process.env.AGENT_CHAT_HOME as string, 'profiles')
+    fs.mkdirSync(dir, { recursive: true })
+    const body = { model: 'opus', allowedTools: ['Read'], isolation: 'none', surface: 'headless' }
+    fs.writeFileSync(path.join(dir, `${name}.json`), JSON.stringify(role ? { ...body, role } : body))
+    return name
+  }
+
+  /** A registered agent whose own spawn row carries `meta`, so it may ask for spawns. */
+  const recordedAgent = (name: string, cwd: string, meta: Record<string, string>): string => {
+    const { msgId } = core.append({
+      kind: 'agent_spawned',
+      actor: 'human',
+      target: name,
+      meta: { name, ...meta },
+    })
+    core.register(fakeConn(), { t: 'register', name, workingOn: '', cwd, pid: 1 })
+    return msgId
+  }
+
+  const spawnedRow = (name: string) =>
+    core.events.agentEvents().find(r => r.kind === 'agent_spawned' && r.target === name)
+
+  it("refuses a worker's spawn with a message that says what to do instead", async () => {
+    const sup = withStubbedSurface()
+    const shared = workspace()
+    const worker = await sup.spawn(spawnReq({ name: 'digger', cwd: shared }))
+    core.register(fakeConn(), { t: 'register', name: 'digger', workingOn: '', cwd: shared, pid: 1 })
+
+    const result = await sup.spawn(
+      spawnReq({ name: 'helper', requestedBy: 'digger', parentAgentId: worker.agentId, cwd: shared }),
+    )
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toBe(
+      'digger is a worker (profile explorer) and cannot spawn agents; report the need to your spawner via chat_send',
+    )
+    expect(spawnedRow('helper')).toBeUndefined()
+  })
+
+  it('lets a coordinator two coordinators deep spawn a worker, the 2026-09-26 case', async () => {
+    const sup = withStubbedSurface()
+    const shared = workspace()
+    const lead = installProfile('lead', 'coordinator')
+    const parentAgentId = recordedAgent('coordinator', shared, {
+      profile: lead,
+      role: 'coordinator',
+      depth: '2',
+      coordinator_depth: '2',
+    })
+
+    const result = await sup.spawn(spawnReq({ requestedBy: 'coordinator', parentAgentId, cwd: shared }))
+
+    expect(result.ok).toBe(true)
+    expect(spawnedRow('scout')?.meta).toMatchObject({ role: 'worker', coordinator_depth: '2', depth: '3' })
+  })
+
+  it(`caps a coordinator chain at ${MAX_COORDINATOR_DEPTH} and still lets the last coordinator spawn workers`, async () => {
+    const sup = withStubbedSurface()
+    const shared = workspace()
+    const lead = installProfile('lead', 'coordinator')
+    const parentAgentId = recordedAgent('deepest', shared, {
+      profile: lead,
+      role: 'coordinator',
+      coordinator_depth: String(MAX_COORDINATOR_DEPTH),
+    })
+
+    const another = await sup.spawn(
+      spawnReq({ name: 'sub-lead', profile: lead, requestedBy: 'deepest', parentAgentId, cwd: shared }),
+    )
+    const worker = await sup.spawn(spawnReq({ requestedBy: 'deepest', parentAgentId, cwd: shared }))
+
+    expect(another.ok).toBe(false)
+    expect(another.reason).toMatch(`coordinator depth 4 exceeds the cap of ${MAX_COORDINATOR_DEPTH}`)
+    expect(worker.ok).toBe(true)
+  })
+
+  it('never refuses the human, and counts their coordinator as the first link', async () => {
+    const sup = withStubbedSurface()
+    const lead = installProfile('lead', 'coordinator')
+
+    const result = await sup.spawn(spawnReq({ profile: lead }))
+
+    expect(result.ok).toBe(true)
+    expect(spawnedRow('scout')?.meta).toMatchObject({ role: 'coordinator', coordinator_depth: '1' })
+  })
+
+  it('refuses Remote Control for a worker profile and allows it for a coordinator', async () => {
+    const sup = withStubbedSurface()
+    const lead = installProfile('lead', 'coordinator')
+
+    const worker = await sup.spawn(spawnReq({ name: 'rc-worker', remoteControl: true }))
+    const coordinator = await sup.spawn(spawnReq({ name: 'rc-lead', profile: lead, remoteControl: true }))
+
+    expect(worker.ok).toBe(false)
+    expect(worker.reason).toMatch(/"explorer" is a worker and cannot run with Remote Control/)
+    expect(coordinator.ok).toBe(true)
+  })
+
+  it('treats a profile file with no role as a worker', async () => {
+    const sup = withStubbedSurface()
+    const plain = installProfile('plain')
+
+    const result = await sup.spawn(spawnReq({ profile: plain, remoteControl: true }))
+
+    expect(result.reason).toMatch(/"plain" is a worker/)
+  })
+
+  it('resolves a pre-role spawn row from its profile name', async () => {
+    const sup = withStubbedSurface()
+    const shared = workspace()
+    const lead = installProfile('lead', 'coordinator')
+    const legacyLead = recordedAgent('old-lead', shared, { profile: lead, depth: '2' })
+    const legacyWorker = recordedAgent('old-worker', shared, { profile: 'implementer', depth: '1' })
+
+    const fromLead = await sup.spawn(
+      spawnReq({ requestedBy: 'old-lead', parentAgentId: legacyLead, cwd: shared }),
+    )
+    const fromWorker = await sup.spawn(
+      spawnReq({ name: 'other', requestedBy: 'old-worker', parentAgentId: legacyWorker, cwd: shared }),
+    )
+
+    expect(fromLead.ok).toBe(true)
+    expect(fromWorker.reason).toMatch(/old-worker is a worker \(profile implementer\)/)
+  })
+})
+
+/**
  * CC-39. `agent_spawn` resolves a profile by NAME and never asked whether the
  * requester was privileged enough to grant what that profile allows — while
  * `launch-plan.ts` appends agent-chat's own tools (agent_spawn among them) to
@@ -1759,13 +1881,13 @@ describe('spawn depth', () => {
  * custom profile file needed: escalation by naming a string.
  */
 describe('spawn privilege', () => {
-  /** A spawned agent that was itself granted `tools`, and is registered so it may spawn. */
+  /** A spawned coordinator that was itself granted `tools`, and is registered so it may spawn. */
   const spawnedParent = (name: string, cwd: string, tools: string[]): string => {
     const { msgId } = core.append({
       kind: 'agent_spawned',
       actor: 'human',
       target: name,
-      meta: { name, depth: '1', allowed_tools: tools.join(',') },
+      meta: { name, depth: '1', role: 'coordinator', allowed_tools: tools.join(',') },
     })
     core.register(fakeConn(), { t: 'register', name, workingOn: '', cwd, pid: 1 })
     return msgId
@@ -1777,7 +1899,13 @@ describe('spawn privilege', () => {
       kind: 'agent_spawned',
       actor: 'human',
       target: name,
-      meta: { name, depth: '1', allowed_tools: tools.join(','), disallowed_tools: denied.join(',') },
+      meta: {
+        name,
+        depth: '1',
+        role: 'coordinator',
+        allowed_tools: tools.join(','),
+        disallowed_tools: denied.join(','),
+      },
     })
     core.register(fakeConn(), { t: 'register', name, workingOn: '', cwd, pid: 1 })
     return msgId

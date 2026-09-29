@@ -254,12 +254,13 @@ escalation and calling it a handoff: an `explorer` could teleport into an
 
 **Depth is inherited, not incremented.** This is a real bug waiting in the
 obvious implementation. `Supervisor.depthOf` reads the parent's `meta.depth` and
-returns it plus one; `preflight` refuses when depth exceeds `MAX_DEPTH` (2). If
+returns it plus one, and the spawn cap reads `meta.coordinator_depth` the same
+way against `MAX_COORDINATOR_DEPTH` (3; CC-163). If
 teleport reuses the ordinary parent path, a depth-1 agent can teleport twice and
 then never again — a long-running agent loses the ability to pick up its own
 improvements precisely because it has been running long enough to need it.
-Succession is not branching. `meta.depth` on the descendant must equal the
-predecessor's.
+Succession is not branching. `meta.depth`, `meta.coordinator_depth` and
+`meta.role` on the descendant must equal the predecessor's.
 
 **The launch plan and MCP config are rebuilt now, not reused.**
 `writeLaunchFiles(buildLaunchPlan(...), buildMcpConfig(profile, cliEntry()))` —

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { listProfileNames, loadProfile } from '../../agents/profiles.js'
+import { listProfileNames, loadProfile, roleOf } from '../../agents/profiles.js'
 import { defineTool } from '../command.js'
 
 export const agentProfiles = defineTool({
@@ -7,7 +7,8 @@ export const agentProfiles = defineTool({
   description:
     "Call this automatically as step one of any spawn decision — even ones you're fairly sure about. " +
     "It's free, and guessing a profile name risks silently granting the wrong tool set. " +
-    'List the profiles agent_spawn can use, with the model, tool set, surface and isolation each grants.',
+    'List the profiles agent_spawn can use, with the role, model, tool set, surface and isolation each grants. ' +
+    'Only a coordinator may spawn agents or run with Remote Control; a worker reports needs to its spawner.',
   args: z.object({}),
   result: z.string(),
   async run() {
@@ -18,7 +19,7 @@ export const agentProfiles = defineTool({
         ? `\n    denies: ${profile.disallowedTools.join(', ')}`
         : ''
       return (
-        `- ${name} [${profile.model}, ${profile.surface}, isolation ${profile.isolation}]\n` +
+        `- ${name} [${roleOf(profile)}, ${profile.model}, ${profile.surface}, isolation ${profile.isolation}]\n` +
         `    ${profile.description}\n    tools: ${profile.allowedTools.join(', ')}${denies}`
       )
     })

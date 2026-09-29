@@ -488,7 +488,7 @@
           },
           "remote_control": {
             "type": "boolean",
-            "description": "Start the agent with Claude Code Remote Control, so it can be driven from claude.ai or a phone. Explicit opt-in, default false: a spawned agent never gets it otherwise. Headless surfaces ignore it, because a print-mode run cannot host Remote Control."
+            "description": "Start the agent with Claude Code Remote Control, so it can be driven from claude.ai or a phone. Explicit opt-in, default false: a spawned agent never gets it otherwise. Coordinator profiles only: it is refused for a worker profile. Headless surfaces ignore it, because a print-mode run cannot host Remote Control."
           },
           "resume_session": {
             "type": "string",
@@ -530,7 +530,7 @@
           },
           "remote_control": {
             "type": "boolean",
-            "description": "Optional. Omit to carry Remote Control across when this session was launched with --remote-control. Set true if you turned it on mid-session with /remote-control, which the broker cannot see; set false to drop it. Headless successors ignore it."
+            "description": "Optional. Omit to carry Remote Control across when this session was launched with --remote-control. Set true if you turned it on mid-session with /remote-control, which the broker cannot see; set false to drop it. A worker successor never gets it, and true is refused for one. Headless successors ignore it."
           }
         },
         "required": [
@@ -594,7 +594,7 @@
     },
     {
       "name": "agent_profiles",
-      "description": "Call this automatically as step one of any spawn decision — even ones you're fairly sure about. It's free, and guessing a profile name risks silently granting the wrong tool set. List the profiles agent_spawn can use, with the model, tool set, surface and isolation each grants.",
+      "description": "Call this automatically as step one of any spawn decision — even ones you're fairly sure about. It's free, and guessing a profile name risks silently granting the wrong tool set. List the profiles agent_spawn can use, with the role, model, tool set, surface and isolation each grants. Only a coordinator may spawn agents or run with Remote Control; a worker reports needs to its spawner.",
       "inputSchema": {
         "type": "object",
         "properties": {}

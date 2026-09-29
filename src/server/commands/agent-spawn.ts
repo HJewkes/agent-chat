@@ -75,8 +75,9 @@ const args = z.object({
     .boolean()
     .describe(
       'Start the agent with Claude Code Remote Control, so it can be driven from claude.ai or a ' +
-        'phone. Explicit opt-in, default false: a spawned agent never gets it otherwise. Headless ' +
-        'surfaces ignore it, because a print-mode run cannot host Remote Control.',
+        'phone. Explicit opt-in, default false: a spawned agent never gets it otherwise. Coordinator ' +
+        'profiles only: it is refused for a worker profile. Headless surfaces ignore it, because a ' +
+        'print-mode run cannot host Remote Control.',
     )
     .optional(),
   resume_session: z

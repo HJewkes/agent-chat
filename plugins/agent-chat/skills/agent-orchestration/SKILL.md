@@ -134,6 +134,21 @@ Report via chat_send to <your name>: Status, PR number, the mutation its test ca
 and any plan assumption that turned out false.
 ```
 
+## Roles: who may spawn, who may have Remote Control
+
+Every profile is a `coordinator` or a `worker` (CC-163). `agent_profiles` shows it on each row.
+
+- Only a coordinator may spawn agents. A worker's `agent_spawn` is refused with a message
+  telling it to report the need to its spawner via `chat_send`. If you are a worker, do that.
+- Only a coordinator profile may run with Remote Control. `remote_control: true` is refused for a
+  worker profile, and a worker's teleport successor never inherits it.
+- Coordinator chains are capped at 3 links (`MAX_COORDINATOR_DEPTH`). A human-started session is
+  link 0, the coordinator it spawns is link 1. Spawning a worker costs no depth, so the third
+  coordinator in a chain can still spawn workers.
+- A profile with no `role` field is a worker. A coordinator profile declares `"role": "coordinator"`
+  in its JSON. Human-started and adopted sessions count as coordinators, and the human at the CLI
+  is never refused by these rules.
+
 ## Talking to a spawned agent or peer
 
 - `chat_send(to: name, text: ...)` — reach a specific peer. Fire-and-forget; no reply

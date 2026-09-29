@@ -58,7 +58,8 @@ export const agentTeleport = defineTool({
       .describe(
         'Optional. Omit to carry Remote Control across when this session was launched with ' +
           '--remote-control. Set true if you turned it on mid-session with /remote-control, which ' +
-          'the broker cannot see; set false to drop it. Headless successors ignore it.',
+          'the broker cannot see; set false to drop it. A worker successor never gets it, and true ' +
+          'is refused for one. Headless successors ignore it.',
       )
       .optional(),
   }),
