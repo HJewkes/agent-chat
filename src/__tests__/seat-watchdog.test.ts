@@ -114,7 +114,7 @@ describe('decide', () => {
   it.each([
     ['logged within two heartbeats', SEAT_QUIET_MS - 60_000, false, /^seat alive: logged 64 min ago/],
     ['quiet for exactly two heartbeats and the slack', SEAT_QUIET_MS, true, /eligible$/],
-  ])('a seat that %s: fire %s', (_name, quiet, fire, reason) => {
+  ])('a seat that %s', (_name, quiet, fire, reason) => {
     const decision = decide(idle({ activityAt: NOW - quiet }), recent, NOW)
     expect(decision.fire).toBe(fire)
     expect(decision.reason).toMatch(reason)
