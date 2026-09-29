@@ -14,8 +14,10 @@ import { start } from '../cli/service.js'
 const shortTmp = (): string => (fs.existsSync('/tmp') ? '/tmp' : os.tmpdir())
 
 let dir: string
+let originalPort: string | undefined
 
 beforeEach(() => {
+  originalPort = process.env.AGENT_CHAT_PORT
   dir = fs.mkdtempSync(path.join(shortTmp(), 'ac-cc193-'))
   process.env.AGENT_CHAT_HOME = dir
 })
@@ -23,6 +25,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks()
   delete process.env.AGENT_CHAT_HOME
+  if (originalPort === undefined) delete process.env.AGENT_CHAT_PORT
+  else process.env.AGENT_CHAT_PORT = originalPort
   process.exitCode = undefined
   fs.rmSync(dir, { recursive: true, force: true })
 })
@@ -59,5 +63,9 @@ describe('a broker that loses the bind with EEXIST', () => {
       'another broker is already listening',
     ])
     expect(fs.existsSync(path.join(dir, 'events.db'))).toBe(false)
+  })
+
+  it('does not inherit the port override the previous test set', async () => {
+    expect(process.env.AGENT_CHAT_PORT).toBeUndefined()
   })
 })
