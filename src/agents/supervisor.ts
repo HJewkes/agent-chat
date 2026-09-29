@@ -938,6 +938,7 @@ export class Supervisor implements TeleportHost {
       this.semaphore.release(agentId)
       const reason = err instanceof SurfaceRefused ? err.message : `spawn failed: ${(err as Error).message}`
       this.shadow.finish(executionId, { outcome: 'failed', reason, retryable: false })
+      if (!this.live.has(agentId)) await this.abandonLaunch(req, agentId, reason)
       return this.refuse(req, reason)
     }
   }
@@ -963,8 +964,10 @@ export class Supervisor implements TeleportHost {
       body: allocation.note ?? '',
       meta: { strategy: isolationName, ...(allocation.ref ?? {}) },
     })
-
     const surface = req.surface ?? profile.surface
+    // CC-158: on disk before anything can fail, so a launch that dies still leaves something to release.
+    writeRuntimeState(agentId, { handle: { surface }, allocation, isolation: isolationName })
+
     if (resumed && surface !== 'headless')
       warnings.push(
         'a visible resume opens on the conversation as it was left; send the brief with chat_send',
@@ -1256,7 +1259,7 @@ export class Supervisor implements TeleportHost {
         this.attachWaiters.delete(agentId)
         if (!this.live.has(agentId) || this.hasAttached(agentId)) return
         const reason = `no registration within ${ceiling} of launching into ${handle.surface}. ${attachDiagnosis(site, handle, 'waiting')}`
-        void this.failSpawn(req, agentId, reason)
+        void this.failSpawn(req, agentId, reason, { unlessPaneOpen: true })
       },
       Math.max(0, launchedAt + this.attachCeilingMs - Date.now()),
     )
@@ -1281,12 +1284,50 @@ export class Supervisor implements TeleportHost {
    * also reaches the requester, whose spawn auto-subscribed it to exactly this
    * kind for exactly this reason.
    */
-  private async failSpawn(req: SpawnRequest, agentId: string, reason: string): Promise<SpawnOutcome> {
+  private async failSpawn(
+    req: SpawnRequest,
+    agentId: string,
+    reason: string,
+    opts: { unlessPaneOpen?: boolean } = {},
+  ): Promise<SpawnOutcome> {
     const full = `${req.name} was launched but never registered: ${reason}`
     await this.recordExit(agentId, { code: null, signal: null, failed: full })
-    clearRuntimeState(agentId)
+    await this.releaseFailedSpawn(req, agentId, opts.unlessPaneOpen === true)
     logEvent('agent_spawn_failed', { agentId, name: req.name, reason })
     return { ok: false, agentId, name: req.name, reason: full }
+  }
+
+  /** CC-158: a launch that threw started no process, so its identity ends failed and its allocation is released. */
+  private async abandonLaunch(req: SpawnRequest, agentId: string, reason: string): Promise<void> {
+    if (this.spawnEventOf(agentId) !== undefined)
+      this.core.append({
+        kind: 'agent_exited',
+        actor: req.name,
+        ref: agentId,
+        body: `${req.name} never started: ${reason}`,
+        meta: { failed: 'true' },
+      })
+    await this.releaseFailedSpawn(req, agentId, false)
+  }
+
+  /**
+   * CC-158: release what a spawn that never registered allocated, under retire's
+   * dirty and unmerged checks. The reclaim grace is not applied: it anchors on an
+   * agent that ran, and a pane that may still hold a process keeps the tree for
+   * retire, which does apply it. A refusal leaves the runtime state for retire --force.
+   */
+  private async releaseFailedSpawn(
+    req: SpawnRequest,
+    agentId: string,
+    unlessPaneOpen: boolean,
+  ): Promise<void> {
+    const held = readRuntimeState(agentId)
+    if (held === undefined) return
+    if (unlessPaneOpen && (await this.paneStillOpen(held.handle))) return
+    const ctx = { agentId, agentName: req.name, baseCwd: req.cwd ?? process.cwd() }
+    if (!(await this.releaseHeld(ctx, held, false))) return
+    // Kept, not cleared, so retire still closes the pane; `none` so it never releases the tree twice.
+    writeRuntimeState(agentId, { ...held, allocation: { cwd: held.allocation.cwd }, isolation: 'none' })
   }
 
   /**
@@ -1512,11 +1553,20 @@ export class Supervisor implements TeleportHost {
       baseCwd: identity.cwd,
       ...(identity.exit ? { exitedAt: identity.lastEventAt } : {}),
     }
+    return this.releaseHeld(ctx, entry, force)
+  }
+
+  /** Shared by retire and a failed spawn, so both write the same `isolation_released` row. */
+  private async releaseHeld(
+    ctx: IsolationContext,
+    entry: Pick<Live, 'allocation' | 'isolation'>,
+    force: boolean,
+  ): Promise<boolean> {
     const released = await resolveIsolation([entry.isolation]).release(ctx, entry.allocation, { force })
     this.core.append({
       kind: 'isolation_released',
-      actor: name,
-      ref: identity.agentId,
+      actor: ctx.agentName,
+      ref: ctx.agentId,
       body: released ? '' : 'refused: uncommitted or unmerged work, or inside the reclaim window',
       meta: { strategy: entry.isolation, released: String(released) },
     })
