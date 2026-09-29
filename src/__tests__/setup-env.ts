@@ -1,4 +1,7 @@
+import fs from 'node:fs'
 import net from 'node:net'
+import os from 'node:os'
+import path from 'node:path'
 
 /**
  * Strip the ambient session's identity out of the test environment (CC-55, CC-90).
@@ -48,3 +51,10 @@ const closed = net.createServer()
 await new Promise<void>(resolve => closed.listen(0, '127.0.0.1', resolve))
 process.env.AGENT_CHAT_ACTIVE_WORK_PORT = String((closed.address() as net.AddressInfo).port)
 await new Promise(resolve => closed.close(resolve))
+
+/**
+ * A per-worker state dir, so a test that never sets its own home cannot write
+ * broker.log or claude-path into the developer's real ~/.agent-chat (CC-162).
+ * Specs that need a home of their own still override it explicitly.
+ */
+process.env.AGENT_CHAT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-test-home-'))
