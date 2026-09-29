@@ -550,6 +550,33 @@ describe('burndown tick gates', () => {
     expect(fake.frames).toEqual([])
     expect(fs.existsSync(burndownLedgerPath())).toBe(false)
   })
+
+  it('pins the dry-run output of a tick with no seats configured', async () => {
+    initiative({ 'DM-1': task('DM-1', 1), 'DM-2': task('DM-2', 2), 'DM-3': 'id: DM-3\nstatus: open\n' })
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [
+        {
+          taskId: 'DM-2',
+          initiative: 'demo',
+          spawnedAt: NOON.toISOString(),
+          phase: 'parked',
+          phaseAt: NOON.toISOString(),
+        },
+      ],
+    })
+
+    const lines = await tick(fakeBroker(), true)
+
+    expect(lines).toEqual([
+      `burndown tick at ${NOON.toISOString()} (dry run)`,
+      `would record add DM-1`,
+      `would spawn bd-dm-1 as bd-implementer-lite (headless) on ${accountPath()} in ${repo()}; brief ${lines[2]?.split('brief ')[1]}`,
+      'refused demo DM-2 [claimed]: held in the burndown claim ledger',
+      'refused demo DM-3 [no-done-when]: no done_when, so no return contract',
+    ])
+    expect(lines[2]).toMatch(/; brief \d+ chars$/)
+  })
 })
 
 describe('burndown tick advances claims', () => {
