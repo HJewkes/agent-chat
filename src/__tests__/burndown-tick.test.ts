@@ -116,6 +116,7 @@ interface Fake {
   resumes: { name: string; message: string }[]
   retires: string[]
   sends: { to: string; text: string }[]
+  senders: { opened: number; closed: number }
 }
 
 function fakeBroker(
@@ -136,6 +137,7 @@ function fakeBroker(
     resumes: [],
     retires: [],
     sends: [],
+    senders: { opened: 0, closed: 0 },
     broker: {
       roster: async () => {
         fake.rosterCalls += 1
@@ -156,9 +158,17 @@ function fakeBroker(
         return opts.resume?.(name) ?? { ok: true, agentId: `id-${name}` }
       },
       collisionView: async () => opts.view?.() ?? { names: [], claims: [] },
-      sendAs: async (to, text) => {
-        fake.sends.push({ to, text })
-        return opts.sendAs?.(to) ?? { ok: true }
+      seatSender: async () => {
+        fake.senders.opened += 1
+        return {
+          send: async (to, text) => {
+            fake.sends.push({ to, text })
+            return opts.sendAs?.(to) ?? { ok: true }
+          },
+          close: () => {
+            fake.senders.closed += 1
+          },
+        }
       },
     },
   }
@@ -807,6 +817,7 @@ describe('burndown tick in seats mode', () => {
       },
     ])
     expect(lines).toContain('told seat-t of 2 event(s)')
+    expect(fake.senders).toEqual({ opened: 1, closed: 1 })
     expect(readLedger(burndownLedgerPath()).claims.map(c => c.notified)).toEqual([
       ['dispatched'],
       ['dispatched'],
@@ -881,6 +892,7 @@ describe('burndown tick in seats mode', () => {
     const dry = await tick(fake, true)
 
     expect(fake.sends).toEqual([])
+    expect(fake.senders.opened).toBe(0)
     expect(dry.join('\n')).not.toContain('would send')
     expect(readLedger(burndownLedgerPath()).claims[0]?.notified).toBeUndefined()
   })

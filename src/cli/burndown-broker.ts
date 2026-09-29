@@ -1,7 +1,7 @@
 import { BrokerClient } from '../client/broker-client.js'
 import type { ServerMessage } from '../protocol.js'
 import type { TickBroker } from '../agents/burndown/run-tick.js'
-import type { SendAs } from '../agents/burndown/seat-deliver.js'
+import { refusedSender, type OpenSender, type SeatSender } from '../agents/burndown/seat-deliver.js'
 import type { BrokerView } from '../agents/burndown/collision.js'
 import { LIVE } from '../agents/burndown/observe.js'
 
@@ -14,7 +14,10 @@ type Reply<T extends ServerMessage['t']> = Extract<ServerMessage, { t: T }>
 /** The name seats see on burndown's event messages. */
 export const BURNDOWN_SENDER = 'burndown'
 
-export function tickBroker(client: BrokerClient, sendAs: SendAs = sendAsBurndown(connectBroker)): TickBroker {
+export function tickBroker(
+  client: BrokerClient,
+  seatSender: OpenSender = burndownSender(connectBroker),
+): TickBroker {
   return {
     async roster() {
       const res = (await client.request(
@@ -51,7 +54,7 @@ export function tickBroker(client: BrokerClient, sendAs: SendAs = sendAsBurndown
       return spawnReply(res)
     },
     collisionView: () => collisionView(client),
-    sendAs,
+    seatSender,
   }
 }
 
@@ -64,9 +67,9 @@ const connectBroker = async (): Promise<BrokerClient> => {
   return client
 }
 
-/** A short-lived connection per message, registered as `burndown`, so the spawn connection stays unregistered. */
-export function sendAsBurndown(connect: () => Promise<BrokerClient>): SendAs {
-  return async (to, text) => {
+/** One connection per tick, registered as `burndown`, so the spawn connection stays unregistered. */
+export function burndownSender(connect: () => Promise<BrokerClient>): OpenSender {
+  return async () => {
     const client = await connect()
     try {
       const identity = {
@@ -79,14 +82,23 @@ export function sendAsBurndown(connect: () => Promise<BrokerClient>): SendAs {
         { t: 'register', ...identity },
         'register_result',
       )) as Reply<'register_result'>
-      if (!reg.ok) return { ok: false, reason: `register as ${BURNDOWN_SENDER}: ${reg.reason ?? 'refused'}` }
-      const res = (await client.request({ t: 'send', to, text }, 'send_result')) as Reply<'send_result'>
-      return { ok: res.ok, ...(res.reason === undefined ? {} : { reason: res.reason }) }
-    } finally {
+      if (reg.ok) return registeredSender(client)
       client.close()
+      return refusedSender(`register as ${BURNDOWN_SENDER}: ${reg.reason ?? 'refused'}`)
+    } catch (err) {
+      client.close()
+      throw err
     }
   }
 }
+
+const registeredSender = (client: BrokerClient): SeatSender => ({
+  async send(to, text) {
+    const res = (await client.request({ t: 'send', to, text }, 'send_result')) as Reply<'send_result'>
+    return { ok: res.ok, ...(res.reason === undefined ? {} : { reason: res.reason }) }
+  },
+  close: () => client.close(),
+})
 
 const spawnReply = (res: Reply<'spawn_result'>): { ok: boolean; agentId?: string; reason?: string } => ({
   ok: res.ok,

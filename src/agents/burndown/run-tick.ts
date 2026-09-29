@@ -35,7 +35,7 @@ import {
 } from './observe.js'
 import { DEFAULT_NAME_PREFIX, plan, type Capacity, type Dispatch, type PlanInputs } from './plan.js'
 import { defaultAutonomyRoot } from './policy.js'
-import { describeSeatEvents, deliverSeatEvents, type SendAs } from './seat-deliver.js'
+import { describeSeatEvents, deliverSeatEvents, type OpenSender } from './seat-deliver.js'
 import type { SpawnResult } from './seat-events.js'
 import { diskSeatDeps, loadSeats, planSeats, type LoadedSeats, type SkippedSeat } from './seat-tick.js'
 import {
@@ -55,7 +55,7 @@ import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
  * every held claim, advance it one phase, then dispatch new work inside the
  * tick's own ceilings. The broker treats this unregistered connection as the
  * human, so it applies no spawn-rate or cwd check: these ceilings are the bound.
- * Seat events go out through `sendAs`, a separate connection registered as `burndown`.
+ * Seat events go out through `seatSender`, a separate connection registered as `burndown`.
  */
 
 export interface TickBroker {
@@ -68,8 +68,8 @@ export interface TickBroker {
   resume: (name: string, message: string) => Promise<SpawnReply>
   /** Live agent and session names and every `files` claim, for the CC-202 collision check. */
   collisionView: () => Promise<BrokerView>
-  /** A peer `send` from a connection registered as `burndown`, never from the spawn connection (CC-250). */
-  sendAs: SendAs
+  /** Opens a connection registered as `burndown` for peer `send`s, never the spawn connection (CC-250). */
+  seatSender: OpenSender
 }
 
 export interface TickOptions {
@@ -168,7 +168,7 @@ async function actOn(
   })
   const woken = await actOnDecider(config, decider, executed.ledger, { broker: opts.broker, log, now })
   const diff = { seats: config.seats, before: ledger, after: woken.ledger, spawns }
-  const told = await deliverSeatEvents(diff, { send: opts.broker.sendAs, log, now })
+  const told = await deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now })
   writeLedger(burndownLedgerPath(), { ...told.ledger, lastTickAt: now.toISOString() })
   return [...executed.lines, ...woken.lines, ...told.lines]
 }

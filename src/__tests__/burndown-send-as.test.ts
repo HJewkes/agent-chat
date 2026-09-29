@@ -6,7 +6,7 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { SocketServer } from '../broker/socket.js'
-import { sendAsBurndown, tickBroker } from '../cli/burndown-broker.js'
+import { burndownSender, tickBroker } from '../cli/burndown-broker.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
 
@@ -29,6 +29,7 @@ interface Wire {
   sent: ClientMessage[]
   received: ServerMessage[]
   client: BrokerClient
+  closes: number
 }
 
 function broker() {
@@ -44,56 +45,65 @@ function broker() {
     const conn = {
       write: (line: string) => received.push(JSON.parse(line) as ServerMessage),
     } as unknown as Conn
-    const client = {
+    const w = { conn, sent, received, closes: 0 } as Wire
+    w.client = {
       request: async (frame: ClientMessage, expected: string) => {
         sent.push(frame)
         server.handleMessage(conn, frame)
         return received.findLast(f => f.t === expected)
       },
-      close: () => undefined,
+      close: () => {
+        w.closes += 1
+      },
     } as unknown as BrokerClient
-    return { conn, sent, received, client }
+    return w
   }
   return { core, wire }
 }
 
-describe('sendAsBurndown', () => {
-  it('delivers a peer message from burndown while the spawn connection stays unregistered', async () => {
+const register = (w: Wire, name: string) =>
+  w.client.request({ t: 'register', name, workingOn: 'x', cwd: home, pid: 1 }, 'register_result')
+
+describe('burndownSender', () => {
+  it('tells two seats over one burndown connection while the spawn connection stays unregistered', async () => {
     const { wire } = broker()
-    const seat = wire()
-    await seat.client.request(
-      { t: 'register', name: 'seat-t', workingOn: 'x', cwd: home, pid: 1 },
-      'register_result',
-    )
+    const [seatT, seatU] = [wire(), wire()]
+    await register(seatT, 'seat-t')
+    await register(seatU, 'seat-u')
     const spawnConn = wire()
     const sender = wire()
-
-    const reply = await tickBroker(
+    const opened = await tickBroker(
       spawnConn.client,
-      sendAsBurndown(async () => sender.client),
-    ).sendAs('seat-t', 'hello')
+      burndownSender(async () => sender.client),
+    ).seatSender()
 
-    expect(reply).toEqual({ ok: true })
-    expect(sender.sent.map(f => f.t)).toEqual(['register', 'send'])
+    const replies = [await opened.send('seat-t', 'one'), await opened.send('seat-u', 'two')]
+    opened.close()
+
+    expect(replies).toEqual([{ ok: true }, { ok: true }])
+    expect(sender.sent.map(f => f.t)).toEqual(['register', 'send', 'send'])
     expect(sender.sent[0]).toMatchObject({ name: 'burndown' })
+    expect(sender.closes).toBe(1)
     expect(spawnConn.sent).toEqual([])
-    const delivered = seat.received.find(f => f.t === 'deliver')
-    expect(delivered).toMatchObject({ message: { from: 'burndown', text: 'hello' } })
+    expect(seatT.received.find(f => f.t === 'deliver')).toMatchObject({
+      message: { from: 'burndown', text: 'one' },
+    })
+    expect(seatU.received.find(f => f.t === 'deliver')).toMatchObject({
+      message: { from: 'burndown', text: 'two' },
+    })
   })
 
-  it('reports a refused registration without sending', async () => {
+  it('reports a refused registration on every send, without sending, and closes the connection', async () => {
     const { wire } = broker()
-    const squatter = wire()
-    await squatter.client.request(
-      { t: 'register', name: 'burndown', workingOn: 'x', cwd: home, pid: 1 },
-      'register_result',
-    )
+    await register(wire(), 'burndown')
     const sender = wire()
 
-    const reply = await sendAsBurndown(async () => sender.client)('seat-t', 'hello')
+    const opened = await burndownSender(async () => sender.client)()
+    const reply = await opened.send('seat-t', 'hello')
 
     expect(reply.ok).toBe(false)
     expect(reply.reason).toMatch(/^register as burndown: /)
     expect(sender.sent.map(f => f.t)).toEqual(['register'])
+    expect(sender.closes).toBe(1)
   })
 })

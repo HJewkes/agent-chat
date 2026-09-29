@@ -3,6 +3,7 @@ import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger
 import {
   MESSAGE_LIMIT,
   markNotified,
+  settleNotified,
   renderSeatEvents,
   seatEvents,
   type EventKind,
@@ -114,6 +115,21 @@ describe('seatEvents', () => {
   })
 })
 
+describe('settleNotified', () => {
+  it('drops parked and stalled once the claim leaves them, and keeps the rest', () => {
+    const start = ledger(
+      claim({ phase: 'implementing', notified: ['dispatched', 'parked', 'stalled'] }),
+      claim({ taskId: 'T-2', phase: 'done', notified: ['ready-to-merge', 'merged'] }),
+      claim({ taskId: 'T-3', phase: 'parked', notified: ['parked'] }),
+    )
+    expect(settleNotified(start).claims.map(c => c.notified)).toEqual([
+      ['dispatched'],
+      ['ready-to-merge', 'merged'],
+      ['parked'],
+    ])
+  })
+})
+
 describe('markNotified', () => {
   it("adds delivered kinds to the seat's matching claims only", () => {
     const start = ledger(
@@ -144,7 +160,7 @@ describe('renderSeatEvents', () => {
     const text = renderSeatEvents('alpha', events, now)
     const last = text.split('\n').at(-1) as string
     expect(text.length).toBeLessThan(1500)
-    expect(last).toMatch(/^and \d+ more: \d+ merged, \d+ parked$/)
+    expect(last).toMatch(/^and \d+ more: \d+ merged, \d+ parked; run burndown status for them$/)
     const shown = text.split('\n').length - 2
     expect(Number(/^and (\d+)/.exec(last)?.[1]) + shown).toBe(200)
   })

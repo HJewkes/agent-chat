@@ -3,6 +3,8 @@ import {
   markNotified,
   renderSeatEvents,
   seatEvents,
+  settleNotified,
+  type SeatEvent,
   type SeatEvents,
   type SpawnResult,
 } from './seat-events.js'
@@ -14,8 +16,22 @@ import {
 
 export type SendAs = (to: string, text: string) => Promise<{ ok: boolean; reason?: string }>
 
-export interface DeliverDeps {
+/** One registered connection for a whole tick's messages; the broker leases a name until the old socket's close runs. */
+export interface SeatSender {
   send: SendAs
+  close: () => void
+}
+
+export type OpenSender = () => Promise<SeatSender>
+
+/** A sender that could not be opened: every seat's send fails with why, and is retried next tick. */
+export const refusedSender = (reason: string): SeatSender => ({
+  send: async () => ({ ok: false, reason }),
+  close: () => undefined,
+})
+
+export interface DeliverDeps {
+  open: OpenSender
   log: (event: string, detail: Record<string, unknown>) => void
   now: Date
 }
@@ -37,11 +53,28 @@ export async function deliverSeatEvents(
   diff: SeatDiff,
   deps: DeliverDeps,
 ): Promise<{ ledger: Ledger; lines: string[] }> {
-  let ledger = diff.after
+  const settled = { ...diff, after: settleNotified(diff.after) }
+  const due = Object.entries(dueEvents(settled))
+  if (due.length === 0) return { ledger: settled.after, lines: [] }
+  const sender = await deps.open().catch((err: Error) => refusedSender(err.message))
+  try {
+    return await sendAll(due, settled.after, sender, deps)
+  } finally {
+    sender.close()
+  }
+}
+
+async function sendAll(
+  due: [string, SeatEvent[]][],
+  start: Ledger,
+  sender: SeatSender,
+  deps: DeliverDeps,
+): Promise<{ ledger: Ledger; lines: string[] }> {
+  let ledger = start
   const lines: string[] = []
-  for (const [seat, events] of Object.entries(dueEvents(diff))) {
+  for (const [seat, events] of due) {
     const text = renderSeatEvents(seat, events, deps.now)
-    const reply = await deps.send(seat, text).catch((err: Error) => ({ ok: false, reason: err.message }))
+    const reply = await sender.send(seat, text).catch((err: Error) => ({ ok: false, reason: err.message }))
     deps.log('burndown_seat_events', { seat, events: events.length, ok: reply.ok, reason: reply.reason })
     if (reply.ok) {
       ledger = markNotified(ledger, seat, events)

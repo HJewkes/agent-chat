@@ -58,13 +58,36 @@ function kindsOf(before: Claim | undefined, after: Claim, spawned: boolean): Sea
   return events
 }
 
-/** Events for claims with a seat whose `notified` lacks that kind; a claim without a seat yields none. */
+/** Whether a delivered kind still describes the claim; once it does not, the kind may fire again (a second park). */
+function stillHolds(claim: Claim, kind: string): boolean {
+  if (kind === 'parked') return claim.phase === 'parked'
+  if (kind === 'stalled') return claim.stalledReason !== undefined
+  // ready-to-merge stays on a done claim: `merged` reads it there.
+  return true
+}
+
+const heldNotified = (claim: Claim): string[] => (claim.notified ?? []).filter(k => stillHolds(claim, k))
+
+/** Drops each delivered kind the claim has since left, so the ledger keeps only what still holds. */
+export function settleNotified(ledger: Ledger): Ledger {
+  const claims = ledger.claims.map(c => {
+    if (c.notified === undefined) return c
+    const held = heldNotified(c)
+    if (held.length === c.notified.length) return c
+    const { notified: _dropped, ...rest } = c
+    return held.length === 0 ? rest : { ...rest, notified: held }
+  })
+  return { ...ledger, claims }
+}
+
+/** Events for claims with a seat whose held `notified` lacks that kind; a claim without a seat yields none. */
 export function seatEvents(before: Ledger, after: Ledger, spawnResults: readonly SpawnResult[]): SeatEvents {
   const out: SeatEvents = {}
   for (const claim of after.claims) {
     if (claim.seat === undefined) continue
     const spawned = spawnResults.some(r => r.ok && claimKey(r.key) === claimKey(claim))
-    const fresh = kindsOf(at(before, claim), claim, spawned).filter(e => !claim.notified?.includes(e.kind))
+    const told = heldNotified(claim)
+    const fresh = kindsOf(at(before, claim), claim, spawned).filter(e => !told.includes(e.kind))
     if (fresh.length > 0) (out[claim.seat] ??= []).push(...fresh)
   }
   return out
@@ -90,10 +113,10 @@ function overflowLine(rest: readonly SeatEvent[]): string {
   const counts = EVENT_KINDS.map(k => [k, rest.filter(e => e.kind === k).length] as const).filter(
     ([, n]) => n > 0,
   )
-  return `and ${rest.length} more: ${counts.map(([k, n]) => `${n} ${k}`).join(', ')}`
+  return `and ${rest.length} more: ${counts.map(([k, n]) => `${n} ${k}`).join(', ')}; run burndown status for them`
 }
 
-/** One message for a seat: a header, one line per event, and counts for whatever will not fit. */
+/** One message for a seat: a header, one line per event, and counts for whatever will not fit; the counted ones count as told. */
 export function renderSeatEvents(seat: string, events: readonly SeatEvent[], now: Date): string {
   const shown = seat.length > SEAT_SHOWN ? `${seat.slice(0, SEAT_SHOWN)}...` : seat
   const header = `Burndown events for ${shown} at ${now.toISOString()}`
