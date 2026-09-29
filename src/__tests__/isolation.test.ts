@@ -357,6 +357,131 @@ describe('worktree re-allocation after a crash', () => {
   })
 })
 
+describe('worktree branch base (CC-151)', () => {
+  const tmp = (prefix: string): string => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)))
+    tmpdirs.push(dir)
+    return dir
+  }
+
+  /** A bare "origin", a peer clone that pushes to it, and the main checkout under test. */
+  function clonedFromOrigin(defaultBranch = 'main'): { origin: string; peer: string; local: string } {
+    const seed = makeRepo()
+    if (defaultBranch !== 'main') git(['branch', '-m', 'main', defaultBranch], seed)
+    const origin = path.join(tmp('iso-origin-'), 'origin.git')
+    git(['clone', '--quiet', '--bare', seed, origin], seed)
+    const clone = (): string => {
+      const dir = path.join(tmp('iso-clone-'), 'repo')
+      git(['clone', '--quiet', origin, dir], seed)
+      git(['config', 'user.email', 'test@example.com'], dir)
+      git(['config', 'user.name', 'Test'], dir)
+      git(['config', 'commit.gpgsign', 'false'], dir)
+      return dir
+    }
+    return { origin, peer: clone(), local: clone() }
+  }
+
+  it("cuts the branch at origin's tip when the local main is behind", async () => {
+    const { peer, local } = clonedFromOrigin()
+    const merged = commitIn(peer, 'merged.ts')
+    git(['push', '--quiet', 'origin', 'main'], peer)
+
+    const alloc = await worktreeStrategy.allocate(ctxFor(local))
+
+    expect(git(['rev-parse', 'HEAD'], alloc.cwd)).toBe(merged)
+    expect(alloc.ref).toMatchObject({ base: merged, base_ref: 'origin/main' })
+    expect(alloc.warnings).toBeUndefined()
+  })
+
+  it("leaves out a commit sitting unpushed on the main checkout's HEAD", async () => {
+    const { local } = clonedFromOrigin()
+    const originTip = git(['rev-parse', 'HEAD'], local)
+    const foreign = commitIn(local, 'someone-elses.ts')
+
+    const alloc = await worktreeStrategy.allocate(ctxFor(local))
+
+    expect(git(['rev-parse', 'HEAD'], alloc.cwd)).toBe(originTip)
+    expect(git(['rev-list', `${foreign}..HEAD`], alloc.cwd)).toBe('')
+    expect(fs.existsSync(path.join(alloc.cwd, 'someone-elses.ts'))).toBe(false)
+  })
+
+  it("never moves the main checkout's HEAD or touches its files", async () => {
+    const { peer, local } = clonedFromOrigin()
+    commitIn(peer, 'merged.ts')
+    git(['push', '--quiet', 'origin', 'main'], peer)
+    const headBefore = git(['rev-parse', 'HEAD'], local)
+    fs.writeFileSync(path.join(local, 'README.md'), 'edited in the main checkout\n')
+
+    await worktreeStrategy.allocate(ctxFor(local))
+
+    expect(git(['rev-parse', 'HEAD'], local)).toBe(headBefore)
+    expect(git(['status', '--porcelain', '--untracked-files=no'], local)).toBe('M README.md')
+    expect(fs.readFileSync(path.join(local, 'README.md'), 'utf8')).toBe('edited in the main checkout\n')
+  })
+
+  it('falls back to master when origin/HEAD is unknown and there is no main', async () => {
+    const { origin, peer } = clonedFromOrigin('master')
+    const tip = commitIn(peer, 'merged.ts')
+    git(['push', '--quiet', 'origin', 'master'], peer)
+    const local = makeRepo()
+    git(['remote', 'add', 'origin', origin], local)
+
+    const alloc = await worktreeStrategy.allocate(ctxFor(local))
+
+    expect(git(['rev-parse', 'HEAD'], alloc.cwd)).toBe(tip)
+    expect(alloc.ref?.base_ref).toBe('origin/master')
+  })
+
+  it('uses the local HEAD and says so when the fetch fails', async () => {
+    const { local } = clonedFromOrigin()
+    git(['remote', 'set-url', 'origin', path.join(tmp('iso-gone-'), 'missing.git')], local)
+    const localHead = commitIn(local, 'unpushed.ts')
+
+    const alloc = await worktreeStrategy.allocate(ctxFor(local))
+
+    expect(git(['rev-parse', 'HEAD'], alloc.cwd)).toBe(localHead)
+    expect(alloc.ref).toMatchObject({ base: localHead, base_ref: 'HEAD' })
+    expect(alloc.warnings).toEqual([expect.stringContaining(`local HEAD at ${localHead}`)])
+    expect(alloc.warnings?.[0]).toContain('origin/main')
+  })
+
+  it("cuts every concurrent allocation from origin's tip, not just the fetch that won the ref lock", async () => {
+    const { peer, local } = clonedFromOrigin()
+    const merged = commitIn(peer, 'merged.ts')
+    git(['push', '--quiet', 'origin', 'main'], peer)
+    const strategy = createWorktreeStrategy({ budget: 10 })
+    const names = ['w1', 'w2', 'w3', 'w4', 'w5']
+
+    const allocs = await Promise.all(names.map(name => strategy.allocate(ctxFor(local, { agentName: name }))))
+
+    expect(allocs.map(a => git(['rev-parse', 'HEAD'], a.cwd))).toEqual(names.map(() => merged))
+    expect(allocs.flatMap(a => a.warnings ?? [])).toEqual([])
+  })
+
+  it('spends one timeout across every default-branch candidate, not one each', async () => {
+    const local = makeRepo()
+    const hang = path.join(tmp('iso-hang-'), 'hang.sh')
+    fs.writeFileSync(hang, '#!/bin/sh\nexec sleep 10 >/dev/null 2>&1\n', { mode: 0o755 })
+    git(['config', 'protocol.ext.allow', 'always'], local)
+    git(['remote', 'add', 'origin', `ext::${hang}`], local)
+    const strategy = createWorktreeStrategy({ fetchTimeoutMs: 1_500 })
+
+    const started = Date.now()
+    const alloc = await strategy.allocate(ctxFor(local))
+
+    expect(Date.now() - started).toBeLessThan(2_900)
+    expect(alloc.warnings?.[0]).toContain('failed or timed out')
+  })
+
+  it('warns that there is no origin when the repository has none', async () => {
+    const repo = makeRepo()
+
+    const alloc = await worktreeStrategy.allocate(ctxFor(repo))
+
+    expect(alloc.warnings?.[0]).toContain('no origin remote')
+  })
+})
+
 describe('worktree release', () => {
   it('removes the worktree and branch when nothing would be lost', async () => {
     const repo = makeRepo()

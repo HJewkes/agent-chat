@@ -462,7 +462,7 @@
               "file-ownership",
               "toolset-limited"
             ],
-            "description": "Overrides the profile's isolation, e.g. worktree to keep it out of your checkout."
+            "description": "Overrides the profile's isolation, e.g. worktree to keep it out of your checkout. A new worktree branch is cut from a fresh fetch of origin's default branch, not your local HEAD."
           },
           "cwd": {
             "type": "string",

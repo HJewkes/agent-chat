@@ -624,6 +624,24 @@ const AGENT_SPAWN_CASES: CallCase[] = [
       reply: spawned({ transcript: { path: '/home/me/.claude/projects/x/uuid-2.jsonl', found: false } }),
     },
   ),
+  spawnCase(
+    'worktree cut from origin',
+    { ...SPAWN_ARGS, isolation: 'worktree' },
+    { reply: spawned({ base: { ref: 'origin/main', sha: 'f8d9fd9aa' } }) },
+  ),
+  spawnCase(
+    'worktree fell back to local HEAD',
+    { ...SPAWN_ARGS, isolation: 'worktree' },
+    {
+      reply: spawned({
+        base: { ref: 'HEAD', sha: '4ff6e74bb' },
+        warnings: [
+          'worktree branched from the local HEAD at 4ff6e74bb because the repository has no origin ' +
+            'remote; it may lag origin or carry unpushed commits',
+        ],
+      }),
+    },
+  ),
 ]
 
 const teleported = (

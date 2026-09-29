@@ -45,8 +45,14 @@ classes. Rather than widen the frozen interface, advisory lines carry a
 - `.claude/` is copied in so hooks fire.
 - Budget defaults to 3 via `createWorktreeStrategy({ budget, basePath })`; the
   default export `worktreeStrategy` is the registry's instance.
-- `allocate` sets `ref = { branch, worktree, gitRoot, base }` (plus `reused: 'true'`
-  when it adopted). `release` needs that ref — an allocation without one is
+- A new branch is cut from origin's default branch, fetched on allocation
+  (CC-151): origin/HEAD, else `main`, else `master`, bounded by a timeout. The main
+  checkout's local HEAD may lag origin or hold another session's unpushed commits,
+  so it is used only when the fetch fails, and the spawn reply then carries a
+  warning naming it. The fetch moves a remote-tracking ref only.
+- `allocate` sets `ref = { branch, worktree, gitRoot, base, base_ref }` (plus
+  `reused: 'true'` when it adopted). `base` is the sha; `spawn_result.base` echoes
+  both so a coordinator can check them. `release` needs that ref — an allocation without one is
   refused, never guessed at.
 
 ### Re-allocating over a crashed agent
@@ -57,7 +63,7 @@ agent that died before calling release. It now branches three ways:
 | Leftover state                            | Behaviour                                                         |
 | ----------------------------------------- | ----------------------------------------------------------------- |
 | branch holds commits, worktree dir gone   | **adopt** — `worktree add <path> <branch>`, `ref.reused = 'true'` |
-| branch holds nothing beyond base          | reset to current HEAD, so nobody inherits a stale base            |
+| branch holds nothing beyond base          | reset to the fetched base, so nobody inherits a stale one         |
 | worktree dir on disk / branch checked out | throw `WorktreeInUseError`                                        |
 
 Adoption rather than refusal, because a respawn under the same name _is_ that

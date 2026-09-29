@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { gitChildEnv } from '../../git.js'
 import { agentsDir } from '../../paths.js'
 import { readRuntimeState, runtimeStatePath } from '../launch-files.js'
 import { BRANCH_PREFIX, inspectForRelease, RECLAIM_GRACE_MS, worktreeStrategy } from './worktree.js'
@@ -138,6 +139,7 @@ const porcelain: GitLister = async gitRoot =>
   (await import('node:child_process')).execFileSync('git', ['worktree', 'list', '--porcelain'], {
     cwd: gitRoot,
     encoding: 'utf8',
+    env: gitChildEnv(),
   })
 
 /**
