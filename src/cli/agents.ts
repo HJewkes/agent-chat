@@ -3,8 +3,8 @@ import { findGitRoot } from '../git.js'
 import { pairPresence } from '../agents/identity.js'
 import { reclaim, sweepWorktrees } from '../agents/isolation/sweep.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
-import { transcriptLine } from '../agents/transcript.js'
-import { type ServerMessage } from '../protocol.js'
+import { findTranscript, observedModel, transcriptLine } from '../agents/transcript.js'
+import { type AgentIdentity, type ServerMessage } from '../protocol.js'
 import type { Report } from './command.js'
 import { fail, withBroker } from './client.js'
 
@@ -15,7 +15,7 @@ import { fail, withBroker } from './client.js'
  * bounced shows as reconnecting rather than vanishing, because identity is a
  * query over the log and only presence depends on a socket being up.
  */
-export async function agentLs(): Promise<void> {
+export async function agentLs(options: { json?: boolean } = {}): Promise<void> {
   const [agents, sessions] = await withBroker(async b => {
     const roster = (await b.request({ t: 'agents' }, 'agents_result')) as Extract<
       ServerMessage,
@@ -28,6 +28,16 @@ export async function agentLs(): Promise<void> {
     return [roster.agents, live.sessions] as const
   })
 
+  if (options.json) {
+    const rows = agents.map(agent =>
+      lsJsonRow(
+        agent,
+        sessions.some(s => s.name === agent.name),
+      ),
+    )
+    console.log(JSON.stringify(rows, null, 2))
+    return
+  }
   if (agents.length === 0) {
     console.log('No agents. Spawn one with: agent-chat agent spawn <name> <profile> "<brief>"')
     return
@@ -49,6 +59,30 @@ export async function agentLs(): Promise<void> {
     // makes urgent. Omitted when the row predates the field.
     if (agent.configDir) console.log(`${' '.repeat(16)} account: ${agent.configDir}`)
     console.log(`${' '.repeat(16)} ${transcriptLine(agent.cwd, agent.sessionId, agent.configDir)}`)
+  }
+}
+
+/** One roster row for `agent ls --json`: everything the text view shows, as fields. */
+function lsJsonRow(agent: AgentIdentity, connected: boolean) {
+  const { status } = pairPresence(agent, { connected })
+  const transcript = findTranscript(agent.cwd, agent.sessionId, agent.configDir)
+  return {
+    name: agent.name,
+    agentId: agent.agentId,
+    state: agent.state,
+    presence: connected ? 'live' : agent.state === 'exited' ? 'exited' : 'detached',
+    status,
+    profile: agent.profile,
+    surface: agent.surface,
+    model: observedModel(agent.cwd, agent.sessionId, agent.configDir) ?? null,
+    cwd: agent.cwd,
+    sessionId: agent.sessionId,
+    transcriptPath: agent.sessionId === '' ? null : transcript.path,
+    transcriptExists: transcript.exists,
+    spawnedBy: agent.spawnedBy,
+    account: agent.configDir || null,
+    generation: agent.generation,
+    teleportFrom: agent.teleportFrom ?? null,
   }
 }
 

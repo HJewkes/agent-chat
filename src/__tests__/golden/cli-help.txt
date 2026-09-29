@@ -420,7 +420,7 @@ Options:
   -h, --help                                   display help for command
 
 Commands:
-  ls                                           agents, with lifecycle and presence
+  ls [options]                                 agents, with lifecycle and presence
   spawn [options] <name> <profile> [brief...]  start a new agent
   retire [options] <name>                      release isolation, end the process, and free the name
   resume [options] <name>                      bring a stopped agent back on its own conversation
@@ -437,6 +437,7 @@ Usage: agent-chat agent ls [options]
 agents, with lifecycle and presence
 
 Options:
+  --json      print one JSON array, one object per agent
   -h, --help  display help for command
 
 === agent-chat agent spawn
