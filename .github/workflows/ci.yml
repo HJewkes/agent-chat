@@ -26,11 +26,29 @@ jobs:
     with:
       node-version: '22'
 
+  # A merge gate behind the pre-push hook `prepare` installs. CI has no private term list.
+  egress-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The scan reads every commit in the range, not only its endpoints.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # The PR head sha, not the merge ref, so GitHub's synthetic merge commit is not scanned.
+      - name: Scan the pushed commits
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: npx --yes @titan-design/egress-scan@0.1.0 range "$BASE_SHA" "$HEAD_SHA"
+
   # The ruleset requires the context `check`, so the aggregator carries that name
   # and no other job may. all-green also fails if a job here is missing from needs.
   check:
     if: always()
-    needs: [std]
+    needs: [std, egress-scan]
     runs-on: ubuntu-latest
     steps:
       - uses: HJewkes/ci/actions/all-green@v1

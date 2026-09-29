@@ -36,8 +36,8 @@ const projectsDir = (dir: string = configDir()): string => path.join(dir, 'proje
 
 /**
  * Derived from 27 real project directories on this machine: every non-alphanumeric
- * byte becomes `-`, including the separators and the dots, so `/Users/h/.claude`
- * lands at `-Users-h--claude`. It is lossy and deliberately not invertible.
+ * byte becomes `-`, including the separators and the dots, so `/Users/alice/.claude`
+ * lands at `-Users-alice--claude`. It is lossy and deliberately not invertible.
  */
 export const projectSlug = (cwd: string): string => cwd.replace(/[^A-Za-z0-9]/g, '-')
 

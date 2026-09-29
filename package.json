@@ -21,7 +21,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "build:dashboard": "vite build --config src/dashboard/vite.config.ts",
-    "typecheck:dashboard": "tsc -p src/dashboard"
+    "typecheck:dashboard": "tsc -p src/dashboard",
+    "prepare": "titan-egress-scan install-hook || echo \"egress-scan: pre-push hook not installed; run npm ci, then npm run prepare\""
   },
   "dependencies": {
     "@hono/node-server": "^2.0.12",
@@ -43,6 +44,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@titan-design/egress-scan": "^0.1.0",
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",

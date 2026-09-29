@@ -31,19 +31,19 @@ afterEach(() => {
 describe('project slug', () => {
   it('replaces every non-alphanumeric byte, dots and separators alike', () => {
     // Both taken from real directories on the machine this was derived from.
-    expect(projectSlug('/Users/hjewkes/projects/agent-chat')).toBe('-Users-hjewkes-projects-agent-chat')
-    expect(projectSlug('/Users/hjewkes/.claude/sessions')).toBe('-Users-hjewkes--claude-sessions')
+    expect(projectSlug('/Users/alice/projects/agent-chat')).toBe('-Users-alice-projects-agent-chat')
+    expect(projectSlug('/Users/alice/.claude/sessions')).toBe('-Users-alice--claude-sessions')
   })
 
   it('collapses spaces the same way, so a path under Application Support resolves', () => {
-    expect(projectSlug('/Users/h/Library/Application Support/x')).toBe(
-      '-Users-h-Library-Application-Support-x',
+    expect(projectSlug('/Users/alice/Library/Application Support/x')).toBe(
+      '-Users-alice-Library-Application-Support-x',
     )
   })
 })
 
 describe('finding a spawned agent transcript', () => {
-  const CWD = '/Users/hjewkes/projects/agent-chat'
+  const CWD = '/Users/alice/projects/agent-chat'
   const SESSION = '90b4944a-2f7e-4142-93e8-572847efd6d3'
 
   it('resolves the derived path when the cwd is what Claude Code recorded', () => {
@@ -58,7 +58,7 @@ describe('finding a spawned agent transcript', () => {
    * uuid, so scanning for it is exact rather than a guess.
    */
   it('finds a transcript filed under a different cwd than the one we asked for', () => {
-    const written = writeTranscript(projectSlug('/Users/hjewkes/Documents/projects/agent-chat'), SESSION)
+    const written = writeTranscript(projectSlug('/Users/alice/Documents/projects/agent-chat'), SESSION)
     const found = findTranscript(CWD, SESSION)
     expect(found).toEqual({ path: written, exists: true })
   })

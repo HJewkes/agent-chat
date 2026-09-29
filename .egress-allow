@@ -1,0 +1,21 @@
+# Files allowed to carry an egress-scan hit: <glob> <rule-id> <reason with a task id>.
+# One entry per file and rule. Private terms are never allowable. See docs/egress-scan.md.
+docs/context-budget-research.md home-path redacted home segment in quoted tool output, CC-172
+docs/leak-guard.md home-path placeholder home glob the built-in allow-list documents, CC-172
+plugins/agent-chat/skills/agent-orchestration/SKILL.md aw-data-path documents the active-work data dir in tilde form, CC-172
+src/__tests__/agent-env.test.ts home-path placeholder HOME for a fake environment, CC-172
+src/__tests__/burndown-launchd.test.ts home-path placeholder home for a launchd plist, CC-172
+src/__tests__/burndown-leak.test.ts home-path synthetic home the leak backstop must catch, CC-172
+src/__tests__/claude-bin.test.ts home-path placeholder home for claude binary lookup, CC-172
+src/__tests__/config-dir.test.ts home-path placeholder home for config dir resolution, CC-172
+src/__tests__/fixtures-privacy.test.ts home-path synthetic home the fixture privacy check must catch, CC-172
+src/__tests__/launch-plan.test.ts home-path placeholder home in launch plan env, CC-172
+src/__tests__/leak-scan.test.ts home-path synthetic homes the leak scanner must catch, CC-172
+src/__tests__/mirror-config.test.ts home-path placeholder home for a launchd plist, CC-172
+src/__tests__/presence.test.ts home-path placeholder home in session cwds, CC-172
+src/__tests__/provisional-registration.test.ts aw-data-path placeholder active-work data dir cwd, CC-172
+src/__tests__/seat-watchdog-replay.test.ts home-path placeholder home in seat cwds, CC-172
+src/__tests__/seat-watchdog-run.test.ts home-path placeholder home in seat cwds, CC-172
+src/__tests__/seat-watchdog.test.ts home-path placeholder home in seat cwds, CC-172
+src/__tests__/teleport.test.ts home-path placeholder home in teleport cwds, CC-172
+src/leak-guard/scan.ts home-path placeholder home pattern the deny-list exempts, CC-172
