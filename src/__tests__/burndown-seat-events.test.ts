@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
-import { renderSeatEvents, seatEvents, type SeatEvent } from '../agents/burndown/seat-events.js'
+import {
+  MESSAGE_LIMIT,
+  markNotified,
+  renderSeatEvents,
+  seatEvents,
+  type EventKind,
+  type SeatEvent,
+} from '../agents/burndown/seat-events.js'
 
 const claim = (over: Partial<Claim> = {}): Claim => ({
   taskId: 'T-1',
@@ -52,9 +59,9 @@ describe('seatEvents', () => {
     ])
   })
 
-  it('does not repeat a stall that was already there', () => {
+  it('reports a stall again while it is still undelivered', () => {
     const both = ledger(claim({ stalledReason: 'timed out' }))
-    expect(kinds(both, both)).toEqual([])
+    expect(kinds(both, both)).toEqual(['stalled'])
   })
 
   it('reports a move to parked', () => {
@@ -66,6 +73,35 @@ describe('seatEvents', () => {
     expect(kinds(after, ledger(claim()))).toEqual([])
   })
 
+  // One per kind: a claim already in that state before the tick, and already told, stays quiet.
+  const settled: Record<EventKind, Partial<Claim>> = {
+    dispatched: { agentId: 'id-1' },
+    'ready-to-merge': { phase: 'awaiting-merge' },
+    merged: { phase: 'done', notified: ['ready-to-merge'] },
+    stalled: { stalledReason: 'timed out' },
+    parked: { phase: 'parked' },
+  }
+  for (const [kind, state] of Object.entries(settled)) {
+    it(`does not re-fire ${kind} for a claim already in that state and notified`, () => {
+      const told = claim({ ...state, notified: [...(state.notified ?? []), kind] })
+      expect(kinds(ledger(told), ledger(told))).toEqual([])
+    })
+  }
+
+  it('reports merged on a retry once ready-to-merge was delivered', () => {
+    const done = ledger(claim({ phase: 'done', notified: ['ready-to-merge'] }))
+    expect(kinds(done, done)).toEqual(['merged'])
+  })
+
+  it('does not report merged for a claim done without a merge', () => {
+    const done = ledger(claim({ phase: 'done' }))
+    expect(kinds(done, ledger(claim({ phase: 'implementing' })))).toEqual([])
+  })
+
+  it('reports a landed agent as dispatched without a spawn result', () => {
+    expect(kinds(ledger(claim({ agentId: 'id-1' })))).toEqual(['dispatched'])
+  })
+
   it('returns nothing for a claim without a seat', () => {
     const { seat: _seat, ...bare } = claim({ phase: 'parked' })
     expect(seatEvents(ledger(claim()), ledger(bare), [])).toEqual({})
@@ -75,6 +111,18 @@ describe('seatEvents', () => {
     const after = ledger(claim({ phase: 'parked' }), claim({ taskId: 'T-2', seat: 'beta', phase: 'parked' }))
     const before = ledger(claim(), claim({ taskId: 'T-2', seat: 'beta' }))
     expect(Object.keys(seatEvents(before, after, []))).toEqual(['alpha', 'beta'])
+  })
+})
+
+describe('markNotified', () => {
+  it("adds delivered kinds to the seat's matching claims only", () => {
+    const start = ledger(
+      claim({ notified: ['dispatched'] }),
+      claim({ taskId: 'T-2' }),
+      claim({ seat: 'beta' }),
+    )
+    const marked = markNotified(start, 'alpha', [{ kind: 'parked', taskId: 'T-1' }])
+    expect(marked.claims.map(c => c.notified)).toEqual([['dispatched', 'parked'], undefined, undefined])
   })
 })
 
@@ -99,5 +147,14 @@ describe('renderSeatEvents', () => {
     expect(last).toMatch(/^and \d+ more: \d+ merged, \d+ parked$/)
     const shown = text.split('\n').length - 2
     expect(Number(/^and (\d+)/.exec(last)?.[1]) + shown).toBe(200)
+  })
+
+  it('cuts a seat name too long for the bound and still shows the events', () => {
+    const text = renderSeatEvents('s'.repeat(2000), [event(1)], now)
+    expect(text.length).toBeLessThanOrEqual(MESSAGE_LIMIT)
+    expect(text.split('\n')).toEqual([
+      `Burndown events for ${'s'.repeat(100)}... at ${now.toISOString()}`,
+      'parked T-1',
+    ])
   })
 })

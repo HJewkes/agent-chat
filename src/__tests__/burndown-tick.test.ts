@@ -115,6 +115,7 @@ interface Fake {
   rosterCalls: number
   resumes: { name: string; message: string }[]
   retires: string[]
+  sends: { to: string; text: string }[]
 }
 
 function fakeBroker(
@@ -126,6 +127,7 @@ function fakeBroker(
     resume?: (name: string) => SpawnReply
     retire?: (name: string) => SpawnReply
     view?: () => BrokerView
+    sendAs?: (to: string) => SpawnReply
   } = {},
 ): Fake {
   const fake: Fake = {
@@ -133,6 +135,7 @@ function fakeBroker(
     rosterCalls: 0,
     resumes: [],
     retires: [],
+    sends: [],
     broker: {
       roster: async () => {
         fake.rosterCalls += 1
@@ -153,6 +156,10 @@ function fakeBroker(
         return opts.resume?.(name) ?? { ok: true, agentId: `id-${name}` }
       },
       collisionView: async () => opts.view?.() ?? { names: [], claims: [] },
+      sendAs: async (to, text) => {
+        fake.sends.push({ to, text })
+        return opts.sendAs?.(to) ?? { ok: true }
+      },
     },
   }
   return fake
@@ -785,6 +792,97 @@ describe('burndown tick in seats mode', () => {
       `would spawn st-dm-1 as bd-implementer (headless) on ${accountPath()} in ${repo()}`,
     )
     expect(fs.existsSync(burndownLedgerPath())).toBe(false)
+  })
+
+  it('tells the seat of its dispatches in one message and marks them notified', async () => {
+    seatInitiative({ 'DM-1': seatTask('DM-1'), 'DM-2': seatTask('DM-2') })
+    const fake = fakeBroker()
+
+    const lines = await tick(fake)
+
+    expect(fake.sends).toEqual([
+      {
+        to: 'seat-t',
+        text: `Burndown events for seat-t at ${NOON.toISOString()}\ndispatched DM-1\ndispatched DM-2`,
+      },
+    ])
+    expect(lines).toContain('told seat-t of 2 event(s)')
+    expect(readLedger(burndownLedgerPath()).claims.map(c => c.notified)).toEqual([
+      ['dispatched'],
+      ['dispatched'],
+    ])
+  })
+
+  it('leaves events unmarked on a failed send and delivers them on the next tick', async () => {
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    let up = false
+    const fake = fakeBroker({
+      agents: [row('st-dm-1', 'live')],
+      sendAs: () => (up ? { ok: true } : { ok: false, reason: 'broker gone' }),
+    })
+
+    const first = await tick(fake)
+    expect(first).toContain('could not tell seat-t of 1 event(s): broker gone; retried next tick')
+    expect(readLedger(burndownLedgerPath()).claims[0]?.notified).toBeUndefined()
+
+    up = true
+    await tick(fake)
+    await tick(fake)
+
+    expect(fake.sends.map(s => s.text.split('\n').slice(1))).toEqual([
+      ['dispatched DM-1'],
+      ['dispatched DM-1'],
+    ])
+    expect(readLedger(burndownLedgerPath()).claims[0]?.notified).toEqual(['dispatched'])
+  })
+
+  it('dry run prints the seat message instead of sending it', async () => {
+    const claim: Claim = {
+      taskId: 'DM-9',
+      initiative: 'demo',
+      seat: 'seat-t',
+      spawnedAt: NOON.toISOString(),
+      phase: 'parked',
+      phaseAt: NOON.toISOString(),
+      agentId: 'id-st-dm-9',
+      notified: ['dispatched'],
+    }
+    seatInitiative({})
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [claim] })
+    const fake = fakeBroker()
+
+    const lines = await tick(fake, true)
+
+    expect(fake.sends).toEqual([])
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        'would send to seat-t:',
+        `  Burndown events for seat-t at ${NOON.toISOString()}`,
+        '  parked DM-9',
+      ]),
+    )
+  })
+
+  it('sends nothing for a claim whose seat is not enabled', async () => {
+    const claim: Claim = {
+      taskId: 'DM-9',
+      initiative: 'demo',
+      seat: 'seat-off',
+      spawnedAt: NOON.toISOString(),
+      phase: 'parked',
+      phaseAt: NOON.toISOString(),
+      agentId: 'id-st-dm-9',
+    }
+    seatInitiative({})
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [claim] })
+    const fake = fakeBroker()
+
+    await tick(fake)
+    const dry = await tick(fake, true)
+
+    expect(fake.sends).toEqual([])
+    expect(dry.join('\n')).not.toContain('would send')
+    expect(readLedger(burndownLedgerPath()).claims[0]?.notified).toBeUndefined()
   })
 })
 

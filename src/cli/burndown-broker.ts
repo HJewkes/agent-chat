@@ -1,16 +1,20 @@
-import type { BrokerClient } from '../client/broker-client.js'
+import { BrokerClient } from '../client/broker-client.js'
 import type { ServerMessage } from '../protocol.js'
 import type { TickBroker } from '../agents/burndown/run-tick.js'
+import type { SendAs } from '../agents/burndown/seat-deliver.js'
 import type { BrokerView } from '../agents/burndown/collision.js'
 import { LIVE } from '../agents/burndown/observe.js'
 
-/** The tick's broker calls over one unregistered connection, which the broker treats as the human. */
+/** The tick's broker calls over one unregistered connection, which the broker treats as the human; seat events are the exception. */
 
 const INBOX_PAGE = 200
 
 type Reply<T extends ServerMessage['t']> = Extract<ServerMessage, { t: T }>
 
-export function tickBroker(client: BrokerClient): TickBroker {
+/** The name seats see on burndown's event messages. */
+export const BURNDOWN_SENDER = 'burndown'
+
+export function tickBroker(client: BrokerClient, sendAs: SendAs = sendAsBurndown(connectBroker)): TickBroker {
   return {
     async roster() {
       const res = (await client.request(
@@ -47,6 +51,40 @@ export function tickBroker(client: BrokerClient): TickBroker {
       return spawnReply(res)
     },
     collisionView: () => collisionView(client),
+    sendAs,
+  }
+}
+
+/** Never autostart: a tick that brought up a broker would own it, and the broker serves every session. */
+const connectBroker = async (): Promise<BrokerClient> => {
+  const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
+    autoStart: false,
+  })
+  await client.connect()
+  return client
+}
+
+/** A short-lived connection per message, registered as `burndown`, so the spawn connection stays unregistered. */
+export function sendAsBurndown(connect: () => Promise<BrokerClient>): SendAs {
+  return async (to, text) => {
+    const client = await connect()
+    try {
+      const identity = {
+        name: BURNDOWN_SENDER,
+        workingOn: 'burndown seat events',
+        cwd: process.cwd(),
+        pid: process.pid,
+      }
+      const reg = (await client.request(
+        { t: 'register', ...identity },
+        'register_result',
+      )) as Reply<'register_result'>
+      if (!reg.ok) return { ok: false, reason: `register as ${BURNDOWN_SENDER}: ${reg.reason ?? 'refused'}` }
+      const res = (await client.request({ t: 'send', to, text }, 'send_result')) as Reply<'send_result'>
+      return { ok: res.ok, ...(res.reason === undefined ? {} : { reason: res.reason }) }
+    } finally {
+      client.close()
+    }
   }
 }
 

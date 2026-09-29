@@ -35,6 +35,8 @@ import {
 } from './observe.js'
 import { DEFAULT_NAME_PREFIX, plan, type Capacity, type Dispatch, type PlanInputs } from './plan.js'
 import { defaultAutonomyRoot } from './policy.js'
+import { describeSeatEvents, deliverSeatEvents, type SendAs } from './seat-deliver.js'
+import type { SpawnResult } from './seat-events.js'
 import { diskSeatDeps, loadSeats, planSeats, type LoadedSeats, type SkippedSeat } from './seat-tick.js'
 import {
   accountDir,
@@ -53,6 +55,7 @@ import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
  * every held claim, advance it one phase, then dispatch new work inside the
  * tick's own ceilings. The broker treats this unregistered connection as the
  * human, so it applies no spawn-rate or cwd check: these ceilings are the bound.
+ * Seat events go out through `sendAs`, a separate connection registered as `burndown`.
  */
 
 export interface TickBroker {
@@ -65,6 +68,8 @@ export interface TickBroker {
   resume: (name: string, message: string) => Promise<SpawnReply>
   /** Live agent and session names and every `files` claim, for the CC-202 collision check. */
   collisionView: () => Promise<BrokerView>
+  /** A peer `send` from a connection registered as `burndown`, never from the spawn connection (CC-250). */
+  sendAs: SendAs
 }
 
 export interface TickOptions {
@@ -119,34 +124,68 @@ export async function tickFromDisk(opts: TickOptions): Promise<string[]> {
 async function runTick(config: TickConfig, opts: TickOptions): Promise<string[]> {
   const now = opts.now ?? new Date()
   const ledger = readLedger(burndownLedgerPath())
-  const { steps, notes, decider, failures, unchecked, seatStates, skippedSeats } = await decide(
-    config,
-    opts,
-    ledger,
-    now,
-  )
-  if (opts.dryRun)
+  const decided = await decide(config, opts, ledger, now)
+  const { steps, notes, decider } = decided
+  if (opts.dryRun) {
+    const planned = applyActions(
+      ledger,
+      steps.flatMap(s => (s.kind === 'ledger' ? s.actions : [])),
+      now,
+    )
+    const diff = { seats: config.seats, before: ledger, after: planned, spawns: [] }
     return [
       `burndown tick at ${now.toISOString()} (dry run)`,
       ...steps.map(describe),
       ...describeDecider(config, decider),
+      ...describeSeatEvents(diff, now),
       ...notes,
     ]
+  }
+  const lines = await actOn(config, opts, ledger, decided, now)
+  return [`burndown tick at ${now.toISOString()}`, ...lines, ...notes]
+}
+
+/** Executes the steps, wakes the decider, then tells each seat what changed, writing the ledger last. */
+async function actOn(
+  config: TickConfig,
+  opts: TickOptions,
+  ledger: Ledger,
+  { steps, decider, failures, unchecked, seatStates, skippedSeats }: Decided,
+  now: Date,
+): Promise<string[]> {
   const log = opts.log ?? logEvent
   for (const failure of failures) log('burndown_collision_reader_failed', { ...failure })
   for (const initiative of unchecked) log('burndown_collision_skipped', { initiative, reason: 'no repo' })
   for (const skipped of skippedSeats) log('burndown_seat_skipped', { ...skipped })
   const sampled = seatStates === undefined ? ledger : { ...ledger, seats: seatStates }
+  const spawns: SpawnResult[] = []
   const executed = await execute(steps, sampled, {
     ledgerFile: burndownLedgerPath(),
-    spawn: opts.broker.spawn,
+    spawn: recordingSpawn(steps, opts.broker.spawn, spawns),
     retire: opts.broker.retire,
     log,
     now,
   })
   const woken = await actOnDecider(config, decider, executed.ledger, { broker: opts.broker, log, now })
-  writeLedger(burndownLedgerPath(), { ...woken.ledger, lastTickAt: now.toISOString() })
-  return [`burndown tick at ${now.toISOString()}`, ...executed.lines, ...woken.lines, ...notes]
+  const diff = { seats: config.seats, before: ledger, after: woken.ledger, spawns }
+  const told = await deliverSeatEvents(diff, { send: opts.broker.sendAs, log, now })
+  writeLedger(burndownLedgerPath(), { ...told.ledger, lastTickAt: now.toISOString() })
+  return [...executed.lines, ...woken.lines, ...told.lines]
+}
+
+/** Spawns through the broker and records which claim each answered spawn was for. */
+function recordingSpawn(
+  steps: readonly Step[],
+  spawn: TickBroker['spawn'],
+  into: SpawnResult[],
+): TickBroker['spawn'] {
+  const keys = new Map(steps.flatMap(s => (s.kind === 'spawn' ? [[s.frame.name, s.key] as const] : [])))
+  return async frame => {
+    const reply = await spawn(frame)
+    const key = keys.get(frame.name)
+    if (key !== undefined) into.push({ key, ok: reply.ok })
+    return reply
+  }
 }
 
 /** Wakes the decider, or records why not when the human has something to fix. */
