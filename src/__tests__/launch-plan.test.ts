@@ -151,7 +151,7 @@ describe('the argv every surface shares', () => {
     writeLaunchFiles(buildLaunchPlan(input({ gitHooksDir: hooks })), {})
 
     expect(fs.statSync(path.join(hooks, 'pre-push')).mode & 0o777).toBe(0o755)
-    expect(fs.readFileSync(path.join(hooks, 'pre-push'), 'utf8')).toContain('leak-scan --pre-push')
+    expect(fs.readFileSync(path.join(hooks, 'pre-push'), 'utf8')).toContain('titan-egress-scan pre-push')
   })
 
   it('passes isolation extra dirs through as --add-dir', () => {

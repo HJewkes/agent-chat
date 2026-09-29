@@ -8,7 +8,6 @@ import { VERSION } from '../broker/version.js'
 import { socketPath } from '../paths.js'
 import * as agents from './agents.js'
 import { addVerb } from './command.js'
-import type { LeakScanCliOptions } from './verbs/leak-pre-push.js'
 import { agentBudgetVerb } from './verbs/agent-budget.js'
 import { agentRetire } from './verbs/agent-retire.js'
 import { agentResume } from './verbs/agent-resume.js'
@@ -189,14 +188,11 @@ function addAgentCommands(program: Command): void {
     .option('--range <from..to>', 'scan added lines, added file names and commit messages in this range')
     .option('--text-file <file>', 'scan every line of a file, such as a PR body')
     .option('--json', 'print one JSON object with the findings')
-    .option('--pre-push', 'run as git pre-push hook: ref lines on stdin, refuse on public or unknown remotes')
-    .option('--remote <name>', 'with --pre-push: the remote name git passes as $1')
-    .option('--url <url>', 'with --pre-push: the remote URL git passes as $2')
     // A usage error must not exit 1, which means "findings".
     .exitOverride(err => process.exit(err.exitCode === 0 ? 0 : 2))
-    .action(async (options: LeakScanCliOptions) => {
-      const { leakScanCommand } = await import('./verbs/leak-pre-push.js')
-      process.exitCode = await leakScanCommand(options)
+    .action(async (options: { range?: string; textFile?: string; json?: boolean }) => {
+      const { leakScan } = await import('./verbs/leak-scan.js')
+      process.exitCode = await leakScan(options)
     })
 }
 

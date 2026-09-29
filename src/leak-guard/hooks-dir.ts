@@ -47,31 +47,51 @@ const CHAIN_SHIM = `${HEADER}${FIND_REPO_HOOK}\n[ -n "$hook" ] || exit 0\nexec "
 
 const NOT_RUN = 'leak-scan: guard NOT run, this push was not scanned'
 
+const INSTALL_HINT = 'Run npm i -g @titan-design/egress-scan; see docs/leak-guard.md.'
+
+/** Flip to false to let a push through, generic rules only, while the owner has no private term list. */
+export const MISSING_TERMS_REFUSES = true
+
+// egress-scan's own stderr line; its exit code (2) is shared with every config error.
+const MISSING_TERMS_LINE = 'private term list not found'
+
+const TERMS_FILE = '${TITAN_EGRESS_TERMS:-${XDG_CONFIG_HOME:-$HOME/.config}/titan-egress/private-terms}'
+
+const missingTermsNote = (refuses: boolean): string =>
+  refuses
+    ? `leak-scan: push refused: no private term list at ${TERMS_FILE}. Create it, one term per line, chmod 600; see docs/leak-guard.md.`
+    : `leak-scan: WARNING: no private term list at ${TERMS_FILE}, so this push was scanned with generic rules only. Create it; see docs/leak-guard.md.`
+
 /**
- * node and agent-chat are found on PATH when the hook runs, never baked in: a versioned node or a
- * worktree's dist goes away and would refuse every push. A missing one, or an installed CLI whose
- * help works but lacks `--pre-push`, warns and lets the push go. A CLI that crashes still refuses.
- * The scan's refusal does not skip the repo's own hook; either one failing refuses the push.
+ * node and titan-egress-scan are found on PATH when the hook runs, never baked in: a versioned node
+ * goes away and would refuse every push. A missing one, or a scanner whose help lacks `pre-push`,
+ * warns and lets the push go. A scanner that crashes still refuses. `CI=` stops egress-scan skipping
+ * the term list. The scan's refusal does not skip the repo's own hook; either one failing refuses.
  */
-const PRE_PUSH_SHIM = `${HEADER}refs=$(mktemp) || exit 1
-trap 'rm -f "$refs"' EXIT
+const prePushShim = (refuses: boolean): string => `${HEADER}refs=$(mktemp) || exit 1
+errs=$(mktemp) || exit 1
+trap 'rm -f "$refs" "$errs"' EXIT
 cat > "$refs"
 scan=0
 if ! command -v node >/dev/null 2>&1; then
   echo "${NOT_RUN}: no node on PATH. Put node on the agent's PATH; see docs/leak-guard.md." >&2
-elif ! command -v agent-chat >/dev/null 2>&1; then
-  echo "${NOT_RUN}: no agent-chat on PATH. Run npm link in the agent-chat checkout; see docs/leak-guard.md." >&2
-elif ! help=$(agent-chat leak-scan --help 2>&1); then
+elif ! command -v titan-egress-scan >/dev/null 2>&1; then
+  echo "${NOT_RUN}: no titan-egress-scan on PATH. ${INSTALL_HINT}" >&2
+elif ! help=$(titan-egress-scan --help 2>&1); then
   printf '%s\\n' "$help" >&2
-  echo "leak-scan: agent-chat failed while checking for leak-scan --pre-push, so the push is refused." >&2
+  echo "leak-scan: titan-egress-scan failed while checking for its pre-push command, so the push is refused." >&2
   scan=2
 else
   case $help in
-  *--pre-push*)
-    agent-chat leak-scan --pre-push "--remote=$1" "--url=$2" < "$refs"
-    scan=$? ;;
+  *pre-push*)
+    CI= TITAN_EGRESS_REQUIRE_TERMS=${refuses ? '1' : ''} titan-egress-scan pre-push "$1" < "$refs" 2> "$errs"
+    scan=$?
+    cat "$errs" >&2
+    if grep -q '${MISSING_TERMS_LINE}' "$errs"; then
+      echo "${missingTermsNote(refuses)}" >&2
+    fi ;;
   *)
-    echo "${NOT_RUN}: the agent-chat on PATH has no leak-scan --pre-push. Rebuild the linked checkout (npm run build); see docs/leak-guard.md." >&2 ;;
+    echo "${NOT_RUN}: the titan-egress-scan on PATH has no pre-push command. ${INSTALL_HINT}" >&2 ;;
   esac
 fi
 ${FIND_REPO_HOOK}
@@ -81,8 +101,11 @@ if [ -n "$hook" ]; then "$hook" "$@" < "$refs"; own_status=$?; fi
 exit "$own_status"
 `
 
-export function hookScripts(): Map<string, string> {
-  return new Map([['pre-push', PRE_PUSH_SHIM], ...CHAINED_HOOKS.map(name => [name, CHAIN_SHIM] as const)])
+export function hookScripts(missingTermsRefuses = MISSING_TERMS_REFUSES): Map<string, string> {
+  return new Map([
+    ['pre-push', prePushShim(missingTermsRefuses)],
+    ...CHAINED_HOOKS.map(name => [name, CHAIN_SHIM] as const),
+  ])
 }
 
 /** Replaced by rename, so a hook git is running at that moment never reads a half-written file. */
@@ -98,7 +121,7 @@ function writeIfChanged(file: string, body: string): void {
   fs.renameSync(tmp, file)
 }
 
-export function writeGitHooks(dir: string): void {
+export function writeGitHooks(dir: string, missingTermsRefuses = MISSING_TERMS_REFUSES): void {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-  for (const [name, body] of hookScripts()) writeIfChanged(path.join(dir, name), body)
+  for (const [name, body] of hookScripts(missingTermsRefuses)) writeIfChanged(path.join(dir, name), body)
 }

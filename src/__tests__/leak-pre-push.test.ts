@@ -2,23 +2,47 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterAll, afterEach, describe, expect, it } from 'vitest'
-import { leakPrePush, parseRefUpdates } from '../cli/verbs/leak-pre-push.js'
+import { afterAll, describe, expect, it } from 'vitest'
 import { gitHooksEnv, hookScripts, writeGitHooks } from '../leak-guard/hooks-dir.js'
-import {
-  cachedVisibility,
-  gitHubRepo,
-  VISIBILITY_TTL_MS,
-  type VisibilityReader,
-} from '../leak-guard/visibility.js'
 
-const CLI = path.resolve(import.meta.dirname, '../../dist/cli.js')
 const SCRATCH = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-prepush-')))
 
 afterAll(() => fs.rmSync(SCRATCH, { recursive: true, force: true }))
 
+const HELP = `usage: titan-egress-scan <command>
+  pre-push <remote>     scan the commits a push sends (reads git's pre-push stdin)
+exit: 0 clean, 1 findings, 2 usage or configuration error`
+
+// Every fixture is synthetic: a made-up home and a made-up marker term.
+const HOME = '/Users/zq7-probe-home'
+const LEAK = 'zq7leakterm'
+
+/**
+ * Mirrors titan-egress-scan 0.1.0: a CI value skips the term list, a missing list exits 2 only under
+ * TITAN_EGRESS_REQUIRE_TERMS=1, and a pushed commit holding the marker is a finding (exit 1).
+ */
+const EGRESS_STUB = `[ "$1" = --help ] && { cat <<'EOF'
+${HELP}
+EOF
+exit 0; }
+[ "$1" = pre-push ] || exit 2
+refs=$(cat)
+printf 'args=%s CI=%s REQUIRE=%s\\n%s\\n' "$*" "\${CI-unset}" "\${TITAN_EGRESS_REQUIRE_TERMS-unset}" "$refs" > "\${STUB_LOG:-/dev/null}"
+case \${CI:-} in
+'' | false | 0)
+  terms=\${TITAN_EGRESS_TERMS:-\${XDG_CONFIG_HOME:-$HOME/.config}/titan-egress/private-terms}
+  if [ ! -f "$terms" ]; then
+    [ "\${TITAN_EGRESS_REQUIRE_TERMS:-}" = 1 ] && { echo 'titan-egress-scan: private term list not found and TITAN_EGRESS_REQUIRE_TERMS=1' >&2; exit 2; }
+    echo 'titan-egress-scan: private term list not found; generic rules only' >&2
+  fi ;;
+esac
+for sha in $(printf '%s\\n' "$refs" | awk '{ print $2 }'); do
+  git show "$sha" | grep -q ${LEAK} && { echo 'commit 1 notes.md:1 private-term'; exit 1; }
+done
+exit 0`
+
 /** A PATH dir holding only the named tools, so a test controls what the hook can find. */
-function binWith(tools: { node?: boolean; agentChat?: boolean; git?: boolean }): string {
+function binWith(tools: { node?: boolean; git?: boolean; egress?: string }): string {
   const dir = fs.mkdtempSync(path.join(SCRATCH, 'bin-'))
   if (tools.node) fs.symlinkSync(process.execPath, path.join(dir, 'node'))
   if (tools.git)
@@ -26,119 +50,13 @@ function binWith(tools: { node?: boolean; agentChat?: boolean; git?: boolean }):
       execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim(),
       path.join(dir, 'git'),
     )
-  if (tools.agentChat)
-    fs.writeFileSync(path.join(dir, 'agent-chat'), `#!/bin/sh\nexec node '${CLI}' "$@"\n`, { mode: 0o755 })
+  if (tools.egress !== undefined)
+    fs.writeFileSync(path.join(dir, 'titan-egress-scan'), `#!/bin/sh\n${tools.egress}\n`, { mode: 0o755 })
   return dir
 }
 
 const SYSTEM_PATH = '/usr/bin:/bin'
-const GUARD_PATH = `${binWith({ node: true, agentChat: true })}:${process.env.PATH ?? SYSTEM_PATH}`
-
-// Every fixture is synthetic: a made-up home, a made-up TLD and made-up names.
-const HOME = '/Users/zq7-probe-home'
-const EMAIL = 'owner.zq7@leakprobe.zq7'
-const NAME = 'zq7privateseat'
-const ENTRIES = [HOME, EMAIL, NAME]
-const LIST_JSON = JSON.stringify({ 'owner-email': [EMAIL], 'private-name': [NAME] })
-const SHA_A = 'a'.repeat(40)
-const SHA_B = 'b'.repeat(40)
-const ZERO = '0'.repeat(40)
-
-const expectNoEntry = (output: string): void => {
-  for (const entry of ENTRIES) expect(output.toLowerCase()).not.toContain(entry.toLowerCase())
-}
-
-describe('parseRefUpdates', () => {
-  it('keeps pushed refs and drops deletions and malformed lines', () => {
-    const stdin = [
-      `refs/heads/a ${SHA_A} refs/heads/a ${ZERO}`,
-      `(delete) ${ZERO} refs/heads/gone ${SHA_B}`,
-      'not a ref line',
-      `refs/heads/b ${SHA_B} refs/heads/b ${SHA_A}`,
-    ].join('\n')
-
-    expect(parseRefUpdates(stdin)).toEqual([
-      { localSha: SHA_A, remoteSha: ZERO },
-      { localSha: SHA_B, remoteSha: SHA_A },
-    ])
-  })
-})
-
-describe('gitHubRepo', () => {
-  it.each([
-    ['git@github.com:acme/widget.git', 'acme/widget'],
-    ['https://github.com/acme/widget', 'acme/widget'],
-    ['https://github.com/acme/widget.git', 'acme/widget'],
-    ['ssh://git@github.com/acme/wid.get.git', 'acme/wid.get'],
-    ['https://token@github.com/acme/widget.git', 'acme/widget'],
-  ])('reads %s as %s', (url, repo) => {
-    expect(gitHubRepo(url)).toBe(repo)
-  })
-
-  it('does not treat another host or a local path as GitHub', () => {
-    expect(gitHubRepo('https://gitlab.com/acme/widget.git')).toBeUndefined()
-    expect(gitHubRepo('/tmp/remote.git')).toBeUndefined()
-  })
-})
-
-describe('cachedVisibility', () => {
-  const cacheFile = (): string =>
-    path.join(fs.mkdtempSync(path.join(SCRATCH, 'vis-')), 'repo-visibility.json')
-
-  it('looks a GitHub remote up once and answers from the cache within a day', async () => {
-    const file = cacheFile()
-    const asked: string[] = []
-    let now = 1_000
-    const read = cachedVisibility(
-      file,
-      async repo => (asked.push(repo), 'public'),
-      () => now,
-    )
-
-    expect(await read('git@github.com:acme/widget.git')).toBe('public')
-    now += VISIBILITY_TTL_MS - 1
-    expect(await read('https://github.com/acme/widget')).toBe('public')
-
-    expect(asked).toEqual(['acme/widget'])
-  })
-
-  it('asks again once the cached answer is a day old', async () => {
-    const file = cacheFile()
-    let now = 1_000
-    const answers = ['private', 'public']
-    const read = cachedVisibility(
-      file,
-      async () => answers.shift() ?? '',
-      () => now,
-    )
-
-    expect(await read('git@github.com:acme/widget.git')).toBe('private')
-    now += VISIBILITY_TTL_MS
-    expect(await read('git@github.com:acme/widget.git')).toBe('public')
-  })
-
-  it('counts a failed or odd lookup as unknown and does not cache it', async () => {
-    const file = cacheFile()
-    const answers: (() => Promise<string>)[] = [
-      () => Promise.reject(new Error('rate limited')),
-      async () => 'null',
-      async () => 'internal',
-    ]
-    const read = cachedVisibility(file, () => answers.shift()!())
-
-    expect(await read('git@github.com:acme/widget.git')).toBe('unknown')
-    expect(await read('git@github.com:acme/widget.git')).toBe('unknown')
-    expect(await read('git@github.com:acme/widget.git')).toBe('private')
-  })
-
-  it('never looks up a non-GitHub remote', async () => {
-    const read = cachedVisibility(cacheFile(), () => {
-      throw new Error('must not be called')
-    })
-
-    expect(await read('/tmp/remote.git')).toBe('unknown')
-  })
-})
+const GUARD_PATH = `${binWith({ node: true, git: true, egress: EGRESS_STUB })}:${SYSTEM_PATH}`
 
 describe('hookScripts', () => {
   // Regression: a baked Cellar node or worktree dist path refused every push once it went away.
@@ -147,7 +65,7 @@ describe('hookScripts', () => {
 
     expect(shim).not.toContain(process.execPath)
     expect(shim).not.toContain('cli.js')
-    expect(shim).toContain('agent-chat leak-scan --pre-push')
+    expect(shim).toContain('titan-egress-scan pre-push "$1"')
   })
 
   it('writes executable shims for pre-push and the gating commit hooks only', () => {
@@ -166,6 +84,8 @@ interface Fixture {
   remote: string
   chatHome: string
   marker: string
+  stubLog: string
+  termsFile: string
   agentEnv: NodeJS.ProcessEnv
 }
 
@@ -190,25 +110,8 @@ function commitFile(f: Fixture, branch: string, file: string, text: string): voi
   git(f.work, baseEnv(), 'commit', '-q', '-m', `add ${file}`)
 }
 
-type Visibility = 'public' | 'private' | undefined
-
-/** A work repo whose origin is a local bare repo, with the guard hooks and a repo-local pre-push hook. */
-function fixture(opts: { denylist?: string; visibility: Visibility }): Fixture {
-  const root = fs.mkdtempSync(path.join(SCRATCH, 'repo-'))
-  const [work, remote, chatHome] = ['work', 'remote.git', 'chat'].map(d => path.join(root, d)) as [
-    string,
-    string,
-    string,
-  ]
-  const marker = path.join(root, 'repo-hook-ran')
-  fs.mkdirSync(chatHome)
-  if (opts.denylist !== undefined)
-    fs.writeFileSync(path.join(chatHome, 'private-denylist.json'), opts.denylist, { mode: 0o600 })
-  if (opts.visibility !== undefined)
-    fs.writeFileSync(
-      path.join(chatHome, 'repo-visibility.json'),
-      JSON.stringify({ [remote]: { visibility: opts.visibility, checkedAt: Date.now() } }),
-    )
+function initRepos(root: string): { work: string; remote: string } {
+  const [work, remote] = ['work', 'remote.git'].map(d => path.join(root, d)) as [string, string]
   git(root, baseEnv(), 'init', '-q', '--bare', remote)
   git(root, baseEnv(), 'init', '-q', '-b', 'main', work)
   git(work, baseEnv(), 'remote', 'add', 'origin', remote)
@@ -216,23 +119,46 @@ function fixture(opts: { denylist?: string; visibility: Visibility }): Fixture {
   git(work, baseEnv(), 'add', 'README.md')
   git(work, baseEnv(), 'commit', '-q', '-m', 'init')
   git(work, baseEnv(), 'push', '-q', 'origin', 'main')
-  const repoHook = path.join(work, '.git', 'hooks', 'pre-push')
-  fs.writeFileSync(repoHook, `#!/bin/sh\nread -r ref sha rest && echo "$1 $ref" >> '${marker}'\n`, {
-    mode: 0o755,
-  })
-  const hooksDir = path.join(chatHome, 'git-hooks')
-  writeGitHooks(hooksDir)
-  const agentEnv = { ...baseEnv(), ...gitHooksEnv(hooksDir), AGENT_CHAT_HOME: chatHome, PATH: GUARD_PATH }
-  return { work, remote, chatHome, marker, agentEnv }
+  return { work, remote }
 }
 
-function push(f: Fixture, branch: string): { code: number; stderr: string } {
+/** A work repo whose origin is a local bare repo, with the guard hooks and a repo-local pre-push hook. */
+function fixture(opts: { terms?: boolean; missingTermsRefuses?: boolean } = {}): Fixture {
+  const root = fs.mkdtempSync(path.join(SCRATCH, 'repo-'))
+  const { work, remote } = initRepos(root)
+  const chatHome = path.join(root, 'chat')
+  const marker = path.join(root, 'repo-hook-ran')
+  const configHome = path.join(root, 'config')
+  const termsFile = path.join(configHome, 'titan-egress', 'private-terms')
+  if (opts.terms !== false) {
+    fs.mkdirSync(path.dirname(termsFile), { recursive: true })
+    fs.writeFileSync(termsFile, `${LEAK}\n`, { mode: 0o600 })
+  }
+  fs.writeFileSync(
+    path.join(work, '.git', 'hooks', 'pre-push'),
+    `#!/bin/sh\nread -r ref sha rest && echo "$1 $ref" >> '${marker}'\n`,
+    { mode: 0o755 },
+  )
+  const hooksDir = path.join(chatHome, 'git-hooks')
+  writeGitHooks(hooksDir, opts.missingTermsRefuses)
+  const stubLog = path.join(root, 'stub.log')
+  const agentEnv = {
+    ...baseEnv(),
+    ...gitHooksEnv(hooksDir),
+    PATH: GUARD_PATH,
+    XDG_CONFIG_HOME: configHome,
+    STUB_LOG: stubLog,
+  }
+  return { work, remote, chatHome, marker, stubLog, termsFile, agentEnv }
+}
+
+function push(f: Fixture, branch: string): { code: number; stdout: string; stderr: string } {
   const run = spawnSync('git', ['push', '-q', 'origin', branch], {
     cwd: f.work,
     env: f.agentEnv,
     encoding: 'utf8',
   })
-  return { code: run.status ?? -1, stderr: run.stderr }
+  return { code: run.status ?? -1, stdout: run.stdout, stderr: run.stderr }
 }
 
 const remoteHas = (f: Fixture, branch: string): boolean =>
@@ -242,41 +168,46 @@ const remoteHas = (f: Fixture, branch: string): boolean =>
 const repoHookRuns = (f: Fixture): string[] =>
   fs.existsSync(f.marker) ? fs.readFileSync(f.marker, 'utf8').trim().split('\n') : []
 
+const stubSaw = (f: Fixture): string[] => fs.readFileSync(f.stubLog, 'utf8').trim().split('\n')
+
 describe('git push under the agent env', () => {
   it('points core.hooksPath at the guard dir', () => {
-    const f = fixture({ denylist: LIST_JSON, visibility: 'public' })
+    const f = fixture()
 
     expect(git(f.work, f.agentEnv, 'config', 'core.hooksPath')).toBe(path.join(f.chatHome, 'git-hooks'))
     expect(git(f.work, baseEnv(), 'config', '--default', 'none', 'core.hooksPath')).toBe('none')
   })
 
-  it('refuses a leak to a public remote with file:line, and still runs the repo hook', () => {
-    const f = fixture({ denylist: LIST_JSON, visibility: 'public' })
-    commitFile(f, 'leaky', 'notes.md', `ping ${EMAIL}`)
+  it("lets a clean push through, feeding egress-scan the remote and git's ref lines, and runs the repo hook", () => {
+    const f = fixture()
+    commitFile(f, 'clean', 'notes.md', 'nothing private')
+    const sha = git(f.work, baseEnv(), 'rev-parse', 'clean')
+
+    const run = push(f, 'clean')
+
+    expect(run).toMatchObject({ code: 0, stderr: '' })
+    expect(remoteHas(f, 'clean')).toBe(true)
+    expect(repoHookRuns(f)).toEqual(['origin refs/heads/clean'])
+    expect(stubSaw(f)).toEqual([
+      'args=pre-push origin CI= REQUIRE=1',
+      `refs/heads/clean ${sha} refs/heads/clean ${'0'.repeat(40)}`,
+    ])
+  })
+
+  it('refuses a push egress-scan reports findings for, and still runs the repo hook', () => {
+    const f = fixture()
+    commitFile(f, 'leaky', 'notes.md', `the ${LEAK} seat`)
 
     const run = push(f, 'leaky')
 
     expect(run.code).not.toBe(0)
-    expect(run.stderr).toMatch(/[0-9a-f]{12} notes\.md:1 {2}owner-email/)
-    expect(run.stderr).toContain('push refused: the remote is public')
-    expectNoEntry(run.stderr)
+    expect(run.stdout + run.stderr).toContain('notes.md:1 private-term')
     expect(remoteHas(f, 'leaky')).toBe(false)
     expect(repoHookRuns(f)).toEqual(['origin refs/heads/leaky'])
   })
 
-  it('lets a clean push through and runs the repo hook', () => {
-    const f = fixture({ denylist: LIST_JSON, visibility: 'public' })
-    commitFile(f, 'clean', 'notes.md', 'nothing private at /Users/example/x')
-
-    const run = push(f, 'clean')
-
-    expect(run).toEqual({ code: 0, stderr: '' })
-    expect(remoteHas(f, 'clean')).toBe(true)
-    expect(repoHookRuns(f)).toEqual(['origin refs/heads/clean'])
-  })
-
   it('refuses the push when the repo hook fails even though the scan is clean', () => {
-    const f = fixture({ denylist: LIST_JSON, visibility: 'public' })
+    const f = fixture()
     fs.writeFileSync(path.join(f.work, '.git', 'hooks', 'pre-push'), '#!/bin/sh\nexit 3\n', { mode: 0o755 })
     commitFile(f, 'clean', 'notes.md', 'fine')
 
@@ -284,30 +215,8 @@ describe('git push under the agent env', () => {
     expect(remoteHas(f, 'clean')).toBe(false)
   })
 
-  it('refuses a leak when the remote visibility is unknown', () => {
-    const f = fixture({ denylist: LIST_JSON, visibility: undefined })
-    commitFile(f, 'leaky', 'notes.md', `the ${NAME} seat`)
-
-    const run = push(f, 'leaky')
-
-    expect(run.code).not.toBe(0)
-    expect(run.stderr).toContain('push refused: the remote is of unknown visibility')
-  })
-
-  it('only warns about a leak to a private remote', () => {
-    const f = fixture({ denylist: LIST_JSON, visibility: 'private' })
-    commitFile(f, 'leaky', 'notes.md', `ping ${EMAIL}`)
-
-    const run = push(f, 'leaky')
-
-    expect(run.code).toBe(0)
-    expect(run.stderr).toContain('notes.md:1  owner-email')
-    expect(run.stderr).toContain('the remote is private, so this is a warning')
-    expect(remoteHas(f, 'leaky')).toBe(true)
-  })
-
   it('chains other hooks, so a repo pre-commit hook still refuses a commit', () => {
-    const f = fixture({ denylist: LIST_JSON, visibility: 'public' })
+    const f = fixture()
     fs.writeFileSync(path.join(f.work, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
     fs.writeFileSync(path.join(f.work, 'x.md'), 'x\n')
     git(f.work, f.agentEnv, 'add', 'x.md')
@@ -318,124 +227,105 @@ describe('git push under the agent env', () => {
   })
 
   it('does not loop when the repo itself points core.hooksPath at the guard dir', () => {
-    const f = fixture({ denylist: LIST_JSON, visibility: 'public' })
+    const f = fixture()
     git(f.work, baseEnv(), 'config', 'core.hooksPath', path.join(f.chatHome, 'git-hooks'))
     commitFile(f, 'clean', 'notes.md', 'fine')
 
-    expect(push(f, 'clean')).toEqual({ code: 0, stderr: '' })
-  })
-
-  it('scans only commits the remote lacks, so an already-pushed leak does not block the next push', () => {
-    const f = fixture({ denylist: LIST_JSON, visibility: 'private' })
-    commitFile(f, 'topic', 'notes.md', `ping ${EMAIL}`)
-    expect(push(f, 'topic').code).toBe(0)
-    fs.writeFileSync(path.join(f.chatHome, 'repo-visibility.json'), JSON.stringify({}))
-    fs.appendFileSync(path.join(f.work, 'notes.md'), 'more\n')
-    git(f.work, baseEnv(), 'commit', '-q', '-am', 'more')
-
-    expect(push(f, 'topic')).toEqual({ code: 0, stderr: '' })
+    expect(push(f, 'clean')).toMatchObject({ code: 0, stderr: '' })
   })
 })
 
-describe('git push with no deny-list yet', () => {
-  it('lets a push through that only the deny-list would flag, with one line naming the missing file', () => {
-    const f = fixture({ visibility: 'public' })
-    commitFile(f, 'mail', 'notes.md', `ping ${EMAIL}`)
+describe('git push with no private term list', () => {
+  const pointer = (f: Fixture): string =>
+    `leak-scan: push refused: no private term list at ${f.termsFile}. Create it, one term per line, chmod 600; see docs/leak-guard.md.`
 
-    const run = push(f, 'mail')
-
-    expect(run.code).toBe(0)
-    const file = path.join(f.chatHome, 'private-denylist.json')
-    expect(run.stderr.trim().split('\n')).toEqual([
-      `leak-scan: no deny-list at ${file}, so only home-path was checked. See docs/leak-guard.md.`,
-    ])
-    expect(remoteHas(f, 'mail')).toBe(true)
-  })
-
-  it('treats an empty deny-list the same way', () => {
-    const f = fixture({ denylist: '{}', visibility: 'public' })
-    commitFile(f, 'mail', 'notes.md', `ping ${EMAIL}`)
-
-    const run = push(f, 'mail')
-
-    expect(run.code).toBe(0)
-    expect(run.stderr).toContain('leak-scan: no deny-list entries at')
-  })
-
-  it('still refuses a home-path leak to a public remote', () => {
-    const f = fixture({ visibility: 'public' })
-    commitFile(f, 'home', 'notes.md', `see ${HOME}/scratch`)
-
-    const run = push(f, 'home')
-
-    expect(run.code).not.toBe(0)
-    expect(run.stderr).toMatch(/notes\.md:1 {2}home-path/)
-    expect(run.stderr).toContain('See docs/leak-guard.md.')
-    expectNoEntry(run.stderr)
-    expect(remoteHas(f, 'home')).toBe(false)
-    expect(repoHookRuns(f)).toEqual(['origin refs/heads/home'])
-  })
-
-  it('refuses every push to a public remote when the deny-list exists but is unreadable', () => {
-    const f = fixture({ denylist: `{"owner-email": "${EMAIL}"`, visibility: 'public' })
+  it('refuses the push and names the file to create', () => {
+    const f = fixture({ terms: false })
     commitFile(f, 'clean', 'notes.md', 'fine')
 
     const run = push(f, 'clean')
 
     expect(run.code).not.toBe(0)
-    expect(run.stderr).toContain('is not valid JSON, so the push is refused unless the remote is private')
-    expect(run.stderr).toContain('Fix its permissions or delete it')
-    expectNoEntry(run.stderr)
+    expect(run.stderr).toContain(pointer(f))
+    expect(remoteHas(f, 'clean')).toBe(false)
+    expect(repoHookRuns(f)).toEqual(['origin refs/heads/clean'])
+  })
+
+  // egress-scan never reads the term list when CI is set, so an agent with CI in its env would skip it.
+  it.each(['true', '1'])('still refuses when the agent env has CI=%s', ci => {
+    const f = fixture({ terms: false })
+    f.agentEnv.CI = ci
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain(pointer(f))
+    expect(stubSaw(f)[0]).toBe('args=pre-push origin CI= REQUIRE=1')
+  })
+
+  it('warns and lets the push through when the missing-terms switch is flipped', () => {
+    const f = fixture({ terms: false, missingTermsRefuses: false })
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run.code).toBe(0)
+    expect(run.stderr).toContain(
+      `leak-scan: WARNING: no private term list at ${f.termsFile}, so this push was scanned with generic rules only.`,
+    )
+    expect(remoteHas(f, 'clean')).toBe(true)
   })
 })
 
 describe('git push when the guard cannot run', () => {
-  const pathWithout = (tool: 'node' | 'agent-chat'): string =>
-    [binWith({ git: true, node: tool !== 'node', agentChat: tool !== 'agent-chat' }), SYSTEM_PATH].join(':')
+  /** A PATH whose titan-egress-scan is the given stub script, beside node and git. */
+  const pathWithStub = (script?: string): string =>
+    [
+      binWith({ node: true, git: true, ...(script === undefined ? {} : { egress: script }) }),
+      SYSTEM_PATH,
+    ].join(':')
+
+  const pathWithout = (tool: 'node' | 'titan-egress-scan'): string =>
+    tool === 'node' ? [binWith({ git: true, egress: EGRESS_STUB }), SYSTEM_PATH].join(':') : pathWithStub()
 
   // Fail open: a guard that cannot start must not refuse every push; S3's tick backstop still reports leaks.
-  it.each(['agent-chat', 'node'] as const)(
-    'lets the push through with one loud line when %s is not on PATH, and still runs the repo hook',
-    tool => {
+  it.each([
+    ['titan-egress-scan', 'Run npm i -g @titan-design/egress-scan; see docs/leak-guard.md.'],
+    ['node', "Put node on the agent's PATH; see docs/leak-guard.md."],
+  ] as const)(
+    'lets the push through with one loud line when %s is not on PATH, and runs the repo hook',
+    (tool, hint) => {
       const onSystemPath = SYSTEM_PATH.split(':').some(dir => fs.existsSync(path.join(dir, tool)))
       if (onSystemPath) return
-      const f = fixture({ denylist: LIST_JSON, visibility: 'public' })
+      const f = fixture()
       f.agentEnv.PATH = pathWithout(tool)
-      commitFile(f, 'leaky', 'notes.md', `ping ${EMAIL}`)
+      commitFile(f, 'leaky', 'notes.md', `the ${LEAK} seat`)
 
       const run = push(f, 'leaky')
 
       expect(run.code).toBe(0)
       expect(run.stderr.trim().split('\n')).toEqual([
-        expect.stringMatching(
-          new RegExp(`^leak-scan: guard NOT run, this push was not scanned: no ${tool} on PATH\\.`),
-        ),
+        `leak-scan: guard NOT run, this push was not scanned: no ${tool} on PATH. ${hint}`,
       ])
       expect(repoHookRuns(f)).toEqual(['origin refs/heads/leaky'])
     },
   )
 
-  /** A PATH whose agent-chat is a stub script, ahead of node and git. */
-  const pathWithStub = (script: string): string => {
-    const dir = binWith({ node: true, git: true })
-    fs.writeFileSync(path.join(dir, 'agent-chat'), `#!/bin/sh\n${script}\n`, { mode: 0o755 })
-    return [dir, SYSTEM_PATH].join(':')
-  }
+  // An egress-scan too old for pre-push must not refuse clean pushes; the probe routes it to fail-open.
+  const STALE_SCANNER = `[ "$1" = --help ] && { echo 'usage: titan-egress-scan <command>'; echo '  range <base> <head>'; exit 0; }
+echo "titan-egress-scan: unknown command" >&2; exit 2`
 
-  // Regression: a linked checkout built before leak-scan prints its top-level help, which refused clean pushes.
-  const STALE_CLI = `[ "$2" = --help ] && { echo 'Usage: agent-chat [options] [command]'; exit 0; }
-echo "error: unknown command '$1'" >&2; exit 1`
-
-  it('lets a clean push through with one loud line when the installed CLI predates leak-scan --pre-push', () => {
-    const f = fixture({ denylist: LIST_JSON, visibility: 'public' })
-    f.agentEnv.PATH = pathWithStub(STALE_CLI)
+  it('lets a clean push through with one loud line when the installed scanner has no pre-push', () => {
+    const f = fixture()
+    f.agentEnv.PATH = pathWithStub(STALE_SCANNER)
     commitFile(f, 'clean', 'notes.md', 'fine')
 
     const run = push(f, 'clean')
 
     expect(run.code).toBe(0)
     expect(run.stderr.trim().split('\n')).toEqual([
-      'leak-scan: guard NOT run, this push was not scanned: the agent-chat on PATH has no leak-scan --pre-push. Rebuild the linked checkout (npm run build); see docs/leak-guard.md.',
+      'leak-scan: guard NOT run, this push was not scanned: the titan-egress-scan on PATH has no pre-push command. Run npm i -g @titan-design/egress-scan; see docs/leak-guard.md.',
     ])
     expect(remoteHas(f, 'clean')).toBe(true)
     expect(repoHookRuns(f)).toEqual(['origin refs/heads/clean'])
@@ -445,10 +335,10 @@ echo "error: unknown command '$1'" >&2; exit 1`
     ['its help check crashes', 'echo boom >&2; exit 1'],
     [
       'it passes the help check and then crashes',
-      '[ "$2" = --help ] && { echo "  --pre-push"; exit 0; }; exit 1',
+      `[ "$1" = --help ] && { echo '  pre-push <remote>'; exit 0; }; exit 2`,
     ],
-  ])('refuses a clean push when the installed CLI %s', (_, script) => {
-    const f = fixture({ denylist: LIST_JSON, visibility: 'public' })
+  ])('refuses a clean push when the installed scanner %s', (_, script) => {
+    const f = fixture()
     f.agentEnv.PATH = pathWithStub(script)
     commitFile(f, 'clean', 'notes.md', 'fine')
 
@@ -457,39 +347,5 @@ echo "error: unknown command '$1'" >&2; exit 1`
     expect(run.code).not.toBe(0)
     expect(run.stderr).not.toContain('guard NOT run')
     expect(remoteHas(f, 'clean')).toBe(false)
-  })
-})
-
-describe('leakPrePush visibility failures', () => {
-  const saved = process.env.AGENT_CHAT_HOME
-  afterEach(() => {
-    if (saved === undefined) delete process.env.AGENT_CHAT_HOME
-    else process.env.AGENT_CHAT_HOME = saved
-  })
-
-  const throwing: Record<string, VisibilityReader> = {
-    rejects: () => Promise.reject(new Error('gh exploded')),
-    throws: () => {
-      throw new Error('gh exploded')
-    },
-  }
-
-  // Mutation M9: a reader that throws was treated as private.
-  it.each(Object.keys(throwing))('counts a reader that %s as unknown and refuses the leak', async kind => {
-    const f = fixture({ denylist: LIST_JSON, visibility: undefined })
-    commitFile(f, 'leaky', 'notes.md', `ping ${EMAIL}`)
-    process.env.AGENT_CHAT_HOME = f.chatHome
-    const sha = git(f.work, baseEnv(), 'rev-parse', 'leaky')
-    const err: string[] = []
-    const io = { out: () => undefined, err: (l: string) => err.push(l), home: HOME, cwd: f.work }
-
-    const code = await leakPrePush(
-      { remote: 'origin', url: f.remote },
-      `refs/heads/leaky ${sha} refs/heads/leaky ${ZERO}\n`,
-      { io, visibility: throwing[kind]! },
-    )
-
-    expect(code).toBe(1)
-    expect(err.at(-1)).toBe('leak-scan: push refused: the remote is of unknown visibility.')
   })
 })
