@@ -466,7 +466,7 @@
           },
           "cwd": {
             "type": "string",
-            "description": "Working directory. Defaults to yours."
+            "description": "Working directory. Defaults to the worktree when one is given, otherwise to yours."
           },
           "worktree": {
             "type": "string",

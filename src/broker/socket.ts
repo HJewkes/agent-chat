@@ -24,6 +24,7 @@ import { SystemEventFeed } from './subscriptions.js'
 import { nextWatchCursor } from './watch-cursor.js'
 import { newestBuildMtime, stalenessWarning } from './staleness.js'
 import { findGitRoot } from '../git.js'
+import { resolveSpawnCwd } from './spawn-default-cwd.js'
 import { readMeta } from './lifecycle.js'
 import { resolveDeciderAgentId } from '../config.js'
 import { shapeMeta } from '../inbox/item-shape.js'
@@ -207,7 +208,7 @@ export class SocketServer {
     const requestedBy = this.core.registry.nameOf(conn) ?? HUMAN
     const requester = this.core.registry.entryFor(conn)
     const anchor = this.core.registry.anchorFor(conn)
-    const cwd = msg.cwd ?? this.core.registry.cwdFor(conn)
+    const cwd = resolveSpawnCwd(msg, this.core.registry.cwdFor(conn))
     const spawnerConfigDir = msg.spawnerConfigDir ?? this.core.registry.observedFor(conn)?.configDir
     const outcome = await this.supervisor.spawn({
       name: msg.name,
