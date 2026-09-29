@@ -22,7 +22,8 @@ import path from 'node:path'
  * ## Precedence, as the human settled it (2026-09-15)
  *
  * 1. an explicit `config_dir` on the spawn request — the caller naming an account;
- * 2. the SPAWNER's own dir, observed from its MCP server process;
+ * 2. the SPAWNER's own dir, observed from its MCP server process. A known Claude
+ *    session with no `CLAUDE_CONFIG_DIR` is on the default `~/.claude` (CC-156);
  * 3. the briefing initiative's `profile:` field, resolved the way active-work's
  *    own launcher resolves it (`$HOME/.claude-profiles/<profile>`);
  * 4. the broker's own environment, and `~/.claude` behind that.
@@ -52,6 +53,8 @@ export interface ConfigDirRequest {
   explicit?: string
   /** The spawning session's own `CLAUDE_CONFIG_DIR`, as its MCP server saw it. */
   spawner?: string
+  /** The spawner is a known Claude Code session, so an absent `spawner` means `~/.claude`. */
+  spawnerIsSession?: boolean
   /** The briefing initiative's `profile:` field, e.g. `agents`. */
   profile?: string
   /** The broker's environment. Injected so the rule is testable without mutating the process. */
@@ -122,8 +125,10 @@ export function resolveConfigDir(req: ConfigDirRequest = {}): ConfigDirResolutio
   }
 
   if (req.spawner !== undefined && req.spawner !== '') return { dir: req.spawner, source: 'spawner' }
+  // CC-156: an unset var in a known session IS an account choice, and falling to the profile billed the wrong one.
+  if (req.spawnerIsSession === true) return { dir: defaultConfigDir(home), source: 'spawner' }
 
-  const fallback = { dir: env.CLAUDE_CONFIG_DIR ?? path.join(home, '.claude'), source: 'broker' as const }
+  const fallback = { dir: env.CLAUDE_CONFIG_DIR ?? defaultConfigDir(home), source: 'broker' as const }
   if (req.profile === undefined || req.profile === '') return fallback
 
   const dir = profileDir(req.profile, env, home)
@@ -141,5 +146,9 @@ export function resolveConfigDir(req: ConfigDirRequest = {}): ConfigDirResolutio
   return { dir, source: 'profile' }
 }
 
-/** The last segment, which is what a human calls the account. `~/.claude` reads as `.claude`. */
-export const accountName = (dir: string): string => path.basename(dir)
+/** Where Claude Code keeps its config when `CLAUDE_CONFIG_DIR` is unset: the default account. */
+export const defaultConfigDir = (home: string = os.homedir()): string => path.join(home, '.claude')
+
+/** The last segment, which is what a human calls the account; `~/.claude` reads as `default`. */
+export const accountName = (dir: string, home: string = os.homedir()): string =>
+  path.resolve(dir) === defaultConfigDir(home) ? 'default' : path.basename(dir)
