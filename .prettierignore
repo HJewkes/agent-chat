@@ -11,5 +11,5 @@ src/__tests__/golden/
 # Verbatim frontmatter copies of the autonomy charter and seats; reformatting would drift from the originals.
 src/__tests__/fixtures/autonomy-2026-09-29/
 
-# Frozen score.py parity input and output; expected-titan-coord.json is score.py's byte output.
+# Frozen score.py parity input and output; expected-sample-seat.json is score.py's byte output.
 src/__tests__/fixtures/score-2026-09-29/

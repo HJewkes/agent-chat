@@ -6,7 +6,7 @@ import { mergeDefaults, parseCharter, parseSeat } from '../agents/burndown/polic
 import { tasksFromList } from '../agents/burndown/score-source.js'
 import { dispatchOrder, scoreAll } from '../agents/burndown/score.js'
 
-/** CC-229: the TS scorer reproduces score.py's titan-coord ranking over a frozen backlog. */
+/** CC-229: the TS scorer reproduces score.py's ranking over a synthetic backlog; see the fixture README. */
 
 const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'score-2026-09-29')
 const read = (file: string) => fs.readFileSync(path.join(FIXTURE, file), 'utf8')
@@ -26,9 +26,9 @@ interface Expected {
 
 function rankFixture() {
   const snapshot = JSON.parse(read('tasks.json')) as { today: string }
-  const expected = JSON.parse(read('expected-titan-coord.json')) as Expected
+  const expected = JSON.parse(read('expected-sample-seat.json')) as Expected
   const charter = parseCharter(read('charter.md'))
-  const seat = parseSeat(read('titan-coord.md'), 'titan-coord')
+  const seat = parseSeat(read('seats/sample-seat.md'), 'sample-seat')
   const defaults = mergeDefaults(charter, seat)
   const exclusions = { tags: seat.excluded_tags, titlePatterns: seat.excluded_title_patterns }
   const scored = scoreAll(
@@ -49,7 +49,7 @@ const pick = ({ id, score, effective }: { id: string; score: number; effective: 
   effective,
 })
 
-describe('score.py parity on the 2026-09-29 titan-coord backlog', () => {
+describe('score.py parity on the synthetic sample-seat backlog', () => {
   const { expected, scored, dispatched } = rankFixture()
 
   it('ranks the same top 10 with the same scores and effective values', () => {
@@ -61,8 +61,9 @@ describe('score.py parity on the 2026-09-29 titan-coord backlog', () => {
     expect(scored.refused).toEqual(expected.refused)
   })
 
-  it('holds no agent-tooling or nit task in the top 10, so share caps stay inert', () => {
+  it('keeps capped kinds out of the top 10 and never caps the three discovery rows', () => {
     const capped = ['agent-tooling', 'nit']
+    expect(expected.order.filter(row => row.kind === 'discovery')).toHaveLength(3)
     expect(expected.order.filter(row => capped.includes(row.kind))).toEqual([])
     expect(dispatched.order.filter(row => capped.includes(row.kind))).toEqual([])
     expect(dispatched.refused).toEqual({})
