@@ -28,16 +28,16 @@ exit 0; }
 [ "$1" = pre-push ] || exit 2
 refs=$(cat)
 printf 'args=%s CI=%s REQUIRE=%s\\n%s\\n' "$*" "\${CI-unset}" "\${TITAN_EGRESS_REQUIRE_TERMS-unset}" "$refs" > "\${STUB_LOG:-/dev/null}"
+terms=\${TITAN_EGRESS_TERMS:-\${XDG_CONFIG_HOME:-$HOME/.config}/titan-egress/private-terms}
 case \${CI:-} in
 '' | false | 0)
-  terms=\${TITAN_EGRESS_TERMS:-\${XDG_CONFIG_HOME:-$HOME/.config}/titan-egress/private-terms}
   if [ ! -f "$terms" ]; then
     [ "\${TITAN_EGRESS_REQUIRE_TERMS:-}" = 1 ] && { echo 'titan-egress-scan: private term list not found and TITAN_EGRESS_REQUIRE_TERMS=1' >&2; exit 2; }
     echo 'titan-egress-scan: private term list not found; generic rules only' >&2
   fi ;;
 esac
 for sha in $(printf '%s\\n' "$refs" | awk '{ print $2 }'); do
-  git show "$sha" | grep -q ${LEAK} && { echo 'commit 1 notes.md:1 private-term'; exit 1; }
+  grep -q ${LEAK} "$terms" 2>/dev/null && git show "$sha" | grep -q ${LEAK} && { echo 'commit 1 notes.md:1 private-term'; exit 1; }
 done
 exit 0`
 
