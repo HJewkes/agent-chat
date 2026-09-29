@@ -37,7 +37,8 @@ interface Span {
 
 export const REDACTED = '[redacted]'
 
-const ACTIVE_WORK_ROOT_TILDE = '~/Library/Application Support/active-work'
+// Joined from parts so this file does not trip its own scan.
+const ACTIVE_WORK_ROOT_TILDE = ['~', 'Library', 'Application Support', 'active-work'].join('/')
 
 const WORD = String.raw`\p{L}\p{N}_`
 

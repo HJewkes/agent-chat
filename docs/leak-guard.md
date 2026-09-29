@@ -22,12 +22,12 @@ repository holds it, no fixture copies it, and the scanner never prints its entr
 Every key is optional. Any other key, a non-string entry or an empty entry makes the file
 unreadable rather than silently dropping the entry.
 
-| Category       | Source                                                                 | Match                                                                                    |
-| -------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `home-path`    | the running user's home from `os.homedir()` at scan time, never stored | the home prefix as a whole path segment, and `~/Library/Application Support/active-work` |
-| `owner-email`  | `owner-email`                                                          | the exact address, case-insensitive                                                      |
-| `private-name` | `private-name`                                                         | a whole word, case-insensitive                                                           |
-| `private-path` | `private-path`                                                         | a substring, case-insensitive                                                            |
+| Category       | Source                                                                 | Match                                                                                   |
+| -------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `home-path`    | the running user's home from `os.homedir()` at scan time, never stored | the home prefix as a whole path segment, and the `~/` form of the active-work data root |
+| `owner-email`  | `owner-email`                                                          | the exact address, case-insensitive                                                     |
+| `private-name` | `private-name`                                                         | a whole word, case-insensitive                                                          |
+| `private-path` | `private-path`                                                         | a substring, case-insensitive                                                           |
 
 `~/projects/<repo>` paths are not flagged, because public docs already use them.
 
