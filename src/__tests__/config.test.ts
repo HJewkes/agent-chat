@@ -3,9 +3,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
+  DEFAULT_NOTICE_TTL_HOURS,
   DEFAULT_PERMISSION_HOOK_TIMEOUT_S,
   resolveAgentSlots,
   resolveContextHintPolicy,
+  resolveNoticeTtlMs,
   resolvePermissionHookTimeout,
   resolveWorktreeBudget,
 } from '../config.js'
@@ -147,5 +149,24 @@ describe('resolvePermissionHookTimeout', () => {
     writeConfigJson({ permissionHookTimeoutSeconds: 'soon' })
 
     expect(resolvePermissionHookTimeout()).toBe(DEFAULT_PERMISSION_HOOK_TIMEOUT_S)
+  })
+})
+
+describe('resolveNoticeTtlMs', () => {
+  it('defaults to three days, so a weekend away does not lose a notice', () => {
+    expect(DEFAULT_NOTICE_TTL_HOURS).toBe(72)
+    expect(resolveNoticeTtlMs()).toBe(72 * 3_600_000)
+  })
+
+  it('reads noticeTtlHours from config.json', () => {
+    writeConfigJson({ noticeTtlHours: 6 })
+
+    expect(resolveNoticeTtlMs()).toBe(6 * 3_600_000)
+  })
+
+  it('falls back to the default on a value that is not a positive integer', () => {
+    writeConfigJson({ noticeTtlHours: 0 })
+
+    expect(resolveNoticeTtlMs()).toBe(DEFAULT_NOTICE_TTL_HOURS * 3_600_000)
   })
 })

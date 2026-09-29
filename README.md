@@ -65,6 +65,12 @@ Derived state is always a query, never a stored aggregate:
 | the human queue     | events where `target = 'human'` and nothing references them as answered or dismissed |
 | the question budget | open `question` rows per actor                                                       |
 
+Plain notices (a `notice` with no item kind) also age out of the human queue at
+read time once older than `noticeTtlHours` in `~/.agent-chat/config.json`
+(default 72). No row is written, so the log is unchanged and old notices drop out
+with no backfill. Questions, approvals, endorsements and kinded notices
+(`ready-to-merge`, `needs-grant`, `stalled`) stay until answered or dismissed.
+
 Resolution is itself an event, so nothing is ever mutated or deleted. Two things
 follow that are worth having: a session's inbox now **survives a broker restart**,
 and an answer written to a session that has just died isn't lost — it's in the
@@ -259,6 +265,7 @@ permission-request notification. The properties that matter:
 - a permission prompt surfaces with its input preview and **no verdict is sent**
 - a blocked session clears the moment it does anything else
 - a stale approval ages out of the queue, while questions never do
+- a plain notice ages out after `noticeTtlHours`, while kinded notices never do
 - an over-budget broadcast is held rather than dropped, and stays retrievable
 - a depth-5 chain delivers untouched — the breaker sits far above real work
 
