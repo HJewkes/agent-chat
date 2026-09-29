@@ -26,6 +26,7 @@ function recorder(send: SeatSender['send'] = async () => ({ ok: true })) {
         seen.sent.push(`${to}: ${text.split('\n').slice(1).join(' | ')}`)
         return send(to, text)
       },
+      notify: async () => ({ ok: true }),
       close: () => {
         seen.closed += 1
       },

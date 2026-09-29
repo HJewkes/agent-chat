@@ -97,6 +97,11 @@ const registeredSender = (client: BrokerClient): SeatSender => ({
     const res = (await client.request({ t: 'send', to, text }, 'send_result')) as Reply<'send_result'>
     return { ok: res.ok, ...(res.reason === undefined ? {} : { reason: res.reason }) }
   },
+  async notify(text, task) {
+    const frame = { t: 'notify' as const, text, ...(task === undefined ? {} : { task }) }
+    const res = (await client.request(frame, 'send_result')) as Reply<'send_result'>
+    return { ok: res.ok, ...(res.reason === undefined ? {} : { reason: res.reason }) }
+  },
   close: () => client.close(),
 })
 
