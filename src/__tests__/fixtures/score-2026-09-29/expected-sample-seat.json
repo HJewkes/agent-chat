@@ -93,24 +93,6 @@
    "effective": 39.7
   },
   {
-   "id": "DE-1",
-   "initiative": "delta",
-   "score": 38.4,
-   "kind": "discovery",
-   "kind_src": "tag",
-   "sev": "critical",
-   "P": 1.0,
-   "est": 3,
-   "unblocks": 0,
-   "age": 120,
-   "blocked": [],
-   "stop_short": [],
-   "route": "planner",
-   "title": "Survey the import formats",
-   "reconciled": false,
-   "effective": 38.4
-  },
-  {
    "id": "GA-1",
    "initiative": "gamma",
    "score": 41.6,
@@ -129,24 +111,40 @@
    "effective": 35.4
   },
   {
-   "id": "AL-6",
-   "initiative": "alpha",
-   "score": 42.3,
-   "kind": "platform",
-   "kind_src": "default",
-   "sev": "critical",
-   "P": 0.77,
+   "id": "EP-6",
+   "initiative": "epsilon",
+   "score": 35.0,
+   "kind": "security",
+   "kind_src": "tag",
+   "sev": "high",
+   "P": 1.0,
    "est": 3,
    "unblocks": 0,
-   "age": 9,
+   "age": 1,
    "blocked": [],
-   "stop_short": [
-    "deploy"
-   ],
+   "stop_short": [],
    "route": "planner",
-   "title": "Roll out the billing service",
+   "title": "Seal the export keys",
    "reconciled": false,
-   "effective": 30.6
+   "effective": 35.0
+  },
+  {
+   "id": "DE-6",
+   "initiative": "delta",
+   "score": 35.0,
+   "kind": "security",
+   "kind_src": "tag",
+   "sev": "critical",
+   "P": 1.0,
+   "est": 3,
+   "unblocks": 0,
+   "age": 0,
+   "blocked": [],
+   "stop_short": [],
+   "route": "planner",
+   "title": "Seal the backup keys",
+   "reconciled": false,
+   "effective": 35.0
   },
   {
    "id": "BE-9",
@@ -167,22 +165,22 @@
    "effective": 30.6
   },
   {
-   "id": "EP-3",
-   "initiative": "epsilon",
-   "score": 26.0,
-   "kind": "product",
-   "kind_src": "regex",
-   "sev": "high",
-   "P": 0.8,
+   "id": "DE-1",
+   "initiative": "delta",
+   "score": 32.0,
+   "kind": "discovery",
+   "kind_src": "tag",
+   "sev": "critical",
+   "P": 1.0,
    "est": 3,
    "unblocks": 0,
-   "age": 0,
+   "age": 120,
    "blocked": [],
    "stop_short": [],
    "route": "planner",
-   "title": "Wire the phone notification",
+   "title": "Survey the import formats",
    "reconciled": false,
-   "effective": 26.0
+   "effective": 27.2
   }
  ],
  "refused": {
@@ -193,7 +191,7 @@
   "alpha": 1.0,
   "beta": 0.8,
   "gamma": 0.8,
-  "delta": 0.6,
-  "epsilon": 0.5
+  "delta": 0.5,
+  "epsilon": 0.6
  }
 }

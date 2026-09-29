@@ -43,18 +43,18 @@ const CASES = [
   // Blocked: waits on AL-2, so it never dispatches and AL-2 gains an unblock.
   task('alpha', 4, { title: 'Ship the invoice screen', priority: 1, severity: 'critical', notes: 'Depends on AL-2 landing first.' }),
   // A dependency on a closed task does not block.
-  task('alpha', 5, { title: 'Refresh the pricing table', priority: 4, severity: 'high', notes: 'Blocked by AL-99; that one is closed.' }),
+  task('alpha', 5, { title: 'Refresh the pricing table', priority: 4, severity: 'medium', notes: 'Blocked by AL-99; that one is closed.' }),
   task('alpha', 99, { title: 'Closed prerequisite', priority: 9, status: 'done' }),
   // Stop-short: hard-stop words in done_when.
-  task('alpha', 6, { title: 'Roll out the billing service', priority: 2, severity: 'critical', done_when: 'The service deploys to production and answers a probe.' }),
+  task('alpha', 6, { title: 'Roll out the billing service', priority: 2, severity: 'high', done_when: 'The service deploys to production and answers a probe.' }),
   task('beta', 1, { title: 'Guard the upload path against leaks', priority: 1, severity: 'critical', estimate: 2, done_when: 'A release tag push follows the fix.' }),
   // Within-initiative tie: identical rows, broken by ID number (BE-9 before BE-10).
   task('beta', 9, { title: 'Stabilize the parser output', priority: 2, severity: 'high', tags: ['kind:product'] }),
   task('beta', 10, { title: 'Stabilize the parser output', priority: 2, severity: 'high', tags: ['kind:product'] }),
-  // Cross-initiative tie at equal weight: broken by slug (beta before gamma).
+  // Same row in gamma; its priority percentile differs, so it does not tie.
   task('gamma', 1, { title: 'Stabilize the parser output', priority: 2, severity: 'high', tags: ['kind:product'] }),
   task('gamma', 2, { title: 'Port the adapter to the new route', priority: 1, severity: 'high', estimate: 12 }),
-  // Discovery is not a capped kind: three of them must all reach the top 10.
+  // Discovery is not a capped kind: all three reach the top 10. BE-3 and GA-3 tie at equal weight, broken by slug.
   task('beta', 3, { title: 'Survey the queue behaviour', priority: 1, severity: 'critical', tags: ['kind:discovery'], updated: '2026-06-01' }),
   task('gamma', 3, { title: 'Survey the storage costs', priority: 1, severity: 'critical', tags: ['kind:discovery'], updated: '2026-06-01' }),
   task('delta', 1, { title: 'Survey the import formats', priority: 1, severity: 'critical', tags: ['kind:discovery'], updated: '2026-06-01' }),
@@ -71,6 +71,9 @@ const CASES = [
   task('alpha', 7, { title: 'Fix typo in the footer', priority: 8, severity: 'low', estimate: 1 }),
   task('beta', 4, { title: 'Rotate the worktree budget', priority: 7, severity: 'low', estimate: 1 }),
   task('gamma', 4, { title: 'Tune the spawn cadence', priority: 6, severity: 'low', tags: ['kind:agent-tooling'] }),
+  // Weight tie: equal scores, and the heavier epsilon must beat delta despite its later slug.
+  task('delta', 6, { title: 'Seal the backup keys', priority: 1, severity: 'critical', tags: ['kind:security'], updated: '2026-09-29' }),
+  task('epsilon', 6, { title: 'Seal the export keys', priority: 1, severity: 'high', tags: ['kind:security'], updated: '2026-09-28' }),
   // Excluded tags: a seat tag, and reserved tags the seat's own list leaves out.
   task('alpha', 8, { title: 'Pick a vendor for mail', priority: 1, severity: 'critical', tags: ['parked'] }),
   task('beta', 5, { title: 'Choose the retention period', priority: 1, severity: 'critical', tags: ['needs-decision'] }),

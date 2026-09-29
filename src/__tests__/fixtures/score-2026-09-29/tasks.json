@@ -68,7 +68,7 @@
    "id": "AL-5",
    "title": "Refresh the pricing table",
    "priority": 4,
-   "severity": "high",
+   "severity": "medium",
    "estimate": 3,
    "done_when": "The change is merged and the suite is green.",
    "status": "open",
@@ -98,7 +98,7 @@
    "id": "AL-6",
    "title": "Roll out the billing service",
    "priority": 2,
-   "severity": "critical",
+   "severity": "high",
    "estimate": 3,
    "done_when": "The service deploys to production and answers a probe.",
    "status": "open",
@@ -392,6 +392,40 @@
    "updated": "2026-09-20",
    "done_at": null,
    "slug": "gamma"
+  },
+  {
+   "id": "DE-6",
+   "title": "Seal the backup keys",
+   "priority": 1,
+   "severity": "critical",
+   "estimate": 3,
+   "done_when": "The change is merged and the suite is green.",
+   "status": "open",
+   "tags": [
+    "kind:security"
+   ],
+   "notes": "",
+   "created": "2026-09-01",
+   "updated": "2026-09-29",
+   "done_at": null,
+   "slug": "delta"
+  },
+  {
+   "id": "EP-6",
+   "title": "Seal the export keys",
+   "priority": 1,
+   "severity": "high",
+   "estimate": 3,
+   "done_when": "The change is merged and the suite is green.",
+   "status": "open",
+   "tags": [
+    "kind:security"
+   ],
+   "notes": "",
+   "created": "2026-09-01",
+   "updated": "2026-09-28",
+   "done_at": null,
+   "slug": "epsilon"
   },
   {
    "id": "AL-8",

@@ -6,8 +6,8 @@ initiatives:
   alpha: 1.0
   beta: 0.8
   gamma: 0.8
-  delta: 0.6
-  epsilon: 0.5
+  delta: 0.5
+  epsilon: 0.6
 unclaimed_engineering: false
 kind_weights: {}
 share_caps: {}
