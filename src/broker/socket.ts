@@ -553,11 +553,13 @@ export class SocketServer {
 
   private async handleSurface(conn: Conn, name: string): Promise<void> {
     const anchor = this.core.registry.anchorFor(conn)
+    const requester = this.core.registry.entryFor(conn)
     const outcome = await this.supervisor.switchSurface({
       name,
       to: 'interactive',
-      requestedBy: this.core.registry.nameOf(conn) ?? HUMAN,
+      requestedBy: requester?.name ?? HUMAN,
       ...(anchor === undefined ? {} : { anchor }),
+      ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
     })
     replySwitch(conn, outcome)
   }
