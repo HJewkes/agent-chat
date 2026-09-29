@@ -340,6 +340,81 @@ describe('planSeat refusals', () => {
   })
 })
 
+describe('planSeat follow-ups from the #199 review', () => {
+  it('counts prior picks only inside the 12-hour run, however early runStartAt is', () => {
+    const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000).toISOString()
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [
+        claim('A-0', { phase: 'done', spawnedAt: hoursAgo(13) }),
+        claim('A-9', { spawnedAt: hoursAgo(2) }),
+      ],
+    }
+    const budget = { ...openPool(), runStartAt: NOW.getTime() - 20 * 3_600_000 }
+
+    expect(one('A-1', {}, {}, { ledger, budget }).priorPicks).toEqual({ alpha: 1 })
+  })
+
+  it('applies share caps over all rows, so a longer scope loosens them', () => {
+    const defaults = { ...DEFAULTS, share_caps: { nit: 0.2 } } as ScoringDefaults
+    const nits = (n: number) => Array.from({ length: n }, (_, i) => row(`A-${i}`, 50 - i, { kind: 'nit' }))
+    const plan = (n: number) =>
+      planSeat(
+        inputs(
+          nits(n),
+          nits(n).map(r => task(r.id)),
+          { defaults },
+        ),
+      )
+
+    expect(plan(5).shareCapped).toEqual({ 'share-cap:nit': 4 })
+    expect(plan(5).dispatch.map(d => d.task)).toEqual(['A-0'])
+    expect(plan(10).shareCapped).toEqual({ 'share-cap:nit': 8 })
+    expect(plan(10).dispatch.map(d => d.task)).toEqual(['A-0', 'A-1'])
+  })
+
+  it("refuses a reserved tag and a missing grant through taskRefusal, and passes the seat's grants on", () => {
+    const merge = { doneWhen: 'The PR is merged once green.' }
+
+    expect(refusalOf(one('A-1', { tags: ['human-only'] }))).toEqual([['A-1', 'reserved-tag']])
+    expect(refusalOf(one('A-1', merge))).toEqual([['A-1', 'needs-grant']])
+    const granted = { ...SEAT, grants: ['merge-on-green-approve'] }
+    expect(one('A-1', merge, {}, { seat: granted }).dispatch).toEqual([
+      expect.objectContaining({ task: 'A-1', grants: ['merge-on-green-approve'] }),
+    ])
+  })
+
+  it("dispatches the seat's ready slices before scored work, with the slice's owned paths", () => {
+    const slice = (taskId: string, patch: Partial<Claim> = {}): Claim =>
+      claim(taskId, { phase: 'queued', slice: 'b', owns: ['src/x.ts'], ...patch })
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [slice('A-1'), slice('A-2', { seat: 'seat-b' }), slice('A-3', { dependsOn: ['a'] })],
+    }
+    const owned: string[][] = []
+    const collision = (_repo: string, work: { owns: string[] }) => (owned.push(work.owns), undefined)
+
+    const plan = planSeat(inputs([row('A-5', 50)], [task('A-1'), task('A-5')], { ledger, collision }))
+
+    expect(plan.dispatch.map(d => [d.task, d.slice, d.agentName, d.worktree])).toEqual([
+      ['A-1', 'b', 'sa-a-1-b', `${REPO}/.worktrees/sa-a-1-b`],
+      ['A-5', undefined, 'sa-a-5', `${REPO}/.worktrees/sa-a-5`],
+    ])
+    expect(owned[0]).toEqual(['src/x.ts'])
+  })
+
+  it('refuses with trust when the pool config dir has not trusted the spawn cwd', () => {
+    const seen: string[][] = []
+    const trust = (repo: string, cwd: string, configDir: string) => (
+      seen.push([repo, cwd, configDir]),
+      'no trust entry'
+    )
+
+    expect(refusalOf(one('A-1', {}, {}, { trust }))).toEqual([['A-1', 'trust']])
+    expect(seen).toEqual([[REPO, `${REPO}/.worktrees/sa-a-1`, '/tmp/pool-x']])
+  })
+})
+
 describe('seat seams from the CC-246 review', () => {
   it("(a) gives a seat planner's slices the planner's seat and prefix", () => {
     const planner = claim('X-1', { phase: 'planning', agentName: 'sa-x-1' })

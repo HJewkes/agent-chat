@@ -484,20 +484,6 @@ describe('burndown tick ceilings', () => {
     expect(lines.join('\n')).toContain('refused demo DM-1 [worktrees]: 7 worktrees')
   })
 
-  it("counts a configured seat's prefixed worktrees against maxWorktreesPerRepo", async () => {
-    const fixture = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'autonomy-2026-09-29')
-    fs.cpSync(fixture, path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy'), { recursive: true })
-    config({ seats: ['seat-a'], maxWorktreesPerRepo: 1 })
-    initiative({ 'DM-1': task('DM-1') })
-    git(repo(), 'worktree', 'add', '-q', '-b', 'sa-x-9', path.join('.worktrees', 'sa-x-9'))
-    const fake = fakeBroker()
-
-    const lines = await tick(fake)
-
-    expect(fake.frames).toEqual([])
-    expect(lines.join('\n')).toContain('1 burndown worktrees under')
-  })
-
   it('reports a branch left by a failed spawn and dispatches the next task instead', async () => {
     initiative({ 'DM-1': task('DM-1', 1), 'DM-2': task('DM-2', 2) })
     git(repo(), 'branch', 'agent-chat/bd-dm-1')
@@ -612,6 +598,175 @@ describe('burndown tick advances claims', () => {
       phase: 'spawning',
       nextPhase: 'reviewing',
     })
+  })
+})
+
+const DEFAULTS = `defaults:
+  kind_weights: {platform: 0.8}
+  share_caps: {}
+  initiative_decay: 0.85
+  score_terms: {severity: 0.40, priority_pct: 0.30, unblocks: 0.20, staleness: 0.10}
+  severity: {unset: 0.3}
+  readiness: {ready: 1.0, untriaged: 0.6, blocked: 0.25}
+  size: {le3: 1.0, le8: 0.9, gt8: 0.75}
+  stop_short_factor: 0.8
+  worktrees_per_repo_per_seat: 3
+  worktrees_left_free_per_repo: 0`
+
+/** A synthetic charter with seat `seat-t` (prefix `st`) on pool `pool-t`, whose config dir is the fixture account. */
+function seatPolicy({ implementers = 2, extraSeats = '' } = {}): void {
+  const root = path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy')
+  const pool = `pool-t: {config_dir: ${accountPath()}, human_uses: false, reserve_seven_day: 30, ceiling_five_hour: 75}`
+  write(
+    path.join(root, 'charter.md'),
+    `---\nseats: [seat-t, seat-e${extraSeats}]\n${DEFAULTS}\npools:\n  ${pool}\n---\n`,
+  )
+  const concurrency = `concurrency: {implementers: ${implementers}, reviewers: 1, planners: 1}`
+  write(
+    path.join(root, 'seats', 'seat-t.md'),
+    `---\nprefix: st\npool: pool-t\ninitiatives: {demo: 1.0}\nrepos:\n  - {path: ${repo()}, initiatives: [demo]}\n${concurrency}\n---\n`,
+  )
+  write(path.join(root, 'seats', 'seat-e.md'), '---\nprefix: se\npool: pool-t\n---\n')
+}
+
+/** A focused initiative with no autonomy block, which only seats mode dispatches from. */
+function seatInitiative(tasks: Record<string, string>): void {
+  write(path.join(world, 'aw', 'demo', 'brief.md'), '---\ntitle: demo\nstate: focused\n---\n# demo\n')
+  for (const [id, text] of Object.entries(tasks))
+    write(path.join(world, 'aw', 'demo', 'tasks', `${id}.yml`), text)
+}
+
+function sevenDayAt(used: number): void {
+  const rate_limits = { seven_day: { used_percentage: used }, five_hour: { used_percentage: 10 } }
+  write(
+    path.join(accountPath(), 'status-cache', 'sessions', 's1.json'),
+    JSON.stringify({ session_id: 's1', written_at: NOON.getTime() / 1000 - 30, rate_limits }),
+  )
+}
+
+const seatTask = (id: string): string => task(id).replace('estimate: 1', 'estimate: 2')
+
+describe('burndown tick in seats mode', () => {
+  beforeEach(() => {
+    seatPolicy()
+    config({ seats: ['seat-t'] })
+  })
+
+  it("dispatches up to the seat's role cap on the pool's config dir, with seat claims", async () => {
+    seatInitiative({ 'DM-1': seatTask('DM-1'), 'DM-2': seatTask('DM-2'), 'DM-3': seatTask('DM-3') })
+    const fake = fakeBroker()
+
+    const lines = await tick(fake)
+
+    expect(fake.frames.map(f => [f.name, f.profile, f.configDir])).toEqual([
+      ['st-dm-1', 'bd-implementer', accountPath()],
+      ['st-dm-2', 'bd-implementer', accountPath()],
+    ])
+    expect(lines.join('\n')).toContain('refused demo DM-3 [role-cap]: seat seat-t holds 2 of 2 implementers')
+    const ledger = readLedger(burndownLedgerPath())
+    expect(ledger.claims.map(c => [c.taskId, c.seat, c.namePrefix])).toEqual([
+      ['DM-1', 'seat-t', 'st'],
+      ['DM-2', 'seat-t', 'st'],
+    ])
+    expect(ledger.seats).toEqual({ 'seat-t': { samples: [{ at: NOON.getTime(), sevenDay: 40 }] } })
+  })
+
+  it('stops at the pool gate with the BUDGET-PAUSE reason', async () => {
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    sevenDayAt(75)
+    const fake = fakeBroker()
+
+    const lines = await tick(fake)
+
+    expect(fake.frames).toEqual([])
+    expect(lines.join('\n')).toContain('refused demo DM-1 [budget]: BUDGET-PAUSE pool pool-t: seven_day 75%')
+  })
+
+  it('keeps one pool sample per tick and prunes samples older than 26 hours', async () => {
+    seatInitiative({})
+    const hour = 3_600_000
+    const old = { at: NOON.getTime() - 27 * hour, sevenDay: 20 }
+    const recent = { at: NOON.getTime() - hour, sevenDay: 38 }
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [],
+      seats: { 'seat-t': { samples: [old, recent] } },
+    })
+
+    await tick(fakeBroker())
+
+    expect(readLedger(burndownLedgerPath()).seats?.['seat-t']?.samples).toEqual([
+      recent,
+      { at: NOON.getTime(), sevenDay: 40 },
+    ])
+  })
+
+  it("counts the seat's prefixed worktrees against maxWorktreesPerRepo", async () => {
+    config({ seats: ['seat-t'], maxWorktreesPerRepo: 1 })
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    git(repo(), 'worktree', 'add', '-q', '-b', 'st-x-9', path.join('.worktrees', 'st-x-9'))
+    const fake = fakeBroker()
+
+    const lines = await tick(fake)
+
+    expect(fake.frames).toEqual([])
+    expect(lines.join('\n')).toContain('1 burndown worktrees under')
+  })
+
+  it('refuses with a config error when a brief also opts in with autonomy:', async () => {
+    initiative({ 'DM-1': task('DM-1') })
+    const fake = fakeBroker()
+
+    const lines = await tick(fake)
+
+    expect(lines).toEqual([
+      expect.stringMatching(/^config error: .* lists seats, and brief.md of demo has an autonomy: block/),
+    ])
+    expect(fake.rosterCalls).toBe(0)
+  })
+
+  it('skips a seat that cannot load or plan, logs it, and still advances claims and plans the others', async () => {
+    config({ seats: ['nope', 'seat-e', 'seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    const inFlight: Claim = {
+      taskId: 'DM-9',
+      initiative: 'demo',
+      seat: 'seat-t',
+      namePrefix: 'st',
+      spawnedAt: NOON.toISOString(),
+      phase: 'spawning',
+      phaseAt: NOON.toISOString(),
+      nextPhase: 'implementing',
+      agentName: 'st-dm-9',
+      spawned: ['st-dm-9'],
+    }
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [inFlight] })
+    const logged: { event: string; detail: Record<string, unknown> }[] = []
+    const fake = fakeBroker({ agents: [row('st-dm-9', 'live')] })
+
+    const lines = await tick(fake, false, (event, detail) => logged.push({ event, detail }))
+
+    expect(lines).toContain(
+      `seat nope skipped: nope is not a seat in ${path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy')}/charter.md`,
+    )
+    expect(lines).toContain('seat seat-e skipped: seat-e has no dispatch scope (hub seat)')
+    expect(logged.filter(l => l.event === 'burndown_seat_skipped').map(l => l.detail.seat)).toEqual([
+      'nope',
+      'seat-e',
+    ])
+    expect(readLedger(burndownLedgerPath()).claims.find(c => c.taskId === 'DM-9')?.phase).toBe('implementing')
+    expect(fake.frames.map(f => f.name)).toEqual(['st-dm-1'])
+  })
+
+  it('dry run prints the seat dispatch and writes nothing', async () => {
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+
+    const lines = await tick(fakeBroker(), true)
+
+    expect(lines.join('\n')).toContain(
+      `would spawn st-dm-1 as bd-implementer (headless) on ${accountPath()} in ${repo()}`,
+    )
+    expect(fs.existsSync(burndownLedgerPath())).toBe(false)
   })
 })
 
