@@ -561,6 +561,12 @@ profile. `env` sits beneath the spawner's own keys: `AGENT_CHAT_*` and
 `CLAUDE_CODE_PROMPT_CACHE_TTL=5m`; other profiles keep the 1 h default because
 they wait over 5 minutes on CI.
 
+Profile `env` is trusted local config, not a sandbox. It can set `PATH`, `HOME`,
+`ANTHROPIC_*`, `NODE_OPTIONS`, and the credential names `agentEnv` strips from
+the broker's own environment. Values are stored in plaintext in the launch plan
+under the agent's state directory, and a resume rebuilds the plan from the same
+profile, so they carry over. Keep secrets out of profile files.
+
 ---
 
 ### 5. Spawning: one interface, surface as a parameter
