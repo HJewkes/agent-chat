@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseAutonomy } from '../agents/active-work.js'
 import { readAccountBudget } from '../agents/budget.js'
-import { gateAccount } from '../agents/burndown/budget-gate.js'
+import { gateAccount, MAX_READING_AGE_SECONDS } from '../agents/burndown/budget-gate.js'
 import { collisionCheck, type BrokerView } from '../agents/burndown/collision.js'
 import { grantGap } from '../agents/burndown/eligibility.js'
 import type { Runner } from '../agents/burndown/exec.js'
@@ -515,6 +515,50 @@ describe('budget gate', () => {
 
   it('stays closed with no reading rather than assuming zero usage', () => {
     expect(gateAccount('agents', rule, undefined, { now: NOON }).open).toBe(false)
+  })
+
+  it('closes on a reading older than the staleness limit and names its age', () => {
+    const stale = { sevenDay: 10, fiveHour: 10, ageSeconds: MAX_READING_AGE_SECONDS + 1 }
+
+    const result = gateAccount('agents', rule, stale, { now: NOON, humanLastTurnAt: 0 })
+
+    expect(result.open).toBe(false)
+    expect(result.reason).toContain(`${MAX_READING_AGE_SECONDS + 1}s old`)
+  })
+
+  it('lets a stale reading through when the caller sets an infinite max age', () => {
+    const stale = { sevenDay: 10, fiveHour: 10, ageSeconds: MAX_READING_AGE_SECONDS * 100 }
+    const ctx = { now: NOON, humanLastTurnAt: 0 }
+
+    const result = gateAccount('agents', rule, stale, ctx, { maxReadingAgeSeconds: Number.POSITIVE_INFINITY })
+
+    expect(result.open).toBe(true)
+  })
+
+  it.each([Number.NaN, undefined])('closes on a reading whose age is %s', age => {
+    const unaged = { sevenDay: 10, fiveHour: 10, ageSeconds: age as number }
+
+    const result = gateAccount('agents', rule, unaged, { now: NOON, humanLastTurnAt: 0 })
+
+    expect(result.open).toBe(false)
+    expect(result.reason).toContain('no age')
+  })
+
+  it('opens on a reading with no age when the caller sets an infinite max age', () => {
+    const unaged = { sevenDay: 10, fiveHour: 10, ageSeconds: Number.NaN }
+    const ctx = { now: NOON, humanLastTurnAt: 0 }
+
+    const result = gateAccount('agents', rule, unaged, ctx, {
+      maxReadingAgeSeconds: Number.POSITIVE_INFINITY,
+    })
+
+    expect(result.open).toBe(true)
+  })
+
+  it('opens on a reading exactly at the staleness limit', () => {
+    const fresh = { sevenDay: 10, fiveHour: 10, ageSeconds: MAX_READING_AGE_SECONDS }
+
+    expect(gateAccount('agents', rule, fresh, { now: NOON, humanLastTurnAt: 0 }).open).toBe(true)
   })
 })
 

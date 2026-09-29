@@ -97,7 +97,16 @@ export function poolBudget(
   reading: AccountReading | undefined,
   now: Date,
 ): BudgetVerdict {
-  const gate = gateAccount(pool?.name ?? 'unknown pool', pool?.rule, reading, { now })
+  // A woken seat takes its own reading before it dispatches; freshness waits on CC-240.
+  const gate = gateAccount(
+    pool?.name ?? 'unknown pool',
+    pool?.rule,
+    reading,
+    { now },
+    {
+      maxReadingAgeSeconds: Number.POSITIVE_INFINITY,
+    },
+  )
   return { open: gate.open, reason: gate.reason }
 }
 

@@ -42,6 +42,8 @@ const NIGHT_ABSENCE_MS = 30 * 60_000
 const PRESENT_WITHIN_MS = 15 * 60_000
 const PRESENT_CEILING = 70
 const SONNET_ONLY_ABOVE = 85
+/** Both gates use the freshest status file; an older one may hide spend since. */
+export const MAX_READING_AGE_SECONDS = 15 * 60
 
 const humanAbsentFor = (ctx: GateContext, ms: number): boolean =>
   ctx.humanLastTurnAt !== undefined && ctx.now.getTime() - ctx.humanLastTurnAt >= ms
@@ -52,15 +54,25 @@ const isNight = (ctx: GateContext): boolean => {
   return nightHour && humanAbsentFor(ctx, NIGHT_ABSENCE_MS)
 }
 
+/** An unusable age closes the gate; only an explicit infinite limit skips the check. */
+function staleReason(age: number, max: number): string | undefined {
+  if (max === Number.POSITIVE_INFINITY) return undefined
+  if (!Number.isFinite(age)) return 'reading has no age'
+  return age > max ? `reading is ${age}s old, over the ${max}s limit` : undefined
+}
+
 export function gateAccount(
   account: string,
   rule: AccountRule | undefined,
   reading: AccountReading | undefined,
   ctx: GateContext,
+  { maxReadingAgeSeconds = MAX_READING_AGE_SECONDS }: { maxReadingAgeSeconds?: number } = {},
 ): GateResult {
   if (rule === undefined) return { open: false, account, reason: 'no budget rule for this account' }
   if (reading?.sevenDay === undefined || reading.fiveHour === undefined)
     return { open: false, account, reason: 'no seven_day and five_hour reading under this account' }
+  const stale = staleReason(reading.ageSeconds, maxReadingAgeSeconds)
+  if (stale !== undefined) return { open: false, account, reason: stale }
 
   const night = isNight(ctx) && rule.night !== undefined
   const reserve = night ? (rule.night?.reserve_seven_day ?? rule.reserve_seven_day) : rule.reserve_seven_day
@@ -121,8 +133,6 @@ export type PoolGateResult =
 const RUN_CAP_MS = 12 * 3_600_000
 const DAY_START_HOUR = 7
 const SONNET_BAND_POINTS = 10
-/** The charter gates on the freshest status file; an older one may hide spend since. */
-const MAX_READING_AGE_SECONDS = 15 * 60
 
 /** Charter section 4: a drop in seven_day, or a sample past the window's reset, counts from zero. */
 export function pointsSpent(samples: readonly SevenDaySample[]): number {
