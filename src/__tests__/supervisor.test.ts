@@ -1055,6 +1055,79 @@ describe('retiring with force', () => {
     expect(fs.existsSync(allocation.cwd)).toBe(false)
     expect(core.agents.nameIsClaimed('scout')).toBe(false)
   })
+
+  /**
+   * CC-141. A clean, merged worktree is exactly what release removes without
+   * asking, so it is the case where a successor working in it loses it silently.
+   */
+  describe('while a successor works in the predecessor’s worktree', () => {
+    async function predecessorWithCleanWorktree(sup: Supervisor): Promise<Allocation> {
+      core.append({ kind: 'agent_spawned', actor: 'human', target: 'scout', msgId: 'a1', body: 'work' })
+      const allocation = await worktreeStrategy.allocate({
+        agentId: 'a1',
+        agentName: 'scout',
+        baseCwd: makeRepo(),
+      })
+      ;(sup as unknown as { live: Map<string, unknown> }).live.set('a1', {
+        agentId: 'a1',
+        name: 'scout',
+        handle: { surface: 'headless' },
+        allocation,
+        isolation: 'worktree',
+      })
+      return allocation
+    }
+
+    const successorIn = (cwd: string): void =>
+      void core.append({
+        kind: 'agent_spawned',
+        actor: 'human',
+        target: 'heir',
+        msgId: 'a2',
+        body: 'carry on',
+        meta: { name: 'heir', cwd, isolation: 'worktree' },
+      })
+
+    it('refuses to retire the predecessor, and names the successor', async () => {
+      const sup = withStubbedSurface()
+      const allocation = await predecessorWithCleanWorktree(sup)
+      successorIn(allocation.cwd)
+
+      const result = await sup.retire('scout')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/heir \(not retired\) is working in it/)
+      expect(result.reason).toMatch(/--force/)
+      expect(fs.existsSync(allocation.cwd)).toBe(true)
+      expect(core.agents.nameIsClaimed('scout')).toBe(true)
+    })
+
+    it('releases it under --force, and says what it released', async () => {
+      const sup = withStubbedSurface()
+      const allocation = await predecessorWithCleanWorktree(sup)
+      successorIn(allocation.cwd)
+
+      const result = await sup.retire('scout', true)
+
+      expect(result.ok).toBe(true)
+      expect(result.reason).toContain(`released the worktree ${allocation.cwd} and branch agent-chat/scout`)
+      expect(result.reason).toMatch(/while heir was still working in it/)
+      expect(fs.existsSync(allocation.cwd)).toBe(false)
+    })
+
+    it('releases it once the successor is retired', async () => {
+      const sup = withStubbedSurface()
+      const allocation = await predecessorWithCleanWorktree(sup)
+      successorIn(allocation.cwd)
+      core.append({ kind: 'agent_retired', actor: 'human', target: 'heir', ref: 'a2' })
+
+      const result = await sup.retire('scout')
+
+      expect(result.ok).toBe(true)
+      expect(result.reason).toBeUndefined()
+      expect(fs.existsSync(allocation.cwd)).toBe(false)
+    })
+  })
 })
 
 /**
