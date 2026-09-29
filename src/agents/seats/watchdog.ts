@@ -19,6 +19,9 @@ export const FIRE_AFTER_RUNS = 2
 /** Two runs further apart than this are not consecutive, e.g. across a sleep. */
 export const MAX_RUN_GAP_MS = 20 * 60_000
 
+/** Wakes with no implementer appearing before the watchdog stops until the seat shows activity again. */
+export const FIRE_CAP = 2
+
 export interface SeatAgent {
   name: string
   profile: string
@@ -36,12 +39,19 @@ export interface Observation {
   implementers: number
   /** Undefined when the scorer could not be read, which never counts as work. */
   eligible: number | undefined
+  /** Why the seat must not be woken now: an owner stop, a pause line, a spend stop or a restart window. */
+  hold?: string
+  /** Epoch ms of the seat's latest own log line. */
+  activityAt?: number
 }
 
 export interface SeatState {
   idleRuns: number
   /** Epoch ms of the run that wrote this state. */
   at: number
+  /** Wakes since the seat last showed activity. */
+  fires?: number
+  lastFireAt?: number
 }
 
 export interface Decision {
@@ -89,21 +99,51 @@ export function poolBudget(
   return { open: gate.open, reason: gate.reason }
 }
 
-const skip = (reason: string, at: number): Decision => ({ fire: false, reason, next: { idleRuns: 0, at } })
+type FireCount = Pick<SeatState, 'fires' | 'lastFireAt'>
 
-export function decide(obs: Observation, previous: SeatState | undefined, nowMs: number): Decision {
-  if (obs.implementers > 0) return skip(`${obs.implementers} implementer(s) running`, nowMs)
-  if (!obs.budget.open) return skip(`budget closed: ${obs.budget.reason}`, nowMs)
-  if (obs.eligible === undefined) return skip('eligible count unavailable', nowMs)
-  if (obs.eligible === 0) return skip('no eligible work', nowMs)
+const minuteOf = (ms: number): number => ms - (ms % 60_000)
+
+/** Seat log lines carry only HH:MM, so a line in the wake's own minute counts as activity after it. */
+function firesSinceActivity(previous: SeatState | undefined, activityAt: number | undefined): FireCount {
+  const { fires, lastFireAt } = previous ?? {}
+  if (fires === undefined || lastFireAt === undefined) return { fires: 0 }
+  if (activityAt !== undefined && activityAt >= minuteOf(lastFireAt)) return { fires: 0 }
+  return { fires, lastFireAt }
+}
+
+export function decide(
+  obs: Observation,
+  previous: SeatState | undefined,
+  nowMs: number,
+  fireCap = FIRE_CAP,
+): Decision {
+  const count = firesSinceActivity(previous, obs.activityAt)
+  const skip = (reason: string, idleRuns = 0): Decision => ({
+    fire: false,
+    reason,
+    next: { idleRuns, at: nowMs, ...count },
+  })
+  if (obs.implementers > 0)
+    return {
+      fire: false,
+      reason: `${obs.implementers} implementer(s) running`,
+      next: { idleRuns: 0, at: nowMs, fires: 0 },
+    }
+  if (obs.hold !== undefined) return skip(`held: ${obs.hold}`)
+  if (!obs.budget.open) return skip(`budget closed: ${obs.budget.reason}`)
+  if (obs.eligible === undefined) return skip('eligible count unavailable')
+  if (obs.eligible === 0) return skip('no eligible work')
+  const fires = count.fires ?? 0
+  if (fires >= fireCap)
+    return skip(`fire cap: ${fires} wake(s) with no implementer; waiting for a dispatch or a seat log line`)
   const consecutive = previous !== undefined && nowMs - previous.at <= MAX_RUN_GAP_MS
   const idleRuns = (consecutive ? previous.idleRuns : 0) + 1
   const summary = `0 implementers, budget open (${obs.budget.reason}), ${obs.eligible} eligible`
   if (idleRuns < FIRE_AFTER_RUNS)
-    return {
-      fire: false,
-      reason: `${summary}; idle run ${idleRuns} of ${FIRE_AFTER_RUNS}`,
-      next: { idleRuns, at: nowMs },
-    }
-  return { fire: true, reason: summary, next: { idleRuns: 0, at: nowMs } }
+    return skip(`${summary}; idle run ${idleRuns} of ${FIRE_AFTER_RUNS}`, idleRuns)
+  return {
+    fire: true,
+    reason: summary,
+    next: { idleRuns: 0, at: nowMs, fires: fires + 1, lastFireAt: nowMs },
+  }
 }

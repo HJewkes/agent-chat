@@ -7,6 +7,7 @@ import type { AgentEventRow } from '../../broker/event-store.js'
 import { home } from '../../paths.js'
 import type { EventKind } from '../../protocol.js'
 import { activeWorkRoot } from '../active-work.js'
+import type { OwnerMessage, SpendMeter } from './stops.js'
 import type { SeatState } from './watchdog.js'
 
 /** The watchdog's disk: autonomy files, the scorer, its own state, seat logs and events.db (read-only). */
@@ -48,28 +49,47 @@ export function scorerEligible(root: string, seat: string): number | undefined {
   }
 }
 
-export function loadStates(file = watchdogStatePath()): Record<string, SeatState> {
+/** A seat's watchdog state plus its run spend meter. */
+export type SeatRecord = SeatState & { run?: SpendMeter }
+
+/**
+ * `seat-watchdog.json`. `stopped` is the owner's switch: a seat named there is
+ * never woken, whatever else holds, until its entry is deleted.
+ */
+export interface WatchdogDoc {
+  seats: Record<string, SeatRecord>
+  pools: Record<string, SpendMeter>
+  stopped: Record<string, string>
+}
+
+export function loadDoc(file = watchdogStatePath()): WatchdogDoc {
   try {
-    const doc = JSON.parse(fs.readFileSync(file, 'utf8')) as { seats?: Record<string, SeatState> }
-    return doc.seats ?? {}
+    const doc = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<WatchdogDoc>
+    return { seats: doc.seats ?? {}, pools: doc.pools ?? {}, stopped: doc.stopped ?? {} }
   } catch {
-    return {}
+    return { seats: {}, pools: {}, stopped: {} }
   }
 }
 
-export function saveStates(states: Record<string, SeatState>, file = watchdogStatePath()): void {
+/** The watchdog never writes `stopped`, so it keeps whatever the owner has on disk at save time. */
+export function saveDoc(doc: Omit<WatchdogDoc, 'stopped'>, file = watchdogStatePath()): void {
+  const { stopped } = loadDoc(file)
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const tmp = `${file}.${process.pid}.tmp`
-  fs.writeFileSync(tmp, `${JSON.stringify({ seats: states }, null, 2)}\n`)
+  fs.writeFileSync(tmp, `${JSON.stringify({ ...doc, stopped }, null, 2)}\n`)
   fs.renameSync(tmp, file)
 }
 
 const pad = (n: number): string => String(n).padStart(2, '0')
 
+const localDay = (at: Date): string => `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
+
+export const seatLogPath = (root: string, seat: string, at: Date): string =>
+  path.join(root, 'logs', seat, `${localDay(at)}.md`)
+
 /** Charter section 10's format: local `logs/<seat>/<YYYY-MM-DD>.md`, each line led by local `HH:MM`. */
 export function appendSeatLog(root: string, seat: string, at: Date, text: string): string {
-  const day = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
-  const file = path.join(root, 'logs', seat, `${day}.md`)
+  const file = seatLogPath(root, seat, at)
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.appendFileSync(file, `${pad(at.getHours())}:${pad(at.getMinutes())} ${text}\n`)
   return file
@@ -115,6 +135,21 @@ export function readAgentEvents(dbPath: string, untilMs: number): AgentEventRow[
       .prepare(`SELECT * FROM events WHERE kind IN (${marks}) AND ts < ? ORDER BY id`)
       .all(...AGENT_KINDS, untilMs) as unknown as Row[]
     return rows.map(toAgentRow)
+  } finally {
+    db.close()
+  }
+}
+
+/** The owner seat's messages since `sinceMs` that mention a restart. Opened read-only. */
+export function readOwnerMessages(dbPath: string, owner: string, sinceMs: number): OwnerMessage[] {
+  const db = new DatabaseSync(dbPath, { readOnly: true })
+  try {
+    const rows = db
+      .prepare(
+        "SELECT ts, body FROM events WHERE kind IN ('message', 'broadcast') AND actor = ? AND ts >= ? AND body LIKE '%restart%' ORDER BY id",
+      )
+      .all(owner, sinceMs) as unknown as { ts: number; body: string | null }[]
+    return rows.map(row => ({ ts: row.ts, body: row.body ?? '' }))
   } finally {
     db.close()
   }

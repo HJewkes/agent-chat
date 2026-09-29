@@ -2,15 +2,17 @@ import path from 'node:path'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
 import { readAccountBudget } from '../../agents/budget.js'
-import { charterSeats, parsePools, parseSeat } from '../../agents/seats/charter.js'
+import { charterSeats, isSeatName, parsePools, parseSeat } from '../../agents/seats/charter.js'
 import {
   appendSeatLog,
   defaultAutonomyRoot,
-  loadStates,
+  loadDoc,
   readAgentEvents,
+  readOwnerMessages,
   readText,
-  saveStates,
+  saveDoc,
   scorerEligible,
+  seatLogPath,
 } from '../../agents/seats/io.js'
 import {
   parseLogReadings,
@@ -19,8 +21,15 @@ import {
   runTimes,
   type ReplayRow,
 } from '../../agents/seats/replay.js'
-import { runWatchdog, type Roster, type WakeResult, type WatchdogDeps } from '../../agents/seats/run.js'
-import { WATCHDOG_MINUTES } from '../../agents/seats/watchdog.js'
+import {
+  runWatchdog,
+  type Roster,
+  type WakeResult,
+  type WatchdogDeps,
+  type WatchdogOptions,
+} from '../../agents/seats/run.js'
+import type { OwnerMessage } from '../../agents/seats/stops.js'
+import { FIRE_CAP, WATCHDOG_MINUTES } from '../../agents/seats/watchdog.js'
 import { BrokerClient } from '../../client/broker-client.js'
 import { startJob, systemLaunchctl, type JobControl } from '../../mirror/launchd.js'
 import { jobEnv, renderWatchdogPlist } from '../../mirror/plist.js'
@@ -43,7 +52,7 @@ async function roster(client: BrokerClient): Promise<Roster> {
 }
 
 /** A connected seat cannot be resumed, so it gets the message as the owner's job would type it. */
-async function wake(
+export async function wakeSeat(
   client: BrokerClient,
   seat: string,
   message: string,
@@ -51,16 +60,31 @@ async function wake(
 ): Promise<WakeResult> {
   if (connected) {
     const res = (await client.request(
-      { t: 'human_send', to: seat, text: message },
+      { t: 'human_send', to: seat, text: message, source: 'watchdog' },
       'send_result',
     )) as Reply<'send_result'>
     return res.ok
       ? { ok: true, detail: `message ${res.msgId}` }
       : { ok: false, detail: res.reason ?? 'send refused' }
   }
-  const frame = { t: 'resume' as const, name: seat, surface: 'headless' as const, message }
+  const frame = {
+    t: 'resume' as const,
+    name: seat,
+    surface: 'headless' as const,
+    message,
+    source: 'watchdog' as const,
+  }
   const res = (await client.request(frame, 'spawn_result')) as Reply<'spawn_result'>
   return res.ok ? { ok: true, detail: 'resumed' } : { ok: false, detail: res.reason ?? 'resume refused' }
+}
+
+/** Undefined when events.db cannot be opened, so the caller says it could not see a restart window. */
+function ownerMessages(owner: string, sinceMs: number): OwnerMessage[] | undefined {
+  try {
+    return readOwnerMessages(path.join(home(), 'events.db'), owner, sinceMs)
+  } catch {
+    return undefined
+  }
 }
 
 function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
@@ -68,27 +92,26 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
     now: () => new Date(),
     readCharter: () => readText(path.join(root, 'charter.md')),
     readSeatFile: seat => readText(path.join(root, 'seats', `${seat}.md`)),
+    readSeatLog: (seat, at) => readText(seatLogPath(root, seat, at)),
     readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
+    ownerMessages: (owner, sinceMs) => ownerMessages(owner, sinceMs),
     roster: () => roster(client),
     eligible: seat => scorerEligible(root, seat),
-    loadStates: () => loadStates(),
-    saveStates: states => saveStates(states),
-    wake: (seat, message, connected) => wake(client, seat, message, connected),
+    loadDoc: () => loadDoc(),
+    saveDoc: doc => saveDoc(doc),
+    wake: (seat, message, connected) => wakeSeat(client, seat, message, connected),
     appendLog: (seat, at, text) => void appendSeatLog(root, seat, at, text),
   }
 }
 
-async function liveRun(root: string, seats: string[] | undefined, dryRun: boolean): Promise<Report> {
+async function liveRun(root: string, options: WatchdogOptions): Promise<Report> {
   // Never autostart: a watchdog that brought up a broker would own it, and the broker serves every session.
   const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
     autoStart: false,
   })
   try {
     await client.connect()
-    const lines = await runWatchdog(liveDeps(root, client), {
-      dryRun,
-      ...(seats === undefined ? {} : { seats }),
-    })
+    const lines = await runWatchdog(liveDeps(root, client), options)
     return { ok: true, lines }
   } finally {
     client.close()
@@ -117,7 +140,7 @@ function replayRun(root: string, day: string, seats: string[] | undefined, flags
   const events = readAgentEvents(path.join(home(), 'events.db'), (times.at(-1) ?? 0) + 60_000)
   const extra = flags.map(parseReadingFlag)
   const lines: string[] = []
-  for (const name of seats ?? charterSeats(charter)) {
+  for (const name of (seats ?? charterSeats(charter)).filter(isSeatName)) {
     const seat = parseSeat(name, readText(path.join(root, 'seats', `${name}.md`)) ?? '')
     if (seat === undefined) continue
     const readings = [
@@ -134,13 +157,19 @@ function replayRun(root: string, day: string, seats: string[] | undefined, flags
 
 export const seatsWatchdogVerb = defineVerb({
   name: 'seats.watchdog',
-  description: 'wake an autonomy seat idle with budget and eligible work (CC-203); silent otherwise',
+  description:
+    'wake an autonomy seat idle with budget and eligible work (CC-203); silent otherwise. ' +
+    'Never wakes a seat named in the `stopped` map of $AGENT_CHAT_HOME/seat-watchdog.json ' +
+    '({"stopped": {"<seat>": "<reason>"}}; delete the entry to re-enable), a seat whose latest ' +
+    'log line starts BUDGET-PAUSE or PARKED, a seat at its spend stop, or any seat while the ' +
+    'owner seat has announced a broker restart without "restart done"',
   args: z.object({
     dryRun: z.boolean().optional(),
     replay: z.string().optional(),
     seat: z.array(z.string()).optional(),
     reading: z.array(z.string()).optional(),
     root: z.string().optional(),
+    fireCap: z.coerce.number().int().positive().optional(),
   }),
   result: Report,
   cli: {
@@ -153,13 +182,21 @@ export const seatsWatchdogVerb = defineVerb({
         description: 'replay budget reading <ISO>=<five_hour>/<seven_day> (repeatable)',
       },
       root: { long: '--root', description: 'autonomy directory holding charter.md, seats/ and logs/' },
+      fireCap: {
+        long: '--fire-cap',
+        description: `wakes with no implementer before holding until the seat shows activity (default ${FIRE_CAP})`,
+      },
     },
   },
-  async run({ dryRun, replay: day, seat, reading, root }) {
+  async run({ dryRun, replay: day, seat, reading, root, fireCap }) {
     const dir = root ?? defaultAutonomyRoot()
     try {
       if (day !== undefined) return replayRun(dir, day, seat, reading ?? [])
-      return await liveRun(dir, seat, dryRun === true)
+      return await liveRun(dir, {
+        dryRun: dryRun === true,
+        ...(seat === undefined ? {} : { seats: seat }),
+        ...(fireCap === undefined ? {} : { fireCap }),
+      })
     } catch (err) {
       return refused(err)
     }
@@ -176,13 +213,17 @@ export function watchdogInstall(control: JobControl): Report {
     env: jobEnv(process.env),
     minutes: WATCHDOG_MINUTES,
   })
-  const result = startJob({ plist: watchdogPlistPath(), logDir: watchdogLogDir() }, plist, control)
+  // No kickstart: the first wake waits for the next scheduled minute, not the install.
+  const result = startJob({ plist: watchdogPlistPath(), logDir: watchdogLogDir() }, plist, control, {
+    kickstart: false,
+  })
   return control.dryRun ? { ok: true, lines: [plist, ...result.lines] } : result
 }
 
 export const seatsWatchdogInstallVerb = defineVerb({
   name: 'seats.watchdog-install',
-  description: 'install and start the launchd job that runs `seats watchdog` four times an hour',
+  description:
+    'install the launchd job that runs `seats watchdog` four times an hour; the first run waits for the next scheduled minute',
   args: z.object({ dryRun: z.boolean().optional() }),
   result: Report,
   cli: {

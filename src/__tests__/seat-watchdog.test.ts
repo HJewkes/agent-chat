@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import type { BudgetRead } from '../agents/budget.js'
-import { charterSeats, parsePools, parseSeat, type Pool } from '../agents/seats/charter.js'
 import {
+  charterOwnerSeat,
+  charterSeats,
+  isSeatName,
+  parsePools,
+  parseSeat,
+  type Pool,
+} from '../agents/seats/charter.js'
+import {
+  FIRE_CAP,
   MAX_RUN_GAP_MS,
   accountReading,
   decide,
@@ -30,6 +38,11 @@ name: hjewkes-surplus
 prefix: hs
 role: owner                   # owns the autonomy system
 pool: claude
+spend:
+  per_run_points: 6
+  per_day_points: 10          # the claude pool's 13 per day
+concurrency:
+  implementers: 3
 ---
 # hjewkes-surplus
 `
@@ -93,8 +106,65 @@ describe('decide', () => {
   it.each(cases)('%s', (_name, obs, previous, fire, idleRuns, reason) => {
     const decision = decide(obs, previous, NOW)
     expect(decision.fire).toBe(fire)
-    expect(decision.next).toEqual({ idleRuns, at: NOW })
+    expect(decision.next).toMatchObject({ idleRuns, at: NOW })
     expect(decision.reason).toMatch(reason)
+  })
+
+  it('never wakes a held seat, even on its second idle run', () => {
+    const decision = decide(idle({ hold: 'seat logged "BUDGET-PAUSE five_hour 71%"' }), recent, NOW)
+    expect(decision.fire).toBe(false)
+    expect(decision.reason).toMatch(/^held: seat logged "BUDGET-PAUSE/)
+  })
+})
+
+describe('decide fire cap', () => {
+  const MIN = 60_000
+  /** Idle runs every 15 minutes from `start`, feeding each decision's state into the next. */
+  function run(count: number, activityAt?: (at: number) => number | undefined, cap?: number): boolean[] {
+    let state: SeatState | undefined
+    return Array.from({ length: count }, (_, i) => {
+      const at = NOW + i * 15 * MIN
+      const activity = activityAt?.(at)
+      const decision = decide(idle(activity === undefined ? {} : { activityAt: activity }), state, at, cap)
+      state = decision.next
+      return decision.fire
+    })
+  }
+  const fireCount = (fires: boolean[]): number => fires.filter(Boolean).length
+
+  it(`stops after ${FIRE_CAP} wakes that bring no implementer`, () => {
+    const fires = run(12)
+    expect(fireCount(fires)).toBe(FIRE_CAP)
+    expect(fires.slice(0, 4)).toEqual([false, true, false, true])
+  })
+
+  it('reports the cap as the reason while it holds', () => {
+    const state: SeatState = { idleRuns: 1, at: NOW - 15 * MIN, fires: 2, lastFireAt: NOW - 30 * MIN }
+    const decision = decide(idle(), state, NOW)
+    expect(decision.fire).toBe(false)
+    expect(decision.reason).toMatch(/^fire cap: 2 wake\(s\) with no implementer/)
+    expect(decision.next).toMatchObject({ fires: 2, lastFireAt: NOW - 30 * MIN })
+  })
+
+  it('fires again once the seat writes a log line after the last wake', () => {
+    const state: SeatState = { idleRuns: 1, at: NOW - 15 * MIN, fires: 2, lastFireAt: NOW - 30 * MIN }
+    const decision = decide(idle({ activityAt: NOW - 20 * MIN }), state, NOW)
+    expect(decision.fire).toBe(true)
+    expect(decision.next).toMatchObject({ fires: 1, lastFireAt: NOW })
+  })
+
+  it('stays capped when the seat last wrote before the wake', () => {
+    const state: SeatState = { idleRuns: 1, at: NOW - 15 * MIN, fires: 2, lastFireAt: NOW - 30 * MIN }
+    expect(decide(idle({ activityAt: NOW - 31 * MIN }), state, NOW).fire).toBe(false)
+  })
+
+  it('resets when an implementer appears', () => {
+    const state: SeatState = { idleRuns: 0, at: NOW - 15 * MIN, fires: 2, lastFireAt: NOW - 30 * MIN }
+    expect(decide(idle({ implementers: 1 }), state, NOW).next.fires).toBe(0)
+  })
+
+  it('honours a caller cap', () => {
+    expect(fireCount(run(12, undefined, 1))).toBe(1)
   })
 })
 
@@ -190,6 +260,7 @@ describe('charter and seat parsing', () => {
       name: 'claude',
       configDir: '/Users/o/.claude',
       rule: { reserve_seven_day: 35, ceiling_five_hour: 70 },
+      perDayPoints: 13,
     })
     expect(pools.get('agents')).toEqual({
       name: 'agents',
@@ -208,7 +279,25 @@ describe('charter and seat parsing', () => {
       name: 'hjewkes-surplus',
       prefix: 'hs',
       pool: 'claude',
+      spend: { perRunPoints: 6, perDayPoints: 10 },
     })
+  })
+
+  it('reads a seat without a spend block as having no seat spend stops', () => {
+    expect(parseSeat('x', '---\nprefix: x\npool: claude\n---\n')?.spend).toEqual({})
+  })
+
+  it('reads the owner seat from the charter', () => {
+    expect(charterOwnerSeat('---\nowner_seat: hjewkes-surplus\n---\n')).toBe('hjewkes-surplus')
+  })
+
+  it.each([
+    ['hjewkes-surplus', true],
+    ['../etc', false],
+    ['a/b', false],
+    ['', false],
+  ])('treats %j as a seat name: %s', (name, ok) => {
+    expect(isSeatName(name)).toBe(ok)
   })
 
   it('refuses a seat file without a prefix', () => {

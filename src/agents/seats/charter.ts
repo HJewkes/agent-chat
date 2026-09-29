@@ -8,6 +8,8 @@ export interface Pool {
   name: string
   configDir: string
   rule: AccountRule
+  /** Charter section 4's daily cap on the pool's seven_day points, counted from 07:00 local. */
+  perDayPoints?: number
 }
 
 /** What the watchdog needs from `seats/<seat>.md`. */
@@ -15,7 +17,17 @@ export interface Seat {
   name: string
   prefix: string
   pool: string
+  spend: SeatSpend
 }
+
+/** The seat file's `spend:` block; either stop may be absent. */
+export interface SeatSpend {
+  perRunPoints?: number
+  perDayPoints?: number
+}
+
+/** A seat name reaches file paths, so only a plain slug is a seat. */
+export const isSeatName = (name: string): boolean => /^[a-z0-9][a-z0-9_-]*$/i.test(name)
 
 const frontmatter = (text: string): string => {
   if (!text.startsWith('---\n')) return ''
@@ -36,6 +48,7 @@ function poolFrom(name: string, fields: Record<string, string>, home: string): P
   const reserve = Number(fields.reserve_seven_day)
   const ceiling = Number(fields.ceiling_five_hour)
   const night = Number(fields.night_reserve_seven_day)
+  const perDay = Number(fields.per_day_points)
   if (fields.config_dir === undefined || !Number.isFinite(reserve) || !Number.isFinite(ceiling))
     return undefined
   return {
@@ -46,6 +59,7 @@ function poolFrom(name: string, fields: Record<string, string>, home: string): P
       ceiling_five_hour: ceiling,
       ...(Number.isFinite(night) ? { night: { reserve_seven_day: night } } : {}),
     },
+    ...(Number.isFinite(perDay) ? { perDayPoints: perDay } : {}),
   }
 }
 
@@ -66,8 +80,34 @@ export function parsePools(charter: string, home = os.homedir()): Map<string, Po
 
 export const charterSeats = (charter: string): string[] => listField(frontmatter(charter), 'seats')
 
+export const charterOwnerSeat = (charter: string): string | undefined =>
+  frontmatterField(charter, 'owner_seat')
+
+/** The indented `key: number` lines under a top-level `block:` in the frontmatter. */
+function nestedNumbers(text: string, block: string): Record<string, number> {
+  const lines = frontmatter(text).split('\n')
+  const start = lines.findIndex(line => line.startsWith(`${block}:`))
+  const found: Record<string, number> = {}
+  if (start === -1) return found
+  for (const line of lines.slice(start + 1)) {
+    if (!/^\s/.test(line)) break
+    const m = /^\s+([\w-]+):\s*([\d.]+)/.exec(line)
+    if (m?.[1] !== undefined) found[m[1]] = Number(m[2])
+  }
+  return found
+}
+
+function parseSpend(seatFile: string): SeatSpend {
+  const spend = nestedNumbers(seatFile, 'spend')
+  return {
+    ...(spend.per_run_points === undefined ? {} : { perRunPoints: spend.per_run_points }),
+    ...(spend.per_day_points === undefined ? {} : { perDayPoints: spend.per_day_points }),
+  }
+}
+
 export function parseSeat(name: string, seatFile: string): Seat | undefined {
   const prefix = frontmatterField(seatFile, 'prefix')
   const pool = frontmatterField(seatFile, 'pool')
-  return prefix === undefined || pool === undefined ? undefined : { name, prefix, pool }
+  if (prefix === undefined || pool === undefined) return undefined
+  return { name, prefix, pool, spend: parseSpend(seatFile) }
 }

@@ -39,7 +39,7 @@ const hhmm = (at: number): string => new Date(at).toISOString().slice(11, 16)
 describe('replay of 2026-09-29, the 3h52m idle night', () => {
   const rows = replay(
     {
-      seat: { name: 'hjewkes-surplus', prefix: 'hs', pool: 'claude' },
+      seat: { name: 'hjewkes-surplus', prefix: 'hs', pool: 'claude', spend: {} },
       pool: parsePools(CHARTER).get('claude'),
       events: ROWS,
       readings: READINGS,
@@ -53,19 +53,9 @@ describe('replay of 2026-09-29, the 3h52m idle night', () => {
     expect(fires.slice(0, 2)).toEqual(['06:23', '06:53'])
   })
 
-  it('keeps firing every 30 minutes through the idle stretch, and never while implementers run', () => {
-    expect(fires).toEqual([
-      '06:23',
-      '06:53',
-      '07:23',
-      '07:53',
-      '08:23',
-      '08:53',
-      '09:23',
-      '09:53',
-      '10:23',
-      '10:53',
-    ])
+  it('stops at the fire cap when no implementer appears, instead of waking every 30 minutes', () => {
+    expect(fires).toEqual(['06:23', '06:53'])
+    expect(rows.find(r => hhmm(r.at) === '07:23')?.reason).toMatch(/^fire cap: 2 wake/)
     expect(rows.filter(r => r.fire).every(r => r.implementers.length === 0)).toBe(true)
   })
 

@@ -5,10 +5,18 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { BudgetRead } from '../agents/budget.js'
-import { appendSeatLog, loadStates, readAgentEvents, saveStates } from '../agents/seats/io.js'
+import {
+  appendSeatLog,
+  loadDoc,
+  readAgentEvents,
+  readOwnerMessages,
+  saveDoc,
+  type WatchdogDoc,
+} from '../agents/seats/io.js'
 import { runWatchdog, type Roster, type WatchdogDeps } from '../agents/seats/run.js'
-import type { SeatState } from '../agents/seats/watchdog.js'
-import { watchdogInstall } from '../cli/verbs/seats.js'
+import type { OwnerMessage } from '../agents/seats/stops.js'
+import type { BrokerClient } from '../client/broker-client.js'
+import { watchdogInstall, wakeSeat } from '../cli/verbs/seats.js'
 import type { Launchctl } from '../mirror/launchd.js'
 import { renderWatchdogPlist } from '../mirror/plist.js'
 
@@ -17,14 +25,15 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
 }
 
 const CHARTER = `---
-seats: [hjewkes-surplus, unconfigured]
+owner_seat: hjewkes-surplus
+seats: [hjewkes-surplus, unconfigured, ../escape]
 pools:
-  claude:  {config_dir: /Users/o/.claude, human_uses: true, reserve_seven_day: 35, ceiling_five_hour: 70}
+  claude:  {config_dir: /Users/o/.claude, human_uses: true, reserve_seven_day: 35, ceiling_five_hour: 70, per_day_points: 13}
 ---
 `
-const SEAT = '---\nprefix: hs\npool: claude\n---\n'
+const SEAT = '---\nprefix: hs\npool: claude\nspend:\n  per_run_points: 6\n  per_day_points: 10\n---\n'
 
-const budget = (fiveHour: number): BudgetRead => ({
+const budget = (fiveHour: number, sevenDay = 19): BudgetRead => ({
   found: true,
   path: '/x',
   age_seconds: 5,
@@ -34,7 +43,7 @@ const budget = (fiveHour: number): BudgetRead => ({
     written_at: 0,
     context: { exceeds_200k: false },
     cost: {},
-    rate_limits: { five_hour: { used_pct: fiveHour }, seven_day: { used_pct: 19 } },
+    rate_limits: { five_hour: { used_pct: fiveHour }, seven_day: { used_pct: sevenDay } },
   },
 })
 
@@ -42,26 +51,39 @@ interface Harness {
   deps: WatchdogDeps
   wakes: { seat: string; message: string; connected: boolean }[]
   logs: string[]
-  states: Record<string, SeatState>
+  doc: WatchdogDoc
+  /** The seat's own log for today, as `HH:MM text` lines. */
+  seatLog: string
+  sevenDay: number
+  ownerMessages: OwnerMessage[]
+  now: () => number
   tick: () => void
 }
 
+const emptyDoc = (): WatchdogDoc => ({ seats: {}, pools: {}, stopped: {} })
+
 function harness(roster: Roster, fiveHour = 41): Harness {
-  let now = Date.parse('2026-09-29T06:38:00Z')
+  let now = new Date(2026, 8, 29, 8, 38).getTime()
   const h: Harness = {
     wakes: [],
     logs: [],
-    states: {},
+    doc: emptyDoc(),
+    seatLog: '',
+    sevenDay: 19,
+    ownerMessages: [],
+    now: () => now,
     tick: () => void (now += 15 * 60_000),
     deps: {
       now: () => new Date(now),
       readCharter: () => CHARTER,
       readSeatFile: seat => (seat === 'hjewkes-surplus' ? SEAT : undefined),
-      readBudget: () => budget(fiveHour),
+      readSeatLog: () => h.seatLog,
+      readBudget: () => budget(fiveHour, h.sevenDay),
+      ownerMessages: () => h.ownerMessages,
       roster: async () => roster,
       eligible: () => 7,
-      loadStates: () => ({ ...h.states }),
-      saveStates: states => void (h.states = states),
+      loadDoc: () => structuredClone(h.doc),
+      saveDoc: doc => void (h.doc = { ...doc, stopped: h.doc.stopped }),
       wake: async (seat, message, connected) => {
         h.wakes.push({ seat, message, connected })
         return { ok: true, detail: 'message m1' }
@@ -73,6 +95,24 @@ function harness(roster: Roster, fiveHour = 41): Harness {
 }
 
 const IDLE: Roster = { agents: [], connected: ['hjewkes-surplus'] }
+
+const ONE = { seats: ['hjewkes-surplus'], dryRun: false }
+
+/** `count` watchdog runs 15 minutes apart; returns how many woke the seat. */
+async function runs(h: Harness, count: number, before?: (i: number) => void): Promise<number> {
+  const start = h.wakes.length
+  for (let i = 0; i < count; i++) {
+    before?.(i)
+    await runWatchdog(h.deps, ONE)
+    h.tick()
+  }
+  return h.wakes.length - start
+}
+
+const hhmm = (ms: number): string => {
+  const d = new Date(ms)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
 
 describe('runWatchdog', () => {
   it('wakes a connected seat with the Discovery message on the second idle run, and logs it', async () => {
@@ -110,7 +150,7 @@ describe('runWatchdog', () => {
       ...(h.tick(), await runWatchdog(h.deps, { seats: ['hjewkes-surplus'], dryRun: false })),
     ]
     expect([out, h.wakes, h.logs]).toEqual([[], [], []])
-    expect(h.states['hjewkes-surplus']?.idleRuns).toBe(0)
+    expect(h.doc.seats['hjewkes-surplus']?.idleRuns).toBe(0)
   })
 
   it('stays silent over the five-hour ceiling', async () => {
@@ -123,13 +163,96 @@ describe('runWatchdog', () => {
 
   it('under --dry-run reports every charter seat and wakes, logs and saves nothing', async () => {
     const h = harness(IDLE)
-    h.states = { 'hjewkes-surplus': { idleRuns: 1, at: Date.parse('2026-09-29T06:30:00Z') } }
+    h.doc.seats = { 'hjewkes-surplus': { idleRuns: 1, at: h.now() - 8 * 60_000 } }
     const out = await runWatchdog(h.deps, { dryRun: true })
     expect(out[0]).toMatch(/^hjewkes-surplus: WOULD FIRE: 0 implementers/)
     expect(out[1]).toMatch(/^unconfigured: skipped, seats\/unconfigured.md has no prefix or pool/)
+    expect(out[2]).toBe('../escape: skipped, not a seat name')
     expect(h.wakes).toEqual([])
     expect(h.logs).toEqual([])
-    expect(h.states['hjewkes-surplus']?.idleRuns).toBe(1)
+    expect(h.doc.seats['hjewkes-surplus']?.idleRuns).toBe(1)
+  })
+
+  it('wakes at most twice through a long idle stretch with no implementer appearing', async () => {
+    const h = harness(IDLE)
+    expect(await runs(h, 16)).toBe(2)
+    const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+    expect(out[0]).toMatch(/skip: fire cap: 2 wake/)
+  })
+
+  it('wakes again after the seat logs a line following a capped stretch', async () => {
+    const h = harness(IDLE)
+    await runs(h, 6)
+    h.seatLog = `${hhmm(h.now())} dispatch refused: no worktree slot\n`
+    expect(await runs(h, 2)).toBe(1)
+  })
+
+  it('never wakes a seat the owner stopped in seat-watchdog.json', async () => {
+    const h = harness(IDLE)
+    h.doc.stopped = { 'hjewkes-surplus': 'away for the weekend' }
+    expect(await runs(h, 4)).toBe(0)
+    const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+    expect(out[0]).toBe('hjewkes-surplus: skip: held: stopped by the owner: away for the weekend')
+  })
+
+  it('never wakes a seat whose latest log line is BUDGET-PAUSE', async () => {
+    const h = harness(IDLE)
+    h.seatLog = '08:30 BUDGET-PAUSE five_hour 71%, seven_day 30%\n'
+    expect(await runs(h, 4)).toBe(0)
+  })
+
+  it('never wakes a seat once its pool has spent the per_day_points stop', async () => {
+    const h = harness(IDLE)
+    h.doc.pools = { claude: { since: h.now() - 3_600_000, last: 19, spent: 9 } }
+    h.sevenDay = 20
+    expect(await runs(h, 4)).toBe(0)
+    expect(h.doc.pools.claude?.spent).toBe(10)
+    expect(h.doc.seats['hjewkes-surplus']?.run?.spent).toBe(0)
+    const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+    expect(out[0]).toMatch(/held: per_day_points stop: pool claude spent 10 of 10/)
+  })
+
+  it('holds a seat at its per_run_points stop even with the day cap open', async () => {
+    const h = harness(IDLE)
+    h.doc.seats = {
+      'hjewkes-surplus': {
+        idleRuns: 1,
+        at: h.now() - 15 * 60_000,
+        run: { since: h.now() - 3_600_000, last: 19, spent: 6 },
+      },
+    }
+    const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+    expect(out[0]).toMatch(/held: per_run_points stop: 6 of 6/)
+  })
+
+  it('never wakes any seat inside an open restart window', async () => {
+    const h = harness(IDLE)
+    h.ownerMessages = [{ ts: h.now() - 5 * 60_000, body: 'hjewkes-surplus: restart at 08:45' }]
+    expect(await runs(h, 3)).toBe(0)
+    h.ownerMessages.push({ ts: h.now(), body: 'hjewkes-surplus: restart done' })
+    expect(await runs(h, 2)).toBe(1)
+  })
+})
+
+describe('wakeSeat', () => {
+  function client(reply: Record<string, unknown>): { frames: unknown[]; client: BrokerClient } {
+    const frames: unknown[] = []
+    const request = async (frame: unknown) => (frames.push(frame), reply)
+    return { frames, client: { request } as unknown as BrokerClient }
+  }
+
+  it('tags a message to a connected seat with source watchdog', async () => {
+    const c = client({ t: 'send_result', ok: true, msgId: 'm1', recipients: ['s'] })
+    expect(await wakeSeat(c.client, 's', 'Watchdog: x', true)).toEqual({ ok: true, detail: 'message m1' })
+    expect(c.frames).toEqual([{ t: 'human_send', to: 's', text: 'Watchdog: x', source: 'watchdog' }])
+  })
+
+  it('tags a headless resume of a stopped seat with source watchdog', async () => {
+    const c = client({ t: 'spawn_result', ok: true })
+    await wakeSeat(c.client, 's', 'Watchdog: x', false)
+    expect(c.frames).toEqual([
+      { t: 'resume', name: 's', surface: 'headless', message: 'Watchdog: x', source: 'watchdog' },
+    ])
   })
 })
 
@@ -149,13 +272,24 @@ describe('watchdog disk state', () => {
   })
 
   it('round-trips seat state under AGENT_CHAT_HOME', () => {
-    saveStates({ s: { idleRuns: 1, at: 5 } })
+    saveDoc({ seats: { s: { idleRuns: 1, at: 5 } }, pools: { p: { since: 1, last: 2, spent: 3 } } })
     expect(fs.existsSync(path.join(dir, 'seat-watchdog.json'))).toBe(true)
-    expect(loadStates()).toEqual({ s: { idleRuns: 1, at: 5 } })
+    expect(loadDoc()).toEqual({
+      seats: { s: { idleRuns: 1, at: 5 } },
+      pools: { p: { since: 1, last: 2, spent: 3 } },
+      stopped: {},
+    })
+  })
+
+  it("keeps the owner's stopped map as it is on disk when saving", () => {
+    const file = path.join(dir, 'seat-watchdog.json')
+    fs.writeFileSync(file, JSON.stringify({ stopped: { s: 'parked' } }))
+    saveDoc({ seats: {}, pools: {} })
+    expect(loadDoc().stopped).toEqual({ s: 'parked' })
   })
 
   it('reads missing state as empty', () => {
-    expect(loadStates()).toEqual({})
+    expect(loadDoc()).toEqual({ seats: {}, pools: {}, stopped: {} })
   })
 
   it('appends a local HH:MM line to logs/<seat>/<local date>.md', () => {
@@ -191,7 +325,7 @@ describe('watchdog launchd job', () => {
     expect(plist).not.toContain('StartInterval</key>\n  <integer>')
   })
 
-  it('under --dry-run prints the plist and the launchctl calls, and only asks launchd whether it is loaded', () => {
+  it('under --dry-run prints the plist and the launchctl calls without a kickstart, and only asks launchd whether it is loaded', () => {
     const calls: string[] = []
     const launchctl: Launchctl = args => {
       calls.push(args[0] ?? '')
@@ -206,7 +340,34 @@ describe('watchdog launchd job', () => {
     expect(report.ok).toBe(true)
     expect(report.lines[0]).toContain('<plist version="1.0">')
     expect(report.lines.some(l => l.startsWith('launchctl bootstrap gui/501'))).toBe(true)
+    expect(report.lines.some(l => l.startsWith('launchctl kickstart'))).toBe(false)
     expect(calls).toEqual(['print'])
+  })
+})
+
+describe('readOwnerMessages', () => {
+  it("reads only the owner seat's restart messages since the cut-off", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-seat-watchdog-db-'))
+    const file = path.join(dir, 'events.db')
+    const db = new DatabaseSync(file)
+    db.exec(
+      'CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, kind TEXT, actor TEXT, body TEXT)',
+    )
+    const insert = db.prepare('INSERT INTO events (ts, kind, actor, body) VALUES (?, ?, ?, ?)')
+    insert.run(1, 'message', 'owner', 'restart at 06:00')
+    insert.run(5, 'message', 'owner', 'restart at 07:00')
+    insert.run(6, 'message', 'other', 'restart at 07:00')
+    insert.run(7, 'message', 'owner', 'merged #1')
+    insert.run(8, 'broadcast', 'owner', 'restart done')
+    db.close()
+    try {
+      expect(readOwnerMessages(file, 'owner', 2)).toEqual([
+        { ts: 5, body: 'restart at 07:00' },
+        { ts: 8, body: 'restart done' },
+      ])
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
