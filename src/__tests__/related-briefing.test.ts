@@ -146,8 +146,9 @@ describe('the related section when the daemon cannot help', () => {
   })
 
   it('reports how long the daemon actually ran before the failure it hit', async () => {
+    let clock = 1_000
     const slowThenRefuse = async () => {
-      await new Promise(resolve => setTimeout(resolve, 300))
+      clock += 300
       return json(400, { ok: false, error: 'Invalid arguments: classes', code: 65 })
     }
 
@@ -156,14 +157,10 @@ describe('the related section when the daemon cannot help', () => {
       brief: 'fix it',
       root,
       fetch: slowThenRefuse,
+      now: () => clock,
     })
 
-    const warning = (result as { warning: string }).warning
-    const match = warning.match(/after (\d+) ms of 2500 ms budget/)
-    expect(match).not.toBeNull()
-    const elapsedMs = Number(match?.[1])
-    expect(elapsedMs).toBeGreaterThanOrEqual(300)
-    expect(elapsedMs).toBeLessThan(900)
+    expect((result as { warning: string }).warning).toContain('after 300 ms of 2500 ms budget')
   })
 
   it('omits the section without a warning when nothing relates', async () => {
@@ -197,19 +194,18 @@ describe('the related section when the daemon answers', () => {
         `- note:widgets/a.md "Title of a.md" ${root}/widgets/sources/notes/a.md\n` +
         `- [from \`relay\`] note:relay/b.md "Title of b.md" ${root}/relay/sources/notes/b.md`,
     })
+    const ranking = {
+      for: 'fix the parser',
+      initiative: 'widgets',
+      limit: 6,
+      budget: 1500,
+      classes: ['notes', 'sources', 'tasks', 'sessions'],
+      exclude: [],
+    }
+    const url = `http://127.0.0.1:${sandboxPort}/rpc/context.related`
     expect(requests).toEqual([
-      {
-        url: `http://127.0.0.1:${sandboxPort}/rpc/context.related`,
-        body: {
-          for: 'fix the parser',
-          initiative: 'widgets',
-          limit: 6,
-          budget: 1500,
-          classes: ['notes', 'sources', 'tasks', 'sessions'],
-          exclude: [],
-          trigger: 'spawn',
-        },
-      },
+      { url, body: ranking },
+      { url, body: { ...ranking, limit: 2, trigger: 'spawn' } },
     ])
   })
 
@@ -249,5 +245,81 @@ describe('the related section when the daemon answers', () => {
 
     expect(result).toEqual({ warning: expect.stringContaining('no active-work initiative "nope"') })
     expect(asked).toBe(false)
+  })
+})
+
+/** A hit shaped like titan-platform's: an 80-char title and a path of the median source length. */
+const titanHit = (i: number, pathTail = `sources/2026-09-2${i}-${'x'.repeat(60)}.md`) => ({
+  ref: `source:titan-platform/2026-09-2${i}-${'x'.repeat(20)}`,
+  class: 'sources',
+  initiative: 'titan-platform',
+  title: `Hit ${i} ${'t'.repeat(78)}`,
+  path: `titan-platform/${pathTail}`,
+  excerpt: 'not rendered',
+})
+
+function titanPlatform(root: string): void {
+  const dir = path.join(root, 'titan-platform')
+  fs.mkdirSync(path.join(dir, 'tasks'), { recursive: true })
+  fs.mkdirSync(path.join(dir, 'sessions'), { recursive: true })
+  fs.writeFileSync(path.join(dir, 'brief.md'), `---\ntitle: titan\n---\n${'Brief line. '.repeat(600)}\n`)
+  for (let i = 1; i <= 187; i++) {
+    const title = `Task ${i} ${'w'.repeat(70)}`
+    fs.writeFileSync(
+      path.join(dir, 'tasks', `TP-${i}.yml`),
+      `id: TP-${i}\ntitle: ${title}\npriority: ${i}\nstatus: open\n`,
+    )
+  }
+  for (const stamp of ['2026-09-20-0900', '2026-09-21-0900', '2026-09-22-0900'])
+    fs.writeFileSync(path.join(dir, 'sessions', `${stamp}-s.md`), `${'Session line. '.repeat(300)}\n`)
+}
+
+const recordingDaemon =
+  (requests: Array<Record<string, unknown>>, answer: unknown[]) =>
+  async (_url: string | URL | Request, init?: RequestInit) => {
+    requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+    return json(200, { ok: true, data: { hits: answer, degraded: [], query: { terms: [], expression: '' } } })
+  }
+
+describe('the related section’s reserve (CC-164)', () => {
+  it('renders all six related items within the cap on a titan-platform-sized initiative', async () => {
+    titanPlatform(root)
+    const six = [1, 2, 3, 4, 5, 6].map(i => titanHit(i))
+    const requests: Array<Record<string, unknown>> = []
+
+    const result = await resolveSpawnBriefing({
+      briefing: 'titan-platform',
+      brief: 'fix it',
+      root,
+      fetch: recordingDaemon(requests, six),
+    })
+
+    const text = (result as { text: string }).text
+    expect(text.length).toBeLessThanOrEqual(9_000)
+    expect(text).toContain('## Related to this assignment (6, ranked; open with Read)')
+    expect(text.endsWith(`${root}/${six[5]?.path}`)).toBe(true)
+    expect(text).toMatch(/- … and \d+ more/)
+    expect(requests[1]).toMatchObject({ limit: 6, trigger: 'spawn' })
+  })
+
+  it('logs as served only the hits that rendered, never one the reserve cut', async () => {
+    const answer = [1, 2, 3, 4, 5, 6].map(i =>
+      i === 4 ? titanHit(i, `sources/${'y'.repeat(2_000)}.md`) : titanHit(i),
+    )
+    const requests: Array<Record<string, unknown>> = []
+
+    const result = await resolveSpawnBriefing({
+      briefing: 'widgets',
+      brief: 'fix it',
+      root,
+      fetch: recordingDaemon(requests, answer),
+    })
+
+    const text = (result as { text: string }).text
+    expect(text).toContain('## Related to this assignment (3, ranked; open with Read)')
+    expect(text).not.toContain('Hit 4')
+    expect(requests).toHaveLength(2)
+    expect(requests[0]).not.toHaveProperty('trigger')
+    expect(requests[1]).toMatchObject({ limit: 3, trigger: 'spawn' })
   })
 })
