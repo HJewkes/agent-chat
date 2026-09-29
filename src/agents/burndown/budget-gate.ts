@@ -121,6 +121,8 @@ export type PoolGateResult =
 const RUN_CAP_MS = 12 * 3_600_000
 const DAY_START_HOUR = 7
 const SONNET_BAND_POINTS = 10
+/** The charter gates on the freshest status file; an older one may hide spend since. */
+const MAX_READING_AGE_SECONDS = 15 * 60
 
 /** Charter section 4: a drop in seven_day, or a sample past the window's reset, counts from zero. */
 export function pointsSpent(samples: readonly SevenDaySample[]): number {
@@ -134,14 +136,14 @@ export function pointsSpent(samples: readonly SevenDaySample[]): number {
   return spent
 }
 
-/** Spend since `start`, from the latest reading at or before it (else the first after it) to `now`; undefined with no such reading. */
+/** Spend since `start`, from the latest reading at or before it to `now`; undefined with no such reading. */
 function spendSince(
   history: readonly SevenDaySample[],
   start: number,
   now: SevenDaySample,
 ): number | undefined {
   const known = [...history].filter(s => s.at < now.at).sort((a, b) => a.at - b.at)
-  const baseline = known.findLast(s => s.at <= start) ?? known.find(s => s.at > start)
+  const baseline = known.findLast(s => s.at <= start)
   if (baseline === undefined) return undefined
   return pointsSpent([...known.filter(s => s.at >= baseline.at), now])
 }
@@ -183,7 +185,9 @@ function spendStop(input: PoolGateInput, now: SevenDaySample): string | undefine
     { cap: spend.per_day_points, whose: "seat's per_day_points" },
   ].filter((c): c is { cap: number; whose: string } => c.cap !== undefined)
   if (caps.length === 0) return undefined
-  const day = spendSince(input.history, dayStart(ctx.now), now) ?? 0
+  // seven_day points are pool-wide, so both caps count spend by the owner and sibling seats too.
+  const day = spendSince(input.history, dayStart(ctx.now), now)
+  if (day === undefined) return 'no seven_day reading at or before 07:00, so day spend unknown'
   const hit = caps.filter(c => day >= c.cap).sort((a, b) => a.cap - b.cap)[0]
   return hit === undefined
     ? undefined
@@ -203,6 +207,8 @@ export function gatePool(input: PoolGateInput): PoolGateResult {
     return closed('no reserve_seven_day and ceiling_five_hour for this pool in the charter')
   if (reading?.sevenDay === undefined || reading.fiveHour === undefined)
     return closed('no seven_day and five_hour reading for this pool')
+  if (reading.ageSeconds > MAX_READING_AGE_SECONDS)
+    return closed(`reading is ${reading.ageSeconds}s old, over the ${MAX_READING_AGE_SECONDS}s limit`)
   const { ceiling, line, note } = windowLines(pool, pool.reserve_seven_day, pool.ceiling_five_hour, ctx)
   const { fiveHour, sevenDay } = reading
   const why = note === '' ? '' : ` (${note})`

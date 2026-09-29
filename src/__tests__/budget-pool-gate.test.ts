@@ -36,6 +36,7 @@ interface Case {
   history?: SevenDaySample[]
   runStartAt?: number
   ownerTypedMinAgo?: number
+  ageSeconds?: number
 }
 
 function gate(c: Case) {
@@ -45,8 +46,11 @@ function gate(c: Case) {
   return gatePool({
     pool: budget.pool,
     spend: budget.spend,
-    reading: { fiveHour: c.fiveHour ?? 10, sevenDay, ageSeconds: 5 },
-    history: c.history ?? [{ at: now.getTime() - HOUR, sevenDay }],
+    reading: { fiveHour: c.fiveHour ?? 10, sevenDay, ageSeconds: c.ageSeconds ?? 5 },
+    history: c.history ?? [
+      { at: dayStart(now) - HOUR, sevenDay },
+      { at: now.getTime() - HOUR, sevenDay },
+    ],
     runStartAt: c.runStartAt ?? now.getTime() - HOUR,
     ctx: {
       now,
@@ -150,7 +154,10 @@ describe('seven_day reserve', () => {
 describe('per_run_points', () => {
   const now = at(15)
   const runStartAt = now.getTime() - 2 * HOUR
-  const started = (sevenDay: number): SevenDaySample[] => [{ at: runStartAt, sevenDay }]
+  const started = (sevenDay: number): SevenDaySample[] => [
+    { at: at(6).getTime(), sevenDay },
+    { at: runStartAt, sevenDay },
+  ]
 
   it('pauses when spend since the run-start reading reaches the seat cap', () => {
     const result = gate({ now, runStartAt, history: started(40), sevenDay: 54 })
@@ -171,6 +178,13 @@ describe('per_run_points', () => {
 
   it('pauses when no reading from the run start exists', () => {
     expect(gate({ now, runStartAt, history: [] }).reason).toBe(
+      'BUDGET-PAUSE pool pool-y: no seven_day reading at run start, so run spend is unknown',
+    )
+  })
+
+  it('pauses when the only reading came after the run start, since it misses earlier spend', () => {
+    const history = [{ at: runStartAt + 1000, sevenDay: 52 }]
+    expect(gate({ now, runStartAt, history, sevenDay: 53 }).reason).toBe(
       'BUDGET-PAUSE pool pool-y: no seven_day reading at run start, so run spend is unknown',
     )
   })
@@ -213,6 +227,22 @@ describe('per_day_points', () => {
     expect(gate({ now, runStartAt, history: day(20, 35), sevenDay: 37 }).open).toBe(true)
   })
 
+  it('pauses when no reading at or before 07:00 exists, even with no run cap', () => {
+    const budget = { ...SEAT_B, spend: {} }
+    const history = [{ at: at(7, 1).getTime(), sevenDay: 30 }]
+    const result = gate({ budget, now, runStartAt, history, sevenDay: 31 })
+    expect(result).toEqual({
+      open: false,
+      pool: 'pool-y',
+      reason: 'BUDGET-PAUSE pool pool-y: no seven_day reading at or before 07:00, so day spend unknown',
+    })
+  })
+
+  it('pauses on an empty history when the pool has a day cap', () => {
+    const budget = { ...SEAT_B, spend: {} }
+    expect(gate({ budget, now, runStartAt, history: [] }).reason).toContain('day spend unknown')
+  })
+
   it("pauses at the seat's per_day_points when it is below the pool's", () => {
     const budget = { ...SEAT_A, spend: { per_day_points: 9 } }
     const result = gate({ budget, now, runStartAt, history: day(20, 26), sevenDay: 29 })
@@ -225,6 +255,18 @@ describe('per_day_points', () => {
     const budget = { ...SEAT_A, spend: { per_day_points: 9 } }
     const result = gate({ budget, now, runStartAt, history: day(20, 30), sevenDay: 33 })
     expect(result.reason).toContain("the seat's per_day_points 9")
+  })
+})
+
+describe('reading age', () => {
+  it('stays open on a reading 15 minutes old', () => {
+    expect(gate({ ageSeconds: 900 }).open).toBe(true)
+  })
+
+  it('pauses on a reading older than 15 minutes and names its age', () => {
+    expect(gate({ ageSeconds: 901 }).reason).toBe(
+      'BUDGET-PAUSE pool pool-y: reading is 901s old, over the 900s limit',
+    )
   })
 })
 
