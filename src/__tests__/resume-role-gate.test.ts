@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
+import type { Supervisor } from '../agents/supervisor.js'
 import { SocketServer } from '../broker/socket.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
@@ -124,15 +125,14 @@ describe('resume asked for over the socket', () => {
     ['keeps a watchdog source', 'watchdog', 'watchdog'],
     ['drops any other source', 'owner-approved', undefined],
   ])('%s on the resume it passes to the supervisor (CC-203)', async (_name, sent, passed) => {
-    const resume = vi
-      .spyOn((server as unknown as { supervisor: { resume: () => Promise<unknown> } }).supervisor, 'resume')
-      .mockResolvedValue({ ok: false, reason: 'stubbed' })
+    const supervisor = (server as unknown as { supervisor: Pick<Supervisor, 'resume'> }).supervisor
+    const resume = vi.spyOn(supervisor, 'resume').mockResolvedValue({ ok: false, reason: 'stubbed' })
     const { conn, replies } = connection()
 
     server.handleMessage(conn, { t: 'resume', name: 'scout', source: sent } as unknown as ClientMessage)
 
     await spawnResult(replies)
-    expect(resume.mock.calls[0]?.at(1)).toMatchObject({ requestedBy: 'human' })
-    expect((resume.mock.calls[0]?.at(1) as { source?: string }).source).toBe(passed)
+    expect(resume.mock.calls[0]?.[1]).toMatchObject({ requestedBy: 'human' })
+    expect(resume.mock.calls[0]?.[1]?.source).toBe(passed)
   })
 })
