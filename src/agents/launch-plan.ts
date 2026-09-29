@@ -1,3 +1,4 @@
+import { gitHooksEnv } from '../leak-guard/hooks-dir.js'
 import { isInteractiveSurface } from '../protocol.js'
 import type { AgentProfile, LaunchPlan, LaunchPlanInput } from './types.js'
 
@@ -103,7 +104,8 @@ const conversationArgs = (input: LaunchPlanInput): string[] =>
     ? [input.resume === true ? '--resume' : '--session-id', input.sessionId]
     : ['--session-id', input.sessionId, '--resume', input.forkFrom, '--fork-session']
 
-const RESERVED_ENV = /^(AGENT_CHAT_|CLAUDE_CONFIG_DIR$)/
+// A profile's GIT_CONFIG_* could otherwise override or disable the leak guard's hooksPath.
+const RESERVED_ENV = /^(AGENT_CHAT_|CLAUDE_CONFIG_DIR$|GIT_CONFIG_(COUNT|PARAMETERS|KEY_\d+|VALUE_\d+)$)/
 
 // Beneath the spawner's own keys, and stripped of the reserved ones so an unset CLAUDE_CONFIG_DIR stays unset.
 const profileEnv = (profile: AgentProfile): Record<string, string> =>
@@ -134,6 +136,8 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   ...(input.configDir === undefined || input.configDirUnset === true
     ? {}
     : { CLAUDE_CONFIG_DIR: input.configDir }),
+  // The leak guard's pre-push hook (CC-268), in every repo the agent pushes from, with no repo config written.
+  ...(input.gitHooksDir === undefined ? {} : gitHooksEnv(input.gitHooksDir)),
   // `run-agent` writes the agent's name as the terminal title, and Claude Code
   // then overwrites it with a description of whatever it is currently doing —
   // so a wall of panes ends up labelled by activity rather than by WHO, which

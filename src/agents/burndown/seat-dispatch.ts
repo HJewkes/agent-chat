@@ -13,7 +13,8 @@ export interface SeatDispatch {
   /** Initiative slug to its checkouts, in the seat file's order. */
   repos: Record<string, string[]>
   caps: { implementers: number; reviewers: number; planners: number }
-  worktrees: { perRepoPerSeat: number; leftFreePerRepo: number }
+  /** `perRepoPerSeat` caps active trees (CC-279); `capName` says which setting set it, for the refusal. */
+  worktrees: { perRepoPerSeat: number; capName: string; leftFreePerRepo: number }
   excludedTags: string[]
   grants: string[]
 }
@@ -29,12 +30,14 @@ function repoMap(seat: SeatPolicy, home: string): Record<string, string[]> {
   return map
 }
 
-function worktreeCaps(charter: CharterPolicy): SeatDispatch['worktrees'] {
-  const { worktrees_per_repo_per_seat: perRepoPerSeat, worktrees_left_free_per_repo: leftFreePerRepo } =
+/** The seat's implementers cap its active trees per repo; worktrees_per_repo_per_seat, when set, is a ceiling over that. */
+function worktreeCaps(charter: CharterPolicy, implementers: number): SeatDispatch['worktrees'] {
+  const { worktrees_per_repo_per_seat: ceiling, worktrees_left_free_per_repo: leftFreePerRepo } =
     charter.defaults
-  if (perRepoPerSeat === undefined || leftFreePerRepo === undefined)
-    throw new Error('charter defaults lack worktrees_per_repo_per_seat or worktrees_left_free_per_repo')
-  return { perRepoPerSeat, leftFreePerRepo }
+  if (leftFreePerRepo === undefined) throw new Error('charter defaults lack worktrees_left_free_per_repo')
+  if (ceiling !== undefined && ceiling < implementers)
+    return { perRepoPerSeat: ceiling, capName: 'worktrees_per_repo_per_seat', leftFreePerRepo }
+  return { perRepoPerSeat: implementers, capName: 'concurrency.implementers', leftFreePerRepo }
 }
 
 function seatPool(
@@ -65,7 +68,7 @@ export function resolveSeatDispatch(policy: Policy, name: string, home = os.home
     ...seatPool(charter, seat, name),
     repos: repoMap(seat, home),
     caps: { ...seat.concurrency },
-    worktrees: worktreeCaps(charter),
+    worktrees: worktreeCaps(charter, seat.concurrency.implementers),
     excludedTags: seat.excluded_tags,
     grants: seat.grants_extra,
   }

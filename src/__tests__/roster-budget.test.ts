@@ -203,7 +203,7 @@ describe('agent_list at the scale a long-lived machine actually reaches', () => 
   // broker on this machine, taken at review time: 216 agents, state distribution
   // 34 live / 93 detached / 89 exited / 0 retired / 0 spawning, 61,183 characters
   // total before this fix — already over the tool-result limit on its own.
-  const REALISTIC_CWD = '/Users/hjewkes/projects/voltras-mcp/.worktrees/vw387-milestone-fields'
+  const REALISTIC_CWD = '/Users/alice/projects/voltras-mcp/.worktrees/vw387-milestone-fields'
   const REALISTIC_SESSION = 'b17eb21b-75f0-49c1-a118-8bf992bbd902'
 
   const agent = (over: Partial<AgentIdentity>): AgentIdentity => ({

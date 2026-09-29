@@ -21,7 +21,7 @@ const task = (over: Partial<TaskBrief> = {}): TaskBrief => ({
   taskYml: `id: CC-900\ntitle: ${TITLE}\nbody: ${BODY}\ndone_when: ${DONE_WHEN}\n`,
   doneWhen: DONE_WHEN,
   grants: [],
-  reportTo: 'hjewkes-surplus',
+  reportTo: 'seat-a',
   configDir: '/Users/x/.claude-profiles/agents',
   defaultBranch: 'main',
   ...over,
@@ -51,7 +51,7 @@ describe('worker brief', () => {
     expect(brief).toContain('You run on the account at `/Users/x/.claude-profiles/agents`.')
     expect(brief).toContain('cannot spawn agents')
     expect(brief).not.toContain('config_dir')
-    expect(brief).toContain('chat_send` to hjewkes-surplus')
+    expect(brief).toContain('chat_send` to seat-a')
     expect(brief).toContain('Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT')
   })
 

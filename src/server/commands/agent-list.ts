@@ -3,6 +3,7 @@ import type { AgentIdentity, ServerMessage } from '../../protocol.js'
 import { accountUsageLine, budgetSegment, readBudget } from '../../agents/budget.js'
 import { transcriptLine } from '../../agents/transcript.js'
 import { accountName } from '../../agents/config-dir.js'
+import { callerName, filterRoster } from '../../agents/roster-filter.js'
 import { defineTool } from '../command.js'
 
 /** CC-126: a retired agent's name is gone, so its row names the session a spawn can continue. */
@@ -21,27 +22,33 @@ export const agentList = defineTool({
       .boolean()
       .describe('Also list retired agents, with the session id agent_spawn resume_session needs.')
       .optional(),
+    mine: z.boolean().describe('Only agents this session spawned.').optional(),
+    prefix: z.string().describe('Only agents whose name starts with this.').optional(),
   }),
   result: z.string(),
-  async run({ include_retired }, ctx) {
+  async run({ include_retired, mine, prefix }, ctx) {
     const includeRetired = include_retired === true
     const res = (await ctx.broker.request(
       { t: 'agents', ...(includeRetired ? { includeRetired } : {}) },
       'agents_result',
     )) as Extract<ServerMessage, { t: 'agents_result' }>
-    if (res.agents.length === 0) return 'No agents.'
+    const agents = filterRoster(res.agents, {
+      ...(mine === true ? { spawner: callerName({ AGENT_CHAT_NAME: ctx.registeredName ?? undefined }) } : {}),
+      ...(prefix === undefined ? {} : { prefix }),
+    })
+    if (agents.length === 0) return 'No agents.'
     // A budget reading is only ever meaningful for a live/attached process — a
     // spawning, detached, exited or retired identity has none to find, and on a
     // machine with a long agent history nearly every row is one of those. Reading
     // and rendering "no budget reading" on each would repeat one absence hundreds
     // of times over, which is worse than the thing CC-94 set out to fix.
-    const budgets = res.agents
+    const budgets = agents
       .filter(a => a.state === 'live')
       // Under the agent's OWN recorded config dir (CC-100): an agent spawned from
       // a session on a dedicated account publishes its status there, not here.
       .map(a => ({ name: a.name, read: readBudget(a.sessionId, Date.now(), a.configDir, a.cwd) }))
     const budgetByName = new Map(budgets.map(b => [b.name, b.read]))
-    const rows = res.agents.map(a => {
+    const rows = agents.map(a => {
       // One extra segment, CC-94: budget rides in the same bracket as state
       // rather than adding a whole new line per row. Absent entirely for a
       // non-live row, rather than "no budget reading" — there, absence is the

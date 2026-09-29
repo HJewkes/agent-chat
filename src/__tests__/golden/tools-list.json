@@ -609,6 +609,14 @@
           "include_retired": {
             "type": "boolean",
             "description": "Also list retired agents, with the session id agent_spawn resume_session needs."
+          },
+          "mine": {
+            "type": "boolean",
+            "description": "Only agents this session spawned."
+          },
+          "prefix": {
+            "type": "string",
+            "description": "Only agents whose name starts with this."
           }
         }
       }

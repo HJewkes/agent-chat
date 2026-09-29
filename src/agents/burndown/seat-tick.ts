@@ -4,7 +4,9 @@ import { accountReading } from '../seats/watchdog.js'
 import { chargesOn, runStartAt, type PoolGateInput, type SevenDaySample } from './budget-gate.js'
 import { sameTickCollision, type SameTickClaim } from './collision.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
-import type { Ledger, SeatState } from './ledger.js'
+import { isLive, occupantOf } from '../isolation/sweep.js'
+import type { Claim, Ledger, SeatState } from './ledger.js'
+import { rowNamed, type Roster } from './observe.js'
 import type { Capacity, Dispatch, PlanInputs } from './plan.js'
 import { loadPolicy, mergeDefaults, seatBudget, seatScope, type Policy, type SeatPolicy } from './policy.js'
 import { scoreAll } from './score.js'
@@ -109,6 +111,22 @@ export interface SeatPlanDeps {
   trust?: (repo: string, cwd: string, configDir: string) => string | undefined
   /** Pools already charged this tick by claims' reviewer and successor spawns, one entry per spawn. */
   charged?: readonly string[]
+  /** The broker's roster, which decides which held trees are active; absent, every held tree counts. */
+  roster?: Roster
+}
+
+/**
+ * CC-279: a held tree is active while its claim is spawning, or while a live or
+ * spawning agent is assigned to it or stands in it (CC-277's sweep liveness).
+ */
+export function activeTreeOf(roster: Roster): (claim: Claim) => boolean {
+  return claim => {
+    if (claim.worktree === undefined) return false
+    if (claim.phase === 'spawning') return true
+    const assigned = rowNamed(roster, claim.agentName)
+    if (assigned !== undefined && isLive(assigned.state)) return true
+    return occupantOf(claim.worktree, roster.agents) !== undefined
+  }
 }
 
 export interface SeatsPlan {
@@ -181,6 +199,7 @@ function optional(deps: SeatPlanDeps, capacity: Capacity | undefined) {
     ...(capacity === undefined ? {} : { capacity }),
     ...(deps.orphan === undefined ? {} : { orphan: deps.orphan }),
     ...(deps.trust === undefined ? {} : { trust: deps.trust }),
+    ...(deps.roster === undefined ? {} : { activeTree: activeTreeOf(deps.roster) }),
   }
 }
 

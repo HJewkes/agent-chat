@@ -108,6 +108,14 @@ describe('mergeDefaults', () => {
     expect(merged.initiative_decay).toBe(0.85)
   })
 
+  it('parses a charter without worktrees_per_repo_per_seat, leaving it undefined', () => {
+    const text = fs.readFileSync(path.join(FIXTURE, 'charter.md'), 'utf8')
+    const charter = parseCharter(text.replace('  worktrees_per_repo_per_seat: 3\n', ''))
+
+    expect(charter.defaults.worktrees_per_repo_per_seat).toBeUndefined()
+    expect(charter.defaults.worktrees_left_free_per_repo).toBe(2)
+  })
+
   it('throws with the zod message on a charter missing a default the scorer reads', () => {
     expect(() => parseCharter(charterText().replace('  stop_short_factor: 0.8\n', ''))).toThrow(
       /autonomy charter is malformed: .*stop_short_factor/s,
@@ -227,6 +235,38 @@ describe('score-source', () => {
     expect(readScoredTasks(root, ['init-alpha', 'absent'])).toEqual([EXPECTED])
   })
 
+  it('normalizes compact YYYYMMDD dates to ISO', () => {
+    const compact = TASK.replace('created: 2026-09-18', 'created: 20260918').replace(
+      "updated: '2026-09-20'",
+      'updated: 20260920',
+    )
+    expect(parseScoredTask(compact, 'init-alpha')).toEqual(EXPECTED)
+  })
+
+  it('rejects an impossible compact date naming the file', () => {
+    const bad = TASK.replace('created: 2026-09-18', 'created: 20260230')
+    expect(() => parseScoredTask(bad, 'init-alpha', 'init-alpha/CC-1.yml')).toThrow(
+      'open task init-alpha/CC-1.yml has an invalid created date: 20260230',
+    )
+  })
+
+  it.each(['..', '../escape', 'a/../b', 'a/b', 'a\\b', '', '/abs'])('refuses initiative slug %j', slug => {
+    expect(() => readScoredTasks(root, [slug])).toThrow('unsafe initiative slug name')
+  })
+
+  it('reports and skips one malformed open task without dropping the rest', () => {
+    const dir = path.join(root, 'init-alpha', 'tasks')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'CC-1.yml'), TASK)
+    fs.writeFileSync(path.join(dir, 'CC-2.yml'), TASK.replace('priority: 3\n', ''))
+    fs.writeFileSync(path.join(dir, 'CC-3.yml'), 'id: [unclosed')
+    const skipped: string[] = []
+    expect(readScoredTasks(root, ['init-alpha'], m => skipped.push(m))).toEqual([EXPECTED])
+    expect(skipped).toHaveLength(2)
+    expect(skipped[0]).toContain('init-alpha/CC-2.yml')
+    expect(skipped[1]).toContain('init-alpha/CC-3.yml')
+  })
+
   it('produces the same objects from task list JSON as from the task file', () => {
     const entry = { ...EXPECTED, tags: ['kind:security', 7], status: 'open', notes: null, done_at: null }
     const done = { ...entry, id: 'CC-2', status: 'done' }
@@ -243,6 +283,28 @@ describe('score-source', () => {
 })
 
 describe('policy and task reader feeding scoreAll', () => {
+  it.each(['2026-02-30', '2026-13-45'])('refuses --today %s even with no tasks', today => {
+    const { charter, seat, defaults } = loadPolicy(FIXTURE, 'seat-b')
+    const exclusions = { tags: seat.excluded_tags, titlePatterns: seat.excluded_title_patterns }
+    expect(() => scoreAll([], {}, defaults, exclusions, charter.hard_stops, today)).toThrow(
+      `today is an invalid date, got ${today}`,
+    )
+  })
+
+  it.each(['..', '../escape', 'a/b'])('refuses charter seat entry %j before reading it', entry => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'burndown-charter-'))
+    try {
+      const charter = fs.readFileSync(path.join(FIXTURE, 'charter.md'), 'utf8')
+      fs.writeFileSync(
+        path.join(root, 'charter.md'),
+        charter.replace('seats: [seat-a,', `seats: ['${entry}', seat-a,`),
+      )
+      expect(() => loadPolicy(root, 'seat-a')).toThrow('unsafe seat name')
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('scores a task read from YAML under the fixture seat defaults', () => {
     const { charter, seat, defaults } = loadPolicy(FIXTURE, 'seat-b')
     const task = parseScoredTask(TASK, 'init-alpha')

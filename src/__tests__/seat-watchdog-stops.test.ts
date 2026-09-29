@@ -173,14 +173,14 @@ describe('restartWindow', () => {
   const msg = (minutesAgo: number, body: string) => ({ ts: now - minutesAgo * 60_000, body })
 
   it('is open after an announcement with no "restart done"', () => {
-    expect(restartWindow([msg(10, 'hjewkes-surplus: restart at 06:00, hold dispatch')], now)).toBe(
+    expect(restartWindow([msg(10, 'seat-a: restart at 06:00, hold dispatch')], now)).toBe(
       'restart window open since 11:50Z',
     )
     expect(restartWindow([msg(1, 'broker restart NOW, on the owner word')], now)).toMatch(/open/)
   })
 
   it('closes on "restart done"', () => {
-    const messages = [msg(10, 'restart at 06:00'), msg(2, 'hjewkes-surplus: restart done (pid 1)')]
+    const messages = [msg(10, 'restart at 06:00'), msg(2, 'seat-a: restart done (pid 1)')]
     expect(restartWindow(messages, now)).toBeUndefined()
   })
 

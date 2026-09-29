@@ -24,7 +24,7 @@ import {
 
 const CHARTER = `---
 schema: autonomy-charter/v1
-seats: [hjewkes-surplus, titan-coord]
+seats: [seat-a, seat-b]
 pools:               # billing pools
   claude:  {config_dir: /Users/o/.claude, human_uses: true, reserve_seven_day: 35, ceiling_five_hour: 70, per_day_points: 13}
   agents:  {config_dir: ~/.claude-profiles/agents, human_uses: false, reserve_seven_day: 25, night_reserve_seven_day: 10, ceiling_five_hour: 85}
@@ -36,8 +36,8 @@ pools: not this one
 
 const SEAT_FILE = `---
 schema: autonomy-seat/v1
-name: hjewkes-surplus
-prefix: hs
+name: seat-a
+prefix: sa
 role: owner                   # owns the autonomy system
 pool: claude
 spend:
@@ -46,7 +46,7 @@ spend:
 concurrency:
   implementers: 3
 ---
-# hjewkes-surplus
+# seat-a
 `
 
 const NOW = Date.parse('2026-09-29T06:53:00Z')
@@ -211,25 +211,25 @@ describe('decide over six hours (CC-203 review simulation)', () => {
 
 describe('runningImplementers', () => {
   const agent = (over: Partial<SeatAgent>): SeatAgent => ({
-    name: 'hs-cc-1-x',
+    name: 'sa-x-1',
     profile: 'implementer',
     state: 'live',
     spawnedBy: 'someone',
     ...over,
   })
-  const seat = { name: 'hjewkes-surplus', prefix: 'hs' }
+  const seat = { name: 'seat-a', prefix: 'sa' }
   const cases: [string, SeatAgent, boolean][] = [
     ['a live implementer under the seat prefix', agent({}), true],
     [
       'a bd-implementer spawned by the seat under another name',
-      agent({ name: 'cc197-x', profile: 'bd-implementer', spawnedBy: 'hjewkes-surplus' }),
+      agent({ name: 'cc197-x', profile: 'bd-implementer', spawnedBy: 'seat-a' }),
       true,
     ],
     ['a starting implementer', agent({ state: 'spawning' }), true],
     ['a detached implementer', agent({ state: 'detached' }), true],
     ['an exited implementer waiting on review', agent({ state: 'exited' }), false],
     ['a reviewer', agent({ profile: 'reviewer' }), false],
-    ['another seat whose prefix starts the same', agent({ name: 'hsx-cc-1' }), false],
+    ['another seat whose prefix starts the same', agent({ name: 'sax-cc-1' }), false],
   ]
   it.each(cases)('%s', (_name, a, counted) => {
     expect(runningImplementers([a], seat)).toEqual(counted ? [a.name] : [])
@@ -342,10 +342,10 @@ describe('charter and seat parsing', () => {
   })
 
   it('lists the charter seats and reads a seat prefix and pool', () => {
-    expect(charterSeats(CHARTER)).toEqual(['hjewkes-surplus', 'titan-coord'])
-    expect(parseSeat('hjewkes-surplus', SEAT_FILE)).toEqual({
-      name: 'hjewkes-surplus',
-      prefix: 'hs',
+    expect(charterSeats(CHARTER)).toEqual(['seat-a', 'seat-b'])
+    expect(parseSeat('seat-a', SEAT_FILE)).toEqual({
+      name: 'seat-a',
+      prefix: 'sa',
       pool: 'claude',
       spend: { perRunPoints: 6, perDayPoints: 10 },
     })
@@ -356,11 +356,11 @@ describe('charter and seat parsing', () => {
   })
 
   it('reads the owner seat from the charter', () => {
-    expect(charterOwnerSeat('---\nowner_seat: hjewkes-surplus\n---\n')).toBe('hjewkes-surplus')
+    expect(charterOwnerSeat('---\nowner_seat: seat-a\n---\n')).toBe('seat-a')
   })
 
   it.each([
-    ['hjewkes-surplus', true],
+    ['seat-a', true],
     ['../etc', false],
     ['a/b', false],
     ['', false],

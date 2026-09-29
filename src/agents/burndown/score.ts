@@ -178,8 +178,10 @@ export function unblocksTerm(unblockCount: number): number {
   return Math.min(1, unblockCount / 3)
 }
 
-function parseIsoDay(value: string): number | undefined {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+const ISO_DAY = /^(\d{4})-(\d{2})-(\d{2})$/
+
+export function parseIsoDay(value: string): number | undefined {
+  const match = ISO_DAY.exec(value)
   if (!match) return undefined
   const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])]
   const ms = Date.UTC(year, month - 1, day)
@@ -187,11 +189,18 @@ function parseIsoDay(value: string): number | undefined {
   return roundTrips ? ms / DAY_MS : undefined
 }
 
+/** The day number of `today`; throws a distinct message for a malformed string and an impossible date. */
+export function checkToday(today: string): number {
+  const day = parseIsoDay(today)
+  if (day !== undefined) return day
+  const shape = ISO_DAY.test(today) ? 'is an invalid date' : 'must be YYYY-MM-DD'
+  throw new Error(`today ${shape}, got ${today}`)
+}
+
 /** Days since `updated` (else `created`), read from the first 10 characters; 0 when unparseable. */
 export function ageDays(task: ScoredTask, today: string): number {
   const stamp = parseIsoDay(String(task.updated || task.created).slice(0, 10))
-  const now = parseIsoDay(today)
-  if (now === undefined) throw new Error(`today must be YYYY-MM-DD, got ${today}`)
+  const now = checkToday(today)
   return stamp === undefined ? 0 : now - stamp
 }
 
@@ -425,6 +434,7 @@ export function scoreAll(
   hardStops: readonly string[],
   today: string,
 ): { rows: ScoreRow[]; refused: RefusalCounts } {
+  checkToday(today)
   const ctx: ScoringContext = {
     weights,
     defaults,

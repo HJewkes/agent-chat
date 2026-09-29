@@ -102,6 +102,7 @@ function readFailure(exit: number | null, stderr: string): ReadFailure {
 export async function leakCheck(ledger: Ledger, deps: LeakDeps): Promise<LeakResult> {
   const repos = reposOf(ledger)
   if (repos.length === 0) return { ledger, human: [], lines: [] }
+  sweepScanRefs(ledger, deps.exec)
   const load = deps.denylist ?? loadDenylist(denylistPath())
   const list = load.kind === 'ok' ? load.list : EMPTY_DENYLIST
   const pass: Pass = {
@@ -151,7 +152,7 @@ async function checkRepo(pass: Pass, repo: string): Promise<void> {
   if (!Array.isArray(pulls)) return readFailed(pass, repo, pulls)
   pass.read.add(repo)
   const found: Found = new Map()
-  for (const pull of pulls.filter(p => fromBaseRepo(p, repo))) await checkPull(pass, pull, found)
+  for (const pull of pulls.filter(p => fromBaseRepo(p, repo))) await checkPull(pass, pull, found, repo)
   pass.ledger = settleClaims(pass.ledger, repo, found)
 }
 
@@ -172,8 +173,8 @@ function recordDenylist(ledger: Ledger, state: DenylistLoad['kind'], deps: LeakD
   return { ...ledger, leakDenylist: state }
 }
 
-async function checkPull(pass: Pass, pull: Pull, found: Found): Promise<void> {
-  const claim = owningClaim(pass.ledger, pull)
+async function checkPull(pass: Pass, pull: Pull, found: Found, repo: string): Promise<void> {
+  const claim = owningClaim(pass.ledger, pull, repo)
   if (claim === undefined && !pull.branch.startsWith(BRANCH_PREFIX)) return
   const text = [...scanText(pull.title, pass.ctx, 'title'), ...scanText(pull.body, pass.ctx, 'body')]
   const none = { findings: [], lines: [] }
@@ -193,12 +194,14 @@ function fileHuman(pass: Pass, item: HumanItem): void {
   if (!(pass.ledger.humanFiled ?? []).includes(item.key)) pass.human.push(item)
 }
 
-/** The held claim whose PR this is, by URL, else by one of its agents' branches. */
-function owningClaim(ledger: Ledger, pull: Pull): Claim | undefined {
+/** The held claim whose PR this is, by URL, else by one of its agents' branches in the repo of its PR. */
+function owningClaim(ledger: Ledger, pull: Pull, repo: string): Claim | undefined {
   const held = heldClaims(ledger)
+  const inRepo = (c: Claim): boolean =>
+    c.pr === undefined || (repoOfPr(c.pr) ?? '').toLowerCase() === repo.toLowerCase()
   return (
     held.find(c => c.pr === pull.url) ??
-    held.find(c => (c.spawned ?? []).some(name => `${BRANCH_PREFIX}${name}` === pull.branch))
+    held.find(c => inRepo(c) && (c.spawned ?? []).some(name => `${BRANCH_PREFIX}${name}` === pull.branch))
   )
 }
 
@@ -290,10 +293,24 @@ async function scanBranch(
   }
 }
 
+const SCAN_REF_ROOT = 'refs/agent-chat/leak-scan/'
+
+/** Deletes scan refs a crashed run or a closed PR left behind, so none outlives the tick after it. */
+function sweepScanRefs(ledger: Ledger, exec: Runner): void {
+  const checkouts = new Set(heldClaims(ledger).flatMap(c => checkoutOf(c) ?? []))
+  for (const cwd of checkouts) {
+    const listed = exec(GIT_BIN, ['for-each-ref', '--format=%(refname)', SCAN_REF_ROOT], cwd)
+    if (listed.status !== 0) continue
+    for (const ref of listed.stdout.split('\n').filter(r => r.startsWith(SCAN_REF_ROOT))) {
+      exec(GIT_BIN, ['update-ref', '-d', ref], cwd)
+    }
+  }
+}
+
 /** Refs only the leak scan writes, so the fetch moves no `origin/*` ref under the checkout's other users. */
 export const scanRefs = (pr: number): { base: string; head: string } => ({
-  base: `refs/agent-chat/leak-scan/${pr}/base`,
-  head: `refs/agent-chat/leak-scan/${pr}/head`,
+  base: `${SCAN_REF_ROOT}${pr}/base`,
+  head: `${SCAN_REF_ROOT}${pr}/head`,
 })
 
 /** `--refmap=` turns off the opportunistic `origin/*` update, and no FETCH_HEAD is written. */
