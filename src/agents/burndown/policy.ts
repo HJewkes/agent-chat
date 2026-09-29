@@ -3,6 +3,7 @@ import path from 'node:path'
 import { parse } from 'yaml'
 import { z } from 'zod'
 import { activeWorkRoot } from '../active-work.js'
+import type { PoolRule, SpendCaps } from './budget-gate.js'
 import type { Initiative } from './eligibility.js'
 import type { ScoringDefaults } from './score.js'
 
@@ -38,11 +39,22 @@ const Defaults = z.looseObject({
   stop_short_factor: z.number(),
 })
 
+// An unset human_uses reads as true, which keeps the stricter five_hour ceiling.
+const Pool = z.looseObject({
+  config_dir: z.string(),
+  human_uses: orEmpty(z.boolean(), true),
+  reserve_seven_day: z.number().optional(),
+  ceiling_five_hour: z.number().optional(),
+  night_reserve_seven_day: z.number().optional(),
+  per_day_points: z.number().optional(),
+})
+
 const Charter = z.looseObject({
   seats: z.array(z.string()),
   human_only_initiatives: orEmpty(z.array(z.string()), []),
   hard_stops: orEmpty(z.array(z.string()), []),
   defaults: Defaults,
+  pools: orEmpty(z.record(z.string(), Pool), {}),
 })
 
 const Seat = z.looseObject({
@@ -53,6 +65,11 @@ const Seat = z.looseObject({
   excluded_title_patterns: orEmpty(z.array(z.string()), []),
   kind_weights: orEmpty(Weights, {}),
   share_caps: orEmpty(Weights, {}),
+  pool: z.string().optional(),
+  spend: orEmpty(
+    z.looseObject({ per_run_points: z.number().optional(), per_day_points: z.number().optional() }),
+    {},
+  ),
 })
 
 export type CharterPolicy = z.infer<typeof Charter>
@@ -100,6 +117,15 @@ export function loadPolicy(root: string, seatName: string): Policy {
   )
   const seat = seats[seatName] as SeatPolicy
   return { charter, seats, seat, defaults: mergeDefaults(charter, seat) }
+}
+
+/** The seat's pool from the charter and its own spend caps, as `gatePool` reads them; an unknown pool is undefined, which closes the gate. */
+export function seatBudget(charter: CharterPolicy, seat: SeatPolicy): { pool?: PoolRule; spend: SpendCaps } {
+  const found = seat.pool === undefined ? undefined : charter.pools[seat.pool]
+  const spend = { per_run_points: seat.spend.per_run_points, per_day_points: seat.spend.per_day_points }
+  return found === undefined || seat.pool === undefined
+    ? { spend }
+    : { pool: { ...found, name: seat.pool }, spend }
 }
 
 /** score.py `seat_initiatives`: slug to scope weight, adding focused unclaimed initiatives when the seat takes them. */

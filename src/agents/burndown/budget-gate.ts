@@ -80,6 +80,145 @@ export function gateAccount(
   }
 }
 
+/** One billing pool from the autonomy charter's `pools:`; a missing stop closes the pool's gate. */
+export interface PoolRule {
+  name: string
+  human_uses: boolean
+  reserve_seven_day?: number | undefined
+  ceiling_five_hour?: number | undefined
+  night_reserve_seven_day?: number | undefined
+  per_day_points?: number | undefined
+}
+
+/** The seat file's `spend:` caps, in seven_day points; an absent cap never stops. */
+export interface SpendCaps {
+  per_run_points?: number | undefined
+  per_day_points?: number | undefined
+}
+
+export interface SevenDaySample {
+  at: number
+  sevenDay: number
+  /** Epoch ms the seven_day window resets, from the status file; a sample after it starts a new window. */
+  resetsAt?: number
+}
+
+export interface PoolGateInput {
+  pool: PoolRule | undefined
+  spend: SpendCaps
+  reading: AccountReading | undefined
+  /** Earlier seven_day readings of the pool, any order; the run-start reading must be among them. */
+  history: readonly SevenDaySample[]
+  /** Epoch ms of the owner's last message to the seat; a run is capped at 12 hours. */
+  runStartAt: number
+  ctx: GateContext
+}
+
+export type PoolGateResult =
+  | { open: true; pool: string; sonnetOnly: boolean; reason: string }
+  | { open: false; pool: string; reason: string }
+
+const RUN_CAP_MS = 12 * 3_600_000
+const DAY_START_HOUR = 7
+const SONNET_BAND_POINTS = 10
+
+/** Charter section 4: a drop in seven_day, or a sample past the window's reset, counts from zero. */
+export function pointsSpent(samples: readonly SevenDaySample[]): number {
+  let spent = 0
+  for (let i = 1; i < samples.length; i++) {
+    const a = samples[i - 1] as SevenDaySample
+    const b = samples[i] as SevenDaySample
+    const reset = b.sevenDay < a.sevenDay || (a.resetsAt !== undefined && a.resetsAt <= b.at)
+    spent += reset ? b.sevenDay : b.sevenDay - a.sevenDay
+  }
+  return spent
+}
+
+/** Spend since `start`, from the latest reading at or before it (else the first after it) to `now`; undefined with no such reading. */
+function spendSince(
+  history: readonly SevenDaySample[],
+  start: number,
+  now: SevenDaySample,
+): number | undefined {
+  const known = [...history].filter(s => s.at < now.at).sort((a, b) => a.at - b.at)
+  const baseline = known.findLast(s => s.at <= start) ?? known.find(s => s.at > start)
+  if (baseline === undefined) return undefined
+  return pointsSpent([...known.filter(s => s.at >= baseline.at), now])
+}
+
+/** The latest 07:00 local at or before `now`, where the charter's spend day starts. */
+export function dayStart(now: Date): number {
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), DAY_START_HOUR)
+  if (start.getTime() > now.getTime()) start.setDate(start.getDate() - 1)
+  return start.getTime()
+}
+
+interface WindowLines {
+  ceiling: number
+  line: number
+  note: string
+}
+
+function windowLines(pool: PoolRule, reserve: number, ceiling: number, ctx: GateContext): WindowLines {
+  const night = isNight(ctx) && pool.night_reserve_seven_day !== undefined
+  const present = pool.human_uses && !humanAbsentFor(ctx, PRESENT_WITHIN_MS)
+  const lowered = present && ceiling > PRESENT_CEILING
+  return {
+    ceiling: lowered ? PRESENT_CEILING : ceiling,
+    line: 100 - (night ? (pool.night_reserve_seven_day ?? reserve) : reserve),
+    note: [night && 'night reserve', lowered && 'owner typed in the last 15 min'].filter(Boolean).join(', '),
+  }
+}
+
+function spendStop(input: PoolGateInput, now: SevenDaySample): string | undefined {
+  const { pool, spend, runStartAt, ctx } = input
+  const runCap = spend.per_run_points
+  if (runCap !== undefined) {
+    const run = spendSince(input.history, Math.max(runStartAt, now.at - RUN_CAP_MS), now)
+    if (run === undefined) return 'no seven_day reading at run start, so run spend is unknown'
+    if (run >= runCap) return `run spend ${run} points at or above the seat's per_run_points ${runCap}`
+  }
+  const caps = [
+    { cap: pool?.per_day_points, whose: `pool ${pool?.name ?? '?'}'s per_day_points` },
+    { cap: spend.per_day_points, whose: "seat's per_day_points" },
+  ].filter((c): c is { cap: number; whose: string } => c.cap !== undefined)
+  if (caps.length === 0) return undefined
+  const day = spendSince(input.history, dayStart(ctx.now), now) ?? 0
+  const hit = caps.filter(c => day >= c.cap).sort((a, b) => a.cap - b.cap)[0]
+  return hit === undefined
+    ? undefined
+    : `day spend ${day} points since 07:00 at or above the ${hit.whose} ${hit.cap}`
+}
+
+/** Charter section 4's budget stops for one seat on its pool; a closed result's reason is the `BUDGET-PAUSE` line. */
+export function gatePool(input: PoolGateInput): PoolGateResult {
+  const { pool, reading, ctx } = input
+  const name = pool?.name ?? 'unknown'
+  const closed = (why: string): PoolGateResult => ({
+    open: false,
+    pool: name,
+    reason: `BUDGET-PAUSE pool ${name}: ${why}`,
+  })
+  if (pool?.reserve_seven_day === undefined || pool.ceiling_five_hour === undefined)
+    return closed('no reserve_seven_day and ceiling_five_hour for this pool in the charter')
+  if (reading?.sevenDay === undefined || reading.fiveHour === undefined)
+    return closed('no seven_day and five_hour reading for this pool')
+  const { ceiling, line, note } = windowLines(pool, pool.reserve_seven_day, pool.ceiling_five_hour, ctx)
+  const { fiveHour, sevenDay } = reading
+  const why = note === '' ? '' : ` (${note})`
+  if (fiveHour >= ceiling) return closed(`five_hour ${fiveHour}% at or above ceiling ${ceiling}%${why}`)
+  if (sevenDay >= line) return closed(`seven_day ${sevenDay}% at or above line ${line}%${why}`)
+  const stop = spendStop(input, { at: ctx.now.getTime(), sevenDay })
+  if (stop !== undefined) return closed(stop)
+  const sonnetOnly = fiveHour >= ceiling - SONNET_BAND_POINTS || sevenDay >= line - SONNET_BAND_POINTS
+  return {
+    open: true,
+    pool: name,
+    sonnetOnly,
+    reason: `pool ${name}: five_hour ${fiveHour}% vs ceiling ${ceiling}%, seven_day ${sevenDay}% vs line ${line}%${why}${sonnetOnly ? '; within 10 points, sonnet only' : ''}`,
+  }
+}
+
 /** The open account with the most headroom, and every closed one with its reason. */
 export function pickAccount(
   accounts: string[],
