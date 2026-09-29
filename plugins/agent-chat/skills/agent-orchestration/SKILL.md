@@ -288,8 +288,9 @@ mutating; never `git checkout` uncommitted work. Scratch files go in the worktre
 `$TMPDIR/<your name>`. Wait for CI with `gh run watch <id> --exit-status`. Load tests
 kill burners with `pkill -f '<pattern>'` and confirm with pgrep. A PR that narrows a
 timeout reports per-case CI times against the new limit. You are NOT done at "PR
-opened". Your LAST action must be chat_send to <spawner> with the PR, the head sha,
-and CI status.
+opened". Your LAST action must be chat_send to <spawner> starting with
+`Status: DONE|DONE_WITH_CONCERNS|BLOCKED`, `PR: <owner>/<repo>#<n>` and
+`Head: <full sha>` lines, then CI status.
 ```
 
 Foreground `sleep` is denied, so an agent that does not block on `gh run watch` ends
@@ -297,8 +298,17 @@ its turn at "PR opened" and needs a paid resume.
 
 ### Reviewer verdict line
 
-A reviewer's report starts with `<repo>#<n> MERGE|FIX_FIRST head <sha>` on its own line
-and stays under 1,200 characters. Verdict line first; blocking items before nits.
+A reviewer's final message (also sent by `chat_send`) starts with exactly this block,
+then blocking items before nits, under 1,200 characters in total:
+
+```
+Verdict: MERGE            (or FIX_FIRST)
+PR: <owner>/<repo>#<n>
+Head: <full 40-hex head sha>
+```
+
+Shepherd accepts a verdict only when `Head` equals the PR's current head exactly, so
+never abbreviate the sha.
 
 Verify agent output before committing it — a passing test count isn't proof:
 
