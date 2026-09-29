@@ -71,6 +71,45 @@ describe('toQueueItem', () => {
     expect(item?.expiresAt).toBe(1_000 + APPROVAL_TTL_MS)
   })
 
+  describe('plain notice expiry (CC-186)', () => {
+    const HOUR = 3_600_000
+    let home: string
+    let priorHome: string | undefined
+
+    beforeEach(() => {
+      priorHome = process.env.AGENT_CHAT_HOME
+      home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-notice-ttl-'))
+      process.env.AGENT_CHAT_HOME = home
+    })
+
+    afterEach(() => {
+      if (priorHome === undefined) delete process.env.AGENT_CHAT_HOME
+      else process.env.AGENT_CHAT_HOME = priorHome
+      fs.rmSync(home, { recursive: true, force: true })
+    })
+
+    it('gives a plain notice at + the default 72h TTL', () => {
+      const item = toQueueItem(baseRow({ kind: 'notice', at: 1_000 }), 'edge1')
+      expect(item?.expiresAt).toBe(1_000 + 72 * HOUR)
+    })
+
+    it('reads noticeTtlHours at projection time, so an edit applies without a restart', () => {
+      const row = baseRow({ kind: 'notice', at: 1_000 })
+      toQueueItem(row, 'edge1')
+      fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ noticeTtlHours: 6 }))
+      expect(toQueueItem(row, 'edge1')?.expiresAt).toBe(1_000 + 6 * HOUR)
+    })
+
+    it.each(['stalled', 'ready-to-merge', 'needs-grant'])('never expires a %s notice', kind => {
+      const item = toQueueItem(baseRow({ kind: 'notice', meta: { kind } }), 'edge1')
+      expect(item?.expiresAt).toBeUndefined()
+    })
+
+    it('never expires a question', () => {
+      expect(toQueueItem(baseRow({ kind: 'question' }), 'edge1')?.expiresAt).toBeUndefined()
+    })
+  })
+
   it('gives null for a kind outside the five queue kinds', () => {
     expect(toQueueItem(baseRow({ kind: 'agent_spawned' }), 'edge1')).toBeNull()
   })

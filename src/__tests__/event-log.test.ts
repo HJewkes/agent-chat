@@ -33,6 +33,27 @@ describe('notice expiry (CC-173)', () => {
     vi.useRealTimers()
   })
 
+  it('reads the TTL per query, not at construction', () => {
+    vi.useFakeTimers({ now: T0 })
+    const priorHome = process.env.AGENT_CHAT_HOME
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-log-ttl-'))
+    dirs.push(home)
+    process.env.AGENT_CHAT_HOME = home
+    try {
+      const log = new EventLog(path.join(home, 'events.db'))
+      log.append({ kind: 'notice', actor: 'bob', target: 'human', body: 'migration finished' })
+      vi.setSystemTime(T0 + 10 * HOUR)
+      expect(log.humanQueue()).toHaveLength(1)
+
+      fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ noticeTtlHours: 6 }))
+
+      expect(log.humanQueue()).toHaveLength(0)
+    } finally {
+      if (priorHome === undefined) delete process.env.AGENT_CHAT_HOME
+      else process.env.AGENT_CHAT_HOME = priorHome
+    }
+  })
+
   it('drops a plain notice from the queue once it is older than the TTL, without writing a row', () => {
     vi.useFakeTimers({ now: T0 })
     const log = logWithTtl(24)
