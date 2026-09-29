@@ -1,5 +1,5 @@
 # Files allowed to carry an egress-scan hit: <glob> <rule-id> <reason with a task id>.
-# One entry per file and rule. Private terms are never allowable. See docs/leak-guard.md.
+# One entry per file and rule. Private terms are never allowable. See docs/egress-scan.md.
 docs/context-budget-research.md home-path redacted home segment in quoted tool output, CC-172
 docs/leak-guard.md home-path placeholder home glob the built-in allow-list documents, CC-172
 plugins/agent-chat/skills/agent-orchestration/SKILL.md aw-data-path documents the active-work data dir in tilde form, CC-172

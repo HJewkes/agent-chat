@@ -31,6 +31,7 @@ canonical, current guide to how the tools fit together. Everything else in
 | `context-budget-research.md`           | What a running session can learn about its own context fill and account budget, and where each figure comes from. |
 | `adr-event-store.md`                   | Decision record — why the event log is append-only SQLite with derived views.                                     |
 | `replacing-built-in-agent-dispatch.md` | Why this machine routes agent dispatch through the bundled skill instead of Claude Code's own Agent tool.         |
+| `egress-scan.md`                       | Current guide — the pre-push egress scan, its CI job, `.egress-allow` and the private term list.                  |
 | `ideas.md`                             | Backlog — ideation only, ranked, nothing implemented.                                                             |
 
 ## Why it works the way it does
