@@ -534,6 +534,8 @@ describe('the launch files', () => {
 
     it('refuses to relaunch when typed keys arrived as arguments, naming the agent', () => {
       const script = written()
+      // Without its plan, a guard that failed to refuse still cannot launch anything.
+      fs.rmSync(planPath('ag000001'))
 
       const run = spawnSync(script, ['as'], { encoding: 'utf8' })
 
