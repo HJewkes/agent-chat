@@ -237,6 +237,7 @@ async function leakScanCli(cwd: string, chatHome: string, ...args: string[]): Pr
     const { stdout, stderr } = await execFileAsync(process.execPath, [CLI, 'leak-scan', ...args], {
       cwd,
       env,
+      timeout: 30_000,
     })
     return { code: 0, stdout, stderr }
   } catch (err) {
