@@ -85,6 +85,12 @@ function exec(plan: LaunchPlan): void {
   })
 
   if (plan.stdin !== undefined) {
+    // A child that exits before reading its brief closes the pipe; its exit code is what matters, not the failed write.
+    child.stdin?.on('error', err => {
+      if ((err as NodeJS.ErrnoException).code !== 'EPIPE') {
+        process.stderr.write(`agent-chat run-agent: could not write the brief to ${bin}: ${err.message}\n`)
+      }
+    })
     child.stdin?.end(plan.stdin)
   }
 
