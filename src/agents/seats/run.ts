@@ -18,6 +18,7 @@ import {
   sameSpendDay,
   spendStop,
   withinRun,
+  type LogVerdict,
   type OwnerMessage,
   type SpendMeter,
 } from './stops.js'
@@ -98,6 +99,14 @@ function openRestartWindow(deps: WatchdogDeps, charter: string, now: Date): stri
   return restartWindow(messages ?? [], now.getTime())
 }
 
+/** Logs are per local day, so just after midnight the seat's newest line is in yesterday's file. */
+function seatLogVerdict(deps: WatchdogDeps, seat: string, now: Date): LogVerdict {
+  const today = readSeatLog(deps.readSeatLog(seat, now) ?? '', now)
+  if (today.activityAt !== undefined) return today
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 12)
+  return readSeatLog(deps.readSeatLog(seat, yesterday) ?? '', yesterday)
+}
+
 /** Owner stop first, then the restart window, the seat's own pause line, and last the spend stops. */
 function holdFor(
   pass: Pass,
@@ -123,7 +132,7 @@ function judgeSeat(pass: Pass, seat: Seat): { decision: Decision; record: SeatRe
   const reading = pool === undefined ? undefined : poolReading(pass, pool)
   const previous = pass.doc.seats[seat.name]
   const run = advanceMeter(previous?.run, reading?.sevenDay, nowMs, withinRun)
-  const log = readSeatLog(deps.readSeatLog(seat.name, now) ?? '', now)
+  const log = seatLogVerdict(deps, seat.name, now)
   const hold = holdFor(pass, seat, run, log.stop)
   const implementers = runningImplementers(pass.roster.agents, seat).length
   const budget = poolBudget(pool, reading, now)

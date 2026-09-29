@@ -11,6 +11,7 @@ import {
 import {
   FIRE_CAP,
   MAX_RUN_GAP_MS,
+  SEAT_QUIET_MS,
   accountReading,
   decide,
   poolBudget,
@@ -110,6 +111,15 @@ describe('decide', () => {
     expect(decision.reason).toMatch(reason)
   })
 
+  it.each([
+    ['logged within two heartbeats', SEAT_QUIET_MS - 60_000, false, /^seat alive: logged 64 min ago/],
+    ['quiet for exactly two heartbeats and the slack', SEAT_QUIET_MS, true, /eligible$/],
+  ])('a seat that %s: fire %s', (_name, quiet, fire, reason) => {
+    const decision = decide(idle({ activityAt: NOW - quiet }), recent, NOW)
+    expect(decision.fire).toBe(fire)
+    expect(decision.reason).toMatch(reason)
+  })
+
   it('never wakes a held seat, even on its second idle run', () => {
     const decision = decide(idle({ hold: 'seat logged "BUDGET-PAUSE five_hour 71%"' }), recent, NOW)
     expect(decision.fire).toBe(false)
@@ -139,33 +149,63 @@ describe('decide fire cap', () => {
   })
 
   it('reports the cap as the reason while it holds', () => {
-    const state: SeatState = { idleRuns: 1, at: NOW - 15 * MIN, fires: 2, lastFireAt: NOW - 30 * MIN }
+    const state: SeatState = { idleRuns: 1, at: NOW - 15 * MIN, fires: 2 }
     const decision = decide(idle(), state, NOW)
     expect(decision.fire).toBe(false)
     expect(decision.reason).toMatch(/^fire cap: 2 wake\(s\) with no implementer/)
-    expect(decision.next).toMatchObject({ fires: 2, lastFireAt: NOW - 30 * MIN })
+    expect(decision.next).toMatchObject({ fires: 2 })
   })
 
-  it('fires again once the seat writes a log line after the last wake', () => {
-    const state: SeatState = { idleRuns: 1, at: NOW - 15 * MIN, fires: 2, lastFireAt: NOW - 30 * MIN }
-    const decision = decide(idle({ activityAt: NOW - 20 * MIN }), state, NOW)
-    expect(decision.fire).toBe(true)
-    expect(decision.next).toMatchObject({ fires: 1, lastFireAt: NOW })
-  })
-
-  it('stays capped when the seat last wrote before the wake', () => {
-    const state: SeatState = { idleRuns: 1, at: NOW - 15 * MIN, fires: 2, lastFireAt: NOW - 30 * MIN }
-    expect(decide(idle({ activityAt: NOW - 31 * MIN }), state, NOW).fire).toBe(false)
+  it('stays capped after the seat logs a line, which is not an implementer', () => {
+    let state: SeatState | undefined = { idleRuns: 1, at: NOW - 15 * MIN, fires: 2 }
+    state = decide(idle({ activityAt: NOW - MIN }), state, NOW).next
+    const later = NOW + SEAT_QUIET_MS + 15 * MIN
+    expect(decide(idle({ activityAt: NOW - MIN }), state, later).fire).toBe(false)
+    expect(state.fires).toBe(2)
   })
 
   it('resets when an implementer appears', () => {
-    const state: SeatState = { idleRuns: 0, at: NOW - 15 * MIN, fires: 2, lastFireAt: NOW - 30 * MIN }
+    const state: SeatState = { idleRuns: 0, at: NOW - 15 * MIN, fires: 2 }
     expect(decide(idle({ implementers: 1 }), state, NOW).next.fires).toBe(0)
   })
 
   it('honours a caller cap', () => {
     expect(fireCount(run(12, undefined, 1))).toBe(1)
   })
+})
+
+describe('decide over six hours (CC-203 review simulation)', () => {
+  const MIN = 60_000
+  const start = Date.parse('2026-09-29T06:00:00Z')
+  const runs = Array.from({ length: 6 }, (_, hour) =>
+    [8, 23, 38, 53].map(minute => start + hour * 60 * MIN + minute * MIN),
+  ).flat()
+  /** The newest `17,47` heartbeat at or before `at`, as a live seat logs it. */
+  const heartbeat = (at: number): number => {
+    const inHour = (at - start) % (60 * MIN)
+    const hourStart = at - inHour
+    if (inHour >= 47 * MIN) return hourStart + 47 * MIN
+    if (inHour >= 17 * MIN) return hourStart + 17 * MIN
+    return hourStart - 13 * MIN
+  }
+  const cases: [string, (at: number) => number | undefined, number][] = [
+    ['a live seat heartbeating at :17 and :47', heartbeat, 0],
+    ['a seat with no log', () => undefined, FIRE_CAP],
+    ['a seat that last logged three hours before', () => start - 180 * MIN, FIRE_CAP],
+  ]
+  it.each(cases)(
+    '%s, with no implementer, fires the expected number of times',
+    (_name, activityAt, expected) => {
+      let state: SeatState | undefined
+      const fired = runs.filter(at => {
+        const activity = activityAt(at)
+        const decision = decide(idle(activity === undefined ? {} : { activityAt: activity }), state, at)
+        state = decision.next
+        return decision.fire
+      })
+      expect(fired).toHaveLength(expected)
+    },
+  )
 })
 
 describe('runningImplementers', () => {

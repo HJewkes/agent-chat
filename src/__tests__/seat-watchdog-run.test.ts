@@ -54,6 +54,8 @@ interface Harness {
   doc: WatchdogDoc
   /** The seat's own log for today, as `HH:MM text` lines. */
   seatLog: string
+  /** The seat's log for the day before. */
+  priorLog: string
   sevenDay: number
   ownerMessages: OwnerMessage[]
   now: () => number
@@ -62,13 +64,14 @@ interface Harness {
 
 const emptyDoc = (): WatchdogDoc => ({ seats: {}, pools: {}, stopped: {} })
 
-function harness(roster: Roster, fiveHour = 41): Harness {
-  let now = new Date(2026, 8, 29, 8, 38).getTime()
+function harness(roster: Roster, fiveHour = 41, start = new Date(2026, 8, 29, 8, 38)): Harness {
+  let now = start.getTime()
   const h: Harness = {
     wakes: [],
     logs: [],
     doc: emptyDoc(),
     seatLog: '',
+    priorLog: '',
     sevenDay: 19,
     ownerMessages: [],
     now: () => now,
@@ -77,7 +80,7 @@ function harness(roster: Roster, fiveHour = 41): Harness {
       now: () => new Date(now),
       readCharter: () => CHARTER,
       readSeatFile: seat => (seat === 'hjewkes-surplus' ? SEAT : undefined),
-      readSeatLog: () => h.seatLog,
+      readSeatLog: (_seat, at) => (at.getDate() === new Date(now).getDate() ? h.seatLog : h.priorLog),
       readBudget: () => budget(fiveHour, h.sevenDay),
       ownerMessages: () => h.ownerMessages,
       roster: async () => roster,
@@ -180,11 +183,24 @@ describe('runWatchdog', () => {
     expect(out[0]).toMatch(/skip: fire cap: 2 wake/)
   })
 
-  it('wakes again after the seat logs a line following a capped stretch', async () => {
+  it('stays capped after the seat logs a line, and wakes again once an implementer has run', async () => {
     const h = harness(IDLE)
     await runs(h, 6)
     h.seatLog = `${hhmm(h.now())} dispatch refused: no worktree slot\n`
+    expect(await runs(h, 8)).toBe(0)
+    const busy: Roster = {
+      agents: [{ name: 'hs-cc-1-x', profile: 'implementer', state: 'live', spawnedBy: 'hjewkes-surplus' }],
+      connected: [],
+    }
+    await runWatchdog({ ...h.deps, roster: async () => busy }, ONE)
+    h.tick()
     expect(await runs(h, 2)).toBe(1)
+  })
+
+  it('never wakes a seat whose newest line is last night, within two heartbeats', async () => {
+    const h = harness(IDLE, 41, new Date(2026, 8, 29, 0, 8))
+    h.priorLog = '23:47 heartbeat: 0 implementers, nothing dispatchable\n'
+    expect(await runs(h, 2)).toBe(0)
   })
 
   it('never wakes a seat the owner stopped in seat-watchdog.json', async () => {
