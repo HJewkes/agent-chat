@@ -207,8 +207,15 @@ describe('frames issued while the broker is restarting', () => {
   })
 
   it('bounds what it holds and refuses the overflow as a restart', async () => {
-    client = await registeredClient('worker')
+    // Issue frames only once the drop is observed; a frame sent earlier can reach the
+    // half-dead socket and reject as deliveryUnknown instead of being held.
+    let dropped: () => void = () => undefined
+    const socketDown = new Promise<void>(resolve => {
+      dropped = resolve
+    })
+    client = await registeredClient('worker', () => dropped())
     await stopBroker()
+    await socketDown
 
     const status = (): Promise<ServerMessage> | undefined =>
       client?.request({ t: 'status', status: 'available' }, 'status_result')
