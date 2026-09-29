@@ -180,8 +180,13 @@ type AttachOutcome =
   | { kind: 'launch_failed'; reason: string }
 
 /** What the attach window concluded: up, dead, or a visible agent still starting in a pane that exists. */
+/** CC-158: when a failed spawn's isolation may be released, by the evidence that its process is gone. */
+type FailedRelease = 'now' | 'if-pane-closed' | 'keep'
+
 type AttachVerdict =
-  { kind: 'attached' } | { kind: 'failed'; reason: string } | { kind: 'pending'; warning: string }
+  | { kind: 'attached' }
+  | { kind: 'failed'; reason: string; release: FailedRelease }
+  | { kind: 'pending'; warning: string }
 
 /**
  * What `spawn` worked out before committing a slot, handed to `launch` as one
@@ -1067,7 +1072,7 @@ export class Supervisor implements TeleportHost {
     // still there to say it in.
     const site = { cwd: allocation.cwd, configDir: account.dir }
     const verdict = await this.verifyAttach(agentId, handle, site)
-    if (verdict.kind === 'failed') return await this.failSpawn(req, agentId, verdict.reason)
+    if (verdict.kind === 'failed') return await this.failSpawn(req, agentId, verdict.reason, verdict.release)
     if (verdict.kind === 'pending') {
       this.awaitLateAttach(req, agentId, handle, site, launchedAt, announce)
       warnings.push(verdict.warning)
@@ -1180,9 +1185,13 @@ export class Supervisor implements TeleportHost {
     if (outcome.kind === 'attached') return { kind: 'attached' }
     if (outcome.kind === 'exited') {
       const cause = `claude exited before registering (exit code ${outcome.code ?? 'unknown'})`
-      return { kind: 'failed', reason: `${cause}. ${attachDiagnosis(site, handle, 'exited')}` }
+      return {
+        kind: 'failed',
+        reason: `${cause}. ${attachDiagnosis(site, handle, 'exited')}`,
+        release: 'now',
+      }
     }
-    if (outcome.kind === 'launch_failed') return { kind: 'failed', reason: outcome.reason }
+    if (outcome.kind === 'launch_failed') return { kind: 'failed', reason: outcome.reason, release: 'now' }
 
     const window = span(this.attachMs)
     const diagnosis = attachDiagnosis(site, handle, 'waiting')
@@ -1193,6 +1202,8 @@ export class Supervisor implements TeleportHost {
       return {
         kind: 'failed',
         reason: `no registration within ${window} of launching into ${handle.surface}. ${diagnosis}`,
+        // A headless timeout is no evidence of death: the child may still be starting in that tree.
+        release: handle.surface === 'headless' ? 'keep' : 'now',
       }
     const ceiling = span(this.attachCeilingMs)
     return {
@@ -1259,7 +1270,7 @@ export class Supervisor implements TeleportHost {
         this.attachWaiters.delete(agentId)
         if (!this.live.has(agentId) || this.hasAttached(agentId)) return
         const reason = `no registration within ${ceiling} of launching into ${handle.surface}. ${attachDiagnosis(site, handle, 'waiting')}`
-        void this.failSpawn(req, agentId, reason, { unlessPaneOpen: true })
+        void this.failSpawn(req, agentId, reason, 'if-pane-closed')
       },
       Math.max(0, launchedAt + this.attachCeilingMs - Date.now()),
     )
@@ -1288,11 +1299,11 @@ export class Supervisor implements TeleportHost {
     req: SpawnRequest,
     agentId: string,
     reason: string,
-    opts: { unlessPaneOpen?: boolean } = {},
+    release: FailedRelease,
   ): Promise<SpawnOutcome> {
     const full = `${req.name} was launched but never registered: ${reason}`
     await this.recordExit(agentId, { code: null, signal: null, failed: full })
-    await this.releaseFailedSpawn(req, agentId, opts.unlessPaneOpen === true)
+    await this.releaseFailedSpawn(req, agentId, release)
     logEvent('agent_spawn_failed', { agentId, name: req.name, reason })
     return { ok: false, agentId, name: req.name, reason: full }
   }
@@ -1307,23 +1318,20 @@ export class Supervisor implements TeleportHost {
         body: `${req.name} never started: ${reason}`,
         meta: { failed: 'true' },
       })
-    await this.releaseFailedSpawn(req, agentId, false)
+    await this.releaseFailedSpawn(req, agentId, 'now')
   }
 
   /**
    * CC-158: release what a spawn that never registered allocated, under retire's
-   * dirty and unmerged checks. The reclaim grace is not applied: it anchors on an
-   * agent that ran, and a pane that may still hold a process keeps the tree for
-   * retire, which does apply it. A refusal leaves the runtime state for retire --force.
+   * dirty and unmerged checks, and only once its process is known gone. The reclaim
+   * grace is not applied: it anchors on an agent that ran, and a tree whose process
+   * may still be alive is kept for retire, which does apply it. A refusal leaves the
+   * runtime state for retire --force.
    */
-  private async releaseFailedSpawn(
-    req: SpawnRequest,
-    agentId: string,
-    unlessPaneOpen: boolean,
-  ): Promise<void> {
+  private async releaseFailedSpawn(req: SpawnRequest, agentId: string, when: FailedRelease): Promise<void> {
     const held = readRuntimeState(agentId)
-    if (held === undefined) return
-    if (unlessPaneOpen && (await this.paneStillOpen(held.handle))) return
+    if (held === undefined || when === 'keep') return
+    if (when === 'if-pane-closed' && (await this.paneStillOpen(held.handle))) return
     const ctx = { agentId, agentName: req.name, baseCwd: req.cwd ?? process.cwd() }
     if (!(await this.releaseHeld(ctx, held, false))) return
     // Kept, not cleared, so retire still closes the pane; `none` so it never releases the tree twice.
@@ -1563,6 +1571,8 @@ export class Supervisor implements TeleportHost {
     force: boolean,
   ): Promise<boolean> {
     const released = await resolveIsolation([entry.isolation]).release(ctx, entry.allocation, { force })
+    // A `none` release is a no-op, so a row would claim a second release of what a failed spawn already gave back.
+    if (entry.isolation === 'none') return released
     this.core.append({
       kind: 'isolation_released',
       actor: ctx.agentName,

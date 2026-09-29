@@ -1150,8 +1150,25 @@ describe('a spawn that never registers gives back its worktree', () => {
   const branchExists = (repo: string, branch: string): boolean =>
     git(['branch', '--list', branch], repo) !== ''
 
-  const neverRegisters = (repo: string, over: Record<string, unknown> = {}): Promise<SpawnOutcome> =>
-    withStubbedSurface({ attachMs: 200 }).spawn(spawnReq({ cwd: repo, isolation: 'worktree', ...over }))
+  /** A headless claude that exits before registering: evidence that nothing is left running in the tree. */
+  const diesBeforeRegistering = () => ({
+    pid: 4242,
+    unref: () => undefined,
+    once: (event: string, listener: (...args: unknown[]) => void) => {
+      if (event === 'exit') queueMicrotask(() => listener(1, null))
+    },
+  })
+
+  const neverRegisters = (repo: string, over: Record<string, unknown> = {}): Promise<SpawnOutcome> => {
+    supervisor = new Supervisor(
+      core,
+      withShadow({ attachMs: 60_000, surface: { platform: 'linux', spawn: diesBeforeRegistering } }),
+    )
+    return supervisor.spawn(spawnReq({ cwd: repo, isolation: 'worktree', ...over }))
+  }
+
+  const releasedRows = (agentId: string) =>
+    core.events.agentEvents().filter(r => r.kind === 'isolation_released' && r.ref === agentId)
 
   it('returns the budget and lets the same name spawn again', async () => {
     const repo = makeRepo()
@@ -1163,7 +1180,33 @@ describe('a spawn that never registers gives back its worktree', () => {
     expect(worktreeCount(repo)).toBe(before)
     expect(branchExists(repo, 'agent-chat/scout')).toBe(false)
     stopAutoAttach = autoAttach(core)
-    expect((await supervisor.spawn(spawnReq({ cwd: repo, isolation: 'worktree' }))).ok).toBe(true)
+    const again = withStubbedSurface()
+    expect((await again.spawn(spawnReq({ cwd: repo, isolation: 'worktree' }))).ok).toBe(true)
+  })
+
+  it('keeps the tree of a headless claude that is only slow to register', async () => {
+    const repo = makeRepo()
+    const tree = path.join(repo, '.worktrees', 'scout')
+
+    const failed = await withStubbedSurface({ attachMs: 200 }).spawn(
+      spawnReq({ cwd: repo, isolation: 'worktree' }),
+    )
+
+    expect(failed.ok).toBe(false)
+    expect(fs.existsSync(tree)).toBe(true)
+    expect(readRuntimeState(failed.agentId as string)?.isolation).toBe('worktree')
+    expect(releasedRows(failed.agentId as string)).toHaveLength(0)
+  })
+
+  it('never releases the tree a second time when the failed agent is retired', async () => {
+    const failed = await neverRegisters(makeRepo())
+
+    const retired = await supervisor.retire('scout')
+
+    expect(retired).toEqual({ ok: true })
+    expect(releasedRows(failed.agentId as string).map(r => r.meta)).toEqual([
+      { strategy: 'worktree', released: 'true' },
+    ])
   })
 
   it('releases it when the surface refuses before anything launched, and frees the name', async () => {
