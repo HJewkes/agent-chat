@@ -13,11 +13,14 @@ export interface Denylist {
 export const EMPTY_DENYLIST: Denylist = { ownerEmails: [], privateNames: [], privatePaths: [] }
 
 /**
- * `missing` and `unreadable` both leave only `home-path` enforced. A reason is a fixed
+ * `missing`, `empty` and `unreadable` all leave only `home-path` enforced. A reason is a fixed
  * phrase and never quotes the file, since parse errors echo the text they choke on.
  */
 export type DenylistLoad =
-  { kind: 'ok'; list: Denylist } | { kind: 'missing' } | { kind: 'unreadable'; reason: string }
+  | { kind: 'ok'; list: Denylist }
+  | { kind: 'missing' }
+  | { kind: 'empty' }
+  | { kind: 'unreadable'; reason: string }
 
 const Entries = z.array(z.string().trim().min(1)).default([])
 
@@ -50,6 +53,7 @@ function parse(text: string): DenylistLoad {
         'must be an object whose only keys are owner-email, private-name and private-path, each a list of non-empty strings',
     }
   const data = parsed.data
+  if (Object.values(data).every(entries => entries.length === 0)) return { kind: 'empty' }
   return {
     kind: 'ok',
     list: {

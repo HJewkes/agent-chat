@@ -66,28 +66,54 @@ async function gitText(args: string[], cwd: string): Promise<string> {
   }
 }
 
+const PER_COMMIT = [
+  '--no-color',
+  '--no-ext-diff',
+  '--no-textconv',
+  '--no-renames',
+  '--diff-merges=first-parent',
+]
+
+/** `-z` log output: an empty field comes before each sha, and the first path follows a newline. */
+export function parseAddedPaths(raw: string): { sha: string; path: string }[] {
+  const fields = raw.split('\0')
+  const out: { sha: string; path: string }[] = []
+  let sha = ''
+  for (let i = 0; i < fields.length; i++) {
+    const field = fields[i] ?? ''
+    if (field === '') sha = fields[++i] ?? ''
+    else out.push({ sha, path: field.startsWith('\n') ? field.slice(1) : field })
+  }
+  return out
+}
+
+function parseMessages(raw: string): { sha: string; body: string }[] {
+  return raw
+    .split('\x1e')
+    .map(record => record.replace(/^\n/, ''))
+    .filter(record => record.includes('\0'))
+    .map(record => {
+      const [sha = '', body = ''] = record.split('\0')
+      return { sha, body }
+    })
+}
+
 export function gitRangeSource(cwd: string): RangeSource {
-  const diff = ['--no-color', '--no-ext-diff', '--no-textconv', '--no-renames']
+  const log = (range: string, ...args: string[]): string[] => [
+    'log',
+    ...PER_COMMIT,
+    ...args,
+    '--end-of-options',
+    range,
+  ]
   return {
-    diffLines: range => gitLines(['diff', ...diff, '--text', '--unified=0', '--end-of-options', range], cwd),
+    diffLines: range => gitLines(log(range, '-p', '--text', '--unified=0', '--format=%x00%H'), cwd),
     addedPaths: async range =>
-      (
-        await gitText(
-          ['diff', ...diff, '--name-only', '-z', '--diff-filter=A', '--end-of-options', range],
-          cwd,
-        )
-      )
-        .split('\0')
-        .filter(p => p !== ''),
+      parseAddedPaths(
+        await gitText(log(range, '--name-only', '-z', '--diff-filter=A', '--format=%x00%H'), cwd),
+      ),
     messages: async range =>
-      (await gitText(['log', '--format=%H%x00%B%x1e', '--end-of-options', range], cwd))
-        .split('\x1e')
-        .map(record => record.replace(/^\n/, ''))
-        .filter(record => record.includes('\0'))
-        .map(record => {
-          const [sha = '', body = ''] = record.split('\0')
-          return { sha, body }
-        }),
+      parseMessages(await gitText(log(range, '--no-patch', '--format=%H%x00%B%x1e'), cwd)),
   }
 }
 

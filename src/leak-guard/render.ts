@@ -10,9 +10,10 @@ export function tildify(file: string, home: string): string {
 }
 
 function where(f: Finding): string {
-  if (f.site === 'path') return `${f.file}  (file name)`
+  const commit = f.commit === undefined ? '' : `${f.commit} `
+  if (f.site === 'path') return `${commit}${f.file}  (file name)`
   if (f.site === 'message') return `${f.file}:${f.line}  (commit message)`
-  return `${f.file}:${f.line}`
+  return `${commit}${f.file}:${f.line}`
 }
 
 /** One line per finding, location and category only; the matched text is never shown. */
@@ -27,12 +28,13 @@ export function renderFindings(findings: readonly Finding[]): string[] {
 export type DenylistState = DenylistLoad['kind']
 
 export function renderJson(findings: readonly Finding[], denylist: DenylistState): string {
-  const rows = findings.map(({ site, file, line, category, fingerprint }) => ({
+  const rows = findings.map(({ site, file, line, category, fingerprint, commit }) => ({
     site,
     file,
     line,
     category,
     fingerprint,
+    ...(commit === undefined ? {} : { commit }),
   }))
   return JSON.stringify({ denylist, findings: rows })
 }
@@ -43,6 +45,8 @@ export function renderDenylistProblem(load: DenylistLoad, displayPath: string): 
   const problem =
     load.kind === 'missing'
       ? `no deny-list at ${displayPath}`
-      : `the deny-list at ${displayPath} ${load.reason}`
+      : load.kind === 'empty'
+        ? `no deny-list entries at ${displayPath}`
+        : `the deny-list at ${displayPath} ${load.reason}`
   return `leak-scan: ${problem}. Only home-path was checked, so the scan cannot pass.`
 }

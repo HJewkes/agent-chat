@@ -318,6 +318,77 @@ describe('agent-chat leak-scan --range', () => {
     expect(leakRun.stdout).toContain('notes.md:2  home-path')
   })
 
+  it('flags a leak that a later commit in the range removes, at the commit that added it', async () => {
+    const churn = syntheticRepo()
+    const start = churn.commit({ 'a.md': 'clean\n' })
+    const adds = churn.commit({ 'a.md': `clean\n${EMAIL}\n`, [`${NAME}.md`]: '' })
+    fs.rmSync(path.join(churn.dir, `${NAME}.md`))
+    const removes = churn.commit({ 'a.md': 'clean\n' })
+
+    const run = await leakScanCli(churn.dir, chatHome, '--range', `${start}..${removes}`)
+
+    expect(run.code).toBe(1)
+    expect(run.stdout).toContain(`${adds.slice(0, 12)} a.md:2  owner-email`)
+    expect(run.stdout).toContain(`${adds.slice(0, 12)} [redacted].md  (file name)  private-name`)
+    expectNoEntry(run.stdout + run.stderr)
+  })
+
+  it('scans the added side of a merge against its first parent', async () => {
+    const merged = syntheticRepo()
+    const start = merged.commit({ 'a.md': 'clean\n' })
+    git(merged.dir, 'checkout', '-q', '-b', 'side')
+    merged.commit({ 'side.md': 'side\n' })
+    git(merged.dir, 'checkout', '-q', 'main')
+    merged.commit({ 'main.md': 'main\n' })
+    git(merged.dir, 'merge', '-q', '--no-ff', '--no-commit', 'side')
+    const merge = merged.commit({ 'side.md': `side\n${EMAIL}\n` }, 'Merge side')
+
+    const run = await leakScanCli(merged.dir, chatHome, '--range', `${start}..${merge}`)
+
+    expect(run.stdout).toContain(`${merge.slice(0, 12)} side.md:2  owner-email`)
+  })
+
+  it('scans added lines of a binary file', async () => {
+    const binary = syntheticRepo()
+    const start = binary.commit({ 'a.md': 'clean\n' })
+    const adds = binary.commit({ 'blob.bin': `\0\x01bytes\n${EMAIL}\n` })
+
+    const run = await leakScanCli(binary.dir, chatHome, '--range', `${start}..${adds}`)
+
+    expect(run.code).toBe(1)
+    expect(run.stdout).toContain(`${adds.slice(0, 12)} blob.bin:2  owner-email`)
+  })
+
+  it('scans a long line with many matches in bounded time', async () => {
+    const long = syntheticRepo()
+    const start = long.commit({ 'a.md': 'clean\n' })
+    const line = `${HOME}/x someone@example.com `.repeat(20_000)
+    const adds = long.commit({ 'long.md': `${line}\n` })
+    const started = Date.now()
+
+    const run = await leakScanCli(long.dir, chatHome, '--range', `${start}..${adds}`)
+
+    expect(run.stdout).toContain(`${adds.slice(0, 12)} long.md:1  home-path`)
+    expect(Date.now() - started).toBeLessThan(10_000)
+  }, 60_000)
+
+  it('keeps git stderr, which can quote the range, off every stream', async () => {
+    const run = await leakScanCli(repo.dir, chatHome, '--range', `${NAME}..${EMAIL}`)
+
+    expect(run.code).toBe(2)
+    expect(run.stderr).toBe('leak-scan: git could not read that range\n')
+    expectNoEntry(run.stdout + run.stderr)
+  })
+
+  it('exits 2 when the deny-list parses but has no entries', async () => {
+    for (const content of ['{}', '{"owner-email": [], "private-name": [], "private-path": []}']) {
+      const run = await leakScanCli(repo.dir, chatHomeWith(content), '--range', `${leaky}..${clean}`)
+
+      expect(run.code).toBe(2)
+      expect(run.stderr).toContain('no deny-list entries at')
+    }
+  })
+
   it('exits 2 on a bad range or a missing flag', async () => {
     expect((await leakScanCli(repo.dir, chatHome, '--range', 'nope..HEAD')).code).toBe(2)
     expect((await leakScanCli(repo.dir, chatHome, '--range', '--output=x')).code).toBe(2)

@@ -20,6 +20,8 @@ export interface Finding {
   category: Category
   entry: number
   fingerprint: string
+  /** The 12-character sha of the commit that added the text, when scanning a range. */
+  commit?: string
 }
 
 interface Matcher {
@@ -133,6 +135,7 @@ interface Location {
   file: string
   display: string
   line: number
+  commit: string | undefined
 }
 
 function scanLine(text: string, at: Location, matchers: readonly Matcher[]): Finding[] {
@@ -149,17 +152,31 @@ function scanLine(text: string, at: Location, matchers: readonly Matcher[]): Fin
       category: s.category,
       entry: s.entry,
       fingerprint: fingerprintOf(s, at.file, text),
+      ...(at.commit === undefined ? {} : { commit: at.commit }),
     })
   }
   return findings
 }
 
 /** Every line of free text, such as a PR body or a commit message, counts as added. */
-export function scanText(text: string, ctx: ScanContext, file: string, site: Site = 'content'): Finding[] {
+export function scanText(
+  text: string,
+  ctx: ScanContext,
+  file: string,
+  site: Site = 'content',
+  commit?: string,
+): Finding[] {
   const matchers = buildMatchers(ctx)
   const display = redactText(file, matchers)
-  return text.split('\n').flatMap((line, i) => scanLine(line, { site, file, display, line: i + 1 }, matchers))
+  return text
+    .split('\n')
+    .flatMap((line, i) => scanLine(line, { site, file, display, line: i + 1, commit }, matchers))
 }
+
+export const shortSha = (sha: string): string => sha.slice(0, 12)
+
+/** Opens each commit in a `RangeSource.diffLines` stream; git never writes a NUL outside a hunk. */
+export const COMMIT_MARK = '\0'
 
 const HUNK = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
 
@@ -167,6 +184,7 @@ const HUNK = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
  * Consumes `git diff --unified=0` one line at a time and scans only added lines.
  * Hunk line counts, not line prefixes, decide what is content, so an added line
  * that itself begins `+++ ` or `diff --git` is never mistaken for a header.
+ * A `COMMIT_MARK` line outside a hunk attributes what follows to that commit.
  */
 export class DiffScanner {
   readonly findings: Finding[] = []
@@ -175,6 +193,7 @@ export class DiffScanner {
   private oldLeft = 0
   private newLeft = 0
   private newLine = 0
+  private commit: string | undefined
 
   constructor(ctx: ScanContext) {
     this.matchers = buildMatchers(ctx)
@@ -182,9 +201,15 @@ export class DiffScanner {
 
   push(line: string): void {
     if (this.oldLeft > 0 || this.newLeft > 0) return this.hunkLine(line)
-    if (line.startsWith('diff --git ')) this.file = null
+    if (line.startsWith(COMMIT_MARK)) this.startCommit(line.slice(COMMIT_MARK.length))
+    else if (line.startsWith('diff --git ')) this.file = null
     else if (line.startsWith('+++ ')) this.setFile(line.slice(4))
     else this.startHunk(line)
+  }
+
+  private startCommit(sha: string): void {
+    this.file = null
+    this.commit = shortSha(sha)
   }
 
   private setFile(target: string): void {
@@ -209,7 +234,7 @@ export class DiffScanner {
     if (mark === '+' || mark === ' ') this.newLeft--
     if (mark === '+' && this.file) {
       const { path, display } = this.file
-      const at: Location = { site: 'content', file: path, display, line: this.newLine }
+      const at: Location = { site: 'content', file: path, display, line: this.newLine, commit: this.commit }
       this.findings.push(...scanLine(line.slice(1), at, this.matchers))
     }
     if (mark === '+' || mark === ' ') this.newLine++
@@ -222,20 +247,26 @@ export function scanDiff(unifiedDiff: string, ctx: ScanContext): Finding[] {
   return scanner.findings
 }
 
-/** What `scanRange` reads from a repository; the CLI backs it with git. */
+/** What `scanRange` reads from a repository, one entry per commit; the CLI backs it with git. */
 export interface RangeSource {
+  /** Each commit's `--unified=0` diff, opened by a line of `COMMIT_MARK` and its sha. */
   diffLines(range: string): AsyncIterable<string>
-  addedPaths(range: string): Promise<string[]>
+  addedPaths(range: string): Promise<{ sha: string; path: string }[]>
   messages(range: string): Promise<{ sha: string; body: string }[]>
 }
 
-/** Added lines, added file paths and commit messages in `range`; removed text never counts. */
+/**
+ * Every commit's added lines, added file paths and message, since a push publishes
+ * each commit and not just the range's net diff. Removed text never counts.
+ */
 export async function scanRange(range: string, ctx: ScanContext, source: RangeSource): Promise<Finding[]> {
   const scanner = new DiffScanner(ctx)
   for await (const line of source.diffLines(range)) scanner.push(line)
-  const paths = (await source.addedPaths(range)).flatMap(p => scanText(p, ctx, p, 'path'))
+  const paths = (await source.addedPaths(range)).flatMap(({ sha, path }) =>
+    scanText(path, ctx, path, 'path', shortSha(sha)),
+  )
   const messages = (await source.messages(range)).flatMap(({ sha, body }) =>
-    scanText(body, ctx, `commit ${sha.slice(0, 12)}`, 'message'),
+    scanText(body, ctx, `commit ${shortSha(sha)}`, 'message'),
   )
   return [...scanner.findings, ...paths, ...messages]
 }
