@@ -216,7 +216,7 @@ Options:
   -h, --help         display help for command
 
 Commands:
-  plan               dry run: what the tick would dispatch now, and why every other task was refused
+  plan [options]     dry run: what the tick would dispatch now, and why every other task was refused
   status             claim ledger, stalled claims and each account budget gate
   tick [options]     one pass: advance every claim a phase, then spawn new work inside the ceilings
   pause              stop new spawns from the next tick on; running agents finish
@@ -233,7 +233,12 @@ Usage: agent-chat burndown plan [options]
 dry run: what the tick would dispatch now, and why every other task was refused
 
 Options:
-  -h, --help  display help for command
+  --seat <value>           autonomy seat whose scored order to print (with --scored)
+  --scored                 print the seat's scored dispatch order with components
+  --top <value>            picks to print with --scored (default 20)
+  --autonomy-root <value>  directory holding charter.md and seats/
+  --today <value>          pin the staleness clock (YYYY-MM-DD) with --scored
+  -h, --help               display help for command
 
 === agent-chat burndown status
 Usage: agent-chat burndown status [options]
