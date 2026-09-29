@@ -1,5 +1,7 @@
 import { applyActions, claimKey, type Action, type ClaimKey } from './advance.js'
-import { sameClaim, writeLedger, type Ledger } from './ledger.js'
+import { sameClaim, writeLedger, type Claim, type Ledger } from './ledger.js'
+
+type Unretired = NonNullable<Claim['unretired']>[number]
 
 /**
  * Carries out a tick's steps against the ledger and the broker, intent first:
@@ -86,10 +88,24 @@ export async function execute(steps: Step[], start: Ledger, deps: ExecuteDeps): 
   }
   for (const step of steps) {
     if (step.kind === 'ledger') commit(step.actions)
-    else if (step.kind === 'retire') lines.push(...(await retireAll(step, deps)))
-    else lines.push(await spawnOne(step, ledger, commit, deps))
+    else if (step.kind === 'retire') {
+      const retired = await retireAll(step, deps)
+      ledger = withUnretired(ledger, step.key, retired.left)
+      writeLedger(deps.ledgerFile, ledger)
+      lines.push(...retired.lines)
+    } else lines.push(await spawnOne(step, ledger, commit, deps))
   }
   return { ledger, lines }
+}
+
+/** The claim was marked done before its retire ran, so the refusals go on the newest done claim with that key. */
+export function withUnretired(ledger: Ledger, key: ClaimKey, left: Unretired[]): Ledger {
+  const index = ledger.claims.findLastIndex(c => c.phase === 'done' && sameClaim(c, key))
+  if (index === -1) return ledger
+  const { unretired: _previous, ...claim } = ledger.claims[index] as Claim
+  const claims = [...ledger.claims]
+  claims[index] = left.length === 0 ? claim : { ...claim, unretired: left }
+  return { ...ledger, claims }
 }
 
 /** A spawn whose claim is not already recorded in `spawning` under this name is refused, whatever built the steps. */
@@ -134,12 +150,22 @@ export function refusalReason(frame: SpawnFrame, reason: string): string {
     : `spawn refused: ${reason}; the worktree ${leftover} may be left behind, reclaim it by hand`
 }
 
-async function retireAll(step: Extract<Step, { kind: 'retire' }>, deps: ExecuteDeps): Promise<string[]> {
+async function retireAll(
+  step: Extract<Step, { kind: 'retire' }>,
+  deps: ExecuteDeps,
+): Promise<{ lines: string[]; left: Unretired[] }> {
   const lines: string[] = []
+  const left: Unretired[] = []
   for (const name of step.names) {
     const reply = await deps.retire(name).catch((err: Error) => ({ ok: false, reason: err.message }))
     deps.log('burndown_retire', { name, ok: reply.ok, reason: reply.reason })
-    lines.push(reply.ok ? `retired ${name}` : `left ${name}: ${reply.reason ?? 'refused'}`)
+    if (reply.ok) lines.push(`retired ${name}`)
+    else {
+      left.push({ name, reason: reply.reason ?? 'refused' })
+      lines.push(
+        `left ${name}: ${reply.reason ?? 'refused'}; recorded on ${claimKey(step.key)}, retried next tick`,
+      )
+    }
   }
-  return lines
+  return { lines, left }
 }

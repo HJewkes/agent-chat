@@ -6,7 +6,7 @@ import { burndownConfigPath, burndownLedgerPath, burndownPausePath } from '../..
 import type { QueueItem } from '../../protocol.js'
 import { activeWorkRoot } from '../active-work.js'
 import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
-import { advance, applyActions, type InboxMessage } from './advance.js'
+import { advance, applyActions, claimKey, type InboxMessage } from './advance.js'
 import { verifySection } from './brief.js'
 import { pickAccount } from './budget-gate.js'
 import { deciderVerdict, recordRefusal, wakeDecider, type DeciderVerdict } from './decider.js'
@@ -24,7 +24,7 @@ import {
 } from './observe.js'
 import { plan, type Capacity, type Plan } from './plan.js'
 import { accountDir, loadTickConfig, readTaskText, type TickConfig } from './source.js'
-import { stepsForActions, stepsForDispatch, type StepContext } from './steps.js'
+import { retrySteps, stepsForActions, stepsForDispatch, type StepContext } from './steps.js'
 import { loadWorld, type World } from './tick.js'
 
 /**
@@ -164,7 +164,11 @@ async function decide(
     ...dispatched.flatMap(d => (typeof d === 'string' ? [`not dispatched: ${d}`] : [])),
     ...refusalLines(planned),
   ]
-  const steps = [...advanced.steps, ...dispatched.flatMap(d => (typeof d === 'string' ? [] : d))]
+  const steps = [
+    ...retrySteps(ledger, roster),
+    ...advanced.steps,
+    ...dispatched.flatMap(d => (typeof d === 'string' ? [] : d)),
+  ]
   return { steps, notes, ...(decider === undefined ? {} : { decider }) }
 }
 
@@ -270,7 +274,10 @@ const readOrUndefined = (file: string): string | undefined => {
 }
 
 function describe(step: Step): string {
-  if (step.kind === 'retire') return `would retire ${step.names.join(', ')}`
+  if (step.kind === 'retire')
+    return step.names.length === 0
+      ? `would clear ${claimKey(step.key)}'s unretired agents, all since retired by hand`
+      : `would retire ${step.names.join(', ')}`
   if (step.kind === 'ledger')
     return `would record ${step.actions.map(a => (a.kind === 'add' ? `add ${a.claims.map(c => c.taskId).join(',')}` : `${a.kind} ${a.key.taskId}${a.key.slice ?? ''}`)).join('; ')}`
   const f = step.frame

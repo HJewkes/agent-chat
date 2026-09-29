@@ -1115,6 +1115,49 @@ describe('retiring with force', () => {
       expect(fs.existsSync(allocation.cwd)).toBe(false)
     })
 
+    it('refuses when the successor reached the worktree through a symlink', async () => {
+      const sup = withStubbedSurface()
+      const allocation = await predecessorWithCleanWorktree(sup)
+      const link = path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'sup-link-'))), 'tree')
+      tmpDirs.push(path.dirname(link))
+      fs.symlinkSync(allocation.cwd, link)
+      successorIn(path.join(link, 'src'))
+
+      const result = await sup.retire('scout')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/heir \(not retired\) is working in it/)
+      expect(fs.existsSync(allocation.cwd)).toBe(true)
+    })
+
+    it('does not count an agent in a sibling worktree whose name extends this one', async () => {
+      const sup = withStubbedSurface()
+      const allocation = await predecessorWithCleanWorktree(sup)
+      const sibling = `${allocation.cwd}-2`
+      fs.mkdirSync(sibling)
+      tmpDirs.push(sibling)
+      successorIn(sibling)
+
+      const result = await sup.retire('scout')
+
+      expect(result.ok).toBe(true)
+      expect(fs.existsSync(allocation.cwd)).toBe(false)
+    })
+
+    it('still refuses after the successor exits, because exited is not retired', async () => {
+      const sup = withStubbedSurface()
+      const allocation = await predecessorWithCleanWorktree(sup)
+      successorIn(allocation.cwd)
+      core.append({ kind: 'agent_exited', actor: 'heir', ref: 'a2', meta: { code: '0' } })
+      expect(core.agents.get('a2')?.state).toBe('exited')
+
+      const result = await sup.retire('scout')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/heir \(not retired\) is working in it/)
+      expect(fs.existsSync(allocation.cwd)).toBe(true)
+    })
+
     it('releases it once the successor is retired', async () => {
       const sup = withStubbedSurface()
       const allocation = await predecessorWithCleanWorktree(sup)
