@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest'
 import {
   fileOwnershipStrategy,
   getStrategy,
@@ -544,8 +544,13 @@ describe('concurrent worktree adds (CC-224)', () => {
     const [left, right] = [makeRepo(), makeRepo()]
     let rightStarted!: () => void
     const rightHasStarted = new Promise<void>(resolve => (rightStarted = resolve))
+    let timer: NodeJS.Timeout | undefined
+    const giveUp = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('the add in the other repository never started')), 2_000)
+    })
+    onTestFinished(() => clearTimeout(timer))
     const leftWaitsForRight: GitRunner = async (args, cwd) => {
-      if (cwd === left) await rightHasStarted
+      if (cwd === left) await Promise.race([rightHasStarted, giveUp])
       else rightStarted()
       return realAdd(args, cwd)
     }
