@@ -209,7 +209,8 @@ export class SocketServer {
     const requester = this.core.registry.entryFor(conn)
     const anchor = this.core.registry.anchorFor(conn)
     const cwd = resolveSpawnCwd(msg, this.core.registry.cwdFor(conn))
-    const spawnerConfigDir = msg.spawnerConfigDir ?? this.core.registry.observedFor(conn)?.configDir
+    const observed = this.core.registry.observedFor(conn)
+    const spawnerConfigDir = msg.spawnerConfigDir ?? observed?.configDir
     const outcome = await this.supervisor.spawn({
       name: msg.name,
       profile: msg.profile,
@@ -240,6 +241,8 @@ export class SocketServer {
       // frame's copy exists for the human at the CLI, who holds no entry to read.
       ...(msg.configDir === undefined ? {} : { configDir: msg.configDir }),
       ...(spawnerConfigDir === undefined ? {} : { spawnerConfigDir }),
+      // CC-156: an observed Claude session id proves the requester is a session, whose unset var means ~/.claude.
+      ...(observed?.claudeSessionId === undefined ? {} : { spawnerIsSession: true }),
       ...(requester?.agentId === undefined ? {} : { parentAgentId: requester.agentId }),
       ...(anchor === undefined ? {} : { anchor }),
     })

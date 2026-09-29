@@ -146,6 +146,21 @@ describe('agent_list carries budget per row', () => {
     expect(out.split('\n')[1]).not.toContain('slots')
   })
 
+  it('labels an agent on ~/.claude as the default account (CC-156)', async () => {
+    const handler = new ToolHandler(
+      stubBroker({
+        t: 'agents_result',
+        agents: [
+          agent({ name: 'home-scout', configDir: path.join(os.homedir(), '.claude') }),
+          agent({ name: 'workout-scout', configDir: path.join(os.homedir(), '.claude-profiles', 'workout') }),
+        ],
+      }),
+    )
+    const out = textOf(await handler.handle('agent_list', {}))
+    expect(out.split('\n').find(line => line.startsWith('- home-scout'))).toContain('account: default')
+    expect(out.split('\n').find(line => line.startsWith('- workout-scout'))).toContain('account: workout')
+  })
+
   /**
    * A retired or exited identity has no process left to have written a
    * reading, so its absence is the default, not information — unlike a LIVE

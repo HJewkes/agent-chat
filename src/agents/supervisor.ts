@@ -265,6 +265,8 @@ export interface SpawnRequest {
   configDir?: string
   /** The requester's own `CLAUDE_CONFIG_DIR`, observed rather than claimed (CC-100). */
   spawnerConfigDir?: string
+  /** CC-156: the requester is a known Claude Code session, so no `spawnerConfigDir` means `~/.claude`. */
+  spawnerIsSession?: boolean
   /** The session id the requester claims as its own. Checked, never trusted. */
   forkFrom?: string
   /** CC-126: continue this Claude session uuid instead of minting one. */
@@ -911,6 +913,7 @@ export class Supervisor implements TeleportHost {
     const account = resolveConfigDir({
       ...(req.configDir === undefined ? {} : { explicit: req.configDir }),
       ...(req.spawnerConfigDir === undefined ? {} : { spawner: req.spawnerConfigDir }),
+      ...(req.spawnerIsSession === true ? { spawnerIsSession: true } : {}),
       ...(injected?.profile === undefined ? {} : { profile: injected.profile }),
     })
     if ('error' in account) return this.refuse(req, account.error)

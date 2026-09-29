@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { AgentIdentity, ServerMessage } from '../../protocol.js'
 import { accountUsageLine, budgetSegment, readBudget } from '../../agents/budget.js'
 import { transcriptLine } from '../../agents/transcript.js'
+import { accountName } from '../../agents/config-dir.js'
 import { defineTool } from '../command.js'
 
 /** CC-126: a retired agent's name is gone, so its row names the session a spawn can continue. */
@@ -52,7 +53,7 @@ export const agentList = defineTool({
         // name is self-reported — so it says what it is rather than rendering
         // two empty fields and reading like an agent someone spawned.
         `- ${a.name} [${a.state}, ${a.origin === 'adopted' ? 'human-started session' : `${a.profile}, ${a.surface}`}${budgetPart}]` +
-        ` spawned by ${a.spawnedBy}\n    ${a.cwd}` +
+        ` spawned by ${a.spawnedBy}${a.configDir ? `, account: ${accountName(a.configDir)}` : ''}\n    ${a.cwd}` +
         // A headless agent's output is discarded, so this is the only way to read
         // what it actually did without interrupting it for a report.
         `\n    ${transcriptLine(a.cwd, a.sessionId, a.configDir)}${resumeHint(a)}`

@@ -143,9 +143,31 @@ describe('an explicit config_dir that cannot be used', () => {
   })
 })
 
+describe('a spawner that is a known Claude session with no CLAUDE_CONFIG_DIR', () => {
+  it('runs on the default ~/.claude over the initiative profile and the broker', () => {
+    const resolved = dirOf({
+      spawnerIsSession: true,
+      profile: 'agents',
+      env: { CLAUDE_CONFIG_DIR: `${HOME}/.claude-profiles/broker` },
+      isDirectory: exists(`${HOME}/.claude-profiles/agents`),
+    })
+
+    expect(resolved).toEqual({ dir: `${HOME}/.claude`, source: 'spawner' })
+  })
+
+  it('still yields to the spawner’s own dir when one was observed', () => {
+    const spawner = `${HOME}/.claude-profiles/workout`
+
+    expect(dirOf({ spawner, spawnerIsSession: true })).toEqual({ dir: spawner, source: 'spawner' })
+  })
+})
+
 describe('the name a human calls an account', () => {
   it('is the last segment of the dir', () => {
-    expect(accountName(`${HOME}/.claude-profiles/workout`)).toBe('workout')
-    expect(accountName(`${HOME}/.claude`)).toBe('.claude')
+    expect(accountName(`${HOME}/.claude-profiles/workout`, HOME)).toBe('workout')
+  })
+
+  it('is "default" for ~/.claude', () => {
+    expect(accountName(`${HOME}/.claude`, HOME)).toBe('default')
   })
 })
