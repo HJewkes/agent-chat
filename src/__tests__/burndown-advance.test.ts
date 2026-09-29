@@ -143,21 +143,21 @@ describe('burndown phase machine', () => {
     expect(after).toEqual([expect.objectContaining({ phase: 'parked', questionId: 'q7' })])
   })
 
-  it('queues one claim per planner slice with its dependencies', () => {
+  it('queues one claim per planner slice with its dependencies and declared files', () => {
     const planning = claim({ phase: 'planning', worktree: undefined })
 
     const { after } = step(planning, {
       agent: exited,
       slices: [
-        { n: 'a', title: 'ledger', dependsOn: [], owns: [] },
+        { n: 'a', title: 'ledger', dependsOn: [], owns: ['src/ledger.ts'] },
         { n: 'b', title: 'tick', dependsOn: ['a'], owns: [] },
       ],
     })
 
-    expect(after.map(c => [c.slice, c.phase, c.dependsOn])).toEqual([
-      [undefined, 'done', undefined],
-      ['a', 'queued', []],
-      ['b', 'queued', ['a']],
+    expect(after.map(c => [c.slice, c.phase, c.dependsOn, c.owns])).toEqual([
+      [undefined, 'done', undefined, undefined],
+      ['a', 'queued', [], ['src/ledger.ts']],
+      ['b', 'queued', ['a'], undefined],
     ])
   })
 

@@ -40,7 +40,7 @@ export interface Observed {
   unread: string[]
 }
 
-const LIVE = new Set(['spawning', 'live', 'detached'])
+export const LIVE = new Set(['spawning', 'live', 'detached'])
 const FINISHED = new Set(['exited', 'retired'])
 
 /** The newest row carrying `name`: names are reused across spawns, identities are not. */

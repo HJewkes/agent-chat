@@ -41,8 +41,15 @@ export function loadWorld(now: Date, root: string): World {
   }
 }
 
-export function planFromDisk(now = new Date(), root = activeWorkRoot()): Plan {
-  return plan({ ...loadWorld(now, root), ledger: readLedger(burndownLedgerPath()) })
+/** `collision` is the CC-202 check; without one, `plan` refuses nothing for collisions. */
+export function planFromDisk(
+  now = new Date(),
+  root = activeWorkRoot(),
+  collision?: (ledger: Ledger) => PlanInputs['collision'],
+): Plan {
+  const ledger = readLedger(burndownLedgerPath())
+  const check = collision?.(ledger)
+  return plan({ ...loadWorld(now, root), ledger, ...(check === undefined ? {} : { collision: check }) })
 }
 
 export function renderPlan(result: Plan, now: Date): string[] {
