@@ -279,6 +279,27 @@ you and the report must come back via `chat_send` — don't assume a return-form
 block implies the channel. Escalating rather than guessing is always fine — bad work
 is worse than no work.
 
+### Implementer contract: end every code brief with this block
+
+```
+First run `git log origin/<default> --oneline --grep <ID>` and stop if it has landed.
+Branch from origin/<default>; check `git log origin/<default>..HEAD`. Commit before
+mutating; never `git checkout` uncommitted work. Scratch files go in the worktree or
+`$TMPDIR/<your name>`. Wait for CI with `gh run watch <id> --exit-status`. Load tests
+kill burners with `pkill -f '<pattern>'` and confirm with pgrep. A PR that narrows a
+timeout reports per-case CI times against the new limit. You are NOT done at "PR
+opened". Your LAST action must be chat_send to <spawner> with the PR, the head sha,
+and CI status.
+```
+
+Foreground `sleep` is denied, so an agent that does not block on `gh run watch` ends
+its turn at "PR opened" and needs a paid resume.
+
+### Reviewer verdict line
+
+A reviewer's report starts with `<repo>#<n> MERGE|FIX_FIRST head <sha>` on its own line
+and stays under 1,200 characters. Verdict line first; blocking items before nits.
+
 Verify agent output before committing it — a passing test count isn't proof:
 
 - Ask for one concrete mutation the agent made and which test caught it, not just
