@@ -55,7 +55,8 @@ function kindsOf(before: Claim | undefined, after: Claim, spawned: boolean): Sea
   if (merged(before, after)) events.push(event('merged', after.pr))
   if (after.stalledReason !== undefined) events.push(event('stalled', after.stalledReason))
   if (after.phase === 'parked') events.push(event('parked'))
-  if (after.leak !== undefined) events.push(event('leak', `${after.leak.url}: ${after.leak.findings.join('; ')}`))
+  if (after.leak !== undefined)
+    events.push(event('leak', `${after.leak.url}: ${after.leak.findings.join('; ')}`))
   return events
 }
 
