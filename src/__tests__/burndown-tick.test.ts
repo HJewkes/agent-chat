@@ -261,6 +261,7 @@ describe('burndown tick retires refused after a claim is done', () => {
     ...extra,
   })
   const TENANCY = 'bd-dm-1 allocated the worktree, and heir (not retired) is working in it'
+  const REFUSED = NOON.toISOString()
 
   it('records the refused name on the done claim and says it will retry', async () => {
     const retired: string[] = []
@@ -280,7 +281,7 @@ describe('burndown tick retires refused after a claim is done', () => {
     expect(retired).toEqual(['bd-dm-1-s1'])
     expect(result.lines).toContain(`left bd-dm-1: ${TENANCY}; recorded on DM-1#, retried next tick`)
     expect(readLedger(burndownLedgerPath()).claims[0]?.unretired).toEqual([
-      { name: 'bd-dm-1', reason: TENANCY },
+      { name: 'bd-dm-1', reason: TENANCY, at: REFUSED },
     ])
   })
 
@@ -288,7 +289,7 @@ describe('burndown tick retires refused after a claim is done', () => {
     initiative({})
     writeLedger(burndownLedgerPath(), {
       version: 1,
-      claims: [doneClaim({ unretired: [{ name: 'bd-dm-1', reason: TENANCY }] })],
+      claims: [doneClaim({ unretired: [{ name: 'bd-dm-1', reason: TENANCY, at: REFUSED }] })],
     })
     const fake = fakeBroker({ agents: [row('bd-dm-1', 'exited')] })
 
@@ -303,7 +304,7 @@ describe('burndown tick retires refused after a claim is done', () => {
     initiative({})
     writeLedger(burndownLedgerPath(), {
       version: 1,
-      claims: [doneClaim({ unretired: [{ name: 'bd-dm-1', reason: TENANCY }] })],
+      claims: [doneClaim({ unretired: [{ name: 'bd-dm-1', reason: TENANCY, at: REFUSED }] })],
     })
     const fake = fakeBroker({
       agents: [row('bd-dm-1', 'exited')],
@@ -314,14 +315,14 @@ describe('burndown tick retires refused after a claim is done', () => {
 
     expect(fake.retires).toEqual(['bd-dm-1'])
     expect(readLedger(burndownLedgerPath()).claims[0]?.unretired).toEqual([
-      { name: 'bd-dm-1', reason: TENANCY },
+      { name: 'bd-dm-1', reason: TENANCY, at: REFUSED },
     ])
   })
 
   it('shows the unretired agent in burndown status', () => {
     const ledger = {
       version: 1 as const,
-      claims: [doneClaim({ unretired: [{ name: 'bd-dm-1', reason: TENANCY }] })],
+      claims: [doneClaim({ unretired: [{ name: 'bd-dm-1', reason: TENANCY, at: REFUSED }] })],
     }
 
     const lines = renderStatus(ledger, NOON)
@@ -329,11 +330,56 @@ describe('burndown tick retires refused after a claim is done', () => {
     expect(lines).toContain(`DM-1 (demo) done, UNRETIRED bd-dm-1: ${TENANCY}`)
   })
 
+  it('retries in the recorded order, so a successor still goes before its predecessor', async () => {
+    initiative({})
+    const unretired = ['bd-dm-1-s1', 'bd-dm-1'].map(name => ({ name, reason: TENANCY, at: REFUSED }))
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [doneClaim({ unretired })] })
+    const fake = fakeBroker({ agents: [row('bd-dm-1-s1', 'exited'), row('bd-dm-1', 'exited')] })
+
+    await tick(fake)
+
+    expect(fake.retires).toEqual(['bd-dm-1-s1', 'bd-dm-1'])
+  })
+
+  it('does not retire a hand-spawned agent that took the name after the refusal', async () => {
+    initiative({})
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [doneClaim({ unretired: [{ name: 'bd-dm-1', reason: TENANCY, at: REFUSED }] })],
+    })
+    const newer = { ...row('bd-dm-1', 'live'), agentId: 'id-hand', spawnedAt: NOON.getTime() + 60_000 }
+    const fake = fakeBroker({ agents: [newer] })
+
+    await tick(fake)
+
+    expect(fake.retires).toEqual([])
+    expect(readLedger(burndownLedgerPath()).claims[0]?.unretired).toBeUndefined()
+  })
+
+  /** A pre-CC-185 entry has no refusal time, so only the held-claim check stands between it and a reused name. */
+  it('does not retire a name a held claim reused, even without a refusal time', async () => {
+    initiative({})
+    const rerun: Claim = {
+      ...doneClaim({ phase: 'implementing', agentName: 'bd-dm-1', spawned: ['bd-dm-1'] }),
+      agentId: 'id-bd-dm-1',
+    }
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [doneClaim({ unretired: [{ name: 'bd-dm-1', reason: TENANCY }] }), rerun],
+    })
+    const fake = fakeBroker({ agents: [row('bd-dm-1', 'live')] })
+
+    await tick(fake)
+
+    expect(fake.retires).toEqual([])
+    expect(readLedger(burndownLedgerPath()).claims[0]?.unretired).toBeUndefined()
+  })
+
   it('drops a name retired by hand without retiring anything', async () => {
     initiative({})
     writeLedger(burndownLedgerPath(), {
       version: 1,
-      claims: [doneClaim({ unretired: [{ name: 'bd-dm-1', reason: TENANCY }] })],
+      claims: [doneClaim({ unretired: [{ name: 'bd-dm-1', reason: TENANCY, at: REFUSED }] })],
     })
     const fake = fakeBroker({ agents: [row('bd-dm-1', 'retired')] })
 

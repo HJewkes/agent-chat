@@ -161,7 +161,7 @@ async function retireAll(
     deps.log('burndown_retire', { name, ok: reply.ok, reason: reply.reason })
     if (reply.ok) lines.push(`retired ${name}`)
     else {
-      left.push({ name, reason: reply.reason ?? 'refused' })
+      left.push({ name, reason: reply.reason ?? 'refused', at: deps.now.toISOString() })
       lines.push(
         `left ${name}: ${reply.reason ?? 'refused'}; recorded on ${claimKey(step.key)}, retried next tick`,
       )
