@@ -453,6 +453,18 @@ describe('planSeat pool charges and same-tick claims (CC-275)', () => {
     ])
   })
 
+  it('keeps charging from the earlier seats count after its own dispatch', () => {
+    const seat = { ...SEAT, pool: { ...SEAT.pool, dispatch_seven_day_points: 20 } }
+    const budget = { ...openPool(), pool: seat.pool, dispatched: 1 }
+
+    const plan = planSeat(
+      inputs([row('A-1', 60), row('A-2', 50)], [task('A-1'), task('A-2')], { seat, budget }),
+    )
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+    expect(refusalOf(plan)).toEqual([['A-2', 'budget']])
+  })
+
   it('starts from the dispatches earlier seats charged to the pool', () => {
     const budget = { ...openPool(), dispatched: 20 }
 
