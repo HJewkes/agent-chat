@@ -632,7 +632,13 @@ const DEFAULTS = `defaults:
   worktrees_left_free_per_repo: 0`
 
 /** A synthetic charter with seat `seat-t` (prefix `st`) on pool `pool-t`, whose config dir is the fixture account. */
-function seatPolicy({ implementers = 2, extraSeats = '', poolExtra = '' } = {}): void {
+function seatPolicy({
+  implementers = 2,
+  extraSeats = '',
+  poolExtra = '',
+  extraRepo = '',
+  grants = '',
+} = {}): void {
   const root = path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy')
   const pool = `pool-t: {config_dir: ${accountPath()}, human_uses: false, reserve_seven_day: 30, ceiling_five_hour: 75${poolExtra}}`
   write(
@@ -640,9 +646,11 @@ function seatPolicy({ implementers = 2, extraSeats = '', poolExtra = '' } = {}):
     `---\nseats: [seat-t, seat-e${extraSeats}]\n${DEFAULTS}\npools:\n  ${pool}\n---\n`,
   )
   const concurrency = `concurrency: {implementers: ${implementers}, reviewers: 1, planners: 1}`
+  const more = extraRepo === '' ? '' : `\n  - {path: ${extraRepo}, initiatives: [demo]}`
+  const granted = grants === '' ? '' : `\ngrants_extra: [${grants}]`
   write(
     path.join(root, 'seats', 'seat-t.md'),
-    `---\nprefix: st\npool: pool-t\ninitiatives: {demo: 1.0}\nrepos:\n  - {path: ${repo()}, initiatives: [demo]}\n${concurrency}\n---\n`,
+    `---\nprefix: st\npool: pool-t\ninitiatives: {demo: 1.0}\nrepos:\n  - {path: ${repo()}, initiatives: [demo]}${more}\n${concurrency}${granted}\n---\n`,
   )
   write(path.join(root, 'seats', 'seat-e.md'), '---\nprefix: se\npool: pool-t\n---\n')
 }
@@ -1025,6 +1033,94 @@ describe('burndown tick advances a seat claim', () => {
     expect(fake.frames).toEqual([])
     expect(lines.join('\n')).toContain('deferred DM-1#: budget: BUDGET-PAUSE pool pool-t')
     expect(readLedger(burndownLedgerPath()).claims[0]?.stalledReason).toBeUndefined()
+  })
+
+  it('defers the reviewer without stalling the claim when its seat is skipped this tick', async () => {
+    const { worktree } = seatClaim('nope')
+    config({ seats: ['seat-t', 'nope'] })
+    const fake = fakeBroker({ agents: [row('st-dm-1', 'exited', worktree)] })
+
+    const lines = await tick(fake)
+
+    expect(fake.frames).toEqual([])
+    expect(lines.join('\n')).toContain('deferred DM-1#: seat nope skipped this tick')
+    expect(readLedger(burndownLedgerPath()).claims[0]?.stalledReason).toBeUndefined()
+  })
+
+  it('defers the reviewer while the seat pool is within its sonnet-only band', async () => {
+    const { worktree } = seatClaim('seat-t')
+    sevenDayAt(65)
+    const fake = fakeBroker({ agents: [row('st-dm-1', 'exited', worktree)] })
+
+    const lines = await tick(fake)
+
+    expect(fake.frames).toEqual([])
+    expect(lines.join('\n')).toContain(
+      'deferred DM-1#: budget: pool-t is within 10 points of a stop, sonnet only',
+    )
+  })
+
+  describe('with a second repo in the seat dispatch', () => {
+    const reviewedClaim = (): { claim: Claim; worktree: string } => {
+      const second = secondRepo()
+      seatPolicy({ extraRepo: second, grants: 'merge' })
+      const worktree = path.join(second, '.worktrees', 'st-dm-1')
+      git(second, 'worktree', 'add', '-q', '-b', 'agent-chat/st-dm-1', worktree)
+      const claim: Claim = {
+        taskId: 'DM-1',
+        initiative: 'demo',
+        seat: 'seat-t',
+        namePrefix: 'st',
+        spawnedAt: NOON.toISOString(),
+        phase: 'reviewing',
+        phaseAt: NOON.toISOString(),
+        agentName: 'st-dm-1-r0',
+        spawned: ['st-dm-1', 'st-dm-1-r0'],
+        worktree,
+      }
+      writeLedger(burndownLedgerPath(), { version: 1, claims: [claim] })
+      return { claim, worktree }
+    }
+
+    it('spawns the successor from the repo holding the claim worktree, on the seat placement', async () => {
+      const { worktree } = reviewedClaim()
+      const fake = fakeBroker({ agents: [row('st-dm-1-r0', 'exited', worktree)] })
+
+      await tick(fake)
+
+      expect(fake.frames).toEqual([
+        expect.objectContaining({
+          name: 'st-dm-1-s1',
+          profile: 'bd-implementer',
+          cwd: path.join(world, 'repo2'),
+          configDir: accountPath(),
+          worktree,
+          brief: expect.stringContaining('Grants in force: merge.'),
+        }),
+      ])
+    })
+
+    it('defers the successor while the seat pool gate is closed', async () => {
+      const { worktree } = reviewedClaim()
+      sevenDayAt(75)
+      const fake = fakeBroker({ agents: [row('st-dm-1-r0', 'exited', worktree)] })
+
+      const lines = await tick(fake)
+
+      expect(fake.frames).toEqual([])
+      expect(lines.join('\n')).toContain('deferred DM-1#: budget: BUDGET-PAUSE pool pool-t')
+    })
+
+    it('defers the successor while the seat pool is within its sonnet-only band', async () => {
+      const { worktree } = reviewedClaim()
+      sevenDayAt(65)
+      const fake = fakeBroker({ agents: [row('st-dm-1-r0', 'exited', worktree)] })
+
+      const lines = await tick(fake)
+
+      expect(fake.frames).toEqual([])
+      expect(lines.join('\n')).toContain('sonnet only')
+    })
   })
 
   it('stalls the claim once, without spawning, when its seat is no longer in the config', async () => {
