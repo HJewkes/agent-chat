@@ -102,14 +102,6 @@ hook runs even when the scan has already refused. The repository's hook is found
 `git rev-parse --git-path hooks` with the guard's variables removed, so a repository's own
 `core.hooksPath` (husky, lefthook) is honoured.
 
-`node` and `titan-egress-scan` are found on the agent's `PATH` when the hook runs. The hook never
-bakes in a path, because a versioned node can disappear. If either is missing, the hook prints one
-line starting `leak-scan: guard NOT run, this push was not scanned` that names the missing tool.
-It then lets the push go ahead, still running the repository's own hook. This fails open on
-purpose: a missing guard must not refuse every push from every agent, and the burndown backstop
-still reports a leak that got through. The fix is to put node on the agent's `PATH` or run
-`npm i -g @titan-design/egress-scan`.
-
 Before scanning, the hook runs `titan-egress-scan --help` and looks for `pre-push`. A scanner
 whose help works but lacks the command fails open with the same `guard NOT run` line and the
 install hint. A scanner whose help check fails, or that passes it and then fails the scan, refuses
@@ -125,15 +117,54 @@ for agents. Server-side hooks never run in an agent's repository.
 What is scanned, and the rules, are egress-scan's: see its README. It exits 0 when clean, 1 on
 findings and 2 on a usage or configuration error. The hook refuses on any non-zero exit.
 
+### Inputs the agent's environment cannot change
+
+The broker writes three values into the hook at each spawn, and the scan uses them instead of
+the agent's environment. `PATH` is the broker's own `PATH`, with relative entries dropped.
+`HOME` is the owner's home from the passwd entry (`os.userInfo()`), not `$HOME`. The term list
+is `<that home>/.config/titan-egress/private-terms`. The scan also runs with `NODE_OPTIONS`,
+`NODE_PATH`, `XDG_CONFIG_HOME` and the `LD_*`/`DYLD_*` preload variables unset. The repository's
+own hook still runs with the agent's environment.
+
+Without this, an agent could skip or blind the scan with variables alone. A `PATH` without the
+scanner made the guard fail open, and a shadow `titan-egress-scan` earlier on `PATH` could pass
+everything. `XDG_CONFIG_HOME` or `HOME` could point egress-scan at an empty term list.
+`NODE_OPTIONS=--require` could run code inside the scanner before it scans.
+
+Baking these in is safe because they come from the broker, which the owner started, and the hook
+is rewritten at every spawn. The hook still bakes in no node or scanner path, only a search path,
+so a node upgrade does not strand it. The owner's own `XDG_CONFIG_HOME` is ignored as well: keep
+the term list under `~/.config`.
+
+The trust limit is the OS account. An agent runs as the owner's user, so it can still edit the
+hook file, the term list or the installed scanner, or set `GIT_*` variables that change what git
+reports. These fixes close the variable-only bypasses; they do not sandbox the agent.
+
+If `node` or `titan-egress-scan` is missing from the broker's `PATH`, the hook prints one line
+starting `leak-scan: guard NOT run, this push was not scanned` that names the missing tool. It
+then lets the push go ahead, still running the repository's own hook. This fails open on purpose:
+a missing guard must not refuse every push from every agent, and the burndown backstop still
+reports a leak that got through. The fix is to put node on the broker's `PATH`, or run
+`npm i -g @titan-design/egress-scan`, then restart the broker.
+
+### A committed `.egress-allow` only
+
+egress-scan reads `.egress-allow` from the repository root in the worktree, so an untracked or
+edited copy would allow findings that no one reviewed. The hook refuses the push while
+`.egress-allow` is untracked or differs from its committed copy at `HEAD`, before it runs the
+scanner. A committed `.egress-allow` is part of the pushed history, so a reviewer sees any entry
+it adds. `private-term` findings are never allowable in any case.
+
 ### The private term list
 
 egress-scan reads its private terms from `$TITAN_EGRESS_TERMS`, else
-`${XDG_CONFIG_HOME:-$HOME/.config}/titan-egress/private-terms`: one term per line, mode 0600,
-never in any repository. The hook sets `TITAN_EGRESS_REQUIRE_TERMS=1`, so while that file is
+`${XDG_CONFIG_HOME:-$HOME/.config}/titan-egress/private-terms`. The hook always passes
+`~/.config/titan-egress/private-terms` under the passwd home, as described above. The file holds
+one term per line, mode 0600, and never lives in any repository. The hook sets `TITAN_EGRESS_REQUIRE_TERMS=1`, so while that file is
 missing every agent push is refused with one line naming the file to create. The hook also clears
 `CI`, because egress-scan never reads the term list when `CI` is set.
 
-The hook ignores an inherited `TITAN_EGRESS_TERMS`. It overwrites the variable with the default
+The hook ignores an inherited `TITAN_EGRESS_TERMS`. It overwrites the variable with the baked
 path for the scanner call, so pointing it at `/dev/null` or an empty file cannot switch the scan
 off, and a missing default file still refuses the push. A profile's `env` cannot pass
 `TITAN_EGRESS_TERMS` either: it is reserved, like `GIT_CONFIG_*`.

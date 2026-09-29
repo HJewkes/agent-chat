@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import {
   defaultScanInputs,
@@ -396,5 +397,114 @@ echo "titan-egress-scan: unknown command" >&2; exit 2`
     expect(run.code).not.toBe(0)
     expect(run.stderr).not.toContain('guard NOT run')
     expect(remoteHas(f, 'clean')).toBe(false)
+  })
+})
+
+describe('scanner inputs the agent environment cannot change', () => {
+  // CC-310: egress-scan derives the term list from XDG_CONFIG_HOME or HOME, which the agent controls.
+  it('scans with the owner term list when the agent points XDG_CONFIG_HOME and HOME at an empty one', () => {
+    const f = fixture()
+    const hostile = path.join(path.dirname(f.chatHome), 'hostile')
+    fs.mkdirSync(path.join(hostile, 'titan-egress'), { recursive: true })
+    fs.writeFileSync(path.join(hostile, 'titan-egress', 'private-terms'), '')
+    Object.assign(f.agentEnv, { XDG_CONFIG_HOME: hostile, HOME: hostile })
+    commitFile(f, 'leaky', 'notes.md', `the ${LEAK} seat`)
+
+    const run = push(f, 'leaky')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stdout + run.stderr).toContain('notes.md:1 private-term')
+    expect(remoteHas(f, 'leaky')).toBe(false)
+  })
+
+  // CC-312: the scanner was found on the agent's PATH, so a shadow or a bare PATH skipped it.
+  it.each([
+    [
+      'a shadow scanner that always passes first',
+      () => `${binWith({ egress: 'exit 0' })}:${process.env.PATH}`,
+    ],
+    ['no scanner at all', () => `${binWith({ git: true })}:${SYSTEM_PATH}`],
+  ])('still scans a push when the agent PATH has %s', (_, agentPath) => {
+    const f = fixture()
+    f.agentEnv.PATH = agentPath()
+    commitFile(f, 'leaky', 'notes.md', `the ${LEAK} seat`)
+
+    const run = push(f, 'leaky')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stdout + run.stderr).toContain('notes.md:1 private-term')
+    expect(remoteHas(f, 'leaky')).toBe(false)
+  })
+})
+
+describe('the real titan-egress-scan under a hostile agent env', () => {
+  const scannerBin = fileURLToPath(
+    new URL('../../node_modules/@titan-design/egress-scan/dist/bin.js', import.meta.url),
+  )
+  const realScanPath = (): string => {
+    const dir = binWith({ node: true, git: true })
+    fs.symlinkSync(scannerBin, path.join(dir, 'titan-egress-scan'))
+    return `${dir}:${SYSTEM_PATH}`
+  }
+  // Built by join so this file's own diff carries no home path.
+  const homePathLine = `see ${['', 'Users', 'zq7probe', 'notes'].join('/')}`
+  const ALLOW = 'notes.md home-path synthetic fixture, ZQ-1\n'
+
+  // CC-312: NODE_OPTIONS=--require runs agent code inside the scanner before it scans.
+  it('clears NODE_OPTIONS, so a preloaded exit(0) cannot pass a leaky push', () => {
+    const f = fixture({ scanPath: realScanPath() })
+    const preload = path.join(path.dirname(f.chatHome), 'pass.cjs')
+    fs.writeFileSync(preload, 'process.exit(0)\n')
+    const preloaded = spawnSync(process.execPath, [scannerBin, 'tree'], {
+      cwd: f.work,
+      env: { ...f.agentEnv, NODE_OPTIONS: `--require ${preload}` },
+    })
+    f.agentEnv.NODE_OPTIONS = `--require ${preload}`
+    commitFile(f, 'leaky', 'notes.md', `the ${LEAK} seat`)
+
+    const run = push(f, 'leaky')
+
+    expect(preloaded.status).toBe(0)
+    expect(run.code).not.toBe(0)
+    expect(run.stdout).toContain('private-term')
+    expect(remoteHas(f, 'leaky')).toBe(false)
+  })
+
+  // CC-312: egress-scan reads .egress-allow from the worktree, so an agent could write one to pass.
+  it.each([
+    ['untracked', (f: Fixture) => fs.writeFileSync(path.join(f.work, '.egress-allow'), ALLOW)],
+    [
+      'edited after its commit',
+      (f: Fixture) => {
+        commitFile(f, 'leaky', '.egress-allow', '# none yet')
+        fs.writeFileSync(path.join(f.work, '.egress-allow'), ALLOW)
+      },
+    ],
+  ])('refuses a push while .egress-allow is %s', (_, plant) => {
+    const f = fixture({ scanPath: realScanPath() })
+    plant(f)
+    git(f.work, baseEnv(), 'checkout', '-q', '-B', 'leaky')
+    fs.writeFileSync(path.join(f.work, 'notes.md'), `${homePathLine}\n`)
+    git(f.work, baseEnv(), 'add', 'notes.md')
+    git(f.work, baseEnv(), 'commit', '-q', '-m', 'add notes.md')
+
+    const run = push(f, 'leaky')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('.egress-allow differs from the committed copy')
+    expect(remoteHas(f, 'leaky')).toBe(false)
+  })
+
+  it('honours a committed .egress-allow', () => {
+    const f = fixture({ scanPath: realScanPath() })
+    commitFile(f, 'allowed', '.egress-allow', ALLOW.trim())
+    fs.writeFileSync(path.join(f.work, 'notes.md'), `${homePathLine}\n`)
+    git(f.work, baseEnv(), 'add', 'notes.md')
+    git(f.work, baseEnv(), 'commit', '-q', '-m', 'add notes.md')
+
+    const run = push(f, 'allowed')
+
+    expect(run).toMatchObject({ code: 0 })
+    expect(remoteHas(f, 'allowed')).toBe(true)
   })
 })

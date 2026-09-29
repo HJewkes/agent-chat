@@ -86,7 +86,8 @@ export const defaultScanInputs = (): ScanInputs => ({
   path: absolutePath(process.env.PATH),
 })
 
-export const termsFileFor = (home: string): string => path.join(home, '.config', 'titan-egress', 'private-terms')
+export const termsFileFor = (home: string): string =>
+  path.join(home, '.config', 'titan-egress', 'private-terms')
 
 const shQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
 
