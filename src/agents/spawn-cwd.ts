@@ -76,6 +76,15 @@ const realOf = (dir: string): string | undefined => {
   }
 }
 
+/** realpath of the deepest ancestor that exists, with the missing tail rejoined, so a gone path still compares canonically. */
+export function canonicalPath(dir: string): string {
+  const resolved = path.resolve(dir)
+  const real = realOf(resolved)
+  if (real !== undefined) return real
+  const parent = path.dirname(resolved)
+  return parent === resolved ? resolved : path.join(canonicalPath(parent), path.basename(resolved))
+}
+
 export const isAtOrUnder = (real: string, root: string): boolean =>
   real === root || real.startsWith(root + path.sep)
 

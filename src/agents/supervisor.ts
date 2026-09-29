@@ -40,7 +40,7 @@ import {
 import { surfaceFor } from './surfaces/index.js'
 import { SurfaceRefused, type SurfaceOptions } from './surfaces/options.js'
 import { Semaphore, type SlotUsage } from './semaphore.js'
-import { checkSpawnCwd, isAtOrUnder } from './spawn-cwd.js'
+import { canonicalPath, checkSpawnCwd, isAtOrUnder } from './spawn-cwd.js'
 import { resolveSpawnBriefing, type BriefingResult } from './active-work.js'
 import { resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
 import { configDir, findTranscript } from './transcript.js'
@@ -1456,10 +1456,10 @@ export class Supervisor implements TeleportHost {
   ): { refusal?: string; warning?: string } | undefined {
     const ref = entry.allocation.ref
     if (entry.isolation !== 'worktree' || ref?.assigned === 'true' || !ref?.worktree) return undefined
-    const tree = path.resolve(ref.worktree)
+    const tree = canonicalPath(ref.worktree)
     const tenants = this.core.agents
       .roster()
-      .filter(a => a.agentId !== agentId && a.cwd !== '' && isAtOrUnder(path.resolve(a.cwd), tree))
+      .filter(a => a.agentId !== agentId && a.cwd !== '' && isAtOrUnder(canonicalPath(a.cwd), tree))
       .map(a => a.name)
     if (tenants.length === 0) return undefined
     const who = tenants.join(', ')
