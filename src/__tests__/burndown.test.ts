@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseAutonomy } from '../agents/active-work.js'
 import { readAccountBudget } from '../agents/budget.js'
-import { gateAccount } from '../agents/burndown/budget-gate.js'
+import { gateAccount, MAX_READING_AGE_SECONDS } from '../agents/burndown/budget-gate.js'
 import { collisionCheck, type BrokerView } from '../agents/burndown/collision.js'
 import { grantGap } from '../agents/burndown/eligibility.js'
 import type { Runner } from '../agents/burndown/exec.js'
@@ -513,6 +513,21 @@ describe('budget gate', () => {
 
   it('stays closed with no reading rather than assuming zero usage', () => {
     expect(gateAccount('agents', rule, undefined, { now: NOON }).open).toBe(false)
+  })
+
+  it('closes on a reading older than the staleness limit and names its age', () => {
+    const stale = { ...reading, ageSeconds: MAX_READING_AGE_SECONDS + 1 }
+
+    const result = gateAccount('agents', rule, stale, { now: NOON, humanLastTurnAt: 0 })
+
+    expect(result.open).toBe(false)
+    expect(result.reason).toContain(`${MAX_READING_AGE_SECONDS + 1}s old`)
+  })
+
+  it('opens on a reading exactly at the staleness limit', () => {
+    const fresh = { ...reading, ageSeconds: MAX_READING_AGE_SECONDS }
+
+    expect(gateAccount('agents', rule, fresh, { now: NOON, humanLastTurnAt: 0 }).open).toBe(true)
   })
 })
 

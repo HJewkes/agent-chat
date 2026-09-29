@@ -42,6 +42,8 @@ const NIGHT_ABSENCE_MS = 30 * 60_000
 const PRESENT_WITHIN_MS = 15 * 60_000
 const PRESENT_CEILING = 70
 const SONNET_ONLY_ABOVE = 85
+/** Both gates use the freshest status file; an older one may hide spend since. */
+export const MAX_READING_AGE_SECONDS = 15 * 60
 
 const humanAbsentFor = (ctx: GateContext, ms: number): boolean =>
   ctx.humanLastTurnAt !== undefined && ctx.now.getTime() - ctx.humanLastTurnAt >= ms
@@ -61,6 +63,12 @@ export function gateAccount(
   if (rule === undefined) return { open: false, account, reason: 'no budget rule for this account' }
   if (reading?.sevenDay === undefined || reading.fiveHour === undefined)
     return { open: false, account, reason: 'no seven_day and five_hour reading under this account' }
+  if (reading.ageSeconds > MAX_READING_AGE_SECONDS)
+    return {
+      open: false,
+      account,
+      reason: `reading is ${reading.ageSeconds}s old, over the ${MAX_READING_AGE_SECONDS}s limit`,
+    }
 
   const night = isNight(ctx) && rule.night !== undefined
   const reserve = night ? (rule.night?.reserve_seven_day ?? rule.reserve_seven_day) : rule.reserve_seven_day
@@ -121,8 +129,6 @@ export type PoolGateResult =
 const RUN_CAP_MS = 12 * 3_600_000
 const DAY_START_HOUR = 7
 const SONNET_BAND_POINTS = 10
-/** The charter gates on the freshest status file; an older one may hide spend since. */
-const MAX_READING_AGE_SECONDS = 15 * 60
 
 /** Charter section 4: a drop in seven_day, or a sample past the window's reset, counts from zero. */
 export function pointsSpent(samples: readonly SevenDaySample[]): number {
