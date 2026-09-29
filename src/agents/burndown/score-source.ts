@@ -42,8 +42,7 @@ const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
 /** Refuses names that could leave the root: separators, `..`, empty. */
 export function assertSafeName(kind: string, name: string): void {
-  if (!SAFE_NAME.test(name) || name.includes('..'))
-    throw new Error(`unsafe ${kind} name: ${JSON.stringify(name)}`)
+  if (!SAFE_NAME.test(name)) throw new Error(`unsafe ${kind} name: ${JSON.stringify(name)}`)
 }
 
 const KEYS = ['severity', 'estimate', 'done_when', 'notes', 'tags', 'created', 'updated'] as const
@@ -96,13 +95,20 @@ const reportSkip = (message: string): void => {
   process.stderr.write(`${message}\n`)
 }
 
+export interface ScoredRead {
+  tasks: ScoredTask[]
+  /** `<slug>/<file>` of each malformed open task left out of `tasks`. */
+  skipped: string[]
+}
+
 /** Open tasks under `<root>/<slug>/tasks/*.yml` for each slug, files in name order; a malformed open task is reported and skipped. */
 export function readScoredTasks(
   root: string,
   slugs: Iterable<string>,
   onSkip: (message: string) => void = reportSkip,
-): ScoredTask[] {
-  return [...slugs].flatMap(slug => {
+): ScoredRead {
+  const skipped: string[] = []
+  const tasks = [...slugs].flatMap(slug => {
     assertSafeName('initiative slug', slug)
     const dir = path.join(root, slug, 'tasks')
     let files: string[]
@@ -116,9 +122,11 @@ export function readScoredTasks(
         const task = parseScoredTask(fs.readFileSync(path.join(dir, file), 'utf8'), slug, `${slug}/${file}`)
         return task === undefined ? [] : [task]
       } catch (err) {
+        skipped.push(`${slug}/${file}`)
         onSkip(`skipping ${slug}/${file}: ${err instanceof Error ? err.message : String(err)}`)
         return []
       }
     })
   })
+  return { tasks, skipped }
 }

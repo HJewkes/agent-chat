@@ -77,7 +77,12 @@ export function seatPlanFromDisk(opts: {
   )
   const [skipped] = [...seats.skipped, ...planned.skipped]
   if (skipped !== undefined) throw new Error(skipped.reason)
-  return { dispatch: planned.dispatch, refusals: planned.refusals, notOptedIn: [] }
+  return {
+    dispatch: planned.dispatch,
+    refusals: planned.refusals,
+    notOptedIn: [],
+    skippedTasks: planned.skippedTasks.flatMap(s => s.files),
+  }
 }
 
 export function renderPlan(result: Plan, now: Date): string[] {
@@ -92,6 +97,10 @@ export function renderPlan(result: Plan, now: Date): string[] {
   if (result.notOptedIn.length > 0)
     lines.push(
       `not opted in (${result.notOptedIn.length} focused, no autonomy.mode: burndown): ${result.notOptedIn.join(', ')}`,
+    )
+  if (result.skippedTasks !== undefined)
+    lines.push(
+      `scorer skipped: ${result.skippedTasks.length}${result.skippedTasks.length === 0 ? '' : ` (${result.skippedTasks.join(', ')})`}`,
     )
   return lines
 }

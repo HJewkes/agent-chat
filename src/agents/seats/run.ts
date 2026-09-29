@@ -9,7 +9,7 @@ import {
   type Pool,
   type Seat,
 } from './charter.js'
-import type { SeatRecord, WatchdogDoc } from './io.js'
+import type { Eligibility, SeatRecord, WatchdogDoc } from './io.js'
 import {
   RESTART_WINDOW_MAX_MS,
   advanceMeter,
@@ -57,7 +57,7 @@ export interface WatchdogDeps {
   /** The owner seat's restart messages since `sinceMs`; undefined when events.db cannot be read, which holds every seat. */
   ownerMessages: (owner: string, sinceMs: number) => OwnerMessage[] | undefined
   roster: () => Promise<Roster>
-  eligible: (seat: string) => number | undefined
+  eligible: (seat: string) => Eligibility | undefined
   loadDoc: () => WatchdogDoc
   saveDoc: (doc: Omit<WatchdogDoc, 'stopped'>) => void
   /** A connected seat gets a message; a stopped one is resumed on it. */
@@ -160,12 +160,13 @@ function judgeSeat(pass: Pass, seat: Seat): Judgement {
   const hold = holdFor(pass, seat, log.stop)
   const implementers = runningImplementers(pass.roster.agents, seat).length
   const budget = seatBudget(pass, seat, reading, run)
-  const eligible =
+  const scored =
     implementers === 0 && hold === undefined && budget.open ? deps.eligible(seat.name) : undefined
   const obs = {
     budget,
     implementers,
-    eligible,
+    eligible: scored?.count,
+    ...(scored === undefined ? {} : { skipped: scored.skipped }),
     ...(hold === undefined ? {} : { hold }),
     ...(log.activityAt === undefined ? {} : { activityAt: log.activityAt }),
   }

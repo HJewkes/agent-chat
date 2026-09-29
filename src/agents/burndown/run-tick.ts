@@ -38,7 +38,14 @@ import { DEFAULT_NAME_PREFIX, plan, type Capacity, type Dispatch, type PlanInput
 import { defaultAutonomyRoot } from './policy.js'
 import { describeSeatEvents, deliverSeatEvents, type OpenSender } from './seat-deliver.js'
 import type { SpawnResult } from './seat-events.js'
-import { diskSeatDeps, loadSeats, planSeats, type LoadedSeats, type SkippedSeat } from './seat-tick.js'
+import {
+  diskSeatDeps,
+  loadSeats,
+  planSeats,
+  type LoadedSeats,
+  type SeatsPlan,
+  type SkippedSeat,
+} from './seat-tick.js'
 import {
   accountDir,
   loadTickConfig,
@@ -278,6 +285,9 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     ...dispatched.flatMap(d => (typeof d === 'string' ? [`not dispatched: ${d}`] : [])),
     ...refusalLines(planned.refusals),
     ...planned.skipped.map(s => `seat ${s.seat} skipped: ${s.reason}`),
+    ...planned.skippedTasks.map(
+      s => `seat ${s.seat} scorer skipped: ${s.files.length} (${s.files.join(', ')})`,
+    ),
   ]
   const steps = [
     ...retrySteps(ledger, roster),
@@ -309,6 +319,7 @@ interface Planned {
   skipped: SkippedSeat[]
   /** Task files seats mode read beyond the world's, for the dispatch briefs. */
   tasks: Map<string, Task[]>
+  skippedTasks: SeatsPlan['skippedTasks']
 }
 
 /** Without seats, `plan()` over the briefs' autonomy blocks; with seats, `planSeat` for each loaded seat. */
@@ -319,7 +330,8 @@ function planNew(
   roster: Roster,
   work: NewWork,
 ): Planned {
-  if (seats === undefined) return { ...plan({ ...world, ...work }), skipped: [], tasks: new Map() }
+  if (seats === undefined)
+    return { ...plan({ ...world, ...work }), skipped: [], tasks: new Map(), skippedTasks: [] }
   const cliVersion = installedClaudeVersion()
   const planned = planSeats(
     seats.loaded,
