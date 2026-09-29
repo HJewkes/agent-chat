@@ -72,6 +72,9 @@ export function renderStatus(ledger: Ledger, now: Date): string[] {
     lines.push(
       `${c.taskId} (${c.initiative}) ${c.agentId ?? c.agentName ?? 'unspawned'} ${c.phase} since ${c.phaseAt}${isStalled(c, now) ? ' STALLED' : ''}`,
     )
+  for (const c of ledger.claims.filter(c => c.phase === 'done'))
+    for (const u of c.unretired ?? [])
+      lines.push(`${c.taskId} (${c.initiative}) done, UNRETIRED ${u.name}: ${u.reason}`)
   if (ledger.decider !== undefined) lines.push(deciderStatus(ledger.decider, now))
   for (const account of Object.keys(rules)) {
     const gate = gateAccount(account, rules[account], readings.get(account), { now })

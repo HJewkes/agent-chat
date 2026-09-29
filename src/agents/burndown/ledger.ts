@@ -55,6 +55,8 @@ const Claim = z.object({
   pr: z.string().optional(),
   lastReport: z.string().optional(),
   stalledReason: z.string().optional(),
+  /** Agents whose retire refused after the claim finished, in retire order; each tick retries them (CC-182). */
+  unretired: z.array(z.object({ name: z.string(), reason: z.string() })).optional(),
 })
 export type Claim = z.infer<typeof Claim>
 
