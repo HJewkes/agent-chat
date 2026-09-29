@@ -255,8 +255,31 @@ export function combine(c: Components, defaults: ScoringDefaults): number {
   return pyRound(100 * base * c.W * c.K * c.R * c.Z * c.H, 1)
 }
 
-function idNumber(id: string): number {
-  return Number(/-(\d+)$/.exec(id)?.[1] ?? Number.NaN)
+/** Locale-independent string order, by Unicode code point rather than UTF-16 unit. */
+function byCodePoint(a: string, b: string): number {
+  const [x, y] = [Array.from(a, c => c.codePointAt(0) ?? 0), Array.from(b, c => c.codePointAt(0) ?? 0)]
+  const i = x.findIndex((point, k) => point !== y[k])
+  return i === -1 ? x.length - y.length : (x[i] ?? 0) - (y[i] ?? -1)
+}
+
+/** Digit strings by numeric value, exact at any length. */
+function byDigits(a: string, b: string): number {
+  const [x, y] = [a.replace(/^0+/, ''), b.replace(/^0+/, '')]
+  return x.length - y.length || byCodePoint(x, y)
+}
+
+function idParts(id: string): { prefix: string; digits: string } | undefined {
+  const dash = id.lastIndexOf('-')
+  const digits = id.slice(dash + 1)
+  return dash >= 0 && /^\d+$/.test(digits) ? { prefix: id.slice(0, dash), digits } : undefined
+}
+
+/** `PREFIX-<digits>` IDs by prefix then number; any other ID after them, by text. */
+function compareIds(a: string, b: string): number {
+  const [x, y] = [idParts(a), idParts(b)]
+  if (x && y) return byCodePoint(x.prefix, y.prefix) || byDigits(x.digits, y.digits) || byCodePoint(a, b)
+  if (x || y) return x ? -1 : 1
+  return byCodePoint(a, b)
 }
 
 /** Ranking order (owner decision, CC-201 plan section 1.3): score, initiative weight, slug, ID number. */
@@ -264,10 +287,61 @@ export function compareRows(a: ScoreRow, b: ScoreRow): number {
   return (
     b.score - a.score ||
     b.components.W - a.components.W ||
-    a.initiative.localeCompare(b.initiative) ||
-    idNumber(a.id) - idNumber(b.id) ||
-    a.id.localeCompare(b.id)
+    byCodePoint(a.initiative, b.initiative) ||
+    compareIds(a.id, b.id)
   )
+}
+
+export interface DispatchRow extends ScoreRow {
+  /** The score after initiative decay, rounded as score.py does. */
+  effective: number
+}
+
+export type ShareCapRefusals = Record<`share-cap:${string}`, number>
+
+/** Picks allowed per capped kind; `discovery` is a route share the tick enforces, not a kind. */
+function kindLimits(shareCaps: Readonly<Record<string, number>>, n: number): Map<string, number> {
+  const limits = new Map<string, number>()
+  for (const [kind, cap] of Object.entries(shareCaps)) {
+    if (kind === 'discovery' || cap >= 1) continue
+    limits.set(kind, Math.max(1, Math.floor(cap * n)))
+  }
+  return limits
+}
+
+/**
+ * score.py's greedy `dispatch_order`, plus share caps (CC-201 plan section
+ * 1.2). Each pick decays its initiative's later candidates by
+ * `initiative_decay`; blocked rows never enter the order.
+ */
+export function dispatchOrder(
+  rows: readonly ScoreRow[],
+  defaults: ScoringDefaults,
+  n: number,
+): { order: DispatchRow[]; refused: ShareCapRefusals } {
+  const pool = rows.filter(row => row.blocked.length === 0)
+  const decay = new Set(pool.map(row => row.initiative)).size > 1 ? defaults.initiative_decay : 1
+  const limits = kindLimits(defaults.share_caps, n)
+  const picksIn = new Map<string, number>()
+  const picksOf = new Map<string, number>()
+  const raw = (row: ScoreRow) => row.score * decay ** (picksIn.get(row.initiative) ?? 0)
+  const order: DispatchRow[] = []
+  const refused: ShareCapRefusals = {}
+  while (pool.length > 0 && order.length < n) {
+    const best = pool.reduce((a, b) =>
+      raw(b) > raw(a) || (raw(b) === raw(a) && compareRows(b, a) < 0) ? b : a,
+    )
+    pool.splice(pool.indexOf(best), 1)
+    const taken = picksOf.get(best.kind) ?? 0
+    if (taken >= (limits.get(best.kind) ?? Infinity)) {
+      refused[`share-cap:${best.kind}`] = (refused[`share-cap:${best.kind}`] ?? 0) + 1
+      continue
+    }
+    order.push({ ...best, effective: pyRound(raw(best), 1) })
+    picksOf.set(best.kind, taken + 1)
+    picksIn.set(best.initiative, (picksIn.get(best.initiative) ?? 0) + 1)
+  }
+  return { order, refused }
 }
 
 function exclusionOf(

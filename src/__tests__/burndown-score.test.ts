@@ -4,6 +4,7 @@ import {
   combine,
   compareRows,
   dependencyGraph,
+  dispatchOrder,
   kindOf,
   kindWeight,
   namedDependencies,
@@ -283,9 +284,235 @@ describe('row order', () => {
     ['heavier initiative on a tie', row('B-9', 'b', 50, 1), row('A-1', 'a', 50, 0.5)],
     ['slug on a weight tie', row('A-9', 'a', 50, 1), row('B-1', 'b', 50, 1)],
     ['ID number, not text, on a slug tie', row('R-125', 'r', 57.5, 1), row('R-1000', 'r', 57.5, 1)],
+    ['ID prefix before number', row('A-9', 'r', 50, 1), row('B-1', 'r', 50, 1)],
+    [
+      'ID number exactly, past 2^53',
+      row('R-9007199254740992', 'r', 50, 1),
+      row('R-9007199254740993', 'r', 50, 1),
+    ],
+    ['a numeric ID before a non-numeric suffix', row('A-10', 'r', 50, 1), row('A-1z', 'r', 50, 1)],
+    ['slug by code point, not locale', row('X-1', 'Zeta', 50, 1), row('X-1', 'alpha', 50, 1)],
+    ['slug by code point, not UTF-16 unit', row('X-1', '\u{FFFF}', 50, 1), row('X-1', '\u{10000}', 50, 1)],
   ])('%s', (_scenario, first, second) => {
     expect(compareRows(first, second)).toBeLessThan(0)
     expect(compareRows(second, first)).toBeGreaterThan(0)
+  })
+
+  it('orders any IDs totally, so every input order sorts the same', () => {
+    const ids = ['A-2', 'A-10', 'A-1z', 'A-02', 'A-', 'a-1', 'B-1', '-1', 'A-1z2']
+    const rows = ids.map(id => row(id, 'r', 50, 1))
+    const expected = ['-1', 'A-02', 'A-2', 'A-10', 'B-1', 'a-1', 'A-', 'A-1z', 'A-1z2']
+    for (let shift = 0; shift < rows.length; shift++) {
+      const rotated = [...rows.slice(shift), ...rows.slice(0, shift)]
+      expect(rotated.sort(compareRows).map(r => r.id)).toEqual(expected)
+      expect(
+        rotated
+          .reverse()
+          .sort(compareRows)
+          .map(r => r.id),
+      ).toEqual(expected)
+    }
+  })
+})
+
+describe('dispatchOrder', () => {
+  interface Spec {
+    id: string
+    in?: string
+    score: number
+    W?: number
+    kind?: string
+    blocked?: string[]
+  }
+  function rows(specs: Spec[]): ScoreRow[] {
+    return specs.map(s => ({
+      id: s.id,
+      initiative: s.in ?? 'a',
+      score: s.score,
+      kind: s.kind ?? 'platform',
+      blocked: s.blocked ?? [],
+      components: { S: 0, P: 0, U: 0, A: 0, W: s.W ?? 1, K: 1, R: 1, Z: 1, H: 1 },
+    })) as ScoreRow[]
+  }
+  const nit = (id: string, score: number): Spec => ({ id, score, kind: 'nit' })
+
+  it.each([
+    [
+      'decays a candidate once per prior pick in its initiative',
+      rows([
+        { id: 'A-1', score: 60 },
+        { id: 'A-2', score: 55 },
+        { id: 'B-1', in: 'b', score: 50 },
+      ]),
+      {},
+      3,
+      [
+        ['A-1', 60],
+        ['B-1', 50],
+        ['A-2', 46.8],
+      ],
+      {},
+    ],
+    [
+      'compounds decay over two prior picks',
+      rows([
+        { id: 'A-1', score: 100 },
+        { id: 'A-2', score: 90 },
+        { id: 'A-3', score: 80 },
+        { id: 'B-1', in: 'b', score: 70 },
+      ]),
+      {},
+      4,
+      [
+        ['A-1', 100],
+        ['A-2', 76.5],
+        ['B-1', 70],
+        ['A-3', 57.8],
+      ],
+      {},
+    ],
+    [
+      'does not decay a single initiative',
+      rows([
+        { id: 'A-1', score: 60 },
+        { id: 'A-2', score: 55 },
+      ]),
+      {},
+      2,
+      [
+        ['A-1', 60],
+        ['A-2', 55],
+      ],
+      {},
+    ],
+    [
+      'counts initiatives after blocked rows leave',
+      rows([
+        { id: 'A-1', score: 60 },
+        { id: 'A-2', score: 55 },
+        { id: 'B-1', in: 'b', score: 90, blocked: ['A-1'] },
+      ]),
+      {},
+      3,
+      [
+        ['A-1', 60],
+        ['A-2', 55],
+      ],
+      {},
+    ],
+    [
+      'stops at n picks',
+      rows([
+        { id: 'A-1', score: 60 },
+        { id: 'A-2', score: 55 },
+        { id: 'A-3', score: 50 },
+      ]),
+      {},
+      2,
+      [
+        ['A-1', 60],
+        ['A-2', 55],
+      ],
+      {},
+    ],
+    [
+      'caps a kind at floor(cap * n) and counts the skip',
+      rows([nit('A-1', 90), nit('A-2', 80), nit('A-3', 70), { id: 'A-4', score: 10 }]),
+      { nit: 0.5 },
+      4,
+      [
+        ['A-1', 90],
+        ['A-2', 80],
+        ['A-4', 10],
+      ],
+      { 'share-cap:nit': 1 },
+    ],
+    [
+      'allows at least one pick when floor(cap * n) is 0',
+      rows([nit('A-1', 90), nit('A-2', 80), { id: 'A-3', score: 10 }]),
+      { nit: 0.1 },
+      3,
+      [
+        ['A-1', 90],
+        ['A-3', 10],
+      ],
+      { 'share-cap:nit': 1 },
+    ],
+    [
+      'does not decay an initiative for a skipped pick',
+      rows([nit('A-1', 90), nit('A-2', 80), { id: 'B-1', in: 'b', score: 70 }, { id: 'A-3', score: 60 }]),
+      { nit: 0.25 },
+      4,
+      [
+        ['A-1', 90],
+        ['B-1', 70],
+        ['A-3', 51],
+      ],
+      { 'share-cap:nit': 1 },
+    ],
+    [
+      'treats a cap of 1 or more as no cap',
+      rows([nit('A-1', 90), nit('A-2', 80), nit('A-3', 70)]),
+      { nit: 1.5 },
+      3,
+      [
+        ['A-1', 90],
+        ['A-2', 80],
+        ['A-3', 70],
+      ],
+      {},
+    ],
+    [
+      'ignores the discovery key',
+      rows([
+        { id: 'A-1', score: 90, kind: 'discovery' },
+        { id: 'A-2', score: 80, kind: 'discovery' },
+      ]),
+      { discovery: 0.1 },
+      2,
+      [
+        ['A-1', 90],
+        ['A-2', 80],
+      ],
+      {},
+    ],
+    [
+      'breaks an effective tie by the heavier initiative',
+      rows([
+        { id: 'A-1', score: 50, W: 0.5 },
+        { id: 'B-1', in: 'b', score: 50, W: 1 },
+      ]),
+      {},
+      1,
+      [['B-1', 50]],
+      {},
+    ],
+    [
+      'breaks a weight tie by slug',
+      rows([
+        { id: 'B-1', in: 'b', score: 50 },
+        { id: 'A-9', score: 50 },
+      ]),
+      {},
+      1,
+      [['A-9', 50]],
+      {},
+    ],
+    [
+      'breaks a slug tie by ID number',
+      rows([
+        { id: 'R-1000', score: 57.5 },
+        { id: 'R-125', score: 57.5 },
+      ]),
+      {},
+      1,
+      [['R-125', 57.5]],
+      {},
+    ],
+  ])('%s', (_scenario, input, shareCaps, n, expected, refused) => {
+    const result = dispatchOrder(input, { ...DEFAULTS, share_caps: shareCaps }, n)
+    expect(result.order.map(r => [r.id, r.effective])).toEqual(expected)
+    expect(result.refused).toEqual(refused)
   })
 })
 
