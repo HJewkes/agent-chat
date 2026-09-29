@@ -294,7 +294,16 @@ describe('a worktree someone is standing in', () => {
     const worktree = await abandonedWorktree(repo)
 
     const swept = await sweepWorktrees(
-      [identity(), identity({ agentId: 'a2', name: 'reviewer', state: 'detached', cwd: worktree })],
+      [
+        identity(),
+        identity({
+          agentId: 'a2',
+          name: 'reviewer',
+          state: 'detached',
+          cwd: worktree,
+          lastEventAt: now() - 1,
+        }),
+      ],
       {
         list: lister,
         now,
@@ -309,7 +318,7 @@ describe('a worktree someone is standing in', () => {
     const worktree = await abandonedWorktree(repo)
 
     const swept = await sweepWorktrees(
-      [identity(), identity({ agentId: 'a2', name: 'reviewer', cwd: worktree })],
+      [identity(), identity({ agentId: 'a2', name: 'reviewer', cwd: worktree, lastEventAt: now() - 1 })],
       {
         list: lister,
         now,
