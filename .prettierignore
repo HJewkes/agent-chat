@@ -10,3 +10,6 @@ src/__tests__/golden/
 
 # One events.db row per line, so a diff of the replay fixture stays reviewable.
 src/__tests__/fixtures/watchdog-2026-09-29.json
+
+# Verbatim frontmatter copies of the autonomy charter and seats; reformatting would drift from the originals.
+src/__tests__/fixtures/autonomy-2026-09-29/
