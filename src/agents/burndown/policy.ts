@@ -6,6 +6,7 @@ import { activeWorkRoot } from '../active-work.js'
 import type { PoolRule, SpendCaps } from './budget-gate.js'
 import type { Initiative } from './eligibility.js'
 import type { ScoringDefaults } from './score.js'
+import { assertSafeName } from './score-source.js'
 
 /** The CC-201 scorer's policy: charter and seat frontmatter, as score.py `load_policy` and `seat_initiatives` read them. CLI-only; the broker never imports this. */
 
@@ -138,6 +139,7 @@ export function loadPolicy(root: string, seatName: string): Policy {
   const read = (file: string) => fs.readFileSync(path.join(root, file), 'utf8')
   const charter = parseCharter(read('charter.md'))
   if (!charter.seats.includes(seatName)) throw new Error(`${seatName} is not a seat in ${root}/charter.md`)
+  charter.seats.forEach(s => assertSafeName('seat', s))
   const seats = Object.fromEntries(
     charter.seats.map(s => [s, parseSeat(read(path.join('seats', `${s}.md`)), s)]),
   )
