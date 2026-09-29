@@ -30,6 +30,8 @@ Agent commands:
   agent                      durable agents
   teleport                   teleport control
   profiles                   agent profiles available to spawn with
+  gh-write <gh-args...>      one gh write after --, spaced machine-wide and retried on the secondary
+                             rate limit
 
 === agent-chat inbox
 Usage: agent-chat inbox [options]
@@ -576,6 +578,14 @@ Options:
 Usage: agent-chat profiles [options]
 
 agent profiles available to spawn with
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat gh-write
+Usage: agent-chat gh-write [options] <gh-args...>
+
+one gh write after --, spaced machine-wide and retried on the secondary rate limit
 
 Options:
   -h, --help  display help for command

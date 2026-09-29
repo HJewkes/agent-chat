@@ -171,6 +171,15 @@ function addAgentCommands(program: Command): void {
   addVerb(teleport, teleportAbortVerb)
 
   addVerb(program, profilesVerb, { helpGroup: AGENTS })
+
+  program
+    .command('gh-write <gh-args...>')
+    .description('one gh write after --, spaced machine-wide and retried on the secondary rate limit')
+    .helpGroup(AGENTS)
+    .action(async (args: string[]) => {
+      const { ghWriteCommand } = await import('./gh-write.js')
+      await ghWriteCommand(args)
+    })
 }
 
 /**

@@ -11,6 +11,7 @@ interface AgentChatConfig {
   permissionHookTimeoutSeconds?: unknown
   decider?: unknown
   noticeTtlHours?: unknown
+  ghWriteGapSeconds?: unknown
 }
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
@@ -90,6 +91,14 @@ export const DEFAULT_NOTICE_TTL_HOURS = 72
 /** `noticeTtlHours` in `config.json`, in milliseconds; read per query so an edit needs no broker restart. */
 export function resolveNoticeTtlMs(): number {
   return positiveIntegerFrom('noticeTtlHours', DEFAULT_NOTICE_TTL_HOURS) * 3_600_000
+}
+
+/** Minimum spacing between two `agent-chat gh-write` calls machine-wide (CC-253). */
+export const DEFAULT_GH_WRITE_GAP_S = 3
+
+/** `ghWriteGapSeconds` in `config.json`, in milliseconds; read per call. */
+export function resolveGhWriteGapMs(): number {
+  return positiveIntegerFrom('ghWriteGapSeconds', DEFAULT_GH_WRITE_GAP_S) * 1000
 }
 
 function positiveIntegerFrom(key: keyof AgentChatConfig, fallback: number): number {
