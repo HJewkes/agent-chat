@@ -557,10 +557,10 @@ Usage: agent-chat agent budget [options] [name]
 context fill and account rate limits, per agent
 
 Options:
-  --mine                    only agents you spawned (needs a registered session name)
-  --spawner <name> <value>  only agents spawned by <name>
-  --prefix <p> <value>      only agents whose name starts with <p>
-  -h, --help                display help for command
+  --mine            only agents you spawned (needs a registered session name)
+  --spawner <name>  only agents spawned by <name>
+  --prefix <p>      only agents whose name starts with <p>
+  -h, --help        display help for command
 
 === agent-chat teleport
 Usage: agent-chat teleport [options] [command]
