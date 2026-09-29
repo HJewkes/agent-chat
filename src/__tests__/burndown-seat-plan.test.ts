@@ -12,7 +12,9 @@ import { checkSeatPrefixes, loadPolicy, type SeatPolicy } from '../agents/burndo
 import type { ScoreRow, ScoringDefaults } from '../agents/burndown/score.js'
 import type { SeatDispatch } from '../agents/burndown/seat-dispatch.js'
 import { planSeat, priorPicksOf, type SeatPlanInputs } from '../agents/burndown/seat-plan.js'
+import { activeTreeOf } from '../agents/burndown/seat-tick.js'
 import { stepsForDispatch, type StepContext } from '../agents/burndown/steps.js'
+import type { AgentIdentity, AgentLifecycle } from '../protocol.js'
 
 /** CC-247: prior picks, the pure seat planner, and the seat identity seams from the #196 review. */
 
@@ -27,7 +29,7 @@ const SEAT: SeatDispatch = {
   configDir: '/tmp/pool-x',
   repos: { alpha: [REPO, '/tmp/repos/alpha-docs'], beta: ['/tmp/repos/beta'] },
   caps: { implementers: 2, reviewers: 1, planners: 1 },
-  worktrees: { perRepoPerSeat: 3, leftFreePerRepo: 2 },
+  worktrees: { perRepoPerSeat: 3, capName: 'worktrees_per_repo_per_seat', leftFreePerRepo: 2 },
   excludedTags: [],
   grants: [],
 }
@@ -337,6 +339,75 @@ describe('planSeat refusals', () => {
         reason: expect.stringContaining('sonnet only'),
       }),
     ])
+  })
+})
+
+describe('planSeat active worktrees (CC-279)', () => {
+  const capped: SeatDispatch = {
+    ...SEAT,
+    worktrees: { perRepoPerSeat: 2, capName: 'concurrency.implementers', leftFreePerRepo: 2 },
+  }
+  const tree = (n: string) => `${REPO}/.worktrees/sa-a-${n}`
+  const held = (n: string, phase: Claim['phase']): Claim =>
+    claim(`A-${n}`, { phase, worktree: tree(n), agentName: `sa-a-${n}` })
+  const agent = (name: string, state: AgentLifecycle, cwd = '/tmp/elsewhere'): AgentIdentity =>
+    ({ name, state, cwd, spawnedAt: 1 }) as AgentIdentity
+  const plan = (claims: Claim[], agents: AgentIdentity[]) =>
+    one(
+      'A-1',
+      {},
+      {},
+      {
+        seat: capped,
+        ledger: { ...EMPTY_LEDGER, claims },
+        activeTree: activeTreeOf({ agents }),
+      },
+    )
+
+  it('dispatches when the seat has more branches than implementers but the extra trees are parked', () => {
+    const claims = [held('7', 'awaiting-merge'), held('8', 'awaiting-merge'), held('9', 'parked')]
+    const agents = [agent('sa-a-7', 'exited'), agent('sa-a-8', 'retired'), agent('sa-a-9', 'live')]
+
+    const result = plan(claims, agents)
+
+    expect(result.dispatch.map(d => d.task)).toEqual(['A-1'])
+  })
+
+  it('refuses when the active trees reach the implementers cap', () => {
+    const claims = [held('7', 'parked'), held('8', 'parked'), held('9', 'awaiting-merge')]
+    const agents = [agent('sa-a-7', 'live'), agent('sa-a-8', 'live'), agent('sa-a-9', 'exited')]
+
+    const result = plan(claims, agents)
+
+    expect(result.refusals).toEqual([
+      expect.objectContaining({
+        kind: 'worktrees',
+        reason: expect.stringContaining(
+          'holds 2 active worktrees under /tmp/repos/alpha-app/.worktrees; concurrency.implementers is 2',
+        ),
+      }),
+    ])
+  })
+
+  it("counts a spawning claim with no roster row and a spawning agent's tree as active", () => {
+    const claims = [held('7', 'spawning'), held('8', 'parked')]
+
+    const result = plan(claims, [agent('sa-a-8', 'spawning')])
+
+    expect(refusalOf(result)).toEqual([['A-1', 'worktrees']])
+  })
+
+  it('counts a tree a live agent of another name stands in', () => {
+    const claims = [held('7', 'parked'), held('8', 'parked')]
+    const agents = [
+      agent('sa-a-7', 'live'),
+      agent('sa-a-8', 'exited'),
+      agent('other', 'live', `${tree('8')}/src`),
+    ]
+
+    const result = plan(claims, agents)
+
+    expect(refusalOf(result)).toEqual([['A-1', 'worktrees']])
   })
 })
 

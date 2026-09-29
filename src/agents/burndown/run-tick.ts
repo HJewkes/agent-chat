@@ -261,7 +261,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const planLedger = applyActions(ledger, kept, now)
   const { check, failures } = await tickCollision(planLedger, opts)
   const prefixes = [DEFAULT_NAME_PREFIX, ...(seats?.loaded.map(s => s.dispatch.prefix) ?? [])]
-  const planned = planNew(world, seats, root, {
+  const planned = planNew(world, seats, root, roster, {
     ledger: planLedger,
     capacity: worktreeCapacity(config, { ...agents, agents: agents.agents - advanced.spawns }, prefixes),
     orphan: (repo, name) => orphanAt(repo, name),
@@ -307,7 +307,13 @@ interface Planned {
 }
 
 /** Without seats, `plan()` over the briefs' autonomy blocks; with seats, `planSeat` for each loaded seat. */
-function planNew(world: World, seats: LoadedSeats | undefined, root: string, work: NewWork): Planned {
+function planNew(
+  world: World,
+  seats: LoadedSeats | undefined,
+  root: string,
+  roster: Roster,
+  work: NewWork,
+): Planned {
   if (seats === undefined) return { ...plan({ ...world, ...work }), skipped: [], tasks: new Map() }
   const cliVersion = installedClaudeVersion()
   const planned = planSeats(
@@ -316,6 +322,7 @@ function planNew(world: World, seats: LoadedSeats | undefined, root: string, wor
       ...work,
       initiatives: world.initiatives,
       trust: (repo, cwd, configDir) => trustRefusal(repo, cwd, configDir, cliVersion),
+      roster,
     },
     root,
   )

@@ -108,6 +108,14 @@ describe('mergeDefaults', () => {
     expect(merged.initiative_decay).toBe(0.85)
   })
 
+  it('parses a charter without worktrees_per_repo_per_seat, leaving it undefined', () => {
+    const text = fs.readFileSync(path.join(FIXTURE, 'charter.md'), 'utf8')
+    const charter = parseCharter(text.replace('  worktrees_per_repo_per_seat: 3\n', ''))
+
+    expect(charter.defaults.worktrees_per_repo_per_seat).toBeUndefined()
+    expect(charter.defaults.worktrees_left_free_per_repo).toBe(2)
+  })
+
   it('throws with the zod message on a charter missing a default the scorer reads', () => {
     expect(() => parseCharter(charterText().replace('  stop_short_factor: 0.8\n', ''))).toThrow(
       /autonomy charter is malformed: .*stop_short_factor/s,

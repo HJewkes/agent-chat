@@ -108,10 +108,10 @@ export async function agentWorktreesIn(
 }
 
 /** Live means someone is in it; anything else has stopped and may be reclaimable. */
-const isLive = (state: string): boolean => state === 'live' || state === 'spawning'
+export const isLive = (state: string): boolean => state === 'live' || state === 'spawning'
 
 /** A live agent whose cwd is the tree or anywhere inside it, whatever its name or branch (CC-277). */
-function occupantOf(worktree: string, roster: readonly AgentIdentity[]): AgentIdentity | undefined {
+export function occupantOf(worktree: string, roster: readonly AgentIdentity[]): AgentIdentity | undefined {
   const tree = canonicalPath(worktree)
   return roster.find(agent => isLive(agent.state) && agent.cwd && isAtOrUnder(canonicalPath(agent.cwd), tree))
 }
