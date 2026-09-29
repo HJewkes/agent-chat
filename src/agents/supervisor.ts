@@ -57,6 +57,7 @@ import {
   type TranscriptVerdict,
 } from './resume-session.js'
 import { reattachWorktree, type WorktreeRecord } from './isolation/worktree.js'
+import { allocatedWorktree, parkBlocker, parkWorktree, type ParkTarget } from './isolation/park.js'
 import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { loginGap, readOutputTail } from './launch-output.js'
@@ -352,6 +353,9 @@ export interface SpawnOutcome {
 }
 
 /** CC-126: how `resume` relaunches. Headless unless the caller asks for a pane. */
+/** CC-282: who asked, resolved by the broker from the connection, for the worker ownership rule. */
+export type ParkRequest = Pick<ResumeRequest, 'requestedBy' | 'requesterAgentId'>
+
 export interface ResumeRequest {
   surface?: SurfaceName
   /** The turn a headless resume starts on; {@link RESUMED_BRIEF} when absent. */
@@ -486,6 +490,8 @@ export function floorWarning(requested: IsolationName, profileIsolation: Isolati
 
 export class Supervisor implements TeleportHost {
   private readonly live = new Map<string, Live>()
+  /** CC-282: agents mid-park, to the canonical tree being removed. */
+  private readonly parking = new Map<string, string>()
   private readonly semaphore: Semaphore
   private readonly spawnRateBudget: SpawnRateBudget
   private readonly settleMs: number
@@ -1004,7 +1010,7 @@ export class Supervisor implements TeleportHost {
     if (fork !== undefined && 'error' in fork) return this.refuse(req, fork.error)
 
     const cwd = req.cwd ?? process.cwd()
-    const cwdError = this.checkCwd(cwd, req.requestedBy)
+    const cwdError = this.checkCwd(cwd, req.requestedBy) ?? this.parkingRefusal(req.worktree ?? cwd)
     if (cwdError) return this.refuse(req, cwdError)
     const isolationName = isolationFor(req, profile)
     // Minted before the slot is taken so that acquire and release are keyed the
@@ -1672,6 +1678,63 @@ export class Supervisor implements TeleportHost {
   }
 
   /**
+   * CC-282: remove an exited agent's clean, pushed worktree and keep its branch.
+   *
+   * Runs here rather than in the CLI so the occupancy check, the removal and the
+   * `isolation_parked` row happen in the process that also serialises spawns into
+   * that tree, and so the row lands in the log `agent resume` reads it back from.
+   */
+  async park(name: string, req: ParkRequest = {}): Promise<{ ok: boolean; reason?: string }> {
+    const identity = this.core.agents.byName(name)
+    if (!identity) return { ok: false, reason: `no agent named "${name}"` }
+    const refused = this.checkOwnership(identity, req.requesterAgentId, req.requestedBy, 'park')
+    if (refused) return { ok: false, reason: refused }
+    if (this.parking.has(identity.agentId)) return { ok: false, reason: `${name} is already being parked` }
+    const target = allocatedWorktree(this.core.events.agentEvents(), identity.agentId)
+    const blocked = this.parkBlockerFor(identity.agentId, target)
+    if (blocked !== undefined || target === undefined) return { ok: false, reason: blocked ?? 'no worktree' }
+    this.parking.set(identity.agentId, canonicalPath(target.worktree))
+    try {
+      const parked = await parkWorktree(target, () => this.parkBlockerFor(identity.agentId, target))
+      if (!parked.ok) return parked
+      this.recordParked(name, identity.agentId, target, parked.head)
+      return {
+        ok: true,
+        reason: `Parked ${target.worktree}; branch ${target.branch} kept at ${parked.head}.`,
+      }
+    } finally {
+      this.parking.delete(identity.agentId)
+    }
+  }
+
+  /** Read fresh each call, so the re-check before removal sees a spawn or resume that landed during the git checks. */
+  private parkBlockerFor(agentId: string, target: ParkTarget | undefined): string | undefined {
+    const identity = this.core.agents.get(agentId)
+    if (!identity) return 'the agent was retired while parking'
+    return parkBlocker(identity, this.live.has(agentId), target, this.core.agents.roster())
+  }
+
+  private recordParked(name: string, agentId: string, target: ParkTarget, head: string): void {
+    const { gitRoot, worktree, branch } = target
+    this.core.append({
+      kind: 'isolation_parked',
+      actor: name,
+      ref: agentId,
+      body: '',
+      meta: { strategy: 'worktree', gitRoot, worktree, branch, head },
+    })
+  }
+
+  /** CC-282: a spawn or resume into a tree mid-park would lose its cwd to the removal. */
+  private parkingRefusal(dir: string | undefined): string | undefined {
+    if (dir === undefined) return undefined
+    const at = canonicalPath(dir)
+    for (const tree of this.parking.values())
+      if (isAtOrUnder(at, tree)) return `${tree} is being parked; try again once the park finishes`
+    return undefined
+  }
+
+  /**
    * CC-141: a successor spawned with `worktree:` adopts its predecessor's tree, and
    * adoption leaves ownership with the predecessor, so retiring it would pull the
    * tree out from under the successor. "Still working" means any identity that is
@@ -1852,7 +1915,7 @@ export class Supervisor implements TeleportHost {
   async resume(name: string, req: ResumeRequest = {}): Promise<SpawnOutcome> {
     const identity = this.core.agents.byName(name)
     if (!identity) return { ok: false, reason: this.missingReason(name) }
-    const refused = this.checkResumer(identity, req)
+    const refused = this.checkResumer(identity, req) ?? this.parkingRefusal(identity.cwd)
     if (refused) return { ok: false, reason: refused }
     const transcript = identityTranscript(identity)
     const gone = this.goneCwd(identity)
@@ -1913,7 +1976,7 @@ export class Supervisor implements TeleportHost {
     identity: AgentIdentity,
     requesterAgentId: string | undefined,
     requestedBy: string | undefined,
-    verb: 'resume' | 'surface',
+    verb: 'resume' | 'surface' | 'park',
   ): string | undefined {
     const requester = this.requesterOf(requesterAgentId)
     if (requester.role !== 'worker') return undefined

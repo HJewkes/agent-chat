@@ -10,6 +10,7 @@ import * as agents from './agents.js'
 import { addVerb } from './command.js'
 import { agentBudgetVerb } from './verbs/agent-budget.js'
 import { agentRetire } from './verbs/agent-retire.js'
+import { agentPark } from './verbs/agent-park.js'
 import { agentResume } from './verbs/agent-resume.js'
 import { agentSurfaceVerb } from './verbs/agent-surface.js'
 import { agentWorktreesVerb } from './verbs/agent-worktrees.js'
@@ -165,6 +166,7 @@ function addAgentCommands(program: Command): void {
     .option('--config-dir <path>', 'the Claude config dir, and therefore the account, to run it on')
     .action(agents.agentSpawn)
   addVerb(agent, agentRetire)
+  addVerb(agent, agentPark)
   addVerb(agent, agentResume)
   addVerb(agent, agentWorktreesVerb)
   addVerb(agent, agentSurfaceVerb)
