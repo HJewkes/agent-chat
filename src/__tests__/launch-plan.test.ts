@@ -537,8 +537,8 @@ describe('profile effort (CC-199)', () => {
 
     const out = String(await agentProfiles.run({} as never, {} as never))
 
-    expect(out).toContain('- deep [opus, effort max, headless')
-    expect(out).toContain('- plain [opus, headless')
+    expect(out).toContain('- deep [worker, opus, effort max, headless')
+    expect(out).toContain('- plain [worker, opus, headless')
   })
 })
 
