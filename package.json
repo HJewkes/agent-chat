@@ -17,6 +17,8 @@
     "pretest": "npm run build",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json && npm run typecheck:dashboard",
     "test": "vitest run",
+    "test:shadow": "AGENT_CHAT_LEDGER_SHADOW=1 vitest run src/__tests__/supervisor.test.ts src/__tests__/slots-reattach.test.ts src/__tests__/ledger-shadow-supervisor.test.ts src/__tests__/ledger-shadow-continuations.test.ts",
+    "verify": "npm run format:check && npm run typecheck && npm run build && vitest run && npm run test:shadow",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "build:dashboard": "vite build --config src/dashboard/vite.config.ts",
