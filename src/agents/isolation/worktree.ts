@@ -51,7 +51,11 @@ export interface WorktreeOptions {
   budget?: number
   /** Bound on fetching origin's default branch before cutting a new one. */
   fetchTimeoutMs?: number
+  /** Runs each `git worktree add`; tests inject one to observe how adds interleave. */
+  runWorktreeAdd?: GitRunner
 }
+
+export type GitRunner = (args: readonly string[], cwd: string) => Promise<string>
 
 async function git(args: readonly string[], cwd: string, timeout?: number): Promise<string> {
   const { stdout } = await execFileAsync('git', [...args], {
@@ -341,6 +345,21 @@ async function resolveBranchBaseNow(gitRoot: string, timeoutMs: number): Promise
   }
 }
 
+/** The tail of each repo's queue of `worktree add`s; it never rejects, so one failure does not jam the rest. */
+const addQueues = new Map<string, Promise<unknown>>()
+
+/**
+ * CC-224: concurrent adds in one repo read each other's half-written
+ * `.git/worktrees/<name>/commondir` and die, so they take turns per repo.
+ */
+function addWorktree(gitRoot: string, args: readonly string[], run: GitRunner = git): Promise<string> {
+  const adding = (addQueues.get(gitRoot) ?? Promise.resolve()).then(() => run(args, gitRoot))
+  const tail = adding.catch(() => undefined)
+  addQueues.set(gitRoot, tail)
+  void tail.then(() => addQueues.get(gitRoot) === tail && addQueues.delete(gitRoot))
+  return adding
+}
+
 /** Hooks and settings live in gitignored .claude/, so a fresh worktree runs unhooked without this. */
 function copyClaudeDir(gitRoot: string, worktreePath: string): void {
   const source = path.resolve(gitRoot, '.claude')
@@ -348,11 +367,22 @@ function copyClaudeDir(gitRoot: string, worktreePath: string): void {
   if (existsSync(source) && !existsSync(target)) cpSync(source, target, { recursive: true })
 }
 
-async function resetTo(gitRoot: string, branch: string, worktreePath: string, base: string): Promise<void> {
+interface AttachOptions {
+  base: string
+  force: boolean
+  run?: GitRunner | undefined
+}
+
+async function resetTo(
+  gitRoot: string,
+  branch: string,
+  worktreePath: string,
+  opts: AttachOptions,
+): Promise<void> {
   await gitOrNull(['worktree', 'remove', '--force', worktreePath], gitRoot)
   rmSync(worktreePath, { recursive: true, force: true })
   await gitOrNull(['branch', '-D', branch], gitRoot)
-  await git(['worktree', 'add', '-b', branch, worktreePath, base], gitRoot)
+  await addWorktree(gitRoot, ['worktree', 'add', '-b', branch, worktreePath, opts.base], opts.run)
 }
 
 /**
@@ -375,16 +405,16 @@ async function attachWorktree(
   gitRoot: string,
   branch: string,
   worktreePath: string,
-  opts: { base: string; force: boolean },
+  opts: AttachOptions,
 ): Promise<boolean> {
   if ((await gitOrNull(['rev-parse', '--verify', branch], gitRoot)) === null) {
-    await git(['worktree', 'add', '-b', branch, worktreePath, opts.base], gitRoot)
+    await addWorktree(gitRoot, ['worktree', 'add', '-b', branch, worktreePath, opts.base], opts.run)
     copyClaudeDir(gitRoot, worktreePath)
     return false
   }
 
   if (opts.force) {
-    await resetTo(gitRoot, branch, worktreePath, opts.base)
+    await resetTo(gitRoot, branch, worktreePath, opts)
     copyClaudeDir(gitRoot, worktreePath)
     return false
   }
@@ -394,8 +424,8 @@ async function attachWorktree(
     throw new WorktreeInUseError(branch, holder ?? worktreePath)
 
   const safety = await inspectForRelease(gitRoot, worktreePath, branch, opts.base)
-  if (safety.unmerged) await git(['worktree', 'add', worktreePath, branch], gitRoot)
-  else await resetTo(gitRoot, branch, worktreePath, opts.base)
+  if (safety.unmerged) await addWorktree(gitRoot, ['worktree', 'add', worktreePath, branch], opts.run)
+  else await resetTo(gitRoot, branch, worktreePath, opts)
 
   copyClaudeDir(gitRoot, worktreePath)
   return safety.unmerged
@@ -458,9 +488,14 @@ function addArgs(record: WorktreeRecord, source: BranchSource, base: string): st
 }
 
 /** A concurrent re-attach of the same record loses the race here; say so rather than pass git's text on. */
-async function addForSource(record: WorktreeRecord, source: BranchSource, base: string): Promise<void> {
+async function addForSource(
+  record: WorktreeRecord,
+  source: BranchSource,
+  base: string,
+  run?: GitRunner,
+): Promise<void> {
   try {
-    await git(addArgs(record, source, base), record.gitRoot)
+    await addWorktree(record.gitRoot, addArgs(record, source, base), run)
   } catch (err) {
     const holder = await checkoutOf(record.gitRoot, record.branch)
     if (holder !== null || existsSync(record.worktree))
@@ -511,7 +546,7 @@ export async function reattachWorktree(
   const timeoutMs = opts.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS
   const base = await resolveBranchBase(gitRoot, timeoutMs)
   const source = await branchSource(gitRoot, branch, timeoutMs)
-  await addForSource(record, source, base.sha)
+  await addForSource(record, source, base.sha, opts.runWorktreeAdd)
   copyClaudeDir(gitRoot, worktree)
   const warnings = reattachWarnings(record, source, base)
   return {
@@ -596,6 +631,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       const reused = await attachWorktree(gitRoot, branch, worktreePath, {
         base: base.sha,
         force: ctx.forceReset === true,
+        run: opts.runWorktreeAdd,
       })
 
       const carried = reused ? ' It already carries commits from an earlier run under this name.' : ''

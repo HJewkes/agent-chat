@@ -1,8 +1,9 @@
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { promisify } from 'node:util'
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest'
 import {
   fileOwnershipStrategy,
   getStrategy,
@@ -22,6 +23,7 @@ import {
   WorktreeInUseError,
   worktreeStrategy,
 } from '../agents/isolation/worktree.js'
+import type { GitRunner } from '../agents/isolation/worktree.js'
 import type { Allocation, IsolationContext, LivePeer } from '../agents/isolation/index.js'
 
 const tmpdirs: string[] = []
@@ -485,6 +487,84 @@ describe('worktree branch base (CC-151)', () => {
     const alloc = await worktreeStrategy.allocate(ctxFor(repo))
 
     expect(alloc.warnings?.[0]).toContain('no origin remote')
+  })
+})
+
+describe('concurrent worktree adds (CC-224)', () => {
+  const runGit = promisify(execFile)
+  const realAdd: GitRunner = async (args, cwd) => (await runGit('git', [...args], { cwd })).stdout.trim()
+
+  /** Records when each add starts and ends; the delay widens any overlap so it cannot slip past. */
+  function recordingAdd(): { run: GitRunner; spans: { start: number; end: number }[] } {
+    const spans: { start: number; end: number }[] = []
+    let clock = 0
+    const run: GitRunner = async (args, cwd) => {
+      const span = { start: clock++, end: -1 }
+      spans.push(span)
+      await new Promise(resolve => setTimeout(resolve, 20))
+      try {
+        return await realAdd(args, cwd)
+      } finally {
+        span.end = clock++
+      }
+    }
+    return { run, spans }
+  }
+
+  it('never lets two allocations in one repository run their worktree add at once', async () => {
+    const repo = makeRepo()
+    const { run, spans } = recordingAdd()
+    const strategy = createWorktreeStrategy({ budget: 10, runWorktreeAdd: run })
+    const names = ['w1', 'w2', 'w3', 'w4', 'w5']
+
+    const allocs = await Promise.all(names.map(name => strategy.allocate(ctxFor(repo, { agentName: name }))))
+
+    expect(allocs).toHaveLength(names.length)
+    expect(spans).toHaveLength(names.length)
+    spans.forEach((span, i) => expect(span.start).toBe(i * 2))
+    spans.forEach(span => expect(span.end).toBe(span.start + 1))
+  })
+
+  it('lets the next allocation in a repository proceed after an add fails', async () => {
+    const repo = makeRepo()
+    let calls = 0
+    const failFirst: GitRunner = (args, cwd) =>
+      calls++ === 0 ? Promise.reject(new Error('add failed')) : realAdd(args, cwd)
+    const strategy = createWorktreeStrategy({ budget: 10, runWorktreeAdd: failFirst })
+
+    const settled = await Promise.allSettled(
+      ['w1', 'w2'].map(name => strategy.allocate(ctxFor(repo, { agentName: name }))),
+    )
+
+    expect(settled.map(s => s.status)).toEqual(['rejected', 'fulfilled'])
+  })
+
+  it('does not make adds in different repositories wait for each other', async () => {
+    const [left, right] = [makeRepo(), makeRepo()]
+    let leftStarted!: () => void
+    let rightStarted!: () => void
+    const leftHasStarted = new Promise<void>(resolve => (leftStarted = resolve))
+    const rightHasStarted = new Promise<void>(resolve => (rightStarted = resolve))
+    let timer: NodeJS.Timeout | undefined
+    const giveUp = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('the add in the other repository never started')), 2_000)
+    })
+    onTestFinished(() => clearTimeout(timer))
+    const leftHoldsItsAddOpen: GitRunner = async (args, cwd) => {
+      if (cwd === left) {
+        leftStarted()
+        await Promise.race([rightHasStarted, giveUp])
+      } else rightStarted()
+      return realAdd(args, cwd)
+    }
+    const strategy = createWorktreeStrategy({ runWorktreeAdd: leftHoldsItsAddOpen })
+
+    const allocs = await Promise.all([
+      strategy.allocate(ctxFor(left)),
+      leftHasStarted.then(() => strategy.allocate(ctxFor(right))),
+    ])
+
+    expect(allocs.map(a => a.ref?.gitRoot)).toEqual([left, right])
   })
 })
 
