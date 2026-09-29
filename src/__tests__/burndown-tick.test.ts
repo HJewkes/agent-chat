@@ -1137,6 +1137,108 @@ describe('burndown tick advances a seat claim', () => {
   })
 })
 
+describe('burndown tick charges seat claim spawns to their pool (CC-292)', () => {
+  const autonomy = () => path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy')
+  const before7 = { at: NOON.getTime() - 6 * 3_600_000, sevenDay: 40 }
+  const implemented = (taskId: string, seat: string): { claim: Claim; name: string; worktree: string } => {
+    const name = `st-${taskId.toLowerCase()}`
+    const worktree = path.join(repo(), '.worktrees', name)
+    git(repo(), 'worktree', 'add', '-q', '-b', `agent-chat/${name}`, worktree)
+    git(worktree, 'commit', '-q', '--allow-empty', '-m', 'work')
+    const claim: Claim = {
+      taskId,
+      initiative: 'demo',
+      seat,
+      namePrefix: 'st',
+      spawnedAt: NOON.toISOString(),
+      phase: 'implementing',
+      phaseAt: NOON.toISOString(),
+      agentName: name,
+      spawned: [name],
+      worktree,
+    }
+    return { claim, name, worktree }
+  }
+
+  it('lets one reviewer spawn and refuses the new dispatch when the pool has headroom for one', async () => {
+    seatPolicy({ poolExtra: ', per_day_points: 2' })
+    config({ seats: ['seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1'), 'DM-2': seatTask('DM-2') })
+    const due = implemented('DM-1', 'seat-t')
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [due.claim],
+      seats: { 'seat-t': { samples: [before7] } },
+    })
+    const fake = fakeBroker({ agents: [row(due.name, 'exited', due.worktree)] })
+
+    const lines = await tick(fake)
+
+    expect(fake.frames.map(f => f.name)).toEqual(['st-dm-1-r0'])
+    expect(lines).toContain(
+      "refused demo DM-2 [budget]: BUDGET-PAUSE pool pool-t: day spend 2 points since 07:00 at or above the pool pool-t's per_day_points 2; charged 1 dispatch(es) this tick at +2 seven_day, +10 five_hour",
+    )
+  })
+
+  it('defers the second of two reviewers on one pool without stalling its claim', async () => {
+    seatPolicy({ poolExtra: ', per_day_points: 2' })
+    config({ seats: ['seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1'), 'DM-2': seatTask('DM-2') })
+    const first = implemented('DM-1', 'seat-t')
+    const second = implemented('DM-2', 'seat-t')
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [first.claim, second.claim],
+      seats: { 'seat-t': { samples: [before7] } },
+    })
+    const agents = [row(first.name, 'exited', first.worktree), row(second.name, 'exited', second.worktree)]
+    const fake = fakeBroker({ agents })
+
+    const lines = await tick(fake)
+
+    expect(fake.frames.map(f => f.name)).toEqual(['st-dm-1-r0'])
+    expect(lines.join('\n')).toContain(
+      'deferred DM-2#: budget: BUDGET-PAUSE pool pool-t: day spend 2 points since 07:00',
+    )
+    expect(
+      readLedger(burndownLedgerPath()).claims.find(c => c.taskId === 'DM-2')?.stalledReason,
+    ).toBeUndefined()
+  })
+
+  it("does not charge a reviewer spawn on one pool against another pool's dispatch", async () => {
+    const other = path.join(world, 'profiles', 'other')
+    fs.cpSync(accountPath(), other, { recursive: true })
+    const pools = [
+      `pool-t: {config_dir: ${accountPath()}, human_uses: false, reserve_seven_day: 30, ceiling_five_hour: 75}`,
+      `pool-u: {config_dir: ${other}, human_uses: false, reserve_seven_day: 30, ceiling_five_hour: 75, per_day_points: 2}`,
+    ]
+    write(
+      path.join(autonomy(), 'charter.md'),
+      `---\nseats: [seat-t, seat-u]\n${DEFAULTS}\npools:\n  ${pools.join('\n  ')}\n---\n`,
+    )
+    const seat = (prefix: string, pool: string) =>
+      `---\nprefix: ${prefix}\npool: ${pool}\ninitiatives: {demo: 1.0}\nrepos:\n  - {path: ${repo()}, initiatives: [demo]}\nconcurrency: {implementers: 2, reviewers: 1, planners: 1}\n---\n`
+    write(path.join(autonomy(), 'seats', 'seat-t.md'), seat('st', 'pool-t'))
+    write(path.join(autonomy(), 'seats', 'seat-u.md'), seat('su', 'pool-u'))
+    config({ seats: ['seat-u', 'seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1'), 'DM-2': seatTask('DM-2') })
+    const due = implemented('DM-1', 'seat-t')
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [due.claim],
+      seats: { 'seat-t': { samples: [before7] }, 'seat-u': { samples: [before7] } },
+    })
+    const fake = fakeBroker({ agents: [row(due.name, 'exited', due.worktree)] })
+
+    await tick(fake)
+
+    expect(fake.frames.map(f => [f.name, f.configDir])).toEqual([
+      ['st-dm-1-r0', accountPath()],
+      ['su-dm-2', other],
+    ])
+  })
+})
+
 describe('tick subprocesses', () => {
   it('never pass the agent-chat identity to a child', () => {
     process.env.AGENT_CHAT_NAME = 'parent'
