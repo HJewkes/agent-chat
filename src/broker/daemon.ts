@@ -47,6 +47,11 @@ export interface StartBrokerOptions {
   http?: boolean
 }
 
+/** The cap is passed as the resolver, not its value, so `agentSlots` is re-read on every spawn (CC-159). */
+export function newAgentSlots(): Semaphore {
+  return new Semaphore(resolveAgentSlots)
+}
+
 /**
  * Returns the socket server, or null when another broker already holds the path.
  *
@@ -162,7 +167,7 @@ function openServices(): { core: BrokerCore; socketServer: SocketServer } {
   if (ledger) backfillAtBoot(events, ledger.fence)
   const socketServer = new SocketServer(
     core,
-    { semaphore: new Semaphore(resolveAgentSlots()), ...(ledger === undefined ? {} : { ledger }) },
+    { semaphore: newAgentSlots(), ...(ledger === undefined ? {} : { ledger }) },
     ledger === undefined ? undefined : events.ledgerHandle(),
   )
   return { core, socketServer }

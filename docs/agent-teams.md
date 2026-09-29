@@ -1479,16 +1479,17 @@ Therefore:
 
 - **Concurrency:** `Semaphore` (lifted from `dispatch-loop.ts:57-77`), default
   `DEFAULT_SLOTS` live agents. Slot released on `agent_exited`. Overridable per
-  machine via `agentSlots` in `~/.agent-chat/config.json`, resolved once at
-  broker start (`config.ts`'s `resolveAgentSlots`); a missing key or an invalid
+  machine via `agentSlots` in `~/.agent-chat/config.json`, read on every
+  spawn (`config.ts`'s `resolveAgentSlots`), so an edit needs no broker restart.
+  Lowering it below the live count stops new spawns but never touches running
+  agents (CC-159); a missing key or an invalid
   value (non-integer, below 1) falls back to `DEFAULT_SLOTS` with a logged
   `config_invalid` event rather than refusing to start.
 - **Worktrees:** worktree isolation is capped PER REPOSITORY (allocations under
   that repo's `.worktrees/`), default 3. Overridable per machine via
   `worktreeBudget` in `~/.agent-chat/config.json` (`config.ts`'s
-  `resolveWorktreeBudget`), with the same fallback rule as `agentSlots`. Unlike
-  `agentSlots` it is read on every spawn, so editing it takes effect without a
-  broker restart. An adopted `worktree:` takes no slot.
+  `resolveWorktreeBudget`), with the same fallback rule and the same
+  per-spawn read as `agentSlots`. An adopted `worktree:` takes no slot.
 - **Roles and depth (CC-163):** only a `coordinator` profile may spawn; a
   worker (any profile without `"role": "coordinator"`) is refused. The cap
   counts coordinator links only: `agent_spawned.meta.coordinator_depth`, capped

@@ -18,8 +18,9 @@ export const agentProfiles = defineTool({
       const denies = profile.disallowedTools?.length
         ? `\n    denies: ${profile.disallowedTools.join(', ')}`
         : ''
+      const effort = profile.effort === undefined ? '' : `, effort ${profile.effort}`
       return (
-        `- ${name} [${roleOf(profile)}, ${profile.model}, ${profile.surface}, isolation ${profile.isolation}]\n` +
+        `- ${name} [${roleOf(profile)}, ${profile.model}${effort}, ${profile.surface}, isolation ${profile.isolation}]\n` +
         `    ${profile.description}\n    tools: ${profile.allowedTools.join(', ')}${denies}`
       )
     })

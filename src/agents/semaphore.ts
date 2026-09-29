@@ -24,7 +24,12 @@ export interface SlotUsage {
 export class Semaphore {
   private readonly held = new Set<string>()
 
-  constructor(readonly slots: number = DEFAULT_SLOTS) {}
+  /** A function cap is re-read on every use, so a config edit applies to the next spawn (CC-159). */
+  constructor(private readonly cap: number | (() => number) = DEFAULT_SLOTS) {}
+
+  get slots(): number {
+    return typeof this.cap === 'function' ? this.cap() : this.cap
+  }
 
   /**
    * Take a slot for `agentId`, or report there is none. Re-acquiring a slot the
