@@ -63,7 +63,8 @@ describe('the last action of an exited agent', () => {
     const tail = exitTailOf(
       lines(
         toolUse('t1', 'Bash', {
-          command: 'cd /private/project/dir && gh pr create --title "secret title" --body-file /private/body.md',
+          command:
+            'cd /private/project/dir && gh pr create --title "secret title" --body-file /private/body.md',
         }),
       ),
     )

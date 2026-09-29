@@ -72,7 +72,8 @@ interface Scan {
 export function exitTailOf(text: string): ExitTail {
   const scan: Scan = { started: new Set() }
   for (const line of text.split('\n')) scanLine(scan, line)
-  if (scan.lastTool === undefined) return { lastAction: NO_TOOL_CALL, pendingBackground: scan.started.size > 0 }
+  if (scan.lastTool === undefined)
+    return { lastAction: NO_TOOL_CALL, pendingBackground: scan.started.size > 0 }
   const lastAction = actionPattern(scan.lastTool)
   return { lastAction, pendingBackground: scan.started.size > 0 || lastAction === 'ScheduleWakeup' }
 }

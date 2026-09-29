@@ -705,7 +705,13 @@ export class Supervisor implements TeleportHost {
         ...(tail.pendingBackground ? { pending_background: 'true' } : {}),
       },
     })
-    this.core.deliverTo(spawner, { msgId, from: 'agent-chat', text: body, at: Date.now(), event: UNREPORTED_EXIT })
+    this.core.deliverTo(spawner, {
+      msgId,
+      from: 'agent-chat',
+      text: body,
+      at: Date.now(),
+      event: UNREPORTED_EXIT,
+    })
     logEvent(UNREPORTED_EXIT, { agentId, name, spawner, lastAction: tail.lastAction })
   }
 

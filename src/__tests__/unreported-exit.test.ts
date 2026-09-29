@@ -99,7 +99,9 @@ const backgroundBash = [
   {
     type: 'user',
     message: {
-      content: [{ type: 'tool_result', tool_use_id: 't1', content: 'Command running in background with ID: b7' }],
+      content: [
+        { type: 'tool_result', tool_use_id: 't1', content: 'Command running in background with ID: b7' },
+      ],
     },
   },
 ]
@@ -115,7 +117,13 @@ async function exitAndSettle(code = 0): Promise<void> {
 describe('an agent that exits without its Status report', () => {
   it('tells its spawner it exited with a pending background task (CC-255)', async () => {
     const coord = {} as unknown as net.Socket
-    core.register(coord, { t: 'register', name: 'coord', workingOn: '', cwd: tmp('agent-chat-coord-'), pid: 1 })
+    core.register(coord, {
+      t: 'register',
+      name: 'coord',
+      workingOn: '',
+      cwd: tmp('agent-chat-coord-'),
+      pid: 1,
+    })
     const agentId = await spawnScout()
     writeTranscript(agentId, backgroundBash)
 
@@ -158,6 +166,17 @@ describe('an agent that does not produce the event', () => {
     await exitAndSettle()
 
     expect(unreported()).toEqual([])
+  })
+
+  it('is not one whose only Status report came before it was resumed', async () => {
+    const agentId = await spawnScout()
+    core.append({ kind: 'message', actor: 'scout', target: 'coord', body: 'Status: DONE' })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    core.append({ kind: 'agent_resumed', actor: 'coord', ref: agentId })
+
+    await exitAndSettle()
+
+    expect(unreported()).toHaveLength(1)
   })
 
   it('is not one whose Status report went to someone else', async () => {
