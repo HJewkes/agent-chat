@@ -277,7 +277,8 @@ Agents report: `Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`, un
 lines, detail to a file. State in every brief that plain-text stdout is invisible to
 you and the report must come back via `chat_send` — don't assume a return-format
 block implies the channel. Escalating rather than guessing is always fine — bad work
-is worse than no work.
+is worse than no work. The "under 15 lines, detail to a file" limit applies to
+implementer reports; reviewers follow the verdict block below.
 
 ### Implementer contract: end every code brief with this block
 
@@ -289,17 +290,17 @@ mutating; never `git checkout` uncommitted work. Scratch files go in the worktre
 kill burners with `pkill -f '<pattern>'` and confirm with pgrep. A PR that narrows a
 timeout reports per-case CI times against the new limit. You are NOT done at "PR
 opened". Your LAST action must be chat_send to <spawner> starting with
-`Status: DONE|DONE_WITH_CONCERNS|BLOCKED`, `PR: <owner>/<repo>#<n>` and
+`Status: DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT`, `PR: <owner>/<repo>#<n>` and
 `Head: <full sha>` lines, then CI status.
 ```
 
 Foreground `sleep` is denied, so an agent that does not block on `gh run watch` ends
 its turn at "PR opened" and needs a paid resume.
 
-### Reviewer verdict line
+### Reviewer verdict block
 
-A reviewer's final message (also sent by `chat_send`) starts with exactly this block,
-then blocking items before nits, under 1,200 characters in total:
+A reviewer's report starts with these three lines, which Shepherd and `parseReport`
+read, then blocking items before nits, under 1,200 characters in total:
 
 ```
 Verdict: MERGE            (or FIX_FIRST)
@@ -307,8 +308,7 @@ PR: <owner>/<repo>#<n>
 Head: <full 40-hex head sha>
 ```
 
-Shepherd accepts a verdict only when `Head` equals the PR's current head exactly, so
-never abbreviate the sha.
+A verdict counts only when Head equals the PR's current head exactly.
 
 Verify agent output before committing it — a passing test count isn't proof:
 
