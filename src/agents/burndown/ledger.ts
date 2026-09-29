@@ -74,6 +74,8 @@ const Claim = z.object({
   namePrefix: z.string().optional(),
   /** Event kinds already delivered to the claim's seat, so a delivered event is never re-sent. */
   notified: z.array(z.string()).optional(),
+  /** The claim's PR as the last leak check found it: redacted `file:line category` rows, never matched text (CC-269). */
+  leak: z.object({ url: z.string(), findings: z.array(z.string()) }).optional(),
 })
 export type Claim = z.infer<typeof Claim>
 
@@ -102,6 +104,10 @@ const Ledger = z.object({
   decider: DeciderState.optional(),
   /** Per-seat pool samples, keyed by seat name (CC-205). */
   seats: z.record(z.string(), SeatState).optional(),
+  /** Keys of human-queue items the tick filed, so a finding that still holds is filed once (CC-269). */
+  humanFiled: z.array(z.string()).optional(),
+  /** The deny-list state the leak check last recorded, so a missing list is logged once rather than every tick. */
+  leakDenylist: z.string().optional(),
 })
 export type Ledger = z.infer<typeof Ledger>
 

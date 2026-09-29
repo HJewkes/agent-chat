@@ -6,7 +6,7 @@ import type { Claim, Ledger } from './ledger.js'
  * Pure: the caller diffs the ledger before and after execute and delivers the rendered message.
  */
 
-export const EVENT_KINDS = ['dispatched', 'ready-to-merge', 'merged', 'stalled', 'parked'] as const
+export const EVENT_KINDS = ['dispatched', 'ready-to-merge', 'merged', 'stalled', 'parked', 'leak'] as const
 export type EventKind = (typeof EVENT_KINDS)[number]
 
 export interface SeatEvent {
@@ -55,6 +55,7 @@ function kindsOf(before: Claim | undefined, after: Claim, spawned: boolean): Sea
   if (merged(before, after)) events.push(event('merged', after.pr))
   if (after.stalledReason !== undefined) events.push(event('stalled', after.stalledReason))
   if (after.phase === 'parked') events.push(event('parked'))
+  if (after.leak !== undefined) events.push(event('leak', `${after.leak.url}: ${after.leak.findings.join('; ')}`))
   return events
 }
 
@@ -62,6 +63,7 @@ function kindsOf(before: Claim | undefined, after: Claim, spawned: boolean): Sea
 function stillHolds(claim: Claim, kind: string): boolean {
   if (kind === 'parked') return claim.phase === 'parked'
   if (kind === 'stalled') return claim.stalledReason !== undefined
+  if (kind === 'leak') return claim.leak !== undefined
   // ready-to-merge stays on a done claim: `merged` reads it there.
   return true
 }

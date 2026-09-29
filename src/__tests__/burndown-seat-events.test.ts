@@ -81,6 +81,7 @@ describe('seatEvents', () => {
     merged: { phase: 'done', notified: ['ready-to-merge'] },
     stalled: { stalledReason: 'timed out' },
     parked: { phase: 'parked' },
+    leak: { leak: { url: 'https://github.com/example/repo/pull/1', findings: ['body:1 home-path'] } },
   }
   for (const [kind, state] of Object.entries(settled)) {
     it(`does not re-fire ${kind} for a claim already in that state and notified`, () => {
