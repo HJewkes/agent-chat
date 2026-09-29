@@ -269,6 +269,7 @@ export class SocketServer {
       ...(warnings.length === 0 ? {} : { warnings }),
       ...(outcome.disallowedTools === undefined ? {} : { disallowedTools: outcome.disallowedTools }),
       ...(outcome.transcript === undefined ? {} : { transcript: outcome.transcript }),
+      ...(outcome.base === undefined ? {} : { base: outcome.base }),
     })
   }
 

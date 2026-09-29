@@ -27,7 +27,10 @@ const args = z.object({
     .optional(),
   isolation: z
     .enum(ISOLATION_NAMES, oneOf('isolation', ISOLATION_NAMES))
-    .describe("Overrides the profile's isolation, e.g. worktree to keep it out of your checkout.")
+    .describe(
+      "Overrides the profile's isolation, e.g. worktree to keep it out of your checkout. A new " +
+        "worktree branch is cut from a fresh fetch of origin's default branch, not your local HEAD.",
+    )
     .optional(),
   cwd: z
     .string()
@@ -169,9 +172,10 @@ function describeSpawn(res: Extract<ServerMessage, { t: 'spawn_result' }>, forke
     ? '\n  it holds a copy of your conversation up to your last COMPLETED turn — not this one'
     : ''
   const resumed = res.transcript === undefined ? '' : `\n  resumed session: ${verdictLine(res.transcript)}`
+  const base = res.base === undefined ? '' : `\n  branched from ${res.base.ref} at ${res.base.sha}`
   return (
     `Spawned "${res.name}" (${res.agentId}). It is a peer now — reach it with chat_send, ` +
-    `not by spawning again.${forked}${resumed}${warnings}${denied}`
+    `not by spawning again.${forked}${resumed}${base}${warnings}${denied}`
   )
 }
 

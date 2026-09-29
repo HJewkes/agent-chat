@@ -49,17 +49,31 @@ export interface WorktreeOptions {
   /** Relative to the git root. */
   basePath?: string
   budget?: number
+  /** Bound on fetching origin's default branch before cutting a new one. */
+  fetchTimeoutMs?: number
 }
 
-async function git(args: readonly string[], cwd: string): Promise<string> {
-  const { stdout } = await execFileAsync('git', [...args], { cwd, encoding: 'utf8' })
+/** A git child that inherits `AGENT_CHAT_*` can register as the agent that spawned it (CC-174). */
+function gitEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+  for (const key of Object.keys(env)) if (key.startsWith('AGENT_CHAT_')) delete env[key]
+  return env
+}
+
+async function git(args: readonly string[], cwd: string, timeout?: number): Promise<string> {
+  const { stdout } = await execFileAsync('git', [...args], {
+    cwd,
+    encoding: 'utf8',
+    env: gitEnv(),
+    ...(timeout === undefined ? {} : { timeout }),
+  })
   return stdout.trim()
 }
 
 /** git failures are routine control flow here — "does this ref exist" is a failing command. */
-async function gitOrNull(args: readonly string[], cwd: string): Promise<string | null> {
+async function gitOrNull(args: readonly string[], cwd: string, timeout?: number): Promise<string | null> {
   try {
-    return await git(args, cwd)
+    return await git(args, cwd, timeout)
   } catch {
     return null
   }
@@ -264,6 +278,57 @@ async function checkoutOf(gitRoot: string, branch: string): Promise<string | nul
   return line ? path.resolve(line.slice('worktree '.length).trim()) : null
 }
 
+export const DEFAULT_FETCH_TIMEOUT_MS = 15_000
+
+/** The commit a new branch is cut from, the ref it was read from, and a warning when that ref is not origin's. */
+export interface BranchBase {
+  sha: string
+  ref: string
+  warning?: string
+}
+
+/** origin/HEAD when this clone knows it; otherwise the two conventional names, in order. */
+async function defaultBranchCandidates(gitRoot: string): Promise<string[]> {
+  const head = await gitOrNull(['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], gitRoot)
+  return head?.startsWith('origin/') ? [head.slice('origin/'.length)] : ['main', 'master']
+}
+
+/** Fetch only: it moves a remote-tracking ref and never the main checkout's HEAD or files. */
+async function fetchTip(gitRoot: string, branch: string, timeoutMs: number): Promise<string | null> {
+  const tracking = `refs/remotes/origin/${branch}`
+  const fetched = await gitOrNull(
+    ['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/${branch}:${tracking}`],
+    gitRoot,
+    timeoutMs,
+  )
+  return fetched === null ? null : gitOrNull(['rev-parse', '--verify', `${tracking}^{commit}`], gitRoot)
+}
+
+/**
+ * CC-151: the main checkout's HEAD may lag origin or hold another session's
+ * unpushed commits, and a branch cut from it ships both. So cut from a fresh
+ * fetch of origin's default branch, and say so loudly when that is impossible.
+ */
+export async function resolveBranchBase(gitRoot: string, timeoutMs: number): Promise<BranchBase> {
+  let reason = 'the repository has no origin remote'
+  if ((await gitOrNull(['remote', 'get-url', 'origin'], gitRoot)) !== null) {
+    const candidates = await defaultBranchCandidates(gitRoot)
+    for (const branch of candidates) {
+      const sha = await fetchTip(gitRoot, branch, timeoutMs)
+      if (sha !== null) return { sha, ref: `origin/${branch}` }
+    }
+    reason = `fetching ${candidates.map(b => `origin/${b}`).join(' or ')} failed or timed out`
+  }
+  const sha = (await gitOrNull(['rev-parse', 'HEAD'], gitRoot)) ?? 'HEAD'
+  return {
+    sha,
+    ref: 'HEAD',
+    warning:
+      `worktree branched from the local HEAD at ${sha} because ${reason}; ` +
+      'it may lag origin or carry unpushed commits',
+  }
+}
+
 /** Hooks and settings live in gitignored .claude/, so a fresh worktree runs unhooked without this. */
 function copyClaudeDir(gitRoot: string, worktreePath: string): void {
   const source = path.resolve(gitRoot, '.claude')
@@ -271,11 +336,11 @@ function copyClaudeDir(gitRoot: string, worktreePath: string): void {
   if (existsSync(source) && !existsSync(target)) cpSync(source, target, { recursive: true })
 }
 
-async function resetTo(gitRoot: string, branch: string, worktreePath: string): Promise<void> {
+async function resetTo(gitRoot: string, branch: string, worktreePath: string, base: string): Promise<void> {
   await gitOrNull(['worktree', 'remove', '--force', worktreePath], gitRoot)
   rmSync(worktreePath, { recursive: true, force: true })
   await gitOrNull(['branch', '-D', branch], gitRoot)
-  await git(['worktree', 'add', '-b', branch, worktreePath], gitRoot)
+  await git(['worktree', 'add', '-b', branch, worktreePath, base], gitRoot)
 }
 
 /**
@@ -301,13 +366,13 @@ async function attachWorktree(
   opts: { base: string; force: boolean },
 ): Promise<boolean> {
   if ((await gitOrNull(['rev-parse', '--verify', branch], gitRoot)) === null) {
-    await git(['worktree', 'add', '-b', branch, worktreePath], gitRoot)
+    await git(['worktree', 'add', '-b', branch, worktreePath, opts.base], gitRoot)
     copyClaudeDir(gitRoot, worktreePath)
     return false
   }
 
   if (opts.force) {
-    await resetTo(gitRoot, branch, worktreePath)
+    await resetTo(gitRoot, branch, worktreePath, opts.base)
     copyClaudeDir(gitRoot, worktreePath)
     return false
   }
@@ -318,7 +383,7 @@ async function attachWorktree(
 
   const safety = await inspectForRelease(gitRoot, worktreePath, branch, opts.base)
   if (safety.unmerged) await git(['worktree', 'add', worktreePath, branch], gitRoot)
-  else await resetTo(gitRoot, branch, worktreePath)
+  else await resetTo(gitRoot, branch, worktreePath, opts.base)
 
   copyClaudeDir(gitRoot, worktreePath)
   return safety.unmerged
@@ -394,9 +459,9 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
 
       const branch = branchFor(ctx.agentName)
       const worktreePath = path.resolve(gitRoot, basePath, slug(ctx.agentName))
-      const base = (await gitOrNull(['rev-parse', 'HEAD'], gitRoot)) ?? 'HEAD'
+      const base = await resolveBranchBase(gitRoot, opts.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS)
       const reused = await attachWorktree(gitRoot, branch, worktreePath, {
-        base,
+        base: base.sha,
         force: ctx.forceReset === true,
       })
 
@@ -404,7 +469,15 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       return {
         cwd: worktreePath,
         note: `You are on branch ${branch} in an isolated worktree at ${worktreePath}.${carried} Commit your work there; nothing outside it is yours to change.`,
-        ref: { branch, worktree: worktreePath, gitRoot, base, ...(reused ? { reused: 'true' } : {}) },
+        ref: {
+          branch,
+          worktree: worktreePath,
+          gitRoot,
+          base: base.sha,
+          base_ref: base.ref,
+          ...(reused ? { reused: 'true' } : {}),
+        },
+        ...(base.warning === undefined ? {} : { warnings: [base.warning] }),
       }
     },
 

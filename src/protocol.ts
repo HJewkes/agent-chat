@@ -1006,6 +1006,8 @@ export type ServerMessage =
       disallowedTools?: string[]
       /** CC-126: set on any resume, so the caller is told whether a conversation actually came back. */
       transcript?: { path: string; found: boolean }
+      /** CC-151: the ref and commit a new worktree branch was cut from, so a coordinator can check it. */
+      base?: { ref: string; sha: string }
     }
   /** `slots` is the live semaphore reading (CC-139); absent from an older broker build. */
   | { t: 'agents_result'; agents: AgentIdentity[]; slots?: { held: number; cap: number } }

@@ -289,6 +289,8 @@ export interface SpawnOutcome {
   disallowedTools?: string[]
   /** CC-126: whether the conversation a resume asked for was there. */
   transcript?: TranscriptVerdict
+  /** CC-151: where a freshly allocated worktree branch was cut from. */
+  base?: { ref: string; sha: string }
 }
 
 /** CC-126: how `resume` relaunches. Headless unless the caller asks for a pane. */
@@ -362,6 +364,12 @@ function stillDenied(childDenied: Set<string>, tool: string): boolean {
   if (childDenied.has(tool)) return true
   const base = tool.split('(')[0] ?? tool
   return base !== tool && childDenied.has(base)
+}
+
+/** Only a worktree the strategy cut records `base_ref`; an adopted one has no base to report. */
+function branchBaseOf(allocation: Allocation): { base?: { ref: string; sha: string } } {
+  const ref = allocation.ref
+  return ref?.base_ref && ref.base ? { base: { ref: ref.base_ref, sha: ref.base } } : {}
 }
 
 /**
@@ -940,6 +948,7 @@ export class Supervisor implements TeleportHost {
   ): Promise<SpawnOutcome> {
     const { briefing, fork, account, resumed, predecessor } = resolved
     const allocation = await resolveIsolation([isolationName]).allocate(ctx)
+    warnings.push(...(allocation.warnings ?? []))
     this.core.append({
       kind: 'isolation_allocated',
       actor: req.name,
@@ -1059,6 +1068,7 @@ export class Supervisor implements TeleportHost {
       ...(warnings.length > 0 ? { warnings } : {}),
       ...(profile.disallowedTools?.length ? { disallowedTools: [...profile.disallowedTools] } : {}),
       ...(resumed ? { transcript: { path: resumed.path, found: true } } : {}),
+      ...branchBaseOf(allocation),
     }
   }
 

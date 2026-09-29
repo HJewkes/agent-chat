@@ -63,6 +63,8 @@ export interface Allocation {
   note?: string
   /** Strategy-specific handle — branch, worktree path, claim id. Goes in meta. */
   ref?: Record<string, string>
+  /** Advisory lines for the requester, surfaced in `spawn_result.warnings`. */
+  warnings?: string[]
 }
 
 export interface ReleaseOptions {
@@ -121,6 +123,7 @@ function mergeAllocations(baseCwd: string, parts: readonly Allocation[]): Alloca
       merged.disallowedTools = [...new Set([...(merged.disallowedTools ?? []), ...part.disallowedTools])]
     if (part.note) notes.push(part.note)
     if (part.ref) merged.ref = { ...merged.ref, ...part.ref }
+    if (part.warnings) merged.warnings = [...(merged.warnings ?? []), ...part.warnings]
   }
   if (notes.length > 0) merged.note = notes.join('\n')
   return merged
