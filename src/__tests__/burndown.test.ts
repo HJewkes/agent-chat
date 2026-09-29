@@ -19,6 +19,7 @@ import {
 } from '../agents/burndown/ledger.js'
 import { planFromDisk, renderPlan } from '../agents/burndown/tick.js'
 import { TRUST_RULE_CLI_VERSION } from '../agents/trust.js'
+import { BrokerClient } from '../client/broker-client.js'
 import { withBroker } from '../cli/client.js'
 import { burndownPlanVerb } from '../cli/verbs/burndown.js'
 
@@ -273,6 +274,7 @@ describe('burndown plan', () => {
   it('prints the unscored plan unchanged when neither --seat nor --scored is passed (CC-230)', async () => {
     initiative('demo', '', { 'DM-1': task('DM-1') })
     vi.useFakeTimers({ toFake: ['Date'], now: NOON })
+    const connect = vi.spyOn(BrokerClient.prototype, 'connect').mockRejectedValue(new Error('no broker'))
 
     try {
       const report = await burndownPlanVerb.run({}, { warnings: [], format: 'human', withBroker })
@@ -286,6 +288,7 @@ describe('burndown plan', () => {
         ],
       })
     } finally {
+      connect.mockRestore()
       vi.useRealTimers()
     }
   })
