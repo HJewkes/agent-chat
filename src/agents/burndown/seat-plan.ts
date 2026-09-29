@@ -52,6 +52,8 @@ export interface SeatPlanInputs {
   collision?: PlanInputs['collision']
   /** Why `cwd` cannot be spawned into on the pool's config dir, as `plan()` checks in `place()`. */
   trust?: (repo: string, cwd: string, configDir: string) => string | undefined
+  /** Whether a held claim's tree is active (CC-279); absent, every held tree counts. */
+  activeTree?: (claim: Claim) => boolean
 }
 
 export interface SeatPlan {
@@ -97,7 +99,7 @@ interface Walk {
   gate: PoolGateResult
   claimed: Set<string>
   roles: Record<Role, number>
-  /** The seat's worktrees per repo: held claims plus this plan's dispatches. */
+  /** The seat's active worktrees per repo: held claims with an active tree plus this plan's dispatches. */
   seatWorktrees: Map<string, number>
   /** The broker-wide ceilings, with the charter's worktrees_left_free_per_repo added to the reserve. */
   capacity: Capacity | undefined
@@ -132,10 +134,12 @@ function startWalk(inputs: SeatPlanInputs): Walk {
   const ours = held.filter(c => c.seat === inputs.seat.seat)
   const roles: Record<Role, number> = { implementers: 0, reviewers: 0, planners: 0 }
   const seatWorktrees = new Map<string, number>()
+  const active = inputs.activeTree ?? (() => true)
   for (const claim of ours) {
     const role = roleOf(claim)
     if (role !== undefined) roles[role] += 1
-    if (claim.worktree !== undefined) bump(seatWorktrees, path.dirname(path.dirname(claim.worktree)))
+    if (claim.worktree !== undefined && active(claim))
+      bump(seatWorktrees, path.dirname(path.dirname(claim.worktree)))
   }
   return {
     inputs,
@@ -280,12 +284,12 @@ function roleCap(role: Role, walk: Walk): Refused | undefined {
 }
 
 function worktreeCap(d: Dispatch, walk: Walk): Refused | undefined {
-  const { perRepoPerSeat } = walk.inputs.seat.worktrees
+  const { perRepoPerSeat, capName } = walk.inputs.seat.worktrees
   const ours = walk.seatWorktrees.get(d.repo) ?? 0
   if (d.worktree !== undefined && ours >= perRepoPerSeat)
     return {
       kind: 'worktrees',
-      reason: `seat ${d.seat ?? '?'} holds ${ours} worktrees under ${d.repo}/.worktrees; worktrees_per_repo_per_seat is ${perRepoPerSeat}`,
+      reason: `seat ${d.seat ?? '?'} holds ${ours} active worktrees under ${d.repo}/.worktrees; ${capName} is ${perRepoPerSeat}`,
     }
   return capacityRefusal(d, walk.capacity, walk.tally)
 }

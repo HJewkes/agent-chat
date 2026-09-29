@@ -33,7 +33,7 @@ describe('resolveSeatDispatch', () => {
       configDir: '/tmp/pool-x',
       repos: { 'init-alpha': ['/tmp/repos/alpha-app', '/tmp/repos/alpha-docs'] },
       caps: { implementers: 4, reviewers: 2, planners: 1 },
-      worktrees: { perRepoPerSeat: 3, leftFreePerRepo: 2 },
+      worktrees: { perRepoPerSeat: 3, capName: 'worktrees_per_repo_per_seat', leftFreePerRepo: 2 },
       excludedTags: ['human-only', 'blocked'],
       grants: ['grant-merge-alpha'],
     })
@@ -103,11 +103,35 @@ describe('resolveSeatDispatch', () => {
     expect(() => resolveSeatDispatch(policy, 'nobody', HOME)).toThrow('nobody is not a seat')
   })
 
-  it('refuses a charter without worktree caps', () => {
-    const { worktrees_per_repo_per_seat: _cap, ...defaults } = policy.charter.defaults
+  it('refuses a charter without worktrees_left_free_per_repo', () => {
+    const { worktrees_left_free_per_repo: _free, ...defaults } = policy.charter.defaults
     const capless = { ...policy, charter: { ...policy.charter, defaults } }
 
-    expect(() => resolveSeatDispatch(capless, 'seat-a', HOME)).toThrow('charter defaults lack worktrees')
+    expect(() => resolveSeatDispatch(capless, 'seat-a', HOME)).toThrow(
+      'charter defaults lack worktrees_left_free_per_repo',
+    )
+  })
+
+  it("caps active trees at the seat's implementers when worktrees_per_repo_per_seat is absent", () => {
+    const { worktrees_per_repo_per_seat: _cap, ...defaults } = policy.charter.defaults
+    const uncapped = { ...policy, charter: { ...policy.charter, defaults } }
+
+    const dispatch = resolveSeatDispatch(uncapped, 'seat-a', HOME)
+
+    expect(dispatch.worktrees).toEqual({
+      perRepoPerSeat: 4,
+      capName: 'concurrency.implementers',
+      leftFreePerRepo: 2,
+    })
+  })
+
+  it('keeps implementers as the cap when worktrees_per_repo_per_seat is above them', () => {
+    const defaults = { ...policy.charter.defaults, worktrees_per_repo_per_seat: 12 }
+    const loose = { ...policy, charter: { ...policy.charter, defaults } }
+
+    const dispatch = resolveSeatDispatch(loose, 'seat-a', HOME)
+
+    expect(dispatch.worktrees).toMatchObject({ perRepoPerSeat: 4, capName: 'concurrency.implementers' })
   })
 })
 
