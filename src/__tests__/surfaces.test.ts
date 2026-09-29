@@ -4,6 +4,7 @@ import { HEADLESS_STDIO } from '../agents/surfaces/headless.js'
 import { SURFACE_NAMES, isInteractiveSurface, type SurfaceName } from '../protocol.js'
 import { SurfaceRefused, surfaceFor, type SpawnFn, type SurfaceOptions } from '../agents/surfaces/index.js'
 import type { LaunchPlan } from '../agents/types.js'
+import { relaunchScriptPath } from '../agents/surfaces/command.js'
 
 const ANCHOR = 'w1t0p0:D5C6B476-BD80-4CED-BA27-A660BC1E01F3'
 const UUID = 'D5C6B476-BD80-4CED-BA27-A660BC1E01F3'
@@ -595,14 +596,21 @@ describe('a pane the broker opens (CC-175)', () => {
     expect(script.indexOf('select priorWindow')).toBeGreaterThan(script.indexOf('set spawned to'))
   })
 
-  it('clears the prompt line before typing into a reused pane, the one case that still types', async () => {
+  /**
+   * CC-191. Teleport's reused pane is the one case that still types. It used to
+   * write Ctrl-U, then the whole run-agent line in a second write, so keys typed
+   * in between or during the long write joined the command.
+   */
+  it('types only the short relaunch path into a reused pane, in the same write as the line clear', async () => {
     const { scripts, options } = fakeIterm()
     await surfaceFor('iterm-tab', { ...options, anchor: ANCHOR, reuseAnchor: true }).launch(plan())
 
-    const script = lastScript(scripts)
-    const clear = script.indexOf('write text (character id 21) newline no')
-    expect(clear).toBeGreaterThan(-1)
-    expect(clear).toBeLessThan(script.indexOf('write text "'))
+    const writes = lastScript(scripts)
+      .split('\n')
+      .filter(line => line.includes('write text'))
+    expect(writes).toEqual([
+      `  tell anchorSession to write text ((character id 21) & "'${relaunchScriptPath('ag000001')}'")`,
+    ])
   })
 
   it('fails the launch within the check window, quoting the pane, when run-agent never started', async () => {
@@ -663,12 +671,16 @@ describe('a pane the broker opens (CC-175)', () => {
     await expect(never(noTty.launchFailed)).resolves.toBe('still pending')
   })
 
-  it('does not arm the check for a pane it only typed into', async () => {
-    const { options } = paneIterm()
-    const handle = await surfaceFor('iterm-tab', { ...options, anchor: ANCHOR, reuseAnchor: true }).launch(
-      plan(),
-    )
+  it('arms the check for a reused pane too, since that command is still typed (CC-191)', async () => {
+    const { options } = paneIterm('zsh: command not found: sa/relaunch')
+    const handle = await surfaceFor('iterm-tab', {
+      ...options,
+      anchor: ANCHOR,
+      reuseAnchor: true,
+      probeProcesses: async () => ['-zsh'],
+    }).launch(plan())
 
-    expect(handle.launchFailed).toBeUndefined()
+    await expect(never(handle.launchFailed, 1000)).resolves.toMatch(/run-agent ag000001 was not running/)
+    expect(handle.ownsSurface).toBeUndefined()
   })
 })

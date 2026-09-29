@@ -1,4 +1,5 @@
-import { cliEntry, home } from '../../paths.js'
+import path from 'node:path'
+import { agentDir, cliEntry, home } from '../../paths.js'
 
 /**
  * The one command every surface launches: `agent-chat run-agent <id>`.
@@ -56,3 +57,26 @@ const itermWord = (word: string): string => {
  */
 export const paneCommand = (agentId: string): string =>
   ['/bin/zsh', '-lic', `${runAgentCommand(agentId)}; exec /bin/zsh -l`].map(itermWord).join(' ')
+
+/** Where teleport's in-place relaunch lives: in the agent's own 0700 dir, beside its plan. */
+export const relaunchScriptPath = (agentId: string): string => path.join(agentDir(agentId), 'relaunch')
+
+/**
+ * The only thing still typed into a shell (CC-191): a reused pane has no creation
+ * `command` to take, so teleport types this short fixed path instead of the full
+ * command line. Keys that join it in front make it a different, failing command;
+ * keys after it arrive as arguments, which a correct invocation never has.
+ */
+export const relaunchCommand = (agentId: string): string => shellQuote(relaunchScriptPath(agentId))
+
+export const relaunchScript = (agentId: string): string =>
+  [
+    '#!/bin/sh',
+    'if [ "$#" -ne 0 ]; then',
+    `  echo "agent-chat: not relaunching ${agentId}: typed keys joined the command (extra arguments: $*)" >&2`,
+    '  exit 64',
+    'fi',
+    `export AGENT_CHAT_HOME=${shellQuote(home())}`,
+    `exec ${[process.execPath, ...runAgentArgv(agentId)].map(shellQuote).join(' ')}`,
+    '',
+  ].join('\n')

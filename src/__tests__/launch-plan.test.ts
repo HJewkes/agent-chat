@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -15,6 +16,7 @@ import {
   writeLaunchFiles,
 } from '../agents/launch-files.js'
 import { oscTitle } from '../agents/run-agent.js'
+import { relaunchScriptPath } from '../agents/surfaces/command.js'
 import type { AgentProfile, LaunchPlanInput } from '../agents/types.js'
 
 const dirs: string[] = []
@@ -513,6 +515,40 @@ describe('the launch files', () => {
     files()
 
     expect(fs.statSync(planPath('ag000001')).mode & 0o777).toBe(0o600)
+  })
+
+  /** CC-191: the path teleport types into a reused pane, and the guard against keys that joined it. */
+  describe('the relaunch script', () => {
+    const written = (): string => {
+      process.env.AGENT_CHAT_HOME = tmpdir()
+      writeLaunchFiles(buildLaunchPlan(input()), buildMcpConfig(profile(), '/e'))
+      return relaunchScriptPath('ag000001')
+    }
+
+    it('is owner-only and executable, beside the plan', () => {
+      const script = written()
+
+      expect(path.dirname(script)).toBe(path.dirname(planPath('ag000001')))
+      expect(fs.statSync(script).mode & 0o777).toBe(0o700)
+    })
+
+    it('refuses to relaunch when typed keys arrived as arguments, naming the agent', () => {
+      const script = written()
+
+      const run = spawnSync(script, ['as'], { encoding: 'utf8' })
+
+      expect(run.status).toBe(64)
+      expect(run.stderr).toContain(
+        'not relaunching ag000001: typed keys joined the command (extra arguments: as)',
+      )
+    })
+
+    it('execs run-agent for this agent under the broker home when invoked bare', () => {
+      const script = fs.readFileSync(written(), 'utf8')
+
+      expect(script).toContain(`export AGENT_CHAT_HOME='${process.env.AGENT_CHAT_HOME}'`)
+      expect(script).toMatch(/\nexec '.*' 'run-agent' 'ag000001'\n$/)
+    })
   })
 
   it('carries through whatever the profile adds, and nothing of its own', () => {

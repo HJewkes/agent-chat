@@ -4,6 +4,7 @@ import { resolvePermissionHookTimeout } from '../config.js'
 import { agentDir, cliEntry } from '../paths.js'
 import type { IsolationName } from '../protocol.js'
 import type { Allocation } from './isolation/index.js'
+import { relaunchScript, relaunchScriptPath } from './surfaces/command.js'
 import type { AgentProfile, LaunchHandle, LaunchPlan } from './types.js'
 
 /**
@@ -23,6 +24,7 @@ import type { AgentProfile, LaunchHandle, LaunchPlan } from './types.js'
 /** Owner-only: these files carry the brief, the argv, and the agent's identity. */
 const DIR_MODE = 0o700
 const FILE_MODE = 0o600
+const SCRIPT_MODE = 0o700
 
 export const planPath = (agentId: string): string => path.join(agentDir(agentId), 'plan.json')
 
@@ -89,17 +91,18 @@ export function buildHookSettings(entry: string, timeoutSeconds: number): Record
   }
 }
 
-function writePrivate(file: string, body: string): void {
+function writePrivate(file: string, body: string, mode: number = FILE_MODE): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: DIR_MODE })
-  fs.writeFileSync(file, body, { mode: FILE_MODE })
+  fs.writeFileSync(file, body, { mode })
   // writeFileSync's mode is ignored when the file already exists, which a resume
   // makes routine rather than exotic.
-  fs.chmodSync(file, FILE_MODE)
+  fs.chmodSync(file, mode)
 }
 
 export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknown>): void {
   writePrivate(mcpConfigPath(plan.agentId), JSON.stringify(config, null, 2))
   writePrivate(planPath(plan.agentId), JSON.stringify(plan, null, 2))
+  writePrivate(relaunchScriptPath(plan.agentId), relaunchScript(plan.agentId), SCRIPT_MODE)
   if (plan.args.includes('--settings')) {
     const settings = buildHookSettings(cliEntry(), resolvePermissionHookTimeout())
     writePrivate(hookSettingsPath(plan.agentId), JSON.stringify(settings, null, 2))

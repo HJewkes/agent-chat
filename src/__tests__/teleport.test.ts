@@ -511,12 +511,41 @@ describe('a visible predecessor', () => {
 
     const launch = scripts[scripts.length - 1] ?? ''
     expect(launch).toContain('tell anchorSession to write text')
+    // CC-191: only the short relaunch path is typed, never the run-agent line.
+    expect(launch).not.toContain('run-agent')
     // Anchored on the AppleScript verbs themselves, not a bare substring: a
     // checkout path containing "split" (e.g. a worktree named "*-split-*")
     // would otherwise leak into the embedded command and fail this on an
     // unrelated basis.
     expect(launch).not.toMatch(/create tab with default profile/)
     expect(launch).not.toMatch(/split (horizontally|vertically) with default profile/)
+  })
+
+  /** CC-191: nothing awaits a successor's attach, so a typed relaunch that died must reach the human. */
+  it('tells the human when the successor never started in the reused pane', async () => {
+    supervisor.close()
+    supervisor = new Supervisor(core, {
+      countdownMs: COUNTDOWN_MS,
+      surface: {
+        platform: 'darwin',
+        launchCheck: { deadlineMs: 1_000, pollMs: 100 },
+        probeProcesses: async () => ['-zsh'],
+        runAppleScript: async script => {
+          if (script.includes('is running')) return 'true'
+          if (script.includes('return tty of s')) return '/dev/ttys042'
+          if (script.includes('return contents of s')) return 'zsh: command not found: sa/relaunch'
+          return 'reused-pane-uuid'
+        },
+      },
+    })
+    const agentId = await spawnAgent(visible)
+    stopAutoAttach()
+
+    await supervisor.teleport({ subject: subject(agentId, { anchor: 'w0t1p0:ANCHOR-UUID' }), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS + 1_500)
+
+    const notice = core.events.humanQueue().find(item => item.text.includes('successor did not start'))
+    expect(notice?.text).toContain('command not found: sa/relaunch')
   })
 
   it('cannot be aborted once the countdown has already run out', async () => {

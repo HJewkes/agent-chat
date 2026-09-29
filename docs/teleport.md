@@ -934,6 +934,20 @@ beside the new agent, and wrong here, where it would halve a pane whose session
 is about to die. Reuse is available only to teleport, because only teleport has
 an anchor its caller has just vacated.
 
+CC-191 narrowed what is typed. A reused shell cannot be handed a command at
+creation the way a new pane is (CC-175), so the text still goes through `write
+text`, but it is now one write: Ctrl-U followed by the quoted path of a 0700
+script, `agents/<id>/relaunch`, which `writeLaunchFiles` writes beside the plan.
+The script sets `AGENT_CHAT_HOME` and `exec`s `run-agent <id>`. Keys that still
+land in front of the path turn it into a command that fails. Keys after it
+arrive as arguments, and the script refuses any argument with exit 64. Either
+way `run-agent` never starts, and the CC-175 launch check, now armed for the
+reused pane, reports the dead successor to the human queue within 5 s.
+Replacing the shell outright was rejected: an adopted session's pane is the
+human's own shell, with no wrapper that could `exec` a successor, and closing
+it and splitting a new one in its place loses the pane, its scrollback and its
+session id.
+
 What the runs confirmed working, and could not have been confirmed any other
 way: SIGTERM on the reported `hostPid` ends Claude Code and its MCP subprocess
 with it; the descendant's registration wins the name once that socket closes;

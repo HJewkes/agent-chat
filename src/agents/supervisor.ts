@@ -2047,6 +2047,7 @@ export class Supervisor implements TeleportHost {
     // releases the real strategy rather than a no-op one.
     this.track(input.agentId, input.name, handle, allocation, isolation, input.anchor)
     this.bindExecution(input.agentId, executionId)
+    void handle.launchFailed?.then(reason => this.reportDeadSuccessor(input, reason))
     logEvent('agent_teleported', { agentId: input.agentId, name: input.name, from: input.inheritedFrom })
     this.fireHook('on_spawn', {
       agentId: input.agentId,
@@ -2057,6 +2058,18 @@ export class Supervisor implements TeleportHost {
       profile: input.profile.name,
       briefing: null,
     })
+  }
+
+  /** Nothing awaits a successor's attach, so a relaunch that never started goes to the human (CC-191). */
+  private reportDeadSuccessor(input: RelaunchInput, reason: string): void {
+    if (this.hasAttached(input.agentId)) return
+    this.core.append({
+      kind: 'notice',
+      actor: 'agent-chat',
+      target: HUMAN,
+      body: `${input.name} shut down for a teleport and its successor did not start: ${reason}`,
+    })
+    logEvent('teleport_failed', { name: input.name, from: input.inheritedFrom, reason })
   }
 
   /** Two applies, not one atomic write until TP-199: a restart between them is slice 4's `teleport_half_written`. */
