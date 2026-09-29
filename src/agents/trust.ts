@@ -31,7 +31,8 @@ interface ClaudeConfig {
 /**
  * The global config the CLI reads, as its 2.1.284 `getGlobalClaudeFile`: a legacy
  * `.config.json` in the config home wins, else `.claude.json` in `CLAUDE_CONFIG_DIR`,
- * else in the home directory. So `~/.claude` as a config dir reads `~/.claude/.claude.json`.
+ * else in the home directory. `configDir` is used whenever it is defined, so an empty string
+ * does not fall back to the home directory. `~/.claude` as a config dir reads `~/.claude/.claude.json`.
  */
 export function claudeConfigPath(configDir?: string): string {
   const legacy = path.join(configDir ?? path.join(os.homedir(), '.claude'), '.config.json')
