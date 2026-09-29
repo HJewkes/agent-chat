@@ -53,8 +53,14 @@ process.env.AGENT_CHAT_ACTIVE_WORK_PORT = String((closed.address() as net.Addres
 await new Promise(resolve => closed.close(resolve))
 
 /**
- * A per-worker state dir, so a test that never sets its own home cannot write
+ * A per-file state dir, so a test that never sets its own home cannot write
  * broker.log or claude-path into the developer's real ~/.agent-chat (CC-162).
  * Specs that need a home of their own still override it explicitly.
+ *
+ * Created under the run root (not an AGENT_CHAT_ name: the loop above would strip it) that global-setup.ts removes after every worker has
+ * finished, so no dir can vanish under a file still using it. Per-file afterAll or
+ * exit hooks were tried and both leaked: afterAll skips all-skipped files and workers
+ * are killed without running exit handlers.
  */
-process.env.AGENT_CHAT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-test-home-'))
+const root = process.env.TEST_HOME_ROOT ?? os.tmpdir()
+process.env.AGENT_CHAT_HOME = fs.mkdtempSync(path.join(root, 'agent-chat-test-home-'))
