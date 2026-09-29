@@ -132,6 +132,9 @@ const AGENT_KINDS = [
 
 const AGENT_KINDS_SQL = AGENT_KINDS.map(k => `'${k}'`).join(',')
 
+/** A return-contract report: `Status:` or a reviewer's `Verdict:`, after any markdown decoration (CC-266). */
+const REPORT_OPENING = /^[\s*_`#>]*(status|verdict)[*_`]*\s*(:|\n)/i
+
 // Loaded through require so Vite/vitest don't try to pre-bundle a builtin they
 // don't yet know about. The type import above is erased, so it costs nothing.
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
@@ -331,6 +334,24 @@ export class EventLog implements EventStore {
       at: row.ts,
       meta: row.target ? { target: row.target } : {},
     }
+  }
+
+  hasStatusReport(from: string, to: readonly string[], since: number): boolean {
+    if (to.length === 0) return false
+    const rows = this.db
+      .prepare(
+        `SELECT body FROM events
+         WHERE actor = ? AND kind = 'message' AND ts >= ? AND target IN (${to.map(() => '?').join(', ')})`,
+      )
+      .all(from, since, ...to) as { body: string | null }[]
+    return rows.some(row => REPORT_OPENING.test(row.body ?? ''))
+  }
+
+  lastAgentEventAt(ref: string, kind: EventKind): number | undefined {
+    const row = this.db
+      .prepare(`SELECT ts FROM events WHERE ref = ? AND kind = ? ORDER BY id DESC LIMIT 1`)
+      .get(ref, kind) as { ts: number } | undefined
+    return row?.ts
   }
 
   /** Open items for the human: addressed to them, not yet answered or dismissed, and not aged out. */

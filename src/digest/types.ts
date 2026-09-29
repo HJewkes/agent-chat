@@ -43,6 +43,14 @@ export interface StatusReport {
   line: string
 }
 
+/** CC-266: headless agents that exited with no Status report, grouped by UTC day and last action. */
+export interface UnreportedExitGroup {
+  day: string
+  lastAction: string
+  count: number
+  agents: string[]
+}
+
 export interface LedgerFacts {
   /** False when events.db is missing or unreadable; every list below is then empty. */
   available: boolean
@@ -52,6 +60,7 @@ export interface LedgerFacts {
   decided: DecidedEntry[]
   reversals: ClassReversal[]
   reports: StatusReport[]
+  unreportedExits: UnreportedExitGroup[]
 }
 
 export interface DoneTask {
