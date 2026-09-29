@@ -7,3 +7,6 @@ results.sarif
 
 # Byte-exact captures of what clients see; reformatting them would falsify the pin.
 src/__tests__/golden/
+
+# Verbatim frontmatter copies of the autonomy charter and seats; reformatting would drift from the originals.
+src/__tests__/fixtures/autonomy-2026-09-29/
