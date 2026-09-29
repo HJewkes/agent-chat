@@ -91,4 +91,22 @@ describe('the spawn trust warning', () => {
     expect(warning).toMatch(/no accepted trust entry/)
     expect(warning).toMatch(/Do you trust the files in this folder\?/)
   })
+
+  it('does not honour trust granted above the git root', () => {
+    const { repo } = repoWithWorktree()
+    const configDir = path.join(home, '.claude')
+    trusting(path.join(configDir, '.claude.json'), path.join(home, 'projects'), home)
+
+    expect(trustGap(repo, 'waiting', configDir)).toMatch(/no accepted trust entry/)
+  })
+
+  it('reads a legacy .config.json in the config dir ahead of .claude.json', () => {
+    const dir = path.join(home, 'work')
+    fs.mkdirSync(dir)
+    const configDir = path.join(home, '.claude-profiles', 'agents')
+    trusting(path.join(configDir, '.claude.json'), dir)
+    trusting(path.join(configDir, '.config.json'))
+
+    expect(trustGap(dir, 'waiting', configDir)).toContain(`in ${path.join(configDir, '.config.json')}`)
+  })
 })

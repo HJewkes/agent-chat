@@ -207,6 +207,12 @@ const span = (ms: number): string =>
 const lifetimeOf = (profile: Pick<AgentProfile, 'surfaceLifetime'>): SurfaceLifetime =>
   profile.surfaceLifetime ?? DEFAULT_SURFACE_LIFETIME
 
+/** Where an agent was launched: its folder and the `CLAUDE_CONFIG_DIR` whose trust entries it reads. */
+interface LaunchSite {
+  cwd: string
+  configDir: string
+}
+
 /**
  * The most likely cause of a spawn that never registered, named (CC-95).
  *
@@ -217,12 +223,6 @@ const lifetimeOf = (profile: Pick<AgentProfile, 'surfaceLifetime'>): SurfaceLife
  * construction: a freshly created worktree is a path Claude Code has never been
  * run in, so it has no trust entry by definition.
  */
-/** Where an agent was launched: its folder and the `CLAUDE_CONFIG_DIR` whose trust entries it reads. */
-interface LaunchSite {
-  cwd: string
-  configDir: string
-}
-
 function attachDiagnosis(site: LaunchSite, handle: LaunchHandle, outcome: 'waiting' | 'exited'): string {
   const trust = trustGap(site.cwd, outcome, site.configDir)
   if (trust !== undefined) return trust
