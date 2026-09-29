@@ -74,7 +74,8 @@ const syncStep = (defaultBranch: string): string =>
   'The worktree is cut from a local HEAD that can lag origin.'
 
 const accountLine = (configDir: string): string =>
-  `You run on the account at \`${configDir}\`. Any agent you spawn must pass \`config_dir: "${configDir}"\` explicitly.`
+  `You run on the account at \`${configDir}\`. Your profile is a worker and cannot spawn agents; ` +
+  'name any agent you need in your report.'
 
 const parkLine = (handoff: string): string =>
   `To ask, call \`chat_ask\`, write your handoff to \`${handoff}\`, and end with the line \`PARKED <msgId>\`. ` +

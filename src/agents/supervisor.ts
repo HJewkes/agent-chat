@@ -352,6 +352,8 @@ export interface ResumeRequest {
   /** The turn a headless resume starts on; {@link RESUMED_BRIEF} when absent. */
   message?: string
   requestedBy?: string
+  /** CC-216: the requester's own agent id, resolved by the broker from its connection. */
+  requesterAgentId?: string
 }
 
 interface Live {
@@ -1790,6 +1792,8 @@ export class Supervisor implements TeleportHost {
   async resume(name: string, req: ResumeRequest = {}): Promise<SpawnOutcome> {
     const identity = this.core.agents.byName(name)
     if (!identity) return { ok: false, reason: this.missingReason(name) }
+    const refused = this.checkResumer(identity, req)
+    if (refused) return { ok: false, reason: refused }
     const transcript = identityTranscript(identity)
     const gone = this.goneCwd(identity)
     const blocked = resumeBlocker(identity, transcript, gone)
@@ -1825,6 +1829,21 @@ export class Supervisor implements TeleportHost {
         'a visible resume opens on the conversation as it was left; the message was not delivered',
       )
     return { ok: true, agentId: identity.agentId, name, transcript, ...(warnings.length ? { warnings } : {}) }
+  }
+
+  /**
+   * CC-216: a worker may resume only an agent it spawned itself, so it cannot
+   * relaunch a coordinator or a peer's agent on a message of its own choosing.
+   */
+  private checkResumer(identity: AgentIdentity, req: ResumeRequest): string | undefined {
+    const requester = this.requesterOf(req.requesterAgentId)
+    if (requester.role !== 'worker') return undefined
+    if (this.spawnEventOf(identity.agentId)?.meta.parent === req.requesterAgentId) return undefined
+    return (
+      `${req.requestedBy ?? 'the requester'} is a worker (profile ${requester.profile || 'unknown'}) ` +
+      `and can resume only agents it spawned; ${identity.name} was not. Report the need to your ` +
+      'spawner via chat_send'
+    )
   }
 
   /** The refusal for a name nothing live holds, with the retired agent's removed worktree when it can come back. */

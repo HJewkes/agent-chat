@@ -537,8 +537,10 @@ export class SocketServer {
    */
   /** CC-126. Answered on `spawn_result`, carrying the transcript verdict whatever the outcome. */
   private async handleResume(conn: Conn, msg: Extract<ClientMessage, { t: 'resume' }>): Promise<void> {
+    const requester = this.core.registry.entryFor(conn)
     const outcome = await this.supervisor.resume(msg.name, {
-      requestedBy: this.core.registry.nameOf(conn) ?? HUMAN,
+      requestedBy: requester?.name ?? HUMAN,
+      ...(requester?.agentId === undefined ? {} : { requesterAgentId: requester.agentId }),
       ...(msg.surface === undefined ? {} : { surface: msg.surface }),
       ...(msg.message === undefined ? {} : { message: msg.message }),
     })
