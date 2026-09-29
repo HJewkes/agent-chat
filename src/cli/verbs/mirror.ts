@@ -2,7 +2,14 @@ import type { Command as Commander } from 'commander'
 import { z } from 'zod'
 import { MIRROR_LABEL, cliEntry, mirrorLogDir, mirrorPlistPath } from '../../paths.js'
 import { loadMirrorConfig, readAsToken } from '../../mirror/config.js'
-import { jobState, startJob, stopJob, systemLaunchctl, type JobControl } from '../../mirror/launchd.js'
+import {
+  jobState,
+  startJob,
+  stopJob,
+  systemLaunchctl,
+  type JobControl,
+  type JobState,
+} from '../../mirror/launchd.js'
 import { mirrorJobEnv, renderMirrorPlist } from '../../mirror/plist.js'
 import { describeMirror, readMirrorFacts } from '../../mirror/status.js'
 import { addVerb, defineVerb, Report } from '../command.js'
@@ -64,6 +71,12 @@ export const mirrorStopVerb = defineVerb({
   },
 })
 
+export function describeJob(job: JobState): string {
+  if (job.disabled) return 'stopped (disabled)'
+  if (!job.loaded) return 'not loaded'
+  return job.pid === null ? 'loaded, not running' : `loaded, pid ${job.pid}`
+}
+
 export const mirrorStatusVerb = defineVerb({
   name: 'mirror.status',
   description: 'config, env file mode, launchd state and status-file freshness',
@@ -71,10 +84,8 @@ export const mirrorStatusVerb = defineVerb({
   result: Report,
   async run() {
     const job = jobState(control())
-    const check = describeMirror(readMirrorFacts())
-    const launchd = job.loaded
-      ? `loaded${job.pid === null ? ', not running' : `, pid ${job.pid}`}`
-      : 'not loaded'
+    const check = describeMirror(readMirrorFacts(undefined, undefined, () => job.disabled))
+    const launchd = describeJob(job)
     return {
       ok: check.status !== 'fail',
       lines: [`${check.status.padEnd(5)} ${check.detail}`, `launchd ${launchd}`],
