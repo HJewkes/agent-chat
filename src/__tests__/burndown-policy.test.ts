@@ -235,7 +235,14 @@ describe('score-source', () => {
     expect(parseScoredTask(compact, 'init-alpha')).toEqual(EXPECTED)
   })
 
-  it.each(['..', '../escape', 'a/b', 'a\\b', '', '/abs'])('refuses initiative slug %j', slug => {
+  it('rejects an impossible compact date naming the file', () => {
+    const bad = TASK.replace('created: 2026-09-18', 'created: 20260230')
+    expect(() => parseScoredTask(bad, 'init-alpha', 'init-alpha/CC-1.yml')).toThrow(
+      'open task init-alpha/CC-1.yml has an invalid created date: 20260230',
+    )
+  })
+
+  it.each(['..', '../escape', 'a/../b', 'a/b', 'a\\b', '', '/abs'])('refuses initiative slug %j', slug => {
     expect(() => readScoredTasks(root, [slug])).toThrow('unsafe initiative slug name')
   })
 
@@ -268,6 +275,28 @@ describe('score-source', () => {
 })
 
 describe('policy and task reader feeding scoreAll', () => {
+  it.each(['2026-02-30', '2026-13-45'])('refuses --today %s even with no tasks', today => {
+    const { charter, seat, defaults } = loadPolicy(FIXTURE, 'seat-b')
+    const exclusions = { tags: seat.excluded_tags, titlePatterns: seat.excluded_title_patterns }
+    expect(() => scoreAll([], {}, defaults, exclusions, charter.hard_stops, today)).toThrow(
+      `today is an invalid date, got ${today}`,
+    )
+  })
+
+  it.each(['..', '../escape', 'a/b'])('refuses charter seat entry %j before reading it', entry => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'burndown-charter-'))
+    try {
+      const charter = fs.readFileSync(path.join(FIXTURE, 'charter.md'), 'utf8')
+      fs.writeFileSync(
+        path.join(root, 'charter.md'),
+        charter.replace('seats: [seat-a,', `seats: ['${entry}', seat-a,`),
+      )
+      expect(() => loadPolicy(root, 'seat-a')).toThrow('unsafe seat name')
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('scores a task read from YAML under the fixture seat defaults', () => {
     const { charter, seat, defaults } = loadPolicy(FIXTURE, 'seat-b')
     const task = parseScoredTask(TASK, 'init-alpha')

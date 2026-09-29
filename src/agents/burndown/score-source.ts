@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { parse } from 'yaml'
 import { z } from 'zod'
-import type { ScoredTask } from './score.js'
+import { parseIsoDay, type ScoredTask } from './score.js'
 
 /** The scorer's task reader: `tasks/*.yml` or `active-work task list` JSON, both into `ScoredTask`, open tasks only. CLI-only. */
 
@@ -31,7 +31,12 @@ const TaskFields = z.looseObject({
 const COMPACT_DATE = /^(\d{4})(\d{2})(\d{2})$/
 
 /** YAML reads an unquoted `20260918` as a number; ISO-shape it so the age term can parse it. */
-const isoDate = (v: string | undefined): string | undefined => v?.replace(COMPACT_DATE, '$1-$2-$3')
+function isoDate(v: string | undefined, field: string, where: string): string | undefined {
+  if (v === undefined || !COMPACT_DATE.test(v)) return v
+  const iso = v.replace(COMPACT_DATE, '$1-$2-$3')
+  if (parseIsoDay(iso) === undefined) throw new Error(`open task ${where} has an invalid ${field} date: ${v}`)
+  return iso
+}
 
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
@@ -51,7 +56,9 @@ function toScoredTask(raw: unknown, slug: string, where: string): ScoredTask {
     KEYS.flatMap(k => (t[k] === undefined || t[k] === null ? [] : [[k, t[k]]])),
   )
   const dates = Object.fromEntries(
-    (['created', 'updated'] as const).flatMap(k => (t[k] === undefined ? [] : [[k, isoDate(t[k])]])),
+    (['created', 'updated'] as const).flatMap(k =>
+      t[k] === undefined ? [] : [[k, isoDate(t[k], k, where)]],
+    ),
   )
   return { id: t.id, title: t.title, priority: t.priority, ...optional, ...dates, slug }
 }
