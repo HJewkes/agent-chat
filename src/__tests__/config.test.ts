@@ -68,6 +68,39 @@ describe('resolveAgentSlots', () => {
   })
 })
 
+describe('agent slot cap read per spawn (CC-159)', () => {
+  it('applies a raised agentSlots to the next acquire without rebuilding the semaphore', () => {
+    writeConfigJson({ agentSlots: 2 })
+    const semaphore = new Semaphore(resolveAgentSlots)
+    semaphore.acquire('a1')
+    semaphore.acquire('a2')
+    expect(semaphore.acquire('a3')).toBe(false)
+
+    writeConfigJson({ agentSlots: 3 })
+
+    expect(semaphore.acquire('a3')).toBe(true)
+    expect(semaphore.summary()).toBe('3/3 slots')
+  })
+
+  it('keeps running agents when agentSlots drops below the live count and refuses only new ones', () => {
+    writeConfigJson({ agentSlots: 3 })
+    const semaphore = new Semaphore(resolveAgentSlots)
+    for (const id of ['a1', 'a2', 'a3']) semaphore.acquire(id)
+
+    writeConfigJson({ agentSlots: 1 })
+
+    expect(semaphore.ids()).toEqual(['a1', 'a2', 'a3'])
+    expect(semaphore.acquire('a4')).toBe(false)
+    expect(semaphore.acquire('a1')).toBe(true)
+    expect(semaphore.available).toBe(0)
+    semaphore.release('a1')
+    semaphore.release('a2')
+    expect(semaphore.acquire('a4')).toBe(false)
+    semaphore.release('a3')
+    expect(semaphore.acquire('a4')).toBe(true)
+  })
+})
+
 describe('resolveWorktreeBudget', () => {
   it('keeps the fallback when config.json does not exist', () => {
     expect(resolveWorktreeBudget(3)).toBe(3)

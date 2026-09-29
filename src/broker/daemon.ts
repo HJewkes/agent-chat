@@ -162,7 +162,7 @@ function openServices(): { core: BrokerCore; socketServer: SocketServer } {
   if (ledger) backfillAtBoot(events, ledger.fence)
   const socketServer = new SocketServer(
     core,
-    { semaphore: new Semaphore(resolveAgentSlots()), ...(ledger === undefined ? {} : { ledger }) },
+    { semaphore: new Semaphore(resolveAgentSlots), ...(ledger === undefined ? {} : { ledger }) },
     ledger === undefined ? undefined : events.ledgerHandle(),
   )
   return { core, socketServer }
