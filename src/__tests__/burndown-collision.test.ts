@@ -63,6 +63,12 @@ describe('collision', () => {
       { subjects: ['Add scorer (TP-400)'] },
       undefined,
     ],
+    [
+      'a slice whose parent id a sibling slice landed',
+      work('CC-202', { slice: 'b' }),
+      { subjects: ['Add the check (CC-202) (#190)'] },
+      undefined,
+    ],
     ['unreadable subjects', work('TP-1'), { subjects: undefined }, 'landed'],
     ['an open PR title', work('R-48'), { prs: [pr(3, { title: 'Fix R-48 paging' })] }, 'open-pr'],
     ['an open PR branch', work('CC-202'), { prs: [pr(3, { branch: 'agent-chat/hs-cc-202-x' })] }, 'open-pr'],
@@ -128,17 +134,23 @@ describe('readSubjects over a real repository', () => {
     git('commit', '--allow-empty', '-q', '-m', message)
   }
 
+  let root: string
+
   beforeEach(() => {
-    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-collision-'))
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-collision-'))
+    repo = path.join(root, 'work')
+    fs.mkdirSync(repo)
     git('init', '-q', '-b', 'main')
+    git('init', '-q', '--bare', path.join(root, 'origin.git'))
+    git('remote', 'add', 'origin', path.join(root, 'origin.git'))
     commit('Add the scorer (TP-400) (#12)')
     commit('Fix the TP-248 flake')
     commit('Tidy the docs\n\nLeaves R-48 for later; see R-71.')
-    git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+    git('push', '-q', 'origin', 'main')
   })
 
   afterEach(() => {
-    fs.rmSync(repo, { recursive: true, force: true })
+    fs.rmSync(root, { recursive: true, force: true })
   })
 
   it.each([
@@ -150,6 +162,20 @@ describe('readSubjects over a real repository', () => {
     const subjects = readSubjects(repo, 'main')
 
     expect(collision(work(id), facts({ subjects }))?.kind).toBe(kind)
+  })
+
+  it('fetches the default branch first, so a landing the local ref has not seen counts', () => {
+    commit('Land the pager (R-9) (#20)')
+    git('push', '-q', 'origin', 'main')
+    git('update-ref', 'refs/remotes/origin/main', 'HEAD~1')
+
+    expect(readSubjects(repo, 'main')).toContain('Land the pager (R-9) (#20)')
+  })
+
+  it('reports a failed fetch as undefined rather than reading the stale ref', () => {
+    git('remote', 'set-url', 'origin', path.join(root, 'gone.git'))
+
+    expect(readSubjects(repo, 'main')).toBeUndefined()
   })
 
   it('reports an unreadable ref as undefined rather than as no subjects', () => {

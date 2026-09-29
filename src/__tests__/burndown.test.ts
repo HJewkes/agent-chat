@@ -282,6 +282,7 @@ describe('burndown plan collision check (CC-202)', () => {
       if (bin === 'gh' && args.some(a => a.includes('/files')))
         return { status: 0, stdout: (seen.files ?? []).join('\n') }
       if (bin === 'gh') return { status: 0, stdout: (seen.prs ?? []).map(p => JSON.stringify(p)).join('\n') }
+      if (args[0] === 'fetch') return { status: 0, stdout: '' }
       if (args[0] === 'log') return { status: 0, stdout: (seen.subjects ?? []).join('\n') }
       return { status: 1, stdout: '' }
     }
@@ -324,6 +325,81 @@ describe('burndown plan collision check (CC-202)', () => {
         kind: 'claimed',
         reason: 'live agent hs-dm-1-collision-check carries DM-1',
       }),
+    ])
+  })
+
+  const sliceClaim = (slice: string, over: Partial<Claim> = {}): Claim => ({
+    taskId: 'DM-1',
+    initiative: 'demo',
+    spawnedAt: NOON.toISOString(),
+    phase: 'queued',
+    phaseAt: NOON.toISOString(),
+    slice,
+    ...over,
+  })
+  const ledgerOf = (...claims: Claim[]): void => {
+    writeLedger(
+      path.join(world, 'home', 'burndown.json'),
+      claims.reduce((l, c) => addClaim(l, c), EMPTY_LEDGER),
+    )
+  }
+
+  it('dispatches slice b after slice a landed under the parent id', () => {
+    ledgerOf(
+      sliceClaim('a', { phase: 'done', spawned: ['bd-dm-1-a'] }),
+      sliceClaim('b', { dependsOn: ['a'] }),
+    )
+
+    const result = planWith({ subjects: ['Ship the scorer (DM-1) (#190)'] })
+
+    expect(result.dispatch).toEqual([expect.objectContaining({ task: 'DM-1', slice: 'b' })])
+  })
+
+  it("lets a ready slice past its held sibling's open PR and live agent", () => {
+    ledgerOf(
+      sliceClaim('a', { phase: 'awaiting-merge', agentName: 'bd-dm-1-a', spawned: ['bd-dm-1-a'] }),
+      sliceClaim('b'),
+    )
+
+    const result = planWith(
+      { prs: [{ ...pr, branch: 'agent-chat/bd-dm-1-a', title: 'Slice a (DM-1)' }] },
+      { names: ['bd-dm-1-a'], claims: [] },
+    )
+
+    expect(result.dispatch).toEqual([expect.objectContaining({ task: 'DM-1', slice: 'b' })])
+  })
+
+  it.each([
+    [
+      'open PR',
+      { prs: [{ ...pr, branch: 'agent-chat/bd-dm-1', title: 'Old try (DM-1)' }] },
+      noBroker,
+      'open-pr',
+    ],
+    ['live agent', {}, { names: ['bd-dm-1'], claims: [] }, 'claimed'],
+  ])("refuses a re-pick while a done claim's %s is still out", (_, seen, broker, kind) => {
+    ledgerOf({
+      ...sliceClaim('x'),
+      slice: undefined,
+      phase: 'done',
+      agentName: 'bd-dm-1',
+      spawned: ['bd-dm-1'],
+    })
+
+    const result = planWith(seen, broker)
+
+    expect(result.dispatch.map(d => d.task)).toEqual(['DM-2'])
+    expect(result.refusals).toEqual([expect.objectContaining({ task: 'DM-1', kind })])
+  })
+
+  it('names the failed reader in the refusal', () => {
+    const failing: Runner = bin => ({ status: bin === 'gh' ? 1 : 0, stdout: '' })
+
+    const result = planFromDisk(NOON, undefined, ledger => collisionCheck(ledger, noBroker, failing))
+
+    expect(result.refusals.map(r => r.reason)).toEqual([
+      expect.stringContaining('reader gh-pulls failed'),
+      expect.stringContaining('reader gh-pulls failed'),
     ])
   })
 

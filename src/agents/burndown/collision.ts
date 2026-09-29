@@ -2,7 +2,7 @@ import { patternsOverlap } from '../../broker/claims.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import type { RefusalKind } from './eligibility.js'
 import { run, type Runner } from './exec.js'
-import type { Ledger } from './ledger.js'
+import { heldClaims, type Ledger } from './ledger.js'
 import { defaultBranch } from './observe.js'
 import { GIT_BIN } from './review-diff.js'
 
@@ -23,6 +23,8 @@ export interface Collision {
 
 export interface CollisionWork {
   taskId: string
+  /** A planner slice letter; its parent id lands with each sibling slice's merge, so `landed` skips it. */
+  slice?: string
   tags: string[]
   /** The paths a slice declares; empty for a whole task, which skips the file checks. */
   owns: string[]
@@ -52,7 +54,7 @@ export interface CollisionFacts {
   /** Live agent and session names on the broker. */
   names: string[] | undefined
   claims: FileClaim[] | undefined
-  /** Agents the burndown ledger spawned: a sibling slice's name and branch carry the task ID by design. */
+  /** Agents on this task's held claims: a sibling slice's name and branch carry the task ID by design. */
   ours: ReadonlySet<string>
 }
 
@@ -67,16 +69,20 @@ export function collision(work: CollisionWork, facts: CollisionFacts): Collision
 const RECONCILED = 'reconciled'
 
 function landed(work: CollisionWork, facts: CollisionFacts): Collision | undefined {
-  if (work.tags.some(tag => tag.startsWith(RECONCILED))) return undefined
+  if (work.slice !== undefined || work.tags.some(tag => tag.startsWith(RECONCILED))) return undefined
   if (facts.subjects === undefined)
-    return { kind: 'landed', reason: `could not read commit subjects in ${facts.repo}` }
+    return {
+      kind: 'landed',
+      reason: `reader git-subjects failed: no default-branch subjects in ${facts.repo}`,
+    }
   const hit = facts.subjects.find(subject => namesId(subject, work.taskId))
   if (hit === undefined) return undefined
   return { kind: 'landed', reason: `"${hit}" is on the default branch; reconcile it, then tag it reconciled` }
 }
 
 function openPr(work: CollisionWork, facts: CollisionFacts): Collision | undefined {
-  if (facts.prs === undefined) return { kind: 'open-pr', reason: `could not list open PRs for ${facts.repo}` }
+  if (facts.prs === undefined)
+    return { kind: 'open-pr', reason: `reader gh-pulls failed: no open PR list for ${facts.repo}` }
   const ourBranches = new Set([...facts.ours].map(name => `${BRANCH_PREFIX}${name}`))
   const hit = facts.prs.find(
     pr =>
@@ -88,7 +94,7 @@ function openPr(work: CollisionWork, facts: CollisionFacts): Collision | undefin
 
 function claimed(work: CollisionWork, facts: CollisionFacts): Collision | undefined {
   if (facts.names === undefined || facts.claims === undefined)
-    return { kind: 'claimed', reason: 'could not read live agents and file claims from the broker' }
+    return { kind: 'claimed', reason: 'reader broker-view failed: no live agents or file claims' }
   const holder = facts.names.find(name => !facts.ours.has(name) && namesId(name, work.taskId))
   if (holder !== undefined) return { kind: 'claimed', reason: `live agent ${holder} carries ${work.taskId}` }
   for (const claim of facts.claims.filter(c => c.repo === facts.repo && !facts.ours.has(c.owner))) {
@@ -103,7 +109,7 @@ function fileOverlap(work: CollisionWork, facts: CollisionFacts): Collision | un
   for (const pr of facts.prs) {
     const files = facts.prFiles(pr.number)
     if (files === undefined)
-      return { kind: 'file-overlap', reason: `could not list the files of #${pr.number}` }
+      return { kind: 'file-overlap', reason: `reader gh-pull-files failed: no file list for #${pr.number}` }
     const path = overlapping(work.owns, files)
     if (path !== undefined) return { kind: 'file-overlap', reason: `#${pr.number} touches ${path}` }
   }
@@ -113,8 +119,9 @@ function fileOverlap(work: CollisionWork, facts: CollisionFacts): Collision | un
 const overlapping = (owns: string[], others: string[]): string | undefined =>
   owns.find(own => others.some(other => patternsOverlap(own, other)))
 
-/** Subjects only (`%s`) on `origin/<branch>`, the ref a landing reaches. */
+/** Subjects only (`%s`) on `origin/<branch>`, fetched first so a landing since the last fetch counts. */
 export function readSubjects(repo: string, branch: string, exec: Runner = run): string[] | undefined {
+  if (exec(GIT_BIN, ['fetch', '--quiet', '--no-tags', 'origin', branch], repo).status !== 0) return undefined
   const result = exec(GIT_BIN, ['log', `origin/${branch}`, '--format=%s'], repo)
   return result.status === 0 ? result.stdout.split('\n').filter(line => line.length > 0) : undefined
 }
@@ -157,9 +164,6 @@ export function collisionCheck(
   broker: BrokerView | undefined,
   exec: Runner = run,
 ): (repo: string, work: CollisionWork) => Collision | undefined {
-  const ours = new Set(
-    ledger.claims.flatMap(c => [...(c.spawned ?? []), ...(c.agentName === undefined ? [] : [c.agentName])]),
-  )
   const perRepo = new Map<string, CollisionFacts>()
   const factsFor = (repo: string): CollisionFacts => {
     const files = new Map<number, string[] | undefined>()
@@ -170,12 +174,20 @@ export function collisionCheck(
       prFiles: pr => (files.has(pr) ? files.get(pr) : files.set(pr, readPrFiles(repo, pr, exec)).get(pr)),
       names: broker?.names,
       claims: broker?.claims,
-      ours,
+      ours: new Set(),
     }
   }
   return (repo, work) => {
     const facts = perRepo.get(repo) ?? factsFor(repo)
     perRepo.set(repo, facts)
-    return collision(work, facts)
+    return collision(work, { ...facts, ours: oursFor(ledger, work.taskId) })
   }
 }
+
+/** A done claim's agents and PR are not ours any more: a re-pick must see them as someone else's. */
+const oursFor = (ledger: Ledger, taskId: string): ReadonlySet<string> =>
+  new Set(
+    heldClaims(ledger)
+      .filter(c => c.taskId === taskId)
+      .flatMap(c => [...(c.spawned ?? []), ...(c.agentName === undefined ? [] : [c.agentName])]),
+  )
