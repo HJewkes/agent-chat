@@ -445,6 +445,34 @@ describe('worktree branch base (CC-151)', () => {
     expect(alloc.warnings?.[0]).toContain('origin/main')
   })
 
+  it("cuts every concurrent allocation from origin's tip, not just the fetch that won the ref lock", async () => {
+    const { peer, local } = clonedFromOrigin()
+    const merged = commitIn(peer, 'merged.ts')
+    git(['push', '--quiet', 'origin', 'main'], peer)
+    const strategy = createWorktreeStrategy({ budget: 10 })
+    const names = ['w1', 'w2', 'w3', 'w4', 'w5']
+
+    const allocs = await Promise.all(names.map(name => strategy.allocate(ctxFor(local, { agentName: name }))))
+
+    expect(allocs.map(a => git(['rev-parse', 'HEAD'], a.cwd))).toEqual(names.map(() => merged))
+    expect(allocs.flatMap(a => a.warnings ?? [])).toEqual([])
+  })
+
+  it('spends one timeout across every default-branch candidate, not one each', async () => {
+    const local = makeRepo()
+    const hang = path.join(tmp('iso-hang-'), 'hang.sh')
+    fs.writeFileSync(hang, '#!/bin/sh\nexec sleep 10 >/dev/null 2>&1\n', { mode: 0o755 })
+    git(['config', 'protocol.ext.allow', 'always'], local)
+    git(['remote', 'add', 'origin', `ext::${hang}`], local)
+    const strategy = createWorktreeStrategy({ fetchTimeoutMs: 1_500 })
+
+    const started = Date.now()
+    const alloc = await strategy.allocate(ctxFor(local))
+
+    expect(Date.now() - started).toBeLessThan(2_900)
+    expect(alloc.warnings?.[0]).toContain('failed or timed out')
+  })
+
   it('warns that there is no origin when the repository has none', async () => {
     const repo = makeRepo()
 

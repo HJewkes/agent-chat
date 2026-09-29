@@ -15,9 +15,16 @@ const execFileAsync = promisify(execFile)
  */
 export type GitRunner = (args: readonly string[], cwd: string) => Promise<string | null>
 
+/** A git child that inherits `AGENT_CHAT_*` can register as the agent that spawned it (CC-174). */
+export function gitChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...env, GIT_TERMINAL_PROMPT: '0' }
+  for (const key of Object.keys(out)) if (key.startsWith('AGENT_CHAT_')) delete out[key]
+  return out
+}
+
 export const runGit: GitRunner = async (args, cwd) => {
   try {
-    const { stdout } = await execFileAsync('git', [...args], { cwd, encoding: 'utf8' })
+    const { stdout } = await execFileAsync('git', [...args], { cwd, encoding: 'utf8', env: gitChildEnv() })
     return stdout.trim()
   } catch {
     return null

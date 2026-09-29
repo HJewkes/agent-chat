@@ -5,7 +5,7 @@ import { promisify } from 'node:util'
 import { clearRefusal, recordRefusal } from './refusals.js'
 import { warn } from './warnings.js'
 import { resolveWorktreeBudget } from '../../config.js'
-import { findGitRoot } from '../../git.js'
+import { findGitRoot, gitChildEnv } from '../../git.js'
 import type { Allocation, IsolationContext, IsolationStrategy, ReleaseOptions } from './index.js'
 
 // Re-exported because this module was its original home and callers (and tests)
@@ -53,18 +53,11 @@ export interface WorktreeOptions {
   fetchTimeoutMs?: number
 }
 
-/** A git child that inherits `AGENT_CHAT_*` can register as the agent that spawned it (CC-174). */
-function gitEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
-  for (const key of Object.keys(env)) if (key.startsWith('AGENT_CHAT_')) delete env[key]
-  return env
-}
-
 async function git(args: readonly string[], cwd: string, timeout?: number): Promise<string> {
   const { stdout } = await execFileAsync('git', [...args], {
     cwd,
     encoding: 'utf8',
-    env: gitEnv(),
+    env: gitChildEnv(),
     ...(timeout === undefined ? {} : { timeout }),
   })
   return stdout.trim()
@@ -304,21 +297,40 @@ async function fetchTip(gitRoot: string, branch: string, timeoutMs: number): Pro
   return fetched === null ? null : gitOrNull(['rev-parse', '--verify', `${tracking}^{commit}`], gitRoot)
 }
 
+/** The timeout is one budget shared by every candidate, not one per candidate. */
+async function fetchDefaultTip(gitRoot: string, timeoutMs: number): Promise<BranchBase | string> {
+  if ((await gitOrNull(['remote', 'get-url', 'origin'], gitRoot)) === null)
+    return 'the repository has no origin remote'
+  const deadline = Date.now() + timeoutMs
+  const candidates = await defaultBranchCandidates(gitRoot)
+  for (const branch of candidates) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) break
+    const sha = await fetchTip(gitRoot, branch, remaining)
+    if (sha !== null) return { sha, ref: `origin/${branch}` }
+  }
+  return `fetching ${candidates.map(b => `origin/${b}`).join(' or ')} failed or timed out`
+}
+
+/** Concurrent fetches of one ref race on its lock and the loser fails, so spawns in a repo share one. */
+const inflightBases = new Map<string, Promise<BranchBase>>()
+
 /**
  * CC-151: the main checkout's HEAD may lag origin or hold another session's
  * unpushed commits, and a branch cut from it ships both. So cut from a fresh
  * fetch of origin's default branch, and say so loudly when that is impossible.
  */
-export async function resolveBranchBase(gitRoot: string, timeoutMs: number): Promise<BranchBase> {
-  let reason = 'the repository has no origin remote'
-  if ((await gitOrNull(['remote', 'get-url', 'origin'], gitRoot)) !== null) {
-    const candidates = await defaultBranchCandidates(gitRoot)
-    for (const branch of candidates) {
-      const sha = await fetchTip(gitRoot, branch, timeoutMs)
-      if (sha !== null) return { sha, ref: `origin/${branch}` }
-    }
-    reason = `fetching ${candidates.map(b => `origin/${b}`).join(' or ')} failed or timed out`
-  }
+export function resolveBranchBase(gitRoot: string, timeoutMs: number): Promise<BranchBase> {
+  const pending = inflightBases.get(gitRoot)
+  if (pending !== undefined) return pending
+  const resolving = resolveBranchBaseNow(gitRoot, timeoutMs).finally(() => inflightBases.delete(gitRoot))
+  inflightBases.set(gitRoot, resolving)
+  return resolving
+}
+
+async function resolveBranchBaseNow(gitRoot: string, timeoutMs: number): Promise<BranchBase> {
+  const reason = await fetchDefaultTip(gitRoot, timeoutMs)
+  if (typeof reason !== 'string') return reason
   const sha = (await gitOrNull(['rev-parse', 'HEAD'], gitRoot)) ?? 'HEAD'
   return {
     sha,
