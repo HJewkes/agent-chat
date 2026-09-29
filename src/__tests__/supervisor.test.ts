@@ -9,7 +9,7 @@ import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { SpawnRateBudget } from '../agents/spawn-rate.js'
-import { MAX_DEPTH, Supervisor, type SupervisorOptions } from '../agents/supervisor.js'
+import { MAX_DEPTH, Supervisor, type SpawnOutcome, type SupervisorOptions } from '../agents/supervisor.js'
 import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
 import { pairPresence } from '../agents/identity.js'
 import type { AgentIdentity } from '../protocol.js'
@@ -998,24 +998,24 @@ describe('runtime state outliving the broker', () => {
  * half of that, against a real repository, because a worktree that refuses is
  * not provable against a mock.
  */
+const git = (args: string[], cwd: string): string =>
+  execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim()
+
+/** A repository with one commit, for a worktree to be cut from. */
+function makeRepo(): string {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'sup-force-')))
+  tmpDirs.push(dir)
+  git(['init', '-b', 'main'], dir)
+  git(['config', 'user.email', 'test@example.com'], dir)
+  git(['config', 'user.name', 'Test'], dir)
+  git(['config', 'commit.gpgsign', 'false'], dir)
+  fs.writeFileSync(path.join(dir, 'README.md'), 'seed\n')
+  git(['add', '.'], dir)
+  git(['commit', '-m', 'seed'], dir)
+  return dir
+}
+
 describe('retiring with force', () => {
-  const git = (args: string[], cwd: string): string =>
-    execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim()
-
-  /** A repository with one commit, for a worktree to be cut from. */
-  function makeRepo(): string {
-    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'sup-force-')))
-    tmpDirs.push(dir)
-    git(['init', '-b', 'main'], dir)
-    git(['config', 'user.email', 'test@example.com'], dir)
-    git(['config', 'user.name', 'Test'], dir)
-    git(['config', 'commit.gpgsign', 'false'], dir)
-    fs.writeFileSync(path.join(dir, 'README.md'), 'seed\n')
-    git(['add', '.'], dir)
-    git(['commit', '-m', 'seed'], dir)
-    return dir
-  }
-
   /** An agent holding a real worktree with a commit nobody else has. */
   async function agentHoldingUnmergedWork(sup: Supervisor): Promise<Allocation> {
     core.append({ kind: 'agent_spawned', actor: 'human', target: 'scout', msgId: 'a1', body: 'work' })
@@ -1187,6 +1187,158 @@ describe('retiring with force', () => {
       expect(result.reason).toBeUndefined()
       expect(fs.existsSync(allocation.cwd)).toBe(false)
     })
+  })
+})
+
+/**
+ * CC-158. Nine spawns that never registered left nine worktrees and branches on
+ * disk: the names refused ("still on disk and holds branch"), retire said it had
+ * no record of what they held, and the repo's budget read 10/10 until someone
+ * removed them by hand.
+ */
+describe('a spawn that never registers gives back its worktree', () => {
+  beforeEach(() => {
+    vi.useRealTimers()
+    stopAutoAttach()
+  })
+
+  const worktreeCount = (repo: string): number =>
+    git(['worktree', 'list', '--porcelain'], repo)
+      .split('\n')
+      .filter(line => line.startsWith('worktree ')).length
+
+  const branchExists = (repo: string, branch: string): boolean =>
+    git(['branch', '--list', branch], repo) !== ''
+
+  /** A headless claude that exits before registering: evidence that nothing is left running in the tree. */
+  const diesBeforeRegistering = () => ({
+    pid: 4242,
+    unref: () => undefined,
+    once: (event: string, listener: (...args: unknown[]) => void) => {
+      if (event === 'exit') queueMicrotask(() => listener(1, null))
+    },
+  })
+
+  const neverRegisters = (repo: string, over: Record<string, unknown> = {}): Promise<SpawnOutcome> => {
+    supervisor = new Supervisor(
+      core,
+      withShadow({ attachMs: 60_000, surface: { platform: 'linux', spawn: diesBeforeRegistering } }),
+    )
+    return supervisor.spawn(spawnReq({ cwd: repo, isolation: 'worktree', ...over }))
+  }
+
+  const releasedRows = (agentId: string) =>
+    core.events.agentEvents().filter(r => r.kind === 'isolation_released' && r.ref === agentId)
+
+  it('returns the budget and lets the same name spawn again', async () => {
+    const repo = makeRepo()
+    const before = worktreeCount(repo)
+
+    const failed = await neverRegisters(repo)
+
+    expect(failed.ok).toBe(false)
+    expect(worktreeCount(repo)).toBe(before)
+    expect(branchExists(repo, 'agent-chat/scout')).toBe(false)
+    stopAutoAttach = autoAttach(core)
+    const again = withStubbedSurface()
+    expect((await again.spawn(spawnReq({ cwd: repo, isolation: 'worktree' }))).ok).toBe(true)
+  })
+
+  it('keeps the tree of a headless claude that is only slow to register', async () => {
+    const repo = makeRepo()
+    const tree = path.join(repo, '.worktrees', 'scout')
+
+    const failed = await withStubbedSurface({ attachMs: 200 }).spawn(
+      spawnReq({ cwd: repo, isolation: 'worktree' }),
+    )
+
+    expect(failed.ok).toBe(false)
+    expect(fs.existsSync(tree)).toBe(true)
+    expect(readRuntimeState(failed.agentId as string)?.isolation).toBe('worktree')
+    expect(releasedRows(failed.agentId as string)).toHaveLength(0)
+  })
+
+  it('never releases the tree a second time when the failed agent is retired', async () => {
+    const failed = await neverRegisters(makeRepo())
+
+    const retired = await supervisor.retire('scout')
+
+    expect(retired).toEqual({ ok: true })
+    expect(releasedRows(failed.agentId as string).map(r => r.meta)).toEqual([
+      { strategy: 'worktree', released: 'true' },
+    ])
+  })
+
+  it('releases it when the surface refuses before anything launched, and frees the name', async () => {
+    const repo = makeRepo()
+    const before = worktreeCount(repo)
+
+    const failed = await neverRegisters(repo, { surface: 'iterm-pane' })
+
+    expect(failed.ok).toBe(false)
+    expect(worktreeCount(repo)).toBe(before)
+    expect(core.agents.nameIsClaimed('scout')).toBe(false)
+  })
+
+  it('keeps a reused branch holding commits nowhere else, for retire --force', async () => {
+    const repo = makeRepo()
+    git(['switch', '-c', 'agent-chat/scout'], repo)
+    fs.writeFileSync(path.join(repo, 'earlier.ts'), 'work\n')
+    git(['add', 'earlier.ts'], repo)
+    git(['commit', '-m', 'earlier run'], repo)
+    git(['switch', 'main'], repo)
+
+    const failed = await neverRegisters(repo)
+    const tree = path.join(repo, '.worktrees', 'scout')
+
+    expect(failed.ok).toBe(false)
+    expect(fs.existsSync(tree)).toBe(true)
+    const retired = await supervisor.retire('scout', true)
+    expect(retired).toEqual({ ok: true })
+    expect(fs.existsSync(tree)).toBe(false)
+  })
+
+  it('never releases a worktree it was assigned', async () => {
+    const repo = makeRepo()
+    const assigned = path.join(repo, '.worktrees', 'task')
+    git(['worktree', 'add', '-b', 'task', assigned], repo)
+
+    const failed = await neverRegisters(repo, { worktree: assigned })
+
+    expect(failed.ok).toBe(false)
+    expect(fs.existsSync(assigned)).toBe(true)
+    expect(branchExists(repo, 'task')).toBe(true)
+  })
+
+  it('keeps the tree while the pane that may be running in it is still open', async () => {
+    const repo = makeRepo()
+    supervisor = new Supervisor(
+      core,
+      withShadow({
+        attachMs: 100,
+        attachCeilingMs: 300,
+        surface: {
+          platform: 'darwin',
+          runAppleScript: async script =>
+            script.includes('is running')
+              ? 'true'
+              : script.includes('@@present@@')
+                ? '@@present@@'
+                : 'PANE-1',
+        },
+      }),
+    )
+
+    const pending = await supervisor.spawn(
+      spawnReq({ cwd: repo, isolation: 'worktree', surface: 'iterm-window' }),
+    )
+    const agentId = pending.agentId as string
+    const log = path.join(process.env.AGENT_CHAT_HOME as string, 'broker.log')
+    await vi.waitFor(() => expect(fs.readFileSync(log, 'utf8')).toContain('"agent_spawn_failed"'))
+
+    expect(core.agents.get(agentId)?.exit?.failedToStart).toBe(true)
+    expect(fs.existsSync(path.join(repo, '.worktrees', 'scout'))).toBe(true)
+    expect(readRuntimeState(agentId)?.isolation).toBe('worktree')
   })
 })
 
