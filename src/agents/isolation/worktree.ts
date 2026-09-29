@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { cpSync, existsSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -367,44 +367,136 @@ function addWorktree(gitRoot: string, args: readonly string[], run: GitRunner = 
 
 const addTarget = (args: readonly string[]): string | undefined => (args[2] === '-b' ? args[4] : args[2])
 
+const CLEANUP_TIMEOUT_MS = 30_000
+/** SIGTERM first so git can drop its lock files; SIGKILL follows for whatever ignores it. */
+const TERM_GRACE_MS = 1_000
+
+class AddTimedOut extends Error {}
+
+const groupAlive = (pid: number): boolean => {
+  try {
+    process.kill(-pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const signalGroup = (pid: number, signal: NodeJS.Signals): void => {
+  try {
+    process.kill(-pid, signal)
+  } catch {
+    // The group is already gone.
+  }
+}
+
+async function reapGroup(pid: number): Promise<void> {
+  signalGroup(pid, 'SIGKILL')
+  for (let i = 0; i < 100 && groupAlive(pid); i++) await new Promise(r => setTimeout(r, 20))
+}
+
 /**
- * A killed add can leave a half-written directory and a registration under
- * `.git/worktrees`. Both are removed inside the queue slot so the next add, and
- * the next attach of this name, start clean. The branch a `-b` add created is
- * kept: it holds no commits, so the next attach resets it.
+ * Run git in its own process group, so a timeout can kill the hooks and filters
+ * it spawned and not only git itself. Settles only after the child has exited and
+ * the group is reaped, so cleanup never races a process that can still write.
  */
-async function discardHalfCreated(gitRoot: string, args: readonly string[]): Promise<void> {
+function gitInGroup(args: readonly string[], cwd: string, timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', [...args], { cwd, env: gitChildEnv(), detached: true })
+    const pid = child.pid
+    let out = ''
+    let err = ''
+    let timedOut = false
+    child.stdout.on('data', chunk => (out += chunk))
+    child.stderr.on('data', chunk => (err += chunk))
+    const term = setTimeout(() => {
+      timedOut = true
+      if (pid !== undefined) signalGroup(pid, 'SIGTERM')
+    }, timeoutMs)
+    const kill = setTimeout(() => pid !== undefined && signalGroup(pid, 'SIGKILL'), timeoutMs + TERM_GRACE_MS)
+    child.on('error', reject)
+    child.on('close', code => {
+      clearTimeout(term)
+      clearTimeout(kill)
+      void (pid === undefined ? Promise.resolve() : reapGroup(pid)).then(() => {
+        if (timedOut) reject(new AddTimedOut())
+        else if (code === 0) resolve(out.trim())
+        else
+          reject(
+            Object.assign(new Error(err.trim() || `git exited with code ${code}`), { code, stderr: err }),
+          )
+      })
+    })
+  })
+}
+
+/**
+ * A timed-out add can leave a half-written directory and a registration under
+ * `.git/worktrees`. Only a directory the add itself created is removed: one that
+ * existed beforehand belongs to someone else. The branch a `-b` add created is
+ * kept, since it holds no commits and the next attach resets it.
+ */
+async function discardHalfCreated(gitRoot: string, args: readonly string[], created: boolean): Promise<void> {
   const target = addTarget(args)
-  if (target !== undefined) {
+  if (created && target !== undefined) {
     await gitOrNull(['worktree', 'remove', '--force', target], gitRoot, CLEANUP_TIMEOUT_MS)
     rmSync(target, { recursive: true, force: true })
   }
   await gitOrNull(['worktree', 'prune'], gitRoot, CLEANUP_TIMEOUT_MS)
 }
 
-const CLEANUP_TIMEOUT_MS = 30_000
+/** The newest add per path; a late finisher only cleans up if no later add has taken the path since. */
+const latestAdd = new Map<string, object>()
 
 /** CC-239: one hung add (a hook, a filter) must not hold the repo's queue forever. */
 function boundedAdd(run: GitRunner | undefined, timeoutMs: number): GitRunner {
-  const inner = run ?? ((args, cwd) => git(args, cwd, timeoutMs))
   return async (args, cwd) => {
-    let timer: NodeJS.Timeout | undefined
-    const expired = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new AddTimedOut()), timeoutMs)
-    })
+    const target = addTarget(args)
+    const created = target !== undefined && !existsSync(target)
+    const mine = {}
+    if (target !== undefined) latestAdd.set(target, mine)
+    const timedOut = new Error(`git worktree add in ${cwd} timed out after ${timeoutMs}ms and was killed`)
     try {
-      return await Promise.race([inner(args, cwd), expired])
+      return await (run === undefined
+        ? gitInGroup(args, cwd, timeoutMs)
+        : raceTimer(run(args, cwd), timeoutMs, () => cleanLate(cwd, args, created, mine)))
     } catch (err) {
-      if (!(err instanceof AddTimedOut) && (err as { killed?: unknown }).killed !== true) throw err
-      await discardHalfCreated(cwd, args)
-      throw new Error(`git worktree add in ${cwd} timed out after ${timeoutMs}ms and was killed`)
-    } finally {
-      clearTimeout(timer)
+      if (!(err instanceof AddTimedOut)) throw err
+      await discardHalfCreated(cwd, args, created)
+      throw timedOut
     }
   }
 }
 
-class AddTimedOut extends Error {}
+async function cleanLate(
+  cwd: string,
+  args: readonly string[],
+  created: boolean,
+  mine: object,
+): Promise<void> {
+  const target = addTarget(args)
+  if (target === undefined || latestAdd.get(target) !== mine) return
+  await discardHalfCreated(cwd, args, created)
+}
+
+async function raceTimer(
+  add: Promise<string>,
+  timeoutMs: number,
+  onLate: () => Promise<void>,
+): Promise<string> {
+  let timer: NodeJS.Timeout | undefined
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new AddTimedOut()), timeoutMs)
+  })
+  try {
+    return await Promise.race([add, expired])
+  } catch (err) {
+    if (err instanceof AddTimedOut) void add.then(onLate, () => undefined)
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 /** Hooks and settings live in gitignored .claude/, so a fresh worktree runs unhooked without this. */
 function copyClaudeDir(gitRoot: string, worktreePath: string): void {
