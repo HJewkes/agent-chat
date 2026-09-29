@@ -157,6 +157,8 @@ export interface LaunchPlanInput {
    * autostarted the daemon.
    */
   configDir?: string
+  /** CC-200: run with `CLAUDE_CONFIG_DIR` deleted, mirroring a default-account spawner; wins over `configDir`. */
+  configDirUnset?: boolean
   workingOn?: string
   /** Tags and subscriptions the spawner chose; applied at the agent's own register. */
   tags?: string[]
@@ -178,6 +180,8 @@ export interface LaunchPlan {
   args: string[]
   cwd: string
   env: Record<string, string>
+  /** Variables `run-agent` deletes from the inherited env, since an empty string is not the same as unset. */
+  unsetEnv?: string[]
   /** Headless only: the prompt goes on stdin, never in argv. */
   stdin?: string
   title: string

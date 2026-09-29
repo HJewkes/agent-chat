@@ -42,7 +42,7 @@ import { SurfaceRefused, type SurfaceOptions } from './surfaces/options.js'
 import { Semaphore, type SlotUsage } from './semaphore.js'
 import { canonicalPath, checkSpawnCwd, isAtOrUnder } from './spawn-cwd.js'
 import { resolveSpawnBriefing, type BriefingResult } from './active-work.js'
-import { resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
+import { childConfigDir, resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
 import { configDir, findTranscript } from './transcript.js'
 import { resolvePredecessor, type PredecessorResult } from './predecessor.js'
 import {
@@ -244,10 +244,10 @@ const span = (ms: number): string =>
 const lifetimeOf = (profile: Pick<AgentProfile, 'surfaceLifetime'>): SurfaceLifetime =>
   profile.surfaceLifetime ?? DEFAULT_SURFACE_LIFETIME
 
-/** Where an agent was launched: its folder and the `CLAUDE_CONFIG_DIR` whose trust entries it reads. */
+/** Where an agent was launched: its folder and the `CLAUDE_CONFIG_DIR` whose trust entries it reads, undefined when unset. */
 interface LaunchSite {
   cwd: string
-  configDir: string
+  configDir: string | undefined
 }
 
 /**
@@ -1082,6 +1082,7 @@ export class Supervisor implements TeleportHost {
       ...(req.remoteControl ? { remoteControl: true } : {}),
       agentChatHome: home(),
       configDir: account.dir,
+      ...(account.unset ? { configDirUnset: true } : {}),
     })
     writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry()))
 
@@ -1115,6 +1116,7 @@ export class Supervisor implements TeleportHost {
         // `CLAUDE_CONFIG_DIR` is precisely the bug.
         config_dir: account.dir,
         config_dir_source: account.source,
+        ...(account.unset ? { config_dir_unset: 'true' } : {}),
         allowed_tools: profile.allowedTools.join(','),
         // Recorded for symmetry with the allowlist the escalation check reads:
         // the deny list is the half that actually confines (see `profiles.ts`),
@@ -1159,7 +1161,7 @@ export class Supervisor implements TeleportHost {
     // not the claim `agent_spawn` was making. Nothing is reported as spawned
     // until the agent's own MCP server has said hello, or (CC-124) its pane is
     // still there to say it in.
-    const site = { cwd: allocation.cwd, configDir: account.dir }
+    const site = { cwd: allocation.cwd, configDir: childConfigDir(account) }
     const verdict = await this.verifyAttach(agentId, handle, site)
     if (verdict.kind === 'failed') return await this.failSpawn(req, agentId, verdict.reason, verdict.release)
     if (verdict.kind === 'pending') {
@@ -1883,6 +1885,7 @@ export class Supervisor implements TeleportHost {
       ...(allocation.addDirs ? { extraDirs: allocation.addDirs } : {}),
       agentChatHome: home(),
       ...(agent.configDir ? { configDir: agent.configDir } : {}),
+      ...(agent.configDirUnset ? { configDirUnset: true } : {}),
     })
     writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry()))
     this.core.append({
@@ -1978,6 +1981,7 @@ export class Supervisor implements TeleportHost {
       // config dir and the agent would come back billing the broker's account,
       // with its conversation resumed from a transcript it can no longer find.
       ...(agent.configDir ? { configDir: agent.configDir } : {}),
+      ...(agent.configDirUnset ? { configDirUnset: true } : {}),
     })
     writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry()))
 
@@ -2144,6 +2148,7 @@ export class Supervisor implements TeleportHost {
       ...(input.subscriptions?.length ? { subscriptions: input.subscriptions } : {}),
       agentChatHome: home(),
       ...(input.configDir ? { configDir: input.configDir } : {}),
+      ...(input.configDirUnset ? { configDirUnset: true } : {}),
       ...(input.remoteControl ? { remoteControl: true } : {}),
     })
     writeLaunchFiles(plan, buildMcpConfig(input.profile, cliEntry()))
@@ -2168,6 +2173,7 @@ export class Supervisor implements TeleportHost {
         // Carried across rather than re-resolved: a descendant spends the same
         // account as the session it continues (CC-100).
         ...(input.configDir ? { config_dir: input.configDir } : {}),
+        ...(input.configDirUnset ? { config_dir_unset: 'true' } : {}),
         ...input.meta,
       },
     })

@@ -23,7 +23,8 @@ import path from 'node:path'
  *
  * 1. an explicit `config_dir` on the spawn request — the caller naming an account;
  * 2. the SPAWNER's own dir, observed from its MCP server process. A known Claude
- *    session with no `CLAUDE_CONFIG_DIR` is on the default `~/.claude` (CC-156);
+ *    session with no `CLAUDE_CONFIG_DIR` is on the default account (CC-156), and
+ *    its child runs with the var unset too (CC-200);
  * 3. the briefing initiative's `profile:` field, resolved the way active-work's
  *    own launcher resolves it (`$HOME/.claude-profiles/<profile>`);
  * 4. the broker's own environment, and `~/.claude` behind that.
@@ -36,10 +37,16 @@ import path from 'node:path'
  *
  * ## Why a resolved value is always returned
  *
- * The child's `CLAUDE_CONFIG_DIR` is set explicitly even when the answer is the
- * default `~/.claude`. Leaving it unset would mean "whatever the broker's env
- * says", which is the bug. Setting it makes the account a recorded fact about the
- * agent rather than an accident of the broker's history.
+ * The child's account is always a recorded fact, never "whatever the broker's env
+ * says", which is the bug. `dir` is where its transcripts land either way.
+ *
+ * ## Why unset is not the same as `~/.claude` (CC-200)
+ *
+ * With the var unset Claude Code reads `~/.claude.json` and the keychain login
+ * `Claude Code-credentials`. With it set to `~/.claude` it reads
+ * `~/.claude/.claude.json` and a login keyed by a hash of the dir: a separate
+ * trust store and a separate login that can drift. So a spawner on the default
+ * account yields `unset`, which `run-agent` honours by deleting the variable.
  */
 
 /** Matches `CLAUDE_PROFILE_ROOT` / `DEFAULT_PROFILE_ROOT` in active-work's `launcher-profile.ts`. */
@@ -65,7 +72,7 @@ export interface ConfigDirRequest {
 }
 
 export type ConfigDirResolution =
-  | { dir: string; source: ConfigDirSource; warning?: string }
+  | { dir: string; source: ConfigDirSource; warning?: string; unset?: true }
   /** The request named a dir that cannot be used. A refusal, never a silent fallback. */
   | { error: string }
 
@@ -126,7 +133,7 @@ export function resolveConfigDir(req: ConfigDirRequest = {}): ConfigDirResolutio
 
   if (req.spawner !== undefined && req.spawner !== '') return { dir: req.spawner, source: 'spawner' }
   // CC-156: an unset var in a known session IS an account choice, and falling to the profile billed the wrong one.
-  if (req.spawnerIsSession === true) return { dir: defaultConfigDir(home), source: 'spawner' }
+  if (req.spawnerIsSession === true) return { dir: defaultConfigDir(home), source: 'spawner', unset: true }
 
   const fallback = { dir: env.CLAUDE_CONFIG_DIR ?? defaultConfigDir(home), source: 'broker' as const }
   if (req.profile === undefined || req.profile === '') return fallback
@@ -145,6 +152,10 @@ export function resolveConfigDir(req: ConfigDirRequest = {}): ConfigDirResolutio
     }
   return { dir, source: 'profile' }
 }
+
+/** The `CLAUDE_CONFIG_DIR` the child process sees, undefined when it runs with the variable unset. */
+export const childConfigDir = (account: { dir: string; unset?: boolean }): string | undefined =>
+  account.unset === true ? undefined : account.dir
 
 /** Where Claude Code keeps its config when `CLAUDE_CONFIG_DIR` is unset: the default account. */
 export const defaultConfigDir = (home: string = os.homedir()): string => path.join(home, '.claude')

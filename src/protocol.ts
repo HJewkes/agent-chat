@@ -1110,6 +1110,8 @@ export interface AgentIdentity {
    * written yet" forever. Empty for rows written before CC-100.
    */
   configDir?: string
+  /** CC-200: the agent runs with `CLAUDE_CONFIG_DIR` unset, so its global config is `~/.claude.json`. */
+  configDirUnset?: boolean
   /** Timestamp of the newest row referencing this identity, spawn included. */
   lastEventAt: number
   /** Timestamp of the `agent_exited` row, cleared by a resume; the reclaim grace window's start. */

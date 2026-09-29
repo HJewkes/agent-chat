@@ -69,4 +69,12 @@ describe('the environment run-agent hands the launched process', () => {
 
     expect(merged).toEqual({ HOME: '/h', AGENT_CHAT_NAME: 'scout', AGENT_CHAT_LAUNCHER_PID: '4242' })
   })
+
+  it('deletes a variable the plan marks unset, even when the broker carried it (CC-200)', () => {
+    const merged = launchEnv({}, { HOME: '/h', CLAUDE_CONFIG_DIR: '/h/.claude-profiles/broker' }, 4242, [
+      'CLAUDE_CONFIG_DIR',
+    ])
+
+    expect(merged).toEqual({ HOME: '/h', AGENT_CHAT_LAUNCHER_PID: '4242' })
+  })
 })

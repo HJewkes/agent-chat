@@ -2675,6 +2675,27 @@ describe('a visible spawn still starting at the attach window', () => {
     )
     expect(warning).not.toMatch(/Do you trust the files/)
   })
+
+  // CC-200: an unset child reads ~/.claude.json, so ~/.claude/.claude.json saying untrusted must not decide it.
+  it('reads trust from ~/.claude.json for a child that runs with CLAUDE_CONFIG_DIR unset', async () => {
+    stopAutoAttach()
+    const cwd = workspace()
+    const home = workspace()
+    fs.writeFileSync(
+      path.join(home, '.claude.json'),
+      JSON.stringify({ projects: { [cwd]: { hasTrustDialogAccepted: true } } }),
+    )
+    fs.mkdirSync(path.join(home, '.claude'))
+    fs.writeFileSync(path.join(home, '.claude', '.claude.json'), JSON.stringify({ projects: {} }))
+    vi.spyOn(os, 'homedir').mockReturnValue(home)
+    const sup = visibleSupervisor(fakeIterm())
+
+    const spawning = sup.spawn(spawnReq({ surface: 'iterm-window', cwd, spawnerIsSession: true }))
+    await vi.advanceTimersByTimeAsync(1000)
+    const warning = (await spawning).warnings?.join(' ')
+
+    expect(warning).toMatch(/The directory is trusted, so this is not the trust prompt/)
+  })
 })
 
 describe('a failed spawn and its name', () => {
@@ -2733,6 +2754,23 @@ describe('resuming an agent on its own conversation', () => {
     expect(plan.args).not.toContain('--session-id')
     expect(plan.surface).toBe('headless')
     expect(plan.stdin).toBe(RESUMED_BRIEF)
+  })
+
+  it('keeps CLAUDE_CONFIG_DIR unset for an agent a default-account session spawned (CC-200)', async () => {
+    vi.spyOn(os, 'homedir').mockReturnValue(workspace())
+    const sup = withStubbedSurface()
+    const spawned = await sup.spawn(spawnReq({ spawnerIsSession: true }))
+    await (sup as unknown as { recordExit: (id: string, o: unknown) => Promise<void> }).recordExit(
+      spawned.agentId as string,
+      { code: 0, signal: null },
+    )
+    writeTranscriptFor(core.agents.get(spawned.agentId as string)!)
+
+    expect((await sup.resume('scout')).ok).toBe(true)
+
+    const plan = readLaunchPlan(spawned.agentId as string)
+    expect('CLAUDE_CONFIG_DIR' in plan.env).toBe(false)
+    expect(plan.unsetEnv).toEqual(['CLAUDE_CONFIG_DIR'])
   })
 
   it('refuses a live agent', async () => {
