@@ -408,6 +408,7 @@ describe('spawning', () => {
       'Bash(agent-chat send:*)',
       'Bash(agent-chat answer:*)',
       'Bash(agent-chat approve:*)',
+      'Bash(agent-chat agent:*)',
       'AskUserQuestion',
     ])
   })
@@ -1870,6 +1871,23 @@ describe('agent roles', () => {
     expect(fromLead.ok).toBe(true)
     expect(fromWorker.reason).toMatch(/old-worker is a worker \(profile implementer\)/)
   })
+
+  it('treats a requester whose spawn row is missing or names no profile as a worker', async () => {
+    const sup = withStubbedSurface()
+    const shared = workspace()
+    core.register(fakeConn(), { t: 'register', name: 'ghost', workingOn: '', cwd: shared, pid: 1 })
+    const unprofiled = recordedAgent('blank', shared, { depth: '1' })
+
+    const noRow = await sup.spawn(
+      spawnReq({ requestedBy: 'ghost', parentAgentId: 'no-such-agent', cwd: shared }),
+    )
+    const noProfile = await sup.spawn(
+      spawnReq({ name: 'other', requestedBy: 'blank', parentAgentId: unprofiled, cwd: shared }),
+    )
+
+    expect(noRow.reason).toMatch(/ghost is a worker \(profile unknown\)/)
+    expect(noProfile.reason).toMatch(/blank is a worker \(profile unknown\)/)
+  })
 })
 
 /**
@@ -2769,6 +2787,62 @@ describe('resuming an agent on its own conversation', () => {
 
     expect(result.ok).toBe(false)
     expect(result.reason).toContain(`resume_session="${agent.sessionId}"`)
+  })
+
+  describe('asked for by a worker (CC-216)', () => {
+    const installLead = (role?: string): void => {
+      const dir = path.join(process.env.AGENT_CHAT_HOME as string, 'profiles')
+      fs.mkdirSync(dir, { recursive: true })
+      const body = { model: 'opus', allowedTools: ['Read'], isolation: 'none', surface: 'headless' }
+      fs.writeFileSync(path.join(dir, 'lead.json'), JSON.stringify(role ? { ...body, role } : body))
+    }
+    const workerRow = (name: string, meta: Record<string, string>): string =>
+      core.append({ kind: 'agent_spawned', actor: 'human', target: name, meta: { name, ...meta } }).msgId
+
+    it('refuses to relaunch an agent the worker did not spawn', async () => {
+      const sup = withStubbedSurface()
+      const agent = await finishedAgent(sup)
+      writeTranscriptFor(agent)
+      const digger = workerRow('digger', { profile: 'implementer', role: 'worker' })
+
+      const result = await sup.resume('scout', { requestedBy: 'digger', requesterAgentId: digger })
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toBe(
+        'digger is a worker (profile implementer) and can resume only agents it spawned; scout was ' +
+          'not. Report the need to your spawner via chat_send',
+      )
+      expect(kindsFor(agent.agentId)).not.toContain('agent_resumed')
+    })
+
+    it('relaunches an agent the worker spawned before it lost its coordinator role', async () => {
+      const sup = withStubbedSurface()
+      installLead('coordinator')
+      const lead = workerRow('old-lead', { profile: 'lead' })
+      const spawned = await sup.spawn(
+        spawnReq({ requestedBy: 'old-lead', parentAgentId: lead, spawnerConfigDir: workspace() }),
+      )
+      const exit = (sup as unknown as { recordExit: (id: string, o: unknown) => Promise<void> }).recordExit
+      await exit.call(sup, spawned.agentId as string, { code: 0, signal: null })
+      writeTranscriptFor(core.agents.get(spawned.agentId as string)!)
+      installLead()
+
+      const result = await sup.resume('scout', { requestedBy: 'old-lead', requesterAgentId: lead })
+
+      expect(result.ok).toBe(true)
+    })
+
+    it('lets a coordinator relaunch an agent it did not spawn', async () => {
+      const sup = withStubbedSurface()
+      const agent = await finishedAgent(sup)
+      writeTranscriptFor(agent)
+      installLead('coordinator')
+      const lead = workerRow('lead', { profile: 'lead', role: 'coordinator' })
+
+      const result = await sup.resume('scout', { requestedBy: 'lead', requesterAgentId: lead })
+
+      expect(result.ok).toBe(true)
+    })
   })
 
   it('records the session id and transcript path when retiring', async () => {

@@ -65,6 +65,14 @@ const HUMAN_ONLY_CLI_DENY = [
 ]
 
 /**
+ * CC-216: the CLI's `agent` verbs reach the socket on an unregistered connection,
+ * which the broker counts as the human, so a worker with Bash could spawn or
+ * resume around the CC-163 role gate. Same configuration-not-guarantee limit as
+ * `HUMAN_ONLY_CLI_DENY`. Workers read the roster through `agent_list` instead.
+ */
+const WORKER_CLI_DENY = ['Bash(agent-chat agent:*)']
+
+/**
  * CC-47: the operator's global CLAUDE.md requires every turn that ends without
  * a pending tool result to end with AskUserQuestion. A spawned agent inherits
  * that file like any other session, so the turn right after it goes idle —
@@ -98,7 +106,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     // Bash SURVIVES here on purpose — a reviewer that cannot run the tests is an
     // explorer with a different prelude. It is confined at the file boundary
     // instead: it may run commands, it may not edit what it is reviewing.
-    disallowedTools: ['Write', 'Edit', ...HUMAN_ONLY_CLI_DENY, ...NO_SELF_QUESTION],
+    disallowedTools: ['Write', 'Edit', ...HUMAN_ONLY_CLI_DENY, ...WORKER_CLI_DENY, ...NO_SELF_QUESTION],
     isolation: 'toolset-limited',
     surface: 'iterm-pane',
     surfaceLifetime: 'close-on-exit',
@@ -111,7 +119,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     description: 'Writes code in its own worktree, in a visible pane so prompts are answerable.',
     model: 'opus',
     allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Monitor'],
-    disallowedTools: [...HUMAN_ONLY_CLI_DENY, ...NO_SELF_QUESTION],
+    disallowedTools: [...HUMAN_ONLY_CLI_DENY, ...WORKER_CLI_DENY, ...NO_SELF_QUESTION],
     isolation: 'worktree',
     surface: 'iterm-pane',
     surfaceLifetime: 'close-on-exit',
@@ -137,7 +145,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     description: 'A long-lived collaborator sharing your checkout, addressable by name.',
     model: 'opus',
     allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Monitor'],
-    disallowedTools: [...HUMAN_ONLY_CLI_DENY, ...NO_SELF_QUESTION],
+    disallowedTools: [...HUMAN_ONLY_CLI_DENY, ...WORKER_CLI_DENY, ...NO_SELF_QUESTION],
     isolation: 'none',
     surface: 'iterm-pane',
     // `keep`, alone among the builtins, and for the reason the retire-only rule
@@ -165,6 +173,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
       'Bash(git reset:*)',
       'Bash(git stash:*)',
       ...HUMAN_ONLY_CLI_DENY,
+      ...WORKER_CLI_DENY,
       ...NO_SELF_QUESTION,
     ],
     isolation: 'none',

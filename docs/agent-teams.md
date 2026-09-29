@@ -1495,7 +1495,20 @@ Therefore:
   at `MAX_COORDINATOR_DEPTH` (3), with a human-started root at 0. Workers are
   leaves and cost no depth. `meta.depth` still records spawn-tree depth for
   placement. Without the cap, an agent team is a fork bomb with a language
-  model deciding the branching factor.
+  model deciding the branching factor. A requester whose own spawn row is
+  missing, or names no profile, counts as a worker.
+- **Resume (CC-216):** a registered worker may `agent_resume` only an agent
+  whose `agent_spawned.meta.parent` is its own agent id. A coordinator, a
+  human-started session and the human at the CLI may resume any agent.
+- **The limit of both gates (CC-216):** the broker judges a requester by its
+  registered connection, and an **unregistered socket connection counts as
+  HUMAN**. That is the normal shape of `agent-chat agent spawn` and
+  `agent-chat agent resume` at the CLI, and it skips the role, depth and resume
+  checks. A worker with `Bash` could reach them that way, so every worker
+  builtin and every worker profile under `profiles/` denies
+  `Bash(agent-chat agent:*)`. The gate is therefore only as strong as that
+  deny, which matches a literal string: `node dist/cli.js agent spawn`, an
+  absolute path, or a raw socket write gets past it.
 - **Lifecycle ledger shadow (CC-118):** `ledgerShadow` in
   `~/.agent-chat/config.json`, read once at broker boot by `config.ts`'s
   `resolveLedgerShadow`, `AGENT_CHAT_LEDGER_SHADOW=0|1` as an environment

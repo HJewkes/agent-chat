@@ -5,7 +5,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { SURFACE_NAMES } from '../protocol.js'
 import { AGENT_CHAT_TOOLS, buildLaunchPlan, HOOK_DENIAL_NOTE, permModeFor } from '../agents/launch-plan.js'
-import { BUILTIN_PROFILES, listProfileNames, loadProfile, parseProfile } from '../agents/profiles.js'
+import { BUILTIN_PROFILES, listProfileNames, loadProfile, parseProfile, roleOf } from '../agents/profiles.js'
 import { DEFAULT_SURFACE_LIFETIME } from '../agents/types.js'
 import {
   buildHookSettings,
@@ -344,6 +344,7 @@ describe('every builtin profile, on every surface', () => {
       'Bash(agent-chat send:*)',
       'Bash(agent-chat answer:*)',
       'Bash(agent-chat approve:*)',
+      'Bash(agent-chat agent:*)',
       'AskUserQuestion',
     ])
 
@@ -389,6 +390,18 @@ describe('every builtin profile, on every surface', () => {
         flag(buildLaunchPlan(input({ profile: builtin })).args, '--disallowed-tools')?.split(','),
       ).toContain('Bash(agent-chat approve:*)')
     }
+  })
+
+  // CC-216: an unregistered CLI connection counts as the human, so Bash would route around the role gate.
+  it('denies the agent CLI verbs on every worker builtin that can run a shell', () => {
+    const shellCapable = BUILTIN_PROFILES.filter(p => !(p.disallowedTools ?? []).includes('Bash'))
+    const workers = shellCapable.filter(p => roleOf(p) === 'worker')
+    expect(workers.map(p => p.name)).toEqual(['reviewer', 'implementer', 'peer', 'planner'])
+
+    for (const builtin of workers)
+      expect(
+        flag(buildLaunchPlan(input({ profile: builtin })).args, '--disallowed-tools')?.split(','),
+      ).toContain('Bash(agent-chat agent:*)')
   })
 
   // CC-97: two spawned agents stalled 6+ minutes on a Monitor permission prompt with
