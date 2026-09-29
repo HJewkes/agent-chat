@@ -112,6 +112,14 @@ describe('scanDiff', () => {
     expect(Date.now() - started).toBeLessThan(5_000)
   })
 
+  it('flags the tilde form of the active-work data root but not ~/projects', () => {
+    const dataRoot = ['~', 'Library', 'Application Support', 'active-work'].join('/')
+
+    const found = scanText(`${dataRoot}/x/tasks.md\n~/projects/agent-chat`, CTX, 'x')
+
+    expect(found.map(f => `${f.line} ${f.category}`)).toEqual(['1 home-path'])
+  })
+
   it('checks only the home prefix when there is no deny-list', () => {
     const found = scanText(`${EMAIL} ${HOME}`, { list: EMPTY_DENYLIST, home: HOME }, 'x')
 
