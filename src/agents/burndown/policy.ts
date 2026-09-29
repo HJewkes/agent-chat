@@ -37,6 +37,8 @@ const Defaults = z.looseObject({
   readiness: z.object({ ready: z.number(), untriaged: z.number(), blocked: z.number() }),
   size: z.object({ le3: z.number(), le8: z.number(), gt8: z.number() }),
   stop_short_factor: z.number(),
+  worktrees_per_repo_per_seat: z.number().int().nonnegative().optional(),
+  worktrees_left_free_per_repo: z.number().int().nonnegative().optional(),
 })
 
 // An unset human_uses reads as true, which keeps the stricter five_hour ceiling.
@@ -51,13 +53,35 @@ const Pool = z.looseObject({
 
 const Charter = z.looseObject({
   seats: z.array(z.string()),
+  hub: z.string().optional(),
   human_only_initiatives: orEmpty(z.array(z.string()), []),
   hard_stops: orEmpty(z.array(z.string()), []),
   defaults: Defaults,
   pools: orEmpty(z.record(z.string(), Pool), {}),
 })
 
+const count = z.number().int().nonnegative()
+
+// An absent concurrency block dispatches nothing, so a seat opts in to each role explicitly.
+const Concurrency = z.object({
+  implementers: count.default(0),
+  reviewers: count.default(0),
+  planners: count.default(0),
+})
+
+const Repo = z.looseObject({
+  path: z.string().min(1),
+  default: z.string().optional(),
+  initiatives: orEmpty(z.array(z.string()), []),
+})
+
 const Seat = z.looseObject({
+  prefix: z.string().min(1).optional(),
+  config_dir: z.string().optional(),
+  role: z.string().optional(),
+  concurrency: orEmpty(Concurrency, { implementers: 0, reviewers: 0, planners: 0 }),
+  repos: orEmpty(z.array(Repo), []),
+  grants_extra: orEmpty(z.array(z.string()), []),
   initiatives: orEmpty(Weights, {}),
   unclaimed_engineering: orEmpty(z.boolean(), false),
   unclaimed_weight: orEmpty(z.number(), 0.5),

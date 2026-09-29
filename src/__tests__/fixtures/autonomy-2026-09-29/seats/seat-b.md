@@ -1,6 +1,7 @@
 ---
 schema: autonomy-seat/v1
 name: seat-b
+prefix: sb
 role: product
 pool: pool-y
 initiatives:
@@ -12,6 +13,8 @@ unclaimed_weight: 0.6
 kind_weights: {}
 share_caps: {}
 excluded_tags: [human-only, blocked, needs-decision]
+repos:
+  - {path: ~/repos/beta, default: main, initiatives: [init-beta, init-gamma]}
 spend:
   per_run_points: 14
   per_day_points: 25

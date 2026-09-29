@@ -1,0 +1,180 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { loadPolicy, parseSeat, type Policy } from '../agents/burndown/policy.js'
+import { repoForTask, resolveSeatDispatch, type SeatDispatch } from '../agents/burndown/seat-dispatch.js'
+import { loadTickConfig } from '../agents/burndown/source.js'
+
+/** CC-245: the seat dispatch policy that CC-205 seats mode resolves from the charter and a seat file. */
+
+const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'autonomy-2026-09-29')
+const HOME = '/tmp/home'
+
+const withSeat = (policy: Policy, name: string, patch: Record<string, unknown>): Policy => ({
+  ...policy,
+  seats: { ...policy.seats, [name]: { ...policy.seats[name], ...patch } as Policy['seat'] },
+})
+
+describe('resolveSeatDispatch', () => {
+  let policy: Policy
+  beforeEach(() => {
+    policy = loadPolicy(FIXTURE, 'seat-a')
+  })
+
+  it('resolves prefix, pool, repos, caps, worktree caps, excluded tags and grants for seat-a', () => {
+    const dispatch = resolveSeatDispatch(policy, 'seat-a', HOME)
+
+    expect(dispatch).toEqual({
+      seat: 'seat-a',
+      prefix: 'sa',
+      pool: expect.objectContaining({ name: 'pool-x', config_dir: '/tmp/pool-x', human_uses: true }),
+      configDir: '/tmp/pool-x',
+      repos: { 'init-alpha': ['/tmp/repos/alpha-app', '/tmp/repos/alpha-docs'] },
+      caps: { implementers: 4, reviewers: 2, planners: 1 },
+      worktrees: { perRepoPerSeat: 3, leftFreePerRepo: 2 },
+      excludedTags: ['human-only', 'blocked'],
+      grants: ['grant-merge-alpha'],
+    })
+  })
+
+  it('takes the pool config_dir when the seat names none and expands a home-relative repo path', () => {
+    const dispatch = resolveSeatDispatch(policy, 'seat-b', HOME)
+
+    expect(dispatch.configDir).toBe('/tmp/pool-y')
+    expect(dispatch.repos).toEqual({
+      'init-beta': ['/tmp/home/repos/beta'],
+      'init-gamma': ['/tmp/home/repos/beta'],
+    })
+  })
+
+  it('gives zero caps and no grants to a seat without concurrency or grants_extra', () => {
+    const dispatch = resolveSeatDispatch(policy, 'seat-b', HOME)
+
+    expect(dispatch.caps).toEqual({ implementers: 0, reviewers: 0, planners: 0 })
+    expect(dispatch.grants).toEqual([])
+  })
+
+  it('refuses the hub seat', () => {
+    expect(() => resolveSeatDispatch(policy, 'seat-hub', HOME)).toThrow('seat-hub is the hub seat')
+  })
+
+  it('refuses a seat whose role is hub even when the charter names another hub', () => {
+    const renamed = { ...policy, charter: { ...policy.charter, hub: 'seat-b' } }
+    const hub = withSeat(renamed, 'seat-hub', { prefix: 'sh', pool: 'pool-x' })
+
+    expect(() => resolveSeatDispatch(hub, 'seat-hub', HOME)).toThrow('seat-hub is the hub seat')
+  })
+
+  it('refuses the seat the charter names as hub even when its role is not hub', () => {
+    const hub = withSeat(policy, 'seat-hub', { role: 'product', prefix: 'sh' })
+
+    expect(() => resolveSeatDispatch(hub, 'seat-hub', HOME)).toThrow('seat-hub is the hub seat')
+  })
+
+  it('refuses a seat whose config_dir differs from its pool', () => {
+    expect(() => resolveSeatDispatch(policy, 'seat-c', HOME)).toThrow(
+      'seat-c config_dir /tmp/pool-x differs from pool pool-y (/tmp/pool-y)',
+    )
+  })
+
+  it('refuses a seat that names an unknown pool', () => {
+    const unknown = withSeat(policy, 'seat-a', { pool: 'pool-missing' })
+
+    expect(() => resolveSeatDispatch(unknown, 'seat-a', HOME)).toThrow(
+      'seat-a names unknown pool pool-missing',
+    )
+  })
+
+  it('refuses a seat that names no pool', () => {
+    const none = withSeat(policy, 'seat-a', { pool: undefined })
+
+    expect(() => resolveSeatDispatch(none, 'seat-a', HOME)).toThrow('seat-a names unknown pool (none)')
+  })
+
+  it('refuses a seat without an agent-name prefix', () => {
+    const bare = withSeat(policy, 'seat-a', { prefix: undefined })
+
+    expect(() => resolveSeatDispatch(bare, 'seat-a', HOME)).toThrow('seat-a has no agent-name prefix')
+  })
+
+  it('refuses a name the charter does not list', () => {
+    expect(() => resolveSeatDispatch(policy, 'nobody', HOME)).toThrow('nobody is not a seat')
+  })
+
+  it('refuses a charter without worktree caps', () => {
+    const { worktrees_per_repo_per_seat: _cap, ...defaults } = policy.charter.defaults
+    const capless = { ...policy, charter: { ...policy.charter, defaults } }
+
+    expect(() => resolveSeatDispatch(capless, 'seat-a', HOME)).toThrow('charter defaults lack worktrees')
+  })
+})
+
+describe('repoForTask', () => {
+  let dispatch: SeatDispatch
+  beforeEach(() => {
+    dispatch = resolveSeatDispatch(loadPolicy(FIXTURE, 'seat-a'), 'seat-a', HOME)
+  })
+
+  it('uses the first listed repo when the task has no repo tag', () => {
+    expect(repoForTask(dispatch, 'init-alpha', ['product'])).toBe('/tmp/repos/alpha-app')
+  })
+
+  it('uses the repo whose basename a repo tag names', () => {
+    expect(repoForTask(dispatch, 'init-alpha', ['product', 'repo:alpha-docs'])).toBe('/tmp/repos/alpha-docs')
+  })
+
+  it('finds no repo when the tag names a repo the initiative does not list', () => {
+    expect(repoForTask(dispatch, 'init-alpha', ['repo:beta'])).toBeUndefined()
+  })
+
+  it('finds no repo for an initiative the seat maps to none', () => {
+    expect(repoForTask(dispatch, 'init-omega', [])).toBeUndefined()
+  })
+})
+
+describe('seat schema', () => {
+  it('reads repos default branch and leaves unknown keys in place', () => {
+    const seat = parseSeat('---\nrepos:\n  - {path: /tmp/r, default: trunk, remote: x/r}\n---\n', 's')
+
+    expect(seat.repos).toEqual([{ path: '/tmp/r', default: 'trunk', remote: 'x/r', initiatives: [] }])
+  })
+
+  it('rejects a negative concurrency cap', () => {
+    expect(() => parseSeat('---\nconcurrency: {implementers: -1}\n---\n', 's')).toThrow(
+      'seat file s is malformed',
+    )
+  })
+})
+
+describe('burndown.config.json seats', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-config-'))
+  })
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('defaults to no seats when the config omits them', () => {
+    const file = path.join(dir, 'burndown.config.json')
+    fs.writeFileSync(file, JSON.stringify({ enabled: true }))
+
+    expect(loadTickConfig(file).seats).toEqual([])
+  })
+
+  it('reads a list of seat names', () => {
+    const file = path.join(dir, 'burndown.config.json')
+    fs.writeFileSync(file, JSON.stringify({ seats: ['seat-a', 'seat-b'] }))
+
+    expect(loadTickConfig(file).seats).toEqual(['seat-a', 'seat-b'])
+  })
+
+  it('rejects a seat entry that is not a name', () => {
+    const file = path.join(dir, 'burndown.config.json')
+    fs.writeFileSync(file, JSON.stringify({ seats: [''] }))
+
+    expect(() => loadTickConfig(file)).toThrow('is malformed')
+  })
+})

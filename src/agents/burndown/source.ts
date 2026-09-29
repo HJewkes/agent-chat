@@ -112,6 +112,8 @@ const Config = z.object({
   decider: z
     .object({ name: z.string().min(1), maxPerHour: count.default(4), maxPerDay: count.default(24) })
     .optional(),
+  /** Seat names for CC-205 seats-mode dispatch; empty means none. */
+  seats: z.array(z.string().min(1)).default([]),
 })
 export type TickConfig = Omit<z.infer<typeof Config>, 'accounts'>
 
