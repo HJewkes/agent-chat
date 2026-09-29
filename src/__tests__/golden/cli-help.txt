@@ -235,7 +235,7 @@ Usage: agent-chat burndown plan [options]
 dry run: what the tick would dispatch now, and why every other task was refused
 
 Options:
-  --seat <value>           autonomy seat whose scored order to print (with --scored)
+  --seat <value>           autonomy seat whose dry-run dispatch plan to print
   --scored                 print the seat's scored dispatch order with components
   --top <value>            picks to print with --scored (default 20)
   --autonomy-root <value>  directory holding charter.md and seats/

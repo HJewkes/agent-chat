@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { gatePool, type PoolGateInput, type PoolGateResult } from './budget-gate.js'
+import { gatePool, RUN_CAP_MS, type PoolGateInput, type PoolGateResult } from './budget-gate.js'
 import {
   IMPLEMENTER_PROFILE,
   PLANNER_PROFILE,
@@ -8,7 +8,7 @@ import {
   type Refusal,
   type Task,
 } from './eligibility.js'
-import { heldClaims, type Claim, type Ledger } from './ledger.js'
+import { heldClaims, readySlices, type Claim, type Ledger } from './ledger.js'
 import {
   agentNameFor,
   capacityRefusal,
@@ -49,6 +49,8 @@ export interface SeatPlanInputs {
   capacity?: Capacity
   orphan?: PlanInputs['orphan']
   collision?: PlanInputs['collision']
+  /** Why `cwd` cannot be spawned into on the pool's config dir, as `plan()` checks in `place()`. */
+  trust?: (repo: string, cwd: string, configDir: string) => string | undefined
 }
 
 export interface SeatPlan {
@@ -99,19 +101,24 @@ interface Walk {
   tally: Tally
 }
 
+/** Ready slices of the seat's planners first, since their tasks are underway; then the scored order. */
 export function planSeat(inputs: SeatPlanInputs): SeatPlan {
-  const priorPicks = priorPicksOf(inputs.ledger, inputs.seat.seat, inputs.budget.runStartAt)
+  const { budget } = inputs
+  const runStart = Math.max(budget.runStartAt, budget.ctx.now.getTime() - RUN_CAP_MS)
+  const priorPicks = priorPicksOf(inputs.ledger, inputs.seat.seat, runStart)
   const { order, refused } = dispatchOrder(inputs.rows, inputs.defaults, inputs.rows.length, priorPicks)
   const walk = startWalk(inputs)
   const plan: SeatPlan = { dispatch: [], refusals: [], priorPicks, shareCapped: refused }
-  for (const row of order) {
-    const outcome = consider(row, walk)
-    if ('kind' in outcome) plan.refusals.push({ initiative: row.initiative, task: row.id, ...outcome })
+  const take = (initiative: string, task: string, outcome: ReturnType<typeof consider>): void => {
+    if ('kind' in outcome) plan.refusals.push({ initiative, task, ...outcome })
     else {
       plan.dispatch.push(outcome.dispatch)
       record(outcome.dispatch, outcome.role, walk)
     }
   }
+  for (const claim of readySlices(inputs.ledger).filter(c => c.seat === inputs.seat.seat))
+    take(claim.initiative, claim.taskId, considerSlice(claim, walk))
+  for (const row of order) take(row.initiative, row.id, consider(row, walk))
   return plan
 }
 
@@ -172,8 +179,31 @@ function consider(row: DispatchRow, walk: Walk): { dispatch: Dispatch; role: Rol
   const repo = repoForTask(seat, row.initiative, task.tags)
   if (repo === undefined)
     return { kind: 'no-repo', reason: `seat ${seat.seat} lists no repo for ${row.initiative}` }
-  const dispatch = dispatchFor(row, route.profile, repo, walk)
-  return blocker(dispatch, task, route.role, walk) ?? { dispatch, role: route.role }
+  const reason = `score ${row.score}, effective ${row.effective}`
+  const dispatch = dispatchFor(
+    { initiative: row.initiative, task: row.id, profile: route.profile },
+    repo,
+    reason,
+    walk,
+  )
+  return blocker(dispatch, task.tags, [], route.role, walk) ?? { dispatch, role: route.role }
+}
+
+/** A queued slice goes to an implementer in the repo its task's tags pick, owning the paths its plan declares. */
+function considerSlice(claim: Claim, walk: Walk): { dispatch: Dispatch; role: Role } | Refused {
+  const { seat, tasks } = walk.inputs
+  const tags = tasks.get(claim.initiative)?.find(t => t.id === claim.taskId)?.tags ?? []
+  const repo = repoForTask(seat, claim.initiative, tags)
+  if (repo === undefined)
+    return { kind: 'no-repo', reason: `seat ${seat.seat} lists no repo for ${claim.initiative}` }
+  const work = {
+    initiative: claim.initiative,
+    task: claim.taskId,
+    profile: IMPLEMENTER_PROFILE,
+    ...(claim.slice === undefined ? {} : { slice: claim.slice }),
+  }
+  const dispatch = dispatchFor(work, repo, `ready slice ${claim.slice ?? '?'}`, walk)
+  return blocker(dispatch, tags, claim.owns ?? [], 'implementers', walk) ?? { dispatch, role: 'implementers' }
 }
 
 function eligibility(row: DispatchRow, task: Task, walk: Walk): Refused | undefined {
@@ -186,33 +216,40 @@ function eligibility(row: DispatchRow, task: Task, walk: Walk): Refused | undefi
   return undefined
 }
 
-function dispatchFor(row: DispatchRow, profile: string, repo: string, walk: Walk): Dispatch {
+type Work = Pick<Dispatch, 'initiative' | 'task' | 'slice' | 'profile'>
+
+function dispatchFor(work: Work, repo: string, reason: string, walk: Walk): Dispatch {
   const { seat } = walk.inputs
-  const agentName = agentNameFor(row.id, undefined, seat.prefix)
-  const worktree = profile === PLANNER_PROFILE ? undefined : worktreePathFor(repo, agentName)
+  const agentName = agentNameFor(work.task, work.slice, seat.prefix)
+  const worktree = work.profile === PLANNER_PROFILE ? undefined : worktreePathFor(repo, agentName)
   return {
-    initiative: row.initiative,
-    task: row.id,
-    profile,
+    ...work,
     account: seat.pool.name,
     cwd: worktree ?? repo,
     repo,
     agentName,
     ...(worktree === undefined ? {} : { worktree }),
-    reason: `score ${row.score}, effective ${row.effective}; ${walk.gate.reason}`,
+    reason: `${reason}; ${walk.gate.reason}`,
     seat: seat.seat,
     namePrefix: seat.prefix,
     configDir: seat.configDir,
+    grants: seat.grants,
   }
 }
 
-/** In D6's order: collision, orphan, role cap, worktree caps, then the pool gate. */
-function blocker(d: Dispatch, task: Task, role: Role, walk: Walk): Refused | undefined {
+/** In D6's order: collision, orphan, trust, role cap, worktree caps, then the pool gate. */
+function blocker(d: Dispatch, tags: string[], owns: string[], role: Role, walk: Walk): Refused | undefined {
   const { inputs } = walk
   const at = { initiative: d.initiative, repo: d.repo, prefix: d.namePrefix }
+  const untrusted = (): Refused | undefined => {
+    const reason = inputs.trust?.(d.repo, d.cwd, inputs.seat.configDir)
+    return reason === undefined ? undefined : { kind: 'trust', reason }
+  }
   return (
-    inputs.collision?.(d.repo, { taskId: d.task, tags: task.tags, owns: [] }) ??
-    orphanRefusal(at, d.task, d.profile, inputs.orphan) ??
+    inputs.collision?.(d.repo, { taskId: d.task, tags, owns }) ??
+    // A slice's branch is named for the slice, so the whole-task orphan check does not apply to it.
+    (d.slice === undefined ? orphanRefusal(at, d.task, d.profile, inputs.orphan) : undefined) ??
+    untrusted() ??
     roleCap(role, walk) ??
     worktreeCap(d, walk) ??
     budgetRefusal(d.profile, walk.gate)

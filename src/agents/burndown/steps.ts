@@ -110,7 +110,13 @@ function resolveSpawn(action: SpawnAction, ledger: Ledger, ctx: StepContext): Ou
   if ('closed' in gate) return { defer: `budget: ${gate.closed}` }
   const untrusted = ctx.trust(repo, claim.worktree, gate.account)
   if (untrusted !== undefined) return { stall: `trust: ${untrusted}` }
-  const t = taskBrief(claim.taskId, claim.slice, initiative, gate.account, ctx)
+  const t = taskBrief(
+    claim.taskId,
+    claim.slice,
+    initiative,
+    autonomyPlacement(repo, gate.account, initiative, ctx),
+    ctx,
+  )
   if (typeof t === 'string') return { stall: t }
   const spec = {
     name: action.name,
@@ -155,15 +161,33 @@ function successorFrame(
   })
 }
 
+/** Where a brief's agent works and what it may do: an initiative's autonomy block, or a seat's dispatch. */
+interface Placement {
+  repo: string | undefined
+  configDir: string
+  grants: string[]
+}
+
+const autonomyPlacement = (
+  repo: string | undefined,
+  account: string,
+  initiative: Initiative,
+  ctx: StepContext,
+): Placement => ({ repo, configDir: ctx.configDir(account), grants: initiative.autonomy?.grants ?? [] })
+
+function dispatchPlacement(d: Dispatch, initiative: Initiative, ctx: StepContext): Placement {
+  if (d.seat === undefined) return autonomyPlacement(initiative.autonomy?.repo, d.account, initiative, ctx)
+  return { repo: d.repo, configDir: d.configDir ?? ctx.configDir(d.account), grants: d.grants ?? [] }
+}
+
 /** Everything a worker, planner or successor brief needs, or why it cannot be built. */
 function taskBrief(
   taskId: string,
   slice: string | undefined,
   initiative: Initiative,
-  account: string,
+  { repo, configDir, grants }: Placement,
   ctx: StepContext,
 ): TaskBrief | string {
-  const repo = initiative.autonomy?.repo
   const task = ctx.tasks.get(initiative.slug)?.find(t => t.id === taskId)
   const taskYml = ctx.taskText(initiative.slug, taskId)
   if (repo === undefined || task?.doneWhen === undefined || taskYml === undefined)
@@ -172,7 +196,7 @@ function taskBrief(
   const facts = ctx.repoFacts(repo)
   return {
     reportTo: ctx.reportTo,
-    configDir: ctx.configDir(account),
+    configDir,
     defaultBranch: facts.defaultBranch,
     ...(facts.verifySteps === undefined ? {} : { verifySteps: facts.verifySteps }),
     initiative: initiative.slug,
@@ -180,7 +204,7 @@ function taskBrief(
     taskId,
     taskYml,
     doneWhen: task.doneWhen,
-    grants: initiative.autonomy?.grants ?? [],
+    grants,
     ...(slice === undefined ? {} : { slice: sliceInfo(initiativeDir, taskId, slice, ctx) }),
   }
 }
@@ -224,7 +248,7 @@ type Unretired = NonNullable<Claim['unretired']>[number]
 export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string {
   const initiative = ctx.initiatives.get(d.initiative)
   if (initiative === undefined) return `initiative ${d.initiative} vanished mid-tick`
-  const t = taskBrief(d.task, d.slice, initiative, d.account, ctx)
+  const t = taskBrief(d.task, d.slice, initiative, dispatchPlacement(d, initiative, ctx), ctx)
   if (typeof t === 'string') return t
   const planner = d.profile === PLANNER_PROFILE
   const key: ClaimKey = d.slice === undefined ? { taskId: d.task } : { taskId: d.task, slice: d.slice }
@@ -249,7 +273,7 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
     profile: d.profile,
     brief: planner ? plannerBrief(t) : workerBrief(t),
     cwd: d.repo,
-    configDir: d.configDir ?? t.configDir,
+    configDir: t.configDir,
     initiative: d.initiative,
     taskId: d.task,
   })

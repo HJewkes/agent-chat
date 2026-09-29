@@ -9,7 +9,7 @@ import { renderScored, renderScoredRow, scoredPlan } from '../agents/burndown/sc
 import { tasksFromList } from '../agents/burndown/score-source.js'
 import type { DispatchRow } from '../agents/burndown/score.js'
 import { withBroker } from '../cli/client.js'
-import { burndownPlanVerb } from '../cli/verbs/burndown.js'
+import { burndownPlanVerb, planFlagError } from '../cli/verbs/burndown.js'
 
 /** CC-230: `burndown plan --seat --scored` over the synthetic parity fixture; see its README. */
 
@@ -162,12 +162,20 @@ describe('burndown plan --seat --scored from disk', () => {
 })
 
 describe('burndown plan flag refusals', () => {
+  it('accepts --seat without --scored, alone or with --autonomy-root', () => {
+    expect(planFlagError({ seat: 'sample-seat' })).toBeUndefined()
+    expect(planFlagError({ seat: 'sample-seat', autonomyRoot: FIXTURE })).toBeUndefined()
+  })
+
   it.each([
     [{ scored: true }, 'burndown plan --scored needs --seat <name>'],
-    [{ seat: 'sample-seat' }, 'burndown plan --seat needs --scored; the tick does not read seat scores yet'],
     [
-      { seat: 'sample-seat', scored: false },
-      'burndown plan --seat needs --scored; the tick does not read seat scores yet',
+      { seat: 'sample-seat', top: 5 },
+      'burndown plan --top and --today apply only with --seat <name> --scored',
+    ],
+    [
+      { seat: 'sample-seat', scored: false, today: '2026-09-29' },
+      'burndown plan --top and --today apply only with --seat <name> --scored',
     ],
     [{ top: 5 }, 'burndown plan --top, --autonomy-root and --today apply only with --seat <name> --scored'],
     [

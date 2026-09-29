@@ -40,6 +40,8 @@ export interface Dispatch {
   namePrefix?: string
   /** The seat pool's Claude config dir; absent means the account's. */
   configDir?: string
+  /** The seat's `grants_extra`; absent means the initiative's autonomy grants. */
+  grants?: string[]
 }
 
 /** Worktrees under one repo's `.worktrees`: every one, and those the tick's own agents hold. */
