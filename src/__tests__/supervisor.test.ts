@@ -1270,9 +1270,13 @@ describe('a spawn that never registers gives back its worktree', () => {
           runAppleScript: async script =>
             script.includes('is running')
               ? 'true'
-              : script.includes('@@present@@')
-                ? '@@present@@'
-                : 'PANE-1',
+              : script.includes('return tty of s')
+                ? '/dev/ttys042'
+                : script.includes('return contents of s')
+                  ? ''
+                  : script.includes('@@present@@')
+                    ? '@@present@@'
+                    : 'PANE-1',
           probeProcesses: async () => ['-zsh'],
           launchCheck: { deadlineMs: 10, pollMs: 5 },
         },
