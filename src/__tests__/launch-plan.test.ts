@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { SURFACE_NAMES } from '../protocol.js'
 import { AGENT_CHAT_TOOLS, buildLaunchPlan, HOOK_DENIAL_NOTE, permModeFor } from '../agents/launch-plan.js'
 import { BUILTIN_PROFILES, listProfileNames, loadProfile, parseProfile } from '../agents/profiles.js'
+import { agentProfiles } from '../server/commands/agent-profiles.js'
 import { DEFAULT_SURFACE_LIFETIME } from '../agents/types.js'
 import {
   buildHookSettings,
@@ -493,6 +494,51 @@ describe('profiles resolve by name only', () => {
     fs.writeFileSync(path.join(dir, 'explorer.json'), '{not json')
 
     expect(loadProfile('explorer', dir)).toHaveProperty('error')
+  })
+})
+
+describe('profile effort (CC-199)', () => {
+  const base = { model: 'opus', allowedTools: ['Read'], isolation: 'none', surface: 'headless' }
+
+  it('passes --effort when the profile sets one', () => {
+    const plan = buildLaunchPlan(input({ profile: profile({ effort: 'xhigh' }) }))
+
+    expect(flag(plan.args, '--effort')).toBe('xhigh')
+  })
+
+  it('passes no --effort when the profile leaves it unset', () => {
+    expect(buildLaunchPlan(input()).args).not.toContain('--effort')
+  })
+
+  it('reads each valid level from a profile file', () => {
+    for (const effort of ['low', 'medium', 'high', 'xhigh', 'max'])
+      expect(parseProfile('p', { ...base, effort })).toMatchObject({ effort })
+  })
+
+  it('leaves effort off a profile file that omits it', () => {
+    expect(parseProfile('p', base)).not.toHaveProperty('effort')
+  })
+
+  it('makes a profile with an unknown effort unreadable, naming the choices', () => {
+    for (const effort of ['extreme', '', 3, null]) {
+      const result = parseProfile('p', { ...base, effort })
+      expect((result as { error: string }).error).toMatch(
+        /"effort" must be one of low, medium, high, xhigh, max/,
+      )
+    }
+  })
+
+  it('lists the effort in agent_profiles', async () => {
+    const home = tmpdir()
+    process.env.AGENT_CHAT_HOME = home
+    fs.mkdirSync(path.join(home, 'profiles'))
+    fs.writeFileSync(path.join(home, 'profiles', 'deep.json'), JSON.stringify({ ...base, effort: 'max' }))
+    fs.writeFileSync(path.join(home, 'profiles', 'plain.json'), JSON.stringify(base))
+
+    const out = String(await agentProfiles.run({} as never, {} as never))
+
+    expect(out).toContain('- deep [opus, effort max, headless')
+    expect(out).toContain('- plain [opus, headless')
   })
 })
 

@@ -156,6 +156,7 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
   // fields, so this cannot be reached from a profile file.
   const args = [
     ...(profile.model === '' ? [] : ['--model', profile.model]),
+    ...(profile.effort === undefined ? [] : ['--effort', profile.effort]),
     ...conversationArgs(input),
     '--append-system-prompt',
     // Standing context only. The brief is a TASK, and a task has to arrive as a
