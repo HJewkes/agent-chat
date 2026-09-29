@@ -75,8 +75,11 @@ seat, is charged before the next gate at the pool's `dispatch_seven_day_points` 
 toward the five-hour ceiling, the seven-day line, `per_day_points` and `per_run_points`.
 A later seat's collision check also sees an earlier seat's dispatches this tick: the same
 task, or a slice whose `owns` overlap one it dispatched in the same repo, is refused as
-`claimed`. The charge covers new dispatches only, not the reviewer and successor spawns
-below.
+`claimed`. A seat claim's reviewer and successor spawns are charged the same way (CC-292).
+They are resolved before new work is planned, so each one gates on the reading charged
+with the spawns before it on its pool, and new dispatches then gate on all of them. When
+the pool has headroom for one, an in-flight claim's reviewer wins over a new dispatch. A
+spawn the charge closes is deferred, not stalled, and comes back next tick.
 
 A queued slice from before the switch to seats mode has no `seat`, and seats mode
 dispatches only its own seats' slices, so it stays queued. Let such slices finish before

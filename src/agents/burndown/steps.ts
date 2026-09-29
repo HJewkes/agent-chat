@@ -15,7 +15,7 @@ import { heldClaims, sameClaim, type Claim, type Ledger } from './ledger.js'
 import { rowNamed, type Roster } from './observe.js'
 import type { Dispatch } from './plan.js'
 import { parseSlices } from './report.js'
-import type { PoolGateResult } from './budget-gate.js'
+import { chargesOn, type PoolGateResult } from './budget-gate.js'
 import type { SeatDispatch } from './seat-dispatch.js'
 
 /**
@@ -45,7 +45,8 @@ export interface StepContext {
 
 export interface SeatSpawn {
   dispatch: SeatDispatch
-  gate: PoolGateResult
+  /** The pool gate with `dispatched` spawns already charged to the pool this tick. */
+  gate: (dispatched: number) => PoolGateResult
   trust: (repo: string, cwd: string, configDir: string) => string | undefined
 }
 
@@ -54,10 +55,12 @@ export interface Resolved {
   spawns: number
   /** Claims left untouched this tick, and why; the same actions come back next tick. */
   deferred: string[]
+  /** The pool each seat spawn billed, one entry per spawn, so later gates this tick see the charge. */
+  charged: string[]
 }
 
 type SpawnAction = Extract<Action, { kind: 'spawn' }>
-type Outcome = { frame: SpawnFrame } | { defer: string } | { stall: string }
+type Outcome = { frame: SpawnFrame; pool?: string } | { defer: string } | { stall: string }
 
 /** Groups each claim's actions so a deferred spawn also drops the intent write that precedes it. */
 export function stepsForActions(
@@ -71,7 +74,7 @@ export function stepsForActions(
     const key = action.kind === 'add' ? `add:${groups.size}` : claimKey(action.key)
     groups.set(key, [...(groups.get(key) ?? []), action])
   }
-  const resolved: Resolved = { steps: [], spawns: 0, deferred: [] }
+  const resolved: Resolved = { steps: [], spawns: 0, deferred: [], charged: [] }
   for (const [key, group] of groups) {
     const spawn = group.find((a): a is SpawnAction => a.kind === 'spawn')
     if (spawn === undefined) {
@@ -81,13 +84,14 @@ export function stepsForActions(
     const outcome =
       resolved.spawns >= budget
         ? { defer: 'no agent capacity left this tick' }
-        : resolveSpawn(spawn, ledger, ctx)
+        : resolveSpawn(spawn, ledger, ctx, resolved.charged)
     if ('defer' in outcome) resolved.deferred.push(`${key}: ${outcome.defer}`)
     else if ('stall' in outcome) resolved.steps.push(ledgerStep(stallUpdate(spawn.key, outcome.stall)))
     else {
       resolved.steps.push(...plainSteps(group.filter(a => a !== spawn)))
       resolved.steps.push({ kind: 'spawn', key: spawn.key, frame: outcome.frame })
       resolved.spawns += 1
+      if (outcome.pool !== undefined) resolved.charged.push(outcome.pool)
     }
   }
   return resolved
@@ -115,6 +119,8 @@ interface SpawnSetup {
   repo: string | undefined
   placement: (account: string) => Placement
   gate: { account: string } | { closed: string }
+  /** The seat pool a spawn bills; absent for an autonomy account. */
+  pool?: string
   trust: (repo: string, cwd: string, account: string) => string | undefined
 }
 
@@ -130,8 +136,14 @@ function autonomySetup(initiative: Initiative, ctx: StepContext): SpawnSetup {
 }
 
 /** A seat claim's placement and pool gate come from the seat; reviewers and successors run on opus, so sonnet-only closes them. */
-function seatSetup(claim: Claim, seat: SeatSpawn, initiative: Initiative): SpawnSetup {
-  const { dispatch, gate } = seat
+function seatSetup(
+  claim: Claim,
+  seat: SeatSpawn,
+  initiative: Initiative,
+  charged: readonly string[],
+): SpawnSetup {
+  const { dispatch } = seat
+  const gate = seat.gate(chargesOn(dispatch.pool.name, charged))
   const repos = dispatch.repos[initiative.slug] ?? []
   const repo = repos.find(r => claim.worktree?.startsWith(`${r}${path.sep}`)) ?? repos[0]
   const placement: Placement = { repo, configDir: dispatch.configDir, grants: dispatch.grants }
@@ -145,11 +157,16 @@ function seatSetup(claim: Claim, seat: SeatSpawn, initiative: Initiative): Spawn
     repo,
     placement: () => placement,
     gate: closed === undefined ? { account: dispatch.configDir } : { closed },
+    pool: dispatch.pool.name,
     trust: (r, cwd) => seat.trust(r, cwd, dispatch.configDir),
   }
 }
 
-function spawnSetup(claim: Claim, ctx: StepContext): SpawnSetup | { stall: string } | { defer: string } {
+function spawnSetup(
+  claim: Claim,
+  ctx: StepContext,
+  charged: readonly string[],
+): SpawnSetup | { stall: string } | { defer: string } {
   const initiative = ctx.initiatives.get(claim.initiative)
   if (initiative === undefined) return { stall: 'initiative is no longer opted in with a repo' }
   if (claim.seat === undefined) return autonomySetup(initiative, ctx)
@@ -157,13 +174,18 @@ function spawnSetup(claim: Claim, ctx: StepContext): SpawnSetup | { stall: strin
   if (seat === undefined)
     return { stall: `seat ${claim.seat} is no longer in the burndown config; left for the owner` }
   if ('skipped' in seat) return { defer: `seat ${claim.seat} skipped this tick: ${seat.skipped}` }
-  return seatSetup(claim, seat, initiative)
+  return seatSetup(claim, seat, initiative, charged)
 }
 
-function resolveSpawn(action: SpawnAction, ledger: Ledger, ctx: StepContext): Outcome {
+function resolveSpawn(
+  action: SpawnAction,
+  ledger: Ledger,
+  ctx: StepContext,
+  charged: readonly string[],
+): Outcome {
   const claim = heldClaims(ledger).find(c => sameClaim(c, action.key))
   if (claim === undefined) return { stall: 'initiative is no longer opted in with a repo' }
-  const setup = spawnSetup(claim, ctx)
+  const setup = spawnSetup(claim, ctx, charged)
   if ('stall' in setup || 'defer' in setup) return setup
   const { initiative, repo, gate } = setup
   if (repo === undefined) return { stall: 'initiative is no longer opted in with a repo' }
@@ -179,16 +201,16 @@ function resolveSpawn(action: SpawnAction, ledger: Ledger, ctx: StepContext): Ou
     initiative: initiative.slug,
     taskId: claim.taskId,
   }
-  if (action.role === 'reviewer')
-    return {
-      frame: spawnFrame({
-        ...spec,
-        profile: REVIEWER_PROFILE,
-        brief: reviewerBrief({ ...t, implementer: claim.agentName ?? '?' }),
-        cwd: claim.worktree,
-      }),
-    }
-  return { frame: successorFrame(action, t, spec, repo) }
+  const frame =
+    action.role === 'reviewer'
+      ? spawnFrame({
+          ...spec,
+          profile: REVIEWER_PROFILE,
+          brief: reviewerBrief({ ...t, implementer: claim.agentName ?? '?' }),
+          cwd: claim.worktree,
+        })
+      : successorFrame(action, t, spec, repo)
+  return { frame, ...(setup.pool === undefined ? {} : { pool: setup.pool }) }
 }
 
 function successorFrame(
