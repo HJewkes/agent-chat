@@ -62,12 +62,13 @@ import { SpawnRateBudget } from './spawn-rate.js'
 import { loginGap, readOutputTail } from './launch-output.js'
 import { isTrusted, trustGap } from './trust.js'
 import { itermSessionPresent } from './surfaces/iterm.js'
-import { cliEntry, home } from '../paths.js'
+import { burndownConfigPath, cliEntry, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { ShadowLedger } from './ledger/shadow-ledger.js'
 import { exitTerminal, LifecycleShadow } from './ledger/lifecycle-shadow.js'
 import { readExitTail, unreportedExitText, UNREPORTED_EXIT } from './exit-report.js'
+import { loadTickConfig } from './burndown/source.js'
 import {
   Teleport,
   type InheritedIsolation,
@@ -421,6 +422,16 @@ export interface SupervisorOptions {
  * denied `Bash(x:*)`. Checked one level: a child denying the tool's base name
  * (the part before its first `(`) covers any of that tool's scoped variants.
  */
+/** Burndown spawns as the human, but its agents report to the configured `reportTo` (CC-266). */
+function burndownReportTo(): string[] {
+  try {
+    const { reportTo } = loadTickConfig(burndownConfigPath())
+    return reportTo === undefined ? [] : [reportTo]
+  } catch {
+    return []
+  }
+}
+
 function stillDenied(childDenied: Set<string>, tool: string): boolean {
   if (childDenied.has(tool)) return true
   const base = tool.split('(')[0] ?? tool
@@ -682,14 +693,15 @@ export class Supervisor implements TeleportHost {
   }
 
   /**
-   * CC-266: a headless agent that ended its run without a `Status:` message to its
-   * spawner gets one written for it, naming its last action from the transcript.
+   * CC-266: a headless agent that ended its run without a report to its spawner
+   * or to burndown's `reportTo` gets one written for it, naming its last action.
    */
   private reportIfUnreported(agentId: string, name: string): void {
     const identity = this.core.agents.get(agentId)
-    if (identity === undefined || identity.state === 'retired') return
+    if (identity === undefined) return
     const spawner = identity.spawnedBy
-    if (this.core.events.hasStatusReport(name, spawner, this.runStartedAt(identity))) return
+    const recipients = [spawner, ...burndownReportTo()]
+    if (this.core.events.hasStatusReport(name, recipients, this.runStartedAt(identity))) return
     const tail = readExitTail(identity.sessionId ? identityTranscript(identity).path : undefined)
     const body = unreportedExitText(name, tail)
     const { msgId } = this.core.append({
@@ -717,11 +729,7 @@ export class Supervisor implements TeleportHost {
 
   /** A resume starts a new run, and only a report made in this run counts. */
   private runStartedAt(identity: AgentIdentity): number {
-    const resumed = this.core.events
-      .agentEvents()
-      .filter(row => row.ref === identity.agentId && row.kind === 'agent_resumed')
-      .at(-1)
-    return resumed?.ts ?? identity.spawnedAt
+    return this.core.events.lastAgentEventAt(identity.agentId, 'agent_resumed') ?? identity.spawnedAt
   }
 
   private refuse(req: SpawnRequest, reason: string): SpawnOutcome {

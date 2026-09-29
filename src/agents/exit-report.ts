@@ -27,10 +27,38 @@ export interface ExitTail {
 const UNREAD: ExitTail = { lastAction: UNKNOWN_ACTION, pendingBackground: false }
 
 const BACKGROUND_STARTED = /Command running in background with ID:?\s*([A-Za-z0-9_-]+)/
-const BACKGROUND_ENDED = /<task-notification>|\b(completed|exited|killed|failed)\b/i
-/** A plain CLI word: a command, subcommand or verb, never a path, flag or value. */
+const BACKGROUND_ENDED = /<status>(completed|exited|killed|failed)<\/status>/
+/** A plain program name, never a path, flag or value. */
 const WORD = /^[a-z][a-z0-9_-]*$/i
-const MAX_WORDS = 3
+/** The only words kept after a program; anything else, such as a branch or repo name, is dropped. */
+const VERBS: Readonly<Record<string, readonly string[]>> = {
+  gh: [
+    'pr create',
+    'pr merge',
+    'pr checks',
+    'pr view',
+    'pr edit',
+    'pr comment',
+    'run watch',
+    'run view',
+    'api',
+  ],
+  git: [
+    'add',
+    'checkout',
+    'commit',
+    'diff',
+    'fetch',
+    'log',
+    'merge',
+    'pull',
+    'push',
+    'rebase',
+    'status',
+    'switch',
+  ],
+  npm: ['run', 'test', 'install', 'ci'],
+}
 const MAX_PATTERN = 60
 
 type Block = Record<string, unknown>
@@ -80,7 +108,7 @@ export function exitTailOf(text: string): ExitTail {
 
 function scanLine(scan: Scan, line: string): void {
   if (line.trim() === '') return
-  for (const id of scan.started) if (line.includes(id) && BACKGROUND_ENDED.test(line)) scan.started.delete(id)
+  for (const id of scan.started) if (endsTask(line, id)) scan.started.delete(id)
   let record: unknown
   try {
     record = JSON.parse(line)
@@ -92,6 +120,9 @@ function scanLine(scan: Scan, line: string): void {
   if (!Array.isArray(content)) return
   for (const block of content) scanBlock(scan, block)
 }
+
+const endsTask = (line: string, id: string): boolean =>
+  line.includes(`<task-id>${id}</task-id>`) && BACKGROUND_ENDED.test(line)
 
 function scanBlock(scan: Scan, block: unknown): void {
   if (!isRecord(block)) return
@@ -107,7 +138,7 @@ const textOf = (content: unknown): string => {
   return content.map(part => (isRecord(part) && typeof part.text === 'string' ? part.text : '')).join(' ')
 }
 
-/** `mcp__plugin_x__chat_send` reads as `chat_send`; Bash keeps only its leading plain words. */
+/** `mcp__plugin_x__chat_send` reads as `chat_send`; Bash keeps its program and an allowlisted verb. */
 export function actionPattern(toolUse: Block): string {
   const pattern = rawPattern(toolUse)
   return pattern.length > MAX_PATTERN ? `${pattern.slice(0, MAX_PATTERN - 3)}...` : pattern
@@ -118,21 +149,19 @@ function rawPattern(toolUse: Block): string {
   if (name !== 'Bash') return name.split('__').at(-1) || UNKNOWN_ACTION
   const input = isRecord(toolUse.input) ? toolUse.input : {}
   if (input.run_in_background === true) return 'Bash(run_in_background)'
-  const words = commandWords(typeof input.command === 'string' ? input.command : '')
-  return words.length === 0 ? 'Bash' : `Bash(${words.join(' ')})`
+  const command = commandPattern(typeof input.command === 'string' ? input.command : '')
+  return command === undefined ? 'Bash' : `Bash(${command})`
 }
 
-/** The first segment that is not a `cd`, cut at the first token that is not a plain word. */
-function commandWords(command: string): string[] {
+/** The first segment that is not a `cd`: its program's name, plus a verb only when allowlisted. */
+function commandPattern(command: string): string | undefined {
   const segments = command.split(/&&|\|\||;|\|/).map(s => s.trim().split(/\s+/).filter(Boolean))
-  const tokens = segments.find(s => s.length > 0 && s[0] !== 'cd') ?? []
-  const words: string[] = []
-  for (const [i, token] of tokens.entries()) {
-    const word = i === 0 ? (token.split('/').at(-1) ?? '') : token
-    if (!WORD.test(word) || words.length === MAX_WORDS) break
-    words.push(word)
-  }
-  return words
+  const [first, ...rest] = segments.find(s => s.length > 0 && s[0] !== 'cd') ?? []
+  const program = first?.split('/').at(-1) ?? ''
+  if (!WORD.test(program)) return undefined
+  const verbs = (Object.hasOwn(VERBS, program) ? VERBS[program] : undefined) ?? []
+  const verb = [rest.slice(0, 2).join(' '), rest[0]].find(v => v !== undefined && verbs.includes(v))
+  return verb === undefined ? program : `${program} ${verb}`
 }
 
 const MAX_NAME = 64

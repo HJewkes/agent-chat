@@ -53,6 +53,20 @@ describe('the last action of an exited agent', () => {
     expect(tail).toEqual({ lastAction: 'Bash(git status)', pendingBackground: false })
   })
 
+  it('keeps a task pending when the only completion names another task or sits outside a status tag', () => {
+    const tail = exitTailOf(
+      lines(
+        toolUse('t1', 'Bash', { command: 'npm run verify', run_in_background: true }),
+        toolResult('t1', 'Command running in background with ID: bg4.'),
+        userText('<task-notification><task-id>bg42</task-id><status>completed</status></task-notification>'),
+        userText('bg4 has not completed yet'),
+        toolUse('t2', 'Read', { file_path: '/x' }),
+      ),
+    )
+
+    expect(tail).toEqual({ lastAction: 'Read', pendingBackground: true })
+  })
+
   it('treats a final ScheduleWakeup as pending background work', () => {
     const tail = exitTailOf(lines(toolUse('t1', 'ScheduleWakeup', { delaySeconds: 600, prompt: 'check CI' })))
 
@@ -70,6 +84,19 @@ describe('the last action of an exited agent', () => {
     )
 
     expect(tail.lastAction).toBe('Bash(gh pr create)')
+  })
+
+  it.each([
+    ['git checkout private-branch', 'Bash(git checkout)'],
+    ['gh repo view private-repo', 'Bash(gh)'],
+    ['npm run private-script', 'Bash(npm run)'],
+    ['git push origin private-branch', 'Bash(git push)'],
+    ['constructor private', 'Bash(constructor)'],
+    ['./private.sh arg', 'Bash'],
+  ])('reduces %s to its program and an allowlisted verb', (command, pattern) => {
+    const tail = exitTailOf(lines(toolUse('t1', 'Bash', { command })))
+
+    expect(tail.lastAction).toBe(pattern)
   })
 
   it('reduces a binary given by path to its name', () => {
