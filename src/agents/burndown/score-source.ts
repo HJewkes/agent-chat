@@ -2,23 +2,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { parse } from 'yaml'
 import { z } from 'zod'
+import type { ScoredTask } from './score.js'
 
 /** The scorer's task reader: `tasks/*.yml` or `active-work task list` JSON, both into `ScoredTask`, open tasks only. CLI-only. */
-
-/** Task-file keys as score.py sees them; snake case because the YAML files and the fixture JSON both use it. */
-export interface ScoredTask {
-  id: string
-  title: string
-  priority: number
-  severity?: string
-  estimate?: number
-  done_when?: string
-  notes?: string
-  tags?: string[]
-  created?: string
-  updated?: string
-  slug: string
-}
 
 const text = z
   .union([z.string(), z.number(), z.boolean()])

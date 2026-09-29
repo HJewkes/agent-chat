@@ -13,6 +13,7 @@ import {
   type Policy,
 } from '../agents/burndown/policy.js'
 import { parseScoredTask, readScoredTasks, tasksFromList } from '../agents/burndown/score-source.js'
+import { scoreAll } from '../agents/burndown/score.js'
 
 /** CC-228: charter and seat frontmatter, the score.py default merge and seat scope, and the scorer's task reader. */
 
@@ -232,5 +233,21 @@ describe('score-source', () => {
     expect(() => tasksFromList({ tasks: [{ ...EXPECTED, slug: undefined, status: 'open' }] })).toThrow(
       'task list entry 0 has no slug',
     )
+  })
+})
+
+describe('policy and task reader feeding scoreAll', () => {
+  it('scores a task read from YAML under the real titan-coord defaults', () => {
+    const { charter, seat, defaults } = loadPolicy(FIXTURE, 'titan-coord')
+    const task = parseScoredTask(TASK, 'claude-channels')
+    const { rows } = scoreAll(
+      task === undefined ? [] : [task],
+      { 'claude-channels': 1 },
+      defaults,
+      { tags: seat.excluded_tags, titlePatterns: seat.excluded_title_patterns },
+      charter.hard_stops,
+      '2026-09-29',
+    )
+    expect(rows.map(r => [r.id, r.kind, r.kindSource, r.score])).toEqual([['CC-1', 'security', 'tag', 61]])
   })
 })

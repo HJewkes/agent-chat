@@ -4,6 +4,7 @@ import { parse } from 'yaml'
 import { z } from 'zod'
 import { activeWorkRoot } from '../active-work.js'
 import type { Initiative } from './eligibility.js'
+import type { ScoringDefaults } from './score.js'
 
 /** The CC-201 scorer's policy: charter and seat frontmatter, as score.py `load_policy` and `seat_initiatives` read them. CLI-only; the broker never imports this. */
 
@@ -54,7 +55,6 @@ const Seat = z.looseObject({
   share_caps: orEmpty(Weights, {}),
 })
 
-export type ScoringDefaults = z.infer<typeof Defaults>
 export type CharterPolicy = z.infer<typeof Charter>
 export type SeatPolicy = z.infer<typeof Seat>
 
