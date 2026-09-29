@@ -11,6 +11,7 @@ import { Semaphore } from '../agents/semaphore.js'
 import { Supervisor } from '../agents/supervisor.js'
 import { HANDOFF_MAX_BYTES, PANE_SETTLE_MS } from '../agents/teleport.js'
 import { planPath } from '../agents/launch-files.js'
+import { logPath } from '../paths.js'
 import type { LaunchPlan } from '../agents/types.js'
 import type { ArgvReader } from '../broker/host-channels.js'
 
@@ -133,6 +134,19 @@ const spawnRowFor = (agentId: string) =>
 
 const planFor = (agentId: string): LaunchPlan =>
   JSON.parse(fs.readFileSync(planPath(agentId), 'utf8')) as LaunchPlan
+
+const readBrokerLog = (): string => fs.readFileSync(logPath(), 'utf8')
+
+/** Swaps every launched handle's launchFailed for one the test settles; returns the trigger. */
+function controlLaunchFailed(): (reason: string) => void {
+  let trigger: (reason: string) => void = () => undefined
+  const failed = new Promise<string>(resolve => (trigger = resolve))
+  const launchOn = (supervisor as unknown as { launchOn: (...a: unknown[]) => Promise<object> }).launchOn
+  vi.spyOn(supervisor as unknown as { launchOn: typeof launchOn }, 'launchOn').mockImplementation(
+    async (...args: unknown[]) => ({ ...(await launchOn.apply(supervisor, args)), launchFailed: failed }),
+  )
+  return trigger
+}
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -544,8 +558,81 @@ describe('a visible predecessor', () => {
     await supervisor.teleport({ subject: subject(agentId, { anchor: 'w0t1p0:ANCHOR-UUID' }), handoff: 'h' })
     await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS + 1_500)
 
-    const notice = core.events.humanQueue().find(item => item.text.includes('successor did not start'))
+    const notice = core.events.humanQueue().find(item => item.text.includes('successor was not running after 5s'))
     expect(notice?.text).toContain('command not found: sa/relaunch')
+  })
+
+  /** CC-194: the successor can attach after the launch check fires and before the report runs. */
+  it('stays quiet when the successor attaches between the launch check and the report', async () => {
+    const fail = controlLaunchFailed()
+    const agentId = await spawnAgent(visible)
+    stopAutoAttach()
+
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { anchor: 'w0t1p0:ANCHOR-UUID' }),
+      handoff: 'h',
+    })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS)
+    fail('run-agent never started')
+    core.append({ kind: 'agent_attached', actor: 'scout', ref: result.agentId as string })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(core.events.humanQueue().filter(item => item.text.includes('successor'))).toEqual([])
+    expect(readBrokerLog()).not.toContain('"event":"teleport_failed"')
+  })
+
+  it('logs instead of leaking a rejection when the dead-successor notice cannot be appended', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => unhandled.push(reason)
+    process.on('unhandledRejection', onUnhandled)
+    const fail = controlLaunchFailed()
+    const agentId = await spawnAgent(visible)
+    stopAutoAttach()
+    const append = core.append.bind(core)
+    vi.spyOn(core, 'append').mockImplementation(input => {
+      if (input.kind === 'notice' && input.body.includes('successor')) throw new Error('disk full')
+      return append(input)
+    })
+
+    await supervisor.teleport({ subject: subject(agentId, { anchor: 'w0t1p0:ANCHOR-UUID' }), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS)
+    fail('run-agent never started')
+    await vi.advanceTimersByTimeAsync(0)
+    process.off('unhandledRejection', onUnhandled)
+
+    expect(unhandled).toEqual([])
+    expect(readBrokerLog()).toContain('"event":"teleport_failed_report_error"')
+  })
+
+  it('logs instead of leaking a rejection when a spawn attach check throws', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => unhandled.push(reason)
+    process.on('unhandledRejection', onUnhandled)
+    const fail = controlLaunchFailed()
+    stopAutoAttach()
+
+    const spawning = supervisor.spawn({
+      name: 'scout',
+      profile: 'explorer',
+      brief: 'read the log',
+      requestedBy: 'human',
+      cwd: workspace(),
+      isolation: 'none',
+      surface: 'iterm-tab',
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    vi.spyOn(core.events, 'agentEvents').mockImplementation(() => {
+      throw new Error('db locked')
+    })
+    fail('run-agent never started')
+    await vi.advanceTimersByTimeAsync(0)
+    process.off('unhandledRejection', onUnhandled)
+    vi.restoreAllMocks()
+    await vi.advanceTimersByTimeAsync(120_000)
+    await spawning
+
+    expect(unhandled).toEqual([])
+    expect(readBrokerLog()).toContain('"event":"launch_failed_watch_error"')
   })
 
   it('cannot be aborted once the countdown has already run out', async () => {

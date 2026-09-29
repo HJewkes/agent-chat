@@ -939,9 +939,10 @@ creation the way a new pane is (CC-175), so the text still goes through `write
 text`, but it is now one write: Ctrl-U followed by the quoted path of a 0700
 script, `agents/<id>/relaunch`, which `writeLaunchFiles` writes beside the plan.
 The script sets `AGENT_CHAT_HOME` and `exec`s `run-agent <id>`. Keys that still
-land in front of the path turn it into a command that fails. Keys after it
-arrive as arguments, and the script refuses any argument with exit 64. Either
-way `run-agent` never starts, and the CC-175 launch check, now armed for the
+land in front of the path turn it into a command that fails. Keys typed
+between the path and the newline become arguments, and the script refuses any
+argument with exit 64. Keys typed after the newline go to `run-agent`'s stdin.
+A human typing `'path' ; cmd` is not caught. In the failing cases `run-agent` never starts, and the CC-175 launch check, now armed for the
 reused pane, reports the dead successor to the human queue within 5 s.
 Replacing the shell outright was rejected: an adopted session's pane is the
 human's own shell, with no wrapper that could `exec` a successor, and closing
