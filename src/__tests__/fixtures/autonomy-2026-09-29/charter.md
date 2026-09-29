@@ -17,6 +17,6 @@ defaults:
   size: {le3: 1.0, le8: 0.9, gt8: 0.75}
   stop_short_factor: 0.8
 pools:
-  pool-x: {config_dir: /tmp/pool-x, human_uses: true}
-  pool-y: {config_dir: /tmp/pool-y, human_uses: false}
+  pool-x: {config_dir: /tmp/pool-x, human_uses: true, reserve_seven_day: 30, ceiling_five_hour: 75, per_day_points: 12}
+  pool-y: {config_dir: /tmp/pool-y, human_uses: false, reserve_seven_day: 20, night_reserve_seven_day: 8, ceiling_five_hour: 80, per_day_points: 18}
 ---

@@ -12,4 +12,7 @@ share_caps:
   agent-tooling: 1.0
   nit: 0.20
 excluded_tags: [human-only, blocked]
+spend:
+  per_run_points: 5
+  per_day_points: 9
 ---
