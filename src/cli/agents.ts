@@ -1,5 +1,6 @@
 import { budgetMiss, formatBudget, readBudget } from '../agents/budget.js'
 import { findGitRoot } from '../git.js'
+import { callerName, filterRoster, type RosterFilter } from '../agents/roster-filter.js'
 import { pairPresence } from '../agents/identity.js'
 import { reclaim, sweepWorktrees } from '../agents/isolation/sweep.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
@@ -15,8 +16,11 @@ import { fail, withBroker } from './client.js'
  * bounced shows as reconnecting rather than vanishing, because identity is a
  * query over the log and only presence depends on a socket being up.
  */
-export async function agentLs(options: { json?: boolean } = {}): Promise<void> {
-  const [agents, sessions] = await withBroker(async b => {
+export async function agentLs(
+  options: { json?: boolean; mine?: boolean; prefix?: string } = {},
+): Promise<void> {
+  const filter = rosterFilter(options)
+  const [all, sessions] = await withBroker(async b => {
     const roster = (await b.request({ t: 'agents' }, 'agents_result')) as Extract<
       ServerMessage,
       { t: 'agents_result' }
@@ -27,6 +31,7 @@ export async function agentLs(options: { json?: boolean } = {}): Promise<void> {
     >
     return [roster.agents, live.sessions] as const
   })
+  const agents = filterRoster(all, filter)
 
   if (options.json) {
     const rows = agents.map(agent =>
@@ -59,6 +64,18 @@ export async function agentLs(options: { json?: boolean } = {}): Promise<void> {
     // makes urgent. Omitted when the row predates the field.
     if (agent.configDir) console.log(`${' '.repeat(16)} account: ${agent.configDir}`)
     console.log(`${' '.repeat(16)} ${transcriptLine(agent.cwd, agent.sessionId, agent.configDir)}`)
+  }
+}
+
+/** `--mine` resolves the caller or exits; printing everything instead would defeat the flag. */
+function rosterFilter(options: { mine?: boolean; prefix?: string }): RosterFilter {
+  try {
+    return {
+      ...(options.mine === true ? { mine: callerName() } : {}),
+      ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
+    }
+  } catch (err) {
+    fail((err as Error).message)
   }
 }
 
@@ -286,14 +303,19 @@ export async function teleportAbort(name: string): Promise<Report> {
  * reading, because the pacing question is usually "which of these is nearly
  * full", not "how is one of them doing".
  */
-export async function agentBudget(name?: string): Promise<Report> {
-  const agents = await withBroker(async b => {
+export async function agentBudget(
+  name?: string,
+  options: { mine?: boolean; prefix?: string } = {},
+): Promise<Report> {
+  const filter = rosterFilter(options)
+  const all = await withBroker(async b => {
     const res = (await b.request({ t: 'agents' }, 'agents_result')) as Extract<
       ServerMessage,
       { t: 'agents_result' }
     >
     return res.agents
   })
+  const agents = filterRoster(all, filter)
 
   const wanted = name === undefined ? agents : agents.filter(a => a.name === name)
   if (wanted.length === 0) {

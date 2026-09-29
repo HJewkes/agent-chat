@@ -488,7 +488,7 @@ Commands:
   worktrees [options]                          worktrees agent-chat is holding, and which nobody is
                                                using
   surface <name>                               bring a headless agent into a window you can answer
-  budget [name]                                context fill and account rate limits, per agent
+  budget [options] [name]                      context fill and account rate limits, per agent
   help [command]                               display help for command
 
 === agent-chat agent ls
@@ -497,8 +497,10 @@ Usage: agent-chat agent ls [options]
 agents, with lifecycle and presence
 
 Options:
-  --json      print one JSON array, one object per agent
-  -h, --help  display help for command
+  --json        print one JSON array, one object per agent
+  --mine        only agents you spawned (needs a registered session name)
+  --prefix <p>  only agents whose name starts with <p>
+  -h, --help    display help for command
 
 === agent-chat agent spawn
 Usage: agent-chat agent spawn [options] <name> <profile> [brief...]
@@ -554,7 +556,9 @@ Usage: agent-chat agent budget [options] [name]
 context fill and account rate limits, per agent
 
 Options:
-  -h, --help  display help for command
+  --mine                only agents you spawned (needs a registered session name)
+  --prefix <p> <value>  only agents whose name starts with <p>
+  -h, --help            display help for command
 
 === agent-chat teleport
 Usage: agent-chat teleport [options] [command]

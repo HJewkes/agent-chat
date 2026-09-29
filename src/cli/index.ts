@@ -150,6 +150,8 @@ function addAgentCommands(program: Command): void {
     .command('ls', { isDefault: true })
     .description('agents, with lifecycle and presence')
     .option('--json', 'print one JSON array, one object per agent')
+    .option('--mine', 'only agents you spawned (needs a registered session name)')
+    .option('--prefix <p>', 'only agents whose name starts with <p>')
     .action(agents.agentLs)
   agent
     // The brief is OPTIONAL in argv only because `--brief-stdin` is the other
