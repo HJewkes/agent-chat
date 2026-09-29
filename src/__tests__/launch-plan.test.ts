@@ -869,3 +869,49 @@ describe('the account a plan hands the launched process (CC-200)', () => {
     expect(plan.unsetEnv).toEqual(['CLAUDE_CONFIG_DIR'])
   })
 })
+
+describe('per-profile env (CC-259)', () => {
+  const base = { model: 'opus', allowedTools: ['Read'], isolation: 'none', surface: 'headless' }
+  const builtin = (name: string): AgentProfile => {
+    const found = BUILTIN_PROFILES.find(p => p.name === name)
+    if (!found) throw new Error(`no builtin ${name}`)
+    return found
+  }
+
+  it('passes the profile env to the launched process', () => {
+    const plan = buildLaunchPlan(input({ profile: profile({ env: { FOO: 'bar' } }) }))
+
+    expect(plan.env.FOO).toBe('bar')
+  })
+
+  // Mutation caught: spreading profile.env after the reserved keys.
+  it('cannot override AGENT_CHAT_* or CLAUDE_CONFIG_DIR', () => {
+    const hostile = profile({
+      env: { AGENT_CHAT_NAME: 'evil', AGENT_CHAT_HOME: '/evil', CLAUDE_CONFIG_DIR: '/evil' },
+    })
+
+    const set = buildLaunchPlan(input({ profile: hostile, configDir: '/good' }))
+    const unset = buildLaunchPlan(input({ profile: hostile, configDir: '/good', configDirUnset: true }))
+
+    expect(set.env.AGENT_CHAT_NAME).toBe('scout')
+    expect(set.env.CLAUDE_CONFIG_DIR).toBe('/good')
+    expect('AGENT_CHAT_HOME' in set.env).toBe(false)
+    expect('CLAUDE_CONFIG_DIR' in unset.env).toBe(false)
+  })
+
+  it('runs a reviewer with a 5-minute prompt cache and leaves an implementer on the default', () => {
+    const reviewer = buildLaunchPlan(input({ profile: builtin('reviewer') }))
+    const implementer = buildLaunchPlan(input({ profile: builtin('implementer') }))
+
+    expect(reviewer.env.CLAUDE_CODE_PROMPT_CACHE_TTL).toBe('5m')
+    expect('CLAUDE_CODE_PROMPT_CACHE_TTL' in implementer.env).toBe(false)
+  })
+
+  it('rejects a non-string env value, naming the profile', () => {
+    const parsed = parseProfile('cachey', { ...base, env: { TTL: 5 } })
+
+    expect(parsed).toHaveProperty('error', expect.stringContaining('cachey'))
+    expect(parseProfile('cachey', { ...base, env: 'x' })).toHaveProperty('error')
+    expect(parseProfile('ok', { ...base, env: { TTL: '5m' } })).toMatchObject({ env: { TTL: '5m' } })
+  })
+})
