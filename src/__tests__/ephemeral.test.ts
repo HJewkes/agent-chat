@@ -31,7 +31,9 @@ describe('isEphemeralHome', () => {
   it('leaves the real bus alone, which is the whole point of gating on location', () => {
     // The shared broker sits at zero connections for days by design. If this
     // ever returns true for it, the reaper kills the machine's messaging bus.
-    expect(isEphemeralHome(path.join(os.homedir(), '.agent-chat'))).toBe(false)
+    // The tmp root is pinned to a sibling so a HOME under the real tmp root (a
+    // sandbox, CI) does not turn the real bus into a per-run directory.
+    expect(isEphemeralHome(path.join(os.homedir(), '.agent-chat'), tempHome())).toBe(false)
   })
 
   it('resolves symlinked temp roots, so /var and /private/var compare equal', () => {

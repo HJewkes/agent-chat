@@ -114,13 +114,18 @@ export function checkSpawnCwd(cwd: string, policy: CwdPolicy): string | undefine
   })
   if (inSession) return undefined
 
-  const workspaceRoots = [policy.homeDir ?? os.homedir(), policy.tmpDir ?? os.tmpdir()]
-    .map(realOf)
-    .filter((root): root is string => root !== undefined)
+  const home = realOf(policy.homeDir ?? os.homedir())
+  // Before the workspace rules: a HOME under the tmp root would otherwise pass as a tmp workspace.
+  if (home !== undefined && real === home) return refusal(cwd)
+
+  const workspaceRoots = [home, realOf(policy.tmpDir ?? os.tmpdir())].filter(
+    (root): root is string => root !== undefined,
+  )
   if (workspaceRoots.some(root => isStrictlyUnder(real, root))) return undefined
 
-  return (
-    `cwd must be under your home directory or a directory some session is working in: ${cwd} ` +
-    '(the home directory itself, system paths and credential directories are not spawnable)'
-  )
+  return refusal(cwd)
 }
+
+const refusal = (cwd: string): string =>
+  `cwd must be under your home directory or a directory some session is working in: ${cwd} ` +
+  '(the home directory itself, system paths and credential directories are not spawnable)'
