@@ -49,6 +49,8 @@ const Pool = z.looseObject({
   ceiling_five_hour: z.number().optional(),
   night_reserve_seven_day: z.number().optional(),
   per_day_points: z.number().optional(),
+  dispatch_seven_day_points: z.number().nonnegative().optional(),
+  dispatch_five_hour_points: z.number().nonnegative().optional(),
 })
 
 const Charter = z.looseObject({

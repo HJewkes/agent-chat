@@ -2,6 +2,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_DISPATCH_COST,
   dayStart,
   RUN_CAP_MS,
   gatePool,
@@ -41,6 +42,7 @@ interface Case {
   ownerTypedMinAgo?: number
   ageSeconds?: number
   maxReadingAgeSeconds?: number
+  dispatched?: number
 }
 
 function gate(c: Case) {
@@ -61,6 +63,7 @@ function gate(c: Case) {
         now,
         humanLastTurnAt: now.getTime() - (c.ownerTypedMinAgo ?? 120) * MIN,
       },
+      ...(c.dispatched === undefined ? {} : { dispatched: c.dispatched }),
     },
     c.maxReadingAgeSeconds === undefined ? {} : { maxReadingAgeSeconds: c.maxReadingAgeSeconds },
   )
@@ -364,5 +367,51 @@ describe('run start', () => {
       now.getTime() - RUN_CAP_MS,
     )
     expect(runStartAt(now, { ownerMessageAt: Number.NaN, recordedAt })).toBe(recordedAt)
+  })
+})
+
+describe("this tick's dispatches charged against the pool (CC-275)", () => {
+  const now = at(15)
+  const priced = (cost: { dispatch_seven_day_points?: number; dispatch_five_hour_points?: number }) => ({
+    ...SEAT_B,
+    spend: {},
+    pool: { ...(SEAT_B.pool as PoolRule), ...cost },
+  })
+  const history = [{ at: at(6, 30).getTime(), sevenDay: 30 }]
+
+  it('closes at per_day_points once the charged dispatches reach it', () => {
+    const budget = priced({ dispatch_seven_day_points: 5 })
+
+    expect(gate({ budget, now, history, sevenDay: 35, dispatched: 2 }).open).toBe(true)
+    expect(gate({ budget, now, history, sevenDay: 35, dispatched: 3 }).reason).toBe(
+      "BUDGET-PAUSE pool pool-y: day spend 20 points since 07:00 at or above the pool pool-y's per_day_points 18; charged 3 dispatch(es) this tick at +15 seven_day, +30 five_hour",
+    )
+  })
+
+  it('closes at the five_hour ceiling and the seven_day line once charged', () => {
+    const budget = priced({ dispatch_seven_day_points: 1, dispatch_five_hour_points: 35 })
+
+    expect(gate({ budget, now, history, sevenDay: 31, dispatched: 1 }).open).toBe(true)
+    expect(gate({ budget, now, history, sevenDay: 31, dispatched: 2 }).reason).toContain(
+      'five_hour 80% at or above ceiling 80%',
+    )
+    const line = priced({ dispatch_seven_day_points: 40, dispatch_five_hour_points: 0 })
+    expect(
+      gate({
+        budget: { ...line, pool: { ...line.pool, per_day_points: undefined } },
+        now,
+        history,
+        sevenDay: 41,
+        dispatched: 1,
+      }).reason,
+    ).toContain('seven_day 81% at or above line 80%')
+  })
+
+  it('charges the default cost when the pool prices no dispatch', () => {
+    const result = gate({ budget: priced({}), now, history, sevenDay: 31, dispatched: 1 })
+
+    expect(result.reason).toContain(
+      `seven_day ${31 + DEFAULT_DISPATCH_COST.sevenDay}% vs line 80%; charged 1 dispatch(es) this tick at +${DEFAULT_DISPATCH_COST.sevenDay} seven_day, +${DEFAULT_DISPATCH_COST.fiveHour} five_hour`,
+    )
   })
 })

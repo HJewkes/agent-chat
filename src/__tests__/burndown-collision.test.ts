@@ -9,6 +9,7 @@ import {
   namesId,
   readOpenPrs,
   readSubjects,
+  sameTickCollision,
   type CollisionFacts,
   type CollisionWork,
 } from '../agents/burndown/collision.js'
@@ -242,5 +243,29 @@ describe('collisionCheck reader failures', () => {
 
     expect(check('/repo', work('CC-9'))).toBeUndefined()
     expect(failed).toEqual([])
+  })
+})
+
+describe('sameTickCollision over earlier seats this tick (CC-275)', () => {
+  const earlier = [
+    {
+      seat: 'seat-a',
+      repo: '/repo',
+      agentName: 'sa-cc-1-a',
+      work: work('CC-1', { slice: 'a', owns: ['src/x.ts'] }),
+    },
+  ]
+
+  it('refuses the same task and an overlapping owns in the same repo', () => {
+    expect(sameTickCollision(earlier, '/other', work('CC-1'))?.reason).toBe(
+      'seat seat-a dispatched it earlier this tick as sa-cc-1-a',
+    )
+    expect(sameTickCollision(earlier, '/repo', work('CC-2', { owns: ['src/**'] }))?.reason).toBe(
+      "src/** is under sa-cc-1-a's owns, dispatched by seat seat-a earlier this tick",
+    )
+  })
+
+  it('passes an overlapping owns in another repo', () => {
+    expect(sameTickCollision(earlier, '/other', work('CC-2', { owns: ['src/**'] }))).toBeUndefined()
   })
 })
