@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite'
@@ -8,6 +7,8 @@ import type { AgentEventRow } from '../../broker/event-store.js'
 import { home } from '../../paths.js'
 import type { EventKind } from '../../protocol.js'
 import { activeWorkRoot } from '../active-work.js'
+import { scoredPlanFromDisk } from '../burndown/score-render.js'
+import { localDate } from '../burndown/seat-tick.js'
 import type { OwnerMessage, SpendMeter } from './stops.js'
 import type { SeatState } from './watchdog.js'
 
@@ -34,21 +35,24 @@ export const readText = (file: string): string | undefined => {
   }
 }
 
-/** The scorer's eligible count for `seat`, or undefined when it cannot be run or read. */
-export function scorerEligible(root: string, seat: string): number | undefined {
+/** The most rows the scorer is asked for; score.py's `--top 1000` the watchdog used to pass. */
+const SCORER_TOP = 1000
+
+/** The scorer's eligible count for `seat`, or undefined when its policy or tasks cannot be read. */
+export function scorerEligible(
+  root: string,
+  seat: string,
+  opts: { activeWork?: string; today?: string } = {},
+): number | undefined {
   try {
-    const out = execFileSync(
-      'python3',
-      [path.join(root, 'score.py'), '--seat', seat, '--json', '--top', '1000'],
-      {
-        cwd: root,
-        encoding: 'utf8',
-        timeout: 120_000,
-        stdio: ['ignore', 'pipe', 'ignore'],
-      },
-    )
-    const order = (JSON.parse(out) as { order?: unknown }).order
-    return Array.isArray(order) ? order.length : undefined
+    const plan = scoredPlanFromDisk({
+      seat,
+      top: SCORER_TOP,
+      today: opts.today ?? localDate(new Date()),
+      autonomyRoot: root,
+      activeWorkRoot: opts.activeWork ?? activeWorkRoot(),
+    })
+    return plan.order.length
   } catch {
     return undefined
   }
