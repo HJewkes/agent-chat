@@ -38,17 +38,30 @@ export function hostIdentity(env: NodeJS.ProcessEnv = process.env, ppid = proces
 
 export type ParentOf = (pid: number) => number | undefined
 
-export const psParentOf: ParentOf = pid => {
+/** Absolute, because a launch may carry no usable PATH (CC-132); macOS has only the first. */
+const PS_CANDIDATES = ['/bin/ps', '/usr/bin/ps']
+const PS_TIMEOUT_MS = 2_000
+
+const parentVia = (ps: string, pid: number): number | undefined => {
   try {
-    const out = execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], {
+    const out = execFileSync(ps, ['-o', 'ppid=', '-p', String(pid)], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: PS_TIMEOUT_MS,
     })
     const ppid = Number.parseInt(out.trim(), 10)
     return Number.isInteger(ppid) ? ppid : undefined
   } catch {
     return undefined
   }
+}
+
+export const psParentOf: ParentOf = pid => {
+  for (const ps of PS_CANDIDATES) {
+    const ppid = parentVia(ps, pid)
+    if (ppid !== undefined) return ppid
+  }
+  return undefined
 }
 
 /**
@@ -65,11 +78,12 @@ export const psParentOf: ParentOf = pid => {
  */
 export function isLaunchedProcess(
   env: NodeJS.ProcessEnv = process.env,
-  hostPid: number | undefined = hostIdentity(env).hostPid,
+  host: HostIdentity = hostIdentity(env),
   parentOf: ParentOf = psParentOf,
 ): boolean {
   const launcher = env[LAUNCHER_PID_ENV]
   if (launcher === undefined || launcher === '') return true
+  const { hostPid } = host
   if (hostPid === undefined) return false
   return parentOf(hostPid) === Number(launcher)
 }

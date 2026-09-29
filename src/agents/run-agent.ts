@@ -21,6 +21,13 @@ export const LAUNCHER_PID_ENV = 'AGENT_CHAT_LAUNCHER_PID'
  * overwrites it with the running job. Here it is a plain stdout write instead of
  * an escaped string inside an AppleScript inside a shell.
  */
+/** The launcher pid comes last so no plan can forge it (CC-174). */
+export const launchEnv = (
+  planEnv: Record<string, string>,
+  base: Record<string, string> = agentEnv(),
+  launcherPid: number = process.pid,
+): Record<string, string> => ({ ...base, ...planEnv, [LAUNCHER_PID_ENV]: String(launcherPid) })
+
 export const oscTitle = (title: string): string => `]0;${title}`
 
 export function runAgent(agentId: string): void {
@@ -60,9 +67,7 @@ function exec(plan: LaunchPlan): void {
     //
     // `plan.env` still wins, and deliberately: it is what the SPAWNER chose for
     // this agent, which is the bounded thing the clause asks for.
-    //
-    // The launcher pid comes last so no plan can forge it (CC-174).
-    env: { ...agentEnv(), ...plan.env, [LAUNCHER_PID_ENV]: String(process.pid) },
+    env: launchEnv(plan.env),
     // The brief goes in on stdin for headless; an interactive surface hands the
     // terminal straight through so the human can type into the pane.
     stdio: plan.stdin === undefined ? 'inherit' : ['pipe', 'inherit', 'inherit'],
