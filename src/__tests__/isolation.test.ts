@@ -532,12 +532,11 @@ describe('concurrent worktree adds (CC-224)', () => {
       calls++ === 0 ? Promise.reject(new Error('add failed')) : realAdd(args, cwd)
     const strategy = createWorktreeStrategy({ budget: 10, runWorktreeAdd: failFirst })
 
-    const [first, second] = await Promise.allSettled(
+    const settled = await Promise.allSettled(
       ['w1', 'w2'].map(name => strategy.allocate(ctxFor(repo, { agentName: name }))),
     )
 
-    expect(first.status).toBe('rejected')
-    expect(second.status).toBe('fulfilled')
+    expect(settled.map(s => s.status)).toEqual(['rejected', 'fulfilled'])
   })
 
   it('does not make adds in different repositories wait for each other', async () => {
