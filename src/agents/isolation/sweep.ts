@@ -109,6 +109,21 @@ export async function agentWorktreesIn(
 /** Live means someone is in it; anything else has stopped and may be reclaimable. */
 const isLive = (state: string): boolean => state === 'live' || state === 'spawning'
 
+const realPath = (p: string): string => {
+  try {
+    return fs.realpathSync(p)
+  } catch {
+    return path.resolve(p)
+  }
+}
+
+/** Live agents keyed by the real path they run in, whatever their name or branch (CC-277). */
+function liveOccupants(roster: readonly AgentIdentity[]): Map<string, AgentIdentity> {
+  const occupants = new Map<string, AgentIdentity>()
+  for (const agent of roster) if (isLive(agent.state) && agent.cwd) occupants.set(realPath(agent.cwd), agent)
+  return occupants
+}
+
 function classifyByAgent(
   agent: AgentIdentity | undefined,
   now: number,
@@ -156,6 +171,7 @@ export async function sweepWorktrees(
   const list = options.list ?? porcelain
   const now = (options.now ?? Date.now)()
   const held = heldByRuntimeState()
+  const occupants = liveOccupants(roster)
   const byBranch = new Map(roster.map(agent => [`${BRANCH_PREFIX}${agent.name}`, agent]))
 
   const roots = new Set<string>(options.roots ?? [])
@@ -164,14 +180,15 @@ export async function sweepWorktrees(
   const swept: SweptWorktree[] = []
   for (const gitRoot of roots) {
     for (const { worktree, branch } of await agentWorktreesIn(gitRoot, list)) {
-      swept.push(await classify({ gitRoot, worktree, branch }, byBranch.get(branch), held, now))
+      const agent = occupants.get(realPath(worktree)) ?? byBranch.get(branch)
+      swept.push(await classify({ gitRoot, worktree, branch }, agent, held, now))
     }
   }
   return swept
 }
 
 /**
- * Ownership is joined on the branch, so `agent` is absent for a worktree whose
+ * Ownership is joined on the branch, or on a live agent's cwd (CC-277), so `agent` is absent for a worktree whose
  * agent predates the log or was pruned from it. That is reported rather than
  * assumed either way: an unknown owner is not a reason to destroy commits, and
  * the dirty/unmerged check below is what actually decides.
