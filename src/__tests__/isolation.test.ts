@@ -357,6 +357,12 @@ describe('worktree re-allocation after a crash', () => {
   })
 })
 
+/** Hangs every fetch, then exits within 0.2s of the fetching git being killed so no child outlives the test. */
+const HANG_UNTIL_GIT_DIES = `#!/bin/sh
+git_pid=$(ps -o ppid= -p $PPID)
+while kill -0 $git_pid 2>/dev/null; do sleep 0.2; done
+`
+
 describe('worktree branch base (CC-151)', () => {
   const tmp = (prefix: string): string => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)))
@@ -461,7 +467,7 @@ describe('worktree branch base (CC-151)', () => {
   it('spends one timeout across every default-branch candidate, not one each', async () => {
     const local = makeRepo()
     const hang = path.join(tmp('iso-hang-'), 'hang.sh')
-    fs.writeFileSync(hang, '#!/bin/sh\nexec sleep 10 >/dev/null 2>&1\n', { mode: 0o755 })
+    fs.writeFileSync(hang, HANG_UNTIL_GIT_DIES, { mode: 0o755 })
     git(['config', 'protocol.ext.allow', 'always'], local)
     git(['remote', 'add', 'origin', `ext::${hang}`], local)
     const strategy = createWorktreeStrategy({ fetchTimeoutMs: 1_500 })

@@ -27,8 +27,10 @@ export interface TranscriptUsage {
 
 export type TranscriptUsageRead = TranscriptUsage | { ok: false; path: string; reason: string }
 
-/** Never throws: the transcript belongs to another program and may be anything. */
-/** A known `cwd` hits the derived path first; without one every project dir is scanned. */
+/**
+ * Never throws: the transcript belongs to another program and may be anything.
+ * A known `cwd` hits the derived path first; without one every project dir is scanned.
+ */
 export function readTranscriptUsage(sessionId: string, dir?: string, cwd = ''): TranscriptUsageRead {
   let file = '(transcript)'
   try {

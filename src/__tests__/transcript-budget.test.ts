@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { accountUsageLine, readBudget, STALE_AFTER_SECONDS } from '../agents/budget.js'
+import { projectSlug } from '../agents/transcript.js'
 import { USAGE_TAIL_BYTES } from '../agents/transcript-usage.js'
 import { ToolHandler } from '../server/tools.js'
 import type { BrokerClient } from '../client/broker-client.js'
@@ -135,6 +136,24 @@ describe('a headless agent with no status line', () => {
     ])
 
     expect(readBudget(SESSION, NOW_S * 1000, configDir)).toMatchObject({ found: true, source: 'transcript' })
+  })
+
+  it('reads the transcript under the given cwd, not another project dir holding the same session id', () => {
+    const write = (project: string, tokens: number): void => {
+      const dir = path.join(configDir, 'projects', project)
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, `${SESSION}.jsonl`), assistant(NOW_S, { input_tokens: tokens }) + '\n')
+    }
+    write('-aaa-other', 1_000)
+    write(projectSlug('/repo/mine'), 2_000)
+
+    const read = readBudget(SESSION, NOW_S * 1000, configDir, '/repo/mine')
+
+    expect(read).toMatchObject({
+      found: true,
+      source: 'transcript',
+      budget: { context: { input_tokens: 2_000 } },
+    })
   })
 
   it('ignores a newer subagent sidechain record and reports the last main-chain usage', async () => {
