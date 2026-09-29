@@ -174,7 +174,7 @@ describe('an agent that does not produce the event', () => {
     ['a reviewer Verdict', 'Verdict: APPROVE'],
     ['a bold Status', '**Status:** DONE'],
     ['a code-quoted Status', '`Status: DONE`'],
-    ['a Status heading', '## Status\nDONE'],
+    ['a Status heading', '## Status: DONE'],
   ])('is one that sent its spawner %s', async (_label, body) => {
     await spawnScout()
     core.append({ kind: 'message', actor: 'scout', target: 'coord', body })
@@ -193,6 +193,26 @@ describe('an agent that does not produce the event', () => {
     await exitAndSettle()
 
     expect(unreported()).toEqual([])
+  })
+
+  it('is not one whose Status report went only to reportTo when a coordinator spawned it', async () => {
+    const config = path.join(process.env.AGENT_CHAT_HOME as string, 'burndown.config.json')
+    fs.writeFileSync(config, JSON.stringify({ reportTo: 'surplus' }))
+    await spawnScout()
+    core.append({ kind: 'message', actor: 'scout', target: 'surplus', body: 'Status: DONE' })
+
+    await exitAndSettle()
+
+    expect(unreported()).toHaveLength(1)
+  })
+
+  it('is not one whose Status opens a line with no colon', async () => {
+    await spawnScout()
+    core.append({ kind: 'message', actor: 'scout', target: 'coord', body: 'Status\nDONE' })
+
+    await exitAndSettle()
+
+    expect(unreported()).toHaveLength(1)
   })
 
   it('is one that never registered, so failed to start', async () => {

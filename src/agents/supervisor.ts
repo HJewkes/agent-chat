@@ -415,13 +415,6 @@ export interface SupervisorOptions {
   ledger?: ShadowLedger
 }
 
-/**
- * CC-69: unlike the allow side, a blanket deny genuinely does subsume a scoped
- * one — denying all of `Bash` is strictly stronger than denying `Bash(x:*)`, so
- * a child that denies plain `Bash` still satisfies a parent that was only
- * denied `Bash(x:*)`. Checked one level: a child denying the tool's base name
- * (the part before its first `(`) covers any of that tool's scoped variants.
- */
 /** Burndown spawns as the human, but its agents report to the configured `reportTo` (CC-266). */
 function burndownReportTo(): string[] {
   try {
@@ -432,6 +425,13 @@ function burndownReportTo(): string[] {
   }
 }
 
+/**
+ * CC-69: unlike the allow side, a blanket deny genuinely does subsume a scoped
+ * one — denying all of `Bash` is strictly stronger than denying `Bash(x:*)`, so
+ * a child that denies plain `Bash` still satisfies a parent that was only
+ * denied `Bash(x:*)`. Checked one level: a child denying the tool's base name
+ * (the part before its first `(`) covers any of that tool's scoped variants.
+ */
 function stillDenied(childDenied: Set<string>, tool: string): boolean {
   if (childDenied.has(tool)) return true
   const base = tool.split('(')[0] ?? tool
@@ -700,7 +700,7 @@ export class Supervisor implements TeleportHost {
     const identity = this.core.agents.get(agentId)
     if (identity === undefined) return
     const spawner = identity.spawnedBy
-    const recipients = [spawner, ...burndownReportTo()]
+    const recipients = spawner === HUMAN ? [spawner, ...burndownReportTo()] : [spawner]
     if (this.core.events.hasStatusReport(name, recipients, this.runStartedAt(identity))) return
     const tail = readExitTail(identity.sessionId ? identityTranscript(identity).path : undefined)
     const body = unreportedExitText(name, tail)
