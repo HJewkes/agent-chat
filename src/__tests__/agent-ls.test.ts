@@ -2,6 +2,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentIdentity } from '../protocol.js'
 
 const roster = vi.hoisted(() => ({ agents: [] as unknown[], sessions: [] as unknown[] }))
+const modelReads = vi.hoisted(() => ({
+  read: undefined as ((cwd: string) => string | undefined) | undefined,
+}))
+
+vi.mock('../agents/transcript.js', async importOriginal => {
+  const original = await importOriginal<typeof import('../agents/transcript.js')>()
+  return {
+    ...original,
+    observedModel: (cwd: string, sessionId: string, dir?: string) =>
+      modelReads.read ? modelReads.read(cwd) : original.observedModel(cwd, sessionId, dir),
+  }
+})
 
 vi.mock('../cli/client.js', async importOriginal => ({
   ...(await importOriginal<typeof import('../cli/client.js')>()),
@@ -47,7 +59,10 @@ beforeEach(() => {
   roster.agents = [liveAgent()]
   roster.sessions = [{ name: 'worker' }]
 })
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {
+  vi.restoreAllMocks()
+  modelReads.read = undefined
+})
 
 describe('agent ls --json', () => {
   it('prints one array whose live entry carries the session id', async () => {
@@ -75,6 +90,24 @@ describe('agent ls --json', () => {
 
     roster.agents = []
     expect(JSON.parse(await lsOutput('--json'))).toEqual([])
+  })
+})
+
+describe('agent ls --json when one transcript cannot be read', () => {
+  // Mutation caught: the per-agent read rethrows, so one bad transcript aborts the whole listing.
+  it('reports model null for that agent and still lists the others', async () => {
+    roster.agents = [{ ...liveAgent(), name: 'broken', agentId: 'a2', cwd: '/tmp/cc178-broken' }, liveAgent()]
+    modelReads.read = cwd => {
+      if (cwd === '/tmp/cc178-broken') throw new SyntaxError('malformed transcript line')
+      return 'claude-sonnet-5-5'
+    }
+
+    const rows = JSON.parse(await lsOutput('--json')) as { name: string; model: string | null }[]
+
+    expect(rows.map(r => [r.name, r.model])).toEqual([
+      ['broken', null],
+      ['worker', 'claude-sonnet-5-5'],
+    ])
   })
 })
 
