@@ -1258,6 +1258,40 @@ describe('a spawn that never registers gives back its worktree', () => {
     expect(releasedRows(failed.agentId as string)).toHaveLength(0)
   })
 
+  it('releases the tree of a pane whose run-agent never started, though the pane is still open', async () => {
+    const repo = makeRepo()
+    const tree = path.join(repo, '.worktrees', 'scout')
+    supervisor = new Supervisor(
+      core,
+      withShadow({
+        attachMs: 60_000,
+        surface: {
+          platform: 'darwin',
+          runAppleScript: async script =>
+            script.includes('is running')
+              ? 'true'
+              : script.includes('return tty of s')
+                ? '/dev/ttys042'
+                : script.includes('return contents of s')
+                  ? ''
+                  : script.includes('@@present@@')
+                    ? '@@present@@'
+                    : 'PANE-1',
+          probeProcesses: async () => ['-zsh'],
+          launchCheck: { deadlineMs: 10, pollMs: 5 },
+        },
+      }),
+    )
+
+    const failed = await supervisor.spawn(
+      spawnReq({ cwd: repo, isolation: 'worktree', surface: 'iterm-pane' }),
+    )
+
+    expect(failed.reason).toMatch(/run-agent .* was not running in its pane/)
+    expect(fs.existsSync(tree)).toBe(false)
+    expect(releasedRows(failed.agentId as string)).toHaveLength(1)
+  })
+
   it('never releases the tree a second time when the failed agent is retired', async () => {
     const failed = await neverRegisters(makeRepo())
 

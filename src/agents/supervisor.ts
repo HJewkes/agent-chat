@@ -179,10 +179,10 @@ type AttachOutcome =
   | { kind: 'exited'; code: number | null }
   | { kind: 'launch_failed'; reason: string }
 
-/** What the attach window concluded: up, dead, or a visible agent still starting in a pane that exists. */
 /** CC-158: when a failed spawn's isolation may be released, by the evidence that its process is gone. */
 type FailedRelease = 'now' | 'if-pane-closed' | 'keep'
 
+/** What the attach window concluded: up, dead, or a visible agent still starting in a pane that exists. */
 type AttachVerdict =
   | { kind: 'attached' }
   | { kind: 'failed'; reason: string; release: FailedRelease }

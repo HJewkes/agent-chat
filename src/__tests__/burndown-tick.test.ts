@@ -375,6 +375,19 @@ describe('burndown tick retires refused after a claim is done', () => {
     expect(readLedger(burndownLedgerPath()).claims[0]?.unretired).toBeUndefined()
   })
 
+  it('skips a name whose refusal time cannot be read rather than risk retiring a reused name', async () => {
+    initiative({})
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [doneClaim({ unretired: [{ name: 'bd-dm-1', reason: TENANCY, at: 'not-a-date' }] })],
+    })
+    const fake = fakeBroker({ agents: [row('bd-dm-1', 'exited')] })
+
+    await tick(fake)
+
+    expect(fake.retires).toEqual([])
+  })
+
   it('drops a name retired by hand without retiring anything', async () => {
     initiative({})
     writeLedger(burndownLedgerPath(), {
