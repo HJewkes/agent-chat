@@ -401,6 +401,74 @@ async function attachWorktree(
   return safety.unmerged
 }
 
+/** Where a worktree this strategy created sat, read back from its `isolation_allocated` row. */
+export interface WorktreeRecord {
+  gitRoot: string
+  worktree: string
+  branch: string
+}
+
+/** How a re-attached worktree got its branch back. */
+type BranchSource = 'local' | 'origin' | 'fresh'
+
+/** Local first, since it may hold commits origin never saw; a squash merge deletes both. */
+async function branchSource(gitRoot: string, branch: string, timeoutMs: number): Promise<BranchSource> {
+  if ((await gitOrNull(['rev-parse', '--verify', branch], gitRoot)) !== null) return 'local'
+  if ((await gitOrNull(['remote', 'get-url', 'origin'], gitRoot)) === null) return 'fresh'
+  return (await fetchTip(gitRoot, branch, timeoutMs)) === null ? 'fresh' : 'origin'
+}
+
+async function addForSource(record: WorktreeRecord, source: BranchSource, base: string): Promise<void> {
+  const { gitRoot, worktree, branch } = record
+  if (source === 'local') await git(['worktree', 'add', worktree, branch], gitRoot)
+  else if (source === 'origin')
+    await git(['worktree', 'add', '-b', branch, worktree, `origin/${branch}`], gitRoot)
+  else await git(['worktree', 'add', '-b', branch, worktree, base], gitRoot)
+}
+
+function reattachWarning(record: WorktreeRecord, source: BranchSource, base: BranchBase): string | undefined {
+  if (source !== 'fresh') return base.warning
+  return (
+    `branch ${record.branch} no longer exists locally or on origin (a squash merge deletes it), so ` +
+    `${record.worktree} was re-created on a fresh ${record.branch} from ${base.ref} ${base.sha}; ` +
+    'commits the conversation mentions may be merged or gone'
+  )
+}
+
+/**
+ * CC-140: put a removed worktree back at its recorded path, under the spawn's budget.
+ *
+ * `claude --resume` finds a transcript only under the project dir of the cwd it
+ * starts in, and that dir is derived from the worktree path, so the path must be
+ * the original one. Every file path in the conversation points there too.
+ */
+export async function reattachWorktree(
+  record: WorktreeRecord,
+  opts: WorktreeOptions = {},
+): Promise<Allocation> {
+  const { gitRoot, worktree, branch } = record
+  if (existsSync(worktree)) throw new WorktreeInUseError(branch, worktree)
+  await pruneStaleWorktrees(gitRoot)
+  const allocated = await allocatedPaths(gitRoot, opts.basePath ?? DEFAULT_BASE_PATH)
+  const budget = opts.budget ?? resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET)
+  if (allocated.length >= budget) throw new WorktreeBudgetExhaustedError(allocated.length, budget)
+  const holder = await checkoutOf(gitRoot, branch)
+  if (holder !== null) throw new WorktreeInUseError(branch, holder)
+
+  const timeoutMs = opts.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS
+  const base = await resolveBranchBase(gitRoot, timeoutMs)
+  const source = await branchSource(gitRoot, branch, timeoutMs)
+  await addForSource(record, source, base.sha)
+  copyClaudeDir(gitRoot, worktree)
+  const warning = reattachWarning(record, source, base)
+  return {
+    cwd: worktree,
+    note: `Your worktree at ${worktree} had been removed and was re-created on branch ${branch}. Commit your work there; nothing outside it is yours to change.`,
+    ref: { branch, worktree, gitRoot, base: base.sha, base_ref: base.ref, reattached: source },
+    ...(warning === undefined ? {} : { warnings: [warning] }),
+  }
+}
+
 /** Null when release may proceed, otherwise the reason it may not. */
 async function refuseRelease(
   ctx: IsolationContext,
