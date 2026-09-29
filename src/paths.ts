@@ -103,6 +103,16 @@ export const burndownPlistPath = (): string =>
 
 export const burndownLogDir = (): string => path.join(os.homedir(), 'Library', 'Logs', 'agent-chat-burndown')
 
+/** The launchd label for `agent-chat seats watchdog` (CC-203). */
+export const WATCHDOG_LABEL = 'dev.hjewkes.agent-chat-seat-watchdog'
+
+/** launchd reads agents from the real home, so this ignores `AGENT_CHAT_HOME`. */
+export const watchdogPlistPath = (): string =>
+  path.join(os.homedir(), 'Library', 'LaunchAgents', `${WATCHDOG_LABEL}.plist`)
+
+export const watchdogLogDir = (): string =>
+  path.join(os.homedir(), 'Library', 'Logs', 'agent-chat-seat-watchdog')
+
 /** The package root, reached identically from `dist/paths.js` and `src/paths.ts`. */
 const packageRoot = (): string => path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 
