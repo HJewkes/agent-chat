@@ -9,7 +9,11 @@ import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Supervisor } from '../agents/supervisor.js'
 import { RECLAIM_GRACE_MS } from '../agents/isolation/worktree.js'
-import { retireFinished, SCOPE_REQUIRED, type FinishedRetirePort } from '../agents/isolation/retire-finished.js'
+import {
+  retireFinished,
+  SCOPE_REQUIRED,
+  type FinishedRetirePort,
+} from '../agents/isolation/retire-finished.js'
 import type { AgentIdentity, ServerMessage } from '../protocol.js'
 import { autoAttach } from './broker-harness.js'
 
