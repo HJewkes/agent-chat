@@ -303,10 +303,9 @@ const MENTIONS_INCLUDE = /include/i
 const DESCRIPTOR_COPY = /\d*[<>]&(?:\d+|-)(?![\w./])/g
 
 /** The line is this one git command alone: a substitution counts as a command, and a heredoc as a redirect. */
-function soleCommand(run: GitRun, scope: Scope, depth: number): boolean {
+function soleCommand(scope: Scope, depth: number): boolean {
   const cmds = parseShell(scope.line)
-  if (depth > 0 || scope.aliases > 0 || !run.literal || cmds.length !== 1 || cmds[0]?.after !== '')
-    return false
+  if (depth > 0 || cmds.length !== 1 || cmds[0]?.after !== '') return false
   return !/[<>]/.test(scope.line.replace(DESCRIPTOR_COPY, ''))
 }
 
@@ -317,7 +316,7 @@ function checkInclude(run: GitRun, ctx: GuardContext, scope: Scope, depth: numbe
   const options = gitOptions(run.resolved, scope.cwd)
   if (options === UNSURE_CALL || !options.sure) return cannotRead
   if (!includesConfig(options.params)) return undefined
-  if (!soleCommand(run, scope, depth)) return REASONS.includePath
+  if (!soleCommand(scope, depth)) return REASONS.includePath
   const env = aliasEnv(run, configEnvVars(options.params), ctx, scope)
   if (options.dir === undefined || env === undefined) return cannotRead
   return ctx.readIncludedHooksPath(options.dir, gitGlobals(options), env) ? REASONS.includePath : undefined
