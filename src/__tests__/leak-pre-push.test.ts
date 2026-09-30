@@ -1128,3 +1128,61 @@ describe("the allow list: the remote default branch's .egress-allow and no other
     expect(remoteHas(f, 'clean')).toBe(true)
   })
 })
+
+describe('the scan view and the repo hook under a hostile agent env', () => {
+  const withGitDir = (f: Fixture): void => {
+    f.agentEnv.GIT_DIR = path.join(f.work, '.git')
+  }
+
+  it('runs the repo hook with the agent PATH, not the broker PATH the shim bakes in', () => {
+    const brokerBin = binWith({ node: true, git: true, egress: egressStub() })
+    const f = fixture({ scanPath: `${brokerBin}:${SYSTEM_PATH}` })
+    const agentBin = binWith({})
+    const seen = path.join(path.dirname(f.work), 'hook-path')
+    fs.writeFileSync(
+      path.join(f.work, '.git', 'hooks', 'pre-push'),
+      `#!/bin/sh\nprintf '%s' "$PATH" > '${seen}'\n`,
+      { mode: 0o755 },
+    )
+    f.agentEnv.PATH = `${agentBin}:${process.env.PATH}`
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run).toMatchObject({ code: 0 })
+    const hookPath = fs.readFileSync(seen, 'utf8').split(':')
+    expect(hookPath).toContain(agentBin)
+    expect(hookPath).not.toContain(brokerBin)
+  })
+
+  it('still refuses a symlinked .egress-allow when the agent env holds GIT_DIR and a replace ref hides it', () => {
+    const f = fixture()
+    const outside = path.join(path.dirname(f.work), 'outside-allow')
+    fs.writeFileSync(outside, 'notes.md\n')
+    commitFile(f, 'linked', 'notes.md', 'fine')
+    fs.symlinkSync(outside, path.join(f.work, '.egress-allow'))
+    git(f.work, baseEnv(), 'add', '.egress-allow')
+    git(f.work, baseEnv(), 'commit', '-q', '-m', 'link the allow list')
+    git(f.work, baseEnv(), 'replace', 'linked', 'main')
+    withGitDir(f)
+
+    const run = push(f, 'linked')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('.egress-allow in refs/heads/linked is not a regular file')
+    expect(remoteHas(f, 'linked')).toBe(false)
+  })
+
+  it('lets a clean push through with GIT_DIR in the agent env, and leaves the agent repository as it was', () => {
+    const f = fixture()
+    commitFile(f, 'clean', 'notes.md', 'fine')
+    withGitDir(f)
+    const alternates = path.join(f.work, '.git', 'objects', 'info', 'alternates')
+
+    const run = push(f, 'clean')
+
+    expect(run).toMatchObject({ code: 0, stderr: '' })
+    expect(remoteHas(f, 'clean')).toBe(true)
+    expect(fs.existsSync(alternates)).toBe(false)
+  })
+})
