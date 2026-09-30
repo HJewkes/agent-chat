@@ -752,7 +752,7 @@ describe('the remote the scan base is read from', () => {
     expect(remoteHas(f, 'leaky')).toBe(false)
   })
 
-  const ownerConfig = (f: Fixture, key: string, value: string): void =>
+  const ownerConfig = (f: Fixture, key: string, value: string): string =>
     git(f.work, baseEnv(), 'config', '--file', path.join(f.ownerHome, '.gitconfig'), key, value)
 
   it("refuses a leaky push when the owner's global remote uploadpack points the lookup at a decoy", () => {
@@ -760,7 +760,9 @@ describe('the remote the scan base is read from', () => {
     const decoy = decoyRemote(f)
     const wrapper = path.join(path.dirname(f.work), 'decoy-upload-pack')
     fs.writeFileSync(wrapper, `#!/bin/sh\nexec git-upload-pack '${decoy}'\n`, { mode: 0o755 })
-    ownerConfig(f, `remote.${f.remote}.uploadpack`, wrapper)
+    const url = `file://${f.remote}`
+    git(f.work, baseEnv(), 'remote', 'set-url', 'origin', url)
+    ownerConfig(f, `remote.${url}.uploadpack`, wrapper)
 
     const run = push(f, 'leaky')
 

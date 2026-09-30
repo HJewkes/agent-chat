@@ -172,13 +172,17 @@ default branch is refused.
 
 Both calls run scrubbed: `env -i` with the baked `PATH`, `HOME` set to the passwd home,
 `SSH_AUTH_SOCK` passed through, `GIT_TERMINAL_PROMPT=0`, and `GIT_DIR` on the scratch
-repository. So they read the system and the owner's global git config and nothing the agent can
-set: no repository or worktree config, no `GIT_CONFIG_*` or `git -c`, no `GIT_SSH_COMMAND`,
-proxy or askpass variables. The push URL git hands the hook already has `insteadOf` and
-`pushInsteadOf` applied. If `git ls-remote --get-url` of it still differs from it, a rule in
-the system or global config would send the read to another repository, and the push is refused.
+repository. So they read the system and the owner's global git config, plus what the repository's
+objects directory holds, and no repository or worktree config, `GIT_CONFIG_*` or `git -c`,
+`GIT_SSH_COMMAND`, proxy or askpass variables. The push URL git hands the hook already has
+`insteadOf` and `pushInsteadOf` applied. If `git ls-remote --get-url` of it still differs from it,
+a rule in the system or global config would send the read to another repository, and the push is
+refused. Both calls pass `--upload-pack=git-upload-pack`, so a global `remote.<url>.uploadpack`
+cannot redirect them. If the scrubbed config sets `core.sshCommand`, the push is refused: the lookup
+no longer sees the agent's `GIT_SSH_COMMAND`, so it could read through a different ssh than the push
+uses. A failed lookup is refused as a failed lookup.
 A credential held only in the repository's config or in `GH_TOKEN` no longer reaches these
-calls; such a push is refused as naming no default branch.
+calls; such a push fails the lookup and is refused.
 A new branch cut from another unmerged branch is scanned back to the default branch, so it
 rescans that other branch's commits.
 
@@ -226,9 +230,9 @@ a caller who turns hooks off:
   spellings in an agent's Bash command is the PreToolUse guard's job (CC-270). The CI
   `egress-scan` job scans the pushed commits with the generic rules after the fact;
 - `GIT_*` variables and git config that change what the push itself sends or where, such as
-  `GIT_DIR`, `remote.<name>.receivepack`, `git push --receive-pack`, or `GIT_SSH_COMMAND` and
-  `core.sshCommand` on the push's own connection. The scan base lookup no longer reads them,
-  but the push does (UNVERIFIED: reasoned, not run);
+  `GIT_DIR`, `remote.<name>.receivepack`, `git push --receive-pack`, or `GIT_SSH_COMMAND` on the
+  push's own connection. The scan base lookup does not read the agent's values, but the push does
+  (UNVERIFIED: reasoned, not run);
 - an ssh remote under the scrubbed lookup, which should find the agent through `SSH_AUTH_SOCK`
   and read `~/.ssh/config` from the passwd home (UNVERIFIED: no ssh remote was tested);
 - a push that does not go through git, such as an upload over the GitHub API;
