@@ -142,10 +142,14 @@ if [ -n "$tip" ] && ! vgit cat-file -e "$tip^{commit}" 2>/dev/null; then
   vgit cat-file -e "$tip^{commit}" 2>/dev/null || tip=
 fi`
 
-// A new ref, or one whose remote sha is not here, is scanned from the remote's default branch.
+// A new ref, or one whose remote sha is not here, is scanned from the remote's default branch. A non-commit is refused.
 const SCAN_REFS = `while read -r lref lsha rref rsha; do
   case $lsha in
   *[!0]*)
+    [ "$(vgit cat-file -t "$lsha" 2>/dev/null)" = commit ] || {
+      echo "leak-scan: push refused: $rref is not a commit, and the scan reads commits only; see docs/leak-guard.md." >&2
+      exit 2
+    }
     case $(allow_mode "$lsha") in
     '' | 100644 | 100755) ;;
     *)
