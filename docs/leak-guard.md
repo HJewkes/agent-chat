@@ -355,8 +355,8 @@ anything but a letter or holds anything but letters, digits and `-`, is never lo
 
 A config file that the command itself includes with `-c` or `--config-env` on `include.path` or
 `includeIf.<cond>.path` is read the same way (TP-602). The guard runs `git <its options> config
---show-scope --includes --get-regexp '^core\.hookspath$'` where the command runs, after `cd` and
-`-C`, with the same 1 s timeout and without the agent's `GIT_CONFIG_*` variables, and denies when a
+--show-scope --includes --get-regexp '^core\.hookspath$'` where the command runs, after `-C`,
+with the same 1 s timeout and without the agent's `GIT_CONFIG_*` variables, and denies when a
 command-scope value comes back. git follows nested includes up to its own depth cap of 10. Unlike
 the alias lookup, the include check fails closed. It denies when:
 
@@ -364,10 +364,15 @@ the alias lookup, the include check fails closed. It denies when:
   circular include, a relative command-line include path or a file that is not config;
 - an absolute or `~/` include file does not exist when the hook runs, since git skips a missing
   include and the file may be written before git reads it;
-- the line holds a redirect other than a descriptor copy such as `2>&1`, or a command that writes
-  files (`cp`, `mv`, `tee`, `ln`, `install`, `rsync`, `dd`, `touch`, `truncate`, `mkfifo`, `sed`,
-  `perl`), since it may write the include or a file it includes before git reads it. This reads
-  the whole line, so `git -c include.path=<f> push 2>/dev/null` is denied too;
+- the git command is not the only simple command on the command line the agent sent. Any `;`,
+  `&&`, `||`, `|`, `&`, newline, parentheses, `$(...)` or backticks, heredoc or here-string, or
+  redirect other than a descriptor copy (`2>&1`, `2>&-`) is a deny, and so is an include inside
+  `sh -c`, `eval` or a `!` alias. Any other command on the line could write the include file, or a
+  file it includes, before git reads it, and no list of writing commands is complete: `python3 -c`,
+  `node -e`, `curl -o`, `tar -x` and `unzip -o` all can. The cost is that ordinary lines are denied
+  too: `cd <dir> && git -c include.path=<f> push`, `git -c include.path=<f> push 2>&1 | tail -3`
+  and `git -c include.path=<f> push > log.txt`. Run the git command on its own, and use `-C` for
+  the directory;
 - a word before the subcommand mentions `include` and the guard cannot tell the directory, an
   option or a `--config-env` variable.
 

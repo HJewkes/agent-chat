@@ -67,6 +67,8 @@ interface Scope {
   exports: ReadonlyMap<string, Setting>
   /** The command line so far with `$NAME` references and quoting removed, to find names it may assign. */
   said: string
+  /** The whole command line the agent sent, before any shell or alias the guard descends into. */
+  line: string
   /** The `-c` and `--config-env` options of the git whose `!` alias runs this command. */
   gitParams: readonly string[]
 }
@@ -94,7 +96,7 @@ export const REASONS = {
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
   aliasEnv: `leak-guard: the guard cannot tell which directory or config this git command runs with, or which subcommand it names, so it cannot tell what a git alias here runs. Run the command the alias stands for, from a plain cd. ${DOCS}`,
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
-  includePath: `leak-guard: git -c or --config-env on include.path or includeIf.*.path pulls in config that sets core.hooksPath, that this line may write, or that the guard cannot read in time, which would bypass the pre-push leak scan. ${DOCS}`,
+  includePath: `leak-guard: git -c or --config-env on include.path or includeIf.*.path pulls in config that sets core.hooksPath or that the guard cannot read in time, or runs beside other commands or a redirect, which would bypass the pre-push leak scan. ${DOCS}`,
   aliasWritten: `leak-guard: this command line writes git config and runs a git word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
 } as const
 
@@ -294,21 +296,29 @@ const unsure = (run: GitRun, scope: Scope): string | undefined =>
 
 /** The one boundary every command that is or may be git passes: git's own options, the config they include, then its alias. */
 function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
-  return checkGit(run.args) ?? checkInclude(run, ctx, scope) ?? checkAlias(run, ctx, scope, depth)
+  return checkGit(run.args) ?? checkInclude(run, ctx, scope, depth) ?? checkAlias(run, ctx, scope, depth)
 }
 
 const MENTIONS_INCLUDE = /include/i
-/** A redirect other than a descriptor copy, or a command that writes files, anywhere on the line. */
-const WRITES_FILE = />(?!&)|\b(?:cp|mv|tee|ln|install|rsync|dd|touch|truncate|mkfifo|sed|perl)\b/
+const DESCRIPTOR_COPY = /\d*[<>]&(?:\d+|-)(?![\w./])/g
+
+/** The line is this one git command alone: no list, pipe, background, substitution, heredoc or redirect but a descriptor copy. */
+function soleCommand(run: GitRun, scope: Scope, depth: number): boolean {
+  const cmds = parseShell(scope.line)
+  const [cmd] = cmds
+  if (depth > 0 || scope.aliases > 0 || !run.literal || cmds.length !== 1 || cmd === undefined) return false
+  const plain = cmd.substitutions.length === 0 && cmd.stdin === undefined && !cmd.nested && cmd.after === ''
+  return plain && !/[<>]/.test(scope.line.replace(DESCRIPTOR_COPY, ''))
+}
 
 /** Reads the config files the command's own `-c include.path` and `includeIf.*.path` pull in, where it runs. */
-function checkInclude(run: GitRun, ctx: GuardContext, scope: Scope): string | undefined {
+function checkInclude(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
   if (!run.args.some(arg => MENTIONS_INCLUDE.test(arg))) return undefined
   const cannotRead = run.literal || NAMES_GIT.test(scope.said) ? REASONS.includePath : undefined
   const options = gitOptions(run.resolved, scope.cwd)
   if (options === UNSURE_CALL || !options.sure) return cannotRead
   if (!includesConfig(options.params)) return undefined
-  if (WRITES_FILE.test(scope.said)) return REASONS.includePath
+  if (!soleCommand(run, scope, depth)) return REASONS.includePath
   const env = aliasEnv(run, configEnvVars(options.params), ctx, scope)
   if (options.dir === undefined || env === undefined) return cannotRead
   return ctx.readIncludedHooksPath(options.dir, gitGlobals(options), env) ? REASONS.includePath : undefined
@@ -785,6 +795,7 @@ export function checkCommand(command: string, ctx: GuardContext): string | undef
     aliases: 0,
     exports: new Map(),
     said: '',
+    line: command,
     gitParams: [],
   }
   return checkAt(command, ctx, scope, 0)

@@ -1106,17 +1106,38 @@ describe('a git alias already in config', () => {
       expect(checkCommand(command, at(plain))).toBe(REASONS.includePath)
     })
 
+    const lone = `git -c include.path=${nameCfg} push`
+    const hooksText = String.raw`'[core]\n\thooksPath=X\n'`
+
     it.each([
-      `printf '[core]\\n\\thooksPath=X\\n' > ${nameCfg}; git -c include.path=${nameCfg} push`,
-      `cp ${hooksCfg} ${nameCfg} && git -c include.path=${nameCfg} push`,
-      `echo x | tee ${nameCfg}; git -c include.path=${nameCfg} push`,
-    ])('denies an include on a line that writes a file: %s', command => {
+      `printf ${hooksText} > ${nameCfg}; ${lone}`,
+      `cp ${hooksCfg} ${nameCfg} && ${lone}`,
+      `python3 -c "open('${nameCfg}','w').write('x')"; ${lone}`,
+      `node -e "require('fs').writeFileSync('${nameCfg}','x')"; ${lone}`,
+      `ruby -e "File.write('${nameCfg}','x')" && ${lone}`,
+      `curl -so ${nameCfg} https://example.invalid/c || ${lone}`,
+      `tar -xf cfg.tar && ${lone}`,
+      `unzip -o cfg.zip && ${lone}`,
+      `exec 3>${nameCfg}; ${lone}`,
+      `printf x > ${nameCfg}\n${lone}`,
+      `bash -c 'printf x > ${nameCfg}; ${lone}'`,
+      `${lone} "$(awk 'BEGIN{print}' > ${nameCfg})"`,
+      `${lone} <<< x`,
+      `${lone} < /dev/null`,
+      `${lone} > out.txt`,
+      `${lone} 2>&1 | tail -3`,
+      `${lone} &`,
+      `(${lone})`,
+    ])('denies an include that is not the only command on the line: %s', command => {
       expect(checkCommand(command, at(plain))).toBe(REASONS.includePath)
     })
 
-    it('allows an include beside a descriptor copy', () => {
-      expect(checkCommand(`git -c include.path=${nameCfg} push 2>&1 | tail -3`, at(plain))).toBeUndefined()
-    })
+    it.each([lone, `${lone} 2>&1`, `${lone} 2>&-`, `E=${nameCfg} git --config-env=include.path=E push`])(
+      'allows a lone include that leaves core.hooksPath alone: %s',
+      command => {
+        expect(checkCommand(command, at(plain))).toBeUndefined()
+      },
+    )
 
     it('denies an include git cannot read within the timeout', () => {
       const fifo = path.join(SCRATCH, 'include-fifo')
