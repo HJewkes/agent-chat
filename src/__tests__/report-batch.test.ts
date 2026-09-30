@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -889,5 +890,104 @@ describe('a headless agent exiting under the supervisor', () => {
       'scout exited with no Status report; last action: unknown',
     ])
     expect(exitsPushedTo(coord)).toEqual(['scout'])
+  })
+})
+
+describe('over real sockets, with the window far from its end', () => {
+  const EXIT_SUBSCRIPTION = [{ selector: { name: 'w-a' }, kinds: ['agent_exited' as const] }]
+  let listener: net.Server
+  let socketPath: string
+  const sockets: net.Socket[] = []
+
+  beforeEach(async () => {
+    windowMs = 60_000
+    socketPath = path.join(tmp('agent-chat-sock-'), 'chat.sock')
+    listener = net.createServer(conn => server.onConnection(conn))
+    await new Promise<void>(resolve => listener.listen(socketPath, resolve))
+  })
+
+  afterEach(async () => {
+    for (const socket of sockets.splice(0)) socket.destroy()
+    await new Promise(resolve => listener.close(resolve))
+  })
+
+  /** A client on its own socket, registered once its `register_result` has come back. */
+  async function client(frame: Omit<Extract<ClientMessage, { t: 'register' }>, 't' | 'workingOn' | 'pid'>) {
+    const socket = net.createConnection(socketPath)
+    sockets.push(socket)
+    const frames: ServerMessage[] = []
+    let buffered = ''
+    socket.on('data', chunk => {
+      const lines = (buffered + String(chunk)).split('\n')
+      buffered = lines.pop() ?? ''
+      for (const line of lines.filter(Boolean)) frames.push(JSON.parse(line) as ServerMessage)
+    })
+    const write = (message: ClientMessage): void => void socket.write(JSON.stringify(message) + '\n')
+    write({ t: 'register', workingOn: '', pid: 1, ...frame })
+    await vi.waitFor(() => expect(frames.some(f => f.t === 'register_result' && f.ok)).toBe(true))
+    return { socket, frames, write }
+  }
+
+  const coordinator = () => client({ name: 'coord', cwd: '/tmp/coord', subscriptions: EXIT_SUBSCRIPTION })
+
+  /** `w-a`, spawned by `coord`, reports and the broker has logged the report. */
+  async function reportFromWorker(): Promise<string> {
+    const { msgId } = core.append({ kind: 'agent_spawned', actor: 'coord', target: 'w-a', body: 'work' })
+    const a = await client({ name: 'w-a', cwd: '/tmp/w-a', agentId: msgId })
+    a.write({ t: 'send', to: 'coord', text: 'Status: DONE' })
+    await vi.waitFor(() => expect(a.frames.some(f => f.t === 'send_result' && f.ok)).toBe(true))
+    return msgId
+  }
+
+  const settle = (): Promise<void> => new Promise(resolve => setTimeout(resolve, LIFECYCLE_MS + 100))
+
+  const textsPushed = (frames: ServerMessage[]): string[] =>
+    frames.flatMap(f => (f.t === 'deliver' ? [f.message.text] : []))
+
+  const exitsIn = (frames: ServerMessage[]): string[] =>
+    frames
+      .flatMap(f => (f.t === 'system_events' ? f.events.filter(e => e.kind === 'agent_exited') : []))
+      .map(e => e.subject)
+
+  // Mutation caught: the exit muted on the strength of a report that is still held.
+  it('writes the held report when its sender exits, and sends no exit notice after it', async () => {
+    const coord = await coordinator()
+    const agentId = await reportFromWorker()
+    expect(textsPushed(coord.frames)).toEqual([])
+
+    core.append({ kind: 'agent_exited', actor: 'w-a', ref: agentId, body: '', meta: { code: '0' } })
+    await settle()
+
+    expect(textsPushed(coord.frames)).toEqual(['Status: DONE'])
+    expect(exitsIn(coord.frames)).toEqual([])
+  })
+
+  // Mutation caught: a closed socket's held report dropped, which leaves the next connection with nothing.
+  it('writes the held report to the socket a coordinator reconnects on, once, and never to the closed one', async () => {
+    const first = await coordinator()
+    const agentId = await reportFromWorker()
+    first.socket.destroy()
+    await vi.waitFor(() => expect(core.registry.connFor('coord')).toBeUndefined())
+
+    const second = await coordinator()
+    core.append({ kind: 'agent_exited', actor: 'w-a', ref: agentId, body: '', meta: { code: '0' } })
+    await settle()
+
+    expect(textsPushed(first.frames)).toEqual([])
+    expect(textsPushed(second.frames)).toEqual(['Status: DONE'])
+    expect(exitsIn(second.frames)).toEqual([])
+  })
+
+  // Mutation caught: the exit code ignored on the real path from log row to subscriber.
+  it('sends the exit notice, after the held report, when the sender exits with code 1', async () => {
+    const coord = await coordinator()
+    const agentId = await reportFromWorker()
+
+    core.append({ kind: 'agent_exited', actor: 'w-a', ref: agentId, body: '', meta: { code: '1' } })
+    await settle()
+
+    const order = coord.frames.flatMap(f => (f.t === 'deliver' || f.t === 'system_events' ? [f.t] : []))
+    expect(order).toEqual(['deliver', 'system_events'])
+    expect(exitsIn(coord.frames)).toEqual(['w-a'])
   })
 })
