@@ -6,6 +6,7 @@ import { requiredString } from '../../args.js'
 import { activeWorkRoot } from '../../agents/active-work.js'
 import { readAccountBudget } from '../../agents/budget.js'
 import { scoredPlanFromDisk } from '../../agents/burndown/score-render.js'
+import { renderBoot, seatBoot, type BootDeps } from '../../agents/seats/boot.js'
 import { charterSeats, isSeatName, parsePools, parseSeat } from '../../agents/seats/charter.js'
 import {
   appendSeatLog,
@@ -396,10 +397,73 @@ export const seatsDispatchesVerb = defineVerb({
   },
 })
 
+/** The status opens its own broker connection, so a broker that is down costs the boot only its status. */
+function bootDeps(root: string): BootDeps {
+  return {
+    now: () => new Date(),
+    autonomyRoot: root,
+    homeDir: os.homedir(),
+    eventsDb: path.join(home(), 'events.db'),
+    status: seat => withRunningBroker(client => seatStatus(statusDeps(root, client), seat)),
+  }
+}
+
+/** The boot verb's body, taking its readers explicitly so a test can point them at a fixture root. */
+export async function bootReport(
+  deps: BootDeps,
+  seat: string,
+  after: string | undefined,
+  json: boolean,
+): Promise<Report> {
+  try {
+    const boot = await seatBoot(deps, seat, after)
+    return { ok: true, lines: json ? [JSON.stringify(boot, null, 2)] : renderBoot(boot) }
+  } catch (err) {
+    return statusFailure(seat, json, plainError(err, [deps.autonomyRoot, deps.homeDir]))
+  }
+}
+
+export const seatsBootVerb = defineVerb({
+  name: 'seats.boot',
+  description:
+    "one boot digest for a coordinator seat (CC-318), read-only: the seat file's frontmatter, the " +
+    "queue's In flight and Next sections, the newest State at teleport section of today's log, inbox " +
+    'messages after a cutoff and the seat status, in 6,000 characters. Over that the oldest inbox ' +
+    'lines go first, then the log section; the queue and status are never cut',
+  args: z.object({
+    seat: requiredString('seat'),
+    after: z.string().optional(),
+    json: z.boolean().optional(),
+    root: z.string().optional(),
+  }),
+  result: Report,
+  cli: {
+    positional: ['seat'],
+    options: {
+      after: {
+        long: '--after',
+        description: 'show inbox messages after this msg_id; default the last 5',
+      },
+      json: {
+        long: '--json',
+        description: 'the uncut sections as one JSON object; a failure is {"seat", "error"} with exit 1',
+      },
+      root: {
+        long: '--root',
+        description: 'autonomy directory holding charter.md, seats/, queues/ and logs/',
+      },
+    },
+  },
+  async run({ seat, after, json, root }) {
+    return bootReport(bootDeps(root ?? defaultAutonomyRoot()), seat, after, json === true)
+  },
+})
+
 export function addSeatsCommands(program: Commander): void {
   const seats = program.command('seats').description('autonomy seats: the idle watchdog')
   addVerb(seats, seatsWatchdogVerb)
   addVerb(seats, seatsStatusVerb)
   addVerb(seats, seatsDispatchesVerb)
+  addVerb(seats, seatsBootVerb)
   addVerb(seats, seatsWatchdogInstallVerb)
 }
