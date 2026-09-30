@@ -31,6 +31,8 @@ export interface RoleLoad {
   cap: number
   atCap: boolean
   names: string[]
+  /** Those of `names` with no connected session; they count as active because the process may still be running. */
+  detached: string[]
 }
 
 export interface ParkedLoad {
@@ -134,8 +136,9 @@ const namesOf = (agents: AgentIdentity[]): string[] => agents.map(a => a.name).s
 const running = (agent: AgentIdentity): boolean => agent.state !== 'exited' && agent.state !== 'retired'
 
 function roleLoad(agents: AgentIdentity[], role: string, cap: number): RoleLoad {
-  const names = namesOf(agents.filter(a => a.profile.includes(role) && running(a)))
-  return { active: names.length, cap, atCap: names.length >= cap, names }
+  const active = agents.filter(a => a.profile.includes(role) && running(a))
+  const detached = namesOf(active.filter(a => a.state === 'detached'))
+  return { active: active.length, cap, atCap: active.length >= cap, names: namesOf(active), detached }
 }
 
 function parkedLoad(agents: AgentIdentity[]): ParkedLoad {
@@ -231,13 +234,11 @@ const TITLE_WIDTH = 60
 
 const line = (label: string, text: string): string => `${label.padEnd(LABEL_WIDTH)} ${text}`
 
-const roleLine = (label: string, load: RoleLoad): string =>
-  line(
-    label,
-    [`${load.active}/${load.cap}`, load.atCap ? 'AT CAP' : '', load.names.join(', ')]
-      .filter(Boolean)
-      .join('  '),
-  )
+function roleLine(label: string, load: RoleLoad): string {
+  const detached = load.detached.length === 0 ? '' : `detached: ${load.detached.join(', ')}`
+  const parts = [`${load.active}/${load.cap}`, load.atCap ? 'AT CAP' : '', load.names.join(', '), detached]
+  return line(label, parts.filter(Boolean).join('  '))
+}
 
 function budgetLine(budget: BudgetStatus): string {
   if (budget.ageSeconds === null) return line('budget', `pool ${budget.pool ?? 'unknown'}: no reading`)

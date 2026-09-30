@@ -109,10 +109,12 @@ interface AgentSeed {
   profile: string
   spawnedBy?: string
   exited?: boolean
+  detached?: boolean
   cwd?: string
 }
 
-function seedAgent({ name, profile, spawnedBy = SEAT, exited = false, cwd = tmp }: AgentSeed): void {
+function seedAgent(seed: AgentSeed): void {
+  const { name, profile, spawnedBy = SEAT, cwd = tmp } = seed
   const id = `agent-${++agentIds}`
   core.append({
     kind: 'agent_spawned',
@@ -123,7 +125,8 @@ function seedAgent({ name, profile, spawnedBy = SEAT, exited = false, cwd = tmp 
     meta: { profile, cwd, isolation: 'worktree' },
   })
   core.append({ kind: 'agent_attached', actor: name, ref: id })
-  if (exited) core.append({ kind: 'agent_exited', actor: name, ref: id })
+  if (seed.detached) core.append({ kind: 'agent_detached', actor: name, ref: id })
+  if (seed.exited) core.append({ kind: 'agent_exited', actor: name, ref: id })
 }
 
 function deps(over: Partial<StatusDeps> = {}): StatusDeps {
@@ -183,7 +186,13 @@ describe('a seat against its concurrency caps', () => {
 
     const { implementers } = await status()
 
-    expect(implementers).toEqual({ active: 2, cap: 2, atCap: true, names: ['helper', 'ss-al-1'] })
+    expect(implementers).toEqual({
+      active: 2,
+      cap: 2,
+      atCap: true,
+      names: ['helper', 'ss-al-1'],
+      detached: [],
+    })
   })
 
   it('reports a seat one implementer under its cap as not at cap', async () => {
@@ -194,14 +203,25 @@ describe('a seat against its concurrency caps', () => {
     expect(implementers).toMatchObject({ active: 1, cap: 2, atCap: false })
   })
 
+  it('counts a detached implementer as active and names it as detached', async () => {
+    seedAgent({ name: 'ss-al-1', profile: 'implementer' })
+    seedAgent({ name: 'ss-al-2', profile: 'implementer', detached: true })
+
+    const report = await statusReport(deps(), SEAT, false)
+    const { implementers } = await status()
+
+    expect(implementers).toMatchObject({ active: 2, atCap: true, detached: ['ss-al-2'] })
+    expect(report.lines[1]).toBe('implementers  2/2  AT CAP  ss-al-1, ss-al-2  detached: ss-al-2')
+  })
+
   it('counts running reviewers and planners against their own caps', async () => {
     seedAgent({ name: 'ss-al-1-review', profile: 'reviewer' })
     seedAgent({ name: 'ss-al-9-review', profile: 'reviewer', exited: true })
 
     const { reviewers, planners } = await status()
 
-    expect(reviewers).toEqual({ active: 1, cap: 1, atCap: true, names: ['ss-al-1-review'] })
-    expect(planners).toEqual({ active: 0, cap: 1, atCap: false, names: [] })
+    expect(reviewers).toEqual({ active: 1, cap: 1, atCap: true, names: ['ss-al-1-review'], detached: [] })
+    expect(planners).toEqual({ active: 0, cap: 1, atCap: false, names: [], detached: [] })
   })
 
   it('counts exited implementers as parked and names the ones whose tree is still on disk', async () => {
