@@ -295,17 +295,6 @@ describe('surfacing a headless agent', () => {
     expect(planFor(agentId).unsetEnv).toEqual(['CLAUDE_CONFIG_DIR'])
   })
 
-  // Mutation caught: appending the contract in resumeOnto puts it in the rebuilt plan.
-  it('does not hand the agent its return contract a second time (CC-286)', async () => {
-    const agentId = await spawnAgent({ profile: 'implementer', requestedBy: 'coordinator' })
-    expect(planFor(agentId).stdin).toContain('LAST action must be chat_send to coordinator')
-
-    const result = await supervisor.switchSurface({ name: 'scout', to: 'interactive', requestedBy: 'human' })
-
-    expect(result.ok).toBe(true)
-    expect(JSON.stringify(planFor(agentId))).not.toContain('LAST action')
-  })
-
   it('keeps the identity, the name and the conversation', async () => {
     const agentId = await spawnAgent()
     const before = core.agents.get(agentId)
@@ -429,6 +418,27 @@ describe('an agent sending itself headless', () => {
     expect(plan.args).toContain(before?.sessionId)
     expect(plan.args).toContain('-p')
     expect(core.agents.get(agentId)?.surface).toBe('headless')
+  })
+
+  // Mutation caught: appending the contract in resumeOnto puts it on the relaunched agent's stdin.
+  it('is not handed its return contract a second time (CC-286)', async () => {
+    const agentId = await spawnAgent({
+      profile: 'implementer',
+      requestedBy: 'coordinator',
+      surface: 'iterm-pane',
+    })
+    expect(JSON.stringify(planFor(agentId))).toContain('LAST action must be chat_send to coordinator')
+
+    const result = await supervisor.switchSurface({
+      name: 'scout',
+      to: 'headless',
+      requestedBy: 'scout',
+      hostPid: 7777,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(planFor(agentId).stdin).toBeTruthy()
+    expect(JSON.stringify(planFor(agentId))).not.toContain('LAST action')
   })
 
   /**
