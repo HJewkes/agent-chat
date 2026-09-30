@@ -232,7 +232,7 @@ describe('score-source', () => {
     fs.writeFileSync(path.join(dir, 'CC-1.yml'), TASK)
     fs.writeFileSync(path.join(dir, 'CC-2.yml'), TASK.replace('status: open', 'status: done'))
     fs.writeFileSync(path.join(dir, 'README.md'), 'not a task')
-    expect(readScoredTasks(root, ['init-alpha', 'absent'])).toEqual([EXPECTED])
+    expect(readScoredTasks(root, ['init-alpha', 'absent'])).toEqual({ tasks: [EXPECTED], skipped: [] })
   })
 
   it('normalizes compact YYYYMMDD dates to ISO', () => {
@@ -261,7 +261,8 @@ describe('score-source', () => {
     fs.writeFileSync(path.join(dir, 'CC-2.yml'), TASK.replace('priority: 3\n', ''))
     fs.writeFileSync(path.join(dir, 'CC-3.yml'), 'id: [unclosed')
     const skipped: string[] = []
-    expect(readScoredTasks(root, ['init-alpha'], m => skipped.push(m))).toEqual([EXPECTED])
+    const read = readScoredTasks(root, ['init-alpha'], m => skipped.push(m))
+    expect(read).toEqual({ tasks: [EXPECTED], skipped: ['init-alpha/CC-2.yml', 'init-alpha/CC-3.yml'] })
     expect(skipped).toHaveLength(2)
     expect(skipped[0]).toContain('init-alpha/CC-2.yml')
     expect(skipped[1]).toContain('init-alpha/CC-3.yml')

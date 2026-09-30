@@ -35,19 +35,26 @@ const agent = (name: string, spawnedBy: string): AgentIdentity => ({
   generation: 1,
 })
 
-// Eleven agents across three spawners; "boss" owns three, two of them under the "cc-" prefix.
+// Twelve agents across four spawners; "boss" owns three, two of them under the "cc-" prefix.
 const TEN = [
   ...['cc-a', 'cc-b', 'x-c'].map(n => agent(n, 'boss')),
   ...['cc-d', 'y-e', 'y-f', 'y-g'].map(n => agent(n, 'other')),
   ...['z-h', 'z-i', 'cc-j'].map(n => agent(n, 'human')),
   // Contains the prefix without starting with it: a substring match would wrongly keep it.
   agent('old-cc-k', 'human'),
+  // Its spawner name contains "boss": a substring match on spawnedBy would wrongly keep it.
+  agent('b2-l', 'boss2'),
 ]
 const names = (agents: AgentIdentity[]) => agents.map(a => a.name)
 
 describe('filterRoster', () => {
-  it('keeps only the three agents the caller spawned out of eleven', () => {
+  it('keeps only the three agents the caller spawned out of twelve', () => {
     expect(names(filterRoster(TEN, { spawner: 'boss' }))).toEqual(['cc-a', 'cc-b', 'x-c'])
+  })
+
+  it('matches the whole spawner name, so boss does not keep boss2 and boss2 keeps only its own', () => {
+    expect(names(filterRoster(TEN, { spawner: 'boss' }))).not.toContain('b2-l')
+    expect(names(filterRoster(TEN, { spawner: 'boss2' }))).toEqual(['b2-l'])
   })
 
   it('keeps only agents whose name starts with the prefix', () => {
@@ -66,7 +73,7 @@ describe('filterRoster', () => {
   })
 
   it('returns everything with no filter', () => {
-    expect(filterRoster(TEN, {})).toHaveLength(11)
+    expect(filterRoster(TEN, {})).toHaveLength(12)
   })
 })
 
@@ -106,6 +113,24 @@ describe('agent ls / budget filters', () => {
     ])
   })
 
+  it('ls --spawner boss leaves out the boss2 agent, and --spawner boss2 lists only it', async () => {
+    await run('ls', '--spawner', 'boss', '--json')
+    expect(JSON.parse(logs.join('\n')).map((r: { name: string }) => r.name)).toEqual(['cc-a', 'cc-b', 'x-c'])
+    logs.length = 0
+    await run('ls', '--spawner', 'boss2', '--json')
+    expect(JSON.parse(logs.join('\n')).map((r: { name: string }) => r.name)).toEqual(['b2-l'])
+  })
+
+  it('budget --help names each option argument once', () => {
+    const budget = buildProgram()
+      .commands.find(c => c.name() === 'agent')
+      ?.commands.find(c => c.name() === 'budget')
+    const help = budget?.helpInformation() ?? ''
+    expect(help).toMatch(/--spawner <name>\s+only agents/)
+    expect(help).toMatch(/--prefix <p>\s+only agents/)
+    expect(help).not.toContain('<value>')
+  })
+
   it('ls --spawner combines with --prefix', async () => {
     await run('ls', '--spawner', 'human', '--prefix', 'cc-', '--json')
     expect(JSON.parse(logs.join('\n')).map((r: { name: string }) => r.name)).toEqual(['cc-j'])
@@ -133,6 +158,13 @@ describe('agent ls / budget filters', () => {
     const report = await agentBudget(undefined, { spawner: 'boss' })
     expect(report.lines).toHaveLength(3)
     expect(report.lines.join('\n')).not.toContain('y-e')
+  })
+
+  it('budget --spawner boss does not report the boss2 agent', async () => {
+    const { agentBudget } = await import('../cli/agents.js')
+    const report = await agentBudget(undefined, { spawner: 'boss2' })
+    expect(report.lines.join('\n')).toContain('b2-l')
+    expect(report.lines.join('\n')).not.toContain('cc-a')
   })
 
   it('budget --mine reports only the callers agents', async () => {

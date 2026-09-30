@@ -46,9 +46,19 @@ afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }))
 
 describe('scorerEligible', () => {
   it('counts the same eligible tasks as score.py for the synthetic sample seat', () => {
-    expect(scorerEligible(autonomy, 'sample-seat', { activeWork, today: '2026-09-29' })).toBe(
-      SCORE_PY_ELIGIBLE,
-    )
+    expect(scorerEligible(autonomy, 'sample-seat', { activeWork, today: '2026-09-29' })).toEqual({
+      count: SCORE_PY_ELIGIBLE,
+      skipped: 0,
+    })
+  })
+
+  it('counts one malformed synthetic task as skipped instead of lowering the count silently', () => {
+    const [slug] = fs.readdirSync(activeWork)
+    fs.writeFileSync(path.join(activeWork, slug ?? '', 'tasks', 'BAD-1.yml'), 'id: BAD-1\nstatus: open\n')
+    expect(scorerEligible(autonomy, 'sample-seat', { activeWork, today: '2026-09-29' })).toEqual({
+      count: SCORE_PY_ELIGIBLE,
+      skipped: 1,
+    })
   })
 
   it('is undefined when the seat file is missing', () => {
