@@ -446,7 +446,7 @@ const settle = (cmd: SimpleCommand, scope: Scope): Scope =>
   scope.fragile && cmd.before !== '&&' ? { ...scope, cwd: undefined, fragile: false } : scope
 
 // The shell sets these itself, so the hook's copy says nothing about the value a command sees.
-const NEVER_EXPANDED = new Set(['PWD', 'OLDPWD', 'SHLVL', '_', 'IFS', 'RANDOM', 'SECONDS', 'LINENO'])
+const NEVER_EXPANDED = new Set(['PWD', 'OLDPWD', 'SHLVL', '_', 'IFS'])
 const REFERENCE = new RegExp(`\\$\\{${NAME}\\}|\\$${NAME}`, 'g')
 
 /** The env without any name the command mentions outside `$NAME` and `${NAME}`: it may assign that name. */
