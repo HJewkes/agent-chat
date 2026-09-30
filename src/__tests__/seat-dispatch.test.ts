@@ -84,14 +84,14 @@ const spawnReq = (name: string) => ({
 })
 
 /** A hand-built transcript at the path retire reads, with two requests and invented ids. */
-function writeTranscript(name: string): void {
+function writeTranscript(name: string, model = MODEL): void {
   const identity = core.agents.byName(name)
   if (identity === undefined) throw new Error(`no identity for ${name}`)
   const file = identityTranscript(identity).path
   const request = (id: string, input: number, output: number) => ({
     type: 'assistant',
     timestamp: AT.toISOString(),
-    message: { id, model: MODEL, role: 'assistant', usage: { input_tokens: input, output_tokens: output } },
+    message: { id, model, role: 'assistant', usage: { input_tokens: input, output_tokens: output } },
   })
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const lines = [request('msg-1', 100, 20), request('msg-2', 300, 80)]
@@ -146,6 +146,28 @@ describe('a seat agent’s spawn', () => {
     expect(fs.existsSync(logFile())).toBe(false)
   })
 
+  it('writes an abandoned row when a late attach never comes and the ceiling fails the agent', async () => {
+    vi.useFakeTimers()
+    stopAutoAttach()
+    sup = new Supervisor(core, {
+      attachMs: 1000,
+      attachCeilingMs: 5000,
+      surface: {
+        platform: 'darwin',
+        runAppleScript: async script =>
+          script.includes('is running') ? 'true' : script.includes('@@present@@') ? '@@present@@' : 'PANE-1',
+      },
+      seatDispatch: writerOver(root),
+    })
+
+    const spawning = sup.spawn({ ...spawnReq(AGENT), surface: 'iterm-window' })
+    await vi.advanceTimersByTimeAsync(10_000)
+    await spawning
+
+    expect(rows().map(row => row.outcome)).toEqual(['dispatched', 'abandoned'])
+    expect(readDispatches(root, SEAT).records).toMatchObject([{ agent: AGENT, outcome: 'abandoned' }])
+  })
+
   it('writes nothing for an agent whose name has no seat prefix', async () => {
     const spawned = await supervisorWith(writerOver(root)).spawn(spawnReq('scout'))
 
@@ -184,6 +206,19 @@ describe('a seat agent’s retire', () => {
     expect(retiredRows()[0]?.usage_miss).toEqual(expect.any(String))
   })
 
+  it('logs a warn line naming a model with no price row', async () => {
+    const s = supervisorWith(writerOver(root))
+    await s.spawn(spawnReq(AGENT))
+    writeTranscript(AGENT, 'model-unknown-9')
+
+    await s.retire(AGENT)
+    await expect.poll(() => retiredRows().length).toBe(1)
+
+    const logged = fs.readFileSync(path.join(process.env.AGENT_CHAT_HOME ?? '', 'broker.log'), 'utf8')
+    expect(logged).toMatch(/"event":"seat_dispatch_unpriced","level":"warn","models":\["model-unknown-9"\]/)
+    expect(retiredRows()[0]?.usd_est).toBeNull()
+  })
+
   it('folds with a hand-written outcome for the same agent to one record', async () => {
     const s = supervisorWith(writerOver(root))
     await s.spawn(spawnReq(AGENT))
@@ -216,6 +251,9 @@ describe('a dispatch log that cannot be written', () => {
   it('leaves the spawn and retire results as they were when the writer throws', async () => {
     const throwing: SeatDispatchLog = {
       dispatched: () => {
+        throw new Error('disk gone')
+      },
+      abandoned: () => {
         throw new Error('disk gone')
       },
       retired: () => {
@@ -282,6 +320,17 @@ describe('the broker’s services', () => {
 
     expect(reply).toMatchObject({ t: 'spawn_result', ok: true })
     expect(fs.readFileSync(dispatchLog(), 'utf8')).toMatch(/"outcome":"retired"/)
+  })
+
+  it('builds no seat dispatch writer when the home is a test’s', () => {
+    const services = openServices(true)
+    try {
+      const supervisor = Reflect.get(services.socketServer, 'supervisor') as object
+      expect(Reflect.get(supervisor, 'seatDispatch')).toBeUndefined()
+    } finally {
+      services.socketServer.close()
+      services.core.close()
+    }
   })
 
   it('write nothing when the home is a test’s', async () => {

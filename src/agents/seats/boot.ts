@@ -111,7 +111,7 @@ function inboxLines(inbox: BootInbox, omitted: number): string[] {
   return [
     head,
     ...(inbox.warning === null ? [] : [`warning: ${inbox.warning}`]),
-    ...(omitted === 0 ? [] : [`${omitted} earlier messages omitted`]),
+    ...(omitted === 0 ? [] : [`${omitted} earlier ${omitted === 1 ? 'message' : 'messages'} omitted`]),
     ...none,
     ...shown.map(m => `[${m.msgId}] from ${m.from}: ${m.text}`),
   ]
@@ -143,20 +143,38 @@ function statusLines({ status }: SeatBoot): string[] {
 
 const size = (lines: string[]): number => lines.join('\n').length
 
-/** Over the cap, the oldest inbox lines go first and then the log section's tail; the queue and status never shrink. */
+type Block = 'seat' | 'queue' | 'status'
+
+/** Over the cap, the oldest inbox lines go first, then the log section's tail, then whatever the queue, seat and status still overrun by. */
 export function renderBoot(boot: SeatBoot, cap = BOOT_CAP): string[] {
-  const render = (log: LogSection, omitted: number): string[] => [
-    ...seatLines(boot),
-    ...queueLines(boot),
+  const render = (log: LogSection, omitted: number, cut: Partial<Record<Block, string[]>> = {}): string[] => [
+    ...(cut.seat ?? seatLines(boot)),
+    ...(cut.queue ?? queueLines(boot)),
     ...logLines(log),
     ...inboxLines(boot.inbox, omitted),
-    ...statusLines(boot),
+    ...(cut.status ?? statusLines(boot)),
   ]
   let omitted = 0
   let lines = render(boot.log, omitted)
   while (size(lines) > cap && omitted < boot.inbox.messages.length) lines = render(boot.log, ++omitted)
+  let log = boot.log
   const section = boot.log.section
-  if (size(lines) <= cap || section === null) return lines
-  const room = Math.max(0, section.length - (size(lines) - cap))
-  return render({ ...boot.log, section: capText(section, room) }, omitted)
+  if (size(lines) > cap && section !== null) {
+    log = { ...log, section: capText(section, Math.max(0, section.length - (size(lines) - cap))) }
+    lines = render(log, omitted)
+  }
+  const cut: Partial<Record<Block, string[]>> = {}
+  const whole: Record<Block, string[]> = {
+    seat: seatLines(boot),
+    queue: queueLines(boot),
+    status: statusLines(boot),
+  }
+  for (const block of ['queue', 'seat', 'status'] as const) {
+    const over = size(lines) - cap
+    if (over <= 0) break
+    const text = whole[block].join('\n')
+    cut[block] = capText(text, Math.max(0, text.length - over)).split('\n')
+    lines = render(log, omitted, cut)
+  }
+  return lines
 }

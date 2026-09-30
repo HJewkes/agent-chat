@@ -180,6 +180,19 @@ describe('readTranscriptSpend', () => {
     expect(read.models).toEqual([MODEL_A, 'model-unknown-9'])
   })
 
+  it('reports a miss, and does not throw, when the read rejects with null', async () => {
+    vi.spyOn(fs, 'createReadStream').mockImplementation(() => {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw null
+    })
+
+    const read = await readTranscriptSpend(
+      transcript(assistant('msg-1', { input_tokens: 1, output_tokens: 1 })),
+    )
+
+    expect(read).toMatchObject({ ok: false, reason: 'unreadable transcript (unknown)' })
+  })
+
   it('never prices a request that names no model', async () => {
     const file = transcript({
       type: 'assistant',
