@@ -61,21 +61,17 @@ function includeFiles(params: readonly string[], env: NodeJS.ProcessEnv): string
   return files
 }
 
-/** 0 with command-scope output, or 1 for no match, is a clean read; anything else is not. */
+/** Exit 1 with no output is a clean read; a timeout, a failure or a command-scope value is not. */
 function readsHooksPath(args: readonly string[], dir: string, env: NodeJS.ProcessEnv): boolean {
-  try {
-    const run = spawnSync('git', args, {
-      cwd: dir,
-      env,
-      encoding: 'utf8',
-      timeout: ALIAS_TIMEOUT_MS,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-    if (run.status === 1 && run.stdout === '') return false
-    return run.status !== 0 || run.stdout.split('\n').some(line => line.startsWith('command\t'))
-  } catch {
-    return true
-  }
+  const run = spawnSync('git', args, {
+    cwd: dir,
+    env,
+    encoding: 'utf8',
+    timeout: ALIAS_TIMEOUT_MS,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  })
+  if (run.status === 1 && run.stdout === '') return false
+  return run.status !== 0 || run.stdout.split('\n').some(line => line.startsWith('command\t'))
 }
 
 export const includedHooksPathReader =
