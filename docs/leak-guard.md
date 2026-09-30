@@ -337,6 +337,20 @@ re-checked as `git <value> <rest>`, so an alias that sets `-c core.hooksPath` is
 arguments put in for `$1` to `$9`, `$@` and `$*` and appended as git appends them. More than 4
 nested aliases is a deny. A failed lookup allows the call, as a plain push is allowed.
 
+Every command that is or may be git reaches this check at one place, after the wrappers above
+are stripped and inside every `sh -c` string, `eval`, `env -S`, `$(...)` and `!` alias body:
+
+- a literal `git` command word, including `/usr/bin/git` and quoted forms such as `"git"`;
+- a command word the guard cannot resolve, such as `$x pnv` or `${X:-git} pnv`, whose next
+  words are looked up as if the word were git;
+- the words a plain alias expands to.
+
+A lookup the guard cannot make, because it cannot tell the directory, the subcommand or the
+config env, is a deny for a literal `git`. For a command word it cannot resolve, it is a deny
+when the line names `git`. A word that git would not take as an alias name, one that starts with
+anything but a letter or holds anything but letters, digits and `-`, is never looked up.
+`echo pnv | xargs git` still runs an alias unchecked, because the subcommand comes from stdin.
+
 Every `git <word>` that is not a builtin costs one `git config` spawn, and a `!` alias costs a
 second one for the work-tree top. The guard does not skip network verbs, and each git command
 in a `!` body is looked up again.
