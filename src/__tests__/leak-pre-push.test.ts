@@ -752,6 +752,37 @@ describe('the remote the scan base is read from', () => {
     expect(remoteHas(f, 'leaky')).toBe(false)
   })
 
+  const ownerConfig = (f: Fixture, key: string, value: string): void =>
+    git(f.work, baseEnv(), 'config', '--file', path.join(f.ownerHome, '.gitconfig'), key, value)
+
+  it("refuses a leaky push when the owner's global remote uploadpack points the lookup at a decoy", () => {
+    const f = fixture({ scanPath: realScanPath() })
+    const decoy = decoyRemote(f)
+    const wrapper = path.join(path.dirname(f.work), 'decoy-upload-pack')
+    fs.writeFileSync(wrapper, `#!/bin/sh\nexec git-upload-pack '${decoy}'\n`, { mode: 0o755 })
+    ownerConfig(f, `remote.${f.remote}.uploadpack`, wrapper)
+
+    const run = push(f, 'leaky')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stdout + run.stderr).toContain('notes.md:1 private-term')
+    expect(remoteHas(f, 'leaky')).toBe(false)
+  })
+
+  it("refuses a push when the owner's global config sets core.sshCommand", () => {
+    const f = fixture()
+    const ssh = path.join(path.dirname(f.work), 'fake-ssh')
+    fs.writeFileSync(ssh, '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+    ownerConfig(f, 'core.sshCommand', ssh)
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('core.sshCommand')
+    expect(remoteHas(f, 'clean')).toBe(false)
+  })
+
   it('still scans a push to a relative-path remote', () => {
     const f = fixture()
     git(f.work, baseEnv(), 'remote', 'set-url', 'origin', path.relative(f.work, f.remote))
@@ -802,7 +833,7 @@ describe('the remote the scan base is read from', () => {
   /** A git on the broker PATH that logs the remote call's env and fetches, and may answer the tip lookup. */
   const gitStub = (log: string, tipLine?: string): string => `case " $* " in
 *' ls-remote '*) env > '${log}.env' ;;
-*' fetch '*) echo fetch >> '${log}' ;;
+*' fetch '*) echo "fetch $*" >> '${log}' ;;
 esac
 ${tipLine === undefined ? '' : `case " $* " in *' ls-remote '*' HEAD '*) printf '%s\\tHEAD\\n' '${tipLine}'; exit 0 ;; esac`}
 exec '${REAL_GIT}' "$@"`
@@ -813,6 +844,34 @@ exec '${REAL_GIT}' "$@"`
     const bin = binWith({ node: true, egress: egressStub(`${log}.scan`), scripts })
     return { f: fixture({ scanPath: `${bin}:${SYSTEM_PATH}` }), log }
   }
+
+  it('says the lookup failed, not that no default branch exists, when ls-remote fails', () => {
+    const log = path.join(fs.mkdtempSync(path.join(SCRATCH, 'git-log-')), 'git.log')
+    const failing = `case " $* " in *' ls-remote '*' HEAD '*) exit 128 ;; esac\nexec '${REAL_GIT}' "$@"`
+    const bin = binWith({ node: true, egress: egressStub(`${log}.scan`), scripts: { git: failing } })
+    const f = fixture({ scanPath: `${bin}:${SYSTEM_PATH}` })
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('lookup on')
+    expect(run.stderr).not.toContain('names no default branch')
+  })
+
+  it('fetches the remote tip without recursing into submodules', () => {
+    const { f, log } = stubbedGitFixture()
+    const other = path.join(path.dirname(f.work), 'other')
+    git(path.dirname(f.work), baseEnv(), 'clone', '-q', f.remote, other)
+    git(other, baseEnv(), 'commit', '-q', '--allow-empty', '-m', 'ahead')
+    git(other, baseEnv(), 'push', '-q', 'origin', 'main')
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run.code).toBe(0)
+    expect(fs.readFileSync(log, 'utf8')).toContain('--no-recurse-submodules')
+  })
 
   it('ignores a tip that is not hex, and fetches nothing', () => {
     const { f, log } = stubbedGitFixture('--x')
