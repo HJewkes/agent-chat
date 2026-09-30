@@ -42,9 +42,12 @@ hook="$own/\${0##*/}"
 [ -n "$own" ] && [ -f "$hook" ] && [ -x "$hook" ] || hook=
 [ -n "$hook" ] && [ "$(cd "$own" && pwd -P)" = "$(cd "\${0%/*}" && pwd -P)" ] && hook=`
 
-const HEADER = '#!/bin/sh\n# Written by agent-chat at each spawn (CC-268); local edits are overwritten.\n'
+const WRITTEN_BY = '# Written by agent-chat at each spawn (CC-268); local edits are overwritten.\n'
 
-const CHAIN_SHIM = `${HEADER}${FIND_REPO_HOOK}\n[ -n "$hook" ] || exit 0\nexec "$hook" "$@"\n`
+const CHAIN_SHIM = `#!/bin/sh\n${WRITTEN_BY}${FIND_REPO_HOOK}\n[ -n "$hook" ] || exit 0\nexec "$hook" "$@"\n`
+
+// -p: bash as sh imports no functions and ignores SHELLOPTS from the agent's environment; dash takes the flag.
+const PRE_PUSH_HEADER = `#!/bin/sh -p\n${WRITTEN_BY}`
 
 const NOT_RUN = 'leak-scan: guard NOT run, this push was not scanned'
 
@@ -59,9 +62,9 @@ const MISSING_TERMS_LINE = 'private term list not found'
 /** What the pre-push shim bakes in when it is written, so nothing the agent's environment holds is trusted. */
 export interface ScanInputs {
   missingTermsRefuses: boolean
-  /** The owner's home from the passwd entry; derives the term list's path and the scanner's HOME. */
+  /** The owner's home from the passwd entry; derives the term list's path. */
   home: string
-  /** The broker's own PATH, absolute entries only; the scan never sees the agent's PATH. */
+  /** The broker's own PATH, absolute entries only; the hook never uses the agent's PATH. */
   path: string
 }
 
@@ -96,63 +99,109 @@ const missingTermsNote = (refuses: boolean, termsFile: string): string =>
     ? `leak-scan: push refused: no private term list at ${termsFile}. Create it, one term per line, chmod 600; see docs/leak-guard.md.`
     : `leak-scan: WARNING: no private term list at ${termsFile}, so this push was scanned with generic rules only. Create it; see docs/leak-guard.md.`
 
-// egress-scan honours an uncommitted .egress-allow in the worktree, so an agent could write one to silence it.
-const ALLOW_CHECK = `top=$(git rev-parse --show-toplevel 2>/dev/null)
-if [ -n "$top" ] && { [ -e "$top/.egress-allow" ] || [ -L "$top/.egress-allow" ]; }; then
-  git -C "$top" ls-files --error-unmatch -- .egress-allow >/dev/null 2>&1 && git -C "$top" diff --quiet HEAD -- .egress-allow || {
-    echo "leak-scan: push refused: .egress-allow differs from the committed copy, and only a committed one may allow findings. Commit it or remove it; see docs/leak-guard.md." >&2
-    exit 2
-  }
+const ALLOW_HINT =
+  "leak-scan: only .egress-allow entries already on the remote's default branch count; see docs/leak-guard.md."
+
+// The scanner sees the repo's objects and nothing else: no worktree, index, refs, repo config or attributes.
+const OBJECT_VIEW = `view=$tmp/view
+objects=$(cd "$(git rev-parse --git-path objects)" 2>/dev/null && pwd -P) &&
+  clean git init -q --template= "$view" >/dev/null 2>&1 &&
+  printf '%s\\n' "$objects" > "$view/.git/objects/info/alternates" || {
+  echo "leak-scan: push refused: could not open the repository's objects for the scan." >&2
+  exit 2
+}
+vgit() { clean git -C "$view" "$@"; }
+allow_mode() { vgit ls-tree "$1" -- .egress-allow 2>/dev/null | awk '{ print $1 }'; }`
+
+// Asked of the push destination itself, since an agent can point any local remote-tracking ref anywhere.
+const REMOTE_TIP = `tip=$(git ls-remote "$2" HEAD 2>/dev/null | awk '$2 == "HEAD" { print $1; exit }')
+case $tip in *[!0-9a-f]*) tip= ;; esac
+if [ -n "$tip" ] && ! vgit cat-file -e "$tip^{commit}" 2>/dev/null; then
+  git fetch -q --no-tags --no-write-fetch-head "$2" HEAD >/dev/null 2>&1
+  vgit cat-file -e "$tip^{commit}" 2>/dev/null || tip=
 fi`
 
+// A new ref, or one whose remote sha is not here, is scanned from the remote's default branch.
+const SCAN_REFS = `while read -r lref lsha rref rsha; do
+  case $lsha in
+  *[!0]*)
+    case $(allow_mode "$lsha") in
+    '' | 100644 | 100755) ;;
+    *)
+      echo "leak-scan: push refused: .egress-allow in $lref is not a regular file; see docs/leak-guard.md." >&2
+      exit 2 ;;
+    esac
+    case $rsha in
+    *[!0]*) vgit cat-file -e "$rsha^{commit}" 2>/dev/null || rsha=$tip ;;
+    *) rsha=$tip ;;
+    esac
+    [ -n "$rsha" ] || {
+      echo "leak-scan: push refused: $1 names no default branch to scan $lref against; see docs/leak-guard.md." >&2
+      exit 2
+    } ;;
+  esac
+  printf '%s %s %s %s\\n' "$lref" "$lsha" "$rref" "$rsha"
+done < "$refs" > "$tmp/scan-refs" || exit 2`
+
+// An entry the pushed commits add would let an agent allow its own finding, so only the remote's copy counts.
+const ALLOW_LIST = `[ -z "$tip" ] || case $(allow_mode "$tip") in
+100644 | 100755) vgit cat-file blob "$tip:.egress-allow" > "$view/.egress-allow" || exit 2 ;;
+esac`
+
+const runScanner = (refuses: boolean, termsFile: string): string =>
+  `cd "$view" || exit 2
+    clean TITAN_EGRESS_TERMS=${shQuote(termsFile)} TITAN_EGRESS_REQUIRE_TERMS=${refuses ? '1' : ''} titan-egress-scan pre-push "$1" < "$tmp/scan-refs" 2> "$errs"
+    scan=$?
+    cat "$errs" >&2
+    if grep -q '${MISSING_TERMS_LINE}' "$errs"; then
+      echo ${shQuote(missingTermsNote(refuses, termsFile))} >&2
+    fi
+    [ "$scan" -ne 1 ] || echo ${shQuote(ALLOW_HINT)} >&2
+    exit "$scan" ;;`
+
 /**
- * The scan runs in a subshell under the broker's PATH and the passwd home, both baked in at spawn,
- * with node's code-loading variables cleared, so the agent's environment cannot swap or silence the
- * scanner. A missing node or scanner, or one whose help lacks `pre-push`, warns and lets the push
- * go. A scanner that crashes still refuses. `CI=` stops egress-scan skipping the term list. The
- * scan's refusal does not skip the repo's own hook; either one failing refuses.
+ * The scan runs in a subshell. `clean` starts git and the scanner with an environment of PATH
+ * alone, so no variable of the agent's reaches them. A missing node or scanner, or one whose help
+ * lacks `pre-push`, warns and lets the push go. A scanner that crashes still refuses. The scan's
+ * refusal does not skip the repo's own hook; either one failing refuses.
  */
-const scanStep = ({ missingTermsRefuses: refuses, home, path: scanPath }: ScanInputs): string => {
-  const termsFile = termsFileFor(home)
-  return `(
-PATH=${shQuote(scanPath)}; export PATH
-HOME=${shQuote(home)}; export HOME
-unset NODE_OPTIONS NODE_PATH XDG_CONFIG_HOME LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH
-${ALLOW_CHECK}
+const scanStep = ({ missingTermsRefuses: refuses, home }: ScanInputs): string => `(
+clean() { /usr/bin/env -i PATH="$PATH" "$@"; }
 if ! command -v node >/dev/null 2>&1; then
   echo "${NOT_RUN}: no node on the broker's PATH. Put node on it and restart the broker; see docs/leak-guard.md." >&2
 elif ! command -v titan-egress-scan >/dev/null 2>&1; then
   echo "${NOT_RUN}: no titan-egress-scan on the broker's PATH. ${INSTALL_HINT}" >&2
-elif ! help=$(titan-egress-scan --help 2>&1); then
+elif ! help=$(clean titan-egress-scan --help 2>&1); then
   printf '%s\\n' "$help" >&2
   echo "leak-scan: titan-egress-scan failed while checking for its pre-push command, so the push is refused." >&2
   exit 2
 else
   case $help in
   *pre-push*)
-    CI= TITAN_EGRESS_TERMS=${shQuote(termsFile)} TITAN_EGRESS_REQUIRE_TERMS=${refuses ? '1' : ''} titan-egress-scan pre-push "$1" < "$refs" 2> "$errs"
-    scan=$?
-    cat "$errs" >&2
-    if grep -q '${MISSING_TERMS_LINE}' "$errs"; then
-      echo ${shQuote(missingTermsNote(refuses, termsFile))} >&2
-    fi
-    exit "$scan" ;;
+    ${OBJECT_VIEW}
+    ${REMOTE_TIP}
+    ${SCAN_REFS}
+    ${ALLOW_LIST}
+    ${runScanner(refuses, termsFileFor(home))}
   *)
     echo "${NOT_RUN}: the titan-egress-scan on the broker's PATH has no pre-push command. ${INSTALL_HINT}" >&2 ;;
   esac
 fi
 )`
-}
 
-const prePushShim = (inputs: ScanInputs): string => `${HEADER}refs=$(mktemp) || exit 1
-errs=$(mktemp) || exit 1
-trap 'rm -f "$refs" "$errs"' EXIT
+// The broker's PATH covers the whole shim, not only the scan; the repo hook gets the agent's PATH back.
+const prePushShim = (inputs: ScanInputs): string => `${PRE_PUSH_HEADER}agent_path=$PATH
+PATH=${shQuote(inputs.path)}; export PATH
+tmp=$(mktemp -d) || exit 1
+trap 'rm -rf "$tmp"' EXIT
+refs=$tmp/refs
+errs=$tmp/errs
 cat > "$refs"
 ${scanStep(inputs)}
 scan=$?
 ${FIND_REPO_HOOK}
 own_status=0
-if [ -n "$hook" ]; then "$hook" "$@" < "$refs"; own_status=$?; fi
+if [ -n "$hook" ]; then PATH=$agent_path "$hook" "$@" < "$refs"; own_status=$?; fi
 [ "$scan" -eq 0 ] || exit "$scan"
 exit "$own_status"
 `
