@@ -113,11 +113,32 @@ objects=$(cd "$(git rev-parse --git-path objects)" 2>/dev/null && pwd -P) &&
 vgit() { clean git -C "$view" "$@"; }
 allow_mode() { vgit ls-tree "$1" -- .egress-allow 2>/dev/null | awk '{ print $1 }'; }`
 
-// Asked of the push destination itself, since an agent can point any local remote-tracking ref anywhere.
-const REMOTE_TIP = `tip=$(git ls-remote "$2" HEAD 2>/dev/null | awk '$2 == "HEAD" { print $1; exit }')
+const SSH_COMMAND_SET =
+  'leak-scan: push refused: core.sshCommand is set in the system or global git config, so the scan base cannot be read the way the push is sent; see docs/leak-guard.md.'
+
+const LOOKUP_FAILED = 'leak-scan: push refused: the scan base lookup on $2 failed; see docs/leak-guard.md.'
+
+const REWRITTEN_URL =
+  'leak-scan: push refused: git config rewrites the push URL $2 for reads, so the scan base cannot be read from it; see docs/leak-guard.md.'
+
+// Asked of the push URL with only system and owner config, since agent config can send the read elsewhere.
+const remoteTip = (home: string): string => `remote() {
+  /usr/bin/env -i PATH="$PATH" HOME=${shQuote(home)} SSH_AUTH_SOCK="\${SSH_AUTH_SOCK-}" \\
+    GIT_TERMINAL_PROMPT=0 GIT_DIR="$view/.git" git "$@"
+}
+[ "$(remote ls-remote --get-url "$2" 2>/dev/null)" = "$2" ] || {
+  echo "${REWRITTEN_URL}" >&2
+  exit 2
+}
+[ -z "$(remote config --get core.sshCommand 2>/dev/null)" ] || {
+  echo "${SSH_COMMAND_SET}" >&2
+  exit 2
+}
+heads=$(remote ls-remote --upload-pack=git-upload-pack "$2" HEAD 2>/dev/null) || lookup_failed=1
+tip=$(printf '%s\\n' "$heads" | awk '$2 == "HEAD" { print $1; exit }')
 case $tip in *[!0-9a-f]*) tip= ;; esac
 if [ -n "$tip" ] && ! vgit cat-file -e "$tip^{commit}" 2>/dev/null; then
-  git fetch -q --no-tags --no-write-fetch-head "$2" HEAD >/dev/null 2>&1
+  remote fetch -q --upload-pack=git-upload-pack --no-tags --no-write-fetch-head --no-recurse-submodules "$2" HEAD >/dev/null 2>&1
   vgit cat-file -e "$tip^{commit}" 2>/dev/null || tip=
 fi`
 
@@ -136,6 +157,7 @@ const SCAN_REFS = `while read -r lref lsha rref rsha; do
     *) rsha=$tip ;;
     esac
     [ -n "$rsha" ] || {
+      [ -z "$lookup_failed" ] || { echo "${LOOKUP_FAILED}" >&2; exit 2; }
       echo "leak-scan: push refused: $1 names no default branch to scan $lref against; see docs/leak-guard.md." >&2
       exit 2
     } ;;
@@ -179,7 +201,7 @@ else
   case $help in
   *pre-push*)
     ${OBJECT_VIEW}
-    ${REMOTE_TIP}
+    ${remoteTip(home)}
     ${SCAN_REFS}
     ${ALLOW_LIST}
     ${runScanner(refuses, termsFileFor(home))}

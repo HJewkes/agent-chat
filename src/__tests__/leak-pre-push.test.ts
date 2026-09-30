@@ -59,15 +59,13 @@ interface Tools {
   scripts?: Record<string, string>
 }
 
+const REAL_GIT = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+
 /** A PATH dir holding only the named tools, so a test controls what the hook can find. */
 function binWith(tools: Tools): string {
   const dir = fs.mkdtempSync(path.join(SCRATCH, 'bin-'))
   if (tools.node) fs.symlinkSync(process.execPath, path.join(dir, 'node'))
-  if (tools.git)
-    fs.symlinkSync(
-      execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim(),
-      path.join(dir, 'git'),
-    )
+  if (tools.git) fs.symlinkSync(REAL_GIT, path.join(dir, 'git'))
   const scripts = {
     ...tools.scripts,
     ...(tools.egress === undefined ? {} : { 'titan-egress-scan': tools.egress }),
@@ -118,6 +116,7 @@ interface Fixture {
   work: string
   remote: string
   chatHome: string
+  ownerHome: string
   marker: string
   stubLog: string
   termsFile: string
@@ -189,11 +188,15 @@ function fixture(opts: FixtureOpts = {}): Fixture {
     path: opts.scanPath ?? pathWithStub(egressStub(stubLog)),
   })
   const agentEnv = { ...baseEnv(), ...gitHooksEnv(hooksDir) }
-  return { work, remote, chatHome, marker, stubLog, termsFile, agentEnv }
+  return { work, remote, chatHome, ownerHome, marker, stubLog, termsFile, agentEnv }
 }
 
-function push(f: Fixture, branch: string): { code: number; stdout: string; stderr: string } {
-  const run = spawnSync('git', ['push', '-q', 'origin', branch], {
+function push(
+  f: Fixture,
+  branch: string,
+  gitArgs: string[] = [],
+): { code: number; stdout: string; stderr: string } {
+  const run = spawnSync('git', [...gitArgs, 'push', '-q', 'origin', branch], {
     cwd: f.work,
     env: f.agentEnv,
     encoding: 'utf8',
@@ -671,6 +674,257 @@ describe('the commits a push is scanned for', () => {
     expect(stubSaw(f)[1]).toBe(
       `refs/heads/main ${git(f.work, baseEnv(), 'rev-parse', 'main')} refs/heads/main ${before}`,
     )
+  })
+})
+
+describe('the remote the scan base is read from', () => {
+  const REWRITTEN = 'leak-scan: push refused: git config rewrites the push URL'
+
+  /** A bare repo whose HEAD is the leaky commit; the stub scans each sha alone, so these tests need the real scanner. */
+  function decoyRemote(f: Fixture): string {
+    commitFile(f, 'leaky', 'notes.md', `the ${LEAK} seat`)
+    const decoy = path.join(path.dirname(f.work), 'decoy.git')
+    git(path.dirname(f.work), baseEnv(), 'init', '-q', '--bare', '-b', 'main', decoy)
+    git(f.work, baseEnv(), 'push', '-q', decoy, 'leaky:main')
+    return decoy
+  }
+
+  // Reads go to the decoy, and the push still goes to the real remote.
+  const decoyRules = (f: Fixture, decoy: string): [string, string][] => [
+    [`url.${decoy}.insteadOf`, f.remote],
+    [`url.${f.remote}.pushInsteadOf`, f.remote],
+  ]
+
+  it.each([
+    [
+      'local url.insteadOf and pushInsteadOf',
+      (f: Fixture, rules: [string, string][]) => {
+        for (const [key, value] of rules) git(f.work, baseEnv(), 'config', '--add', key, value)
+        return []
+      },
+    ],
+    [
+      'the two rules as GIT_CONFIG_COUNT entries',
+      (f: Fixture, rules: [string, string][]) => {
+        f.agentEnv.GIT_CONFIG_COUNT = '3'
+        rules.forEach(([key, value], i) =>
+          Object.assign(f.agentEnv, {
+            [`GIT_CONFIG_KEY_${i + 1}`]: key,
+            [`GIT_CONFIG_VALUE_${i + 1}`]: value,
+          }),
+        )
+        return []
+      },
+    ],
+    [
+      'the two rules as git -c',
+      (_: Fixture, rules: [string, string][]) => rules.flatMap(([k, v]) => ['-c', `${k}=${v}`]),
+    ],
+  ])('refuses a leaky push when %s point the tip lookup at another repository', (_, plant) => {
+    const f = fixture({ scanPath: realScanPath() })
+    const gitArgs = plant(f, decoyRules(f, decoyRemote(f)))
+
+    const run = push(f, 'leaky', gitArgs)
+
+    expect(run.code).not.toBe(0)
+    expect(run.stdout + run.stderr).toContain('notes.md:1 private-term')
+    expect(run.stderr).not.toContain(REWRITTEN)
+    expect(remoteHas(f, 'leaky')).toBe(false)
+  })
+
+  it("refuses a push when the owner's global config rewrites the push URL", () => {
+    const f = fixture({ scanPath: realScanPath() })
+    const decoy = decoyRemote(f)
+    git(
+      f.work,
+      baseEnv(),
+      'config',
+      '--file',
+      path.join(f.ownerHome, '.gitconfig'),
+      `url.${decoy}.insteadOf`,
+      f.remote,
+    )
+
+    const run = push(f, 'leaky')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain(REWRITTEN)
+    expect(remoteHas(f, 'leaky')).toBe(false)
+  })
+
+  const ownerConfig = (f: Fixture, key: string, value: string): string =>
+    git(f.work, baseEnv(), 'config', '--file', path.join(f.ownerHome, '.gitconfig'), key, value)
+
+  it("refuses a leaky push when the owner's global remote uploadpack points the lookup at a decoy", () => {
+    const f = fixture({ scanPath: realScanPath() })
+    const decoy = decoyRemote(f)
+    const wrapper = path.join(path.dirname(f.work), 'decoy-upload-pack')
+    fs.writeFileSync(wrapper, `#!/bin/sh\nexec git-upload-pack '${decoy}'\n`, { mode: 0o755 })
+    const url = `file://${f.remote}`
+    git(f.work, baseEnv(), 'remote', 'set-url', 'origin', url)
+    ownerConfig(f, `remote.${url}.uploadpack`, wrapper)
+
+    const run = push(f, 'leaky')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stdout + run.stderr).toContain('notes.md:1 private-term')
+    expect(remoteHas(f, 'leaky')).toBe(false)
+  })
+
+  it("refuses a push when the owner's global config sets core.sshCommand", () => {
+    const f = fixture()
+    const ssh = path.join(path.dirname(f.work), 'fake-ssh')
+    fs.writeFileSync(ssh, '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+    ownerConfig(f, 'core.sshCommand', ssh)
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('core.sshCommand')
+    expect(remoteHas(f, 'clean')).toBe(false)
+  })
+
+  it('still scans a push to a relative-path remote', () => {
+    const f = fixture()
+    git(f.work, baseEnv(), 'remote', 'set-url', 'origin', path.relative(f.work, f.remote))
+    commitFile(f, 'leaky', 'notes.md', `the ${LEAK} seat`)
+    commitFile(f, 'clean', 'notes.md', 'fine')
+    const [sha, main] = ['clean', 'main'].map(rev => git(f.work, baseEnv(), 'rev-parse', rev))
+
+    const clean = push(f, 'clean')
+    const cleanScan = stubSaw(f)[1]
+    const leaky = push(f, 'leaky')
+
+    expect(clean).toMatchObject({ code: 0, stderr: '' })
+    expect(cleanScan).toBe(`refs/heads/clean ${sha} refs/heads/clean ${main}`)
+    expect(leaky.code).not.toBe(0)
+    expect(remoteHas(f, 'leaky')).toBe(false)
+  })
+
+  it("fetches a remote tip this clone lacks without writing it into the agent's repository", () => {
+    const f = fixture()
+    const other = path.join(path.dirname(f.work), 'other')
+    git(path.dirname(f.work), baseEnv(), 'clone', '-q', f.remote, other)
+    git(other, baseEnv(), 'commit', '-q', '--allow-empty', '-m', 'ahead')
+    git(other, baseEnv(), 'push', '-q', 'origin', 'main')
+    const tip = git(other, baseEnv(), 'rev-parse', 'HEAD')
+    commitFile(f, 'clean', 'notes.md', 'fine')
+    const sha = git(f.work, baseEnv(), 'rev-parse', 'clean')
+
+    const run = push(f, 'clean')
+
+    expect(run).toMatchObject({ code: 0, stderr: '' })
+    expect(stubSaw(f)[1]).toBe(`refs/heads/clean ${sha} refs/heads/clean ${tip}`)
+    expect(spawnSync('git', ['cat-file', '-e', tip], { cwd: f.work, env: baseEnv() }).status).not.toBe(0)
+  })
+
+  it('takes no tip from a ref that only ends in /HEAD', () => {
+    const f = fixture()
+    git(f.remote, baseEnv(), 'update-ref', 'refs/heads/x/HEAD', 'main')
+    git(f.remote, baseEnv(), 'symbolic-ref', 'HEAD', 'refs/heads/absent')
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('origin names no default branch to scan refs/heads/clean against')
+    expect(remoteHas(f, 'clean')).toBe(false)
+  })
+
+  /** A git on the broker PATH that logs the remote call's env and fetches, and may answer the tip lookup. */
+  const gitStub = (log: string, tipLine?: string): string => `case " $* " in
+*' ls-remote '*) env > '${log}.env' ;;
+*' fetch '*) echo "fetch $*" >> '${log}' ;;
+esac
+${tipLine === undefined ? '' : `case " $* " in *' ls-remote '*' HEAD '*) printf '%s\\tHEAD\\n' '${tipLine}'; exit 0 ;; esac`}
+exec '${REAL_GIT}' "$@"`
+
+  const stubbedGitFixture = (tipLine?: string): { f: Fixture; log: string } => {
+    const log = path.join(fs.mkdtempSync(path.join(SCRATCH, 'git-log-')), 'git.log')
+    const scripts = { git: gitStub(log, tipLine) }
+    const bin = binWith({ node: true, egress: egressStub(`${log}.scan`), scripts })
+    return { f: fixture({ scanPath: `${bin}:${SYSTEM_PATH}` }), log }
+  }
+
+  it('says the lookup failed, not that no default branch exists, when ls-remote fails', () => {
+    const log = path.join(fs.mkdtempSync(path.join(SCRATCH, 'git-log-')), 'git.log')
+    const failing = `case " $* " in *' ls-remote '*' HEAD '*) exit 128 ;; esac\nexec '${REAL_GIT}' "$@"`
+    const bin = binWith({ node: true, egress: egressStub(`${log}.scan`), scripts: { git: failing } })
+    const f = fixture({ scanPath: `${bin}:${SYSTEM_PATH}` })
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('lookup on')
+    expect(run.stderr).not.toContain('names no default branch')
+  })
+
+  it('fetches the remote tip without recursing into submodules', () => {
+    const { f, log } = stubbedGitFixture()
+    const other = path.join(path.dirname(f.work), 'other')
+    git(path.dirname(f.work), baseEnv(), 'clone', '-q', f.remote, other)
+    git(other, baseEnv(), 'commit', '-q', '--allow-empty', '-m', 'ahead')
+    git(other, baseEnv(), 'push', '-q', 'origin', 'main')
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run.code).toBe(0)
+    expect(fs.readFileSync(log, 'utf8')).toContain('--no-recurse-submodules')
+  })
+
+  it('ignores a tip that is not hex, and fetches nothing', () => {
+    const { f, log } = stubbedGitFixture('--x')
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('origin names no default branch')
+    expect(fs.existsSync(log)).toBe(false)
+  })
+
+  it('hands the remote call no variable of the agent but SSH_AUTH_SOCK', () => {
+    const { f, log } = stubbedGitFixture()
+    const scratch = path.dirname(f.chatHome)
+    Object.assign(f.agentEnv, {
+      HOME: scratch,
+      XDG_CONFIG_HOME: scratch,
+      GIT_CONFIG_GLOBAL: path.join(scratch, 'agent-gitconfig'),
+      GIT_SSH_COMMAND: 'false',
+      GIT_ASKPASS: 'false',
+      SSH_AUTH_SOCK: path.join(scratch, 'agent.sock'),
+      ZQ7_CANARY: '1',
+    })
+    commitFile(f, 'clean', 'notes.md', 'fine')
+    const setByTheShell = new Set(['PWD', 'OLDPWD', 'SHLVL', '_'])
+
+    const run = push(f, 'clean')
+
+    const seen = Object.fromEntries(
+      fs
+        .readFileSync(`${log}.env`, 'utf8')
+        .trim()
+        .split('\n')
+        .map(line => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)])
+        .filter(([name]) => !setByTheShell.has(name ?? '')),
+    )
+    expect(run.code).toBe(0)
+    expect(Object.keys(seen).sort()).toEqual([
+      'GIT_DIR',
+      'GIT_TERMINAL_PROMPT',
+      'HOME',
+      'PATH',
+      'SSH_AUTH_SOCK',
+    ])
+    expect(seen).toMatchObject({
+      HOME: f.ownerHome,
+      SSH_AUTH_SOCK: f.agentEnv.SSH_AUTH_SOCK,
+      GIT_TERMINAL_PROMPT: '0',
+    })
+    expect(seen.GIT_DIR).toMatch(/\/view\/\.git$/)
   })
 })
 
