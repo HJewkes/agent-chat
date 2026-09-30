@@ -352,7 +352,9 @@ describe('spawning', () => {
 
   it('refuses owns with no isolation field when the profile defaults to a worktree (CC-356)', async () => {
     const sup = withStubbedSurface()
-    const result = await sup.spawn(spawnReq({ name: 'scoped2', profile: 'implementer', owns: ['src/a/**'] }))
+    const result = await sup.spawn(
+      spawnReq({ name: 'scoped2', profile: 'implementer', isolation: undefined, owns: ['src/a/**'] }),
+    )
 
     expect(result.ok).toBe(false)
     expect(result.reason).toMatch(/owns.*worktree/)
