@@ -36,6 +36,16 @@ export const readText = (file: string): string | undefined => {
   }
 }
 
+/** Undefined only when the path is missing; any other failure throws, so an unreadable journal never reads as an empty one. */
+function ifPresent<T>(read: () => T): T | undefined {
+  try {
+    return read()
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw err
+  }
+}
+
 /** The most rows the scorer is asked for; score.py's `--top 1000` the watchdog used to pass. */
 const SCORER_TOP = 1000
 
@@ -70,13 +80,17 @@ export type SeatRecord = SeatState & {
   run?: SpendMeter
   budgetPaused?: boolean
   capped?: boolean
-  /** CC-320: `darkSince` of the dark episode the watchdog last tried to resume. */
+  /** CC-320: the start of the dark episode the watchdog last tried to resume. */
   resumedDark?: number
+  /** CC-326: tries at that episode while its resume is unconfirmed; absent once one was accepted. */
+  resumeRetry?: number
+  /** CC-326: when the watchdog first saw the seat absent with log row `register` as its last presence row. */
+  absent?: { register: number; since: number }
 }
 
 /**
  * `seat-watchdog.json`. `stopped` is the owner's switch: a seat named there is
- * never woken, whatever else holds, until its entry is deleted.
+ * never woken or resumed, whatever else holds, until its entry is deleted.
  */
 export interface WatchdogDoc {
   seats: Record<string, SeatRecord>
@@ -88,7 +102,7 @@ export interface WatchdogDoc {
 
 const emptyDoc = (): WatchdogDoc => ({ seats: {}, pools: {}, stopped: {} })
 
-function parseDoc(text: string, name: string): Partial<WatchdogDoc> {
+function parseStatusDoc(text: string, name: string): Partial<WatchdogDoc> {
   let doc: unknown
   try {
     doc = JSON.parse(text)
@@ -111,7 +125,7 @@ export function readDoc(file = watchdogStatePath()): WatchdogDoc {
     if (code === 'ENOENT') return emptyDoc()
     throw new Error(`${name} cannot be read (${code ?? 'unknown error'})`)
   }
-  const doc = parseDoc(text, name)
+  const doc = parseStatusDoc(text, name)
   return {
     seats: doc.seats ?? {},
     pools: doc.pools ?? {},
@@ -120,12 +134,37 @@ export function readDoc(file = watchdogStatePath()): WatchdogDoc {
   }
 }
 
-/** The watchdog's read: a file it cannot use is an empty doc, so one bad write never stops every pass. */
-export function loadDoc(file = watchdogStatePath()): WatchdogDoc {
+const isMap = (value: unknown): boolean =>
+  value === undefined || (typeof value === 'object' && value !== null && !Array.isArray(value))
+
+/** CC-326: a state file that cannot be read as written is an error, never "no stops". */
+function parseDoc(text: string, file: string): Partial<WatchdogDoc> {
+  const unusable = (why: string): Error =>
+    new Error(
+      `${path.basename(file)} is unusable (${why}), so the owner's stops are unknown; fix or delete it`,
+    )
+  let doc: unknown
   try {
-    return readDoc(file)
-  } catch {
-    return emptyDoc()
+    doc = JSON.parse(text)
+  } catch (err) {
+    throw unusable(err instanceof Error ? err.message : String(err))
+  }
+  if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) throw unusable('not a JSON object')
+  const maps = doc as Record<'seats' | 'pools' | 'stopped', unknown>
+  for (const key of ['seats', 'pools', 'stopped'] as const)
+    if (!isMap(maps[key])) throw unusable(`\`${key}\` is not an object`)
+  return doc as Partial<WatchdogDoc>
+}
+
+/** A missing file is a first run; one that is there and unreadable or unparsable throws. */
+export function loadDoc(file = watchdogStatePath()): WatchdogDoc {
+  const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '{}'
+  const doc = parseDoc(text, file)
+  return {
+    seats: doc.seats ?? {},
+    pools: doc.pools ?? {},
+    stopped: doc.stopped ?? {},
+    ...(doc.held === undefined ? {} : { held: doc.held }),
   }
 }
 
@@ -142,14 +181,34 @@ const pad = (n: number): string => String(n).padStart(2, '0')
 
 const localDay = (at: Date): string => `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
 
+export const seatLogClock = (at: Date): string => `${pad(at.getHours())}:${pad(at.getMinutes())}`
+
 export const seatLogPath = (root: string, seat: string, at: Date): string =>
   path.join(root, 'logs', seat, `${localDay(at)}.md`)
+
+/** CC-326: a seat's journal for the local day of `at`; undefined when there is none, and throws when it cannot be read. */
+export const readSeatJournal = (root: string, seat: string, at: Date): string | undefined =>
+  ifPresent(() => fs.readFileSync(seatLogPath(root, seat, at), 'utf8'))
+
+const JOURNAL_FILE = /^(\d{4})-(\d\d)-(\d\d)\.md$/
+
+/** CC-326: local noon of each day the seat has a journal file for, newest first; throws when `logs/<seat>` cannot be listed. */
+export function seatJournalDays(root: string, seat: string): Date[] {
+  const names = ifPresent(() => fs.readdirSync(path.join(root, 'logs', seat))) ?? []
+  return names
+    .sort()
+    .reverse()
+    .flatMap(name => {
+      const m = JOURNAL_FILE.exec(name)
+      return m === null ? [] : [new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12)]
+    })
+}
 
 /** Charter section 10's format: local `logs/<seat>/<YYYY-MM-DD>.md`, each line led by local `HH:MM`. */
 export function appendSeatLog(root: string, seat: string, at: Date, text: string): string {
   const file = seatLogPath(root, seat, at)
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.appendFileSync(file, `${pad(at.getHours())}:${pad(at.getMinutes())} ${text}\n`)
+  fs.appendFileSync(file, `${seatLogClock(at)} ${text}\n`)
   return file
 }
 
@@ -226,9 +285,24 @@ const countAfter = (db: DatabaseSyncType, where: string, afterId: number, ...arg
 }
 
 const REGISTERED = "actor = ? AND kind = 'registered'"
-const TELEPORT_ROWS = "actor = ? AND kind IN ('agent_handoff', 'agent_stood_down')"
+// CC-326: a handoff row alone is a teleport that may have been aborted; only the stand-down commits it.
+const TELEPORT_ROWS = "actor = ? AND kind = 'agent_stood_down'"
+const ANY_RESUME = "target = ? AND kind = 'agent_resumed'"
 const WATCHDOG_RESUME =
   "target = ? AND kind = 'agent_resumed' AND json_extract(meta, '$.source') = 'watchdog'"
+// CC-326: the supervisor closes the `agent_resumed` row of a launch that threw with this row.
+const NEVER_STARTED = "actor = ? AND kind = 'agent_exited' AND json_extract(meta, '$.never_started') = 'true'"
+
+/** Resume rows after log id `afterId` whose launch did not throw. */
+const resumesLaunched = (db: DatabaseSyncType, seat: string, afterId: number): number =>
+  countAfter(db, ANY_RESUME, afterId, seat) - countAfter(db, NEVER_STARTED, afterId, seat)
+
+/** The watchdog's latest resume launched, and the seat's one register since is the session it started. */
+function wokenByWatchdog(db: DatabaseSyncType, seat: string, registered: number): boolean {
+  const woke = maxId(db, WATCHDOG_RESUME, seat)
+  if (woke === 0 || countAfter(db, REGISTERED, woke, seat) !== 1) return false
+  return countAfter(db, NEVER_STARTED, woke, seat) === countAfter(db, NEVER_STARTED, registered, seat)
+}
 
 /** CC-320: a seat's latest presence rows. Throws when events.db cannot be read. */
 export function readPresence(dbPath: string, seat: string): Presence {
@@ -237,15 +311,15 @@ export function readPresence(dbPath: string, seat: string): Presence {
     const registered = maxId(db, REGISTERED, seat)
     const dark = db
       .prepare(
-        "SELECT ts FROM events WHERE actor = ? AND kind = 'deregistered' AND id > ? ORDER BY id DESC LIMIT 1",
+        "SELECT id, ts FROM events WHERE actor = ? AND kind = 'deregistered' AND id > ? ORDER BY id DESC LIMIT 1",
       )
-      .get(seat, registered) as { ts: number } | undefined
-    const woke = maxId(db, WATCHDOG_RESUME, seat)
+      .get(seat, registered) as { id: number; ts: number } | undefined
     return {
       ...(dark === undefined ? {} : { darkSince: dark.ts }),
+      ...(dark === undefined && registered > 0 ? { openRegister: registered } : {}),
+      resumeStarted: resumesLaunched(db, seat, dark?.id ?? registered) > 0,
       teleported: countAfter(db, TELEPORT_ROWS, registered, seat) > 0,
-      // A register after the one the wake produced means something else started the session since.
-      wokenByWatchdog: woke > 0 && countAfter(db, REGISTERED, woke, seat) <= 1,
+      wokenByWatchdog: wokenByWatchdog(db, seat, registered),
     }
   } finally {
     db.close()
@@ -255,5 +329,11 @@ export function readPresence(dbPath: string, seat: string): Presence {
 /** CC-320: the broker's seat test, read fresh each call so a charter edit or an owner stop needs no restart. */
 export function isWatchedSeat(name: string, root = defaultAutonomyRoot()): boolean {
   const charter = readText(path.join(root, 'charter.md'))
-  return charter !== undefined && watchedSeats(charter, loadDoc().stopped).includes(name)
+  if (charter === undefined) return false
+  try {
+    return watchedSeats(charter, loadDoc().stopped).includes(name)
+  } catch {
+    // CC-326: with the owner's stops unreadable nothing will resume the seat, so nothing is held for it.
+    return false
+  }
 }

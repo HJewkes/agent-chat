@@ -23,7 +23,7 @@ export interface Observation {
   /** A finished planner's slices, parsed from its plan file. */
   slices?: PlannedSlice[]
   diff?: { reviewable: boolean; reason: string }
-  pr?: { state: 'open' | 'merged' | 'closed'; checks: 'pass' | 'fail' | 'pending' }
+  pr?: { state: 'open' | 'merged' | 'closed'; checks: 'pass' | 'fail' | 'pending'; head?: string }
 }
 
 export type SpawnContext =
@@ -149,8 +149,10 @@ function afterReviewer(claim: Claim, obs: Observation): Action[] {
 }
 
 function afterMerge(claim: Claim, obs: Observation): Action[] {
-  if (obs.pr?.state === 'merged') return [update(claim, { phase: 'done' }), retireAll(claim)]
-  if (obs.pr?.state === 'closed') return [stall(claim, 'PR closed without merging')]
+  const head = obs.pr?.head === undefined ? {} : { prHead: obs.pr.head }
+  if (obs.pr?.state === 'merged') return [update(claim, { phase: 'done', ...head }), retireAll(claim)]
+  if (obs.pr?.state === 'closed')
+    return [update(claim, { stalledReason: 'PR closed without merging', ...head })]
   return []
 }
 

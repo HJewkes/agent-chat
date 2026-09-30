@@ -5,10 +5,12 @@ import { ISOLATION_NAMES, SURFACE_NAMES } from '../protocol.js'
 import {
   AGENT_ROLES,
   EFFORT_LEVELS,
+  RETURN_CONTRACTS,
   SURFACE_LIFETIMES,
   type AgentProfile,
   type AgentRole,
   type EffortLevel,
+  type ReturnContract,
   type SurfaceLifetime,
 } from './types.js'
 
@@ -204,6 +206,11 @@ const leanFlags = (body: Record<string, unknown>): Partial<AgentProfile> =>
 
 const isRole = (value: unknown): value is AgentRole => AGENT_ROLES.includes(value as never)
 
+const CONTRACT_CHOICES = [...RETURN_CONTRACTS, 'none'] as const
+
+const isContractChoice = (value: unknown): value is ReturnContract | 'none' =>
+  CONTRACT_CHOICES.includes(value as never)
+
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every(entry => typeof entry === 'string')
 
@@ -238,6 +245,8 @@ export function parseProfile(name: string, raw: unknown): AgentProfile | { error
     return { error: `${name}: "surfaceLifetime" must be one of ${SURFACE_LIFETIMES.join(', ')}` }
   if (body.role !== undefined && !isRole(body.role))
     return { error: `${name}: "role" must be one of ${AGENT_ROLES.join(', ')}` }
+  if (body.returnContract !== undefined && !isContractChoice(body.returnContract))
+    return { error: `${name}: "returnContract" must be one of ${CONTRACT_CHOICES.join(', ')}` }
   if (body.effort !== undefined && !EFFORT_LEVELS.includes(body.effort as never))
     return { error: `${name}: "effort" must be one of ${EFFORT_LEVELS.join(', ')}` }
   if (body.env !== undefined && !isStringRecord(body.env))
@@ -258,6 +267,7 @@ export function parseProfile(name: string, raw: unknown): AgentProfile | { error
       ? {}
       : { surfaceLifetime: body.surfaceLifetime as SurfaceLifetime }),
     ...(isRole(body.role) ? { role: body.role } : {}),
+    ...(isContractChoice(body.returnContract) ? { returnContract: body.returnContract } : {}),
     ...(body.effort === undefined ? {} : { effort: body.effort as EffortLevel }),
     promptPrelude: typeof body.promptPrelude === 'string' ? body.promptPrelude : '',
     ...(typeof body.mcpServers === 'object' && body.mcpServers !== null

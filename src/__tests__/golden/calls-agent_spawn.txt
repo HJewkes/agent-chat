@@ -219,6 +219,25 @@ args: {"name":"scout","profile":"explorer","brief":"read the log","remote_contro
   }
 ]
 
+=== agent_spawn: return_contract none
+args: {"name":"scout","profile":"explorer","brief":"read the log","return_contract":"none"}
+frame: {"t":"spawn","name":"scout","profile":"explorer","brief":"read the log","spawnerConfigDir":"/home/me/.claude","returnContract":"none"}
+[
+  {
+    "type": "text",
+    "text": "Spawned \"scout\" (a-1). It is a peer now — reach it with chat_send, not by spawning again."
+  }
+]
+
+=== agent_spawn: return_contract misspelled
+args: {"name":"scout","profile":"explorer","brief":"read the log","return_contract":"off"}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: return_contract: return_contract must be one of: none"
+  }
+]
+
 === agent_spawn: surface blank
 args: {"name":"scout","profile":"explorer","brief":"read the log","surface":"  "}
 [

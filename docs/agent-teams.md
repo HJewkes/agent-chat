@@ -383,6 +383,10 @@ agent_spawned                        -> spawning
 … + agent_retired                    -> retired
 ```
 
+A resume whose launch throws is closed by an `agent_exited` row with
+`meta.never_started`, so the identity does not read `spawning` forever and the
+seat watchdog does not read the resume as started (CC-326).
+
 `nameIsClaimed` enforces, in code, the uniqueness the schema no longer provides
 (§1.2): a name is claimed while any non-`retired` identity holds it.
 
@@ -561,6 +565,19 @@ profile. `env` sits beneath the spawner's own keys: `AGENT_CHAT_*` and
 `CLAUDE_CONFIG_DIR` in a profile are dropped. The built-in `reviewer` sets
 `CLAUDE_CODE_PROMPT_CACHE_TTL=5m`; other profiles keep the 1 h default because
 they wait over 5 minutes on CI.
+
+**A profile may set `returnContract`** to `implementer`, `reviewer` or `none` (CC-286). The
+broker appends that block to the brief of an agent a registered session spawns, with the
+spawner's name filled in. The two blocks are compiled in from
+`src/agents/return-contract-blocks.ts`; nothing is read from disk at spawn time, so a change
+takes a build and a broker restart. A profile without the field is read by name: a worker whose
+name carries `implementer` or `reviewer` as a whole word takes that block when its grants agree
+(an implementer may Edit, a reviewer may not). Any other profile takes none.
+
+Nothing is appended to a brief that already carries every line the block's report format
+requires, to a CLI spawn, to a resume, a surface switch or a teleport, or when the spawn passes
+`return_contract: "none"`. Pass that when the brief states a report format of its own. A brief
+with a `Status:` or `Verdict:` line of its own that still gets the block draws a spawn warning.
 
 Profile `env` is trusted local config, not a sandbox. It can set `PATH`, `HOME`,
 `ANTHROPIC_*`, `NODE_OPTIONS`, and the credential names `agentEnv` strips from

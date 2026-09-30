@@ -235,6 +235,8 @@ function restrictToOwner(file: string): void {
 export class EventLog implements EventStore {
   private readonly db: DatabaseSyncType
   private readonly noticeTtlMs: () => number
+  /** The newest log id when this log was opened, and when: for the broker, its boot. */
+  private readonly opened: { id: number; at: number }
 
   constructor(dbPath?: string, options: { noticeTtlMs?: () => number } = {}) {
     this.noticeTtlMs = options.noticeTtlMs ?? resolveNoticeTtlMs
@@ -245,6 +247,8 @@ export class EventLog implements EventStore {
     this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec(SCHEMA)
     restrictToOwner(file)
+    const last = this.db.prepare('SELECT MAX(id) AS id FROM events').get() as { id: number | null }
+    this.opened = { id: last.id ?? 0, at: Date.now() }
   }
 
   /** CC-118: the lifecycle ledger's tables share this connection, so shadow writes never meet `SQLITE_BUSY`. */
@@ -372,7 +376,9 @@ export class EventLog implements EventStore {
          WHERE actor = ? AND kind IN ('registered', 'deregistered') ORDER BY id DESC LIMIT 1`,
       )
       .get(name) as { id: number; ts: number; kind: string } | undefined
-    return row?.kind === 'deregistered' ? { id: row.id, at: row.ts } : undefined
+    if (row?.kind === 'deregistered') return { id: row.id, at: row.ts }
+    // CC-326: a register from before this log was opened was never closed, so the name is dark since then.
+    return row !== undefined && row.id <= this.opened.id ? this.opened : undefined
   }
 
   /** Open items for the human: addressed to them, not yet answered or dismissed, and not aged out. */

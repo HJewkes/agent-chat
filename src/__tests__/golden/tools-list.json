@@ -498,6 +498,13 @@
             "type": "string",
             "description": "Name of an agent YOU spawned whose work this one takes over, for a follow-up assignment sent to a fresh worker instead of the one that did the first piece. The broker adds a section to the brief with the predecessor's last report (its newest chat_send to you), its branch and worktree, and its session id and transcript path, so the brief need only say what to do next. Refused for an agent someone else spawned. It does not retire the predecessor: the spawn warns while it is unretired, and retiring it is yours to do once this one registers."
           },
+          "return_contract": {
+            "type": "string",
+            "enum": [
+              "none"
+            ],
+            "description": "The broker appends its return contract (the report rules and format) to the brief of an implementer or reviewer profile you spawn, with your name filled in, so do not paste one. Pass \"none\" when this brief states a report format of its own, which the appended block would contradict. Omit it otherwise."
+          },
           "config_dir": {
             "type": "string",
             "description": "Absolute path of the Claude config dir the agent should run under, and therefore WHICH ACCOUNT it spends, e.g. \"/Users/you/.claude-profiles/agents\". Omit it in the ordinary case: the agent inherits YOUR account automatically, then the briefing initiative's declared profile, then the broker's. Pass it only to bill an account deliberately. It must already exist and be under your home directory; anything else is refused rather than quietly replaced, because running on the wrong account is the failure this prevents."
