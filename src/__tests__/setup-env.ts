@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { withoutInjectedHooksPath } from './helpers/git-config-env.js'
 
 /**
  * Strip the ambient session's identity out of the test environment (CC-55, CC-90).
@@ -41,6 +42,17 @@ delete process.env.CLAUDE_CODE_SESSION_ID
 for (const key of Object.keys(process.env)) {
   if (key.startsWith('AGENT_CHAT_') && key !== 'AGENT_CHAT_LIVE') delete process.env[key]
 }
+
+/**
+ * A spawned agent's env points core.hooksPath at the live leak guard (CC-268). Kept, every fixture
+ * push to a temp-dir origin runs that hook, which refuses without the owner's term list (CC-335).
+ * Only the hooks-path pair goes; the launch-plan and leak-pre-push specs set it on their own env.
+ */
+const scrubbed = withoutInjectedHooksPath(process.env)
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith('GIT_CONFIG_') && !(key in scrubbed)) delete process.env[key]
+}
+Object.assign(process.env, scrubbed)
 
 /**
  * A just-closed loopback port, so a spawn with a briefing fails open fast instead of
