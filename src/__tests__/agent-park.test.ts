@@ -224,6 +224,16 @@ describe('parking a seat’s agent (CC-316)', () => {
     expect(parked.ok).toBe(false)
     expect(journal()).toBe('04:05 spawn AB-12 sx-ab-12-fix -\n')
   })
+
+  it('writes no retire line when the retire is refused for uncommitted work', async () => {
+    const agent = await spawnIn('sx-ab-12-fix', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, 'scratch.txt'), 'unsaved\n')
+
+    const retired = await sup.retire('sx-ab-12-fix')
+
+    expect(retired.reason).toMatch(/refused release/)
+    expect(journal()).toBe('04:05 spawn AB-12 sx-ab-12-fix -\n')
+  })
 })
 
 describe('refusing to park', () => {

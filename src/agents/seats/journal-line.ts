@@ -28,29 +28,36 @@ export function prRef(url: string | undefined, head: string | undefined): string
   return `${m[1]}#${m[2]}@${head.slice(0, SHORT_SHA)}`
 }
 
-export const journalText = (entry: JournalEntry, prefix: string): string =>
-  [entry.event, entry.task ?? taskOf(entry.agent, prefix) ?? ABSENT, entry.agent, entry.pr ?? ABSENT].join(
-    ' ',
-  )
+const TASK = String.raw`(?:-|[A-Za-z][A-Za-z0-9]*-\d+)`
+/** A seat's agent is `<prefix>-<rest>`, which also keeps a bare word of prose from reading as one. */
+const AGENT = String.raw`[A-Za-z0-9]+-[A-Za-z0-9][A-Za-z0-9._-]*`
+const PR = String.raw`-|[\w.-]+/[\w.-]+#\d+@[0-9a-f]{7}`
+const JOURNAL_TEXT = new RegExp(`^(${JOURNAL_EVENTS.join('|')}) ${TASK} (${AGENT}) (${PR})$`)
+const CLOCKED = /^\d\d:\d\d (.*)$/
 
-const JOURNAL_TEXT = new RegExp(`^(${JOURNAL_EVENTS.join('|')}) \\S+ \\S+ \\S+$`)
+/** The events the broker itself sees, which never carry a PR. */
+const LIFECYCLE: readonly string[] = ['spawn', 'retire', 'park']
 
-/** Whether a log line's text has the broker's shape, so the watchdog does not read it as the seat's own. */
-export const isJournalText = (text: string): boolean => JOURNAL_TEXT.test(text)
+/** The agent a broker line names; undefined for any other text, so the seat's own prose never reads as the broker's. */
+function agentOf(text: string): string | undefined {
+  const m = JOURNAL_TEXT.exec(text)
+  if (m === null || (LIFECYCLE.includes(m[1] ?? '') && m[3] !== ABSENT)) return undefined
+  return m[2]
+}
 
-const namesEvent = (line: string, event: JournalEvent): boolean =>
-  line
-    .toLowerCase()
-    .split(/[^a-z]+/)
-    .some(word => word.startsWith(event))
+/** Whether a log line's text is exactly the broker's shape, so the watchdog does not read it as the seat's own. */
+export const isJournalText = (text: string): boolean => agentOf(text) !== undefined
 
-const namesAgent = (line: string, agent: string): boolean => line.split(/[^\w-]+/).includes(agent)
+/** Undefined when a field is not one plain token: a line the watchdog could not tell from the seat's is never written. */
+export function journalText(entry: JournalEntry, prefix: string): string | undefined {
+  const task = entry.task ?? taskOf(entry.agent, prefix) ?? ABSENT
+  const text = [entry.event, task, entry.agent, entry.pr ?? ABSENT].join(' ')
+  return isJournalText(text) ? text : undefined
+}
 
-/** Whether `log` already holds a line at `clock` for the entry's event and agent, in any wording. */
-export function alreadyJournaled(log: string, clock: string, entry: JournalEntry): boolean {
-  return log
-    .split('\n')
-    .some(
-      line => line.startsWith(`${clock} `) && namesEvent(line, entry.event) && namesAgent(line, entry.agent),
-    )
+/** Whether the latest broker line for its agent in `log` is `line`, clock included; a respawn after a retire is a new line. */
+export function alreadyJournaled(log: string, line: string): boolean {
+  const agent = agentOf(CLOCKED.exec(line)?.[1] ?? '')
+  const latest = log.split('\n').findLast(l => agentOf(CLOCKED.exec(l)?.[1] ?? '') === agent)
+  return latest === line
 }

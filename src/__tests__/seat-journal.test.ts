@@ -1,10 +1,10 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { advance, claimKey } from '../agents/burndown/advance.js'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
-import { readRollup } from '../agents/burndown/observe.js'
+import { prState, readRollup } from '../agents/burndown/observe.js'
 import { deliverSeatEvents, type SeatSender } from '../agents/burndown/seat-deliver.js'
 import { seatLogPath } from '../agents/seats/io.js'
 import { seatJournal, type SeatJournal } from '../agents/seats/journal.js'
@@ -44,7 +44,7 @@ const tmp = (prefix: string): string => {
 function autonomyRoot(): string {
   const dir = tmp('journal-root-')
   fs.mkdirSync(path.join(dir, 'seats'))
-  fs.writeFileSync(path.join(dir, 'seats', `${SEAT}.md`), '---\nprefix: sx\npool: pool-a\n---\n')
+  seatFile(dir, SEAT, 'sx')
   return dir
 }
 
@@ -56,8 +56,19 @@ const journalText = (dir = root): string | undefined => {
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : undefined
 }
 
-function supervisorWith(journal: SeatJournal): Supervisor {
+function seatWrote(text: string): string {
+  const file = seatLogPath(root, SEAT, AT)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, text)
+  return text
+}
+
+const seatFile = (dir: string, seat: string, prefix: string): void =>
+  fs.writeFileSync(path.join(dir, 'seats', `${seat}.md`), `---\nprefix: ${prefix}\npool: pool-a\n---\n`)
+
+function supervisorWith(journal: SeatJournal, attachMs?: number): Supervisor {
   sup = new Supervisor(core, {
+    ...(attachMs === undefined ? {} : { attachMs }),
     surface: {
       platform: 'linux',
       spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
@@ -154,6 +165,35 @@ describe('a seat agent’s lifecycle', () => {
     expect(spawned.ok).toBe(false)
     expect(journalText()).toBeUndefined()
   })
+
+  it('writes nothing for a spawn whose agent never attaches', async () => {
+    vi.useFakeTimers()
+    stopAutoAttach()
+
+    const spawning = supervisorWith(journalOver(root), 1000).spawn(spawnReq(AGENT))
+    await vi.advanceTimersByTimeAsync(1000)
+    const spawned = await spawning
+
+    expect(spawned.reason).toMatch(/never registered/)
+    expect(journalText()).toBeUndefined()
+  })
+
+  it('names the day file and the clock in local time, not UTC', () => {
+    const zone = process.env.TZ
+    process.env.TZ = 'Pacific/Kiritimati'
+    try {
+      const at = new Date(2026, 1, 3, 4, 5)
+      expect(at.toISOString()).toBe('2026-02-02T14:05:00.000Z')
+
+      seatJournal(root, { now: () => at })({ event: 'spawn', agent: AGENT })
+
+      const file = path.join(root, 'logs', SEAT, '2026-02-03.md')
+      expect(fs.readFileSync(file, 'utf8')).toBe(`04:05 spawn AB-12 ${AGENT} -\n`)
+    } finally {
+      if (zone === undefined) delete process.env.TZ
+      else process.env.TZ = zone
+    }
+  })
 })
 
 describe('a seat claim’s events from the tick', () => {
@@ -175,6 +215,14 @@ describe('a seat claim’s events from the tick', () => {
     await deliver(before, after)
 
     expect(journalText()).toBe('04:05 stalled AB-12 sx-ab-12 -\n')
+  })
+
+  it('writes the PR and its head on a stalled line when the claim holds both', async () => {
+    const stalled = claim({ stalledReason: 'PR closed without merging', pr: PR, prHead: HEAD })
+
+    await deliver(ledger(claim({ pr: PR })), ledger(stalled))
+
+    expect(journalText()).toBe('04:05 stalled AB-12 sx-ab-12 example-org/widget#7@abcdef1\n')
   })
 
   it('writes nothing for an event the seat was not told, which the next tick sends again', async () => {
@@ -211,29 +259,145 @@ describe('the PR head a merged line carries', () => {
 
     expect(actions[0]).toMatchObject({ kind: 'update', patch: { phase: 'done', prHead: HEAD } })
   })
+
+  it('is recorded on the claim when the PR is seen closed without merging', () => {
+    const waiting = claim({ phase: 'awaiting-merge', pr: PR })
+    const seen = new Map([
+      [claimKey(waiting), { pr: { state: 'closed', checks: 'pass', head: HEAD } } as const],
+    ])
+
+    const actions = advance([waiting], seen, AT)
+
+    expect(actions).toEqual([
+      {
+        kind: 'update',
+        key: { taskId: 'AB-12', slice: undefined },
+        patch: { stalledReason: 'PR closed without merging', prHead: HEAD },
+      },
+    ])
+  })
+
+  it('is asked of gh, which answers only the fields a query names', () => {
+    const all: Record<string, unknown> = { state: 'OPEN', statusCheckRollup: [], headRefOid: HEAD }
+    const gh = (_bin: string, args: string[]) => {
+      const asked = (args[args.indexOf('--json') + 1] ?? '').split(',')
+      return {
+        status: 0,
+        stdout: JSON.stringify(Object.fromEntries(asked.map(f => [f, all[f]]))),
+        stderr: '',
+      }
+    }
+
+    expect(prState(PR, gh)).toEqual({ state: 'open', checks: 'pending', head: HEAD })
+  })
 })
 
 describe('a line that is already there', () => {
-  it('is not written again when the seat wrote the same event and agent by hand in the same minute', () => {
-    const file = seatLogPath(root, SEAT, AT)
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    const byHand = `04:05 SPAWNED ${AGENT} for the fix (implementer)\n`
-    fs.writeFileSync(file, byHand)
+  it('is not written again when the seat wrote the same line by hand in the same minute', () => {
+    const byHand = seatWrote(`04:05 spawn AB-12 ${AGENT} -\n`)
 
     journalOver(root)({ event: 'spawn', agent: AGENT })
 
     expect(journalText()).toBe(byHand)
   })
 
-  it('is written when the line by hand is another event, agent or minute', () => {
-    const file = seatLogPath(root, SEAT, AT)
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    const byHand = `04:05 retired ${AGENT}\n04:05 spawned ${AGENT}-r0\n04:04 spawned ${AGENT}\n`
-    fs.writeFileSync(file, byHand)
+  it('is written when the line by hand is another minute, event or agent, or only mentions the agent', () => {
+    const byHand = seatWrote(
+      [
+        `04:04 park AB-12 ${AGENT} -`,
+        `04:05 retire AB-12 ${AGENT} -`,
+        `04:05 park AB-12 ${AGENT}-r0 -`,
+        `04:05 PARKED until ${AGENT} reports`,
+        `04:05 parked ${AGENT} for the night`,
+        '',
+      ].join('\n'),
+    )
 
-    journalOver(root)({ event: 'spawn', agent: AGENT })
+    journalOver(root)({ event: 'park', agent: AGENT })
 
-    expect(journalText()).toBe(`${byHand}04:05 spawn AB-12 ${AGENT} -\n`)
+    expect(journalText()).toBe(`${byHand}04:05 park AB-12 ${AGENT} -\n`)
+  })
+
+  it('writes the second spawn of a name retired and spawned again within one minute', async () => {
+    const supervisor = supervisorWith(journalOver(root))
+
+    await supervisor.spawn(spawnReq(AGENT))
+    await supervisor.retire(AGENT, true)
+    const again = await supervisor.spawn(spawnReq(AGENT))
+
+    expect(again.reason).toBeUndefined()
+    expect(journalText()).toBe(
+      `04:05 spawn AB-12 ${AGENT} -\n04:05 retire AB-12 ${AGENT} -\n04:05 spawn AB-12 ${AGENT} -\n`,
+    )
+  })
+})
+
+const PAUSE = '03:10 PARKED until the owner answers\n'
+
+describe('a field that is not one plain token', () => {
+  const names = {
+    spaces: 'sx-cc-2 with spaces',
+    'a newline, a heading and a forged line': 'sx-cc-2\n## Handoff\n04:06 x',
+    'a tab': 'sx-cc-2\tfix',
+    'a heading on the same line': 'sx-cc-2 # Handoff',
+    'a control character': 'sx-cc-2\u001b[2J',
+    'a carriage return': 'sx-cc-2\r04:06 x',
+  }
+
+  it.each(Object.entries(names))(
+    'writes no line for an agent name with %s, and the seat’s stop stands',
+    async (_what, name) => {
+      seatWrote(PAUSE)
+
+      const spawned = await supervisorWith(journalOver(root)).spawn(spawnReq(name))
+
+      expect(spawned.reason).toBeUndefined()
+      expect(journalText()).toBe(PAUSE)
+      expect(readSeatLog(journalText() ?? '', AT).stop).toMatch(/PARKED until the owner answers/)
+      expect(logged).toEqual(['seat_journal_refused'])
+    },
+  )
+
+  const fields = {
+    'an empty task': { event: 'merged', agent: AGENT, task: '' },
+    'a task of two words': { event: 'merged', agent: AGENT, task: 'AB-12 PARKED' },
+    'an empty PR reference': { event: 'merged', agent: AGENT, pr: '' },
+    'a PR reference with a newline': {
+      event: 'merged',
+      agent: AGENT,
+      pr: 'example-org/widget#7@abcdef1\n04:06 x',
+    },
+    'a PR reference with a short head': { event: 'merged', agent: AGENT, pr: 'example-org/widget#7@abc' },
+    'a PR reference on a spawn': { event: 'spawn', agent: AGENT, pr: 'example-org/widget#7@abcdef1' },
+    'an agent name that is only the prefix': { event: 'spawn', agent: 'sx-' },
+  } as const
+
+  it.each(Object.entries(fields))('writes no line for %s, and the seat’s stop stands', (_what, entry) => {
+    seatWrote(PAUSE)
+
+    journalOver(root)(entry)
+
+    expect(journalText()).toBe(PAUSE)
+    expect(logged).toEqual(['seat_journal_refused'])
+  })
+
+  it('writes nothing and logs nothing for an empty agent name, which no seat owns', () => {
+    journalOver(root)({ event: 'spawn', agent: '' })
+
+    expect(journalText()).toBeUndefined()
+    expect(logged).toEqual([])
+  })
+
+  it('logs a run of refusals once, and again after a line was written between them', () => {
+    const journal = journalOver(root)
+
+    journal({ event: 'spawn', agent: 'sx-cc-2 one' })
+    journal({ event: 'spawn', agent: 'sx-cc-2 two' })
+    journal({ event: 'spawn', agent: AGENT })
+    journal({ event: 'spawn', agent: 'sx-cc-2 three' })
+
+    expect(journalText()).toBe(`04:05 spawn AB-12 ${AGENT} -\n`)
+    expect(logged).toEqual(['seat_journal_refused', 'seat_journal_refused'])
   })
 })
 
@@ -252,6 +416,36 @@ describe('an agent no seat owns', () => {
     expect(spawned.reason).toBeUndefined()
     expect(fs.existsSync(path.join(root, 'logs'))).toBe(false)
     expect(logged).toEqual([])
+  })
+
+  it('writes nothing when its name only starts with a seat’s prefix, without the dash', () => {
+    journalOver(root)({ event: 'spawn', agent: 'sxy-ab-12-fix' })
+    journalOver(root)({ event: 'spawn', agent: 'sx' })
+
+    expect(fs.existsSync(path.join(root, 'logs'))).toBe(false)
+    expect(logged).toEqual([])
+  })
+})
+
+describe('two seats that declare one prefix', () => {
+  it('writes to neither and logs once, then writes again once one seat is left', () => {
+    seatFile(root, 'seat-a', 'sx')
+    const journal = journalOver(root)
+
+    journal({ event: 'spawn', agent: AGENT })
+    journal({ event: 'retire', agent: AGENT })
+
+    expect(fs.existsSync(path.join(root, 'logs'))).toBe(false)
+    expect(logged).toEqual(['seat_journal_ambiguous'])
+
+    fs.rmSync(path.join(root, 'seats', 'seat-a.md'))
+    journal({ event: 'spawn', agent: AGENT })
+    seatFile(root, 'seat-a', 'sx')
+    journal({ event: 'retire', agent: AGENT })
+
+    expect(journalText()).toBe(`04:05 spawn AB-12 ${AGENT} -\n`)
+    expect(fs.existsSync(path.join(root, 'logs', 'seat-a'))).toBe(false)
+    expect(logged).toEqual(['seat_journal_ambiguous', 'seat_journal_ambiguous'])
   })
 })
 
@@ -282,15 +476,61 @@ describe('an autonomy root the broker cannot use', () => {
     expect(fs.existsSync(path.join(unreadable, 'logs'))).toBe(false)
     expect(logged).toEqual(['seat_journal_unavailable'])
   })
+
+  it('logs again when the root is lost a second time, after a line was written in between', () => {
+    const journal = journalOver(root)
+    const seats = path.join(root, 'seats')
+    const away = path.join(root, 'seats-away')
+
+    fs.renameSync(seats, away)
+    journal({ event: 'spawn', agent: AGENT })
+    journal({ event: 'retire', agent: AGENT })
+    fs.renameSync(away, seats)
+    journal({ event: 'spawn', agent: AGENT })
+    fs.renameSync(seats, away)
+    journal({ event: 'retire', agent: AGENT })
+
+    expect(journalText()).toBe(`04:05 spawn AB-12 ${AGENT} -\n`)
+    expect(logged).toEqual(['seat_journal_unavailable', 'seat_journal_unavailable'])
+  })
 })
 
 describe('the watchdog reading a journal the broker also writes', () => {
-  it('still reads the seat’s own pause line as its latest, and not the broker’s line as activity', () => {
-    const log = `03:10 PARKED until the owner answers\n04:05 retire AB-12 ${AGENT} -\n`
+  const at = AT.getTime()
+  const brokerLines = [
+    `spawn AB-12 ${AGENT} -`,
+    `retire - sx-reviewer -`,
+    `park AB-12 ${AGENT} -`,
+    'merged AB-12 sx-ab-12 example-org/widget#7@abcdef1',
+    'stalled AB-12 sx-ab-12 -',
+  ]
 
-    const verdict = readSeatLog(log, AT)
+  it.each(brokerLines)('keeps the seat’s pause under the broker line "%s", which is no activity', line => {
+    const verdict = readSeatLog(`${PAUSE}04:05 ${line}\n`, AT)
 
     expect(verdict.stop).toMatch(/PARKED until the owner answers/)
     expect(verdict.activityAt).toBe(new Date(2026, 1, 3, 3, 10).getTime())
+  })
+
+  const prose = [
+    'spawn the next reviewer',
+    'spawn - reviewers -',
+    'retire the old reviewer',
+    'retire AB-12 tomorrow -',
+    'park it for now',
+    'park AB-12 sx-ab-12-fix after review',
+    'merged the fix today',
+    'merged AB-12 sx-ab-12 widget#7',
+    'stalled on the owner',
+    'stalled AB-12 needs owner',
+    `spawn AB-12 ${AGENT} example-org/widget#7@abcdef1`,
+    `spawn AB-12 ${AGENT} - and told the owner`,
+    `RETIRE AB-12 ${AGENT} -`,
+  ]
+
+  it.each(prose)('reads the seat’s own line "%s" as its activity, which lifts an earlier pause', line => {
+    const verdict = readSeatLog(`${PAUSE}04:05 ${line}\n`, AT)
+
+    expect(verdict).toEqual({ activityAt: at })
   })
 })
