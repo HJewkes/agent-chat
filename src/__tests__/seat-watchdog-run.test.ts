@@ -324,12 +324,12 @@ describe('seat liveness (CC-320)', () => {
 
   it('resumes once through the synthetic 47-minute dark stretch that went unnoticed', async () => {
     const h = harness(DARK, 41, new Date(2026, 8, 29, 14, 53))
-    const since = new Date(2026, 8, 29, 14, 46, 36).getTime()
+    const since = new Date(2026, 8, 29, 14, 46).getTime()
     h.presence = { darkSince: since, teleported: false, wokenByWatchdog: false }
     // Sweeps at 14:53, 15:08 and 15:23; the owner found the seat dark at 15:33.
     expect(await runs(h, 3)).toBe(1)
     expect(h.logs).toHaveLength(1)
-    expect(h.logs[0]).toContain('dark 6 min since')
+    expect(h.logs[0]).toContain('dark 7 min since')
   })
 
   it('never resumes a seat that registers again inside five minutes', async () => {

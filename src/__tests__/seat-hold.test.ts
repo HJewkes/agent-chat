@@ -16,7 +16,7 @@ import type { DeliveredMessage, ServerMessage } from '../protocol.js'
  */
 
 const SEAT = 'seat-hub'
-const T0 = Date.parse('2026-09-29T14:46:36.000Z')
+const T0 = Date.parse('2026-09-29T14:46:00.000Z')
 const MINUTE = 60_000
 
 interface Wire {
