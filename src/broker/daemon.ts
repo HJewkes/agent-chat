@@ -7,6 +7,7 @@ import { resolveAgentSlots } from '../config.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { backfillAtBoot } from '../agents/ledger/backfill-run.js'
 import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
+import { isWatchedSeat } from '../agents/seats/io.js'
 import { BrokerCore } from './core.js'
 import { EventLog } from './event-log.js'
 import { activeHold } from './hold.js'
@@ -162,7 +163,11 @@ function isHeld(): boolean {
  */
 function openServices(): { core: BrokerCore; socketServer: SocketServer } {
   const events = new EventLog()
-  const core = new BrokerCore(deliver, { events })
+  // A per-run home is a test's: it must not hold messages by this machine's real charter.
+  const core = new BrokerCore(deliver, {
+    events,
+    ...(isEphemeralHome(home()) ? {} : { isSeat: isWatchedSeat }),
+  })
   const ledger = shadowLedgerFromConfig(() => events.ledgerHandle())
   if (ledger) backfillAtBoot(events, ledger.fence)
   const socketServer = new SocketServer(
