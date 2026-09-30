@@ -42,6 +42,8 @@ interface Scope {
   fragile: boolean
   /** `CDPATH` may be set, so a relative `cd` may land somewhere else. */
   cdpath: boolean
+  /** The command line names git or gh, so a script the guard cannot read may run either. */
+  namesGit: boolean
 }
 
 const DOCS = 'See docs/leak-guard.md.'
@@ -56,6 +58,8 @@ export const REASONS = {
   tooDeep: `leak-guard: the command nests shells too deeply to check. Run it more directly. ${DOCS}`,
   stdinBody: `leak-guard: a PR or issue body read from a pipe cannot be checked. Write it to a file and pass --body-file. ${DOCS}`,
   unreadableBody: `leak-guard: this command's PR or issue text could not be read the way the shell will read it, so it was not checked. Use literal arguments, a body file at a literal path and a quoted heredoc. ${DOCS}`,
+  hiddenCommand: `leak-guard: the command word is an expansion, so the guard cannot tell what this runs. Write git or gh out literally. ${DOCS}`,
+  hiddenScript: `leak-guard: eval of text the guard cannot read, on a command line that names git or gh. Run the command directly. ${DOCS}`,
   missingTerms: `leak-guard: no private term list, so PR and issue text cannot be checked. Create ~/.config/titan-egress/private-terms, one term per line, chmod 600. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
 } as const
@@ -65,12 +69,13 @@ const MAX_DEPTH = 6
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
 const PREFIX_WORDS = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', 'time'])
-const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'exec', 'nohup'])
+const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'exec', 'nohup', 'noglob', 'nocorrect'])
 const GIT_VALUE_OPTS = new Set(['-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix'])
 
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=/
 const isGitConfigVar = (name: string | undefined): boolean => name !== undefined && /^GIT_CONFIG/.test(name)
 const NO_VERIFY = /^--no-veri(?:f|fy)?$/
+const MENTIONS_GIT = /\b(?:git|gh)\b|GIT_CONFIG/
 
 /** `chdir` is set when a wrapper such as `env -C` runs the command in another directory. */
 type Unwrapped = { words: string[]; chdir?: boolean } | { reason: string }
@@ -276,10 +281,13 @@ function readBody(file: string, cmd: SimpleCommand, ctx: GuardContext, scope: Sc
   return cmd.stdinLive ? undefined : cmd.stdin
 }
 
+/** zsh feeds a command its pipe as well as its heredoc, so stdin behind a pipe is never the text the guard read. */
+const piped = (cmd: SimpleCommand): boolean => cmd.before === '|'
+
 function collect({ inline, files }: Sources, cmd: SimpleCommand, ctx: GuardContext, scope: Scope): Texts {
   const texts = [...inline]
   for (const { label, file } of files) {
-    if (file === '-' && cmd.stdin === undefined) return { reason: REASONS.stdinBody }
+    if (file === '-' && (cmd.stdin === undefined || piped(cmd))) return { reason: REASONS.stdinBody }
     const text = readBody(file, cmd, ctx, scope)
     if (text === undefined) return { reason: REASONS.unreadableBody }
     texts.push({ label, text })
@@ -384,15 +392,38 @@ function checkShell(
 const ghWriteArgs = (args: readonly string[]): readonly string[] =>
   args.includes('--') ? args.slice(args.indexOf('--') + 1) : args.slice(1)
 
+const postsText = (marked: readonly string[]): boolean => ['pr', 'api'].includes(ghKind(marked))
+
+/** A command word the guard cannot resolve may be git or gh, so its arguments are checked as both. */
+function checkHidden(marked: readonly string[]): string | undefined {
+  const viaWrite = unmark(marked[0] ?? '') === 'gh-write' && postsText(ghWriteArgs(marked))
+  return postsText(marked) || viaWrite ? REASONS.hiddenCommand : checkGit(marked.map(unmark))
+}
+
+/** Checks the text `eval` runs; text the guard cannot resolve is a deny on a line that names git or gh. */
+function checkEval(
+  marked: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  const args = marked.map(word => resolveWord(word, cmd, ctx, scope))
+  if (args.includes(undefined) && scope.namesGit) return REASONS.hiddenScript
+  return checkAt(args.map((arg, i) => arg ?? unmark(marked[i] as string)).join(' '), ctx, scope, depth + 1)
+}
+
 function checkSimple(cmd: SimpleCommand, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
   const unwrapped = unwrap(cmd.marked)
   if ('reason' in unwrapped) return unwrapped.reason
   const at = unwrapped.chdir ? { ...scope, cwd: undefined } : scope
   const marked = unwrapped.words.slice(1)
-  const [head = '', ...args] = unwrapped.words.map(unmark)
+  const head = resolveWord(unwrapped.words[0] ?? '', cmd, ctx, at)
+  if (head === undefined) return checkHidden(marked)
+  const args = marked.map(unmark)
   const name = path.basename(head)
   if (SHELLS.has(name)) return checkShell(args, cmd.stdin, ctx, at, depth)
-  if (name === 'eval') return checkAt(args.join(' '), ctx, at, depth + 1)
+  if (name === 'eval') return checkEval(marked, cmd, ctx, at, depth)
   if (name === 'git') return checkGit(args)
   if (name === 'gh') return checkGh(marked, cmd, ctx, at)
   if (name === 'agent-chat' && args[0] === 'gh-write') return checkGh(ghWriteArgs(marked), cmd, ctx, at)
@@ -448,10 +479,12 @@ const settle = (cmd: SimpleCommand, scope: Scope): Scope =>
 // The shell sets these itself, so the hook's copy says nothing about the value a command sees.
 const NEVER_EXPANDED = new Set(['PWD', 'OLDPWD', 'SHLVL', '_', 'IFS'])
 const REFERENCE = new RegExp(`\\$\\{${NAME}\\}|\\$${NAME}`, 'g')
+// `TMP""DIR=x` and `TMP\DIR=x` assign TMPDIR, so quoting is dropped before a name is looked for.
+const QUOTING = /\\\n|['"\\]/g
 
 /** The env without any name the command mentions outside `$NAME` and `${NAME}`: it may assign that name. */
 function knownEnv(command: string, env: Env): Env {
-  const rest = command.replace(REFERENCE, ' ')
+  const rest = command.replace(REFERENCE, ' ').replace(QUOTING, '')
   const known = ([name]: [string, unknown]): boolean => !NEVER_EXPANDED.has(name) && !rest.includes(name)
   return Object.fromEntries(Object.entries(env).filter(known))
 }
@@ -460,7 +493,8 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   if (depth > MAX_DEPTH) return REASONS.tooDeep
   if (ctx.protectedPaths.some(p => command.includes(p))) return REASONS.protectedPath
   const cdpath = scope.cdpath || command.includes('CDPATH')
-  let at: Scope = { ...scope, cdpath, env: scope.env && knownEnv(command, scope.env) }
+  const namesGit = scope.namesGit || MENTIONS_GIT.test(command)
+  let at: Scope = { ...scope, cdpath, namesGit, env: scope.env && knownEnv(command, scope.env) }
   for (const cmd of parseShell(command)) {
     at = settle(cmd, at)
     const reason = checkSimple(cmd, ctx, at, depth)
@@ -471,7 +505,8 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
 }
 
 export function checkCommand(command: string, ctx: GuardContext): string | undefined {
-  const scope = { cwd: ctx.cwd, env: ctx.env, fragile: false, cdpath: Boolean(ctx.env.CDPATH) }
+  const cdpath = Boolean(ctx.env.CDPATH)
+  const scope = { cwd: ctx.cwd, env: ctx.env, fragile: false, cdpath, namesGit: false }
   return checkAt(command, ctx, scope, 0)
 }
 
@@ -546,8 +581,6 @@ export const denyOutput = (reason: string): string =>
       permissionDecisionReason: reason,
     },
   })
-
-const MENTIONS_GIT = /\b(?:git|gh)\b|GIT_CONFIG/
 
 /**
  * The hook's stdout for Claude Code's stdin, or '' to allow. A call the guard cannot read is

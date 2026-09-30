@@ -25,7 +25,7 @@ export interface SimpleCommand {
   marked: string[]
   substitutions: Substitution[]
   stdin?: string
-  /** The shell expands `stdin`, or reads its input from a redirect the splitter does not follow. */
+  /** The shell expands `stdin`, reads it from a redirect the splitter does not follow, or has two sources for it. */
   stdinLive: boolean
   /** The operator joining this command to the one before it and after it; '' at either end. */
   before: string
@@ -34,11 +34,13 @@ export interface SimpleCommand {
   nested: boolean
 }
 
-type Pending = 'discard' | 'herestring' | { heredoc: boolean }
+/** `aside` marks a heredoc on a descriptor other than 0, which is read past and never fed as stdin. */
+type Pending = 'discard' | 'herestring' | { strip: boolean; aside: boolean }
 
 interface Heredoc {
   delim: string
   strip: boolean
+  aside: boolean
   quoted: boolean
   target: SimpleCommand
 }
@@ -46,6 +48,10 @@ interface Heredoc {
 const OPERATORS = new Set([';', '&', '|'])
 const GLOB = '*?[{'
 const BLANK = new Set([' ', '\t', '\n', ';', undefined])
+// gh fills these in a `gh api` path itself; no shell expands a brace group that has no comma.
+const GH_PLACEHOLDERS = ['{owner}', '{repo}', '{branch}']
+// In a heredoc with an unquoted delimiter the shell expands these and joins a line ending in a backslash.
+const HEREDOC_LIVE = /[$`\\]/
 
 const ANSI_C: Record<string, string> = { n: '\n', t: '\t', r: '\r', '\\': '\\', "'": "'", '"': '"' }
 
@@ -143,17 +149,25 @@ class ShellLexer {
   private redirect(): void {
     const range = /^<\d*-\d*>/.exec(this.src.slice(this.pos))?.[0]
     if (range !== undefined) return this.globRange(range)
-    if (this.word !== null && /^\d+$/.test(this.word)) this.word = null
+    const aside = this.descriptor() > 0
     this.endWord()
-    if (this.src.startsWith('<<<', this.pos)) return this.expect('herestring', 3)
+    if (this.src.startsWith('<<<', this.pos)) return this.expect(aside ? 'discard' : 'herestring', 3)
     if (this.src.startsWith('<<', this.pos)) {
       const strip = this.src[this.pos + 2] === '-'
-      return this.expect({ heredoc: strip }, strip ? 3 : 2)
+      return this.expect({ strip, aside }, strip ? 3 : 2)
     }
-    if (this.src[this.pos] === '<') this.cur.stdinLive = true
+    if (this.src[this.pos] === '<' && !aside) this.cur.stdinLive = true
     this.pos++
     while ('>&|'.includes(this.src[this.pos] ?? '.')) this.pos++
     this.pending = 'discard'
+  }
+
+  /** The number an unquoted digit word gives a redirect, such as the 3 of `3<<EOF`; -1 when there is none. */
+  private descriptor(): number {
+    if (this.word === null || this.quoted || !/^\d+$/.test(this.word)) return -1
+    const fd = Number(this.word)
+    this.word = null
+    return fd
   }
 
   /** zsh matches `<1-9>` against file names, so it is a glob and not two redirects. */
@@ -188,6 +202,7 @@ class ShellLexer {
   private expands(c: string, next: string | undefined): boolean {
     const starts = this.word === null
     if ((c === '{' || c === '}') && starts && BLANK.has(next)) return false
+    if (GH_PLACEHOLDERS.some(name => this.src.startsWith(name, this.pos - 1))) return false
     return c === '$' || GLOB.includes(c) || (starts && (c === '~' || c === '='))
   }
 
@@ -279,12 +294,13 @@ class ShellLexer {
       this.cur.marked.push(this.marked)
     } else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
     else if (pending !== 'discard')
-      this.heredocs.push({ delim: word, strip: pending.heredoc, quoted, target: this.cur })
+      this.heredocs.push({ delim: word, ...pending, quoted, target: this.cur })
   }
 
+  /** zsh feeds a command every heredoc and here-string it is given and bash only the last, so a second one is unsure. */
   private feed(target: SimpleCommand, text: string, live: boolean): void {
+    target.stdinLive ||= live || target.stdin !== undefined
     target.stdin = (target.stdin ?? '') + text
-    target.stdinLive ||= live
   }
 
   private endCommand(): void {
@@ -298,11 +314,10 @@ class ShellLexer {
     this.cur = this.newCommand()
   }
 
-  /** The shell expands `$` and backticks in a heredoc whose delimiter is not quoted. */
   private readHeredocs(): void {
     for (const doc of this.heredocs) {
       const body = this.heredocBody(doc)
-      this.feed(doc.target, body, !doc.quoted && /[$`]/.test(body))
+      if (!doc.aside) this.feed(doc.target, body, !doc.quoted && HEREDOC_LIVE.test(body))
     }
     this.heredocs = []
   }
@@ -321,12 +336,12 @@ class ShellLexer {
   }
 }
 
-/** Stands in for a substitution while the rest of its word is expanded. */
+/** Stands in for a substitution while the rest of its word is expanded; a word that holds one already does not resolve. */
 export const HOLE = '\x01'
 
 /** Every simple command in `src`, including those inside `$(...)` and backticks. */
 export function parseShell(src: string): SimpleCommand[] {
-  return new ShellLexer(unmark(src).replaceAll(HOLE, '')).run()
+  return new ShellLexer(unmark(src)).run()
 }
 
 export const NAME = '[A-Za-z_][A-Za-z0-9_]*'

@@ -452,6 +452,170 @@ describe('the guard never reads one file while the shell posts another', () => {
   })
 })
 
+describe('stdin with more than one source, or a source the guard did not read', () => {
+  const HEREDOC = "<<'EOF'\nclean\nEOF"
+  const COMMENTS = 'repos/o/r/issues/1/comments'
+
+  it.each([
+    `cat /evil/pr.md | gh pr create -t x -F - ${HEREDOC}`,
+    `cat /evil/pr.md |\ngh pr create -t x -F - ${HEREDOC}`,
+    `cat /evil/pr.md | gh pr create -t x -F - <<< clean`,
+    `cat /evil/pr.md | gh api ${COMMENTS} --input - ${HEREDOC}`,
+    `cat /evil/pr.md | gh api ${COMMENTS} -F body=@- ${HEREDOC}`,
+    `cat /evil/pr.md | command gh pr create -t x -F - ${HEREDOC}`,
+    `cat /evil/pr.md | agent-chat gh-write -- pr create -t x -F - ${HEREDOC}`,
+    `cat /evil/pr.md | { gh pr create -t x -F - ${HEREDOC}\n}`,
+    `cat /evil/pr.md | (gh pr create -t x -F - ${HEREDOC}\n)`,
+    `cat /evil/pr.md |& gh pr create -t x -F - ${HEREDOC}`,
+    `cat /evil/pr.md | gh pr create -t x -F - 0${HEREDOC}`,
+  ])('denies a heredoc or here-string behind a pipe: %j', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.stdinBody)
+  })
+
+  it.each([
+    `gh pr create -t x -F - 3${HEREDOC}`,
+    'gh pr create -t x -F - 3<<< clean',
+    `cat /evil/pr.md | gh pr create -t x -F - 3${HEREDOC}`,
+    'cat /evil/pr.md | gh pr create -t x -F - 3<<< clean',
+    `gh api ${COMMENTS} --input - 12${HEREDOC}`,
+  ])('does not take a heredoc on another descriptor for stdin: %j', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.stdinBody)
+  })
+
+  it('reads the heredoc on descriptor 0 and reads past one on another descriptor', () => {
+    const both = `gh pr create -t x -F - <<'EOF' 3<<'E2'\n${TERM}\nEOF\nclean\nE2`
+
+    expect(checkCommand(`gh pr create -t x -F - 0<<'EOF'\n${TERM}\nEOF`, ctx())).toContain('body line 1')
+    expect(checkCommand(both, ctx())).toContain('body line 1 private-term #1')
+    expect(checkCommand("gh pr create -t x -b y 3<<'E2'\ngit push --no-verify\nE2", ctx())).toBeUndefined()
+    expect(checkCommand(`gh pr create -t x -F - "3"<<'EOF'\n${TERM}\nEOF`, ctx())).toContain('body line 1')
+    expect(checkCommand("gh pr create -t x -F - 3< f <<'EOF'\nclean\nEOF", ctx())).toBeUndefined()
+  })
+
+  it.each([
+    "gh pr create -t x -F - <<'A' <<'B'\nclean\nA\nclean\nB",
+    "gh pr create -t x -F - <<'A' <<< clean\nclean\nA",
+    'gh pr create -t x -F - <<< clean <<< clean',
+    `gh pr create -t x -b "$(cat <<'A' <<'B'\nclean\nA\nclean\nB\n)"`,
+  ])('denies two heredocs or here-strings on one command: %j', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.unreadableBody)
+  })
+
+  it('denies an unquoted heredoc holding a backslash, which joins lines and escapes', () => {
+    const split = (delim: string): string => `<<${delim}\nzq7private\\\nseat\nEOF`
+
+    expect(checkCommand(`gh pr create -t x -F - ${split('EOF')}`, ctx())).toBe(REASONS.unreadableBody)
+    expect(checkCommand(`gh pr create -t x -b "$(cat ${split('EOF')}\n)"`, ctx())).toBe(
+      REASONS.unreadableBody,
+    )
+    expect(checkCommand(`gh pr create -t x -F - ${split("'EOF'")}`, ctx())).toBeUndefined()
+  })
+
+  it('reads the file a path with a control character names, not the path without it', () => {
+    const files: Record<string, string> = { '/work/ab.md': 'clean', '/work/a\x01b.md': TERM, '/t/a\x01b.md': 'x' }
+    const read = ctx({ env: { T: '/t' }, readFile: f => files[f] })
+
+    expect(checkCommand('gh pr create -t x --body-file a\x01b.md', read)).toContain('body line 1 private-term')
+    expect(checkCommand("gh pr create -t x --body-file 'a\x01b.md'", read)).toContain('body line 1')
+    expect(checkCommand('gh pr create -t x --body-file "$T/a\x01b.md"', read)).toBe(REASONS.unreadableBody)
+  })
+})
+
+describe("gh's own placeholders in an api path", () => {
+  it.each([
+    'gh api -X POST repos/{owner}/{repo}/issues/12/comments -f body=hello',
+    'gh api repos/{owner}/{repo}/git/refs/heads/{branch} -f note=hello',
+    'agent-chat gh-write -- api -X PATCH repos/{owner}/{repo}/pulls/12 -f title=hello',
+  ])('passes %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+    expect(checkCommand(command.replace('hello', TERM), ctx())).toContain('private-term #1')
+  })
+
+  it('takes the merge path with placeholders for a merge', () => {
+    const merge = 'gh api -X PUT repos/{owner}/{repo}/pulls/12/merge -f merge_method=squash'
+
+    expect(checkCommand(merge, ctx({ terms: { kind: 'missing' } }))).toBeUndefined()
+  })
+
+  it.each(['repos/{owner,o}/r/issues', 'repos/{o}/r/issues', 'repos/o/r/issues/{1..2}', 'repos/{ownerx}/r'])(
+    'still denies the brace group in %s',
+    endpoint => {
+      expect(checkCommand(`gh api ${endpoint} -f body=hello`, ctx())).toBe(REASONS.unreadableBody)
+    },
+  )
+})
+
+describe('a gh command the command line hides', () => {
+  it.each([
+    ['an expanded group that resolves', 'gh "$G" create -t x -b y', { G: 'pr' }],
+    ['an expanded verb that resolves', 'gh pr $V -t x -b y', { V: 'create' }],
+  ])('denies %s, since flags are not read from an expanded subcommand', (_, command, env) => {
+    expect(checkCommand(command, ctx({ env }))).toBe(REASONS.unreadableBody)
+  })
+
+  it.each([
+    'G=gh; $G pr create -t x -b y',
+    '$(command -v gh) pr create -t x -b y',
+    '"$(which gh)" api repos/o/r/issues/1/comments -f body=y',
+    '`which gh` issue comment 4 -b y',
+    '=gh pr create -t x -b y',
+    'command "$G" pr edit 3 -b y',
+    '$AC gh-write -- pr create -t x -b y',
+    '$AC gh-write api repos/o/r/issues/1/comments -f body=y',
+  ])('denies %s, whose command word is an expansion', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.hiddenCommand)
+  })
+
+  it('checks an expanded command word as git too, and by name once it resolves', () => {
+    const env = { GH: '/opt/bin/gh', GIT: 'git' }
+
+    expect(checkCommand('G=git; $G push --no-verify', ctx())).toBe(REASONS.noVerify)
+    expect(checkCommand(`$GH pr create -t ${TERM} -b y`, ctx({ env }))).toContain('title line 1')
+    expect(checkCommand('"$GIT" push --no-verify', ctx({ env }))).toBe(REASONS.noVerify)
+  })
+
+  it.each(['$EDITOR notes.md', '"$X" "$Y" z', '$G pr view 12', '$G push origin main', '$AC gh-write -- pr view 1'])(
+    'leaves %s alone',
+    command => {
+      expect(checkCommand(command, ctx())).toBeUndefined()
+    },
+  )
+
+  it.each([
+    `C='gh pr create -t x -b y'; eval "$C"`,
+    'eval "$(cat post.sh)" # gh',
+    'eval "$(ssh-agent -s)" && git push',
+    'eval $C; gh pr view 1',
+  ])('denies %s: eval of unread text on a line that names git or gh', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.hiddenScript)
+  })
+
+  it('reads eval text it can resolve, and leaves eval alone on a line without git or gh', () => {
+    const env = { T: TERM }
+
+    expect(checkCommand('eval "gh pr create -t $T -b y"', ctx({ env }))).toContain('title line 1')
+    expect(checkCommand('eval "$(ssh-agent -s)"; npm test', ctx())).toBeUndefined()
+    expect(checkCommand('eval "$(fnm env)" && eval "git push --no-verify"', ctx())).toBe(REASONS.hiddenScript)
+  })
+
+  it.each(['noglob', 'nocorrect'])('checks gh behind the zsh modifier %s', modifier => {
+    expect(checkCommand(`${modifier} gh pr create -t x -b y`, ctx())).toBeUndefined()
+    expect(checkCommand(`${modifier} gh pr create -t ${TERM} -b y`, ctx())).toContain('title line 1')
+    expect(checkCommand(`${modifier} git push --no-verify`, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it.each(['export TMP""DIR=/evil', "TMP''DIR=/evil", 'TMP\\DIR=/evil', 'TMP\\\nDIR=/evil'])(
+    'denies a variable assigned under a quote-split name: %j',
+    assign => {
+      const known = ctx({ env: { TMPDIR: '/scratch/tmp' }, readFile: () => 'clean' })
+
+      expect(checkCommand(`${assign}; gh pr create -t x -F "$TMPDIR/pr.md"`, known)).toBe(
+        REASONS.unreadableBody,
+      )
+    },
+  )
+})
+
 describe('the commands coordinators and agents post with', () => {
   const NO_LIST: TermsLoad = { kind: 'missing' }
   const mergeArgs = (message: string): string =>
