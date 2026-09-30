@@ -61,6 +61,28 @@ That identity is genuinely yours the moment it returns, but the agent is still b
 auto-subscribed to `agent_attached` and `agent_exited` for whatever you spawn — no `chat_subscribe`
 call needed — so you learn the moment it actually attaches rather than polling `agent_list`.
 
+**One wake per finished agent (CC-321).** A push costs the recipient a turn over its whole
+context, so two rules cut the pushes a finished agent causes. Neither changes what the log
+records.
+
+- When the newest message an agent sent you in its run opens with `Status:` or `Verdict:`, and
+  the broker pushed it to you, you get no `agent_exited` notice for that agent. The report is the
+  notice. The exit notice still arrives if the agent sent something after its report, if you wrote
+  to it after the report, or if the report was held rather than pushed. An agent that exits with
+  no report at all still produces the `exited with no Status report` message.
+- A `Status:` or `Verdict:` from an agent to the session that spawned it waits up to
+  `reportBatchSeconds` (in `~/.agent-chat/config.json`, default 20, maximum 300, `0` turns it
+  off; `AGENT_CHAT_REPORT_BATCH_SECONDS` overrides the file). The first report starts the window
+  and later ones do not extend it, so no report waits longer than one window. Reports that share
+  a window arrive as one message from `agent-chat` with `count`, `senders` and `msg_ids`
+  attributes, each report whole under its own `from` and `msg_id` header. Any other message to
+  you (a human message, a `chat_ask` answer, an endorsed message, a progress note) is pushed at
+  once, with anything held for you pushed just ahead of it.
+
+If you deregister inside a window, the held reports stay in your inbox and nothing is pushed. A
+clean broker shutdown pushes what is held. A broker crash inside a window pushes nothing: the
+reports are in the log, so `chat_inbox` returns them, but no wake is sent for them.
+
 **`chat_send`** addresses it by name. A spawned agent is an ordinary peer on the bus — there is
 no separate channel for "your" agents, and no privileged relationship.
 
