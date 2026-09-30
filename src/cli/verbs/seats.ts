@@ -10,10 +10,11 @@ import {
   readAgentEvents,
   readOwnerMessages,
   readPresence,
+  readSeatJournal,
   readText,
   saveDoc,
   scorerEligible,
-  seatLogPath,
+  seatJournalDays,
 } from '../../agents/seats/io.js'
 import { acquireRunLock } from '../../agents/seats/lock.js'
 import {
@@ -104,7 +105,8 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
     now: () => new Date(),
     readCharter: () => readText(path.join(root, 'charter.md')),
     readSeatFile: seat => readText(path.join(root, 'seats', `${seat}.md`)),
-    readSeatLog: (seat, at) => readText(seatLogPath(root, seat, at)),
+    seatLogDays: seat => seatJournalDays(root, seat),
+    readSeatLog: (seat, at) => readSeatJournal(root, seat, at),
     readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
     ownerMessages: (owner, sinceMs) => ownerMessages(owner, sinceMs),
     roster: () => roster(client),

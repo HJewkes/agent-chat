@@ -12,7 +12,11 @@ import {
   loadDoc,
   readAgentEvents,
   readOwnerMessages,
+  readPresence,
+  readSeatJournal,
   saveDoc,
+  seatJournalDays,
+  seatLogPath,
   type WatchdogDoc,
 } from '../agents/seats/io.js'
 import { DARK_AFTER_MS, RESUME_MESSAGE, judgeLiveness, type Presence } from '../agents/seats/liveness.js'
@@ -21,6 +25,8 @@ import { runWatchdog, type Roster, type WatchdogDeps } from '../agents/seats/run
 import type { OwnerMessage } from '../agents/seats/stops.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import { watchdogInstall, wakeSeat } from '../cli/verbs/seats.js'
+import { transcriptPath } from '../agents/transcript.js'
+import { startSupervisor, type RestartHarness, type SurfaceSpawn } from './helpers/restart-harness.js'
 import type { Launchctl } from '../mirror/launchd.js'
 import { renderWatchdogPlist } from '../mirror/plist.js'
 
@@ -71,6 +77,15 @@ interface Harness {
   tick: () => void
 }
 
+/** Local noon of the `count` days ending on the day of `nowMs`, newest first. */
+function lastDays(nowMs: number, count: number): Date[] {
+  const today = new Date(nowMs)
+  return Array.from(
+    { length: count },
+    (_, back) => new Date(today.getFullYear(), today.getMonth(), today.getDate() - back, 12),
+  )
+}
+
 const emptyDoc = (): WatchdogDoc => ({ seats: {}, pools: {}, stopped: {} })
 
 function harness(roster: Roster, fiveHour = 41, start = new Date(2026, 8, 29, 8, 38)): Harness {
@@ -92,6 +107,7 @@ function harness(roster: Roster, fiveHour = 41, start = new Date(2026, 8, 29, 8,
       now: () => new Date(now),
       readCharter: () => CHARTER,
       readSeatFile: seat => (seat === 'seat-a' ? SEAT : undefined),
+      seatLogDays: () => lastDays(now, 8),
       readSeatLog: (_seat, at) => (at.getDate() === new Date(now).getDate() ? h.seatLog : h.priorLog),
       readBudget: () => budget(h.fiveHour, h.sevenDay),
       ownerMessages: () => h.ownerMessages,
@@ -110,6 +126,8 @@ function harness(roster: Roster, fiveHour = 41, start = new Date(2026, 8, 29, 8,
   }
   return h
 }
+
+const AS_ROOT = process.getuid?.() === 0
 
 const IDLE: Roster = { agents: [], connected: ['seat-a'] }
 
@@ -533,6 +551,22 @@ describe('stops hold the dark-seat resume (CC-326)', () => {
     expect(resumes(h)).toBe(1)
   })
 
+  it('reads WRAP as a stop only in capitals', async () => {
+    const h = harness(DARK)
+    h.seatLog = '08:20 wrap up the notes\n'
+    dark(h, 17)
+    await runWatchdog(h.deps, ONE)
+    expect(resumes(h)).toBe(1)
+  })
+
+  it('does not read a WRAP in the middle of the latest line as a stop', async () => {
+    const h = harness(DARK)
+    h.seatLog = '08:20 notes: WRAP comes later\n'
+    dark(h, 17)
+    await runWatchdog(h.deps, ONE)
+    expect(resumes(h)).toBe(1)
+  })
+
   it('finds a WRAP line the seat wrote three days before the run', async () => {
     const h = harness(DARK)
     const wrapDay = new Date(h.now()).getDate() - 3
@@ -650,6 +684,53 @@ describe('stops hold the dark-seat resume (CC-326)', () => {
     expect(await runs(h, 4)).toBe(0)
   })
 
+  it('holds a dark seat whose journal cannot be read, and says why on every run', async () => {
+    const h = harness(DARK)
+    h.deps.readSeatLog = () => {
+      throw new Error('EACCES: permission denied')
+    }
+    dark(h, 17)
+    const first = notGap(await runWatchdog(h.deps, ONE))
+    h.tick()
+    const second = notGap(await runWatchdog(h.deps, ONE))
+    expect(h.wakes).toEqual([])
+    expect(first).toEqual([
+      expect.stringMatching(
+        /^seat-a: Watchdog: dark 17 min .*; not resumed: seat journal unreadable, so a stop in it cannot be ruled out \(EACCES: permission denied\)$/,
+      ),
+    ])
+    expect(second).toEqual([expect.stringMatching(/dark 32 min .*seat journal unreadable/)])
+  })
+
+  it('holds a dark seat whose journal files cannot be listed', async () => {
+    const h = harness(DARK)
+    h.deps.seatLogDays = () => {
+      throw new Error('EACCES: permission denied, scandir')
+    }
+    dark(h, 17)
+    const out = notGap(await runWatchdog(h.deps, ONE))
+    expect(h.wakes).toEqual([])
+    expect(out).toEqual([expect.stringContaining('not resumed: seat journal unreadable')])
+  })
+
+  it('never wakes a connected seat whose journal cannot be read, and says why on every run', async () => {
+    const h = harness(IDLE)
+    h.deps.readSeatLog = () => {
+      throw new Error('EACCES: permission denied')
+    }
+    const lines: string[][] = []
+    const woke = await runs(h, 4, () => undefined)
+    for (let i = 0; i < 2; i++) {
+      lines.push(notGap(await runWatchdog(h.deps, ONE)))
+      h.tick()
+    }
+    expect(woke).toBe(0)
+    expect(h.wakes).toEqual([])
+    const held =
+      'seat-a: Watchdog: held: seat journal unreadable, so a stop in it cannot be ruled out (EACCES: permission denied)'
+    expect(lines).toEqual([[held], [held]])
+  })
+
   it('under --dry-run says why a dark seat would not be resumed', async () => {
     const h = harness(DARK)
     h.seatLog = '08:20 WRAP closing the session for the day\n'
@@ -680,6 +761,12 @@ describe('the dark threshold (CC-326)', () => {
       resume: false,
       reason: 'dark 5 min, not yet over 5',
     })
+  })
+
+  it('counts failed tries from one again in a new dark episode', () => {
+    const earlier = { attempted: 1, unconfirmed: 3 }
+    const verdict = judgeLiveness({ ...input(DARK_AFTER_MS + 1), ...earlier })
+    expect(verdict).toMatchObject({ resume: true, tries: 1, reason: expect.not.stringContaining('try') })
   })
 
   it('resumes a seat dark one millisecond over five minutes', () => {
@@ -967,6 +1054,13 @@ describe('watchdog disk state', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe(text)
   })
 
+  it.skipIf(AS_ROOT)('refuses a state file it cannot read instead of reading it as no stops', () => {
+    const file = path.join(dir, 'seat-watchdog.json')
+    fs.writeFileSync(file, '{"stopped": {"seat-a": "away"}}')
+    fs.chmodSync(file, 0o000)
+    expect(() => loadDoc()).toThrow('EACCES')
+  })
+
   it('ends the run with that error, resuming nothing, when seat-watchdog.json cannot be parsed', async () => {
     fs.writeFileSync(path.join(dir, 'seat-watchdog.json'), '{"stopped": {"seat-a": "away"}')
     const h = harness({ agents: [], connected: [] })
@@ -994,6 +1088,200 @@ describe('watchdog disk state', () => {
     appendSeatLog(dir, 'seat', at, 'again')
     expect(file).toBe(path.join(dir, 'logs', 'seat', '2026-09-29.md'))
     expect(fs.readFileSync(file, 'utf8')).toBe('06:53 Watchdog: fired\n06:53 again\n')
+  })
+})
+
+describe('the seat journal on disk (CC-326)', () => {
+  const DARK: Roster = { agents: [], connected: [] }
+  let root: string
+  let h: Harness
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-seat-journal-'))
+    h = harness(DARK)
+    h.deps.seatLogDays = seat => seatJournalDays(root, seat)
+    h.deps.readSeatLog = (seat, at) => readSeatJournal(root, seat, at)
+    h.presence = {
+      darkSince: h.now() - 17 * 60_000,
+      teleported: false,
+      wokenByWatchdog: false,
+      resumeStarted: false,
+    }
+  })
+
+  afterEach(() => {
+    fs.chmodSync(path.join(root, 'logs', 'seat-a'), 0o755)
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  const daysAgo = (days: number): Date => {
+    const today = new Date(h.now())
+    return new Date(today.getFullYear(), today.getMonth(), today.getDate() - days, 12)
+  }
+
+  function journal(days: number, text: string): string {
+    const file = seatLogPath(root, 'seat-a', daysAgo(days))
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, text)
+    return file
+  }
+
+  const notGap = (lines: string[]): string[] => lines.filter(line => line !== GAP_LINE)
+
+  it('holds a seat that died today whose WRAP line is older than eight journal files, on every run', async () => {
+    journal(30, '16:31 WRAP done until the owner is back\n')
+    for (let back = 0; back < 9; back++) journal(back, '07:08 Watchdog: budget open again\n')
+    const first = notGap(await runWatchdog(h.deps, ONE))
+    h.tick()
+    const second = notGap(await runWatchdog(h.deps, ONE))
+    expect(h.wakes).toEqual([])
+    const why = 'not resumed: seat logged "WRAP done until the owner is back"'
+    expect([first, second]).toEqual([[expect.stringContaining(why)], [expect.stringContaining(why)]])
+  })
+
+  it('resumes a seat whose journals are readable and whose latest line, however old, is no stop', async () => {
+    journal(40, '16:31 WRAP done until the owner is back\n')
+    journal(30, '09:02 heartbeat: back, 0 implementers\n')
+    journal(0, '')
+    await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toHaveLength(1)
+  })
+
+  it('resumes a seat that has no journal at all', async () => {
+    fs.mkdirSync(path.join(root, 'logs', 'seat-a'), { recursive: true })
+    expect(seatJournalDays(root, 'seat-b')).toEqual([])
+    expect(readSeatJournal(root, 'seat-a', daysAgo(0))).toBeUndefined()
+    await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toHaveLength(1)
+  })
+
+  it('lists only dated journal files, newest first', () => {
+    journal(0, '')
+    journal(2, '')
+    fs.writeFileSync(path.join(root, 'logs', 'seat-a', 'notes.md'), '')
+    expect(seatJournalDays(root, 'seat-a')).toEqual([daysAgo(0), daysAgo(2)])
+  })
+
+  it.skipIf(AS_ROOT)('holds a dark seat whose journal file is unreadable, and says why', async () => {
+    fs.chmodSync(journal(0, '08:20 WRAP closing the session for the day\n'), 0o000)
+    const out = notGap(await runWatchdog(h.deps, ONE))
+    expect(h.wakes).toEqual([])
+    expect(out).toEqual([expect.stringMatching(/not resumed: seat journal unreadable.*EACCES/)])
+  })
+
+  it.skipIf(AS_ROOT)('holds a dark seat whose journal directory is unreadable', async () => {
+    journal(0, '08:20 WRAP closing the session for the day\n')
+    fs.chmodSync(path.join(root, 'logs', 'seat-a'), 0o000)
+    const out = notGap(await runWatchdog(h.deps, ONE))
+    expect(h.wakes).toEqual([])
+    expect(out).toEqual([expect.stringMatching(/not resumed: seat journal unreadable.*EACCES/)])
+  })
+})
+
+describe('a resume whose launch throws (CC-326)', () => {
+  const SEAT_NAME = 'seat-a'
+  let sup: RestartHarness
+  let launches: number
+  let configDir: string
+
+  let exit: (code: number) => void = () => undefined
+  const launching = (() => {
+    launches += 1
+    return {
+      pid: 4244,
+      unref: () => undefined,
+      once: (event: string, listener: (code: number) => void) => {
+        if (event === 'exit') exit = listener
+      },
+    }
+  }) as unknown as SurfaceSpawn
+  const broken = (() => {
+    throw new Error('spawn claude ENOENT')
+  }) as unknown as SurfaceSpawn
+
+  /** A seat that ran, has a transcript, and deregistered with no teleport ten minutes before the harness clock. */
+  beforeEach(async () => {
+    launches = 0
+    configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-seat-resume-'))
+    sup = startSupervisor({ spawn: launching })
+    const spawned = await sup.supervisor.spawn({
+      name: SEAT_NAME,
+      profile: 'explorer',
+      brief: 'a seat',
+      requestedBy: 'human',
+      cwd: configDir,
+      isolation: 'none',
+      surface: 'headless',
+      spawnerConfigDir: configDir,
+    })
+    exit(0)
+    for (let i = 0; i < 50; i++) await Promise.resolve()
+    const agent = sup.core.agents.get(String(spawned.agentId))
+    if (agent?.state !== 'exited') throw new Error('the spawned seat did not exit')
+    const file = transcriptPath(agent.cwd, agent.sessionId, agent.configDir)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, '{}\n')
+    sup.core.append({ kind: 'registered', actor: SEAT_NAME })
+    sup.core.append({ kind: 'deregistered', actor: SEAT_NAME })
+    launches = 0
+  })
+
+  afterEach(() => {
+    sup.close()
+    fs.rmSync(configDir, { recursive: true, force: true })
+  })
+
+  /** The watchdog over the real supervisor and the real events.db. */
+  function overSupervisor(): Harness {
+    const h = harness({ agents: [], connected: [] }, 41, new Date(Date.now() + 10 * 60_000))
+    h.deps.presence = seat => readPresence(path.join(sup.home, 'events.db'), seat)
+    h.deps.wake = async (seat, message) => {
+      h.wakes.push({ seat, message, connected: false })
+      const res = await sup.supervisor.resume(seat, { message, source: 'watchdog', surface: 'headless' })
+      return { ok: res.ok, detail: res.ok ? 'resumed' : (res.reason ?? 'resume refused') }
+    }
+    return h
+  }
+
+  const seatLines = async (h: Harness): Promise<string[]> => {
+    const out = await runWatchdog(h.deps, ONE)
+    h.tick()
+    return out.filter(line => line.startsWith('seat-a: '))
+  }
+
+  it('is retried on the next run with a line each run, and is never sent again once one launched', async () => {
+    const h = overSupervisor()
+    sup.restart({ spawn: broken })
+    const first = await seatLines(h)
+    const second = await seatLines(h)
+    const state = sup.core.agents.byName(SEAT_NAME)?.state
+    sup.restart({ spawn: launching })
+    const third = await seatLines(h)
+    const later = [await seatLines(h), await seatLines(h)]
+
+    expect(first).toEqual([
+      expect.stringContaining(
+        'resume FAILED seat-a (resume failed: spawn claude ENOENT); will retry next run',
+      ),
+    ])
+    expect(second).toEqual([expect.stringContaining('try 2 of 8 after a failed resume; resume FAILED')])
+    expect(state).toBe('exited')
+    expect(third).toEqual([expect.stringContaining('try 3 of 8 after a failed resume; resumed seat-a')])
+    expect(later).toEqual([[], []])
+    expect([h.wakes.length, launches]).toEqual([3, 1])
+  })
+
+  it('counts toward the eight-try cap, then says so once a run', async () => {
+    const h = overSupervisor()
+    sup.restart({ spawn: broken })
+    const lines: string[][] = []
+    for (let run = 0; run < 10; run++) lines.push(await seatLines(h))
+
+    expect(h.wakes).toHaveLength(8)
+    expect(lines.every(out => out.length === 1)).toBe(true)
+    expect(lines[0]?.[0]).toContain('resume failed: spawn claude ENOENT')
+    expect(lines[7]?.[0]).toContain('try 8 of 8 after a failed resume; resume FAILED')
+    expect(lines[9]?.[0]).toContain('not resumed: 8 resume attempts failed this dark episode')
   })
 })
 

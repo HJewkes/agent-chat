@@ -36,6 +36,16 @@ export const readText = (file: string): string | undefined => {
   }
 }
 
+/** Undefined only when the path is missing; any other failure throws, so an unreadable journal never reads as an empty one. */
+function ifPresent<T>(read: () => T): T | undefined {
+  try {
+    return read()
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw err
+  }
+}
+
 /** The most rows the scorer is asked for; score.py's `--top 1000` the watchdog used to pass. */
 const SCORER_TOP = 1000
 
@@ -142,6 +152,24 @@ export const seatLogClock = (at: Date): string => `${pad(at.getHours())}:${pad(a
 export const seatLogPath = (root: string, seat: string, at: Date): string =>
   path.join(root, 'logs', seat, `${localDay(at)}.md`)
 
+/** CC-326: a seat's journal for the local day of `at`; undefined when there is none, and throws when it cannot be read. */
+export const readSeatJournal = (root: string, seat: string, at: Date): string | undefined =>
+  ifPresent(() => fs.readFileSync(seatLogPath(root, seat, at), 'utf8'))
+
+const JOURNAL_FILE = /^(\d{4})-(\d\d)-(\d\d)\.md$/
+
+/** CC-326: local noon of each day the seat has a journal file for, newest first; throws when `logs/<seat>` cannot be listed. */
+export function seatJournalDays(root: string, seat: string): Date[] {
+  const names = ifPresent(() => fs.readdirSync(path.join(root, 'logs', seat))) ?? []
+  return names
+    .sort()
+    .reverse()
+    .flatMap(name => {
+      const m = JOURNAL_FILE.exec(name)
+      return m === null ? [] : [new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12)]
+    })
+}
+
 /** Charter section 10's format: local `logs/<seat>/<YYYY-MM-DD>.md`, each line led by local `HH:MM`. */
 export function appendSeatLog(root: string, seat: string, at: Date, text: string): string {
   const file = seatLogPath(root, seat, at)
@@ -228,6 +256,19 @@ const TELEPORT_ROWS = "actor = ? AND kind = 'agent_stood_down'"
 const ANY_RESUME = "target = ? AND kind = 'agent_resumed'"
 const WATCHDOG_RESUME =
   "target = ? AND kind = 'agent_resumed' AND json_extract(meta, '$.source') = 'watchdog'"
+// CC-326: the supervisor closes the `agent_resumed` row of a launch that threw with this row.
+const NEVER_STARTED = "actor = ? AND kind = 'agent_exited' AND json_extract(meta, '$.never_started') = 'true'"
+
+/** Resume rows after log id `afterId` whose launch did not throw. */
+const resumesLaunched = (db: DatabaseSyncType, seat: string, afterId: number): number =>
+  countAfter(db, ANY_RESUME, afterId, seat) - countAfter(db, NEVER_STARTED, afterId, seat)
+
+/** The watchdog's latest resume launched, and the seat's one register since is the session it started. */
+function wokenByWatchdog(db: DatabaseSyncType, seat: string, registered: number): boolean {
+  const woke = maxId(db, WATCHDOG_RESUME, seat)
+  if (woke === 0 || countAfter(db, REGISTERED, woke, seat) !== 1) return false
+  return countAfter(db, NEVER_STARTED, woke, seat) === countAfter(db, NEVER_STARTED, registered, seat)
+}
 
 /** CC-320: a seat's latest presence rows. Throws when events.db cannot be read. */
 export function readPresence(dbPath: string, seat: string): Presence {
@@ -239,14 +280,12 @@ export function readPresence(dbPath: string, seat: string): Presence {
         "SELECT id, ts FROM events WHERE actor = ? AND kind = 'deregistered' AND id > ? ORDER BY id DESC LIMIT 1",
       )
       .get(seat, registered) as { id: number; ts: number } | undefined
-    const woke = maxId(db, WATCHDOG_RESUME, seat)
     return {
       ...(dark === undefined ? {} : { darkSince: dark.ts }),
       ...(dark === undefined && registered > 0 ? { openRegister: registered } : {}),
-      resumeStarted: countAfter(db, ANY_RESUME, dark?.id ?? registered, seat) > 0,
+      resumeStarted: resumesLaunched(db, seat, dark?.id ?? registered) > 0,
       teleported: countAfter(db, TELEPORT_ROWS, registered, seat) > 0,
-      // A register after the one the wake produced means something else started the session since.
-      wokenByWatchdog: woke > 0 && countAfter(db, REGISTERED, woke, seat) <= 1,
+      wokenByWatchdog: wokenByWatchdog(db, seat, registered),
     }
   } finally {
     db.close()

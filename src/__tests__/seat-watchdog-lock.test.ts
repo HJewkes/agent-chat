@@ -85,6 +85,18 @@ describe('the watchdog run lock', () => {
     expect(acquire(true, written + LOCK_STALE_MS + 1)).toMatchObject({ held: true })
   })
 
+  it('dates a lock that names no time by when the file was written', () => {
+    fs.writeFileSync(file, JSON.stringify({ pid: OTHER }))
+    const written = fs.statSync(file).mtimeMs
+    expect(acquire(true, written + LOCK_STALE_MS).held).toBe(false)
+    expect(acquire(true, written + LOCK_STALE_MS + 1)).toMatchObject({ held: true })
+  })
+
+  it("leaves a fresh lock held by another user's live process", () => {
+    heldBy(1, Date.now())
+    expect(acquireRunLock(file)).toMatchObject({ held: false, reason: expect.stringContaining('pid 1,') })
+  })
+
   it('lets one of two runs take over the same stale lock', () => {
     heldBy(OTHER, NOW - 60_000)
     const first = acquire(false)

@@ -11,7 +11,6 @@ import {
 } from './charter.js'
 import type { Eligibility, SeatRecord, WatchdogDoc } from './io.js'
 import {
-  JOURNAL_LOOKBACK_DAYS,
   RESUME_MESSAGE,
   RESUME_TRY_CAP,
   judgeLiveness,
@@ -40,6 +39,7 @@ import {
   runningImplementers,
   type BudgetVerdict,
   type Decision,
+  type Observation,
   type SeatAgent,
 } from './watchdog.js'
 
@@ -60,7 +60,9 @@ export interface WatchdogDeps {
   now: () => Date
   readCharter: () => string | undefined
   readSeatFile: (seat: string) => string | undefined
-  /** The seat's log for the local day of `at`. */
+  /** CC-326: the local days the seat has a log for, newest first; throws when they cannot be listed. */
+  seatLogDays: (seat: string) => Date[]
+  /** The seat's log for the local day of `at`; undefined when there is none, and throws when it cannot be read. */
   readSeatLog: (seat: string, at: Date) => string | undefined
   readBudget: (configDir: string, nowMs: number) => BudgetRead
   /** The owner seat's restart messages since `sinceMs`; undefined when events.db cannot be read, which holds every seat. */
@@ -122,14 +124,24 @@ function openRestartWindow(deps: WatchdogDeps, charter: string, now: Date): stri
   return restartWindow(messages, now.getTime())
 }
 
-/** Logs are per local day, and a seat that stopped days ago has its newest line in an older file. */
-function seatLogVerdict(deps: WatchdogDeps, seat: string, now: Date): LogVerdict {
-  for (let back = 0; back <= JOURNAL_LOOKBACK_DAYS; back++) {
-    const day = back === 0 ? now : new Date(now.getFullYear(), now.getMonth(), now.getDate() - back, 12)
-    const verdict = readSeatLog(deps.readSeatLog(seat, day) ?? '', day)
-    if (verdict.activityAt !== undefined) return verdict
+interface SeatJournal extends LogVerdict {
+  /** CC-326: why the journal could not be read, which holds the seat and is said on every run. */
+  unreadable?: string
+}
+
+/** Logs are per local day, and a seat that stopped long ago has its newest line in an old file, so every file counts. */
+function seatJournal(deps: WatchdogDeps, seat: string): SeatJournal {
+  try {
+    for (const day of deps.seatLogDays(seat)) {
+      const verdict = readSeatLog(deps.readSeatLog(seat, day) ?? '', day)
+      if (verdict.activityAt !== undefined) return verdict
+    }
+    return {}
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err)
+    const unreadable = `seat journal unreadable, so a stop in it cannot be ruled out (${why})`
+    return { stop: unreadable, unreadable }
   }
-  return {}
 }
 
 /** Owner stop first, then the restart window, then the seat's own pause line. */
@@ -209,34 +221,46 @@ interface Judgement {
   budget: BudgetVerdict
   record: SeatRecord
   liveness: LivenessVerdict
+  /** CC-326: set when the seat's journal could not be read. */
+  journalFault?: string
+}
+
+/** What the idle wake is decided on; the scorer is asked only for a seat nothing else holds. */
+function observe(
+  pass: Pass,
+  seat: Seat,
+  budget: BudgetVerdict,
+  hold: string | undefined,
+  activityAt: number | undefined,
+): Observation {
+  const implementers = runningImplementers(pass.roster.agents, seat).length
+  const scored =
+    implementers === 0 && hold === undefined && budget.open ? pass.deps.eligible(seat.name) : undefined
+  return {
+    budget,
+    implementers,
+    eligible: scored?.count,
+    ...(scored === undefined ? {} : { skipped: scored.skipped }),
+    ...(hold === undefined ? {} : { hold }),
+    ...(activityAt === undefined ? {} : { activityAt }),
+  }
 }
 
 /** A seat's decision plus the record to save for it. */
 function judgeSeat(pass: Pass, seat: Seat): Judgement {
-  const { deps, now } = pass
-  const nowMs = now.getTime()
+  const nowMs = pass.now.getTime()
   const pool = pass.pools.get(seat.pool)
   const reading = pool === undefined ? undefined : poolReading(pass, pool)
   const previous = pass.doc.seats[seat.name]
   const run = advanceMeter(previous?.run, reading?.sevenDay, nowMs, withinRun)
-  const log = seatLogVerdict(deps, seat.name, now)
+  const log = seatJournal(pass.deps, seat.name)
   const ownHold = holdFor(pass, seat, log.stop)
   const budget = seatBudget(pass, seat, reading, run)
   // CC-326: a closed pool or a seat at its spend stop holds the resume as it holds the wake.
   const resumeHold = ownHold ?? (budget.open ? undefined : `budget closed: ${budget.reason}`)
   const liveness = seatLiveness(pass, seat.name, resumeHold)
   const hold = ownHold ?? liveness.verdict.idleHold
-  const implementers = runningImplementers(pass.roster.agents, seat).length
-  const scored =
-    implementers === 0 && hold === undefined && budget.open ? deps.eligible(seat.name) : undefined
-  const obs = {
-    budget,
-    implementers,
-    eligible: scored?.count,
-    ...(scored === undefined ? {} : { skipped: scored.skipped }),
-    ...(hold === undefined ? {} : { hold }),
-    ...(log.activityAt === undefined ? {} : { activityAt: log.activityAt }),
-  }
+  const obs = observe(pass, seat, budget, hold, log.activityAt)
   const decision = decide(obs, previous, nowMs, pass.fireCap)
   const capped = (decision.next.fires ?? 0) >= (pass.fireCap ?? FIRE_CAP)
   const record = {
@@ -246,7 +270,8 @@ function judgeSeat(pass: Pass, seat: Seat): Judgement {
     capped,
     ...liveness.mark,
   }
-  return { decision, budget, record, liveness: liveness.verdict }
+  const journalFault = log.unreadable === undefined ? {} : { journalFault: log.unreadable }
+  return { decision, budget, record, liveness: liveness.verdict, ...journalFault }
 }
 
 /** A BUDGET-PAUSE and its lifting are each logged once, on the run that sees the gate change. */
@@ -354,7 +379,7 @@ async function runPass(deps: WatchdogDeps, options: WatchdogOptions, lines: stri
       lines.push(seat)
       continue
     }
-    const { decision, budget, record, liveness } = judgeSeat(pass, seat)
+    const { decision, budget, record, liveness, journalFault } = judgeSeat(pass, seat)
     const change = options.dryRun ? undefined : budgetChange(pass, name, budget)
     if (change !== undefined) lines.push(change)
     const capLine = options.dryRun ? undefined : capChange(pass, name, record)
@@ -364,6 +389,7 @@ async function runPass(deps: WatchdogDeps, options: WatchdogOptions, lines: stri
     else if (liveness.resume) lines.push(await resumeDark(pass, name, liveness))
     else if (liveness.refused) lines.push(`${name}: Watchdog: ${liveness.reason}`)
     else if (decision.fire) lines.push(await act(pass, name, decision))
+    else if (journalFault !== undefined) lines.push(`${name}: Watchdog: held: ${journalFault}`)
   }
   for (const pool of pass.gaps)
     lines.push(
@@ -373,7 +399,7 @@ async function runPass(deps: WatchdogDeps, options: WatchdogOptions, lines: stri
   return lines
 }
 
-/** Output lines: one per seat under --dry-run, else only wakes, refused resumes and misconfigured seats. */
+/** Output lines: one per seat under --dry-run, else only wakes, refused resumes, unreadable journals and misconfigured seats. */
 export async function runWatchdog(deps: WatchdogDeps, options: WatchdogOptions): Promise<string[]> {
   if (options.dryRun) return runPass(deps, options, [])
   const lock = deps.lock()

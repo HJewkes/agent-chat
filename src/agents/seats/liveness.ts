@@ -9,7 +9,7 @@ import { charterSeats, isSeatName } from './charter.js'
 /** A seat that registers again within this is never resumed. */
 export const DARK_AFTER_MS = 5 * 60_000
 
-/** Days of seat journal read for the seat's latest line; a seat dark for longer is never resumed (CC-326). */
+/** A seat dark for longer than this is never resumed (CC-326). */
 export const JOURNAL_LOOKBACK_DAYS = 7
 
 /** Resume attempts per dark episode (CC-326): a refusal, or a run that died mid-call, earns the next one. */
@@ -29,7 +29,7 @@ export interface Presence {
   teleported: boolean
   /** The watchdog started the seat's latest session, so that session ending is not a death. */
   wokenByWatchdog: boolean
-  /** CC-326: an `agent_resumed` row for the seat since its last presence row, so a resume already started. */
+  /** CC-326: an `agent_resumed` row since the seat's last presence row whose launch did not throw, so a resume already started. */
   resumeStarted: boolean
 }
 

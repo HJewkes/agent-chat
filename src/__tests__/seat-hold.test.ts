@@ -325,6 +325,46 @@ describe('readPresence', () => {
     expect(presence()).toMatchObject({ darkSince: T0, resumeStarted: true })
   })
 
+  const launchThrew = (): void =>
+    void core.append({ kind: 'agent_exited', actor: SEAT, meta: { failed: 'true', never_started: 'true' } })
+
+  it('does not read a resume whose launch threw as started, nor as a watchdog wake', () => {
+    seatGoesDark()
+    resumedByWatchdog()
+    launchThrew()
+    expect(presence()).toMatchObject({ resumeStarted: false, wokenByWatchdog: false })
+  })
+
+  it('reads a second resume as started while the first one that threw is on record', () => {
+    seatGoesDark()
+    resumedByWatchdog()
+    launchThrew()
+    resumedByWatchdog()
+    expect(presence().resumeStarted).toBe(true)
+  })
+
+  it('reads a resume that launched and exited before it registered as started', () => {
+    seatGoesDark()
+    resumedByWatchdog()
+    core.append({ kind: 'agent_exited', actor: SEAT, meta: { failed: 'true' } })
+    expect(presence().resumeStarted).toBe(true)
+  })
+
+  it('does not read a session a person started after a watchdog resume threw as a watchdog wake', () => {
+    seatGoesDark()
+    resumedByWatchdog()
+    launchThrew()
+    core.drop(join(SEAT).conn)
+    expect(presence().wokenByWatchdog).toBe(false)
+  })
+
+  it('does not read a resume sent while the seat was connected as started once it goes dark', () => {
+    const seat = join(SEAT)
+    core.append({ kind: 'agent_resumed', actor: 'human', target: SEAT })
+    core.drop(seat.conn)
+    expect(presence().resumeStarted).toBe(false)
+  })
+
   it('does not read a resume from before the seat went dark as started', () => {
     core.append({ kind: 'agent_resumed', actor: 'human', target: SEAT })
     seatGoesDark()
