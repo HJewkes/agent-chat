@@ -499,6 +499,24 @@ export function isolationFor(
 }
 
 /**
+ * CC-356: `owns` means file-ownership in the shared checkout, so a spawn that would
+ * otherwise get a worktree, by request or by profile default, must not silently lose it.
+ * Refuse rather than cut a worktree: file-ownership's peer claims are keyed to the base
+ * checkout. An assigned worktree is fine, since the paths then live inside it.
+ */
+export function worktreeOwnsConflict(
+  req: { worktree?: string; owns?: string[]; isolation?: IsolationName },
+  profile: { isolation: IsolationName },
+): string | undefined {
+  if ((req.isolation ?? profile.isolation) !== 'worktree' || !req.owns?.length || req.worktree)
+    return undefined
+  return (
+    'owns conflicts with worktree isolation: owns scopes paths in the shared checkout and would put the ' +
+    'agent there. Drop owns to get a worktree, or pass an assigned worktree so owns scopes paths inside it.'
+  )
+}
+
+/**
  * The floor: a request may narrow a profile's isolation, never widen it.
  *
  * Only one widening actually costs anything, so only one is named — an agent the
@@ -1043,6 +1061,8 @@ export class Supervisor implements TeleportHost {
     const cwd = req.cwd ?? process.cwd()
     const cwdError = this.checkCwd(cwd, req.requestedBy) ?? this.parkingRefusal(req.worktree ?? cwd)
     if (cwdError) return this.refuse(req, cwdError)
+    const conflict = worktreeOwnsConflict(req, profile)
+    if (conflict) return this.refuse(req, conflict)
     const isolationName = isolationFor(req, profile)
     // Minted before the slot is taken so that acquire and release are keyed the
     // same way. Keying acquire on the name and release on the id leaks a slot on

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isolationFor, floorWarning } from '../agents/supervisor.js'
+import { isolationFor, floorWarning, worktreeOwnsConflict } from '../agents/supervisor.js'
 import { fileOwnershipStrategy } from '../agents/isolation/index.js'
 import type { IsolationContext } from '../agents/isolation/index.js'
 
@@ -122,5 +122,32 @@ describe('file-ownership, once its inputs are actually supplied', () => {
       }),
     )
     expect(found).toEqual([])
+  })
+})
+
+describe('worktreeOwnsConflict (CC-356)', () => {
+  const none = { isolation: 'none' } as const
+  const worktreeProfile = { isolation: 'worktree' } as const
+
+  it('names both fields when isolation worktree is asked for together with owns', () => {
+    expect(worktreeOwnsConflict({ isolation: 'worktree', owns: ['src/**'] }, none)).toMatch(/owns.*worktree/)
+  })
+
+  it('refuses owns with no isolation field on a profile that defaults to a worktree', () => {
+    expect(worktreeOwnsConflict({ owns: ['src/**'] }, worktreeProfile)).toMatch(/owns.*worktree/)
+  })
+
+  it('allows owns inside an assigned worktree, which already exists', () => {
+    expect(worktreeOwnsConflict({ owns: ['src/**'], worktree: '/wt' }, worktreeProfile)).toBeUndefined()
+  })
+
+  it('allows owns when neither request nor profile wants a worktree', () => {
+    expect(worktreeOwnsConflict({ owns: ['src/**'] }, none)).toBeUndefined()
+    expect(worktreeOwnsConflict({ isolation: 'none', owns: ['src/**'] }, worktreeProfile)).toBeUndefined()
+  })
+
+  it('allows a worktree with no owns', () => {
+    expect(worktreeOwnsConflict({ isolation: 'worktree' }, none)).toBeUndefined()
+    expect(worktreeOwnsConflict({ owns: [] }, worktreeProfile)).toBeUndefined()
   })
 })
