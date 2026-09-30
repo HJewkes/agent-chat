@@ -127,6 +127,10 @@ export const watchdogLogDir = (): string =>
 /** The package root, reached identically from `dist/paths.js` and `src/paths.ts`. */
 const packageRoot = (): string => path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 
+/** CC-286: the one copy of the return contract, shipped inside the skill so coordinators can read it too. */
+export const returnContractPath = (): string =>
+  path.join(packageRoot(), 'plugins', 'agent-chat', 'skills', 'agent-orchestration', 'return-contract.md')
+
 /**
  * Always the built `dist/cli.js`, whether we are running from `dist/` or `src/`.
  *

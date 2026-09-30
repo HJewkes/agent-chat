@@ -562,6 +562,14 @@ profile. `env` sits beneath the spawner's own keys: `AGENT_CHAT_*` and
 `CLAUDE_CODE_PROMPT_CACHE_TTL=5m`; other profiles keep the 1 h default because
 they wait over 5 minutes on CI.
 
+**A profile may set `returnContract`** to `implementer`, `reviewer` or `none` (CC-286). The
+broker appends that block of
+`plugins/agent-chat/skills/agent-orchestration/return-contract.md` to the brief of an agent a
+registered session spawns, with the spawner's name filled in. A profile without the field is
+read by name: a worker whose name carries `implementer` or `reviewer` as a whole word takes that
+block when its grants agree (an implementer may Edit, a reviewer may not). Any other profile
+takes none. A brief that already carries the block, a CLI spawn and a resume get nothing added.
+
 Profile `env` is trusted local config, not a sandbox. It can set `PATH`, `HOME`,
 `ANTHROPIC_*`, `NODE_OPTIONS`, and the credential names `agentEnv` strips from
 the broker's own environment. Values are stored in plaintext in the launch plan

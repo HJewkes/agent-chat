@@ -282,44 +282,21 @@ lines, detail to a file. State in every brief that plain-text stdout is invisibl
 you and the report must come back via `chat_send` — don't assume a return-format
 block implies the channel. Escalating rather than guessing is always fine — bad work
 is worse than no work. The "under 15 lines, detail to a file" limit applies to
-implementer reports; reviewers follow the verdict block below.
+implementer reports; reviewers follow the reviewer block.
 
-### Implementer contract: end every code brief with this block
+### The broker appends the contract
 
-```
-Check `gh api repos/<owner>/<repo> --jq .visibility`. In a public repo, never commit or
-paste captured real data into code, fixtures, PR bodies or comments: task lists, charter or
-seat files, /Users paths, emails, or IDs and text from private repos. Use synthetic
-fixtures. First run `git log origin/<default> --oneline --grep <ID>` and stop if it has
-landed. Branch from origin/<default>; check `git log origin/<default>..HEAD`. Commit before
-mutating; never `git checkout` uncommitted work. Scratch files go in the worktree or
-`$TMPDIR/<your name>`. Make GitHub writes (merge PUT, PR create, comment, PR body PATCH)
-through `agent-chat gh-write -- <gh args>` when `agent-chat gh-write --help` works;
-otherwise, on a 403 "API rate limit exceeded" with core quota left, wait 5 minutes and retry
-once. Wait for CI with `gh run watch <id> --exit-status` in the foreground. Never end a turn
-on a background task, a sleep or a ScheduleWakeup: a headless agent exits at turn end and
-the task dies with it. Load tests kill burners with `pkill -f '<pattern>'` and confirm with
-pgrep. A PR that narrows a timeout reports per-case CI times against the new limit. You are
-NOT done at "PR opened". Your LAST action must be chat_send to <seat> starting with
-`Status: DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT`, `PR: <owner>/<repo>#<n>` and
-`Head: <full sha>` lines, then CI status.
-```
+`agent_spawn` appends the implementer or the reviewer block from
+[return-contract.md](return-contract.md) to the brief, with your registered name filled in, so
+never paste either block into a brief. That file also says which profiles take which block;
+explorer, planner, researcher, coordinator and peer profiles take none, and neither does a
+resumed agent, so state the report channel yourself in those briefs.
 
 Foreground `sleep` is denied, so an agent that does not block on `gh run watch` ends
 its turn at "PR opened" and needs a paid resume.
 
-### Reviewer verdict block
-
-A reviewer's report starts with these three lines, which Shepherd and `parseReport`
-read, then blocking items before nits, under 1,200 characters in total:
-
-```
-Verdict: MERGE            (or FIX_FIRST)
-PR: <owner>/<repo>#<n>
-Head: <full 40-hex head sha>
-```
-
-A verdict counts only when Head equals the PR's current head exactly.
+Shepherd and `parseReport` read the three lines a reviewer's report starts with (`Verdict:`,
+`PR:`, `Head:`). A verdict counts only when Head equals the PR's current head exactly.
 
 Verify agent output before committing it — a passing test count isn't proof:
 

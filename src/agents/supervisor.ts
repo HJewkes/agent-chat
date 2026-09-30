@@ -46,6 +46,7 @@ import { resolveSpawnBriefing, type BriefingResult } from './active-work.js'
 import { childConfigDir, resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
 import { configDir, findTranscript } from './transcript.js'
 import { resolvePredecessor, type PredecessorResult } from './predecessor.js'
+import { withReturnContract } from './return-contract.js'
 import {
   checkResumeSession,
   goneWorktree,
@@ -1131,13 +1132,20 @@ export class Supervisor implements TeleportHost {
         'a visible resume opens on the conversation as it was left; send the brief with chat_send',
       )
     const sessionId = resumed?.sessionId ?? randomUUID()
+    const contracted = withReturnContract({
+      brief: req.brief,
+      profile,
+      spawner: req.requestedBy,
+      resumed: resumed !== undefined,
+    })
+    warnings.push(...contracted.warnings)
     const plan = buildLaunchPlan({
       agentId,
       sessionId,
       ...(resumed ? { resume: true } : {}),
       name: req.name,
       profile,
-      brief: [briefing?.text, predecessor, req.brief, allocation.note].filter(Boolean).join('\n\n'),
+      brief: [briefing?.text, predecessor, contracted.brief, allocation.note].filter(Boolean).join('\n\n'),
       cwd: allocation.cwd,
       surface,
       mcpConfigPath: mcpConfigPath(agentId),
