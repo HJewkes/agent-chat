@@ -130,6 +130,7 @@ describe('foldDispatch', () => {
     note: null,
     tokens: 1200,
     usd_est: 0.0123,
+    usage_partial: false,
     value: 3,
     agent_id: 'id-1',
     spawner: 'seat-x',
@@ -192,7 +193,11 @@ describe('foldDispatch', () => {
   })
 
   it('reads a new agent_id as a second record when the first run left no retired row', () => {
-    const { records } = fold(dispatched(), dispatched({ agent_id: 'id-2' }), retired('s-2', 300, 0.002))
+    const { records } = fold(
+      dispatched(),
+      dispatched({ agent_id: 'id-2' }),
+      retired('s-2', 300, 0.002, { agent_id: 'id-2' }),
+    )
 
     expect(records.map(r => [r.agent_id, r.outcome, r.tokens])).toEqual([
       ['id-1', 'dispatched', null],
@@ -327,6 +332,79 @@ describe('foldDispatch', () => {
         model: null,
       },
     ])
+  })
+
+  it('joins a retired row to the run with its agent_id, not the latest of the name', () => {
+    const { records } = fold(
+      dispatched(),
+      dispatched({ agent_id: 'id-2' }),
+      retired('s1', 10, 0.001, { agent_id: 'id-1' }),
+      retired('s2', 20, 0.002, { agent_id: 'id-2' }),
+    )
+
+    expect(records.map(r => [r.agent_id, r.tokens])).toEqual([
+      ['id-1', 10],
+      ['id-2', 20],
+    ])
+  })
+
+  it('joins a retired row with no agent_id to the latest run of the name', () => {
+    const noId = { ...retired('s-2', 20, 0.002), agent_id: null }
+    const { records } = fold(dispatched(), dispatched({ agent_id: 'id-2' }), noId)
+
+    expect(records.map(r => [r.agent_id, r.tokens])).toEqual([
+      ['id-1', null],
+      ['id-2', 20],
+    ])
+  })
+
+  it("opens no new record for a seat's dispatched row written after the broker's retired row", () => {
+    const seatDispatched = seatRow({ outcome: 'dispatched', value: null, pr: null })
+    const { records } = fold(dispatched(), retired('s-1'), seatDispatched, seatRow())
+
+    expect(records).toEqual([merged])
+  })
+
+  it.each([
+    ['a seat outcome', [dispatched(), retired('s-1'), seatRow()]],
+    ['a retire of the same agent_id', [dispatched(), retired('s-1')]],
+  ])('opens a new record for a broker dispatched row once the run ended by %s', (_name, ended) => {
+    const { records } = fold(...ended, dispatched({ ts: '2026-02-04T00:00:00Z' }))
+
+    expect(records.map(r => r.outcome).at(-1)).toBe('dispatched')
+    expect(records).toHaveLength(2)
+  })
+
+  it("opens a new record for a seat's dispatched row once a seat outcome ended the run", () => {
+    const seatDispatched = seatRow({ outcome: 'dispatched', value: null, pr: null })
+    const { records } = fold(dispatched(), retired('s-1'), seatRow(), seatDispatched)
+
+    expect(records).toHaveLength(2)
+  })
+
+  it('flags usage_partial when a session read missed and its tokens are left out', () => {
+    const miss = retiredRow(run(), 's-2', { usage_miss: 'no transcript written' })
+    const { records } = fold(dispatched(), retired('s-1', 1200, 0.0123), miss)
+
+    expect(records[0]).toMatchObject({ tokens: 1200, usage_partial: true })
+  })
+
+  it('flags usage_partial with null tokens when every read missed', () => {
+    const miss = retiredRow(run(), 's-1', { usage_miss: 'no transcript written' })
+
+    expect(fold(dispatched(), miss).records[0]).toMatchObject({ tokens: null, usage_partial: true })
+  })
+
+  it('does not flag usage_partial when a later miss follows an earlier read of the same session', () => {
+    const miss = retiredRow(run(), 's-1', { usage_miss: 'no transcript written' })
+
+    expect(fold(dispatched(), retired('s-1'), miss).records[0]?.usage_partial).toBe(false)
+  })
+
+  it('reads a seat-only usd_est that is not a finite number as null', () => {
+    const { records } = fold(seatRow({ outcome: 'done', tokens: 5, usd_est: 'free' }))
+
+    expect(records[0]).toMatchObject({ tokens: 5, usd_est: null })
   })
 
   it('folds an empty file to no records', () => {
