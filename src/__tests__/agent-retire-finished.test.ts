@@ -9,7 +9,7 @@ import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Supervisor } from '../agents/supervisor.js'
 import { RECLAIM_GRACE_MS } from '../agents/isolation/worktree.js'
-import { SCOPE_REQUIRED } from '../agents/isolation/retire-finished.js'
+import { retireFinished, SCOPE_REQUIRED, type FinishedRetirePort } from '../agents/isolation/retire-finished.js'
 import type { AgentIdentity, ServerMessage } from '../protocol.js'
 import { autoAttach } from './broker-harness.js'
 
@@ -151,6 +151,35 @@ describe('the skip rules', () => {
 
     expect(out.plan[0]).toMatchObject({ action: 'skip', reason: `uncommitted changes in ${agent.cwd}` })
     expect(fs.existsSync(path.join(agent.cwd, 'draft.txt'))).toBe(true)
+  })
+
+  // Kills M2 and M19: a status read that leaves out ignored-but-tracked or untracked files.
+  it('skips a tree whose only change is a tracked file that .gitignore also matches', async () => {
+    const repo = makeRepo()
+    fs.writeFileSync(path.join(repo, 'kept.log'), 'v1\n')
+    git(['add', '-f', 'kept.log'], repo)
+    fs.writeFileSync(path.join(repo, '.gitignore'), '*.log\n')
+    git(['add', '.gitignore'], repo)
+    git(['commit', '-m', 'track an ignored file'], repo)
+    const agent = await finishedIn('cc-ignored', repo)
+    fs.writeFileSync(path.join(agent.cwd, 'kept.log'), 'v2\n')
+    pastGrace()
+
+    const out = await sup.retireFinished({ prefix: 'cc-' })
+
+    expect(out.plan[0]).toMatchObject({ action: 'skip', reason: `uncommitted changes in ${agent.cwd}` })
+  })
+
+  it('skips an untracked file even when status.showUntrackedFiles is off', async () => {
+    const repo = makeRepo()
+    git(['config', 'status.showUntrackedFiles', 'no'], repo)
+    const agent = await finishedIn('cc-untracked', repo)
+    fs.writeFileSync(path.join(agent.cwd, 'new.ts'), 'x\n')
+    pastGrace()
+
+    const out = await sup.retireFinished({ prefix: 'cc-' })
+
+    expect(out.plan[0]).toMatchObject({ action: 'skip', reason: `uncommitted changes in ${agent.cwd}` })
   })
 
   // Kills: `unpushed` ignoring a non-empty `git rev-list @{u}..HEAD`.
@@ -349,5 +378,101 @@ describe('the broker frame', () => {
       services.socketServer.close()
       services.core.close()
     }
+  })
+
+  it.each([
+    ['prefix 5', { prefix: 5 }],
+    ['spawner an object', { spawner: { x: 1 } }],
+    ['dryRun a string', { prefix: 'cc-', dryRun: 'yes' }],
+  ])('replies ok:false to a malformed frame (%s) and keeps answering', async (_label, fields) => {
+    process.env.AGENT_CHAT_HOME = tmp('bulk-services-')
+    const services = openServices(true)
+    try {
+      const frames: ServerMessage[] = []
+      const conn = {
+        write: (line: string) => frames.push(JSON.parse(line) as ServerMessage),
+      } as unknown as Conn
+
+      services.socketServer.handleMessage(conn, { t: 'retire_finished', ...fields } as never)
+      await expect.poll(() => frames.length).toBe(1)
+      services.socketServer.handleMessage(conn, { t: 'retire_finished', prefix: 'cc-' })
+      await expect.poll(() => frames.length).toBe(2)
+
+      expect(frames[0]).toMatchObject({ t: 'retire_finished_result', ok: false, plan: [], results: [] })
+      expect(frames[1]).toMatchObject({ t: 'retire_finished_result', ok: true })
+    } finally {
+      services.socketServer.close()
+      services.core.close()
+    }
+  })
+})
+
+describe('the recheck and parking rules, against a fake port', () => {
+  const agent = (name: string, over: Partial<AgentIdentity> = {}): AgentIdentity =>
+    ({
+      agentId: `id-${name}`,
+      name,
+      state: 'exited',
+      origin: 'spawned',
+      spawnedBy: 'coord-a',
+      cwd: '',
+      ...over,
+    }) as AgentIdentity
+
+  function portFor(roster: AgentIdentity[], over: Partial<FinishedRetirePort> = {}): FinishedRetirePort {
+    return {
+      roster: () => roster,
+      events: () => [],
+      tracked: () => false,
+      parking: () => false,
+      current: id => roster.find(a => a.agentId === id),
+      retire: () => Promise.resolve({ ok: true }),
+      ...over,
+    }
+  }
+
+  // Kills M9: dropping the liveness recheck before each retire.
+  it('refuses to retire an agent that went live after the plan', async () => {
+    const first = agent('cc-1')
+    const second = agent('cc-2')
+    const retired: string[] = []
+    const port = portFor([first, second], {
+      retire: name => {
+        retired.push(name)
+        second.state = 'live'
+        return Promise.resolve({ ok: true })
+      },
+    })
+
+    const out = await retireFinished(port, { prefix: 'cc-' })
+
+    expect(retired).toEqual(['cc-1'])
+    expect(out.results[1]).toEqual({ name: 'cc-2', ok: false, reason: 'became live after the plan' })
+  })
+
+  // Kills M10: dropping the identity recheck before each retire.
+  it('refuses to retire when the name now belongs to another agent', async () => {
+    const first = agent('cc-1')
+    const port = portFor([first], {
+      current: () => agent('cc-other', { agentId: first.agentId }),
+    })
+
+    const out = await retireFinished(port, { prefix: 'cc-' })
+
+    expect(out.results).toEqual([{ name: 'cc-1', ok: false, reason: 'no longer the agent the plan named' }])
+  })
+
+  // Kills M4 and M20: ignoring the parking state, in the plan or by reading the wrong id.
+  it('skips only the agent that is being parked', async () => {
+    const parked = agent('cc-parked')
+    const other = agent('cc-other')
+    const port = portFor([parked, other], { parking: id => id === parked.agentId })
+
+    const out = await retireFinished(port, { prefix: 'cc-', dryRun: true })
+
+    expect(out.plan).toEqual([
+      { name: 'cc-parked', action: 'skip', reason: 'being parked' },
+      { name: 'cc-other', action: 'retire' },
+    ])
   })
 })

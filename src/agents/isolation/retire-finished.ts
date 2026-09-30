@@ -49,6 +49,8 @@ export async function retireFinished(
   port: FinishedRetirePort,
   req: RetireScope & { dryRun?: boolean },
 ): Promise<FinishedRetireOutcome> {
+  const malformed = malformedRequest(req)
+  if (malformed) return { ok: false, reason: malformed, plan: [], results: [] }
   if (!req.spawner?.trim() && !req.prefix?.trim())
     return { ok: false, reason: SCOPE_REQUIRED, plan: [], results: [] }
   const planned = await planFinished(port, req)
@@ -58,6 +60,15 @@ export async function retireFinished(
   for (const { agentId, entry } of planned)
     if (entry.action === 'retire') results.push(await retireOne(port, agentId, entry.name))
   return { ok: results.every(r => r.ok), plan, results }
+}
+
+/** The frame arrives from any socket client, so its field types are unchecked until here. */
+function malformedRequest(req: RetireScope & { dryRun?: unknown }): string | undefined {
+  const field = (value: unknown, type: string): boolean => value === undefined || typeof value === type
+  if (!field(req.spawner, 'string')) return 'spawner must be a string'
+  if (!field(req.prefix, 'string')) return 'prefix must be a string'
+  if (!field(req.dryRun, 'boolean')) return 'dryRun must be a boolean'
+  return undefined
 }
 
 async function planFinished(port: FinishedRetirePort, scope: RetireScope): Promise<Planned[]> {
