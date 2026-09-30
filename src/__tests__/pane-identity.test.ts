@@ -110,6 +110,19 @@ describe('the escape bytes run-agent writes', () => {
     expect(paneEscapes(plan(), { TERM_PROGRAM: 'Apple_Terminal' }, sources())).toBe('\x1b]0;ac-task-1\x07')
   })
 
+  it('emits one title sequence for a name that tries to inject a second escape', () => {
+    const probe = 'x\x07\x1b]1337;SetBadgeFormat=cHduZWQ=\x07'
+    const out = paneEscapes(plan({ title: probe }), ITERM, sources())
+
+    expect(out.match(/\x1b\]0;/g)).toHaveLength(1)
+    expect(out.match(/\x1b\]1337;/g)).toHaveLength(1)
+    const title = /\x1b\]0;([^\x07]*)\x07/.exec(out)?.[1] ?? ''
+    expect(title).not.toMatch(/[\x00-\x1f\x7f-\x9f]/)
+    expect(paneEscapes(plan({ title: 'a\nb\x1b\\c' }), { TERM_PROGRAM: 'x' }, sources())).toBe(
+      '\x1b]0;ab\\c\x07',
+    )
+  })
+
   it('base64-encodes the badge so a name with escapes cannot break out of it', () => {
     expect(itermIdentity('a\x07b', { r: 0, g: 0, b: 0 })).toContain('SetBadgeFormat=YQdi\x07')
   })
@@ -189,6 +202,10 @@ describe('run-agent against a home and an autonomy root on disk', () => {
     expect(seatPrefixes(path.join(dir, 'aw', 'claude-channels', 'sources', 'autonomy'))).toEqual([
       { name: 'alpha-coord', prefix: 'ac' },
     ])
+  })
+
+  it('degrades to no seat prefix when the charter file is missing', () => {
+    expect(seatPrefixes(path.join(dir, 'no-such-autonomy'))).toEqual([])
   })
 
   it('writes the exact iTerm bytes before claude starts in a tab', () => {

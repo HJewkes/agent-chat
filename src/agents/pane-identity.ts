@@ -6,7 +6,7 @@ import { charterSeats } from './seats/charter.js'
 /**
  * CC-327: what makes an interactive agent's pane recognisable at a glance. The
  * name is the title and the badge; the tab colour says which coordinator the
- * agent belongs to, so every `tc-*` agent shares its seat's colour and so does
+ * agent belongs to, so every `ac-*` agent shares its seat's colour and so does
  * the seat's own pane.
  *
  * The coordinator is found from the agent's NAME, not its recorded spawner:
@@ -115,7 +115,11 @@ export function seatPrefixes(
 const OSC = '\x1b]'
 const BEL = '\x07'
 
-export const oscTitle = (title: string): string => `${OSC}0;${title}${BEL}`
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\x00-\x1f\x7f-\x9f]/g
+
+/** Control characters are stripped so a name can never end the title early and start another sequence. */
+export const oscTitle = (title: string): string => `${OSC}0;${title.replace(CONTROL_CHARS, '')}${BEL}`
 
 /** iTerm's proprietary tab colour (OSC 6) and badge (OSC 1337 SetBadgeFormat, base64 of the text). */
 export function itermIdentity(name: string, colour: Rgb): string {
