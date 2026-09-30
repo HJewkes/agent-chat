@@ -121,6 +121,16 @@ describe('agent ls / budget filters', () => {
     expect(JSON.parse(logs.join('\n')).map((r: { name: string }) => r.name)).toEqual(['b2-l'])
   })
 
+  it('budget --spawner and --prefix list only the matching agents', async () => {
+    vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+    const listed = () => TEN.map(a => a.name).filter(n => logs.some(l => l.includes(`for ${n} (`)))
+    await run('budget', '--spawner', 'boss')
+    expect(listed().sort()).toEqual(['cc-a', 'cc-b', 'x-c'])
+    logs.length = 0
+    await run('budget', '--prefix', 'cc-')
+    expect(listed().sort()).toEqual(['cc-a', 'cc-b', 'cc-d', 'cc-j'])
+  })
+
   it('budget --help names each option argument once', () => {
     const budget = buildProgram()
       .commands.find(c => c.name() === 'agent')
