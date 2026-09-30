@@ -46,7 +46,7 @@ afterAll(() => {
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-dispatches-'))
   fs.mkdirSync(path.join(root, 'seats'))
-  fs.writeFileSync(path.join(root, 'seats', `${SEAT}.md`), '---\nprefix: sx\n---\n')
+  fs.writeFileSync(path.join(root, 'seats', `${SEAT}.md`), '---\nprefix: sx\npool: p\n---\n')
 })
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
 
@@ -125,6 +125,36 @@ describe('seats dispatches', () => {
     expect(report.ok).toBe(false)
     expect(report.errors?.[0]).toContain('no dispatch log')
     expect(report.errors?.[0]).not.toContain(root)
+  })
+
+  it('reads the file a seat names in dispatch_log inside the root', () => {
+    fs.writeFileSync(
+      path.join(root, 'seats', `${SEAT}.md`),
+      '---\nprefix: sx\npool: p\ndispatch_log: custom/runs.jsonl\n---\n',
+    )
+    fs.mkdirSync(path.join(root, 'custom'))
+    const body = brokerAndHand.map(l => JSON.stringify(l)).join('\n')
+    fs.writeFileSync(path.join(root, 'custom', 'runs.jsonl'), `${body}\n`)
+    const report = dispatchesReport(root, SEAT, undefined, true)
+    expect(report.ok).toBe(true)
+    expect(records(report.lines)).toHaveLength(2)
+  })
+
+  it('refuses a dispatch_log outside the root as a plain error without reading it', () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-dispatches-out-'))
+    try {
+      fs.writeFileSync(path.join(outside, 'runs.jsonl'), `${JSON.stringify(brokerAndHand[0])}\n`)
+      fs.writeFileSync(
+        path.join(root, 'seats', `${SEAT}.md`),
+        `---\nprefix: sx\npool: p\ndispatch_log: ${path.join(outside, 'runs.jsonl')}\n---\n`,
+      )
+      const report = dispatchesReport(root, SEAT, undefined, false)
+      expect(report).toMatchObject({ ok: false, lines: [] })
+      expect(report.errors?.[0]).toContain('outside the root')
+      expect(report.errors?.[0]).not.toContain(outside)
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true })
+    }
   })
 
   it('reports an unreadable --since as a plain error', () => {

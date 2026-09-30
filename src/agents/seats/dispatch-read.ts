@@ -1,12 +1,10 @@
 import path from 'node:path'
 import { foldDispatch, type DispatchFold, type DispatchRecord } from './dispatch-record.js'
-import { isSeatName } from './charter.js'
+import { isSeatName, parseSeat } from './charter.js'
+import { dispatchLogPath } from './dispatch-log.js'
 import { readText } from './io.js'
 
 /** CC-332: the reader of a seat's dispatch log. It folds with CC-328's `foldDispatch` and adds no rules of its own. */
-
-export const dispatchLogPath = (root: string, seat: string): string =>
-  path.join(root, 'logs', seat, 'dispatch.jsonl')
 
 /** A zone-less stamp or a bare date is UTC, never the machine's local time. */
 const ZONE = /(?:Z|[+-]\d\d:?\d\d)$/i
@@ -22,16 +20,18 @@ export function parseSince(value: string): number | undefined {
 
 /** Throws a plain message for an unknown seat, an unreadable `--since` or a missing log. */
 export function readDispatches(root: string, seat: string, since?: string): DispatchFold {
-  if (!isSeatName(seat) || readText(path.join(root, 'seats', `${seat}.md`)) === undefined) {
-    throw new Error(`${seat} is not a seat`)
-  }
+  const text = isSeatName(seat) ? readText(path.join(root, 'seats', `${seat}.md`)) : undefined
+  const parsed = text === undefined ? undefined : parseSeat(seat, text)
+  if (text === undefined || parsed === undefined) throw new Error(`${seat} is not a seat`)
   const sinceMs = since === undefined ? undefined : parseSince(since)
   if (since !== undefined && sinceMs === undefined) {
     throw new Error(`--since ${since} is not a timestamp; use YYYY-MM-DD or an ISO time, read as UTC`)
   }
-  const text = readText(dispatchLogPath(root, seat))
-  if (text === undefined) throw new Error(`${seat} has no dispatch log at logs/${seat}/dispatch.jsonl`)
-  const fold = foldDispatch(text)
+  const file = dispatchLogPath(root, { seat: parsed, text })
+  if (file === undefined) throw new Error(`${seat} dispatch_log resolves outside the root`)
+  const log = readText(file)
+  if (log === undefined) throw new Error(`${seat} has no dispatch log at ${path.relative(root, file)}`)
+  const fold = foldDispatch(log)
   if (sinceMs === undefined) return fold
   return { ...fold, records: fold.records.filter(r => r.ts !== null && Date.parse(r.ts) >= sinceMs) }
 }
