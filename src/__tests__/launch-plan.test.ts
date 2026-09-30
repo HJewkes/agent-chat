@@ -851,11 +851,12 @@ describe('the leak guard PreToolUse hook (CC-270)', () => {
   it('goes to every agent, alongside the permission hook on a print run', () => {
     for (const timeout of [undefined, 1800]) {
       const settings = buildHookSettings('/Application Support/dist/cli.js', timeout) as {
-        hooks: { PreToolUse: { matcher: string; hooks: { command: string }[] }[] }
+        hooks: { PreToolUse: { matcher: string; hooks: { command: string; timeout: number }[] }[] }
       }
       const [entry] = settings.hooks.PreToolUse
 
       expect(entry?.matcher).toBe('Bash|Edit|Write|MultiEdit|NotebookEdit')
+      expect(entry?.hooks[0]?.timeout).toBe(15)
       expect(entry?.hooks[0]?.command).toMatch(/'\/Application Support\/dist\/cli\.js' leak-guard pretool$/)
     }
   })

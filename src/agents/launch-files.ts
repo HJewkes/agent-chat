@@ -83,6 +83,9 @@ const hookCommand = (entry: string, verb: string): string =>
 /** Bash spells the bypasses; the edit tools can rewrite the hook directory or the term list. */
 const PRETOOL_MATCHER = 'Bash|Edit|Write|MultiEdit|NotebookEdit'
 
+/** Seconds. The guard reads only regular files and never waits, so a run this long is already broken. */
+const PRETOOL_TIMEOUT_S = 15
+
 /**
  * The `--settings` file every spawned agent runs with. The leak guard's PreToolUse hook
  * (CC-270) goes to all of them. A print-mode run, given `permissionTimeoutSeconds`, also
@@ -94,7 +97,9 @@ export function buildHookSettings(entry: string, permissionTimeoutSeconds?: numb
   const pretool = [
     {
       matcher: PRETOOL_MATCHER,
-      hooks: [{ type: 'command', command: hookCommand(entry, 'leak-guard pretool') }],
+      hooks: [
+        { type: 'command', command: hookCommand(entry, 'leak-guard pretool'), timeout: PRETOOL_TIMEOUT_S },
+      ],
     },
   ]
   if (permissionTimeoutSeconds === undefined) return { hooks: { PreToolUse: pretool } }

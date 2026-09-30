@@ -8,7 +8,9 @@ import {
   checkCommand,
   checkToolCall,
   guardContext,
+  loadTerms,
   pretoolDecision,
+  readText,
   REASONS,
   type GuardContext,
   type TermsLoad,
@@ -29,7 +31,6 @@ const HOOKS_DIR = '/state/zq7/git-hooks'
 const ctx = (over: Partial<GuardContext> = {}): GuardContext => ({
   terms: { kind: 'ok', rules: parseTerms(`${TERM}\n`) },
   cwd: '/work',
-  home: '/home/example',
   env: {},
   protectedPaths: [
     '/cfg/titan-egress/private-terms',
@@ -208,9 +209,10 @@ describe('the PR pre-check', () => {
 
 describe('body file paths are expanded from the hook env', () => {
   const TMP = '/scratch/tmp'
+  const ENV = { TMPDIR: TMP, HOME: '/home/example' }
   const holding = (file: string, body: string): GuardContext =>
-    ctx({ env: { TMPDIR: TMP }, readFile: f => (f === file ? body : undefined) })
-  const anyFileIsClean = ctx({ env: { TMPDIR: TMP }, readFile: () => 'clean' })
+    ctx({ env: ENV, readFile: f => (f === file ? body : undefined) })
+  const anyFileIsClean = ctx({ env: ENV, readFile: () => 'clean' })
 
   it.each([
     ['--body-file "$TMPDIR/pr.md"', `${TMP}/pr.md`],
@@ -231,7 +233,18 @@ describe('body file paths are expanded from the hook env', () => {
     ['a default-value form', '"${TMPDIR:-/x}/pr.md"'],
     ['a command substitution', '"$(echo /scratch/tmp)/pr.md"'],
     ['backticks', '`echo /scratch/tmp`/pr.md'],
-    ['a glob', '$TMPDIR/*.md'],
+    ['a * glob', '$TMPDIR/*.md'],
+    ['a ? glob', '$TMPDIR/pr.m?'],
+    ['a [ glob', '$TMPDIR/p[r].md'],
+    ['a brace expansion', '$TMPDIR/{pr,x}.md'],
+    ['a zsh numeric range', '$TMPDIR/pr<1-2>.md'],
+    ['a zsh glob qualifier', '$TMPDIR/pr.md(:h)'],
+    ['a zsh command path', '=pr.md'],
+    ['a process substitution', '<(cat pr.md)'],
+    ['an ANSI-C escape the splitter does not decode', "$'\\x70r.md'"],
+    ['a zsh modifier', '$TMPDIR:h/pr.md'],
+    ['a quoted zsh modifier', '"$TMPDIR:h/pr.md"'],
+    ['a zsh subscript', '"$TMPDIR[1]pr.md"'],
     ['a tilde with a user name', '~zq7user/pr.md'],
   ])('denies %s rather than guessing the file', (_, file) => {
     expect(checkCommand(`gh pr create -t x --body-file ${file}`, holding(`${TMP}/pr.md`, 'clean'))).toBe(
@@ -270,11 +283,159 @@ describe('body file paths are expanded from the hook env', () => {
     const inBody = 'gh pr create -t x --body "$(cat "$TMPDIR/pr.md")"'
 
     expect(checkCommand(inBody, holding(`${TMP}/pr.md`, 'clean'))).toBeUndefined()
-    expect(checkCommand(inBody, holding(`${TMP}/pr.md`, TERM))).toContain('cat file line 1 private-term #1')
+    expect(checkCommand(inBody, holding(`${TMP}/pr.md`, `a\n${TERM}`))).toContain(
+      'body line 2 private-term #1',
+    )
     expect(checkCommand(inBody, ctx())).toBe(REASONS.unreadableBody)
     expect(checkCommand('gh pr create -t x -b "`cat b.md`"', holding('/work/b.md', TERM))).toContain(
-      'cat file line 1 private-term #1',
+      'body line 1 private-term #1',
     )
+  })
+
+  it.each([
+    ['HOME assigned, then ~', { HOME: '/home/example' }, 'HOME=/evil; gh pr create -t x --body-file ~/pr.md'],
+    ['PWD after a cd', { PWD: '/work' }, 'cd /evil && gh pr create -t x --body-file "$PWD/pr.md"'],
+    ['OLDPWD', { OLDPWD: '/work' }, 'gh pr create -t x --body-file "$OLDPWD/pr.md"'],
+    ['IFS in bash', { IFS: '/' }, 'gh pr create -t x --body-file$IFS/evil/pr.md'],
+    ['an assignment after another command', ENV, 'true; TMPDIR=/evil; gh pr create -t x -F "$TMPDIR/pr.md"'],
+    ['export', ENV, 'export TMPDIR=/evil; gh pr create -t x -F "$TMPDIR/pr.md"'],
+    ['env', ENV, 'env TMPDIR=/evil gh pr create -t x -F "$TMPDIR/pr.md"'],
+    ['read', ENV, 'read TMPDIR <<< /evil; gh pr create -t x -F "$TMPDIR/pr.md"'],
+    ['for', ENV, 'for TMPDIR in /evil; do gh pr create -t x -F "$TMPDIR/pr.md"; done'],
+    ['printf -v', ENV, 'printf -v TMPDIR /evil; gh pr create -t x -F "$TMPDIR/pr.md"'],
+    ['unset', ENV, 'unset TMPDIR; gh pr create -t x -F "${TMPDIR}pr.md"'],
+    ['a zsh assigning expansion', ENV, ': ${TMPDIR::=/evil}; gh pr create -t x -F "$TMPDIR/pr.md"'],
+    ['an assignment, then eval', ENV, `TMPDIR=/evil; eval 'gh pr create -t x -F "$TMPDIR/pr.md"'`],
+    ['an assignment, then sh -c', ENV, `TMPDIR=/evil; sh -c 'gh pr create -t x -F "$TMPDIR/pr.md"'`],
+    ['a variable set from a file', { B: 'x' }, 'B=$(cat f); gh pr create -t x --body "$B"'],
+    ['a variable holding a flag', { A: 'x' }, 'A=--body-file=/evil/pr.md; gh pr create -t x $A'],
+    ['a value with a blank', { V: '/a b' }, 'gh pr create -t x -F "$V"'],
+    ['a value with a glob', { V: '/a/*' }, 'gh pr create -t x -F $V'],
+    ['an empty value', { V: '' }, 'gh pr create -t x $V -F pr.md'],
+  ])('denies %s, whose value in the shell the hook env does not hold', (_, env, command) => {
+    expect(checkCommand(command, ctx({ env, readFile: () => 'clean' }))).toBe(REASONS.unreadableBody)
+  })
+})
+
+describe('the guard never reads one file while the shell posts another', () => {
+  const FILES: Record<string, string> = { '/clean/w.md': 'clean', '/work/w.md': TERM, '/work/sub/w.md': TERM }
+  const read = (env: GuardContext['env'] = {}): GuardContext => ctx({ env, readFile: f => FILES[f] })
+  const POST = 'gh pr create -t x --body-file w.md'
+
+  it.each([
+    `(cd /clean); ${POST}`,
+    `cd /clean | true; ${POST}`,
+    `true | cd /clean; ${POST}`,
+    `cd /clean & ${POST}`,
+    `false && cd /clean; ${POST}`,
+    `false &&\ncd /clean\n${POST}`,
+    `false || cd /clean; ${POST}`,
+    `echo $(cd /clean); ${POST}`,
+    `cd; ${POST}`,
+    `cd -P /clean; ${POST}`,
+    `cd /clean /work; ${POST}`,
+    `cd nowhere/../../clean; ${POST}`,
+    `builtin cd /clean; ${POST}`,
+    `if true; then cd /clean; fi; ${POST}`,
+    `pushd /clean; ${POST}`,
+    `f() { true; }; ${POST}`,
+    `f () { true; }; ${POST}`,
+    `eval 'true'; ${POST}`,
+    `source ./env.sh; ${POST}`,
+    `setopt autocd; ${POST}`,
+    `set -o autocd; ${POST}`,
+    `trap 'true' EXIT; ${POST}`,
+    `"$(echo cd)" /clean; ${POST}`,
+    `env -C /clean ${POST}`,
+    `env --chdir=/clean ${POST}`,
+    `CDPATH=/; cd clean; ${POST}`,
+  ])('denies %s', command => {
+    expect(checkCommand(command, ctx({ readFile: () => 'clean' }))).toBe(REASONS.unreadableBody)
+  })
+
+  it('denies a relative cd while CDPATH is set in the hook env', () => {
+    const command = `cd sub; ${POST}`
+
+    expect(checkCommand(command, read())).toContain('body line 1 private-term #1')
+    expect(checkCommand(command, read({ CDPATH: '/clean' }))).toBe(REASONS.unreadableBody)
+    expect(checkCommand(`cd ./sub; ${POST}`, read({ CDPATH: '/clean' }))).toContain('private-term #1')
+  })
+
+  it.each([
+    `cd /clean && ${POST}`,
+    `cd /clean; ${POST}`,
+    `cd /clean\n${POST}`,
+    `true && cd /clean && ${POST}`,
+    `cd /clean || exit 1; ${POST}`,
+    `set -euo pipefail; cd /clean; ${POST}`,
+    `cd /clean/sub && cd .. && ${POST}`,
+    `echo "f() is gone"; cd /clean; ${POST}`,
+  ])('follows the plain cd in %s', command => {
+    expect(checkCommand(command, read())).toBeUndefined()
+  })
+
+  it.each([
+    `${POST} # after no cd`,
+    `(cd /clean && true) || true; gh pr create -t x --body-file /work/w.md`,
+    `cd /work/sub && ${POST}`,
+  ])('reads the file the shell posts in %s', command => {
+    expect(checkCommand(command, read())).toContain('body line 1 private-term #1')
+  })
+
+  it.each([
+    ['a body from a command', 'gh pr create -t x --body "$(git log -1)"'],
+    ['a body from a redirect', 'gh pr create -t x --body "$(< w.md)"'],
+    ['an unquoted $(cat file), which the shell splits', 'gh pr create -t x --body $(cat w.md)'],
+    ['a cat after a cd in the substitution', 'gh pr create -t x --body "$(cd /clean && cat w.md)"'],
+    ['a cat with an option', 'gh pr create -t x --body "$(cat -n /clean/w.md)"'],
+    ['a heredoc the shell expands', 'gh pr create -t x -F - <<EOF\n$(cat secret)\nEOF'],
+    ['a heredoc the shell expands, through cat', 'gh pr create -t x -b "$(cat <<EOF\n`cat secret`\nEOF\n)"'],
+    ['a here-string the shell expands', 'gh pr create -t x -F - <<< "$(cat secret)"'],
+    ['a heredoc overridden by a redirect', "gh pr create -t x -F - <<'EOF' < /clean/w.md\nclean\nEOF"],
+    ['an expanded verb', 'gh pr $V -t x -b y'],
+    ['an expanded group', 'gh "$G" create -t x -b y'],
+    ['an expanded positional', 'gh pr comment "$(gh pr view --json number -q .number)" -b y'],
+    ['an expanded gh api endpoint', 'gh api "repos/o/r/issues/$N/comments" -f body=y'],
+  ])('denies %s', (_, command) => {
+    expect(checkCommand(command, ctx({ readFile: () => 'clean' }))).toBe(REASONS.unreadableBody)
+  })
+
+  it('still reads a quoted heredoc, with or without an expansion-free unquoted delimiter', () => {
+    expect(checkCommand("gh pr create -t x -F - <<'EOF'\nclean\nEOF", ctx())).toBeUndefined()
+    expect(checkCommand('gh pr create -t x -F - <<EOF\nclean\nEOF', ctx())).toBeUndefined()
+    expect(checkCommand(`gh pr create -t x -F - <<EOF\n${TERM}\nEOF`, ctx())).toContain('private-term #1')
+  })
+
+  it.each([
+    ['a short flag behind another', 'gh pr create -t x -dF /work/w.md', 'body line 1'],
+    ['a short flag joined with =', 'gh pr create -t x -F=/work/w.md', 'body line 1'],
+    ['a repo flag before the verb', `gh pr -R o/r create -t x -b ${TERM}`, 'body line 1'],
+    ['gh pr new', `gh pr new -t ${TERM} -b y`, 'title line 1'],
+    ['gh pr merge --body', `gh pr merge 12 --squash --body ${TERM}`, 'body line 1'],
+    ['gh pr merge --subject', `gh pr merge 12 --squash --subject ${TERM}`, 'title line 1'],
+    ['gh pr merge --body-file', 'gh pr merge 12 --squash --body-file w.md', 'body line 1'],
+  ])('scans %s', (_, command, where) => {
+    expect(checkCommand(command, read())).toContain(`${where} private-term #1`)
+  })
+
+  it('leaves gh commands that post no text alone, whatever their arguments', () => {
+    const noList = ctx({ terms: { kind: 'missing' } })
+
+    expect(checkCommand('gh pr merge 12 --squash --delete-branch', noList)).toBeUndefined()
+    expect(checkCommand('gh pr view "$PR" --json title', noList)).toBeUndefined()
+    expect(
+      checkCommand('gh run watch $(gh run list -L1 --json databaseId -q ".[0].databaseId")', noList),
+    ).toBeUndefined()
+  })
+
+  it('denies a FIFO or a directory as a body file without waiting on it', () => {
+    const fifo = path.join(SCRATCH, 'body.fifo')
+    execFileSync('mkfifo', [fifo])
+    const real = ctx({ readFile: readText })
+
+    expect(checkCommand(`gh pr create -t x --body-file ${fifo}`, real)).toBe(REASONS.unreadableBody)
+    expect(checkCommand(`gh pr create -t x --body-file ${SCRATCH}`, real)).toBe(REASONS.unreadableBody)
+    expect(checkCommand('gh pr create -t x --body-file /dev/stdin', real)).toBe(REASONS.unreadableBody)
   })
 })
 
@@ -332,6 +493,24 @@ describe('the commands coordinators and agents post with', () => {
 
     expect(checkCommand(comment, ctx({ terms: NO_LIST }))).toBe(REASONS.missingTerms)
   })
+
+  it.each([
+    "-f body='hello see /repos/o/r/pulls/12/merge'",
+    '-f body=hello -f x=/repos/o/r/pulls/12/merge',
+    "-f body=hello -H 'X-N: /repos/o/r/pulls/12/merge'",
+    '-f body=hello --jq repos/o/r/pulls/12/merge',
+    '-f body=hello repos/o/r/pulls/12/merge',
+  ])('does not take a comment for a merge because %s names the merge path', rest => {
+    const comment = `gh api -X POST repos/o/r/issues/12/comments ${rest}`
+
+    expect(checkCommand(comment, ctx({ terms: NO_LIST }))).toBe(REASONS.missingTerms)
+  })
+
+  it('does not take an endpoint that only ends in the merge path for a merge', () => {
+    const comment = "gh api -X POST 'repos/o/r/issues/12/comments?x=/repos/o/r/pulls/12/merge' -f body=hello"
+
+    expect(checkCommand(comment, ctx({ terms: NO_LIST }))).toBe(REASONS.missingTerms)
+  })
 })
 
 describe('the hook entry point', () => {
@@ -372,6 +551,25 @@ describe('the hook entry point', () => {
     expect(built.terms.kind).toBe('ok')
     expect(checkCommand(`gh pr create -t ${TERM} -b x`, built)).toContain('private-term')
     expect(checkCommand(`ls ${path.join(SCRATCH, 'hooks')}`, built)).toBe(REASONS.protectedPath)
+  })
+
+  it.skipIf(process.getuid?.() === 0)('reports a term list it cannot read as unreadable, not missing', () => {
+    const locked = path.join(SCRATCH, 'locked-terms')
+    fs.writeFileSync(locked, `${TERM}\n`, { mode: 0o000 })
+
+    expect(loadTerms(locked)).toEqual({ kind: 'unreadable' })
+    expect(loadTerms(SCRATCH)).toEqual({ kind: 'unreadable' })
+    expect(loadTerms(path.join(SCRATCH, 'no-such-terms'))).toEqual({ kind: 'missing' })
+    expect(checkCommand('gh pr create -t x -b y', ctx({ terms: loadTerms(locked) }))).toBe(
+      REASONS.unreadableTerms,
+    )
+  })
+
+  it('takes an empty term list file for a list', () => {
+    const empty = path.join(SCRATCH, 'empty-terms')
+    fs.writeFileSync(empty, '', { mode: 0o600 })
+
+    expect(loadTerms(empty)).toEqual({ kind: 'ok', rules: [] })
   })
 
   it('runs as agent-chat leak-guard pretool from the built CLI', () => {
@@ -419,6 +617,21 @@ describe('the shell splitter', () => {
 
     expect(cmd?.marked).toEqual(['a', '\0$X/b', '$Y', '$Z', '\0~/c', 'd~', '\0*.md', '~', '$W'])
     expect(cmd?.words).toEqual(['a', '$X/b', '$Y', '$Z', '~/c', 'd~', '*.md', '~', '$W'])
+  })
+
+  it('records how each command is joined and whether it runs in a subshell', () => {
+    const cmds = parseShell('a && b |\nc; (d) || e & f "$(g)"')
+    const shape = cmds.map(c => [c.words[0], c.before, c.after, c.nested])
+
+    expect(shape).toEqual([
+      ['a', '', '&&', false],
+      ['b', '&&', '|', false],
+      ['c', '|', ';', false],
+      ['d', ';', '||', true],
+      ['e', '||', '&', false],
+      ['g', '', '', true],
+      ['f', '&', '', false],
+    ])
   })
 
   it('drops redirection targets and comments', () => {

@@ -10,37 +10,54 @@ export const LIVE = '\0'
 
 export const unmark = (word: string): string => word.replaceAll(LIVE, '')
 
+/** One `$(...)` or backtick pair: its source text and the commands inside it. */
+export interface Substitution {
+  raw: string
+  commands: SimpleCommand[]
+  /** Inside double quotes, so the shell does not split or glob what it prints. */
+  quoted: boolean
+}
+
 /** One simple command, its words with quotes removed, and any heredoc or here-string fed to it. */
 export interface SimpleCommand {
   words: string[]
   /** The same words with LIVE before each character the shell would expand, so quoting is not lost. */
   marked: string[]
-  /** The commands inside this command's `$(...)` and backticks. */
-  substitutions: SimpleCommand[]
+  substitutions: Substitution[]
   stdin?: string
+  /** The shell expands `stdin`, or reads its input from a redirect the splitter does not follow. */
+  stdinLive: boolean
+  /** The operator joining this command to the one before it and after it; '' at either end. */
+  before: string
+  after: string
+  /** Inside parentheses or a substitution, so it runs in a subshell. */
+  nested: boolean
 }
-
-const newCommand = (): SimpleCommand => ({ words: [], marked: [], substitutions: [] })
 
 type Pending = 'discard' | 'herestring' | { heredoc: boolean }
 
 interface Heredoc {
   delim: string
   strip: boolean
+  quoted: boolean
   target: SimpleCommand
 }
 
 const OPERATORS = new Set([';', '&', '|'])
-const GLOB = '*?['
+const GLOB = '*?[{'
+const BLANK = new Set([' ', '\t', '\n', ';', undefined])
 
 const ANSI_C: Record<string, string> = { n: '\n', t: '\t', r: '\r', '\\': '\\', "'": "'", '"': '"' }
 
 class ShellLexer {
   pos: number
   private readonly out: SimpleCommand[] = []
-  private cur = newCommand()
+  private cur: SimpleCommand
+  private last: SimpleCommand | undefined
+  private joiner = ''
   private word: string | null = null
   private marked = ''
+  private quoted = false
   private pending: Pending | null = null
   private heredocs: Heredoc[] = []
   private depth = 0
@@ -52,6 +69,12 @@ class ShellLexer {
     private readonly nested = false,
   ) {
     this.pos = start
+    this.cur = this.newCommand()
+  }
+
+  private newCommand(): SimpleCommand {
+    const nested = this.nested || this.depth !== 0
+    return { words: [], marked: [], substitutions: [], stdinLive: false, before: '', after: '', nested }
   }
 
   run(): SimpleCommand[] {
@@ -66,7 +89,7 @@ class ShellLexer {
     if (c === ' ' || c === '\t') return this.skip(() => this.endWord())
     if (c === '\n') return this.newline()
     if (c === '(' || c === ')') return this.paren(c)
-    if (OPERATORS.has(c)) return this.skip(() => this.endCommand())
+    if (OPERATORS.has(c)) return this.operator(c)
     if (c === '#' && this.word === null) return this.skipComment()
     if (c === '<' || c === '>') return this.redirect()
     this.wordPart(c)
@@ -79,15 +102,37 @@ class ShellLexer {
 
   private newline(): void {
     this.endCommand()
+    this.join('\n')
     this.pos++
     this.readHeredocs()
   }
 
+  private operator(c: string): void {
+    const op = c !== ';' && this.src[this.pos + 1] === c ? c + c : c
+    this.endCommand()
+    this.join(op)
+    this.pos += op.length
+  }
+
+  /** A newline after `&&`, `||` or `|` continues the list, so it never replaces that operator. */
+  private join(op: string): void {
+    if (this.joiner === '') this.joiner = op
+    if (this.last !== undefined && this.last.after === '') this.last.after = op
+  }
+
+  /** `name(`, `name ()` and `<(`: a glob qualifier, a function and a process substitution, none modelled. */
   private paren(c: string): void {
+    const fed = c === '(' && this.word === null && this.pending !== null
+    if (fed) this.pending = null
+    if (fed || (c === '(' && this.word !== null)) this.append('', true)
+    this.endWord()
+    const defined = this.cur.marked.length - 1
+    if (defined >= 0 && /^\(\s*\)/.test(this.src.slice(this.pos))) this.cur.marked[defined] += LIVE
     this.endCommand()
     if (c === ')' && this.nested && this.depth === 0) return void (this.closed = true)
     this.depth += c === '(' ? 1 : -1
     this.pos++
+    this.cur = this.newCommand()
   }
 
   private skipComment(): void {
@@ -96,6 +141,8 @@ class ShellLexer {
   }
 
   private redirect(): void {
+    const range = /^<\d*-\d*>/.exec(this.src.slice(this.pos))?.[0]
+    if (range !== undefined) return this.globRange(range)
     if (this.word !== null && /^\d+$/.test(this.word)) this.word = null
     this.endWord()
     if (this.src.startsWith('<<<', this.pos)) return this.expect('herestring', 3)
@@ -103,9 +150,16 @@ class ShellLexer {
       const strip = this.src[this.pos + 2] === '-'
       return this.expect({ heredoc: strip }, strip ? 3 : 2)
     }
+    if (this.src[this.pos] === '<') this.cur.stdinLive = true
     this.pos++
     while ('>&|'.includes(this.src[this.pos] ?? '.')) this.pos++
     this.pending = 'discard'
+  }
+
+  /** zsh matches `<1-9>` against file names, so it is a glob and not two redirects. */
+  private globRange(range: string): void {
+    this.pos += range.length
+    this.append(range, true)
   }
 
   private expect(pending: Pending, width: number): void {
@@ -115,17 +169,34 @@ class ShellLexer {
 
   private wordPart(c: string): void {
     const next = this.src[this.pos + 1]
+    this.quoted ||= c === "'" || c === '"' || c === '\\'
     if (c === "'") return this.append(this.until("'"))
     if (c === '"') return this.doubleQuoted()
-    if (c === '$' && next === "'") return this.append(this.ansiC())
-    if (c === '$' && next === '(') return this.append(this.substitution(), true)
-    if (c === '`') return this.append(this.backtick(), true)
+    if (c === '$' && next === "'") return this.ansiC()
+    if (c === '$' && next === '(') return this.append(this.substitution(false), true)
+    if (c === '$' && next === '{') return this.append(this.braced(), true)
+    if (c === '`') return this.append(this.backtick(false), true)
     if (c === '\\') {
       this.pos += 2
       return this.append(next ?? '')
     }
     this.pos++
-    this.append(c, c === '$' || GLOB.includes(c) || (c === '~' && this.word === null))
+    this.append(c, this.expands(c, next))
+  }
+
+  /** A `{` or `}` alone is a group, not a brace expansion; a leading `=` is zsh's command path. */
+  private expands(c: string, next: string | undefined): boolean {
+    const starts = this.word === null
+    if ((c === '{' || c === '}') && starts && BLANK.has(next)) return false
+    return c === '$' || GLOB.includes(c) || (starts && (c === '~' || c === '='))
+  }
+
+  private braced(): string {
+    const end = this.src.indexOf('}', this.pos)
+    const stop = end < 0 ? this.src.length : end + 1
+    const text = this.src.slice(this.pos, stop)
+    this.pos = stop
+    return text
   }
 
   private append(text: string, live = false): void {
@@ -147,8 +218,8 @@ class ShellLexer {
     while (this.pos < this.src.length && this.src[this.pos] !== '"') {
       const c = this.src[this.pos] as string
       const next = this.src[this.pos + 1] ?? ''
-      if (c === '$' && next === '(') this.append(this.substitution(), true)
-      else if (c === '`') this.append(this.backtick(), true)
+      if (c === '$' && next === '(') this.append(this.substitution(true), true)
+      else if (c === '`') this.append(this.backtick(true), true)
       else if (c === '\\' && '$`"\\\n'.includes(next)) {
         this.append(next === '\n' ? '' : next)
         this.pos += 2
@@ -160,54 +231,79 @@ class ShellLexer {
     this.pos++
   }
 
-  private ansiC(): string {
+  /** An escape outside the table, such as `\x65`, stays LIVE: the splitter does not decode it. */
+  private ansiC(): void {
+    this.append('')
+    this.pos += 2
+    while (this.pos < this.src.length && this.src[this.pos] !== "'") {
+      const c = this.src[this.pos] as string
+      const next = this.src[this.pos + 1] ?? ''
+      if (c === '\\') this.append(ANSI_C[next] ?? next, ANSI_C[next] === undefined)
+      else this.append(c)
+      this.pos += c === '\\' ? 2 : 1
+    }
     this.pos++
-    return this.until("'").replace(/\\(.)/g, (_, ch: string) => ANSI_C[ch] ?? `\\${ch}`)
   }
 
   /** Parses the inner commands too, so `$(git push --no-verify)` is seen; the word keeps the raw text. */
-  private substitution(): string {
+  private substitution(quoted: boolean): string {
     const start = this.pos
     const inner = new ShellLexer(this.src, this.pos + 2, true)
-    this.substituted(inner.run())
+    const commands = inner.run()
     this.pos = Math.min(inner.pos + 1, this.src.length)
-    return this.src.slice(start, this.pos)
+    return this.substituted(this.src.slice(start, this.pos), commands, quoted)
   }
 
-  private backtick(): string {
+  private backtick(quoted: boolean): string {
     const start = this.pos
-    const body = this.until('`')
-    this.substituted(parseShell(body))
-    return this.src.slice(start, this.pos)
+    const commands = new ShellLexer(this.until('`'), 0, true).run()
+    return this.substituted(this.src.slice(start, this.pos), commands, quoted)
   }
 
-  private substituted(commands: SimpleCommand[]): void {
+  private substituted(raw: string, commands: SimpleCommand[], quoted: boolean): string {
     this.out.push(...commands)
-    this.cur.substitutions.push(...commands)
+    this.cur.substitutions.push({ raw, commands, quoted })
+    return raw
   }
 
   private endWord(): void {
     if (this.word === null) return
     const word = this.word
+    const quoted = this.quoted
     this.word = null
+    this.quoted = false
     const pending = this.pending
     this.pending = null
     if (pending === null) {
       this.cur.words.push(word)
       this.cur.marked.push(this.marked)
-    } else if (pending === 'herestring') this.cur.stdin = word
+    } else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
     else if (pending !== 'discard')
-      this.heredocs.push({ delim: word, strip: pending.heredoc, target: this.cur })
+      this.heredocs.push({ delim: word, strip: pending.heredoc, quoted, target: this.cur })
+  }
+
+  private feed(target: SimpleCommand, text: string, live: boolean): void {
+    target.stdin = (target.stdin ?? '') + text
+    target.stdinLive ||= live
   }
 
   private endCommand(): void {
     this.endWord()
-    if (this.cur.words.length > 0) this.out.push(this.cur)
-    this.cur = newCommand()
+    if (this.cur.words.length > 0) {
+      this.cur.before = this.joiner
+      this.joiner = ''
+      this.last = this.cur
+      this.out.push(this.cur)
+    }
+    this.cur = this.newCommand()
   }
 
+  /** The shell expands `$` and backticks in a heredoc whose delimiter is not quoted. */
   private readHeredocs(): void {
-    for (const doc of this.heredocs) doc.target.stdin = (doc.target.stdin ?? '') + this.heredocBody(doc)
+    for (const doc of this.heredocs) {
+      const body = this.heredocBody(doc)
+      this.feed(doc.target, body, !doc.quoted && /[$`]/.test(body))
+    }
     this.heredocs = []
   }
 
@@ -225,26 +321,31 @@ class ShellLexer {
   }
 }
 
+/** Stands in for a substitution while the rest of its word is expanded. */
+export const HOLE = '\x01'
+
 /** Every simple command in `src`, including those inside `$(...)` and backticks. */
 export function parseShell(src: string): SimpleCommand[] {
-  return new ShellLexer(unmark(src)).run()
+  return new ShellLexer(unmark(src).replaceAll(HOLE, '')).run()
 }
 
-const NAME = '[A-Za-z_][A-Za-z0-9_]*'
-const EXPANSION = new RegExp(`${LIVE}(?:\\$\\{(${NAME})\\}|\\$(${NAME})|~(?=/|$))`, 'g')
+export const NAME = '[A-Za-z_][A-Za-z0-9_]*'
+// zsh reads `$NAME:h` and `$NAME[1]` as a modifier and a subscript, even inside double quotes.
+const BARE = `\\$(${NAME})(?![A-Za-z0-9_]|${LIVE}?[:\\[])`
+const EXPANSION = new RegExp(`${LIVE}(?:\\$\\{(${NAME})\\}|${BARE}|~(?=/|$))`, 'g')
+// An unquoted value that is empty, or holds blanks or glob characters, becomes other words.
+const ONE_WORD = /^[^\s*?[\]{}]+$/
 
-/** A marked word as the shell expands it, or undefined unless every expansion is `~`, `$VAR` or `${VAR}` with a value. */
+/** A marked word as the shell expands it, or undefined unless every expansion is `~`, `$VAR` or `${VAR}` with a one-word value. */
 export function expandWord(
   marked: string,
   env: Readonly<Record<string, string | undefined>>,
-  home: string,
 ): string | undefined {
   let known = true
   const expanded = marked.replace(EXPANSION, (_, braced?: string, bare?: string) => {
-    const name = braced ?? bare
-    const value = name === undefined ? home : env[name]
-    known &&= value !== undefined
-    return value ?? ''
+    const value = env[braced ?? bare ?? 'HOME'] ?? ''
+    known &&= ONE_WORD.test(value)
+    return value
   })
   return known && !expanded.includes(LIVE) ? expanded : undefined
 }

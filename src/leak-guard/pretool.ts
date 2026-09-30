@@ -2,7 +2,16 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { matchRules, parseTerms, type TermRule } from '@titan-design/egress-scan'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
-import { expandWord, LIVE, parseShell, unmark, type SimpleCommand } from './shell-words.js'
+import {
+  expandWord,
+  HOLE,
+  LIVE,
+  NAME,
+  parseShell,
+  unmark,
+  type SimpleCommand,
+  type Substitution,
+} from './shell-words.js'
 
 /**
  * The PreToolUse bypass guard every spawned agent runs (CC-270). It denies the ordinary ways
@@ -13,15 +22,26 @@ import { expandWord, LIVE, parseShell, unmark, type SimpleCommand } from './shel
 
 export type TermsLoad = { kind: 'ok'; rules: TermRule[] } | { kind: 'missing' } | { kind: 'unreadable' }
 
+type Env = Readonly<Record<string, string | undefined>>
+
 export interface GuardContext {
   terms: TermsLoad
   cwd: string
-  home: string
-  /** The hook's own environment, which `$VAR` in a body file path is expanded from. */
-  env: Readonly<Record<string, string | undefined>>
+  /** The hook's own environment, which `~` and `$VAR` in a gh argument are expanded from. */
+  env: Env
   /** Absolute paths and path fragments an agent may not touch: the hook dir and the term list. */
   protectedPaths: readonly string[]
   readFile(file: string): string | undefined
+}
+
+/** What the guard knows of the shell before one command; undefined where it cannot tell. */
+interface Scope {
+  cwd: string | undefined
+  env: Env | undefined
+  /** The last `cd` ran only if the command before its `&&` succeeded. */
+  fragile: boolean
+  /** `CDPATH` may be set, so a relative `cd` may land somewhere else. */
+  cdpath: boolean
 }
 
 const DOCS = 'See docs/leak-guard.md.'
@@ -35,7 +55,7 @@ export const REASONS = {
   protectedPath: `leak-guard: the leak guard's hook directory and private term list are off limits to agents. ${DOCS}`,
   tooDeep: `leak-guard: the command nests shells too deeply to check. Run it more directly. ${DOCS}`,
   stdinBody: `leak-guard: a PR or issue body read from a pipe cannot be checked. Write it to a file and pass --body-file. ${DOCS}`,
-  unreadableBody: `leak-guard: a body file named in this command could not be read, so it was not checked. ${DOCS}`,
+  unreadableBody: `leak-guard: this command's PR or issue text could not be read the way the shell will read it, so it was not checked. Use literal arguments, a body file at a literal path and a quoted heredoc. ${DOCS}`,
   missingTerms: `leak-guard: no private term list, so PR and issue text cannot be checked. Create ~/.config/titan-egress/private-terms, one term per line, chmod 600. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
 } as const
@@ -52,14 +72,16 @@ const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=/
 const isGitConfigVar = (name: string | undefined): boolean => name !== undefined && /^GIT_CONFIG/.test(name)
 const NO_VERIFY = /^--no-veri(?:f|fy)?$/
 
-type Unwrapped = { words: string[] } | { reason: string }
+/** `chdir` is set when a wrapper such as `env -C` runs the command in another directory. */
+type Unwrapped = { words: string[]; chdir?: boolean } | { reason: string }
 
 /** Strips assignments and wrappers such as `env`, `command` and `nice` down to the command that runs. */
 function unwrap(words: readonly string[]): Unwrapped {
   let rest = [...words]
+  let chdir = false
   for (;;) {
     const head = rest[0]
-    if (head === undefined) return { words: rest }
+    if (head === undefined) return { words: rest, chdir }
     const assigned = ASSIGNMENT.exec(head)?.[1]
     if (assigned !== undefined) {
       if (isGitConfigVar(assigned)) return { reason: REASONS.gitConfigEnv }
@@ -71,7 +93,8 @@ function unwrap(words: readonly string[]): Unwrapped {
       const env = unwrapEnv(rest.slice(1))
       if ('reason' in env) return env
       rest = env.words
-    } else return { words: rest }
+      chdir ||= env.chdir === true
+    } else return { words: rest, chdir }
   }
 }
 
@@ -85,6 +108,7 @@ function dropOptions(words: string[], withValue: readonly string[] = []): string
 
 function unwrapEnv(args: string[]): Unwrapped {
   let i = 0
+  let chdir = false
   for (; i < args.length; i++) {
     const a = args[i] as string
     const unset =
@@ -94,12 +118,13 @@ function unwrapEnv(args: string[]): Unwrapped {
     if (a === '-' || a === '--ignore-environment' || /^-[^-]*i/.test(a)) return { reason: REASONS.envClear }
     if (a === '-S' || a === '--split-string')
       return { words: [...(parseShell(args[i + 1] ?? '')[0]?.marked ?? []), ...args.slice(i + 2)] }
+    chdir ||= /^(?:-C|--chdir)/.test(a)
     if (a === '-C' || a === '--chdir' || a === '-P') i++
-    else if (a === '--') return { words: args.slice(i + 1) }
+    else if (a === '--') return { words: args.slice(i + 1), chdir }
     else if (!a.startsWith('-') && !ASSIGNMENT.test(a)) break
     else if (isGitConfigVar(ASSIGNMENT.exec(a)?.[1])) return { reason: REASONS.gitConfigEnv }
   }
-  return { words: args.slice(i) }
+  return { words: args.slice(i), chdir }
 }
 
 function checkEnvEdit(args: readonly string[]): string | undefined {
@@ -148,7 +173,6 @@ interface Text {
   text: string
 }
 
-/** A file whose content is posted; `file` is a marked word, expanded before it is read. */
 interface BodyFile {
   label: string
   file: string
@@ -161,43 +185,111 @@ interface Sources {
 
 type Texts = { texts: Text[] } | { reason: string }
 
-const GH_TEXT_COMMANDS = new Set(['create', 'edit', 'comment', 'review'])
+function readAt(file: string, ctx: GuardContext, scope: Scope): string | undefined {
+  if (path.isAbsolute(file)) return ctx.readFile(file)
+  return scope.cwd === undefined ? undefined : ctx.readFile(`${scope.cwd}/${file}`)
+}
 
-/** Every value of a flag, in `--flag v`, `--flag=v`, `-f v` and `-fv` spellings. */
+/** What a quoted `$(cat file)` or `$(cat <<'EOF')` prints; undefined for any other substitution. */
+function printedBy(sub: Substitution, ctx: GuardContext, scope: Scope): string | undefined {
+  const [cat, ...others] = sub.commands
+  if (!sub.quoted || cat === undefined || others.length > 0 || cat.marked[0] !== 'cat') return undefined
+  const files = cat.marked.slice(1).map(file => expandWord(file, scope.env ?? {}))
+  if (files.length === 0) return cat.stdinLive ? undefined : cat.stdin
+  const bodies = files.map(file =>
+    file === undefined || file.startsWith('-') ? undefined : readAt(file, ctx, scope),
+  )
+  return bodies.includes(undefined) ? undefined : unmark(bodies.join('')).replace(/\n+$/, '')
+}
+
+/** A marked word as the shell will pass it, or undefined when the guard cannot be sure of it. */
+function resolveWord(
+  marked: string,
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+): string | undefined {
+  if (!marked.includes(LIVE)) return marked
+  if (scope.env === undefined) return undefined
+  const printed: (string | undefined)[] = []
+  let text = marked
+  for (const sub of cmd.substitutions.filter(s => marked.includes(LIVE + s.raw))) {
+    text = text.replace(LIVE + sub.raw, () => HOLE)
+    printed.push(printedBy(sub, ctx, scope))
+  }
+  const parts = expandWord(text, scope.env)?.split(HOLE)
+  if (parts?.length !== printed.length + 1 || printed.includes(undefined)) return undefined
+  return parts.map((part, i) => part + (printed[i] ?? '')).join('')
+}
+
+const GH_TEXT_VERBS = new Set(['create', 'new', 'edit', 'comment', 'review', 'merge'])
+const GH_REPO_FLAGS = new Set(['-R', '--repo'])
+
+/** The first word after the group that is not a flag, or the first one the shell expands. */
+function ghVerb(args: readonly string[]): string {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] as string
+    if (a.includes(LIVE) || !a.startsWith('-')) return a
+    if (GH_REPO_FLAGS.has(a)) i++
+  }
+  return ''
+}
+
+type GhKind = 'pr' | 'api' | 'other' | 'unknown'
+
+/** Which text a gh command can post, from its marked words; unknown when the group or verb is expanded. */
+function ghKind(marked: readonly string[]): GhKind {
+  const group = marked[0] ?? ''
+  if (group.includes(LIVE)) return 'unknown'
+  if (group === 'api') return 'api'
+  if (group !== 'pr' && group !== 'issue') return 'other'
+  const verb = ghVerb(marked.slice(1))
+  if (verb.includes(LIVE)) return 'unknown'
+  return GH_TEXT_VERBS.has(verb) ? 'pr' : 'other'
+}
+
+const longValue = (arg: string, name: string): string | undefined =>
+  arg === name ? '' : arg.startsWith(`${name}=`) ? arg.slice(name.length + 1) : undefined
+
+/** gh takes `-dF file`, a short flag behind other short flags, as well as `-F file` and `-Ffile`. */
+function shortValue(arg: string, name: string): string | undefined {
+  const letter = name[1] as string
+  const at = /^-[A-Za-z]+/.exec(arg)?.[0].indexOf(letter) ?? -1
+  return at < 0 ? undefined : arg.slice(at + 1).replace(/^=/, '')
+}
+
+/** Every value of a flag, in `--flag v`, `--flag=v`, `-f v`, `-fv` and `-xf v` spellings. */
 export function flagValues(args: readonly string[], names: readonly string[]): string[] {
   const values: string[] = []
-  args.forEach((a, i) => {
+  args.forEach((arg, i) => {
     for (const name of names) {
-      if (a === name && i + 1 < args.length) values.push(args[i + 1] as string)
-      else if (name.startsWith('--') && a.startsWith(`${name}=`)) values.push(a.slice(name.length + 1))
-      else if (!name.startsWith('--') && a.startsWith(name) && a.length > name.length)
-        values.push(a.slice(name.length))
+      const value = name.startsWith('--') ? longValue(arg, name) : shortValue(arg, name)
+      if (value !== undefined && value !== '') values.push(value)
+      else if (value === '' && i + 1 < args.length) values.push(args[i + 1] as string)
     }
   })
   return values
 }
 
-/** An expansion the guard cannot resolve becomes LIVE in the path, which is never read. */
-function readBody(marked: string, stdin: string | undefined, ctx: GuardContext): string | { reason: string } {
-  if (marked === '-') return stdin ?? { reason: REASONS.stdinBody }
-  const file = path.resolve(ctx.cwd, expandWord(marked, ctx.env, ctx.home) ?? LIVE)
-  const body = file.includes(LIVE) ? undefined : ctx.readFile(file)
-  return body ?? { reason: REASONS.unreadableBody }
+function readBody(file: string, cmd: SimpleCommand, ctx: GuardContext, scope: Scope): string | undefined {
+  if (file !== '-') return readAt(file, ctx, scope)
+  return cmd.stdinLive ? undefined : cmd.stdin
 }
 
-function collect({ inline, files }: Sources, stdin: string | undefined, ctx: GuardContext): Texts {
-  const texts = inline.map(({ label, text }) => ({ label, text: unmark(text) }))
+function collect({ inline, files }: Sources, cmd: SimpleCommand, ctx: GuardContext, scope: Scope): Texts {
+  const texts = [...inline]
   for (const { label, file } of files) {
-    const body = readBody(file, stdin, ctx)
-    if (typeof body !== 'string') return body
-    texts.push({ label, text: body })
+    if (file === '-' && cmd.stdin === undefined) return { reason: REASONS.stdinBody }
+    const text = readBody(file, cmd, ctx, scope)
+    if (text === undefined) return { reason: REASONS.unreadableBody }
+    texts.push({ label, text })
   }
   return { texts }
 }
 
 function prSources(args: readonly string[]): Sources {
   const inline = [
-    ...flagValues(args, ['--title', '-t']).map(text => ({ label: 'title', text })),
+    ...flagValues(args, ['--title', '--subject', '-t']).map(text => ({ label: 'title', text })),
     ...flagValues(args, ['--body', '-b']).map(text => ({ label: 'body', text })),
   ]
   const files = flagValues(args, ['--body-file', '-F']).map(file => ({ label: 'body', file }))
@@ -216,26 +308,30 @@ function apiSources(args: readonly string[]): Sources {
   return { inline, files }
 }
 
-/** The text a gh command posts, from its marked arguments; nothing for a command that posts none. */
-function ghSources(args: readonly string[]): Sources {
-  const [group, verb] = args
-  if ((group === 'pr' || group === 'issue') && GH_TEXT_COMMANDS.has(verb ?? '')) return prSources(args)
-  if (group === 'api') return apiSources(args)
-  return { inline: [], files: [] }
+const API_VALUE_FLAGS = new Set(
+  '-X --method -f --raw-field -F --field -H --header --input -q --jq -t --template --hostname --cache -p --preview'.split(
+    ' ',
+  ),
+)
+
+/** The endpoint of a `gh api` call: every word that is neither a flag nor a flag's value. */
+function apiEndpoints(args: readonly string[]): string[] {
+  const endpoints: string[] = []
+  for (let i = 1; i < args.length; i++) {
+    const a = args[i] as string
+    if (API_VALUE_FLAGS.has(a)) i++
+    else if (!a.startsWith('-')) endpoints.push(a)
+  }
+  return endpoints
 }
 
-/** The files a `$(cat file)` puts into the command's text, which the text itself does not show. */
-const catFiles = (cmd: SimpleCommand): BodyFile[] =>
-  cmd.substitutions
-    .filter(sub => sub.words[0] === 'cat' && sub.stdin === undefined)
-    .flatMap(sub => sub.marked.slice(1).filter(word => !word.startsWith('-')))
-    .map(file => ({ label: 'cat file', file }))
-
-const MERGE_ENDPOINT = /(?:^|\/)repos\/[^/]+\/[^/]+\/pulls\/\d+\/merge$/
+const MERGE_ENDPOINT = /^\/?repos\/[^/]+\/[^/]+\/pulls\/\d+\/merge$/
 
 /** A merge has no pre-push scan behind it to refuse, so a missing term list must not block every merge. */
-const isMerge = (args: readonly string[]): boolean =>
-  args[0] === 'api' && args.some(arg => MERGE_ENDPOINT.test(arg))
+function isMerge(args: readonly string[]): boolean {
+  const endpoints = apiEndpoints(args)
+  return args[0] === 'api' && endpoints.length === 1 && MERGE_ENDPOINT.test(endpoints[0] as string)
+}
 
 /** `label line n rule[ #term]` for each hit; the line's text never appears. */
 export function findingsIn(texts: readonly Text[], rules: readonly TermRule[]): string[] {
@@ -251,10 +347,19 @@ export function findingsIn(texts: readonly Text[], rules: readonly TermRule[]): 
   )
 }
 
-function checkGh(args: readonly string[], cmd: SimpleCommand, ctx: GuardContext): string | undefined {
-  const { inline, files } = ghSources(args)
-  if (inline.length + files.length === 0) return undefined
-  const collected = collect({ inline, files: [...files, ...catFiles(cmd)] }, cmd.stdin, ctx)
+function checkGh(
+  marked: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+): string | undefined {
+  const kind = ghKind(marked)
+  if (kind === 'other') return undefined
+  const args = marked.map(word => resolveWord(word, cmd, ctx, scope))
+  if (kind === 'unknown' || !args.every(arg => arg !== undefined)) return REASONS.unreadableBody
+  const sources = kind === 'api' ? apiSources(args) : prSources(args)
+  if (sources.inline.length + sources.files.length === 0) return undefined
+  const collected = collect(sources, cmd, ctx, scope)
   if ('reason' in collected) return collected.reason
   if (ctx.terms.kind === 'unreadable') return REASONS.unreadableTerms
   if (ctx.terms.kind === 'missing' && MISSING_TERMS_REFUSES && !isMerge(args)) return REASONS.missingTerms
@@ -267,61 +372,108 @@ function checkShell(
   args: readonly string[],
   stdin: string | undefined,
   ctx: GuardContext,
+  scope: Scope,
   depth: number,
 ): string | undefined {
   const flag = args.findIndex(a => /^-[a-z]*c[a-z]*$/.test(a))
-  if (flag >= 0) return checkAt(args[flag + 1] ?? '', ctx, depth + 1)
+  if (flag >= 0) return checkAt(args[flag + 1] ?? '', ctx, scope, depth + 1)
   const script = args.find(a => !a.startsWith('-'))
-  return script === undefined && stdin !== undefined ? checkAt(stdin, ctx, depth + 1) : undefined
+  return script === undefined && stdin !== undefined ? checkAt(stdin, ctx, scope, depth + 1) : undefined
 }
 
 const ghWriteArgs = (args: readonly string[]): readonly string[] =>
   args.includes('--') ? args.slice(args.indexOf('--') + 1) : args.slice(1)
 
-function checkSimple(cmd: SimpleCommand, ctx: GuardContext, depth: number): string | undefined {
+function checkSimple(cmd: SimpleCommand, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
   const unwrapped = unwrap(cmd.marked)
   if ('reason' in unwrapped) return unwrapped.reason
+  const at = unwrapped.chdir ? { ...scope, cwd: undefined } : scope
   const marked = unwrapped.words.slice(1)
   const [head = '', ...args] = unwrapped.words.map(unmark)
   const name = path.basename(head)
-  if (SHELLS.has(name)) return checkShell(args, cmd.stdin, ctx, depth)
-  if (name === 'eval') return checkAt(args.join(' '), ctx, depth + 1)
+  if (SHELLS.has(name)) return checkShell(args, cmd.stdin, ctx, at, depth)
+  if (name === 'eval') return checkAt(args.join(' '), ctx, at, depth + 1)
   if (name === 'git') return checkGit(args)
-  if (name === 'gh') return checkGh(marked, cmd, ctx)
-  if (name === 'agent-chat' && args[0] === 'gh-write') return checkGh(ghWriteArgs(marked), cmd, ctx)
+  if (name === 'gh') return checkGh(marked, cmd, ctx, at)
+  if (name === 'agent-chat' && args[0] === 'gh-write') return checkGh(ghWriteArgs(marked), cmd, ctx, at)
   if (ENV_EDITS.has(name)) return checkEnvEdit(args)
   return undefined
 }
 
-/** Follows `cd` so a relative body file resolves the way the shell would resolve it. */
-function followCd(cmd: SimpleCommand, ctx: GuardContext): GuardContext {
-  const [head, dir] = cmd.marked
-  if (head !== 'cd' || dir === undefined || dir === '-') return ctx
-  return { ...ctx, cwd: path.resolve(ctx.cwd, expandWord(dir, ctx.env, ctx.home) ?? LIVE) }
+const CD_WORDS = new Set(['cd', 'chdir', 'pushd', 'popd'])
+const OPAQUE = new Set('eval source . function alias setopt unsetopt shopt emulate trap'.split(' '))
+const PLAIN_SET = /^(?:[-+][euxo]+|pipefail|errexit|nounset|xtrace)$/
+
+/** A command that can change the directory or any variable in a way the command line does not show. */
+function isOpaque(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): boolean {
+  const unwrapped = unwrap(cmd.marked)
+  const words = 'reason' in unwrapped ? [] : unwrapped.words
+  const head = resolveWord(words[0] ?? '', cmd, ctx, scope)
+  if (head === 'set') return !words.slice(1).every(arg => PLAIN_SET.test(arg))
+  return head === undefined || OPAQUE.has(head)
 }
 
-const ASSIGNED = /([A-Za-z_][A-Za-z0-9_]*)=/g
+/** bash falls back to the old directory when a `..` follows a name that does not exist. */
+const climbsBack = (dir: string): boolean =>
+  dir
+    .split('/')
+    .some((seg, i, segs) => seg === '..' && segs.slice(0, i).some(s => !['', '.', '..'].includes(s)))
 
-/** The env without the names the command assigns, whose new values the guard cannot know. */
-function knownEnv(command: string, env: GuardContext['env']): GuardContext['env'] {
-  const assigned = new Set([...command.matchAll(ASSIGNED)].map(match => match[1]))
-  return Object.fromEntries(Object.entries(env).filter(([name]) => !assigned.has(name)))
+const JOINS_BEFORE = new Set(['', ';', '\n', '&&'])
+const JOINS_AFTER = new Set(['', ';', '\n', '&&', '||'])
+
+/** Where a plain top-level `cd <dir>` leaves the shell; undefined for any other command that may move it. */
+function plainCd(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): string | undefined {
+  const [head, target, ...rest] = cmd.marked
+  const joined = !cmd.nested && JOINS_BEFORE.has(cmd.before) && JOINS_AFTER.has(cmd.after)
+  if (head !== 'cd' || target === undefined || rest.length > 0 || !joined) return undefined
+  const dir = resolveWord(target, cmd, ctx, scope)
+  if (dir === undefined || dir === '' || /^[-+]/.test(dir) || climbsBack(dir)) return undefined
+  if (path.isAbsolute(dir)) return path.resolve(dir)
+  const searched = scope.cdpath && !/^\.\.?(?:\/|$)/.test(dir)
+  return scope.cwd === undefined || searched ? undefined : path.resolve(scope.cwd, dir)
 }
 
-function checkAt(command: string, ctx: GuardContext, depth: number): string | undefined {
+/** The scope the next command runs in; a `cd` behind `&&` is unsure once its list ends. */
+function advance(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): Scope {
+  if (isOpaque(cmd, ctx, scope)) return { ...scope, cwd: undefined, env: undefined }
+  if (!cmd.words.some(word => CD_WORDS.has(word))) return scope
+  const cwd = plainCd(cmd, ctx, scope)
+  return { ...scope, cwd, fragile: cwd !== undefined && cmd.before === '&&' }
+}
+
+const settle = (cmd: SimpleCommand, scope: Scope): Scope =>
+  scope.fragile && cmd.before !== '&&' ? { ...scope, cwd: undefined, fragile: false } : scope
+
+// The shell sets these itself, so the hook's copy says nothing about the value a command sees.
+const NEVER_EXPANDED = new Set(['PWD', 'OLDPWD', 'SHLVL', '_', 'IFS', 'RANDOM', 'SECONDS', 'LINENO'])
+const REFERENCE = new RegExp(`\\$\\{${NAME}\\}|\\$${NAME}`, 'g')
+
+/** The env without any name the command mentions outside `$NAME` and `${NAME}`: it may assign that name. */
+function knownEnv(command: string, env: Env): Env {
+  const rest = command.replace(REFERENCE, ' ')
+  const known = ([name]: [string, unknown]): boolean => !NEVER_EXPANDED.has(name) && !rest.includes(name)
+  return Object.fromEntries(Object.entries(env).filter(known))
+}
+
+function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
   if (depth > MAX_DEPTH) return REASONS.tooDeep
   if (ctx.protectedPaths.some(p => command.includes(p))) return REASONS.protectedPath
-  let at = { ...ctx, env: knownEnv(command, ctx.env) }
+  const cdpath = scope.cdpath || command.includes('CDPATH')
+  let at: Scope = { ...scope, cdpath, env: scope.env && knownEnv(command, scope.env) }
   for (const cmd of parseShell(command)) {
-    const reason = checkSimple(cmd, at, depth)
+    at = settle(cmd, at)
+    const reason = checkSimple(cmd, ctx, at, depth)
     if (reason !== undefined) return reason
-    at = followCd(cmd, at)
+    at = advance(cmd, ctx, at)
   }
   return undefined
 }
 
-export const checkCommand = (command: string, ctx: GuardContext): string | undefined =>
-  checkAt(command, ctx, 0)
+export function checkCommand(command: string, ctx: GuardContext): string | undefined {
+  const scope = { cwd: ctx.cwd, env: ctx.env, fragile: false, cdpath: Boolean(ctx.env.CDPATH) }
+  return checkAt(command, ctx, scope, 0)
+}
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 
@@ -355,11 +507,16 @@ export function loadTerms(file: string): TermsLoad {
   }
 }
 
-function readText(file: string): string | undefined {
+/** Opened without blocking and read only when regular, so a FIFO or a device cannot hang the hook. */
+export function readText(file: string): string | undefined {
+  let fd: number | undefined
   try {
-    return fs.readFileSync(file, 'utf8')
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK)
+    return fs.fstatSync(fd).isFile() ? fs.readFileSync(fd, 'utf8') : undefined
   } catch {
     return undefined
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd)
   }
 }
 
@@ -369,7 +526,6 @@ export function guardContext(env: NodeJS.ProcessEnv, cwd: string, home: string):
   return {
     terms: loadTerms(terms),
     cwd,
-    home,
     env,
     protectedPaths: [
       terms,
