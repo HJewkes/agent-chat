@@ -9,6 +9,7 @@ import {
   resolveContextHintPolicy,
   resolveNoticeTtlMs,
   resolvePermissionHookTimeout,
+  resolveReportBatchMs,
   resolveWorktreeBudget,
 } from '../config.js'
 import { newAgentSlots } from '../broker/daemon.js'
@@ -29,6 +30,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.AGENT_CHAT_HOME
+  delete process.env.AGENT_CHAT_REPORT_BATCH_SECONDS
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
@@ -217,4 +219,47 @@ describe('resolveNoticeTtlMs', () => {
 
     expect(resolveNoticeTtlMs()).toBe(DEFAULT_NOTICE_TTL_HOURS * 3_600_000)
   })
+})
+
+describe('resolveReportBatchMs', () => {
+  it('defaults to a 20 second window', () => {
+    expect(resolveReportBatchMs()).toBe(20_000)
+  })
+
+  it('reads reportBatchSeconds from config.json, where 0 turns batching off', () => {
+    writeConfigJson({ reportBatchSeconds: 5 })
+    expect(resolveReportBatchMs()).toBe(5_000)
+
+    writeConfigJson({ reportBatchSeconds: 0 })
+    expect(resolveReportBatchMs()).toBe(0)
+  })
+
+  it('lets AGENT_CHAT_REPORT_BATCH_SECONDS override the file', () => {
+    writeConfigJson({ reportBatchSeconds: 5 })
+    process.env.AGENT_CHAT_REPORT_BATCH_SECONDS = '0'
+
+    expect(resolveReportBatchMs()).toBe(0)
+  })
+
+  it.each(['soon', '-1', '301'])('falls back to the file value when the override is %s', override => {
+    writeConfigJson({ reportBatchSeconds: 5 })
+    process.env.AGENT_CHAT_REPORT_BATCH_SECONDS = override
+
+    expect(resolveReportBatchMs()).toBe(5_000)
+  })
+
+  it('falls back to the default when the override is bad and the file sets nothing', () => {
+    process.env.AGENT_CHAT_REPORT_BATCH_SECONDS = 'soon'
+
+    expect(resolveReportBatchMs()).toBe(20_000)
+  })
+
+  it.each([-1, 1.5, 301, 'soon'])(
+    'falls back to the default on %s, which would stall a coordinator',
+    value => {
+      writeConfigJson({ reportBatchSeconds: value })
+
+      expect(resolveReportBatchMs()).toBe(20_000)
+    },
+  )
 })

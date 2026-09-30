@@ -1,6 +1,7 @@
 import type net from 'node:net'
 import {
   HUMAN,
+  type AgentIdentity,
   type ClientMessage,
   type DecidedRefusal,
   type DecisionCitation,
@@ -8,8 +9,10 @@ import {
 } from '../protocol.js'
 import { checkDecision, decidedText, overruleText } from './decisions.js'
 import { AgentLog } from '../agents/identity.js'
+import { resolveReportBatchMs } from '../config.js'
 import { logEvent } from './log.js'
-import { EventLog, newMsgId } from './event-log.js'
+import { EventLog, isReport, isTerminalReport, newMsgId } from './event-log.js'
+import { ReportBatcher } from './report-batch.js'
 import type { AppendInput, EventStore } from './event-store.js'
 import { EventHub } from './events.js'
 import { Registry } from './registry.js'
@@ -24,9 +27,13 @@ export type Conn = net.Socket
  * Live delivery to a connected session, injected so the core never touches a
  * socket. Generic over the connection type so `BrokerCore` itself can be
  * instantiated over a non-socket transport (relay's fold-in target); every
- * existing caller passes no type argument and keeps getting `Conn`.
+ * existing caller passes no type argument and keeps getting `Conn`. Returning
+ * `false` says the frame was not written, which keeps a report from counting as pushed.
  */
-export type Deliver<C = Conn> = (conn: C, message: DeliveredMessage) => void
+export type Deliver<C = Conn> = (conn: C, message: DeliveredMessage) => unknown
+
+/** A headless agent exits seconds after its report; two minutes covers a slow Stop hook and no further work. */
+export const CLOSING_ACT_MS = 120_000
 
 /**
  * The broker's state and its only write path.
@@ -57,12 +64,14 @@ export class BrokerCore<C = Conn> {
   /** Live worktree/file claims, released with the connection that took them (CC-56). */
   readonly claims = new ClaimLedger()
 
-  private readonly deliver: Deliver<C>
+  private readonly reports: ReportBatcher<C>
   private readonly isSeat: (name: string) => boolean
+  /** CC-321: reports a connection closed on unpushed, by name, pushed to the next connection to take that name. */
+  private readonly stranded = new Map<string, DeliveredMessage[]>()
   private readonly watchers = new Set<(row: AppendInput) => void>()
 
   constructor(deliver: Deliver<C>, options: BrokerCoreOptions<C> = {}) {
-    this.deliver = deliver
+    this.reports = new ReportBatcher<C>(deliver, options.reportBatchMs ?? resolveReportBatchMs)
     this.isSeat = options.isSeat ?? (() => false)
     this.registry = options.registry ?? new Registry<C>()
     this.events = options.events ?? new EventLog(options.dbPath)
@@ -226,6 +235,7 @@ export class BrokerCore<C = Conn> {
     // drop() find nothing left to record when it does fire.
     if (agentId !== undefined)
       this.append({ kind: 'agent_detached', actor: name, ref: agentId, body: 'superseded by resume' })
+    this.strand(name, this.reports.forget(evicted))
     logEvent('deregistered', { name, reason: 'superseded by resume' })
     evict?.(evicted)
   }
@@ -270,7 +280,9 @@ export class BrokerCore<C = Conn> {
   drop(conn: C): void {
     const entry = this.registry.entryFor(conn)
     const name = this.registry.drop(conn)
+    const unpushed = this.reports.forget(conn)
     if (!name || !entry) return
+    this.strand(name, unpushed)
     // Claims are leases held by presence, so they end here rather than needing
     // to be reaped: an agent that dies mid-task stops blocking its peers at
     // once, and there is no such thing as a stale claim (CC-56).
@@ -281,12 +293,73 @@ export class BrokerCore<C = Conn> {
       this.append({ kind: 'agent_detached', actor: name, ref: entry.agentId, body: 'connection closed' })
   }
 
+  private strand(name: string, unpushed: DeliveredMessage[]): void {
+    if (unpushed.length > 0) this.stranded.set(name, [...(this.stranded.get(name) ?? []), ...unpushed])
+  }
+
+  /** Push `name`'s new connection the reports its last one closed on, once (CC-321). */
+  deliverStranded(name: string): void {
+    const unpushed = this.stranded.get(name)
+    const conn = this.registry.connFor(name)
+    if (unpushed === undefined || conn === undefined) return
+    this.stranded.delete(name)
+    this.reports.resend(conn, unpushed)
+    logEvent('stranded_reports_delivered', { name, count: unpushed.length })
+  }
+
   /** Deliver to a named session if it happens to be connected right now. */
   deliverTo(name: string, message: DeliveredMessage): boolean {
     const target = this.registry.connFor(name)
     if (!target) return false
-    this.deliver(target, message)
+    this.reports.now(target, message)
     return true
+  }
+
+  /**
+   * Push one routed peer message (CC-321). A worker's report to the session that
+   * spawned it waits out the batch window; everything else goes at once. The
+   * human, a `chat_ask` answer and an endorsed message never come through here.
+   */
+  pushRouted(sender: C, target: C, message: DeliveredMessage): void {
+    if (this.isReportToSpawner(sender, target, message)) this.reports.report(target, message)
+    else this.reports.now(target, message)
+  }
+
+  private isReportToSpawner(sender: C, target: C, message: DeliveredMessage): boolean {
+    if (message.broadcast || !isReport(message.text)) return false
+    const agentId = this.registry.entryFor(sender)?.agentId
+    const spawner = agentId === undefined ? undefined : this.agents.get(agentId)?.spawnedBy
+    return spawner !== undefined && spawner === this.registry.nameOf(target)
+  }
+
+  /** A resume starts a new run, and only a report made in this run counts. */
+  runStartedAt(identity: AgentIdentity): number {
+    return this.events.lastAgentEventAt(identity.agentId, 'agent_resumed') ?? identity.spawnedAt
+  }
+
+  /**
+   * The spawner whose `agent_exited` notice would repeat what it already has (CC-321).
+   * Any held report from the agent is pushed first, so the notice never overtakes it.
+   */
+  reportedSpawner(agentId: string | undefined, exit: Record<string, string> = {}): string | undefined {
+    const identity = agentId === undefined ? undefined : this.agents.get(agentId)
+    if (identity === undefined) return undefined
+    const spawner = this.registry.connFor(identity.spawnedBy)
+    if (spawner !== undefined) this.reports.flushFrom(spawner, identity.name)
+    if (!exitedCleanly(exit)) return undefined
+    return this.closedWithReport(identity) ? identity.spawnedBy : undefined
+  }
+
+  /**
+   * The agent's newest message to its spawner in this run is a terminal report, written
+   * to the spawner's open connection, shortly before now, with nothing sent back since.
+   */
+  private closedWithReport(identity: AgentIdentity): boolean {
+    const { name, spawnedBy } = identity
+    const last = this.events.lastMessageFrom(name, { to: spawnedBy, since: this.runStartedAt(identity) })
+    if (last === undefined || !isTerminalReport(last.text)) return false
+    if (Date.now() - last.at > CLOSING_ACT_MS || !this.reports.wasPushed(last.msgId)) return false
+    return this.events.lastMessageFrom(spawnedBy, { to: name, since: last.at }) === undefined
   }
 
   /**
@@ -478,9 +551,13 @@ export class BrokerCore<C = Conn> {
   }
 
   close(): void {
+    this.reports.flushAll()
     this.events.close()
   }
 }
+
+/** Exit code 0 only: a signalled, inferred or never-started exit records no code at all. */
+const exitedCleanly = (exit: Record<string, string>): boolean => exit.code === '0'
 
 export interface VerdictResult {
   ok: boolean
@@ -496,6 +573,8 @@ export interface BrokerCoreOptions<C = Conn> {
   events?: EventStore
   hub?: EventHub
   dbPath?: string
+  /** The report batch window in ms, asked per report; 0 turns batching off. Defaults to config (CC-321). */
+  reportBatchMs?: () => number
   /** CC-320: whether a name is a watched seat, whose messages are held while it is dark. Nobody, when absent. */
   isSeat?: (name: string) => boolean
 }

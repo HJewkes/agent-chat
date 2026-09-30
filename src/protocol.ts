@@ -441,6 +441,11 @@ export interface DeliveredMessage {
   threadDepth?: number
   /** Set once a thread is long enough to be worth flagging, alongside threadDepth. */
   threadHint?: string
+  /**
+   * CC-321: set only on a coalesced push of several reports. `text` holds each
+   * one whole; this names the real sender and log id of each, in order.
+   */
+  batch?: { msgId: string; from: string }[]
   at: number
 }
 
