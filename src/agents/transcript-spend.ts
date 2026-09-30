@@ -57,9 +57,9 @@ export async function readTranscriptSpend(file: string): Promise<TranscriptSpend
 
 /** The error's code and not its message, which holds the path. */
 function missReason(error: unknown): string {
-  const code = (error as NodeJS.ErrnoException).code
+  const code = (error as NodeJS.ErrnoException | null)?.code
   if (code === 'ENOENT') return 'no transcript written'
-  return `unreadable transcript (${code ?? (error as Error).name})`
+  return `unreadable transcript (${code ?? (error as Error | null)?.name ?? 'unknown'})`
 }
 
 /** Claude Code writes one record per content block of a response, each with the response's usage, so the last per id stands. */
