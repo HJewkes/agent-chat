@@ -240,6 +240,7 @@ export class SocketServer {
       ...(msg.forkFrom === undefined ? {} : { forkFrom: msg.forkFrom }),
       ...(msg.resumeSession === undefined ? {} : { resumeSession: msg.resumeSession }),
       ...(msg.predecessor === undefined ? {} : { predecessor: msg.predecessor }),
+      ...(msg.returnContract === undefined ? {} : { returnContract: msg.returnContract }),
       ...(msg.tags === undefined ? {} : { tags: msg.tags }),
       ...(msg.subscriptions === undefined ? {} : { subscriptions: msg.subscriptions }),
       // CC-100. The explicit ask is the request's to make; the spawner's own

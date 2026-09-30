@@ -1,0 +1,53 @@
+import type { ReturnContract } from './types.js'
+
+/**
+ * CC-286: the one copy of the return contract. `<spawner>` is the only
+ * placeholder the broker fills; the rest is for the agent to resolve.
+ *
+ * Compiled in rather than read from a file: the broker runs from a checkout that
+ * agents write to, so a file read at spawn time let any of them reword the
+ * contract for every later spawn. A change here needs a build and a restart.
+ */
+
+/** A block is paid for on every contracted spawn, so it stays a paragraph. */
+export const MAX_BLOCK_CHARS = 2400
+
+const NEVER_PARK =
+  'Never end a turn on a background task, a sleep or a ScheduleWakeup: a headless agent exits at ' +
+  'turn end and the task dies with it.'
+
+const IMPLEMENTER = [
+  'Check `gh api repos/<owner>/<repo> --jq .visibility`. In a public repo, never commit or paste',
+  'captured real data into code, fixtures, PR bodies or comments: task lists, charter or seat files,',
+  '/Users paths, emails, or IDs and text from private repos. Use synthetic fixtures.',
+  'First run `git log origin/<default> --oneline --grep <ID>` and stop if it has landed.',
+  'Branch from origin/<default>; check `git log origin/<default>..HEAD`.',
+  'Commit before mutating; never `git checkout` uncommitted work.',
+  'Scratch files go in the worktree or `$TMPDIR/<your name>`.',
+  'Make GitHub writes (merge PUT, PR create, comment, PR body PATCH) through',
+  '`agent-chat gh-write -- <gh args>` when `agent-chat gh-write --help` prints a usage line naming',
+  '`gh-write`; otherwise use plain `gh`, and verify each write landed.',
+  'On a 403 "API rate limit exceeded" with core quota left, wait 5 minutes and retry once.',
+  'Never use --no-verify. Wait for CI with `gh run watch <id> --exit-status` in the foreground.',
+  NEVER_PARK,
+  "Load tests kill burners with `pkill -f '<pattern>'` and confirm with pgrep.",
+  'A PR that narrows a timeout reports per-case CI times against the new limit.',
+  'You are NOT done at "PR opened". Your LAST action must be chat_send to <spawner> starting with',
+  '`Status: DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT`, `PR: <owner>/<repo>#<n>` and',
+  '`Head: <full sha>` lines, then CI status.',
+].join('\n')
+
+const REVIEWER = [
+  `Plain-text stdout is invisible to <spawner>. ${NEVER_PARK}`,
+  'Your LAST action must be chat_send to <spawner>, under 1,200 characters in total, starting with',
+  'exactly these three lines:',
+  'Verdict: MERGE            (or FIX_FIRST)',
+  'PR: <owner>/<repo>#<n>',
+  'Head: <full 40-hex head sha>',
+  "Then blocking items before nits. A verdict counts only when Head equals the PR's current head exactly.",
+].join('\n')
+
+export const RETURN_CONTRACT_BLOCKS: Readonly<Record<ReturnContract, string>> = {
+  implementer: IMPLEMENTER,
+  reviewer: REVIEWER,
+}

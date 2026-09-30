@@ -420,6 +420,27 @@ describe('an agent sending itself headless', () => {
     expect(core.agents.get(agentId)?.surface).toBe('headless')
   })
 
+  // Mutation caught: appending the contract in resumeOnto puts it on the relaunched agent's stdin.
+  it('is not handed its return contract a second time (CC-286)', async () => {
+    const agentId = await spawnAgent({
+      profile: 'implementer',
+      requestedBy: 'coordinator',
+      surface: 'iterm-pane',
+    })
+    expect(JSON.stringify(planFor(agentId))).toContain('LAST action must be chat_send to coordinator')
+
+    const result = await supervisor.switchSurface({
+      name: 'scout',
+      to: 'headless',
+      requestedBy: 'scout',
+      hostPid: 7777,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(planFor(agentId).stdin).toBeTruthy()
+    expect(JSON.stringify(planFor(agentId))).not.toContain('LAST action')
+  })
+
   /**
    * The pid signalled is Claude Code's own, reported by the session about ITSELF
    * at registration. Signalling the MCP subprocess would sever the bus and leave
