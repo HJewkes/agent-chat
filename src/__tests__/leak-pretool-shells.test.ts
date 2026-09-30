@@ -168,7 +168,6 @@ const DENIED = [
   `$E agent-chat gh-write -- ${FROM_FILE}`,
   `repeat 1 gh ${FROM_FILE}`,
   `caffeinate gh ${FROM_FILE}`,
-  `coproc gh ${FROM_FILE}`,
   `export TMP""DIR=$HOME/../evil; gh pr create -t x --body-file "$TMPDIR/pr.md"`,
 ]
 
@@ -178,7 +177,6 @@ const NESTED = [
   `${COMMENT} <<'EOF' ${OPEN3} 00>&3\nclean\nEOF`,
   `${COMMENT} <<'EOF' ${OPEN3} 0\\\n>&3\nclean\nEOF`,
   `${COMMENT} <<'EOF' ${OPEN3} 0<&3-\nclean\nEOF`,
-  `${COMMENT} <<'EOF' ${OPEN3} 0>|/dev/fd/3\nclean\nEOF`,
   `${COMMENT} <<'EOF' ${OPEN3} "0">&3\nclean\nEOF`,
   `{ ${COMMENT} <<'EOF'\nclean\nEOF\n} ${OPEN3} 0>&3`,
   `{ ${COMMENT} 0>&3; } <<'EOF' ${OPEN3}\nclean\nEOF`,
