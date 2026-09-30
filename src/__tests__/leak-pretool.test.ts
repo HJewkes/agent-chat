@@ -104,11 +104,32 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
     'xargs --max-args=1 --replace=% git push --no-verify',
     'xargs -r env git push --no-verify',
     'xargs --replace git push --no-verify',
+    'xargs -J % git push --no-verify',
+    'xargs -R 2 git push --no-verify',
+    'xargs -S 255 git push --no-verify',
+    'xargs -tn 1 git push --no-verify',
+    'xargs -rL 1 git push --no-verify',
+    'xargs -tn1 git push --no-verify',
+    'xargs -- git push --no-verify',
   ])('denies git push --no-verify behind xargs: %s', command => {
     expect(checkCommand(command, ctx())).toBe(
       command.includes('hooksPath') ? REASONS.gitConfig : REASONS.noVerify,
     )
   })
+
+  it.each([
+    'xargs --process-slot-var V git push --no-verify',
+    'xargs --process-slot-var=V git push --no-verify',
+  ])('denies git push --no-verify behind a known long xargs option: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it.each(['xargs --max-a 1 git push --no-verify', 'xargs --frobnicate git push --no-verify'])(
+    'fails closed on a long xargs option it does not know: %s',
+    command => {
+      expect(checkCommand(command, ctx())).toBe(REASONS.xargsOption)
+    },
+  )
 
   it('denies a push that follows git config core.hooksPath in one command', () => {
     expect(checkCommand('git config core.hooksPath /dev/null && git push', ctx())).toBe(REASONS.configWrite)
@@ -165,6 +186,12 @@ describe('the bypass guard leaves ordinary commands alone', () => {
     'gh pr create --title "Add a feature" --body "Plain text"',
     'npm run verify 2>&1 | tail -5',
     'ls | xargs -n 1 echo',
+    'ls | xargs -J cp',
+    'git log | xargs echo',
+    'ls | xargs -tn 1 echo',
+    'git ls-files | xargs grep -- --no-verify',
+    'echo a | xargs -n 1 cat push-verify.txt',
+    'xargs --process-slot-var=V --max-args=1 echo',
     'git ls-files | xargs grep foo',
     'echo origin | xargs -I {} git push {}',
     'xargs -n 1 git status',
