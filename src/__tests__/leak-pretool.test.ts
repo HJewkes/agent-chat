@@ -15,6 +15,7 @@ import {
   type GuardContext,
   type TermsLoad,
 } from '../leak-guard/pretool.js'
+import { aliasReader } from '../leak-guard/git-alias.js'
 import { parseShell } from '../leak-guard/shell-words.js'
 
 const CLI = path.resolve(import.meta.dirname, '../../dist/cli.js')
@@ -39,6 +40,7 @@ const ctx = (over: Partial<GuardContext> = {}): GuardContext => ({
     HOOKS_DIR,
   ],
   readFile: () => undefined,
+  readAlias: () => undefined,
   ...over,
 })
 
@@ -864,6 +866,188 @@ describe('the commands coordinators and agents post with', () => {
     const comment = "gh api -X POST 'repos/o/r/issues/12/comments?x=/repos/o/r/pulls/12/merge' -f body=hello"
 
     expect(checkCommand(comment, ctx({ terms: NO_LIST }))).toBe(REASONS.missingTerms)
+  })
+})
+
+describe('a git alias already in config', () => {
+  // Fixture repos carry their own aliases; the machine's global and system config stay out.
+  const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
+
+  const repo = (name: string, aliases: Record<string, string>): string => {
+    const dir = path.join(SCRATCH, name)
+    execFileSync('git', ['init', '-q', dir], { env: GIT_ENV })
+    for (const [word, value] of Object.entries(aliases))
+      execFileSync('git', ['-C', dir, 'config', `alias.${word}`, value], { env: GIT_ENV })
+    return dir
+  }
+
+  // The lookup reads a made-up empty home, so a HOME or XDG_CONFIG_HOME the command sets is what it sees.
+  const emptyHome = path.join(SCRATCH, 'empty-home')
+  const READ_ENV: NodeJS.ProcessEnv = { ...process.env, HOME: emptyHome, XDG_CONFIG_HOME: emptyHome }
+  READ_ENV.GIT_CONFIG_NOSYSTEM = '1'
+  for (const name of ['GIT_CONFIG_GLOBAL', 'GIT_DIR', 'GIT_WORK_TREE']) delete READ_ENV[name]
+
+  const at = (cwd: string): GuardContext => ctx({ cwd, readAlias: aliasReader(READ_ENV) })
+
+  const aliased = repo('aliased', {
+    pnv: 'push --no-verify',
+    quoted: "push '--no-verify' origin",
+    chained: 'pnv',
+    bang: '!git push --no-verify origin HEAD',
+    hp: '-c core.hooksPath=/dev/null push',
+    cob: '!git checkout -b $1 && git push -u origin $1',
+    loop: 'loop',
+    bangloop: '!git bangloop',
+  })
+  const plain = repo('plain', {})
+
+  it.each(['git pnv', 'git pnv origin HEAD', 'git quoted main', 'git chained'])(
+    'denies a repo alias that expands to push --no-verify: %s',
+    command => {
+      expect(checkCommand(command, at(aliased))).toBe(REASONS.noVerify)
+    },
+  )
+
+  it('denies a ! alias whose body runs git push --no-verify', () => {
+    expect(checkCommand('git bang', at(aliased))).toBe(REASONS.noVerify)
+  })
+
+  it('denies an alias that sets -c core.hooksPath', () => {
+    expect(checkCommand('git hp origin main', at(aliased))).toBe(REASONS.gitConfig)
+  })
+
+  it('allows an alias that pushes without skipping the hook', () => {
+    expect(checkCommand('git cob feat-x', at(aliased))).toBeUndefined()
+  })
+
+  it('denies a ! alias that passes --no-verify through its arguments', () => {
+    expect(checkCommand('git cob --no-verify', at(aliased))).toBe(REASONS.noVerify)
+  })
+
+  it.each(['git loop', 'git bangloop'])('stops on a self-referencing alias: %s', command => {
+    expect(checkCommand(command, at(aliased))).toBe(REASONS.aliasDepth)
+  })
+
+  it.each([`cd ${aliased} && git pnv`, `git -C ${aliased} pnv`, `cd ${SCRATCH} && git -C aliased pnv`])(
+    'reads the alias where the command cds to: %s',
+    command => {
+      expect(checkCommand(command, at(plain))).toBe(REASONS.noVerify)
+    },
+  )
+
+  it.each(['git pnv', `cd ${SCRATCH}/missing && git pnv`, 'git status', 'git push origin main'])(
+    'allows a git command with no alias where it runs: %s',
+    command => {
+      expect(checkCommand(command, at(plain))).toBeUndefined()
+    },
+  )
+
+  describe('where the guard cannot tell the directory or the word', () => {
+    const inAliased = (): GuardContext => ({ ...at(aliased), env: { HOME: emptyHome } })
+
+    it.each([
+      'source /dev/null; git pnv',
+      'set -a; git pnv',
+      "trap '' INT; git pnv",
+      'pushd .; git pnv',
+      'cd ~/../aliased && git pnv',
+      `set -a; HOME=${path.join(SCRATCH, 'alias-home')}; git pnv`,
+      'S=pnv; git $S',
+      'D=x; git -C "$D" pnv',
+      'export "$V"; git pnv',
+    ])('denies a git word that may be an alias: %s', command => {
+      expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
+    })
+
+    it.each(['x=git; $x pnv', '${X:-git} pnv', '"$(echo git)" pnv', 'command $G pnv'])(
+      'reads the alias behind a command word that is an expansion: %s',
+      command => {
+        expect(checkCommand(command, inAliased())).toBe(REASONS.noVerify)
+      },
+    )
+
+    it.each(['source ./env.sh; x=git; $x pnv', 'source ./env.sh; ${X:-git} pnv'])(
+      'denies an expanded command word on a line that names git where it cannot look: %s',
+      command => {
+        expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
+      },
+    )
+
+    it.each([
+      `x=git; $x pnv`,
+      `git -C ${aliased} push origin main`,
+      'source ./env.sh; $EDITOR notes',
+      'source ./env.sh; $CD /tmp && git status',
+      '$E $F gh pr view 1',
+    ])('allows an expanded command word with no alias to follow: %s', command => {
+      expect(checkCommand(command, { ...at(plain), env: { HOME: emptyHome } })).toBeUndefined()
+    })
+
+    it.each(['git pnv', `cd ${aliased} && git pnv`])(
+      'still reads the alias where the directory is known: %s',
+      command => {
+        expect(checkCommand(command, inAliased())).toBe(REASONS.noVerify)
+      },
+    )
+
+    it.each([
+      'git push origin main',
+      'source ./env.sh && git push',
+      'git lfs pull',
+      'brew --prefix HOMEBREW; git lfs pull',
+      'for d in a b; do git -C "$d" status; done',
+    ])('allows a builtin, or a word with no alias where it runs: %s', command => {
+      expect(checkCommand(command, inAliased())).toBeUndefined()
+    })
+  })
+
+  describe('in config the command itself points git at', () => {
+    const aliasHome = path.join(SCRATCH, 'alias-home')
+    const include = path.join(SCRATCH, 'alias-include')
+    const gitDir = path.join(aliased, '.git')
+    const fwd = repo('fwd', { fwd: '!git incl' })
+    fs.mkdirSync(aliasHome)
+    fs.writeFileSync(path.join(aliasHome, '.gitconfig'), '[alias]\n\tpnv = push --no-verify\n')
+    fs.writeFileSync(include, '[alias]\n\tpnv = push --no-verify\n\tincl = push --no-verify\n')
+
+    it.each([
+      `GIT_DIR=${gitDir} git pnv`,
+      `HOME=${aliasHome} git pnv`,
+      `env GIT_DIR=${gitDir} git pnv`,
+      `export GIT_DIR=${gitDir}; git pnv`,
+      `export HOME=${aliasHome}; git pnv`,
+      `HOME=${aliasHome}; git pnv`,
+      `git -c include.path=${include} pnv`,
+      `git -cinclude.path=${include} pnv`,
+      `E=${include} git --config-env=include.path=E pnv`,
+      `git --git-dir=${gitDir} pnv`,
+      `git -c include.path=${include} -C ${fwd} fwd`,
+    ])('denies an alias found through it: %s', command => {
+      expect(checkCommand(command, at(plain))).toBe(REASONS.noVerify)
+    })
+
+    it.each([`git -c alias.x='push --no-verify' x`, `GIT_CONFIG_GLOBAL=${include} git pnv`])(
+      'keeps denying config set on the command line: %s',
+      command => {
+        expect(checkCommand(command, at(plain))).toBeDefined()
+      },
+    )
+
+    it.each([
+      `read GIT_DIR; git pnv`,
+      `true && export GIT_DIR=${gitDir}; git pnv`,
+      `GIT_DIR=$(cat f) git pnv`,
+      `source ./env.sh; git -C ${plain} pnv`,
+    ])('denies an alias lookup whose config it cannot follow: %s', command => {
+      expect(checkCommand(command, at(plain))).toBe(REASONS.aliasEnv)
+    })
+
+    it.each([`export HOME=${aliasHome}; git status`, `unset GIT_DIR; git pnv`, `HOME=${emptyHome} git pnv`])(
+      'allows it where that config holds no alias to follow: %s',
+      command => {
+        expect(checkCommand(command, at(plain))).toBeUndefined()
+      },
+    )
   })
 })
 

@@ -321,6 +321,40 @@ and other prefixes are stripped, is one of these. A wrapper is known by its base
 | a command word that is an expansion, followed by a command that any row above denies                     | `$E gh pr create` runs gh when `E` is empty       |
 | `eval` of text the guard cannot be sure of, on a command line that names `git` or `gh`                   | the text may be a push or a gh command            |
 
+A git alias that was already in config is expanded before the table is applied (TP-595). For
+`git <word>`, where `<word>` is not a git builtin, the guard runs `git config --get alias.<word>`
+in the directory the command runs in, after `cd` and `-C`, with a 1 s timeout. The lookup gets
+the command's own `-c` and `--config-env` options, `--git-dir` and `--work-tree`, and the
+variables that choose config files (`GIT_DIR`, `HOME`, `XDG_CONFIG_HOME`, `GIT_CONFIG_*` and
+others) as the command sets them, by prefix assignment, `env`, or an earlier `export`, bare
+assignment or `unset`. When the command line changes one of those variables in a way the guard
+cannot follow, such as `read`, a value from `$(...)`, an `export` behind `&&`, or an `export` of
+a name built at run time, a lookup is denied. So is one where the guard cannot tell the directory
+(after `source`, `set -a`, `trap`, `pushd` or a `cd` it cannot follow), a `-C` value, or the
+subcommand word itself; a builtin such as `git push` is still allowed there. A plain value is
+re-checked as `git <value> <rest>`, so an alias that sets `-c core.hooksPath` is denied too. A
+`!` value is re-checked as a shell command, run from the top of the work tree, with its
+arguments put in for `$1` to `$9`, `$@` and `$*` and appended as git appends them. More than 4
+nested aliases is a deny. A failed lookup allows the call, as a plain push is allowed.
+
+Every command that is or may be git reaches this check at one place, after the wrappers above
+are stripped and inside every `sh -c` string, `eval`, `env -S`, `$(...)` and `!` alias body:
+
+- a literal `git` command word, including `/usr/bin/git` and quoted forms such as `"git"`;
+- a command word the guard cannot resolve, such as `$x pnv` or `${X:-git} pnv`, whose next
+  words are looked up as if the word were git;
+- the words a plain alias expands to.
+
+A lookup the guard cannot make, because it cannot tell the directory, the subcommand or the
+config env, is a deny for a literal `git`. For a command word it cannot resolve, it is a deny
+when the line names `git`. A word that git would not take as an alias name, one that starts with
+anything but a letter or holds anything but letters, digits and `-`, is never looked up.
+`echo pnv | xargs git` still runs an alias unchecked, because the subcommand comes from stdin.
+
+Every `git <word>` that is not a builtin costs one `git config` spawn, and a `!` alias costs a
+second one for the work-tree top. The guard does not skip network verbs, and each git command
+in a `!` body is looked up again.
+
 The splitter looks inside `$(...)`, backticks, `sh -c`/`bash -c` strings, `eval`, `env -S` and a
 heredoc fed to a shell. `agent-chat gh-write -- <gh args>` is checked like `gh`. `git push -n` is
 `--dry-run`, which pushes nothing, so it is allowed. `git commit --no-verify` is allowed too:
@@ -469,7 +503,9 @@ Not covered, by design or by cost:
 - zsh with `BRACE_CCL` set in a startup file, which expands `{owner}` into single characters;
 - a different `git` on `PATH`, `GIT_EXEC_PATH`, or `--exec-path`;
 - pushing without git at all, for example over the GitHub API with `curl`;
-- an alias that was already in git config before the agent started;
+- a git alias whose directory the guard cannot tell, whose lookup fails or takes over 1 s, or
+  that shadows an external `git-<name>` command on `PATH`;
+- a `!` alias body that reads its arguments other than as `$1` to `$9`, `$@` or `$*`;
 - shell syntax the splitter misreads, such as `&>` or `case` patterns;
 - a variable whose value in the Bash tool's shell differs from the hook's although the command
   line never mentions its name, for example one set in a shell startup file, or one assigned

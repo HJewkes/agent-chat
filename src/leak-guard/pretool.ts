@@ -1,6 +1,17 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { matchRules, parseTerms, type TermRule } from '@titan-design/egress-scan'
+import {
+  aliasReader,
+  CONFIG_ENV,
+  gitCall,
+  UNSURE_CALL,
+  shellAlias,
+  splitAlias,
+  type GitCall,
+  type Overrides,
+  type ReadAlias,
+} from './git-alias.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
   expandWord,
@@ -32,6 +43,7 @@ export interface GuardContext {
   /** Absolute paths and path fragments an agent may not touch: the hook dir and the term list. */
   protectedPaths: readonly string[]
   readFile(file: string): string | undefined
+  readAlias: ReadAlias
 }
 
 /** What the guard knows of the shell before one command; undefined where it cannot tell. */
@@ -44,7 +56,18 @@ interface Scope {
   cdpath: boolean
   /** The command line names git or gh, so a script the guard cannot read may run either. */
   namesGit: boolean
+  /** How many git aliases the guard has expanded to reach this command. */
+  aliases: number
+  /** Variables earlier commands set, unset (undefined) or changed in a way the guard cannot tell (UNSURE). */
+  exports: ReadonlyMap<string, Setting>
+  /** The command line so far with `$NAME` references and quoting removed, to find names it may assign. */
+  said: string
+  /** The `-c` and `--config-env` options of the git whose `!` alias runs this command. */
+  gitParams: readonly string[]
 }
+
+const UNSURE = Symbol('unsure')
+type Setting = string | undefined | typeof UNSURE
 
 const DOCS = 'See docs/leak-guard.md.'
 
@@ -64,9 +87,12 @@ export const REASONS = {
   missingTerms: `leak-guard: no private term list, so PR and issue text cannot be checked. Create ~/.config/titan-egress/private-terms, one term per line, chmod 600. ${DOCS}`,
   xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
+  aliasEnv: `leak-guard: the guard cannot tell which directory or config this git command runs with, or which subcommand it names, so it cannot tell what a git alias here runs. Run the command the alias stands for, from a plain cd. ${DOCS}`,
+  aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
 } as const
 
 const MAX_DEPTH = 6
+const MAX_ALIASES = 4
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
@@ -102,20 +128,25 @@ const isGitConfigVar = (name: string | undefined): boolean => name !== undefined
 const NO_VERIFY = /^--no-veri(?:f|fy)?$/
 const MENTIONS_GIT = /\b(?:git|gh)\b|GIT_CONFIG/
 
-/** `chdir` is set when a wrapper such as `env -C` runs the command in another directory. */
-type Unwrapped = { words: string[]; chdir?: boolean } | { reason: string }
+/**
+ * `chdir` is set when a wrapper such as `env -C` runs the command in another directory.
+ * `assigns` are the command's own `NAME=value` words, and a bare `NAME` that `env -u` unsets.
+ */
+type Unwrapped = { words: string[]; chdir?: boolean; assigns: string[] } | { reason: string }
 
 /** Strips assignments and wrappers such as `env`, `command` and `nice` down to the command that runs. */
 function unwrap(words: readonly string[]): Unwrapped {
   let rest = [...words]
   let chdir = false
+  const assigns: string[] = []
   for (;;) {
     const head = rest[0]
-    if (head === undefined) return { words: rest, chdir }
+    if (head === undefined) return { words: rest, chdir, assigns }
     const name = path.basename(head)
     const assigned = ASSIGNMENT.exec(head)?.[1]
     if (assigned !== undefined) {
       if (isGitConfigVar(assigned)) return { reason: REASONS.gitConfigEnv }
+      assigns.push(head)
       rest = rest.slice(1)
     } else if (PREFIX_WORDS.has(head) || PLAIN_WRAPPERS.has(name)) rest = dropOptions(rest.slice(1))
     else if (name === 'nice') rest = dropOptions(rest.slice(1), ['-n'])
@@ -130,7 +161,8 @@ function unwrap(words: readonly string[]): Unwrapped {
       if ('reason' in env) return env
       rest = env.words
       chdir ||= env.chdir === true
-    } else return { words: rest, chdir }
+      assigns.push(...env.assigns)
+    } else return { words: rest, chdir, assigns }
   }
 }
 
@@ -170,22 +202,27 @@ function clusterValueWords(cluster: string): number {
 function unwrapEnv(args: string[]): Unwrapped {
   let i = 0
   let chdir = false
+  const assigns: string[] = []
   for (; i < args.length; i++) {
     const a = args[i] as string
     const unset =
       a === '-u' || a === '--unset' ? args[++i] : (/^-u(.+)/.exec(a)?.[1] ?? /^--unset=(.*)/.exec(a)?.[1])
     if (isGitConfigVar(unset)) return { reason: REASONS.gitConfigEnv }
-    if (unset !== undefined) continue
+    if (unset !== undefined) {
+      assigns.push(unset)
+      continue
+    }
     if (a === '-' || a === '--ignore-environment' || /^-[^-]*i/.test(a)) return { reason: REASONS.envClear }
     if (a === '-S' || a === '--split-string')
-      return { words: [...(parseShell(args[i + 1] ?? '')[0]?.marked ?? []), ...args.slice(i + 2)] }
+      return { words: [...(parseShell(args[i + 1] ?? '')[0]?.marked ?? []), ...args.slice(i + 2)], assigns }
     chdir ||= /^(?:-C|--chdir)/.test(a)
     if (a === '-C' || a === '--chdir' || a === '-P') i++
-    else if (a === '--') return { words: args.slice(i + 1), chdir }
+    else if (a === '--') return { words: args.slice(i + 1), chdir, assigns }
     else if (!a.startsWith('-') && !ASSIGNMENT.test(a)) break
     else if (isGitConfigVar(ASSIGNMENT.exec(a)?.[1])) return { reason: REASONS.gitConfigEnv }
+    else if (ASSIGNMENT.test(a)) assigns.push(a)
   }
-  return { words: args.slice(i), chdir }
+  return { words: args.slice(i), chdir, assigns }
 }
 
 function checkEnvEdit(args: readonly string[]): string | undefined {
@@ -218,6 +255,101 @@ export function checkGit(args: readonly string[]): string | undefined {
   if (sub === 'push') return opts.some(a => NO_VERIFY.test(a)) ? REASONS.noVerify : undefined
   if (sub === 'config') return configWritesGuard(rest)
   return undefined
+}
+
+/** A `git` command as the alias check needs it: its words and the variables it sets for itself. */
+interface GitRun {
+  resolved: readonly (string | undefined)[]
+  args: readonly string[]
+  assigns: readonly string[]
+  cmd: SimpleCommand
+  /** The command word is git, not an expansion that may be git. */
+  literal: boolean
+}
+
+function gitRun(
+  marked: readonly string[],
+  assigns: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+  literal: boolean,
+): GitRun {
+  const resolved = marked.map(word => resolveWord(word, cmd, ctx, scope))
+  return { resolved, args: marked.map(unmark), assigns, cmd, literal }
+}
+
+const NAMES_GIT = /\bgit\b/
+
+/** A lookup the guard cannot make denies where the command is git, or may be git on a line that names git. */
+const unsure = (run: GitRun, scope: Scope): string | undefined =>
+  run.literal || NAMES_GIT.test(scope.said) ? REASONS.aliasEnv : undefined
+
+/** The one boundary every command that is or may be git passes: git's own options, then its alias. */
+function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
+  return checkGit(run.args) ?? checkAlias(run, ctx, scope, depth)
+}
+
+/** Whether the line names `name` as a whole word; `GIT_CONFIG` also matches every `GIT_CONFIG_*`. */
+const mentions = (said: string, name: string): boolean =>
+  new RegExp(`(?<![A-Za-z0-9_])${name}${name === 'GIT_CONFIG' ? '[A-Za-z0-9_]*' : ''}(?![A-Za-z0-9_])`).test(
+    said,
+  )
+
+/** What git's config env is for this command over the hook's; undefined when the guard cannot tell. */
+function aliasEnv(
+  run: GitRun,
+  vars: readonly string[],
+  ctx: GuardContext,
+  scope: Scope,
+): Overrides | undefined {
+  const set = new Map(scope.exports)
+  for (const word of run.assigns) {
+    const eq = word.indexOf('=')
+    const value = eq < 0 ? undefined : (resolveWord(word.slice(eq + 1), run.cmd, ctx, scope) ?? UNSURE)
+    set.set(eq < 0 ? word : word.slice(0, eq), value)
+  }
+  const env: Record<string, string | undefined> = {}
+  for (const name of [...CONFIG_ENV, ...vars]) {
+    if (!set.has(name) && (scope.env === undefined || mentions(scope.said, name))) return undefined
+    const value = set.get(name)
+    if (value === UNSURE) return undefined
+    if (set.has(name)) env[name] = value
+  }
+  return env
+}
+
+/** The scope a `!` alias body runs in: git exports its env, `--git-dir` and its `-c` options to it. */
+const aliasShell = (scope: Scope, call: GitCall, env: Overrides, runsIn: string): Scope => ({
+  ...scope,
+  cwd: runsIn,
+  exports: new Map([...scope.exports, ...Object.entries(env), ...Object.entries(call.dirEnv)]),
+  gitParams: call.params,
+})
+
+/** Re-checks `git <alias> <rest>` as what the alias expands to, read where and how the command runs. */
+function checkAlias(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
+  const call = gitCall(run.resolved, scope.cwd, scope.gitParams)
+  if (call === undefined) return undefined
+  if (call === UNSURE_CALL) return unsure(run, scope)
+  const env = aliasEnv(run, call.vars, ctx, scope)
+  if (env === undefined) return unsure(run, scope)
+  const alias = ctx.readAlias(call.sub, call.dir, call.globals, env)
+  if (alias === undefined) return undefined
+  if (scope.aliases >= MAX_ALIASES) return REASONS.aliasDepth
+  const inner = { ...scope, aliases: scope.aliases + 1 }
+  const rest = run.args.slice(call.at + 1)
+  if (alias.value.startsWith('!'))
+    return checkAt(
+      shellAlias(alias.value.slice(1), rest),
+      ctx,
+      aliasShell(inner, call, env, alias.runsIn),
+      depth + 1,
+    )
+  const value = splitAlias(alias.value)
+  if (value === undefined) return undefined
+  const words = [...run.args.slice(0, call.at), ...value, ...rest]
+  return checkGitRun({ ...run, resolved: words, args: words, literal: true }, ctx, inner, depth)
 }
 
 function configWritesGuard(args: readonly string[]): string | undefined {
@@ -461,6 +593,7 @@ const postsText = (marked: readonly string[]): boolean => ['pr', 'api'].includes
  */
 function checkHidden(
   marked: readonly string[],
+  assigns: readonly string[],
   cmd: SimpleCommand,
   ctx: GuardContext,
   scope: Scope,
@@ -470,7 +603,10 @@ function checkHidden(
   if (postsText(marked) || viaWrite) return REASONS.hiddenCommand
   const words = marked.map(unmark)
   const unseen = { ...scope, cwd: undefined, env: undefined }
-  return checkGit(words) ?? checkSimple({ ...cmd, words, marked: [...marked] }, ctx, unseen, depth)
+  return (
+    checkSimple({ ...cmd, words, marked: [...marked] }, ctx, unseen, depth) ??
+    checkGitRun(gitRun(marked, assigns, cmd, ctx, scope, false), ctx, scope, depth)
+  )
 }
 
 /** Checks the text `eval` runs; text the guard cannot resolve is a deny on a line that names git or gh. */
@@ -492,12 +628,13 @@ function checkSimple(cmd: SimpleCommand, ctx: GuardContext, scope: Scope, depth:
   const at = unwrapped.chdir ? { ...scope, cwd: undefined } : scope
   const marked = unwrapped.words.slice(1)
   const head = resolveWord(unwrapped.words[0] ?? '', cmd, ctx, at)
-  if (head === undefined) return checkHidden(marked, cmd, ctx, at, depth)
+  if (head === undefined) return checkHidden(marked, unwrapped.assigns, cmd, ctx, at, depth)
   const args = marked.map(unmark)
   const name = path.basename(head)
   if (SHELLS.has(name)) return checkShell(args, cmd.stdin, ctx, at, depth)
   if (name === 'eval') return checkEval(marked, cmd, ctx, at, depth)
-  if (name === 'git') return checkGit(args)
+  if (name === 'git')
+    return checkGitRun(gitRun(marked, unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
   if (name === 'gh') return checkGh(marked, cmd, ctx, at)
   if (name === 'agent-chat' && args[0] === 'gh-write') return checkGh(ghWriteArgs(marked), cmd, ctx, at)
   if (ENV_EDITS.has(name)) return checkEnvEdit(args)
@@ -539,8 +676,33 @@ function plainCd(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): string | 
 }
 
 /** The scope the next command runs in; a `cd` behind `&&` is unsure once its list ends. */
+const SURE_BEFORE = new Set(['', ';', '\n'])
+
+/** The variables a bare `NAME=value`, `export` or `unset` leaves set; a conditional one is UNSURE. */
+function exported(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): ReadonlyMap<string, Setting> {
+  const unwrapped = unwrap(cmd.marked)
+  if ('reason' in unwrapped) return scope.exports
+  const [head, ...rest] = unwrapped.words
+  const sure = !cmd.nested && SURE_BEFORE.has(cmd.before) && JOINS_AFTER.has(cmd.after)
+  const set = new Map(scope.exports)
+  const value = (word: string): Setting =>
+    sure ? (resolveWord(word.slice(word.indexOf('=') + 1), cmd, ctx, scope) ?? UNSURE) : UNSURE
+  if (head === undefined)
+    for (const word of unwrapped.assigns) set.set(ASSIGNMENT.exec(word)?.[1] ?? '', value(word))
+  else if (head === 'export')
+    for (const word of rest.filter(w => ASSIGNMENT.test(w)))
+      set.set(ASSIGNMENT.exec(word)?.[1] ?? '', value(word))
+  else if (head === 'unset')
+    for (const word of rest.filter(w => !w.startsWith('-'))) set.set(word, sure ? undefined : UNSURE)
+  const builtName = rest.some(w => w.includes(LIVE) && !ASSIGNMENT.test(w))
+  if (head !== undefined && ENV_EDITS.has(head) && builtName)
+    for (const name of CONFIG_ENV) set.set(name, UNSURE)
+  return set
+}
+
 function advance(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): Scope {
   if (isOpaque(cmd, ctx, scope)) return { ...scope, cwd: undefined, env: undefined }
+  scope = { ...scope, exports: exported(cmd, ctx, scope) }
   if (!cmd.words.some(word => CD_WORDS.has(word))) return scope
   const cwd = plainCd(cmd, ctx, scope)
   return { ...scope, cwd, fragile: cwd !== undefined && cmd.before === '&&' }
@@ -555,9 +717,11 @@ const REFERENCE = new RegExp(`\\$\\{${NAME}\\}|\\$${NAME}`, 'g')
 // `TMP""DIR=x` and `TMP\DIR=x` assign TMPDIR, so quoting is dropped before a name is looked for.
 const QUOTING = /\\\n|['"\\]/g
 
+const unreferenced = (command: string): string => command.replace(REFERENCE, ' ').replace(QUOTING, '')
+
 /** The env without any name the command mentions outside `$NAME` and `${NAME}`: it may assign that name. */
 function knownEnv(command: string, env: Env): Env {
-  const rest = command.replace(REFERENCE, ' ').replace(QUOTING, '')
+  const rest = unreferenced(command)
   const known = ([name]: [string, unknown]): boolean => !NEVER_EXPANDED.has(name) && !rest.includes(name)
   return Object.fromEntries(Object.entries(env).filter(known))
 }
@@ -567,7 +731,8 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   if (ctx.protectedPaths.some(p => command.includes(p))) return REASONS.protectedPath
   const cdpath = scope.cdpath || command.includes('CDPATH')
   const namesGit = scope.namesGit || MENTIONS_GIT.test(command)
-  let at: Scope = { ...scope, cdpath, namesGit, env: scope.env && knownEnv(command, scope.env) }
+  const said = `${scope.said}\n${unreferenced(command)}`
+  let at: Scope = { ...scope, cdpath, namesGit, said, env: scope.env && knownEnv(command, scope.env) }
   for (const cmd of parseShell(command)) {
     at = settle(cmd, at)
     const reason = checkSimple(cmd, ctx, at, depth)
@@ -579,7 +744,17 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
 
 export function checkCommand(command: string, ctx: GuardContext): string | undefined {
   const cdpath = Boolean(ctx.env.CDPATH)
-  const scope = { cwd: ctx.cwd, env: ctx.env, fragile: false, cdpath, namesGit: false }
+  const scope: Scope = {
+    cwd: ctx.cwd,
+    env: ctx.env,
+    fragile: false,
+    cdpath,
+    namesGit: false,
+    aliases: 0,
+    exports: new Map(),
+    said: '',
+    gitParams: [],
+  }
   return checkAt(command, ctx, scope, 0)
 }
 
@@ -642,6 +817,7 @@ export function guardContext(env: NodeJS.ProcessEnv, cwd: string, home: string):
       ...(hooksDir === undefined ? [] : [hooksDir]),
     ],
     readFile: readText,
+    readAlias: aliasReader(env),
   }
 }
 
