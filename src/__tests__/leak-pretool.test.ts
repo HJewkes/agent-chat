@@ -536,17 +536,40 @@ describe('stdin with more than one source, or a source the guard did not read', 
   })
 
   it('names the backslash only when a heredoc with one is what it could not read', () => {
-    const backslash = "<<'EOF'\nclean\\\nEOF\n"
+    const backslash = '<<EOF\nclean\\\nEOF'
 
     expect(REASONS.heredocBackslash).toContain('holds a backslash')
+    expect(checkCommand(`gh pr create -t x -F - ${backslash}`, ctx())).toBe(REASONS.heredocBackslash)
     expect(checkCommand('gh pr create -t x -F - <<EOF\n$HOME\nEOF', ctx())).toBe(REASONS.unreadableBody)
+    expect(checkCommand(`gh pr create -t x -F missing.md ${backslash}`, ctx())).toBe(REASONS.unreadableBody)
+    expect(checkCommand(`gh pr create -t x -F - <<< $X 3${backslash}`, ctx())).toBe(REASONS.unreadableBody)
     expect(checkCommand(`gh pr create -t x -b "$(git log -1)" -F - ${backslash}`, ctx())).toBe(
       REASONS.unreadableBody,
     )
-    expect(checkCommand(`gh pr create -t x -F missing.md 3${backslash}`, ctx())).toBe(REASONS.unreadableBody)
-    expect(checkCommand(`cat ${backslash}gh pr create -t x -F missing.md`, ctx())).toBe(
-      REASONS.unreadableBody,
-    )
+  })
+
+  it('leaves a redirect of another descriptor alone, with or without its number', () => {
+    const redirected = (text: string): string =>
+      `gh pr create -t x -F - <<'EOF' > out.txt 2>&1 1>&2\n${text}\nEOF`
+
+    expect(checkCommand(redirected('clean'), ctx())).toBeUndefined()
+    expect(checkCommand(redirected(TERM), ctx())).toContain('body line 1 private-term #1')
+  })
+
+  it.each([
+    "gh pr create -t x -F - <<'EOF' 0>&3\nclean\nEOF",
+    "gh pr create -t x -F - <<'EOF' 0>&3-\nclean\nEOF",
+    "gh pr create -t x -F - <<'EOF' 0>& 3\nclean\nEOF",
+    "gh pr create -t x -F - <<'EOF' 00>&3\nclean\nEOF",
+    "gh pr create -t x -F - <<'EOF' 0<&3\nclean\nEOF",
+    "gh pr create -t x -F - <<'EOF' <&3\nclean\nEOF",
+    "gh pr create -t x -F - <<'EOF' 0<> f\nclean\nEOF",
+    "gh pr create -t x -F - <<'EOF' < f\nclean\nEOF",
+    'gh pr create -t x -F - <<< clean 0>&3',
+    `gh api ${COMMENTS} --input - <<'EOF' 0>&3\nclean\nEOF`,
+    "agent-chat gh-write -- pr create -t x -F - <<'EOF' 0>&3\nclean\nEOF",
+  ])('denies any redirect of descriptor 0 beside a heredoc or here-string: %j', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.unreadableBody)
   })
 
   it.each([
