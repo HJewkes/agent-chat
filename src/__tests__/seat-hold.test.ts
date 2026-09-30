@@ -200,6 +200,70 @@ describe('the dark-seat hold', () => {
 
     expect(result).toMatchObject({ ok: false, reason: `no active session named "${SEAT}"` })
   })
+
+  it('stops holding once the seat has registered again, even with an older deregister on record', () => {
+    seatGoesDark()
+    join(SEAT)
+
+    expect(core.events.darkSince(SEAT)).toBeUndefined()
+    expect(core.darkSeat(SEAT)).toBeUndefined()
+  })
+})
+
+describe('a seat the broker never deregistered (CC-326)', () => {
+  /** The broker dies with the seat connected, so no `deregistered` row is written, then boots again. */
+  function brokerRestarts(): void {
+    server.close()
+    core.close()
+    core = new BrokerCore((conn, message) => void conn.write(JSON.stringify({ t: 'deliver', message })), {
+      events: new EventLog(path.join(dir, 'events.db')),
+      registry: new Registry<Conn>(),
+      isSeat: name => name === SEAT,
+    })
+    server = new SocketServer(core)
+  }
+
+  it('holds a report for a seat absent after boot and delivers it when the seat registers', () => {
+    join(SEAT)
+    at(T0)
+    brokerRestarts()
+    at(T0 + 3 * MINUTE)
+
+    const result = send(join('rev-one'), SEAT, 'Verdict: MERGE')
+
+    expect(result).toMatchObject({ ok: true, held: true })
+    expect(core.events.darkSince(SEAT)?.at).toBe(T0)
+    const back = join(SEAT)
+    expect(pushed(back).map(m => m.text)).toEqual(['Verdict: MERGE'])
+    expect(core.events.darkSince(SEAT)).toBeUndefined()
+  })
+
+  it('does not push again what the seat received before the restart', () => {
+    const seat = join(SEAT)
+    send(join('rev-one'), SEAT, 'seen live')
+    expect(pushed(seat)).toHaveLength(1)
+    brokerRestarts()
+
+    expect(pushed(join(SEAT))).toEqual([])
+  })
+
+  it('does not count a seat that registered after boot as dark', () => {
+    brokerRestarts()
+    join(SEAT)
+
+    expect(core.events.darkSince(SEAT)).toBeUndefined()
+  })
+
+  it('reads the unclosed register as open for the watchdog, and as closed once the seat is back', () => {
+    join(SEAT)
+    brokerRestarts()
+    const open = readPresence(path.join(dir, 'events.db'), SEAT)
+    expect(open.darkSince).toBeUndefined()
+    expect(open.openRegister).toBeGreaterThan(0)
+
+    core.drop(join(SEAT).conn)
+    expect(readPresence(path.join(dir, 'events.db'), SEAT).openRegister).toBeUndefined()
+  })
 })
 
 describe('readPresence', () => {
@@ -209,7 +273,12 @@ describe('readPresence', () => {
 
   it('reads a connection closed with no teleport as dark since the deregister', () => {
     seatGoesDark()
-    expect(presence()).toEqual({ darkSince: T0, teleported: false, wokenByWatchdog: false })
+    expect(presence()).toEqual({
+      darkSince: T0,
+      teleported: false,
+      wokenByWatchdog: false,
+      resumeStarted: false,
+    })
   })
 
   it('reads a seat that registered again as not dark', () => {
@@ -218,16 +287,55 @@ describe('readPresence', () => {
     expect(presence().darkSince).toBeUndefined()
   })
 
-  it('reads a handoff written since the last register as a teleport', () => {
-    const seat = join(SEAT)
+  const teleports = (): void => {
     core.append({ kind: 'agent_handoff', actor: SEAT, body: 'handoff' })
+    core.append({ kind: 'agent_stood_down', actor: SEAT })
+  }
+
+  it('reads a handoff and stand-down written since the last register as a teleport', () => {
+    const seat = join(SEAT)
+    teleports()
     core.drop(seat.conn)
     expect(presence()).toMatchObject({ teleported: true })
   })
 
-  it('does not read an earlier teleport as one after the successor registered', () => {
+  it('reads a stand-down written after the session closed as a teleport', () => {
     const seat = join(SEAT)
     core.append({ kind: 'agent_handoff', actor: SEAT, body: 'handoff' })
+    core.drop(seat.conn)
+    core.append({ kind: 'agent_stood_down', actor: SEAT })
+    expect(presence()).toMatchObject({ teleported: true })
+  })
+
+  it('does not let the handoff row of an aborted teleport mask a later death', () => {
+    const seat = join(SEAT)
+    core.append({ kind: 'agent_handoff', actor: SEAT, body: 'handoff' })
+    at(T0)
+    core.drop(seat.conn)
+    expect(presence()).toMatchObject({ darkSince: T0, teleported: false })
+  })
+
+  it('reads a seat that never registered as neither dark nor open', () => {
+    expect(presence()).toEqual({ teleported: false, wokenByWatchdog: false, resumeStarted: false })
+  })
+
+  it('reads a resume started since the seat went dark, by the watchdog or anyone, as started', () => {
+    seatGoesDark()
+    core.append({ kind: 'agent_resumed', actor: 'human', target: SEAT })
+    expect(presence()).toMatchObject({ darkSince: T0, resumeStarted: true })
+  })
+
+  it('does not read a resume from before the seat went dark as started', () => {
+    core.append({ kind: 'agent_resumed', actor: 'human', target: SEAT })
+    seatGoesDark()
+    expect(presence().resumeStarted).toBe(false)
+    core.drop(join(SEAT).conn)
+    expect(presence().resumeStarted).toBe(false)
+  })
+
+  it('does not read an earlier teleport as one after the successor registered', () => {
+    const seat = join(SEAT)
+    teleports()
     core.drop(seat.conn)
     core.drop(join(SEAT).conn)
     expect(presence()).toMatchObject({ teleported: false })

@@ -10,7 +10,15 @@ import {
   type Seat,
 } from './charter.js'
 import type { Eligibility, SeatRecord, WatchdogDoc } from './io.js'
-import { RESUME_MESSAGE, judgeLiveness, type LivenessVerdict, type Presence } from './liveness.js'
+import {
+  JOURNAL_LOOKBACK_DAYS,
+  RESUME_MESSAGE,
+  RESUME_TRY_CAP,
+  judgeLiveness,
+  type LivenessVerdict,
+  type Presence,
+} from './liveness.js'
+import type { RunLock } from './lock.js'
 import {
   RESTART_WINDOW_MAX_MS,
   advanceMeter,
@@ -61,11 +69,14 @@ export interface WatchdogDeps {
   /** CC-320: the seat's latest presence rows; undefined when events.db cannot be read, which never resumes. */
   presence: (seat: string) => Presence | undefined
   eligible: (seat: string) => Eligibility | undefined
+  /** Throws when seat-watchdog.json is there and unusable, which ends the run with that error. */
   loadDoc: () => WatchdogDoc
   saveDoc: (doc: Omit<WatchdogDoc, 'stopped'>) => void
   /** A connected seat gets a message; a stopped one is resumed on it. */
   wake: (seat: string, message: string, connected: boolean) => Promise<WakeResult>
   appendLog: (seat: string, at: Date, text: string) => void
+  /** CC-326: taken by every run that may wake or resume, so two runs never act on the same seat. */
+  lock: () => RunLock
 }
 
 export interface WatchdogOptions {
@@ -111,12 +122,14 @@ function openRestartWindow(deps: WatchdogDeps, charter: string, now: Date): stri
   return restartWindow(messages, now.getTime())
 }
 
-/** Logs are per local day, so just after midnight the seat's newest line is in yesterday's file. */
+/** Logs are per local day, and a seat that stopped days ago has its newest line in an older file. */
 function seatLogVerdict(deps: WatchdogDeps, seat: string, now: Date): LogVerdict {
-  const today = readSeatLog(deps.readSeatLog(seat, now) ?? '', now)
-  if (today.activityAt !== undefined) return today
-  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 12)
-  return readSeatLog(deps.readSeatLog(seat, yesterday) ?? '', yesterday)
+  for (let back = 0; back <= JOURNAL_LOOKBACK_DAYS; back++) {
+    const day = back === 0 ? now : new Date(now.getFullYear(), now.getMonth(), now.getDate() - back, 12)
+    const verdict = readSeatLog(deps.readSeatLog(seat, day) ?? '', day)
+    if (verdict.activityAt !== undefined) return verdict
+  }
+  return {}
 }
 
 /** Owner stop first, then the restart window, then the seat's own pause line. */
@@ -145,26 +158,50 @@ function seatBudget(
   return poolBudget({ pool, spend: seat.spend, reading, history, runStartAt: runStart, now: pass.now })
 }
 
+type ResumeMark = Pick<SeatRecord, 'resumedDark' | 'resumeRetry' | 'absent'>
+
 interface SeatLiveness {
   verdict: LivenessVerdict
-  /** `darkSince` of the episode to keep marked as resumed. */
-  resumedDark?: number
-  /** Keeps the idle wake off a seat whose dark episode already had its one resume. */
-  idleHold?: string
+  /** The resume mark and the absence clock to save with the seat's record. */
+  mark: ResumeMark
+}
+
+type Absence = NonNullable<SeatRecord['absent']>
+
+/** CC-326: a seat absent though its last row is `registered` is dark from the run that first saw it so. */
+function absence(
+  previous: Absence | undefined,
+  presence: Presence | undefined,
+  nowMs: number,
+): Absence | undefined {
+  if (presence === undefined) return previous
+  const register = presence.openRegister
+  if (register === undefined) return undefined
+  return previous?.register === register ? previous : { register, since: nowMs }
+}
+
+function resumeMark(attempted: number | undefined, retry: number | undefined, absent?: Absence): ResumeMark {
+  return {
+    ...(attempted === undefined ? {} : { resumedDark: attempted }),
+    ...(retry === undefined ? {} : { resumeRetry: retry }),
+    ...(absent === undefined ? {} : { absent }),
+  }
 }
 
 function seatLiveness(pass: Pass, seat: string, hold: string | undefined): SeatLiveness {
   const connected = pass.roster.connected.includes(seat)
   const presence = connected ? undefined : pass.deps.presence(seat)
-  const attempted = pass.doc.seats[seat]?.resumedDark
-  const verdict = judgeLiveness({ connected, presence, hold, attempted, nowMs: pass.now.getTime() })
-  const resumedDark = verdict.resume ? presence?.darkSince : attempted
-  const spent = !connected && resumedDark !== undefined && resumedDark === presence?.darkSince
-  return {
-    verdict,
-    ...(resumedDark === undefined ? {} : { resumedDark }),
-    ...(spent ? { idleHold: 'dark episode already resumed once' } : {}),
-  }
+  const previous = pass.doc.seats[seat]
+  const nowMs = pass.now.getTime()
+  const absent = connected ? undefined : absence(previous?.absent, presence, nowMs)
+  const attempted = previous?.resumedDark
+  const unconfirmed = previous?.resumeRetry
+  const input = { connected, presence, hold, absentSince: absent?.since, attempted, unconfirmed, nowMs }
+  const verdict = judgeLiveness(input)
+  const mark = verdict.resume
+    ? resumeMark(verdict.episode, verdict.tries, absent)
+    : resumeMark(attempted, unconfirmed, absent)
+  return { verdict, mark }
 }
 
 interface Judgement {
@@ -184,10 +221,12 @@ function judgeSeat(pass: Pass, seat: Seat): Judgement {
   const run = advanceMeter(previous?.run, reading?.sevenDay, nowMs, withinRun)
   const log = seatLogVerdict(deps, seat.name, now)
   const ownHold = holdFor(pass, seat, log.stop)
-  const liveness = seatLiveness(pass, seat.name, ownHold)
-  const hold = ownHold ?? liveness.idleHold
-  const implementers = runningImplementers(pass.roster.agents, seat).length
   const budget = seatBudget(pass, seat, reading, run)
+  // CC-326: a closed pool or a seat at its spend stop holds the resume as it holds the wake.
+  const resumeHold = ownHold ?? (budget.open ? undefined : `budget closed: ${budget.reason}`)
+  const liveness = seatLiveness(pass, seat.name, resumeHold)
+  const hold = ownHold ?? liveness.verdict.idleHold
+  const implementers = runningImplementers(pass.roster.agents, seat).length
   const scored =
     implementers === 0 && hold === undefined && budget.open ? deps.eligible(seat.name) : undefined
   const obs = {
@@ -205,7 +244,7 @@ function judgeSeat(pass: Pass, seat: Seat): Judgement {
     ...(run === undefined ? {} : { run }),
     budgetPaused: !budget.open,
     capped,
-    ...(liveness.resumedDark === undefined ? {} : { resumedDark: liveness.resumedDark }),
+    ...liveness.mark,
   }
   return { decision, budget, record, liveness: liveness.verdict }
 }
@@ -256,21 +295,30 @@ function save(pass: Pass): void {
   })
 }
 
-/** CC-320. The episode mark is saved before the resume, so neither a crash nor a refusal leads to a second one. */
-async function resumeDark(pass: Pass, seat: string, reason: string): Promise<string> {
+/**
+ * CC-320, CC-326. The mark is saved before the resume and stays unconfirmed until the broker
+ * accepts it, so a refusal or a run that dies mid-call is retried and an accepted resume never is.
+ */
+async function resumeDark(pass: Pass, seat: string, liveness: LivenessVerdict): Promise<string> {
   save(pass)
   const woke = await pass.deps
     .wake(seat, RESUME_MESSAGE, false)
     .catch((err: unknown) => ({ ok: false, detail: err instanceof Error ? err.message : String(err) }))
-  const line = `Watchdog: ${reason}; ${woke.ok ? 'resumed' : 'resume FAILED'} ${seat} (${woke.detail})`
+  if (woke.ok) delete pass.doc.seats[seat]?.resumeRetry
+  const next = (liveness.tries ?? 1) < RESUME_TRY_CAP ? 'will retry next run' : 'giving up on this episode'
+  const outcome = woke.ok
+    ? `resumed ${seat} (${woke.detail})`
+    : `resume FAILED ${seat} (${woke.detail}); ${next}`
+  const line = `Watchdog: ${liveness.reason}; ${outcome}`
   pass.deps.appendLog(seat, pass.deps.now(), line)
   return `${seat}: ${line}`
 }
 
-const dryRunLine = (decision: Decision, liveness: LivenessVerdict): string =>
-  liveness.resume
-    ? `WOULD RESUME: ${liveness.reason}`
-    : `${decision.fire ? 'WOULD FIRE' : 'skip'}: ${decision.reason}`
+function dryRunLine(decision: Decision, liveness: LivenessVerdict): string {
+  if (liveness.resume) return `WOULD RESUME: ${liveness.reason}`
+  if (liveness.refused) return `skip: ${liveness.reason}`
+  return `${decision.fire ? 'WOULD FIRE' : 'skip'}: ${decision.reason}`
+}
 
 function seatOrSkip(deps: WatchdogDeps, name: string): Seat | string {
   if (!isSeatName(name)) return `${name}: skipped, not a seat name`
@@ -296,10 +344,8 @@ async function startPass(deps: WatchdogDeps, options: WatchdogOptions): Promise<
   return [pass, charter]
 }
 
-/** Output lines: one per seat under --dry-run, else only wakes and misconfigured seats. */
-export async function runWatchdog(deps: WatchdogDeps, options: WatchdogOptions): Promise<string[]> {
+async function runPass(deps: WatchdogDeps, options: WatchdogOptions, lines: string[]): Promise<string[]> {
   const [pass, charter] = await startPass(deps, options)
-  const lines: string[] = []
   const hold = options.dryRun ? undefined : holdChange(pass)
   if (hold !== undefined) lines.push(hold)
   for (const name of options.seats ?? charterSeats(charter)) {
@@ -315,7 +361,8 @@ export async function runWatchdog(deps: WatchdogDeps, options: WatchdogOptions):
     if (capLine !== undefined) lines.push(capLine)
     pass.doc.seats[name] = record
     if (options.dryRun) lines.push(`${name}: ${dryRunLine(decision, liveness)}`)
-    else if (liveness.resume) lines.push(await resumeDark(pass, name, liveness.reason))
+    else if (liveness.resume) lines.push(await resumeDark(pass, name, liveness))
+    else if (liveness.refused) lines.push(`${name}: Watchdog: ${liveness.reason}`)
     else if (decision.fire) lines.push(await act(pass, name, decision))
   }
   for (const pool of pass.gaps)
@@ -324,4 +371,16 @@ export async function runWatchdog(deps: WatchdogDeps, options: WatchdogOptions):
     )
   if (!options.dryRun) save(pass)
   return lines
+}
+
+/** Output lines: one per seat under --dry-run, else only wakes, refused resumes and misconfigured seats. */
+export async function runWatchdog(deps: WatchdogDeps, options: WatchdogOptions): Promise<string[]> {
+  if (options.dryRun) return runPass(deps, options, [])
+  const lock = deps.lock()
+  if (!lock.held) return [`Watchdog: ${lock.reason}; this run did nothing`]
+  try {
+    return await runPass(deps, options, lock.note === undefined ? [] : [`Watchdog: ${lock.note}`])
+  } finally {
+    lock.release()
+  }
 }

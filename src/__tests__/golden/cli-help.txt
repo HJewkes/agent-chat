@@ -320,13 +320,16 @@ Options:
   -h, --help                  display help for command
 
 Commands:
-  watchdog [options]          wake an autonomy seat idle with budget and eligible work (CC-203);
-                              silent otherwise. Never wakes a seat named in the `stopped` map of
+  watchdog [options]          wake an autonomy seat idle with budget and eligible work (CC-203), and
+                              resume a seat that went dark with no teleport (CC-320); silent
+                              otherwise. Never wakes or resumes a seat named in the `stopped` map of
                               $AGENT_CHAT_HOME/seat-watchdog.json ({"stopped": {"<seat>":
-                              "<reason>"}}; delete the entry to re-enable), a seat whose latest log
-                              line starts BUDGET-PAUSE or PARKED, a seat at its spend stop, or any
-                              seat while the owner seat has announced a broker restart without
-                              "restart done"
+                              "<reason>"}}; delete the entry to re-enable), a seat at its spend
+                              stop, or any seat while the owner seat has announced a broker restart
+                              without "restart done". A latest journal line starting WRAP, PARKED or
+                              BUDGET-PAUSE stops both the wake and the resume until the seat logs an
+                              ordinary line. An unparsable seat-watchdog.json is an error and the
+                              run does nothing
   watchdog-install [options]  install the launchd job that runs `seats watchdog` four times an hour;
                               the first run waits for the next scheduled minute
   help [command]              display help for command
@@ -334,11 +337,13 @@ Commands:
 === agent-chat seats watchdog
 Usage: agent-chat seats watchdog [options]
 
-wake an autonomy seat idle with budget and eligible work (CC-203); silent otherwise. Never wakes a
-seat named in the `stopped` map of $AGENT_CHAT_HOME/seat-watchdog.json ({"stopped": {"<seat>":
-"<reason>"}}; delete the entry to re-enable), a seat whose latest log line starts BUDGET-PAUSE or
-PARKED, a seat at its spend stop, or any seat while the owner seat has announced a broker restart
-without "restart done"
+wake an autonomy seat idle with budget and eligible work (CC-203), and resume a seat that went dark
+with no teleport (CC-320); silent otherwise. Never wakes or resumes a seat named in the `stopped`
+map of $AGENT_CHAT_HOME/seat-watchdog.json ({"stopped": {"<seat>": "<reason>"}}; delete the entry to
+re-enable), a seat at its spend stop, or any seat while the owner seat has announced a broker
+restart without "restart done". A latest journal line starting WRAP, PARKED or BUDGET-PAUSE stops
+both the wake and the resume until the seat logs an ordinary line. An unparsable seat-watchdog.json
+is an error and the run does nothing
 
 Options:
   --dry-run           print each seat decision; wake nothing, write nothing

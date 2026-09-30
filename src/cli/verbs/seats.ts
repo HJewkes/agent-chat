@@ -15,6 +15,7 @@ import {
   scorerEligible,
   seatLogPath,
 } from '../../agents/seats/io.js'
+import { acquireRunLock } from '../../agents/seats/lock.js'
 import {
   parseLogReadings,
   parseReadingFlag,
@@ -111,6 +112,7 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
     eligible: seat => scorerEligible(root, seat),
     loadDoc: () => loadDoc(),
     saveDoc: doc => saveDoc(doc),
+    lock: () => acquireRunLock(),
     wake: (seat, message, connected) => wakeSeat(client, seat, message, connected),
     appendLog: (seat, at, text) => void appendSeatLog(root, seat, at, text),
   }
@@ -174,11 +176,13 @@ function replayRun(root: string, day: string, seats: string[] | undefined, flags
 export const seatsWatchdogVerb = defineVerb({
   name: 'seats.watchdog',
   description:
-    'wake an autonomy seat idle with budget and eligible work (CC-203); silent otherwise. ' +
-    'Never wakes a seat named in the `stopped` map of $AGENT_CHAT_HOME/seat-watchdog.json ' +
-    '({"stopped": {"<seat>": "<reason>"}}; delete the entry to re-enable), a seat whose latest ' +
-    'log line starts BUDGET-PAUSE or PARKED, a seat at its spend stop, or any seat while the ' +
-    'owner seat has announced a broker restart without "restart done"',
+    'wake an autonomy seat idle with budget and eligible work (CC-203), and resume a seat that went ' +
+    'dark with no teleport (CC-320); silent otherwise. Never wakes or resumes a seat named in the ' +
+    '`stopped` map of $AGENT_CHAT_HOME/seat-watchdog.json ({"stopped": {"<seat>": "<reason>"}}; ' +
+    'delete the entry to re-enable), a seat at its spend stop, or any seat while the owner seat has ' +
+    'announced a broker restart without "restart done". A latest journal line starting WRAP, PARKED ' +
+    'or BUDGET-PAUSE stops both the wake and the resume until the seat logs an ordinary line. An ' +
+    'unparsable seat-watchdog.json is an error and the run does nothing',
   args: z.object({
     dryRun: z.boolean().optional(),
     replay: z.string().optional(),
