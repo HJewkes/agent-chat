@@ -407,6 +407,41 @@ describe('foldDispatch', () => {
     expect(records[0]).toMatchObject({ tokens: 5, usd_est: null })
   })
 
+  it('attaches a broker retire to the latest run when no row of its name carries its agent_id', () => {
+    const legacy = seatRow({ outcome: 'dispatched', value: null, pr: null })
+    const { records } = fold(legacy, retired('s-1', 1200, 0.0123, { agent_id: 'id-A' }))
+
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({ tokens: 1200, agent_id: 'id-A' })
+  })
+
+  it('matches a retire to the run that holds its agent_id even when another row of that run has none', () => {
+    const legacy = seatRow({ outcome: 'dispatched', value: null, pr: null })
+    const { records } = fold(
+      legacy,
+      dispatched({ agent_id: 'id-A' }),
+      seatRow(),
+      dispatched({ agent_id: 'id-B' }),
+      retired('s-1', 1200, 0.0123, { agent_id: 'id-A' }),
+    )
+
+    expect(records.map(r => [r.agent_id, r.tokens])).toEqual([
+      ['id-A', 1200],
+      ['id-B', null],
+    ])
+  })
+
+  it('matches a retire to the latest run when an agent_id is reused', () => {
+    const { records } = fold(
+      dispatched({ agent_id: 'id-A' }),
+      seatRow(),
+      dispatched({ agent_id: 'id-A' }),
+      retired('s-1', 1200, 0.0123, { agent_id: 'id-A' }),
+    )
+
+    expect(records.map(r => r.tokens)).toEqual([null, 1200])
+  })
+
   it('folds an empty file to no records', () => {
     expect(foldDispatch('')).toEqual({ records: [], malformed: 0, invalid_outcomes: 0 })
   })
