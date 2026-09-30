@@ -4,7 +4,13 @@ import path from 'node:path'
 import { logEvent } from '../../broker/log.js'
 import { activeWorkRoot, frontmatterField } from '../active-work.js'
 import { parseTask } from '../burndown/source.js'
-import { dispatchedRow, retiredRow, type DispatchRun, type RetireSpend } from './dispatch-record.js'
+import {
+  abandonedRow,
+  dispatchedRow,
+  retiredRow,
+  type DispatchRun,
+  type RetireSpend,
+} from './dispatch-record.js'
 import { taskOf } from './journal-line.js'
 import { readText } from './io.js'
 import { seatOf, type SeatFile } from './seat-of.js'
@@ -17,6 +23,7 @@ export type SpawnFacts = Omit<DispatchRun, 'ts' | 'task' | 'initiative' | 'kind'
 /** Never throws and returns nothing: a dispatch row must not fail the spawn or retire that caused it. */
 export interface SeatDispatchLog {
   dispatched: (spawn: SpawnFacts) => void
+  abandoned: (spawn: SpawnFacts) => void
   retired: (spawn: SpawnFacts, sessionId: string | null, spend: RetireSpend) => void
 }
 
@@ -41,7 +48,7 @@ const NO_OPEN = new Set(['ENXIO', 'EOPNOTSUPP'])
 const NO_OPEN_ERRNO = new Set([-os.constants.errno.ENXIO, -os.constants.errno.EOPNOTSUPP])
 const UNREADABLE = 'seat_dispatch_seat_unreadable'
 
-type Row = ReturnType<typeof dispatchedRow> | ReturnType<typeof retiredRow>
+type Row = ReturnType<typeof dispatchedRow> | ReturnType<typeof retiredRow> | ReturnType<typeof abandonedRow>
 
 /** The writer over the autonomy root at `root`. Each problem is logged once per writer and retried silently. */
 export function seatDispatchLog(root: string, deps: DispatchLogDeps = {}): SeatDispatchLog {
@@ -63,6 +70,7 @@ export function seatDispatchLog(root: string, deps: DispatchLogDeps = {}): SeatD
   }
   return {
     dispatched: spawn => write(spawn, dispatchedRow),
+    abandoned: spawn => write(spawn, abandonedRow),
     retired: (spawn, sessionId, spend) => write(spawn, run => retiredRow(run, sessionId, spend)),
   }
 }

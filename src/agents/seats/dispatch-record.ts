@@ -113,6 +113,10 @@ function brokerRow<Outcome extends string>(
 
 export const dispatchedRow = (run: DispatchRun): DispatchedRow => brokerRow(run, DISPATCHED, null, null)
 
+/** Broker-written end state for a dispatched agent that never attached; no seat exists to write it. */
+export const abandonedRow = (run: DispatchRun): BrokerRow<'abandoned'> =>
+  brokerRow(run, 'abandoned', null, null)
+
 export function retiredRow(run: DispatchRun, sessionId: string | null, spend: RetireSpend): RetiredRow {
   if ('usage_miss' in spend) {
     return { ...brokerRow(run, RETIRED, null, null), session_id: sessionId, usage_miss: spend.usage_miss }
@@ -205,7 +209,7 @@ function groupOf(row: Row, named: readonly Row[][]): Row[] | undefined {
   const latest = named.at(-1)
   if (latest === undefined) return undefined
   const id = text(row.agent_id)
-  if (row.outcome === RETIRED && isBroker(row) && id !== null) {
+  if ((row.outcome === RETIRED || row.outcome === 'abandoned') && isBroker(row) && id !== null) {
     return named.findLast(g => g.some(r => r.agent_id === id)) ?? latest
   }
   return opensGroup(row, latest) ? undefined : latest
@@ -250,6 +254,7 @@ function recordOf(group: readonly Row[]): DispatchRecord {
 function outcomeOf(broker: readonly Row[], seat: readonly Row[]): DispatchRecord['outcome'] {
   const ended = seat.map(r => r.outcome).findLast(isSeatOutcome)
   if (ended !== undefined) return ended
+  if (broker.some(r => r.outcome === 'abandoned')) return 'abandoned'
   return broker.some(r => r.outcome === RETIRED) ? RETIRED : DISPATCHED
 }
 

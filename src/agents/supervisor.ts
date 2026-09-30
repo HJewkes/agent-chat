@@ -436,12 +436,17 @@ function writeDispatch(write: () => void): void {
   try {
     write()
   } catch (err) {
-    logEvent('seat_dispatch_unavailable', { reason: err instanceof Error ? err.message : String(err) })
+    dispatchUnavailable(err)
   }
+}
+
+function dispatchUnavailable(err: unknown): void {
+  logEvent('seat_dispatch_unavailable', { reason: err instanceof Error ? err.message : String(err) })
 }
 
 function retireSpendOf(read: TranscriptSpendRead): RetireSpend {
   if (!read.ok) return { usage_miss: read.reason }
+  if (read.unpriced.length > 0) logEvent('seat_dispatch_unpriced', { level: 'warn', models: read.unpriced })
   const { tokens, usd_est, usage, models, price_table } = read
   return { tokens, usd_est, usage, models, price_table }
 }
@@ -1266,11 +1271,6 @@ export class Supervisor implements TeleportHost {
     const site = { cwd: allocation.cwd, configDir: childConfigDir(account) }
     const verdict = await this.verifyAttach(agentId, handle, site)
     if (verdict.kind === 'failed') return await this.failSpawn(req, agentId, verdict.reason, verdict.release)
-    if (verdict.kind === 'pending') {
-      this.awaitLateAttach(req, agentId, handle, site, launchedAt, announce)
-      warnings.push(verdict.warning)
-    } else announce()
-    this.seatJournal?.({ event: 'spawn', agent: req.name })
     const facts: SpawnFacts = {
       agent: req.name,
       agent_id: agentId,
@@ -1279,6 +1279,11 @@ export class Supervisor implements TeleportHost {
       model: profile.model,
       predecessor: req.predecessor ?? null,
     }
+    if (verdict.kind === 'pending') {
+      this.awaitLateAttach(req, agentId, handle, site, launchedAt, announce, facts)
+      warnings.push(verdict.warning)
+    } else announce()
+    this.seatJournal?.({ event: 'spawn', agent: req.name })
     writeDispatch(() => this.seatDispatch?.dispatched(facts))
     return {
       ok: true,
@@ -1492,6 +1497,7 @@ export class Supervisor implements TeleportHost {
     site: LaunchSite,
     launchedAt: number,
     onAttached: () => void,
+    facts: SpawnFacts,
   ): void {
     const entry = this.live.get(agentId)
     if (!entry) return
@@ -1501,6 +1507,8 @@ export class Supervisor implements TeleportHost {
         this.attachWaiters.delete(agentId)
         if (!this.live.has(agentId) || this.hasAttached(agentId)) return
         const reason = `no registration within ${ceiling} of launching into ${handle.surface}. ${attachDiagnosis(site, handle, 'waiting')}`
+        // The dispatched row went out at spawn, so the ceiling is where it ends.
+        writeDispatch(() => this.seatDispatch?.abandoned(facts))
         void this.failSpawn(req, agentId, reason, 'if-pane-closed')
       },
       Math.max(0, launchedAt + this.attachCeilingMs - Date.now()),
@@ -1737,9 +1745,9 @@ export class Supervisor implements TeleportHost {
       predecessor: meta.predecessor ?? null,
     }
     const sessionId = identity.sessionId || null
-    void readTranscriptSpend(transcript).then(read =>
-      writeDispatch(() => log.retired(facts, sessionId, retireSpendOf(read))),
-    )
+    void readTranscriptSpend(transcript)
+      .then(read => writeDispatch(() => log.retired(facts, sessionId, retireSpendOf(read))))
+      .catch(dispatchUnavailable)
   }
 
   /**
