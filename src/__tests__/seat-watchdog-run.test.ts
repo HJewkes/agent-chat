@@ -543,6 +543,15 @@ describe('stops hold the dark-seat resume (CC-326)', () => {
     expect(out).toEqual([expect.stringContaining('not resumed: seat logged "WRAP done until next week"')])
   })
 
+  it('finds a WRAP line on the last day of the look-back', async () => {
+    const h = harness(DARK)
+    const wrapDay = new Date(h.now() - 7 * 86_400_000).getDate()
+    h.deps.readSeatLog = (_seat, at) => (at.getDate() === wrapDay ? '09:10 WRAP done until next week\n' : '')
+    dark(h, 7 * 24 * 60 - 30)
+    await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toEqual([])
+  })
+
   it('does not resume a seat dark for longer than the journal look-back', async () => {
     const h = harness(DARK)
     dark(h, 7 * 24 * 60 + 1)
@@ -627,10 +636,18 @@ describe('stops hold the dark-seat resume (CC-326)', () => {
     expect(await runs(h, 3)).toBe(0)
   })
 
-  it('never wakes by the idle path a dark seat whose resume a stop refused', async () => {
+  it('never wakes by the idle path a dark seat whose resume a stop refused, and counts no wake against it', async () => {
     const h = harness(DARK)
     dark(h, 7 * 24 * 60 + 1)
     expect(await runs(h, 6)).toBe(0)
+    expect(h.logs).toEqual([])
+    expect(h.doc.seats['seat-a']?.fires).toBe(0)
+  })
+
+  it('never wakes by the idle path a disconnected seat whose presence cannot be read', async () => {
+    const h = harness(DARK)
+    h.presence = undefined
+    expect(await runs(h, 4)).toBe(0)
   })
 
   it('under --dry-run says why a dark seat would not be resumed', async () => {

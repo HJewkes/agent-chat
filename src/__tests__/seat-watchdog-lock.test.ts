@@ -92,6 +92,21 @@ describe('the watchdog run lock', () => {
     expect([first.held, second.held]).toEqual([true, false])
   })
 
+  it('backs off, leaving the fresh lock in place, when another run takes over the stale lock first', () => {
+    heldBy(OTHER, NOW - 60_000)
+    const fresh = JSON.stringify({ pid: OTHER + 1, at: NOW })
+    const lock = acquireRunLock(file, {
+      now: () => NOW,
+      alive: () => {
+        fs.writeFileSync(file, fresh)
+        return false
+      },
+    })
+    expect(lock).toEqual({ held: false, reason: 'another run took over a stale lock first' })
+    expect(fs.readFileSync(file, 'utf8')).toBe(fresh)
+    expect(fs.readdirSync(dir)).toEqual(['seat-watchdog.lock'])
+  })
+
   it('does not remove a lock another run took over from it', () => {
     const mine = acquireRunLock(file, { now: () => NOW })
     heldBy(OTHER, NOW + LOCK_STALE_MS)
