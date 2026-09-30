@@ -4,7 +4,10 @@ import { matchRules, parseTerms, type TermRule } from '@titan-design/egress-scan
 import {
   aliasReader,
   CONFIG_ENV,
+  configEnvVars,
   gitCall,
+  gitGlobals,
+  gitOptions,
   UNSURE_CALL,
   shellAlias,
   splitAlias,
@@ -12,6 +15,7 @@ import {
   type Overrides,
   type ReadAlias,
 } from './git-alias.js'
+import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
   expandWord,
@@ -44,6 +48,7 @@ export interface GuardContext {
   protectedPaths: readonly string[]
   readFile(file: string): string | undefined
   readAlias: ReadAlias
+  readIncludedHooksPath: ReadIncludedHooksPath
 }
 
 /** What the guard knows of the shell before one command; undefined where it cannot tell. */
@@ -89,6 +94,8 @@ export const REASONS = {
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
   aliasEnv: `leak-guard: the guard cannot tell which directory or config this git command runs with, or which subcommand it names, so it cannot tell what a git alias here runs. Run the command the alias stands for, from a plain cd. ${DOCS}`,
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
+  includePath: `leak-guard: git -c or --config-env on include.path or includeIf.*.path pulls in config that sets core.hooksPath, or config the guard cannot read, which would bypass the pre-push leak scan. ${DOCS}`,
+  aliasWritten: `leak-guard: this command line writes git config and runs a git word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
 } as const
 
 const MAX_DEPTH = 6
@@ -285,10 +292,30 @@ const NAMES_GIT = /\bgit\b/
 const unsure = (run: GitRun, scope: Scope): string | undefined =>
   run.literal || NAMES_GIT.test(scope.said) ? REASONS.aliasEnv : undefined
 
-/** The one boundary every command that is or may be git passes: git's own options, then its alias. */
+/** The one boundary every command that is or may be git passes: git's own options, the config they include, then its alias. */
 function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
-  return checkGit(run.args) ?? checkAlias(run, ctx, scope, depth)
+  return checkGit(run.args) ?? checkInclude(run, ctx, scope) ?? checkAlias(run, ctx, scope, depth)
 }
+
+const MENTIONS_INCLUDE = /include/i
+
+/** Reads the config files the command's own `-c include.path` and `includeIf.*.path` pull in, where it runs. */
+function checkInclude(run: GitRun, ctx: GuardContext, scope: Scope): string | undefined {
+  if (!run.args.some(arg => MENTIONS_INCLUDE.test(arg))) return undefined
+  const cannotRead = run.literal || NAMES_GIT.test(scope.said) ? REASONS.includePath : undefined
+  const options = gitOptions(run.resolved, scope.cwd)
+  if (options === UNSURE_CALL || !options.sure) return cannotRead
+  if (!includesConfig(options.params)) return undefined
+  const env = aliasEnv(run, configEnvVars(options.params), ctx, scope)
+  if (options.dir === undefined || env === undefined) return cannotRead
+  return ctx.readIncludedHooksPath(options.dir, gitGlobals(options), env) ? REASONS.includePath : undefined
+}
+
+/** A git config file path, or `git config` on an alias or include key, anywhere on the line (TP-607). */
+const WRITES_CONFIG = [
+  /\bgit\/(?:\S*\/)?config(?:\.worktree)?\b|\.gitconfig\b/,
+  /(?:^|[\s;&|(`'"])config\s[^\n;&|]*\b(?:alias|include(?:if)?)\./im,
+]
 
 /** Whether the line names `name` as a whole word; `GIT_CONFIG` also matches every `GIT_CONFIG_*`. */
 const mentions = (said: string, name: string): boolean =>
@@ -331,6 +358,8 @@ const aliasShell = (scope: Scope, call: GitCall, env: Overrides, runsIn: string)
 function checkAlias(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
   const call = gitCall(run.resolved, scope.cwd, scope.gitParams)
   if (call === undefined) return undefined
+  if (WRITES_CONFIG.some(pattern => pattern.test(scope.said)))
+    return run.literal || NAMES_GIT.test(scope.said) ? REASONS.aliasWritten : undefined
   if (call === UNSURE_CALL) return unsure(run, scope)
   const env = aliasEnv(run, call.vars, ctx, scope)
   if (env === undefined) return unsure(run, scope)
@@ -818,6 +847,7 @@ export function guardContext(env: NodeJS.ProcessEnv, cwd: string, home: string):
     ],
     readFile: readText,
     readAlias: aliasReader(env),
+    readIncludedHooksPath: includedHooksPathReader(env),
   }
 }
 

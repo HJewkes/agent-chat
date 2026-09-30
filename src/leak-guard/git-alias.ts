@@ -63,7 +63,7 @@ export const CONFIG_ENV = [
 
 export const ALIAS_TIMEOUT_MS = 1000
 
-function gitOutput(args: readonly string[], dir: string, env: NodeJS.ProcessEnv): string | undefined {
+export function gitOutput(args: readonly string[], dir: string, env: NodeJS.ProcessEnv): string | undefined {
   try {
     const run = spawnSync('git', args, {
       cwd: dir,
@@ -78,7 +78,7 @@ function gitOutput(args: readonly string[], dir: string, env: NodeJS.ProcessEnv)
   }
 }
 
-function withOverrides(base: NodeJS.ProcessEnv, overrides: Overrides): NodeJS.ProcessEnv {
+export function withOverrides(base: NodeJS.ProcessEnv, overrides: Overrides): NodeJS.ProcessEnv {
   const env = { ...base, ...overrides }
   for (const [name, value] of Object.entries(env)) if (value === undefined) delete env[name]
   return env
@@ -135,16 +135,22 @@ function optionValue(word: string, name: string, next: string | undefined): stri
 /** A git word the shell expands in a way the guard cannot tell, or a directory it cannot tell. */
 export const UNSURE_CALL = 'unsure'
 
-/**
- * The alias lookup for `git <words>`: undefined when there is nothing to look up, a builtin or no
- * subcommand, and UNSURE_CALL when the subcommand, an option or the directory cannot be told.
- * `inherited` are the `-c` and `--config-env` options of the git whose `!` alias runs this one.
- */
-export function gitCall(
+/** git's options before the subcommand; `dir` is undefined and `sure` false where a value cannot be told. */
+export interface GitOptions {
+  dir: string | undefined
+  sure: boolean
+  params: string[]
+  dirs: [string, string][]
+  /** The index of the first word that is not an option. */
+  at: number
+}
+
+/** git's options in `words`, or UNSURE_CALL when a word before the subcommand cannot be told. */
+export function gitOptions(
   words: readonly (string | undefined)[],
   cwd: string | undefined,
   inherited: readonly string[] = [],
-): GitCall | typeof UNSURE_CALL | undefined {
+): GitOptions | typeof UNSURE_CALL {
   let dir = cwd
   let sure = true
   const params = [...inherited]
@@ -168,17 +174,38 @@ export function gitCall(
     if (name === '--config-env') params.push(`--config-env=${value}`)
     if (DIR_ENV[name] !== undefined) dirs.push([name, value])
   }
+  return { dir, sure, params, dirs, at: i }
+}
+
+/** The options that choose which config git reads, as the lookup passes them to git. */
+export const gitGlobals = ({ dirs, params }: GitOptions): string[] => [
+  ...dirs.map(([name, value]) => `${name}=${value}`),
+  ...params,
+]
+
+/**
+ * The alias lookup for `git <words>`: undefined when there is nothing to look up, a builtin or no
+ * subcommand, and UNSURE_CALL when the subcommand, an option or the directory cannot be told.
+ * `inherited` are the `-c` and `--config-env` options of the git whose `!` alias runs this one.
+ */
+export function gitCall(
+  words: readonly (string | undefined)[],
+  cwd: string | undefined,
+  inherited: readonly string[] = [],
+): GitCall | typeof UNSURE_CALL | undefined {
+  const options = gitOptions(words, cwd, inherited)
+  if (options === UNSURE_CALL) return UNSURE_CALL
+  const { dir, sure, params, dirs, at: i } = options
   const sub = words[i]
   if (i >= words.length || (sub !== undefined && (GIT_BUILTINS.has(sub) || !ALIAS_NAME.test(sub))))
     return undefined
   if (sub === undefined || dir === undefined || !sure) return UNSURE_CALL
   const at = dir
   const dirEnv = Object.fromEntries(dirs.map(([name, value]) => [DIR_ENV[name], path.resolve(at, value)]))
-  const globals = [...dirs.map(([name, value]) => `${name}=${value}`), ...params]
-  return { sub, dir, globals, params, vars: configEnvVars(params), dirEnv, at: i }
+  return { sub, dir, globals: gitGlobals(options), params, vars: configEnvVars(params), dirEnv, at: i }
 }
 
-const configEnvVars = (params: readonly string[]): string[] =>
+export const configEnvVars = (params: readonly string[]): string[] =>
   params.filter(p => p.startsWith('--config-env=')).map(p => p.slice(p.lastIndexOf('=') + 1))
 
 /** An alias value split the way git splits it: blanks separate words, quotes and backslashes group them. */

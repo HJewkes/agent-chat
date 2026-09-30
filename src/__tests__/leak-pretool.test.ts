@@ -16,6 +16,7 @@ import {
   type TermsLoad,
 } from '../leak-guard/pretool.js'
 import { aliasReader } from '../leak-guard/git-alias.js'
+import { includedHooksPathReader } from '../leak-guard/git-include.js'
 import { parseShell } from '../leak-guard/shell-words.js'
 
 const CLI = path.resolve(import.meta.dirname, '../../dist/cli.js')
@@ -41,6 +42,7 @@ const ctx = (over: Partial<GuardContext> = {}): GuardContext => ({
   ],
   readFile: () => undefined,
   readAlias: () => undefined,
+  readIncludedHooksPath: () => false,
   ...over,
 })
 
@@ -887,10 +889,13 @@ describe('a git alias already in config', () => {
   READ_ENV.GIT_CONFIG_NOSYSTEM = '1'
   for (const name of ['GIT_CONFIG_GLOBAL', 'GIT_DIR', 'GIT_WORK_TREE']) delete READ_ENV[name]
 
-  const at = (cwd: string): GuardContext => ctx({ cwd, readAlias: aliasReader(READ_ENV) })
+  const at = (cwd: string): GuardContext =>
+    ctx({ cwd, readAlias: aliasReader(READ_ENV), readIncludedHooksPath: includedHooksPathReader(READ_ENV) })
 
   const aliased = repo('aliased', {
     pnv: 'push --no-verify',
+    'p-nv': 'push --no-verify',
+    pnv2: 'push --no-verify',
     quoted: "push '--no-verify' origin",
     chained: 'pnv',
     bang: '!git push --no-verify origin HEAD',
@@ -901,12 +906,17 @@ describe('a git alias already in config', () => {
   })
   const plain = repo('plain', {})
 
-  it.each(['git pnv', 'git pnv origin HEAD', 'git quoted main', 'git chained'])(
-    'denies a repo alias that expands to push --no-verify: %s',
-    command => {
-      expect(checkCommand(command, at(aliased))).toBe(REASONS.noVerify)
-    },
-  )
+  it.each([
+    'git pnv',
+    'git pnv origin HEAD',
+    'git quoted main',
+    'git chained',
+    'git PNV',
+    'git p-nv',
+    'git pnv2',
+  ])('denies a repo alias that expands to push --no-verify: %s', command => {
+    expect(checkCommand(command, at(aliased))).toBe(REASONS.noVerify)
+  })
 
   it('denies a ! alias whose body runs git push --no-verify', () => {
     expect(checkCommand('git bang', at(aliased))).toBe(REASONS.noVerify)
@@ -1044,6 +1054,68 @@ describe('a git alias already in config', () => {
 
     it.each([`export HOME=${aliasHome}; git status`, `unset GIT_DIR; git pnv`, `HOME=${emptyHome} git pnv`])(
       'allows it where that config holds no alias to follow: %s',
+      command => {
+        expect(checkCommand(command, at(plain))).toBeUndefined()
+      },
+    )
+  })
+
+  describe('config a command-line include pulls in (TP-602)', () => {
+    const hooksCfg = path.join(SCRATCH, 'include-hooks')
+    const nameCfg = path.join(SCRATCH, 'include-name')
+    const nestedCfg = path.join(SCRATCH, 'include-nested')
+    fs.writeFileSync(hooksCfg, '[core]\n\thooksPath = /dev/null\n')
+    fs.writeFileSync(nameCfg, '[user]\n\tname = x\n')
+    fs.writeFileSync(nestedCfg, `[include]\n\tpath = ${hooksCfg}\n`)
+    // git matches gitdir: against the real path, and the scratch dir sits behind a symlink on macOS.
+    const inAliased = `includeIf.gitdir:${fs.realpathSync(aliased)}/.path=${hooksCfg}`
+
+    it.each([
+      `git -c include.path=${hooksCfg} push`,
+      `git -cinclude.path=${hooksCfg} push origin main`,
+      `E=${hooksCfg} git --config-env=include.path=E push`,
+      `git -c include.path=${nestedCfg} push`,
+      `git -c ${inAliased} -C ${aliased} push`,
+      `cd ${aliased} && git -c ${inAliased} push`,
+    ])('denies an include that sets core.hooksPath: %s', command => {
+      expect(checkCommand(command, at(plain))).toBe(REASONS.includePath)
+    })
+
+    it.each([
+      `git -c include.path=${nameCfg} push`,
+      `E=${nameCfg} git --config-env=include.path=E push`,
+      `git -c ${inAliased} push`,
+      `git log --grep include`,
+    ])('allows an include that leaves core.hooksPath alone: %s', command => {
+      expect(checkCommand(command, at(plain))).toBeUndefined()
+    })
+
+    it.each([
+      'git -c include.path="$(cat f)" push',
+      `source ./env.sh; git -c include.path=${hooksCfg} push`,
+      'git --config-env=include.path=E push',
+    ])('denies an include it cannot read: %s', command => {
+      expect(checkCommand(command, { ...at(plain), env: { HOME: emptyHome } })).toBe(REASONS.includePath)
+    })
+  })
+
+  describe('an alias the same command line writes (TP-607)', () => {
+    const writeAlias = `git config alias.pnvw '!git push --no-ve""rify'`
+
+    it.each(['&&', ';', '||', '\n'])('denies git config alias then its use joined by %j', joiner => {
+      expect(checkCommand(`${writeAlias} ${joiner} git pnvw`, at(plain))).toBe(REASONS.aliasWritten)
+    })
+
+    it.each([
+      `printf '[alias]\\n\\tpx = push --no-verify\\n' >> .git/config; git px`,
+      `echo x | tee -a ~/.gitconfig && git px`,
+      `sh -c "git config --global alias.px log"; git px`,
+    ])('denies a config file write then an alias: %s', command => {
+      expect(checkCommand(command, at(plain))).toBe(REASONS.aliasWritten)
+    })
+
+    it.each(['git config user.name x && git push', 'git config user.name x; git status', `${writeAlias}`])(
+      'allows a config write with no alias use: %s',
       command => {
         expect(checkCommand(command, at(plain))).toBeUndefined()
       },
