@@ -167,8 +167,9 @@ the scan by habit or by following a stale instruction. The pre-push hook and, on
 burndown backstop are what catch a leak.
 
 It denies a Bash command when any simple command in it, after `env`, `command`, `exec`, `nohup`,
-`nice`, `timeout`, zsh's `noglob` and `nocorrect`, `if`/`then` and other prefixes are stripped, is
-one of these:
+`nice`, `timeout`, `caffeinate`, `coproc`, zsh's `noglob`, `nocorrect` and `repeat <n>`, `if`/`then`
+and other prefixes are stripped, is one of these. A wrapper is known by its base name, so
+`/usr/bin/nice` is stripped like `nice`.
 
 | Denied                                                                                                   | Why                                               |
 | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
@@ -182,6 +183,7 @@ one of these:
 | one of those commands, or `gh api`, with an argument or body file the guard cannot be sure of            | the guard would scan one text and gh post another |
 | `gh api` whose `-f`, `-F` or `--input` values have a finding                                             | the same text by another route                    |
 | a command word that is an expansion, followed by the words of one of those gh commands                   | `$G pr create` may run gh unscanned               |
+| a command word that is an expansion, followed by a command that any row above denies                     | `$E gh pr create` runs gh when `E` is empty       |
 | `eval` of text the guard cannot be sure of, on a command line that names `git` or `gh`                   | the text may be a push or a gh command            |
 
 The splitter looks inside `$(...)`, backticks, `sh -c`/`bash -c` strings, `eval`, `env -S` and a
@@ -240,7 +242,9 @@ has exactly one source that it has read: one heredoc or one here-string on descr
 - any input redirect with a descriptor of two or more digits, such as `12< file`. bash reads
   descriptor 12; zsh reads the word `12` and a redirect of stdin.
 - two heredocs or here-strings on one command. zsh posts both and bash the last.
-- a `<` redirect of stdin, with or without a heredoc.
+- any redirect of descriptor 0, with or without a heredoc: `< file`, `<&3`, `0<&3`, `0<> file` and
+  `0>&3`. bash takes `0>&3` for a copy of descriptor 3 onto stdin, so after `3< file 0>&3` gh reads
+  the file and not the heredoc. zsh refuses that copy and runs nothing.
 - a heredoc with an unquoted delimiter whose body holds a `$`, a backtick or a backslash. The
   shell expands the first two, and a backslash joins two lines or escapes a character. Quote the
   delimiter: `<<'EOF'`.
@@ -250,6 +254,9 @@ has exactly one source that it has read: one heredoc or one here-string on descr
   covers `--body "$(cat <<'EOF' ... EOF)"`.
 - a backtick substitution that holds a backslash. The shell rewrites `\\`, `\$` and a backslash
   before a newline inside backticks before it parses them. Use `$(...)`.
+
+The two heredoc denies that a backslash causes say so: the message names the backslash and asks
+for a body file. Every other deny in this list uses the general "could not be read" message.
 
 `src/__tests__/leak-pretool-shells.test.ts` runs these through the guard and then through zsh and
 bash with a fake `gh` that records what it is given. It asserts that no shell posts the term
@@ -269,6 +276,23 @@ variable are unknown.
 The cost is that ordinary dynamic arguments are denied too: `gh pr comment "$PR" --body x` with
 `PR` set on the same command line, `--body "$(git log -1)"` and `-f sha="$(git rev-parse HEAD)"`.
 Write the value into the command, or the text into a file at a literal path.
+
+### A command word that is an expansion
+
+When the guard cannot resolve the command word, as in `$E gh pr create ...` or `$(true) gh ...`,
+it checks the words after it twice: as the arguments of git or gh, and as a command of their own,
+because the expansion may be empty or may be a wrapper. For that second check it trusts neither
+the directory nor any variable. A literal title or body and a body file at a literal absolute
+path are scanned; a relative body file or a `$VAR` in an argument is a deny.
+
+### Known false deny: eval beside git or gh
+
+`eval` of text the guard cannot resolve is denied whenever the command line names `git` or `gh`
+anywhere. That denies harmless lines: `eval "$(ssh-agent -s)"; git push` and
+`eval "$(direnv export bash)"; gh pr view 12`. The rule is not narrowed, because the unread text
+can itself be `git push --no-verify` or a gh write, and the guard cannot tell a name that only
+appears in the next command from one that builds the text. Leave the `eval` out of a command
+line that runs git or gh when the command does not need it.
 
 One command is exempt from the missing-list refusal: the merge call,
 `gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge`. The exemption holds only when the call's one
@@ -297,6 +321,9 @@ Not covered, by design or by cost:
 
 - a script file (`bash push.sh`, `make push`, an npm script) or `xargs`, whose commands the guard
   never sees;
+- any other program that runs the command it is given and is not in the wrapper list above:
+  `find -exec gh ...`, `sudo gh ...`, `watch gh ...`, `script -q /dev/null gh ...`. The guard
+  reads the program's name, not gh's, and checks nothing;
 - command text held in a variable and run by a shell: `C='gh pr create ...'; sh -c "$C"`. The
   guard reads a `sh -c` string as written and does not expand it. `eval "$C"` is denied only
   when the command line names `git` or `gh`, so text set in an earlier tool call gets through;

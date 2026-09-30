@@ -27,6 +27,8 @@ export interface SimpleCommand {
   stdin?: string
   /** The shell expands `stdin`, reads it from a redirect the splitter does not follow, or has two sources for it. */
   stdinLive: boolean
+  /** A heredoc fed to it holds a backslash the shell rewrites, which is why `stdin` is unsure. */
+  backslash: boolean
   /** The operator joining this command to the one before it and after it; '' at either end. */
   before: string
   after: string
@@ -88,7 +90,8 @@ class ShellLexer {
 
   private newCommand(): SimpleCommand {
     const nested = this.nested || this.depth !== 0
-    return { words: [], marked: [], substitutions: [], stdinLive: false, before: '', after: '', nested }
+    const unsure = { stdinLive: false, backslash: false }
+    return { words: [], marked: [], substitutions: [], ...unsure, before: '', after: '', nested }
   }
 
   run(): SimpleCommand[] {
@@ -330,8 +333,10 @@ class ShellLexer {
   private readHeredocs(): void {
     for (const doc of this.heredocs) {
       const body = this.heredocBody(doc)
-      const live = doc.quoted ? this.nested && JOINED.test(body) : HEREDOC_LIVE.test(body)
-      if (!doc.aside) this.feed(doc.target, body, live)
+      if (doc.aside) continue
+      const backslash = doc.quoted ? this.nested && JOINED.test(body) : body.includes('\\')
+      doc.target.backslash ||= backslash
+      this.feed(doc.target, body, doc.quoted ? backslash : HEREDOC_LIVE.test(body))
     }
     this.heredocs = []
   }

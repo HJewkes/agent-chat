@@ -504,9 +504,9 @@ describe('stdin with more than one source, or a source the guard did not read', 
   it('denies an unquoted heredoc holding a backslash, which joins lines and escapes', () => {
     const split = (delim: string): string => `<<${delim}\nzq7private\\\nseat\nEOF`
 
-    expect(checkCommand(`gh pr create -t x -F - ${split('EOF')}`, ctx())).toBe(REASONS.unreadableBody)
+    expect(checkCommand(`gh pr create -t x -F - ${split('EOF')}`, ctx())).toBe(REASONS.heredocBackslash)
     expect(checkCommand(`gh pr create -t x -b "$(cat ${split('EOF')}\n)"`, ctx())).toBe(
-      REASONS.unreadableBody,
+      REASONS.heredocBackslash,
     )
     expect(checkCommand(`gh pr create -t x -F - ${split("'EOF'")}`, ctx())).toBeUndefined()
   })
@@ -514,11 +514,11 @@ describe('stdin with more than one source, or a source the guard did not read', 
   it('denies a line ending in a backslash in a quoted heredoc inside a substitution, which bash 3.2 joins', () => {
     const body = (last: string): string => `<<'EOF'\nzq7private\\\nseat${last}\nEOF\n`
 
-    expect(checkCommand(`gh pr create -t x -b "$(cat ${body('')})"`, ctx())).toBe(REASONS.unreadableBody)
+    expect(checkCommand(`gh pr create -t x -b "$(cat ${body('')})"`, ctx())).toBe(REASONS.heredocBackslash)
     expect(checkCommand(`gh pr create -t x -b "$(cat <<'EOF'\nclean\\\nEOF\n)"`, ctx())).toBe(
-      REASONS.unreadableBody,
+      REASONS.heredocBackslash,
     )
-    expect(checkCommand(`echo "$(gh pr create -t x -F - ${body('')})"`, ctx())).toBe(REASONS.unreadableBody)
+    expect(checkCommand(`echo "$(gh pr create -t x -F - ${body('')})"`, ctx())).toBe(REASONS.heredocBackslash)
     expect(checkCommand(`gh pr create -t x -b "$(cat <<'EOF'\na\\b\nEOF\n)"`, ctx())).toBeUndefined()
   })
 
@@ -533,6 +533,20 @@ describe('stdin with more than one source, or a source the guard did not read', 
     expect(checkCommand("echo `gh pr create -t 'x\\y' -b y`", read)).toBe(REASONS.unreadableBody)
     expect(checkCommand('gh pr create -t x -b "`cat b.md`"', read)).toBeUndefined()
     expect(checkCommand('echo `git push \\\n--no-verify`', read)).toBe(REASONS.noVerify)
+  })
+
+  it('names the backslash only when a heredoc with one is what it could not read', () => {
+    const backslash = "<<'EOF'\nclean\\\nEOF\n"
+
+    expect(REASONS.heredocBackslash).toContain('holds a backslash')
+    expect(checkCommand('gh pr create -t x -F - <<EOF\n$HOME\nEOF', ctx())).toBe(REASONS.unreadableBody)
+    expect(checkCommand(`gh pr create -t x -b "$(git log -1)" -F - ${backslash}`, ctx())).toBe(
+      REASONS.unreadableBody,
+    )
+    expect(checkCommand(`gh pr create -t x -F missing.md 3${backslash}`, ctx())).toBe(REASONS.unreadableBody)
+    expect(checkCommand(`cat ${backslash}gh pr create -t x -F missing.md`, ctx())).toBe(
+      REASONS.unreadableBody,
+    )
   })
 
   it.each([
@@ -616,6 +630,30 @@ describe('a gh command the command line hides', () => {
   })
 
   it.each([
+    '$E gh pr create -t x --body-file /w/pr.md',
+    '$(true) gh pr create -t x --body-file /w/pr.md',
+    '$E $F gh pr create -t x --body-file /w/pr.md',
+    '$E command gh pr create -t x --body-file /w/pr.md',
+    '$E agent-chat gh-write -- pr create -t x --body-file /w/pr.md',
+    "$E gh pr create -t x -F - <<'EOF'\nFILE\nEOF",
+    `$E sh -c 'gh pr create -t x -b FILE'`,
+  ])('scans %j, whose leading expansion may be empty', command => {
+    const holding = (text: string): GuardContext => ctx({ readFile: () => text })
+
+    expect(checkCommand(command.replace('FILE', TERM), holding(TERM))).toContain('line 1 private-term #1')
+    expect(checkCommand(command, holding('clean'))).toBeUndefined()
+  })
+
+  it('trusts no directory and no variable behind a command word it cannot resolve', () => {
+    const read = ctx({ env: { T: '/w' }, readFile: () => 'clean' })
+
+    expect(checkCommand('$E gh pr create -t x --body-file pr.md', read)).toBe(REASONS.unreadableBody)
+    expect(checkCommand('$E gh pr create -t x --body-file "$T/pr.md"', read)).toBe(REASONS.unreadableBody)
+    expect(checkCommand('gh pr create -t x --body-file "$T/pr.md"', read)).toBeUndefined()
+    expect(checkCommand('$E git push --no-verify', read)).toBe(REASONS.noVerify)
+  })
+
+  it.each([
     '$EDITOR notes.md',
     '"$X" "$Y" z',
     '$G pr view 12',
@@ -649,6 +687,20 @@ describe('a gh command the command line hides', () => {
     expect(checkCommand(`${modifier} gh pr create -t x -b y`, ctx())).toBeUndefined()
     expect(checkCommand(`${modifier} gh pr create -t ${TERM} -b y`, ctx())).toContain('title line 1')
     expect(checkCommand(`${modifier} git push --no-verify`, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it.each([
+    'repeat 3',
+    'caffeinate',
+    'caffeinate -i -t 60',
+    'caffeinate -w 12',
+    'coproc',
+    '/usr/bin/nice',
+    '/usr/bin/caffeinate -t 60',
+  ])('checks gh behind the wrapper %s', wrapper => {
+    expect(checkCommand(`${wrapper} gh pr create -t x -b y`, ctx())).toBeUndefined()
+    expect(checkCommand(`${wrapper} gh pr create -t ${TERM} -b y`, ctx())).toContain('title line 1')
+    expect(checkCommand(`${wrapper} git push --no-verify`, ctx())).toBe(REASONS.noVerify)
   })
 
   it.each(['export TMP""DIR=/evil', "TMP''DIR=/evil", 'TMP\\DIR=/evil', 'TMP\\\nDIR=/evil'])(

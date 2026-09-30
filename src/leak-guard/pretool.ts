@@ -58,6 +58,7 @@ export const REASONS = {
   tooDeep: `leak-guard: the command nests shells too deeply to check. Run it more directly. ${DOCS}`,
   stdinBody: `leak-guard: a PR or issue body read from a pipe cannot be checked. Write it to a file and pass --body-file. ${DOCS}`,
   unreadableBody: `leak-guard: this command's PR or issue text could not be read the way the shell will read it, so it was not checked. Use literal arguments, a body file at a literal path and a quoted heredoc. ${DOCS}`,
+  heredocBackslash: `leak-guard: a heredoc in this command holds a backslash, which a shell may rewrite: it joins a line that ends in one, and under an unquoted delimiter it escapes the next character. So this PR or issue text was not checked. Remove the backslash, or write the text to a file and pass --body-file. ${DOCS}`,
   hiddenCommand: `leak-guard: the command word is an expansion, so the guard cannot tell what this runs. Write git or gh out literally. ${DOCS}`,
   hiddenScript: `leak-guard: eval of text the guard cannot read, on a command line that names git or gh. Run the command directly. ${DOCS}`,
   missingTerms: `leak-guard: no private term list, so PR and issue text cannot be checked. Create ~/.config/titan-egress/private-terms, one term per line, chmod 600. ${DOCS}`,
@@ -69,7 +70,7 @@ const MAX_DEPTH = 6
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
 const PREFIX_WORDS = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', 'time'])
-const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'exec', 'nohup', 'noglob', 'nocorrect'])
+const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'exec', 'nohup', 'noglob', 'nocorrect', 'coproc'])
 const GIT_VALUE_OPTS = new Set(['-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix'])
 
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=/
@@ -87,14 +88,16 @@ function unwrap(words: readonly string[]): Unwrapped {
   for (;;) {
     const head = rest[0]
     if (head === undefined) return { words: rest, chdir }
+    const name = path.basename(head)
     const assigned = ASSIGNMENT.exec(head)?.[1]
     if (assigned !== undefined) {
       if (isGitConfigVar(assigned)) return { reason: REASONS.gitConfigEnv }
       rest = rest.slice(1)
-    } else if (PREFIX_WORDS.has(head) || PLAIN_WRAPPERS.has(head)) rest = dropOptions(rest.slice(1))
-    else if (head === 'nice') rest = dropOptions(rest.slice(1), ['-n'])
-    else if (head === 'timeout') rest = dropOptions(rest.slice(1), ['-s', '-k']).slice(1)
-    else if (path.basename(head) === 'env') {
+    } else if (PREFIX_WORDS.has(head) || PLAIN_WRAPPERS.has(name)) rest = dropOptions(rest.slice(1))
+    else if (name === 'nice') rest = dropOptions(rest.slice(1), ['-n'])
+    else if (name === 'caffeinate') rest = dropOptions(rest.slice(1), ['-t', '-w'])
+    else if (name === 'timeout' || name === 'repeat') rest = dropOptions(rest.slice(1), ['-s', '-k']).slice(1)
+    else if (name === 'env') {
       const env = unwrapEnv(rest.slice(1))
       if ('reason' in env) return env
       rest = env.words
@@ -281,6 +284,10 @@ function readBody(file: string, cmd: SimpleCommand, ctx: GuardContext, scope: Sc
   return cmd.stdinLive ? undefined : cmd.stdin
 }
 
+/** The deny for text the guard could not read, naming the backslash when a heredoc holds the cause. */
+const unread = (cmds: readonly SimpleCommand[]): string =>
+  cmds.some(cmd => cmd.backslash) ? REASONS.heredocBackslash : REASONS.unreadableBody
+
 /** zsh feeds a command its pipe as well as its heredoc, so stdin behind a pipe is never the text the guard read. */
 const piped = (cmd: SimpleCommand): boolean => cmd.before === '|'
 
@@ -289,7 +296,7 @@ function collect({ inline, files }: Sources, cmd: SimpleCommand, ctx: GuardConte
   for (const { label, file } of files) {
     if (file === '-' && (cmd.stdin === undefined || piped(cmd))) return { reason: REASONS.stdinBody }
     const text = readBody(file, cmd, ctx, scope)
-    if (text === undefined) return { reason: REASONS.unreadableBody }
+    if (text === undefined) return { reason: file === '-' ? unread([cmd]) : REASONS.unreadableBody }
     texts.push({ label, text })
   }
   return { texts }
@@ -364,7 +371,8 @@ function checkGh(
   const kind = ghKind(marked)
   if (kind === 'other') return undefined
   const args = marked.map(word => resolveWord(word, cmd, ctx, scope))
-  if (kind === 'unknown' || !args.every(arg => arg !== undefined)) return REASONS.unreadableBody
+  const unsure = kind === 'unknown' || !args.every(arg => arg !== undefined)
+  if (unsure) return unread(cmd.substitutions.flatMap(sub => sub.commands))
   const sources = kind === 'api' ? apiSources(args) : prSources(args)
   if (sources.inline.length + sources.files.length === 0) return undefined
   const collected = collect(sources, cmd, ctx, scope)
@@ -394,10 +402,22 @@ const ghWriteArgs = (args: readonly string[]): readonly string[] =>
 
 const postsText = (marked: readonly string[]): boolean => ['pr', 'api'].includes(ghKind(marked))
 
-/** A command word the guard cannot resolve may be git or gh, so its arguments are checked as both. */
-function checkHidden(marked: readonly string[]): string | undefined {
+/**
+ * A command word the guard cannot resolve may be git or gh, so its arguments are checked as both.
+ * It may also expand to nothing or to a wrapper, so the words after it are checked as a command.
+ */
+function checkHidden(
+  marked: readonly string[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
   const viaWrite = unmark(marked[0] ?? '') === 'gh-write' && postsText(ghWriteArgs(marked))
-  return postsText(marked) || viaWrite ? REASONS.hiddenCommand : checkGit(marked.map(unmark))
+  if (postsText(marked) || viaWrite) return REASONS.hiddenCommand
+  const words = marked.map(unmark)
+  const unseen = { ...scope, cwd: undefined, env: undefined }
+  return checkGit(words) ?? checkSimple({ ...cmd, words, marked: [...marked] }, ctx, unseen, depth)
 }
 
 /** Checks the text `eval` runs; text the guard cannot resolve is a deny on a line that names git or gh. */
@@ -419,7 +439,7 @@ function checkSimple(cmd: SimpleCommand, ctx: GuardContext, scope: Scope, depth:
   const at = unwrapped.chdir ? { ...scope, cwd: undefined } : scope
   const marked = unwrapped.words.slice(1)
   const head = resolveWord(unwrapped.words[0] ?? '', cmd, ctx, at)
-  if (head === undefined) return checkHidden(marked)
+  if (head === undefined) return checkHidden(marked, cmd, ctx, at, depth)
   const args = marked.map(unmark)
   const name = path.basename(head)
   if (SHELLS.has(name)) return checkShell(args, cmd.stdin, ctx, at, depth)

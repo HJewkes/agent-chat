@@ -162,6 +162,13 @@ const DENIED = [
   `$(command -v gh) ${FROM_FILE}`,
   `C='gh ${FROM_FILE}'; eval "$C"`,
   `noglob gh ${FROM_FILE}`,
+  `$E gh ${FROM_FILE}`,
+  `$(true) gh ${FROM_FILE}`,
+  `$E command gh ${FROM_FILE}`,
+  `$E agent-chat gh-write -- ${FROM_FILE}`,
+  `repeat 1 gh ${FROM_FILE}`,
+  `caffeinate gh ${FROM_FILE}`,
+  `coproc gh ${FROM_FILE}`,
   `export TMP""DIR=$HOME/../evil; gh pr create -t x --body-file "$TMPDIR/pr.md"`,
 ]
 
