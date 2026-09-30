@@ -140,6 +140,8 @@ export interface DispatchRecord {
   note: Scalar
   tokens: number | null
   usd_est: number | null
+  /** True when a session's usage read missed, so `tokens` leaves that session out. */
+  usage_partial: boolean
   value: Scalar
   agent_id: string | null
   spawner: string | null
@@ -159,7 +161,7 @@ type Row = Record<string, unknown> & { agent: string }
 
 export function foldDispatch(text: string): DispatchFold {
   const groups: Row[][] = []
-  const latest = new Map<string, Row[]>()
+  const byName = new Map<string, Row[][]>()
   let malformed = 0
   for (const line of text.split('\n')) {
     if (line.trim() === '') continue
@@ -168,14 +170,16 @@ export function foldDispatch(text: string): DispatchFold {
       malformed++
       continue
     }
-    const open = latest.get(row.agent)
-    if (open !== undefined && !opensGroup(row, open)) {
+    const named = byName.get(row.agent) ?? []
+    const open = groupOf(row, named)
+    if (open !== undefined) {
       open.push(row)
       continue
     }
     const group = [row]
     groups.push(group)
-    latest.set(row.agent, group)
+    named.push(group)
+    byName.set(row.agent, named)
   }
   return {
     records: groups.map(recordOf),
@@ -194,10 +198,22 @@ function parseRow(line: string): Row | undefined {
   }
 }
 
+/** The run a row belongs to among those of its name, or undefined when it starts a new one. */
+function groupOf(row: Row, named: readonly Row[][]): Row[] | undefined {
+  const latest = named.at(-1)
+  if (latest === undefined) return undefined
+  const id = text(row.agent_id)
+  if (row.outcome === RETIRED && isBroker(row) && id !== null) {
+    return named.findLast(g => g.some(r => r.agent_id === id)) ?? latest
+  }
+  return opensGroup(row, latest) ? undefined : latest
+}
+
 /** A name is reused across runs, so a second `dispatched` starts a run once the first has ended or names another agent. */
 function opensGroup(row: Row, group: readonly Row[]): boolean {
   if (row.outcome !== DISPATCHED) return false
-  if (group.some(r => r.outcome !== DISPATCHED)) return true
+  // The broker's retire is not the end of a seat's own `dispatched`, which may be written after it.
+  if (group.some(r => r.outcome !== DISPATCHED && (isBroker(row) || !isBroker(r)))) return true
   const id = text(row.agent_id)
   return id !== null && group.some(r => text(r.agent_id) !== null && r.agent_id !== id)
 }
@@ -235,7 +251,7 @@ function outcomeOf(broker: readonly Row[], seat: readonly Row[]): DispatchRecord
   return broker.some(r => r.outcome === RETIRED) ? RETIRED : DISPATCHED
 }
 
-type Spend = Pick<DispatchRecord, 'tokens' | 'usd_est'>
+type Spend = Pick<DispatchRecord, 'tokens' | 'usd_est' | 'usage_partial'>
 
 /** A retire row reads the whole transcript, so a session retired twice counts its last read and not both. */
 function brokerSpend(broker: readonly Row[]): Spend {
@@ -244,17 +260,21 @@ function brokerSpend(broker: readonly Row[]): Spend {
     if (row.outcome === RETIRED && count(row.tokens) !== null) bySession.set(text(row.session_id), row)
   }
   const read = [...bySession.values()]
-  if (read.length === 0) return { tokens: null, usd_est: null }
+  const sessions = new Set(broker.filter(r => r.outcome === RETIRED).map(r => text(r.session_id)))
+  const usage_partial = sessions.size > read.length
+  if (read.length === 0) return { tokens: null, usd_est: null, usage_partial }
   const usd = read.map(r => count(r.usd_est))
   return {
     tokens: sum(read.map(r => count(r.tokens))),
     usd_est: usd.includes(null) ? null : Math.round(sum(usd) * 1e4) / 1e4,
+    usage_partial,
   }
 }
 
 const seatSpend = (seat: readonly Row[]): Spend => ({
   tokens: lastOf(seat, 'tokens', count),
   usd_est: lastOf(seat, 'usd_est', count),
+  usage_partial: false,
 })
 
 const isBroker = (row: Row): boolean => row.by === BROKER

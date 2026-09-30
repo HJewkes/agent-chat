@@ -383,6 +383,10 @@ agent_spawned                        -> spawning
 … + agent_retired                    -> retired
 ```
 
+A resume whose launch throws is closed by an `agent_exited` row with
+`meta.never_started`, so the identity does not read `spawning` forever and the
+seat watchdog does not read the resume as started (CC-326).
+
 `nameIsClaimed` enforces, in code, the uniqueness the schema no longer provides
 (§1.2): a name is claimed while any non-`retired` identity holds it.
 

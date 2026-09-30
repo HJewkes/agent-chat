@@ -88,7 +88,7 @@ export interface EventStore {
   /** When the newest `kind` row about agent `ref` was written, if any (CC-266). */
   lastAgentEventAt(ref: string, kind: EventKind): number | undefined
 
-  /** The `deregistered` row `name` has not registered since: its log id and time (CC-320). */
+  /** Where `name` went dark: its unanswered `deregistered` row, or the log's opening if an older register was never closed. */
   darkSince(name: string): { id: number; at: number } | undefined
 
   /** Open items for the human: addressed to them and not yet answered or dismissed. */
