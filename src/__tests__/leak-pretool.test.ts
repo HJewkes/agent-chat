@@ -511,6 +511,38 @@ describe('stdin with more than one source, or a source the guard did not read', 
     expect(checkCommand(`gh pr create -t x -F - ${split("'EOF'")}`, ctx())).toBeUndefined()
   })
 
+  it('denies a line ending in a backslash in a quoted heredoc inside a substitution, which bash 3.2 joins', () => {
+    const body = (last: string): string => `<<'EOF'\nzq7private\\\nseat${last}\nEOF\n`
+
+    expect(checkCommand(`gh pr create -t x -b "$(cat ${body('')})"`, ctx())).toBe(REASONS.unreadableBody)
+    expect(checkCommand(`gh pr create -t x -b "$(cat <<'EOF'\nclean\\\nEOF\n)"`, ctx())).toBe(
+      REASONS.unreadableBody,
+    )
+    expect(checkCommand(`echo "$(gh pr create -t x -F - ${body('')})"`, ctx())).toBe(REASONS.unreadableBody)
+    expect(checkCommand(`gh pr create -t x -b "$(cat <<'EOF'\na\\b\nEOF\n)"`, ctx())).toBeUndefined()
+  })
+
+  it('denies a backtick substitution holding a backslash, which the shell rewrites before parsing', () => {
+    const files: Record<string, string> = { '/work/a\\$b.md': 'clean', '/work/b.md': 'clean' }
+    const read = ctx({ readFile: f => files[f] })
+
+    expect(checkCommand('gh pr create -t x -b "`cat <<\'EOF\'\nzq7private\\\\seat\nEOF\n`"', read)).toBe(
+      REASONS.unreadableBody,
+    )
+    expect(checkCommand('gh pr create -t x -b "`cat \'a\\$b.md\'`"', read)).toBe(REASONS.unreadableBody)
+    expect(checkCommand("echo `gh pr create -t 'x\\y' -b y`", read)).toBe(REASONS.unreadableBody)
+    expect(checkCommand('gh pr create -t x -b "`cat b.md`"', read)).toBeUndefined()
+    expect(checkCommand('echo `git push \\\n--no-verify`', read)).toBe(REASONS.noVerify)
+  })
+
+  it.each([
+    "gh pr create -t x -F - <<'EOF' 12< /evil/pr.md\nclean\nEOF",
+    "gh pr create -t x -F - <<'EOF' 12<<'E2'\nclean\nEOF\nclean\nE2",
+    "gh pr create -t x -F - <<'EOF' 00<<< clean\nclean\nEOF",
+  ])('denies a descriptor of two digits, which zsh reads as a word and a redirect of stdin: %j', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.unreadableBody)
+  })
+
   it('reads the file a path with a control character names, not the path without it', () => {
     const files: Record<string, string> = {
       '/work/ab.md': 'clean',

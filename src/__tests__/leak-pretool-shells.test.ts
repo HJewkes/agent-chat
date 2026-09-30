@@ -120,6 +120,12 @@ const DENIED = [
   `${EVIL} | ${CREATE} 3<<< clean`,
   `${CREATE} <<EOF\nzebra\\\nquark\nEOF`,
   `gh pr create -t x -b "$(cat <<EOF\nzebra\\\nquark\nEOF\n)"`,
+  `gh pr create -t x -b "$(cat <<'EOF'\nzebra\\\nquark\nEOF\n)"`,
+  `gh pr create -t x -b "\`cat <<'EOF'\nzebra\\\nquark\nEOF\n\`"`,
+  `gh pr create -t x -b "\`cat <<'EOF'\nzebra\\\\quark\nEOF\n\`"`,
+  `echo "$(${CREATE} <<'EOF'\nzebra\\\nquark\nEOF\n)"`,
+  `${CREATE} <<'EOF' 12< ../evil/pr.md\nclean\nEOF`,
+  `${CREATE} <<'EOF' 12<<'E2'\nclean\nEOF\n${TERM}\nE2`,
   `${CREATE} <<'A' <<'B'\n${TERM}\nA\ns\nB`,
   `${CREATE} <<'A' <<< s\n${TERM}\nA`,
   'gh pr create -t x --body-file a\x01b.md',
@@ -137,6 +143,12 @@ const NESTED = [
   `${EVIL} | if true; then ${CREATE} ${HEREDOC}\nfi`,
   `${CREATE} <<'EOF' 3<<'E2'\nclean\nEOF\n${TERM}\nE2`,
   `exec 3< ../evil/pr.md; ${CREATE} ${HEREDOC}`,
+  `${CREATE} <<'EOF' 3< ../evil/pr.md\nclean\nEOF`,
+  `${CREATE} <<'EOF'\nzebra\\\nquark\nEOF`,
+  `(${CREATE} <<'EOF'\nzebra\\\nquark\nEOF\n)`,
+  `{ ${CREATE} <<'EOF'\nzebra\\\nquark\nEOF\n}`,
+  `gh pr create -t x -b 'zebra\\\nquark'`,
+  `gh pr create -t x -b "$(printf %s 'zebra\\\nquark')"`,
 ]
 
 const ALLOWED: [string, string][] = [

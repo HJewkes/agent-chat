@@ -237,12 +237,19 @@ has exactly one source that it has read: one heredoc or one here-string on descr
 - a pipe into the command, alone or with a heredoc. zsh feeds gh the pipe and then the heredoc;
   bash feeds it the heredoc only.
 - a heredoc or here-string on another descriptor, such as `3<<'EOF'`, which leaves stdin as it was.
+- any input redirect with a descriptor of two or more digits, such as `12< file`. bash reads
+  descriptor 12; zsh reads the word `12` and a redirect of stdin.
 - two heredocs or here-strings on one command. zsh posts both and bash the last.
 - a `<` redirect of stdin, with or without a heredoc.
 - a heredoc with an unquoted delimiter whose body holds a `$`, a backtick or a backslash. The
   shell expands the first two, and a backslash joins two lines or escapes a character. Quote the
   delimiter: `<<'EOF'`.
 - a here-string the shell expands.
+- inside `$(...)` or backticks, a heredoc with a line that ends in a backslash, even under a
+  quoted delimiter. bash 3.2, which is `/bin/bash` on macOS, joins that line to the next. This
+  covers `--body "$(cat <<'EOF' ... EOF)"`.
+- a backtick substitution that holds a backslash. The shell rewrites `\\`, `\$` and a backslash
+  before a newline inside backticks before it parses them. Use `$(...)`.
 
 `src/__tests__/leak-pretool-shells.test.ts` runs these through the guard and then through zsh and
 bash with a fake `gh` that records what it is given. It asserts that no shell posts the term

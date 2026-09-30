@@ -52,6 +52,14 @@ const BLANK = new Set([' ', '\t', '\n', ';', undefined])
 const GH_PLACEHOLDERS = ['{owner}', '{repo}', '{branch}']
 // In a heredoc with an unquoted delimiter the shell expands these and joins a line ending in a backslash.
 const HEREDOC_LIVE = /[$`\\]/
+// bash 3.2 joins a line ending in a backslash in a heredoc inside `$(...)`, even under a quoted delimiter.
+const JOINED = /\\(?:\n|$)/
+
+/** The shell rewrites backslashes inside backticks before it parses them, so such a command is read as unsure. */
+const blur = (cmd: SimpleCommand): void => {
+  cmd.marked = cmd.marked.map((word, i) => (i === 0 ? word : LIVE + word))
+  cmd.stdinLive = true
+}
 
 const ANSI_C: Record<string, string> = { n: '\n', t: '\t', r: '\r', '\\': '\\', "'": "'", '"': '"' }
 
@@ -165,6 +173,8 @@ class ShellLexer {
   /** The number an unquoted digit word gives a redirect, such as the 3 of `3<<EOF`; -1 when there is none. */
   private descriptor(): number {
     if (this.word === null || this.quoted || !/^\d+$/.test(this.word)) return -1
+    // zsh reads `12<f` as the word 12 and a redirect of stdin, where bash reads descriptor 12.
+    if (this.word.length > 1 && this.src[this.pos] === '<') this.cur.stdinLive = true
     const fd = Number(this.word)
     this.word = null
     return fd
@@ -271,7 +281,9 @@ class ShellLexer {
 
   private backtick(quoted: boolean): string {
     const start = this.pos
-    const commands = new ShellLexer(this.until('`'), 0, true).run()
+    const inner = this.until('`')
+    const commands = new ShellLexer(inner, 0, true).run()
+    if (inner.includes('\\')) commands.forEach(blur)
     return this.substituted(this.src.slice(start, this.pos), commands, quoted)
   }
 
@@ -316,7 +328,8 @@ class ShellLexer {
   private readHeredocs(): void {
     for (const doc of this.heredocs) {
       const body = this.heredocBody(doc)
-      if (!doc.aside) this.feed(doc.target, body, !doc.quoted && HEREDOC_LIVE.test(body))
+      const live = doc.quoted ? this.nested && JOINED.test(body) : HEREDOC_LIVE.test(body)
+      if (!doc.aside) this.feed(doc.target, body, live)
     }
     this.heredocs = []
   }
