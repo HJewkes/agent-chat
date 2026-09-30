@@ -241,9 +241,9 @@ describe('body file paths are expanded from the hook env', () => {
   })
 
   it.each([
-    ['single-quoted', "'$TMPDIR/pr.md'"],
-    ['escaped', '\\$TMPDIR/pr.md'],
-  ])('reads a %s variable as the literal file name, as the shell does', (_, file) => {
+    ['a single-quoted variable', "'$TMPDIR/pr.md'"],
+    ['an escaped variable', '\\$TMPDIR/pr.md'],
+  ])('reads %s as the literal file name, as the shell does', (_, file) => {
     const command = `gh pr create -t x --body-file ${file}`
 
     expect(checkCommand(command, holding(`${TMP}/pr.md`, 'clean'))).toBe(REASONS.unreadableBody)
