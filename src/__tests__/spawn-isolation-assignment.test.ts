@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isolationFor, floorWarning } from '../agents/supervisor.js'
+import { isolationFor, floorWarning, worktreeOwnsConflict } from '../agents/supervisor.js'
 import { fileOwnershipStrategy } from '../agents/isolation/index.js'
 import type { IsolationContext } from '../agents/isolation/index.js'
 
@@ -122,5 +122,21 @@ describe('file-ownership, once its inputs are actually supplied', () => {
       }),
     )
     expect(found).toEqual([])
+  })
+})
+
+describe('worktreeOwnsConflict (CC-356)', () => {
+  it('names both fields when isolation worktree is asked for together with owns', () => {
+    expect(worktreeOwnsConflict({ isolation: 'worktree', owns: ['src/**'] })).toMatch(/isolation "worktree".*owns/)
+  })
+
+  it('allows owns inside an assigned worktree, which already exists', () => {
+    expect(worktreeOwnsConflict({ isolation: 'worktree', owns: ['src/**'], worktree: '/wt' })).toBeUndefined()
+  })
+
+  it('allows owns alone and worktree alone', () => {
+    expect(worktreeOwnsConflict({ owns: ['src/**'] })).toBeUndefined()
+    expect(worktreeOwnsConflict({ isolation: 'worktree' })).toBeUndefined()
+    expect(worktreeOwnsConflict({ isolation: 'worktree', owns: [] })).toBeUndefined()
   })
 })

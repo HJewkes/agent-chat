@@ -339,6 +339,15 @@ describe('spawning', () => {
     })
   })
 
+  it('refuses an explicit worktree isolation combined with owns, naming both fields (CC-356)', async () => {
+    const sup = withStubbedSurface()
+    const result = await sup.spawn(spawnReq({ name: 'scoped', isolation: 'worktree', owns: ['src/a/**'] }))
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/isolation "worktree".*owns/)
+    expect(core.events.agentEvents().some(r => r.kind === 'agent_spawned' && r.target === 'scoped')).toBe(false)
+  })
+
   it('refuses a reserved name, and records the refusal as an event', async () => {
     const sup = withStubbedSurface()
     const result = await sup.spawn(spawnReq({ name: 'human' }))
