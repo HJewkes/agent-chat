@@ -708,7 +708,7 @@ export class Supervisor implements TeleportHost {
     if (identity === undefined) return
     const spawner = identity.spawnedBy
     const recipients = spawner === HUMAN ? [spawner, ...burndownReportTo()] : [spawner]
-    if (this.core.events.hasStatusReport(name, recipients, this.runStartedAt(identity))) return
+    if (this.core.events.hasStatusReport(name, recipients, this.core.runStartedAt(identity))) return
     const tail = readExitTail(identity.sessionId ? identityTranscript(identity).path : undefined)
     const body = unreportedExitText(name, tail)
     const { msgId } = this.core.append({
@@ -732,11 +732,6 @@ export class Supervisor implements TeleportHost {
       event: UNREPORTED_EXIT,
     })
     logEvent(UNREPORTED_EXIT, { agentId, name, spawner, lastAction: tail.lastAction })
-  }
-
-  /** A resume starts a new run, and only a report made in this run counts. */
-  private runStartedAt(identity: AgentIdentity): number {
-    return this.core.events.lastAgentEventAt(identity.agentId, 'agent_resumed') ?? identity.spawnedAt
   }
 
   private refuse(req: SpawnRequest, reason: string): SpawnOutcome {

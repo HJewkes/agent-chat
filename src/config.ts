@@ -12,6 +12,7 @@ interface AgentChatConfig {
   decider?: unknown
   noticeTtlHours?: unknown
   ghWriteGapSeconds?: unknown
+  reportBatchSeconds?: unknown
 }
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
@@ -99,6 +100,32 @@ export const DEFAULT_GH_WRITE_GAP_S = 3
 /** `ghWriteGapSeconds` in `config.json`, in milliseconds; read per call. */
 export function resolveGhWriteGapMs(): number {
   return positiveIntegerFrom('ghWriteGapSeconds', DEFAULT_GH_WRITE_GAP_S) * 1000
+}
+
+/** How long a worker's report to its spawner waits for others to join it in one push (CC-321). */
+export const DEFAULT_REPORT_BATCH_S = 20
+
+/** A longer window is read as a typo: a report held for minutes is a stalled coordinator. */
+export const MAX_REPORT_BATCH_S = 300
+
+/**
+ * `reportBatchSeconds` in `config.json`, in milliseconds; 0 turns batching off.
+ * `AGENT_CHAT_REPORT_BATCH_SECONDS` overrides the file. Read per report, so an edit needs no broker restart.
+ */
+export function resolveReportBatchMs(): number {
+  const override = process.env.AGENT_CHAT_REPORT_BATCH_SECONDS
+  const fromEnv = override === undefined || override.trim() === '' ? undefined : Number(override)
+  // A bad override falls back to the file before the default: the file is the owner's standing choice.
+  const seconds = reportBatchSeconds(fromEnv) ?? reportBatchSeconds(readConfig().reportBatchSeconds)
+  return (seconds ?? DEFAULT_REPORT_BATCH_S) * 1000
+}
+
+function reportBatchSeconds(value: unknown): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= MAX_REPORT_BATCH_S)
+    return value
+  logEvent('config_invalid', { key: 'reportBatchSeconds', value, fallback: DEFAULT_REPORT_BATCH_S })
+  return undefined
 }
 
 function positiveIntegerFrom(key: keyof AgentChatConfig, fallback: number): number {
