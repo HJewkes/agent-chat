@@ -165,9 +165,20 @@ The commits scanned for each pushed ref are `<base>..<pushed sha>`. The base is 
 reports for that ref on the remote, on the hook's stdin, when the ref exists there and the
 commit is in the local object store. For a new ref, or a remote sha that is not local, the base
 is the tip of the remote's default branch. The hook asks the push URL for it with
-`git ls-remote <url> HEAD`, and fetches it when it is not local. Local remote-tracking refs are
-never used, because `git update-ref refs/remotes/origin/x <sha>` writes one. This costs one
-more connection per push. A new ref pushed to a remote that names no default branch is refused.
+`git ls-remote <url> HEAD`, and fetches it into the scratch repository when it is not local.
+Local remote-tracking refs are never used, because `git update-ref refs/remotes/origin/x <sha>`
+writes one. This costs one more connection per push. A new ref pushed to a remote that names no
+default branch is refused.
+
+Both calls run scrubbed: `env -i` with the baked `PATH`, `HOME` set to the passwd home,
+`SSH_AUTH_SOCK` passed through, `GIT_TERMINAL_PROMPT=0`, and `GIT_DIR` on the scratch
+repository. So they read the system and the owner's global git config and nothing the agent can
+set: no repository or worktree config, no `GIT_CONFIG_*` or `git -c`, no `GIT_SSH_COMMAND`,
+proxy or askpass variables. The push URL git hands the hook already has `insteadOf` and
+`pushInsteadOf` applied. If `git ls-remote --get-url` of it still differs from it, a rule in
+the system or global config would send the read to another repository, and the push is refused.
+A credential held only in the repository's config or in `GH_TOKEN` no longer reaches these
+calls; such a push is refused as naming no default branch.
 A new branch cut from another unmerged branch is scanned back to the default branch, so it
 rescans that other branch's commits.
 
@@ -201,7 +212,11 @@ repository:
 - an allow entry that is untracked, staged, hidden by `git update-index --skip-worktree`, on an
   unpushed `HEAD`, behind a committed symlink, or added by the pushed commits;
 - git attributes, in the repository or under the agent's `HOME`, and replace refs;
-- a forged remote-tracking ref that hides commits from the scan range.
+- a forged remote-tracking ref that hides commits from the scan range;
+- a `url.<base>.insteadOf` rule, paired with a `pushInsteadOf` so the push still goes to the
+  real remote, that sends the scan base lookup to another repository whose default branch holds
+  the pushed commits. Tested from four sources: the repository's config, `GIT_CONFIG_COUNT`
+  entries, `git -c`, and the owner's global config (refused by the `--get-url` check).
 
 Not closed by the hook. A pre-push hook runs only when git is told to run it, so it cannot stop
 a caller who turns hooks off:
@@ -211,8 +226,11 @@ a caller who turns hooks off:
   spellings in an agent's Bash command is the PreToolUse guard's job (CC-270). The CI
   `egress-scan` job scans the pushed commits with the generic rules after the fact;
 - `GIT_*` variables and git config that change what the push itself sends or where, such as
-  `GIT_DIR`, or a `url.<base>.insteadOf` rule that sends `git ls-remote` to a repository other
-  than the one pushed to (UNVERIFIED: reasoned from how git rewrites URLs, not run);
+  `GIT_DIR`, `remote.<name>.receivepack`, `git push --receive-pack`, or `GIT_SSH_COMMAND` and
+  `core.sshCommand` on the push's own connection. The scan base lookup no longer reads them,
+  but the push does (UNVERIFIED: reasoned, not run);
+- an ssh remote under the scrubbed lookup, which should find the agent through `SSH_AUTH_SOCK`
+  and read `~/.ssh/config` from the passwd home (UNVERIFIED: no ssh remote was tested);
 - a push that does not go through git, such as an upload over the GitHub API;
 - a missing scanner, which fails open as described above;
 - text in a PR title or body, which the hook never sees.
