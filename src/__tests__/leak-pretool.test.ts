@@ -881,7 +881,13 @@ describe('a git alias already in config', () => {
     return dir
   }
 
-  const at = (cwd: string): GuardContext => ctx({ cwd, readAlias: aliasReader(GIT_ENV) })
+  // The lookup reads a made-up empty home, so a HOME or XDG_CONFIG_HOME the command sets is what it sees.
+  const emptyHome = path.join(SCRATCH, 'empty-home')
+  const READ_ENV: NodeJS.ProcessEnv = { ...process.env, HOME: emptyHome, XDG_CONFIG_HOME: emptyHome }
+  READ_ENV.GIT_CONFIG_NOSYSTEM = '1'
+  for (const name of ['GIT_CONFIG_GLOBAL', 'GIT_DIR', 'GIT_WORK_TREE']) delete READ_ENV[name]
+
+  const at = (cwd: string): GuardContext => ctx({ cwd, readAlias: aliasReader(READ_ENV) })
 
   const aliased = repo('aliased', {
     pnv: 'push --no-verify',
@@ -935,6 +941,55 @@ describe('a git alias already in config', () => {
       expect(checkCommand(command, at(plain))).toBeUndefined()
     },
   )
+
+  describe('in config the command itself points git at', () => {
+    const aliasHome = path.join(SCRATCH, 'alias-home')
+    const include = path.join(SCRATCH, 'alias-include')
+    const gitDir = path.join(aliased, '.git')
+    const fwd = repo('fwd', { fwd: '!git incl' })
+    fs.mkdirSync(aliasHome)
+    fs.writeFileSync(path.join(aliasHome, '.gitconfig'), '[alias]\n\tpnv = push --no-verify\n')
+    fs.writeFileSync(include, '[alias]\n\tpnv = push --no-verify\n\tincl = push --no-verify\n')
+
+    it.each([
+      `GIT_DIR=${gitDir} git pnv`,
+      `HOME=${aliasHome} git pnv`,
+      `env GIT_DIR=${gitDir} git pnv`,
+      `export GIT_DIR=${gitDir}; git pnv`,
+      `export HOME=${aliasHome}; git pnv`,
+      `HOME=${aliasHome}; git pnv`,
+      `git -c include.path=${include} pnv`,
+      `git -cinclude.path=${include} pnv`,
+      `E=${include} git --config-env=include.path=E pnv`,
+      `git --git-dir=${gitDir} pnv`,
+      `git -c include.path=${include} -C ${fwd} fwd`,
+    ])('denies an alias found through it: %s', command => {
+      expect(checkCommand(command, at(plain))).toBe(REASONS.noVerify)
+    })
+
+    it.each([`git -c alias.x='push --no-verify' x`, `GIT_CONFIG_GLOBAL=${include} git pnv`])(
+      'keeps denying config set on the command line: %s',
+      command => {
+        expect(checkCommand(command, at(plain))).toBeDefined()
+      },
+    )
+
+    it.each([
+      `read GIT_DIR; git pnv`,
+      `true && export GIT_DIR=${gitDir}; git pnv`,
+      `GIT_DIR=$(cat f) git pnv`,
+      `source ./env.sh; git -C ${plain} pnv`,
+    ])('denies an alias lookup whose config it cannot follow: %s', command => {
+      expect(checkCommand(command, at(plain))).toBe(REASONS.aliasEnv)
+    })
+
+    it.each([`export HOME=${aliasHome}; git status`, `unset GIT_DIR; git pnv`, `HOME=${emptyHome} git pnv`])(
+      'allows it where that config holds no alias to follow: %s',
+      command => {
+        expect(checkCommand(command, at(plain))).toBeUndefined()
+      },
+    )
+  })
 })
 
 describe('the hook entry point', () => {
