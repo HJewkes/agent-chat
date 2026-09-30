@@ -5,8 +5,10 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createWorktreeStrategy, reattachWorktree } from '../agents/isolation/worktree.js'
 import {
+  parseSetupStep,
   runSetupCommand,
   SETUP_FILE,
+  SETUP_LOG,
   type SetupResult,
   type SetupRunner,
 } from '../agents/isolation/worktree-setup.js'
@@ -27,21 +29,50 @@ const tmpdir = (prefix: string): string => {
   return dir
 }
 
-/** A synthetic repository with one commit, declaring `setup` when given. */
-function makeRepo(setup?: object): string {
+const declare = (dir: string, content: string): void => {
+  fs.mkdirSync(path.join(dir, '.agent-chat'), { recursive: true })
+  fs.writeFileSync(path.join(dir, SETUP_FILE), content)
+}
+
+/** Commits a declaration on whatever branch `dir` has checked out. */
+const commitDeclaration = (dir: string, command: string[]): void => {
+  declare(dir, JSON.stringify({ setup: { command } }))
+  git(['add', '.'], dir)
+  git(['commit', '-m', 'change the setup step'], dir)
+}
+
+/** A synthetic repository with one commit, whose declaration file holds `content` when given. */
+function makeLocalRepo(content?: string): string {
   const dir = tmpdir('wt-setup-')
   git(['init', '-b', 'main'], dir)
   git(['config', 'user.email', 'test@example.com'], dir)
   git(['config', 'user.name', 'Test'], dir)
   git(['config', 'commit.gpgsign', 'false'], dir)
   fs.writeFileSync(path.join(dir, 'README.md'), 'seed\n')
-  if (setup !== undefined) {
-    fs.mkdirSync(path.join(dir, '.agent-chat'))
-    fs.writeFileSync(path.join(dir, SETUP_FILE), JSON.stringify({ setup }))
-  }
+  if (content !== undefined) declare(dir, content)
   git(['add', '.'], dir)
   git(['commit', '-m', 'seed'], dir)
   return dir
+}
+
+/** The same, pushed to a bare origin, so its default branch is the one a declaration is trusted from. */
+function makeRepoHolding(content?: string): string {
+  const repo = makeLocalRepo(content)
+  const origin = tmpdir('wt-origin-')
+  git(['init', '--bare', '-b', 'main'], origin)
+  git(['remote', 'add', 'origin', origin], repo)
+  git(['push', '-q', 'origin', 'main'], repo)
+  return repo
+}
+
+const makeRepo = (setup?: object): string =>
+  makeRepoHolding(setup === undefined ? undefined : JSON.stringify({ setup }))
+
+/** A branch with one commit of its own that declares `command`, checked out nowhere. */
+function branchDeclaring(repo: string, branch: string, command: string[]): void {
+  git(['switch', '-q', '-c', branch], repo)
+  commitDeclaration(repo, command)
+  git(['switch', '-q', 'main'], repo)
 }
 
 const ctxFor = (cwd: string, agentName = 'alice'): IsolationContext => ({
@@ -107,8 +138,33 @@ describe('worktree setup on allocate', () => {
     const alloc = await createWorktreeStrategy({ runSetup: runner }).allocate(ctxFor(repo))
 
     expect(fs.existsSync(alloc.cwd)).toBe(true)
+    expect(setupWarnings(alloc.warnings)).toEqual([expect.stringContaining('`npm ci` exited with code 1')])
+  })
+
+  it('keeps the step output out of the warning and in an owner-only log outside the tree', async () => {
+    const repo = makeRepo({ command: ['npm', 'ci'] })
+    const output = 'npm ERR! 401 //registry.example/:_authToken=synthetic-value\n'
+    const { runner } = recording({ exitCode: 1, timedOut: false, output })
+
+    const alloc = await createWorktreeStrategy({ runSetup: runner }).allocate(ctxFor(repo))
+
+    const log = path.join(git(['rev-parse', '--absolute-git-dir'], alloc.cwd), SETUP_LOG)
+    const [warning] = setupWarnings(alloc.warnings)
+    expect(warning).not.toContain('synthetic-value')
+    expect(warning).toContain(`its output is in ${log}`)
+    expect(fs.readFileSync(log, 'utf8')).toBe(output)
+    expect(fs.statSync(log).mode & 0o777).toBe(0o600)
+    expect(git(['status', '--porcelain'], alloc.cwd)).toBe('')
+  })
+
+  it('reports a step that was killed by the timeout even though it exited 0', async () => {
+    const repo = makeRepo({ command: ['npm', 'ci'], timeoutMs: 50 })
+    const { runner } = recording({ exitCode: 0, timedOut: true, output: '' })
+
+    const alloc = await createWorktreeStrategy({ runSetup: runner }).allocate(ctxFor(repo))
+
     expect(setupWarnings(alloc.warnings)).toEqual([
-      expect.stringMatching(/`npm ci` exited with code 1 \(npm ERR! lockfile out of sync\)/),
+      expect.stringContaining('`npm ci` timed out after 50ms and was killed'),
     ])
   })
 
@@ -131,6 +187,100 @@ describe('worktree setup on allocate', () => {
 
     expect(calls).toEqual([])
     expect(setupWarnings(alloc.warnings)).toEqual([expect.stringContaining('setup.command must be')])
+  })
+
+  it('warns and runs nothing when the declaration file is empty', async () => {
+    const repo = makeRepoHolding('')
+    const { runner, calls } = recording()
+
+    const alloc = await createWorktreeStrategy({ runSetup: runner }).allocate(ctxFor(repo))
+
+    expect(calls).toEqual([])
+    expect(setupWarnings(alloc.warnings)).toEqual([`worktree setup skipped: ${SETUP_FILE} is empty`])
+  })
+
+  it('warns and does not throw when setup is null', async () => {
+    const repo = makeRepoHolding('{"setup":null}')
+    const { runner, calls } = recording()
+
+    const alloc = await createWorktreeStrategy({ runSetup: runner }).allocate(ctxFor(repo))
+
+    expect(calls).toEqual([])
+    expect(setupWarnings(alloc.warnings)).toEqual([expect.stringContaining('setup must be an object')])
+  })
+
+  it('ignores keys it does not know and still runs the step as argv', async () => {
+    const declared = { setup: { command: ['npm', 'ci'], shell: true, env: { X: '1' } }, later: [1] }
+    const repo = makeRepoHolding(JSON.stringify(declared))
+    const { runner, calls } = recording()
+
+    const alloc = await createWorktreeStrategy({ runSetup: runner }).allocate(ctxFor(repo))
+
+    expect(calls.map(c => c.command)).toEqual([['npm', 'ci']])
+    expect(setupWarnings(alloc.warnings)).toEqual([])
+    expect(parseSetupStep(JSON.stringify(declared))).toEqual({ command: ['npm', 'ci'], timeoutMs: 300_000 })
+  })
+})
+
+describe('where the setup declaration is read from', () => {
+  it('a new allocation runs origin default, not the unpushed or uncommitted local one', async () => {
+    const repo = makeRepo({ command: ['default-step'] })
+    commitDeclaration(repo, ['unpushed-step'])
+    declare(repo, JSON.stringify({ setup: { command: ['uncommitted-step'] } }))
+    const { runner, calls } = recording()
+
+    await createWorktreeStrategy({ runSetup: runner }).allocate(ctxFor(repo))
+
+    expect(calls.map(c => c.command)).toEqual([['default-step']])
+  })
+
+  it('a reused branch with prior commits runs origin default, not its own declaration', async () => {
+    const repo = makeRepo({ command: ['default-step'] })
+    branchDeclaring(repo, 'agent-chat/alice', ['branch-step'])
+    const { runner, calls } = recording()
+
+    const alloc = await createWorktreeStrategy({ runSetup: runner }).allocate(ctxFor(repo))
+
+    expect(alloc.ref?.reused).toBe('true')
+    expect(fs.readFileSync(path.join(alloc.cwd, SETUP_FILE), 'utf8')).toContain('branch-step')
+    expect(calls).toEqual([{ command: ['default-step'], cwd: alloc.cwd, treeExisted: true }])
+  })
+
+  it('a resume that re-creates a parked tree runs origin default, not the branch declaration', async () => {
+    const repo = makeRepo({ command: ['default-step'] })
+    const first = await createWorktreeStrategy({ runSetup: recording().runner }).allocate(ctxFor(repo))
+    commitDeclaration(first.cwd, ['branch-step'])
+    git(['worktree', 'remove', '--force', first.cwd], repo)
+    const { runner, calls } = recording()
+
+    const record = { gitRoot: repo, worktree: first.cwd, branch: first.ref?.branch ?? '' }
+    const again = await reattachWorktree(record, { runSetup: runner })
+
+    expect(again.ref?.reattached).toBe('local')
+    expect(fs.readFileSync(path.join(again.cwd, SETUP_FILE), 'utf8')).toContain('branch-step')
+    expect(calls.map(c => c.command)).toEqual([['default-step']])
+  })
+
+  it('runs nothing when only the branch declares a step', async () => {
+    const repo = makeRepo()
+    branchDeclaring(repo, 'agent-chat/alice', ['branch-step'])
+    const { runner, calls } = recording()
+
+    const alloc = await createWorktreeStrategy({ runSetup: runner }).allocate(ctxFor(repo))
+
+    expect(alloc.ref?.reused).toBe('true')
+    expect(calls).toEqual([])
+    expect(setupWarnings(alloc.warnings)).toEqual([])
+  })
+
+  it('runs nothing and says so when the base is a local HEAD because origin is absent', async () => {
+    const repo = makeLocalRepo(JSON.stringify({ setup: { command: ['local-step'] } }))
+    const { runner, calls } = recording()
+
+    const alloc = await createWorktreeStrategy({ runSetup: runner }).allocate(ctxFor(repo))
+
+    expect(calls).toEqual([])
+    expect(setupWarnings(alloc.warnings)).toEqual([expect.stringContaining('worktree setup skipped')])
   })
 })
 
@@ -164,6 +314,18 @@ describe('the default setup runner', () => {
     expect(Date.now() - started).toBeLessThan(10_000)
   })
 
+  it('passes the step PATH but not the rest of the broker environment', async () => {
+    const dir = tmpdir('wt-run-')
+    process.env.CC313_BROKER_SECRET = 'synthetic-value'
+    try {
+      const result = await runSetupCommand(['sh', '-c', 'env'], dir, 5_000)
+      expect(result.output).toContain('PATH=')
+      expect(result.output).not.toContain('CC313_BROKER_SECRET')
+    } finally {
+      delete process.env.CC313_BROKER_SECRET
+    }
+  })
+
   it('reports a command that cannot start', async () => {
     const dir = tmpdir('wt-run-')
     const result = await runSetupCommand(['definitely-not-a-command-cc313'], dir, 5_000)
@@ -181,10 +343,6 @@ const STUB_SCANNER =
 /** A synthetic repo with a bare origin and the real egress-scan pre-push hook in its shared hooks dir. */
 function makeHookedRepo(setup?: object): string {
   const repo = makeRepo(setup)
-  const origin = tmpdir('wt-origin-')
-  git(['init', '--bare', '-b', 'main'], origin)
-  git(['remote', 'add', 'origin', origin], repo)
-  git(['push', '-q', 'origin', 'main'], repo)
   const hook = path.join(repo, '.git', 'hooks', 'pre-push')
   fs.copyFileSync(EGRESS_HOOK, hook)
   fs.chmodSync(hook, 0o755)

@@ -4,7 +4,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { clearRefusal, recordRefusal } from './refusals.js'
 import { warn } from './warnings.js'
-import { runWorktreeSetup, type SetupRunner } from './worktree-setup.js'
+import { runWorktreeSetup, type SetupRunner, type SetupTarget } from './worktree-setup.js'
 import { resolveWorktreeBudget } from '../../config.js'
 import { findGitRoot, gitChildEnv } from '../../git.js'
 import type { Allocation, IsolationContext, IsolationStrategy, ReleaseOptions } from './index.js'
@@ -353,6 +353,14 @@ async function resolveBranchBaseNow(gitRoot: string, timeoutMs: number): Promise
   }
 }
 
+/** `warning` is set exactly when the base is a local HEAD, which no setup declaration is trusted from. */
+const setupTarget = (gitRoot: string, worktree: string, base: BranchBase): SetupTarget => ({
+  gitRoot,
+  worktree,
+  baseSha: base.sha,
+  fetched: base.warning === undefined,
+})
+
 /** The tail of each repo's queue of `worktree add`s; it never rejects, so one failure does not jam the rest. */
 const addQueues = new Map<string, Promise<unknown>>()
 
@@ -696,7 +704,7 @@ export async function reattachWorktree(
   copyClaudeDir(gitRoot, worktree)
   const warnings = [
     ...reattachWarnings(record, source, base),
-    ...(await runWorktreeSetup(worktree, opts.runSetup)),
+    ...(await runWorktreeSetup(setupTarget(gitRoot, worktree, base), opts.runSetup)),
   ]
   return {
     cwd: worktree,
@@ -784,7 +792,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       })
       const warnings = [
         ...(base.warning === undefined ? [] : [base.warning]),
-        ...(await runWorktreeSetup(worktreePath, opts.runSetup)),
+        ...(await runWorktreeSetup(setupTarget(gitRoot, worktreePath, base), opts.runSetup)),
       ]
 
       const carried = reused ? ' It already carries commits from an earlier run under this name.' : ''

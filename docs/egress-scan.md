@@ -27,11 +27,26 @@ launches:
 ```
 
 `command` is an argv array run without a shell; `timeoutMs` defaults to five minutes and caps at
-thirty. A repository with no such file gets no setup. A step that fails, times out, or is
-malformed becomes a spawn warning that names the step and its exit, and the spawn proceeds; the
-hook then fails closed as before. The step's `npm ci` runs `prepare` in the new worktree, which
+thirty. Keys agent-chat does not know are ignored. A repository with no such file gets no setup.
+
+The step runs on the broker, outside any permission profile, so agent-chat reads the declaration
+only from the commit it fetched as origin's default branch (`git cat-file blob <base sha>:.agent-chat/worktree.json`).
+It never reads the file in a working tree or on the agent's branch. This holds for a new worktree, a
+parked one re-created on resume, and a reused branch that already carries commits. A branch that adds
+or edits the file changes what runs only after that change lands on the default branch. When origin
+cannot be fetched and the worktree is cut from a local HEAD, no step runs and the spawn warns.
+
+The step gets an allowlisted environment, not the broker's: `PATH`, `HOME`, `USER`, `LOGNAME`,
+`SHELL`, `TMPDIR`, `LANG`, `LC_*`, `XDG_*_HOME`, the proxy variables, `NODE_EXTRA_CA_CERTS`,
+`PNPM_HOME`, `COREPACK_*` and `npm_config_*`.
+
+A step that fails, times out, or is malformed becomes a spawn warning that names the step and its
+exit, and the spawn proceeds; the hook then fails closed as before. The warning carries no step
+output. The output goes to `agent-chat-setup.log` in the worktree's git dir, readable by the owner
+only, and the warning names that path. The step's `npm ci` runs `prepare` in the new worktree, which
 rewrites the shared hook only when its managed body differs, leaves a foreign hook alone, and
-otherwise reports it unchanged.
+otherwise reports it unchanged. The command is the default branch's, but the `package.json` whose
+lifecycle scripts it runs is the worktree's, which on a reused or resumed branch is the branch's.
 
 When the private term list is missing, egress-scan's own hook prints `private term list not found;
 generic rules only` and still scans with the generic rules. It refuses only when
