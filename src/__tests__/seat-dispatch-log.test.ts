@@ -209,20 +209,20 @@ describe('where the rows go', () => {
     expect(rowsOf(path.join(root, 'records', 'sx.jsonl'))).toHaveLength(1)
   })
 
-  it.each(['../escaped.jsonl', '/tmp/escaped-dispatch.jsonl'])(
-    'refuses a dispatch_log of %s that resolves outside the root, and logs it once',
-    declared => {
-      seatFile('seat-x', `prefix: sx\npool: pool-a\ndispatch_log: ${declared}`)
-      const escaped = path.resolve(root, declared)
-      const writer = writerOver()
+  it.each([
+    ['a relative', (outside: string) => path.relative(root, path.join(outside, 'escaped.jsonl'))],
+    ['an absolute', (outside: string) => path.join(outside, 'escaped.jsonl')],
+  ])('refuses %s dispatch_log that resolves outside the root, and logs it once', (_, declaredIn) => {
+    const outside = tmp('dispatch-outside-')
+    seatFile('seat-x', `prefix: sx\npool: pool-a\ndispatch_log: ${declaredIn(outside)}`)
+    const writer = writerOver()
 
-      writer.dispatched(facts())
-      writer.dispatched(facts())
+    writer.dispatched(facts())
+    writer.dispatched(facts())
 
-      expect(fs.existsSync(escaped)).toBe(false)
-      expect(logged).toEqual(['seat_dispatch_refused'])
-    },
-  )
+    expect(fs.readdirSync(outside)).toEqual([])
+    expect(logged).toEqual(['seat_dispatch_refused'])
+  })
 
   it('writes a newline before the row when the last line has none', () => {
     fs.mkdirSync(path.dirname(logFile('seat-x')), { recursive: true })
