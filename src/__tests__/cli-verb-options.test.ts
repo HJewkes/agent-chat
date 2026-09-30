@@ -1,15 +1,21 @@
+import { readdirSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { cliArgs, type Verb } from '../cli/command.js'
 
-const modules = import.meta.glob('../cli/verbs/*.ts', { eager: true }) as Record<
-  string,
-  Record<string, unknown>
->
+const verbsDir = new URL('../cli/verbs/', import.meta.url)
+const loaded = await Promise.all(
+  readdirSync(verbsDir)
+    .filter(file => file.endsWith('.ts'))
+    .map(
+      file =>
+        import(new URL(file.replace(/\.ts$/, '.js'), verbsDir).href) as Promise<Record<string, unknown>>,
+    ),
+)
 
 const isVerb = (value: unknown): value is Verb<unknown> =>
   typeof value === 'object' && value !== null && 'cli' in value && 'run' in value && 'name' in value
 
-const declared = Object.values(modules)
+const declared = loaded
   .flatMap(mod => Object.values(mod))
   .filter(isVerb)
   .flatMap(verb =>
