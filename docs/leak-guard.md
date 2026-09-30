@@ -167,7 +167,8 @@ the scan by habit or by following a stale instruction. The pre-push hook and, on
 burndown backstop are what catch a leak.
 
 It denies a Bash command when any simple command in it, after `env`, `command`, `exec`, `nohup`,
-`nice`, `timeout`, `if`/`then` and other prefixes are stripped, is one of these:
+`nice`, `timeout`, zsh's `noglob` and `nocorrect`, `if`/`then` and other prefixes are stripped, is
+one of these:
 
 | Denied                                                                                                   | Why                                               |
 | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
@@ -180,6 +181,8 @@ It denies a Bash command when any simple command in it, after `env`, `command`, 
 | `gh pr` or `gh issue` `create`, `edit`, `comment`, `review` or `merge` whose title or body has a finding | the text is public the moment it is posted        |
 | one of those commands, or `gh api`, with an argument or body file the guard cannot be sure of            | the guard would scan one text and gh post another |
 | `gh api` whose `-f`, `-F` or `--input` values have a finding                                             | the same text by another route                    |
+| a command word that is an expansion, followed by the words of one of those gh commands                   | `$G pr create` may run gh unscanned               |
+| `eval` of text the guard cannot be sure of, on a command line that names `git` or `gh`                   | the text may be a push or a gh command            |
 
 The splitter looks inside `$(...)`, backticks, `sh -c`/`bash -c` strings, `eval`, `env -S` and a
 heredoc fed to a shell. `agent-chat gh-write -- <gh args>` is checked like `gh`. `git push -n` is
@@ -214,15 +217,36 @@ An argument is sure when it is literal, or when each expansion in it is one of t
 
 A name is unknown when the command line mentions it anywhere outside `$NAME` and `${NAME}`. That
 covers `NAME=`, `export`, `read`, `for`, `printf -v`, `unset` and `${NAME:=x}` without a list of
-the commands that assign. `PWD`, `OLDPWD`, `SHLVL`, `_` and `IFS` are never expanded, because the
+the commands that assign. Quotes and backslashes are dropped before the name is looked for, so
+`TMP""DIR=x` counts as a mention of `TMPDIR`. `PWD`, `OLDPWD`, `SHLVL`, `_` and `IFS` are never expanded, because the
 shell sets them itself. `$NAME:h` and `$NAME[1]` are a zsh modifier and subscript, and are unknown.
 
 Everything else is unknown: `$(...)` and backticks that are not the `cat` form above, an unquoted
 substitution, `${VAR:-x}`, `~user`, a glob, a brace expansion, `<(...)`, zsh's `=command`,
 `name(qualifier)` and `<1-9>`, and an ANSI-C escape other than `\n`, `\t`, `\r`, `\\` and the
-quotes. A heredoc or here-string passed as `--body-file -` is unknown when the shell expands it:
-a heredoc with an unquoted delimiter and a `$` or a backtick in its body. So is one whose command
-also redirects its input with `<`.
+quotes. gh's own `{owner}`, `{repo}` and `{branch}` are not brace expansions and pass as written.
+A `gh` whose group or verb is an expansion (`gh pr $V`) is unknown even when the value is known,
+because the guard picks the flags to read from the literal subcommand.
+
+### Text on stdin
+
+`--body-file -`, `--input -` and `-F field=@-` read stdin. The guard scans that text only when it
+has exactly one source that it has read: one heredoc or one here-string on descriptor 0 of the
+`gh` command itself. Every other case is a deny:
+
+- a pipe into the command, alone or with a heredoc. zsh feeds gh the pipe and then the heredoc;
+  bash feeds it the heredoc only.
+- a heredoc or here-string on another descriptor, such as `3<<'EOF'`, which leaves stdin as it was.
+- two heredocs or here-strings on one command. zsh posts both and bash the last.
+- a `<` redirect of stdin, with or without a heredoc.
+- a heredoc with an unquoted delimiter whose body holds a `$`, a backtick or a backslash. The
+  shell expands the first two, and a backslash joins two lines or escapes a character. Quote the
+  delimiter: `<<'EOF'`.
+- a here-string the shell expands.
+
+`src/__tests__/leak-pretool-shells.test.ts` runs these through the guard and then through zsh and
+bash with a fake `gh` that records what it is given. It asserts that no shell posts the term
+when the guard allows the command.
 
 A relative body file is read from the directory the shell will be in. The guard follows only a
 plain `cd <dir>`: at the top level, one argument that is sure, no option, joined by `;`, a newline
@@ -251,6 +275,14 @@ allowed.
 The hook entry has a 15 second timeout. The guard never waits on a file, so a run that long is
 already broken.
 
+Claude Code fails open on a broken hook. Observed on Claude Code 2.1.285 in print mode, with a
+`touch` command and three PreToolUse hooks on `Bash`: a hook that printed a deny stopped the
+command; a hook that exited 1 with no output let it run; a hook still running at its timeout (2
+seconds in the probe) let it run. So if the guard's entry is missing, or the guard crashes outside
+its own error handling, or it passes the 15 seconds, the tool call goes ahead unchecked and the
+agent sees no message. The guard's own handling covers a call it cannot parse, below. Interactive
+mode and other versions are unverified.
+
 A tool call the guard cannot parse is denied only when it mentions `git`, `gh` or `GIT_CONFIG`,
 so a bug in the guard cannot block every command an agent runs.
 
@@ -258,6 +290,14 @@ Not covered, by design or by cost:
 
 - a script file (`bash push.sh`, `make push`, an npm script) or `xargs`, whose commands the guard
   never sees;
+- command text held in a variable and run by a shell: `C='gh pr create ...'; sh -c "$C"`. The
+  guard reads a `sh -c` string as written and does not expand it. `eval "$C"` is denied only
+  when the command line names `git` or `gh`, so text set in an earlier tool call gets through;
+- a command word that is an expansion, when the group or verb after it is one too (`$G pr $V`);
+- text in a place the guard does not scan: the query string of a `gh api` path
+  (`'repos/o/r/issues/1/comments?body=<text>'`), and flag values other than the title, body and
+  fields, such as `--head`, `--label` and `--milestone`;
+- zsh with `BRACE_CCL` set in a startup file, which expands `{owner}` into single characters;
 - a different `git` on `PATH`, `GIT_EXEC_PATH`, or `--exec-path`;
 - pushing without git at all, for example over the GitHub API with `curl`;
 - an alias that was already in git config before the agent started;

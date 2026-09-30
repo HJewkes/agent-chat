@@ -512,10 +512,16 @@ describe('stdin with more than one source, or a source the guard did not read', 
   })
 
   it('reads the file a path with a control character names, not the path without it', () => {
-    const files: Record<string, string> = { '/work/ab.md': 'clean', '/work/a\x01b.md': TERM, '/t/a\x01b.md': 'x' }
+    const files: Record<string, string> = {
+      '/work/ab.md': 'clean',
+      '/work/a\x01b.md': TERM,
+      '/t/a\x01b.md': 'x',
+    }
     const read = ctx({ env: { T: '/t' }, readFile: f => files[f] })
 
-    expect(checkCommand('gh pr create -t x --body-file a\x01b.md', read)).toContain('body line 1 private-term')
+    expect(checkCommand('gh pr create -t x --body-file a\x01b.md', read)).toContain(
+      'body line 1 private-term',
+    )
     expect(checkCommand("gh pr create -t x --body-file 'a\x01b.md'", read)).toContain('body line 1')
     expect(checkCommand('gh pr create -t x --body-file "$T/a\x01b.md"', read)).toBe(REASONS.unreadableBody)
   })
@@ -537,12 +543,15 @@ describe("gh's own placeholders in an api path", () => {
     expect(checkCommand(merge, ctx({ terms: { kind: 'missing' } }))).toBeUndefined()
   })
 
-  it.each(['repos/{owner,o}/r/issues', 'repos/{o}/r/issues', 'repos/o/r/issues/{1..2}', 'repos/{ownerx}/r'])(
-    'still denies the brace group in %s',
-    endpoint => {
-      expect(checkCommand(`gh api ${endpoint} -f body=hello`, ctx())).toBe(REASONS.unreadableBody)
-    },
-  )
+  it.each([
+    'repos/{owner,o}/r/issues',
+    'repos/{o}/r/issues',
+    'repos/o/r/issues/{1..2}',
+    'repos/{ownerx}/r',
+    'repos/{owner}/{o,p}/issues',
+  ])('still denies the brace group in %s', endpoint => {
+    expect(checkCommand(`gh api ${endpoint} -f body=hello`, ctx())).toBe(REASONS.unreadableBody)
+  })
 })
 
 describe('a gh command the command line hides', () => {
@@ -574,15 +583,20 @@ describe('a gh command the command line hides', () => {
     expect(checkCommand('"$GIT" push --no-verify', ctx({ env }))).toBe(REASONS.noVerify)
   })
 
-  it.each(['$EDITOR notes.md', '"$X" "$Y" z', '$G pr view 12', '$G push origin main', '$AC gh-write -- pr view 1'])(
-    'leaves %s alone',
-    command => {
-      expect(checkCommand(command, ctx())).toBeUndefined()
-    },
-  )
+  it.each([
+    '$EDITOR notes.md',
+    '"$X" "$Y" z',
+    '$G pr view 12',
+    '$G push origin main',
+    '$AC gh-write -- pr view 1',
+    '$X run -- pr create -t x -b y',
+  ])('leaves %s alone', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
 
   it.each([
     `C='gh pr create -t x -b y'; eval "$C"`,
+    `gh pr view 1; sh -c 'eval "$C"'`,
     'eval "$(cat post.sh)" # gh',
     'eval "$(ssh-agent -s)" && git push',
     'eval $C; gh pr view 1',
@@ -591,9 +605,10 @@ describe('a gh command the command line hides', () => {
   })
 
   it('reads eval text it can resolve, and leaves eval alone on a line without git or gh', () => {
-    const env = { T: TERM }
+    const env = { T: TERM, V: '--no-verify' }
 
     expect(checkCommand('eval "gh pr create -t $T -b y"', ctx({ env }))).toContain('title line 1')
+    expect(checkCommand('eval "git push $V"', ctx({ env }))).toBe(REASONS.noVerify)
     expect(checkCommand('eval "$(ssh-agent -s)"; npm test', ctx())).toBeUndefined()
     expect(checkCommand('eval "$(fnm env)" && eval "git push --no-verify"', ctx())).toBe(REASONS.hiddenScript)
   })

@@ -293,8 +293,7 @@ class ShellLexer {
       this.cur.words.push(word)
       this.cur.marked.push(this.marked)
     } else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
-    else if (pending !== 'discard')
-      this.heredocs.push({ delim: word, ...pending, quoted, target: this.cur })
+    else if (pending !== 'discard') this.heredocs.push({ delim: word, ...pending, quoted, target: this.cur })
   }
 
   /** zsh feeds a command every heredoc and here-string it is given and bash only the last, so a second one is unsure. */
