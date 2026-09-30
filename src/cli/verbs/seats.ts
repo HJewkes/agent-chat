@@ -391,8 +391,9 @@ export const seatsDispatchesVerb = defineVerb({
       root: { long: '--root', description: 'autonomy directory holding charter.md, seats/ and logs/' },
     },
   },
-  run: ({ seat, since, json, root }) =>
-    dispatchesReport(root ?? defaultAutonomyRoot(), seat, since, json === true),
+  async run({ seat, since, json, root }) {
+    return dispatchesReport(root ?? defaultAutonomyRoot(), seat, since, json === true)
+  },
 })
 
 export function addSeatsCommands(program: Commander): void {
