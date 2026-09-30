@@ -130,7 +130,7 @@ describe('the broker’s services', () => {
   it('write a retire line for a seat’s agent when the home is a lasting one', async () => {
     const reply = await retireOver(false)
 
-    const days = fs.readdirSync(path.join(autonomy, 'logs', SEAT))
+    const days = fs.readdirSync(path.join(autonomy, 'logs', SEAT)).filter(f => f.endsWith('.md'))
     const written = fs.readFileSync(path.join(autonomy, 'logs', SEAT, days[0] ?? ''), 'utf8')
     expect(reply).toMatchObject({ t: 'spawn_result', ok: true })
     expect(days).toHaveLength(1)

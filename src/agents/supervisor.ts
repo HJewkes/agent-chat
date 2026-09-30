@@ -69,6 +69,9 @@ import { burndownConfigPath, cliEntry, gitHooksDir, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { SeatJournal } from './seats/journal.js'
+import type { SeatDispatchLog, SpawnFacts } from './seats/dispatch-log.js'
+import type { RetireSpend } from './seats/dispatch-record.js'
+import { readTranscriptSpend, type TranscriptSpendRead } from './transcript-spend.js'
 import type { ShadowLedger } from './ledger/shadow-ledger.js'
 import { exitTerminal, LifecycleShadow } from './ledger/lifecycle-shadow.js'
 import { readExitTail, unreportedExitText, UNREPORTED_EXIT } from './exit-report.js'
@@ -424,6 +427,23 @@ export interface SupervisorOptions {
   ledger?: ShadowLedger
   /** CC-316: writes a seat agent's spawn, retire and park lines. Absent in tests, which own no autonomy root. */
   seatJournal?: SeatJournal
+  /** CC-331: appends a seat agent's dispatched and retired rows. Absent in tests, which own no autonomy root. */
+  seatDispatch?: SeatDispatchLog
+}
+
+/** A dispatch row is bookkeeping: a writer that throws despite its contract leaves the spawn or retire as it was. */
+function writeDispatch(write: () => void): void {
+  try {
+    write()
+  } catch (err) {
+    logEvent('seat_dispatch_unavailable', { reason: err instanceof Error ? err.message : String(err) })
+  }
+}
+
+function retireSpendOf(read: TranscriptSpendRead): RetireSpend {
+  if (!read.ok) return { usage_miss: read.reason }
+  const { tokens, usd_est, usage, models, price_table } = read
+  return { tokens, usd_est, usage, models, price_table }
 }
 
 /** Burndown spawns as the human, but its agents report to the configured `reportTo` (CC-266). */
@@ -512,6 +532,7 @@ export class Supervisor implements TeleportHost {
   private readonly surfaceOptions: SupervisorOptions['surface']
   private readonly hookSpawn: HookSpawnFn | undefined
   private readonly seatJournal: SeatJournal | undefined
+  private readonly seatDispatch: SeatDispatchLog | undefined
   private readonly unwatch: () => void
   private readonly teleporter: Teleport
   private readonly shadow: LifecycleShadow
@@ -529,6 +550,7 @@ export class Supervisor implements TeleportHost {
     this.surfaceOptions = options.surface ?? {}
     this.hookSpawn = options.hookSpawn
     this.seatJournal = options.seatJournal
+    this.seatDispatch = options.seatDispatch
     this.unwatch = core.onAppend(row => this.onRow(row))
     this.teleporter = new Teleport(core, this, options.countdownMs, options.argvReader)
     this.shadow = new LifecycleShadow(options.ledger)
@@ -1249,6 +1271,15 @@ export class Supervisor implements TeleportHost {
       warnings.push(verdict.warning)
     } else announce()
     this.seatJournal?.({ event: 'spawn', agent: req.name })
+    const facts: SpawnFacts = {
+      agent: req.name,
+      agent_id: agentId,
+      spawner: req.requestedBy,
+      profile: profile.name,
+      model: profile.model,
+      predecessor: req.predecessor ?? null,
+    }
+    writeDispatch(() => this.seatDispatch?.dispatched(facts))
     return {
       ok: true,
       agentId,
@@ -1688,7 +1719,27 @@ export class Supervisor implements TeleportHost {
     })
     this.finishRetired(identity.agentId, held)
     this.seatJournal?.({ event: 'retire', agent: name })
+    this.writeRetiredRow(identity, transcript.path)
     return { ok: true, ...(this.retireCaveat(name, entry !== undefined, reaped, tenancy?.warning) ?? {}) }
+  }
+
+  /** CC-331: the spend read streams the whole transcript, so the row is written after retire has answered. */
+  private writeRetiredRow(identity: AgentIdentity, transcript: string): void {
+    const log = this.seatDispatch
+    if (log === undefined) return
+    const meta = this.core.agents.spawnMeta(identity.agentId)
+    const facts: SpawnFacts = {
+      agent: identity.name,
+      agent_id: identity.agentId,
+      spawner: identity.spawnedBy || null,
+      profile: meta.profile ?? identity.profile,
+      model: meta.model ?? null,
+      predecessor: meta.predecessor ?? null,
+    }
+    const sessionId = identity.sessionId || null
+    void readTranscriptSpend(transcript).then(read =>
+      writeDispatch(() => log.retired(facts, sessionId, retireSpendOf(read))),
+    )
   }
 
   /**

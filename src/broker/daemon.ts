@@ -9,6 +9,7 @@ import { backfillAtBoot } from '../agents/ledger/backfill-run.js'
 import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
 import { defaultAutonomyRoot, isWatchedSeat } from '../agents/seats/io.js'
 import { seatJournal } from '../agents/seats/journal.js'
+import { seatDispatchLog } from '../agents/seats/dispatch-log.js'
 import { BrokerCore } from './core.js'
 import { EventLog } from './event-log.js'
 import { activeHold } from './hold.js'
@@ -172,8 +173,13 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
   const core = new BrokerCore(deliver, { events, ...(ephemeral ? {} : { isSeat: isWatchedSeat }) })
   const ledger = shadowLedgerFromConfig(() => events.ledgerHandle())
   if (ledger) backfillAtBoot(events, ledger.fence)
-  // CC-316: the same rule for the seat journal, which writes under the real autonomy root.
-  const journal = ephemeral ? {} : { seatJournal: seatJournal(defaultAutonomyRoot()) }
+  // CC-316, CC-331: the same rule for the seat journal and dispatch log, which write under the real autonomy root.
+  const journal = ephemeral
+    ? {}
+    : {
+        seatJournal: seatJournal(defaultAutonomyRoot()),
+        seatDispatch: seatDispatchLog(defaultAutonomyRoot()),
+      }
   const socketServer = new SocketServer(
     core,
     { semaphore: newAgentSlots(), ...(ledger === undefined ? {} : { ledger }), ...journal },

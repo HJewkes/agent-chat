@@ -3,8 +3,8 @@
  *
  * The log has two writers and neither rewrites the other's line. The broker knows a spawn and a retire, with
  * the spend; the seat knows how the work ended. A reader therefore never trusts a single row.
- * A broker retire joins the run holding its agent_id, else the previous run of the name. So a lost broker dispatched
- * line, or a legacy run with no seat row, attaches its spend to the previous run of that name.
+ * A broker retire joins the run holding its agent_id, else the previous run of the name. So a run with no row
+ * carrying its agent_id (lost dispatched line, no seat row) attaches its spend to the previous run of that name.
  * Pure: the writer and the reader do the I/O.
  */
 
