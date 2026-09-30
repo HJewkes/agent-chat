@@ -21,6 +21,7 @@ import {
   scorerEligible,
   seatJournalDays,
 } from '../../agents/seats/io.js'
+import { readDispatches, renderDispatches } from '../../agents/seats/dispatch-read.js'
 import { acquireRunLock } from '../../agents/seats/lock.js'
 import {
   parseLogReadings,
@@ -348,9 +349,56 @@ export const seatsStatusVerb = defineVerb({
   },
 })
 
+/** The dispatches verb's body; an unknown seat, a bad `--since` or a missing log is a plain error. */
+export function dispatchesReport(
+  root: string,
+  seat: string,
+  since: string | undefined,
+  json: boolean,
+): Report {
+  try {
+    return { ok: true, lines: renderDispatches(readDispatches(root, seat, since), json) }
+  } catch (err) {
+    return statusFailure(seat, json, plainError(err, [root, os.homedir()]))
+  }
+}
+
+export const seatsDispatchesVerb = defineVerb({
+  name: 'seats.dispatches',
+  description:
+    "one folded record per agent run from a seat's dispatch log (CC-332), read-only: the broker's " +
+    "spawn and retire rows and the seat's own rows merged, with the spend. Lines that are not a JSON " +
+    'object with an agent and seat outcomes outside the end states are counted, not fatal',
+  args: z.object({
+    seat: requiredString('seat'),
+    since: z.string().optional(),
+    json: z.boolean().optional(),
+    root: z.string().optional(),
+  }),
+  result: Report,
+  cli: {
+    positional: ['seat'],
+    options: {
+      since: {
+        long: '--since',
+        description: 'only runs dispatched at or after this time (YYYY-MM-DD or ISO; no zone means UTC)',
+      },
+      json: {
+        long: '--json',
+        description:
+          'one JSON record per line, then {"malformed","invalid_outcomes"}; a failure is {"seat", "error"}',
+      },
+      root: { long: '--root', description: 'autonomy directory holding charter.md, seats/ and logs/' },
+    },
+  },
+  run: ({ seat, since, json, root }) =>
+    dispatchesReport(root ?? defaultAutonomyRoot(), seat, since, json === true),
+})
+
 export function addSeatsCommands(program: Commander): void {
   const seats = program.command('seats').description('autonomy seats: the idle watchdog')
   addVerb(seats, seatsWatchdogVerb)
   addVerb(seats, seatsStatusVerb)
+  addVerb(seats, seatsDispatchesVerb)
   addVerb(seats, seatsWatchdogInstallVerb)
 }
