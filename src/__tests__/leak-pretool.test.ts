@@ -1121,23 +1121,27 @@ describe('a git alias already in config', () => {
       `exec 3>${nameCfg}; ${lone}`,
       `printf x > ${nameCfg}\n${lone}`,
       `bash -c 'printf x > ${nameCfg}; ${lone}'`,
+      `bash -c "cp ${hooksCfg} ${nameCfg}; ${lone}"`,
+      `${lone} "$(cp ${hooksCfg} ${nameCfg})"`,
       `${lone} "$(awk 'BEGIN{print}' > ${nameCfg})"`,
       `${lone} <<< x`,
       `${lone} < /dev/null`,
       `${lone} > out.txt`,
       `${lone} 2>&1 | tail -3`,
       `${lone} &`,
-      `(${lone})`,
     ])('denies an include that is not the only command on the line: %s', command => {
       expect(checkCommand(command, at(plain))).toBe(REASONS.includePath)
     })
 
-    it.each([lone, `${lone} 2>&1`, `${lone} 2>&-`, `E=${nameCfg} git --config-env=include.path=E push`])(
-      'allows a lone include that leaves core.hooksPath alone: %s',
-      command => {
-        expect(checkCommand(command, at(plain))).toBeUndefined()
-      },
-    )
+    it.each([
+      lone,
+      `${lone} 2>&1`,
+      `${lone} 2>&-`,
+      `(${lone})`,
+      `E=${nameCfg} git --config-env=include.path=E push`,
+    ])('allows a lone include that leaves core.hooksPath alone: %s', command => {
+      expect(checkCommand(command, at(plain))).toBeUndefined()
+    })
 
     it('denies an include git cannot read within the timeout', () => {
       const fifo = path.join(SCRATCH, 'include-fifo')

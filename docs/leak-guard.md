@@ -365,7 +365,7 @@ the alias lookup, the include check fails closed. It denies when:
 - an absolute or `~/` include file does not exist when the hook runs, since git skips a missing
   include and the file may be written before git reads it;
 - the git command is not the only simple command on the command line the agent sent. Any `;`,
-  `&&`, `||`, `|`, `&`, newline, parentheses, `$(...)` or backticks, heredoc or here-string, or
+  `&&`, `||`, `|`, `&`, newline, `$(...)` or backticks, heredoc or here-string, or
   redirect other than a descriptor copy (`2>&1`, `2>&-`) is a deny, and so is an include inside
   `sh -c`, `eval` or a `!` alias. Any other command on the line could write the include file, or a
   file it includes, before git reads it, and no list of writing commands is complete: `python3 -c`,

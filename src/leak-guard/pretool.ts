@@ -302,13 +302,12 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
 const MENTIONS_INCLUDE = /include/i
 const DESCRIPTOR_COPY = /\d*[<>]&(?:\d+|-)(?![\w./])/g
 
-/** The line is this one git command alone: no list, pipe, background, substitution, heredoc or redirect but a descriptor copy. */
+/** The line is this one git command alone: a substitution counts as a command, and a heredoc as a redirect. */
 function soleCommand(run: GitRun, scope: Scope, depth: number): boolean {
   const cmds = parseShell(scope.line)
-  const [cmd] = cmds
-  if (depth > 0 || scope.aliases > 0 || !run.literal || cmds.length !== 1 || cmd === undefined) return false
-  const plain = cmd.substitutions.length === 0 && cmd.stdin === undefined && !cmd.nested && cmd.after === ''
-  return plain && !/[<>]/.test(scope.line.replace(DESCRIPTOR_COPY, ''))
+  if (depth > 0 || scope.aliases > 0 || !run.literal || cmds.length !== 1 || cmds[0]?.after !== '')
+    return false
+  return !/[<>]/.test(scope.line.replace(DESCRIPTOR_COPY, ''))
 }
 
 /** Reads the config files the command's own `-c include.path` and `includeIf.*.path` pull in, where it runs. */
