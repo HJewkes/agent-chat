@@ -15,7 +15,7 @@ export type SeatMatch =
   { kind: 'seat'; seat: SeatFile } | { kind: 'ambiguous'; prefix: string; seats: string[] } | { kind: 'none' }
 
 /** Every seat file under `root` that parses; read fresh, so a new seat needs no restart. Throws when `seats/` is unreadable. */
-function seatFiles(root: string): SeatFile[] {
+function seatFiles(root: string, onUnreadable?: (seat: string) => void): SeatFile[] {
   const dir = path.join(root, 'seats')
   return fs
     .readdirSync(dir)
@@ -23,7 +23,11 @@ function seatFiles(root: string): SeatFile[] {
     .map(file => file.slice(0, -'.md'.length))
     .filter(isSeatName)
     .flatMap(name => {
-      const text = readText(path.join(dir, `${name}.md`)) ?? ''
+      const text = readText(path.join(dir, `${name}.md`))
+      if (text === undefined) {
+        onUnreadable?.(name)
+        return []
+      }
       const seat = parseSeat(name, text)
       return seat === undefined ? [] : [{ seat, text }]
     })
@@ -32,9 +36,15 @@ function seatFiles(root: string): SeatFile[] {
 /**
  * The seat whose prefix is the longest one `agent` is named with. Two seats declaring that prefix are settled by
  * the one named `spawner`; otherwise neither owns it, since either log could be the wrong one.
+ * A seat file that cannot be read is skipped and passed to `onUnreadable`.
  */
-export function seatOf(root: string, agent: string, spawner?: string): SeatMatch {
-  const matching = seatFiles(root).filter(({ seat }) => agent.startsWith(`${seat.prefix}-`))
+export function seatOf(
+  root: string,
+  agent: string,
+  spawner?: string,
+  onUnreadable?: (seat: string) => void,
+): SeatMatch {
+  const matching = seatFiles(root, onUnreadable).filter(({ seat }) => agent.startsWith(`${seat.prefix}-`))
   const longest = Math.max(0, ...matching.map(({ seat }) => seat.prefix.length))
   const owners = matching.filter(({ seat }) => seat.prefix.length === longest)
   const [first] = owners

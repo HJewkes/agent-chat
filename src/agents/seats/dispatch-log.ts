@@ -31,6 +31,7 @@ export interface DispatchLogDeps {
 const UNAVAILABLE = 'seat_dispatch_unavailable'
 const AMBIGUOUS = 'seat_dispatch_ambiguous'
 const REFUSED = 'seat_dispatch_refused'
+const UNREADABLE = 'seat_dispatch_seat_unreadable'
 
 type Row = ReturnType<typeof dispatchedRow> | ReturnType<typeof retiredRow>
 
@@ -64,19 +65,25 @@ interface WriteContext {
 }
 
 function writeRow(ctx: WriteContext, spawn: SpawnFacts, ts: string, rowOf: (run: DispatchRun) => Row): void {
-  const match = seatOf(ctx.root, spawn.agent, spawn.spawner ?? undefined)
+  const unreadable = (seat: string): void => ctx.once(`${UNREADABLE}:${seat}`, UNREADABLE, { seat })
+  const match = seatOf(ctx.root, spawn.agent, spawn.spawner ?? undefined, unreadable)
   if (match.kind === 'ambiguous') {
     return ctx.once(`${AMBIGUOUS}:${match.prefix}`, AMBIGUOUS, { prefix: match.prefix, seats: match.seats })
   }
   if (match.kind === 'none') return
+  const seat = match.seat.seat.name
+  const refuse = (): void =>
+    ctx.once(`${REFUSED}:${seat}`, REFUSED, { seat, reason: 'dispatch_log resolves outside the root' })
   const file = dispatchLogPath(ctx.root, match.seat)
-  if (file === undefined) {
-    const seat = match.seat.seat.name
-    return ctx.once(`${REFUSED}:${seat}`, REFUSED, { seat, reason: 'dispatch_log resolves outside the root' })
-  }
+  if (file === undefined) return refuse()
   const task = taskOf(spawn.agent, match.seat.seat.prefix) ?? null
   const run: DispatchRun = { ...spawn, ts, task, ...taskContext(ctx.activeWork, task) }
-  appendRow(file, rowOf(run))
+  try {
+    appendRow(ctx.root, file, rowOf(run))
+  } catch (err) {
+    if (!(err instanceof Escape)) throw err
+    refuse()
+  }
 }
 
 /** The seat's `dispatch_log` under `root`, else `logs/<seat>/dispatch.jsonl`; undefined when it resolves outside `root`. */
@@ -112,27 +119,56 @@ function initiatives(activeWork: string): string[] {
   }
 }
 
-/** One O_APPEND write of a whole line, as a seat's `echo >>` is, so neither writer can split the other's line. */
-function appendRow(file: string, row: Row): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  const lead = endsUnterminated(file) ? '\n' : ''
-  fs.appendFileSync(file, `${lead}${JSON.stringify(row)}\n`)
-}
+/** A target that a symlink carries outside the root. */
+class Escape extends Error {}
 
-function endsUnterminated(file: string): boolean {
-  let fd: number
+/** One O_APPEND write of a whole line, as a seat's `echo >>` is, so neither writer can split the other's line. */
+function appendRow(root: string, file: string, row: Row): void {
+  const fd = openInside(root, file)
   try {
-    fd = fs.openSync(file, 'r')
-  } catch {
-    return false
-  }
-  try {
-    const size = fs.fstatSync(fd).size
-    if (size === 0) return false
-    const last = Buffer.alloc(1)
-    fs.readSync(fd, last, 0, 1, size - 1)
-    return last[0] !== 0x0a
+    const lead = endsUnterminated(fd) ? '\n' : ''
+    fs.writeSync(fd, `${lead}${JSON.stringify(row)}\n`)
   } finally {
     fs.closeSync(fd)
   }
+}
+
+/** Opens `file` for append, creating its directories one level at a time; throws Escape when a symlink leaves `root`. */
+function openInside(root: string, file: string): number {
+  const realRoot = fs.realpathSync(root)
+  let dir = realRoot
+  for (const part of path
+    .relative(root, path.dirname(file))
+    .split(path.sep)
+    .filter(p => p !== '')) {
+    dir = enterInside(realRoot, path.join(dir, part))
+  }
+  const { O_APPEND, O_CREAT, O_RDWR, O_NOFOLLOW } = fs.constants
+  try {
+    return fs.openSync(path.join(dir, path.basename(file)), O_APPEND | O_CREAT | O_RDWR | O_NOFOLLOW, 0o644)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ELOOP') throw new Escape(file)
+    throw err
+  }
+}
+
+/** The real path of `dir`, whose parent is already real and inside; made when missing, Escape when it leaves `realRoot`. */
+function enterInside(realRoot: string, dir: string): string {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir)
+  const real = fs.realpathSync(dir)
+  if (!isInside(realRoot, real)) throw new Escape(dir)
+  return real
+}
+
+function isInside(realRoot: string, real: string): boolean {
+  const inside = path.relative(realRoot, real)
+  return inside === '' || (!inside.startsWith('..') && !path.isAbsolute(inside))
+}
+
+function endsUnterminated(fd: number): boolean {
+  const size = fs.fstatSync(fd).size
+  if (size === 0) return false
+  const last = Buffer.alloc(1)
+  fs.readSync(fd, last, 0, 1, size - 1)
+  return last[0] !== 0x0a
 }

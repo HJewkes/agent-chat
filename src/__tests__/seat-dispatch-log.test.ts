@@ -154,6 +154,15 @@ describe('task, initiative and kind', () => {
     expect(rowsOf(logFile('seat-x'))[0]).toMatchObject({ initiative: 'demo', kind: null })
   })
 
+  it('takes the first initiative by name when two hold the same task id', () => {
+    taskFile('zeta', 'AB-12', '[kind:second]')
+    taskFile('alpha', 'AB-12', '[kind:first]')
+
+    writerOver().dispatched(facts())
+
+    expect(rowsOf(logFile('seat-x'))[0]).toMatchObject({ initiative: 'alpha', kind: 'first' })
+  })
+
   it('writes a null task for a name with no task id', () => {
     writerOver().dispatched(facts({ agent: 'sx-restart-check' }))
 
@@ -189,6 +198,20 @@ describe('which seat owns the agent', () => {
 
     expect(fs.existsSync(path.join(root, 'logs'))).toBe(false)
     expect(logged).toEqual(['seat_dispatch_ambiguous'])
+  })
+
+  it.each([
+    ['with no read permission', (file: string) => fs.chmodSync(file, 0o000)],
+    ['that is a directory', (file: string) => (fs.rmSync(file), fs.mkdirSync(file))],
+  ])('skips a seat file %s, writes nothing and logs it once', (_, spoil) => {
+    spoil(path.join(root, 'seats', 'seat-x.md'))
+    const writer = writerOver()
+
+    writer.dispatched(facts())
+    writer.dispatched(facts())
+
+    expect(fs.existsSync(path.join(root, 'logs'))).toBe(false)
+    expect(logged).toEqual(['seat_dispatch_seat_unreadable'])
   })
 
   it('ignores a seat file without a prefix', () => {
@@ -234,6 +257,94 @@ describe('where the rows go', () => {
     expect(lines).toHaveLength(3)
     expect(lines[0]).toBe('{"agent":"sx-cd-34-fix","outcome":"done"}')
     expect(JSON.parse(lines[1] ?? '')).toMatchObject({ agent: AGENT })
+  })
+
+  it('writes the first row of an empty existing log with no newline before it', () => {
+    fs.mkdirSync(path.dirname(logFile('seat-x')), { recursive: true })
+    fs.writeFileSync(logFile('seat-x'), '')
+
+    writerOver().dispatched(facts())
+
+    const text = fs.readFileSync(logFile('seat-x'), 'utf8')
+    expect(text.split('\n')).toHaveLength(2)
+    expect(JSON.parse(text)).toMatchObject({ agent: AGENT })
+  })
+})
+
+describe('a symlink under the root', () => {
+  const declare = (dispatchLog: string): void =>
+    seatFile('seat-x', `prefix: sx\npool: pool-a\ndispatch_log: ${dispatchLog}`)
+
+  const writeTwice = (): void => {
+    const writer = writerOver()
+    writer.dispatched(facts())
+    writer.dispatched(facts())
+  }
+
+  it('refuses a dispatch_log under a directory symlink that points outside, and logs it once', () => {
+    const outside = tmp('dispatch-outside-')
+    fs.symlinkSync(outside, path.join(root, 'links'))
+    declare('links/x.jsonl')
+
+    writeTwice()
+
+    expect(fs.readdirSync(outside)).toEqual([])
+    expect(logged).toEqual(['seat_dispatch_refused'])
+  })
+
+  it('creates no directory outside for a missing path under such a symlink', () => {
+    const outside = tmp('dispatch-outside-')
+    fs.symlinkSync(outside, path.join(root, 'links'))
+    declare('links/new/sub/x.jsonl')
+
+    writeTwice()
+
+    expect(fs.readdirSync(outside)).toEqual([])
+    expect(logged).toEqual(['seat_dispatch_refused'])
+  })
+
+  it('refuses the default path when logs/ is a symlink that points outside', () => {
+    const outside = tmp('dispatch-outside-')
+    fs.symlinkSync(outside, path.join(root, 'logs'))
+
+    writeTwice()
+
+    expect(fs.readdirSync(outside)).toEqual([])
+    expect(logged).toEqual(['seat_dispatch_refused'])
+  })
+
+  it('does not append through a log file that is a symlink to a file outside', () => {
+    const target = path.join(tmp('dispatch-outside-'), 'victim.jsonl')
+    fs.writeFileSync(target, 'untouched\n')
+    fs.mkdirSync(path.dirname(logFile('seat-x')), { recursive: true })
+    fs.symlinkSync(target, logFile('seat-x'))
+
+    writeTwice()
+
+    expect(fs.readFileSync(target, 'utf8')).toBe('untouched\n')
+    expect(logged).toEqual(['seat_dispatch_refused'])
+  })
+
+  it('writes through a directory symlink that points to a place inside the root', () => {
+    fs.mkdirSync(path.join(root, 'archive'))
+    fs.symlinkSync(path.join(root, 'archive'), path.join(root, 'logs'))
+
+    writerOver().dispatched(facts())
+
+    expect(rowsOf(path.join(root, 'archive', 'seat-x', 'dispatch.jsonl'))).toHaveLength(1)
+    expect(logged).toEqual([])
+  })
+
+  it('refuses a log file that is a symlink even when it points inside the root', () => {
+    const target = path.join(root, 'real.jsonl')
+    fs.writeFileSync(target, '')
+    fs.mkdirSync(path.dirname(logFile('seat-x')), { recursive: true })
+    fs.symlinkSync(target, logFile('seat-x'))
+
+    writerOver().dispatched(facts())
+
+    expect(fs.readFileSync(target, 'utf8')).toBe('')
+    expect(logged).toEqual(['seat_dispatch_refused'])
   })
 })
 
