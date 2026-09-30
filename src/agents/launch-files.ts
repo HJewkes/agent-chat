@@ -77,19 +77,48 @@ const HOOK_DEADLINE_MARGIN_S = 10
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
 
+const hookCommand = (entry: string, verb: string): string =>
+  `${shellQuote(process.execPath)} ${shellQuote(entry)} ${verb}`
+
+/** Bash spells the bypasses; the edit tools can rewrite the hook directory or the term list. */
+const PRETOOL_MATCHER = 'Bash|Edit|Write|MultiEdit|NotebookEdit'
+
+/** Seconds. The guard reads only regular files and never waits, so a run this long is already broken. */
+const PRETOOL_TIMEOUT_S = 15
+
 /**
- * The `--settings` file a print-mode agent runs with (CC-144): one PermissionRequest
- * hook that files each prompt in the human queue and blocks for the verdict. Claude
- * Code runs hook commands through a shell, and both paths can contain spaces.
+ * The `--settings` file every spawned agent runs with. The leak guard's PreToolUse hook
+ * (CC-270) goes to all of them. A print-mode run, given `permissionTimeoutSeconds`, also
+ * gets the PermissionRequest hook (CC-144) that files each prompt in the human queue and
+ * blocks for the verdict. Claude Code runs hook commands through a shell, and both paths
+ * can contain spaces.
  */
-export function buildHookSettings(entry: string, timeoutSeconds: number): Record<string, unknown> {
-  const deadline = Math.max(1, timeoutSeconds - HOOK_DEADLINE_MARGIN_S)
-  const command = `${shellQuote(process.execPath)} ${shellQuote(entry)} permission-hook --deadline ${deadline}`
+export function buildHookSettings(entry: string, permissionTimeoutSeconds?: number): Record<string, unknown> {
+  const pretool = [
+    {
+      matcher: PRETOOL_MATCHER,
+      hooks: [
+        { type: 'command', command: hookCommand(entry, 'leak-guard pretool'), timeout: PRETOOL_TIMEOUT_S },
+      ],
+    },
+  ]
+  if (permissionTimeoutSeconds === undefined) return { hooks: { PreToolUse: pretool } }
+  const deadline = Math.max(1, permissionTimeoutSeconds - HOOK_DEADLINE_MARGIN_S)
+  const command = hookCommand(entry, `permission-hook --deadline ${deadline}`)
   return {
     hooks: {
-      PermissionRequest: [{ matcher: '*', hooks: [{ type: 'command', command, timeout: timeoutSeconds }] }],
+      PreToolUse: pretool,
+      PermissionRequest: [
+        { matcher: '*', hooks: [{ type: 'command', command, timeout: permissionTimeoutSeconds }] },
+      ],
     },
   }
+}
+
+/** An interactive plan carries no `--settings`, so the guard's file is added to its argv here. */
+function withSettings(plan: LaunchPlan): LaunchPlan {
+  if (plan.args.includes('--settings')) return plan
+  return { ...plan, args: ['--settings', hookSettingsPath(plan.agentId), ...plan.args] }
 }
 
 function writePrivate(file: string, body: string, mode: number = FILE_MODE): void {
@@ -101,15 +130,14 @@ function writePrivate(file: string, body: string, mode: number = FILE_MODE): voi
 }
 
 export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknown>): void {
+  const permissionTimeout = plan.args.includes('--settings') ? resolvePermissionHookTimeout() : undefined
+  const settings = buildHookSettings(cliEntry(), permissionTimeout)
+  writePrivate(hookSettingsPath(plan.agentId), JSON.stringify(settings, null, 2))
   writePrivate(mcpConfigPath(plan.agentId), JSON.stringify(config, null, 2))
-  writePrivate(planPath(plan.agentId), JSON.stringify(plan, null, 2))
+  writePrivate(planPath(plan.agentId), JSON.stringify(withSettings(plan), null, 2))
   writePrivate(relaunchScriptPath(plan.agentId), relaunchScript(plan.agentId), SCRIPT_MODE)
   const hooksDir = hooksDirOf(plan.env)
   if (hooksDir !== undefined) writeGitHooks(hooksDir)
-  if (plan.args.includes('--settings')) {
-    const settings = buildHookSettings(cliEntry(), resolvePermissionHookTimeout())
-    writePrivate(hookSettingsPath(plan.agentId), JSON.stringify(settings, null, 2))
-  }
 }
 
 export function readLaunchPlan(agentId: string): LaunchPlan {
