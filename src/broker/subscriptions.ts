@@ -56,9 +56,10 @@ export class SystemEventFeed<C> {
     const subject = subjectOf(row)
     if (subject === undefined) return
 
+    const reported = row.kind === 'agent_exited' ? this.reportedTo(row.ref) : undefined
     const recipients = this.registry
       .subscribersFor({ kind: row.kind, subject })
-      .filter(conn => !this.alreadyReported(conn, row.kind, row.ref))
+      .filter(conn => !this.alreadyReported(conn, reported, row.ref))
     if (recipients.length === 0) return
 
     const event: SystemEvent = {
@@ -78,9 +79,7 @@ export class SystemEventFeed<C> {
   }
 
   /** Only the push is skipped: the `agent_exited` row is in the log and on the roster either way. */
-  private alreadyReported(conn: C, kind: string, agentId: string | undefined): boolean {
-    if (kind !== 'agent_exited') return false
-    const spawner = this.reportedTo(agentId)
+  private alreadyReported(conn: C, spawner: string | undefined, agentId: string | undefined): boolean {
     if (spawner === undefined || this.registry.nameOf(conn) !== spawner) return false
     logEvent('exit_notice_suppressed', { agentId, spawner })
     return true

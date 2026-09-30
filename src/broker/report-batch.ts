@@ -107,7 +107,7 @@ function logBatch(messages: readonly DeliveredMessage[]): void {
 export function batchOf(messages: readonly DeliveredMessage[]): DeliveredMessage {
   const total = messages.length
   const senders = [...new Set(messages.map(m => m.from))].join(', ')
-  const parts = messages.map((m, i) => `[${i + 1}/${total}] from ${m.from}, msg_id ${m.msgId}\n${m.text}`)
+  const parts = messages.map((m, i) => `[${i + 1}/${total}] ${headerOf(m)}\n${m.text}`)
   return {
     msgId: newMsgId(),
     from: 'agent-chat',
@@ -119,3 +119,6 @@ export function batchOf(messages: readonly DeliveredMessage[]): DeliveredMessage
     at: Date.now(),
   }
 }
+
+const headerOf = (m: DeliveredMessage): string =>
+  `from ${m.from}, msg_id ${m.msgId}${m.inReplyTo ? `, in_reply_to ${m.inReplyTo}` : ''}`

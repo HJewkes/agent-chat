@@ -312,6 +312,20 @@ describe('reports to one coordinator inside the window', () => {
     events.mockRestore()
   })
 
+  // Mutation caught: `headerOf` dropping the thread a report answers.
+  it('keeps the in_reply_to of a report inside a batch', () => {
+    const coord = session('coord')
+    const [a, b] = [worker('w-a', coord), worker('w-b', coord)]
+    say(coord, 'w-a', 'take the flaky test')
+    const assignment = core.events.inboxFor('w-a', 1)[0]?.msgId as string
+
+    send(a, { t: 'send', to: 'coord', text: 'Status: DONE', inReplyTo: assignment })
+    say(b, 'coord', 'Status: DONE')
+    vi.advanceTimersByTime(WINDOW_MS)
+
+    expect(pushes(coord)[0]?.text).toContain(`, in_reply_to ${assignment}\nStatus: DONE`)
+  })
+
   // Mutation caught: `batchMeta` leaving the senders or ids out of the attributes.
   it('names every real sender and id in the attributes the recipient sees', () => {
     const batch = [
