@@ -286,11 +286,17 @@ implementer reports; reviewers follow the reviewer block.
 
 ### The broker appends the contract
 
-`agent_spawn` appends the implementer or the reviewer block from
-[return-contract.md](return-contract.md) to the brief, with your registered name filled in, so
-never paste either block into a brief. That file also says which profiles take which block;
-explorer, planner, researcher, coordinator and peer profiles take none, and neither does a
-resumed agent, so state the report channel yourself in those briefs.
+`agent_spawn` appends the implementer or the reviewer block to the brief, with your registered
+name filled in, so never paste either block into a brief. The text is compiled into the broker
+from `src/agents/return-contract-blocks.ts` in the agent-chat repository, so a change to it
+takes a build and a broker restart. A profile takes the block its `returnContract` field names,
+or the one its name carries (`<prefix>-implementer`, `<prefix>-reviewer`) when it is a worker
+whose grants agree. Explorer, planner, researcher, coordinator and peer profiles take none, and
+neither does a resumed agent, so state the report channel yourself in those briefs.
+
+When a brief states a report format of its own (another `Verdict:` vocabulary, a digest with no
+PR), pass `return_contract: "none"` to `agent_spawn`. Without it the agent gets your format and
+the broker's block, and the spawn result warns.
 
 Foreground `sleep` is denied, so an agent that does not block on `gh run watch` ends
 its turn at "PR opened" and needs a paid resume.

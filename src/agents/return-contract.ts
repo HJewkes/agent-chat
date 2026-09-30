@@ -1,7 +1,6 @@
-import fs from 'node:fs'
-import { returnContractPath } from '../paths.js'
 import { HUMAN } from '../protocol.js'
 import { roleOf } from './profiles.js'
+import { RETURN_CONTRACT_BLOCKS } from './return-contract-blocks.js'
 import { RETURN_CONTRACTS, type AgentProfile, type ReturnContract } from './types.js'
 
 /**
@@ -9,18 +8,25 @@ import { RETURN_CONTRACTS, type AgentProfile, type ReturnContract } from './type
  *
  * Coordinators pasted these rules into every brief by hand, so the copies drifted
  * and each one was paid for on every coordinator turn. The text now lives in one
- * file and the broker appends the block that fits the profile.
+ * module and the broker appends the block that fits the profile.
  */
 
 const PLACEHOLDER = '<spawner>'
 
-/** The phrases every pasted copy of a block carries, however the rest was reworded or rewrapped. */
-const SIGNATURES: Record<ReturnContract, readonly string[]> = {
-  implementer: ['LAST action must be chat_send to', 'Status: DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT'],
-  reviewer: ['Verdict: MERGE (or FIX_FIRST)'],
+const LAST_ACTION = /\blast action\b/i
+const STATUS_LINE = /\bStatus:\s*DONE\s*\|\s*DONE_WITH_CONCERNS\s*\|\s*BLOCKED\s*\|\s*NEEDS_CONTEXT\b/
+const VERDICT_LINE = /\bVerdict:\s*MERGE\s*(?:\(\s*or\s+FIX_FIRST\s*\)|or\s+FIX_FIRST\b|\|\s*FIX_FIRST\b)/
+const PR_LINE = /\bPR:\s*\S/
+const HEAD_LINE = /\bHead:\s*\S/
+
+/** Every line the spawner's tooling parses: a brief that quotes only some of them still needs the block. */
+const CARRIED: Record<ReturnContract, readonly RegExp[]> = {
+  implementer: [LAST_ACTION, STATUS_LINE, PR_LINE, HEAD_LINE],
+  reviewer: [VERDICT_LINE, PR_LINE, HEAD_LINE],
 }
 
-const collapse = (text: string): string => text.replace(/\s+/g, ' ')
+/** A report line of the brief's own, at a line start or quoted inline. */
+const OWN_REPORT_LINE = /(?:^|[\s`*])(?:Status|Verdict):/
 
 const mayEdit = (profile: AgentProfile): boolean =>
   profile.allowedTools.includes('Edit') && !(profile.disallowedTools ?? []).includes('Edit')
@@ -46,21 +52,9 @@ export function contractOf(profile: AgentProfile): ReturnContract | undefined {
   return (named === 'implementer') === mayEdit(profile) ? named : undefined
 }
 
-/** Whether a brief already carries a pasted copy of this block, in any wording. */
-export function carriesContract(brief: string, contract: ReturnContract): boolean {
-  const flat = collapse(brief)
-  return SIGNATURES[contract].every(phrase => flat.includes(phrase))
-}
-
-/** The fenced text under `## <contract>`, or nothing when the file or the section is missing. */
-export function readContract(
-  contract: ReturnContract,
-  file: string = returnContractPath(),
-): string | undefined {
-  if (!fs.existsSync(file)) return undefined
-  const section = new RegExp(`^## ${contract}\\n+\`\`\`\\n([\\s\\S]*?)\\n\`\`\`$`, 'm')
-  return section.exec(fs.readFileSync(file, 'utf8'))?.[1]
-}
+/** Whether a brief already carries a pasted copy of this block, in any wording or wrapping. */
+export const carriesContract = (brief: string, contract: ReturnContract): boolean =>
+  CARRIED[contract].every(line => line.test(brief))
 
 export interface ContractInput {
   brief: string
@@ -69,7 +63,8 @@ export interface ContractInput {
   spawner: string
   /** A resumed conversation was handed its contract when it was first spawned. */
   resumed: boolean
-  file?: string
+  /** The spawn's own `return_contract`: `none` when the brief states its own report format. */
+  requested?: 'none'
 }
 
 export interface Contracted {
@@ -77,28 +72,27 @@ export interface Contracted {
   warnings: string[]
 }
 
-/**
- * The brief as the agent receives it. A CLI spawn has no registered name to
- * report to, and `burndown tick` spawns that way with a report format of its own.
- */
+/** A CLI spawn has no registered name to report to, and `burndown tick` spawns that way with its own format. */
+function contractFor(input: ContractInput): ReturnContract | undefined {
+  if (input.resumed || input.requested === 'none' || input.spawner === HUMAN) return undefined
+  return contractOf(input.profile)
+}
+
+const pastedWarning = (contract: ReturnContract): string =>
+  `the brief already carries the ${contract} return contract; the broker appends it, so stop pasting it`
+
+const ownFormatWarning = (contract: ReturnContract): string =>
+  `the brief has a Status: or Verdict: line of its own and the ${contract} return contract was appended ` +
+  'after it; pass return_contract: "none" if your format should stand alone'
+
+/** The brief as the agent receives it. */
 export function withReturnContract(input: ContractInput): Contracted {
   const { brief, spawner } = input
-  const contract = input.resumed || spawner === HUMAN ? undefined : contractOf(input.profile)
+  const contract = contractFor(input)
   if (contract === undefined) return { brief, warnings: [] }
-  if (carriesContract(brief, contract))
-    return {
-      brief,
-      warnings: [
-        `the brief already carries the ${contract} return contract; the broker appends it, so stop pasting it`,
-      ],
-    }
-  const block = readContract(contract, input.file)
-  if (block === undefined)
-    return {
-      brief,
-      warnings: [
-        `no ${contract} return contract in ${input.file ?? returnContractPath()}; spawned without it`,
-      ],
-    }
-  return { brief: `${brief}\n\n${block.replaceAll(PLACEHOLDER, spawner)}`, warnings: [] }
+  if (carriesContract(brief, contract)) return { brief, warnings: [pastedWarning(contract)] }
+  // A function, so `$&` in a spawner name is text and not a replacement pattern.
+  const block = RETURN_CONTRACT_BLOCKS[contract].replaceAll(PLACEHOLDER, () => spawner)
+  const warnings = OWN_REPORT_LINE.test(brief) ? [ownFormatWarning(contract)] : []
+  return { brief: `${brief}\n\n${block}`, warnings }
 }

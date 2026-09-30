@@ -295,6 +295,17 @@ describe('surfacing a headless agent', () => {
     expect(planFor(agentId).unsetEnv).toEqual(['CLAUDE_CONFIG_DIR'])
   })
 
+  // Mutation caught: appending the contract in resumeOnto puts it in the rebuilt plan.
+  it('does not hand the agent its return contract a second time (CC-286)', async () => {
+    const agentId = await spawnAgent({ profile: 'implementer', requestedBy: 'coordinator' })
+    expect(planFor(agentId).stdin).toContain('LAST action must be chat_send to coordinator')
+
+    const result = await supervisor.switchSurface({ name: 'scout', to: 'interactive', requestedBy: 'human' })
+
+    expect(result.ok).toBe(true)
+    expect(JSON.stringify(planFor(agentId))).not.toContain('LAST action')
+  })
+
   it('keeps the identity, the name and the conversation', async () => {
     const agentId = await spawnAgent()
     const before = core.agents.get(agentId)
