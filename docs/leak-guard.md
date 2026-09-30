@@ -135,8 +135,9 @@ functions from `BASH_FUNC_<name>%%` variables and options from `SHELLOPTS`. A fu
 `titan-egress-scan` replaced the scanner, and `SHELLOPTS=noexec` made the hook read its script,
 run nothing and exit 0. With `-p` bash does neither. This was run on macOS `sh` (bash 3.2.57)
 and on dash 0.5.12 (Ubuntu 24.04), which takes the flag and imports no functions in any case.
-The `/bin/dash` that macOS ships rejects `-p`, as does dash before 0.5.11. On a machine whose
-`/bin/sh` is one of those, the hook cannot start and every agent push is refused.
+The `/bin/dash` that macOS ships rejects `-p` (`Illegal option -p`). Other shells are UNVERIFIED.
+On a machine whose `/bin/sh` rejects the flag, the hook cannot start and every agent push is
+refused.
 
 Baking the two values in is safe because they come from the broker, which the owner started, and
 the hook is rewritten at every spawn. The hook still bakes in no node or scanner path, only a
@@ -168,8 +169,7 @@ is the tip of the remote's default branch. The hook asks the push URL for it wit
 never used, because `git update-ref refs/remotes/origin/x <sha>` writes one. This costs one
 more connection per push. A new ref pushed to a remote that names no default branch is refused.
 A new branch cut from another unmerged branch is scanned back to the default branch, so it
-rescans that other branch's commits. A shallow clone can be refused: the scratch repository has
-no `shallow` file, so a scan that walks past the shallow boundary fails.
+rescans that other branch's commits.
 
 ### The allow list: only the remote default branch's `.egress-allow`
 
@@ -191,7 +191,7 @@ example, is refused. If the default branch itself holds a symlink there, no entr
 
 ### What the hook closes and what it leaves
 
-Closed, each with a test in `src/__tests__/leak-pre-push.test.ts` that pushes to a local bare
+Closed, each with a test in `src/__tests__/leak-pre-push.test.ts` against a local bare
 repository:
 
 - a variable that swaps or blinds the scanner: `PATH`, `HOME`, `XDG_CONFIG_HOME`, `CI`,
@@ -207,12 +207,12 @@ Not closed by the hook. A pre-push hook runs only when git is told to run it, so
 a caller who turns hooks off:
 
 - `git push --no-verify`, `git -c core.hooksPath=<dir> push`, and `GIT_CONFIG_COUNT=0 git push`
-  or any other change to the `GIT_CONFIG_*` variables that carry the hooks path. The PreToolUse
-  guard (CC-270) denies these spellings in an agent's Bash command. The CI `egress-scan` job
-  scans the pushed commits with the generic rules after the fact;
+  or any other change to the `GIT_CONFIG_*` variables that carry the hooks path. Denying these
+  spellings in an agent's Bash command is the PreToolUse guard's job (CC-270). The CI
+  `egress-scan` job scans the pushed commits with the generic rules after the fact;
 - `GIT_*` variables and git config that change what the push itself sends or where, such as
-  `GIT_DIR` or a `url.<base>.insteadOf` rule that sends `git ls-remote` to a repository other
-  than the one pushed to;
+  `GIT_DIR`, or a `url.<base>.insteadOf` rule that sends `git ls-remote` to a repository other
+  than the one pushed to (UNVERIFIED: reasoned from how git rewrites URLs, not run);
 - a push that does not go through git, such as an upload over the GitHub API;
 - a missing scanner, which fails open as described above;
 - text in a PR title or body, which the hook never sees.
