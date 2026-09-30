@@ -4,6 +4,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { clearRefusal, recordRefusal } from './refusals.js'
 import { warn } from './warnings.js'
+import { runWorktreeSetup, type SetupRunner, type SetupTarget } from './worktree-setup.js'
 import { resolveWorktreeBudget } from '../../config.js'
 import { findGitRoot, gitChildEnv } from '../../git.js'
 import type { Allocation, IsolationContext, IsolationStrategy, ReleaseOptions } from './index.js'
@@ -58,6 +59,8 @@ export interface WorktreeOptions {
   addTimeoutMs?: number
   /** Runs each `git worktree add`; tests inject one to observe how adds interleave. */
   runWorktreeAdd?: GitRunner
+  /** Runs the repository's declared setup step; tests inject one so no real install runs. */
+  runSetup?: SetupRunner
 }
 
 export type GitRunner = (args: readonly string[], cwd: string) => Promise<string>
@@ -349,6 +352,14 @@ async function resolveBranchBaseNow(gitRoot: string, timeoutMs: number): Promise
       'it may lag origin or carry unpushed commits',
   }
 }
+
+/** `warning` is set exactly when the base is a local HEAD, which no setup declaration is trusted from. */
+const setupTarget = (gitRoot: string, worktree: string, base: BranchBase): SetupTarget => ({
+  gitRoot,
+  worktree,
+  baseSha: base.sha,
+  fetched: base.warning === undefined,
+})
 
 /** The tail of each repo's queue of `worktree add`s; it never rejects, so one failure does not jam the rest. */
 const addQueues = new Map<string, Promise<unknown>>()
@@ -691,7 +702,10 @@ export async function reattachWorktree(
     boundedAdd(opts.runWorktreeAdd, opts.addTimeoutMs ?? WORKTREE_ADD_TIMEOUT_MS),
   )
   copyClaudeDir(gitRoot, worktree)
-  const warnings = reattachWarnings(record, source, base)
+  const warnings = [
+    ...reattachWarnings(record, source, base),
+    ...(await runWorktreeSetup(setupTarget(gitRoot, worktree, base), opts.runSetup)),
+  ]
   return {
     cwd: worktree,
     note: `Your worktree at ${worktree} had been removed and was re-created on branch ${branch}. Commit your work there; nothing outside it is yours to change.`,
@@ -776,6 +790,10 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
         force: ctx.forceReset === true,
         run: boundedAdd(opts.runWorktreeAdd, opts.addTimeoutMs ?? WORKTREE_ADD_TIMEOUT_MS),
       })
+      const warnings = [
+        ...(base.warning === undefined ? [] : [base.warning]),
+        ...(await runWorktreeSetup(setupTarget(gitRoot, worktreePath, base), opts.runSetup)),
+      ]
 
       const carried = reused ? ' It already carries commits from an earlier run under this name.' : ''
       return {
@@ -789,7 +807,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
           base_ref: base.ref,
           ...(reused ? { reused: 'true' } : {}),
         },
-        ...(base.warning === undefined ? {} : { warnings: [base.warning] }),
+        ...(warnings.length === 0 ? {} : { warnings }),
       }
     },
 
