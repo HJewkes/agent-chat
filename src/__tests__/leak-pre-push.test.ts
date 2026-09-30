@@ -680,7 +680,7 @@ describe('the commits a push is scanned for', () => {
 describe('the remote the scan base is read from', () => {
   const REWRITTEN = 'leak-scan: push refused: git config rewrites the push URL'
 
-  /** A bare repository whose default branch is the leaky commit, so a tip read from it empties the scan. */
+  /** A bare repo whose HEAD is the leaky commit; the stub scans each sha alone, so these tests need the real scanner. */
   function decoyRemote(f: Fixture): string {
     commitFile(f, 'leaky', 'notes.md', `the ${LEAK} seat`)
     const decoy = path.join(path.dirname(f.work), 'decoy.git')
@@ -721,7 +721,7 @@ describe('the remote the scan base is read from', () => {
       (_: Fixture, rules: [string, string][]) => rules.flatMap(([k, v]) => ['-c', `${k}=${v}`]),
     ],
   ])('refuses a leaky push when %s point the tip lookup at another repository', (_, plant) => {
-    const f = fixture()
+    const f = fixture({ scanPath: realScanPath() })
     const gitArgs = plant(f, decoyRules(f, decoyRemote(f)))
 
     const run = push(f, 'leaky', gitArgs)
@@ -733,7 +733,7 @@ describe('the remote the scan base is read from', () => {
   })
 
   it("refuses a push when the owner's global config rewrites the push URL", () => {
-    const f = fixture()
+    const f = fixture({ scanPath: realScanPath() })
     const decoy = decoyRemote(f)
     git(
       f.work,
