@@ -13,7 +13,7 @@ import type { AgentIdentity, ServerMessage } from '../protocol.js'
  * here may read the developer's real transcripts.
  *
  * Every row below is shaped after real rows from a live transcript on this
- * machine (`~/.claude/projects/-Users-hjewkes-projects-agent-chat`), including
+ * machine (`~/.claude/projects/-Users-someone-projects-x`), including
  * the ones we ignore — `mode`, `file-history-snapshot` and `attachment` are all
  * types Claude Code really writes, and a reader that rendered them would show a
  * caller rows that are not turns.

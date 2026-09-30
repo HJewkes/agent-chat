@@ -54,6 +54,8 @@ const KINDS_AT_FREEZE = [
   'agent_retired',
   'isolation_allocated',
   'isolation_released',
+  // CC-282, added through this test. Not a queue item and not subscribable; the log view renders it generically.
+  'isolation_parked',
   'agent_spawn_refused',
   'verdict_refused',
   // Added deliberately for teleport (CC-20), following the process this test

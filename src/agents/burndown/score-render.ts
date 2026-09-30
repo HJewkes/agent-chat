@@ -21,6 +21,8 @@ export interface ScoredPlan {
   open: number
   /** Exclusions from scoring, then share-cap skips from the dispatch order. */
   refused: Record<string, number>
+  /** `<slug>/<file>` of each malformed open task the reader left out, so a low count from skips is not a real drop. */
+  skipped: string[]
 }
 
 export interface ScoredPlanInputs {
@@ -31,10 +33,11 @@ export interface ScoredPlanInputs {
   hardStops: readonly string[]
   today: string
   top: number
+  skipped?: readonly string[]
 }
 
 export function scoredPlan(input: ScoredPlanInputs): ScoredPlan {
-  const { tasks, weights, defaults, exclusions, hardStops, today, top } = input
+  const { tasks, weights, defaults, exclusions, hardStops, today, top, skipped = [] } = input
   const scored = scoreAll(tasks, weights, defaults, exclusions, hardStops, today)
   const dispatched = dispatchOrder(scored.rows, defaults, top)
   return {
@@ -42,6 +45,7 @@ export function scoredPlan(input: ScoredPlanInputs): ScoredPlan {
     scope: Object.keys(weights).length,
     open: tasks.length,
     refused: { ...scored.refused, ...dispatched.refused },
+    skipped: [...skipped],
   }
 }
 
@@ -55,8 +59,10 @@ export function scoredPlanFromDisk(opts: {
 }): ScoredPlan {
   const policy = loadPolicy(opts.autonomyRoot, opts.seat)
   const weights = seatScope(policy.charter, policy.seats, opts.seat, readInitiatives(opts.activeWorkRoot))
+  const { tasks, skipped } = readScoredTasks(opts.activeWorkRoot, Object.keys(weights))
   return scoredPlan({
-    tasks: readScoredTasks(opts.activeWorkRoot, Object.keys(weights)),
+    tasks,
+    skipped,
     weights,
     defaults: policy.defaults,
     exclusions: { tags: policy.seat.excluded_tags, titlePatterns: policy.seat.excluded_title_patterns },
@@ -88,6 +94,6 @@ export function renderScored(plan: ScoredPlan): string[] {
     .join(', ')
   return [
     ...plan.order.map((row, i) => renderScoredRow(row, i + 1)),
-    `scope=${plan.scope} initiatives, ${plan.open} open, refused={${refused}}`,
+    `scope=${plan.scope} initiatives, ${plan.open} open, skipped: ${plan.skipped.length}, refused={${refused}}`,
   ]
 }

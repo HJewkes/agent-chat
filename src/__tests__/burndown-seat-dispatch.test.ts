@@ -133,6 +133,24 @@ describe('resolveSeatDispatch', () => {
 
     expect(dispatch.worktrees).toMatchObject({ perRepoPerSeat: 4, capName: 'concurrency.implementers' })
   })
+
+  it('honours a worktrees_per_repo_per_seat ceiling of 0 over the implementers', () => {
+    const defaults = { ...policy.charter.defaults, worktrees_per_repo_per_seat: 0 }
+    const closed = { ...policy, charter: { ...policy.charter, defaults } }
+
+    const dispatch = resolveSeatDispatch(closed, 'seat-a', HOME)
+
+    expect(dispatch.worktrees).toMatchObject({ perRepoPerSeat: 0, capName: 'worktrees_per_repo_per_seat' })
+  })
+
+  it('names implementers as the cap when the ceiling equals them', () => {
+    const defaults = { ...policy.charter.defaults, worktrees_per_repo_per_seat: 4 }
+    const level = { ...policy, charter: { ...policy.charter, defaults } }
+
+    const dispatch = resolveSeatDispatch(level, 'seat-a', HOME)
+
+    expect(dispatch.worktrees).toMatchObject({ perRepoPerSeat: 4, capName: 'concurrency.implementers' })
+  })
 })
 
 describe('repoForTask', () => {

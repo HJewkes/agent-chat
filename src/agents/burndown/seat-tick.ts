@@ -135,6 +135,8 @@ export interface SeatsPlan {
   skipped: SkippedSeat[]
   /** Task files read for every planned seat's scope, for the dispatch briefs. */
   tasks: Map<string, Task[]>
+  /** Malformed open tasks the scorer left out of each seat's scope, `<slug>/<file>`. */
+  skippedTasks: { seat: string; files: string[] }[]
 }
 
 /** The broker-wide ceilings less what earlier seats dispatched this tick. */
@@ -168,14 +170,8 @@ function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, taken: T
     titlePatterns: seat.policy.seat.excluded_title_patterns,
   }
   const today = localDate(seat.budget.ctx.now)
-  const { rows } = scoreAll(
-    readScoredTasks(root, slugs),
-    weights,
-    defaults,
-    exclusions,
-    charter.hard_stops,
-    today,
-  )
+  const read = readScoredTasks(root, slugs)
+  const { rows } = scoreAll(read.tasks, weights, defaults, exclusions, charter.hard_stops, today)
   const tasks = new Map(slugs.map(slug => [slug, readTasks(root, slug)]))
   const pool = seat.dispatch.pool.name
   const planned = planSeat({
@@ -191,7 +187,7 @@ function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, taken: T
     collision: (repo, work) => sameTickCollision(taken.claims, repo, work) ?? deps.collision?.(repo, work),
     ...optional(deps, lessDispatched(deps.capacity, taken.dispatch)),
   })
-  return { planned, tasks }
+  return { planned, tasks, skipped: read.skipped }
 }
 
 function optional(deps: SeatPlanDeps, capacity: Capacity | undefined) {
@@ -209,12 +205,13 @@ export const localDate = (now: Date): string =>
 
 /** Each loaded seat in config order, sharing the tick's ceilings, pool charges and claims; a seat whose planning throws is skipped. */
 export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root: string): SeatsPlan {
-  const result: SeatsPlan = { dispatch: [], refusals: [], skipped: [], tasks: new Map() }
+  const result: SeatsPlan = { dispatch: [], refusals: [], skipped: [], tasks: new Map(), skippedTasks: [] }
   const claims: SameTickClaim[] = []
   for (const seat of seats) {
     try {
       const taken = { dispatch: result.dispatch, claims, charged: deps.charged ?? [] }
-      const { planned, tasks } = planLoaded(seat, deps, root, taken)
+      const { planned, tasks, skipped } = planLoaded(seat, deps, root, taken)
+      if (skipped.length > 0) result.skippedTasks.push({ seat: seat.dispatch.seat, files: skipped })
       for (const [slug, list] of tasks) result.tasks.set(slug, list)
       result.refusals.push(...planned.refusals)
       result.dispatch.push(...planned.dispatch)
