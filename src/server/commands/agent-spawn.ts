@@ -52,12 +52,8 @@ const args = z.object({
   owns: z
     .array(z.string())
     .describe(
-      'Path globs INSIDE the worktree that this agent owns; with isolation "worktree" it needs an ' +
-        'assigned worktree, else the spawn is refused. E.g. e.g. ["src/broker/**", ' +
-        '"src/protocol.ts"]. This is what lets several agents share one worktree: each is given a ' +
-        'disjoint set of paths, and a spawn overlapping what a live peer already holds is warned ' +
-        'about by name. Advisory, like chat_claim — it records who was given what, and cannot stop ' +
-        'an agent that writes outside its set.',
+      'Path globs INSIDE the worktree that this agent owns, e.g. ["src/broker/**"]; refused when the ' +
+        'agent would get its own worktree unless you also pass an assigned worktree.',
     )
     .optional(),
   inherit: z

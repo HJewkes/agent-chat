@@ -499,19 +499,19 @@ export function isolationFor(
 }
 
 /**
- * CC-356: `owns` alone means file-ownership in the shared checkout, so an explicit
- * `isolation: "worktree"` beside it would silently lose. Refuse rather than cut a
- * worktree, since file-ownership's peer claims are keyed to the base checkout.
- * An assigned worktree is fine: the paths then live inside it.
+ * CC-356: `owns` means file-ownership in the shared checkout, so a spawn that would
+ * otherwise get a worktree, by request or by profile default, must not silently lose it.
+ * Refuse rather than cut a worktree: file-ownership's peer claims are keyed to the base
+ * checkout. An assigned worktree is fine, since the paths then live inside it.
  */
-export function worktreeOwnsConflict(req: {
-  worktree?: string
-  owns?: string[]
-  isolation?: IsolationName
-}): string | undefined {
-  if (req.isolation !== 'worktree' || !req.owns?.length || req.worktree) return undefined
+export function worktreeOwnsConflict(
+  req: { worktree?: string; owns?: string[]; isolation?: IsolationName },
+  profile: { isolation: IsolationName },
+): string | undefined {
+  if ((req.isolation ?? profile.isolation) !== 'worktree' || !req.owns?.length || req.worktree)
+    return undefined
   return (
-    'isolation "worktree" conflicts with owns: owns scopes paths in a shared checkout and would put the ' +
+    'owns conflicts with worktree isolation: owns scopes paths in the shared checkout and would put the ' +
     'agent there. Drop owns to get a worktree, or pass an assigned worktree so owns scopes paths inside it.'
   )
 }
@@ -1061,7 +1061,7 @@ export class Supervisor implements TeleportHost {
     const cwd = req.cwd ?? process.cwd()
     const cwdError = this.checkCwd(cwd, req.requestedBy) ?? this.parkingRefusal(req.worktree ?? cwd)
     if (cwdError) return this.refuse(req, cwdError)
-    const conflict = worktreeOwnsConflict(req)
+    const conflict = worktreeOwnsConflict(req, profile)
     if (conflict) return this.refuse(req, conflict)
     const isolationName = isolationFor(req, profile)
     // Minted before the slot is taken so that acquire and release are keyed the

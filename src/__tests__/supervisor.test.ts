@@ -344,10 +344,18 @@ describe('spawning', () => {
     const result = await sup.spawn(spawnReq({ name: 'scoped', isolation: 'worktree', owns: ['src/a/**'] }))
 
     expect(result.ok).toBe(false)
-    expect(result.reason).toMatch(/isolation "worktree".*owns/)
+    expect(result.reason).toMatch(/owns.*worktree/)
     expect(core.events.agentEvents().some(r => r.kind === 'agent_spawned' && r.target === 'scoped')).toBe(
       false,
     )
+  })
+
+  it('refuses owns with no isolation field when the profile defaults to a worktree (CC-356)', async () => {
+    const sup = withStubbedSurface()
+    const result = await sup.spawn(spawnReq({ name: 'scoped2', profile: 'implementer', owns: ['src/a/**'] }))
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/owns.*worktree/)
   })
 
   it('refuses a reserved name, and records the refusal as an event', async () => {
