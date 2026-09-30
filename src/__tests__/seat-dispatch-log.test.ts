@@ -1,8 +1,9 @@
 import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { seatDispatchLog, type SeatDispatchLog, type SpawnFacts } from '../agents/seats/dispatch-log.js'
 import { foldDispatch } from '../agents/seats/dispatch-record.js'
 
@@ -371,6 +372,38 @@ describe('a log path that is not the regular file it was opened as', () => {
 
     expect(logged).toEqual(['seat_dispatch_refused'])
     expect(fs.existsSync(path.join(root, 'nowhere'))).toBe(false)
+  })
+
+  it('refuses a socket at the log path, not as unavailable', async () => {
+    declare('sock.jsonl')
+    const server = net.createServer()
+    await new Promise<void>(done => server.listen(path.join(root, 'sock.jsonl'), done))
+
+    try {
+      writerOver().dispatched(facts())
+    } finally {
+      await new Promise(done => server.close(done))
+    }
+
+    expect(logged).toEqual(['seat_dispatch_refused'])
+  })
+
+  it('refuses when a directory is swapped for a symlink outside just before the open', () => {
+    const outside = tmp('dispatch-outside-')
+    declare('d/x.jsonl')
+    fs.mkdirSync(path.join(root, 'd'))
+    const realOpen = fs.openSync
+    const spy = vi.spyOn(fs, 'openSync').mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+      spy.mockRestore()
+      fs.renameSync(path.join(root, 'd'), path.join(root, 'd.moved'))
+      fs.symlinkSync(outside, path.join(root, 'd'))
+      return realOpen(...args)
+    }) as typeof fs.openSync)
+
+    writerOver().dispatched(facts())
+
+    expect(logged).toEqual(['seat_dispatch_refused'])
+    expect(rowsOf(path.join(outside, 'x.jsonl'))).toEqual([])
   })
 
   it('refuses when the opened file is not the one its path now names, appending nothing', () => {
