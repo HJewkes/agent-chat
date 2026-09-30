@@ -1,4 +1,8 @@
+import type { SeatJournal } from '../seats/journal.js'
+import { prRef } from '../seats/journal-line.js'
+import { claimKey } from './advance.js'
 import type { Ledger } from './ledger.js'
+import { agentNameFor } from './plan.js'
 import {
   markNotified,
   renderSeatEvents,
@@ -39,6 +43,8 @@ export interface DeliverDeps {
   open: OpenSender
   log: (event: string, detail: Record<string, unknown>) => void
   now: Date
+  /** CC-316: writes a delivered merged or stalled event to the seat's journal. */
+  journal?: SeatJournal
 }
 
 export interface SeatDiff {
@@ -94,6 +100,7 @@ async function sendAll(
     deps.log('burndown_seat_events', { seat, events: events.length, ok: reply.ok, reason: reply.reason })
     if (reply.ok) {
       ledger = markNotified(ledger, seat, events)
+      journalEvents(events, ledger, deps.journal)
       lines.push(`told ${seat} of ${events.length} event(s)`)
     } else
       lines.push(
@@ -101,6 +108,17 @@ async function sendAll(
       )
   }
   return { ledger, lines }
+}
+
+/** Written once delivered, so an event retried next tick is never journaled twice; the line names the claim's implementer. */
+function journalEvents(events: readonly SeatEvent[], ledger: Ledger, journal?: SeatJournal): void {
+  for (const e of events) {
+    const claim = ledger.claims.find(c => claimKey(c) === claimKey(e))
+    if (claim === undefined || (e.kind !== 'merged' && e.kind !== 'stalled')) continue
+    const agent = agentNameFor(claim.taskId, claim.slice, claim.namePrefix)
+    const pr = prRef(claim.pr, claim.prHead)
+    journal?.({ event: e.kind, task: claim.taskId, agent, ...(pr === undefined ? {} : { pr }) })
+  }
 }
 
 async function fileAll(

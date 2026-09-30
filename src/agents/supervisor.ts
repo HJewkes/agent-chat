@@ -66,6 +66,7 @@ import { itermSessionPresent } from './surfaces/iterm.js'
 import { burndownConfigPath, cliEntry, gitHooksDir, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
+import type { SeatJournal } from './seats/journal.js'
 import type { ShadowLedger } from './ledger/shadow-ledger.js'
 import { exitTerminal, LifecycleShadow } from './ledger/lifecycle-shadow.js'
 import { readExitTail, unreportedExitText, UNREPORTED_EXIT } from './exit-report.js'
@@ -417,6 +418,8 @@ export interface SupervisorOptions {
   hookSpawn?: HookSpawnFn
   /** CC-118's write-only shadow ledger. Present only when `ledgerShadow` is on. */
   ledger?: ShadowLedger
+  /** CC-316: writes a seat agent's spawn, retire and park lines. Absent in tests, which own no autonomy root. */
+  seatJournal?: SeatJournal
 }
 
 /** Burndown spawns as the human, but its agents report to the configured `reportTo` (CC-266). */
@@ -504,6 +507,7 @@ export class Supervisor implements TeleportHost {
   private readonly nameFreeMs: number
   private readonly surfaceOptions: SupervisorOptions['surface']
   private readonly hookSpawn: HookSpawnFn | undefined
+  private readonly seatJournal: SeatJournal | undefined
   private readonly unwatch: () => void
   private readonly teleporter: Teleport
   private readonly shadow: LifecycleShadow
@@ -520,6 +524,7 @@ export class Supervisor implements TeleportHost {
     this.nameFreeMs = options.nameFreeMs ?? NAME_FREE_TIMEOUT_MS
     this.surfaceOptions = options.surface ?? {}
     this.hookSpawn = options.hookSpawn
+    this.seatJournal = options.seatJournal
     this.unwatch = core.onAppend(row => this.onRow(row))
     this.teleporter = new Teleport(core, this, options.countdownMs, options.argvReader)
     this.shadow = new LifecycleShadow(options.ledger)
@@ -1236,6 +1241,7 @@ export class Supervisor implements TeleportHost {
       this.awaitLateAttach(req, agentId, handle, site, launchedAt, announce)
       warnings.push(verdict.warning)
     } else announce()
+    this.seatJournal?.({ event: 'spawn', agent: req.name })
     return {
       ok: true,
       agentId,
@@ -1674,6 +1680,7 @@ export class Supervisor implements TeleportHost {
       },
     })
     this.finishRetired(identity.agentId, held)
+    this.seatJournal?.({ event: 'retire', agent: name })
     return { ok: true, ...(this.retireCaveat(name, entry !== undefined, reaped, tenancy?.warning) ?? {}) }
   }
 
@@ -1723,6 +1730,7 @@ export class Supervisor implements TeleportHost {
       body: '',
       meta: { strategy: 'worktree', gitRoot, worktree, branch, head },
     })
+    this.seatJournal?.({ event: 'park', agent: name })
   }
 
   /** CC-282: a spawn or resume into a tree mid-park would lose its cwd to the removal. */

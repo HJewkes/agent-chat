@@ -55,6 +55,8 @@ const Claim = z.object({
   attempt: z.number().int().nonnegative().optional(),
   reviewRound: z.number().int().nonnegative().optional(),
   pr: z.string().optional(),
+  /** The PR's head commit when the tick last read it at a merge or a close (CC-316). */
+  prHead: z.string().optional(),
   lastReport: z.string().optional(),
   stalledReason: z.string().optional(),
   /** Agents whose retire refused after the claim finished, in retire order; each tick retries them (CC-182). */

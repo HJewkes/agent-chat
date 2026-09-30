@@ -10,6 +10,8 @@ import { Supervisor } from '../agents/supervisor.js'
 import { readLaunchPlan } from '../agents/launch-files.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { worktreeStrategy } from '../agents/isolation/worktree.js'
+import { seatLogPath } from '../agents/seats/io.js'
+import { seatJournal } from '../agents/seats/journal.js'
 import type { AgentIdentity } from '../protocol.js'
 import { autoAttach } from './broker-harness.js'
 
@@ -181,6 +183,46 @@ describe('parking a finished agent', () => {
     await expect(worktreeStrategy.allocate(other)).resolves.toMatchObject({
       ref: { branch: 'agent-chat/other' },
     })
+  })
+})
+
+describe('parking a seat’s agent (CC-316)', () => {
+  const at = new Date(2026, 1, 3, 4, 5)
+  let root: string
+
+  beforeEach(() => {
+    root = tmp('park-autonomy-')
+    fs.mkdirSync(path.join(root, 'seats'))
+    fs.writeFileSync(path.join(root, 'seats', 'seat-x.md'), '---\nprefix: sx\npool: pool-a\n---\n')
+    sup.close()
+    sup = new Supervisor(core, {
+      surface: {
+        platform: 'linux',
+        spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
+      },
+      seatJournal: seatJournal(root, { now: () => at }),
+    })
+  })
+
+  const journal = (): string => fs.readFileSync(seatLogPath(root, 'seat-x', at), 'utf8')
+
+  it('writes one park line to the seat’s journal after the spawn line', async () => {
+    await finishedIn('sx-ab-12-fix', makeRepo())
+
+    const parked = await sup.park('sx-ab-12-fix')
+
+    expect(parked.ok).toBe(true)
+    expect(journal()).toBe('04:05 spawn AB-12 sx-ab-12-fix -\n04:05 park AB-12 sx-ab-12-fix -\n')
+  })
+
+  it('writes no park line when the park is refused', async () => {
+    const agent = await finishedIn('sx-ab-12-fix', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, 'scratch.txt'), 'unsaved\n')
+
+    const parked = await sup.park('sx-ab-12-fix')
+
+    expect(parked.ok).toBe(false)
+    expect(journal()).toBe('04:05 spawn AB-12 sx-ab-12-fix -\n')
   })
 })
 

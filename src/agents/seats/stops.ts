@@ -1,4 +1,5 @@
 import { RUN_CAP_MS, dayStart, type SevenDaySample } from '../burndown/budget-gate.js'
+import { isJournalText } from './journal-line.js'
 
 /**
  * Why the watchdog holds a seat it would otherwise wake (CC-203 review): the
@@ -75,7 +76,7 @@ export function meterHistory(starts: readonly MeterStart[], nowMs: number): Seve
   return chain
 }
 
-/** A seat log line the seat wrote itself, as the charter's `HH:MM <text>`; the watchdog's own lines are not the seat's. */
+/** A seat log line the seat wrote itself, as the charter's `HH:MM <text>`; the watchdog's and the broker's lines are not the seat's. */
 interface SeatLine {
   at: number
   text: string
@@ -84,7 +85,7 @@ interface SeatLine {
 function seatLines(log: string, day: Date): SeatLine[] {
   return log.split('\n').flatMap(line => {
     const m = /^(\d\d):(\d\d) (.*)$/.exec(line)
-    if (m === null || m[3]?.startsWith('Watchdog:')) return []
+    if (m === null || m[3]?.startsWith('Watchdog:') || isJournalText(m[3] ?? '')) return []
     const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), Number(m[1]), Number(m[2]))
     return [{ at: at.getTime(), text: m[3] ?? '' }]
   })
