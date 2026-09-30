@@ -50,7 +50,7 @@ export class ReportBatcher<C> {
     this.push(conn, message)
   }
 
-  /** Whether this report reached the push path, which is what makes its sender's exit notice redundant. */
+  /** True only for a report that reached the push path, which is what makes its sender's exit notice redundant. */
   wasPushed(msgId: string): boolean {
     return this.pushed.has(msgId)
   }

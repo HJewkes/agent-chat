@@ -322,7 +322,7 @@ export class BrokerCore<C = Conn> {
     if (identity === undefined) return undefined
     const { name, spawnedBy } = identity
     const last = this.events.lastMessageFrom(name, { to: spawnedBy, since: this.runStartedAt(identity) })
-    if (last === undefined || !isReport(last.text) || !this.reports.wasPushed(last.msgId)) return undefined
+    if (last === undefined || !this.reports.wasPushed(last.msgId)) return undefined
     const followUp = this.events.lastMessageFrom(spawnedBy, { to: name, since: last.at })
     return followUp === undefined ? spawnedBy : undefined
   }
