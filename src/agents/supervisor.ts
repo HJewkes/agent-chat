@@ -59,6 +59,7 @@ import {
 } from './resume-session.js'
 import { reattachWorktree, type WorktreeRecord } from './isolation/worktree.js'
 import { allocatedWorktree, parkBlocker, parkWorktree, type ParkTarget } from './isolation/park.js'
+import { retireFinished, type FinishedRetireOutcome, type RetireScope } from './isolation/retire-finished.js'
 import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { loginGap, readOutputTail } from './launch-output.js'
@@ -1718,6 +1719,19 @@ export class Supervisor implements TeleportHost {
     } finally {
       this.parking.delete(identity.agentId)
     }
+  }
+
+  /** CC-323: retire every finished agent in scope that holds no work, each through `retire` so its refusals apply. */
+  async retireFinished(req: RetireScope & { dryRun?: boolean }): Promise<FinishedRetireOutcome> {
+    const port = {
+      roster: () => this.core.agents.roster(),
+      events: () => this.core.events.agentEvents(),
+      tracked: (agentId: string) => this.live.has(agentId),
+      parking: (agentId: string) => this.parking.has(agentId),
+      current: (agentId: string) => this.core.agents.get(agentId),
+      retire: (name: string) => this.retire(name),
+    }
+    return retireFinished(port, req)
   }
 
   /** Read fresh each call, so the re-check before removal sees a spawn or resume that landed during the git checks. */
