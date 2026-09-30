@@ -323,11 +323,21 @@ and other prefixes are stripped, is one of these. A wrapper is known by its base
 
 A git alias that was already in config is expanded before the table is applied (TP-595). For
 `git <word>`, where `<word>` is not a git builtin, the guard runs `git config --get alias.<word>`
-in the directory the command runs in, after `cd` and `-C`, with a 1 s timeout. A plain value is
+in the directory the command runs in, after `cd` and `-C`, with a 1 s timeout. The lookup gets
+the command's own `-c` and `--config-env` options, `--git-dir` and `--work-tree`, and the
+variables that choose config files (`GIT_DIR`, `HOME`, `XDG_CONFIG_HOME`, `GIT_CONFIG_*` and
+others) as the command sets them, by prefix assignment, `env`, or an earlier `export`, bare
+assignment or `unset`. When the command line changes one of those variables in a way the guard
+cannot follow, such as `read`, a value from `$(...)`, or an `export` behind `&&`, a lookup is
+denied. A plain value is
 re-checked as `git <value> <rest>`, so an alias that sets `-c core.hooksPath` is denied too. A
 `!` value is re-checked as a shell command, run from the top of the work tree, with its
 arguments put in for `$1` to `$9`, `$@` and `$*` and appended as git appends them. More than 4
 nested aliases is a deny. A failed lookup allows the call, as a plain push is allowed.
+
+Every `git <word>` that is not a builtin costs one `git config` spawn, and a `!` alias costs a
+second one for the work-tree top. The guard does not skip network verbs, and each git command
+in a `!` body is looked up again.
 
 The splitter looks inside `$(...)`, backticks, `sh -c`/`bash -c` strings, `eval`, `env -S` and a
 heredoc fed to a shell. `agent-chat gh-write -- <gh args>` is checked like `gh`. `git push -n` is
