@@ -5,11 +5,22 @@
  * in a speed bump, never a boundary; see docs/leak-guard.md.
  */
 
+/** Precedes each `$`, leading `~`, glob character and substitution the shell would expand in a marked word. */
+export const LIVE = '\0'
+
+export const unmark = (word: string): string => word.replaceAll(LIVE, '')
+
 /** One simple command, its words with quotes removed, and any heredoc or here-string fed to it. */
 export interface SimpleCommand {
   words: string[]
+  /** The same words with LIVE before each character the shell would expand, so quoting is not lost. */
+  marked: string[]
+  /** The commands inside this command's `$(...)` and backticks. */
+  substitutions: SimpleCommand[]
   stdin?: string
 }
+
+const newCommand = (): SimpleCommand => ({ words: [], marked: [], substitutions: [] })
 
 type Pending = 'discard' | 'herestring' | { heredoc: boolean }
 
@@ -20,14 +31,16 @@ interface Heredoc {
 }
 
 const OPERATORS = new Set([';', '&', '|'])
+const GLOB = '*?['
 
 const ANSI_C: Record<string, string> = { n: '\n', t: '\t', r: '\r', '\\': '\\', "'": "'", '"': '"' }
 
 class ShellLexer {
   pos: number
   private readonly out: SimpleCommand[] = []
-  private cur: SimpleCommand = { words: [] }
+  private cur = newCommand()
   private word: string | null = null
+  private marked = ''
   private pending: Pending | null = null
   private heredocs: Heredoc[] = []
   private depth = 0
@@ -103,19 +116,20 @@ class ShellLexer {
   private wordPart(c: string): void {
     const next = this.src[this.pos + 1]
     if (c === "'") return this.append(this.until("'"))
-    if (c === '"') return this.append(this.doubleQuoted())
+    if (c === '"') return this.doubleQuoted()
     if (c === '$' && next === "'") return this.append(this.ansiC())
-    if (c === '$' && next === '(') return this.append(this.substitution())
-    if (c === '`') return this.append(this.backtick())
+    if (c === '$' && next === '(') return this.append(this.substitution(), true)
+    if (c === '`') return this.append(this.backtick(), true)
     if (c === '\\') {
       this.pos += 2
       return this.append(next ?? '')
     }
     this.pos++
-    this.append(c)
+    this.append(c, c === '$' || GLOB.includes(c) || (c === '~' && this.word === null))
   }
 
-  private append(text: string): void {
+  private append(text: string, live = false): void {
+    this.marked = (this.word === null ? '' : this.marked) + (live ? LIVE : '') + text
     this.word = (this.word ?? '') + text
   }
 
@@ -127,24 +141,23 @@ class ShellLexer {
     return text
   }
 
-  private doubleQuoted(): string {
-    let text = ''
+  private doubleQuoted(): void {
+    this.append('')
     this.pos++
     while (this.pos < this.src.length && this.src[this.pos] !== '"') {
       const c = this.src[this.pos] as string
       const next = this.src[this.pos + 1] ?? ''
-      if (c === '$' && next === '(') text += this.substitution()
-      else if (c === '`') text += this.backtick()
+      if (c === '$' && next === '(') this.append(this.substitution(), true)
+      else if (c === '`') this.append(this.backtick(), true)
       else if (c === '\\' && '$`"\\\n'.includes(next)) {
-        text += next === '\n' ? '' : next
+        this.append(next === '\n' ? '' : next)
         this.pos += 2
       } else {
-        text += c
+        this.append(c, c === '$')
         this.pos++
       }
     }
     this.pos++
-    return text
   }
 
   private ansiC(): string {
@@ -156,7 +169,7 @@ class ShellLexer {
   private substitution(): string {
     const start = this.pos
     const inner = new ShellLexer(this.src, this.pos + 2, true)
-    this.out.push(...inner.run())
+    this.substituted(inner.run())
     this.pos = Math.min(inner.pos + 1, this.src.length)
     return this.src.slice(start, this.pos)
   }
@@ -164,8 +177,13 @@ class ShellLexer {
   private backtick(): string {
     const start = this.pos
     const body = this.until('`')
-    this.out.push(...parseShell(body))
+    this.substituted(parseShell(body))
     return this.src.slice(start, this.pos)
+  }
+
+  private substituted(commands: SimpleCommand[]): void {
+    this.out.push(...commands)
+    this.cur.substitutions.push(...commands)
   }
 
   private endWord(): void {
@@ -174,8 +192,10 @@ class ShellLexer {
     this.word = null
     const pending = this.pending
     this.pending = null
-    if (pending === null) this.cur.words.push(word)
-    else if (pending === 'herestring') this.cur.stdin = word
+    if (pending === null) {
+      this.cur.words.push(word)
+      this.cur.marked.push(this.marked)
+    } else if (pending === 'herestring') this.cur.stdin = word
     else if (pending !== 'discard')
       this.heredocs.push({ delim: word, strip: pending.heredoc, target: this.cur })
   }
@@ -183,7 +203,7 @@ class ShellLexer {
   private endCommand(): void {
     this.endWord()
     if (this.cur.words.length > 0) this.out.push(this.cur)
-    this.cur = { words: [] }
+    this.cur = newCommand()
   }
 
   private readHeredocs(): void {
@@ -207,5 +227,24 @@ class ShellLexer {
 
 /** Every simple command in `src`, including those inside `$(...)` and backticks. */
 export function parseShell(src: string): SimpleCommand[] {
-  return new ShellLexer(src).run()
+  return new ShellLexer(unmark(src)).run()
+}
+
+const NAME = '[A-Za-z_][A-Za-z0-9_]*'
+const EXPANSION = new RegExp(`${LIVE}(?:\\$\\{(${NAME})\\}|\\$(${NAME})|~(?=/|$))`, 'g')
+
+/** A marked word as the shell expands it, or undefined unless every expansion is `~`, `$VAR` or `${VAR}` with a value. */
+export function expandWord(
+  marked: string,
+  env: Readonly<Record<string, string | undefined>>,
+  home: string,
+): string | undefined {
+  let known = true
+  const expanded = marked.replace(EXPANSION, (_, braced?: string, bare?: string) => {
+    const name = braced ?? bare
+    const value = name === undefined ? home : env[name]
+    known &&= value !== undefined
+    return value ?? ''
+  })
+  return known && !expanded.includes(LIVE) ? expanded : undefined
 }

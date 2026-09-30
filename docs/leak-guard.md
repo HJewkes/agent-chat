@@ -192,6 +192,20 @@ the pre-push hook. A deny names `title line 1 private-term #3` or `body line 4 h
 the matched text. It also denies when it cannot check: a body piped from another command, a body
 file it cannot read, or a missing or unreadable term list while `MISSING_TERMS_REFUSES` is set.
 
+A body file path, and a `cd` target, is expanded the way the shell would expand it, from the
+hook's own environment: a leading `~`, `$VAR` and `${VAR}`, so `--body-file "$TMPDIR/pr.md"` is
+read and scanned. Nothing inside single quotes or after a backslash is expanded. The guard
+denies the command, as a body file it cannot read, when the path holds an unset variable, a
+variable the same command line assigns (`NAME=` anywhere in it), or any other expansion:
+`$(...)`, backticks, `${VAR:-x}`, `~user` or a glob. A file that `$(cat file)` or backticks put
+into a title, body or field is read and scanned the same way, under the label `cat file`.
+
+One command is exempt from the missing-list refusal: the merge call,
+`gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge`. With no term list its fields are scanned
+with the generic rules only, and a finding still denies it. A merge pushes nothing, so no
+pre-push refusal stands behind it, and refusing it would stop every coordinator from merging.
+An unreadable term list still refuses the merge.
+
 A tool call the guard cannot parse is denied only when it mentions `git`, `gh` or `GIT_CONFIG`,
 so a bug in the guard cannot block every command an agent runs.
 
@@ -202,7 +216,12 @@ Not covered, by design or by cost:
 - a different `git` on `PATH`, `GIT_EXEC_PATH`, or `--exec-path`;
 - pushing without git at all, for example over the GitHub API with `curl`;
 - an alias that was already in git config before the agent started;
-- shell syntax the splitter misreads, such as `&>` or `case` patterns.
+- shell syntax the splitter misreads, such as `&>` or `case` patterns;
+- a variable in a body file path whose value in the Bash tool's shell differs from the hook's,
+  for example one set by `read` or a `for` loop, and an unquoted variable whose value holds
+  spaces, which the shell would split;
+- text a substitution other than `cat file` produces, such as `--body "$(git log -1)"`, and an
+  inline `--body "$VAR"`, which are scanned as written and not as expanded.
 
 ## Owner override and its trust limit
 

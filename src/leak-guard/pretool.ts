@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { matchRules, parseTerms, type TermRule } from '@titan-design/egress-scan'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
-import { parseShell, type SimpleCommand } from './shell-words.js'
+import { expandWord, LIVE, parseShell, unmark, type SimpleCommand } from './shell-words.js'
 
 /**
  * The PreToolUse bypass guard every spawned agent runs (CC-270). It denies the ordinary ways
@@ -17,6 +17,8 @@ export interface GuardContext {
   terms: TermsLoad
   cwd: string
   home: string
+  /** The hook's own environment, which `$VAR` in a body file path is expanded from. */
+  env: Readonly<Record<string, string | undefined>>
   /** Absolute paths and path fragments an agent may not touch: the hook dir and the term list. */
   protectedPaths: readonly string[]
   readFile(file: string): string | undefined
@@ -91,7 +93,7 @@ function unwrapEnv(args: string[]): Unwrapped {
     if (unset !== undefined) continue
     if (a === '-' || a === '--ignore-environment' || /^-[^-]*i/.test(a)) return { reason: REASONS.envClear }
     if (a === '-S' || a === '--split-string')
-      return { words: [...(parseShell(args[i + 1] ?? '')[0]?.words ?? []), ...args.slice(i + 2)] }
+      return { words: [...(parseShell(args[i + 1] ?? '')[0]?.marked ?? []), ...args.slice(i + 2)] }
     if (a === '-C' || a === '--chdir' || a === '-P') i++
     else if (a === '--') return { words: args.slice(i + 1) }
     else if (!a.startsWith('-') && !ASSIGNMENT.test(a)) break
@@ -146,6 +148,17 @@ interface Text {
   text: string
 }
 
+/** A file whose content is posted; `file` is a marked word, expanded before it is read. */
+interface BodyFile {
+  label: string
+  file: string
+}
+
+interface Sources {
+  inline: Text[]
+  files: BodyFile[]
+}
+
 type Texts = { texts: Text[] } | { reason: string }
 
 const GH_TEXT_COMMANDS = new Set(['create', 'edit', 'comment', 'review'])
@@ -164,18 +177,16 @@ export function flagValues(args: readonly string[], names: readonly string[]): s
   return values
 }
 
-function readBody(file: string, stdin: string | undefined, ctx: GuardContext): string | { reason: string } {
-  if (file === '-') return stdin ?? { reason: REASONS.stdinBody }
-  return ctx.readFile(path.resolve(ctx.cwd, file)) ?? { reason: REASONS.unreadableBody }
+/** An expansion the guard cannot resolve becomes LIVE in the path, which is never read. */
+function readBody(marked: string, stdin: string | undefined, ctx: GuardContext): string | { reason: string } {
+  if (marked === '-') return stdin ?? { reason: REASONS.stdinBody }
+  const file = path.resolve(ctx.cwd, expandWord(marked, ctx.env, ctx.home) ?? LIVE)
+  const body = file.includes(LIVE) ? undefined : ctx.readFile(file)
+  return body ?? { reason: REASONS.unreadableBody }
 }
 
-function collect(
-  inline: Text[],
-  files: { label: string; file: string }[],
-  stdin: string | undefined,
-  ctx: GuardContext,
-): Texts {
-  const texts = [...inline]
+function collect({ inline, files }: Sources, stdin: string | undefined, ctx: GuardContext): Texts {
+  const texts = inline.map(({ label, text }) => ({ label, text: unmark(text) }))
   for (const { label, file } of files) {
     const body = readBody(file, stdin, ctx)
     if (typeof body !== 'string') return body
@@ -184,16 +195,16 @@ function collect(
   return { texts }
 }
 
-function prTexts(args: readonly string[], stdin: string | undefined, ctx: GuardContext): Texts {
+function prSources(args: readonly string[]): Sources {
   const inline = [
     ...flagValues(args, ['--title', '-t']).map(text => ({ label: 'title', text })),
     ...flagValues(args, ['--body', '-b']).map(text => ({ label: 'body', text })),
   ]
   const files = flagValues(args, ['--body-file', '-F']).map(file => ({ label: 'body', file }))
-  return collect(inline, files, stdin, ctx)
+  return { inline, files }
 }
 
-function apiTexts(args: readonly string[], stdin: string | undefined, ctx: GuardContext): Texts {
+function apiSources(args: readonly string[]): Sources {
   const value = (f: string): string => f.slice(f.indexOf('=') + 1)
   const raw = flagValues(args, ['-f', '--raw-field']).map(value)
   const typed = flagValues(args, ['-F', '--field']).map(value)
@@ -202,16 +213,29 @@ function apiTexts(args: readonly string[], stdin: string | undefined, ctx: Guard
     ...typed.filter(v => v.startsWith('@')).map(v => ({ label: 'field', file: v.slice(1) })),
     ...flagValues(args, ['--input']).map(file => ({ label: 'input', file })),
   ]
-  return collect(inline, files, stdin, ctx)
+  return { inline, files }
 }
 
-function ghTexts(args: readonly string[], stdin: string | undefined, ctx: GuardContext): Texts {
+/** The text a gh command posts, from its marked arguments; nothing for a command that posts none. */
+function ghSources(args: readonly string[]): Sources {
   const [group, verb] = args
-  if ((group === 'pr' || group === 'issue') && GH_TEXT_COMMANDS.has(verb ?? ''))
-    return prTexts(args, stdin, ctx)
-  if (group === 'api') return apiTexts(args, stdin, ctx)
-  return { texts: [] }
+  if ((group === 'pr' || group === 'issue') && GH_TEXT_COMMANDS.has(verb ?? '')) return prSources(args)
+  if (group === 'api') return apiSources(args)
+  return { inline: [], files: [] }
 }
+
+/** The files a `$(cat file)` puts into the command's text, which the text itself does not show. */
+const catFiles = (cmd: SimpleCommand): BodyFile[] =>
+  cmd.substitutions
+    .filter(sub => sub.words[0] === 'cat' && sub.stdin === undefined)
+    .flatMap(sub => sub.marked.slice(1).filter(word => !word.startsWith('-')))
+    .map(file => ({ label: 'cat file', file }))
+
+const MERGE_ENDPOINT = /(?:^|\/)repos\/[^/]+\/[^/]+\/pulls\/\d+\/merge$/
+
+/** A merge has no pre-push scan behind it to refuse, so a missing term list must not block every merge. */
+const isMerge = (args: readonly string[]): boolean =>
+  args[0] === 'api' && args.some(arg => MERGE_ENDPOINT.test(arg))
 
 /** `label line n rule[ #term]` for each hit; the line's text never appears. */
 export function findingsIn(texts: readonly Text[], rules: readonly TermRule[]): string[] {
@@ -227,12 +251,13 @@ export function findingsIn(texts: readonly Text[], rules: readonly TermRule[]): 
   )
 }
 
-function checkGh(args: readonly string[], stdin: string | undefined, ctx: GuardContext): string | undefined {
-  const collected = ghTexts(args, stdin, ctx)
+function checkGh(args: readonly string[], cmd: SimpleCommand, ctx: GuardContext): string | undefined {
+  const { inline, files } = ghSources(args)
+  if (inline.length + files.length === 0) return undefined
+  const collected = collect({ inline, files: [...files, ...catFiles(cmd)] }, cmd.stdin, ctx)
   if ('reason' in collected) return collected.reason
-  if (collected.texts.length === 0) return undefined
   if (ctx.terms.kind === 'unreadable') return REASONS.unreadableTerms
-  if (ctx.terms.kind === 'missing' && MISSING_TERMS_REFUSES) return REASONS.missingTerms
+  if (ctx.terms.kind === 'missing' && MISSING_TERMS_REFUSES && !isMerge(args)) return REASONS.missingTerms
   const found = findingsIn(collected.texts, ctx.terms.kind === 'ok' ? ctx.terms.rules : [])
   if (found.length === 0) return undefined
   return `leak-guard: this text would publish private data (${found.join('; ')}). Remove the flagged text and retry; the guard never prints what matched. ${DOCS}`
@@ -254,31 +279,39 @@ const ghWriteArgs = (args: readonly string[]): readonly string[] =>
   args.includes('--') ? args.slice(args.indexOf('--') + 1) : args.slice(1)
 
 function checkSimple(cmd: SimpleCommand, ctx: GuardContext, depth: number): string | undefined {
-  const unwrapped = unwrap(cmd.words)
+  const unwrapped = unwrap(cmd.marked)
   if ('reason' in unwrapped) return unwrapped.reason
-  const [head = '', ...args] = unwrapped.words
+  const marked = unwrapped.words.slice(1)
+  const [head = '', ...args] = unwrapped.words.map(unmark)
   const name = path.basename(head)
   if (SHELLS.has(name)) return checkShell(args, cmd.stdin, ctx, depth)
   if (name === 'eval') return checkAt(args.join(' '), ctx, depth + 1)
   if (name === 'git') return checkGit(args)
-  if (name === 'gh') return checkGh(args, cmd.stdin, ctx)
-  if (name === 'agent-chat' && args[0] === 'gh-write') return checkGh(ghWriteArgs(args), cmd.stdin, ctx)
+  if (name === 'gh') return checkGh(marked, cmd, ctx)
+  if (name === 'agent-chat' && args[0] === 'gh-write') return checkGh(ghWriteArgs(marked), cmd, ctx)
   if (ENV_EDITS.has(name)) return checkEnvEdit(args)
   return undefined
 }
 
 /** Follows `cd` so a relative body file resolves the way the shell would resolve it. */
 function followCd(cmd: SimpleCommand, ctx: GuardContext): GuardContext {
-  const [head, dir] = cmd.words
+  const [head, dir] = cmd.marked
   if (head !== 'cd' || dir === undefined || dir === '-') return ctx
-  const target = dir === '~' || dir.startsWith('~/') ? ctx.home + dir.slice(1) : dir
-  return { ...ctx, cwd: path.resolve(ctx.cwd, target) }
+  return { ...ctx, cwd: path.resolve(ctx.cwd, expandWord(dir, ctx.env, ctx.home) ?? LIVE) }
+}
+
+const ASSIGNED = /([A-Za-z_][A-Za-z0-9_]*)=/g
+
+/** The env without the names the command assigns, whose new values the guard cannot know. */
+function knownEnv(command: string, env: GuardContext['env']): GuardContext['env'] {
+  const assigned = new Set([...command.matchAll(ASSIGNED)].map(match => match[1]))
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !assigned.has(name)))
 }
 
 function checkAt(command: string, ctx: GuardContext, depth: number): string | undefined {
   if (depth > MAX_DEPTH) return REASONS.tooDeep
   if (ctx.protectedPaths.some(p => command.includes(p))) return REASONS.protectedPath
-  let at = ctx
+  let at = { ...ctx, env: knownEnv(command, ctx.env) }
   for (const cmd of parseShell(command)) {
     const reason = checkSimple(cmd, at, depth)
     if (reason !== undefined) return reason
@@ -337,6 +370,7 @@ export function guardContext(env: NodeJS.ProcessEnv, cwd: string, home: string):
     terms: loadTerms(terms),
     cwd,
     home,
+    env,
     protectedPaths: [
       terms,
       'titan-egress/private-terms',
