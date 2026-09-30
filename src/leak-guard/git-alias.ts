@@ -130,35 +130,45 @@ function optionValue(word: string, name: string, next: string | undefined): stri
   return name === '-c' ? word.slice(2) : word.slice(name.length + 1)
 }
 
+/** A git word the shell expands in a way the guard cannot tell, or a directory it cannot tell. */
+export const UNSURE_CALL = 'unsure'
+
 /**
- * The alias lookup for `git <words>`; undefined for a builtin or a word or directory the guard cannot tell.
+ * The alias lookup for `git <words>`: undefined when there is nothing to look up, a builtin or no
+ * subcommand, and UNSURE_CALL when the subcommand, an option or the directory cannot be told.
  * `inherited` are the `-c` and `--config-env` options of the git whose `!` alias runs this one.
  */
 export function gitCall(
   words: readonly (string | undefined)[],
   cwd: string | undefined,
   inherited: readonly string[] = [],
-): GitCall | undefined {
+): GitCall | typeof UNSURE_CALL | undefined {
   let dir = cwd
+  let sure = true
   const params = [...inherited]
   const dirs: [string, string][] = []
   let i = 0
   for (; i < words.length; i++) {
     const word = words[i]
-    if (word === undefined) return undefined
+    if (word === undefined) return UNSURE_CALL
     if (!word.startsWith('-')) break
     const name = optionName(word)
     if (!VALUE_OPTS.has(name)) continue
     const value = optionValue(word, name, words[i + 1])
-    if (value === undefined) return undefined
     if (name === word) i++
+    if (value === undefined) {
+      if (name === '-C') dir = undefined
+      else sure = false
+      continue
+    }
     if (name === '-C' && value !== '') dir = path.isAbsolute(value) ? value : dir && path.resolve(dir, value)
     if (name === '-c') params.push('-c', value)
     if (name === '--config-env') params.push(`--config-env=${value}`)
     if (DIR_ENV[name] !== undefined) dirs.push([name, value])
   }
   const sub = words[i]
-  if (sub === undefined || dir === undefined || GIT_BUILTINS.has(sub)) return undefined
+  if (i >= words.length || (sub !== undefined && GIT_BUILTINS.has(sub))) return undefined
+  if (sub === undefined || dir === undefined || !sure) return UNSURE_CALL
   const at = dir
   const dirEnv = Object.fromEntries(dirs.map(([name, value]) => [DIR_ENV[name], path.resolve(at, value)]))
   const globals = [...dirs.map(([name, value]) => `${name}=${value}`), ...params]

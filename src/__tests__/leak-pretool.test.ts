@@ -942,6 +942,41 @@ describe('a git alias already in config', () => {
     },
   )
 
+  describe('where the guard cannot tell the directory or the word', () => {
+    const inAliased = (): GuardContext => ({ ...at(aliased), env: { HOME: emptyHome } })
+
+    it.each([
+      'source /dev/null; git pnv',
+      'set -a; git pnv',
+      "trap '' INT; git pnv",
+      'pushd .; git pnv',
+      'cd ~/../aliased && git pnv',
+      `set -a; HOME=${path.join(SCRATCH, 'alias-home')}; git pnv`,
+      'S=pnv; git $S',
+      'D=x; git -C "$D" pnv',
+      'export "$V"; git pnv',
+    ])('denies a git word that may be an alias: %s', command => {
+      expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
+    })
+
+    it.each(['git pnv', `cd ${aliased} && git pnv`])(
+      'still reads the alias where the directory is known: %s',
+      command => {
+        expect(checkCommand(command, inAliased())).toBe(REASONS.noVerify)
+      },
+    )
+
+    it.each([
+      'git push origin main',
+      'source ./env.sh && git push',
+      'git lfs pull',
+      'brew --prefix HOMEBREW; git lfs pull',
+      'for d in a b; do git -C "$d" status; done',
+    ])('allows a builtin, or a word with no alias where it runs: %s', command => {
+      expect(checkCommand(command, inAliased())).toBeUndefined()
+    })
+  })
+
   describe('in config the command itself points git at', () => {
     const aliasHome = path.join(SCRATCH, 'alias-home')
     const include = path.join(SCRATCH, 'alias-include')

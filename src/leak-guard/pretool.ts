@@ -5,6 +5,7 @@ import {
   aliasReader,
   CONFIG_ENV,
   gitCall,
+  UNSURE_CALL,
   shellAlias,
   splitAlias,
   type GitCall,
@@ -86,7 +87,7 @@ export const REASONS = {
   missingTerms: `leak-guard: no private term list, so PR and issue text cannot be checked. Create ~/.config/titan-egress/private-terms, one term per line, chmod 600. ${DOCS}`,
   xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
-  aliasEnv: `leak-guard: this command changes which config git reads in a way the guard cannot follow, so it cannot tell what this git alias runs. Run the command the alias stands for. ${DOCS}`,
+  aliasEnv: `leak-guard: the guard cannot tell which directory or config this git command runs with, or which subcommand it names, so it cannot tell what a git alias here runs. Run the command the alias stands for, from a plain cd. ${DOCS}`,
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
 } as const
 
@@ -264,7 +265,11 @@ interface GitRun {
   cmd: SimpleCommand
 }
 
-const mentions = (said: string, name: string): boolean => said.includes(name)
+/** Whether the line names `name` as a whole word; `GIT_CONFIG` also matches every `GIT_CONFIG_*`. */
+const mentions = (said: string, name: string): boolean =>
+  new RegExp(`(?<![A-Za-z0-9_])${name}${name === 'GIT_CONFIG' ? '[A-Za-z0-9_]*' : ''}(?![A-Za-z0-9_])`).test(
+    said,
+  )
 
 /** What git's config env is for this command over the hook's; undefined when the guard cannot tell. */
 function aliasEnv(
@@ -301,6 +306,7 @@ const aliasShell = (scope: Scope, call: GitCall, env: Overrides, runsIn: string)
 function checkAlias(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
   const call = gitCall(run.resolved, scope.cwd, scope.gitParams)
   if (call === undefined) return undefined
+  if (call === UNSURE_CALL) return REASONS.aliasEnv
   const env = aliasEnv(run, call.vars, ctx, scope)
   if (env === undefined) return REASONS.aliasEnv
   const alias = ctx.readAlias(call.sub, call.dir, call.globals, env)
@@ -661,6 +667,9 @@ function exported(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): Readonly
       set.set(ASSIGNMENT.exec(word)?.[1] ?? '', value(word))
   else if (head === 'unset')
     for (const word of rest.filter(w => !w.startsWith('-'))) set.set(word, sure ? undefined : UNSURE)
+  const builtName = rest.some(w => w.includes(LIVE) && !ASSIGNMENT.test(w))
+  if (head !== undefined && ENV_EDITS.has(head) && builtName)
+    for (const name of CONFIG_ENV) set.set(name, UNSURE)
   return set
 }
 
