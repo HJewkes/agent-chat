@@ -584,6 +584,29 @@ export class SocketServer {
     replySwitch(conn, outcome)
   }
 
+  /** One named recipient. CC-320: a dark seat's message is held for it rather than failing to route. */
+  private handleSend(conn: Conn, to: string, text: string, inReplyTo?: string): void {
+    const { core } = this
+    const result = core.registry.send(conn, to, text, inReplyTo)
+    const from = core.registry.nameOf(conn)
+    const unrouted = from !== undefined && result.results[0]?.status === 'no_such_session'
+    const held = unrouted ? core.holdForSeat(from, to, text, inReplyTo) : undefined
+    if (held === undefined) return this.handleRoute(conn, result, 'message', to)
+    if (!held.ok) return this.handleRoute(conn, { ...result, reason: held.reason }, 'message', to)
+    const reason =
+      `"${to}" has no active session. The message is held and will be pushed when it registers; ` +
+      'it has not been delivered or read, so do not resend it.'
+    reply(conn, {
+      t: 'send_result',
+      ok: true,
+      held: true,
+      msgId: held.msgId,
+      recipients: [to],
+      results: [{ name: to, status: 'held', reason }],
+      reason,
+    })
+  }
+
   private handleRoute(
     conn: Conn,
     result: RouteResult<Conn>,
@@ -1168,11 +1191,14 @@ export class SocketServer {
         // holds. `end` rather than `destroy` so the fatal frame is flushed first
         // — the predecessor has to learn why, or it just reconnects and takes the
         // name back.
+        const dark = core.darkSeat(msg.name)
         const result = core.register(conn, msg, stale =>
           stale.end(encode({ t: 'error', reason: `superseded by a resume of "${msg.name}"`, fatal: true })),
         )
         if (result.ok) this.noteBuildMismatch(msg.name, msg.build)
-        return reply(conn, { t: 'register_result', ...result })
+        reply(conn, { t: 'register_result', ...result })
+        if (result.ok && dark !== undefined) core.deliverHeld(msg.name, dark)
+        return
       }
       case 'readopt':
         return this.handleReadopt(conn, msg)
@@ -1223,14 +1249,7 @@ export class SocketServer {
           })
         }
         if (msg.to === HUMAN) return this.enqueueForHuman(conn, 'message', msg.text)
-        if (!Array.isArray(msg.to)) {
-          return this.handleRoute(
-            conn,
-            core.registry.send(conn, msg.to, msg.text, msg.inReplyTo),
-            'message',
-            msg.to,
-          )
-        }
+        if (!Array.isArray(msg.to)) return this.handleSend(conn, msg.to, msg.text, msg.inReplyTo)
         // The human is a queue, not a session, and a multicast is a fan-out to
         // sessions. Splitting one call across both write paths is where the bugs
         // would live, so the whole call is refused rather than half-honoured.

@@ -9,6 +9,7 @@ import {
   loadDoc,
   readAgentEvents,
   readOwnerMessages,
+  readPresence,
   readText,
   saveDoc,
   scorerEligible,
@@ -28,6 +29,7 @@ import {
   type WatchdogDeps,
   type WatchdogOptions,
 } from '../../agents/seats/run.js'
+import type { Presence } from '../../agents/seats/liveness.js'
 import type { OwnerMessage } from '../../agents/seats/stops.js'
 import { FIRE_CAP, WATCHDOG_MINUTES } from '../../agents/seats/watchdog.js'
 import { BrokerClient } from '../../client/broker-client.js'
@@ -87,6 +89,15 @@ function ownerMessages(owner: string, sinceMs: number): OwnerMessage[] | undefin
   }
 }
 
+/** Undefined when events.db cannot be read, so the caller resumes nothing on a guess. */
+function presence(seat: string): Presence | undefined {
+  try {
+    return readPresence(path.join(home(), 'events.db'), seat)
+  } catch {
+    return undefined
+  }
+}
+
 function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
   return {
     now: () => new Date(),
@@ -96,6 +107,7 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
     readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
     ownerMessages: (owner, sinceMs) => ownerMessages(owner, sinceMs),
     roster: () => roster(client),
+    presence,
     eligible: seat => scorerEligible(root, seat),
     loadDoc: () => loadDoc(),
     saveDoc: doc => saveDoc(doc),

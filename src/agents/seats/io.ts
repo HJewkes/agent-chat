@@ -9,6 +9,7 @@ import type { EventKind } from '../../protocol.js'
 import { activeWorkRoot } from '../active-work.js'
 import { scoredPlanFromDisk } from '../burndown/score-render.js'
 import { localDate } from '../burndown/seat-tick.js'
+import { watchedSeats, type Presence } from './liveness.js'
 import type { OwnerMessage, SpendMeter } from './stops.js'
 import type { SeatState } from './watchdog.js'
 
@@ -59,7 +60,13 @@ export function scorerEligible(
 }
 
 /** A seat's watchdog state, its run spend meter, and whether its pool gate was closed at the last run. */
-export type SeatRecord = SeatState & { run?: SpendMeter; budgetPaused?: boolean; capped?: boolean }
+export type SeatRecord = SeatState & {
+  run?: SpendMeter
+  budgetPaused?: boolean
+  capped?: boolean
+  /** CC-320: `darkSince` of the dark episode the watchdog last tried to resume. */
+  resumedDark?: number
+}
 
 /**
  * `seat-watchdog.json`. `stopped` is the owner's switch: a seat named there is
@@ -169,4 +176,49 @@ export function readOwnerMessages(dbPath: string, owner: string, sinceMs: number
   } finally {
     db.close()
   }
+}
+
+const maxId = (db: DatabaseSyncType, where: string, ...args: string[]): number => {
+  const row = db.prepare(`SELECT MAX(id) AS id FROM events WHERE ${where}`).get(...args) as {
+    id: number | null
+  }
+  return row.id ?? 0
+}
+
+const countAfter = (db: DatabaseSyncType, where: string, afterId: number, ...args: string[]): number => {
+  const sql = `SELECT COUNT(*) AS n FROM events WHERE ${where} AND id > ?`
+  return (db.prepare(sql).get(...args, afterId) as { n: number }).n
+}
+
+const REGISTERED = "actor = ? AND kind = 'registered'"
+const TELEPORT_ROWS = "actor = ? AND kind IN ('agent_handoff', 'agent_stood_down')"
+const WATCHDOG_RESUME =
+  "target = ? AND kind = 'agent_resumed' AND json_extract(meta, '$.source') = 'watchdog'"
+
+/** CC-320: a seat's latest presence rows. Throws when events.db cannot be read. */
+export function readPresence(dbPath: string, seat: string): Presence {
+  const db = openEvents(dbPath)
+  try {
+    const registered = maxId(db, REGISTERED, seat)
+    const dark = db
+      .prepare(
+        "SELECT ts FROM events WHERE actor = ? AND kind = 'deregistered' AND id > ? ORDER BY id DESC LIMIT 1",
+      )
+      .get(seat, registered) as { ts: number } | undefined
+    const woke = maxId(db, WATCHDOG_RESUME, seat)
+    return {
+      ...(dark === undefined ? {} : { darkSince: dark.ts }),
+      teleported: countAfter(db, TELEPORT_ROWS, registered, seat) > 0,
+      // A register after the one the wake produced means something else started the session since.
+      wokenByWatchdog: woke > 0 && countAfter(db, REGISTERED, woke, seat) <= 1,
+    }
+  } finally {
+    db.close()
+  }
+}
+
+/** CC-320: the broker's seat test, read fresh each call so a charter edit or an owner stop needs no restart. */
+export function isWatchedSeat(name: string, root = defaultAutonomyRoot()): boolean {
+  const charter = readText(path.join(root, 'charter.md'))
+  return charter !== undefined && watchedSeats(charter, loadDoc().stopped).includes(name)
 }
