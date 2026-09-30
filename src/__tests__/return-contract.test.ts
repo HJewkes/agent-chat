@@ -155,6 +155,28 @@ describe('the compiled blocks', () => {
   })
 })
 
+describe('the check-run rule (CC-357)', () => {
+  // Mutation caught: reverting the implementer CI line to a bare "then CI status".
+  it('has the implementer paste each check-run at the head instead of reporting "green"', () => {
+    const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
+
+    expect(text).toContain(
+      'CI: <paste of: gh api repos/<owner>/<repo>/commits/<head>/check-runs --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>',
+    )
+    expect(text).toContain('never "green" alone')
+    expect(text).toContain('`gh run watch` covers only one workflow')
+  })
+
+  // Mutation caught: dropping the reviewer's check-run line.
+  it('has the reviewer confirm every required check-run at the head before a MERGE', () => {
+    const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
+
+    expect(text).toContain('Before MERGE, confirm every required check-run at the reviewed head')
+    expect(text).toContain('commits/<head>/check-runs')
+    expect(text).toContain('FIX_FIRST if a required one failed')
+  })
+})
+
 describe('a spawn by a registered session', () => {
   it.each([
     ['implementer', 'implementer'],
