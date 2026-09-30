@@ -136,6 +136,16 @@ const AGENT_KINDS_SQL = AGENT_KINDS.map(k => `'${k}'`).join(',')
 /** A return-contract report: `Status:` or a reviewer's `Verdict:`, after any markdown decoration (CC-266). */
 const REPORT_OPENING = /^[\s*_`#>]*(status|verdict)[*_`]*\s*:/i
 
+/** Whether a message opens as a return-contract report; the one test CC-266 and CC-321 share. */
+export const isReport = (text: string): boolean => REPORT_OPENING.test(text)
+
+/** A report that says the sender is finished: a closing return-contract status, or any `Verdict:` (CC-321). */
+const TERMINAL_OPENING =
+  /^[\s*_`#>]*(verdict[*_`]*\s*:|status[*_`]*\s*:[\s*_`]*(done|done_with_concerns|blocked|needs_context)\b)/i
+
+/** Whether a message is its sender's last word; `Status: IN PROGRESS` is a report and is not this. */
+export const isTerminalReport = (text: string): boolean => TERMINAL_OPENING.test(text)
+
 // Loaded through require so Vite/vitest don't try to pre-bundle a builtin they
 // don't yet know about. The type import above is erased, so it costs nothing.
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
@@ -349,7 +359,7 @@ export class EventLog implements EventStore {
          WHERE actor = ? AND kind = 'message' AND ts >= ? AND target IN (${to.map(() => '?').join(', ')})`,
       )
       .all(from, since, ...to) as { body: string | null }[]
-    return rows.some(row => REPORT_OPENING.test(row.body ?? ''))
+    return rows.some(row => isReport(row.body ?? ''))
   }
 
   lastAgentEventAt(ref: string, kind: EventKind): number | undefined {
