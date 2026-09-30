@@ -14,6 +14,7 @@ import {
   saveDoc,
   type WatchdogDoc,
 } from '../agents/seats/io.js'
+import { RESUME_MESSAGE, type Presence } from '../agents/seats/liveness.js'
 import { runWatchdog, type Roster, type WatchdogDeps } from '../agents/seats/run.js'
 import type { OwnerMessage } from '../agents/seats/stops.js'
 import type { BrokerClient } from '../client/broker-client.js'
@@ -60,6 +61,10 @@ interface Harness {
   fiveHour: number
   sevenDay: number
   ownerMessages: OwnerMessage[]
+  /** What events.db says about the seat's presence; undefined reads as unreadable. */
+  presence: Presence | undefined
+  /** What the next wake or resume answers. */
+  wakeResult: { ok: boolean; detail: string }
   now: () => number
   tick: () => void
 }
@@ -77,6 +82,8 @@ function harness(roster: Roster, fiveHour = 41, start = new Date(2026, 8, 29, 8,
     fiveHour,
     sevenDay: 19,
     ownerMessages: [],
+    presence: { teleported: false, wokenByWatchdog: false },
+    wakeResult: { ok: true, detail: 'message m1' },
     now: () => now,
     tick: () => void (now += 15 * 60_000),
     deps: {
@@ -87,12 +94,13 @@ function harness(roster: Roster, fiveHour = 41, start = new Date(2026, 8, 29, 8,
       readBudget: () => budget(h.fiveHour, h.sevenDay),
       ownerMessages: () => h.ownerMessages,
       roster: async () => roster,
+      presence: () => h.presence,
       eligible: () => 7,
       loadDoc: () => structuredClone(h.doc),
       saveDoc: doc => void (h.doc = { ...doc, stopped: h.doc.stopped }),
       wake: async (seat, message, connected) => {
         h.wakes.push({ seat, message, connected })
-        return { ok: true, detail: 'message m1' }
+        return h.wakeResult
       },
       appendLog: (seat, _at, text) => void h.logs.push(`${seat}: ${text}`),
     },
@@ -285,6 +293,139 @@ describe('runWatchdog', () => {
     expect(await runs(h, 3)).toBe(0)
     const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
     expect(out[0]).toBe('seat-a: skip: held: events.db unreadable, so a restart window cannot be ruled out')
+  })
+})
+
+describe('seat liveness (CC-320)', () => {
+  const DARK: Roster = { agents: [], connected: [] }
+  const minutesAgo = (h: Harness, minutes: number): number => h.now() - minutes * 60_000
+  const dark = (h: Harness, minutes: number, extra: Partial<Presence> = {}): void => {
+    h.presence = { darkSince: minutesAgo(h, minutes), teleported: false, wokenByWatchdog: false, ...extra }
+  }
+
+  it('resumes a seat deregistered over five minutes with no teleport, and logs one line', async () => {
+    const h = harness(DARK)
+    dark(h, 6)
+    const out = await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toEqual([{ seat: 'seat-a', message: RESUME_MESSAGE, connected: false }])
+    expect(h.logs).toHaveLength(1)
+    expect(h.logs[0]).toMatch(
+      /^seat-a: Watchdog: dark 6 min since \d\d:\d\dZ with no teleport; resumed seat-a/,
+    )
+    expect(out.filter(line => line !== GAP_LINE)).toEqual([h.logs[0]])
+  })
+
+  it('does not resume again on later sweeps of the same dark episode, by either path', async () => {
+    const h = harness(DARK)
+    dark(h, 6)
+    expect(await runs(h, 5)).toBe(1)
+    expect(h.logs).toHaveLength(1)
+  })
+
+  it('resumes once through the synthetic 47-minute dark stretch that went unnoticed', async () => {
+    const h = harness(DARK, 41, new Date(2026, 8, 29, 14, 53))
+    const since = new Date(2026, 8, 29, 14, 46, 36).getTime()
+    h.presence = { darkSince: since, teleported: false, wokenByWatchdog: false }
+    // Sweeps at 14:53, 15:08 and 15:23; the owner found the seat dark at 15:33.
+    expect(await runs(h, 3)).toBe(1)
+    expect(h.logs).toHaveLength(1)
+    expect(h.logs[0]).toContain('dark 6 min since')
+  })
+
+  it('never resumes a seat that registers again inside five minutes', async () => {
+    const h = harness(DARK)
+    dark(h, 4)
+    await runWatchdog(h.deps, ONE)
+    h.presence = { teleported: false, wokenByWatchdog: false }
+    h.tick()
+    await runWatchdog(h.deps, ONE)
+    expect(h.wakes.filter(wake => wake.message === RESUME_MESSAGE)).toEqual([])
+  })
+
+  it('does not resume a seat that left by teleport', async () => {
+    const h = harness(DARK)
+    dark(h, 30, { teleported: true })
+    await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toEqual([])
+    const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+    expect(out[0]).not.toContain('WOULD RESUME')
+  })
+
+  it('does not resume a seat the owner stopped in seat-watchdog.json', async () => {
+    const h = harness(DARK)
+    h.doc.stopped = { 'seat-a': 'shut down on purpose' }
+    dark(h, 30)
+    expect(await runs(h, 3)).toBe(0)
+  })
+
+  it('does not resume a seat the owner took off the charter list', async () => {
+    const h = harness(DARK)
+    h.deps.readCharter = () => CHARTER.replace('seats: [seat-a, ', 'seats: [')
+    dark(h, 30)
+    for (let i = 0; i < 3; i++) await runWatchdog(h.deps, { dryRun: false })
+    expect(h.wakes).toEqual([])
+  })
+
+  it('does not resume a seat whose own log says it parked', async () => {
+    const h = harness(DARK)
+    h.seatLog = '08:30 PARKED handoff written, waiting for the owner\n'
+    dark(h, 30)
+    expect(await runs(h, 3)).toBe(0)
+  })
+
+  it('logs one line for a refused resume and does not try again', async () => {
+    const h = harness(DARK)
+    h.wakeResult = { ok: false, detail: 'no transcript on disk' }
+    dark(h, 6)
+    expect(await runs(h, 4)).toBe(1)
+    expect(h.logs).toHaveLength(1)
+    expect(h.logs[0]).toContain('resume FAILED seat-a (no transcript on disk)')
+  })
+
+  it('marks the episode before resuming, so a resume that throws is not retried', async () => {
+    const h = harness(DARK)
+    dark(h, 6)
+    const since = h.presence?.darkSince
+    h.deps.wake = async seat => {
+      h.wakes.push({ seat, message: RESUME_MESSAGE, connected: false })
+      expect(h.doc.seats['seat-a']?.resumedDark).toBe(since)
+      throw new Error('broker went away')
+    }
+    await runWatchdog(h.deps, ONE)
+    expect(h.logs[0]).toContain('resume FAILED seat-a (broker went away)')
+  })
+
+  it('does not resume a session the watchdog itself started, which ends on its own', async () => {
+    const h = harness(DARK)
+    dark(h, 30, { wokenByWatchdog: true })
+    await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toEqual([])
+  })
+
+  it('resumes nothing when events.db cannot be read', async () => {
+    const h = harness(DARK)
+    h.presence = undefined
+    await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toEqual([])
+  })
+
+  it('resumes a new dark episode after the seat came back', async () => {
+    const h = harness(DARK)
+    dark(h, 6)
+    await runWatchdog(h.deps, ONE)
+    h.tick()
+    dark(h, 7)
+    await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toHaveLength(2)
+  })
+
+  it('under --dry-run says it would resume, and resumes and saves nothing', async () => {
+    const h = harness(DARK)
+    dark(h, 6)
+    const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+    expect(out[0]).toMatch(/^seat-a: WOULD RESUME: dark 6 min since/)
+    expect(h.wakes).toEqual([])
+    expect(h.doc).toEqual(emptyDoc())
   })
 })
 
