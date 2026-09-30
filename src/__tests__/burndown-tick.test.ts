@@ -802,10 +802,57 @@ describe('burndown tick in seats mode', () => {
       `would dispatch demo DM-1 as bd-implementer on pool-t in ${repo()}/.worktrees/st-dm-1`,
       `would dispatch demo DM-2 as bd-implementer on pool-t in ${repo()}/.worktrees/st-dm-2`,
       'refused demo DM-3 [role-cap]: seat seat-t holds 2 of 2 implementers',
+      'scorer skipped: 0',
     ])
     expect(() => seatPlanFromDisk({ seat: 'seat-e', now: NOON, root, autonomyRoot })).toThrow(
       'seat-e has no dispatch scope',
     )
+  })
+
+  it('burndown plan --seat and the tick report a malformed task the scorer skipped', async () => {
+    seatInitiative({ 'DM-1': seatTask('DM-1'), 'DM-2': seatTask('DM-2').replace('priority: 3\n', '') })
+    const root = path.join(world, 'aw')
+    const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
+
+    const plan = renderPlan(seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot }), NOON)
+    const ticked = await tick(fakeBroker(), true)
+
+    expect(plan).toContain('scorer skipped: 1 (demo/DM-2.yml)')
+    expect(ticked).toContain('seat seat-t scorer skipped: 1 (demo/DM-2.yml)')
+  })
+
+  it('burndown plan --seat counts only active trees when it has a roster, and every held tree without one', () => {
+    seatPolicy({ implementers: 1 })
+    seatInitiative({ 'DM-2': seatTask('DM-2') })
+    const root = path.join(world, 'aw')
+    const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
+    const worktree = path.join(repo(), '.worktrees', 'st-dm-1')
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [
+        {
+          taskId: 'DM-1',
+          initiative: 'demo',
+          seat: 'seat-t',
+          namePrefix: 'st',
+          spawnedAt: NOON.toISOString(),
+          phase: 'awaiting-merge',
+          phaseAt: NOON.toISOString(),
+          agentName: 'st-dm-1',
+          spawned: ['st-dm-1'],
+          worktree,
+        },
+      ],
+    })
+    const dry = (roster?: { agents: AgentIdentity[] }) =>
+      seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot, ...(roster ? { roster } : {}) })
+
+    expect(dry().refusals.map(r => r.kind)).toEqual(['worktrees'])
+    const parked = dry({ agents: [row('st-dm-1', 'exited', worktree)] })
+    expect(parked.dispatch.map(d => d.task)).toEqual(['DM-2'])
+    expect(dry({ agents: [row('st-dm-1', 'live', worktree)] }).refusals.map(r => r.kind)).toEqual([
+      'worktrees',
+    ])
   })
 
   it('dry run prints the seat dispatch and writes nothing', async () => {

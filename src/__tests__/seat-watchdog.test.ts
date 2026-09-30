@@ -105,6 +105,17 @@ describe('decide', () => {
       /eligible$/,
     ],
   ]
+  it('names the skipped count when a scorer skip leaves no eligible work', () => {
+    expect(decide(idle({ eligible: 0, skipped: 1 }), undefined, NOW).reason).toBe(
+      'no eligible work, skipped: 1',
+    )
+  })
+
+  it('carries the skipped count into the wake summary', () => {
+    const decision = decide(idle({ skipped: 2 }), { idleRuns: 1, at: NOW - 15 * 60_000 }, NOW)
+    expect(decision.reason).toMatch(/12 eligible, skipped: 2$/)
+  })
+
   it.each(cases)('%s', (_name, obs, previous, fire, idleRuns, reason) => {
     const decision = decide(obs, previous, NOW)
     expect(decision.fire).toBe(fire)

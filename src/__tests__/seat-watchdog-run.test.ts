@@ -87,7 +87,7 @@ function harness(roster: Roster, fiveHour = 41, start = new Date(2026, 8, 29, 8,
       readBudget: () => budget(h.fiveHour, h.sevenDay),
       ownerMessages: () => h.ownerMessages,
       roster: async () => roster,
-      eligible: () => 7,
+      eligible: () => ({ count: 7, skipped: 0 }),
       loadDoc: () => structuredClone(h.doc),
       saveDoc: doc => void (h.doc = { ...doc, stopped: h.doc.stopped }),
       wake: async (seat, message, connected) => {
@@ -182,7 +182,7 @@ describe('runWatchdog', () => {
 
   it('logs nothing for an open pool and records nothing under --dry-run', async () => {
     const open = harness({ agents: [], connected: [] }, 41)
-    open.deps.eligible = () => 0
+    open.deps.eligible = () => ({ count: 0, skipped: 0 })
     await runs(open, 3)
     expect(open.logs).toEqual([])
     const held = harness(IDLE, 70)

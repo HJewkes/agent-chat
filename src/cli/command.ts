@@ -32,6 +32,12 @@ export type Verb<Args> = Command<Args, Report, VerbContext>
 
 export const defineVerb = <Args>(verb: Verb<Args>): Verb<Args> => defineCommand(verb)
 
+/** The registry appends `<value>` to every non-boolean flag; a flag that already names its argument keeps its own. */
+const flagSpec = (verb: Verb<unknown>, key: string, option: Parameters<typeof optionFlagSpec>[2]): string =>
+  option.long.includes('<')
+    ? `${option.short ? `${option.short}, ` : ''}${option.long}`
+    : optionFlagSpec(verb, key, option)
+
 /**
  * Adds a registry verb under `parent`, spelled and described exactly as its
  * definition says. A hidden mount skips the description too, matching every
@@ -52,7 +58,7 @@ export function addVerb<Args>(
   for (const name of verb.cli?.positional ?? []) sub.argument(positionalSpec(verb, name))
   for (const [key, option] of Object.entries(verb.cli?.options ?? {})) {
     const parser = collectOptionParser(verb, key)
-    const spec = optionFlagSpec(verb, key, option)
+    const spec = flagSpec(verb, key, option)
     if (parser) sub.option(spec, option.description, parser)
     else sub.option(spec, option.description)
   }

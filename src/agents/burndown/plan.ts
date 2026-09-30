@@ -82,6 +82,8 @@ export interface Plan {
   refusals: Refusal[]
   /** Focused initiatives with no `autonomy: mode: burndown`, which the tick never reads further. */
   notOptedIn: string[]
+  /** A seat plan's malformed open tasks the scorer left out; absent for the unseated plan. */
+  skippedTasks?: string[]
 }
 
 /** A claim with no `namePrefix` names its agents `bd-...`, as every claim did before seats (CC-205). */
