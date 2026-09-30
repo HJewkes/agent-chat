@@ -199,7 +199,7 @@ function printedBy(sub: Substitution, ctx: GuardContext, scope: Scope): string |
   const bodies = files.map(file =>
     file === undefined || file.startsWith('-') ? undefined : readAt(file, ctx, scope),
   )
-  return bodies.includes(undefined) ? undefined : unmark(bodies.join('')).replace(/\n+$/, '')
+  return bodies.includes(undefined) ? undefined : bodies.join('')
 }
 
 /** A marked word as the shell will pass it, or undefined when the guard cannot be sure of it. */
@@ -428,7 +428,7 @@ function plainCd(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): string | 
   const joined = !cmd.nested && JOINS_BEFORE.has(cmd.before) && JOINS_AFTER.has(cmd.after)
   if (head !== 'cd' || target === undefined || rest.length > 0 || !joined) return undefined
   const dir = resolveWord(target, cmd, ctx, scope)
-  if (dir === undefined || dir === '' || /^[-+]/.test(dir) || climbsBack(dir)) return undefined
+  if (dir === undefined || /^[-+]/.test(dir) || climbsBack(dir)) return undefined
   if (path.isAbsolute(dir)) return path.resolve(dir)
   const searched = scope.cdpath && !/^\.\.?(?:\/|$)/.test(dir)
   return scope.cwd === undefined || searched ? undefined : path.resolve(scope.cwd, dir)
