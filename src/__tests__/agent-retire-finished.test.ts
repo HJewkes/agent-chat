@@ -411,6 +411,47 @@ describe('the broker frame', () => {
   })
 })
 
+describe('the supervisor feeding the port', () => {
+  const internals = (): { live: Map<string, unknown>; parking: Map<string, string> } =>
+    sup as unknown as { live: Map<string, unknown>; parking: Map<string, string> }
+
+  // Kills M19: the supervisor dropping `tracked = this.live.has(agentId)`.
+  it('skips an exited agent the supervisor still tracks, and retires one it does not', async () => {
+    const repo = makeRepo()
+    const tracked = await finishedIn('cc-tracked', repo)
+    await finishedIn('cc-gone', repo)
+    internals().live.set(tracked.agentId, {})
+    pastGrace()
+
+    const out = await sup.retireFinished({ prefix: 'cc-', dryRun: true })
+
+    expect(out.plan).toEqual([
+      { name: 'cc-tracked', action: 'skip', reason: 'exited, but its process is still running' },
+      { name: 'cc-gone', action: 'retire' },
+    ])
+  })
+
+  // Kills M20: the supervisor reading `parking` by name, when it is keyed by agentId.
+  it('skips the agent whose id is being parked, not its namesake', async () => {
+    const repo = makeRepo()
+    const old = await finishedIn('cc-twin', repo)
+    pastGrace()
+    expect((await sup.retire('cc-twin')).ok).toBe(true)
+    const twin = await finishedIn('cc-twin', repo)
+    await finishedIn('cc-other', repo)
+    internals().parking.set(twin.agentId, twin.cwd)
+    pastGrace()
+
+    const out = await sup.retireFinished({ prefix: 'cc-', dryRun: true })
+
+    expect(old.agentId).not.toBe(twin.agentId)
+    expect(out.plan).toEqual([
+      { name: 'cc-twin', action: 'skip', reason: 'being parked' },
+      { name: 'cc-other', action: 'retire' },
+    ])
+  })
+})
+
 describe('the recheck and parking rules, against a fake port', () => {
   const agent = (name: string, over: Partial<AgentIdentity> = {}): AgentIdentity =>
     ({
@@ -434,6 +475,26 @@ describe('the recheck and parking rules, against a fake port', () => {
       ...over,
     }
   }
+
+  // Kills M2: liveBlocker ignoring `tracked` for an agent whose state is already exited.
+  it('skips an exited agent whose process the broker still tracks, and says why', async () => {
+    const detached = agent('cc-detached')
+    const retired: string[] = []
+    const port = portFor([detached], {
+      tracked: () => true,
+      retire: name => {
+        retired.push(name)
+        return Promise.resolve({ ok: true })
+      },
+    })
+
+    const out = await retireFinished(port, { prefix: 'cc-' })
+
+    expect(out.plan).toEqual([
+      { name: 'cc-detached', action: 'skip', reason: 'exited, but its process is still running' },
+    ])
+    expect(retired).toEqual([])
+  })
 
   // Kills M9: dropping the liveness recheck before each retire.
   it('refuses to retire an agent that went live after the plan', async () => {
