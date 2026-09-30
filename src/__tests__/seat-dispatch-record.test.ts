@@ -360,9 +360,9 @@ describe('foldDispatch', () => {
 
   it("opens no new record for a seat's dispatched row written after the broker's retired row", () => {
     const seatDispatched = seatRow({ outcome: 'dispatched', value: null, pr: null })
-    const { records } = fold(dispatched(), retired('s-1'), seatDispatched, seatRow())
+    const folded = fold(dispatched(), retired('s-1'), seatDispatched, seatRow())
 
-    expect(records).toEqual([merged])
+    expect(folded).toEqual({ records: [merged], malformed: 0, invalid_outcomes: 0 })
   })
 
   it.each([
