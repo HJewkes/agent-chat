@@ -1166,7 +1166,7 @@ describe('a git alias already in config', () => {
       it.each([
         `git -c include.path=${nameCfg} wr`,
         `E=${nameCfg} git --config-env=include.path=E wr`,
-        `git -c includeIf.onbranch:*.path=${nameCfg} wr`,
+        `git -c 'includeIf.onbranch:*.path=${nameCfg}' wr`,
       ])('denies an include passed to a ! alias, from the built CLI: %s', command => {
         expect(JSON.parse(hookSays(command)).hookSpecificOutput.permissionDecisionReason).toBe(
           REASONS.includePath,
