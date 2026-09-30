@@ -54,6 +54,8 @@ const SHELLS: [string, string[]][] = (
   ] satisfies [string, string[]][]
 ).filter(([shell]) => fs.existsSync(shell))
 
+const BASH = SHELLS.find(([shell]) => shell.endsWith('bash'))
+
 const inShell = (shell: string, flags: string[], command: string): string => {
   try {
     return execFileSync(shell, [...flags, '-c', command], {
@@ -106,7 +108,34 @@ const CREATE = 'gh pr create -t x -F -'
 const HEREDOC = "<<'EOF'\nclean\nEOF"
 const FROM_FILE = 'pr create -t x --body-file ../evil/pr.md'
 
+const COMMENT = 'gh pr comment 1 -F -'
+const OPEN3 = '3< ../evil/pr.md'
+const COMMENTS = 'gh api -X POST repos/o/r/issues/1/comments'
+
+// bash copies descriptor 3 onto stdin after the heredoc, so gh reads the file; zsh refuses the copy.
+const COPIED_ONTO_STDIN = [
+  `${COMMENT} <<'EOF' ${OPEN3} 0>&3\nclean\nEOF`,
+  `${COMMENT} <<'EOF' ${OPEN3} 0>&3-\nclean\nEOF`,
+  `${COMMENT} <<'EOF' ${OPEN3} 0>& 3\nclean\nEOF`,
+  `${COMMENT} <<'EOF' 3<> ../evil/pr.md 0>&3\nclean\nEOF`,
+  `exec ${OPEN3}; ${COMMENT} <<'EOF' 0>&3\nclean\nEOF`,
+  `${COMMENT} <<< clean ${OPEN3} 0>&3`,
+  `${COMMENT} 0<<'EOF' ${OPEN3} 0>&3\nclean\nEOF`,
+  `${COMMENTS} --input - <<'EOF' ${OPEN3} 0>&3\nclean\nEOF`,
+  `${COMMENTS} -F body=@- <<'EOF' ${OPEN3} 0>&3\nclean\nEOF`,
+  `agent-chat gh-write -- pr comment 1 -F - <<'EOF' ${OPEN3} 0>&3\nclean\nEOF`,
+]
+
 const DENIED = [
+  ...COPIED_ONTO_STDIN,
+  `${COMMENT} <<'EOF' ${OPEN3} 0<&3\nclean\nEOF`,
+  `${COMMENT} <<'EOF' ${OPEN3} <&3\nclean\nEOF`,
+  `${COMMENT} <<'EOF' 0<> ../evil/pr.md\nclean\nEOF`,
+  `${COMMENT} <<'EOF' < <(${EVIL})\nclean\nEOF`,
+  `${COMMENT} <<< ${TERM} <<< clean`,
+  `${COMMENT} <<'EOF' 03<<'E2'\nclean\nEOF\n${TERM}\nE2`,
+  `${EVIL} | ${COMMENT} 1${HEREDOC}`,
+  `${EVIL} |& ${COMMENT} ${HEREDOC}`,
   `${EVIL} | ${CREATE} ${HEREDOC}`,
   `${EVIL} | ${CREATE} <<< clean`,
   `${EVIL} | gh api -X POST repos/o/r/issues/1/comments --input - ${HEREDOC}`,
@@ -138,6 +167,15 @@ const DENIED = [
 
 // The guard may allow these; the shells show whether what it read is what gh was given.
 const NESTED = [
+  `${COMMENT} ${OPEN3} 0>&3 <<'EOF'\nclean\nEOF`,
+  `${COMMENT} <<'EOF' ${OPEN3} 00>&3\nclean\nEOF`,
+  `${COMMENT} <<'EOF' ${OPEN3} 0\\\n>&3\nclean\nEOF`,
+  `${COMMENT} <<'EOF' ${OPEN3} 0<&3-\nclean\nEOF`,
+  `${COMMENT} <<'EOF' ${OPEN3} 0>|/dev/fd/3\nclean\nEOF`,
+  `${COMMENT} <<'EOF' ${OPEN3} "0">&3\nclean\nEOF`,
+  `{ ${COMMENT} <<'EOF'\nclean\nEOF\n} ${OPEN3} 0>&3`,
+  `{ ${COMMENT} 0>&3; } <<'EOF' ${OPEN3}\nclean\nEOF`,
+  `exec ${OPEN3} 0>&3; ${COMMENT} <<'EOF'\nclean\nEOF`,
   `${EVIL} | { true && ${CREATE} ${HEREDOC}\n}`,
   `${EVIL} | while read -r line; do ${CREATE} ${HEREDOC}\ndone`,
   `${EVIL} | if true; then ${CREATE} ${HEREDOC}\nfi`,
@@ -177,6 +215,16 @@ describe.skipIf(SHELLS.length === 0)('the guard against real shells and a fake g
   it('sees a leak when there is one: every shell posts a pipe that a descriptor-3 heredoc does not replace', () => {
     for (const record of posted(`${EVIL} | ${CREATE} 3${HEREDOC}`)) expect(record).toContain(TERM)
   })
+
+  it.skipIf(BASH === undefined).each(COPIED_ONTO_STDIN)(
+    'sees a leak when there is one: bash posts %j',
+    command => {
+      fs.writeFileSync(RECORD, '')
+      inShell(...(BASH as [string, string[]]), command)
+
+      expect(fs.readFileSync(RECORD, 'utf8')).toContain(TERM)
+    },
+  )
 
   it.each(ALLOWED)('allows %j and every shell posts what the guard read', (command, text) => {
     expect(checkCommand(command, guard())).toBeUndefined()

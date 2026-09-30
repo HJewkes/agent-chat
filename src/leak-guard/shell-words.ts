@@ -157,14 +157,16 @@ class ShellLexer {
   private redirect(): void {
     const range = /^<\d*-\d*>/.exec(this.src.slice(this.pos))?.[0]
     if (range !== undefined) return this.globRange(range)
-    const aside = this.descriptor() > 0
+    const fd = this.descriptor()
+    const aside = fd > 0
     this.endWord()
     if (this.src.startsWith('<<<', this.pos)) return this.expect(aside ? 'discard' : 'herestring', 3)
     if (this.src.startsWith('<<', this.pos)) {
       const strip = this.src[this.pos + 2] === '-'
       return this.expect({ strip, aside }, strip ? 3 : 2)
     }
-    if (this.src[this.pos] === '<' && !aside) this.cur.stdinLive = true
+    // bash takes `0>&3` for a copy of descriptor 3 onto stdin, whatever the direction of the arrow.
+    if (fd === 0 || (fd < 0 && this.src[this.pos] === '<')) this.cur.stdinLive = true
     this.pos++
     while ('>&|'.includes(this.src[this.pos] ?? '.')) this.pos++
     this.pending = 'discard'
