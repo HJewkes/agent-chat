@@ -522,12 +522,12 @@ Usage: agent-chat agent retire [options] [name]
 release isolation, end the process, and free the name
 
 Options:
-  --force           discard uncommitted or unmerged work the isolation is holding
-  --finished        retire every finished agent in scope that holds no uncommitted or unpushed work
-  --spawner <name>  with --finished: only agents spawned by <name>
-  --prefix <p>      with --finished: only agents whose name starts with <p>
-  --dry-run         with --finished: print the plan and retire nothing
-  -h, --help        display help for command
+  --force            discard uncommitted or unmerged work the isolation is holding
+  --finished         retire every finished agent in scope that holds no uncommitted or unpushed work
+  --spawner <value>  with --finished: only agents spawned by this session name
+  --prefix <value>   with --finished: only agents whose name starts with this
+  --dry-run          with --finished: print the plan and retire nothing
+  -h, --help         display help for command
 
 === agent-chat agent park
 Usage: agent-chat agent park [options] <name>

@@ -4,12 +4,13 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
+import { openServices } from '../broker/daemon.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Supervisor } from '../agents/supervisor.js'
 import { RECLAIM_GRACE_MS } from '../agents/isolation/worktree.js'
 import { SCOPE_REQUIRED } from '../agents/isolation/retire-finished.js'
-import type { AgentIdentity } from '../protocol.js'
+import type { AgentIdentity, ServerMessage } from '../protocol.js'
 import { autoAttach } from './broker-harness.js'
 
 /**
@@ -312,5 +313,41 @@ describe('a failed retire', () => {
     ])
     expect(fs.existsSync(older.cwd)).toBe(false)
     expect(stateOf('cc-a-recent')).toBe('exited')
+  })
+})
+
+describe('the broker frame', () => {
+  it('answers retire_finished with the plan, and each result with its retire caveat', async () => {
+    process.env.AGENT_CHAT_HOME = tmp('bulk-services-')
+    const services = openServices(true)
+    try {
+      services.core.append({
+        kind: 'agent_spawned',
+        actor: 'coord-a',
+        target: 'cc-done',
+        msgId: 'a1',
+        body: 'w',
+      })
+      services.core.append({ kind: 'agent_exited', actor: 'cc-done', ref: 'a1', meta: { code: '0' } })
+      const frames: ServerMessage[] = []
+      const conn = {
+        write: (line: string) => frames.push(JSON.parse(line) as ServerMessage),
+      } as unknown as Conn
+
+      services.socketServer.handleMessage(conn, { t: 'retire_finished', prefix: 'cc-' })
+      await expect.poll(() => frames.length).toBe(1)
+
+      expect(frames[0]).toEqual({
+        t: 'retire_finished_result',
+        ok: true,
+        plan: [{ name: 'cc-done', action: 'retire' }],
+        results: [
+          { name: 'cc-done', ok: true, reason: expect.stringMatching(/no record of what cc-done held/) },
+        ],
+      })
+    } finally {
+      services.socketServer.close()
+      services.core.close()
+    }
   })
 })

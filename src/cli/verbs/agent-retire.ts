@@ -59,11 +59,11 @@ export const agentRetire = defineVerb({
         long: '--finished',
         description: 'retire every finished agent in scope that holds no uncommitted or unpushed work',
       },
-      spawner: { long: '--spawner <name>', description: 'with --finished: only agents spawned by <name>' },
-      prefix: {
-        long: '--prefix <p>',
-        description: 'with --finished: only agents whose name starts with <p>',
+      spawner: {
+        long: '--spawner',
+        description: 'with --finished: only agents spawned by this session name',
       },
+      prefix: { long: '--prefix', description: 'with --finished: only agents whose name starts with this' },
       dryRun: { long: '--dry-run', description: 'with --finished: print the plan and retire nothing' },
     },
   },
