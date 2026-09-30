@@ -11,7 +11,7 @@ import { checkDecision, decidedText, overruleText } from './decisions.js'
 import { AgentLog } from '../agents/identity.js'
 import { resolveReportBatchMs } from '../config.js'
 import { logEvent } from './log.js'
-import { EventLog, isReport, newMsgId } from './event-log.js'
+import { EventLog, isReport, isTerminalReport, newMsgId } from './event-log.js'
 import { ReportBatcher } from './report-batch.js'
 import type { AppendInput, EventStore } from './event-store.js'
 import { EventHub } from './events.js'
@@ -30,6 +30,9 @@ export type Conn = net.Socket
  * existing caller passes no type argument and keeps getting `Conn`.
  */
 export type Deliver<C = Conn> = (conn: C, message: DeliveredMessage) => void
+
+/** A headless agent exits seconds after its report; two minutes covers a slow Stop hook and no further work. */
+export const CLOSING_ACT_MS = 120_000
 
 /**
  * The broker's state and its only write path.
@@ -319,19 +322,23 @@ export class BrokerCore<C = Conn> {
     return this.events.lastAgentEventAt(identity.agentId, 'agent_resumed') ?? identity.spawnedAt
   }
 
-  /**
-   * The spawner whose `agent_exited` notice would repeat what it already has (CC-321):
-   * the agent's newest message to it in this run is a report, that report was
-   * pushed, and the spawner has sent the agent nothing since.
-   */
-  reportedSpawner(agentId: string | undefined): string | undefined {
+  /** The spawner whose `agent_exited` notice would repeat what it already has (CC-321). */
+  reportedSpawner(agentId: string | undefined, exit: Record<string, string> = {}): string | undefined {
     const identity = agentId === undefined ? undefined : this.agents.get(agentId)
-    if (identity === undefined) return undefined
+    if (identity === undefined || !exitedCleanly(exit)) return undefined
+    return this.closedWithReport(identity) ? identity.spawnedBy : undefined
+  }
+
+  /**
+   * The agent's newest message to its spawner in this run is a terminal report, pushed
+   * to the spawner shortly before now, with nothing sent back since.
+   */
+  private closedWithReport(identity: AgentIdentity): boolean {
     const { name, spawnedBy } = identity
     const last = this.events.lastMessageFrom(name, { to: spawnedBy, since: this.runStartedAt(identity) })
-    if (last === undefined || !this.reports.wasPushed(last.msgId)) return undefined
-    const followUp = this.events.lastMessageFrom(spawnedBy, { to: name, since: last.at })
-    return followUp === undefined ? spawnedBy : undefined
+    if (last === undefined || !isTerminalReport(last.text)) return false
+    if (Date.now() - last.at > CLOSING_ACT_MS || !this.reports.wasPushed(last.msgId)) return false
+    return this.events.lastMessageFrom(spawnedBy, { to: name, since: last.at }) === undefined
   }
 
   /**
@@ -528,6 +535,9 @@ export class BrokerCore<C = Conn> {
     this.events.close()
   }
 }
+
+/** Exit code 0 only: a signalled, inferred or never-started exit records no code at all. */
+const exitedCleanly = (exit: Record<string, string>): boolean => exit.code === '0'
 
 export interface VerdictResult {
   ok: boolean

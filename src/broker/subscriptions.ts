@@ -36,7 +36,10 @@ export class SystemEventFeed<C> {
     private readonly push: (conn: C, events: SystemEvent[]) => void,
     private readonly coalesceMs: number = COALESCE_MS,
     /** CC-321: the one session, by name, that already holds this exit's report and is not told again. */
-    private readonly reportedTo: (agentId: string | undefined) => string | undefined = () => undefined,
+    private readonly reportedTo: (
+      agentId: string | undefined,
+      exit: Record<string, string> | undefined,
+    ) => string | undefined = () => undefined,
   ) {}
 
   offer(row: {
@@ -56,7 +59,7 @@ export class SystemEventFeed<C> {
     const subject = subjectOf(row)
     if (subject === undefined) return
 
-    const reported = row.kind === 'agent_exited' ? this.reportedTo(row.ref) : undefined
+    const reported = row.kind === 'agent_exited' ? this.reportedTo(row.ref, row.meta) : undefined
     const recipients = this.registry
       .subscribersFor({ kind: row.kind, subject })
       .filter(conn => !this.alreadyReported(conn, reported, row.ref))

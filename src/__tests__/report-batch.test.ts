@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { BrokerCore, type Conn } from '../broker/core.js'
+import { BrokerCore, CLOSING_ACT_MS, type Conn } from '../broker/core.js'
 import { SocketServer } from '../broker/socket.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
@@ -12,7 +12,7 @@ import type { ClientMessage, DeliveredMessage, ServerMessage, SystemEvent } from
 /**
  * CC-321: one wake per finished agent. Reports to the session that spawned the
  * sender wait out one window and go as a single push, and a spawner that was
- * pushed an agent's final report is not also pushed its `agent_exited`.
+ * pushed an agent's closing report is not also pushed its clean `agent_exited`.
  * Each test names the mutation it catches. Every name and id here is synthetic.
  */
 
@@ -343,8 +343,9 @@ describe('the agent_exited notice to a spawner that was pushed the final report'
     windowMs = 0
   })
 
-  const exit = (w: Wire, name: string): void => {
-    core.append({ kind: 'agent_exited', actor: name, ref: idOf(w), body: '', meta: { code: '0' } })
+  /** A clean exit by default; the feed's own coalesce window is waited out before returning. */
+  const exit = (w: Wire, name: string, meta: Record<string, string> = { code: '0' }): void => {
+    core.append({ kind: 'agent_exited', actor: name, ref: idOf(w), body: '', meta })
     vi.advanceTimersByTime(LIFECYCLE_MS)
   }
 
@@ -391,6 +392,77 @@ describe('the agent_exited notice to a spawner that was pushed the final report'
 
     expect(exitsPushedTo(coord)).toEqual([])
     expect(pushes(coord).map(m => m.text)).toEqual(['Status: DONE'])
+  })
+
+  // Mutation caught: a closing status left out of the terminal set.
+  it.each(['DONE', 'DONE_WITH_CONCERNS', 'BLOCKED', 'NEEDS_CONTEXT', '**done**'])(
+    'is skipped for a terminal Status of %s followed by a prompt clean exit',
+    status => {
+      const coord = session('coord')
+      const a = worker('w-a', coord)
+      say(a, 'coord', `Status: ${status}\nPR: example/repo#1`)
+
+      exit(a, 'w-a')
+
+      expect(exitsPushedTo(coord)).toEqual([])
+    },
+  )
+
+  // Mutation caught: suppression on any `Status:` line, terminal or not.
+  it('is pushed when a progress Status is followed by the exit', () => {
+    const coord = session('coord')
+    const a = worker('w-a', coord)
+    say(a, 'coord', 'Status: IN PROGRESS\nhalfway through, tests next')
+
+    exit(a, 'w-a')
+
+    expect(exitsPushedTo(coord)).toEqual(['w-a'])
+  })
+
+  // Mutation caught: the exit code ignored, so a crash after a report goes unannounced.
+  it('is pushed when a terminal Status is followed by exit code 1', () => {
+    const coord = session('coord')
+    const a = worker('w-a', coord)
+    say(a, 'coord', 'Status: DONE')
+
+    exit(a, 'w-a', { code: '1' })
+
+    expect(exitsPushedTo(coord)).toEqual(['w-a'])
+  })
+
+  // Mutation caught: an exit with no code read as clean.
+  it('is pushed when a terminal Status is followed by a signalled exit', () => {
+    const coord = session('coord')
+    const a = worker('w-a', coord)
+    say(a, 'coord', 'Status: DONE')
+
+    exit(a, 'w-a', { signal: 'SIGKILL' })
+
+    expect(exitsPushedTo(coord)).toEqual(['w-a'])
+  })
+
+  // Mutation caught: the closing-act gap removed or widened.
+  it('is pushed when a terminal Status is followed by a long silence and then the exit', () => {
+    const coord = session('coord')
+    const a = worker('w-a', coord)
+    say(a, 'coord', 'Status: DONE')
+    vi.advanceTimersByTime(CLOSING_ACT_MS + 1)
+
+    exit(a, 'w-a')
+
+    expect(exitsPushedTo(coord)).toEqual(['w-a'])
+  })
+
+  // Mutation caught: the closing-act gap narrowed, or its boundary made exclusive.
+  it('is skipped when the exit comes exactly at the end of the closing-act gap', () => {
+    const coord = session('coord')
+    const a = worker('w-a', coord)
+    say(a, 'coord', 'Status: DONE')
+    vi.advanceTimersByTime(CLOSING_ACT_MS)
+
+    exit(a, 'w-a')
+
+    expect(exitsPushedTo(coord)).toEqual([])
   })
 
   // Mutation caught: `reportedSpawner` returning the spawner whatever the last message was.
@@ -493,8 +565,8 @@ describe('a headless agent exiting under the supervisor', () => {
     return scout
   }
 
-  async function exitAndSettle(): Promise<void> {
-    exitChild(0)
+  async function exitAndSettle(code = 0): Promise<void> {
+    exitChild(code)
     await vi.waitFor(() => expect(core.events.agentEvents().some(r => r.kind === 'agent_exited')).toBe(true))
     await pause(LIFECYCLE_MS)
   }
@@ -512,6 +584,18 @@ describe('a headless agent exiting under the supervisor', () => {
 
     expect(pushes(coord).map(m => m.text)).toEqual(['Status: DONE\nPR: example/repo#1'])
     expect(exitsPushedTo(coord)).toEqual([])
+  })
+
+  // Mutation caught: the feed not handed the exit row's code, so a crashed agent reads as a clean exit.
+  it('sends the exit notice when the agent crashes after its Status', async () => {
+    windowMs = 0
+    const coord = session('coord')
+    const scout = await spawnScout(coord)
+    say(scout, 'coord', 'Status: DONE\nPR: example/repo#1')
+
+    await exitAndSettle(1)
+
+    expect(exitsPushedTo(coord)).toEqual(['scout'])
   })
 
   // Mutation caught: a progress message counting as the report, which would silence both notices.
