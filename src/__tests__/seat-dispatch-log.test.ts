@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -345,6 +345,50 @@ describe('a symlink under the root', () => {
 
     expect(fs.readFileSync(target, 'utf8')).toBe('')
     expect(logged).toEqual(['seat_dispatch_refused'])
+  })
+})
+
+describe('a log path that is not the regular file it was opened as', () => {
+  const declare = (dispatchLog: string): void =>
+    seatFile('seat-x', `prefix: sx\npool: pool-a\ndispatch_log: ${dispatchLog}`)
+
+  it('refuses a FIFO at the log path without blocking, and logs it once', () => {
+    declare('pipe.jsonl')
+    execFileSync('mkfifo', [path.join(root, 'pipe.jsonl')])
+    const writer = writerOver()
+
+    writer.dispatched(facts())
+    writer.dispatched(facts())
+
+    expect(logged).toEqual(['seat_dispatch_refused'])
+  })
+
+  it('refuses a dispatch_log under a dangling directory symlink, not as unavailable', () => {
+    fs.symlinkSync(path.join(root, 'nowhere'), path.join(root, 'links'))
+    declare('links/x.jsonl')
+
+    writerOver().dispatched(facts())
+
+    expect(logged).toEqual(['seat_dispatch_refused'])
+    expect(fs.existsSync(path.join(root, 'nowhere'))).toBe(false)
+  })
+
+  it('refuses when the opened file is not the one its path now names, appending nothing', () => {
+    const swapped = (file: string): fs.Stats => {
+      const real = fs.statSync(file)
+      return Object.assign(Object.create(real) as fs.Stats, { ino: real.ino + 1 })
+    }
+    const writer = seatDispatchLog(root, {
+      now: () => AT,
+      activeWork,
+      log: e => void logged.push(e),
+      stat: swapped,
+    })
+
+    writer.dispatched(facts())
+
+    expect(logged).toEqual(['seat_dispatch_refused'])
+    expect(rowsOf(logFile('seat-x'))).toEqual([])
   })
 })
 
