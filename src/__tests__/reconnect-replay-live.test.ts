@@ -173,8 +173,15 @@ describe('frames issued while the broker is restarting', () => {
   })
 
   it('surfaces the restart in the chat_send tool result', async () => {
-    client = await registeredClient('worker')
+    // Send only once the drop is observed, so the frame is always queued rather than
+    // in flight at the drop (which reports a different message).
+    let dropped: () => void = () => undefined
+    const socketDown = new Promise<void>(resolve => {
+      dropped = resolve
+    })
+    client = await registeredClient('worker', () => dropped())
     await stopBroker()
+    await socketDown
 
     const result = new ToolHandler(client, 'worker').handle('chat_send', { to: 'peer', text: 'hello' })
 
