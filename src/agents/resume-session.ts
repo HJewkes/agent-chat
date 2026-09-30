@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import path from 'node:path'
 import type { AgentEventRow } from '../broker/event-store.js'
 import type { AgentIdentity, IsolationName } from '../protocol.js'
 import type { WorktreeRecord } from './isolation/worktree.js'
@@ -44,13 +45,36 @@ export function identityTranscript(agent: AgentIdentity): TranscriptVerdict {
 }
 
 /**
+ * CC-283: the newest record of agent-chat allocating the tree at `worktree`, as
+ * an adopted record, so an agent that adopted it can re-create it once removed.
+ */
+export function allocationRecord(
+  rows: readonly AgentEventRow[],
+  worktree: string,
+): WorktreeRecord | undefined {
+  const at = path.resolve(worktree)
+  const meta = rows.findLast(
+    row =>
+      row.kind === 'isolation_allocated' &&
+      row.meta.strategy === 'worktree' &&
+      row.meta.assigned !== 'true' &&
+      row.meta.worktree === at,
+  )?.meta
+  if (!meta?.gitRoot || !meta.branch || !fs.existsSync(meta.gitRoot)) return undefined
+  return { gitRoot: meta.gitRoot, worktree: at, branch: meta.branch, adopted: true }
+}
+
+/**
  * CC-140: the worktree an agent ran in, when it is gone from disk and agent-chat created it.
  *
- * An assigned worktree belongs to the task system, so it is never re-created here.
+ * An assigned worktree comes back only from its allocator's record (CC-283);
+ * one the task system made has none, so it is never re-created here.
  */
 export function goneWorktree(rows: readonly AgentEventRow[], agentId: string): WorktreeRecord | undefined {
   const meta = rows.findLast(row => row.kind === 'isolation_allocated' && row.ref === agentId)?.meta
-  if (meta?.strategy !== 'worktree' || meta.assigned === 'true') return undefined
+  if (meta?.strategy !== 'worktree') return undefined
+  if (meta.assigned === 'true')
+    return meta.worktree && !fs.existsSync(meta.worktree) ? allocationRecord(rows, meta.worktree) : undefined
   const { gitRoot, worktree, branch } = meta
   if (!gitRoot || !worktree || !branch || fs.existsSync(worktree) || !fs.existsSync(gitRoot)) return undefined
   return { gitRoot, worktree, branch }

@@ -186,6 +186,112 @@ describe('parking a finished agent', () => {
   })
 })
 
+describe('re-creating a parked tree a successor adopts (CC-283)', () => {
+  async function parkedPushed(repo: string): Promise<{ tree: string; pushed: string }> {
+    const predecessor = await spawnIn('worker-a', repo)
+    const pushed = commitIn(predecessor.cwd, 'feature.ts')
+    git(['push', '-q', 'origin', 'agent-chat/worker-a'], predecessor.cwd)
+    await exit(predecessor)
+    expect((await sup.park('worker-a')).ok).toBe(true)
+    return { tree: predecessor.cwd, pushed }
+  }
+
+  const allocatedRows = (agentId: string) =>
+    core.events.agentEvents().filter(r => r.kind === 'isolation_allocated' && r.ref === agentId)
+
+  it('spawns a successor on a parked predecessor tree, re-created at its path on the pushed branch tip', async () => {
+    const repo = repoWithOrigin()
+    const { tree, pushed } = await parkedPushed(repo)
+    git(['commit', '-q', '--allow-empty', '-m', 'main moved on'], repo)
+
+    const spawned = await sup.spawn(spawnReq('worker-b', repo, { worktree: tree }))
+
+    expect(spawned.reason).toBeUndefined()
+    expect(readLaunchPlan(spawned.agentId as string).cwd).toBe(tree)
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], tree)).toBe('agent-chat/worker-a')
+    expect(git(['rev-parse', 'HEAD'], tree)).toBe(pushed)
+    expect(allocatedRows(spawned.agentId as string).at(-1)?.meta).toMatchObject({
+      worktree: tree,
+      assigned: 'true',
+    })
+  })
+
+  it('resumes a successor whose adopted tree was parked, re-created at its path on the pushed branch tip', async () => {
+    const repo = repoWithOrigin()
+    const predecessor = await spawnIn('worker-a', repo)
+    const pushed = commitIn(predecessor.cwd, 'feature.ts')
+    git(['push', '-q', 'origin', 'agent-chat/worker-a'], predecessor.cwd)
+    await exit(predecessor)
+    const successor = await finishedIn('worker-b', repo, { worktree: predecessor.cwd })
+    git(['worktree', 'remove', predecessor.cwd], repo)
+
+    const resumed = await sup.resume('worker-b')
+
+    expect(resumed.reason).toBeUndefined()
+    expect(readLaunchPlan(successor.agentId).cwd).toBe(predecessor.cwd)
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], predecessor.cwd)).toBe('agent-chat/worker-a')
+    expect(git(['rev-parse', 'HEAD'], predecessor.cwd)).toBe(pushed)
+    expect(allocatedRows(successor.agentId).at(-1)?.meta).toMatchObject({ assigned: 'true' })
+  })
+
+  it('leaves the re-created tree in place when the successor retires', async () => {
+    const repo = repoWithOrigin()
+    const { tree } = await parkedPushed(repo)
+    await sup.spawn(spawnReq('worker-b', repo, { worktree: tree }))
+
+    const retired = await sup.retire('worker-b')
+
+    expect(retired.reason).toBeUndefined()
+    expect(fs.existsSync(tree)).toBe(true)
+    expect(branchHead(repo, 'agent-chat/worker-a')).toBeTruthy()
+  })
+
+  it('counts the re-created tree once against the worktree budget', async () => {
+    const repo = repoWithOrigin()
+    const { tree } = await parkedPushed(repo)
+    fs.writeFileSync(path.join(process.env.AGENT_CHAT_HOME!, 'config.json'), '{"worktreeBudget": 1}')
+
+    const spawned = await sup.spawn(spawnReq('worker-b', repo, { worktree: tree }))
+
+    expect(spawned.reason).toBeUndefined()
+    expect(treesUnder(repo)).toBe(1)
+    const other = { agentId: 'other', agentName: 'other', baseCwd: repo }
+    await expect(worktreeStrategy.allocate(other)).rejects.toThrow(/budget exhausted: 1\/1/i)
+  })
+
+  it('refuses an assigned path agent-chat never allocated, creating nothing', async () => {
+    const repo = makeRepo()
+    const invented = path.join(repo, '.worktrees', 'never-made')
+
+    const spawned = await sup.spawn(spawnReq('worker-b', repo, { worktree: invented }))
+
+    expect(spawned).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(
+        /assigned worktree .* does not exist, and agent-chat has no record of allocating it/,
+      ),
+    })
+    expect(fs.existsSync(invented)).toBe(false)
+  })
+
+  it('refuses to re-create an adopted tree whose branch is gone rather than fork a fresh one', async () => {
+    const repo = makeRepo()
+    const predecessor = await finishedIn('worker-a', repo)
+    expect((await sup.park('worker-a')).ok).toBe(true)
+    git(['branch', '-D', 'agent-chat/worker-a'], repo)
+
+    const spawned = await sup.spawn(spawnReq('worker-b', repo, { worktree: predecessor.cwd }))
+
+    expect(spawned).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(
+        /branch agent-chat\/worker-a no longer exists .* not re-created on a fresh one/,
+      ),
+    })
+    expect(fs.existsSync(predecessor.cwd)).toBe(false)
+  })
+})
+
 describe('parking a seat’s agent (CC-316)', () => {
   const at = new Date(2026, 1, 3, 4, 5)
   let root: string

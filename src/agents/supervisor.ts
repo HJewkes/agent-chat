@@ -49,6 +49,7 @@ import { resolvePredecessor, type PredecessorResult } from './predecessor.js'
 import { withReturnContract } from './return-contract.js'
 import {
   checkResumeSession,
+  allocationRecord,
   goneWorktree,
   identityTranscript,
   missingAgent,
@@ -57,7 +58,7 @@ import {
   retiredWorktree,
   type TranscriptVerdict,
 } from './resume-session.js'
-import { reattachWorktree, type WorktreeRecord } from './isolation/worktree.js'
+import { recreateWorktree, type WorktreeRecord } from './isolation/worktree.js'
 import { allocatedWorktree, parkBlocker, parkWorktree, type ParkTarget } from './isolation/park.js'
 import { retireFinished, type FinishedRetireOutcome, type RetireScope } from './isolation/retire-finished.js'
 import { findGitRoot } from '../git.js'
@@ -1072,7 +1073,7 @@ export class Supervisor implements TeleportHost {
       agentId,
       agentName: req.name,
       baseCwd: cwd,
-      ...(req.worktree ? { assignedWorktree: req.worktree } : {}),
+      ...(req.worktree ? this.assignment(req.worktree) : {}),
       ...(req.owns?.length ? { declaredPaths: [...req.owns] } : {}),
       // The claim ledger is the live answer to "who holds what here", leased by
       // presence: a claim whose owner has disconnected is already gone from it,
@@ -1163,7 +1164,7 @@ export class Supervisor implements TeleportHost {
   ): Promise<SpawnOutcome> {
     const { briefing, fork, account, resumed, predecessor } = resolved
     const allocation = resumed?.reattach
-      ? await reattachWorktree(resumed.reattach)
+      ? await recreateWorktree(resumed.reattach)
       : await resolveIsolation([isolationName]).allocate(ctx)
     warnings.push(...(allocation.warnings ?? []))
     this.core.append({
@@ -1339,6 +1340,13 @@ export class Supervisor implements TeleportHost {
   /** CC-133. Refused when unknown or not the requester's; resolved against the log, never the request. */
   private predecessorFor(name: string, req: SpawnRequest): PredecessorResult {
     return resolvePredecessor(this.core.agents, this.core.events, name, req.requestedBy)
+  }
+
+  /** CC-283: an assigned worktree, with the record that re-creates it when it has been removed. */
+  private assignment(worktree: string): Pick<IsolationContext, 'assignedWorktree' | 'assignedRecord'> {
+    if (fs.existsSync(worktree)) return { assignedWorktree: worktree }
+    const record = allocationRecord(this.core.events.agentEvents(), worktree)
+    return { assignedWorktree: worktree, ...(record ? { assignedRecord: record } : {}) }
   }
 
   /** CC-126: the checked transcript a `resume_session` spawn continues, or why it cannot. */
@@ -2109,13 +2117,13 @@ export class Supervisor implements TeleportHost {
     return gone !== undefined && gone.worktree === path.resolve(identity.cwd) ? gone : undefined
   }
 
-  /** Re-create the worktree and record it, so a later retire releases it like any allocation. */
+  /** Re-create the worktree and record it, so a later retire treats it like the allocation or adoption it was. */
   private async reattachForResume(
     identity: AgentIdentity,
     gone: WorktreeRecord,
     req: ResumeRequest,
   ): Promise<Allocation> {
-    const allocation = await reattachWorktree(gone)
+    const allocation = await recreateWorktree(gone)
     this.core.append({
       kind: 'isolation_allocated',
       actor: req.requestedBy ?? HUMAN,
