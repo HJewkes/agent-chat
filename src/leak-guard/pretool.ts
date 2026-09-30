@@ -62,6 +62,7 @@ export const REASONS = {
   hiddenCommand: `leak-guard: the command word is an expansion, so the guard cannot tell what this runs. Write git or gh out literally. ${DOCS}`,
   hiddenScript: `leak-guard: eval of text the guard cannot read, on a command line that names git or gh. Run the command directly. ${DOCS}`,
   missingTerms: `leak-guard: no private term list, so PR and issue text cannot be checked. Create ~/.config/titan-egress/private-terms, one term per line, chmod 600. ${DOCS}`,
+  xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
 } as const
 
@@ -71,6 +72,29 @@ const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
 const PREFIX_WORDS = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', 'time'])
 const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'exec', 'nohup', 'noglob', 'nocorrect', 'coproc'])
+const XARGS_SHORT_VALUE = new Set('nILPdasEJRS')
+const XARGS_LONG_VALUE = new Set([
+  '--arg-file',
+  '--delimiter',
+  '--max-lines',
+  '--max-args',
+  '--max-chars',
+  '--max-procs',
+  '--process-slot-var',
+])
+const XARGS_LONG_FLAG = new Set([
+  '--null',
+  '--eof',
+  '--replace',
+  '--interactive',
+  '--open-tty',
+  '--no-run-if-empty',
+  '--verbose',
+  '--exit',
+  '--show-limits',
+  '--version',
+  '--help',
+])
 const GIT_VALUE_OPTS = new Set(['-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix'])
 
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=/
@@ -97,7 +121,11 @@ function unwrap(words: readonly string[]): Unwrapped {
     else if (name === 'nice') rest = dropOptions(rest.slice(1), ['-n'])
     else if (name === 'caffeinate') rest = dropOptions(rest.slice(1), ['-t', '-w'])
     else if (name === 'timeout' || name === 'repeat') rest = dropOptions(rest.slice(1), ['-s', '-k']).slice(1)
-    else if (name === 'env') {
+    else if (name === 'xargs') {
+      const after = dropXargsOptions(rest.slice(1))
+      if (after === undefined) return { reason: REASONS.xargsOption }
+      rest = after
+    } else if (name === 'env') {
       const env = unwrapEnv(rest.slice(1))
       if ('reason' in env) return env
       rest = env.words
@@ -112,6 +140,31 @@ function dropOptions(words: string[], withValue: readonly string[] = []): string
     i += withValue.includes(words[i] as string) ? 2 : 1
   }
   return words.slice(i)
+}
+
+/** Returns the command xargs runs, or undefined on a long option this guard does not know. */
+function dropXargsOptions(words: string[]): string[] | undefined {
+  let i = 0
+  for (; i < words.length; i++) {
+    const a = words[i] as string
+    if (a === '--') return words.slice(i + 1)
+    if (!a.startsWith('-') || a === '-') break
+    if (a.startsWith('--')) {
+      const name = a.split('=')[0] as string
+      if (XARGS_LONG_VALUE.has(name)) i += a.includes('=') ? 0 : 1
+      else if (!XARGS_LONG_FLAG.has(name)) return undefined
+    } else i += clusterValueWords(a)
+  }
+  return words.slice(i)
+}
+
+/** A short-flag cluster takes the next word only when its first value letter ends it. */
+function clusterValueWords(cluster: string): number {
+  for (let k = 1; k < cluster.length; k++) {
+    if (XARGS_SHORT_VALUE.has(cluster[k] as string)) return k === cluster.length - 1 ? 1 : 0
+    if ('ile'.includes(cluster[k] as string)) return 0
+  }
+  return 0
 }
 
 function unwrapEnv(args: string[]): Unwrapped {
