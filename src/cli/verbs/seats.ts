@@ -446,7 +446,8 @@ export const seatsBootVerb = defineVerb({
       },
       json: {
         long: '--json',
-        description: 'the uncut sections as one JSON object; a failure is {"seat", "error"} with exit 1',
+        description:
+          'the sections without the 6,000-character cut, as one JSON object; a failure is {"seat", "error"} with exit 1',
       },
       root: {
         long: '--root',
