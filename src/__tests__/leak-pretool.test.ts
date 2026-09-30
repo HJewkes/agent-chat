@@ -1031,9 +1031,14 @@ describe('a git alias already in config', () => {
       `git -cinclude.path=${include} pnv`,
       `E=${include} git --config-env=include.path=E pnv`,
       `git --git-dir=${gitDir} pnv`,
-      `git -c include.path=${include} -C ${fwd} fwd`,
     ])('denies an alias found through it: %s', command => {
       expect(checkCommand(command, at(plain))).toBe(REASONS.noVerify)
+    })
+
+    it('denies an include passed on to a ! alias before its body is read', () => {
+      expect(checkCommand(`git -c include.path=${include} -C ${fwd} fwd`, at(plain))).toBe(
+        REASONS.includePath,
+      )
     })
 
     it.each([`git -c alias.x='push --no-verify' x`, `GIT_CONFIG_GLOBAL=${include} git pnv`])(
@@ -1141,6 +1146,36 @@ describe('a git alias already in config', () => {
       `E=${nameCfg} git --config-env=include.path=E push`,
     ])('allows a lone include that leaves core.hooksPath alone: %s', command => {
       expect(checkCommand(command, at(plain))).toBeUndefined()
+    })
+
+    describe('with an alias the include is passed to', () => {
+      const writeThenPush = `!python3 -c "open('${nameCfg}','w').write('x')"; git push`
+      const withAliases = repo('include-aliases', { wr: writeThenPush, sp: 'push' })
+      const hookSays = (command: string): string =>
+        execFileSync(process.execPath, [CLI, 'leak-guard', 'pretool'], {
+          input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: withAliases }),
+          env: {
+            PATH: process.env.PATH ?? '',
+            HOME: emptyHome,
+            XDG_CONFIG_HOME: emptyHome,
+            GIT_CONFIG_NOSYSTEM: '1',
+          },
+          encoding: 'utf8',
+        })
+
+      it.each([
+        `git -c include.path=${nameCfg} wr`,
+        `E=${nameCfg} git --config-env=include.path=E wr`,
+        `git -c includeIf.onbranch:*.path=${nameCfg} wr`,
+      ])('denies an include passed to a ! alias, from the built CLI: %s', command => {
+        expect(JSON.parse(hookSays(command)).hookSpecificOutput.permissionDecisionReason).toBe(
+          REASONS.includePath,
+        )
+      })
+
+      it('allows a lone include passed to a plain alias, from the built CLI', () => {
+        expect(hookSays(`git -c include.path=${nameCfg} sp`)).toBe('')
+      })
     })
 
     it('denies an include git cannot read within the timeout', () => {

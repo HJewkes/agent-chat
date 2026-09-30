@@ -373,6 +373,8 @@ the alias lookup, the include check fails closed. It denies when:
   too: `cd <dir> && git -c include.path=<f> push`, `git -c include.path=<f> push 2>&1 | tail -3`
   and `git -c include.path=<f> push > log.txt`. Run the git command on its own, and use `-C` for
   the directory;
+- the subcommand is a `!` alias. git passes the include to every git the alias body runs, and the
+  body may write the file first, so the body is never read;
 - a word before the subcommand mentions `include` and the guard cannot tell the directory, an
   option or a `--config-env` variable.
 

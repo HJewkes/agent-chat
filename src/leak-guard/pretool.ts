@@ -379,6 +379,8 @@ function checkAlias(run: GitRun, ctx: GuardContext, scope: Scope, depth: number)
   if (scope.aliases >= MAX_ALIASES) return REASONS.aliasDepth
   const inner = { ...scope, aliases: scope.aliases + 1 }
   const rest = run.args.slice(call.at + 1)
+  // A `!` body passes the include to every git it runs and may write the file before one reads it.
+  if (alias.value.startsWith('!') && includesConfig(call.params)) return REASONS.includePath
   if (alias.value.startsWith('!'))
     return checkAt(
       shellAlias(alias.value.slice(1), rest),
