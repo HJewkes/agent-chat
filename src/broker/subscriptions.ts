@@ -1,4 +1,5 @@
 import { SUBSCRIBABLE_KINDS, type SubscribableKind, type SystemEvent } from '../protocol.js'
+import { logEvent } from './log.js'
 import type { Registry } from './registry.js'
 
 /**
@@ -34,12 +35,15 @@ export class SystemEventFeed<C> {
     private readonly registry: Registry<C>,
     private readonly push: (conn: C, events: SystemEvent[]) => void,
     private readonly coalesceMs: number = COALESCE_MS,
+    /** CC-321: the one session, by name, that already holds this exit's report and is not told again. */
+    private readonly reportedTo: (agentId: string | undefined) => string | undefined = () => undefined,
   ) {}
 
   offer(row: {
     kind: string
     actor?: string
     target?: string
+    ref?: string
     body?: string
     meta?: Record<string, string>
   }): void {
@@ -52,7 +56,9 @@ export class SystemEventFeed<C> {
     const subject = subjectOf(row)
     if (subject === undefined) return
 
-    const recipients = this.registry.subscribersFor({ kind: row.kind, subject })
+    const recipients = this.registry
+      .subscribersFor({ kind: row.kind, subject })
+      .filter(conn => !this.alreadyReported(conn, row.kind, row.ref))
     if (recipients.length === 0) return
 
     const event: SystemEvent = {
@@ -69,6 +75,15 @@ export class SystemEventFeed<C> {
     // Unref'd: a pending join notification must never be the reason the broker
     // stays alive, and the log has the row regardless of whether this fires.
     if (this.timer === null) this.timer = setTimeout(() => this.flush(), this.coalesceMs).unref()
+  }
+
+  /** Only the push is skipped: the `agent_exited` row is in the log and on the roster either way. */
+  private alreadyReported(conn: C, kind: string, agentId: string | undefined): boolean {
+    if (kind !== 'agent_exited') return false
+    const spawner = this.reportedTo(agentId)
+    if (spawner === undefined || this.registry.nameOf(conn) !== spawner) return false
+    logEvent('exit_notice_suppressed', { agentId, spawner })
+    return true
   }
 
   /** A subscriber that disconnected mid-window is simply dropped, not pushed to. */

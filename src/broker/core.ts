@@ -1,6 +1,7 @@
 import type net from 'node:net'
 import {
   HUMAN,
+  type AgentIdentity,
   type ClientMessage,
   type DecidedRefusal,
   type DecisionCitation,
@@ -8,8 +9,10 @@ import {
 } from '../protocol.js'
 import { checkDecision, decidedText, overruleText } from './decisions.js'
 import { AgentLog } from '../agents/identity.js'
+import { resolveReportBatchMs } from '../config.js'
 import { logEvent } from './log.js'
-import { EventLog, newMsgId } from './event-log.js'
+import { EventLog, isReport, newMsgId } from './event-log.js'
+import { ReportBatcher } from './report-batch.js'
 import type { AppendInput, EventStore } from './event-store.js'
 import { EventHub } from './events.js'
 import { Registry } from './registry.js'
@@ -56,11 +59,11 @@ export class BrokerCore<C = Conn> {
   /** Live worktree/file claims, released with the connection that took them (CC-56). */
   readonly claims = new ClaimLedger()
 
-  private readonly deliver: Deliver<C>
+  private readonly reports: ReportBatcher<C>
   private readonly watchers = new Set<(row: AppendInput) => void>()
 
   constructor(deliver: Deliver<C>, options: BrokerCoreOptions<C> = {}) {
-    this.deliver = deliver
+    this.reports = new ReportBatcher<C>(deliver, options.reportBatchMs ?? resolveReportBatchMs)
     this.registry = options.registry ?? new Registry<C>()
     this.events = options.events ?? new EventLog(options.dbPath)
     this.hub = options.hub ?? new EventHub()
@@ -267,6 +270,7 @@ export class BrokerCore<C = Conn> {
   drop(conn: C): void {
     const entry = this.registry.entryFor(conn)
     const name = this.registry.drop(conn)
+    this.reports.forget(conn)
     if (!name || !entry) return
     // Claims are leases held by presence, so they end here rather than needing
     // to be reaped: an agent that dies mid-task stops blocking its peers at
@@ -282,8 +286,45 @@ export class BrokerCore<C = Conn> {
   deliverTo(name: string, message: DeliveredMessage): boolean {
     const target = this.registry.connFor(name)
     if (!target) return false
-    this.deliver(target, message)
+    this.reports.now(target, message)
     return true
+  }
+
+  /**
+   * Push one routed peer message (CC-321). A worker's report to the session that
+   * spawned it waits out the batch window; everything else goes at once. The
+   * human, a `chat_ask` answer and an endorsed message never come through here.
+   */
+  pushRouted(sender: C, target: C, message: DeliveredMessage): void {
+    if (this.isReportToSpawner(sender, target, message)) this.reports.report(target, message)
+    else this.reports.now(target, message)
+  }
+
+  private isReportToSpawner(sender: C, target: C, message: DeliveredMessage): boolean {
+    if (message.broadcast || !isReport(message.text)) return false
+    const agentId = this.registry.entryFor(sender)?.agentId
+    const spawner = agentId === undefined ? undefined : this.agents.get(agentId)?.spawnedBy
+    return spawner !== undefined && spawner === this.registry.nameOf(target)
+  }
+
+  /** A resume starts a new run, and only a report made in this run counts. */
+  runStartedAt(identity: AgentIdentity): number {
+    return this.events.lastAgentEventAt(identity.agentId, 'agent_resumed') ?? identity.spawnedAt
+  }
+
+  /**
+   * The spawner whose `agent_exited` notice would repeat what it already has (CC-321):
+   * the agent's newest message to it in this run is a report, that report was
+   * pushed, and the spawner has sent the agent nothing since.
+   */
+  reportedSpawner(agentId: string | undefined): string | undefined {
+    const identity = agentId === undefined ? undefined : this.agents.get(agentId)
+    if (identity === undefined) return undefined
+    const { name, spawnedBy } = identity
+    const last = this.events.lastMessageFrom(name, { to: spawnedBy, since: this.runStartedAt(identity) })
+    if (last === undefined || !isReport(last.text) || !this.reports.wasPushed(last.msgId)) return undefined
+    const followUp = this.events.lastMessageFrom(spawnedBy, { to: name, since: last.at })
+    return followUp === undefined ? spawnedBy : undefined
   }
 
   /**
@@ -442,6 +483,7 @@ export class BrokerCore<C = Conn> {
   }
 
   close(): void {
+    this.reports.flushAll()
     this.events.close()
   }
 }
@@ -458,4 +500,6 @@ export interface BrokerCoreOptions<C = Conn> {
   events?: EventStore
   hub?: EventHub
   dbPath?: string
+  /** The report batch window in ms, asked per report; 0 turns batching off. Defaults to config (CC-321). */
+  reportBatchMs?: () => number
 }

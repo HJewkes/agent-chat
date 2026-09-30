@@ -136,9 +136,12 @@ export class SocketServer {
     supervisorOptions: SupervisorOptions = {},
     ledgerDb?: DatabaseSync,
   ) {
-    this.feed = new SystemEventFeed<Conn>(core.registry, (conn, events) => {
-      reply(conn, { t: 'system_events', events })
-    })
+    this.feed = new SystemEventFeed<Conn>(
+      core.registry,
+      (conn, events) => reply(conn, { t: 'system_events', events }),
+      undefined,
+      agentId => core.reportedSpawner(agentId),
+    )
     // Fed from the single write path, so a subscriber sees exactly what the log
     // recorded rather than a second notion of what happened.
     this.unwatch = core.onAppend(row => this.feed.offer(row))
@@ -625,7 +628,7 @@ export class SocketServer {
       // query over the log, so chat_inbox still returns them. Two independent
       // reasons to hold: the sender is over budget (whole route) or this one
       // recipient is in do-not-disturb.
-      if (!result.suppressLive && delivery.live) deliver(delivery.conn, delivery.message)
+      if (!result.suppressLive && delivery.live) core.pushRouted(conn, delivery.conn, delivery.message)
     }
     if (!result.ok) {
       core.append({ kind: 'route_failed', actor: from, target: to, body: result.reason ?? 'unknown' })
@@ -1097,7 +1100,7 @@ export class SocketServer {
     // The human overrides do-not-disturb and no agent can. Scarcity has to be
     // structural: if any peer could mark a message urgent, every message would be
     // urgent within a day. There is simply no parameter for it on the agent path.
-    deliver(target, { msgId, from: HUMAN, text, at: Date.now() })
+    core.deliverTo(to, { msgId, from: HUMAN, text, at: Date.now() })
     logEvent('route', { kind: 'message', msgId, from: HUMAN, to, delivered: true, recipients: [to] })
     reply(conn, { t: 'send_result', ok: true, msgId, recipients: [to] })
   }
