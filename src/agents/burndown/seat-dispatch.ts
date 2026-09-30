@@ -19,7 +19,7 @@ export interface SeatDispatch {
   grants: string[]
 }
 
-const expandHome = (p: string, home: string): string =>
+export const expandHome = (p: string, home: string): string =>
   p === '~' ? home : p.startsWith('~/') ? path.join(home, p.slice(2)) : p
 
 function repoMap(seat: SeatPolicy, home: string): Record<string, string[]> {
