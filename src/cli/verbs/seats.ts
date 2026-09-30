@@ -1,3 +1,4 @@
+import os from 'node:os'
 import path from 'node:path'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
@@ -11,6 +12,7 @@ import {
   defaultAutonomyRoot,
   loadDoc,
   readAgentEvents,
+  readDoc,
   readOwnerMessages,
   readPresence,
   readText,
@@ -35,6 +37,7 @@ import {
 import type { Presence } from '../../agents/seats/liveness.js'
 import {
   STATUS_TOP,
+  plainError,
   readInbox,
   renderStatus,
   seatStatus,
@@ -276,10 +279,11 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
   return {
     now: () => new Date(),
     autonomyRoot: root,
+    homeDir: os.homedir(),
     agents: async () =>
       ((await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>).agents,
     readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
-    loadDoc: () => loadDoc(),
+    loadDoc: () => readDoc(),
     inbox: seat => readInbox(path.join(home(), 'events.db'), seat),
     scored: (seat, today) =>
       scoredPlanFromDisk({
@@ -292,13 +296,20 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
   }
 }
 
+/** Under --json a failure is one document on stdout too, so a caller never parses an empty string. */
+function statusFailure(seat: string, json: boolean, error: string): Report {
+  return json
+    ? { ok: false, lines: [JSON.stringify({ seat, error }, null, 2)] }
+    : { ok: false, lines: [], errors: [error] }
+}
+
 /** The status verb's body, taking its readers explicitly so a test can point them at a fixture broker. */
 export async function statusReport(deps: StatusDeps, seat: string, json: boolean): Promise<Report> {
   try {
     const status = await seatStatus(deps, seat)
     return { ok: true, lines: json ? [JSON.stringify(status, null, 2)] : renderStatus(status) }
   } catch (err) {
-    return refused(err)
+    return statusFailure(seat, json, plainError(err, [deps.autonomyRoot, deps.homeDir]))
   }
 }
 
@@ -306,14 +317,18 @@ export const seatsStatusVerb = defineVerb({
   name: 'seats.status',
   description:
     'what a seat reads before it dispatches (CC-317), read-only: implementers, reviewers and planners ' +
-    'against their caps, parked implementers, the pool reading with its age and the charter stop that ' +
-    'applies, unread inbox messages since the seat last sent one, and the top eligible tasks',
+    'against their caps, its other running agents, parked implementers, the pool reading with its age ' +
+    'and the charter stop that applies, unread inbox messages since the seat last sent one, and the ' +
+    'top eligible tasks. A spend cap with no saved meter to count it is a stop',
   args: z.object({ seat: requiredString('seat'), json: z.boolean().optional(), root: z.string().optional() }),
   result: Report,
   cli: {
     positional: ['seat'],
     options: {
-      json: { long: '--json', description: 'the same facts as one JSON object' },
+      json: {
+        long: '--json',
+        description: 'the same facts as one JSON object; a failure is {"seat", "error"} with exit 1',
+      },
       root: { long: '--root', description: 'autonomy directory holding charter.md and seats/' },
     },
   },
@@ -322,7 +337,7 @@ export const seatsStatusVerb = defineVerb({
     try {
       return await withRunningBroker(client => statusReport(statusDeps(dir, client), seat, json === true))
     } catch (err) {
-      return refused(err)
+      return statusFailure(seat, json === true, plainError(err, [dir, os.homedir()]))
     }
   },
 })

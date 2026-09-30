@@ -86,17 +86,46 @@ export interface WatchdogDoc {
   held?: boolean
 }
 
+const emptyDoc = (): WatchdogDoc => ({ seats: {}, pools: {}, stopped: {} })
+
+function parseDoc(text: string, name: string): Partial<WatchdogDoc> {
+  let doc: unknown
+  try {
+    doc = JSON.parse(text)
+  } catch (err) {
+    throw new Error(`${name} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  if (doc === null || typeof doc !== 'object' || Array.isArray(doc))
+    throw new Error(`${name} does not hold a JSON object`)
+  return doc as Partial<WatchdogDoc>
+}
+
+/** An absent file is an empty doc. Throws, naming the file without its directory, when it cannot be read or parsed. */
+export function readDoc(file = watchdogStatePath()): WatchdogDoc {
+  const name = path.basename(file)
+  let text: string
+  try {
+    text = fs.readFileSync(file, 'utf8')
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return emptyDoc()
+    throw new Error(`${name} cannot be read (${code ?? 'unknown error'})`)
+  }
+  const doc = parseDoc(text, name)
+  return {
+    seats: doc.seats ?? {},
+    pools: doc.pools ?? {},
+    stopped: doc.stopped ?? {},
+    ...(doc.held === undefined ? {} : { held: doc.held }),
+  }
+}
+
+/** The watchdog's read: a file it cannot use is an empty doc, so one bad write never stops every pass. */
 export function loadDoc(file = watchdogStatePath()): WatchdogDoc {
   try {
-    const doc = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<WatchdogDoc>
-    return {
-      seats: doc.seats ?? {},
-      pools: doc.pools ?? {},
-      stopped: doc.stopped ?? {},
-      ...(doc.held === undefined ? {} : { held: doc.held }),
-    }
+    return readDoc(file)
   } catch {
-    return { seats: {}, pools: {}, stopped: {} }
+    return emptyDoc()
   }
 }
 
