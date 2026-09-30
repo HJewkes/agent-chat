@@ -155,7 +155,9 @@ restart the broker.
 ### What the scanner reads
 
 The scanner runs in an empty scratch repository that borrows the pushing repository's object
-store (`objects/info/alternates`). It sees commits and nothing else. The worktree, the index,
+store (`objects/info/alternates`). It sees commits and nothing else. It does not read the author and
+committer idents or the ref names: a term in `GIT_AUTHOR_NAME`, and a branch named after a term, both
+reached the remote. The worktree, the index,
 the refs, the repository's config, `info/attributes` and replace refs are not there. This
 matters because egress-scan skips a file git calls binary, and a `-diff` attribute makes any
 file binary: an attributes file, in the repository or under the agent's `HOME`, passed a leak.
@@ -220,7 +222,11 @@ repository:
 - a `url.<base>.insteadOf` rule, paired with a `pushInsteadOf` so the push still goes to the
   real remote, that sends the scan base lookup to another repository whose default branch holds
   the pushed commits. Tested from four sources: the repository's config, `GIT_CONFIG_COUNT`
-  entries, `git -c`, and the owner's global config (refused by the `--get-url` check).
+  entries, `git -c`, and the owner's global config (refused by the `--get-url` check);
+- a pushed object that is not a commit: a blob or tree sha sent to a tag ref, an annotated tag, or an
+  existing tag moved to a blob. Their text (content, path names, a tag message) is outside what the
+  scanner reads, so `git cat-file -t` in the scratch view must say `commit` or the push is refused,
+  exit 2, naming the remote ref. A lightweight tag on a commit and a ref deletion still pass.
 
 Not closed by the hook. A pre-push hook runs only when git is told to run it, so it cannot stop
 a caller who turns hooks off:
@@ -246,7 +252,8 @@ a caller who turns hooks off:
   tracked as CC-355 (not done);
 - a push that does not go through git, such as an upload over the GitHub API;
 - a missing scanner, which fails open as described above;
-- text in a PR title or body, which the hook never sees.
+- text in a PR title or body, which the hook never sees;
+- author and committer idents and ref names, which the scanner does not read (observed).
 
 The trust limit is the OS account. An agent runs as the owner's user, so it can edit the hook
 file, the term list or the installed scanner. The hook stops a careless agent and the variable

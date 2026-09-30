@@ -677,6 +677,77 @@ describe('the commits a push is scanned for', () => {
   })
 })
 
+describe('pushed objects that are not commits', () => {
+  const remoteTag = (f: Fixture, tag: string): string =>
+    spawnSync('git', ['rev-parse', '--verify', '-q', `refs/tags/${tag}`], {
+      cwd: f.remote,
+      env: baseEnv(),
+      encoding: 'utf8',
+    }).stdout.trim()
+
+  const blobSha = (f: Fixture): string => {
+    fs.writeFileSync(path.join(f.work, 'loose.txt'), `the ${LEAK} seat\n`)
+    return git(f.work, baseEnv(), 'hash-object', '-w', 'loose.txt')
+  }
+
+  it('refuses a blob sha pushed to a tag ref', () => {
+    const f = fixture()
+
+    const run = push(f, `${blobSha(f)}:refs/tags/x`)
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('refs/tags/x')
+    expect(remoteTag(f, 'x')).toBe('')
+  })
+
+  it('refuses a tree sha pushed to a tag ref', () => {
+    const f = fixture()
+
+    const run = push(f, `${git(f.work, baseEnv(), 'rev-parse', 'main^{tree}')}:refs/tags/x`)
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('refs/tags/x')
+    expect(remoteTag(f, 'x')).toBe('')
+  })
+
+  it('refuses an annotated tag, whose message the scan cannot read', () => {
+    const f = fixture()
+    git(f.work, baseEnv(), 'tag', '-a', '-m', `the ${LEAK} seat`, 'v1')
+
+    const run = push(f, 'refs/tags/v1')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('refs/tags/v1')
+    expect(remoteTag(f, 'v1')).toBe('')
+  })
+
+  it('refuses moving an existing tag to a blob', () => {
+    const f = fixture()
+    git(f.work, baseEnv(), 'tag', 'x', 'main')
+    expect(push(f, 'refs/tags/x').code).toBe(0)
+    const before = remoteTag(f, 'x')
+
+    const run = push(f, `+${blobSha(f)}:refs/tags/x`)
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('refs/tags/x')
+    expect(remoteTag(f, 'x')).toBe(before)
+  })
+
+  it('lets a lightweight tag on a clean commit and a ref deletion through', () => {
+    const f = fixture()
+    commitFile(f, 'clean', 'notes.md', 'fine')
+    git(f.work, baseEnv(), 'tag', 'lw', 'clean')
+
+    const tagged = push(f, 'refs/tags/lw')
+    const deleted = push(f, ':refs/tags/lw')
+
+    expect(tagged.code).toBe(0)
+    expect(deleted.code).toBe(0)
+    expect(remoteTag(f, 'lw')).toBe('')
+  })
+})
+
 describe('the remote the scan base is read from', () => {
   const REWRITTEN = 'leak-scan: push refused: git config rewrites the push URL'
 
