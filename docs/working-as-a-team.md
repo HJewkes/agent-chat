@@ -65,24 +65,30 @@ call needed — so you learn the moment it actually attaches rather than polling
 context, so two rules cut the pushes a finished agent causes. Neither changes what the log
 records.
 
-- When the newest message an agent sent you in its run opens with `Status:` or `Verdict:`, and
-  the broker pushed it to you, you get no `agent_exited` notice for that agent. The report is the
-  notice. The exit notice still arrives if the agent sent something after its report, if you wrote
-  to it after the report, or if the report was held rather than pushed. An agent that exits with
-  no report at all still produces the `exited with no Status report` message.
+- You get no `agent_exited` notice for an agent when all of these hold: the newest message it sent
+  you in its run is a closing report (`Status:` `DONE`, `DONE_WITH_CONCERNS`, `BLOCKED` or
+  `NEEDS_CONTEXT`, or a `Verdict:`); the broker wrote that report to the connection you are on now;
+  the agent exited with code 0; the exit came within two minutes of the report; and you wrote
+  nothing to the agent after it. The report is the notice. In every other case the exit notice
+  arrives: a progress line such as `Status: IN PROGRESS`, a crash or a signal, a long silence before
+  the exit, a reconnect since the report, or a report that was held rather than pushed. An agent
+  that exits with no report at all still produces the `exited with no Status report` message.
 - A `Status:` or `Verdict:` from an agent to the session that spawned it waits up to
   `reportBatchSeconds` (in `~/.agent-chat/config.json`, default 20, maximum 300, `0` turns it
-  off; `AGENT_CHAT_REPORT_BATCH_SECONDS` overrides the file). The first report starts the window
-  and later ones do not extend it, so no report waits longer than one window. Reports that share
-  a window arrive as one message from `agent-chat` with `count`, `senders` and `msg_ids`
-  attributes, each report whole under its own `from` and `msg_id` header. Any other message to
-  you (a human message, a `chat_ask` answer, an endorsed message, a progress note) is pushed at
-  once, with anything held for you pushed just ahead of it.
+  off; `AGENT_CHAT_REPORT_BATCH_SECONDS` overrides the file, and a bad override falls back to the
+  file). The first report starts the window and later ones do not extend it, so no report waits
+  longer than one window. Reports that share a window arrive as one message from `agent-chat` with
+  `count`, `senders` and `msg_ids` attributes, each report whole under its own `from` and `msg_id`
+  header. Any other message to you (a human message, a `chat_ask` answer, an endorsed message, a
+  progress note) is pushed at once, with anything held for you pushed just ahead of it. The exit of
+  an agent whose report is still held ends the window early, so the report always reaches you
+  before the broker decides whether its exit notice is redundant.
 
-If you deregister inside a window, the held reports stay in your inbox and nothing is pushed. A
-watched seat is the exception: it is pushed them when it registers again, ahead of what the
-dark-seat hold kept for it, unless the broker restarted in between. A clean broker shutdown pushes what is held. A broker crash inside a window pushes nothing: the
-reports are in the log, so `chat_inbox` returns them, but no wake is sent for them.
+If your connection closes or is taken over inside a window, the held reports stay in your inbox
+and are pushed once to the next connection that registers under your name, unless the broker
+restarted in between. A clean broker shutdown pushes what is held. A broker crash inside a window
+pushes nothing: the reports are in the log, so `chat_inbox` returns them, but no wake is sent for
+them.
 
 **`chat_send`** addresses it by name. A spawned agent is an ordinary peer on the bus — there is
 no separate channel for "your" agents, and no privileged relationship.
