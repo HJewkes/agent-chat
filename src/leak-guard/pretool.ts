@@ -71,6 +71,22 @@ const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
 const PREFIX_WORDS = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', 'time'])
 const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'exec', 'nohup', 'noglob', 'nocorrect', 'coproc'])
+const XARGS_VALUE_OPTS = [
+  '-n',
+  '-I',
+  '-L',
+  '-P',
+  '-d',
+  '-a',
+  '-s',
+  '-E',
+  '--max-args',
+  '--max-lines',
+  '--max-procs',
+  '--delimiter',
+  '--arg-file',
+  '--max-chars',
+]
 const GIT_VALUE_OPTS = new Set(['-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix'])
 
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=/
@@ -97,6 +113,7 @@ function unwrap(words: readonly string[]): Unwrapped {
     else if (name === 'nice') rest = dropOptions(rest.slice(1), ['-n'])
     else if (name === 'caffeinate') rest = dropOptions(rest.slice(1), ['-t', '-w'])
     else if (name === 'timeout' || name === 'repeat') rest = dropOptions(rest.slice(1), ['-s', '-k']).slice(1)
+    else if (name === 'xargs') rest = dropOptions(rest.slice(1), XARGS_VALUE_OPTS)
     else if (name === 'env') {
       const env = unwrapEnv(rest.slice(1))
       if ('reason' in env) return env
