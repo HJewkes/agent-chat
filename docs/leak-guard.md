@@ -328,8 +328,10 @@ the command's own `-c` and `--config-env` options, `--git-dir` and `--work-tree`
 variables that choose config files (`GIT_DIR`, `HOME`, `XDG_CONFIG_HOME`, `GIT_CONFIG_*` and
 others) as the command sets them, by prefix assignment, `env`, or an earlier `export`, bare
 assignment or `unset`. When the command line changes one of those variables in a way the guard
-cannot follow, such as `read`, a value from `$(...)`, or an `export` behind `&&`, a lookup is
-denied. A plain value is
+cannot follow, such as `read`, a value from `$(...)`, an `export` behind `&&`, or an `export` of
+a name built at run time, a lookup is denied. So is one where the guard cannot tell the directory
+(after `source`, `set -a`, `trap`, `pushd` or a `cd` it cannot follow), a `-C` value, or the
+subcommand word itself; a builtin such as `git push` is still allowed there. A plain value is
 re-checked as `git <value> <rest>`, so an alias that sets `-c core.hooksPath` is denied too. A
 `!` value is re-checked as a shell command, run from the top of the work tree, with its
 arguments put in for `$1` to `$9`, `$@` and `$*` and appended as git appends them. More than 4
