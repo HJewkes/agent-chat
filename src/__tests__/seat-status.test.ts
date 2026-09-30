@@ -1,12 +1,15 @@
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stringify } from 'yaml'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readAccountBudget } from '../agents/budget.js'
 import { scoredPlanFromDisk } from '../agents/burndown/score-render.js'
-import type { WatchdogDoc } from '../agents/seats/io.js'
+import { dayStart } from '../agents/burndown/budget-gate.js'
+import { readDoc, type SeatRecord, type WatchdogDoc } from '../agents/seats/io.js'
 import {
   STATUS_TOP,
   readInbox,
@@ -18,13 +21,20 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { SocketServer } from '../broker/socket.js'
-import { statusReport } from '../cli/verbs/seats.js'
-import type { ServerMessage } from '../protocol.js'
+import { withBroker } from '../cli/client.js'
+import { seatsStatusVerb, statusReport } from '../cli/verbs/seats.js'
+import type { IsolationName, ServerMessage } from '../protocol.js'
 
 /**
  * CC-317: `seats status` answers a seat's tick questions in one read-only call.
  * The broker, the autonomy root, the pool's status file and every name are synthetic.
  */
+
+// A mutant that lets the verb autostart must not leave a real broker running.
+vi.mock('node:child_process', async original => ({
+  ...(await original<typeof import('node:child_process')>()),
+  spawn: vi.fn(() => ({ unref: () => undefined })),
+}))
 
 const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'score-2026-09-29')
 const fixture = (file: string) => fs.readFileSync(path.join(FIXTURE, file), 'utf8')
@@ -32,13 +42,17 @@ const fixture = (file: string) => fs.readFileSync(path.join(FIXTURE, file), 'utf
 const SEAT = 'sample-seat'
 const POOL = 'pool-a'
 const NOW = new Date(2026, 8, 29, 10, 0)
-const SEAT_EXTRA = [
-  'prefix: ss',
-  `pool: ${POOL}`,
-  'concurrency: {implementers: 2, reviewers: 1, planners: 1}',
-  'spend:',
-  '  per_day_points: 10',
-].join('\n')
+const DAY_MS = 24 * 3_600_000
+/** Epoch ms of `hour:minute` on the fixture's day. */
+const at = (hour: number, minute = 0): number => new Date(2026, 8, 29, hour, minute).getTime()
+
+interface Spend {
+  per_run_points?: number
+  per_day_points?: number
+}
+
+const seatExtra = (spend: Spend, concurrency: string): string =>
+  ['prefix: ss', `pool: ${POOL}`, `concurrency: ${concurrency}`, `spend: ${JSON.stringify(spend)}`].join('\n')
 
 interface Wire {
   conn: Conn
@@ -57,13 +71,25 @@ let agentIds = 0
 const beforeFrontmatterEnd = (text: string, extra: string): string =>
   text.replace(/\n---\n$/, `\n${extra}\n---\n`)
 
-function writeAutonomy(): void {
-  const pools = `pools:\n  ${POOL}: {config_dir: ${poolDir}, human_uses: false, reserve_seven_day: 35, ceiling_five_hour: 70}`
+interface AutonomyOptions {
+  spend?: Spend
+  concurrency?: string
+  /** Written under `~` by default, which the status expands against its home directory. */
+  configDir?: string
+}
+
+function writeAutonomy(options: AutonomyOptions = {}): void {
+  const {
+    spend = { per_day_points: 10 },
+    concurrency = '{implementers: 2, reviewers: 1, planners: 3}',
+    configDir = '~/pool',
+  } = options
+  const pools = `pools:\n  ${POOL}: {config_dir: ${configDir}, human_uses: false, reserve_seven_day: 35, ceiling_five_hour: 70}`
   fs.mkdirSync(path.join(autonomy, 'seats'), { recursive: true })
   fs.writeFileSync(path.join(autonomy, 'charter.md'), beforeFrontmatterEnd(fixture('charter.md'), pools))
   fs.writeFileSync(
     path.join(autonomy, 'seats', `${SEAT}.md`),
-    beforeFrontmatterEnd(fixture('seats/sample-seat.md'), SEAT_EXTRA),
+    beforeFrontmatterEnd(fixture('seats/sample-seat.md'), seatExtra(spend, concurrency)),
   )
 }
 
@@ -77,13 +103,13 @@ function writeTasks(): void {
   }
 }
 
-/** The pool's status file, as the status line writes it, `ageSeconds` before `NOW`. */
-function writeReading(fiveHour: number, sevenDay: number, ageSeconds = 30): void {
+/** The pool's status file, as the status line writes it, `ageSeconds` before `now`. */
+function writeReading(fiveHour: number, sevenDay: number, ageSeconds = 30, now = NOW): void {
   const dir = path.join(poolDir, 'status-cache', 'sessions')
   fs.mkdirSync(dir, { recursive: true })
   const reading = {
     session_id: 'session-1',
-    written_at: NOW.getTime() / 1000 - ageSeconds,
+    written_at: now.getTime() / 1000 - ageSeconds,
     rate_limits: { five_hour: { used_pct: fiveHour }, seven_day: { used_pct: sevenDay } },
   }
   fs.writeFileSync(path.join(dir, 'session-1.json'), JSON.stringify(reading))
@@ -111,10 +137,11 @@ interface AgentSeed {
   exited?: boolean
   detached?: boolean
   cwd?: string
+  isolation?: IsolationName
 }
 
 function seedAgent(seed: AgentSeed): void {
-  const { name, profile, spawnedBy = SEAT, cwd = tmp } = seed
+  const { name, profile, spawnedBy = SEAT, cwd = tmp, isolation = 'worktree' } = seed
   const id = `agent-${++agentIds}`
   core.append({
     kind: 'agent_spawned',
@@ -122,7 +149,7 @@ function seedAgent(seed: AgentSeed): void {
     target: name,
     msgId: id,
     body: 'synthetic brief',
-    meta: { profile, cwd, isolation: 'worktree' },
+    meta: { profile, cwd, isolation },
   })
   core.append({ kind: 'agent_attached', actor: name, ref: id })
   if (seed.detached) core.append({ kind: 'agent_detached', actor: name, ref: id })
@@ -133,6 +160,7 @@ function deps(over: Partial<StatusDeps> = {}): StatusDeps {
   return {
     now: () => NOW,
     autonomyRoot: autonomy,
+    homeDir: tmp,
     agents: async () => {
       const w = wire()
       server.handleMessage(w.conn, { t: 'agents' })
@@ -156,12 +184,19 @@ function deps(over: Partial<StatusDeps> = {}): StatusDeps {
 
 const status = (over: Partial<StatusDeps> = {}): Promise<SeatStatus> => seatStatus(deps(over), SEAT)
 
+/** The scorer's real plan for the fixture, for a test that changes one part of it. */
+const fixturePlan = () => deps().scored(SEAT, '2026-09-29')
+
+const scorerExplodes = (): never => {
+  throw new Error('scorer exploded')
+}
+
 beforeEach(() => {
   tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ac-seat-status-')))
   autonomy = path.join(tmp, 'autonomy')
   activeWork = path.join(tmp, 'active-work')
   poolDir = path.join(tmp, 'pool')
-  doc = { seats: {}, pools: {}, stopped: {} }
+  doc = { seats: {}, pools: { [POOL]: { since: at(7), last: 41, spent: 0 } }, stopped: {} }
   writeAutonomy()
   writeTasks()
   writeReading(12, 41)
@@ -203,6 +238,14 @@ describe('a seat against its concurrency caps', () => {
     expect(implementers).toMatchObject({ active: 1, cap: 2, atCap: false })
   })
 
+  it("leaves out another seat's agent whose name only starts with the seat's prefix letters", async () => {
+    seedAgent({ name: 'ssx-be-3', profile: 'implementer', spawnedBy: 'other-seat' })
+
+    const { implementers } = await status()
+
+    expect(implementers.names).toEqual([])
+  })
+
   it('counts a detached implementer as active and names it as detached', async () => {
     seedAgent({ name: 'ss-al-1', profile: 'implementer' })
     seedAgent({ name: 'ss-al-2', profile: 'implementer', detached: true })
@@ -221,7 +264,30 @@ describe('a seat against its concurrency caps', () => {
     const { reviewers, planners } = await status()
 
     expect(reviewers).toEqual({ active: 1, cap: 1, atCap: true, names: ['ss-al-1-review'], detached: [] })
-    expect(planners).toEqual({ active: 0, cap: 1, atCap: false, names: [], detached: [] })
+    expect(planners).toEqual({ active: 0, cap: 3, atCap: false, names: [], detached: [] })
+  })
+
+  it('lists a running agent whose profile names no role under other, with no cap', async () => {
+    seedAgent({ name: 'ss-scout', profile: 'researcher' })
+    seedAgent({ name: 'ss-scribe', profile: 'docs-writer', detached: true })
+    seedAgent({ name: 'ss-gone', profile: 'researcher', exited: true })
+
+    const result = await status()
+    const report = await statusReport(deps(), SEAT, false)
+
+    expect(result.other).toEqual({ active: 2, names: ['ss-scout', 'ss-scribe'], detached: ['ss-scribe'] })
+    expect(result.implementers.active + result.reviewers.active + result.planners.active).toBe(0)
+    expect(report.lines[4]).toBe('other         2  ss-scout, ss-scribe  detached: ss-scribe')
+  })
+
+  it('counts an agent whose profile names two roles once, as an implementer', async () => {
+    seedAgent({ name: 'ss-al-5', profile: 'implementer-reviewer' })
+
+    const result = await status()
+
+    expect(result.implementers.names).toEqual(['ss-al-5'])
+    expect(result.reviewers.names).toEqual([])
+    expect(result.other.names).toEqual([])
   })
 
   it('counts exited implementers as parked and names the ones whose tree is still on disk', async () => {
@@ -232,6 +298,23 @@ describe('a seat against its concurrency caps', () => {
 
     expect(parked).toEqual({ count: 2, names: ['ss-al-3', 'ss-al-4'], treeOnDisk: ['ss-al-4'] })
     expect(implementers.active).toBe(0)
+  })
+
+  it('counts no exited reviewer or roleless agent as parked', async () => {
+    seedAgent({ name: 'ss-al-9-review', profile: 'reviewer', exited: true })
+    seedAgent({ name: 'ss-gone', profile: 'researcher', exited: true })
+
+    const { parked } = await status()
+
+    expect(parked).toEqual({ count: 0, names: [], treeOnDisk: [] })
+  })
+
+  it('names no tree on disk for a parked implementer that ran without a worktree', async () => {
+    seedAgent({ name: 'ss-al-6', profile: 'implementer', exited: true, cwd: autonomy, isolation: 'none' })
+
+    const { parked } = await status()
+
+    expect(parked).toEqual({ count: 1, names: ['ss-al-6'], treeOnDisk: [] })
   })
 })
 
@@ -247,6 +330,8 @@ describe("the seat's pool reading and charter stop", () => {
       stale: false,
       stop: null,
       sonnetOnly: false,
+      spendSince: null,
+      note: null,
     })
     expect(budget.margin).toContain('seven_day 41% vs line 65%')
   })
@@ -260,13 +345,13 @@ describe("the seat's pool reading and charter stop", () => {
     expect(budget.margin).toBeNull()
   })
 
-  it("names the day spend stop from the watchdog's saved pool meter", async () => {
-    const since = new Date(2026, 8, 29, 7, 30).getTime()
-    doc.pools[POOL] = { since, last: 30, spent: 0 }
+  it('reports an open gate within ten points of its line as sonnet only', async () => {
+    writeReading(12, 58)
+    doc.pools[POOL] = { since: at(7), last: 58, spent: 0 }
 
     const { budget } = await status()
 
-    expect(budget.stop).toContain("day spend 11 points since 07:00 at or above the seat's per_day_points 10")
+    expect(budget).toMatchObject({ stop: null, sonnetOnly: true })
   })
 
   it('shows the age of a stale reading and closes the gate on it', async () => {
@@ -281,10 +366,182 @@ describe("the seat's pool reading and charter stop", () => {
   it('reports a pool with no status file as having no reading, and stops on it', async () => {
     fs.rmSync(poolDir, { recursive: true })
 
+    const report = await statusReport(deps(), SEAT, false)
     const { budget } = await status()
 
     expect(budget).toMatchObject({ sevenDay: null, fiveHour: null, ageSeconds: null, stale: true })
     expect(budget.stop).toContain('no seven_day and five_hour reading')
+    expect(report.lines[6]).toBe(`budget        pool ${POOL}: no reading`)
+  })
+})
+
+describe("the seat's spend caps", () => {
+  const statePath = (): string => path.join(tmp, 'seat-watchdog.json')
+  const fromDisk = (): Promise<SeatStatus> => status({ loadDoc: () => readDoc(statePath()) })
+  const stopOf = (why: string): string => `BUDGET-PAUSE pool ${POOL}: ${why}`
+  const RUN_UNKNOWN = stopOf('no seven_day reading at run start, so run spend is unknown')
+  const DAY_UNKNOWN = stopOf('no seven_day reading at or before 07:00, so day spend unknown')
+  const dayMeter = { since: at(7), last: 40, spent: 8 }
+
+  it('stops a per_day cap as unknown when the watchdog has saved no state file', async () => {
+    const { budget } = await fromDisk()
+
+    expect(budget).toMatchObject({ stop: DAY_UNKNOWN, margin: null })
+  })
+
+  it('stops a per_run cap as unknown when the watchdog has saved no state file', async () => {
+    writeAutonomy({ spend: { per_run_points: 5 } })
+
+    const { budget } = await fromDisk()
+
+    expect(budget.stop).toBe(RUN_UNKNOWN)
+  })
+
+  it('opens the gate for a seat with no spend cap and no state file', async () => {
+    writeAutonomy({ spend: {} })
+
+    const { budget } = await fromDisk()
+
+    expect(budget.stop).toBeNull()
+  })
+
+  it('stops on a state file that does not parse, and names the failure', async () => {
+    fs.writeFileSync(statePath(), '{"pools": ')
+
+    const { budget } = await fromDisk()
+
+    expect(budget.stop).toMatch(
+      new RegExp(
+        `^BUDGET-PAUSE pool ${POOL}: seat-watchdog.json is not valid JSON: .*, so spend is unknown$`,
+      ),
+    )
+    expect(budget).toMatchObject({ margin: null, sonnetOnly: false })
+    expect(budget.stop).not.toContain(tmp)
+  })
+
+  it('stops on a state file that holds no object, even with no spend cap set', async () => {
+    writeAutonomy({ spend: {} })
+    fs.writeFileSync(statePath(), '[]')
+
+    const { budget } = await fromDisk()
+
+    expect(budget.stop).toBe(stopOf('seat-watchdog.json does not hold a JSON object, so spend is unknown'))
+  })
+
+  it('reads the saved day meter from the state file', async () => {
+    fs.writeFileSync(statePath(), JSON.stringify({ pools: { [POOL]: dayMeter } }))
+
+    const { budget } = await fromDisk()
+
+    expect(budget.stop).toBeNull()
+  })
+
+  it('stops a per_run cap as unknown for a seat record that holds no run meter', async () => {
+    writeAutonomy({ spend: { per_run_points: 5 } })
+    doc.seats[SEAT] = { idleRuns: 0, at: at(9, 45) }
+
+    const { budget } = await status()
+
+    expect(budget.stop).toBe(RUN_UNKNOWN)
+  })
+
+  it('stops a per_run cap as unknown for a run meter that holds no figures', async () => {
+    writeAutonomy({ spend: { per_run_points: 5 } })
+    doc.seats[SEAT] = { idleRuns: 0, at: at(9, 45), run: {} } as unknown as SeatRecord
+
+    const { budget } = await status()
+
+    expect(budget.stop).toBe(RUN_UNKNOWN)
+  })
+
+  it('stops a per_day cap as unknown when the day meter is saved under another pool', async () => {
+    doc.pools = { 'pool-b': dayMeter }
+
+    const { budget } = await status()
+
+    expect(budget.stop).toBe(DAY_UNKNOWN)
+  })
+
+  it('opens the gate on a saved run meter below the per_run cap', async () => {
+    writeAutonomy({ spend: { per_run_points: 5, per_day_points: 10 } })
+    doc.pools[POOL] = dayMeter
+    doc.seats[SEAT] = { idleRuns: 0, at: at(9, 45), run: { since: at(9), last: 40, spent: 2 } }
+
+    const { budget } = await status()
+
+    expect(budget.stop).toBeNull()
+    expect(budget.margin).toContain('seven_day 41% vs line 65%')
+  })
+
+  it('stops on a saved run meter that this reading brings to the per_run cap', async () => {
+    writeAutonomy({ spend: { per_run_points: 5, per_day_points: 10 } })
+    doc.pools[POOL] = dayMeter
+    doc.seats[SEAT] = { idleRuns: 0, at: at(9, 45), run: { since: at(9), last: 40, spent: 4 } }
+
+    const { budget } = await status()
+
+    expect(budget.stop).toBe(stopOf("run spend 5 points at or above the seat's per_run_points 5"))
+  })
+
+  it('counts a run meter older than 12 hours from its last reading, not from zero', async () => {
+    writeAutonomy({ spend: { per_run_points: 5 } })
+    doc.pools[POOL] = dayMeter
+    doc.seats[SEAT] = { idleRuns: 0, at: at(9, 45), run: { since: at(9) - DAY_MS, last: 30, spent: 20 } }
+
+    const { budget } = await status()
+
+    expect(budget.stop).toBe(stopOf("run spend 11 points at or above the seat's per_run_points 5"))
+  })
+
+  it("names the day spend stop from the watchdog's saved pool meter", async () => {
+    doc.pools[POOL] = { since: at(7), last: 30, spent: 0 }
+
+    const { budget } = await status()
+
+    expect(budget.stop).toBe(
+      stopOf("day spend 11 points since 07:00 at or above the seat's per_day_points 10"),
+    )
+    expect(budget.spendSince).toBeNull()
+  })
+
+  it("counts the day's spend from yesterday's last reading when the day meter is from yesterday", async () => {
+    doc.pools[POOL] = { since: at(7) - DAY_MS, last: 30, spent: 25 }
+
+    const { budget } = await status()
+
+    expect(budget.stop).toBe(
+      stopOf("day spend 11 points since 07:00 at or above the seat's per_day_points 10"),
+    )
+    expect(budget).toMatchObject({ spendSince: null, note: null })
+  })
+
+  it('opens the gate on a day meter from yesterday whose last reading is under the cap away', async () => {
+    doc.pools[POOL] = { since: at(7) - DAY_MS, last: 35, spent: 25 }
+
+    const { budget } = await status()
+
+    expect(budget).toMatchObject({ stop: null, spendSince: null })
+  })
+
+  it("says the day's spend counts from the first sample when the day meter started after 07:00", async () => {
+    doc.pools[POOL] = { since: at(7, 30), last: 40, spent: 0 }
+    const since = new Date(at(7, 30)).toISOString()
+    const note = `no seven_day reading at or before 07:00, so the day's spend counts from the first sample at ${since}`
+
+    const { budget } = await status()
+    const report = await statusReport(deps(), SEAT, false)
+
+    expect(budget).toMatchObject({ stop: null, spendSince: since, note })
+    expect(report.lines[8]).toBe(`note          ${note}`)
+  })
+
+  it('keeps the late start note on a day meter that is also at its cap', async () => {
+    doc.pools[POOL] = { since: at(7, 30), last: 30, spent: 0 }
+
+    const { budget } = await status()
+
+    expect(budget.stop).toContain('day spend 11 points')
+    expect(budget.spendSince).toBe(new Date(at(7, 30)).toISOString())
   })
 })
 
@@ -314,6 +571,69 @@ describe("the seat's unread inbox", () => {
     expect(inbox.unread).toBe(1)
     expect(inbox.sinceLastSend).not.toBeNull()
   })
+
+  it('keeps a message unread after the seat tags itself', async () => {
+    const seat = join(SEAT)
+    const peer = join('peer-b')
+    send(peer, SEAT, 'first')
+    server.handleMessage(seat.conn, { t: 'tag', add: ['dispatching'] })
+    const notices = core.events.activityFor(SEAT, 10).filter(row => row.kind === 'notice')
+
+    const { inbox } = await status()
+
+    expect(notices).toHaveLength(1)
+    expect(inbox).toEqual({ unread: 1, sinceLastSend: null })
+  })
+
+  it('keeps a message unread after the seat asks the owner a question', async () => {
+    const seat = join(SEAT)
+    const peer = join('peer-b')
+    send(peer, SEAT, 'first')
+    server.handleMessage(seat.conn, { t: 'ask', text: 'May the seat dispatch?' })
+
+    const { inbox } = await status()
+
+    expect(seat.frames.at(-1)).toMatchObject({ t: 'send_result', ok: true })
+    expect(inbox).toEqual({ unread: 1, sinceLastSend: null })
+  })
+
+  it('counts a broadcast that reached the seat', async () => {
+    join(SEAT)
+    const peer = join('peer-b')
+    server.handleMessage(peer.conn, { t: 'broadcast', text: 'to everyone' })
+
+    const { inbox } = await status()
+
+    expect(inbox.unread).toBe(1)
+  })
+
+  it("moves the cutoff on the seat's own broadcast", async () => {
+    const seat = join(SEAT)
+    const peer = join('peer-b')
+    send(peer, SEAT, 'first')
+    server.handleMessage(seat.conn, { t: 'broadcast', text: 'handled it' })
+
+    const { inbox } = await status()
+
+    expect(inbox.unread).toBe(0)
+    expect(inbox.sinceLastSend).not.toBeNull()
+  })
+
+  it('carries the error and keeps every other reading when events.db cannot be read', async () => {
+    seedAgent({ name: 'ss-al-1', profile: 'implementer' })
+    const inbox = (seat: string) => readInbox(path.join(tmp, 'absent', 'events.db'), seat)
+
+    const result = await status({ inbox })
+    const report = await statusReport(deps({ inbox }), SEAT, false)
+
+    expect(result.inbox).toMatchObject({ unread: null, sinceLastSend: null })
+    expect(result.inbox.error).toMatch(/\S/)
+    expect(result.inbox.error).not.toContain(tmp)
+    expect(result.implementers.active).toBe(1)
+    expect(result.budget.sevenDay).toBe(41)
+    expect(result.eligible.top).toHaveLength(3)
+    expect(report.lines[8]).toBe(`inbox         unavailable: ${result.inbox.error}`)
+  })
 })
 
 describe('the top eligible tasks', () => {
@@ -329,13 +649,20 @@ describe('the top eligible tasks', () => {
     expect(eligible.error).toBeUndefined()
   })
 
+  it('counts the malformed tasks the scorer skipped', async () => {
+    const scored = () => ({ ...fixturePlan(), skipped: ['alpha/AL-8.yml', 'beta/BE-9.yml'] })
+
+    const { eligible } = await status({ scored })
+    const report = await statusReport(deps({ scored }), SEAT, false)
+
+    expect(eligible.skipped).toBe(2)
+    expect(report.lines.at(-1)).toBe('              2 malformed task(s) skipped')
+  })
+
   it('keeps every other reading and carries the error when the scorer throws', async () => {
     seedAgent({ name: 'ss-al-1', profile: 'implementer' })
-    const scored = (): never => {
-      throw new Error('scorer exploded')
-    }
 
-    const result = await status({ scored })
+    const result = await status({ scored: scorerExplodes })
 
     expect(result.eligible).toEqual({ top: [], skipped: 0, today: '2026-09-29', error: 'scorer exploded' })
     expect(result.implementers.active).toBe(1)
@@ -345,14 +672,6 @@ describe('the top eligible tasks', () => {
 })
 
 describe('the status verb', () => {
-  it('refuses a name the charter does not list as a seat', async () => {
-    const report = await statusReport(deps(), 'no-such-seat', true)
-
-    expect(report.ok).toBe(false)
-    expect(report.lines).toEqual([])
-    expect(report.errors?.[0]).toContain('no-such-seat is not a seat')
-  })
-
   it('prints the status as one JSON object under --json', async () => {
     seedAgent({ name: 'ss-al-1', profile: 'implementer' })
 
@@ -374,7 +693,8 @@ describe('the status verb', () => {
       `seat ${SEAT} at ${NOW.toISOString()}`,
       'implementers  2/2  AT CAP  ss-al-1, ss-al-2',
       'reviewers     0/1',
-      'planners      0/1',
+      'planners      0/3',
+      'other         0',
       'parked        1  tree on disk: ss-al-4',
       `budget        pool ${POOL}: seven_day 70%, five_hour 12% (reading 30s old)`,
       `stop          BUDGET-PAUSE pool ${POOL}: seven_day 70% at or above line 65%`,
@@ -387,18 +707,36 @@ describe('the status verb', () => {
 
   it('marks a stale reading, an open gate and a failed scorer in the table', async () => {
     writeReading(12, 41, 300)
-    const scored = (): never => {
-      throw new Error('scorer exploded')
-    }
 
-    const { lines } = await statusReport(deps({ scored }), SEAT, false)
+    const { lines } = await statusReport(deps({ scored: scorerExplodes }), SEAT, false)
 
-    expect(lines.slice(5)).toEqual([
+    expect(lines.slice(6)).toEqual([
       `budget        pool ${POOL}: seven_day 41%, five_hour 12% (reading 300s old, STALE)`,
       `stop          none; pool ${POOL}: five_hour 12% vs ceiling 70%, seven_day 41% vs line 65%`,
       'inbox         0 unread (the seat has sent nothing)',
       'eligible      unavailable: scorer exploded',
     ])
+  })
+
+  it('cuts a long task title to sixty characters in the table', async () => {
+    const plan = fixturePlan()
+    const [first] = plan.order
+    const scored = () => ({
+      ...plan,
+      order: first === undefined ? [] : [{ ...first, title: 'x'.repeat(80) }],
+    })
+
+    const { lines } = await statusReport(deps({ scored }), SEAT, false)
+
+    expect(lines.at(-1)).toBe(`eligible      AL-1  72.0  alpha  ${'x'.repeat(60)}`)
+  })
+
+  it('says none when the scorer has no eligible task, then the skipped count', async () => {
+    const scored = () => ({ ...fixturePlan(), order: [], skipped: ['alpha/AL-8.yml'] })
+
+    const { lines } = await statusReport(deps({ scored }), SEAT, false)
+
+    expect(lines.slice(-2)).toEqual(['eligible      none', '              1 malformed task(s) skipped'])
   })
 
   it('writes nothing to the event log', async () => {
@@ -410,5 +748,138 @@ describe('the status verb', () => {
     await statusReport(deps(), SEAT, true)
 
     expect(core.events.latestId()).toBe(head)
+  })
+})
+
+describe('a status that cannot be read', () => {
+  const seatFile = (): string => path.join(autonomy, 'seats', `${SEAT}.md`)
+  const failures: [string, () => void, string][] = [
+    ['a missing charter', () => fs.rmSync(path.join(autonomy, 'charter.md')), "open 'charter.md'"],
+    ['a missing seat file', () => fs.rmSync(seatFile()), `open 'seats/${SEAT}.md'`],
+    [
+      'a seat file that is not YAML',
+      () => fs.writeFileSync(seatFile(), '---\nprefix: [\n---\n'),
+      'Flow sequence',
+    ],
+    [
+      'a cap that is not a number',
+      () => writeAutonomy({ concurrency: '{implementers: two}' }),
+      `seat file ${SEAT} is malformed`,
+    ],
+  ]
+
+  it.each(failures)('prints one error document for %s under --json', async (_name, damage, text) => {
+    damage()
+
+    const report = await statusReport(deps(), SEAT, true)
+    const document = JSON.parse(report.lines.join('\n')) as { seat: string; error: string }
+
+    expect(report).toMatchObject({ ok: false })
+    expect(report.errors).toBeUndefined()
+    expect(Object.keys(document)).toEqual(['seat', 'error'])
+    expect(document.seat).toBe(SEAT)
+    expect(document.error).toContain(text)
+    expect(document.error).not.toContain(tmp)
+  })
+
+  it('prints one error document for a name the charter does not list as a seat', async () => {
+    const report = await statusReport(deps(), 'no-such-seat', true)
+
+    expect(report.ok).toBe(false)
+    expect(JSON.parse(report.lines.join('\n'))).toEqual({
+      seat: 'no-such-seat',
+      error: 'no-such-seat is not a seat in charter.md',
+    })
+  })
+
+  it('prints one error document when the broker does not answer', async () => {
+    const agents = (): never => {
+      throw new Error('broker request timed out')
+    }
+
+    const report = await statusReport(deps({ agents }), SEAT, true)
+
+    expect(report.ok).toBe(false)
+    expect(JSON.parse(report.lines.join('\n'))).toEqual({ seat: SEAT, error: 'broker request timed out' })
+  })
+
+  it('prints the failure as an error line and nothing else without --json', async () => {
+    const report = await statusReport(deps(), 'no-such-seat', false)
+
+    expect(report).toEqual({ ok: false, lines: [], errors: ['no-such-seat is not a seat in charter.md'] })
+  })
+})
+
+describe('the verb wired to a running broker', () => {
+  const ctx = { warnings: [], format: 'human' as const, withBroker }
+  const saved = { ...process.env }
+  let listener: net.Server | undefined
+
+  async function stopListening(): Promise<void> {
+    const open = listener
+    listener = undefined
+    if (open !== undefined) await new Promise<void>(resolve => open.close(() => resolve()))
+  }
+
+  beforeEach(async () => {
+    const now = new Date()
+    process.env.AGENT_CHAT_HOME = tmp
+    process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = activeWork
+    writeAutonomy({ configDir: poolDir })
+    writeReading(12, 41, 30, now)
+    const state = { pools: { [POOL]: { since: dayStart(now), last: 41, spent: 0 } } }
+    fs.writeFileSync(path.join(tmp, 'seat-watchdog.json'), JSON.stringify(state))
+    const opened = net.createServer(conn => server.onConnection(conn))
+    listener = opened
+    await new Promise<void>(resolve => opened.listen(path.join(tmp, 'chat.sock'), resolve))
+  })
+
+  afterEach(async () => {
+    process.env = { ...saved }
+    await stopListening()
+  })
+
+  it("reads the broker's roster, the live inbox and the saved meters under --json", async () => {
+    seedAgent({ name: 'ss-al-1', profile: 'implementer' })
+    join(SEAT)
+    send(join('peer-b'), SEAT, 'hello')
+
+    const report = await seatsStatusVerb.run({ seat: SEAT, json: true, root: autonomy }, ctx)
+    const result = JSON.parse(report.lines.join('\n')) as SeatStatus
+
+    expect(report.ok).toBe(true)
+    expect(result.implementers.names).toEqual(['ss-al-1'])
+    expect(result.inbox.unread).toBe(1)
+    expect(result.budget).toMatchObject({ sevenDay: 41, stop: null })
+  })
+
+  it('stops on a saved state file that does not parse', async () => {
+    fs.writeFileSync(path.join(tmp, 'seat-watchdog.json'), '{"pools": ')
+
+    const report = await seatsStatusVerb.run({ seat: SEAT, json: true, root: autonomy }, ctx)
+    const result = JSON.parse(report.lines.join('\n')) as SeatStatus
+
+    expect(result.budget.stop).toContain('seat-watchdog.json is not valid JSON')
+  })
+
+  it('prints the table when --json is not given', async () => {
+    const report = await seatsStatusVerb.run({ seat: SEAT, root: autonomy }, ctx)
+
+    expect(report.ok).toBe(true)
+    expect(report.lines[0]).toMatch(new RegExp(`^seat ${SEAT} at `))
+    expect(report.lines[1]).toBe('implementers  0/2')
+  })
+
+  it('prints one error document and starts no broker when none is running', async () => {
+    await stopListening()
+
+    const report = await seatsStatusVerb.run({ seat: SEAT, json: true, root: autonomy }, ctx)
+
+    expect(report.ok).toBe(false)
+    expect(JSON.parse(report.lines.join('\n'))).toEqual({
+      seat: SEAT,
+      error: 'could not reach or start the agent-chat broker',
+    })
+    expect(spawn).not.toHaveBeenCalled()
   })
 })
