@@ -105,13 +105,14 @@ function withPr(obs: Observation, claim: Claim, deps: ObserveDeps): Observation 
 
 interface Rollup {
   state?: string
+  headRefOid?: string
   statusCheckRollup?: { conclusion?: string | null; state?: string | null; status?: string | null }[]
 }
 
 const PASSED = new Set(['SUCCESS', 'SKIPPED', 'NEUTRAL'])
 const FAILED = new Set(['FAILURE', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'ERROR', 'STARTUP_FAILURE'])
 
-/** `gh pr view --json state,statusCheckRollup`, read into the phase machine's shape; no checks is pending. */
+/** `gh pr view --json state,statusCheckRollup,headRefOid`, read into the phase machine's shape; no checks is pending. */
 export function readRollup(json: string): Observation['pr'] | undefined {
   let parsed: Rollup
   try {
@@ -130,11 +131,11 @@ export function readRollup(json: string): Observation['pr'] | undefined {
     : results.length > 0 && results.every(r => PASSED.has(r))
       ? 'pass'
       : 'pending'
-  return { state, checks }
+  return { state, checks, ...(parsed.headRefOid ? { head: parsed.headRefOid } : {}) }
 }
 
 export function prState(url: string, exec: Runner = run): Observation['pr'] | undefined {
-  const result = exec('gh', ['pr', 'view', url, '--json', 'state,statusCheckRollup'])
+  const result = exec('gh', ['pr', 'view', url, '--json', 'state,statusCheckRollup,headRefOid'])
   return result.status === 0 ? readRollup(result.stdout) : undefined
 }
 

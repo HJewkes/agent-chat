@@ -7,7 +7,8 @@ import { resolveAgentSlots } from '../config.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { backfillAtBoot } from '../agents/ledger/backfill-run.js'
 import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
-import { isWatchedSeat } from '../agents/seats/io.js'
+import { defaultAutonomyRoot, isWatchedSeat } from '../agents/seats/io.js'
+import { seatJournal } from '../agents/seats/journal.js'
 import { BrokerCore } from './core.js'
 import { EventLog } from './event-log.js'
 import { activeHold } from './hold.js'
@@ -160,19 +161,22 @@ function isHeld(): boolean {
  * Everything that reads or writes `events.db`, opened only by the broker that won
  * the listen. Siblings that raced it through the probe exit having touched nothing,
  * which is what keeps the boot backfill to one writer (CC-153).
+ * `ephemeral` is a parameter so a test can open the services of a lasting home over temp roots.
  */
-function openServices(): { core: BrokerCore; socketServer: SocketServer } {
+export function openServices(ephemeral = isEphemeralHome(home())): {
+  core: BrokerCore
+  socketServer: SocketServer
+} {
   const events = new EventLog()
   // A per-run home is a test's: it must not hold messages by this machine's real charter.
-  const core = new BrokerCore(deliver, {
-    events,
-    ...(isEphemeralHome(home()) ? {} : { isSeat: isWatchedSeat }),
-  })
+  const core = new BrokerCore(deliver, { events, ...(ephemeral ? {} : { isSeat: isWatchedSeat }) })
   const ledger = shadowLedgerFromConfig(() => events.ledgerHandle())
   if (ledger) backfillAtBoot(events, ledger.fence)
+  // CC-316: the same rule for the seat journal, which writes under the real autonomy root.
+  const journal = ephemeral ? {} : { seatJournal: seatJournal(defaultAutonomyRoot()) }
   const socketServer = new SocketServer(
     core,
-    { semaphore: newAgentSlots(), ...(ledger === undefined ? {} : { ledger }) },
+    { semaphore: newAgentSlots(), ...(ledger === undefined ? {} : { ledger }), ...journal },
     ledger === undefined ? undefined : events.ledgerHandle(),
   )
   return { core, socketServer }
