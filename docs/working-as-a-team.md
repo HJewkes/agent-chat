@@ -80,7 +80,8 @@ records.
   once, with anything held for you pushed just ahead of it.
 
 If you deregister inside a window, the held reports stay in your inbox and nothing is pushed. A
-clean broker shutdown pushes what is held. A broker crash inside a window pushes nothing: the
+watched seat is the exception: it is pushed them when it registers again, ahead of what the
+dark-seat hold kept for it, unless the broker restarted in between. A clean broker shutdown pushes what is held. A broker crash inside a window pushes nothing: the
 reports are in the log, so `chat_inbox` returns them, but no wake is sent for them.
 
 **`chat_send`** addresses it by name. A spawned agent is an ordinary peer on the bus — there is

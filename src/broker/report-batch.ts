@@ -55,13 +55,14 @@ export class ReportBatcher<C> {
     return this.pushed.has(msgId)
   }
 
-  /** The connection closed inside its window: its reports stay in its inbox, unpushed. */
-  forget(conn: C): void {
+  /** The connection closed inside its window: its reports stay in its inbox, unpushed, and are returned. */
+  forget(conn: C): DeliveredMessage[] {
     const waiting = this.held.get(conn)
-    if (!waiting) return
+    if (!waiting) return []
     clearTimeout(waiting.timer)
     this.held.delete(conn)
     for (const message of waiting.messages) this.pushed.delete(message.msgId)
+    return waiting.messages
   }
 
   flush(conn: C): void {

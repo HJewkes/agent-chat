@@ -17,6 +17,7 @@ import type { AppendInput, EventStore } from './event-store.js'
 import { EventHub } from './events.js'
 import { Registry } from './registry.js'
 import { ClaimLedger } from './claims.js'
+import { SEAT_HOLD_MARK, heldMessages, holdVerdict } from './seat-hold.js'
 
 type RegisterMessage = Extract<ClientMessage, { t: 'register' }>
 
@@ -60,10 +61,14 @@ export class BrokerCore<C = Conn> {
   readonly claims = new ClaimLedger()
 
   private readonly reports: ReportBatcher<C>
+  private readonly isSeat: (name: string) => boolean
+  /** CC-321: reports a seat's connection closed on mid-window, pushed with its CC-320 hold when it registers. */
+  private readonly stranded = new Map<string, DeliveredMessage[]>()
   private readonly watchers = new Set<(row: AppendInput) => void>()
 
   constructor(deliver: Deliver<C>, options: BrokerCoreOptions<C> = {}) {
     this.reports = new ReportBatcher<C>(deliver, options.reportBatchMs ?? resolveReportBatchMs)
+    this.isSeat = options.isSeat ?? (() => false)
     this.registry = options.registry ?? new Registry<C>()
     this.events = options.events ?? new EventLog(options.dbPath)
     this.hub = options.hub ?? new EventHub()
@@ -270,8 +275,10 @@ export class BrokerCore<C = Conn> {
   drop(conn: C): void {
     const entry = this.registry.entryFor(conn)
     const name = this.registry.drop(conn)
-    this.reports.forget(conn)
+    const unpushed = this.reports.forget(conn)
     if (!name || !entry) return
+    if (unpushed.length > 0 && this.isSeat(name))
+      this.stranded.set(name, [...(this.stranded.get(name) ?? []), ...unpushed])
     // Claims are leases held by presence, so they end here rather than needing
     // to be reaped: an agent that dies mid-task stops blocking its peers at
     // once, and there is no such thing as a stale claim (CC-56).
@@ -325,6 +332,40 @@ export class BrokerCore<C = Conn> {
     if (last === undefined || !this.reports.wasPushed(last.msgId)) return undefined
     const followUp = this.events.lastMessageFrom(spawnedBy, { to: name, since: last.at })
     return followUp === undefined ? spawnedBy : undefined
+  }
+
+  /**
+   * CC-320: keep a message for a dark seat. Undefined when `to` is not one, so the
+   * send fails as before; `ok: false` when the hold is full or the seat is dark too long.
+   */
+  holdForSeat(from: string, to: string, text: string, inReplyTo?: string): SeatHoldResult | undefined {
+    if (!this.isSeat(to)) return undefined
+    const verdict = holdVerdict(this.events, to, Date.now())
+    if (verdict === undefined) return undefined
+    if (!verdict.hold) return { ok: false, reason: verdict.reason }
+    const { msgId } = this.append({
+      kind: 'message',
+      actor: from,
+      target: to,
+      ...(inReplyTo === undefined ? {} : { ref: inReplyTo }),
+      body: text,
+      meta: { held: SEAT_HOLD_MARK },
+    })
+    logEvent('route', { kind: 'message', msgId, from, to, delivered: false, held: SEAT_HOLD_MARK })
+    return { ok: true, msgId }
+  }
+
+  /** The log id of the dark episode seat `name` is in, read before it registers. */
+  darkSeat(name: string): number | undefined {
+    return this.isSeat(name) ? this.events.darkSince(name)?.id : undefined
+  }
+
+  /** Push what landed in a seat's inbox during the dark episode it just registered out of, oldest first. */
+  deliverHeld(name: string, darkId: number): void {
+    const held = [...(this.stranded.get(name) ?? []), ...heldMessages(this.events, name, darkId, Date.now())]
+    this.stranded.delete(name)
+    for (const message of held) this.deliverTo(name, message)
+    if (held.length > 0) logEvent('seat_hold_delivered', { name, count: held.length })
   }
 
   /**
@@ -493,6 +534,8 @@ export interface VerdictResult {
   reason?: string
 }
 
+export type SeatHoldResult = { ok: true; msgId: string } | { ok: false; reason: string }
+
 export type DecideResult = { ok: true; reason?: string } | { ok: false; code: DecidedRefusal; reason: string }
 
 export interface BrokerCoreOptions<C = Conn> {
@@ -502,4 +545,6 @@ export interface BrokerCoreOptions<C = Conn> {
   dbPath?: string
   /** The report batch window in ms, asked per report; 0 turns batching off. Defaults to config (CC-321). */
   reportBatchMs?: () => number
+  /** CC-320: whether a name is a watched seat, whose messages are held while it is dark. Nobody, when absent. */
+  isSeat?: (name: string) => boolean
 }

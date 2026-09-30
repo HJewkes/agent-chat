@@ -358,6 +358,16 @@ export class EventLog implements EventStore {
     return row?.ts
   }
 
+  darkSince(name: string): { id: number; at: number } | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT id, ts, kind FROM events
+         WHERE actor = ? AND kind IN ('registered', 'deregistered') ORDER BY id DESC LIMIT 1`,
+      )
+      .get(name) as { id: number; ts: number; kind: string } | undefined
+    return row?.kind === 'deregistered' ? { id: row.id, at: row.ts } : undefined
+  }
+
   /** Open items for the human: addressed to them, not yet answered or dismissed, and not aged out. */
   humanQueue(): QueueItem[] {
     const now = Date.now()

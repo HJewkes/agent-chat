@@ -58,6 +58,7 @@ beforeEach(() => {
       events: new EventLog(path.join(process.env.AGENT_CHAT_HOME, 'events.db')),
       registry: new Registry<Conn>(),
       reportBatchMs: () => windowMs,
+      isSeat: name => name === 'seat',
     },
   )
   server = new SocketServer(core, { surface: { platform: 'linux', spawn: controlledChild } })
@@ -280,6 +281,21 @@ describe('reports to one coordinator inside the window', () => {
 
     expect(pushes(coord)).toEqual([])
     expect(core.events.inboxFor('coord', 10).map(m => m.from)).toEqual(['w-a', 'w-b'])
+  })
+
+  // Mutation caught: `drop` discarding a seat's held reports, which the CC-320 hold does not cover.
+  it('pushes a seat the reports its connection closed on when it registers again', () => {
+    const seat = session('seat')
+    const a = worker('w-a', seat)
+    say(a, 'seat', 'Status: DONE')
+    core.drop(seat.conn)
+    vi.advanceTimersByTime(WINDOW_MS)
+    say(a, 'seat', 'Status: DONE, and one thing more')
+
+    const back = session('seat')
+
+    expect(pushes(seat)).toEqual([])
+    expect(pushes(back).map(m => m.text)).toEqual(['Status: DONE', 'Status: DONE, and one thing more'])
   })
 
   // Mutation caught: `close` not flushing, so a clean shutdown leaves the batch unpushed.
