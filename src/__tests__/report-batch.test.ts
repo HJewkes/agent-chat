@@ -543,6 +543,26 @@ describe('a report that is held and not yet written', () => {
     expect(pushes(third)).toEqual([])
   })
 
+  // Mutation caught: the readopt path registering without handing over what the old connection held.
+  it('goes to a coordinator that reclaims its name by session id after its MCP server was replaced', () => {
+    const coord = wire()
+    send(coord, {
+      t: 'register',
+      name: 'coord',
+      workingOn: '',
+      cwd: '/tmp/coord',
+      pid: 1,
+      sessionId: 'session-one',
+    })
+    say(worker('w-a', coord), 'coord', 'Status: DONE')
+    core.drop(coord.conn)
+
+    const back = wire()
+    send(back, { t: 'readopt', sessionId: 'session-one', cwd: '/tmp/coord', pid: 2 })
+
+    expect(pushes(back).map(m => m.text)).toEqual(['Status: DONE'])
+  })
+
   it('reaches a coordinator that reconnects as one batch when several were held', () => {
     const coord = session('coord')
     say(worker('w-a', coord), 'coord', 'Status: DONE')
