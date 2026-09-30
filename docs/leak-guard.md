@@ -265,8 +265,8 @@ Not covered, by design or by cost:
 - a variable whose value in the Bash tool's shell differs from the hook's although the command
   line never mentions its name, for example one set in a shell startup file, or one assigned
   under a name built at run time (`typeset "${n}DIR=x"`);
-- a function or alias named `gh` or `cat`, and a gh alias (`gh alias set`), which change what a
-  checked command runs;
+- a function or alias named `gh`, and a gh alias (`gh alias set`), which change what a checked
+  command runs;
 - gh commands other than those above that post text, such as `gh release create --notes`,
   `gh gist create` and `gh pr close --comment`;
 - a file that changes between the guard's read and gh's.
