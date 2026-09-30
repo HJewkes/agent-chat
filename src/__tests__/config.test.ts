@@ -241,6 +241,19 @@ describe('resolveReportBatchMs', () => {
     expect(resolveReportBatchMs()).toBe(0)
   })
 
+  it.each(['soon', '-1', '301'])('falls back to the file value when the override is %s', override => {
+    writeConfigJson({ reportBatchSeconds: 5 })
+    process.env.AGENT_CHAT_REPORT_BATCH_SECONDS = override
+
+    expect(resolveReportBatchMs()).toBe(5_000)
+  })
+
+  it('falls back to the default when the override is bad and the file sets nothing', () => {
+    process.env.AGENT_CHAT_REPORT_BATCH_SECONDS = 'soon'
+
+    expect(resolveReportBatchMs()).toBe(20_000)
+  })
+
   it.each([-1, 1.5, 301, 'soon'])(
     'falls back to the default on %s, which would stall a coordinator',
     value => {

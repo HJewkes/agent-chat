@@ -115,12 +115,17 @@ export const MAX_REPORT_BATCH_S = 300
 export function resolveReportBatchMs(): number {
   const override = process.env.AGENT_CHAT_REPORT_BATCH_SECONDS
   const fromEnv = override === undefined || override.trim() === '' ? undefined : Number(override)
-  const value = fromEnv ?? readConfig().reportBatchSeconds
-  if (value === undefined) return DEFAULT_REPORT_BATCH_S * 1000
+  // A bad override falls back to the file before the default: the file is the owner's standing choice.
+  const seconds = reportBatchSeconds(fromEnv) ?? reportBatchSeconds(readConfig().reportBatchSeconds)
+  return (seconds ?? DEFAULT_REPORT_BATCH_S) * 1000
+}
+
+function reportBatchSeconds(value: unknown): number | undefined {
+  if (value === undefined) return undefined
   if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= MAX_REPORT_BATCH_S)
-    return value * 1000
+    return value
   logEvent('config_invalid', { key: 'reportBatchSeconds', value, fallback: DEFAULT_REPORT_BATCH_S })
-  return DEFAULT_REPORT_BATCH_S * 1000
+  return undefined
 }
 
 function positiveIntegerFrom(key: keyof AgentChatConfig, fallback: number): number {
