@@ -172,6 +172,9 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     ...(profile.model === '' ? [] : ['--model', profile.model]),
     ...(profile.effort === undefined ? [] : ['--effort', profile.effort]),
     ...conversationArgs(input),
+    // Claude Code shows it in the prompt box and the /resume picker (CC-327).
+    '--name',
+    input.name,
     '--append-system-prompt',
     // Standing context only. The brief is a TASK, and a task has to arrive as a
     // turn — see below.

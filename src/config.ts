@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import { logEvent } from './broker/log.js'
 import { DEFAULT_SLOTS } from './agents/semaphore.js'
 import { configPath } from './paths.js'
+import { isHexColour, type PaneColourConfig } from './agents/pane-identity.js'
 
 interface AgentChatConfig {
   agentSlots?: unknown
@@ -13,6 +14,7 @@ interface AgentChatConfig {
   noticeTtlHours?: unknown
   ghWriteGapSeconds?: unknown
   reportBatchSeconds?: unknown
+  paneColours?: unknown
 }
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
@@ -192,6 +194,33 @@ function policyFrom(key: string, value: unknown, fallback: ContextHintPolicy): C
   }
   logEvent('config_invalid', { key: `contextHints.${key}`, value, fallback })
   return fallback
+}
+
+/**
+ * CC-327: `paneColours.seats.<seat>` and `paneColours.profiles.<profile>`, each a `#rrggbb`.
+ * A malformed entry is logged and dropped, so that pane falls back to its hashed colour.
+ */
+export function resolvePaneColourConfig(): PaneColourConfig {
+  const raw = readConfig().paneColours
+  const configured = isObject(raw) ? raw : {}
+  return {
+    seats: hexEntries('seats', configured.seats),
+    profiles: hexEntries('profiles', configured.profiles),
+  }
+}
+
+function hexEntries(group: string, value: unknown): Record<string, string> {
+  if (!isObject(value)) return {}
+  const entries = Object.entries(value).filter(([key, colour]) => {
+    if (isHexColour(colour)) return true
+    logEvent('config_invalid', {
+      key: `paneColours.${group}.${key}`,
+      value: colour,
+      fallback: 'hashed colour',
+    })
+    return false
+  })
+  return Object.fromEntries(entries) as Record<string, string>
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null

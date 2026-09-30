@@ -1,9 +1,20 @@
 import { spawn } from 'node:child_process'
+import { resolvePaneColourConfig } from '../config.js'
 import { home } from '../paths.js'
 import { agentEnv } from './agent-env.js'
 import { recordClaudeBin, resolveClaudeBin } from './claude-bin.js'
 import { readLaunchPlan } from './launch-files.js'
 import { clearOutputTail, tailKeeper, writeOutputTail } from './launch-output.js'
+import {
+  isITerm,
+  itermIdentity,
+  oscTitle,
+  paneColour,
+  parseHex,
+  seatPrefixes,
+  type PaneColourConfig,
+  type SeatPrefix,
+} from './pane-identity.js'
 import type { LaunchPlan } from './types.js'
 
 /**
@@ -17,11 +28,6 @@ import type { LaunchPlan } from './types.js'
 /** Set to run-agent's own pid, so the process it launched can tell itself apart from that process's descendants. */
 export const LAUNCHER_PID_ENV = 'AGENT_CHAT_LAUNCHER_PID'
 
-/**
- * Title via OSC 0 rather than iTerm's `set name`, which does not stick — iTerm
- * overwrites it with the running job. Here it is a plain stdout write instead of
- * an escaped string inside an AppleScript inside a shell.
- */
 /** The launcher pid comes last so no plan can forge it (CC-174). */
 export const launchEnv = (
   planEnv: Record<string, string>,
@@ -34,11 +40,36 @@ export const launchEnv = (
   return { ...env, [LAUNCHER_PID_ENV]: String(launcherPid) }
 }
 
-export const oscTitle = (title: string): string => `]0;${title}`
+export { oscTitle }
+
+/** Where the pane's colour comes from; injected so a test needs no charter or config on disk. */
+export interface PaneSources {
+  seats: () => SeatPrefix[]
+  colours: () => PaneColourConfig
+}
+
+const diskSources: PaneSources = { seats: () => seatPrefixes(), colours: resolvePaneColourConfig }
+
+/**
+ * Title via OSC 0 rather than iTerm's `set name`, which does not stick: iTerm
+ * overwrites it with the running job. In iTerm the tab colour and badge follow
+ * (CC-327); any other terminal gets the title alone, and a headless agent nothing.
+ */
+export function paneEscapes(
+  plan: LaunchPlan,
+  env: NodeJS.ProcessEnv,
+  sources: PaneSources = diskSources,
+): string {
+  if (plan.surface === 'headless') return ''
+  if (!isITerm(env)) return oscTitle(plan.title)
+  const colour = paneColour(plan.title, plan.env.AGENT_CHAT_PROFILE, sources.seats(), sources.colours())
+  const rgb = parseHex(colour)
+  return oscTitle(plan.title) + (rgb === undefined ? '' : itermIdentity(plan.title, rgb))
+}
 
 export function runAgent(agentId: string): void {
   const plan = readLaunchPlan(agentId)
-  if (plan.surface !== 'headless') process.stdout.write(oscTitle(plan.title))
+  process.stdout.write(paneEscapes(plan, process.env))
   exec(plan)
 }
 
