@@ -33,6 +33,7 @@
     "@titan-design/queue-mirror": "^0.2.0",
     "@titan-design/react-ui": "^0.12.1",
     "@titan-design/registry": "^0.2.0",
+    "@titan-design/session-analytics": "^0.4.1",
     "@titan-design/session-read": "^0.5.1",
     "@titan-design/store-sqlite": "^0.3.1",
     "commander": "^15.0.0",
