@@ -959,6 +959,30 @@ describe('a git alias already in config', () => {
       expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
     })
 
+    it.each(['x=git; $x pnv', '${X:-git} pnv', '"$(echo git)" pnv', 'command $G pnv'])(
+      'reads the alias behind a command word that is an expansion: %s',
+      command => {
+        expect(checkCommand(command, inAliased())).toBe(REASONS.noVerify)
+      },
+    )
+
+    it.each(['source ./env.sh; x=git; $x pnv', 'source ./env.sh; ${X:-git} pnv'])(
+      'denies an expanded command word on a line that names git where it cannot look: %s',
+      command => {
+        expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
+      },
+    )
+
+    it.each([
+      `x=git; $x pnv`,
+      `git -C ${aliased} push origin main`,
+      'source ./env.sh; $EDITOR notes',
+      'source ./env.sh; $CD /tmp && git status',
+      '$E $F gh pr view 1',
+    ])('allows an expanded command word with no alias to follow: %s', command => {
+      expect(checkCommand(command, { ...at(plain), env: { HOME: emptyHome } })).toBeUndefined()
+    })
+
     it.each(['git pnv', `cd ${aliased} && git pnv`])(
       'still reads the alias where the directory is known: %s',
       command => {

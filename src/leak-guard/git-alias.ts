@@ -117,6 +117,8 @@ const VALUE_OPTS = new Set([
   '--super-prefix',
   '--config-env',
 ])
+/** git's rule for a config variable name, so any other word cannot be an alias. */
+const ALIAS_NAME = /^[A-Za-z][A-Za-z0-9-]*$/
 const DIR_ENV: Record<string, string> = { '--git-dir': 'GIT_DIR', '--work-tree': 'GIT_WORK_TREE' }
 
 function optionName(word: string): string {
@@ -167,7 +169,8 @@ export function gitCall(
     if (DIR_ENV[name] !== undefined) dirs.push([name, value])
   }
   const sub = words[i]
-  if (i >= words.length || (sub !== undefined && GIT_BUILTINS.has(sub))) return undefined
+  if (i >= words.length || (sub !== undefined && (GIT_BUILTINS.has(sub) || !ALIAS_NAME.test(sub))))
+    return undefined
   if (sub === undefined || dir === undefined || !sure) return UNSURE_CALL
   const at = dir
   const dirEnv = Object.fromEntries(dirs.map(([name, value]) => [DIR_ENV[name], path.resolve(at, value)]))
