@@ -127,7 +127,9 @@ describe('file-ownership, once its inputs are actually supplied', () => {
 
 describe('worktreeOwnsConflict (CC-356)', () => {
   it('names both fields when isolation worktree is asked for together with owns', () => {
-    expect(worktreeOwnsConflict({ isolation: 'worktree', owns: ['src/**'] })).toMatch(/isolation "worktree".*owns/)
+    expect(worktreeOwnsConflict({ isolation: 'worktree', owns: ['src/**'] })).toMatch(
+      /isolation "worktree".*owns/,
+    )
   })
 
   it('allows owns inside an assigned worktree, which already exists', () => {

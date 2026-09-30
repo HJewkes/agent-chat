@@ -345,7 +345,9 @@ describe('spawning', () => {
 
     expect(result.ok).toBe(false)
     expect(result.reason).toMatch(/isolation "worktree".*owns/)
-    expect(core.events.agentEvents().some(r => r.kind === 'agent_spawned' && r.target === 'scoped')).toBe(false)
+    expect(core.events.agentEvents().some(r => r.kind === 'agent_spawned' && r.target === 'scoped')).toBe(
+      false,
+    )
   })
 
   it('refuses a reserved name, and records the refusal as an event', async () => {
