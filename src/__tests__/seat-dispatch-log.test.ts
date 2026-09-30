@@ -1,8 +1,9 @@
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { seatDispatchLog, type SeatDispatchLog, type SpawnFacts } from '../agents/seats/dispatch-log.js'
 import { foldDispatch } from '../agents/seats/dispatch-record.js'
 
@@ -345,6 +346,82 @@ describe('a symlink under the root', () => {
 
     expect(fs.readFileSync(target, 'utf8')).toBe('')
     expect(logged).toEqual(['seat_dispatch_refused'])
+  })
+})
+
+describe('a log path that is not the regular file it was opened as', () => {
+  const declare = (dispatchLog: string): void =>
+    seatFile('seat-x', `prefix: sx\npool: pool-a\ndispatch_log: ${dispatchLog}`)
+
+  it('refuses a FIFO at the log path without blocking, and logs it once', () => {
+    declare('pipe.jsonl')
+    execFileSync('mkfifo', [path.join(root, 'pipe.jsonl')])
+    const writer = writerOver()
+
+    writer.dispatched(facts())
+    writer.dispatched(facts())
+
+    expect(logged).toEqual(['seat_dispatch_refused'])
+  })
+
+  it('refuses a dispatch_log under a dangling directory symlink, not as unavailable', () => {
+    fs.symlinkSync(path.join(root, 'nowhere'), path.join(root, 'links'))
+    declare('links/x.jsonl')
+
+    writerOver().dispatched(facts())
+
+    expect(logged).toEqual(['seat_dispatch_refused'])
+    expect(fs.existsSync(path.join(root, 'nowhere'))).toBe(false)
+  })
+
+  it('refuses a socket at the log path, not as unavailable', async () => {
+    declare('sock.jsonl')
+    const server = net.createServer()
+    await new Promise<void>(done => server.listen(path.join(root, 'sock.jsonl'), done))
+
+    try {
+      writerOver().dispatched(facts())
+    } finally {
+      await new Promise(done => server.close(done))
+    }
+
+    expect(logged).toEqual(['seat_dispatch_refused'])
+  })
+
+  it('refuses when a directory is swapped for a symlink outside just before the open', () => {
+    const outside = tmp('dispatch-outside-')
+    declare('d/x.jsonl')
+    fs.mkdirSync(path.join(root, 'd'))
+    const realOpen = fs.openSync
+    const spy = vi.spyOn(fs, 'openSync').mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+      spy.mockRestore()
+      fs.renameSync(path.join(root, 'd'), path.join(root, 'd.moved'))
+      fs.symlinkSync(outside, path.join(root, 'd'))
+      return realOpen(...args)
+    }) as typeof fs.openSync)
+
+    writerOver().dispatched(facts())
+
+    expect(logged).toEqual(['seat_dispatch_refused'])
+    expect(rowsOf(path.join(outside, 'x.jsonl'))).toEqual([])
+  })
+
+  it('refuses when the opened file is not the one its path now names, appending nothing', () => {
+    const swapped = (file: string): fs.Stats => {
+      const real = fs.statSync(file)
+      return Object.assign(Object.create(real) as fs.Stats, { ino: real.ino + 1 })
+    }
+    const writer = seatDispatchLog(root, {
+      now: () => AT,
+      activeWork,
+      log: e => void logged.push(e),
+      stat: swapped,
+    })
+
+    writer.dispatched(facts())
+
+    expect(logged).toEqual(['seat_dispatch_refused'])
+    expect(rowsOf(logFile('seat-x'))).toEqual([])
   })
 })
 

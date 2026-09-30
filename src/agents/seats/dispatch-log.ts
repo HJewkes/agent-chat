@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { logEvent } from '../../broker/log.js'
 import { activeWorkRoot, frontmatterField } from '../active-work.js'
@@ -26,11 +27,18 @@ export interface DispatchLogDeps {
   log?: Log
   /** Where task files are looked up; defaults to active-work's root. */
   activeWork?: string
+  /** The stat used to re-check an opened log against its path; injectable so a directory swap can be simulated. */
+  stat?: (file: string) => fs.Stats
 }
 
 const UNAVAILABLE = 'seat_dispatch_unavailable'
 const AMBIGUOUS = 'seat_dispatch_ambiguous'
 const REFUSED = 'seat_dispatch_refused'
+const OUTSIDE = 'dispatch_log resolves outside the root'
+const NOT_REGULAR = 'dispatch_log is not a regular file'
+/** What open reports for a socket: a code on Linux, a bare errno on macOS. */
+const NO_OPEN = new Set(['ENXIO', 'EOPNOTSUPP'])
+const NO_OPEN_ERRNO = new Set([-os.constants.errno.ENXIO, -os.constants.errno.EOPNOTSUPP])
 const UNREADABLE = 'seat_dispatch_seat_unreadable'
 
 type Row = ReturnType<typeof dispatchedRow> | ReturnType<typeof retiredRow>
@@ -44,7 +52,8 @@ export function seatDispatchLog(root: string, deps: DispatchLogDeps = {}): SeatD
     reported.add(key)
     log(event, detail)
   }
-  const context: WriteContext = { root, activeWork: deps.activeWork ?? activeWorkRoot(), once }
+  const stat = deps.stat ?? ((file: string) => fs.statSync(file))
+  const context: WriteContext = { root, activeWork: deps.activeWork ?? activeWorkRoot(), once, stat }
   const write = (spawn: SpawnFacts, rowOf: (run: DispatchRun) => Row): void => {
     try {
       writeRow(context, spawn, (deps.now?.() ?? new Date()).toISOString(), rowOf)
@@ -62,6 +71,7 @@ interface WriteContext {
   root: string
   activeWork: string
   once: (key: string, event: string, detail: Record<string, unknown>) => void
+  stat: (file: string) => fs.Stats
 }
 
 function writeRow(ctx: WriteContext, spawn: SpawnFacts, ts: string, rowOf: (run: DispatchRun) => Row): void {
@@ -72,17 +82,16 @@ function writeRow(ctx: WriteContext, spawn: SpawnFacts, ts: string, rowOf: (run:
   }
   if (match.kind === 'none') return
   const seat = match.seat.seat.name
-  const refuse = (): void =>
-    ctx.once(`${REFUSED}:${seat}`, REFUSED, { seat, reason: 'dispatch_log resolves outside the root' })
+  const refuse = (reason = OUTSIDE): void => ctx.once(`${REFUSED}:${seat}`, REFUSED, { seat, reason })
   const file = dispatchLogPath(ctx.root, match.seat)
   if (file === undefined) return refuse()
   const task = taskOf(spawn.agent, match.seat.seat.prefix) ?? null
   const run: DispatchRun = { ...spawn, ts, task, ...taskContext(ctx.activeWork, task) }
   try {
-    appendRow(ctx.root, file, rowOf(run))
+    appendRow(ctx, file, rowOf(run))
   } catch (err) {
     if (!(err instanceof Escape)) throw err
-    refuse()
+    refuse(err.message)
   }
 }
 
@@ -120,16 +129,36 @@ function initiatives(activeWork: string): string[] {
 }
 
 /** A target that a symlink carries outside the root. */
-class Escape extends Error {}
+class Escape extends Error {
+  constructor(
+    readonly target: string,
+    reason = OUTSIDE,
+  ) {
+    super(reason)
+  }
+}
 
 /** One O_APPEND write of a whole line, as a seat's `echo >>` is, so neither writer can split the other's line. */
-function appendRow(root: string, file: string, row: Row): void {
-  const fd = openInside(root, file)
+function appendRow(ctx: WriteContext, file: string, row: Row): void {
+  const fd = openInside(ctx.root, file)
   try {
+    verifyOpened(ctx, fd, file)
     const lead = endsUnterminated(fd) ? '\n' : ''
     fs.writeSync(fd, `${lead}${JSON.stringify(row)}\n`)
   } finally {
     fs.closeSync(fd)
+  }
+}
+
+/** Throws Escape unless `fd` is a regular file that is what `file` resolves to now, inside the root; O_RDWR opens a FIFO without blocking and loses the row. */
+function verifyOpened(ctx: WriteContext, fd: number, file: string): void {
+  const opened = fs.fstatSync(fd)
+  if (!opened.isFile()) throw new Escape(file, NOT_REGULAR)
+  const real = fs.realpathSync(file)
+  if (!isInside(fs.realpathSync(ctx.root), real)) throw new Escape(file)
+  const named = ctx.stat(real)
+  if (named.dev !== opened.dev || named.ino !== opened.ino) {
+    throw new Escape(file, 'dispatch_log changed between open and check')
   }
 }
 
@@ -143,21 +172,41 @@ function openInside(root: string, file: string): number {
     .filter(p => p !== '')) {
     dir = enterInside(realRoot, path.join(dir, part))
   }
-  const { O_APPEND, O_CREAT, O_RDWR, O_NOFOLLOW } = fs.constants
+  const { O_APPEND, O_CREAT, O_RDWR, O_NOFOLLOW, O_NONBLOCK } = fs.constants
   try {
-    return fs.openSync(path.join(dir, path.basename(file)), O_APPEND | O_CREAT | O_RDWR | O_NOFOLLOW, 0o644)
+    return fs.openSync(
+      path.join(dir, path.basename(file)),
+      O_APPEND | O_CREAT | O_RDWR | O_NOFOLLOW | O_NONBLOCK,
+      0o644,
+    )
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ELOOP') throw new Escape(file)
+    const { code, errno } = err as NodeJS.ErrnoException
+    if (code === 'ELOOP') throw new Escape(file)
+    if (NO_OPEN.has(code ?? '') || NO_OPEN_ERRNO.has(errno ?? 0)) throw new Escape(file, NOT_REGULAR)
     throw err
   }
 }
 
 /** The real path of `dir`, whose parent is already real and inside; made when missing, Escape when it leaves `realRoot`. */
 function enterInside(realRoot: string, dir: string): string {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir)
-  const real = fs.realpathSync(dir)
+  const real = realDir(dir)
   if (!isInside(realRoot, real)) throw new Escape(dir)
   return real
+}
+
+/** The real path of `dir`, made when missing; Escape for a symlink whose target does not exist. */
+function realDir(dir: string): string {
+  try {
+    fs.mkdirSync(dir)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+  }
+  try {
+    return fs.realpathSync(dir)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw new Escape(dir)
+    throw err
+  }
 }
 
 function isInside(realRoot: string, real: string): boolean {
