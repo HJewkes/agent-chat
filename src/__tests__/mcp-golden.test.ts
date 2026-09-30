@@ -608,6 +608,8 @@ const AGENT_SPAWN_CASES: CallCase[] = [
   spawnCase('remote_control on', { ...SPAWN_ARGS, remote_control: true }, { reply: spawned() }),
   spawnCase('remote_control off', { ...SPAWN_ARGS, remote_control: false }, { reply: spawned() }),
   spawnCase('remote_control not a boolean', { ...SPAWN_ARGS, remote_control: 'yes' }),
+  spawnCase('return_contract none', { ...SPAWN_ARGS, return_contract: 'none' }, { reply: spawned() }),
+  spawnCase('return_contract misspelled', { ...SPAWN_ARGS, return_contract: 'off' }),
   spawnCase('surface blank', { ...SPAWN_ARGS, surface: '  ' }),
   spawnCase('surface null', { ...SPAWN_ARGS, surface: null }, { reply: spawned() }),
   spawnCase('cwd not a string', { ...SPAWN_ARGS, cwd: 42 }, { reply: spawned() }),

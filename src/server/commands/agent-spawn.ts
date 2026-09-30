@@ -10,6 +10,7 @@ const oneOf = (field: string, allowed: readonly string[]) => ({
 })
 
 const INHERIT_NAMES = ['context'] as const
+const RETURN_CONTRACT_CHOICES = ['none'] as const
 
 const args = z.object({
   name: requiredString('name').describe('Short handle for the agent, e.g. "auth-review". Must be free.'),
@@ -103,6 +104,15 @@ const args = z.object({
         'this one registers.',
     )
     .optional(),
+  return_contract: z
+    .enum(RETURN_CONTRACT_CHOICES, oneOf('return_contract', RETURN_CONTRACT_CHOICES))
+    .describe(
+      'The broker appends its return contract (the report rules and format) to the brief of an ' +
+        'implementer or reviewer profile you spawn, with your name filled in, so do not paste one. ' +
+        'Pass "none" when this brief states a report format of its own, which the appended block ' +
+        'would contradict. Omit it otherwise.',
+    )
+    .optional(),
   config_dir: z
     .string()
     .describe(
@@ -161,6 +171,7 @@ function spawnFrame(input: SpawnArgs): ClientMessage {
     ...(input.remote_control === undefined ? {} : { remoteControl: input.remote_control }),
     ...(resumeSession === undefined ? {} : { resumeSession }),
     ...(predecessor === undefined ? {} : { predecessor }),
+    ...(input.return_contract === undefined ? {} : { returnContract: input.return_contract }),
   }
 }
 

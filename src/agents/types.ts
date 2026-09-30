@@ -44,6 +44,11 @@ export const AGENT_ROLES = ['coordinator', 'worker'] as const
 
 export type AgentRole = (typeof AGENT_ROLES)[number]
 
+/** CC-286: the report rules the broker appends to a spawned agent's brief. */
+export const RETURN_CONTRACTS = ['implementer', 'reviewer'] as const
+
+export type ReturnContract = (typeof RETURN_CONTRACTS)[number]
+
 /**
  * A profile bundles the things that always travel together, so a spawn is one
  * noun rather than six flags.
@@ -75,6 +80,8 @@ export interface AgentProfile {
   surfaceLifetime?: SurfaceLifetime
   /** Absent means `worker`: spawning and Remote Control are opted into, never granted by omission. */
   role?: AgentRole
+  /** Absent means the contract is inferred from the name and grants; `none` opts out. */
+  returnContract?: ReturnContract | 'none'
   /** Passed as --effort when set; unset leaves the harness default. */
   effort?: EffortLevel
   /** Appended via --append-system-prompt, after the standard peer preamble. */

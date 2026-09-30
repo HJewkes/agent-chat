@@ -846,6 +846,8 @@ export type ClientMessage =
        * from the log, and refuses unless the requester spawned it.
        */
       predecessor?: string
+      /** CC-286: `none` stops the broker appending its return contract to `brief`. */
+      returnContract?: 'none'
     }
   | { t: 'agents'; includeRetired?: boolean }
   /**

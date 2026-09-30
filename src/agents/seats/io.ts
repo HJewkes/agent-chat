@@ -137,6 +137,8 @@ const pad = (n: number): string => String(n).padStart(2, '0')
 
 const localDay = (at: Date): string => `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
 
+export const seatLogClock = (at: Date): string => `${pad(at.getHours())}:${pad(at.getMinutes())}`
+
 export const seatLogPath = (root: string, seat: string, at: Date): string =>
   path.join(root, 'logs', seat, `${localDay(at)}.md`)
 
@@ -144,7 +146,7 @@ export const seatLogPath = (root: string, seat: string, at: Date): string =>
 export function appendSeatLog(root: string, seat: string, at: Date, text: string): string {
   const file = seatLogPath(root, seat, at)
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.appendFileSync(file, `${pad(at.getHours())}:${pad(at.getMinutes())} ${text}\n`)
+  fs.appendFileSync(file, `${seatLogClock(at)} ${text}\n`)
   return file
 }
 
