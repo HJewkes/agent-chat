@@ -236,12 +236,14 @@ a caller who turns hooks off:
 - an ssh remote under the scrubbed lookup, which should find the agent through `SSH_AUTH_SOCK`
   and read `~/.ssh/config` from the passwd home (UNVERIFIED: no ssh remote was tested);
 - owner-global and system git config, which the tip lookup trusts. Settings there such as
-  `http.proxy`, `https.proxy` and `http.<url>.proxy`, and `~/.ssh/config` (`Host`,
+  `http.proxy`, `http.<url>.proxy` and `remote.<name>.proxy`, and `~/.ssh/config` (`Host`,
   `ProxyCommand`) for ssh remotes, can send the lookup somewhere other than where the push goes,
   so the scan base is read from a repository the push does not update. The scrub covers
   config the agent can write, and a writer of the owner's global config is outside the guard's
-  model. Hardening: run the lookup with `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`
-  and an explicit credential helper, as a follow-up task (not done);
+  model. UNVERIFIED: `http.proxy` was observed only on an http:// remote, and an https remote
+  also needs TLS interception; `~/.ssh/config` was not run. Hardening: run the lookup with
+  `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` and an explicit credential helper,
+  tracked as CC-355 (not done);
 - a push that does not go through git, such as an upload over the GitHub API;
 - a missing scanner, which fails open as described above;
 - text in a PR title or body, which the hook never sees.
