@@ -38,6 +38,20 @@ const flagSpec = (verb: Verb<unknown>, key: string, option: Parameters<typeof op
     ? `${option.short ? `${option.short}, ` : ''}${option.long}`
     : optionFlagSpec(verb, key, option)
 
+/** The registry's `flagToKey` keeps a `<value>` placeholder in the key, so its read of the option misses; strip it here until the package does. */
+const stripPlaceholder = (long: string): string => long.replace(/\s+[<[].*$/, '')
+
+/** Args for `verb` from commander's parse, reading options whose declared flag names their argument. */
+export function cliArgs<Args>(verb: Verb<Args>, positionals: unknown[], opts: Record<string, unknown>) {
+  const options = Object.fromEntries(
+    Object.entries(verb.cli?.options ?? {}).map(([key, option]) => [
+      key,
+      { ...option, long: stripPlaceholder(option.long) },
+    ]),
+  )
+  return collectCliArgs({ ...verb, cli: { ...verb.cli, options } }, positionals, opts)
+}
+
 /**
  * Adds a registry verb under `parent`, spelled and described exactly as its
  * definition says. A hidden mount skips the description too, matching every
@@ -68,7 +82,7 @@ export function addVerb<Args>(
 
 async function runVerb<Args>(verb: Verb<Args>, positionals: unknown[], opts: Record<string, unknown>) {
   const ctx: VerbContext = { warnings: [], format: 'human', withBroker }
-  const args = collectCliArgs(verb, positionals, opts)
+  const args = cliArgs(verb, positionals, opts)
   const { envelope, exitCode } = await invokeCommand(verb, args, ctx, { invalidArgsCode: EXIT.USAGE })
   if (!envelope.ok) {
     console.error(envelope.error)
