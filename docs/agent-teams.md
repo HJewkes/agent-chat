@@ -268,6 +268,7 @@ Added to the union at `protocol.ts:26-36`:
 | `agent_retired`       | new              | agent id | actor who retired it      | agent name     | terminal; isolation released, process reaped (`meta.reaped`), name freed |
 | `isolation_allocated` | new              | agent id | agent name                | —              | strategy + handle (branch, path, patterns)                               |
 | `isolation_released`  | new              | agent id | agent name                | —              | released, or refused-and-why                                             |
+| `isolation_parked`    | new              | agent id | agent name                | —              | worktree removed, branch kept (CC-282); `agent resume` re-creates it     |
 | `agent_spawn_refused` | new              | —        | requester                 | requested name | budget, depth, authority, or cwd refusal                                 |
 | `verdict_refused`     | new              | —        | requester                 | —              | something reached for the verdict path without human authority (§11.4)   |
 

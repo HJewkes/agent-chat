@@ -247,6 +247,8 @@ export const EVENT_KINDS = [
   'agent_stood_down',
   'isolation_allocated',
   'isolation_released',
+  // CC-282: a finished agent's worktree was removed and its branch kept, for `agent resume` to re-create.
+  'isolation_parked',
   // Refusals are events rather than just `reason` strings on a reply: they are
   // the security-relevant thing, and must be in the log whether or not anyone
   // was watching at the time.
@@ -854,6 +856,8 @@ export type ClientMessage =
    * and forcing it is a human deciding to throw work away.
    */
   | { t: 'retire'; name: string; force?: boolean }
+  /** CC-282: remove an exited agent's clean, pushed worktree and keep its branch. CLI-only, like `retire`. */
+  | { t: 'park'; name: string }
   /**
    * Hand off to a successor and end this session. NAMES NO AGENT: the subject is
    * resolved by the broker from the requesting connection, the same discipline

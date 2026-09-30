@@ -128,6 +128,7 @@ const AGENT_KINDS = [
   'agent_stood_down',
   'isolation_allocated',
   'isolation_released',
+  'isolation_parked',
 ] as const satisfies readonly EventKind[]
 
 const AGENT_KINDS_SQL = AGENT_KINDS.map(k => `'${k}'`).join(',')
