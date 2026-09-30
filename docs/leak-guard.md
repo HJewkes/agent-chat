@@ -95,20 +95,12 @@ repository's `.git/config` is written. A profile's `env` cannot set any `GIT_CON
 human's own shell has none of these variables, so the owner's pushes are unaffected.
 
 The broker rewrites `git-hooks/` at each spawn. `pre-push` runs
-`CI= TITAN_EGRESS_REQUIRE_TERMS=1 titan-egress-scan pre-push <remote>` with git's ref lines on
-stdin, the same call egress-scan's own hook makes. It then runs the repository's own `pre-push`
-with the same arguments and stdin. The push is refused if either one fails, and the repository's
+`TITAN_EGRESS_REQUIRE_TERMS=1 titan-egress-scan pre-push <remote>` with the push's ref lines on
+stdin, in the environment and the directory described below. It then runs the repository's own
+`pre-push` with git's arguments and git's own ref lines. The push is refused if either one fails, and the repository's
 hook runs even when the scan has already refused. The repository's hook is found with
 `git rev-parse --git-path hooks` with the guard's variables removed, so a repository's own
 `core.hooksPath` (husky, lefthook) is honoured.
-
-`node` and `titan-egress-scan` are found on the agent's `PATH` when the hook runs. The hook never
-bakes in a path, because a versioned node can disappear. If either is missing, the hook prints one
-line starting `leak-scan: guard NOT run, this push was not scanned` that names the missing tool.
-It then lets the push go ahead, still running the repository's own hook. This fails open on
-purpose: a missing guard must not refuse every push from every agent, and the burndown backstop
-still reports a leak that got through. The fix is to put node on the agent's `PATH` or run
-`npm i -g @titan-design/egress-scan`.
 
 Before scanning, the hook runs `titan-egress-scan --help` and looks for `pre-push`. A scanner
 whose help works but lacks the command fails open with the same `guard NOT run` line and the
@@ -125,15 +117,120 @@ for agents. Server-side hooks never run in an agent's repository.
 What is scanned, and the rules, are egress-scan's: see its README. It exits 0 when clean, 1 on
 findings and 2 on a usage or configuration error. The hook refuses on any non-zero exit.
 
+### Inputs the agent's environment cannot change
+
+The broker writes two values into the hook at each spawn. `PATH` is the broker's own `PATH`,
+with relative entries dropped, and the whole hook runs under it. The term list is
+`<home>/.config/titan-egress/private-terms`, where the home comes from the passwd entry
+(`os.userInfo()`), not `$HOME`.
+
+The hook starts git and the scanner for the scan through `env -i`, with that `PATH`, the term
+list path and `TITAN_EGRESS_REQUIRE_TERMS` and nothing else. No variable of the agent's reaches
+them: not `HOME`, `XDG_CONFIG_HOME`, `CI`, `NODE_OPTIONS`, `NODE_PATH`, `LD_*`, `DYLD_*` or
+`GIT_*`. The repository's own hook still runs with the agent's environment and the agent's
+`PATH`.
+
+The hook's first line is `#!/bin/sh -p`. On macOS `sh` is bash 3.2, which imports shell
+functions from `BASH_FUNC_<name>%%` variables and options from `SHELLOPTS`. A function named
+`titan-egress-scan` replaced the scanner, and `SHELLOPTS=noexec` made the hook read its script,
+run nothing and exit 0. With `-p` bash does neither. This was run on macOS `sh` (bash 3.2.57)
+and on dash 0.5.12 (Ubuntu 24.04), which takes the flag and imports no functions in any case.
+The `/bin/dash` that macOS ships rejects `-p` (`Illegal option -p`). Other shells are UNVERIFIED.
+On a machine whose `/bin/sh` rejects the flag, the hook cannot start and every agent push is
+refused.
+
+Baking the two values in is safe because they come from the broker, which the owner started, and
+the hook is rewritten at every spawn. The hook still bakes in no node or scanner path, only a
+search path, so a node upgrade does not strand it. The owner's own `XDG_CONFIG_HOME` is ignored
+as well: keep the term list under `~/.config`.
+
+If `node` or `titan-egress-scan` is missing from the broker's `PATH`, the hook prints one line
+starting `leak-scan: guard NOT run, this push was not scanned` that names the missing tool. It
+then lets the push go ahead, still running the repository's own hook. This is a fail-open, and
+it is the same as before this hardening: a leaky push from a machine with no scanner installed
+goes through with one warning line. Whether it should refuse instead is an open owner decision.
+The fix is to put node on the broker's `PATH`, or run `npm i -g @titan-design/egress-scan`, then
+restart the broker.
+
+### What the scanner reads
+
+The scanner runs in an empty scratch repository that borrows the pushing repository's object
+store (`objects/info/alternates`). It sees commits and nothing else. The worktree, the index,
+the refs, the repository's config, `info/attributes` and replace refs are not there. This
+matters because egress-scan skips a file git calls binary, and a `-diff` attribute makes any
+file binary: an attributes file, in the repository or under the agent's `HOME`, passed a leak.
+A replace ref over the pushed commit did the same.
+
+The commits scanned for each pushed ref are `<base>..<pushed sha>`. The base is the sha git
+reports for that ref on the remote, on the hook's stdin, when the ref exists there and the
+commit is in the local object store. For a new ref, or a remote sha that is not local, the base
+is the tip of the remote's default branch. The hook asks the push URL for it with
+`git ls-remote <url> HEAD`, and fetches it when it is not local. Local remote-tracking refs are
+never used, because `git update-ref refs/remotes/origin/x <sha>` writes one. This costs one
+more connection per push. A new ref pushed to a remote that names no default branch is refused.
+A new branch cut from another unmerged branch is scanned back to the default branch, so it
+rescans that other branch's commits.
+
+### The allow list: only the remote default branch's `.egress-allow`
+
+egress-scan reads `.egress-allow` from the root of the directory it runs in. The hook puts one
+file there: the `.egress-allow` blob at the tip of the remote's default branch, the same tip as
+above. No other copy counts. An entry in the worktree, in the index, on `HEAD`, on the remote
+branch being pushed to, or added by the commits being pushed is not read.
+
+The reason is that an allow entry is an audited exception, and an entry the pushed commits add
+has been audited by no one. An agent whose push is refused could otherwise add the entry and
+push again. So an entry takes two pushes: first a change to `.egress-allow` alone, merged
+through review, then the text it allows. The CI `egress-scan` job is looser. It reads
+`.egress-allow` from the PR head, so it accepts an entry the same PR adds.
+
+A scan with findings ends with a line saying that only entries on the remote's default branch
+count. A push whose tip holds `.egress-allow` as anything but a regular file, a symlink for
+example, is refused. If the default branch itself holds a symlink there, no entry is read.
+`private-term` findings are never allowable in any case.
+
+### What the hook closes and what it leaves
+
+Closed, each with a test in `src/__tests__/leak-pre-push.test.ts` against a local bare
+repository:
+
+- a variable that swaps or blinds the scanner: `PATH`, `HOME`, `XDG_CONFIG_HOME`, `CI`,
+  `TITAN_EGRESS_TERMS`, `NODE_OPTIONS`, `NODE_PATH`, `LD_*`, `DYLD_*`;
+- a shell function or `SHELLOPTS` in the environment, where `sh` is bash;
+- a shadow `cat` on the agent's `PATH` that empties the ref lines the scan reads;
+- an allow entry that is untracked, staged, hidden by `git update-index --skip-worktree`, on an
+  unpushed `HEAD`, behind a committed symlink, or added by the pushed commits;
+- git attributes, in the repository or under the agent's `HOME`, and replace refs;
+- a forged remote-tracking ref that hides commits from the scan range.
+
+Not closed by the hook. A pre-push hook runs only when git is told to run it, so it cannot stop
+a caller who turns hooks off:
+
+- `git push --no-verify`, `git -c core.hooksPath=<dir> push`, and `GIT_CONFIG_COUNT=0 git push`
+  or any other change to the `GIT_CONFIG_*` variables that carry the hooks path. Denying these
+  spellings in an agent's Bash command is the PreToolUse guard's job (CC-270). The CI
+  `egress-scan` job scans the pushed commits with the generic rules after the fact;
+- `GIT_*` variables and git config that change what the push itself sends or where, such as
+  `GIT_DIR`, or a `url.<base>.insteadOf` rule that sends `git ls-remote` to a repository other
+  than the one pushed to (UNVERIFIED: reasoned from how git rewrites URLs, not run);
+- a push that does not go through git, such as an upload over the GitHub API;
+- a missing scanner, which fails open as described above;
+- text in a PR title or body, which the hook never sees.
+
+The trust limit is the OS account. An agent runs as the owner's user, so it can edit the hook
+file, the term list or the installed scanner. The hook stops a careless agent and the variable
+and repository-state tricks listed above; it does not sandbox one that sets out to get past it.
+
 ### The private term list
 
 egress-scan reads its private terms from `$TITAN_EGRESS_TERMS`, else
-`${XDG_CONFIG_HOME:-$HOME/.config}/titan-egress/private-terms`: one term per line, mode 0600,
-never in any repository. The hook sets `TITAN_EGRESS_REQUIRE_TERMS=1`, so while that file is
-missing every agent push is refused with one line naming the file to create. The hook also clears
-`CI`, because egress-scan never reads the term list when `CI` is set.
+`${XDG_CONFIG_HOME:-$HOME/.config}/titan-egress/private-terms`. The hook always passes
+`~/.config/titan-egress/private-terms` under the passwd home, as described above. The file holds
+one term per line, mode 0600, and never lives in any repository. The hook sets `TITAN_EGRESS_REQUIRE_TERMS=1`, so while that file is
+missing every agent push is refused with one line naming the file to create. The scanner's
+environment has no `CI`, because egress-scan never reads the term list when `CI` is set.
 
-The hook ignores an inherited `TITAN_EGRESS_TERMS`. It overwrites the variable with the default
+The hook ignores an inherited `TITAN_EGRESS_TERMS`. It overwrites the variable with the baked
 path for the scanner call, so pointing it at `/dev/null` or an empty file cannot switch the scan
 off, and a missing default file still refuses the push. A profile's `env` cannot pass
 `TITAN_EGRESS_TERMS` either: it is reserved, like `GIT_CONFIG_*`.
