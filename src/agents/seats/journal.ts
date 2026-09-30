@@ -1,9 +1,8 @@
-import fs from 'node:fs'
-import path from 'node:path'
 import { logEvent } from '../../broker/log.js'
-import { isSeatName, parseSeat, type Seat } from './charter.js'
+import type { Seat } from './charter.js'
 import { appendSeatLog, readText, seatLogClock, seatLogPath } from './io.js'
 import { alreadyJournaled, journalText, type JournalEntry } from './journal-line.js'
+import { seatOf } from './seat-of.js'
 
 /** CC-316: the broker writes a seat's spawn, retire, park, merged and stalled lines, so the seat does not. */
 
@@ -39,31 +38,18 @@ function latchOver(log: Log): Latch {
   }
 }
 
-/** Every seat whose file declares a prefix `agent` is named with; read fresh, so a new seat needs no restart. */
-function seatsOf(root: string, agent: string): Seat[] {
-  const dir = path.join(root, 'seats')
-  return fs
-    .readdirSync(dir)
-    .filter(file => file.endsWith('.md'))
-    .map(file => file.slice(0, -'.md'.length))
-    .filter(isSeatName)
-    .flatMap(name => parseSeat(name, readText(path.join(dir, `${name}.md`)) ?? '') ?? [])
-    .filter(seat => agent.startsWith(`${seat.prefix}-`))
-    .sort((a, b) => a.name.localeCompare(b.name))
-}
-
-/** The one seat that owns `agent`. Two seats claiming it get no line, since either journal could be the wrong one. */
+/** The one seat that owns `agent`. Two seats claiming its prefix get no line, since either journal could be the wrong one. */
 function ownerOf(root: string, agent: string, latch: Latch): Seat | undefined {
-  const seats = seatsOf(root, agent)
-  const [first] = seats
-  if (first === undefined) return undefined
-  const key = `${AMBIGUOUS}:${first.prefix}`
-  if (seats.length > 1) {
-    latch.report(key, AMBIGUOUS, { prefix: first.prefix, seats: seats.map(seat => seat.name) })
+  const match = seatOf(root, agent)
+  if (match.kind === 'none') return undefined
+  const prefix = match.kind === 'seat' ? match.seat.seat.prefix : match.prefix
+  const key = `${AMBIGUOUS}:${prefix}`
+  if (match.kind === 'ambiguous') {
+    latch.report(key, AMBIGUOUS, { prefix, seats: match.seats })
     return undefined
   }
   latch.clear(key)
-  return first
+  return match.seat.seat
 }
 
 function write(root: string, entry: JournalEntry, at: Date, latch: Latch): void {
