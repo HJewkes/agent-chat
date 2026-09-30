@@ -169,16 +169,17 @@ burndown backstop are what catch a leak.
 It denies a Bash command when any simple command in it, after `env`, `command`, `exec`, `nohup`,
 `nice`, `timeout`, `if`/`then` and other prefixes are stripped, is one of these:
 
-| Denied                                                                                                 | Why                                               |
-| ------------------------------------------------------------------------------------------------------ | ------------------------------------------------- |
-| `git push` with `--no-verify`, or its abbreviations `--no-veri` and `--no-verif`, anywhere before `--` | skips the pre-push hook                           |
-| `git -c` or `--config-env` on `core.hooksPath` or any `alias.*` key                                    | command-line config beats the guard's environment |
-| a `GIT_CONFIG*` assignment, `export`, `export -n`, `unset`, `declare` or `env -u`                      | removes or overrides the guard's `core.hooksPath` |
-| `env -i` or `env -`                                                                                    | clears the environment, guard included            |
-| `git config` writing or unsetting `core.hooksPath`, or writing a value that holds `--no-verify`        | a hooks path or alias in shared repo config       |
-| any mention of the guard's hook directory or the private term list; an edit tool writing to either     | rewriting the hook or emptying the term list      |
-| `gh pr` or `gh issue` `create`, `edit`, `comment` or `review` whose title or body has a finding        | the text is public the moment it is posted        |
-| `gh api` whose `-f`, `-F` or `--input` values have a finding                                           | the same text by another route                    |
+| Denied                                                                                                   | Why                                               |
+| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `git push` with `--no-verify`, or its abbreviations `--no-veri` and `--no-verif`, anywhere before `--`   | skips the pre-push hook                           |
+| `git -c` or `--config-env` on `core.hooksPath` or any `alias.*` key                                      | command-line config beats the guard's environment |
+| a `GIT_CONFIG*` assignment, `export`, `export -n`, `unset`, `declare` or `env -u`                        | removes or overrides the guard's `core.hooksPath` |
+| `env -i` or `env -`                                                                                      | clears the environment, guard included            |
+| `git config` writing or unsetting `core.hooksPath`, or writing a value that holds `--no-verify`          | a hooks path or alias in shared repo config       |
+| any mention of the guard's hook directory or the private term list; an edit tool writing to either       | rewriting the hook or emptying the term list      |
+| `gh pr` or `gh issue` `create`, `edit`, `comment`, `review` or `merge` whose title or body has a finding | the text is public the moment it is posted        |
+| one of those commands, or `gh api`, with an argument or body file the guard cannot be sure of            | the guard would scan one text and gh post another |
+| `gh api` whose `-f`, `-F` or `--input` values have a finding                                             | the same text by another route                    |
 
 The splitter looks inside `$(...)`, backticks, `sh -c`/`bash -c` strings, `eval`, `env -S` and a
 heredoc fed to a shell. `agent-chat gh-write -- <gh args>` is checked like `gh`. `git push -n` is
@@ -186,25 +187,69 @@ heredoc fed to a shell. `agent-chat gh-write -- <gh args>` is checked like `gh`.
 it skips only the repository's own commit hooks, and the push is still scanned.
 
 The PR pre-check runs egress-scan's rules on each line of the title, the body, a `--body-file`
-(read relative to the working directory, following `cd`) or a heredoc passed as `--body-file -`.
-It reads the private term list from the default path only, never from `TITAN_EGRESS_TERMS`, like
-the pre-push hook. A deny names `title line 1 private-term #3` or `body line 4 home-path` and never
-the matched text. It also denies when it cannot check: a body piped from another command, a body
-file it cannot read, or a missing or unreadable term list while `MISSING_TERMS_REFUSES` is set.
+or a heredoc passed as `--body-file -`. `gh pr merge` is checked like `create`: its `--subject`,
+`--body` and `--body-file`. It reads the private term list from the default path only, never from
+`TITAN_EGRESS_TERMS`, like the pre-push hook. A deny names `title line 1 private-term #3` or
+`body line 4 home-path` and never the matched text. It also denies when it cannot check: a body
+piped from another command, or a missing or unreadable term list while `MISSING_TERMS_REFUSES` is
+set. An empty term list file counts as a list: the guard then checks the generic rules only and
+refuses nothing for a missing list.
 
-A body file path, and a `cd` target, is expanded the way the shell would expand it, from the
-hook's own environment: a leading `~`, `$VAR` and `${VAR}`, so `--body-file "$TMPDIR/pr.md"` is
-read and scanned. Nothing inside single quotes or after a backslash is expanded. The guard
-denies the command, as a body file it cannot read, when the path holds an unset variable, a
-variable the same command line assigns (`NAME=` anywhere in it), or any other expansion:
-`$(...)`, backticks, `${VAR:-x}`, `~user` or a glob. A file that `$(cat file)` or backticks put
-into a title, body or field is read and scanned the same way, under the label `cat file`.
+### The guard never reads one file while the shell posts another
+
+For a `gh pr` or `gh issue` `create`, `new`, `edit`, `comment`, `review` or `merge`, and for every
+`gh api` call, the guard works out each argument the way the shell will. When it cannot be sure of
+one, it denies the command as text it could not read. It reads a body file only when the file is a
+regular file, so a FIFO, a device or a directory is a deny.
+
+An argument is sure when it is literal, or when each expansion in it is one of these:
+
+- `$NAME` or `${NAME}`, taken from the hook's own environment. The name must have a value that is
+  one word: not empty, no blanks, no glob characters. `--body-file "$TMPDIR/pr.md"` is read and
+  scanned.
+- a leading `~`, which follows `HOME` under the same rules.
+- `"$(cat file)"`, ``"`cat file`"`` or `"$(cat <<'EOF' ... EOF)"` in double quotes: one `cat`
+  with no options. The file's content takes the place of the substitution and is scanned as part
+  of the title, body or field.
+
+A name is unknown when the command line mentions it anywhere outside `$NAME` and `${NAME}`. That
+covers `NAME=`, `export`, `read`, `for`, `printf -v`, `unset` and `${NAME:=x}` without a list of
+the commands that assign. `PWD`, `OLDPWD`, `SHLVL`, `_` and `IFS` are never expanded, because the
+shell sets them itself. `$NAME:h` and `$NAME[1]` are a zsh modifier and subscript, and are unknown.
+
+Everything else is unknown: `$(...)` and backticks that are not the `cat` form above, an unquoted
+substitution, `${VAR:-x}`, `~user`, a glob, a brace expansion, `<(...)`, zsh's `=command`,
+`name(qualifier)` and `<1-9>`, and an ANSI-C escape other than `\n`, `\t`, `\r`, `\\` and the
+quotes. A heredoc or here-string passed as `--body-file -` is unknown when the shell expands it:
+a heredoc with an unquoted delimiter and a `$` or a backtick in its body. So is one whose command
+also redirects its input with `<`.
+
+A relative body file is read from the directory the shell will be in. The guard follows only a
+plain `cd <dir>`: at the top level, one argument that is sure, no option, joined by `;`, a newline
+or `&&`. A `cd` after `&&` is trusted only until that `&&` list ends, since it may not have run.
+After any other command that may move the shell, the directory is unknown and a relative body
+file is a deny: a `cd` in parentheses, in a pipeline, in the background, after `||`, inside `if`
+or a loop, with no argument, with an option, with `..` after a name, or a relative `cd` while
+`CDPATH` is set or mentioned; `pushd`, `popd`, `chdir`; and `env -C`. After `eval`, `source`, `.`,
+a function definition, `alias`, `trap`, `setopt`, `shopt`, `emulate`, a `set` beyond `-euxo
+pipefail`, or a command whose name is itself an unknown expansion, the directory and every
+variable are unknown.
+
+The cost is that ordinary dynamic arguments are denied too: `gh pr comment "$PR" --body x` with
+`PR` set on the same command line, `--body "$(git log -1)"` and `-f sha="$(git rev-parse HEAD)"`.
+Write the value into the command, or the text into a file at a literal path.
 
 One command is exempt from the missing-list refusal: the merge call,
-`gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge`. With no term list its fields are scanned
-with the generic rules only, and a finding still denies it. A merge pushes nothing, so no
-pre-push refusal stands behind it, and refusing it would stop every coordinator from merging.
-An unreadable term list still refuses the merge.
+`gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge`. The exemption holds only when the call's one
+endpoint is exactly that path. A field, a header or a `--jq` value that holds the path does not
+count. With no term list its fields are scanned with the generic rules only, and a finding still
+denies it. A merge pushes nothing, so no pre-push refusal stands behind it, and refusing it would
+stop every coordinator from merging. An unreadable term list still refuses the merge. `gh pr merge`
+with a `--body` or `--subject` is not exempt; `gh pr merge` with neither posts no text and is
+allowed.
+
+The hook entry has a 15 second timeout. The guard never waits on a file, so a run that long is
+already broken.
 
 A tool call the guard cannot parse is denied only when it mentions `git`, `gh` or `GIT_CONFIG`,
 so a bug in the guard cannot block every command an agent runs.
@@ -217,11 +262,14 @@ Not covered, by design or by cost:
 - pushing without git at all, for example over the GitHub API with `curl`;
 - an alias that was already in git config before the agent started;
 - shell syntax the splitter misreads, such as `&>` or `case` patterns;
-- a variable in a body file path whose value in the Bash tool's shell differs from the hook's,
-  for example one set by `read` or a `for` loop, and an unquoted variable whose value holds
-  spaces, which the shell would split;
-- text a substitution other than `cat file` produces, such as `--body "$(git log -1)"`, and an
-  inline `--body "$VAR"`, which are scanned as written and not as expanded.
+- a variable whose value in the Bash tool's shell differs from the hook's although the command
+  line never mentions its name, for example one set in a shell startup file, or one assigned
+  under a name built at run time (`typeset "${n}DIR=x"`);
+- a function or alias named `gh` or `cat`, and a gh alias (`gh alias set`), which change what a
+  checked command runs;
+- gh commands other than those above that post text, such as `gh release create --notes`,
+  `gh gist create` and `gh pr close --comment`;
+- a file that changes between the guard's read and gh's.
 
 ## Owner override and its trust limit
 
