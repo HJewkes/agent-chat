@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LOG_CAP, latestTeleportState } from '../agents/seats/boot-read.js'
-import { BOOT_CAP, type BootDeps } from '../agents/seats/boot.js'
+import { BOOT_CAP, renderBoot, seatBoot, type BootDeps } from '../agents/seats/boot.js'
 import type { SeatStatus } from '../agents/seats/status.js'
 import { EventLog } from '../broker/event-log.js'
 import { bootReport } from '../cli/verbs/seats.js'
@@ -181,6 +181,12 @@ describe('the State-at-teleport picker', () => {
     expect(latestTeleportState(log)).toBe('## State at teleport 3\nnewest state\n- item')
   })
 
+  it('keeps a ### subsection and stops only at a heading of level 2 or higher', () => {
+    const log = '## State at teleport 1\nfirst\n### Waiting\n- sc-two\n## Afterwards\nnot state'
+
+    expect(latestTeleportState(log)).toBe('## State at teleport 1\nfirst\n### Waiting\n- sc-two')
+  })
+
   it('runs to the end of the file when no heading follows', () => {
     expect(latestTeleportState('## State at teleport 1\na\n10:00 line\n')).toBe(
       '## State at teleport 1\na\n10:00 line',
@@ -293,6 +299,37 @@ describe('the 6,000-character cap', () => {
     expect(inboxLines(lines)[0]).toBe('10 earlier messages omitted')
     expect(text).toMatch(/\[cut at \d+ of \d+ chars\]/)
     expect(lines.at(-1)).toBe('inbox 4 unread since 2026-09-30T09:00:00.000Z')
+  })
+})
+
+describe('the inbox omission note', () => {
+  it('uses the singular for exactly one omitted message', async () => {
+    sendMessages(3, 240)
+    const boot = await seatBoot(deps(), SEAT, 'm0')
+    const full = renderBoot(boot, 100_000)
+    const one = renderBoot(boot, full.join('\n').length - 1)
+
+    expect(one).toContain('1 earlier message omitted')
+  })
+})
+
+describe('an oversized field in text mode', () => {
+  it('cuts an oversized queue under the cap and says how much was cut', async () => {
+    write(`queues/${SEAT}.md`, `${IN_FLIGHT}\n${'- in flight row\n'.repeat(1_000)}\n${NEXT}\n`)
+
+    const lines = await boot()
+
+    const text = lines.join('\n')
+    expect(text.length).toBeLessThanOrEqual(BOOT_CAP)
+    expect(text).toMatch(/\[cut at \d+ of \d+ chars\]/)
+  })
+
+  it('leaves --json uncapped', async () => {
+    write(`queues/${SEAT}.md`, `${IN_FLIGHT}\n${'- in flight row\n'.repeat(1_000)}\n${NEXT}\n`)
+
+    const report = await bootReport(deps(), SEAT, undefined, true)
+
+    expect(report.lines.join('\n').length).toBeGreaterThan(BOOT_CAP)
   })
 })
 

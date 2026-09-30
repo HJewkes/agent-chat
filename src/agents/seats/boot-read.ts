@@ -76,7 +76,7 @@ export function latestTeleportState(log: string): string | undefined {
     const n = Number(TELEPORT_HEADING.exec(line)?.[1] ?? NaN)
     if (Number.isFinite(n) && (best === undefined || n >= best.n)) best = { at, n }
   })
-  return best === undefined ? undefined : sectionFrom(lines, best.at, /^#+\s/)
+  return best === undefined ? undefined : sectionFrom(lines, best.at, QUEUE_STOP)
 }
 
 /** `text` cut to at most `cap` characters at a line end where one exists, with a note on what was cut. */
