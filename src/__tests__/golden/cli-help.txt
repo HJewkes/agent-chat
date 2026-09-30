@@ -340,6 +340,12 @@ Commands:
                                read-only: the broker's spawn and retire rows and the seat's own rows
                                merged, with the spend. Lines that are not a JSON object with an
                                agent and seat outcomes outside the end states are counted, not fatal
+  boot [options] <seat>        one boot digest for a coordinator seat (CC-318), read-only: the seat
+                               file's frontmatter, the queue's In flight and Next sections, the
+                               newest State at teleport section of today's log, inbox messages after
+                               a cutoff and the seat status, in 6,000 characters. Over that the
+                               oldest inbox lines go first, then the log section; the queue and
+                               status are never cut
   watchdog-install [options]   install the launchd job that runs `seats watchdog` four times an
                                hour; the first run waits for the next scheduled minute
   help [command]               display help for command
@@ -390,6 +396,21 @@ Options:
   --json           one JSON record per line, then {"malformed","invalid_outcomes"}; a failure is
                    {"seat", "error"}
   --root <value>   autonomy directory holding charter.md, seats/ and logs/
+  -h, --help       display help for command
+
+=== agent-chat seats boot
+Usage: agent-chat seats boot [options] <seat>
+
+one boot digest for a coordinator seat (CC-318), read-only: the seat file's frontmatter, the queue's
+In flight and Next sections, the newest State at teleport section of today's log, inbox messages
+after a cutoff and the seat status, in 6,000 characters. Over that the oldest inbox lines go first,
+then the log section; the queue and status are never cut
+
+Options:
+  --after <value>  show inbox messages after this msg_id; default the last 5
+  --json           the sections without the 6,000-character cut, as one JSON object; a failure is
+                   {"seat", "error"} with exit 1
+  --root <value>   autonomy directory holding charter.md, seats/, queues/ and logs/
   -h, --help       display help for command
 
 === agent-chat seats watchdog-install

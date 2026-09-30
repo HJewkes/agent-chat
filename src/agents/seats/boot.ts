@@ -1,0 +1,162 @@
+import { isSeatName } from './charter.js'
+import {
+  INBOX_TAIL,
+  capText,
+  readBootInbox,
+  readLogSection,
+  readQueueSections,
+  readSeatDigest,
+  type BootInbox,
+  type LogSection,
+  type QueueSections,
+  type SeatDigest,
+} from './boot-read.js'
+import { plainError, type SeatStatus } from './status.js'
+
+/**
+ * CC-318: one boot digest for a coordinator seat, so a successor reads one command's output
+ * instead of its seat file, queue, today's log, inbox and status one by one. Read-only.
+ */
+
+export const BOOT_CAP = 6_000
+
+export interface BootDeps {
+  now: () => Date
+  autonomyRoot: string
+  homeDir: string
+  eventsDb: string
+  /** Throws when the broker or the charter cannot answer; the boot keeps its other sections. */
+  status: (seat: string) => Promise<SeatStatus>
+}
+
+export interface SeatBoot {
+  seat: string
+  at: string
+  seatFile: SeatDigest
+  queue: QueueSections
+  log: LogSection
+  inbox: BootInbox
+  status: SeatStatus | { error: string }
+}
+
+/** Throws for a name that is not a seat slug and for a seat with no readable seat file. */
+export async function seatBoot(deps: BootDeps, seat: string, after?: string): Promise<SeatBoot> {
+  if (!isSeatName(seat)) throw new Error(`${seat} is not a seat name`)
+  const plain = (err: unknown): string => plainError(err, [deps.autonomyRoot, deps.homeDir])
+  const now = deps.now()
+  let inbox: BootInbox
+  try {
+    inbox = readBootInbox(deps.eventsDb, seat, after)
+  } catch (err) {
+    inbox = { after: after ?? null, warning: null, messages: [], error: plain(err) }
+  }
+  let status: SeatBoot['status']
+  try {
+    status = await deps.status(seat)
+  } catch (err) {
+    status = { error: plain(err) }
+  }
+  return {
+    seat,
+    at: now.toISOString(),
+    seatFile: readSeatDigest(deps.autonomyRoot, seat),
+    queue: readQueueSections(deps.autonomyRoot, seat),
+    log: readLogSection(deps.autonomyRoot, seat, now),
+    inbox,
+    status,
+  }
+}
+
+function fieldText(value: unknown): string {
+  if (Array.isArray(value)) return value.map(fieldText).join(', ')
+  if (value !== null && typeof value === 'object')
+    return Object.entries(value)
+      .map(([k, v]) => `${k} ${fieldText(v)}`)
+      .join(', ')
+  return String(value)
+}
+
+function seatLines({ seat, seatFile }: SeatBoot): string[] {
+  const { path, chars, mtime, fields } = seatFile
+  return [
+    `== seat ${seat}`,
+    `file ${path} (${chars} chars, modified ${mtime}); its prose is not shown`,
+    ...Object.entries(fields).map(([key, value]) => `${key}: ${fieldText(value)}`),
+  ]
+}
+
+function queueLines({ queue }: SeatBoot): string[] {
+  if (!queue.found) return [`== queue: no queue file at ${queue.file}`]
+  return [
+    `== queue ${queue.file}`,
+    ...(queue.inFlight ?? '(no "## In flight" section)').split('\n'),
+    ...(queue.next ?? '(no "## Next" section)').split('\n'),
+  ]
+}
+
+function logLines(log: LogSection): string[] {
+  if (!log.found) return [`== log: no log for today at ${log.file}`]
+  if (log.section === null) return [`== log ${log.file}: no "## State at teleport" section`]
+  return [`== log ${log.file}`, ...log.section.split('\n')]
+}
+
+function inboxLines(inbox: BootInbox, omitted: number): string[] {
+  const head = `== inbox ${inbox.after === null ? `last ${INBOX_TAIL}` : `after ${inbox.after}`}`
+  if (inbox.error !== undefined) return [head, `unavailable: ${inbox.error}`]
+  const shown = inbox.messages.slice(omitted)
+  const none =
+    inbox.messages.length > 0
+      ? []
+      : [inbox.after !== null && inbox.warning === null ? `inbox: none after ${inbox.after}` : 'inbox: none']
+  return [
+    head,
+    ...(inbox.warning === null ? [] : [`warning: ${inbox.warning}`]),
+    ...(omitted === 0 ? [] : [`${omitted} earlier messages omitted`]),
+    ...none,
+    ...shown.map(m => `[${m.msgId}] from ${m.from}: ${m.text}`),
+  ]
+}
+
+function poolLine({ budget }: SeatStatus): string {
+  const pool = `pool ${budget.pool ?? 'unknown'}`
+  if (budget.ageSeconds === null) return `${pool}: no reading`
+  const age = `reading ${budget.ageSeconds}s old${budget.stale ? ', STALE' : ''}`
+  return `${pool}: seven_day ${budget.sevenDay ?? '?'}%, five_hour ${budget.fiveHour ?? '?'}% (${age})`
+}
+
+function statusLines({ status }: SeatBoot): string[] {
+  if ('error' in status) return ['== status', `unavailable: ${status.error}`]
+  const cap = (role: string, load: { active: number; cap: number }) => `${role} ${load.active}/${load.cap}`
+  const { implementers, reviewers, planners, budget, inbox } = status
+  const unread =
+    inbox.error !== undefined
+      ? `inbox unavailable: ${inbox.error}`
+      : `inbox ${inbox.unread} unread since ${inbox.sinceLastSend ?? 'the start (the seat has sent nothing)'}`
+  return [
+    '== status',
+    `caps ${[cap('implementers', implementers), cap('reviewers', reviewers), cap('planners', planners)].join(', ')}; other ${status.other.active}; parked ${status.parked.count}`,
+    poolLine(status),
+    `stop ${budget.stop ?? `none; ${budget.margin}`}`,
+    unread,
+  ]
+}
+
+const size = (lines: string[]): number => lines.join('\n').length
+
+/** Over the cap, the oldest inbox lines go first and then the log section's tail; the queue and status never shrink. */
+export function renderBoot(boot: SeatBoot, cap = BOOT_CAP): string[] {
+  const render = (log: LogSection, omitted: number): string[] => [
+    ...seatLines(boot),
+    ...queueLines(boot),
+    ...logLines(log),
+    ...inboxLines(boot.inbox, omitted),
+    ...statusLines(boot),
+  ]
+  let omitted = 0
+  let lines = render(boot.log, omitted)
+  while (size(lines) > cap && omitted < boot.inbox.messages.length) lines = render(boot.log, ++omitted)
+  const section = boot.log.section
+  if (size(lines) <= cap || section === null) return lines
+  const room = Math.max(0, section.length - (size(lines) - cap))
+  return render({ ...boot.log, section: capText(section, room) }, omitted)
+}
