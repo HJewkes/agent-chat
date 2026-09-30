@@ -1379,6 +1379,8 @@ agent-chat agent attach <name>     select the iTerm pane, or print how to reach 
 agent-chat agent resume <name>     new process, same identity
 agent-chat agent kill <name>       headless only
 agent-chat agent retire <name> [--force]  release isolation, end it, free the name
+agent-chat agent retire --finished (--spawner <name> | --prefix <p>) [--dry-run]
+                                   retire every finished agent in scope that holds no work
 agent-chat agent worktrees [--prune]  what is held in git, and what nobody uses
 agent-chat agent logs <name> [-n]  tail stream.jsonl
 agent-chat run-agent <id>          internal; the fixed launch command of §5.3
@@ -1388,6 +1390,19 @@ agent-chat run-agent <id>          internal; the fixed launch command of §5.3
 matches the whole name recorded as `spawnedBy` when the agent was spawned, so `boss`
 does not match an agent spawned by `boss2`. A rename since then does not move an
 agent to the new name; a successor that reuses the name does match.
+
+`agent retire --finished` (CC-323) retires in one call every agent in scope that is not
+live: exited, detached or failed to start. It needs `--spawner` or `--prefix`, so one call
+cannot sweep the machine, and it refuses `--force` and a name. It prints the plan first,
+one line per agent, then the result per retire and a summary line with counts; `--dry-run`
+prints only the plan. It skips, and says why, an agent that is live or spawning, a detached
+agent whose process the broker still tracks, an agent the broker did not spawn, one being
+parked, one whose worktree a non-retired agent works in (CC-141), and one whose worktree or
+kept branch has uncommitted changes, commits not on its upstream (or on `origin/<branch>`
+when no upstream is set), commits not on the default branch when it has neither, or cannot
+be read. Each remaining agent goes through the same retire as `agent retire <name>`, so its
+refusals still apply; the liveness check is repeated just before each one. A failed retire
+is reported and the rest continue.
 
 `run-agent` is a process-launch contract the moment the first `plan.json` is
 written — it must be treated the same way `broker` and `mcp` are (service plan

@@ -865,6 +865,8 @@ export type ClientMessage =
   | { t: 'retire'; name: string; force?: boolean }
   /** CC-282: remove an exited agent's clean, pushed worktree and keep its branch. CLI-only, like `retire`. */
   | { t: 'park'; name: string }
+  /** CC-323: retire every finished agent in scope that holds no work. CLI-only, like `retire`; no `force`. */
+  | { t: 'retire_finished'; spawner?: string; prefix?: string; dryRun?: boolean }
   /**
    * Hand off to a successor and end this session. NAMES NO AGENT: the subject is
    * resolved by the broker from the requesting connection, the same discipline
@@ -1029,6 +1031,14 @@ export type ServerMessage =
     }
   /** `slots` is the live semaphore reading (CC-139); absent from an older broker build. */
   | { t: 'agents_result'; agents: AgentIdentity[]; slots?: { held: number; cap: number } }
+  /** CC-323: `plan` holds every agent in scope; `results` one per planned retire, empty on a dry run. */
+  | {
+      t: 'retire_finished_result'
+      ok: boolean
+      reason?: string
+      plan: RetirePlanEntry[]
+      results: RetireResult[]
+    }
   /**
    * Answered as soon as the handoff is recorded and the sequence is committed to,
    * NOT when the descendant is up: a visible predecessor has 30 seconds of
@@ -1151,6 +1161,20 @@ export interface AgentIdentity {
    * every consumer of `AgentLifecycle` growing a case for it.
    */
   exit?: { code: number | null; summary: string; costUsd?: number; failedToStart?: boolean }
+}
+
+/** One agent in a bulk retire's plan: retired, or skipped for `reason`. */
+export interface RetirePlanEntry {
+  name: string
+  action: 'retire' | 'skip'
+  reason?: string
+}
+
+/** What `retire` answered for one planned agent; `reason` on success is its caveat. */
+export interface RetireResult {
+  name: string
+  ok: boolean
+  reason?: string
 }
 
 export type ReplyType = Exclude<ServerMessage['t'], 'deliver' | 'error' | 'permission_verdict'>

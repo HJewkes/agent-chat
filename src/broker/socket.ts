@@ -1386,6 +1386,22 @@ export class SocketServer {
           )
         return
       }
+      case 'retire_finished': {
+        const { t: _kind, ...req } = msg
+        void this.supervisor
+          .retireFinished(req)
+          .then(outcome => reply(conn, { t: 'retire_finished_result', ...outcome }))
+          .catch((err: Error) =>
+            reply(conn, {
+              t: 'retire_finished_result',
+              ok: false,
+              reason: err.message,
+              plan: [],
+              results: [],
+            }),
+          )
+        return
+      }
       case 'retire':
         void this.supervisor.retire(msg.name, msg.force === true).then(result =>
           reply(conn, {

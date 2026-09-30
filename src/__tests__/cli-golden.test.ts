@@ -147,6 +147,86 @@ describe('registry verbs', () => {
   })
 })
 
+describe('agent retire --finished (CC-323)', () => {
+  const bulk = (extra: Partial<Extract<ServerMessage, { t: 'retire_finished_result' }>>): ServerMessage => ({
+    t: 'retire_finished_result',
+    ok: true,
+    plan: [],
+    results: [],
+    ...extra,
+  })
+
+  it.each([
+    [['--finished'], 'finished: name --spawner or --prefix'],
+    [['--finished', '--prefix', ' '], 'finished: name --spawner or --prefix'],
+    [['--finished', '--prefix', 'cc-', '--force'], 'force: --force is refused with --finished'],
+    [['bob', '--finished', '--prefix', 'cc-'], 'name: --finished retires by scope; drop the name'],
+    [['--prefix', 'cc-'], 'finished: --spawner, --prefix and --dry-run need --finished'],
+    [[], 'name: name is required'],
+  ])('refuses %j as a usage error before anything reaches the broker', async (flags, message) => {
+    const rendered = await invoke({ argv: ['agent', 'retire', ...flags], reply: bulk({}) })
+
+    expect(rendered).toContain(`stderr: Invalid arguments: ${message}`)
+    expect(rendered).not.toContain('frame:')
+    expect(rendered).toContain('exit 64')
+  })
+
+  it('prints the plan, the result per agent, and one summary line', async () => {
+    const reply = bulk({
+      ok: false,
+      plan: [
+        { name: 'cc-a', action: 'retire' },
+        { name: 'cc-b', action: 'skip', reason: 'live' },
+        { name: 'cc-c', action: 'retire' },
+      ],
+      results: [
+        { name: 'cc-a', ok: true },
+        { name: 'cc-c', ok: false, reason: 'inside the reclaim grace window' },
+      ],
+    })
+
+    const rendered = await invoke({ argv: ['agent', 'retire', '--finished', '--spawner', 'coord'], reply })
+
+    expect(rendered).toBe(
+      [
+        '=== agent-chat agent retire --finished --spawner coord',
+        'frame: {"t":"retire_finished","spawner":"coord"}',
+        'stdout: Plan:',
+        'stdout:   retire cc-a',
+        'stdout:   skip   cc-b: live',
+        'stdout:   retire cc-c',
+        'stdout: Results:',
+        'stdout:   retired cc-a',
+        'stdout:   FAILED  cc-c: inside the reclaim grace window',
+        'stdout: 1 retired, 1 failed, 1 skipped.',
+        'exit 1',
+        '',
+      ].join('\n'),
+    )
+  })
+
+  it('prints only the plan on a dry run', async () => {
+    const reply = bulk({ plan: [{ name: 'cc-a', action: 'retire' }] })
+
+    const rendered = await invoke({
+      argv: ['agent', 'retire', '--finished', '--prefix', 'cc-', '--dry-run'],
+      reply,
+    })
+
+    expect(rendered).toBe(
+      [
+        '=== agent-chat agent retire --finished --prefix cc- --dry-run',
+        'frame: {"t":"retire_finished","prefix":"cc-","dryRun":true}',
+        'stdout: Plan:',
+        'stdout:   retire cc-a',
+        'stdout: Dry run: 1 would be retired, 0 skipped.',
+        'exit 0',
+        '',
+      ].join('\n'),
+    )
+  })
+})
+
 const answerResult = (extra: Partial<Extract<ServerMessage, { t: 'answer_result' }>>): ServerMessage => ({
   t: 'answer_result',
   ok: true,
