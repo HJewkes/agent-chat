@@ -1,7 +1,10 @@
 import path from 'node:path'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
+import { requiredString } from '../../args.js'
+import { activeWorkRoot } from '../../agents/active-work.js'
 import { readAccountBudget } from '../../agents/budget.js'
+import { scoredPlanFromDisk } from '../../agents/burndown/score-render.js'
 import { charterSeats, isSeatName, parsePools, parseSeat } from '../../agents/seats/charter.js'
 import {
   appendSeatLog,
@@ -30,6 +33,13 @@ import {
   type WatchdogOptions,
 } from '../../agents/seats/run.js'
 import type { Presence } from '../../agents/seats/liveness.js'
+import {
+  STATUS_TOP,
+  readInbox,
+  renderStatus,
+  seatStatus,
+  type StatusDeps,
+} from '../../agents/seats/status.js'
 import type { OwnerMessage } from '../../agents/seats/stops.js'
 import { FIRE_CAP, WATCHDOG_MINUTES } from '../../agents/seats/watchdog.js'
 import { BrokerClient } from '../../client/broker-client.js'
@@ -116,18 +126,22 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
   }
 }
 
-async function liveRun(root: string, options: WatchdogOptions): Promise<Report> {
-  // Never autostart: a watchdog that brought up a broker would own it, and the broker serves every session.
+/** Never autostarts: a seat verb that brought up a broker would own it, and the broker serves every session. */
+async function withRunningBroker<T>(fn: (client: BrokerClient) => Promise<T>): Promise<T> {
   const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
     autoStart: false,
   })
   try {
     await client.connect()
-    const lines = await runWatchdog(liveDeps(root, client), options)
-    return { ok: true, lines }
+    return await fn(client)
   } finally {
     client.close()
   }
+}
+
+async function liveRun(root: string, options: WatchdogOptions): Promise<Report> {
+  const lines = await withRunningBroker(client => runWatchdog(liveDeps(root, client), options))
+  return { ok: true, lines }
 }
 
 const hhmm = (at: number): string => new Date(at).toISOString().slice(11, 16) + 'Z'
@@ -258,8 +272,64 @@ export const seatsWatchdogInstallVerb = defineVerb({
   },
 })
 
+function statusDeps(root: string, client: BrokerClient): StatusDeps {
+  return {
+    now: () => new Date(),
+    autonomyRoot: root,
+    agents: async () =>
+      ((await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>).agents,
+    readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
+    loadDoc: () => loadDoc(),
+    inbox: seat => readInbox(path.join(home(), 'events.db'), seat),
+    scored: (seat, today) =>
+      scoredPlanFromDisk({
+        seat,
+        top: STATUS_TOP,
+        today,
+        autonomyRoot: root,
+        activeWorkRoot: activeWorkRoot(),
+      }),
+  }
+}
+
+/** The status verb's body, taking its readers explicitly so a test can point them at a fixture broker. */
+export async function statusReport(deps: StatusDeps, seat: string, json: boolean): Promise<Report> {
+  try {
+    const status = await seatStatus(deps, seat)
+    return { ok: true, lines: json ? [JSON.stringify(status, null, 2)] : renderStatus(status) }
+  } catch (err) {
+    return refused(err)
+  }
+}
+
+export const seatsStatusVerb = defineVerb({
+  name: 'seats.status',
+  description:
+    'what a seat reads before it dispatches (CC-317), read-only: implementers, reviewers and planners ' +
+    'against their caps, parked implementers, the pool reading with its age and the charter stop that ' +
+    'applies, unread inbox messages since the seat last sent one, and the top eligible tasks',
+  args: z.object({ seat: requiredString('seat'), json: z.boolean().optional(), root: z.string().optional() }),
+  result: Report,
+  cli: {
+    positional: ['seat'],
+    options: {
+      json: { long: '--json', description: 'the same facts as one JSON object' },
+      root: { long: '--root', description: 'autonomy directory holding charter.md and seats/' },
+    },
+  },
+  async run({ seat, json, root }) {
+    const dir = root ?? defaultAutonomyRoot()
+    try {
+      return await withRunningBroker(client => statusReport(statusDeps(dir, client), seat, json === true))
+    } catch (err) {
+      return refused(err)
+    }
+  },
+})
+
 export function addSeatsCommands(program: Commander): void {
   const seats = program.command('seats').description('autonomy seats: the idle watchdog')
   addVerb(seats, seatsWatchdogVerb)
+  addVerb(seats, seatsStatusVerb)
   addVerb(seats, seatsWatchdogInstallVerb)
 }

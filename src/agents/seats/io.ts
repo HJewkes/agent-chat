@@ -20,7 +20,7 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
 }
 
 /** Read-only and never migrated; waits out the broker's write lock like the broker's own connection does. */
-const openEvents = (dbPath: string): DatabaseSyncType =>
+export const openEvents = (dbPath: string): DatabaseSyncType =>
   new DatabaseSync(dbPath, { readOnly: true, timeout: BUSY_TIMEOUT_MS })
 
 export const defaultAutonomyRoot = (): string =>
