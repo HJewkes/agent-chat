@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { matchRules, parseTerms, type TermRule } from '@titan-design/egress-scan'
+import { aliasReader, gitCall, shellAlias, splitAlias, type ReadAlias } from './git-alias.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
   expandWord,
@@ -32,6 +33,7 @@ export interface GuardContext {
   /** Absolute paths and path fragments an agent may not touch: the hook dir and the term list. */
   protectedPaths: readonly string[]
   readFile(file: string): string | undefined
+  readAlias: ReadAlias
 }
 
 /** What the guard knows of the shell before one command; undefined where it cannot tell. */
@@ -44,6 +46,8 @@ interface Scope {
   cdpath: boolean
   /** The command line names git or gh, so a script the guard cannot read may run either. */
   namesGit: boolean
+  /** How many git aliases the guard has expanded to reach this command. */
+  aliases: number
 }
 
 const DOCS = 'See docs/leak-guard.md.'
@@ -64,9 +68,11 @@ export const REASONS = {
   missingTerms: `leak-guard: no private term list, so PR and issue text cannot be checked. Create ~/.config/titan-egress/private-terms, one term per line, chmod 600. ${DOCS}`,
   xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
+  aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
 } as const
 
 const MAX_DEPTH = 6
+const MAX_ALIASES = 4
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
@@ -218,6 +224,28 @@ export function checkGit(args: readonly string[]): string | undefined {
   if (sub === 'push') return opts.some(a => NO_VERIFY.test(a)) ? REASONS.noVerify : undefined
   if (sub === 'config') return configWritesGuard(rest)
   return undefined
+}
+
+/** Re-checks `git <alias> <rest>` as what the alias expands to, read where the command runs. */
+function checkAlias(
+  resolved: readonly (string | undefined)[],
+  args: readonly string[],
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  const call = gitCall(resolved, scope.cwd)
+  const alias = call && ctx.readAlias(call.sub, call.dir, call.globals)
+  if (call === undefined || alias === undefined) return undefined
+  if (scope.aliases >= MAX_ALIASES) return REASONS.aliasDepth
+  const inner = { ...scope, aliases: scope.aliases + 1 }
+  const rest = args.slice(call.at + 1)
+  if (alias.value.startsWith('!'))
+    return checkAt(shellAlias(alias.value.slice(1), rest), ctx, { ...inner, cwd: alias.runsIn }, depth + 1)
+  const value = splitAlias(alias.value)
+  if (value === undefined) return undefined
+  const words = [...args.slice(0, call.at), ...value, ...rest]
+  return checkGit(words) ?? checkAlias(words, words, ctx, inner, depth)
 }
 
 function configWritesGuard(args: readonly string[]): string | undefined {
@@ -497,7 +525,10 @@ function checkSimple(cmd: SimpleCommand, ctx: GuardContext, scope: Scope, depth:
   const name = path.basename(head)
   if (SHELLS.has(name)) return checkShell(args, cmd.stdin, ctx, at, depth)
   if (name === 'eval') return checkEval(marked, cmd, ctx, at, depth)
-  if (name === 'git') return checkGit(args)
+  if (name === 'git') {
+    const resolved = marked.map(word => resolveWord(word, cmd, ctx, at))
+    return checkGit(args) ?? checkAlias(resolved, args, ctx, at, depth)
+  }
   if (name === 'gh') return checkGh(marked, cmd, ctx, at)
   if (name === 'agent-chat' && args[0] === 'gh-write') return checkGh(ghWriteArgs(marked), cmd, ctx, at)
   if (ENV_EDITS.has(name)) return checkEnvEdit(args)
@@ -579,7 +610,7 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
 
 export function checkCommand(command: string, ctx: GuardContext): string | undefined {
   const cdpath = Boolean(ctx.env.CDPATH)
-  const scope = { cwd: ctx.cwd, env: ctx.env, fragile: false, cdpath, namesGit: false }
+  const scope = { cwd: ctx.cwd, env: ctx.env, fragile: false, cdpath, namesGit: false, aliases: 0 }
   return checkAt(command, ctx, scope, 0)
 }
 
@@ -642,6 +673,7 @@ export function guardContext(env: NodeJS.ProcessEnv, cwd: string, home: string):
       ...(hooksDir === undefined ? [] : [hooksDir]),
     ],
     readFile: readText,
+    readAlias: aliasReader(env),
   }
 }
 

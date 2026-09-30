@@ -15,6 +15,7 @@ import {
   type GuardContext,
   type TermsLoad,
 } from '../leak-guard/pretool.js'
+import { aliasReader } from '../leak-guard/git-alias.js'
 import { parseShell } from '../leak-guard/shell-words.js'
 
 const CLI = path.resolve(import.meta.dirname, '../../dist/cli.js')
@@ -39,6 +40,7 @@ const ctx = (over: Partial<GuardContext> = {}): GuardContext => ({
     HOOKS_DIR,
   ],
   readFile: () => undefined,
+  readAlias: () => undefined,
   ...over,
 })
 
@@ -865,6 +867,74 @@ describe('the commands coordinators and agents post with', () => {
 
     expect(checkCommand(comment, ctx({ terms: NO_LIST }))).toBe(REASONS.missingTerms)
   })
+})
+
+describe('a git alias already in config', () => {
+  // Fixture repos carry their own aliases; the machine's global and system config stay out.
+  const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
+
+  const repo = (name: string, aliases: Record<string, string>): string => {
+    const dir = path.join(SCRATCH, name)
+    execFileSync('git', ['init', '-q', dir], { env: GIT_ENV })
+    for (const [word, value] of Object.entries(aliases))
+      execFileSync('git', ['-C', dir, 'config', `alias.${word}`, value], { env: GIT_ENV })
+    return dir
+  }
+
+  const at = (cwd: string): GuardContext => ctx({ cwd, readAlias: aliasReader(GIT_ENV) })
+
+  const aliased = repo('aliased', {
+    pnv: 'push --no-verify',
+    quoted: "push '--no-verify' origin",
+    chained: 'pnv',
+    bang: '!git push --no-verify origin HEAD',
+    hp: '-c core.hooksPath=/dev/null push',
+    cob: '!git checkout -b $1 && git push -u origin $1',
+    loop: 'loop',
+    bangloop: '!git bangloop',
+  })
+  const plain = repo('plain', {})
+
+  it.each(['git pnv', 'git pnv origin HEAD', 'git quoted main', 'git chained'])(
+    'denies a repo alias that expands to push --no-verify: %s',
+    command => {
+      expect(checkCommand(command, at(aliased))).toBe(REASONS.noVerify)
+    },
+  )
+
+  it('denies a ! alias whose body runs git push --no-verify', () => {
+    expect(checkCommand('git bang', at(aliased))).toBe(REASONS.noVerify)
+  })
+
+  it('denies an alias that sets -c core.hooksPath', () => {
+    expect(checkCommand('git hp origin main', at(aliased))).toBe(REASONS.gitConfig)
+  })
+
+  it('allows an alias that pushes without skipping the hook', () => {
+    expect(checkCommand('git cob feat-x', at(aliased))).toBeUndefined()
+  })
+
+  it('denies a ! alias that passes --no-verify through its arguments', () => {
+    expect(checkCommand('git cob --no-verify', at(aliased))).toBe(REASONS.noVerify)
+  })
+
+  it.each(['git loop', 'git bangloop'])('stops on a self-referencing alias: %s', command => {
+    expect(checkCommand(command, at(aliased))).toBe(REASONS.aliasDepth)
+  })
+
+  it.each([`cd ${aliased} && git pnv`, `git -C ${aliased} pnv`, `cd ${SCRATCH} && git -C aliased pnv`])(
+    'reads the alias where the command cds to: %s',
+    command => {
+      expect(checkCommand(command, at(plain))).toBe(REASONS.noVerify)
+    },
+  )
+
+  it.each(['git pnv', `cd ${SCRATCH}/missing && git pnv`, 'git status', 'git push origin main'])(
+    'allows a git command with no alias where it runs: %s',
+    command => {
+      expect(checkCommand(command, at(plain))).toBeUndefined()
+    },
+  )
 })
 
 describe('the hook entry point', () => {
