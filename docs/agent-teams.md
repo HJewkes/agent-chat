@@ -1367,6 +1367,11 @@ agent-chat agent logs <name> [-n]  tail stream.jsonl
 agent-chat run-agent <id>          internal; the fixed launch command of §5.3
 ```
 
+`agent ls` and `agent budget` take `--spawner <name>` and `--prefix <p>`. `--spawner`
+matches the whole name recorded as `spawnedBy` when the agent was spawned, so `boss`
+does not match an agent spawned by `boss2`. A rename since then does not move an
+agent to the new name; a successor that reuses the name does match.
+
 `run-agent` is a process-launch contract the moment the first `plan.json` is
 written — it must be treated the same way `broker` and `mcp` are (service plan
 §4.3): never renamed without changing the plan writer in the same commit.

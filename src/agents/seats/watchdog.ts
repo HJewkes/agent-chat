@@ -42,11 +42,16 @@ export interface Observation {
   implementers: number
   /** Undefined when the scorer could not be read, which never counts as work. */
   eligible: number | undefined
+  /** Malformed tasks the scorer skipped; a low `eligible` with skips is not a real drop. */
+  skipped?: number
   /** Why the seat must not be woken now: an owner stop, a pause line, a spend stop or a restart window. */
   hold?: string
   /** Epoch ms of the seat's latest own log line; undefined when it has none. */
   activityAt?: number
 }
+
+const skippedNote = (obs: Observation): string =>
+  obs.skipped === undefined || obs.skipped === 0 ? '' : `, skipped: ${obs.skipped}`
 
 export interface SeatState {
   idleRuns: number
@@ -152,14 +157,14 @@ export function decide(
   if (obs.hold !== undefined) return skip(`held: ${obs.hold}`)
   if (!obs.budget.open) return skip(`budget closed: ${obs.budget.reason}`)
   if (obs.eligible === undefined) return skip('eligible count unavailable')
-  if (obs.eligible === 0) return skip('no eligible work')
+  if (obs.eligible === 0) return skip(`no eligible work${skippedNote(obs)}`)
   const quiet = quietFor(obs.activityAt, nowMs)
   if (quiet !== undefined && quiet < SEAT_QUIET_MS)
     return skip(`seat alive: logged ${Math.round(quiet / 60_000)} min ago`)
   if (fires >= fireCap) return skip(`fire cap: ${fires} wake(s) with no implementer; waiting for a dispatch`)
   const consecutive = previous !== undefined && nowMs - previous.at <= MAX_RUN_GAP_MS
   const idleRuns = (consecutive ? previous.idleRuns : 0) + 1
-  const summary = `0 implementers, budget open (${obs.budget.reason}), ${obs.eligible} eligible`
+  const summary = `0 implementers, budget open (${obs.budget.reason}), ${obs.eligible} eligible${skippedNote(obs)}`
   if (idleRuns < FIRE_AFTER_RUNS)
     return skip(`${summary}; idle run ${idleRuns} of ${FIRE_AFTER_RUNS}`, idleRuns)
   return {

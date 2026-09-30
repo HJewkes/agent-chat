@@ -78,7 +78,7 @@ describe('scored plan rendering of the parity fixture', () => {
 
     expect(lines).toHaveLength(11)
     expect(lines.at(-1)).toBe(
-      `scope=5 initiatives, ${open} open, refused={excluded-tag: 4, excluded-pattern: 1}`,
+      `scope=5 initiatives, ${open} open, skipped: 0, refused={excluded-tag: 4, excluded-pattern: 1}`,
     )
   })
 })
@@ -88,7 +88,7 @@ describe('scored plan refusal counts', () => {
     const plan = fixturePlan(60, { product: 0.01 })
 
     expect(renderScored(plan).at(-1)).toBe(
-      `scope=5 initiatives, ${plan.open} open, refused={excluded-tag: 4, excluded-pattern: 1, share-cap:product: 6}`,
+      `scope=5 initiatives, ${plan.open} open, skipped: 0, refused={excluded-tag: 4, excluded-pattern: 1, share-cap:product: 6}`,
     )
   })
 })
@@ -115,11 +115,14 @@ describe('scored row flags', () => {
   })
 
   it('lists share-cap skips after the exclusions and prints no refusals as {}', () => {
-    const plan = { order: [], scope: 2, open: 0, refused: {} }
+    const plan = { order: [], scope: 2, open: 0, refused: {}, skipped: [] }
 
-    expect(renderScored(plan)).toEqual(['scope=2 initiatives, 0 open, refused={}'])
+    expect(renderScored(plan)).toEqual(['scope=2 initiatives, 0 open, skipped: 0, refused={}'])
+    expect(renderScored({ ...plan, skipped: ['init-alpha/CC-2.yml'] })).toEqual([
+      'scope=2 initiatives, 0 open, skipped: 1, refused={}',
+    ])
     expect(renderScored({ ...plan, refused: { 'excluded-tag': 1, 'share-cap:nit': 2 } })).toEqual([
-      'scope=2 initiatives, 0 open, refused={excluded-tag: 1, share-cap:nit: 2}',
+      'scope=2 initiatives, 0 open, skipped: 0, refused={excluded-tag: 1, share-cap:nit: 2}',
     ])
   })
 })

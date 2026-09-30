@@ -159,8 +159,12 @@ function replayRun(root: string, day: string, seats: string[] | undefined, flags
       ...parseLogReadings(readText(path.join(root, 'logs', name, `${day}.md`)) ?? '', day),
       ...extra,
     ]
-    const eligible = scorerEligible(root, name)
-    lines.push(`${name}: eligible ${eligible ?? 'unknown'} is TODAY's scorer count, assumed for ${day}`)
+    const scored = scorerEligible(root, name)
+    const eligible = scored?.count
+    const skipped = scored === undefined || scored.skipped === 0 ? '' : `, skipped: ${scored.skipped}`
+    lines.push(
+      `${name}: eligible ${eligible ?? 'unknown'}${skipped} is TODAY's scorer count, assumed for ${day}`,
+    )
     const pool = parsePools(charter).get(seat.pool)
     lines.push(...renderReplay(name, replay({ seat, pool, events, readings, eligible }, times)))
   }

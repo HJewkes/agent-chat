@@ -9,7 +9,7 @@ import {
   type Pool,
   type Seat,
 } from './charter.js'
-import type { SeatRecord, WatchdogDoc } from './io.js'
+import type { Eligibility, SeatRecord, WatchdogDoc } from './io.js'
 import { RESUME_MESSAGE, judgeLiveness, type LivenessVerdict, type Presence } from './liveness.js'
 import {
   RESTART_WINDOW_MAX_MS,
@@ -60,7 +60,7 @@ export interface WatchdogDeps {
   roster: () => Promise<Roster>
   /** CC-320: the seat's latest presence rows; undefined when events.db cannot be read, which never resumes. */
   presence: (seat: string) => Presence | undefined
-  eligible: (seat: string) => number | undefined
+  eligible: (seat: string) => Eligibility | undefined
   loadDoc: () => WatchdogDoc
   saveDoc: (doc: Omit<WatchdogDoc, 'stopped'>) => void
   /** A connected seat gets a message; a stopped one is resumed on it. */
@@ -188,12 +188,13 @@ function judgeSeat(pass: Pass, seat: Seat): Judgement {
   const hold = ownHold ?? liveness.idleHold
   const implementers = runningImplementers(pass.roster.agents, seat).length
   const budget = seatBudget(pass, seat, reading, run)
-  const eligible =
+  const scored =
     implementers === 0 && hold === undefined && budget.open ? deps.eligible(seat.name) : undefined
   const obs = {
     budget,
     implementers,
-    eligible,
+    eligible: scored?.count,
+    ...(scored === undefined ? {} : { skipped: scored.skipped }),
     ...(hold === undefined ? {} : { hold }),
     ...(log.activityAt === undefined ? {} : { activityAt: log.activityAt }),
   }
