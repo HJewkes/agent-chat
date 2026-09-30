@@ -374,6 +374,13 @@ export function batchMeta(batch: NonNullable<DeliveredMessage['batch']>): Record
   }
 }
 
+/** Who a push is from: a batch's own id is in no log, so it names the real senders and ids instead (CC-321). */
+export function senderMeta(message: DeliveredMessage): Record<string, string> {
+  return message.batch
+    ? { from: message.from, ...batchMeta(message.batch) }
+    : { from: message.from, msg_id: message.msgId }
+}
+
 export async function startMcpServer(): Promise<void> {
   const mcp = new Server(
     { name: 'agent-chat', version: '0.1.0' },
@@ -402,10 +409,7 @@ export async function startMcpServer(): Promise<void> {
   )
 
   const deliver = (message: DeliveredMessage): void => {
-    // CC-321: a batch's own id is in no log, so it names the real senders and ids instead.
-    const meta: Record<string, string> = message.batch
-      ? { from: message.from, ...batchMeta(message.batch) }
-      : { from: message.from, msg_id: message.msgId }
+    const meta = senderMeta(message)
     if (message.inReplyTo) meta.in_reply_to = message.inReplyTo
     if (message.broadcast) meta.broadcast = 'true'
     // Who else was told the same thing, so three recipients do not each answer

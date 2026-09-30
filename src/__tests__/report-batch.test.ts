@@ -7,7 +7,7 @@ import { deliver, SocketServer } from '../broker/socket.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { MAX_REMEMBERED, ReportBatcher } from '../broker/report-batch.js'
-import { batchMeta } from '../server/index.js'
+import { batchMeta, senderMeta } from '../server/index.js'
 import type { ClientMessage, DeliveredMessage, ServerMessage, SystemEvent } from '../protocol.js'
 
 /**
@@ -350,6 +350,22 @@ describe('reports to one coordinator inside the window', () => {
     ]
 
     expect(batchMeta(batch)).toEqual({ count: '2', senders: 'w-a,w-b', msg_ids: 'id-one,id-two' })
+  })
+
+  // Mutation caught: the delivery frame ignoring `batch`, so a batch shows its own unlogged id as `msg_id`.
+  it('gives a batch no msg_id of its own, and a lone message its own id', () => {
+    const batch = [message('id-one', 'w-a'), message('id-two', 'w-b')].map(({ msgId, from }) => ({
+      msgId,
+      from,
+    }))
+
+    expect(senderMeta({ ...message('batch-id', 'agent-chat'), batch })).toEqual({
+      from: 'agent-chat',
+      count: '2',
+      senders: 'w-a,w-b',
+      msg_ids: 'id-one,id-two',
+    })
+    expect(senderMeta(message('id-one'))).toEqual({ from: 'w-a', msg_id: 'id-one' })
   })
 
   // Mutation caught: the broadcast exemption removed, so a worker's broadcast is held for its spawner alone.
