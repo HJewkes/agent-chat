@@ -94,7 +94,7 @@ export const REASONS = {
   unreadableTerms: `leak-guard: the private term list could not be read, so PR and issue text cannot be checked. ${DOCS}`,
   aliasEnv: `leak-guard: the guard cannot tell which directory or config this git command runs with, or which subcommand it names, so it cannot tell what a git alias here runs. Run the command the alias stands for, from a plain cd. ${DOCS}`,
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
-  includePath: `leak-guard: git -c or --config-env on include.path or includeIf.*.path pulls in config that sets core.hooksPath, or config the guard cannot read, which would bypass the pre-push leak scan. ${DOCS}`,
+  includePath: `leak-guard: git -c or --config-env on include.path or includeIf.*.path pulls in config that sets core.hooksPath, that this line may write, or that the guard cannot read in time, which would bypass the pre-push leak scan. ${DOCS}`,
   aliasWritten: `leak-guard: this command line writes git config and runs a git word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
 } as const
 
@@ -298,6 +298,8 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
 }
 
 const MENTIONS_INCLUDE = /include/i
+/** A redirect other than a descriptor copy, or a command that writes files, anywhere on the line. */
+const WRITES_FILE = />(?!&)|\b(?:cp|mv|tee|ln|install|rsync|dd|touch|truncate|mkfifo|sed|perl)\b/
 
 /** Reads the config files the command's own `-c include.path` and `includeIf.*.path` pull in, where it runs. */
 function checkInclude(run: GitRun, ctx: GuardContext, scope: Scope): string | undefined {
@@ -306,6 +308,7 @@ function checkInclude(run: GitRun, ctx: GuardContext, scope: Scope): string | un
   const options = gitOptions(run.resolved, scope.cwd)
   if (options === UNSURE_CALL || !options.sure) return cannotRead
   if (!includesConfig(options.params)) return undefined
+  if (WRITES_FILE.test(scope.said)) return REASONS.includePath
   const env = aliasEnv(run, configEnvVars(options.params), ctx, scope)
   if (options.dir === undefined || env === undefined) return cannotRead
   return ctx.readIncludedHooksPath(options.dir, gitGlobals(options), env) ? REASONS.includePath : undefined

@@ -63,7 +63,7 @@ export const CONFIG_ENV = [
 
 export const ALIAS_TIMEOUT_MS = 1000
 
-export function gitOutput(args: readonly string[], dir: string, env: NodeJS.ProcessEnv): string | undefined {
+function gitOutput(args: readonly string[], dir: string, env: NodeJS.ProcessEnv): string | undefined {
   try {
     const run = spawnSync('git', args, {
       cwd: dir,

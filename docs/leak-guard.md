@@ -357,11 +357,22 @@ A config file that the command itself includes with `-c` or `--config-env` on `i
 `includeIf.<cond>.path` is read the same way (TP-602). The guard runs `git <its options> config
 --show-scope --includes --get-regexp '^core\.hookspath$'` where the command runs, after `cd` and
 `-C`, with the same 1 s timeout and without the agent's `GIT_CONFIG_*` variables, and denies when a
-command-scope value comes back. git follows nested includes and fails past its own depth cap of
-10, as it does for a relative path given on the command line; the push would fail the same way,
-so a failed read allows the call. When a word before the subcommand mentions `include` and the
-guard cannot tell the directory, an option or a `--config-env` variable, the command is denied.
-An include of a file that sets only an alias is left to the alias lookup above.
+command-scope value comes back. git follows nested includes up to its own depth cap of 10. Unlike
+the alias lookup, the include check fails closed. It denies when:
+
+- the read times out, as a FIFO or a very large include does, or git fails, as it does on a
+  circular include, a relative command-line include path or a file that is not config;
+- an absolute or `~/` include file does not exist when the hook runs, since git skips a missing
+  include and the file may be written before git reads it;
+- the line holds a redirect other than a descriptor copy such as `2>&1`, or a command that writes
+  files (`cp`, `mv`, `tee`, `ln`, `install`, `rsync`, `dd`, `touch`, `truncate`, `mkfifo`, `sed`,
+  `perl`), since it may write the include or a file it includes before git reads it. This reads
+  the whole line, so `git -c include.path=<f> push 2>/dev/null` is denied too;
+- a word before the subcommand mentions `include` and the guard cannot tell the directory, an
+  option or a `--config-env` variable.
+
+An include of a file that sets only an alias is left to the alias lookup above. A nested include
+file written by another process between the hook and git is not caught.
 
 A line that writes git config and runs a git word that may be an alias is denied (TP-607), since
 the lookup reads config before the line changes it: `git config alias.x '!git push --no-ve""rify'

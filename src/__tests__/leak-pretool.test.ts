@@ -1097,6 +1097,40 @@ describe('a git alias already in config', () => {
     ])('denies an include it cannot read: %s', command => {
       expect(checkCommand(command, { ...at(plain), env: { HOME: emptyHome } })).toBe(REASONS.includePath)
     })
+
+    it.each([
+      `git -c include.path=${path.join(SCRATCH, 'include-missing')} push`,
+      'git -c include.path=~/include-missing push',
+      `E=${path.join(SCRATCH, 'include-missing')} git --config-env=include.path=E push`,
+    ])('denies an include whose file does not exist yet: %s', command => {
+      expect(checkCommand(command, at(plain))).toBe(REASONS.includePath)
+    })
+
+    it.each([
+      `printf '[core]\\n\\thooksPath=X\\n' > ${nameCfg}; git -c include.path=${nameCfg} push`,
+      `cp ${hooksCfg} ${nameCfg} && git -c include.path=${nameCfg} push`,
+      `echo x | tee ${nameCfg}; git -c include.path=${nameCfg} push`,
+    ])('denies an include on a line that writes a file: %s', command => {
+      expect(checkCommand(command, at(plain))).toBe(REASONS.includePath)
+    })
+
+    it('allows an include beside a descriptor copy', () => {
+      expect(checkCommand(`git -c include.path=${nameCfg} push 2>&1 | tail -3`, at(plain))).toBeUndefined()
+    })
+
+    it('denies an include git cannot read within the timeout', () => {
+      const fifo = path.join(SCRATCH, 'include-fifo')
+      execFileSync('mkfifo', [fifo])
+
+      expect(checkCommand(`git -c include.path=${fifo} push`, at(plain))).toBe(REASONS.includePath)
+    })
+
+    it('denies an include git fails to read', () => {
+      const circular = path.join(SCRATCH, 'include-circular')
+      fs.writeFileSync(circular, `[include]\n\tpath = ${circular}\n`)
+
+      expect(checkCommand(`git -c include.path=${circular} push`, at(plain))).toBe(REASONS.includePath)
+    })
   })
 
   describe('an alias the same command line writes (TP-607)', () => {
