@@ -38,12 +38,18 @@ export const readText = (file: string): string | undefined => {
 /** The most rows the scorer is asked for; score.py's `--top 1000` the watchdog used to pass. */
 const SCORER_TOP = 1000
 
-/** The scorer's eligible count for `seat`, or undefined when its policy or tasks cannot be read. */
+/** The scorer's eligible count and the malformed tasks it skipped, so a count that fell from skips is told from a real drop. */
+export interface Eligibility {
+  count: number
+  skipped: number
+}
+
+/** The scorer's eligibility for `seat`, or undefined when its policy or tasks cannot be read. */
 export function scorerEligible(
   root: string,
   seat: string,
   opts: { activeWork?: string; today?: string } = {},
-): number | undefined {
+): Eligibility | undefined {
   try {
     const plan = scoredPlanFromDisk({
       seat,
@@ -52,7 +58,7 @@ export function scorerEligible(
       autonomyRoot: root,
       activeWorkRoot: opts.activeWork ?? activeWorkRoot(),
     })
-    return plan.order.length
+    return { count: plan.order.length, skipped: plan.skipped.length }
   } catch {
     return undefined
   }

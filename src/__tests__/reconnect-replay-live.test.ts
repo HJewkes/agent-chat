@@ -242,6 +242,19 @@ describe('frames issued while the broker is restarting', () => {
     expect(seen).toEqual([])
   })
 
+  it('rejects a request written before the drop is seen when the client closes', async () => {
+    client = await registeredClient('worker')
+    // Cut the server side and ask in the same turn: the client has not yet seen the
+    // close, so the frame is written to a dead socket and waits for a reply.
+    for (const conn of serverConns.splice(0)) conn.destroy()
+    const status = client.request({ t: 'status', status: 'working' }, 'status_result')
+    const expectation = expect(status).rejects.toThrow('broker client closed')
+
+    client.close()
+
+    await expectation
+  })
+
   it('joins an in-flight reconnect ladder rather than climbing a second one', async () => {
     // Awaited rather than slept for, same reasoning as the fire-and-forget-approval
     // test above: `onDropped` fires synchronously in the same turn `onDrop` starts
