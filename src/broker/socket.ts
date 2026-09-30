@@ -100,8 +100,10 @@ const HOOK_WITHDRAWN = 'withdrawn'
  * of socket I/O for the same reason the HTTP layer must: one write path, several
  * transports.
  */
-export const deliver = (conn: Conn, message: DeliveredMessage): void => {
+export const deliver = (conn: Conn, message: DeliveredMessage): boolean => {
+  if (conn.destroyed || conn.writableEnded) return false
   reply(conn, { t: 'deliver', message })
+  return true
 }
 
 /** Both switch directions answer on one frame, so they serialise it the same way. */
@@ -530,6 +532,7 @@ export class SocketServer {
     })
     if (result.ok) logEvent('readopted', { name: known.name, sessionId: msg.sessionId })
     reply(conn, { t: 'register_result', ...result, ...(result.ok ? { name: known.name } : {}) })
+    if (result.ok) this.core.deliverStranded(known.name)
   }
 
   /**
@@ -1200,6 +1203,7 @@ export class SocketServer {
         )
         if (result.ok) this.noteBuildMismatch(msg.name, msg.build)
         reply(conn, { t: 'register_result', ...result })
+        if (result.ok) core.deliverStranded(msg.name)
         if (result.ok && dark !== undefined) core.deliverHeld(msg.name, dark)
         return
       }

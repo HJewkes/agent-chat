@@ -3,9 +3,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrokerCore, CLOSING_ACT_MS, type Conn } from '../broker/core.js'
-import { SocketServer } from '../broker/socket.js'
+import { deliver, SocketServer } from '../broker/socket.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
+import { MAX_REMEMBERED, ReportBatcher } from '../broker/report-batch.js'
 import { batchMeta } from '../server/index.js'
 import type { ClientMessage, DeliveredMessage, ServerMessage, SystemEvent } from '../protocol.js'
 
@@ -52,15 +53,12 @@ beforeEach(() => {
   process.env.HOME = tmp('agent-chat-home-')
   process.env.AGENT_CHAT_HOME = tmp('agent-chat-bus-')
   windowMs = WINDOW_MS
-  core = new BrokerCore<Conn>(
-    (conn, message) => void conn.write(JSON.stringify({ t: 'deliver', message }) + '\n'),
-    {
-      events: new EventLog(path.join(process.env.AGENT_CHAT_HOME, 'events.db')),
-      registry: new Registry<Conn>(),
-      reportBatchMs: () => windowMs,
-      isSeat: name => name === 'seat',
-    },
-  )
+  core = new BrokerCore<Conn>(deliver, {
+    events: new EventLog(path.join(process.env.AGENT_CHAT_HOME, 'events.db')),
+    registry: new Registry<Conn>(),
+    reportBatchMs: () => windowMs,
+    isSeat: name => name === 'seat',
+  })
   server = new SocketServer(core, { surface: { platform: 'linux', spawn: controlledChild } })
 })
 
@@ -120,6 +118,24 @@ const exitsPushedTo = (w: Wire): string[] =>
     .map(e => e.subject)
 
 const idOf = (w: Wire): string => core.registry.entryFor(w.conn)?.agentId as string
+
+/** A clean exit by default; the feed's own coalesce window is waited out before returning. */
+function exit(w: Wire, name: string, meta: Record<string, string> = { code: '0' }): void {
+  core.append({ kind: 'agent_exited', actor: name, ref: idOf(w), body: '', meta })
+  vi.advanceTimersByTime(LIFECYCLE_MS)
+}
+
+/** A reconnected session re-declares its subscriptions; this is the one these tests need. */
+function watchExitOf(w: Wire, name: string): void {
+  core.registry.subscribe(w.conn, [{ selector: { name }, kinds: ['agent_exited'] }])
+}
+
+const message = (msgId: string, from = 'w-a'): DeliveredMessage => ({
+  msgId,
+  from,
+  text: 'Status: DONE',
+  at: 0,
+})
 
 describe('reports to one coordinator inside the window', () => {
   beforeEach(() => {
@@ -335,6 +351,220 @@ describe('reports to one coordinator inside the window', () => {
 
     expect(batchMeta(batch)).toEqual({ count: '2', senders: 'w-a,w-b', msg_ids: 'id-one,id-two' })
   })
+
+  // Mutation caught: the broadcast exemption removed, so a worker's broadcast is held for its spawner alone.
+  it('delivers a broadcast at once to the spawner, even when it opens like a report', () => {
+    const coord = session('coord')
+    const a = worker('w-a', coord)
+
+    send(a, { t: 'broadcast', text: 'Status: DONE, main is green again' })
+
+    expect(pushes(coord).map(m => [m.text, m.broadcast])).toEqual([
+      ['Status: DONE, main is green again', true],
+    ])
+  })
+
+  // Mutation caught: a failed write left to throw, which costs the next coordinator its batch.
+  it('still pushes the second coordinator its batch at shutdown when the first one cannot be written', () => {
+    const [north, south] = [session('north'), session('south')]
+    say(worker('w-a', north), 'north', 'Status: DONE')
+    say(worker('w-b', south), 'south', 'Status: DONE')
+    north.conn.write = () => {
+      throw new Error('write after end')
+    }
+    const events = vi.spyOn(core.events, 'close').mockImplementation(() => undefined)
+
+    core.close()
+
+    expect(pushes(south).map(m => m.from)).toEqual(['w-b'])
+    events.mockRestore()
+  })
+
+  // Mutation caught: the oldest remembered id kept and the newest evicted once the memory is full.
+  it('forgets the oldest pushed report first once it remembers the maximum', () => {
+    const batcher = new ReportBatcher<string>(
+      () => undefined,
+      () => 0,
+    )
+
+    for (let i = 0; i <= MAX_REMEMBERED; i++) batcher.report('coord', message(`id-${i}`))
+
+    expect(batcher.wasPushed('id-0')).toBe(false)
+    expect(batcher.wasPushed('id-1')).toBe(true)
+    expect(batcher.wasPushed(`id-${MAX_REMEMBERED}`)).toBe(true)
+  })
+})
+
+describe('a report that is held and not yet written', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  /** A coordinator that is itself an agent, so a second connection with its agent id takes it over. */
+  const coordinator = (name: string): Wire => worker(name, session('root'))
+
+  // Mutation caught: a report counted as pushed when it is held.
+  it('does not count as pushed until its frame is written', () => {
+    const batcher = new ReportBatcher<string>(
+      () => undefined,
+      () => WINDOW_MS,
+    )
+
+    batcher.report('coord', message('id-one'))
+    expect(batcher.wasPushed('id-one')).toBe(false)
+    batcher.flush('coord')
+
+    expect(batcher.wasPushed('id-one')).toBe(true)
+  })
+
+  // Mutation caught: the exit judged without first flushing, so the notice is muted for a report nobody was pushed.
+  it.each(['coord', 'seat'])(
+    'is pushed to %s at the exit, which is then not announced, and is not pushed again after a reconnect',
+    name => {
+      const coord = session(name)
+      const a = worker('w-a', coord)
+      say(a, name, 'Status: DONE')
+      expect(pushes(coord)).toEqual([])
+
+      exit(a, 'w-a')
+      core.drop(coord.conn)
+      const back = session(name)
+      vi.advanceTimersByTime(WINDOW_MS)
+
+      expect(pushes(coord).map(m => m.text)).toEqual(['Status: DONE'])
+      expect(exitsPushedTo(coord)).toEqual([])
+      expect(pushes(back)).toEqual([])
+    },
+  )
+
+  // Mutation caught: a takeover leaving the displaced connection's timer armed, so it is written to after the fact.
+  it.each(['coord', 'seat'])(
+    'is pushed to %s at the exit, and is not pushed again after a takeover by the same agent',
+    name => {
+      const coord = coordinator(name)
+      const a = worker('w-a', coord)
+      say(a, name, 'Status: DONE')
+
+      exit(a, 'w-a')
+      const back = session(name, idOf(coord))
+      vi.advanceTimersByTime(WINDOW_MS)
+
+      expect(pushes(coord).map(m => m.text)).toEqual(['Status: DONE'])
+      expect(exitsPushedTo(coord)).toEqual([])
+      expect(pushes(back)).toEqual([])
+    },
+  )
+
+  // Mutation caught: only a seat's held reports kept for its next connection.
+  it.each(['coord', 'seat'])(
+    'goes to the connection %s reconnects on when the first one closed inside the window',
+    name => {
+      const coord = session(name)
+      const a = worker('w-a', coord)
+      say(a, name, 'Status: DONE')
+
+      core.drop(coord.conn)
+      const back = session(name)
+      watchExitOf(back, 'w-a')
+      exit(a, 'w-a')
+      vi.advanceTimersByTime(WINDOW_MS)
+
+      expect(pushes(coord)).toEqual([])
+      expect(pushes(back).map(m => m.text)).toEqual(['Status: DONE'])
+      expect(exitsPushedTo(back)).toEqual([])
+    },
+  )
+
+  // Mutation caught: a takeover not handing the displaced connection's held reports to its successor.
+  it.each(['coord', 'seat'])(
+    'goes to the connection that takes %s over inside the window, and to no other',
+    name => {
+      const coord = coordinator(name)
+      const a = worker('w-a', coord)
+      say(a, name, 'Status: DONE')
+
+      const back = session(name, idOf(coord))
+      watchExitOf(back, 'w-a')
+      exit(a, 'w-a')
+      vi.advanceTimersByTime(WINDOW_MS)
+
+      expect(pushes(coord)).toEqual([])
+      expect(pushes(back).map(m => m.text)).toEqual(['Status: DONE'])
+      expect(exitsPushedTo(back)).toEqual([])
+    },
+  )
+
+  // Mutation caught: a report counted as pushed when it is held, or when its write was refused.
+  it.each(['destroyed', 'writableEnded'])(
+    'leaves the exit notice in place when the connection is %s, and goes to the next connection',
+    flag => {
+      const coord = session('coord')
+      const a = worker('w-a', coord)
+      say(a, 'coord', 'Status: DONE')
+      Object.assign(coord.conn, { [flag]: true })
+
+      exit(a, 'w-a')
+      core.drop(coord.conn)
+      const back = session('coord')
+
+      expect(pushes(coord)).toEqual([])
+      expect(exitsPushedTo(coord)).toEqual(['w-a'])
+      expect(pushes(back).map(m => m.text)).toEqual(['Status: DONE'])
+    },
+  )
+
+  // Mutation caught: stranded reports kept after they are pushed, so every later reconnect repeats them.
+  it('is pushed once to a coordinator that reconnects twice', () => {
+    const coord = session('coord')
+    say(worker('w-a', coord), 'coord', 'Status: DONE')
+    core.drop(coord.conn)
+    const second = session('coord')
+    core.drop(second.conn)
+
+    const third = session('coord')
+
+    expect(pushes(second).map(m => m.text)).toEqual(['Status: DONE'])
+    expect(pushes(third)).toEqual([])
+  })
+
+  it('reaches a coordinator that reconnects as one batch when several were held', () => {
+    const coord = session('coord')
+    say(worker('w-a', coord), 'coord', 'Status: DONE')
+    say(worker('w-b', coord), 'coord', 'Verdict: MERGE')
+    core.drop(coord.conn)
+
+    const back = session('coord')
+
+    expect(pushes(back)).toHaveLength(1)
+    expect(pushes(back)[0]?.batch?.map(m => m.from)).toEqual(['w-a', 'w-b'])
+  })
+
+  // Mutation caught: the exit judged before the flush, so the notice overtakes the report it follows.
+  it('is pushed ahead of the exit notice when the spawner wrote to the agent after it', () => {
+    const coord = session('coord')
+    const a = worker('w-a', coord)
+    say(a, 'coord', 'Status: DONE')
+    vi.advanceTimersByTime(10)
+    windowMs = 0
+    send(coord, { t: 'send', to: 'w-a', text: 'also fix the flake before you stop' })
+
+    exit(a, 'w-a')
+
+    const order = coord.frames.flatMap(f => (f.t === 'deliver' || f.t === 'system_events' ? [f.t] : []))
+    expect(order.slice(-2)).toEqual(['deliver', 'system_events'])
+    expect(exitsPushedTo(coord)).toEqual(['w-a'])
+  })
+
+  // Mutation caught: any exit ending the window, which would undo batching for every other worker.
+  it('stays held through the exit of a different agent', () => {
+    const coord = session('coord')
+    const [a, b] = [worker('w-a', coord), worker('w-b', coord)]
+    say(a, 'coord', 'Status: DONE')
+
+    exit(b, 'w-b')
+
+    expect(pushes(coord)).toEqual([])
+  })
 })
 
 describe('the agent_exited notice to a spawner that was pushed the final report', () => {
@@ -342,12 +572,6 @@ describe('the agent_exited notice to a spawner that was pushed the final report'
     vi.useFakeTimers()
     windowMs = 0
   })
-
-  /** A clean exit by default; the feed's own coalesce window is waited out before returning. */
-  const exit = (w: Wire, name: string, meta: Record<string, string> = { code: '0' }): void => {
-    core.append({ kind: 'agent_exited', actor: name, ref: idOf(w), body: '', meta })
-    vi.advanceTimersByTime(LIFECYCLE_MS)
-  }
 
   const watcher = (): Wire => {
     const w = session('watcher')
@@ -378,20 +602,6 @@ describe('the agent_exited notice to a spawner that was pushed the final report'
     exit(a, 'w-a')
 
     expect(exitsPushedTo(coord)).toEqual([])
-  })
-
-  // Mutation caught: a report still inside its batch window not counting as pushed.
-  it('is skipped when the exit lands while the report is still held in its window', () => {
-    windowMs = WINDOW_MS
-    const coord = session('coord')
-    const a = worker('w-a', coord)
-    say(a, 'coord', 'Status: DONE')
-
-    exit(a, 'w-a')
-    vi.advanceTimersByTime(WINDOW_MS)
-
-    expect(exitsPushedTo(coord)).toEqual([])
-    expect(pushes(coord).map(m => m.text)).toEqual(['Status: DONE'])
   })
 
   // Mutation caught: a closing status left out of the terminal set.
@@ -464,6 +674,38 @@ describe('the agent_exited notice to a spawner that was pushed the final report'
 
     expect(exitsPushedTo(coord)).toEqual([])
   })
+
+  // Mutation caught: a follow-up looked for since the run began, so an assignment sent before the report counts.
+  it('is skipped when the spawner last wrote to the agent before its report', () => {
+    const coord = session('coord')
+    const a = worker('w-a', coord)
+    say(coord, 'w-a', 'take the flaky test')
+    vi.advanceTimersByTime(10)
+    say(a, 'coord', 'Status: DONE')
+
+    exit(a, 'w-a')
+
+    expect(exitsPushedTo(coord)).toEqual([])
+  })
+
+  // Mutation caught: a closed connection's pushes still counting for the one that replaced it.
+  it.each(['reconnect', 'takeover'])(
+    'is pushed to a spawner whose %s left it on a connection the report was never written to',
+    how => {
+      const coord = worker('coord', session('root'))
+      const a = worker('w-a', coord)
+      say(a, 'coord', 'Status: DONE')
+      const agentId = idOf(coord)
+      if (how === 'reconnect') core.drop(coord.conn)
+
+      const back = session('coord', agentId)
+      watchExitOf(back, 'w-a')
+      exit(a, 'w-a')
+
+      expect(pushes(back)).toEqual([])
+      expect(exitsPushedTo(back)).toEqual(['w-a'])
+    },
+  )
 
   // Mutation caught: `reportedSpawner` returning the spawner whatever the last message was.
   it('is pushed when the agent sent no message at all', () => {

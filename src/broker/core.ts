@@ -27,9 +27,10 @@ export type Conn = net.Socket
  * Live delivery to a connected session, injected so the core never touches a
  * socket. Generic over the connection type so `BrokerCore` itself can be
  * instantiated over a non-socket transport (relay's fold-in target); every
- * existing caller passes no type argument and keeps getting `Conn`.
+ * existing caller passes no type argument and keeps getting `Conn`. Returning
+ * `false` says the frame was not written, which keeps a report from counting as pushed.
  */
-export type Deliver<C = Conn> = (conn: C, message: DeliveredMessage) => void
+export type Deliver<C = Conn> = (conn: C, message: DeliveredMessage) => unknown
 
 /** A headless agent exits seconds after its report; two minutes covers a slow Stop hook and no further work. */
 export const CLOSING_ACT_MS = 120_000
@@ -65,7 +66,7 @@ export class BrokerCore<C = Conn> {
 
   private readonly reports: ReportBatcher<C>
   private readonly isSeat: (name: string) => boolean
-  /** CC-321: reports a seat's connection closed on mid-window, pushed with its CC-320 hold when it registers. */
+  /** CC-321: reports a connection closed on unpushed, by name, pushed to the next connection to take that name. */
   private readonly stranded = new Map<string, DeliveredMessage[]>()
   private readonly watchers = new Set<(row: AppendInput) => void>()
 
@@ -234,6 +235,7 @@ export class BrokerCore<C = Conn> {
     // drop() find nothing left to record when it does fire.
     if (agentId !== undefined)
       this.append({ kind: 'agent_detached', actor: name, ref: agentId, body: 'superseded by resume' })
+    this.strand(name, this.reports.forget(evicted))
     logEvent('deregistered', { name, reason: 'superseded by resume' })
     evict?.(evicted)
   }
@@ -280,8 +282,7 @@ export class BrokerCore<C = Conn> {
     const name = this.registry.drop(conn)
     const unpushed = this.reports.forget(conn)
     if (!name || !entry) return
-    if (unpushed.length > 0 && this.isSeat(name))
-      this.stranded.set(name, [...(this.stranded.get(name) ?? []), ...unpushed])
+    this.strand(name, unpushed)
     // Claims are leases held by presence, so they end here rather than needing
     // to be reaped: an agent that dies mid-task stops blocking its peers at
     // once, and there is no such thing as a stale claim (CC-56).
@@ -290,6 +291,20 @@ export class BrokerCore<C = Conn> {
     this.append({ kind: 'deregistered', actor: name, body: entry.workingOn, meta: { status: entry.status } })
     if (entry.agentId !== undefined)
       this.append({ kind: 'agent_detached', actor: name, ref: entry.agentId, body: 'connection closed' })
+  }
+
+  private strand(name: string, unpushed: DeliveredMessage[]): void {
+    if (unpushed.length > 0) this.stranded.set(name, [...(this.stranded.get(name) ?? []), ...unpushed])
+  }
+
+  /** Push `name`'s new connection the reports its last one closed on, once (CC-321). */
+  deliverStranded(name: string): void {
+    const unpushed = this.stranded.get(name)
+    const conn = this.registry.connFor(name)
+    if (unpushed === undefined || conn === undefined) return
+    this.stranded.delete(name)
+    this.reports.resend(conn, unpushed)
+    logEvent('stranded_reports_delivered', { name, count: unpushed.length })
   }
 
   /** Deliver to a named session if it happens to be connected right now. */
@@ -322,16 +337,22 @@ export class BrokerCore<C = Conn> {
     return this.events.lastAgentEventAt(identity.agentId, 'agent_resumed') ?? identity.spawnedAt
   }
 
-  /** The spawner whose `agent_exited` notice would repeat what it already has (CC-321). */
+  /**
+   * The spawner whose `agent_exited` notice would repeat what it already has (CC-321).
+   * Any held report from the agent is pushed first, so the notice never overtakes it.
+   */
   reportedSpawner(agentId: string | undefined, exit: Record<string, string> = {}): string | undefined {
     const identity = agentId === undefined ? undefined : this.agents.get(agentId)
-    if (identity === undefined || !exitedCleanly(exit)) return undefined
+    if (identity === undefined) return undefined
+    const spawner = this.registry.connFor(identity.spawnedBy)
+    if (spawner !== undefined) this.reports.flushFrom(spawner, identity.name)
+    if (!exitedCleanly(exit)) return undefined
     return this.closedWithReport(identity) ? identity.spawnedBy : undefined
   }
 
   /**
-   * The agent's newest message to its spawner in this run is a terminal report, pushed
-   * to the spawner shortly before now, with nothing sent back since.
+   * The agent's newest message to its spawner in this run is a terminal report, written
+   * to the spawner's open connection, shortly before now, with nothing sent back since.
    */
   private closedWithReport(identity: AgentIdentity): boolean {
     const { name, spawnedBy } = identity
@@ -369,8 +390,7 @@ export class BrokerCore<C = Conn> {
 
   /** Push what landed in a seat's inbox during the dark episode it just registered out of, oldest first. */
   deliverHeld(name: string, darkId: number): void {
-    const held = [...(this.stranded.get(name) ?? []), ...heldMessages(this.events, name, darkId, Date.now())]
-    this.stranded.delete(name)
+    const held = heldMessages(this.events, name, darkId, Date.now())
     for (const message of held) this.deliverTo(name, message)
     if (held.length > 0) logEvent('seat_hold_delivered', { name, count: held.length })
   }
