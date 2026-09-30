@@ -205,6 +205,13 @@ const remoteHas = (f: Fixture, branch: string): boolean =>
   spawnSync('git', ['rev-parse', '--verify', '-q', `refs/heads/${branch}`], { cwd: f.remote, env: baseEnv() })
     .status === 0
 
+const remoteAt = (f: Fixture, branch: string): string =>
+  spawnSync('git', ['rev-parse', '--verify', '-q', `refs/heads/${branch}`], {
+    cwd: f.remote,
+    env: baseEnv(),
+    encoding: 'utf8',
+  }).stdout.trim()
+
 const repoHookRuns = (f: Fixture): string[] =>
   fs.existsSync(f.marker) ? fs.readFileSync(f.marker, 'utf8').trim().split('\n') : []
 
@@ -591,16 +598,14 @@ describe('the real titan-egress-scan under a hostile agent env', () => {
 describe('the commits a push is scanned for', () => {
   // CC-310 review: the scanner skips commits a local remote-tracking ref holds, and an agent can write one.
   it('scans a new branch whose commits a forged remote-tracking ref already holds', () => {
-    const f = fixture()
+    const f = fixture({ scanPath: realScanPath() })
     commitFile(f, 'leaky', 'notes.md', `the ${LEAK} seat`)
     git(f.work, baseEnv(), 'update-ref', 'refs/remotes/origin/decoy', 'leaky')
 
     const run = push(f, 'leaky')
 
     expect(run.code).not.toBe(0)
-    expect(stubSaw(f)[1]).toBe(
-      `refs/heads/leaky ${git(f.work, baseEnv(), 'rev-parse', 'leaky')} refs/heads/leaky ${git(f.work, baseEnv(), 'rev-parse', 'main')}`,
-    )
+    expect(run.stdout).toContain('notes.md:1 private-term')
     expect(remoteHas(f, 'leaky')).toBe(false)
   })
 
@@ -708,11 +713,11 @@ describe("the allow list: the remote default branch's .egress-allow and no other
       },
     ],
     [
-      'on another branch of the remote',
+      'on the remote branch being pushed to, and not on the default branch',
       (f: Fixture) => {
-        commitFile(f, 'prep', '.egress-allow', ALLOW.trim())
-        git(f.work, baseEnv(), 'push', '-q', 'origin', 'prep')
-        leak(f, 'leaky')
+        commitFile(f, 'leaky', '.egress-allow', ALLOW.trim())
+        git(f.work, baseEnv(), 'push', '-q', 'origin', 'leaky')
+        commitOnTop(f, 'notes.md', homePathLine)
       },
     ],
   ])('refuses a home path whose allow entry is %s', (_, plant) => {
@@ -724,7 +729,7 @@ describe("the allow list: the remote default branch's .egress-allow and no other
     expect(run.code).not.toBe(0)
     expect(run.stdout).toContain('notes.md:1 home-path')
     expect(run.stderr).toContain("only .egress-allow entries already on the remote's default branch count")
-    expect(remoteHas(f, 'leaky')).toBe(false)
+    expect(remoteAt(f, 'leaky')).not.toBe(git(f.work, baseEnv(), 'rev-parse', 'leaky'))
   })
 
   it('refuses a push whose .egress-allow is a symlink to a file outside the repo', () => {
