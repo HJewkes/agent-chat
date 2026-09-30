@@ -2092,9 +2092,23 @@ export class Supervisor implements TeleportHost {
         ...(req.source === undefined ? {} : { source: req.source }),
       },
     })
-    const handle = await this.launchOn(surface, plan)
+    const handle = await this.launchOn(surface, plan).catch((err: unknown) => {
+      this.resumeNeverStarted(agent, err)
+      throw err
+    })
     this.track(agent.agentId, agent.name, handle, allocation, isolation)
     this.bindExecution(agent.agentId, executionId)
+  }
+
+  /** CC-326: closes the `agent_resumed` row of a launch that threw, so nothing reads it as a resume that started. */
+  private resumeNeverStarted(agent: AgentIdentity, err: unknown): void {
+    this.core.append({
+      kind: 'agent_exited',
+      actor: agent.name,
+      ref: agent.agentId,
+      body: `${agent.name} resume never started: ${err instanceof Error ? err.message : String(err)}`,
+      meta: { failed: 'true', never_started: 'true' },
+    })
   }
 
   /**

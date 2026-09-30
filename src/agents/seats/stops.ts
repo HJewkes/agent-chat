@@ -92,7 +92,7 @@ function seatLines(log: string, day: Date): SeatLine[] {
 }
 
 export interface LogVerdict {
-  /** Set when the seat's latest line is a `BUDGET-PAUSE` or `PARKED` line. */
+  /** Set when the seat's latest line is a `BUDGET-PAUSE`, `PARKED` or `WRAP` line. */
   stop?: string
   /** Epoch ms of the seat's latest line. */
   activityAt?: number
@@ -105,7 +105,7 @@ export function readSeatLog(log: string, day: Date): LogVerdict {
     undefined,
   )
   if (latest === undefined) return {}
-  const marker = /^(BUDGET-PAUSE|PARKED)\b/.test(latest.text)
+  const marker = /^(BUDGET-PAUSE|PARKED|WRAP)\b/.test(latest.text)
   return { activityAt: latest.at, ...(marker ? { stop: `seat logged "${latest.text.slice(0, 80)}"` } : {}) }
 }
 

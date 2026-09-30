@@ -180,6 +180,39 @@ describe('readTranscriptSpend', () => {
     expect(read.models).toEqual([MODEL_A, 'model-unknown-9'])
   })
 
+  it('never prices a request that names no model', async () => {
+    const file = transcript({
+      type: 'assistant',
+      timestamp: TS,
+      message: { id: 'msg-1', role: 'assistant', usage: { input_tokens: 10, output_tokens: 20 } },
+    })
+
+    const read = await spent(file)
+
+    expect(read.usd_est).toBeNull()
+    expect(read.tokens).toBe(30)
+    expect(read.unpriced).toEqual(['unknown'])
+  })
+
+  it('prices a request at its own timestamp, and leaves one with no timestamp unpriced', async () => {
+    const usage = { input_tokens: 1000, output_tokens: 1000 }
+    const dated = await spent(transcript(assistant('msg-1', usage)))
+    const undated = await spent(transcript(assistant('msg-1', usage, { timestamp: undefined })))
+
+    expect(dated.usd_est).toBe(
+      perMillion(1000, rates(MODEL_A).input) + perMillion(1000, rates(MODEL_A).output),
+    )
+    expect(undated.tokens).toBe(2000)
+    expect(undated.usd_est).toBeNull()
+  })
+
+  it('counts a negative token count as zero', async () => {
+    const read = await spent(transcript(assistant('msg-1', { input_tokens: -50, output_tokens: 20 })))
+
+    expect(read.usage.input).toBe(0)
+    expect(read.tokens).toBe(20)
+  })
+
   it('skips a <synthetic> record', async () => {
     const file = transcript(
       assistant('msg-1', { input_tokens: 10, output_tokens: 20 }),
