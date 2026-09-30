@@ -457,22 +457,31 @@ describe('scanner inputs the agent environment cannot change', () => {
     expect(remoteHas(f, 'leaky')).toBe(false)
   })
 
+  // The fixture's repo hook fails on empty stdin, which would refuse these pushes for the wrong reason.
+  const dropRepoHook = (f: Fixture): void => fs.rmSync(path.join(f.work, '.git', 'hooks', 'pre-push'))
+
   // The scan's ref lines are read outside the scan step; a shadow cat on the agent PATH emptied them.
   it('reads the ref lines with the broker PATH, so a shadow cat cannot hide the push from the scan', () => {
     const f = fixture()
+    dropRepoHook(f)
     f.agentEnv.PATH = `${binWith({ scripts: { cat: 'exit 0' } })}:${process.env.PATH}`
     commitFile(f, 'leaky', 'notes.md', `the ${LEAK} seat`)
 
     const run = push(f, 'leaky')
 
     expect(run.code).not.toBe(0)
+    expect(run.stdout + run.stderr).toContain('notes.md:1 private-term')
     expect(remoteHas(f, 'leaky')).toBe(false)
   })
 
   // CC-310 review: sh on macOS is bash, which imports functions from the environment.
-  it('still scans a push when the agent env holds a shell function named after the scanner', () => {
+  it.each([
+    ['titan-egress-scan', '() { echo pre-push; }'],
+    ['cat', '() { :; }'],
+  ])('still scans a push when the agent env holds a shell function named %s', (name, body) => {
     const f = fixture()
-    f.agentEnv['BASH_FUNC_titan-egress-scan%%'] = '() { echo pre-push; }'
+    dropRepoHook(f)
+    f.agentEnv[`BASH_FUNC_${name}%%`] = body
     commitFile(f, 'leaky', 'notes.md', `the ${LEAK} seat`)
 
     const run = push(f, 'leaky')
@@ -618,6 +627,35 @@ describe('the commits a push is scanned for', () => {
 
     expect(run.code).not.toBe(0)
     expect(run.stderr).toContain('origin names no default branch to scan refs/heads/clean against')
+    expect(remoteHas(f, 'clean')).toBe(false)
+  })
+
+  it('scans a forced push over a remote commit this clone lacks from the default branch', () => {
+    const f = fixture()
+    commitFile(f, 'shared', 'notes.md', 'fine')
+    git(f.work, baseEnv(), 'push', '-q', 'origin', 'shared')
+    const other = path.join(path.dirname(f.work), 'other')
+    git(path.dirname(f.work), baseEnv(), 'clone', '-q', '-b', 'shared', f.remote, other)
+    git(other, baseEnv(), 'commit', '-q', '--allow-empty', '-m', 'ahead')
+    git(other, baseEnv(), 'push', '-q', 'origin', 'shared')
+    commitFile(f, 'shared', 'notes.md', 'rewritten')
+    const [sha, main] = ['shared', 'main'].map(rev => git(f.work, baseEnv(), 'rev-parse', rev))
+
+    const run = push(f, '+shared')
+
+    expect(run.code).toBe(0)
+    expect(stubSaw(f)[1]).toBe(`refs/heads/shared ${sha} refs/heads/shared ${main}`)
+  })
+
+  it('scans every ref of a push that sends several', () => {
+    const f = fixture()
+    commitFile(f, 'leaky', 'notes.md', `the ${LEAK} seat`)
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = spawnSync('git', ['push', '-q', 'origin', 'clean', 'leaky'], { cwd: f.work, env: f.agentEnv })
+
+    expect(run.status).not.toBe(0)
+    expect(stubSaw(f)).toHaveLength(3)
     expect(remoteHas(f, 'clean')).toBe(false)
   })
 
