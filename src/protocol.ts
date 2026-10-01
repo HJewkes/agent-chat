@@ -513,6 +513,14 @@ export const SURFACE_NAMES = ['headless', 'iterm-pane', 'iterm-tab', 'iterm-wind
 
 export type SurfaceName = (typeof SURFACE_NAMES)[number]
 
+/** Why a session teleported; absent is the ordinary build-refresh case. */
+export const TELEPORT_REASONS = ['park'] as const
+
+export type TeleportReason = (typeof TELEPORT_REASONS)[number]
+
+export const isTeleportReason = (value: unknown): value is TeleportReason =>
+  (TELEPORT_REASONS as readonly unknown[]).includes(value)
+
 /** The surfaces that put the agent in front of a human who can answer a prompt. */
 export const isInteractiveSurface = (surface: SurfaceName): boolean => surface !== 'headless'
 
@@ -881,7 +889,7 @@ export type ClientMessage =
    * deliberately succeed itself onto a cheaper or stronger model. Absent means
    * "whatever this session is running on now", which is the point of teleport.
    */
-  | { t: 'teleport'; handoff: string; model?: string; remoteControl?: boolean }
+  | { t: 'teleport'; handoff: string; model?: string; remoteControl?: boolean; reason?: TeleportReason }
   /**
    * Stop a countdown that has not fired yet. The human's veto, and it has no
    * MCP tool — see `docs/teleport.md` §4.2. The broker refuses it from a

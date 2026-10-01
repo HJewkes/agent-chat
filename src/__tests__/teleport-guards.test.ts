@@ -89,6 +89,19 @@ describe('who may teleport', () => {
     expect(result.ok).toBe(false)
     expect(result.reason).toMatch(/durable identity/)
   })
+
+  it('refuses a reason it does not know, rather than passing it through', async () => {
+    const socket = await connect()
+    const frame = { t: 'teleport', handoff: 'x', reason: 'refresh' } as unknown as ClientMessage
+
+    const result = (await ask(socket, frame, 'teleport_result')) as Extract<
+      ServerMessage,
+      { t: 'teleport_result' }
+    >
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toBe('unknown teleport reason "refresh"')
+  })
 })
 
 describe('who may abort a countdown', () => {
