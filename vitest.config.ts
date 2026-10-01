@@ -9,6 +9,13 @@ const FORKS_FILES = [
   'src/__tests__/seat-journal.test.ts',
   // Sets process.env.TZ, which a worker thread keeps in its own env copy and never applies.
   'src/__tests__/seat-dispatches-verb.test.ts',
+  // The next five point HOME at a temp dir for the in-process broker, but os.homedir() in a
+  // worker thread still returns the developer's real home.
+  'src/__tests__/spawn-account.test.ts',
+  'src/__tests__/spawn-default-account.test.ts',
+  'src/__tests__/resume-role-gate.test.ts',
+  'src/__tests__/surface-role-gate.test.ts',
+  'src/__tests__/report-batch.test.ts',
 ]
 
 const MAX_WORKERS = 4
