@@ -9,11 +9,13 @@ import {
 } from './agents/machine-guard.js'
 import { DEFAULT_FULL_SUITE_SLOTS } from './suite-slots.js'
 import { isHexColour, type PaneColourConfig } from './agents/pane-identity.js'
+import { isInteractiveSurface, type SurfaceName } from './protocol.js'
 
 interface AgentChatConfig {
   agentSlots?: unknown
   worktreeBudget?: unknown
   contextHints?: unknown
+  parkAdvice?: unknown
   ledgerShadow?: unknown
   permissionHookTimeoutSeconds?: unknown
   decider?: unknown
@@ -225,6 +227,40 @@ function policyFrom(key: string, value: unknown, fallback: ContextHintPolicy): C
   }
   logEvent('config_invalid', { key: `contextHints.${key}`, value, fallback })
   return fallback
+}
+
+/** When to tell a session idle on the human that its warm cache is about to expire (CC-135). Advisory only. */
+export interface ParkAdvicePolicy {
+  tokens: number
+  /** How long before cache expiry the notice goes out. */
+  leadMinutes: number
+  /** The cache TTL assumed when the status line reports no expiry. */
+  ttlMinutes: number
+}
+
+/** 200k is where the CC-135 cold-rebuild cost cells start; keep-warm is deliberately absent. */
+export const DEFAULT_PARK_ADVICE: ParkAdvicePolicy = { tokens: 200_000, leadMinutes: 8, ttlMinutes: 60 }
+
+/**
+ * Null means never advise: `parkAdvice.enabled` is false, the surface is headless, or the
+ * profile is one the context hint never addresses.
+ */
+export function resolveParkAdvicePolicy(
+  profile: string | undefined,
+  surface: string | undefined,
+): ParkAdvicePolicy | null {
+  if (surface !== undefined && !isInteractiveSurface(surface as SurfaceName)) return null
+  if (resolveContextHintPolicy(profile) === null) return null
+  const raw = readConfig().parkAdvice
+  const configured = isObject(raw) ? raw : {}
+  if (configured.enabled === false) return null
+  const number = (key: keyof ParkAdvicePolicy): number => {
+    const value = configured[key]
+    if (value === undefined || isPositiveInteger(value)) return value ?? DEFAULT_PARK_ADVICE[key]
+    logEvent('config_invalid', { key: `parkAdvice.${key}`, value, fallback: DEFAULT_PARK_ADVICE[key] })
+    return DEFAULT_PARK_ADVICE[key]
+  }
+  return { tokens: number('tokens'), leadMinutes: number('leadMinutes'), ttlMinutes: number('ttlMinutes') }
 }
 
 /**

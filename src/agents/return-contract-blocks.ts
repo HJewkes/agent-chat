@@ -39,8 +39,9 @@ const IMPLEMENTER = [
   '`Status: DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT`, `PR: <owner>/<repo>#<n>` and',
   '`Head: <full sha>` lines, then',
   'CI: <paste of: gh api repos/<owner>/<repo>/commits/<head>/check-runs --paginate --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>,',
-  'as it stands at the push, never "green" alone. `gh run watch` covers only one workflow;',
-  'a skipped check (std / compat) is no failure.',
+  'as it stands at the push (you do not wait for CI), never "green" alone. `gh run watch` covers only one',
+  'workflow; a skipped check (std / compat) is no failure, and "required" means the required contexts on',
+  'the default branch.',
 ].join('\n')
 
 const REVIEWER = [

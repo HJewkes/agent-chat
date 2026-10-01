@@ -17,6 +17,16 @@ export interface AppendInput {
   meta?: Record<string, string>
 }
 
+/** An endorsement request awaiting the human, as stored when it was composed. */
+export interface OpenEndorsement {
+  composer: string
+  recipient: string
+  /** CC-420: absent on requests written before it, or to a recipient with no durable identity. */
+  recipientAgentId?: string
+  text: string
+  at: number
+}
+
 /**
  * One relayed permission prompt that can still be answered (CC-96).
  *
@@ -101,7 +111,7 @@ export interface EventStore {
   openCountByAgent(agentId: string, kind: EventKind): number
 
   /** The stored text of a still-open endorsement request, with composer and recipient. */
-  openEndorsement(msgId: string): { composer: string; recipient: string; text: string } | undefined
+  openEndorsement(msgId: string): OpenEndorsement | undefined
 
   /** A still-open approval request, with who is blocked on it. Channel rows age out; hook rows do not. */
   openApproval(msgId: string): OpenApproval | undefined

@@ -84,6 +84,11 @@ export class ToolHandler {
     this.nameIsFixed = spawnedName !== undefined
   }
 
+  /** The name this session is registered under, as far as this process knows. */
+  name(): string | null {
+    return this.registeredName
+  }
+
   private context(): ToolContext {
     return {
       warnings: [],

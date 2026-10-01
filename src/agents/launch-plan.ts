@@ -122,6 +122,8 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   AGENT_CHAT_WORKING_ON: input.workingOn ?? summaryFor(input),
   // The role the child's context hint is tuned to (CC-128); absent means a human-started session.
   AGENT_CHAT_PROFILE: input.profile.name,
+  // The child's park advisor stays off on a headless surface, which has no human to wait on (CC-135).
+  AGENT_CHAT_SURFACE: input.surface ?? input.profile.surface,
   // Defaults chosen by whoever spawned it, applied on that first registration —
   // so an agent is already listening to the right things before its first turn,
   // rather than needing the model to remember to subscribe.

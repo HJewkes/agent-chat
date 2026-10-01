@@ -35,11 +35,11 @@ interface Session {
 
 const sessions: Session[] = []
 
-async function startSession(label: string): Promise<Session> {
+async function startSession(label: string, env: Record<string, string> = {}): Promise<Session> {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [CLI, 'mcp'],
-    env: { ...process.env, AGENT_CHAT_HOME: TEST_HOME },
+    env: { ...process.env, AGENT_CHAT_HOME: TEST_HOME, ...env },
   })
   const client = new Client({ name: `test-${label}`, version: '0.0.1' }, { capabilities: {} })
   const inbox: Inbox = []
@@ -71,7 +71,8 @@ beforeAll(async () => {
   expect(fs.existsSync(CLI), 'run `npm run build` before the integration test').toBe(true)
   alice = await startSession('alice')
   bob = await startSession('bob')
-  carol = await startSession('carol')
+  // A durable identity, as Claude Code gives every session: an endorsement recipient needs one (CC-420).
+  carol = await startSession('carol', { CLAUDE_CODE_SESSION_ID: 'routing-test-carol' })
   await call(alice, 'chat_register', { name: 'alice', working_on: 'the dashboard' })
   await call(bob, 'chat_register', { name: 'bob', working_on: 'the BLE adapter' })
   await call(carol, 'chat_register', { name: 'carol', working_on: 'docs' })

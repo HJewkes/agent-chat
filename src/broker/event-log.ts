@@ -23,6 +23,7 @@ import type {
   EventStore,
   LoggedEventRow,
   OpenApproval,
+  OpenEndorsement,
 } from './event-store.js'
 
 /**
@@ -42,6 +43,7 @@ export type {
   EventStore,
   LoggedEventRow,
   OpenApproval,
+  OpenEndorsement,
 } from './event-store.js'
 
 /** The question's columns, aliased beside a `decided` row in `decidedQueue`. */
@@ -447,7 +449,7 @@ export class EventLog implements EventStore {
    * shown. Returns undefined once the item is closed, so an approval is a grant
    * over exactly one message and cannot be replayed.
    */
-  openEndorsement(msgId: string): { composer: string; recipient: string; text: string } | undefined {
+  openEndorsement(msgId: string): OpenEndorsement | undefined {
     const row = this.db
       .prepare(
         `SELECT * FROM events
@@ -457,7 +459,13 @@ export class EventLog implements EventStore {
     if (!row) return undefined
     const meta = (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>
     if (!meta.recipient) return undefined
-    return { composer: row.actor, recipient: meta.recipient, text: row.body ?? '' }
+    return {
+      composer: row.actor,
+      recipient: meta.recipient,
+      ...(meta.recipient_agent_id ? { recipientAgentId: meta.recipient_agent_id } : {}),
+      text: row.body ?? '',
+      at: row.ts,
+    }
   }
 
   /**

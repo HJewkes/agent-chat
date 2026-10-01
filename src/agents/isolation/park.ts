@@ -26,23 +26,38 @@ export interface CwdProcess {
 /** Lists every process's cwd; throws when it cannot, which parking treats as a refusal. */
 export type CwdLister = () => Promise<CwdProcess[]>
 
-/** `lsof -Fpn` prints `p<pid>` then `n<path>` per process; lsof exits 1 with no output when nothing matches. */
-export const lsofCwds: CwdLister = async () => {
-  const run = await execFileAsync('lsof', ['-a', '-d', 'cwd', '-Fpn'], {
-    encoding: 'utf8',
-    maxBuffer: 64 << 20,
-  }).catch((err: { code?: unknown; stdout?: string }) => {
-    if (err.code === 1 && !err.stdout) return { stdout: '' }
-    throw err
-  })
+/** Runs `lsof`; rejects like `execFile` does, with `code` and `stdout` on a nonzero exit. */
+export type LsofRunner = () => Promise<{ stdout: string }>
+
+const runLsof: LsofRunner = () =>
+  execFileAsync('lsof', ['-a', '-d', 'cwd', '-Fpn'], { encoding: 'utf8', maxBuffer: 64 << 20 })
+
+function parseCwds(stdout: string): CwdProcess[] | undefined {
   const found: CwdProcess[] = []
   let pid = 0
-  for (const line of run.stdout.split('\n')) {
+  for (const line of stdout.split('\n')) {
     if (line.startsWith('p')) pid = Number(line.slice(1))
     else if (line.startsWith('n') && pid > 0) found.push({ pid, cwd: line.slice(1) })
   }
-  return found
+  return found.length > 0 ? found : undefined
 }
+
+/**
+ * `lsof -Fpn` prints `p<pid>` then `n<path>` per process. It exits 1 with no output when nothing
+ * matches, and also when warnings accompany partial output, which still lists real processes.
+ */
+export const lsofCwdsWith =
+  (run: LsofRunner): CwdLister =>
+  async () => {
+    const { stdout } = await run().catch((err: { code?: unknown; stdout?: string }) => {
+      if (err.code === 1 && !err.stdout) return { stdout: '' }
+      if (err.code === 1 && err.stdout && parseCwds(err.stdout)) return { stdout: err.stdout }
+      throw err
+    })
+    return parseCwds(stdout) ?? []
+  }
+
+export const lsofCwds: CwdLister = lsofCwdsWith(runLsof)
 
 /** A detached agent's process may have outlived a broker restart, so refuse while anything still sits in its tree. */
 async function occupiedByProcess(tree: string, list: CwdLister): Promise<string | undefined> {

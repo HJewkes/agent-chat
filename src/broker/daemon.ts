@@ -26,6 +26,7 @@ import {
   writePidFile,
 } from './lifecycle.js'
 import { logEvent } from './log.js'
+import { installedCliPaths, lsofCwd, readPsTable, startReaper } from './reaper.js'
 import { deliver, SocketServer } from './socket.js'
 import { ensureToken } from './token.js'
 import { VERSION } from './version.js'
@@ -74,6 +75,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   const { core, socketServer } = openServices()
   listener.serve(socketServer)
   socketServer.startLifecycleVerifier()
+  const stopReaper = startBrokerReaper()
   const { server, openConnections } = listener
 
   // Only after the socket is serving, and only ever best-effort.
@@ -103,6 +105,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
     stopWatching: () => {
       stopWatching?.()
       stopIdleWatch?.()
+      stopReaper()
     },
   })
 
@@ -133,6 +136,25 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
 
   installSignalHandlers(shutdown)
   return server
+}
+
+const REAP_MIN_AGE_MS = 120_000
+
+function startBrokerReaper(): () => void {
+  const excludePaths = installedCliPaths()
+  return startReaper({
+    readTable: () => readPsTable(),
+    kill: pid => process.kill(pid, 'SIGTERM'),
+    cwdOf: lsofCwd,
+    log: entry => logEvent('reaped', entry),
+    options: () => ({
+      uid: process.getuid?.() ?? -1,
+      now: Date.now(),
+      minAgeMs: REAP_MIN_AGE_MS,
+      selfPid: process.pid,
+      excludePaths,
+    }),
+  })
 }
 
 /**

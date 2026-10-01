@@ -90,6 +90,8 @@ export interface Registration {
   task: string
   /** The agent Shepherd wakes to push fixes. */
   implementer: string
+  /** The PR's current head; when known, a listed row at any other head is stale. */
+  headSha?: string
 }
 
 export type RegisterReply = { ok: true } | { ok: false; refused: boolean; reason: string }
@@ -98,7 +100,8 @@ export type RegisterReply = { ok: true } | { ok: false; refused: boolean; reason
 export function registerWithShepherd(reg: Registration, exec: Runner = run): RegisterReply {
   // A worker registers its own PR with a --kind; a repeat here would clear it.
   const listed = shepherdRows(exec)
-  if (listed !== undefined && rowFor(listed, reg.target) !== undefined) return { ok: true }
+  const row = listed && rowFor(listed, reg.target)
+  if (row && isLiveAtHead(row, reg.headSha)) return { ok: true }
   const args = [
     'shepherd',
     'register',
@@ -114,6 +117,12 @@ export function registerWithShepherd(reg: Registration, exec: Runner = run): Reg
     firstLine(result.stderr) ?? (result.status === null ? 'did not run' : `exit ${result.status}`)
   return { ok: false, refused: result.status === REFUSED_EXIT, reason }
 }
+
+const FINISHED_PHASES: readonly ShepherdRow['phase'][] = ['done', 'failed', 'cancelled']
+
+/** A finished run, or one at another head, no longer watches this PR. */
+const isLiveAtHead = (row: ShepherdRow, headSha: string | undefined): boolean =>
+  !FINISHED_PHASES.includes(row.phase) && (headSha === undefined || row.headSha === headSha)
 
 const firstLine = (text: string | undefined): string | undefined =>
   text

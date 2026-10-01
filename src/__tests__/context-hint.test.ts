@@ -113,6 +113,14 @@ describe('ContextHinter', () => {
     )
   })
 
+  it('asks for plain-text questions past the mark, since AskUserQuestion holds a park notice back', () => {
+    const hint = hinter(read(210_000)).hint()
+
+    expect(hint).toMatch(
+      /Above this mark, put questions to the human in plain text rather than AskUserQuestion, so a park notice can reach you\.$/,
+    )
+  })
+
   it('omits cache state entirely when the status line did not report it', () => {
     expect(hinter(read(210_000)).hint()).not.toMatch(/cache/)
   })

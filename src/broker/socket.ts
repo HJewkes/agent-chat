@@ -4,6 +4,7 @@ import {
   encode,
   lineReader,
   HUMAN,
+  isTeleportReason,
   type ClientMessage,
   type DeliveredMessage,
   type ItemShape,
@@ -359,6 +360,12 @@ export class SocketServer {
    * so there is no version of this call that ends someone else's session.
    */
   private async handleTeleport(conn: Conn, msg: Extract<ClientMessage, { t: 'teleport' }>): Promise<void> {
+    if (msg.reason !== undefined && !isTeleportReason(msg.reason))
+      return reply(conn, {
+        t: 'teleport_result',
+        ok: false,
+        reason: `unknown teleport reason "${String(msg.reason)}"`,
+      })
     const { registry } = this.core
     const entry = registry.entryFor(conn)
     if (entry?.agentId === undefined) {
@@ -392,6 +399,7 @@ export class SocketServer {
       handoff: msg.handoff,
       ...(msg.model === undefined ? {} : { model: msg.model }),
       ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
+      ...(msg.reason === undefined ? {} : { reason: msg.reason }),
     })
     reply(conn, {
       t: 'teleport_result',
@@ -785,11 +793,9 @@ export class SocketServer {
     // The human is shown "would be delivered to X" and decides based on that
     // name. Refusing an unknown name here at least closes the case an adversarial
     // review found live: approving a request for a name nobody holds yet, which
-    // then gets delivered to whoever happens to register it later. This does NOT
-    // close the narrower race where the recipient changes identity between this
-    // check and the human's eventual approval — that would need the approval
-    // bound to an agentId rather than a name, which nothing else on this bus does
-    // either (accepted, tracked separately).
+    // then gets delivered to whoever happens to register it later. The narrower
+    // race, where the name changes hands before the human approves, is closed at
+    // approval by `recipient_agent_id` below (CC-420).
     const recipientConn = core.registry.connFor(msg.to)
     if (recipientConn === undefined) return refuse(`no session named "${msg.to}" is currently connected`)
 
@@ -822,6 +828,7 @@ export class SocketServer {
       meta: {
         recipient: msg.to,
         ...(composer?.agentId ? { agent_id: composer.agentId } : {}),
+        ...(recipient?.agentId ? { recipient_agent_id: recipient.agentId } : {}),
         recipient_durable: recipient?.agentId ? 'true' : 'false',
         recipient_registered_at: String(recipient?.registeredAt ?? Date.now()),
       },
@@ -1339,6 +1346,11 @@ export class SocketServer {
           events: core.events.activityFor(msg.name, msg.limit),
         })
       }
+      case 'reported':
+        return reply(conn, {
+          t: 'reported_result',
+          reported: core.events.hasStatusReport(msg.from, [msg.to], msg.since),
+        })
       case 'human_send':
         return this.handleHumanSend(conn, msg.to, msg.text, wakeSource(msg.source))
       case 'approval':
