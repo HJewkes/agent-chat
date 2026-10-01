@@ -12,6 +12,7 @@ import {
   type QueueResponse,
   type ResetFrameData,
 } from '../api-contract.js'
+import type { EndorseApproval } from '../broker/core.js'
 import { APPROVAL_TTL_MS } from '../broker/event-log.js'
 import { resolveNoticeTtlMs } from '../config.js'
 import { HUMAN, type ClientMessage, type EventKind, type ServerMessage } from '../protocol.js'
@@ -53,11 +54,39 @@ export interface QueueRow {
 }
 
 export function agentChatQueueSource(options: AgentChatSourceOptions): QueueSource {
+  const posted = new PostedEndorsements()
   return {
     kinds: ITEM_KINDS,
-    open: () => openQueue(options),
-    tail: (cursor, signal) => tail(options, cursor, signal),
-    resolve: (id, verdict) => resolve(options, id, verdict),
+    open: async () => posted.trackAll(await openQueue(options)),
+    tail: (cursor, signal) => posted.tap(tail(options, cursor, signal)),
+    resolve: (id, verdict) => resolve(options, id, verdict, posted.get(id)),
+  }
+}
+
+/** The text and recipient of each endorse request handed to the mirror, which an approval restates (CC-418). */
+class PostedEndorsements {
+  private readonly byId = new Map<string, EndorseApproval>()
+
+  get(id: string): EndorseApproval | undefined {
+    return this.byId.get(id)
+  }
+
+  trackAll(items: QueueItem[]): QueueItem[] {
+    for (const item of items) this.track(item)
+    return items
+  }
+
+  async *tap(events: AsyncIterable<SourceEvent>): AsyncIterable<SourceEvent> {
+    for await (const event of events) {
+      if (event.type === 'opened') this.track(event.item)
+      else this.byId.delete(event.id)
+      yield event
+    }
+  }
+
+  private track(item: QueueItem): void {
+    if (item.kind === 'endorse_request' && item.text !== undefined && item.recipient !== undefined)
+      this.byId.set(item.id, { text: item.text, to: item.recipient })
   }
 }
 
@@ -114,10 +143,18 @@ export function toSourceEvent(frame: EventFrameData, machine: string): SourceEve
   return null
 }
 
-export function toClientFrame(id: string, verdict: VerdictInput): ClientMessage {
+/** Null for an approval of an endorsement this source never posted: there are no bytes to restate. */
+export function toClientFrame(
+  id: string,
+  verdict: VerdictInput,
+  endorsement?: EndorseApproval,
+): ClientMessage | null {
   const behavior = verdict.verdict as Verdict
   if (behavior === 'allow' || behavior === 'deny') return { t: 'approve_permission', msgId: id, behavior }
-  if (behavior === 'approve') return { t: 'endorse_approve', msgId: id }
+  if (behavior === 'approve')
+    return endorsement
+      ? { t: 'endorse_approve', msgId: id, text: endorsement.text, to: endorsement.to }
+      : null
   if (behavior === 'answer') return { t: 'answer', msgId: id, text: verdict.text ?? '' }
   return { t: 'dismiss', msgId: id }
 }
@@ -150,8 +187,12 @@ async function resolve(
   options: AgentChatSourceOptions,
   id: string,
   verdict: VerdictInput,
+  endorsement: EndorseApproval | undefined,
 ): Promise<ResolveResult> {
-  const reply = await options.verdicts.request(toClientFrame(id, verdict), 'answer_result')
+  const frame = toClientFrame(id, verdict, endorsement)
+  if (!frame)
+    return { ok: false, reason: 'rejected', detail: `${id} was not posted as an endorsement request` }
+  const reply = await options.verdicts.request(frame, 'answer_result')
   if (reply.t !== 'answer_result') throw new Error(`unexpected reply "${reply.t}" for answer_result`)
   return toResolveResult(reply)
 }

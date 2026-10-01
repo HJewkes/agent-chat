@@ -172,10 +172,9 @@ describe('toClientFrame', () => {
       msgId: 'm1',
       behavior: 'deny',
     })
-    expect(toClientFrame('m1', { verdict: 'approve', resolutionEventId: 'r1' })).toEqual({
-      t: 'endorse_approve',
-      msgId: 'm1',
-    })
+    expect(
+      toClientFrame('m1', { verdict: 'approve', resolutionEventId: 'r1' }, { text: 'ship it', to: 'bob' }),
+    ).toEqual({ t: 'endorse_approve', msgId: 'm1', text: 'ship it', to: 'bob' })
     expect(toClientFrame('m1', { verdict: 'answer', text: 'hi', resolutionEventId: 'r1' })).toEqual({
       t: 'answer',
       msgId: 'm1',
@@ -185,6 +184,10 @@ describe('toClientFrame', () => {
       t: 'dismiss',
       msgId: 'm1',
     })
+  })
+
+  it('builds no approval frame without the posted text and recipient to restate', () => {
+    expect(toClientFrame('m1', { verdict: 'approve', resolutionEventId: 'r1' })).toBeNull()
   })
 })
 
@@ -489,8 +492,48 @@ describe('agentChatQueueSource, against a real in-process broker', () => {
 
     const impersonator = await registeredClient('impersonator')
     const source = agentChatQueueSource(options(impersonator))
+    await source.open()
     const result = await source.resolve(msgId as string, { verdict: 'approve', resolutionEventId: 'r2' })
-    expect(result).toEqual({ ok: false, reason: 'rejected', detail: expect.any(String) })
+    expect(result).toEqual({ ok: false, reason: 'rejected', detail: expect.stringMatching(/human’s call/) })
+  })
+
+  it('approves an endorsement it tailed by restating the posted text and recipient', async () => {
+    const composer = await registeredClient('composer')
+    await registeredClient('recipient')
+    const source = agentChatQueueSource(options(await unregisteredClient()))
+    const controller = new AbortController()
+    const iterator = source.tail(undefined, controller.signal)[Symbol.asyncIterator]()
+    await settle(50)
+    const text = '  ship v2 on Friday\n'
+    const { msgId } = (await composer.request(
+      { t: 'endorse', to: 'recipient', text },
+      'send_result',
+    )) as Extract<ServerMessage, { t: 'send_result' }>
+    await iterator.next()
+
+    const result = await source.resolve(msgId as string, { verdict: 'approve', resolutionEventId: 'r3' })
+
+    expect(result).toEqual({ ok: true })
+    const [delivered] = core.events.inboxFor('recipient', 10)
+    expect(delivered).toMatchObject({ text, provenance: 'human-endorsed' })
+    controller.abort()
+  })
+
+  it('rejects an approval of an endorsement it never posted without sending a frame', async () => {
+    const sent: unknown[] = []
+    const source = agentChatQueueSource(
+      options({
+        request: async message => {
+          sent.push(message)
+          return { t: 'answer_result', ok: true }
+        },
+      }),
+    )
+
+    const result = await source.resolve('m9', { verdict: 'approve', resolutionEventId: 'r4' })
+
+    expect(result).toMatchObject({ ok: false, reason: 'rejected' })
+    expect(sent).toHaveLength(0)
   })
 
   it('lists all five agent-chat queue kinds', () => {

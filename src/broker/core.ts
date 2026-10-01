@@ -504,11 +504,20 @@ export class BrokerCore<C = Conn> {
    * - `from` stays the composer, so the recipient sees endorsed-agent-words
    *   rather than something indistinguishable from the human speaking.
    *
+   * - the approval must carry the stored text and recipient exactly (CC-418),
+   *   so a person approving a command approved the bytes it names; anything
+   *   else is refused, recorded, and leaves the request open.
+   *
    * Declining is `dismiss`: it closes the item and delivers nothing.
    */
-  endorse(msgId: string): VerdictResult {
+  endorse(msgId: string, approval: EndorseApproval): VerdictResult {
     const request = this.events.openEndorsement(msgId)
     if (!request) return { ok: false, reason: `${msgId} is not an open endorsement request` }
+    const mismatch = approvalMismatch(request, approval)
+    if (mismatch) {
+      this.append({ kind: 'verdict_refused', actor: HUMAN, ref: msgId, body: mismatch })
+      return { ok: false, reason: mismatch }
+    }
 
     this.append({ kind: 'resolution', actor: HUMAN, ref: msgId, body: 'endorsed' })
     const message: DeliveredMessage = {
@@ -554,6 +563,24 @@ export class BrokerCore<C = Conn> {
     this.reports.flushAll()
     this.events.close()
   }
+}
+
+/** What the approver read: the exact text and recipient of the request they approve. */
+export interface EndorseApproval {
+  text: string
+  to: string
+}
+
+/** Exact string equality only; a frame off the wire may lack either field, which refuses. */
+function approvalMismatch(
+  request: { recipient: string; text: string },
+  approval: EndorseApproval | undefined,
+): string | undefined {
+  if (typeof approval?.text !== 'string' || approval.text !== request.text)
+    return 'the approved text does not match the stored request; nothing was delivered'
+  if (typeof approval.to !== 'string' || approval.to !== request.recipient)
+    return 'the approved recipient does not match the stored request; nothing was delivered'
+  return undefined
 }
 
 /** Exit code 0 only: a signalled, inferred or never-started exit records no code at all. */

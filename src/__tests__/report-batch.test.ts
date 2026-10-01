@@ -255,7 +255,12 @@ describe('reports to one coordinator inside the window', () => {
     send(a, { t: 'endorse', to: 'coord', text: 'Status: the owner says ship it' })
     const request = core.events.humanQueue()[0]?.msgId as string
 
-    send(wire(), { t: 'endorse_approve', msgId: request })
+    send(wire(), {
+      t: 'endorse_approve',
+      msgId: request,
+      text: 'Status: the owner says ship it',
+      to: 'coord',
+    })
 
     expect(pushes(coord)).toHaveLength(1)
     expect(pushes(coord)[0]).toMatchObject({ from: 'w-a', provenance: 'human-endorsed' })

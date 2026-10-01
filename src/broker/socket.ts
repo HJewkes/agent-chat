@@ -16,7 +16,7 @@ import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
 import { newMsgId } from './event-log.js'
 import { type Escalation, type RouteResult } from './registry.js'
-import { BrokerCore, type Conn } from './core.js'
+import { BrokerCore, type Conn, type EndorseApproval } from './core.js'
 import type { SlotUsage } from '../agents/semaphore.js'
 import { Supervisor, type SupervisorOptions } from '../agents/supervisor.js'
 import { gather, LifecycleVerifier } from '../agents/ledger/verifier.js'
@@ -920,7 +920,7 @@ export class SocketServer {
    * that no message shape carries the field itself. See `isHuman` for what this
    * check does and does not guarantee against a more determined bypass.
    */
-  private handleEndorseApprove(conn: Conn, msgId: string): void {
+  private handleEndorseApprove(conn: Conn, msgId: string, approval: EndorseApproval): void {
     if (!this.isHuman(conn)) {
       this.refuseToSession(conn, 'endorse a message')
       return reply(conn, {
@@ -929,7 +929,7 @@ export class SocketServer {
         reason: 'endorsing is the human’s call; a session cannot endorse its own message or a peer’s',
       })
     }
-    const result = this.core.endorse(msgId)
+    const result = this.core.endorse(msgId, approval)
     reply(conn, {
       t: 'answer_result',
       ok: result.ok,
@@ -1287,7 +1287,7 @@ export class SocketServer {
       case 'endorse':
         return this.handleEndorseRequest(conn, msg)
       case 'endorse_approve':
-        return this.handleEndorseApprove(conn, msg.msgId)
+        return this.handleEndorseApprove(conn, msg.msgId, { text: msg.text, to: msg.to })
       case 'inbox': {
         const name = core.registry.nameOf(conn)
         return reply(conn, { t: 'inbox_result', messages: name ? core.events.inboxFor(name, msg.limit) : [] })

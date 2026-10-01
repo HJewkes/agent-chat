@@ -18,6 +18,8 @@ export interface BatchItem {
   shape: ItemShape
   /** Lines shown under the text: the command preview, the recipient, the decision under audit. */
   details: string[]
+  /** An endorsement's recipient, which approving it restates (CC-418). */
+  recipient?: string
   /** The unlock-table row this item touches; such an item is never prefilled. */
   unlock?: string
   /** The answer line's starting value, which feeding the file back unedited sends. */
@@ -68,7 +70,13 @@ function fromQueue(item: QueueItem): Unnumbered | undefined {
   const shape = readShape(item.meta)
   const unlock = unlockOf(section, item.text, shape)
   const base = { msgId: item.msgId, section, from: item.from, at: item.at, text: item.text, shape }
-  const withUnlock = { ...base, details: detailsOf(item), ...(unlock === undefined ? {} : { unlock }) }
+  const recipient = item.kind === 'endorse_request' ? item.meta.recipient : undefined
+  const withUnlock = {
+    ...base,
+    details: detailsOf(item),
+    ...(recipient === undefined ? {} : { recipient }),
+    ...(unlock === undefined ? {} : { unlock }),
+  }
   const prefill = prefillOf(withUnlock)
   return prefill === undefined ? withUnlock : { ...withUnlock, prefill }
 }
