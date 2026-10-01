@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type net from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
-import { BrokerCore, type Conn } from '../broker/core.js'
+import { BrokerCore, type Conn, type EndorseApproval } from '../broker/core.js'
 import { SocketServer } from '../broker/socket.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
@@ -66,7 +66,7 @@ describe('endorsed delivery', () => {
     const body = '  Ship v2 on Friday, not Thursday.\n\n  — decided in review.  \n'
     const msgId = requestEndorsement(core, 'alpha', 'beta', body)
 
-    expect(core.endorse(msgId)).toEqual({ ok: true })
+    expect(core.endorse(msgId, { text: body, to: 'beta' })).toEqual({ ok: true })
     expect(delivered).toHaveLength(1)
     expect(delivered[0]!.text).toBe(body)
     expect(delivered[0]!.provenance).toBe('human-endorsed')
@@ -85,7 +85,7 @@ describe('endorsed delivery', () => {
     const msgId = requestEndorsement(core, 'alpha', 'beta', 'freeze merges after Thursday')
 
     const shown = core.events.humanQueue().find(item => item.msgId === msgId)
-    core.endorse(msgId)
+    core.endorse(msgId, { text: shown!.text, to: shown!.meta.recipient! })
 
     expect(shown?.text).toBe(delivered[0]!.text)
     expect(shown?.meta.recipient).toBe('beta')
@@ -97,7 +97,7 @@ describe('endorsed delivery', () => {
     const msgId = requestEndorsement(core, 'alpha', 'beta', 'take the left slot')
 
     // beta is not connected: recorded, reported, and nothing lost.
-    const result = core.endorse(msgId)
+    const result = core.endorse(msgId, { text: 'take the left slot', to: 'beta' })
 
     expect(result.ok).toBe(true)
     expect(result.reason).toMatch(/beta is offline/)
@@ -117,7 +117,7 @@ describe('endorsed delivery', () => {
     registerSession(core, 'alpha')
     core.append({ kind: 'message', actor: HUMAN, target: 'beta', body: 'human-authored' })
     core.append({ kind: 'message', actor: 'alpha', target: 'beta', body: 'agent-authored' })
-    core.endorse(requestEndorsement(core, 'alpha', 'beta', 'endorsed'))
+    core.endorse(requestEndorsement(core, 'alpha', 'beta', 'endorsed'), { text: 'endorsed', to: 'beta' })
 
     const seen = core.events.inboxFor('beta', 10).map(m => [m.from, m.provenance])
 
@@ -129,14 +129,101 @@ describe('endorsed delivery', () => {
   })
 })
 
+/**
+ * CC-418 — the approval carries the bytes the human read and the recipient they
+ * saw, and the broker delivers only on an exact match with the stored request.
+ * Every refusal leaves the request open and records a `verdict_refused` row.
+ */
+describe('binding the approval to the exact text and recipient', () => {
+  const refusals = (core: BrokerCore): number =>
+    core.events.history(50).filter(r => r.kind === 'verdict_refused').length
+
+  function expectRefusedAndOpen(
+    core: BrokerCore,
+    delivered: DeliveredMessage[],
+    msgId: string,
+    result: unknown,
+  ) {
+    expect(result).toMatchObject({ ok: false })
+    expect(delivered).toHaveLength(0)
+    expect(core.events.inboxFor('beta', 10)).toHaveLength(0)
+    expect(core.events.humanQueue().map(i => i.msgId)).toContain(msgId)
+    expect(refusals(core)).toBe(1)
+  }
+
+  it('refuses an approval whose text differs from the stored request by one byte', () => {
+    const { core, delivered } = makeCore()
+    registerSession(core, 'beta')
+    const msgId = requestEndorsement(core, 'alpha', 'beta', 'ship v2 on Friday')
+
+    const result = core.endorse(msgId, { text: 'ship v2 on Friday ', to: 'beta' })
+
+    expectRefusedAndOpen(core, delivered, msgId, result)
+  })
+
+  it('refuses an approval that omits the text', () => {
+    const { core, delivered } = makeCore()
+    registerSession(core, 'beta')
+    const msgId = requestEndorsement(core, 'alpha', 'beta', 'ship it')
+
+    const result = core.endorse(msgId, { to: 'beta' } as unknown as EndorseApproval)
+
+    expectRefusedAndOpen(core, delivered, msgId, result)
+  })
+
+  it('refuses an approval naming a different recipient than the stored request', () => {
+    const { core, delivered } = makeCore()
+    registerSession(core, 'beta')
+    registerSession(core, 'gamma')
+    const msgId = requestEndorsement(core, 'alpha', 'beta', 'ship it')
+
+    const result = core.endorse(msgId, { text: 'ship it', to: 'gamma' })
+
+    expectRefusedAndOpen(core, delivered, msgId, result)
+  })
+
+  it('refuses an approval that omits the recipient', () => {
+    const { core, delivered } = makeCore()
+    registerSession(core, 'beta')
+    const msgId = requestEndorsement(core, 'alpha', 'beta', 'ship it')
+
+    const result = core.endorse(msgId, { text: 'ship it' } as unknown as EndorseApproval)
+
+    expectRefusedAndOpen(core, delivered, msgId, result)
+  })
+
+  it('refuses text taken from a different pending request', () => {
+    const { core, delivered } = makeCore()
+    registerSession(core, 'beta')
+    const first = requestEndorsement(core, 'alpha', 'beta', 'merge the small fix')
+    requestEndorsement(core, 'alpha', 'beta', 'drop the release branch')
+
+    const result = core.endorse(first, { text: 'drop the release branch', to: 'beta' })
+
+    expectRefusedAndOpen(core, delivered, first, result)
+  })
+
+  it('still delivers after a mismatch once the exact text is approved', () => {
+    const { core, delivered } = makeCore()
+    registerSession(core, 'beta')
+    const msgId = requestEndorsement(core, 'alpha', 'beta', 'ship it')
+    core.endorse(msgId, { text: 'ship it!', to: 'beta' })
+
+    const result = core.endorse(msgId, { text: 'ship it', to: 'beta' })
+
+    expect(result).toEqual({ ok: true })
+    expect(delivered.map(m => [m.text, m.provenance])).toEqual([['ship it', 'human-endorsed']])
+  })
+})
+
 describe('one approval, one message', () => {
   it('refuses to deliver the same endorsement twice', () => {
     const { core, delivered } = makeCore()
     registerSession(core, 'beta')
     const msgId = requestEndorsement(core, 'alpha', 'beta', 'ship it')
-    core.endorse(msgId)
+    core.endorse(msgId, { text: 'ship it', to: 'beta' })
 
-    const second = core.endorse(msgId)
+    const second = core.endorse(msgId, { text: 'ship it', to: 'beta' })
 
     expect(second.ok).toBe(false)
     expect(second.reason).toMatch(/not an open endorsement request/)
@@ -152,7 +239,10 @@ describe('one approval, one message', () => {
   it('does not carry the grant over to the composer’s next message', () => {
     const { core, delivered } = makeCore()
     registerSession(core, 'beta')
-    core.endorse(requestEndorsement(core, 'alpha', 'beta', 'first, approved'))
+    core.endorse(requestEndorsement(core, 'alpha', 'beta', 'first, approved'), {
+      text: 'first, approved',
+      to: 'beta',
+    })
 
     const second = requestEndorsement(core, 'alpha', 'beta', 'second, never approved')
 
@@ -167,7 +257,7 @@ describe('one approval, one message', () => {
 
     expect(core.dismiss(msgId)).toEqual({ ok: true })
     expect(delivered).toHaveLength(0)
-    expect(core.endorse(msgId).ok).toBe(false)
+    expect(core.endorse(msgId, { text: 'do not send this', to: 'beta' }).ok).toBe(false)
     expect(core.events.humanQueue()).toHaveLength(0)
   })
 
@@ -176,7 +266,7 @@ describe('one approval, one message', () => {
     registerSession(core, 'alpha')
     const { msgId } = core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'which branch?' })
 
-    expect(core.endorse(msgId).ok).toBe(false)
+    expect(core.endorse(msgId, { text: 'which branch?', to: HUMAN }).ok).toBe(false)
     expect(delivered).toHaveLength(0)
   })
 
@@ -184,7 +274,7 @@ describe('one approval, one message', () => {
     const { core } = makeCore()
     registerSession(core, 'beta')
     const msgId = requestEndorsement(core, 'alpha', 'beta', 'the decision')
-    core.endorse(msgId)
+    core.endorse(msgId, { text: 'the decision', to: 'beta' })
 
     const rows = core.events.history(10)
     const resolution = rows.find(r => r.kind === 'resolution')
@@ -287,8 +377,8 @@ describe('the marker cannot be set by a client', () => {
     const msgId = (alpha.frames.at(-1) as Extract<ServerMessage, { t: 'send_result' }>).msgId!
 
     // Its own composition, and then a peer's: neither is a session's call.
-    server.handleMessage(alpha.conn, { t: 'endorse_approve', msgId })
-    server.handleMessage(beta.conn, { t: 'endorse_approve', msgId })
+    server.handleMessage(alpha.conn, { t: 'endorse_approve', msgId, text: 'ship it', to: 'beta' })
+    server.handleMessage(beta.conn, { t: 'endorse_approve', msgId, text: 'ship it', to: 'beta' })
 
     expect(deliveries(beta.frames)).toHaveLength(0)
     for (const frames of [alpha.frames, beta.frames]) {
@@ -313,12 +403,28 @@ describe('the marker cannot be set by a client', () => {
     server.handleMessage(alpha.conn, { t: 'endorse', to: 'beta', text: 'ship it' })
     const msgId = (alpha.frames.at(-1) as Extract<ServerMessage, { t: 'send_result' }>).msgId!
 
-    server.handleMessage(human.conn, { t: 'endorse_approve', msgId })
+    server.handleMessage(human.conn, { t: 'endorse_approve', msgId, text: 'ship it', to: 'beta' })
 
     const [message] = deliveries(beta.frames)
     expect(message?.text).toBe('ship it')
     expect(message?.provenance).toBe('human-endorsed')
     expect(message?.from).toBe('alpha')
+  })
+
+  it('refuses a bare-id approval frame from an unregistered connection', () => {
+    const { server, wire } = makeServer()
+    const alpha = wire()
+    const beta = wire()
+    const human = wire()
+    register(server, alpha.conn, 'alpha')
+    register(server, beta.conn, 'beta')
+    server.handleMessage(alpha.conn, { t: 'endorse', to: 'beta', text: 'ship it' })
+    const msgId = (alpha.frames.at(-1) as Extract<ServerMessage, { t: 'send_result' }>).msgId!
+
+    server.handleMessage(human.conn, { t: 'endorse_approve', msgId } as unknown as ClientMessage)
+
+    expect(deliveries(beta.frames)).toHaveLength(0)
+    expect((human.frames.at(-1) as Extract<ServerMessage, { t: 'answer_result' }>).ok).toBe(false)
   })
 
   it('budgets how many messages one session can have waiting to be endorsed', () => {

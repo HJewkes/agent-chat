@@ -172,7 +172,7 @@ describe('a batch answer is a single answer', () => {
     const human = single.wire()
     await approveVerb.run({ id: one.ids.approval, 'allow|deny': 'allow' }, single.ctx)
     single.send(human, { t: 'answer', msgId: one.ids.question, text: 'sqlite' })
-    await endorseVerb.run({ id: one.ids.endorse }, single.ctx)
+    await endorseVerb.run({ id: one.ids.endorse, text: 'please rebase', to: 'bob' }, single.ctx)
     single.send(human, { t: 'answer', msgId: one.ids.decided, text: 'stop here' })
     await dismissVerb.run({ id: one.ids.notice }, single.ctx)
 
