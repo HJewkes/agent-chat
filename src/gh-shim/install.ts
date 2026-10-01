@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -23,8 +24,13 @@ export const ghShimScript = (dir: string, node: string, main: string): string =>
     '',
   ].join('\n')
 
+/** One directory per build, so a spawn from a worktree's dist never repoints the script other agents run. */
+export const shimDirFor = (root: string, main: string): string =>
+  path.join(root, createHash('sha256').update(main).digest('hex').slice(0, 12))
+
 /** Rewritten through a rename on every launch, so a concurrent spawn never execs a half-written file. */
-export function writeGhShim(dir: string, node: string, main: string): string {
+export function writeGhShim(root: string, node: string, main: string): string {
+  const dir = shimDirFor(root, main)
   fs.mkdirSync(dir, { recursive: true })
   const target = path.join(dir, 'gh')
   const temp = `${target}.${process.pid}.tmp`

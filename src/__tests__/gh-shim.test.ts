@@ -290,6 +290,30 @@ describe('gh shim answering pr checks from REST', () => {
   })
 })
 
+describe('gh shim leaving oversized check lists to the real gh', () => {
+  const prChecksArgs = ['pr', 'checks', '7', '--repo', 'acme/widgets']
+
+  it('passes pr checks through when check-runs total more than one page returned', () => {
+    const fixtures: Record<string, unknown> = checksFixtures([checkRun('lint', 'completed', 'success', 1)])
+    const key = `${REPO}/commits/${SHA}/check-runs?per_page=100`
+    fixtures[key] = { total_count: 101, check_runs: [checkRun('lint', 'completed', 'success', 1)] }
+
+    const result = gh({ [`${REPO}/pulls/7`]: pull(), ...fixtures }, ...prChecksArgs)
+
+    expect(calls().at(-1)).toEqual(prChecksArgs)
+    expect(result.stdout).toBe(`real-gh ${prChecksArgs.join(' ')}\n`)
+  })
+
+  it('passes pr checks through when statuses total more than one page returned', () => {
+    const fixtures: Record<string, unknown> = checksFixtures([checkRun('lint', 'completed', 'success', 1)])
+    fixtures[`${REPO}/commits/${SHA}/status?per_page=100`] = { total_count: 101, statuses: [] }
+
+    gh({ [`${REPO}/pulls/7`]: pull(), ...fixtures }, ...prChecksArgs)
+
+    expect(calls().at(-1)).toEqual(prChecksArgs)
+  })
+})
+
 const run = (status: string, conclusion: string | null) => ({
   id: 99,
   name: 'CI',
@@ -368,7 +392,7 @@ describe('gh shim answering run view and run watch from REST', () => {
       'acme/widgets',
       '--exit-status',
       '--interval',
-      '0.01',
+      '1',
     )
 
     expect(result.stdout).toContain('X test in 22s (ID 5)')
@@ -422,6 +446,17 @@ describe('gh shim argument parsing', () => {
     ['a repeated flag', ['pr', 'view', '7', '--json', 'number', '--json', 'title']],
   ])('leaves %s to the real gh', (_name, argv) => {
     expect(parseRequest(argv)).toBeUndefined()
+  })
+
+  it.each(['0', '0.5', '0.001', '1.5', '-2', 'abc'])(
+    'leaves run watch --interval %s to the real gh',
+    interval => {
+      expect(parseRequest(['run', 'watch', '99', '--interval', interval])).toBeUndefined()
+    },
+  )
+
+  it('accepts a whole-second run watch interval of 1', () => {
+    expect(parseRequest(['run', 'watch', '99', '-i', '1'])).toMatchObject({ intervalSec: 1 })
   })
 
   it('reads --flag=value forms', () => {

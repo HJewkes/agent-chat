@@ -57,9 +57,17 @@ function resolvePull(io: ShimIo, req: PrRequest): { repo: string; pull: Json } {
   return { repo, pull: pullByBranch(io, repo, branch) }
 }
 
+/** One page of a REST list; a total past the page means a failure could be cut off, so gh answers instead. */
+function onePage(io: ShimIo, path: string, key: string): unknown[] {
+  const body = asJson(io.api(path))
+  const items = body[key] as unknown[]
+  if (typeof body.total_count === 'number' && body.total_count > items.length) throw new Unsupported(path)
+  return items
+}
+
 const commitChecks = (io: ShimIo, repo: string, sha: string): CommitChecks => ({
-  checkRuns: asJson(io.api(`repos/${repo}/commits/${sha}/check-runs?per_page=100`)).check_runs as unknown[],
-  statuses: asJson(io.api(`repos/${repo}/commits/${sha}/status?per_page=100`)).statuses as unknown[],
+  checkRuns: onePage(io, `repos/${repo}/commits/${sha}/check-runs?per_page=100`, 'check_runs'),
+  statuses: onePage(io, `repos/${repo}/commits/${sha}/status?per_page=100`, 'statuses'),
   workflowRuns: asJson(io.api(`repos/${repo}/actions/runs?head_sha=${sha}&per_page=100`))
     .workflow_runs as unknown[],
 })

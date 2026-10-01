@@ -35,8 +35,8 @@ const IMPLEMENTER = [
   'You are NOT done at "PR opened". Your LAST action must be chat_send to <spawner> starting with',
   '`Status: DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT`, `PR: <owner>/<repo>#<n>` and',
   '`Head: <full sha>` lines, then',
-  'CI: <paste of: gh api repos/<owner>/<repo>/commits/<head>/check-runs --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>,',
-  'never "green" alone. `gh run watch` covers only one workflow.',
+  'CI: <paste of: gh api repos/<owner>/<repo>/commits/<head>/check-runs --paginate --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>,',
+  'never "green" alone. `gh run watch` covers only one workflow; a skipped check (std / compat) is no failure.',
 ].join('\n')
 
 const REVIEWER = [
@@ -46,8 +46,9 @@ const REVIEWER = [
   'Verdict: MERGE            (or FIX_FIRST)',
   'PR: <owner>/<repo>#<n>',
   'Head: <full 40-hex head sha>',
-  'Before MERGE, confirm every required check-run at the reviewed head with `gh api',
-  'repos/<owner>/<repo>/commits/<head>/check-runs`; FIX_FIRST if a required one failed.',
+  'Before MERGE, confirm every required check-run (one branch protection names) at the reviewed head',
+  'with `gh api repos/<owner>/<repo>/commits/<head>/check-runs --paginate`; FIX_FIRST if a required',
+  'one failed. A skipped check (std / compat) is not a failure.',
   "Then blocking items before nits. A verdict counts only when Head equals the PR's current head exactly.",
 ].join('\n')
 
