@@ -1339,6 +1339,11 @@ export class SocketServer {
           events: core.events.activityFor(msg.name, msg.limit),
         })
       }
+      case 'reported':
+        return reply(conn, {
+          t: 'reported_result',
+          reported: core.events.hasStatusReport(msg.from, [msg.to], msg.since),
+        })
       case 'human_send':
         return this.handleHumanSend(conn, msg.to, msg.text, wakeSource(msg.source))
       case 'approval':

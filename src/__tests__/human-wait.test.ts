@@ -7,12 +7,18 @@ import {
   awaitedChildren,
   classifyWait,
   parseDirtyPaths,
+  readAwaitedChildren,
   readDirtyPaths,
   readWait,
   recordsOf,
 } from '../server/human-wait.js'
 import { transcriptPath } from '../agents/transcript.js'
-import type { AgentIdentity, QueueItem } from '../protocol.js'
+import type { AgentIdentity, ClientMessage, ServerMessage } from '../protocol.js'
+import { BrokerCore, type Conn } from '../broker/core.js'
+import { EventLog } from '../broker/event-log.js'
+import type { AppendInput } from '../broker/event-store.js'
+import { Registry } from '../broker/registry.js'
+import { SocketServer } from '../broker/socket.js'
 
 const REPO = '/repo'
 const FILE = `${REPO}/src/a.ts`
@@ -243,7 +249,7 @@ describe('readWait', () => {
 
   const noChildren = {
     request: async (msg: { t: string }) =>
-      msg.t === 'agents' ? { t: 'agents_result', agents: [] } : { t: 'activity_result', events: [] },
+      msg.t === 'agents' ? { t: 'agents_result', agents: [] } : { t: 'reported_result', reported: false },
   } as never
 
   it('sees an edited, uncommitted file in a real checkout as a partial edit', async () => {
@@ -370,41 +376,87 @@ describe('readDirtyPaths', () => {
 })
 
 describe('awaitedChildren', () => {
-  const SPAWNED_AT = 1_000
   const child = (name: string, state: AgentIdentity['state'] = 'live', spawnedBy = 'coord') =>
-    ({ name, state, spawnedBy, spawnedAt: SPAWNED_AT }) as AgentIdentity
-  const message = (from: string, body: string, at = SPAWNED_AT + 1, target = 'coord'): QueueItem => ({
-    msgId: `m-${from}-${at}`,
-    kind: 'message',
-    from,
-    text: body,
-    at,
-    meta: { target },
-  })
+    ({ name, state, spawnedBy, spawnedAt: 1_000 }) as AgentIdentity
 
-  it('names live children with no Status: report since their spawn', () => {
+  it('names live children of this session that have not reported', () => {
     const agents = [child('w1'), child('w2'), child('w3', 'exited'), child('other', 'live', 'someone-else')]
-    const activity = new Map([
-      ['w1', [message('w1', 'Status: DONE\nPR: o/r#1')]],
-      ['w2', [message('w2', 'halfway there'), message('w2', 'Status: DONE', SPAWNED_AT - 5)]],
-    ])
 
-    expect(awaitedChildren('coord', agents, activity)).toEqual(['w2'])
+    expect(awaitedChildren('coord', agents, new Set(['w1']))).toEqual(['w2'])
   })
 
   it('still awaits a detached child, which is running without a surface', () => {
-    expect(awaitedChildren('coord', [child('w1', 'detached')], new Map())).toEqual(['w1'])
+    expect(awaitedChildren('coord', [child('w1', 'detached')], new Set())).toEqual(['w1'])
+  })
+})
+
+describe('readAwaitedChildren', () => {
+  let home: string
+
+  afterEach(() => {
+    fs.rmSync(home, { recursive: true, force: true })
   })
 
-  it("counts a reviewer's Verdict: as its report", () => {
-    const activity = new Map([['rev', [message('rev', 'Verdict: MERGE')]]])
+  /** A real broker core and socket handler, driven in process over fake connections. */
+  function broker() {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'awaited-children-'))
+    const core = new BrokerCore(() => true, {
+      events: new EventLog(path.join(home, 'events.db')),
+      registry: new Registry<Conn>(),
+    })
+    const server = new SocketServer(core)
+    const received: ServerMessage[] = []
+    const conn = {
+      write: (line: string) => received.push(JSON.parse(line) as ServerMessage),
+    } as unknown as Conn
+    const roster: Partial<AgentIdentity>[] = []
+    const client = {
+      request: async (frame: ClientMessage, expected: string) => {
+        if (frame.t === 'agents') return { t: 'agents_result', agents: roster }
+        server.handleMessage(conn, frame)
+        return received.findLast(f => f.t === expected)
+      },
+    } as never
+    return { core, client, roster }
+  }
 
-    expect(awaitedChildren('coord', [child('rev')], activity)).toEqual([])
+  const report = (from: string, to: string, body: string): AppendInput => ({
+    kind: 'message',
+    actor: from,
+    target: to,
+    body,
   })
 
-  it('does not count a report sent to someone else', () => {
-    const activity = new Map([['w1', [message('w1', 'Status: DONE', SPAWNED_AT + 1, 'peer')]]])
+  it('counts a report buried under more than 200 later rows', async () => {
+    const { core, client, roster } = broker()
+    roster.push({ name: 'w1', state: 'live', spawnedBy: 'coord', spawnedAt: Date.now() - 1_000 })
+    core.events.append(report('w1', 'coord', 'Status: DONE\nPR: o/r#1'))
+    for (let i = 0; i < 250; i++) core.events.append(report('w1', 'coord', `progress ${i}`))
 
-    expect(awaitedChildren('coord', [child('w1', 'spawning')], activity)).toEqual(['w1'])
+    expect(await readAwaitedChildren(client, 'coord')).toEqual([])
+  })
+
+  it("counts a reviewer's Verdict: as its report", async () => {
+    const { core, client, roster } = broker()
+    roster.push({ name: 'rev', state: 'live', spawnedBy: 'coord', spawnedAt: Date.now() - 1_000 })
+    core.events.append(report('rev', 'coord', 'Verdict: MERGE'))
+
+    expect(await readAwaitedChildren(client, 'coord')).toEqual([])
+  })
+
+  it('does not count a report sent to someone else', async () => {
+    const { core, client, roster } = broker()
+    roster.push({ name: 'w1', state: 'spawning', spawnedBy: 'coord', spawnedAt: Date.now() - 1_000 })
+    core.events.append(report('w1', 'peer', 'Status: DONE'))
+
+    expect(await readAwaitedChildren(client, 'coord')).toEqual(['w1'])
+  })
+
+  it('does not count a report from before the child was spawned', async () => {
+    const { core, client, roster } = broker()
+    core.events.append(report('w1', 'coord', 'Status: DONE'))
+    roster.push({ name: 'w1', state: 'live', spawnedBy: 'coord', spawnedAt: Date.now() + 60_000 })
+
+    expect(await readAwaitedChildren(client, 'coord')).toEqual(['w1'])
   })
 })

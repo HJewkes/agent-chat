@@ -113,6 +113,11 @@ describe('the argv every surface shares', () => {
     expect(plan.env.AGENT_CHAT_PROFILE).toBe(input().profile.name)
   })
 
+  it('tells the child its surface, so a headless one never gets a park notice', () => {
+    expect(buildLaunchPlan(input({ surface: 'headless' })).env.AGENT_CHAT_SURFACE).toBe('headless')
+    expect(buildLaunchPlan(input({ surface: 'iterm-pane' })).env.AGENT_CHAT_SURFACE).toBe('iterm-pane')
+  })
+
   it('propagates a relocated home, or the agent would join a different bus', () => {
     const plan = buildLaunchPlan(input({ agentChatHome: '/state' }))
     expect(plan.env.AGENT_CHAT_HOME).toBe('/state')
