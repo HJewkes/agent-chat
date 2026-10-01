@@ -298,11 +298,16 @@ When a brief states a report format of its own (another `Verdict:` vocabulary, a
 PR), pass `return_contract: "none"` to `agent_spawn`. Without it the agent gets your format and
 the broker's block, and the spawn result warns.
 
-Foreground `sleep` is denied, so an agent that does not block on `gh run watch` ends
-its turn at "PR opened" and needs a paid resume.
+An implementer's contract ends at "pushed": it verifies locally, pushes, opens the PR over REST,
+runs `titan-factory shepherd register <owner>/<repo>#<n> --task <initiative>/<ID> --implementer
+<its own agent name> --kind <correctness|security|feature|refactor>`, and reports Status, PR, Head
+and `Shepherd: <run id>`. It never waits on CI; Shepherd owns CI, review and merge. When register
+refuses (exit 65: a repo no seat policy lists, agent-chat today), it reports `Shepherd: refused
+<first stderr line>` and still reports Status, PR and Head, and you watch CI for that PR.
 
-Shepherd and `parseReport` read the three lines a reviewer's report starts with (`Verdict:`,
-`PR:`, `Head:`). A verdict counts only when Head equals the PR's current head exactly.
+A reviewer's report starts with the three lines `Verdict: MERGE` (or `FIX_FIRST`),
+`PR: <owner>/<repo>#<n>` and `Head: <40-hex sha>`. Shepherd, `bin/premerge` and `parseReport` read
+exactly those. A verdict counts only when Head equals the PR's current head exactly.
 
 Verify agent output before committing it — a passing test count isn't proof:
 

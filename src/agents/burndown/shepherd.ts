@@ -96,6 +96,9 @@ export type RegisterReply = { ok: true } | { ok: false; refused: boolean; reason
 
 /** Idempotent on `repo#pr` at Shepherd's end, so a repeat after an unanswered call starts no second run. */
 export function registerWithShepherd(reg: Registration, exec: Runner = run): RegisterReply {
+  // A worker registers its own PR with a --kind; a repeat here would clear it.
+  const listed = shepherdRows(exec)
+  if (listed !== undefined && rowFor(listed, reg.target) !== undefined) return { ok: true }
   const args = [
     'shepherd',
     'register',

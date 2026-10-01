@@ -28,7 +28,10 @@ const IMPLEMENTER = [
   '`agent-chat gh-write -- <gh args>` when `agent-chat gh-write --help` prints a usage line naming',
   '`gh-write`; otherwise use plain `gh`, and verify each write landed.',
   'On a 403 "API rate limit exceeded" with core quota left, wait 5 minutes and retry once.',
-  'Never use --no-verify. Wait for CI with `gh run watch <id> --exit-status` in the foreground.',
+  'Never use --no-verify. Verify locally, push, open the PR over REST, and never wait on CI.',
+  'Then run `titan-factory shepherd register <owner>/<repo>#<n> --task <initiative>/<ID> --implementer',
+  '<your agent name> --kind <correctness|security|feature|refactor>`. Report `Shepherd: <run id>`; if it',
+  'refuses (exit 65, a repo no seat lists), report `Shepherd: refused <first stderr line>`: <spawner> watches CI.',
   NEVER_PARK,
   "Load tests kill burners with `pkill -f '<pattern>'` and confirm with pgrep.",
   'A PR that narrows a timeout reports per-case CI times against the new limit.',
@@ -36,7 +39,8 @@ const IMPLEMENTER = [
   '`Status: DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT`, `PR: <owner>/<repo>#<n>` and',
   '`Head: <full sha>` lines, then',
   'CI: <paste of: gh api repos/<owner>/<repo>/commits/<head>/check-runs --paginate --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>,',
-  'never "green" alone. `gh run watch` covers only one workflow; a skipped check (std / compat) is no failure.',
+  'as it stands at the push, never "green" alone. `gh run watch` covers only one workflow;',
+  'a skipped check (std / compat) is no failure.',
 ].join('\n')
 
 const REVIEWER = [

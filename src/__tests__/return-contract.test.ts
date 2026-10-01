@@ -513,3 +513,23 @@ describe('which contract a profile takes', () => {
     })
   })
 })
+
+describe('the Shepherd handoff (TP-468)', () => {
+  // Mutation caught: restoring "Wait for CI with `gh run watch`" in the implementer block.
+  it('ends the implementer at pushed and registers the PR with a kind', () => {
+    const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
+
+    expect(text).toContain('titan-factory shepherd register <owner>/<repo>#<n> --task <initiative>/<ID>')
+    expect(text).toContain('--kind <correctness|security|feature|refactor>')
+    expect(text).toContain('never wait on CI')
+    expect(text).not.toContain('gh run watch <id>')
+    expect(text).toContain('Shepherd: refused <first stderr line>')
+  })
+
+  // Mutation caught: any change to the three lines bin/premerge and Shepherd parse.
+  it('pins the reviewer verdict block', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(
+      'exactly these three lines:\nVerdict: MERGE            (or FIX_FIRST)\nPR: <owner>/<repo>#<n>\nHead: <full 40-hex head sha>\n',
+    )
+  })
+})

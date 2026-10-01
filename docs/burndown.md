@@ -131,7 +131,7 @@ after the ledger write that moves the claim to `shepherding`. Each tick then rea
 `titan-factory shepherd status --json` once, and `shepherd timeline` for a run that has
 finished, to tell a merge from a stop. The tick no longer reads PRs through `gh`.
 
-- **Registers once.** A claim Shepherd already lists is never registered again. A register
+- **Registers once.** A claim Shepherd already lists is never registered again, so a worker's own `--kind` survives. A register
   that fails, or a Shepherd that does not list the PR, is registered again next tick;
   Shepherd's register is idempotent on `repo#pr`.
 - **Shepherd unreadable.** A status or timeline read that fails leaves the claim untouched
