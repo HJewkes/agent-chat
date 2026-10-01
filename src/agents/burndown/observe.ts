@@ -89,8 +89,7 @@ async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Pr
     const afterId = Number.parseInt(claim.inboxCursor ?? '0', 10)
     obs.inbox = await deps.inboxSince(claim.agentName, Number.isInteger(afterId) ? afterId : 0)
   }
-  if (claim.phase === 'awaiting-merge' || claim.phase === 'shepherding')
-    return withShepherd(obs, claim, deps)
+  if (claim.phase === 'awaiting-merge' || claim.phase === 'shepherding') return withShepherd(obs, claim, deps)
   if (row === undefined || !FINISHED.has(row.state) || claim.phase === 'spawning') return obs
   const text = (deps.finalText ?? defaultFinalText)(row)
   if (text !== undefined) obs.report = parseReport(text)

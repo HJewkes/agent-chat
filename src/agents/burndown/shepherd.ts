@@ -96,10 +96,19 @@ export type RegisterReply = { ok: true } | { ok: false; refused: boolean; reason
 
 /** Idempotent on `repo#pr` at Shepherd's end, so a repeat after an unanswered call starts no second run. */
 export function registerWithShepherd(reg: Registration, exec: Runner = run): RegisterReply {
-  const args = ['shepherd', 'register', targetRef(reg.target), '--task', reg.task, '--implementer', reg.implementer]
+  const args = [
+    'shepherd',
+    'register',
+    targetRef(reg.target),
+    '--task',
+    reg.task,
+    '--implementer',
+    reg.implementer,
+  ]
   const result = exec(SHEPHERD_BIN, [...args, '--json'])
   if (result.status === 0) return { ok: true }
-  const reason = firstLine(result.stderr) ?? (result.status === null ? 'did not run' : `exit ${result.status}`)
+  const reason =
+    firstLine(result.stderr) ?? (result.status === null ? 'did not run' : `exit ${result.status}`)
   return { ok: false, refused: result.status === REFUSED_EXIT, reason }
 }
 

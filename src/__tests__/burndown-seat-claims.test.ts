@@ -36,6 +36,13 @@ function step(c: Claim, obs: Observation): { actions: Action[]; after: Claim } {
 const land = (c: Claim, id: string): Claim => step(c, { agent: { id, state: 'live' } }).after
 const exited = { id: 'a1', state: 'exited' as const }
 const spawned = (actions: Action[]) => actions.filter(a => a.kind === 'spawn')
+const PR = 'https://github.com/o/r/pull/9'
+const landed: Observation = {
+  shepherd: {
+    row: { repo: 'o/r', pr: 9, runId: 'run-1', phase: 'done', headSha: null, stalled: null },
+    landed: true,
+  },
+}
 
 describe('agent names', () => {
   it('default to the bd prefix', () => {
@@ -61,17 +68,13 @@ describe('a tc claim through the phase machine', () => {
     const review = step(land(first.after, 'r0'), {
       agent: exited,
       report: parseReport('Verdict: CHANGES\nMissing a test.'),
-      pr: { state: 'open', checks: 'pass' },
     })
     const fixed = step(land(review.after, 's1'), {
       agent: exited,
       report: parseReport('Status: DONE'),
       diff: reviewable,
     })
-    const merged = step(
-      { ...fixed.after, phase: 'awaiting-merge' },
-      { pr: { state: 'merged', checks: 'pass' } },
-    )
+    const merged = step({ ...fixed.after, phase: 'shepherding', pr: PR }, landed)
 
     expect([...spawned(first.actions), ...spawned(review.actions), ...spawned(fixed.actions)]).toEqual([
       expect.objectContaining({ role: 'reviewer', name: 'tc-x-1-r0' }),
@@ -95,9 +98,7 @@ describe('a tc claim through the phase machine', () => {
   })
 
   it("retires the claim's original agent by prefix even when spawned lost it", () => {
-    const { actions } = step(seatClaim({ phase: 'awaiting-merge', spawned: [] }), {
-      pr: { state: 'merged', checks: 'pass' },
-    })
+    const { actions } = step(seatClaim({ phase: 'shepherding', spawned: [], pr: PR }), landed)
 
     expect(actions.filter(a => a.kind === 'retire')).toEqual([expect.objectContaining({ names: ['tc-x-1'] })])
   })

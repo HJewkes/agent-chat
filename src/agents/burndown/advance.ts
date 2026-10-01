@@ -170,7 +170,12 @@ function afterMerge(claim: Claim, obs: Observation): Action[] {
     return [update(claim, { phase: 'done', ...head }), retireAll(claim)]
   if (ENDED.has(row.phase)) {
     const why = row.stalled === null ? '' : `: ${row.stalled.reason}`
-    return [update(claim, { stalledReason: `Shepherd run ${row.runId} ended ${row.phase} without merging${why}`, ...head })]
+    return [
+      update(claim, {
+        stalledReason: `Shepherd run ${row.runId} ended ${row.phase} without merging${why}`,
+        ...head,
+      }),
+    ]
   }
   return claim.phase === 'awaiting-merge' ? [update(claim, { phase: 'shepherding' })] : []
 }
