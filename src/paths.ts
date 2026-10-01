@@ -99,6 +99,9 @@ export const denylistPath = (): string => path.join(home(), 'private-denylist.js
 /** The `core.hooksPath` every spawned agent's git runs with; rewritten at each spawn (CC-268). */
 export const gitHooksDir = (): string => path.join(home(), 'git-hooks')
 
+/** Holds the `gh` every spawned agent finds first on its PATH (CC-395). */
+export const ghShimDir = (): string => path.join(home(), 'gh-shim')
+
 /** The burndown claim ledger: which task each tick-spawned agent holds, and in what phase. */
 export const burndownLedgerPath = (): string => path.join(home(), 'burndown.json')
 

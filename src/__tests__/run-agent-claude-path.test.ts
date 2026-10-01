@@ -88,6 +88,22 @@ describe('run-agent stamping the launched process', () => {
   })
 })
 
+describe('run-agent putting the REST gh shim on the agent PATH (CC-395)', () => {
+  it('launches claude with the shim directory first on PATH and a gh script in it', () => {
+    fs.writeFileSync(fakeClaude, "process.stdout.write(process.env.PATH.split(':')[0])\n")
+    writePlan('agt-test')
+
+    const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
+
+    const shimDir = path.join(stateDir, 'gh-shim')
+    expect(result.stdout).toBe(shimDir)
+    expect(fs.statSync(path.join(shimDir, 'gh')).mode & 0o111).not.toBe(0)
+    expect(fs.readFileSync(path.join(shimDir, 'gh'), 'utf8')).toContain(
+      path.join('dist', 'gh-shim', 'main.js'),
+    )
+  })
+})
+
 describe('run-agent honouring an unset marker in the plan (CC-200)', () => {
   // The deletion must not be gated on the surface: only a headless plan was ever tested (CC-221).
   it.each(['headless', 'iterm-pane', 'iterm-tab'] as const)(

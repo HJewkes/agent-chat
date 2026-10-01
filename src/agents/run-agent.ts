@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process'
+import path from 'node:path'
 import { resolvePaneColourConfig } from '../config.js'
-import { home } from '../paths.js'
+import { withShimOnPath, writeGhShim } from '../gh-shim/install.js'
+import { distDir, ghShimDir, home } from '../paths.js'
 import { agentEnv } from './agent-env.js'
 import { recordClaudeBin, resolveClaudeBin } from './claude-bin.js'
 import { readLaunchPlan } from './launch-files.js'
@@ -93,6 +95,19 @@ function resolvedBin(bin: string): string {
   return resolution.bin
 }
 
+/** Puts the REST-backed `gh` first on PATH; a failure to write it costs the agent the shim, not the spawn. */
+function withGhShim(env: Record<string, string>): Record<string, string> {
+  try {
+    return withShimOnPath(
+      env,
+      writeGhShim(ghShimDir(), process.execPath, path.join(distDir(), 'gh-shim', 'main.js')),
+    )
+  } catch (err) {
+    process.stderr.write(`agent-chat run-agent: gh shim not installed: ${(err as Error).message}\n`)
+    return env
+  }
+}
+
 /** Longest the wrapper waits for stderr to drain after claude exits; a grandchild holding fd 2 must not stall it. */
 const STDERR_FLUSH_MS = 250
 
@@ -108,7 +123,7 @@ function exec(plan: LaunchPlan): void {
     //
     // `plan.env` still wins, and deliberately: it is what the SPAWNER chose for
     // this agent, which is the bounded thing the clause asks for.
-    env: launchEnv(plan.env, agentEnv(), process.pid, plan.unsetEnv),
+    env: withGhShim(launchEnv(plan.env, agentEnv(), process.pid, plan.unsetEnv)),
     // The brief goes in on stdin for headless; an interactive surface hands the
     // terminal straight through so the human can type into the pane.
     stdio: plan.stdin === undefined ? 'inherit' : ['pipe', 'inherit', 'pipe'],
