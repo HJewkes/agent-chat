@@ -585,6 +585,10 @@ the broker's own environment. Values are stored in plaintext in the launch plan
 under the agent's state directory, and a resume or surface switch reloads the profile by
 name from disk, so they carry over and any edit made since the spawn applies. Keep secrets out of profile files.
 
+After the plan's env is applied, `run-agent` puts `<state dir>/gh-shim` first on `PATH`, so a
+profile's own `PATH` still loses that first slot. The `gh` there answers read-only PR and run
+queries from REST instead of GraphQL (CC-395; see the README's CLI section).
+
 ---
 
 ### 5. Spawning: one interface, surface as a parameter
