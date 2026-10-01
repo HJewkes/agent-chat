@@ -263,9 +263,10 @@ so at most `fullSuiteSlots` (default 4) full suites run at once machine-wide. A
 runner in another repo takes a slot the same way, for example
 `"test": "agent-chat suite-slot -- vitest run"`. Each held slot is a directory
 `~/.agent-chat/suite-slots/<i>` holding the wrapper's pid. The wrapper waits for a
-free slot, runs the command, passes its exit code through and removes the slot. A
-slot whose pid is no longer running is taken over, so a killed runner frees its
-slot. After 30 minutes of waiting the wrapper runs without a slot rather
+free slot, runs the command, passes its exit code through and removes the slot.
+On SIGINT or SIGTERM it forwards the signal to the command, removes the slot once
+the command exits, and exits by the same signal. A slot whose pid is no longer
+running is taken over, so a runner killed outright frees its slot. After 30 minutes of waiting the wrapper runs without a slot rather
 than block on a hung holder. Run a single test file with `npx vitest run <file>`,
 which takes no slot.
 
@@ -346,6 +347,14 @@ read once and memoized with no watcher. Its own grants apply immediately, but
 another session's never reach it. So the _absence_ of an `approval` row only
 tells you a tool was allowlisted when that session launched — it is not portable
 evidence across sessions of different vintages. Presence is unaffected.
+
+**Spawns stop when the machine is full.** `agent_spawn` refuses a headless spawn
+while `machineHeadlessAgents` (default 10) headless agents are live machine-wide,
+and any spawn while free memory (`kern.memorystatus_level`) is below
+`machineMemoryFreePercent` (default 15) percent. Both keys live in
+`~/.agent-chat/config.json`. Swap used is reported by `seats status` but never
+refuses, because macOS keeps swap allocated after memory pressure ends. A reader
+that fails lets the spawn through. Details are in `docs/agent-teams.md` §11.3.
 
 ## Not built yet
 

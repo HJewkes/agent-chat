@@ -6,23 +6,29 @@ import type { AgentIdentity } from '../protocol.js'
  * population and spawn-rate bounds churn per requester; neither sees the machine,
  * so several seats spawning at once drove load to 52 on 14 cores with swap at 84%.
  *
+ * Memory pressure, not swap, is the gate: macOS keeps swap allocated long after
+ * pressure ends, so swap used reads high on an idle machine. Swap is reported only.
+ *
  * Pure decision over injectable readings. A reading that fails never refuses:
- * a broken swap reader would otherwise stop every seat on the machine.
+ * a broken reader would otherwise stop every seat on the machine.
  */
 
 export const DEFAULT_MACHINE_HEADLESS_AGENTS = 10
-export const DEFAULT_MACHINE_SWAP_PERCENT = 85
+export const DEFAULT_MACHINE_MEMORY_FREE_PERCENT = 15
 
 export interface MachineLimits {
   headlessAgents: number
-  swapPercent: number
+  /** Refuse below this share of memory free, as `kern.memorystatus_level` reports it. */
+  memoryFreePercent: number
 }
+
+export type MemoryReading = { freePercent: number } | { error: string }
 
 export type SwapReading = { usedBytes: number; totalBytes: number } | { error: string }
 
 export interface MachineReadings {
   liveHeadless: number
-  swap: SwapReading
+  memory: MemoryReading
 }
 
 export type MachineDecision = { ok: true } | { ok: false; reason: string }
@@ -34,7 +40,7 @@ export function countLiveHeadless(agents: readonly AgentIdentity[]): number {
   return agents.filter(a => a.surface === 'headless' && LIVE_STATES.has(a.state)).length
 }
 
-/** Used share of swap in whole percent, or null with no swap configured or no reading. */
+/** Used share of swap in percent to one decimal, or null with no swap configured or no reading. */
 export function swapPercent(swap: SwapReading): number | null {
   if ('error' in swap || swap.totalBytes <= 0) return null
   return Math.round((swap.usedBytes / swap.totalBytes) * 1000) / 10
@@ -54,16 +60,38 @@ export function machineDecision(
         `(limit ${limits.headlessAgents}, config machineHeadlessAgents); wait for one to exit`,
     }
   }
-  const swap = swapPercent(readings.swap)
-  if (swap !== null && swap > limits.swapPercent) {
+  const { memory } = readings
+  if (!('error' in memory) && memory.freePercent < limits.memoryFreePercent) {
     return {
       ok: false,
       reason:
-        `machine guard: swap ${swap}% used (limit ${limits.swapPercent}%, config machineSwapPercent); ` +
-        'wait for memory to free before spawning',
+        `machine guard: memory ${memory.freePercent}% free ` +
+        `(floor ${limits.memoryFreePercent}%, config machineMemoryFreePercent); ` +
+        'wait for memory pressure to ease before spawning',
     }
   }
   return { ok: true }
+}
+
+const sysctl = (name: string): string =>
+  execFileSync('sysctl', ['-n', name], { encoding: 'utf8', timeout: 2000 })
+
+/** Parses macOS `sysctl -n kern.memorystatus_level`, the percent of memory free. */
+export function parseMemoryLevel(text: string): MemoryReading {
+  const level = Number(text.trim())
+  if (text.trim() === '' || !Number.isInteger(level) || level < 0 || level > 100)
+    return { error: `unparsed kern.memorystatus_level: ${text.trim()}` }
+  return { freePercent: level }
+}
+
+/** Only macOS is read; elsewhere the reading is an error and so never refuses. */
+export function readMemoryFree(platform: NodeJS.Platform = process.platform): MemoryReading {
+  if (platform !== 'darwin') return { error: `memory is not read on ${platform}` }
+  try {
+    return parseMemoryLevel(sysctl('kern.memorystatus_level'))
+  } catch (err) {
+    return { error: `sysctl kern.memorystatus_level failed: ${(err as Error).message}` }
+  }
 }
 
 const UNIT_BYTES: Record<string, number> = { K: 1024, M: 1024 ** 2, G: 1024 ** 3 }
@@ -82,11 +110,10 @@ export function parseSwapUsage(text: string): SwapReading {
   return { usedBytes, totalBytes }
 }
 
-/** Only macOS is read; elsewhere the swap check reports an error and so never refuses. */
 export function readSwapUsage(platform: NodeJS.Platform = process.platform): SwapReading {
   if (platform !== 'darwin') return { error: `swap is not read on ${platform}` }
   try {
-    return parseSwapUsage(execFileSync('sysctl', ['-n', 'vm.swapusage'], { encoding: 'utf8', timeout: 2000 }))
+    return parseSwapUsage(sysctl('vm.swapusage'))
   } catch (err) {
     return { error: `sysctl vm.swapusage failed: ${(err as Error).message}` }
   }
@@ -94,19 +121,29 @@ export function readSwapUsage(platform: NodeJS.Platform = process.platform): Swa
 
 export interface MachineStatus {
   headlessAgents: { live: number; limit: number }
-  swap: { usedPercent: number | null; limit: number; error?: string }
+  memoryFree: { percent: number | null; limit: number; error?: string }
+  /** Reported only; no limit applies. */
+  swap: { usedPercent: number | null; error?: string }
   fullSuiteSlots: { inUse: number; total: number }
 }
 
+const errorOf = (reading: { error: string } | object): { error?: string } =>
+  'error' in reading ? { error: reading.error } : {}
+
 export function machineStatus(
-  readings: MachineReadings,
+  readings: MachineReadings & { swap: SwapReading },
   limits: MachineLimits,
   slots: { inUse: number; total: number },
 ): MachineStatus {
-  const error = 'error' in readings.swap ? { error: readings.swap.error } : {}
+  const { memory, swap } = readings
   return {
     headlessAgents: { live: readings.liveHeadless, limit: limits.headlessAgents },
-    swap: { usedPercent: swapPercent(readings.swap), limit: limits.swapPercent, ...error },
+    memoryFree: {
+      percent: 'error' in memory ? null : memory.freePercent,
+      limit: limits.memoryFreePercent,
+      ...errorOf(memory),
+    },
+    swap: { usedPercent: swapPercent(swap), ...errorOf(swap) },
     fullSuiteSlots: slots,
   }
 }

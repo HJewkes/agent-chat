@@ -4,7 +4,7 @@ import { serve, type ServerType } from '@hono/node-server'
 import type { Hono } from 'hono'
 import { defaultPort, home, socketPath } from '../paths.js'
 import { resolveAgentSlots, resolveMachineLimits } from '../config.js'
-import { readSwapUsage } from '../agents/machine-guard.js'
+import { readMemoryFree } from '../agents/machine-guard.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { backfillAtBoot } from '../agents/ledger/backfill-run.js'
 import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
@@ -185,7 +185,7 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
     core,
     {
       semaphore: newAgentSlots(),
-      machineGuard: { readSwap: () => readSwapUsage(), limits: resolveMachineLimits },
+      machineGuard: { readMemoryFree: () => readMemoryFree(), limits: resolveMachineLimits },
       ...(ledger === undefined ? {} : { ledger }),
       ...journal,
     },

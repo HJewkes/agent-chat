@@ -67,7 +67,8 @@ const STATUS: SeatStatus = {
   eligible: { top: [], skipped: 0, today: '2026-09-30' },
   machine: {
     headlessAgents: { live: 3, limit: 10 },
-    swap: { usedPercent: 40, limit: 85 },
+    memoryFree: { percent: 35, limit: 15 },
+    swap: { usedPercent: 40 },
     fullSuiteSlots: { inUse: 0, total: 4 },
   },
 }

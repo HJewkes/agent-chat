@@ -367,17 +367,23 @@ function eligibleLines(eligible: EligibleStatus): string[] {
   return texts.map((text, i) => line(i === 0 ? 'eligible' : '', text))
 }
 
-function machineLine({ headlessAgents, swap, fullSuiteSlots }: MachineStatus): string {
-  const swapText =
-    swap.usedPercent === null
-      ? `swap unread${swap.error === undefined ? '' : ` (${swap.error})`}`
-      : `swap ${swap.usedPercent}%/${swap.limit}%${swap.usedPercent > swap.limit ? ' OVER' : ''}`
-  const headless = `headless ${headlessAgents.live}/${headlessAgents.limit}`
+const unread = (what: string, error: string | undefined): string =>
+  `${what} unread${error === undefined ? '' : ` (${error})`}`
+
+function machineLine({ headlessAgents, memoryFree, swap, fullSuiteSlots }: MachineStatus): string {
   const atCap = headlessAgents.live >= headlessAgents.limit ? ' AT CAP' : ''
-  return line(
-    'machine',
-    `${headless}${atCap}, ${swapText}, suite slots ${fullSuiteSlots.inUse}/${fullSuiteSlots.total}`,
-  )
+  const memory =
+    memoryFree.percent === null
+      ? unread('memory', memoryFree.error)
+      : `memory ${memoryFree.percent}% free/${memoryFree.limit}% floor${memoryFree.percent < memoryFree.limit ? ' LOW' : ''}`
+  const swapText = swap.usedPercent === null ? unread('swap', swap.error) : `swap ${swap.usedPercent}% used`
+  const parts = [
+    `headless ${headlessAgents.live}/${headlessAgents.limit}${atCap}`,
+    memory,
+    swapText,
+    `suite slots ${fullSuiteSlots.inUse}/${fullSuiteSlots.total}`,
+  ]
+  return line('machine', parts.join(', '))
 }
 
 function inboxLine(inbox: InboxReading): string {

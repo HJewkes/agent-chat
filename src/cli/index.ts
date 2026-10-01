@@ -192,7 +192,7 @@ function addAgentCommands(program: Command): void {
     .helpGroup(AGENTS)
     .action(async (command: string[]) => {
       const { suiteSlotCommand } = await import('./suite-slot.js')
-      suiteSlotCommand(command)
+      await suiteSlotCommand(command)
     })
 
   program

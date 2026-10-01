@@ -41,7 +41,12 @@ import {
 import { surfaceFor } from './surfaces/index.js'
 import { SurfaceRefused, type SurfaceOptions } from './surfaces/options.js'
 import { Semaphore, type SlotUsage } from './semaphore.js'
-import { countLiveHeadless, machineDecision, type MachineLimits, type SwapReading } from './machine-guard.js'
+import {
+  countLiveHeadless,
+  machineDecision,
+  type MachineLimits,
+  type MemoryReading,
+} from './machine-guard.js'
 import { canonicalPath, checkSpawnCwd, isAtOrUnder } from './spawn-cwd.js'
 import { resolveSpawnBriefing, type BriefingResult } from './active-work.js'
 import { childConfigDir, resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
@@ -431,7 +436,7 @@ export interface SupervisorOptions {
   seatJournal?: SeatJournal
   /** CC-331: appends a seat agent's dispatched and retired rows. Absent in tests, which own no autonomy root. */
   seatDispatch?: SeatDispatchLog
-  /** CC-406: the machine-wide guard's readers. Absent in tests, which must not read the host's swap. */
+  /** CC-406: the machine-wide guard's readers. Absent in tests, which must not read the host's memory. */
   machineGuard?: MachineGuardReaders
 }
 
@@ -543,7 +548,7 @@ export function floorWarning(requested: IsolationName, profileIsolation: Isolati
 }
 
 export interface MachineGuardReaders {
-  readSwap: () => SwapReading
+  readMemoryFree: () => MemoryReading
   limits: () => MachineLimits
 }
 
@@ -860,14 +865,14 @@ export class Supervisor implements TeleportHost {
     return undefined
   }
 
-  /** CC-406: refuses when the machine is at its headless-agent total or past its swap share. */
+  /** CC-406: refuses when the machine is at its headless-agent total or below its memory-free floor. */
   private machineRefusal(surface: SurfaceName): string | undefined {
     if (this.machineGuard === undefined) return undefined
-    const swap = this.machineGuard.readSwap()
-    if ('error' in swap) logEvent('machine_guard_reader_failed', { reader: 'swap', error: swap.error })
+    const memory = this.machineGuard.readMemoryFree()
+    if ('error' in memory) logEvent('machine_guard_reader_failed', { reader: 'memory', error: memory.error })
     const liveHeadless = countLiveHeadless(this.core.agents.roster())
     const decision = machineDecision(
-      { liveHeadless, swap },
+      { liveHeadless, memory },
       this.machineGuard.limits(),
       surface === 'headless',
     )

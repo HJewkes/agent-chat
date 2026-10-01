@@ -1,7 +1,8 @@
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { acquireSlot, releaseSlot, slotUsage, tryAcquireSlot, type SlotDeps } from '../suite-slots.js'
 
 /** CC-406: machine-wide full-suite slots, with process liveness and the clock mocked. */
@@ -29,6 +30,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.restoreAllMocks()
   fs.rmSync(path.dirname(dir), { recursive: true, force: true })
 })
 
@@ -84,4 +86,41 @@ describe('full-suite slots', () => {
 
     expect(slotUsage(runner(101, { total: 2 }))).toEqual({ inUse: 2, total: 2 })
   })
+
+  it('treats a slot renamed aside before its pid is written as not taken', () => {
+    vi.spyOn(fs, 'writeFileSync').mockImplementationOnce(() => {
+      throw Object.assign(new Error('renamed aside'), { code: 'ENOENT' })
+    })
+
+    const slot = tryAcquireSlot(runner(101, { total: 1 }))
+
+    expect(slot).toBeUndefined()
+  })
+})
+
+describe('the suite-slot wrapper under a signal', () => {
+  const entry = path.join(import.meta.dirname, '..', '..', 'dist', 'cli.js')
+
+  it.each(['SIGTERM', 'SIGINT'] as const)(
+    'releases its slot and exits by %s',
+    async signal => {
+      const home = path.dirname(dir)
+      const wrapper = spawn(process.execPath, [entry, 'suite-slot', '--', 'sleep', '30'], {
+        env: { ...process.env, AGENT_CHAT_HOME: home },
+        stdio: 'ignore',
+      })
+      const pidFile = path.join(home, 'suite-slots', '0', 'pid')
+      for (let i = 0; i < 100 && !fs.existsSync(pidFile); i++) await new Promise(r => setTimeout(r, 50))
+      expect(fs.readFileSync(pidFile, 'utf8')).toBe(String(wrapper.pid))
+
+      const exited = new Promise<NodeJS.Signals | null>(resolve =>
+        wrapper.on('exit', (_c, sig) => resolve(sig)),
+      )
+      wrapper.kill(signal)
+
+      expect(await exited).toBe(signal)
+      expect(fs.existsSync(path.join(home, 'suite-slots', '0'))).toBe(false)
+    },
+    15_000,
+  )
 })

@@ -1545,15 +1545,18 @@ Therefore:
 - **Machine guard (CC-406):** the slot cap is per broker and the seat caps are
   per seat, so neither sees the machine. `agent_spawn` also refuses a headless
   spawn while `machineHeadlessAgents` (default 10) headless agents are live
-  (spawning, live or detached, from every seat), and any spawn while used swap
-  exceeds `machineSwapPercent` (default 85) percent. Both keys live in
-  `~/.agent-chat/config.json` and are read per spawn. The refusal names the
-  limit, the current value and the config key. Swap is read from
-  `sysctl -n vm.swapusage` on macOS only; a reader that fails, or another
-  platform, never refuses, and the failure is logged as
-  `machine_guard_reader_failed`. A broken reader would otherwise stop every
-  seat. `seats status --json` reports the same readings in its `machine` block,
-  with the full-suite slots in use (`fullSuiteSlots`, README "Tests").
+  (spawning, live or detached, from every seat). It refuses any spawn while free
+  memory is below `machineMemoryFreePercent` (default 15) percent. Both keys
+  live in `~/.agent-chat/config.json` and are read per spawn. The refusal names
+  the reading, the limit and the config key. Free memory is
+  `sysctl -n kern.memorystatus_level`, read on macOS only. Swap is not a gate:
+  macOS keeps swap allocated long after memory pressure ends, so swap used reads
+  high on a machine with plenty free. A reader that fails, or another platform,
+  never refuses, and the failure is logged as `machine_guard_reader_failed`. A
+  broken reader would otherwise stop every seat. `seats status --json` reports
+  the readings in its `machine` block: `headlessAgents`, `memoryFree`, `swap`
+  (used percent, no limit) and the full-suite slots in use (`fullSuiteSlots`,
+  README "Tests"). `agent_resume` is not guarded yet.
 - **Roles and depth (CC-163):** only a `coordinator` profile may spawn; a
   worker (any profile without `"role": "coordinator"`) is refused. The cap
   counts coordinator links only: `agent_spawned.meta.coordinator_depth`, capped

@@ -75,8 +75,14 @@ function tryTake(slot: string, deps: SlotDeps): boolean {
     if (isStale(slot, deps)) clearStale(slot, deps)
     return false
   }
-  fs.writeFileSync(path.join(slot, OWNER_FILE), String(deps.pid))
-  return true
+  try {
+    fs.writeFileSync(path.join(slot, OWNER_FILE), String(deps.pid))
+  } catch (err) {
+    // A contender judged the old slot stale and renamed our fresh one aside.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw err
+  }
+  return ownerOf(slot) === deps.pid
 }
 
 /** The index of the slot taken, or undefined when every slot is held by a live owner. */

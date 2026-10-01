@@ -4,7 +4,7 @@ import { DEFAULT_SLOTS } from './agents/semaphore.js'
 import { configPath } from './paths.js'
 import {
   DEFAULT_MACHINE_HEADLESS_AGENTS,
-  DEFAULT_MACHINE_SWAP_PERCENT,
+  DEFAULT_MACHINE_MEMORY_FREE_PERCENT,
   type MachineLimits,
 } from './agents/machine-guard.js'
 import { DEFAULT_FULL_SUITE_SLOTS } from './suite-slots.js'
@@ -22,7 +22,7 @@ interface AgentChatConfig {
   reportBatchSeconds?: unknown
   paneColours?: unknown
   machineHeadlessAgents?: unknown
-  machineSwapPercent?: unknown
+  machineMemoryFreePercent?: unknown
   fullSuiteSlots?: unknown
 }
 
@@ -141,18 +141,18 @@ function reportBatchSeconds(value: unknown): number | undefined {
 
 /** CC-406's machine-wide spawn limits, read per spawn so an edit needs no broker restart. */
 export function resolveMachineLimits(): MachineLimits {
-  let swapPercent = positiveIntegerFrom('machineSwapPercent', DEFAULT_MACHINE_SWAP_PERCENT)
-  if (swapPercent > 100) {
+  let memoryFreePercent = positiveIntegerFrom('machineMemoryFreePercent', DEFAULT_MACHINE_MEMORY_FREE_PERCENT)
+  if (memoryFreePercent > 100) {
     logEvent('config_invalid', {
-      key: 'machineSwapPercent',
-      value: swapPercent,
-      fallback: DEFAULT_MACHINE_SWAP_PERCENT,
+      key: 'machineMemoryFreePercent',
+      value: memoryFreePercent,
+      fallback: DEFAULT_MACHINE_MEMORY_FREE_PERCENT,
     })
-    swapPercent = DEFAULT_MACHINE_SWAP_PERCENT
+    memoryFreePercent = DEFAULT_MACHINE_MEMORY_FREE_PERCENT
   }
   return {
     headlessAgents: positiveIntegerFrom('machineHeadlessAgents', DEFAULT_MACHINE_HEADLESS_AGENTS),
-    swapPercent,
+    memoryFreePercent,
   }
 }
 

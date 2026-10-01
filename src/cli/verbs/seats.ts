@@ -8,6 +8,7 @@ import { readAccountBudget } from '../../agents/budget.js'
 import {
   countLiveHeadless,
   machineStatus,
+  readMemoryFree,
   readSwapUsage,
   type MachineStatus,
 } from '../../agents/machine-guard.js'
@@ -317,7 +318,11 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
 
 /** CC-406: the live readings the spawn guard decides on, for the `machine` block. */
 function readMachineStatus(agents: AgentIdentity[]): MachineStatus {
-  const readings = { liveHeadless: countLiveHeadless(agents), swap: readSwapUsage() }
+  const readings = {
+    liveHeadless: countLiveHeadless(agents),
+    memory: readMemoryFree(),
+    swap: readSwapUsage(),
+  }
   return machineStatus(readings, resolveMachineLimits(), slotUsage(suiteSlotDeps()))
 }
 
@@ -344,7 +349,7 @@ export const seatsStatusVerb = defineVerb({
     'what a seat reads before it dispatches (CC-317), read-only: implementers, reviewers and planners ' +
     'against their caps, its other running agents, parked implementers, the pool reading with its age ' +
     'and the charter stop that applies, unread inbox messages since the seat last sent one, the ' +
-    'machine-wide headless agents, swap and full-suite slots against their limits, and the ' +
+    'machine-wide headless agents, free memory and full-suite slots against their limits, swap used, and the ' +
     'top eligible tasks. A spend cap with no saved meter to count it is a stop',
   args: z.object({ seat: requiredString('seat'), json: z.boolean().optional(), root: z.string().optional() }),
   result: Report,
