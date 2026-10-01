@@ -6,6 +6,7 @@ import {
   dayStart,
   gatePool,
   runStartAt,
+  standInReading,
   type AccountReading,
   type PoolGateResult,
 } from '../burndown/budget-gate.js'
@@ -54,7 +55,7 @@ export interface BudgetStatus {
   /** Seconds since the pool's freshest status file was written; null with no reading. */
   ageSeconds: number | null
   stale: boolean
-  /** CC-409: the current reading lacks a window, so the figures are the pool's last good reading, within its limits. */
+  /** CC-409: the current reading lacks a window, so the last good reading, within its limits, stands in for it. */
   staleOk: boolean
   /** The charter stop that closes the seat's gate, or null when it is open. */
   stop: string | null
@@ -239,7 +240,7 @@ function seatGate(
 }
 
 type Verdict = Pick<BudgetStatus, 'stop' | 'margin' | 'sonnetOnly' | 'spendSince' | 'note'> & {
-  /** CC-409: set when the gate opened on the pool's last good reading. */
+  /** CC-409: the reading the gate opened on when the last good reading stood in for a missing window. */
   staleOk?: AccountReading
 }
 
@@ -281,7 +282,8 @@ function spendVerdict(
   const saved = savedMeters(doc, seat, name, now.getTime())
   const { gate, day } = seatGate(budget, saved, reading, now)
   if (!gate.open) return { ...stopped(gate.reason), ...lateDayStart(day, now) }
-  const staleOk = gate.staleOk === true && saved.lastGood !== undefined ? { staleOk: saved.lastGood } : {}
+  const shown = gate.staleOk === true ? standInReading(reading, saved.lastGood) : undefined
+  const staleOk = shown === undefined ? {} : { staleOk: shown }
   return {
     stop: null,
     margin: gate.reason,
