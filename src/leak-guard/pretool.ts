@@ -272,6 +272,8 @@ export function checkGit(args: readonly string[]): string | undefined {
 interface GitRun {
   resolved: readonly (string | undefined)[]
   args: readonly string[]
+  /** `args` with LIVE before each character the shell expands. */
+  marked: readonly string[]
   assigns: readonly string[]
   cmd: SimpleCommand
   /** The command word is git, not an expansion that may be git. */
@@ -287,7 +289,7 @@ function gitRun(
   literal: boolean,
 ): GitRun {
   const resolved = marked.map(word => resolveWord(word, cmd, ctx, scope))
-  return { resolved, args: marked.map(unmark), assigns, cmd, literal }
+  return { resolved, args: marked.map(unmark), marked, assigns, cmd, literal }
 }
 
 const NAMES_GIT = /\bgit\b/
@@ -307,7 +309,7 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
 }
 
 const checkUnresolvedConfig = (run: GitRun): string | undefined =>
-  hasUnreadableConfig(run.resolved, run.args) ? REASONS.gitConfigUnresolved : undefined
+  hasUnreadableConfig(run.resolved, run.marked) ? REASONS.gitConfigUnresolved : undefined
 
 const MENTIONS_INCLUDE = /include/i
 const DESCRIPTOR_COPY = /\d*[<>]&(?:\d+|-)(?![\w./])/g
@@ -401,7 +403,12 @@ function checkAlias(run: GitRun, ctx: GuardContext, scope: Scope, depth: number)
   const value = splitAlias(alias.value)
   if (value === undefined) return undefined
   const words = [...run.args.slice(0, call.at), ...value, ...rest]
-  return checkGitRun({ ...run, resolved: words, args: words, literal: true }, ctx, inner, depth)
+  return checkGitRun(
+    { ...run, resolved: words, args: words, marked: words, literal: true },
+    ctx,
+    inner,
+    depth,
+  )
 }
 
 function configWritesGuard(args: readonly string[]): string | undefined {

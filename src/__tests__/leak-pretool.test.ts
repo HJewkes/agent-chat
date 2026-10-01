@@ -97,6 +97,10 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
     'git --config-env="$K" rebase',
     'git -c "$X" hp',
     'git -c "$X" $SUB',
+    'git -c {core.hooksPath=/dev/null,-p} push',
+    'git -c core.hooks?ath=x push',
+    'git -c core.hooks[P]ath=x push',
+    "git -c $'core.hooks\\x50ath=/dev/null' push",
   ])('denies a config the guard cannot read before a hook-running command: %s', command => {
     expect(checkCommand(command, ctx())).toBe(REASONS.gitConfigUnresolved)
   })
@@ -106,6 +110,8 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
     'git -c user.name="$(whoami)" push',
     'git -c core.pager=less log',
     'git -c "$X" log',
+    "git -c 'core.pager=less *' log",
+    'git -c "a{b}=x" push',
     'git --config-env "$K" status',
     'git --config-env=user.name=NAME push',
   ])('allows %s', command => {

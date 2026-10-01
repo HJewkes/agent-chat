@@ -418,6 +418,10 @@ or `core.hooksPath`. The guard denies it when the subcommand runs a client hook:
 `checkout`, `cherry-pick`, `clone`, `commit`, `fetch`, `gc`, `hook`, `maintenance`, `merge`,
 `pull`, `push`, `rebase`, `receive-pack`, `revert`, `stash`, `switch` and `worktree`. It also
 denies when the subcommand is not a git builtin, so it may be an alias, or when it cannot be told.
+A word the shell expands into other words counts as unreadable too: a glob character (`?`, `*`,
+`[`), a brace form (`{a,b}`, `{a..b}`) or a `$'...'` escape the guard does not decode, such as
+`git -c {core.hooksPath=/dev/null,-p} push` or `git -c core.hooks?ath=x push`. The same characters
+inside single or double quotes are literal and stay allowed, as in `git -c 'core.pager=less *' log`.
 This covers the separated (`-c <value>`, `--config-env <value>`) and attached (`-c<value>`,
 `--config-env=<value>`) forms.
 

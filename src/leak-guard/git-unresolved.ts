@@ -1,4 +1,5 @@
 import { GIT_BUILTINS } from './git-alias.js'
+import { LIVE, unmark } from './shell-words.js'
 
 /**
  * A `-c` or `--config-env` the guard cannot read before a command that runs hooks (TP-630). A word
@@ -11,50 +12,55 @@ const HOOK_RUNNING = new Set(
   receive-pack revert stash switch worktree`.split(/\s+/),
 )
 const VALUE_OPTS = new Set(['-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix'])
+// A glob or brace word may expand to several words, one of them an option; a bare `$VAR` is one word.
+const GLOBBED = new RegExp(`${LIVE}[*?[{]`)
 const CONFIG_ENV_OPT = '--config-env='
-const EXPANDS = /[$`]/
 
-/** One `-c` or `--config-env` value: its resolved word, and its source text with expansions kept. */
+/** One `-c` or `--config-env` value: its resolved word, and its marked source, where LIVE precedes what the shell expands. */
 interface ConfigWord {
   resolved: string | undefined
-  raw: string
+  marked: string
   fromEnv: boolean
 }
 
-/** The raw part of a value that names the key: before the first `=` for `-c`, before the last for `--config-env`. */
-function rawKey(raw: string, fromEnv: boolean): string {
-  const eq = fromEnv ? raw.lastIndexOf('=') : raw.indexOf('=')
-  return eq < 0 ? raw : raw.slice(0, eq)
+/** The part of a value that names the key: before the first `=` for `-c`, before the last for `--config-env`. */
+function keyOf(marked: string, fromEnv: boolean): string {
+  const eq = fromEnv ? marked.lastIndexOf('=') : marked.indexOf('=')
+  return eq < 0 ? marked : marked.slice(0, eq)
 }
 
 /** A `-c` key that is not literal, or a `--config-env` key or variable name that is not. */
-function unreadable({ resolved, raw, fromEnv }: ConfigWord): boolean {
+function unreadable({ resolved, marked, fromEnv }: ConfigWord): boolean {
   if (resolved !== undefined) return false
-  const eq = raw.indexOf('=')
-  if (eq < 0 || EXPANDS.test(rawKey(raw, fromEnv))) return true
-  return fromEnv && EXPANDS.test(raw.slice(raw.lastIndexOf('=') + 1))
+  if (!marked.includes('=') || keyOf(marked, fromEnv).includes(LIVE)) return true
+  return fromEnv && marked.slice(marked.lastIndexOf('=') + 1).includes(LIVE)
 }
 
 /** The config words in git's options before the subcommand, and the index of the subcommand. */
 function scanOptions(
   resolved: readonly (string | undefined)[],
-  args: readonly string[],
+  marked: readonly string[],
 ): { words: ConfigWord[]; at: number } {
   const words: ConfigWord[] = []
   let i = 0
-  for (; i < args.length && (args[i] as string).startsWith('-'); i++) {
-    const raw = args[i] as string
+  for (; i < marked.length; i++) {
+    const raw = unmark(marked[i] as string)
     const word = resolved[i]
-    if (raw === '-c' || raw === '--config-env') {
-      words.push({ resolved: resolved[i + 1], raw: args[i + 1] ?? '', fromEnv: raw !== '-c' })
+    // A word the shell expands may itself be options, as `{core.hooksPath=x,-p}` is.
+    if (word === undefined && GLOBBED.test(marked[i] as string))
+      words.push({ resolved: undefined, marked: marked[i] as string, fromEnv: false })
+    else if (!raw.startsWith('-')) break
+    else if (raw === '-c' || raw === '--config-env') {
+      words.push({ resolved: resolved[i + 1], marked: marked[i + 1] ?? '', fromEnv: raw !== '-c' })
       i++
     } else if (raw.startsWith(CONFIG_ENV_OPT))
       words.push({
         resolved: word?.slice(CONFIG_ENV_OPT.length),
-        raw: raw.slice(CONFIG_ENV_OPT.length),
+        marked: (marked[i] as string).slice(CONFIG_ENV_OPT.length),
         fromEnv: true,
       })
-    else if (/^-c./.test(raw)) words.push({ resolved: word?.slice(2), raw: raw.slice(2), fromEnv: false })
+    else if (/^-c./.test(raw))
+      words.push({ resolved: word?.slice(2), marked: (marked[i] as string).slice(2), fromEnv: false })
     else if (VALUE_OPTS.has(raw)) i++
   }
   return { words, at: i }
@@ -63,9 +69,9 @@ function scanOptions(
 /** Whether git's options hold a config word the guard cannot read and the subcommand may run a hook. */
 export function hasUnreadableConfig(
   resolved: readonly (string | undefined)[],
-  args: readonly string[],
+  marked: readonly string[],
 ): boolean {
-  const { words, at } = scanOptions(resolved, args)
+  const { words, at } = scanOptions(resolved, marked)
   if (!words.some(unreadable)) return false
   const sub = resolved[at]
   return sub === undefined || HOOK_RUNNING.has(sub) || !GIT_BUILTINS.has(sub)
