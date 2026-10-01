@@ -460,6 +460,29 @@ quotes. gh's own `{owner}`, `{repo}` and `{branch}` are not brace expansions and
 A `gh` whose group or verb is an expansion (`gh pr $V`) is unknown even when the value is known,
 because the guard picks the flags to read from the literal subcommand.
 
+### A body file written on the line that posts it (CC-371)
+
+A Bash line that writes a PR or issue body file and then posts it is denied. The guard cannot
+scan a body that does not exist yet when it checks the line. The body file is the
+`--body-file`, `--body-file=` or `-F` file of `gh pr` or `gh issue`, or the `-F key=@file` or
+`--input` file of `gh api`. The line is denied when an earlier command, or a redirect on the
+`gh` command itself:
+
+- redirects to the file (`>`, `>>`, `>|`, `<>`) or lists it for `tee`;
+- names it as an argument, or as the value after an `=` (`cp`, `mv`, `install`, `ln`, `sed -i`,
+  `dd of=`, `curl -o`, `--output=`);
+- holds its path as text in a word or a heredoc, as `sh -c 'echo hi > b.md'` and
+  `python3 -c "open('b.md', 'w')"` do.
+
+`cat > b.md <<'EOF' ... EOF; gh pr create --body-file b.md` is an example. A redirect target the
+guard cannot resolve counts as a possible match. A write inside `$(...)` is seen. Write the file
+in one Bash call and post it in the next. A body file that exists before the line and is not
+named by it, or one written on another line, is read and scanned as before.
+
+The check is by name, so the remaining gaps are a writer that builds the path at run time
+(`python3 -c "open('b' + '.md', 'w')"`), a script that already sits on disk, and a body file that
+is a symlink or hard link to a file the line wrote under another name.
+
 ### Text on stdin
 
 `--body-file -`, `--input -` and `-F field=@-` read stdin. The guard scans that text only when it
@@ -590,3 +613,19 @@ The trust boundary is the OS account, not this guard. Any process running as the
 the hook directory, the term list or a settings file, as it could forge any other local frame.
 The guard denies the ordinary routes to those files for agents. The pushed history and PR text
 remain the record of anything that got through.
+
+## Fail-open of the PreToolUse hook (CC-371)
+
+The hook allows a call it cannot decide when it crashes on input that does not mention git or
+gh, or when it runs past its 12 s deadline. A crash on a call that mentions git or gh is a deny,
+not a fail-open. That holds for a crash in the worker thread that runs the decision, such as a
+worker that does not start, as well as for one inside the decision. The deadline sits under the 15 s that Claude Code gives the hook, which would
+kill it without a word. The owner accepts both fail-opens, and each writes exactly one line to
+`leak-guard.log` in the agent-chat home:
+
+```
+<ISO time> leak-guard pretool fail-open: crash (<error class>)
+<ISO time> leak-guard pretool fail-open: timeout after <elapsed>ms
+```
+
+The line never holds the command. A log that cannot be written does not change the allow.

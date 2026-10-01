@@ -171,3 +171,6 @@ export const ACTIVE_WORK_PORT = 7400
 
 export const activeWorkPort = (): number =>
   portFrom(process.env.AGENT_CHAT_ACTIVE_WORK_PORT, ACTIVE_WORK_PORT)
+
+/** One line per time the PreToolUse leak guard allowed a call because it crashed or ran out of time (CC-371). */
+export const leakGuardLogPath = (): string => path.join(home(), 'leak-guard.log')

@@ -15,6 +15,7 @@ import {
   type Overrides,
   type ReadAlias,
 } from './git-alias.js'
+import { crashCause, type FailOpen } from './failopen.js'
 import { hasUnreadableConfig } from './git-unresolved.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
@@ -66,6 +67,10 @@ interface Scope {
   aliases: number
   /** Variables earlier commands set, unset (undefined) or changed in a way the guard cannot tell (UNSURE). */
   exports: ReadonlyMap<string, Setting>
+  /** The files earlier commands on this line wrote, as a path key; undefined where the guard cannot tell which. */
+  written: readonly (string | undefined)[]
+  /** The words of the commands before this one, to find a body path inside a script or a flag value. */
+  earlier: readonly string[]
   /** The command line so far with `$NAME` references and quoting removed, to find names it may assign. */
   said: string
   /** The whole command line the agent sent, before any shell or alias the guard descends into. */
@@ -99,6 +104,7 @@ export const REASONS = {
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
   includePath: `leak-guard: git -c or --config-env on include.path or includeIf.*.path pulls in config that sets core.hooksPath or that the guard cannot read in time, or runs beside other commands or a redirect, which would bypass the pre-push leak scan. ${DOCS}`,
   gitConfigUnresolved: `leak-guard: git -c or --config-env with a key or value the guard cannot read, before a command that runs hooks, may set core.hooksPath or include.path and would bypass the pre-push leak scan. Spell the config out, or drop it. ${DOCS}`,
+  writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. Write the file in one Bash call and post it in the next. ${DOCS}`,
   aliasWritten: `leak-guard: this command line writes git config and runs a git word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
 } as const
 
@@ -546,6 +552,45 @@ function collect({ inline, files }: Sources, cmd: SimpleCommand, ctx: GuardConte
   return { texts }
 }
 
+/** A file as one comparable key: absolute where the directory is known, else relative and marked. */
+function pathKey(file: string, scope: Scope): string {
+  if (path.isAbsolute(file)) return path.resolve(file)
+  return scope.cwd === undefined ? `?/${path.normalize(file)}` : path.resolve(scope.cwd, file)
+}
+
+/** The files a command writes by redirect or `tee`; undefined for a target the guard cannot resolve. */
+function writtenBy(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): (string | undefined)[] {
+  const targets = [...cmd.writes]
+  if (path.basename(cmd.words[0] ?? '') === 'tee')
+    targets.push(...cmd.marked.slice(1).filter(w => !w.startsWith('-')))
+  return targets.map(word => {
+    const file = resolveWord(word, cmd, ctx, scope)
+    return file === undefined ? undefined : pathKey(file, scope)
+  })
+}
+
+/** Each argument as a path, and its value after an `=` (`dd of=f`, `--output=f`); unresolved words drop out. */
+function namedBy(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): string[] {
+  const words = cmd.marked.slice(1).flatMap(word => [word, word.slice(word.indexOf('=') + 1)])
+  return words.flatMap(word => {
+    const file = resolveWord(word, cmd, ctx, scope)
+    return file === undefined || file === '' ? [] : [pathKey(file, scope)]
+  })
+}
+
+/**
+ * Whether the line wrote, or merely named, a body file before gh reads it, or wrote a file the guard
+ * cannot name. Any earlier command may write it (`cp`, `sed -i`, `dd of=`, `sh -c`, `python`).
+ */
+function postsWrittenBody(sources: Sources, scope: Scope, own: readonly (string | undefined)[]): boolean {
+  const written = [...scope.written, ...own]
+  const keys = new Set(written.filter(key => key !== undefined))
+  const unnamed = written.includes(undefined)
+  const named = ({ file }: BodyFile): boolean =>
+    keys.has(pathKey(file, scope)) || scope.earlier.some(word => word.includes(file))
+  return sources.files.some(body => body.file !== '-' && (unnamed || named(body)))
+}
+
 function prSources(args: readonly string[]): Sources {
   const inline = [
     ...flagValues(args, ['--title', '--subject', '-t']).map(text => ({ label: 'title', text })),
@@ -619,6 +664,7 @@ function checkGh(
   if (unsure) return unread(cmd.substitutions.flatMap(sub => sub.commands))
   const sources = kind === 'api' ? apiSources(args) : prSources(args)
   if (sources.inline.length + sources.files.length === 0) return undefined
+  if (postsWrittenBody(sources, scope, writtenBy(cmd, ctx, scope))) return REASONS.writtenBody
   const collected = collect(sources, cmd, ctx, scope)
   if ('reason' in collected) return collected.reason
   if (ctx.terms.kind === 'unreadable') return REASONS.unreadableTerms
@@ -760,6 +806,12 @@ function exported(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): Readonly
 }
 
 function advance(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): Scope {
+  const written = [...scope.written, ...writtenBy(cmd, ctx, scope), ...namedBy(cmd, ctx, scope)]
+  scope = {
+    ...scope,
+    written,
+    earlier: [...scope.earlier, ...cmd.words.slice(1), ...(cmd.stdin === undefined ? [] : [cmd.stdin])],
+  }
   if (isOpaque(cmd, ctx, scope)) return { ...scope, cwd: undefined, env: undefined }
   scope = { ...scope, exports: exported(cmd, ctx, scope) }
   if (!cmd.words.some(word => CD_WORDS.has(word))) return scope
@@ -811,6 +863,8 @@ export function checkCommand(command: string, ctx: GuardContext): string | undef
     namesGit: false,
     aliases: 0,
     exports: new Map(),
+    written: [],
+    earlier: [],
     said: '',
     line: command,
     gitParams: [],
@@ -892,20 +946,29 @@ export const denyOutput = (reason: string): string =>
     },
   })
 
+/** The deny for a call the guard could not check when it mentions git or gh; undefined for any other call. */
+export const crashDenial = (raw: string): string | undefined =>
+  MENTIONS_GIT.test(raw) ? denyOutput('leak-guard: the guard could not check this call. ' + DOCS) : undefined
+
 /**
  * The hook's stdout for Claude Code's stdin, or '' to allow. A call the guard cannot read is
  * denied only when it mentions git or gh, so a guard bug cannot block every other command.
  */
-export function pretoolDecision(raw: string, build: (cwd: string) => GuardContext): string {
+export function pretoolDecision(
+  raw: string,
+  build: (cwd: string) => GuardContext,
+  onFailOpen: FailOpen = () => undefined,
+): string {
   try {
     const input = JSON.parse(raw) as { tool_name?: unknown; tool_input?: unknown; cwd?: unknown }
     if (typeof input.tool_name !== 'string') throw new Error('no tool_name')
     const ctx = build(typeof input.cwd === 'string' ? input.cwd : process.cwd())
     const reason = checkToolCall(input.tool_name, input.tool_input, ctx)
     return reason === undefined ? '' : denyOutput(reason)
-  } catch {
-    return MENTIONS_GIT.test(raw)
-      ? denyOutput('leak-guard: the guard could not check this call. ' + DOCS)
-      : ''
+  } catch (err) {
+    const denied = crashDenial(raw)
+    if (denied !== undefined) return denied
+    onFailOpen(crashCause(err))
+    return ''
   }
 }
