@@ -36,6 +36,9 @@ function unreadable({ resolved, marked, fromEnv }: ConfigWord): boolean {
   return fromEnv && marked.slice(marked.lastIndexOf('=') + 1).includes(LIVE)
 }
 
+/** A word that may expand to options, whatever else it holds. */
+const UNKNOWN: ConfigWord = { resolved: undefined, marked: LIVE, fromEnv: false }
+
 /** The config words in git's options before the subcommand, and the index of the subcommand. */
 function scanOptions(
   resolved: readonly (string | undefined)[],
@@ -47,8 +50,7 @@ function scanOptions(
     const raw = unmark(marked[i] as string)
     const word = resolved[i]
     // A word the shell expands may itself be options, as `{core.hooksPath=x,-p}` is.
-    if (word === undefined && GLOBBED.test(marked[i] as string))
-      words.push({ resolved: undefined, marked: marked[i] as string, fromEnv: false })
+    if (word === undefined && GLOBBED.test(marked[i] as string)) words.push(UNKNOWN)
     else if (!raw.startsWith('-')) break
     else if (raw === '-c' || raw === '--config-env') {
       words.push({ resolved: resolved[i + 1], marked: marked[i + 1] ?? '', fromEnv: raw !== '-c' })
@@ -61,7 +63,11 @@ function scanOptions(
       })
     else if (/^-c./.test(raw))
       words.push({ resolved: word?.slice(2), marked: (marked[i] as string).slice(2), fromEnv: false })
-    else if (VALUE_OPTS.has(raw)) i++
+    else if (VALUE_OPTS.has(raw)) {
+      // The value may expand to more options too, as `-C {.,-c,core.hooksPath=x}` does.
+      if (resolved[i + 1] === undefined && GLOBBED.test(marked[i + 1] ?? '')) words.push(UNKNOWN)
+      i++
+    }
   }
   return { words, at: i }
 }
