@@ -36,6 +36,53 @@ describe('patternsOverlap', () => {
   it('does not collide two files that merely share a directory', () => {
     expect(patternsOverlap('src/cli/a.ts', 'src/cli/b.ts')).toBe(false)
   })
+
+  describe('slash-free and last-segment wildcards (CC-272)', () => {
+    it('keeps a root glob off a deep subtree', () => {
+      expect(patternsOverlap('playwright*.config.ts', 'packages/ui/src/components/custom/Chat/**')).toBe(
+        false,
+      )
+    })
+
+    it('keeps a root glob off another subtree', () => {
+      expect(patternsOverlap('*.md', 'docs/**')).toBe(false)
+    })
+
+    it('keeps a nested last-segment glob off a sibling file', () => {
+      expect(patternsOverlap('packages/ui/playwright*.config.ts', 'packages/ui/CHANGELOG.md')).toBe(false)
+    })
+
+    it('keeps a nested last-segment glob off a deeper subtree', () => {
+      expect(patternsOverlap('packages/ui/playwright*.config.ts', 'packages/ui/src/**')).toBe(false)
+    })
+
+    it('overlaps a root glob with a root file', () => {
+      expect(patternsOverlap('*.md', 'README.md')).toBe(true)
+    })
+
+    it('overlaps a root glob with the match-everything patterns', () => {
+      expect(patternsOverlap('*.md', '**')).toBe(true)
+      expect(patternsOverlap('*.md', '*')).toBe(true)
+    })
+
+    it('overlaps a root glob with a recursive glob of the same extension', () => {
+      expect(patternsOverlap('*.md', '**/*.md')).toBe(true)
+    })
+
+    it('overlaps a recursive glob with a nested file', () => {
+      expect(patternsOverlap('**/*.md', 'docs/a.md')).toBe(true)
+    })
+
+    it('still overlaps a subtree with a file inside it', () => {
+      expect(patternsOverlap('src/**', 'src/a.ts')).toBe(true)
+    })
+
+    it('treats an omitted pattern list as a whole-worktree claim that conflicts', () => {
+      const l = new ClaimLedger(() => 1)
+      l.claim({ owner: 'alice', worktreePath: WT, patterns: ['playwright*.config.ts'] })
+      expect(l.claim({ owner: 'bob', worktreePath: WT }).ok).toBe(false)
+    })
+  })
 })
 
 /**
