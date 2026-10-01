@@ -336,9 +336,9 @@ Commands:
                                implementers, reviewers and planners against their caps, its other
                                running agents, parked implementers, the pool reading with its age
                                and the charter stop that applies, unread inbox messages since the
-                               seat last sent one, the machine-wide headless agents, swap and
-                               full-suite slots against their limits, and the top eligible tasks. A
-                               spend cap with no saved meter to count it is a stop
+                               seat last sent one, the machine-wide headless agents, free memory and
+                               full-suite slots against their limits, swap used, and the top
+                               eligible tasks. A spend cap with no saved meter to count it is a stop
   dispatches [options] <seat>  one folded record per agent run from a seat's dispatch log (CC-332),
                                read-only: the broker's spawn and retire rows and the seat's own rows
                                merged, with the spend. Lines that are not a JSON object with an
@@ -380,8 +380,8 @@ Usage: agent-chat seats status [options] <seat>
 what a seat reads before it dispatches (CC-317), read-only: implementers, reviewers and planners
 against their caps, its other running agents, parked implementers, the pool reading with its age and
 the charter stop that applies, unread inbox messages since the seat last sent one, the machine-wide
-headless agents, swap and full-suite slots against their limits, and the top eligible tasks. A spend
-cap with no saved meter to count it is a stop
+headless agents, free memory and full-suite slots against their limits, swap used, and the top
+eligible tasks. A spend cap with no saved meter to count it is a stop
 
 Options:
   --json          the same facts as one JSON object; a failure is {"seat", "error"} with exit 1
