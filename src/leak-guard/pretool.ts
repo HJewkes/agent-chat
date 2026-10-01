@@ -69,6 +69,8 @@ interface Scope {
   exports: ReadonlyMap<string, Setting>
   /** The files earlier commands on this line wrote, as a path key; undefined where the guard cannot tell which. */
   written: readonly (string | undefined)[]
+  /** The words of the commands before this one, to find a body path inside a script or a flag value. */
+  earlier: readonly string[]
   /** The command line so far with `$NAME` references and quoting removed, to find names it may assign. */
   said: string
   /** The whole command line the agent sent, before any shell or alias the guard descends into. */
@@ -567,11 +569,26 @@ function writtenBy(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): (string
   })
 }
 
-/** Whether the line wrote a file before gh reads it as a body, or wrote a file the guard cannot name. */
-function postsWrittenBody(sources: Sources, written: readonly (string | undefined)[], scope: Scope): boolean {
+/** Each argument as a path, and its value after an `=` (`dd of=f`, `--output=f`); unresolved words drop out. */
+function namedBy(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): string[] {
+  const words = cmd.marked.slice(1).flatMap(word => [word, word.slice(word.indexOf('=') + 1)])
+  return words.flatMap(word => {
+    const file = resolveWord(word, cmd, ctx, scope)
+    return file === undefined || file === '' ? [] : [pathKey(file, scope)]
+  })
+}
+
+/**
+ * Whether the line wrote, or merely named, a body file before gh reads it, or wrote a file the guard
+ * cannot name. Any earlier command may write it (`cp`, `sed -i`, `dd of=`, `sh -c`, `python`).
+ */
+function postsWrittenBody(sources: Sources, scope: Scope, own: readonly (string | undefined)[]): boolean {
+  const written = [...scope.written, ...own]
   const keys = new Set(written.filter(key => key !== undefined))
   const unnamed = written.includes(undefined)
-  return sources.files.some(({ file }) => file !== '-' && (unnamed || keys.has(pathKey(file, scope))))
+  const named = ({ file }: BodyFile): boolean =>
+    keys.has(pathKey(file, scope)) || scope.earlier.some(word => word.includes(file))
+  return sources.files.some(body => body.file !== '-' && (unnamed || named(body)))
 }
 
 function prSources(args: readonly string[]): Sources {
@@ -647,8 +664,7 @@ function checkGh(
   if (unsure) return unread(cmd.substitutions.flatMap(sub => sub.commands))
   const sources = kind === 'api' ? apiSources(args) : prSources(args)
   if (sources.inline.length + sources.files.length === 0) return undefined
-  const written = [...scope.written, ...writtenBy(cmd, ctx, scope)]
-  if (kind === 'pr' && postsWrittenBody(sources, written, scope)) return REASONS.writtenBody
+  if (postsWrittenBody(sources, scope, writtenBy(cmd, ctx, scope))) return REASONS.writtenBody
   const collected = collect(sources, cmd, ctx, scope)
   if ('reason' in collected) return collected.reason
   if (ctx.terms.kind === 'unreadable') return REASONS.unreadableTerms
@@ -790,7 +806,12 @@ function exported(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): Readonly
 }
 
 function advance(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): Scope {
-  scope = { ...scope, written: [...scope.written, ...writtenBy(cmd, ctx, scope)] }
+  const written = [...scope.written, ...writtenBy(cmd, ctx, scope), ...namedBy(cmd, ctx, scope)]
+  scope = {
+    ...scope,
+    written,
+    earlier: [...scope.earlier, ...cmd.words.slice(1), ...(cmd.stdin === undefined ? [] : [cmd.stdin])],
+  }
   if (isOpaque(cmd, ctx, scope)) return { ...scope, cwd: undefined, env: undefined }
   scope = { ...scope, exports: exported(cmd, ctx, scope) }
   if (!cmd.words.some(word => CD_WORDS.has(word))) return scope
@@ -843,6 +864,7 @@ export function checkCommand(command: string, ctx: GuardContext): string | undef
     aliases: 0,
     exports: new Map(),
     written: [],
+    earlier: [],
     said: '',
     line: command,
     gitParams: [],
@@ -924,6 +946,10 @@ export const denyOutput = (reason: string): string =>
     },
   })
 
+/** The deny for a call the guard could not check when it mentions git or gh; undefined for any other call. */
+export const crashDenial = (raw: string): string | undefined =>
+  MENTIONS_GIT.test(raw) ? denyOutput('leak-guard: the guard could not check this call. ' + DOCS) : undefined
+
 /**
  * The hook's stdout for Claude Code's stdin, or '' to allow. A call the guard cannot read is
  * denied only when it mentions git or gh, so a guard bug cannot block every other command.
@@ -940,7 +966,8 @@ export function pretoolDecision(
     const reason = checkToolCall(input.tool_name, input.tool_input, ctx)
     return reason === undefined ? '' : denyOutput(reason)
   } catch (err) {
-    if (MENTIONS_GIT.test(raw)) return denyOutput('leak-guard: the guard could not check this call. ' + DOCS)
+    const denied = crashDenial(raw)
+    if (denied !== undefined) return denied
     onFailOpen(crashCause(err))
     return ''
   }

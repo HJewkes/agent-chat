@@ -1422,6 +1422,22 @@ describe('a body file written and posted on one line (CC-371)', () => {
     'echo hi | tee -a b.md >/dev/null && gh pr create -t x -Fb.md',
     'echo hi > ./b.md; gh pr create -t x --body-file b.md',
     'cd /tmp && echo hi > b.md && gh pr create -t x --body-file /tmp/b.md',
+    'echo x > b.md; gh api repos/o/r/issues -F body=@b.md',
+    'echo x > b.md; gh api repos/o/r/issues --input b.md',
+    'echo x>b.md; gh api repos/o/r/issues -F title=t -F body=@b.md',
+    'cp src.md b.md && gh pr create -t x -F b.md',
+    'mv src.md b.md && gh pr create -t x -F b.md',
+    'install src.md b.md && gh pr create -t x -F b.md',
+    'ln -sf src.md b.md && gh pr create -t x -F b.md',
+    'dd if=src.md of=b.md && gh pr create -t x -F b.md',
+    'curl -o b.md https://example.com/x && gh pr create -t x -F b.md',
+    'curl --output=b.md https://example.com/x && gh pr create -t x -F b.md',
+    'sed -i s/a/b/ b.md && gh pr create -t x -F b.md',
+    'exec 1<>b.md; gh pr create -t x -F b.md',
+    "sh -c 'echo hi > b.md'; gh pr create -t x -F b.md",
+    "python3 -c \"open('b.md','w').write('hi')\"; gh pr create -t x -F b.md",
+    'echo $(echo hi > b.md); gh pr create -t x -F b.md',
+    'cd sub && cp ../src.md b.md; cd .. && gh pr create -t x -F sub/b.md',
   ])('denies %j', command => {
     const reason = checkCommand(command, ctx({ readFile: () => 'clean' }))
 
@@ -1433,6 +1449,7 @@ describe('a body file written and posted on one line (CC-371)', () => {
     expect(checkCommand('gh pr create -t x --body-file existing.md', existing)).toBeUndefined()
     expect(checkCommand('echo x > notes.txt; gh pr view 3', existing)).toBeUndefined()
     expect(checkCommand('echo x > notes.txt; gh pr create -t x -F existing.md', existing)).toBeUndefined()
+    expect(checkCommand('ls src && gh pr create -t x -F existing.md', existing)).toBeUndefined()
     expect(checkCommand('echo x 2>&1 >/dev/null; gh pr create -t x -F existing.md', existing)).toBeUndefined()
   })
 

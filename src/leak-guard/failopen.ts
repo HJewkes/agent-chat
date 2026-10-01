@@ -20,11 +20,15 @@ export function failOpenLogger(file: string): FailOpen {
   }
 }
 
-/** The decision, or '' (allow) with one log line when it rejects or outlasts the deadline. */
+/**
+ * The decision. A rejection gives `onCrash`'s answer when it has one (a deny, so unlogged), else
+ * '' (allow) with one log line. A run past the deadline allows with one log line.
+ */
 export async function decideWithin(
   decide: () => Promise<string>,
   deadlineMs: number,
   onFailOpen: FailOpen,
+  onCrash: () => string | undefined = () => undefined,
 ): Promise<string> {
   const started = Date.now()
   let timer: NodeJS.Timeout | undefined
@@ -37,6 +41,8 @@ export async function decideWithin(
   try {
     return await Promise.race([decide(), late])
   } catch (err) {
+    const answer = onCrash()
+    if (answer !== undefined) return answer
     onFailOpen(crashCause(err))
     return ''
   } finally {

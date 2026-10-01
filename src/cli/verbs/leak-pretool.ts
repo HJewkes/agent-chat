@@ -1,5 +1,6 @@
 import { Worker } from 'node:worker_threads'
 import { decideWithin, failOpenLogger } from '../../leak-guard/failopen.js'
+import { crashDenial } from '../../leak-guard/pretool.js'
 import { leakGuardLogPath } from '../../paths.js'
 import { readStdin } from './permission-hook.js'
 
@@ -21,8 +22,10 @@ function decideInWorker(raw: string, logFile: string): { run: Promise<string>; s
 /** `agent-chat leak-guard pretool`: the PreToolUse hook every spawned agent runs (CC-270). */
 export async function leakPretool(): Promise<void> {
   const logFile = leakGuardLogPath()
-  const { run, stop } = decideInWorker(await readStdin(), logFile)
-  const out = await decideWithin(() => run, DECISION_DEADLINE_MS, failOpenLogger(logFile))
+  const raw = await readStdin()
+  const { run, stop } = decideInWorker(raw, logFile)
+  const onCrash = (): string | undefined => crashDenial(raw)
+  const out = await decideWithin(() => run, DECISION_DEADLINE_MS, failOpenLogger(logFile), onCrash)
   stop()
   if (out !== '') process.stdout.write(`${out}\n`)
 }
