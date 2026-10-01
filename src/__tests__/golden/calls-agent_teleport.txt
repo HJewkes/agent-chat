@@ -102,3 +102,22 @@ args: {"handoff":"h","model":4}
     "text": "Error: Invalid arguments: model: Invalid input: expected string, received number"
   }
 ]
+
+=== agent_teleport: parked on the human
+args: {"handoff":"h","reason":"park"}
+frame: {"t":"teleport","handoff":"h","reason":"park"}
+[
+  {
+    "type": "text",
+    "text": "Teleport accepted. Handoff recorded; your successor is a-2 and keeps the name \"me\". Your successor is starting now and this session is being shut down. Do not start anything new — finish or write down whatever is in flight, because it will not survive this turn."
+  }
+]
+
+=== agent_teleport: unknown reason
+args: {"handoff":"h","reason":"refresh"}
+[
+  {
+    "type": "text",
+    "text": "Error: Invalid arguments: reason: Invalid input: expected \"park\""
+  }
+]

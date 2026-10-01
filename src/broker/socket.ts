@@ -4,6 +4,7 @@ import {
   encode,
   lineReader,
   HUMAN,
+  isTeleportReason,
   type ClientMessage,
   type DeliveredMessage,
   type ItemShape,
@@ -359,6 +360,12 @@ export class SocketServer {
    * so there is no version of this call that ends someone else's session.
    */
   private async handleTeleport(conn: Conn, msg: Extract<ClientMessage, { t: 'teleport' }>): Promise<void> {
+    if (msg.reason !== undefined && !isTeleportReason(msg.reason))
+      return reply(conn, {
+        t: 'teleport_result',
+        ok: false,
+        reason: `unknown teleport reason "${String(msg.reason)}"`,
+      })
     const { registry } = this.core
     const entry = registry.entryFor(conn)
     if (entry?.agentId === undefined) {
@@ -392,6 +399,7 @@ export class SocketServer {
       handoff: msg.handoff,
       ...(msg.model === undefined ? {} : { model: msg.model }),
       ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
+      ...(msg.reason === undefined ? {} : { reason: msg.reason }),
     })
     reply(conn, {
       t: 'teleport_result',

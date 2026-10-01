@@ -9,7 +9,7 @@ import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { Supervisor } from '../agents/supervisor.js'
-import { HANDOFF_MAX_BYTES, PANE_SETTLE_MS } from '../agents/teleport.js'
+import { HANDOFF_MAX_BYTES, PANE_SETTLE_MS, PARK_LINE } from '../agents/teleport.js'
 import { planPath } from '../agents/launch-files.js'
 import { logPath, profilesDir } from '../paths.js'
 import type { LaunchPlan } from '../agents/types.js'
@@ -316,6 +316,36 @@ describe('the descendant', () => {
     expect(spawn?.target).toBe('scout')
     expect(spawn?.body).toBe('the handoff')
     expect(planFor(result.agentId as string).stdin).toBe('the handoff')
+  })
+
+  it('a park teleport tells the successor to ask the open question first', async () => {
+    const agentId = await spawnAgent()
+    const handoff = 'Open question for the human: merge #12 or wait?'
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff, reason: 'park' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(planFor(result.agentId as string).stdin).toBe(`${PARK_LINE}\n\n${handoff}`)
+    const row = rowsFor(agentId).find(r => r.kind === 'agent_handoff')
+    expect(row?.body).toBe(handoff)
+    expect(row?.meta.reason).toBe('park')
+    const started = readBrokerLog()
+      .split('\n')
+      .filter(line => line.includes('"teleport_started"'))
+      .map(line => JSON.parse(line) as Record<string, unknown>)
+    expect(started.at(-1)?.reason).toBe('park')
+  })
+
+  it('a teleport without a reason gets the handoff alone and records no reason', async () => {
+    const agentId = await spawnAgent()
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'the handoff' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(planFor(result.agentId as string).stdin).toBe('the handoff')
+    const row = rowsFor(agentId).find(r => r.kind === 'agent_handoff')
+    expect(row?.meta).toEqual({ successor: result.agentId })
+    expect(readBrokerLog()).not.toContain('"reason":"park"')
   })
 
   /**

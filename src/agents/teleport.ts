@@ -11,6 +11,7 @@ import {
   type IsolationName,
   type Subscription,
   type SurfaceName,
+  type TeleportReason,
 } from '../protocol.js'
 import type { Allocation } from './isolation/index.js'
 import { loadProfile, recordedRole } from './profiles.js'
@@ -70,6 +71,10 @@ export const TELEPORT_PREAMBLE = [
   'starting point and check it as you go. Your predecessor is gone; do not report back to it.',
 ].join(' ')
 
+/** Put ahead of a park handoff, so the successor re-asks before it starts working (CC-135). */
+export const PARK_LINE =
+  'Your predecessor parked while waiting on the human. Ask the open question from its handoff first, then wait.'
+
 /**
  * What the socket layer resolved from the requesting connection, never from the
  * request. `hostPid` is Claude Code's own pid — signalling the MCP subprocess
@@ -103,6 +108,7 @@ export interface TeleportRequest {
   model?: string
   /** Overrides argv detection, for a session that enabled Remote Control with `/remote-control` (H-12). */
   remoteControl?: boolean
+  reason?: TeleportReason
 }
 
 export interface TeleportOutcome {
@@ -162,6 +168,7 @@ interface Pending {
   handoff: string
   inherited: InheritedIsolation | undefined
   remoteControl: boolean
+  reason?: TeleportReason
   timer?: NodeJS.Timeout
 }
 
@@ -241,7 +248,7 @@ export class Teleport {
       actor: subject.name,
       ref: subject.agentId,
       body: req.handoff,
-      meta: { successor: descendantId },
+      meta: { successor: descendantId, ...(req.reason === undefined ? {} : { reason: req.reason }) },
     })
 
     const entry: Pending = {
@@ -253,9 +260,15 @@ export class Teleport {
       inherited: this.host.inheritedIsolation(subject.agentId),
       // CC-163: a worker's successor never inherits Remote Control, even one its argv shows.
       remoteControl: worker ? false : (req.remoteControl ?? this.predecessorRemoteControl(subject)),
+      ...(req.reason === undefined ? {} : { reason: req.reason }),
     }
     this.pending.set(subject.agentId, entry)
-    logEvent('teleport_started', { name: subject.name, from: subject.agentId, to: descendantId })
+    logEvent('teleport_started', {
+      name: subject.name,
+      from: subject.agentId,
+      to: descendantId,
+      ...(req.reason === undefined ? {} : { reason: req.reason }),
+    })
 
     const warnings = this.warningsFor(identity, subject.name)
     const result: TeleportOutcome = {
@@ -476,7 +489,7 @@ export class Teleport {
       agentId: entry.descendantId,
       name: subject.name,
       profile: entry.profile,
-      brief: entry.handoff,
+      brief: entry.reason === 'park' ? `${PARK_LINE}\n\n${entry.handoff}` : entry.handoff,
       cwd: entry.inherited?.allocation.cwd ?? subject.cwd,
       surface: entry.surface,
       preamble: TELEPORT_PREAMBLE,
