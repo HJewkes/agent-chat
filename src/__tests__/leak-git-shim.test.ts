@@ -27,8 +27,10 @@ const git = (cwd: string, ...args: string[]): string =>
 interface Fixture {
   work: string
   remote: string
+  guard: string
+  shimDir: string
   marker: string
-  env: Record<string, string>
+  env: Record<string, string> & { PATH: string }
 }
 
 let count = 0
@@ -36,9 +38,11 @@ let count = 0
 /** A repo with one commit, a bare remote, a guard dir whose pre-push leaves a marker, and the shim. */
 function fixture(): Fixture {
   const root = path.join(SCRATCH, `case-${++count}`)
-  const [work, remote, guard, shimDir, home] = ['work', 'remote.git', 'git-hooks', 'git-bin', 'home'].map(
-    name => path.join(root, name),
-  )
+  const work = path.join(root, 'work')
+  const remote = path.join(root, 'remote.git')
+  const guard = path.join(root, 'git-hooks')
+  const shimDir = path.join(root, 'git-bin')
+  const home = path.join(root, 'home')
   const marker = path.join(root, 'pre-push-ran')
   for (const dir of [work, guard, home]) fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(path.join(guard, 'pre-push'), `#!/bin/sh\ncat >/dev/null\ntouch '${marker}'\n`, {
@@ -66,7 +70,7 @@ function fixture(): Fixture {
     GIT_CONFIG_NOSYSTEM: '1',
     ...gitHooksEnv(guard),
   }
-  return { work, remote, marker, env }
+  return { work, remote, guard, shimDir, marker, env }
 }
 
 /** Runs a script file, as make or an npm script would; a recursing shim is killed by the timeout. */
@@ -181,8 +185,7 @@ describe('the agent git shim passing everything else to the real git', () => {
   // Kills: the shim calling git by name, which finds itself first on PATH (timeout).
   it('does not recurse into itself', () => {
     const fx = fixture()
-    const shimDir = fx.env.PATH.split(':')[0]
-    writeGitShim(shimDir, path.join(shimDir, '..', 'git-hooks'), fx.env.PATH + `:${process.env.PATH}`)
+    writeGitShim(fx.shimDir, fx.guard, `${fx.env.PATH}:${process.env.PATH ?? ''}`)
 
     const run = runScript(fx, 'git --version && git status --short && git push -q origin main')
 
