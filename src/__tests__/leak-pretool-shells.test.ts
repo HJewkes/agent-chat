@@ -86,6 +86,7 @@ const guard = (): GuardContext => ({
   protectedPaths: [],
   readFile: readText,
   readAlias: () => undefined,
+  readIncludedHooksPath: () => false,
 })
 
 beforeAll(() => {
