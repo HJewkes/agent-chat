@@ -78,6 +78,13 @@ function scanOptions(
   return { words, at: i }
 }
 
+/** Whether git's options hold a config word the guard cannot read, whatever the subcommand. */
+export const hasUnreadableOption = (
+  resolved: readonly (string | undefined)[],
+  marked: readonly string[],
+  splits: readonly string[],
+): boolean => scanOptions(resolved, marked, splits).words.some(unreadable)
+
 /** Whether git's options hold a config word the guard cannot read and the subcommand may run a hook. */
 export function hasUnreadableConfig(
   resolved: readonly (string | undefined)[],

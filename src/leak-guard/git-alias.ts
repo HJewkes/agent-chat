@@ -228,7 +228,8 @@ export function splitAlias(value: string): string[] | undefined {
 }
 
 const PLAIN_WORD = /^[\w@%+=:,./-]+$/
-const quoted = (word: string): string => (PLAIN_WORD.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`)
+export const quoted = (word: string): string =>
+  PLAIN_WORD.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`
 const POSITIONAL = /\$(?:\{([1-9@*])\}|([1-9@*]))/g
 
 /** The command line a `!` alias runs: git passes the words after it as `$@` and appends `"$@"`. */
