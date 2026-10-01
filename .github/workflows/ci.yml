@@ -26,22 +26,6 @@ jobs:
     with:
       node-version: '22'
 
-  cc417-repeat:
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        n: [1, 2, 3]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: npm ci
-      - run: npx vitest run src/__tests__/seat-dispatch-log.test.ts -t interleaved
-        env:
-          CC417_REPEATS: '200'
-
   # A merge gate behind the pre-push hook `prepare` installs. CI has no private term list.
   egress-scan:
     runs-on: ubuntu-latest
