@@ -23,6 +23,8 @@ export interface SimpleCommand {
   words: string[]
   /** The same words with LIVE before each character the shell would expand, so quoting is not lost. */
   marked: string[]
+  /** The `marked` words that hold an unquoted `$`, substitution, backtick or glob, which the shell splits into words. */
+  splits: string[]
   substitutions: Substitution[]
   stdin?: string
   /** The shell expands `stdin`, reads it from a redirect the splitter does not follow, or has two sources for it. */
@@ -60,6 +62,7 @@ const JOINED = /\\(?:\n|$)/
 /** The shell rewrites backslashes inside backticks before it parses them, so such a command is read as unsure. */
 const blur = (cmd: SimpleCommand): void => {
   cmd.marked = cmd.marked.map((word, i) => (i === 0 ? word : LIVE + word))
+  cmd.splits = cmd.marked
   cmd.stdinLive = true
 }
 
@@ -73,6 +76,7 @@ class ShellLexer {
   private joiner = ''
   private word: string | null = null
   private marked = ''
+  private splitting = false
   private quoted = false
   private pending: Pending | null = null
   private heredocs: Heredoc[] = []
@@ -91,7 +95,7 @@ class ShellLexer {
   private newCommand(): SimpleCommand {
     const nested = this.nested || this.depth !== 0
     const unsure = { stdinLive: false, backslash: false }
-    return { words: [], marked: [], substitutions: [], ...unsure, before: '', after: '', nested }
+    return { words: [], marked: [], splits: [], substitutions: [], ...unsure, before: '', after: '', nested }
   }
 
   run(): SimpleCommand[] {
@@ -202,15 +206,23 @@ class ShellLexer {
     if (c === "'") return this.append(this.until("'"))
     if (c === '"') return this.doubleQuoted()
     if (c === '$' && next === "'") return this.ansiC()
-    if (c === '$' && next === '(') return this.append(this.substitution(false), true)
-    if (c === '$' && next === '{') return this.append(this.braced(), true)
-    if (c === '`') return this.append(this.backtick(false), true)
+    if (c === '$' && next === '(') return this.split(this.substitution(false))
+    if (c === '$' && next === '{') return this.split(this.braced())
+    if (c === '`') return this.split(this.backtick(false))
     if (c === '\\') {
       this.pos += 2
       return this.append(next ?? '')
     }
     this.pos++
-    this.append(c, this.expands(c, next))
+    const live = this.expands(c, next)
+    this.splitting ||= live && (c === '$' || GLOB.includes(c))
+    this.append(c, live)
+  }
+
+  /** Appends an unquoted expansion, which the shell splits into words. */
+  private split(text: string): void {
+    this.splitting = true
+    this.append(text, true)
   }
 
   /** A `{` or `}` alone is a group, not a brace expansion; a leading `=` is zsh's command path. */
@@ -302,6 +314,8 @@ class ShellLexer {
     if (this.word === null) return
     const word = this.word
     const quoted = this.quoted
+    const splitting = this.splitting
+    this.splitting = false
     this.word = null
     this.quoted = false
     const pending = this.pending
@@ -309,6 +323,7 @@ class ShellLexer {
     if (pending === null) {
       this.cur.words.push(word)
       this.cur.marked.push(this.marked)
+      if (splitting) this.cur.splits.push(this.marked)
     } else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
     else if (pending !== 'discard') this.heredocs.push({ delim: word, ...pending, quoted, target: this.cur })
   }

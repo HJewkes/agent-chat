@@ -85,6 +85,56 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
   })
 
   it.each([
+    'git -c "$(cat k)" push',
+    'git -c "$K" push',
+    'git -c `cat k` push',
+    'git -c"$K" commit',
+    'git -c "$(echo core.hooksPath)=/dev/null" push',
+    'git -c "$K=x" merge',
+    'git --config-env=include.path=$E push',
+    'git --config-env include.path=$E push',
+    'git --config-env "$(cat k)" push',
+    'git --config-env="$K" rebase',
+    'git -c "$X" hp',
+    'git -c "$X" $SUB',
+    'git -c {core.hooksPath=/dev/null,-p} push',
+    'git -c core.hooks?ath=x push',
+    'git -C {.,-c,core.hooksPath=/dev/null} push',
+    'git -C{.,-c,core.hooksPath=/dev/null} push',
+    'git --git-dir {.git,-c,core.hooksPath=/dev/null} push',
+    'git --git-dir={.git,-c,core.hooksPath=/dev/null} push',
+    'git --work-tree {.,-c,core.hooksPath=/dev/null} push',
+    'git -C * push',
+    'git -C $(cat d) push',
+    'git -C `cat d` push',
+    'git --git-dir $(cat d) push',
+    'git -C $D push',
+    'git -C$(cat d) push',
+    'git --git-dir=$(cat d) push',
+    'git -c core.hooks[P]ath=x push',
+    "git -c $'core.hooks\\x50ath=/dev/null' push",
+  ])('denies a config the guard cannot read before a hook-running command: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.gitConfigUnresolved)
+  })
+
+  it.each([
+    'git -c user.name=x push',
+    'git -c user.name="$(whoami)" push',
+    'git -c core.pager=less log',
+    'git -c "$X" log',
+    'git -C ../repo push',
+    'git -C "$D" status',
+    'git -C "$D" push',
+    'git -C "$(git rev-parse --show-toplevel)" push',
+    "git -c 'core.pager=less *' log",
+    'git -c "a{b}=x" push',
+    'git --config-env "$K" status',
+    'git --config-env=user.name=NAME push',
+  ])('allows %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+
+  it.each([
     'GIT_CONFIG_COUNT=0 git push',
     'GIT_CONFIG_PARAMETERS= git push',
     'env GIT_CONFIG_COUNT=0 git push',

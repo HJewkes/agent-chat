@@ -8,7 +8,7 @@ import path from 'node:path'
  */
 
 /** git runs a builtin before any alias of the same name. From `git --list-cmds=builtins`, git 2.50. */
-const GIT_BUILTINS = new Set(
+export const GIT_BUILTINS = new Set(
   `add am annotate apply archive backfill bisect blame branch bugreport bundle cat-file check-attr
   check-ignore check-mailmap check-ref-format checkout checkout--worker checkout-index cherry
   cherry-pick clean clone column commit commit-graph commit-tree config count-objects credential
