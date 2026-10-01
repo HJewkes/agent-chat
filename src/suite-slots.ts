@@ -6,8 +6,6 @@ import path from 'node:path'
  * `<dir>/<i>` holding the owner's pid; `mkdir` is atomic, so whoever creates it
  * holds the slot. A slot whose pid is dead is stale and taken over, which is how
  * a runner killed mid-suite gives its slot back.
- *
- * Synchronous on purpose: a test-runner wrapper has nothing else to do while it waits.
  */
 
 export const DEFAULT_FULL_SUITE_SLOTS = 4
@@ -23,7 +21,7 @@ export interface SlotDeps {
   pid: number
   isAlive: (pid: number) => boolean
   now: () => number
-  sleep: (ms: number) => void
+  sleep: (ms: number) => Promise<void>
 }
 
 export interface SlotUsage {
@@ -93,23 +91,24 @@ export function tryAcquireSlot(deps: SlotDeps): number | undefined {
 }
 
 /**
- * Waits up to `waitMs` for a slot. Past that it returns undefined and the caller
- * runs without one: a hung holder must not stop every test run on the machine.
+ * Waits up to `waitMs` for a slot, or until `stop` says so. Past that it returns undefined
+ * and the caller runs without one: a hung holder must not stop every test run on the machine.
  */
-export function acquireSlot(
+export async function acquireSlot(
   deps: SlotDeps,
   waitMs: number,
   notice: (line: string) => void,
-): number | undefined {
+  stop: () => boolean = () => false,
+): Promise<number | undefined> {
   const deadline = deps.now() + waitMs
   let told = false
   for (;;) {
     const index = tryAcquireSlot(deps)
     if (index !== undefined) return index
-    if (deps.now() >= deadline) return undefined
+    if (deps.now() >= deadline || stop()) return undefined
     if (!told) notice(`suite-slot: all ${deps.total} full-suite slots in use; waiting`)
     told = true
-    deps.sleep(POLL_MS)
+    await deps.sleep(POLL_MS)
   }
 }
 
@@ -136,8 +135,4 @@ export function isAlive(pid: number): boolean {
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === 'EPERM'
   }
-}
-
-export function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }

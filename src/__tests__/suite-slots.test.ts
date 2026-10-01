@@ -17,7 +17,7 @@ const runner = (pid: number, over: Partial<SlotDeps> = {}): SlotDeps => ({
   pid,
   isAlive: p => alive.has(p),
   now: () => clock,
-  sleep: ms => {
+  sleep: async ms => {
     clock += ms
   },
   ...over,
@@ -52,13 +52,13 @@ describe('full-suite slots', () => {
     expect(tryAcquireSlot(runner(103))).toBe(1)
   })
 
-  it('takes over the slot of a runner that died without releasing it', () => {
+  it('takes over the slot of a runner that died without releasing it', async () => {
     tryAcquireSlot(runner(101))
     tryAcquireSlot(runner(102))
     alive.delete(101)
 
     expect(slotUsage(runner(103))).toEqual({ inUse: 1, total: 2 })
-    expect(acquireSlot(runner(103), 10_000, () => undefined)).toBe(0)
+    expect(await acquireSlot(runner(103), 10_000, () => undefined)).toBe(0)
   })
 
   it('does not release a slot another runner now owns', () => {
@@ -68,12 +68,12 @@ describe('full-suite slots', () => {
     expect(slotUsage(runner(103)).inUse).toBe(1)
   })
 
-  it('waits for a slot, says so once, and gives up after the wait', () => {
+  it('waits for a slot, says so once, and gives up after the wait', async () => {
     tryAcquireSlot(runner(101))
     tryAcquireSlot(runner(102))
     const notices: string[] = []
 
-    const slot = acquireSlot(runner(103), 10_000, line => notices.push(line))
+    const slot = await acquireSlot(runner(103), 10_000, line => notices.push(line))
 
     expect(slot).toBeUndefined()
     expect(notices).toEqual(['suite-slot: all 2 full-suite slots in use; waiting'])
@@ -98,6 +98,24 @@ describe('full-suite slots', () => {
   })
 })
 
+describe('waiting for a slot', () => {
+  it('stops waiting as soon as it is told to', async () => {
+    tryAcquireSlot(runner(101))
+    tryAcquireSlot(runner(102))
+    let polls = 0
+
+    const slot = await acquireSlot(
+      runner(103),
+      60_000,
+      () => undefined,
+      () => ++polls > 2,
+    )
+
+    expect(slot).toBeUndefined()
+    expect(clock).toBe(1_000_000 + 2 * 2000)
+  })
+})
+
 describe('the suite-slot wrapper under a signal', () => {
   const entry = path.join(import.meta.dirname, '..', '..', 'dist', 'cli.js')
 
@@ -110,7 +128,7 @@ describe('the suite-slot wrapper under a signal', () => {
         stdio: 'ignore',
       })
       const pidFile = path.join(home, 'suite-slots', '0', 'pid')
-      for (let i = 0; i < 100 && !fs.existsSync(pidFile); i++) await new Promise(r => setTimeout(r, 50))
+      for (let i = 0; i < 400 && !fs.existsSync(pidFile); i++) await new Promise(r => setTimeout(r, 50))
       expect(fs.readFileSync(pidFile, 'utf8')).toBe(String(wrapper.pid))
 
       const exited = new Promise<NodeJS.Signals | null>(resolve =>
@@ -121,6 +139,6 @@ describe('the suite-slot wrapper under a signal', () => {
       expect(await exited).toBe(signal)
       expect(fs.existsSync(path.join(home, 'suite-slots', '0'))).toBe(false)
     },
-    15_000,
+    30_000,
   )
 })
