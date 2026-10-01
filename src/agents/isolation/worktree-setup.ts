@@ -62,8 +62,15 @@ const SETUP_ENV_KEYS = new Set([
 ])
 const SETUP_ENV_PREFIXES = ['LC_', 'npm_config_', 'NPM_CONFIG_', 'COREPACK_']
 
-/** CC-324: a resumed tree holds the branch's package.json, whose lifecycle scripts must not run on the broker. */
-const IGNORE_SCRIPTS_KEYS = ['npm_config_ignore_scripts', 'NPM_CONFIG_IGNORE_SCRIPTS'] as const
+/** CC-324: a resumed tree holds the branch's package.json and .npmrc; env outranks the .npmrc, so no branch program runs. */
+const PINNED_NPM_CONFIG: Readonly<Record<string, string>> = {
+  ignore_scripts: 'true',
+  git: 'git',
+  // npm reads an empty value as unset, which lets the .npmrc win.
+  node_options: '--no-deprecation',
+  script_shell: '/bin/sh',
+  shell: '/bin/sh',
+}
 
 /** An allowlist of what an install needs: the step runs on the broker, outside any permission profile. */
 export function setupEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
@@ -71,7 +78,10 @@ export function setupEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEn
   for (const [key, value] of Object.entries(env)) {
     if (SETUP_ENV_KEYS.has(key) || SETUP_ENV_PREFIXES.some(prefix => key.startsWith(prefix))) out[key] = value
   }
-  for (const key of IGNORE_SCRIPTS_KEYS) out[key] = 'true'
+  for (const [key, value] of Object.entries(PINNED_NPM_CONFIG)) {
+    out[`npm_config_${key}`] = value
+    out[`NPM_CONFIG_${key.toUpperCase()}`] = value
+  }
   return out
 }
 
