@@ -1044,6 +1044,20 @@ describe('a git alias already in config', () => {
       expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
     })
 
+    it.each([
+      'y=x; x=git; source /dev/null; ${!y} pnv',
+      'y=x; x=git; pushd .; ${!y} hp',
+      'set -- git; source /dev/null; $1 pnv',
+      'set -- git; cd "$D"; ${1} pnv',
+      'set -- git; source /dev/null; $* pnv',
+      'set -- git; source /dev/null; "$@" pnv',
+      'read <<< git; source /dev/null; $REPLY pnv',
+      'read <<< git; pushd .; ${REPLY} pnv',
+      ': git; source /dev/null; $_ pnv',
+    ])('denies a positional, special or indirect command word where it cannot look (TP-613): %s', command => {
+      expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
+    })
+
     it('denies an expanded command word whose hook env value is git where it cannot look', () => {
       const command = 'source /dev/null; $G pnv'
       expect(checkCommand(command, { ...inAliased(), env: { HOME: emptyHome, G: 'git' } })).toBe(

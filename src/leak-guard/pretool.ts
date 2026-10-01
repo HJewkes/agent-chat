@@ -303,11 +303,14 @@ function gitRun(
 
 const NAMES_GIT = /\bgit\b/
 const VARIABLE = /\$\{?([A-Za-z_][A-Za-z0-9_]*)/g
+// Positional and special parameters, REPLY and `${!name}` indirection are set without naming them.
+const UNNAMED_SET = /\$\{?(?:[0-9*@]|_(?![A-Za-z0-9_])|REPLY(?![A-Za-z0-9_])|!)/
 
 /** An expanded command word that names git, runs a substitution, or reads a variable the line may set or the hook holds as git. */
 function tiedToGit(head: string, cmd: SimpleCommand, ctx: GuardContext, scope: Scope): boolean {
   const raw = unmark(head)
-  if (NAMES_GIT.test(raw) || cmd.substitutions.some(sub => head.includes(LIVE + sub.raw))) return true
+  if (NAMES_GIT.test(raw) || UNNAMED_SET.test(raw)) return true
+  if (cmd.substitutions.some(sub => head.includes(LIVE + sub.raw))) return true
   const names = [...raw.matchAll(VARIABLE)].map(match => match[1] as string)
   return names.some(name => mentions(scope.said, name) || NAMES_GIT.test(ctx.env[name] ?? ''))
 }
