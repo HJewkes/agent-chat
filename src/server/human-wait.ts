@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process'
+import fs from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { AgentIdentity, AgentLifecycle, QueueItem, ServerMessage } from '../protocol.js'
 import { findTranscript } from '../agents/transcript.js'
-import { parseLine, readTail } from '../agents/transcript-usage.js'
+import { parseLine, readTail, USAGE_TAIL_BYTES } from '../agents/transcript-usage.js'
 
 /**
  * Whether a session is idle on the human, read from its own transcript tail (CC-135 S2).
@@ -32,36 +33,64 @@ const EDIT_PATH_KEYS: Readonly<Record<string, string>> = {
   Write: 'file_path',
   NotebookEdit: 'notebook_path',
 }
-/** Work that has landed in history: a commit, or a pull request opened from it. */
-const LANDS_WORK = /\bgit\b[^\n|;&]*\bcommit\b|\bgh\s+pr\s+create\b/
-const LIVE_STATES: ReadonlySet<AgentLifecycle> = new Set(['spawning', 'live'])
+/** Detached is still running: machine-guard counts it live, so a park must too. */
+const LIVE_STATES: ReadonlySet<AgentLifecycle> = new Set(['spawning', 'live', 'detached'])
 const CHILD_ACTIVITY_LIMIT = 200
+/** The first line of a return-contract report: implementers send `Status:`, reviewers `Verdict:`. */
+const REPORT = /^(Status|Verdict):/
+const GIT_TIMEOUT_MS = 5_000
+/** A human turn of tool calls often outgrows 256 KB, so the tail widens until it holds the prompt. */
+const TAIL_STEPS = [USAGE_TAIL_BYTES, 1024 * 1024, 4 * 1024 * 1024]
+/** Read-only status: no index.lock in a checkout a live agent may share, and no fsmonitor program. */
+const GIT_READ_ONLY = ['--no-optional-locks', '-c', 'core.fsmonitor=false']
 
 const isRecord = (v: unknown): v is Rec => typeof v === 'object' && v !== null
 const mid = (reason: MidEpisodeReason): WaitClass => ({ kind: 'mid-episode', reason })
 
-/** Pure: how the session's final turn stands, given the dirty paths and the children it still awaits. */
+/** How to compare edit paths with dirty ones: relative edits resolve against the session's cwd. */
+export interface PathContext {
+  cwd: string
+  real: (absolute: string) => string
+}
+
+const AS_GIVEN: PathContext = { cwd: process.cwd(), real: p => p }
+
+/**
+ * Pure: how the session's final turn stands, given the dirty paths and the children it still awaits.
+ *
+ * `records` undefined means the tail was torn or garbled. No commit parsing: the dirty-path
+ * intersection already shows whether an edit landed, and a command line cannot.
+ */
 export function classifyWait(
-  records: readonly unknown[],
+  records: readonly unknown[] | undefined,
   dirtyPaths: readonly string[],
   children: readonly string[],
+  paths: Partial<PathContext> = {},
 ): WaitClass {
-  const turn = finalTurn(records)
-  const last = turn.at(-1)
-  if (last === undefined) return UNKNOWN
+  const { cwd, real } = { ...AS_GIVEN, ...paths }
+  const turn = records === undefined ? undefined : finalTurn(records)
+  const last = turn?.at(-1)
+  if (turn === undefined || last === undefined) return UNKNOWN
   const open = openToolNames(turn)
   if (open.some(name => name !== ASK)) return mid('open-tool')
-  const dirty = new Set(dirtyPaths.map(p => path.resolve(p)))
-  if (uncommittedEdits(turn).some(p => dirty.has(p))) return mid('partial-edit')
+  const canonical = (p: string): string => real(path.resolve(cwd, p))
+  const dirty = new Set(dirtyPaths.map(canonical))
+  if (editedPaths(turn).some(p => dirty.has(canonical(p)))) return mid('partial-edit')
   if (children.length > 0) return mid('awaited-children')
   if (open.length > 0) return { kind: 'awaiting-ask' }
   const stop = (last.message as Rec).stop_reason
   return last.type === 'assistant' && stop === 'end_turn' ? { kind: 'awaiting-turn-end' } : UNKNOWN
 }
 
-/** Parse a transcript tail; a cut or garbled line is dropped rather than guessed at. */
-export function recordsOf(tail: string): Rec[] {
-  return tail.split('\n').flatMap(line => {
+/**
+ * Parse a transcript tail. The cut first line is dropped; a half-written or garbled LAST line
+ * gives undefined, because the record it hides may be the one that ends the wait.
+ */
+export function recordsOf(tail: string): Rec[] | undefined {
+  if (!tail.endsWith('\n')) return undefined
+  const lines = tail.slice(0, -1).split('\n')
+  if (parseLine(lines.at(-1) ?? '') === undefined) return undefined
+  return lines.flatMap(line => {
     const record = parseLine(line)
     return record === undefined ? [] : [record]
   })
@@ -83,10 +112,23 @@ const blocksOf = (r: Rec): Rec[] => {
 /** A user record carrying anything but tool results is a new prompt, so it opens a turn. */
 const opensTurn = (r: Rec): boolean => r.type === 'user' && !blocksOf(r).some(b => b.type === 'tool_result')
 
-function finalTurn(records: readonly unknown[]): Rec[] {
+/** Undefined when no prompt is in the tail: the turn began earlier, and its first edits are cut off. */
+function finalTurn(records: readonly unknown[]): Rec[] | undefined {
   const turn = records.filter(isTurnRecord)
   const start = turn.findLastIndex(opensTurn)
-  return start < 0 ? turn : turn.slice(start)
+  return start < 0 ? undefined : turn.slice(start)
+}
+
+/** The tail from the final turn's prompt on, read no wider than it needs; past 4 MB the turn reads as unknown. */
+export function readTurnRecords(file: string): Rec[] | undefined {
+  let records: Rec[] | undefined
+  for (const bytes of TAIL_STEPS) {
+    const tail = readTail(file, bytes)
+    records = recordsOf(tail)
+    const whole = Buffer.byteLength(tail) < bytes
+    if (records === undefined || whole || records.filter(isTurnRecord).some(opensTurn)) return records
+  }
+  return records
 }
 
 const blocksOfType = (turn: Rec[], type: string): Rec[] =>
@@ -99,18 +141,25 @@ function openToolNames(turn: Rec[]): string[] {
     .map(use => String(use.name))
 }
 
-/** Paths the turn edited after its last commit; a commit clears only what came before it. */
-function uncommittedEdits(turn: Rec[]): string[] {
-  let edited: string[] = []
-  for (const use of blocksOfType(turn, 'tool_use')) {
-    const input = isRecord(use.input) ? use.input : {}
+function editedPaths(turn: Rec[]): string[] {
+  return blocksOfType(turn, 'tool_use').flatMap(use => {
     const key = EDIT_PATH_KEYS[String(use.name)]
-    const target = key === undefined ? undefined : input[key]
-    if (typeof target === 'string') edited.push(path.resolve(target))
-    if (use.name === 'Bash' && typeof input.command === 'string' && LANDS_WORK.test(input.command))
-      edited = []
+    const target = key !== undefined && isRecord(use.input) ? use.input[key] : undefined
+    return typeof target === 'string' ? [target] : []
+  })
+}
+
+/** Symlinks resolved, so `/var/x` and git's `/private/var/x` compare equal; a deleted file keeps its name. */
+export function canonicalPath(absolute: string): string {
+  try {
+    return fs.realpathSync.native(absolute)
+  } catch {
+    try {
+      return path.join(fs.realpathSync.native(path.dirname(absolute)), path.basename(absolute))
+    } catch {
+      return absolute
+    }
   }
-  return edited
 }
 
 /** Absolute paths from `git status --porcelain -z`, whose entries are relative to the repo root. */
@@ -127,7 +176,7 @@ export function parseDirtyPaths(porcelain: string, root: string): string[] {
   return paths
 }
 
-/** Pure: live children of `self` that have sent it no `Status:` report since they were spawned. */
+/** Pure: live children of `self` that have sent it no report since they were spawned. */
 export function awaitedChildren(
   self: string,
   agents: readonly AgentIdentity[],
@@ -140,24 +189,30 @@ export function awaitedChildren(
         item.from === child.name &&
         item.meta.target === self &&
         item.at >= child.spawnedAt &&
-        item.text.startsWith('Status:'),
+        REPORT.test(item.text),
     )
   return agents.filter(a => a.spawnedBy === self && LIVE_STATES.has(a.state) && !reported(a)).map(a => a.name)
 }
 
 const run = promisify(execFile)
 
+const git = async (cwd: string, args: string[], timeout: number): Promise<string> =>
+  (await run('git', [...GIT_READ_ONLY, '-C', cwd, ...args], { timeout })).stdout
+
+/** git exits 128 for a cwd outside any repo; a timeout or missing git is a different failure. */
+const notARepo = (error: unknown): boolean => isRecord(error) && error.code === 128
+
 /** Undefined when the status cannot be read; a cwd outside any repo has nothing dirty. */
-export async function readDirtyPaths(cwd: string): Promise<string[] | undefined> {
+export async function readDirtyPaths(cwd: string, timeoutMs = GIT_TIMEOUT_MS): Promise<string[] | undefined> {
   let root: string
   try {
-    root = (await run('git', ['-C', cwd, 'rev-parse', '--show-toplevel'])).stdout.trim()
-  } catch {
-    return []
+    root = (await git(cwd, ['rev-parse', '--show-toplevel'], timeoutMs)).trim()
+  } catch (error) {
+    return notARepo(error) ? [] : undefined
   }
   try {
-    const args = ['-C', cwd, 'status', '--porcelain', '-z', '--untracked-files=all']
-    return parseDirtyPaths((await run('git', args)).stdout, root)
+    const porcelain = await git(cwd, ['status', '--porcelain', '-z', '--untracked-files=all'], timeoutMs)
+    return parseDirtyPaths(porcelain, root)
   } catch {
     return undefined
   }
@@ -198,11 +253,11 @@ export async function readWait(source: WaitSource): Promise<WaitClass> {
   try {
     const transcript = findTranscript(source.cwd, source.sessionId, source.configDir)
     if (!transcript.exists) return UNKNOWN
-    const records = recordsOf(readTail(transcript.path))
+    const records = readTurnRecords(transcript.path)
     const dirty = await readDirtyPaths(source.cwd)
     if (dirty === undefined) return UNKNOWN
     const children = source.self === null ? [] : await readAwaitedChildren(source.broker, source.self)
-    return classifyWait(records, dirty, children)
+    return classifyWait(records, dirty, children, { cwd: source.cwd, real: canonicalPath })
   } catch {
     return UNKNOWN
   }
