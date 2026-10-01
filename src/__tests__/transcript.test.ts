@@ -2,7 +2,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { findTranscript, projectSlug, transcriptLine, transcriptPath } from '../agents/transcript.js'
+import {
+  findAgentTranscript,
+  findTranscript,
+  projectSlug,
+  transcriptLine,
+  transcriptPath,
+} from '../agents/transcript.js'
 
 /**
  * A fake `~/.claude` so nothing here reads the developer's real transcripts —
@@ -78,5 +84,53 @@ describe('finding a spawned agent transcript', () => {
   it('survives a machine with no Claude Code config at all', () => {
     fs.rmSync(configDir, { recursive: true, force: true })
     expect(findTranscript(CWD, SESSION).exists).toBe(false)
+  })
+})
+
+describe('finding the transcript of an adopted agent with no recorded config dir (CC-261)', () => {
+  const CWD = '/Users/alice/projects/agent-chat'
+  const SESSION = '4e4f4f5b-6bf2-4ccc-bbd2-133297c7de07'
+  let profileRoot: string
+
+  beforeEach(() => {
+    profileRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-profiles-'))
+    process.env.CLAUDE_PROFILE_ROOT = profileRoot
+  })
+
+  afterEach(() => {
+    delete process.env.CLAUDE_PROFILE_ROOT
+    fs.rmSync(profileRoot, { recursive: true, force: true })
+  })
+
+  const writeUnder = (dir: string): string => {
+    const folder = path.join(dir, 'projects', projectSlug(CWD))
+    fs.mkdirSync(folder, { recursive: true })
+    const file = path.join(folder, `${SESSION}.jsonl`)
+    fs.writeFileSync(file, '{"type":"user"}\n')
+    return file
+  }
+
+  it('finds the transcript under a profile dir instead of printing the default one', () => {
+    const written = writeUnder(path.join(profileRoot, 'agents'))
+
+    const found = findAgentTranscript(CWD, SESSION, undefined)
+
+    expect(found).toEqual({ path: written, exists: true })
+  })
+
+  it('trusts a recorded config dir over any search', () => {
+    writeUnder(path.join(profileRoot, 'agents'))
+    const recorded = path.join(profileRoot, 'other')
+
+    const found = findAgentTranscript(CWD, SESSION, recorded)
+
+    expect(found.exists).toBe(false)
+    expect(found.path.startsWith(recorded)).toBe(true)
+  })
+
+  it('falls back to the default derived path when no dir holds the session', () => {
+    const found = findAgentTranscript(CWD, SESSION, undefined)
+
+    expect(found).toEqual({ path: transcriptPath(CWD, SESSION), exists: false })
   })
 })

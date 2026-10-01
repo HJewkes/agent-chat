@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { profileDir } from './config-dir.js'
 import {
   claudeSourceFromPath,
   readRecentSessionTurnsSync,
@@ -71,6 +72,32 @@ export function findTranscript(cwd: string, sessionId: string, dir?: string): Tr
   return { path: derived, exists: false }
 }
 
+/**
+ * CC-261: `findTranscript` for a roster row. An adopted session's row records no config dir,
+ * so the default dir would be printed even when it ran under a profile dir. The session id
+ * is unique, so searching the profile dirs for it is exact. A recorded dir is never searched past.
+ */
+export function findAgentTranscript(cwd: string, sessionId: string, dir?: string): Transcript {
+  const primary = findTranscript(cwd, sessionId, dir)
+  if (dir !== undefined || primary.exists) return primary
+  for (const profile of profileDirs()) {
+    const found = findTranscript(cwd, sessionId, profile)
+    if (found.exists) return found
+  }
+  return primary
+}
+
+function profileDirs(): string[] {
+  const root = path.dirname(profileDir('x', process.env, os.homedir()))
+  try {
+    return fs
+      .readdirSync(root, { withFileTypes: true })
+      .flatMap(e => (e.isDirectory() ? [path.join(root, e.name)] : []))
+  } catch {
+    return []
+  }
+}
+
 function readProjects(dir?: string): string[] {
   try {
     return fs
@@ -117,6 +144,6 @@ function readModel(file: string): RecentObservedValue<string> | undefined {
 /** One line for a roster: the path, or why there is not one. */
 export const transcriptLine = (cwd: string, sessionId: string, dir?: string): string => {
   if (sessionId === '') return 'transcript: none recorded for this agent'
-  const found = findTranscript(cwd, sessionId, dir)
+  const found = findAgentTranscript(cwd, sessionId, dir)
   return found.exists ? `transcript: ${found.path}` : `transcript: ${found.path} (not written yet)`
 }

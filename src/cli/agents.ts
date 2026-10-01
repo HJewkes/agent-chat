@@ -4,7 +4,7 @@ import { callerName, filterRoster, type RosterFilter } from '../agents/roster-fi
 import { pairPresence } from '../agents/identity.js'
 import { reclaim, sweepWorktrees } from '../agents/isolation/sweep.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
-import { findTranscript, observedModel, transcriptLine } from '../agents/transcript.js'
+import { findAgentTranscript, observedModel, transcriptLine } from '../agents/transcript.js'
 import { type AgentIdentity, type ServerMessage } from '../protocol.js'
 import type { Report } from './command.js'
 import { fail, withBroker } from './client.js'
@@ -92,7 +92,7 @@ function modelOrNull(agent: AgentIdentity): string | null {
 /** One roster row for `agent ls --json`: everything the text view shows, as fields. */
 function lsJsonRow(agent: AgentIdentity, connected: boolean) {
   const { status } = pairPresence(agent, { connected })
-  const transcript = findTranscript(agent.cwd, agent.sessionId, agent.configDir)
+  const transcript = findAgentTranscript(agent.cwd, agent.sessionId, agent.configDir)
   return {
     name: agent.name,
     agentId: agent.agentId,
