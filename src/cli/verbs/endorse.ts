@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { endorseCommand } from '../../endorse-command.js'
+import { CONTROL_MARK, endorseCommand, visible } from '../../endorse-command.js'
 import type { ServerMessage } from '../../protocol.js'
 import { describeEndorse } from '../human.js'
 import { defineVerb, Report, type VerbContext } from '../command.js'
@@ -27,18 +27,29 @@ async function stored(msgId: string, ctx: VerbContext): Promise<Endorsement | un
   return item && { msgId, to: item.meta.recipient ?? '', text: item.text }
 }
 
-/** Recipient before and after the verbatim text, so a body cannot fake the line that names it. */
-const show = ({ msgId, to, text }: Endorsement): string[] => [
-  `Endorsement ${msgId} would be delivered to ${to}, with your authority. Text, verbatim:`,
-  text,
-  `(end of text, ${text.length} characters, to ${to})`,
-]
+/** Recipient before and after the text, so a body cannot fake the line that names it. */
+function show({ msgId, to, text }: Endorsement): string[] {
+  const shownTo = visible(to)
+  const shownText = visible(text)
+  const escaped = shownTo.escaped || shownText.escaped
+  return [
+    `Endorsement ${msgId} would be delivered to ${shownTo.text}, with your authority. Text${escaped ? '' : ', verbatim'}:`,
+    ...(escaped ? [CONTROL_MARK] : []),
+    shownText.text,
+    `(end of text, ${text.length} characters, to ${shownTo.text})`,
+  ]
+}
 
 /** What a caller with no terminal gets instead of a prompt: the command that restates the bytes. */
-export const noTerminal = (e: Endorsement): string[] => [
-  `refusing to endorse ${e.msgId} without a terminal to confirm at; to endorse these exact bytes, run:`,
-  endorseCommand(e.msgId, e.to, e.text),
-]
+export function noTerminal(e: Endorsement): string[] {
+  const command = endorseCommand(e.msgId, e.to, e.text)
+  const refusal = `refusing to endorse ${e.msgId} without a terminal to confirm at`
+  if (command === undefined)
+    return [
+      `${refusal}. It contains control characters, so no shell command can restate it without writing them raw; endorse it at a terminal, or dismiss it.`,
+    ]
+  return [`${refusal}; to endorse these exact bytes, run:`, command]
+}
 
 /**
  * A confused-agent control, not a guarantee (a pty wrapper defeats it): the
