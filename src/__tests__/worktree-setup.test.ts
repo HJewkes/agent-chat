@@ -7,6 +7,7 @@ import { createWorktreeStrategy, reattachWorktree } from '../agents/isolation/wo
 import {
   parseSetupStep,
   runSetupCommand,
+  setupEnv,
   SETUP_FILE,
   SETUP_LOG,
   type SetupResult,
@@ -331,6 +332,58 @@ describe('the default setup runner', () => {
     const result = await runSetupCommand(['definitely-not-a-command-cc313'], dir, 5_000)
     expect(result.exitCode).toBeNull()
     expect(result.output).toContain('ENOENT')
+  })
+})
+
+/** A package with no dependencies whose every lifecycle script touches a marker in the tree. */
+const SCRIPTED_PACKAGE = {
+  'package.json': JSON.stringify({
+    name: 'cc324-synthetic',
+    version: '1.0.0',
+    scripts: Object.fromEntries(
+      ['preinstall', 'install', 'postinstall', 'prepare'].map(hook => [hook, `touch ${hook}-ran`]),
+    ),
+  }),
+  'package-lock.json': JSON.stringify({
+    name: 'cc324-synthetic',
+    version: '1.0.0',
+    lockfileVersion: 3,
+    requires: true,
+    packages: { '': { name: 'cc324-synthetic', version: '1.0.0' } },
+  }),
+}
+
+const markersIn = (dir: string): string[] => fs.readdirSync(dir).filter(name => name.endsWith('-ran'))
+
+describe('lifecycle scripts during worktree setup (CC-324)', () => {
+  it('a reused branch whose package.json has install scripts runs none of them under npm ci', async () => {
+    const repo = makeRepo({ command: ['npm', 'ci', '--no-audit', '--no-fund'] })
+    git(['switch', '-q', '-c', 'agent-chat/alice'], repo)
+    for (const [name, content] of Object.entries(SCRIPTED_PACKAGE))
+      fs.writeFileSync(path.join(repo, name), content)
+    git(['add', '.'], repo)
+    git(['commit', '-m', 'add scripts'], repo)
+    git(['switch', '-q', 'main'], repo)
+
+    const alloc = await createWorktreeStrategy().allocate(ctxFor(repo))
+
+    expect(alloc.ref?.reused).toBe('true')
+    expect(setupWarnings(alloc.warnings)).toEqual([])
+    expect(markersIn(alloc.cwd)).toEqual([])
+  }, 60_000)
+
+  it('turns scripts off even when the broker environment turns them on', () => {
+    const env = setupEnv({
+      PATH: '/bin',
+      npm_config_ignore_scripts: 'false',
+      NPM_CONFIG_IGNORE_SCRIPTS: 'false',
+    })
+    expect(env).toMatchObject({ npm_config_ignore_scripts: 'true', NPM_CONFIG_IGNORE_SCRIPTS: 'true' })
+  })
+
+  it('the repository declaration passes --ignore-scripts to its install', () => {
+    const step = parseSetupStep(fs.readFileSync(SETUP_FILE, 'utf8'))
+    expect(step).toMatchObject({ command: expect.arrayContaining(['npm', 'ci', '--ignore-scripts']) })
   })
 })
 

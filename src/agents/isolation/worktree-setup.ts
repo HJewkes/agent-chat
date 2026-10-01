@@ -62,12 +62,16 @@ const SETUP_ENV_KEYS = new Set([
 ])
 const SETUP_ENV_PREFIXES = ['LC_', 'npm_config_', 'NPM_CONFIG_', 'COREPACK_']
 
+/** CC-324: a resumed tree holds the branch's package.json, whose lifecycle scripts must not run on the broker. */
+const IGNORE_SCRIPTS_KEYS = ['npm_config_ignore_scripts', 'NPM_CONFIG_IGNORE_SCRIPTS'] as const
+
 /** An allowlist of what an install needs: the step runs on the broker, outside any permission profile. */
 export function setupEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { GIT_TERMINAL_PROMPT: '0' }
   for (const [key, value] of Object.entries(env)) {
     if (SETUP_ENV_KEYS.has(key) || SETUP_ENV_PREFIXES.some(prefix => key.startsWith(prefix))) out[key] = value
   }
+  for (const key of IGNORE_SCRIPTS_KEYS) out[key] = 'true'
   return out
 }
 
