@@ -793,11 +793,9 @@ export class SocketServer {
     // The human is shown "would be delivered to X" and decides based on that
     // name. Refusing an unknown name here at least closes the case an adversarial
     // review found live: approving a request for a name nobody holds yet, which
-    // then gets delivered to whoever happens to register it later. This does NOT
-    // close the narrower race where the recipient changes identity between this
-    // check and the human's eventual approval — that would need the approval
-    // bound to an agentId rather than a name, which nothing else on this bus does
-    // either (accepted, tracked separately).
+    // then gets delivered to whoever happens to register it later. The narrower
+    // race, where the name changes hands before the human approves, is closed at
+    // approval by `recipient_agent_id` below (CC-420).
     const recipientConn = core.registry.connFor(msg.to)
     if (recipientConn === undefined) return refuse(`no session named "${msg.to}" is currently connected`)
 
@@ -830,6 +828,7 @@ export class SocketServer {
       meta: {
         recipient: msg.to,
         ...(composer?.agentId ? { agent_id: composer.agentId } : {}),
+        ...(recipient?.agentId ? { recipient_agent_id: recipient.agentId } : {}),
         recipient_durable: recipient?.agentId ? 'true' : 'false',
         recipient_registered_at: String(recipient?.registeredAt ?? Date.now()),
       },

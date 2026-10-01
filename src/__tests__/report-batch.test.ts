@@ -250,7 +250,13 @@ describe('reports to one coordinator inside the window', () => {
 
   // Mutation caught: `endorse` delivering through the batch window.
   it('delivers a human-endorsed message at once even when it opens like a report', () => {
-    const coord = session('coord')
+    const coordId = core.append({
+      kind: 'agent_spawned',
+      actor: 'owner',
+      target: 'coord',
+      body: 'coordinate',
+    }).msgId
+    const coord = session('coord', coordId)
     const a = worker('w-a', coord)
     send(a, { t: 'endorse', to: 'coord', text: 'Status: the owner says ship it' })
     const request = core.events.humanQueue()[0]?.msgId as string

@@ -103,7 +103,7 @@ const msgIdOf = (frame: ServerMessage | undefined): string =>
 /** One item of every kind the batch answers, raised the way agents raise them. */
 function seed(env: Env) {
   const asker = register(env, 'asker')
-  register(env, 'bob')
+  register(env, 'bob', 'session-bob')
   const decider = register(env, 'decider', 'session-decider')
   const deciderId = env.core.registry.entryFor(decider.conn)!.agentId!
   fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ decider: { agentId: deciderId } }))
