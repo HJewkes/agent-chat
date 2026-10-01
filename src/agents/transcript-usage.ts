@@ -46,11 +46,11 @@ export function readTranscriptUsage(sessionId: string, dir?: string, cwd = ''): 
   }
 }
 
-function readTail(file: string): string {
+export function readTail(file: string, maxBytes = USAGE_TAIL_BYTES): string {
   const fd = fs.openSync(file, 'r')
   try {
     const size = fs.fstatSync(fd).size
-    const length = Math.min(size, USAGE_TAIL_BYTES)
+    const length = Math.min(size, maxBytes)
     const buffer = Buffer.alloc(length)
     fs.readSync(fd, buffer, 0, length, size - length)
     return buffer.toString('utf8')
@@ -89,7 +89,7 @@ function usageOf(line: string): Omit<TranscriptUsage, 'ok' | 'path'> | undefined
 }
 
 /** The first line of a tail is usually cut mid-record; it fails to parse and is skipped. */
-function parseLine(line: string): Record<string, unknown> | undefined {
+export function parseLine(line: string): Record<string, unknown> | undefined {
   try {
     const doc: unknown = JSON.parse(line)
     return isRecord(doc) ? doc : undefined

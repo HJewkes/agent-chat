@@ -54,6 +54,10 @@ export function cacheSentence(cache: PromptCache | undefined, now: number): stri
 
 const kTokens = (n: number): string => `${Math.round(n / 1000)}k`
 
+/** CC-135 S1: a pending AskUserQuestion holds every channel notice until the human answers. */
+export const PLAIN_TEXT_QUESTIONS =
+  'Above this mark, put questions to the human in plain text rather than AskUserQuestion, so a park notice can reach you.'
+
 /**
  * Tracks whether a session has already been told, so the crossing is announced
  * once.
@@ -100,6 +104,7 @@ export class ContextHinter {
       `[budget] Your context holds ${kTokens(tokens)} tokens, past the ${kTokens(threshold)} advisory mark.`,
       `At your next ${this.policy.boundary}, use agent_teleport to carry a handoff into a fresh session.`,
       ...(cache === undefined ? [] : [cache]),
+      PLAIN_TEXT_QUESTIONS,
     ].join(' ')
   }
 }
