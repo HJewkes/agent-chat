@@ -78,11 +78,26 @@ export function patternsOverlap(a: string, b: string): boolean {
   // directly whether it covers it.
   if (!hasWildcard(b) && matchPattern(b, a)) return true
   if (!hasWildcard(a) && matchPattern(a, b)) return true
+  if (isShallow(a) || isShallow(b)) return shallowOverlap(a, b)
   const [prefixA, prefixB] = [literalPrefix(a), literalPrefix(b)]
   return prefixA.startsWith(prefixB) || prefixB.startsWith(prefixA)
 }
 
 const hasWildcard = (pattern: string): boolean => pattern.includes('*')
+
+/** A wildcard confined to the last segment matches only files in its own directory. */
+const isShallow = (pattern: string): boolean =>
+  hasWildcard(pattern) && !pattern.includes('**') && !hasWildcard(directoryOf(pattern))
+
+const directoryOf = (pattern: string): string => pattern.slice(0, pattern.lastIndexOf('/') + 1)
+
+/** At least one side is shallow; when the other cannot be placed, report an overlap. */
+function shallowOverlap(a: string, b: string): boolean {
+  const [shallow, other] = isShallow(a) ? [a, b] : [b, a]
+  const dir = directoryOf(shallow)
+  if (isShallow(other)) return directoryOf(other) === dir
+  return dir.startsWith(literalPrefix(other))
+}
 
 /** Everything up to the first wildcard, trimmed to a path boundary. */
 function literalPrefix(pattern: string): string {
