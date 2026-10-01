@@ -455,6 +455,23 @@ describe('an autonomy root the writer cannot use', () => {
   })
 })
 
+const parses = (text: string): boolean => {
+  try {
+    JSON.parse(text)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Every blank or unparseable line as `[index, line, 2 lines either side]`, stringified so whitespace shows. */
+const badLines = (lines: string[]): string[] =>
+  lines.flatMap((text, i) =>
+    text !== '' && parses(text)
+      ? []
+      : [JSON.stringify({ i, around: lines.slice(Math.max(0, i - 2), i + 3) })],
+  )
+
 describe('a seat appending by shell while the writer appends', () => {
   it('leaves every one of 400 interleaved lines parseable', async () => {
     const file = logFile('seat-x')
@@ -477,8 +494,8 @@ describe('a seat appending by shell while the writer appends', () => {
 
     const lines = fs.readFileSync(file, 'utf8').split('\n')
     expect(lines.pop()).toBe('')
+    expect(badLines(lines), 'blank or unparseable lines, with their neighbours').toEqual([])
     expect(lines).toHaveLength(400)
-    for (const text of lines) expect(() => JSON.parse(text) as unknown).not.toThrow()
     expect(logged).toEqual([])
   })
 })
