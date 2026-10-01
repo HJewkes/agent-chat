@@ -141,7 +141,8 @@ export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknow
   if (hooksDir === undefined) return
   writeGitHooks(hooksDir)
   const shimDir = plan.env[GIT_SHIM_DIR_ENV]
-  if (shimDir !== undefined) writeGitShim(shimDir, hooksDir)
+  if (shimDir !== undefined && !writeGitShim(shimDir, hooksDir))
+    process.stderr.write(`agent-chat: git shim not written to ${shimDir}: no git on PATH\n`)
 }
 
 export function readLaunchPlan(agentId: string): LaunchPlan {

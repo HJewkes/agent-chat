@@ -6,7 +6,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { writeLaunchFiles } from '../agents/launch-files.js'
 import { buildLaunchPlan } from '../agents/launch-plan.js'
 import type { AgentProfile, LaunchPlan, LaunchPlanInput } from '../agents/types.js'
-import { findRealGit, GIT_SHIM_DIR_ENV, writeGitShim } from '../leak-guard/git-shim.js'
+import { findRealGit, GIT_SHIM_DIR_ENV, gitShimScript, writeGitShim } from '../leak-guard/git-shim.js'
 import { gitHooksEnv } from '../leak-guard/hooks-dir.js'
 
 /**
@@ -149,6 +149,87 @@ describe('the agent git shim refusing pushes that skip the leak scan', () => {
 
     expect(run.stderr).toContain('git-shim: push refused (shell-alias)')
     expect(remoteHasMain(fx)).toBe(false)
+  })
+})
+
+describe('the agent git shim failing closed when it cannot resolve a push (fix round 1)', () => {
+  // Each case pushed without the hook at 789da5ba: sh word splitting kept the quotes, so the lookup missed.
+  it.each([
+    ['"push"', `git p ${NO_VERIFY} origin main`, 'no-verify'],
+    ["'push'", 'git -c core.hooksPath=/dev/null p origin main', 'hooks-path'],
+    ['pu\\sh', `git p ${NO_VERIFY} origin main`, 'no-verify'],
+    ['"push" "--no-verify"', 'git p origin main', 'no-verify'],
+  ])('refuses alias.p=%s split the way git splits it', (alias, command, rule) => {
+    const fx = fixture()
+    git(fx.work, 'config', 'alias.p', alias)
+
+    const run = runScript(fx, command)
+
+    expect(run.stderr).toContain(`git-shim: push refused (${rule})`)
+    expect(run.status).toBe(2)
+    expect(remoteHasMain(fx)).toBe(false)
+  })
+
+  it('refuses an alias with an open quote rather than passing it to git', () => {
+    const fx = fixture()
+    git(fx.work, 'config', 'alias.p', '"push')
+
+    const run = runScript(fx, 'git p origin main')
+
+    expect(run.stderr).toContain('git-shim: push refused (unresolved)')
+    expect(run.status).toBe(2)
+  })
+
+  it('refuses an alias chain deeper than 10 that ends in push --no-verify', () => {
+    const fx = fixture()
+    for (let level = 0; level < 12; level++) git(fx.work, 'config', `alias.a${level}`, `a${level + 1}`)
+    git(fx.work, 'config', 'alias.a12', `push ${NO_VERIFY}`)
+
+    const run = runScript(fx, 'git a0 origin main')
+
+    expect(run.stderr).toContain('git-shim: push refused (alias-depth)')
+    expect(run.status).toBe(2)
+    expect(remoteHasMain(fx)).toBe(false)
+  })
+
+  it.each([
+    [`git push ${NO_VERIFY} origin main`, 'no-verify'],
+    ['git -c core.hooksPath=/dev/null push origin main', 'hooks-path'],
+  ])('refuses %s when the builtin list could not be read', (command, rule) => {
+    const fx = fixture()
+    const real = findRealGit(process.env.PATH ?? '', fx.shimDir) as string
+    fs.writeFileSync(path.join(fx.shimDir, 'git'), gitShimScript(real, fx.guard, []), { mode: 0o755 })
+
+    const run = runScript(fx, command)
+    const status = runScript(fx, 'git rev-parse --verify -q refs/heads/absent; echo "status=$?"')
+
+    expect(run.stderr).toContain(`git-shim: push refused (${rule})`)
+    expect(remoteHasMain(fx)).toBe(false)
+    expect(status.stdout.trim()).toBe('status=1')
+  })
+
+  // At 789da5ba the inner git refused as no-verify; the outer shim now names the shell alias itself.
+  it.each([
+    ['!git', `git g push ${NO_VERIFY} origin main`],
+    ["!git pu''sh origin main", 'git g'],
+  ])('refuses the shell alias %s when it or its arguments mention push', (alias, command) => {
+    const fx = fixture()
+    git(fx.work, 'config', 'alias.g', alias)
+
+    const run = runScript(fx, command)
+
+    expect(run.stderr).toContain('git-shim: push refused (shell-alias)')
+    expect(remoteHasMain(fx)).toBe(false)
+  })
+
+  it('still runs a shell alias that does not mention push', () => {
+    const fx = fixture()
+    git(fx.work, 'config', 'alias.hi', '!echo hello')
+
+    const run = runScript(fx, 'git hi')
+
+    expect(run.stdout.trim()).toBe('hello')
+    expect(run.status).toBe(0)
   })
 })
 

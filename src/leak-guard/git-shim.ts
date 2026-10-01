@@ -33,7 +33,38 @@ const REFUSE_FN = `refuse() {
   exit 2
 }`
 
-// Aliases cannot shadow a builtin, so only a non-builtin word costs a config read.
+// git's split_cmdline: quotes group, a backslash escapes outside single quotes, an open quote fails.
+const SPLIT_FN = `tab='	'
+nl='
+'
+split() {
+  s=$1 words= word= started= quoted=
+  while [ -n "$s" ]; do
+    c=\${s%"\${s#?}"}
+    s=\${s#?}
+    if [ -z "$quoted" ]; then
+      case $c in
+      ' ' | "$tab" | "$nl")
+        [ -z "$started" ] || { quote "$word"; words="$words $q"; word= started=; }
+        continue ;;
+      \\' | \\") quoted=$c started=1; continue ;;
+      esac
+    elif [ "$c" = "$quoted" ]; then
+      quoted=
+      continue
+    fi
+    if [ "$c" = \\\\ ] && [ "$quoted" != \\' ]; then
+      [ -n "$s" ] || return 1
+      c=\${s%"\${s#?}"}
+      s=\${s#?}
+    fi
+    word=$word$c started=1
+  done
+  [ -z "$quoted" ] || return 1
+  [ -z "$started" ] || { quote "$word"; words="$words $q"; }
+}`
+
+// Fails closed: a word it cannot resolve, or an alias chain past the cap, refuses rather than execs.
 const RESOLVE_FN = `resolve() {
   globals= depth=0
   while [ $# -gt 0 ]; do
@@ -42,24 +73,29 @@ const RESOLVE_FN = `resolve() {
       [ $# -ge 2 ] || return 1
       quote "$1"; globals="$globals $q"; quote "$2"; globals="$globals $q"; shift 2; continue ;;
     -*) quote "$1"; globals="$globals $q"; shift; continue ;;
+    push) break ;;
     esac
-    case " $builtins " in *" $1 "*) break ;; esac
-    alias=$(eval "\\"\\$real\\"$globals config --get \\"alias.\\$1\\"" 2>/dev/null) || return 1
+    case " $builtins " in *" $1 "*) return 1 ;; esac
+    alias=$(eval "\\"\\$real\\"$globals config --get \\"alias.\\$1\\"" 2>/dev/null)
+    case $? in
+    0) ;;
+    1) return 1 ;;
+    *) refuse unresolved "git could not read alias.$1, so the shim cannot tell whether this is a push." ;;
+    esac
     case $alias in
-    !*push*) refuse shell-alias "alias.$1 runs a shell command that pushes; push with git push directly." ;;
-    !*) return 1 ;;
+    !*)
+      case $(printf '%s' "$alias $*" | tr -d "\\"'\\\\\\\\") in
+      *push*) refuse shell-alias "alias.$1 runs a shell command and the command mentions push; run git push directly." ;;
+      esac
+      return 1 ;;
     esac
-    case $(printf '%s' "$alias" | tr -d "\\"'\\\\\\\\") in
-    *--no-veri*) refuse no-verify "alias.$1 expands to a push that skips the pre-push leak scan." ;;
-    esac
+    split "$alias" || refuse unresolved "alias.$1 has an open quote or a trailing backslash."
     depth=$((depth + 1))
-    [ "$depth" -le 10 ] || return 1
+    [ "$depth" -le 10 ] || refuse alias-depth "alias.$1 is more than 10 aliases deep."
     shift
-    set -f
-    set -- $alias "$@"
-    set +f
+    eval "set -- $words \\"\\$@\\""
   done
-  [ "$1" = push ] || return 1
+  [ $# -gt 0 ] || return 1
   shift
   for word; do
     case $word in --no-veri*) refuse no-verify "git push --no-verify skips the pre-push leak scan." ;; esac
@@ -83,6 +119,7 @@ guard=${shQuote(guard)}
 builtins=${shQuote(builtins.join(' '))}
 ${QUOTE_FN}
 ${REFUSE_FN}
+${SPLIT_FN}
 ${RESOLVE_FN}
 if resolve "$@"; then
 ${HOOKS_CHECK}
@@ -119,7 +156,7 @@ export function findRealGit(pathValue: string, shimDir: string): string | undefi
   return undefined
 }
 
-/** Empty on failure, which costs every non-push call a config read but refuses nothing it should not. */
+/** Empty on failure: `push` is matched by name first, so this only costs other words a config read. */
 function gitBuiltins(real: string): string[] {
   try {
     return execFileSync(real, ['--list-cmds=builtins'], { encoding: 'utf8', timeout: 5000 })
