@@ -656,3 +656,69 @@ kill it without a word. The owner accepts both fail-opens, and each writes exact
 ```
 
 The line never holds the command. A log that cannot be written does not change the allow.
+
+## The push-time git shim (TP-596)
+
+The PreToolUse guard reads the Bash command line, so it never sees a push that a script file,
+`make` or an npm script runs. The pre-push hook cannot refuse a push that skips it. So every
+spawned agent also runs a `git` shim, which checks each push when it happens.
+
+At each spawn, `launch-files.ts` writes `git-bin/git` in the agent-chat home, beside the guard's
+`git-hooks`. The plan names that directory in `AGENT_CHAT_GIT_SHIM_DIR`. The `AGENT_CHAT_` prefix
+is reserved, so a profile's `env` cannot set or move it. `run-agent` puts the directory first
+on the launched process's PATH, after the plan's own PATH is applied, so a profile PATH cannot
+push it down. It comes ahead of the gh shim's directory: the two hold different names, and the
+push guard should sit ahead of every other shim. Only a plan that sets the guard's hooks path
+carries the variable. The owner's shell and the owner's own Claude sessions never see it.
+
+The shim is a `sh -p` script with the real git's absolute path baked in. That path is the first
+`git` on the broker's PATH whose realpath is not the shim, so the shim never calls itself.
+The path is not resolved further, so a package-manager upgrade does not strand it. The shim
+skips git's global options (`-C`, `-c`, `--git-dir` and the rest) to find the subcommand. The
+word `push` is matched by name. Another word that is not a git builtin is looked up as
+`alias.<word>`, through the real git with the same global options. The alias is split the way
+git splits it, so quotes group words and a backslash escapes the next character, and expanded.
+The shim fails closed. A push it cannot rule out is refused, never passed to git. A push is
+refused with exit 2 and a line `git-shim: push refused (<rule>)` when:
+
+| Rule          | When                                                                                                                                     |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `no-verify`   | an argument after `push`, including one an alias supplies, starts with `--no-veri`                                                       |
+| `hooks-path`  | `core.hooksPath`, as the real git resolves it with the same options, is not the guard                                                    |
+| `shell-alias` | the word is a `!` alias, and its text or the arguments after it mention `push` other than as `stash push`, quotes aside                  |
+| `unresolved`  | the alias read fails for a reason other than "no such key", or the alias has an open quote                                               |
+| `alias-depth` | aliases chain more than 10 deep                                                                                                          |
+| `autocorrect` | the word is no builtin, alias or `git-<word>` command, and `help.autocorrect` is not unset, `0`, `false`, `off`, `no`, `show` or `never` |
+
+The builtin list is read from the real git at each spawn. If that read fails, the shim reads it
+on each call instead, and `push` is still matched by name.
+
+The `autocorrect` rule exists because git corrects a mistyped word, such as `pusj`, into the
+command it resembles, and with `help.autocorrect` on it runs that command without the shim
+seeing it. The shim reads the value through the real git with the same options. It passes only
+the values git documents as not running the correction, so an unknown or new spelling refuses.
+The rule refuses rather than adding `-c help.autocorrect=never` to the command. An override's
+effect depends on how `-c`, `--config-env` and the `GIT_CONFIG_*` variables rank against each
+other, and a ranking it gets wrong would fail open. A read of the value git will use cannot.
+When autocorrect is on, a mistyped word is refused even when its correction is not a push.
+
+The hooks-path rule is what covers `GIT_CONFIG_COUNT=0`, `-c core.hooksPath=...`,
+and `GIT_CONFIG_PARAMETERS`. agent-chat's own injected hooks path
+is exactly the guard directory, so it passes. Every other command, and a push that passes,
+`exec`s the real git with the arguments unchanged, so its exit code, stdout and stderr are git's.
+A builtin costs one `sh` start. An alias costs one `git config` read, a push one more, and a word
+that is no alias up to two more for `help.autocorrect`.
+
+Not covered:
+
+- an absolute git path (`/usr/bin/git push`), or `env -i`, which drops the shim from PATH;
+- `GIT_EXEC_PATH` or `--exec-path`;
+- a `git` that the agent puts ahead of the shim on its own PATH (the PreToolUse guard reads that
+  command line);
+- a `git` binary inside git's exec-path directory, which git puts first on PATH for its hooks,
+  `!` aliases and `rebase --exec`. A `!` alias that builds the word push at run time, such as
+  `$(echo pu)sh`, is in this class;
+- pushing without git.
+
+The shim is live for an agent only after a broker restart picks up the
+build. `src/__tests__/leak-git-shim.test.ts` runs every rule against real git and a bare remote.

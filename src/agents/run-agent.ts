@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { resolvePaneColourConfig } from '../config.js'
 import { withShimOnPath, writeGhShim } from '../gh-shim/install.js'
+import { GIT_SHIM_DIR_ENV } from '../leak-guard/git-shim.js'
 import { distDir, ghShimDir, home } from '../paths.js'
 import { agentEnv } from './agent-env.js'
 import { recordClaudeBin, resolveClaudeBin } from './claude-bin.js'
@@ -108,6 +109,12 @@ function withGhShim(env: Record<string, string>): Record<string, string> {
   }
 }
 
+/** Last applied, so first on PATH: the push guard sits ahead of every other shim dir. */
+function withGitShim(env: Record<string, string>): Record<string, string> {
+  const dir = env[GIT_SHIM_DIR_ENV]
+  return dir === undefined ? env : withShimOnPath(env, dir)
+}
+
 /** Longest the wrapper waits for stderr to drain after claude exits; a grandchild holding fd 2 must not stall it. */
 const STDERR_FLUSH_MS = 250
 
@@ -123,7 +130,7 @@ function exec(plan: LaunchPlan): void {
     //
     // `plan.env` still wins, and deliberately: it is what the SPAWNER chose for
     // this agent, which is the bounded thing the clause asks for.
-    env: withGhShim(launchEnv(plan.env, agentEnv(), process.pid, plan.unsetEnv)),
+    env: withGitShim(withGhShim(launchEnv(plan.env, agentEnv(), process.pid, plan.unsetEnv))),
     // The brief goes in on stdin for headless; an interactive surface hands the
     // terminal straight through so the human can type into the pane.
     stdio: plan.stdin === undefined ? 'inherit' : ['pipe', 'inherit', 'pipe'],
