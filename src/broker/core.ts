@@ -13,7 +13,7 @@ import { resolveReportBatchMs } from '../config.js'
 import { logEvent } from './log.js'
 import { EventLog, isReport, isTerminalReport, newMsgId } from './event-log.js'
 import { ReportBatcher } from './report-batch.js'
-import type { AppendInput, EventStore } from './event-store.js'
+import type { AppendInput, EventStore, OpenEndorsement } from './event-store.js'
 import { EventHub } from './events.js'
 import { Registry } from './registry.js'
 import { ClaimLedger } from './claims.js'
@@ -31,6 +31,9 @@ export type Conn = net.Socket
  * `false` says the frame was not written, which keeps a report from counting as pushed.
  */
 export type Deliver<C = Conn> = (conn: C, message: DeliveredMessage) => unknown
+
+/** CC-420: the plan's proposed 24h default; the owner has not yet answered the max-age question. */
+export const ENDORSE_MAX_AGE_MS = 24 * 60 * 60 * 1000
 
 /** A headless agent exits seconds after its report; two minutes covers a slow Stop hook and no further work. */
 export const CLOSING_ACT_MS = 120_000
@@ -508,15 +511,18 @@ export class BrokerCore<C = Conn> {
    *   so a person approving a command approved the bytes it names; anything
    *   else is refused, recorded, and leaves the request open.
    *
+   * - the request must be younger than `ENDORSE_MAX_AGE_MS`, and the name must
+   *   still belong to the agent it named, or its teleport successor (CC-420).
+   *
    * Declining is `dismiss`: it closes the item and delivers nothing.
    */
   endorse(msgId: string, approval: EndorseApproval): VerdictResult {
     const request = this.events.openEndorsement(msgId)
     if (!request) return { ok: false, reason: `${msgId} is not an open endorsement request` }
-    const mismatch = approvalMismatch(request, approval)
-    if (mismatch) {
-      this.append({ kind: 'verdict_refused', actor: HUMAN, ref: msgId, body: mismatch })
-      return { ok: false, reason: mismatch }
+    const refusal = approvalMismatch(request, approval) ?? staleness(request) ?? this.recipientMoved(request)
+    if (refusal) {
+      this.append({ kind: 'verdict_refused', actor: HUMAN, ref: msgId, body: refusal })
+      return { ok: false, reason: refusal }
     }
 
     this.append({ kind: 'resolution', actor: HUMAN, ref: msgId, body: 'endorsed' })
@@ -552,6 +558,28 @@ export class BrokerCore<C = Conn> {
     return { ok: true, ...(live ? {} : { reason: `${request.recipient} is offline; queued in its inbox` }) }
   }
 
+  /**
+   * Why the recipient name no longer reaches the agent the human was shown, if it does not.
+   *
+   * Fails closed on a request with no stored agent id: the human can still dismiss it.
+   * Offline, the line's latest identity must still hold the name, since its inbox is read by name.
+   */
+  private recipientMoved(request: OpenEndorsement): string | undefined {
+    const { recipient, recipientAgentId } = request
+    if (recipientAgentId === undefined)
+      return `the request does not record which agent "${recipient}" was; dismiss it and ask for a new one`
+    const line = this.agents.lineageFrom(recipientAgentId)
+    const holder = this.registry.connFor(recipient)
+    if (holder !== undefined) {
+      const holderId = this.registry.entryFor(holder)?.agentId
+      if (line.some(agent => agent.agentId === holderId)) return undefined
+      return `"${recipient}" is now held by a different agent than the request named; nothing was delivered`
+    }
+    const latest = line.at(-1)
+    if (latest && latest.state !== 'retired' && latest.name === recipient) return undefined
+    return `the agent the request named no longer holds "${recipient}"; nothing was delivered`
+  }
+
   /** Close an item without answering it. Resolution is an event, never a mutation. */
   dismiss(msgId: string): VerdictResult {
     if (!this.events.isOpen(msgId)) return { ok: false, reason: `${msgId} is not an open item` }
@@ -581,6 +609,13 @@ function approvalMismatch(
   if (typeof approval.to !== 'string' || approval.to !== request.recipient)
     return 'the approved recipient does not match the stored request; nothing was delivered'
   return undefined
+}
+
+/** A prompt left open overnight should not deliver a decision that may no longer hold. */
+function staleness(request: OpenEndorsement): string | undefined {
+  if (Date.now() - request.at <= ENDORSE_MAX_AGE_MS) return undefined
+  const hours = ENDORSE_MAX_AGE_MS / 3_600_000
+  return `the request is older than ${hours}h; dismiss it and ask the composer to send it again`
 }
 
 /** Exit code 0 only: a signalled, inferred or never-started exit records no code at all. */

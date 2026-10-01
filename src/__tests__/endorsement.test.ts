@@ -2,8 +2,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type net from 'node:net'
-import { afterEach, describe, expect, it } from 'vitest'
-import { BrokerCore, type Conn, type EndorseApproval } from '../broker/core.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { BrokerCore, ENDORSE_MAX_AGE_MS, type Conn, type EndorseApproval } from '../broker/core.js'
 import { SocketServer } from '../broker/socket.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
@@ -40,16 +40,19 @@ function makeCore(): { core: BrokerCore; delivered: DeliveredMessage[] } {
 
 const fakeConn = (): Conn => ({}) as unknown as net.Socket
 
-function registerSession(core: BrokerCore, name: string): Conn {
+/** A session id adopts the connection into a durable identity, as a real MCP server's does. */
+function registerSession(core: BrokerCore, name: string, sessionId = `sess-${name}`): Conn {
   const conn = fakeConn()
-  core.registry.register(conn, { name, workingOn: 'testing', cwd: '/tmp', pid: 1 })
+  core.register(conn, { t: 'register', name, workingOn: 'testing', cwd: '/tmp', pid: 1, sessionId })
   return conn
 }
 
 /** Compose a request the way the socket layer does, without going through it. */
 function requestEndorsement(core: BrokerCore, from: string, to: string, body: string): string {
-  return core.append({ kind: 'endorse_request', actor: from, target: HUMAN, body, meta: { recipient: to } })
-    .msgId
+  const holder = core.registry.connFor(to)
+  const agentId = holder === undefined ? undefined : core.registry.entryFor(holder)?.agentId
+  const meta = { recipient: to, ...(agentId === undefined ? {} : { recipient_agent_id: agentId }) }
+  return core.append({ kind: 'endorse_request', actor: from, target: HUMAN, body, meta }).msgId
 }
 
 afterEach(() => {
@@ -94,7 +97,9 @@ describe('endorsed delivery', () => {
   it('leaves the marker on the message when the recipient reads it back from the inbox', () => {
     const { core } = makeCore()
     registerSession(core, 'alpha')
+    const beta = registerSession(core, 'beta')
     const msgId = requestEndorsement(core, 'alpha', 'beta', 'take the left slot')
+    core.drop(beta)
 
     // beta is not connected: recorded, reported, and nothing lost.
     const result = core.endorse(msgId, { text: 'take the left slot', to: 'beta' })
@@ -115,6 +120,7 @@ describe('endorsed delivery', () => {
   it('keeps human-authored, agent-authored and endorsed messages distinguishable', () => {
     const { core } = makeCore()
     registerSession(core, 'alpha')
+    registerSession(core, 'beta')
     core.append({ kind: 'message', actor: HUMAN, target: 'beta', body: 'human-authored' })
     core.append({ kind: 'message', actor: 'alpha', target: 'beta', body: 'agent-authored' })
     core.endorse(requestEndorsement(core, 'alpha', 'beta', 'endorsed'), { text: 'endorsed', to: 'beta' })
@@ -213,6 +219,146 @@ describe('binding the approval to the exact text and recipient', () => {
 
     expect(result).toEqual({ ok: true })
     expect(delivered.map(m => [m.text, m.provenance])).toEqual([['ship it', 'human-endorsed']])
+  })
+})
+
+/**
+ * CC-420 — the approval reaches the agent the human was shown, and only while
+ * the request is still current. Both refusals leave the request open and
+ * record a `verdict_refused` row, like a text mismatch.
+ */
+describe('binding the approval to the recipient agent and a maximum age', () => {
+  const refused = (core: BrokerCore): string[] =>
+    core.events
+      .history(50)
+      .filter(r => r.kind === 'verdict_refused')
+      .map(r => r.text)
+
+  function expectRefusedAndOpen(
+    core: BrokerCore,
+    delivered: DeliveredMessage[],
+    msgId: string,
+    result: unknown,
+  ) {
+    expect(result).toMatchObject({ ok: false })
+    expect(delivered).toHaveLength(0)
+    expect(core.events.inboxFor('beta', 10)).toHaveLength(0)
+    expect(core.events.humanQueue().map(i => i.msgId)).toContain(msgId)
+    expect(refused(core)).toHaveLength(1)
+  }
+
+  /** A broker-spawned identity, as the supervisor or a teleport would mint it. */
+  function spawnIdentity(core: BrokerCore, name: string, meta: Record<string, string> = {}): string {
+    return core.append({
+      kind: 'agent_spawned',
+      actor: HUMAN,
+      target: name,
+      body: 'brief',
+      meta: { name, ...meta },
+    }).msgId
+  }
+
+  function attach(core: BrokerCore, name: string, agentId: string): Conn {
+    const conn = fakeConn()
+    core.register(conn, { t: 'register', name, workingOn: 'testing', cwd: '/tmp', pid: 1, agentId })
+    return conn
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('refuses an endorsement when the recipient name is now held by a different agent', () => {
+    const { core, delivered } = makeCore()
+    const original = registerSession(core, 'beta', 'sess-original')
+    const msgId = requestEndorsement(core, 'alpha', 'beta', 'ship it')
+    core.drop(original)
+    registerSession(core, 'beta', 'sess-impostor')
+
+    const result = core.endorse(msgId, { text: 'ship it', to: 'beta' })
+
+    expectRefusedAndOpen(core, delivered, msgId, result)
+    expect(refused(core)[0]).toMatch(/held by a different agent/)
+  })
+
+  it('refuses approval of a request older than the max age', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-01T09:00:00Z'))
+    const { core, delivered } = makeCore()
+    registerSession(core, 'beta')
+    const msgId = requestEndorsement(core, 'alpha', 'beta', 'ship it')
+    vi.setSystemTime(Date.now() + ENDORSE_MAX_AGE_MS + 1)
+
+    const result = core.endorse(msgId, { text: 'ship it', to: 'beta' })
+
+    expectRefusedAndOpen(core, delivered, msgId, result)
+    expect(refused(core)[0]).toMatch(/older than 24h/)
+  })
+
+  it('still approves a request just inside the max age', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-01T09:00:00Z'))
+    const { core, delivered } = makeCore()
+    registerSession(core, 'beta')
+    const msgId = requestEndorsement(core, 'alpha', 'beta', 'ship it')
+    vi.setSystemTime(Date.now() + ENDORSE_MAX_AGE_MS)
+
+    expect(core.endorse(msgId, { text: 'ship it', to: 'beta' })).toEqual({ ok: true })
+    expect(delivered).toHaveLength(1)
+  })
+
+  it('refuses a request stored without the recipient agent id, which the human can still dismiss', () => {
+    const { core, delivered } = makeCore()
+    registerSession(core, 'beta')
+    const { msgId } = core.append({
+      kind: 'endorse_request',
+      actor: 'alpha',
+      target: HUMAN,
+      body: 'ship it',
+      meta: { recipient: 'beta' },
+    })
+
+    const result = core.endorse(msgId, { text: 'ship it', to: 'beta' })
+
+    expectRefusedAndOpen(core, delivered, msgId, result)
+    expect(core.dismiss(msgId)).toEqual({ ok: true })
+  })
+
+  it('approves a recipient that reconnected under the same identity', () => {
+    const { core, delivered } = makeCore()
+    const before = registerSession(core, 'beta')
+    const msgId = requestEndorsement(core, 'alpha', 'beta', 'ship it')
+    core.drop(before)
+    registerSession(core, 'beta')
+
+    expect(core.endorse(msgId, { text: 'ship it', to: 'beta' })).toEqual({ ok: true })
+    expect(delivered).toHaveLength(1)
+  })
+
+  it('approves a recipient that teleported into a successor holding the same name', () => {
+    const { core, delivered } = makeCore()
+    const predecessor = spawnIdentity(core, 'beta')
+    const before = attach(core, 'beta', predecessor)
+    const msgId = requestEndorsement(core, 'alpha', 'beta', 'ship it')
+    core.drop(before)
+    core.append({ kind: 'agent_retired', actor: 'agent-chat', target: 'beta', ref: predecessor })
+    attach(core, 'beta', spawnIdentity(core, 'beta', { teleport_from: predecessor, generation: '2' }))
+
+    expect(core.endorse(msgId, { text: 'ship it', to: 'beta' })).toEqual({ ok: true })
+    expect(delivered).toHaveLength(1)
+  })
+
+  it('refuses an offline recipient whose identity was retired without a successor', () => {
+    const { core, delivered } = makeCore()
+    const agentId = spawnIdentity(core, 'beta')
+    const before = attach(core, 'beta', agentId)
+    const msgId = requestEndorsement(core, 'alpha', 'beta', 'ship it')
+    core.drop(before)
+    core.append({ kind: 'agent_retired', actor: 'agent-chat', target: 'beta', ref: agentId })
+
+    const result = core.endorse(msgId, { text: 'ship it', to: 'beta' })
+
+    expectRefusedAndOpen(core, delivered, msgId, result)
   })
 })
 
@@ -399,7 +545,7 @@ describe('the marker cannot be set by a client', () => {
     const beta = wire()
     const human = wire()
     register(server, alpha.conn, 'alpha')
-    register(server, beta.conn, 'beta')
+    registerDurable(server, beta.conn, 'beta', 'sess-beta')
     server.handleMessage(alpha.conn, { t: 'endorse', to: 'beta', text: 'ship it' })
     const msgId = (alpha.frames.at(-1) as Extract<ServerMessage, { t: 'send_result' }>).msgId!
 
@@ -534,6 +680,20 @@ describe('the marker cannot be set by a client', () => {
 
     const item = core.events.humanQueue().find(i => i.kind === 'endorse_request')
     expect(item?.meta.recipient_durable).toBe('true')
+  })
+
+  it('records the recipient agent id on the request', () => {
+    const { core, server, wire } = makeServer()
+    const alpha = wire()
+    const lead = wire()
+    register(server, alpha.conn, 'alpha')
+    registerDurable(server, lead.conn, 'lead', 'sess-lead')
+
+    server.handleMessage(alpha.conn, { t: 'endorse', to: 'lead', text: 'ship it' })
+
+    const item = core.events.humanQueue().find(i => i.kind === 'endorse_request')
+    expect(item?.meta.recipient_agent_id).toBe(core.registry.entryFor(lead.conn)?.agentId)
+    expect(item?.meta.recipient_agent_id).toBeTruthy()
   })
 })
 

@@ -373,10 +373,18 @@ describe('agentChatQueueSource, against a real in-process broker', () => {
     return client
   }
 
-  async function registeredClient(name: string): Promise<BrokerClient> {
+  /** A session id gives the client a durable identity, which an endorsement recipient needs (CC-420). */
+  async function registeredClient(name: string, sessionId?: string): Promise<BrokerClient> {
     const client = await unregisteredClient()
     await client.request(
-      { t: 'register', name, workingOn: 'CC-145 test', cwd: '/tmp', pid: process.pid },
+      {
+        t: 'register',
+        name,
+        workingOn: 'CC-145 test',
+        cwd: '/tmp',
+        pid: process.pid,
+        ...(sessionId === undefined ? {} : { sessionId }),
+      },
       'register_result',
     )
     return client
@@ -499,7 +507,7 @@ describe('agentChatQueueSource, against a real in-process broker', () => {
 
   it('approves an endorsement it tailed by restating the posted text and recipient', async () => {
     const composer = await registeredClient('composer')
-    await registeredClient('recipient')
+    await registeredClient('recipient', 'sess-recipient')
     const source = agentChatQueueSource(options(await unregisteredClient()))
     const controller = new AbortController()
     const iterator = source.tail(undefined, controller.signal)[Symbol.asyncIterator]()
