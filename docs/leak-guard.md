@@ -674,16 +674,23 @@ carries the variable. The owner's shell and the owner's own Claude sessions neve
 The shim is a `sh -p` script with the real git's absolute path baked in. That path is the first
 `git` on the broker's PATH whose realpath is not the shim, so the shim never calls itself.
 The path is not resolved further, so a package-manager upgrade does not strand it. The shim
-skips git's global options (`-C`, `-c`, `--git-dir` and the rest) to find the subcommand. A
-word that is not a git builtin is looked up as `alias.<word>`, through the real git with the
-same global options, and expanded, up to 10 times. A push is refused with exit 2 and a line
-`git-shim: push refused (<rule>)` when:
+skips git's global options (`-C`, `-c`, `--git-dir` and the rest) to find the subcommand. The
+word `push` is matched by name. Another word that is not a git builtin is looked up as
+`alias.<word>`, through the real git with the same global options. The alias is split the way
+git splits it, so quotes group words and a backslash escapes the next character, and expanded.
+The shim fails closed. A push it cannot rule out is refused, never passed to git. A push is
+refused with exit 2 and a line `git-shim: push refused (<rule>)` when:
 
-| Rule          | When                                                                                  |
-| ------------- | ------------------------------------------------------------------------------------- |
-| `no-verify`   | an argument after `push`, or the text of an alias that leads to it, has `--no-veri`   |
-| `hooks-path`  | `core.hooksPath`, as the real git resolves it with the same options, is not the guard |
-| `shell-alias` | the push word is a `!` alias whose text mentions `push`                               |
+| Rule          | When                                                                                         |
+| ------------- | -------------------------------------------------------------------------------------------- |
+| `no-verify`   | an argument after `push`, including one an alias supplies, starts with `--no-veri`           |
+| `hooks-path`  | `core.hooksPath`, as the real git resolves it with the same options, is not the guard        |
+| `shell-alias` | the word is a `!` alias, and its text or the arguments after it mention `push`, quotes aside |
+| `unresolved`  | the alias read fails for a reason other than "no such key", or the alias has an open quote   |
+| `alias-depth` | aliases chain more than 10 deep                                                              |
+
+The builtin list is read from the real git at each spawn. If that read fails, the list is
+empty. `push` is still matched by name, so the only cost is one `git config` read per call.
 
 The hooks-path rule is what covers `GIT_CONFIG_COUNT=0`, `-c core.hooksPath=...`,
 and `GIT_CONFIG_PARAMETERS`. agent-chat's own injected hooks path
@@ -691,8 +698,14 @@ is exactly the guard directory, so it passes. Every other command, and a push th
 `exec`s the real git with the arguments unchanged, so its exit code, stdout and stderr are git's.
 A builtin costs one `sh` start; an alias costs one `git config` read, and a push one more.
 
-Not covered: an absolute git path (`/usr/bin/git push`), `GIT_EXEC_PATH` or `--exec-path`, a
-`git` that the agent puts ahead of the shim on its own PATH (the PreToolUse guard reads that
-command line), a `git` binary inside git's exec-path directory that a hook or `!` alias reaches,
-and pushing without git. The shim is live for an agent only after a broker restart picks up the
-build. `src/__tests__/leak-git-shim.test.ts` runs every rule against real git and a bare remote.
+Not covered:
+
+- an absolute git path (`/usr/bin/git push`), or `env -i`, which drops the shim from PATH;
+- `GIT_EXEC_PATH` or `--exec-path`;
+- a `git` that the agent puts ahead of the shim on its own PATH (the PreToolUse guard reads that
+  command line);
+- a `git` binary inside git's exec-path directory, which git puts first on PATH for its hooks,
+  `!` aliases and `rebase --exec`. A `!` alias that builds the word push at run time, such as
+  `$(echo pu)sh`, is in this class;
+- pushing without git. The shim is live for an agent only after a broker restart picks up the
+  build. `src/__tests__/leak-git-shim.test.ts` runs every rule against real git and a bare remote.
