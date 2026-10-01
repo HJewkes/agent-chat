@@ -33,8 +33,6 @@ const matching: Array<[string, string]> = [
   ['dag-check plain', `${NODE} /w/scripts/dag-check-self.mjs`],
   ['dag-check json', `${NODE} /w/scripts/dag-check-self.mjs --json`],
   ['dag-check heap flag', `${NODE} --max-old-space-size=4096 /w/scripts/dag-check-self.mjs --json`],
-  ['test broker in worktree', `${NODE} /r/.worktrees/x/dist/cli.js broker`],
-  ['test broker in tmp', `${NODE} /tmp/build/dist/cli.js broker`],
 ]
 
 describe('selectOrphans', () => {
@@ -74,35 +72,55 @@ describe('selectOrphans', () => {
     expect(selectOrphans(table, opts)).toEqual([])
   })
 
-  it('spares an orphaned broker outside any throwaway directory', () => {
-    const table = [row(200, `${NODE} /srv/other/dist/cli.js broker`)]
-
-    expect(selectOrphans(table, opts)).toEqual([])
-  })
-
   it('spares the running broker itself', () => {
-    const table = [row(100, `${NODE} /r/.worktrees/x/dist/cli.js broker`)]
+    const table = [row(100, 'node (vitest 1)')]
 
     expect(selectOrphans(table, opts)).toEqual([])
   })
 
   it('spares an ancestor of the running broker', () => {
+    const table = [row(100, 'zsh', { ppid: 50 }), row(50, 'node (vitest 2)')]
+
+    expect(selectOrphans(table, opts)).toEqual([])
+  })
+
+  it('spares an orphaned test broker, which is out of scope', () => {
+    const table = [row(200, `${NODE} /r/.worktrees/x/dist/cli.js broker`)]
+
+    expect(selectOrphans(table, opts)).toEqual([])
+  })
+
+  it('spares a claude session whose argv only mentions the target scripts', () => {
+    const command =
+      'claude --append-system-prompt run /w/scripts/dag-check-self.mjs and /w/node_modules/vitest/dist/workers/forks.js'
+    const table = [row(200, command)]
+
+    expect(selectOrphans(table, opts)).toEqual([])
+  })
+
+  it('spares a node process running another script that mentions the targets later', () => {
     const table = [
-      row(100, `${NODE} /r/.worktrees/x/dist/cli.js broker`, { ppid: 50 }),
-      row(50, `${NODE} /tmp/y/dist/cli.js broker`),
+      row(200, `${NODE} /w/other.js /w/scripts/dag-check-self.mjs`),
+      row(201, `${NODE} /w/other.js /w/node_modules/vitest/dist/workers/forks.js`),
     ]
+
+    expect(selectOrphans(table, opts)).toEqual([])
+  })
+
+  it('spares a title that only starts like a vitest worker', () => {
+    const table = [row(200, 'node (vitest 3) --extra'), row(201, 'claude node (vitest 3)')]
+
+    expect(selectOrphans(table, opts)).toEqual([])
+  })
+
+  it('spares a dag-check script outside a scripts directory', () => {
+    const table = [row(200, `${NODE} /w/lib/dag-check-self.mjs`)]
 
     expect(selectOrphans(table, opts)).toEqual([])
   })
 
   it('spares unrelated orphans', () => {
     const table = [row(200, `${NODE} /w/server.js`), row(201, 'vim notes.txt')]
-
-    expect(selectOrphans(table, opts)).toEqual([])
-  })
-
-  it('spares a non-broker cli.js command under a worktree', () => {
-    const table = [row(200, `${NODE} /r/.worktrees/x/dist/cli.js run-agent abc`)]
 
     expect(selectOrphans(table, opts)).toEqual([])
   })
@@ -115,6 +133,20 @@ describe('parseEtime', () => {
     ['2-03:04:05', (2 * 86400 + 3 * 3600 + 4 * 60 + 5) * 1000],
   ])('parses %s', (text, ms) => {
     expect(parseEtime(text)).toBe(ms)
+  })
+})
+
+describe('junk etime', () => {
+  it('drops a row whose etime cannot be parsed so it is never reaped', () => {
+    const rows = parseTable('  42     1   501 garbage  2048 node (vitest 2)\n', NOW)
+
+    expect(rows).toEqual([])
+  })
+
+  it('spares a row whose start time is not a number', () => {
+    const table = [row(200, 'node (vitest 1)', { startMs: Number.NaN })]
+
+    expect(selectOrphans(table, opts)).toEqual([])
   })
 })
 
@@ -137,16 +169,16 @@ describe('parseTable', () => {
 })
 
 describe('reapOnce', () => {
-  it('kills each orphan and logs pid, cwd and rss once', () => {
+  it('kills each orphan and logs pid, cwd and rss once', async () => {
     const kill = vi.fn()
     const log = vi.fn()
     const table = [row(200, 'node (vitest 1)', { rssKb: 1900 }), row(201, 'zsh')]
 
-    const reaped = reapOnce({
-      readTable: () => table,
+    const reaped = await reapOnce({
+      readTable: async () => table,
       kill,
       log,
-      cwdOf: pid => `/w/${pid}`,
+      cwdOf: async pid => `/w/${pid}`,
       options: () => opts,
     })
 
@@ -162,16 +194,38 @@ describe('reapOnce', () => {
     })
   })
 
-  it('does not log a process whose kill failed', () => {
+  it('reads the cwd before the signal and truncates the logged command', async () => {
+    const order: string[] = []
     const log = vi.fn()
 
-    reapOnce({
-      readTable: () => [row(200, 'node (vitest 1)')],
+    await reapOnce({
+      readTable: async () => [
+        row(200, 'node (vitest 1)'),
+        row(201, `${NODE} /w/scripts/dag-check-self.mjs ${'x'.repeat(500)}`),
+      ],
+      kill: pid => order.push(`kill ${pid}`),
+      log,
+      cwdOf: async pid => {
+        order.push(`cwd ${pid}`)
+        return '/w'
+      },
+      options: () => opts,
+    })
+
+    expect(order).toEqual(['cwd 200', 'kill 200', 'cwd 201', 'kill 201'])
+    expect(log.mock.calls[1]?.[0].command).toHaveLength(200)
+  })
+
+  it('does not log a process whose kill failed', async () => {
+    const log = vi.fn()
+
+    await reapOnce({
+      readTable: async () => [row(200, 'node (vitest 1)')],
       kill: () => {
         throw new Error('ESRCH')
       },
       log,
-      cwdOf: () => '?',
+      cwdOf: async () => '?',
       options: () => opts,
     })
 
@@ -180,17 +234,17 @@ describe('reapOnce', () => {
 })
 
 describe('startReaper', () => {
-  it('sweeps every interval until cancelled', () => {
+  it('sweeps every interval until cancelled', async () => {
     vi.useFakeTimers()
-    const readTable = vi.fn(() => [])
+    const readTable = vi.fn(async () => [])
     const cancel = startReaper(
-      { readTable, kill: vi.fn(), log: vi.fn(), cwdOf: () => '?', options: () => opts },
+      { readTable, kill: vi.fn(), log: vi.fn(), cwdOf: async () => '?', options: () => opts },
       60_000,
     )
 
-    vi.advanceTimersByTime(180_000)
+    await vi.advanceTimersByTimeAsync(180_000)
     cancel()
-    vi.advanceTimersByTime(180_000)
+    await vi.advanceTimersByTimeAsync(180_000)
 
     expect(readTable).toHaveBeenCalledTimes(3)
     vi.useRealTimers()
