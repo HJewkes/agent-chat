@@ -30,6 +30,8 @@ let broker: ChildProcess | undefined
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(shortTmp(), 'ac-attach-'))
   workspace = fs.mkdtempSync(path.join(shortTmp(), 'ac-work-'))
+  // The real broker reads this host's swap (CC-406); a loaded developer machine must not refuse the spawn.
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ machineSwapPercent: 100 }))
 })
 
 afterEach(async () => {
