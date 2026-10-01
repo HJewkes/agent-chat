@@ -493,6 +493,35 @@ describe('refusing to park what the removal would lose', () => {
     expect(fs.existsSync(path.join(agent.cwd, '.env'))).toBe(true)
   })
 
+  it('parks a tree whose only ignored files are tsbuildinfo at the root and in a package dir', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, '.gitignore'), '*.tsbuildinfo\n')
+    git(['add', '.gitignore'], agent.cwd)
+    git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+    fs.mkdirSync(path.join(agent.cwd, 'packages', 'core'), { recursive: true })
+    fs.writeFileSync(path.join(agent.cwd, 'tsconfig.tsbuildinfo'), '{}\n')
+    fs.writeFileSync(path.join(agent.cwd, 'packages', 'core', 'tsconfig.test.tsbuildinfo'), '{}\n')
+    await exit(agent)
+
+    expect((await sup.park('worker-a')).ok).toBe(true)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+  })
+
+  it('refuses an ignored scratch file beside tsbuildinfo, naming only the scratch file', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, '.gitignore'), '*.tsbuildinfo\nscratch.md\n')
+    git(['add', '.gitignore'], agent.cwd)
+    git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+    fs.writeFileSync(path.join(agent.cwd, 'tsconfig.tsbuildinfo'), '{}\n')
+    fs.writeFileSync(path.join(agent.cwd, 'scratch.md'), 'notes\n')
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/\(scratch\.md\)/) })
+    expect(fs.existsSync(path.join(agent.cwd, 'scratch.md'))).toBe(true)
+  })
+
   it('parks a tree whose only ignored files are regenerable', async () => {
     const agent = await spawnIn('worker-a', makeRepo())
     fs.writeFileSync(path.join(agent.cwd, '.gitignore'), 'node_modules/\ndist/\n')
@@ -510,7 +539,7 @@ describe('refusing to park what the removal would lose', () => {
 })
 
 describe('refusing to park a running or shared agent', () => {
-  it('refuses a detached agent, which may still be running in the tree', async () => {
+  it('refuses a detached agent whose process this broker still tracks', async () => {
     const agent = await spawnIn('worker-a', makeRepo())
     core.append({ kind: 'agent_detached', actor: 'worker-a', ref: agent.agentId, body: 'connection closed' })
 
@@ -518,6 +547,18 @@ describe('refusing to park a running or shared agent', () => {
 
     expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/worker-a is detached/) })
     expect(fs.existsSync(agent.cwd)).toBe(true)
+  })
+
+  it('parks a detached agent this broker no longer tracks, as after a broker restart', async () => {
+    const agent = await spawnIn('worker-a', repoWithOrigin())
+    core.append({ kind: 'agent_detached', actor: 'worker-a', ref: agent.agentId, body: 'connection closed' })
+    ;(sup as unknown as { live: Map<string, unknown> }).live.delete(agent.agentId)
+    git(['push', '-q', 'origin', git(['branch', '--show-current'], agent.cwd)], agent.cwd)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked.ok).toBe(true)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
   })
 
   it('refuses an exited agent whose process this broker still tracks', async () => {

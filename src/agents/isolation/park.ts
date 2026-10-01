@@ -30,11 +30,12 @@ export function allocatedWorktree(rows: readonly AgentEventRow[], agentId: strin
   return { gitRoot, worktree, branch, assigned: meta.assigned === 'true' }
 }
 
-/** Only an exited agent is parkable: a detached one may still be running in the tree, reconnecting. */
+/** Parkable: exited, or detached with no process this broker tracks (the state after a broker restart). */
 function stateBlocker(agent: AgentIdentity, tracked: boolean): string | undefined {
-  if (agent.state === 'exited' && !tracked) return undefined
+  const finished = agent.state === 'exited' || agent.state === 'detached'
+  if (finished && !tracked) return undefined
   const state = agent.state === 'exited' ? 'still tracked as running' : agent.state
-  return `${agent.name} is ${state}; park takes only an agent whose process has exited`
+  return `${agent.name} is ${state}; park takes only an agent whose process has exited or that this broker no longer tracks`
 }
 
 /** Any other identity that is not retired and works in the tree, live or not, since it could be resumed there. */
@@ -105,7 +106,18 @@ const REGENERABLE_DIRS = ['node_modules', 'dist', 'coverage', '.turbo']
 /** `.claude` only at the top, since re-attach copies it from the repository root. */
 const isRegenerable = (entry: string): boolean => {
   const segments = entry.split('/').filter(Boolean)
+  if (segments.at(-1)?.endsWith('.tsbuildinfo')) return true
   return segments[0] === '.claude' || segments.some(segment => REGENERABLE_DIRS.includes(segment))
+}
+
+/** `--directory` collapses a wholly ignored directory into one entry; list its files so a nested build output is judged alone. */
+async function expandDirectory(worktree: string, entry: string): Promise<string[]> {
+  if (!entry.endsWith('/')) return [entry]
+  const files = await gitOrNull(
+    ['ls-files', '--others', '--ignored', '--exclude-standard', '--', entry],
+    worktree,
+  )
+  return files === null ? [entry] : files.split('\n').filter(Boolean)
 }
 
 /** `-uall` so `status.showUntrackedFiles=no` cannot hide an untracked file the removal would take. */
@@ -118,11 +130,13 @@ async function unsaved(worktree: string): Promise<string | undefined> {
     worktree,
   )
   if (ignored === null) return `could not list ignored files in ${worktree}`
-  const kept = ignored.split('\n').filter(entry => entry !== '' && !isRegenerable(entry))
-  if (kept.length === 0) return undefined
+  const entries = ignored.split('\n').filter(entry => entry !== '' && !isRegenerable(entry))
+  const kept = (await Promise.all(entries.map(entry => expandDirectory(worktree, entry)))).flat()
+  const unregenerable = kept.filter(entry => !isRegenerable(entry))
+  if (unregenerable.length === 0) return undefined
   return (
-    `ignored files in ${worktree} would be deleted (${kept.slice(0, 3).join(', ')}); ` +
-    `park removes only ignored ${REGENERABLE_DIRS.join(', ')} and a top-level .claude`
+    `ignored files in ${worktree} would be deleted (${unregenerable.slice(0, 3).join(', ')}); ` +
+    `park removes only ignored ${REGENERABLE_DIRS.join(', ')}, *.tsbuildinfo and a top-level .claude`
   )
 }
 

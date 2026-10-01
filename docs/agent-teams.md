@@ -1408,6 +1408,12 @@ be read. Each remaining agent goes through the same retire as `agent retire <nam
 refusals still apply; the liveness check is repeated just before each one. A failed retire
 is reported and the rest continue.
 
+`agent park` (CC-282) removes a finished agent's tree and keeps its branch. It takes an exited
+agent, or a detached one this broker no longer tracks (the state after a broker restart), and
+refuses a live or still-tracked one. The tree must be clean, on its branch and pushed. Ignored
+files block the removal unless they are `node_modules`, `dist`, `coverage`, `.turbo`, a
+`*.tsbuildinfo` at any depth, or a top-level `.claude` (CC-334).
+
 `run-agent` is a process-launch contract the moment the first `plan.json` is
 written — it must be treated the same way `broker` and `mcp` are (service plan
 §4.3): never renamed without changing the plan writer in the same commit.
