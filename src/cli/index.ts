@@ -187,6 +187,15 @@ function addAgentCommands(program: Command): void {
     })
 
   program
+    .command('suite-slot <command...>')
+    .description('run a full test suite after --, holding one of the machine-wide full-suite slots')
+    .helpGroup(AGENTS)
+    .action(async (command: string[]) => {
+      const { suiteSlotCommand } = await import('./suite-slot.js')
+      suiteSlotCommand(command)
+    })
+
+  program
     .command('leak-scan')
     .description('scan added lines for private data; exit 0 clean, 1 findings, 2 cannot pass')
     .helpGroup(AGENTS)

@@ -3,7 +3,8 @@ import net from 'node:net'
 import { serve, type ServerType } from '@hono/node-server'
 import type { Hono } from 'hono'
 import { defaultPort, home, socketPath } from '../paths.js'
-import { resolveAgentSlots } from '../config.js'
+import { resolveAgentSlots, resolveMachineLimits } from '../config.js'
+import { readSwapUsage } from '../agents/machine-guard.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { backfillAtBoot } from '../agents/ledger/backfill-run.js'
 import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
@@ -182,7 +183,12 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
       }
   const socketServer = new SocketServer(
     core,
-    { semaphore: newAgentSlots(), ...(ledger === undefined ? {} : { ledger }), ...journal },
+    {
+      semaphore: newAgentSlots(),
+      machineGuard: { readSwap: () => readSwapUsage(), limits: resolveMachineLimits },
+      ...(ledger === undefined ? {} : { ledger }),
+      ...journal,
+    },
     ledger === undefined ? undefined : events.ledgerHandle(),
   )
   return { core, socketServer }

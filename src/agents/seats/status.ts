@@ -17,6 +17,7 @@ import { localDate } from '../burndown/seat-tick.js'
 import { openEvents, type WatchdogDoc } from './io.js'
 import { advanceMeter, meterHistory, sameSpendDay, withinRun, type SpendMeter } from './stops.js'
 import { accountReading } from './watchdog.js'
+import type { MachineStatus } from '../machine-guard.js'
 
 /**
  * CC-317: what a coordinator seat reads before it dispatches, in one call.
@@ -101,6 +102,8 @@ export interface SeatStatus {
   budget: BudgetStatus
   inbox: InboxReading
   eligible: EligibleStatus
+  /** CC-406: the machine-wide guard's readings against its limits, across every seat. */
+  machine: MachineStatus
 }
 
 export interface StatusDeps {
@@ -115,6 +118,8 @@ export interface StatusDeps {
   /** Throws when events.db cannot be read. */
   inbox: (seat: string) => InboxReading
   scored: (seat: string, today: string) => ScoredPlan
+  /** Given the whole roster, not the seat's share of it. */
+  machine: (agents: AgentIdentity[]) => MachineStatus
 }
 
 const INBOX_KINDS = "'message', 'broadcast', 'answer', 'decided'"
@@ -312,7 +317,8 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
   const policy = loadPolicy(deps.autonomyRoot, seat)
   const now = deps.now()
   const { prefix, concurrency } = policy.seat
-  const mine = ownedBy(await deps.agents(), seat, prefix)
+  const roster = await deps.agents()
+  const mine = ownedBy(roster, seat, prefix)
   const plain: Plain = err => plainError(err, [deps.autonomyRoot, deps.homeDir])
   return {
     seat,
@@ -325,6 +331,7 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
     budget: budgetStatus(deps, policy, seat, now, plain),
     inbox: inboxReading(deps, seat, plain),
     eligible: eligibleStatus(deps, seat, localDate(now), plain),
+    machine: deps.machine(roster),
   }
 }
 
@@ -360,6 +367,19 @@ function eligibleLines(eligible: EligibleStatus): string[] {
   return texts.map((text, i) => line(i === 0 ? 'eligible' : '', text))
 }
 
+function machineLine({ headlessAgents, swap, fullSuiteSlots }: MachineStatus): string {
+  const swapText =
+    swap.usedPercent === null
+      ? `swap unread${swap.error === undefined ? '' : ` (${swap.error})`}`
+      : `swap ${swap.usedPercent}%/${swap.limit}%${swap.usedPercent > swap.limit ? ' OVER' : ''}`
+  const headless = `headless ${headlessAgents.live}/${headlessAgents.limit}`
+  const atCap = headlessAgents.live >= headlessAgents.limit ? ' AT CAP' : ''
+  return line(
+    'machine',
+    `${headless}${atCap}, ${swapText}, suite slots ${fullSuiteSlots.inUse}/${fullSuiteSlots.total}`,
+  )
+}
+
 function inboxLine(inbox: InboxReading): string {
   if (inbox.error !== undefined) return line('inbox', `unavailable: ${inbox.error}`)
   const since =
@@ -382,6 +402,7 @@ export function renderStatus(status: SeatStatus): string[] {
     budgetLine(budget),
     line('stop', budget.stop ?? `none; ${budget.margin}`),
     ...(budget.note === null ? [] : [line('note', budget.note)]),
+    machineLine(status.machine),
     inboxLine(status.inbox),
     ...eligibleLines(status.eligible),
   ]

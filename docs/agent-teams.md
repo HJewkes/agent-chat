@@ -1542,6 +1542,18 @@ Therefore:
   `worktreeBudget` in `~/.agent-chat/config.json` (`config.ts`'s
   `resolveWorktreeBudget`), with the same fallback rule and the same
   per-spawn read as `agentSlots`. An adopted `worktree:` takes no slot.
+- **Machine guard (CC-406):** the slot cap is per broker and the seat caps are
+  per seat, so neither sees the machine. `agent_spawn` also refuses a headless
+  spawn while `machineHeadlessAgents` (default 10) headless agents are live
+  (spawning, live or detached, from every seat), and any spawn while used swap
+  exceeds `machineSwapPercent` (default 85) percent. Both keys live in
+  `~/.agent-chat/config.json` and are read per spawn. The refusal names the
+  limit, the current value and the config key. Swap is read from
+  `sysctl -n vm.swapusage` on macOS only; a reader that fails, or another
+  platform, never refuses, and the failure is logged as
+  `machine_guard_reader_failed`. A broken reader would otherwise stop every
+  seat. `seats status --json` reports the same readings in its `machine` block,
+  with the full-suite slots in use (`fullSuiteSlots`, README "Tests").
 - **Roles and depth (CC-163):** only a `coordinator` profile may spawn; a
   worker (any profile without `"role": "coordinator"`) is refused. The cap
   counts coordinator links only: `agent_spawned.meta.coordinator_depth`, capped

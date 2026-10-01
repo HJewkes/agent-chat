@@ -41,6 +41,7 @@ import {
 import { surfaceFor } from './surfaces/index.js'
 import { SurfaceRefused, type SurfaceOptions } from './surfaces/options.js'
 import { Semaphore, type SlotUsage } from './semaphore.js'
+import { countLiveHeadless, machineDecision, type MachineLimits, type SwapReading } from './machine-guard.js'
 import { canonicalPath, checkSpawnCwd, isAtOrUnder } from './spawn-cwd.js'
 import { resolveSpawnBriefing, type BriefingResult } from './active-work.js'
 import { childConfigDir, resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
@@ -430,6 +431,8 @@ export interface SupervisorOptions {
   seatJournal?: SeatJournal
   /** CC-331: appends a seat agent's dispatched and retired rows. Absent in tests, which own no autonomy root. */
   seatDispatch?: SeatDispatchLog
+  /** CC-406: the machine-wide guard's readers. Absent in tests, which must not read the host's swap. */
+  machineGuard?: MachineGuardReaders
 }
 
 /** A dispatch row is bookkeeping: a writer that throws despite its contract leaves the spawn or retire as it was. */
@@ -539,6 +542,11 @@ export function floorWarning(requested: IsolationName, profileIsolation: Isolati
   )
 }
 
+export interface MachineGuardReaders {
+  readSwap: () => SwapReading
+  limits: () => MachineLimits
+}
+
 export class Supervisor implements TeleportHost {
   private readonly live = new Map<string, Live>()
   /** CC-282: agents mid-park, to the canonical tree being removed. */
@@ -560,6 +568,7 @@ export class Supervisor implements TeleportHost {
   private readonly unwatch: () => void
   private readonly teleporter: Teleport
   private readonly shadow: LifecycleShadow
+  private readonly machineGuard: MachineGuardReaders | undefined
 
   constructor(
     private readonly core: BrokerCore,
@@ -575,6 +584,7 @@ export class Supervisor implements TeleportHost {
     this.hookSpawn = options.hookSpawn
     this.seatJournal = options.seatJournal
     this.seatDispatch = options.seatDispatch
+    this.machineGuard = options.machineGuard
     this.unwatch = core.onAppend(row => this.onRow(row))
     this.teleporter = new Teleport(core, this, options.countdownMs, options.argvReader)
     this.shadow = new LifecycleShadow(options.ledger)
@@ -850,6 +860,20 @@ export class Supervisor implements TeleportHost {
     return undefined
   }
 
+  /** CC-406: refuses when the machine is at its headless-agent total or past its swap share. */
+  private machineRefusal(surface: SurfaceName): string | undefined {
+    if (this.machineGuard === undefined) return undefined
+    const swap = this.machineGuard.readSwap()
+    if ('error' in swap) logEvent('machine_guard_reader_failed', { reader: 'swap', error: swap.error })
+    const liveHeadless = countLiveHeadless(this.core.agents.roster())
+    const decision = machineDecision(
+      { liveHeadless, swap },
+      this.machineGuard.limits(),
+      surface === 'headless',
+    )
+    return decision.ok ? undefined : decision.reason
+  }
+
   /** The requester's OWN `agent_spawned` row — the only record of what it was granted. */
   private spawnEventOf(agentId: string) {
     return this.core.events.agentEvents().find(row => row.kind === 'agent_spawned' && row.msgId === agentId)
@@ -1052,7 +1076,9 @@ export class Supervisor implements TeleportHost {
       depth: this.depthOf(req.parentAgentId),
       coordinatorDepth: requester.coordinatorDepth + (roleOf(profile) === 'coordinator' ? 1 : 0),
     }
-    const roleBlocked = this.checkRole(req, profile, lineage.coordinatorDepth)
+    const roleBlocked =
+      this.checkRole(req, profile, lineage.coordinatorDepth) ??
+      this.machineRefusal(req.surface ?? profile.surface)
     if (roleBlocked) return this.refuse(req, roleBlocked)
     const escalation = this.checkEscalation(req, profile)
     if (escalation) return this.refuse(req, escalation)

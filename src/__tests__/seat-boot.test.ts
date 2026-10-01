@@ -65,6 +65,11 @@ const STATUS: SeatStatus = {
   },
   inbox: { unread: 4, sinceLastSend: '2026-09-30T09:00:00.000Z' },
   eligible: { top: [], skipped: 0, today: '2026-09-30' },
+  machine: {
+    headlessAgents: { live: 3, limit: 10 },
+    swap: { usedPercent: 40, limit: 85 },
+    fullSuiteSlots: { inUse: 0, total: 4 },
+  },
 }
 
 let tmp: string

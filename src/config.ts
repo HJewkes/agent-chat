@@ -2,6 +2,12 @@ import fs from 'node:fs'
 import { logEvent } from './broker/log.js'
 import { DEFAULT_SLOTS } from './agents/semaphore.js'
 import { configPath } from './paths.js'
+import {
+  DEFAULT_MACHINE_HEADLESS_AGENTS,
+  DEFAULT_MACHINE_SWAP_PERCENT,
+  type MachineLimits,
+} from './agents/machine-guard.js'
+import { DEFAULT_FULL_SUITE_SLOTS } from './suite-slots.js'
 import { isHexColour, type PaneColourConfig } from './agents/pane-identity.js'
 
 interface AgentChatConfig {
@@ -15,6 +21,9 @@ interface AgentChatConfig {
   ghWriteGapSeconds?: unknown
   reportBatchSeconds?: unknown
   paneColours?: unknown
+  machineHeadlessAgents?: unknown
+  machineSwapPercent?: unknown
+  fullSuiteSlots?: unknown
 }
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
@@ -128,6 +137,28 @@ function reportBatchSeconds(value: unknown): number | undefined {
     return value
   logEvent('config_invalid', { key: 'reportBatchSeconds', value, fallback: DEFAULT_REPORT_BATCH_S })
   return undefined
+}
+
+/** CC-406's machine-wide spawn limits, read per spawn so an edit needs no broker restart. */
+export function resolveMachineLimits(): MachineLimits {
+  let swapPercent = positiveIntegerFrom('machineSwapPercent', DEFAULT_MACHINE_SWAP_PERCENT)
+  if (swapPercent > 100) {
+    logEvent('config_invalid', {
+      key: 'machineSwapPercent',
+      value: swapPercent,
+      fallback: DEFAULT_MACHINE_SWAP_PERCENT,
+    })
+    swapPercent = DEFAULT_MACHINE_SWAP_PERCENT
+  }
+  return {
+    headlessAgents: positiveIntegerFrom('machineHeadlessAgents', DEFAULT_MACHINE_HEADLESS_AGENTS),
+    swapPercent,
+  }
+}
+
+/** How many full test suites may run at once machine-wide (CC-406). */
+export function resolveFullSuiteSlots(): number {
+  return positiveIntegerFrom('fullSuiteSlots', DEFAULT_FULL_SUITE_SLOTS)
 }
 
 function positiveIntegerFrom(key: keyof AgentChatConfig, fallback: number): number {

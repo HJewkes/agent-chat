@@ -5,6 +5,16 @@ import { z } from 'zod'
 import { requiredString } from '../../args.js'
 import { activeWorkRoot } from '../../agents/active-work.js'
 import { readAccountBudget } from '../../agents/budget.js'
+import {
+  countLiveHeadless,
+  machineStatus,
+  readSwapUsage,
+  type MachineStatus,
+} from '../../agents/machine-guard.js'
+import { resolveMachineLimits } from '../../config.js'
+import { slotUsage } from '../../suite-slots.js'
+import { suiteSlotDeps } from '../suite-slot.js'
+import type { AgentIdentity } from '../../protocol.js'
 import { scoredPlanFromDisk } from '../../agents/burndown/score-render.js'
 import { renderBoot, seatBoot, type BootDeps } from '../../agents/seats/boot.js'
 import { charterSeats, isSeatName, parsePools, parseSeat } from '../../agents/seats/charter.js'
@@ -301,7 +311,14 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
         autonomyRoot: root,
         activeWorkRoot: activeWorkRoot(),
       }),
+    machine: readMachineStatus,
   }
+}
+
+/** CC-406: the live readings the spawn guard decides on, for the `machine` block. */
+function readMachineStatus(agents: AgentIdentity[]): MachineStatus {
+  const readings = { liveHeadless: countLiveHeadless(agents), swap: readSwapUsage() }
+  return machineStatus(readings, resolveMachineLimits(), slotUsage(suiteSlotDeps()))
 }
 
 /** Under --json a failure is one document on stdout too, so a caller never parses an empty string. */
@@ -326,7 +343,8 @@ export const seatsStatusVerb = defineVerb({
   description:
     'what a seat reads before it dispatches (CC-317), read-only: implementers, reviewers and planners ' +
     'against their caps, its other running agents, parked implementers, the pool reading with its age ' +
-    'and the charter stop that applies, unread inbox messages since the seat last sent one, and the ' +
+    'and the charter stop that applies, unread inbox messages since the seat last sent one, the ' +
+    'machine-wide headless agents, swap and full-suite slots against their limits, and the ' +
     'top eligible tasks. A spend cap with no saved meter to count it is a stop',
   args: z.object({ seat: requiredString('seat'), json: z.boolean().optional(), root: z.string().optional() }),
   result: Report,

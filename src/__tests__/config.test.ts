@@ -7,6 +7,8 @@ import {
   DEFAULT_PERMISSION_HOOK_TIMEOUT_S,
   resolveAgentSlots,
   resolveContextHintPolicy,
+  resolveFullSuiteSlots,
+  resolveMachineLimits,
   resolveNoticeTtlMs,
   resolvePermissionHookTimeout,
   resolveReportBatchMs,
@@ -133,6 +135,26 @@ describe('resolveWorktreeBudget', () => {
     writeConfigJson({ worktreeBudget: value })
 
     expect(resolveWorktreeBudget(3)).toBe(3)
+  })
+})
+
+describe('machine guard limits (CC-406)', () => {
+  it('defaults to 10 headless agents, 85 percent swap and 4 full-suite slots', () => {
+    expect(resolveMachineLimits()).toEqual({ headlessAgents: 10, swapPercent: 85 })
+    expect(resolveFullSuiteSlots()).toBe(4)
+  })
+
+  it('reads all three limits from config.json', () => {
+    writeConfigJson({ machineHeadlessAgents: 6, machineSwapPercent: 70, fullSuiteSlots: 2 })
+
+    expect(resolveMachineLimits()).toEqual({ headlessAgents: 6, swapPercent: 70 })
+    expect(resolveFullSuiteSlots()).toBe(2)
+  })
+
+  it.each([0, 101, 50.5, '70'])('falls back to 85 when machineSwapPercent is %j', value => {
+    writeConfigJson({ machineSwapPercent: value })
+
+    expect(resolveMachineLimits().swapPercent).toBe(85)
   })
 })
 
