@@ -17,6 +17,46 @@ import type { WorktreeRecord } from './worktree.js'
 
 const execFileAsync = promisify(execFile)
 
+/** A process whose working directory is inside a tree. */
+export interface CwdProcess {
+  pid: number
+  cwd: string
+}
+
+/** Lists every process's cwd; throws when it cannot, which parking treats as a refusal. */
+export type CwdLister = () => Promise<CwdProcess[]>
+
+/** `lsof -Fpn` prints `p<pid>` then `n<path>` per process; lsof exits 1 with no output when nothing matches. */
+export const lsofCwds: CwdLister = async () => {
+  const run = await execFileAsync('lsof', ['-a', '-d', 'cwd', '-Fpn'], {
+    encoding: 'utf8',
+    maxBuffer: 64 << 20,
+  }).catch((err: { code?: unknown; stdout?: string }) => {
+    if (err.code === 1 && !err.stdout) return { stdout: '' }
+    throw err
+  })
+  const found: CwdProcess[] = []
+  let pid = 0
+  for (const line of run.stdout.split('\n')) {
+    if (line.startsWith('p')) pid = Number(line.slice(1))
+    else if (line.startsWith('n') && pid > 0) found.push({ pid, cwd: line.slice(1) })
+  }
+  return found
+}
+
+/** A detached agent's process may have outlived a broker restart, so refuse while anything still sits in its tree. */
+async function occupiedByProcess(tree: string, list: CwdLister): Promise<string | undefined> {
+  let procs: CwdProcess[]
+  try {
+    procs = await list()
+  } catch (err) {
+    return `could not check for processes running in ${tree} (${(err as Error).message.split('\n')[0]}); not parked`
+  }
+  const root = canonicalPath(tree)
+  const inside = procs.find(p => isAtOrUnder(canonicalPath(p.cwd), root))
+  return inside && `process ${inside.pid} has its working directory in ${tree}; not parked while it runs`
+}
+
 /** The worktree an agent's newest `isolation_allocated` row records, and whether it was adopted rather than created. */
 export interface ParkTarget extends WorktreeRecord {
   assigned: boolean
@@ -103,10 +143,10 @@ async function offBranch(target: ParkTarget): Promise<string | undefined> {
 /** Ignored paths `git worktree remove` would delete that a build or agent-chat's own re-attach puts back. */
 const REGENERABLE_DIRS = ['node_modules', 'dist', 'coverage', '.turbo']
 
-/** `.claude` only at the top, since re-attach copies it from the repository root. */
+/** `.claude` only at the top, since re-attach copies it from the repository root. `.tsbuildinfo` applies to files only: a directory so named may hold anything. */
 const isRegenerable = (entry: string): boolean => {
   const segments = entry.split('/').filter(Boolean)
-  if (segments.at(-1)?.endsWith('.tsbuildinfo')) return true
+  if (!entry.endsWith('/') && segments.at(-1)?.endsWith('.tsbuildinfo')) return true
   return segments[0] === '.claude' || segments.some(segment => REGENERABLE_DIRS.includes(segment))
 }
 
@@ -148,8 +188,14 @@ async function unsaved(worktree: string): Promise<string | undefined> {
 export async function parkWorktree(
   target: ParkTarget,
   recheck: () => string | undefined,
+  /** Set for an untracked detached agent: the lister that finds a process still in the tree. */
+  listCwds?: CwdLister,
 ): Promise<{ ok: true; head: string } | { ok: false; reason: string }> {
-  const refusal = (await offBranch(target)) ?? (await unsaved(target.worktree)) ?? (await unpushed(target))
+  const refusal =
+    (listCwds && (await occupiedByProcess(target.worktree, listCwds))) ??
+    (await offBranch(target)) ??
+    (await unsaved(target.worktree)) ??
+    (await unpushed(target))
   if (refusal) return { ok: false, reason: refusal }
   const head = await git(['rev-parse', 'HEAD'], target.worktree)
   const late = recheck()

@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
@@ -21,6 +21,7 @@ import { autoAttach } from './broker-harness.js'
  */
 
 const tmpDirs: string[] = []
+let cwdProcs: () => Promise<{ pid: number; cwd: string }[]> = async () => []
 let core: BrokerCore
 let sup: Supervisor
 let stopAutoAttach: () => void
@@ -119,7 +120,9 @@ beforeEach(() => {
   const events = new EventLog(path.join(home, 'events.db'))
   core = new BrokerCore(() => undefined, { events, registry: new Registry<Conn>() })
   stopAutoAttach = autoAttach(core)
+  cwdProcs = async () => []
   sup = new Supervisor(core, {
+    cwdLister: () => cwdProcs(),
     surface: {
       platform: 'linux',
       spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
@@ -522,6 +525,21 @@ describe('refusing to park what the removal would lose', () => {
     expect(fs.existsSync(path.join(agent.cwd, 'scratch.md'))).toBe(true)
   })
 
+  it('refuses an ignored directory named like a tsbuildinfo that holds another file', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, '.gitignore'), 'x.tsbuildinfo/\n')
+    git(['add', '.gitignore'], agent.cwd)
+    git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+    fs.mkdirSync(path.join(agent.cwd, 'x.tsbuildinfo'))
+    fs.writeFileSync(path.join(agent.cwd, 'x.tsbuildinfo', '.env'), 'TOKEN=synthetic\n')
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringContaining('x.tsbuildinfo/.env') })
+    expect(fs.existsSync(path.join(agent.cwd, 'x.tsbuildinfo', '.env'))).toBe(true)
+  })
+
   it('parks a tree whose only ignored files are regenerable', async () => {
     const agent = await spawnIn('worker-a', makeRepo())
     fs.writeFileSync(path.join(agent.cwd, '.gitignore'), 'node_modules/\ndist/\n')
@@ -559,6 +577,56 @@ describe('refusing to park a running or shared agent', () => {
 
     expect(parked.ok).toBe(true)
     expect(fs.existsSync(agent.cwd)).toBe(false)
+  })
+
+  async function untrackedDetached(): Promise<AgentIdentity> {
+    const agent = await spawnIn('worker-a', repoWithOrigin())
+    core.append({ kind: 'agent_detached', actor: 'worker-a', ref: agent.agentId, body: 'connection closed' })
+    ;(sup as unknown as { live: Map<string, unknown> }).live.delete(agent.agentId)
+    git(['push', '-q', 'origin', git(['branch', '--show-current'], agent.cwd)], agent.cwd)
+    return agent
+  }
+
+  it('refuses an untracked detached agent while a process has its cwd inside the tree, naming the pid', async () => {
+    const agent = await untrackedDetached()
+    cwdProcs = async () => [{ pid: 4711, cwd: path.join(agent.cwd, 'sub') }]
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/process 4711 .*not parked/) })
+    expect(fs.existsSync(agent.cwd)).toBe(true)
+  })
+
+  it('refuses an untracked detached agent when the process list cannot be read', async () => {
+    const agent = await untrackedDetached()
+    cwdProcs = async () => {
+      throw new Error('lsof: not found')
+    }
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/could not check .*lsof: not found/),
+    })
+    expect(fs.existsSync(agent.cwd)).toBe(true)
+  })
+
+  it('refuses an untracked detached agent while a real child process runs in the tree', async () => {
+    const agent = await untrackedDetached()
+    const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},30000)'], {
+      cwd: agent.cwd,
+      stdio: 'ignore',
+    })
+    try {
+      cwdProcs = (await import('../agents/isolation/park.js')).lsofCwds
+      const parked = await sup.park('worker-a')
+
+      expect(parked).toMatchObject({ ok: false, reason: expect.stringContaining(`process ${child.pid}`) })
+    } finally {
+      child.kill('SIGKILL')
+    }
+    expect(fs.existsSync(agent.cwd)).toBe(true)
   })
 
   it('refuses an exited agent whose process this broker still tracks', async () => {
