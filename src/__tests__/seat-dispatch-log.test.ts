@@ -473,7 +473,7 @@ const badLines = (lines: string[]): string[] =>
   )
 
 describe('a seat appending by shell while the writer appends', () => {
-  it('leaves every one of 400 interleaved lines parseable', async () => {
+  it('leaves every one of 400 interleaved lines parseable', { repeats: Number(process.env.CC417_REPEATS ?? 0) }, async () => {
     const file = logFile('seat-x')
     fs.mkdirSync(path.dirname(file), { recursive: true })
     const line = `{"agent":"${AGENT}","outcome":"done","note":"by shell"}`
