@@ -2,9 +2,14 @@ import { describe, expect, it } from 'vitest'
 import type { Runner } from '../agents/burndown/exec.js'
 import { registerWithShepherd } from '../agents/burndown/shepherd.js'
 
-const reg = { target: { repo: 'Acme/Widgets', pr: 7 }, task: 'init/T-1', implementer: 'worker-a' }
+const reg = {
+  target: { repo: 'Acme/Widgets', pr: 7 },
+  task: 'init/T-1',
+  implementer: 'worker-a',
+  headSha: 'aaa111',
+}
 
-const row = { repo: 'acme/widgets', pr: 7, runId: 'r1', phase: 'ci', headSha: null, stalled: null }
+const row = { repo: 'acme/widgets', pr: 7, runId: 'r1', phase: 'ci', headSha: 'aaa111', stalled: null }
 
 function shepherd(rows: unknown[] | undefined): { exec: Runner; calls: string[][] } {
   const calls: string[][] = []
@@ -23,6 +28,22 @@ describe('burndown registering a PR with Shepherd (TP-468)', () => {
 
     expect(registerWithShepherd(reg, exec)).toEqual({ ok: true })
     expect(calls.some(a => a[1] === 'register')).toBe(false)
+  })
+
+  it('registers again when the listed row is at an older head', () => {
+    const { exec, calls } = shepherd([{ ...row, headSha: 'old000' }])
+
+    registerWithShepherd(reg, exec)
+
+    expect(calls.some(a => a[1] === 'register')).toBe(true)
+  })
+
+  it.each(['done', 'failed', 'cancelled'])('registers again when the listed row is in phase %s', phase => {
+    const { exec, calls } = shepherd([{ ...row, phase }])
+
+    registerWithShepherd(reg, exec)
+
+    expect(calls.some(a => a[1] === 'register')).toBe(true)
   })
 
   it('registers a PR Shepherd does not list', () => {

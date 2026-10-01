@@ -166,6 +166,8 @@ describe('the check-run rule (CC-357)', () => {
     expect(text).toContain('never "green" alone')
     expect(text).toContain('`gh run watch` covers only one workflow')
     expect(text).toContain('a skipped check (std / compat) is no failure')
+    expect(text).toContain('"required" means the required contexts on the default branch')
+    expect(text).toContain('as it stands at the push (you do not wait for CI)')
   })
 
   // Mutation caught: dropping the reviewer's check-run line.

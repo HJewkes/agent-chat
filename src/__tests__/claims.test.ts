@@ -37,6 +37,20 @@ describe('patternsOverlap', () => {
     expect(patternsOverlap('src/cli/a.ts', 'src/cli/b.ts')).toBe(false)
   })
 
+  describe('only * is a wildcard', () => {
+    it.each(['?', '[ab].md', '{a,b}.md'])('reads %s as a literal file name', literal => {
+      expect(patternsOverlap(literal, literal)).toBe(true)
+      expect(patternsOverlap(literal, 'a.md')).toBe(false)
+      expect(patternsOverlap(literal, 'b.md')).toBe(false)
+      expect(patternsOverlap(literal, 'a')).toBe(false)
+    })
+
+    it('keeps a bare * off a directory-only pattern', () => {
+      expect(patternsOverlap('*', 'docs/')).toBe(false)
+      expect(patternsOverlap('docs/', '*')).toBe(false)
+    })
+  })
+
   describe('slash-free and last-segment wildcards (CC-272)', () => {
     it('keeps a root glob off a deep subtree', () => {
       expect(patternsOverlap('playwright*.config.ts', 'packages/ui/src/components/custom/Chat/**')).toBe(

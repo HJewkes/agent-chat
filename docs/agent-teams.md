@@ -1412,9 +1412,11 @@ is reported and the rest continue.
 agent, or a detached one this broker no longer tracks (the state after a broker restart), and
 refuses a live or still-tracked one. For a detached agent it also lists process working
 directories with `lsof` and refuses, naming the pid, while any process sits inside the tree; if
-the listing fails it refuses too, since the agent's process may have outlived the broker. The tree must be clean, on its branch and pushed. Ignored
-files block the removal unless they are `node_modules`, `dist`, `coverage`, `.turbo`, a
-`*.tsbuildinfo` file at any depth (a directory so named is searched, not trusted), or a top-level `.claude` (CC-334).
+the listing fails it refuses too, since the agent's process may have outlived the broker. An
+`lsof` exit 1 that still printed parseable output counts as a listing. The tree must be clean, on
+its branch and pushed. Ignored files block the removal unless they are `node_modules`, `dist`,
+`coverage`, `.turbo`, a `*.tsbuildinfo` file at any depth (a directory so named is searched, not
+trusted), or a top-level `.claude` (CC-334).
 
 `run-agent` is a process-launch contract the moment the first `plan.json` is
 written — it must be treated the same way `broker` and `mcp` are (service plan
