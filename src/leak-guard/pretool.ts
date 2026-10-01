@@ -303,16 +303,21 @@ function gitRun(
 
 const NAMES_GIT = /\bgit\b/
 const VARIABLE = /\$\{?([A-Za-z_][A-Za-z0-9_]*)/g
-// Positional and special parameters, REPLY and `${!name}` indirection are set without naming them.
-const UNNAMED_SET = /\$\{?(?:[0-9*@]|_(?![A-Za-z0-9_])|REPLY(?![A-Za-z0-9_])|!)/
+// Positional and special parameters, REPLY, argv, reply and MAPFILE are set without naming them.
+const UNNAMED_SET = /\$\{?(?:[0-9*@]|(?:_|REPLY|argv|reply|MAPFILE)(?![A-Za-z0-9_]))/
+// `${!y}`, a zsh flag such as `${(P)y}` or `${=x}`, and zsh's bare `$=x`, `$~x` and `$^x` hide the name.
+const HIDDEN_NAME = /\$\{(?![A-Za-z_])|\$[=~^]/
+// `${NAME:-default}` and its kin read NAME without assigning it, unlike `${NAME:=default}`.
+const READ_ONLY_REF = new RegExp(`\\$\\{${NAME}(?=:?[-+?]|[#%/])`, 'g')
 
 /** An expanded command word that names git, runs a substitution, or reads a variable the line may set or the hook holds as git. */
 function tiedToGit(head: string, cmd: SimpleCommand, ctx: GuardContext, scope: Scope): boolean {
   const raw = unmark(head)
-  if (NAMES_GIT.test(raw) || UNNAMED_SET.test(raw)) return true
+  if (NAMES_GIT.test(raw) || UNNAMED_SET.test(raw) || HIDDEN_NAME.test(raw)) return true
   if (cmd.substitutions.some(sub => head.includes(LIVE + sub.raw))) return true
+  const said = scope.said.replace(READ_ONLY_REF, ' ')
   const names = [...raw.matchAll(VARIABLE)].map(match => match[1] as string)
-  return names.some(name => mentions(scope.said, name) || NAMES_GIT.test(ctx.env[name] ?? ''))
+  return names.some(name => mentions(said, name) || NAMES_GIT.test(ctx.env[name] ?? ''))
 }
 
 /** A lookup the guard cannot make denies where the command is git or an expansion the line ties to git (TP-613). */

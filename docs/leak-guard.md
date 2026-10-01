@@ -354,9 +354,12 @@ when the line ties that word to git (TP-613): the word names `git` (`${X:-git}`)
 substitution (`$(echo tig|rev)`), or reads a variable that the line mentions outside a `$`
 reference (`x=...`, `read x`, `for x in`) or that the hook's own env holds as a value naming
 `git`. A word that reads a variable the shell sets without the line naming it is always tied:
-`$1` to `$9`, `${N}`, `$*`, `$@`, `$_`, `$REPLY` and any `${!name}` indirection, as in `set --
-git; source /dev/null; $1 pnv` or `read <<< git; pushd .; $REPLY pnv`. None of them is a
-routine command word. So `x=$(echo tig|rev); source /dev/null; $x pnv` is denied, and so is the same line with
+`$1` to `$9`, `${N}`, `$*`, `$@`, `$_`, `$REPLY`, bash's `$MAPFILE`, and zsh's `$argv` and
+`$reply`, as in `set -- git; source /dev/null; $1 pnv` or `read <<< git; pushd .; $REPLY pnv`. So
+is a word that hides the name it reads: any `${` not followed by a name, such as `${!y}`, `${#x}`
+or a zsh flag (`${(P)y}`, `${=x}`, `${~x}`, `${^x}`), and zsh's bare `$=x`, `$~x` and `$^x`. None
+of them is a routine command word. A default such as `${PYTHON:-python3}` reads `PYTHON` without
+assigning it, so it is treated like `$PYTHON`; `${PYTHON:=python3}` assigns and ties. So `x=$(echo tig|rev); source /dev/null; $x pnv` is denied, and so is the same line with
 `pushd .` or `cd "$D"` in place of `source`. A command word from the environment the line does
 not touch is allowed, whatever else the line runs: `source .venv/bin/activate && $PYTHON -m
 pytest && git status`, `source x; $PAGER README; git log`, and `[ -n "$T" ] && git -C "$T" status`
