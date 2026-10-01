@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { BrokerCore, type Conn } from '../broker/core.js'
+import { BrokerCore, ENDORSE_MAX_AGE_MS, type Conn } from '../broker/core.js'
 import { SocketServer } from '../broker/socket.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
@@ -451,7 +451,7 @@ describe('endorsement text with control characters', () => {
 
   function seedSpoof(env: Env): string {
     const asker = register(env, 'asker')
-    register(env, 'bob')
+    register(env, 'bob', 'session-bob')
     return msgIdOf(env.send(asker, { t: 'endorse', to: 'bob', text: SPOOF }))
   }
 
@@ -535,5 +535,46 @@ describe('inbox --batch --answers source', () => {
 
     expect(report.ok).toBe(true)
     expect(env.core.events.isOpen(seeded.ids.endorse)).toBe(false)
+  })
+})
+
+/** CC-420 meets CC-419: the CLI's restating form reaches the broker's recipient and age checks. */
+describe('endorse --to --text after the request went stale', () => {
+  afterEach(() => vi.useRealTimers())
+
+  function request(env: Env) {
+    const asker = register(env, 'asker')
+    const bob = register(env, 'bob', 'session-bob')
+    const id = msgIdOf(env.send(asker, { t: 'endorse', to: 'bob', text: 'please rebase' }))
+    return { bob, id }
+  }
+
+  // Mutation caught: the CLI approval skipping CC-420's recipient-agent check.
+  it('is refused when the recipient name is now held by a different agent', async () => {
+    const env = makeEnv('events.db')
+    const { bob, id } = request(env)
+    env.core.drop(bob.conn)
+    register(env, 'bob', 'session-impostor')
+
+    const report = await endorseVerb.run({ id, to: 'bob', text: 'please rebase' }, env.ctx)
+
+    expect(report.ok).toBe(false)
+    expect(report.errors!.join()).toMatch(/held by a different agent/)
+    expect(env.core.events.isOpen(id)).toBe(true)
+  })
+
+  // Mutation caught: the CLI approval skipping CC-420's max-age check.
+  it('is refused when the request is older than the max age', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-01T09:00:00Z'))
+    const env = makeEnv('events.db')
+    const { id } = request(env)
+    vi.setSystemTime(Date.now() + ENDORSE_MAX_AGE_MS + 1)
+
+    const report = await endorseVerb.run({ id, to: 'bob', text: 'please rebase' }, env.ctx)
+
+    expect(report.ok).toBe(false)
+    expect(report.errors!.join()).toMatch(/older than 24h/)
+    expect(env.core.events.isOpen(id)).toBe(true)
   })
 })
