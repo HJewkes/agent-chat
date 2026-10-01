@@ -15,6 +15,7 @@ import {
   type Overrides,
   type ReadAlias,
 } from './git-alias.js'
+import { hasUnreadableConfig } from './git-unresolved.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
@@ -97,6 +98,7 @@ export const REASONS = {
   aliasEnv: `leak-guard: the guard cannot tell which directory or config this git command runs with, or which subcommand it names, so it cannot tell what a git alias here runs. Run the command the alias stands for, from a plain cd. ${DOCS}`,
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
   includePath: `leak-guard: git -c or --config-env on include.path or includeIf.*.path pulls in config that sets core.hooksPath or that the guard cannot read in time, or runs beside other commands or a redirect, which would bypass the pre-push leak scan. ${DOCS}`,
+  gitConfigUnresolved: `leak-guard: git -c or --config-env with a key or value the guard cannot read, before a command that runs hooks, may set core.hooksPath or include.path and would bypass the pre-push leak scan. Spell the config out, or drop it. ${DOCS}`,
   aliasWritten: `leak-guard: this command line writes git config and runs a git word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
 } as const
 
@@ -296,8 +298,16 @@ const unsure = (run: GitRun, scope: Scope): string | undefined =>
 
 /** The one boundary every command that is or may be git passes: git's own options, the config they include, then its alias. */
 function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
-  return checkGit(run.args) ?? checkInclude(run, ctx, scope, depth) ?? checkAlias(run, ctx, scope, depth)
+  return (
+    checkGit(run.args) ??
+    checkUnresolvedConfig(run) ??
+    checkInclude(run, ctx, scope, depth) ??
+    checkAlias(run, ctx, scope, depth)
+  )
 }
+
+const checkUnresolvedConfig = (run: GitRun): string | undefined =>
+  hasUnreadableConfig(run.resolved, run.args) ? REASONS.gitConfigUnresolved : undefined
 
 const MENTIONS_INCLUDE = /include/i
 const DESCRIPTOR_COPY = /\d*[<>]&(?:\d+|-)(?![\w./])/g
