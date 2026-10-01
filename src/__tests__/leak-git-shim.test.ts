@@ -233,6 +233,73 @@ describe('the agent git shim failing closed when it cannot resolve a push (fix r
   })
 })
 
+describe('the agent git shim and help.autocorrect (fix round 2)', () => {
+  // At c679bb28 the alias miss exec'd the real git, which corrected pusj to push and skipped the hook.
+  it.each([
+    ['-c help.autocorrect=immediate', NO_VERIFY],
+    ['-c help.autocorrect=1', NO_VERIFY],
+    ['-c help.autocorrect=true', NO_VERIFY],
+    ['-c help.autocorrect=5', NO_VERIFY],
+    ['-c help.autocorrect=prompt', NO_VERIFY],
+    ['-c help.autocorrect', NO_VERIFY],
+    ['-c help.autocorrect=immediate -c core.hooksPath=/dev/null', ''],
+  ])('refuses a mistyped push under git %s', (options, flag) => {
+    const fx = fixture()
+
+    const run = runScript(fx, `git ${options} pusj origin main ${flag}`)
+
+    expect(run.stderr).toContain('git-shim: push refused (autocorrect)')
+    expect(run.status).toBe(2)
+    expect(remoteHasMain(fx)).toBe(false)
+  })
+
+  it.each(['', '-c help.autocorrect=never', '-c help.autocorrect=0', '-c help.autocorrect=show'])(
+    'leaves an unknown word to git when autocorrect cannot run it (%s)',
+    options => {
+      const fx = fixture()
+
+      const run = runScript(fx, `git ${options} pusj origin main`)
+
+      expect(run.stderr).not.toContain('git-shim')
+      expect(run.stderr).toContain('is not a git command')
+      expect(remoteHasMain(fx)).toBe(false)
+    },
+  )
+
+  it('runs an external git-<word> command under autocorrect', () => {
+    const fx = fixture()
+    const bin = path.join(fx.work, '..', 'ext-bin')
+    fs.mkdirSync(bin)
+    fs.writeFileSync(path.join(bin, 'git-hello'), '#!/bin/sh\necho hello\n', { mode: 0o755 })
+
+    const run = runScript(fx, `PATH='${bin}':$PATH git -c help.autocorrect=immediate hello`)
+
+    expect(run.stdout.trim()).toBe('hello')
+    expect(run.status).toBe(0)
+  })
+
+  it('runs builtins under autocorrect when the baked builtin list is empty', () => {
+    const fx = fixture()
+    const real = findRealGit(process.env.PATH ?? '', fx.shimDir) as string
+    fs.writeFileSync(path.join(fx.shimDir, 'git'), gitShimScript(real, fx.guard, []), { mode: 0o755 })
+
+    const run = runScript(fx, 'git -c help.autocorrect=1 rev-parse --abbrev-ref HEAD')
+
+    expect(run.stdout.trim()).toBe('main')
+    expect(run.status).toBe(0)
+  })
+
+  it('runs a shell alias whose only push is git stash push', () => {
+    const fx = fixture()
+    git(fx.work, 'config', 'alias.sp', '!git stash push -q')
+
+    const run = runScript(fx, 'git sp')
+
+    expect(run.stderr).not.toContain('git-shim')
+    expect(run.status).toBe(0)
+  })
+})
+
 describe('the agent git shim passing everything else to the real git', () => {
   // Kills: the shim not exec-ing the real git.
   it('lets a plain push through and the pre-push hook still runs', () => {

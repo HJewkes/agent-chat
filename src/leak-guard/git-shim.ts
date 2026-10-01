@@ -64,6 +64,42 @@ split() {
   [ -z "$started" ] || { quote "$word"; words="$words $q"; }
 }`
 
+// help.autocorrect would run a command the shim never checked; only values git documents as "do not run" pass.
+const AUTOCORRECT_FN = `autocorrect_off() {
+  ac=$(eval "\\"\\$real\\"$globals config --get --type=bool-or-int help.autocorrect" 2>/dev/null)
+  case $? in
+  1) return 0 ;;
+  0) case $ac in false | 0) return 0 ;; esac; return 1 ;;
+  esac
+  ac=$(eval "\\"\\$real\\"$globals config --get help.autocorrect" 2>/dev/null)
+  case $ac in never | show) return 0 ;; esac
+  return 1
+}`
+
+// A word git finds as git-<word> on its exec path or PATH runs that command, so git never autocorrects it.
+const EXTERNAL_FN = `external() {
+  case $1 in */*) return 1 ;; esac
+  saved=$PATH
+  PATH=\${exec_path:+$exec_path:}$PATH
+  command -v "git-$1" >/dev/null 2>&1
+  found=$?
+  PATH=$saved
+  return $found
+}`
+
+// git stash push is the one subcommand named push that is not a push.
+const MENTIONS_PUSH_FN = `mentions_push() {
+  set -f
+  set -- $(printf '%s' "$1" | tr -d "\\"'\\\\\\\\")
+  set +f
+  prev=
+  for tok; do
+    case $tok in *push*) [ "$prev" = stash ] || return 0 ;; esac
+    prev=$tok
+  done
+  return 1
+}`
+
 // Fails closed: a word it cannot resolve, or an alias chain past the cap, refuses rather than execs.
 const RESOLVE_FN = `resolve() {
   globals= depth=0
@@ -79,14 +115,16 @@ const RESOLVE_FN = `resolve() {
     alias=$(eval "\\"\\$real\\"$globals config --get \\"alias.\\$1\\"" 2>/dev/null)
     case $? in
     0) ;;
-    1) return 1 ;;
+    1)
+      external "$1" || autocorrect_off ||
+        refuse autocorrect "$1 is not a git command and help.autocorrect would run its correction unchecked; set it to show or never."
+      return 1 ;;
     *) refuse unresolved "git could not read alias.$1, so the shim cannot tell whether this is a push." ;;
     esac
     case $alias in
     !*)
-      case $(printf '%s' "$alias $*" | tr -d "\\"'\\\\\\\\") in
-      *push*) refuse shell-alias "alias.$1 runs a shell command and the command mentions push; run git push directly." ;;
-      esac
+      mentions_push "$alias $*" &&
+        refuse shell-alias "alias.$1 runs a shell command and the command mentions push; run git push directly."
       return 1 ;;
     esac
     split "$alias" || refuse unresolved "alias.$1 has an open quote or a trailing backslash."
@@ -111,15 +149,25 @@ const HOOKS_CHECK = `hooks=$(eval "\\"\\$real\\"$globals config --get core.hooks
  * it skips verification or when the hooks path git resolves is not the guard's. Everything else
  * execs the real git, baked as an absolute path so the shim never finds itself.
  */
-export const gitShimScript = (real: string, guard: string, builtins: readonly string[]): string =>
+export const gitShimScript = (
+  real: string,
+  guard: string,
+  builtins: readonly string[],
+  execPath = '',
+): string =>
   `#!/bin/sh -p
 # Written by agent-chat at each spawn (TP-596); local edits are overwritten.
 real=${shQuote(real)}
 guard=${shQuote(guard)}
+exec_path=${shQuote(execPath)}
 builtins=${shQuote(builtins.join(' '))}
+[ -n "$builtins" ] || builtins=$("$real" --list-cmds=builtins 2>/dev/null | tr '\\n' ' ')
 ${QUOTE_FN}
 ${REFUSE_FN}
 ${SPLIT_FN}
+${AUTOCORRECT_FN}
+${EXTERNAL_FN}
+${MENTIONS_PUSH_FN}
 ${RESOLVE_FN}
 if resolve "$@"; then
 ${HOOKS_CHECK}
@@ -156,7 +204,15 @@ export function findRealGit(pathValue: string, shimDir: string): string | undefi
   return undefined
 }
 
-/** Empty on failure: `push` is matched by name first, so this only costs other words a config read. */
+/** Empty on failure; the shim then reads the list itself on each call, and `push` is matched by name first. */
+const gitExecPath = (real: string): string => {
+  try {
+    return execFileSync(real, ['--exec-path'], { encoding: 'utf8', timeout: 5000 }).trim()
+  } catch {
+    return ''
+  }
+}
+
 function gitBuiltins(real: string): string[] {
   try {
     return execFileSync(real, ['--list-cmds=builtins'], { encoding: 'utf8', timeout: 5000 })
@@ -178,7 +234,7 @@ export function writeGitShim(
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   const target = path.join(dir, 'git')
   const temp = `${target}.${process.pid}.tmp`
-  fs.writeFileSync(temp, gitShimScript(real, guard, gitBuiltins(real)), { mode: 0o755 })
+  fs.writeFileSync(temp, gitShimScript(real, guard, gitBuiltins(real), gitExecPath(real)), { mode: 0o755 })
   fs.chmodSync(temp, 0o755)
   fs.renameSync(temp, target)
   return true
