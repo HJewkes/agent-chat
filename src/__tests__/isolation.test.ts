@@ -606,13 +606,14 @@ describe('concurrent worktree adds (CC-224)', () => {
     })
   })
 
-  it('kills the hook a timed-out add spawned, and cleans up only after it is gone', async () => {
+  it('kills the filter a timed-out add spawned, and cleans up only after it is gone', async () => {
     const repo = makeRepo()
     const target = path.join(repo, '.worktrees', 'w1')
     const marker = 'sleep 61'
-    const hook = path.join(repo, '.git', 'hooks', 'post-checkout')
-    fs.mkdirSync(path.dirname(hook), { recursive: true })
-    fs.writeFileSync(hook, `#!/bin/sh\n${marker} &\nwait\n`, { mode: 0o755 })
+    git(['config', 'filter.hang.smudge', `sh -c '${marker} & wait'`], repo)
+    fs.writeFileSync(path.join(repo, '.gitattributes'), 'README.md filter=hang\n')
+    git(['add', '.gitattributes'], repo)
+    git(['commit', '-m', 'hang on checkout'], repo)
     const strategy = createWorktreeStrategy({ addTimeoutMs: 1_500 })
 
     await expect(strategy.allocate(ctxFor(repo, { agentName: 'w1' }))).rejects.toThrow('timed out')
@@ -648,6 +649,70 @@ describe('concurrent worktree adds (CC-224)', () => {
     ])
 
     expect(allocs.map(a => a.ref?.gitRoot)).toEqual([left, right])
+  })
+})
+
+describe('worktree add runs no repository hook (CC-410)', () => {
+  /** A repo whose hooks live in the tree under a relative path, as husky sets up. */
+  function huskyRepo(): { repo: string; marker: string } {
+    const repo = makeRepo()
+    git(['config', 'core.hooksPath', '.husky'], repo)
+    return { repo, marker: path.join(repo, 'HOOK_RAN') }
+  }
+
+  /** Each copy writes its own label, so the marker says which checkout's hook git ran. */
+  const writeHook = (dir: string, label: string, marker: string): void => {
+    fs.mkdirSync(path.join(dir, '.husky'), { recursive: true })
+    fs.writeFileSync(
+      path.join(dir, '.husky', 'post-checkout'),
+      `#!/bin/sh\necho "${label} $PWD" >> '${marker}'\n`,
+      {
+        mode: 0o755,
+      },
+    )
+  }
+
+  const ran = (marker: string): string =>
+    fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8').trim() : ''
+
+  it("does not run a hook sitting in the main checkout's working tree", async () => {
+    const { repo, marker } = huskyRepo()
+    writeHook(repo, 'main', marker)
+
+    const alloc = await worktreeStrategy.allocate(ctxFor(repo))
+
+    expect(fs.existsSync(alloc.cwd)).toBe(true)
+    expect(ran(marker)).toBe('')
+  })
+
+  it('does not run the hook on a branch it adopts', async () => {
+    const { repo, marker } = huskyRepo()
+    const ctx = ctxFor(repo, { agentName: 'scout' })
+    const first = await worktreeStrategy.allocate(ctx)
+    writeHook(first.cwd, 'branch', marker)
+    git(['add', '.husky'], first.cwd)
+    git(['commit', '-m', 'add post-checkout'], first.cwd)
+    fs.rmSync(first.cwd, { recursive: true, force: true })
+    writeHook(repo, 'main', marker)
+
+    const second = await worktreeStrategy.allocate(ctx)
+
+    expect(second.ref?.reused).toBe('true')
+    expect(ran(marker)).toBe('')
+  })
+
+  it("leaves the tree's own hooks working for the agent's later git commands", async () => {
+    const { repo, marker } = huskyRepo()
+    writeHook(repo, 'tree', marker)
+    git(['add', '.husky'], repo)
+    git(['commit', '-m', 'add post-checkout'], repo)
+    fs.rmSync(marker, { force: true })
+    const alloc = await worktreeStrategy.allocate(ctxFor(repo))
+
+    git(['checkout', '-b', 'probe'], alloc.cwd)
+
+    expect(git(['config', '--get', 'core.hooksPath'], alloc.cwd)).toBe('.husky')
+    expect(ran(marker)).toBe(`tree ${alloc.cwd}`)
   })
 })
 
