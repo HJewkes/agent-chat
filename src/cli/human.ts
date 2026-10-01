@@ -89,7 +89,7 @@ export function describeInbox(res: Extract<ServerMessage, { t: 'queue_result' }>
   if (open > blocked.length) lines.push('answer with: agent-chat answer <id> "..."')
   if (res.items.some(i => i.kind === 'endorse_request')) {
     lines.push(
-      "endorse with: agent-chat endorse <id> --to <recipient> --text '<exact text>'   (or dismiss <id> to decline)",
+      "endorse with: agent-chat endorse <id>, then type y at the terminal, or add --to <recipient> --text '<exact text>'   (or dismiss <id> to decline)",
     )
   }
   if (decided.length > 0) lines.push('', ...decided)

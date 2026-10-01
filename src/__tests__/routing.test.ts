@@ -318,7 +318,7 @@ describe('human-endorsed relay', () => {
     expect(stdout).toContain('would be delivered to carol as alice, with your authority')
 
     const msgId = /ENDR\s+(\w+)/.exec(stdout)?.[1]
-    await expect(cli(['endorse', msgId!])).rejects.toThrow(/needs --to and --text/)
+    await expect(cli(['endorse', msgId!])).rejects.toThrow(/without a terminal[\s\S]*--to carol --text/)
     await settle()
     expect(carol.inbox).toHaveLength(before)
 

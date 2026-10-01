@@ -1,9 +1,10 @@
 import fs from 'node:fs'
 import type { ServerMessage } from '../protocol.js'
 import type { Report, VerbContext } from '../cli/command.js'
+import { noTerminal } from '../cli/verbs/endorse.js'
 import { applyActions } from './apply.js'
 import { batchId, buildBatch, type BatchItem } from './batch.js'
-import { parseAnswers } from './parse.js'
+import { parseAnswers, type Action } from './parse.js'
 import { renderBatch } from './render.js'
 import { readSnapshot, writeSnapshot } from './snapshot.js'
 
@@ -30,9 +31,20 @@ export async function answerBatch(input: string, ctx: VerbContext): Promise<Repo
     return { ok: false, lines: [], errors: ['no batch to answer; run agent-chat inbox --batch first'] }
   const { actions, errors } = parseAnswers(input, snapshot, await currentBatch(ctx))
   if (errors.length > 0) return { ok: false, lines: ['Nothing sent.'], errors }
+  const unconfirmable = ctx.terminal?.isTTY ? [] : endorsements(actions).flatMap(withoutTerminal)
+  if (unconfirmable.length > 0) return { ok: false, lines: ['Nothing sent.'], errors: unconfirmable }
   if (actions.length === 0) return { ok: true, lines: ['No answers filled in; nothing sent.'] }
   return applyActions(actions, ctx)
 }
+
+type EndorseAction = Extract<Action, { verb: 'endorse' }>
+
+const endorsements = (actions: readonly Action[]): EndorseAction[] =>
+  actions.filter((a): a is EndorseAction => a.verb === 'endorse')
+
+/** Batch endorse follows the bare form's rule: no terminal, no endorsement (CC-419). */
+const withoutTerminal = (a: EndorseAction): string[] =>
+  noTerminal({ msgId: a.msgId, to: a.to, text: a.text }).map(line => `${a.n}: ${line}`)
 
 /** `-` is stdin, so a heredoc or a pipe works as well as a file. */
 export const readAnswers = (source: string): string => fs.readFileSync(source === '-' ? 0 : source, 'utf8')

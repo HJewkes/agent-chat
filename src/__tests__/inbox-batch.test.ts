@@ -7,7 +7,7 @@ import { SocketServer } from '../broker/socket.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import type { BrokerClient } from '../client/broker-client.js'
-import type { VerbContext } from '../cli/command.js'
+import type { Terminal, VerbContext } from '../cli/command.js'
 import { approveVerb } from '../cli/verbs/approve.js'
 import { dismissVerb } from '../cli/verbs/dismiss.js'
 import { endorseVerb } from '../cli/verbs/endorse.js'
@@ -161,6 +161,8 @@ function normalised(env: Env, seeded: ReturnType<typeof seed>) {
   return { rows, delivered }
 }
 
+const TYPES_Y: Terminal = { isTTY: true, ask: async () => 'y' }
+
 const numberOf = (msgId: string): number => readSnapshot()!.items.find(i => i.msgId === msgId)!.n
 
 describe('a batch answer is a single answer', () => {
@@ -187,12 +189,77 @@ describe('a batch answer is a single answer', () => {
         `${numberOf(two.ids.decided)}: overrule stop here`,
         `${numberOf(two.ids.notice)}: dismiss`,
       ].join('\n'),
-      batch.ctx,
+      { ...batch.ctx, terminal: TYPES_Y },
     )
 
     expect(report.ok).toBe(true)
     expect(normalised(batch, two)).toEqual(normalised(single, one))
     expect(normalised(batch, two).rows.map(r => r.kind)).toContain('answer')
+  })
+
+  // Mutation caught: batch endorse skipping the bare form's terminal rule (CC-419).
+  it('sends nothing at all when an endorsement is answered with no terminal', async () => {
+    const env = makeEnv('events.db')
+    const seeded = seed(env)
+    await printBatch(env.ctx)
+
+    const report = await answerBatch(
+      [`${numberOf(seeded.ids.question)}: sqlite`, `${numberOf(seeded.ids.endorse)}: endorse`].join('\n'),
+      env.ctx,
+    )
+
+    expect(report.ok).toBe(false)
+    expect(report.lines).toEqual(['Nothing sent.'])
+    expect(report.errors!.join('\n')).toContain(
+      `agent-chat endorse ${seeded.ids.endorse} --to bob --text 'please rebase'`,
+    )
+    expect(env.core.events.isOpen(seeded.ids.endorse)).toBe(true)
+    expect(env.core.events.isOpen(seeded.ids.question)).toBe(true)
+  })
+
+  // Mutation caught: the batch approval restating anything but the stored row, e.g. an empty recipient.
+  it('restates the stored text and recipient in the frame it sends, after a typed y', async () => {
+    const env = makeEnv('events.db')
+    const seeded = seed(env)
+    await printBatch(env.ctx)
+    const sent: ClientMessage[] = []
+    let shown = ''
+    const ctx: VerbContext = {
+      ...env.ctx,
+      withBroker: fn =>
+        env.ctx.withBroker(broker =>
+          fn({
+            request: (...args: Parameters<BrokerClient['request']>) => (
+              sent.push(args[0]),
+              broker.request(...args)
+            ),
+          } as unknown as BrokerClient),
+        ),
+      terminal: { isTTY: true, ask: async prompt => ((shown = prompt), 'y') },
+    }
+
+    const report = await answerBatch(`${numberOf(seeded.ids.endorse)}: endorse`, ctx)
+
+    expect(report.ok).toBe(true)
+    expect(shown).toContain('delivered to bob')
+    expect(sent.filter(f => f.t === 'endorse_approve')).toEqual([
+      { t: 'endorse_approve', msgId: seeded.ids.endorse, text: 'please rebase', to: 'bob' },
+    ])
+  })
+
+  // Mutation caught: a declined prompt still sending the approval.
+  it('leaves an endorsement open when the terminal answer is not y', async () => {
+    const env = makeEnv('events.db')
+    const seeded = seed(env)
+    await printBatch(env.ctx)
+
+    const report = await answerBatch(`${numberOf(seeded.ids.endorse)}: endorse`, {
+      ...env.ctx,
+      terminal: { isTTY: true, ask: async () => 'n' },
+    })
+
+    expect(report.ok).toBe(false)
+    expect(env.core.events.isOpen(seeded.ids.endorse)).toBe(true)
   })
 
   // Mutation caught: `accept` on a decided item sent as an answer, which would overrule it.
