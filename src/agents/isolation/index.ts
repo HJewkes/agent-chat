@@ -2,7 +2,7 @@ import { ISOLATION_NAMES, type IsolationName } from '../../protocol.js'
 import { fileOwnershipStrategy } from './file-ownership.js'
 import { noneStrategy } from './none.js'
 import { toolsetStrategy } from './toolset.js'
-import { worktreeStrategy } from './worktree.js'
+import { worktreeStrategy, type WorktreeRecord } from './worktree.js'
 
 /**
  * A peer an isolation strategy is allowed to reason about: an agent that is both
@@ -36,6 +36,8 @@ export interface IsolationContext {
    * work, so the assignment outranks whatever the profile would have chosen.
    */
   assignedWorktree?: string
+  /** CC-283: agent-chat's record of allocating `assignedWorktree`, which re-creates it if it was removed. */
+  assignedRecord?: WorktreeRecord
   /** For toolset-limited: the profile's tool lists, which the context does not otherwise carry. */
   toolset?: { allowedTools?: string[]; disallowedTools?: string[] }
   /** Turns advisory conflicts into refusals. Wired to `--strict`. */

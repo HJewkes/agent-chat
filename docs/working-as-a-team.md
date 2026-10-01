@@ -107,6 +107,14 @@ and otherwise cuts a fresh branch of the same name from origin's default branch 
 which is the usual case once a squash merge has deleted the branch. For the spawn route pass
 `isolation="worktree"` and the repository as `cwd`.
 
+**Adopting a parked tree (CC-283).** A successor spawned with `worktree=<predecessor's path>`
+after that tree was parked, or resumed after its adopted tree was parked, gets the tree
+re-created at the same path on the predecessor's branch, from agent-chat's record of allocating
+it. Pass the repository as `cwd`, since the tree is not there yet. The tree stays adopted, so
+retiring the successor leaves it. Unlike an allocator's own re-attach, it never cuts a fresh
+branch: when the branch is gone locally and on origin, the spawn or resume refuses. A path
+agent-chat never allocated refuses too, as it always has.
+
 ---
 
 ## 3. Choosing a surface

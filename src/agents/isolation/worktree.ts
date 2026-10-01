@@ -585,6 +585,8 @@ export interface WorktreeRecord {
   gitRoot: string
   worktree: string
   branch: string
+  /** CC-283: an agent adopted this tree from the allocator the record came from, so it is not that agent's to remove. */
+  adopted?: boolean
 }
 
 /** How a re-attached worktree got its branch back. */
@@ -680,6 +682,7 @@ function checkRecordPlacement(record: WorktreeRecord, basePath: string): void {
 export async function reattachWorktree(
   record: WorktreeRecord,
   opts: WorktreeOptions = {},
+  requireBranch = false,
 ): Promise<Allocation> {
   const { gitRoot, worktree, branch } = record
   const basePath = opts.basePath ?? DEFAULT_BASE_PATH
@@ -695,6 +698,11 @@ export async function reattachWorktree(
   const timeoutMs = opts.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS
   const base = await resolveBranchBase(gitRoot, timeoutMs)
   const source = await branchSource(gitRoot, branch, timeoutMs)
+  if (source === 'fresh' && requireBranch)
+    throw new Error(
+      `branch ${branch} no longer exists locally or on origin, so the adopted worktree ${worktree} ` +
+        'was not re-created on a fresh one',
+    )
   await addForSource(
     record,
     source,
@@ -714,6 +722,26 @@ export async function reattachWorktree(
   }
 }
 
+/**
+ * CC-283: put back a removed tree an agent adopted, on its allocator's branch.
+ *
+ * It stays marked assigned, so the adopter's retire leaves it, and a branch that
+ * is gone refuses rather than forking a fresh one the adopter never worked on.
+ */
+async function readoptWorktree(record: WorktreeRecord, opts: WorktreeOptions): Promise<Allocation> {
+  const allocation = await reattachWorktree(record, opts, true)
+  return {
+    ...allocation,
+    note: `The worktree assigned to this task at ${record.worktree} had been removed and was re-created on branch ${record.branch}. You may be sharing it with other agents, so stay inside the paths you were given.`,
+    ref: { ...allocation.ref, assigned: 'true' },
+  }
+}
+
+/** Re-create a removed tree from its record, keeping an adopted one adopted. */
+export function recreateWorktree(record: WorktreeRecord, opts: WorktreeOptions = {}): Promise<Allocation> {
+  return record.adopted === true ? readoptWorktree(record, opts) : reattachWorktree(record, opts)
+}
+
 /** Null when release may proceed, otherwise the reason it may not. */
 async function refuseRelease(
   ctx: IsolationContext,
@@ -726,6 +754,20 @@ async function refuseRelease(
     return `agent exited less than ${RECLAIM_GRACE_MS / 1000}s ago; inside the reclaim grace window`
   const safety = await inspectForRelease(gitRoot, worktreePath, branch, baseRef)
   return safety.dirty || safety.unmerged ? describeRefusal(safety) : null
+}
+
+/** CC-283: a gone assigned tree comes back only from agent-chat's record of allocating it. */
+function recreateAssigned(
+  assigned: string,
+  record: WorktreeRecord | undefined,
+  opts: WorktreeOptions,
+): Promise<Allocation> {
+  if (record === undefined || path.resolve(record.worktree) !== assigned)
+    throw new Error(
+      `assigned worktree ${assigned} does not exist, and agent-chat has no record of allocating it ` +
+        'to re-create it from. Not spawned',
+    )
+  return readoptWorktree(record, opts)
 }
 
 export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStrategy {
@@ -768,7 +810,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       // this path exists to avoid.
       if (ctx.assignedWorktree !== undefined) {
         const assigned = path.resolve(ctx.assignedWorktree)
-        if (!existsSync(assigned)) throw new Error(`assigned worktree ${assigned} does not exist`)
+        if (!existsSync(assigned)) return recreateAssigned(assigned, ctx.assignedRecord, opts)
         const branch = (await gitOrNull(['rev-parse', '--abbrev-ref', 'HEAD'], assigned)) ?? 'HEAD'
         return {
           cwd: assigned,
