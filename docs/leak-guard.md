@@ -358,8 +358,12 @@ reference (`x=...`, `read x`, `for x in`) or that the hook's own env holds as a 
 `$reply`, as in `set -- git; source /dev/null; $1 pnv` or `read <<< git; pushd .; $REPLY pnv`. So
 is a word that hides the name it reads: any `${` not followed by a name, such as `${!y}`, `${#x}`
 or a zsh flag (`${(P)y}`, `${=x}`, `${~x}`, `${^x}`), and zsh's bare `$=x`, `$~x` and `$^x`. None
-of them is a routine command word. A default such as `${PYTHON:-python3}` reads `PYTHON` without
-assigning it, so it is treated like `$PYTHON`; `${PYTHON:=python3}` assigns and ties. So `x=$(echo tig|rev); source /dev/null; $x pnv` is denied, and so is the same line with
+of them is a routine command word. That includes `"$1"` after `source`, which a script wrapper
+may run as its command; the guard accepts that over-deny, since `set -- git` can feed it. A
+default such as `${PYTHON:-python3}` reads `PYTHON` without assigning it, so it is treated like
+`$PYTHON`; `${PYTHON:=python3}` assigns and ties. The guard tests for `git` after removing quotes
+and backslashes, so a default or replacement word that becomes `git` ties: `${x:-g"i"t}`,
+`${x:-g\it}`, `${x/#/g"i"t}` and `${x/a/g"i"t}`. So `x=$(echo tig|rev); source /dev/null; $x pnv` is denied, and so is the same line with
 `pushd .` or `cd "$D"` in place of `source`. A command word from the environment the line does
 not touch is allowed, whatever else the line runs: `source .venv/bin/activate && $PYTHON -m
 pytest && git status`, `source x; $PAGER README; git log`, and `[ -n "$T" ] && git -C "$T" status`

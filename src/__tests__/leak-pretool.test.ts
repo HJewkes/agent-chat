@@ -1067,6 +1067,12 @@ describe('a git alias already in config', () => {
       'read -A <<< git; source /dev/null; $reply pnv',
       'mapfile <<< git; source /dev/null; $MAPFILE pnv',
       'source /dev/null; ${x:=y} pnv',
+      'source /dev/null; ${x:-g"i"t} pnv',
+      'source /dev/null; ${x:-g\\it} pnv',
+      'x=a; source /dev/null; ${x/a/g"i"t} pnv',
+      'source /dev/null; ${x/#/g"i"t} pnv',
+      'source /dev/null; ${x/a/g"i"t} pnv',
+      'source /dev/null; ${x:-git} pnv',
     ])('denies a positional, special or indirect command word where it cannot look (TP-613): %s', command => {
       expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
     })
@@ -1083,6 +1089,8 @@ describe('a git alias already in config', () => {
       'source x; $PAGER README; git log',
       'source .venv/bin/activate && ${PYTHON:-python3} -m pytest && git status',
       'source x; ${PAGER-less} README; git log',
+      'source x; ${EDITOR:-vi} notes; git log',
+      'source x; ${TOOL#x} README; git log',
       `T=$(git -C ~/w worktree list | grep x | awk '{print $1}'); [ -n "$T" ] && git -C "$T" status --porcelain && git -C "$T" rev-list origin/b..HEAD`,
     ])('allows an expanded command word the line does not tie to git (TP-613): %s', command => {
       expect(checkCommand(command, inAliased())).toBeUndefined()
