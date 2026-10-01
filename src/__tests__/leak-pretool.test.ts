@@ -1570,7 +1570,9 @@ describe('a command git runs for its subcommand (TP-634)', () => {
   it.each(['git rebase -x "$(cat s)" HEAD~1', 'X=$(cat s); git submodule foreach "$X"'])(
     'denies a command it cannot read: %s',
     command => {
-      expect(checkCommand(command, ctx())).toBe(REASONS.nestedScript)
+      const reason = checkCommand(command, ctx())
+      expect(reason).toBeDefined()
+      expect(reason).toBe(REASONS.nestedScript)
     },
   )
 

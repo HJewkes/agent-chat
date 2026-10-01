@@ -323,6 +323,8 @@ and other prefixes are stripped, is one of these. A wrapper is known by its base
 | a command word that is an expansion, followed by the words of one of those gh commands                                 | `$G pr create` may run gh unscanned                       |
 | a command word that is an expansion, followed by a command that any row above denies                                   | `$E gh pr create` runs gh when `E` is empty               |
 | `eval` of text the guard cannot be sure of, on a command line that names `git` or `gh`                                 | the text may be a push or a gh command                    |
+| a command git runs for its subcommand that a row above denies, or that the guard cannot read (below)                   | `git rebase -x` runs a shell command unseen               |
+| `git -c` or `--config-env` on an include, or with a key the guard cannot read, before a command git runs (below)       | git passes it on to every git that command runs           |
 
 A git alias that was already in config is expanded before the table is applied (TP-595). For
 `git <word>`, where `<word>` is not a git builtin, the guard runs `git config --get alias.<word>`
@@ -435,6 +437,36 @@ or a heredoc passed as `--body-file -`. `gh pr merge` is checked like `create`: 
 piped from another command, or a missing or unreadable term list while `MISSING_TERMS_REFUSES` is
 set. An empty term list file counts as a list: the guard then checks the generic rules only and
 refuses nothing for a missing list.
+
+### A command git runs for its subcommand (TP-634)
+
+Some git subcommands run a command line they are given. The guard checks that command like a
+top-level Bash line, so `git rebase -x "git push --no-verify" HEAD~1` is denied as a skipped hook.
+It reads the command from:
+
+- `git rebase -x <cmd>`, `--exec <cmd>`, `--exec=<cmd>`, a short cluster such as `-ix <cmd>`, and
+  any prefix of `--exec`, since git takes an unambiguous prefix;
+- `git submodule [--quiet] foreach [--recursive] <cmd>` and `git bisect run <cmd>`. One word is
+  read as a shell string; several are quoted and joined, as git runs them;
+- `git difftool -x` or `--extcmd`, `git filter-branch --setup` and every `--*-filter`, and
+  `git grep -O<pager>` or `--open-files-in-pager=<pager>`;
+- the program options git runs through a shell: `--upload-pack` on `fetch`, `pull`, `clone` (also
+  `-u`) and `ls-remote` (also `-u`), `--receive-pack` and `--exec` on `push`, `--exec` on
+  `archive`, and `--to-cmd`, `--cc-cmd`, `--header-cmd` and `--sendmail-cmd` on `send-email`.
+
+A git alias that expands to one of these is checked the same way. The command runs in another
+directory, and for `submodule foreach` in each submodule with variables git sets, so the guard
+trusts neither the directory nor any variable inside it. git passes its `-c` and `--config-env`
+options on to every git the command runs, and the command may write an include file before git
+reads it. So an `include.path` or `includeIf.<cond>.path` on the outer git is a deny, whatever the
+file holds, and so is a `-c` or `--config-env` word the guard cannot read. A command word the guard
+cannot read, such as `-x "$(cat s)"`, is a deny for a literal `git` or an expansion tied to git.
+`git rebase -i`, `git submodule update` and `git bisect start`, `good` and `bad` run no command and
+are not affected.
+
+Config values that name a program, such as `core.pager`, `core.sshCommand`, `sequence.editor` and
+`diff.external`, are not read here (TP-636). Nor are git's own hooks, or an option whose name is an
+expansion, as in `git rebase "$OPT" "<cmd>"` with `OPT` set on the line.
 
 ### Config the guard cannot read (TP-630)
 
