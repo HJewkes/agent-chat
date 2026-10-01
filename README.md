@@ -240,6 +240,10 @@ agent-chat gh-write -- <gh args...>
                                 one gh write, spaced machine-wide (config.json
                                 ghWriteGapSeconds, default 3) and retried on
                                 GitHub's secondary rate limit (60 s, 120 s, 300 s)
+agent-chat suite-slot -- <command...>
+                                run a full test suite holding one of the
+                                machine-wide full-suite slots (config.json
+                                fullSuiteSlots, default 4)
 agent-chat ps                   who's registered
 agent-chat history [n]          recent events from the log
 agent-chat broker               run the broker in the foreground
@@ -253,6 +257,18 @@ Implementer briefs should use `agent-chat gh-write --` for merge PUTs, PR create
 ```bash
 npm run build && npm test
 ```
+
+`npm test` and `npm run verify` run `vitest run` through `agent-chat suite-slot`,
+so at most `fullSuiteSlots` (default 4) full suites run at once machine-wide. A
+runner in another repo takes a slot the same way, for example
+`"test": "agent-chat suite-slot -- vitest run"`. Each held slot is a directory
+`~/.agent-chat/suite-slots/<i>` holding the wrapper's pid. The wrapper waits for a
+free slot, runs the command, passes its exit code through and removes the slot.
+On SIGINT or SIGTERM it forwards the signal to the command, removes the slot once
+the command exits, and exits by the same signal. A slot whose pid is no longer
+running is taken over, so a runner killed outright frees its slot. After 30 minutes of waiting the wrapper runs without a slot rather
+than block on a hung holder. Run a single test file with `npx vitest run <file>`,
+which takes no slot.
 
 Roughly 1,000 checks across 60 files. `registry.test.ts` covers live routing
 decisions, `event-log.test.ts` covers the projections, `routing.test.ts` drives
@@ -331,6 +347,14 @@ read once and memoized with no watcher. Its own grants apply immediately, but
 another session's never reach it. So the _absence_ of an `approval` row only
 tells you a tool was allowlisted when that session launched — it is not portable
 evidence across sessions of different vintages. Presence is unaffected.
+
+**Spawns stop when the machine is full.** `agent_spawn` refuses a headless spawn
+while `machineHeadlessAgents` (default 10) headless agents are live machine-wide,
+and any spawn while free memory (`kern.memorystatus_level`) is below
+`machineMemoryFreePercent` (default 15) percent. Both keys live in
+`~/.agent-chat/config.json`. Swap used is reported by `seats status` but never
+refuses, because macOS keeps swap allocated after memory pressure ends. A reader
+that fails lets the spawn through. Details are in `docs/agent-teams.md` §11.3.
 
 ## Not built yet
 

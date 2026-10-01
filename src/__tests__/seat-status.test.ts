@@ -24,6 +24,12 @@ import { SocketServer } from '../broker/socket.js'
 import { withBroker } from '../cli/client.js'
 import { seatsStatusVerb, statusReport } from '../cli/verbs/seats.js'
 import type { IsolationName, ServerMessage } from '../protocol.js'
+import {
+  countLiveHeadless,
+  machineStatus,
+  type MemoryReading,
+  type SwapReading,
+} from '../agents/machine-guard.js'
 
 /**
  * CC-317: `seats status` answers a seat's tick questions in one read-only call.
@@ -138,10 +144,15 @@ interface AgentSeed {
   detached?: boolean
   cwd?: string
   isolation?: IsolationName
+  surface?: string
 }
 
+const GIB = 1024 ** 3
+let swap: SwapReading
+let memory: MemoryReading
+
 function seedAgent(seed: AgentSeed): void {
-  const { name, profile, spawnedBy = SEAT, cwd = tmp, isolation = 'worktree' } = seed
+  const { name, profile, spawnedBy = SEAT, cwd = tmp, isolation = 'worktree', surface = 'headless' } = seed
   const id = `agent-${++agentIds}`
   core.append({
     kind: 'agent_spawned',
@@ -149,7 +160,7 @@ function seedAgent(seed: AgentSeed): void {
     target: name,
     msgId: id,
     body: 'synthetic brief',
-    meta: { profile, cwd, isolation },
+    meta: { profile, cwd, isolation, surface },
   })
   core.append({ kind: 'agent_attached', actor: name, ref: id })
   if (seed.detached) core.append({ kind: 'agent_detached', actor: name, ref: id })
@@ -178,6 +189,12 @@ function deps(over: Partial<StatusDeps> = {}): StatusDeps {
         autonomyRoot: autonomy,
         activeWorkRoot: activeWork,
       }),
+    machine: agents =>
+      machineStatus(
+        { liveHeadless: countLiveHeadless(agents), memory, swap },
+        { headlessAgents: 10, memoryFreePercent: 15 },
+        { inUse: 1, total: 4 },
+      ),
     ...over,
   }
 }
@@ -197,6 +214,8 @@ beforeEach(() => {
   activeWork = path.join(tmp, 'active-work')
   poolDir = path.join(tmp, 'pool')
   doc = { seats: {}, pools: { [POOL]: { since: at(7), last: 41, spent: 0 } }, stopped: {} }
+  swap = { usedBytes: 2 * GIB, totalBytes: 8 * GIB }
+  memory = { freePercent: 50 }
   writeAutonomy()
   writeTasks()
   writeReading(12, 41)
@@ -632,7 +651,7 @@ describe("the seat's unread inbox", () => {
     expect(result.implementers.active).toBe(1)
     expect(result.budget.sevenDay).toBe(41)
     expect(result.eligible.top).toHaveLength(3)
-    expect(report.lines[8]).toBe(`inbox         unavailable: ${result.inbox.error}`)
+    expect(report.lines[9]).toBe(`inbox         unavailable: ${result.inbox.error}`)
   })
 })
 
@@ -671,6 +690,46 @@ describe('the top eligible tasks', () => {
   })
 })
 
+describe('the machine-wide guard readings', () => {
+  it("counts every seat's live headless agents and leaves out exited and visible ones", async () => {
+    seedAgent({ name: 'ss-al-1', profile: 'implementer' })
+    seedAgent({ name: 'other-1', profile: 'implementer', spawnedBy: 'other-seat' })
+    seedAgent({ name: 'other-2', profile: 'reviewer', spawnedBy: 'other-seat', detached: true })
+    seedAgent({ name: 'other-3', profile: 'implementer', spawnedBy: 'other-seat', exited: true })
+    seedAgent({ name: 'other-4', profile: 'implementer', spawnedBy: 'other-seat', surface: 'iterm-pane' })
+
+    const result = await status()
+
+    expect(result.machine.headlessAgents).toEqual({ live: 3, limit: 10 })
+  })
+
+  it('reports free memory against its floor, swap used, and suite slots', async () => {
+    memory = { freePercent: 35 }
+    swap = { usedBytes: 7 * GIB, totalBytes: 8 * GIB }
+
+    const result = await status()
+
+    expect(result.machine.memoryFree).toEqual({ percent: 35, limit: 15 })
+    expect(result.machine.swap).toEqual({ usedPercent: 87.5 })
+    expect(result.machine.fullSuiteSlots).toEqual({ inUse: 1, total: 4 })
+  })
+
+  it('flags memory under its floor and names failed readings in the table', async () => {
+    memory = { freePercent: 9 }
+    const low = await statusReport(deps(), SEAT, false)
+    memory = { error: 'no level' }
+    swap = { error: 'sysctl failed' }
+    const failed = await statusReport(deps(), SEAT, false)
+
+    expect(low.lines).toContain(
+      'machine       headless 0/10, memory 9% free/15% floor LOW, swap 25% used, suite slots 1/4',
+    )
+    expect(failed.lines).toContain(
+      'machine       headless 0/10, memory unread (no level), swap unread (sysctl failed), suite slots 1/4',
+    )
+  })
+})
+
 describe('the status verb', () => {
   it('prints the status as one JSON object under --json', async () => {
     seedAgent({ name: 'ss-al-1', profile: 'implementer' })
@@ -698,6 +757,7 @@ describe('the status verb', () => {
       'parked        1  tree on disk: ss-al-4',
       `budget        pool ${POOL}: seven_day 70%, five_hour 12% (reading 30s old)`,
       `stop          BUDGET-PAUSE pool ${POOL}: seven_day 70% at or above line 65%`,
+      'machine       headless 2/10, memory 50% free/15% floor, swap 25% used, suite slots 1/4',
       'inbox         0 unread (the seat has sent nothing)',
       'eligible      AL-1  72.0  alpha  Harden the secret store against injection',
       '              AL-2  51.6  alpha  Add the export feature to the dashboard',
@@ -713,6 +773,7 @@ describe('the status verb', () => {
     expect(lines.slice(6)).toEqual([
       `budget        pool ${POOL}: seven_day 41%, five_hour 12% (reading 300s old, STALE)`,
       `stop          none; pool ${POOL}: five_hour 12% vs ceiling 70%, seven_day 41% vs line 65%`,
+      'machine       headless 0/10, memory 50% free/15% floor, swap 25% used, suite slots 1/4',
       'inbox         0 unread (the seat has sent nothing)',
       'eligible      unavailable: scorer exploded',
     ])

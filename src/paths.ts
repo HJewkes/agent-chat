@@ -67,6 +67,9 @@ export const configPath = (): string => path.join(home(), 'config.json')
 /** `agent-chat gh-write`'s machine-wide lock (a directory) and the time the next write may start. */
 export const ghWriteLockPath = (): string => path.join(home(), 'gh-write.lock')
 
+/** CC-406: one directory per held full-suite test slot, see `suite-slots.ts`. */
+export const suiteSlotsDir = (): string => path.join(home(), 'suite-slots')
+
 export const ghWriteStampPath = (): string => path.join(home(), 'gh-write.stamp.json')
 
 /** The launchd label for `agent-chat mirror`; the plist and every `launchctl` call use it. */
