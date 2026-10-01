@@ -23,7 +23,7 @@ function dispatch(action: Action, ctx: VerbContext): Promise<Report> {
     case 'approve':
       return approveVerb.run({ id, 'allow|deny': action.behavior }, ctx)
     case 'endorse':
-      return endorseVerb.run({ id }, ctx)
+      return endorseVerb.run({ id, text: action.text, to: action.to }, ctx)
     case 'dismiss':
       return dismissVerb.run({ id }, ctx)
   }

@@ -702,15 +702,15 @@ export type ClientMessage =
    */
   | { t: 'endorse'; to: string; text: string }
   /**
-   * The human approving one stored request, by id. Carries no text, so the bytes
-   * delivered are necessarily the bytes shown; the composer gets no second bite
-   * between approval and delivery.
+   * The human approving one stored request, by id, restating its exact text and
+   * recipient (CC-418). The broker delivers the stored bytes only when both match
+   * them exactly, so what the approver read is what is delivered.
    *
    * The broker refuses this from a REGISTERED connection, the same discipline
    * `teleport_abort` follows: what is left is someone at the CLI, who on a 0600
    * socket is the user. Declining is `dismiss`, which already closes any item.
    */
-  | { t: 'endorse_approve'; msgId: string }
+  | { t: 'endorse_approve'; msgId: string; text: string; to: string }
   /**
    * The human answering one relayed permission prompt, by queue id (CC-96).
    *
