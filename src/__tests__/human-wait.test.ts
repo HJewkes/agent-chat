@@ -314,6 +314,25 @@ describe('readDirtyPaths', () => {
     process.env.PATH = PATH
   })
 
+  const tempDir = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'dirty-paths-')))
+
+  it('is unreadable, not clean, when a broken repo makes git exit 128', async () => {
+    const repo = tempDir()
+    execFileSync('git', ['-C', repo, 'init', '-q'])
+    fs.writeFileSync(path.join(repo, 'untracked.ts'), 'x\n')
+    fs.writeFileSync(path.join(repo, '.git', 'HEAD'), 'garbage\n')
+
+    expect(await readDirtyPaths(repo)).toBeUndefined()
+  })
+
+  it('is unreadable when the cwd no longer exists', async () => {
+    expect(await readDirtyPaths(path.join(tempDir(), 'gone'))).toBeUndefined()
+  })
+
+  it('has nothing dirty in a directory outside any repo', async () => {
+    expect(await readDirtyPaths(tempDir())).toEqual([])
+  })
+
   /** A stand-in git that logs its arguments and can be told to hang on status. */
   function fakeGit(statusSleep: number) {
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-git-'))

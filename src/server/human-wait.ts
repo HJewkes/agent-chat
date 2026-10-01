@@ -200,15 +200,25 @@ const git = async (cwd: string, args: string[], timeout: number): Promise<string
   (await run('git', [...GIT_READ_ONLY, '-C', cwd, ...args], { timeout })).stdout
 
 /** git exits 128 for a cwd outside any repo; a timeout or missing git is a different failure. */
-const notARepo = (error: unknown): boolean => isRecord(error) && error.code === 128
+/** git exits 128 for a broken repo too (bad config, garbage HEAD, unreadable .git), so look for one. */
+const notARepo = (error: unknown, cwd: string): boolean =>
+  isRecord(error) && error.code === 128 && !insideRepo(cwd)
+
+function insideRepo(cwd: string): boolean {
+  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
+    if (fs.existsSync(path.join(dir, '.git'))) return true
+    if (path.dirname(dir) === dir) return false
+  }
+}
 
 /** Undefined when the status cannot be read; a cwd outside any repo has nothing dirty. */
 export async function readDirtyPaths(cwd: string, timeoutMs = GIT_TIMEOUT_MS): Promise<string[] | undefined> {
+  if (!fs.existsSync(cwd)) return undefined
   let root: string
   try {
     root = (await git(cwd, ['rev-parse', '--show-toplevel'], timeoutMs)).trim()
   } catch (error) {
-    return notARepo(error) ? [] : undefined
+    return notARepo(error, cwd) ? [] : undefined
   }
   try {
     const porcelain = await git(cwd, ['status', '--porcelain', '-z', '--untracked-files=all'], timeoutMs)
