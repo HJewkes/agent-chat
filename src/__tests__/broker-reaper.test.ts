@@ -107,6 +107,30 @@ describe('selectOrphans', () => {
     expect(selectOrphans(table, opts)).toEqual([])
   })
 
+  it.each([
+    ['claude', '/w/scripts/dag-check-self.mjs'],
+    ['bun', '/w/node_modules/vitest/dist/workers/forks.js'],
+  ])('spares a %s process whose script argument is the target', (argv0, script) => {
+    const table = [row(200, `${argv0} ${script}`)]
+
+    expect(selectOrphans(table, opts)).toEqual([])
+  })
+
+  it('spares a node process whose first script argument is not the target', () => {
+    const table = [row(200, `${NODE} /w/other.mjs /w/scripts/dag-check-self.mjs`)]
+
+    expect(selectOrphans(table, opts)).toEqual([])
+  })
+
+  it.each(['--require', '-r', '--import', '--loader', '--conditions', '--inspect-port'])(
+    'reaps a node process whose %s value precedes the target script',
+    flag => {
+      const table = [row(200, `${NODE} ${flag} x.js /p/scripts/dag-check-self.mjs`)]
+
+      expect(selectOrphans(table, opts)).toHaveLength(1)
+    },
+  )
+
   it('spares a title that only starts like a vitest worker', () => {
     const table = [row(200, 'node (vitest 3) --extra'), row(201, 'claude node (vitest 3)')]
 

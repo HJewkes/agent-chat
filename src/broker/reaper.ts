@@ -74,12 +74,33 @@ function ancestorsOf(table: ProcRow[], pid: number): Set<number> {
   return chain
 }
 
+const VALUE_FLAGS = new Set([
+  '--require',
+  '-r',
+  '--import',
+  '--loader',
+  '--experimental-loader',
+  '--conditions',
+  '-C',
+  '--inspect-port',
+])
+
+/** The script is the first argument that is neither a flag nor the value of a known value-taking flag. */
+function firstScriptArg(args: string[]): string {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] ?? ''
+    if (VALUE_FLAGS.has(arg)) i++
+    else if (!arg.startsWith('-')) return arg
+  }
+  return ''
+}
+
 /** Anchored on argv: only a `node` process whose script is the target, never a substring of argv. */
 function isTarget(command: string): boolean {
   if (TITLE_RE.test(command)) return true
   const [argv0 = '', ...args] = command.split(/\s+/)
   if (argv0.split('/').pop() !== 'node') return false
-  const script = args.find(a => !a.startsWith('-')) ?? ''
+  const script = firstScriptArg(args)
   return script.endsWith(DAG_CHECK_SCRIPT_SUFFIX) || WORKER_SCRIPT_RE.test(script)
 }
 
