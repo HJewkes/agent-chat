@@ -121,6 +121,18 @@ function writeReading(fiveHour: number, sevenDay: number, ageSeconds = 30, now =
   fs.writeFileSync(path.join(dir, 'session-1.json'), JSON.stringify(reading))
 }
 
+/** A status file the status line wrote just after a five-hour window reset, which carries no `five_hour`. */
+function writeWindowless(sevenDay: number): void {
+  const dir = path.join(poolDir, 'status-cache', 'sessions')
+  fs.mkdirSync(dir, { recursive: true })
+  const reading = {
+    session_id: 'session-1',
+    written_at: NOW.getTime() / 1000 - 30,
+    rate_limits: { seven_day: { used_pct: sevenDay } },
+  }
+  fs.writeFileSync(path.join(dir, 'session-1.json'), JSON.stringify(reading))
+}
+
 const wire = (): Wire => {
   const frames: ServerMessage[] = []
   const conn = { write: (line: string) => frames.push(JSON.parse(line) as ServerMessage) } as unknown as Conn
@@ -347,6 +359,7 @@ describe("the seat's pool reading and charter stop", () => {
       fiveHour: 12,
       ageSeconds: 30,
       stale: false,
+      staleOk: false,
       stop: null,
       sonnetOnly: false,
       spendSince: null,
@@ -391,6 +404,77 @@ describe("the seat's pool reading and charter stop", () => {
     expect(budget).toMatchObject({ sevenDay: null, fiveHour: null, ageSeconds: null, stale: true })
     expect(budget.stop).toContain('no seven_day and five_hour reading')
     expect(report.lines[6]).toBe(`budget        pool ${POOL}: no reading`)
+  })
+})
+
+describe("a current reading that lacks a window, against the pool's last good one (CC-409)", () => {
+  const NO_READING = `BUDGET-PAUSE pool ${POOL}: no seven_day and five_hour reading for this pool`
+  const keep = (minutesAgo: number, sevenDay: number, fiveHour: number): void => {
+    doc.lastReadings = { [POOL]: { at: NOW.getTime() - minutesAgo * 60_000, sevenDay, fiveHour } }
+  }
+
+  beforeEach(() => writeWindowless(41))
+
+  it('opens on a last good reading 30 minutes old with margin, and flags it stale-ok', async () => {
+    keep(30, 41, 12)
+
+    const { budget } = await status()
+    const report = await statusReport(deps(), SEAT, true)
+    const table = await statusReport(deps(), SEAT, false)
+
+    expect(budget).toMatchObject({
+      sevenDay: 41,
+      fiveHour: 12,
+      ageSeconds: 1800,
+      stale: true,
+      staleOk: true,
+      stop: null,
+    })
+    expect(budget.margin).toContain('stale-ok: last good reading 1800s old')
+    expect(JSON.parse(report.lines.join('\n'))).toMatchObject({ budget: { staleOk: true } })
+    expect(table.lines[6]).toBe(
+      `budget        pool ${POOL}: seven_day 41%, five_hour 12% (last good reading 1800s old, STALE-OK)`,
+    )
+  })
+
+  it('opens on a last good reading exactly 5 points under the line and 10 under the ceiling', async () => {
+    writeWindowless(60)
+    keep(30, 60, 60)
+    doc.pools[POOL] = { since: at(7), last: 60, spent: 0 }
+
+    const { budget } = await status()
+
+    expect(budget).toMatchObject({ staleOk: true, stop: null })
+  })
+
+  it.each([
+    ['seven_day within 5 points of the line', 61, 12],
+    ['five_hour within 10 points of the ceiling', 41, 61],
+  ])('stops on a last good reading 30 minutes old with %s', async (_name, sevenDay, fiveHour) => {
+    keep(30, sevenDay, fiveHour)
+
+    const { budget } = await status()
+
+    expect(budget.stop).toMatch(
+      new RegExp(`^${NO_READING}; the last good one \\(1800s old: .*\\) is within 5 points`),
+    )
+    expect(budget).toMatchObject({ staleOk: false, margin: null })
+  })
+
+  it('stops on a last good reading 90 minutes old', async () => {
+    keep(90, 41, 12)
+
+    const { budget } = await status()
+
+    expect(budget.stop).toBe(`${NO_READING}; the last good one is 5400s old, over the 3600s limit`)
+    expect(budget.staleOk).toBe(false)
+  })
+
+  it('stops with no last good reading', async () => {
+    const { budget } = await status()
+
+    expect(budget.stop).toBe(NO_READING)
+    expect(budget).toMatchObject({ staleOk: false, sevenDay: 41, fiveHour: null })
   })
 })
 

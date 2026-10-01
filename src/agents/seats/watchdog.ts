@@ -96,10 +96,39 @@ export function accountReading(read: BudgetRead, nowMs: number): AccountReading 
   }
 }
 
+/** CC-409: a pool reading that held both windows, kept in the watchdog doc so a later gap can lean on it. */
+export interface PoolReading {
+  /** Epoch ms the status file was written. */
+  at: number
+  sevenDay: number
+  fiveHour: number
+}
+
+/** The reading to keep: this one when it holds both windows, else the one kept before. */
+export function keepReading(
+  kept: PoolReading | undefined,
+  reading: AccountReading | undefined,
+  nowMs: number,
+): PoolReading | undefined {
+  if (reading?.sevenDay === undefined || reading.fiveHour === undefined) return kept
+  return { at: nowMs - reading.ageSeconds * 1000, sevenDay: reading.sevenDay, fiveHour: reading.fiveHour }
+}
+
+/** A kept reading aged to now; one missing a figure from a hand-edited doc is no reading. */
+export function lastGoodReading(kept: PoolReading | undefined, nowMs: number): AccountReading | undefined {
+  if (kept === undefined || ![kept.at, kept.sevenDay, kept.fiveHour].every(Number.isFinite)) return undefined
+  return {
+    ageSeconds: Math.round((nowMs - kept.at) / 1000),
+    sevenDay: kept.sevenDay,
+    fiveHour: kept.fiveHour,
+  }
+}
+
 export interface PoolBudgetInput {
   pool: Pool | undefined
   spend: SeatSpend
   reading: AccountReading | undefined
+  lastGood?: AccountReading | undefined
   /** The pool's seven_day readings at or before the run start and the day start. */
   history: readonly SevenDaySample[]
   runStartAt: number
@@ -117,12 +146,13 @@ const poolRule = (pool: Pool): PoolRule => ({
 
 /** Charter section 4's budget stops for the seat, with the owner assumed present because nothing here can tell. */
 export function poolBudget(input: PoolBudgetInput): BudgetVerdict {
-  const { pool, spend, reading, history, runStartAt, now } = input
+  const { pool, spend, reading, lastGood, history, runStartAt, now } = input
   const gate = gatePool(
     {
       pool: pool === undefined ? undefined : poolRule(pool),
       spend: { per_run_points: spend.perRunPoints, per_day_points: spend.perDayPoints },
       reading,
+      lastGood,
       history,
       runStartAt,
       ctx: { now },

@@ -982,6 +982,72 @@ describe('state-change log lines', () => {
   })
 })
 
+describe('a pool reading that lacks a window (CC-409)', () => {
+  const PAUSES = /^seat-a: Watchdog: BUDGET-PAUSE /
+  const NO_READING =
+    'seat-a: Watchdog: BUDGET-PAUSE pool claude: no seven_day and five_hour reading for this pool'
+  const windowless = (h: Harness): BudgetRead => {
+    const read = budget(h.fiveHour, h.sevenDay)
+    if (read.found) delete read.budget.rate_limits.five_hour
+    return read
+  }
+
+  /** One run on a good reading, then `gapRuns` more, 15 minutes apart, whose reading has no five_hour. */
+  async function gap(h: Harness, gapRuns: number): Promise<void> {
+    await runWatchdog(h.deps, ONE)
+    h.deps.readBudget = () => windowless(h)
+    for (let i = 0; i < gapRuns; i++) {
+      h.tick()
+      await runWatchdog(h.deps, ONE)
+    }
+  }
+
+  it('keeps the gate open on a last good reading 30 minutes old with margin', async () => {
+    const h = harness(IDLE)
+
+    await gap(h, 2)
+
+    expect(h.logs.filter(l => PAUSES.test(l))).toEqual([])
+    expect(h.doc.seats['seat-a']?.budgetPaused).toBe(false)
+    expect(h.doc.lastReadings?.claude).toEqual({
+      at: h.now() - 30 * 60_000 - 5_000,
+      sevenDay: 19,
+      fiveHour: 41,
+    })
+  })
+
+  it('pauses once the last good reading is over 60 minutes old', async () => {
+    const h = harness(IDLE)
+
+    await gap(h, 6)
+
+    const pauses = h.logs.filter(l => PAUSES.test(l))
+    expect(pauses).toEqual([`${NO_READING}; the last good one is 3605s old, over the 3600s limit`])
+  })
+
+  it('pauses on a last good reading within 5 points of the seven_day line', async () => {
+    const h = harness(IDLE)
+    h.sevenDay = 61
+
+    await gap(h, 1)
+
+    const pauses = h.logs.filter(l => PAUSES.test(l))
+    expect(pauses).toHaveLength(1)
+    expect(pauses[0]).toMatch(
+      /^.*; the last good one \(905s old: seven_day 61% vs line 65%.*\) is within 5 points/,
+    )
+  })
+
+  it('pauses with no last good reading', async () => {
+    const h = harness(IDLE)
+    h.deps.readBudget = () => windowless(h)
+
+    await runWatchdog(h.deps, ONE)
+
+    expect(h.logs.filter(l => PAUSES.test(l))).toEqual([NO_READING])
+  })
+})
+
 describe('wakeSeat', () => {
   function client(reply: Record<string, unknown>): { frames: unknown[]; client: BrokerClient } {
     const frames: unknown[] = []
@@ -1017,6 +1083,12 @@ describe('watchdog disk state', () => {
     fs.rmSync(dir, { recursive: true, force: true })
     if (savedHome === undefined) delete process.env.AGENT_CHAT_HOME
     else process.env.AGENT_CHAT_HOME = savedHome
+  })
+
+  it("round-trips each pool's last good reading", () => {
+    const lastReadings = { p: { at: 9, sevenDay: 19, fiveHour: 41 } }
+    saveDoc({ seats: {}, pools: {}, lastReadings })
+    expect(loadDoc().lastReadings).toEqual(lastReadings)
   })
 
   it('round-trips seat state under AGENT_CHAT_HOME', () => {

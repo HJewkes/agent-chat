@@ -136,13 +136,19 @@ export interface PoolGateInput {
   ctx: GateContext
   /** Dispatches already planned on this pool this tick, by any seat; each is charged at the pool's dispatch cost. */
   dispatched?: number
+  /** CC-409: the pool's last reading that held both windows, aged to now; stands in when `reading` lacks one. */
+  lastGood?: AccountReading | undefined
 }
 
 export type PoolGateResult =
-  | { open: true; pool: string; sonnetOnly: boolean; reason: string }
+  | { open: true; pool: string; sonnetOnly: boolean; reason: string; staleOk?: true }
   | { open: false; pool: string; reason: string }
 
 export const RUN_CAP_MS = 12 * 3_600_000
+/** CC-409: a last good reading older than this never stands in for a missing one. */
+export const LAST_GOOD_MAX_AGE_SECONDS = 60 * 60
+const LAST_GOOD_SEVEN_DAY_MARGIN = 5
+const LAST_GOOD_FIVE_HOUR_MARGIN = 10
 const DAY_START_HOUR = 7
 const SONNET_BAND_POINTS = 10
 
@@ -256,19 +262,48 @@ export function gatePool(
   })
   if (pool?.reserve_seven_day === undefined || pool.ceiling_five_hour === undefined)
     return closed('no reserve_seven_day and ceiling_five_hour for this pool in the charter')
-  if (reading?.sevenDay === undefined || reading.fiveHour === undefined)
-    return closed('no seven_day and five_hour reading for this pool')
-  const stale = staleReason(reading.ageSeconds, maxReadingAgeSeconds)
-  if (stale !== undefined) return closed(stale)
   const priced = {
     ...pool,
     reserve_seven_day: pool.reserve_seven_day,
     ceiling_five_hour: pool.ceiling_five_hour,
   }
+  if (reading?.sevenDay === undefined || reading.fiveHour === undefined)
+    return gateLastGood(input, priced, closed)
+  const stale = staleReason(reading.ageSeconds, maxReadingAgeSeconds)
+  if (stale !== undefined) return closed(stale)
   return gateWindows(input, priced, { sevenDay: reading.sevenDay, fiveHour: reading.fiveHour }, closed)
 }
 
 type PricedPool = PoolRule & { reserve_seven_day: number; ceiling_five_hour: number }
+
+const NO_READING = 'no seven_day and five_hour reading for this pool'
+
+/**
+ * CC-409: a status line drops `five_hour` when its window resets, so the pool's freshest file can lack a
+ * window for hours. A recent last good reading well inside both lines stands in; any doubt keeps the stop.
+ */
+function gateLastGood(
+  input: PoolGateInput,
+  pool: PricedPool,
+  closed: (why: string) => PoolGateResult,
+): PoolGateResult {
+  const last = input.lastGood
+  if (last?.sevenDay === undefined || last.fiveHour === undefined) return closed(NO_READING)
+  const age = last.ageSeconds
+  if (!(age >= 0 && age <= LAST_GOOD_MAX_AGE_SECONDS))
+    return closed(
+      `${NO_READING}; the last good one is ${age}s old, over the ${LAST_GOOD_MAX_AGE_SECONDS}s limit`,
+    )
+  const { ceiling, line } = windowLines(pool, pool.reserve_seven_day, pool.ceiling_five_hour, input.ctx)
+  const { sevenDay, fiveHour } = last
+  if (sevenDay > line - LAST_GOOD_SEVEN_DAY_MARGIN || fiveHour > ceiling - LAST_GOOD_FIVE_HOUR_MARGIN)
+    return closed(
+      `${NO_READING}; the last good one (${age}s old: seven_day ${sevenDay}% vs line ${line}%, five_hour ${fiveHour}% vs ceiling ${ceiling}%) is within ${LAST_GOOD_SEVEN_DAY_MARGIN} points of the line or ${LAST_GOOD_FIVE_HOUR_MARGIN} of the ceiling`,
+    )
+  const gate = gateWindows(input, pool, { sevenDay, fiveHour }, closed)
+  if (!gate.open) return gate
+  return { ...gate, staleOk: true, reason: `${gate.reason}; stale-ok: last good reading ${age}s old` }
+}
 
 function gateWindows(
   input: PoolGateInput,

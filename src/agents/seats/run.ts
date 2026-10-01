@@ -35,6 +35,8 @@ import {
   WAKE_MESSAGE,
   accountReading,
   decide,
+  keepReading,
+  lastGoodReading,
   poolBudget,
   runningImplementers,
   type BudgetVerdict,
@@ -106,6 +108,8 @@ function poolReading(pass: Pass, pool: Pool): AccountReading | undefined {
     const nowMs = pass.now.getTime()
     const reading = accountReading(pass.deps.readBudget(pool.configDir, nowMs), nowMs)
     pass.readings.set(pool.name, reading)
+    const kept = keepReading(pass.doc.lastReadings?.[pool.name], reading, nowMs)
+    if (kept !== undefined) pass.doc.lastReadings = { ...pass.doc.lastReadings, [pool.name]: kept }
     const meter = advanceMeter(pass.doc.pools[pool.name], reading?.sevenDay, nowMs, sameSpendDay)
     if (meter !== undefined) {
       const started = pass.doc.pools[pool.name] !== meter && meter.since === nowMs
@@ -167,7 +171,17 @@ function seatBudget(
     { at: dayStart(pass.now), meter: day },
   ]
   const history = meterHistory(starts, pass.now.getTime())
-  return poolBudget({ pool, spend: seat.spend, reading, history, runStartAt: runStart, now: pass.now })
+  const kept = pool === undefined ? undefined : pass.doc.lastReadings?.[pool.name]
+  const lastGood = lastGoodReading(kept, pass.now.getTime())
+  return poolBudget({
+    pool,
+    spend: seat.spend,
+    reading,
+    lastGood,
+    history,
+    runStartAt: runStart,
+    now: pass.now,
+  })
 }
 
 type ResumeMark = Pick<SeatRecord, 'resumedDark' | 'resumeRetry' | 'absent'>
@@ -316,6 +330,7 @@ function save(pass: Pass): void {
   pass.deps.saveDoc({
     seats: pass.doc.seats,
     pools: pass.doc.pools,
+    ...(pass.doc.lastReadings === undefined ? {} : { lastReadings: pass.doc.lastReadings }),
     ...(pass.doc.held === undefined ? {} : { held: pass.doc.held }),
   })
 }
