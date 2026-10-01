@@ -60,7 +60,12 @@ import {
 } from './resume-session.js'
 import { recreateWorktree, type WorktreeRecord } from './isolation/worktree.js'
 import { allocatedWorktree, parkBlocker, parkWorktree, type ParkTarget } from './isolation/park.js'
-import { retireFinished, type FinishedRetireOutcome, type RetireScope } from './isolation/retire-finished.js'
+import {
+  retireFinished,
+  type FinishedRetireOutcome,
+  type NamePresence,
+  type RetireScope,
+} from './isolation/retire-finished.js'
 import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { loginGap, readOutputTail } from './launch-output.js'
@@ -1720,6 +1725,22 @@ export class Supervisor implements TeleportHost {
   async retire(name: string, force = false): Promise<{ ok: boolean; reason?: string }> {
     const identity = this.core.agents.byName(name)
     if (!identity) return { ok: false, reason: `no agent named "${name}"` }
+    return this.retireIdentity(identity, force)
+  }
+
+  /** CC-408: the bulk form retires the row it planned, never whichever row now holds the name. */
+  async retireById(agentId: string): Promise<{ ok: boolean; reason?: string }> {
+    const identity = this.core.agents.get(agentId)
+    if (identity?.origin !== 'spawned' || identity.state === 'retired')
+      return { ok: false, reason: `no unretired spawned agent with id ${agentId}` }
+    return this.retireIdentity(identity, false)
+  }
+
+  private async retireIdentity(
+    identity: AgentIdentity,
+    force: boolean,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    const name = identity.name
     const held = this.live.get(identity.agentId)
     const entry = held ?? this.rehydrate(identity.agentId, name)
     const tenancy = entry ? this.worktreeTenancy(identity.agentId, name, entry, force) : undefined
@@ -1732,11 +1753,12 @@ export class Supervisor implements TeleportHost {
           ok: false,
           reason: `${name}'s isolation refused release (${refusalOf(entry.allocation) ?? 'still holds work'}). Merge or discard it, or retire with --force.`,
         }
-      await this.closeSurface(entry)
+      // CC-408: a teleport successor may reuse the stale row's pane, so only the name's own process closes it.
+      if (this.namePresence(identity) !== 'other') await this.closeSurface(entry)
       this.live.delete(identity.agentId)
     }
 
-    const reaped = this.reap(name)
+    const reaped = this.reap(identity)
     this.semaphore.release(identity.agentId)
     clearRuntimeState(identity.agentId)
     // CC-126: retire frees the name, so this row is how the conversation is found again.
@@ -1809,14 +1831,17 @@ export class Supervisor implements TeleportHost {
   }
 
   /** CC-323: retire every finished agent in scope that holds no work, each through `retire` so its refusals apply. */
-  async retireFinished(req: RetireScope & { dryRun?: boolean }): Promise<FinishedRetireOutcome> {
+  async retireFinished(
+    req: RetireScope & { dryRun?: boolean; caller?: string },
+  ): Promise<FinishedRetireOutcome> {
     const port = {
       roster: () => this.core.agents.roster(),
       events: () => this.core.events.agentEvents(),
       tracked: (agentId: string) => this.live.has(agentId),
       parking: (agentId: string) => this.parking.has(agentId),
       current: (agentId: string) => this.core.agents.get(agentId),
-      retire: (name: string) => this.retire(name),
+      presence: (agent: AgentIdentity) => this.namePresence(agent),
+      retire: (agentId: string) => this.retireById(agentId),
     }
     return retireFinished(port, req)
   }
@@ -1956,11 +1981,24 @@ export class Supervisor implements TeleportHost {
    * `not_registered` is the ordinary, quiet case: the agent already exited, or
    * its pane close above ended it, and there is nothing left to signal.
    */
-  private reap(name: string): 'true' | 'not_registered' | 'no_host_pid' | 'already_gone' {
-    if (this.core.registry.connFor(name) === undefined) return 'not_registered'
+  private reap(
+    identity: AgentIdentity,
+  ): 'true' | 'not_registered' | 'another_agent' | 'no_host_pid' | 'already_gone' {
+    const name = identity.name
+    const presence = this.namePresence(identity)
+    if (presence === 'none') return 'not_registered'
+    if (presence === 'other') return 'another_agent'
     const hostPid = this.core.registry.hostPidFor(name)
     if (hostPid === undefined) return 'no_host_pid'
     return this.endSession(name, hostPid).ok ? 'true' : 'already_gone'
+  }
+
+  /** CC-408: an unbound connection counts as this agent's, so the doubt falls on not retiring. */
+  private namePresence(identity: AgentIdentity): NamePresence {
+    const conn = this.core.registry.connFor(identity.name)
+    if (conn === undefined) return 'none'
+    const bound = this.core.registry.entryFor(conn)?.agentId
+    return bound === undefined || bound === identity.agentId ? 'self' : 'other'
   }
 
   /**
@@ -1985,6 +2023,10 @@ export class Supervisor implements TeleportHost {
       notes.push(
         `${name} is still running but its MCP server predates \`hostPid\`, so the broker cannot end ` +
           'it without severing the bus and leaving it running; exit it in its terminal',
+      )
+    if (reaped === 'another_agent')
+      notes.push(
+        `another agent now holds the name ${name}, so its process was left running and no pane was closed`,
       )
     return notes.length === 0 ? undefined : { reason: `Note: ${notes.join('. ')}.` }
   }
@@ -2030,7 +2072,10 @@ export class Supervisor implements TeleportHost {
   async resume(name: string, req: ResumeRequest = {}): Promise<SpawnOutcome> {
     const identity = this.core.agents.byName(name)
     if (!identity) return { ok: false, reason: this.missingReason(name) }
-    const refused = this.checkResumer(identity, req) ?? this.parkingRefusal(identity.cwd)
+    const refused =
+      this.checkResumer(identity, req) ??
+      this.supersededRefusal(identity) ??
+      this.parkingRefusal(identity.cwd)
     if (refused) return { ok: false, reason: refused }
     const transcript = identityTranscript(identity)
     const gone = this.goneCwd(identity)
@@ -2075,6 +2120,16 @@ export class Supervisor implements TeleportHost {
    */
   private checkResumer(identity: AgentIdentity, req: ResumeRequest): string | undefined {
     return this.checkOwnership(identity, req.requesterAgentId, req.requestedBy, 'resume')
+  }
+
+  /** CC-408: only the newest session under a name is resumed; an older generation is stale. */
+  private supersededRefusal(identity: AgentIdentity): string | undefined {
+    const newer = this.core.agents.supersededBy(identity)
+    if (newer === undefined) return undefined
+    return (
+      `${identity.name}'s session ${identity.sessionId || '(none)'} is stale: a newer ${identity.name} ` +
+      `(agent ${newer.agentId}, session ${newer.sessionId || '(none)'}) is ${newer.state}, so resuming the older one is refused`
+    )
   }
 
   /** CC-225: surfacing stops the running process, so it takes resume's rule; surfacing yourself is always allowed. */

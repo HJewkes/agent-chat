@@ -1168,6 +1168,9 @@ export interface RetirePlanEntry {
   name: string
   action: 'retire' | 'skip'
   reason?: string
+  /** CC-408: set, with `duplicate`, when another unretired row holds the same name. */
+  agentId?: string
+  duplicate?: true
 }
 
 /** What `retire` answered for one planned agent; `reason` on success is its caveat. */

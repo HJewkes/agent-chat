@@ -1388,8 +1388,9 @@ export class SocketServer {
       }
       case 'retire_finished': {
         const { t: _kind, ...req } = msg
+        const caller = this.core.registry.nameOf(conn)
         void this.supervisor
-          .retireFinished(req)
+          .retireFinished({ ...req, ...(caller === undefined ? {} : { caller }) })
           .then(outcome => reply(conn, { t: 'retire_finished_result', ...outcome }))
           .catch((err: Error) =>
             reply(conn, {

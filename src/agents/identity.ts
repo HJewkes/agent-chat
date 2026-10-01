@@ -272,6 +272,18 @@ export class AgentLog {
   }
 
   /**
+   * CC-408: a newer spawned identity under the same name, retired or not.
+   *
+   * Teleport successors keep the name, so once the newest is retired `byName`
+   * falls back to an older generation; resuming that would wake a stale session.
+   */
+  supersededBy(agent: AgentIdentity): AgentIdentity | undefined {
+    return this.all().find(
+      a => a.name === agent.name && a.origin === 'spawned' && a.spawnedAt > agent.spawnedAt,
+    )
+  }
+
+  /**
    * The identity adopted for a Claude Code session id, so a session that
    * reconnects or outlives a broker restart re-attaches instead of accumulating
    * one identity per registration.
