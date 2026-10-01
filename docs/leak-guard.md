@@ -460,6 +460,17 @@ quotes. gh's own `{owner}`, `{repo}` and `{branch}` are not brace expansions and
 A `gh` whose group or verb is an expansion (`gh pr $V`) is unknown even when the value is known,
 because the guard picks the flags to read from the literal subcommand.
 
+### A body file written on the line that posts it (CC-371)
+
+A Bash line that writes a PR or issue body file and then posts it is denied. The file is written
+by a redirect (`>`, `>>`, `>|`) or by `tee`, earlier in the same line or on the `gh` command
+itself, and `gh pr` or `gh issue` reads it through `--body-file`, `--body-file=` or `-F`.
+`cat > b.md <<'EOF' ... EOF; gh pr create --body-file b.md` is an example. The guard cannot scan
+a body that does not exist yet when it checks the line. Write the file in one Bash call and post
+it in the next. A redirect target the guard cannot resolve counts as a possible match. A body
+file that exists before the line, or one written on another line, is read and scanned as before.
+A write inside `sh -c`, `eval` or a `$(...)` is not seen by the outer line, which is a gap.
+
 ### Text on stdin
 
 `--body-file -`, `--input -` and `-F field=@-` read stdin. The guard scans that text only when it
@@ -590,3 +601,18 @@ The trust boundary is the OS account, not this guard. Any process running as the
 the hook directory, the term list or a settings file, as it could forge any other local frame.
 The guard denies the ordinary routes to those files for agents. The pushed history and PR text
 remain the record of anything that got through.
+
+## Fail-open of the PreToolUse hook (CC-371)
+
+The hook allows a call it cannot decide when it crashes on input that does not mention git or
+gh, or when it runs past its 12 s deadline. A crash on a call that mentions git or gh is a deny,
+not a fail-open. The deadline sits under the 15 s that Claude Code gives the hook, which would
+kill it without a word. The owner accepts both fail-opens, and each writes exactly one line to
+`leak-guard.log` in the agent-chat home:
+
+```
+<ISO time> leak-guard pretool fail-open: crash (<error class>)
+<ISO time> leak-guard pretool fail-open: timeout after <elapsed>ms
+```
+
+The line never holds the command. A log that cannot be written does not change the allow.

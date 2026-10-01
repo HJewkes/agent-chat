@@ -29,6 +29,8 @@ export interface SimpleCommand {
   stdin?: string
   /** The shell expands `stdin`, reads it from a redirect the splitter does not follow, or has two sources for it. */
   stdinLive: boolean
+  /** The marked targets of its output redirects (`>`, `>>`, `&>`), including those of a bare redirect before it. */
+  writes: string[]
   /** A heredoc fed to it holds a backslash the shell rewrites, which is why `stdin` is unsure. */
   backslash: boolean
   /** The operator joining this command to the one before it and after it; '' at either end. */
@@ -39,7 +41,7 @@ export interface SimpleCommand {
 }
 
 /** `aside` marks a heredoc on a descriptor other than 0, which is read past and never fed as stdin. */
-type Pending = 'discard' | 'herestring' | { strip: boolean; aside: boolean }
+type Pending = 'discard' | 'write' | 'herestring' | { strip: boolean; aside: boolean }
 
 interface Heredoc {
   delim: string
@@ -50,6 +52,7 @@ interface Heredoc {
 }
 
 const OPERATORS = new Set([';', '&', '|'])
+const WRITE_OPERATORS = new Set(['>', '>>', '>|'])
 const GLOB = '*?[{'
 const BLANK = new Set([' ', '\t', '\n', ';', undefined])
 // gh fills these in a `gh api` path itself; no shell expands a brace group that has no comma.
@@ -79,6 +82,8 @@ class ShellLexer {
   private splitting = false
   private quoted = false
   private pending: Pending | null = null
+  /** Output redirects of a command with no words, which the next command inherits. */
+  private carried: string[] = []
   private heredocs: Heredoc[] = []
   private depth = 0
   private closed = false
@@ -95,7 +100,17 @@ class ShellLexer {
   private newCommand(): SimpleCommand {
     const nested = this.nested || this.depth !== 0
     const unsure = { stdinLive: false, backslash: false }
-    return { words: [], marked: [], splits: [], substitutions: [], ...unsure, before: '', after: '', nested }
+    return {
+      words: [],
+      marked: [],
+      splits: [],
+      substitutions: [],
+      writes: [],
+      ...unsure,
+      before: '',
+      after: '',
+      nested,
+    }
   }
 
   run(): SimpleCommand[] {
@@ -174,9 +189,10 @@ class ShellLexer {
     }
     // bash takes `0>&3` for a copy of descriptor 3 onto stdin, whatever the direction of the arrow.
     if (fd === 0 || (fd < 0 && this.src[this.pos] === '<')) this.cur.stdinLive = true
+    const start = this.pos
     this.pos++
     while ('>&|'.includes(this.src[this.pos] ?? '.')) this.pos++
-    this.pending = 'discard'
+    this.pending = WRITE_OPERATORS.has(this.src.slice(start, this.pos)) ? 'write' : 'discard'
   }
 
   /** The number an unquoted digit word gives a redirect, such as the 3 of `3<<EOF`; -1 when there is none. */
@@ -324,7 +340,8 @@ class ShellLexer {
       this.cur.words.push(word)
       this.cur.marked.push(this.marked)
       if (splitting) this.cur.splits.push(this.marked)
-    } else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
+    } else if (pending === 'write') this.cur.writes.push(this.marked)
+    else if (pending === 'herestring') this.feed(this.cur, word, this.marked.includes(LIVE))
     else if (pending !== 'discard') this.heredocs.push({ delim: word, ...pending, quoted, target: this.cur })
   }
 
@@ -336,7 +353,9 @@ class ShellLexer {
 
   private endCommand(): void {
     this.endWord()
-    if (this.cur.words.length > 0) {
+    if (this.cur.words.length === 0) this.carried.push(...this.cur.writes)
+    else {
+      this.cur.writes.unshift(...this.carried.splice(0))
       this.cur.before = this.joiner
       this.joiner = ''
       this.last = this.cur
