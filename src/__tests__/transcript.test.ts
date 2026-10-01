@@ -1,8 +1,9 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  createProfileIndex,
   findAgentTranscript,
   findTranscript,
   projectSlug,
@@ -126,6 +127,39 @@ describe('finding the transcript of an adopted agent with no recorded config dir
 
     expect(found.exists).toBe(false)
     expect(found.path.startsWith(recorded)).toBe(true)
+  })
+
+  it('resolves a session that ran under a non-default CLAUDE_CONFIG_DIR with no recorded dir', () => {
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-elsewhere-'))
+    process.env.CLAUDE_CONFIG_DIR = elsewhere
+    try {
+      const written = writeUnder(path.join(profileRoot, 'agents'))
+
+      expect(findAgentTranscript(CWD, SESSION, undefined)).toEqual({ path: written, exists: true })
+    } finally {
+      fs.rmSync(elsewhere, { recursive: true, force: true })
+    }
+  })
+
+  it('prefers the alphabetically first profile when two hold the same session id', () => {
+    writeUnder(path.join(profileRoot, 'zeta'))
+    const first = writeUnder(path.join(profileRoot, 'alpha'))
+
+    expect(findAgentTranscript(CWD, SESSION, undefined).path).toBe(first)
+  })
+
+  it('lists the profile dirs once however many rows miss', () => {
+    writeUnder(path.join(profileRoot, 'agents'))
+    const index = createProfileIndex()
+    const spy = vi.spyOn(fs, 'readdirSync')
+
+    for (let n = 0; n < 50; n++) findAgentTranscript(CWD, `missing-${n}`, undefined, index)
+    findAgentTranscript(CWD, SESSION, undefined, index)
+    const underProfiles = spy.mock.calls.filter(([dir]) => String(dir).startsWith(profileRoot))
+
+    // root, agents/projects, and one project folder: nothing is re-listed per row.
+    expect(underProfiles).toHaveLength(3)
+    spy.mockRestore()
   })
 
   it('falls back to the default derived path when no dir holds the session', () => {

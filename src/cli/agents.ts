@@ -4,7 +4,13 @@ import { callerName, filterRoster, type RosterFilter } from '../agents/roster-fi
 import { pairPresence } from '../agents/identity.js'
 import { reclaim, sweepWorktrees } from '../agents/isolation/sweep.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
-import { findAgentTranscript, observedModel, transcriptLine } from '../agents/transcript.js'
+import {
+  createProfileIndex,
+  findAgentTranscript,
+  observedModel,
+  transcriptLine,
+  type ProfileIndex,
+} from '../agents/transcript.js'
 import { type AgentIdentity, type ServerMessage } from '../protocol.js'
 import type { Report } from './command.js'
 import { fail, withBroker } from './client.js'
@@ -32,12 +38,14 @@ export async function agentLs(
     return [roster.agents, live.sessions] as const
   })
   const agents = filterRoster(all, filter)
+  const index = createProfileIndex()
 
   if (options.json) {
     const rows = agents.map(agent =>
       lsJsonRow(
         agent,
         sessions.some(s => s.name === agent.name),
+        index,
       ),
     )
     console.log(JSON.stringify(rows, null, 2))
@@ -63,7 +71,7 @@ export async function agentLs(
     // operator's view, and "which account, exactly" is the question a spend limit
     // makes urgent. Omitted when the row predates the field.
     if (agent.configDir) console.log(`${' '.repeat(16)} account: ${agent.configDir}`)
-    console.log(`${' '.repeat(16)} ${transcriptLine(agent.cwd, agent.sessionId, agent.configDir)}`)
+    console.log(`${' '.repeat(16)} ${transcriptLine(agent.cwd, agent.sessionId, agent.configDir, index)}`)
   }
 }
 
@@ -90,9 +98,9 @@ function modelOrNull(agent: AgentIdentity): string | null {
 }
 
 /** One roster row for `agent ls --json`: everything the text view shows, as fields. */
-function lsJsonRow(agent: AgentIdentity, connected: boolean) {
+function lsJsonRow(agent: AgentIdentity, connected: boolean, index: ProfileIndex) {
   const { status } = pairPresence(agent, { connected })
-  const transcript = findAgentTranscript(agent.cwd, agent.sessionId, agent.configDir)
+  const transcript = findAgentTranscript(agent.cwd, agent.sessionId, agent.configDir, index)
   return {
     name: agent.name,
     agentId: agent.agentId,
