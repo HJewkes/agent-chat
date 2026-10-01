@@ -30,7 +30,6 @@ import {
   liveBurndownAgents,
   observe,
   orphanAt,
-  prState,
   worktreesUnder,
   worktreeUse,
   type Roster,
@@ -55,6 +54,7 @@ import {
   readTasks,
   type TickConfig,
 } from './source.js'
+import { registerWithShepherd, shepherdLanded, shepherdRows, targetRef } from './shepherd.js'
 import { retrySteps, stepsForActions, stepsForDispatch, type StepContext } from './steps.js'
 import { loadWorld, type World } from './tick.js'
 import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
@@ -87,7 +87,7 @@ export interface TickOptions {
   now?: Date
   root?: string
   log?: (event: string, detail: Record<string, unknown>) => void
-  /** Runs the collision check's `git` and `gh` readers; a test injects one that never reaches GitHub. */
+  /** Runs the collision check's `git` and `gh` readers and the `titan-factory` calls; a test injects one that reaches neither. */
   exec?: Runner
 }
 
@@ -172,6 +172,7 @@ async function actOn(
     ledgerFile: burndownLedgerPath(),
     spawn: recordingSpawn(steps, opts.broker.spawn, spawns),
     retire: opts.broker.retire,
+    register: registration => registerWithShepherd(registration, opts.exec ?? run),
     log,
     now,
   })
@@ -257,7 +258,8 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const { observations, unread } = await observe(held, roster, {
     inboxSince: opts.broker.inboxSince,
     root,
-    pr: url => prState(url, opts.exec ?? run),
+    shepherdRows: () => shepherdRows(opts.exec ?? run),
+    landed: target => shepherdLanded(target, opts.exec ?? run),
   })
   const ctx = {
     ...stepContext(world, config, now, root),
@@ -513,6 +515,8 @@ function describe(step: Step): string {
     return step.names.length === 0
       ? `would clear ${claimKey(step.key)}'s unretired agents, all since retired by hand`
       : `would retire ${step.names.join(', ')}`
+  if (step.kind === 'register')
+    return `would register ${targetRef(step.registration.target)} with Shepherd for ${claimKey(step.key)}`
   if (step.kind === 'ledger')
     return `would record ${step.actions.map(a => (a.kind === 'add' ? `add ${a.claims.map(c => c.taskId).join(',')}` : `${a.kind} ${a.key.taskId}${a.key.slice ?? ''}`)).join('; ')}`
   const f = step.frame

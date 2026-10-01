@@ -8,9 +8,11 @@ import type { BrokerView } from '../agents/burndown/collision.js'
 import { run, type Runner } from '../agents/burndown/exec.js'
 import { execute, spawnFrame, type SpawnFrame, type SpawnReply } from '../agents/burndown/execute.js'
 import { readLedger, writeLedger, type Claim } from '../agents/burndown/ledger.js'
+import { SHEPHERD_BIN } from '../agents/burndown/shepherd.js'
 import { tickFromDisk, type TickBroker } from '../agents/burndown/run-tick.js'
 import { renderPlan, renderStatus, seatPlanFromDisk } from '../agents/burndown/tick.js'
 import { TRUST_RULE_CLI_VERSION } from '../agents/trust.js'
+import { transcriptPath } from '../agents/transcript.js'
 import { burndownLedgerPath, burndownPausePath, configPath } from '../paths.js'
 import { tickBroker } from '../cli/burndown-broker.js'
 import type { BrokerClient } from '../client/broker-client.js'
@@ -109,6 +111,21 @@ const row = (name: string, state: AgentIdentity['state'], cwd = repo()): AgentId
   generation: 1,
 })
 
+const shepherdRow = (phase: string) => ({
+  repo: 'demo/repo',
+  pr: 5,
+  branch: 'agent-chat/bd-dm-1',
+  runId: 'run-5',
+  task: 'demo/DM-1',
+  phase,
+  headSha: 'h5',
+  phaseSince: NOON.toISOString(),
+  nextAction: 'none',
+  pendingGate: null,
+  held: null,
+  stalled: null,
+})
+
 interface Fake {
   broker: TickBroker
   frames: SpawnFrame[]
@@ -181,16 +198,16 @@ function fakeBroker(
   return fake
 }
 
-/** `gh` answers per call from `gh`; `git` runs for real against the fixture repo and its bare origin. */
+type Answer = { status: number; stdout: string; stderr?: string }
+
+/** `gh` and `titan-factory` answer per call from stubs, so no test reaches GitHub or Shepherd; `git` runs for real against the fixture repo and its bare origin. */
 const stubGh =
   (
-    gh: (args: string[], cwd?: string) => { status: number; stdout: string } = () => ({
-      status: 0,
-      stdout: '',
-    }),
+    gh: (args: string[], cwd?: string) => Answer = () => ({ status: 0, stdout: '' }),
+    factory: (args: string[]) => Answer = () => ({ status: 0, stdout: '[]' }),
   ): Runner =>
   (bin, args, cwd) =>
-    bin === 'gh' ? gh(args, cwd) : run(bin, args, cwd)
+    bin === 'gh' ? gh(args, cwd) : bin === SHEPHERD_BIN ? factory(args) : run(bin, args, cwd)
 
 const tick = (
   fake: Fake,
@@ -289,6 +306,7 @@ describe('burndown tick spawns', () => {
         ledgerFile: burndownLedgerPath(),
         spawn: async f => (frames.push(f), { ok: true }),
         retire: async () => ({ ok: true }),
+        register: () => ({ ok: true }),
         log: () => {},
         now: NOON,
       },
@@ -307,6 +325,113 @@ describe('burndown tick spawns', () => {
     expect(readLedger(burndownLedgerPath()).claims[0]?.stalledReason).toContain(
       `${repo()}/.worktrees/bd-dm-1 may be left behind`,
     )
+  })
+})
+
+/** TP-469: Shepherd owns CI, review and merge; the tick registers a finished worker's PR and reads Shepherd's status. */
+describe('burndown tick hands a finished PR to Shepherd', () => {
+  const PR = 'https://github.com/demo/repo/pull/5'
+  const REGISTER = [
+    'shepherd',
+    'register',
+    'demo/repo#5',
+    '--task',
+    'demo/DM-1',
+    '--implementer',
+    'bd-dm-1',
+    '--json',
+  ]
+
+  function finishedWorker(): Fake {
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [
+        {
+          taskId: 'DM-1',
+          initiative: 'demo',
+          agentId: 'id-bd-dm-1',
+          agentName: 'bd-dm-1',
+          spawned: ['bd-dm-1'],
+          spawnedAt: NOON.toISOString(),
+          phase: 'implementing',
+          phaseAt: NOON.toISOString(),
+        },
+      ],
+    })
+    const worker = { ...row('bd-dm-1', 'exited'), sessionId: 'sess-dm-1' }
+    const file = transcriptPath(worker.cwd, worker.sessionId, worker.configDir)
+    const text = `Status: DONE\nPR: ${PR}\nHead: h5`
+    write(file, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } })}\n`)
+    return fakeBroker({ agents: [worker] })
+  }
+
+  /** Shepherd as the CLI answers it: `status` lists what `register` has enrolled. */
+  function shepherd(register: () => Answer = () => ({ status: 0, stdout: '{}' })) {
+    const calls: string[][] = []
+    let enrolled = false
+    const factory = (args: string[]): Answer => {
+      calls.push(args)
+      if (args[1] === 'status')
+        return { status: 0, stdout: JSON.stringify(enrolled ? [shepherdRow('ci')] : []) }
+      const answer = register()
+      enrolled ||= answer.status === 0
+      return answer
+    }
+    return { calls, factory, registers: () => calls.filter(c => c[1] === 'register') }
+  }
+
+  it('registers once across two ticks and never asks gh for the PR', async () => {
+    const fake = finishedWorker()
+    const factory = shepherd()
+    const seen: string[][] = []
+    const stub = stubGh(undefined, factory.factory)
+    const exec: Runner = (bin, args, cwd) => (seen.push([bin, ...args]), stub(bin, args, cwd))
+
+    const first = await tick(fake, false, () => {}, exec)
+    await tick(fake, false, () => {}, exec)
+
+    expect(factory.registers()).toEqual([REGISTER])
+    expect(first.join('\n')).toContain('registered demo/repo#5 with Shepherd for DM-1#')
+    expect(readLedger(burndownLedgerPath()).claims[0]).toMatchObject({ phase: 'shepherding', pr: PR })
+    expect(seen.filter(([bin, ...args]) => bin === 'gh' && args[0] === 'pr' && args[1] === 'view')).toEqual(
+      [],
+    )
+    expect(seen.filter(argv => argv.includes('graphql'))).toEqual([])
+  })
+
+  it('stalls the claim for the owner when Shepherd refuses the repo, and does not ask again', async () => {
+    const fake = finishedWorker()
+    const refused = 'Error: registration refused: demo/repo is in denyRepos'
+    const factory = shepherd(() => ({ status: 65, stdout: '', stderr: `${refused}\n` }))
+
+    await tick(fake, false, () => {}, stubGh(undefined, factory.factory))
+    await tick(fake, false, () => {}, stubGh(undefined, factory.factory))
+
+    expect(factory.registers()).toHaveLength(1)
+    expect(readLedger(burndownLedgerPath()).claims[0]?.stalledReason).toBe(
+      `Shepherd refused demo/repo#5 (${refused}); burndown does not merge, so the PR is left for the owner`,
+    )
+  })
+
+  it('registers again next tick after Shepherd was down, and reads nothing while its status cannot be read', async () => {
+    const fake = finishedWorker()
+    let up = false
+    const factory = shepherd(() => (up ? { status: 0, stdout: '{}' } : { status: 69, stdout: '' }))
+    const down = (args: string[]): Answer =>
+      args[1] === 'status' ? { status: 1, stdout: '' } : factory.factory(args)
+
+    const failed = await tick(fake, false, () => {}, stubGh(undefined, factory.factory))
+    const unread = await tick(fake, false, () => {}, stubGh(undefined, down))
+    up = true
+    await tick(fake, false, () => {}, stubGh(undefined, factory.factory))
+
+    expect(failed.join('\n')).toContain(
+      'register demo/repo#5 with Shepherd failed (exit 69); retried next tick',
+    )
+    expect(unread.join('\n')).toContain(`unread DM-1#: could not read Shepherd's status for ${PR}`)
+    expect(factory.registers()).toEqual([REGISTER, REGISTER])
+    expect(readLedger(burndownLedgerPath()).claims[0]).toMatchObject({ phase: 'shepherding' })
+    expect(readLedger(burndownLedgerPath()).claims[0]?.stalledReason).toBeUndefined()
   })
 })
 
@@ -334,6 +459,7 @@ describe('burndown tick retires refused after a claim is done', () => {
         spawn: async () => ({ ok: true }),
         retire: async name =>
           name === 'bd-dm-1' ? { ok: false, reason: TENANCY } : (retired.push(name), { ok: true }),
+        register: () => ({ ok: true }),
         log: () => {},
         now: NOON,
       },
@@ -1785,23 +1911,23 @@ describe('burndown tick collision check', () => {
       taskId: 'DM-1',
       initiative: 'demo',
       spawnedAt: NOON.toISOString(),
-      phase: 'awaiting-merge',
+      phase: 'shepherding',
       phaseAt: NOON.toISOString(),
       agentName: 'bd-dm-1',
       spawned: ['bd-dm-1'],
-      pr: 'https://example.test/demo/repo/pull/5',
+      pr: 'https://github.com/demo/repo/pull/5',
     }
     writeLedger(burndownLedgerPath(), { version: 1, claims: [merging] })
     const merged = (args: string[]) =>
-      args[0] === 'pr'
-        ? { status: 0, stdout: JSON.stringify({ state: 'MERGED' }) }
-        : { status: 0, stdout: '' }
+      args[1] === 'status'
+        ? { status: 0, stdout: JSON.stringify([shepherdRow('post-merge')]) }
+        : { status: 1, stdout: '' }
     const fake = fakeBroker({
       agents: [row('bd-dm-1', 'live')],
       view: () => ({ names: ['bd-dm-1'], claims: [] }),
     })
 
-    const lines = await tick(fake, false, () => {}, stubGh(merged))
+    const lines = await tick(fake, false, () => {}, stubGh(undefined, merged))
 
     expect(readLedger(burndownLedgerPath()).claims[0]?.phase).toBe('done')
     expect(fake.frames).toEqual([])

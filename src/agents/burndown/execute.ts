@@ -1,5 +1,6 @@
 import { applyActions, claimKey, type Action, type ClaimKey } from './advance.js'
 import { sameClaim, writeLedger, type Claim, type Ledger } from './ledger.js'
+import { targetRef, type RegisterReply, type Registration } from './shepherd.js'
 
 type Unretired = NonNullable<Claim['unretired']>[number]
 
@@ -59,6 +60,7 @@ export type Step =
   | { kind: 'ledger'; actions: Action[] }
   | { kind: 'spawn'; key: ClaimKey; frame: SpawnFrame }
   | { kind: 'retire'; key: ClaimKey; names: string[] }
+  | { kind: 'register'; key: ClaimKey; registration: Registration }
 
 export interface SpawnReply {
   ok: boolean
@@ -70,6 +72,7 @@ export interface ExecuteDeps {
   ledgerFile: string
   spawn: (frame: SpawnFrame) => Promise<SpawnReply>
   retire: (name: string) => Promise<SpawnReply>
+  register: (registration: Registration) => RegisterReply
   log: (event: string, detail: Record<string, unknown>) => void
   now: Date
 }
@@ -93,7 +96,8 @@ export async function execute(steps: Step[], start: Ledger, deps: ExecuteDeps): 
       ledger = withUnretired(ledger, step.key, retired.left)
       writeLedger(deps.ledgerFile, ledger)
       lines.push(...retired.lines)
-    } else lines.push(await spawnOne(step, ledger, commit, deps))
+    } else if (step.kind === 'register') lines.push(registerOne(step, commit, deps))
+    else lines.push(await spawnOne(step, ledger, commit, deps))
   }
   return { ledger, lines }
 }
@@ -139,6 +143,22 @@ async function spawnOne(
   const stalledReason = refusalReason(frame, reply.reason ?? 'refused without a reason')
   commit([{ kind: 'update', key, patch: { stalledReason } }])
   return `not spawned ${frame.name}: ${stalledReason}`
+}
+
+/** A refused registration stalls the claim, since burndown never merges; an unanswered one is retried next tick. */
+function registerOne(
+  step: Extract<Step, { kind: 'register' }>,
+  commit: (actions: Action[]) => void,
+  deps: ExecuteDeps,
+): string {
+  const ref = targetRef(step.registration.target)
+  const reply = deps.register(step.registration)
+  deps.log('burndown_shepherd_register', { pr: ref, task: step.registration.task, ...reply })
+  if (reply.ok) return `registered ${ref} with Shepherd for ${claimKey(step.key)}`
+  if (!reply.refused) return `register ${ref} with Shepherd failed (${reply.reason}); retried next tick`
+  const stalledReason = `Shepherd refused ${ref} (${reply.reason}); burndown does not merge, so the PR is left for the owner`
+  commit([{ kind: 'update', key: step.key, patch: { stalledReason } }])
+  return `not registered ${ref}: ${stalledReason}`
 }
 
 /** A refusal after allocation leaves the worktree behind (the supervisor releases the slot only), so name it. */

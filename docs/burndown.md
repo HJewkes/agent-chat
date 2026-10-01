@@ -3,7 +3,8 @@
 `agent-chat burndown tick` reads the claim ledger, advances every held claim a phase, and
 spawns at most one new agent per opted-in initiative: a planner for estimate 3 or more,
 otherwise an implementer, headless, on the account the budget gate picked. A worker that
-must ask parks and waits for an answer; a worker that leaves a diff gets a reviewer.
+must ask parks and waits for an answer; a worker that reports `DONE` with a PR hands the PR to
+Shepherd, which owns CI, review and merge from then on.
 `agent-chat burndown install` runs the tick on a schedule through launchd. Full design:
 `claude-channels/sources/surplus-2026-09-26/autonomous-burndown-design.md`; slice plan:
 `claude-channels/sources/CC-slice4-plan.md`.
@@ -110,15 +111,38 @@ the same reason: nothing else rides along from the account that ran `install`.
 
 `agent-chat burndown status` prints every held claim's phase.
 
-| Phase            | Meaning                                                                                                                                                                                                |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `spawning`       | The tick sent a spawn frame and is waiting for the broker's roster to show the agent. Ten minutes with no row stalls the claim.                                                                        |
-| `planning`       | A planner is running. On exit, a `burndown-slices` block adds one `implementing` claim per slice; no block stalls the claim.                                                                           |
-| `implementing`   | A worker is running. On exit: a park request moves to `parked`; a reviewable diff spawns a reviewer and moves to `reviewing`; a clean `DONE` with no diff finishes the claim; anything else stalls it. |
-| `parked`         | The worker asked a question and stopped. An answer with the right `inReplyTo` spawns a successor in the same worktree and moves back to `implementing`.                                                |
-| `reviewing`      | A reviewer is running. `Verdict: APPROVE` plus green CI moves to `awaiting-merge`; a first failure spawns one successor; a second stalls the claim.                                                    |
-| `awaiting-merge` | Waiting for the PR to merge. Once merged, successors retire before the original agent, then the claim finishes.                                                                                        |
-| `done`           | Nothing left to do. The claim no longer holds its task or a lane.                                                                                                                                      |
+| Phase            | Meaning                                                                                                                                                                                                                                                                                                |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `spawning`       | The tick sent a spawn frame and is waiting for the broker's roster to show the agent. Ten minutes with no row stalls the claim.                                                                                                                                                                        |
+| `planning`       | A planner is running. On exit, a `burndown-slices` block adds one `implementing` claim per slice; no block stalls the claim.                                                                                                                                                                           |
+| `implementing`   | A worker is running. On exit: a park request moves to `parked`; a `DONE` report with a PR registers the PR with Shepherd and moves to `shepherding`; a reviewable diff with no PR spawns a reviewer and moves to `reviewing`; a clean `DONE` with no diff finishes the claim; anything else stalls it. |
+| `parked`         | The worker asked a question and stopped. An answer with the right `inReplyTo` spawns a successor in the same worktree and moves back to `implementing`.                                                                                                                                                |
+| `reviewing`      | A reviewer is running. `Verdict: APPROVE` on a claim with a PR hands the PR to Shepherd and moves to `shepherding`; a first failure spawns one successor; a second stalls the claim.                                                                                                                   |
+| `awaiting-merge` | A claim from before Shepherd. The next tick hands its PR to Shepherd and moves it to `shepherding`.                                                                                                                                                                                                    |
+| `shepherding`    | Shepherd holds the PR. Once its run lands the PR, successors retire before the original agent, then the claim finishes. A run that ends without merging stalls the claim.                                                                                                                              |
+| `done`           | Nothing left to do. The claim no longer holds its task or a lane.                                                                                                                                                                                                                                      |
+
+## Shepherd hand-off (TP-469)
+
+Shepherd is the factory's PR-shepherding service, reached through the `titan-factory` CLI on
+`PATH`. The tick registers a claim's PR with
+`titan-factory shepherd register <owner/repo#n> --task <initiative>/<task> --implementer <agent>`,
+after the ledger write that moves the claim to `shepherding`. Each tick then reads
+`titan-factory shepherd status --json` once, and `shepherd timeline` for a run that has
+finished, to tell a merge from a stop. The tick no longer reads PRs through `gh`.
+
+- **Registers once.** A claim Shepherd already lists is never registered again. A register
+  that fails, or a Shepherd that does not list the PR, is registered again next tick;
+  Shepherd's register is idempotent on `repo#pr`.
+- **Shepherd unreadable.** A status or timeline read that fails leaves the claim untouched
+  and prints an `unread` line.
+- **A repo Shepherd does not cover.** Shepherd refuses the registration (a repo in its
+  `denyRepos`, for example). The claim stalls with `Shepherd refused <repo#n> (<reason>)`.
+  Burndown never merges, so the PR is left for the owner.
+- **A PR Shepherd cannot name.** A PR that is not a `github.com` pull URL stalls the claim
+  without a register.
+- **Merge authority** is Shepherd's seat policy, not burndown's: a repo no seat lists is
+  owner-gated there.
 
 A claim with a `stalledReason` keeps its task and worktree but never respawns; only
 `agent-chat burndown release <task>` clears it. `agent-chat doctor` reports the stalled
@@ -150,8 +174,10 @@ Every item is yours to check by hand; nothing here is verified by an agent.
 - **`reportTo`** set to a registered session name in `burndown.config.json` — a real tick
   refuses to run without it.
 - **Opt-in scope**: exactly one initiative opted in, `lanes: 1`, `grants: []`.
+- **Shepherd serving**: `titan-factory shepherd status` answers from the account that runs
+  the tick, and each opted-in repo is in a Shepherd seat, or is accepted as owner-gated.
 - **Three supervised ticks**: `agent-chat burndown tick --once` run by hand three times
-  across one worker's life (spawn, review, awaiting-merge), `burndown status` read after
+  across one worker's life (spawn, shepherding, done), `burndown status` read after
   each.
 - **Kill switch known**: `agent-chat burndown pause` stops new spawns on the next tick;
   `agent-chat burndown uninstall` removes the job.
