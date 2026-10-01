@@ -161,19 +161,21 @@ describe('the check-run rule (CC-357)', () => {
     const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
 
     expect(text).toContain(
-      'CI: <paste of: gh api repos/<owner>/<repo>/commits/<head>/check-runs --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>',
+      'CI: <paste of: gh api repos/<owner>/<repo>/commits/<head>/check-runs --paginate --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>',
     )
     expect(text).toContain('never "green" alone')
     expect(text).toContain('`gh run watch` covers only one workflow')
+    expect(text).toContain('a skipped check (std / compat) is no failure')
   })
 
   // Mutation caught: dropping the reviewer's check-run line.
   it('has the reviewer confirm every required check-run at the head before a MERGE', () => {
     const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
 
-    expect(text).toContain('Before MERGE, confirm every required check-run at the reviewed head')
-    expect(text).toContain('commits/<head>/check-runs')
+    expect(text).toContain('Before MERGE, confirm every required check-run (one branch protection names)')
+    expect(text).toContain('commits/<head>/check-runs --paginate')
     expect(text).toContain('FIX_FIRST if a required one failed')
+    expect(text).toContain('A skipped check (std / compat) is not a failure')
   })
 })
 

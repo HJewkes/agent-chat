@@ -147,7 +147,7 @@ function runWatch(args: readonly string[]): ShimRequest | undefined {
   const [runId] = flags?.positionals ?? []
   const intervalSec = Number(flags?.values.interval ?? '3')
   if (!flags || flags.positionals.length !== 1 || !/^\d+$/.test(runId ?? '')) return undefined
-  if (!Number.isFinite(intervalSec) || intervalSec <= 0) return undefined
+  if (!Number.isInteger(intervalSec) || intervalSec < 1) return undefined
   return {
     kind: 'run-watch',
     ...(flags.values.repo === undefined ? {} : { repo: flags.values.repo }),

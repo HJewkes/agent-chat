@@ -95,8 +95,8 @@ describe('run-agent putting the REST gh shim on the agent PATH (CC-395)', () => 
 
     const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
 
-    const shimDir = path.join(stateDir, 'gh-shim')
-    expect(result.stdout).toBe(shimDir)
+    const shimDir = result.stdout
+    expect(path.dirname(shimDir)).toBe(path.join(stateDir, 'gh-shim'))
     expect(fs.statSync(path.join(shimDir, 'gh')).mode & 0o111).not.toBe(0)
     expect(fs.readFileSync(path.join(shimDir, 'gh'), 'utf8')).toContain(
       path.join('dist', 'gh-shim', 'main.js'),
