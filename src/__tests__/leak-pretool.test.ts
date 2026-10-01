@@ -1034,6 +1034,69 @@ describe('a git alias already in config', () => {
     )
 
     it.each([
+      'x=$(echo tig|rev); source /dev/null; $x pnv',
+      'x=$(echo tig|rev); pushd .; $x pnv',
+      'x=$(echo tig|rev); cd "$D"; $x pnv',
+      'read x; source /dev/null; $x pnv',
+      'source /dev/null; $(echo tig|rev) pnv',
+      'source /dev/null; `echo tig|rev` pnv',
+    ])('denies an expanded command word the line ties to git where it cannot look (TP-613): %s', command => {
+      expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
+    })
+
+    it.each([
+      'y=x; x=git; source /dev/null; ${!y} pnv',
+      'y=x; x=git; pushd .; ${!y} hp',
+      'set -- git; source /dev/null; $1 pnv',
+      'set -- git; cd "$D"; ${1} pnv',
+      'set -- git; source /dev/null; $* pnv',
+      'set -- git; source /dev/null; "$@" pnv',
+      'read <<< git; source /dev/null; $REPLY pnv',
+      'read <<< git; pushd .; ${REPLY} pnv',
+      ': git; source /dev/null; $_ pnv',
+      'y=x; x=git; source /dev/null; ${(P)y} pnv',
+      'x=git; source /dev/null; ${=x} pnv',
+      'x=git; source /dev/null; ${~x} pnv',
+      'x=git; source /dev/null; ${^x} pnv',
+      'x=GIT; source /dev/null; ${(L)x} pnv',
+      'x=git; source /dev/null; $=x pnv',
+      'x=git; source /dev/null; $~x pnv',
+      'x=git; source /dev/null; $^x pnv',
+      'set -- git; source /dev/null; $argv pnv',
+      'set -- git; source /dev/null; $argv[1] pnv',
+      'read -A <<< git; source /dev/null; $reply pnv',
+      'mapfile <<< git; source /dev/null; $MAPFILE pnv',
+      'source /dev/null; ${x:=y} pnv',
+      'source /dev/null; ${x:-g"i"t} pnv',
+      'source /dev/null; ${x:-g\\it} pnv',
+      'x=a; source /dev/null; ${x/a/g"i"t} pnv',
+      'source /dev/null; ${x/#/g"i"t} pnv',
+      'source /dev/null; ${x/a/g"i"t} pnv',
+      'source /dev/null; ${x:-git} pnv',
+    ])('denies a positional, special or indirect command word where it cannot look (TP-613): %s', command => {
+      expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
+    })
+
+    it('denies an expanded command word whose hook env value is git where it cannot look', () => {
+      const command = 'source /dev/null; $G pnv'
+      expect(checkCommand(command, { ...inAliased(), env: { HOME: emptyHome, G: 'git' } })).toBe(
+        REASONS.aliasEnv,
+      )
+    })
+
+    it.each([
+      'source .venv/bin/activate && $PYTHON -m pytest && git status',
+      'source x; $PAGER README; git log',
+      'source .venv/bin/activate && ${PYTHON:-python3} -m pytest && git status',
+      'source x; ${PAGER-less} README; git log',
+      'source x; ${EDITOR:-vi} notes; git log',
+      'source x; ${TOOL#x} README; git log',
+      `T=$(git -C ~/w worktree list | grep x | awk '{print $1}'); [ -n "$T" ] && git -C "$T" status --porcelain && git -C "$T" rev-list origin/b..HEAD`,
+    ])('allows an expanded command word the line does not tie to git (TP-613): %s', command => {
+      expect(checkCommand(command, inAliased())).toBeUndefined()
+    })
+
+    it.each([
       `x=git; $x pnv`,
       `git -C ${aliased} push origin main`,
       'source ./env.sh; $EDITOR notes',

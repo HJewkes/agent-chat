@@ -350,9 +350,35 @@ are stripped and inside every `sh -c` string, `eval`, `env -S`, `$(...)` and `!`
 
 A lookup the guard cannot make, because it cannot tell the directory, the subcommand or the
 config env, is a deny for a literal `git`. For a command word it cannot resolve, it is a deny
-when the line names `git`. A word that git would not take as an alias name, one that starts with
-anything but a letter or holds anything but letters, digits and `-`, is never looked up.
-`echo pnv | xargs git` still runs an alias unchecked, because the subcommand comes from stdin.
+when the line ties that word to git (TP-613): the word names `git` (`${X:-git}`), holds a command
+substitution (`$(echo tig|rev)`), or reads a variable that the line mentions outside a `$`
+reference (`x=...`, `read x`, `for x in`) or that the hook's own env holds as a value naming
+`git`. A word that reads a variable the shell sets without the line naming it is always tied:
+`$1` to `$9`, `${N}`, `$*`, `$@`, `$_`, `$REPLY`, bash's `$MAPFILE`, and zsh's `$argv` and
+`$reply`, as in `set -- git; source /dev/null; $1 pnv` or `read <<< git; pushd .; $REPLY pnv`. So
+is a word that hides the name it reads: any `${` not followed by a name, such as `${!y}`, `${#x}`
+or a zsh flag (`${(P)y}`, `${=x}`, `${~x}`, `${^x}`), and zsh's bare `$=x`, `$~x` and `$^x`. None
+of them is a routine command word. That includes `"$1"` after `source`, which a script wrapper
+may run as its command; the guard accepts that over-deny, since `set -- git` can feed it. A
+default such as `${PYTHON:-python3}` reads `PYTHON` without assigning it, so it is treated like
+`$PYTHON`; `${PYTHON:=python3}` assigns and ties. The guard tests for `git` after removing quotes
+and backslashes, so a default or replacement word that becomes `git` ties: `${x:-g"i"t}`,
+`${x:-g\it}`, `${x/#/g"i"t}` and `${x/a/g"i"t}`. So `x=$(echo tig|rev); source /dev/null; $x pnv` is denied, and so is the same line with
+`pushd .` or `cd "$D"` in place of `source`. A command word from the environment the line does
+not touch is allowed, whatever else the line runs: `source .venv/bin/activate && $PYTHON -m
+pytest && git status`, `source x; $PAGER README; git log`, and `[ -n "$T" ] && git -C "$T" status`
+(an unquoted `[` is a glob character, so the guard reads it as an expansion). Whether the line
+names `git` elsewhere does not matter: it says nothing about what the expansion holds, and denying
+on it blocked routine lines.
+
+The accepted gap is a command word set where the guard cannot see, such as a variable that a
+sourced file or the Bash tool's shell set, after a `source`, `pushd` or `cd` the guard cannot
+follow: `source ./env.sh; $x pnv` runs an alias unchecked when `env.sh` sets `x=git`. Denying it
+would deny `$PYTHON -m pytest` and `$PAGER README` too, since the command string cannot tell
+them apart, and a sourced file can run `git push --no-verify` itself anyway. A word that git
+would not take as an alias name, one that starts with anything but a letter or holds anything
+but letters, digits and `-`, is never looked up. `echo pnv | xargs git` still runs an alias
+unchecked, because the subcommand comes from stdin.
 
 A config file that the command itself includes with `-c` or `--config-env` on `include.path` or
 `includeIf.<cond>.path` is read the same way (TP-602). The guard runs `git <its options> config
@@ -587,8 +613,9 @@ Not covered, by design or by cost:
 - zsh with `BRACE_CCL` set in a startup file, which expands `{owner}` into single characters;
 - a different `git` on `PATH`, `GIT_EXEC_PATH`, or `--exec-path`;
 - pushing without git at all, for example over the GitHub API with `curl`;
-- a git alias whose directory the guard cannot tell, whose lookup fails or takes over 1 s, or
-  that shadows an external `git-<name>` command on `PATH`;
+- a git alias whose lookup fails or takes over 1 s, that shadows an external `git-<name>`
+  command on `PATH`, or whose directory the guard cannot tell behind a command word the line does
+  not tie to git (`source ./env.sh; $x pnv`, TP-613);
 - a `!` alias body that reads its arguments other than as `$1` to `$9`, `$@` or `$*`;
 - shell syntax the splitter misreads, such as `&>` or `case` patterns;
 - a variable whose value in the Bash tool's shell differs from the hook's although the command
