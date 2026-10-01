@@ -736,6 +736,8 @@ export type ClientMessage =
   | { t: 'inbox_since'; name: string; afterId: number; limit: number }
   /** Read one session's trail. Never delivers anything to the session being read. */
   | { t: 'activity'; name: string; limit: number }
+  /** Whether `from` sent `to` a `Status:` or `Verdict:` report at or after `since` (CC-135), with no row window. */
+  | { t: 'reported'; from: string; to: string; since: number }
   /** From the terminal client, which is the human and so never registers. */
   | { t: 'human_send'; to: string; text: string; source?: WakeSource }
   /** Claude Code opened a permission dialog in this session. Observed; answered only via `approve_permission`. */
@@ -976,6 +978,7 @@ export type ServerMessage =
   | { t: 'inbox_since_result'; messages: CursoredMessage[]; nextCursor: number }
   /** `session` is absent when the name has no live registration; `events` outlives it. */
   | { t: 'activity_result'; session?: SessionInfo; events: QueueItem[] }
+  | { t: 'reported_result'; reported: boolean }
   | { t: 'deliver'; message: DeliveredMessage }
   /**
    * The human's verdict on a prompt this session relayed (CC-96). A push, never

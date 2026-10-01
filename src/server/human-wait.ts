@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import type { BrokerClient } from '../client/broker-client.js'
-import type { AgentIdentity, AgentLifecycle, QueueItem, ServerMessage } from '../protocol.js'
+import type { AgentIdentity, AgentLifecycle, ServerMessage } from '../protocol.js'
 import { findTranscript } from '../agents/transcript.js'
 import { parseLine, readTail, USAGE_TAIL_BYTES } from '../agents/transcript-usage.js'
 
@@ -35,9 +35,6 @@ const EDIT_PATH_KEYS: Readonly<Record<string, string>> = {
 }
 /** Detached is still running: machine-guard counts it live, so a park must too. */
 const LIVE_STATES: ReadonlySet<AgentLifecycle> = new Set(['spawning', 'live', 'detached'])
-const CHILD_ACTIVITY_LIMIT = 200
-/** The first line of a return-contract report: implementers send `Status:`, reviewers `Verdict:`. */
-const REPORT = /^(Status|Verdict):/
 const GIT_TIMEOUT_MS = 5_000
 /** A human turn of tool calls often outgrows 256 KB, so the tail widens until it holds the prompt. */
 const TAIL_STEPS = [USAGE_TAIL_BYTES, 1024 * 1024, 4 * 1024 * 1024]
@@ -180,18 +177,11 @@ export function parseDirtyPaths(porcelain: string, root: string): string[] {
 export function awaitedChildren(
   self: string,
   agents: readonly AgentIdentity[],
-  activity: ReadonlyMap<string, readonly QueueItem[]>,
+  reported: ReadonlySet<string>,
 ): string[] {
-  const reported = (child: AgentIdentity): boolean =>
-    (activity.get(child.name) ?? []).some(
-      item =>
-        item.kind === 'message' &&
-        item.from === child.name &&
-        item.meta.target === self &&
-        item.at >= child.spawnedAt &&
-        REPORT.test(item.text),
-    )
-  return agents.filter(a => a.spawnedBy === self && LIVE_STATES.has(a.state) && !reported(a)).map(a => a.name)
+  return agents
+    .filter(a => a.spawnedBy === self && LIVE_STATES.has(a.state) && !reported.has(a.name))
+    .map(a => a.name)
 }
 
 const run = promisify(execFile)
@@ -230,22 +220,23 @@ export async function readDirtyPaths(cwd: string, timeoutMs = GIT_TIMEOUT_MS): P
 
 type Broker = Pick<BrokerClient, 'request'>
 
+/** Asks the broker per child, so a report buried under any amount of later traffic still counts. */
 export async function readAwaitedChildren(broker: Broker, self: string): Promise<string[]> {
   const roster = (await broker.request({ t: 'agents' }, 'agents_result')) as Extract<
     ServerMessage,
     { t: 'agents_result' }
   >
   const mine = roster.agents.filter(a => a.spawnedBy === self && LIVE_STATES.has(a.state))
-  const trails = await Promise.all(
+  const reported = await Promise.all(
     mine.map(async child => {
       const res = (await broker.request(
-        { t: 'activity', name: child.name, limit: CHILD_ACTIVITY_LIMIT },
-        'activity_result',
-      )) as Extract<ServerMessage, { t: 'activity_result' }>
-      return [child.name, res.events] as const
+        { t: 'reported', from: child.name, to: self, since: child.spawnedAt },
+        'reported_result',
+      )) as Extract<ServerMessage, { t: 'reported_result' }>
+      return res.reported ? [child.name] : []
     }),
   )
-  return awaitedChildren(self, mine, new Map(trails))
+  return awaitedChildren(self, mine, new Set(reported.flat()))
 }
 
 export interface WaitSource {
