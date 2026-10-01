@@ -125,3 +125,24 @@ describe('verifySection', () => {
     expect(verifySection('# repo\n\n## Other\n')).toBeUndefined()
   })
 })
+
+describe('the worker hands its PR to Shepherd (TP-468)', () => {
+  it('registers with --kind, stops at pushed and falls back to a refusal line', () => {
+    const brief = workerBrief(task())
+
+    expect(brief).toContain('shepherd register')
+    expect(brief).toContain('--kind <correctness|security|feature|refactor>')
+    expect(brief).toContain('`Shepherd: refused <first stderr line>`')
+    expect(brief).toContain('never wait on CI')
+    expect(brief).not.toContain('gh run watch')
+  })
+
+  it('gives every worker successor the same register step', () => {
+    const t = task()
+
+    expect(successorAfterReview(t, 'fix it')).toContain('shepherd register')
+    expect(successorAfterAnswer(t, { question: 'q', answer: 'a', provenance: 'decided' })).toContain(
+      'shepherd register',
+    )
+  })
+})
