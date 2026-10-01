@@ -11,7 +11,8 @@ export const gitShimDirFor = (hooksDir: string): string => path.join(path.dirnam
 const shQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
 
 // Global options whose value is the next word; every other leading dash word stands alone.
-const VALUED_GLOBALS = '-C | -c | --git-dir | --work-tree | --namespace | --config-env | --attr-source | --super-prefix'
+const VALUED_GLOBALS =
+  '-C | -c | --git-dir | --work-tree | --namespace | --config-env | --attr-source | --super-prefix'
 
 const DOCS = 'See docs/leak-guard.md.'
 
@@ -130,7 +131,11 @@ function gitBuiltins(real: string): string[] {
 }
 
 /** Rewritten through a rename, so a git call at that moment never execs a half-written file. */
-export function writeGitShim(dir: string, guard: string, pathValue: string = process.env.PATH ?? ''): boolean {
+export function writeGitShim(
+  dir: string,
+  guard: string,
+  pathValue: string = process.env.PATH ?? '',
+): boolean {
   const real = findRealGit(pathValue, dir)
   if (real === undefined) return false
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })

@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
+import { writeLaunchFiles } from '../agents/launch-files.js'
 import { buildLaunchPlan } from '../agents/launch-plan.js'
 import type { AgentProfile, LaunchPlan, LaunchPlanInput } from '../agents/types.js'
 import { findRealGit, GIT_SHIM_DIR_ENV, writeGitShim } from '../leak-guard/git-shim.js'
@@ -35,15 +36,28 @@ let count = 0
 /** A repo with one commit, a bare remote, a guard dir whose pre-push leaves a marker, and the shim. */
 function fixture(): Fixture {
   const root = path.join(SCRATCH, `case-${++count}`)
-  const [work, remote, guard, shimDir, home] = ['work', 'remote.git', 'git-hooks', 'git-bin', 'home'].map(name =>
-    path.join(root, name),
+  const [work, remote, guard, shimDir, home] = ['work', 'remote.git', 'git-hooks', 'git-bin', 'home'].map(
+    name => path.join(root, name),
   )
   const marker = path.join(root, 'pre-push-ran')
   for (const dir of [work, guard, home]) fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(path.join(guard, 'pre-push'), `#!/bin/sh\ncat >/dev/null\ntouch '${marker}'\n`, { mode: 0o755 })
+  fs.writeFileSync(path.join(guard, 'pre-push'), `#!/bin/sh\ncat >/dev/null\ntouch '${marker}'\n`, {
+    mode: 0o755,
+  })
   git(root, 'init', '-q', '--bare', remote)
   git(work, 'init', '-q', '-b', 'main')
-  git(work, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'one')
+  git(
+    work,
+    '-c',
+    'user.name=t',
+    '-c',
+    'user.email=t@example.com',
+    'commit',
+    '-q',
+    '--allow-empty',
+    '-m',
+    'one',
+  )
   git(work, 'remote', 'add', 'origin', remote)
   expect(writeGitShim(shimDir, guard)).toBe(true)
   const env = {
@@ -56,7 +70,10 @@ function fixture(): Fixture {
 }
 
 /** Runs a script file, as make or an npm script would; a recursing shim is killed by the timeout. */
-function runScript(fx: Fixture, body: string): ReturnType<typeof spawnSync> & { stdout: string; stderr: string } {
+function runScript(
+  fx: Fixture,
+  body: string,
+): ReturnType<typeof spawnSync> & { stdout: string; stderr: string } {
   const script = path.join(fx.work, '..', `script-${++count}.sh`)
   fs.writeFileSync(script, `#!/bin/sh\n${body}\n`, { mode: 0o755 })
   return spawnSync(script, { cwd: fx.work, env: fx.env, encoding: 'utf8', timeout: 10_000 })
@@ -155,7 +172,8 @@ describe('the agent git shim passing everything else to the real git', () => {
     expect(head.stdout.trim()).toBe(git(fx.work, 'rev-parse', 'HEAD').trim())
     expect(head.status).toBe(0)
     expect(missing.status).toBe(
-      spawnSync(REAL_GIT, ['cat-file', '-e', '0000000000000000000000000000000000000001'], { cwd: fx.work }).status,
+      spawnSync(REAL_GIT, ['cat-file', '-e', '0000000000000000000000000000000000000001'], { cwd: fx.work })
+        .status,
     )
     expect(failed.stdout.trim()).toBe('status=1')
   })
@@ -203,6 +221,24 @@ describe('where the agent git shim is put on PATH', () => {
 
     expect(guarded.env[GIT_SHIM_DIR_ENV]).toBe('/state/git-bin')
     expect(GIT_SHIM_DIR_ENV in buildLaunchPlan(input()).env).toBe(false)
+  })
+
+  it('writes <home>/git-bin/git beside the guard hooks at spawn, and nothing without them', () => {
+    const home = fs.mkdtempSync(path.join(SCRATCH, 'home-'))
+    process.env.AGENT_CHAT_HOME = home
+    const hooks = path.join(home, 'git-hooks')
+    const shim = path.join(home, 'git-bin', 'git')
+    try {
+      writeLaunchFiles(buildLaunchPlan(input()), {})
+      expect(fs.existsSync(shim)).toBe(false)
+
+      writeLaunchFiles(buildLaunchPlan(input({ gitHooksDir: hooks })), {})
+    } finally {
+      delete process.env.AGENT_CHAT_HOME
+    }
+
+    expect(fs.statSync(shim).mode & 0o777).toBe(0o755)
+    expect(fs.readFileSync(shim, 'utf8')).toContain(`guard='${hooks}'`)
   })
 
   const CLI = path.join(import.meta.dirname, '..', '..', 'dist', 'cli.js')
