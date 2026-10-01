@@ -57,7 +57,7 @@ describe('the burndown tick', () => {
     seat: SEAT,
     namePrefix: 'sx',
     spawnedAt: NOW.toISOString(),
-    phase: 'awaiting-merge',
+    phase: 'shepherding',
     phaseAt: NOW.toISOString(),
     agentName: 'sx-ab-12',
     spawned: ['sx-ab-12'],
@@ -80,15 +80,18 @@ describe('the burndown tick', () => {
     }),
   }
 
-  /** `gh pr view` answers only the fields its `--json` names, as the real one does. */
-  const gh: Runner = (_bin, args) => {
-    const merged: Record<string, unknown> = { state: 'MERGED', statusCheckRollup: [], headRefOid: HEAD }
-    const asked = args[0] === 'pr' ? (args[args.indexOf('--json') + 1] ?? '').split(',') : []
-    return {
-      status: 0,
-      stdout: JSON.stringify(Object.fromEntries(asked.map(f => [f, merged[f]]))),
-      stderr: '',
+  /** Shepherd as `titan-factory` answers it: a finished run whose timeline records the merge. */
+  const factory: Runner = (_bin, args) => {
+    const row = {
+      repo: 'example-org/widget',
+      pr: 7,
+      runId: 'run-7',
+      phase: 'done',
+      headSha: HEAD,
+      stalled: null,
     }
+    const timeline = { row, entries: [{ kind: 'step', stepId: 'sh-landed' }] }
+    return { status: 0, stdout: JSON.stringify(args[1] === 'status' ? [row] : timeline), stderr: '' }
   }
 
   it('writes the merged line, with the PR head it read, to the journal under the active-work root', async () => {
@@ -96,7 +99,7 @@ describe('the burndown tick', () => {
     write(path.join(world, 'home', 'burndown.config.json'), JSON.stringify(config))
     writeLedger(burndownLedgerPath(), { version: 1, claims: [merging] })
 
-    await tickFromDisk({ dryRun: false, broker, now: NOW, log: () => {}, exec: gh })
+    await tickFromDisk({ dryRun: false, broker, now: NOW, log: () => {}, exec: factory })
 
     expect(readLedger(burndownLedgerPath()).claims[0]).toMatchObject({ phase: 'done', prHead: HEAD })
     expect(journal()).toBe('04:05 merged AB-12 sx-ab-12 example-org/widget#7@abcdef1\n')
