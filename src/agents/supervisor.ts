@@ -65,7 +65,14 @@ import {
   type TranscriptVerdict,
 } from './resume-session.js'
 import { recreateWorktree, type WorktreeRecord } from './isolation/worktree.js'
-import { allocatedWorktree, parkBlocker, parkWorktree, type ParkTarget } from './isolation/park.js'
+import {
+  allocatedWorktree,
+  lsofCwds,
+  parkBlocker,
+  parkWorktree,
+  type CwdLister,
+  type ParkTarget,
+} from './isolation/park.js'
 import { retireFinished, type FinishedRetireOutcome, type RetireScope } from './isolation/retire-finished.js'
 import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
@@ -402,6 +409,8 @@ interface Live {
 }
 
 export interface SupervisorOptions {
+  /** CC-334: lists process working directories for parking a detached agent. Injected in tests. */
+  cwdLister?: CwdLister
   semaphore?: Semaphore
   spawnRateBudget?: SpawnRateBudget
   settleMs?: number
@@ -554,6 +563,7 @@ export interface MachineGuardReaders {
 
 export class Supervisor implements TeleportHost {
   private readonly live = new Map<string, Live>()
+  private readonly cwdLister: CwdLister
   /** CC-282: agents mid-park, to the canonical tree being removed. */
   private readonly parking = new Map<string, string>()
   private readonly semaphore: Semaphore
@@ -579,6 +589,7 @@ export class Supervisor implements TeleportHost {
     private readonly core: BrokerCore,
     options: SupervisorOptions = {},
   ) {
+    this.cwdLister = options.cwdLister ?? lsofCwds
     this.semaphore = options.semaphore ?? new Semaphore()
     this.spawnRateBudget = options.spawnRateBudget ?? new SpawnRateBudget()
     this.settleMs = options.settleMs ?? SETTLE_MS
@@ -1827,7 +1838,11 @@ export class Supervisor implements TeleportHost {
     if (blocked !== undefined || target === undefined) return { ok: false, reason: blocked ?? 'no worktree' }
     this.parking.set(identity.agentId, canonicalPath(target.worktree))
     try {
-      const parked = await parkWorktree(target, () => this.parkBlockerFor(identity.agentId, target))
+      const parked = await parkWorktree(
+        target,
+        () => this.parkBlockerFor(identity.agentId, target),
+        identity.state === 'detached' ? this.cwdLister : undefined,
+      )
       if (!parked.ok) return parked
       this.recordParked(name, identity.agentId, target, parked.head)
       return {
