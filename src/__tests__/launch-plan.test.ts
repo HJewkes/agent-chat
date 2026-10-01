@@ -389,6 +389,7 @@ describe('every builtin profile, on every surface', () => {
       'Bash(agent-chat send:*)',
       'Bash(agent-chat answer:*)',
       'Bash(agent-chat approve:*)',
+      'Bash(agent-chat inbox:*)',
       'Bash(agent-chat agent:*)',
       'AskUserQuestion',
     ])
