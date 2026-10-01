@@ -309,7 +309,7 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
 }
 
 const checkUnresolvedConfig = (run: GitRun): string | undefined =>
-  hasUnreadableConfig(run.resolved, run.marked) ? REASONS.gitConfigUnresolved : undefined
+  hasUnreadableConfig(run.resolved, run.marked, run.cmd.splits) ? REASONS.gitConfigUnresolved : undefined
 
 const MENTIONS_INCLUDE = /include/i
 const DESCRIPTOR_COPY = /\d*[<>]&(?:\d+|-)(?![\w./])/g

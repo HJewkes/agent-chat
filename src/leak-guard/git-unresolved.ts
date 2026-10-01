@@ -36,6 +36,10 @@ function unreadable({ resolved, marked, fromEnv }: ConfigWord): boolean {
   return fromEnv && marked.slice(marked.lastIndexOf('=') + 1).includes(LIVE)
 }
 
+/** Whether the shell may split the word into several, one of them an option. */
+const expandsToWords = (marked: string, splits: readonly string[]): boolean =>
+  GLOBBED.test(marked) || splits.includes(marked)
+
 /** A word that may expand to options, whatever else it holds. */
 const UNKNOWN: ConfigWord = { resolved: undefined, marked: LIVE, fromEnv: false }
 
@@ -43,6 +47,7 @@ const UNKNOWN: ConfigWord = { resolved: undefined, marked: LIVE, fromEnv: false 
 function scanOptions(
   resolved: readonly (string | undefined)[],
   marked: readonly string[],
+  splits: readonly string[],
 ): { words: ConfigWord[]; at: number } {
   const words: ConfigWord[] = []
   let i = 0
@@ -63,9 +68,10 @@ function scanOptions(
       })
     else if (/^-c./.test(raw))
       words.push({ resolved: word?.slice(2), marked: (marked[i] as string).slice(2), fromEnv: false })
+    else if (word === undefined && splits.includes(marked[i] as string)) words.push(UNKNOWN)
     else if (VALUE_OPTS.has(raw)) {
       // The value may expand to more options too, as `-C {.,-c,core.hooksPath=x}` does.
-      if (resolved[i + 1] === undefined && GLOBBED.test(marked[i + 1] ?? '')) words.push(UNKNOWN)
+      if (resolved[i + 1] === undefined && expandsToWords(marked[i + 1] ?? '', splits)) words.push(UNKNOWN)
       i++
     }
   }
@@ -76,8 +82,9 @@ function scanOptions(
 export function hasUnreadableConfig(
   resolved: readonly (string | undefined)[],
   marked: readonly string[],
+  splits: readonly string[],
 ): boolean {
-  const { words, at } = scanOptions(resolved, marked)
+  const { words, at } = scanOptions(resolved, marked, splits)
   if (!words.some(unreadable)) return false
   const sub = resolved[at]
   return sub === undefined || HOOK_RUNNING.has(sub) || !GIT_BUILTINS.has(sub)
