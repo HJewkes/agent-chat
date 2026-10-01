@@ -464,38 +464,43 @@ const parses = (text: string): boolean => {
   }
 }
 
-/** Every blank or unparseable line as `[index, line, 2 lines either side]`, stringified so whitespace shows. */
+/** Every unparseable non-blank line as `{i, around}` with 2 lines either side, stringified so whitespace shows. */
 const badLines = (lines: string[]): string[] =>
   lines.flatMap((text, i) =>
-    text !== '' && parses(text)
+    text === '' || parses(text)
       ? []
       : [JSON.stringify({ i, around: lines.slice(Math.max(0, i - 2), i + 3) })],
   )
 
+/** A blank line is tolerated: the writer pads an unterminated tail, and a shell's own newline can land after the pad. */
 describe('a seat appending by shell while the writer appends', () => {
-  it('leaves every one of 400 interleaved lines parseable', { repeats: Number(process.env.CC417_REPEATS ?? 0) }, async () => {
-    const file = logFile('seat-x')
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    const line = `{"agent":"${AGENT}","outcome":"done","note":"by shell"}`
-    const shell = spawn('/bin/sh', [
-      '-c',
-      `i=0; while [ $i -lt 200 ]; do i=$((i+1)); echo '${line}' >> "$1"; done`,
-      'sh',
-      file,
-    ])
-    const exited = new Promise(resolve => shell.on('exit', resolve))
-    const writer = writerOver()
+  it(
+    'leaves every one of 400 interleaved lines parseable',
+    { repeats: Number(process.env.CC417_REPEATS ?? 0) },
+    async () => {
+      const file = logFile('seat-x')
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      const line = `{"agent":"${AGENT}","outcome":"done","note":"by shell"}`
+      const shell = spawn('/bin/sh', [
+        '-c',
+        `i=0; while [ $i -lt 200 ]; do i=$((i+1)); echo '${line}' >> "$1"; done`,
+        'sh',
+        file,
+      ])
+      const exited = new Promise(resolve => shell.on('exit', resolve))
+      const writer = writerOver()
 
-    for (let i = 0; i < 200; i++) {
-      writer.dispatched(facts({ agent_id: `id-${i}` }))
-      await new Promise(resolve => setImmediate(resolve))
-    }
-    expect(await exited).toBe(0)
+      for (let i = 0; i < 200; i++) {
+        writer.dispatched(facts({ agent_id: `id-${i}` }))
+        await new Promise(resolve => setImmediate(resolve))
+      }
+      expect(await exited).toBe(0)
 
-    const lines = fs.readFileSync(file, 'utf8').split('\n')
-    expect(lines.pop()).toBe('')
-    expect(badLines(lines), 'blank or unparseable lines, with their neighbours').toEqual([])
-    expect(lines).toHaveLength(400)
-    expect(logged).toEqual([])
-  })
+      const lines = fs.readFileSync(file, 'utf8').split('\n')
+      expect(lines.pop()).toBe('')
+      expect(badLines(lines), 'unparseable lines, with their neighbours').toEqual([])
+      expect(lines.filter(text => text !== '')).toHaveLength(400)
+      expect(logged).toEqual([])
+    },
+  )
 })
