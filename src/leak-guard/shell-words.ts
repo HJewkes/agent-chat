@@ -186,6 +186,7 @@ class ShellLexer {
 
   /** `name(`, `name ()` and `<(`: a glob qualifier, a function and a process substitution, none modelled. */
   private paren(c: string): void {
+    if (c === '(' && this.globGroup()) return
     const fed = c === '(' && this.word === null && this.pending !== null
     if (fed) this.pending = null
     if (fed || (c === '(' && this.word !== null)) this.append('', true)
@@ -197,6 +198,26 @@ class ShellLexer {
     this.depth += c === '(' ? 1 : -1
     this.pos++
     this.cur = this.newCommand()
+  }
+
+  /** zsh reads `g(i|x)t` and `*.ts(.)` as one glob word (TP-721); `name()` stays a function and `x=(` an array. */
+  private globGroup(): boolean {
+    const word = this.word
+    if (word === null || word.endsWith('=') || this.pending !== null) return false
+    if (/^\(\s*\)/.test(this.src.slice(this.pos))) return false
+    let depth = 0
+    let end = this.pos
+    for (; end < this.src.length && this.src[end] !== '\n'; end++) {
+      depth += this.src[end] === '(' ? 1 : this.src[end] === ')' ? -1 : 0
+      if (depth === 0) break
+    }
+    const stop = this.src[end] === '\n' ? end : Math.min(end + 1, this.src.length)
+    const group = this.src.slice(this.pos, stop)
+    // A substitution inside still runs, so such a group keeps the subshell reading that checks it.
+    if (/\$\(|`/.test(group)) return false
+    this.split(group)
+    this.pos = stop
+    return true
   }
 
   private skipComment(): void {

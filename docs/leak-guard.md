@@ -366,13 +366,17 @@ default such as `${PYTHON:-python3}` reads `PYTHON` without assigning it, so it 
 `$PYTHON`; `${PYTHON:=python3}` assigns and ties. The guard tests for `git` after removing quotes
 and backslashes, so a default or replacement word that becomes `git` ties: `${x:-g"i"t}`,
 `${x:-g\it}`, `${x/#/g"i"t}` and `${x/a/g"i"t}`. A word ties, too, when a glob, a brace
-expansion, an ANSI-C string or an unset variable spliced into it may turn a path segment into
-`git` (TP-721): `/usr/bin/gi?`, `gi[t]`, `${x:-/usr/bin/g?t}`, `g{i,}t`, `g{h..j}t`,
-`${x:-$'g\x69t'}` and `${x:-g${z}it}`. The guard expands brace alternatives and ranges, decodes
-the ANSI-C string, drops each `$NAME` and `${NAME}` as if unset, and matches each segment as a
-glob against `git`. A word that cannot become `git` stays allowed: `./scripts/*.sh`,
-`~/bin/*-tool`, `${PYTHON:-python{3,}}`. A bare `*` can, if the directory holds a file named
-`git`, so it ties. A top-level `$'\x67it'` needs none of this: the splitter decodes it to a
+expansion, zsh alternation, an ANSI-C string or an unset variable spliced into it may turn a
+path segment into `git` (TP-721): `/usr/bin/gi?`, `gi[t]`, `gi[]t]`, `gi[!]x]`,
+`${x:-/usr/bin/g?t}`, `g{i,}t`, `g{h..j}t`, `g(i|x)t`, `${x:-$'g\x69t'}`, `${x:-gi}t` and
+`${x:-g${z}it}`. The guard expands brace alternatives, ranges and `(a|b)` groups, decodes the
+ANSI-C string, drops each `$NAME` and `${NAME}` as if unset, reads a `${x:-...}` default as joined
+to the text around it, and matches each segment as a glob against `git`. The splitter keeps
+`g(i|x)t` and `*.ts(.)` as one word rather than a subshell, unless the group holds a `$(...)` or
+backticks, which it still parses as commands. A word over 1024 characters, or one that expands
+past 256 words or 4096 steps, ties without being checked, so it fails closed and fast. A word that
+cannot become `git` stays allowed: `./scripts/*.sh`, `~/bin/*-tool`, `${PYTHON:-python{3,}}`. A
+bare `*` can, if the directory holds a file named `git`, so it ties. A top-level `$'\x67it'` needs none of this: the splitter decodes it to a
 literal `git`. So `x=$(echo tig|rev); source /dev/null; $x pnv` is denied, and so is the same line with
 `pushd .` or `cd "$D"` in place of `source`. A command word from the environment the line does
 not touch is allowed, whatever else the line runs: `source .venv/bin/activate && $PYTHON -m
@@ -654,9 +658,9 @@ Not covered, by design or by cost:
   (`'repos/o/r/issues/1/comments?body=<text>'`), and flag values other than the title, body and
   fields, such as `--head`, `--label` and `--milestone`;
 - zsh with `BRACE_CCL` set in a startup file, which expands `{owner}` into single characters;
-- a command word that zsh's glob grouping or `EXTENDED_GLOB` operators turn into git (`g(i|x)t`,
-  `gi#t`), behind a `source`, `pushd` or `cd` the guard cannot follow: the splitter reads `(` as
-  a subshell, and the TP-721 glob match knows only `?`, `*` and brackets;
+- a command word that zsh's `EXTENDED_GLOB` operators turn into git (`gi#t`, `^x`, `x~y`). The
+  option is off by default, and the splitter reads `#` as a literal character, so `gi#t` resolves
+  to itself. Reading `#` as a glob would make every unquoted `fix#12` argument unreadable;
 - a different `git` on `PATH`, `GIT_EXEC_PATH`, or `--exec-path`;
 - pushing without git at all, for example over the GitHub API with `curl`;
 - a git alias whose lookup fails or takes over 1 s, that shadows an external `git-<name>`

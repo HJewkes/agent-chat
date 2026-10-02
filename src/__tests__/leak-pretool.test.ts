@@ -1088,12 +1088,43 @@ describe('a git alias already in config', () => {
       ['an ANSI-C string in a default', "${x:-$'g\\x69t'} pnv"],
       ['a brace expansion', 'g{i,}t pnv'],
       ['an unset variable spliced into a default', '${x:-g${z}it} pnv'],
+      ['a bracket that opens with ]', 'gi[]t] pnv'],
+      ['a negated bracket that opens with ]', 'gi[!]x] pnv'],
+      ['a bracket that opens with ] on a path', '/usr/bin/gi[]t] pnv'],
+      ['a bracket that opens with ] in a default', '${x:-gi[]t]} pnv'],
+      ['zsh alternation', 'g(i|x)t pnv'],
+      ['zsh alternation on a path', '/usr/bin/g(i|x)t pnv'],
+      ['zsh alternation in a default', '${x:-g(i|x)t} pnv'],
+      ['a default joined to the text after it', '${x:-gi}t pnv'],
     ])(
       'denies a command word that may become git through %s where it cannot look (TP-721): %s',
       (_, word) => {
         expect(checkCommand(`source /dev/null; ${word}`, inAliased())).toBe(REASONS.aliasEnv)
       },
     )
+
+    it.each(['g(i|x)t pnv', '/usr/bin/g(i|x)t pnv', '${x:-g(i|x)t} pnv'])(
+      'reads the alias behind a zsh alternation that may be git where it can look (TP-721): %s',
+      command => {
+        expect(checkCommand(command, inAliased())).toBe(REASONS.noVerify)
+      },
+    )
+
+    it('still checks a substitution inside a zsh glob group (TP-721)', () => {
+      expect(checkCommand('ls x(a|$(git push --no-verify))', inAliased())).toBe(REASONS.noVerify)
+    })
+
+    it('denies a command word too deeply nested to check, well within the hook timeout (TP-721)', () => {
+      const word = `${'{'.repeat(80000)}x${'}'.repeat(80000)}`
+      const started = performance.now()
+
+      const reasons = [`source /dev/null; ${word} pnv`, `${word}; git push --no-verify`].map(command =>
+        checkCommand(command, inAliased()),
+      )
+
+      expect(reasons).toEqual([REASONS.aliasEnv, REASONS.noVerify])
+      expect(performance.now() - started).toBeLessThan(2000)
+    })
 
     it.each([
       'ls src/*.ts',
@@ -1104,6 +1135,9 @@ describe('a git alias already in config', () => {
       './scripts/*.sh run && git status',
       '~/bin/*-tool x; git log',
       '${PYTHON:-python{3,}} -m pytest && git status',
+      'ls *.ts(.)',
+      'f() { echo hi; }; f',
+      'arr=(a b); echo $arr',
     ])(
       'allows a glob, brace or ANSI-C word that cannot become git where it cannot look (TP-721): %s',
       line => {
