@@ -21,7 +21,7 @@ import {
   SURFACED_NOTICE,
   type SwitchOutcome,
 } from './mode-switch.js'
-import { buildLaunchPlan, permModeFor } from './launch-plan.js'
+import { AGENT_CHAT_TOOLS, buildLaunchPlan, permModeFor } from './launch-plan.js'
 import {
   buildMcpConfig,
   clearRuntimeState,
@@ -497,6 +497,35 @@ function stillDenied(childDenied: Set<string>, tool: string): boolean {
   if (childDenied.has(tool)) return true
   const base = tool.split('(')[0] ?? tool
   return base !== tool && childDenied.has(base)
+}
+
+/** CC-451: what a web-exempt child may hold besides the exempt tools. None of them runs code. */
+const NON_EXEC_TOOLS: ReadonlySet<string> = new Set([
+  'Read',
+  'Write',
+  'Edit',
+  'Grep',
+  'Glob',
+  AGENT_CHAT_TOOLS,
+])
+
+/**
+ * CC-451: the tools a requester of `role` may grant `profile` without holding
+ * them. Only a coordinator, and only to a child that denies all of Bash and
+ * allows nothing outside `grantable` and `NON_EXEC_TOOLS`, so a fetched page
+ * cannot talk it into running code. Fails closed: Monitor, any Bash form and
+ * any MCP tool, including ones added later, void the exemption.
+ */
+export function coordinatorExemption(
+  role: AgentRole,
+  profile: Pick<AgentProfile, 'allowedTools' | 'disallowedTools'>,
+  grantable: readonly string[],
+): Set<string> {
+  if (role !== 'coordinator') return new Set()
+  if (!(profile.disallowedTools ?? []).includes('Bash')) return new Set()
+  const exempt = new Set(grantable)
+  const confined = profile.allowedTools.every(tool => exempt.has(tool) || NON_EXEC_TOOLS.has(tool))
+  return confined ? exempt : new Set()
 }
 
 /** Only a worktree the strategy cut records `base_ref`; an adopted one has no base to report. */
@@ -1039,15 +1068,12 @@ export class Supervisor implements TeleportHost {
     return { exempted }
   }
 
-  /**
-   * CC-451: the tools this requester may grant without holding them. Only a
-   * coordinator, and only to a child that denies ALL of Bash, so the child
-   * cannot run code a fetched page talks it into and WebFetch is its one way out.
-   */
   private exemptionFor(req: SpawnRequest, profile: AgentProfile): Set<string> {
-    if (this.requesterOf(req.parentAgentId).role !== 'coordinator') return new Set()
-    if (!(profile.disallowedTools ?? []).includes('Bash')) return new Set()
-    return new Set(resolveCoordinatorGrantableTools())
+    return coordinatorExemption(
+      this.requesterOf(req.parentAgentId).role,
+      profile,
+      resolveCoordinatorGrantableTools(),
+    )
   }
 
   /**
