@@ -9,7 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readAccountBudget } from '../agents/budget.js'
 import { scoredPlanFromDisk } from '../agents/burndown/score-render.js'
 import { dayStart } from '../agents/burndown/budget-gate.js'
-import { readDoc, type SeatRecord, type WatchdogDoc } from '../agents/seats/io.js'
+import { loadDoc, readDoc, saveDoc, type SeatRecord, type WatchdogDoc } from '../agents/seats/io.js'
+import { acquireRunLock } from '../agents/seats/lock.js'
+import { startRun } from '../agents/seats/run-start.js'
 import {
   STATUS_TOP,
   readInbox,
@@ -681,6 +683,32 @@ describe("the seat's spend caps", () => {
     const { budget } = await status()
 
     expect(budget.stop).toBe(stopOf("run spend 5 points at or above the seat's per_run_points 5"))
+  })
+
+  it('opens the gate once seats run-start resets a run meter past the per_run cap', async () => {
+    writeAutonomy({ spend: { per_run_points: 5, per_day_points: 10 }, configDir: poolDir })
+    const run = { since: at(1), last: 30, spent: 9 }
+    const saved = { seats: { [SEAT]: { idleRuns: 0, at: at(9, 45), run } }, pools: { [POOL]: dayMeter } }
+    fs.writeFileSync(statePath(), JSON.stringify(saved))
+    const before = await fromDisk()
+
+    await startRun(
+      {
+        now: () => NOW,
+        readCharter: () => fs.readFileSync(path.join(autonomy, 'charter.md'), 'utf8'),
+        readSeatFile: seat => fs.readFileSync(path.join(autonomy, 'seats', `${seat}.md`), 'utf8'),
+        readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
+        loadDoc: () => loadDoc(statePath()),
+        saveDoc: next => saveDoc(next, statePath()),
+        lock: () => acquireRunLock(path.join(tmp, 'seat-watchdog.lock')),
+        sleep: async () => undefined,
+      },
+      SEAT,
+    )
+    const after = await fromDisk()
+
+    expect(before.budget.stop).toBe(stopOf("run spend 20 points at or above the seat's per_run_points 5"))
+    expect(after.budget.stop).toBeNull()
   })
 
   it('counts a run meter older than 12 hours from its last reading, not from zero', async () => {

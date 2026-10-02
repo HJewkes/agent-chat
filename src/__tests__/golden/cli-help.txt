@@ -351,6 +351,13 @@ Commands:
                                a cutoff and the seat status, in 6,000 characters. Over that the
                                oldest inbox lines go first, then the log section; the queue and
                                status are never cut
+  run-start [options] <seat>   start a new run for a seat when the owner messages it (CC-472): sets
+                               the seat's run meter in $AGENT_CHAT_HOME/seat-watchdog.json to
+                               {since: now, last: <pool seven_day now>, spent: 0, before: <old
+                               last>} under the watchdog run lock, leaving every other entry as it
+                               was. Refuses and writes nothing on unknown_seat, no_reading (no
+                               seven_day reading, or one over 15 min old) or lock_held (a watchdog
+                               run held the lock for 90 s)
   watchdog-install [options]   install the launchd job that runs `seats watchdog` four times an
                                hour; the first run waits for the next scheduled minute
   help [command]               display help for command
@@ -418,6 +425,19 @@ Options:
                    {"seat", "error"} with exit 1
   --root <value>   autonomy directory holding charter.md, seats/, queues/ and logs/
   -h, --help       display help for command
+
+=== agent-chat seats run-start
+Usage: agent-chat seats run-start [options] <seat>
+
+start a new run for a seat when the owner messages it (CC-472): sets the seat's run meter in
+$AGENT_CHAT_HOME/seat-watchdog.json to {since: now, last: <pool seven_day now>, spent: 0, before:
+<old last>} under the watchdog run lock, leaving every other entry as it was. Refuses and writes
+nothing on unknown_seat, no_reading (no seven_day reading, or one over 15 min old) or lock_held (a
+watchdog run held the lock for 90 s)
+
+Options:
+  --root <value>  autonomy directory holding charter.md and seats/
+  -h, --help      display help for command
 
 === agent-chat seats watchdog-install
 Usage: agent-chat seats watchdog-install [options]

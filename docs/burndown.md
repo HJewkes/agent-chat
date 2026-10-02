@@ -60,7 +60,8 @@ For each listed seat, in order, the tick:
 - takes one sample of the seat pool's `seven_day` reading from the status file under the
   pool's `config_dir`, and keeps the seat's samples for 26 hours in the ledger's `seats`;
 - gates the pool with `gatePool`, using the run start the seat watchdog shares
-  (`runStartAt`, capped at 12 hours) and the samples as history;
+  (`runStartAt`, capped at 12 hours) and the samples as history (see "The run meter"
+  below);
 - dispatches the seat planners' ready slices first, then scores the seat's scope and walks
   the order through `planSeat`: eligibility, route, repo, the post-advance collision
   check, orphan, trust on the pool's `config_dir`, role caps, worktree caps, then the pool
@@ -81,6 +82,25 @@ They are resolved before new work is planned, so each one gates on the reading c
 with the spawns before it on its pool, and new dispatches then gate on all of them. When
 the pool has headroom for one, an in-flight claim's reviewer wins over a new dispatch. A
 spawn the charge closes is deferred, not stalled, and comes back next tick.
+
+### The run meter
+
+The seat watchdog keeps each seat's run meter in `$AGENT_CHAT_HOME/seat-watchdog.json` at
+`seats.<seat>.run = {since, last, spent, before?}`. The watchdog starts a new run only once
+the meter is 12 hours old. The charter's run, though, starts at the owner's last message to
+the seat. When the owner starts a new run, reset the meter (CC-472):
+
+```
+agent-chat seats run-start <seat> [--root <autonomy dir>]
+```
+
+It sets the meter to `{since: now, last: <pool seven_day now>, spent: 0, before: <the old
+meter's last>}` and leaves every other seat and map untouched. It takes the watchdog's run
+lock (`seat-watchdog.lock`), so a watchdog pass never overwrites the reset and the reset never
+overwrites a pass; it waits up to 90 seconds for a pass to finish. It refuses and writes
+nothing on `unknown_seat`, `no_reading` (no `seven_day` in the pool's status file, or one older
+than 15 minutes) or `lock_held`. The watchdog, `seats status` and the CC-288 spawn gate read
+the new run at once.
 
 A seat file may set `pacing: reset-aware` (CC-404). The tick, the seat watchdog and
 `seats status` then replace both `per_day_points` caps with one day allowance, built by

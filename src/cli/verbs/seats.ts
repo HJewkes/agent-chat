@@ -38,6 +38,7 @@ import {
 } from '../../agents/seats/io.js'
 import { readDispatches, renderDispatches } from '../../agents/seats/dispatch-read.js'
 import { acquireRunLock } from '../../agents/seats/lock.js'
+import { renderRunStart, startRun, type RunStartDeps } from '../../agents/seats/run-start.js'
 import {
   parseLogReadings,
   parseReadingFlag,
@@ -504,6 +505,49 @@ export const seatsDispatchesVerb = defineVerb({
   },
 })
 
+function runStartDeps(root: string): RunStartDeps {
+  return {
+    now: () => new Date(),
+    readCharter: () => readText(path.join(root, 'charter.md')),
+    readSeatFile: seat => readText(path.join(root, 'seats', `${seat}.md`)),
+    readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
+    loadDoc: () => loadDoc(),
+    saveDoc: doc => saveDoc(doc),
+    lock: () => acquireRunLock(),
+    sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+  }
+}
+
+/** The run-start verb's body, taking its readers explicitly so a test can point them at a fixture home. */
+export async function runStartReport(deps: RunStartDeps, seat: string): Promise<Report> {
+  try {
+    return { ok: true, lines: renderRunStart(await startRun(deps, seat)) }
+  } catch (err) {
+    return refused(err)
+  }
+}
+
+export const seatsRunStartVerb = defineVerb({
+  name: 'seats.run-start',
+  description:
+    "start a new run for a seat when the owner messages it (CC-472): sets the seat's run meter in " +
+    '$AGENT_CHAT_HOME/seat-watchdog.json to {since: now, last: <pool seven_day now>, spent: 0, ' +
+    'before: <old last>} under the watchdog run lock, leaving every other entry as it was. Refuses and ' +
+    'writes nothing on unknown_seat, no_reading (no seven_day reading, or one over 15 min old) or ' +
+    'lock_held (a watchdog run held the lock for 90 s)',
+  args: z.object({ seat: requiredString('seat'), root: z.string().optional() }),
+  result: Report,
+  cli: {
+    positional: ['seat'],
+    options: {
+      root: { long: '--root', description: 'autonomy directory holding charter.md and seats/' },
+    },
+  },
+  async run({ seat, root }) {
+    return runStartReport(runStartDeps(root ?? defaultAutonomyRoot()), seat)
+  },
+})
+
 /** The status opens its own broker connection, so a broker that is down costs the boot only its status. */
 function bootDeps(root: string): BootDeps {
   return {
@@ -573,5 +617,6 @@ export function addSeatsCommands(program: Commander): void {
   addVerb(seats, seatsStatusVerb)
   addVerb(seats, seatsDispatchesVerb)
   addVerb(seats, seatsBootVerb)
+  addVerb(seats, seatsRunStartVerb)
   addVerb(seats, seatsWatchdogInstallVerb)
 }
