@@ -259,6 +259,20 @@ The trust limit is the OS account. An agent runs as the owner's user, so it can 
 file, the term list or the installed scanner. The hook stops a careless agent and the variable
 and repository-state tricks listed above; it does not sandbox one that sets out to get past it.
 
+### Binary files are scanned as text (CC-343)
+
+From `@titan-design/egress-scan` 0.2.0 the scanner passes `--text` to git, so a file git calls
+binary, one NUL byte is enough, is scanned line by line like any other. A commit whose patch text
+is over 128 MiB is refused, with one line naming the commit and the limit. UTF-16 text is not
+matched: the scanner reads bytes as UTF-8, so a term written as UTF-16 still passes.
+
+The hook checks for this. A scanner whose `--help` lacks `scanned as text`, that is 0.1.x, skips
+binary files, so the hook refuses the push and prints the install hint. A missing scanner or one
+without `pre-push` still warns and lets the push go.
+
+Upgrade the global scanner before the broker restart that loads this hook, or every agent push is
+refused: `npm i -g @titan-design/egress-scan@0.2.0`.
+
 ### The private term list
 
 egress-scan reads its private terms from `$TITAN_EGRESS_TERMS`, else
