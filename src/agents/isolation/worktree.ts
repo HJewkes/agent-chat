@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
-import { cpSync, existsSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, lstatSync, rmSync } from 'node:fs'
+import type { Stats } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { clearRefusal, recordRefusal } from './refusals.js'
@@ -526,7 +527,24 @@ async function raceTimer(
 function copyClaudeDir(gitRoot: string, worktreePath: string): void {
   const source = path.resolve(gitRoot, '.claude')
   const target = path.resolve(worktreePath, '.claude')
-  if (existsSync(source) && !existsSync(target)) cpSync(source, target, { recursive: true })
+  if (!existsSync(source)) return
+  const existing = lstatOrNull(target)
+  if (existing === null) cpSync(source, target, { recursive: true })
+  else if (!existing.isDirectory())
+    process.stderr.write(
+      `agent-chat: .claude not copied into ${worktreePath}: the branch committed it as ` +
+        `${existing.isSymbolicLink() ? 'a symlink' : 'a non-directory'}\n`,
+    )
+}
+
+/** lstat, not stat: a branch can commit a dangling symlink, which existsSync reads as absent. */
+function lstatOrNull(target: string): Stats | null {
+  try {
+    return lstatSync(target)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw err
+  }
 }
 
 interface AttachOptions {

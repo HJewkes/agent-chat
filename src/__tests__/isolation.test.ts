@@ -230,6 +230,42 @@ describe('worktree allocate', () => {
     expect(fs.existsSync(path.join(alloc.cwd, '.claude', 'settings.json'))).toBe(true)
   })
 
+  describe('a branch that commits .claude as a symlink (CC-459)', () => {
+    /** The branch is committed first so adoption checks it out with the link in place. */
+    function repoWithBranchSymlink(linkTarget: string): string {
+      const repo = makeRepo()
+      git(['checkout', '-b', 'agent-chat/alice'], repo)
+      fs.symlinkSync(linkTarget, path.join(repo, '.claude'))
+      git(['add', '.claude'], repo)
+      git(['commit', '-m', 'commit .claude as a symlink'], repo)
+      git(['checkout', 'main'], repo)
+      fs.mkdirSync(path.join(repo, '.claude'))
+      fs.writeFileSync(path.join(repo, '.claude', 'settings.json'), '{}')
+      return repo
+    }
+
+    it('survives a dangling symlink and writes nothing through it', async () => {
+      const outside = path.join(os.tmpdir(), `iso-outside-${process.pid}-dangling`)
+      tmpdirs.push(outside)
+      const repo = repoWithBranchSymlink(outside)
+
+      const alloc = await worktreeStrategy.allocate(ctxFor(repo))
+
+      expect(fs.lstatSync(path.join(alloc.cwd, '.claude')).isSymbolicLink()).toBe(true)
+      expect(fs.existsSync(outside)).toBe(false)
+    })
+
+    it('does not copy settings into a real directory outside the tree', async () => {
+      const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'iso-outside-')))
+      tmpdirs.push(outside)
+      const repo = repoWithBranchSymlink(outside)
+
+      await worktreeStrategy.allocate(ctxFor(repo))
+
+      expect(fs.readdirSync(outside)).toEqual([])
+    })
+  })
+
   it('allocates against the main repo when called from inside a worktree', async () => {
     const repo = makeRepo()
     const first = await worktreeStrategy.allocate(ctxFor(repo))
