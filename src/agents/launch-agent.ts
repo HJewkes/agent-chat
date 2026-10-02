@@ -9,6 +9,7 @@ import { withShimOnPath, writeGhShim } from '../gh-shim/install.js'
 import { GIT_SHIM_DIR_ENV } from '../leak-guard/git-shim.js'
 import { agentDir, distDir, ghShimDir, home } from '../paths.js'
 import { agentEnv } from './agent-env.js'
+import { resolveBasePath } from './base-path.js'
 import { recordClaudeBin, resolveClaudeBin } from './claude-bin.js'
 import { LAUNCHER_PID_ENV } from './launcher.js'
 import { watchLauncherSignals } from './launcher-signals.js'
@@ -46,11 +47,19 @@ function withGitShim(env: Record<string, string>): Record<string, string> {
   return dir === undefined ? env : withShimOnPath(env, dir)
 }
 
+/** `agentEnv()` with a PATH that keeps agent-chat, gh and sbin however the broker was started (CC-456). */
+export function agentBaseEnv(
+  parent: NodeJS.ProcessEnv = process.env,
+  resolvePath: (env: NodeJS.ProcessEnv) => string = env => resolveBasePath({ env, stateDir: home() }),
+): Record<string, string> {
+  return { ...agentEnv(parent), PATH: resolvePath(parent) }
+}
+
 /**
  * The plan with the shim dirs on its PATH. The launcher layers `plan.env` over the base env,
  * so a PATH the plan sets wins over the base's: the shims go onto whichever PATH will win.
  */
-export function withShims(plan: LaunchPlan, base: Record<string, string> = agentEnv()): LaunchPlan {
+export function withShims(plan: LaunchPlan, base: Record<string, string> = agentBaseEnv()): LaunchPlan {
   const env = {
     ...(plan.env.PATH === undefined && base.PATH !== undefined ? { PATH: base.PATH } : {}),
     ...plan.env,
@@ -63,7 +72,7 @@ export function withShims(plan: LaunchPlan, base: Record<string, string> = agent
 export function launchOptions(agentId: string): RunAgentOptions {
   return {
     agentDir: agentDir(agentId),
-    baseEnv: agentEnv(),
+    baseEnv: agentBaseEnv(),
     resolveBin,
     launcherPidEnv: LAUNCHER_PID_ENV,
     paneSources: diskPaneSources,

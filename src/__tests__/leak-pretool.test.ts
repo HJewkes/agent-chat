@@ -754,7 +754,7 @@ describe('a gh command the command line hides', () => {
   })
 
   it('checks an expanded command word as git too, and by name once it resolves', () => {
-    const env = { GH: '/opt/bin/gh', GIT: 'git' }
+    const env = { GH: 'gh', GIT: 'git' }
 
     expect(checkCommand('G=git; $G push --no-verify', ctx())).toBe(REASONS.noVerify)
     expect(checkCommand(`$GH pr create -t ${TERM} -b y`, ctx({ env }))).toContain('title line 1')
@@ -1327,6 +1327,46 @@ describe('a git alias already in config', () => {
         expect(checkCommand(command, at(plain))).toBeUndefined()
       },
     )
+  })
+})
+
+describe('the bypass guard denies gh called by path (CC-456)', () => {
+  it.each([
+    '/opt/homebrew/bin/gh pr create -t x -b y',
+    '/usr/local/bin/gh api -X POST repos/o/r/issues/1/comments -f body=y',
+    './gh pr merge 3 --squash',
+    'command /opt/homebrew/bin/gh pr edit 3 -b y',
+    'env FOO=1 /opt/homebrew/bin/gh issue comment 4 -b y',
+    "sh -c '/opt/homebrew/bin/gh pr create -t x -b y'",
+    '/opt/homebrew/bin/gh pr view 3',
+  ])('denies %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.ghByPath)
+  })
+
+  it('denies a gh path that a variable expands to', () => {
+    expect(checkCommand('$GH pr create -t x -b y', ctx({ env: { GH: '/opt/bin/gh' } }))).toBe(
+      REASONS.ghByPath,
+    )
+  })
+
+  it('still allows bare gh and gh-write', () => {
+    expect(checkCommand('gh pr view 3', ctx())).toBeUndefined()
+    expect(checkCommand('agent-chat gh-write -- pr create -t x -b y', ctx())).toBeUndefined()
+  })
+
+  it('prints a PreToolUse deny naming gh-write from the hook entry point', () => {
+    const raw = JSON.stringify({
+      tool_name: 'Bash',
+      tool_input: { command: '/opt/homebrew/bin/gh pr create -t x -b y' },
+      cwd: '/work',
+    })
+
+    const out = JSON.parse(pretoolDecision(raw, () => ctx())) as {
+      hookSpecificOutput: Record<string, string>
+    }
+
+    expect(out.hookSpecificOutput.permissionDecision).toBe('deny')
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain('agent-chat gh-write --')
   })
 })
 

@@ -82,7 +82,7 @@ export function machineDecision(
 }
 
 const sysctl = (name: string): string =>
-  execFileSync('sysctl', ['-n', name], { encoding: 'utf8', timeout: 2000 })
+  execFileSync('/usr/sbin/sysctl', ['-n', name], { encoding: 'utf8', timeout: 2000 })
 
 /** Parses macOS `sysctl -n kern.memorystatus_level`, the percent of memory free. */
 export function parseMemoryLevel(text: string): MemoryReading {
