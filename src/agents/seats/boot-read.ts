@@ -109,12 +109,25 @@ export function readLogSection(root: string, seat: string, now: Date): LogSectio
 
 export const TELEPORT_LOOKBACK_DAYS = 7
 
-/** The newest `State at teleport` section among the seat's last journal days, not only today's; undefined when none has one. */
-export function latestTeleportSection(root: string, seat: string): string | undefined {
-  for (const day of seatJournalDays(root, seat).slice(0, TELEPORT_LOOKBACK_DAYS)) {
+export interface TeleportSection {
+  /** Local `YYYY-MM-DD` of the journal the section came from. */
+  day: string
+  section: string
+}
+
+const DAY_MS = 86_400_000
+const startOfDay = (at: Date): number => new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime()
+const dayName = (at: Date): string =>
+  [at.getFullYear(), at.getMonth() + 1, at.getDate()].map(n => String(n).padStart(2, '0')).join('-')
+
+/** The newest `State at teleport` section in a journal dated within the lookback of `now`, not only today's. */
+export function latestTeleportSection(root: string, seat: string, now: Date): TeleportSection | undefined {
+  const oldest = startOfDay(now) - TELEPORT_LOOKBACK_DAYS * DAY_MS
+  for (const day of seatJournalDays(root, seat)) {
+    if (startOfDay(day) < oldest) break
     const text = readSeatJournal(root, seat, day)
     const section = text === undefined ? undefined : latestTeleportState(text)
-    if (section !== undefined) return section
+    if (section !== undefined) return { day: dayName(day), section }
   }
   return undefined
 }
