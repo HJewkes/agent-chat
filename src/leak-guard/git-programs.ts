@@ -1,3 +1,4 @@
+import { quoted } from './git-alias.js'
 import { configWords, keyOf, unreadable, type ConfigWord } from './git-unresolved.js'
 import { LIVE, unmark } from './shell-words.js'
 
@@ -80,9 +81,62 @@ export function configPrograms(
   return scripts
 }
 
-/** The shell command an `ext::` transport URL runs, for each such argument git is given. */
-export function extScripts(resolved: readonly (string | undefined)[]): string[] {
-  return resolved
-    .filter((arg): arg is string => arg !== undefined && arg.startsWith('ext::'))
-    .map(arg => arg.slice('ext::'.length))
+/**
+ * The command an `ext::` transport payload runs, as `git-remote-ext` decodes it: arguments split
+ * on spaces, `% ` an embedded space, `%%` a literal percent, `%s`/`%S`/`%G`/`%V` substitutions the
+ * guard cannot know. The argv is shell-quoted back into one line to check. undefined when it cannot
+ * be decoded, as a trailing or unknown `%` escape cannot.
+ */
+export function decodeExt(payload: string): string | undefined {
+  const args: string[] = []
+  let cur = ''
+  for (let i = 0; i < payload.length; i++) {
+    const c = payload[i] as string
+    if (c === '%') {
+      const next = payload[++i]
+      if (next === ' ') cur += ' '
+      else if (next === '%') cur += '%'
+      else if (next !== undefined && 'sSGV'.includes(next)) cur += ''
+      else return undefined
+    } else if (c === ' ') {
+      args.push(cur)
+      cur = ''
+    } else cur += c
+  }
+  args.push(cur)
+  return args
+    .filter(a => a !== '')
+    .map(quoted)
+    .join(' ')
+}
+
+/**
+ * The commands `ext::` transport URLs run on a git command (TP-636): every argument or config
+ * value that holds `ext::`, case-insensitive, and the command of `git remote-ext <name> <cmd>`.
+ * `unreadable` when such a word holds an expansion the guard cannot read or a payload it cannot decode.
+ */
+export function extPrograms(
+  resolved: readonly (string | undefined)[],
+  marked: readonly string[],
+  at: number,
+): { scripts: string[]; unreadable: boolean } {
+  const scripts: string[] = []
+  let unreadable = false
+  const decode = (payload: string): void => {
+    const script = decodeExt(payload)
+    if (script === undefined) unreadable = true
+    else scripts.push(script)
+  }
+  marked.forEach((word, i) => {
+    if (!unmark(word).toLowerCase().includes('ext::')) return
+    const value = resolved[i]
+    if (value === undefined) unreadable = true
+    else decode(value.slice(value.toLowerCase().indexOf('ext::') + 'ext::'.length))
+  })
+  if (resolved[at] === 'remote-ext') {
+    const cmd = resolved[at + 2]
+    if (cmd === undefined && marked[at + 2] !== undefined) unreadable = true
+    else if (cmd !== undefined) decode(cmd)
+  }
+  return { scripts, unreadable }
 }
