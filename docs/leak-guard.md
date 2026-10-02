@@ -423,7 +423,9 @@ second one for the work-tree top. The guard does not skip network verbs, and eac
 in a `!` body is looked up again.
 
 The splitter looks inside `$(...)`, backticks, `sh -c`/`bash -c` strings, `eval`, `env -S` and a
-heredoc fed to a shell. `agent-chat gh-write -- <gh args>` is checked like `gh`. `git push -n` is
+heredoc fed to a shell. `agent-chat gh-write -- <gh args>` is checked like `gh`. A gh called by
+path, such as `/opt/homebrew/bin/gh` or a `$GH` that expands to one, is denied outright: it skips the
+agent's gh shim, and gh-write is the only write path (CC-456). `git push -n` is
 `--dry-run`, which pushes nothing, so it is allowed. `git commit --no-verify` is allowed too:
 it skips only the repository's own commit hooks, and the push is still scanned.
 

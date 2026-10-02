@@ -155,6 +155,15 @@ describe('the compiled blocks', () => {
   })
 })
 
+describe('the GitHub write path (CC-456)', () => {
+  it('names gh-write as the only write path, with no fallback to plain gh', () => {
+    const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
+
+    expect(text).toContain('`agent-chat gh-write -- <gh args>`, the only write path')
+    expect(text).not.toContain('otherwise use plain `gh`')
+  })
+})
+
 describe('the check-run rule (CC-357)', () => {
   // Mutation caught: reverting the implementer CI line to a bare "then CI status".
   it('has the implementer paste each check-run at the head instead of reporting "green"', () => {
