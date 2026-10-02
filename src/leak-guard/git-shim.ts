@@ -12,7 +12,7 @@ const shQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
 
 // Global options whose value is the next word; every other leading dash word stands alone.
 const VALUED_GLOBALS =
-  '-C | -c | --git-dir | --work-tree | --namespace | --config-env | --attr-source | --super-prefix'
+  '-C | -c | --git-dir | --work-tree | --namespace | --config-env | --attr-source | --super-prefix | --shallow-file'
 
 const DOCS = 'See docs/leak-guard.md.'
 

@@ -116,6 +116,21 @@ describe('the agent git shim exempting only an exact git stash push (TP-783)', (
     },
   )
 
+  // Kills: --shallow-file dropped from the valued globals (reviewer finding on #332; both pushed at 976c8031).
+  it.each([
+    ['shell-alias', 'git g', `!git --shallow-file stash push ${NO_VERIFY} origin main`],
+    ['no-verify', `git --shallow-file stash push ${NO_VERIFY} origin main`, ''],
+  ])('refuses as %s a push after --shallow-file stash: %s %s', (rule, command, alias) => {
+    const fx = fixture()
+    if (alias) git(fx.work, 'config', 'alias.g', alias)
+
+    const run = runScript(fx, command)
+
+    expect(run.stderr).toContain(`git-shim: push refused (${rule})`)
+    expect(run.status).toBe(2)
+    expect(remoteHasMain(fx)).toBe(false)
+  })
+
   // Kills: the stash exemption removed, or global options not skipped before the subcommand.
   it.each([
     ['git stash push -m x', ''],
