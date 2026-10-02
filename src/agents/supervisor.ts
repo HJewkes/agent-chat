@@ -105,6 +105,8 @@ import { resolveCoordinatorGrantableTools } from '../config.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { SeatJournal } from './seats/journal.js'
 import type { SeatDispatchLog, SpawnFacts } from './seats/dispatch-log.js'
+import type { SeatSpawnRead, SeatSpawnRequest } from './seats/spawn-gate-read.js'
+import { SEAT_BUDGET_STOP, seatSpawnGate, type SeatBudgetRefusalCode } from './seats/spawn-gate.js'
 import type { RetireSpend } from './seats/dispatch-record.js'
 import { readTranscriptSpend, type TranscriptSpendRead } from './transcript-spend.js'
 import type { ShadowLedger } from './ledger/shadow-ledger.js'
@@ -383,7 +385,12 @@ export interface SpawnRequest {
   anchor?: string
 }
 
-export type SpawnRefusalCode = 'surface_refused' | MachineRefusalCode
+export type SpawnRefusalCode = 'surface_refused' | MachineRefusalCode | SeatBudgetRefusalCode
+
+/** CC-288: reads a seat-prefixed spawn's pool and meters. Absent in tests, which own no autonomy root. */
+export interface SeatBudgetReaders {
+  read: (spawn: SeatSpawnRequest) => SeatSpawnRead
+}
 
 export interface SpawnOutcome {
   ok: boolean
@@ -392,7 +399,7 @@ export interface SpawnOutcome {
   reason?: string
   /** CC-441: see protocol.ts's `spawn_result`. */
   code?: SpawnRefusalCode
-  /** CC-445: whether the same spawn may succeed later without changes; set with a machine-guard `code`. */
+  /** CC-445: whether the same spawn may succeed later without changes; set with a machine-guard or seat budget `code`. */
   retryable?: boolean
   warnings?: string[]
   /** The profile's own deny list. See protocol.ts's `spawn_result` for why this matters. */
@@ -476,6 +483,8 @@ export interface SupervisorOptions {
   seatDispatch?: SeatDispatchLog
   /** CC-406: the machine-wide guard's readers. Absent in tests, which must not read the host's memory. */
   machineGuard?: MachineGuardReaders
+  /** CC-288: the seat budget gate's reader. */
+  seatBudget?: SeatBudgetReaders
   /** CC-450: how an unwatched agent's recorded launcher pid is checked. Faked in tests. */
   processProbe?: ProcessProbe
 }
@@ -644,6 +653,7 @@ export class Supervisor implements TeleportHost {
   private readonly teleporter: Teleport
   private readonly shadow: LifecycleShadow
   private readonly machineGuard: MachineGuardReaders | undefined
+  private readonly seatBudget: SeatBudgetReaders | undefined
   private readonly processProbe: ProcessProbe
   private readonly reaper: DetachedReaper
 
@@ -663,6 +673,7 @@ export class Supervisor implements TeleportHost {
     this.seatJournal = options.seatJournal
     this.seatDispatch = options.seatDispatch
     this.machineGuard = options.machineGuard
+    this.seatBudget = options.seatBudget
     this.processProbe = options.processProbe ?? hostProbe
     this.reaper = new DetachedReaper(this.settleMs, agentId => this.reapIfDead(agentId))
     this.unwatch = core.onAppend(row => this.onRow(row))
@@ -911,7 +922,7 @@ export class Supervisor implements TeleportHost {
   private refuse(
     req: SpawnRequest,
     reason: string,
-    cause: { code: MachineRefusalCode; retryable: boolean } | {} = {},
+    cause: { code: MachineRefusalCode | SeatBudgetRefusalCode; retryable: boolean } | {} = {},
   ): SpawnOutcome {
     // An event, not just a reply string: refusals are the security-relevant
     // thing and belong in the log whether or not anyone was watching.
@@ -986,6 +997,29 @@ export class Supervisor implements TeleportHost {
       surface === 'headless',
     )
     return decision.ok ? undefined : decision
+  }
+
+  /** CC-288: refuses a seat-prefixed spawn whose billed pool is past a charter budget stop; an unreadable seat lets it through. */
+  private seatBudgetRefusal(req: SpawnRequest, model: string, configDir: string): string | undefined {
+    if (this.seatBudget === undefined) return undefined
+    let read: SeatSpawnRead
+    try {
+      read = this.seatBudget.read({ name: req.name, spawner: req.requestedBy, configDir, now: new Date() })
+    } catch (err) {
+      logEvent('seat_spawn_gate_failed', {
+        name: req.name,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return undefined
+    }
+    if (read.kind === 'none') return undefined
+    if (read.kind === 'skip') {
+      logEvent('seat_spawn_gate', { name: req.name, allow: true, reason: read.reason })
+      return undefined
+    }
+    const verdict = seatSpawnGate({ ...read.input, model })
+    logEvent('seat_spawn_gate', { name: req.name, allow: verdict.allow, reason: verdict.reason })
+    return verdict.allow ? undefined : `seat budget stop: ${verdict.reason}`
   }
 
   /** The requester's OWN `agent_spawned` row — the only record of what it was granted. */
@@ -1284,6 +1318,8 @@ export class Supervisor implements TeleportHost {
     })
     if ('error' in account) return this.refuse(req, account.error)
     if (account.warning !== undefined) warnings.push(account.warning)
+    const overBudget = this.seatBudgetRefusal(req, profile.model, account.dir)
+    if (overBudget) return this.refuse(req, overBudget, { code: SEAT_BUDGET_STOP, retryable: true })
     const resumed = await this.resumeSource(req, isolationName, cwd, account.dir)
     if (resumed !== undefined && 'error' in resumed) return this.refuse(req, resumed.error)
     const predecessor = req.predecessor === undefined ? undefined : this.predecessorFor(req.predecessor, req)
