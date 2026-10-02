@@ -85,6 +85,7 @@ import { SpawnRateBudget } from './spawn-rate.js'
 import { isTrusted, trustGap } from './trust.js'
 import { agentDir, burndownConfigPath, cliEntry, gitHooksDir, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
+import { resolveCoordinatorGrantableTools } from '../config.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { SeatJournal } from './seats/journal.js'
 import type { SeatDispatchLog, SpawnFacts } from './seats/dispatch-log.js'
@@ -264,6 +265,8 @@ interface Resolved {
   predecessor?: string
   /** CC-118: the shadow execution this launch belongs to, when the ledger is on. */
   executionId?: string
+  /** CC-451: tools granted past the escalation check by the coordinator exemption. */
+  exempted?: string[]
 }
 
 /** A duration as a reader would say it: seconds under a minute, minutes above. */
@@ -993,18 +996,30 @@ export class Supervisor implements TeleportHost {
    * child whose deny list is strictly weaker than its own (same allowedTools,
    * fewer disallowedTools). Symmetric check: every tool the parent was denied
    * must still be denied to the child, or refuse the same way.
+   *
+   * CC-451: the one hole in the allow side. `exemptionFor` lets a coordinator
+   * grant the configured web-read tools it lacks; what was exempted comes back
+   * so the spawn row can record it.
    */
-  private checkEscalation(req: SpawnRequest, profile: AgentProfile): string | undefined {
-    if (req.requestedBy === HUMAN) return undefined
+  private checkEscalation(
+    req: SpawnRequest,
+    profile: AgentProfile,
+  ): { refusal: string } | { exempted: string[] } {
+    if (req.requestedBy === HUMAN) return { exempted: [] }
 
+    let exempted: string[] = []
     const granted = this.grantedTools(req.parentAgentId)
     if (granted !== undefined) {
-      const escalated = profile.allowedTools.filter(tool => !granted.has(tool))
+      const missing = profile.allowedTools.filter(tool => !granted.has(tool))
+      const exempt = this.exemptionFor(req, profile)
+      exempted = missing.filter(tool => exempt.has(tool))
+      const escalated = missing.filter(tool => !exempt.has(tool))
       if (escalated.length > 0) {
-        return (
-          `profile "${profile.name}" grants tools you were not granted (${escalated.join(', ')}); ` +
-          'an agent cannot spawn a peer more capable than itself — ask the human to spawn it'
-        )
+        return {
+          refusal:
+            `profile "${profile.name}" grants tools you were not granted (${escalated.join(', ')}); ` +
+            'an agent cannot spawn a peer more capable than itself — ask the human to spawn it',
+        }
       }
     }
 
@@ -1013,14 +1028,26 @@ export class Supervisor implements TeleportHost {
       const childDenied = new Set(profile.disallowedTools ?? [])
       const relaxed = [...parentDenied].filter(tool => !stillDenied(childDenied, tool))
       if (relaxed.length > 0) {
-        return (
-          `profile "${profile.name}" does not deny tools you were denied (${relaxed.join(', ')}); ` +
-          'a spawned peer cannot have a weaker deny list than its parent — ask the human to spawn it'
-        )
+        return {
+          refusal:
+            `profile "${profile.name}" does not deny tools you were denied (${relaxed.join(', ')}); ` +
+            'a spawned peer cannot have a weaker deny list than its parent — ask the human to spawn it',
+        }
       }
     }
 
-    return undefined
+    return { exempted }
+  }
+
+  /**
+   * CC-451: the tools this requester may grant without holding them. Only a
+   * coordinator, and only to a child that denies ALL of Bash, so the child
+   * cannot run code a fetched page talks it into and WebFetch is its one way out.
+   */
+  private exemptionFor(req: SpawnRequest, profile: AgentProfile): Set<string> {
+    if (this.requesterOf(req.parentAgentId).role !== 'coordinator') return new Set()
+    if (!(profile.disallowedTools ?? []).includes('Bash')) return new Set()
+    return new Set(resolveCoordinatorGrantableTools())
   }
 
   /**
@@ -1101,7 +1128,7 @@ export class Supervisor implements TeleportHost {
       this.machineRefusal(req.surface ?? profile.surface)
     if (roleBlocked) return this.refuse(req, roleBlocked)
     const escalation = this.checkEscalation(req, profile)
-    if (escalation) return this.refuse(req, escalation)
+    if ('refusal' in escalation) return this.refuse(req, escalation.refusal)
     const fork = req.inherit === 'context' ? this.forkSource(req) : undefined
     if (fork !== undefined && 'error' in fork) return this.refuse(req, fork.error)
 
@@ -1187,6 +1214,7 @@ export class Supervisor implements TeleportHost {
         ...(resumed ? { resumed } : {}),
         ...(predecessor ? { predecessor: predecessor.text } : {}),
         ...(executionId ? { executionId } : {}),
+        ...(escalation.exempted.length > 0 ? { exempted: escalation.exempted } : {}),
       })
     } catch (err) {
       this.semaphore.release(agentId)
@@ -1296,6 +1324,7 @@ export class Supervisor implements TeleportHost {
         // the deny list is the half that actually confines (see `profiles.ts`),
         // so a row that names one and not the other under-describes the agent.
         disallowed_tools: (profile.disallowedTools ?? []).join(','),
+        ...(resolved.exempted ? { granted_by_exemption: resolved.exempted.join(',') } : {}),
         perm_mode: permModeFor(surface),
         // Recorded rather than carried in memory so the exit path can read it
         // after a broker restart, and so `agent ls`/the log can show what an

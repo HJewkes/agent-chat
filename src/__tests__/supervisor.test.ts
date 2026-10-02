@@ -2130,6 +2130,190 @@ describe('spawn privilege', () => {
     expect(result.ok).toBe(false)
     expect(result.reason).toMatch(/weaker deny list/)
   })
+
+  /**
+   * CC-451: a coordinator may grant the configured web-read tools it lacks, so
+   * it can dispatch web research without a human. Everything else above holds.
+   */
+  describe('coordinator web exemption', () => {
+    const COORDINATOR_TOOLS = ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Monitor']
+    const COORDINATOR_DENIED = ['Bash(agent-chat endorse:*)', 'AskUserQuestion']
+
+    const writeProfile = (name: string, allowedTools: string[], disallowedTools: string[]): void => {
+      fs.writeFileSync(
+        path.join(profilesDirFor(), `${name}.json`),
+        JSON.stringify({
+          model: 'sonnet',
+          allowedTools,
+          disallowedTools,
+          isolation: 'none',
+          surface: 'headless',
+        }),
+      )
+    }
+
+    const writeConfig = (config: unknown): void => {
+      fs.writeFileSync(
+        path.join(process.env.AGENT_CHAT_HOME as string, 'config.json'),
+        JSON.stringify(config),
+      )
+    }
+
+    const webReader = (): void =>
+      writeProfile(
+        'web-reader',
+        ['WebSearch', 'WebFetch', 'Read', 'Write', 'Grep', 'Glob'],
+        ['Edit', 'Bash', 'AskUserQuestion'],
+      )
+
+    const spawnAs = async (
+      sup: ReturnType<typeof withStubbedSurface>,
+      parentAgentId: string,
+      cwd: string,
+      profile: string,
+    ) => sup.spawn(spawnReq({ profile, requestedBy: 'coord-agent', parentAgentId, cwd }))
+
+    it('lets a coordinator without web tools spawn a web researcher', async () => {
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      webReader()
+      const parentAgentId = spawnedParentWithDeny(
+        'coord-agent',
+        shared,
+        COORDINATOR_TOOLS,
+        COORDINATOR_DENIED,
+      )
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'web-reader')
+
+      expect(result.ok).toBe(true)
+    })
+
+    it('records the exempted tools on the spawn row', async () => {
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      webReader()
+      const parentAgentId = spawnedParentWithDeny(
+        'coord-agent',
+        shared,
+        COORDINATOR_TOOLS,
+        COORDINATOR_DENIED,
+      )
+
+      await spawnAs(sup, parentAgentId, shared, 'web-reader')
+
+      const row = core.events.agentEvents().find(r => r.kind === 'agent_spawned' && r.target === 'scout')
+      expect(row?.meta.granted_by_exemption).toBe('WebSearch,WebFetch')
+    })
+
+    it('leaves the exemption off the row when the parent already held the tools', async () => {
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      webReader()
+      const parentAgentId = spawnedParentWithDeny(
+        'coord-agent',
+        shared,
+        [...COORDINATOR_TOOLS, 'WebSearch', 'WebFetch'],
+        COORDINATOR_DENIED,
+      )
+
+      await spawnAs(sup, parentAgentId, shared, 'web-reader')
+
+      const row = core.events.agentEvents().find(r => r.kind === 'agent_spawned' && r.target === 'scout')
+      expect(row?.meta.granted_by_exemption).toBeUndefined()
+    })
+
+    it('refuses a web child that does not deny Bash', async () => {
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      writeProfile(
+        'web-shell',
+        ['WebFetch', 'Read', 'Bash'],
+        ['Bash(agent-chat endorse:*)', 'AskUserQuestion'],
+      )
+      const parentAgentId = spawnedParentWithDeny(
+        'coord-agent',
+        shared,
+        COORDINATOR_TOOLS,
+        COORDINATOR_DENIED,
+      )
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'web-shell')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/more capable than itself/)
+      expect(result.reason).toMatch(/WebFetch/)
+    })
+
+    it('still refuses a non-exempt tool the coordinator lacks', async () => {
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      writeProfile('web-editor', ['WebFetch', 'Read', 'Edit'], ['Bash', 'AskUserQuestion'])
+      const parentAgentId = spawnedParentWithDeny(
+        'coord-agent',
+        shared,
+        ['Read', 'Write', 'Grep', 'Glob'],
+        COORDINATOR_DENIED,
+      )
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'web-editor')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/not granted \(Edit\)/)
+    })
+
+    it('does not relax a web tool the coordinator was denied', async () => {
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      webReader()
+      const parentAgentId = spawnedParentWithDeny('coord-agent', shared, COORDINATOR_TOOLS, [
+        ...COORDINATOR_DENIED,
+        'WebFetch',
+      ])
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'web-reader')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/weaker deny list/)
+      expect(result.reason).toMatch(/WebFetch/)
+    })
+
+    it('restores the old refusal when the configured set is empty', async () => {
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      webReader()
+      writeConfig({ coordinatorGrantableTools: [] })
+      const parentAgentId = spawnedParentWithDeny(
+        'coord-agent',
+        shared,
+        COORDINATOR_TOOLS,
+        COORDINATOR_DENIED,
+      )
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'web-reader')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/not granted \(WebSearch, WebFetch\)/)
+    })
+
+    it('grants nothing when the configured set is malformed', async () => {
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      webReader()
+      writeConfig({ coordinatorGrantableTools: 'WebSearch' })
+      const parentAgentId = spawnedParentWithDeny(
+        'coord-agent',
+        shared,
+        COORDINATOR_TOOLS,
+        COORDINATOR_DENIED,
+      )
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'web-reader')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/more capable than itself/)
+    })
+  })
 })
 
 /** CC-71: on_spawn/on_complete lifecycle hooks. */

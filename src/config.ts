@@ -26,6 +26,7 @@ interface AgentChatConfig {
   machineHeadlessAgents?: unknown
   machineMemoryFreePercent?: unknown
   fullSuiteSlots?: unknown
+  coordinatorGrantableTools?: unknown
 }
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
@@ -161,6 +162,22 @@ export function resolveMachineLimits(): MachineLimits {
 /** How many full test suites may run at once machine-wide (CC-406). */
 export function resolveFullSuiteSlots(): number {
   return positiveIntegerFrom('fullSuiteSlots', DEFAULT_FULL_SUITE_SLOTS)
+}
+
+/** CC-451: the web-read tools a coordinator may grant a child it does not hold itself. */
+export const DEFAULT_COORDINATOR_GRANTABLE_TOOLS: readonly string[] = ['WebSearch', 'WebFetch']
+
+/**
+ * `coordinatorGrantableTools` in `config.json`, read per spawn; `[]` turns the exemption off.
+ * A malformed value grants nothing rather than the default, because this key widens authority.
+ */
+export function resolveCoordinatorGrantableTools(): string[] {
+  const value = readConfig().coordinatorGrantableTools
+  if (value === undefined) return [...DEFAULT_COORDINATOR_GRANTABLE_TOOLS]
+  if (Array.isArray(value) && value.every(tool => typeof tool === 'string' && tool.trim() !== ''))
+    return value.map(tool => tool.trim())
+  logEvent('config_invalid', { key: 'coordinatorGrantableTools', value, fallback: [] })
+  return []
 }
 
 function positiveIntegerFrom(key: keyof AgentChatConfig, fallback: number): number {
