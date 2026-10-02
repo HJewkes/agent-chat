@@ -146,13 +146,13 @@ const CFG_FN = `cfg() {
   eval "\\"\\$real\\"$globals config \\"\\$@\\""
 }`
 
-// Sets vals to one "=<value>" line per value; a value holding a newline is unreadable, so status 2.
+// Sets vals to one "=<value>" line per value; a read error or a value holding a newline is status 2.
 const VALUES_FN = `soh=$(printf '\\001')
 values() {
   vals=
   cfg --get-all "$1" >/dev/null 2>&1
   case $? in 0) ;; 1) return 1 ;; *) return 2 ;; esac
-  vals=$(cfg -z --get-all "$1" 2>/dev/null | tr '\\n\\0' '\\001\\n' | sed 's/^/=/')
+  vals=$({ cfg -z --get-all "$1" 2>/dev/null || echo "$soh"; } | tr '\\n\\0' '\\001\\n' | sed 's/^/=/')
   case $vals in *"$soh"*) return 2 ;; esac
 }`
 
@@ -207,10 +207,11 @@ $vals
 EOF
 }`
 
-// git's pushremote_for_branch; every value of each key counts, not only the last.
+// git's pushremote_for_branch; every value counts, and a detached HEAD fails closed.
 const DEFAULT_REMOTE_FN = `default_remote() {
-  b=$(eval "\\"\\$real\\"$globals symbolic-ref -q --short HEAD" 2>/dev/null)
-  for key in \${b:+"branch.$b.pushRemote"} remote.pushDefault \${b:+"branch.$b.remote"}; do
+  ref=$(eval "\\"\\$real\\"$globals symbolic-ref -q HEAD" 2>/dev/null) || return 1
+  case $ref in refs/heads/?*) b=\${ref#refs/heads/} ;; *) return 1 ;; esac
+  for key in "branch.$b.pushRemote" remote.pushDefault "branch.$b.remote"; do
     values "$key"
     case $? in 0) repos="$repos$nl$vals"; return 0 ;; 1) ;; *) return 1 ;; esac
   done

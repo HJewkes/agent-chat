@@ -419,6 +419,70 @@ describe('the agent git shim letting a push to a local repository skip the hooks
     expect(remoteHasMain(fx)).toBe(false)
   })
 
+  // At 49e14d0c symbolic-ref --short gave heads/main when a tag main existed, so the push fell through to origin.
+  it.each([
+    ['a tag main', 'branch.main.pushRemote', ['tag', 'main']],
+    ['a tag main', 'branch.main.remote', ['tag', 'main']],
+    ['a ref refs/main', 'branch.main.pushRemote', ['update-ref', 'refs/main', 'HEAD']],
+    ['a ref refs/main', 'branch.main.remote', ['update-ref', 'refs/main', 'HEAD']],
+  ])('refuses a bare push beside %s when %s names an ssh remote', (_label, key, ambiguity) => {
+    const fx = fixture()
+    git(fx.work, ...ambiguity)
+    git(fx.work, 'config', key, 'evil')
+    git(fx.work, 'config', 'remote.evil.url', 'git.invalid:r.git')
+
+    const run = foreignPush(fx, '')
+
+    expect(run.stderr).toContain('git-shim: push refused (hooks-path)')
+    expect(run.status).toBe(2)
+  })
+
+  it('refuses a bare push from a detached HEAD', () => {
+    const fx = fixture()
+    git(fx.work, 'checkout', '-q', '--detach')
+
+    const run = foreignPush(fx, '--all')
+
+    expect(run.stderr).toContain('git-shim: push refused (hooks-path)')
+    expect(remoteHasMain(fx)).toBe(false)
+  })
+
+  it.each([
+    ['push.recurseSubmodules', 'on-demand'],
+    ['push.recurseSubmodules', 'only'],
+    ['submodule.recurse', 'true'],
+  ])('refuses a push to a local path when %s is %s', (key, value) => {
+    const fx = fixture()
+    git(fx.work, 'config', key, value)
+
+    const run = foreignPush(fx, 'origin main')
+
+    expect(run.stderr).toContain('git-shim: push refused (hooks-path)')
+    expect(remoteHasMain(fx)).toBe(false)
+  })
+
+  // Kills: a config read error in values() taken as an unset key.
+  it.each([
+    ['remote.origin.vcs'],
+    ['remote.origin.pushurl'],
+    ['remote.origin.url'],
+    ['-z remote.origin.url'],
+  ])('refuses a push to a local remote when git fails to read %s', words => {
+    const fx = fixture()
+    const failing = path.join(fx.work, '..', 'failing-git')
+    const match = words
+      .split(' ')
+      .map(word => `case " $* " in *" ${word} "*) ;; *) exec '${REAL_GIT}' "$@" ;; esac`)
+      .join('\n')
+    fs.writeFileSync(failing, `#!/bin/sh\n${match}\necho 'error: injected' >&2\nexit 3\n`, { mode: 0o755 })
+    fs.writeFileSync(path.join(fx.shimDir, 'git'), gitShimScript(failing, fx.guard, []), { mode: 0o755 })
+
+    const run = foreignPush(fx, 'origin main')
+
+    expect(run.stderr).toContain('git-shim: push refused (hooks-path)')
+    expect(remoteHasMain(fx)).toBe(false)
+  })
+
   it('still refuses --no-verify to a local path', () => {
     const fx = fixture()
 
