@@ -16,7 +16,14 @@ import type { DispatchRow } from '../burndown/score.js'
 import { expandHome } from '../burndown/seat-dispatch.js'
 import { localDate } from '../burndown/seat-tick.js'
 import { openEvents, type WatchdogDoc } from './io.js'
-import { advanceMeter, meterHistory, sameSpendDay, withinRun, type SpendMeter } from './stops.js'
+import {
+  advanceMeter,
+  meterHistory,
+  sameSpendDay,
+  withinRun,
+  type MachineStop,
+  type SpendMeter,
+} from './stops.js'
 import { accountReading, lastGoodReading } from './watchdog.js'
 import type { MachineStatus } from '../machine-guard.js'
 
@@ -107,6 +114,10 @@ export interface SeatStatus {
   eligible: EligibleStatus
   /** CC-406: the machine-wide guard's readings against its limits, across every seat. */
   machine: MachineStatus
+  /** CC-431: 'machine' when memory or load is past its limit, which takes the `stop` line before the budget's. */
+  stop: 'machine' | null
+  /** The readings behind a machine stop; null without one. */
+  machineStop: MachineStop | null
 }
 
 export interface StatusDeps {
@@ -123,6 +134,8 @@ export interface StatusDeps {
   scored: (seat: string, today: string) => ScoredPlan
   /** Given the whole roster, not the seat's share of it. */
   machine: (agents: AgentIdentity[]) => MachineStatus
+  /** CC-431: null when no limit is breached or a reading could not be taken. */
+  machineStop: () => MachineStop | null
 }
 
 const INBOX_KINDS = "'message', 'broadcast', 'answer', 'decided'"
@@ -348,6 +361,7 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
   const now = deps.now()
   const { prefix, concurrency } = policy.seat
   const roster = await deps.agents()
+  const machineStop = deps.machineStop()
   const mine = ownedBy(roster, seat, prefix)
   const plain: Plain = err => plainError(err, [deps.autonomyRoot, deps.homeDir])
   return {
@@ -362,6 +376,8 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
     inbox: inboxReading(deps, seat, plain),
     eligible: eligibleStatus(deps, seat, localDate(now), plain),
     machine: deps.machine(roster),
+    stop: machineStop === null ? null : 'machine',
+    machineStop,
   }
 }
 
@@ -438,7 +454,7 @@ export function renderStatus(status: SeatStatus): string[] {
     agentLine('other', status.other, String(status.other.active)),
     line('parked', `${parked.count}${trees}`),
     budgetLine(budget),
-    line('stop', budget.stop ?? `none; ${budget.margin}`),
+    line('stop', status.machineStop?.reason ?? budget.stop ?? `none; ${budget.margin}`),
     ...(budget.note === null ? [] : [line('note', budget.note)]),
     machineLine(status.machine),
     inboxLine(status.inbox),

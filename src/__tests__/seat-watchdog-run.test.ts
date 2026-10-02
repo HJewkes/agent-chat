@@ -309,6 +309,17 @@ describe('runWatchdog', () => {
     expect(await runs(h, 2)).toBe(1)
   })
 
+  it('holds every seat while the machine is under pressure and wakes again when it clears', async () => {
+    const h = harness(IDLE)
+    let stop: string | undefined = 'machine under pressure: load5 31 (limit 28)'
+    h.deps.machineStop = () => stop
+    expect(await runs(h, 3)).toBe(0)
+    const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+    expect(out[0]).toBe('seat-a: skip: held: machine under pressure: load5 31 (limit 28)')
+    stop = undefined
+    expect(await runs(h, 2)).toBe(1)
+  })
+
   it('holds every seat when events.db cannot be read, since a restart window cannot be ruled out', async () => {
     const h = harness(IDLE)
     h.deps.ownerMessages = () => undefined

@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import os from 'node:os'
 import type { AgentIdentity } from '../protocol.js'
 
 /**
@@ -155,3 +156,24 @@ export function machineStatus(
     fullSuiteSlots: slots,
   }
 }
+
+/** Parses `memory_pressure`: the line "System-wide memory free percentage: 41%". Null when the line is absent. */
+export function parseMemoryPressure(text: string): number | null {
+  const match = /System-wide memory free percentage:\s*(\d{1,3})%/.exec(text)
+  const percent = match === null ? NaN : Number(match[1])
+  return percent >= 0 && percent <= 100 ? percent : null
+}
+
+/** CC-431: free memory from `memory_pressure`; null when it is missing, fails or does not parse. */
+export function readMemoryPressure(platform: NodeJS.Platform = process.platform): number | null {
+  if (platform !== 'darwin') return null
+  try {
+    const out = execFileSync('/usr/bin/memory_pressure', [], { encoding: 'utf8', timeout: 5000 })
+    return parseMemoryPressure(out)
+  } catch {
+    return null
+  }
+}
+
+/** The five-minute load average. */
+export const readLoad5 = (): number => Math.round((os.loadavg()[1] ?? 0) * 100) / 100
