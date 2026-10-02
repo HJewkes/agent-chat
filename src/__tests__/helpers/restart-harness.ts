@@ -24,6 +24,7 @@ import { BrokerCore, type Conn } from '../../broker/core.js'
 import { EventLog } from '../../broker/event-log.js'
 import { Registry } from '../../broker/registry.js'
 import { Semaphore } from '../../agents/semaphore.js'
+import type { ProcessProbe } from '../../agents/detached-reap.js'
 import { Supervisor, type SpawnOutcome, type SupervisorOptions } from '../../agents/supervisor.js'
 import { shadowLedgerFromConfig, type ShadowLedger } from '../../agents/ledger/shadow-ledger.js'
 import { autoAttach } from '../broker-harness.js'
@@ -54,7 +55,11 @@ export interface HarnessOptions {
   ledger?: (events: EventLog) => ShadowLedger | undefined
   /** CC-406: mocked swap and limit readers; absent leaves the guard off. */
   machineGuard?: SupervisorOptions['machineGuard']
+  /** CC-450: defaults to one that proves nothing dead, so no test reads the host's process table. */
+  processProbe?: ProcessProbe
 }
+
+const unprovenProbe: ProcessProbe = { isAlive: () => true, readArgv: () => undefined }
 
 /** A child that starts and never exits, so the attach path decides what a test sees. */
 const liveChild = (): { pid: number; unref: () => void; once: () => undefined } => ({
@@ -126,6 +131,7 @@ function boot(home: string, options: HarnessOptions): Generation {
     ...(options.settleMs === undefined ? {} : { settleMs: options.settleMs }),
     ...(ledger === undefined ? {} : { ledger }),
     ...(options.machineGuard === undefined ? {} : { machineGuard: options.machineGuard }),
+    processProbe: options.processProbe ?? unprovenProbe,
     surface: {
       platform: options.appleScript === undefined ? 'linux' : 'darwin',
       spawn: options.spawn ?? liveChild,
