@@ -126,9 +126,10 @@ export function foldAgent(rows: readonly AgentEventRow[]): AgentIdentity | undef
     if (row.kind === 'agent_exited') {
       agent.exit = exitFrom(row)
       agent.exitedAt = row.ts
-      exitInferred = row.meta.inferred === 'true'
+      exitInferred = row.meta.inferred === 'true' || row.meta.failed === 'true'
     }
     // CC-454: an inferred exit can be false (the launcher died, claude did not); a real one is final.
+    // CC-450: so can a failed start, when the registration lands after the attach check gave up.
     if (row.kind === 'agent_attached' && exitInferred) {
       delete agent.exitedAt
       delete agent.exit
@@ -138,7 +139,9 @@ export function foldAgent(rows: readonly AgentEventRow[]): AgentIdentity | undef
     if (row.kind === 'agent_detached') agent.detachedAt = row.ts
     if (row.kind === 'agent_resumed' || row.kind === 'agent_attached') delete agent.detachedAt
     const next = TRANSITIONS[row.kind]
-    if (next !== undefined) agent.state = next
+    // CC-450: a socket closing just after the process exited does not reopen a finished agent.
+    const closesAfterExit = row.kind === 'agent_detached' && agent.exitedAt !== undefined
+    if (next !== undefined) agent.state = closesAfterExit ? 'exited' : next
   }
 
   return agent
