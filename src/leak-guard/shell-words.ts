@@ -69,7 +69,35 @@ const blur = (cmd: SimpleCommand): void => {
   cmd.stdinLive = true
 }
 
-const ANSI_C: Record<string, string> = { n: '\n', t: '\t', r: '\r', '\\': '\\', "'": "'", '"': '"' }
+const ANSI_C: Record<string, string> = {
+  a: '\x07',
+  b: '\b',
+  e: '\x1b',
+  E: '\x1b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+  v: '\v',
+  '\\': '\\',
+  "'": "'",
+  '"': '"',
+  '?': '?',
+}
+const ANSI_C_CODE = /^(?:x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|([0-7]{1,3}))/
+
+/** The `$'...'` escape whose backslash is at `src[at]`; `live` when the splitter cannot decode it, as with `\cX`. */
+export function ansiCEscape(src: string, at: number): { text: string; width: number; live: boolean } {
+  const next = src[at + 1] ?? ''
+  const named = ANSI_C[next]
+  if (named !== undefined) return { text: named, width: 2, live: false }
+  const code = ANSI_C_CODE.exec(src.slice(at + 1))
+  const octal = code?.[4]
+  const point = code ? parseInt(octal ?? code[1] ?? code[2] ?? code[3] ?? '', octal ? 8 : 16) : -1
+  // NUL ends the word in bash, and 1 is HOLE, so neither decodes.
+  if (code === null || point < 2 || point > 0x10ffff) return { text: next, width: 2, live: true }
+  return { text: String.fromCodePoint(point), width: code[0].length + 1, live: false }
+}
 
 class ShellLexer {
   pos: number
@@ -289,16 +317,15 @@ class ShellLexer {
     this.pos++
   }
 
-  /** An escape outside the table, such as `\x65`, stays LIVE: the splitter does not decode it. */
+  /** Decodes `\x67`, `\147` and the rest, so `$'\x67it'` reads as git (TP-721); an escape it cannot decode stays LIVE. */
   private ansiC(): void {
     this.append('')
     this.pos += 2
     while (this.pos < this.src.length && this.src[this.pos] !== "'") {
       const c = this.src[this.pos] as string
-      const next = this.src[this.pos + 1] ?? ''
-      if (c === '\\') this.append(ANSI_C[next] ?? next, ANSI_C[next] === undefined)
-      else this.append(c)
-      this.pos += c === '\\' ? 2 : 1
+      const escape = c === '\\' ? ansiCEscape(this.src, this.pos) : { text: c, width: 1, live: false }
+      this.append(escape.text, escape.live)
+      this.pos += escape.width
     }
     this.pos++
   }

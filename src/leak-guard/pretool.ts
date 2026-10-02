@@ -19,6 +19,7 @@ import {
 import { crashCause, type FailOpen } from './failopen.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
 import { hasUnreadableConfig, hasUnreadableOption } from './git-unresolved.js'
+import { mayExpandToGit } from './git-word.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
@@ -317,7 +318,8 @@ const READ_ONLY_REF = new RegExp(`\\$\\{${NAME}(?=:?[-+?]|[#%/])`, 'g')
 /** An expanded command word that names git, runs a substitution, or reads a variable the line may set or the hook holds as git. */
 function tiedToGit(head: string, cmd: SimpleCommand, ctx: GuardContext, scope: Scope): boolean {
   const raw = unmark(head)
-  if (NAMES_GIT.test(raw.replace(QUOTING, '')) || UNNAMED_SET.test(raw) || HIDDEN_NAME.test(raw)) return true
+  if (NAMES_GIT.test(raw.replace(QUOTING, '')) || mayExpandToGit(raw)) return true
+  if (UNNAMED_SET.test(raw) || HIDDEN_NAME.test(raw)) return true
   if (cmd.substitutions.some(sub => head.includes(LIVE + sub.raw))) return true
   const said = scope.said.replace(READ_ONLY_REF, ' ')
   const names = [...raw.matchAll(VARIABLE)].map(match => match[1] as string)

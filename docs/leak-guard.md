@@ -365,7 +365,15 @@ may run as its command; the guard accepts that over-deny, since `set -- git` can
 default such as `${PYTHON:-python3}` reads `PYTHON` without assigning it, so it is treated like
 `$PYTHON`; `${PYTHON:=python3}` assigns and ties. The guard tests for `git` after removing quotes
 and backslashes, so a default or replacement word that becomes `git` ties: `${x:-g"i"t}`,
-`${x:-g\it}`, `${x/#/g"i"t}` and `${x/a/g"i"t}`. So `x=$(echo tig|rev); source /dev/null; $x pnv` is denied, and so is the same line with
+`${x:-g\it}`, `${x/#/g"i"t}` and `${x/a/g"i"t}`. A word ties, too, when a glob, a brace
+expansion, an ANSI-C string or an unset variable spliced into it may turn a path segment into
+`git` (TP-721): `/usr/bin/gi?`, `gi[t]`, `${x:-/usr/bin/g?t}`, `g{i,}t`, `g{h..j}t`,
+`${x:-$'g\x69t'}` and `${x:-g${z}it}`. The guard expands brace alternatives and ranges, decodes
+the ANSI-C string, drops each `$NAME` and `${NAME}` as if unset, and matches each segment as a
+glob against `git`. A word that cannot become `git` stays allowed: `./scripts/*.sh`,
+`~/bin/*-tool`, `${PYTHON:-python{3,}}`. A bare `*` can, if the directory holds a file named
+`git`, so it ties. A top-level `$'\x67it'` needs none of this: the splitter decodes it to a
+literal `git`. So `x=$(echo tig|rev); source /dev/null; $x pnv` is denied, and so is the same line with
 `pushd .` or `cd "$D"` in place of `source`. A command word from the environment the line does
 not touch is allowed, whatever else the line runs: `source .venv/bin/activate && $PYTHON -m
 pytest && git status`, `source x; $PAGER README; git log`, and `[ -n "$T" ] && git -C "$T" status`
@@ -515,8 +523,9 @@ shell sets them itself. `$NAME:h` and `$NAME[1]` are a zsh modifier and subscrip
 
 Everything else is unknown: `$(...)` and backticks that are not the `cat` form above, an unquoted
 substitution, `${VAR:-x}`, `~user`, a glob, a brace expansion, `<(...)`, zsh's `=command`,
-`name(qualifier)` and `<1-9>`, and an ANSI-C escape other than `\n`, `\t`, `\r`, `\\` and the
-quotes. gh's own `{owner}`, `{repo}` and `{branch}` are not brace expansions and pass as written.
+`name(qualifier)` and `<1-9>`, and an ANSI-C escape the splitter does not decode. It decodes
+the named escapes (`\n`, `\t`, `\e` and the rest), `\xHH`, octal `\NNN`, `\uHHHH` and
+`\UHHHHHHHH` (TP-721); `\cX` and a NUL stay unknown. gh's own `{owner}`, `{repo}` and `{branch}` are not brace expansions and pass as written.
 A `gh` whose group or verb is an expansion (`gh pr $V`) is unknown even when the value is known,
 because the guard picks the flags to read from the literal subcommand.
 
@@ -645,6 +654,9 @@ Not covered, by design or by cost:
   (`'repos/o/r/issues/1/comments?body=<text>'`), and flag values other than the title, body and
   fields, such as `--head`, `--label` and `--milestone`;
 - zsh with `BRACE_CCL` set in a startup file, which expands `{owner}` into single characters;
+- a command word that zsh's glob grouping or `EXTENDED_GLOB` operators turn into git (`g(i|x)t`,
+  `gi#t`), behind a `source`, `pushd` or `cd` the guard cannot follow: the splitter reads `(` as
+  a subshell, and the TP-721 glob match knows only `?`, `*` and brackets;
 - a different `git` on `PATH`, `GIT_EXEC_PATH`, or `--exec-path`;
 - pushing without git at all, for example over the GitHub API with `curl`;
 - a git alias whose lookup fails or takes over 1 s, that shadows an external `git-<name>`
