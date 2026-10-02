@@ -1096,6 +1096,7 @@ describe('a git alias already in config', () => {
       ['zsh alternation on a path', '/usr/bin/g(i|x)t pnv'],
       ['zsh alternation in a default', '${x:-g(i|x)t} pnv'],
       ['a default joined to the text after it', '${x:-gi}t pnv'],
+      ['zsh alternation before a glob qualifier', 'g(i|x)t(N) pnv'],
     ])(
       'denies a command word that may become git through %s where it cannot look (TP-721): %s',
       (_, word) => {
@@ -1112,6 +1113,16 @@ describe('a git alias already in config', () => {
 
     it('still checks a substitution inside a zsh glob group (TP-721)', () => {
       expect(checkCommand('ls x(a|$(git push --no-verify))', inAliased())).toBe(REASONS.noVerify)
+    })
+
+    it.each([
+      "echo x(a|'(') ; git push --no-verify ; echo ')' # '",
+      "echo x(a|\"(\") ; git push --no-verify ; echo ')' # '",
+      "echo x(a|')') ; git push --no-verify ; echo ')' # '",
+      "echo x(a|'(') && git push --no-verify # )",
+      '{(git push --no-verify)}',
+    ])('still sees a command beside a group with a quoted paren or after a brace (TP-721): %s', command => {
+      expect(checkCommand(command, inAliased())).toBe(REASONS.noVerify)
     })
 
     it('denies a command word too deeply nested to check, well within the hook timeout (TP-721)', () => {

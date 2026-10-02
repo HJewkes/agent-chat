@@ -54,6 +54,7 @@ interface Heredoc {
 const OPERATORS = new Set([';', '&', '|'])
 const WRITE_OPERATORS = new Set(['>', '>>', '>|', '<>'])
 const GLOB = '*?[{'
+const PLAIN_GROUP = /^\([^\s()'"\\`$;&<>]*\)/
 const BLANK = new Set([' ', '\t', '\n', ';', undefined])
 // gh fills these in a `gh api` path itself; no shell expands a brace group that has no comma.
 const GH_PLACEHOLDERS = ['{owner}', '{repo}', '{branch}']
@@ -200,23 +201,18 @@ class ShellLexer {
     this.cur = this.newCommand()
   }
 
-  /** zsh reads `g(i|x)t` and `*.ts(.)` as one glob word (TP-721); `name()` stays a function and `x=(` an array. */
+  /**
+   * zsh reads `g(i|x)t` and `*.ts(.)` as one glob word (TP-721). Only a plain group counts: one
+   * with a quote, backslash, blank, `$`, backtick or operator inside, or one after `{`, keeps the
+   * subshell reading, so no quoted paren can hide a command. `name()` stays a function and `x=(` an array.
+   */
   private globGroup(): boolean {
     const word = this.word
-    if (word === null || word.endsWith('=') || this.pending !== null) return false
-    if (/^\(\s*\)/.test(this.src.slice(this.pos))) return false
-    let depth = 0
-    let end = this.pos
-    for (; end < this.src.length && this.src[end] !== '\n'; end++) {
-      depth += this.src[end] === '(' ? 1 : this.src[end] === ')' ? -1 : 0
-      if (depth === 0) break
-    }
-    const stop = this.src[end] === '\n' ? end : Math.min(end + 1, this.src.length)
-    const group = this.src.slice(this.pos, stop)
-    // A substitution inside still runs, so such a group keeps the subshell reading that checks it.
-    if (/\$\(|`/.test(group)) return false
+    if (word === null || /[={]$/.test(word) || this.pending !== null) return false
+    const group = PLAIN_GROUP.exec(this.src.slice(this.pos))?.[0]
+    if (group === undefined || group === '()') return false
     this.split(group)
-    this.pos = stop
+    this.pos += group.length
     return true
   }
 

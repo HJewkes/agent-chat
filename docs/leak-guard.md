@@ -372,8 +372,11 @@ path segment into `git` (TP-721): `/usr/bin/gi?`, `gi[t]`, `gi[]t]`, `gi[!]x]`,
 `${x:-g${z}it}`. The guard expands brace alternatives, ranges and `(a|b)` groups, decodes the
 ANSI-C string, drops each `$NAME` and `${NAME}` as if unset, reads a `${x:-...}` default as joined
 to the text around it, and matches each segment as a glob against `git`. The splitter keeps
-`g(i|x)t` and `*.ts(.)` as one word rather than a subshell, unless the group holds a `$(...)` or
-backticks, which it still parses as commands. A word over 1024 characters, or one that expands
+`g(i|x)t` and `*.ts(.)` as one word rather than a subshell only when the group is plain: no
+quote, backslash, blank, `$`, backtick, `;`, `&`, `<`, `>` or nested paren inside, and no `{`
+before it. Any other group keeps the subshell reading, so a quoted paren cannot hide a command,
+as in `echo x(a|'(') ; git push --no-verify ; echo ')'`. A last group with no `|`, such as
+`(N)`, is a glob qualifier and is dropped, so `g(i|x)t(N)` ties. A word over 1024 characters, or one that expands
 past 256 words or 4096 steps, ties without being checked, so it fails closed and fast. A word that
 cannot become `git` stays allowed: `./scripts/*.sh`, `~/bin/*-tool`, `${PYTHON:-python{3,}}`. A
 bare `*` can, if the directory holds a file named `git`, so it ties. A top-level `$'\x67it'` needs none of this: the splitter decodes it to a
