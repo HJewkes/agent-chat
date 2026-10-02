@@ -35,14 +35,14 @@ function deps(autonomyRoot: string, sevenDay: number, resetDays: number): SeatTi
     root: autonomyRoot,
     now: NOW,
     reading: () => ({
-      reading: { sevenDay, fiveHour: 10, ageSeconds: 30 },
+      reading: { sevenDay, fiveHour: 10, ageSeconds: 30, sevenDayResetsAt: DAY_START + resetDays * DAY_MS },
       resetsAt: DAY_START + resetDays * DAY_MS,
     }),
     recordedRunStart: () => RUN_START,
   }
 }
 
-// pool-x's line is 70 and seven_day read 40 at 06:00, so 30 points are left at the day start.
+// pool-x's reserve is 30 and seven_day read 40 at 06:00; on day d its line is 100 - 30 * (8 - d) / 7.
 const ledger = {
   seats: {
     'seat-a': {
@@ -73,16 +73,16 @@ describe('the tick gate for a reset-aware seat', () => {
     expect(gateOf('pacing: reset-aware\n', 51, 0.5)).toMatchObject({ open: true })
   })
 
-  it('stops at the allowance when the reset is three days from 07:00', () => {
-    const gate = gateOf('pacing: reset-aware\n', 51, 3)
+  it('stops at the allowance when the reset is six days from 07:00', () => {
+    const gate = gateOf('pacing: reset-aware\n', 51, 6)
     expect(gate).toMatchObject({ open: false })
     expect(gate.reason).toContain(
-      "day spend 11 points since 07:00 at or above the seat's reset-aware day allowance 10",
+      "day spend 11 points since 07:00 at or above the seat's reset-aware day allowance 5.72",
     )
   })
 
   it('keeps the per_day_points stop for a seat without the key', () => {
-    const gate = gateOf('', 51, 0.5)
+    const gate = gateOf('', 51, 3)
     expect(gate.reason).toContain("day spend 11 points since 07:00 at or above the seat's per_day_points 9")
   })
 })

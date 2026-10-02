@@ -14,12 +14,13 @@ import { startSupervisor, type RestartHarness } from './helpers/restart-harness.
 const NOON = new Date(2026, 9, 2, 12, 0)
 const DAY_START = new Date(2026, 9, 2, 7, 0).getTime()
 const MIN = 60_000
+const DAY = 24 * 60 * MIN
 
 const AGENTS: Pool = {
   name: 'agents',
   configDir: '/synthetic/agents',
   humanUses: false,
-  rule: { reserve_seven_day: 25, ceiling_five_hour: 85, night: { reserve_seven_day: 10 } },
+  rule: { reserve_seven_day: 25, ceiling_five_hour: 85 },
   perDayPoints: 15,
 }
 
@@ -57,7 +58,8 @@ describe('the seat spawn gate', () => {
 
     expect(verdict).toEqual({
       allow: false,
-      reason: 'seat alpha-coord: BUDGET-PAUSE pool agents: five_hour 90% at or above ceiling 85%',
+      reason:
+        'seat alpha-coord: BUDGET-PAUSE pool agents: five_hour 90% at or above ceiling 85% (no seven_day resets_at, flat reserve)',
     })
   })
 
@@ -68,20 +70,62 @@ describe('the seat spawn gate', () => {
     expect(verdict.reason).toContain('seven_day 76% at or above line 75%')
   })
 
-  it('refuses inside the night reserve when the owner has been silent at night', () => {
-    const night = new Date(2026, 9, 2, 2, 0)
+  it('lifts the seat per_run_points and per_day_points on day 6 of the window (CC-474)', () => {
+    const seat: Seat = { ...SEAT, spend: { perRunPoints: 3, perDayPoints: 5 } }
+    const meter = { since: DAY_START, last: 40, spent: 0 }
+    const onDay = (daysToReset: number) =>
+      seatSpawnGate(
+        input({
+          seat,
+          runMeter: meter,
+          dayMeter: meter,
+          reading: {
+            sevenDay: 50,
+            fiveHour: 20,
+            ageSeconds: 30,
+            sevenDayResetsAt: NOON.getTime() + daysToReset * DAY - MIN,
+          },
+        }),
+      )
 
+    const dayFive = onDay(3)
+    const daySix = onDay(2)
+
+    expect(dayFive.allow).toBe(false)
+    expect(dayFive.reason).toContain("run spend 10 points at or above the seat's per_run_points 3")
+    expect(daySix.allow).toBe(true)
+    expect(daySix.reason).toContain('seven_day 50% vs line 92.86% (day 6 of 7, seat caps lifted)')
+  })
+
+  it("keeps the pool's per_day_points for a reset-aware seat on day 6", () => {
+    const resetsAt = NOON.getTime() + 2 * DAY - MIN
     const verdict = seatSpawnGate(
       input({
-        now: night,
-        humanLastTurnAt: night.getTime() - 60 * MIN,
-        reading: { sevenDay: 91, fiveHour: 20, ageSeconds: 30 },
-        dayMeter: undefined,
+        seat: { ...SEAT, pacing: 'reset-aware' },
+        resetsAt,
+        reading: { sevenDay: 56, fiveHour: 20, ageSeconds: 30, sevenDayResetsAt: resetsAt },
+        model: 'sonnet',
       }),
     )
 
     expect(verdict.allow).toBe(false)
-    expect(verdict.reason).toContain('seven_day 91% at or above line 90% (night reserve)')
+    expect(verdict.reason).toContain(
+      "day spend 16 points since 07:00 at or above the pool agents's per_day_points 15",
+    )
+  })
+
+  it('keeps the R line on day 7 while the seat caps are lifted', () => {
+    const reading = {
+      sevenDay: 97,
+      fiveHour: 20,
+      ageSeconds: 30,
+      sevenDayResetsAt: NOON.getTime() + DAY - MIN,
+    }
+
+    const verdict = seatSpawnGate(input({ reading }))
+
+    expect(verdict.allow).toBe(false)
+    expect(verdict.reason).toContain('seven_day 97% at or above line 96.43% (day 7 of 7, seat caps lifted)')
   })
 
   it("refuses once the pool's spend since 07:00 reaches its per_day_points", () => {
@@ -102,13 +146,13 @@ describe('the seat spawn gate', () => {
         seat,
         resetsAt,
         dayMeter: { since: DAY_START, last: 70, spent: 0 },
-        reading: { sevenDay: 72, fiveHour: 20, ageSeconds: 30 },
+        reading: { sevenDay: 73, fiveHour: 20, ageSeconds: 30, sevenDayResetsAt: resetsAt },
         model: 'sonnet',
       }),
     )
 
     expect(verdict.allow).toBe(false)
-    expect(verdict.reason).toContain("at or above the seat's reset-aware day allowance 1")
+    expect(verdict.reason).toContain("at or above the seat's reset-aware day allowance 2.43")
   })
 
   it('leaves the day caps unchecked when the watchdog has saved no day meter', () => {
@@ -147,7 +191,7 @@ describe('the seat spawn gate', () => {
 
     expect(present.allow).toBe(false)
     expect(present.reason).toContain(
-      'BUDGET-PAUSE pool shared: five_hour 74% at or above ceiling 70% (owner typed in the last 15 min)',
+      'BUDGET-PAUSE pool shared: five_hour 74% at or above ceiling 70% (no seven_day resets_at, flat reserve, owner typed in the last 15 min)',
     )
     expect(away.allow).toBe(true)
   })
@@ -286,7 +330,7 @@ describe('agent spawn under the seat budget gate', () => {
       code: 'seat_budget_stop',
       retryable: true,
       reason:
-        'seat budget stop: seat alpha-coord: BUDGET-PAUSE pool agents: five_hour 90% at or above ceiling 85%',
+        'seat budget stop: seat alpha-coord: BUDGET-PAUSE pool agents: five_hour 90% at or above ceiling 85% (no seven_day resets_at, flat reserve)',
     })
     const refused = sup.core.events.history(20).filter(r => r.kind === 'agent_spawn_refused')
     expect(refused.map(r => r.text)).toEqual([expect.stringContaining('five_hour 90%')])

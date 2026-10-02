@@ -150,6 +150,7 @@ export function readReadings(accounts: string[], now = Date.now()): Map<string, 
       ageSeconds: read.age_seconds,
       ...(seven_day === undefined ? {} : { sevenDay: seven_day.used_pct }),
       ...(five_hour === undefined ? {} : { fiveHour: five_hour.used_pct }),
+      ...(seven_day?.resets_at === undefined ? {} : { sevenDayResetsAt: seven_day.resets_at * 1000 }),
     })
   }
   return readings

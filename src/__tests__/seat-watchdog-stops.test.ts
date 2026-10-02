@@ -218,18 +218,19 @@ describe('the reset-aware day allowance (CC-404)', () => {
     nowMs: at(7),
   }
 
+  // CC-474: the line is 100 - 25 * (8 - d) / 7 on day d of the window at 07:00.
   it.each([
-    [0.5, 60],
-    [3, 10],
-    [6, 5],
+    [0.5, 96.43, 102.86],
+    [3, 89.29, 14.76],
+    [6, 78.57, 5.59],
   ])(
-    'spreads the 30 points left under line 75 at 07:00 over %s days to reset as %s a day',
-    (days, points) => {
+    'spreads the points left at 07:00 under the declining line over %s days to reset: line %s, %s a day',
+    (days, stopLine, points) => {
       const allowance = dayAllowance({ ...base, resetsAt: at(7) + days * DAY })
       expect(allowance).toMatchObject({
         source: 'reset-aware',
         points,
-        stopLine: 75,
+        stopLine,
         dayStartSevenDay: 45,
         basis: 'day-start',
         daysToReset: days,
@@ -239,7 +240,7 @@ describe('the reset-aware day allowance (CC-404)', () => {
 
   it("counts from the day start, so the day's own spend does not shrink its allowance", () => {
     const allowance = dayAllowance({ ...base, sevenDay: 60, daySpend: 10, resetsAt: at(7) + 0.5 * DAY })
-    expect(allowance).toMatchObject({ points: 50, sevenDay: 60, dayStartSevenDay: 50, basis: 'day-start' })
+    expect(allowance).toMatchObject({ points: 92.86, sevenDay: 60, dayStartSevenDay: 50, basis: 'day-start' })
   })
 
   it('holds the same allowance at 23:00 as at 07:00, measuring days from the day start', () => {
@@ -256,7 +257,7 @@ describe('the reset-aware day allowance (CC-404)', () => {
       nowMs: at(19),
       resetsAt: at(19) + 2 * DAY,
     })
-    expect(allowance).toMatchObject({ points: 10, dayStartSevenDay: 55, basis: 'current', daysToReset: 2 })
+    expect(allowance).toMatchObject({ points: 18.93, dayStartSevenDay: 55, basis: 'current', daysToReset: 2 })
   })
 
   it('falls back to the smallest per_day_points with no resets_at', () => {
@@ -275,7 +276,7 @@ describe('the reset-aware day allowance (CC-404)', () => {
   })
 
   it('allows nothing once seven_day at the day start is past the line', () => {
-    const allowance = dayAllowance({ ...base, sevenDay: 90, resetsAt: at(7) + DAY })
+    const allowance = dayAllowance({ ...base, sevenDay: 99, daySpend: 2, resetsAt: at(7) + DAY })
     expect(allowance).toMatchObject({ source: 'reset-aware', points: 0 })
   })
 })
@@ -301,13 +302,19 @@ describe('the paced caps every gate hands gatePool (CC-404)', () => {
 
   it('replaces both day caps with the allowance and names it, leaving the run cap', () => {
     const paced = pacedCaps(input)
-    expect(paced.allowance).toMatchObject({ points: 10, dayStartSevenDay: 40, basis: 'day-start' })
+    expect(paced.allowance).toMatchObject({ points: 15.71, dayStartSevenDay: 40, basis: 'day-start' })
     expect(paced.pool?.per_day_points).toBeUndefined()
     expect(paced.spend).toEqual({
       per_run_points: 6,
-      per_day_points: 10,
+      per_day_points: 15.71,
       per_day_label: "seat's reset-aware day allowance",
     })
+  })
+
+  it('leaves the pool day cap on the pool on day 6, when gatePool lifts the seat caps (CC-474)', () => {
+    const paced = pacedCaps({ ...input, resetsAt: now.getTime() + 2 * DAY - 60_000 })
+    expect(paced.pool).toBe(input.pool)
+    expect(paced.spend).toBe(input.spend)
   })
 
   it('returns the caps unchanged for a seat without the key', () => {
@@ -316,7 +323,7 @@ describe('the paced caps every gate hands gatePool (CC-404)', () => {
     expect(paced.spend).toBe(input.spend)
   })
 
-  it('opens the watchdog gate past per_day_points when the reset is half a day from 07:00', () => {
+  it("holds the watchdog gate at the pool's per_day_points on day 7, half a day from the reset (CC-474)", () => {
     const verdict = poolBudget({
       pool: {
         name: 'agents',
@@ -326,13 +333,14 @@ describe('the paced caps every gate hands gatePool (CC-404)', () => {
         perDayPoints: 12,
       },
       spend: { perDayPoints: 9 },
-      reading: { ageSeconds: 0, fiveHour: 5, sevenDay: 52 },
+      reading: { ageSeconds: 0, fiveHour: 5, sevenDay: 52, sevenDayResetsAt: at(7) + 0.5 * DAY },
       history: input.history,
       runStartAt: at(9),
       now,
       pacing: 'reset-aware',
       resetsAt: at(7) + 0.5 * DAY,
     })
-    expect(verdict).toMatchObject({ open: true })
+    expect(verdict.open).toBe(false)
+    expect(verdict.reason).toContain("at or above the pool agents's per_day_points 12")
   })
 })

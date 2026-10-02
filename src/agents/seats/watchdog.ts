@@ -90,10 +90,12 @@ export function accountReading(read: BudgetRead, nowMs: number): AccountReading 
   if (!read.found) return undefined
   const fiveHour = windowUsed(read.budget.rate_limits.five_hour, nowMs)
   const sevenDay = windowUsed(read.budget.rate_limits.seven_day, nowMs)
+  const resetsAt = read.budget.rate_limits.seven_day?.resets_at
   return {
     ageSeconds: read.age_seconds,
     ...(fiveHour === undefined ? {} : { fiveHour }),
     ...(sevenDay === undefined ? {} : { sevenDay }),
+    ...(resetsAt === undefined ? {} : { sevenDayResetsAt: resetsAt * 1000 }),
   }
 }
 
