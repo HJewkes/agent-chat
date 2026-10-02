@@ -56,6 +56,22 @@ const reply = (conn: Conn, message: ServerMessage): void => {
   conn.write(encode(message))
 }
 
+/** CC-320: the sender learns the message waits for the seat, so it neither resends nor reads it as delivered. */
+const replyHeld = (conn: Conn, to: string, msgId: string): void => {
+  const reason =
+    `"${to}" has no active session. The message is held and will be pushed when it registers; ` +
+    'it has not been delivered or read, so do not resend it.'
+  reply(conn, {
+    t: 'send_result',
+    ok: true,
+    held: true,
+    msgId,
+    recipients: [to],
+    results: [{ name: to, status: 'held', reason }],
+    reason,
+  })
+}
+
 /**
  * Frames that only a registered session can mean anything by (CC-83).
  *
@@ -608,18 +624,7 @@ export class SocketServer {
     const held = unrouted ? core.holdForSeat(from, to, text, inReplyTo) : undefined
     if (held === undefined) return this.handleRoute(conn, result, 'message', to)
     if (!held.ok) return this.handleRoute(conn, { ...result, reason: held.reason }, 'message', to)
-    const reason =
-      `"${to}" has no active session. The message is held and will be pushed when it registers; ` +
-      'it has not been delivered or read, so do not resend it.'
-    reply(conn, {
-      t: 'send_result',
-      ok: true,
-      held: true,
-      msgId: held.msgId,
-      recipients: [to],
-      results: [{ name: to, status: 'held', reason }],
-      reason,
-    })
+    replyHeld(conn, to, held.msgId)
   }
 
   private handleRoute(
@@ -1114,6 +1119,9 @@ export class SocketServer {
     const target = core.registry.connFor(to)
     const msgId = newMsgId()
     if (!target) {
+      // CC-441: the watchdog's wake for a seat it just resumed visibly lands here before the seat registers.
+      const held = core.holdForSeat(HUMAN, to, text)
+      if (held?.ok) return replyHeld(conn, to, held.msgId)
       core.append({ kind: 'route_failed', actor: HUMAN, target: to, body: 'no active session' })
       logEvent('route', { kind: 'message', msgId, from: HUMAN, to, delivered: false, recipients: [] })
       return reply(conn, {

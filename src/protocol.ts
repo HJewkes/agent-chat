@@ -1027,6 +1027,8 @@ export type ServerMessage =
       agentId?: string
       name?: string
       reason?: string
+      /** CC-441: the surface refused to launch (iTerm2 down, not macOS), so a headless launch may still work. */
+      code?: 'surface_refused'
       warnings?: string[]
       /**
        * The profile's own deny list, echoed back on success. CC-29's finding:

@@ -380,6 +380,8 @@ export interface SpawnOutcome {
   agentId?: string
   name?: string
   reason?: string
+  /** CC-441: see protocol.ts's `spawn_result`. */
+  code?: 'surface_refused'
   warnings?: string[]
   /** The profile's own deny list. See protocol.ts's `spawn_result` for why this matters. */
   disallowedTools?: string[]
@@ -2209,7 +2211,8 @@ export class Supervisor implements TeleportHost {
       this.semaphore.release(identity.agentId)
       const reason = `resume failed: ${(err as Error).message}`
       this.shadow.finish(executionId, { outcome: 'failed', reason, retryable: false })
-      return { ok: false, reason, transcript }
+      const code = err instanceof SurfaceRefused ? { code: 'surface_refused' as const } : {}
+      return { ok: false, reason, ...code, transcript }
     }
     if (req.message !== undefined && (req.surface ?? 'headless') !== 'headless')
       warnings.push(

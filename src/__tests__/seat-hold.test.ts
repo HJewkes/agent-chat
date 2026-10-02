@@ -99,6 +99,29 @@ describe('the dark-seat hold', () => {
     expect(back.frames[0]).toMatchObject({ t: 'register_result', ok: true })
   })
 
+  // CC-441. Catches: handleHumanSend failing a dark seat as "no active session" instead of holding it.
+  it('holds the watchdog wake sent as the human to a dark seat and delivers it after the seat registers', () => {
+    seatGoesDark()
+    const watchdog = wire()
+    at(T0 + 12 * MINUTE)
+
+    server.handleMessage(watchdog.conn, {
+      t: 'human_send',
+      to: SEAT,
+      text: 'Watchdog: wake',
+      source: 'watchdog',
+    })
+    const result = watchdog.frames.at(-1) as SendResult
+
+    expect(result).toMatchObject({ t: 'send_result', ok: true, held: true, recipients: [SEAT] })
+    expect(routeFailures()).toBe(0)
+    at(T0 + 13 * MINUTE)
+    const back = join(SEAT)
+    expect(pushed(back).map(m => [m.from, m.text, m.msgId])).toEqual([
+      ['human', 'Watchdog: wake', result.msgId],
+    ])
+  })
+
   it('tells the sender the message is held and unread, never delivered', () => {
     seatGoesDark()
     const result = send(join('rev-one'), SEAT, 'Status: DONE')

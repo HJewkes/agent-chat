@@ -22,6 +22,7 @@ import {
 import { DARK_AFTER_MS, RESUME_MESSAGE, judgeLiveness, type Presence } from '../agents/seats/liveness.js'
 import { acquireRunLock } from '../agents/seats/lock.js'
 import { runWatchdog, type Roster, type WatchdogDeps } from '../agents/seats/run.js'
+import { seatSurface } from '../agents/seats/charter.js'
 import type { OwnerMessage } from '../agents/seats/stops.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import { watchdogInstall, wakeSeat } from '../cli/verbs/seats.js'
@@ -1001,6 +1002,87 @@ describe('wakeSeat', () => {
     expect(c.frames).toEqual([
       { t: 'resume', name: 's', surface: 'headless', message: 'Watchdog: x', source: 'watchdog' },
     ])
+  })
+
+  // Catches: the surface hard-coded to 'headless' again, or the declared surface dropped from the frame.
+  it('resumes a seat declared on iterm-window on iterm-window and holds the message as a send', async () => {
+    const c = client({ t: 'spawn_result', ok: true, msgId: 'm2' })
+    const woke = await wakeSeat(c.client, 's', 'Watchdog: x', false, {
+      surface: 'iterm-window',
+      from: 'seat file',
+    })
+    expect(c.frames).toEqual([
+      { t: 'resume', name: 's', surface: 'iterm-window', source: 'watchdog' },
+      { t: 'human_send', to: 's', text: 'Watchdog: x', source: 'watchdog' },
+    ])
+    expect(woke).toEqual({ ok: true, detail: 'resumed on iterm-window (seat file); message m2' })
+  })
+
+  // Catches: no fallback on an iTerm refusal, or a fallback that drops the reason from the log line.
+  // Catches: the fallback keyed on the refusal text alone, ignoring the broker's typed code.
+  it('falls back to headless on code surface_refused whatever the reason text says', async () => {
+    const frames: unknown[] = []
+    const replies = [
+      { t: 'spawn_result', ok: false, code: 'surface_refused', reason: 'resume failed: iTerm2 is down' },
+      { t: 'spawn_result', ok: true },
+    ]
+    const request = async (frame: unknown) => (frames.push(frame), replies.shift())
+    const woke = await wakeSeat({ request } as unknown as BrokerClient, 's', 'Watchdog: x', false, {
+      surface: 'iterm-window',
+      from: 'seat file',
+    })
+    expect(frames).toHaveLength(2)
+    expect(woke).toEqual({
+      ok: true,
+      detail: 'resumed headless (iterm-window refused: resume failed: iTerm2 is down)',
+    })
+  })
+
+  // A broker built before the code existed; catches the legacy text fallback being dropped.
+  it('falls back to headless when iTerm refuses the declared surface, and says why', async () => {
+    const frames: unknown[] = []
+    const replies = [
+      {
+        t: 'spawn_result',
+        ok: false,
+        reason: "resume failed: iTerm2 is not running; use surface 'headless'",
+      },
+      { t: 'spawn_result', ok: true },
+    ]
+    const request = async (frame: unknown) => (frames.push(frame), replies.shift())
+    const woke = await wakeSeat({ request } as unknown as BrokerClient, 's', 'Watchdog: x', false, {
+      surface: 'iterm-window',
+      from: 'seat file',
+    })
+    expect(frames).toEqual([
+      { t: 'resume', name: 's', surface: 'iterm-window', source: 'watchdog' },
+      { t: 'resume', name: 's', surface: 'headless', message: 'Watchdog: x', source: 'watchdog' },
+    ])
+    expect(woke).toEqual({
+      ok: true,
+      detail:
+        "resumed headless (iterm-window refused: resume failed: iTerm2 is not running; use surface 'headless')",
+    })
+  })
+
+  // Catches: falling back to headless on any refusal, which would hide an ownership or slot refusal.
+  it('does not fall back to headless when the resume is refused for a reason other than iTerm', async () => {
+    const c = client({ t: 'spawn_result', ok: false, reason: 'no free agent slots (4/4)' })
+    const woke = await wakeSeat(c.client, 's', 'Watchdog: x', false, {
+      surface: 'iterm-window',
+      from: 'seat file',
+    })
+    expect(c.frames).toHaveLength(1)
+    expect(woke).toEqual({ ok: false, detail: 'no free agent slots (4/4)' })
+  })
+})
+
+describe('seatSurface', () => {
+  // Catches: reading the surface from outside the frontmatter, or accepting a name no surface has.
+  it('reads a known surface from the seat file frontmatter and ignores an unknown one', () => {
+    expect(seatSurface('---\nprefix: sa\npool: claude\nsurface: iterm-window\n---\n')).toBe('iterm-window')
+    expect(seatSurface('---\nprefix: sa\npool: claude\nsurface: kitty\n---\n')).toBeUndefined()
+    expect(seatSurface(SEAT)).toBeUndefined()
   })
 })
 
