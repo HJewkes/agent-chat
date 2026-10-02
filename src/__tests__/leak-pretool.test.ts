@@ -80,6 +80,7 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
     'git --config-env=core.hooksPath=X push',
     'git --config-env core.hooksPath=X push',
     "git -c alias.p='push --no-verify' p",
+    "git -c $'core.hooks\\x50ath=/dev/null' push",
   ])('%s', command => {
     expect(checkCommand(command, ctx())).toBe(REASONS.gitConfig)
   })
@@ -112,7 +113,7 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
     'git -C$(cat d) push',
     'git --git-dir=$(cat d) push',
     'git -c core.hooks[P]ath=x push',
-    "git -c $'core.hooks\\x50ath=/dev/null' push",
+    "git -c $'core.hooks\\cPath=/dev/null' push",
   ])('denies a config the guard cannot read before a hook-running command: %s', command => {
     expect(checkCommand(command, ctx())).toBe(REASONS.gitConfigUnresolved)
   })
@@ -350,7 +351,7 @@ describe('body file paths are expanded from the hook env', () => {
     ['a zsh glob qualifier', '$TMPDIR/pr.md(:h)'],
     ['a zsh command path', '=pr.md'],
     ['a process substitution', '<(cat pr.md)'],
-    ['an ANSI-C escape the splitter does not decode', "$'\\x70r.md'"],
+    ['an ANSI-C escape the splitter does not decode', "$'\\cAr.md'"],
     ['a zsh modifier', '$TMPDIR:h/pr.md'],
     ['a quoted zsh modifier', '"$TMPDIR:h/pr.md"'],
     ['a zsh subscript', '"$TMPDIR[1]pr.md"'],
@@ -1076,6 +1077,92 @@ describe('a git alias already in config', () => {
     ])('denies a positional, special or indirect command word where it cannot look (TP-613): %s', command => {
       expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
     })
+
+    it.each([
+      ['a ? glob on a path', '/usr/bin/gi? pnv'],
+      ['a bracket glob', 'gi[t] pnv'],
+      ['a ? glob in a default', '${x:-/usr/bin/g?t} pnv'],
+      ['a bracket glob in a default', '${x:-/usr/bin/gi[t]} pnv'],
+      ['an ANSI-C hex escape', "$'\\x67it' pnv"],
+      ['an ANSI-C octal escape', "$'\\147it' pnv"],
+      ['an ANSI-C string in a default', "${x:-$'g\\x69t'} pnv"],
+      ['a brace expansion', 'g{i,}t pnv'],
+      ['an unset variable spliced into a default', '${x:-g${z}it} pnv'],
+      ['a bracket that opens with ]', 'gi[]t] pnv'],
+      ['a negated bracket that opens with ]', 'gi[!]x] pnv'],
+      ['a bracket that opens with ] on a path', '/usr/bin/gi[]t] pnv'],
+      ['a bracket that opens with ] in a default', '${x:-gi[]t]} pnv'],
+      ['zsh alternation', 'g(i|x)t pnv'],
+      ['zsh alternation on a path', '/usr/bin/g(i|x)t pnv'],
+      ['zsh alternation in a default', '${x:-g(i|x)t} pnv'],
+      ['a default joined to the text after it', '${x:-gi}t pnv'],
+      ['zsh alternation before a glob qualifier', 'g(i|x)t(N) pnv'],
+      ['a glob qualifier closing a default', '${x:-/usr/bin/g?t(N)} pnv'],
+      ['a group and a qualifier closing a default', '${x:-/usr/bin/gi(t)(N)} pnv'],
+      ['a group and a . qualifier closing a default', '${x:-/usr/bin/g(i)t(.)} pnv'],
+    ])(
+      'denies a command word that may become git through %s where it cannot look (TP-721): %s',
+      (_, word) => {
+        expect(checkCommand(`source /dev/null; ${word}`, inAliased())).toBe(REASONS.aliasEnv)
+      },
+    )
+
+    it.each([
+      'g(i|x)t pnv',
+      '/usr/bin/g(i|x)t pnv',
+      '${x:-g(i|x)t} pnv',
+      '${x:-/usr/bin/g?t(N)} pnv',
+      '${x:-/usr/bin/gi(t)(N)} pnv',
+      '${x:-/usr/bin/g(i)t(.)} pnv',
+    ])('reads the alias behind a zsh alternation that may be git where it can look (TP-721): %s', command => {
+      expect(checkCommand(command, inAliased())).toBe(REASONS.noVerify)
+    })
+
+    it('still checks a substitution inside a zsh glob group (TP-721)', () => {
+      expect(checkCommand('ls x(a|$(git push --no-verify))', inAliased())).toBe(REASONS.noVerify)
+    })
+
+    it.each([
+      "echo x(a|'(') ; git push --no-verify ; echo ')' # '",
+      "echo x(a|\"(\") ; git push --no-verify ; echo ')' # '",
+      "echo x(a|')') ; git push --no-verify ; echo ')' # '",
+      "echo x(a|'(') && git push --no-verify # )",
+      '{(git push --no-verify)}',
+    ])('still sees a command beside a group with a quoted paren or after a brace (TP-721): %s', command => {
+      expect(checkCommand(command, inAliased())).toBe(REASONS.noVerify)
+    })
+
+    it('denies a command word too deeply nested to check, well within the hook timeout (TP-721)', () => {
+      const word = `${'{'.repeat(80000)}x${'}'.repeat(80000)}`
+      const started = performance.now()
+
+      const reasons = [`source /dev/null; ${word} pnv`, `${word}; git push --no-verify`].map(command =>
+        checkCommand(command, inAliased()),
+      )
+
+      expect(reasons).toEqual([REASONS.aliasEnv, REASONS.noVerify])
+      expect(performance.now() - started).toBeLessThan(2000)
+    })
+
+    it.each([
+      'ls src/*.ts',
+      'cp file{,.bak}',
+      "printf $'a\\tb\\n'",
+      'echo {1..3}',
+      'rm -f dist/*.js && git status',
+      './scripts/*.sh run && git status',
+      '~/bin/*-tool x; git log',
+      '${PYTHON:-python{3,}} -m pytest && git status',
+      'ls *.ts(.)',
+      'f() { echo hi; }; f',
+      'arr=(a b); echo $arr',
+    ])(
+      'allows a glob, brace or ANSI-C word that cannot become git where it cannot look (TP-721): %s',
+      line => {
+        expect(checkCommand(`source /dev/null; ${line}`, inAliased())).toBeUndefined()
+        expect(checkCommand(line, inAliased())).toBeUndefined()
+      },
+    )
 
     it('denies an expanded command word whose hook env value is git where it cannot look', () => {
       const command = 'source /dev/null; $G pnv'
