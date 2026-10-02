@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createWorktreeStrategy, reattachWorktree } from '../agents/isolation/worktree.js'
 import {
   parseSetupStep,
+  PNPM_WORKSPACE_FILE,
   runSetupCommand,
   setupEnv,
   SETUP_FILE,
@@ -473,6 +474,83 @@ describe('lifecycle scripts during worktree setup (CC-324)', () => {
   it('the repository declaration passes --ignore-scripts to its install', () => {
     const step = parseSetupStep(fs.readFileSync(SETUP_FILE, 'utf8'))
     expect(step).toMatchObject({ command: expect.arrayContaining(['npm', 'ci', '--ignore-scripts']) })
+  })
+})
+
+/** Needs the registry once to fetch pnpm; 10.28.1 is the version whose precedence was observed. */
+const PNPM_INSTALL = ['npx', '--yes', 'pnpm@10.28.1', 'install']
+
+const writesMarker = (name: string): string =>
+  `require('fs').writeFileSync(require('path').join(__dirname, ${JSON.stringify(`${name}-ran`)}), '')\nmodule.exports = { hooks: {} }\n`
+
+/** A branch package with a root postinstall and a .pnpmfile.cjs, each of which leaves a marker in the tree. */
+const PNPM_HOSTILE_PACKAGE: Record<string, string> = {
+  'package.json': JSON.stringify({
+    name: 'cc446-synthetic',
+    version: '1.0.0',
+    scripts: { postinstall: 'touch postinstall-ran' },
+  }),
+  '.pnpmfile.cjs': writesMarker('pnpmfile'),
+  'evil.cjs': writesMarker('evil'),
+}
+
+const HOSTILE_WORKSPACE = 'ignorePnpmfile: false\nignoreScripts: false\n'
+
+describe('pnpm during worktree setup (CC-446)', () => {
+  it('turns the pnpmfile off even when the broker environment turns it on', () => {
+    const env = setupEnv({
+      PATH: '/bin',
+      npm_config_ignore_pnpmfile: 'false',
+      NPM_CONFIG_IGNORE_PNPMFILE: 'false',
+    })
+    expect(env).toMatchObject({ npm_config_ignore_pnpmfile: 'true', NPM_CONFIG_IGNORE_PNPMFILE: 'true' })
+  })
+
+  it('a reused branch with a .pnpmfile.cjs and a postinstall runs neither under pnpm install', async () => {
+    const repo = makeRepo({ command: PNPM_INSTALL })
+    branchWithFiles(repo, 'agent-chat/alice', PNPM_HOSTILE_PACKAGE)
+
+    const alloc = await createWorktreeStrategy().allocate(ctxFor(repo))
+
+    expect(alloc.ref?.reused).toBe('true')
+    expect(setupWarnings(alloc.warnings)).toEqual([])
+    expect(fs.existsSync(path.join(alloc.cwd, 'node_modules'))).toBe(true)
+    expect(markersIn(alloc.cwd)).toEqual([])
+  }, 120_000)
+
+  it.each([
+    ['turns both back on', HOSTILE_WORKSPACE],
+    ['names its own pnpmfile', `${HOSTILE_WORKSPACE}pnpmfile: evil.cjs\n`],
+  ])(
+    'a reused branch whose pnpm-workspace.yaml %s runs no branch code',
+    async (_case, workspace) => {
+      const repo = makeRepo({ command: PNPM_INSTALL })
+      branchWithFiles(repo, 'agent-chat/alice', { ...PNPM_HOSTILE_PACKAGE, [PNPM_WORKSPACE_FILE]: workspace })
+
+      const alloc = await createWorktreeStrategy().allocate(ctxFor(repo))
+
+      expect(alloc.ref?.reused).toBe('true')
+      expect(setupWarnings(alloc.warnings)).toEqual([
+        `worktree setup skipped: the tree's ${PNPM_WORKSPACE_FILE} differs from origin's default branch`,
+      ])
+      expect(markersIn(alloc.cwd)).toEqual([])
+    },
+    120_000,
+  )
+
+  it('still runs the step when the branch keeps the pnpm-workspace.yaml origin has', async () => {
+    const repo = makeRepo({ command: ['true'] })
+    fs.writeFileSync(path.join(repo, PNPM_WORKSPACE_FILE), 'packages: []\n')
+    git(['add', '.'], repo)
+    git(['commit', '-m', 'workspace'], repo)
+    git(['push', '-q', 'origin', 'main'], repo)
+    branchWithFiles(repo, 'agent-chat/alice', { 'work.txt': 'work\n' })
+    const recorder = recording()
+
+    const alloc = await createWorktreeStrategy({ runSetup: recorder.runner }).allocate(ctxFor(repo))
+
+    expect(setupWarnings(alloc.warnings)).toEqual([])
+    expect(recorder.calls).toHaveLength(1)
   })
 })
 
