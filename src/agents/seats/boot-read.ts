@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { frontmatter } from '../burndown/policy.js'
-import { openEvents, readText, seatLogPath } from './io.js'
+import { openEvents, readSeatJournal, readText, seatJournalDays, seatLogPath } from './io.js'
 
 /** CC-318: the readers behind `seats boot`, each read-only. */
 
@@ -105,6 +105,18 @@ export function readLogSection(root: string, seat: string, now: Date): LogSectio
     found: text !== undefined,
     section: section === undefined ? null : capText(section, LOG_CAP),
   }
+}
+
+export const TELEPORT_LOOKBACK_DAYS = 7
+
+/** The newest `State at teleport` section among the seat's last journal days, not only today's; undefined when none has one. */
+export function latestTeleportSection(root: string, seat: string): string | undefined {
+  for (const day of seatJournalDays(root, seat).slice(0, TELEPORT_LOOKBACK_DAYS)) {
+    const text = readSeatJournal(root, seat, day)
+    const section = text === undefined ? undefined : latestTeleportState(text)
+    if (section !== undefined) return section
+  }
+  return undefined
 }
 
 export const INBOX_TAIL = 5
