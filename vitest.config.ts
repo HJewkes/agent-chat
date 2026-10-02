@@ -16,7 +16,10 @@ const FORKS_FILES = [
   'src/__tests__/resume-role-gate.test.ts',
   'src/__tests__/surface-role-gate.test.ts',
   'src/__tests__/report-batch.test.ts',
-  // Execs scripts it just wrote; a sibling thread's fork can hold the write fd open (ETXTBSY).
+  // The next three exec scripts they just wrote. On Linux a sibling worker's fork can inherit the
+  // write fd, and the exec fails with ETXTBSY until that child execs (CC-462).
+  'src/__tests__/gh-shim.test.ts',
+  'src/__tests__/leak-git-shim.test.ts',
   'src/__tests__/leak-git-shim-stash.test.ts',
 ]
 
