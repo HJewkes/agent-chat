@@ -1299,7 +1299,11 @@ export class Supervisor implements TeleportHost {
     }
 
     const floor = floorWarning(isolationName, profile.isolation)
-    const warnings = [...(floor ? [floor] : []), ...(await resolveIsolation([isolationName]).check(ctx))]
+    const warnings = [
+      ...(profile.warnings ?? []),
+      ...(floor ? [floor] : []),
+      ...(await resolveIsolation([isolationName]).check(ctx)),
+    ]
     // A briefing is an improvement to the brief, never a precondition for one:
     // an unresolvable initiative warns and spawns anyway. The alternative is a
     // spawn that fails for a reason unrelated to the work.

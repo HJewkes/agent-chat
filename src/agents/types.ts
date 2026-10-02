@@ -94,6 +94,8 @@ export interface AgentProfile {
   disableSlashCommands?: boolean
   /** Extra environment for the launched process. Never overrides AGENT_CHAT_* or CLAUDE_CONFIG_DIR. */
   env?: Record<string, string>
+  /** Set by the loader, never read from a file: keys in the file that no field here answers to. */
+  warnings?: string[]
 }
 
 /**
