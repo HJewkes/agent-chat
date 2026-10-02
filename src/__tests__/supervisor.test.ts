@@ -10,6 +10,7 @@ import { Registry } from '../broker/registry.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { SpawnRateBudget } from '../agents/spawn-rate.js'
 import {
+  coordinatorExemption,
   MAX_COORDINATOR_DEPTH,
   Supervisor,
   type SpawnOutcome,
@@ -2313,6 +2314,77 @@ describe('spawn privilege', () => {
       expect(result.ok).toBe(false)
       expect(result.reason).toMatch(/more capable than itself/)
     })
+
+    /** Monitor runs shell commands, so a Bash deny alone does not keep a fetched page from running code. */
+    it('refuses a web child that allows Monitor even when it denies Bash', async () => {
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      writeProfile('web-monitor', ['WebFetch', 'Read', 'Monitor'], ['Bash', 'AskUserQuestion'])
+      const parentAgentId = spawnedParentWithDeny(
+        'coord-agent',
+        shared,
+        COORDINATOR_TOOLS,
+        COORDINATOR_DENIED,
+      )
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'web-monitor')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/not granted \(WebFetch\)/)
+    })
+
+    it('refuses a web child that allows a scoped Bash form', async () => {
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      writeProfile('web-git', ['WebFetch', 'Read', 'Bash(git:*)'], ['Bash', 'AskUserQuestion'])
+      const parentAgentId = spawnedParentWithDeny(
+        'coord-agent',
+        shared,
+        [...COORDINATOR_TOOLS, 'Bash(git:*)'],
+        COORDINATOR_DENIED,
+      )
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'web-git')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/not granted \(WebFetch\)/)
+    })
+
+    it('refuses a web child that allows an MCP tool', async () => {
+      const sup = withStubbedSurface()
+      const shared = workspace()
+      writeProfile('web-mcp', ['WebFetch', 'Read', 'mcp__other__run'], ['Bash', 'AskUserQuestion'])
+      const parentAgentId = spawnedParentWithDeny(
+        'coord-agent',
+        shared,
+        [...COORDINATOR_TOOLS, 'mcp__other__run'],
+        COORDINATOR_DENIED,
+      )
+
+      const result = await spawnAs(sup, parentAgentId, shared, 'web-mcp')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/not granted \(WebFetch\)/)
+    })
+  })
+})
+
+/** CC-451: the exemption rule itself, apart from the spawn path that reaches it. */
+describe('coordinatorExemption', () => {
+  const researcher = {
+    allowedTools: ['WebSearch', 'WebFetch', 'Read', 'Write', 'Grep', 'Glob'],
+    disallowedTools: ['Edit', 'Bash', 'AskUserQuestion'],
+  }
+
+  it('gives a coordinator the grantable tools for a confined child', () => {
+    expect([...coordinatorExemption('coordinator', researcher, ['WebSearch', 'WebFetch'])]).toEqual([
+      'WebSearch',
+      'WebFetch',
+    ])
+  })
+
+  it('gives a worker nothing, even for the same confined child', () => {
+    expect(coordinatorExemption('worker', researcher, ['WebSearch', 'WebFetch']).size).toBe(0)
   })
 })
 

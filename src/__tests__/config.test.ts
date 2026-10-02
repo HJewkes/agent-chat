@@ -6,6 +6,7 @@ import {
   DEFAULT_NOTICE_TTL_HOURS,
   DEFAULT_PERMISSION_HOOK_TIMEOUT_S,
   resolveAgentSlots,
+  resolveCoordinatorGrantableTools,
   resolveContextHintPolicy,
   resolveFullSuiteSlots,
   resolveMachineLimits,
@@ -284,4 +285,25 @@ describe('resolveReportBatchMs', () => {
       expect(resolveReportBatchMs()).toBe(20_000)
     },
   )
+})
+
+describe('resolveCoordinatorGrantableTools', () => {
+  it('defaults to the two web-read tools', () => {
+    expect(resolveCoordinatorGrantableTools()).toEqual(['WebSearch', 'WebFetch'])
+  })
+
+  it('keeps a narrowed list', () => {
+    writeConfigJson({ coordinatorGrantableTools: ['WebSearch'] })
+    expect(resolveCoordinatorGrantableTools()).toEqual(['WebSearch'])
+  })
+
+  it('drops a wildcard and any tool outside the web-read set', () => {
+    writeConfigJson({ coordinatorGrantableTools: ['*', 'Bash', 'Monitor', 'WebFetch'] })
+    expect(resolveCoordinatorGrantableTools()).toEqual(['WebFetch'])
+  })
+
+  it('grants nothing for a value that is not a list', () => {
+    writeConfigJson({ coordinatorGrantableTools: 'WebSearch' })
+    expect(resolveCoordinatorGrantableTools()).toEqual([])
+  })
 })
