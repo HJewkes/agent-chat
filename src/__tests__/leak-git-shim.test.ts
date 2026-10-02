@@ -466,9 +466,10 @@ describe('the agent git shim letting a push to a local repository skip the hooks
     ['remote.origin.vcs'],
     ['remote.origin.pushurl'],
     ['remote.origin.url'],
-    ['-z remote.origin.url'],
+    ['-z url.https://github.com/acme/.insteadof'],
   ])('refuses a push to a local remote when git fails to read %s', words => {
     const fx = fixture()
+    git(fx.work, 'config', 'url.https://github.com/acme/.insteadOf', '/no-such-prefix/')
     const failing = path.join(fx.work, '..', 'failing-git')
     const match = words
       .split(' ')
