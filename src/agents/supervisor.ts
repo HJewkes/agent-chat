@@ -2107,7 +2107,7 @@ export class Supervisor implements TeleportHost {
       agentName: name,
       baseCwd: identity.cwd,
       // CC-188: not lastEventAt, which each refused retire's own isolation_released row advances.
-      ...(stopped !== undefined ? { exitedAt: stopped } : {}),
+      ...(stopped !== undefined ? { stoppedAt: stopped } : {}),
     }
     return this.releaseHeld(ctx, entry, force)
   }

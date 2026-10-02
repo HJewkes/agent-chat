@@ -239,7 +239,7 @@ export async function reclaim(
   // Forced at the strategy either way: the grace window and the dirty/unmerged
   // check have already run, in `classify`, against the report the caller read.
   // Letting release re-derive them would refuse a reclaim the human just saw
-  // offered, on an `exitedAt` this call site does not have.
+  // offered, on a `stoppedAt` this call site does not have.
   const released = await worktreeStrategy.release(
     { agentId: alloc?.agentId ?? '', agentName: entry.agent?.name ?? entry.branch, baseCwd: entry.gitRoot },
     allocation,
