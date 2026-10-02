@@ -51,7 +51,10 @@ function withGitShim(env: Record<string, string>): Record<string, string> {
  * so a PATH the plan sets wins over the base's: the shims go onto whichever PATH will win.
  */
 export function withShims(plan: LaunchPlan, base: Record<string, string> = agentEnv()): LaunchPlan {
-  const env = { ...(plan.env.PATH === undefined && base.PATH !== undefined ? { PATH: base.PATH } : {}), ...plan.env }
+  const env = {
+    ...(plan.env.PATH === undefined && base.PATH !== undefined ? { PATH: base.PATH } : {}),
+    ...plan.env,
+  }
   const { PATH } = withGitShim(withGhShim(env))
   return { ...plan, env: { ...plan.env, ...(PATH === undefined ? {} : { PATH }) } }
 }

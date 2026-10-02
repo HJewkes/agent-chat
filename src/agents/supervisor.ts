@@ -38,7 +38,13 @@ import {
   type Allocation,
   type IsolationContext,
 } from './isolation/index.js'
-import { SurfaceRefused, itermSessionPresent, loginGap, readOutputTail, type SurfaceOptions } from '@titan-design/agent-surface'
+import {
+  SurfaceRefused,
+  itermSessionPresent,
+  loginGap,
+  readOutputTail,
+  type SurfaceOptions,
+} from '@titan-design/agent-surface'
 import { surfaceFor } from './launcher.js'
 import { Semaphore, type SlotUsage } from './semaphore.js'
 import {

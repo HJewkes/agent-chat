@@ -137,7 +137,11 @@ export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknow
   writePrivate(hookSettingsPath(plan.agentId), JSON.stringify(settings, null, 2))
   writePrivate(mcpConfigPath(plan.agentId), JSON.stringify(config, null, 2))
   writePrivate(planPath(plan.agentId), JSON.stringify(withSettings(plan), null, 2))
-  writePrivate(relaunchScriptPath(plan.agentId), relaunchScript(agentChatLauncher(), plan.agentId), SCRIPT_MODE)
+  writePrivate(
+    relaunchScriptPath(plan.agentId),
+    relaunchScript(agentChatLauncher(), plan.agentId),
+    SCRIPT_MODE,
+  )
   const hooksDir = hooksDirOf(plan.env)
   if (hooksDir === undefined) return
   writeGitHooks(hooksDir)

@@ -78,11 +78,11 @@ describe('a visible pane keeps its identity', () => {
     fs.writeFileSync(path.join(autonomy, 'seats', 'alpha-coord.md'), '---\nprefix: ac\n---\n')
     fs.writeFileSync(
       path.join(dir, 'config.json'),
-      JSON.stringify({ paneColours: { seats: { 'alpha-coord': '#3d85c6' } } }),
+      JSON.stringify({ paneColours: { seats: { 'alpha-coord': '#123456' } } }),
     )
     writePlan(plan({ surface: 'iterm-tab', title: 'ac-task-1' }))
 
-    const rgb = parseHex('#3d85c6')
+    const rgb = parseHex('#123456')
     expect(rgb).toBeDefined()
     expect(runVerb(ITERM).stdout).toBe(
       `${oscTitle('ac-task-1')}${itermIdentity('ac-task-1', rgb!)}fake-claude-ran`,
