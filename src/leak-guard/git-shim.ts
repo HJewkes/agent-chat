@@ -97,15 +97,26 @@ const EXTERNAL_FN = `external() {
   return $found
 }`
 
-// git stash push is the one subcommand named push that is not a push; only those two exact words pass.
+// git stash push is not a push; push passes only right after stash as git's subcommand, past its global options.
 const MENTIONS_PUSH_FN = `mentions_push() {
   set -f
-  set -- $(printf '%s' "$1" | tr -d "\\"'\\\\\\\\")
+  set -- $(printf '%s' "\${1#!}" | tr -d "\\"'\\\\\\\\")
   set +f
-  prev=
+  at=
   for tok; do
-    case $tok in *push*) [ "$prev $tok" = 'stash push' ] || return 0 ;; esac
-    prev=$tok
+    case $at in
+    globals)
+      case $tok in
+      ${VALUED_GLOBALS}) at=value ;;
+      -*) ;;
+      stash) at=stash ;;
+      *) at= ;;
+      esac ;;
+    value) at=globals ;;
+    stash) at=; [ "$tok" = push ] && continue ;;
+    *) [ "$tok" = git ] && at=globals ;;
+    esac
+    case $tok in *push*) return 0 ;; esac
   done
   return 1
 }`

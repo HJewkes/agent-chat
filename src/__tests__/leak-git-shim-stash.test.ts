@@ -84,7 +84,11 @@ describe('the agent git shim exempting only an exact git stash push (TP-783)', (
   // Kills: the exemption reverted to any token after stash, and an exemption that covers the rest of the line.
   it.each([
     `!git stash push;git\${IFS}push ${NO_VERIFY} origin main`,
+    `!git stash ;git\${IFS}push ${NO_VERIFY} origin main`,
     `!git stash; git push ${NO_VERIFY} origin main`,
+    `!git stash push && git push ${NO_VERIFY} origin main`,
+    `!git stash push\ngit push ${NO_VERIFY} origin main`,
+    `!git stash push $(git push ${NO_VERIFY} origin main)`,
   ])('refuses the shell alias %s, whose later command pushes', alias => {
     const fx = fixture()
     git(fx.work, 'config', 'alias.g', alias)
@@ -96,12 +100,30 @@ describe('the agent git shim exempting only an exact git stash push (TP-783)', (
     expect(remoteHasMain(fx)).toBe(false)
   })
 
-  // Kills: the stash exemption removed.
+  // Kills: an option value of stash taken as the stash subcommand (reviewer finding Q1 on #332).
+  it.each(['-C stash', '--work-tree stash', '--namespace stash', '--git-dir=stash'])(
+    'refuses the shell alias !git %s push, where stash is an option value',
+    options => {
+      const fx = fixture()
+      fs.mkdirSync(path.join(fx.work, 'stash'))
+      git(fx.work, 'config', 'alias.g', `!git ${options} push ${NO_VERIFY} origin main`)
+
+      const run = runScript(fx, 'git g')
+
+      expect(run.stderr).toContain('git-shim: push refused (shell-alias)')
+      expect(run.status).toBe(2)
+      expect(remoteHasMain(fx)).toBe(false)
+    },
+  )
+
+  // Kills: the stash exemption removed, or global options not skipped before the subcommand.
   it.each([
     ['git stash push -m x', ''],
     ['git g', '!git stash push -m x'],
-  ])('still runs %s and records the stash', (command, alias) => {
+    ['git g', '!git -C sub stash push -m x'],
+  ])('still runs %s (alias %s) and records the stash', (command, alias) => {
     const fx = fixture()
+    fs.mkdirSync(path.join(fx.work, 'sub'))
     if (alias) git(fx.work, 'config', 'alias.g', alias)
     fs.writeFileSync(path.join(fx.work, 'file.txt'), 'two\n')
 
