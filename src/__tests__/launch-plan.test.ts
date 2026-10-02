@@ -384,6 +384,7 @@ describe('every builtin profile, on every surface', () => {
     expect(named('reviewer')?.disallowedTools).toEqual([
       'Write',
       'Edit',
+      'Bash(git stash:*)',
       'Bash(agent-chat endorse:*)',
       'Bash(agent-chat dismiss:*)',
       'Bash(agent-chat send:*)',

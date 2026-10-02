@@ -54,6 +54,7 @@ const REVIEWER = [
   'Before MERGE, confirm every required check-run (one branch protection names) at the reviewed head',
   'with `gh api repos/<owner>/<repo>/commits/<head>/check-runs --paginate`; FIX_FIRST if a required',
   'one failed. A skipped check (std / compat) is not a failure.',
+  'Never run `git stash`: refs/stash is shared across worktrees. Use `git show <rev>:<path>` instead.',
   "Then blocking items before nits. A verdict counts only when Head equals the PR's current head exactly.",
 ].join('\n')
 
