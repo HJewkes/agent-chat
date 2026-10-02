@@ -6,6 +6,7 @@ import {
   dayStart,
   gatePool,
   runStartAt,
+  standInReading,
   type AccountReading,
   type PoolGateResult,
 } from '../burndown/budget-gate.js'
@@ -16,7 +17,7 @@ import { expandHome } from '../burndown/seat-dispatch.js'
 import { localDate } from '../burndown/seat-tick.js'
 import { openEvents, type WatchdogDoc } from './io.js'
 import { advanceMeter, meterHistory, sameSpendDay, withinRun, type SpendMeter } from './stops.js'
-import { accountReading } from './watchdog.js'
+import { accountReading, lastGoodReading } from './watchdog.js'
 import type { MachineStatus } from '../machine-guard.js'
 
 /**
@@ -54,6 +55,8 @@ export interface BudgetStatus {
   /** Seconds since the pool's freshest status file was written; null with no reading. */
   ageSeconds: number | null
   stale: boolean
+  /** CC-409: the current reading lacks a window, so the last good reading, within its limits, stands in for it. */
+  staleOk: boolean
   /** The charter stop that closes the seat's gate, or null when it is open. */
   stop: string | null
   /** The open gate's figures against its lines. */
@@ -189,14 +192,17 @@ type SeatBudget = ReturnType<typeof seatBudget>
 interface SavedMeters {
   run: SpendMeter | undefined
   day: SpendMeter | undefined
+  lastGood: AccountReading | undefined
 }
 
 /** A saved meter missing a figure is no meter, so the cap it would cover reads as unknown. */
 const usable = (meter: SpendMeter | undefined): SpendMeter | undefined =>
   [meter?.since, meter?.last, meter?.spent].every(Number.isFinite) ? meter : undefined
 
-function savedMeters(doc: WatchdogDoc, seat: string, pool: string | undefined): SavedMeters {
-  return { run: usable(doc.seats[seat]?.run), day: pool === undefined ? undefined : usable(doc.pools[pool]) }
+function savedMeters(doc: WatchdogDoc, seat: string, pool: string | undefined, nowMs: number): SavedMeters {
+  if (pool === undefined) return { run: usable(doc.seats[seat]?.run), day: undefined, lastGood: undefined }
+  const lastGood = lastGoodReading(doc.lastReadings?.[pool], nowMs)
+  return { run: usable(doc.seats[seat]?.run), day: usable(doc.pools[pool]), lastGood }
 }
 
 /**
@@ -221,10 +227,22 @@ function seatGate(
     { at: dayStart(now), meter: day },
   ]
   const history = meterHistory(starts, nowMs)
-  return { gate: gatePool({ pool, spend, reading, history, runStartAt: runStart, ctx: { now } }), day }
+  const input = {
+    pool,
+    spend,
+    reading,
+    lastGood: saved.lastGood,
+    history,
+    runStartAt: runStart,
+    ctx: { now },
+  }
+  return { gate: gatePool(input), day }
 }
 
-type Verdict = Pick<BudgetStatus, 'stop' | 'margin' | 'sonnetOnly' | 'spendSince' | 'note'>
+type Verdict = Pick<BudgetStatus, 'stop' | 'margin' | 'sonnetOnly' | 'spendSince' | 'note'> & {
+  /** CC-409: the reading the gate opened on when the last good reading stood in for a missing window. */
+  staleOk?: AccountReading
+}
 
 const stopped = (stop: string): Verdict => ({
   stop,
@@ -261,9 +279,18 @@ function spendVerdict(
   } catch (err) {
     return stopped(`BUDGET-PAUSE pool ${name ?? 'unknown'}: ${plain(err)}, so spend is unknown`)
   }
-  const { gate, day } = seatGate(budget, savedMeters(doc, seat, name), reading, now)
+  const saved = savedMeters(doc, seat, name, now.getTime())
+  const { gate, day } = seatGate(budget, saved, reading, now)
   if (!gate.open) return { ...stopped(gate.reason), ...lateDayStart(day, now) }
-  return { stop: null, margin: gate.reason, sonnetOnly: gate.sonnetOnly, ...lateDayStart(day, now) }
+  const shown = gate.staleOk === true ? standInReading(reading, saved.lastGood) : undefined
+  const staleOk = shown === undefined ? {} : { staleOk: shown }
+  return {
+    stop: null,
+    margin: gate.reason,
+    sonnetOnly: gate.sonnetOnly,
+    ...lateDayStart(day, now),
+    ...staleOk,
+  }
 }
 
 function budgetStatus(deps: StatusDeps, policy: Policy, seat: string, now: Date, plain: Plain): BudgetStatus {
@@ -273,13 +300,16 @@ function budgetStatus(deps: StatusDeps, policy: Policy, seat: string, now: Date,
   const read =
     configDir === undefined ? undefined : deps.readBudget(expandHome(configDir, deps.homeDir), now.getTime())
   const reading = read === undefined ? undefined : accountReading(read, now.getTime())
+  const { staleOk, ...verdict } = spendVerdict(deps, budget, seat, reading, now, plain)
+  const shown = staleOk ?? reading
   return {
     pool: name ?? null,
-    sevenDay: reading?.sevenDay ?? null,
-    fiveHour: reading?.fiveHour ?? null,
-    ageSeconds: reading?.ageSeconds ?? null,
-    stale: read?.found === true ? read.stale : true,
-    ...spendVerdict(deps, budget, seat, reading, now, plain),
+    sevenDay: shown?.sevenDay ?? null,
+    fiveHour: shown?.fiveHour ?? null,
+    ageSeconds: shown?.ageSeconds ?? null,
+    stale: staleOk !== undefined || (read?.found === true ? read.stale : true),
+    staleOk: staleOk !== undefined,
+    ...verdict,
   }
 }
 
@@ -348,14 +378,16 @@ function agentLine(label: string, load: AgentLoad, count: string, flag = ''): st
 const roleLine = (label: string, load: RoleLoad): string =>
   agentLine(label, load, `${load.active}/${load.cap}`, load.atCap ? 'AT CAP' : '')
 
-function budgetLine(budget: BudgetStatus): string {
-  if (budget.ageSeconds === null) return line('budget', `pool ${budget.pool ?? 'unknown'}: no reading`)
-  const age = `reading ${budget.ageSeconds}s old${budget.stale ? ', STALE' : ''}`
-  return line(
-    'budget',
-    `pool ${budget.pool ?? 'unknown'}: seven_day ${budget.sevenDay ?? '?'}%, five_hour ${budget.fiveHour ?? '?'}% (${age})`,
-  )
+/** The pool's reading in words, shared with the boot page. */
+export function poolReadingText(budget: BudgetStatus): string {
+  const pool = `pool ${budget.pool ?? 'unknown'}`
+  if (budget.ageSeconds === null) return `${pool}: no reading`
+  const flag = budget.staleOk ? ', STALE-OK' : budget.stale ? ', STALE' : ''
+  const age = `${budget.staleOk ? 'last good reading' : 'reading'} ${budget.ageSeconds}s old${flag}`
+  return `${pool}: seven_day ${budget.sevenDay ?? '?'}%, five_hour ${budget.fiveHour ?? '?'}% (${age})`
 }
+
+const budgetLine = (budget: BudgetStatus): string => line('budget', poolReadingText(budget))
 
 function eligibleLines(eligible: EligibleStatus): string[] {
   if (eligible.error !== undefined) return [line('eligible', `unavailable: ${eligible.error}`)]

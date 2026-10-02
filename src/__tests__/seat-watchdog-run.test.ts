@@ -983,6 +983,95 @@ describe('state-change log lines', () => {
   })
 })
 
+describe('a pool reading that lacks a window (CC-409)', () => {
+  const PAUSES = /^seat-a: Watchdog: BUDGET-PAUSE /
+  const NO_READING =
+    'seat-a: Watchdog: BUDGET-PAUSE pool claude: no seven_day and five_hour reading for this pool'
+  const windowless = (h: Harness): BudgetRead => {
+    const read = budget(h.fiveHour, h.sevenDay)
+    if (read.found) delete read.budget.rate_limits.five_hour
+    return read
+  }
+
+  /** One run on a good reading, then `gapRuns` more, 15 minutes apart, whose reading has `sevenDay` and no five_hour. */
+  async function gap(h: Harness, gapRuns: number, sevenDay = h.sevenDay): Promise<void> {
+    await runWatchdog(h.deps, ONE)
+    h.sevenDay = sevenDay
+    h.deps.readBudget = () => windowless(h)
+    for (let i = 0; i < gapRuns; i++) {
+      h.tick()
+      await runWatchdog(h.deps, ONE)
+    }
+  }
+
+  const pauses = (h: Harness): string[] => h.logs.filter(l => PAUSES.test(l))
+
+  it('keeps the gate open on the current seven_day and a 30-minute-old five_hour with margin', async () => {
+    const h = harness(IDLE)
+
+    await gap(h, 2, 22)
+
+    expect(pauses(h)).toEqual([])
+    expect(h.doc.seats['seat-a']?.budgetPaused).toBe(false)
+    expect(h.doc.lastReadings?.claude).toEqual({
+      at: h.now() - 30 * 60_000 - 5_000,
+      sevenDay: 19,
+      fiveHour: 41,
+    })
+  })
+
+  it('pauses on the first run after the last good reading passes 60 minutes old', async () => {
+    const h = harness(IDLE)
+
+    await gap(h, 3)
+    const at45 = pauses(h)
+    h.tick()
+    await runWatchdog(h.deps, ONE)
+
+    expect(at45).toEqual([])
+    expect(pauses(h)).toHaveLength(1)
+    expect(pauses(h)[0]?.startsWith(NO_READING)).toBe(true)
+  })
+
+  it('pauses on a current seven_day over the line though the stored one is well under it', async () => {
+    const h = harness(IDLE)
+
+    await gap(h, 1, 66)
+
+    expect(pauses(h)).toEqual([
+      'seat-a: Watchdog: BUDGET-PAUSE pool claude: seven_day 66% at or above line 65%',
+    ])
+  })
+
+  it('counts run spend from the current seven_day, not the stored one', async () => {
+    const h = harness(IDLE)
+
+    await gap(h, 1, 25)
+
+    expect(pauses(h)).toEqual([
+      "seat-a: Watchdog: BUDGET-PAUSE pool claude: run spend 6 points at or above the seat's per_run_points 6",
+    ])
+  })
+
+  it('pauses on a borrowed five_hour within 10 points of the ceiling', async () => {
+    const h = harness(IDLE, 61)
+
+    await gap(h, 1)
+
+    expect(pauses(h)).toHaveLength(1)
+    expect(pauses(h)[0]?.startsWith(NO_READING)).toBe(true)
+  })
+
+  it('pauses with no last good reading', async () => {
+    const h = harness(IDLE)
+    h.deps.readBudget = () => windowless(h)
+
+    await runWatchdog(h.deps, ONE)
+
+    expect(h.logs.filter(l => PAUSES.test(l))).toEqual([NO_READING])
+  })
+})
+
 describe('wakeSeat', () => {
   function client(reply: Record<string, unknown>): { frames: unknown[]; client: BrokerClient } {
     const frames: unknown[] = []
@@ -1099,6 +1188,12 @@ describe('watchdog disk state', () => {
     fs.rmSync(dir, { recursive: true, force: true })
     if (savedHome === undefined) delete process.env.AGENT_CHAT_HOME
     else process.env.AGENT_CHAT_HOME = savedHome
+  })
+
+  it("round-trips each pool's last good reading", () => {
+    const lastReadings = { p: { at: 9, sevenDay: 19, fiveHour: 41 } }
+    saveDoc({ seats: {}, pools: {}, lastReadings })
+    expect(loadDoc().lastReadings).toEqual(lastReadings)
   })
 
   it('round-trips seat state under AGENT_CHAT_HOME', () => {

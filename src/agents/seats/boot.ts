@@ -11,7 +11,7 @@ import {
   type QueueSections,
   type SeatDigest,
 } from './boot-read.js'
-import { plainError, type SeatStatus } from './status.js'
+import { plainError, poolReadingText, type SeatStatus } from './status.js'
 
 /**
  * CC-318: one boot digest for a coordinator seat, so a successor reads one command's output
@@ -117,13 +117,6 @@ function inboxLines(inbox: BootInbox, omitted: number): string[] {
   ]
 }
 
-function poolLine({ budget }: SeatStatus): string {
-  const pool = `pool ${budget.pool ?? 'unknown'}`
-  if (budget.ageSeconds === null) return `${pool}: no reading`
-  const age = `reading ${budget.ageSeconds}s old${budget.stale ? ', STALE' : ''}`
-  return `${pool}: seven_day ${budget.sevenDay ?? '?'}%, five_hour ${budget.fiveHour ?? '?'}% (${age})`
-}
-
 function statusLines({ status }: SeatBoot): string[] {
   if ('error' in status) return ['== status', `unavailable: ${status.error}`]
   const cap = (role: string, load: { active: number; cap: number }) => `${role} ${load.active}/${load.cap}`
@@ -135,7 +128,7 @@ function statusLines({ status }: SeatBoot): string[] {
   return [
     '== status',
     `caps ${[cap('implementers', implementers), cap('reviewers', reviewers), cap('planners', planners)].join(', ')}; other ${status.other.active}; parked ${status.parked.count}`,
-    poolLine(status),
+    poolReadingText(status.budget),
     `stop ${budget.stop ?? `none; ${budget.margin}`}`,
     unread,
   ]

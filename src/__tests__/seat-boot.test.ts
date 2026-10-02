@@ -57,6 +57,7 @@ const STATUS: SeatStatus = {
     fiveHour: 12,
     ageSeconds: 30,
     stale: false,
+    staleOk: false,
     stop: null,
     margin: 'seven_day 41 < 65',
     sonnetOnly: false,

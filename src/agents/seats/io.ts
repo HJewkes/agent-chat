@@ -11,7 +11,7 @@ import { scoredPlanFromDisk } from '../burndown/score-render.js'
 import { localDate } from '../burndown/seat-tick.js'
 import { watchedSeats, type Presence } from './liveness.js'
 import type { OwnerMessage, SpendMeter } from './stops.js'
-import type { SeatState } from './watchdog.js'
+import type { PoolReading, SeatState } from './watchdog.js'
 
 /** The watchdog's disk: autonomy files, the scorer, its own state, seat logs and events.db (read-only). */
 
@@ -95,6 +95,8 @@ export type SeatRecord = SeatState & {
 export interface WatchdogDoc {
   seats: Record<string, SeatRecord>
   pools: Record<string, SpendMeter>
+  /** CC-409: each pool's last reading that held both windows. */
+  lastReadings?: Record<string, PoolReading>
   stopped: Record<string, string>
   /** Whether a hold on every seat (restart window, unreadable events.db) was open at the last run. */
   held?: boolean
@@ -130,6 +132,7 @@ export function readDoc(file = watchdogStatePath()): WatchdogDoc {
     seats: doc.seats ?? {},
     pools: doc.pools ?? {},
     stopped: doc.stopped ?? {},
+    ...(doc.lastReadings === undefined ? {} : { lastReadings: doc.lastReadings }),
     ...(doc.held === undefined ? {} : { held: doc.held }),
   }
 }
@@ -150,8 +153,8 @@ function parseDoc(text: string, file: string): Partial<WatchdogDoc> {
     throw unusable(err instanceof Error ? err.message : String(err))
   }
   if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) throw unusable('not a JSON object')
-  const maps = doc as Record<'seats' | 'pools' | 'stopped', unknown>
-  for (const key of ['seats', 'pools', 'stopped'] as const)
+  const maps = doc as Record<'seats' | 'pools' | 'lastReadings' | 'stopped', unknown>
+  for (const key of ['seats', 'pools', 'lastReadings', 'stopped'] as const)
     if (!isMap(maps[key])) throw unusable(`\`${key}\` is not an object`)
   return doc as Partial<WatchdogDoc>
 }
@@ -164,6 +167,7 @@ export function loadDoc(file = watchdogStatePath()): WatchdogDoc {
     seats: doc.seats ?? {},
     pools: doc.pools ?? {},
     stopped: doc.stopped ?? {},
+    ...(doc.lastReadings === undefined ? {} : { lastReadings: doc.lastReadings }),
     ...(doc.held === undefined ? {} : { held: doc.held }),
   }
 }

@@ -121,6 +121,18 @@ function writeReading(fiveHour: number, sevenDay: number, ageSeconds = 30, now =
   fs.writeFileSync(path.join(dir, 'session-1.json'), JSON.stringify(reading))
 }
 
+/** A status file the status line wrote just after a five-hour window reset, which carries no `five_hour`. */
+function writeWindowless(sevenDay: number): void {
+  const dir = path.join(poolDir, 'status-cache', 'sessions')
+  fs.mkdirSync(dir, { recursive: true })
+  const reading = {
+    session_id: 'session-1',
+    written_at: NOW.getTime() / 1000 - 30,
+    rate_limits: { seven_day: { used_pct: sevenDay } },
+  }
+  fs.writeFileSync(path.join(dir, 'session-1.json'), JSON.stringify(reading))
+}
+
 const wire = (): Wire => {
   const frames: ServerMessage[] = []
   const conn = { write: (line: string) => frames.push(JSON.parse(line) as ServerMessage) } as unknown as Conn
@@ -391,6 +403,106 @@ describe("the seat's pool reading and charter stop", () => {
     expect(budget).toMatchObject({ sevenDay: null, fiveHour: null, ageSeconds: null, stale: true })
     expect(budget.stop).toContain('no seven_day and five_hour reading')
     expect(report.lines[6]).toBe(`budget        pool ${POOL}: no reading`)
+  })
+})
+
+describe("a current reading that lacks a window, against the pool's last good one (CC-409)", () => {
+  const NO_READING = `BUDGET-PAUSE pool ${POOL}: no seven_day and five_hour reading for this pool`
+  const keep = (minutesAgo: number, sevenDay: number, fiveHour: number): void => {
+    doc.lastReadings = { [POOL]: { at: NOW.getTime() - minutesAgo * 60_000, sevenDay, fiveHour } }
+  }
+
+  beforeEach(() => writeWindowless(41))
+
+  it('opens on the current seven_day and a 30-minute-old five_hour with margin, flagged stale-ok', async () => {
+    keep(30, 35, 12)
+
+    const { budget } = await status()
+    const report = await statusReport(deps(), SEAT, true)
+    const table = await statusReport(deps(), SEAT, false)
+
+    expect(budget).toMatchObject({ stop: null, sevenDay: 41, fiveHour: 12, ageSeconds: 1800, staleOk: true })
+    expect(budget.margin).toContain('seven_day 41% vs line 65%')
+    expect(budget.margin).toContain('stale-ok: last good reading 1800s old')
+    expect(JSON.parse(report.lines.join('\n'))).toMatchObject({ budget: { staleOk: true, stale: true } })
+    expect(table.lines[6]).toBe(
+      `budget        pool ${POOL}: seven_day 41%, five_hour 12% (last good reading 1800s old, STALE-OK)`,
+    )
+  })
+
+  it('stops on a current seven_day over the line though the stored one is well under it', async () => {
+    writeWindowless(70)
+    keep(30, 35, 12)
+
+    const { budget } = await status()
+
+    expect(budget.stop).toBe(`BUDGET-PAUSE pool ${POOL}: seven_day 70% at or above line 65%`)
+    expect(budget.margin).toBeNull()
+  })
+
+  it('opens on a current seven_day under the line and a stored five_hour exactly 10 under the ceiling', async () => {
+    keep(30, 63, 60)
+
+    const { budget } = await status()
+
+    expect(budget).toMatchObject({ stop: null, staleOk: true, sevenDay: 41, fiveHour: 60 })
+  })
+
+  it('counts day spend from the current seven_day, not the stored one', async () => {
+    writeWindowless(52)
+    keep(30, 41, 12)
+
+    const { budget } = await status()
+
+    expect(budget.stop).toBe(
+      `BUDGET-PAUSE pool ${POOL}: day spend 11 points since 07:00 at or above the seat's per_day_points 10`,
+    )
+  })
+
+  it('opens on the stored day-spend figure only when the current reading has no seven_day either', async () => {
+    fs.rmSync(poolDir, { recursive: true })
+    keep(30, 41, 12)
+
+    const { budget } = await status()
+
+    expect(budget).toMatchObject({ stop: null, staleOk: true, sevenDay: 41 })
+  })
+
+  it.each([
+    ['a borrowed five_hour within 10 points of the ceiling', 41, 61, false],
+    ['a borrowed seven_day within 5 points of the line', 61, 12, true],
+  ])('stops on %s', async (_name, sevenDay, fiveHour, noFile) => {
+    if (noFile) fs.rmSync(poolDir, { recursive: true })
+    keep(30, sevenDay, fiveHour)
+    doc.pools[POOL] = { since: at(7), last: sevenDay, spent: 0 }
+
+    const { budget } = await status()
+
+    expect(budget.stop?.startsWith(NO_READING)).toBe(true)
+  })
+
+  it('opens with no status file on a stored reading exactly 5 under the line and 10 under the ceiling', async () => {
+    fs.rmSync(poolDir, { recursive: true })
+    keep(30, 60, 60)
+    doc.pools[POOL] = { since: at(7), last: 60, spent: 0 }
+
+    const { budget } = await status()
+
+    expect(budget).toMatchObject({ stop: null, staleOk: true })
+  })
+
+  it('stops on a last good reading 90 minutes old', async () => {
+    keep(90, 41, 12)
+
+    const { budget } = await status()
+
+    expect(budget.stop?.startsWith(NO_READING)).toBe(true)
+  })
+
+  it('stops with no last good reading', async () => {
+    const { budget } = await status()
+
+    expect(budget.stop).toBe(NO_READING)
   })
 })
 
