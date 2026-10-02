@@ -752,11 +752,22 @@ function makeHookedRepo(setup?: object): string {
   return repo
 }
 
+/** The 0.2.0 hook also looks on PATH, where npm run and a global install put a scanner. */
+const pathWithoutScanner = (): string =>
+  (process.env.PATH ?? '')
+    .split(path.delimiter)
+    .filter(dir => !fs.existsSync(path.join(dir, 'titan-egress-scan')))
+    .join(path.delimiter)
+
 const pushFrom = (cwd: string): { status: number | null; stderr: string } => {
   fs.writeFileSync(path.join(cwd, 'work.txt'), 'work\n')
   git(['add', 'work.txt'], cwd)
   git(['commit', '-m', 'work'], cwd)
-  const pushed = spawnSync('git', ['push', '-q', 'origin', 'HEAD'], { cwd, encoding: 'utf8' })
+  const pushed = spawnSync('git', ['push', '-q', 'origin', 'HEAD'], {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, PATH: pathWithoutScanner() },
+  })
   return { status: pushed.status, stderr: pushed.stderr }
 }
 
