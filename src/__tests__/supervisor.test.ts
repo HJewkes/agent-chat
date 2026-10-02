@@ -30,7 +30,8 @@ import type { Allocation } from '../agents/isolation/index.js'
 import type { HookProcess, HookSpawnFn } from '../agents/hooks.js'
 import { autoAttach } from './broker-harness.js'
 import { transcriptPath } from '../agents/transcript.js'
-import { writeOutputTail } from '../agents/launch-output.js'
+import { writeOutputTail } from '@titan-design/agent-surface'
+import { agentDir } from '../paths.js'
 import { RESUMED_BRIEF } from '../agents/resume-session.js'
 
 /**
@@ -2615,7 +2616,7 @@ describe('a visible spawn still starting at the attach window', () => {
         surface: {
           platform: 'linux',
           spawn: (_bin: string, argv: string[]) => {
-            if (stderr !== '') writeOutputTail(argv[argv.length - 1] as string, stderr)
+            if (stderr !== '') writeOutputTail(agentDir(argv[argv.length - 1] as string), stderr)
             return {
               pid: 4242,
               unref: () => undefined,
@@ -2677,7 +2678,7 @@ describe('a visible spawn still starting at the attach window', () => {
         surface: {
           platform: 'linux',
           spawn: (_bin: string, argv: string[]) => {
-            writeOutputTail(argv[argv.length - 1] as string, 'segfault\n')
+            writeOutputTail(agentDir(argv[argv.length - 1] as string), 'segfault\n')
             return {
               pid: 4242,
               unref: () => undefined,

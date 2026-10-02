@@ -6,7 +6,8 @@ import { hooksDirOf, writeGitHooks } from '../leak-guard/hooks-dir.js'
 import { agentDir, cliEntry } from '../paths.js'
 import type { IsolationName } from '../protocol.js'
 import type { Allocation } from './isolation/index.js'
-import { relaunchScript, relaunchScriptPath } from './surfaces/command.js'
+import { readLaunchPlan as readPlanFile, relaunchScript } from '@titan-design/agent-surface'
+import { agentChatLauncher, relaunchScriptPath } from './launcher.js'
 import type { AgentProfile, LaunchHandle, LaunchPlan } from './types.js'
 
 /**
@@ -136,7 +137,11 @@ export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknow
   writePrivate(hookSettingsPath(plan.agentId), JSON.stringify(settings, null, 2))
   writePrivate(mcpConfigPath(plan.agentId), JSON.stringify(config, null, 2))
   writePrivate(planPath(plan.agentId), JSON.stringify(withSettings(plan), null, 2))
-  writePrivate(relaunchScriptPath(plan.agentId), relaunchScript(plan.agentId), SCRIPT_MODE)
+  writePrivate(
+    relaunchScriptPath(plan.agentId),
+    relaunchScript(agentChatLauncher(), plan.agentId),
+    SCRIPT_MODE,
+  )
   const hooksDir = hooksDirOf(plan.env)
   if (hooksDir === undefined) return
   writeGitHooks(hooksDir)
@@ -148,7 +153,7 @@ export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknow
 export function readLaunchPlan(agentId: string): LaunchPlan {
   const file = planPath(agentId)
   if (!fs.existsSync(file)) throw new Error(`no launch plan for agent ${agentId} at ${file}`)
-  return JSON.parse(fs.readFileSync(file, 'utf8')) as LaunchPlan
+  return readPlanFile(file)
 }
 
 export const runtimeStatePath = (agentId: string): string => path.join(agentDir(agentId), 'runtime.json')

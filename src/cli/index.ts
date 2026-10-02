@@ -231,8 +231,8 @@ function addHiddenCommands(program: Command): void {
   })
 
   program.command('run-agent <id>', { hidden: true }).action(async (id: string) => {
-    const { runAgent } = await import('../agents/run-agent.js')
-    await runAgent(id)
+    const { runAgentVerb } = await import('../agents/launch-agent.js')
+    runAgentVerb(id)
   })
 
   // Run by Claude Code as a headless agent's PermissionRequest hook (CC-144), never by a person.

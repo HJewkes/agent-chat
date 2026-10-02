@@ -16,8 +16,8 @@ import {
   readLaunchPlan,
   writeLaunchFiles,
 } from '../agents/launch-files.js'
-import { oscTitle } from '../agents/run-agent.js'
-import { relaunchScriptPath } from '../agents/surfaces/command.js'
+import { oscTitle } from '@titan-design/agent-surface'
+import { relaunchScriptPath } from '../agents/launcher.js'
 import type { AgentProfile, LaunchPlanInput } from '../agents/types.js'
 
 const dirs: string[] = []
