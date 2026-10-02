@@ -2,6 +2,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { frontmatterField, listField } from '../active-work.js'
 import type { AccountRule } from '../burndown/budget-gate.js'
+import { SURFACE_NAMES, type SurfaceName } from '../../protocol.js'
 
 /** One billing pool from the autonomy charter's `pools:` map. */
 export interface Pool {
@@ -113,4 +114,10 @@ export function parseSeat(name: string, seatFile: string): Seat | undefined {
   const pool = frontmatterField(seatFile, 'pool')
   if (prefix === undefined || pool === undefined) return undefined
   return { name, prefix, pool, spend: parseSpend(seatFile) }
+}
+
+/** CC-441: the seat file's `surface:`, the one record a headless resume cannot overwrite. */
+export function seatSurface(seatFile: string | undefined): SurfaceName | undefined {
+  const declared = seatFile === undefined ? undefined : frontmatterField(seatFile, 'surface')
+  return SURFACE_NAMES.find(name => name === declared)
 }
