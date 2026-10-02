@@ -8,6 +8,7 @@ import {
   gitCall,
   gitGlobals,
   gitOptions,
+  quoted,
   UNSURE_CALL,
   shellAlias,
   splitAlias,
@@ -16,7 +17,8 @@ import {
   type ReadAlias,
 } from './git-alias.js'
 import { crashCause, type FailOpen } from './failopen.js'
-import { hasUnreadableConfig } from './git-unresolved.js'
+import { gitScripts, type ScriptSpan } from './git-scripts.js'
+import { hasUnreadableConfig, hasUnreadableOption } from './git-unresolved.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
@@ -104,6 +106,7 @@ export const REASONS = {
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
   includePath: `leak-guard: git -c or --config-env on include.path or includeIf.*.path pulls in config that sets core.hooksPath or that the guard cannot read in time, or runs beside other commands or a redirect, which would bypass the pre-push leak scan. ${DOCS}`,
   gitConfigUnresolved: `leak-guard: git -c or --config-env with a key or value the guard cannot read, before a command that runs hooks, may set core.hooksPath or include.path and would bypass the pre-push leak scan. Spell the config out, or drop it. ${DOCS}`,
+  nestedScript: `leak-guard: git runs a command here (rebase --exec, submodule foreach, bisect run or the like) that the guard cannot read. Write the command out literally. ${DOCS}`,
   writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. Write the file in one Bash call and post it in the next. ${DOCS}`,
   ghByPath: `leak-guard: gh called by path skips the agent's gh shim and the gh-write leak scan. Use bare gh for reads and agent-chat gh-write -- <gh args> for every GitHub write. ${DOCS}`,
   aliasWritten: `leak-guard: this command line writes git config and runs a git word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
@@ -330,6 +333,7 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
     checkGit(run.args) ??
     checkUnresolvedConfig(run) ??
     checkInclude(run, ctx, scope, depth) ??
+    checkNestedScripts(run, ctx, scope, depth) ??
     checkAlias(run, ctx, scope, depth)
   )
 }
@@ -358,6 +362,39 @@ function checkInclude(run: GitRun, ctx: GuardContext, scope: Scope, depth: numbe
   const env = aliasEnv(run, configEnvVars(options.params), ctx, scope)
   if (options.dir === undefined || env === undefined) return cannotRead
   return ctx.readIncludedHooksPath(options.dir, gitGlobals(options), env) ? REASONS.includePath : undefined
+}
+
+/** A span's text as git hands it on: one word as written, several quoted and joined like argv. */
+function scriptText(span: ScriptSpan, resolved: readonly (string | undefined)[]): string | undefined {
+  const words = resolved.slice(span.from, span.to)
+  if (words.includes(undefined)) return undefined
+  if (words.length === 1) return words[0]?.slice(span.offset)
+  return (words as string[]).map(quoted).join(' ')
+}
+
+/**
+ * Each command git runs for its subcommand (TP-634), checked as a command line of its own. git
+ * passes its `-c` options on to it, and the command may write an include file before git reads it.
+ */
+function checkNestedScripts(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
+  const options = gitOptions(run.args, scope.cwd, scope.gitParams)
+  if (options === UNSURE_CALL) return undefined
+  const spans = gitScripts(run.args, options.at)
+  if (spans.length === 0) return undefined
+  if (includesConfig(options.params)) return REASONS.includePath
+  if (hasUnreadableOption(run.resolved, run.marked, run.cmd.splits)) return REASONS.gitConfigUnresolved
+  const inner: Scope = { ...scope, cwd: undefined, env: undefined, gitParams: options.params }
+  for (const span of spans) {
+    const script = scriptText(span, run.resolved)
+    const reason =
+      script === undefined
+        ? run.tied
+          ? REASONS.nestedScript
+          : undefined
+        : checkAt(script, ctx, inner, depth + 1)
+    if (reason !== undefined) return reason
+  }
+  return undefined
 }
 
 /** A git config file path, or `git config` on an alias or include key, anywhere on the line (TP-607). */

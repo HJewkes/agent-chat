@@ -1561,3 +1561,84 @@ describe('a body file written and posted on one line (CC-371)', () => {
     expectRedacted(checkCommand('gh pr create -t x --body-file b.md', flagged))
   })
 })
+
+describe('a command git runs for its subcommand (TP-634)', () => {
+  it.each([
+    'git rebase -x "git push --no-verify" HEAD~1',
+    'git rebase --exec "git push --no-verify" HEAD~1',
+    'git rebase --exec="git push --no-verify" HEAD~1',
+    'git rebase --ex "git push --no-verify" HEAD~1',
+    'git rebase -ix "git push --no-verify" HEAD~2',
+    'git rebase "-xgit push --no-verify" HEAD~1',
+    'git -C /work rebase -x "npm test && git push --no-verify" HEAD~1',
+    'git rebase -x \'sh -c "git push --no-verify"\' HEAD~1',
+    'git submodule foreach "git push --no-verify"',
+    'git submodule --quiet foreach --recursive git push --no-verify',
+    'git bisect run git push --no-verify',
+    'git bisect run sh -c "git push --no-verify"',
+    'git difftool -x "git push --no-verify" HEAD',
+    'git difftool --extcmd="git push --no-verify" HEAD',
+    'git filter-branch --tree-filter "git push --no-verify" HEAD',
+    'git grep -O"git push --no-verify" x',
+    'git push --receive-pack="git push --no-verify" origin main',
+    'git fetch --upload-pack "git push --no-verify" origin',
+    'git clone -u "git push --no-verify" ../r',
+    'git send-email --to-cmd="git push --no-verify" HEAD~1',
+    'cd /work && git rebase -x "git push --no-verify" HEAD~1',
+  ])('denies a skipped hook in the command: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it('denies a hooks path override inside the command', () => {
+    expect(checkCommand('git rebase -x "git -c core.hooksPath=/dev/null push" HEAD~1', ctx())).toBe(
+      REASONS.gitConfig,
+    )
+  })
+
+  it.each([
+    'git -c include.path=f rebase -x "python3 w.py; git push" HEAD~1',
+    'git -c include.path=/cfg/inc submodule foreach true',
+    'E=/cfg/inc git --config-env=include.path=E bisect run true',
+  ])('denies an include on the git that runs the command: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.includePath)
+  })
+
+  it('denies an unreadable config option on the git that runs the command', () => {
+    expect(checkCommand('git -c "$K" difftool -x true HEAD', ctx())).toBe(REASONS.gitConfigUnresolved)
+  })
+
+  it.each(['git rebase -x "$(cat s)" HEAD~1', 'X=$(cat s); git submodule foreach "$X"'])(
+    'denies a command it cannot read: %s',
+    command => {
+      const reason = checkCommand(command, ctx())
+      expect(reason).toBeDefined()
+      expect(reason).toBe(REASONS.nestedScript)
+    },
+  )
+
+  it('denies a plain alias that expands to a rebase exec', () => {
+    const readAlias = (word: string) =>
+      word === 'rx' ? { value: 'rebase -x "git push --no-verify"', runsIn: '/work' } : undefined
+    expect(checkCommand('git rx HEAD~1', ctx({ readAlias }))).toBe(REASONS.noVerify)
+  })
+
+  it.each([
+    'git rebase -i HEAD~2',
+    'git rebase -s ours -X theirs main',
+    'git rebase -x "npm test" HEAD~3',
+    'git rebase -x "git commit --amend --no-edit" HEAD~1',
+    'git -c user.name=x rebase -x "npm test" HEAD~1',
+    'git submodule update --init --recursive',
+    'git submodule foreach git pull',
+    'git bisect start',
+    'git bisect good',
+    'git bisect bad HEAD',
+    'git bisect run npm test',
+    'git difftool -t vimdiff HEAD',
+    'git grep -e exec -O',
+    'git push origin main',
+    'git log --grep exec',
+  ])('allows %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+})
