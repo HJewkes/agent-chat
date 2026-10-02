@@ -7,6 +7,7 @@ import { createWorktreeStrategy, reattachWorktree } from '../agents/isolation/wo
 import {
   parseSetupStep,
   runSetupCommand,
+  setupEnv,
   SETUP_FILE,
   SETUP_LOG,
   type SetupResult,
@@ -331,6 +332,147 @@ describe('the default setup runner', () => {
     const result = await runSetupCommand(['definitely-not-a-command-cc313'], dir, 5_000)
     expect(result.exitCode).toBeNull()
     expect(result.output).toContain('ENOENT')
+  })
+})
+
+/** A package with no dependencies whose every lifecycle script touches a marker in the tree. */
+const SCRIPTED_PACKAGE = {
+  'package.json': JSON.stringify({
+    name: 'cc324-synthetic',
+    version: '1.0.0',
+    scripts: Object.fromEntries(
+      ['preinstall', 'install', 'postinstall', 'prepare'].map(hook => [hook, `touch ${hook}-ran`]),
+    ),
+  }),
+  'package-lock.json': JSON.stringify({
+    name: 'cc324-synthetic',
+    version: '1.0.0',
+    lockfileVersion: 3,
+    requires: true,
+    packages: { '': { name: 'cc324-synthetic', version: '1.0.0' } },
+  }),
+}
+
+const markersIn = (dir: string): string[] => fs.readdirSync(dir).filter(name => name.endsWith('-ran'))
+
+/** Commits `files` on a new branch of `repo`, checked out nowhere afterwards. */
+function branchWithFiles(repo: string, branch: string, files: Record<string, string>): void {
+  git(['switch', '-q', '-c', branch], repo)
+  for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(repo, name), content)
+  git(['add', '.'], repo)
+  git(['commit', '-m', 'branch files'], repo)
+  git(['switch', '-q', 'main'], repo)
+}
+
+/** A git dependency with a prepare script, which makes npm spawn node to prepare it. */
+function gitDependency(): { url: string; sha: string } {
+  const dir = tmpdir('wt-dep-')
+  git(['init', '-q', '-b', 'main'], dir)
+  fs.writeFileSync(
+    path.join(dir, 'package.json'),
+    JSON.stringify({ name: 'dep', version: '1.0.0', scripts: { prepare: 'true' } }),
+  )
+  git(['add', '.'], dir)
+  git(['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-qm', 'dep'], dir)
+  return { url: `git+file://${dir}`, sha: git(['rev-parse', 'HEAD'], dir) }
+}
+
+/** A branch package that depends on a git dependency and carries `npmrc`. */
+function packageWithGitDependency(npmrc: string): Record<string, string> {
+  const dep = gitDependency()
+  const root = { name: 'cc324-synthetic', version: '1.0.0', dependencies: { dep: dep.url } }
+  const lock = {
+    ...root,
+    lockfileVersion: 3,
+    requires: true,
+    packages: { '': root, 'node_modules/dep': { version: '1.0.0', resolved: `${dep.url}#${dep.sha}` } },
+  }
+  return { 'package.json': JSON.stringify(root), 'package-lock.json': JSON.stringify(lock), '.npmrc': npmrc }
+}
+
+/** Each .npmrc names a program that writes `<key>-ran` into `markers` when npm runs it. */
+const HOSTILE_NPMRC: Record<string, (markers: string) => string> = {
+  git: markers => {
+    const script = path.join(markers, 'git.sh')
+    fs.writeFileSync(script, `#!/bin/sh\ntouch ${markers}/git-ran\nexec git "$@"\n`, { mode: 0o755 })
+    return `git=${script}\n`
+  },
+  'node-options': markers => {
+    const script = path.join(markers, 'require.cjs')
+    fs.writeFileSync(
+      script,
+      `require('fs').writeFileSync(${JSON.stringify(`${markers}/node-options-ran`)}, '')\n`,
+    )
+    return `node-options=--require=${script}\n`
+  },
+}
+
+describe('lifecycle scripts during worktree setup (CC-324)', () => {
+  it('a reused branch whose package.json has install scripts runs none of them under npm ci', async () => {
+    const repo = makeRepo({ command: ['npm', 'ci', '--no-audit', '--no-fund'] })
+    git(['switch', '-q', '-c', 'agent-chat/alice'], repo)
+    for (const [name, content] of Object.entries(SCRIPTED_PACKAGE))
+      fs.writeFileSync(path.join(repo, name), content)
+    git(['add', '.'], repo)
+    git(['commit', '-m', 'add scripts'], repo)
+    git(['switch', '-q', 'main'], repo)
+
+    const alloc = await createWorktreeStrategy().allocate(ctxFor(repo))
+
+    expect(alloc.ref?.reused).toBe('true')
+    expect(setupWarnings(alloc.warnings)).toEqual([])
+    expect(markersIn(alloc.cwd)).toEqual([])
+  }, 60_000)
+
+  it('turns scripts off even when the broker environment turns them on', () => {
+    const env = setupEnv({
+      PATH: '/bin',
+      npm_config_ignore_scripts: 'false',
+      NPM_CONFIG_IGNORE_SCRIPTS: 'false',
+    })
+    expect(env).toMatchObject({ npm_config_ignore_scripts: 'true', NPM_CONFIG_IGNORE_SCRIPTS: 'true' })
+  })
+
+  it.each(Object.keys(HOSTILE_NPMRC))(
+    'a reused branch whose .npmrc sets %s to its own program does not run it under npm ci',
+    async key => {
+      const repo = makeRepo({ command: ['npm', 'ci', '--no-audit', '--no-fund'] })
+      const markers = tmpdir('wt-markers-')
+      branchWithFiles(repo, 'agent-chat/alice', packageWithGitDependency(HOSTILE_NPMRC[key]?.(markers) ?? ''))
+
+      const alloc = await createWorktreeStrategy().allocate(ctxFor(repo))
+
+      expect(alloc.ref?.reused).toBe('true')
+      expect(setupWarnings(alloc.warnings)).toEqual([])
+      expect(fs.existsSync(path.join(alloc.cwd, 'node_modules', 'dep', 'package.json'))).toBe(true)
+      expect(markersIn(markers)).toEqual([])
+    },
+    60_000,
+  )
+
+  it('pins every npm setting that names a program, over the broker environment', () => {
+    const hostile = {
+      npm_config_git: '/tmp/evil',
+      NPM_CONFIG_NODE_OPTIONS: '--require=/tmp/evil.js',
+      npm_config_script_shell: '/tmp/evil',
+      NPM_CONFIG_SHELL: '/tmp/evil',
+    }
+    const env = setupEnv({ PATH: '/bin', ...hostile })
+    expect(env).toMatchObject({
+      npm_config_git: 'git',
+      NPM_CONFIG_GIT: 'git',
+      npm_config_node_options: '--no-deprecation',
+      NPM_CONFIG_NODE_OPTIONS: '--no-deprecation',
+      npm_config_script_shell: '/bin/sh',
+      NPM_CONFIG_SCRIPT_SHELL: '/bin/sh',
+      npm_config_shell: '/bin/sh',
+      NPM_CONFIG_SHELL: '/bin/sh',
+    })
+  })
+
+  it('the repository declaration passes --ignore-scripts to its install', () => {
+    const step = parseSetupStep(fs.readFileSync(SETUP_FILE, 'utf8'))
+    expect(step).toMatchObject({ command: expect.arrayContaining(['npm', 'ci', '--ignore-scripts']) })
   })
 })
 
