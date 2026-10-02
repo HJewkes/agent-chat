@@ -307,6 +307,16 @@ and `Shepherd: <run id>`. It never waits on CI; Shepherd owns CI, review and mer
 refuses (exit 65: a repo no seat policy lists, agent-chat today), it reports `Shepherd: refused
 <first stderr line>` and still reports Status, PR and Head, and you watch CI for that PR.
 
+When your seat merges through its own path (its own reviewer, then `bin/merge`), put a line that
+reads exactly `Shepherd: none` in the brief, on a line of its own. The broker then appends an
+implementer block that says not to run `titan-factory shepherd register`, to wait for CI as the
+brief directs, and to report each check-run's conclusion at the final head. A brief that only
+mentions the marker inside a sentence keeps the Shepherd block. Saying "do not register" in prose
+is not enough: the appended block comes last and wins.
+
+The implementer block's load-test rule applies only when the brief asks for a load test. The agent
+kills the burners it started by their recorded PIDs and confirms with `pgrep`, never `pkill -f`.
+
 A reviewer's report starts with the three lines `Verdict: MERGE` (or `FIX_FIRST`),
 `PR: <owner>/<repo>#<n>` and `Head: <40-hex sha>`. Shepherd, `bin/premerge` and `parseReport` read
 exactly those. A verdict counts only when Head equals the PR's current head exactly.
