@@ -827,6 +827,17 @@ describe('a gh command the command line hides', () => {
       expect(checkCommand(command, ctx())).toBeUndefined()
     })
 
+    it('draws command starts in nested shells from one budget, well within the hook timeout', () => {
+      const inner = `$E ${'nice '.repeat(63)}${'a '.repeat(30000)}`
+      const command = `$E ${'nice '.repeat(63)}sh -c '${inner}'; gh pr create -t x -b ${TERM}`
+      const started = performance.now()
+
+      const reason = checkCommand(command, ctx())
+
+      expect(reason).toBe(REASONS.hiddenCommand)
+      expect(performance.now() - started).toBeLessThan(1000)
+    })
+
     it('denies a split command behind another expansion rather than rescanning it', () => {
       expect(checkCommand(`$E env -S '$W -n 5 gh ${BODY}'`, ctx())).toBe(REASONS.hiddenCommand)
     })

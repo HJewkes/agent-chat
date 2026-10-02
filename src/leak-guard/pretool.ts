@@ -80,6 +80,8 @@ interface Scope {
   line: string
   /** The `-c` and `--config-env` options of the git whose `!` alias runs this command. */
   gitParams: readonly string[]
+  /** Command starts after an expansion the whole call may still check; nested shells draw on the same budget. */
+  hiddenStarts: { left: number }
 }
 
 const UNSURE = Symbol('unsure')
@@ -795,7 +797,8 @@ function checkHidden(
   if (postsText(marked) || viaWrite) return REASONS.hiddenCommand
   const unseen = { ...scope, cwd: undefined, env: undefined }
   const starts = outermost ? marked.flatMap((word, i) => (mayStartCommand(word) ? [i] : [])) : []
-  if (starts.length > MAX_HIDDEN_STARTS) return REASONS.hiddenCommand
+  scope.hiddenStarts.left -= starts.length
+  if (scope.hiddenStarts.left < 0) return REASONS.hiddenCommand
   const reason =
     firstReason(starts, i => checkSimple(suffixCommand(cmd, marked.slice(i)), ctx, unseen, depth, false)) ??
     checkGitRun(
@@ -999,6 +1002,7 @@ export function checkCommand(command: string, ctx: GuardContext): string | undef
     said: '',
     line: command,
     gitParams: [],
+    hiddenStarts: { left: MAX_HIDDEN_STARTS },
   }
   return checkAt(command, ctx, scope, 0)
 }
