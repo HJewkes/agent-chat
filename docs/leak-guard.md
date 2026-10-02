@@ -325,6 +325,8 @@ and other prefixes are stripped, is one of these. A wrapper is known by its base
 | `eval` of text the guard cannot be sure of, on a command line that names `git` or `gh`                                 | the text may be a push or a gh command                    |
 | a command git runs for its subcommand that a row above denies, or that the guard cannot read (below)                   | `git rebase -x` runs a shell command unseen               |
 | `git -c` or `--config-env` on an include, or with a key the guard cannot read, before a command git runs (below)       | git passes it on to every git that command runs           |
+| `git -c` on a key whose value git runs as a program, when the value is a line a row above denies (below)               | `core.pager="git push --no-verify"` runs on `git log`     |
+| `git -c` or `--config-env` on such a key with a value the guard cannot read, or with a key it cannot read, on any git  | the value may be a push with hooks off                    |
 
 A git alias that was already in config is expanded before the table is applied (TP-595). For
 `git <word>`, where `<word>` is not a git builtin, the guard runs `git config --get alias.<word>`
@@ -482,9 +484,49 @@ cannot read, such as `-x "$(cat s)"`, is a deny for a literal `git` or an expans
 `git rebase -i`, `git submodule update` and `git bisect start`, `good` and `bad` run no command and
 are not affected.
 
-Config values that name a program, such as `core.pager`, `core.sshCommand`, `sequence.editor` and
-`diff.external`, are not read here (TP-636). Nor are git's own hooks, or an option whose name is an
-expansion, as in `git rebase "$OPT" "<cmd>"` with `OPT` set on the line.
+Config values that name a program are read in their own section below (TP-636). git's own hooks,
+and an option whose name is an expansion, as in `git rebase "$OPT" "<cmd>"` with `OPT` set on the
+line, are not read.
+
+### A config value git runs as a program (TP-636)
+
+Some config keys hold a program or shell command that git runs: `core.pager`, every `pager.<cmd>`,
+`core.editor`, `sequence.editor`, `core.sshCommand`, `core.fsmonitor`, `core.askPass`,
+`core.gitProxy`, `diff.external`, `diff.<driver>.command` and `.textconv`, `merge.<driver>.driver`,
+`filter.<driver>.clean`, `.smudge` and `.process`, `credential.helper` and
+`credential.<url>.helper`, `gpg.program` and `gpg.<format>.program`, `interactive.diffFilter`,
+`web.browser`, `browser.<tool>.cmd`, `difftool.<tool>.cmd`, `mergetool.<tool>.cmd`, `man.<tool>.cmd`,
+`remote.<name>.receivepack` and `.uploadpack`, and the `sendemail` `toCmd`, `ccCmd`, `headerCmd`,
+`sendmailCmd` and `smtpServer`. The section and the key name match case-insensitively, as git
+matches them.
+
+A literal `-c` value for one of these keys is checked like a top-level Bash line, so
+`git -c core.pager="git -c core.hooksPath=/dev/null push" log` is denied as a hooks path override
+and `git -c core.pager="git push --no-verify" log` as a skipped hook. A `credential.helper` value
+that starts with `!` is checked without the `!`. git passes its `-c` options on to the git the
+program runs, through `GIT_CONFIG_PARAMETERS`, so an `include.path` on the same git is a deny, as
+it is for a command git runs for its subcommand. A safe value stays allowed: `less`, `cat`,
+`"less -R"`, `vim`, `store`, `"ssh -i key"`, `true` and an empty value.
+
+A value the guard cannot read for one of these keys is a deny on every git subcommand, since any
+of them may start a pager or an editor: `-c core.pager="$P"`, `-c core.editor=$(cat e)`, and every
+`--config-env` on such a key, since its value always comes from a variable. A `-c` or
+`--config-env` word whose key the guard cannot read, such as `-c "$(cat k)"`, `-c "$X"`, a
+backtick substitution or a glob or brace word, may name one of these keys, so it is a deny on every
+git subcommand too, not only before one that runs a hook. So `git -c "$(cat k)" -c "$(cat k2)" log`
+is denied: the two files may set `core.pager` to a push and `core.hooksPath` for it. This replaces
+the TP-630 allowance for `git -c "$X" log`.
+
+`GIT_CONFIG_PARAMETERS`, and `GIT_CONFIG_COUNT` with `GIT_CONFIG_KEY_<n>` and
+`GIT_CONFIG_VALUE_<n>`, set inline before git can set the same keys. They need no rule of their
+own: the existing `GIT_CONFIG*` row already denies any assignment, `export`, `unset` or `env -u` of
+those variables, whatever the key.
+
+Not covered: a program key written to repository or global config with `git config` in one call
+and used by a later git in another, and text read from a file at run time by `bash -c "$(cat f)"`
+or `eval "$(cat f)"`. The guard reads a `sh -c` string as written, and `eval` of text it cannot
+read is denied only when the line names `git` or `gh`. Both are the script-file gap below: a file
+whose content the guard never sees can run `git push --no-verify` itself.
 
 ### Config the guard cannot read (TP-630)
 
@@ -501,10 +543,11 @@ inside single or double quotes are literal and stay allowed, as in `git -c 'core
 This covers the separated (`-c <value>`, `--config-env <value>`) and attached (`-c<value>`,
 `--config-env=<value>`) forms.
 
-A non-literal word on any other builtin, as in `git -c "$X" log`, is allowed: the guard exists to
-protect the pre-push scan, and those commands run no hook. A literal key with a non-literal value,
-as in `git -c user.name="$(whoami)" push`, is allowed too, since the key alone decides what the
-setting does. `git -c user.name=x push` and `git -c core.pager=less log` stay allowed.
+A non-literal word on any other builtin, as in `git -c "$X" log`, was allowed here, since those
+commands run no hook. TP-636 above denies it, because the word may set a pager that runs a push.
+A literal key with a non-literal value, as in `git -c user.name="$(whoami)" push`, is allowed,
+since the key alone decides what the setting does, unless the key runs a program (TP-636).
+`git -c user.name=x push` and `git -c core.pager=less log` stay allowed.
 
 ### The guard never reads one file while the shell posts another
 

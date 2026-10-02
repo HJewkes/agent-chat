@@ -122,14 +122,12 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
     'git -c user.name=x push',
     'git -c user.name="$(whoami)" push',
     'git -c core.pager=less log',
-    'git -c "$X" log',
     'git -C ../repo push',
     'git -C "$D" status',
     'git -C "$D" push',
     'git -C "$(git rev-parse --show-toplevel)" push',
     "git -c 'core.pager=less *' log",
     'git -c "a{b}=x" push',
-    'git --config-env "$K" status',
     'git --config-env=user.name=NAME push',
   ])('allows %s', command => {
     expect(checkCommand(command, ctx())).toBeUndefined()
@@ -1725,6 +1723,82 @@ describe('a command git runs for its subcommand (TP-634)', () => {
     'git grep -e exec -O',
     'git push origin main',
     'git log --grep exec',
+  ])('allows %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+})
+
+describe('a git config value that runs a program (TP-636)', () => {
+  it.each([
+    'git -c core.pager="git -c core.hooksPath=/dev/null push" log',
+    'git -c core.editor="git -c core.hooksPath=/dev/null push" commit',
+    'git -c CORE.PAGER="git -c core.hooksPath=/dev/null push" log',
+    'git -c Pager.Log="git -c core.hooksPath=/dev/null push" log',
+    'git -c "sequence.editor=git -c core.hooksPath=/dev/null push" rebase -i HEAD~2',
+  ])('denies a hooks path override in the value: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.gitConfig)
+  })
+
+  it.each([
+    'git -c core.pager="git push --no-verify" log',
+    'git -c diff.external="git push --no-verify" diff',
+    'git -c core.fsmonitor="git push --no-verify" status',
+    'git -c credential.helper="!git push --no-verify" fetch',
+    'git -c credential.https://example.com.helper="!git push --no-verify" fetch',
+    'git -c core.sshCommand="git push --no-verify; ssh" fetch',
+    'git -c core.pager="less; git push --no-verify" log',
+    'git -c diff.x.textconv="sh -c \'git push --no-verify\'" diff',
+  ])('denies a skipped hook in the value: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it.each([
+    'git -c "$(cat k)" -c "$(cat k2)" log',
+    'git -c "$(cat k)" log',
+    'git -c "$X" log',
+    'git -c `cat k` status',
+    'git --config-env "$K" status',
+    'git -c core.pager="$(cat p)" log',
+    'git -c core.pager="$P" log',
+    'git -c core.editor=$E commit',
+    'git --config-env=core.pager=P log',
+    'git --config-env core.sshCommand=S fetch',
+    'git --config-env=CORE.PAGER=P log',
+    'git -c {core.pager=x,-p} log',
+  ])('denies a value or key the guard cannot read: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.configProgram)
+  })
+
+  it('denies an include on the git whose config runs a program', () => {
+    expect(checkCommand('git -c include.path=/cfg/inc -c core.pager="sh w.sh" log', ctx())).toBe(
+      REASONS.includePath,
+    )
+  })
+
+  it.each([
+    "GIT_CONFIG_PARAMETERS=\"'core.pager'='git push'\" git log",
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0="git push" git log',
+    "env GIT_CONFIG_PARAMETERS=\"'core.editor'='git push'\" git commit",
+  ])('still denies the GIT_CONFIG_* forms by the existing rule: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.gitConfigEnv)
+  })
+
+  it.each([
+    'git -c core.pager=less log',
+    'git -c core.pager=cat log',
+    'git -c core.pager="less -R" log',
+    "git -c 'core.pager=less -R' log",
+    'git -c core.editor=vim commit',
+    'git -c sequence.editor=true rebase -i HEAD~2',
+    'git -c pager.log=false log',
+    'git -c core.pager= log',
+    'git -c core.fsmonitor=true status',
+    'git -c credential.helper=store fetch',
+    'git -c core.sshCommand="ssh -i key" fetch',
+    'git -c diff.external="difft --color always" diff',
+    'git -c user.name="$(whoami)" log',
+    'git -c color.ui=always log',
+    'git --config-env=user.name=NAME log',
   ])('allows %s', command => {
     expect(checkCommand(command, ctx())).toBeUndefined()
   })

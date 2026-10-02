@@ -17,6 +17,7 @@ import {
   type ReadAlias,
 } from './git-alias.js'
 import { crashCause, type FailOpen } from './failopen.js'
+import { configPrograms } from './git-programs.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
 import { hasUnreadableConfig, hasUnreadableOption } from './git-unresolved.js'
 import { mayExpandToGit } from './git-word.js'
@@ -107,6 +108,7 @@ export const REASONS = {
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
   includePath: `leak-guard: git -c or --config-env on include.path or includeIf.*.path pulls in config that sets core.hooksPath or that the guard cannot read in time, or runs beside other commands or a redirect, which would bypass the pre-push leak scan. ${DOCS}`,
   gitConfigUnresolved: `leak-guard: git -c or --config-env with a key or value the guard cannot read, before a command that runs hooks, may set core.hooksPath or include.path and would bypass the pre-push leak scan. Spell the config out, or drop it. ${DOCS}`,
+  configProgram: `leak-guard: git -c or --config-env here may set a key whose value git runs as a program (core.pager, core.editor, core.sshCommand and the like), and the guard cannot read the key or the value. Write the config out literally, or drop it. ${DOCS}`,
   nestedScript: `leak-guard: git runs a command here (rebase --exec, submodule foreach, bisect run or the like) that the guard cannot read. Write the command out literally. ${DOCS}`,
   writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. Write the file in one Bash call and post it in the next. ${DOCS}`,
   ghByPath: `leak-guard: gh called by path skips the agent's gh shim and the gh-write leak scan. Use bare gh for reads and agent-chat gh-write -- <gh args> for every GitHub write. ${DOCS}`,
@@ -336,8 +338,30 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
     checkUnresolvedConfig(run) ??
     checkInclude(run, ctx, scope, depth) ??
     checkNestedScripts(run, ctx, scope, depth) ??
+    checkConfigPrograms(run, ctx, scope, depth) ??
     checkAlias(run, ctx, scope, depth)
   )
+}
+
+/** Each `-c` value git runs as a program (TP-636), checked as a command line of its own, like a nested script. */
+function checkConfigPrograms(
+  run: GitRun,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  const scripts = configPrograms(run.resolved, run.marked, run.cmd.splits)
+  if (scripts === undefined) return run.tied ? REASONS.configProgram : undefined
+  if (scripts.length === 0) return undefined
+  const options = gitOptions(run.args, scope.cwd, scope.gitParams)
+  const params = options === UNSURE_CALL ? scope.gitParams : options.params
+  if (includesConfig(params)) return REASONS.includePath
+  const inner: Scope = { ...scope, cwd: undefined, env: undefined, gitParams: params }
+  for (const script of scripts) {
+    const reason = checkAt(script, ctx, inner, depth + 1)
+    if (reason !== undefined) return reason
+  }
+  return undefined
 }
 
 const checkUnresolvedConfig = (run: GitRun): string | undefined =>
