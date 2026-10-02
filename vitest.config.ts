@@ -16,6 +16,8 @@ const FORKS_FILES = [
   'src/__tests__/resume-role-gate.test.ts',
   'src/__tests__/surface-role-gate.test.ts',
   'src/__tests__/report-batch.test.ts',
+  // Execs scripts it just wrote; a sibling thread's fork can hold the write fd open (ETXTBSY).
+  'src/__tests__/leak-git-shim-stash.test.ts',
 ]
 
 const MAX_WORKERS = 4

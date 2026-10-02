@@ -27,7 +27,8 @@ const HOST_PATH = (process.env.PATH ?? '')
 
 const REAL_GIT = findRealGit(HOST_PATH, path.join(SCRATCH, 'none')) as string
 const NO_VERIFY = ['--no', 'verify'].join('-')
-const IDENTITY = 'GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com'
+const IDENTITY =
+  'GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com'
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync(REAL_GIT, args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' } })
@@ -67,7 +68,10 @@ function fixture(): Fixture {
   return { work, remote, env }
 }
 
-function runScript(fx: Fixture, body: string): ReturnType<typeof spawnSync> & { stdout: string; stderr: string } {
+function runScript(
+  fx: Fixture,
+  body: string,
+): ReturnType<typeof spawnSync> & { stdout: string; stderr: string } {
   const script = path.join(fx.work, '..', `script-${++count}.sh`)
   fs.writeFileSync(script, `#!/bin/sh\nexport ${IDENTITY}\n${body}\n`, { mode: 0o755 })
   return spawnSync(script, { cwd: fx.work, env: fx.env, encoding: 'utf8', timeout: 10_000 })
@@ -78,19 +82,19 @@ const remoteHasMain = (fx: Fixture): boolean =>
 
 describe('the agent git shim exempting only an exact git stash push (TP-783)', () => {
   // Kills: the exemption reverted to any token after stash, and an exemption that covers the rest of the line.
-  it.each([`!git stash push;git\${IFS}push ${NO_VERIFY} origin main`, `!git stash; git push ${NO_VERIFY} origin main`])(
-    'refuses the shell alias %s, whose later command pushes',
-    alias => {
-      const fx = fixture()
-      git(fx.work, 'config', 'alias.g', alias)
+  it.each([
+    `!git stash push;git\${IFS}push ${NO_VERIFY} origin main`,
+    `!git stash; git push ${NO_VERIFY} origin main`,
+  ])('refuses the shell alias %s, whose later command pushes', alias => {
+    const fx = fixture()
+    git(fx.work, 'config', 'alias.g', alias)
 
-      const run = runScript(fx, 'git g')
+    const run = runScript(fx, 'git g')
 
-      expect(run.stderr).toContain('git-shim: push refused (shell-alias)')
-      expect(run.status).toBe(2)
-      expect(remoteHasMain(fx)).toBe(false)
-    },
-  )
+    expect(run.stderr).toContain('git-shim: push refused (shell-alias)')
+    expect(run.status).toBe(2)
+    expect(remoteHasMain(fx)).toBe(false)
+  })
 
   // Kills: the stash exemption removed.
   it.each([
