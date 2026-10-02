@@ -59,3 +59,35 @@ describe('handleSpawn cwd', () => {
     expect(request.cwd).toBe('/tmp/cc178-explicit')
   })
 })
+
+/** CC-445: the broker's spawn_result carries the supervisor's refusal code and retryable flag. */
+describe('handleSpawn refusal reply', () => {
+  it('forwards code and retryable from the supervisor outcome', async () => {
+    vi.spyOn(Supervisor.prototype, 'spawn').mockResolvedValue({
+      ok: false,
+      reason: 'machine guard: memory 8% free',
+      code: 'machine_memory_floor',
+      retryable: true,
+    })
+    const core = new BrokerCore(() => undefined, {
+      events: new EventLog(path.join(home, 'events.db')),
+      registry: new Registry<Conn>(),
+    })
+    server = new SocketServer(core)
+    const frames: unknown[] = []
+    const conn = { write: (line: string) => frames.push(JSON.parse(line)) } as unknown as Conn
+
+    server.handleMessage(conn, { t: 'spawn', name: 'w', profile: 'implementer', brief: 'b' })
+
+    await vi.waitFor(() =>
+      expect(frames).toContainEqual(
+        expect.objectContaining({
+          t: 'spawn_result',
+          ok: false,
+          code: 'machine_memory_floor',
+          retryable: true,
+        }),
+      ),
+    )
+  })
+})

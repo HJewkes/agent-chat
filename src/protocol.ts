@@ -1028,7 +1028,9 @@ export type ServerMessage =
       name?: string
       reason?: string
       /** CC-441: the surface refused to launch (iTerm2 down, not macOS), so a headless launch may still work. */
-      code?: 'surface_refused'
+      code?: 'surface_refused' | 'machine_headless_limit' | 'machine_memory_floor'
+      /** CC-445: the machine guard's refusals clear as load drops, so the same spawn may be retried later. */
+      retryable?: boolean
       warnings?: string[]
       /**
        * The profile's own deny list, echoed back on success. CC-29's finding:
