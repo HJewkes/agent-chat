@@ -11,6 +11,7 @@ import { agentDir, distDir, ghShimDir, home } from '../paths.js'
 import { agentEnv } from './agent-env.js'
 import { recordClaudeBin, resolveClaudeBin } from './claude-bin.js'
 import { LAUNCHER_PID_ENV } from './launcher.js'
+import { watchLauncherSignals } from './launcher-signals.js'
 import { diskPaneSources } from './pane-sources.js'
 import { readLaunchPlan } from './launch-files.js'
 
@@ -72,5 +73,7 @@ export function launchOptions(agentId: string): RunAgentOptions {
 
 /** `agent-chat run-agent <id>`: the verb every stored relaunch script calls. */
 export function runAgentVerb(agentId: string): void {
-  runAgent(withShims(readLaunchPlan(agentId)), launchOptions(agentId))
+  const plan = withShims(readLaunchPlan(agentId))
+  watchLauncherSignals(agentDir(agentId), plan.title || agentId)
+  runAgent(plan, launchOptions(agentId))
 }
