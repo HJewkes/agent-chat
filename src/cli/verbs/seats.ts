@@ -59,6 +59,7 @@ import {
   readInbox,
   renderStatus,
   seatStatus,
+  WAITING_OWNER_TAG,
   type StatusDeps,
 } from '../../agents/seats/status.js'
 import type { OwnerMessage } from '../../agents/seats/stops.js'
@@ -371,6 +372,10 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
     homeDir: os.homedir(),
     agents: async () =>
       ((await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>).agents,
+    waitingOwner: async () => {
+      const live = (await client.request({ t: 'list' }, 'list_result')) as Reply<'list_result'>
+      return live.sessions.filter(s => s.tags?.some(t => t.tag === WAITING_OWNER_TAG)).map(s => s.name)
+    },
     readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
     loadDoc: () => readDoc(),
     inbox: seat => readInbox(path.join(home(), 'events.db'), seat),

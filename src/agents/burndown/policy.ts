@@ -93,6 +93,8 @@ const Seat = z.looseObject({
   kind_weights: orEmpty(Weights, {}),
   share_caps: orEmpty(Weights, {}),
   pool: z.string().optional(),
+  /** CC-405: agents tagged `waiting-owner` stay out of the seat's cap count in `seats status`. */
+  cap_excludes_waiting_owner: orEmpty(z.boolean(), false),
   spend: orEmpty(
     z.looseObject({ per_run_points: z.number().optional(), per_day_points: z.number().optional() }),
     {},
