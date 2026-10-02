@@ -2,7 +2,7 @@ import type { ServerMessage } from '../protocol.js'
 import type { Report, VerbContext } from '../cli/command.js'
 import { approveVerb } from '../cli/verbs/approve.js'
 import { dismissVerb } from '../cli/verbs/dismiss.js'
-import { endorseVerb } from '../cli/verbs/endorse.js'
+import { confirmAndEndorse } from '../cli/verbs/endorse.js'
 import type { Action } from './parse.js'
 
 /** The frame `agent-chat answer <id> <text>` sends; an overrule is the same frame on a decided id. */
@@ -23,7 +23,7 @@ function dispatch(action: Action, ctx: VerbContext): Promise<Report> {
     case 'approve':
       return approveVerb.run({ id, 'allow|deny': action.behavior }, ctx)
     case 'endorse':
-      return endorseVerb.run({ id, text: action.text, to: action.to }, ctx)
+      return confirmAndEndorse({ msgId: id, text: action.text, to: action.to }, ctx)
     case 'dismiss':
       return dismissVerb.run({ id }, ctx)
   }

@@ -5,6 +5,7 @@ import {
   type QueueItem,
   type ServerMessage,
 } from '../protocol.js'
+import { CONTROL_MARK, hasControls, visible } from '../endorse-command.js'
 import type { Report } from './command.js'
 import { ago, fail, withBroker } from './client.js'
 
@@ -57,19 +58,21 @@ export function describeInbox(res: Extract<ServerMessage, { t: 'queue_result' }>
     // print IS the thing being endorsed — anything elided here would be
     // approved unread, which is the failure the whole flow exists to prevent.
     if (item.kind === 'endorse_request') {
-      lines.push(`      would be delivered to ${item.meta.recipient} as ${item.from}, with your authority:`)
+      const recipient = visible(item.meta.recipient ?? '')
+      lines.push(`      would be delivered to ${recipient.text} as ${item.from}, with your authority:`)
+      if (recipient.escaped || hasControls(item.text)) lines.push(`      ${CONTROL_MARK}`)
       // CC-38: any free name is available to whoever registers it first.
       // recipient_durable distinguishes a broker-minted identity from a
       // self-chosen one that could belong to anybody.
       if (item.meta.recipient_durable === 'false') {
         const registeredAt = Number(item.meta.recipient_registered_at ?? Date.now())
         lines.push(
-          `      warning: "${item.meta.recipient}" has no durable Claude Code identity ` +
+          `      warning: "${recipient.text}" has no durable Claude Code identity ` +
             `(registered ${ago(registeredAt)}) — a raw process could have claimed that name.`,
         )
       }
     }
-    lines.push(`      ${item.text}`)
+    lines.push(`      ${item.kind === 'endorse_request' ? visible(item.text).text : item.text}`)
     // For an approval the description is often just "Run shell command", so the
     // preview is the only place the actual command shows up — and since CC-96
     // this print is what the human decides on, so it is never truncated. A
@@ -89,7 +92,7 @@ export function describeInbox(res: Extract<ServerMessage, { t: 'queue_result' }>
   if (open > blocked.length) lines.push('answer with: agent-chat answer <id> "..."')
   if (res.items.some(i => i.kind === 'endorse_request')) {
     lines.push(
-      "endorse with: agent-chat endorse <id> --to <recipient> --text '<exact text>'   (or dismiss <id> to decline)",
+      "endorse with: agent-chat endorse <id>, then type y at the terminal, or add --to <recipient> --text '<exact text>'   (or dismiss <id> to decline)",
     )
   }
   if (decided.length > 0) lines.push('', ...decided)

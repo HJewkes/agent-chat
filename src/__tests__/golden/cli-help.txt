@@ -78,7 +78,7 @@ approve a composed message; delivers it with your authority
 
 Options:
   --to <value>    the recipient the request names, exactly
-  --text <value>  the request text, byte for byte
+  --text <value>  the request text, byte for byte; without --to and --text, confirm at a terminal
   -h, --help      display help for command
 
 === agent-chat digest

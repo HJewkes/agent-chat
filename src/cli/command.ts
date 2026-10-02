@@ -12,12 +12,33 @@ import {
   type BaseContext,
   type Command,
 } from '@titan-design/registry'
+import { createInterface } from 'node:readline/promises'
 import { withBroker } from './client.js'
+
+/** The person at the keyboard, if there is one: stdin a TTY, and a way to ask them a line. */
+export interface Terminal {
+  isTTY: boolean
+  ask(prompt: string): Promise<string>
+}
 
 /** What a verb's `run` is handed: a broker connection scoped to the one call. */
 export interface VerbContext extends BaseContext {
   withBroker: typeof withBroker
+  /** Absent means no terminal, so a verb that needs a typed confirm refuses. */
+  terminal?: Terminal
 }
+
+export const stdinTerminal = (): Terminal => ({
+  isTTY: process.stdin.isTTY === true,
+  async ask(prompt) {
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+    try {
+      return await rl.question(prompt)
+    } finally {
+      rl.close()
+    }
+  },
+})
 
 /** Lines for stdout, and whether the broker did what was asked, which decides the exit status. */
 export const Report = z.object({
@@ -81,7 +102,7 @@ export function addVerb<Args>(
 }
 
 async function runVerb<Args>(verb: Verb<Args>, positionals: unknown[], opts: Record<string, unknown>) {
-  const ctx: VerbContext = { warnings: [], format: 'human', withBroker }
+  const ctx: VerbContext = { warnings: [], format: 'human', withBroker, terminal: stdinTerminal() }
   const args = cliArgs(verb, positionals, opts)
   const { envelope, exitCode } = await invokeCommand(verb, args, ctx, { invalidArgsCode: EXIT.USAGE })
   if (!envelope.ok) {

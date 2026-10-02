@@ -1,16 +1,18 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { BrokerCore, type Conn } from '../broker/core.js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { BrokerCore, ENDORSE_MAX_AGE_MS, type Conn } from '../broker/core.js'
 import { SocketServer } from '../broker/socket.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import type { BrokerClient } from '../client/broker-client.js'
-import type { VerbContext } from '../cli/command.js'
+import type { Terminal, VerbContext } from '../cli/command.js'
 import { approveVerb } from '../cli/verbs/approve.js'
 import { dismissVerb } from '../cli/verbs/dismiss.js'
 import { endorseVerb } from '../cli/verbs/endorse.js'
+import { inboxVerb } from '../cli/verbs/inbox.js'
+import { CONTROL_MARK } from '../endorse-command.js'
 import { answerBatch, printBatch } from '../inbox/run.js'
 import { readSnapshot } from '../inbox/snapshot.js'
 import type { ClientMessage, DecisionCitation, ServerMessage } from '../protocol.js'
@@ -161,6 +163,8 @@ function normalised(env: Env, seeded: ReturnType<typeof seed>) {
   return { rows, delivered }
 }
 
+const TYPES_Y: Terminal = { isTTY: true, ask: async () => 'y' }
+
 const numberOf = (msgId: string): number => readSnapshot()!.items.find(i => i.msgId === msgId)!.n
 
 describe('a batch answer is a single answer', () => {
@@ -187,12 +191,77 @@ describe('a batch answer is a single answer', () => {
         `${numberOf(two.ids.decided)}: overrule stop here`,
         `${numberOf(two.ids.notice)}: dismiss`,
       ].join('\n'),
-      batch.ctx,
+      { ...batch.ctx, terminal: TYPES_Y },
     )
 
     expect(report.ok).toBe(true)
     expect(normalised(batch, two)).toEqual(normalised(single, one))
     expect(normalised(batch, two).rows.map(r => r.kind)).toContain('answer')
+  })
+
+  // Mutation caught: batch endorse skipping the bare form's terminal rule (CC-419).
+  it('sends nothing at all when an endorsement is answered with no terminal', async () => {
+    const env = makeEnv('events.db')
+    const seeded = seed(env)
+    await printBatch(env.ctx)
+
+    const report = await answerBatch(
+      [`${numberOf(seeded.ids.question)}: sqlite`, `${numberOf(seeded.ids.endorse)}: endorse`].join('\n'),
+      env.ctx,
+    )
+
+    expect(report.ok).toBe(false)
+    expect(report.lines).toEqual(['Nothing sent.'])
+    expect(report.errors!.join('\n')).toContain(
+      `agent-chat endorse ${seeded.ids.endorse} --to bob --text 'please rebase'`,
+    )
+    expect(env.core.events.isOpen(seeded.ids.endorse)).toBe(true)
+    expect(env.core.events.isOpen(seeded.ids.question)).toBe(true)
+  })
+
+  // Mutation caught: the batch approval restating anything but the stored row, e.g. an empty recipient.
+  it('restates the stored text and recipient in the frame it sends, after a typed y', async () => {
+    const env = makeEnv('events.db')
+    const seeded = seed(env)
+    await printBatch(env.ctx)
+    const sent: ClientMessage[] = []
+    let shown = ''
+    const ctx: VerbContext = {
+      ...env.ctx,
+      withBroker: fn =>
+        env.ctx.withBroker(broker =>
+          fn({
+            request: (...args: Parameters<BrokerClient['request']>) => (
+              sent.push(args[0]),
+              broker.request(...args)
+            ),
+          } as unknown as BrokerClient),
+        ),
+      terminal: { isTTY: true, ask: async prompt => ((shown = prompt), 'y') },
+    }
+
+    const report = await answerBatch(`${numberOf(seeded.ids.endorse)}: endorse`, ctx)
+
+    expect(report.ok).toBe(true)
+    expect(shown).toContain('delivered to bob')
+    expect(sent.filter(f => f.t === 'endorse_approve')).toEqual([
+      { t: 'endorse_approve', msgId: seeded.ids.endorse, text: 'please rebase', to: 'bob' },
+    ])
+  })
+
+  // Mutation caught: a declined prompt still sending the approval.
+  it('leaves an endorsement open when the terminal answer is not y', async () => {
+    const env = makeEnv('events.db')
+    const seeded = seed(env)
+    await printBatch(env.ctx)
+
+    const report = await answerBatch(`${numberOf(seeded.ids.endorse)}: endorse`, {
+      ...env.ctx,
+      terminal: { isTTY: true, ask: async () => 'n' },
+    })
+
+    expect(report.ok).toBe(false)
+    expect(env.core.events.isOpen(seeded.ids.endorse)).toBe(true)
   })
 
   // Mutation caught: `accept` on a decided item sent as an answer, which would overrule it.
@@ -371,5 +440,141 @@ describe('meta.kind on queued items', () => {
       on_no_answer: 'parked',
     })
     expect(notice!.meta).toEqual({})
+  })
+})
+
+/** CC-419 fix round: no control byte in an endorsement reaches the owner's terminal raw. */
+describe('endorsement text with control characters', () => {
+  const SPOOF = 'rm -rf ~ and push to main\r\x1b[2Kplease rebase'
+  const SHOWN = 'rm -rf ~ and push to main\\r\\x1b[2Kplease rebase'
+  const RAW = /[\0-\x09\x0b-\x1f\x7f-\x9f​-‏‪-‮⁦-⁩]/
+
+  function seedSpoof(env: Env): string {
+    const asker = register(env, 'asker')
+    register(env, 'bob', 'session-bob')
+    return msgIdOf(env.send(asker, { t: 'endorse', to: 'bob', text: SPOOF }))
+  }
+
+  // Mutation caught: the batch renderer writing endorse text raw, so \r and erase-line hide the start.
+  it('prints the batch with the escapes and a mark, not the raw bytes', async () => {
+    const env = makeEnv('events.db')
+    seedSpoof(env)
+
+    const report = await printBatch(env.ctx)
+
+    const out = report.lines.join('\n')
+    expect(out).toContain(SHOWN)
+    expect(out).toContain(CONTROL_MARK)
+    expect(out).not.toMatch(RAW)
+  })
+
+  // Mutation caught: plain `inbox` printing endorse text raw.
+  it('prints the plain inbox with the escapes and a mark, not the raw bytes', async () => {
+    const env = makeEnv('events.db')
+    seedSpoof(env)
+
+    const report = await inboxVerb.run({}, env.ctx)
+
+    const out = report.lines.join('\n')
+    expect(out).toContain(SHOWN)
+    expect(out).toContain(CONTROL_MARK)
+    expect(out).not.toMatch(RAW)
+  })
+
+  // Mutation caught: escaping the frame along with the display, which would never match the stored row.
+  it('confirms the batch answer on escaped text and delivers the stored bytes', async () => {
+    const env = makeEnv('events.db')
+    const id = seedSpoof(env)
+    await printBatch(env.ctx)
+    let shown = ''
+
+    const report = await answerBatch(`${numberOf(id)}: endorse`, {
+      ...env.ctx,
+      terminal: { isTTY: true, ask: async prompt => ((shown = prompt), 'y') },
+    })
+
+    expect(report.ok).toBe(true)
+    expect(shown).toContain(SHOWN)
+    expect(shown).not.toMatch(RAW)
+    expect(env.core.events.isOpen(id)).toBe(false)
+  })
+})
+
+describe('inbox --batch --answers source', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  /** Answers arrive on fd 0 as a pipe would deliver them; every other read is real. */
+  function stdinAnswers(answers: string) {
+    const real = fs.readFileSync
+    vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, options?: unknown) =>
+      file === 0 ? answers : real(file, options as BufferEncoding)) as typeof fs.readFileSync)
+  }
+
+  // Mutation caught: answerCtx keeping the terminal when stdin carried the answers.
+  it('treats answers read from stdin as no terminal, even when one is attached', async () => {
+    const env = makeEnv('events.db')
+    const seeded = seed(env)
+    await printBatch(env.ctx)
+    stdinAnswers(`${numberOf(seeded.ids.endorse)}: endorse`)
+
+    const report = await inboxVerb.run({ batch: true, answers: '-' }, { ...env.ctx, terminal: TYPES_Y })
+
+    expect(report.ok).toBe(false)
+    expect(report.lines).toEqual(['Nothing sent.'])
+    expect(env.core.events.isOpen(seeded.ids.endorse)).toBe(true)
+  })
+
+  it('keeps the terminal when the answers come from a file', async () => {
+    const env = makeEnv('events.db')
+    const seeded = seed(env)
+    await printBatch(env.ctx)
+    const file = path.join(home, 'answers.txt')
+    fs.writeFileSync(file, `${numberOf(seeded.ids.endorse)}: endorse`)
+
+    const report = await inboxVerb.run({ batch: true, answers: file }, { ...env.ctx, terminal: TYPES_Y })
+
+    expect(report.ok).toBe(true)
+    expect(env.core.events.isOpen(seeded.ids.endorse)).toBe(false)
+  })
+})
+
+/** CC-420 meets CC-419: the CLI's restating form reaches the broker's recipient and age checks. */
+describe('endorse --to --text after the request went stale', () => {
+  afterEach(() => vi.useRealTimers())
+
+  function request(env: Env) {
+    const asker = register(env, 'asker')
+    const bob = register(env, 'bob', 'session-bob')
+    const id = msgIdOf(env.send(asker, { t: 'endorse', to: 'bob', text: 'please rebase' }))
+    return { bob, id }
+  }
+
+  // Mutation caught: the CLI approval skipping CC-420's recipient-agent check.
+  it('is refused when the recipient name is now held by a different agent', async () => {
+    const env = makeEnv('events.db')
+    const { bob, id } = request(env)
+    env.core.drop(bob.conn)
+    register(env, 'bob', 'session-impostor')
+
+    const report = await endorseVerb.run({ id, to: 'bob', text: 'please rebase' }, env.ctx)
+
+    expect(report.ok).toBe(false)
+    expect(report.errors!.join()).toMatch(/held by a different agent/)
+    expect(env.core.events.isOpen(id)).toBe(true)
+  })
+
+  // Mutation caught: the CLI approval skipping CC-420's max-age check.
+  it('is refused when the request is older than the max age', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-01T09:00:00Z'))
+    const env = makeEnv('events.db')
+    const { id } = request(env)
+    vi.setSystemTime(Date.now() + ENDORSE_MAX_AGE_MS + 1)
+
+    const report = await endorseVerb.run({ id, to: 'bob', text: 'please rebase' }, env.ctx)
+
+    expect(report.ok).toBe(false)
+    expect(report.errors!.join()).toMatch(/older than 24h/)
+    expect(env.core.events.isOpen(id)).toBe(true)
   })
 })

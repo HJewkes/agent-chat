@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -16,7 +17,12 @@ import { ATTACH_TIMEOUT_MS } from '../agents/supervisor.js'
 import type { AgentEventRow } from '../broker/event-store.js'
 import type { AgentIdentity } from '../protocol.js'
 import { resolveBrief } from '../cli/agents.js'
+import type { Terminal, VerbContext } from '../cli/command.js'
 import { buildProgram } from '../cli/index.js'
+import { endorseVerb } from '../cli/verbs/endorse.js'
+import { CONTROL_MARK, endorseCommand, visible } from '../endorse-command.js'
+import type { BrokerClient } from '../client/broker-client.js'
+import type { ClientMessage, ServerMessage } from '../protocol.js'
 import { tailLines } from '../cli/service.js'
 
 /**
@@ -197,6 +203,205 @@ describe('agent spawn brief sources', () => {
   it('refuses a spawn with no brief at all, from either source', () => {
     expect(() => resolveBrief([], undefined)).toThrow(/usage:/)
     expect(() => resolveBrief([], '   \n')).toThrow(/empty brief/)
+  })
+})
+
+/**
+ * CC-419: the bare `endorse <id>` shows the stored bytes and needs a typed `y`
+ * at a terminal. A caller with no terminal gets the restating command instead.
+ */
+describe('endorse without --to and --text', () => {
+  const STORED = "it's $HOME and `whoami`\nsecond line \\ done"
+  const RECIPIENT = "o'brien"
+
+  function fakeCtx(terminal?: Terminal) {
+    const sent: ClientMessage[] = []
+    const queue: ServerMessage = {
+      t: 'queue_result',
+      items: [
+        {
+          msgId: 'e1',
+          kind: 'endorse_request',
+          from: 'w-a',
+          text: STORED,
+          at: 0,
+          meta: { recipient: RECIPIENT },
+        },
+      ],
+    }
+    const broker = {
+      request: async (frame: ClientMessage) => {
+        sent.push(frame)
+        return frame.t === 'queue' ? queue : { t: 'answer_result', ok: true }
+      },
+    }
+    const ctx: VerbContext = {
+      warnings: [],
+      format: 'human',
+      withBroker: async fn => fn(broker as unknown as BrokerClient),
+      ...(terminal ? { terminal } : {}),
+    }
+    return { ctx, approvals: () => sent.filter(f => f.t === 'endorse_approve') }
+  }
+
+  const shellWords = (command: string): string[] =>
+    execFileSync('/bin/sh', ['-c', `printf '%s\\0' ${command}`], { encoding: 'utf8' })
+      .split('\0')
+      .slice(0, -1)
+
+  it('refuses a bare endorse when stdin is not a TTY', async () => {
+    const { ctx, approvals } = fakeCtx({ isTTY: false, ask: async () => 'y' })
+
+    const report = await endorseVerb.run({ id: 'e1' }, ctx)
+
+    expect(report.ok).toBe(false)
+    expect(approvals()).toEqual([])
+    expect(report.lines.join('\n')).toContain(STORED)
+    expect(report.lines.join('\n')).toContain(RECIPIENT)
+    const command = report.errors!.find(e => e.startsWith('agent-chat endorse '))!
+    expect(shellWords(command.slice('agent-chat '.length))).toEqual([
+      'endorse',
+      'e1',
+      '--to',
+      RECIPIENT,
+      '--text',
+      STORED,
+    ])
+  })
+
+  it('treats a missing terminal as no TTY', async () => {
+    const { ctx, approvals } = fakeCtx()
+
+    const report = await endorseVerb.run({ id: 'e1' }, ctx)
+
+    expect(report.ok).toBe(false)
+    expect(approvals()).toEqual([])
+  })
+
+  it('sends the stored text and recipient after a typed y at a terminal', async () => {
+    let shown = ''
+    const { ctx, approvals } = fakeCtx({ isTTY: true, ask: async prompt => ((shown = prompt), ' Y\n') })
+
+    const report = await endorseVerb.run({ id: 'e1' }, ctx)
+
+    expect(report.ok).toBe(true)
+    expect(shown).toContain(STORED)
+    expect(shown).toContain(RECIPIENT)
+    expect(approvals()).toEqual([{ t: 'endorse_approve', msgId: 'e1', text: STORED, to: RECIPIENT }])
+  })
+
+  it('sends nothing when the answer at the terminal is anything but y', async () => {
+    const { ctx, approvals } = fakeCtx({ isTTY: true, ask: async () => 'yes please' })
+
+    const report = await endorseVerb.run({ id: 'e1' }, ctx)
+
+    expect(report.ok).toBe(false)
+    expect(approvals()).toEqual([])
+  })
+
+  it('refuses an id that is not an open endorsement', async () => {
+    const { ctx, approvals } = fakeCtx({ isTTY: true, ask: async () => 'y' })
+
+    const report = await endorseVerb.run({ id: 'nope' }, ctx)
+
+    expect(report.ok).toBe(false)
+    expect(report.errors!.join()).toMatch(/no open endorsement nope/)
+    expect(approvals()).toEqual([])
+  })
+
+  it('refuses --to without --text rather than filling one in from the store', async () => {
+    const { ctx, approvals } = fakeCtx({ isTTY: true, ask: async () => 'y' })
+
+    const report = await endorseVerb.run({ id: 'e1', to: RECIPIENT }, ctx)
+
+    expect(report.ok).toBe(false)
+    expect(approvals()).toEqual([])
+  })
+
+  it('sends the restated frame with no prompt when both flags are given', async () => {
+    const { ctx, approvals } = fakeCtx()
+
+    const report = await endorseVerb.run({ id: 'e1', to: RECIPIENT, text: STORED }, ctx)
+
+    expect(report.ok).toBe(true)
+    expect(approvals()).toEqual([{ t: 'endorse_approve', msgId: 'e1', text: STORED, to: RECIPIENT }])
+  })
+})
+
+/**
+ * CC-419 fix round: stored bytes can redraw a terminal (a carriage return then
+ * an erase-line), so what the owner reads and types y to must show every
+ * control character as an escape, while the frame still carries the stored bytes.
+ */
+describe('endorse text with control characters', () => {
+  const SPOOF = 'rm -rf ~ and push to main\r\x1b[2Kplease rebase'
+  const BIDI = 'approve \u202Egnissap\u202C tests'
+  const RAW = /[\0-\x09\x0b-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/
+
+  function fakeCtx(text: string, terminal?: Terminal) {
+    const sent: ClientMessage[] = []
+    const queue: ServerMessage = {
+      t: 'queue_result',
+      items: [{ msgId: 'e1', kind: 'endorse_request', from: 'w-a', text, at: 0, meta: { recipient: 'bob' } }],
+    }
+    const broker = {
+      request: async (frame: ClientMessage) => {
+        sent.push(frame)
+        return frame.t === 'queue' ? queue : { t: 'answer_result', ok: true }
+      },
+    }
+    const ctx: VerbContext = {
+      warnings: [],
+      format: 'human',
+      withBroker: async fn => fn(broker as unknown as BrokerClient),
+      ...(terminal ? { terminal } : {}),
+    }
+    return { ctx, approvals: () => sent.filter(f => f.t === 'endorse_approve') }
+  }
+
+  it('shows a carriage return and erase-line as escapes, then sends the stored bytes after y', async () => {
+    let shown = ''
+    const { ctx, approvals } = fakeCtx(SPOOF, { isTTY: true, ask: async prompt => ((shown = prompt), 'y') })
+
+    const report = await endorseVerb.run({ id: 'e1' }, ctx)
+
+    expect(report.ok).toBe(true)
+    expect(shown).toContain('rm -rf ~ and push to main\\r\\x1b[2Kplease rebase')
+    expect(shown).toContain(CONTROL_MARK)
+    expect(shown).not.toMatch(RAW)
+    expect(approvals()).toEqual([{ t: 'endorse_approve', msgId: 'e1', text: SPOOF, to: 'bob' }])
+  })
+
+  it('refuses with no terminal and prints no command that would write the bytes raw', async () => {
+    const { ctx, approvals } = fakeCtx(SPOOF)
+
+    const report = await endorseVerb.run({ id: 'e1' }, ctx)
+
+    expect(report.ok).toBe(false)
+    expect(approvals()).toEqual([])
+    expect(report.lines).toContain(CONTROL_MARK)
+    expect(report.lines.join('\n')).toContain('\\r\\x1b[2K')
+    expect([...report.lines, ...report.errors!].join('\n')).not.toMatch(RAW)
+    expect(report.errors!.some(e => e.includes('agent-chat endorse'))).toBe(false)
+    expect(report.errors!.join()).toMatch(/contains control characters/)
+  })
+
+  it('shows bidi overrides as escapes', async () => {
+    let shown = ''
+    const { ctx } = fakeCtx(BIDI, { isTTY: true, ask: async prompt => ((shown = prompt), 'n') })
+
+    await endorseVerb.run({ id: 'e1' }, ctx)
+
+    expect(shown).toContain('approve \\u202Egnissap\\u202C tests')
+    expect(shown).toContain(CONTROL_MARK)
+    expect(shown).not.toMatch(RAW)
+  })
+
+  it('leaves plain text, backslashes and newlines included, exactly as stored', () => {
+    const plain = 'line one \\r is literal\nline two'
+
+    expect(visible(plain)).toEqual({ text: plain, escaped: false })
+    expect(endorseCommand('e1', 'bob', plain)).toBe(`agent-chat endorse e1 --to bob --text '${plain}'`)
   })
 })
 

@@ -1,7 +1,67 @@
 import { z } from 'zod'
+import { CONTROL_MARK, endorseCommand, visible } from '../../endorse-command.js'
 import type { ServerMessage } from '../../protocol.js'
 import { describeEndorse } from '../human.js'
-import { defineVerb, Report } from '../command.js'
+import { defineVerb, Report, type VerbContext } from '../command.js'
+
+/** An open endorsement request as stored: the bytes and recipient an approval must restate. */
+export interface Endorsement {
+  msgId: string
+  to: string
+  text: string
+}
+
+async function approve({ msgId, to, text }: Endorsement, ctx: VerbContext): Promise<Report> {
+  const res = (await ctx.withBroker(b =>
+    b.request({ t: 'endorse_approve', msgId, text, to }, 'answer_result'),
+  )) as Extract<ServerMessage, { t: 'answer_result' }>
+  return describeEndorse(msgId, res)
+}
+
+async function stored(msgId: string, ctx: VerbContext): Promise<Endorsement | undefined> {
+  const res = (await ctx.withBroker(b => b.request({ t: 'queue' }, 'queue_result'))) as Extract<
+    ServerMessage,
+    { t: 'queue_result' }
+  >
+  const item = res.items.find(i => i.msgId === msgId && i.kind === 'endorse_request')
+  return item && { msgId, to: item.meta.recipient ?? '', text: item.text }
+}
+
+/** Recipient before and after the text, so a body cannot fake the line that names it. */
+function show({ msgId, to, text }: Endorsement): string[] {
+  const shownTo = visible(to)
+  const shownText = visible(text)
+  const escaped = shownTo.escaped || shownText.escaped
+  return [
+    `Endorsement ${msgId} would be delivered to ${shownTo.text}, with your authority. Text${escaped ? '' : ', verbatim'}:`,
+    ...(escaped ? [CONTROL_MARK] : []),
+    shownText.text,
+    `(end of text, ${text.length} characters, to ${shownTo.text})`,
+  ]
+}
+
+/** What a caller with no terminal gets instead of a prompt: the command that restates the bytes. */
+export function noTerminal(e: Endorsement): string[] {
+  const command = endorseCommand(e.msgId, e.to, e.text)
+  const refusal = `refusing to endorse ${e.msgId} without a terminal to confirm at`
+  if (command === undefined)
+    return [
+      `${refusal}. It contains control characters, so no shell command can restate it without writing them raw; endorse it at a terminal, or dismiss it.`,
+    ]
+  return [`${refusal}; to endorse these exact bytes, run:`, command]
+}
+
+/**
+ * A confused-agent control, not a guarantee (a pty wrapper defeats it): the
+ * person reads the stored bytes and types `y` before they go out (CC-419).
+ */
+export async function confirmAndEndorse(e: Endorsement, ctx: VerbContext): Promise<Report> {
+  if (!ctx.terminal?.isTTY) return { ok: false, lines: show(e), errors: noTerminal(e) }
+  const answer = await ctx.terminal.ask([...show(e), 'Type y to endorse: '].join('\n'))
+  if (answer.trim().toLowerCase() !== 'y')
+    return { ok: false, lines: [], errors: [`Not endorsed ${e.msgId}; nothing sent.`] }
+  return approve(e, ctx)
+}
 
 /**
  * A CLI verb and nothing else: the broker refuses this frame from any
@@ -18,19 +78,22 @@ export const endorseVerb = defineVerb({
     positional: ['id'],
     options: {
       to: { long: '--to', description: 'the recipient the request names, exactly' },
-      text: { long: '--text', description: 'the request text, byte for byte' },
+      text: {
+        long: '--text',
+        description: 'the request text, byte for byte; without --to and --text, confirm at a terminal',
+      },
     },
   },
   async run({ id, to, text }, ctx) {
-    if (to === undefined || text === undefined)
+    if (to !== undefined && text !== undefined) return approve({ msgId: id, to, text }, ctx)
+    if (to !== undefined || text !== undefined)
       return {
         ok: false,
         lines: [],
-        errors: [`endorse needs --to and --text restating request ${id} exactly`],
+        errors: ['give both --to and --text, or neither to confirm at a terminal'],
       }
-    const res = (await ctx.withBroker(b =>
-      b.request({ t: 'endorse_approve', msgId: id, text, to }, 'answer_result'),
-    )) as Extract<ServerMessage, { t: 'answer_result' }>
-    return describeEndorse(id, res)
+    const request = await stored(id, ctx)
+    if (request === undefined) return { ok: false, lines: [], errors: [`no open endorsement ${id}`] }
+    return confirmAndEndorse(request, ctx)
   },
 })

@@ -1,4 +1,5 @@
 import { ago } from '../cli/client.js'
+import { CONTROL_MARK, visible } from '../endorse-command.js'
 import type { BatchItem, Section } from './batch.js'
 
 const LABEL: Record<Section, string> = {
@@ -42,11 +43,20 @@ function header(item: BatchItem): string {
   return `[${item.n}] ${LABEL[item.section]} ${oneLine(item.msgId)}  from ${oneLine(item.from)}  ${ago(item.at)}${kind}${unlock}`
 }
 
+/** An endorsement's text and recipient reach the terminal with every control character escaped (CC-419). */
+function escapedEndorse(item: BatchItem): { text: string; details: string[] } {
+  const text = visible(item.text)
+  const details = item.details.map(detail => visible(detail))
+  const escaped = text.escaped || details.some(d => d.escaped)
+  return { text: text.text, details: [...(escaped ? [CONTROL_MARK] : []), ...details.map(d => d.text)] }
+}
+
 function body(item: BatchItem): string[] {
   const { task, options, recommended, onNoAnswer } = item.shape
   const lines = task ? indent(`doing: ${task}`) : []
-  lines.push(...indent(item.text))
-  for (const detail of item.details) lines.push(...indent(detail))
+  const { text, details } = item.section === 'endorse' ? escapedEndorse(item) : item
+  lines.push(...indent(text))
+  for (const detail of details) lines.push(...indent(detail))
   if (options) lines.push(...indent(`options: ${options.join(' | ')}`))
   if (recommended) {
     const own = item.unlock ? ' (unlock table, so not prefilled)' : ''

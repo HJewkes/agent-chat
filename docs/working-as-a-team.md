@@ -247,7 +247,14 @@ human's own.
 1. The composing agent calls `chat_endorse` with `to` and `text`. **Nothing is sent.**
 2. The text lands in the human queue as an `ENDR` item. `agent-chat inbox` prints it in full and
    untruncated, naming the recipient — that print _is_ the thing being endorsed.
-3. The human runs `agent-chat endorse <id>` to approve, or `agent-chat dismiss <id>` to decline.
+3. The human approves with `agent-chat endorse <id> --to <recipient> --text '<exact text>'`, or
+   declines with `agent-chat dismiss <id>`. The broker delivers only if `--to` and `--text` equal
+   the stored recipient and text byte for byte (CC-418). At a terminal, the bare
+   `agent-chat endorse <id>` prints the stored text and recipient and sends them after a typed
+   `y`. With no TTY on stdin it refuses and prints the full `--to`/`--text` command, shell-quoted,
+   instead (CC-419). `inbox --batch` follows the same rule for an `endorse` answer, and
+   `--answers -` counts as no terminal, since stdin carries the answers. The TTY check stops a
+   confused agent, not a determined one: a pty wrapper defeats it.
 4. On approval the **broker** delivers the stored text. The composer never sends it, and so gets
    no opportunity to alter it between approval and delivery.
 
