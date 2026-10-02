@@ -17,7 +17,7 @@ import {
   type ReadAlias,
 } from './git-alias.js'
 import { crashCause, type FailOpen } from './failopen.js'
-import { configPrograms } from './git-programs.js'
+import { configPrograms, extScripts, PROGRAM_ENV } from './git-programs.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
 import { hasUnreadableConfig, hasUnreadableOption } from './git-unresolved.js'
 import { mayExpandToGit } from './git-word.js'
@@ -338,20 +338,39 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
     checkUnresolvedConfig(run) ??
     checkInclude(run, ctx, scope, depth) ??
     checkNestedScripts(run, ctx, scope, depth) ??
-    checkConfigPrograms(run, ctx, scope, depth) ??
+    checkPrograms(run, ctx, scope, depth) ??
     checkAlias(run, ctx, scope, depth)
   )
 }
 
-/** Each `-c` value git runs as a program (TP-636), checked as a command line of its own, like a nested script. */
-function checkConfigPrograms(
-  run: GitRun,
-  ctx: GuardContext,
-  scope: Scope,
-  depth: number,
-): string | undefined {
-  const scripts = configPrograms(run.resolved, run.marked, run.cmd.splits)
-  if (scripts === undefined) return run.tied ? REASONS.configProgram : undefined
+/** A program-running env var set on this line: its resolved value, or UNSURE where the guard cannot read it. */
+function programEnv(run: GitRun, ctx: GuardContext, scope: Scope): Map<string, Setting> {
+  const set = new Map<string, Setting>()
+  for (const [name, value] of scope.exports) if (PROGRAM_ENV.has(name)) set.set(name, value)
+  for (const word of run.assigns) {
+    const eq = word.indexOf('=')
+    const name = eq < 0 ? word : word.slice(0, eq)
+    if (!PROGRAM_ENV.has(name)) continue
+    set.set(name, eq < 0 ? undefined : (resolveWord(word.slice(eq + 1), run.cmd, ctx, scope) ?? UNSURE))
+  }
+  return set
+}
+
+/**
+ * Each value git runs as a program (TP-636), checked as a command line of its own: a `-c` config
+ * value, an `ext::` transport URL, and a program-running env var the line sets. git passes its `-c`
+ * options on to each, so an include on this git is a deny whatever the value holds.
+ */
+function checkPrograms(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
+  const config = configPrograms(run.resolved, run.marked, run.cmd.splits)
+  const env = programEnv(run, ctx, scope)
+  const unreadable = config === undefined || [...env.values()].includes(UNSURE)
+  if (unreadable) return run.tied ? REASONS.configProgram : undefined
+  const scripts = [
+    ...config,
+    ...extScripts(run.resolved),
+    ...[...env.values()].filter((v): v is string => typeof v === 'string'),
+  ]
   if (scripts.length === 0) return undefined
   const options = gitOptions(run.args, scope.cwd, scope.gitParams)
   const params = options === UNSURE_CALL ? scope.gitParams : options.params

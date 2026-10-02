@@ -1802,4 +1802,78 @@ describe('a git config value that runs a program (TP-636)', () => {
   ])('allows %s', command => {
     expect(checkCommand(command, ctx())).toBeUndefined()
   })
+
+  // Fix round 1: keys the first pass missed (reviewer ran or flagged these).
+  it.each([
+    'git -c trailer.sign.cmd="git push --no-verify" interpret-trailers',
+    'git -c trailer.sign.command="git push --no-verify" interpret-trailers',
+    'git -c core.alternateRefsCommand="git push --no-verify" fetch',
+    'git -c gpg.ssh.defaultKeyCommand="git push --no-verify" tag -s v1',
+    'git -c uploadpack.packObjectsHook="git push --no-verify" fetch',
+    'git -c imap.tunnel="git push --no-verify" send-email',
+    'git -c hook.pre-commit.command="git push --no-verify" commit',
+    'git -c guitool.x.cmd="git push --no-verify" gui',
+    'git -c instaweb.httpd="git push --no-verify" instaweb',
+  ])('denies a skipped hook in a newly covered key: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.noVerify)
+  })
+
+  // An ext:: transport URL runs a shell command, enabled by protocol.ext.allow / protocol.allow.
+  it.each([
+    'git -c protocol.ext.allow=always fetch "ext::sh -c \'git push --no-verify\'"',
+    'git -c protocol.allow=always clone "ext::git push --no-verify" r',
+    'git fetch "ext::sh -c \'git push --no-verify\'"',
+  ])('denies a skipped hook in an ext:: URL: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.noVerify)
+  })
+})
+
+describe('an environment variable git runs as a program (TP-636)', () => {
+  it.each([
+    "GIT_EDITOR='git push --no-verify' git commit",
+    "GIT_SEQUENCE_EDITOR='git push --no-verify' git rebase -i HEAD~2",
+    "GIT_SSH_COMMAND='git push --no-verify' git fetch origin",
+    "GIT_PAGER='git push --no-verify' git log",
+    "PAGER='git push --no-verify' git log",
+    "EDITOR='git push --no-verify' git commit",
+    "VISUAL='git push --no-verify' git commit",
+    "GIT_ASKPASS='git push --no-verify' git fetch",
+    "SSH_ASKPASS='git push --no-verify' git fetch",
+    "GIT_PROXY_COMMAND='git push --no-verify' git fetch",
+    "GIT_EXTERNAL_DIFF='git push --no-verify' git diff",
+    "env GIT_EDITOR='git push --no-verify' git commit",
+    "GIT_PAGER='git push --no-verify' command git log",
+    "export GIT_SSH_COMMAND='git push --no-verify'; git fetch origin",
+  ])('denies a skipped hook in the value: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it('denies a hooks path override in an env value', () => {
+    expect(checkCommand("GIT_PAGER='git -c core.hooksPath=/dev/null push' git log", ctx())).toBe(
+      REASONS.gitConfig,
+    )
+  })
+
+  it.each([
+    'GIT_PAGER="$(cat p)" git log',
+    'GIT_EDITOR=$E git commit',
+    'export GIT_SSH_COMMAND="$S"; git fetch',
+    'GIT_EXTERNAL_DIFF=`cat d` git diff',
+  ])('denies a value the guard cannot read: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.configProgram)
+  })
+
+  it.each([
+    'GIT_PAGER=less git log',
+    'PAGER=cat git log',
+    'GIT_EDITOR=vim git commit',
+    'VISUAL=nano git commit',
+    'GIT_SSH_COMMAND="ssh -i key" git fetch',
+    'GIT_PAGER= git log',
+    'GIT_SEQUENCE_EDITOR=true git rebase -i HEAD~2',
+    'GIT_EDITOR=vim npm test && git status',
+    'GIT_PAGER=less git log && EDITOR=vim git commit',
+  ])('allows %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
 })
