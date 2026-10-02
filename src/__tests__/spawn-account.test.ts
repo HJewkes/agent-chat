@@ -9,7 +9,7 @@ import { Registry } from '../broker/registry.js'
 import { Supervisor } from '../agents/supervisor.js'
 import { readLaunchPlan } from '../agents/launch-files.js'
 import { readBudget } from '../agents/budget.js'
-import { transcriptLine, projectSlug } from '../agents/transcript.js'
+import { findTranscript, transcriptLine, projectSlug } from '../agents/transcript.js'
 import { autoAttach } from './broker-harness.js'
 
 /**
@@ -210,7 +210,7 @@ describe('reading an agent’s telemetry back', () => {
     expect(transcriptLine(cwd, agent?.sessionId as string, agent?.configDir)).not.toContain('not written yet')
     // The same lookup without the record is the bug: it reports "not written yet"
     // forever for an agent whose transcript is right there on disk.
-    expect(transcriptLine(cwd, agent?.sessionId as string)).toContain('not written yet')
+    expect(findTranscript(cwd, agent?.sessionId as string).exists).toBe(false)
   })
 
   it('finds a budget reading under the agent’s recorded dir', async () => {

@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { profileDir } from './config-dir.js'
 import {
   claudeSourceFromPath,
   readRecentSessionTurnsSync,
@@ -71,6 +72,77 @@ export function findTranscript(cwd: string, sessionId: string, dir?: string): Tr
   return { path: derived, exists: false }
 }
 
+/** Session id to transcript path across every profile dir; built on the first miss, then reused. */
+export interface ProfileIndex {
+  lookup(sessionId: string): string | undefined
+}
+
+/**
+ * One index per roster listing, never a module global: the broker is long-lived and a cached
+ * listing would go stale. Profile dirs are sorted, so a session id present in two of them
+ * resolves to the alphabetically first profile.
+ */
+export function createProfileIndex(): ProfileIndex {
+  let byId: Map<string, string> | undefined
+  return {
+    lookup(sessionId) {
+      byId ??= buildProfileIndex()
+      return byId.get(sessionId)
+    },
+  }
+}
+
+function buildProfileIndex(): Map<string, string> {
+  const byId = new Map<string, string>()
+  for (const profile of profileDirs()) {
+    for (const project of readProjects(profile)) {
+      const folder = path.join(projectsDir(profile), project)
+      for (const file of readFiles(folder)) {
+        const id = file.endsWith('.jsonl') ? file.slice(0, -'.jsonl'.length) : undefined
+        if (id !== undefined && !byId.has(id)) byId.set(id, path.join(folder, file))
+      }
+    }
+  }
+  return byId
+}
+
+/**
+ * CC-261: `findTranscript` for a roster row. An adopted session's row records no config dir,
+ * so the default dir would be printed even when it ran under a profile dir. The session id
+ * is unique, so searching the profile dirs for it is exact. A recorded dir is never searched past.
+ */
+export function findAgentTranscript(
+  cwd: string,
+  sessionId: string,
+  dir?: string,
+  index: ProfileIndex = createProfileIndex(),
+): Transcript {
+  const primary = findTranscript(cwd, sessionId, dir)
+  if (dir !== undefined || primary.exists || sessionId === '') return primary
+  const found = index.lookup(sessionId)
+  return found === undefined ? primary : { path: found, exists: true }
+}
+
+function profileDirs(): string[] {
+  const root = path.dirname(profileDir('x', process.env, os.homedir()))
+  try {
+    return fs
+      .readdirSync(root, { withFileTypes: true })
+      .flatMap(e => (e.isDirectory() ? [path.join(root, e.name)] : []))
+      .sort()
+  } catch {
+    return []
+  }
+}
+
+function readFiles(folder: string): string[] {
+  try {
+    return fs.readdirSync(folder)
+  } catch {
+    return []
+  }
+}
+
 function readProjects(dir?: string): string[] {
   try {
     return fs
@@ -114,9 +186,17 @@ function readModel(file: string): RecentObservedValue<string> | undefined {
   }
 }
 
-/** One line for a roster: the path, or why there is not one. */
-export const transcriptLine = (cwd: string, sessionId: string, dir?: string): string => {
+/** One line for a roster: the path, or why there is not one. Passing an index adds the profile-dir search. */
+export const transcriptLine = (
+  cwd: string,
+  sessionId: string,
+  dir?: string,
+  index?: ProfileIndex,
+): string => {
   if (sessionId === '') return 'transcript: none recorded for this agent'
-  const found = findTranscript(cwd, sessionId, dir)
+  const found =
+    index === undefined
+      ? findTranscript(cwd, sessionId, dir)
+      : findAgentTranscript(cwd, sessionId, dir, index)
   return found.exists ? `transcript: ${found.path}` : `transcript: ${found.path} (not written yet)`
 }
