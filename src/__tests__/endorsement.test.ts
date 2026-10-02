@@ -791,7 +791,19 @@ describe('closing the authorization gaps a same-uid session could reach on its o
       ])
     })
 
-    it('drops a source other than watchdog, so a client cannot invent one', () => {
+    it('records a shepherd wake with meta.source (CC-436)', () => {
+      const { core, server, wire } = makeServer()
+      const human = wire()
+      const beta = wire()
+      register(server, beta.conn, 'beta')
+
+      server.handleMessage(human.conn, { t: 'human_send', to: 'beta', text: 'wake', source: 'shepherd' })
+
+      const sent = core.events.since(0, 100).filter(row => row.kind === 'message')
+      expect(sent.map(row => [row.body, row.meta.source])).toEqual([['wake', 'shepherd']])
+    })
+
+    it('drops a source other than watchdog or shepherd, so a client cannot invent one', () => {
       const { core, server, wire } = makeServer()
       const human = wire()
       const beta = wire()

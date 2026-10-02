@@ -435,15 +435,15 @@ Usage: agent-chat debug [options] [command]
 diagnostics: sessions, history, routing
 
 Options:
-  -h, --help           display help for command
+  -h, --help                     display help for command
 
 Commands:
-  ps                   list registered sessions
-  claims               who holds which worktrees and paths
-  history [n]          recent events from the log (default 30)
-  log [n]              recent routing decisions
-  send <to> <text...>  message a session as the human
-  help [command]       display help for command
+  ps                             list registered sessions
+  claims                         who holds which worktrees and paths
+  history [n]                    recent events from the log (default 30)
+  log [n]                        recent routing decisions
+  send [options] <to> <text...>  message a session as the human
+  help [command]                 display help for command
 
 === agent-chat debug ps
 Usage: agent-chat debug ps [options]
@@ -483,7 +483,8 @@ Usage: agent-chat debug send [options] <to> <text...>
 message a session as the human
 
 Options:
-  -h, --help  display help for command
+  --source <source>  record the send as made by this source (watchdog, shepherd) in the event log
+  -h, --help         display help for command
 
 === agent-chat doctor
 Usage: agent-chat doctor [options] [command]

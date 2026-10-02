@@ -132,7 +132,14 @@ function addDebugCommands(program: Command): void {
   addVerb(dbg, debugClaimsVerb)
   addVerb(dbg, debugHistoryVerb)
   addVerb(dbg, debugLogVerb)
-  dbg.command('send <to> <text...>').description('message a session as the human').action(debug.send)
+  dbg
+    .command('send <to> <text...>')
+    .description('message a session as the human')
+    .option(
+      '--source <source>',
+      'record the send as made by this source (watchdog, shepherd) in the event log',
+    )
+    .action(debug.send)
 }
 
 function addAgentCommands(program: Command): void {
