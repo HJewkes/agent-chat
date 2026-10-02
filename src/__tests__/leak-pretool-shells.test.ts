@@ -128,8 +128,18 @@ const COPIED_ONTO_STDIN = [
   `agent-chat gh-write -- pr comment 1 -F - <<'EOF' ${OPEN3} 0>&3\nclean\nEOF`,
 ]
 
+// CC-347: every shell runs gh here, behind a wrapper or option the guard used to stop at.
+const HIDDEN_BEHIND_OPTION = [
+  `W=nice; $W -n 5 gh ${FROM_FILE}`,
+  `W=env; $W -u X gh ${FROM_FILE}`,
+  `OPT=-u; env $OPT X gh ${FROM_FILE}`,
+  `exec -a name gh ${FROM_FILE}`,
+  `function f { gh ${FROM_FILE}; }; f`,
+]
+
 const DENIED = [
   ...COPIED_ONTO_STDIN,
+  ...HIDDEN_BEHIND_OPTION,
   `${COMMENT} <<'EOF' ${OPEN3} 0<&3\nclean\nEOF`,
   `${COMMENT} <<'EOF' ${OPEN3} <&3\nclean\nEOF`,
   `${COMMENT} <<'EOF' 0<> ../evil/pr.md\nclean\nEOF`,
@@ -221,6 +231,13 @@ describe.skipIf(SHELLS.length === 0)('the guard against real shells and a fake g
 
   it('sees a leak when there is one: every shell posts a pipe that a descriptor-3 heredoc does not replace', () => {
     for (const record of posted(`${EVIL} | ${CREATE} 3${HEREDOC}`)) expect(record).toContain(TERM)
+  })
+
+  it.each(HIDDEN_BEHIND_OPTION)('sees a leak when there is one: every shell posts %j', command => {
+    const records = posted(command)
+
+    expect(records).toHaveLength(SHELLS.length)
+    for (const record of records) expect(record).toContain(TERM)
   })
 
   it.skipIf(BASH === undefined).each(COPIED_ONTO_STDIN)(
