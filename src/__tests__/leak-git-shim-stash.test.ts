@@ -121,6 +121,7 @@ describe('the agent git shim exempting only an exact git stash push (TP-783)', (
     ['git stash push -m x', ''],
     ['git g', '!git stash push -m x'],
     ['git g', '!git -C sub stash push -m x'],
+    ['git g', '!git --no-pager stash push -m x'],
   ])('still runs %s (alias %s) and records the stash', (command, alias) => {
     const fx = fixture()
     fs.mkdirSync(path.join(fx.work, 'sub'))
