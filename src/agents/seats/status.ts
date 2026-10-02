@@ -18,9 +18,11 @@ import { localDate } from '../burndown/seat-tick.js'
 import { openEvents, type WatchdogDoc } from './io.js'
 import {
   advanceMeter,
+  dayAllowance,
   meterHistory,
   sameSpendDay,
   withinRun,
+  type DayAllowance,
   type MachineStop,
   type SpendMeter,
 } from './stops.js'
@@ -72,6 +74,8 @@ export interface BudgetStatus {
   /** Set when the day's spend is counted from the saved meter's first sample, which came after 07:00. */
   spendSince: string | null
   note: string | null
+  /** CC-404: the day stop the gate used and its inputs; `reset-aware` only for a seat with `pacing: reset-aware`. */
+  allowance: DayAllowance
 }
 
 export interface InboxReading {
@@ -306,6 +310,38 @@ function spendVerdict(
   }
 }
 
+function seatAllowance(
+  policy: Policy,
+  budget: SeatBudget,
+  read: BudgetRead | undefined,
+  reading: AccountReading | undefined,
+  nowMs: number,
+): DayAllowance {
+  const resetsAt = read?.found === true ? read.budget.rate_limits.seven_day?.resets_at : undefined
+  return dayAllowance({
+    pacing: policy.seat.pacing,
+    reserveSevenDay: budget.pool?.reserve_seven_day,
+    perDayPoints: [budget.pool?.per_day_points, budget.spend.per_day_points],
+    sevenDay: reading?.sevenDay,
+    resetsAt: resetsAt === undefined ? undefined : resetsAt * 1000,
+    nowMs,
+  })
+}
+
+/** A reset-aware allowance stands in for both day caps; every other stop is left as the charter sets it. */
+function pacedBudget(budget: SeatBudget, allowance: DayAllowance): SeatBudget {
+  if (allowance.source !== 'reset-aware' || budget.pool === undefined || allowance.points === null)
+    return budget
+  return {
+    pool: { ...budget.pool, per_day_points: undefined },
+    spend: {
+      ...budget.spend,
+      per_day_points: allowance.points,
+      per_day_label: "seat's reset-aware day allowance",
+    },
+  }
+}
+
 function budgetStatus(deps: StatusDeps, policy: Policy, seat: string, now: Date, plain: Plain): BudgetStatus {
   const budget = seatBudget(policy.charter, policy.seat)
   const name = budget.pool?.name
@@ -313,7 +349,9 @@ function budgetStatus(deps: StatusDeps, policy: Policy, seat: string, now: Date,
   const read =
     configDir === undefined ? undefined : deps.readBudget(expandHome(configDir, deps.homeDir), now.getTime())
   const reading = read === undefined ? undefined : accountReading(read, now.getTime())
-  const { staleOk, ...verdict } = spendVerdict(deps, budget, seat, reading, now, plain)
+  const allowance = seatAllowance(policy, budget, read, reading, now.getTime())
+  const paced = pacedBudget(budget, allowance)
+  const { staleOk, ...verdict } = spendVerdict(deps, paced, seat, reading, now, plain)
   const shown = staleOk ?? reading
   return {
     pool: name ?? null,
@@ -323,6 +361,7 @@ function budgetStatus(deps: StatusDeps, policy: Policy, seat: string, now: Date,
     stale: staleOk !== undefined || (read?.found === true ? read.stale : true),
     staleOk: staleOk !== undefined,
     ...verdict,
+    allowance,
   }
 }
 
@@ -405,6 +444,17 @@ export function poolReadingText(budget: BudgetStatus): string {
 
 const budgetLine = (budget: BudgetStatus): string => line('budget', poolReadingText(budget))
 
+/** Shown only for a reset-aware seat, so every other seat's page reads as before. */
+function pacingLines({ allowance: a }: BudgetStatus): string[] {
+  if (a.source !== 'reset-aware') return []
+  return [
+    line(
+      'pacing',
+      `reset-aware: ${a.points} points/day = (${a.stopLine} - ${a.sevenDay}) / ${a.daysToReset} days to reset at ${a.resetsAt}`,
+    ),
+  ]
+}
+
 function eligibleLines(eligible: EligibleStatus): string[] {
   if (eligible.error !== undefined) return [line('eligible', `unavailable: ${eligible.error}`)]
   const skipped = eligible.skipped === 0 ? [] : [`${eligible.skipped} malformed task(s) skipped`]
@@ -456,6 +506,7 @@ export function renderStatus(status: SeatStatus): string[] {
     budgetLine(budget),
     line('stop', status.machineStop?.reason ?? budget.stop ?? `none; ${budget.margin}`),
     ...(budget.note === null ? [] : [line('note', budget.note)]),
+    ...pacingLines(budget),
     machineLine(status.machine),
     inboxLine(status.inbox),
     ...eligibleLines(status.eligible),

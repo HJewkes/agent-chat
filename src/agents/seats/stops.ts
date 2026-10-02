@@ -76,6 +76,51 @@ export function meterHistory(starts: readonly MeterStart[], nowMs: number): Seve
   return chain
 }
 
+const DAY_MS = 24 * 3_600_000
+
+export interface DayAllowanceInput {
+  /** The seat file's `pacing:`; only `reset-aware` changes the day stop. */
+  pacing: unknown
+  reserveSevenDay: number | undefined
+  /** The day caps the charter and the seat file set, which stand when reset-aware pacing cannot apply. */
+  perDayPoints: readonly (number | undefined)[]
+  sevenDay: number | undefined
+  /** Epoch ms the pool's seven_day window resets. */
+  resetsAt: number | undefined
+  nowMs: number
+}
+
+/** The day stop and what it was computed from; `points` is null when no day cap applies. */
+export interface DayAllowance {
+  source: 'reset-aware' | 'per_day_points'
+  points: number | null
+  stopLine: number | null
+  sevenDay: number | null
+  daysToReset: number | null
+  resetsAt: string | null
+}
+
+const round2 = (n: number): number => Math.round(n * 100) / 100
+
+/** CC-404: a `reset-aware` seat may spend what is left above its stop line spread over the days to the reset. */
+export function dayAllowance(input: DayAllowanceInput): DayAllowance {
+  const { reserveSevenDay, sevenDay, resetsAt, nowMs } = input
+  const stopLine = reserveSevenDay === undefined ? null : 100 - reserveSevenDay
+  const daysToReset = resetsAt === undefined ? null : round2((resetsAt - nowMs) / DAY_MS)
+  const caps = input.perDayPoints.filter((cap): cap is number => cap !== undefined)
+  const inputs = {
+    stopLine,
+    sevenDay: sevenDay ?? null,
+    daysToReset,
+    resetsAt: resetsAt === undefined ? null : new Date(resetsAt).toISOString(),
+  }
+  const paced = input.pacing === 'reset-aware' && stopLine !== null && sevenDay !== undefined
+  if (!paced || resetsAt === undefined || resetsAt <= nowMs)
+    return { source: 'per_day_points', points: caps.length === 0 ? null : Math.min(...caps), ...inputs }
+  const points = Math.max(0, (stopLine - sevenDay) / ((resetsAt - nowMs) / DAY_MS))
+  return { source: 'reset-aware', points: round2(points), ...inputs }
+}
+
 /** A seat log line the seat wrote itself, as the charter's `HH:MM <text>`; the watchdog's and the broker's lines are not the seat's. */
 interface SeatLine {
   at: number

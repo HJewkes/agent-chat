@@ -3,6 +3,7 @@ import { RUN_CAP_MS, dayStart } from '../agents/burndown/budget-gate.js'
 import {
   RESTART_WINDOW_MAX_MS,
   advanceMeter,
+  dayAllowance,
   meterHistory,
   readSeatLog,
   restartWindow,
@@ -196,5 +197,34 @@ describe('restartWindow', () => {
 
   it('is closed with no messages', () => {
     expect(restartWindow([], now)).toBeUndefined()
+  })
+})
+
+describe('the reset-aware day allowance (CC-404)', () => {
+  const DAY = 24 * 3_600_000
+  const base = { pacing: 'reset-aware', reserveSevenDay: 25, perDayPoints: [12], sevenDay: 45, nowMs: at(10) }
+
+  it.each([
+    [0.5, 60],
+    [3, 10],
+    [6, 5],
+  ])('spreads the 30 points left under line 75 over %s days to reset as %s a day', (days, points) => {
+    const allowance = dayAllowance({ ...base, resetsAt: at(10) + days * DAY })
+    expect(allowance).toMatchObject({ source: 'reset-aware', points, stopLine: 75, daysToReset: days })
+  })
+
+  it('falls back to the smallest per_day_points with no resets_at', () => {
+    const allowance = dayAllowance({ ...base, perDayPoints: [12, undefined, 9], resetsAt: undefined })
+    expect(allowance).toMatchObject({ source: 'per_day_points', points: 9, daysToReset: null })
+  })
+
+  it('falls back for any pacing value other than reset-aware', () => {
+    const allowance = dayAllowance({ ...base, pacing: 'even', resetsAt: at(10) + 3 * DAY })
+    expect(allowance).toMatchObject({ source: 'per_day_points', points: 12 })
+  })
+
+  it('allows nothing once seven_day is past the line', () => {
+    const allowance = dayAllowance({ ...base, sevenDay: 80, resetsAt: at(10) + DAY })
+    expect(allowance).toMatchObject({ source: 'reset-aware', points: 0 })
   })
 })

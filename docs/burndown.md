@@ -82,6 +82,14 @@ with the spawns before it on its pool, and new dispatches then gate on all of th
 the pool has headroom for one, an in-flight claim's reviewer wins over a new dispatch. A
 spawn the charge closes is deferred, not stalled, and comes back next tick.
 
+A seat file may set `pacing: reset-aware` (CC-404). `seats status` then replaces both
+`per_day_points` caps with a day allowance of `(100 - reserve_seven_day - seven_day) /
+days_to_reset`, taking `days_to_reset` from the reading's `seven_day.resets_at`. With no
+`resets_at`, or one already past, the `per_day_points` caps stand. `seats status --json`
+reports the allowance and its inputs under `budget.allowance`, with `source` set to
+`reset-aware` or `per_day_points`. The tick and the seat watchdog still gate on
+`per_day_points`.
+
 A queued slice from before the switch to seats mode has no `seat`, and seats mode
 dispatches only its own seats' slices, so it stays queued. Let such slices finish before
 switching, or set `seat` and `namePrefix` on the queued claims in the ledger to hand them

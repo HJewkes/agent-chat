@@ -116,6 +116,8 @@ export const chargesOn = (pool: string, charged: readonly string[]): number =>
 export interface SpendCaps {
   per_run_points?: number | undefined
   per_day_points?: number | undefined
+  /** How a stop names `per_day_points` when it is not the seat file's own figure. */
+  per_day_label?: string | undefined
 }
 
 export interface SevenDaySample {
@@ -220,7 +222,7 @@ function spendStop(input: PoolGateInput, now: SevenDaySample): string | undefine
   }
   const caps = [
     { cap: pool?.per_day_points, whose: `pool ${pool?.name ?? '?'}'s per_day_points` },
-    { cap: spend.per_day_points, whose: "seat's per_day_points" },
+    { cap: spend.per_day_points, whose: spend.per_day_label ?? "seat's per_day_points" },
   ].filter((c): c is { cap: number; whose: string } => c.cap !== undefined)
   if (caps.length === 0) return undefined
   // seven_day points are pool-wide, so both caps count spend by the owner and sibling seats too.
