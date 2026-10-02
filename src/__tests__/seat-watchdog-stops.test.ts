@@ -202,15 +202,39 @@ describe('restartWindow', () => {
 
 describe('the reset-aware day allowance (CC-404)', () => {
   const DAY = 24 * 3_600_000
-  const base = { pacing: 'reset-aware', reserveSevenDay: 25, perDayPoints: [12], sevenDay: 45, nowMs: at(10) }
+  const base = {
+    pacing: 'reset-aware',
+    reserveSevenDay: 25,
+    perDayPoints: [12],
+    sevenDay: 55,
+    daySpend: 10,
+    nowMs: at(10),
+  }
 
   it.each([
     [0.5, 60],
     [3, 10],
     [6, 5],
-  ])('spreads the 30 points left under line 75 over %s days to reset as %s a day', (days, points) => {
+  ])('spreads the 30 points left under line 75 at the day start over %s days as %s a day', (days, points) => {
     const allowance = dayAllowance({ ...base, resetsAt: at(10) + days * DAY })
-    expect(allowance).toMatchObject({ source: 'reset-aware', points, stopLine: 75, daysToReset: days })
+    expect(allowance).toMatchObject({
+      source: 'reset-aware',
+      points,
+      stopLine: 75,
+      dayStartSevenDay: 45,
+      basis: 'day-start',
+      daysToReset: days,
+    })
+  })
+
+  it("counts from the day start, so the day's own spend does not shrink its allowance", () => {
+    const allowance = dayAllowance({ ...base, sevenDay: 60, daySpend: 10, resetsAt: at(10) + 0.5 * DAY })
+    expect(allowance).toMatchObject({ points: 50, sevenDay: 60, dayStartSevenDay: 50, basis: 'day-start' })
+  })
+
+  it('spreads from the current seven_day when the day spend is unknown', () => {
+    const allowance = dayAllowance({ ...base, daySpend: undefined, resetsAt: at(10) + 2 * DAY })
+    expect(allowance).toMatchObject({ points: 10, dayStartSevenDay: 55, basis: 'current' })
   })
 
   it('falls back to the smallest per_day_points with no resets_at', () => {
@@ -223,8 +247,8 @@ describe('the reset-aware day allowance (CC-404)', () => {
     expect(allowance).toMatchObject({ source: 'per_day_points', points: 12 })
   })
 
-  it('allows nothing once seven_day is past the line', () => {
-    const allowance = dayAllowance({ ...base, sevenDay: 80, resetsAt: at(10) + DAY })
+  it('allows nothing once seven_day at the day start is past the line', () => {
+    const allowance = dayAllowance({ ...base, sevenDay: 90, resetsAt: at(10) + DAY })
     expect(allowance).toMatchObject({ source: 'reset-aware', points: 0 })
   })
 })

@@ -6,9 +6,10 @@ import {
   dayStart,
   gatePool,
   runStartAt,
+  spendSince,
   standInReading,
+  type SevenDaySample,
   type AccountReading,
-  type PoolGateResult,
 } from '../burndown/budget-gate.js'
 import { loadPolicy, seatBudget, type Policy } from '../burndown/policy.js'
 import type { ScoredPlan } from '../burndown/score-render.js'
@@ -222,17 +223,18 @@ function savedMeters(doc: WatchdogDoc, seat: string, pool: string | undefined, n
   return { run: usable(doc.seats[seat]?.run), day: usable(doc.pools[pool]), lastGood }
 }
 
+interface SeatHistory {
+  history: SevenDaySample[]
+  runStart: number
+  day: SpendMeter | undefined
+}
+
 /**
- * `gatePool` over the watchdog's saved run and day meters, advanced to this reading as its next pass would.
+ * The watchdog's saved run and day meters, advanced to this reading as its next pass would, as `gatePool` history.
  * A meter the watchdog never saved stays absent, so `gatePool` stops a cap that needs it as unknown.
  * A run meter past 12 hours counts from its last reading, because this read saves no restart.
  */
-function seatGate(
-  { pool, spend }: SeatBudget,
-  saved: SavedMeters,
-  reading: AccountReading | undefined,
-  now: Date,
-): { gate: PoolGateResult; day: SpendMeter | undefined } {
+function seatHistory(saved: SavedMeters, reading: AccountReading | undefined, now: Date): SeatHistory {
   const nowMs = now.getTime()
   const advance = (meter: SpendMeter | undefined, current: typeof withinRun): SpendMeter | undefined =>
     meter === undefined ? undefined : advanceMeter(meter, reading?.sevenDay, nowMs, current)
@@ -243,23 +245,26 @@ function seatGate(
     { at: runStart, meter: run },
     { at: dayStart(now), meter: day },
   ]
-  const history = meterHistory(starts, nowMs)
-  const input = {
-    pool,
-    spend,
-    reading,
-    lastGood: saved.lastGood,
-    history,
-    runStartAt: runStart,
-    ctx: { now },
-  }
-  return { gate: gatePool(input), day }
+  return { history: meterHistory(starts, nowMs), runStart, day }
+}
+
+/** The day's spend as the gate counts it, so the allowance and the day stop agree. */
+function daySpend(
+  { history }: SeatHistory,
+  reading: AccountReading | undefined,
+  now: Date,
+): number | undefined {
+  if (reading?.sevenDay === undefined) return undefined
+  return spendSince(history, dayStart(now), { at: now.getTime(), sevenDay: reading.sevenDay })
 }
 
 type Verdict = Pick<BudgetStatus, 'stop' | 'margin' | 'sonnetOnly' | 'spendSince' | 'note'> & {
   /** CC-409: the reading the gate opened on when the last good reading stood in for a missing window. */
   staleOk?: AccountReading
 }
+
+/** The seat's day allowance given the day's spend so far, which only the saved meters can tell. */
+type Pace = (daySpend: number | undefined) => DayAllowance
 
 const stopped = (stop: string): Verdict => ({
   stop,
@@ -284,48 +289,56 @@ function lateDayStart(day: SpendMeter | undefined, now: Date): Pick<Verdict, 'sp
 function spendVerdict(
   deps: StatusDeps,
   budget: SeatBudget,
+  pace: Pace,
   seat: string,
   reading: AccountReading | undefined,
   now: Date,
   plain: Plain,
-): Verdict {
+): Verdict & { allowance: DayAllowance } {
   const name = budget.pool?.name
   let doc: WatchdogDoc
   try {
     doc = deps.loadDoc()
   } catch (err) {
-    return stopped(`BUDGET-PAUSE pool ${name ?? 'unknown'}: ${plain(err)}, so spend is unknown`)
+    const why = `BUDGET-PAUSE pool ${name ?? 'unknown'}: ${plain(err)}, so spend is unknown`
+    return { ...stopped(why), allowance: pace(undefined) }
   }
   const saved = savedMeters(doc, seat, name, now.getTime())
-  const { gate, day } = seatGate(budget, saved, reading, now)
-  if (!gate.open) return { ...stopped(gate.reason), ...lateDayStart(day, now) }
+  const meters = seatHistory(saved, reading, now)
+  const allowance = pace(daySpend(meters, reading, now))
+  const gate = gatePool({
+    ...pacedBudget(budget, allowance),
+    reading,
+    lastGood: saved.lastGood,
+    history: meters.history,
+    runStartAt: meters.runStart,
+    ctx: { now },
+  })
+  const late = lateDayStart(meters.day, now)
+  if (!gate.open) return { ...stopped(gate.reason), ...late, allowance }
   const shown = gate.staleOk === true ? standInReading(reading, saved.lastGood) : undefined
   const staleOk = shown === undefined ? {} : { staleOk: shown }
-  return {
-    stop: null,
-    margin: gate.reason,
-    sonnetOnly: gate.sonnetOnly,
-    ...lateDayStart(day, now),
-    ...staleOk,
-  }
+  return { stop: null, margin: gate.reason, sonnetOnly: gate.sonnetOnly, ...late, ...staleOk, allowance }
 }
 
-function seatAllowance(
+function seatPace(
   policy: Policy,
   budget: SeatBudget,
   read: BudgetRead | undefined,
   reading: AccountReading | undefined,
   nowMs: number,
-): DayAllowance {
+): Pace {
   const resetsAt = read?.found === true ? read.budget.rate_limits.seven_day?.resets_at : undefined
-  return dayAllowance({
-    pacing: policy.seat.pacing,
-    reserveSevenDay: budget.pool?.reserve_seven_day,
-    perDayPoints: [budget.pool?.per_day_points, budget.spend.per_day_points],
-    sevenDay: reading?.sevenDay,
-    resetsAt: resetsAt === undefined ? undefined : resetsAt * 1000,
-    nowMs,
-  })
+  return daySpend =>
+    dayAllowance({
+      pacing: policy.seat.pacing,
+      reserveSevenDay: budget.pool?.reserve_seven_day,
+      perDayPoints: [budget.pool?.per_day_points, budget.spend.per_day_points],
+      sevenDay: reading?.sevenDay,
+      daySpend,
+      resetsAt: resetsAt === undefined ? undefined : resetsAt * 1000,
+      nowMs,
+    })
 }
 
 /** A reset-aware allowance stands in for both day caps; every other stop is left as the charter sets it. */
@@ -349,9 +362,8 @@ function budgetStatus(deps: StatusDeps, policy: Policy, seat: string, now: Date,
   const read =
     configDir === undefined ? undefined : deps.readBudget(expandHome(configDir, deps.homeDir), now.getTime())
   const reading = read === undefined ? undefined : accountReading(read, now.getTime())
-  const allowance = seatAllowance(policy, budget, read, reading, now.getTime())
-  const paced = pacedBudget(budget, allowance)
-  const { staleOk, ...verdict } = spendVerdict(deps, paced, seat, reading, now, plain)
+  const pace = seatPace(policy, budget, read, reading, now.getTime())
+  const { staleOk, ...verdict } = spendVerdict(deps, budget, pace, seat, reading, now, plain)
   const shown = staleOk ?? reading
   return {
     pool: name ?? null,
@@ -361,7 +373,6 @@ function budgetStatus(deps: StatusDeps, policy: Policy, seat: string, now: Date,
     stale: staleOk !== undefined || (read?.found === true ? read.stale : true),
     staleOk: staleOk !== undefined,
     ...verdict,
-    allowance,
   }
 }
 
@@ -450,7 +461,7 @@ function pacingLines({ allowance: a }: BudgetStatus): string[] {
   return [
     line(
       'pacing',
-      `reset-aware: ${a.points} points/day = (${a.stopLine} - ${a.sevenDay}) / ${a.daysToReset} days to reset at ${a.resetsAt}`,
+      `reset-aware: ${a.points} points/day = (${a.stopLine} - ${a.dayStartSevenDay} at ${a.basis === 'day-start' ? '07:00' : 'now'}) / ${a.daysToReset} days to reset at ${a.resetsAt}`,
     ),
   ]
 }

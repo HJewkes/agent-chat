@@ -700,17 +700,18 @@ describe('reset-aware day pacing (CC-404)', () => {
   const PACED = 'pacing: reset-aware'
   const stopOf = (why: string): string => `BUDGET-PAUSE pool ${POOL}: ${why}`
   const resetIn = (days: number): number => NOW.getTime() + days * DAY_MS
-  const pacedAt = (days: number): void => {
+  /** seven_day 41 now and `dayStart` at 07:00, so the day has spent 41 - `dayStart`. */
+  const pacedAt = (days: number, dayStartSevenDay = 35, sevenDay = 41): void => {
     writeAutonomy({ seatLines: PACED })
-    writeReading(12, 41, 30, NOW, resetIn(days))
-    doc.pools[POOL] = { since: at(7), last: 30, spent: 0 }
+    writeReading(12, sevenDay, 30, NOW, resetIn(days))
+    doc.pools[POOL] = { since: at(7), last: dayStartSevenDay, spent: 0 }
   }
 
   it.each([
-    [0.5, 48],
-    [3, 8],
-    [6, 4],
-  ])('allows (65 - 41) / %s days to reset = %s points a day', async (days, points) => {
+    [0.5, 60],
+    [3, 10],
+    [6, 5],
+  ])('allows (65 - 35 at 07:00) / %s days to reset = %s points a day', async (days, points) => {
     pacedAt(days)
 
     const { budget } = await status()
@@ -720,13 +721,23 @@ describe('reset-aware day pacing (CC-404)', () => {
       points,
       stopLine: 65,
       sevenDay: 41,
+      dayStartSevenDay: 35,
+      basis: 'day-start',
       daysToReset: days,
       resetsAt: new Date(resetIn(days)).toISOString(),
     })
   })
 
+  it('spreads the headroom at the day start, not what is left after the day spent 10', async () => {
+    pacedAt(0.5, 40, 50)
+
+    const { budget } = await status()
+
+    expect(budget.allowance).toMatchObject({ points: 50, sevenDay: 50, dayStartSevenDay: 40 })
+  })
+
   it('opens on day spend over per_day_points when the reset is half a day away', async () => {
-    pacedAt(0.5)
+    pacedAt(0.5, 30)
 
     const { budget } = await status()
 
@@ -734,13 +745,22 @@ describe('reset-aware day pacing (CC-404)', () => {
   })
 
   it('stops on day spend at or above an allowance smaller than per_day_points', async () => {
-    pacedAt(3)
+    pacedAt(6)
 
     const { budget } = await status()
 
     expect(budget.stop).toBe(
-      stopOf("day spend 11 points since 07:00 at or above the seat's reset-aware day allowance 8"),
+      stopOf("day spend 6 points since 07:00 at or above the seat's reset-aware day allowance 5"),
     )
+  })
+
+  it('spreads from the current seven_day when the watchdog saved no day meter', async () => {
+    pacedAt(3)
+    doc.pools = {}
+
+    const { budget } = await status()
+
+    expect(budget.allowance).toMatchObject({ points: 8, dayStartSevenDay: 41, basis: 'current' })
   })
 
   it('falls back to per_day_points when the reading carries no resets_at', async () => {
@@ -783,7 +803,7 @@ describe('reset-aware day pacing (CC-404)', () => {
     const plain = await statusReport(deps(), SEAT, false)
 
     expect(paced.lines).toContain(
-      `pacing        reset-aware: 4 points/day = (65 - 41) / 6 days to reset at ${new Date(resetIn(6)).toISOString()}`,
+      `pacing        reset-aware: 5 points/day = (65 - 35 at 07:00) / 6 days to reset at ${new Date(resetIn(6)).toISOString()}`,
     )
     expect(plain.lines.some(l => l.startsWith('pacing'))).toBe(false)
   })

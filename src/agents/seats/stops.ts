@@ -85,6 +85,8 @@ export interface DayAllowanceInput {
   /** The day caps the charter and the seat file set, which stand when reset-aware pacing cannot apply. */
   perDayPoints: readonly (number | undefined)[]
   sevenDay: number | undefined
+  /** Seven_day points spent since the spend day started; undefined when no reading at or before 07:00 is known. */
+  daySpend: number | undefined
   /** Epoch ms the pool's seven_day window resets. */
   resetsAt: number | undefined
   nowMs: number
@@ -96,6 +98,9 @@ export interface DayAllowance {
   points: number | null
   stopLine: number | null
   sevenDay: number | null
+  /** The seven_day the allowance spreads from: at the day start, or the current one when that is unknown. */
+  dayStartSevenDay: number | null
+  basis: 'day-start' | 'current'
   daysToReset: number | null
   resetsAt: string | null
 }
@@ -104,20 +109,26 @@ const round2 = (n: number): number => Math.round(n * 100) / 100
 
 /** CC-404: a `reset-aware` seat may spend what is left above its stop line spread over the days to the reset. */
 export function dayAllowance(input: DayAllowanceInput): DayAllowance {
-  const { reserveSevenDay, sevenDay, resetsAt, nowMs } = input
+  const { reserveSevenDay, sevenDay, daySpend, resetsAt, nowMs } = input
   const stopLine = reserveSevenDay === undefined ? null : 100 - reserveSevenDay
   const daysToReset = resetsAt === undefined ? null : round2((resetsAt - nowMs) / DAY_MS)
   const caps = input.perDayPoints.filter((cap): cap is number => cap !== undefined)
+  const basis: DayAllowance['basis'] =
+    sevenDay !== undefined && daySpend !== undefined ? 'day-start' : 'current'
+  const dayStartSevenDay = sevenDay === undefined ? undefined : sevenDay - (daySpend ?? 0)
   const inputs = {
     stopLine,
     sevenDay: sevenDay ?? null,
+    dayStartSevenDay: dayStartSevenDay ?? null,
+    basis,
     daysToReset,
     resetsAt: resetsAt === undefined ? null : new Date(resetsAt).toISOString(),
   }
-  const paced = input.pacing === 'reset-aware' && stopLine !== null && sevenDay !== undefined
+  const paced = input.pacing === 'reset-aware' && stopLine !== null && dayStartSevenDay !== undefined
   if (!paced || resetsAt === undefined || resetsAt <= nowMs)
     return { source: 'per_day_points', points: caps.length === 0 ? null : Math.min(...caps), ...inputs }
-  const points = Math.max(0, (stopLine - sevenDay) / ((resetsAt - nowMs) / DAY_MS))
+  // From the day start, not now: today's spend would otherwise shrink its own allowance.
+  const points = Math.max(0, (stopLine - dayStartSevenDay) / ((resetsAt - nowMs) / DAY_MS))
   return { source: 'reset-aware', points: round2(points), ...inputs }
 }
 

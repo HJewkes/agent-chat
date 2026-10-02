@@ -68,6 +68,8 @@ const STATUS: SeatStatus = {
       points: null,
       stopLine: 65,
       sevenDay: 41,
+      dayStartSevenDay: 41,
+      basis: 'current',
       daysToReset: null,
       resetsAt: null,
     },

@@ -167,7 +167,7 @@ export function pointsSpent(samples: readonly SevenDaySample[]): number {
 }
 
 /** Spend since `start`, from the latest reading at or before it to `now`; undefined with no such reading. */
-function spendSince(
+export function spendSince(
   history: readonly SevenDaySample[],
   start: number,
   now: SevenDaySample,

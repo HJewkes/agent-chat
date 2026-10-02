@@ -83,11 +83,15 @@ the pool has headroom for one, an in-flight claim's reviewer wins over a new dis
 spawn the charge closes is deferred, not stalled, and comes back next tick.
 
 A seat file may set `pacing: reset-aware` (CC-404). `seats status` then replaces both
-`per_day_points` caps with a day allowance of `(100 - reserve_seven_day - seven_day) /
-days_to_reset`, taking `days_to_reset` from the reading's `seven_day.resets_at`. With no
-`resets_at`, or one already past, the `per_day_points` caps stand. `seats status --json`
-reports the allowance and its inputs under `budget.allowance`, with `source` set to
-`reset-aware` or `per_day_points`. The tick and the seat watchdog still gate on
+`per_day_points` caps with a day allowance of `(100 - reserve_seven_day -
+day_start_seven_day) / days_to_reset`, taking `days_to_reset` from the reading's
+`seven_day.resets_at`. `day_start_seven_day` is the current `seven_day` less the day's
+spend since 07:00 from the watchdog's day meter (`basis: "day-start"`). With no such
+meter it is the current `seven_day` (`basis: "current"`). Counting from the day start
+keeps the day's own spend from shrinking its allowance. With no `resets_at`, or one
+already past, the `per_day_points` caps stand. `seats status --json` reports the
+allowance and its inputs under `budget.allowance`, with `source` set to `reset-aware` or
+`per_day_points`. The tick and the seat watchdog still gate on
 `per_day_points`.
 
 A queued slice from before the switch to seats mode has no `seat`, and seats mode
