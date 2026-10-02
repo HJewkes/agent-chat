@@ -311,13 +311,19 @@ describe('the paced caps every gate hands gatePool (CC-404)', () => {
     })
   })
 
+  it('leaves the pool day cap on the pool on day 6, when gatePool lifts the seat caps (CC-474)', () => {
+    const paced = pacedCaps({ ...input, resetsAt: now.getTime() + 2 * DAY - 60_000 })
+    expect(paced.pool).toBe(input.pool)
+    expect(paced.spend).toBe(input.spend)
+  })
+
   it('returns the caps unchanged for a seat without the key', () => {
     const paced = pacedCaps({ ...input, pacing: undefined })
     expect(paced.pool).toBe(input.pool)
     expect(paced.spend).toBe(input.spend)
   })
 
-  it('opens the watchdog gate past per_day_points when the reset is half a day from 07:00', () => {
+  it("holds the watchdog gate at the pool's per_day_points on day 7, half a day from the reset (CC-474)", () => {
     const verdict = poolBudget({
       pool: {
         name: 'agents',
@@ -327,13 +333,14 @@ describe('the paced caps every gate hands gatePool (CC-404)', () => {
         perDayPoints: 12,
       },
       spend: { perDayPoints: 9 },
-      reading: { ageSeconds: 0, fiveHour: 5, sevenDay: 52 },
+      reading: { ageSeconds: 0, fiveHour: 5, sevenDay: 52, sevenDayResetsAt: at(7) + 0.5 * DAY },
       history: input.history,
       runStartAt: at(9),
       now,
       pacing: 'reset-aware',
       resetsAt: at(7) + 0.5 * DAY,
     })
-    expect(verdict).toMatchObject({ open: true })
+    expect(verdict.open).toBe(false)
+    expect(verdict.reason).toContain("at or above the pool agents's per_day_points 12")
   })
 })

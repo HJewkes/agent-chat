@@ -181,6 +181,9 @@ export function pacedCaps(input: PacingInput): PacedCaps {
   })
   if (allowance.source !== 'reset-aware' || pool === undefined || allowance.points === null)
     return { pool, spend, allowance }
+  // CC-474: gatePool lifts the seat's caps on days 6-7, so the pool's own day cap must stay on the pool.
+  if (sevenDayLine(pool.reserve_seven_day ?? 0, input.resetsAt, nowMs).capsLifted)
+    return { pool, spend, allowance }
   return {
     pool: { ...pool, per_day_points: undefined },
     spend: { ...spend, per_day_points: allowance.points, per_day_label: "seat's reset-aware day allowance" },

@@ -97,6 +97,23 @@ describe('the seat spawn gate', () => {
     expect(daySix.reason).toContain('seven_day 50% vs line 92.86% (day 6 of 7, seat caps lifted)')
   })
 
+  it("keeps the pool's per_day_points for a reset-aware seat on day 6", () => {
+    const resetsAt = NOON.getTime() + 2 * DAY - MIN
+    const verdict = seatSpawnGate(
+      input({
+        seat: { ...SEAT, pacing: 'reset-aware' },
+        resetsAt,
+        reading: { sevenDay: 56, fiveHour: 20, ageSeconds: 30, sevenDayResetsAt: resetsAt },
+        model: 'sonnet',
+      }),
+    )
+
+    expect(verdict.allow).toBe(false)
+    expect(verdict.reason).toContain(
+      "day spend 16 points since 07:00 at or above the pool agents's per_day_points 15",
+    )
+  })
+
   it('keeps the R line on day 7 while the seat caps are lifted', () => {
     const reading = {
       sevenDay: 97,
