@@ -5,6 +5,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { parseRequest } from '../gh-shim/argv.js'
 import { writeGhShim } from '../gh-shim/install.js'
+import { expectSpawned } from './helpers/spawn-result.js'
 
 /**
  * CC-395: the `gh` on an agent's PATH answers read-only commands from REST.
@@ -102,7 +103,7 @@ afterEach(() => {
 
 function gh(fixtures: Record<string, unknown>, ...args: string[]) {
   fs.writeFileSync(fixturesFile, JSON.stringify(fixtures))
-  return spawnSync('gh', args, { cwd: dir, env, encoding: 'utf8' })
+  return expectSpawned(spawnSync('gh', args, { cwd: dir, env, encoding: 'utf8' }), `gh ${args.join(' ')}`)
 }
 
 const calls = (): string[][] =>
