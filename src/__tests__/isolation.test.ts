@@ -493,6 +493,8 @@ describe('worktree branch base (CC-151)', () => {
 describe('concurrent worktree adds (CC-224)', () => {
   const runGit = promisify(execFile)
   const realAdd: GitRunner = async (args, cwd) => (await runGit('git', [...args], { cwd })).stdout.trim()
+  /** Finishes before boundedAdd arms its timer, so a slow runner cannot turn the add into a timeout. */
+  const addBeforeTimer = (args: readonly string[], cwd: string): string => git([...args], cwd)
 
   /** Records when each add starts and ends; the delay widens any overlap so it cannot slip past. */
   function recordingAdd(): { run: GitRunner; spans: { start: number; end: number }[] } {
@@ -543,8 +545,8 @@ describe('concurrent worktree adds (CC-224)', () => {
   it('rejects an add that never resolves, naming the repo and timeout, and lets the next add run', async () => {
     const repo = makeRepo()
     let calls = 0
-    const hangFirst: GitRunner = (args, cwd) =>
-      calls++ === 0 ? new Promise<string>(() => {}) : realAdd(args, cwd)
+    const hangFirst: GitRunner = async (args, cwd) =>
+      calls++ === 0 ? new Promise<string>(() => {}) : addBeforeTimer(args, cwd)
     const strategy = createWorktreeStrategy({ budget: 10, addTimeoutMs: 200, runWorktreeAdd: hangFirst })
 
     const first = strategy.allocate(ctxFor(repo, { agentName: 'w1' }))
@@ -560,8 +562,8 @@ describe('concurrent worktree adds (CC-224)', () => {
 
   it('removes the half-created directory and registration after a killed add', async () => {
     const repo = makeRepo()
-    const halfWritten: GitRunner = async (args, cwd) => {
-      await realAdd(args, cwd)
+    const halfWritten: GitRunner = (args, cwd) => {
+      addBeforeTimer(args, cwd)
       return new Promise<string>(() => {})
     }
     const strategy = createWorktreeStrategy({ addTimeoutMs: 300, runWorktreeAdd: halfWritten })
@@ -601,15 +603,18 @@ describe('concurrent worktree adds (CC-224)', () => {
     await expect(strategy.allocate(ctxFor(repo, { agentName: 'w1' }))).rejects.toThrow('timed out')
 
     await vi.waitFor(() => expect(fs.existsSync(target)).toBe(false), { timeout: 5_000 })
-    await vi.waitFor(() => expect(git(['worktree', 'list', '--porcelain'], repo)).not.toContain('w1'), {
-      timeout: 5_000,
-    })
+    // The repo's own mkdtemp suffix can contain "w1", so match the worktree path.
+    await vi.waitFor(
+      () => expect(git(['worktree', 'list', '--porcelain'], repo)).not.toContain('.worktrees/w1'),
+      { timeout: 5_000 },
+    )
   })
 
   it('kills the filter a timed-out add spawned, and cleans up only after it is gone', async () => {
     const repo = makeRepo()
     const target = path.join(repo, '.worktrees', 'w1')
-    const marker = 'sleep 61'
+    // Unique per run, so pgrep never sees a filter from a suite running concurrently on the machine.
+    const marker = `sleep 61.${process.pid}${Date.now() % 1_000}`
     git(['config', 'filter.hang.smudge', `sh -c '${marker} & wait'`], repo)
     fs.writeFileSync(path.join(repo, '.gitattributes'), 'README.md filter=hang\n')
     git(['add', '.gitattributes'], repo)
