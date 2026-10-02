@@ -125,3 +125,37 @@ export function restartWindow(messages: OwnerMessage[], nowMs: number): string |
   if (sorted.some(m => m.ts >= announced.ts && DONE.test(m.body))) return undefined
   return `restart window open since ${new Date(announced.ts).toISOString().slice(11, 16)}Z`
 }
+
+export const DEFAULT_MACHINE_STOP_MEMORY_FREE_PERCENT = 20
+export const DEFAULT_MACHINE_STOP_LOAD5 = 28
+
+export interface MachineStopLimits {
+  /** Stop below this share of memory free. */
+  memoryFreePercent: number
+  /** Stop above this five-minute load average. */
+  load5: number
+}
+
+/** A reading that could not be taken is null, and a null reading never stops a seat. */
+export interface MachineStopReadings {
+  memoryFreePercent: number | null
+  load5: number | null
+}
+
+export interface MachineStop extends MachineStopReadings {
+  /** The breach in words, with the readings that caused it. */
+  reason: string
+}
+
+/** CC-431: a machine under memory or load pressure holds every seat; each breach names its reading. */
+export function machineStop(readings: MachineStopReadings, limits: MachineStopLimits): MachineStop | null {
+  const { memoryFreePercent, load5 } = readings
+  const breaches = [
+    ...(memoryFreePercent !== null && memoryFreePercent < limits.memoryFreePercent
+      ? [`memory ${memoryFreePercent}% free (floor ${limits.memoryFreePercent}%)`]
+      : []),
+    ...(load5 !== null && load5 > limits.load5 ? [`load5 ${load5} (limit ${limits.load5})`] : []),
+  ]
+  if (breaches.length === 0) return null
+  return { memoryFreePercent, load5, reason: `machine under pressure: ${breaches.join(', ')}` }
+}
