@@ -1,7 +1,11 @@
 import { z } from 'zod'
 import { requiredString } from '../../args.js'
 import type { ServerMessage } from '../../protocol.js'
+import { endorseCommand } from '../../endorse-command.js'
 import { defineTool } from '../command.js'
+
+/** Longest text the owner can check in a remote approval prompt (CC-369.4). */
+export const MAX_ENDORSE_TEXT = 500
 
 export const chatEndorse = defineTool({
   name: 'chat_endorse',
@@ -28,15 +32,22 @@ export const chatEndorse = defineTool({
   async run({ to, text }, ctx) {
     if (!ctx.registeredName)
       return 'Call chat_register before composing an endorsement, so the recipient knows who you are.'
+    if (text.length > MAX_ENDORSE_TEXT)
+      return (
+        `Not queued: the text is ${text.length} characters and the limit is ${MAX_ENDORSE_TEXT}. ` +
+        'Shorten it so your human can read all of it before approving.'
+      )
     const res = (await ctx.broker.request({ t: 'endorse', to, text }, 'send_result')) as Extract<
       ServerMessage,
       { t: 'send_result' }
     >
     if (!res.ok) return `Not queued: ${res.reason}`
+    const command = endorseCommand(res.msgId, to, text)
     return (
       `Waiting on your human (msg_id ${res.msgId}). NOTHING has been sent to "${to}" and nothing will ` +
       'be unless they approve it, at which point the broker delivers exactly the text above. Carry ' +
-      'on with other work; do not send it yourself in the meantime.'
+      'on with other work; do not send it yourself in the meantime.' +
+      (command ? `\nTo approve, your human can run:\n${command}` : '')
     )
   },
 })

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -7,6 +8,10 @@ import { BrokerCore, ENDORSE_MAX_AGE_MS, type Conn, type EndorseApproval } from 
 import { SocketServer } from '../broker/socket.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
+import { invokeCommand } from '@titan-design/registry'
+import type { BrokerClient } from '../client/broker-client.js'
+import type { ToolContext } from '../server/command.js'
+import { chatEndorse, MAX_ENDORSE_TEXT } from '../server/commands/chat-endorse.js'
 import { HUMAN, type ClientMessage, type DeliveredMessage, type ServerMessage } from '../protocol.js'
 
 /**
@@ -883,5 +888,53 @@ describe('closing the authorization gaps a same-uid session could reach on its o
 
       expect((human.frames.at(-1) as Extract<ServerMessage, { t: 'answer_result' }>).ok).toBe(true)
     })
+  })
+})
+
+describe('chat_endorse result', () => {
+  const answering = (sent: ClientMessage[]): ToolContext => ({
+    warnings: [],
+    format: 'human',
+    broker: {
+      request: async (message: ClientMessage) => {
+        sent.push(message)
+        return { t: 'send_result', ok: true, msgId: 'e1' }
+      },
+    } as unknown as BrokerClient,
+    registeredName: 'alice',
+    session: { name: () => 'alice', fixed: false, adopt: () => undefined },
+  })
+
+  it.each([
+    ['single quotes', "it's the owner's call"],
+    ['newlines', 'line one\n\nline three'],
+    ['dollar and backticks', 'cost $HOME `whoami` $(id) "q" \\n'],
+  ])('returns a command whose shell-parsed --text equals the stored bytes (%s)', async (_label, text) => {
+    const { envelope } = await invokeCommand(chatEndorse, { to: 'bob', text }, answering([]))
+    const result = (envelope as { ok: true; data: string }).data
+    const command = result.slice(result.indexOf('agent-chat endorse '))
+
+    const parsed = execFileSync(
+      'sh',
+      ['-c', `show() { printf '%s' "$6"; }; ${command.replace(/^agent-chat/, 'show')}`],
+      {
+        encoding: 'utf8',
+      },
+    )
+
+    expect(parsed).toBe(text)
+  })
+
+  it('refuses text over the limit with a shorten hint and sends no frame', async () => {
+    const sent: ClientMessage[] = []
+
+    const { envelope } = await invokeCommand(
+      chatEndorse,
+      { to: 'bob', text: 'x'.repeat(MAX_ENDORSE_TEXT + 1) },
+      answering(sent),
+    )
+
+    expect((envelope as { data: string }).data).toMatch(/limit is 500\. Shorten it/)
+    expect(sent).toEqual([])
   })
 })

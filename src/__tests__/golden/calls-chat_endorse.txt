@@ -13,7 +13,7 @@ frame: {"t":"endorse","to":"bob","text":"ship it"}
 [
   {
     "type": "text",
-    "text": "Waiting on your human (msg_id m-1). NOTHING has been sent to \"bob\" and nothing will be unless they approve it, at which point the broker delivers exactly the text above. Carry on with other work; do not send it yourself in the meantime."
+    "text": "Waiting on your human (msg_id m-1). NOTHING has been sent to \"bob\" and nothing will be unless they approve it, at which point the broker delivers exactly the text above. Carry on with other work; do not send it yourself in the meantime.\nTo approve, your human can run:\nagent-chat endorse m-1 --to bob --text 'ship it'"
   }
 ]
 

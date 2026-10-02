@@ -57,3 +57,12 @@ describe('worker profiles', () => {
     },
   )
 })
+
+describe('builtin profiles that grant Bash', () => {
+  it.each(BUILTIN_PROFILES.filter(p => (p.allowedTools ?? []).includes('Bash')).map(p => [p.name, p]))(
+    '%s denies self-endorsement (CC-421)',
+    (_name, profile) => {
+      expect((profile as AgentProfile).disallowedTools).toContain('Bash(agent-chat endorse:*)')
+    },
+  )
+})
