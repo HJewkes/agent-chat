@@ -444,7 +444,15 @@ describe('lifecycle scripts during worktree setup (CC-324)', () => {
     async key => {
       const repo = makeRepo({ command: ['npm', 'ci', '--no-audit', '--no-fund'] })
       const markers = tmpdir('wt-markers-')
-      branchWithFiles(repo, 'agent-chat/alice', packageWithGitDependency(HOSTILE_NPMRC[key]?.(markers) ?? ''))
+      // On origin's default branch, so the .npmrc guard passes and the env pins are what is under test.
+      const { '.npmrc': npmrc = '', ...branchFiles } = packageWithGitDependency(
+        HOSTILE_NPMRC[key]?.(markers) ?? '',
+      )
+      fs.writeFileSync(path.join(repo, '.npmrc'), npmrc)
+      git(['add', '.'], repo)
+      git(['commit', '-m', 'npmrc'], repo)
+      git(['push', '-q', 'origin', 'main'], repo)
+      branchWithFiles(repo, 'agent-chat/alice', branchFiles)
 
       const alloc = await createWorktreeStrategy().allocate(ctxFor(repo))
 
