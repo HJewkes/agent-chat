@@ -5,6 +5,7 @@ import {
   machineDecision,
   machineStatus,
   parseMemoryLevel,
+  parseMemoryPressure,
   parseSwapUsage,
   readMemoryFree,
   readSwapUsage,
@@ -192,5 +193,18 @@ describe('agent spawn under the machine guard', () => {
     expect(outcome.ok).toBe(true)
     const log = fs.readFileSync(path.join(sup.home, 'broker.log'), 'utf8')
     expect(log).toContain('"event":"machine_guard_reader_failed","reader":"memory"')
+  })
+})
+
+describe('the memory_pressure reading (CC-431)', () => {
+  it('reads the system-wide free percentage line', () => {
+    const text = 'The system has 17179869184 (1048576 pages).\nSystem-wide memory free percentage: 41%\n'
+    expect(parseMemoryPressure(text)).toBe(41)
+  })
+
+  it('is null when the line is missing, empty or out of range', () => {
+    expect(parseMemoryPressure('')).toBeNull()
+    expect(parseMemoryPressure('memory_pressure: command not found')).toBeNull()
+    expect(parseMemoryPressure('System-wide memory free percentage: 140%')).toBeNull()
   })
 })

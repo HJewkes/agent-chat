@@ -8,11 +8,14 @@ import { readAccountBudget } from '../../agents/budget.js'
 import {
   countLiveHeadless,
   machineStatus,
+  readLoad5,
   readMemoryFree,
+  readMemoryPressure,
   readSwapUsage,
   type MachineStatus,
 } from '../../agents/machine-guard.js'
-import { resolveMachineLimits } from '../../config.js'
+import { resolveMachineLimits, resolveMachineStopLimits } from '../../config.js'
+import { machineStop, type MachineStop } from '../../agents/seats/stops.js'
 import { slotUsage } from '../../suite-slots.js'
 import { suiteSlotDeps } from '../suite-slot.js'
 import type { AgentIdentity } from '../../protocol.js'
@@ -194,6 +197,7 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
     readSeatLog: (seat, at) => readSeatJournal(root, seat, at),
     readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
     ownerMessages: (owner, sinceMs) => ownerMessages(owner, sinceMs),
+    machineStop: () => readMachineStop()?.reason,
     roster: () => roster(client),
     presence,
     eligible: seat => scorerEligible(root, seat),
@@ -379,7 +383,16 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
         activeWorkRoot: activeWorkRoot(),
       }),
     machine: readMachineStatus,
+    machineStop: readMachineStop,
   }
+}
+
+/** CC-431: the live memory and load readings against the stop limits. */
+function readMachineStop(): MachineStop | null {
+  return machineStop(
+    { memoryFreePercent: readMemoryPressure(), load5: readLoad5() },
+    resolveMachineStopLimits(),
+  )
 }
 
 /** CC-406: the live readings the spawn guard decides on, for the `machine` block. */

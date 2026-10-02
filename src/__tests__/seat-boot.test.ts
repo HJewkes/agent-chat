@@ -72,6 +72,8 @@ const STATUS: SeatStatus = {
     swap: { usedPercent: 40 },
     fullSuiteSlots: { inUse: 0, total: 4 },
   },
+  stop: null,
+  machineStop: null,
 }
 
 let tmp: string

@@ -7,6 +7,11 @@ import {
   DEFAULT_MACHINE_MEMORY_FREE_PERCENT,
   type MachineLimits,
 } from './agents/machine-guard.js'
+import {
+  DEFAULT_MACHINE_STOP_LOAD5,
+  DEFAULT_MACHINE_STOP_MEMORY_FREE_PERCENT,
+  type MachineStopLimits,
+} from './agents/seats/stops.js'
 import { DEFAULT_FULL_SUITE_SLOTS } from './suite-slots.js'
 import { isHexColour, type PaneColourConfig } from '@titan-design/agent-surface'
 import { isInteractiveSurface, type SurfaceName } from './protocol.js'
@@ -25,6 +30,8 @@ interface AgentChatConfig {
   paneColours?: unknown
   machineHeadlessAgents?: unknown
   machineMemoryFreePercent?: unknown
+  machineStopMemoryFreePercent?: unknown
+  machineStopLoad5?: unknown
   fullSuiteSlots?: unknown
   coordinatorGrantableTools?: unknown
 }
@@ -157,6 +164,27 @@ export function resolveMachineLimits(): MachineLimits {
     headlessAgents: positiveIntegerFrom('machineHeadlessAgents', DEFAULT_MACHINE_HEADLESS_AGENTS),
     memoryFreePercent,
   }
+}
+
+/** CC-431: where a seat stops on machine pressure, read per call so an edit needs no restart. */
+export function resolveMachineStopLimits(): MachineStopLimits {
+  const config = readConfig()
+  return {
+    memoryFreePercent: numberFrom(
+      'machineStopMemoryFreePercent',
+      config.machineStopMemoryFreePercent,
+      DEFAULT_MACHINE_STOP_MEMORY_FREE_PERCENT,
+      100,
+    ),
+    load5: numberFrom('machineStopLoad5', config.machineStopLoad5, DEFAULT_MACHINE_STOP_LOAD5),
+  }
+}
+
+function numberFrom(key: string, value: unknown, fallback: number, max = Infinity): number {
+  if (value === undefined) return fallback
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= max) return value
+  logEvent('config_invalid', { key, value, fallback })
+  return fallback
 }
 
 /** How many full test suites may run at once machine-wide (CC-406). */

@@ -69,6 +69,8 @@ export interface WatchdogDeps {
   readBudget: (configDir: string, nowMs: number) => BudgetRead
   /** The owner seat's restart messages since `sinceMs`; undefined when events.db cannot be read, which holds every seat. */
   ownerMessages: (owner: string, sinceMs: number) => OwnerMessage[] | undefined
+  /** CC-431: why memory or load holds every seat; undefined when neither is past its limit or unread. */
+  machineStop?: () => string | undefined
   roster: () => Promise<Roster>
   /** CC-320: the seat's latest presence rows; undefined when events.db cannot be read, which never resumes. */
   presence: (seat: string) => Presence | undefined
@@ -97,6 +99,7 @@ interface Pass {
   roster: Roster
   doc: WatchdogDoc
   restart: string | undefined
+  machine: string | undefined
   readings: Map<string, AccountReading | undefined>
   fireCap: number | undefined
   /** Pools whose day meter started with no reading at or before 07:00, reported once when it starts. */
@@ -148,11 +151,14 @@ function seatJournal(deps: WatchdogDeps, seat: string): SeatJournal {
   }
 }
 
-/** Owner stop first, then the restart window, then the seat's own pause line. */
+/** Owner stop first, then the restart window, machine pressure, then the seat's own pause line. */
 function holdFor(pass: Pass, seat: Seat, logStop: string | undefined): string | undefined {
   const ownerStop = pass.doc.stopped[seat.name]
   return (
-    (ownerStop === undefined ? undefined : `stopped by the owner: ${ownerStop}`) ?? pass.restart ?? logStop
+    (ownerStop === undefined ? undefined : `stopped by the owner: ${ownerStop}`) ??
+    pass.restart ??
+    pass.machine ??
+    logStop
   )
 }
 
@@ -377,6 +383,7 @@ async function startPass(deps: WatchdogDeps, options: WatchdogOptions): Promise<
     roster: await deps.roster(),
     doc: deps.loadDoc(),
     restart: openRestartWindow(deps, charter, now),
+    machine: deps.machineStop?.(),
     readings: new Map(),
     fireCap: options.fireCap,
     gaps: [],
