@@ -27,6 +27,7 @@ const IMPLEMENTER_HEAD = [
   'Branch from origin/<default>; check `git log origin/<default>..HEAD`.',
   'Commit before mutating; never `git checkout` uncommitted work.',
   'Scratch files go in the worktree or `$TMPDIR/<your name>`.',
+  'Write PR bodies to a fresh `$TMPDIR/<your name>/pr-body.md`; cat it before `gh-write -- pr create|edit`.',
   'Make every GitHub write (merge PUT, PR create, comment, PR body PATCH) through',
   '`agent-chat gh-write -- <gh args>`, the only write path, and verify each write landed. Plain `gh` is',
   'for reads; a gh called by path (`/opt/homebrew/bin/gh`) is refused. No gh-write: report BLOCKED.',
