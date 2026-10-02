@@ -781,8 +781,8 @@ async function refuseRelease(
   branch: string,
   baseRef: string,
 ): Promise<string | null> {
-  if (ctx.exitedAt !== undefined && Date.now() - ctx.exitedAt < RECLAIM_GRACE_MS)
-    return `agent exited less than ${RECLAIM_GRACE_MS / 1000}s ago; inside the reclaim grace window`
+  if (ctx.stoppedAt !== undefined && Date.now() - ctx.stoppedAt < RECLAIM_GRACE_MS)
+    return `agent stopped less than ${RECLAIM_GRACE_MS / 1000}s ago; inside the reclaim grace window`
   const safety = await inspectForRelease(gitRoot, worktreePath, branch, baseRef)
   return safety.dirty || safety.unmerged ? describeRefusal(safety) : null
 }

@@ -43,10 +43,10 @@ export interface IsolationContext {
   /** Turns advisory conflicts into refusals. Wired to `--strict`. */
   strict?: boolean
   /**
-   * `agent_exited.ts` for this agent, when it has exited. Anchors the worktree
-   * reclaim grace window — see RECLAIM_GRACE_MS in worktree.ts.
+   * When this agent stopped: its `agent_exited` time, else its last detach. Anchors
+   * the worktree reclaim grace window — see RECLAIM_GRACE_MS in worktree.ts.
    */
-  exitedAt?: number
+  stoppedAt?: number
   /**
    * Discard a leftover branch instead of adopting it. Opt-in, and deliberately
    * on the context rather than defaulted: allocation can destroy commits exactly

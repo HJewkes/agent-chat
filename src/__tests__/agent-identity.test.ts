@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { EventLog, type AgentEventRow } from '../broker/event-log.js'
-import { AgentLog, foldAgent, pairPresence } from '../agents/identity.js'
+import { AgentLog, foldAgent, pairPresence, stoppedAt } from '../agents/identity.js'
 import type { AgentIdentity, AgentLifecycle, EventKind } from '../protocol.js'
 
 const dirs: string[] = []
@@ -151,6 +151,25 @@ describe('the lifecycle fold', () => {
 
     expect(foldAgent([spawned(), exited, refused])?.exitedAt).toBe(exited.ts)
     expect(foldAgent([spawned(), exited, row('agent_resumed')])?.exitedAt).toBeUndefined()
+  })
+})
+
+describe('when an agent stopped', () => {
+  it('falls back to the last detach while no exit is recorded, and ignores later rows', () => {
+    const detached = row('agent_detached')
+    const refused = row('isolation_released', { meta: { released: 'false' } })
+    const agent = foldAgent([spawned(), detached, refused])
+
+    expect(agent?.exitedAt).toBeUndefined()
+    expect(agent && stoppedAt(agent)).toBe(detached.ts)
+  })
+
+  it('prefers the exit over a detach, and forgets a detach on attach', () => {
+    const exited = row('agent_exited')
+    const detached = row('agent_detached')
+
+    expect(foldAgent([spawned(), exited, detached])?.exitedAt).toBe(exited.ts)
+    expect(foldAgent([spawned(), detached, row('agent_attached')])?.detachedAt).toBeUndefined()
   })
 })
 
