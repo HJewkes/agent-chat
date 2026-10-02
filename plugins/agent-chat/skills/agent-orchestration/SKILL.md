@@ -267,7 +267,9 @@ its context as the scarce resource, not the agents' time.
   PR's reviewer while it is warm; a new PR never reuses a reviewer. Retire the reviewer when
   its PR merges or closes. A reviewer reviews in a detached worktree at the head under
   `$TMPDIR/<reviewer name>`, never under `<repo>/.worktrees` and never in the implementer's
-  tree, and removes it at verdict. Read a diff yourself only where the judgement is the point
+  tree, and removes it at verdict. A reviewer never runs `git stash`, because refs/stash is
+  shared by every worktree: read a file at a revision with `git show <rev>:<path>`, or copy
+  files into the session scratchpad. Read a diff yourself only where the judgement is the point
   (safety paths, lifecycle and migration changes), not for routine hygiene PRs.
 - Before any read that will return more than ~100 lines, ask whether a sonnet agent could
   return a 10-line answer instead.

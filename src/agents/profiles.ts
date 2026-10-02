@@ -112,7 +112,15 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = [
     // Bash SURVIVES here on purpose — a reviewer that cannot run the tests is an
     // explorer with a different prelude. It is confined at the file boundary
     // instead: it may run commands, it may not edit what it is reviewing.
-    disallowedTools: ['Write', 'Edit', ...HUMAN_ONLY_CLI_DENY, ...WORKER_CLI_DENY, ...NO_SELF_QUESTION],
+    // refs/stash is shared by every worktree, so a reviewer's stash can capture a peer's edit.
+    disallowedTools: [
+      'Write',
+      'Edit',
+      'Bash(git stash:*)',
+      ...HUMAN_ONLY_CLI_DENY,
+      ...WORKER_CLI_DENY,
+      ...NO_SELF_QUESTION,
+    ],
     isolation: 'toolset-limited',
     surface: 'iterm-pane',
     surfaceLifetime: 'close-on-exit',
