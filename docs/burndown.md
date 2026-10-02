@@ -82,17 +82,17 @@ with the spawns before it on its pool, and new dispatches then gate on all of th
 the pool has headroom for one, an in-flight claim's reviewer wins over a new dispatch. A
 spawn the charge closes is deferred, not stalled, and comes back next tick.
 
-A seat file may set `pacing: reset-aware` (CC-404). `seats status` then replaces both
-`per_day_points` caps with a day allowance of `(100 - reserve_seven_day -
-day_start_seven_day) / days_to_reset`, taking `days_to_reset` from the reading's
-`seven_day.resets_at`. `day_start_seven_day` is the current `seven_day` less the day's
-spend since 07:00 from the watchdog's day meter (`basis: "day-start"`). With no such
-meter it is the current `seven_day` (`basis: "current"`). Counting from the day start
-keeps the day's own spend from shrinking its allowance. With no `resets_at`, or one
-already past, the `per_day_points` caps stand. `seats status --json` reports the
-allowance and its inputs under `budget.allowance`, with `source` set to `reset-aware` or
-`per_day_points`. The tick and the seat watchdog still gate on
-`per_day_points`.
+A seat file may set `pacing: reset-aware` (CC-404). The tick, the seat watchdog and
+`seats status` then replace both `per_day_points` caps with one day allowance, built by
+`pacedCaps` in `seats/stops.ts`: `(100 - reserve_seven_day - day_start_seven_day) /
+days_to_reset`. `day_start_seven_day` is the current `seven_day` less the day's spend since
+07:00, counted from the same history the day stop reads (`basis: "day-start"`), and
+`days_to_reset` runs from 07:00 to the reading's `seven_day.resets_at`. Both terms share
+the day start, so the allowance holds steady through the day and the day's own spend
+does not shrink it. With no reading at or before 07:00, both run from now on the current
+`seven_day` (`basis: "current"`). With no `resets_at`, or one already past, the
+`per_day_points` caps stand. `seats status --json` reports the allowance and its inputs
+under `budget.allowance`, with `source` set to `reset-aware` or `per_day_points`.
 
 A queued slice from before the switch to seats mode has no `seat`, and seats mode
 dispatches only its own seats' slices, so it stays queued. Let such slices finish before

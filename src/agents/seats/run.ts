@@ -101,6 +101,8 @@ interface Pass {
   restart: string | undefined
   machine: string | undefined
   readings: Map<string, AccountReading | undefined>
+  /** CC-404: epoch ms each pool's seven_day window resets, from the same status file as its reading. */
+  resets: Map<string, number | undefined>
   fireCap: number | undefined
   /** Pools whose day meter started with no reading at or before 07:00, reported once when it starts. */
   gaps: string[]
@@ -109,8 +111,11 @@ interface Pass {
 function poolReading(pass: Pass, pool: Pool): AccountReading | undefined {
   if (!pass.readings.has(pool.name)) {
     const nowMs = pass.now.getTime()
-    const reading = accountReading(pass.deps.readBudget(pool.configDir, nowMs), nowMs)
+    const read = pass.deps.readBudget(pool.configDir, nowMs)
+    const reading = accountReading(read, nowMs)
+    const resetsAt = read.found ? read.budget.rate_limits.seven_day?.resets_at : undefined
     pass.readings.set(pool.name, reading)
+    pass.resets.set(pool.name, resetsAt === undefined ? undefined : resetsAt * 1000)
     const kept = keepReading(pass.doc.lastReadings?.[pool.name], reading, nowMs)
     if (kept !== undefined) pass.doc.lastReadings = { ...pass.doc.lastReadings, [pool.name]: kept }
     const meter = advanceMeter(pass.doc.pools[pool.name], reading?.sevenDay, nowMs, sameSpendDay)
@@ -187,6 +192,8 @@ function seatBudget(
     history,
     runStartAt: runStart,
     now: pass.now,
+    pacing: seat.pacing,
+    resetsAt: pool === undefined ? undefined : pass.resets.get(pool.name),
   })
 }
 
@@ -385,6 +392,7 @@ async function startPass(deps: WatchdogDeps, options: WatchdogOptions): Promise<
     restart: openRestartWindow(deps, charter, now),
     machine: deps.machineStop?.(),
     readings: new Map(),
+    resets: new Map(),
     fireCap: options.fireCap,
     gaps: [],
   }

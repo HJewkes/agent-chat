@@ -1,4 +1,11 @@
-import { RUN_CAP_MS, dayStart, type SevenDaySample } from '../burndown/budget-gate.js'
+import {
+  RUN_CAP_MS,
+  dayStart,
+  spendSince,
+  type PoolRule,
+  type SevenDaySample,
+  type SpendCaps,
+} from '../burndown/budget-gate.js'
 import { isJournalText } from './journal-line.js'
 
 /**
@@ -89,6 +96,8 @@ export interface DayAllowanceInput {
   daySpend: number | undefined
   /** Epoch ms the pool's seven_day window resets. */
   resetsAt: number | undefined
+  /** Epoch ms the spend day started (07:00 local). */
+  dayStartMs: number
   nowMs: number
 }
 
@@ -111,25 +120,71 @@ const round2 = (n: number): number => Math.round(n * 100) / 100
 export function dayAllowance(input: DayAllowanceInput): DayAllowance {
   const { reserveSevenDay, sevenDay, daySpend, resetsAt, nowMs } = input
   const stopLine = reserveSevenDay === undefined ? null : 100 - reserveSevenDay
-  const daysToReset = resetsAt === undefined ? null : round2((resetsAt - nowMs) / DAY_MS)
   const caps = input.perDayPoints.filter((cap): cap is number => cap !== undefined)
   const basis: DayAllowance['basis'] =
     sevenDay !== undefined && daySpend !== undefined ? 'day-start' : 'current'
   const dayStartSevenDay = sevenDay === undefined ? undefined : sevenDay - (daySpend ?? 0)
+  // Headroom and days share one anchor, so the allowance holds steady through the day.
+  const anchor = basis === 'day-start' ? input.dayStartMs : nowMs
+  const days = resetsAt === undefined ? undefined : (resetsAt - anchor) / DAY_MS
   const inputs = {
     stopLine,
     sevenDay: sevenDay ?? null,
     dayStartSevenDay: dayStartSevenDay ?? null,
     basis,
-    daysToReset,
+    daysToReset: days === undefined ? null : round2(days),
     resetsAt: resetsAt === undefined ? null : new Date(resetsAt).toISOString(),
   }
   const paced = input.pacing === 'reset-aware' && stopLine !== null && dayStartSevenDay !== undefined
-  if (!paced || resetsAt === undefined || resetsAt <= nowMs)
+  if (!paced || days === undefined || resetsAt === undefined || resetsAt <= nowMs)
     return { source: 'per_day_points', points: caps.length === 0 ? null : Math.min(...caps), ...inputs }
-  // From the day start, not now: today's spend would otherwise shrink its own allowance.
-  const points = Math.max(0, (stopLine - dayStartSevenDay) / ((resetsAt - nowMs) / DAY_MS))
+  const points = Math.max(0, (stopLine - dayStartSevenDay) / days)
   return { source: 'reset-aware', points: round2(points), ...inputs }
+}
+
+export interface PacingInput {
+  /** The seat file's `pacing:`. */
+  pacing: unknown
+  pool: PoolRule | undefined
+  spend: SpendCaps
+  sevenDay: number | undefined
+  /** Epoch ms the pool's seven_day window resets. */
+  resetsAt: number | undefined
+  /** The pool's earlier seven_day readings, as `gatePool` reads them. */
+  history: readonly SevenDaySample[]
+  now: Date
+}
+
+export interface PacedCaps {
+  pool: PoolRule | undefined
+  spend: SpendCaps
+  allowance: DayAllowance
+}
+
+/** CC-404: the caps every gate hands `gatePool`, so status, the watchdog and the tick hold a seat at one day stop. */
+export function pacedCaps(input: PacingInput): PacedCaps {
+  const { pool, spend, sevenDay, now } = input
+  const start = dayStart(now)
+  const nowMs = now.getTime()
+  const daySpend =
+    sevenDay === undefined ? undefined : spendSince(input.history, start, { at: nowMs, sevenDay })
+  const allowance = dayAllowance({
+    pacing: input.pacing,
+    reserveSevenDay: pool?.reserve_seven_day,
+    perDayPoints: [pool?.per_day_points, spend.per_day_points],
+    sevenDay,
+    daySpend,
+    resetsAt: input.resetsAt,
+    dayStartMs: start,
+    nowMs,
+  })
+  if (allowance.source !== 'reset-aware' || pool === undefined || allowance.points === null)
+    return { pool, spend, allowance }
+  return {
+    pool: { ...pool, per_day_points: undefined },
+    spend: { ...spend, per_day_points: allowance.points, per_day_label: "seat's reset-aware day allowance" },
+    allowance,
+  }
 }
 
 /** A seat log line the seat wrote itself, as the charter's `HH:MM <text>`; the watchdog's and the broker's lines are not the seat's. */

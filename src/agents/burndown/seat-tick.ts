@@ -1,5 +1,6 @@
 import { readAccountBudget } from '../budget.js'
 import { loadDoc } from '../seats/io.js'
+import { pacedCaps } from '../seats/stops.js'
 import { accountReading } from '../seats/watchdog.js'
 import { chargesOn, runStartAt, type PoolGateInput, type SevenDaySample } from './budget-gate.js'
 import { sameTickCollision, type SameTickClaim } from './collision.js'
@@ -65,19 +66,28 @@ function sampled(previous: SeatState | undefined, deps: SeatTickDeps, dispatch: 
     reading?.sevenDay === undefined
       ? []
       : [{ at: nowMs, sevenDay: reading.sevenDay, ...(resetsAt === undefined ? {} : { resetsAt }) }]
-  return { reading, history: kept, state: { samples: [...kept, ...sample] } }
+  return { reading, resetsAt, history: kept, state: { samples: [...kept, ...sample] } }
 }
 
 function loadSeat(policy: Policy, name: string, ledger: Ledger, deps: SeatTickDeps): LoadedSeat {
   const dispatch = resolveSeatDispatch(policy, name)
   const seat = policy.seats[name] as SeatPolicy
-  const { reading, history, state } = sampled(ledger.seats?.[name], deps, dispatch)
+  const { reading, resetsAt, history, state } = sampled(ledger.seats?.[name], deps, dispatch)
   const recordedAt = deps.recordedRunStart(name)
+  const { pool, spend } = pacedCaps({
+    pacing: seat.pacing,
+    ...seatBudget(policy.charter, seat),
+    sevenDay: reading?.sevenDay,
+    resetsAt,
+    history,
+    now: deps.now,
+  })
   return {
     dispatch,
     policy: { ...policy, seat, defaults: mergeDefaults(policy.charter, seat) },
     budget: {
-      ...seatBudget(policy.charter, seat),
+      pool,
+      spend,
       reading,
       history,
       runStartAt: runStartAt(deps.now, recordedAt === undefined ? {} : { recordedAt }),
