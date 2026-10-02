@@ -110,10 +110,13 @@ async function retireFinished(args: RetireArgs, ctx: VerbContext): Promise<Repor
   }
 }
 
-const planLine = (entry: RetirePlanEntry): string =>
-  entry.action === 'retire'
-    ? `  retire ${entry.name}`
-    : `  skip   ${entry.name}: ${entry.reason ?? 'no reason given'}`
+const planLine = (entry: RetirePlanEntry): string => {
+  const who =
+    entry.duplicate === true ? `${entry.name} [${entry.agentId ?? '?'}, DUPLICATE NAME]` : entry.name
+  return entry.action === 'retire'
+    ? `  retire ${who}`
+    : `  skip   ${who}: ${entry.reason ?? 'no reason given'}`
+}
 
 const resultLine = (result: RetireResult): string => {
   const outcome = result.ok ? `  retired ${result.name}` : `  FAILED  ${result.name}`

@@ -471,6 +471,7 @@ describe('the recheck and parking rules, against a fake port', () => {
       tracked: () => false,
       parking: () => false,
       current: id => roster.find(a => a.agentId === id),
+      presence: () => 'none',
       retire: () => Promise.resolve({ ok: true }),
       ...over,
     }
@@ -482,8 +483,8 @@ describe('the recheck and parking rules, against a fake port', () => {
     const retired: string[] = []
     const port = portFor([detached], {
       tracked: () => true,
-      retire: name => {
-        retired.push(name)
+      retire: agentId => {
+        retired.push(agentId)
         return Promise.resolve({ ok: true })
       },
     })
@@ -502,8 +503,8 @@ describe('the recheck and parking rules, against a fake port', () => {
     const second = agent('cc-2')
     const retired: string[] = []
     const port = portFor([first, second], {
-      retire: name => {
-        retired.push(name)
+      retire: agentId => {
+        retired.push(agentId)
         second.state = 'live'
         return Promise.resolve({ ok: true })
       },
@@ -511,7 +512,7 @@ describe('the recheck and parking rules, against a fake port', () => {
 
     const out = await retireFinished(port, { prefix: 'cc-' })
 
-    expect(retired).toEqual(['cc-1'])
+    expect(retired).toEqual([first.agentId])
     expect(out.results[1]).toEqual({ name: 'cc-2', ok: false, reason: 'became live after the plan' })
   })
 

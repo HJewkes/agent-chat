@@ -17,6 +17,9 @@ export interface RetireScope {
   prefix?: string
 }
 
+/** CC-408: who holds a name's live connection, relative to one row. */
+export type NamePresence = 'self' | 'other' | 'none'
+
 /** What the bulk form reads from, and retires through, the supervisor. */
 export interface FinishedRetirePort {
   roster(): AgentIdentity[]
@@ -25,7 +28,10 @@ export interface FinishedRetirePort {
   tracked(agentId: string): boolean
   parking(agentId: string): boolean
   current(agentId: string): AgentIdentity | undefined
-  retire(name: string): Promise<{ ok: boolean; reason?: string }>
+  /** CC-408: liveness from the connected process, since a registry row can say `exited` while it runs. */
+  presence(agent: AgentIdentity): NamePresence
+  /** CC-408: by id, so a stale row never resolves to the newest holder of its name. */
+  retire(agentId: string): Promise<{ ok: boolean; reason?: string }>
   git?: GitRunner
 }
 
@@ -47,7 +53,7 @@ interface Planned {
 /** Plan every in-scope agent, then retire the planned ones one at a time; one failure never stops the rest. */
 export async function retireFinished(
   port: FinishedRetirePort,
-  req: RetireScope & { dryRun?: boolean },
+  req: RetireScope & { dryRun?: boolean; caller?: string },
 ): Promise<FinishedRetireOutcome> {
   const malformed = malformedRequest(req)
   if (malformed) return { ok: false, reason: malformed, plan: [], results: [] }
@@ -71,19 +77,33 @@ function malformedRequest(req: RetireScope & { dryRun?: unknown }): string | und
   return undefined
 }
 
-async function planFinished(port: FinishedRetirePort, scope: RetireScope): Promise<Planned[]> {
+async function planFinished(
+  port: FinishedRetirePort,
+  scope: RetireScope & { caller?: string },
+): Promise<Planned[]> {
   const roster = port.roster()
   const events = port.events()
+  const callers = new Set([scope.caller, scope.spawner].filter((n): n is string => Boolean(n?.trim())))
   const planned: Planned[] = []
   for (const agent of roster.filter(a => inScope(a, scope))) {
-    const reason = await finishedBlocker(port, agent, roster, events)
+    const reason = callers.has(agent.name)
+      ? `${agent.name} is the caller itself, not an agent it spawned`
+      : await finishedBlocker(port, agent, roster, events)
+    const base: Omit<RetirePlanEntry, 'action'> = { name: agent.name, ...duplicateOf(agent, roster) }
     const entry: RetirePlanEntry =
-      reason === undefined
-        ? { name: agent.name, action: 'retire' }
-        : { name: agent.name, action: 'skip', reason }
+      reason === undefined ? { ...base, action: 'retire' } : { ...base, action: 'skip', reason }
     planned.push({ agentId: agent.agentId, entry })
   }
   return planned
+}
+
+/** Teleport successors keep their predecessor's name, so a name alone cannot say which row the plan means. */
+function duplicateOf(
+  agent: AgentIdentity,
+  roster: readonly AgentIdentity[],
+): Pick<RetirePlanEntry, 'agentId' | 'duplicate'> {
+  const twins = roster.filter(a => a.name === agent.name && a.agentId !== agent.agentId)
+  return twins.length === 0 ? {} : { agentId: agent.agentId, duplicate: true }
 }
 
 async function finishedBlocker(
@@ -92,7 +112,7 @@ async function finishedBlocker(
   roster: readonly AgentIdentity[],
   events: readonly AgentEventRow[],
 ): Promise<string | undefined> {
-  const byState = liveBlocker(agent, port.tracked(agent.agentId))
+  const byState = liveBlocker(agent, port.tracked(agent.agentId)) ?? connectedBlocker(port, agent)
   if (byState) return byState
   if (agent.origin !== 'spawned') return 'not spawned by agent-chat; retire it by name'
   if (port.parking(agent.agentId)) return 'being parked'
@@ -109,10 +129,10 @@ async function finishedBlocker(
 async function retireOne(port: FinishedRetirePort, agentId: string, name: string): Promise<RetireResult> {
   const now = port.current(agentId)
   if (now?.name !== name) return { name, ok: false, reason: 'no longer the agent the plan named' }
-  const late = liveBlocker(now, port.tracked(agentId))
+  const late = liveBlocker(now, port.tracked(agentId)) ?? connectedBlocker(port, now)
   if (late) return { name, ok: false, reason: `became ${late} after the plan` }
   try {
-    const res = await port.retire(name)
+    const res = await port.retire(agentId)
     return { name, ok: res.ok, ...(res.reason === undefined ? {} : { reason: res.reason }) }
   } catch (err) {
     return { name, ok: false, reason: (err as Error).message }
@@ -131,6 +151,10 @@ export function liveBlocker(agent: AgentIdentity, tracked: boolean): string | un
   if (isLive(agent.state)) return agent.state
   if (tracked) return `${agent.state}, but its process is still running`
   return undefined
+}
+
+function connectedBlocker(port: FinishedRetirePort, agent: AgentIdentity): string | undefined {
+  return port.presence(agent) === 'self' ? `${agent.state}, but its process is still connected` : undefined
 }
 
 /** Any other identity that is not retired and works in the tree, the test `retire` itself applies (CC-141). */
