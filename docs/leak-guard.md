@@ -684,7 +684,7 @@ refused with exit 2 and a line `git-shim: push refused (<rule>)` when:
 | Rule          | When                                                                                                                                     |
 | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `no-verify`   | an argument after `push`, including one an alias supplies, starts with `--no-veri`                                                       |
-| `hooks-path`  | `core.hooksPath`, as the real git resolves it with the same options, is not the guard                                                    |
+| `hooks-path`  | `core.hooksPath`, as the real git resolves it with the same options, is not the guard, and a destination is not local (below)            |
 | `shell-alias` | the word is a `!` alias, and its text or the arguments after it mention `push` other than as `stash push`, quotes aside                  |
 | `unresolved`  | the alias read fails for a reason other than "no such key", or the alias has an open quote                                               |
 | `alias-depth` | aliases chain more than 10 deep                                                                                                          |
@@ -704,7 +704,22 @@ When autocorrect is on, a mistyped word is refused even when its correction is n
 
 The hooks-path rule is what covers `GIT_CONFIG_COUNT=0`, `-c core.hooksPath=...`,
 and `GIT_CONFIG_PARAMETERS`. agent-chat's own injected hooks path
-is exactly the guard directory, so it passes. Every other command, and a push that passes,
+is exactly the guard directory, so it passes.
+
+A push whose every destination is a local repository skips the hooks-path rule (CC-442), so
+test fixtures that strip the injected hooks path can push to a temp-dir remote. The shim
+resolves destinations the way git does: the repository word, `--repo`, or the branch's push
+remote, `remote.pushDefault`, the branch's remote and then `origin`; a remote's `pushurl`
+values, else its `url` values, else the word itself; and every `insteadOf` and
+`pushInsteadOf` rewrite of each. Each must be a `file://` URL or a path, meaning a slash
+comes before any colon, which is git's own `url_is_local_not_ssh` test. A `<transport>::`
+helper, any other URL and `host:path` fail it. So do `remote.<name>.vcs` or `.receivepack`,
+a legacy `remotes/` or `branches/` file, `--receive-pack`, `--exec`, submodule pushes, an
+option the shim does not know, and any value it cannot read; those pushes keep the rule.
+`--no-verify` stays refused for every destination. A path on a network or sync mount counts as
+local, and the destination repository's own hooks run on the push.
+
+Every other command, and a push that passes,
 `exec`s the real git with the arguments unchanged, so its exit code, stdout and stderr are git's.
 A builtin costs one `sh` start. An alias costs one `git config` read, a push one more, and a word
 that is no alias up to two more for `help.autocorrect`.
