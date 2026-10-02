@@ -5,6 +5,7 @@ import type net from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BrokerCore, ENDORSE_MAX_AGE_MS, type Conn, type EndorseApproval } from '../broker/core.js'
 import { SocketServer } from '../broker/socket.js'
+import { channelMeta } from '../server/index.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { HUMAN, type ClientMessage, type DeliveredMessage, type ServerMessage } from '../protocol.js'
@@ -814,6 +815,48 @@ describe('closing the authorization gaps a same-uid session could reach on its o
 
       const sent = core.events.since(0, 100).filter(row => row.kind === 'message')
       expect(sent.map(row => [row.body, row.meta.source])).toEqual([['hi', undefined]])
+    })
+  })
+
+  describe('wake source as the recipient is shown it (CC-436)', () => {
+    const sendAs = (source?: string) => {
+      const { core, server, wire } = makeServer()
+      const human = wire()
+      const beta = wire()
+      register(server, beta.conn, 'beta')
+      server.handleMessage(human.conn, {
+        t: 'human_send',
+        to: 'beta',
+        text: 'wake',
+        ...(source === undefined ? {} : { source }),
+      } as ClientMessage)
+      const [live] = deliveries(beta.frames)
+      const [replayed] = core.events.inboxFor('beta', 10)
+      return { live: live as DeliveredMessage, replayed: replayed as DeliveredMessage }
+    }
+
+    it('names shepherd on the live push and on the inbox replay, with no human authority marker', () => {
+      const { live, replayed } = sendAs('shepherd')
+
+      for (const message of [live, replayed]) {
+        expect(channelMeta(message)).toMatchObject({ from: HUMAN, wake_source: 'shepherd' })
+        expect(channelMeta(message).provenance).toBeUndefined()
+      }
+    })
+
+    it('names watchdog the same way', () => {
+      expect(channelMeta(sendAs('watchdog').live).wake_source).toBe('watchdog')
+    })
+
+    it('renders an unsourced send exactly as before', () => {
+      const { live, replayed } = sendAs()
+
+      expect(channelMeta(live)).toEqual({ from: HUMAN, msg_id: live.msgId })
+      expect(channelMeta(replayed)).toEqual({ from: HUMAN, msg_id: replayed.msgId })
+    })
+
+    it('does not label an invented source', () => {
+      expect(channelMeta(sendAs('owner-approved').live).wake_source).toBeUndefined()
     })
   })
 

@@ -419,6 +419,8 @@ export interface DeliveredMessage {
   text: string
   /** Absent on every ordinary message. See {@link Provenance}. */
   provenance?: Provenance
+  /** CC-436: set when the human seat's frame was sent by a known automation, so it is not read as the human typing. */
+  wakeSource?: WakeSource
   /** Set when this message answers an earlier one, carrying that message's id. */
   inReplyTo?: string
   /** True when the sender addressed everyone rather than this session specifically. */

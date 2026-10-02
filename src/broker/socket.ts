@@ -1122,7 +1122,7 @@ export class SocketServer {
     const msgId = newMsgId()
     if (!target) {
       // CC-441: the watchdog's wake for a seat it just resumed visibly lands here before the seat registers.
-      const held = core.holdForSeat(HUMAN, to, text)
+      const held = core.holdForSeat(HUMAN, to, text, undefined, source)
       if (held?.ok) return replyHeld(conn, to, held.msgId)
       core.append({ kind: 'route_failed', actor: HUMAN, target: to, body: 'no active session' })
       logEvent('route', { kind: 'message', msgId, from: HUMAN, to, delivered: false, recipients: [] })
@@ -1144,7 +1144,13 @@ export class SocketServer {
     // The human overrides do-not-disturb and no agent can. Scarcity has to be
     // structural: if any peer could mark a message urgent, every message would be
     // urgent within a day. There is simply no parameter for it on the agent path.
-    core.deliverTo(to, { msgId, from: HUMAN, text, at: Date.now() })
+    core.deliverTo(to, {
+      msgId,
+      from: HUMAN,
+      text,
+      at: Date.now(),
+      ...(source === undefined ? {} : { wakeSource: source }),
+    })
     logEvent('route', { kind: 'message', msgId, from: HUMAN, to, delivered: true, recipients: [to] })
     reply(conn, { t: 'send_result', ok: true, msgId, recipients: [to] })
   }

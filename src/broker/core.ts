@@ -6,6 +6,7 @@ import {
   type DecidedRefusal,
   type DecisionCitation,
   type DeliveredMessage,
+  type WakeSource,
 } from '../protocol.js'
 import { checkDecision, decidedText, overruleText } from './decisions.js'
 import { AgentLog } from '../agents/identity.js'
@@ -369,7 +370,13 @@ export class BrokerCore<C = Conn> {
    * CC-320: keep a message for a dark seat. Undefined when `to` is not one, so the
    * send fails as before; `ok: false` when the hold is full or the seat is dark too long.
    */
-  holdForSeat(from: string, to: string, text: string, inReplyTo?: string): SeatHoldResult | undefined {
+  holdForSeat(
+    from: string,
+    to: string,
+    text: string,
+    inReplyTo?: string,
+    source?: WakeSource,
+  ): SeatHoldResult | undefined {
     if (!this.isSeat(to)) return undefined
     const verdict = holdVerdict(this.events, to, Date.now())
     if (verdict === undefined) return undefined
@@ -380,7 +387,7 @@ export class BrokerCore<C = Conn> {
       target: to,
       ...(inReplyTo === undefined ? {} : { ref: inReplyTo }),
       body: text,
-      meta: { held: SEAT_HOLD_MARK },
+      meta: { held: SEAT_HOLD_MARK, ...(source === undefined ? {} : { source }) },
     })
     logEvent('route', { kind: 'message', msgId, from, to, delivered: false, held: SEAT_HOLD_MARK })
     return { ok: true, msgId }
