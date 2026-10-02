@@ -754,7 +754,7 @@ describe('a gh command the command line hides', () => {
   })
 
   it('checks an expanded command word as git too, and by name once it resolves', () => {
-    const env = { GH: '/opt/bin/gh', GIT: 'git' }
+    const env = { GH: 'gh', GIT: 'git' }
 
     expect(checkCommand('G=git; $G push --no-verify', ctx())).toBe(REASONS.noVerify)
     expect(checkCommand(`$GH pr create -t ${TERM} -b y`, ctx({ env }))).toContain('title line 1')
@@ -1034,6 +1034,69 @@ describe('a git alias already in config', () => {
     )
 
     it.each([
+      'x=$(echo tig|rev); source /dev/null; $x pnv',
+      'x=$(echo tig|rev); pushd .; $x pnv',
+      'x=$(echo tig|rev); cd "$D"; $x pnv',
+      'read x; source /dev/null; $x pnv',
+      'source /dev/null; $(echo tig|rev) pnv',
+      'source /dev/null; `echo tig|rev` pnv',
+    ])('denies an expanded command word the line ties to git where it cannot look (TP-613): %s', command => {
+      expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
+    })
+
+    it.each([
+      'y=x; x=git; source /dev/null; ${!y} pnv',
+      'y=x; x=git; pushd .; ${!y} hp',
+      'set -- git; source /dev/null; $1 pnv',
+      'set -- git; cd "$D"; ${1} pnv',
+      'set -- git; source /dev/null; $* pnv',
+      'set -- git; source /dev/null; "$@" pnv',
+      'read <<< git; source /dev/null; $REPLY pnv',
+      'read <<< git; pushd .; ${REPLY} pnv',
+      ': git; source /dev/null; $_ pnv',
+      'y=x; x=git; source /dev/null; ${(P)y} pnv',
+      'x=git; source /dev/null; ${=x} pnv',
+      'x=git; source /dev/null; ${~x} pnv',
+      'x=git; source /dev/null; ${^x} pnv',
+      'x=GIT; source /dev/null; ${(L)x} pnv',
+      'x=git; source /dev/null; $=x pnv',
+      'x=git; source /dev/null; $~x pnv',
+      'x=git; source /dev/null; $^x pnv',
+      'set -- git; source /dev/null; $argv pnv',
+      'set -- git; source /dev/null; $argv[1] pnv',
+      'read -A <<< git; source /dev/null; $reply pnv',
+      'mapfile <<< git; source /dev/null; $MAPFILE pnv',
+      'source /dev/null; ${x:=y} pnv',
+      'source /dev/null; ${x:-g"i"t} pnv',
+      'source /dev/null; ${x:-g\\it} pnv',
+      'x=a; source /dev/null; ${x/a/g"i"t} pnv',
+      'source /dev/null; ${x/#/g"i"t} pnv',
+      'source /dev/null; ${x/a/g"i"t} pnv',
+      'source /dev/null; ${x:-git} pnv',
+    ])('denies a positional, special or indirect command word where it cannot look (TP-613): %s', command => {
+      expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
+    })
+
+    it('denies an expanded command word whose hook env value is git where it cannot look', () => {
+      const command = 'source /dev/null; $G pnv'
+      expect(checkCommand(command, { ...inAliased(), env: { HOME: emptyHome, G: 'git' } })).toBe(
+        REASONS.aliasEnv,
+      )
+    })
+
+    it.each([
+      'source .venv/bin/activate && $PYTHON -m pytest && git status',
+      'source x; $PAGER README; git log',
+      'source .venv/bin/activate && ${PYTHON:-python3} -m pytest && git status',
+      'source x; ${PAGER-less} README; git log',
+      'source x; ${EDITOR:-vi} notes; git log',
+      'source x; ${TOOL#x} README; git log',
+      `T=$(git -C ~/w worktree list | grep x | awk '{print $1}'); [ -n "$T" ] && git -C "$T" status --porcelain && git -C "$T" rev-list origin/b..HEAD`,
+    ])('allows an expanded command word the line does not tie to git (TP-613): %s', command => {
+      expect(checkCommand(command, inAliased())).toBeUndefined()
+    })
+
+    it.each([
       `x=git; $x pnv`,
       `git -C ${aliased} push origin main`,
       'source ./env.sh; $EDITOR notes',
@@ -1264,6 +1327,46 @@ describe('a git alias already in config', () => {
         expect(checkCommand(command, at(plain))).toBeUndefined()
       },
     )
+  })
+})
+
+describe('the bypass guard denies gh called by path (CC-456)', () => {
+  it.each([
+    '/opt/homebrew/bin/gh pr create -t x -b y',
+    '/usr/local/bin/gh api -X POST repos/o/r/issues/1/comments -f body=y',
+    './gh pr merge 3 --squash',
+    'command /opt/homebrew/bin/gh pr edit 3 -b y',
+    'env FOO=1 /opt/homebrew/bin/gh issue comment 4 -b y',
+    "sh -c '/opt/homebrew/bin/gh pr create -t x -b y'",
+    '/opt/homebrew/bin/gh pr view 3',
+  ])('denies %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.ghByPath)
+  })
+
+  it('denies a gh path that a variable expands to', () => {
+    expect(checkCommand('$GH pr create -t x -b y', ctx({ env: { GH: '/opt/bin/gh' } }))).toBe(
+      REASONS.ghByPath,
+    )
+  })
+
+  it('still allows bare gh and gh-write', () => {
+    expect(checkCommand('gh pr view 3', ctx())).toBeUndefined()
+    expect(checkCommand('agent-chat gh-write -- pr create -t x -b y', ctx())).toBeUndefined()
+  })
+
+  it('prints a PreToolUse deny naming gh-write from the hook entry point', () => {
+    const raw = JSON.stringify({
+      tool_name: 'Bash',
+      tool_input: { command: '/opt/homebrew/bin/gh pr create -t x -b y' },
+      cwd: '/work',
+    })
+
+    const out = JSON.parse(pretoolDecision(raw, () => ctx())) as {
+      hookSpecificOutput: Record<string, string>
+    }
+
+    expect(out.hookSpecificOutput.permissionDecision).toBe('deny')
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain('agent-chat gh-write --')
   })
 })
 

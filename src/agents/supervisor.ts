@@ -21,7 +21,7 @@ import {
   SURFACED_NOTICE,
   type SwitchOutcome,
 } from './mode-switch.js'
-import { buildLaunchPlan, permModeFor } from './launch-plan.js'
+import { AGENT_CHAT_TOOLS, buildLaunchPlan, permModeFor } from './launch-plan.js'
 import {
   buildMcpConfig,
   clearRuntimeState,
@@ -31,6 +31,14 @@ import {
   writeLaunchFiles,
   writeRuntimeState,
 } from './launch-files.js'
+import {
+  awaitsExit,
+  DetachedReaper,
+  detachedAtStart,
+  hostProbe,
+  launcherLiveness,
+  type ProcessProbe,
+} from './detached-reap.js'
 import { loadProfile, recordedRole, roleOf } from './profiles.js'
 import {
   refusalOf,
@@ -38,9 +46,23 @@ import {
   type Allocation,
   type IsolationContext,
 } from './isolation/index.js'
-import { surfaceFor } from './surfaces/index.js'
-import { SurfaceRefused, type SurfaceOptions } from './surfaces/options.js'
+import {
+  SurfaceRefused,
+  itermSessionPresent,
+  loginGap,
+  readOutputTail,
+  type SurfaceOptions,
+} from '@titan-design/agent-surface'
+import { surfaceFor } from './launcher.js'
 import { Semaphore, type SlotUsage } from './semaphore.js'
+import {
+  countLiveHeadless,
+  machineDecision,
+  type MachineDecision,
+  type MachineRefusalCode,
+  type MachineLimits,
+  type MemoryReading,
+} from './machine-guard.js'
 import { canonicalPath, checkSpawnCwd, isAtOrUnder } from './spawn-cwd.js'
 import { resolveSpawnBriefing, type BriefingResult } from './active-work.js'
 import { childConfigDir, resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
@@ -59,7 +81,14 @@ import {
   type TranscriptVerdict,
 } from './resume-session.js'
 import { recreateWorktree, type WorktreeRecord } from './isolation/worktree.js'
-import { allocatedWorktree, parkBlocker, parkWorktree, type ParkTarget } from './isolation/park.js'
+import {
+  allocatedWorktree,
+  lsofCwds,
+  parkBlocker,
+  parkWorktree,
+  type CwdLister,
+  type ParkTarget,
+} from './isolation/park.js'
 import {
   retireFinished,
   type FinishedRetireOutcome,
@@ -68,11 +97,10 @@ import {
 } from './isolation/retire-finished.js'
 import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
-import { loginGap, readOutputTail } from './launch-output.js'
 import { isTrusted, trustGap } from './trust.js'
-import { itermSessionPresent } from './surfaces/iterm.js'
-import { burndownConfigPath, cliEntry, gitHooksDir, home } from '../paths.js'
+import { agentDir, burndownConfigPath, cliEntry, gitHooksDir, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
+import { resolveCoordinatorGrantableTools } from '../config.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { SeatJournal } from './seats/journal.js'
 import type { SeatDispatchLog, SpawnFacts } from './seats/dispatch-log.js'
@@ -252,6 +280,8 @@ interface Resolved {
   predecessor?: string
   /** CC-118: the shadow execution this launch belongs to, when the ledger is on. */
   executionId?: string
+  /** CC-451: tools granted past the escalation check by the coordinator exemption. */
+  exempted?: string[]
 }
 
 /** A duration as a reader would say it: seconds under a minute, minutes above. */
@@ -352,11 +382,17 @@ export interface SpawnRequest {
   anchor?: string
 }
 
+export type SpawnRefusalCode = 'surface_refused' | MachineRefusalCode
+
 export interface SpawnOutcome {
   ok: boolean
   agentId?: string
   name?: string
   reason?: string
+  /** CC-441: see protocol.ts's `spawn_result`. */
+  code?: SpawnRefusalCode
+  /** CC-445: whether the same spawn may succeed later without changes; set with a machine-guard `code`. */
+  retryable?: boolean
   warnings?: string[]
   /** The profile's own deny list. See protocol.ts's `spawn_result` for why this matters. */
   disallowedTools?: string[]
@@ -401,6 +437,8 @@ interface Live {
 }
 
 export interface SupervisorOptions {
+  /** CC-334: lists process working directories for parking a detached agent. Injected in tests. */
+  cwdLister?: CwdLister
   semaphore?: Semaphore
   spawnRateBudget?: SpawnRateBudget
   settleMs?: number
@@ -435,6 +473,10 @@ export interface SupervisorOptions {
   seatJournal?: SeatJournal
   /** CC-331: appends a seat agent's dispatched and retired rows. Absent in tests, which own no autonomy root. */
   seatDispatch?: SeatDispatchLog
+  /** CC-406: the machine-wide guard's readers. Absent in tests, which must not read the host's memory. */
+  machineGuard?: MachineGuardReaders
+  /** CC-450: how an unwatched agent's recorded launcher pid is checked. Faked in tests. */
+  processProbe?: ProcessProbe
 }
 
 /** A dispatch row is bookkeeping: a writer that throws despite its contract leaves the spawn or retire as it was. */
@@ -478,6 +520,35 @@ function stillDenied(childDenied: Set<string>, tool: string): boolean {
   if (childDenied.has(tool)) return true
   const base = tool.split('(')[0] ?? tool
   return base !== tool && childDenied.has(base)
+}
+
+/** CC-451: what a web-exempt child may hold besides the exempt tools. None of them runs code. */
+const NON_EXEC_TOOLS: ReadonlySet<string> = new Set([
+  'Read',
+  'Write',
+  'Edit',
+  'Grep',
+  'Glob',
+  AGENT_CHAT_TOOLS,
+])
+
+/**
+ * CC-451: the tools a requester of `role` may grant `profile` without holding
+ * them. Only a coordinator, and only to a child that denies all of Bash and
+ * allows nothing outside `grantable` and `NON_EXEC_TOOLS`, so a fetched page
+ * cannot talk it into running code. Fails closed: Monitor, any Bash form and
+ * any MCP tool, including ones added later, void the exemption.
+ */
+export function coordinatorExemption(
+  role: AgentRole,
+  profile: Pick<AgentProfile, 'allowedTools' | 'disallowedTools'>,
+  grantable: readonly string[],
+): Set<string> {
+  if (role !== 'coordinator') return new Set()
+  if (!(profile.disallowedTools ?? []).includes('Bash')) return new Set()
+  const exempt = new Set(grantable)
+  const confined = profile.allowedTools.every(tool => exempt.has(tool) || NON_EXEC_TOOLS.has(tool))
+  return confined ? exempt : new Set()
 }
 
 /** Only a worktree the strategy cut records `base_ref`; an adopted one has no base to report. */
@@ -544,8 +615,14 @@ export function floorWarning(requested: IsolationName, profileIsolation: Isolati
   )
 }
 
+export interface MachineGuardReaders {
+  readMemoryFree: () => MemoryReading
+  limits: () => MachineLimits
+}
+
 export class Supervisor implements TeleportHost {
   private readonly live = new Map<string, Live>()
+  private readonly cwdLister: CwdLister
   /** CC-282: agents mid-park, to the canonical tree being removed. */
   private readonly parking = new Map<string, string>()
   private readonly semaphore: Semaphore
@@ -565,11 +642,15 @@ export class Supervisor implements TeleportHost {
   private readonly unwatch: () => void
   private readonly teleporter: Teleport
   private readonly shadow: LifecycleShadow
+  private readonly machineGuard: MachineGuardReaders | undefined
+  private readonly processProbe: ProcessProbe
+  private readonly reaper: DetachedReaper
 
   constructor(
     private readonly core: BrokerCore,
     options: SupervisorOptions = {},
   ) {
+    this.cwdLister = options.cwdLister ?? lsofCwds
     this.semaphore = options.semaphore ?? new Semaphore()
     this.spawnRateBudget = options.spawnRateBudget ?? new SpawnRateBudget()
     this.settleMs = options.settleMs ?? SETTLE_MS
@@ -580,9 +661,13 @@ export class Supervisor implements TeleportHost {
     this.hookSpawn = options.hookSpawn
     this.seatJournal = options.seatJournal
     this.seatDispatch = options.seatDispatch
+    this.machineGuard = options.machineGuard
+    this.processProbe = options.processProbe ?? hostProbe
+    this.reaper = new DetachedReaper(this.settleMs, agentId => this.reapIfDead(agentId))
     this.unwatch = core.onAppend(row => this.onRow(row))
     this.teleporter = new Teleport(core, this, options.countdownMs, options.argvReader)
     this.shadow = new LifecycleShadow(options.ledger)
+    for (const agent of detachedAtStart(core.agents.roster())) this.reapIfDead(agent.agentId)
   }
 
   private fireHook(event: HookEvent, payload: Record<string, unknown>): void {
@@ -626,10 +711,13 @@ export class Supervisor implements TeleportHost {
 
   /**
    * CC-109: slot accounting for a spawned agent this broker did not launch,
-   * which after a restart is every agent that reattaches. Count only: no exit
-   * is inferred and nothing is added to `live`, for the reasons on `rehydrate`.
+   * which after a restart is every agent that reattaches. Nothing is added to
+   * `live`, for the reasons on `rehydrate`. CC-450: a detach that outlasts the
+   * settle window infers an exit only once the recorded launcher pid is gone.
    */
   private onUnwatchedRow(kind: string, agentId: string): void {
+    if (kind === 'agent_detached') this.reaper.schedule(agentId)
+    else this.reaper.cancel(agentId)
     if (kind === 'agent_attached') return this.countReattach(agentId)
     if (!this.reattached.has(agentId)) return
     if (kind === 'agent_detached') this.scheduleReattachRelease(agentId)
@@ -662,6 +750,32 @@ export class Supervisor implements TeleportHost {
     clearTimeout(this.reattached.get(agentId))
     this.reattached.delete(agentId)
     this.semaphore.release(agentId)
+  }
+
+  /** CC-450: the row and the ledger only; the process is not ours to signal and has no surface to close. */
+  private reapIfDead(agentId: string): void {
+    const agent = this.core.agents.get(agentId)
+    if (!awaitsExit(agent) || this.live.has(agentId)) return
+    const liveness = launcherLiveness(agentId, this.processProbe)
+    if (!liveness.dead) return
+    this.core.append({
+      kind: 'agent_exited',
+      actor: agent.name,
+      ref: agentId,
+      body: `exit inferred after a broker restart: ${liveness.reason}`,
+      meta: { inferred: 'true', pid: String(liveness.pid) },
+    })
+    logEvent('agent_exited', {
+      agentId,
+      name: agent.name,
+      code: null,
+      inferred: true,
+      reason: liveness.reason,
+    })
+    this.shadow.finishByAgent(
+      agentId,
+      exitTerminal({ code: null, signal: null, inferred: true }, undefined, undefined),
+    )
   }
 
   /** A launch takes over the slot, so its release moves to `recordExit`. */
@@ -793,7 +907,11 @@ export class Supervisor implements TeleportHost {
     logEvent(UNREPORTED_EXIT, { agentId, name, spawner, lastAction: tail.lastAction })
   }
 
-  private refuse(req: SpawnRequest, reason: string): SpawnOutcome {
+  private refuse(
+    req: SpawnRequest,
+    reason: string,
+    cause: { code: MachineRefusalCode; retryable: boolean } | {} = {},
+  ): SpawnOutcome {
     // An event, not just a reply string: refusals are the security-relevant
     // thing and belong in the log whether or not anyone was watching.
     this.core.append({
@@ -804,7 +922,7 @@ export class Supervisor implements TeleportHost {
       meta: { profile: req.profile },
     })
     logEvent('agent_spawn_refused', { name: req.name, by: req.requestedBy, reason })
-    return { ok: false, reason }
+    return { ok: false, reason, ...cause }
   }
 
   /**
@@ -853,6 +971,20 @@ export class Supervisor implements TeleportHost {
       if (!rate.ok) return rate.reason
     }
     return undefined
+  }
+
+  /** CC-406: refuses when the machine is at its headless-agent total or below its memory-free floor. */
+  private machineRefusal(surface: SurfaceName): Extract<MachineDecision, { ok: false }> | undefined {
+    if (this.machineGuard === undefined) return undefined
+    const memory = this.machineGuard.readMemoryFree()
+    if ('error' in memory) logEvent('machine_guard_reader_failed', { reader: 'memory', error: memory.error })
+    const liveHeadless = countLiveHeadless(this.core.agents.roster())
+    const decision = machineDecision(
+      { liveHeadless, memory },
+      this.machineGuard.limits(),
+      surface === 'headless',
+    )
+    return decision.ok ? undefined : decision
   }
 
   /** The requester's OWN `agent_spawned` row — the only record of what it was granted. */
@@ -954,18 +1086,30 @@ export class Supervisor implements TeleportHost {
    * child whose deny list is strictly weaker than its own (same allowedTools,
    * fewer disallowedTools). Symmetric check: every tool the parent was denied
    * must still be denied to the child, or refuse the same way.
+   *
+   * CC-451: the one hole in the allow side. `exemptionFor` lets a coordinator
+   * grant the configured web-read tools it lacks; what was exempted comes back
+   * so the spawn row can record it.
    */
-  private checkEscalation(req: SpawnRequest, profile: AgentProfile): string | undefined {
-    if (req.requestedBy === HUMAN) return undefined
+  private checkEscalation(
+    req: SpawnRequest,
+    profile: AgentProfile,
+  ): { refusal: string } | { exempted: string[] } {
+    if (req.requestedBy === HUMAN) return { exempted: [] }
 
+    let exempted: string[] = []
     const granted = this.grantedTools(req.parentAgentId)
     if (granted !== undefined) {
-      const escalated = profile.allowedTools.filter(tool => !granted.has(tool))
+      const missing = profile.allowedTools.filter(tool => !granted.has(tool))
+      const exempt = this.exemptionFor(req, profile)
+      exempted = missing.filter(tool => exempt.has(tool))
+      const escalated = missing.filter(tool => !exempt.has(tool))
       if (escalated.length > 0) {
-        return (
-          `profile "${profile.name}" grants tools you were not granted (${escalated.join(', ')}); ` +
-          'an agent cannot spawn a peer more capable than itself — ask the human to spawn it'
-        )
+        return {
+          refusal:
+            `profile "${profile.name}" grants tools you were not granted (${escalated.join(', ')}); ` +
+            'an agent cannot spawn a peer more capable than itself — ask the human to spawn it',
+        }
       }
     }
 
@@ -974,14 +1118,23 @@ export class Supervisor implements TeleportHost {
       const childDenied = new Set(profile.disallowedTools ?? [])
       const relaxed = [...parentDenied].filter(tool => !stillDenied(childDenied, tool))
       if (relaxed.length > 0) {
-        return (
-          `profile "${profile.name}" does not deny tools you were denied (${relaxed.join(', ')}); ` +
-          'a spawned peer cannot have a weaker deny list than its parent — ask the human to spawn it'
-        )
+        return {
+          refusal:
+            `profile "${profile.name}" does not deny tools you were denied (${relaxed.join(', ')}); ` +
+            'a spawned peer cannot have a weaker deny list than its parent — ask the human to spawn it',
+        }
       }
     }
 
-    return undefined
+    return { exempted }
+  }
+
+  private exemptionFor(req: SpawnRequest, profile: AgentProfile): Set<string> {
+    return coordinatorExemption(
+      this.requesterOf(req.parentAgentId).role,
+      profile,
+      resolveCoordinatorGrantableTools(),
+    )
   }
 
   /**
@@ -1059,8 +1212,10 @@ export class Supervisor implements TeleportHost {
     }
     const roleBlocked = this.checkRole(req, profile, lineage.coordinatorDepth)
     if (roleBlocked) return this.refuse(req, roleBlocked)
+    const machine = this.machineRefusal(req.surface ?? profile.surface)
+    if (machine) return this.refuse(req, machine.reason, { code: machine.code, retryable: machine.retryable })
     const escalation = this.checkEscalation(req, profile)
-    if (escalation) return this.refuse(req, escalation)
+    if ('refusal' in escalation) return this.refuse(req, escalation.refusal)
     const fork = req.inherit === 'context' ? this.forkSource(req) : undefined
     if (fork !== undefined && 'error' in fork) return this.refuse(req, fork.error)
 
@@ -1146,6 +1301,7 @@ export class Supervisor implements TeleportHost {
         ...(resumed ? { resumed } : {}),
         ...(predecessor ? { predecessor: predecessor.text } : {}),
         ...(executionId ? { executionId } : {}),
+        ...(escalation.exempted.length > 0 ? { exempted: escalation.exempted } : {}),
       })
     } catch (err) {
       this.semaphore.release(agentId)
@@ -1255,6 +1411,7 @@ export class Supervisor implements TeleportHost {
         // the deny list is the half that actually confines (see `profiles.ts`),
         // so a row that names one and not the other under-describes the agent.
         disallowed_tools: (profile.disallowedTools ?? []).join(','),
+        ...(resolved.exempted ? { granted_by_exemption: resolved.exempted.join(',') } : {}),
         perm_mode: permModeFor(surface),
         // Recorded rather than carried in memory so the exit path can read it
         // after a broker restart, and so `agent ls`/the log can show what an
@@ -1451,7 +1608,7 @@ export class Supervisor implements TeleportHost {
     if (outcome.kind === 'attached') return { kind: 'attached' }
     if (outcome.kind === 'exited') {
       const cause = `claude exited before registering (exit code ${outcome.code ?? 'unknown'})`
-      const output = readOutputTail(agentId)
+      const output = readOutputTail(agentDir(agentId))
       return {
         kind: 'failed',
         reason: `${cause}. ${attachDiagnosis(site, handle, 'exited', output)}`,
@@ -1818,7 +1975,11 @@ export class Supervisor implements TeleportHost {
     if (blocked !== undefined || target === undefined) return { ok: false, reason: blocked ?? 'no worktree' }
     this.parking.set(identity.agentId, canonicalPath(target.worktree))
     try {
-      const parked = await parkWorktree(target, () => this.parkBlockerFor(identity.agentId, target))
+      const parked = await parkWorktree(
+        target,
+        () => this.parkBlockerFor(identity.agentId, target),
+        identity.state === 'detached' ? this.cwdLister : undefined,
+      )
       if (!parked.ok) return parked
       this.recordParked(name, identity.agentId, target, parked.head)
       return {
@@ -2105,7 +2266,8 @@ export class Supervisor implements TeleportHost {
       this.semaphore.release(identity.agentId)
       const reason = `resume failed: ${(err as Error).message}`
       this.shadow.finish(executionId, { outcome: 'failed', reason, retryable: false })
-      return { ok: false, reason, transcript }
+      const code = err instanceof SurfaceRefused ? { code: 'surface_refused' as const } : {}
+      return { ok: false, reason, ...code, transcript }
     }
     if (req.message !== undefined && (req.surface ?? 'headless') !== 'headless')
       warnings.push(
@@ -2624,6 +2786,7 @@ export class Supervisor implements TeleportHost {
     this.unwatch()
     this.teleporter.close()
     this.attachWaiters.clear()
+    this.reaper.close()
     for (const timer of this.reattached.values()) clearTimeout(timer)
     for (const entry of this.live.values()) {
       if (entry.settle) clearTimeout(entry.settle)

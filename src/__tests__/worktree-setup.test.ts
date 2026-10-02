@@ -1,12 +1,17 @@
 import { execFileSync, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createWorktreeStrategy, reattachWorktree } from '../agents/isolation/worktree.js'
 import {
+  NPMRC_FILE,
   parseSetupStep,
+  PNPM_WORKSPACE_FILE,
   runSetupCommand,
+  setupEnv,
   SETUP_FILE,
   SETUP_LOG,
   type SetupResult,
@@ -15,8 +20,10 @@ import {
 import type { IsolationContext } from '../agents/isolation/index.js'
 
 const tmpdirs: string[] = []
+const cleanups: Array<() => void> = []
 
 afterEach(() => {
+  while (cleanups.length > 0) cleanups.pop()?.()
   while (tmpdirs.length > 0) fs.rmSync(tmpdirs.pop() ?? '', { recursive: true, force: true })
 })
 
@@ -332,6 +339,402 @@ describe('the default setup runner', () => {
     expect(result.exitCode).toBeNull()
     expect(result.output).toContain('ENOENT')
   })
+})
+
+/** A package with no dependencies whose every lifecycle script touches a marker in the tree. */
+const SCRIPTED_PACKAGE = {
+  'package.json': JSON.stringify({
+    name: 'cc324-synthetic',
+    version: '1.0.0',
+    scripts: Object.fromEntries(
+      ['preinstall', 'install', 'postinstall', 'prepare'].map(hook => [hook, `touch ${hook}-ran`]),
+    ),
+  }),
+  'package-lock.json': JSON.stringify({
+    name: 'cc324-synthetic',
+    version: '1.0.0',
+    lockfileVersion: 3,
+    requires: true,
+    packages: { '': { name: 'cc324-synthetic', version: '1.0.0' } },
+  }),
+}
+
+const markersIn = (dir: string): string[] => fs.readdirSync(dir).filter(name => name.endsWith('-ran'))
+
+/** Commits `files` on a new branch of `repo`, checked out nowhere afterwards. */
+function branchWithFiles(repo: string, branch: string, files: Record<string, string>): void {
+  git(['switch', '-q', '-c', branch], repo)
+  for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(repo, name), content)
+  git(['add', '.'], repo)
+  git(['commit', '-m', 'branch files'], repo)
+  git(['switch', '-q', 'main'], repo)
+}
+
+/** A git dependency with a prepare script, which makes npm spawn node to prepare it. */
+function gitDependency(): { url: string; sha: string } {
+  const dir = tmpdir('wt-dep-')
+  git(['init', '-q', '-b', 'main'], dir)
+  fs.writeFileSync(
+    path.join(dir, 'package.json'),
+    JSON.stringify({ name: 'dep', version: '1.0.0', scripts: { prepare: 'true' } }),
+  )
+  git(['add', '.'], dir)
+  git(['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-qm', 'dep'], dir)
+  return { url: `git+file://${dir}`, sha: git(['rev-parse', 'HEAD'], dir) }
+}
+
+/** A branch package that depends on a git dependency and carries `npmrc`. */
+function packageWithGitDependency(npmrc: string): Record<string, string> {
+  const dep = gitDependency()
+  const root = { name: 'cc324-synthetic', version: '1.0.0', dependencies: { dep: dep.url } }
+  const lock = {
+    ...root,
+    lockfileVersion: 3,
+    requires: true,
+    packages: { '': root, 'node_modules/dep': { version: '1.0.0', resolved: `${dep.url}#${dep.sha}` } },
+  }
+  return { 'package.json': JSON.stringify(root), 'package-lock.json': JSON.stringify(lock), '.npmrc': npmrc }
+}
+
+/** Each .npmrc names a program that writes `<key>-ran` into `markers` when npm runs it. */
+const HOSTILE_NPMRC: Record<string, (markers: string) => string> = {
+  git: markers => {
+    const script = path.join(markers, 'git.sh')
+    fs.writeFileSync(script, `#!/bin/sh\ntouch ${markers}/git-ran\nexec git "$@"\n`, { mode: 0o755 })
+    return `git=${script}\n`
+  },
+  'node-options': markers => {
+    const script = path.join(markers, 'require.cjs')
+    fs.writeFileSync(
+      script,
+      `require('fs').writeFileSync(${JSON.stringify(`${markers}/node-options-ran`)}, '')\n`,
+    )
+    return `node-options=--require=${script}\n`
+  },
+}
+
+describe('lifecycle scripts during worktree setup (CC-324)', () => {
+  it('a reused branch whose package.json has install scripts runs none of them under npm ci', async () => {
+    const repo = makeRepo({ command: ['npm', 'ci', '--no-audit', '--no-fund'] })
+    git(['switch', '-q', '-c', 'agent-chat/alice'], repo)
+    for (const [name, content] of Object.entries(SCRIPTED_PACKAGE))
+      fs.writeFileSync(path.join(repo, name), content)
+    git(['add', '.'], repo)
+    git(['commit', '-m', 'add scripts'], repo)
+    git(['switch', '-q', 'main'], repo)
+
+    const alloc = await createWorktreeStrategy().allocate(ctxFor(repo))
+
+    expect(alloc.ref?.reused).toBe('true')
+    expect(setupWarnings(alloc.warnings)).toEqual([])
+    expect(markersIn(alloc.cwd)).toEqual([])
+  }, 60_000)
+
+  it('turns scripts off even when the broker environment turns them on', () => {
+    const env = setupEnv({
+      PATH: '/bin',
+      npm_config_ignore_scripts: 'false',
+      NPM_CONFIG_IGNORE_SCRIPTS: 'false',
+    })
+    expect(env).toMatchObject({ npm_config_ignore_scripts: 'true', NPM_CONFIG_IGNORE_SCRIPTS: 'true' })
+  })
+
+  it.each(Object.keys(HOSTILE_NPMRC))(
+    'a reused branch whose .npmrc sets %s to its own program does not run it under npm ci',
+    async key => {
+      const repo = makeRepo({ command: ['npm', 'ci', '--no-audit', '--no-fund'] })
+      const markers = tmpdir('wt-markers-')
+      // On origin's default branch, so the .npmrc guard passes and the env pins are what is under test.
+      const { '.npmrc': npmrc = '', ...branchFiles } = packageWithGitDependency(
+        HOSTILE_NPMRC[key]?.(markers) ?? '',
+      )
+      fs.writeFileSync(path.join(repo, '.npmrc'), npmrc)
+      git(['add', '.'], repo)
+      git(['commit', '-m', 'npmrc'], repo)
+      git(['push', '-q', 'origin', 'main'], repo)
+      branchWithFiles(repo, 'agent-chat/alice', branchFiles)
+
+      const alloc = await createWorktreeStrategy().allocate(ctxFor(repo))
+
+      expect(alloc.ref?.reused).toBe('true')
+      expect(setupWarnings(alloc.warnings)).toEqual([])
+      expect(fs.existsSync(path.join(alloc.cwd, 'node_modules', 'dep', 'package.json'))).toBe(true)
+      expect(markersIn(markers)).toEqual([])
+    },
+    60_000,
+  )
+
+  it('pins every npm setting that names a program, over the broker environment', () => {
+    const hostile = {
+      npm_config_git: '/tmp/evil',
+      NPM_CONFIG_NODE_OPTIONS: '--require=/tmp/evil.js',
+      npm_config_script_shell: '/tmp/evil',
+      NPM_CONFIG_SHELL: '/tmp/evil',
+    }
+    const env = setupEnv({ PATH: '/bin', ...hostile })
+    expect(env).toMatchObject({
+      npm_config_git: 'git',
+      NPM_CONFIG_GIT: 'git',
+      npm_config_node_options: '--no-deprecation',
+      NPM_CONFIG_NODE_OPTIONS: '--no-deprecation',
+      npm_config_script_shell: '/bin/sh',
+      NPM_CONFIG_SCRIPT_SHELL: '/bin/sh',
+      npm_config_shell: '/bin/sh',
+      NPM_CONFIG_SHELL: '/bin/sh',
+    })
+  })
+
+  it('the repository declaration passes --ignore-scripts to its install', () => {
+    const step = parseSetupStep(fs.readFileSync(SETUP_FILE, 'utf8'))
+    expect(step).toMatchObject({ command: expect.arrayContaining(['npm', 'ci', '--ignore-scripts']) })
+  })
+})
+
+/** Needs the registry once to fetch pnpm; 10.28.1 is the version whose precedence was observed. */
+const PNPM_INSTALL = ['npx', '--yes', 'pnpm@10.28.1', 'install']
+
+const writesMarker = (name: string): string =>
+  `require('fs').writeFileSync(require('path').join(__dirname, ${JSON.stringify(`${name}-ran`)}), '')\nmodule.exports = { hooks: {} }\n`
+
+/** A branch package with a root postinstall and a .pnpmfile.cjs, each of which leaves a marker in the tree. */
+const PNPM_HOSTILE_PACKAGE: Record<string, string> = {
+  'package.json': JSON.stringify({
+    name: 'cc446-synthetic',
+    version: '1.0.0',
+    scripts: { postinstall: 'touch postinstall-ran' },
+  }),
+  '.pnpmfile.cjs': writesMarker('pnpmfile'),
+  'evil.cjs': writesMarker('evil'),
+}
+
+const HOSTILE_WORKSPACE = 'ignorePnpmfile: false\nignoreScripts: false\n'
+
+describe('pnpm during worktree setup (CC-446)', () => {
+  it('turns the pnpmfile off even when the broker environment turns it on', () => {
+    const env = setupEnv({
+      PATH: '/bin',
+      npm_config_ignore_pnpmfile: 'false',
+      NPM_CONFIG_IGNORE_PNPMFILE: 'false',
+    })
+    expect(env).toMatchObject({ npm_config_ignore_pnpmfile: 'true', NPM_CONFIG_IGNORE_PNPMFILE: 'true' })
+  })
+
+  it('a reused branch with a .pnpmfile.cjs and a postinstall runs neither under pnpm install', async () => {
+    const repo = makeRepo({ command: PNPM_INSTALL })
+    branchWithFiles(repo, 'agent-chat/alice', PNPM_HOSTILE_PACKAGE)
+
+    const alloc = await createWorktreeStrategy().allocate(ctxFor(repo))
+
+    expect(alloc.ref?.reused).toBe('true')
+    expect(setupWarnings(alloc.warnings)).toEqual([])
+    expect(fs.existsSync(path.join(alloc.cwd, 'node_modules'))).toBe(true)
+    expect(markersIn(alloc.cwd)).toEqual([])
+  }, 120_000)
+
+  it.each([
+    ['turns both back on', HOSTILE_WORKSPACE],
+    ['names its own pnpmfile', `${HOSTILE_WORKSPACE}pnpmfile: evil.cjs\n`],
+  ])(
+    'a reused branch whose pnpm-workspace.yaml %s runs no branch code',
+    async (_case, workspace) => {
+      const repo = makeRepo({ command: PNPM_INSTALL })
+      branchWithFiles(repo, 'agent-chat/alice', { ...PNPM_HOSTILE_PACKAGE, [PNPM_WORKSPACE_FILE]: workspace })
+
+      const alloc = await createWorktreeStrategy().allocate(ctxFor(repo))
+
+      expect(alloc.ref?.reused).toBe('true')
+      expect(setupWarnings(alloc.warnings)).toEqual([
+        `worktree setup skipped: the tree's ${PNPM_WORKSPACE_FILE} differs from origin's default branch`,
+      ])
+      expect(markersIn(alloc.cwd)).toEqual([])
+    },
+    120_000,
+  )
+
+  it('still runs the step when the branch keeps the pnpm-workspace.yaml origin has', async () => {
+    const repo = makeRepo({ command: ['true'] })
+    fs.writeFileSync(path.join(repo, PNPM_WORKSPACE_FILE), 'packages: []\n')
+    git(['add', '.'], repo)
+    git(['commit', '-m', 'workspace'], repo)
+    git(['push', '-q', 'origin', 'main'], repo)
+    branchWithFiles(repo, 'agent-chat/alice', { 'work.txt': 'work\n' })
+    const recorder = recording()
+
+    const alloc = await createWorktreeStrategy({ runSetup: recorder.runner }).allocate(ctxFor(repo))
+
+    expect(setupWarnings(alloc.warnings)).toEqual([])
+    expect(recorder.calls).toHaveLength(1)
+  })
+})
+
+/** Sets process variables until the test ends, so the setup step inherits them. */
+function overrideEnv(vars: Record<string, string>): void {
+  for (const [key, value] of Object.entries(vars)) {
+    const before = process.env[key]
+    process.env[key] = value
+    cleanups.push(() => {
+      if (before === undefined) delete process.env[key]
+      else process.env[key] = before
+    })
+  }
+}
+
+/** A tarball of a "pnpm" package whose bin writes `marker`, as a registry would serve it. */
+function fakePnpmTarball(marker: string): Buffer {
+  const dir = tmpdir('wt-fakepnpm-')
+  fs.mkdirSync(path.join(dir, 'package', 'bin'), { recursive: true })
+  fs.writeFileSync(
+    path.join(dir, 'package', 'package.json'),
+    JSON.stringify({ name: 'pnpm', version: '10.99.0', bin: { pnpm: 'bin/pnpm.cjs' } }),
+  )
+  fs.writeFileSync(
+    path.join(dir, 'package', 'bin', 'pnpm.cjs'),
+    `#!/usr/bin/env node\nrequire('fs').writeFileSync(${JSON.stringify(marker)}, '')\n`,
+    { mode: 0o755 },
+  )
+  execFileSync('tar', ['-czf', path.join(dir, 'pnpm.tgz'), '-C', dir, 'package'])
+  return fs.readFileSync(path.join(dir, 'pnpm.tgz'))
+}
+
+/** A loopback registry that serves only the fake "pnpm" and serves it. */
+async function fakeRegistry(tarball: Buffer): Promise<{ url: string }> {
+  const server = http.createServer((req, res) => {
+    if (req.url?.endsWith('.tgz')) return void res.end(tarball)
+    const dist = {
+      tarball: `http://127.0.0.1:${(server.address() as { port: number }).port}/pnpm/-/pnpm-10.99.0.tgz`,
+      integrity: `sha512-${createHash('sha512').update(tarball).digest('base64')}`,
+      shasum: createHash('sha1').update(tarball).digest('hex'),
+    }
+    res.setHeader('content-type', 'application/json')
+    res.end(
+      JSON.stringify({
+        name: 'pnpm',
+        'dist-tags': { latest: '10.99.0' },
+        versions: { '10.99.0': { name: 'pnpm', version: '10.99.0', dist } },
+      }),
+    )
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address() as { port: number }
+  cleanups.push(() => void server.close())
+  return { url: `http://127.0.0.1:${port}/` }
+}
+
+describe('a branch-chosen package manager during worktree setup (CC-458)', () => {
+  it.each(['npm_config_manage_package_manager_versions', 'NPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS'])(
+    'turns pnpm self-install off even when the broker environment sets %s to true',
+    key => {
+      const env = setupEnv({ PATH: '/bin', [key]: 'true' })
+      expect(env).toMatchObject({
+        npm_config_manage_package_manager_versions: 'false',
+        NPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS: 'false',
+      })
+    },
+  )
+
+  it('pins the corepack settings a branch .corepack.env would otherwise fill', () => {
+    const env = setupEnv({ PATH: '/bin', COREPACK_ENV_FILE: '1', COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: '1' })
+    expect(env).toMatchObject({ COREPACK_ENV_FILE: '0', COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: '0' })
+  })
+
+  it.each([
+    ['the underscore form', 'manage_package_manager_versions=true\n'],
+    ['the UPPER_CASE form', 'MANAGE_PACKAGE_MANAGER_VERSIONS=true\n'],
+    ['a registry', 'registry=http://127.0.0.1:1/\n'],
+  ])('a branch .npmrc with %s skips setup', async (_case, npmrc) => {
+    const repo = makeRepo({ command: ['true'] })
+    branchWithFiles(repo, 'agent-chat/alice', { [NPMRC_FILE]: npmrc })
+    const recorder = recording()
+
+    const alloc = await createWorktreeStrategy({ runSetup: recorder.runner }).allocate(ctxFor(repo))
+
+    expect(setupWarnings(alloc.warnings)).toEqual([
+      `worktree setup skipped: the tree's ${NPMRC_FILE} differs from origin's default branch`,
+    ])
+    expect(recorder.calls).toEqual([])
+  })
+
+  it('a branch that deletes the .npmrc origin has skips setup', async () => {
+    const repo = makeRepo({ command: ['true'] })
+    fs.writeFileSync(path.join(repo, NPMRC_FILE), 'save-exact=true\n')
+    git(['add', '.'], repo)
+    git(['commit', '-m', 'npmrc'], repo)
+    git(['push', '-q', 'origin', 'main'], repo)
+    git(['switch', '-q', '-c', 'agent-chat/alice'], repo)
+    git(['rm', '-q', NPMRC_FILE], repo)
+    git(['commit', '-m', 'drop npmrc'], repo)
+    git(['switch', '-q', 'main'], repo)
+    const recorder = recording()
+
+    const alloc = await createWorktreeStrategy({ runSetup: recorder.runner }).allocate(ctxFor(repo))
+
+    expect(setupWarnings(alloc.warnings)).toHaveLength(1)
+    expect(recorder.calls).toEqual([])
+  })
+
+  it('still runs the step when the branch keeps the .npmrc origin has', async () => {
+    const repo = makeRepo({ command: ['true'] })
+    fs.writeFileSync(path.join(repo, NPMRC_FILE), 'save-exact=true\n')
+    git(['add', '.'], repo)
+    git(['commit', '-m', 'npmrc'], repo)
+    git(['push', '-q', 'origin', 'main'], repo)
+    branchWithFiles(repo, 'agent-chat/alice', { 'work.txt': 'work\n' })
+    const recorder = recording()
+
+    const alloc = await createWorktreeStrategy({ runSetup: recorder.runner }).allocate(ctxFor(repo))
+
+    expect(setupWarnings(alloc.warnings)).toEqual([])
+    expect(recorder.calls).toHaveLength(1)
+  })
+
+  it.each([NPMRC_FILE, PNPM_WORKSPACE_FILE])(
+    'a branch whose %s is a symlink to /dev/zero skips setup without hanging',
+    async file => {
+      const repo = makeRepo({ command: ['true'] })
+      git(['switch', '-q', '-c', 'agent-chat/alice'], repo)
+      fs.symlinkSync('/dev/zero', path.join(repo, file))
+      git(['add', '.'], repo)
+      git(['commit', '-m', 'link'], repo)
+      git(['switch', '-q', 'main'], repo)
+      const recorder = recording()
+
+      const alloc = await createWorktreeStrategy({ runSetup: recorder.runner }).allocate(ctxFor(repo))
+
+      expect(setupWarnings(alloc.warnings)).toEqual([
+        `worktree setup skipped: the tree's ${file} differs from origin's default branch`,
+      ])
+      expect(recorder.calls).toEqual([])
+    },
+    15_000,
+  )
+
+  it('a reused branch naming another pnpm and a registry for it runs that pnpm never', async () => {
+    const markers = tmpdir('wt-markers-')
+    const registry = await fakeRegistry(fakePnpmTarball(path.join(markers, 'attacker-pnpm-ran')))
+    const tool = tmpdir('wt-pnpm-')
+    execFileSync('npm', ['install', '--prefix', tool, 'pnpm@10.28.1'], { cwd: tool, stdio: 'pipe' })
+    const repo = makeRepo({ command: ['node', path.join(tool, 'node_modules/pnpm/bin/pnpm.cjs'), 'install'] })
+    // The .npmrc sits on origin's default branch so the .npmrc guard stays out of the way: this isolates the pin.
+    fs.writeFileSync(path.join(repo, NPMRC_FILE), `registry=${registry.url}\n`)
+    git(['add', '.'], repo)
+    git(['commit', '-m', 'registry'], repo)
+    git(['push', '-q', 'origin', 'main'], repo)
+    branchWithFiles(repo, 'agent-chat/alice', {
+      'package.json': JSON.stringify({
+        name: 'cc458-synthetic',
+        version: '1.0.0',
+        packageManager: 'pnpm@10.99.0',
+      }),
+    })
+    // npx exports the branch .npmrc registry like this, and pnpm's version switch fetches from it.
+    overrideEnv({ npm_config_registry: registry.url, PNPM_HOME: tmpdir('wt-pnpm-home-') })
+
+    const alloc = await createWorktreeStrategy().allocate(ctxFor(repo))
+
+    expect(alloc.ref?.reused).toBe('true')
+    expect(setupWarnings(alloc.warnings)).toEqual([])
+    expect(markersIn(markers)).toEqual([])
+  }, 120_000)
 })
 
 const EGRESS_HOOK = path.resolve('node_modules/@titan-design/egress-scan/hooks/pre-push')

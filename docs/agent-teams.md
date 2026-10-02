@@ -585,6 +585,10 @@ the broker's own environment. Values are stored in plaintext in the launch plan
 under the agent's state directory, and a resume or surface switch reloads the profile by
 name from disk, so they carry over and any edit made since the spawn applies. Keep secrets out of profile files.
 
+After the plan's env is applied, `run-agent` puts `<state dir>/gh-shim` first on `PATH`, so a
+profile's own `PATH` still loses that first slot. The `gh` there answers read-only PR and run
+queries from REST instead of GraphQL (CC-395; see the README's CLI section).
+
 ---
 
 ### 5. Spawning: one interface, surface as a parameter
@@ -1404,6 +1408,16 @@ be read. Each remaining agent goes through the same retire as `agent retire <nam
 refusals still apply; the liveness check is repeated just before each one. A failed retire
 is reported and the rest continue.
 
+`agent park` (CC-282) removes a finished agent's tree and keeps its branch. It takes an exited
+agent, or a detached one this broker no longer tracks (the state after a broker restart), and
+refuses a live or still-tracked one. For a detached agent it also lists process working
+directories with `lsof` and refuses, naming the pid, while any process sits inside the tree; if
+the listing fails it refuses too, since the agent's process may have outlived the broker. An
+`lsof` exit 1 that still printed parseable output counts as a listing. The tree must be clean, on
+its branch and pushed. Ignored files block the removal unless they are `node_modules`, `dist`,
+`coverage`, `.turbo`, a `*.tsbuildinfo` file at any depth (a directory so named is searched, not
+trusted), or a top-level `.claude` (CC-334).
+
 `run-agent` is a process-launch contract the moment the first `plan.json` is
 written — it must be treated the same way `broker` and `mcp` are (service plan
 §4.3): never renamed without changing the plan writer in the same commit.
@@ -1542,6 +1556,21 @@ Therefore:
   `worktreeBudget` in `~/.agent-chat/config.json` (`config.ts`'s
   `resolveWorktreeBudget`), with the same fallback rule and the same
   per-spawn read as `agentSlots`. An adopted `worktree:` takes no slot.
+- **Machine guard (CC-406):** the slot cap is per broker and the seat caps are
+  per seat, so neither sees the machine. `agent_spawn` also refuses a headless
+  spawn while `machineHeadlessAgents` (default 10) headless agents are live
+  (spawning, live or detached, from every seat). It refuses any spawn while free
+  memory is below `machineMemoryFreePercent` (default 15) percent. Both keys
+  live in `~/.agent-chat/config.json` and are read per spawn. The refusal names
+  the reading, the limit and the config key. Free memory is
+  `sysctl -n kern.memorystatus_level`, read on macOS only. Swap is not a gate:
+  macOS keeps swap allocated long after memory pressure ends, so swap used reads
+  high on a machine with plenty free. A reader that fails, or another platform,
+  never refuses, and the failure is logged as `machine_guard_reader_failed`. A
+  broken reader would otherwise stop every seat. `seats status --json` reports
+  the readings in its `machine` block: `headlessAgents`, `memoryFree`, `swap`
+  (used percent, no limit) and the full-suite slots in use (`fullSuiteSlots`,
+  README "Tests"). `agent_resume` is not guarded yet.
 - **Roles and depth (CC-163):** only a `coordinator` profile may spawn; a
   worker (any profile without `"role": "coordinator"`) is refused. The cap
   counts coordinator links only: `agent_spawned.meta.coordinator_depth`, capped

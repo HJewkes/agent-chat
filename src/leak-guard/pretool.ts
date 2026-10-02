@@ -105,6 +105,7 @@ export const REASONS = {
   includePath: `leak-guard: git -c or --config-env on include.path or includeIf.*.path pulls in config that sets core.hooksPath or that the guard cannot read in time, or runs beside other commands or a redirect, which would bypass the pre-push leak scan. ${DOCS}`,
   gitConfigUnresolved: `leak-guard: git -c or --config-env with a key or value the guard cannot read, before a command that runs hooks, may set core.hooksPath or include.path and would bypass the pre-push leak scan. Spell the config out, or drop it. ${DOCS}`,
   writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. Write the file in one Bash call and post it in the next. ${DOCS}`,
+  ghByPath: `leak-guard: gh called by path skips the agent's gh shim and the gh-write leak scan. Use bare gh for reads and agent-chat gh-write -- <gh args> for every GitHub write. ${DOCS}`,
   aliasWritten: `leak-guard: this command line writes git config and runs a git word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
 } as const
 
@@ -284,6 +285,8 @@ interface GitRun {
   cmd: SimpleCommand
   /** The command word is git, not an expansion that may be git. */
   literal: boolean
+  /** The command word is git, or an expansion the line ties to git. */
+  tied: boolean
 }
 
 function gitRun(
@@ -293,16 +296,33 @@ function gitRun(
   ctx: GuardContext,
   scope: Scope,
   literal: boolean,
+  tied = literal,
 ): GitRun {
   const resolved = marked.map(word => resolveWord(word, cmd, ctx, scope))
-  return { resolved, args: marked.map(unmark), marked, assigns, cmd, literal }
+  return { resolved, args: marked.map(unmark), marked, assigns, cmd, literal, tied }
 }
 
 const NAMES_GIT = /\bgit\b/
+const VARIABLE = /\$\{?([A-Za-z_][A-Za-z0-9_]*)/g
+// Positional and special parameters, REPLY, argv, reply and MAPFILE are set without naming them.
+const UNNAMED_SET = /\$\{?(?:[0-9*@]|(?:_|REPLY|argv|reply|MAPFILE)(?![A-Za-z0-9_]))/
+// `${!y}`, a zsh flag such as `${(P)y}` or `${=x}`, and zsh's bare `$=x`, `$~x` and `$^x` hide the name.
+const HIDDEN_NAME = /\$\{(?![A-Za-z_])|\$[=~^]/
+// `${NAME:-default}` and its kin read NAME without assigning it, unlike `${NAME:=default}`.
+const READ_ONLY_REF = new RegExp(`\\$\\{${NAME}(?=:?[-+?]|[#%/])`, 'g')
 
-/** A lookup the guard cannot make denies where the command is git, or may be git on a line that names git. */
-const unsure = (run: GitRun, scope: Scope): string | undefined =>
-  run.literal || NAMES_GIT.test(scope.said) ? REASONS.aliasEnv : undefined
+/** An expanded command word that names git, runs a substitution, or reads a variable the line may set or the hook holds as git. */
+function tiedToGit(head: string, cmd: SimpleCommand, ctx: GuardContext, scope: Scope): boolean {
+  const raw = unmark(head)
+  if (NAMES_GIT.test(raw.replace(QUOTING, '')) || UNNAMED_SET.test(raw) || HIDDEN_NAME.test(raw)) return true
+  if (cmd.substitutions.some(sub => head.includes(LIVE + sub.raw))) return true
+  const said = scope.said.replace(READ_ONLY_REF, ' ')
+  const names = [...raw.matchAll(VARIABLE)].map(match => match[1] as string)
+  return names.some(name => mentions(said, name) || NAMES_GIT.test(ctx.env[name] ?? ''))
+}
+
+/** A lookup the guard cannot make denies where the command is git or an expansion the line ties to git (TP-613). */
+const unsure = (run: GitRun): string | undefined => (run.tied ? REASONS.aliasEnv : undefined)
 
 /** The one boundary every command that is or may be git passes: git's own options, the config they include, then its alias. */
 function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
@@ -389,9 +409,9 @@ function checkAlias(run: GitRun, ctx: GuardContext, scope: Scope, depth: number)
   if (call === undefined) return undefined
   if (WRITES_CONFIG.some(pattern => pattern.test(scope.said)))
     return run.literal || NAMES_GIT.test(scope.said) ? REASONS.aliasWritten : undefined
-  if (call === UNSURE_CALL) return unsure(run, scope)
+  if (call === UNSURE_CALL) return unsure(run)
   const env = aliasEnv(run, call.vars, ctx, scope)
-  if (env === undefined) return unsure(run, scope)
+  if (env === undefined) return unsure(run)
   const alias = ctx.readAlias(call.sub, call.dir, call.globals, env)
   if (alias === undefined) return undefined
   if (scope.aliases >= MAX_ALIASES) return REASONS.aliasDepth
@@ -410,7 +430,7 @@ function checkAlias(run: GitRun, ctx: GuardContext, scope: Scope, depth: number)
   if (value === undefined) return undefined
   const words = [...run.args.slice(0, call.at), ...value, ...rest]
   return checkGitRun(
-    { ...run, resolved: words, args: words, marked: words, literal: true },
+    { ...run, resolved: words, args: words, marked: words, literal: true, tied: true },
     ctx,
     inner,
     depth,
@@ -697,7 +717,7 @@ const postsText = (marked: readonly string[]): boolean => ['pr', 'api'].includes
  * It may also expand to nothing or to a wrapper, so the words after it are checked as a command.
  */
 function checkHidden(
-  marked: readonly string[],
+  [head = '', ...marked]: readonly string[],
   assigns: readonly string[],
   cmd: SimpleCommand,
   ctx: GuardContext,
@@ -710,7 +730,12 @@ function checkHidden(
   const unseen = { ...scope, cwd: undefined, env: undefined }
   return (
     checkSimple({ ...cmd, words, marked: [...marked] }, ctx, unseen, depth) ??
-    checkGitRun(gitRun(marked, assigns, cmd, ctx, scope, false), ctx, scope, depth)
+    checkGitRun(
+      gitRun(marked, assigns, cmd, ctx, scope, false, tiedToGit(head, cmd, ctx, scope)),
+      ctx,
+      scope,
+      depth,
+    )
   )
 }
 
@@ -733,14 +758,14 @@ function checkSimple(cmd: SimpleCommand, ctx: GuardContext, scope: Scope, depth:
   const at = unwrapped.chdir ? { ...scope, cwd: undefined } : scope
   const marked = unwrapped.words.slice(1)
   const head = resolveWord(unwrapped.words[0] ?? '', cmd, ctx, at)
-  if (head === undefined) return checkHidden(marked, unwrapped.assigns, cmd, ctx, at, depth)
+  if (head === undefined) return checkHidden(unwrapped.words, unwrapped.assigns, cmd, ctx, at, depth)
   const args = marked.map(unmark)
   const name = path.basename(head)
   if (SHELLS.has(name)) return checkShell(args, cmd.stdin, ctx, at, depth)
   if (name === 'eval') return checkEval(marked, cmd, ctx, at, depth)
   if (name === 'git')
     return checkGitRun(gitRun(marked, unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
-  if (name === 'gh') return checkGh(marked, cmd, ctx, at)
+  if (name === 'gh') return head === 'gh' ? checkGh(marked, cmd, ctx, at) : REASONS.ghByPath
   if (name === 'agent-chat' && args[0] === 'gh-write') return checkGh(ghWriteArgs(marked), cmd, ctx, at)
   if (ENV_EDITS.has(name)) return checkEnvEdit(args)
   return undefined

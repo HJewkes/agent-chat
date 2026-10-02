@@ -2,11 +2,12 @@ import type { AgentLifecycle, DeliveredMessage } from '../../protocol.js'
 import { addClaim, isStalled, sameClaim, type AgentPhase, type Claim, type Ledger } from './ledger.js'
 import { agentNameFor, reviewerNameFor, successorNameFor } from './plan.js'
 import type { PlannedSlice, Report } from './report.js'
+import { shepherdTarget, type Registration, type ShepherdRow } from './shepherd.js'
 
 /**
  * The tick's phase machine: given every claim and what the tick observed
  * about it, the actions that move each claim one phase. Pure: the caller
- * reads the roster, inbox, transcript, diff and PR, and executes the actions
+ * reads the roster, inbox, transcript, diff and Shepherd, and executes the actions
  * in order, writing each `update` before the `spawn` that follows it.
  */
 
@@ -23,7 +24,8 @@ export interface Observation {
   /** A finished planner's slices, parsed from its plan file. */
   slices?: PlannedSlice[]
   diff?: { reviewable: boolean; reason: string }
-  pr?: { state: 'open' | 'merged' | 'closed'; checks: 'pass' | 'fail' | 'pending'; head?: string }
+  /** Shepherd's row for the claim's PR, absent from the row when Shepherd has none; `landed` is read for a finished run. */
+  shepherd?: { row?: ShepherdRow; landed?: boolean }
 }
 
 export type SpawnContext =
@@ -45,6 +47,8 @@ export type Action =
   /** Retire in the order given: successors and reviewers first, the original agent last (CC-141). */
   | { kind: 'retire'; key: ClaimKey; names: string[] }
   | { kind: 'add'; claims: Claim[] }
+  /** Hands the claim's PR to Shepherd, after the update that moves it to `shepherding`. */
+  | { kind: 'register'; key: ClaimKey; registration: Registration }
 
 export const claimKey = (c: ClaimKey): string => `${c.taskId}#${c.slice ?? ''}`
 
@@ -65,6 +69,7 @@ const STEPS: Partial<Record<Claim['phase'], Step>> = {
   parked: afterAnswer,
   reviewing: (claim, obs) => (finished(obs) ? afterReviewer(claim, obs) : []),
   'awaiting-merge': afterMerge,
+  shepherding: afterMerge,
 }
 
 function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
@@ -120,9 +125,12 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
     return [update(claim, { phase: 'parked', questionId: report.parked, lastReport })]
   if (report?.status === 'BLOCKED' || report?.status === 'NEEDS_CONTEXT')
     return [stall(claim, report.firstLine)]
+  const pr = report?.pr ?? claim.pr
+  if (report?.status === 'DONE' && pr !== undefined)
+    return handOff(claim, pr, claim.agentName ?? workerOf(claim), { lastReport })
   if (obs.diff?.reviewable === true) {
     const name = reviewerNameFor(claim.taskId, claim.reviewRound ?? 0, claim.slice, claim.namePrefix)
-    return spawn(claim, { role: 'reviewer', name }, 'reviewing', { lastReport, pr: report?.pr ?? claim.pr })
+    return spawn(claim, { role: 'reviewer', name }, 'reviewing', { lastReport, pr })
   }
   if (report?.status === 'DONE') return [update(claim, { phase: 'done', lastReport }), retireAll(claim)]
   return [stall(claim, lastReport === undefined || lastReport === '' ? 'no final report' : lastReport)]
@@ -135,25 +143,52 @@ function afterAnswer(claim: Claim, obs: Observation): Action[] {
   return successor(claim, context, { questionId: undefined })
 }
 
+/** An approved PR goes to Shepherd for CI and merge; a PR Shepherd already holds is not registered again. */
 function afterReviewer(claim: Claim, obs: Observation): Action[] {
   const verdict = obs.report?.verdict
-  const pr = obs.pr
-  const approved = verdict === 'APPROVE' && pr !== undefined && pr.state !== 'closed'
-  if (approved && pr.checks === 'pass')
-    return [update(claim, { phase: 'awaiting-merge', lastReport: obs.report?.firstLine })]
-  if (approved && pr.checks === 'pending') return []
-  const why = `verdict ${verdict ?? 'unreadable'}, checks ${pr?.checks ?? 'no PR'}`
+  const lastReport = obs.report?.firstLine
+  if (verdict === 'APPROVE' && claim.pr !== undefined)
+    return obs.shepherd?.row === undefined
+      ? handOff(claim, claim.pr, workerOf(claim), { lastReport })
+      : [update(claim, { phase: 'shepherding', lastReport })]
+  const why = `verdict ${verdict ?? 'unreadable'}${claim.pr === undefined ? ', no PR' : ''}`
   const round = claim.reviewRound ?? 0
   if (round >= 1) return [stall(claim, `second failed review (${why})`)]
   return successor(claim, { kind: 'review', review: obs.report?.text ?? why }, { reviewRound: round + 1 })
 }
 
+const ENDED: ReadonlySet<ShepherdRow['phase']> = new Set(['done', 'failed', 'cancelled'])
+
+/** Shepherd merges; the claim finishes once its run has landed the PR, and stalls on a run that ended any other way. */
 function afterMerge(claim: Claim, obs: Observation): Action[] {
-  const head = obs.pr?.head === undefined ? {} : { prHead: obs.pr.head }
-  if (obs.pr?.state === 'merged') return [update(claim, { phase: 'done', ...head }), retireAll(claim)]
-  if (obs.pr?.state === 'closed')
-    return [update(claim, { stalledReason: 'PR closed without merging', ...head })]
-  return []
+  if (claim.pr === undefined) return [stall(claim, 'no PR recorded for Shepherd to merge')]
+  if (obs.shepherd === undefined) return []
+  const { row, landed } = obs.shepherd
+  if (row === undefined) return handOff(claim, claim.pr, workerOf(claim), {})
+  const head = row.headSha === null ? {} : { prHead: row.headSha }
+  if (row.phase === 'post-merge' || (row.phase === 'done' && landed === true))
+    return [update(claim, { phase: 'done', ...head }), retireAll(claim)]
+  if (ENDED.has(row.phase)) {
+    const why = row.stalled === null ? '' : `: ${row.stalled.reason}`
+    return [
+      update(claim, {
+        stalledReason: `Shepherd run ${row.runId} ended ${row.phase} without merging${why}`,
+        ...head,
+      }),
+    ]
+  }
+  return claim.phase === 'awaiting-merge' ? [update(claim, { phase: 'shepherding' })] : []
+}
+
+/** A PR Shepherd cannot name stalls here; one it refuses stalls when the register runs. */
+function handOff(claim: Claim, pr: string, implementer: string, patch: ClaimPatch): Action[] {
+  const target = shepherdTarget(pr)
+  if (target === undefined) return [stall(claim, `${pr} is not a GitHub PR Shepherd can take`)]
+  const registration = { target, task: `${claim.initiative}/${claim.taskId}`, implementer }
+  return [
+    update(claim, { ...patch, phase: 'shepherding', pr }),
+    { kind: 'register', key: keyOf(claim), registration },
+  ]
 }
 
 /** The worker the claim's next successor takes over from: the latest successor, else the original. */

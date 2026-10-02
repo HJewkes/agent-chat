@@ -67,6 +67,9 @@ export const configPath = (): string => path.join(home(), 'config.json')
 /** `agent-chat gh-write`'s machine-wide lock (a directory) and the time the next write may start. */
 export const ghWriteLockPath = (): string => path.join(home(), 'gh-write.lock')
 
+/** CC-406: one directory per held full-suite test slot, see `suite-slots.ts`. */
+export const suiteSlotsDir = (): string => path.join(home(), 'suite-slots')
+
 export const ghWriteStampPath = (): string => path.join(home(), 'gh-write.stamp.json')
 
 /** The launchd label for `agent-chat mirror`; the plist and every `launchctl` call use it. */
@@ -95,6 +98,9 @@ export const denylistPath = (): string => path.join(home(), 'private-denylist.js
 
 /** The `core.hooksPath` every spawned agent's git runs with; rewritten at each spawn (CC-268). */
 export const gitHooksDir = (): string => path.join(home(), 'git-hooks')
+
+/** Holds the `gh` every spawned agent finds first on its PATH (CC-395). */
+export const ghShimDir = (): string => path.join(home(), 'gh-shim')
 
 /** The burndown claim ledger: which task each tick-spawned agent holds, and in what phase. */
 export const burndownLedgerPath = (): string => path.join(home(), 'burndown.json')

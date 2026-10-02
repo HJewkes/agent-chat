@@ -12,7 +12,7 @@ Human commands:
   answer <id> <text...>      answer a question; routes back to the asker
   dismiss <id>               close an item without answering, or decline an endorsement
   approve <id> <allow|deny>  answer an agent's permission prompt from here
-  endorse <id>               approve a composed message; delivers it with your authority
+  endorse [options] <id>     approve a composed message; delivers it with your authority
   digest [options]           morning digest: asks, decisions, done, stalled, spend and next picks
 
 Commands:
@@ -32,6 +32,8 @@ Agent commands:
   profiles                   agent profiles available to spawn with
   gh-write <gh-args...>      one gh write after --, spaced machine-wide and retried on the secondary
                              rate limit
+  suite-slot <command...>    run a full test suite after --, holding one of the machine-wide
+                             full-suite slots
   leak-scan [options]        scan added lines for private data; exit 0 clean, 1 findings, 2 cannot
                              pass
 
@@ -75,7 +77,9 @@ Usage: agent-chat endorse [options] <id>
 approve a composed message; delivers it with your authority
 
 Options:
-  -h, --help  display help for command
+  --to <value>    the recipient the request names, exactly
+  --text <value>  the request text, byte for byte
+  -h, --help      display help for command
 
 === agent-chat digest
 Usage: agent-chat digest [options]
@@ -334,8 +338,9 @@ Commands:
                                implementers, reviewers and planners against their caps, its other
                                running agents, parked implementers, the pool reading with its age
                                and the charter stop that applies, unread inbox messages since the
-                               seat last sent one, and the top eligible tasks. A spend cap with no
-                               saved meter to count it is a stop
+                               seat last sent one, the machine-wide headless agents, free memory and
+                               full-suite slots against their limits, swap used, and the top
+                               eligible tasks. A spend cap with no saved meter to count it is a stop
   dispatches [options] <seat>  one folded record per agent run from a seat's dispatch log (CC-332),
                                read-only: the broker's spawn and retire rows and the seat's own rows
                                merged, with the spend. Lines that are not a JSON object with an
@@ -376,7 +381,8 @@ Usage: agent-chat seats status [options] <seat>
 
 what a seat reads before it dispatches (CC-317), read-only: implementers, reviewers and planners
 against their caps, its other running agents, parked implementers, the pool reading with its age and
-the charter stop that applies, unread inbox messages since the seat last sent one, and the top
+the charter stop that applies, unread inbox messages since the seat last sent one, the machine-wide
+headless agents, free memory and full-suite slots against their limits, swap used, and the top
 eligible tasks. A spend cap with no saved meter to count it is a stop
 
 Options:
@@ -671,6 +677,14 @@ Options:
 Usage: agent-chat gh-write [options] <gh-args...>
 
 one gh write after --, spaced machine-wide and retried on the secondary rate limit
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat suite-slot
+Usage: agent-chat suite-slot [options] <command...>
+
+run a full test suite after --, holding one of the machine-wide full-suite slots
 
 Options:
   -h, --help  display help for command

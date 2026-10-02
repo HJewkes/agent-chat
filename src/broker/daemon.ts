@@ -3,7 +3,8 @@ import net from 'node:net'
 import { serve, type ServerType } from '@hono/node-server'
 import type { Hono } from 'hono'
 import { defaultPort, home, socketPath } from '../paths.js'
-import { resolveAgentSlots } from '../config.js'
+import { resolveAgentSlots, resolveMachineLimits } from '../config.js'
+import { readMemoryFree } from '../agents/machine-guard.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { backfillAtBoot } from '../agents/ledger/backfill-run.js'
 import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
@@ -25,6 +26,7 @@ import {
   writePidFile,
 } from './lifecycle.js'
 import { logEvent } from './log.js'
+import { installedCliPaths, lsofCwd, readPsTable, startReaper } from './reaper.js'
 import { deliver, SocketServer } from './socket.js'
 import { ensureToken } from './token.js'
 import { VERSION } from './version.js'
@@ -73,6 +75,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   const { core, socketServer } = openServices()
   listener.serve(socketServer)
   socketServer.startLifecycleVerifier()
+  const stopReaper = startBrokerReaper()
   const { server, openConnections } = listener
 
   // Only after the socket is serving, and only ever best-effort.
@@ -102,6 +105,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
     stopWatching: () => {
       stopWatching?.()
       stopIdleWatch?.()
+      stopReaper()
     },
   })
 
@@ -132,6 +136,25 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
 
   installSignalHandlers(shutdown)
   return server
+}
+
+const REAP_MIN_AGE_MS = 120_000
+
+function startBrokerReaper(): () => void {
+  const excludePaths = installedCliPaths()
+  return startReaper({
+    readTable: () => readPsTable(),
+    kill: pid => process.kill(pid, 'SIGTERM'),
+    cwdOf: lsofCwd,
+    log: entry => logEvent('reaped', entry),
+    options: () => ({
+      uid: process.getuid?.() ?? -1,
+      now: Date.now(),
+      minAgeMs: REAP_MIN_AGE_MS,
+      selfPid: process.pid,
+      excludePaths,
+    }),
+  })
 }
 
 /**
@@ -182,7 +205,12 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
       }
   const socketServer = new SocketServer(
     core,
-    { semaphore: newAgentSlots(), ...(ledger === undefined ? {} : { ledger }), ...journal },
+    {
+      semaphore: newAgentSlots(),
+      machineGuard: { readMemoryFree: () => readMemoryFree(), limits: resolveMachineLimits },
+      ...(ledger === undefined ? {} : { ledger }),
+      ...journal,
+    },
     ledger === undefined ? undefined : events.ledgerHandle(),
   )
   return { core, socketServer }

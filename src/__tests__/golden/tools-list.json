@@ -538,6 +538,13 @@
           "remote_control": {
             "type": "boolean",
             "description": "Optional. Omit to carry Remote Control across when this session was launched with --remote-control. Set true if you turned it on mid-session with /remote-control, which the broker cannot see; set false to drop it. A worker successor never gets it, and true is refused for one. Headless successors ignore it."
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "park"
+            ],
+            "description": "Optional. Omit for an ordinary teleport. Set \"park\" when you are idle waiting on the human and are handing off to a fresh session: your successor is told to ask your open question from the handoff first, so restate that question in the handoff."
           }
         },
         "required": [

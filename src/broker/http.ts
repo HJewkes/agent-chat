@@ -1,3 +1,4 @@
+import { CLIENT_HEADER, createRequestGuard } from '@titan-design/daemon'
 import { Hono, type Context, type MiddlewareHandler } from 'hono'
 import {
   TOKEN_HEADER,
@@ -76,6 +77,8 @@ export function buildHttpApp({
     await next()
   })
 
+  app.use('*', requestGuard(port))
+
   app.use('/api/*', requireToken(token))
 
   // The live tail is a read of the same queue, session and message activity
@@ -125,6 +128,27 @@ export function buildHttpApp({
   )
 
   return app
+}
+
+/**
+ * The daemon package's guard: a Host allowlist on every request against DNS
+ * rebinding, and on writes an Origin or `X-Titan-Client` plus a JSON body, so a
+ * cross-origin simple POST cannot reach a verdict route. The Origin check above
+ * stays because it is stricter (exact port, http only, reads too).
+ */
+function requestGuard(port: () => number | null): MiddlewareHandler {
+  const guard = createRequestGuard({}, () => port() ?? 0)
+  return async (c, next) => {
+    const refusal = guard({
+      method: c.req.method,
+      host: c.req.header('Host') ?? new URL(c.req.url).host,
+      origin: c.req.header('Origin'),
+      client: c.req.header(CLIENT_HEADER),
+      contentType: c.req.header('Content-Type'),
+    })
+    if (refusal !== null) return c.json<ErrorResponse>({ error: refusal.message }, refusal.status)
+    await next()
+  }
 }
 
 /**

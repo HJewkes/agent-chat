@@ -205,10 +205,22 @@ describe('resume', () => {
     await drain()
 
     expect(resumed.ok).toBe(false)
+    expect(resumed.code).toBeUndefined()
     expect(records(h)[1]?.terminal).toMatchObject({
       outcome: 'failed',
       reason: expect.stringMatching(/^resume failed: /),
     })
+  })
+
+  // CC-441. Catches: the code dropped, or set on every launch failure rather than only a surface refusal.
+  it('a resume the iTerm surface refuses carries code surface_refused', async () => {
+    const child = exitingChild()
+    const h = start({ spawn: child.spawn })
+    await finishedAgent(h, child)
+
+    const resumed = await h.supervisor.resume('scout', { surface: 'iterm-window' })
+
+    expect(resumed).toMatchObject({ ok: false, code: 'surface_refused' })
   })
 })
 

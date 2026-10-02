@@ -333,6 +333,19 @@ export class AgentLog {
     return this.all().find(a => a.teleportFrom === agentId)
   }
 
+  /** An identity followed by each teleport successor in turn, oldest first; empty when it is unknown. */
+  lineageFrom(agentId: string): AgentIdentity[] {
+    const agents = this.all()
+    const line: AgentIdentity[] = []
+    let next = agents.find(a => a.agentId === agentId)
+    while (next !== undefined && !line.includes(next)) {
+      line.push(next)
+      const from = next.agentId
+      next = agents.find(a => a.teleportFrom === from)
+    }
+    return line
+  }
+
   /**
    * The raw `meta` of an identity's spawn row.
    *

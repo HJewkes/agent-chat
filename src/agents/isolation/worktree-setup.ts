@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
+import { lstat } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { gitChildEnv } from '../../git.js'
@@ -62,12 +63,44 @@ const SETUP_ENV_KEYS = new Set([
 ])
 const SETUP_ENV_PREFIXES = ['LC_', 'npm_config_', 'NPM_CONFIG_', 'COREPACK_']
 
+/** CC-324: a resumed tree holds the branch's package.json and .npmrc; env outranks the .npmrc, so no branch program runs. */
+const PINNED_NPM_CONFIG: Readonly<Record<string, string>> = {
+  ignore_scripts: 'true',
+  git: 'git',
+  // npm reads an empty value as unset, which lets the .npmrc win.
+  node_options: '--no-deprecation',
+  script_shell: '/bin/sh',
+  shell: '/bin/sh',
+  // pnpm loads a branch .pnpmfile.cjs (arbitrary code) even with ignore-scripts on.
+  ignore_pnpmfile: 'true',
+  // pnpm 10 downloads and runs the packageManager version a branch names, from the registry its .npmrc names.
+  manage_package_manager_versions: 'false',
+}
+
+/** CC-458: a corepack shim fills unset COREPACK_* keys from a branch .corepack.env, so these are set outright. */
+const PINNED_ENV: Readonly<Record<string, string>> = {
+  COREPACK_ENV_FILE: '0',
+  COREPACK_ENABLE_UNSAFE_CUSTOM_URLS: '0',
+}
+
+/** CC-446: pnpm 10 ranks this file's ignorePnpmfile and ignoreScripts above every env pin. */
+export const PNPM_WORKSPACE_FILE = 'pnpm-workspace.yaml'
+
+/** CC-458: npm exports a branch .npmrc key as env, which overwrites an env pin, so that file is guarded too. */
+export const NPMRC_FILE = '.npmrc'
+const GUARDED_FILES = [PNPM_WORKSPACE_FILE, NPMRC_FILE]
+
 /** An allowlist of what an install needs: the step runs on the broker, outside any permission profile. */
 export function setupEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { GIT_TERMINAL_PROMPT: '0' }
   for (const [key, value] of Object.entries(env)) {
     if (SETUP_ENV_KEYS.has(key) || SETUP_ENV_PREFIXES.some(prefix => key.startsWith(prefix))) out[key] = value
   }
+  for (const [key, value] of Object.entries(PINNED_NPM_CONFIG)) {
+    out[`npm_config_${key}`] = value
+    out[`NPM_CONFIG_${key.toUpperCase()}`] = value
+  }
+  Object.assign(out, PINNED_ENV)
   return out
 }
 
@@ -108,6 +141,31 @@ async function gitOutput(args: readonly string[], cwd: string): Promise<string |
 /** The declaration as committed at `sha`, or null when that commit has none. */
 const declarationAt = (gitRoot: string, sha: string): Promise<string | null> =>
   gitOutput(['cat-file', 'blob', `${sha}:${SETUP_FILE}`], gitRoot)
+
+/** The blob id of `file` as the tree holds it, null when absent, or NOT_REGULAR for anything git would read through. */
+const NOT_REGULAR = Symbol('not-regular')
+async function blobInTree(worktree: string, file: string): Promise<string | null | typeof NOT_REGULAR> {
+  const stat = await lstat(path.join(worktree, file)).catch(() => null)
+  if (stat === null) return null
+  // A symlink to /dev/zero or a fifo would hang `git hash-object`, so it is never hashed.
+  if (!stat.isFile()) return NOT_REGULAR
+  return gitOutput(['hash-object', '--', file], worktree)
+}
+
+/** True when the tree's copy of `file` is not byte-for-byte the one at the trusted base. */
+async function differsFromBase(target: SetupTarget, file: string): Promise<boolean> {
+  const [atBase, inTree] = await Promise.all([
+    gitOutput(['rev-parse', '--verify', '--quiet', `${target.baseSha}:${file}`], target.gitRoot),
+    blobInTree(target.worktree, file),
+  ])
+  if (inTree === NOT_REGULAR) return true
+  return (atBase?.trim() ?? null) !== (inTree?.trim() ?? null)
+}
+
+async function changedGuardedFile(target: SetupTarget): Promise<string | undefined> {
+  for (const file of GUARDED_FILES) if (await differsFromBase(target, file)) return file
+  return undefined
+}
 
 const signalGroup = (pid: number, signal: NodeJS.Signals): void => {
   try {
@@ -193,6 +251,9 @@ export async function runWorktreeSetup(
   const step = parseSetupStep(declared)
   if (step === null) return []
   if (typeof step === 'string') return [`worktree setup skipped: ${step}`]
+  const changed = await changedGuardedFile(target)
+  if (changed !== undefined)
+    return [`worktree setup skipped: the tree's ${changed} differs from origin's default branch`]
   const result = await run(step.command, target.worktree, step.timeoutMs).catch(
     (err: unknown): SetupResult => ({
       exitCode: null,

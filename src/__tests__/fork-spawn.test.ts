@@ -10,7 +10,7 @@ import { Registry } from '../broker/registry.js'
 import { Supervisor } from '../agents/supervisor.js'
 import { readLaunchPlan } from '../agents/launch-files.js'
 import { projectSlug } from '../agents/transcript.js'
-import type { SpawnFn } from '../agents/surfaces/options.js'
+import type { SpawnFn } from '@titan-design/agent-surface'
 
 /**
  * CC-44 at the SPAWN PATH: who may fork, and what argv a fork produces.

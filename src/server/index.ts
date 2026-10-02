@@ -17,8 +17,11 @@ import { hostIdentity, isLaunchedProcess } from './host.js'
 import { observedRegistration } from '../git.js'
 import { disambiguated, provisionalName } from './provisional.js'
 import { exitWhenStdinEnds } from './stdio-lifetime.js'
-import { resolveContextHintPolicy } from '../config.js'
+import { resolveContextHintPolicy, resolveParkAdvicePolicy } from '../config.js'
+import { logEvent } from '../broker/log.js'
 import { ContextHinter, withHint } from './context-hint.js'
+import { readWait } from './human-wait.js'
+import { ParkAdvisor, readParkBudget } from './park-advisor.js'
 
 /**
  * Claude Code sends this when a tool-approval dialog opens in this session.
@@ -381,6 +384,26 @@ export function senderMeta(message: DeliveredMessage): Record<string, string> {
     : { from: message.from, msg_id: message.msgId }
 }
 
+/** CC-135: one `[park]` notice before a waiting session's warm cache expires. Advisory only. */
+function startParkAdvisor(mcp: Server, broker: BrokerClient, handler: ToolHandler): void {
+  const { sessionId } = hostIdentity()
+  const cwd = process.cwd()
+  new ParkAdvisor({
+    sessionId,
+    policy: resolveParkAdvicePolicy(process.env.AGENT_CHAT_PROFILE, process.env.AGENT_CHAT_SURFACE),
+    now: Date.now,
+    readBudget: (id, now) => readParkBudget(id, now, cwd),
+    classify: () => readWait({ sessionId: sessionId ?? '', cwd, self: handler.name(), broker }),
+    notify: content =>
+      void mcp.notification({
+        method: 'notifications/claude/channel',
+        params: { content, meta: { from: 'agent-chat', system: 'true', kind: 'park' } },
+      }),
+    log: logEvent,
+    name: () => handler.name(),
+  }).start()
+}
+
 export async function startMcpServer(): Promise<void> {
   const mcp = new Server(
     { name: 'agent-chat', version: '0.1.0' },
@@ -520,7 +543,9 @@ export async function startMcpServer(): Promise<void> {
   // A readopted session already holds its name, so the handler must know it —
   // otherwise chat_register would look unmade and the model would be told to
   // call it, which is the confusion this whole path exists to remove.
-  serveTools(mcp, new ToolHandler(broker, spawned?.name, readopted ?? provisional))
+  const handler = new ToolHandler(broker, spawned?.name, readopted ?? provisional)
+  serveTools(mcp, handler)
+  startParkAdvisor(mcp, broker, handler)
 
   const transport = new StdioServerTransport()
   // Claude Code closing the pipe means the session is gone. Exit rather than

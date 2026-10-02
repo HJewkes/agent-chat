@@ -4,7 +4,8 @@ import type { HealthPayload } from '../api-contract.js'
 import { probeHealth } from '../broker/doctor.js'
 import { activeHold, clearHold, writeHold } from '../broker/hold.js'
 import { isProcessAlive, probeSocket, readMeta, readPidFile, removeStateFiles } from '../broker/lifecycle.js'
-import { cliEntry, defaultPort, logPath, socketPath } from '../paths.js'
+import { recordLoginPath, resolveBasePath } from '../agents/base-path.js'
+import { cliEntry, defaultPort, home, logPath, socketPath } from '../paths.js'
 import { type ServerMessage } from '../protocol.js'
 import { fail, withBroker } from './client.js'
 import { brokerSource, guardRestart } from './restart-guard.js'
@@ -78,6 +79,8 @@ export async function start(options: { port?: number; foreground?: boolean }): P
     // Exactly what `agent-chat broker` has always done, and still the same code
     // path: the hidden alias and this flag must not drift apart.
     if (port !== undefined) process.env.AGENT_CHAT_PORT = String(port)
+    // Every auto-start lands here, so the broker's own children get a full PATH (CC-456).
+    process.env.PATH = resolveBasePath({ env: process.env, stateDir: home() })
     const { startBroker } = await import('../broker/index.js')
     const server = await startBroker()
     if (!server) console.error(refusedStart())
@@ -86,6 +89,7 @@ export async function start(options: { port?: number; foreground?: boolean }): P
 
   // Only the detached start lifts a hold: `agent-chat broker`, which every auto-start runs, is the foreground path.
   clearHold()
+  recordLoginPath(home(), process.env.PATH)
 
   // Detached, matching `spawnBroker` (`broker-client.ts:90`) — the broker must
   // outlive whichever process happened to want it first.

@@ -72,6 +72,32 @@ describe('chat_send refuses a missing message body at the schema boundary', () =
   })
 })
 
+/** CC-445: a refused spawn names its cause in a line a caller can match without reading the prose. */
+describe('agent_spawn refusal', () => {
+  it('appends the machine-guard code and retryable flag to the refusal text', async () => {
+    const broker = {
+      request: async () => ({
+        t: 'spawn_result',
+        ok: false,
+        code: 'machine_memory_floor',
+        retryable: true,
+        reason: 'machine guard: memory 8% free (floor 15%, config machineMemoryFreePercent)',
+      }),
+    } as unknown as BrokerClient
+
+    const reply = await new ToolHandler(broker, undefined, 'me').handle('agent_spawn', {
+      name: 'scout',
+      profile: 'explorer',
+      brief: 'b',
+    })
+
+    expect(reply.content[0]?.text).toBe(
+      'Not spawned: machine guard: memory 8% free (floor 15%, config machineMemoryFreePercent)\n' +
+        '  code: machine_memory_floor retryable: true',
+    )
+  })
+})
+
 /** CC-126: the resume reply says whether the conversation came back, on success and refusal alike. */
 describe('agent_resume', () => {
   const answering = (reply: Record<string, unknown>): { broker: BrokerClient; sent: ClientMessage[] } => {

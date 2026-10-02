@@ -710,6 +710,20 @@ const AGENT_TELEPORT_CASES: CallCase[] = [
     args: { handoff: 'h', model: 4 },
     reply: teleported(),
   },
+  {
+    label: 'parked on the human',
+    tool: 'agent_teleport',
+    registeredAs: 'me',
+    args: { handoff: 'h', reason: 'park' },
+    reply: teleported(),
+  },
+  {
+    label: 'unknown reason',
+    tool: 'agent_teleport',
+    registeredAs: 'me',
+    args: { handoff: 'h', reason: 'refresh' },
+    reply: teleported(),
+  },
 ]
 
 const registered = (

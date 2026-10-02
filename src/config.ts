@@ -2,12 +2,20 @@ import fs from 'node:fs'
 import { logEvent } from './broker/log.js'
 import { DEFAULT_SLOTS } from './agents/semaphore.js'
 import { configPath } from './paths.js'
-import { isHexColour, type PaneColourConfig } from './agents/pane-identity.js'
+import {
+  DEFAULT_MACHINE_HEADLESS_AGENTS,
+  DEFAULT_MACHINE_MEMORY_FREE_PERCENT,
+  type MachineLimits,
+} from './agents/machine-guard.js'
+import { DEFAULT_FULL_SUITE_SLOTS } from './suite-slots.js'
+import { isHexColour, type PaneColourConfig } from '@titan-design/agent-surface'
+import { isInteractiveSurface, type SurfaceName } from './protocol.js'
 
 interface AgentChatConfig {
   agentSlots?: unknown
   worktreeBudget?: unknown
   contextHints?: unknown
+  parkAdvice?: unknown
   ledgerShadow?: unknown
   permissionHookTimeoutSeconds?: unknown
   decider?: unknown
@@ -15,6 +23,10 @@ interface AgentChatConfig {
   ghWriteGapSeconds?: unknown
   reportBatchSeconds?: unknown
   paneColours?: unknown
+  machineHeadlessAgents?: unknown
+  machineMemoryFreePercent?: unknown
+  fullSuiteSlots?: unknown
+  coordinatorGrantableTools?: unknown
 }
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
@@ -130,6 +142,52 @@ function reportBatchSeconds(value: unknown): number | undefined {
   return undefined
 }
 
+/** CC-406's machine-wide spawn limits, read per spawn so an edit needs no broker restart. */
+export function resolveMachineLimits(): MachineLimits {
+  let memoryFreePercent = positiveIntegerFrom('machineMemoryFreePercent', DEFAULT_MACHINE_MEMORY_FREE_PERCENT)
+  if (memoryFreePercent > 100) {
+    logEvent('config_invalid', {
+      key: 'machineMemoryFreePercent',
+      value: memoryFreePercent,
+      fallback: DEFAULT_MACHINE_MEMORY_FREE_PERCENT,
+    })
+    memoryFreePercent = DEFAULT_MACHINE_MEMORY_FREE_PERCENT
+  }
+  return {
+    headlessAgents: positiveIntegerFrom('machineHeadlessAgents', DEFAULT_MACHINE_HEADLESS_AGENTS),
+    memoryFreePercent,
+  }
+}
+
+/** How many full test suites may run at once machine-wide (CC-406). */
+export function resolveFullSuiteSlots(): number {
+  return positiveIntegerFrom('fullSuiteSlots', DEFAULT_FULL_SUITE_SLOTS)
+}
+
+/** CC-451: the web-read tools a coordinator may grant a child it does not hold itself, and the only ones. */
+export const WEB_READ_TOOLS: readonly string[] = ['WebSearch', 'WebFetch']
+
+/**
+ * `coordinatorGrantableTools` in `config.json`, read per spawn; `[]` turns the exemption off.
+ * It can only narrow `WEB_READ_TOOLS`: any other name, `*` included, is logged and dropped,
+ * and a non-array grants nothing rather than the default, because this key widens authority.
+ */
+export function resolveCoordinatorGrantableTools(): string[] {
+  const value = readConfig().coordinatorGrantableTools
+  if (value === undefined) return [...WEB_READ_TOOLS]
+  if (!Array.isArray(value)) {
+    logEvent('config_invalid', { key: 'coordinatorGrantableTools', value, fallback: [] })
+    return []
+  }
+  const known = value.filter(
+    (tool): tool is string => typeof tool === 'string' && WEB_READ_TOOLS.includes(tool),
+  )
+  const ignored = value.filter(tool => !known.includes(tool as string))
+  if (ignored.length > 0)
+    logEvent('config_invalid', { key: 'coordinatorGrantableTools', value: ignored, fallback: 'ignored' })
+  return known
+}
+
 function positiveIntegerFrom(key: keyof AgentChatConfig, fallback: number): number {
   const value = readConfig()[key]
   if (value === undefined) return fallback
@@ -194,6 +252,40 @@ function policyFrom(key: string, value: unknown, fallback: ContextHintPolicy): C
   }
   logEvent('config_invalid', { key: `contextHints.${key}`, value, fallback })
   return fallback
+}
+
+/** When to tell a session idle on the human that its warm cache is about to expire (CC-135). Advisory only. */
+export interface ParkAdvicePolicy {
+  tokens: number
+  /** How long before cache expiry the notice goes out. */
+  leadMinutes: number
+  /** The cache TTL assumed when the status line reports no expiry. */
+  ttlMinutes: number
+}
+
+/** 200k is where the CC-135 cold-rebuild cost cells start; keep-warm is deliberately absent. */
+export const DEFAULT_PARK_ADVICE: ParkAdvicePolicy = { tokens: 200_000, leadMinutes: 8, ttlMinutes: 60 }
+
+/**
+ * Null means never advise: `parkAdvice.enabled` is false, the surface is headless, or the
+ * profile is one the context hint never addresses.
+ */
+export function resolveParkAdvicePolicy(
+  profile: string | undefined,
+  surface: string | undefined,
+): ParkAdvicePolicy | null {
+  if (surface !== undefined && !isInteractiveSurface(surface as SurfaceName)) return null
+  if (resolveContextHintPolicy(profile) === null) return null
+  const raw = readConfig().parkAdvice
+  const configured = isObject(raw) ? raw : {}
+  if (configured.enabled === false) return null
+  const number = (key: keyof ParkAdvicePolicy): number => {
+    const value = configured[key]
+    if (value === undefined || isPositiveInteger(value)) return value ?? DEFAULT_PARK_ADVICE[key]
+    logEvent('config_invalid', { key: `parkAdvice.${key}`, value, fallback: DEFAULT_PARK_ADVICE[key] })
+    return DEFAULT_PARK_ADVICE[key]
+  }
+  return { tokens: number('tokens'), leadMinutes: number('leadMinutes'), ttlMinutes: number('ttlMinutes') }
 }
 
 /**

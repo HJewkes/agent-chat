@@ -37,6 +37,20 @@ describe('patternsOverlap', () => {
     expect(patternsOverlap('src/cli/a.ts', 'src/cli/b.ts')).toBe(false)
   })
 
+  describe('only * is a wildcard', () => {
+    it.each(['?', '[ab].md', '{a,b}.md'])('reads %s as a literal file name', literal => {
+      expect(patternsOverlap(literal, literal)).toBe(true)
+      expect(patternsOverlap(literal, 'a.md')).toBe(false)
+      expect(patternsOverlap(literal, 'b.md')).toBe(false)
+      expect(patternsOverlap(literal, 'a')).toBe(false)
+    })
+
+    it('keeps a bare * off a directory-only pattern', () => {
+      expect(patternsOverlap('*', 'docs/')).toBe(false)
+      expect(patternsOverlap('docs/', '*')).toBe(false)
+    })
+  })
+
   describe('slash-free and last-segment wildcards (CC-272)', () => {
     it('keeps a root glob off a deep subtree', () => {
       expect(patternsOverlap('playwright*.config.ts', 'packages/ui/src/components/custom/Chat/**')).toBe(
@@ -94,6 +108,26 @@ describe('patternsOverlap', () => {
  * so adopting `patternsOverlap` in file-ownership.ts has to be a decision rather
  * than a silent change that leaves the comment describing code that moved.
  */
+describe('patternsOverlap literals and over-reports (CC-272 review)', () => {
+  it.each(['?', 'a?.md', '[ab].md', '{a,b}.md'])(
+    'reads %s as a literal file name, not a wildcard',
+    pattern => {
+      expect(patternsOverlap(pattern, 'a.md')).toBe(false)
+      expect(patternsOverlap(pattern, pattern)).toBe(true)
+    },
+  )
+
+  it('does not collide a wildcard with a directory claim it cannot name a file in', () => {
+    expect(patternsOverlap('*', 'docs/')).toBe(false)
+    expect(patternsOverlap('a*', 'a/')).toBe(false)
+  })
+
+  it('over-reports wildcard pairs it cannot decide, rather than miss an overlap', () => {
+    expect(patternsOverlap('src/*.ts', 'src/a*/b.ts')).toBe(true)
+    expect(patternsOverlap('*.md', '*/x.md')).toBe(true)
+  })
+})
+
 describe('divergence from file-ownership checkConflicts', () => {
   const conflictsOn = (a: string, b: string): boolean =>
     checkConflicts(

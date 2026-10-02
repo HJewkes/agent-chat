@@ -65,8 +65,9 @@ const UNATTENDED =
 
 function grantsLine(grants: string[]): string {
   const merge = grants.includes('merge') ? '' : ' You may not merge; open a PR and stop.'
+  const ci = ' Verify locally, push, open the PR over REST and never wait on CI.'
   const inForce = grants.length === 0 ? 'Grants in force: none.' : `Grants in force: ${grants.join(', ')}.`
-  return inForce + merge
+  return inForce + merge + ci
 }
 
 const syncStep = (defaultBranch: string): string =>
@@ -94,6 +95,12 @@ function reportContract(reportTo: string, lines: string): string {
 
 const WORKER_REPORT = '`Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`, then `PR: <url>`'
 
+const SHEPHERD_STEP =
+  'After the PR opens, run `titan-factory shepherd register <owner>/<repo>#<n> --task <initiative>/<ID> ' +
+  '--implementer <your agent name> --kind <correctness|security|feature|refactor>`. Report `PR: <url>`, ' +
+  '`Head: <full sha>` and `Shepherd: <run id>`; if it refuses (exit 65), report ' +
+  '`Shepherd: refused <first stderr line>` and still report Status, PR and Head: the tick watches CI.'
+
 /** Constraints and return contract shared by the first worker and its successors. */
 function workerTail(t: TaskBrief): string[] {
   return [
@@ -103,6 +110,7 @@ function workerTail(t: TaskBrief): string[] {
     accountLine(t.configDir),
     parkLine(handoffPathFor(t.initiativeDir, t.taskId, t.slice?.n)),
     ...verifyBlock(t.verifySteps),
+    SHEPHERD_STEP,
     '## Report',
     reportContract(t.reportTo, WORKER_REPORT),
   ]

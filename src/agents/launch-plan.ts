@@ -1,3 +1,4 @@
+import { GIT_SHIM_DIR_ENV, gitShimDirFor } from '../leak-guard/git-shim.js'
 import { gitHooksEnv } from '../leak-guard/hooks-dir.js'
 import { isInteractiveSurface } from '../protocol.js'
 import type { AgentProfile, LaunchPlan, LaunchPlanInput } from './types.js'
@@ -121,6 +122,8 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
   AGENT_CHAT_WORKING_ON: input.workingOn ?? summaryFor(input),
   // The role the child's context hint is tuned to (CC-128); absent means a human-started session.
   AGENT_CHAT_PROFILE: input.profile.name,
+  // The child's park advisor stays off on a headless surface, which has no human to wait on (CC-135).
+  AGENT_CHAT_SURFACE: input.surface ?? input.profile.surface,
   // Defaults chosen by whoever spawned it, applied on that first registration —
   // so an agent is already listening to the right things before its first turn,
   // rather than needing the model to remember to subscribe.
@@ -139,6 +142,8 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
     : { CLAUDE_CONFIG_DIR: input.configDir }),
   // The leak guard's pre-push hook (CC-268), in every repo the agent pushes from, with no repo config written.
   ...(input.gitHooksDir === undefined ? {} : gitHooksEnv(input.gitHooksDir)),
+  // The push-time git shim (TP-596) checks that same hooks path; AGENT_CHAT_ keeps a profile from moving it.
+  ...(input.gitHooksDir === undefined ? {} : { [GIT_SHIM_DIR_ENV]: gitShimDirFor(input.gitHooksDir) }),
   // `run-agent` writes the agent's name as the terminal title, and Claude Code
   // then overwrites it with a description of whatever it is currently doing —
   // so a wall of panes ends up labelled by activity rather than by WHO, which

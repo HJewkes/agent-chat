@@ -6,7 +6,10 @@ import {
   DEFAULT_NOTICE_TTL_HOURS,
   DEFAULT_PERMISSION_HOOK_TIMEOUT_S,
   resolveAgentSlots,
+  resolveCoordinatorGrantableTools,
   resolveContextHintPolicy,
+  resolveFullSuiteSlots,
+  resolveMachineLimits,
   resolveNoticeTtlMs,
   resolvePermissionHookTimeout,
   resolveReportBatchMs,
@@ -136,6 +139,26 @@ describe('resolveWorktreeBudget', () => {
   })
 })
 
+describe('machine guard limits (CC-406)', () => {
+  it('defaults to 10 headless agents, a 15 percent memory-free floor and 4 full-suite slots', () => {
+    expect(resolveMachineLimits()).toEqual({ headlessAgents: 10, memoryFreePercent: 15 })
+    expect(resolveFullSuiteSlots()).toBe(4)
+  })
+
+  it('reads all three limits from config.json', () => {
+    writeConfigJson({ machineHeadlessAgents: 6, machineMemoryFreePercent: 20, fullSuiteSlots: 2 })
+
+    expect(resolveMachineLimits()).toEqual({ headlessAgents: 6, memoryFreePercent: 20 })
+    expect(resolveFullSuiteSlots()).toBe(2)
+  })
+
+  it.each([0, 101, 50.5, '70'])('falls back to 15 when machineMemoryFreePercent is %j', value => {
+    writeConfigJson({ machineMemoryFreePercent: value })
+
+    expect(resolveMachineLimits().memoryFreePercent).toBe(15)
+  })
+})
+
 describe('resolveContextHintPolicy', () => {
   it('uses the owner-chosen defaults per role when config.json is silent', () => {
     expect(resolveContextHintPolicy('implementer')?.tokens).toBe(200_000)
@@ -262,4 +285,25 @@ describe('resolveReportBatchMs', () => {
       expect(resolveReportBatchMs()).toBe(20_000)
     },
   )
+})
+
+describe('resolveCoordinatorGrantableTools', () => {
+  it('defaults to the two web-read tools', () => {
+    expect(resolveCoordinatorGrantableTools()).toEqual(['WebSearch', 'WebFetch'])
+  })
+
+  it('keeps a narrowed list', () => {
+    writeConfigJson({ coordinatorGrantableTools: ['WebSearch'] })
+    expect(resolveCoordinatorGrantableTools()).toEqual(['WebSearch'])
+  })
+
+  it('drops a wildcard and any tool outside the web-read set', () => {
+    writeConfigJson({ coordinatorGrantableTools: ['*', 'Bash', 'Monitor', 'WebFetch'] })
+    expect(resolveCoordinatorGrantableTools()).toEqual(['WebFetch'])
+  })
+
+  it('grants nothing for a value that is not a list', () => {
+    writeConfigJson({ coordinatorGrantableTools: 'WebSearch' })
+    expect(resolveCoordinatorGrantableTools()).toEqual([])
+  })
 })

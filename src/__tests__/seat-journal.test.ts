@@ -4,7 +4,6 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { advance, claimKey } from '../agents/burndown/advance.js'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
-import { prState, readRollup } from '../agents/burndown/observe.js'
 import { deliverSeatEvents, type SeatSender } from '../agents/burndown/seat-deliver.js'
 import { seatLogPath } from '../agents/seats/io.js'
 import { seatJournal, type SeatJournal } from '../agents/seats/journal.js'
@@ -243,28 +242,21 @@ describe('a seat claim’s events from the tick', () => {
 })
 
 describe('the PR head a merged line carries', () => {
-  it('is read from the PR the tick observes', () => {
-    const json = JSON.stringify({ state: 'MERGED', statusCheckRollup: [], headRefOid: HEAD })
+  const row = (phase: 'done' | 'cancelled') =>
+    ({ repo: 'example-org/widget', pr: 7, runId: 'run-7', phase, headSha: HEAD, stalled: null }) as const
 
-    expect(readRollup(json)).toEqual({ state: 'merged', checks: 'pending', head: HEAD })
-  })
-
-  it('is recorded on the claim when the merge is observed', () => {
-    const waiting = claim({ phase: 'awaiting-merge', pr: PR })
-    const seen = new Map([
-      [claimKey(waiting), { pr: { state: 'merged', checks: 'pass', head: HEAD } } as const],
-    ])
+  it('is recorded on the claim when Shepherd has landed the PR', () => {
+    const waiting = claim({ phase: 'shepherding', pr: PR })
+    const seen = new Map([[claimKey(waiting), { shepherd: { row: row('done'), landed: true } }]])
 
     const actions = advance([waiting], seen, AT)
 
     expect(actions[0]).toMatchObject({ kind: 'update', patch: { phase: 'done', prHead: HEAD } })
   })
 
-  it('is recorded on the claim when the PR is seen closed without merging', () => {
-    const waiting = claim({ phase: 'awaiting-merge', pr: PR })
-    const seen = new Map([
-      [claimKey(waiting), { pr: { state: 'closed', checks: 'pass', head: HEAD } } as const],
-    ])
+  it('is recorded on the claim when Shepherd ends the run without merging', () => {
+    const waiting = claim({ phase: 'shepherding', pr: PR })
+    const seen = new Map([[claimKey(waiting), { shepherd: { row: row('cancelled') } }]])
 
     const actions = advance([waiting], seen, AT)
 
@@ -272,23 +264,9 @@ describe('the PR head a merged line carries', () => {
       {
         kind: 'update',
         key: { taskId: 'AB-12', slice: undefined },
-        patch: { stalledReason: 'PR closed without merging', prHead: HEAD },
+        patch: { stalledReason: 'Shepherd run run-7 ended cancelled without merging', prHead: HEAD },
       },
     ])
-  })
-
-  it('is asked of gh, which answers only the fields a query names', () => {
-    const all: Record<string, unknown> = { state: 'OPEN', statusCheckRollup: [], headRefOid: HEAD }
-    const gh = (_bin: string, args: string[]) => {
-      const asked = (args[args.indexOf('--json') + 1] ?? '').split(',')
-      return {
-        status: 0,
-        stdout: JSON.stringify(Object.fromEntries(asked.map(f => [f, all[f]]))),
-        stderr: '',
-      }
-    }
-
-    expect(prState(PR, gh)).toEqual({ state: 'open', checks: 'pending', head: HEAD })
   })
 })
 

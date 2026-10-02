@@ -455,8 +455,26 @@ describe('an autonomy root the writer cannot use', () => {
   })
 })
 
+const parses = (text: string): boolean => {
+  try {
+    JSON.parse(text)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Every unparseable non-blank line as `{i, around}` with 2 lines either side, stringified so whitespace shows. */
+const badLines = (lines: string[]): string[] =>
+  lines.flatMap((text, i) =>
+    text === '' || parses(text)
+      ? []
+      : [JSON.stringify({ i, around: lines.slice(Math.max(0, i - 2), i + 3) })],
+  )
+
+/** A blank line is tolerated: the writer pads an unterminated tail, and a shell's own newline can land after the pad. */
 describe('a seat appending by shell while the writer appends', () => {
-  it('leaves every one of 400 interleaved lines parseable', async () => {
+  it('leaves every one of 400 interleaved rows parseable, tolerating blank pad lines', async () => {
     const file = logFile('seat-x')
     fs.mkdirSync(path.dirname(file), { recursive: true })
     const line = `{"agent":"${AGENT}","outcome":"done","note":"by shell"}`
@@ -477,8 +495,8 @@ describe('a seat appending by shell while the writer appends', () => {
 
     const lines = fs.readFileSync(file, 'utf8').split('\n')
     expect(lines.pop()).toBe('')
-    expect(lines).toHaveLength(400)
-    for (const text of lines) expect(() => JSON.parse(text) as unknown).not.toThrow()
+    expect(badLines(lines), 'unparseable lines, with their neighbours').toEqual([])
+    expect(lines.filter(text => text !== '')).toHaveLength(400)
     expect(logged).toEqual([])
   })
 })

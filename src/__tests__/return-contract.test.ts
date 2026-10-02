@@ -155,25 +155,38 @@ describe('the compiled blocks', () => {
   })
 })
 
+describe('the GitHub write path (CC-456)', () => {
+  it('names gh-write as the only write path, with no fallback to plain gh', () => {
+    const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
+
+    expect(text).toContain('`agent-chat gh-write -- <gh args>`, the only write path')
+    expect(text).not.toContain('otherwise use plain `gh`')
+  })
+})
+
 describe('the check-run rule (CC-357)', () => {
   // Mutation caught: reverting the implementer CI line to a bare "then CI status".
   it('has the implementer paste each check-run at the head instead of reporting "green"', () => {
     const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
 
     expect(text).toContain(
-      'CI: <paste of: gh api repos/<owner>/<repo>/commits/<head>/check-runs --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>',
+      'CI: <paste of: gh api repos/<owner>/<repo>/commits/<head>/check-runs --paginate --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>',
     )
     expect(text).toContain('never "green" alone')
     expect(text).toContain('`gh run watch` covers only one workflow')
+    expect(text).toContain('a skipped check (std / compat) is no failure')
+    expect(text).toContain('"required" means the required contexts on the default branch')
+    expect(text).toContain('as it stands at the push (you do not wait for CI)')
   })
 
   // Mutation caught: dropping the reviewer's check-run line.
   it('has the reviewer confirm every required check-run at the head before a MERGE', () => {
     const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
 
-    expect(text).toContain('Before MERGE, confirm every required check-run at the reviewed head')
-    expect(text).toContain('commits/<head>/check-runs')
+    expect(text).toContain('Before MERGE, confirm every required check-run (one branch protection names)')
+    expect(text).toContain('commits/<head>/check-runs --paginate')
     expect(text).toContain('FIX_FIRST if a required one failed')
+    expect(text).toContain('A skipped check (std / compat) is not a failure')
   })
 })
 
@@ -509,5 +522,25 @@ describe('which contract a profile takes', () => {
       brief: 'review it',
       warnings: [],
     })
+  })
+})
+
+describe('the Shepherd handoff (TP-468)', () => {
+  // Mutation caught: restoring "Wait for CI with `gh run watch`" in the implementer block.
+  it('ends the implementer at pushed and registers the PR with a kind', () => {
+    const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
+
+    expect(text).toContain('titan-factory shepherd register <owner>/<repo>#<n> --task <initiative>/<ID>')
+    expect(text).toContain('--kind <correctness|security|feature|refactor>')
+    expect(text).toContain('never wait on CI')
+    expect(text).not.toContain('gh run watch <id>')
+    expect(text).toContain('Shepherd: refused <first stderr line>')
+  })
+
+  // Mutation caught: any change to the three lines bin/premerge and Shepherd parse.
+  it('pins the reviewer verdict block', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(
+      'exactly these three lines:\nVerdict: MERGE            (or FIX_FIRST)\nPR: <owner>/<repo>#<n>\nHead: <full 40-hex head sha>\n',
+    )
   })
 })

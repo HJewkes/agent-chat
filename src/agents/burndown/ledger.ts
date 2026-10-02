@@ -20,6 +20,7 @@ export const PHASES = [
   'parked',
   'reviewing',
   'awaiting-merge',
+  'shepherding',
   'done',
 ] as const
 export type Phase = (typeof PHASES)[number]
@@ -154,7 +155,7 @@ export const heldClaims = (ledger: Ledger): Claim[] => ledger.claims.filter(c =>
 
 const LANE_PHASES: ReadonlySet<Phase> = new Set(['spawning', 'planning', 'implementing', 'reviewing'])
 
-/** Claims with an agent at work: parked, queued and awaiting-merge claims hold their task but not a lane. */
+/** Claims with an agent at work: parked, queued, awaiting-merge and shepherding claims hold their task but not a lane. */
 export const laneClaims = (ledger: Ledger): Claim[] => ledger.claims.filter(c => LANE_PHASES.has(c.phase))
 
 export function isStalled(claim: Claim, now: Date): boolean {

@@ -6,7 +6,7 @@ import type { Snapshot } from './snapshot.js'
 export type Action =
   | { n: number; msgId: string; verb: 'answer'; text: string }
   | { n: number; msgId: string; verb: 'approve'; behavior: PermissionBehavior }
-  | { n: number; msgId: string; verb: 'endorse' }
+  | { n: number; msgId: string; verb: 'endorse'; text: string; to: string }
   | { n: number; msgId: string; verb: 'dismiss' }
 
 export interface Parsed {
@@ -29,7 +29,7 @@ const INTERPRET: Record<Section, Interpret> = {
   },
   endorse: a => {
     const w = word(a)
-    if (w === 'endorse') return { verb: 'endorse' }
+    if (w === 'endorse') return { verb: 'endorse', text: '', to: '' }
     return w === 'decline' || w === 'dismiss'
       ? { verb: 'dismiss' }
       : 'an endorsement takes endorse or decline'
@@ -66,6 +66,12 @@ function checkBatchId(input: string[], snapshot: Snapshot): string[] {
     .map(id => `this file is batch ${id}; the latest is ${snapshot.batch}`)
 }
 
+/** An endorsement restates the stored text and recipient of the row the batch printed (CC-418). */
+function bind(action: Action, stored: BatchItem): Action {
+  if (action.verb !== 'endorse') return action
+  return { ...action, text: stored.text, to: stored.recipient ?? '' }
+}
+
 /**
  * Bind every `N: answer` line to the item N meant when the batch was printed.
  * Validation is all or nothing, so a typo can never shift an answer onto a
@@ -94,7 +100,7 @@ export function parseAnswers(input: string, snapshot: Snapshot, current: readonl
     if (moved) return void errors.push(`${at}: ${moved}`)
     const verdict = INTERPRET[item.section](answer)
     if (typeof verdict === 'string') return void errors.push(`${at}: ${verdict}`)
-    actions.push({ ...verdict, n, msgId: item.msgId } as Action)
+    actions.push(bind({ ...verdict, n, msgId: item.msgId } as Action, byMsgId.get(item.msgId)!))
   })
   return { actions, errors }
 }

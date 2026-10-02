@@ -187,6 +187,15 @@ function addAgentCommands(program: Command): void {
     })
 
   program
+    .command('suite-slot <command...>')
+    .description('run a full test suite after --, holding one of the machine-wide full-suite slots')
+    .helpGroup(AGENTS)
+    .action(async (command: string[]) => {
+      const { suiteSlotCommand } = await import('./suite-slot.js')
+      await suiteSlotCommand(command)
+    })
+
+  program
     .command('leak-scan')
     .description('scan added lines for private data; exit 0 clean, 1 findings, 2 cannot pass')
     .helpGroup(AGENTS)
@@ -222,8 +231,8 @@ function addHiddenCommands(program: Command): void {
   })
 
   program.command('run-agent <id>', { hidden: true }).action(async (id: string) => {
-    const { runAgent } = await import('../agents/run-agent.js')
-    await runAgent(id)
+    const { runAgentVerb } = await import('../agents/launch-agent.js')
+    runAgentVerb(id)
   })
 
   // Run by Claude Code as a headless agent's PermissionRequest hook (CC-144), never by a person.

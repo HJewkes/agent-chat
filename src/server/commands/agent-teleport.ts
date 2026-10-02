@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { present, requiredString } from '../../args.js'
-import type { ServerMessage } from '../../protocol.js'
+import { TELEPORT_REASONS, type ServerMessage } from '../../protocol.js'
 import { defineTool } from '../command.js'
 
 function describeTeleport(res: Extract<ServerMessage, { t: 'teleport_result' }>): string {
@@ -62,9 +62,17 @@ export const agentTeleport = defineTool({
           'is refused for one. Headless successors ignore it.',
       )
       .optional(),
+    reason: z
+      .enum(TELEPORT_REASONS)
+      .describe(
+        'Optional. Omit for an ordinary teleport. Set "park" when you are idle waiting on the human ' +
+          'and are handing off to a fresh session: your successor is told to ask your open question ' +
+          'from the handoff first, so restate that question in the handoff.',
+      )
+      .optional(),
   }),
   result: z.string(),
-  async run({ handoff, model: requested, remote_control: remoteControl }, ctx) {
+  async run({ handoff, model: requested, remote_control: remoteControl, reason }, ctx) {
     if (ctx.registeredName === null)
       return (
         'Register with chat_register first: teleport hands your name to a successor, and you do not ' +
@@ -77,6 +85,7 @@ export const agentTeleport = defineTool({
         handoff,
         ...(model === undefined ? {} : { model }),
         ...(remoteControl === undefined ? {} : { remoteControl }),
+        ...(reason === undefined ? {} : { reason }),
       },
       'teleport_result',
     )) as Extract<ServerMessage, { t: 'teleport_result' }>

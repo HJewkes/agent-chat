@@ -10,10 +10,18 @@ import type { Claim } from './ledger.js'
 import { DEFAULT_NAME_PREFIX, type WorktreeUse } from './plan.js'
 import { parseReport, parseSlices } from './report.js'
 import { assessDiff, GIT_BIN, type DiffVerdict } from './review-diff.js'
+import {
+  rowFor,
+  shepherdLanded,
+  shepherdRows,
+  shepherdTarget,
+  type ShepherdRow,
+  type ShepherdTarget,
+} from './shepherd.js'
 import { worktreePathFor } from './trust-gate.js'
 
 /**
- * The tick's reads: what the broker, the transcripts, git and GitHub say about
+ * The tick's reads: what the broker, the transcripts, git and Shepherd say about
  * each held claim. Every read that fails is reported as "could not tell"
  * rather than as a fact, so `advance` never moves a claim on a guess.
  */
@@ -30,7 +38,9 @@ export interface ObserveDeps {
   root: string
   finalText?: (agent: AgentIdentity) => string | undefined
   diff?: (cwd: string) => DiffVerdict
-  pr?: (url: string) => Observation['pr'] | undefined
+  /** Every row `shepherd status` lists; observe calls it at most once per tick. */
+  shepherdRows?: () => ShepherdRow[] | undefined
+  landed?: (target: ShepherdTarget) => boolean | undefined
   readFile?: (file: string) => string | undefined
 }
 
@@ -63,8 +73,9 @@ const defaultFinalText = (agent: AgentIdentity): string | undefined =>
 export async function observe(claims: Claim[], roster: Roster, deps: ObserveDeps): Promise<Observed> {
   const observations = new Map<string, Observation>()
   const unread: string[] = []
+  const once = { ...deps, shepherdRows: memo(deps.shepherdRows ?? (() => shepherdRows())) }
   for (const claim of claims) {
-    const result = await observeClaim(claim, roster, deps)
+    const result = await observeClaim(claim, roster, once)
     if (typeof result === 'string') unread.push(`${claimKey(claim)}: ${result}`)
     else observations.set(claimKey(claim), result)
   }
@@ -78,14 +89,14 @@ async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Pr
     const afterId = Number.parseInt(claim.inboxCursor ?? '0', 10)
     obs.inbox = await deps.inboxSince(claim.agentName, Number.isInteger(afterId) ? afterId : 0)
   }
-  if (claim.phase === 'awaiting-merge') return withPr(obs, claim, deps)
+  if (claim.phase === 'awaiting-merge' || claim.phase === 'shepherding') return withShepherd(obs, claim, deps)
   if (row === undefined || !FINISHED.has(row.state) || claim.phase === 'spawning') return obs
   const text = (deps.finalText ?? defaultFinalText)(row)
   if (text !== undefined) obs.report = parseReport(text)
   if (claim.phase === 'planning') return withSlices(obs, claim, deps)
   if (claim.phase === 'implementing' && claim.worktree !== undefined)
     obs.diff = (deps.diff ?? assessDiff)(claim.worktree)
-  if (claim.phase === 'reviewing') return withPr(obs, claim, deps)
+  if (claim.phase === 'reviewing') return withShepherd(obs, claim, deps)
   return obs
 }
 
@@ -96,47 +107,23 @@ function withSlices(obs: Observation, claim: Claim, deps: ObserveDeps): Observat
   return slices === undefined ? obs : { ...obs, slices }
 }
 
-/** A PR the tick cannot read withholds the observation: a transient `gh` failure must not read as a failed review. */
-function withPr(obs: Observation, claim: Claim, deps: ObserveDeps): Observation | string {
+const memo = <T>(read: () => T): (() => T) => {
+  let cached: { value: T } | undefined
+  return () => (cached ??= { value: read() }).value
+}
+
+/** Shepherd unreadable withholds the observation: a down service must not read as an unregistered PR. */
+function withShepherd(obs: Observation, claim: Claim, deps: ObserveDeps): Observation | string {
   if (claim.pr === undefined) return obs
-  const pr = (deps.pr ?? prState)(claim.pr)
-  return pr === undefined ? `could not read ${claim.pr} through gh` : { ...obs, pr }
-}
-
-interface Rollup {
-  state?: string
-  headRefOid?: string
-  statusCheckRollup?: { conclusion?: string | null; state?: string | null; status?: string | null }[]
-}
-
-const PASSED = new Set(['SUCCESS', 'SKIPPED', 'NEUTRAL'])
-const FAILED = new Set(['FAILURE', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'ERROR', 'STARTUP_FAILURE'])
-
-/** `gh pr view --json state,statusCheckRollup,headRefOid`, read into the phase machine's shape; no checks is pending. */
-export function readRollup(json: string): Observation['pr'] | undefined {
-  let parsed: Rollup
-  try {
-    parsed = JSON.parse(json) as Rollup
-  } catch {
-    return undefined
-  }
-  const state = { OPEN: 'open', MERGED: 'merged', CLOSED: 'closed' }[parsed.state ?? ''] as
-    'open' | 'merged' | 'closed' | undefined
-  if (state === undefined) return undefined
-  const results = (parsed.statusCheckRollup ?? []).map(c =>
-    (c.conclusion || c.state || c.status || '').toUpperCase(),
-  )
-  const checks = results.some(r => FAILED.has(r))
-    ? 'fail'
-    : results.length > 0 && results.every(r => PASSED.has(r))
-      ? 'pass'
-      : 'pending'
-  return { state, checks, ...(parsed.headRefOid ? { head: parsed.headRefOid } : {}) }
-}
-
-export function prState(url: string, exec: Runner = run): Observation['pr'] | undefined {
-  const result = exec('gh', ['pr', 'view', url, '--json', 'state,statusCheckRollup,headRefOid'])
-  return result.status === 0 ? readRollup(result.stdout) : undefined
+  const target = shepherdTarget(claim.pr)
+  if (target === undefined) return { ...obs, shepherd: {} }
+  const rows = deps.shepherdRows?.()
+  if (rows === undefined) return `could not read Shepherd's status for ${claim.pr}`
+  const row = rowFor(rows, target)
+  if (row?.phase !== 'done') return { ...obs, shepherd: row === undefined ? {} : { row } }
+  const landed = (deps.landed ?? (t => shepherdLanded(t)))(target)
+  if (landed === undefined) return `could not read Shepherd's timeline for ${claim.pr}`
+  return { ...obs, shepherd: { row, landed } }
 }
 
 /** Live roster rows this tick's ledger spawned or `others` names (the decider), plus spawns still waiting for their row. */

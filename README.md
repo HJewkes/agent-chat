@@ -240,6 +240,10 @@ agent-chat gh-write -- <gh args...>
                                 one gh write, spaced machine-wide (config.json
                                 ghWriteGapSeconds, default 3) and retried on
                                 GitHub's secondary rate limit (60 s, 120 s, 300 s)
+agent-chat suite-slot -- <command...>
+                                run a full test suite holding one of the
+                                machine-wide full-suite slots (config.json
+                                fullSuiteSlots, default 4)
 agent-chat ps                   who's registered
 agent-chat history [n]          recent events from the log
 agent-chat broker               run the broker in the foreground
@@ -248,11 +252,39 @@ agent-chat mcp                  the MCP server (Claude Code spawns this)
 
 Implementer briefs should use `agent-chat gh-write --` for merge PUTs, PR creates, comments and PR body PATCHes, since every seat and agent shares one GitHub user and so one secondary rate limit. It passes gh's stdout, stderr and exit code through; stdin is not forwarded, so send bodies with `-f`/`-F` or `--input <file>`. GitHub rejects a secondary-rate-limited request without performing it, so retrying after a rate-limit response cannot apply a write twice. Any other failure is never retried, because repeating a non-idempotent POST could duplicate it. Nothing sleeps while holding the lock: a writer that must wait records when the next write may start, releases the lock, and waits outside it.
 
+### The gh shim on a spawned agent's PATH (CC-395)
+
+gh's `pr view`, `pr list` and `pr checks` read through GraphQL. Every agent on the machine shares one GitHub user, so they share one hourly GraphQL budget. To keep agents off that budget, `run-agent` writes a `gh` script into `<state dir>/gh-shim/` at each launch and puts that directory first on the agent's `PATH`. Nothing in `~/.claude*` or the profiles is touched. The script runs `dist/gh-shim/main.js`, which answers these shapes from REST through `gh api`:
+
+| Command                       | Handled flags                                                                                                             | REST reads                                                                                     |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `gh pr view [n\|url\|branch]` | `--json` (required), `--jq`/`-q`, `--repo`/`-R`                                                                           | `pulls/<n>`; `pulls/<n>/files`; check runs, statuses and workflow runs for `statusCheckRollup` |
+| `gh pr list`                  | `--json` (required), `--jq`, `--repo`, `--state`, `--head`, `--base`, `--limit` (up to 100)                               | `pulls?state=`                                                                                 |
+| `gh pr checks [n]`            | `--json`, `--jq`, `--repo`; without `--json` it prints gh's tab-separated table and exits 1 on a failure, 8 while pending | `pulls/<n>`, `commits/<sha>/check-runs`, `commits/<sha>/status`, `actions/runs?head_sha=`      |
+| `gh run view <id>`            | `--json` (required), `--jq`, `--repo`                                                                                     | `actions/runs/<id>`, `actions/runs/<id>/jobs`                                                  |
+| `gh run watch <id>`           | `--repo`, `--exit-status`, `--interval`/`-i` (default 3 s), `--compact`                                                   | `actions/runs/<id>` per poll, then its jobs                                                    |
+
+JSON output uses gh's field names and its compact, key-sorted form. `--jq` runs through `jq -rc`, which matches gh's output. Without `jq` on `PATH`, the command passes through. `author.name` is always empty, because REST does not return it. `pr view` and `pr list` refuse fields that REST cannot answer, such as `reviewDecision`, `commits` and `mergeable` on a list. Those commands pass through.
+
+Every other command goes to the real gh with its argv untouched, writes included, and so does any command whose flags, fields or selector the shim does not recognise. When a REST read fails, the shim prints nothing and reruns the command on the real gh, so the error shown is gh's own. Set `AGENT_CHAT_GH_SHIM_OFF=1` to send every command straight through. The shim takes effect for agents launched after a broker restart.
+
 ## Tests
 
 ```bash
 npm run build && npm test
 ```
+
+`npm test` and `npm run verify` run `vitest run` through `agent-chat suite-slot`,
+so at most `fullSuiteSlots` (default 4) full suites run at once machine-wide. A
+runner in another repo takes a slot the same way, for example
+`"test": "agent-chat suite-slot -- vitest run"`. Each held slot is a directory
+`~/.agent-chat/suite-slots/<i>` holding the wrapper's pid. The wrapper waits for a
+free slot, runs the command, passes its exit code through and removes the slot.
+On SIGINT or SIGTERM it forwards the signal to the command, removes the slot once
+the command exits, and exits by the same signal. A slot whose pid is no longer
+running is taken over, so a runner killed outright frees its slot. After 30 minutes of waiting the wrapper runs without a slot rather
+than block on a hung holder. Run a single test file with `npx vitest run <file>`,
+which takes no slot.
 
 Roughly 1,000 checks across 60 files. `registry.test.ts` covers live routing
 decisions, `event-log.test.ts` covers the projections, `routing.test.ts` drives
@@ -331,6 +363,14 @@ read once and memoized with no watcher. Its own grants apply immediately, but
 another session's never reach it. So the _absence_ of an `approval` row only
 tells you a tool was allowlisted when that session launched — it is not portable
 evidence across sessions of different vintages. Presence is unaffected.
+
+**Spawns stop when the machine is full.** `agent_spawn` refuses a headless spawn
+while `machineHeadlessAgents` (default 10) headless agents are live machine-wide,
+and any spawn while free memory (`kern.memorystatus_level`) is below
+`machineMemoryFreePercent` (default 15) percent. Both keys live in
+`~/.agent-chat/config.json`. Swap used is reported by `seats status` but never
+refuses, because macOS keeps swap allocated after memory pressure ends. A reader
+that fails lets the spawn through. Details are in `docs/agent-teams.md` §11.3.
 
 ## Not built yet
 

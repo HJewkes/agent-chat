@@ -16,8 +16,8 @@ import {
   readLaunchPlan,
   writeLaunchFiles,
 } from '../agents/launch-files.js'
-import { oscTitle } from '../agents/run-agent.js'
-import { relaunchScriptPath } from '../agents/surfaces/command.js'
+import { oscTitle } from '@titan-design/agent-surface'
+import { relaunchScriptPath } from '../agents/launcher.js'
 import type { AgentProfile, LaunchPlanInput } from '../agents/types.js'
 
 const dirs: string[] = []
@@ -111,6 +111,11 @@ describe('the argv every surface shares', () => {
     const plan = buildLaunchPlan(input())
 
     expect(plan.env.AGENT_CHAT_PROFILE).toBe(input().profile.name)
+  })
+
+  it('tells the child its surface, so a headless one never gets a park notice', () => {
+    expect(buildLaunchPlan(input({ surface: 'headless' })).env.AGENT_CHAT_SURFACE).toBe('headless')
+    expect(buildLaunchPlan(input({ surface: 'iterm-pane' })).env.AGENT_CHAT_SURFACE).toBe('iterm-pane')
   })
 
   it('propagates a relocated home, or the agent would join a different bus', () => {
@@ -384,6 +389,7 @@ describe('every builtin profile, on every surface', () => {
       'Bash(agent-chat send:*)',
       'Bash(agent-chat answer:*)',
       'Bash(agent-chat approve:*)',
+      'Bash(agent-chat inbox:*)',
       'Bash(agent-chat agent:*)',
       'AskUserQuestion',
     ])

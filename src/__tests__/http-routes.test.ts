@@ -33,6 +33,13 @@ import { HUMAN } from '../protocol.js'
 
 const tmpDirs: string[] = []
 const PORT = 7600
+const OWN_ORIGIN = `http://127.0.0.1:${PORT}`
+/** Passes the request guard, so a 404 means the route is absent rather than refused. */
+const WELL_FORMED_POST: RequestInit = {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', Origin: OWN_ORIGIN },
+  body: '{}',
+}
 
 function tmpDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
@@ -262,7 +269,7 @@ describe('write routes', () => {
     app(core).fetch(
       new Request(`http://127.0.0.1${route}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Origin: OWN_ORIGIN },
         body: JSON.stringify(body),
       }),
     )
@@ -324,7 +331,7 @@ describe('write routes', () => {
    * review comment.
    */
   it('does not serve POST /api/approve, and never will', async () => {
-    const res = await app(makeCore()).fetch(new Request('http://127.0.0.1/api/approve', { method: 'POST' }))
+    const res = await app(makeCore()).fetch(new Request('http://127.0.0.1/api/approve', WELL_FORMED_POST))
     expect(res.status).toBe(404)
   })
 
@@ -334,18 +341,107 @@ describe('write routes', () => {
     const res = await app(core, { token: 's3cret' }).fetch(
       new Request('http://127.0.0.1/api/dismiss', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: OWN_ORIGIN },
         body: JSON.stringify({ msgId: item.msgId }),
+      }),
+    )
+
+    expect(res.status).toBe(403)
+    expect(((await res.json()) as ErrorResponse).error).toContain('token')
+    expect(core.events.humanQueue()).toHaveLength(1)
+  })
+
+  it('accepts a same-origin JSON POST that carries the ui token, as the dashboard sends it', async () => {
+    const core = makeCore()
+    const item = core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'q' })
+    const res = await app(core, { token: 's3cret' }).fetch(
+      new Request(`${OWN_ORIGIN}/api/dismiss`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: OWN_ORIGIN, [TOKEN_HEADER]: 's3cret' },
+        body: JSON.stringify({ msgId: item.msgId }),
+      }),
+    )
+
+    expect(((await res.json()) as VerdictResponse).ok).toBe(true)
+    expect(core.events.humanQueue()).toHaveLength(0)
+  })
+})
+
+describe('request guard (CC-112)', () => {
+  const openItem = (core: BrokerCore) =>
+    core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'q' }).msgId
+
+  /** A form or `fetch(..., { mode: 'no-cors' })` from a page that rebound its name to loopback. */
+  it('refuses a simple text/plain POST, which a browser sends without a preflight', async () => {
+    const core = makeCore()
+    const msgId = openItem(core)
+    const res = await app(core).fetch(
+      new Request('http://127.0.0.1/api/dismiss', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain', Origin: OWN_ORIGIN },
+        body: JSON.stringify({ msgId }),
+      }),
+    )
+
+    expect(res.status).toBe(415)
+    expect(core.events.humanQueue()).toHaveLength(1)
+  })
+
+  it('refuses a request whose Host is not loopback, which is what DNS rebinding sends', async () => {
+    const core = makeCore()
+    const msgId = openItem(core)
+    const res = await app(core).fetch(
+      new Request('http://127.0.0.1/api/dismiss', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Host: `evil.example:${PORT}` },
+        body: JSON.stringify({ msgId }),
       }),
     )
 
     expect(res.status).toBe(403)
     expect(core.events.humanQueue()).toHaveLength(1)
   })
+
+  it('refuses a foreign Host on a read too, since /ui would hand it the token', async () => {
+    const res = await app(makeCore()).fetch(
+      new Request('http://127.0.0.1/health', { headers: { Host: 'evil.example' } }),
+    )
+    expect(res.status).toBe(403)
+  })
+
+  it('refuses a write that carries neither Origin nor X-Titan-Client', async () => {
+    const core = makeCore()
+    const msgId = openItem(core)
+    const res = await app(core).fetch(
+      new Request('http://127.0.0.1/api/dismiss', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ msgId }),
+      }),
+    )
+
+    expect(res.status).toBe(403)
+    expect(core.events.humanQueue()).toHaveLength(1)
+  })
+
+  it('accepts a non-browser write that names itself with X-Titan-Client', async () => {
+    const core = makeCore()
+    const msgId = openItem(core)
+    const res = await app(core).fetch(
+      new Request(`http://localhost:${PORT}/api/dismiss`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Titan-Client': 'test' },
+        body: JSON.stringify({ msgId }),
+      }),
+    )
+
+    expect(((await res.json()) as VerdictResponse).ok).toBe(true)
+  })
 })
 
 describe('ANY /mcp', () => {
   it('404s with an explanation rather than blank, so a reader is told why', async () => {
-    const res = await app(makeCore()).fetch(new Request('http://127.0.0.1/mcp', { method: 'POST' }))
+    const res = await app(makeCore()).fetch(new Request('http://127.0.0.1/mcp', WELL_FORMED_POST))
     expect(res.status).toBe(404)
     expect(await res.text()).toContain('stdio')
   })

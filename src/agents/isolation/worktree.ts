@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
-import { cpSync, existsSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, lstatSync, rmSync } from 'node:fs'
+import type { Stats } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { clearRefusal, recordRefusal } from './refusals.js'
@@ -361,6 +362,15 @@ const setupTarget = (gitRoot: string, worktree: string, base: BranchBase): Setup
   fetched: base.warning === undefined,
 })
 
+/**
+ * CC-410: with a relative core.hooksPath, the add runs whatever post-checkout sits
+ * in the shared main checkout's working tree, inside the new tree, before any review.
+ * Hooks are switched off rather than pinned elsewhere because even a trusted hook
+ * (an `npm install`) runs the branch's code; worktree-setup.ts is the declared way
+ * to prepare a tree. `-c` binds this invocation only, so later commits and pushes keep their hooks.
+ */
+const HOOKS_OFF = ['-c', 'core.hooksPath=/dev/null'] as const
+
 /** The tail of each repo's queue of `worktree add`s; it never rejects, so one failure does not jam the rest. */
 const addQueues = new Map<string, Promise<unknown>>()
 
@@ -369,14 +379,18 @@ const addQueues = new Map<string, Promise<unknown>>()
  * `.git/worktrees/<name>/commondir` and die, so they take turns per repo.
  */
 function addWorktree(gitRoot: string, args: readonly string[], run: GitRunner = git): Promise<string> {
-  const adding = (addQueues.get(gitRoot) ?? Promise.resolve()).then(() => run(args, gitRoot))
+  const pinned = [...HOOKS_OFF, ...args]
+  const adding = (addQueues.get(gitRoot) ?? Promise.resolve()).then(() => run(pinned, gitRoot))
   const tail = adding.catch(() => undefined)
   addQueues.set(gitRoot, tail)
   void tail.then(() => addQueues.get(gitRoot) === tail && addQueues.delete(gitRoot))
   return adding
 }
 
-const addTarget = (args: readonly string[]): string | undefined => (args[2] === '-b' ? args[4] : args[2])
+const addTarget = (args: readonly string[]): string | undefined => {
+  const rest = args.slice(args.indexOf('add') + 1)
+  return rest[0] === '-b' ? rest[2] : rest[0]
+}
 
 const CLEANUP_TIMEOUT_MS = 30_000
 /** SIGTERM first so git can drop its lock files; SIGKILL follows for whatever ignores it. */
@@ -513,7 +527,24 @@ async function raceTimer(
 function copyClaudeDir(gitRoot: string, worktreePath: string): void {
   const source = path.resolve(gitRoot, '.claude')
   const target = path.resolve(worktreePath, '.claude')
-  if (existsSync(source) && !existsSync(target)) cpSync(source, target, { recursive: true })
+  if (!existsSync(source)) return
+  const existing = lstatOrNull(target)
+  if (existing === null) cpSync(source, target, { recursive: true })
+  else if (!existing.isDirectory())
+    process.stderr.write(
+      `agent-chat: .claude not copied into ${worktreePath}: the branch committed it as ` +
+        `${existing.isSymbolicLink() ? 'a symlink' : 'a non-directory'}\n`,
+    )
+}
+
+/** lstat, not stat: a branch can commit a dangling symlink, which existsSync reads as absent. */
+function lstatOrNull(target: string): Stats | null {
+  try {
+    return lstatSync(target)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw err
+  }
 }
 
 interface AttachOptions {

@@ -230,6 +230,42 @@ describe('worktree allocate', () => {
     expect(fs.existsSync(path.join(alloc.cwd, '.claude', 'settings.json'))).toBe(true)
   })
 
+  describe('a branch that commits .claude as a symlink (CC-459)', () => {
+    /** The branch is committed first so adoption checks it out with the link in place. */
+    function repoWithBranchSymlink(linkTarget: string): string {
+      const repo = makeRepo()
+      git(['checkout', '-b', 'agent-chat/alice'], repo)
+      fs.symlinkSync(linkTarget, path.join(repo, '.claude'))
+      git(['add', '.claude'], repo)
+      git(['commit', '-m', 'commit .claude as a symlink'], repo)
+      git(['checkout', 'main'], repo)
+      fs.mkdirSync(path.join(repo, '.claude'))
+      fs.writeFileSync(path.join(repo, '.claude', 'settings.json'), '{}')
+      return repo
+    }
+
+    it('survives a dangling symlink and writes nothing through it', async () => {
+      const outside = path.join(os.tmpdir(), `iso-outside-${process.pid}-dangling`)
+      tmpdirs.push(outside)
+      const repo = repoWithBranchSymlink(outside)
+
+      const alloc = await worktreeStrategy.allocate(ctxFor(repo))
+
+      expect(fs.lstatSync(path.join(alloc.cwd, '.claude')).isSymbolicLink()).toBe(true)
+      expect(fs.existsSync(outside)).toBe(false)
+    })
+
+    it('does not copy settings into a real directory outside the tree', async () => {
+      const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'iso-outside-')))
+      tmpdirs.push(outside)
+      const repo = repoWithBranchSymlink(outside)
+
+      await worktreeStrategy.allocate(ctxFor(repo))
+
+      expect(fs.readdirSync(outside)).toEqual([])
+    })
+  })
+
   it('allocates against the main repo when called from inside a worktree', async () => {
     const repo = makeRepo()
     const first = await worktreeStrategy.allocate(ctxFor(repo))
@@ -493,6 +529,8 @@ describe('worktree branch base (CC-151)', () => {
 describe('concurrent worktree adds (CC-224)', () => {
   const runGit = promisify(execFile)
   const realAdd: GitRunner = async (args, cwd) => (await runGit('git', [...args], { cwd })).stdout.trim()
+  /** Finishes before boundedAdd arms its timer, so a slow runner cannot turn the add into a timeout. */
+  const addBeforeTimer = (args: readonly string[], cwd: string): string => git([...args], cwd)
 
   /** Records when each add starts and ends; the delay widens any overlap so it cannot slip past. */
   function recordingAdd(): { run: GitRunner; spans: { start: number; end: number }[] } {
@@ -543,8 +581,8 @@ describe('concurrent worktree adds (CC-224)', () => {
   it('rejects an add that never resolves, naming the repo and timeout, and lets the next add run', async () => {
     const repo = makeRepo()
     let calls = 0
-    const hangFirst: GitRunner = (args, cwd) =>
-      calls++ === 0 ? new Promise<string>(() => {}) : realAdd(args, cwd)
+    const hangFirst: GitRunner = async (args, cwd) =>
+      calls++ === 0 ? new Promise<string>(() => {}) : addBeforeTimer(args, cwd)
     const strategy = createWorktreeStrategy({ budget: 10, addTimeoutMs: 200, runWorktreeAdd: hangFirst })
 
     const first = strategy.allocate(ctxFor(repo, { agentName: 'w1' }))
@@ -560,8 +598,8 @@ describe('concurrent worktree adds (CC-224)', () => {
 
   it('removes the half-created directory and registration after a killed add', async () => {
     const repo = makeRepo()
-    const halfWritten: GitRunner = async (args, cwd) => {
-      await realAdd(args, cwd)
+    const halfWritten: GitRunner = (args, cwd) => {
+      addBeforeTimer(args, cwd)
       return new Promise<string>(() => {})
     }
     const strategy = createWorktreeStrategy({ addTimeoutMs: 300, runWorktreeAdd: halfWritten })
@@ -601,18 +639,22 @@ describe('concurrent worktree adds (CC-224)', () => {
     await expect(strategy.allocate(ctxFor(repo, { agentName: 'w1' }))).rejects.toThrow('timed out')
 
     await vi.waitFor(() => expect(fs.existsSync(target)).toBe(false), { timeout: 5_000 })
-    await vi.waitFor(() => expect(git(['worktree', 'list', '--porcelain'], repo)).not.toContain('w1'), {
-      timeout: 5_000,
-    })
+    // The repo's own mkdtemp suffix can contain "w1", so match the worktree path.
+    await vi.waitFor(
+      () => expect(git(['worktree', 'list', '--porcelain'], repo)).not.toContain('.worktrees/w1'),
+      { timeout: 5_000 },
+    )
   })
 
-  it('kills the hook a timed-out add spawned, and cleans up only after it is gone', async () => {
+  it('kills the filter a timed-out add spawned, and cleans up only after it is gone', async () => {
     const repo = makeRepo()
     const target = path.join(repo, '.worktrees', 'w1')
-    const marker = 'sleep 61'
-    const hook = path.join(repo, '.git', 'hooks', 'post-checkout')
-    fs.mkdirSync(path.dirname(hook), { recursive: true })
-    fs.writeFileSync(hook, `#!/bin/sh\n${marker} &\nwait\n`, { mode: 0o755 })
+    // Unique per run, so pgrep never sees a filter from a suite running concurrently on the machine.
+    const marker = `sleep 61.${process.pid}${Date.now() % 1_000}`
+    git(['config', 'filter.hang.smudge', `sh -c '${marker} & wait'`], repo)
+    fs.writeFileSync(path.join(repo, '.gitattributes'), 'README.md filter=hang\n')
+    git(['add', '.gitattributes'], repo)
+    git(['commit', '-m', 'hang on checkout'], repo)
     const strategy = createWorktreeStrategy({ addTimeoutMs: 1_500 })
 
     await expect(strategy.allocate(ctxFor(repo, { agentName: 'w1' }))).rejects.toThrow('timed out')
@@ -648,6 +690,70 @@ describe('concurrent worktree adds (CC-224)', () => {
     ])
 
     expect(allocs.map(a => a.ref?.gitRoot)).toEqual([left, right])
+  })
+})
+
+describe('worktree add runs no repository hook (CC-410)', () => {
+  /** A repo whose hooks live in the tree under a relative path, as husky sets up. */
+  function huskyRepo(): { repo: string; marker: string } {
+    const repo = makeRepo()
+    git(['config', 'core.hooksPath', '.husky'], repo)
+    return { repo, marker: path.join(repo, 'HOOK_RAN') }
+  }
+
+  /** Each copy writes its own label, so the marker says which checkout's hook git ran. */
+  const writeHook = (dir: string, label: string, marker: string): void => {
+    fs.mkdirSync(path.join(dir, '.husky'), { recursive: true })
+    fs.writeFileSync(
+      path.join(dir, '.husky', 'post-checkout'),
+      `#!/bin/sh\necho "${label} $PWD" >> '${marker}'\n`,
+      {
+        mode: 0o755,
+      },
+    )
+  }
+
+  const ran = (marker: string): string =>
+    fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8').trim() : ''
+
+  it("does not run a hook sitting in the main checkout's working tree", async () => {
+    const { repo, marker } = huskyRepo()
+    writeHook(repo, 'main', marker)
+
+    const alloc = await worktreeStrategy.allocate(ctxFor(repo))
+
+    expect(fs.existsSync(alloc.cwd)).toBe(true)
+    expect(ran(marker)).toBe('')
+  })
+
+  it('does not run the hook on a branch it adopts', async () => {
+    const { repo, marker } = huskyRepo()
+    const ctx = ctxFor(repo, { agentName: 'scout' })
+    const first = await worktreeStrategy.allocate(ctx)
+    writeHook(first.cwd, 'branch', marker)
+    git(['add', '.husky'], first.cwd)
+    git(['commit', '-m', 'add post-checkout'], first.cwd)
+    fs.rmSync(first.cwd, { recursive: true, force: true })
+    writeHook(repo, 'main', marker)
+
+    const second = await worktreeStrategy.allocate(ctx)
+
+    expect(second.ref?.reused).toBe('true')
+    expect(ran(marker)).toBe('')
+  })
+
+  it("leaves the tree's own hooks working for the agent's later git commands", async () => {
+    const { repo, marker } = huskyRepo()
+    writeHook(repo, 'tree', marker)
+    git(['add', '.husky'], repo)
+    git(['commit', '-m', 'add post-checkout'], repo)
+    fs.rmSync(marker, { force: true })
+    const alloc = await worktreeStrategy.allocate(ctxFor(repo))
+
+    git(['checkout', '-b', 'probe'], alloc.cwd)
+
+    expect(git(['config', '--get', 'core.hooksPath'], alloc.cwd)).toBe('.husky')
+    expect(ran(marker)).toBe(`tree ${alloc.cwd}`)
   })
 })
 

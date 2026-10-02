@@ -5,9 +5,20 @@ import { z } from 'zod'
 import { requiredString } from '../../args.js'
 import { activeWorkRoot } from '../../agents/active-work.js'
 import { readAccountBudget } from '../../agents/budget.js'
+import {
+  countLiveHeadless,
+  machineStatus,
+  readMemoryFree,
+  readSwapUsage,
+  type MachineStatus,
+} from '../../agents/machine-guard.js'
+import { resolveMachineLimits } from '../../config.js'
+import { slotUsage } from '../../suite-slots.js'
+import { suiteSlotDeps } from '../suite-slot.js'
+import type { AgentIdentity } from '../../protocol.js'
 import { scoredPlanFromDisk } from '../../agents/burndown/score-render.js'
 import { renderBoot, seatBoot, type BootDeps } from '../../agents/seats/boot.js'
-import { charterSeats, isSeatName, parsePools, parseSeat } from '../../agents/seats/charter.js'
+import { charterSeats, isSeatName, parsePools, parseSeat, seatSurface } from '../../agents/seats/charter.js'
 import {
   appendSeatLog,
   defaultAutonomyRoot,
@@ -53,7 +64,7 @@ import { BrokerClient } from '../../client/broker-client.js'
 import { startJob, systemLaunchctl, type JobControl } from '../../mirror/launchd.js'
 import { jobEnv, renderWatchdogPlist } from '../../mirror/plist.js'
 import { WATCHDOG_LABEL, cliEntry, home, watchdogLogDir, watchdogPlistPath } from '../../paths.js'
-import type { ServerMessage } from '../../protocol.js'
+import { SURFACE_NAMES, type ServerMessage, type SurfaceName } from '../../protocol.js'
 import { addVerb, defineVerb, Report } from '../command.js'
 
 type Reply<T extends ServerMessage['t']> = Extract<ServerMessage, { t: T }>
@@ -70,31 +81,90 @@ async function roster(client: BrokerClient): Promise<Roster> {
   return { agents: agents.agents, connected: live.sessions.map(s => s.name) }
 }
 
-/** A connected seat cannot be resumed, so it gets the message as the owner's job would type it. */
+/** The surface a stopped seat comes back on, and where that was read from. */
+export interface DeclaredSurface {
+  surface: SurfaceName
+  from: string
+}
+
+const UNDECLARED: DeclaredSurface = { surface: 'headless', from: 'none declared' }
+
+/** A broker built before `code` existed says it only in `agent-surface`'s refusal text. */
+const LEGACY_SURFACE_REFUSED = "use surface 'headless'"
+
+const surfaceRefused = (res: Reply<'spawn_result'>): boolean =>
+  res.code === 'surface_refused' || (res.reason ?? '').includes(LEGACY_SURFACE_REFUSED)
+
+async function sendAsOwner(client: BrokerClient, seat: string, message: string): Promise<WakeResult> {
+  const res = (await client.request(
+    { t: 'human_send', to: seat, text: message, source: 'watchdog' },
+    'send_result',
+  )) as Reply<'send_result'>
+  return res.ok
+    ? { ok: true, detail: `message ${res.msgId}` }
+    : { ok: false, detail: res.reason ?? 'send refused' }
+}
+
+async function resumeOn(
+  client: BrokerClient,
+  seat: string,
+  surface: SurfaceName,
+  message?: string,
+): Promise<Reply<'spawn_result'>> {
+  const frame = {
+    t: 'resume' as const,
+    name: seat,
+    surface,
+    ...(message === undefined ? {} : { message }),
+    source: 'watchdog' as const,
+  }
+  return (await client.request(frame, 'spawn_result')) as Reply<'spawn_result'>
+}
+
+/** A visible resume drops its message, so it goes as a send the broker holds until the seat registers. */
+async function resumeVisible(
+  client: BrokerClient,
+  seat: string,
+  message: string,
+  declared: DeclaredSurface,
+): Promise<WakeResult | Reply<'spawn_result'>> {
+  const res = await resumeOn(client, seat, declared.surface)
+  if (!res.ok) return res
+  const sent = await sendAsOwner(client, seat, message)
+  const delivery = sent.ok ? sent.detail : `message not delivered: ${sent.detail}`
+  return { ok: true, detail: `resumed on ${declared.surface} (${declared.from}); ${delivery}` }
+}
+
+/** CC-441: a stopped seat resumes on its declared surface, and headless only when iTerm refuses it. */
 export async function wakeSeat(
   client: BrokerClient,
   seat: string,
   message: string,
   connected: boolean,
+  declared: DeclaredSurface = UNDECLARED,
 ): Promise<WakeResult> {
-  if (connected) {
-    const res = (await client.request(
-      { t: 'human_send', to: seat, text: message, source: 'watchdog' },
-      'send_result',
-    )) as Reply<'send_result'>
-    return res.ok
-      ? { ok: true, detail: `message ${res.msgId}` }
-      : { ok: false, detail: res.reason ?? 'send refused' }
+  if (connected) return sendAsOwner(client, seat, message)
+  let why = declared.from
+  if (declared.surface !== 'headless') {
+    const visible = await resumeVisible(client, seat, message, declared)
+    if (!('t' in visible)) return visible
+    const reason = visible.reason ?? 'resume refused'
+    if (!surfaceRefused(visible)) return { ok: false, detail: reason }
+    why = `${declared.surface} refused: ${reason}`
   }
-  const frame = {
-    t: 'resume' as const,
-    name: seat,
-    surface: 'headless' as const,
-    message,
-    source: 'watchdog' as const,
-  }
-  const res = (await client.request(frame, 'spawn_result')) as Reply<'spawn_result'>
-  return res.ok ? { ok: true, detail: 'resumed' } : { ok: false, detail: res.reason ?? 'resume refused' }
+  const res = await resumeOn(client, seat, 'headless', message)
+  return res.ok
+    ? { ok: true, detail: `resumed headless (${why})` }
+    : { ok: false, detail: res.reason ?? 'resume refused' }
+}
+
+/** The seat file's `surface:` wins, since the agent record takes whatever surface the last resume used. */
+async function declaredSurface(client: BrokerClient, root: string, seat: string): Promise<DeclaredSurface> {
+  const fromFile = seatSurface(readText(path.join(root, 'seats', `${seat}.md`)))
+  if (fromFile !== undefined) return { surface: fromFile, from: 'seat file' }
+  const agents = (await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>
+  const recorded = SURFACE_NAMES.find(name => name === agents.agents.find(a => a.name === seat)?.surface)
+  return recorded === undefined ? UNDECLARED : { surface: recorded, from: 'agent record' }
 }
 
 /** Undefined when events.db cannot be read, so the caller holds every seat rather than risk a restart window. */
@@ -130,7 +200,14 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
     loadDoc: () => loadDoc(),
     saveDoc: doc => saveDoc(doc),
     lock: () => acquireRunLock(),
-    wake: (seat, message, connected) => wakeSeat(client, seat, message, connected),
+    wake: async (seat, message, connected) =>
+      wakeSeat(
+        client,
+        seat,
+        message,
+        connected,
+        connected ? UNDECLARED : await declaredSurface(client, root, seat),
+      ),
     appendLog: (seat, at, text) => void appendSeatLog(root, seat, at, text),
   }
 }
@@ -301,7 +378,18 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
         autonomyRoot: root,
         activeWorkRoot: activeWorkRoot(),
       }),
+    machine: readMachineStatus,
   }
+}
+
+/** CC-406: the live readings the spawn guard decides on, for the `machine` block. */
+function readMachineStatus(agents: AgentIdentity[]): MachineStatus {
+  const readings = {
+    liveHeadless: countLiveHeadless(agents),
+    memory: readMemoryFree(),
+    swap: readSwapUsage(),
+  }
+  return machineStatus(readings, resolveMachineLimits(), slotUsage(suiteSlotDeps()))
 }
 
 /** Under --json a failure is one document on stdout too, so a caller never parses an empty string. */
@@ -326,7 +414,8 @@ export const seatsStatusVerb = defineVerb({
   description:
     'what a seat reads before it dispatches (CC-317), read-only: implementers, reviewers and planners ' +
     'against their caps, its other running agents, parked implementers, the pool reading with its age ' +
-    'and the charter stop that applies, unread inbox messages since the seat last sent one, and the ' +
+    'and the charter stop that applies, unread inbox messages since the seat last sent one, the ' +
+    'machine-wide headless agents, free memory and full-suite slots against their limits, swap used, and the ' +
     'top eligible tasks. A spend cap with no saved meter to count it is a stop',
   args: z.object({ seat: requiredString('seat'), json: z.boolean().optional(), root: z.string().optional() }),
   result: Report,

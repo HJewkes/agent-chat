@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { LAUNCHER_PID_ENV } from '../agents/run-agent.js'
+import { LAUNCHER_PID_ENV } from '../agents/launcher.js'
 
 /**
  * What this process knows about the Claude Code session it belongs to, without

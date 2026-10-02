@@ -1,10 +1,14 @@
 import { spawn as nodeSpawn } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
-import { HEADLESS_STDIO } from '../agents/surfaces/headless.js'
+import {
+  HEADLESS_STDIO,
+  SurfaceRefused,
+  type SpawnFn,
+  type SurfaceOptions,
+} from '@titan-design/agent-surface'
 import { SURFACE_NAMES, isInteractiveSurface, type SurfaceName } from '../protocol.js'
-import { SurfaceRefused, surfaceFor, type SpawnFn, type SurfaceOptions } from '../agents/surfaces/index.js'
+import { relaunchScriptPath, surfaceFor } from '../agents/launcher.js'
 import type { LaunchPlan } from '../agents/types.js'
-import { relaunchScriptPath } from '../agents/surfaces/command.js'
 
 const ANCHOR = 'w1t0p0:D5C6B476-BD80-4CED-BA27-A660BC1E01F3'
 const UUID = 'D5C6B476-BD80-4CED-BA27-A660BC1E01F3'

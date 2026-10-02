@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { advance, applyActions, claimKey, type Action, type Observation } from '../agents/burndown/advance.js'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
 import { parseReport } from '../agents/burndown/report.js'
+import type { ShepherdRow } from '../agents/burndown/shepherd.js'
 
 /** The phase machine over hand-built claims and observations; no broker, git or transcript. */
 
@@ -31,12 +32,23 @@ function step(c: Claim, obs: Observation): { actions: Action[]; after: Claim[] }
 }
 
 const spawns = (actions: Action[]) => actions.filter(a => a.kind === 'spawn')
+const registers = (actions: Action[]) => actions.filter(a => a.kind === 'register')
+
+const PR = 'https://github.com/o/r/pull/9'
+const row = (phase: ShepherdRow['phase'], stalled: string | null = null): ShepherdRow => ({
+  repo: 'o/r',
+  pr: 9,
+  runId: 'run-9',
+  phase,
+  headSha: 'h9',
+  stalled: stalled === null ? null : { reason: stalled },
+})
 
 describe('burndown phase machine', () => {
-  it('spawns one reviewer when an implementer exits with a reviewable diff', () => {
+  it('spawns one reviewer when an implementer exits with a reviewable diff and no PR', () => {
     const { actions, after } = step(claim(), {
       agent: exited,
-      report: parseReport('Status: DONE\nPR: https://github.com/o/r/pull/9'),
+      report: parseReport('Status: DONE_WITH_CONCERNS'),
       diff: { reviewable: true, reason: '2 commits ahead' },
     })
 
@@ -67,7 +79,6 @@ describe('burndown phase machine', () => {
     const { actions, after } = step(reviewing, {
       agent: exited,
       report: parseReport('Verdict: CHANGES\nThe test asserts nothing.'),
-      pr: { state: 'open', checks: 'pass' },
     })
 
     expect(spawns(actions)).toEqual([])
@@ -82,7 +93,6 @@ describe('burndown phase machine', () => {
     const { actions, after } = step(reviewing, {
       agent: exited,
       report: parseReport('Verdict: CHANGES\nThe test asserts nothing.'),
-      pr: { state: 'open', checks: 'pass' },
     })
 
     expect(spawns(actions)).toEqual([
@@ -120,12 +130,13 @@ describe('burndown phase machine', () => {
   })
 
   it('retires successors and reviewers before the original agent once the PR merges', () => {
-    const awaiting = claim({
-      phase: 'awaiting-merge',
+    const shepherding = claim({
+      phase: 'shepherding',
+      pr: PR,
       spawned: ['bd-cc-1', 'bd-cc-1-r0', 'bd-cc-1-s1', 'bd-cc-1-r1'],
     })
 
-    const { actions, after } = step(awaiting, { pr: { state: 'merged', checks: 'pass' } })
+    const { actions, after } = step(shepherding, { shepherd: { row: row('done'), landed: true } })
 
     expect(actions.filter(a => a.kind === 'retire')).toEqual([
       expect.objectContaining({ names: ['bd-cc-1-r1', 'bd-cc-1-s1', 'bd-cc-1-r0', 'bd-cc-1'] }),
@@ -175,5 +186,102 @@ describe('burndown phase machine', () => {
     const stalled = claim({ stalledReason: 'implementing past its timeout' })
 
     expect(step(stalled, { agent: exited, report: parseReport('Status: DONE') }).actions).toEqual([])
+  })
+})
+
+describe('burndown hands a PR to Shepherd', () => {
+  it("registers a DONE worker's PR and moves the claim to shepherding without a reviewer", () => {
+    const { actions, after } = step(claim(), {
+      agent: exited,
+      report: parseReport(`Status: DONE\nPR: ${PR}`),
+      diff: { reviewable: true, reason: '2 commits ahead' },
+    })
+
+    expect(spawns(actions)).toEqual([])
+    expect(registers(actions)).toEqual([
+      expect.objectContaining({
+        registration: { target: { repo: 'o/r', pr: 9 }, task: 'demo/CC-1', implementer: 'bd-cc-1' },
+      }),
+    ])
+    expect(after).toEqual([expect.objectContaining({ phase: 'shepherding', pr: PR })])
+  })
+
+  it('stalls a DONE worker whose PR is not a GitHub PR, registering nothing', () => {
+    const { actions, after } = step(claim(), {
+      agent: exited,
+      report: parseReport('Status: DONE\nPR: https://example.test/o/r/pull/9'),
+    })
+
+    expect(registers(actions)).toEqual([])
+    expect(after).toEqual([
+      expect.objectContaining({
+        stalledReason: expect.stringContaining('not a GitHub PR Shepherd can take'),
+      }),
+    ])
+  })
+
+  it('registers an approved PR Shepherd does not hold, and only moves one it already holds', () => {
+    const reviewing = claim({ phase: 'reviewing', agentName: 'bd-cc-1-r0', pr: PR })
+    const approve = { agent: exited, report: parseReport('Verdict: APPROVE') }
+
+    const fresh = step(reviewing, { ...approve, shepherd: {} })
+    const held = step(reviewing, { ...approve, shepherd: { row: row('ci') } })
+
+    expect(registers(fresh.actions)).toHaveLength(1)
+    expect(registers(held.actions)).toEqual([])
+    expect([...fresh.after, ...held.after]).toEqual([
+      expect.objectContaining({ phase: 'shepherding' }),
+      expect.objectContaining({ phase: 'shepherding' }),
+    ])
+  })
+
+  it('waits without registering again while Shepherd holds the PR in flight', () => {
+    const shepherding = claim({ phase: 'shepherding', pr: PR })
+
+    const phases = ['ci', 'fixing', 'review', 'awaiting-approval', 'merging'] as const
+
+    expect(phases.flatMap(p => step(shepherding, { shepherd: { row: row(p) } }).actions)).toEqual([])
+  })
+
+  it('registers again when Shepherd has no row, as after an unanswered register', () => {
+    const { actions } = step(claim({ phase: 'shepherding', pr: PR }), { shepherd: {} })
+
+    expect(registers(actions)).toHaveLength(1)
+  })
+
+  it('finishes on post-merge, and stalls a finished run that never landed', () => {
+    const shepherding = claim({ phase: 'shepherding', pr: PR })
+
+    const merged = step(shepherding, { shepherd: { row: row('post-merge') } })
+    const closed = step(shepherding, { shepherd: { row: row('done'), landed: false } })
+    const failed = step(shepherding, { shepherd: { row: row('failed', 'merge denied') } })
+
+    expect(merged.after).toEqual([expect.objectContaining({ phase: 'done', prHead: 'h9' })])
+    expect(closed.after).toEqual([
+      expect.objectContaining({ stalledReason: 'Shepherd run run-9 ended done without merging' }),
+    ])
+    expect(failed.after).toEqual([
+      expect.objectContaining({
+        stalledReason: 'Shepherd run run-9 ended failed without merging: merge denied',
+      }),
+    ])
+  })
+
+  it('moves an awaiting-merge claim from before Shepherd onto it', () => {
+    const awaiting = claim({ phase: 'awaiting-merge', pr: PR })
+
+    const unheld = step(awaiting, { shepherd: {} })
+    const held = step(awaiting, { shepherd: { row: row('ci') } })
+
+    expect(registers(unheld.actions)).toHaveLength(1)
+    expect([...unheld.after, ...held.after].map(c => c.phase)).toEqual(['shepherding', 'shepherding'])
+  })
+
+  it('stalls a shepherding claim with no PR recorded', () => {
+    const { after } = step(claim({ phase: 'shepherding' }), {})
+
+    expect(after).toEqual([
+      expect.objectContaining({ stalledReason: 'no PR recorded for Shepherd to merge' }),
+    ])
   })
 })

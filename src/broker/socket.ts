@@ -4,6 +4,7 @@ import {
   encode,
   lineReader,
   HUMAN,
+  isTeleportReason,
   type ClientMessage,
   type DeliveredMessage,
   type ItemShape,
@@ -16,7 +17,7 @@ import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
 import { newMsgId } from './event-log.js'
 import { type Escalation, type RouteResult } from './registry.js'
-import { BrokerCore, type Conn } from './core.js'
+import { BrokerCore, type Conn, type EndorseApproval } from './core.js'
 import type { SlotUsage } from '../agents/semaphore.js'
 import { Supervisor, type SupervisorOptions } from '../agents/supervisor.js'
 import { gather, LifecycleVerifier } from '../agents/ledger/verifier.js'
@@ -53,6 +54,22 @@ const MAX_OPEN_ENDORSEMENTS = 2
 
 const reply = (conn: Conn, message: ServerMessage): void => {
   conn.write(encode(message))
+}
+
+/** CC-320: the sender learns the message waits for the seat, so it neither resends nor reads it as delivered. */
+const replyHeld = (conn: Conn, to: string, msgId: string): void => {
+  const reason =
+    `"${to}" has no active session. The message is held and will be pushed when it registers; ` +
+    'it has not been delivered or read, so do not resend it.'
+  reply(conn, {
+    t: 'send_result',
+    ok: true,
+    held: true,
+    msgId,
+    recipients: [to],
+    results: [{ name: to, status: 'held', reason }],
+    reason,
+  })
 }
 
 /**
@@ -277,6 +294,8 @@ export class SocketServer {
       ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }),
       ...(outcome.name === undefined ? {} : { name: outcome.name }),
       ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+      ...(outcome.code === undefined ? {} : { code: outcome.code }),
+      ...(outcome.retryable === undefined ? {} : { retryable: outcome.retryable }),
       ...(warnings.length === 0 ? {} : { warnings }),
       ...(outcome.disallowedTools === undefined ? {} : { disallowedTools: outcome.disallowedTools }),
       ...(outcome.transcript === undefined ? {} : { transcript: outcome.transcript }),
@@ -359,6 +378,12 @@ export class SocketServer {
    * so there is no version of this call that ends someone else's session.
    */
   private async handleTeleport(conn: Conn, msg: Extract<ClientMessage, { t: 'teleport' }>): Promise<void> {
+    if (msg.reason !== undefined && !isTeleportReason(msg.reason))
+      return reply(conn, {
+        t: 'teleport_result',
+        ok: false,
+        reason: `unknown teleport reason "${String(msg.reason)}"`,
+      })
     const { registry } = this.core
     const entry = registry.entryFor(conn)
     if (entry?.agentId === undefined) {
@@ -392,6 +417,7 @@ export class SocketServer {
       handoff: msg.handoff,
       ...(msg.model === undefined ? {} : { model: msg.model }),
       ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
+      ...(msg.reason === undefined ? {} : { reason: msg.reason }),
     })
     reply(conn, {
       t: 'teleport_result',
@@ -600,18 +626,7 @@ export class SocketServer {
     const held = unrouted ? core.holdForSeat(from, to, text, inReplyTo) : undefined
     if (held === undefined) return this.handleRoute(conn, result, 'message', to)
     if (!held.ok) return this.handleRoute(conn, { ...result, reason: held.reason }, 'message', to)
-    const reason =
-      `"${to}" has no active session. The message is held and will be pushed when it registers; ` +
-      'it has not been delivered or read, so do not resend it.'
-    reply(conn, {
-      t: 'send_result',
-      ok: true,
-      held: true,
-      msgId: held.msgId,
-      recipients: [to],
-      results: [{ name: to, status: 'held', reason }],
-      reason,
-    })
+    replyHeld(conn, to, held.msgId)
   }
 
   private handleRoute(
@@ -785,11 +800,9 @@ export class SocketServer {
     // The human is shown "would be delivered to X" and decides based on that
     // name. Refusing an unknown name here at least closes the case an adversarial
     // review found live: approving a request for a name nobody holds yet, which
-    // then gets delivered to whoever happens to register it later. This does NOT
-    // close the narrower race where the recipient changes identity between this
-    // check and the human's eventual approval — that would need the approval
-    // bound to an agentId rather than a name, which nothing else on this bus does
-    // either (accepted, tracked separately).
+    // then gets delivered to whoever happens to register it later. The narrower
+    // race, where the name changes hands before the human approves, is closed at
+    // approval by `recipient_agent_id` below (CC-420).
     const recipientConn = core.registry.connFor(msg.to)
     if (recipientConn === undefined) return refuse(`no session named "${msg.to}" is currently connected`)
 
@@ -822,6 +835,7 @@ export class SocketServer {
       meta: {
         recipient: msg.to,
         ...(composer?.agentId ? { agent_id: composer.agentId } : {}),
+        ...(recipient?.agentId ? { recipient_agent_id: recipient.agentId } : {}),
         recipient_durable: recipient?.agentId ? 'true' : 'false',
         recipient_registered_at: String(recipient?.registeredAt ?? Date.now()),
       },
@@ -920,7 +934,7 @@ export class SocketServer {
    * that no message shape carries the field itself. See `isHuman` for what this
    * check does and does not guarantee against a more determined bypass.
    */
-  private handleEndorseApprove(conn: Conn, msgId: string): void {
+  private handleEndorseApprove(conn: Conn, msgId: string, approval: EndorseApproval): void {
     if (!this.isHuman(conn)) {
       this.refuseToSession(conn, 'endorse a message')
       return reply(conn, {
@@ -929,7 +943,7 @@ export class SocketServer {
         reason: 'endorsing is the human’s call; a session cannot endorse its own message or a peer’s',
       })
     }
-    const result = this.core.endorse(msgId)
+    const result = this.core.endorse(msgId, approval)
     reply(conn, {
       t: 'answer_result',
       ok: result.ok,
@@ -1107,6 +1121,9 @@ export class SocketServer {
     const target = core.registry.connFor(to)
     const msgId = newMsgId()
     if (!target) {
+      // CC-441: the watchdog's wake for a seat it just resumed visibly lands here before the seat registers.
+      const held = core.holdForSeat(HUMAN, to, text)
+      if (held?.ok) return replyHeld(conn, to, held.msgId)
       core.append({ kind: 'route_failed', actor: HUMAN, target: to, body: 'no active session' })
       logEvent('route', { kind: 'message', msgId, from: HUMAN, to, delivered: false, recipients: [] })
       return reply(conn, {
@@ -1287,7 +1304,7 @@ export class SocketServer {
       case 'endorse':
         return this.handleEndorseRequest(conn, msg)
       case 'endorse_approve':
-        return this.handleEndorseApprove(conn, msg.msgId)
+        return this.handleEndorseApprove(conn, msg.msgId, { text: msg.text, to: msg.to })
       case 'inbox': {
         const name = core.registry.nameOf(conn)
         return reply(conn, { t: 'inbox_result', messages: name ? core.events.inboxFor(name, msg.limit) : [] })
@@ -1339,6 +1356,11 @@ export class SocketServer {
           events: core.events.activityFor(msg.name, msg.limit),
         })
       }
+      case 'reported':
+        return reply(conn, {
+          t: 'reported_result',
+          reported: core.events.hasStatusReport(msg.from, [msg.to], msg.since),
+        })
       case 'human_send':
         return this.handleHumanSend(conn, msg.to, msg.text, wakeSource(msg.source))
       case 'approval':
