@@ -139,7 +139,7 @@ export interface PoolBudgetInput {
   resetsAt?: number | undefined
 }
 
-const poolRule = (pool: Pool): PoolRule => ({
+export const poolRule = (pool: Pool): PoolRule => ({
   name: pool.name,
   human_uses: pool.humanUses,
   reserve_seven_day: pool.rule.reserve_seven_day,
