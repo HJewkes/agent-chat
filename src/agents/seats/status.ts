@@ -48,7 +48,12 @@ export interface AgentLoad {
 export interface RoleLoad extends AgentLoad {
   cap: number
   atCap: boolean
+  /** CC-405: running agents tagged `waiting-owner`, left out of every other field; always empty without `cap_excludes_waiting_owner`. */
+  waitingOwner: string[]
 }
+
+/** The session tag that marks an agent as blocked on the owner; set with `chat_tag`. */
+export const WAITING_OWNER_TAG = 'waiting-owner'
 
 export interface ParkedLoad {
   /** The seat's implementers that exited and are not retired. */
@@ -131,6 +136,8 @@ export interface StatusDeps {
   homeDir: string
   /** The broker's roster without retired agents. */
   agents: () => Promise<AgentIdentity[]>
+  /** CC-405: names of the sessions that carry `WAITING_OWNER_TAG`. */
+  waitingOwner: () => Promise<string[]>
   readBudget: (configDir: string, nowMs: number) => BudgetRead
   /** Throws when seat-watchdog.json exists and cannot be read or parsed. */
   loadDoc: () => WatchdogDoc
@@ -194,9 +201,13 @@ function agentLoad(agents: AgentIdentity[], role: Role): AgentLoad {
   return { active: active.length, names: namesOf(active), detached }
 }
 
-function roleLoad(agents: AgentIdentity[], role: Role, cap: number): RoleLoad {
-  const { active, names, detached } = agentLoad(agents, role)
-  return { active, cap, atCap: active >= cap, names, detached }
+function roleLoad(agents: AgentIdentity[], role: Role, cap: number, waiting: ReadonlySet<string>): RoleLoad {
+  const parked = agents.filter(a => waiting.has(a.name) && roleOf(a) === role && running(a))
+  const { active, names, detached } = agentLoad(
+    agents.filter(a => !parked.includes(a)),
+    role,
+  )
+  return { active, cap, atCap: active >= cap, names, detached, waitingOwner: namesOf(parked) }
 }
 
 function parkedLoad(agents: AgentIdentity[]): ParkedLoad {
@@ -388,13 +399,14 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
   const roster = await deps.agents()
   const machineStop = deps.machineStop()
   const mine = ownedBy(roster, seat, prefix)
+  const waiting = new Set(policy.seat.cap_excludes_waiting_owner ? await deps.waitingOwner() : [])
   const plain: Plain = err => plainError(err, [deps.autonomyRoot, deps.homeDir])
   return {
     seat,
     at: now.toISOString(),
-    implementers: roleLoad(mine, 'implementer', concurrency.implementers),
-    reviewers: roleLoad(mine, 'reviewer', concurrency.reviewers),
-    planners: roleLoad(mine, 'planner', concurrency.planners),
+    implementers: roleLoad(mine, 'implementer', concurrency.implementers, waiting),
+    reviewers: roleLoad(mine, 'reviewer', concurrency.reviewers, waiting),
+    planners: roleLoad(mine, 'planner', concurrency.planners, waiting),
     other: agentLoad(mine, 'other'),
     parked: parkedLoad(mine),
     budget: budgetStatus(deps, policy, seat, now, plain),
