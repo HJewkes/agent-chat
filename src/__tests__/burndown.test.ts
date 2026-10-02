@@ -501,16 +501,22 @@ describe('budget gate', () => {
   const rule = { reserve_seven_day: 25, ceiling_five_hour: 70, night: { reserve_seven_day: 10 } }
   const reading = { sevenDay: 80, fiveHour: 10, ageSeconds: 5 }
   const night = new Date(2026, 8, 26, 2, 0)
+  const DAY_MS = 24 * 3_600_000
 
-  it('lowers the reserve at night only when the human has been gone half an hour', () => {
-    const away = gateAccount('agents', rule, reading, {
-      now: night,
-      humanLastTurnAt: night.getTime() - 3_600_000,
-    })
-    const unknown = gateAccount('agents', rule, reading, { now: night })
+  it('ignores the night reserve and declines the reserve over the seven_day window (CC-474)', () => {
+    const away = { now: night, humanLastTurnAt: night.getTime() - 3_600_000 }
+    const dayOne = gateAccount('agents', rule, reading, away)
+    const daySix = gateAccount(
+      'agents',
+      rule,
+      { ...reading, sevenDayResetsAt: night.getTime() + 2 * DAY_MS - 60_000 },
+      away,
+    )
 
-    expect(away.open).toBe(true)
-    expect(unknown.open).toBe(false)
+    expect(dayOne.open).toBe(false)
+    expect(dayOne.reason).toContain('line 75% (no seven_day resets_at, flat reserve)')
+    expect(daySix.open).toBe(true)
+    expect(daySix.reason).toContain('seven_day 80% vs line 92.86% (day 6 of 7, seat caps lifted)')
   })
 
   it('stays closed with no reading rather than assuming zero usage', () => {

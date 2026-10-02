@@ -443,7 +443,9 @@ describe("the seat's pool reading and charter stop", () => {
 
     const { budget } = await status()
 
-    expect(budget.stop).toBe(`BUDGET-PAUSE pool ${POOL}: seven_day 70% at or above line 65%`)
+    expect(budget.stop).toBe(
+      `BUDGET-PAUSE pool ${POOL}: seven_day 70% at or above line 65% (no seven_day resets_at, flat reserve)`,
+    )
     expect(budget.margin).toBeNull()
   })
 
@@ -507,7 +509,9 @@ describe("a current reading that lacks a window, against the pool's last good on
 
     const { budget } = await status()
 
-    expect(budget.stop).toBe(`BUDGET-PAUSE pool ${POOL}: seven_day 70% at or above line 65%`)
+    expect(budget.stop).toBe(
+      `BUDGET-PAUSE pool ${POOL}: seven_day 70% at or above line 65% (no seven_day resets_at, flat reserve)`,
+    )
     expect(budget.margin).toBeNull()
   })
 
@@ -785,33 +789,37 @@ describe('reset-aware day pacing (CC-404)', () => {
     doc.pools[POOL] = { since: at(7), last: dayStartSevenDay, spent: 0 }
   }
 
+  // CC-474: the line at 07:00 is 100 - 35 * (8 - d) / 7 on day d of the window.
   it.each([
-    [0.5, 60],
-    [3, 10],
-    [6, 5],
-  ])('allows (65 - 35 at 07:00) / %s days to reset = %s points a day', async (days, points) => {
-    pacedAt(days)
+    [0.5, 95, 120],
+    [3, 85, 16.67],
+    [6, 70, 5.83],
+  ])(
+    'allows (line - 35 at 07:00) / %s days to reset, line %s, = %s points a day',
+    async (days, stopLine, points) => {
+      pacedAt(days)
 
-    const { budget } = await status()
+      const { budget } = await status()
 
-    expect(budget.allowance).toEqual({
-      source: 'reset-aware',
-      points,
-      stopLine: 65,
-      sevenDay: 41,
-      dayStartSevenDay: 35,
-      basis: 'day-start',
-      daysToReset: days,
-      resetsAt: new Date(resetIn(days)).toISOString(),
-    })
-  })
+      expect(budget.allowance).toEqual({
+        source: 'reset-aware',
+        points,
+        stopLine,
+        sevenDay: 41,
+        dayStartSevenDay: 35,
+        basis: 'day-start',
+        daysToReset: days,
+        resetsAt: new Date(resetIn(days)).toISOString(),
+      })
+    },
+  )
 
   it('spreads the headroom at the day start, not what is left after the day spent 10', async () => {
     pacedAt(0.5, 40, 50)
 
     const { budget } = await status()
 
-    expect(budget.allowance).toMatchObject({ points: 50, sevenDay: 50, dayStartSevenDay: 40 })
+    expect(budget.allowance).toMatchObject({ points: 110, sevenDay: 50, dayStartSevenDay: 40 })
   })
 
   it('opens on day spend over per_day_points when the reset is half a day away', async () => {
@@ -828,7 +836,7 @@ describe('reset-aware day pacing (CC-404)', () => {
     const { budget } = await status()
 
     expect(budget.stop).toBe(
-      stopOf("day spend 6 points since 07:00 at or above the seat's reset-aware day allowance 5"),
+      stopOf("day spend 6 points since 07:00 at or above the seat's reset-aware day allowance 5.83"),
     )
   })
 
@@ -840,7 +848,7 @@ describe('reset-aware day pacing (CC-404)', () => {
     const { budget } = await status()
 
     expect(budget.allowance).toMatchObject({
-      points: 8,
+      points: 14.67,
       dayStartSevenDay: 41,
       basis: 'current',
       daysToReset: 3,
@@ -868,8 +876,8 @@ describe('reset-aware day pacing (CC-404)', () => {
     expect(budget.allowance).toMatchObject({ source: 'per_day_points', points: 10, daysToReset: -0.1 })
   })
 
-  it('keeps the per_day_points stop for a seat without the key, whatever the reset', async () => {
-    writeReading(12, 41, 30, NOW, resetIn(0.5))
+  it('keeps the per_day_points stop for a seat without the key, whatever the reset before day 6', async () => {
+    writeReading(12, 41, 30, NOW, resetIn(3))
     doc.pools[POOL] = { since: at(7), last: 30, spent: 0 }
 
     const { budget } = await status()
@@ -887,9 +895,36 @@ describe('reset-aware day pacing (CC-404)', () => {
     const plain = await statusReport(deps(), SEAT, false)
 
     expect(paced.lines).toContain(
-      `pacing        reset-aware: 5 points/day = (65 - 35 at 07:00) / 6 days to reset at ${new Date(resetIn(6)).toISOString()}`,
+      `pacing        reset-aware: 5.83 points/day = (70 - 35 at 07:00) / 6 days to reset at ${new Date(resetIn(6)).toISOString()}`,
     )
     expect(plain.lines.some(l => l.startsWith('pacing'))).toBe(false)
+  })
+})
+
+describe('seat caps on days 6 and 7 of the window (CC-474)', () => {
+  const resetIn = (days: number): number => NOW.getTime() + days * DAY_MS - 60_000
+
+  it('lifts the seat per_day_points on day 6 and names the day and the line', async () => {
+    writeAutonomy()
+    writeReading(12, 41, 30, NOW, resetIn(2))
+    doc.pools[POOL] = { since: at(7), last: 30, spent: 0 }
+
+    const { budget } = await status()
+
+    expect(budget.stop).toBeNull()
+    expect(budget.margin).toContain('seven_day 41% vs line 90% (day 6 of 7, seat caps lifted)')
+  })
+
+  it('keeps the per_day_points stop on day 5', async () => {
+    writeAutonomy()
+    writeReading(12, 41, 30, NOW, resetIn(3))
+    doc.pools[POOL] = { since: at(7), last: 30, spent: 0 }
+
+    const { budget } = await status()
+
+    expect(budget.stop).toBe(
+      `BUDGET-PAUSE pool ${POOL}: day spend 11 points since 07:00 at or above the seat's per_day_points 10`,
+    )
   })
 })
 
@@ -1134,7 +1169,7 @@ describe('the status verb', () => {
       'other         0',
       'parked        1  tree on disk: ss-al-4',
       `budget        pool ${POOL}: seven_day 70%, five_hour 12% (reading 30s old)`,
-      `stop          BUDGET-PAUSE pool ${POOL}: seven_day 70% at or above line 65%`,
+      `stop          BUDGET-PAUSE pool ${POOL}: seven_day 70% at or above line 65% (no seven_day resets_at, flat reserve)`,
       'machine       headless 2/10, memory 50% free/15% floor, swap 25% used, suite slots 1/4',
       'inbox         0 unread (the seat has sent nothing)',
       'eligible      AL-1  72.0  alpha  Harden the secret store against injection',
@@ -1150,7 +1185,7 @@ describe('the status verb', () => {
 
     expect(lines.slice(6)).toEqual([
       `budget        pool ${POOL}: seven_day 41%, five_hour 12% (reading 300s old, STALE)`,
-      `stop          none; pool ${POOL}: five_hour 12% vs ceiling 70%, seven_day 41% vs line 65%`,
+      `stop          none; pool ${POOL}: five_hour 12% vs ceiling 70%, seven_day 41% vs line 65% (no seven_day resets_at, flat reserve)`,
       'machine       headless 0/10, memory 50% free/15% floor, swap 25% used, suite slots 1/4',
       'inbox         0 unread (the seat has sent nothing)',
       'eligible      unavailable: scorer exploded',

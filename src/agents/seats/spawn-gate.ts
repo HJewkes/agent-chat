@@ -4,6 +4,7 @@ import {
   gatePool,
   runStartAt,
   type AccountReading,
+  type FullReading,
   type PoolRule,
   type SevenDaySample,
   type SpendCaps,
@@ -42,8 +43,6 @@ export interface SeatSpawnVerdict {
   allow: boolean
   reason: string
 }
-
-type FullReading = Required<AccountReading>
 
 const isFresh = (reading: AccountReading | undefined): reading is FullReading =>
   reading?.sevenDay !== undefined &&

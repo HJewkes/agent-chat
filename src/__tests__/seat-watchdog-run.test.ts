@@ -194,7 +194,7 @@ describe('runWatchdog', () => {
     const h = harness(IDLE, 70)
     expect(await runs(h, 4)).toBe(0)
     expect(h.logs).toEqual([
-      'seat-a: Watchdog: BUDGET-PAUSE pool claude: five_hour 70% at or above ceiling 70%',
+      'seat-a: Watchdog: BUDGET-PAUSE pool claude: five_hour 70% at or above ceiling 70% (no seven_day resets_at, flat reserve)',
     ])
     expect(h.doc.seats['seat-a']?.budgetPaused).toBe(true)
   })
@@ -205,7 +205,7 @@ describe('runWatchdog', () => {
     h.fiveHour = 41
     expect(await runs(h, 3)).toBe(1)
     expect(h.logs.filter(l => l.includes('budget open again'))).toEqual([
-      'seat-a: Watchdog: budget open again: pool claude: five_hour 41% vs ceiling 70%, seven_day 19% vs line 65%',
+      'seat-a: Watchdog: budget open again: pool claude: five_hour 41% vs ceiling 70%, seven_day 19% vs line 65% (no seven_day resets_at, flat reserve)',
     ])
     expect(h.logs.filter(l => l.includes('BUDGET-PAUSE'))).toHaveLength(1)
   })
@@ -290,7 +290,7 @@ describe('runWatchdog', () => {
     [1, 'budget open'],
     [
       6,
-      "budget closed: BUDGET-PAUSE pool claude: day spend 10 points since 07:00 at or above the seat's reset-aware day allowance 9.17",
+      "budget closed: BUDGET-PAUSE pool claude: day spend 10 points since 07:00 at or above the seat's reset-aware day allowance 10",
     ],
   ])(
     'paces a reset-aware seat whose pool resets %s day(s) after 07:00 to the allowance (CC-404)',
@@ -681,7 +681,7 @@ describe('stops hold the dark-seat resume (CC-326)', () => {
     expect(h.wakes).toEqual([])
     expect(out).toContainEqual(
       expect.stringContaining(
-        'not resumed: budget closed: BUDGET-PAUSE pool claude: five_hour 70% at or above ceiling 70%',
+        'not resumed: budget closed: BUDGET-PAUSE pool claude: five_hour 70% at or above ceiling 70% (no seven_day resets_at, flat reserve)',
       ),
     )
     h.fiveHour = 41
@@ -1075,7 +1075,7 @@ describe('a pool reading that lacks a window (CC-409)', () => {
     await gap(h, 1, 66)
 
     expect(pauses(h)).toEqual([
-      'seat-a: Watchdog: BUDGET-PAUSE pool claude: seven_day 66% at or above line 65%',
+      'seat-a: Watchdog: BUDGET-PAUSE pool claude: seven_day 66% at or above line 65% (no seven_day resets_at, flat reserve)',
     ])
   })
 
