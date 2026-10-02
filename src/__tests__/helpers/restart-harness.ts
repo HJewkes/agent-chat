@@ -61,7 +61,11 @@ export interface HarnessOptions {
   processProbe?: ProcessProbe
 }
 
-const unprovenProbe: ProcessProbe = { isAlive: () => true, readArgv: () => undefined }
+const unprovenProbe: ProcessProbe = {
+  isAlive: () => true,
+  readArgv: () => undefined,
+  sessionRecords: () => [],
+}
 
 /** A child that starts and never exits, so the attach path decides what a test sees. */
 const liveChild = (): { pid: number; unref: () => void; once: () => undefined } => ({

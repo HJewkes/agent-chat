@@ -32,11 +32,12 @@ import {
   writeRuntimeState,
 } from './launch-files.js'
 import {
+  agentLiveness,
   awaitsExit,
   DetachedReaper,
   detachedAtStart,
   hostProbe,
-  launcherLiveness,
+  launcherPid,
   type ProcessProbe,
 } from './detached-reap.js'
 import { loadProfile, recordedRole, roleOf } from './profiles.js'
@@ -679,7 +680,13 @@ export class Supervisor implements TeleportHost {
     this.unwatch = core.onAppend(row => this.onRow(row))
     this.teleporter = new Teleport(core, this, options.countdownMs, options.argvReader)
     this.shadow = new LifecycleShadow(options.ledger)
-    for (const agent of detachedAtStart(core.agents.roster())) this.reapIfDead(agent.agentId)
+    for (const agent of detachedAtStart(core.agents.roster())) this.reapAtStart(agent.agentId)
+  }
+
+  /** A launcher pid is direct evidence now; a session lookup waits one settle window for a reconnect. */
+  private reapAtStart(agentId: string): void {
+    if (launcherPid(agentId) === undefined) this.reaper.schedule(agentId)
+    else this.reapIfDead(agentId)
   }
 
   private fireHook(event: HookEvent, payload: Record<string, unknown>): void {
@@ -725,7 +732,7 @@ export class Supervisor implements TeleportHost {
    * CC-109: slot accounting for a spawned agent this broker did not launch,
    * which after a restart is every agent that reattaches. Nothing is added to
    * `live`, for the reasons on `rehydrate`. CC-450: a detach that outlasts the
-   * settle window infers an exit only once the recorded launcher pid is gone.
+   * settle window infers an exit only once its launcher pid or its Claude Code session is gone.
    */
   private onUnwatchedRow(kind: string, agentId: string): void {
     if (kind === 'agent_detached') this.reaper.schedule(agentId)
@@ -768,14 +775,14 @@ export class Supervisor implements TeleportHost {
   private reapIfDead(agentId: string): void {
     const agent = this.core.agents.get(agentId)
     if (!awaitsExit(agent) || this.live.has(agentId)) return
-    const liveness = launcherLiveness(agentId, this.processProbe)
+    const liveness = agentLiveness(agent, this.processProbe)
     if (!liveness.dead) return
     this.core.append({
       kind: 'agent_exited',
       actor: agent.name,
       ref: agentId,
-      body: `exit inferred after a broker restart: ${liveness.reason}`,
-      meta: { inferred: 'true', pid: String(liveness.pid) },
+      body: `exit inferred while detached: ${liveness.reason}`,
+      meta: { inferred: 'true', ...(liveness.pid === undefined ? {} : { pid: String(liveness.pid) }) },
     })
     logEvent('agent_exited', {
       agentId,

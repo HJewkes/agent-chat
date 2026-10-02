@@ -88,11 +88,13 @@ const realIsDirectory = (dir: string): boolean => {
  * Copied semantics, not copied code: active-work reads `CLAUDE_PROFILE_ROOT` when
  * it is absolute and falls back to `$HOME/.claude-profiles`.
  */
-export function profileDir(profile: string, env: NodeJS.ProcessEnv, home: string): string {
+export function profileRoot(env: NodeJS.ProcessEnv, home: string): string {
   const configured = env[PROFILE_ROOT_ENV]
-  const root = configured && path.isAbsolute(configured) ? configured : path.join(home, DEFAULT_PROFILE_ROOT)
-  return path.join(root, profile)
+  return configured && path.isAbsolute(configured) ? configured : path.join(home, DEFAULT_PROFILE_ROOT)
 }
+
+export const profileDir = (profile: string, env: NodeJS.ProcessEnv, home: string): string =>
+  path.join(profileRoot(env, home), profile)
 
 /**
  * Why an explicit dir is REFUSED rather than warned about and dropped.

@@ -1,6 +1,8 @@
+import path from 'node:path'
 import { isProcessAlive } from '../broker/lifecycle.js'
 import { psArgvReader, type ArgvReader } from '../broker/host-channels.js'
 import type { AgentIdentity } from '../protocol.js'
+import { knownConfigDirs, readSessionRecords, type SessionRecord } from './claude-sessions.js'
 import { readRuntimeState } from './launch-files.js'
 
 /**
@@ -13,25 +15,38 @@ import { readRuntimeState } from './launch-files.js'
  * Nothing is signalled and nothing enters `live`.
  *
  * Only a headless launch records a pid (the `agent-chat run-agent <id>` process,
- * which lives exactly as long as the claude it started). A visible agent, or a
- * launch that failed before its handle was written, has none and is never reaped.
+ * which lives exactly as long as the claude it started). A visible agent, an adopted
+ * human session, or a launch that failed before its handle was written has none, so
+ * its liveness comes from Claude Code's own session records instead (`claude-sessions.ts`).
  */
 
 export interface ProcessProbe {
   isAlive: (pid: number) => boolean
   readArgv: ArgvReader
+  /** Claude Code's running-session records across every account dir, plus `extraDirs`. */
+  sessionRecords: (extraDirs: readonly string[]) => SessionRecord[]
 }
 
-export const hostProbe: ProcessProbe = { isAlive: isProcessAlive, readArgv: psArgvReader }
+export const hostProbe: ProcessProbe = {
+  isAlive: isProcessAlive,
+  readArgv: psArgvReader,
+  sessionRecords: extraDirs => readSessionRecords([...extraDirs, ...knownConfigDirs()]),
+}
 
-export type Liveness = { dead: true; pid: number; reason: string } | { dead: false; reason: string }
+export type Liveness = { dead: true; pid?: number; reason: string } | { dead: false; reason: string }
 
 /** The launcher's own argv: `<node> <cli> run-agent <id>`. */
 const runsAgent = (argv: string, agentId: string): boolean =>
   argv.split(/\s+/).some((word, i, words) => word === 'run-agent' && words[i + 1] === agentId)
 
+/** A native `.../claude` binary or an npm install's `@anthropic-ai/claude-code` entry. */
+const runsClaude = (argv: string): boolean =>
+  argv.split(/\s+/).some(word => path.basename(word) === 'claude' || word.includes('/claude-code/'))
+
+export const launcherPid = (agentId: string): number | undefined => readRuntimeState(agentId)?.handle.pid
+
 export function launcherLiveness(agentId: string, probe: ProcessProbe): Liveness {
-  const pid = readRuntimeState(agentId)?.handle.pid
+  const pid = launcherPid(agentId)
   if (pid === undefined) return { dead: false, reason: 'no recorded pid' }
   if (!probe.isAlive(pid)) return { dead: true, pid, reason: `launcher pid ${pid} is gone` }
   const argv = probe.readArgv(pid)
@@ -40,9 +55,35 @@ export function launcherLiveness(agentId: string, probe: ProcessProbe): Liveness
   return { dead: true, pid, reason: `pid ${pid} was reused by another process` }
 }
 
-/** A detached spawned agent whose exit is not yet on the log; a detach can land after a recorded exit. */
+function sessionPidLiveness(record: SessionRecord, probe: ProcessProbe): Liveness {
+  const { pid, sessionId } = record
+  if (!probe.isAlive(pid)) return { dead: true, pid, reason: `session ${sessionId} pid ${pid} is gone` }
+  const argv = probe.readArgv(pid)
+  if (argv === undefined || runsClaude(argv)) return { dead: false, reason: `session pid ${pid} is running` }
+  return { dead: true, pid, reason: `session pid ${pid} was reused by another process` }
+}
+
+/** For a row with no launcher pid: is a Claude Code process still holding its session id? */
+export function sessionLiveness(agent: AgentIdentity, probe: ProcessProbe): Liveness {
+  if (agent.sessionId === '') return { dead: false, reason: 'no recorded pid or session id' }
+  const records = probe.sessionRecords(agent.configDir === undefined ? [] : [agent.configDir])
+  if (records.length === 0) return { dead: false, reason: 'no Claude Code session records to read' }
+  const verdicts = records.filter(r => r.sessionId === agent.sessionId).map(r => sessionPidLiveness(r, probe))
+  const running = verdicts.find(v => !v.dead)
+  if (running) return running
+  return (
+    verdicts[0] ?? { dead: true, reason: `no running Claude Code process holds session ${agent.sessionId}` }
+  )
+}
+
+export const agentLiveness = (agent: AgentIdentity, probe: ProcessProbe): Liveness =>
+  launcherPid(agent.agentId) === undefined
+    ? sessionLiveness(agent, probe)
+    : launcherLiveness(agent.agentId, probe)
+
+/** A detached agent, spawned or adopted, whose exit is not yet on the log. */
 export const awaitsExit = (agent: AgentIdentity | undefined): agent is AgentIdentity =>
-  agent?.origin === 'spawned' && agent.state === 'detached' && agent.exitedAt === undefined
+  agent?.state === 'detached' && agent.exitedAt === undefined
 
 /** Rows a previous broker left detached, at the moment this one starts. */
 export const detachedAtStart = (roster: readonly AgentIdentity[]): AgentIdentity[] =>
