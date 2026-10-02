@@ -7,8 +7,8 @@ import {
   gatePool,
   runStartAt,
   standInReading,
+  type SevenDaySample,
   type AccountReading,
-  type PoolGateResult,
 } from '../burndown/budget-gate.js'
 import { loadPolicy, seatBudget, type Policy } from '../burndown/policy.js'
 import type { ScoredPlan } from '../burndown/score-render.js'
@@ -19,9 +19,12 @@ import { openEvents, type WatchdogDoc } from './io.js'
 import {
   advanceMeter,
   meterHistory,
+  pacedCaps,
   sameSpendDay,
   withinRun,
+  type DayAllowance,
   type MachineStop,
+  type PacedCaps,
   type SpendMeter,
 } from './stops.js'
 import { accountReading, lastGoodReading } from './watchdog.js'
@@ -72,6 +75,8 @@ export interface BudgetStatus {
   /** Set when the day's spend is counted from the saved meter's first sample, which came after 07:00. */
   spendSince: string | null
   note: string | null
+  /** CC-404: the day stop the gate used and its inputs; `reset-aware` only for a seat with `pacing: reset-aware`. */
+  allowance: DayAllowance
 }
 
 export interface InboxReading {
@@ -218,17 +223,18 @@ function savedMeters(doc: WatchdogDoc, seat: string, pool: string | undefined, n
   return { run: usable(doc.seats[seat]?.run), day: usable(doc.pools[pool]), lastGood }
 }
 
+interface SeatHistory {
+  history: SevenDaySample[]
+  runStart: number
+  day: SpendMeter | undefined
+}
+
 /**
- * `gatePool` over the watchdog's saved run and day meters, advanced to this reading as its next pass would.
+ * The watchdog's saved run and day meters, advanced to this reading as its next pass would, as `gatePool` history.
  * A meter the watchdog never saved stays absent, so `gatePool` stops a cap that needs it as unknown.
  * A run meter past 12 hours counts from its last reading, because this read saves no restart.
  */
-function seatGate(
-  { pool, spend }: SeatBudget,
-  saved: SavedMeters,
-  reading: AccountReading | undefined,
-  now: Date,
-): { gate: PoolGateResult; day: SpendMeter | undefined } {
+function seatHistory(saved: SavedMeters, reading: AccountReading | undefined, now: Date): SeatHistory {
   const nowMs = now.getTime()
   const advance = (meter: SpendMeter | undefined, current: typeof withinRun): SpendMeter | undefined =>
     meter === undefined ? undefined : advanceMeter(meter, reading?.sevenDay, nowMs, current)
@@ -239,23 +245,16 @@ function seatGate(
     { at: runStart, meter: run },
     { at: dayStart(now), meter: day },
   ]
-  const history = meterHistory(starts, nowMs)
-  const input = {
-    pool,
-    spend,
-    reading,
-    lastGood: saved.lastGood,
-    history,
-    runStartAt: runStart,
-    ctx: { now },
-  }
-  return { gate: gatePool(input), day }
+  return { history: meterHistory(starts, nowMs), runStart, day }
 }
 
 type Verdict = Pick<BudgetStatus, 'stop' | 'margin' | 'sonnetOnly' | 'spendSince' | 'note'> & {
   /** CC-409: the reading the gate opened on when the last good reading stood in for a missing window. */
   staleOk?: AccountReading
 }
+
+/** The seat's caps for `gatePool` given the pool's history, which only the saved meters can tell. */
+type Pace = (history: readonly SevenDaySample[]) => PacedCaps
 
 const stopped = (stop: string): Verdict => ({
   stop,
@@ -280,30 +279,55 @@ function lateDayStart(day: SpendMeter | undefined, now: Date): Pick<Verdict, 'sp
 function spendVerdict(
   deps: StatusDeps,
   budget: SeatBudget,
+  pace: Pace,
   seat: string,
   reading: AccountReading | undefined,
   now: Date,
   plain: Plain,
-): Verdict {
+): Verdict & { allowance: DayAllowance } {
   const name = budget.pool?.name
   let doc: WatchdogDoc
   try {
     doc = deps.loadDoc()
   } catch (err) {
-    return stopped(`BUDGET-PAUSE pool ${name ?? 'unknown'}: ${plain(err)}, so spend is unknown`)
+    const why = `BUDGET-PAUSE pool ${name ?? 'unknown'}: ${plain(err)}, so spend is unknown`
+    return { ...stopped(why), allowance: pace([]).allowance }
   }
   const saved = savedMeters(doc, seat, name, now.getTime())
-  const { gate, day } = seatGate(budget, saved, reading, now)
-  if (!gate.open) return { ...stopped(gate.reason), ...lateDayStart(day, now) }
+  const meters = seatHistory(saved, reading, now)
+  const { allowance, ...caps } = pace(meters.history)
+  const gate = gatePool({
+    ...caps,
+    reading,
+    lastGood: saved.lastGood,
+    history: meters.history,
+    runStartAt: meters.runStart,
+    ctx: { now },
+  })
+  const late = lateDayStart(meters.day, now)
+  if (!gate.open) return { ...stopped(gate.reason), ...late, allowance }
   const shown = gate.staleOk === true ? standInReading(reading, saved.lastGood) : undefined
   const staleOk = shown === undefined ? {} : { staleOk: shown }
-  return {
-    stop: null,
-    margin: gate.reason,
-    sonnetOnly: gate.sonnetOnly,
-    ...lateDayStart(day, now),
-    ...staleOk,
-  }
+  return { stop: null, margin: gate.reason, sonnetOnly: gate.sonnetOnly, ...late, ...staleOk, allowance }
+}
+
+function seatPace(
+  policy: Policy,
+  budget: SeatBudget,
+  read: BudgetRead | undefined,
+  reading: AccountReading | undefined,
+  now: Date,
+): Pace {
+  const resetsAt = read?.found === true ? read.budget.rate_limits.seven_day?.resets_at : undefined
+  return history =>
+    pacedCaps({
+      pacing: policy.seat.pacing,
+      ...budget,
+      sevenDay: reading?.sevenDay,
+      resetsAt: resetsAt === undefined ? undefined : resetsAt * 1000,
+      history,
+      now,
+    })
 }
 
 function budgetStatus(deps: StatusDeps, policy: Policy, seat: string, now: Date, plain: Plain): BudgetStatus {
@@ -313,7 +337,8 @@ function budgetStatus(deps: StatusDeps, policy: Policy, seat: string, now: Date,
   const read =
     configDir === undefined ? undefined : deps.readBudget(expandHome(configDir, deps.homeDir), now.getTime())
   const reading = read === undefined ? undefined : accountReading(read, now.getTime())
-  const { staleOk, ...verdict } = spendVerdict(deps, budget, seat, reading, now, plain)
+  const pace = seatPace(policy, budget, read, reading, now)
+  const { staleOk, ...verdict } = spendVerdict(deps, budget, pace, seat, reading, now, plain)
   const shown = staleOk ?? reading
   return {
     pool: name ?? null,
@@ -405,6 +430,17 @@ export function poolReadingText(budget: BudgetStatus): string {
 
 const budgetLine = (budget: BudgetStatus): string => line('budget', poolReadingText(budget))
 
+/** Shown only for a reset-aware seat, so every other seat's page reads as before. */
+function pacingLines({ allowance: a }: BudgetStatus): string[] {
+  if (a.source !== 'reset-aware') return []
+  return [
+    line(
+      'pacing',
+      `reset-aware: ${a.points} points/day = (${a.stopLine} - ${a.dayStartSevenDay} at ${a.basis === 'day-start' ? '07:00' : 'now'}) / ${a.daysToReset} days to reset at ${a.resetsAt}`,
+    ),
+  ]
+}
+
 function eligibleLines(eligible: EligibleStatus): string[] {
   if (eligible.error !== undefined) return [line('eligible', `unavailable: ${eligible.error}`)]
   const skipped = eligible.skipped === 0 ? [] : [`${eligible.skipped} malformed task(s) skipped`]
@@ -456,6 +492,7 @@ export function renderStatus(status: SeatStatus): string[] {
     budgetLine(budget),
     line('stop', status.machineStop?.reason ?? budget.stop ?? `none; ${budget.margin}`),
     ...(budget.note === null ? [] : [line('note', budget.note)]),
+    ...pacingLines(budget),
     machineLine(status.machine),
     inboxLine(status.inbox),
     ...eligibleLines(status.eligible),

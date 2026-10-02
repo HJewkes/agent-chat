@@ -3,7 +3,9 @@ import { RUN_CAP_MS, dayStart } from '../agents/burndown/budget-gate.js'
 import {
   RESTART_WINDOW_MAX_MS,
   advanceMeter,
+  dayAllowance,
   meterHistory,
+  pacedCaps,
   readSeatLog,
   restartWindow,
   sameSpendDay,
@@ -196,5 +198,136 @@ describe('restartWindow', () => {
 
   it('is closed with no messages', () => {
     expect(restartWindow([], now)).toBeUndefined()
+  })
+})
+
+describe('the reset-aware day allowance (CC-404)', () => {
+  const DAY = 24 * 3_600_000
+  const base = {
+    pacing: 'reset-aware',
+    reserveSevenDay: 25,
+    perDayPoints: [12],
+    sevenDay: 55,
+    daySpend: 10,
+    dayStartMs: at(7),
+    nowMs: at(7),
+  }
+
+  it.each([
+    [0.5, 60],
+    [3, 10],
+    [6, 5],
+  ])(
+    'spreads the 30 points left under line 75 at 07:00 over %s days to reset as %s a day',
+    (days, points) => {
+      const allowance = dayAllowance({ ...base, resetsAt: at(7) + days * DAY })
+      expect(allowance).toMatchObject({
+        source: 'reset-aware',
+        points,
+        stopLine: 75,
+        dayStartSevenDay: 45,
+        basis: 'day-start',
+        daysToReset: days,
+      })
+    },
+  )
+
+  it("counts from the day start, so the day's own spend does not shrink its allowance", () => {
+    const allowance = dayAllowance({ ...base, sevenDay: 60, daySpend: 10, resetsAt: at(7) + 0.5 * DAY })
+    expect(allowance).toMatchObject({ points: 50, sevenDay: 60, dayStartSevenDay: 50, basis: 'day-start' })
+  })
+
+  it('holds the same allowance at 23:00 as at 07:00, measuring days from the day start', () => {
+    const resetsAt = at(7) + 3 * DAY
+    const morning = dayAllowance({ ...base, resetsAt })
+    const night = dayAllowance({ ...base, nowMs: at(23), resetsAt })
+    expect(night).toEqual(morning)
+  })
+
+  it('spreads from the current seven_day over the days from now when the day spend is unknown', () => {
+    const allowance = dayAllowance({
+      ...base,
+      daySpend: undefined,
+      nowMs: at(19),
+      resetsAt: at(19) + 2 * DAY,
+    })
+    expect(allowance).toMatchObject({ points: 10, dayStartSevenDay: 55, basis: 'current', daysToReset: 2 })
+  })
+
+  it('falls back to the smallest per_day_points with no resets_at', () => {
+    const allowance = dayAllowance({ ...base, perDayPoints: [12, undefined, 9], resetsAt: undefined })
+    expect(allowance).toMatchObject({ source: 'per_day_points', points: 9, daysToReset: null })
+  })
+
+  it('falls back to per_day_points once the reset is at or before now', () => {
+    const allowance = dayAllowance({ ...base, nowMs: at(9), resetsAt: at(9) })
+    expect(allowance).toMatchObject({ source: 'per_day_points', points: 12 })
+  })
+
+  it('falls back for any pacing value other than reset-aware', () => {
+    const allowance = dayAllowance({ ...base, pacing: 'even', resetsAt: at(7) + 3 * DAY })
+    expect(allowance).toMatchObject({ source: 'per_day_points', points: 12 })
+  })
+
+  it('allows nothing once seven_day at the day start is past the line', () => {
+    const allowance = dayAllowance({ ...base, sevenDay: 90, resetsAt: at(7) + DAY })
+    expect(allowance).toMatchObject({ source: 'reset-aware', points: 0 })
+  })
+})
+
+describe('the paced caps every gate hands gatePool (CC-404)', () => {
+  const DAY = 24 * 3_600_000
+  const now = new Date(2026, 8, 29, 10)
+  const input = {
+    pacing: 'reset-aware',
+    pool: {
+      name: 'agents',
+      human_uses: false,
+      reserve_seven_day: 30,
+      ceiling_five_hour: 70,
+      per_day_points: 12,
+    },
+    spend: { per_run_points: 6, per_day_points: 9 },
+    sevenDay: 46,
+    resetsAt: at(7) + 3 * DAY,
+    history: [{ at: at(6), sevenDay: 40 }],
+    now,
+  }
+
+  it('replaces both day caps with the allowance and names it, leaving the run cap', () => {
+    const paced = pacedCaps(input)
+    expect(paced.allowance).toMatchObject({ points: 10, dayStartSevenDay: 40, basis: 'day-start' })
+    expect(paced.pool?.per_day_points).toBeUndefined()
+    expect(paced.spend).toEqual({
+      per_run_points: 6,
+      per_day_points: 10,
+      per_day_label: "seat's reset-aware day allowance",
+    })
+  })
+
+  it('returns the caps unchanged for a seat without the key', () => {
+    const paced = pacedCaps({ ...input, pacing: undefined })
+    expect(paced.pool).toBe(input.pool)
+    expect(paced.spend).toBe(input.spend)
+  })
+
+  it('opens the watchdog gate past per_day_points when the reset is half a day from 07:00', () => {
+    const verdict = poolBudget({
+      pool: {
+        name: 'agents',
+        configDir: '/pool',
+        humanUses: false,
+        rule: { reserve_seven_day: 30, ceiling_five_hour: 70 },
+        perDayPoints: 12,
+      },
+      spend: { perDayPoints: 9 },
+      reading: { ageSeconds: 0, fiveHour: 5, sevenDay: 52 },
+      history: input.history,
+      runStartAt: at(9),
+      now,
+      pacing: 'reset-aware',
+      resetsAt: at(7) + 0.5 * DAY,
+    })
+    expect(verdict).toMatchObject({ open: true })
   })
 })

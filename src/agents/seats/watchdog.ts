@@ -1,6 +1,7 @@
 import type { BudgetRead, BudgetWindow } from '../budget.js'
 import { gatePool, type AccountReading, type PoolRule, type SevenDaySample } from '../burndown/budget-gate.js'
 import type { Pool, Seat, SeatSpend } from './charter.js'
+import { pacedCaps } from './stops.js'
 
 /**
  * The idle watchdog's decision (CC-203): wake a seat that has no implementer
@@ -133,6 +134,9 @@ export interface PoolBudgetInput {
   history: readonly SevenDaySample[]
   runStartAt: number
   now: Date
+  /** CC-404: the seat's `pacing:` and the epoch ms the pool's seven_day resets, for a reset-aware day stop. */
+  pacing?: string | undefined
+  resetsAt?: number | undefined
 }
 
 const poolRule = (pool: Pool): PoolRule => ({
@@ -147,10 +151,19 @@ const poolRule = (pool: Pool): PoolRule => ({
 /** Charter section 4's budget stops for the seat, with the owner assumed present because nothing here can tell. */
 export function poolBudget(input: PoolBudgetInput): BudgetVerdict {
   const { pool, spend, reading, lastGood, history, runStartAt, now } = input
+  const paced = pacedCaps({
+    pacing: input.pacing,
+    pool: pool === undefined ? undefined : poolRule(pool),
+    spend: { per_run_points: spend.perRunPoints, per_day_points: spend.perDayPoints },
+    sevenDay: reading?.sevenDay,
+    resetsAt: input.resetsAt,
+    history,
+    now,
+  })
   const gate = gatePool(
     {
-      pool: pool === undefined ? undefined : poolRule(pool),
-      spend: { per_run_points: spend.perRunPoints, per_day_points: spend.perDayPoints },
+      pool: paced.pool,
+      spend: paced.spend,
       reading,
       lastGood,
       history,

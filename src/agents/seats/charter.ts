@@ -21,6 +21,8 @@ export interface Seat {
   prefix: string
   pool: string
   spend: SeatSpend
+  /** CC-404: `reset-aware` paces the day stop to the seven_day reset; anything else keeps `per_day_points`. */
+  pacing?: string
 }
 
 /** The seat file's `spend:` block; either stop may be absent. */
@@ -113,7 +115,8 @@ export function parseSeat(name: string, seatFile: string): Seat | undefined {
   const prefix = frontmatterField(seatFile, 'prefix')
   const pool = frontmatterField(seatFile, 'pool')
   if (prefix === undefined || pool === undefined) return undefined
-  return { name, prefix, pool, spend: parseSpend(seatFile) }
+  const pacing = frontmatterField(seatFile, 'pacing')
+  return { name, prefix, pool, spend: parseSpend(seatFile), ...(pacing === undefined ? {} : { pacing }) }
 }
 
 /** CC-441: the seat file's `surface:`, the one record a headless resume cannot overwrite. */

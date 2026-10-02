@@ -286,6 +286,31 @@ describe('runWatchdog', () => {
     )
   })
 
+  it.each([
+    [1, 'budget open'],
+    [
+      6,
+      "budget closed: BUDGET-PAUSE pool claude: day spend 10 points since 07:00 at or above the seat's reset-aware day allowance 9.17",
+    ],
+  ])(
+    'paces a reset-aware seat whose pool resets %s day(s) after 07:00 to the allowance (CC-404)',
+    async (days, verdict) => {
+      const h = harness(IDLE)
+      h.doc.pools = { claude: { since: h.now() - 3_600_000, last: 19, spent: 9 } }
+      h.sevenDay = 20
+      h.deps.readSeatFile = seat =>
+        seat === 'seat-a' ? SEAT.replace('pool: claude\n', 'pool: claude\npacing: reset-aware\n') : undefined
+      const read = budget(h.fiveHour, h.sevenDay)
+      const resetsAt = (new Date(2026, 8, 29, 7).getTime() + days * 86_400_000) / 1000
+      if (read.found) read.budget.rate_limits.seven_day = { used_pct: 20, resets_at: resetsAt }
+      h.deps.readBudget = () => read
+
+      const out = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+
+      expect(out[0]).toContain(verdict)
+    },
+  )
+
   it('holds a seat at its per_run_points stop even with the day cap open', async () => {
     const h = harness(IDLE)
     h.doc.seats = {
