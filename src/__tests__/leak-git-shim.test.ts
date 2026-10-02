@@ -8,6 +8,7 @@ import { buildLaunchPlan } from '../agents/launch-plan.js'
 import type { AgentProfile, LaunchPlan, LaunchPlanInput } from '../agents/types.js'
 import { findRealGit, GIT_SHIM_DIR_ENV, gitShimScript, writeGitShim } from '../leak-guard/git-shim.js'
 import { gitHooksEnv } from '../leak-guard/hooks-dir.js'
+import { expectSpawned } from './helpers/spawn-result.js'
 
 /**
  * TP-596, against real git, temp repos and a local bare remote. Each push test names the
@@ -97,7 +98,10 @@ function runScript(
 ): ReturnType<typeof spawnSync> & { stdout: string; stderr: string } {
   const script = path.join(fx.work, '..', `script-${++count}.sh`)
   fs.writeFileSync(script, `#!/bin/sh\n${body}\n`, { mode: 0o755 })
-  return spawnSync(script, { cwd: fx.work, env: fx.env, encoding: 'utf8', timeout: 10_000 })
+  return expectSpawned(
+    spawnSync(script, { cwd: fx.work, env: fx.env, encoding: 'utf8', timeout: 10_000 }),
+    body,
+  )
 }
 
 const remoteHasMain = (fx: Fixture): boolean =>
@@ -604,10 +608,13 @@ describe('where the agent git shim is put on PATH', () => {
     }
     fs.mkdirSync(path.join(state, 'agents', 'agt-test'), { recursive: true })
     fs.writeFileSync(path.join(state, 'agents', 'agt-test', 'plan.json'), JSON.stringify(plan))
-    const run = spawnSync(process.execPath, [CLI, 'run-agent', 'agt-test'], {
-      encoding: 'utf8',
-      env: { PATH: '/usr/bin:/bin', AGENT_CHAT_HOME: state, AGENT_CHAT_CLAUDE: process.execPath },
-    })
+    const run = expectSpawned(
+      spawnSync(process.execPath, [CLI, 'run-agent', 'agt-test'], {
+        encoding: 'utf8',
+        env: { PATH: '/usr/bin:/bin', AGENT_CHAT_HOME: state, AGENT_CHAT_CLAUDE: process.execPath },
+      }),
+      'run-agent agt-test',
+    )
     return run.stdout.split(':')
   }
 
