@@ -274,7 +274,7 @@ export class AgentLog {
   }
 
   get(id: string): AgentIdentity | undefined {
-    return this.all().find(a => a.agentId === id)
+    return foldAgent(this.events.agentEventsFor(id))
   }
 
   /**

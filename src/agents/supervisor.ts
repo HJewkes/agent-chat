@@ -676,7 +676,9 @@ export class Supervisor implements TeleportHost {
     this.machineGuard = options.machineGuard
     this.seatBudget = options.seatBudget
     this.processProbe = options.processProbe ?? hostProbe
-    this.reaper = new DetachedReaper(this.settleMs, agentId => this.reapIfDead(agentId))
+    this.reaper = new DetachedReaper(this.settleMs, this.processProbe, (agentId, probe) =>
+      this.reapIfDead(agentId, probe),
+    )
     this.unwatch = core.onAppend(row => this.onRow(row))
     this.teleporter = new Teleport(core, this, options.countdownMs, options.argvReader)
     this.shadow = new LifecycleShadow(options.ledger)
@@ -772,10 +774,10 @@ export class Supervisor implements TeleportHost {
   }
 
   /** CC-450: the row and the ledger only; the process is not ours to signal and has no surface to close. */
-  private reapIfDead(agentId: string): void {
+  private reapIfDead(agentId: string, probe: ProcessProbe = this.processProbe): void {
     const agent = this.core.agents.get(agentId)
     if (!awaitsExit(agent) || this.live.has(agentId)) return
-    const liveness = agentLiveness(agent, this.processProbe)
+    const liveness = agentLiveness(agent, probe)
     if (!liveness.dead) return
     this.core.append({
       kind: 'agent_exited',

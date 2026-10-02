@@ -89,23 +89,45 @@ export const awaitsExit = (agent: AgentIdentity | undefined): agent is AgentIden
 export const detachedAtStart = (roster: readonly AgentIdentity[]): AgentIdentity[] =>
   roster.filter(awaitsExit)
 
+/** CC-476: rows probed per event-loop turn, so a boot backlog cannot starve the socket. */
+export const REAP_BATCH = 25
+
+/** One read of the session records per batch, however many rows in it ask. */
+export function batchProbe(probe: ProcessProbe): ProcessProbe {
+  const records = new Map<string, SessionRecord[]>()
+  return {
+    ...probe,
+    sessionRecords: extraDirs => {
+      const key = extraDirs.join('\0')
+      const cached = records.get(key) ?? probe.sessionRecords(extraDirs)
+      records.set(key, cached)
+      return cached
+    },
+  }
+}
+
 /**
  * Timers per unwatched agent: one settle window after a detach, then one probe.
  * A reattach cancels; a probe that cannot prove death leaves the row as it was.
+ * Due probes queue and run `REAP_BATCH` at a time, yielding between batches.
  */
 export class DetachedReaper {
   private readonly pending = new Map<string, NodeJS.Timeout>()
+  private readonly due = new Set<string>()
+  private drain: NodeJS.Timeout | undefined
 
   constructor(
     private readonly settleMs: number,
-    private readonly check: (agentId: string) => void,
+    private readonly probe: ProcessProbe,
+    private readonly check: (agentId: string, probe: ProcessProbe) => void,
   ) {}
 
   schedule(agentId: string): void {
     this.cancel(agentId)
     const timer = setTimeout(() => {
       this.pending.delete(agentId)
-      this.check(agentId)
+      this.due.add(agentId)
+      this.drainSoon()
     }, this.settleMs)
     timer.unref?.()
     this.pending.set(agentId, timer)
@@ -114,10 +136,33 @@ export class DetachedReaper {
   cancel(agentId: string): void {
     clearTimeout(this.pending.get(agentId))
     this.pending.delete(agentId)
+    this.due.delete(agentId)
   }
 
   close(): void {
     for (const timer of this.pending.values()) clearTimeout(timer)
     this.pending.clear()
+    this.due.clear()
+    clearTimeout(this.drain)
+    this.drain = undefined
+  }
+
+  /** Runs now unless a batch ran this turn; then the rest waits for the next turn. */
+  private drainSoon(): void {
+    if (this.drain === undefined) this.runBatch()
+  }
+
+  private runBatch(): void {
+    const batch = [...this.due].slice(0, REAP_BATCH)
+    const probe = batchProbe(this.probe)
+    for (const agentId of batch) {
+      this.due.delete(agentId)
+      this.check(agentId, probe)
+    }
+    this.drain = setTimeout(() => {
+      this.drain = undefined
+      if (this.due.size > 0) this.runBatch()
+    }, 0)
+    this.drain.unref?.()
   }
 }

@@ -203,6 +203,17 @@ const toQueueItem = (row: Row): QueueItem => ({
   meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
 })
 
+const toAgentEventRow = (row: Row): AgentEventRow => ({
+  kind: row.kind as EventKind,
+  ts: row.ts,
+  actor: row.actor,
+  target: row.target,
+  msgId: row.msg_id,
+  ref: row.ref,
+  body: row.body,
+  meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
+})
+
 /**
  * 0600 on the log and its WAL sidecars, for the same reason `token.ts` and
  * `launch-files.ts` already do it: this file holds every brief verbatim
@@ -630,16 +641,19 @@ export class EventLog implements EventStore {
     const rows = this.db
       .prepare(`SELECT * FROM events WHERE kind IN (${AGENT_KINDS_SQL}) ORDER BY id ASC`)
       .all() as unknown as Row[]
-    return rows.map(row => ({
-      kind: row.kind as EventKind,
-      ts: row.ts,
-      actor: row.actor,
-      target: row.target,
-      msgId: row.msg_id,
-      ref: row.ref,
-      body: row.body,
-      meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
-    }))
+    return rows.map(toAgentEventRow)
+  }
+
+  /** CC-476: one agent's rows, by the same id rule as `groupByAgent`, so a lookup skips the full fold. */
+  agentEventsFor(agentId: string): AgentEventRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM events WHERE kind IN (${AGENT_KINDS_SQL}) AND (
+           (kind = 'agent_spawned' AND msg_id = ?) OR (kind <> 'agent_spawned' AND ref = ?)
+         ) ORDER BY id ASC`,
+      )
+      .all(agentId, agentId) as unknown as Row[]
+    return rows.map(toAgentEventRow)
   }
 
   history(limit: number): QueueItem[] {

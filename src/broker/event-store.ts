@@ -139,6 +139,9 @@ export interface EventStore {
   /** Every row that bears on an agent identity, oldest first. */
   agentEvents(): AgentEventRow[]
 
+  /** The rows `agentEvents` would group under `agentId`, oldest first. */
+  agentEventsFor(agentId: string): AgentEventRow[]
+
   history(limit: number): QueueItem[]
 
   /**
