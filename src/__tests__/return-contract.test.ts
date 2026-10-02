@@ -621,3 +621,17 @@ describe('the load-test rule (CC-473)', () => {
     expect(flat(text)).toContain('confirm with `pgrep` that none survive')
   })
 })
+
+describe('PR body path (CC-444)', () => {
+  const PR_BODY_RULE =
+    'Write PR bodies to a fresh `$TMPDIR/<your name>/pr-body.md`; cat it before `gh-write -- pr create|edit`.'
+
+  // Mutation caught: a shared `$TMPDIR/body.md` lets one agent publish another's stale body.
+  it.each([
+    ['implementer', RETURN_CONTRACT_BLOCKS.implementer],
+    ['implementer without Shepherd', IMPLEMENTER_WITHOUT_SHEPHERD],
+  ])('tells the %s block to use a per-agent PR body file within the size cap', (_name, block) => {
+    expect(block).toContain(PR_BODY_RULE)
+    expect(block.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+  })
+})
