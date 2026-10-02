@@ -230,12 +230,41 @@ const isStringRecord = (value: unknown): value is Record<string, string> =>
   !Array.isArray(value) &&
   Object.values(value).every(entry => typeof entry === 'string')
 
+/** Exhaustive over {@link AgentProfile}, so a new field fails to compile until it is listed here. */
+const PROFILE_KEYS: Record<Exclude<keyof AgentProfile, 'warnings'>, true> = {
+  name: true,
+  description: true,
+  model: true,
+  allowedTools: true,
+  disallowedTools: true,
+  isolation: true,
+  surface: true,
+  surfaceLifetime: true,
+  role: true,
+  returnContract: true,
+  effort: true,
+  promptPrelude: true,
+  mcpServers: true,
+  strictMcpConfig: true,
+  disableSlashCommands: true,
+  env: true,
+}
+
+const unknownKeyWarnings = (file: string, body: Record<string, unknown>): string[] =>
+  Object.keys(body)
+    .filter(key => !Object.hasOwn(PROFILE_KEYS, key))
+    .map(key => `${file}: unknown key "${key}" is ignored; no AgentProfile field has that name`)
+
 /**
  * Validate a parsed profile file. Returns the profile or an explanatory error —
  * never a partially-trusted object, because a profile that half-loaded would
  * grant whatever its defaults happened to be.
  */
-export function parseProfile(name: string, raw: unknown): AgentProfile | { error: string } {
+export function parseProfile(
+  name: string,
+  raw: unknown,
+  file: string = `${name}.json`,
+): AgentProfile | { error: string } {
   if (typeof raw !== 'object' || raw === null) return { error: `${name}: not a JSON object` }
   const body = raw as Record<string, unknown>
 
@@ -265,6 +294,7 @@ export function parseProfile(name: string, raw: unknown): AgentProfile | { error
     if (body[field] !== undefined && typeof body[field] !== 'boolean')
       return { error: `${name}: "${field}" must be true or false` }
 
+  const warnings = unknownKeyWarnings(file, body)
   return {
     name,
     description: typeof body.description === 'string' ? body.description : '',
@@ -285,6 +315,7 @@ export function parseProfile(name: string, raw: unknown): AgentProfile | { error
       : {}),
     ...(body.env === undefined ? {} : { env: body.env }),
     ...leanFlags(body),
+    ...(warnings.length === 0 ? {} : { warnings }),
   }
 }
 
@@ -303,7 +334,7 @@ export function loadProfile(name: string, dir: string = profilesDir()): AgentPro
     } catch (err) {
       return { error: `${name}: ${file} is not valid JSON (${(err as Error).message})` }
     }
-    return parseProfile(name, parsed)
+    return parseProfile(name, parsed, file)
   }
 
   const builtin = BUILTIN_PROFILES.find(p => p.name === name)
