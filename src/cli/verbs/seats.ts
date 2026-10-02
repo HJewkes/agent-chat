@@ -89,8 +89,11 @@ export interface DeclaredSurface {
 
 const UNDECLARED: DeclaredSurface = { surface: 'headless', from: 'none declared' }
 
-/** The marker `@titan-design/agent-surface` puts on every refusal of an iTerm surface (not macOS, iTerm2 down). */
-const ITERM_REFUSED = "use surface 'headless'"
+/** A broker built before `code` existed says it only in `agent-surface`'s refusal text. */
+const LEGACY_SURFACE_REFUSED = "use surface 'headless'"
+
+const surfaceRefused = (res: Reply<'spawn_result'>): boolean =>
+  res.code === 'surface_refused' || (res.reason ?? '').includes(LEGACY_SURFACE_REFUSED)
 
 async function sendAsOwner(client: BrokerClient, seat: string, message: string): Promise<WakeResult> {
   const res = (await client.request(
@@ -124,9 +127,9 @@ async function resumeVisible(
   seat: string,
   message: string,
   declared: DeclaredSurface,
-): Promise<WakeResult | string> {
+): Promise<WakeResult | Reply<'spawn_result'>> {
   const res = await resumeOn(client, seat, declared.surface)
-  if (!res.ok) return res.reason ?? 'resume refused'
+  if (!res.ok) return res
   const sent = await sendAsOwner(client, seat, message)
   const delivery = sent.ok ? sent.detail : `message not delivered: ${sent.detail}`
   return { ok: true, detail: `resumed on ${declared.surface} (${declared.from}); ${delivery}` }
@@ -144,9 +147,10 @@ export async function wakeSeat(
   let why = declared.from
   if (declared.surface !== 'headless') {
     const visible = await resumeVisible(client, seat, message, declared)
-    if (typeof visible !== 'string') return visible
-    if (!visible.includes(ITERM_REFUSED)) return { ok: false, detail: visible }
-    why = `${declared.surface} refused: ${visible}`
+    if (!('t' in visible)) return visible
+    const reason = visible.reason ?? 'resume refused'
+    if (!surfaceRefused(visible)) return { ok: false, detail: reason }
+    why = `${declared.surface} refused: ${reason}`
   }
   const res = await resumeOn(client, seat, 'headless', message)
   return res.ok

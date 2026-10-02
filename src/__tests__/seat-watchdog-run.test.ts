@@ -1019,6 +1019,26 @@ describe('wakeSeat', () => {
   })
 
   // Catches: no fallback on an iTerm refusal, or a fallback that drops the reason from the log line.
+  // Catches: the fallback keyed on the refusal text alone, ignoring the broker's typed code.
+  it('falls back to headless on code surface_refused whatever the reason text says', async () => {
+    const frames: unknown[] = []
+    const replies = [
+      { t: 'spawn_result', ok: false, code: 'surface_refused', reason: 'resume failed: iTerm2 is down' },
+      { t: 'spawn_result', ok: true },
+    ]
+    const request = async (frame: unknown) => (frames.push(frame), replies.shift())
+    const woke = await wakeSeat({ request } as unknown as BrokerClient, 's', 'Watchdog: x', false, {
+      surface: 'iterm-window',
+      from: 'seat file',
+    })
+    expect(frames).toHaveLength(2)
+    expect(woke).toEqual({
+      ok: true,
+      detail: 'resumed headless (iterm-window refused: resume failed: iTerm2 is down)',
+    })
+  })
+
+  // A broker built before the code existed; catches the legacy text fallback being dropped.
   it('falls back to headless when iTerm refuses the declared surface, and says why', async () => {
     const frames: unknown[] = []
     const replies = [
