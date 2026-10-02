@@ -1,7 +1,6 @@
 import path from 'node:path'
 import {
   LaunchBinUnresolved,
-  readLaunchPlan,
   runAgent,
   type LaunchPlan,
   type RunAgentOptions,
@@ -13,7 +12,7 @@ import { agentEnv } from './agent-env.js'
 import { recordClaudeBin, resolveClaudeBin } from './claude-bin.js'
 import { LAUNCHER_PID_ENV } from './launcher.js'
 import { diskPaneSources } from './pane-sources.js'
-import { planPath } from './launch-files.js'
+import { readLaunchPlan } from './launch-files.js'
 
 /**
  * Resolve `plan.bin` to an absolute path without depending on `PATH` (CC-132). Only
@@ -73,5 +72,5 @@ export function launchOptions(agentId: string): RunAgentOptions {
 
 /** `agent-chat run-agent <id>`: the verb every stored relaunch script calls. */
 export function runAgentVerb(agentId: string): void {
-  runAgent(withShims(readLaunchPlan(planPath(agentId))), launchOptions(agentId))
+  runAgent(withShims(readLaunchPlan(agentId)), launchOptions(agentId))
 }
