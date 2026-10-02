@@ -1097,6 +1097,9 @@ describe('a git alias already in config', () => {
       ['zsh alternation in a default', '${x:-g(i|x)t} pnv'],
       ['a default joined to the text after it', '${x:-gi}t pnv'],
       ['zsh alternation before a glob qualifier', 'g(i|x)t(N) pnv'],
+      ['a glob qualifier closing a default', '${x:-/usr/bin/g?t(N)} pnv'],
+      ['a group and a qualifier closing a default', '${x:-/usr/bin/gi(t)(N)} pnv'],
+      ['a group and a . qualifier closing a default', '${x:-/usr/bin/g(i)t(.)} pnv'],
     ])(
       'denies a command word that may become git through %s where it cannot look (TP-721): %s',
       (_, word) => {
@@ -1104,12 +1107,16 @@ describe('a git alias already in config', () => {
       },
     )
 
-    it.each(['g(i|x)t pnv', '/usr/bin/g(i|x)t pnv', '${x:-g(i|x)t} pnv'])(
-      'reads the alias behind a zsh alternation that may be git where it can look (TP-721): %s',
-      command => {
-        expect(checkCommand(command, inAliased())).toBe(REASONS.noVerify)
-      },
-    )
+    it.each([
+      'g(i|x)t pnv',
+      '/usr/bin/g(i|x)t pnv',
+      '${x:-g(i|x)t} pnv',
+      '${x:-/usr/bin/g?t(N)} pnv',
+      '${x:-/usr/bin/gi(t)(N)} pnv',
+      '${x:-/usr/bin/g(i)t(.)} pnv',
+    ])('reads the alias behind a zsh alternation that may be git where it can look (TP-721): %s', command => {
+      expect(checkCommand(command, inAliased())).toBe(REASONS.noVerify)
+    })
 
     it('still checks a substitution inside a zsh glob group (TP-721)', () => {
       expect(checkCommand('ls x(a|$(git push --no-verify))', inAliased())).toBe(REASONS.noVerify)

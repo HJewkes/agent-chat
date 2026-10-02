@@ -13,8 +13,6 @@ const QUOTING = /\\\n|['"\\]/g
 // The `${x:-` of a default or the `${x#` of a trim, whose text may stand in for the whole expansion.
 const EXPANSION_OPEN = /\$\{[A-Za-z_][A-Za-z0-9_]*(?::?[-=+?]|#{1,2}|%{1,2}|\/[/#%]?|\^{1,2}|,{1,2})?/g
 const DEFAULT = '\x02'
-// zsh reads a last group with no `|`, such as `(N)` or `(.)`, as glob qualifiers, not part of the name.
-const QUALIFIER = /\([^()|]*\)$/
 // A glob bracket, where a `]` first (after `!` or `^`) is a member and a class such as [:alpha:] may sit inside.
 const BRACKET = String.raw`\[[!^]?\]?(?:\[:\w+:\]|[^\]/])*\]`
 const SEGMENT = new RegExp(String.raw`(?:[\w.?*#-]|${BRACKET})+`, 'g')
@@ -39,7 +37,8 @@ function decodeAnsiC(text: string): string {
 
 /** The words a `{...}` or zsh `(...)` body stands for, or undefined when it is not an expansion, as `{x}` is not. */
 function alternatives(open: string, body: string): string[] | undefined {
-  if (open === '(') return body.split('|')
+  // A group may also be glob qualifiers such as `(N)`, which zsh drops, wherever its word ends.
+  if (open === '(') return [...body.split('|'), '']
   // An unset variable leaves the default; a set one is read as unset too, like `$NAME`.
   if (body.startsWith(DEFAULT)) return [body.slice(1), '']
   const range = RANGE.exec(body)
@@ -105,7 +104,6 @@ function segmentMatchesGit(segment: string): boolean {
 export function mayExpandToGit(raw: string): boolean {
   if (raw.length > MAX_LENGTH) return true
   const plain = decodeAnsiC(raw)
-    .replace(QUALIFIER, '')
     .replace(REFERENCE, '')
     .replace(EXPANSION_OPEN, `{${DEFAULT}`)
     .replace(QUOTING, '')
