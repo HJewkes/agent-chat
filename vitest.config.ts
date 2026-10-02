@@ -16,6 +16,10 @@ const FORKS_FILES = [
   'src/__tests__/resume-role-gate.test.ts',
   'src/__tests__/surface-role-gate.test.ts',
   'src/__tests__/report-batch.test.ts',
+  // The next two exec scripts they just wrote. On Linux a sibling worker's fork can inherit the
+  // write fd, and the exec fails with ETXTBSY until that child execs (CC-462).
+  'src/__tests__/gh-shim.test.ts',
+  'src/__tests__/leak-git-shim.test.ts',
 ]
 
 const MAX_WORKERS = 4
