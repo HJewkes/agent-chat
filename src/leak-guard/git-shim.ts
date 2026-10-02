@@ -76,6 +76,16 @@ const AUTOCORRECT_FN = `autocorrect_off() {
   return 1
 }`
 
+// git's own "most similar command" list for a word, read with autocorrect off so nothing runs.
+const TYPO_FN = `refuse_typo() {
+  similar=$(eval "\\"\\$real\\"$globals -c help.autocorrect=0 \\"\\$1\\"" 2>&1)
+  case $similar$nl in *"$tab"push"$nl"*)
+    refuse autocorrect "$1 is not a git command and help.autocorrect would run its correction unchecked; set it to show or never." ;;
+  esac
+  echo "git-shim: refused (autocorrect): '$1' is not a git command and help.autocorrect would run git's guess at it unchecked; fix the typo, or set help.autocorrect to show or never. ${DOCS}" >&2
+  exit 2
+}`
+
 // A word git finds as git-<word> on its exec path or PATH runs that command, so git never autocorrects it.
 const EXTERNAL_FN = `external() {
   case $1 in */*) return 1 ;; esac
@@ -87,14 +97,14 @@ const EXTERNAL_FN = `external() {
   return $found
 }`
 
-// git stash push is the one subcommand named push that is not a push.
+// git stash push is the one subcommand named push that is not a push; only those two exact words pass.
 const MENTIONS_PUSH_FN = `mentions_push() {
   set -f
   set -- $(printf '%s' "$1" | tr -d "\\"'\\\\\\\\")
   set +f
   prev=
   for tok; do
-    case $tok in *push*) [ "$prev" = stash ] || return 0 ;; esac
+    case $tok in *push*) [ "$prev $tok" = 'stash push' ] || return 0 ;; esac
     prev=$tok
   done
   return 1
@@ -116,8 +126,7 @@ const RESOLVE_FN = `resolve() {
     case $? in
     0) ;;
     1)
-      external "$1" || autocorrect_off ||
-        refuse autocorrect "$1 is not a git command and help.autocorrect would run its correction unchecked; set it to show or never."
+      external "$1" || autocorrect_off || refuse_typo "$1"
       return 1 ;;
     *) refuse unresolved "git could not read alias.$1, so the shim cannot tell whether this is a push." ;;
     esac
@@ -345,6 +354,7 @@ ${QUOTE_FN}
 ${REFUSE_FN}
 ${SPLIT_FN}
 ${AUTOCORRECT_FN}
+${TYPO_FN}
 ${EXTERNAL_FN}
 ${MENTIONS_PUSH_FN}
 ${RESOLVE_FN}
