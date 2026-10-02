@@ -42,7 +42,7 @@ export const chatEndorse = defineTool({
       { t: 'send_result' }
     >
     if (!res.ok) return `Not queued: ${res.reason}`
-    const command = endorseCommand(res.msgId, to, text)
+    const command = res.msgId ? endorseCommand(res.msgId, to, text) : undefined
     return (
       `Waiting on your human (msg_id ${res.msgId}). NOTHING has been sent to "${to}" and nothing will ` +
       'be unless they approve it, at which point the broker delivers exactly the text above. Carry ' +
