@@ -10,7 +10,12 @@ import { Supervisor } from '../agents/supervisor.js'
 import { readLaunchPlan } from '../agents/launch-files.js'
 import { BUILTIN_PROFILES, parseProfile } from '../agents/profiles.js'
 import { carriesContract, contractOf, withReturnContract } from '../agents/return-contract.js'
-import { MAX_BLOCK_CHARS, RETURN_CONTRACT_BLOCKS } from '../agents/return-contract-blocks.js'
+import {
+  IMPLEMENTER_WITHOUT_SHEPHERD,
+  MAX_BLOCK_CHARS,
+  RETURN_CONTRACT_BLOCKS,
+  SHEPHERD_NONE_MARKER,
+} from '../agents/return-contract-blocks.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { RETURN_CONTRACTS, type AgentProfile, type ReturnContract } from '../agents/types.js'
 import type { ServerMessage } from '../protocol.js'
@@ -542,5 +547,77 @@ describe('the Shepherd handoff (TP-468)', () => {
     expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(
       'exactly these three lines:\nVerdict: MERGE            (or FIX_FIRST)\nPR: <owner>/<repo>#<n>\nHead: <full 40-hex head sha>\n',
     )
+  })
+})
+
+describe('a brief that opts out of Shepherd (CC-452)', () => {
+  const REGISTER = 'titan-factory shepherd register <owner>/<repo>#<n>'
+  const CI_WAIT = "Wait for CI as the brief directs and report each check-run's conclusion at the final head"
+
+  it('keeps the variant block whole, generic and under the size cap', () => {
+    expect(IMPLEMENTER_WITHOUT_SHEPHERD).toContain('<spawner>')
+    expect(carriesContract(IMPLEMENTER_WITHOUT_SHEPHERD, 'implementer')).toBe(true)
+    expect(IMPLEMENTER_WITHOUT_SHEPHERD.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+  })
+
+  // Mutation caught: ignoring the marker hands the agent the register sentence again.
+  it.each([SHEPHERD_NONE_MARKER, 'shepherd: NONE', '   Shepherd: none\t'])(
+    'drops the register and no-wait text for the line %j',
+    async marker => {
+      const brief = `add the parser\n${marker}\nwait for CI with bin/ci-wait`
+
+      const { text } = await delivered({ brief })
+
+      const appended = flat(text.slice(brief.length))
+      expect(appended).not.toContain(REGISTER)
+      expect(appended).not.toContain('never wait on CI')
+      expect(appended).not.toContain('you do not wait for CI')
+      expect(appended).toContain('Do not run `titan-factory shepherd register`.')
+      expect(appended).toContain(CI_WAIT)
+      expect(appended).toContain('chat_send to coord')
+    },
+  )
+
+  // Mutation caught: a substring test opts out a brief that only talks about the marker.
+  it('keeps Shepherd for a brief that mentions the marker mid-sentence', async () => {
+    const brief = 'add the parser; a seat may write Shepherd: none in its brief'
+
+    const { text } = await delivered({ brief })
+
+    expect(text).toBe(`${brief}\n\n${block('implementer')}`)
+  })
+
+  it('hands a brief without the marker the default block unchanged', async () => {
+    const { text } = await delivered()
+
+    expect(text).toBe(`add the parser\n\n${block('implementer')}`)
+    expect(flat(text)).toContain(REGISTER)
+  })
+
+  it('leaves a reviewer brief carrying the marker on the reviewer block', async () => {
+    const { text } = await delivered({ profile: 'reviewer', brief: `review it\n${SHEPHERD_NONE_MARKER}` })
+
+    expect(occurrences(text, block('reviewer'))).toBe(1)
+  })
+
+  it('does not double a brief that already pastes the contract and carries the marker', async () => {
+    const brief = `add the parser\n${SHEPHERD_NONE_MARKER}\n\n${block('implementer')}`
+
+    const { text, warnings } = await delivered({ brief })
+
+    expect(text).toBe(brief)
+    expect(warnings.join(' ')).toMatch(PASTED_WARNING)
+  })
+})
+
+describe('the load-test rule (CC-473)', () => {
+  // Mutation caught: restoring the pkill -f line in either implementer block.
+  it.each([
+    ['default', RETURN_CONTRACT_BLOCKS.implementer],
+    ['Shepherd: none', IMPLEMENTER_WITHOUT_SHEPHERD],
+  ])('in the %s block applies only to an asked-for load test and kills by recorded PID', (_which, text) => {
+    expect(text).not.toContain('pkill')
+    expect(flat(text)).toContain('Only when the brief asks for a load test: record the PID of each burner')
+    expect(flat(text)).toContain('confirm with `pgrep` that none survive')
   })
 })

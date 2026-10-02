@@ -16,7 +16,10 @@ const NEVER_PARK =
   'Never end a turn on a background task, a sleep or a ScheduleWakeup: a headless agent exits at ' +
   'turn end and the task dies with it.'
 
-const IMPLEMENTER = [
+/** CC-452: a brief line reading exactly this keeps the implementer off Shepherd for a seat's own merge path. */
+export const SHEPHERD_NONE_MARKER = 'Shepherd: none'
+
+const IMPLEMENTER_HEAD = [
   'Check `gh api repos/<owner>/<repo> --jq .visibility`. In a public repo, never commit or paste',
   'captured real data into code, fixtures, PR bodies or comments: task lists, charter or seat files,',
   '/Users paths, emails, or IDs and text from private repos. Use synthetic fixtures.',
@@ -28,21 +31,48 @@ const IMPLEMENTER = [
   '`agent-chat gh-write -- <gh args>`, the only write path, and verify each write landed. Plain `gh` is',
   'for reads; a gh called by path (`/opt/homebrew/bin/gh`) is refused. No gh-write: report BLOCKED.',
   'On a 403 "API rate limit exceeded" with core quota left, wait 5 minutes and retry once.',
+]
+
+const SHEPHERD_HANDOFF = [
   'Never use --no-verify. Verify locally, push, open the PR over REST, and never wait on CI.',
   'Then run `titan-factory shepherd register <owner>/<repo>#<n> --task <initiative>/<ID> --implementer',
   '<your agent name> --kind <correctness|security|feature|refactor>`. Report `Shepherd: <run id>`; if it',
   'refuses (exit 65, a repo no seat lists), report `Shepherd: refused <first stderr line>`: <spawner> watches CI.',
+]
+
+const OWN_CI_WAIT = [
+  'Never use --no-verify. Verify locally, push and open the PR over REST.',
+  'Do not run `titan-factory shepherd register`. Wait for CI as the brief directs and report each',
+  "check-run's conclusion at the final head.",
+]
+
+const IMPLEMENTER_RULES = [
   NEVER_PARK,
-  "Load tests kill burners with `pkill -f '<pattern>'` and confirm with pgrep.",
+  'Only when the brief asks for a load test: record the PID of each burner you start, kill those PIDs',
+  'and no others when done, and confirm with `pgrep` that none survive. Never kill by name pattern.',
   'A PR that narrows a timeout reports per-case CI times against the new limit.',
   'You are NOT done at "PR opened". Your LAST action must be chat_send to <spawner> starting with',
   '`Status: DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT`, `PR: <owner>/<repo>#<n>` and',
   '`Head: <full sha>` lines, then',
   'CI: <paste of: gh api repos/<owner>/<repo>/commits/<head>/check-runs --paginate --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>,',
-  'as it stands at the push (you do not wait for CI), never "green" alone. `gh run watch` covers only one',
+]
+
+const ciTail = (ciAt: string): string[] => [
+  `${ciAt}, never "green" alone. \`gh run watch\` covers only one`,
   'workflow; a skipped check (std / compat) is no failure, and "required" means the required contexts on',
   'the default branch.',
-].join('\n')
+]
+
+const implementerBlock = (handoff: string[], ciAt: string): string =>
+  [...IMPLEMENTER_HEAD, ...handoff, ...IMPLEMENTER_RULES, ...ciTail(ciAt)].join('\n')
+
+const IMPLEMENTER = implementerBlock(SHEPHERD_HANDOFF, 'as it stands at the push (you do not wait for CI)')
+
+/** The implementer block for a brief carrying `SHEPHERD_NONE_MARKER`. */
+export const IMPLEMENTER_WITHOUT_SHEPHERD = implementerBlock(
+  OWN_CI_WAIT,
+  'as it stands at the final head after the wait',
+)
 
 const REVIEWER = [
   `Plain-text stdout is invisible to <spawner>. ${NEVER_PARK}`,
