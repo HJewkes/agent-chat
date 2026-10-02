@@ -1,5 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -17,8 +19,10 @@ import {
 import type { IsolationContext } from '../agents/isolation/index.js'
 
 const tmpdirs: string[] = []
+const cleanups: Array<() => void> = []
 
 afterEach(() => {
+  while (cleanups.length > 0) cleanups.pop()?.()
   while (tmpdirs.length > 0) fs.rmSync(tmpdirs.pop() ?? '', { recursive: true, force: true })
 })
 
@@ -552,6 +556,96 @@ describe('pnpm during worktree setup (CC-446)', () => {
     expect(setupWarnings(alloc.warnings)).toEqual([])
     expect(recorder.calls).toHaveLength(1)
   })
+})
+
+/** Sets process variables until the test ends, so the setup step inherits them. */
+function overrideEnv(vars: Record<string, string>): void {
+  for (const [key, value] of Object.entries(vars)) {
+    const before = process.env[key]
+    process.env[key] = value
+    cleanups.push(() => {
+      if (before === undefined) delete process.env[key]
+      else process.env[key] = before
+    })
+  }
+}
+
+/** A tarball of a "pnpm" package whose bin writes `marker`, as a registry would serve it. */
+function fakePnpmTarball(marker: string): Buffer {
+  const dir = tmpdir('wt-fakepnpm-')
+  fs.mkdirSync(path.join(dir, 'package', 'bin'), { recursive: true })
+  fs.writeFileSync(
+    path.join(dir, 'package', 'package.json'),
+    JSON.stringify({ name: 'pnpm', version: '10.99.0', bin: { pnpm: 'bin/pnpm.cjs' } }),
+  )
+  fs.writeFileSync(
+    path.join(dir, 'package', 'bin', 'pnpm.cjs'),
+    `#!/usr/bin/env node\nrequire('fs').writeFileSync(${JSON.stringify(marker)}, '')\n`,
+    { mode: 0o755 },
+  )
+  execFileSync('tar', ['-czf', path.join(dir, 'pnpm.tgz'), '-C', dir, 'package'])
+  return fs.readFileSync(path.join(dir, 'pnpm.tgz'))
+}
+
+/** A loopback registry that serves only the fake "pnpm" and serves it. */
+async function fakeRegistry(tarball: Buffer): Promise<{ url: string }> {
+  const server = http.createServer((req, res) => {
+    if (req.url?.endsWith('.tgz')) return void res.end(tarball)
+    const dist = {
+      tarball: `http://127.0.0.1:${(server.address() as { port: number }).port}/pnpm/-/pnpm-10.99.0.tgz`,
+      integrity: `sha512-${createHash('sha512').update(tarball).digest('base64')}`,
+      shasum: createHash('sha1').update(tarball).digest('hex'),
+    }
+    res.setHeader('content-type', 'application/json')
+    res.end(
+      JSON.stringify({
+        name: 'pnpm',
+        'dist-tags': { latest: '10.99.0' },
+        versions: { '10.99.0': { name: 'pnpm', version: '10.99.0', dist } },
+      }),
+    )
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address() as { port: number }
+  cleanups.push(() => void server.close())
+  return { url: `http://127.0.0.1:${port}/` }
+}
+
+describe('a branch-chosen package manager during worktree setup (CC-458)', () => {
+  it.each(['npm_config_manage_package_manager_versions', 'NPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS'])(
+    'turns pnpm self-install off even when the broker environment sets %s to true',
+    key => {
+      const env = setupEnv({ PATH: '/bin', [key]: 'true' })
+      expect(env).toMatchObject({
+        npm_config_manage_package_manager_versions: 'false',
+        NPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS: 'false',
+      })
+    },
+  )
+
+  it('a reused branch naming another pnpm and a registry for it runs that pnpm never', async () => {
+    const markers = tmpdir('wt-markers-')
+    const registry = await fakeRegistry(fakePnpmTarball(path.join(markers, 'attacker-pnpm-ran')))
+    const tool = tmpdir('wt-pnpm-')
+    execFileSync('npm', ['install', '--prefix', tool, 'pnpm@10.28.1'], { cwd: tool, stdio: 'pipe' })
+    const repo = makeRepo({ command: ['node', path.join(tool, 'node_modules/pnpm/bin/pnpm.cjs'), 'install'] })
+    branchWithFiles(repo, 'agent-chat/alice', {
+      'package.json': JSON.stringify({
+        name: 'cc458-synthetic',
+        version: '1.0.0',
+        packageManager: 'pnpm@10.99.0',
+      }),
+      '.npmrc': `registry=${registry.url}\n`,
+    })
+    // npx exports the branch .npmrc registry like this, and pnpm's version switch fetches from it.
+    overrideEnv({ npm_config_registry: registry.url, PNPM_HOME: tmpdir('wt-pnpm-home-') })
+
+    const alloc = await createWorktreeStrategy().allocate(ctxFor(repo))
+
+    expect(alloc.ref?.reused).toBe('true')
+    expect(setupWarnings(alloc.warnings)).toEqual([])
+    expect(markersIn(markers)).toEqual([])
+  }, 120_000)
 })
 
 const EGRESS_HOOK = path.resolve('node_modules/@titan-design/egress-scan/hooks/pre-push')

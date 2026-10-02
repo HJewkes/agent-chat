@@ -72,6 +72,8 @@ const PINNED_NPM_CONFIG: Readonly<Record<string, string>> = {
   shell: '/bin/sh',
   // pnpm loads a branch .pnpmfile.cjs (arbitrary code) even with ignore-scripts on.
   ignore_pnpmfile: 'true',
+  // pnpm 10 downloads and runs the packageManager version a branch names, from the registry its .npmrc names.
+  manage_package_manager_versions: 'false',
 }
 
 /** CC-446: pnpm 10 ranks this file's ignorePnpmfile and ignoreScripts above every env pin. */
