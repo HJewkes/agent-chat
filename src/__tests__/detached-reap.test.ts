@@ -159,4 +159,34 @@ describe('an agent the current broker did not launch', () => {
     expect(exits()).toHaveLength(1)
     expect(exits()[0]?.meta.code).toBe('0')
   })
+  it('records its real exit once after a false reap and a reattach', async () => {
+    await spawnThenDetach()
+    alive.delete(PID)
+    h.restart()
+    expect(exits()).toHaveLength(1)
+
+    h.reattach(['a'])
+    expect(h.core.agents.byName('a')?.state).toBe('live')
+    h.core.append({ kind: 'agent_detached', actor: 'a', ref: currentAgentId() })
+    vi.advanceTimersByTime(SETTLE_MS)
+
+    expect(exits()).toHaveLength(2)
+    expect(exits()[1]?.meta.inferred).toBe('true')
+    expect(h.core.agents.byName('a')?.state).toBe('exited')
+    vi.advanceTimersByTime(SETTLE_MS * 5)
+    expect(exits()).toHaveLength(2)
+  })
+
+  it('keeps exitedAt when it attaches after a real exit', async () => {
+    h = startSupervisor({ slots: 5, settleMs: SETTLE_MS, processProbe: probe })
+    await spawnA()
+    h.core.append({ kind: 'agent_exited', actor: 'a', ref: currentAgentId(), meta: { code: '0' } })
+    const exitedAt = h.core.agents.byName('a')?.exitedAt
+
+    h.reattach(['a'])
+
+    expect(exitedAt).toBeDefined()
+    expect(h.core.agents.byName('a')?.exitedAt).toBe(exitedAt)
+    expect(h.core.agents.byName('a')?.exit?.code).toBe(0)
+  })
 })

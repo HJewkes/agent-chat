@@ -97,6 +97,7 @@ const TRANSITIONS: Partial<Record<AgentEventRow['kind'], AgentLifecycle>> = {
  */
 export function foldAgent(rows: readonly AgentEventRow[]): AgentIdentity | undefined {
   let agent: AgentIdentity | undefined
+  let exitInferred = false
 
   for (const row of rows) {
     const id = agentIdOf(row)
@@ -125,6 +126,13 @@ export function foldAgent(rows: readonly AgentEventRow[]): AgentIdentity | undef
     if (row.kind === 'agent_exited') {
       agent.exit = exitFrom(row)
       agent.exitedAt = row.ts
+      exitInferred = row.meta.inferred === 'true'
+    }
+    // CC-454: an inferred exit can be false (the launcher died, claude did not); a real one is final.
+    if (row.kind === 'agent_attached' && exitInferred) {
+      delete agent.exitedAt
+      delete agent.exit
+      exitInferred = false
     }
     if (row.kind === 'agent_resumed') delete agent.exitedAt
     if (row.kind === 'agent_detached') agent.detachedAt = row.ts
