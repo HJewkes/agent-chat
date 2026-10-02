@@ -58,6 +58,8 @@ import { Semaphore, type SlotUsage } from './semaphore.js'
 import {
   countLiveHeadless,
   machineDecision,
+  type MachineDecision,
+  type MachineRefusalCode,
   type MachineLimits,
   type MemoryReading,
 } from './machine-guard.js'
@@ -375,13 +377,17 @@ export interface SpawnRequest {
   anchor?: string
 }
 
+export type SpawnRefusalCode = 'surface_refused' | MachineRefusalCode
+
 export interface SpawnOutcome {
   ok: boolean
   agentId?: string
   name?: string
   reason?: string
   /** CC-441: see protocol.ts's `spawn_result`. */
-  code?: 'surface_refused'
+  code?: SpawnRefusalCode
+  /** CC-445: whether the same spawn may succeed later without changes; set with a machine-guard `code`. */
+  retryable?: boolean
   warnings?: string[]
   /** The profile's own deny list. See protocol.ts's `spawn_result` for why this matters. */
   disallowedTools?: string[]
@@ -896,7 +902,11 @@ export class Supervisor implements TeleportHost {
     logEvent(UNREPORTED_EXIT, { agentId, name, spawner, lastAction: tail.lastAction })
   }
 
-  private refuse(req: SpawnRequest, reason: string): SpawnOutcome {
+  private refuse(
+    req: SpawnRequest,
+    reason: string,
+    cause: { code: MachineRefusalCode; retryable: boolean } | {} = {},
+  ): SpawnOutcome {
     // An event, not just a reply string: refusals are the security-relevant
     // thing and belong in the log whether or not anyone was watching.
     this.core.append({
@@ -907,7 +917,7 @@ export class Supervisor implements TeleportHost {
       meta: { profile: req.profile },
     })
     logEvent('agent_spawn_refused', { name: req.name, by: req.requestedBy, reason })
-    return { ok: false, reason }
+    return { ok: false, reason, ...cause }
   }
 
   /**
@@ -959,7 +969,7 @@ export class Supervisor implements TeleportHost {
   }
 
   /** CC-406: refuses when the machine is at its headless-agent total or below its memory-free floor. */
-  private machineRefusal(surface: SurfaceName): string | undefined {
+  private machineRefusal(surface: SurfaceName): Extract<MachineDecision, { ok: false }> | undefined {
     if (this.machineGuard === undefined) return undefined
     const memory = this.machineGuard.readMemoryFree()
     if ('error' in memory) logEvent('machine_guard_reader_failed', { reader: 'memory', error: memory.error })
@@ -969,7 +979,7 @@ export class Supervisor implements TeleportHost {
       this.machineGuard.limits(),
       surface === 'headless',
     )
-    return decision.ok ? undefined : decision.reason
+    return decision.ok ? undefined : decision
   }
 
   /** The requester's OWN `agent_spawned` row — the only record of what it was granted. */
@@ -1195,10 +1205,10 @@ export class Supervisor implements TeleportHost {
       depth: this.depthOf(req.parentAgentId),
       coordinatorDepth: requester.coordinatorDepth + (roleOf(profile) === 'coordinator' ? 1 : 0),
     }
-    const roleBlocked =
-      this.checkRole(req, profile, lineage.coordinatorDepth) ??
-      this.machineRefusal(req.surface ?? profile.surface)
+    const roleBlocked = this.checkRole(req, profile, lineage.coordinatorDepth)
     if (roleBlocked) return this.refuse(req, roleBlocked)
+    const machine = this.machineRefusal(req.surface ?? profile.surface)
+    if (machine) return this.refuse(req, machine.reason, { code: machine.code, retryable: machine.retryable })
     const escalation = this.checkEscalation(req, profile)
     if ('refusal' in escalation) return this.refuse(req, escalation.refusal)
     const fork = req.inherit === 'context' ? this.forkSource(req) : undefined

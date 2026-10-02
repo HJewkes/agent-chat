@@ -294,6 +294,8 @@ export class SocketServer {
       ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }),
       ...(outcome.name === undefined ? {} : { name: outcome.name }),
       ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+      ...(outcome.code === undefined ? {} : { code: outcome.code }),
+      ...(outcome.retryable === undefined ? {} : { retryable: outcome.retryable }),
       ...(warnings.length === 0 ? {} : { warnings }),
       ...(outcome.disallowedTools === undefined ? {} : { disallowedTools: outcome.disallowedTools }),
       ...(outcome.transcript === undefined ? {} : { transcript: outcome.transcript }),

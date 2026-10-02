@@ -173,8 +173,14 @@ function spawnFrame(input: SpawnArgs): ClientMessage {
   }
 }
 
+/** CC-445: a parseable trailer so a caller can branch on the cause instead of the prose. */
+export const refusalLine = (res: { code?: string; retryable?: boolean }): string =>
+  res.code === undefined
+    ? ''
+    : `\n  code: ${res.code}${res.retryable === undefined ? '' : ` retryable: ${res.retryable}`}`
+
 function describeSpawn(res: Extract<ServerMessage, { t: 'spawn_result' }>, forkedContext: boolean): string {
-  if (!res.ok) return `Not spawned: ${res.reason}`
+  if (!res.ok) return `Not spawned: ${res.reason}${refusalLine(res)}`
   const warnings = (res.warnings ?? []).map(w => `\n  warning: ${w}`).join('')
   // Spawn time is the only place a toolset-confined agent's missing tools are knowable with certainty.
   const denied = res.disallowedTools?.length ? `\n  denied tools: ${res.disallowedTools.join(', ')}` : ''

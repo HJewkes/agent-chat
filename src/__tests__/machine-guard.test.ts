@@ -28,7 +28,12 @@ describe('the machine guard decision', () => {
   it('refuses a headless spawn at the headless total, naming the limit and the count', () => {
     const decision = machineDecision({ liveHeadless: 10, memory: free(60) }, LIMITS, true)
 
-    expect(decision).toEqual({ ok: false, reason: expect.stringContaining('10 live headless agents') })
+    expect(decision).toEqual({
+      ok: false,
+      code: 'machine_headless_limit',
+      retryable: true,
+      reason: expect.stringContaining('machine guard: 10 live headless agents'),
+    })
     expect(decision.ok ? '' : decision.reason).toContain('limit 10, config machineHeadlessAgents')
   })
 
@@ -46,6 +51,7 @@ describe('the machine guard decision', () => {
     expect(decision.ok ? '' : decision.reason).toContain(
       'memory 9% free (floor 15%, config machineMemoryFreePercent)',
     )
+    expect(decision).toMatchObject({ ok: false, code: 'machine_memory_floor', retryable: true })
   })
 
   it('allows a spawn with memory free exactly at the floor', () => {
@@ -146,7 +152,12 @@ describe('agent spawn under the machine guard', () => {
 
     const third = await sup.spawnAgent('mg-three')
 
-    expect(third).toEqual({ ok: false, reason: expect.stringContaining('2 live headless agents') })
+    expect(third).toEqual({
+      ok: false,
+      code: 'machine_headless_limit',
+      retryable: true,
+      reason: expect.stringContaining('2 live headless agents'),
+    })
     const refused = sup.core.events.history(20).filter(r => r.kind === 'agent_spawn_refused')
     expect(refused.map(r => r.text)).toEqual([
       expect.stringContaining('limit 2, config machineHeadlessAgents'),
@@ -162,7 +173,12 @@ describe('agent spawn under the machine guard', () => {
     memory = free(40)
     const freed = await sup.spawnAgent('mg-memory')
 
-    expect(pressed).toEqual({ ok: false, reason: expect.stringContaining('memory 8% free (floor 15%') })
+    expect(pressed).toEqual({
+      ok: false,
+      code: 'machine_memory_floor',
+      retryable: true,
+      reason: expect.stringContaining('machine guard: memory 8% free (floor 15%'),
+    })
     expect(freed.ok).toBe(true)
   })
 

@@ -250,6 +250,8 @@ export async function agentSpawn(
 
   for (const warning of res.warnings ?? []) console.log(warning)
   console.log(res.ok ? `Spawned ${res.name} (${res.agentId}).` : `Not spawned: ${res.reason}`)
+  if (!res.ok && res.code !== undefined)
+    console.log(`code: ${res.code}${res.retryable === undefined ? '' : ` retryable: ${res.retryable}`}`)
   process.exit(res.ok ? 0 : 1)
 }
 

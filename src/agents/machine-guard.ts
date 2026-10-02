@@ -31,7 +31,11 @@ export interface MachineReadings {
   memory: MemoryReading
 }
 
-export type MachineDecision = { ok: true } | { ok: false; reason: string }
+/** CC-445: stable causes of a machine-guard refusal; both clear as load drops. */
+export type MachineRefusalCode = 'machine_headless_limit' | 'machine_memory_floor'
+
+export type MachineDecision =
+  { ok: true } | { ok: false; code: MachineRefusalCode; retryable: true; reason: string }
 
 const LIVE_STATES = new Set(['spawning', 'live', 'detached'])
 
@@ -55,6 +59,8 @@ export function machineDecision(
   if (headless && readings.liveHeadless >= limits.headlessAgents) {
     return {
       ok: false,
+      code: 'machine_headless_limit',
+      retryable: true,
       reason:
         `machine guard: ${readings.liveHeadless} live headless agents machine-wide ` +
         `(limit ${limits.headlessAgents}, config machineHeadlessAgents); wait for one to exit`,
@@ -64,6 +70,8 @@ export function machineDecision(
   if (!('error' in memory) && memory.freePercent < limits.memoryFreePercent) {
     return {
       ok: false,
+      code: 'machine_memory_floor',
+      retryable: true,
       reason:
         `machine guard: memory ${memory.freePercent}% free ` +
         `(floor ${limits.memoryFreePercent}%, config machineMemoryFreePercent); ` +
