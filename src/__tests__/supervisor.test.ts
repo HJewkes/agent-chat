@@ -1116,6 +1116,36 @@ describe('retiring with force', () => {
     expect(fs.existsSync(allocation.cwd)).toBe(false)
   })
 
+  /** CC-427: a detached agent has no exit row, so its last detach starts the grace window. */
+  it('holds a detached agent that never exited inside the window, then releases it', async () => {
+    // A settle window past the test's clock keeps the detach from being inferred into an exit.
+    const sup = withStubbedSurface({ settleMs: 60 * 60_000 })
+    core.append({ kind: 'agent_spawned', actor: 'human', target: 'scout', msgId: 'a1', body: 'work' })
+    const allocation = await worktreeStrategy.allocate({
+      agentId: 'a1',
+      agentName: 'scout',
+      baseCwd: makeRepo(),
+    })
+    ;(sup as unknown as { live: Map<string, unknown> }).live.set('a1', {
+      agentId: 'a1',
+      name: 'scout',
+      handle: { surface: 'headless' },
+      allocation,
+      isolation: 'worktree',
+    })
+    core.append({ kind: 'agent_detached', actor: 'scout', ref: 'a1' })
+
+    vi.advanceTimersByTime(85_000)
+    const early = await sup.retire('scout')
+    vi.advanceTimersByTime(RECLAIM_GRACE_MS - 85_000 + 4_000)
+    const late = await sup.retire('scout')
+
+    expect(core.agents.byName('scout')?.exitedAt).toBeUndefined()
+    expect(early.reason).toMatch(/inside the reclaim grace window/)
+    expect(late).toEqual({ ok: true })
+    expect(fs.existsSync(allocation.cwd)).toBe(false)
+  })
+
   /** CC-189: an explicit retire ends the agent, live or not, so a resume must not make the tree unreleasable. */
   describe('an agent that exited and was resumed', () => {
     async function resumedAgentWithCleanTree(sup: Supervisor): Promise<Allocation> {

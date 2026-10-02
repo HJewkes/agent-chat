@@ -127,12 +127,21 @@ export function foldAgent(rows: readonly AgentEventRow[]): AgentIdentity | undef
       agent.exitedAt = row.ts
     }
     if (row.kind === 'agent_resumed') delete agent.exitedAt
+    if (row.kind === 'agent_detached') agent.detachedAt = row.ts
+    if (row.kind === 'agent_resumed' || row.kind === 'agent_attached') delete agent.detachedAt
     const next = TRANSITIONS[row.kind]
     if (next !== undefined) agent.state = next
   }
 
   return agent
 }
+
+/**
+ * When an agent stopped, for the reclaim grace window: its exit, else its last detach.
+ * Never `lastEventAt`, which every refused retire's own `isolation_released` row advances.
+ */
+export const stoppedAt = (agent: Pick<AgentIdentity, 'exitedAt' | 'detachedAt'>): number | undefined =>
+  agent.exitedAt ?? agent.detachedAt
 
 /** Group rows by the agent id they carry, preserving log order within each group. */
 export function groupByAgent(rows: readonly AgentEventRow[]): Map<string, AgentEventRow[]> {
