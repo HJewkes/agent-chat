@@ -13,11 +13,10 @@ import {
   buildMcpConfig,
   hookSettingsPath,
   planPath,
-  readLaunchPlan,
   writeLaunchFiles,
 } from '../agents/launch-files.js'
-import { oscTitle } from '../agents/run-agent.js'
-import { relaunchScriptPath } from '../agents/surfaces/command.js'
+import { oscTitle, readLaunchPlan } from '@titan-design/agent-surface'
+import { relaunchScriptPath } from '../agents/launcher.js'
 import type { AgentProfile, LaunchPlanInput } from '../agents/types.js'
 
 const dirs: string[] = []
@@ -608,7 +607,7 @@ describe('the launch files', () => {
 
     writeLaunchFiles(plan, buildMcpConfig(profile(), '/repo/dist/cli.js'))
 
-    expect(readLaunchPlan('ag000001')).toEqual(plan)
+    expect(readLaunchPlan(planPath('ag000001'))).toEqual(plan)
   })
 
   it('keeps the brief owner-only, because that is the only place it lives', () => {
@@ -684,7 +683,7 @@ describe('the launch files', () => {
 
   it('refuses to run an agent with no plan on disk', () => {
     process.env.AGENT_CHAT_HOME = tmpdir()
-    expect(() => readLaunchPlan('missing')).toThrow(/no launch plan for agent missing/)
+    expect(() => readLaunchPlan(planPath('missing'))).toThrow(/no launch plan at .*missing/)
   })
 })
 
@@ -876,7 +875,7 @@ describe('the leak guard PreToolUse hook (CC-270)', () => {
         buildLaunchPlan(input({ surface, hookSettingsPath: hookSettingsPath('ag000001') })),
         {},
       )
-      const { args } = readLaunchPlan('ag000001')
+      const { args } = readLaunchPlan(planPath('ag000001'))
 
       expect(args.filter(a => a === '--settings')).toHaveLength(1)
       expect(flag(args, '--settings')).toBe(hookSettingsPath('ag000001'))

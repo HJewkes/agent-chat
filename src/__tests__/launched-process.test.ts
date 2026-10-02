@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { isLaunchedProcess, psParentOf } from '../server/host.js'
-import { launchEnv } from '../agents/run-agent.js'
+import { launchEnv } from '@titan-design/agent-surface'
+import { LAUNCHER_PID_ENV } from '../agents/launcher.js'
 
 const LAUNCHER = 4000
 const LAUNCHED_CLAUDE = 4001
@@ -65,15 +66,25 @@ describe('reading a parent pid when the launch carried no usable PATH', () => {
 
 describe('the environment run-agent hands the launched process', () => {
   it('stamps its own pid over a launcher pid the plan tries to set', () => {
-    const merged = launchEnv({ AGENT_CHAT_LAUNCHER_PID: '1', AGENT_CHAT_NAME: 'scout' }, { HOME: '/h' }, 4242)
+    const merged = launchEnv(
+      { AGENT_CHAT_LAUNCHER_PID: '1', AGENT_CHAT_NAME: 'scout' },
+      { HOME: '/h' },
+      4242,
+      [],
+      LAUNCHER_PID_ENV,
+    )
 
     expect(merged).toEqual({ HOME: '/h', AGENT_CHAT_NAME: 'scout', AGENT_CHAT_LAUNCHER_PID: '4242' })
   })
 
   it('deletes a variable the plan marks unset, even when the broker carried it (CC-200)', () => {
-    const merged = launchEnv({}, { HOME: '/h', CLAUDE_CONFIG_DIR: '/h/.claude-profiles/broker' }, 4242, [
-      'CLAUDE_CONFIG_DIR',
-    ])
+    const merged = launchEnv(
+      {},
+      { HOME: '/h', CLAUDE_CONFIG_DIR: '/h/.claude-profiles/broker' },
+      4242,
+      ['CLAUDE_CONFIG_DIR'],
+      LAUNCHER_PID_ENV,
+    )
 
     expect(merged).toEqual({ HOME: '/h', AGENT_CHAT_LAUNCHER_PID: '4242' })
   })

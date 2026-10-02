@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { afterAll, describe, expect, it } from 'vitest'
-import { surfaceFor } from '../agents/surfaces/index.js'
+import { surfaceFor } from '../agents/launcher.js'
 import type { LaunchPlan } from '../agents/types.js'
 
 /**

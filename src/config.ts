@@ -8,7 +8,7 @@ import {
   type MachineLimits,
 } from './agents/machine-guard.js'
 import { DEFAULT_FULL_SUITE_SLOTS } from './suite-slots.js'
-import { isHexColour, type PaneColourConfig } from './agents/pane-identity.js'
+import { isHexColour, type PaneColourConfig } from '@titan-design/agent-surface'
 import { isInteractiveSurface, type SurfaceName } from './protocol.js'
 
 interface AgentChatConfig {

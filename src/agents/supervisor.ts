@@ -38,8 +38,8 @@ import {
   type Allocation,
   type IsolationContext,
 } from './isolation/index.js'
-import { surfaceFor } from './surfaces/index.js'
-import { SurfaceRefused, type SurfaceOptions } from './surfaces/options.js'
+import { SurfaceRefused, itermSessionPresent, loginGap, readOutputTail, type SurfaceOptions } from '@titan-design/agent-surface'
+import { surfaceFor } from './launcher.js'
 import { Semaphore, type SlotUsage } from './semaphore.js'
 import {
   countLiveHeadless,
@@ -76,10 +76,8 @@ import {
 import { retireFinished, type FinishedRetireOutcome, type RetireScope } from './isolation/retire-finished.js'
 import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
-import { loginGap, readOutputTail } from './launch-output.js'
 import { isTrusted, trustGap } from './trust.js'
-import { itermSessionPresent } from './surfaces/iterm.js'
-import { burndownConfigPath, cliEntry, gitHooksDir, home } from '../paths.js'
+import { agentDir, burndownConfigPath, cliEntry, gitHooksDir, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { SeatJournal } from './seats/journal.js'
@@ -1488,7 +1486,7 @@ export class Supervisor implements TeleportHost {
     if (outcome.kind === 'attached') return { kind: 'attached' }
     if (outcome.kind === 'exited') {
       const cause = `claude exited before registering (exit code ${outcome.code ?? 'unknown'})`
-      const output = readOutputTail(agentId)
+      const output = readOutputTail(agentDir(agentId))
       return {
         kind: 'failed',
         reason: `${cause}. ${attachDiagnosis(site, handle, 'exited', output)}`,
