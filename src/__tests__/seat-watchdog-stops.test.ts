@@ -165,6 +165,11 @@ describe('readSeatLog', () => {
     expect(verdict).toEqual({ stop: 'seat logged "PARKED"', activityAt: at(6, 30) })
   })
 
+  it("does not count the watchdog's relaunch line as the seat's activity", () => {
+    const log = '06:30 heartbeat\n07:08 watchdog relaunch seat-a (no log line for 38 min; resumed)\n'
+    expect(readSeatLog(log, day)).toEqual({ activityAt: at(6, 30) })
+  })
+
   it('reads an empty log as nothing', () => {
     expect(readSeatLog('', day)).toEqual({})
   })

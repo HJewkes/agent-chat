@@ -193,10 +193,14 @@ interface SeatLine {
   text: string
 }
 
+// CC-463: a relaunch line counted as activity would mask the relaunch failing.
+const isWatchdogText = (text: string): boolean =>
+  text.startsWith('Watchdog:') || text.startsWith('watchdog relaunch ')
+
 function seatLines(log: string, day: Date): SeatLine[] {
   return log.split('\n').flatMap(line => {
     const m = /^(\d\d):(\d\d) (.*)$/.exec(line)
-    if (m === null || m[3]?.startsWith('Watchdog:') || isJournalText(m[3] ?? '')) return []
+    if (m === null || isWatchdogText(m[3] ?? '') || isJournalText(m[3] ?? '')) return []
     const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), Number(m[1]), Number(m[2]))
     return [{ at: at.getTime(), text: m[3] ?? '' }]
   })

@@ -86,6 +86,10 @@ export type SeatRecord = SeatState & {
   resumeRetry?: number
   /** CC-326: when the watchdog first saw the seat absent with log row `register` as its last presence row. */
   absent?: { register: number; since: number }
+  /** CC-463: epoch ms of the watchdog's last relaunch, saved before the launch call. */
+  relaunchedAt?: number
+  /** CC-463: relaunches since the seat last registered, counting the one at `relaunchedAt`. */
+  relaunchTries?: number
 }
 
 /**
@@ -308,6 +312,25 @@ function wokenByWatchdog(db: DatabaseSyncType, seat: string, registered: number)
   return countAfter(db, NEVER_STARTED, woke, seat) === countAfter(db, NEVER_STARTED, registered, seat)
 }
 
+// CC-463: an adopted session registered by itself, so its `agent_spawned` row is no launch.
+const LAUNCH_ROWS =
+  "target = ? AND kind IN ('agent_resumed', 'agent_spawned') AND COALESCE(json_extract(meta, '$.origin'), '') != 'adopted'"
+const HANDOFF_ROWS = "actor = ? AND kind = 'agent_handoff'"
+
+const tsOf = (db: DatabaseSyncType, id: number): number | undefined =>
+  id === 0 ? undefined : (db.prepare('SELECT ts FROM events WHERE id = ?').get(id) as { ts: number }).ts
+
+/** CC-463: the times the relaunch rule reads: last register, last launch, and a handoff no register followed. */
+function relaunchTimes(db: DatabaseSyncType, seat: string, registered: number): Partial<Presence> {
+  const handoff = maxId(db, HANDOFF_ROWS, seat)
+  const times = {
+    registeredAt: tsOf(db, registered),
+    lastLaunchAt: tsOf(db, maxId(db, LAUNCH_ROWS, seat)),
+    handoffAt: handoff > registered ? tsOf(db, handoff) : undefined,
+  }
+  return Object.fromEntries(Object.entries(times).filter(([, at]) => at !== undefined))
+}
+
 /** CC-320: a seat's latest presence rows. Throws when events.db cannot be read. */
 export function readPresence(dbPath: string, seat: string): Presence {
   const db = openEvents(dbPath)
@@ -324,6 +347,7 @@ export function readPresence(dbPath: string, seat: string): Presence {
       resumeStarted: resumesLaunched(db, seat, dark?.id ?? registered) > 0,
       teleported: countAfter(db, TELEPORT_ROWS, registered, seat) > 0,
       wokenByWatchdog: wokenByWatchdog(db, seat, registered),
+      ...relaunchTimes(db, seat, registered),
     }
   } finally {
     db.close()
