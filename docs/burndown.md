@@ -193,3 +193,10 @@ Every item is yours to check by hand; nothing here is verified by an agent.
   each.
 - **Kill switch known**: `agent-chat burndown pause` stops new spawns on the next tick;
   `agent-chat burndown uninstall` removes the job.
+
+A seat file may set `cap_excludes_waiting_owner: true` (CC-405). A running agent that carries
+the session tag `waiting-owner` then no longer counts toward its role's cap in
+`seats status`: it drops out of `active`, `names` and `detached` and is listed under
+`waitingOwner` in that role's block of `--json`. Set the tag with `chat_tag` on the agent
+(or on a peer), and remove it when the owner has answered. Without the key, or for an
+untagged agent, the count is unchanged and `waitingOwner` is empty.

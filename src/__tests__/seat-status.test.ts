@@ -74,6 +74,7 @@ let core: BrokerCore
 let server: SocketServer
 let doc: WatchdogDoc
 let agentIds = 0
+let waiting: string[] = []
 
 const beforeFrontmatterEnd = (text: string, extra: string): string =>
   text.replace(/\n---\n$/, `\n${extra}\n---\n`)
@@ -208,6 +209,7 @@ function deps(over: Partial<StatusDeps> = {}): StatusDeps {
       const reply = w.frames.find(f => f.t === 'agents_result')
       return reply?.t === 'agents_result' ? reply.agents : []
     },
+    waitingOwner: async () => waiting,
     readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
     loadDoc: () => structuredClone(doc),
     inbox: seat => readInbox(path.join(tmp, 'events.db'), seat),
@@ -256,6 +258,7 @@ beforeEach(() => {
     registry: new Registry<Conn>(),
   })
   server = new SocketServer(core)
+  waiting = []
 })
 
 afterEach(() => {
@@ -278,6 +281,7 @@ describe('a seat against its concurrency caps', () => {
       atCap: true,
       names: ['helper', 'ss-al-1'],
       detached: [],
+      waitingOwner: [],
     })
   })
 
@@ -308,14 +312,59 @@ describe('a seat against its concurrency caps', () => {
     expect(report.lines[1]).toBe('implementers  2/2  AT CAP  ss-al-1, ss-al-2  detached: ss-al-2')
   })
 
+  describe('agents waiting on the owner (CC-405)', () => {
+    const CAP5 = '{implementers: 5, reviewers: 1, planners: 3}'
+
+    function seedFive(): void {
+      for (const n of [1, 2, 3, 4, 5]) seedAgent({ name: `ss-al-${n}`, profile: 'implementer' })
+      waiting = ['ss-al-5']
+    }
+
+    it('leaves a waiting-owner implementer out of the cap count for a seat that opts in', async () => {
+      writeAutonomy({ concurrency: CAP5, seatLines: 'cap_excludes_waiting_owner: true' })
+      seedFive()
+
+      const { implementers } = await status()
+
+      expect(implementers).toMatchObject({ active: 4, cap: 5, atCap: false, waitingOwner: ['ss-al-5'] })
+      expect(implementers.names).not.toContain('ss-al-5')
+    })
+
+    it('counts a waiting-owner implementer as before when the seat does not opt in', async () => {
+      writeAutonomy({ concurrency: CAP5 })
+      seedFive()
+
+      const { implementers } = await status()
+
+      expect(implementers).toMatchObject({ active: 5, atCap: true, waitingOwner: [] })
+    })
+
+    it('counts an untagged implementer as before for a seat that opts in', async () => {
+      writeAutonomy({ concurrency: CAP5, seatLines: 'cap_excludes_waiting_owner: true' })
+      seedFive()
+      waiting = []
+
+      const { implementers } = await status()
+
+      expect(implementers).toMatchObject({ active: 5, atCap: true, waitingOwner: [] })
+    })
+  })
+
   it('counts running reviewers and planners against their own caps', async () => {
     seedAgent({ name: 'ss-al-1-review', profile: 'reviewer' })
     seedAgent({ name: 'ss-al-9-review', profile: 'reviewer', exited: true })
 
     const { reviewers, planners } = await status()
 
-    expect(reviewers).toEqual({ active: 1, cap: 1, atCap: true, names: ['ss-al-1-review'], detached: [] })
-    expect(planners).toEqual({ active: 0, cap: 3, atCap: false, names: [], detached: [] })
+    expect(reviewers).toEqual({
+      active: 1,
+      cap: 1,
+      atCap: true,
+      names: ['ss-al-1-review'],
+      detached: [],
+      waitingOwner: [],
+    })
+    expect(planners).toEqual({ active: 0, cap: 3, atCap: false, names: [], detached: [], waitingOwner: [] })
   })
 
   it('lists a running agent whose profile names no role under other, with no cap', async () => {

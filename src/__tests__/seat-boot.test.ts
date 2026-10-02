@@ -46,9 +46,9 @@ const QUEUE = `# Queue: ${SEAT}\n\n${IN_FLIGHT}\n\n${NEXT}\n\n## Morning queue (
 const STATUS: SeatStatus = {
   seat: SEAT,
   at: NOW.toISOString(),
-  implementers: { active: 2, cap: 5, atCap: false, names: ['sc-a', 'sc-b'], detached: [] },
-  reviewers: { active: 1, cap: 2, atCap: false, names: ['sc-r'], detached: [] },
-  planners: { active: 0, cap: 1, atCap: false, names: [], detached: [] },
+  implementers: { active: 2, cap: 5, atCap: false, names: ['sc-a', 'sc-b'], detached: [], waitingOwner: [] },
+  reviewers: { active: 1, cap: 2, atCap: false, names: ['sc-r'], detached: [], waitingOwner: [] },
+  planners: { active: 0, cap: 1, atCap: false, names: [], detached: [], waitingOwner: [] },
   other: { active: 0, names: [], detached: [] },
   parked: { count: 3, names: ['sc-p1', 'sc-p2', 'sc-p3'], treeOnDisk: [] },
   budget: {
