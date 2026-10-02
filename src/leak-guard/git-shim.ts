@@ -12,7 +12,7 @@ const shQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
 
 // Global options whose value is the next word; every other leading dash word stands alone.
 const VALUED_GLOBALS =
-  '-C | -c | --git-dir | --work-tree | --namespace | --config-env | --attr-source | --super-prefix'
+  '-C | -c | --git-dir | --work-tree | --namespace | --config-env | --attr-source | --super-prefix | --shallow-file'
 
 const DOCS = 'See docs/leak-guard.md.'
 
@@ -76,6 +76,16 @@ const AUTOCORRECT_FN = `autocorrect_off() {
   return 1
 }`
 
+// git's own "most similar command" list for a word, read with autocorrect off so nothing runs.
+const TYPO_FN = `refuse_typo() {
+  similar=$(eval "\\"\\$real\\"$globals -c help.autocorrect=0 \\"\\$1\\"" 2>&1)
+  case $similar$nl in *"$tab"push"$nl"*)
+    refuse autocorrect "$1 is not a git command and help.autocorrect would run its correction unchecked; set it to show or never." ;;
+  esac
+  echo "git-shim: refused (autocorrect): '$1' is not a git command and help.autocorrect would run git's guess at it unchecked; fix the typo, or set help.autocorrect to show or never. ${DOCS}" >&2
+  exit 2
+}`
+
 // A word git finds as git-<word> on its exec path or PATH runs that command, so git never autocorrects it.
 const EXTERNAL_FN = `external() {
   case $1 in */*) return 1 ;; esac
@@ -87,15 +97,26 @@ const EXTERNAL_FN = `external() {
   return $found
 }`
 
-// git stash push is the one subcommand named push that is not a push.
+// git stash push is not a push; push passes only right after stash as git's subcommand, past its global options.
 const MENTIONS_PUSH_FN = `mentions_push() {
   set -f
-  set -- $(printf '%s' "$1" | tr -d "\\"'\\\\\\\\")
+  set -- $(printf '%s' "\${1#!}" | tr -d "\\"'\\\\\\\\")
   set +f
-  prev=
+  at=
   for tok; do
-    case $tok in *push*) [ "$prev" = stash ] || return 0 ;; esac
-    prev=$tok
+    case $at in
+    globals)
+      case $tok in
+      ${VALUED_GLOBALS}) at=value ;;
+      -*) ;;
+      stash) at=stash ;;
+      *) at= ;;
+      esac ;;
+    value) at=globals ;;
+    stash) at=; [ "$tok" = push ] && continue ;;
+    *) [ "$tok" = git ] && at=globals ;;
+    esac
+    case $tok in *push*) return 0 ;; esac
   done
   return 1
 }`
@@ -116,15 +137,16 @@ const RESOLVE_FN = `resolve() {
     case $? in
     0) ;;
     1)
-      external "$1" || autocorrect_off ||
-        refuse autocorrect "$1 is not a git command and help.autocorrect would run its correction unchecked; set it to show or never."
+      external "$1" || autocorrect_off || refuse_typo "$1"
       return 1 ;;
     *) refuse unresolved "git could not read alias.$1, so the shim cannot tell whether this is a push." ;;
     esac
     case $alias in
     !*)
+      name=$1
+      shift
       mentions_push "$alias $*" &&
-        refuse shell-alias "alias.$1 runs a shell command and the command mentions push; run git push directly."
+        refuse shell-alias "alias.$name runs a shell command and the command mentions push; run git push directly."
       return 1 ;;
     esac
     split "$alias" || refuse unresolved "alias.$1 has an open quote or a trailing backslash."
@@ -345,6 +367,7 @@ ${QUOTE_FN}
 ${REFUSE_FN}
 ${SPLIT_FN}
 ${AUTOCORRECT_FN}
+${TYPO_FN}
 ${EXTERNAL_FN}
 ${MENTIONS_PUSH_FN}
 ${RESOLVE_FN}

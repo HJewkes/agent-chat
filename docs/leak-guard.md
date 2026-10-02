@@ -800,7 +800,10 @@ Not covered:
   command line);
 - a `git` binary inside git's exec-path directory, which git puts first on PATH for its hooks,
   `!` aliases and `rebase --exec`. A `!` alias that builds the word push at run time, such as
-  `$(echo pu)sh`, is in this class;
+  `$(echo pu)sh`, is in this class, and so is one that takes the subcommand from its arguments,
+  such as `!f(){ git $2; }; f stash push`;
+- an executable `git-<word>` on PATH or in git's exec-path: `git <word>` runs it unchecked, with
+  git's exec-path first on PATH as for a `!` alias;
 - pushing without git.
 
 The shim is live for an agent only after a broker restart picks up the
