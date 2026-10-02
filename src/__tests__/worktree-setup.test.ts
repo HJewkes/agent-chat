@@ -779,6 +779,6 @@ describe('a push from a fresh worktree (CC-313)', () => {
     const pushed = pushFrom(alloc.cwd)
 
     expect(pushed.status).not.toBe(0)
-    expect(pushed.stderr).toContain('titan-egress-scan: not installed in this worktree')
+    expect(pushed.stderr).toContain('titan-egress-scan: scanner not found, so the push is refused')
   })
 })
