@@ -31,6 +31,14 @@ import {
   writeLaunchFiles,
   writeRuntimeState,
 } from './launch-files.js'
+import {
+  awaitsExit,
+  DetachedReaper,
+  detachedAtStart,
+  hostProbe,
+  launcherLiveness,
+  type ProcessProbe,
+} from './detached-reap.js'
 import { loadProfile, recordedRole, roleOf } from './profiles.js'
 import {
   refusalOf,
@@ -451,6 +459,8 @@ export interface SupervisorOptions {
   seatDispatch?: SeatDispatchLog
   /** CC-406: the machine-wide guard's readers. Absent in tests, which must not read the host's memory. */
   machineGuard?: MachineGuardReaders
+  /** CC-450: how an unwatched agent's recorded launcher pid is checked. Faked in tests. */
+  processProbe?: ProcessProbe
 }
 
 /** A dispatch row is bookkeeping: a writer that throws despite its contract leaves the spawn or retire as it was. */
@@ -588,6 +598,8 @@ export class Supervisor implements TeleportHost {
   private readonly teleporter: Teleport
   private readonly shadow: LifecycleShadow
   private readonly machineGuard: MachineGuardReaders | undefined
+  private readonly processProbe: ProcessProbe
+  private readonly reaper: DetachedReaper
 
   constructor(
     private readonly core: BrokerCore,
@@ -605,9 +617,12 @@ export class Supervisor implements TeleportHost {
     this.seatJournal = options.seatJournal
     this.seatDispatch = options.seatDispatch
     this.machineGuard = options.machineGuard
+    this.processProbe = options.processProbe ?? hostProbe
+    this.reaper = new DetachedReaper(this.settleMs, agentId => this.reapIfDead(agentId))
     this.unwatch = core.onAppend(row => this.onRow(row))
     this.teleporter = new Teleport(core, this, options.countdownMs, options.argvReader)
     this.shadow = new LifecycleShadow(options.ledger)
+    for (const agent of detachedAtStart(core.agents.roster())) this.reapIfDead(agent.agentId)
   }
 
   private fireHook(event: HookEvent, payload: Record<string, unknown>): void {
@@ -651,10 +666,13 @@ export class Supervisor implements TeleportHost {
 
   /**
    * CC-109: slot accounting for a spawned agent this broker did not launch,
-   * which after a restart is every agent that reattaches. Count only: no exit
-   * is inferred and nothing is added to `live`, for the reasons on `rehydrate`.
+   * which after a restart is every agent that reattaches. Nothing is added to
+   * `live`, for the reasons on `rehydrate`. CC-450: a detach that outlasts the
+   * settle window infers an exit only once the recorded launcher pid is gone.
    */
   private onUnwatchedRow(kind: string, agentId: string): void {
+    if (kind === 'agent_detached') this.reaper.schedule(agentId)
+    else this.reaper.cancel(agentId)
     if (kind === 'agent_attached') return this.countReattach(agentId)
     if (!this.reattached.has(agentId)) return
     if (kind === 'agent_detached') this.scheduleReattachRelease(agentId)
@@ -687,6 +705,32 @@ export class Supervisor implements TeleportHost {
     clearTimeout(this.reattached.get(agentId))
     this.reattached.delete(agentId)
     this.semaphore.release(agentId)
+  }
+
+  /** CC-450: the row and the ledger only; the process is not ours to signal and has no surface to close. */
+  private reapIfDead(agentId: string): void {
+    const agent = this.core.agents.get(agentId)
+    if (!awaitsExit(agent) || this.live.has(agentId)) return
+    const liveness = launcherLiveness(agentId, this.processProbe)
+    if (!liveness.dead) return
+    this.core.append({
+      kind: 'agent_exited',
+      actor: agent.name,
+      ref: agentId,
+      body: `exit inferred after a broker restart: ${liveness.reason}`,
+      meta: { inferred: 'true', pid: String(liveness.pid) },
+    })
+    logEvent('agent_exited', {
+      agentId,
+      name: agent.name,
+      code: null,
+      inferred: true,
+      reason: liveness.reason,
+    })
+    this.shadow.finishByAgent(
+      agentId,
+      exitTerminal({ code: null, signal: null, inferred: true }, undefined, undefined),
+    )
   }
 
   /** A launch takes over the slot, so its release moves to `recordExit`. */
@@ -2619,6 +2663,7 @@ export class Supervisor implements TeleportHost {
     this.unwatch()
     this.teleporter.close()
     this.attachWaiters.clear()
+    this.reaper.close()
     for (const timer of this.reattached.values()) clearTimeout(timer)
     for (const entry of this.live.values()) {
       if (entry.settle) clearTimeout(entry.settle)
