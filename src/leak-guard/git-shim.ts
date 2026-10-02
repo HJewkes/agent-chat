@@ -143,8 +143,10 @@ const RESOLVE_FN = `resolve() {
     esac
     case $alias in
     !*)
+      name=$1
+      shift
       mentions_push "$alias $*" &&
-        refuse shell-alias "alias.$1 runs a shell command and the command mentions push; run git push directly."
+        refuse shell-alias "alias.$name runs a shell command and the command mentions push; run git push directly."
       return 1 ;;
     esac
     split "$alias" || refuse unresolved "alias.$1 has an open quote or a trailing backslash."

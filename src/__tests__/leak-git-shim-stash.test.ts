@@ -116,6 +116,22 @@ describe('the agent git shim exempting only an exact git stash push (TP-783)', (
     },
   )
 
+  // Kills: the alias name checked between the body and its arguments, where git never puts it (review of 9db2cdf).
+  it.each(['!git -C', '!git --namespace'])(
+    'refuses the shell alias %s run as git g stash push, whose stash is the option value',
+    alias => {
+      const fx = fixture()
+      fs.mkdirSync(path.join(fx.work, 'stash'))
+      git(fx.work, 'config', 'alias.g', alias)
+
+      const run = runScript(fx, `git g stash push ${NO_VERIFY} origin main`)
+
+      expect(run.stderr).toContain('git-shim: push refused (shell-alias)')
+      expect(run.status).toBe(2)
+      expect(remoteHasMain(fx)).toBe(false)
+    },
+  )
+
   // Kills: --shallow-file dropped from the valued globals (reviewer finding on #332; both pushed at 976c8031).
   it.each([
     ['shell-alias', 'git g', `!git --shallow-file stash push ${NO_VERIFY} origin main`],
