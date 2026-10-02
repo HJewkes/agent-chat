@@ -26,6 +26,7 @@ interface AgentChatConfig {
   machineHeadlessAgents?: unknown
   machineMemoryFreePercent?: unknown
   fullSuiteSlots?: unknown
+  coordinatorGrantableTools?: unknown
 }
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
@@ -161,6 +162,30 @@ export function resolveMachineLimits(): MachineLimits {
 /** How many full test suites may run at once machine-wide (CC-406). */
 export function resolveFullSuiteSlots(): number {
   return positiveIntegerFrom('fullSuiteSlots', DEFAULT_FULL_SUITE_SLOTS)
+}
+
+/** CC-451: the web-read tools a coordinator may grant a child it does not hold itself, and the only ones. */
+export const WEB_READ_TOOLS: readonly string[] = ['WebSearch', 'WebFetch']
+
+/**
+ * `coordinatorGrantableTools` in `config.json`, read per spawn; `[]` turns the exemption off.
+ * It can only narrow `WEB_READ_TOOLS`: any other name, `*` included, is logged and dropped,
+ * and a non-array grants nothing rather than the default, because this key widens authority.
+ */
+export function resolveCoordinatorGrantableTools(): string[] {
+  const value = readConfig().coordinatorGrantableTools
+  if (value === undefined) return [...WEB_READ_TOOLS]
+  if (!Array.isArray(value)) {
+    logEvent('config_invalid', { key: 'coordinatorGrantableTools', value, fallback: [] })
+    return []
+  }
+  const known = value.filter(
+    (tool): tool is string => typeof tool === 'string' && WEB_READ_TOOLS.includes(tool),
+  )
+  const ignored = value.filter(tool => !known.includes(tool as string))
+  if (ignored.length > 0)
+    logEvent('config_invalid', { key: 'coordinatorGrantableTools', value: ignored, fallback: 'ignored' })
+  return known
 }
 
 function positiveIntegerFrom(key: keyof AgentChatConfig, fallback: number): number {
