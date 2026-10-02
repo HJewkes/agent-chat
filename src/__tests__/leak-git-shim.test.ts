@@ -18,7 +18,21 @@ const SCRATCH = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-cha
 
 afterAll(() => fs.rmSync(SCRATCH, { recursive: true, force: true }))
 
-const REAL_GIT = findRealGit(process.env.PATH ?? '', path.join(SCRATCH, 'none')) as string
+const isAgentShim = (dir: string): boolean => {
+  try {
+    return fs.readFileSync(path.join(dir, 'git'), 'utf8').includes('# Written by agent-chat')
+  } catch {
+    return false
+  }
+}
+
+/** PATH without an agent session's own shim, so the shim under test never execs a second shim (CC-442). */
+const HOST_PATH = (process.env.PATH ?? '')
+  .split(path.delimiter)
+  .filter(dir => !isAgentShim(dir))
+  .join(path.delimiter)
+
+const REAL_GIT = findRealGit(HOST_PATH, path.join(SCRATCH, 'none')) as string
 const NO_VERIFY = ['--no', 'verify'].join('-')
 
 const git = (cwd: string, ...args: string[]): string =>
@@ -63,11 +77,14 @@ function fixture(): Fixture {
     'one',
   )
   git(work, 'remote', 'add', 'origin', remote)
-  expect(writeGitShim(shimDir, guard)).toBe(true)
+  git(work, 'remote', 'add', 'net', 'ssh://git.invalid/remote.git')
+  expect(writeGitShim(shimDir, guard, HOST_PATH)).toBe(true)
   const env = {
     PATH: `${shimDir}:/usr/bin:/bin`,
     HOME: home,
     GIT_CONFIG_NOSYSTEM: '1',
+    GIT_SSH_COMMAND: 'false',
+    GIT_TERMINAL_PROMPT: '0',
     ...gitHooksEnv(guard),
   }
   return { work, remote, guard, shimDir, marker, env }
@@ -102,7 +119,7 @@ describe('the agent git shim refusing pushes that skip the leak scan', () => {
   it('refuses a push from a script that sets GIT_CONFIG_COUNT=0', () => {
     const fx = fixture()
 
-    const run = runScript(fx, 'GIT_CONFIG_COUNT=0 git push -q origin main')
+    const run = runScript(fx, 'GIT_CONFIG_COUNT=0 git push -q net main')
 
     expect(run.stderr).toContain('git-shim: push refused (hooks-path)')
     expect(run.status).not.toBe(0)
@@ -112,7 +129,7 @@ describe('the agent git shim refusing pushes that skip the leak scan', () => {
   it('refuses a push whose -c option points core.hooksPath elsewhere', () => {
     const fx = fixture()
 
-    const run = runScript(fx, 'git -c core.hooksPath=/dev/null push -q origin main')
+    const run = runScript(fx, 'git -c core.hooksPath=/dev/null push -q net main')
 
     expect(run.stderr).toContain('git-shim: push refused (hooks-path)')
     expect(remoteHasMain(fx)).toBe(false)
@@ -156,7 +173,7 @@ describe('the agent git shim failing closed when it cannot resolve a push (fix r
   // Each case pushed without the hook at 789da5ba: sh word splitting kept the quotes, so the lookup missed.
   it.each([
     ['"push"', `git p ${NO_VERIFY} origin main`, 'no-verify'],
-    ["'push'", 'git -c core.hooksPath=/dev/null p origin main', 'hooks-path'],
+    ["'push'", 'git -c core.hooksPath=/dev/null p net main', 'hooks-path'],
     ['pu\\sh', `git p ${NO_VERIFY} origin main`, 'no-verify'],
     ['"push" "--no-verify"', 'git p origin main', 'no-verify'],
   ])('refuses alias.p=%s split the way git splits it', (alias, command, rule) => {
@@ -194,10 +211,10 @@ describe('the agent git shim failing closed when it cannot resolve a push (fix r
 
   it.each([
     [`git push ${NO_VERIFY} origin main`, 'no-verify'],
-    ['git -c core.hooksPath=/dev/null push origin main', 'hooks-path'],
+    ['git -c core.hooksPath=/dev/null push net main', 'hooks-path'],
   ])('refuses %s when the builtin list could not be read', (command, rule) => {
     const fx = fixture()
-    const real = findRealGit(process.env.PATH ?? '', fx.shimDir) as string
+    const real = findRealGit(HOST_PATH, fx.shimDir) as string
     fs.writeFileSync(path.join(fx.shimDir, 'git'), gitShimScript(real, fx.guard, []), { mode: 0o755 })
 
     const run = runScript(fx, command)
@@ -280,7 +297,7 @@ describe('the agent git shim and help.autocorrect (fix round 2)', () => {
 
   it('runs builtins under autocorrect when the baked builtin list is empty', () => {
     const fx = fixture()
-    const real = findRealGit(process.env.PATH ?? '', fx.shimDir) as string
+    const real = findRealGit(HOST_PATH, fx.shimDir) as string
     fs.writeFileSync(path.join(fx.shimDir, 'git'), gitShimScript(real, fx.guard, []), { mode: 0o755 })
 
     const run = runScript(fx, 'git -c help.autocorrect=1 rev-parse --abbrev-ref HEAD')
@@ -297,6 +314,118 @@ describe('the agent git shim and help.autocorrect (fix round 2)', () => {
 
     expect(run.stderr).not.toContain('git-shim')
     expect(run.status).toBe(0)
+  })
+})
+
+describe('the agent git shim letting a push to a local repository skip the hooks-path check (CC-442)', () => {
+  const FOREIGN = 'git -c core.hooksPath=/dev/null push -q'
+
+  /** A fixture push with a hooks path that is not the guard's, as a test harness that strips it makes. */
+  const foreignPush = (fx: Fixture, args: string) => runScript(fx, `${FOREIGN} ${args}`)
+
+  // Kills: local_only always false.
+  it.each([
+    ['an absolute path', (fx: Fixture) => `'${fx.remote}' main`],
+    ['a relative path', () => '../remote.git main'],
+    ['a file:// URL', (fx: Fixture) => `'file://${fx.remote}' main`],
+    ['a remote named origin whose url is a path', () => '-u origin main'],
+    ['the default remote, origin', () => '--all'],
+  ])('lets a push to %s through with a foreign hooks path', (_label, args) => {
+    const fx = fixture()
+
+    const run = foreignPush(fx, args(fx))
+
+    expect(run.stderr).toBe('')
+    expect(run.status).toBe(0)
+    expect(remoteHasMain(fx)).toBe(true)
+  })
+
+  it('lets a remote with two pushurls through when both are paths', () => {
+    const fx = fixture()
+    const second = path.join(fx.work, '..', 'second.git')
+    git(fx.work, 'init', '-q', '--bare', second)
+    git(fx.work, 'config', '--add', 'remote.origin.pushurl', fx.remote)
+    git(fx.work, 'config', '--add', 'remote.origin.pushurl', second)
+
+    const run = foreignPush(fx, 'origin main')
+
+    expect(run.status).toBe(0)
+    expect(remoteHasMain(fx)).toBe(true)
+  })
+
+  // Kills: the insteadOf rewrite left out of the destinations.
+  it.each([
+    ['insteadOf', 'url.https://github.com/acme/.insteadOf'],
+    ['pushInsteadOf', 'url.https://github.com/acme/.pushInsteadOf'],
+  ])('refuses a path remote that %s rewrites to github.com', (_label, key) => {
+    const fx = fixture()
+    git(fx.work, 'config', key, path.dirname(fx.remote))
+
+    const run = foreignPush(fx, 'origin main')
+
+    expect(run.stderr).toContain('git-shim: push refused (hooks-path)')
+    expect(run.status).toBe(2)
+  })
+
+  it.each([
+    ['ext::', "'ext::sh -c true' main"],
+    ['fd::', 'fd::3 main'],
+    ['an ssh URL', 'ssh://git.invalid/r.git main'],
+    ['an https URL', 'https://git.invalid/r.git main'],
+    ['an scp-like host:path', 'git.invalid:r.git main'],
+    ['a remote whose url is ssh', 'net main'],
+    ['a local path with --receive-pack', "--receive-pack='git receive-pack' ../remote.git main"],
+    ['a local path with an unknown option', '--unknown-option ../remote.git main'],
+    ['a local path with submodule pushes on', '--recurse-submodules=on-demand ../remote.git main'],
+  ])('refuses a push to %s with a foreign hooks path', (_label, args) => {
+    const fx = fixture()
+
+    const run = foreignPush(fx, args)
+
+    expect(run.stderr).toContain('git-shim: push refused (hooks-path)')
+    expect(run.status).toBe(2)
+    expect(remoteHasMain(fx)).toBe(false)
+  })
+
+  // Kills: requiring only one local destination instead of all.
+  it('refuses a remote with a path pushurl and an ssh pushurl', () => {
+    const fx = fixture()
+    git(fx.work, 'config', '--add', 'remote.origin.pushurl', fx.remote)
+    git(fx.work, 'config', '--add', 'remote.origin.pushurl', 'ssh://git.invalid/r.git')
+
+    const run = foreignPush(fx, 'origin main')
+
+    expect(run.stderr).toContain('git-shim: push refused (hooks-path)')
+    expect(remoteHasMain(fx)).toBe(false)
+  })
+
+  it.each([
+    ['its url holds a newline', (fx: Fixture) => git(fx.work, 'config', 'remote.odd.url', `${fx.remote}\nx`)],
+    ['it names a remote helper', (fx: Fixture) => git(fx.work, 'config', 'remote.odd.vcs', 'x')],
+    [
+      'it is a legacy remotes file',
+      (fx: Fixture) => {
+        fs.mkdirSync(path.join(fx.work, '.git', 'remotes'))
+        fs.writeFileSync(path.join(fx.work, '.git', 'remotes', 'odd'), 'URL: ssh://git.invalid/r.git\n')
+      },
+    ],
+  ])('refuses a remote the shim cannot resolve: %s', (_label, setup) => {
+    const fx = fixture()
+    setup(fx)
+
+    const run = foreignPush(fx, 'odd main')
+
+    expect(run.stderr).toContain('git-shim: push refused (hooks-path)')
+    expect(remoteHasMain(fx)).toBe(false)
+  })
+
+  it('still refuses --no-verify to a local path', () => {
+    const fx = fixture()
+
+    const run = runScript(fx, `git push -q ${NO_VERIFY} '${fx.remote}' main`)
+
+    expect(run.stderr).toContain('git-shim: push refused (no-verify)')
+    expect(remoteHasMain(fx)).toBe(false)
   })
 })
 
@@ -333,7 +462,7 @@ describe('the agent git shim passing everything else to the real git', () => {
   // Kills: the shim calling git by name, which finds itself first on PATH (timeout).
   it('does not recurse into itself', () => {
     const fx = fixture()
-    writeGitShim(fx.shimDir, fx.guard, `${fx.env.PATH}:${process.env.PATH ?? ''}`)
+    writeGitShim(fx.shimDir, fx.guard, `${fx.env.PATH}:${HOST_PATH}`)
 
     const run = runScript(fx, 'git --version && git status --short && git push -q origin main')
 
