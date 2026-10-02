@@ -98,6 +98,7 @@ import {
 import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { isTrusted, trustGap } from './trust.js'
+import { stoppedAt } from './identity.js'
 import { agentDir, burndownConfigPath, cliEntry, gitHooksDir, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
 import { resolveCoordinatorGrantableTools } from '../config.js'
@@ -2100,12 +2101,13 @@ export class Supervisor implements TeleportHost {
     entry: Live,
     force: boolean,
   ): Promise<boolean> {
+    const stopped = stoppedAt(identity)
     const ctx: IsolationContext = {
       agentId: identity.agentId,
       agentName: name,
       baseCwd: identity.cwd,
       // CC-188: not lastEventAt, which each refused retire's own isolation_released row advances.
-      ...(identity.exitedAt !== undefined ? { exitedAt: identity.exitedAt } : {}),
+      ...(stopped !== undefined ? { exitedAt: stopped } : {}),
     }
     return this.releaseHeld(ctx, entry, force)
   }

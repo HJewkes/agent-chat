@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { gitChildEnv } from '../../git.js'
 import { agentsDir } from '../../paths.js'
+import { stoppedAt } from '../identity.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import { readRuntimeState, runtimeStatePath } from '../launch-files.js'
 import { BRANCH_PREFIX, inspectForRelease, RECLAIM_GRACE_MS, worktreeStrategy } from './worktree.js'
@@ -122,7 +123,7 @@ function classifyByAgent(
 ): { status: SweepStatus; detail: string } | undefined {
   if (agent === undefined) return undefined
   if (isLive(agent.state)) return { status: 'held', detail: `${agent.name} is ${agent.state}` }
-  const since = now - (agent.exitedAt ?? agent.lastEventAt)
+  const since = now - (stoppedAt(agent) ?? agent.lastEventAt)
   if (since < RECLAIM_GRACE_MS)
     return {
       status: 'in-grace',
