@@ -780,10 +780,104 @@ describe('a gh command the command line hides', () => {
   it('trusts no directory and no variable behind a command word it cannot resolve', () => {
     const read = ctx({ env: { T: '/w' }, readFile: () => 'clean' })
 
-    expect(checkCommand('$E gh pr create -t x --body-file pr.md', read)).toBe(REASONS.unreadableBody)
-    expect(checkCommand('$E gh pr create -t x --body-file "$T/pr.md"', read)).toBe(REASONS.unreadableBody)
+    expect(checkCommand('$E gh pr create -t x --body-file pr.md', read)).toBe(REASONS.hiddenBody)
+    expect(checkCommand('$E gh pr create -t x --body-file "$T/pr.md"', read)).toBe(REASONS.hiddenBody)
     expect(checkCommand('gh pr create -t x --body-file "$T/pr.md"', read)).toBeUndefined()
     expect(checkCommand('$E git push --no-verify', read)).toBe(REASONS.noVerify)
+  })
+
+  describe('gh after an option the expanded command word may take (CC-347)', () => {
+    const BODY = 'pr create -t x --body-file pr.md'
+
+    it.each([
+      `W=nice; $W -n 5 gh ${BODY}`,
+      `W=env; $W -u X gh ${BODY}`,
+      `OPT=-u; env $OPT X gh ${BODY}`,
+      `$W -n 5 agent-chat gh-write -- ${BODY}`,
+      `$W -n 5 $V gh ${BODY}`,
+      `$W -n 5 sh -c 'gh ${BODY}'`,
+    ])('names the literal form for a relative body file in %j', command => {
+      expect(checkCommand(command, ctx({ readFile: () => 'clean' }))).toBe(REASONS.hiddenBody)
+      expect(REASONS.hiddenBody).toContain('agent-chat gh-write -- pr create --body-file <path>')
+    })
+
+    it.each([
+      `W=nice; $W -n 5 gh pr create -t ${TERM} -b y`,
+      `W=timeout; $W -s KILL 5 gh pr create -t ${TERM} -b y`,
+      `$W -n 5 gh pr create -t x --body-file /w/pr.md`,
+    ])('scans the text of %j', command => {
+      expect(checkCommand(command, ctx({ readFile: () => TERM }))).toContain('line 1 private-term #1')
+    })
+
+    it.each([
+      ['W=nice; $W -n 5 git push --no-verify', REASONS.noVerify],
+      ['$W -n 5 env -i git push', REASONS.envClear],
+      ['$W -n 5 GIT_CONFIG_COUNT=1 git push', REASONS.gitConfigEnv],
+      ['$W -n 5 $G pr create -t x -b y', REASONS.hiddenCommand],
+    ])('denies %j', (command, reason) => {
+      expect(checkCommand(command, ctx())).toBe(reason)
+    })
+
+    it.each([
+      '$W -n 5 gh pr view 12',
+      '$W -n 5 gh pr create -t x -b y',
+      '$X run -- pr create -t x -b y',
+      `$CC ${'-I inc '.repeat(500)}main.c`,
+    ])('leaves %j alone', command => {
+      expect(checkCommand(command, ctx())).toBeUndefined()
+    })
+
+    it('denies a split command behind another expansion rather than rescanning it', () => {
+      expect(checkCommand(`$E env -S '$W -n 5 gh ${BODY}'`, ctx())).toBe(REASONS.hiddenCommand)
+    })
+
+    it('denies more command words after an expansion than it checks, well within the hook timeout', () => {
+      const padding = 'a '.repeat(20000)
+      const started = performance.now()
+
+      const reasons = [`$E ${'nice '.repeat(65)}${padding}`, `$E ${'$A '.repeat(65)}${padding}`].map(
+        command => checkCommand(command, ctx()),
+      )
+      const under = checkCommand(`$E ${'nice '.repeat(64)}${padding}`, ctx())
+
+      expect(reasons).toEqual([REASONS.hiddenCommand, REASONS.hiddenCommand])
+      expect(under).toBeUndefined()
+      expect(performance.now() - started).toBeLessThan(2000)
+    })
+  })
+
+  it.each([
+    'exec -a name gh pr create -t x --body-file pr.md',
+    'exec -a name -c gh pr create -t x --body-file pr.md',
+    'exec -a name /usr/bin/gh pr view 1',
+  ])('checks gh behind exec -a: %j', command => {
+    const reason = checkCommand(command, ctx({ readFile: () => TERM }))
+
+    expect(reason).toMatch(command.includes('/usr/bin/gh') ? REASONS.ghByPath : /line 1 private-term #1/)
+  })
+
+  it('checks the body of a function the function keyword defines as if it ran now', () => {
+    const command = 'function f { gh pr create -t x --body-file pr.md; }; f'
+
+    expect(checkCommand(command, ctx({ readFile: () => TERM }))).toContain('line 1 private-term #1')
+    expect(checkCommand(command, ctx({ readFile: () => 'clean' }))).toBeUndefined()
+  })
+
+  it.each([
+    ['/usr/bin/env', ''],
+    ['/usr/bin/env', '-u X'],
+    ['/opt/homebrew/bin/timeout', '5'],
+    ['/opt/homebrew/bin/timeout', '-s KILL -k 1 5'],
+  ])('matches the wrapper %s %s by its base name', (wrapper, options) => {
+    expect(checkCommand(`${wrapper} ${options} gh pr create -t ${TERM} -b y`, ctx())).toContain(
+      'title line 1',
+    )
+    expect(checkCommand(`${wrapper} ${options} git push --no-verify`, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it('denies env -i and a GIT_CONFIG assignment behind env called by path', () => {
+    expect(checkCommand('/usr/bin/env -i git push', ctx())).toBe(REASONS.envClear)
+    expect(checkCommand('/usr/bin/env GIT_CONFIG_COUNT=1 git push', ctx())).toBe(REASONS.gitConfigEnv)
   })
 
   it.each([

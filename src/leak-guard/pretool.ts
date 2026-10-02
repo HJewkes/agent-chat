@@ -99,6 +99,7 @@ export const REASONS = {
   unreadableBody: `leak-guard: this command's PR or issue text could not be read the way the shell will read it, so it was not checked. Use literal arguments, a body file at a literal path and a quoted heredoc. ${DOCS}`,
   heredocBackslash: `leak-guard: a heredoc in this command holds a backslash, which a shell may rewrite: it joins a line that ends in one, and under an unquoted delimiter it escapes the next character. So this PR or issue text was not checked. Remove the backslash, or write the text to a file and pass --body-file. ${DOCS}`,
   hiddenCommand: `leak-guard: the command word is an expansion, so the guard cannot tell what this runs. Write git or gh out literally. ${DOCS}`,
+  hiddenBody: `leak-guard: the command word is an expansion, so the guard cannot tell which directory or variables gh reads this PR or issue text with, and did not check it. Write the command out literally: agent-chat gh-write -- pr create --body-file <path>. ${DOCS}`,
   hiddenScript: `leak-guard: eval of text the guard cannot read, on a command line that names git or gh. Run the command directly. ${DOCS}`,
   missingTerms: `leak-guard: no private term list, so PR and issue text cannot be checked. Create ~/.config/titan-egress/private-terms, one term per line, chmod 600. ${DOCS}`,
   xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
@@ -115,11 +116,21 @@ export const REASONS = {
 
 const MAX_DEPTH = 6
 const MAX_ALIASES = 4
+const MAX_HIDDEN_STARTS = 64
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
 const PREFIX_WORDS = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until', 'time'])
-const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'exec', 'nohup', 'noglob', 'nocorrect', 'coproc'])
+const PLAIN_WRAPPERS = new Set(['command', 'builtin', 'nohup', 'noglob', 'nocorrect', 'coproc'])
+const OPTION_WRAPPERS = ['exec', 'nice', 'caffeinate', 'timeout', 'repeat', 'xargs', 'env']
+/** Every name unwrap or checkSimple acts on; a command that starts with another literal word runs nothing checked. */
+const CHECKED_NAMES = new Set([
+  ...PLAIN_WRAPPERS,
+  ...OPTION_WRAPPERS,
+  ...SHELLS,
+  ...ENV_EDITS,
+  ...['function', 'eval', 'git', 'gh', 'agent-chat'],
+])
 const XARGS_SHORT_VALUE = new Set('nILPdasEJRS')
 const XARGS_LONG_VALUE = new Set([
   '--arg-file',
@@ -158,50 +169,59 @@ type Unwrapped = { words: string[]; chdir?: boolean; assigns: string[] } | { rea
 
 /** Strips assignments and wrappers such as `env`, `command` and `nice` down to the command that runs. */
 function unwrap(words: readonly string[]): Unwrapped {
-  let rest = [...words]
+  let rest = words
+  let at = 0
   let chdir = false
   const assigns: string[] = []
   for (;;) {
-    const head = rest[0]
-    if (head === undefined) return { words: rest, chdir, assigns }
+    const head = rest[at]
+    if (head === undefined) return { words: rest.slice(at), chdir, assigns }
     const name = path.basename(head)
     const assigned = ASSIGNMENT.exec(head)?.[1]
+    const next = wrapperEnd(rest, at, name)
     if (assigned !== undefined) {
       if (isGitConfigVar(assigned)) return { reason: REASONS.gitConfigEnv }
       assigns.push(head)
-      rest = rest.slice(1)
-    } else if (PREFIX_WORDS.has(head) || PLAIN_WRAPPERS.has(name)) rest = dropOptions(rest.slice(1))
-    else if (name === 'nice') rest = dropOptions(rest.slice(1), ['-n'])
-    else if (name === 'caffeinate') rest = dropOptions(rest.slice(1), ['-t', '-w'])
-    else if (name === 'timeout' || name === 'repeat') rest = dropOptions(rest.slice(1), ['-s', '-k']).slice(1)
+      at++
+    } else if (PREFIX_WORDS.has(head)) at = dropOptions(rest, at + 1)
+    else if (next !== undefined) at = next
     else if (name === 'xargs') {
-      const after = dropXargsOptions(rest.slice(1))
+      const after = dropXargsOptions(rest, at + 1)
       if (after === undefined) return { reason: REASONS.xargsOption }
-      rest = after
+      at = after
     } else if (name === 'env') {
-      const env = unwrapEnv(rest.slice(1))
+      const env = unwrapEnv(rest, at + 1)
       if ('reason' in env) return env
-      rest = env.words
+      ;({ words: rest, at } = env)
       chdir ||= env.chdir === true
       assigns.push(...env.assigns)
-    } else return { words: rest, chdir, assigns }
+    } else return { words: rest.slice(at), chdir, assigns }
   }
 }
 
-function dropOptions(words: string[], withValue: readonly string[] = []): string[] {
-  let i = 0
+/** Where the command after a wrapper and its options starts; undefined when `name` is no such wrapper. */
+function wrapperEnd(words: readonly string[], at: number, name: string): number | undefined {
+  if (PLAIN_WRAPPERS.has(name)) return dropOptions(words, at + 1)
+  if (name === 'exec') return dropOptions(words, at + 1, ['-a'])
+  if (name === 'nice') return dropOptions(words, at + 1, ['-n'])
+  if (name === 'caffeinate') return dropOptions(words, at + 1, ['-t', '-w'])
+  if (name === 'timeout' || name === 'repeat') return dropOptions(words, at + 1, ['-s', '-k']) + 1
+  return undefined
+}
+
+/** The index of the first word from `i` on that is not an option or an option's value. */
+function dropOptions(words: readonly string[], i: number, withValue: readonly string[] = []): number {
   while (i < words.length && (words[i] as string).startsWith('-') && words[i] !== '-') {
     i += withValue.includes(words[i] as string) ? 2 : 1
   }
-  return words.slice(i)
+  return Math.min(i, words.length)
 }
 
-/** Returns the command xargs runs, or undefined on a long option this guard does not know. */
-function dropXargsOptions(words: string[]): string[] | undefined {
-  let i = 0
+/** Returns where the command xargs runs starts, or undefined on a long option this guard does not know. */
+function dropXargsOptions(words: readonly string[], i: number): number | undefined {
   for (; i < words.length; i++) {
     const a = words[i] as string
-    if (a === '--') return words.slice(i + 1)
+    if (a === '--') return i + 1
     if (!a.startsWith('-') || a === '-') break
     if (a.startsWith('--')) {
       const name = a.split('=')[0] as string
@@ -209,7 +229,7 @@ function dropXargsOptions(words: string[]): string[] | undefined {
       else if (!XARGS_LONG_FLAG.has(name)) return undefined
     } else i += clusterValueWords(a)
   }
-  return words.slice(i)
+  return Math.min(i, words.length)
 }
 
 /** A short-flag cluster takes the next word only when its first value letter ends it. */
@@ -221,8 +241,11 @@ function clusterValueWords(cluster: string): number {
   return 0
 }
 
-function unwrapEnv(args: string[]): Unwrapped {
-  let i = 0
+/** The words env runs and where in them its command starts; `-S` splits its value into new words. */
+type EnvRun =
+  { words: readonly string[]; at: number; chdir?: boolean; assigns: string[] } | { reason: string }
+
+function unwrapEnv(args: readonly string[], i: number): EnvRun {
   let chdir = false
   const assigns: string[] = []
   for (; i < args.length; i++) {
@@ -235,16 +258,18 @@ function unwrapEnv(args: string[]): Unwrapped {
       continue
     }
     if (a === '-' || a === '--ignore-environment' || /^-[^-]*i/.test(a)) return { reason: REASONS.envClear }
-    if (a === '-S' || a === '--split-string')
-      return { words: [...(parseShell(args[i + 1] ?? '')[0]?.marked ?? []), ...args.slice(i + 2)], assigns }
+    if (a === '-S' || a === '--split-string') {
+      const split = parseShell(args[i + 1] ?? '')[0]?.marked ?? []
+      return { words: [...split, ...args.slice(i + 2)], at: 0, assigns }
+    }
     chdir ||= /^(?:-C|--chdir)/.test(a)
     if (a === '-C' || a === '--chdir' || a === '-P') i++
-    else if (a === '--') return { words: args.slice(i + 1), chdir, assigns }
+    else if (a === '--') return { words: args, at: i + 1, chdir, assigns }
     else if (!a.startsWith('-') && !ASSIGNMENT.test(a)) break
     else if (isGitConfigVar(ASSIGNMENT.exec(a)?.[1])) return { reason: REASONS.gitConfigEnv }
     else if (ASSIGNMENT.test(a)) assigns.push(a)
   }
-  return { words: args.slice(i), chdir, assigns }
+  return { words: args, at: Math.min(i, args.length), chdir, assigns }
 }
 
 function checkEnvEdit(args: readonly string[]): string | undefined {
@@ -753,7 +778,9 @@ const postsText = (marked: readonly string[]): boolean => ['pr', 'api'].includes
 
 /**
  * A command word the guard cannot resolve may be git or gh, so its arguments are checked as both.
- * It may also expand to nothing or to a wrapper, so the words after it are checked as a command.
+ * It may also expand to nothing, a wrapper, or a wrapper and its options, so every suffix of the
+ * words after it is checked as a command (CC-347). A hidden word inside those suffixes checks only
+ * its own arguments, since the outermost one already visits every later word.
  */
 function checkHidden(
   [head = '', ...marked]: readonly string[],
@@ -762,20 +789,42 @@ function checkHidden(
   ctx: GuardContext,
   scope: Scope,
   depth: number,
+  outermost: boolean,
 ): string | undefined {
   const viaWrite = unmark(marked[0] ?? '') === 'gh-write' && postsText(ghWriteArgs(marked))
   if (postsText(marked) || viaWrite) return REASONS.hiddenCommand
-  const words = marked.map(unmark)
   const unseen = { ...scope, cwd: undefined, env: undefined }
-  return (
-    checkSimple({ ...cmd, words, marked: [...marked] }, ctx, unseen, depth) ??
+  const starts = outermost ? marked.flatMap((word, i) => (mayStartCommand(word) ? [i] : [])) : []
+  if (starts.length > MAX_HIDDEN_STARTS) return REASONS.hiddenCommand
+  const reason =
+    firstReason(starts, i => checkSimple(suffixCommand(cmd, marked.slice(i)), ctx, unseen, depth, false)) ??
     checkGitRun(
       gitRun(marked, assigns, cmd, ctx, scope, false, tiedToGit(head, cmd, ctx, scope)),
       ctx,
       scope,
       depth,
     )
-  )
+  return reason === REASONS.unreadableBody ? REASONS.hiddenBody : reason
+}
+
+const mayStartCommand = (word: string): boolean =>
+  word.includes(LIVE) ||
+  PREFIX_WORDS.has(word) ||
+  ASSIGNMENT.test(word) ||
+  CHECKED_NAMES.has(path.basename(word))
+
+const suffixCommand = (cmd: SimpleCommand, marked: readonly string[]): SimpleCommand => ({
+  ...cmd,
+  words: marked.map(unmark),
+  marked: [...marked],
+})
+
+function firstReason<T>(items: readonly T[], check: (item: T) => string | undefined): string | undefined {
+  for (const item of items) {
+    const reason = check(item)
+    if (reason !== undefined) return reason
+  }
+  return undefined
 }
 
 /** Checks the text `eval` runs; text the guard cannot resolve is a deny on a line that names git or gh. */
@@ -791,13 +840,31 @@ function checkEval(
   return checkAt(args.map((arg, i) => arg ?? unmark(marked[i] as string)).join(' '), ctx, scope, depth + 1)
 }
 
-function checkSimple(cmd: SimpleCommand, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
-  const unwrapped = unwrap(cmd.marked)
+/** Whether unwrapping only dropped leading words, rather than splitting new ones out as `env -S` does. */
+const isTail = (tail: readonly string[], words: readonly string[]): boolean =>
+  tail.every((word, i) => word === words[words.length - tail.length + i])
+
+/** `function f { gh ...; }` runs nothing yet, but its body is checked as if it ran now. */
+const functionBody = (marked: readonly string[]): readonly string[] =>
+  marked[0] === 'function' ? marked.slice(2) : marked
+
+function checkSimple(
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+  outermost = true,
+): string | undefined {
+  const unwrapped = unwrap(functionBody(cmd.marked))
   if ('reason' in unwrapped) return unwrapped.reason
   const at = unwrapped.chdir ? { ...scope, cwd: undefined } : scope
   const marked = unwrapped.words.slice(1)
   const head = resolveWord(unwrapped.words[0] ?? '', cmd, ctx, at)
-  if (head === undefined) return checkHidden(unwrapped.words, unwrapped.assigns, cmd, ctx, at, depth)
+  if (head === undefined) {
+    // An `env -S` split behind another expansion would rescan every suffix at each level.
+    if (!outermost && !isTail(unwrapped.words, cmd.marked)) return REASONS.hiddenCommand
+    return checkHidden(unwrapped.words, unwrapped.assigns, cmd, ctx, at, depth, outermost)
+  }
   const args = marked.map(unmark)
   const name = path.basename(head)
   if (SHELLS.has(name)) return checkShell(args, cmd.stdin, ctx, at, depth)
