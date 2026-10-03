@@ -33,6 +33,7 @@ import {
   type SwapReading,
 } from '../agents/machine-guard.js'
 import { machineStop } from '../agents/seats/stops.js'
+import { readPoolPicks } from '../agents/seats/pool-pick-log.js'
 
 /**
  * CC-317: `seats status` answers a seat's tick questions in one read-only call.
@@ -215,6 +216,7 @@ function deps(over: Partial<StatusDeps> = {}): StatusDeps {
     readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
     loadDoc: () => structuredClone(doc),
     inbox: seat => readInbox(path.join(tmp, 'events.db'), seat),
+    poolPicks: seat => readPoolPicks(path.join(tmp, 'events.db'), seat),
     scored: (seat, today) =>
       scoredPlanFromDisk({
         seat,
@@ -925,6 +927,62 @@ describe('seat caps on days 6 and 7 of the window (CC-474)', () => {
     expect(budget.stop).toBe(
       `BUDGET-PAUSE pool ${POOL}: day spend 11 points since 07:00 at or above the seat's per_day_points 10`,
     )
+  })
+})
+
+describe("the seat's last pool picks", () => {
+  const pick = (seat: string, agent: string, chosen: string): void => {
+    core.append({
+      kind: 'notice',
+      actor: 'agent-chat',
+      target: seat,
+      body: `pool pick (shadow) for ${agent}: would bill ${chosen}, home alpha: ${chosen} is most behind pace (12)`,
+      meta: { pool_pick: 'shadow', would: 'true', agent, chosen },
+    })
+  }
+
+  it('lists the newest three picks for the seat, newest first', async () => {
+    for (const n of [1, 2, 3, 4]) pick(SEAT, `ss-al-${n}`, 'beta')
+    pick('other-seat', 'os-1', 'gamma')
+    core.append({
+      kind: 'notice',
+      actor: 'peer-b',
+      target: SEAT,
+      body: 'peer-b tagged it',
+      meta: { tag_add: 'x' },
+    })
+
+    const { poolPicks } = await status()
+
+    expect(poolPicks.last.map(p => p.text.split(':')[0])).toEqual([
+      'pool pick (shadow) for ss-al-4',
+      'pool pick (shadow) for ss-al-3',
+      'pool pick (shadow) for ss-al-2',
+    ])
+  })
+
+  it('prints a pool pick line per pick, and none before the broker has picked', async () => {
+    const before = (await statusReport(deps(), SEAT, false)).lines
+    pick(SEAT, 'ss-al-1', 'beta')
+
+    const after = (await statusReport(deps(), SEAT, false)).lines
+
+    expect(before.filter(l => l.startsWith('pool pick'))).toEqual([])
+    expect(after.filter(l => l.startsWith('pool pick'))).toEqual([
+      expect.stringMatching(
+        /^pool pick {5}\S+Z {2}pool pick \(shadow\) for ss-al-1: would bill beta, home alpha: beta is most behind pace \(12\)$/,
+      ),
+    ])
+  })
+
+  it('reports an unreadable event log on the line in place of the picks', async () => {
+    const poolPicks = () => {
+      throw new Error('events.db is locked')
+    }
+
+    const { lines } = await statusReport(deps({ poolPicks }), SEAT, false)
+
+    expect(lines).toContain('pool pick     unavailable: events.db is locked')
   })
 })
 
