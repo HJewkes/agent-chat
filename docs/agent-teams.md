@@ -1403,6 +1403,13 @@ matches the whole name recorded as `spawnedBy` when the agent was spawned, so `b
 does not match an agent spawned by `boss2`. A rename since then does not move an
 agent to the new name; a successor that reuses the name does match.
 
+`agent ls --json` rows carry `spawnedAt` (ISO time of the spawn record) and `inferred`
+(CC-333). `inferred` is true when the agent's `agent_exited` row was written by the settle
+timer or a presence check, not by a recorded process exit. It is false for a recorded exit
+and for an agent that has not exited. A row with `presence: "exited"` and `inferred: true`
+does not prove the process stopped writing: a reboot or a dead launcher can leave a
+reviewer still mid-turn. Treat such a row with care, for example by checking its transcript.
+
 `agent retire --finished` (CC-323) retires in one call every agent in scope that is not
 live: exited, detached or failed to start. It needs `--spawner` or `--prefix`, so one call
 cannot sweep the machine, and it refuses `--force` and a name. It prints the plan first,

@@ -1177,7 +1177,14 @@ export interface AgentIdentity {
    * terminal — and only the roster needs to say WHICH kind, which it does without
    * every consumer of `AgentLifecycle` growing a case for it.
    */
-  exit?: { code: number | null; summary: string; costUsd?: number; failedToStart?: boolean }
+  exit?: {
+    code: number | null
+    summary: string
+    costUsd?: number
+    failedToStart?: boolean
+    /** CC-333: written by the settle timer or a presence check, not by a recorded process exit. */
+    inferred?: boolean
+  }
 }
 
 /** One agent in a bulk retire's plan: retired, or skipped for `reason`. */
