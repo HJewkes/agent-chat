@@ -36,6 +36,7 @@ interface AgentChatConfig {
   machineStopLoad5?: unknown
   fullSuiteSlots?: unknown
   coordinatorGrantableTools?: unknown
+  poolProbe?: unknown
 }
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
@@ -85,6 +86,17 @@ export function resolveLedgerShadow(): boolean {
   if (value === undefined || typeof value === 'boolean') return value !== false
   logEvent('config_invalid', { key: 'ledgerShadow', value, fallback: true })
   return true
+}
+
+/**
+ * CC-529: whether the seat watchdog may spend a headless turn to read a pool with no fresh reading.
+ * Off unless `poolProbe` is `true`: the turn is unattended and starts a five_hour window on an idle pool.
+ */
+export function resolvePoolProbe(): boolean {
+  const value = readConfig().poolProbe
+  if (value === undefined || typeof value === 'boolean') return value === true
+  logEvent('config_invalid', { key: 'poolProbe', value, fallback: false })
+  return false
 }
 
 /**

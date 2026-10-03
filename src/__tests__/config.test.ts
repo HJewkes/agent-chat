@@ -12,6 +12,7 @@ import {
   resolveMachineLimits,
   resolveNoticeTtlMs,
   resolvePermissionHookTimeout,
+  resolvePoolProbe,
   resolvePoolPickMode,
   resolveReportBatchMs,
   resolveWorktreeBudget,
@@ -306,6 +307,32 @@ describe('resolveCoordinatorGrantableTools', () => {
   it('grants nothing for a value that is not a list', () => {
     writeConfigJson({ coordinatorGrantableTools: 'WebSearch' })
     expect(resolveCoordinatorGrantableTools()).toEqual([])
+  })
+})
+
+describe('resolvePoolProbe', () => {
+  it('is off with no config.json and with no poolProbe key', () => {
+    expect(resolvePoolProbe()).toBe(false)
+    writeConfigJson({ agentSlots: 30 })
+
+    expect(resolvePoolProbe()).toBe(false)
+  })
+
+  it('is on only for poolProbe true', () => {
+    writeConfigJson({ poolProbe: true })
+    expect(resolvePoolProbe()).toBe(true)
+
+    writeConfigJson({ poolProbe: false })
+    expect(resolvePoolProbe()).toBe(false)
+  })
+
+  it.each([
+    ['a string', 'true'],
+    ['a number', 1],
+  ])('stays off for %s', (_scenario, value) => {
+    writeConfigJson({ poolProbe: value })
+
+    expect(resolvePoolProbe()).toBe(false)
   })
 })
 

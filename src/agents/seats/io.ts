@@ -106,6 +106,10 @@ export interface WatchdogDoc {
   stopped: Record<string, string>
   /** Whether a hold on every seat (restart window, unreadable events.db) was open at the last run. */
   held?: boolean
+  /** Epoch ms of each pool's last failed probe; the pool is not probed again for an hour. */
+  probeFailed?: Record<string, number>
+  /** The attended seats seen so far, so a pass can say when one's file stops gating its spawns. */
+  attended?: string[]
 }
 
 const emptyDoc = (): WatchdogDoc => ({ seats: {}, pools: {}, stopped: {} })
@@ -140,6 +144,8 @@ export function readDoc(file = watchdogStatePath()): WatchdogDoc {
     stopped: doc.stopped ?? {},
     ...(doc.lastReadings === undefined ? {} : { lastReadings: doc.lastReadings }),
     ...(doc.held === undefined ? {} : { held: doc.held }),
+    ...(doc.probeFailed === undefined ? {} : { probeFailed: doc.probeFailed }),
+    ...(Array.isArray(doc.attended) ? { attended: doc.attended } : {}),
   }
 }
 
@@ -159,8 +165,8 @@ function parseDoc(text: string, file: string): Partial<WatchdogDoc> {
     throw unusable(err instanceof Error ? err.message : String(err))
   }
   if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) throw unusable('not a JSON object')
-  const maps = doc as Record<'seats' | 'pools' | 'lastReadings' | 'stopped', unknown>
-  for (const key of ['seats', 'pools', 'lastReadings', 'stopped'] as const)
+  const maps = doc as Record<'seats' | 'pools' | 'lastReadings' | 'stopped' | 'probeFailed', unknown>
+  for (const key of ['seats', 'pools', 'lastReadings', 'stopped', 'probeFailed'] as const)
     if (!isMap(maps[key])) throw unusable(`\`${key}\` is not an object`)
   return doc as Partial<WatchdogDoc>
 }
@@ -175,6 +181,8 @@ export function loadDoc(file = watchdogStatePath()): WatchdogDoc {
     stopped: doc.stopped ?? {},
     ...(doc.lastReadings === undefined ? {} : { lastReadings: doc.lastReadings }),
     ...(doc.held === undefined ? {} : { held: doc.held }),
+    ...(doc.probeFailed === undefined ? {} : { probeFailed: doc.probeFailed }),
+    ...(Array.isArray(doc.attended) ? { attended: doc.attended } : {}),
   }
 }
 
@@ -186,6 +194,13 @@ export function saveDoc(doc: Omit<WatchdogDoc, 'stopped'>, file = watchdogStateP
   fs.writeFileSync(tmp, `${JSON.stringify({ ...doc, stopped }, null, 2)}\n`)
   fs.renameSync(tmp, file)
 }
+
+/** The names of the seat files under `root`; throws when `seats/` cannot be listed. */
+export const seatFileNames = (root: string): string[] =>
+  fs
+    .readdirSync(path.join(root, 'seats'))
+    .filter(file => file.endsWith('.md'))
+    .map(file => file.slice(0, -'.md'.length))
 
 const pad = (n: number): string => String(n).padStart(2, '0')
 

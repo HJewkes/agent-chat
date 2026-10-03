@@ -131,6 +131,8 @@ export interface PoolReading {
   at: number
   sevenDay: number
   fiveHour: number
+  /** Epoch ms the seven_day window resets; absent on a reading kept before CC-605. */
+  resetsAt?: number
 }
 
 /** The reading to keep: this one when it holds both windows, else the one kept before. */
@@ -140,7 +142,13 @@ export function keepReading(
   nowMs: number,
 ): PoolReading | undefined {
   if (reading?.sevenDay === undefined || reading.fiveHour === undefined) return kept
-  return { at: nowMs - reading.ageSeconds * 1000, sevenDay: reading.sevenDay, fiveHour: reading.fiveHour }
+  const resetsAt = reading.sevenDayResetsAt === undefined ? {} : { resetsAt: reading.sevenDayResetsAt }
+  return {
+    at: nowMs - reading.ageSeconds * 1000,
+    sevenDay: reading.sevenDay,
+    fiveHour: reading.fiveHour,
+    ...resetsAt,
+  }
 }
 
 /** A kept reading aged to now; one missing a figure from a hand-edited doc is no reading. */

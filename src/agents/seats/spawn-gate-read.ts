@@ -1,9 +1,9 @@
 import os from 'node:os'
 import path from 'node:path'
 import { readAccountBudget, type BudgetRead } from '../budget.js'
-import { charterSeats, parsePools, type Pool } from './charter.js'
+import { parsePools, type Pool } from './charter.js'
 import { loadDoc, readText, type WatchdogDoc } from './io.js'
-import { seatOf } from './seat-of.js'
+import { ownsSpawns, seatOf } from './seat-of.js'
 import type { SeatSpawnInput } from './spawn-gate.js'
 import type { SpendMeter } from './stops.js'
 import { accountReading } from './watchdog.js'
@@ -61,7 +61,7 @@ export function readSeatSpawn(
   if (match.kind === 'ambiguous')
     return { kind: 'skip', reason: `prefix ${match.prefix} is declared by ${match.seats.join(', ')}` }
   const { seat } = match.seat
-  if (!charterSeats(charter).includes(seat.name))
+  if (!ownsSpawns(charter, match.seat))
     return { kind: 'skip', reason: `seat ${seat.name} is not in the charter's seats` }
   const pool = poolForConfigDir(parsePools(charter, deps.home), spawn.configDir)
   if (pool === undefined)

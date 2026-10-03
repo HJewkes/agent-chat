@@ -1,5 +1,10 @@
 import type { BudgetRead } from '../budget.js'
-import { dayStart, runStartAt, type AccountReading } from '../burndown/budget-gate.js'
+import {
+  MAX_READING_AGE_SECONDS,
+  dayStart,
+  runStartAt,
+  type AccountReading,
+} from '../burndown/budget-gate.js'
 import {
   charterOwnerSeat,
   charterSeats,
@@ -18,6 +23,9 @@ import {
   type Presence,
 } from './liveness.js'
 import type { RunLock } from './lock.js'
+import { checkAttended } from './attended.js'
+import { poolPace } from './pace.js'
+import { publishPace, type PaceStore } from './pace-pass.js'
 import {
   RESTART_WINDOW_MAX_MS,
   advanceMeter,
@@ -84,6 +92,12 @@ export interface WatchdogDeps {
   appendLog: (seat: string, at: Date, text: string) => void
   /** CC-326: taken by every run that may wake or resume, so two runs never act on the same seat. */
   lock: () => RunLock
+  /** CC-605: where the pass publishes every pool's pace and appends the reading history. */
+  pace?: PaceStore
+  /** CC-529: takes a reading for a pool whose status cache has none under 15 minutes old; false when it took none. */
+  probe?: (configDir: string) => boolean
+  /** The seat files under the root, charter-listed or not; throws when they cannot be listed. */
+  seatNames?: () => string[]
 }
 
 export interface WatchdogOptions {
@@ -105,14 +119,49 @@ interface Pass {
   /** CC-404: epoch ms each pool's seven_day window resets, from the same status file as its reading. */
   resets: Map<string, number | undefined>
   fireCap: number | undefined
+  dryRun: boolean
   /** Pools whose day meter started with no reading at or before 07:00, reported once when it starts. */
   gaps: string[]
+  /** Probes that failed in this pass, one line each. */
+  probeFaults: string[]
+}
+
+const PROBE_BACKOFF_MS = 3_600_000
+
+/** Why the probe took no reading; a throw is one too, so it never ends the pass. */
+function probeFault(probe: (configDir: string) => boolean, configDir: string): string | undefined {
+  try {
+    return probe(configDir) ? undefined : 'the headless turn carried no reading'
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err)
+  }
+}
+
+/** A failed probe is logged and keeps its pool unprobed for an hour; a good one clears that. */
+function probe(pass: Pass, pool: Pool, run: (configDir: string) => boolean, nowMs: number): void {
+  const fault = probeFault(run, pool.configDir)
+  const before = Object.entries(pass.doc.probeFailed ?? {})
+  const others = Object.fromEntries(before.filter(([name]) => name !== pool.name))
+  pass.doc.probeFailed = fault === undefined ? others : { ...others, [pool.name]: nowMs }
+  if (fault !== undefined)
+    pass.probeFaults.push(`pool ${pool.name}: Watchdog: probe failed (${fault}); not probed again for 1 h`)
+}
+
+/** CC-491: a pool with no reading under 15 minutes old is probed once, and never under --dry-run. */
+function freshRead(pass: Pass, pool: Pool, nowMs: number): BudgetRead {
+  const read = pass.deps.readBudget(pool.configDir, nowMs)
+  const fresh = read.found && read.age_seconds <= MAX_READING_AGE_SECONDS
+  const failedAt = pass.doc.probeFailed?.[pool.name]
+  const backedOff = failedAt !== undefined && nowMs - failedAt < PROBE_BACKOFF_MS
+  if (fresh || pass.dryRun || pass.deps.probe === undefined || backedOff) return read
+  probe(pass, pool, pass.deps.probe, nowMs)
+  return pass.deps.readBudget(pool.configDir, nowMs)
 }
 
 function poolReading(pass: Pass, pool: Pool): AccountReading | undefined {
   if (!pass.readings.has(pool.name)) {
     const nowMs = pass.now.getTime()
-    const read = pass.deps.readBudget(pool.configDir, nowMs)
+    const read = freshRead(pass, pool, nowMs)
     const reading = accountReading(read, nowMs)
     const resetsAt = read.found ? read.budget.rate_limits.seven_day?.resets_at : undefined
     pass.readings.set(pool.name, reading)
@@ -361,6 +410,8 @@ function save(pass: Pass): void {
     pools: pass.doc.pools,
     ...(pass.doc.lastReadings === undefined ? {} : { lastReadings: pass.doc.lastReadings }),
     ...(pass.doc.held === undefined ? {} : { held: pass.doc.held }),
+    ...(pass.doc.probeFailed === undefined ? {} : { probeFailed: pass.doc.probeFailed }),
+    ...(pass.doc.attended === undefined ? {} : { attended: pass.doc.attended }),
   })
 }
 
@@ -395,6 +446,29 @@ function seatOrSkip(deps: WatchdogDeps, name: string): Seat | string {
   return seat ?? `${name}: skipped, seats/${name}.md has no prefix or pool`
 }
 
+/** Every charter pool is read, seat or no seat, so a pool no seat calls home still has a pace. */
+function publishPoolPace(pass: Pass): string | undefined {
+  const nowMs = pass.now.getTime()
+  const rows = [...pass.pools.values()].map(pool =>
+    poolPace(pool.name, poolReading(pass, pool), pool.rule.reserve_seven_day, nowMs),
+  )
+  try {
+    if (pass.deps.pace !== undefined) publishPace(pass.deps.pace, rows, nowMs)
+    return undefined
+  } catch (err) {
+    return `Watchdog: pace not published: ${err instanceof Error ? err.message : String(err)}`
+  }
+}
+
+/** One warning a pass for the attended seats whose files no longer gate their spawns. */
+function attendedChange(pass: Pass, charter: string): string | undefined {
+  const { seatNames, readSeatFile } = pass.deps
+  if (seatNames === undefined) return undefined
+  const check = checkAttended({ seatNames, readSeatFile }, charter, pass.doc.attended ?? [])
+  pass.doc.attended = check.seats
+  return check.warning
+}
+
 async function startPass(deps: WatchdogDeps, options: WatchdogOptions): Promise<[Pass, string]> {
   const charter = deps.readCharter()
   if (charter === undefined) throw new Error('no autonomy charter.md under the root')
@@ -410,7 +484,9 @@ async function startPass(deps: WatchdogDeps, options: WatchdogOptions): Promise<
     readings: new Map(),
     resets: new Map(),
     fireCap: options.fireCap,
+    dryRun: options.dryRun,
     gaps: [],
+    probeFaults: [],
   }
   return [pass, charter]
 }
@@ -419,6 +495,8 @@ async function runPass(deps: WatchdogDeps, options: WatchdogOptions, lines: stri
   const [pass, charter] = await startPass(deps, options)
   const hold = options.dryRun ? undefined : holdChange(pass)
   if (hold !== undefined) lines.push(hold)
+  const ungated = attendedChange(pass, charter)
+  if (ungated !== undefined) lines.push(ungated)
   for (const name of options.seats ?? charterSeats(charter)) {
     const seat = seatOrSkip(deps, name)
     if (typeof seat === 'string') {
@@ -438,6 +516,9 @@ async function runPass(deps: WatchdogDeps, options: WatchdogOptions, lines: stri
     else if (decision.fire) lines.push(await act(pass, name, decision))
     else if (journalFault !== undefined) lines.push(`${name}: Watchdog: held: ${journalFault}`)
   }
+  const paceFault = options.dryRun ? undefined : publishPoolPace(pass)
+  if (paceFault !== undefined) lines.push(paceFault)
+  lines.push(...pass.probeFaults)
   for (const pool of pass.gaps)
     lines.push(
       `pool ${pool}: no seven_day reading at or before 07:00, so the day's spend counts from the first sample`,

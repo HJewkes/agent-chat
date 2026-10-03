@@ -14,7 +14,7 @@ import {
   readSwapUsage,
   type MachineStatus,
 } from '../../agents/machine-guard.js'
-import { resolveMachineLimits, resolveMachineStopLimits } from '../../config.js'
+import { resolveMachineLimits, resolveMachineStopLimits, resolvePoolProbe } from '../../config.js'
 import { machineStop, type MachineStop } from '../../agents/seats/stops.js'
 import { slotUsage } from '../../suite-slots.js'
 import { suiteSlotDeps } from '../suite-slot.js'
@@ -34,10 +34,13 @@ import {
   readText,
   saveDoc,
   scorerEligible,
+  seatFileNames,
   seatJournalDays,
 } from '../../agents/seats/io.js'
 import { readDispatches, renderDispatches } from '../../agents/seats/dispatch-read.js'
 import { acquireRunLock } from '../../agents/seats/lock.js'
+import { diskPaceStore } from '../../agents/seats/pace-pass.js'
+import { probePool } from '../../agents/seats/pool-probe.js'
 import { renderRunStart, startRun, type RunStartDeps } from '../../agents/seats/run-start.js'
 import {
   parseLogReadings,
@@ -207,6 +210,9 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
     loadDoc: () => loadDoc(),
     saveDoc: doc => saveDoc(doc),
     lock: () => acquireRunLock(),
+    pace: diskPaceStore(root),
+    ...(resolvePoolProbe() ? { probe: (configDir: string) => probePool(configDir) } : {}),
+    seatNames: () => seatFileNames(root),
     wake: async (seat, message, connected) =>
       wakeSeat(
         client,
@@ -435,7 +441,8 @@ export const seatsStatusVerb = defineVerb({
   description:
     'what a seat reads before it dispatches (CC-317), read-only: implementers, reviewers and planners ' +
     'against their caps, its other running agents, parked implementers, the pool reading with its age ' +
-    'and the charter stop that applies, unread inbox messages since the seat last sent one, the ' +
+    'and the charter stop that applies, the pace of every pool against its glide path, unread inbox ' +
+    'messages since the seat last sent one, the ' +
     'machine-wide headless agents, free memory and full-suite slots against their limits, swap used, and the ' +
     'top eligible tasks. A spend cap with no saved meter to count it is a stop',
   args: z.object({ seat: requiredString('seat'), json: z.boolean().optional(), root: z.string().optional() }),

@@ -1,6 +1,5 @@
 import fs from 'node:fs'
-import path from 'node:path'
-import { home } from '../../paths.js'
+import { pacePath } from './pace-pass.js'
 
 /**
  * CC-606: the seat watchdog's `pace.json` as the broker's pool pick reads it: `{at, pools: {<name>: row}}`,
@@ -19,8 +18,6 @@ export interface PacePool {
 }
 
 export type PaceRead = { found: true; pools: Map<string, PacePool> } | { found: false; reason: string }
-
-export const pacePath = (): string => path.join(home(), 'pace.json')
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
