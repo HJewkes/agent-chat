@@ -82,8 +82,12 @@ export function machineDecision(
   return { ok: true }
 }
 
-const sysctl = (name: string): string =>
-  execFileSync('/usr/sbin/sysctl', ['-n', name], { encoding: 'utf8', timeout: 2000 })
+type ExecFile = (file: string, args: string[], options: { encoding: 'utf8'; timeout: number }) => string
+
+// Absolute path: launchd's PATH lacks /usr/sbin, so a bare `sysctl` fails with ENOENT (CC-498).
+const SYSCTL = '/usr/sbin/sysctl'
+const sysctl = (name: string, exec: ExecFile): string =>
+  exec(SYSCTL, ['-n', name], { encoding: 'utf8', timeout: 2000 })
 
 /** Parses macOS `sysctl -n kern.memorystatus_level`, the percent of memory free. */
 export function parseMemoryLevel(text: string): MemoryReading {
@@ -94,10 +98,13 @@ export function parseMemoryLevel(text: string): MemoryReading {
 }
 
 /** Only macOS is read; elsewhere the reading is an error and so never refuses. */
-export function readMemoryFree(platform: NodeJS.Platform = process.platform): MemoryReading {
+export function readMemoryFree(
+  platform: NodeJS.Platform = process.platform,
+  exec: ExecFile = execFileSync,
+): MemoryReading {
   if (platform !== 'darwin') return { error: `memory is not read on ${platform}` }
   try {
-    return parseMemoryLevel(sysctl('kern.memorystatus_level'))
+    return parseMemoryLevel(sysctl('kern.memorystatus_level', exec))
   } catch (err) {
     return { error: `sysctl kern.memorystatus_level failed: ${(err as Error).message}` }
   }
@@ -119,10 +126,13 @@ export function parseSwapUsage(text: string): SwapReading {
   return { usedBytes, totalBytes }
 }
 
-export function readSwapUsage(platform: NodeJS.Platform = process.platform): SwapReading {
+export function readSwapUsage(
+  platform: NodeJS.Platform = process.platform,
+  exec: ExecFile = execFileSync,
+): SwapReading {
   if (platform !== 'darwin') return { error: `swap is not read on ${platform}` }
   try {
-    return parseSwapUsage(sysctl('vm.swapusage'))
+    return parseSwapUsage(sysctl('vm.swapusage', exec))
   } catch (err) {
     return { error: `sysctl vm.swapusage failed: ${(err as Error).message}` }
   }
