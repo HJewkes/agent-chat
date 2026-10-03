@@ -18,6 +18,7 @@ import { logEvent, loggedCount } from './log.js'
 import { newMsgId } from './event-log.js'
 import { type Escalation, type RouteResult } from './registry.js'
 import { BrokerCore, type Conn, type EndorseApproval } from './core.js'
+import { recoverHandoff } from './handoff-recovery.js'
 import type { SlotUsage } from '../agents/semaphore.js'
 import { Supervisor, type SupervisorOptions } from '../agents/supervisor.js'
 import { gather, LifecycleVerifier } from '../agents/ledger/verifier.js'
@@ -1202,6 +1203,15 @@ export class SocketServer {
     })
   }
 
+  /** CC-524: recovery adds to a registration that already succeeded, so a failed read is logged and dropped. */
+  private showUndeliveredHandoff(msg: Extract<ClientMessage, { t: 'register' }>): void {
+    try {
+      recoverHandoff(this.core, msg)
+    } catch (err) {
+      logEvent('handoff_recovery_failed', { name: msg.name, error: (err as Error).message })
+    }
+  }
+
   handleMessage(conn: Conn, msg: ClientMessage): void {
     const { core } = this
     core.registry.touch(conn)
@@ -1225,6 +1235,7 @@ export class SocketServer {
         reply(conn, { t: 'register_result', ...result })
         if (result.ok) core.deliverStranded(msg.name)
         if (result.ok && dark !== undefined) core.deliverHeld(msg.name, dark)
+        if (result.ok) this.showUndeliveredHandoff(msg)
         return
       }
       case 'readopt':
