@@ -39,6 +39,7 @@ import {
   detachedAtStart,
   hostProbe,
   launcherPid,
+  type DeadLiveness,
   type ProcessProbe,
 } from './detached-reap.js'
 import { loadProfile, recordedRole, roleOf } from './profiles.js'
@@ -835,24 +836,47 @@ export class Supervisor implements TeleportHost {
     if (!awaitsExit(agent) || this.live.has(agentId)) return
     const liveness = agentLiveness(agent, probe)
     if (!liveness.dead) return
+    this.recordInferredExit(agent, liveness, `exit inferred while detached: ${liveness.reason}`)
+  }
+
+  /** The row and ledger write both the boot reaper and a resume of a stale `live` row make. */
+  private recordInferredExit(agent: AgentIdentity, liveness: DeadLiveness, body: string): void {
     this.core.append({
       kind: 'agent_exited',
       actor: agent.name,
-      ref: agentId,
-      body: `exit inferred while detached: ${liveness.reason}`,
+      ref: agent.agentId,
+      body,
       meta: { inferred: 'true', ...(liveness.pid === undefined ? {} : { pid: String(liveness.pid) }) },
     })
     logEvent('agent_exited', {
-      agentId,
+      agentId: agent.agentId,
       name: agent.name,
       code: null,
       inferred: true,
       reason: liveness.reason,
     })
     this.shadow.finishByAgent(
-      agentId,
+      agent.agentId,
       exitTerminal({ code: null, signal: null, inferred: true }, undefined, undefined),
     )
+  }
+
+  /** CC-488: a `live` row is resumable only when no connection, launcher or session holds it; records the exit if so. */
+  private async staleLiveRefusal(identity: AgentIdentity): Promise<string | undefined> {
+    if (this.core.registry.connFor(identity.name) !== undefined || this.live.has(identity.agentId))
+      return `${identity.name} is already live; message it instead`
+    const running = await this.launcherRunning(identity.agentId)
+    if (running === true) return `${identity.name} is already live: its run-agent is still running`
+    if (running === undefined)
+      return `${identity.name} is marked live and the process table could not be read, so it is not resumed`
+    const liveness = agentLiveness(identity, this.processProbe)
+    if (!liveness.dead) return `${identity.name} is already live: ${liveness.reason}`
+    this.recordInferredExit(
+      identity,
+      liveness,
+      `live row with no process (no connection, no run-agent, ${liveness.reason})`,
+    )
+    return undefined
   }
 
   /** A launch takes over the slot, so its release moves to `recordExit`. */
@@ -2422,13 +2446,18 @@ export class Supervisor implements TeleportHost {
    * outcome carries the verdict either way so the caller never has to guess.
    */
   async resume(name: string, req: ResumeRequest = {}): Promise<SpawnOutcome> {
-    const identity = this.core.agents.byName(name)
+    let identity = this.core.agents.byName(name)
     if (!identity) return { ok: false, reason: this.missingReason(name) }
     const refused =
       this.checkResumer(identity, req) ??
       this.supersededRefusal(identity) ??
       this.parkingRefusal(identity.cwd)
     if (refused) return { ok: false, reason: refused }
+    if (identity.state === 'live') {
+      const stale = await this.staleLiveRefusal(identity)
+      if (stale) return { ok: false, reason: stale }
+      identity = this.core.agents.get(identity.agentId) ?? identity
+    }
     const transcript = identityTranscript(identity)
     const gone = this.goneCwd(identity)
     const blocked = resumeBlocker(identity, transcript, gone)
