@@ -81,13 +81,17 @@ interface Scope {
   /** The `-c` and `--config-env` options of the git whose `!` alias runs this command. */
   gitParams: readonly string[]
   /** Command starts after an expansion the whole call may still check; nested shells draw on the same budget. */
-  hiddenStarts: { left: number }
+  hiddenStarts: { left: number; reachesGit?: boolean }
 }
 
 const UNSURE = Symbol('unsure')
 type Setting = string | undefined | typeof UNSURE
 
 const DOCS = 'See docs/leak-guard.md.'
+
+const MAX_DEPTH = 6
+const MAX_ALIASES = 4
+const MAX_HIDDEN_STARTS = 64
 
 export const REASONS = {
   noVerify: `leak-guard: git push --no-verify skips the pre-push leak scan. Push without it. ${DOCS}`,
@@ -102,6 +106,7 @@ export const REASONS = {
   heredocBackslash: `leak-guard: a heredoc in this command holds a backslash, which a shell may rewrite: it joins a line that ends in one, and under an unquoted delimiter it escapes the next character. So this PR or issue text was not checked. Remove the backslash, or write the text to a file and pass --body-file. ${DOCS}`,
   hiddenCommand: `leak-guard: the command word is an expansion, so the guard cannot tell what this runs. Write git or gh out literally. ${DOCS}`,
   hiddenBody: `leak-guard: the command word is an expansion, so the guard cannot tell which directory or variables gh reads this PR or issue text with, and did not check it. Write the command out literally: agent-chat gh-write -- pr create --body-file <path>. ${DOCS}`,
+  hiddenStarts: `leak-guard: this command line has more than ${MAX_HIDDEN_STARTS} command starts after expanded command words, more than the guard checks, and it may run git or gh. Split it into shorter Bash calls. ${DOCS}`,
   hiddenScript: `leak-guard: eval of text the guard cannot read, on a command line that names git or gh. Run the command directly. ${DOCS}`,
   missingTerms: `leak-guard: no private term list, so PR and issue text cannot be checked. Create ~/.config/titan-egress/private-terms, one term per line, chmod 600. ${DOCS}`,
   xargsOption: `leak-guard: xargs with an option this guard does not know, so it cannot tell which word is the command. Spell the option in full, or run the command without xargs. ${DOCS}`,
@@ -115,10 +120,6 @@ export const REASONS = {
   ghByPath: `leak-guard: gh called by path skips the agent's gh shim and the gh-write leak scan. Use bare gh for reads and agent-chat gh-write -- <gh args> for every GitHub write. ${DOCS}`,
   aliasWritten: `leak-guard: this command line writes git config and runs a git word that may be an alias, so the guard cannot tell what that alias will run. Write the config in one Bash call and run the alias in another. ${DOCS}`,
 } as const
-
-const MAX_DEPTH = 6
-const MAX_ALIASES = 4
-const MAX_HIDDEN_STARTS = 64
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 const ENV_EDITS = new Set(['export', 'unset', 'declare', 'typeset', 'readonly', 'local'])
@@ -798,9 +799,12 @@ function checkHidden(
   const unseen = { ...scope, cwd: undefined, env: undefined }
   const starts = outermost ? marked.flatMap((word, i) => (mayStartCommand(word) ? [i] : [])) : []
   scope.hiddenStarts.left -= starts.length
-  if (scope.hiddenStarts.left < 0) return REASONS.hiddenCommand
+  const spent = scope.hiddenStarts.left < 0
+  if (spent && lineMayReachGit(scope, ctx)) return REASONS.hiddenStarts
   const reason =
-    firstReason(starts, i => checkSimple(suffixCommand(cmd, marked.slice(i)), ctx, unseen, depth, false)) ??
+    firstReason(spent ? [] : starts, i =>
+      checkSimple(suffixCommand(cmd, marked.slice(i)), ctx, unseen, depth, false),
+    ) ??
     checkGitRun(
       gitRun(marked, assigns, cmd, ctx, scope, false, tiedToGit(head, cmd, ctx, scope)),
       ctx,
@@ -808,6 +812,24 @@ function checkHidden(
       depth,
     )
   return reason === REASONS.unreadableBody ? REASONS.hiddenBody : reason
+}
+
+const SUBSTITUTION = /\$\(|`|[<>]\(/
+
+/** Whether any word of the line names git or gh, may expand to git, or reads a variable the line or the hook ties to git (CC-478). */
+function mayReachGit(line: string, env: Env): boolean {
+  if (MENTIONS_GIT.test(line) || SUBSTITUTION.test(line)) return true
+  if (UNNAMED_SET.test(line) || HIDDEN_NAME.test(line)) return true
+  const words = line.split(/[\s;&<>]+/)
+  if (words.some(word => MENTIONS_GIT.test(word.replace(QUOTING, '')) || mayExpandToGit(word))) return true
+  const said = unreferenced(line).replace(READ_ONLY_REF, ' ')
+  const names = [...line.matchAll(VARIABLE)].map(match => match[1] as string)
+  return names.some(name => mentions(said, name) || MENTIONS_GIT.test(env[name] ?? ''))
+}
+
+function lineMayReachGit(scope: Scope, ctx: GuardContext): boolean {
+  scope.hiddenStarts.reachesGit ??= mayReachGit(scope.line, ctx.env)
+  return scope.hiddenStarts.reachesGit
 }
 
 const mayStartCommand = (word: string): boolean =>

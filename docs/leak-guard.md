@@ -632,8 +632,16 @@ path are scanned; a relative body file or a `$VAR` in an argument is a deny.
 Two cases of this check are denied outright, so the check stays fast (CC-347):
 
 - more than 64 command starts after expanded command words across one command line, nested
-  shells included. A command start is a later word that may begin a command: an expansion, a
-  wrapper, an assignment, a shell keyword, or `git`, `gh` and the other names the guard reads;
+  shells included, on a line that may reach git or gh. A command start is a later word that may
+  begin a command: an expansion, a wrapper, an assignment, a shell keyword, or `git`, `gh` and
+  the other names the guard reads. A line may reach git or gh when it names either one anywhere,
+  holds a command substitution, a word that may expand to `git` (as above), an expansion that
+  hides its name or reads `$1`, `$@` and the like, or a variable that
+  the line mentions outside a `$` reference or that the hook's env holds as `git` or `gh` (CC-478).
+  A line past the budget that may reach neither, such as 40 joined
+  `"$PY" "$SCRIPT" --out "$DIR"` commands, is allowed, and its starts past the budget go
+  unchecked. An unchecked start can reach git only through a variable set where the guard cannot
+  see, the accepted gap above;
 - an `env -S` split behind another expansion, such as `$E env -S '$W -n 5 gh ...'`.
 
 ### Known false deny: eval beside git or gh
