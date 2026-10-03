@@ -499,6 +499,33 @@ describe('seat liveness (CC-320)', () => {
     expect(await runs(h, 3)).toBe(0)
   })
 
+  it('does not resume a dark seat whose agent row the roster shows live', async () => {
+    const h = harness({
+      agents: [{ name: 'seat-a', profile: 'seat', state: 'live', spawnedBy: 'owner' }],
+      connected: [],
+    })
+    dark(h, 30)
+    const out = await runWatchdog(h.deps, ONE)
+    expect([h.wakes, h.logs]).toEqual([[], []])
+    expect(out.filter(line => line !== GAP_LINE)).toEqual([])
+  })
+
+  it('treats a roster timeout as unknown: no resume, no try counted, one log line', async () => {
+    const h = harness(DARK)
+    dark(h, 30)
+    h.doc.seats['seat-a'] = { resumedDark: h.presence?.darkSince, resumeRetry: 2 } as never
+    const timedOut: Roster = {
+      agents: [],
+      connected: [],
+      unknown: 'broker did not answer agents_result',
+    }
+    h.deps.roster = async () => timedOut
+    const out = await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toEqual([])
+    expect(h.doc.seats['seat-a']).toMatchObject({ resumedDark: h.presence?.darkSince, resumeRetry: 2 })
+    expect(out.filter(line => line.includes('roster unreadable'))).toHaveLength(1)
+  })
+
   it('retries a refused resume on the next run, logs each try, and stops once one is accepted', async () => {
     const h = harness(DARK)
     h.wakeResult = { ok: false, detail: 'no free agent slots (4/4)' }

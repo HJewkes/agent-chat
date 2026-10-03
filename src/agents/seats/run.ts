@@ -60,6 +60,8 @@ export interface Roster {
   agents: SeatAgent[]
   /** Names with a connected session right now. */
   connected: string[]
+  /** Why the roster could not be read; a timeout or error means unknown, never absent. */
+  unknown?: string
 }
 
 export interface WakeResult {
@@ -277,10 +279,26 @@ function resumeMark(attempted: number | undefined, retry: number | undefined, ab
   }
 }
 
+/** TP-812: a seat the roster shows live is not dark, and an unreadable roster says nothing about it. */
+function rosterVerdict(roster: Roster, seat: string): LivenessVerdict | undefined {
+  if (roster.unknown !== undefined)
+    return { resume: false, reason: 'roster unknown', idleHold: `roster unknown: ${roster.unknown}` }
+  const rowLive = roster.agents.some(a => a.name === seat && a.state === 'live')
+  if (rowLive && !roster.connected.includes(seat))
+    return { resume: false, reason: 'roster shows it live', idleHold: 'roster shows it live' }
+  return undefined
+}
+
 function seatLiveness(pass: Pass, seat: string, hold: string | undefined): SeatLiveness {
+  const previous = pass.doc.seats[seat]
+  const byRoster = rosterVerdict(pass.roster, seat)
+  if (byRoster !== undefined)
+    return {
+      verdict: byRoster,
+      mark: resumeMark(previous?.resumedDark, previous?.resumeRetry, previous?.absent),
+    }
   const connected = pass.roster.connected.includes(seat)
   const presence = connected ? undefined : pass.deps.presence(seat)
-  const previous = pass.doc.seats[seat]
   const nowMs = pass.now.getTime()
   const absent = connected ? undefined : absence(previous?.absent, presence, nowMs)
   const attempted = previous?.resumedDark
@@ -497,6 +515,8 @@ async function runPass(deps: WatchdogDeps, options: WatchdogOptions, lines: stri
   if (hold !== undefined) lines.push(hold)
   const ungated = attendedChange(pass, charter)
   if (ungated !== undefined) lines.push(ungated)
+  if (pass.roster.unknown !== undefined)
+    lines.push(`Watchdog: roster unreadable (${pass.roster.unknown}); no seat resumed this run`)
   for (const name of options.seats ?? charterSeats(charter)) {
     const seat = seatOrSkip(deps, name)
     if (typeof seat === 'string') {

@@ -85,9 +85,13 @@ const refused = (err: unknown): Report => ({
 })
 
 async function roster(client: BrokerClient): Promise<Roster> {
-  const agents = (await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>
-  const live = (await client.request({ t: 'list' }, 'list_result')) as Reply<'list_result'>
-  return { agents: agents.agents, connected: live.sessions.map(s => s.name) }
+  try {
+    const agents = (await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>
+    const live = (await client.request({ t: 'list' }, 'list_result')) as Reply<'list_result'>
+    return { agents: agents.agents, connected: live.sessions.map(s => s.name) }
+  } catch (err) {
+    return { agents: [], connected: [], unknown: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 /** The surface a stopped seat comes back on, and where that was read from. */
