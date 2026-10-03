@@ -168,6 +168,12 @@ The broker starts itself on first use and outlives the session that spawned it.
 State lives in `~/.agent-chat/` (`chat.sock`, `events.db`, `broker.log`);
 override with `AGENT_CHAT_HOME`.
 
+Set `AGENT_CHAT_NO_AUTOSTART=1` to stop the CLI starting a broker: when none is
+listening, a verb prints one stderr line starting `broker unavailable` and exits 69
+(`EX_UNAVAILABLE`), so a caller can tell a down broker from any other failure. Only
+`1` enables it. `agent-chat agent resume <name> --message-stdin` reads the resume
+message from stdin instead of `--message`, keeping the text out of `ps` and argv limits.
+
 ## Tools
 
 | Tool                                                                      | Purpose                                                                                                              |
