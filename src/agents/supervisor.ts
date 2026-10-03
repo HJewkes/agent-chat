@@ -1956,23 +1956,24 @@ export class Supervisor implements TeleportHost {
    * CC-78 closed the other half of the same gap: what `live` held is now also on
    * disk, so a restart no longer costs the worktree and the pane either.
    */
-  async retire(name: string, force = false): Promise<{ ok: boolean; reason?: string }> {
+  async retire(name: string, force = false, actor?: string): Promise<{ ok: boolean; reason?: string }> {
     const identity = this.core.agents.byName(name)
     if (!identity) return { ok: false, reason: `no agent named "${name}"` }
-    return this.retireIdentity(identity, force)
+    return this.retireIdentity(identity, force, actor)
   }
 
   /** CC-408: the bulk form retires the row it planned, never whichever row now holds the name. */
-  async retireById(agentId: string): Promise<{ ok: boolean; reason?: string }> {
+  async retireById(agentId: string, actor?: string): Promise<{ ok: boolean; reason?: string }> {
     const identity = this.core.agents.get(agentId)
     if (identity?.origin !== 'spawned' || identity.state === 'retired')
       return { ok: false, reason: `no unretired spawned agent with id ${agentId}` }
-    return this.retireIdentity(identity, false)
+    return this.retireIdentity(identity, false, actor)
   }
 
   private async retireIdentity(
     identity: AgentIdentity,
     force: boolean,
+    actor?: string,
   ): Promise<{ ok: boolean; reason?: string }> {
     const name = identity.name
     const held = this.live.get(identity.agentId)
@@ -1999,7 +2000,7 @@ export class Supervisor implements TeleportHost {
     const transcript = identityTranscript(identity)
     this.core.append({
       kind: 'agent_retired',
-      actor: 'human',
+      actor: actor ?? 'human',
       target: name,
       ref: identity.agentId,
       meta: {

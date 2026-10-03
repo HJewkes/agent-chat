@@ -184,3 +184,20 @@ describe('the watchdog resume', () => {
     expect(core.events.agentEvents().filter(r => r.kind === 'agent_resumed')).toEqual([])
   })
 })
+
+describe('who a retire is recorded as (CC-218)', () => {
+  async function retireWorker(actor?: string): Promise<string | undefined> {
+    spawnRow('w1', 'worker-1', 'coord-x')
+    await exitRow('w1', 'worker-1')
+    await sup.retire('worker-1', false, actor)
+    return core.events.agentEvents().find(r => r.kind === 'agent_retired')?.actor
+  }
+
+  it('records the calling agent session as the actor', async () => {
+    expect(await retireWorker('coord-x')).toBe('coord-x')
+  })
+
+  it('records human when no agent identity is given', async () => {
+    expect(await retireWorker()).toBe('human')
+  })
+})
