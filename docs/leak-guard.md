@@ -629,6 +629,13 @@ because the expansion may be empty or may be a wrapper. For that second check it
 the directory nor any variable. A literal title or body and a body file at a literal absolute
 path are scanned; a relative body file or a `$VAR` in an argument is a deny.
 
+Two cases of this check are denied outright, so the check stays fast (CC-347):
+
+- more than 64 command starts after expanded command words across one command line, nested
+  shells included. A command start is a later word that may begin a command: an expansion, a
+  wrapper, an assignment, a shell keyword, or `git`, `gh` and the other names the guard reads;
+- an `env -S` split behind another expansion, such as `$E env -S '$W -n 5 gh ...'`.
+
 ### Known false deny: eval beside git or gh
 
 `eval` of text the guard cannot resolve is denied whenever the command line names `git` or `gh`
