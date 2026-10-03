@@ -2,6 +2,7 @@ import { GIT_SHIM_DIR_ENV, gitShimDirFor } from '../leak-guard/git-shim.js'
 import { gitHooksEnv } from '../leak-guard/hooks-dir.js'
 import { isInteractiveSurface } from '../protocol.js'
 import { settingSourcesFor, strictMcpFor } from './launch-policy.js'
+import { RESUMED_BRIEF } from './resume-session.js'
 import type { AgentProfile, LaunchPlan, LaunchPlanInput } from './types.js'
 
 /**
@@ -299,3 +300,23 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
 /** The `perm_mode` value to record on `agent_spawned`; empty means inherited. */
 export const permModeFor = (surface: LaunchPlan['surface']): string =>
   isInteractiveSurface(surface) ? '' : 'default'
+
+/**
+ * CC-488: a stored plan replays `--session-id`, which Claude Code refuses once the
+ * transcript exists. Continue that conversation instead; a fork keeps minting.
+ */
+export function continueStarted(
+  plan: LaunchPlan,
+  transcriptExists: (sessionId: string) => boolean,
+): LaunchPlan {
+  const at = plan.args.indexOf('--session-id')
+  const sessionId = plan.args[at + 1]
+  if (at < 0 || sessionId === undefined) return plan
+  if (plan.args.includes('--resume') || plan.args.includes('--fork-session')) return plan
+  if (!transcriptExists(sessionId)) return plan
+
+  const args = [...plan.args.slice(0, at), '--resume', sessionId, ...plan.args.slice(at + 2)]
+  if (plan.stdin !== undefined) return { ...plan, args, stdin: RESUMED_BRIEF }
+  const briefAt = args.indexOf('--')
+  return { ...plan, args: briefAt < 0 ? args : args.slice(0, briefAt) }
+}
