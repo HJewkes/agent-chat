@@ -276,7 +276,9 @@ Every other command goes to the real gh with its argv untouched, writes included
 
 ## Restart window
 
-`scripts/restart-window.sh` runs the daily broker restart in one command. It refuses, one line per blocker, when `agent-chat service restart` reports an unanswered ask or a mid-spawn agent, when a `git push` or `git-remote-http*` process is running, or when the checkout behind the installed `agent-chat` is not a clean `main`. It then restarts the broker, runs `npm ci && npm run build` in that checkout, and checks `events.db` for exactly one `broker_started` and no `ledger_shadow_error` since the restart, plus a parseable `agent ls --json`. It exits 1 on a refusal, 2 on a failed post-check, and prints `restart-window OK` otherwise. It accepts no `--force`, and running it needs the owner's approval of the day's window. `RESTART_WINDOW_DB` overrides the database path.
+`scripts/restart-window.sh` runs the daily broker restart in one command. It refuses, one line per blocker, when a `git push`, `git-remote-http*`, `seat-merge`, `bin/merge`, `gh pr merge` or `agent-chat gh-write` process is running (it names the pids), or when the checkout behind the installed `agent-chat` is not a clean `main`. It then runs `git pull --ff-only origin main`, `npm ci` and `npm run build` in that checkout, and only then `agent-chat service restart`, which itself refuses on an unanswered ask or a mid-spawn agent. Last it checks `broker.log` (and the rotated `broker.log.1`) for exactly one `broker_started` and no `ledger_shadow_error` since the restart, plus a parseable `agent ls --json`. It accepts no `--force`, and running it needs the owner's approval of the day's window. `AGENT_CHAT_HOME` moves the log directory.
+
+Exit codes: `0` prints `restart-window OK`. `1` means a pre-check or the restart guard refused and the broker was not touched. `2` means a post-check failed. `3` means the restart failed and the broker may be down; the script prints `BROKER MAY BE DOWN: run agent-chat service start`. `4` means pull, install or build failed and the broker was not touched.
 
 ## Tests
 
