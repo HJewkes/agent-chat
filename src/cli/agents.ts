@@ -118,6 +118,8 @@ function lsJsonRow(agent: AgentIdentity, connected: boolean, index: ProfileIndex
     account: agent.configDir || null,
     generation: agent.generation,
     teleportFrom: agent.teleportFrom ?? null,
+    inferred: agent.exit?.inferred === true,
+    spawnedAt: new Date(agent.spawnedAt).toISOString(),
   }
 }
 

@@ -32,6 +32,7 @@ const exitFrom = (row: AgentEventRow): NonNullable<AgentIdentity['exit']> => {
     // CC-95: written only by the supervisor's attach verification, so the roster
     // can say `failed` rather than `finished` for a process that never came up.
     ...(row.meta.failed === 'true' ? { failedToStart: true } : {}),
+    ...(row.meta.inferred === 'true' ? { inferred: true } : {}),
   }
 }
 

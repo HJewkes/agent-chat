@@ -55,6 +55,14 @@ const stateAfter = (...rows: AgentEventRow[]): AgentLifecycle | undefined =>
   foldAgent([spawned(), ...rows])?.state
 
 describe('the lifecycle fold', () => {
+  it('marks an exit from the settle timer as inferred and a recorded exit as not', () => {
+    const inferred = foldAgent([spawned(), row('agent_exited', { meta: { inferred: 'true' } })])
+    const recorded = foldAgent([spawned(), row('agent_exited', { meta: { code: '0' } })])
+
+    expect(inferred?.exit?.inferred).toBe(true)
+    expect(recorded?.exit?.inferred).toBeUndefined()
+  })
+
   it('carries the spawn payload onto the identity', () => {
     const agent = foldAgent([spawned()])
 
