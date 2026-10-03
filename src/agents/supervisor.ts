@@ -54,7 +54,7 @@ import {
   readOutputTail,
   type SurfaceOptions,
 } from '@titan-design/agent-surface'
-import { surfaceFor } from './launcher.js'
+import { relaunchScriptPath, surfaceFor } from './launcher.js'
 import { Semaphore, type SlotUsage } from './semaphore.js'
 import {
   countLiveHeadless,
@@ -115,6 +115,7 @@ import { exitTerminal, LifecycleShadow } from './ledger/lifecycle-shadow.js'
 import { readExitTail, unreportedExitText, UNREPORTED_EXIT } from './exit-report.js'
 import { loadTickConfig } from './burndown/source.js'
 import {
+  SuccessorNotStarted,
   Teleport,
   type InheritedIsolation,
   type RelaunchInput,
@@ -198,6 +199,9 @@ const KILL_GRACE_MS = 3000
 const NAME_FREE_TIMEOUT_MS = 8_000
 const NAME_FREE_POLL_MS = 100
 
+/** CC-402: the pause before a teleport successor's one relaunch retry, so a surface that just failed can come back. */
+export const RELAUNCH_RETRY_MS = 10_000
+
 /** CC-118: the cancellation reason a surface switch writes for the process it stops. */
 const MODE_SWITCH = 'mode switch'
 
@@ -214,6 +218,17 @@ const MODE_SWITCH = 'mode switch'
  */
 const succeedsInto = (handle: LaunchHandle, predecessor: LaunchHandle | undefined): boolean =>
   predecessor?.ownsSurface === true && handle.paneRef !== undefined && handle.paneRef === predecessor.paneRef
+
+/** What a teleport successor's launch and its one retry share (CC-402). */
+interface SuccessorLaunch {
+  input: RelaunchInput
+  plan: LaunchPlan
+  predecessor: Live | undefined
+  allocation: Allocation
+  isolation: IsolationName
+}
+
+const pause = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
 
 /**
  * A mode switch, resolved by the socket layer before it reaches here.
@@ -2743,20 +2758,11 @@ export class Supervisor implements TeleportHost {
     })
 
     const executionId = this.openSuccessor(input, predecessor)
-    // The descendant takes the pane its predecessor vacated, rather than a tab
-    // beside it. Safe here and nowhere else: this anchor is the predecessor's
-    // own pane, and the predecessor is already gone.
-    const launched = await this.launchSuccessor(input, plan, executionId)
-    const handle = succeedsInto(launched, predecessor?.handle) ? { ...launched, ownsSurface: true } : launched
-    // Transfers the allocation to the descendant's id, so ITS eventual retire
-    // releases the real strategy rather than a no-op one.
-    this.track(input.agentId, input.name, handle, allocation, isolation, input.anchor)
+    const launch: SuccessorLaunch = { input, plan, predecessor, allocation, isolation }
+    const { handle, retried } = await this.launchSuccessor(launch, executionId)
+    this.trackSuccessor(launch, handle)
     this.bindExecution(input.agentId, executionId)
-    handle.launchFailed
-      ?.then(reason => this.reportDeadSuccessor(input, reason))
-      .catch(err =>
-        logEvent('teleport_failed_report_error', { name: input.name, error: (err as Error).message }),
-      )
+    this.watchSuccessor(launch, handle, retried)
     logEvent('agent_teleported', { agentId: input.agentId, name: input.name, from: input.inheritedFrom })
     this.fireHook('on_spawn', {
       agentId: input.agentId,
@@ -2769,15 +2775,52 @@ export class Supervisor implements TeleportHost {
     })
   }
 
-  /** Nothing awaits a successor's attach, so a relaunch that never started goes to the human (CC-191). */
+  /** Transfers the allocation to the descendant's id, so ITS eventual retire releases the real strategy. */
+  private trackSuccessor(launch: SuccessorLaunch, launched: LaunchHandle): void {
+    const { input, predecessor, allocation, isolation } = launch
+    const handle = succeedsInto(launched, predecessor?.handle) ? { ...launched, ownsSurface: true } : launched
+    this.track(input.agentId, input.name, handle, allocation, isolation, input.anchor)
+  }
+
+  /** Nothing awaits a successor's attach, so its launch check is what notices a relaunch that never ran (CC-191). */
+  private watchSuccessor(launch: SuccessorLaunch, handle: LaunchHandle, retried: boolean): void {
+    handle.launchFailed
+      ?.then(reason => this.successorNotRunning(launch, reason, retried))
+      .catch(err =>
+        logEvent('teleport_failed_report_error', { name: launch.input.name, error: (err as Error).message }),
+      )
+  }
+
+  /** CC-402: the first launch check that fails earns one relaunch; the second goes to the human. */
+  private async successorNotRunning(launch: SuccessorLaunch, reason: string, retried: boolean): Promise<void> {
+    const { input } = launch
+    if (this.hasAttached(input.agentId)) return
+    if (retried) return this.reportDeadSuccessor(input, reason)
+    logEvent('teleport_relaunch_retry', { name: input.name, agentId: input.agentId, reason })
+    await pause(RELAUNCH_RETRY_MS)
+    if (this.hasAttached(input.agentId)) return
+    let handle: LaunchHandle
+    try {
+      handle = await this.launchOn(input.surface, launch.plan, input.anchor, input.reuseAnchor ?? false)
+    } catch (err) {
+      return this.reportDeadSuccessor(input, (err as Error).message)
+    }
+    this.trackSuccessor(launch, handle)
+    this.watchSuccessor(launch, handle, true)
+  }
+
+  /** The human queue and the seat's log, since nobody is left inside the session to notice (CC-191, CC-402). */
   private reportDeadSuccessor(input: RelaunchInput, reason: string): void {
     if (this.hasAttached(input.agentId)) return
     this.core.append({
       kind: 'notice',
       actor: 'agent-chat',
       target: HUMAN,
-      body: `${input.name} shut down for a teleport and its successor was not running after 5s: ${reason}`,
+      body:
+        `${input.name} shut down for a teleport and its successor was still not running after one retry: ${reason}. ` +
+        `Run ${relaunchScriptPath(input.agentId)} in a terminal to start it.`,
     })
+    this.seatJournal?.({ event: 'teleport-failed', agent: input.name })
     logEvent('teleport_failed', { name: input.name, from: input.inheritedFrom, reason })
   }
 
@@ -2788,20 +2831,26 @@ export class Supervisor implements TeleportHost {
     return this.shadow.open(input.agentId, input.configDir ?? configDir())
   }
 
+  /** The descendant takes the pane its predecessor vacated; safe only because that pane's owner is already gone. */
   private async launchSuccessor(
-    input: RelaunchInput,
-    plan: LaunchPlan,
+    launch: SuccessorLaunch,
     executionId: string | undefined,
-  ): Promise<LaunchHandle> {
+  ): Promise<{ handle: LaunchHandle; retried: boolean }> {
+    const { input, plan } = launch
+    const attempt = () => this.launchOn(input.surface, plan, input.anchor, input.reuseAnchor ?? false)
     try {
-      return await this.launchOn(input.surface, plan, input.anchor, input.reuseAnchor ?? false)
+      return { handle: await attempt(), retried: false }
+    } catch (first) {
+      logEvent('teleport_relaunch_retry', { name: input.name, agentId: input.agentId, reason: (first as Error).message })
+    }
+    await pause(RELAUNCH_RETRY_MS)
+    try {
+      return { handle: await attempt(), retried: true }
     } catch (err) {
-      this.shadow.finish(executionId, {
-        outcome: 'failed',
-        reason: `teleport failed: ${(err as Error).message}`,
-        retryable: false,
-      })
-      throw err
+      const reason = (err as Error).message
+      this.shadow.finish(executionId, { outcome: 'failed', reason: `teleport failed: ${reason}`, retryable: false })
+      this.reportDeadSuccessor(input, reason)
+      throw new SuccessorNotStarted(reason)
     }
   }
 

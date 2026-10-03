@@ -62,6 +62,25 @@ const NAME_FREE_POLL_MS = 100
  */
 export const PANE_SETTLE_MS = 750
 
+/** CC-402: how long a reused pane waits for the predecessor's pid to exit; past the SIGKILL grace, so only a stuck kill hits it. */
+export const PANE_EXIT_TIMEOUT_MS = 10_000
+const PANE_EXIT_POLL_MS = 100
+
+/** Thrown by a host that already told the human its successor did not start, so `finish` does not tell them twice. */
+export class SuccessorNotStarted extends Error {
+  override name = 'SuccessorNotStarted'
+}
+
+/** EPERM means the pid exists under another user, which still counts as running. */
+const pidAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
 /** What every descendant is told about its own origin, in place of PEER_PREAMBLE. */
 export const TELEPORT_PREAMBLE = [
   'You are the continuation of a session that handed off to you and then ended. You keep its',
@@ -457,10 +476,11 @@ export class Teleport {
     })
 
     try {
-      if (subject.anchor !== undefined) await sleep(PANE_SETTLE_MS)
+      if (subject.anchor !== undefined) await this.waitForPaneFree(subject)
       await this.host.relaunch(this.relaunchFor(entry))
       logEvent('teleport_completed', { name: subject.name, from: agentId, to: entry.descendantId })
     } catch (err) {
+      if (err instanceof SuccessorNotStarted) return
       // The one genuinely bad state this feature can reach: predecessor gone,
       // descendant never started. Nobody is left inside the session to notice,
       // so it goes to the only party outside it.
@@ -533,6 +553,23 @@ export class Teleport {
       await sleep(NAME_FREE_POLL_MS)
     }
     logEvent('teleport_name_held', { name, waitedMs: NAME_FREE_TIMEOUT_MS })
+  }
+
+  /**
+   * CC-402: a command typed while the predecessor still owns the pane is swallowed, so wait for its pid to exit.
+   * A timeout is not fatal: the launch check and its retry catch a relaunch that still did not run.
+   */
+  private async waitForPaneFree(subject: TeleportSubject): Promise<void> {
+    const pid = subject.hostPid as number
+    const deadline = Date.now() + PANE_EXIT_TIMEOUT_MS
+    while (pidAlive(pid)) {
+      if (Date.now() >= deadline) {
+        logEvent('teleport_pane_held', { name: subject.name, pid, waitedMs: PANE_EXIT_TIMEOUT_MS })
+        break
+      }
+      await sleep(PANE_EXIT_POLL_MS)
+    }
+    await sleep(PANE_SETTLE_MS)
   }
 
   /** Session ids are minted per descendant, never reused: a teleport is not a resume. */

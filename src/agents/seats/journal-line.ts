@@ -1,6 +1,6 @@
 /** CC-316: the shape of a seat journal line the broker writes, `<event> <task> <agent> <pr@head>`. Pure. */
 
-export const JOURNAL_EVENTS = ['spawn', 'retire', 'park', 'merged', 'stalled'] as const
+export const JOURNAL_EVENTS = ['spawn', 'retire', 'park', 'merged', 'stalled', 'teleport-failed'] as const
 export type JournalEvent = (typeof JOURNAL_EVENTS)[number]
 
 export interface JournalEntry {
@@ -36,7 +36,7 @@ const JOURNAL_TEXT = new RegExp(`^(${JOURNAL_EVENTS.join('|')}) ${TASK} (${AGENT
 const CLOCKED = /^\d\d:\d\d (.*)$/
 
 /** The events the broker itself sees, which never carry a PR. */
-const LIFECYCLE: readonly string[] = ['spawn', 'retire', 'park']
+const LIFECYCLE: readonly string[] = ['spawn', 'retire', 'park', 'teleport-failed']
 
 /** The agent a broker line names; undefined for any other text, so the seat's own prose never reads as the broker's. */
 function agentOf(text: string): string | undefined {

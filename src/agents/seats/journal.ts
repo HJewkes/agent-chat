@@ -1,10 +1,11 @@
+import path from 'node:path'
 import { logEvent } from '../../broker/log.js'
-import type { Seat } from './charter.js'
+import { isSeatName, parseSeat, type Seat } from './charter.js'
 import { appendSeatLog, readText, seatLogClock, seatLogPath } from './io.js'
 import { alreadyJournaled, journalText, type JournalEntry } from './journal-line.js'
 import { seatOf } from './seat-of.js'
 
-/** CC-316: the broker writes a seat's spawn, retire, park, merged and stalled lines, so the seat does not. */
+/** CC-316: the broker writes a seat's spawn, retire, park, merged, stalled and teleport-failed lines, so the seat does not. */
 
 /** Never throws: a journal line must not fail the spawn, retire or park that caused it. */
 export type SeatJournal = (entry: JournalEntry) => void
@@ -52,10 +53,19 @@ function ownerOf(root: string, agent: string, latch: Latch): Seat | undefined {
   return match.seat.seat
 }
 
+/** CC-402: a seat's own successor carries the seat's name, not its prefix, so its failed teleport is found by name. */
+function seatNamed(root: string, name: string): Seat | undefined {
+  if (!isSeatName(name)) return undefined
+  const text = readText(path.join(root, 'seats', `${name}.md`))
+  return text === undefined ? undefined : parseSeat(name, text)
+}
+
 function write(root: string, entry: JournalEntry, at: Date, latch: Latch): void {
-  const seat = ownerOf(root, entry.agent, latch)
+  const owner = ownerOf(root, entry.agent, latch)
+  const self = owner === undefined && entry.event === 'teleport-failed' ? seatNamed(root, entry.agent) : undefined
+  const seat = owner ?? self
   if (seat === undefined) return
-  const text = journalText(entry, seat.prefix)
+  const text = journalText(self === undefined ? entry : { ...entry, task: '-' }, seat.prefix)
   if (text === undefined) return latch.report(REFUSED, REFUSED, { event: entry.event, agent: entry.agent })
   latch.clear(REFUSED)
   const today = readText(seatLogPath(root, seat.name, at)) ?? ''

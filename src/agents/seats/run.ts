@@ -39,6 +39,7 @@ import {
   lastGoodReading,
   poolBudget,
   runningImplementers,
+  stuckSpawning,
   type BudgetVerdict,
   type Decision,
   type Observation,
@@ -322,6 +323,21 @@ function capChange(pass: Pass, seat: string, record: SeatRecord): string | undef
   return `${seat}: ${line}`
 }
 
+/** CC-402: each seat agent stuck in `spawning` is logged once; the record keeps the names still stuck. */
+function spawningChange(pass: Pass, seat: Seat, record: SeatRecord, dryRun: boolean): string[] {
+  const stuck = stuckSpawning(pass.roster.agents, seat, pass.now.getTime())
+  const flagged = pass.doc.seats[seat.name]?.spawningFlagged ?? []
+  if (stuck.length > 0) record.spawningFlagged = stuck.map(agent => agent.name)
+  else delete record.spawningFlagged
+  return stuck
+    .filter(agent => !flagged.includes(agent.name))
+    .map(agent => {
+      const line = `Watchdog: ${agent.name} in state spawning for ${agent.minutes} min; its launch never registered`
+      if (!dryRun) pass.deps.appendLog(seat.name, pass.now, line)
+      return `${seat.name}: ${line}`
+    })
+}
+
 /** A hold on every seat starting or ending is logged once, in the run output. */
 function holdChange(pass: Pass): string | undefined {
   const wasHeld = pass.doc.held ?? false
@@ -414,6 +430,7 @@ async function runPass(deps: WatchdogDeps, options: WatchdogOptions, lines: stri
     if (change !== undefined) lines.push(change)
     const capLine = options.dryRun ? undefined : capChange(pass, name, record)
     if (capLine !== undefined) lines.push(capLine)
+    lines.push(...spawningChange(pass, seat, record, options.dryRun))
     pass.doc.seats[name] = record
     if (options.dryRun) lines.push(`${name}: ${dryRunLine(decision, liveness)}`)
     else if (liveness.resume) lines.push(await resumeDark(pass, name, liveness))
@@ -429,7 +446,7 @@ async function runPass(deps: WatchdogDeps, options: WatchdogOptions, lines: stri
   return lines
 }
 
-/** Output lines: one per seat under --dry-run, else only wakes, refused resumes, unreadable journals and misconfigured seats. */
+/** Output lines: one per seat under --dry-run, else only wakes, refused resumes, agents stuck spawning, unreadable journals and misconfigured seats. */
 export async function runWatchdog(deps: WatchdogDeps, options: WatchdogOptions): Promise<string[]> {
   if (options.dryRun) return runPass(deps, options, [])
   const lock = deps.lock()
