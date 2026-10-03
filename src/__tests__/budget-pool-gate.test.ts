@@ -179,6 +179,16 @@ describe('seven_day reserve', () => {
     )
   })
 
+  it('applies the pool ceiling, not 70, on day 7 while the owner types, but still 70 on day 3', () => {
+    const now = at(15)
+    const pool85 = { ...SEAT_A, pool: { ...SEAT_A.pool, ceiling_five_hour: 85 } as PoolRule }
+    const owner = { budget: pool85, now, fiveHour: 75, ownerTypedMinAgo: 1 }
+    expect(gate({ ...owner, resetsAt: resetIn(now, 1) }).open).toBe(true)
+    expect(gate({ ...owner, resetsAt: resetIn(now, 5) }).reason).toContain(
+      'five_hour 75% at or above ceiling 70%',
+    )
+  })
+
   it('ignores the night reserve at night with the owner away', () => {
     expect(gate({ now: at(2), sevenDay: 85, ownerTypedMinAgo: 120 }).reason).toContain('line 80%')
   })
