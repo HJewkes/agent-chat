@@ -24,6 +24,7 @@ const deniedAtLaunch = (profile: AgentProfile): string[] => {
     profile,
     brief: 'review the diff',
     cwd: '/repo',
+    cwdHoldsUserSettings: false,
     mcpConfigPath: '/state/agents/ag000001/mcp.json',
   })
   return (args[args.indexOf('--disallowed-tools') + 1] ?? '').split(',')

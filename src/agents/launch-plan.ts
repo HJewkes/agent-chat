@@ -173,8 +173,8 @@ function unsetEnvFor(input: LaunchPlanInput, interactive: boolean): Pick<LaunchP
 }
 
 /** An empty list still emits the flag: it loads no settings file at all, which is not the same as every one. */
-function settingSourceArgs(profile: AgentProfile): string[] {
-  const sources = settingSourcesFor(profile)
+function settingSourceArgs(input: LaunchPlanInput): string[] {
+  const sources = settingSourcesFor(input.profile, input.cwdHoldsUserSettings)
   return sources === undefined ? [] : ['--setting-sources', sources.join(',')]
 }
 
@@ -208,7 +208,7 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     '--mcp-config',
     input.mcpConfigPath,
     ...(strictMcpFor(profile, surface) ? ['--strict-mcp-config'] : []),
-    ...settingSourceArgs(profile),
+    ...settingSourceArgs(input),
     ...(profile.disableSlashCommands === true ? ['--disable-slash-commands'] : []),
     ...(settings === undefined ? [] : ['--settings', settings]),
     // Without this, notifications/claude/channel is never negotiated for the

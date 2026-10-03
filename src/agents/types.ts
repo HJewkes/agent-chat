@@ -118,6 +118,11 @@ export interface LaunchPlanInput {
   profile: AgentProfile
   brief: string
   cwd: string
+  /**
+   * `cwdHoldsUserSettings(cwd, configDir)`: the project settings at `cwd` are an
+   * account's user settings. Required, so no launch path can leave the check out.
+   */
+  cwdHoldsUserSettings: boolean
   /** Overrides `profile.surface` when the request asked for a different one. */
   surface?: SurfaceName
   /**

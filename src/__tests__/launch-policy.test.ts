@@ -11,6 +11,7 @@ import {
   writeLaunchFiles,
 } from '../agents/launch-files.js'
 import { AGENT_CHAT_PLUGIN, buildLaunchPlan } from '../agents/launch-plan.js'
+import { cwdHoldsUserSettings } from '../agents/launch-policy.js'
 import { BUILTIN_PROFILES, parseProfile, roleOf } from '../agents/profiles.js'
 import type { AgentProfile, LaunchPlan, LaunchPlanInput } from '../agents/types.js'
 
@@ -36,6 +37,7 @@ const planFor = (profile: AgentProfile, over: Partial<LaunchPlanInput> = {}): La
     profile,
     brief: 'find every caller of foo()',
     cwd: '/repo',
+    cwdHoldsUserSettings: false,
     mcpConfigPath: '/state/agents/ag000001/mcp.json',
     ...over,
   })
@@ -99,6 +101,86 @@ describe('the settings a launch loads', () => {
     expect(parseProfile('ok', { ...base, settingSources: ['project'] })).not.toHaveProperty('warnings')
     expect(parseProfile('bad', { ...base, settingSources: ['global'] })).toHaveProperty('error')
     expect(parseProfile('bad', { ...base, settingSources: 'project' })).toHaveProperty('error')
+  })
+})
+
+describe('a launch from a directory that holds user settings', () => {
+  const atHome = { cwdHoldsUserSettings: true }
+
+  // Mutation caught: emitting project,local there, which loads the user file as the project file.
+  it('loads no settings file at all for a worker', () => {
+    const args = argsFor(worker(), atHome)
+
+    expect(args).toContain('--setting-sources')
+    expect(flag(args, '--setting-sources')).toBe('')
+  })
+
+  it('loads none for any profile whose list leaves user out', () => {
+    expect(flag(argsFor(worker({ settingSources: ['project'] }), atHome), '--setting-sources')).toBe('')
+    expect(flag(argsFor(coordinator({ settingSources: ['local'] }), atHome), '--setting-sources')).toBe('')
+  })
+
+  it('changes nothing for a launch that loads user settings anyway', () => {
+    const optedIn = worker({ settingSources: ['user', 'project'] })
+
+    expect(argsFor(coordinator(), atHome)).not.toContain('--setting-sources')
+    expect(flag(argsFor(optedIn, atHome), '--setting-sources')).toBe('user,project')
+  })
+
+  it('names the home directory and the parent of the config dir, through a symlink too', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-policy-home-'))
+    const accounts = path.join(home, 'accounts')
+    const worktree = path.join(home, 'projects', 'repo')
+    const link = path.join(home, 'projects', 'link-home')
+    fs.mkdirSync(path.join(accounts, 'work'), { recursive: true })
+    fs.mkdirSync(worktree, { recursive: true })
+    fs.symlinkSync(home, link)
+    const configDir = path.join(accounts, 'work')
+
+    try {
+      expect(cwdHoldsUserSettings(home, configDir, home)).toBe(true)
+      expect(cwdHoldsUserSettings(link, configDir, home)).toBe(true)
+      expect(cwdHoldsUserSettings(accounts, configDir, home)).toBe(true)
+      expect(cwdHoldsUserSettings(accounts, undefined, home)).toBe(false)
+      expect(cwdHoldsUserSettings(worktree, configDir, home)).toBe(false)
+      expect(cwdHoldsUserSettings(path.join(home, 'gone'), configDir, home)).toBe(false)
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('the worker flags on every way a launch is built', () => {
+  const expectWorkerFlags = (args: string[]): void => {
+    expect(flag(args, '--setting-sources')).toBe('project,local')
+    expect(args).toContain('--strict-mcp-config')
+  }
+
+  it('carries them on a headless resume, with or without a message', () => {
+    expectWorkerFlags(argsFor(worker(), { resume: true }))
+    expectWorkerFlags(argsFor(worker(), { resume: true, resumeMessage: 'carry on' }))
+  })
+
+  it('carries the settings flag on a pane resume, which has a human to answer for MCP', () => {
+    for (const over of [{}, { resumeMessage: 'carry on' }]) {
+      const args = argsFor(worker(), { resume: true, surface: 'iterm-pane', ...over })
+
+      expect(flag(args, '--setting-sources')).toBe('project,local')
+      expect(args).not.toContain('--strict-mcp-config')
+    }
+  })
+
+  it('carries them on a fork of another transcript', () => {
+    expectWorkerFlags(argsFor(worker(), { forkFrom: '/state/projects/repo/parent.jsonl' }))
+  })
+
+  it('carries them on a teleport of a worker, and not on one of a human session', () => {
+    const preamble = 'You are the continuation of a session that ended on purpose.'
+    const inherited = coordinator({ model: '', allowedTools: [], surface: 'iterm-tab' })
+
+    expectWorkerFlags(argsFor(worker(), { preamble }))
+    expect(argsFor(inherited, { preamble })).not.toContain('--setting-sources')
+    expect(argsFor(inherited, { preamble })).not.toContain('--strict-mcp-config')
   })
 })
 
@@ -200,6 +282,15 @@ describe('the settings file of a launch without user settings', () => {
     const settings = writtenSettings(planFor(worker(), { configDir }))
 
     expect(settings.permissions).toEqual({ deny: ['Agent', 'SendMessage'] })
+    expect(settings.enabledPlugins).toEqual({ [AGENT_CHAT_PLUGIN]: true })
+  })
+
+  it('still carries both for a worker at the home directory, where no settings file loads', () => {
+    const configDir = accountDenying(['Agent'])
+
+    const settings = writtenSettings(planFor(worker(), { configDir, cwdHoldsUserSettings: true }))
+
+    expect(settings.permissions).toEqual({ deny: ['Agent'] })
     expect(settings.enabledPlugins).toEqual({ [AGENT_CHAT_PLUGIN]: true })
   })
 

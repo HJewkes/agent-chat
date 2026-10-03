@@ -218,6 +218,12 @@ MCP wildcard) approved tools the profile never named.
 | worker, visible pane                 | `project,local`     | no                    |
 | coordinator, or a teleported session | none (every source) | no                    |
 
+At the home directory, and at the parent of the agent's config dir, the project settings
+file is an account's user file (`<cwd>/.claude/settings.json`). A launch there whose
+sources leave `user` out gets `--setting-sources ''` and loads no settings file. Observed
+with `project,local` and `--allowed-tools Read`: an unlisted `touch` ran from the home
+directory and was denied from a worktree; with `''` it was denied from the home directory.
+
 A profile file overrides either default with `settingSources` (a list drawn from `user`,
 `project`, `local`; an empty list loads no settings file) or `strictMcpConfig`. A strict
 launch loads only the generated MCP config: agent-chat, plus the servers the profile

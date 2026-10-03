@@ -1,5 +1,8 @@
+import os from 'node:os'
+import path from 'node:path'
 import type { SurfaceName } from '../protocol.js'
 import { roleOf } from './profiles.js'
+import { canonicalPath } from './spawn-cwd.js'
 import type { AgentProfile, SettingSource } from './types.js'
 
 /**
@@ -16,10 +19,33 @@ import type { AgentProfile, SettingSource } from './types.js'
  */
 export const WORKER_SETTING_SOURCES: readonly SettingSource[] = ['project', 'local']
 
-/** Undefined means no `--setting-sources` flag, so Claude Code loads every source. */
-export function settingSourcesFor(profile: AgentProfile): readonly SettingSource[] | undefined {
-  if (profile.settingSources !== undefined) return profile.settingSources
-  return roleOf(profile) === 'worker' ? WORKER_SETTING_SOURCES : undefined
+/**
+ * Whether `project` and `local` at this cwd ARE an account's user settings.
+ *
+ * Claude Code reads the project file from `<cwd>/.claude/settings.json`. At the
+ * home directory that is the default account's user file, and at the parent of
+ * any config dir it can be that account's. Observed on claude 2.1.288 with
+ * `--setting-sources project,local --allowed-tools Read`: an unlisted `touch`
+ * ran from the home directory and was denied from a worktree.
+ */
+export function cwdHoldsUserSettings(cwd: string, configDir?: string, home: string = os.homedir()): boolean {
+  const real = canonicalPath(cwd)
+  const roots = [home, ...(configDir === undefined ? [] : [path.dirname(configDir)])]
+  return roots.some(root => canonicalPath(root) === real)
+}
+
+/**
+ * Undefined means no `--setting-sources` flag, so Claude Code loads every source.
+ * A list that leaves `user` out loads no file at all from a cwd that holds user
+ * settings, since every other source there is the user file under another name.
+ */
+export function settingSourcesFor(
+  profile: AgentProfile,
+  atUserSettings = false,
+): readonly SettingSource[] | undefined {
+  const sources =
+    profile.settingSources ?? (roleOf(profile) === 'worker' ? WORKER_SETTING_SOURCES : undefined)
+  return atUserSettings && sources !== undefined && !sources.includes('user') ? [] : sources
 }
 
 /**

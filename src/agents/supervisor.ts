@@ -22,6 +22,7 @@ import {
   type SwitchOutcome,
 } from './mode-switch.js'
 import { AGENT_CHAT_TOOLS, buildLaunchPlan, permModeFor } from './launch-plan.js'
+import { cwdHoldsUserSettings } from './launch-policy.js'
 import {
   buildMcpConfig,
   clearRuntimeState,
@@ -1437,6 +1438,7 @@ export class Supervisor implements TeleportHost {
       profile,
       brief: [briefing?.text, predecessor, contracted.brief, allocation.note].filter(Boolean).join('\n\n'),
       cwd: allocation.cwd,
+      cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, account.dir),
       surface,
       mcpConfigPath: mcpConfigPath(agentId),
       hookSettingsPath: hookSettingsPath(agentId),
@@ -2450,6 +2452,7 @@ export class Supervisor implements TeleportHost {
       profile,
       brief: req.message ?? RESUMED_BRIEF,
       cwd: allocation.cwd,
+      cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, agent.configDir),
       surface,
       mcpConfigPath: mcpConfigPath(agent.agentId),
       hookSettingsPath: hookSettingsPath(agent.agentId),
@@ -2560,6 +2563,7 @@ export class Supervisor implements TeleportHost {
       profile,
       brief: req.to === 'headless' ? BACKGROUNDED_BRIEF : agent.brief,
       cwd: allocation.cwd,
+      cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, agent.configDir),
       surface,
       mcpConfigPath: mcpConfigPath(agent.agentId),
       hookSettingsPath: hookSettingsPath(agent.agentId),
@@ -2729,6 +2733,7 @@ export class Supervisor implements TeleportHost {
       profile: input.profile,
       brief: input.brief,
       cwd: allocation.cwd,
+      cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, input.configDir),
       surface: input.surface,
       preamble: input.preamble,
       mcpConfigPath: mcpConfigPath(input.agentId),
