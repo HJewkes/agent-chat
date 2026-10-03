@@ -15,6 +15,7 @@ import {
 import { DEFAULT_FULL_SUITE_SLOTS } from './suite-slots.js'
 import { isHexColour, type PaneColourConfig } from '@titan-design/agent-surface'
 import { isInteractiveSurface, type SurfaceName } from './protocol.js'
+import { POOL_PICK_MODES, type PoolPickMode } from './agents/seats/pool-pick.js'
 
 interface AgentChatConfig {
   agentSlots?: unknown
@@ -22,6 +23,7 @@ interface AgentChatConfig {
   contextHints?: unknown
   parkAdvice?: unknown
   ledgerShadow?: unknown
+  poolPick?: unknown
   permissionHookTimeoutSeconds?: unknown
   decider?: unknown
   noticeTtlHours?: unknown
@@ -83,6 +85,19 @@ export function resolveLedgerShadow(): boolean {
   if (value === undefined || typeof value === 'boolean') return value !== false
   logEvent('config_invalid', { key: 'ledgerShadow', value, fallback: true })
   return true
+}
+
+/**
+ * CC-606: whether the broker's pool pick for an unpinned seat spawn is only recorded (`shadow`, the default)
+ * or also billed (`enforce`); `off` skips it. From `config.json`'s `poolPick`, read per spawn.
+ */
+export function resolvePoolPickMode(): PoolPickMode {
+  const value = readConfig().poolPick
+  if (value === undefined) return 'shadow'
+  const mode = POOL_PICK_MODES.find(known => known === value)
+  if (mode !== undefined) return mode
+  logEvent('config_invalid', { key: 'poolPick', value, fallback: 'shadow' })
+  return 'shadow'
 }
 
 /**

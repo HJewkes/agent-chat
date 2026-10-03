@@ -12,6 +12,7 @@ import {
   resolveMachineLimits,
   resolveNoticeTtlMs,
   resolvePermissionHookTimeout,
+  resolvePoolPickMode,
   resolveReportBatchMs,
   resolveWorktreeBudget,
 } from '../config.js'
@@ -305,5 +306,28 @@ describe('resolveCoordinatorGrantableTools', () => {
   it('grants nothing for a value that is not a list', () => {
     writeConfigJson({ coordinatorGrantableTools: 'WebSearch' })
     expect(resolveCoordinatorGrantableTools()).toEqual([])
+  })
+})
+
+describe('resolvePoolPickMode', () => {
+  it('is shadow when config.json does not set poolPick', () => {
+    writeConfigJson({ agentSlots: 30 })
+
+    expect(resolvePoolPickMode()).toBe('shadow')
+  })
+
+  it('honors enforce and off', () => {
+    writeConfigJson({ poolPick: 'enforce' })
+    expect(resolvePoolPickMode()).toBe('enforce')
+
+    writeConfigJson({ poolPick: 'off' })
+    expect(resolvePoolPickMode()).toBe('off')
+  })
+
+  it('falls back to shadow on an unknown mode, and logs it', () => {
+    writeConfigJson({ poolPick: 'on' })
+
+    expect(resolvePoolPickMode()).toBe('shadow')
+    expect(fs.readFileSync(path.join(dir, 'broker.log'), 'utf8')).toContain('"key":"poolPick"')
   })
 })

@@ -28,6 +28,7 @@ import {
   type SpendMeter,
 } from './stops.js'
 import { accountReading, lastGoodReading } from './watchdog.js'
+import type { PoolPickLine, PoolPickStatus } from './pool-pick-log.js'
 import type { MachineStatus } from '../machine-guard.js'
 
 /**
@@ -121,6 +122,8 @@ export interface SeatStatus {
   parked: ParkedLoad
   budget: BudgetStatus
   inbox: InboxReading
+  /** CC-606: the broker's last pool picks for the seat's spawns; in shadow mode, what it would have billed. */
+  poolPicks: PoolPickStatus
   eligible: EligibleStatus
   /** CC-406: the machine-wide guard's readings against its limits, across every seat. */
   machine: MachineStatus
@@ -143,6 +146,8 @@ export interface StatusDeps {
   loadDoc: () => WatchdogDoc
   /** Throws when events.db cannot be read. */
   inbox: (seat: string) => InboxReading
+  /** Newest first. Throws when events.db cannot be read. */
+  poolPicks: (seat: string) => PoolPickLine[]
   scored: (seat: string, today: string) => ScoredPlan
   /** Given the whole roster, not the seat's share of it. */
   machine: (agents: AgentIdentity[]) => MachineStatus
@@ -371,6 +376,14 @@ function inboxReading(deps: StatusDeps, seat: string, plain: Plain): InboxReadin
   }
 }
 
+function poolPickStatus(deps: StatusDeps, seat: string, plain: Plain): PoolPickStatus {
+  try {
+    return { last: deps.poolPicks(seat) }
+  } catch (err) {
+    return { last: [], error: plain(err) }
+  }
+}
+
 const eligibleTask = (row: DispatchRow): EligibleTask => ({
   id: row.id,
   initiative: row.initiative,
@@ -411,6 +424,7 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
     parked: parkedLoad(mine),
     budget: budgetStatus(deps, policy, seat, now, plain),
     inbox: inboxReading(deps, seat, plain),
+    poolPicks: poolPickStatus(deps, seat, plain),
     eligible: eligibleStatus(deps, seat, localDate(now), plain),
     machine: deps.machine(roster),
     stop: machineStop === null ? null : 'machine',
@@ -491,6 +505,12 @@ function inboxLine(inbox: InboxReading): string {
   return line('inbox', `${inbox.unread} unread (${since})`)
 }
 
+/** No line until the broker has picked for the seat, so a seat it never routes reads as before. */
+function poolPickLines(picks: PoolPickStatus): string[] {
+  if (picks.error !== undefined) return [line('pool pick', `unavailable: ${picks.error}`)]
+  return picks.last.map((pick, i) => line(i === 0 ? 'pool pick' : '', `${pick.at}  ${pick.text}`))
+}
+
 export function renderStatus(status: SeatStatus): string[] {
   const { parked, budget } = status
   const trees = parked.treeOnDisk.length === 0 ? '' : `  tree on disk: ${parked.treeOnDisk.join(', ')}`
@@ -507,6 +527,7 @@ export function renderStatus(status: SeatStatus): string[] {
     ...pacingLines(budget),
     machineLine(status.machine),
     inboxLine(status.inbox),
+    ...poolPickLines(status.poolPicks),
     ...eligibleLines(status.eligible),
   ]
 }

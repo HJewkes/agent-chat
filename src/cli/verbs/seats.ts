@@ -63,6 +63,7 @@ import {
   WAITING_OWNER_TAG,
   type StatusDeps,
 } from '../../agents/seats/status.js'
+import { readPoolPicks } from '../../agents/seats/pool-pick-log.js'
 import type { OwnerMessage } from '../../agents/seats/stops.js'
 import { FIRE_CAP, WATCHDOG_MINUTES } from '../../agents/seats/watchdog.js'
 import { BrokerClient } from '../../client/broker-client.js'
@@ -380,6 +381,7 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
     readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
     loadDoc: () => readDoc(),
     inbox: seat => readInbox(path.join(home(), 'events.db'), seat),
+    poolPicks: seat => readPoolPicks(path.join(home(), 'events.db'), seat),
     scored: (seat, today) =>
       scoredPlanFromDisk({
         seat,
