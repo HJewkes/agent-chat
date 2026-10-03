@@ -22,6 +22,7 @@ import {
   type SwitchOutcome,
 } from './mode-switch.js'
 import { AGENT_CHAT_TOOLS, buildLaunchPlan, permModeFor } from './launch-plan.js'
+import { cwdHoldsUserSettings } from './launch-policy.js'
 import {
   buildMcpConfig,
   clearRuntimeState,
@@ -1437,6 +1438,7 @@ export class Supervisor implements TeleportHost {
       profile,
       brief: [briefing?.text, predecessor, contracted.brief, allocation.note].filter(Boolean).join('\n\n'),
       cwd: allocation.cwd,
+      cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, account.dir),
       surface,
       mcpConfigPath: mcpConfigPath(agentId),
       hookSettingsPath: hookSettingsPath(agentId),
@@ -1450,7 +1452,7 @@ export class Supervisor implements TeleportHost {
       configDir: account.dir,
       ...(account.unset ? { configDirUnset: true } : {}),
     })
-    writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry()))
+    writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry(), plan.surface))
 
     // Appended BEFORE the launch. If the launch then fails, the identity exists
     // in `spawning` with a refusal beside it, which is exactly what you want when
@@ -2450,6 +2452,7 @@ export class Supervisor implements TeleportHost {
       profile,
       brief: req.message ?? RESUMED_BRIEF,
       cwd: allocation.cwd,
+      cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, agent.configDir),
       surface,
       mcpConfigPath: mcpConfigPath(agent.agentId),
       hookSettingsPath: hookSettingsPath(agent.agentId),
@@ -2459,7 +2462,7 @@ export class Supervisor implements TeleportHost {
       ...(agent.configDir ? { configDir: agent.configDir } : {}),
       ...(agent.configDirUnset ? { configDirUnset: true } : {}),
     })
-    writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry()))
+    writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry(), plan.surface))
     this.core.append({
       kind: 'agent_resumed',
       actor: req.requestedBy ?? HUMAN,
@@ -2560,6 +2563,7 @@ export class Supervisor implements TeleportHost {
       profile,
       brief: req.to === 'headless' ? BACKGROUNDED_BRIEF : agent.brief,
       cwd: allocation.cwd,
+      cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, agent.configDir),
       surface,
       mcpConfigPath: mcpConfigPath(agent.agentId),
       hookSettingsPath: hookSettingsPath(agent.agentId),
@@ -2573,7 +2577,7 @@ export class Supervisor implements TeleportHost {
       ...(agent.configDir ? { configDir: agent.configDir } : {}),
       ...(agent.configDirUnset ? { configDirUnset: true } : {}),
     })
-    writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry()))
+    writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry(), plan.surface))
 
     // `surface` in meta is what stops the roster reporting the pane this agent no
     // longer has — `foldAgent` reads it, and only a switch ever writes it.
@@ -2729,6 +2733,7 @@ export class Supervisor implements TeleportHost {
       profile: input.profile,
       brief: input.brief,
       cwd: allocation.cwd,
+      cwdHoldsUserSettings: cwdHoldsUserSettings(allocation.cwd, input.configDir),
       surface: input.surface,
       preamble: input.preamble,
       mcpConfigPath: mcpConfigPath(input.agentId),
@@ -2742,7 +2747,7 @@ export class Supervisor implements TeleportHost {
       ...(input.configDirUnset ? { configDirUnset: true } : {}),
       ...(input.remoteControl ? { remoteControl: true } : {}),
     })
-    writeLaunchFiles(plan, buildMcpConfig(input.profile, cliEntry()))
+    writeLaunchFiles(plan, buildMcpConfig(input.profile, cliEntry(), plan.surface))
 
     this.core.append({
       kind: 'agent_spawned',

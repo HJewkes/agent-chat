@@ -1,6 +1,7 @@
 import { GIT_SHIM_DIR_ENV, gitShimDirFor } from '../leak-guard/git-shim.js'
 import { gitHooksEnv } from '../leak-guard/hooks-dir.js'
 import { isInteractiveSurface } from '../protocol.js'
+import { settingSourcesFor, strictMcpFor } from './launch-policy.js'
 import type { AgentProfile, LaunchPlan, LaunchPlanInput } from './types.js'
 
 /**
@@ -25,6 +26,9 @@ import type { AgentProfile, LaunchPlan, LaunchPlanInput } from './types.js'
  * as a healthy peer that never answers. Too important to leave to each profile.
  */
 export const AGENT_CHAT_TOOLS = 'mcp__plugin_agent-chat_agent-chat__*'
+
+/** The plugin that carries the bus, as its marketplace names it. */
+export const AGENT_CHAT_PLUGIN = 'agent-chat@agent-chat-local'
 
 /** What every spawned agent is told about its situation, before its profile speaks. */
 export const PEER_PREAMBLE = [
@@ -168,6 +172,12 @@ function unsetEnvFor(input: LaunchPlanInput, interactive: boolean): Pick<LaunchP
   return unsetEnv.length > 0 ? { unsetEnv } : {}
 }
 
+/** An empty list still emits the flag: it loads no settings file at all, which is not the same as every one. */
+function settingSourceArgs(input: LaunchPlanInput): string[] {
+  const sources = settingSourcesFor(input.profile, input.cwdHoldsUserSettings)
+  return sources === undefined ? [] : ['--setting-sources', sources.join(',')]
+}
+
 export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
   const surface = input.surface ?? input.profile.surface
   const interactive = isInteractiveSurface(surface)
@@ -197,7 +207,8 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     systemPrompt(input, hooked),
     '--mcp-config',
     input.mcpConfigPath,
-    ...(profile.strictMcpConfig === true ? ['--strict-mcp-config'] : []),
+    ...(strictMcpFor(profile, surface) ? ['--strict-mcp-config'] : []),
+    ...settingSourceArgs(input),
     ...(profile.disableSlashCommands === true ? ['--disable-slash-commands'] : []),
     ...(settings === undefined ? [] : ['--settings', settings]),
     // Without this, notifications/claude/channel is never negotiated for the
@@ -208,7 +219,7 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     // durable, addressable peer. Matches the flag active-work's own launcher
     // passes for a human-started session (`aw`'s buildChannelArgs).
     '--channels',
-    'plugin:agent-chat@agent-chat-local',
+    `plugin:${AGENT_CHAT_PLUGIN}`,
   ]
   // Note what an inherited posture costs: agent-chat's own tools stop being
   // allowlisted here and fall back to the session's ordinary permission rules,

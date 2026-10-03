@@ -559,6 +559,7 @@ describe('where the agent git shim is put on PATH', () => {
     profile,
     brief: 'brief',
     cwd: '/repo',
+    cwdHoldsUserSettings: false,
     mcpConfigPath: '/state/agents/ag000001/mcp.json',
     ...over,
   })

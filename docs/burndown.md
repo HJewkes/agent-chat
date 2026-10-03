@@ -185,13 +185,15 @@ count.
 Every item is yours to check by hand; nothing here is verified by an agent.
 `agent-chat burndown install` prints this list and refuses while `enabled` is false.
 
-- **Settings allowlist.** `permissions.allow` in the shared `~/.claude/settings.json`
-  covers what a burndown worker runs: `git fetch`, `git merge --ff-only`, `git add`,
-  `git commit`, `git push -u origin agent-chat/*` (the existing worktree branch prefix,
-  not `bd/*`), `npm run format`, `npm run format:check`, `npm run typecheck`,
-  `npm run build`, `npx vitest run`, `gh pr create`, `gh pr view`, `gh pr checks`.
-  `gh pr merge` stays out until the merge-chore slice. Checked by one manual run that
-  raised no approval request.
+- **Profile allowlist.** A worker no longer loads the shared `~/.claude/settings.json`
+  (see [`permission-relay.md`](permission-relay.md), "What a worker launch loads"), so
+  the `bd-*` profile's own `allowedTools` must cover what a burndown worker runs:
+  `git fetch`, `git merge --ff-only`, `git add`, `git commit`,
+  `git push -u origin agent-chat/*` (the existing worktree branch prefix, not `bd/*`),
+  `npm run format`, `npm run format:check`, `npm run typecheck`, `npm run build`,
+  `npx vitest run`, `gh pr create`, `gh pr view`, `gh pr checks`. `gh pr merge` stays
+  denied until the merge-chore slice. Checked by one manual run that raised no approval
+  request.
 - **Decider deployed** in a restart window, or explicitly waived (parked questions wait
   for you until then).
 - **Lean profiles live**: the `bd-*` profiles merged and installed after a broker

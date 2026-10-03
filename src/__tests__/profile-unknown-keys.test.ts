@@ -9,12 +9,12 @@ const valid = { model: 'sonnet', allowedTools: ['Read'], isolation: 'none', surf
 describe('unknown profile keys', () => {
   it('warns with the file and key for a field AgentProfile does not have', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-keys-'))
-    fs.writeFileSync(path.join(dir, 'typo.json'), JSON.stringify({ ...valid, denies: ['Monitor'] }))
+    fs.writeFileSync(path.join(dir, 'typo.json'), JSON.stringify({ ...valid, deniedTools: ['Monitor'] }))
 
     const loaded = loadProfile('typo', dir)
 
     expect(loaded).toMatchObject({ name: 'typo', model: 'sonnet' })
-    expect(loaded).toHaveProperty('warnings', [expect.stringMatching(/typo\.json.*"denies"/)])
+    expect(loaded).toHaveProperty('warnings', [expect.stringMatching(/typo\.json.*"deniedTools"/)])
   })
 
   it('gives a valid profile no warnings', () => {
@@ -24,10 +24,10 @@ describe('unknown profile keys', () => {
   })
 
   it('names every unknown key', () => {
-    const parsed = parseProfile('two', { ...valid, denies: [], extra: 1 })
+    const parsed = parseProfile('two', { ...valid, deniedTools: [], extra: 1 })
 
     expect(parsed).toHaveProperty('warnings', [
-      expect.stringContaining('"denies"'),
+      expect.stringContaining('"deniedTools"'),
       expect.stringContaining('"extra"'),
     ])
   })
