@@ -15,7 +15,7 @@ import {
 } from '../protocol.js'
 import type { Allocation } from './isolation/index.js'
 import { loadProfile, recordedRole } from './profiles.js'
-import { appendixFacts, renderAppendix, reportsSinceWrap } from './teleport-appendix.js'
+import { appendixFacts, renderAppendix, reportsSinceWrap, type WrapGap } from './teleport-appendix.js'
 import { observedModel } from './transcript.js'
 import type { AgentProfile } from './types.js'
 
@@ -413,15 +413,27 @@ export class Teleport {
     ]
   }
 
-  /** CC-524: a wrap records what the session knew when it ran, so a report that arrived later is in no record. */
+  /**
+   * CC-524: a wrap records what the session knew when it ran, so a report that arrived later is in no record.
+   * The handoff is already stored when this runs, so a failed read drops the warning and never the teleport.
+   */
   private wrapWarning(identity: AgentIdentity, name: string): string[] {
-    const gap = reportsSinceWrap(this.core.agents, this.core.events, { name, sessionId: identity.sessionId })
+    const gap = this.wrapGap(identity, name)
     if (gap === undefined) return []
     return [
       `${gap.reports} agent report(s) arrived after your last active-work wrap ` +
         `(${new Date(gap.wrapAt).toISOString()}), so no session record holds them. Your successor ` +
         'is told the count, not what they said.',
     ]
+  }
+
+  private wrapGap(identity: AgentIdentity, name: string): WrapGap | undefined {
+    try {
+      return reportsSinceWrap(this.core.agents, this.core.events, { name, sessionId: identity.sessionId })
+    } catch (err) {
+      logEvent('teleport_wrap_check_failed', { name, error: (err as Error).message })
+      return undefined
+    }
   }
 
   /**
@@ -558,15 +570,23 @@ export class Teleport {
     }
   }
 
-  /** CC-524: the handoff, then what the broker knows that the handoff may have left out. */
+  /**
+   * CC-524: the handoff, then what the broker knows that the handoff may have left out.
+   * This runs after the predecessor stood down, so a failed read costs the appendix and never the successor.
+   */
   private briefFor(entry: Pending): string {
     const handoff = entry.reason === 'park' ? `${PARK_LINE}\n\n${entry.handoff}` : entry.handoff
-    const facts = appendixFacts(this.core.agents, this.core.events, {
-      name: entry.subject.name,
-      since: entry.since,
-      sessionId: entry.sessionId,
-    })
-    return `${handoff}\n\n${renderAppendix(facts)}`
+    try {
+      const facts = appendixFacts(this.core.agents, this.core.events, {
+        name: entry.subject.name,
+        since: entry.since,
+        sessionId: entry.sessionId,
+      })
+      return `${handoff}\n\n${renderAppendix(facts)}`
+    } catch (err) {
+      logEvent('teleport_appendix_failed', { name: entry.subject.name, error: (err as Error).message })
+      return handoff
+    }
   }
 
   /**

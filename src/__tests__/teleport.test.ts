@@ -421,6 +421,46 @@ describe('the descendant', () => {
     expect(planFor(result.agentId as string).stdin).toContain('Wrap: 1 agent report(s) arrived after')
   })
 
+  it('still starts, on the handoff alone, when the broker cannot build its appendix (CC-524)', async () => {
+    const agentId = await spawnAgent()
+    const real = core.events.openQuestions.bind(core.events)
+    // The first read is preflight's; the next is the appendix's, after the predecessor stood down.
+    vi.spyOn(core.events, 'openQuestions')
+      .mockImplementationOnce(real)
+      .mockImplementation(() => {
+        throw new Error('database is locked')
+      })
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'the handoff' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(spawnRowFor(result.agentId as string)?.target).toBe('scout')
+    expect(planFor(result.agentId as string).stdin).toBe('the handoff')
+    expect(readBrokerLog()).toContain('"teleport_appendix_failed"')
+    expect(readBrokerLog()).not.toContain('"teleport_failed"')
+  })
+
+  it('still teleports, without the wrap warning, when the wrap check cannot read the inbox (CC-524)', async () => {
+    const agentId = await spawnAgent()
+    const sessions = path.join(process.env.AGENT_CHAT_ACTIVE_WORK_ROOT as string, 'init-a', 'sessions')
+    fs.mkdirSync(sessions, { recursive: true })
+    fs.writeFileSync(path.join(sessions, '..', 'brief.md'), '# init-a\n')
+    fs.writeFileSync(path.join(sessions, `2026-01-01-0000-${core.agents.get(agentId)?.sessionId}.md`), 'w\n')
+    core.append({ kind: 'message', actor: 'a-peer', target: 'scout', body: 'hello' })
+    vi.spyOn(core.events, 'inboxFor').mockImplementation(() => {
+      throw new Error('database is locked')
+    })
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'the handoff' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(result.ok).toBe(true)
+    expect(result.warnings).toHaveLength(1)
+    expect(readBrokerLog()).toContain('"teleport_wrap_check_failed"')
+    expect(spawnRowFor(result.agentId as string)?.target).toBe('scout')
+    expect(planFor(result.agentId as string).stdin).toBe('the handoff')
+  })
+
   /**
    * The bug waiting in the obvious implementation: reuse the ordinary parent
    * path and `depthOf` returns parent + 1, so a depth-1 agent can teleport twice
