@@ -76,6 +76,7 @@ const STATUS: SeatStatus = {
   },
   pace: [],
   inbox: { unread: 4, sinceLastSend: '2026-09-30T09:00:00.000Z' },
+  poolPicks: { last: [] },
   eligible: { top: [], skipped: 0, today: '2026-09-30' },
   machine: {
     headlessAgents: { live: 3, limit: 10 },

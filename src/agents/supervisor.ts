@@ -67,7 +67,7 @@ import {
 } from './machine-guard.js'
 import { canonicalPath, checkSpawnCwd, isAtOrUnder } from './spawn-cwd.js'
 import { resolveSpawnBriefing, type BriefingResult } from './active-work.js'
-import { childConfigDir, resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
+import { childConfigDir, defaultConfigDir, resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
 import { configDir, findTranscript } from './transcript.js'
 import { resolvePredecessor, type PredecessorResult } from './predecessor.js'
 import { withReturnContract } from './return-contract.js'
@@ -110,6 +110,15 @@ import type { SeatDispatchLog, SpawnFacts } from './seats/dispatch-log.js'
 import type { SeatSpawnRead, SeatSpawnRequest } from './seats/spawn-gate-read.js'
 import { SEAT_BUDGET_STOP, seatSpawnGate, type SeatBudgetRefusalCode } from './seats/spawn-gate.js'
 import type { RetireSpend } from './seats/dispatch-record.js'
+import {
+  poolPickText,
+  routePool,
+  type PoolPickRead,
+  type PoolPickRecord,
+  type PoolPickRequest,
+  type PoolRoute,
+} from './seats/pool-route.js'
+import type { PoolPickMode } from './seats/pool-pick.js'
 import { readTranscriptSpend, type TranscriptSpendRead } from './transcript-spend.js'
 import type { ShadowLedger } from './ledger/shadow-ledger.js'
 import { exitTerminal, LifecycleShadow } from './ledger/lifecycle-shadow.js'
@@ -415,6 +424,21 @@ export interface SeatBudgetReaders {
   read: (spawn: SeatSpawnRequest) => SeatSpawnRead
 }
 
+/** CC-606: the pool pick's disk reader and its `poolPick` config mode, both read per spawn. */
+export interface PoolPickReaders {
+  read: (spawn: PoolPickRequest) => PoolPickRead
+  mode: () => PoolPickMode
+}
+
+type Account = Extract<ConfigDirResolution, { dir: string }>
+
+/** The default account runs with the variable unset (CC-200), as a spawner on it would leave its child. */
+const poolAccount = (dir: string): Account => ({
+  dir,
+  source: 'pool',
+  ...(path.resolve(dir) === defaultConfigDir() ? { unset: true as const } : {}),
+})
+
 export interface SpawnOutcome {
   ok: boolean
   agentId?: string
@@ -512,6 +536,8 @@ export interface SupervisorOptions {
   machineGuard?: MachineGuardReaders
   /** CC-288: the seat budget gate's reader. */
   seatBudget?: SeatBudgetReaders
+  /** CC-606: the pool pick's readers. Absent in tests, which own no autonomy root. */
+  poolPick?: PoolPickReaders
   /** CC-450: how an unwatched agent's recorded launcher pid is checked. Faked in tests. */
   processProbe?: ProcessProbe
 }
@@ -682,6 +708,7 @@ export class Supervisor implements TeleportHost {
   private readonly shadow: LifecycleShadow
   private readonly machineGuard: MachineGuardReaders | undefined
   private readonly seatBudget: SeatBudgetReaders | undefined
+  private readonly poolPick: PoolPickReaders | undefined
   private readonly processProbe: ProcessProbe
   private readonly reaper: DetachedReaper
 
@@ -703,6 +730,7 @@ export class Supervisor implements TeleportHost {
     this.seatDispatch = options.seatDispatch
     this.machineGuard = options.machineGuard
     this.seatBudget = options.seatBudget
+    this.poolPick = options.poolPick
     this.processProbe = options.processProbe ?? hostProbe
     this.reaper = new DetachedReaper(this.settleMs, this.processProbe, (agentId, probe) =>
       this.reapIfDead(agentId, probe),
@@ -1059,6 +1087,82 @@ export class Supervisor implements TeleportHost {
     return verdict.allow ? undefined : `seat budget stop: ${verdict.reason}`
   }
 
+  /**
+   * CC-606: the pick for a seat's spawn, walked past the budget gate and recorded; undefined when no seat
+   * owns it or the pick is off. Any failure logs and returns undefined, so the spawn bills as it would unrouted.
+   */
+  private poolRoute(
+    req: SpawnRequest,
+    site: { homeDir: string; cwd: string; initiative?: string },
+    gate: (configDir: string) => string | undefined,
+  ): PoolRoute | undefined {
+    const pinned = req.configDir !== undefined && req.configDir !== ''
+    try {
+      const mode = this.poolPick?.mode() ?? 'off'
+      if (this.poolPick === undefined || mode === 'off') return undefined
+      const read = this.poolPick.read({
+        name: req.name,
+        spawner: req.requestedBy,
+        pinned,
+        now: new Date(),
+        ...site,
+      })
+      if (read.kind === 'none') return undefined
+      const route = routePool(read, mode, gate)
+      this.recordPoolPick(req.name, route.record, pinned)
+      return pinned ? { record: route.record } : route
+    } catch (err) {
+      logEvent('pool_pick_failed', {
+        name: req.name,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return undefined
+    }
+  }
+
+  /** A pinned spawn's pick is logged only: its row would say nothing a shadow comparison needs. */
+  private recordPoolPick(agent: string, record: PoolPickRecord, pinned: boolean): void {
+    logEvent('pool_pick', { name: agent, ...record })
+    if (pinned) return
+    this.core.append({
+      kind: 'notice',
+      actor: 'agent-chat',
+      target: record.seat,
+      body: poolPickText(agent, record),
+      meta: {
+        pool_pick: record.mode,
+        would: String(record.would),
+        agent,
+        home: record.home ?? '',
+        chosen: record.chosen ?? '',
+        candidates: JSON.stringify(record.candidates),
+      },
+    })
+  }
+
+  /**
+   * The account the spawn bills, past the seat budget gate. Shadow mode records the pool pick and keeps
+   * `account`; enforce mode bills the picked pool, and refuses only when every eligible pool and `account` are closed.
+   */
+  private billedAccount(
+    req: SpawnRequest,
+    model: string,
+    account: Account,
+    site: { cwd: string; initiative?: string; keepsAccount: boolean },
+  ): { account: Account } | { refusal: string } {
+    const refusals = new Map<string, string | undefined>()
+    const gate = (dir: string): string | undefined => {
+      if (!refusals.has(dir)) refusals.set(dir, this.seatBudgetRefusal(req, model, dir))
+      return refusals.get(dir)
+    }
+    const { keepsAccount, ...where } = site
+    const route = keepsAccount ? undefined : this.poolRoute(req, { homeDir: account.dir, ...where }, gate)
+    if (route?.redirect !== undefined) return { account: poolAccount(route.redirect.configDir) }
+    const overBudget = gate(account.dir)
+    if (overBudget === undefined) return { account }
+    return { refusal: route?.refusal === undefined ? overBudget : `seat budget stop: ${route.refusal}` }
+  }
+
   /** The requester's OWN `agent_spawned` row — the only record of what it was granted. */
   private spawnEventOf(agentId: string) {
     return this.core.events.agentEvents().find(row => row.kind === 'agent_spawned' && row.msgId === agentId)
@@ -1351,16 +1455,23 @@ export class Supervisor implements TeleportHost {
     // CC-100. Resolved here rather than at launch time so a bad `config_dir`
     // refuses before anything is allocated, and so the WARNING from a missing
     // initiative profile dir reaches the requester with every other spawn warning.
-    const account = resolveConfigDir({
+    const resolved = resolveConfigDir({
       ...(req.configDir === undefined ? {} : { explicit: req.configDir }),
       ...(req.spawnerConfigDir === undefined ? {} : { spawner: req.spawnerConfigDir }),
       ...(req.spawnerIsSession === true ? { spawnerIsSession: true } : {}),
       ...(injected?.profile === undefined ? {} : { profile: injected.profile }),
     })
-    if ('error' in account) return this.refuse(req, account.error)
-    if (account.warning !== undefined) warnings.push(account.warning)
-    const overBudget = this.seatBudgetRefusal(req, profile.model, account.dir)
-    if (overBudget) return this.refuse(req, overBudget, { code: SEAT_BUDGET_STOP, retryable: true })
+    if ('error' in resolved) return this.refuse(req, resolved.error)
+    if (resolved.warning !== undefined) warnings.push(resolved.warning)
+    // A fork or a resumed session continues a transcript that lives under its account, so neither is routed.
+    const billed = this.billedAccount(req, profile.model, resolved, {
+      cwd,
+      ...(injected === undefined ? {} : { initiative: injected.slug }),
+      keepsAccount: fork !== undefined || req.resumeSession !== undefined,
+    })
+    if ('refusal' in billed)
+      return this.refuse(req, billed.refusal, { code: SEAT_BUDGET_STOP, retryable: true })
+    const { account } = billed
     const resumed = await this.resumeSource(req, isolationName, cwd, account.dir)
     if (resumed !== undefined && 'error' in resumed) return this.refuse(req, resumed.error)
     const predecessor = req.predecessor === undefined ? undefined : this.predecessorFor(req.predecessor, req)

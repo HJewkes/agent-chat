@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { isSeatName, parseSeat, type Seat } from './charter.js'
+import { frontmatterField } from '../active-work.js'
+import { charterSeats, isSeatName, parseSeat, type Seat } from './charter.js'
 import { readText } from './io.js'
 
 /** CC-330: which seat an agent belongs to, shared by the seat journal and the dispatch log so they cannot disagree. */
@@ -55,3 +56,10 @@ export function seatOf(
   const seats = owners.map(({ seat }) => seat.name).sort((a, b) => a.localeCompare(b))
   return { kind: 'ambiguous', prefix: first.seat.prefix, seats }
 }
+
+/** The owner runs an attended seat, so the charter's watchdog list never names it. */
+export const isAttended = (seatFile: string): boolean => frontmatterField(seatFile, 'role') === 'attended'
+
+/** A seat whose spawns the broker gates and routes: one the charter lists, or an attended seat. */
+export const ownsSpawns = (charter: string, { seat, text }: SeatFile): boolean =>
+  charterSeats(charter).includes(seat.name) || isAttended(text)

@@ -1,5 +1,5 @@
-import { frontmatterField } from '../active-work.js'
 import { charterSeats, isSeatName, parseSeat } from './charter.js'
+import { isAttended } from './seat-of.js'
 
 /**
  * CC-605: the charter never names an attended seat, so nothing says one should exist. The
@@ -27,7 +27,7 @@ function judge(deps: AttendedDeps, name: string, remembered: boolean): Verdict {
     const retired = deps.readSeatFile(`retired/${name}`) !== undefined
     return !remembered || retired ? { kind: 'forget' } : { kind: 'ungated', why: 'is missing' }
   }
-  if (frontmatterField(text, 'role') !== 'attended')
+  if (!isAttended(text))
     return remembered ? { kind: 'ungated', why: 'no longer says role: attended' } : { kind: 'forget' }
   return parseSeat(name, text) === undefined
     ? { kind: 'ungated', why: 'has no prefix or pool' }
