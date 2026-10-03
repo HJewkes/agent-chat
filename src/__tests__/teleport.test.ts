@@ -47,6 +47,8 @@ function makeCore(): BrokerCore {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-tele-'))
   tmpDirs.push(dir)
   process.env.AGENT_CHAT_HOME = dir
+  // The appendix reads seat files under the active-work root; this keeps it off the developer's own.
+  process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = path.join(dir, 'active-work')
   return new BrokerCore((conn, message) => delivered.push({ conn, text: message.text }), {
     events: new EventLog(path.join(dir, 'events.db')),
     registry: new Registry<Conn>(),
@@ -157,6 +159,10 @@ const planFor = (agentId: string): LaunchPlan =>
 
 const readBrokerLog = (): string => fs.readFileSync(logPath(), 'utf8')
 
+/** A successor's first turn up to the broker's appendix (CC-524), which is everything the predecessor wrote. */
+const handoffPart = (agentId: string): string =>
+  (planFor(agentId).stdin ?? '').split('\n\n---\n\n## Broker appendix')[0] ?? ''
+
 /** Swaps every launched handle's launchFailed for one the test settles; returns the trigger. */
 function controlLaunchFailed(): (reason: string) => void {
   let trigger: (reason: string) => void = () => undefined
@@ -197,6 +203,7 @@ afterEach(() => {
   vi.restoreAllMocks()
   vi.useRealTimers()
   delete process.env.AGENT_CHAT_HOME
+  delete process.env.AGENT_CHAT_ACTIVE_WORK_ROOT
   for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 
@@ -330,8 +337,8 @@ describe('the descendant', () => {
     expect(result.name).toBe('scout')
     const spawn = spawnRowFor(result.agentId as string)
     expect(spawn?.target).toBe('scout')
-    expect(spawn?.body).toBe('the handoff')
-    expect(planFor(result.agentId as string).stdin).toBe('the handoff')
+    expect(spawn?.body).toBe(planFor(result.agentId as string).stdin)
+    expect(handoffPart(result.agentId as string)).toBe('the handoff')
   })
 
   it('a park teleport tells the successor to ask the open question first', async () => {
@@ -341,7 +348,7 @@ describe('the descendant', () => {
     const result = await supervisor.teleport({ subject: subject(agentId), handoff, reason: 'park' })
     await vi.advanceTimersByTimeAsync(0)
 
-    expect(planFor(result.agentId as string).stdin).toBe(`${PARK_LINE}\n\n${handoff}`)
+    expect(handoffPart(result.agentId as string)).toBe(`${PARK_LINE}\n\n${handoff}`)
     const row = rowsFor(agentId).find(r => r.kind === 'agent_handoff')
     expect(row?.body).toBe(handoff)
     expect(row?.meta.reason).toBe('park')
@@ -358,10 +365,100 @@ describe('the descendant', () => {
     const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'the handoff' })
     await vi.advanceTimersByTimeAsync(0)
 
-    expect(planFor(result.agentId as string).stdin).toBe('the handoff')
+    expect(handoffPart(result.agentId as string)).toBe('the handoff')
     const row = rowsFor(agentId).find(r => r.kind === 'agent_handoff')
     expect(row?.meta).toEqual({ successor: result.agentId })
     expect(readBrokerLog()).not.toContain('"reason":"park"')
+  })
+
+  it('is told by the broker which agents its predecessor left running and what arrived (CC-524)', async () => {
+    const agentId = await spawnAgent()
+    const { msgId: child } = core.append({
+      kind: 'agent_spawned',
+      actor: 'scout',
+      target: 'scout-helper',
+      body: 'a brief',
+      meta: { name: 'scout-helper', profile: 'explorer' },
+    })
+    core.append({ kind: 'agent_attached', actor: 'scout-helper', ref: child })
+    core.append({ kind: 'message', actor: 'scout-helper', target: 'scout', body: 'Status: DONE' })
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'the handoff' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    const stdin = planFor(result.agentId as string).stdin ?? ''
+    expect(stdin.startsWith('the handoff\n\n---\n\n## Broker appendix')).toBe(true)
+    expect(stdin).toContain('- scout-helper (profile explorer, live)')
+    expect(stdin).toContain('Inbox: 1 message(s) arrived for scout')
+    expect(stdin).toContain('Open chat_ask questions: none.')
+  })
+
+  it('warns the predecessor when an agent report arrived after its last wrap (CC-524)', async () => {
+    const agentId = await spawnAgent()
+    const sessions = path.join(process.env.AGENT_CHAT_ACTIVE_WORK_ROOT as string, 'init-a', 'sessions')
+    fs.mkdirSync(sessions, { recursive: true })
+    fs.writeFileSync(path.join(sessions, '..', 'brief.md'), '# init-a\n')
+    const record = path.join(sessions, `2026-01-01-0000-${core.agents.get(agentId)?.sessionId}.md`)
+    fs.writeFileSync(record, 'what the session knew\n')
+    const wrapAt = new Date(Date.now() - 60_000)
+    fs.utimesSync(record, wrapAt, wrapAt)
+    const { msgId: child } = core.append({
+      kind: 'agent_spawned',
+      actor: 'scout',
+      target: 'scout-helper',
+      body: 'a brief',
+      meta: { name: 'scout-helper', profile: 'explorer' },
+    })
+    core.append({ kind: 'agent_attached', actor: 'scout-helper', ref: child })
+    core.append({ kind: 'message', actor: 'scout-helper', target: 'scout', body: 'Status: DONE' })
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(result.warnings?.join('\n')).toContain(
+      '1 agent report(s) arrived after your last active-work wrap',
+    )
+    expect(planFor(result.agentId as string).stdin).toContain('Wrap: 1 agent report(s) arrived after')
+  })
+
+  it('still starts, on the handoff alone, when the broker cannot build its appendix (CC-524)', async () => {
+    const agentId = await spawnAgent()
+    const real = core.events.openQuestions.bind(core.events)
+    // The first read is preflight's; the next is the appendix's, after the predecessor stood down.
+    vi.spyOn(core.events, 'openQuestions')
+      .mockImplementationOnce(real)
+      .mockImplementation(() => {
+        throw new Error('database is locked')
+      })
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'the handoff' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(spawnRowFor(result.agentId as string)?.target).toBe('scout')
+    expect(planFor(result.agentId as string).stdin).toBe('the handoff')
+    expect(readBrokerLog()).toContain('"teleport_appendix_failed"')
+    expect(readBrokerLog()).not.toContain('"teleport_failed"')
+  })
+
+  it('still teleports, without the wrap warning, when the wrap check cannot read the inbox (CC-524)', async () => {
+    const agentId = await spawnAgent()
+    const sessions = path.join(process.env.AGENT_CHAT_ACTIVE_WORK_ROOT as string, 'init-a', 'sessions')
+    fs.mkdirSync(sessions, { recursive: true })
+    fs.writeFileSync(path.join(sessions, '..', 'brief.md'), '# init-a\n')
+    fs.writeFileSync(path.join(sessions, `2026-01-01-0000-${core.agents.get(agentId)?.sessionId}.md`), 'w\n')
+    core.append({ kind: 'message', actor: 'a-peer', target: 'scout', body: 'hello' })
+    vi.spyOn(core.events, 'inboxFor').mockImplementation(() => {
+      throw new Error('database is locked')
+    })
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'the handoff' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(result.ok).toBe(true)
+    expect(result.warnings).toHaveLength(1)
+    expect(readBrokerLog()).toContain('"teleport_wrap_check_failed"')
+    expect(spawnRowFor(result.agentId as string)?.target).toBe('scout')
+    expect(planFor(result.agentId as string).stdin).toBe('the handoff')
   })
 
   /**

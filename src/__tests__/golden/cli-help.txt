@@ -29,6 +29,7 @@ Agent commands:
   watch [options] <name>     stream messages for a session that cannot receive channel pushes
   agent                      durable agents
   teleport                   teleport control
+  handoff                    stored teleport handoffs
   profiles                   agent profiles available to spawn with
   gh-write <gh-args...>      one gh write after --, spaced machine-wide and retried on the secondary
                              rate limit
@@ -681,6 +682,26 @@ Commands:
 Usage: agent-chat teleport abort [options] <name>
 
 stop a session ending itself for a successor
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat handoff
+Usage: agent-chat handoff [options] [command]
+
+stored teleport handoffs
+
+Options:
+  -h, --help      display help for command
+
+Commands:
+  last <name>     print the latest handoff a session stored when it teleported
+  help [command]  display help for command
+
+=== agent-chat handoff last
+Usage: agent-chat handoff last [options] <name>
+
+print the latest handoff a session stored when it teleported
 
 Options:
   -h, --help  display help for command

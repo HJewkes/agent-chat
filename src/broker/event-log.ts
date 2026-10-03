@@ -15,6 +15,7 @@ import type {
 import type { CursoredMessage, DecisionCitation } from '../protocol.js'
 import { resolveNoticeTtlMs } from '../config.js'
 import { DECISION_AUDIT_MS, decidedText, overruleText } from './decisions.js'
+import { undeliveredHandoffs, type StoredHandoff } from './handoffs.js'
 import { NOTICE_LIVE } from './notice-expiry.js'
 import type {
   AgentEventRow,
@@ -547,6 +548,10 @@ export class EventLog implements EventStore {
       )
       .get(name, since) as unknown as { n: number }
     return row.n
+  }
+
+  undeliveredHandoffs(since: number): StoredHandoff[] {
+    return undeliveredHandoffs(this.db, since)
   }
 
   /** An open `question` nobody has decided yet: the only thing a decider may answer. */

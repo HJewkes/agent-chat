@@ -974,3 +974,55 @@ the countdown notice reaches the human queue and `agent-chat teleport abort`
 stops it; an ordinary session's descendant comes up on the inherited
 configuration and registers under the same name; and a descendant can itself
 teleport again — `gen=3` — with lineage intact through both hops.
+
+---
+
+## 16. What the broker adds to a handoff, and where a lost one goes (CC-524)
+
+The stored `agent_handoff` row is still the predecessor's text, verbatim. Two
+things now sit around it.
+
+**The appendix.** The successor's first turn is the handoff followed by a
+section headed `## Broker appendix`, which says the predecessor did not write
+it. The broker builds it from the event log just before the relaunch
+(`src/agents/teleport-appendix.ts`):
+
+- agents spawned under the name that are `spawning`, `live` or `detached`, with
+  profile and state, plus a count of exited agents nobody retired;
+- how many inbox rows arrived for the name during the predecessor's session.
+  This is a count of arrivals, not of unread messages, because nothing tracks a
+  read cursor;
+- open `chat_ask` questions, by message id;
+- the queue file, when `seats/<name>.md` declares `queue:` in its frontmatter;
+- a `Wrap:` line when agent reports arrived after the predecessor's last
+  `active-work wrap`.
+
+The wrap is not in the event log. `active-work` names a session record
+`<timestamp>-<session id>.md`, so the newest file carrying the predecessor's
+session id gives the wrap time by its mtime. A report counts when an agent the
+name spawned sent it after that time. The predecessor gets the same fact as a
+warning on its `agent_teleport` result. A session with no record gets no
+warning, since it may have no initiative to wrap into.
+
+The appendix is built after the predecessor has stood down. A read that
+throws there costs the appendix, not the successor: the broker logs
+`teleport_appendix_failed` and starts the successor on the handoff alone. The
+wrap check on the `agent_teleport` result is guarded the same way.
+
+**The undelivered handoff.** A handoff is undelivered when its predecessor
+stood down, its successor's identity never attached, and no holder of its
+name has been shown it. On `register` the broker looks for one from the last 7 days
+(`src/broker/handoff-recovery.ts`) and shows it to:
+
+- the next session that registers the predecessor's name, at once;
+- the next human-started session that starts in the predecessor's working
+  directory, once the handoff is 2 minutes old. A broker-spawned agent is
+  skipped, because it has a brief of its own. A session that already had an
+  identity is skipped too: it is re-registering, not starting.
+
+It arrives as a message from `agent-chat` that cites the handoff row and
+records which match it was (`meta.recovered_by`). Each match shows once. A
+directory showing does not use up the name's, because two seats can share one
+directory and the handoff belongs to the name. `agent-chat handoff last <name>` prints the
+newest stored handoff for a name and what became of its teleport. It reads
+`events.db` directly, so it works while the broker is down.

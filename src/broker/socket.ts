@@ -18,6 +18,7 @@ import { logEvent, loggedCount } from './log.js'
 import { newMsgId } from './event-log.js'
 import { type Escalation, type RouteResult } from './registry.js'
 import { BrokerCore, type Conn, type EndorseApproval } from './core.js'
+import { recoverHandoff, returningSession } from './handoff-recovery.js'
 import type { SlotUsage } from '../agents/semaphore.js'
 import { Supervisor, type SupervisorOptions } from '../agents/supervisor.js'
 import { gather, LifecycleVerifier } from '../agents/ledger/verifier.js'
@@ -1202,6 +1203,26 @@ export class SocketServer {
     })
   }
 
+  /** CC-524: read before `core.register`, which mints an identity for a session that has none. */
+  private returning(msg: Extract<ClientMessage, { t: 'register' }>): boolean {
+    try {
+      return returningSession(this.core, msg)
+    } catch (err) {
+      logEvent('handoff_recovery_failed', { name: msg.name, error: (err as Error).message })
+      // Unknown reads as returning: a name match still shows, and no directory match goes out on a guess.
+      return true
+    }
+  }
+
+  /** CC-524: recovery adds to a registration that already succeeded, so a failed read is logged and dropped. */
+  private showUndeliveredHandoff(msg: Extract<ClientMessage, { t: 'register' }>, returning: boolean): void {
+    try {
+      recoverHandoff(this.core, msg, { returning })
+    } catch (err) {
+      logEvent('handoff_recovery_failed', { name: msg.name, error: (err as Error).message })
+    }
+  }
+
   handleMessage(conn: Conn, msg: ClientMessage): void {
     const { core } = this
     core.registry.touch(conn)
@@ -1218,6 +1239,7 @@ export class SocketServer {
         // — the predecessor has to learn why, or it just reconnects and takes the
         // name back.
         const dark = core.darkSeat(msg.name)
+        const returning = this.returning(msg)
         const result = core.register(conn, msg, stale =>
           stale.end(encode({ t: 'error', reason: `superseded by a resume of "${msg.name}"`, fatal: true })),
         )
@@ -1225,6 +1247,7 @@ export class SocketServer {
         reply(conn, { t: 'register_result', ...result })
         if (result.ok) core.deliverStranded(msg.name)
         if (result.ok && dark !== undefined) core.deliverHeld(msg.name, dark)
+        if (result.ok) this.showUndeliveredHandoff(msg, returning)
         return
       }
       case 'readopt':

@@ -301,6 +301,40 @@ const newestFiles = (dir: string, limit: number): string[] => {
   }
 }
 
+const mtimeOf = (file: string): number | undefined => {
+  try {
+    return fs.statSync(file).mtimeMs
+  } catch {
+    return undefined
+  }
+}
+
+const initiativeDirs = (root: string): string[] => {
+  try {
+    return fs.readdirSync(root).filter(slug => isInitiative(root, slug))
+  } catch {
+    return []
+  }
+}
+
+/** A shorter id would match session files that are not this session's. */
+const SESSION_ID_MIN = 8
+
+/**
+ * CC-524: when `active-work wrap` last wrote this session's record, in any initiative.
+ * It names the file `<timestamp>-<session id>.md`, so the newest match's mtime is the wrap.
+ */
+export function sessionWrapAt(sessionId: string, root = activeWorkRoot()): number | undefined {
+  if (sessionId.length < SESSION_ID_MIN) return undefined
+  const times = initiativeDirs(root).flatMap(slug => {
+    const dir = path.join(root, slug, 'sessions')
+    return newestFiles(dir, Infinity)
+      .filter(name => name.includes(sessionId))
+      .flatMap(name => mtimeOf(path.join(dir, name)) ?? [])
+  })
+  return times.length === 0 ? undefined : Math.max(...times)
+}
+
 const readOr = (file: string, fallback: string): string => {
   try {
     return fs.readFileSync(file, 'utf8')
