@@ -54,7 +54,7 @@ import {
   readOutputTail,
   type SurfaceOptions,
 } from '@titan-design/agent-surface'
-import { relaunchScriptPath, surfaceFor } from './launcher.js'
+import { psLauncherProbe, relaunchScriptPath, surfaceFor, type LauncherProbe } from './launcher.js'
 import { Semaphore, type SlotUsage } from './semaphore.js'
 import {
   countLiveHeadless,
@@ -226,6 +226,12 @@ interface SuccessorLaunch {
   predecessor: Live | undefined
   allocation: Allocation
   isolation: IsolationName
+}
+
+/** Why a teleport successor's retry did not launch; `tell` when the human must hear of it. */
+interface RetryRefusal {
+  reason: string
+  tell: boolean
 }
 
 const pause = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
@@ -478,6 +484,8 @@ export interface SupervisorOptions {
   surface?: Pick<SurfaceOptions, 'runAppleScript' | 'spawn' | 'platform' | 'probeProcesses' | 'launchCheck'>
   /** Teleport's human-veto window. Shortened in tests; never shortened in production. */
   countdownMs?: number
+  /** CC-402: finds a successor's `run-agent` before a relaunch retry, so a slow launch is never started twice. */
+  launcherRunning?: LauncherProbe
   /** How teleport reads a predecessor's argv for `--remote-control`. Faked in tests. */
   argvReader?: ArgvReader
   /**
@@ -664,6 +672,7 @@ export class Supervisor implements TeleportHost {
   private readonly surfaceOptions: SupervisorOptions['surface']
   private readonly hookSpawn: HookSpawnFn | undefined
   private readonly seatJournal: SeatJournal | undefined
+  private readonly launcherRunning: LauncherProbe
   private readonly seatDispatch: SeatDispatchLog | undefined
   private readonly unwatch: () => void
   private readonly teleporter: Teleport
@@ -687,6 +696,7 @@ export class Supervisor implements TeleportHost {
     this.surfaceOptions = options.surface ?? {}
     this.hookSpawn = options.hookSpawn
     this.seatJournal = options.seatJournal
+    this.launcherRunning = options.launcherRunning ?? psLauncherProbe
     this.seatDispatch = options.seatDispatch
     this.machineGuard = options.machineGuard
     this.seatBudget = options.seatBudget
@@ -2802,7 +2812,8 @@ export class Supervisor implements TeleportHost {
     if (retried) return this.reportDeadSuccessor(input, reason)
     logEvent('teleport_relaunch_retry', { name: input.name, agentId: input.agentId, reason })
     await pause(RELAUNCH_RETRY_MS)
-    if (this.hasAttached(input.agentId)) return
+    const refusal = await this.retryRefusal(input)
+    if (refusal !== undefined) return this.refuseRetry(input, reason, refusal)
     let handle: LaunchHandle
     try {
       handle = await this.launchOn(input.surface, launch.plan, input.anchor, input.reuseAnchor ?? false)
@@ -2811,6 +2822,29 @@ export class Supervisor implements TeleportHost {
     }
     this.trackSuccessor(launch, handle)
     this.watchSuccessor(launch, handle, true)
+  }
+
+  /** CC-402: why a retry must not launch again, since a late successor would then run twice; undefined to retry. */
+  private async retryRefusal(input: RelaunchInput): Promise<RetryRefusal | undefined> {
+    if (this.hasAttached(input.agentId)) return { reason: 'the successor attached', tell: false }
+    const running = await this.launcherRunning(input.agentId)
+    if (running === true) return { reason: 'its run-agent is already running', tell: false }
+    if (running === undefined)
+      return {
+        reason: 'the process table could not be read, so a running run-agent cannot be ruled out',
+        tell: true,
+      }
+    return undefined
+  }
+
+  private refuseRetry(input: RelaunchInput, failure: string, refusal: RetryRefusal): void {
+    if (refusal.tell)
+      return this.reportDeadSuccessor(input, `${failure}; not launched again: ${refusal.reason}`)
+    logEvent('teleport_relaunch_skipped', {
+      name: input.name,
+      agentId: input.agentId,
+      reason: refusal.reason,
+    })
   }
 
   /** The human queue and the seat's log, since nobody is left inside the session to notice (CC-191, CC-402). */
@@ -2842,28 +2876,36 @@ export class Supervisor implements TeleportHost {
   ): Promise<{ handle: LaunchHandle; retried: boolean }> {
     const { input, plan } = launch
     const attempt = () => this.launchOn(input.surface, plan, input.anchor, input.reuseAnchor ?? false)
+    let failure: string
     try {
       return { handle: await attempt(), retried: false }
     } catch (first) {
-      logEvent('teleport_relaunch_retry', {
-        name: input.name,
-        agentId: input.agentId,
-        reason: (first as Error).message,
-      })
+      failure = (first as Error).message
+      logEvent('teleport_relaunch_retry', { name: input.name, agentId: input.agentId, reason: failure })
     }
     await pause(RELAUNCH_RETRY_MS)
+    const refusal = await this.retryRefusal(input)
+    if (refusal !== undefined) {
+      if (refusal.tell) this.finishFailedLaunch(executionId, failure)
+      this.refuseRetry(input, failure, refusal)
+      throw new SuccessorNotStarted(refusal.reason)
+    }
     try {
       return { handle: await attempt(), retried: true }
     } catch (err) {
       const reason = (err as Error).message
-      this.shadow.finish(executionId, {
-        outcome: 'failed',
-        reason: `teleport failed: ${reason}`,
-        retryable: false,
-      })
+      this.finishFailedLaunch(executionId, reason)
       this.reportDeadSuccessor(input, reason)
       throw new SuccessorNotStarted(reason)
     }
+  }
+
+  private finishFailedLaunch(executionId: string | undefined, reason: string): void {
+    this.shadow.finish(executionId, {
+      outcome: 'failed',
+      reason: `teleport failed: ${reason}`,
+      retryable: false,
+    })
   }
 
   /** Live agents, for `agent ls` and the slot summary. */

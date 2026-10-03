@@ -487,6 +487,16 @@ describe('a teleport whose successor did not start (CC-402)', () => {
     expect(journalText()).toBe(`04:05 teleport-failed AB-12 ${AGENT} -\n`)
   })
 
+  it('writes the line for a seat whose name has no dash', () => {
+    seatFile(root, 'coord', 'co')
+
+    journalOver(root)({ event: 'teleport-failed', agent: 'coord' })
+
+    const file = seatLogPath(root, 'coord', AT)
+    expect(fs.readFileSync(file, 'utf8')).toBe('04:05 teleport-failed - coord -\n')
+    expect(readSeatLog(fs.readFileSync(file, 'utf8'), AT)).toEqual({})
+  })
+
   it('still writes no other event under the seat’s own name', () => {
     journalOver(root)({ event: 'spawn', agent: SEAT })
 
@@ -503,6 +513,7 @@ describe('the watchdog reading a journal the broker also writes', () => {
     'merged AB-12 sx-ab-12 example-org/widget#7@abcdef1',
     'stalled AB-12 sx-ab-12 -',
     `teleport-failed - ${SEAT} -`,
+    'teleport-failed - coord -',
   ]
 
   it.each(brokerLines)('keeps the seat’s pause under the broker line "%s", which is no activity', line => {

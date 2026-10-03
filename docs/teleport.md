@@ -947,10 +947,14 @@ argument with exit 64. Keys typed after the newline go to `run-agent`'s stdin.
 CC-402 replaced the fixed settle with a wait. The broker polls the
 predecessor's pid until it has exited, for up to 10 s, and then waits the 750 ms
 settle. A relaunch typed while Claude Code still held the pane was swallowed,
-and the successor sat in `spawning` with no transcript and no alert. A
-successor launch that throws, such as "iTerm2 is not running" after
+and the successor sat in `spawning` with no transcript and no alert. If the pid
+outlives the 10 s, the successor opens beside the pane rather than typing into
+it. A successor launch that throws, such as "iTerm2 is not running" after
 launchservicesd restarted under memory pressure, or that fails its 5 s launch
-check, is retried once after 10 s. A second failure raises one human-queue
+check, is retried once after 10 s. Just before the retry the broker looks for
+`run-agent <id>` in the process table. If it is there, the launch was only
+slow, so nothing is launched again. If the table cannot be read, the human is
+told instead of risking a second successor. A second failure raises one human-queue
 notice that names the `relaunch` script, and writes a `teleport-failed` line to
 the seat's journal. That line has the broker's journal shape, so the watchdog
 reads it as neither a stop nor activity. The seat watchdog separately flags any

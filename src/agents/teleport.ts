@@ -476,8 +476,8 @@ export class Teleport {
     })
 
     try {
-      if (subject.anchor !== undefined) await this.waitForPaneFree(subject)
-      await this.host.relaunch(this.relaunchFor(entry))
+      const paneFree = subject.anchor !== undefined && (await this.waitForPaneFree(subject))
+      await this.host.relaunch(this.relaunchFor(entry, paneFree))
       logEvent('teleport_completed', { name: subject.name, from: agentId, to: entry.descendantId })
     } catch (err) {
       if (err instanceof SuccessorNotStarted) return
@@ -497,7 +497,8 @@ export class Teleport {
     }
   }
 
-  private relaunchFor(entry: Pending): RelaunchInput {
+  /** `paneFree` false keeps the anchor but opens beside it: typing into a pane the predecessor still holds reaches its prompt. */
+  private relaunchFor(entry: Pending, paneFree: boolean): RelaunchInput {
     const { subject } = entry
     const previous = this.core.agents.spawnMeta(subject.agentId)
     const generation = Number.parseInt(previous.generation ?? '1', 10)
@@ -531,7 +532,8 @@ export class Teleport {
       ...(entry.remoteControl ? { remoteControl: true } : {}),
       ...(subject.tags.length > 0 ? { tags: subject.tags } : {}),
       ...(subject.subscriptions.length > 0 ? { subscriptions: subject.subscriptions } : {}),
-      ...(subject.anchor === undefined ? {} : { anchor: subject.anchor, reuseAnchor: true }),
+      ...(subject.anchor === undefined ? {} : { anchor: subject.anchor }),
+      ...(paneFree ? { reuseAnchor: true } : {}),
       ...(entry.inherited === undefined ? {} : { inherited: entry.inherited }),
       ...(entry.inherited === undefined ? {} : { inheritedFrom: subject.agentId }),
     }
@@ -555,21 +557,19 @@ export class Teleport {
     logEvent('teleport_name_held', { name, waitedMs: NAME_FREE_TIMEOUT_MS })
   }
 
-  /**
-   * CC-402: a command typed while the predecessor still owns the pane is swallowed, so wait for its pid to exit.
-   * A timeout is not fatal: the launch check and its retry catch a relaunch that still did not run.
-   */
-  private async waitForPaneFree(subject: TeleportSubject): Promise<void> {
+  /** CC-402: a command typed while the predecessor still owns the pane is swallowed, so wait for its pid to exit. */
+  private async waitForPaneFree(subject: TeleportSubject): Promise<boolean> {
     const pid = subject.hostPid as number
     const deadline = Date.now() + PANE_EXIT_TIMEOUT_MS
     while (pidAlive(pid)) {
       if (Date.now() >= deadline) {
         logEvent('teleport_pane_held', { name: subject.name, pid, waitedMs: PANE_EXIT_TIMEOUT_MS })
-        break
+        return false
       }
       await sleep(PANE_EXIT_POLL_MS)
     }
     await sleep(PANE_SETTLE_MS)
+    return true
   }
 
   /** Session ids are minted per descendant, never reused: a teleport is not a resume. */

@@ -33,6 +33,8 @@ const TASK = String.raw`(?:-|[A-Za-z][A-Za-z0-9]*-\d+)`
 const AGENT = String.raw`[A-Za-z0-9]+-[A-Za-z0-9][A-Za-z0-9._-]*`
 const PR = String.raw`-|[\w.-]+/[\w.-]+#\d+@[0-9a-f]{7}`
 const JOURNAL_TEXT = new RegExp(`^(${JOURNAL_EVENTS.join('|')}) ${TASK} (${AGENT}) (${PR})$`)
+/** CC-402: a seat's own successor is named for the seat, which needs no dash. */
+const SEAT_FAILED = /^teleport-failed - ([a-z0-9][a-z0-9_-]*) -$/i
 const CLOCKED = /^\d\d:\d\d (.*)$/
 
 /** The events the broker itself sees, which never carry a PR. */
@@ -41,7 +43,8 @@ const LIFECYCLE: readonly string[] = ['spawn', 'retire', 'park', 'teleport-faile
 /** The agent a broker line names; undefined for any other text, so the seat's own prose never reads as the broker's. */
 function agentOf(text: string): string | undefined {
   const m = JOURNAL_TEXT.exec(text)
-  if (m === null || (LIFECYCLE.includes(m[1] ?? '') && m[3] !== ABSENT)) return undefined
+  if (m === null) return SEAT_FAILED.exec(text)?.[1]
+  if (LIFECYCLE.includes(m[1] ?? '') && m[3] !== ABSENT) return undefined
   return m[2]
 }
 

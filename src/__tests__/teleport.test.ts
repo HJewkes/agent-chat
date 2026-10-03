@@ -1,5 +1,3 @@
-import { spawn, type ChildProcess } from 'node:child_process'
-import { once } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -11,7 +9,7 @@ import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { RELAUNCH_RETRY_MS, Supervisor } from '../agents/supervisor.js'
-import { HANDOFF_MAX_BYTES, PANE_SETTLE_MS, PARK_LINE } from '../agents/teleport.js'
+import { HANDOFF_MAX_BYTES, PANE_EXIT_TIMEOUT_MS, PANE_SETTLE_MS, PARK_LINE } from '../agents/teleport.js'
 import { planPath } from '../agents/launch-files.js'
 import { logPath, profilesDir } from '../paths.js'
 import type { LaunchPlan } from '../agents/types.js'
@@ -36,6 +34,10 @@ let core: BrokerCore
 let supervisor: Supervisor
 let stopAutoAttach: () => void
 let killed: Array<{ pid: number; signal: string }>
+/** When each pid was first signalled, so a liveness probe can answer from the fake clock. */
+let signalledAt: Map<number, number>
+/** CC-402: how long a signalled predecessor takes to exit; Infinity never exits. */
+let exitDelayMs: number
 /** Everything the broker pushed to a live session, so "was it told?" is answerable. */
 let delivered: Array<{ conn: Conn; text: string }>
 
@@ -70,6 +72,7 @@ function makeSupervisor(semaphore?: Semaphore, argvReader: ArgvReader = () => 'c
   supervisor = new Supervisor(core, {
     countdownMs: COUNTDOWN_MS,
     argvReader,
+    launcherRunning: async () => false,
     ...(semaphore ? { semaphore } : {}),
     surface: {
       platform: 'darwin',
@@ -168,13 +171,18 @@ function controlLaunchFailed(): (reason: string) => void {
 beforeEach(() => {
   vi.useFakeTimers()
   killed = []
+  signalledAt = new Map()
+  exitDelayMs = 0
   delivered = []
   vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: unknown) => {
     // CC-402: a liveness probe, answered as a predecessor that exits on its first SIGTERM.
     if (signal === 0) {
-      if (killed.some(k => k.pid === pid)) throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
+      const at = signalledAt.get(pid)
+      if (at !== undefined && Date.now() >= at + exitDelayMs)
+        throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
       return true
     }
+    if (!signalledAt.has(pid)) signalledAt.set(pid, Date.now())
     killed.push({ pid, signal: String(signal) })
     return true
   })
@@ -616,6 +624,7 @@ describe('a visible predecessor', () => {
     supervisor.close()
     supervisor = new Supervisor(core, {
       countdownMs: COUNTDOWN_MS,
+      launcherRunning: async () => false,
       surface: {
         platform: 'darwin',
         launchCheck: { deadlineMs: 1_000, pollMs: 100 },
@@ -746,6 +755,9 @@ describe('a successor that does not start (CC-402)', () => {
   })
   let journal: JournalEntry[]
   let typed: string[]
+  let split: string[]
+  /** What the run-agent probe answers before a retry. */
+  let launcherUp: boolean | undefined
   /** iTerm answers "not running" to this many probes, as it did after launchservicesd restarted under memory pressure. */
   let itermDownFor: number
 
@@ -753,10 +765,13 @@ describe('a successor that does not start (CC-402)', () => {
     supervisor.close()
     journal = []
     typed = []
+    split = []
+    launcherUp = false
     itermDownFor = 0
     supervisor = new Supervisor(core, {
       countdownMs: COUNTDOWN_MS,
       seatJournal: entry => journal.push(entry),
+      launcherRunning: async () => launcherUp,
       surface: {
         platform: 'darwin',
         runAppleScript: async script => {
@@ -766,17 +781,35 @@ describe('a successor that does not start (CC-402)', () => {
             return 'false'
           }
           if (script.includes('write text')) typed.push(script)
+          if (/split (horizontally|vertically) with default profile/.test(script)) split.push(script)
           return 'reused-pane-uuid'
         },
       },
     })
   })
 
+  /** The first launch's check reports run-agent absent; later launches pass theirs. */
+  function failFirstLaunchCheck(): () => number {
+    const launchOn = (supervisor as unknown as { launchOn: (...a: unknown[]) => Promise<object> }).launchOn
+    let launches = 0
+    vi.spyOn(supervisor as unknown as { launchOn: typeof launchOn }, 'launchOn').mockImplementation(
+      async (...args: unknown[]) => {
+        const handle = await launchOn.apply(supervisor, args)
+        launches += 1
+        return launches === 1
+          ? { ...handle, launchFailed: Promise.resolve('run-agent never started') }
+          : handle
+      },
+    )
+    return () => launches
+  }
+
   const failedLines = (): JournalEntry[] => journal.filter(entry => entry.event === 'teleport-failed')
   const successorNotices = () => core.events.humanQueue().filter(item => item.text.includes('successor'))
 
   it('retries a relaunch iTerm refused, and the retry starts the successor', async () => {
     const agentId = await spawnAgent(visible)
+    stopAutoAttach()
     itermDownFor = 1
 
     await supervisor.teleport(anchored(agentId))
@@ -810,46 +843,71 @@ describe('a successor that does not start (CC-402)', () => {
   it('retries once when the launch check finds the successor not running, and that retry starts it', async () => {
     const agentId = await spawnAgent(visible)
     stopAutoAttach()
-    const launchOn = (supervisor as unknown as { launchOn: (...a: unknown[]) => Promise<object> }).launchOn
-    let launches = 0
-    vi.spyOn(supervisor as unknown as { launchOn: typeof launchOn }, 'launchOn').mockImplementation(
-      async (...args: unknown[]) => {
-        const handle = await launchOn.apply(supervisor, args)
-        launches += 1
-        return launches === 1
-          ? { ...handle, launchFailed: Promise.resolve('run-agent never started') }
-          : handle
-      },
-    )
+    const launches = failFirstLaunchCheck()
 
     await supervisor.teleport(anchored(agentId))
     await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS + RELAUNCH_RETRY_MS + 1_000)
 
+    expect(launches()).toBe(2)
     expect(typed).toHaveLength(2)
     expect(readBrokerLog()).toContain('"event":"teleport_relaunch_retry"')
     expect(readBrokerLog()).not.toContain('"event":"teleport_failed"')
     expect(successorNotices()).toEqual([])
     expect(failedLines()).toEqual([])
   })
+
+  it('does not launch again when run-agent appeared after the launch check, before it registered', async () => {
+    const agentId = await spawnAgent(visible)
+    stopAutoAttach()
+    const launches = failFirstLaunchCheck()
+    launcherUp = true
+
+    await supervisor.teleport(anchored(agentId))
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS + RELAUNCH_RETRY_MS + 1_000)
+
+    expect(launches()).toBe(1)
+    expect(typed).toHaveLength(1)
+    expect(readBrokerLog()).toContain('"event":"teleport_relaunch_skipped"')
+    expect(successorNotices()).toEqual([])
+  })
+
+  it('tells the human rather than launching again when the process table cannot be read', async () => {
+    const agentId = await spawnAgent(visible)
+    stopAutoAttach()
+    const launches = failFirstLaunchCheck()
+    launcherUp = undefined
+
+    await supervisor.teleport(anchored(agentId))
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_SETTLE_MS + RELAUNCH_RETRY_MS + 1_000)
+
+    expect(launches()).toBe(1)
+    expect(successorNotices()[0]?.text).toContain('cannot be ruled out')
+    expect(failedLines()).toEqual([{ event: 'teleport-failed', agent: 'scout' }])
+  })
+
+  it('opens beside a pane the predecessor still holds, and its retry does not type into it either', async () => {
+    const agentId = await spawnAgent(visible)
+    stopAutoAttach()
+    const launches = failFirstLaunchCheck()
+    exitDelayMs = Number.POSITIVE_INFINITY
+
+    await supervisor.teleport(anchored(agentId))
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + PANE_EXIT_TIMEOUT_MS + RELAUNCH_RETRY_MS + 1_000)
+
+    expect(readBrokerLog()).toContain('"event":"teleport_pane_held"')
+    expect(launches()).toBe(2)
+    expect(typed).toEqual([])
+    expect(split).toHaveLength(2)
+  })
 })
 
 describe('a reused pane whose predecessor is slow to exit (CC-402)', () => {
-  const SLOW_EXIT =
-    "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 1500)); setInterval(() => {}, 1000); process.stdout.write('ready')"
-  let child: ChildProcess | undefined
-
-  afterEach(() => {
-    child?.kill('SIGKILL')
-    child = undefined
-  })
-
   it('types the relaunch only after the old process has exited, and the successor starts', async () => {
-    vi.restoreAllMocks()
-    vi.useRealTimers()
     const typedAt: number[] = []
     supervisor.close()
     supervisor = new Supervisor(core, {
-      countdownMs: 200,
+      countdownMs: COUNTDOWN_MS,
+      launcherRunning: async () => false,
       surface: {
         platform: 'darwin',
         runAppleScript: async script => {
@@ -860,22 +918,15 @@ describe('a reused pane whose predecessor is slow to exit (CC-402)', () => {
       },
     })
     const agentId = await spawnAgent({ surface: 'iterm-pane' })
-    const slow = spawn(process.execPath, ['-e', SLOW_EXIT], { stdio: ['ignore', 'pipe', 'ignore'] })
-    child = slow
-    await once(slow.stdout, 'data')
-    const exited = new Promise<number>(resolve => slow.once('exit', () => resolve(Date.now())))
+    exitDelayMs = 1_500
 
-    await supervisor.teleport({
-      subject: subject(agentId, { anchor: 'w0t1p0:ANCHOR-UUID', hostPid: slow.pid }),
-      handoff: 'h',
-    })
-    const exitedAt = await exited
-    await vi.waitFor(() => expect(readBrokerLog()).toContain('"event":"teleport_completed"'), {
-      timeout: 5_000,
-    })
+    await supervisor.teleport({ subject: subject(agentId, { anchor: 'w0t1p0:ANCHOR-UUID' }), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS + exitDelayMs + PANE_SETTLE_MS + 500)
 
+    const exitedAt = (signalledAt.get(9999) ?? 0) + exitDelayMs
     expect(typedAt).toHaveLength(1)
-    expect(typedAt[0]).toBeGreaterThan(exitedAt)
+    expect(typedAt[0]).toBeGreaterThanOrEqual(exitedAt + PANE_SETTLE_MS)
+    expect(readBrokerLog()).toContain('"event":"teleport_completed"')
   })
 })
 
