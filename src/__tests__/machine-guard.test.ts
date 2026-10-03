@@ -196,6 +196,46 @@ describe('agent spawn under the machine guard', () => {
   })
 })
 
+describe('the sysctl readers under a PATH without /usr/sbin (CC-498)', () => {
+  const calls: string[][] = []
+  // Stands in for execFileSync: only an absolute /usr/sbin/sysctl resolves, as under launchd.
+  const exec = (file: string, args: string[]): string => {
+    calls.push([file, ...args])
+    if (file !== '/usr/sbin/sysctl') throw new Error(`spawnSync ${file} ENOENT`)
+    return args[1] === 'vm.swapusage' ? 'total = 8192.00M  used = 4096.00M  free = 4096.00M' : '12\n'
+  }
+
+  it('reads memory by the absolute sysctl path', () => {
+    const savedPath = process.env.PATH
+    process.env.PATH = '/usr/bin:/bin'
+    try {
+      expect(readMemoryFree('darwin', exec)).toEqual({ freePercent: 12 })
+    } finally {
+      process.env.PATH = savedPath
+    }
+    expect(calls.at(-1)).toEqual(['/usr/sbin/sysctl', '-n', 'kern.memorystatus_level'])
+  })
+
+  it('reads swap by the absolute sysctl path', () => {
+    expect(readSwapUsage('darwin', exec)).toEqual({
+      usedBytes: 4096 * 1024 ** 2,
+      totalBytes: 8192 * 1024 ** 2,
+    })
+    expect(calls.at(-1)).toEqual(['/usr/sbin/sysctl', '-n', 'vm.swapusage'])
+  })
+
+  it('refuses a spawn when the stubbed memorystatus level is below the floor', () => {
+    const memory = readMemoryFree('darwin', exec)
+    const decision = machineDecision({ liveHeadless: 0, memory }, LIMITS, true)
+
+    expect(decision).toMatchObject({
+      ok: false,
+      code: 'machine_memory_floor',
+      reason: expect.stringContaining('memory 12% free (floor 15%'),
+    })
+  })
+})
+
 describe('the memory_pressure reading (CC-431)', () => {
   it('reads the system-wide free percentage line', () => {
     const text = 'The system has 17179869184 (1048576 pages).\nSystem-wide memory free percentage: 41%\n'
