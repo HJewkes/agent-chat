@@ -74,6 +74,7 @@ const STATUS: SeatStatus = {
       resetsAt: null,
     },
   },
+  pace: [],
   inbox: { unread: 4, sinceLastSend: '2026-09-30T09:00:00.000Z' },
   eligible: { top: [], skipped: 0, today: '2026-09-30' },
   machine: {
