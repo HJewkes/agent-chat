@@ -503,6 +503,19 @@ describe('budget gate', () => {
   const night = new Date(2026, 8, 26, 2, 0)
   const DAY_MS = 24 * 3_600_000
 
+  it('applies the account ceiling, not 70, on day 7 while the owner types, but still 70 on day 3', () => {
+    const wide = { ...rule, ceiling_five_hour: 85 }
+    const typing = { now: night, humanLastTurnAt: night.getTime() - 60_000 }
+    const busy = { ...reading, fiveHour: 75 }
+    const resetIn = (days: number) => night.getTime() + days * DAY_MS - 60_000
+    const day7 = gateAccount('agents', wide, { ...busy, sevenDayResetsAt: resetIn(1) }, typing)
+    const day3 = gateAccount('agents', wide, { ...busy, sevenDayResetsAt: resetIn(5) }, typing)
+
+    expect(day7.open).toBe(true)
+    expect(day3.open).toBe(false)
+    expect(day3.reason).toContain('five_hour 75% vs ceiling 70%')
+  })
+
   it('ignores the night reserve and declines the reserve over the seven_day window (CC-474)', () => {
     const away = { now: night, humanLastTurnAt: night.getTime() - 3_600_000 }
     const dayOne = gateAccount('agents', rule, reading, away)
