@@ -206,6 +206,32 @@ The same verdict can come from a phone: `agent-chat mirror` posts each approval 
 Matrix room and sends ✅ or ❌ back as this `approve_permission` frame, over an
 unregistered connection. See [`phone-queue.md`](phone-queue.md).
 
+## What a worker launch loads
+
+Added 2026-10-03. A profile is the whole capability set of a worker. Before this, a
+spawned agent loaded the account's user settings, and an allow rule there (`Bash(*)`, an
+MCP wildcard) approved tools the profile never named.
+
+| Launch                               | `--setting-sources` | `--strict-mcp-config` |
+| ------------------------------------ | ------------------- | --------------------- |
+| worker, headless                     | `project,local`     | yes                   |
+| worker, visible pane                 | `project,local`     | no                    |
+| coordinator, or a teleported session | none (every source) | no                    |
+
+A profile file overrides either default with `settingSources` (a list drawn from `user`,
+`project`, `local`; an empty list loads no settings file) or `strictMcpConfig`. A strict
+launch loads only the generated MCP config: agent-chat, plus the servers the profile
+lists under `mcpServers`.
+
+Two things the user settings held are carried into the per-agent `--settings` file for a
+launch without them: the agent-chat plugin (`enabledPlugins`), and the account's own
+`permissions.deny`, which only narrows. Nothing else is carried. The account's hooks,
+`env`, `defaultMode` and allow rules do not apply to a worker.
+
+Observed on claude 2.1.288 with `--allowed-tools Read` in print mode: an unlisted `curl`
+ran under the default sources and was denied under `project,local`; the `--settings` hook
+still fired; `--strict-mcp-config` left agent-chat as the only server.
+
 ## Headless agents: the `PermissionRequest` hook (CC-144)
 
 Added 2026-09-23. A spawned agent that runs `claude -p` (surface `headless`, or a pane
