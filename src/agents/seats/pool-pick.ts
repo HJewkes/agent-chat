@@ -12,6 +12,10 @@ export const FIVE_HOUR_MARGIN = 10
 /** Below this deficit on every pool, the home pool wins and nothing moves. */
 export const BEHIND_FLOOR = 5
 
+export const POOL_PICK_MODES = ['off', 'shadow', 'enforce'] as const
+/** `shadow` computes and records the pick and bills as before; `enforce` bills the picked pool. */
+export type PoolPickMode = (typeof POOL_PICK_MODES)[number]
+
 export interface PoolPickInput {
   /** The request named a config_dir, which always wins. */
   pinned: boolean
