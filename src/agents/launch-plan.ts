@@ -157,6 +157,17 @@ const envFor = (input: LaunchPlanInput): Record<string, string> => ({
     : {}),
 })
 
+/** CC-497: a headless agent has no pane, so the broker's terminal ids must not reach it and register as its anchor. */
+const TERMINAL_SESSION_ENV = ['ITERM_SESSION_ID', 'TERM_SESSION_ID']
+
+function unsetEnvFor(input: LaunchPlanInput, interactive: boolean): Pick<LaunchPlan, 'unsetEnv'> {
+  const unsetEnv = [
+    ...(input.configDirUnset === true ? ['CLAUDE_CONFIG_DIR'] : []),
+    ...(interactive ? [] : TERMINAL_SESSION_ENV),
+  ]
+  return unsetEnv.length > 0 ? { unsetEnv } : {}
+}
+
 export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
   const surface = input.surface ?? input.profile.surface
   const interactive = isInteractiveSurface(surface)
@@ -264,7 +275,7 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     args,
     cwd: input.cwd,
     env: envFor(input),
-    ...(input.configDirUnset === true ? { unsetEnv: ['CLAUDE_CONFIG_DIR'] } : {}),
+    ...unsetEnvFor(input, interactive),
     // Headless already delivers its turn on stdin, so a resume message needs no
     // extra flag here — it just displaces the brief, which on a resume would
     // restart the work instead of continuing it.
