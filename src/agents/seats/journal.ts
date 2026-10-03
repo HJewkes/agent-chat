@@ -62,7 +62,8 @@ function seatNamed(root: string, name: string): Seat | undefined {
 
 function write(root: string, entry: JournalEntry, at: Date, latch: Latch): void {
   const owner = ownerOf(root, entry.agent, latch)
-  const self = owner === undefined && entry.event === 'teleport-failed' ? seatNamed(root, entry.agent) : undefined
+  const self =
+    owner === undefined && entry.event === 'teleport-failed' ? seatNamed(root, entry.agent) : undefined
   const seat = owner ?? self
   if (seat === undefined) return
   const text = journalText(self === undefined ? entry : { ...entry, task: '-' }, seat.prefix)

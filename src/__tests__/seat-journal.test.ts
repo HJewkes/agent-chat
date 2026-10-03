@@ -473,6 +473,27 @@ describe('an autonomy root the broker cannot use', () => {
   })
 })
 
+describe('a teleport whose successor did not start (CC-402)', () => {
+  it('writes a teleport-failed line to the seat’s own log for the seat itself, which is no stop and no activity', () => {
+    journalOver(root)({ event: 'teleport-failed', agent: SEAT })
+
+    expect(journalText()).toBe(`04:05 teleport-failed - ${SEAT} -\n`)
+    expect(readSeatLog(journalText() ?? '', AT)).toEqual({})
+  })
+
+  it('writes a teleport-failed line with the task for one of the seat’s agents', () => {
+    journalOver(root)({ event: 'teleport-failed', agent: AGENT })
+
+    expect(journalText()).toBe(`04:05 teleport-failed AB-12 ${AGENT} -\n`)
+  })
+
+  it('still writes no other event under the seat’s own name', () => {
+    journalOver(root)({ event: 'spawn', agent: SEAT })
+
+    expect(journalText()).toBeUndefined()
+  })
+})
+
 describe('the watchdog reading a journal the broker also writes', () => {
   const at = AT.getTime()
   const brokerLines = [
@@ -481,6 +502,7 @@ describe('the watchdog reading a journal the broker also writes', () => {
     `park AB-12 ${AGENT} -`,
     'merged AB-12 sx-ab-12 example-org/widget#7@abcdef1',
     'stalled AB-12 sx-ab-12 -',
+    `teleport-failed - ${SEAT} -`,
   ]
 
   it.each(brokerLines)('keeps the seat’s pause under the broker line "%s", which is no activity', line => {

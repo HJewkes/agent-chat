@@ -943,6 +943,19 @@ The script sets `AGENT_CHAT_HOME` and `exec`s `run-agent <id>`. Keys that still
 land in front of the path turn it into a command that fails. Keys typed
 between the path and the newline become arguments, and the script refuses any
 argument with exit 64. Keys typed after the newline go to `run-agent`'s stdin.
+
+CC-402 replaced the fixed settle with a wait. The broker polls the
+predecessor's pid until it has exited, for up to 10 s, and then waits the 750 ms
+settle. A relaunch typed while Claude Code still held the pane was swallowed,
+and the successor sat in `spawning` with no transcript and no alert. A
+successor launch that throws, such as "iTerm2 is not running" after
+launchservicesd restarted under memory pressure, or that fails its 5 s launch
+check, is retried once after 10 s. A second failure raises one human-queue
+notice that names the `relaunch` script, and writes a `teleport-failed` line to
+the seat's journal. That line has the broker's journal shape, so the watchdog
+reads it as neither a stop nor activity. The seat watchdog separately flags any
+seat agent that has been in `spawning` for over 10 minutes. A headless fallback
+for an unavailable iTerm is not built yet.
 A human typing `'path' ; cmd` is not caught. In the failing cases `run-agent` never starts, and the CC-175 launch check, now armed for the
 reused pane, reports the dead successor to the human queue within 5 s.
 Replacing the shell outright was rejected: an adopted session's pane is the

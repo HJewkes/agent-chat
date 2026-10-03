@@ -816,7 +816,9 @@ describe('a successor that does not start (CC-402)', () => {
       async (...args: unknown[]) => {
         const handle = await launchOn.apply(supervisor, args)
         launches += 1
-        return launches === 1 ? { ...handle, launchFailed: Promise.resolve('run-agent never started') } : handle
+        return launches === 1
+          ? { ...handle, launchFailed: Promise.resolve('run-agent never started') }
+          : handle
       },
     )
 
@@ -868,7 +870,9 @@ describe('a reused pane whose predecessor is slow to exit (CC-402)', () => {
       handoff: 'h',
     })
     const exitedAt = await exited
-    await vi.waitFor(() => expect(readBrokerLog()).toContain('"event":"teleport_completed"'), { timeout: 5_000 })
+    await vi.waitFor(() => expect(readBrokerLog()).toContain('"event":"teleport_completed"'), {
+      timeout: 5_000,
+    })
 
     expect(typedAt).toHaveLength(1)
     expect(typedAt[0]).toBeGreaterThan(exitedAt)

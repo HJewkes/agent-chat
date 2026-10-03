@@ -2792,7 +2792,11 @@ export class Supervisor implements TeleportHost {
   }
 
   /** CC-402: the first launch check that fails earns one relaunch; the second goes to the human. */
-  private async successorNotRunning(launch: SuccessorLaunch, reason: string, retried: boolean): Promise<void> {
+  private async successorNotRunning(
+    launch: SuccessorLaunch,
+    reason: string,
+    retried: boolean,
+  ): Promise<void> {
     const { input } = launch
     if (this.hasAttached(input.agentId)) return
     if (retried) return this.reportDeadSuccessor(input, reason)
@@ -2841,14 +2845,22 @@ export class Supervisor implements TeleportHost {
     try {
       return { handle: await attempt(), retried: false }
     } catch (first) {
-      logEvent('teleport_relaunch_retry', { name: input.name, agentId: input.agentId, reason: (first as Error).message })
+      logEvent('teleport_relaunch_retry', {
+        name: input.name,
+        agentId: input.agentId,
+        reason: (first as Error).message,
+      })
     }
     await pause(RELAUNCH_RETRY_MS)
     try {
       return { handle: await attempt(), retried: true }
     } catch (err) {
       const reason = (err as Error).message
-      this.shadow.finish(executionId, { outcome: 'failed', reason: `teleport failed: ${reason}`, retryable: false })
+      this.shadow.finish(executionId, {
+        outcome: 'failed',
+        reason: `teleport failed: ${reason}`,
+        retryable: false,
+      })
       this.reportDeadSuccessor(input, reason)
       throw new SuccessorNotStarted(reason)
     }

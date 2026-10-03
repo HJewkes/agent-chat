@@ -92,7 +92,11 @@ export interface StuckAgent {
 }
 
 /** CC-402: the seat's own successor and its agents that have sat in `spawning` for over ten minutes. */
-export function stuckSpawning(agents: SeatAgent[], seat: Pick<Seat, 'name' | 'prefix'>, nowMs: number): StuckAgent[] {
+export function stuckSpawning(
+  agents: SeatAgent[],
+  seat: Pick<Seat, 'name' | 'prefix'>,
+  nowMs: number,
+): StuckAgent[] {
   return agents.flatMap(a => {
     if (!ofSeat(a, seat) || a.state !== 'spawning' || a.spawnedAt === undefined) return []
     const waited = nowMs - a.spawnedAt
