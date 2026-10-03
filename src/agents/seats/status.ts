@@ -130,7 +130,7 @@ export interface SeatStatus {
   eligible: EligibleStatus
   /** CC-406: the machine-wide guard's readings against its limits, across every seat. */
   machine: MachineStatus
-  /** CC-431: 'machine' when memory or load is past its limit, which takes the `stop` line before the budget's. */
+  /** CC-431: 'machine' when memory, swap, pressure level or load is past its limit, which takes the `stop` line before the budget's. */
   stop: 'machine' | null
   /** The readings behind a machine stop; null without one. */
   machineStop: MachineStop | null
