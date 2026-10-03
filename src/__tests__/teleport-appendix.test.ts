@@ -6,17 +6,26 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
-import { appendixFacts, declaredQueueFile, renderAppendix } from '../agents/teleport-appendix.js'
+import {
+  appendixFacts,
+  declaredQueueFile,
+  renderAppendix,
+  reportsSinceWrap,
+} from '../agents/teleport-appendix.js'
 
 /** CC-524: the broker's own section of a teleport successor's first turn. Every name and path is synthetic. */
 
+const SESSION = '11111111-2222-4333-8444-555555555555'
+
 let dir: string
 let root: string
+let activeWork: string
 let core: BrokerCore
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-appendix-'))
   root = path.join(dir, 'autonomy')
+  activeWork = path.join(dir, 'active-work')
   fs.mkdirSync(path.join(root, 'seats'), { recursive: true })
   process.env.AGENT_CHAT_HOME = dir
   core = new BrokerCore(() => undefined, {
@@ -47,7 +56,13 @@ function spawned(spawner: string, name: string, state: 'live' | 'exited' | 'reti
 }
 
 const facts = (name = 'lead', since = 0) =>
-  appendixFacts(core.agents, core.events, { name, since, autonomyRoot: root })
+  appendixFacts(core.agents, core.events, {
+    name,
+    since,
+    sessionId: SESSION,
+    autonomyRoot: root,
+    activeWorkRoot: activeWork,
+  })
 
 const fakeConn = (): Conn => ({}) as unknown as net.Socket
 
@@ -142,6 +157,71 @@ describe('the queue file', () => {
 
   it('never reads a path built from a name that is not a plain slug', () => {
     expect(declaredQueueFile('../seats/lead', root)).toBeUndefined()
+  })
+})
+
+describe('agent reports after the last wrap', () => {
+  /** A session record as `active-work wrap` names one, last written `agoMs` before now. */
+  function wrapped(agoMs: number, sessionId = SESSION): number {
+    const sessions = path.join(activeWork, 'init-a', 'sessions')
+    fs.mkdirSync(sessions, { recursive: true })
+    fs.writeFileSync(path.join(activeWork, 'init-a', 'brief.md'), '# init-a\n')
+    const file = path.join(sessions, `2026-01-01-0000-${sessionId}.md`)
+    fs.writeFileSync(file, 'what the session knew\n')
+    const at = new Date(Date.now() - agoMs)
+    fs.utimesSync(file, at, at)
+    return at.getTime()
+  }
+
+  const gap = () =>
+    reportsSinceWrap(core.agents, core.events, {
+      name: 'lead',
+      sessionId: SESSION,
+      activeWorkRoot: activeWork,
+    })
+
+  it('counts a spawned agent’s report that arrived after the wrap', () => {
+    spawned('lead', 'lead-a', 'live')
+    const wrapAt = wrapped(60_000)
+    core.append({ kind: 'message', actor: 'lead-a', target: 'lead', body: 'Status: DONE' })
+
+    expect(gap()).toEqual({ wrapAt, reports: 1 })
+    expect(renderAppendix(facts())).toContain(
+      `Wrap: 1 agent report(s) arrived after your predecessor's last active-work wrap (${new Date(wrapAt).toISOString()})`,
+    )
+  })
+
+  it('counts nothing when the wrap is newer than every report', () => {
+    spawned('lead', 'lead-a', 'live')
+    core.append({ kind: 'message', actor: 'lead-a', target: 'lead', body: 'Status: DONE' })
+    wrapped(-60_000)
+
+    expect(gap()).toBeUndefined()
+    expect(renderAppendix(facts())).not.toContain('Wrap:')
+  })
+
+  it('does not count a message from a peer the name did not spawn', () => {
+    spawned('someone-else', 'other-a', 'live')
+    wrapped(60_000)
+    core.append({ kind: 'message', actor: 'other-a', target: 'lead', body: 'hello' })
+
+    expect(gap()).toBeUndefined()
+  })
+
+  it('still counts a report from an agent that has since been retired', () => {
+    spawned('lead', 'lead-gone', 'retired')
+    wrapped(60_000)
+    core.append({ kind: 'message', actor: 'lead-gone', target: 'lead', body: 'Status: DONE' })
+
+    expect(gap()?.reports).toBe(1)
+  })
+
+  it('says nothing for a session that never wrapped', () => {
+    spawned('lead', 'lead-a', 'live')
+    wrapped(60_000, '99999999-0000-4000-8000-000000000000')
+    core.append({ kind: 'message', actor: 'lead-a', target: 'lead', body: 'Status: DONE' })
+
+    expect(gap()).toBeUndefined()
   })
 })
 

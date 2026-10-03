@@ -393,6 +393,34 @@ describe('the descendant', () => {
     expect(stdin).toContain('Open chat_ask questions: none.')
   })
 
+  it('warns the predecessor when an agent report arrived after its last wrap (CC-524)', async () => {
+    const agentId = await spawnAgent()
+    const sessions = path.join(process.env.AGENT_CHAT_ACTIVE_WORK_ROOT as string, 'init-a', 'sessions')
+    fs.mkdirSync(sessions, { recursive: true })
+    fs.writeFileSync(path.join(sessions, '..', 'brief.md'), '# init-a\n')
+    const record = path.join(sessions, `2026-01-01-0000-${core.agents.get(agentId)?.sessionId}.md`)
+    fs.writeFileSync(record, 'what the session knew\n')
+    const wrapAt = new Date(Date.now() - 60_000)
+    fs.utimesSync(record, wrapAt, wrapAt)
+    const { msgId: child } = core.append({
+      kind: 'agent_spawned',
+      actor: 'scout',
+      target: 'scout-helper',
+      body: 'a brief',
+      meta: { name: 'scout-helper', profile: 'explorer' },
+    })
+    core.append({ kind: 'agent_attached', actor: 'scout-helper', ref: child })
+    core.append({ kind: 'message', actor: 'scout-helper', target: 'scout', body: 'Status: DONE' })
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(result.warnings?.join('\n')).toContain(
+      '1 agent report(s) arrived after your last active-work wrap',
+    )
+    expect(planFor(result.agentId as string).stdin).toContain('Wrap: 1 agent report(s) arrived after')
+  })
+
   /**
    * The bug waiting in the obvious implementation: reuse the ordinary parent
    * path and `depthOf` returns parent + 1, so a depth-1 agent can teleport twice

@@ -1,7 +1,7 @@
 import path from 'node:path'
 import type { EventStore } from '../broker/event-store.js'
 import type { AgentIdentity, QueueItem } from '../protocol.js'
-import { frontmatterField } from './active-work.js'
+import { frontmatterField, sessionWrapAt } from './active-work.js'
 import type { AgentLog } from './identity.js'
 import { isSeatName } from './seats/charter.js'
 import { defaultAutonomyRoot, readText } from './seats/io.js'
@@ -18,6 +18,8 @@ import { defaultAutonomyRoot, readText } from './seats/io.js'
 /** Past this many the list is cut; `agent_list` has the rest. */
 const MAX_LISTED = 20
 const QUESTION_TEXT = 120
+/** How far back in the inbox the wrap check looks; more reports than this since a wrap still warns. */
+const REPORT_SCAN = 500
 
 /** States in which an agent still has a process, or is about to. */
 const RUNNING: ReadonlySet<AgentIdentity['state']> = new Set(['spawning', 'live', 'detached'])
@@ -32,13 +34,23 @@ export interface AppendixFacts {
   arrived: number
   questions: QueueItem[]
   queueFile?: string
+  wrapGap?: WrapGap
+}
+
+/** Agent reports no session record can hold, because they arrived after the wrap wrote it. */
+export interface WrapGap {
+  wrapAt: number
+  reports: number
 }
 
 export interface AppendixQuery {
   name: string
   /** When the predecessor's session began: the window `arrived` counts over. */
   since: number
+  /** The predecessor's Claude session id, which names its active-work session record. */
+  sessionId: string
   autonomyRoot?: string
+  activeWorkRoot?: string
 }
 
 /** The queue file `seats/<name>.md` declares in its frontmatter, resolved against the autonomy root. */
@@ -50,13 +62,36 @@ export function declaredQueueFile(name: string, root = defaultAutonomyRoot()): s
 }
 
 /** Every agent spawned under `name`, without the name's own earlier generations. */
-const spawnedBy = (agents: AgentLog, name: string): AgentIdentity[] =>
-  agents.roster().filter(a => a.spawnedBy === name && a.name !== name && a.origin === 'spawned')
+const spawnedBy = (agents: AgentLog, name: string, includeRetired = false): AgentIdentity[] =>
+  agents
+    .roster({ includeRetired })
+    .filter(a => a.spawnedBy === name && a.name !== name && a.origin === 'spawned')
+
+type WrapQuery = Pick<AppendixQuery, 'name' | 'sessionId' | 'activeWorkRoot'>
+
+/**
+ * Messages from agents spawned under `name` that arrived after its session's last wrap.
+ * Undefined when the session never wrapped or nothing arrived since: a session with no
+ * initiative has no wrap to be behind.
+ */
+export function reportsSinceWrap(
+  agents: AgentLog,
+  events: EventStore,
+  query: WrapQuery,
+): WrapGap | undefined {
+  const wrapAt = sessionWrapAt(query.sessionId, query.activeWorkRoot)
+  if (wrapAt === undefined) return undefined
+  const reporters = new Set(spawnedBy(agents, query.name, true).map(a => a.name))
+  const inbox = events.inboxFor(query.name, REPORT_SCAN)
+  const reports = inbox.filter(m => m.at > wrapAt && reporters.has(m.from)).length
+  return reports === 0 ? undefined : { wrapAt, reports }
+}
 
 export function appendixFacts(agents: AgentLog, events: EventStore, query: AppendixQuery): AppendixFacts {
   const { name } = query
   const spawned = spawnedBy(agents, name)
   const queueFile = declaredQueueFile(name, query.autonomyRoot)
+  const wrapGap = reportsSinceWrap(agents, events, query)
   return {
     name,
     running: spawned.filter(a => RUNNING.has(a.state)),
@@ -64,6 +99,7 @@ export function appendixFacts(agents: AgentLog, events: EventStore, query: Appen
     arrived: events.inboxCountSince(name, query.since),
     questions: events.openQuestions(name),
     ...(queueFile === undefined ? {} : { queueFile }),
+    ...(wrapGap === undefined ? {} : { wrapGap }),
   }
 }
 
@@ -98,6 +134,15 @@ function questionLines({ questions }: AppendixFacts): string[] {
   ]
 }
 
+const wrapLines = ({ wrapGap }: AppendixFacts): string[] =>
+  wrapGap === undefined
+    ? []
+    : [
+        `Wrap: ${wrapGap.reports} agent report(s) arrived after your predecessor's last active-work wrap ` +
+          `(${new Date(wrapGap.wrapAt).toISOString()}). No session record holds them; read them with ` +
+          'chat_inbox and file what they propose.',
+      ]
+
 /** The section appended to a teleport successor's first turn. */
 export function renderAppendix(facts: AppendixFacts): string {
   return [
@@ -109,6 +154,7 @@ export function renderAppendix(facts: AppendixFacts): string {
       ...agentLines(facts),
       inboxLine(facts),
       ...questionLines(facts),
+      ...wrapLines(facts),
       ...(facts.queueFile === undefined ? [] : [`Queue file: ${facts.queueFile}`]),
     ].join('\n'),
   ].join('\n\n')

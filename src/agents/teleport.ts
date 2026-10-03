@@ -15,7 +15,7 @@ import {
 } from '../protocol.js'
 import type { Allocation } from './isolation/index.js'
 import { loadProfile, recordedRole } from './profiles.js'
-import { appendixFacts, renderAppendix } from './teleport-appendix.js'
+import { appendixFacts, renderAppendix, reportsSinceWrap } from './teleport-appendix.js'
 import { observedModel } from './transcript.js'
 import type { AgentProfile } from './types.js'
 
@@ -191,6 +191,8 @@ interface Pending {
   reason?: TeleportReason
   /** When the predecessor's session began: the window the appendix counts inbox arrivals over. */
   since: number
+  /** The predecessor's Claude session id, which names its active-work session record. */
+  sessionId: string
   timer?: NodeJS.Timeout
 }
 
@@ -283,6 +285,7 @@ export class Teleport {
       // CC-163: a worker's successor never inherits Remote Control, even one its argv shows.
       remoteControl: worker ? false : (req.remoteControl ?? this.predecessorRemoteControl(subject)),
       since: identity.spawnedAt,
+      sessionId: identity.sessionId,
       ...(req.reason === undefined ? {} : { reason: req.reason }),
     }
     this.pending.set(subject.agentId, entry)
@@ -406,6 +409,18 @@ export class Teleport {
       `${arrived} message(s) arrived for ${name} during this session. They stay addressed to the ` +
         'name, so your successor can read them with chat_inbox — but it will not know which you ' +
         'had already handled. Say so in the handoff.',
+      ...this.wrapWarning(identity, name),
+    ]
+  }
+
+  /** CC-524: a wrap records what the session knew when it ran, so a report that arrived later is in no record. */
+  private wrapWarning(identity: AgentIdentity, name: string): string[] {
+    const gap = reportsSinceWrap(this.core.agents, this.core.events, { name, sessionId: identity.sessionId })
+    if (gap === undefined) return []
+    return [
+      `${gap.reports} agent report(s) arrived after your last active-work wrap ` +
+        `(${new Date(gap.wrapAt).toISOString()}), so no session record holds them. Your successor ` +
+        'is told the count, not what they said.',
     ]
   }
 
@@ -549,6 +564,7 @@ export class Teleport {
     const facts = appendixFacts(this.core.agents, this.core.events, {
       name: entry.subject.name,
       since: entry.since,
+      sessionId: entry.sessionId,
     })
     return `${handoff}\n\n${renderAppendix(facts)}`
   }
