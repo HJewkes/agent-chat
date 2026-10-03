@@ -632,7 +632,11 @@ describe('inferring the exit of a visible agent', () => {
     const exit = core.events.agentEvents().find(r => r.kind === 'agent_exited')
     expect(exit?.meta.inferred).toBe('true')
     expect(exit?.meta.code).toBeUndefined()
-    expect(core.agents.get('a1')?.exit).toEqual({ code: null, summary: expect.stringMatching(/inferred/) })
+    expect(core.agents.get('a1')?.exit).toEqual({
+      code: null,
+      summary: expect.stringMatching(/inferred/),
+      inferred: true,
+    })
   })
 
   it('cancels the settle when the agent comes back, so a reconnect is not a death', () => {
