@@ -27,6 +27,9 @@ import type { AgentProfile, LaunchPlan, LaunchPlanInput } from './types.js'
  */
 export const AGENT_CHAT_TOOLS = 'mcp__plugin_agent-chat_agent-chat__*'
 
+/** The plugin that carries the bus, as its marketplace names it. */
+export const AGENT_CHAT_PLUGIN = 'agent-chat@agent-chat-local'
+
 /** What every spawned agent is told about its situation, before its profile speaks. */
 export const PEER_PREAMBLE = [
   'You are a spawned agent in an agent-chat team. You have a durable name and other sessions',
@@ -216,7 +219,7 @@ export function buildLaunchPlan(input: LaunchPlanInput): LaunchPlan {
     // durable, addressable peer. Matches the flag active-work's own launcher
     // passes for a human-started session (`aw`'s buildChannelArgs).
     '--channels',
-    'plugin:agent-chat@agent-chat-local',
+    `plugin:${AGENT_CHAT_PLUGIN}`,
   ]
   // Note what an inherited posture costs: agent-chat's own tools stop being
   // allowlisted here and fall back to the session's ordinary permission rules,

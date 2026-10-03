@@ -1,9 +1,18 @@
-import { describe, expect, it } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
 import { SURFACE_NAMES } from '../protocol.js'
-import { buildMcpConfig } from '../agents/launch-files.js'
-import { buildLaunchPlan } from '../agents/launch-plan.js'
+import {
+  buildHookSettings,
+  buildMcpConfig,
+  hookSettingsPath,
+  readUserDenies,
+  writeLaunchFiles,
+} from '../agents/launch-files.js'
+import { AGENT_CHAT_PLUGIN, buildLaunchPlan } from '../agents/launch-plan.js'
 import { BUILTIN_PROFILES, parseProfile, roleOf } from '../agents/profiles.js'
-import type { AgentProfile, LaunchPlanInput } from '../agents/types.js'
+import type { AgentProfile, LaunchPlan, LaunchPlanInput } from '../agents/types.js'
 
 const worker = (over: Partial<AgentProfile> = {}): AgentProfile => ({
   name: 'worker',
@@ -19,7 +28,7 @@ const worker = (over: Partial<AgentProfile> = {}): AgentProfile => ({
 const coordinator = (over: Partial<AgentProfile> = {}): AgentProfile =>
   worker({ name: 'coordinator', role: 'coordinator', ...over })
 
-const argsFor = (profile: AgentProfile, over: Partial<LaunchPlanInput> = {}): string[] =>
+const planFor = (profile: AgentProfile, over: Partial<LaunchPlanInput> = {}): LaunchPlan =>
   buildLaunchPlan({
     agentId: 'ag000001',
     sessionId: '00000000-0000-4000-8000-000000000001',
@@ -29,7 +38,10 @@ const argsFor = (profile: AgentProfile, over: Partial<LaunchPlanInput> = {}): st
     cwd: '/repo',
     mcpConfigPath: '/state/agents/ag000001/mcp.json',
     ...over,
-  }).args
+  })
+
+const argsFor = (profile: AgentProfile, over: Partial<LaunchPlanInput> = {}): string[] =>
+  planFor(profile, over).args
 
 const flag = (args: string[], name: string): string | undefined => {
   const at = args.indexOf(name)
@@ -127,5 +139,86 @@ describe('the MCP servers a launch loads', () => {
     expect(serversFor(optedOut)).toEqual([])
     expect(argsFor(optedIn)).toContain('--strict-mcp-config')
     expect(serversFor(optedIn)).toEqual(['plugin:agent-chat:agent-chat'])
+  })
+})
+
+describe('the settings file of a launch without user settings', () => {
+  const dirs: string[] = []
+
+  const tmpdir = (): string => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-policy-'))
+    dirs.push(dir)
+    return dir
+  }
+
+  const accountDenying = (deny: unknown): string => {
+    const dir = tmpdir()
+    fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ permissions: { deny } }))
+    return dir
+  }
+
+  const writtenSettings = (plan: LaunchPlan): Record<string, unknown> => {
+    process.env.AGENT_CHAT_HOME = tmpdir()
+    writeLaunchFiles(plan, {})
+    return JSON.parse(fs.readFileSync(hookSettingsPath(plan.agentId), 'utf8')) as Record<string, unknown>
+  }
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+    delete process.env.AGENT_CHAT_HOME
+  })
+
+  it('enables the bus plugin and carries the denies, beside the hooks it always had', () => {
+    const settings = buildHookSettings('/repo/dist/cli.js', undefined, ['Agent', 'SendMessage'])
+
+    expect(settings.enabledPlugins).toEqual({ [AGENT_CHAT_PLUGIN]: true })
+    expect(settings.permissions).toEqual({ deny: ['Agent', 'SendMessage'] })
+    expect(JSON.stringify(settings.hooks)).toContain('leak-guard pretool')
+  })
+
+  it('adds nothing to a launch that loads user settings itself', () => {
+    const settings = buildHookSettings('/repo/dist/cli.js', 1800)
+
+    expect(Object.keys(settings)).toEqual(['hooks'])
+  })
+
+  it('reads the deny rules of an account, and none from a file it cannot use', () => {
+    const missing = tmpdir()
+    const malformed = tmpdir()
+    fs.writeFileSync(path.join(malformed, 'settings.json'), '{ not json')
+
+    expect(readUserDenies(accountDenying(['Agent', 'Bash(rm:*)']))).toEqual(['Agent', 'Bash(rm:*)'])
+    expect(readUserDenies(accountDenying('Agent'))).toEqual([])
+    expect(readUserDenies(missing)).toEqual([])
+    expect(readUserDenies(malformed)).toEqual([])
+  })
+
+  // Mutation caught: dropping the carry, which hands a worker every tool the account denies everywhere.
+  it('writes the account denies into a worker launch, from the config dir the worker runs on', () => {
+    const configDir = accountDenying(['Agent', 'SendMessage'])
+
+    const settings = writtenSettings(planFor(worker(), { configDir }))
+
+    expect(settings.permissions).toEqual({ deny: ['Agent', 'SendMessage'] })
+    expect(settings.enabledPlugins).toEqual({ [AGENT_CHAT_PLUGIN]: true })
+  })
+
+  it('leaves a coordinator launch, and a worker that names the user source, as they were', () => {
+    const configDir = accountDenying(['Agent'])
+    const optedIn = worker({ settingSources: ['user', 'project'] })
+
+    for (const profile of [coordinator(), optedIn]) {
+      const settings = writtenSettings(planFor(profile, { configDir }))
+
+      expect(settings).not.toHaveProperty('permissions')
+      expect(settings).not.toHaveProperty('enabledPlugins')
+    }
+  })
+
+  it('does not read a brief that spells the flag as the flag', () => {
+    const configDir = accountDenying(['Agent'])
+    const plan = planFor(coordinator(), { configDir, surface: 'iterm-pane', brief: '--setting-sources' })
+
+    expect(writtenSettings(plan)).not.toHaveProperty('permissions')
   })
 })

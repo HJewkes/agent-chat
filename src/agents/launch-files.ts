@@ -7,7 +7,9 @@ import { agentDir, cliEntry } from '../paths.js'
 import type { IsolationName, SurfaceName } from '../protocol.js'
 import type { Allocation } from './isolation/index.js'
 import { readLaunchPlan as readPlanFile, relaunchScript } from '@titan-design/agent-surface'
+import { defaultConfigDir } from './config-dir.js'
 import { agentChatLauncher, relaunchScriptPath } from './launcher.js'
+import { AGENT_CHAT_PLUGIN } from './launch-plan.js'
 import { strictMcpFor } from './launch-policy.js'
 import type { AgentProfile, LaunchHandle, LaunchPlan } from './types.js'
 
@@ -95,13 +97,29 @@ const PRETOOL_MATCHER = 'Bash|Edit|Write|MultiEdit|NotebookEdit'
 const PRETOOL_TIMEOUT_S = 15
 
 /**
+ * What a launch without the user settings source still takes from that account. The user
+ * file is where the bus plugin is enabled, and its deny rules only narrow, so dropping them
+ * would hand a worker tools the owner denied everywhere (observed: Agent and SendMessage
+ * came back under `--setting-sources project,local`).
+ */
+const withoutUserSettings = (denies: string[]): Record<string, unknown> => ({
+  enabledPlugins: { [AGENT_CHAT_PLUGIN]: true },
+  ...(denies.length === 0 ? {} : { permissions: { deny: denies } }),
+})
+
+/**
  * The `--settings` file every spawned agent runs with. The leak guard's PreToolUse hook
  * (CC-270) goes to all of them. A print-mode run, given `permissionTimeoutSeconds`, also
  * gets the PermissionRequest hook (CC-144) that files each prompt in the human queue and
  * blocks for the verdict. Claude Code runs hook commands through a shell, and both paths
- * can contain spaces.
+ * can contain spaces. `userDenies` is set, even when empty, for a launch that loads no
+ * user settings.
  */
-export function buildHookSettings(entry: string, permissionTimeoutSeconds?: number): Record<string, unknown> {
+export function buildHookSettings(
+  entry: string,
+  permissionTimeoutSeconds?: number,
+  userDenies?: string[],
+): Record<string, unknown> {
   const pretool = [
     {
       matcher: PRETOOL_MATCHER,
@@ -110,10 +128,12 @@ export function buildHookSettings(entry: string, permissionTimeoutSeconds?: numb
       ],
     },
   ]
-  if (permissionTimeoutSeconds === undefined) return { hooks: { PreToolUse: pretool } }
+  const carried = userDenies === undefined ? {} : withoutUserSettings(userDenies)
+  if (permissionTimeoutSeconds === undefined) return { ...carried, hooks: { PreToolUse: pretool } }
   const deadline = Math.max(1, permissionTimeoutSeconds - HOOK_DEADLINE_MARGIN_S)
   const command = hookCommand(entry, `permission-hook --deadline ${deadline}`)
   return {
+    ...carried,
     hooks: {
       PreToolUse: pretool,
       PermissionRequest: [
@@ -121,6 +141,35 @@ export function buildHookSettings(entry: string, permissionTimeoutSeconds?: numb
       ],
     },
   }
+}
+
+/** The deny rules in an account's own settings file. An unreadable file carries none, as Claude Code reads it. */
+export function readUserDenies(configDir: string): string[] {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(configDir, 'settings.json'), 'utf8')) as {
+      permissions?: { deny?: unknown }
+    }
+    const deny = parsed.permissions?.deny
+    return Array.isArray(deny) ? deny.filter((rule): rule is string => typeof rule === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+/** The config dir the launched process sees: the plan's, else the broker's own, else the default account. */
+function planConfigDir(plan: LaunchPlan): string {
+  if (plan.env.CLAUDE_CONFIG_DIR !== undefined) return plan.env.CLAUDE_CONFIG_DIR
+  if (plan.unsetEnv?.includes('CLAUDE_CONFIG_DIR')) return defaultConfigDir()
+  return process.env.CLAUDE_CONFIG_DIR ?? defaultConfigDir()
+}
+
+/** Undefined when the plan loads user settings itself; the brief follows `--` and is never read as a flag. */
+function carriedUserDenies(plan: LaunchPlan): string[] | undefined {
+  const end = plan.args.indexOf('--')
+  const options = end === -1 ? plan.args : plan.args.slice(0, end)
+  const at = options.indexOf('--setting-sources')
+  if (at === -1 || (options[at + 1] ?? '').split(',').includes('user')) return undefined
+  return readUserDenies(planConfigDir(plan))
 }
 
 /** An interactive plan carries no `--settings`, so the guard's file is added to its argv here. */
@@ -139,7 +188,7 @@ function writePrivate(file: string, body: string, mode: number = FILE_MODE): voi
 
 export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknown>): void {
   const permissionTimeout = plan.args.includes('--settings') ? resolvePermissionHookTimeout() : undefined
-  const settings = buildHookSettings(cliEntry(), permissionTimeout)
+  const settings = buildHookSettings(cliEntry(), permissionTimeout, carriedUserDenies(plan))
   writePrivate(hookSettingsPath(plan.agentId), JSON.stringify(settings, null, 2))
   writePrivate(mcpConfigPath(plan.agentId), JSON.stringify(config, null, 2))
   writePrivate(planPath(plan.agentId), JSON.stringify(withSettings(plan), null, 2))
