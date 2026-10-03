@@ -1451,13 +1451,15 @@ export class SocketServer {
         return
       }
       case 'retire':
-        void this.supervisor.retire(msg.name, msg.force === true).then(result =>
-          reply(conn, {
-            t: 'spawn_result',
-            ok: result.ok,
-            ...(result.reason === undefined ? {} : { reason: result.reason }),
-          }),
-        )
+        void this.supervisor
+          .retire(msg.name, msg.force === true, this.core.registry.nameOf(conn) ?? (msg.caller || undefined))
+          .then(result =>
+            reply(conn, {
+              t: 'spawn_result',
+              ok: result.ok,
+              ...(result.reason === undefined ? {} : { reason: result.reason }),
+            }),
+          )
         return
     }
   }
