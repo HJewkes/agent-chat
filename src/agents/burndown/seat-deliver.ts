@@ -1,3 +1,4 @@
+import type { SeatMergedLog } from '../seats/dispatch-log.js'
 import type { SeatJournal } from '../seats/journal.js'
 import { prRef } from '../seats/journal-line.js'
 import { claimKey } from './advance.js'
@@ -45,6 +46,8 @@ export interface DeliverDeps {
   now: Date
   /** CC-316: writes a delivered merged or stalled event to the seat's journal. */
   journal?: SeatJournal
+  /** CC-469: writes a due merged event to the seat's dispatch log, delivered or not; the writer skips a merge already there. */
+  dispatch?: SeatMergedLog
 }
 
 export interface SeatDiff {
@@ -74,6 +77,7 @@ export async function deliverSeatEvents(
 ): Promise<{ ledger: Ledger; lines: string[] }> {
   const settled = { ...diff, after: settleNotified(diff.after) }
   const due = Object.entries(dueEvents(settled))
+  recordMerges(due, settled.after, deps.dispatch)
   const human = diff.human ?? []
   if (due.length === 0 && human.length === 0) return { ledger: settled.after, lines: [] }
   const sender = await deps.open().catch((err: Error) => refusedSender(err.message))
@@ -118,6 +122,25 @@ function journalEvents(events: readonly SeatEvent[], ledger: Ledger, journal?: S
     const agent = agentNameFor(claim.taskId, claim.slice, claim.namePrefix)
     const pr = prRef(claim.pr, claim.prHead)
     journal?.({ event: e.kind, task: claim.taskId, agent, ...(pr === undefined ? {} : { pr }) })
+  }
+}
+
+/** `owner/repo#n` of a pull request URL. */
+const prNumberRef = (url: string | undefined): string | undefined => {
+  const m = /github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)/.exec(url ?? '')
+  return m === null ? undefined : `${m[1]}#${m[2]}`
+}
+
+/** One merged row per merged claim, named for the claim's implementer as the journal line is. */
+function recordMerges(due: [string, SeatEvent[]][], ledger: Ledger, dispatch?: SeatMergedLog): void {
+  if (dispatch === undefined) return
+  for (const [seat, events] of due) {
+    for (const e of events.filter(ev => ev.kind === 'merged')) {
+      const claim = ledger.claims.find(c => claimKey(c) === claimKey(e))
+      const pr = prNumberRef(claim?.pr)
+      if (claim === undefined || pr === undefined) continue
+      dispatch({ agent: agentNameFor(claim.taskId, claim.slice, claim.namePrefix), pr, seat })
+    }
   }
 }
 
