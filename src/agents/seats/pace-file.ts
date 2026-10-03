@@ -3,8 +3,8 @@ import path from 'node:path'
 import { home } from '../../paths.js'
 
 /**
- * CC-606: the seat watchdog's `pace.json` as the broker's pool pick reads it.
- * The watchdog pass owns the file and every field not named here; this is the read half of that interface.
+ * CC-606: the seat watchdog's `pace.json` as the broker's pool pick reads it: `{at, pools: {<name>: row}}`,
+ * times in epoch ms. The watchdog pass (CC-605) owns the file; this reads four of a row's fields.
  */
 
 /** One pool's row, with every time in epoch ms. */
@@ -28,30 +28,23 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const finite = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined
 
-/** An ISO string, epoch ms or epoch seconds, as epoch ms. */
-function toMs(value: unknown): number | undefined {
-  if (typeof value === 'string') return finite(Date.parse(value))
-  const n = finite(value)
-  if (n === undefined) return undefined
-  return n < 1e12 ? n * 1000 : n
-}
-
-function poolRow(raw: unknown): PacePool | undefined {
-  if (!isRecord(raw) || !isRecord(raw.reading)) return undefined
+/** The writer's row holds the reading's age at the pass, so the pass time dates the reading. */
+function poolRow(raw: unknown, passAt: number): PacePool | undefined {
+  if (!isRecord(raw) || raw.stale === true) return undefined
   const behind = finite(raw.behind)
-  const readingAt = toMs(raw.reading.at)
-  if (behind === undefined || readingAt === undefined) return undefined
-  const fiveHour = finite(raw.reading.five_hour)
-  const resetsAt = toMs(raw.resets_at)
+  const ageSeconds = finite(raw.ageSeconds)
+  if (behind === undefined || ageSeconds === undefined) return undefined
+  const fiveHour = finite(raw.fiveHour)
+  const resetsAt = finite(raw.resetsAt)
   return {
     behind,
-    readingAt,
+    readingAt: passAt - ageSeconds * 1000,
     ...(fiveHour === undefined ? {} : { fiveHour }),
     ...(resetsAt === undefined ? {} : { resetsAt }),
   }
 }
 
-/** A row that does not parse is left out, so the pick skips that pool rather than the whole file. */
+/** A row that does not parse, or that the writer marked stale, is left out, so the pick skips that pool rather than the whole file. */
 export function parsePace(text: string): PaceRead {
   let parsed: unknown
   try {
@@ -59,9 +52,12 @@ export function parsePace(text: string): PaceRead {
   } catch {
     return { found: false, reason: 'pace.json is not JSON' }
   }
-  if (!isRecord(parsed) || !isRecord(parsed.pools)) return { found: false, reason: 'pace.json has no pools' }
-  const rows = Object.entries(parsed.pools).flatMap(([name, raw]) => {
-    const row = poolRow(raw)
+  const passAt = isRecord(parsed) ? finite(parsed.at) : undefined
+  if (!isRecord(parsed) || passAt === undefined || !isRecord(parsed.pools))
+    return { found: false, reason: 'pace.json has no pass time or no pools' }
+  const pools = parsed.pools
+  const rows = Object.entries(pools).flatMap(([name, raw]) => {
+    const row = poolRow(raw, passAt)
     return row === undefined ? [] : [[name, row] as const]
   })
   return { found: true, pools: new Map(rows) }

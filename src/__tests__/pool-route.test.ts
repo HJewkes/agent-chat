@@ -162,6 +162,20 @@ describe('reading the pool pick for a spawn', () => {
     expect(readPoolPick(root(), spawn({ name: 'zz-task' }), deps())).toEqual({ kind: 'none' })
   })
 
+  it('reads a seat the charter does not list as none, unless its role is attended', () => {
+    const unlisted = (seat: string): string => {
+      const dir = root()
+      fs.writeFileSync(path.join(dir, 'seats', 'zeta-coord.md'), seat)
+      return dir
+    }
+    const seat = (role: string) => ['---', 'prefix: zc', 'pool: alpha', `role: ${role}`, '---'].join('\n')
+
+    expect(readPoolPick(unlisted(seat('product')), spawn({ name: 'zc-task' }), deps())).toEqual({
+      kind: 'none',
+    })
+    expect(readPoolPick(unlisted(seat('attended')), spawn({ name: 'zc-task' }), deps()).kind).toBe('pick')
+  })
+
   it('keeps the pick inside the seat file’s pools list', () => {
     const got = readPoolPick(root(seatFile(['pools: [alpha, gamma]'])), spawn(), deps())
 

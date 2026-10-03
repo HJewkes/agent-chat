@@ -1,12 +1,13 @@
 import os from 'node:os'
 import path from 'node:path'
+import { frontmatterField } from '../active-work.js'
 import { defaultConfigDir } from '../config-dir.js'
 import { isTrusted } from '../trust.js'
 import { charterSeats, parseFunds, parsePools, seatInitiatives, seatPools, type Pool } from './charter.js'
 import { readText } from './io.js'
 import { readPace, type PaceRead } from './pace-file.js'
 import { pickPool, type PoolCandidate, type PoolPick, type PoolPickMode } from './pool-pick.js'
-import { seatOf } from './seat-of.js'
+import { seatOf, type SeatFile } from './seat-of.js'
 import { poolForConfigDir } from './spawn-gate-read.js'
 
 /** CC-606: the broker's pool pick for an unpinned seat spawn, read from disk and walked past the budget gate. */
@@ -41,6 +42,10 @@ const defaultDeps = (): PoolPickReadDeps => {
   return { readPace: () => readPace(), trusted: (cwd, dir) => trustsCwd(cwd, dir, home), home }
 }
 
+/** A seat the charter lists, or an attended seat, which the owner runs and the charter's watchdog list never names. */
+const routed = (charter: string, { seat, text }: SeatFile): boolean =>
+  charterSeats(charter).includes(seat.name) || frontmatterField(text, 'role') === 'attended'
+
 /** `none` is a spawn no charter seat owns. Throws when the seats directory cannot be read. */
 export function readPoolPick(
   root: string,
@@ -50,7 +55,7 @@ export function readPoolPick(
   const charter = readText(path.join(root, 'charter.md'))
   if (charter === undefined) return { kind: 'none' }
   const match = seatOf(root, spawn.name, spawn.spawner)
-  if (match.kind !== 'seat' || !charterSeats(charter).includes(match.seat.seat.name)) return { kind: 'none' }
+  if (match.kind !== 'seat' || !routed(charter, match.seat)) return { kind: 'none' }
   const { seat, text } = match.seat
   const all = parsePools(charter, deps.home)
   const allowed = seatPools(text)

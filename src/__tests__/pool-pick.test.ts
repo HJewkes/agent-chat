@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseFunds, seatInitiatives, seatPools, type FundsMap, type Pool } from '../agents/seats/charter.js'
-import { parsePace, type PaceRead } from '../agents/seats/pace-file.js'
+import { parsePace, readPace, type PaceRead } from '../agents/seats/pace-file.js'
 import { pickPool, type PoolPickInput } from '../agents/seats/pool-pick.js'
 
 const NOW = Date.parse('2026-01-05T12:00:00Z')
@@ -26,18 +26,18 @@ interface Row {
 const pace = (rows: Record<string, Row>): PaceRead =>
   parsePace(
     JSON.stringify({
-      at: new Date(NOW).toISOString(),
+      at: NOW,
       pools: Object.fromEntries(
         Object.entries(rows).map(([name, row]) => [
           name,
           {
+            pool: name,
+            sevenDay: 40,
+            fiveHour: row.fiveHour ?? 20,
+            ageSeconds: (row.ageMinutes ?? 1) * 60,
+            resetsAt: Date.parse(row.resetsAt ?? '2026-01-09T12:00:00Z'),
             behind: row.behind,
-            reading: {
-              at: new Date(NOW - (row.ageMinutes ?? 1) * MINUTE).toISOString(),
-              seven_day: 40,
-              five_hour: row.fiveHour ?? 20,
-            },
-            resets_at: row.resetsAt ?? '2026-01-09T12:00:00Z',
+            level: 'on_pace',
           },
         ]),
       ),
@@ -233,12 +233,13 @@ describe('charter and seat fields the pool pick reads', () => {
 })
 
 describe('the pace file reader', () => {
-  it('reads epoch seconds, epoch ms and ISO times as epoch ms', () => {
+  it('dates each reading from the pass time and the row’s age', () => {
     const read = parsePace(
       JSON.stringify({
+        at: NOW,
         pools: {
-          alpha: { behind: 3, reading: { at: NOW / 1000, five_hour: 5 }, resets_at: NOW + MINUTE },
-          beta: { behind: -2, reading: { at: new Date(NOW).toISOString() } },
+          alpha: { behind: 3, ageSeconds: 120, fiveHour: 5, resetsAt: NOW + MINUTE },
+          beta: { behind: -2, ageSeconds: 0, fiveHour: null, resetsAt: null },
         },
       }),
     )
@@ -246,14 +247,42 @@ describe('the pace file reader', () => {
     expect(read).toEqual({
       found: true,
       pools: new Map([
-        ['alpha', { behind: 3, readingAt: NOW, fiveHour: 5, resetsAt: NOW + MINUTE }],
+        ['alpha', { behind: 3, readingAt: NOW - 2 * MINUTE, fiveHour: 5, resetsAt: NOW + MINUTE }],
         ['beta', { behind: -2, readingAt: NOW }],
       ]),
     })
   })
 
-  it('leaves out a row with no deficit or reading time, and skips that pool in the pick', () => {
-    const read = parsePace(JSON.stringify({ pools: { alpha: { behind: 'far' }, beta: { reading: {} } } }))
+  it('ages a reading by the time since the pass, so a dead watchdog’s file goes stale', () => {
+    const read = parsePace(
+      JSON.stringify({
+        at: NOW - 14 * MINUTE,
+        pools: { beta: { behind: 30, ageSeconds: 120, fiveHour: 20 } },
+      }),
+    )
+
+    expect(pickPool(input({}, { pace: read })).candidates).toContainEqual({
+      pool: 'beta',
+      behind: 30,
+      skip: 'reading 960s old, over 900s',
+    })
+  })
+
+  it('leaves out a row the writer marked stale, as one from a window that has reset', () => {
+    const read = parsePace(
+      JSON.stringify({ at: NOW, pools: { alpha: { behind: 40, ageSeconds: 30, fiveHour: 5, stale: true } } }),
+    )
+
+    expect(read).toEqual({ found: true, pools: new Map() })
+  })
+
+  it('leaves out a pool with no deficit or no reading, and skips it in the pick', () => {
+    const read = parsePace(
+      JSON.stringify({
+        at: NOW,
+        pools: { alpha: { behind: null, ageSeconds: 30 }, beta: { behind: 4, ageSeconds: null } },
+      }),
+    )
 
     expect(read).toEqual({ found: true, pools: new Map() })
     expect(pickPool(input({}, { pace: read })).candidates).toContainEqual({
@@ -262,8 +291,16 @@ describe('the pace file reader', () => {
     })
   })
 
-  it('reports text that is not JSON, or has no pools, as not found', () => {
+  it('reports text that is not JSON, or has no pass time or pools, as not found', () => {
     expect(parsePace('{')).toEqual({ found: false, reason: 'pace.json is not JSON' })
-    expect(parsePace('[]')).toEqual({ found: false, reason: 'pace.json has no pools' })
+    expect(parsePace('[]')).toEqual({ found: false, reason: 'pace.json has no pass time or no pools' })
+    expect(parsePace('{"pools":{}}')).toEqual({
+      found: false,
+      reason: 'pace.json has no pass time or no pools',
+    })
+  })
+
+  it('reads a missing file as not found', () => {
+    expect(readPace('/synthetic/none/pace.json')).toEqual({ found: false, reason: 'pace.json is missing' })
   })
 })
