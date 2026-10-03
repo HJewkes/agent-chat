@@ -822,7 +822,7 @@ function mayReachGit(line: string, env: Env): boolean {
   if (UNNAMED_SET.test(line) || HIDDEN_NAME.test(line)) return true
   const said = unreferenced(line).replace(READ_ONLY_REF, ' ')
   const names = [...line.matchAll(VARIABLE)].map(match => match[1] as string)
-  if (names.some(name => mentions(said, name))) return true
+  if (names.some(name => mentions(said, name) || wordMayBeGit(env[name] ?? ''))) return true
   return line.split(/[\s;&<>]+/).some(word => wordMayBeGit(word) || wordMayBeGit(withEnv(word, env)))
 }
 

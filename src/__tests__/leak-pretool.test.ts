@@ -890,11 +890,16 @@ describe('a gh command the command line hides', () => {
       ['a gh joined from hook variables', `${SCRIPTS}; $E "$A$B" pr create -t x --body y`],
       ['a gh joined from text and a hook variable', `${SCRIPTS}; $E g"$B" pr create -t x --body y`],
       ['a glob that may be gh', `${SCRIPTS}; $E g? pr create -t x --body y`],
+      ['a trimmed hook variable', `${SCRIPTS}; $E "\${TOOL%x}" pr create -t x --body y`],
+      ['a hook variable with a prefix trim', `${SCRIPTS}; $E "\${TOOL#x}" pr create -t x --body y`],
+      ['a hook variable with a default', `${SCRIPTS}; $E "\${TOOL:-x}" pr create -t x --body y`],
+      ['a hook variable with a replacement', `${SCRIPTS}; $E \${TOOL/x/y} pr create -t x --body y`],
+      ['a hook variable holding push', `${SCRIPTS}; $E $G "\${P%x}" $N`],
       ['a hidden push that skips hooks', `${SCRIPTS}; $E $X push --no-verify`],
       ['a hidden push spelled as a glob', `${SCRIPTS}; $E $X p?sh`],
       ['a hidden abbreviated no-verify', `${SCRIPTS}; $E $X "$R" --no-veri`],
     ])('denies a line that reaches git or gh through %s', (_, command) => {
-      const reason = checkCommand(command, ctx({ env: { TOOL: 'gh', A: 'g', B: 'h' } }))
+      const reason = checkCommand(command, ctx({ env: { TOOL: 'gh', A: 'g', B: 'h', P: 'push' } }))
 
       expect(reason).toBe(REASONS.hiddenStarts)
       expect(reason).not.toContain('out literally')

@@ -647,7 +647,8 @@ Two cases of this check are denied outright, so the check stays fast (CC-347):
   holds a command substitution or any `$'...'` string, a word that may expand to `git` or `gh`
   (as above, `g?` included), an expansion that hides its name or reads `$1`, `$@` and the like, a
   variable that the line mentions outside a `$` reference, or a word that names either one once
-  the hook's env values are put in, so `"$A$B"` with `A=g` and `B=h` counts (CC-478). Since
+  the hook's env values are put in, so `"$A$B"` with `A=g` and `B=h` counts, or reads a variable
+  whose hook env value would count, through any operator, as `${TOOL%x}` with `TOOL=gh` (CC-478). Since
   the arguments of a hidden git past the budget go unchecked, a line that names `push`,
   `--no-verify` or `--no-veri`, a word that may expand to one of them (`p?sh`), `hooksPath`,
   `include`, `alias` or `GIT_CONFIG` counts as reaching git too.
