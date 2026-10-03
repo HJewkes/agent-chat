@@ -235,7 +235,7 @@ function windowLines(pool: PricedPool, input: PoolGateInput): WindowLines {
   const { ctx } = input
   const seven = sevenDayLine(pool.reserve_seven_day, input.reading?.sevenDayResetsAt, ctx.now.getTime())
   const present = pool.human_uses && !humanAbsentFor(ctx, PRESENT_WITHIN_MS)
-  const lowered = present && pool.ceiling_five_hour > PRESENT_CEILING
+  const lowered = present && !seven.capsLifted && pool.ceiling_five_hour > PRESENT_CEILING
   return {
     ceiling: lowered ? PRESENT_CEILING : pool.ceiling_five_hour,
     line: seven.line,
