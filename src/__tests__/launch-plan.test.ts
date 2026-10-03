@@ -4,7 +4,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { SURFACE_NAMES } from '../protocol.js'
-import { AGENT_CHAT_TOOLS, buildLaunchPlan, HOOK_DENIAL_NOTE, permModeFor } from '../agents/launch-plan.js'
+import { RESUMED_BRIEF } from '../agents/resume-session.js'
+import {
+  AGENT_CHAT_TOOLS,
+  buildLaunchPlan,
+  continueStarted,
+  HOOK_DENIAL_NOTE,
+  permModeFor,
+} from '../agents/launch-plan.js'
 import { BUILTIN_PROFILES, listProfileNames, loadProfile, parseProfile, roleOf } from '../agents/profiles.js'
 import { agentProfiles } from '../server/commands/agent-profiles.js'
 import { DEFAULT_SURFACE_LIFETIME } from '../agents/types.js'
@@ -1083,5 +1090,43 @@ describe('per-profile env (CC-259)', () => {
     expect(parsed).toHaveProperty('error', expect.stringContaining('cachey'))
     expect(parseProfile('cachey', { ...base, env: 'x' })).toHaveProperty('error')
     expect(parseProfile('ok', { ...base, env: { TTL: '5m' } })).toMatchObject({ env: { TTL: '5m' } })
+  })
+})
+
+describe('continueStarted (CC-488)', () => {
+  const stored = (over: Partial<LaunchPlanInput> = {}) => buildLaunchPlan(input(over))
+  const SID = '00000000-0000-4000-8000-000000000001'
+
+  it('resumes a stored interactive plan whose transcript exists, without the brief', () => {
+    const plan = stored({ surface: 'iterm-tab' })
+    expect(plan.args).toContain('--session-id')
+
+    const next = continueStarted(plan, id => id === SID)
+
+    expect(flag(next.args, '--resume')).toBe(SID)
+    expect(next.args).not.toContain('--session-id')
+    expect(next.args).not.toContain('--')
+    expect(next.args).not.toContain('find every caller of foo()')
+  })
+
+  it('resumes a stored headless plan on the resumed brief', () => {
+    const plan = stored()
+
+    const next = continueStarted(plan, () => true)
+
+    expect(flag(next.args, '--resume')).toBe(SID)
+    expect(next.stdin).toBe(RESUMED_BRIEF)
+  })
+
+  it('leaves a plan unchanged when its transcript is absent', () => {
+    const plan = stored()
+
+    expect(continueStarted(plan, () => false)).toEqual(plan)
+  })
+
+  it('never rewrites a fork plan, even with the parent transcript present', () => {
+    const plan = stored({ forkFrom: '/projects/parent.jsonl' })
+
+    expect(continueStarted(plan, () => true)).toEqual(plan)
   })
 })
