@@ -1015,7 +1015,7 @@ describe("the seat's unread inbox", () => {
     expect(result.implementers.active).toBe(1)
     expect(result.budget.sevenDay).toBe(41)
     expect(result.eligible.top).toHaveLength(3)
-    expect(report.lines[9]).toBe(`inbox         unavailable: ${result.inbox.error}`)
+    expect(report.lines[10]).toBe(`inbox         unavailable: ${result.inbox.error}`)
   })
 })
 
@@ -1170,12 +1170,63 @@ describe('the status verb', () => {
       'parked        1  tree on disk: ss-al-4',
       `budget        pool ${POOL}: seven_day 70%, five_hour 12% (reading 30s old)`,
       `stop          BUDGET-PAUSE pool ${POOL}: seven_day 70% at or above line 65% (no seven_day resets_at, flat reserve)`,
+      `pace          ${POOL}: 70 | no pace, the reading has no seven_day reset time`,
       'machine       headless 2/10, memory 50% free/15% floor, swap 25% used, suite slots 1/4',
       'inbox         0 unread (the seat has sent nothing)',
       'eligible      AL-1  72.0  alpha  Harden the secret store against injection',
       '              AL-2  51.6  alpha  Add the export feature to the dashboard',
       '              BE-3  51.2  beta  Survey the queue behaviour',
     ])
+  })
+
+  it('carries a pace block for the pool: glide target, points behind and needs a day', async () => {
+    const midWindow = NOW.getTime() + 4 * DAY_MS
+    writeReading(12, 39, 30, NOW, midWindow)
+
+    const { pace } = await status()
+    const { lines } = await statusReport(deps(), SEAT, false)
+
+    expect(pace).toEqual([
+      {
+        pool: POOL,
+        sevenDay: 39,
+        fiveHour: 12,
+        ageSeconds: 30,
+        stale: false,
+        resetsAt: midWindow,
+        target: 47.5,
+        behind: 8.5,
+        needs: 18.7,
+        level: 'behind',
+      },
+    ])
+    expect(lines).toContain(
+      `pace          ${POOL}: 39 | target 48 | behind 9 | needs 18.7/day | 5h 12 | resets in 4d 0h | reading 0 min old`,
+    )
+  })
+
+  it('reads 0 for a pool whose reset has passed and gives a reading over 15 minutes old no pace level', async () => {
+    writeReading(12, 93, 30, NOW, NOW.getTime() - 3 * DAY_MS)
+    const rolled = (await status()).pace[0]
+    writeReading(12, 39, 901, NOW, NOW.getTime() + 4 * DAY_MS)
+    const old = (await status()).pace[0]
+
+    expect(rolled).toMatchObject({
+      sevenDay: 0,
+      stale: true,
+      level: 'stale',
+      resetsAt: NOW.getTime() + 4 * DAY_MS,
+    })
+    expect(old).toMatchObject({ sevenDay: 39, ageSeconds: 901, stale: true, level: 'stale' })
+  })
+
+  it('gives a pool no pace when it has no status file or its reading has no reset time', async () => {
+    const noReset = (await status()).pace
+    fs.rmSync(path.join(poolDir, 'status-cache'), { recursive: true })
+    const noFile = (await status()).pace
+
+    expect(noReset).toMatchObject([{ pool: POOL, level: 'no_reading', sevenDay: 41, target: null }])
+    expect(noFile).toMatchObject([{ pool: POOL, level: 'no_reading', sevenDay: null, ageSeconds: null }])
   })
 
   it('marks a stale reading, an open gate and a failed scorer in the table', async () => {
@@ -1186,6 +1237,7 @@ describe('the status verb', () => {
     expect(lines.slice(6)).toEqual([
       `budget        pool ${POOL}: seven_day 41%, five_hour 12% (reading 300s old, STALE)`,
       `stop          none; pool ${POOL}: five_hour 12% vs ceiling 70%, seven_day 41% vs line 65% (no seven_day resets_at, flat reserve)`,
+      `pace          ${POOL}: 41 | no pace, the reading has no seven_day reset time`,
       'machine       headless 0/10, memory 50% free/15% floor, swap 25% used, suite slots 1/4',
       'inbox         0 unread (the seat has sent nothing)',
       'eligible      unavailable: scorer exploded',

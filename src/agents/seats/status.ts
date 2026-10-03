@@ -16,6 +16,7 @@ import type { DispatchRow } from '../burndown/score.js'
 import { expandHome } from '../burndown/seat-dispatch.js'
 import { localDate } from '../burndown/seat-tick.js'
 import { openEvents, type WatchdogDoc } from './io.js'
+import { paceLine, poolPace, type PoolPace } from './pace.js'
 import {
   advanceMeter,
   meterHistory,
@@ -120,6 +121,8 @@ export interface SeatStatus {
   other: AgentLoad
   parked: ParkedLoad
   budget: BudgetStatus
+  /** CC-605: every charter pool against its glide path, so a tick reads pace without running `bin/pace`. */
+  pace: PoolPace[]
   inbox: InboxReading
   eligible: EligibleStatus
   /** CC-406: the machine-wide guard's readings against its limits, across every seat. */
@@ -362,6 +365,16 @@ function budgetStatus(deps: StatusDeps, policy: Policy, seat: string, now: Date,
   }
 }
 
+/** A pool with no reserve has no day 7 line to pace against, so it has no row. */
+function poolPaces(deps: StatusDeps, policy: Policy, now: Date): PoolPace[] {
+  const nowMs = now.getTime()
+  return Object.entries(policy.charter.pools).flatMap(([name, pool]) => {
+    if (pool.reserve_seven_day === undefined) return []
+    const read = deps.readBudget(expandHome(pool.config_dir, deps.homeDir), nowMs)
+    return [poolPace(name, accountReading(read, nowMs), pool.reserve_seven_day, nowMs)]
+  })
+}
+
 /** An events.db that cannot be read costs the status its inbox count, not the other readings. */
 function inboxReading(deps: StatusDeps, seat: string, plain: Plain): InboxReading {
   try {
@@ -410,6 +423,7 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
     other: agentLoad(mine, 'other'),
     parked: parkedLoad(mine),
     budget: budgetStatus(deps, policy, seat, now, plain),
+    pace: poolPaces(deps, policy, now),
     inbox: inboxReading(deps, seat, plain),
     eligible: eligibleStatus(deps, seat, localDate(now), plain),
     machine: deps.machine(roster),
@@ -491,6 +505,11 @@ function inboxLine(inbox: InboxReading): string {
   return line('inbox', `${inbox.unread} unread (${since})`)
 }
 
+function paceLines(status: SeatStatus): string[] {
+  const nowMs = Date.parse(status.at)
+  return status.pace.map((row, i) => line(i === 0 ? 'pace' : '', paceLine(row, nowMs)))
+}
+
 export function renderStatus(status: SeatStatus): string[] {
   const { parked, budget } = status
   const trees = parked.treeOnDisk.length === 0 ? '' : `  tree on disk: ${parked.treeOnDisk.join(', ')}`
@@ -505,6 +524,7 @@ export function renderStatus(status: SeatStatus): string[] {
     line('stop', status.machineStop?.reason ?? budget.stop ?? `none; ${budget.margin}`),
     ...(budget.note === null ? [] : [line('note', budget.note)]),
     ...pacingLines(budget),
+    ...paceLines(status),
     machineLine(status.machine),
     inboxLine(status.inbox),
     ...eligibleLines(status.eligible),

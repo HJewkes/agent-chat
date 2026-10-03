@@ -107,6 +107,9 @@ describe("a pool's pace row", () => {
       'alpha: 41 | target 49 | behind 8 | needs 19.0/day | 5h 30 | resets in 4d 0h | reading 3 min old',
     )
     expect(paceLine(poolPace('alpha', undefined, RESERVE, NOW), NOW)).toBe('alpha: no reading')
+    expect(paceLine(poolPace('alpha', { ageSeconds: 5, sevenDay: 41 }, RESERVE, NOW), NOW)).toBe(
+      'alpha: 41 | no pace, the reading has no seven_day reset time',
+    )
     expect(paceLine(poolPace('alpha', reading(1200, 60), RESERVE, NOW), NOW)).toContain('| on pace |')
     expect(paceLine(poolPace('alpha', reading(1200, 60), RESERVE, NOW), NOW)).toMatch(/20 min old STALE$/)
   })

@@ -120,7 +120,9 @@ const span = (ms: number): string => `${Math.floor(ms / DAY_MS)}d ${Math.floor((
 
 /** The PACE line `bin/pace` prints, from a row. */
 export function paceLine(row: PoolPace, nowMs: number): string {
-  if (row.target === null || row.resetsAt === null) return `${row.pool}: no reading`
+  if (row.ageSeconds === null) return `${row.pool}: no reading`
+  if (row.target === null || row.resetsAt === null)
+    return `${row.pool}: ${row.sevenDay ?? '?'} | no pace, the reading has no seven_day reset time`
   const behind = (row.behind ?? 0) >= 0.5 ? `behind ${Math.round(row.behind ?? 0)}` : 'on pace'
   const age = `reading ${Math.floor((row.ageSeconds ?? 0) / 60)} min old${row.stale ? ' STALE' : ''}`
   return (

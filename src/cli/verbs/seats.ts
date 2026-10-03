@@ -437,7 +437,7 @@ export const seatsStatusVerb = defineVerb({
   description:
     'what a seat reads before it dispatches (CC-317), read-only: implementers, reviewers and planners ' +
     'against their caps, its other running agents, parked implementers, the pool reading with its age ' +
-    'and the charter stop that applies, unread inbox messages since the seat last sent one, the ' +
+    'and the charter stop that applies, every pool's pace against its glide path, unread inbox messages since the seat last sent one, the ' +
     'machine-wide headless agents, free memory and full-suite slots against their limits, swap used, and the ' +
     'top eligible tasks. A spend cap with no saved meter to count it is a stop',
   args: z.object({ seat: requiredString('seat'), json: z.boolean().optional(), root: z.string().optional() }),
