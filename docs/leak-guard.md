@@ -647,7 +647,10 @@ Two cases of this check are denied outright, so the check stays fast (CC-347):
   holds a command substitution or any `$'...'` string, a word that may expand to `git` or `gh`
   (as above, `g?` included), an expansion that hides its name or reads `$1`, `$@` and the like, a
   variable that the line mentions outside a `$` reference, or a word that names either one once
-  the hook's env values are put in, so `"$A$B"` with `A=g` and `B=h` counts (CC-478).
+  the hook's env values are put in, so `"$A$B"` with `A=g` and `B=h` counts (CC-478). Since
+  the arguments of a hidden git past the budget go unchecked, a line that names `push`,
+  `--no-verify` or `--no-veri`, a word that may expand to one of them (`p?sh`), `hooksPath`,
+  `include`, `alias` or `GIT_CONFIG` counts as reaching git too.
   A line past the budget that may reach neither, such as 40 joined
   `"$PY" "$SCRIPT" --out "$DIR"` commands, is allowed, and its starts past the budget go
   unchecked. An unchecked start can reach git only through a variable set where the guard cannot
@@ -785,9 +788,11 @@ refused with exit 2 and a line `git-shim: push refused (<rule>)` when:
 
 git appends the arguments to a `!` alias's shell command, which can read them in more ways than
 any list covers (`$1`, `"$@"`, `for a;`, `$0` under a nested `sh -c`, `shift`, `getopts`). So
-`shell-alias` also refuses a `!` alias whenever its arguments mention `push` at all, `stash push`
-included, after removing quotes, backslashes and blanks, so `pu sh` split across two arguments
-counts (CC-479). The accepted cost is a false refusal such as `git st push` for `st = !git
+`shell-alias` also refuses a `!` alias whenever its arguments mention `push` in any case, `stash
+push` included, after removing quotes and blanks, so `pu sh` split across two arguments counts
+(CC-479). It refuses, too, when the arguments hold a backslash, which the body may decode
+(`printf "$1"` over `\x70ush`), or a glob character `?`, `*` or `[`, which the body may expand
+into `push` (`p?sh` beside a file named `push`). The accepted cost is a false refusal such as `git st push` for `st = !git
 stash`; run the command the alias stands for instead.
 
 The builtin list is read from the real git at each spawn. If that read fails, the shim reads it
@@ -833,7 +838,9 @@ Not covered:
 - a `git` binary inside git's exec-path directory, which git puts first on PATH for its hooks,
   `!` aliases and `rebase --exec`. A `!` alias that builds the word push at run time, such as
   `$(echo pu)sh`, is in this class, and so is one that builds push by transforming arguments
-  that do not mention it, such as `tr a-z b-za` over `otrg`. One whose arguments mention push,
+  that do not mention it, such as `tr a-z b-za` over `otrg` or printf over an octal number the
+  body puts the backslash before, or reads push from a variable rather than its arguments, such
+  as `!git $P --no-verify origin main; true` run as `P=push git g`. One whose arguments mention push,
   such as `!f(){ git $2; }; f` run as `git g stash push`, is refused (above);
 - an executable `git-<word>` on PATH or in git's exec-path: `git <word>` runs it unchecked, with
   git's exec-path first on PATH as for a `!` alias;

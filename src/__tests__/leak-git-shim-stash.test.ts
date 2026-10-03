@@ -188,6 +188,23 @@ describe('the agent git shim refusing a shell alias whose arguments mention push
     expect(remoteHasMain(fx)).toBe(false)
   })
 
+  // Kills: arguments that the body globs, decodes or case-folds into push (second review of #337).
+  it.each([
+    [`!git $1 ${NO_VERIFY} origin main; true`, "git g 'p?sh'"],
+    [`!git $(printf "$1") ${NO_VERIFY} origin main; true`, "git g '\\x70ush'"],
+    [`!git $(echo $1 | tr A-Z a-z) ${NO_VERIFY} origin main; true`, 'git g PUSH'],
+  ])('refuses the alias %s run as %s', (alias, command) => {
+    const fx = fixture()
+    fs.writeFileSync(path.join(fx.work, 'push'), '')
+    git(fx.work, 'config', 'alias.g', alias)
+
+    const run = runScript(fx, command)
+
+    expect(run.stderr).toContain('git-shim: push refused (shell-alias)')
+    expect(run.status).toBe(2)
+    expect(remoteHasMain(fx)).toBe(false)
+  })
+
   // Pins the accepted cost: a stash alias given push as an argument is refused too.
   it('refuses git st push for the alias !git stash', () => {
     const fx = fixture()
