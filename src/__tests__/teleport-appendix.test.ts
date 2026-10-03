@@ -163,7 +163,7 @@ describe('the queue file', () => {
 })
 
 describe('agent reports after the last wrap', () => {
-  /** A session record as `active-work wrap` names one, last written `agoMs` before now. */
+  /** A session record as `active-work wrap` names one, last written `agoMs` before now; returns the mtime the disk kept. */
   function wrapped(agoMs: number, sessionId = SESSION): number {
     const sessions = path.join(activeWork, 'init-a', 'sessions')
     fs.mkdirSync(sessions, { recursive: true })
@@ -172,7 +172,7 @@ describe('agent reports after the last wrap', () => {
     fs.writeFileSync(file, 'what the session knew\n')
     const at = new Date(Date.now() - agoMs)
     fs.utimesSync(file, at, at)
-    return at.getTime()
+    return fs.statSync(file).mtimeMs
   }
 
   const gap = () =>
