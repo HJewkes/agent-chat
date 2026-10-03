@@ -1,7 +1,7 @@
 {
   "description": "Burndown reviewer: relay-reviewer's read-only grants, headless, isolation none so it lands in the implementer's worktree, on a lean bootstrap (only agent-chat and active-work MCP, no skills).",
   "model": "opus",
-  "allowedTools": ["Read", "Bash", "Grep", "Glob"],
+  "allowedTools": ["Read", "Bash", "Grep", "Glob", "mcp__active-work__*"],
   "disallowedTools": [
     "Write",
     "Edit",

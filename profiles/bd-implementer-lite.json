@@ -1,7 +1,7 @@
 {
   "description": "Burndown implementer for small, fully specified briefs: implementer-lite's model (sonnet), headless, in its own worktree, on a lean bootstrap (only agent-chat and active-work MCP, no skills).",
   "model": "sonnet",
-  "allowedTools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "Monitor"],
+  "allowedTools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "Monitor", "mcp__active-work__*"],
   "disallowedTools": [
     "Bash(agent-chat endorse:*)",
     "Bash(agent-chat dismiss:*)",

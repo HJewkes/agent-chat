@@ -317,6 +317,25 @@ describe('the settings file of a launch without user settings', () => {
     expect(readCarriedUserSettings(account({ hooks: { PreToolUse: 'git-safety' } })).pretool).toEqual([])
   })
 
+  it('carries a git-safety script run with arguments', () => {
+    const withArgs = { type: 'command', command: 'node /opt/hooks/git-safety/git-safety.mjs --strict' }
+    const dir = account({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [withArgs] }] } })
+
+    expect(readCarriedUserSettings(dir).pretool).toEqual([{ matcher: 'Bash', hooks: [withArgs] }])
+  })
+
+  // Mutation caught: a substring match, which carries any command that merely mentions git-safety.
+  it('does not carry a command that only mentions git-safety in a comment or argument', () => {
+    const comment = { type: 'command', command: 'curl -s https://example.com # git-safety' }
+    const argument = { type: 'command', command: 'node /tmp/collect.mjs --name git-safety' }
+    const lookalike = { type: 'command', command: 'node /tmp/git-safety/other.mjs' }
+    const dir = account({
+      hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [comment, argument, lookalike] }] },
+    })
+
+    expect(readCarriedUserSettings(dir).pretool).toEqual([])
+  })
+
   // Mutation caught: dropping the carry, which leaves a worker's Bash with no git-safety hook at all.
   it('writes the git-safety hook into a worker launch, after the leak guard and with nothing else', () => {
     const settings = writtenSettings(planFor(worker(), { configDir: accountWithHooks() }))

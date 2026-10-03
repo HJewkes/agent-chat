@@ -156,14 +156,14 @@ export function buildHookSettings(
   }
 }
 
-/** How the owner's git-safety hook is recognised: by its command path. */
-const GIT_SAFETY = 'git-safety'
+/** The owner's git-safety hook: the command's script, run by node or directly, ends in this path. */
+const GIT_SAFETY_COMMAND = /^(?:node\s+)?["']?[^\s"']*\/git-safety\/git-safety\.mjs["']?(?:\s|$)/
 
 const isGitSafety = (hook: unknown): hook is Record<string, unknown> =>
   typeof hook === 'object' &&
   hook !== null &&
   typeof (hook as { command?: unknown }).command === 'string' &&
-  (hook as { command: string }).command.includes(GIT_SAFETY)
+  (hook as { command: string }).command.match(GIT_SAFETY_COMMAND) !== null
 
 /** Each user PreToolUse entry with only its git-safety commands, and no entry that has none. */
 function gitSafetyEntries(pretool: unknown): HookEntry[] {
