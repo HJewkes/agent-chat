@@ -33,9 +33,9 @@ export interface PoolPickReadDeps {
   home: string
 }
 
-/** The default account keeps its trust in `~/.claude.json`, which the CLI reads with the variable unset. */
-const trustsCwd = (cwd: string, configDir: string, home: string): boolean =>
-  isTrusted(cwd, path.resolve(configDir) === defaultConfigDir(home) ? undefined : configDir) !== false
+/** The default account keeps its trust in `~/.claude.json`; a config that cannot be read counts as untrusted. */
+export const trustsCwd = (cwd: string, configDir: string, home: string): boolean =>
+  isTrusted(cwd, path.resolve(configDir) === defaultConfigDir(home) ? undefined : configDir) === true
 
 const defaultDeps = (): PoolPickReadDeps => {
   const home = os.homedir()
@@ -90,7 +90,7 @@ export interface PoolRoute {
   record: PoolPickRecord
   /** Enforce mode: the pool to bill in place of the home pool. */
   redirect?: Pool
-  /** Enforce mode: every eligible pool is past a budget stop. */
+  /** Enforce mode: every eligible pool is past a budget stop; the caller still bills an open home pool. */
   refusal?: string
 }
 

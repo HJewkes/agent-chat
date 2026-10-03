@@ -1087,24 +1087,30 @@ export class Supervisor implements TeleportHost {
     return verdict.allow ? undefined : `seat budget stop: ${verdict.reason}`
   }
 
-  /** CC-606: the pick for a seat's spawn, walked past the budget gate and recorded; undefined when no seat owns it or the pick is off. */
+  /**
+   * CC-606: the pick for a seat's spawn, walked past the budget gate and recorded; undefined when no seat
+   * owns it or the pick is off. Any failure logs and returns undefined, so the spawn bills as it would unrouted.
+   */
   private poolRoute(
     req: SpawnRequest,
     site: { homeDir: string; cwd: string; initiative?: string },
     gate: (configDir: string) => string | undefined,
   ): PoolRoute | undefined {
-    const mode = this.poolPick?.mode() ?? 'off'
-    if (this.poolPick === undefined || mode === 'off') return undefined
     const pinned = req.configDir !== undefined && req.configDir !== ''
-    let read: PoolPickRead
     try {
-      read = this.poolPick.read({
+      const mode = this.poolPick?.mode() ?? 'off'
+      if (this.poolPick === undefined || mode === 'off') return undefined
+      const read = this.poolPick.read({
         name: req.name,
         spawner: req.requestedBy,
         pinned,
         now: new Date(),
         ...site,
       })
+      if (read.kind === 'none') return undefined
+      const route = routePool(read, mode, gate)
+      this.recordPoolPick(req.name, route.record, pinned)
+      return pinned ? { record: route.record } : route
     } catch (err) {
       logEvent('pool_pick_failed', {
         name: req.name,
@@ -1112,10 +1118,6 @@ export class Supervisor implements TeleportHost {
       })
       return undefined
     }
-    if (read.kind === 'none') return undefined
-    const route = routePool(read, mode, gate)
-    this.recordPoolPick(req.name, route.record, pinned)
-    return route
   }
 
   /** A pinned spawn's pick is logged only: its row would say nothing a shadow comparison needs. */
@@ -1140,7 +1142,7 @@ export class Supervisor implements TeleportHost {
 
   /**
    * The account the spawn bills, past the seat budget gate. Shadow mode records the pool pick and keeps
-   * `account`; enforce mode bills the picked pool, and refuses only when every eligible pool is closed.
+   * `account`; enforce mode bills the picked pool, and refuses only when every eligible pool and `account` are closed.
    */
   private billedAccount(
     req: SpawnRequest,
@@ -1155,10 +1157,10 @@ export class Supervisor implements TeleportHost {
     }
     const { keepsAccount, ...where } = site
     const route = keepsAccount ? undefined : this.poolRoute(req, { homeDir: account.dir, ...where }, gate)
-    if (route?.refusal !== undefined) return { refusal: `seat budget stop: ${route.refusal}` }
     if (route?.redirect !== undefined) return { account: poolAccount(route.redirect.configDir) }
     const overBudget = gate(account.dir)
-    return overBudget === undefined ? { account } : { refusal: overBudget }
+    if (overBudget === undefined) return { account }
+    return { refusal: route?.refusal === undefined ? overBudget : `seat budget stop: ${route.refusal}` }
   }
 
   /** The requester's OWN `agent_spawned` row — the only record of what it was granted. */

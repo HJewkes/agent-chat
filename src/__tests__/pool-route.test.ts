@@ -1,18 +1,22 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import type net from 'node:net'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { Conn } from '../broker/core.js'
 import type { Pool, Seat } from '../agents/seats/charter.js'
 import type { PaceRead } from '../agents/seats/pace-file.js'
 import type { PoolPick, PoolPickMode } from '../agents/seats/pool-pick.js'
 import {
   readPoolPick,
   routePool,
+  trustsCwd,
   type PoolPickRead,
   type PoolPickReadDeps,
   type PoolPickRequest,
 } from '../agents/seats/pool-route.js'
 import type { SeatSpawnRequest } from '../agents/seats/spawn-gate-read.js'
+import { transcriptPath } from '../agents/transcript.js'
 import { startSupervisor, type RestartHarness } from './helpers/restart-harness.js'
 
 const NOON = new Date(2026, 0, 5, 12, 0)
@@ -217,6 +221,31 @@ describe('reading the pool pick for a spawn', () => {
   })
 })
 
+describe('whether a pool’s config dir trusts the cwd', () => {
+  const dirs: string[] = []
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+  })
+  const tmp = (): string => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pool-trust-')))
+    dirs.push(dir)
+    return dir
+  }
+
+  it('reads a config dir whose .claude.json cannot be read as untrusted', () => {
+    expect(trustsCwd(tmp(), tmp(), '/synthetic')).toBe(false)
+  })
+
+  it('reads an accepted trust entry as trusted and a missing one as untrusted', () => {
+    const [cwd, other, configDir] = [tmp(), tmp(), tmp()]
+    const config = { projects: { [cwd]: { hasTrustDialogAccepted: true } } }
+    fs.writeFileSync(path.join(configDir, '.claude.json'), JSON.stringify(config))
+
+    expect(trustsCwd(cwd, configDir, '/synthetic')).toBe(true)
+    expect(trustsCwd(other, configDir, '/synthetic')).toBe(false)
+  })
+})
+
 const SEAT: Seat = { name: 'alpha-coord', prefix: 'ac', pool: 'alpha', spend: {} }
 
 describe('agent spawn under the pool pick', () => {
@@ -225,14 +254,20 @@ describe('agent spawn under the pool pick', () => {
   afterEach(() => {
     h?.close()
     h = undefined
+    vi.restoreAllMocks()
+    delete process.env.CLAUDE_CONFIG_DIR
     for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
   })
 
+  const tmp = (label: string): string => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `pool-route-${label}-`))
+    dirs.push(dir)
+    return dir
+  }
+
   /** A real directory, so a redirected launch has a config dir to write under. */
   const account = (name: string): Pool => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `pool-route-${name}-`))
-    dirs.push(dir)
-    return { ...pool(name), configDir: dir }
+    return { ...pool(name), configDir: tmp(name) }
   }
 
   interface Setup {
@@ -241,9 +276,11 @@ describe('agent spawn under the pool pick', () => {
     /** Pools whose five_hour reading is past the ceiling. */
     closed?: string[]
     reason?: string
+    /** The budget gate throws on the beta pool's config dir. */
+    gateThrowsOnBeta?: boolean
   }
 
-  const routed = ({ mode, order, closed = [], reason }: Setup) => {
+  const routed = ({ mode, order, closed = [], reason, gateThrowsOnBeta = false }: Setup) => {
     const beta = account('beta')
     const requests: PoolPickRequest[] = []
     const fiveHour = (dir: string) => (closed.includes(dir === beta.configDir ? 'beta' : 'alpha') ? 90 : 20)
@@ -259,11 +296,14 @@ describe('agent spawn under the pool pick', () => {
       seatBudget: {
         read: ({ configDir }: SeatSpawnRequest) => ({
           kind: 'gate' as const,
-          input: {
-            seat: SEAT,
-            pool: configDir === beta.configDir ? beta : ALPHA,
-            reading: { sevenDay: 40, fiveHour: fiveHour(configDir), ageSeconds: 30 },
-            now: NOON,
+          get input() {
+            if (gateThrowsOnBeta && configDir === beta.configDir) throw new Error('gate broke')
+            return {
+              seat: SEAT,
+              pool: configDir === beta.configDir ? beta : ALPHA,
+              reading: { sevenDay: 40, fiveHour: fiveHour(configDir), ageSeconds: 30 },
+              now: NOON,
+            }
           },
         }),
       },
@@ -276,6 +316,19 @@ describe('agent spawn under the pool pick', () => {
 
   const pickRows = (sup: RestartHarness) =>
     sup.core.events.history(50).filter(r => r.meta.pool_pick !== undefined)
+
+  const brokerLog = (sup: RestartHarness) => fs.readFileSync(path.join(sup.home, 'broker.log'), 'utf8')
+
+  const request = (name: string, over: Record<string, unknown> = {}) => ({
+    name,
+    profile: 'explorer',
+    brief: 'pool pick',
+    requestedBy: 'human',
+    cwd: tmp('cwd'),
+    isolation: 'none' as const,
+    surface: 'headless' as const,
+    ...over,
+  })
 
   it('records the pick in shadow mode and leaves the spawn’s config_dir alone', async () => {
     const { sup, beta, requests } = routed({ mode: 'shadow', order: ['beta', 'alpha'] })
@@ -380,5 +433,102 @@ describe('agent spawn under the pool pick', () => {
 
     expect((await h.spawnAgent('ac-unread')).ok).toBe(true)
     expect(fs.readFileSync(path.join(h.home, 'broker.log'), 'utf8')).toContain('"event":"pool_pick_failed"')
+  })
+
+  it('falls back to an open home pool in enforce mode when the pick skipped it and the rest are closed', async () => {
+    const { sup, requests } = routed({ mode: 'enforce', order: ['beta'], closed: ['beta'] })
+
+    const outcome = await sup.spawnAgent('ac-home-open')
+
+    expect(outcome.ok).toBe(true)
+    expect(spawnMeta(sup, outcome.agentId)?.config_dir).toBe(requests[0]?.homeDir)
+  })
+
+  it('refuses in enforce mode when the pick skipped the home pool and it is closed too', async () => {
+    const { sup } = routed({ mode: 'enforce', order: ['beta'], closed: ['alpha', 'beta'] })
+
+    const outcome = await sup.spawnAgent('ac-home-shut')
+
+    expect(outcome).toMatchObject({ ok: false, code: 'seat_budget_stop', retryable: true })
+    expect(outcome.reason).toContain('every eligible pool is closed: beta: ')
+  })
+
+  it('keeps a pinned spawn on its config_dir in enforce mode, whatever the reader returns', async () => {
+    const { sup, requests } = routed({ mode: 'enforce', order: ['beta', 'alpha'] })
+    const pinnedDir = tmp('pinned')
+    vi.spyOn(os, 'homedir').mockReturnValue(path.dirname(pinnedDir))
+
+    const outcome = await sup.supervisor.spawn(request('ac-pinned', { configDir: pinnedDir }))
+
+    expect(outcome.reason).toBeUndefined()
+    expect(requests.map(r => r.pinned)).toEqual([true])
+    expect(spawnMeta(sup, outcome.agentId)).toMatchObject({
+      config_dir: pinnedDir,
+      config_dir_source: 'explicit',
+    })
+    expect(pickRows(sup)).toEqual([])
+  })
+
+  it('keeps a fork on its requester’s account in enforce mode and never reads the pick', async () => {
+    const { sup, requests } = routed({ mode: 'enforce', order: ['beta', 'alpha'] })
+    const accountDir = tmp('fork-account')
+    process.env.CLAUDE_CONFIG_DIR = accountDir
+    const [cwd, sessionId] = [tmp('fork-cwd'), '11111111-1111-4111-8111-000000000001']
+    const conn = {} as unknown as net.Socket as Conn
+    sup.core.register(conn, { t: 'register', name: 'alpha-coord', workingOn: '', cwd, pid: 1, sessionId })
+    const transcript = transcriptPath(cwd, sessionId, accountDir)
+    fs.mkdirSync(path.dirname(transcript), { recursive: true })
+    fs.writeFileSync(transcript, '{}\n')
+
+    const outcome = await sup.supervisor.spawn(
+      request('ac-fork', { requestedBy: 'alpha-coord', cwd, inherit: 'context' }),
+    )
+
+    expect(outcome.reason).toBeUndefined()
+    expect(requests).toEqual([])
+    expect(spawnMeta(sup, outcome.agentId)).toMatchObject({ config_dir: accountDir, inherit: 'context' })
+  })
+
+  it('keeps a resumed session on its account in enforce mode and never reads the pick', async () => {
+    const { sup, requests } = routed({ mode: 'enforce', order: ['beta', 'alpha'] })
+    const [accountDir, cwd] = [tmp('resume-account'), tmp('resume-cwd')]
+    const sessionId = '0f8fad5b-d9cb-469f-a165-70867728950e'
+    const transcript = transcriptPath(cwd, sessionId, accountDir)
+    fs.mkdirSync(path.dirname(transcript), { recursive: true })
+    fs.writeFileSync(transcript, '{}\n')
+
+    const outcome = await sup.supervisor.spawn(
+      request('ac-resume', { cwd, spawnerConfigDir: accountDir, resumeSession: sessionId }),
+    )
+
+    expect(outcome.reason).toBeUndefined()
+    expect(requests).toEqual([])
+    expect(spawnMeta(sup, outcome.agentId)?.config_dir).toBe(accountDir)
+  })
+
+  it('spawns on the original account in shadow mode when writing the pick row throws', async () => {
+    const { sup, requests } = routed({ mode: 'shadow', order: ['beta', 'alpha'] })
+    const append = sup.core.append.bind(sup.core)
+    vi.spyOn(sup.core, 'append').mockImplementation(input => {
+      if (input.meta?.pool_pick !== undefined) throw new Error('database is locked')
+      return append(input)
+    })
+
+    const outcome = await sup.spawnAgent('ac-append-throws')
+
+    expect(outcome.reason).toBeUndefined()
+    expect(spawnMeta(sup, outcome.agentId)?.config_dir).toBe(requests[0]?.homeDir)
+    expect(brokerLog(sup)).toContain('"event":"pool_pick_failed","name":"ac-append-throws"')
+  })
+
+  it('spawns on the original account in shadow mode when the gate throws on another pool', async () => {
+    const { sup, requests } = routed({ mode: 'shadow', order: ['beta', 'alpha'], gateThrowsOnBeta: true })
+
+    const outcome = await sup.spawnAgent('ac-gate-throws')
+
+    expect(outcome.reason).toBeUndefined()
+    expect(spawnMeta(sup, outcome.agentId)?.config_dir).toBe(requests[0]?.homeDir)
+    expect(brokerLog(sup)).toContain('"event":"pool_pick_failed","name":"ac-gate-throws"')
+    expect(pickRows(sup)).toEqual([])
   })
 })
