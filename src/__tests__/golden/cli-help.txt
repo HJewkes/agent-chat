@@ -636,6 +636,7 @@ bring a stopped agent back on its own conversation (headless by default)
 
 Options:
   --message <value>  the turn it resumes on
+  --message-stdin    read the turn from stdin, not argv
   --surface <value>  where it comes back: headless, iterm-pane, iterm-tab, iterm-window
   -h, --help         display help for command
 
