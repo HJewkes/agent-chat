@@ -31,7 +31,12 @@ export interface SeatAgent {
   profile: string
   state: string
   spawnedBy: string
+  /** Epoch ms of the agent's launch; a replay's roster has none. */
+  spawnedAt?: number
 }
+
+/** CC-402: a seat agent still in `spawning` past this never started, and nothing else says so. */
+export const SPAWNING_STUCK_MS = 10 * 60_000
 
 export interface BudgetVerdict {
   open: boolean
@@ -76,6 +81,27 @@ export function runningImplementers(agents: SeatAgent[], seat: Pick<Seat, 'name'
     .filter(a => a.name.startsWith(`${seat.prefix}-`) || a.spawnedBy === seat.name)
     .filter(a => a.profile.includes('implementer') && RUNNING.has(a.state))
     .map(a => a.name)
+}
+
+const ofSeat = (agent: SeatAgent, seat: Pick<Seat, 'name' | 'prefix'>): boolean =>
+  agent.name === seat.name || agent.name.startsWith(`${seat.prefix}-`) || agent.spawnedBy === seat.name
+
+export interface StuckAgent {
+  name: string
+  minutes: number
+}
+
+/** CC-402: the seat's own successor and its agents that have sat in `spawning` for over ten minutes. */
+export function stuckSpawning(
+  agents: SeatAgent[],
+  seat: Pick<Seat, 'name' | 'prefix'>,
+  nowMs: number,
+): StuckAgent[] {
+  return agents.flatMap(a => {
+    if (!ofSeat(a, seat) || a.state !== 'spawning' || a.spawnedAt === undefined) return []
+    const waited = nowMs - a.spawnedAt
+    return waited > SPAWNING_STUCK_MS ? [{ name: a.name, minutes: Math.floor(waited / 60_000) }] : []
+  })
 }
 
 const windowUsed = (window: BudgetWindow | undefined, nowMs: number): number | undefined =>

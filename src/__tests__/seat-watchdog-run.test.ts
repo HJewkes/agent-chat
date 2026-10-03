@@ -354,6 +354,73 @@ describe('runWatchdog', () => {
   })
 })
 
+describe('seat agents stuck in spawning (CC-402)', () => {
+  const START = new Date(2026, 8, 29, 8, 38)
+  const minutesAgo = (minutes: number): number => START.getTime() - minutes * 60_000
+  const spawning = (name: string, minutes: number, spawnedBy = 'human') => ({
+    name,
+    profile: name.startsWith('sa-') ? 'implementer' : 'lead',
+    state: 'spawning',
+    spawnedBy,
+    spawnedAt: minutesAgo(minutes),
+  })
+  const flagLines = (h: Harness): string[] => h.logs.filter(line => line.includes('in state spawning'))
+
+  it("flags the seat's own successor and its implementer past ten minutes, once each across runs", async () => {
+    const roster: Roster = {
+      agents: [spawning('seat-a', 11), spawning('sa-cc-9-fix', 12, 'seat-a')],
+      connected: [],
+    }
+    const h = harness(roster, 41, START)
+
+    const first = await runWatchdog(h.deps, ONE)
+    h.tick()
+    const second = await runWatchdog(h.deps, ONE)
+
+    expect(flagLines(h)).toEqual([
+      'seat-a: Watchdog: seat-a in state spawning for 11 min; its launch never registered',
+      'seat-a: Watchdog: sa-cc-9-fix in state spawning for 12 min; its launch never registered',
+    ])
+    expect(first).toContain(
+      'seat-a: Watchdog: seat-a in state spawning for 11 min; its launch never registered',
+    )
+    expect(second.filter(line => line.includes('in state spawning'))).toEqual([])
+  })
+
+  it('leaves alone an agent at exactly ten minutes, a live one and another seat’s, then flags the first once it passes ten', async () => {
+    const live = { ...spawning('sa-cc-1-fix', 30, 'seat-a'), state: 'live' }
+    const roster: Roster = {
+      agents: [spawning('seat-a', 10), live, spawning('sb-cc-2-fix', 30, 'seat-b')],
+      connected: [],
+    }
+    const h = harness(roster, 41, START)
+
+    await runWatchdog(h.deps, ONE)
+    expect(flagLines(h)).toEqual([])
+
+    h.tick()
+    await runWatchdog(h.deps, ONE)
+    expect(flagLines(h)).toEqual([
+      'seat-a: Watchdog: seat-a in state spawning for 25 min; its launch never registered',
+    ])
+  })
+
+  it('flags an agent again after it registered and later stuck in spawning anew', async () => {
+    const roster: Roster = { agents: [spawning('seat-a', 11)], connected: [] }
+    const h = harness(roster, 41, START)
+
+    await runWatchdog(h.deps, ONE)
+    roster.agents = [{ ...spawning('seat-a', 11), state: 'live' }]
+    h.tick()
+    await runWatchdog(h.deps, ONE)
+    roster.agents = [{ ...spawning('seat-a', 0), spawnedAt: h.now() - 11 * 60_000 }]
+    h.tick()
+    await runWatchdog(h.deps, ONE)
+
+    expect(flagLines(h)).toHaveLength(2)
+  })
+})
+
 describe('seat liveness (CC-320)', () => {
   const DARK: Roster = { agents: [], connected: [] }
   const LIVE: Presence = { teleported: false, wokenByWatchdog: false, resumeStarted: false }
