@@ -890,6 +890,9 @@ describe('a gh command the command line hides', () => {
       ['a gh joined from hook variables', `${SCRIPTS}; $E "$A$B" pr create -t x --body y`],
       ['a gh joined from text and a hook variable', `${SCRIPTS}; $E g"$B" pr create -t x --body y`],
       ['a glob that may be gh', `${SCRIPTS}; $E g? pr create -t x --body y`],
+      ['a hidden push that skips hooks', `${SCRIPTS}; $E $X push --no-verify`],
+      ['a hidden push spelled as a glob', `${SCRIPTS}; $E $X p?sh`],
+      ['a hidden abbreviated no-verify', `${SCRIPTS}; $E $X "$R" --no-veri`],
     ])('denies a line that reaches git or gh through %s', (_, command) => {
       const reason = checkCommand(command, ctx({ env: { TOOL: 'gh', A: 'g', B: 'h' } }))
 

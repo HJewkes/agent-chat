@@ -828,8 +828,12 @@ function mayReachGit(line: string, env: Env): boolean {
 
 const ANSI_C = /\$'/
 
+// Past the budget a hidden git's arguments go unchecked, so a word that may push or skip hooks counts as reaching it.
+const RISKY_WORD = /\b(?:git|gh)\b|GIT_CONFIG|push|no-?veri|hookspath|include|alias/i
+const RISKY_NAMES = ['git', 'gh', 'push', '--no-verify', '--no-veri']
+
 const wordMayBeGit = (word: string): boolean =>
-  MENTIONS_GIT.test(word.replace(QUOTING, '')) || mayExpandToGit(word) || mayExpandTo(word, 'gh')
+  RISKY_WORD.test(word.replace(QUOTING, '')) || RISKY_NAMES.some(name => mayExpandTo(word, name))
 
 /** The word with each `$NAME` and `${NAME}` replaced by the hook env's value, so joined variables are tested as one. */
 const withEnv = (word: string, env: Env): string =>
