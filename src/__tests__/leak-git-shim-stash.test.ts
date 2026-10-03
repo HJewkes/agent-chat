@@ -167,6 +167,70 @@ describe('the agent git shim exempting only an exact git stash push (TP-783)', (
   })
 })
 
+describe('the agent git shim refusing a shell alias whose arguments mention push (CC-479)', () => {
+  // Kills: the decision taken from argument-reading spellings in the body rather than from the arguments (review of #337).
+  it.each([
+    [`!git $1 ${NO_VERIFY} origin main; git stash`, 'git g push'],
+    [`!git "$@" ${NO_VERIFY} origin main`, 'git g push'],
+    [`!git \${1} ${NO_VERIFY} origin main`, 'git g push'],
+    [`!for a; do git $a ${NO_VERIFY} origin main; done; git stash`, 'git g push'],
+    [`!sh -c 'git $0 ${NO_VERIFY} origin main; git stash'`, 'git g push'],
+    [`!git $1$2 ${NO_VERIFY} origin main; true`, 'git g pu sh'],
+    ['!f(){ git $2; }; f', `git g stash push ${NO_VERIFY} origin main`],
+  ])('refuses the alias %s run as %s', (alias, command) => {
+    const fx = fixture()
+    git(fx.work, 'config', 'alias.g', alias)
+
+    const run = runScript(fx, command)
+
+    expect(run.stderr).toContain('git-shim: push refused (shell-alias)')
+    expect(run.status).toBe(2)
+    expect(remoteHasMain(fx)).toBe(false)
+  })
+
+  // Kills: arguments that the body globs, decodes or case-folds into push (second review of #337).
+  it.each([
+    [`!git $1 ${NO_VERIFY} origin main; true`, "git g 'p?sh'"],
+    [`!git $(printf "$1") ${NO_VERIFY} origin main; true`, "git g '\\x70ush'"],
+    [`!git $(echo $1 | tr A-Z a-z) ${NO_VERIFY} origin main; true`, 'git g PUSH'],
+  ])('refuses the alias %s run as %s', (alias, command) => {
+    const fx = fixture()
+    fs.writeFileSync(path.join(fx.work, 'push'), '')
+    git(fx.work, 'config', 'alias.g', alias)
+
+    const run = runScript(fx, command)
+
+    expect(run.stderr).toContain('git-shim: push refused (shell-alias)')
+    expect(run.status).toBe(2)
+    expect(remoteHasMain(fx)).toBe(false)
+  })
+
+  // Pins the accepted cost: a stash alias given push as an argument is refused too.
+  it('refuses git st push for the alias !git stash', () => {
+    const fx = fixture()
+    git(fx.work, 'config', 'alias.st', '!git stash')
+
+    const run = runScript(fx, 'git st push')
+
+    expect(run.stderr).toContain('git-shim: push refused (shell-alias)')
+    expect(run.status).toBe(2)
+  })
+
+  // Kills: every positional alias refused, push or not.
+  it.each([
+    ['!f(){ git log --oneline -n $1; }; f', 'git g 1'],
+    ['!f(){ git rev-parse "$@"; }; f', 'git g HEAD'],
+  ])('still runs the alias %s as %s', (alias, command) => {
+    const fx = fixture()
+    git(fx.work, 'config', 'alias.g', alias)
+
+    const run = runScript(fx, command)
+
+    expect(run.stderr).not.toContain('git-shim')
+    expect(run.status).toBe(0)
+  })
+})
+
 describe('the agent git shim naming a typo it refuses under help.autocorrect (TP-783)', () => {
   // Kills: the refusal for a typo that git would not correct to push still saying push refused.
   it('names git stauts as the typo and does not claim a push', () => {
