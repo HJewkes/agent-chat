@@ -256,10 +256,39 @@ const PROFILE_KEYS: Record<Exclude<keyof AgentProfile, 'warnings'>, true> = {
   env: true,
 }
 
+/** CC-558: a live profile listed tools under `denies`, which no field read, so the tools stayed reachable. */
+const DENY_ALIAS = 'denies'
+
 const unknownKeyWarnings = (file: string, body: Record<string, unknown>): string[] =>
   Object.keys(body)
-    .filter(key => !Object.hasOwn(PROFILE_KEYS, key))
+    .filter(key => key !== DENY_ALIAS && !Object.hasOwn(PROFILE_KEYS, key))
     .map(key => `${file}: unknown key "${key}" is ignored; no AgentProfile field has that name`)
+
+const INBOX_DENY = 'Bash(agent-chat inbox:*)'
+
+/** The verbs `inbox --batch --answers` reaches through one door (CC-425). */
+const INBOX_REACHES = ['Bash(agent-chat approve:*)', 'Bash(agent-chat endorse:*)']
+
+/**
+ * CC-558: a file that denies approve or endorse but not inbox leaves that door
+ * open. A profile that allows an inbox pattern by name, as the decider does, keeps it.
+ */
+const needsInboxDeny = (denied: string[], allowed: string[]): boolean =>
+  INBOX_REACHES.some(verb => denied.includes(verb)) &&
+  !denied.includes(INBOX_DENY) &&
+  !allowed.some(tool => tool.startsWith('Bash(agent-chat inbox'))
+
+/** `disallowedTools` and its alias as one list, plus the inbox deny when the file needs it. */
+function fileDenies(file: string, body: Record<string, unknown>): { denied?: string[]; warnings: string[] } {
+  const listed = [...((body.disallowedTools as string[]) ?? []), ...((body[DENY_ALIAS] as string[]) ?? [])]
+  const denied = [...new Set(listed)]
+  if (needsInboxDeny(denied, body.allowedTools as string[])) {
+    const why = 'the file denies approve or endorse, and inbox reaches both'
+    return { denied: [...denied, INBOX_DENY], warnings: [`${file}: "${INBOX_DENY}" is denied too; ${why}`] }
+  }
+  const named = body.disallowedTools !== undefined || body[DENY_ALIAS] !== undefined
+  return { ...(named ? { denied } : {}), warnings: [] }
+}
 
 /**
  * Validate a parsed profile file. Returns the profile or an explanatory error —
@@ -282,6 +311,8 @@ export function parseProfile(
     return { error: `${name}: "allowedTools" must be an array of strings` }
   if (body.disallowedTools !== undefined && !isStringArray(body.disallowedTools))
     return { error: `${name}: "disallowedTools" must be an array of strings` }
+  if (body[DENY_ALIAS] !== undefined && !isStringArray(body[DENY_ALIAS]))
+    return { error: `${name}: "${DENY_ALIAS}" must be an array of strings` }
   if (!ISOLATION_NAMES.includes(body.isolation as never))
     return { error: `${name}: "isolation" must be one of ${ISOLATION_NAMES.join(', ')}` }
   if (!SURFACE_NAMES.includes(body.surface as never))
@@ -302,13 +333,14 @@ export function parseProfile(
     if (body[field] !== undefined && typeof body[field] !== 'boolean')
       return { error: `${name}: "${field}" must be true or false` }
 
-  const warnings = unknownKeyWarnings(file, body)
+  const denies = fileDenies(file, body)
+  const warnings = [...unknownKeyWarnings(file, body), ...denies.warnings]
   return {
     name,
     description: typeof body.description === 'string' ? body.description : '',
     model: body.model,
     allowedTools: body.allowedTools,
-    ...(body.disallowedTools === undefined ? {} : { disallowedTools: body.disallowedTools }),
+    ...(denies.denied === undefined ? {} : { disallowedTools: denies.denied }),
     isolation: body.isolation as AgentProfile['isolation'],
     surface: body.surface as AgentProfile['surface'],
     ...(body.surfaceLifetime === undefined
