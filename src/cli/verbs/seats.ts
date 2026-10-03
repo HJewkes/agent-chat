@@ -38,6 +38,8 @@ import {
 } from '../../agents/seats/io.js'
 import { readDispatches, renderDispatches } from '../../agents/seats/dispatch-read.js'
 import { acquireRunLock } from '../../agents/seats/lock.js'
+import { diskPaceStore } from '../../agents/seats/pace-pass.js'
+import { probePool } from '../../agents/seats/pool-probe.js'
 import { renderRunStart, startRun, type RunStartDeps } from '../../agents/seats/run-start.js'
 import {
   parseLogReadings,
@@ -206,6 +208,8 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
     loadDoc: () => loadDoc(),
     saveDoc: doc => saveDoc(doc),
     lock: () => acquireRunLock(),
+    pace: diskPaceStore(root),
+    probe: configDir => void probePool(configDir),
     wake: async (seat, message, connected) =>
       wakeSeat(
         client,

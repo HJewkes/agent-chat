@@ -278,7 +278,8 @@ describe('reading a seat spawn from the autonomy root', () => {
 
   it('gates the spawn of an attended seat the charter does not list, on any charter pool', () => {
     const { root: dir, home } = root()
-    const attended = '---\nprefix: at\nrole: attended   # the owner works here\npool: agents\nspend: {}\n---\n'
+    const attended =
+      '---\nprefix: at\nrole: attended   # the owner works here\npool: agents\nspend: {}\n---\n'
     fs.writeFileSync(path.join(dir, 'seats', 'owner-desk.md'), attended)
 
     const own = readSeatSpawn(dir, spawn('at-task'), deps(home))

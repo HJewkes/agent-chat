@@ -34,7 +34,13 @@ describe('the pace of one pool reading', () => {
   it('reads 0 for the new window once the reset has passed', () => {
     const pace = at(93, NOW + 7 * DAY)
 
-    expect(pace).toMatchObject({ sevenDay: 0, target: 49, behind: 49, rolled: true, resetsAt: RESET + 7 * DAY })
+    expect(pace).toMatchObject({
+      sevenDay: 0,
+      target: 49,
+      behind: 49,
+      rolled: true,
+      resetsAt: RESET + 7 * DAY,
+    })
   })
 
   it('rolls a reset that passed several windows ago to the next one', () => {
