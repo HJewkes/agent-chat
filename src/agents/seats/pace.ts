@@ -74,6 +74,8 @@ export interface PoolPace {
   behind: number | null
   needs: number | null
   level: PaceLevel | 'stale' | 'no_reading'
+  /** The reading's window has passed, so `sevenDay` is an assumed 0 and no measurement. */
+  rolled?: true
 }
 
 const round1 = (n: number): number => Math.round(n * 10) / 10
@@ -113,6 +115,7 @@ export function poolPace(
     behind: round1(pace.behind),
     needs: round1(pace.needs),
     level: stale ? 'stale' : pace.level,
+    ...(pace.rolled ? { rolled: true as const } : {}),
   }
 }
 

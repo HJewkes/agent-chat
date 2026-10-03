@@ -14,7 +14,7 @@ import {
   readSwapUsage,
   type MachineStatus,
 } from '../../agents/machine-guard.js'
-import { resolveMachineLimits, resolveMachineStopLimits } from '../../config.js'
+import { resolveMachineLimits, resolveMachineStopLimits, resolvePoolProbe } from '../../config.js'
 import { machineStop, type MachineStop } from '../../agents/seats/stops.js'
 import { slotUsage } from '../../suite-slots.js'
 import { suiteSlotDeps } from '../suite-slot.js'
@@ -34,6 +34,7 @@ import {
   readText,
   saveDoc,
   scorerEligible,
+  seatFileNames,
   seatJournalDays,
 } from '../../agents/seats/io.js'
 import { readDispatches, renderDispatches } from '../../agents/seats/dispatch-read.js'
@@ -209,7 +210,8 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
     saveDoc: doc => saveDoc(doc),
     lock: () => acquireRunLock(),
     pace: diskPaceStore(root),
-    probe: configDir => void probePool(configDir),
+    ...(resolvePoolProbe() ? { probe: (configDir: string) => probePool(configDir) } : {}),
+    seatNames: () => seatFileNames(root),
     wake: async (seat, message, connected) =>
       wakeSeat(
         client,

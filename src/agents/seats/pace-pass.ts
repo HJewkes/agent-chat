@@ -26,6 +26,8 @@ export interface ReadingRow {
   resets_at: number
   source: 'watchdog'
   age_s: number
+  /** The window had passed, so `seven_day` is an assumed 0 and no measurement. */
+  rolled?: true
 }
 
 export interface PaceStore {
@@ -71,6 +73,7 @@ export function changedReadings(
         resets_at: Math.round(resetsAt / 1000),
         source: 'watchdog' as const,
         age_s: ageSeconds,
+        ...(row.rolled ? { rolled: true as const } : {}),
       },
     ]
   })

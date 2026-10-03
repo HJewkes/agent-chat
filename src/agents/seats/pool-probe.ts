@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { home } from '../../paths.js'
+import { agentEnv } from '../agent-env.js'
 import { budgetPath, type BudgetWindow } from '../budget.js'
 import { resolveClaudeBin } from '../claude-bin.js'
 
@@ -86,12 +87,18 @@ const PROBE_ARGS = [
   ...['--system-prompt', 'Reply ok.'],
 ]
 
+/** No inherited credential or provider switch: the turn can bill only the account `configDir` is logged in to. */
+export function probeEnv(parent: NodeJS.ProcessEnv, configDir: string): Record<string, string> {
+  const kept = Object.entries(agentEnv(parent)).filter(([name]) => !/^(ANTHROPIC|CLAUDE_CODE)_/i.test(name))
+  return { ...Object.fromEntries(kept), CLAUDE_CONFIG_DIR: configDir }
+}
+
 function runClaude(configDir: string): string {
   const resolution = resolveClaudeBin({ env: process.env, stateDir: home() })
   if ('error' in resolution) throw new Error(resolution.error)
   return execFileSync(resolution.bin, PROBE_ARGS, {
     cwd: os.tmpdir(),
-    env: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+    env: probeEnv(process.env, configDir),
     encoding: 'utf8',
     timeout: PROBE_TIMEOUT_MS,
     stdio: ['ignore', 'pipe', 'ignore'],
@@ -107,7 +114,7 @@ function writeAtomic(file: string, text: string): void {
 
 const liveDeps: ProbeDeps = { run: runClaude, write: writeAtomic, now: () => Date.now() }
 
-/** False when the turn could not run or carried no reading; the pool then stays stale, which is reported. */
+/** False when the turn could not run or carried no reading; throws when the status cache cannot be written. */
 export function probePool(configDir: string, deps: ProbeDeps = liveDeps): boolean {
   let windows: Record<string, BudgetWindow> | undefined
   try {

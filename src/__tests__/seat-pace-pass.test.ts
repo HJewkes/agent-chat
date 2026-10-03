@@ -12,7 +12,7 @@ import {
   type PaceDoc,
   type ReadingRow,
 } from '../agents/seats/pace-pass.js'
-import { PROBE_SESSION, parseRateLimits, probePool } from '../agents/seats/pool-probe.js'
+import { PROBE_SESSION, parseRateLimits, probeEnv, probePool } from '../agents/seats/pool-probe.js'
 import { runWatchdog, type WatchdogDeps } from '../agents/seats/run.js'
 import { keepReading } from '../agents/seats/watchdog.js'
 
@@ -35,9 +35,10 @@ interface Cached {
   sevenDay: number
   ageSeconds: number
   fiveHour?: number
+  resetS?: number
 }
 
-const read = ({ sevenDay, ageSeconds, fiveHour = 30 }: Cached): BudgetRead => ({
+const read = ({ sevenDay, ageSeconds, fiveHour = 30, resetS = RESET_S }: Cached): BudgetRead => ({
   found: true,
   path: '/x',
   age_seconds: ageSeconds,
@@ -49,7 +50,7 @@ const read = ({ sevenDay, ageSeconds, fiveHour = 30 }: Cached): BudgetRead => ({
     cost: {},
     rate_limits: {
       five_hour: { used_pct: fiveHour },
-      seven_day: { used_pct: sevenDay, resets_at: RESET_S },
+      seven_day: { used_pct: sevenDay, resets_at: resetS },
     },
   },
 })
@@ -102,6 +103,7 @@ function harness(): Harness {
       probe: dir => {
         h.probed.push(dir)
         h.cache[dir] = { sevenDay: 22, ageSeconds: 0 }
+        return true
       },
     },
   }
@@ -188,7 +190,7 @@ describe('the watchdog pass publishes pool pace', () => {
   it('probes a pool with no reading at all, and leaves it no reading when the probe finds none', async () => {
     const h = harness()
     h.cache['/synthetic/beta'] = undefined
-    h.deps.probe = dir => void h.probed.push(dir)
+    h.deps.probe = dir => h.probed.push(dir) < 0
 
     await pass(h)
 
@@ -217,6 +219,70 @@ describe('the watchdog pass publishes pool pace', () => {
     expect(h.pace).toBeUndefined()
     expect(h.history).toEqual([])
     expect(h.probed).toEqual([])
+  })
+
+  it('logs a probe that throws, and still judges the seats and saves the watchdog doc', async () => {
+    const h = harness()
+    h.cache['/synthetic/alpha'] = { sevenDay: 41, ageSeconds: 901 }
+    h.deps.probe = () => {
+      throw new Error('EACCES: status cache')
+    }
+
+    const lines = await pass(h)
+
+    expect(lines).toContain(
+      'pool alpha: Watchdog: probe failed (EACCES: status cache); not probed again for 1 h',
+    )
+    expect(h.doc.seats['seat-a']).toBeDefined()
+    expect(h.pace?.pools.alpha).toMatchObject({ level: 'stale', ageSeconds: 901 })
+  })
+
+  it('leaves a pool unprobed for an hour after a failed probe, then probes it again', async () => {
+    const h = harness()
+    h.cache['/synthetic/beta'] = undefined
+    const succeeding = h.deps.probe!
+    h.deps.probe = dir => h.probed.push(dir) < 0
+
+    const first = await pass(h)
+    const inBackoff = await pass(h, 45)
+    h.deps.probe = succeeding
+    await pass(h, 15)
+
+    expect(first).toContain(
+      'pool beta: Watchdog: probe failed (the headless turn carried no reading); not probed again for 1 h',
+    )
+    expect(inBackoff.join('\n')).not.toContain('probe failed')
+    expect(h.probed).toEqual(['/synthetic/beta', '/synthetic/beta'])
+    expect(h.doc.probeFailed).toEqual({})
+  })
+
+  it('marks the history row of a reading whose window has passed as rolled, and no other', async () => {
+    const h = harness()
+    h.cache['/synthetic/alpha'] = { sevenDay: 88, ageSeconds: 60, resetS: Math.round(NOW / 1000) - 3600 }
+
+    await pass(h)
+
+    expect(h.history[0]).toMatchObject({ pool: 'alpha', seven_day: 0, rolled: true })
+    expect(h.history[1]).not.toHaveProperty('rolled')
+  })
+
+  it('warns once a pass while an attended seat it has seen has no seat file', async () => {
+    const h = harness()
+    const files: Record<string, string | undefined> = {
+      'seat-a': SEAT,
+      desk: '---\nprefix: dk\nrole: attended\npool: alpha\n---\n',
+    }
+    h.deps.readSeatFile = name => files[name]
+    h.deps.seatNames = () => Object.keys(files).filter(name => files[name] !== undefined)
+
+    const seen = await pass(h)
+    files.desk = undefined
+    const missing = await pass(h, 15)
+
+    const warning = 'Watchdog: attended seat spawns are NOT gated: seats/desk.md is missing'
+    expect(seen.join('\n')).not.toContain('NOT gated')
+    expect(missing.filter(line => line === warning)).toHaveLength(1)
+    expect(h.doc.attended).toEqual(['desk'])
   })
 
   it('reports a pace file that cannot be written and still saves the watchdog doc', async () => {
@@ -332,6 +398,26 @@ describe('pace files on disk', () => {
       session_id: PROBE_SESSION,
       rate_limits: { seven_day: { used_pct: 3, resets_at: RESET_S }, five_hour: { used_pct: 67 } },
     })
+  })
+
+  it('gives the headless turn no credential or provider switch, only the config dir it bills', () => {
+    const parent = {
+      PATH: '/usr/bin',
+      HOME: '/synthetic/home',
+      TMPDIR: '/synthetic/tmp',
+      ANTHROPIC_API_KEY: 'synthetic-key',
+      ANTHROPIC_AUTH_TOKEN: 'synthetic-token',
+      ANTHROPIC_BASE_URL: 'https://elsewhere.invalid',
+      CLAUDE_CODE_OAUTH_TOKEN: 'synthetic-oauth',
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      AWS_BEARER_TOKEN_BEDROCK: 'synthetic-aws',
+      CLAUDE_CONFIG_DIR: '/synthetic/other',
+    }
+
+    const env = probeEnv(parent, '/synthetic/alpha')
+
+    expect(Object.keys(env).sort()).toEqual(['CLAUDE_CONFIG_DIR', 'HOME', 'PATH', 'TMPDIR'])
+    expect(env).toMatchObject({ CLAUDE_CONFIG_DIR: '/synthetic/alpha', HOME: '/synthetic/home' })
   })
 
   it('writes nothing when the headless run fails or carries no reading', () => {
