@@ -4,10 +4,11 @@ import { resolvePermissionHookTimeout } from '../config.js'
 import { GIT_SHIM_DIR_ENV, writeGitShim } from '../leak-guard/git-shim.js'
 import { hooksDirOf, writeGitHooks } from '../leak-guard/hooks-dir.js'
 import { agentDir, cliEntry } from '../paths.js'
-import type { IsolationName } from '../protocol.js'
+import type { IsolationName, SurfaceName } from '../protocol.js'
 import type { Allocation } from './isolation/index.js'
 import { readLaunchPlan as readPlanFile, relaunchScript } from '@titan-design/agent-surface'
 import { agentChatLauncher, relaunchScriptPath } from './launcher.js'
+import { strictMcpFor } from './launch-policy.js'
 import type { AgentProfile, LaunchHandle, LaunchPlan } from './types.js'
 
 /**
@@ -56,15 +57,20 @@ export const mcpConfigPath = (agentId: string): string => path.join(agentDir(age
  * setup where the plugin isn't installed, only `npm link`ed — that is the
  * regression to watch for and the reason this used to be unconditional.
  *
- * A `strictMcpConfig` profile is the exception: --strict-mcp-config drops the
- * plugin's server along with every other one (observed 2026-09-28: `mcp_servers`
- * was empty even with --channels), so the entry comes back for it, and that
- * agent reaches the bus by tools and polling rather than live pushes.
+ * A strict launch is the exception, and a headless worker is strict unless its
+ * profile says otherwise: --strict-mcp-config drops the plugin's server along
+ * with every other one (observed 2026-09-28: `mcp_servers` was empty even with
+ * --channels), so the entry comes back for it, and that agent reaches the bus by
+ * tools and polling rather than live pushes.
  */
-export function buildMcpConfig(profile: AgentProfile, entry: string): Record<string, unknown> {
+export function buildMcpConfig(
+  profile: AgentProfile,
+  entry: string,
+  surface: SurfaceName = profile.surface,
+): Record<string, unknown> {
   return {
     mcpServers: {
-      ...(profile.strictMcpConfig === true
+      ...(strictMcpFor(profile, surface)
         ? { [AGENT_CHAT_SERVER]: { command: process.execPath, args: [entry, 'mcp'] } }
         : {}),
       ...(profile.mcpServers ?? {}),

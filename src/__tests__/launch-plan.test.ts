@@ -77,6 +77,9 @@ describe('the argv every surface shares', () => {
       Be brief.",
         "--mcp-config",
         "/state/agents/ag000001/mcp.json",
+        "--strict-mcp-config",
+        "--setting-sources",
+        "project,local",
         "--channels",
         "plugin:agent-chat@agent-chat-local",
         "--allowed-tools",
@@ -215,7 +218,15 @@ describe('the one thing surfaces are allowed to differ on', () => {
   it('differs on nothing else across all four surfaces', () => {
     // If this fails, someone added a second axis of divergence — which is the
     // wart the single builder exists to prevent.
-    const promptFlags = new Set(['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode'])
+    // `--strict-mcp-config` rides the same axis: only a headless worker has no pane to answer for an unnamed server.
+    const promptFlags = new Set([
+      '-p',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--permission-mode',
+      '--strict-mcp-config',
+    ])
     const stripped = SURFACE_NAMES.map(surface => {
       const args = buildLaunchPlan(input({ surface })).args
       const kept: string[] = []
@@ -678,7 +689,8 @@ describe('the launch files', () => {
     // chat_send, and did once this was removed and agent-chat was left to load
     // via the plugin's normal auto-load path instead. See launch-plan.ts's
     // --channels flag, which is the other half of this fix.
-    const config = buildMcpConfig(profile({ mcpServers: { extra: { command: 'x' } } }), '/repo/dist/cli.js')
+    const visible = profile({ surface: 'iterm-pane', mcpServers: { extra: { command: 'x' } } })
+    const config = buildMcpConfig(visible, '/repo/dist/cli.js')
     const servers = (config as { mcpServers: Record<string, unknown> }).mcpServers
 
     expect(Object.keys(servers)).toEqual(['extra'])
@@ -889,12 +901,13 @@ describe('the leak guard PreToolUse hook (CC-270)', () => {
 })
 
 describe('a lean profile', () => {
-  const lean = profile({ strictMcpConfig: true, disableSlashCommands: true })
+  const lean = profile({ surface: 'iterm-pane', strictMcpConfig: true, disableSlashCommands: true })
+  const plain = profile({ surface: 'iterm-pane' })
 
   // Mutation caught: emitting --strict-mcp-config unconditionally, which strips every normal spawn.
   it('drops the ambient MCP servers and skills only when the profile asks', () => {
     const leanArgs = buildLaunchPlan(input({ profile: lean })).args
-    const plainArgs = buildLaunchPlan(input()).args
+    const plainArgs = buildLaunchPlan(input({ profile: plain })).args
 
     expect(leanArgs.indexOf('--strict-mcp-config')).toBe(leanArgs.indexOf('--mcp-config') + 2)
     expect(leanArgs).toContain('--disable-slash-commands')
@@ -904,7 +917,7 @@ describe('a lean profile', () => {
 
   it('keeps agent-chat in its own MCP config, since strict mode drops the plugin', () => {
     const leanServers = buildMcpConfig(lean, '/repo/dist/cli.js').mcpServers as Record<string, unknown>
-    const plainServers = buildMcpConfig(profile(), '/repo/dist/cli.js').mcpServers as Record<string, unknown>
+    const plainServers = buildMcpConfig(plain, '/repo/dist/cli.js').mcpServers as Record<string, unknown>
 
     expect(leanServers['plugin:agent-chat:agent-chat']).toMatchObject({ args: ['/repo/dist/cli.js', 'mcp'] })
     expect(plainServers).toEqual({})
