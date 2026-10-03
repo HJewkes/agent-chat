@@ -243,6 +243,24 @@ describe('the agent git shim failing closed when it cannot resolve a push (fix r
     expect(remoteHasMain(fx)).toBe(false)
   })
 
+  // At 446bc7a4 these arguments passed the shim and the alias body's eval assembled push.
+  it.each([
+    ['command substitution', '$(echo pu)sh'],
+    ['variable expansion', '${P:-pu}sh'],
+    ['bare variable', '$P'],
+    ['backtick substitution', '`echo pu`sh'],
+    ['brace expansion', '{pu,}sh'],
+  ])('refuses a shell alias whose eval could build push from %s', (_form, arg) => {
+    const fx = fixture()
+    git(fx.work, 'config', 'alias.ev', '!f() { eval "git $*"; }; f')
+
+    const run = runScript(fx, `git ev '${arg}' origin main`)
+
+    expect(run.status).toBe(2)
+    expect(run.stderr).toContain('git-shim: push refused (shell-alias)')
+    expect(remoteHasMain(fx)).toBe(false)
+  })
+
   it('still runs a shell alias that does not mention push', () => {
     const fx = fixture()
     git(fx.work, 'config', 'alias.hi', '!echo hello')

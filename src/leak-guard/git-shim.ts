@@ -121,9 +121,9 @@ const MENTIONS_PUSH_FN = `mentions_push() {
   return 1
 }`
 
-// git appends the arguments to a ! alias, which may read, glob or decode them, so push in any case, a glob or an escape counts.
+// git appends the arguments to a ! alias, which may read, glob, decode or eval them, so push in any case, a glob, an escape or a $, backtick or { counts.
 const ARGS_PUSH_FN = `args_push() {
-  case $(printf '%s' "$*" | tr -d " \\t\\n\\"'" | tr A-Z a-z) in *push* | *'\\'* | *'?'* | *'*'* | *'['*) return 0 ;; esac
+  case $(printf '%s' "$*" | tr -d " \\t\\n\\"'" | tr A-Z a-z) in *push* | *'\\'* | *'?'* | *'*'* | *'['* | *'$'* | *'\`'* | *'{'*) return 0 ;; esac
   return 1
 }`
 
@@ -152,7 +152,7 @@ const RESOLVE_FN = `resolve() {
       name=$1
       shift
       args_push "$@" &&
-        refuse shell-alias "alias.$name runs a shell command and its arguments mention push or hold a glob or backslash; run the command directly."
+        refuse shell-alias "alias.$name runs a shell command and its arguments mention push or hold a glob, backslash, $, backtick or brace; run the command directly."
       mentions_push "$alias $*" &&
         refuse shell-alias "alias.$name runs a shell command and the command mentions push; run git push directly."
       return 1 ;;
