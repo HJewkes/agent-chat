@@ -121,10 +121,9 @@ const MENTIONS_PUSH_FN = `mentions_push() {
   return 1
 }`
 
-// A body that reads $1 to $9, $@ or $* may run the user's push as its git subcommand, so any push mention counts.
-const FORWARDS_PUSH_FN = `forwards_push() {
-  case $1 in *'$'[1-9@*]* | *'\${'[1-9@*]*) ;; *) return 1 ;; esac
-  case $(printf '%s' "$1 $2" | tr -d "\\"'\\\\\\\\") in *push*) return 0 ;; esac
+// git appends the arguments to a ! alias, which may read them any way a shell can, so any push in them counts.
+const ARGS_PUSH_FN = `args_push() {
+  case $(printf '%s' "$*" | tr -d " \\t\\n\\"'\\\\\\\\") in *push*) return 0 ;; esac
   return 1
 }`
 
@@ -152,8 +151,8 @@ const RESOLVE_FN = `resolve() {
     !*)
       name=$1
       shift
-      forwards_push "$alias" "$*" &&
-        refuse shell-alias "alias.$name passes its arguments to a shell command and the command mentions push; run git push directly."
+      args_push "$@" &&
+        refuse shell-alias "alias.$name runs a shell command and its arguments mention push; run git push directly."
       mentions_push "$alias $*" &&
         refuse shell-alias "alias.$name runs a shell command and the command mentions push; run git push directly."
       return 1 ;;
@@ -379,7 +378,7 @@ ${AUTOCORRECT_FN}
 ${TYPO_FN}
 ${EXTERNAL_FN}
 ${MENTIONS_PUSH_FN}
-${FORWARDS_PUSH_FN}
+${ARGS_PUSH_FN}
 ${RESOLVE_FN}
 ${CFG_FN}
 ${VALUES_FN}

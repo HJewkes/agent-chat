@@ -782,9 +782,12 @@ refused with exit 2 and a line `git-shim: push refused (<rule>)` when:
 | `alias-depth` | aliases chain more than 10 deep                                                                                                          |
 | `autocorrect` | the word is no builtin, alias or `git-<word>` command, and `help.autocorrect` is not unset, `0`, `false`, `off`, `no`, `show` or `never` |
 
-A `!` alias whose text reads `$1` to `$9`, `$@` or `$*`, braced or not, may pass the user's
-`push` to git as the subcommand. So `shell-alias` also refuses it when its text or the arguments
-after it mention `push` at all, `stash push` included (CC-479).
+git appends the arguments to a `!` alias's shell command, which can read them in more ways than
+any list covers (`$1`, `"$@"`, `for a;`, `$0` under a nested `sh -c`, `shift`, `getopts`). So
+`shell-alias` also refuses a `!` alias whenever its arguments mention `push` at all, `stash push`
+included, after removing quotes, backslashes and blanks, so `pu sh` split across two arguments
+counts (CC-479). The accepted cost is a false refusal such as `git st push` for `st = !git
+stash`; run the command the alias stands for instead.
 
 The builtin list is read from the real git at each spawn. If that read fails, the shim reads it
 on each call instead, and `push` is still matched by name.
@@ -828,8 +831,9 @@ Not covered:
   command line);
 - a `git` binary inside git's exec-path directory, which git puts first on PATH for its hooks,
   `!` aliases and `rebase --exec`. A `!` alias that builds the word push at run time, such as
-  `$(echo pu)sh`, is in this class. One that takes the subcommand from its arguments, such as
-  `!f(){ git $2; }; f` run as `git g stash push`, is refused (above);
+  `$(echo pu)sh`, is in this class, and so is one that builds push by transforming arguments
+  that do not mention it, such as `tr a-z b-za` over `otrg`. One whose arguments mention push,
+  such as `!f(){ git $2; }; f` run as `git g stash push`, is refused (above);
 - an executable `git-<word>` on PATH or in git's exec-path: `git <word>` runs it unchecked, with
   git's exec-path first on PATH as for a `!` alias;
 - pushing without git.
