@@ -644,9 +644,10 @@ Two cases of this check are denied outright, so the check stays fast (CC-347):
   shells included, on a line that may reach git or gh. A command start is a later word that may
   begin a command: an expansion, a wrapper, an assignment, a shell keyword, or `git`, `gh` and
   the other names the guard reads. A line may reach git or gh when it names either one anywhere,
-  holds a command substitution, a word that may expand to `git` (as above), an expansion that
-  hides its name or reads `$1`, `$@` and the like, or a variable that
-  the line mentions outside a `$` reference or that the hook's env holds as `git` or `gh` (CC-478).
+  holds a command substitution or any `$'...'` string, a word that may expand to `git` or `gh`
+  (as above, `g?` included), an expansion that hides its name or reads `$1`, `$@` and the like, a
+  variable that the line mentions outside a `$` reference, or a word that names either one once
+  the hook's env values are put in, so `"$A$B"` with `A=g` and `B=h` counts (CC-478).
   A line past the budget that may reach neither, such as 40 joined
   `"$PY" "$SCRIPT" --out "$DIR"` commands, is allowed, and its starts past the budget go
   unchecked. An unchecked start can reach git only through a variable set where the guard cannot

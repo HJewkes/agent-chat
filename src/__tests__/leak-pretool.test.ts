@@ -886,8 +886,12 @@ describe('a gh command the command line hides', () => {
       ['a variable the hook holds as gh', `${SCRIPTS}; "$TOOL" pr view 1`],
       ['a variable the line assigns', `T=x; ${SCRIPTS}; "$T" pr view 1`],
       ['a command substitution', `${SCRIPTS}; "$(printf x)" status`],
+      ['an ANSI-C gh', `${SCRIPTS}; $E $'\\x67h' pr create -t x --body y`],
+      ['a gh joined from hook variables', `${SCRIPTS}; $E "$A$B" pr create -t x --body y`],
+      ['a gh joined from text and a hook variable', `${SCRIPTS}; $E g"$B" pr create -t x --body y`],
+      ['a glob that may be gh', `${SCRIPTS}; $E g? pr create -t x --body y`],
     ])('denies a line that reaches git or gh through %s', (_, command) => {
-      const reason = checkCommand(command, ctx({ env: { TOOL: 'gh' } }))
+      const reason = checkCommand(command, ctx({ env: { TOOL: 'gh', A: 'g', B: 'h' } }))
 
       expect(reason).toBe(REASONS.hiddenStarts)
       expect(reason).not.toContain('out literally')

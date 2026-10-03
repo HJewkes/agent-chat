@@ -19,7 +19,7 @@ import {
 import { crashCause, type FailOpen } from './failopen.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
 import { hasUnreadableConfig, hasUnreadableOption } from './git-unresolved.js'
-import { mayExpandToGit } from './git-word.js'
+import { mayExpandTo, mayExpandToGit } from './git-word.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
 import {
@@ -816,16 +816,24 @@ function checkHidden(
 
 const SUBSTITUTION = /\$\(|`|[<>]\(/
 
-/** Whether any word of the line names git or gh, may expand to git, or reads a variable the line or the hook ties to git (CC-478). */
+/** Whether any word of the line names git or gh, may expand to either, or reads a variable the line or the hook ties to them (CC-478). */
 function mayReachGit(line: string, env: Env): boolean {
-  if (MENTIONS_GIT.test(line) || SUBSTITUTION.test(line)) return true
+  if (MENTIONS_GIT.test(line) || SUBSTITUTION.test(line) || ANSI_C.test(line)) return true
   if (UNNAMED_SET.test(line) || HIDDEN_NAME.test(line)) return true
-  const words = line.split(/[\s;&<>]+/)
-  if (words.some(word => MENTIONS_GIT.test(word.replace(QUOTING, '')) || mayExpandToGit(word))) return true
   const said = unreferenced(line).replace(READ_ONLY_REF, ' ')
   const names = [...line.matchAll(VARIABLE)].map(match => match[1] as string)
-  return names.some(name => mentions(said, name) || MENTIONS_GIT.test(env[name] ?? ''))
+  if (names.some(name => mentions(said, name))) return true
+  return line.split(/[\s;&<>]+/).some(word => wordMayBeGit(word) || wordMayBeGit(withEnv(word, env)))
 }
+
+const ANSI_C = /\$'/
+
+const wordMayBeGit = (word: string): boolean =>
+  MENTIONS_GIT.test(word.replace(QUOTING, '')) || mayExpandToGit(word) || mayExpandTo(word, 'gh')
+
+/** The word with each `$NAME` and `${NAME}` replaced by the hook env's value, so joined variables are tested as one. */
+const withEnv = (word: string, env: Env): string =>
+  word.replace(REFERENCE, ref => env[ref.replace(/[${}]/g, '')] ?? '')
 
 function lineMayReachGit(scope: Scope, ctx: GuardContext): boolean {
   scope.hiddenStarts.reachesGit ??= mayReachGit(scope.line, ctx.env)

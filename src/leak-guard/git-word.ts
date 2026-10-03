@@ -91,21 +91,24 @@ function pieceSource(piece: string, previous: string | undefined): string {
   return piece.length > 1 ? bracketClass(piece) : escapeRegExp(piece)
 }
 
-function segmentMatchesGit(segment: string): boolean {
+function segmentMatches(segment: string, name: string): boolean {
   const source: string[] = []
   for (const piece of segment.match(PIECE) ?? []) source.push(pieceSource(piece, source.at(-1)))
   try {
-    return new RegExp(`^${source.join('')}$`).test('git')
+    return new RegExp(`^${source.join('')}$`).test(name)
   } catch {
     return true
   }
 }
 
-export function mayExpandToGit(raw: string): boolean {
+/** Whether the word may expand to a path segment `name`, by the same expansions as mayExpandToGit. */
+export function mayExpandTo(raw: string, name: string): boolean {
   if (raw.length > MAX_LENGTH) return true
   const plain = decodeAnsiC(raw)
     .replace(REFERENCE, '')
     .replace(EXPANSION_OPEN, `{${DEFAULT}`)
     .replace(QUOTING, '')
-  return expandedWords(plain).some(word => (word.match(SEGMENT) ?? []).some(segmentMatchesGit))
+  return expandedWords(plain).some(word => (word.match(SEGMENT) ?? []).some(seg => segmentMatches(seg, name)))
 }
+
+export const mayExpandToGit = (raw: string): boolean => mayExpandTo(raw, 'git')
