@@ -118,6 +118,15 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
     expect(checkCommand(command, ctx())).toBe(REASONS.gitConfigUnresolved)
   })
 
+  // Pins the intended deny a coordinator hit (CC-479 item 4) and the quoted form that passes.
+  it('denies an unquoted -C value from a for list before worktree, and allows it quoted', () => {
+    const loop = (dir: string): string => `for r in a b; do git -C ${dir} worktree list; done`
+
+    expect(checkCommand(loop('~/projects/$r'), ctx())).toBe(REASONS.gitConfigUnresolved)
+    expect(checkCommand(loop('~/projects/"$r"'), ctx())).toBeUndefined()
+    expect(checkCommand(loop('"$HOME/projects/$r"'), ctx())).toBeUndefined()
+  })
+
   it.each([
     'git -c user.name=x push',
     'git -c user.name="$(whoami)" push',

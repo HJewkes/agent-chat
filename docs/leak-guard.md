@@ -520,6 +520,15 @@ protect the pre-push scan, and those commands run no hook. A literal key with a 
 as in `git -c user.name="$(whoami)" push`, is allowed too, since the key alone decides what the
 setting does. `git -c user.name=x push` and `git -c core.pager=less log` stay allowed.
 
+An unquoted expansion in the value of `-C`, `--git-dir`, `--work-tree`, `--namespace` or
+`--super-prefix` counts as an unreadable config word too, since the shell may split it into
+`-c core.hooksPath=...` words. So `for r in a b; do git -C ~/projects/$r worktree list; done`
+is denied, although `worktree list` runs no hook: `worktree` runs `post-checkout` for `add`, and
+the guard gates by subcommand. It also does not track the value a line gives a variable, so
+`r=x` or a `for` list of literal words leaves `$r` unknown. This is intended (checked
+2026-10-02, CC-479). Quote the expansion, as in `git -C ~/projects/"$r" worktree list` or
+`git -C "$HOME/projects/$r"`: a quoted expansion stays one word and is allowed.
+
 ### The guard never reads one file while the shell posts another
 
 For a `gh pr` or `gh issue` `create`, `new`, `edit`, `comment`, `review` or `merge`, and for every
