@@ -276,6 +276,18 @@ describe('reading a seat spawn from the autonomy root', () => {
     expect(readSeatSpawn(dir, spawn('gc-task'), deps(home))).toEqual({ kind: 'none' })
   })
 
+  it('gates the spawn of an attended seat the charter does not list, on any charter pool', () => {
+    const { root: dir, home } = root()
+    const attended = '---\nprefix: at\nrole: attended   # the owner works here\npool: agents\nspend: {}\n---\n'
+    fs.writeFileSync(path.join(dir, 'seats', 'owner-desk.md'), attended)
+
+    const own = readSeatSpawn(dir, spawn('at-task'), deps(home))
+    const other = readSeatSpawn(dir, spawn('at-task', '/synthetic/shared'), deps(home))
+
+    expect(own).toMatchObject({ kind: 'gate', input: { seat: { name: 'owner-desk', spend: {} } } })
+    expect(other).toMatchObject({ kind: 'gate', input: { pool: { name: 'shared' } } })
+  })
+
   it("gates on the pool of the spawn's config_dir, not the seat's own pool", () => {
     const { root: dir, home } = root()
     const reads: string[] = []

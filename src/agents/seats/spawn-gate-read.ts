@@ -1,9 +1,10 @@
 import os from 'node:os'
 import path from 'node:path'
+import { frontmatterField } from '../active-work.js'
 import { readAccountBudget, type BudgetRead } from '../budget.js'
 import { charterSeats, parsePools, type Pool } from './charter.js'
 import { loadDoc, readText, type WatchdogDoc } from './io.js'
-import { seatOf } from './seat-of.js'
+import { seatOf, type SeatFile } from './seat-of.js'
 import type { SeatSpawnInput } from './spawn-gate.js'
 import type { SpendMeter } from './stops.js'
 import { accountReading } from './watchdog.js'
@@ -48,6 +49,10 @@ function savedDoc(load: () => WatchdogDoc): WatchdogDoc | undefined {
   }
 }
 
+/** The owner runs an attended seat, so the charter's watchdog list never names it; its spawns are gated all the same. */
+const gated = (charter: string, { seat, text }: SeatFile): boolean =>
+  charterSeats(charter).includes(seat.name) || frontmatterField(text, 'role') === 'attended'
+
 /** Throws when the seats directory cannot be read; the broker logs that and lets the spawn through. */
 export function readSeatSpawn(
   root: string,
@@ -61,7 +66,7 @@ export function readSeatSpawn(
   if (match.kind === 'ambiguous')
     return { kind: 'skip', reason: `prefix ${match.prefix} is declared by ${match.seats.join(', ')}` }
   const { seat } = match.seat
-  if (!charterSeats(charter).includes(seat.name))
+  if (!gated(charter, match.seat))
     return { kind: 'skip', reason: `seat ${seat.name} is not in the charter's seats` }
   const pool = poolForConfigDir(parsePools(charter, deps.home), spawn.configDir)
   if (pool === undefined)
