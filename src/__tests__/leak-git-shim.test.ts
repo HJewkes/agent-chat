@@ -656,7 +656,9 @@ describe('where the agent git shim is put on PATH', () => {
 
 describe('the agent git shim under a UTF-8 locale (CC-612)', () => {
   const utf8 = (fx: Fixture): Fixture => ({ ...fx, env: { ...fx.env, LANG: 'en_US.UTF-8' } })
-  const evAlias = (fx: Fixture): void => git(fx.work, 'config', 'alias.ev', '!f() { eval "git $*"; }; f')
+  const evAlias = (fx: Fixture): void => {
+    git(fx.work, 'config', 'alias.ev', '!f() { eval "git $*"; }; f')
+  }
   it('refuses an alias call whose -c value holds byte 0xff before push --no-verify', () => {
     const fx = utf8(fixture())
     evAlias(fx)
