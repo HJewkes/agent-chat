@@ -274,6 +274,10 @@ JSON output uses gh's field names and its compact, key-sorted form. `--jq` runs 
 
 Every other command goes to the real gh with its argv untouched, writes included, and so does any command whose flags, fields or selector the shim does not recognise. When a REST read fails, the shim prints nothing and reruns the command on the real gh, so the error shown is gh's own. Set `AGENT_CHAT_GH_SHIM_OFF=1` to send every command straight through. The shim takes effect for agents launched after a broker restart.
 
+## Restart window
+
+`scripts/restart-window.sh` runs the daily broker restart in one command. It refuses, one line per blocker, when `agent-chat service restart` reports an unanswered ask or a mid-spawn agent, when a `git push` or `git-remote-http*` process is running, or when the checkout behind the installed `agent-chat` is not a clean `main`. It then restarts the broker, runs `npm ci && npm run build` in that checkout, and checks `events.db` for exactly one `broker_started` and no `ledger_shadow_error` since the restart, plus a parseable `agent ls --json`. It exits 1 on a refusal, 2 on a failed post-check, and prints `restart-window OK` otherwise. It accepts no `--force`, and running it needs the owner's approval of the day's window. `RESTART_WINDOW_DB` overrides the database path.
+
 ## Tests
 
 ```bash
