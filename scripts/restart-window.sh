@@ -7,13 +7,18 @@
 #   1  a pre-check refused, or the restart's own guard refused; the broker was not touched
 #   2  a post-check failed
 #   3  the restart failed and the broker may be down (run: agent-chat service start)
-#   4  pull, install or build failed; the broker was not touched
+#   4  pull, staged install or staged build failed, or the swap failed; the broker was not
+#      touched and the live node_modules and dist are intact
+#
+# Install and build run in a staging copy of HEAD beside the checkout (<checkout>.staging), never
+# in the live tree, so a failed `npm ci` cannot empty node_modules under the running broker. The
+# staged node_modules and dist are renamed into the checkout only when both steps passed.
 set -euo pipefail
 
 [ $# -eq 0 ] || { echo "restart-window: takes no arguments; --force is the owner's call" >&2; exit 1; }
 
 log_dir="${AGENT_CHAT_HOME:-$HOME/.agent-chat}"
-PUSH_RE='(^|/)git push( |$)|(^|/)git-remote-http'
+PUSH_RE='(^|/)git push( |$)|(^|/)git -C [^ ]+ push( |$)|(^|/)git-remote-http'
 MERGE_RE='(^|/)seat-merge( |$)|(^|/)bin/merge( |$)|(^|/)gh pr merge( |$)|(agent-chat|index\.js) gh-write( |$)'
 blockers=()
 
@@ -45,11 +50,30 @@ if [ ${#blockers[@]} -gt 0 ]; then
   exit 1
 fi
 
+# Swaps staged <name> into the checkout. Renames stay on one filesystem, so the live copy is
+# only ever absent between two adjacent renames, and a failed rename puts it back.
+swap_in() { # swap_in <stage> <live> <name>
+  [ ! -e "$2/$3" ] || mv "$2/$3" "$2/$3.prev" || return 1
+  mv "$1/$3" "$2/$3" || { [ ! -e "$2/$3.prev" ] || mv "$2/$3.prev" "$2/$3"; return 1; }
+}
+
 # Pull and build before the restart, so the broker never starts on old dist while node_modules changes.
-if ! (cd "$repo" && git pull --ff-only origin main && npm ci && npm run build); then
+stage="$repo.staging"
+stage_and_swap() {
+  git pull --ff-only origin main || return 1
+  rm -rf "$stage" && mkdir "$stage" || return 1
+  git archive HEAD | tar -x -C "$stage" || return 1
+  (cd "$stage" && npm ci && npm run build) || return 1
+  rm -rf "$repo/node_modules.prev" "$repo/dist.prev"
+  swap_in "$stage" "$repo" node_modules || return 1
+  swap_in "$stage" "$repo" dist || { rm -rf "$repo/node_modules"; [ ! -e "$repo/node_modules.prev" ] || mv "$repo/node_modules.prev" "$repo/node_modules"; return 1; }
+}
+if ! (cd "$repo" && stage_and_swap); then
+  rm -rf "$stage"
   echo "restart-window: pull, install or build failed; the broker was not touched" >&2
   exit 4
 fi
+rm -rf "$stage" "$repo/node_modules.prev" "$repo/dist.prev"
 
 # Floored to the second, which can only widen the window by under a second.
 started_at="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
@@ -77,7 +101,7 @@ count() {
     const fs = require("fs")
     const [dir, event, since] = process.argv.slice(1)
     let n = 0
-    for (const f of [`${dir}/broker.log.1`, `${dir}/broker.log`]) {
+    for (const f of [`${dir}/broker.log`, `${dir}/broker.log.1`]) {
       if (!fs.existsSync(f)) continue
       for (const line of fs.readFileSync(f, "utf8").split("\n")) {
         try {
