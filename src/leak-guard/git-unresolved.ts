@@ -17,20 +17,20 @@ const GLOBBED = new RegExp(`${LIVE}[*?[{]`)
 const CONFIG_ENV_OPT = '--config-env='
 
 /** One `-c` or `--config-env` value: its resolved word, and its marked source, where LIVE precedes what the shell expands. */
-interface ConfigWord {
+export interface ConfigWord {
   resolved: string | undefined
   marked: string
   fromEnv: boolean
 }
 
 /** The part of a value that names the key: before the first `=` for `-c`, before the last for `--config-env`. */
-function keyOf(marked: string, fromEnv: boolean): string {
+export function keyOf(marked: string, fromEnv: boolean): string {
   const eq = fromEnv ? marked.lastIndexOf('=') : marked.indexOf('=')
   return eq < 0 ? marked : marked.slice(0, eq)
 }
 
 /** A `-c` key that is not literal, or a `--config-env` key or variable name that is not. */
-function unreadable({ resolved, marked, fromEnv }: ConfigWord): boolean {
+export function unreadable({ resolved, marked, fromEnv }: ConfigWord): boolean {
   if (resolved !== undefined) return false
   if (!marked.includes('=') || keyOf(marked, fromEnv).includes(LIVE)) return true
   return fromEnv && marked.slice(marked.lastIndexOf('=') + 1).includes(LIVE)
@@ -77,6 +77,13 @@ function scanOptions(
   }
   return { words, at: i }
 }
+
+/** The `-c` and `--config-env` words in git's options before the subcommand. */
+export const configWords = (
+  resolved: readonly (string | undefined)[],
+  marked: readonly string[],
+  splits: readonly string[],
+): ConfigWord[] => scanOptions(resolved, marked, splits).words
 
 /** Whether git's options hold a config word the guard cannot read, whatever the subcommand. */
 export const hasUnreadableOption = (

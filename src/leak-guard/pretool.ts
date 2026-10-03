@@ -17,6 +17,7 @@ import {
   type ReadAlias,
 } from './git-alias.js'
 import { crashCause, type FailOpen } from './failopen.js'
+import { configPrograms, extPrograms, PROGRAM_ENV } from './git-programs.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
 import { hasUnreadableConfig, hasUnreadableOption } from './git-unresolved.js'
 import { mayExpandTo, mayExpandToGit } from './git-word.js'
@@ -115,6 +116,7 @@ export const REASONS = {
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
   includePath: `leak-guard: git -c or --config-env on include.path or includeIf.*.path pulls in config that sets core.hooksPath or that the guard cannot read in time, or runs beside other commands or a redirect, which would bypass the pre-push leak scan. ${DOCS}`,
   gitConfigUnresolved: `leak-guard: git -c or --config-env with a key or value the guard cannot read, before a command that runs hooks, may set core.hooksPath or include.path and would bypass the pre-push leak scan. Spell the config out, or drop it. ${DOCS}`,
+  configProgram: `leak-guard: git -c or --config-env here may set a key whose value git runs as a program (core.pager, core.editor, core.sshCommand and the like), and the guard cannot read the key or the value. Write the config out literally, or drop it. ${DOCS}`,
   nestedScript: `leak-guard: git runs a command here (rebase --exec, submodule foreach, bisect run or the like) that the guard cannot read. Write the command out literally. ${DOCS}`,
   writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. Write the file in one Bash call and post it in the next. ${DOCS}`,
   ghByPath: `leak-guard: gh called by path skips the agent's gh shim and the gh-write leak scan. Use bare gh for reads and agent-chat gh-write -- <gh args> for every GitHub write. ${DOCS}`,
@@ -364,8 +366,33 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
     checkUnresolvedConfig(run) ??
     checkInclude(run, ctx, scope, depth) ??
     checkNestedScripts(run, ctx, scope, depth) ??
+    checkPrograms(run, ctx, scope, depth) ??
     checkAlias(run, ctx, scope, depth)
   )
+}
+
+/**
+ * Each value git runs as a program (TP-636), checked as a command line of its own: a `-c` config
+ * value and an `ext::` transport payload. git passes its `-c` options on to each, so an include on
+ * this git is a deny whatever the value holds. Program env vars are closed by `checkProgramEnvLine`.
+ */
+function checkPrograms(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
+  const config = configPrograms(run.resolved, run.marked, run.cmd.splits)
+  const options = gitOptions(run.args, scope.cwd, scope.gitParams)
+  const at =
+    options === UNSURE_CALL ? run.resolved.findIndex(w => w !== undefined && !w.startsWith('-')) : options.at
+  const ext = extPrograms(run.resolved, run.marked, at)
+  if (config === undefined || ext.unreadable) return run.tied ? REASONS.configProgram : undefined
+  const scripts = [...config, ...ext.scripts]
+  if (scripts.length === 0) return undefined
+  const params = options === UNSURE_CALL ? scope.gitParams : options.params
+  if (includesConfig(params)) return REASONS.includePath
+  const inner: Scope = { ...scope, cwd: undefined, env: undefined, gitParams: params }
+  for (const script of scripts) {
+    const reason = checkAt(script, ctx, inner, depth + 1)
+    if (reason !== undefined) return reason
+  }
+  return undefined
 }
 
 const checkUnresolvedConfig = (run: GitRun): string | undefined =>
@@ -1005,6 +1032,82 @@ function knownEnv(command: string, env: Env): Env {
   return Object.fromEntries(Object.entries(env).filter(known))
 }
 
+const ENV_DECL = new Set(['export', 'declare', 'typeset', 'local', 'readonly'])
+const LEADING_ASSIGN = /^(?:[A-Za-z_]\w*\+?=|\{[^}]*\}\+?=)/
+const NAME_PLUS_EQ = /^([A-Za-z_]\w*)(\+?)=/
+const BRACE_ASSIGN = /^\{([^}]*)\}\+?=/
+
+/** A program-running env assignment: its literal value to check, null when the guard cannot read it, undefined for none. */
+function envEvent(word: string, allowBare: boolean): string | null | undefined {
+  const um = unmark(word)
+  const brace = BRACE_ASSIGN.exec(um)
+  if (brace) return (brace[1] as string).split(',').some(n => PROGRAM_ENV.has(n.trim())) ? null : undefined
+  const m = NAME_PLUS_EQ.exec(um)
+  if (m) {
+    if (!PROGRAM_ENV.has(m[1] as string)) return undefined
+    if (m[2] === '+') return null
+    const value = word.slice(um.indexOf('=') + 1)
+    return value.includes(LIVE) ? null : unmark(value)
+  }
+  return allowBare && PROGRAM_ENV.has(um) ? null : undefined
+}
+
+/** Every program-env assignment on one command: a prefix assign, a `+=`, a brace name, or an arg to export/declare. */
+function envEvents(cmd: SimpleCommand): (string | null)[] {
+  const unwrapped = unwrap(cmd.marked)
+  if ('reason' in unwrapped) return []
+  const events: (string | null)[] = []
+  const take = (word: string, allowBare: boolean): void => {
+    const event = envEvent(word, allowBare)
+    if (event !== undefined) events.push(event)
+  }
+  for (const word of unwrapped.assigns) take(word, false)
+  for (const word of unwrapped.words) {
+    if (!LEADING_ASSIGN.test(unmark(word))) break
+    take(word, false)
+  }
+  if (ENV_DECL.has(path.basename(unmark(unwrapped.words[0] ?? ''))))
+    for (const word of unwrapped.words.slice(1)) {
+      const um = unmark(word)
+      if (um !== '--' && !um.startsWith('-')) take(word, true)
+    }
+  return events
+}
+
+/** A word's text for the git scan, with a program-env assignment's value blanked so a `git` in it does not count. */
+function scanWord(word: string): string {
+  const um = unmark(word)
+  const name = BRACE_ASSIGN.test(um)
+    ? (BRACE_ASSIGN.exec(um)?.[1] ?? '').split(',').some(n => PROGRAM_ENV.has(n.trim()))
+    : PROGRAM_ENV.has(NAME_PLUS_EQ.exec(um)?.[1] ?? '')
+  return name ? um.slice(0, um.indexOf('=') + 1) : um
+}
+
+/**
+ * Program env vars git runs (TP-636), closed as one conservative line rule. If a PROGRAM_ENV name
+ * is an assignment target anywhere on the line, in any form, and the line runs git anywhere, a
+ * literal value is checked as a nested script and anything else denies.
+ */
+function checkProgramEnvLine(
+  command: string,
+  ctx: GuardContext,
+  scope: Scope,
+  depth: number,
+): string | undefined {
+  const cmds = parseShell(command)
+  const events = cmds.flatMap(envEvents)
+  if (events.length === 0) return undefined
+  const scan = cmds.flatMap(cmd => cmd.marked.map(scanWord)).join(' ')
+  if (!/\bgit\b/.test(scan)) return undefined
+  const inner: Scope = { ...scope, cwd: undefined, env: undefined }
+  for (const event of events) {
+    if (event === null) return REASONS.configProgram
+    const reason = checkAt(event, ctx, inner, depth + 1)
+    if (reason !== undefined) return reason
+  }
+  return undefined
+}
+
 function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
   if (depth > MAX_DEPTH) return REASONS.tooDeep
   if (ctx.protectedPaths.some(p => command.includes(p))) return REASONS.protectedPath
@@ -1012,6 +1115,8 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
   const namesGit = scope.namesGit || MENTIONS_GIT.test(command)
   const said = `${scope.said}\n${unreferenced(command)}`
   let at: Scope = { ...scope, cdpath, namesGit, said, env: scope.env && knownEnv(command, scope.env) }
+  const envReason = checkProgramEnvLine(command, ctx, at, depth)
+  if (envReason !== undefined) return envReason
   for (const cmd of parseShell(command)) {
     at = settle(cmd, at)
     const reason = checkSimple(cmd, ctx, at, depth)
