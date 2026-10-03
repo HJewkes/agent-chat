@@ -279,22 +279,37 @@ function resumeMark(attempted: number | undefined, retry: number | undefined, ab
   }
 }
 
-/** TP-812: a seat the roster shows live is not dark, and an unreadable roster says nothing about it. */
-function rosterVerdict(roster: Roster, seat: string): LivenessVerdict | undefined {
-  if (roster.unknown !== undefined)
-    return { resume: false, reason: 'roster unknown', idleHold: `roster unknown: ${roster.unknown}` }
-  const rowLive = roster.agents.some(a => a.name === seat && a.state === 'live')
-  if (rowLive && !roster.connected.includes(seat))
-    return { resume: false, reason: 'roster shows it live', idleHold: 'roster shows it live' }
-  return undefined
+/** TP-812: how long a live roster row outranks a seat that stayed dark; a crashed broker can leave the row live for good. */
+export const LIVE_ROW_GRACE_MS = 30 * 60_000
+
+/** TP-812: an unreadable roster says nothing about a seat, so nothing is resumed and no try is counted. */
+function unknownRoster(roster: Roster): LivenessVerdict | undefined {
+  if (roster.unknown === undefined) return undefined
+  return { resume: false, reason: 'roster unknown', idleHold: `roster unknown: ${roster.unknown}` }
+}
+
+const rowLive = (roster: Roster, seat: string): boolean =>
+  roster.agents.some(a => a.name === seat && a.state === 'live') && !roster.connected.includes(seat)
+
+/** TP-812: a resume the roster says is pointless waits out the grace, is logged each run, and then goes ahead. */
+function heldByLiveRow(verdict: LivenessVerdict, nowMs: number): LivenessVerdict {
+  if (verdict.resume && nowMs - (verdict.episode ?? nowMs) > LIVE_ROW_GRACE_MS) return verdict
+  const idleHold = 'roster shows it live'
+  if (!verdict.resume) return { ...verdict, idleHold: verdict.idleHold ?? idleHold }
+  return {
+    resume: false,
+    reason: `${verdict.reason}; not resumed: roster shows it live`,
+    refused: true,
+    idleHold,
+  }
 }
 
 function seatLiveness(pass: Pass, seat: string, hold: string | undefined): SeatLiveness {
   const previous = pass.doc.seats[seat]
-  const byRoster = rosterVerdict(pass.roster, seat)
-  if (byRoster !== undefined)
+  const unknown = unknownRoster(pass.roster)
+  if (unknown !== undefined)
     return {
-      verdict: byRoster,
+      verdict: unknown,
       mark: resumeMark(previous?.resumedDark, previous?.resumeRetry, previous?.absent),
     }
   const connected = pass.roster.connected.includes(seat)
@@ -304,7 +319,8 @@ function seatLiveness(pass: Pass, seat: string, hold: string | undefined): SeatL
   const attempted = previous?.resumedDark
   const unconfirmed = previous?.resumeRetry
   const input = { connected, presence, hold, absentSince: absent?.since, attempted, unconfirmed, nowMs }
-  const verdict = judgeLiveness(input)
+  const judged = judgeLiveness(input)
+  const verdict = rowLive(pass.roster, seat) ? heldByLiveRow(judged, nowMs) : judged
   const mark = verdict.resume
     ? resumeMark(verdict.episode, verdict.tries, absent)
     : resumeMark(attempted, unconfirmed, absent)

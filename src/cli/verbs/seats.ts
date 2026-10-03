@@ -90,7 +90,9 @@ async function roster(client: BrokerClient): Promise<Roster> {
     const live = (await client.request({ t: 'list' }, 'list_result')) as Reply<'list_result'>
     return { agents: agents.agents, connected: live.sessions.map(s => s.name) }
   } catch (err) {
-    return { agents: [], connected: [], unknown: err instanceof Error ? err.message : String(err) }
+    // Only a missed reply is unknown; any other failure is a real fault and ends the run.
+    if (!(err instanceof Error) || !err.message.startsWith('broker did not answer')) throw err
+    return { agents: [], connected: [], unknown: err.message }
   }
 }
 
