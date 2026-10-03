@@ -97,11 +97,24 @@ const PRETOOL_MATCHER = 'Bash|Edit|Write|MultiEdit|NotebookEdit'
 const PRETOOL_TIMEOUT_S = 15
 
 /**
- * What a launch without the user settings source still takes from that account. The user
- * file is where the bus plugin is enabled, and its deny rules only narrow, so dropping them
- * would hand a worker tools the owner denied everywhere (observed: Agent and SendMessage
- * came back under `--setting-sources project,local`).
+ * What a launch without the user settings source still takes from that account. Its deny
+ * rules only narrow, so dropping them would hand a worker tools the owner denied everywhere
+ * (observed: Agent and SendMessage came back under `--setting-sources project,local`). The
+ * git-safety hook only blocks, so it travels too. No other user hook does: a hook is a
+ * shell command, and one that is not a known guard could widen what a worker does.
  */
+export interface CarriedUserSettings {
+  denies: string[]
+  /** The user PreToolUse entries, cut down to their git-safety commands. */
+  pretool: HookEntry[]
+}
+
+interface HookEntry {
+  matcher?: string
+  hooks: Record<string, unknown>[]
+}
+
+/** The user file is also where the bus plugin is enabled, so the launch enables it here. */
 const withoutUserSettings = (denies: string[]): Record<string, unknown> => ({
   enabledPlugins: { [AGENT_CHAT_PLUGIN]: true },
   ...(denies.length === 0 ? {} : { permissions: { deny: denies } }),
@@ -112,13 +125,12 @@ const withoutUserSettings = (denies: string[]): Record<string, unknown> => ({
  * (CC-270) goes to all of them. A print-mode run, given `permissionTimeoutSeconds`, also
  * gets the PermissionRequest hook (CC-144) that files each prompt in the human queue and
  * blocks for the verdict. Claude Code runs hook commands through a shell, and both paths
- * can contain spaces. `userDenies` is set, even when empty, for a launch that loads no
- * user settings.
+ * can contain spaces. `carried` is set for a launch that loads no user settings.
  */
 export function buildHookSettings(
   entry: string,
   permissionTimeoutSeconds?: number,
-  userDenies?: string[],
+  carried?: CarriedUserSettings,
 ): Record<string, unknown> {
   const pretool = [
     {
@@ -127,13 +139,14 @@ export function buildHookSettings(
         { type: 'command', command: hookCommand(entry, 'leak-guard pretool'), timeout: PRETOOL_TIMEOUT_S },
       ],
     },
+    ...(carried?.pretool ?? []),
   ]
-  const carried = userDenies === undefined ? {} : withoutUserSettings(userDenies)
-  if (permissionTimeoutSeconds === undefined) return { ...carried, hooks: { PreToolUse: pretool } }
+  const account = carried === undefined ? {} : withoutUserSettings(carried.denies)
+  if (permissionTimeoutSeconds === undefined) return { ...account, hooks: { PreToolUse: pretool } }
   const deadline = Math.max(1, permissionTimeoutSeconds - HOOK_DEADLINE_MARGIN_S)
   const command = hookCommand(entry, `permission-hook --deadline ${deadline}`)
   return {
-    ...carried,
+    ...account,
     hooks: {
       PreToolUse: pretool,
       PermissionRequest: [
@@ -143,16 +156,39 @@ export function buildHookSettings(
   }
 }
 
-/** The deny rules in an account's own settings file. An unreadable file carries none, as Claude Code reads it. */
-export function readUserDenies(configDir: string): string[] {
+/** How the owner's git-safety hook is recognised: by its command path. */
+const GIT_SAFETY = 'git-safety'
+
+const isGitSafety = (hook: unknown): hook is Record<string, unknown> =>
+  typeof hook === 'object' &&
+  hook !== null &&
+  typeof (hook as { command?: unknown }).command === 'string' &&
+  (hook as { command: string }).command.includes(GIT_SAFETY)
+
+/** Each user PreToolUse entry with only its git-safety commands, and no entry that has none. */
+function gitSafetyEntries(pretool: unknown): HookEntry[] {
+  if (!Array.isArray(pretool)) return []
+  return pretool.flatMap((entry: { matcher?: unknown; hooks?: unknown } | null) => {
+    const hooks = Array.isArray(entry?.hooks) ? entry.hooks.filter(isGitSafety) : []
+    if (hooks.length === 0) return []
+    return [{ ...(typeof entry?.matcher === 'string' ? { matcher: entry.matcher } : {}), hooks }]
+  })
+}
+
+/** Read from an account's own settings file. An unreadable file carries nothing, as Claude Code reads it. */
+export function readCarriedUserSettings(configDir: string): CarriedUserSettings {
   try {
     const parsed = JSON.parse(fs.readFileSync(path.join(configDir, 'settings.json'), 'utf8')) as {
       permissions?: { deny?: unknown }
+      hooks?: { PreToolUse?: unknown }
     }
     const deny = parsed.permissions?.deny
-    return Array.isArray(deny) ? deny.filter((rule): rule is string => typeof rule === 'string') : []
+    return {
+      denies: Array.isArray(deny) ? deny.filter((rule): rule is string => typeof rule === 'string') : [],
+      pretool: gitSafetyEntries(parsed.hooks?.PreToolUse),
+    }
   } catch {
-    return []
+    return { denies: [], pretool: [] }
   }
 }
 
@@ -164,12 +200,12 @@ function planConfigDir(plan: LaunchPlan): string {
 }
 
 /** Undefined when the plan loads user settings itself; the brief follows `--` and is never read as a flag. */
-function carriedUserDenies(plan: LaunchPlan): string[] | undefined {
+function carriedUserSettings(plan: LaunchPlan): CarriedUserSettings | undefined {
   const end = plan.args.indexOf('--')
   const options = end === -1 ? plan.args : plan.args.slice(0, end)
   const at = options.indexOf('--setting-sources')
   if (at === -1 || (options[at + 1] ?? '').split(',').includes('user')) return undefined
-  return readUserDenies(planConfigDir(plan))
+  return readCarriedUserSettings(planConfigDir(plan))
 }
 
 /** An interactive plan carries no `--settings`, so the guard's file is added to its argv here. */
@@ -188,7 +224,7 @@ function writePrivate(file: string, body: string, mode: number = FILE_MODE): voi
 
 export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknown>): void {
   const permissionTimeout = plan.args.includes('--settings') ? resolvePermissionHookTimeout() : undefined
-  const settings = buildHookSettings(cliEntry(), permissionTimeout, carriedUserDenies(plan))
+  const settings = buildHookSettings(cliEntry(), permissionTimeout, carriedUserSettings(plan))
   writePrivate(hookSettingsPath(plan.agentId), JSON.stringify(settings, null, 2))
   writePrivate(mcpConfigPath(plan.agentId), JSON.stringify(config, null, 2))
   writePrivate(planPath(plan.agentId), JSON.stringify(withSettings(plan), null, 2))

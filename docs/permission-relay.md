@@ -229,10 +229,13 @@ A profile file overrides either default with `settingSources` (a list drawn from
 launch loads only the generated MCP config: agent-chat, plus the servers the profile
 lists under `mcpServers`.
 
-Two things the user settings held are carried into the per-agent `--settings` file for a
-launch without them: the agent-chat plugin (`enabledPlugins`), and the account's own
-`permissions.deny`, which only narrows. Nothing else is carried. The account's hooks,
-`env`, `defaultMode` and allow rules do not apply to a worker.
+Three things the user settings held are carried into the per-agent `--settings` file for
+a launch without them: the agent-chat plugin (`enabledPlugins`); the account's own
+`permissions.deny`, which only narrows; and the git-safety PreToolUse hook, matched by
+`git-safety` in its command path, which only blocks. Nothing else is carried. The
+account's other hooks, `env`, `defaultMode`, skills and allow rules do not apply to a
+worker. Observed: a worker launched this way was refused `git push --mirror` by the
+carried hook.
 
 Observed on claude 2.1.288 with `--allowed-tools Read` in print mode: an unlisted `curl`
 ran under the default sources and was denied under `project,local`; the `--settings` hook

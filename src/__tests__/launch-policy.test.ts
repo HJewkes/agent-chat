@@ -7,7 +7,7 @@ import {
   buildHookSettings,
   buildMcpConfig,
   hookSettingsPath,
-  readUserDenies,
+  readCarriedUserSettings,
   writeLaunchFiles,
 } from '../agents/launch-files.js'
 import { AGENT_CHAT_PLUGIN, buildLaunchPlan } from '../agents/launch-plan.js'
@@ -233,11 +233,32 @@ describe('the settings file of a launch without user settings', () => {
     return dir
   }
 
-  const accountDenying = (deny: unknown): string => {
+  const account = (settings: unknown): string => {
     const dir = tmpdir()
-    fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ permissions: { deny } }))
+    fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(settings))
     return dir
   }
+
+  const accountDenying = (deny: unknown): string => account({ permissions: { deny } })
+
+  const gitSafety = {
+    type: 'command',
+    command: 'node "$HOME/.claude/hooks/git-safety/git-safety.mjs"',
+    timeout: 5,
+  }
+  const other = { type: 'command', command: 'curl -s https://example.com/collect' }
+
+  const accountWithHooks = (): string =>
+    account({
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Bash', hooks: [other, gitSafety] },
+          { matcher: 'Write', hooks: [other] },
+        ],
+        PostToolUse: [{ matcher: 'Bash', hooks: [gitSafety] }],
+        Notification: [{ matcher: '', hooks: [other] }],
+      },
+    })
 
   const writtenSettings = (plan: LaunchPlan): Record<string, unknown> => {
     process.env.AGENT_CHAT_HOME = tmpdir()
@@ -251,7 +272,8 @@ describe('the settings file of a launch without user settings', () => {
   })
 
   it('enables the bus plugin and carries the denies, beside the hooks it always had', () => {
-    const settings = buildHookSettings('/repo/dist/cli.js', undefined, ['Agent', 'SendMessage'])
+    const carried = { denies: ['Agent', 'SendMessage'], pretool: [] }
+    const settings = buildHookSettings('/repo/dist/cli.js', undefined, carried)
 
     expect(settings.enabledPlugins).toEqual({ [AGENT_CHAT_PLUGIN]: true })
     expect(settings.permissions).toEqual({ deny: ['Agent', 'SendMessage'] })
@@ -269,10 +291,48 @@ describe('the settings file of a launch without user settings', () => {
     const malformed = tmpdir()
     fs.writeFileSync(path.join(malformed, 'settings.json'), '{ not json')
 
-    expect(readUserDenies(accountDenying(['Agent', 'Bash(rm:*)']))).toEqual(['Agent', 'Bash(rm:*)'])
-    expect(readUserDenies(accountDenying('Agent'))).toEqual([])
-    expect(readUserDenies(missing)).toEqual([])
-    expect(readUserDenies(malformed)).toEqual([])
+    const denies = (dir: string): string[] => readCarriedUserSettings(dir).denies
+
+    expect(denies(accountDenying(['Agent', 'Bash(rm:*)']))).toEqual(['Agent', 'Bash(rm:*)'])
+    expect(denies(accountDenying('Agent'))).toEqual([])
+    expect(readCarriedUserSettings(missing)).toEqual({ denies: [], pretool: [] })
+    expect(readCarriedUserSettings(malformed)).toEqual({ denies: [], pretool: [] })
+  })
+
+  // Mutation caught: carrying every user hook, which runs the account's other shell commands in a worker.
+  it('reads only the git-safety command of the account PreToolUse hooks', () => {
+    expect(readCarriedUserSettings(accountWithHooks()).pretool).toEqual([
+      { matcher: 'Bash', hooks: [gitSafety] },
+    ])
+  })
+
+  it('reads no hook from an account without git-safety, or with hooks it cannot use', () => {
+    const without = account({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [other] }] } })
+    const misshapen = account({
+      hooks: { PreToolUse: [null, { matcher: 'Bash', hooks: 'git-safety' }, 'git-safety'] },
+    })
+
+    expect(readCarriedUserSettings(without).pretool).toEqual([])
+    expect(readCarriedUserSettings(misshapen).pretool).toEqual([])
+    expect(readCarriedUserSettings(account({ hooks: { PreToolUse: 'git-safety' } })).pretool).toEqual([])
+  })
+
+  // Mutation caught: dropping the carry, which leaves a worker's Bash with no git-safety hook at all.
+  it('writes the git-safety hook into a worker launch, after the leak guard and with nothing else', () => {
+    const settings = writtenSettings(planFor(worker(), { configDir: accountWithHooks() }))
+    const hooks = settings.hooks as { PreToolUse: { matcher: string; hooks: { command: string }[] }[] }
+
+    expect(Object.keys(settings.hooks as object)).toEqual(['PreToolUse'])
+    expect(hooks.PreToolUse).toHaveLength(2)
+    expect(hooks.PreToolUse[0]?.hooks[0]?.command).toContain('leak-guard pretool')
+    expect(hooks.PreToolUse[1]).toEqual({ matcher: 'Bash', hooks: [gitSafety] })
+    expect(JSON.stringify(settings)).not.toContain(other.command)
+  })
+
+  it('writes no user hook into a coordinator launch, which loads the user file itself', () => {
+    const settings = writtenSettings(planFor(coordinator(), { configDir: accountWithHooks() }))
+
+    expect(JSON.stringify(settings)).not.toContain('git-safety')
   })
 
   // Mutation caught: dropping the carry, which hands a worker every tool the account denies everywhere.
