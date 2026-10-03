@@ -7,8 +7,9 @@ import type { AgentIdentity } from '../protocol.js'
  * population and spawn-rate bounds churn per requester; neither sees the machine,
  * so several seats spawning at once drove load to 52 on 14 cores with swap at 84%.
  *
- * Memory pressure, not swap, is the gate: macOS keeps swap allocated long after
- * pressure ends, so swap used reads high on an idle machine. Swap is reported only.
+ * Memory pressure, not swap, is the spawn gate: macOS keeps swap allocated long after
+ * pressure ends, so swap used reads high on an idle machine. The seat machine stop
+ * does gate on swap and on the kernel pressure level (CC-480).
  *
  * Pure decision over injectable readings. A reading that fails never refuses:
  * a broken reader would otherwise stop every seat on the machine.
@@ -180,6 +181,27 @@ export function readMemoryPressure(platform: NodeJS.Platform = process.platform)
   try {
     const out = execFileSync('/usr/bin/memory_pressure', [], { encoding: 'utf8', timeout: 5000 })
     return parseMemoryPressure(out)
+  } catch {
+    return null
+  }
+}
+
+/** Parses `sysctl -n kern.memorystatus_vm_pressure_level`: an integer 0-4, else null. */
+export function parsePressureLevel(text: string): number | null {
+  const trimmed = text.trim()
+  if (!/^\d$/.test(trimmed)) return null
+  const level = Number(trimmed)
+  return level <= 4 ? level : null
+}
+
+/** CC-492: the kernel memory pressure level; null off macOS or when sysctl fails or does not parse. */
+export function readPressureLevel(
+  platform: NodeJS.Platform = process.platform,
+  exec: ExecFile = execFileSync,
+): number | null {
+  if (platform !== 'darwin') return null
+  try {
+    return parsePressureLevel(sysctl('kern.memorystatus_vm_pressure_level', exec))
   } catch {
     return null
   }

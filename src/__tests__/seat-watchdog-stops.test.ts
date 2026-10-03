@@ -4,12 +4,15 @@ import {
   RESTART_WINDOW_MAX_MS,
   advanceMeter,
   dayAllowance,
+  machineStop,
   meterHistory,
   pacedCaps,
   readSeatLog,
   restartWindow,
   sameSpendDay,
   withinRun,
+  type MachineStopLimits,
+  type MachineStopReadings,
   type SpendMeter,
 } from '../agents/seats/stops.js'
 import { poolBudget } from '../agents/seats/watchdog.js'
@@ -342,5 +345,40 @@ describe('the paced caps every gate hands gatePool (CC-404)', () => {
     })
     expect(verdict.open).toBe(false)
     expect(verdict.reason).toContain("at or above the pool agents's per_day_points 12")
+  })
+})
+
+describe('machineStop swap and pressure level (CC-492)', () => {
+  const limits: MachineStopLimits = {
+    memoryFreePercent: 20,
+    load5: 28,
+    swapUsedPercent: 60,
+    pressureLevel: 2,
+  }
+  const calm: MachineStopReadings = { memoryFreePercent: 60, load5: 2, swapUsedPercent: 10, pressureLevel: 1 }
+
+  it('swap at 60.1 percent with memory and load fine stops the seat and names swap', () => {
+    const stop = machineStop({ ...calm, swapUsedPercent: 60.1 }, limits)
+
+    expect(stop?.reason).toBe('machine under pressure: swap 60.1% used (limit 60%)')
+  })
+
+  it('swap at exactly 60 percent does not stop', () => {
+    expect(machineStop({ ...calm, swapUsedPercent: 60 }, limits)).toBeNull()
+  })
+
+  it('pressure level 2 stops and level 1 does not', () => {
+    expect(machineStop({ ...calm, pressureLevel: 2 }, limits)?.reason).toBe(
+      'machine under pressure: pressure level 2 (limit 2)',
+    )
+    expect(machineStop({ ...calm, pressureLevel: 1 }, limits)).toBeNull()
+  })
+
+  it('null swap and null pressure readings never stop', () => {
+    expect(machineStop({ ...calm, swapUsedPercent: null, pressureLevel: null }, limits)).toBeNull()
+  })
+
+  it('swap limit set to null in config disables the swap trigger', () => {
+    expect(machineStop({ ...calm, swapUsedPercent: 95 }, { ...limits, swapUsedPercent: null })).toBeNull()
   })
 })

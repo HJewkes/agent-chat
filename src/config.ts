@@ -10,6 +10,8 @@ import {
 import {
   DEFAULT_MACHINE_STOP_LOAD5,
   DEFAULT_MACHINE_STOP_MEMORY_FREE_PERCENT,
+  DEFAULT_MACHINE_STOP_PRESSURE_LEVEL,
+  DEFAULT_MACHINE_STOP_SWAP_USED_PERCENT,
   type MachineStopLimits,
 } from './agents/seats/stops.js'
 import { DEFAULT_FULL_SUITE_SLOTS } from './suite-slots.js'
@@ -32,6 +34,8 @@ interface AgentChatConfig {
   machineMemoryFreePercent?: unknown
   machineStopMemoryFreePercent?: unknown
   machineStopLoad5?: unknown
+  machineStopSwapUsedPercent?: unknown
+  machineStopPressureLevel?: unknown
   fullSuiteSlots?: unknown
   coordinatorGrantableTools?: unknown
 }
@@ -177,7 +181,28 @@ export function resolveMachineStopLimits(): MachineStopLimits {
       100,
     ),
     load5: numberFrom('machineStopLoad5', config.machineStopLoad5, DEFAULT_MACHINE_STOP_LOAD5),
+    swapUsedPercent:
+      config.machineStopSwapUsedPercent === null
+        ? null
+        : numberFrom(
+            'machineStopSwapUsedPercent',
+            config.machineStopSwapUsedPercent,
+            DEFAULT_MACHINE_STOP_SWAP_USED_PERCENT,
+            100,
+          ),
+    pressureLevel: pressureLevelFrom(config.machineStopPressureLevel),
   }
+}
+
+function pressureLevelFrom(value: unknown): number {
+  if (value === undefined) return DEFAULT_MACHINE_STOP_PRESSURE_LEVEL
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 4) return value
+  logEvent('config_invalid', {
+    key: 'machineStopPressureLevel',
+    value,
+    fallback: DEFAULT_MACHINE_STOP_PRESSURE_LEVEL,
+  })
+  return DEFAULT_MACHINE_STOP_PRESSURE_LEVEL
 }
 
 function numberFrom(key: string, value: unknown, fallback: number, max = Infinity): number {

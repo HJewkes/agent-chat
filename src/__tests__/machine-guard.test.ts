@@ -5,6 +5,7 @@ import {
   machineDecision,
   machineStatus,
   parseMemoryLevel,
+  parsePressureLevel,
   parseMemoryPressure,
   parseSwapUsage,
   readMemoryFree,
@@ -102,6 +103,17 @@ describe('the readers', () => {
 
   it.each(['', 'n/a', '135', '-1'])('reports a memorystatus level of %j as an error', text => {
     expect(parseMemoryLevel(text)).toEqual({ error: expect.stringContaining('unparsed') })
+  })
+
+  it.each(['', '-1', '1.5', '5', '10', 'warn'])(
+    'parsePressureLevel rejects empty, negative and non-integer text: %j',
+    text => {
+      expect(parsePressureLevel(text)).toBeNull()
+    },
+  )
+
+  it('parsePressureLevel accepts the integers 0 to 4', () => {
+    expect([0, 1, 2, 4].map(n => parsePressureLevel(`${n}\n`))).toEqual([0, 1, 2, 4])
   })
 
   it('parses the evidence reading from sysctl vm.swapusage', () => {

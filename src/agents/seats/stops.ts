@@ -247,18 +247,26 @@ export function restartWindow(messages: OwnerMessage[], nowMs: number): string |
 
 export const DEFAULT_MACHINE_STOP_MEMORY_FREE_PERCENT = 20
 export const DEFAULT_MACHINE_STOP_LOAD5 = 28
+export const DEFAULT_MACHINE_STOP_SWAP_USED_PERCENT = 60
+export const DEFAULT_MACHINE_STOP_PRESSURE_LEVEL = 2
 
 export interface MachineStopLimits {
   /** Stop below this share of memory free. */
   memoryFreePercent: number
   /** Stop above this five-minute load average. */
   load5: number
+  /** Stop above this share of swap used; null disables the swap trigger. */
+  swapUsedPercent: number | null
+  /** Stop at or above this kernel memory pressure level (1 normal, 2 warn, 4 critical). */
+  pressureLevel: number
 }
 
 /** A reading that could not be taken is null, and a null reading never stops a seat. */
 export interface MachineStopReadings {
   memoryFreePercent: number | null
   load5: number | null
+  swapUsedPercent: number | null
+  pressureLevel: number | null
 }
 
 export interface MachineStop extends MachineStopReadings {
@@ -266,15 +274,29 @@ export interface MachineStop extends MachineStopReadings {
   reason: string
 }
 
-/** CC-431: a machine under memory or load pressure holds every seat; each breach names its reading. */
+/** CC-431, CC-492: a machine under memory, swap, pressure level or load holds every seat; each breach names its reading. */
 export function machineStop(readings: MachineStopReadings, limits: MachineStopLimits): MachineStop | null {
-  const { memoryFreePercent, load5 } = readings
+  const { memoryFreePercent, load5, swapUsedPercent, pressureLevel } = readings
   const breaches = [
     ...(memoryFreePercent !== null && memoryFreePercent < limits.memoryFreePercent
       ? [`memory ${memoryFreePercent}% free (floor ${limits.memoryFreePercent}%)`]
       : []),
+    ...(swapUsedPercent !== null &&
+    limits.swapUsedPercent !== null &&
+    swapUsedPercent > limits.swapUsedPercent
+      ? [`swap ${swapUsedPercent}% used (limit ${limits.swapUsedPercent}%)`]
+      : []),
+    ...(pressureLevel !== null && pressureLevel >= limits.pressureLevel
+      ? [`pressure level ${pressureLevel} (limit ${limits.pressureLevel})`]
+      : []),
     ...(load5 !== null && load5 > limits.load5 ? [`load5 ${load5} (limit ${limits.load5})`] : []),
   ]
   if (breaches.length === 0) return null
-  return { memoryFreePercent, load5, reason: `machine under pressure: ${breaches.join(', ')}` }
+  return {
+    memoryFreePercent,
+    load5,
+    swapUsedPercent,
+    pressureLevel,
+    reason: `machine under pressure: ${breaches.join(', ')}`,
+  }
 }

@@ -11,7 +11,9 @@ import {
   readLoad5,
   readMemoryFree,
   readMemoryPressure,
+  readPressureLevel,
   readSwapUsage,
+  swapPercent,
   type MachineStatus,
 } from '../../agents/machine-guard.js'
 import { resolveMachineLimits, resolveMachineStopLimits } from '../../config.js'
@@ -393,10 +395,15 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
   }
 }
 
-/** CC-431: the live memory and load readings against the stop limits. */
+/** CC-431, CC-492: the live memory, swap, pressure level and load readings against the stop limits. */
 function readMachineStop(): MachineStop | null {
   return machineStop(
-    { memoryFreePercent: readMemoryPressure(), load5: readLoad5() },
+    {
+      memoryFreePercent: readMemoryPressure(),
+      load5: readLoad5(),
+      swapUsedPercent: swapPercent(readSwapUsage()),
+      pressureLevel: readPressureLevel(),
+    },
     resolveMachineStopLimits(),
   )
 }

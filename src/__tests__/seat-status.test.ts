@@ -182,7 +182,12 @@ interface AgentSeed {
 const GIB = 1024 ** 3
 let swap: SwapReading
 let memory: MemoryReading
-let pressure: { memoryFreePercent: number | null; load5: number | null }
+let pressure: {
+  memoryFreePercent: number | null
+  load5: number | null
+  swapUsedPercent: number | null
+  pressureLevel: number | null
+}
 
 function seedAgent(seed: AgentSeed): void {
   const { name, profile, spawnedBy = SEAT, cwd = tmp, isolation = 'worktree', surface = 'headless' } = seed
@@ -229,7 +234,8 @@ function deps(over: Partial<StatusDeps> = {}): StatusDeps {
         { headlessAgents: 10, memoryFreePercent: 15 },
         { inUse: 1, total: 4 },
       ),
-    machineStop: () => machineStop(pressure, { memoryFreePercent: 20, load5: 28 }),
+    machineStop: () =>
+      machineStop(pressure, { memoryFreePercent: 20, load5: 28, swapUsedPercent: 60, pressureLevel: 2 }),
     ...over,
   }
 }
@@ -244,7 +250,7 @@ const scorerExplodes = (): never => {
 }
 
 beforeEach(() => {
-  pressure = { memoryFreePercent: 60, load5: 2 }
+  pressure = { memoryFreePercent: 60, load5: 2, swapUsedPercent: 10, pressureLevel: 1 }
   tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ac-seat-status-')))
   autonomy = path.join(tmp, 'autonomy')
   activeWork = path.join(tmp, 'active-work')
@@ -1101,39 +1107,54 @@ describe('the machine stop (CC-431)', () => {
   }
 
   it('stops on machine with the memory reading when free memory is under 20%', async () => {
-    const result = await breach({ memoryFreePercent: 19, load5: 4 })
+    const result = await breach({ ...pressure, memoryFreePercent: 19, load5: 4 })
 
     expect(result.stop).toBe('machine')
     expect(result.machineStop).toEqual({
       memoryFreePercent: 19,
       load5: 4,
+      swapUsedPercent: 10,
+      pressureLevel: 1,
       reason: 'machine under pressure: memory 19% free (floor 20%)',
     })
   })
 
   it('stops on machine with the load5 reading when load5 is over 28', async () => {
-    const result = await breach({ memoryFreePercent: 60, load5: 28.5 })
+    const result = await breach({ ...pressure, memoryFreePercent: 60, load5: 28.5 })
 
     expect(result.stop).toBe('machine')
     expect(result.machineStop?.reason).toBe('machine under pressure: load5 28.5 (limit 28)')
   })
 
+  it('seats status --json reports stop machine with swapUsedPercent and pressureLevel in machineStop', async () => {
+    const result = await breach({ ...pressure, swapUsedPercent: 72.4, pressureLevel: 2 })
+
+    expect(JSON.parse(JSON.stringify(result))).toMatchObject({
+      stop: 'machine',
+      machineStop: {
+        swapUsedPercent: 72.4,
+        pressureLevel: 2,
+        reason: 'machine under pressure: swap 72.4% used (limit 60%), pressure level 2 (limit 2)',
+      },
+    })
+  })
+
   it('reports no stop at exactly 20% free and exactly load5 28', async () => {
-    const result = await breach({ memoryFreePercent: 20, load5: 28 })
+    const result = await breach({ ...pressure, memoryFreePercent: 20, load5: 28 })
 
     expect(result.stop).toBeNull()
     expect(result.machineStop).toBeNull()
   })
 
   it('does not stop on a memory reading that could not be taken', async () => {
-    const result = await breach({ memoryFreePercent: null, load5: 3 })
+    const result = await breach({ ...pressure, memoryFreePercent: null, load5: 3 })
 
     expect(result.stop).toBeNull()
   })
 
   it('takes the stop line before the budget stop in the table', async () => {
     const report = await (async () => {
-      pressure = { memoryFreePercent: 5, load5: 40 }
+      pressure = { memoryFreePercent: 5, load5: 40, swapUsedPercent: 10, pressureLevel: 1 }
       return statusReport(deps(), SEAT, false)
     })()
 
