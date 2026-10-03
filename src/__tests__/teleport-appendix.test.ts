@@ -156,6 +156,8 @@ describe('the queue file', () => {
   })
 
   it('never reads a path built from a name that is not a plain slug', () => {
+    writeSeat('lead', 'prefix: ld\npool: p\nqueue: queues/lead.md')
+
     expect(declaredQueueFile('../seats/lead', root)).toBeUndefined()
   })
 })
