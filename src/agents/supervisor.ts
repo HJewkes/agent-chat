@@ -445,6 +445,8 @@ export interface ResumeRequest {
   requestedBy?: string
   /** CC-216: the requester's own agent id, resolved by the broker from its connection. */
   requesterAgentId?: string
+  /** CC-497: the requester's pane, resolved by the broker from its connection, as for a spawn. */
+  anchor?: string
 }
 
 interface Live {
@@ -2472,11 +2474,11 @@ export class Supervisor implements TeleportHost {
         ...(req.source === undefined ? {} : { source: req.source }),
       },
     })
-    const handle = await this.launchOn(surface, plan).catch((err: unknown) => {
+    const handle = await this.launchOn(surface, plan, req.anchor).catch((err: unknown) => {
       this.resumeNeverStarted(agent, err)
       throw err
     })
-    this.track(agent.agentId, agent.name, handle, allocation, isolation)
+    this.track(agent.agentId, agent.name, handle, allocation, isolation, req.anchor)
     this.bindExecution(agent.agentId, executionId)
   }
 

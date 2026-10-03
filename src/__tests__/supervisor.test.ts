@@ -3132,7 +3132,7 @@ describe('resuming an agent on its own conversation', () => {
 
     const plan = readLaunchPlan(spawned.agentId as string)
     expect('CLAUDE_CONFIG_DIR' in plan.env).toBe(false)
-    expect(plan.unsetEnv).toEqual(['CLAUDE_CONFIG_DIR'])
+    expect(plan.unsetEnv).toContain('CLAUDE_CONFIG_DIR')
   })
 
   it('refuses a live agent', async () => {

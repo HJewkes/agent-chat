@@ -16,7 +16,8 @@ import {
   readLaunchPlan,
   writeLaunchFiles,
 } from '../agents/launch-files.js'
-import { oscTitle } from '@titan-design/agent-surface'
+import { launchEnv, oscTitle } from '@titan-design/agent-surface'
+import { terminalAnchor } from '../server/anchor.js'
 import { relaunchScriptPath } from '../agents/launcher.js'
 import type { AgentProfile, LaunchPlanInput } from '../agents/types.js'
 
@@ -937,14 +938,50 @@ describe('the account a plan hands the launched process (CC-200)', () => {
     const plan = buildLaunchPlan(input({ configDir: '/Users/test/.claude-profiles/agents' }))
 
     expect(plan.env.CLAUDE_CONFIG_DIR).toBe('/Users/test/.claude-profiles/agents')
-    expect(plan.unsetEnv).toBeUndefined()
+    expect(plan.unsetEnv).not.toContain('CLAUDE_CONFIG_DIR')
   })
 
   it('marks CLAUDE_CONFIG_DIR for deletion, not an empty value, when the spawner ran with it unset', () => {
     const plan = buildLaunchPlan(input({ configDir: '/Users/test/.claude', configDirUnset: true }))
 
     expect('CLAUDE_CONFIG_DIR' in plan.env).toBe(false)
-    expect(plan.unsetEnv).toEqual(['CLAUDE_CONFIG_DIR'])
+    expect(plan.unsetEnv).toContain('CLAUDE_CONFIG_DIR')
+  })
+})
+
+describe('the terminal ids a plan keeps from a headless agent (CC-497)', () => {
+  const brokerEnv = {
+    HOME: '/h',
+    ITERM_SESSION_ID: 'w0t0p0:BROKER-PANE',
+    TERM_SESSION_ID: 'w0t0p0:BROKER-PANE',
+  }
+
+  it('marks ITERM_SESSION_ID and TERM_SESSION_ID for deletion on a headless plan', () => {
+    const plan = buildLaunchPlan(input({ surface: 'headless' }))
+
+    expect(plan.unsetEnv).toEqual(['ITERM_SESSION_ID', 'TERM_SESSION_ID'])
+  })
+
+  it('keeps the account marker beside them when the spawner ran with CLAUDE_CONFIG_DIR unset', () => {
+    const plan = buildLaunchPlan(input({ surface: 'headless', configDirUnset: true }))
+
+    expect(plan.unsetEnv).toEqual(['CLAUDE_CONFIG_DIR', 'ITERM_SESSION_ID', 'TERM_SESSION_ID'])
+  })
+
+  it.each(['iterm-pane', 'iterm-tab', 'iterm-window'] as const)('marks nothing on %s', surface => {
+    const plan = buildLaunchPlan(input({ surface }))
+
+    expect(plan.unsetEnv).toBeUndefined()
+  })
+
+  // The 10-01 case: a headless agent registered the pane of the terminal the broker was started from.
+  it('registers a headless agent with no anchor, though the broker was started from an iTerm pane', () => {
+    const plan = buildLaunchPlan(input({ surface: 'headless' }))
+
+    const agentEnv = launchEnv(plan.env, brokerEnv, 4242, plan.unsetEnv)
+
+    expect(terminalAnchor(agentEnv)).toEqual({})
+    expect('TERM_SESSION_ID' in agentEnv).toBe(false)
   })
 })
 

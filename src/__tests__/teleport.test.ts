@@ -459,7 +459,7 @@ describe('the descendant', () => {
 
     const plan = planFor(result.agentId as string)
     expect('CLAUDE_CONFIG_DIR' in plan.env).toBe(false)
-    expect(plan.unsetEnv).toEqual(['CLAUDE_CONFIG_DIR'])
+    expect(plan.unsetEnv).toContain('CLAUDE_CONFIG_DIR')
     expect(spawnRowFor(result.agentId as string)?.meta.config_dir_unset).toBe('true')
   })
 
@@ -471,7 +471,7 @@ describe('the descendant', () => {
     await vi.advanceTimersByTimeAsync(0)
 
     expect(planFor(result.agentId as string).env.CLAUDE_CONFIG_DIR).toBe(dir)
-    expect(planFor(result.agentId as string).unsetEnv).toBeUndefined()
+    expect(planFor(result.agentId as string).unsetEnv).not.toContain('CLAUDE_CONFIG_DIR')
   })
 
   /** The predecessor's own row answers when its connection is gone. */
