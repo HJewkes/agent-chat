@@ -5,7 +5,12 @@ import type net from 'node:net'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
-import { CWD_GRACE_MS, RECOVERY_MAX_AGE_MS, recoverHandoff } from '../broker/handoff-recovery.js'
+import {
+  CWD_GRACE_MS,
+  RECOVERY_MAX_AGE_MS,
+  recoverHandoff,
+  returningSession,
+} from '../broker/handoff-recovery.js'
 import { Registry } from '../broker/registry.js'
 
 /** CC-524: a handoff whose successor never registered reaches the next session that could act on it. */
@@ -37,8 +42,11 @@ afterEach(() => {
 
 const fakeConn = (): Conn => ({}) as unknown as net.Socket
 
-/** An ordinary session registering, the way the socket layer hands one to the core. */
-function register(name: string, cwd: string, agentId?: string) {
+/**
+ * An ordinary session registering, the way the socket layer hands one to the core: whether it
+ * already had an identity is read first, because registering mints one. `sessionId` repeats a session.
+ */
+function register(name: string, cwd: string, over: { agentId?: string; sessionId?: string } = {}) {
   sessions += 1
   const msg = {
     t: 'register' as const,
@@ -46,13 +54,18 @@ function register(name: string, cwd: string, agentId?: string) {
     workingOn: 'w',
     cwd,
     pid: 100 + sessions,
-    sessionId: `session-${sessions}`,
-    ...(agentId === undefined ? {} : { agentId }),
+    sessionId: over.sessionId ?? `session-${sessions}`,
+    ...(over.agentId === undefined ? {} : { agentId: over.agentId }),
   }
+  const returning = returningSession(core, msg)
   const conn = fakeConn()
   expect(core.register(conn, msg).ok).toBe(true)
-  return { conn, msg }
+  return { conn, msg, returning }
 }
+
+/** Recovery as the socket layer runs it after a registration, `afterMs` from now. */
+const recover = (session: ReturnType<typeof register>, afterMs = 0): boolean =>
+  recoverHandoff(core, session.msg, { now: Date.now() + afterMs, returning: session.returning })
 
 interface Orphan {
   standDown?: boolean
@@ -105,7 +118,7 @@ describe('the next session to start in the directory', () => {
     orphaned('lead')
 
     const { conn, msg } = register('passer-by', seatDir)
-    expect(recoverHandoff(core, msg, Date.now() + SETTLED)).toBe(true)
+    expect(recoverHandoff(core, msg, { now: Date.now() + SETTLED })).toBe(true)
 
     expect(shownTo(conn)[0]).toContain(HANDOFF)
     expect(shownTo(conn)[0]).toContain("you started in lead's working directory")
@@ -125,7 +138,7 @@ describe('the next session to start in the directory', () => {
 
     const { msg } = register('passer-by', path.join(dir, 'elsewhere'))
 
-    expect(recoverHandoff(core, msg, Date.now() + SETTLED)).toBe(false)
+    expect(recoverHandoff(core, msg, { now: Date.now() + SETTLED })).toBe(false)
   })
 
   it('is shown nothing when it is a broker-spawned agent, which has a brief of its own', () => {
@@ -138,9 +151,61 @@ describe('the next session to start in the directory', () => {
       meta: { name: 'worker-a', cwd: seatDir },
     })
 
-    const { msg } = register('worker-a', seatDir, worker)
+    const { msg } = register('worker-a', seatDir, { agentId: worker })
 
-    expect(recoverHandoff(core, msg, Date.now() + SETTLED)).toBe(false)
+    expect(recoverHandoff(core, msg, { now: Date.now() + SETTLED })).toBe(false)
+  })
+})
+
+describe('two seats sharing one directory', () => {
+  it('does not show a seat that re-registers there the other seat’s handoff, and the name’s next holder gets it', () => {
+    const seatB = register('seat-b', seatDir, { sessionId: 'seat-b-session' })
+    orphaned('seat-a')
+    core.drop(seatB.conn)
+
+    const again = register('seat-b', seatDir, { sessionId: 'seat-b-session' })
+    expect(again.returning).toBe(true)
+    expect(recover(again, SETTLED)).toBe(false)
+    expect(shownTo(again.conn)).toEqual([])
+
+    const holder = register('seat-a', seatDir)
+    expect(recover(holder, SETTLED)).toBe(true)
+    expect(shownTo(holder.conn)[0]).toContain('you registered the name seat-a')
+  })
+
+  it('still shows the name’s next holder a handoff that a new session in the directory was shown', () => {
+    orphaned('seat-a')
+    const newcomer = register('seat-b', seatDir)
+    expect(newcomer.returning).toBe(false)
+    expect(recover(newcomer, SETTLED)).toBe(true)
+
+    const holder = register('seat-a', seatDir)
+    expect(recover(holder, SETTLED)).toBe(true)
+
+    expect(shownTo(newcomer.conn)[0]).toContain("you started in seat-a's working directory")
+    expect(shownTo(holder.conn)[0]).toContain(HANDOFF)
+    expect(shownTo(holder.conn)[0]).toContain('you registered the name seat-a')
+  })
+
+  it('shows it to one new session in the directory, not to each that starts there', () => {
+    orphaned('seat-a')
+    recover(register('seat-b', seatDir), SETTLED)
+
+    const third = register('seat-c', seatDir)
+
+    expect(recover(third, SETTLED)).toBe(false)
+  })
+
+  it('shows the name’s holder once, whatever the directory has seen', () => {
+    orphaned('seat-a')
+    recover(register('seat-b', seatDir), SETTLED)
+    const holder = register('seat-a', seatDir)
+    recover(holder, SETTLED)
+    core.drop(holder.conn)
+
+    const later = register('seat-a', seatDir)
+
+    expect(recover(later, SETTLED)).toBe(false)
   })
 })
 
@@ -167,7 +232,7 @@ describe('a handoff that is not undelivered', () => {
 
     const { msg } = register('lead', seatDir)
 
-    expect(recoverHandoff(core, msg, Date.now() + RECOVERY_MAX_AGE_MS + 1_000)).toBe(false)
+    expect(recoverHandoff(core, msg, { now: Date.now() + RECOVERY_MAX_AGE_MS + 1_000 })).toBe(false)
   })
 })
 

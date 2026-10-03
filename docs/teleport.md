@@ -1004,17 +1004,25 @@ name spawned sent it after that time. The predecessor gets the same fact as a
 warning on its `agent_teleport` result. A session with no record gets no
 warning, since it may have no initiative to wrap into.
 
+The appendix is built after the predecessor has stood down. A read that
+throws there costs the appendix, not the successor: the broker logs
+`teleport_appendix_failed` and starts the successor on the handoff alone. The
+wrap check on the `agent_teleport` result is guarded the same way.
+
 **The undelivered handoff.** A handoff is undelivered when its predecessor
-stood down, its successor's identity never attached, and no session has been
-shown it. On `register` the broker looks for one from the last 7 days
+stood down, its successor's identity never attached, and no holder of its
+name has been shown it. On `register` the broker looks for one from the last 7 days
 (`src/broker/handoff-recovery.ts`) and shows it to:
 
 - the next session that registers the predecessor's name, at once;
-- the next human-started session that registers in the predecessor's working
+- the next human-started session that starts in the predecessor's working
   directory, once the handoff is 2 minutes old. A broker-spawned agent is
-  skipped, because it has a brief of its own.
+  skipped, because it has a brief of its own. A session that already had an
+  identity is skipped too: it is re-registering, not starting.
 
-It arrives as a message from `agent-chat` that cites the handoff row. That row
-is what stops a second showing. `agent-chat handoff last <name>` prints the
+It arrives as a message from `agent-chat` that cites the handoff row and
+records which match it was (`meta.recovered_by`). Each match shows once. A
+directory showing does not use up the name's, because two seats can share one
+directory and the handoff belongs to the name. `agent-chat handoff last <name>` prints the
 newest stored handoff for a name and what became of its teleport. It reads
 `events.db` directly, so it works while the broker is down.

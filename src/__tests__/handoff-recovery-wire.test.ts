@@ -20,6 +20,9 @@ const CLI = path.resolve(import.meta.dirname, '../../dist/cli.js')
 const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-hwire-'))
 const SOCKET = path.join(TEST_HOME, 'chat.sock')
 const HANDOFF = 'mid-way through the migration\nstep 3 failed twice'
+/** Two seats run here: seat-a, whose handoff was orphaned, and seat-b, which is still running. */
+const SHARED = path.join(TEST_HOME, 'shared')
+const SEAT_A_HANDOFF = 'seat-a was half-way through a release'
 
 const open: net.Socket[] = []
 
@@ -34,11 +37,38 @@ function seedOrphanedHandoff(): void {
     meta: { successor: 'succ-1' },
   })
   log.append({ kind: 'agent_stood_down', actor: 'lead', ref: 'pred-1' })
+  seedSharedDirectory(log)
   log.close()
 }
 
+const adopted = (name: string, sessionId: string) => ({
+  kind: 'agent_spawned' as const,
+  actor: 'human',
+  target: name,
+  meta: { origin: 'adopted', name, cwd: SHARED, session_id: sessionId },
+})
+
+/** seat-a's orphaned handoff, written long enough ago to be past the directory grace, and seat-b's identity. */
+function seedSharedDirectory(log: EventLog): void {
+  const { msgId: seatA } = log.append(adopted('seat-a', 'seat-a-session'))
+  log.append(adopted('seat-b', 'seat-b-session'))
+  const meta = { successor: 'succ-a' }
+  const { id } = log.append({
+    kind: 'agent_handoff',
+    actor: 'seat-a',
+    ref: seatA,
+    body: SEAT_A_HANDOFF,
+    meta,
+  })
+  log.append({ kind: 'agent_stood_down', actor: 'seat-a', ref: seatA })
+  log.ledgerHandle().prepare('UPDATE events SET ts = ts - 600000 WHERE id = ?').run(id)
+}
+
 /** Registers `name` on a fresh connection and collects every frame the broker sends it. */
-async function registerAndListen(name: string): Promise<ServerMessage[]> {
+async function registerAndListen(
+  name: string,
+  over: { cwd?: string; sessionId?: string } = {},
+): Promise<ServerMessage[]> {
   const socket = net.connect(SOCKET)
   await new Promise<void>((resolve, reject) => {
     socket.once('connect', resolve)
@@ -53,7 +83,14 @@ async function registerAndListen(name: string): Promise<ServerMessage[]> {
       () => undefined,
     ),
   )
-  const register: ClientMessage = { t: 'register', name, workingOn: 'w', cwd: TEST_HOME, pid: process.pid }
+  const register: ClientMessage = {
+    t: 'register',
+    name,
+    workingOn: 'w',
+    cwd: over.cwd ?? TEST_HOME,
+    pid: process.pid,
+    ...(over.sessionId === undefined ? {} : { sessionId: over.sessionId }),
+  }
   socket.write(encode(register))
   return frames
 }
@@ -119,5 +156,21 @@ describe('an undelivered handoff, over the wire', () => {
 
     expect(second.find(f => f.t === 'register_result')).toMatchObject({ ok: true })
     expect(deliveries(second)).toEqual([])
+  })
+
+  it('skips a running seat that re-registers in a shared directory, and reaches the name’s next holder', async () => {
+    const seatB = await registerAndListen('seat-b', { cwd: SHARED, sessionId: 'seat-b-session' })
+    await until(() => seatB.some(f => f.t === 'register_result'))
+    await settle()
+
+    expect(seatB.find(f => f.t === 'register_result')).toMatchObject({ ok: true })
+    expect(deliveries(seatB)).toEqual([])
+
+    const seatA = await registerAndListen('seat-a', { cwd: SHARED })
+    await until(() => deliveries(seatA).length > 0)
+
+    expect(deliveries(seatA)).toHaveLength(1)
+    expect(deliveries(seatA)[0]).toContain(SEAT_A_HANDOFF)
+    expect(deliveries(seatA)[0]).toContain('you registered the name seat-a')
   })
 })
