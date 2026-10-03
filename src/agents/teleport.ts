@@ -15,6 +15,7 @@ import {
 } from '../protocol.js'
 import type { Allocation } from './isolation/index.js'
 import { loadProfile, recordedRole } from './profiles.js'
+import { appendixFacts, renderAppendix } from './teleport-appendix.js'
 import { observedModel } from './transcript.js'
 import type { AgentProfile } from './types.js'
 
@@ -188,6 +189,8 @@ interface Pending {
   inherited: InheritedIsolation | undefined
   remoteControl: boolean
   reason?: TeleportReason
+  /** When the predecessor's session began: the window the appendix counts inbox arrivals over. */
+  since: number
   timer?: NodeJS.Timeout
 }
 
@@ -279,6 +282,7 @@ export class Teleport {
       inherited: this.host.inheritedIsolation(subject.agentId),
       // CC-163: a worker's successor never inherits Remote Control, even one its argv shows.
       remoteControl: worker ? false : (req.remoteControl ?? this.predecessorRemoteControl(subject)),
+      since: identity.spawnedAt,
       ...(req.reason === undefined ? {} : { reason: req.reason }),
     }
     this.pending.set(subject.agentId, entry)
@@ -510,7 +514,7 @@ export class Teleport {
       agentId: entry.descendantId,
       name: subject.name,
       profile: entry.profile,
-      brief: entry.reason === 'park' ? `${PARK_LINE}\n\n${entry.handoff}` : entry.handoff,
+      brief: this.briefFor(entry),
       cwd: entry.inherited?.allocation.cwd ?? subject.cwd,
       surface: entry.surface,
       preamble: TELEPORT_PREAMBLE,
@@ -537,6 +541,16 @@ export class Teleport {
       ...(entry.inherited === undefined ? {} : { inherited: entry.inherited }),
       ...(entry.inherited === undefined ? {} : { inheritedFrom: subject.agentId }),
     }
+  }
+
+  /** CC-524: the handoff, then what the broker knows that the handoff may have left out. */
+  private briefFor(entry: Pending): string {
+    const handoff = entry.reason === 'park' ? `${PARK_LINE}\n\n${entry.handoff}` : entry.handoff
+    const facts = appendixFacts(this.core.agents, this.core.events, {
+      name: entry.subject.name,
+      since: entry.since,
+    })
+    return `${handoff}\n\n${renderAppendix(facts)}`
   }
 
   /**
