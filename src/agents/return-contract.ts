@@ -19,7 +19,8 @@ const PLACEHOLDER = '<spawner>'
 
 const LAST_ACTION = /\blast action\b/i
 const STATUS_LINE = /\bStatus:\s*DONE\s*\|\s*DONE_WITH_CONCERNS\s*\|\s*BLOCKED\s*\|\s*NEEDS_CONTEXT\b/
-const VERDICT_LINE = /\bVerdict:\s*MERGE\s*(?:\(\s*or\s+FIX_FIRST\s*\)|or\s+FIX_FIRST\b|\|\s*FIX_FIRST\b)/
+const VERDICT_LINE =
+  /\bVerdict:\s*MERGE\s*(?:\(\s*or\s+FIX_FIRST(?:\s+or\s+WAIT)?\s*\)|or\s+FIX_FIRST\b|\|\s*FIX_FIRST\b)/
 const PR_LINE = /\bPR:\s*\S/
 const HEAD_LINE = /\bHead:\s*\S/
 

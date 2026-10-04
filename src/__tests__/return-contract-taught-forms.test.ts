@@ -59,6 +59,7 @@ const PLACEHOLDERS: Record<string, string> = {
   '<ID>': 'CC-1',
   '<gh args>': 'pr create --title T',
   '<f>': 'pr-body.md',
+  '<t>': 'T',
   '<rev>': 'HEAD',
   '<path>': 'README.md',
   '#<n>': '#1',
@@ -101,6 +102,7 @@ describe('every command form the return contract teaches is one the leak guard a
 
   it('finds the forms it is meant to check', () => {
     expect(forms).toContain('agent-chat gh-write -- <gh args> --body-file <f>')
+    expect(forms).toContain('agent-chat pr-ready --title <t> --body-file <f>')
     expect(forms).toContain('git -C "$dir"')
     expect(forms).toContain('pgrep')
     expect(forms.some(form => form.startsWith('titan-factory shepherd register'))).toBe(true)

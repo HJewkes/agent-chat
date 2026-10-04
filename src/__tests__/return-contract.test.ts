@@ -371,6 +371,7 @@ describe('a brief that already carries the contract', () => {
     ['reviewer', 'in the older wording', OLDER_REVIEWER_BLOCK],
     ['reviewer', 'as MERGE or FIX_FIRST', `Verdict: MERGE or FIX_FIRST\n${PR_AND_HEAD}`],
     ['reviewer', 'as MERGE | FIX_FIRST', `Verdict: MERGE | FIX_FIRST\n${PR_AND_HEAD}`],
+    ['reviewer', 'with WAIT added', `Verdict: MERGE (or FIX_FIRST or WAIT)\n${PR_AND_HEAD}`],
   ]
 
   it.each(PASTED)(
@@ -595,7 +596,7 @@ describe('the Shepherd handoff (TP-468)', () => {
   // Mutation caught: any change to the three lines bin/premerge and Shepherd parse.
   it('pins the reviewer verdict block', () => {
     expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(
-      'exactly these three lines:\nVerdict: MERGE            (or FIX_FIRST)\nPR: <owner>/<repo>#<n>\nHead: <full 40-hex head sha>\n',
+      'exactly these three lines:\nVerdict: MERGE            (or FIX_FIRST or WAIT)\nPR: <owner>/<repo>#<n>\nHead: <full 40-hex head sha>\n',
     )
   })
 })
@@ -689,6 +690,37 @@ describe('PR body path (CC-444, CC-725)', () => {
   it('gives the reviewer its body-file rule and the quoting rule', () => {
     expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(REVIEWER_BODY_FILE_RULE)
     expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(QUOTE_RULE)
+    expect(RETURN_CONTRACT_BLOCKS.reviewer.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+  })
+})
+
+describe('CC-690: pr-ready, WAIT and the Class line', () => {
+  it('has both implementer blocks run pr-ready with --title and --body-file and fix every FAIL before pr create', () => {
+    for (const block of [RETURN_CONTRACT_BLOCKS.implementer, IMPLEMENTER_WITHOUT_SHEPHERD]) {
+      const text = flat(block)
+      expect(text).toContain('agent-chat pr-ready --title <t> --body-file <f>')
+      expect(text).toContain('fix every FAIL')
+      expect(text.indexOf('pr-ready')).toBeLessThan(text.indexOf('gh-write -- <gh args>'))
+    }
+  })
+
+  it('lets the reviewer say WAIT only for a clean review whose required checks have not finished', () => {
+    const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
+    expect(text).toContain('Verdict: MERGE (or FIX_FIRST or WAIT)')
+    expect(text).toContain('WAIT only for a clean review whose required checks have not finished')
+  })
+
+  it('asks for a Class line naming the first blocker on FIX_FIRST', () => {
+    const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
+    expect(text).toContain('Class: defect|test|pr-text|leak|lint|rebase|ci-red|changeset')
+    expect(text).toMatch(/FIX_FIRST[^.]*Class:/)
+  })
+
+  it('runs risky probes only in a scratch repo whose origin is a local bare repo', () => {
+    expect(flat(RETURN_CONTRACT_BLOCKS.reviewer)).toContain('scratch repo whose origin is a local bare repo')
+  })
+
+  it('stays under the cap with the reviewer under its own 1,200-character report limit named', () => {
     expect(RETURN_CONTRACT_BLOCKS.reviewer.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
   })
 })

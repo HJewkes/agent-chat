@@ -36,6 +36,10 @@ export const REVIEWER_BODY_FILE_RULE =
   "the working directory, written with `<<'EOF'` in one Bash call, posted in the next, then deleted; " +
   'the tree is not yours.'
 
+/** CC-690: the mechanical blockers (dirty tree, stale base, red checks, leak terms) cost a reviewer round each. */
+export const PR_READY_RULE =
+  'Before `gh-write -- pr create` run `agent-chat pr-ready --title <t> --body-file <f>`, fix every FAIL.'
+
 export const QUOTE_RULE =
   'Quote expansions in git and gh args (`git -C "$dir"`); never hold a command name in a variable.'
 
@@ -43,21 +47,22 @@ export const QUOTE_RULE =
 export const SHEPHERD_NONE_MARKER = 'Shepherd: none'
 
 const IMPLEMENTER_HEAD = [
-  'Check `gh api repos/<owner>/<repo> --jq .visibility`. In a public repo, never put real data',
-  'in code, fixtures, PR bodies or comments: task lists, charter or seat files,',
-  '/Users paths, emails, or IDs and text from private repos.',
-  'First, stop if `git log origin/<default> --oneline --grep <ID>` shows it landed.',
+  'Check `gh api repos/<owner>/<repo> --jq .visibility`. In a public repo, put no real data',
+  'in code, fixtures, PR text, comments: task lists, charter or seat files,',
+  '/Users paths, emails, private-repo IDs or text.',
+  'Stop if `git log origin/<default> --oneline --grep <ID>` shows it landed.',
   'Branch from origin/<default>; check `git log origin/<default>..HEAD`.',
   'Commit before mutating; never `git checkout` uncommitted work.',
-  'Scratch: the worktree or `$TMPDIR/<your name>`.',
+  'Scratch: worktree or `$TMPDIR/<your name>`.',
+  PR_READY_RULE,
   BODY_FILE_RULE,
-  'gh-write is the only write path; check each landed. No gh-write: report BLOCKED.',
+  'gh-write is the only write path; verify each. None: BLOCKED.',
   QUOTE_RULE,
-  'On a 403 "API rate limit exceeded" with core quota left, retry once in 5 minutes.',
+  'On a 403 rate limit with quota left, retry once in 5 minutes.',
 ]
 
 const SHEPHERD_HANDOFF = [
-  'Never use --no-verify. Verify locally, push, open the PR over REST, never wait on CI.',
+  'Never --no-verify. Verify, push, open the PR over REST, never wait on CI.',
   'Only if the brief asks (one saying not to wins), run `titan-factory shepherd register <owner>/<repo>#<n>',
   '--task <initiative>/<ID> --implementer <your name> --kind <correctness|security|feature|refactor>`',
   'and report `Shepherd: <run id>`, `Shepherd: refused <first stderr line>` on exit 65, or `Shepherd: down`',
@@ -75,7 +80,7 @@ const IMPLEMENTER_RULES = [
   SHIM_RULE,
   'Only when the brief asks for a load test: record the PID of each burner, kill only those, never by',
   'name pattern; confirm with `pgrep` none survive.',
-  'A PR narrowing a timeout reports per-case CI times against the new limit.',
+  'A PR narrowing a timeout reports per-case CI times.',
   'You are NOT done at "PR opened". Your LAST action must be chat_send to <spawner> starting with',
   '`Status: DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT`, `PR: <owner>/<repo>#<n>` and',
   '`Head: <full sha>` lines, then',
@@ -103,12 +108,15 @@ const REVIEWER = [
   `Plain-text stdout is invisible to <spawner>. ${NEVER_PARK}`,
   'Your LAST action must be chat_send to <spawner>, under 1,200 characters in total, starting with',
   'exactly these three lines:',
-  'Verdict: MERGE            (or FIX_FIRST)',
+  'Verdict: MERGE            (or FIX_FIRST or WAIT)',
   'PR: <owner>/<repo>#<n>',
   'Head: <full 40-hex head sha>',
   'Before MERGE, confirm every required check-run (one branch protection names) at the reviewed head',
   'with `gh api "repos/<owner>/<repo>/commits/<head>/check-runs" --paginate`; FIX_FIRST if a required',
-  'one failed. A skipped check (std / compat) is not a failure.',
+  'one failed. A skipped check (std / compat) is not a failure. WAIT only for a clean review whose',
+  'required checks have not finished. On FIX_FIRST add a fourth line naming the first blocker:',
+  'Class: defect|test|pr-text|leak|lint|rebase|ci-red|changeset',
+  'Run probes that may use git, network or destructive commands only in a scratch repo whose origin is a local bare repo.',
   'Never run `git stash`: refs/stash is shared across worktrees. Use `git show <rev>:<path>` instead.',
   SHIM_RULE,
   REVIEWER_BODY_FILE_RULE,
