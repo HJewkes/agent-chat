@@ -488,13 +488,15 @@ EOF
 
 gh never reads the original path or stdin. Each file source is replaced by a 0600 copy of the
 scanned text in a fresh `mkdtemp` directory. The directory is removed after the last retry, and also
-when SIGTERM, SIGINT or SIGHUP ends gh-write. The swapped arguments are then scanned again with only
+when SIGTERM, SIGINT, SIGHUP or SIGQUIT ends gh-write. The swapped arguments are then scanned again with only
 those copies readable, so a file changed after the scan, or a flag spelling the swap missed, cannot
 reach gh unscanned.
 
-gh parses flags anywhere, so `pr --body x comment 1` is `pr comment`. gh-write therefore requires
-the group and verb first: only `-R`/`--repo` and its value may come before either, and any other
-flag there refuses. `pr create` and `issue create` refuse `--fill` (any spelling, and `-f`),
+gh parses flags anywhere, so `pr --body x comment 1` is `pr comment`, and it drops empty words,
+so `pr '' comment` is too. gh-write therefore requires the group and verb first: every word up to
+the verb must be one of gh's own groups, a known `pr` or `issue` verb, or an `-R`/`--repo` pair.
+Any other flag there, an empty or blank word, a config alias such as `co`, or an extension
+refuses. `pr create` and `issue create` refuse `--fill` (any spelling, and `-f`),
 `--template`/`-T` and `--recover`, since gh would then post text read from commits, a template or a
 recovery file that gh-write never sees.
 
@@ -505,8 +507,12 @@ plain merge is `gh api` with exactly one endpoint word, `.../pulls/<n>/merge`, a
 `-X`/`--method`, `-H`/`--header`, `-q`/`--jq` and `--input`. This is stricter than the hook, which
 also exempts a merge with `-f` fields.
 
-`pr close --comment`, `issue close --comment` and `release create --notes` are not scanned yet; they
-are classified as other commands, as in the hook.
+Any other command (`pr close`, `release create`, `workflow run` and the like) that carries a text
+flag in any spelling refuses, since gh-write does not read its text: `--body`, `-b`, `--body-file`,
+`-F`, `--field`, `-f`, `--raw-field`, `--input`, `--title`, `-t`, `--subject`, `--notes`,
+`--notes-file`, `--comment`, `-c`, `--message`, `-m`, and their `=` forms or short clusters. Reads
+without those flags, such as `pr view`, `pr checks`, `pr list` and `api` GETs, run as before.
+`pr view -c` is refused too; run reads with plain gh.
 It reads the list from the passwd home's `~/.config/titan-egress/private-terms`, like the pre-push
 hook. It does not read `HOME`, `XDG_CONFIG_HOME` or `TITAN_EGRESS_TERMS`. No variable or flag turns
 the scan off. With the hook in place, a post is scanned twice.

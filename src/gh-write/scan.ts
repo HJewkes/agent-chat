@@ -28,7 +28,8 @@ const DOCS = 'See docs/leak-guard.md.'
 export const SCAN_REASONS = {
   unreadableSource: `leak-guard: gh-write could not read a body or input file as a regular file, so it neither checked nor posted it. ${DOCS}`,
   stdinTwice: `leak-guard: gh-write reads stdin once, so only one body or input may be -. ${DOCS}`,
-  unknownCommand: `leak-guard: gh-write could not tell which text this gh command posts, so it did not run it. ${DOCS}`,
+  unknownCommand: `leak-guard: gh-write could not tell which text this gh command posts, so it did not run it. Spell gh's own group and verb out, with no empty word, alias or extension. ${DOCS}`,
+  otherText: `leak-guard: this gh command carries a text flag (body, title, field, input, notes, comment or message) that gh-write does not scan for it. Post the text with pr or issue create, edit, comment, review or merge, or with gh api. ${DOCS}`,
   flagFirst: `leak-guard: gh-write needs gh's group and verb first; only -R/--repo may come before them. Put every other flag after the verb. ${DOCS}`,
   unscannedCreate: `leak-guard: --fill, --template and --recover make gh read text gh-write cannot scan. Pass --title and --body or --body-file instead. ${DOCS}`,
 } as const
@@ -81,18 +82,58 @@ function afterRepo(words: readonly string[]): readonly string[] | undefined {
   return words.slice(i)
 }
 
+/** gh 2.87's own groups and their cobra aliases; a config alias (`co`) or an extension is refused. */
+const GH_GROUPS = new Set(
+  (
+    'agent-task alias api attestation auth browse cache codespace cs completion config copilot ' +
+    'extension extensions ext gist gpg-key issue label licenses org pr preview project release repo ' +
+    'ruleset rs run search secret ssh-key status variable workflow'
+  ).split(' '),
+)
+
+const GROUP_VERBS: Readonly<Record<string, ReadonlySet<string>>> = {
+  pr: new Set(
+    (
+      'checkout co checks close comment create new diff edit list ls lock merge ready reopen revert ' +
+      'review status unlock update-branch view'
+    ).split(' '),
+  ),
+  issue: new Set(
+    (
+      'close comment create new delete develop edit list ls lock pin reopen status transfer unlock ' +
+      'unpin view'
+    ).split(' '),
+  ),
+}
+
+type Command = { words: readonly string[] } | { reason: string }
+
 /**
  * The command as gh-write classifies it, with `-R` pairs before the group and verb removed. gh
- * accepts any flag there (`pr --body x comment 1`), which the guard's classifier would read as
- * another command, so any other flag before them leaves the command undefined.
+ * accepts any flag there (`pr --body x comment 1`) and drops empty words (`pr '' comment`), which
+ * the guard's classifier would read as another command. So every word up to the verb must be a
+ * known group, a known verb or an `-R` pair.
  */
-function commandOf(args: readonly string[]): readonly string[] | undefined {
+function commandOf(args: readonly string[]): Command {
   const rest = afterRepo(args)
-  const [group = '', ...tail] = rest ?? []
-  if (rest === undefined || (group !== 'pr' && group !== 'issue')) return rest
+  if (rest === undefined) return { reason: SCAN_REASONS.flagFirst }
+  const [group = '', ...tail] = rest
+  if (!GH_GROUPS.has(group)) return { reason: SCAN_REASONS.unknownCommand }
+  const verbs = GROUP_VERBS[group]
+  if (verbs === undefined)
+    return tail[0]?.trim() === '' ? { reason: SCAN_REASONS.unknownCommand } : { words: rest }
   const verbOn = afterRepo(tail)
-  return verbOn === undefined ? undefined : [group, ...verbOn]
+  if (verbOn === undefined) return { reason: SCAN_REASONS.flagFirst }
+  return verbs.has(verbOn[0] ?? '') ? { words: [group, ...verbOn] } : { reason: SCAN_REASONS.unknownCommand }
 }
+
+const TEXT_LONG =
+  /^--(?:body|body-file|field|raw-field|input|title|subject|notes|notes-file|comment|message)(?:=|$)/
+const TEXT_SHORT = /^-[A-Za-z]*[bFftcm]/
+
+/** Any spelling of a flag that may carry text, on a command whose text gh-write does not read. */
+const carriesText = (args: readonly string[]): boolean =>
+  args.some(word => TEXT_LONG.test(word) || TEXT_SHORT.test(word))
 
 const CREATE_VERBS = new Set(['create', 'new'])
 const UNSCANNED_LONG = /^--(?:fill|recover|template)(?:[-=]|$)/
@@ -104,10 +145,11 @@ const readsUnscanned = (command: readonly string[]): boolean =>
   command.some(word => UNSCANNED_LONG.test(word) || UNSCANNED_SHORT.test(word))
 
 export async function scanGhArgs(args: readonly string[], deps: ScanDeps): Promise<Scan> {
-  const command = commandOf(args)
-  if (command === undefined) return { reason: SCAN_REASONS.flagFirst }
+  const classified = commandOf(args)
+  if ('reason' in classified) return classified
+  const command = classified.words
   const kind = ghKind(command)
-  if (kind === 'other') return NO_TEXT
+  if (kind === 'other') return carriesText(args) ? { reason: SCAN_REASONS.otherText } : NO_TEXT
   if (kind === 'unknown') return { reason: SCAN_REASONS.unknownCommand }
   if (kind === 'pr' && readsUnscanned(command)) return { reason: SCAN_REASONS.unscannedCreate }
   const sources = kind === 'api' ? apiSources(command) : prSources(command)
@@ -210,7 +252,7 @@ function handOver(
   }
 }
 
-const SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const
+const SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT'] as const
 
 /**
  * The cleanup for a copy directory, also run when a signal ends the process, so a killed
@@ -240,7 +282,7 @@ function swapSources(args: readonly string[], copyOf: ReadonlyMap<string, string
   }
   const out = [...args]
   const command = commandOf(args)
-  if (command !== undefined && ghKind(command) === 'api') {
+  if ('words' in command && ghKind(command.words) === 'api') {
     swapFlag(out, args, ['-F', '--field'], swapField)
     swapFlag(out, args, ['--input'], swapFile)
   } else swapFlag(out, args, ['--body-file', '-F'], swapFile)

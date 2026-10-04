@@ -171,6 +171,33 @@ describe('gh-write refuses a command whose text it cannot place, before gh start
       SCAN_REASONS.unscannedCreate,
     ],
     ['pr create -df', () => ['pr', 'create', '-df'], SCAN_REASONS.unscannedCreate],
+    ['an empty verb word', () => ['pr', '', 'comment', '--body', TERM], SCAN_REASONS.unknownCommand],
+    ['an empty group word', () => ['', 'pr', 'comment', '--body', TERM], SCAN_REASONS.unknownCommand],
+    ['an empty word before edit', () => ['pr', '', 'edit', '--body', TERM], SCAN_REASONS.unknownCommand],
+    [
+      'an empty word before api',
+      () => ['', 'api', 'repos/o/r/issues', '-f', `body=${TERM}`],
+      SCAN_REASONS.unknownCommand,
+    ],
+    [
+      'a blank word after api',
+      () => ['api', ' ', 'repos/o/r/issues', '-f', `body=${TERM}`],
+      SCAN_REASONS.unknownCommand,
+    ],
+    ['a whitespace verb word', () => ['pr', ' \t', 'comment', '--body', TERM], SCAN_REASONS.unknownCommand],
+    [
+      'a whitespace group word',
+      () => [' ', 'issue', 'comment', '1', '-b', TERM],
+      SCAN_REASONS.unknownCommand,
+    ],
+    ['a config alias', () => ['co', '12', '--body', TERM], SCAN_REASONS.unknownCommand],
+    ['an extension', () => ['my-ext', 'post', '--body', TERM], SCAN_REASONS.unknownCommand],
+    ['an unknown pr verb', () => ['pr', 'comment2', '1', '--body', TERM], SCAN_REASONS.unknownCommand],
+    ['an other-kind command with --body', () => ['pr', 'list', '--body', TERM], SCAN_REASONS.otherText],
+    ['pr close --comment', () => ['pr', 'close', '3', '--comment', TERM], SCAN_REASONS.otherText],
+    ['issue close -c', () => ['issue', 'close', '3', '-c', TERM], SCAN_REASONS.otherText],
+    ['release create --notes=', () => ['release', 'create', 'v1', `--notes=${TERM}`], SCAN_REASONS.otherText],
+    ['workflow run -f', () => ['workflow', 'run', 'ci.yml', '-f', `note=${TERM}`], SCAN_REASONS.otherText],
     [
       'a merge path behind a flag cluster, missing list',
       () => ['api', '-ip', '-X', 'repos/o/r/issues', '-ip', 'repos/o/r/pulls/7/merge', '-f', 'body=x'],
@@ -200,6 +227,20 @@ describe('gh-write refuses a command whose text it cannot place, before gh start
     expect(result.stderr.toString()).toContain(reason)
     expect(result.stderr.toString()).not.toContain(TERM)
     expect(ghStarted()).toBe(false)
+  })
+
+  it.each([
+    [['pr', 'view', '3']],
+    [['pr', 'checks', '3', '--watch']],
+    [['pr', 'list', '--state', 'open', '--search', 'is:draft', '-L', '5']],
+    [['issue', 'view', '4', '--comments']],
+    [['api', 'repos/o/r/pulls', '--jq', '.[].number']],
+    [['run', 'list', '-L', '5']],
+  ])('runs the read %j', async args => {
+    const result = await runGhWrite(args, deps({ terms: { kind: 'missing' } }), throttle())
+
+    expect(result.code).toBe(0)
+    expect(fs.readFileSync(calls(), 'utf8')).toBe(`${args.join(' ')}\n`)
   })
 
   it('runs a clean post with -R before the group', async () => {
@@ -439,7 +480,7 @@ describe('agent-chat gh-write from a shell', () => {
     expect(fs.existsSync(file('home/gh-write.stamp.json'))).toBe(true)
   })
 
-  it('removes its copy when SIGTERM ends it while gh runs', async () => {
+  it.each(['SIGTERM', 'SIGQUIT'] as const)('removes its copy when %s ends it while gh runs', async signal => {
     const child = spawn(process.execPath, [CLI, ...MERGE], {
       env: env({ GH_SLEEP: '30' }),
       stdio: ['pipe', 'ignore', 'ignore'],
@@ -451,9 +492,9 @@ describe('agent-chat gh-write from a shell', () => {
       const copy = /(\S*gh-write-[^/\s]*)\/source-0/.exec(fs.readFileSync(calls(), 'utf8'))?.[1] as string
       expect(fs.existsSync(copy)).toBe(true)
 
-      child.kill('SIGTERM')
+      child.kill(signal)
 
-      expect(await exited).toBe('SIGTERM')
+      expect(await exited).toBe(signal)
       expect(fs.existsSync(copy)).toBe(false)
     } finally {
       child.kill('SIGKILL')
