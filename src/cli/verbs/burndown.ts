@@ -28,6 +28,7 @@ import { jobState, startJob, stopJob, systemLaunchctl, type JobControl } from '.
 import { jobEnv, launchdJobRefusals, renderBurndownPlist } from '../../mirror/plist.js'
 import { addVerb, defineVerb, Report } from '../command.js'
 import { collisionView, tickBroker } from '../burndown-broker.js'
+import { releaseTask, type RetireCall } from './burndown-release.js'
 
 /** How often launchd fires `burndown tick --once`; independent of any phase timeout. */
 const TICK_INTERVAL_SECONDS = 600
@@ -282,22 +283,22 @@ export const burndownReleaseVerb = defineVerb({
   result: Report,
   cli: { positional: ['task'] },
   async run({ task }) {
-    const file = burndownLedgerPath()
-    const locked = await withLedgerLock(file, () => {
-      const ledger = readLedger(file)
-      const dropped = ledger.claims.filter(c => c.taskId === task && c.phase !== 'done')
-      writeLedger(file, { ...ledger, claims: ledger.claims.filter(c => !dropped.includes(c)) })
-      return dropped
+    // Never autostart: a release that brought up a broker would own it, and the broker serves every session.
+    const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
+      autoStart: false,
     })
-    if (!locked.ran)
-      return refused(new Error(`a tick holds the ledger lock (pid ${locked.holder}); try again`))
-    if (locked.value.length === 0) return { ok: false, lines: [], errors: [`no held claim on ${task}`] }
-    return {
-      ok: true,
-      lines: locked.value.map(
-        c =>
-          `released ${c.taskId}${c.slice === undefined ? '' : ` slice ${c.slice}`} (${c.phase}${c.stalledReason === undefined ? '' : `, stalled: ${c.stalledReason}`})`,
-      ),
+    let connected = false
+    const retire: RetireCall = async name => {
+      if (!connected) {
+        await client.connect()
+        connected = true
+      }
+      return tickBroker(client).retire(name)
+    }
+    try {
+      return await releaseTask(task, retire)
+    } finally {
+      client.close()
     }
   },
 })
