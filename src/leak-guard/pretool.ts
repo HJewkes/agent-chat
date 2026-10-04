@@ -54,6 +54,10 @@ export interface GuardContext {
   readFile(file: string): string | undefined
   readAlias: ReadAlias
   readIncludedHooksPath: ReadIncludedHooksPath
+  /** `realpath` proved that `agent-chat` on the hook's `PATH` is the hook's own entry script, whose `gh-write` scans at run time. */
+  scansGhWrite?: boolean
+  /** The real path of that install and of the `PATH` directory that holds it, which a body file may not be or share. */
+  install?: { file: string; dir: string }
 }
 
 /** What the guard knows of the shell before one command; undefined where it cannot tell. */
@@ -80,6 +84,10 @@ interface Scope {
   line: string
   /** The `-c` and `--config-env` options of the git whose `!` alias runs this command. */
   gitParams: readonly string[]
+  /** Where earlier commands on the line write: the path key of a literal target, undefined for any other. */
+  targets: readonly (string | undefined)[]
+  /** Every command before this one on the line is from a short set that cannot change what `agent-chat` resolves to. */
+  deferrable: boolean
   /** Command starts after an expansion the whole call may still check; nested shells draw on the same budget. */
   hiddenStarts: { left: number; reachesGit?: boolean }
 }
@@ -738,15 +746,179 @@ export function findingsIn(texts: readonly Text[], rules: readonly TermRule[]): 
   )
 }
 
+/**
+ * Whether the run-time scan in `gh-write` covers what the guard cannot read: the command word is
+ * the bare, unwrapped `agent-chat` at the top level, the hook's own install is what `PATH` finds,
+ * `PATH` is not mentioned on the line, and every command before it is from the allowlist.
+ */
+function defersToGhWrite(
+  cmd: SimpleCommand,
+  assigns: readonly string[],
+  ctx: GuardContext,
+  scope: Scope,
+): boolean {
+  return (
+    ctx.scansGhWrite === true &&
+    scope.deferrable &&
+    !cmd.nested &&
+    cmd.marked[0] === 'agent-chat' &&
+    assigns.length === 0 &&
+    scope.env?.PATH !== undefined
+  )
+}
+
+const PLAIN_COMMANDS = new Set(['cat', 'printf', 'echo', 'tee'])
+
+/**
+ * Whether a command before `agent-chat` is one of `cat`, `printf`, `echo` and `tee`, with no
+ * variable on it and words the guard can resolve. Anything else, `cd`, `git`, an assignment, a
+ * function definition, `export`, `eval` and `source` included, is not.
+ */
+function plainCommand(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): boolean {
+  const [head, ...args] = cmd.marked
+  if (head === undefined || !PLAIN_COMMANDS.has(head)) return false
+  if (!cmd.marked.every(word => resolveWord(word, cmd, ctx, scope) !== undefined)) return false
+  return !(head === 'printf' && args.some(arg => arg.startsWith('-v')))
+}
+
+// zsh reads its startup file on every `-c`, and ksh may, so neither is plain.
+const PLAIN_SHELLS = new Set(['sh', 'bash', 'dash'])
+
+/** A shell with no startup flag or environment on the line, running one `-c` script. */
+const plainShell = (cmd: SimpleCommand, assigns: readonly string[]): boolean =>
+  PLAIN_SHELLS.has(cmd.marked[0] ?? '') &&
+  assigns.length === 0 &&
+  cmd.marked[1] === '-c' &&
+  cmd.marked.length === 3
+
+/** The marked words a command writes to by redirect or `tee`. */
+function writeWords(cmd: SimpleCommand): string[] {
+  const tee = path.basename(cmd.words[0] ?? '') === 'tee'
+  return [...cmd.writes, ...(tee ? cmd.marked.slice(1).filter(w => !w.startsWith('-')) : [])]
+}
+
+const literalTargets = (cmd: SimpleCommand, scope: Scope): (string | undefined)[] =>
+  writeWords(cmd).map(word => (word.includes(LIVE) ? undefined : pathKey(unmark(word), scope)))
+
+// `&>` and `>&file` write a file the splitter does not record; `>&2` and `>&-` only duplicate a descriptor.
+const UNRECORDED_WRITE = /&>|>&(?![\d-])/
+
+const NULL_DEVICE = '/dev/null'
+const BODY_NAME = /\.(?:md|txt)$/i
+
+const isSymlink = (file: string): boolean => {
+  try {
+    return fs.lstatSync(file).isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+
+const sameFile = (a: string, b: string): boolean => {
+  try {
+    const [x, y] = [fs.statSync(a), fs.statSync(b)]
+    return x.ino === y.ino && x.dev === y.dev
+  } catch {
+    return false
+  }
+}
+
+/**
+ * A file the line may write and `gh-write` may read: a `.md` or `.txt` path with no symlink in any
+ * component and no `.git` directory above it, that is neither the install nor a file in its
+ * `PATH` directory, nor a hard link to it.
+ */
+function safeBodyPath(key: string, ctx: GuardContext): boolean {
+  if (!path.isAbsolute(key) || !BODY_NAME.test(key)) return false
+  const parts = key.split(path.sep).filter(part => part !== '')
+  if (parts.includes('.git')) return false
+  const prefixes = parts.map((_, i) => path.sep + parts.slice(0, i + 1).join(path.sep))
+  if (prefixes.some(isSymlink)) return false
+  const { install } = ctx
+  if (install === undefined) return true
+  return path.dirname(key) !== install.dir && key !== install.file && !sameFile(key, install.file)
+}
+
+/**
+ * Deferral covers only a line with at most one body source, whose earlier commands write at most
+ * one safe body file (and `/dev/null`), and whose own redirects write nothing else.
+ */
+function writesOnlySafeBody(sources: Sources, cmd: SimpleCommand, ctx: GuardContext, scope: Scope): boolean {
+  if (UNRECORDED_WRITE.test(scope.line) || sources.files.length > 1) return false
+  if (literalTargets(cmd, scope).some(key => key !== NULL_DEVICE)) return false
+  const written = new Set(scope.targets.filter(key => key !== NULL_DEVICE))
+  return written.size <= 1 && [...written].every(key => key !== undefined && safeBodyPath(key, ctx))
+}
+
+/** What `collect` reads, leaving out each file or stdin the guard cannot attribute: `gh-write` scans those at run time. */
+function collectReadable(
+  { inline, files }: Sources,
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+): Text[] {
+  const texts = [...inline]
+  for (const { label, file } of files) {
+    if (file === '-' && (cmd.stdin === undefined || piped(cmd))) continue
+    const text = readBody(file, cmd, ctx, scope)
+    if (text !== undefined) texts.push({ label, text })
+  }
+  return texts
+}
+
+const termsRefusal = (terms: TermsLoad, merge: boolean): string | undefined => {
+  if (terms.kind === 'unreadable') return REASONS.unreadableTerms
+  return terms.kind === 'missing' && MISSING_TERMS_REFUSES && !merge ? REASONS.missingTerms : undefined
+}
+
+const publishes = (found: readonly string[]): string =>
+  `leak-guard: this text would publish private data (${found.join('; ')}). Remove the flagged text and retry; the guard never prints what matched. ${DOCS}`
+
+const UNRESOLVED = '\0unresolved'
+
+/** Scans what the guard can read and leaves the rest to the run-time scan in `gh-write`. */
+function checkDeferred(
+  kind: GhKind,
+  args: readonly (string | undefined)[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+): string | undefined {
+  const known = kind !== 'unknown' && args.every(arg => arg !== undefined)
+  // An unresolved word keeps its place, so each flag still pairs with its own value.
+  const resolved = kind === 'unknown' ? [] : args.map(arg => arg ?? UNRESOLVED)
+  const sources = kind === 'api' ? apiSources(resolved) : prSources(resolved)
+  if (known && sources.inline.length + sources.files.length === 0) return undefined
+  const refusal = termsRefusal(ctx.terms, known && isMerge(resolved))
+  if (refusal !== undefined) return refusal
+  const rules = ctx.terms.kind === 'ok' ? ctx.terms.rules : []
+  const found = findingsIn(collectReadable(sources, cmd, ctx, scope), rules)
+  return found.length === 0 ? undefined : publishes(found)
+}
+
+function deferredWritesOnlyBody(
+  kind: GhKind,
+  args: readonly (string | undefined)[],
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+): boolean {
+  const resolved = kind === 'unknown' ? [] : args.map(arg => arg ?? UNRESOLVED)
+  return writesOnlySafeBody(kind === 'api' ? apiSources(resolved) : prSources(resolved), cmd, ctx, scope)
+}
+
 function checkGh(
   marked: readonly string[],
   cmd: SimpleCommand,
   ctx: GuardContext,
   scope: Scope,
+  defers = false,
 ): string | undefined {
   const kind = ghKind(marked)
   if (kind === 'other') return undefined
   const args = marked.map(word => resolveWord(word, cmd, ctx, scope))
+  if (defers && deferredWritesOnlyBody(kind, args, cmd, ctx, scope))
+    return checkDeferred(kind, args, cmd, ctx, scope)
   const unsure = kind === 'unknown' || !args.every(arg => arg !== undefined)
   if (unsure) return unread(cmd.substitutions.flatMap(sub => sub.commands))
   const sources = kind === 'api' ? apiSources(args) : prSources(args)
@@ -754,11 +926,10 @@ function checkGh(
   if (postsWrittenBody(sources, scope, writtenBy(cmd, ctx, scope))) return REASONS.writtenBody
   const collected = collect(sources, cmd, ctx, scope)
   if ('reason' in collected) return collected.reason
-  if (ctx.terms.kind === 'unreadable') return REASONS.unreadableTerms
-  if (ctx.terms.kind === 'missing' && MISSING_TERMS_REFUSES && !isMerge(args)) return REASONS.missingTerms
+  const refusal = termsRefusal(ctx.terms, isMerge(args))
+  if (refusal !== undefined) return refusal
   const found = findingsIn(collected.texts, ctx.terms.kind === 'ok' ? ctx.terms.rules : [])
-  if (found.length === 0) return undefined
-  return `leak-guard: this text would publish private data (${found.join('; ')}). Remove the flagged text and retry; the guard never prints what matched. ${DOCS}`
+  return found.length === 0 ? undefined : publishes(found)
 }
 
 function checkShell(
@@ -904,12 +1075,18 @@ function checkSimple(
   }
   const args = marked.map(unmark)
   const name = path.basename(head)
-  if (SHELLS.has(name)) return checkShell(args, cmd.stdin, ctx, at, depth)
-  if (name === 'eval') return checkEval(marked, cmd, ctx, at, depth)
+  if (SHELLS.has(name)) {
+    const inner = plainShell(cmd, unwrapped.assigns) ? at : { ...at, deferrable: false }
+    return checkShell(args, cmd.stdin, ctx, inner, depth)
+  }
+  if (name === 'eval') return checkEval(marked, cmd, ctx, { ...at, deferrable: false }, depth)
   if (name === 'git')
     return checkGitRun(gitRun(marked, unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
   if (name === 'gh') return head === 'gh' ? checkGh(marked, cmd, ctx, at) : REASONS.ghByPath
-  if (name === 'agent-chat' && args[0] === 'gh-write') return checkGh(ghWriteArgs(marked), cmd, ctx, at)
+  if (name === 'agent-chat' && args[0] === 'gh-write') {
+    const defers = head === 'agent-chat' && defersToGhWrite(cmd, unwrapped.assigns, ctx, at)
+    return checkGh(ghWriteArgs(marked), cmd, ctx, at, defers)
+  }
   if (ENV_EDITS.has(name)) return checkEnvEdit(args)
   return undefined
 }
@@ -974,9 +1151,12 @@ function exported(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): Readonly
 }
 
 function advance(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): Scope {
+  const deferrable = scope.deferrable && plainCommand(cmd, ctx, scope)
   const written = [...scope.written, ...writtenBy(cmd, ctx, scope), ...namedBy(cmd, ctx, scope)]
   scope = {
     ...scope,
+    deferrable,
+    targets: [...scope.targets, ...literalTargets(cmd, scope)],
     written,
     earlier: [...scope.earlier, ...cmd.words.slice(1), ...(cmd.stdin === undefined ? [] : [cmd.stdin])],
   }
@@ -1034,6 +1214,8 @@ export function checkCommand(command: string, ctx: GuardContext): string | undef
     written: [],
     earlier: [],
     said: '',
+    deferrable: true,
+    targets: [],
     line: command,
     gitParams: [],
     hiddenStarts: { left: MAX_HIDDEN_STARTS },
@@ -1086,9 +1268,44 @@ export function readText(file: string): string | undefined {
   }
 }
 
-export function guardContext(env: NodeJS.ProcessEnv, cwd: string, home: string): GuardContext {
+const realOf = (file: string): string | undefined => {
+  try {
+    return fs.realpathSync(file)
+  } catch {
+    return undefined
+  }
+}
+
+/** The real install and its `PATH` directory when the first `agent-chat` on PATH is the file this hook runs from. */
+export function ownInstall(
+  env: NodeJS.ProcessEnv,
+  entry: string | undefined,
+): { file: string; dir: string } | undefined {
+  const own = entry === undefined ? undefined : realOf(entry)
+  if (own === undefined) return undefined
+  for (const dir of (env.PATH ?? '').split(path.delimiter)) {
+    // A relative or empty entry searches the working directory, which the hook does not track.
+    if (!path.isAbsolute(dir)) return undefined
+    const file = path.join(dir, 'agent-chat')
+    if (!fs.existsSync(file)) continue
+    const realDir = realOf(dir)
+    return realOf(file) === own && realDir !== undefined ? { file: own, dir: realDir } : undefined
+  }
+  return undefined
+}
+
+export const pathFindsOwnInstall = (env: NodeJS.ProcessEnv, entry: string | undefined): boolean =>
+  ownInstall(env, entry) !== undefined
+
+export function guardContext(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  home: string,
+  entry: string | undefined = process.argv[1],
+): GuardContext {
   const terms = termsFile(env, home)
   const hooksDir = hooksDirOf(env as Record<string, string>)
+  const install = ownInstall(env, entry)
   return {
     terms: loadTerms(terms),
     cwd,
@@ -1102,6 +1319,8 @@ export function guardContext(env: NodeJS.ProcessEnv, cwd: string, home: string):
     readFile: readText,
     readAlias: aliasReader(env),
     readIncludedHooksPath: includedHooksPathReader(env),
+    scansGhWrite: install !== undefined,
+    ...(install === undefined ? {} : { install }),
   }
 }
 

@@ -8,6 +8,7 @@ import {
   checkCommand,
   checkToolCall,
   guardContext,
+  pathFindsOwnInstall,
   loadTerms,
   pretoolDecision,
   readText,
@@ -1718,6 +1719,98 @@ describe('the hook entry point', () => {
   })
 })
 
+describe('a body file may not be, or lead to, the install or git config (CC-678 r3)', () => {
+  const D = fs.realpathSync(fs.mkdtempSync(path.join(SCRATCH, 'r3-')))
+  const I = path.join(D, 'bin', 'agent-chat')
+  fs.mkdirSync(path.join(D, 'bin'))
+  fs.mkdirSync(path.join(D, '.git'))
+  fs.writeFileSync(I, '#!/bin/sh\n')
+  fs.symlinkSync(I, path.join(D, 'link.md'))
+  fs.linkSync(I, path.join(D, 'hl.md'))
+  const at = (): GuardContext =>
+    ctx({
+      cwd: D,
+      env: { PATH: `${path.join(D, 'bin')}:/usr/bin` },
+      scansGhWrite: true,
+      install: { file: I, dir: path.join(D, 'bin') },
+    })
+  const S = "printf '#!/bin/sh\\nexec gh\\n'"
+  const E = 'cat /w/x.md'
+  const GW = 'agent-chat gh-write -- pr create -t x'
+  const GIT_CONFIG = `printf '[core]\\n\\tfsmonitor = true\\n' >> ${D}/.git/config`
+  const DENIED = [
+    `${S} > ${I}; ${E} | ${GW} -F ${I} -F -`,
+    `${S} > ${I}; ${E} | ${GW} --body-file ${I} --body-file -`,
+    `${S} | tee ${I}; ${E} | ${GW} -F ${I} -F -`,
+    `cd ${D}/bin; ${S} > agent-chat; ${E} | ${GW} -F agent-chat -F -`,
+    `${S} > link.md; ${E} | ${GW} -F link.md -F -`,
+    `${S} > ${I}; ${E} | agent-chat gh-write -- pr comment 1 -F ${I} -F -`,
+    `${S} > ${I}; ${E} | agent-chat gh-write -- api -X POST repos/o/r/issues/1/comments -F body=@${I} --input -`,
+    `${S} > ${I}; ${GW} -F ${I}`,
+    `${S} | tee ${I}; ${GW} -F ${I}`,
+    `${S} > link.md; ${GW} -F link.md`,
+    `${S} > hl.md; ${GW} -F hl.md`,
+    `${S} > hl.md; ${E} | ${GW} -F -`,
+    `${S} > ${D}/bin/notes.md; ${E} | ${GW} -F -`,
+    `${GIT_CONFIG}; git status; ${E} | ${GW} -F ${D}/.git/config -F -`,
+    `${GIT_CONFIG}; ${E} | ${GW} -F ${D}/.git/config`,
+    `${S} > ${D}/.git/body.md; ${GW} -F ${D}/.git/body.md`,
+    `${S} > a.md; ${S} > b.md; ${GW} -F a.md`,
+    `${S} > a.sh; ${GW} -F a.sh`,
+    `cd ${D}; ${S} > n.md; ${GW} -F n.md`,
+    `git status; ${S} > n.md; ${GW} -F n.md`,
+    `X=1; ${S} > n.md; ${GW} -F n.md`,
+  ]
+
+  it.each([...DENIED, ...DENIED.map(line => `sh -c "${line.replaceAll('"', '\\"')}"`)])(
+    'denies %s',
+    command => {
+      expect(checkCommand(command, at())).toBeDefined()
+    },
+  )
+
+  it('defers a plain body file, a /dev/null redirect and a pipe', () => {
+    for (const command of [
+      `${S} > notes.md; ${GW} -F notes.md`,
+      `printf hi > notes.txt; ${E} 2>/dev/null | ${GW} -F -`,
+      `${E} | ${GW} -F - 2>/dev/null`,
+      `cat > notes.md <<'EOF'\nhello\nEOF\ncat notes.md | ${GW} -F -`,
+      `${GW} -b "$(cat < /w/x)" >/dev/null`,
+    ])
+      expect(checkCommand(command, at())).toBeUndefined()
+  })
+})
+
+describe('the built hook defers to the install PATH finds (CC-678)', () => {
+  const hook = (command: string, bin: string): string => {
+    const cfg = path.join(SCRATCH, 'defer-cfg')
+    fs.mkdirSync(path.join(cfg, 'titan-egress'), { recursive: true })
+    fs.writeFileSync(path.join(cfg, 'titan-egress', 'private-terms'), `${TERM}\n`, { mode: 0o600 })
+    return execFileSync(process.execPath, [CLI, 'leak-guard', 'pretool'], {
+      input: JSON.stringify({ tool_name: 'Bash', cwd: SCRATCH, tool_input: { command } }),
+      env: { PATH: `${bin}:/usr/bin:/bin`, HOME: SCRATCH, XDG_CONFIG_HOME: cfg },
+      encoding: 'utf8',
+    })
+  }
+  const UNREAD = 'agent-chat gh-write -- pr create -t x -b "$(cat < /w/x)"'
+
+  it('allows an unreadable argument when agent-chat on PATH is the hook entry, and denies when it is not', () => {
+    const own = path.join(SCRATCH, 'own-bin')
+    const other = path.join(SCRATCH, 'other-bin')
+    fs.mkdirSync(own, { recursive: true })
+    fs.mkdirSync(other, { recursive: true })
+    fs.symlinkSync(CLI, path.join(own, 'agent-chat'))
+    fs.writeFileSync(path.join(other, 'agent-chat'), '')
+
+    expect(hook(UNREAD, own)).toBe('')
+    expect(JSON.parse(hook(UNREAD, other)).hookSpecificOutput.permissionDecision).toBe('deny')
+    expect(
+      JSON.parse(hook(`agent-chat gh-write -- pr create -t ${TERM} -b "$(cat < /w/x)"`, own))
+        .hookSpecificOutput.permissionDecisionReason,
+    ).toContain('private-term')
+  })
+})
+
 describe('the shell splitter', () => {
   it('splits operators, strips quotes and keeps heredoc bodies as stdin', () => {
     const cmds = parseShell(`a 'b c' "d\\"e" f\\ g && h|i; j <<-EOF\n\tbody\n\tEOF\nk`)
@@ -1881,5 +1974,189 @@ describe('a command git runs for its subcommand (TP-634)', () => {
     'git log --grep exec',
   ])('allows %s', command => {
     expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+})
+
+describe('the guard defers unreadable gh-write text to the run-time scan (CC-678)', () => {
+  const own = (over: Partial<GuardContext> = {}): GuardContext =>
+    ctx({
+      env: { PATH: '/usr/bin' },
+      scansGhWrite: true,
+      readFile: file => (file === '/w/ok.md' ? 'fine\n' : undefined),
+      ...over,
+    })
+  const POST = 'agent-chat gh-write -- pr create -t x'
+
+  const DEFERRED = [
+    `${POST} -b "$(cat < /w/x)"`,
+    `${POST} -b "$UNSET_NAME"`,
+    `echo hi > /w/pr.md; ${POST} --body-file /w/pr.md`,
+    `echo hi > /w/pr.md && ${POST} -F /w/pr.md`,
+    `${POST} --body-file /w/never-written.md`,
+    `cat /w/x.md | ${POST} -F -`,
+    `${POST} -F -`,
+  ]
+
+  it.each(DEFERRED)("allows %s for the hook's own install", command => {
+    expect(checkCommand(command, own())).toBeUndefined()
+    expect(checkCommand(command, ctx({ env: { PATH: '/usr/bin' } }))).toBeDefined()
+  })
+
+  it('still denies a finding it can read, in any text beside an unreadable one', () => {
+    expect(checkCommand(`${POST} -b ${TERM}`, own())).toContain('private-term')
+    expect(checkCommand(`${POST} -t ${TERM} -b "$(cat < /w/x)"`, own())).toContain('private-term')
+    expect(checkCommand(`${POST} -b "$(cat < /w/x)" --body-file /w/ok.md -t ${TERM}`, own())).toContain(
+      'private-term',
+    )
+    const withTerm = own({ readFile: () => `${TERM}\n` })
+    expect(checkCommand(`${POST} -b "$(cat < /w/x)" --body-file /w/pr.md`, withTerm)).toContain(
+      'private-term',
+    )
+  })
+
+  it.each([
+    ['missing', { kind: 'missing' } as const, REASONS.missingTerms],
+    ['unreadable', { kind: 'unreadable' } as const, REASONS.unreadableTerms],
+  ])('still denies a %s term list, even for text it cannot read', (_name, terms, reason) => {
+    expect(checkCommand(`${POST} -b "$(cat < /w/x)"`, own({ terms }))).toBe(reason)
+    expect(checkCommand(`${POST} -b y`, own({ terms }))).toBe(reason)
+    expect(checkCommand(`cat f | ${POST} -F -`, own({ terms }))).toBe(reason)
+  })
+
+  const UNREADABLE = `-b "$(cat < /w/x)"`
+  const SHADOWED = [
+    `agent-chat() { :; }; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `function agent-chat { :; }; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `alias agent-chat=/tmp/evil; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `PATH=/tmp:$PATH agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `export PATH=/tmp:$PATH; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `PATH=/tmp:$PATH; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `./agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `/tmp/agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `command agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `env agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `env -S 'agent-chat gh-write -- pr create -t x' ${UNREADABLE}`,
+    `FOO=1 agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `$E agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `source /tmp/setup; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `eval "$SETUP"; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `. /tmp/setup; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `$SETUP; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `(agent-chat() { :; }); agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `gh pr create -t x ${UNREADABLE}`,
+    `/usr/bin/gh pr create -t x -F -`,
+  ]
+
+  it.each(SHADOWED)('keeps denying %s', command => {
+    expect(checkCommand(command, own())).toBeDefined()
+  })
+
+  const PROBES = [
+    'hash -p /tmp/x/agent-chat agent-chat',
+    'builtin hash -p /tmp/x/agent-chat agent-chat',
+    'sh -c "hash -p /tmp/x/agent-chat agent-chat"',
+    'hash agent-chat=/tmp/x/agent-chat',
+    'path=(/tmp/x $path)',
+    'V=PA; export ${V}TH=/tmp/x',
+    'V=PA; declare -x ${V}TH=/tmp/x',
+    'V=PA; read ${V}TH <<< /tmp/x',
+    'V=PA; printf -v ${V}TH %s /tmp/x',
+    'fpath=(/tmp/x); autoload agent-chat',
+    'agent-chat gh-write() { :; }',
+    'agent-chat x() { :; }',
+    'BASH_ENV=/tmp/x/setup bash -c true',
+    'ZDOTDIR=/tmp/x zsh -c true',
+    'HOME=/tmp/x bash -l -c true',
+    'bash -l -c true',
+    'typeset -x PATH=/tmp/x',
+    'local PATH=/tmp/x',
+    'cp /tmp/a /tmp/b',
+    'echo ${path:=/tmp/x}',
+    'echo *(e:path=/tmp/x:)',
+  ]
+
+  it.each(PROBES)('denies unreadable text after %s', probe => {
+    expect(checkCommand(`${probe}; ${POST} ${UNREADABLE}`, own())).toBeDefined()
+    expect(checkCommand(`sh -c '${probe}; ${POST} ${UNREADABLE}'`, own())).toBeDefined()
+  })
+
+  it('defers after plain commands inside a plain sh -c', () => {
+    expect(checkCommand(`echo hi; sh -c 'echo hi; ${POST} ${UNREADABLE}'`, own())).toBeUndefined()
+    expect(checkCommand(`sh -c 'echo hi'; ${POST} ${UNREADABLE}`, own())).toBeDefined()
+  })
+
+  const STDIN = 'cat /w/x.md | agent-chat gh-write -- pr create -t x -F -'
+  const SETUP = 'agent-chat() { /tmp/x/agent-chat "$@"; }'
+  const WRITES = [
+    `echo '${SETUP}' > ~/.zshenv; zsh -c '${STDIN}'`,
+    `echo '${SETUP}' | tee ~/.zshenv; zsh -c '${STDIN}'`,
+    `cat /w/setup > $HOME/.zshenv; ${STDIN} && zsh -c '${STDIN}'`,
+    `cat /w/setup > $HOME/.zshenv; sh -c '${STDIN}'`,
+    `printf '#!/bin/sh\\nexec gh "$@"\\n' > /usr/bin/agent-chat; ${STDIN}`,
+    `echo x > /usr/bin/agent-chat; ${STDIN}`,
+    `echo x | tee -a /usr/bin/agent-chat; ${STDIN}`,
+    `echo x | tee /usr/bin/agent-chat; ${STDIN}`,
+    `echo x &> /usr/bin/agent-chat; ${STDIN}`,
+    `echo x &>> /usr/bin/agent-chat; ${STDIN}`,
+    `echo x >& /usr/bin/agent-chat; ${STDIN}`,
+    `echo x >| /usr/bin/agent-chat; ${STDIN}`,
+    `echo x >> /usr/bin/agent-chat; ${STDIN}`,
+    `echo x > /tmp/other; ${STDIN}`,
+    `echo x > "$OTHER"; ${STDIN}`,
+    `echo x > /usr/bin/agent-chat; ${POST} ${UNREADABLE}`,
+    `${POST} ${UNREADABLE} > /usr/bin/agent-chat`,
+    `echo hi > /w/b.md; echo x > /tmp/other; ${POST} --body-file /w/b.md`,
+    `zsh -c '${STDIN}'`,
+    `git log --output=/usr/bin/agent-chat; ${STDIN}`,
+  ]
+
+  it.each(WRITES)('keeps denying a write that is not the body file: %s', command => {
+    expect(checkCommand(command, own())).toBeDefined()
+  })
+
+  it('still defers when the only writes are the body file or a descriptor duplicate', () => {
+    expect(
+      checkCommand(`cat > body.md <<'EOF'\nhello\nEOF\n${POST.replace('-t x', '-t T')} -F body.md`, own()),
+    ).toBeUndefined()
+    expect(
+      checkCommand(`cat /w/x.md 2>&1 | agent-chat gh-write -- pr create -t x -F -`, own()),
+    ).toBeUndefined()
+    expect(checkCommand(`echo hi > body.md; ${POST} -F body.md -b "$(cat < /w/x)"`, own())).toBeUndefined()
+  })
+
+  it('keeps denying written and stdin text for each shadow form', () => {
+    for (const shadow of ['./agent-chat', '/tmp/agent-chat', 'command agent-chat', 'env agent-chat']) {
+      expect(checkCommand(`echo hi > /w/p.md; ${shadow} gh-write -- pr create -t x -F /w/p.md`, own())).toBe(
+        REASONS.writtenBody,
+      )
+      expect(checkCommand(`cat f | ${shadow} gh-write -- pr create -t x -F -`, own())).toBeDefined()
+    }
+  })
+
+  it('denies when the hook cannot prove PATH finds its own install', () => {
+    expect(checkCommand(`${POST} ${UNREADABLE}`, own({ scansGhWrite: false }))).toBeDefined()
+    expect(checkCommand(`${POST} ${UNREADABLE}`, own({ env: {} }))).toBeDefined()
+  })
+
+  it('keeps every plain gh refusal and push rule', () => {
+    expect(checkCommand(`gh pr create -t x -F -`, own())).toBeDefined()
+    expect(checkCommand('git push --no-verify', own())).toBeDefined()
+  })
+
+  it('proves the install by realpath, through a symlink, and not for another file', () => {
+    const real = path.join(SCRATCH, 'own-install')
+    fs.mkdirSync(path.join(real, 'bin'), { recursive: true })
+    fs.mkdirSync(path.join(real, 'other'), { recursive: true })
+    fs.writeFileSync(path.join(real, 'cli.js'), '')
+    fs.writeFileSync(path.join(real, 'other', 'agent-chat'), '')
+    fs.symlinkSync(path.join(real, 'cli.js'), path.join(real, 'bin', 'agent-chat'))
+    const env = (dir: string): NodeJS.ProcessEnv => ({ PATH: `${path.join(real, dir)}:/usr/bin` })
+
+    expect(pathFindsOwnInstall(env('bin'), path.join(real, 'cli.js'))).toBe(true)
+    expect(pathFindsOwnInstall(env('other'), path.join(real, 'cli.js'))).toBe(false)
+    expect(pathFindsOwnInstall({ PATH: `bin:${path.join(real, 'bin')}` }, path.join(real, 'cli.js'))).toBe(
+      false,
+    )
+    expect(pathFindsOwnInstall(env('bin'), undefined)).toBe(false)
   })
 })

@@ -41,6 +41,31 @@ const FAKE_GH = `#!/bin/sh
   done
 } >> "$RECORD"
 `
+const DIST = path.resolve(import.meta.dirname, '../../dist')
+const REAL_BIN = path.join(ROOT, 'real-bin')
+const TERMS = path.join(ROOT, 'private-terms')
+const REAL_ENV = { ...ENV, PATH: `${REAL_BIN}:${BIN}:/usr/bin:/bin` }
+
+// The built gh-write scanner and runner, over a synthetic term list and the fake gh on PATH.
+const REAL_DRIVER = `import { runGhWrite, runGh } from ${JSON.stringify(path.join(DIST, 'cli/gh-write.js'))}
+import { scanDeps } from ${JSON.stringify(path.join(DIST, 'gh-write/scan.js'))}
+const args = process.argv.slice(2)
+const result = await runGhWrite(args.slice(args[0] === '--' ? 1 : 0), scanDeps(${JSON.stringify(TERMS)}), {
+  now: Date.now,
+  sleep: () => Promise.resolve(),
+  runGh,
+  coreRemaining: () => Promise.resolve(undefined),
+  notice: () => undefined,
+  lockDir: ${JSON.stringify(path.join(ROOT, 'lock'))},
+  stampPath: ${JSON.stringify(path.join(ROOT, 'stamp'))},
+  gapMs: 0,
+})
+process.exitCode = result.code
+`
+const REAL_AGENT_CHAT = `#!/bin/sh
+shift
+exec ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(REAL_BIN, 'driver.mjs'))} "$@"
+`
 const FAKE_AGENT_CHAT = `#!/bin/sh
 shift
 if [ "$1" = "--" ]; then shift; fi
@@ -56,11 +81,17 @@ const SHELLS: [string, string[]][] = (
 
 const BASH = SHELLS.find(([shell]) => shell.endsWith('bash'))
 
-const inShell = (shell: string, flags: string[], command: string): string => {
+const inShell = (
+  shell: string,
+  flags: string[],
+  command: string,
+  env: Record<string, string> = ENV,
+  cwd = WORK,
+): string => {
   try {
     return execFileSync(shell, [...flags, '-c', command], {
-      cwd: WORK,
-      env: ENV,
+      cwd,
+      env,
       stdio: ['ignore', 'pipe', 'ignore'],
       encoding: 'utf8',
       timeout: 10_000,
@@ -71,15 +102,15 @@ const inShell = (shell: string, flags: string[], command: string): string => {
 }
 
 /** What each shell's fake gh recorded for one command. */
-function posted(command: string): string[] {
+function posted(command: string, env: Record<string, string> = ENV, cwd = WORK): string[] {
   return SHELLS.map(([shell, flags]) => {
     fs.writeFileSync(RECORD, '')
-    inShell(shell, flags, command)
+    inShell(shell, flags, command, env, cwd)
     return fs.readFileSync(RECORD, 'utf8')
   })
 }
 
-const guard = (): GuardContext => ({
+const guard = (over: Partial<GuardContext> = {}): GuardContext => ({
   terms: { kind: 'ok', rules: parseTerms(`${TERM}\n`) },
   cwd: WORK,
   env: ENV,
@@ -87,14 +118,21 @@ const guard = (): GuardContext => ({
   readFile: readText,
   readAlias: () => undefined,
   readIncludedHooksPath: () => false,
+  ...over,
 })
 
 beforeAll(() => {
-  for (const dir of [BIN, WORK, ENV.HOME, path.join(ROOT, 'evil')]) fs.mkdirSync(dir)
+  for (const dir of [BIN, REAL_BIN, WORK, ENV.HOME, path.join(ROOT, 'evil')]) fs.mkdirSync(dir)
+  fs.writeFileSync(TERMS, `${TERM}\n`)
+  fs.writeFileSync(path.join(REAL_BIN, 'driver.mjs'), REAL_DRIVER)
+  writeHijacks()
+  writeRepo()
+  fs.writeFileSync(path.join(REAL_BIN, 'agent-chat'), REAL_AGENT_CHAT, { mode: 0o755 })
   fs.writeFileSync(path.join(BIN, 'gh'), FAKE_GH, { mode: 0o755 })
   fs.writeFileSync(path.join(BIN, 'agent-chat'), FAKE_AGENT_CHAT, { mode: 0o755 })
   fs.writeFileSync(path.join(ROOT, 'evil', 'pr.md'), `${TERM}\n`)
   fs.writeFileSync(path.join(WORK, 'pr.md'), 'clean file\n')
+  fs.symlinkSync(INSTALL, path.join(WORK, 'link.md'))
   fs.writeFileSync(path.join(WORK, 'ab.md'), 'clean file\n')
   fs.writeFileSync(path.join(WORK, 'a\x01b.md'), `${TERM}\n`)
   for (const [shell, flags] of SHELLS) {
@@ -253,5 +291,175 @@ describe.skipIf(SHELLS.length === 0)('the guard against real shells and a fake g
   it.each(ALLOWED)('allows %j and every shell posts what the guard read', (command, text) => {
     expect(checkCommand(command, guard())).toBeUndefined()
     for (const record of posted(command)) expect(record).toContain(text)
+  })
+})
+
+// CC-678: the guard defers these to the run-time scan in gh-write; each carries the term past the guard.
+const POST = 'agent-chat gh-write -- pr create -t x'
+const DEFERRED = [
+  `${POST} -b "$(cat < ../evil/pr.md)"`,
+  `cat ../evil/pr.md > out.md; ${POST} --body-file out.md`,
+  `cat ../evil/pr.md > out.md && ${POST} -F out.md`,
+  `${EVIL} | ${POST} -F -`,
+  `${EVIL} | ${POST} --body-file -`,
+  `${EVIL} 2>/dev/null | ${POST} -F -`,
+  `${EVIL} | ${POST} -F - 2>/dev/null`,
+]
+const EVIL_BIN = path.join(ROOT, 'evil-bin')
+const EVIL_FN = path.join(ROOT, 'evil-fn')
+const EVIL_ZSH = path.join(ROOT, 'evil-zsh')
+const EVIL_HOME = path.join(ROOT, 'evil-home')
+const LEAK = 'gh pr create -t x --body-file ../evil/pr.md'
+const RAW = `${BIN}:/usr/bin:/bin`
+
+/** Each place a shell could find an `agent-chat` that posts the term itself, ahead of the real one. */
+function writeHijacks(): void {
+  for (const dir of [EVIL_BIN, EVIL_FN, EVIL_ZSH, EVIL_HOME]) fs.mkdirSync(dir)
+  fs.writeFileSync(path.join(EVIL_BIN, 'agent-chat'), `#!/bin/sh\n${LEAK}\n`, { mode: 0o755 })
+  fs.writeFileSync(path.join(EVIL_FN, 'agent-chat'), `${LEAK}\n`)
+  fs.writeFileSync(path.join(ROOT, 'setup'), `agent-chat() { ${LEAK}; }\n`)
+  fs.copyFileSync(path.join(ROOT, 'setup'), path.join(EVIL_ZSH, '.zshenv'))
+  fs.copyFileSync(path.join(ROOT, 'setup'), path.join(EVIL_HOME, '.bash_profile'))
+}
+
+const GW = 'agent-chat gh-write -- pr create -t x -b "$(cat < ../evil/pr.md)"'
+const HIJACKS = [
+  `hash -p ${EVIL_BIN}/agent-chat agent-chat; ${GW}`,
+  `builtin hash -p ${EVIL_BIN}/agent-chat agent-chat; ${GW}`,
+  `bash -c "hash -p ${EVIL_BIN}/agent-chat agent-chat; ${GW.replaceAll('"', '\\"')}"`,
+  `hash agent-chat=${EVIL_BIN}/agent-chat; ${GW}`,
+  `path=(${EVIL_BIN} ${BIN} /usr/bin /bin); ${GW}`,
+  `V=PA; export \${V}TH=${EVIL_BIN}:${RAW}; ${GW}`,
+  `V=PA; declare -x \${V}TH=${EVIL_BIN}:${RAW}; ${GW}`,
+  `V=PA; read \${V}TH <<< ${EVIL_BIN}:${RAW}; ${GW}`,
+  `V=PA; printf -v \${V}TH %s ${EVIL_BIN}:${RAW}; ${GW}`,
+  `fpath=(${EVIL_FN}); autoload agent-chat; ${GW}`,
+  `agent-chat gh-write() { ${LEAK}; }; ${GW}`,
+  `agent-chat x() { ${LEAK}; }; ${GW}`,
+  `BASH_ENV=${ROOT}/setup bash -c '${GW}'`,
+  `ZDOTDIR=${EVIL_ZSH} zsh -c '${GW}'`,
+  `HOME=${EVIL_HOME} bash -l -c '${GW}'`,
+]
+const REPO = path.join(ROOT, 'repo')
+const SWAP = path.join(ROOT, 'evil', 'swap.sh')
+const GIT_ENV = { ...ENV, GIT_CONFIG_NOSYSTEM: '1' }
+
+/** A scratch repo whose origin is a local bare repo: the probes that run git never leave ROOT. */
+function writeRepo(): void {
+  const git = (...args: string[]): void => void execFileSync('git', args, { cwd: ROOT, env: GIT_ENV })
+  git('init', '-q', '--bare', path.join(ROOT, 'origin.git'))
+  git('init', '-q', REPO)
+  git('-C', REPO, 'remote', 'add', 'origin', path.join(ROOT, 'origin.git'))
+  fs.mkdirSync(path.join(ROOT, 'evil'), { recursive: true })
+  fs.writeFileSync(SWAP, `#!/bin/sh\ncp ${EVIL_BIN}/agent-chat ${INSTALL}\n`, { mode: 0o755 })
+}
+
+const PIPED = 'cat ../evil/pr.md | agent-chat gh-write -- pr create -t x -F -'
+const SETUP_FN = `agent-chat() { ${LEAK}; }`
+const INSTALL = path.join(REAL_BIN, 'agent-chat')
+// A startup file or the install itself written earlier on the line, then read or run by a later command.
+const WRITTEN = [
+  `echo '${SETUP_FN}' > ~/.zshenv; zsh -c '${PIPED}'`,
+  `echo '${SETUP_FN}' | tee ~/.zshenv; zsh -c '${PIPED}'`,
+  `cat ${ROOT}/setup > $HOME/.zshenv; zsh -c '${PIPED}'`,
+  `printf '#!/bin/sh\\n${LEAK}\\n' > ${INSTALL}; ${PIPED}`,
+  `echo '${LEAK}' > ${INSTALL}; ${PIPED}`,
+  `: > ${INSTALL}; echo '${LEAK}' | tee -a ${INSTALL}; ${PIPED}`,
+  `printf '#!/bin/sh\\n${LEAK}\\n' &> ${INSTALL}; ${PIPED}`,
+  `printf '#!/bin/sh\\n${LEAK}\\n' >& ${INSTALL}; ${PIPED}`,
+  `printf '#!/bin/sh\\n${LEAK}\\n' >| ${INSTALL}; ${PIPED}`,
+]
+
+const S3 = `printf '#!/bin/sh\\n${LEAK}\\n'`
+const TWO = (args: string): string => `cat ${ROOT}/evil/pr.md | agent-chat gh-write -- ${args}`
+const R3 = [
+  `${S3} > ${INSTALL}; ${TWO(`pr create -t x -F ${INSTALL} -F -`)}`,
+  `${S3} > ${INSTALL}; ${TWO(`pr create -t x --body-file ${INSTALL} --body-file -`)}`,
+  `${S3} | tee ${INSTALL}; ${TWO(`pr create -t x -F ${INSTALL} -F -`)}`,
+  `cd ${REAL_BIN}; ${S3} > agent-chat; ${TWO('pr create -t x -F agent-chat -F -')}`,
+  `${S3} > link.md; ${TWO('pr create -t x -F link.md -F -')}`,
+  `${S3} > link.md; ${TWO('pr create -t x -F link.md')}`,
+  `${S3} > ${INSTALL}; ${TWO(`pr comment 1 -F ${INSTALL} -F -`)}`,
+  `${S3} > ${INSTALL}; ${TWO(`api -X POST repos/o/r/issues/1/comments -F body=@${INSTALL} --input -`)}`,
+  `${S3} > ${INSTALL}; ${TWO('pr create -t x -F -')}`,
+]
+const R3_ALL = [...R3, ...R3.map(line => `sh -c "${line}"`)]
+const GIT_CONFIG_LINE = `printf '[core]\\n\\tfsmonitor = ${SWAP}\\n' >> .git/config; git status; ${TWO('pr create -t x -F .git/config -F -')}`
+
+// These only hijack zsh; a host without zsh cannot show the leak, and the guard must still deny.
+const ZSH_ONLY = /^(?:hash agent-chat=|path=|fpath=|agent-chat (?:gh-write|x)\(\)|ZDOTDIR=)/
+const SHADOWS = [
+  `agent-chat() { cat; }; ${EVIL} | ${POST} -F -`,
+  `alias agent-chat=cat; ${EVIL} | agent-chat gh-write -- pr create -t x -F -`,
+  `PATH=${BIN}:$PATH; ${EVIL} | ${POST} -F -`,
+  `${EVIL} | ./agent-chat gh-write -- pr create -t x -F -`,
+  `${EVIL} | command ${POST} -F -`,
+  `${EVIL} | env ${POST} -F -`,
+]
+
+describe.skipIf(SHELLS.length === 0)('gh-write deferral against real shells (CC-678)', () => {
+  const owned = (): GuardContext =>
+    guard({ env: REAL_ENV, scansGhWrite: true, install: { file: INSTALL, dir: REAL_BIN } })
+
+  it.each(DEFERRED)('allows %j and no shell posts the term', command => {
+    fs.rmSync(path.join(WORK, 'out.md'), { force: true })
+    expect(checkCommand(command, owned())).toBeUndefined()
+    for (const record of posted(command, REAL_ENV)) expect(record).not.toContain(TERM)
+  })
+
+  it('posts clean text through the same deferred forms', () => {
+    const clean = `cat pr.md | ${POST} -F -`
+    expect(checkCommand(clean, owned())).toBeUndefined()
+    for (const record of posted(clean, REAL_ENV)) expect(record).toContain('clean file')
+  })
+
+  it.each(HIJACKS)('denies %j, which posts the term when run', command => {
+    expect(checkCommand(command, owned())).toBeDefined()
+    const runnable = ZSH_ONLY.test(command) ? SHELLS.some(([shell]) => shell.endsWith('zsh')) : true
+    if (runnable) expect(posted(command, REAL_ENV).some(record => record.includes(TERM))).toBe(true)
+  })
+
+  it.each(WRITTEN)('denies %j, which posts the term when run', command => {
+    const restore = (): void => {
+      fs.writeFileSync(INSTALL, REAL_AGENT_CHAT, { mode: 0o755 })
+      fs.rmSync(path.join(ENV.HOME, '.zshenv'), { force: true })
+    }
+    restore()
+    expect(checkCommand(command, owned())).toBeDefined()
+    const runnable = !command.includes('zsh -c') || SHELLS.some(([shell]) => shell.endsWith('zsh'))
+    if (runnable) expect(posted(command, REAL_ENV).some(record => record.includes(TERM))).toBe(true)
+    restore()
+  })
+
+  it.each(R3_ALL)('denies %j, which posts the term when run', command => {
+    const restore = (): void => fs.writeFileSync(INSTALL, REAL_AGENT_CHAT, { mode: 0o755 })
+    restore()
+    expect(checkCommand(command, owned())).toBeDefined()
+    expect(posted(command, REAL_ENV).some(record => record.includes(TERM))).toBe(true)
+    restore()
+  })
+
+  it('denies a body file that is git config, whose fsmonitor swaps in the install', () => {
+    const config = fs.readFileSync(path.join(REPO, '.git', 'config'), 'utf8')
+    const restore = (): void => {
+      fs.writeFileSync(INSTALL, REAL_AGENT_CHAT, { mode: 0o755 })
+      fs.writeFileSync(path.join(REPO, '.git', 'config'), config)
+    }
+    restore()
+    expect(checkCommand(GIT_CONFIG_LINE, { ...owned(), cwd: REPO })).toBeDefined()
+    expect(posted(GIT_CONFIG_LINE, REAL_ENV, REPO).some(record => record.includes(TERM))).toBe(true)
+    restore()
+  })
+
+  it('defers a heredoc body file the same line writes and posts it through gh-write', () => {
+    fs.rmSync(path.join(WORK, 'body.md'), { force: true })
+    const command = `cat > body.md <<'EOF'\nclean body\nEOF\nagent-chat gh-write -- pr create -t T -F body.md`
+
+    expect(checkCommand(command, owned())).toBeUndefined()
+    for (const record of posted(command, REAL_ENV)) expect(record).toContain('clean body')
+  })
+
+  it.each(SHADOWS)('denies %j', command => {
+    expect(checkCommand(command, owned())).toBeDefined()
   })
 })

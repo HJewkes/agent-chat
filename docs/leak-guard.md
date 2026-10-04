@@ -607,6 +607,35 @@ the named escapes (`\n`, `\t`, `\e` and the rest), `\xHH`, octal `\NNN`, `\uHHHH
 A `gh` whose group or verb is an expansion (`gh pr $V`) is unknown even when the value is known,
 because the guard picks the flags to read from the literal subcommand.
 
+**Exception for `gh-write` (CC-678).** A bare `agent-chat gh-write` does not get this deny for an
+argument the guard cannot resolve: `gh-write` scans the text itself before gh starts. The mode
+applies only when all of these hold, and a plain `gh` post never gets it:
+
+- the command word is exactly `agent-chat`: not `/tmp/agent-chat`, `./agent-chat`, `command
+agent-chat`, `env agent-chat`, a prefix assignment, `env -S`, or an expansion (`$E agent-chat`);
+- `realpath` of the first `agent-chat` on the hook's `PATH` is the hook's own entry script, and
+  every `PATH` entry before it is absolute;
+- the hook knows the environment at that command, `PATH` is not mentioned anywhere on the line,
+  and the command is at the top level, not inside a function, group or subshell;
+- every command before it, including one inside `$(...)` and one inside an enclosing `sh -c`,
+  `bash -c` or `dash -c` that has no flag or variable on it, is `cat`, `printf` without `-v`,
+  `echo` or `tee`, with no variable on it and words the guard can resolve. Anything else keeps
+  the deny: `cd`, `git`, an assignment, a function definition, `hash`, `builtin`, `autoload`,
+  `alias`, `export`, `declare`, `read`, `eval`, `source`, zsh or ksh as a shell (`zsh -c` reads
+  `.zshenv`), a shell with a startup flag or variable, or any other program;
+- the gh-write has at most one body source: one of `-F`, `--body-file`, `--input` or `body=@file`,
+  or stdin, never two;
+- the earlier commands write at most one file, which is a literal `.md` or `.txt` path with no
+  symlink in any component, no `.git` directory above it, and that is neither the install, a file
+  in the `PATH` directory that holds it, nor a hard link to it. A `>` or `>>` or `tee` to any other
+  file, a target that is not a literal, a `&>` or `>&file`, or a redirect on the `agent-chat`
+  command to anything but `/dev/null` keeps the deny. Redirects to `/dev/null` and descriptor
+  copies such as `2>&1` stay allowed. A path under a symlinked directory, such as `/tmp` on macOS,
+  keeps the deny; write the body under the working directory.
+
+In that mode the guard still scans the text it can read, and still denies a finding, a missing
+term list and an unreadable term list, even beside text it cannot read.
+
 ### A body file written on the line that posts it (CC-371)
 
 A Bash line that writes a PR or issue body file and then posts it is denied. The guard cannot
@@ -625,6 +654,10 @@ scan a body that does not exist yet when it checks the line. The body file is th
 guard cannot resolve counts as a possible match. A write inside `$(...)` is seen. Write the file
 in one Bash call and post it in the next. A body file that exists before the line and is not
 named by it, or one written on another line, is read and scanned as before.
+
+With `gh-write` in the mode above, this line is allowed instead: the post goes through
+`gh-write`, which reads the body file after the line has written it and refuses on a finding
+before gh starts. Plain `gh` and every other spelling of `agent-chat` keep the deny.
 
 The check is by name, so the remaining gaps are a writer that builds the path at run time
 (`python3 -c "open('b' + '.md', 'w')"`), a script that already sits on disk, and a body file that
@@ -654,6 +687,10 @@ has exactly one source that it has read: one heredoc or one here-string on descr
   covers `--body "$(cat <<'EOF' ... EOF)"`.
 - a backtick substitution that holds a backslash. The shell rewrites `\\`, `\$` and a backslash
   before a newline inside backticks before it parses them. Use `$(...)`.
+
+With `gh-write` in the mode described under "The guard never reads one file while the shell posts
+another", stdin the guard cannot attribute is allowed: `gh-write` reads stdin once, scans it and
+hands gh a copy. A source the guard did read is still scanned and still denied on a finding.
 
 The two heredoc denies that a backslash causes say so: the message names the backslash and asks
 for a body file. Every other deny in this list uses the general "could not be read" message.
