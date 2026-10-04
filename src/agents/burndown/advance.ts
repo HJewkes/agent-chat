@@ -3,6 +3,7 @@ import { addClaim, isStalled, sameClaim, type AgentPhase, type Claim, type Ledge
 import { agentNameFor, reviewerNameFor, successorNameFor } from './plan.js'
 import type { PlannedSlice, Report } from './report.js'
 import { shepherdTarget, type Registration, type ShepherdRow } from './shepherd.js'
+import type { ActivityRead } from './stall.js'
 
 /**
  * The tick's phase machine: given every claim and what the tick observed
@@ -25,6 +26,8 @@ export interface Observation {
   slices?: PlannedSlice[]
   /** CC-631: why a finished planner's slices were refused, one line per slice and rule. */
   sliceProblems?: string[]
+  /** A live lane agent's transcript read for the stall check, with the row's spawn time (CC-654). */
+  activity?: { read: ActivityRead; spawnedAt: number }
   diff?: { reviewable: boolean; reason: string }
   /** Shepherd's row for the claim's PR, absent from the row when Shepherd has none; `landed` is read for a finished run. */
   shepherd?: { row?: ShepherdRow; landed?: boolean }

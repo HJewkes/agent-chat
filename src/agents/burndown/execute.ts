@@ -1,3 +1,4 @@
+import { logFindings } from './finding.js'
 import { applyActions, claimKey, type Action, type ClaimKey } from './advance.js'
 import { sameClaim, writeLedger, type Claim, type Ledger } from './ledger.js'
 import { targetRef, type RegisterReply, type Registration } from './shepherd.js'
@@ -86,7 +87,9 @@ export async function execute(steps: Step[], start: Ledger, deps: ExecuteDeps): 
   let ledger = start
   const lines: string[] = []
   const commit = (actions: Action[]): void => {
+    const before = ledger
     ledger = applyActions(ledger, actions, deps.now)
+    logFindings(before, ledger, deps.log)
     writeLedger(deps.ledgerFile, ledger)
   }
   for (const step of steps) {

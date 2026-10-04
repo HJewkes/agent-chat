@@ -2,7 +2,7 @@ import { burndownConfigPath, burndownLedgerPath } from '../../paths.js'
 import { activeWorkRoot } from '../active-work.js'
 import { gateAccount } from './budget-gate.js'
 import { taskRefusal, type Initiative } from './eligibility.js'
-import { heldClaims, isStalled, readLedger, type DeciderState, type Ledger } from './ledger.js'
+import { heldClaims, isStalled, readLedger, type Claim, type DeciderState, type Ledger } from './ledger.js'
 import type { Roster } from './observe.js'
 import { plan, type Plan, type PlanInputs } from './plan.js'
 import { diskSeatDeps, loadSeats, planSeats } from './seat-tick.js'
@@ -109,6 +109,9 @@ export function renderPlan(result: Plan, now: Date): string[] {
   return lines
 }
 
+const findingSuffix = (c: Claim): string =>
+  c.finding === undefined ? '' : ` FINDING ${c.finding.kind} (${c.finding.reason}, since ${c.finding.since})`
+
 export function renderStatus(ledger: Ledger, now: Date): string[] {
   const rules = loadRules(burndownConfigPath())
   const readings = readReadings(Object.keys(rules), now.getTime())
@@ -118,7 +121,7 @@ export function renderStatus(ledger: Ledger, now: Date): string[] {
   ]
   for (const c of held)
     lines.push(
-      `${c.taskId} (${c.initiative}) ${c.agentId ?? c.agentName ?? 'unspawned'} ${c.phase} since ${c.phaseAt}${isStalled(c, now) ? ' STALLED' : ''}`,
+      `${c.taskId} (${c.initiative}) ${c.agentId ?? c.agentName ?? 'unspawned'} ${c.phase} since ${c.phaseAt}${isStalled(c, now) ? ' STALLED' : ''}${findingSuffix(c)}`,
     )
   for (const c of ledger.claims.filter(c => c.phase === 'done'))
     for (const u of c.unretired ?? [])

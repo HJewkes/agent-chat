@@ -2,13 +2,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { AgentIdentity } from '../../protocol.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
-import { finalAssistantText } from '../turns.js'
+import { finalAssistantText, readActivity } from '../turns.js'
 import { claimKey, type InboxMessage, type Observation } from './advance.js'
 import { planPathFor } from './brief.js'
 import { run, type Runner } from './exec.js'
-import type { Claim } from './ledger.js'
+import { AGENT_PHASES, type Claim } from './ledger.js'
 import { DEFAULT_NAME_PREFIX, type WorktreeUse } from './plan.js'
 import { parseReport, readSlices } from './report.js'
+import type { ActivityRead } from './stall.js'
 import { assessDiff, GIT_BIN, type DiffVerdict } from './review-diff.js'
 import {
   rowFor,
@@ -42,6 +43,8 @@ export interface ObserveDeps {
   shepherdRows?: () => ShepherdRow[] | undefined
   landed?: (target: ShepherdTarget) => boolean | undefined
   readFile?: (file: string) => string | undefined
+  /** The row's transcript activity; defaults to `readActivity`. */
+  activity?: (agent: AgentIdentity) => ActivityRead
 }
 
 export interface Observed {
@@ -49,6 +52,8 @@ export interface Observed {
   /** Claims the tick could not read this run, and why; `advance` sees nothing for them. */
   unread: string[]
 }
+
+const isAgentPhase = (phase: Claim['phase']): boolean => (AGENT_PHASES as readonly string[]).includes(phase)
 
 export const LIVE = new Set(['spawning', 'live', 'detached'])
 const FINISHED = new Set(['exited', 'retired'])
@@ -66,6 +71,9 @@ const readFileOrUndefined = (file: string): string | undefined => {
     return undefined
   }
 }
+
+const defaultActivity = (agent: AgentIdentity): ActivityRead =>
+  readActivity(agent.cwd, agent.sessionId, agent.configDir === '' ? undefined : agent.configDir)
 
 const defaultFinalText = (agent: AgentIdentity): string | undefined =>
   finalAssistantText(agent.cwd, agent.sessionId, agent.configDir === '' ? undefined : agent.configDir)
@@ -90,6 +98,8 @@ async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Pr
     obs.inbox = await deps.inboxSince(claim.agentName, Number.isInteger(afterId) ? afterId : 0)
   }
   if (claim.phase === 'awaiting-merge' || claim.phase === 'shepherding') return withShepherd(obs, claim, deps)
+  if (row !== undefined && LIVE.has(row.state) && isAgentPhase(claim.phase))
+    obs.activity = { read: (deps.activity ?? defaultActivity)(row), spawnedAt: row.spawnedAt }
   if (row === undefined || !FINISHED.has(row.state) || claim.phase === 'spawning') return obs
   const text = (deps.finalText ?? defaultFinalText)(row)
   if (text !== undefined) obs.report = parseReport(text)

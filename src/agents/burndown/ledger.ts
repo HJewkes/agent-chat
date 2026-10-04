@@ -77,6 +77,18 @@ const Claim = z.object({
   namePrefix: z.string().optional(),
   /** Event kinds already delivered to the claim's seat, so a delivered event is never re-sent. */
   notified: z.array(z.string()).optional(),
+  /** Set while the claim's live agent shows no progress in its transcript; the tick opens, refreshes and closes it (CC-654). */
+  finding: z
+    .object({
+      kind: z.literal('stalled-after-claim'),
+      reason: z.enum(['silent', 'idle', 'slow-tool']),
+      /** The last progress the transcript showed, or the spawn when it showed none. */
+      since: z.string(),
+      openedAt: z.string(),
+      checkedAt: z.string(),
+      detail: z.string(),
+    })
+    .optional(),
   /** The claim's PR as the last leak check found it: redacted `file:line category` rows, never matched text (CC-269). */
   leak: z.object({ repo: z.string(), url: z.string(), findings: z.array(z.string()) }).optional(),
 })
