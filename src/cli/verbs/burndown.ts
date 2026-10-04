@@ -15,6 +15,8 @@ import {
 import { activeWorkRoot } from '../../agents/active-work.js'
 import { defaultAutonomyRoot } from '../../agents/burndown/policy.js'
 import { renderScored, scoredPlanFromDisk } from '../../agents/burndown/score-render.js'
+import { renderMilestoneLine } from '../../agents/burndown/milestone-report.js'
+import { milestoneReportFromDisk, type MilestoneReportRead } from '../../agents/burndown/milestone-source.js'
 import { localDate } from '../../agents/burndown/seat-tick.js'
 import { collisionCheck, type BrokerView } from '../../agents/burndown/collision.js'
 import { readLedger, withLedgerLock, writeLedger } from '../../agents/burndown/ledger.js'
@@ -168,6 +170,45 @@ async function readBroker<T>(read: (client: BrokerClient) => Promise<T>): Promis
     client.close()
   }
 }
+
+/** The milestone verb's body, taking its reader explicitly so a test can point it at a fixture. */
+export function milestoneReportLines(read: () => MilestoneReportRead | undefined, json: boolean): Report {
+  try {
+    const doc = read()
+    if (doc === undefined) throw new Error('no milestones/<week>.yml for this ISO week')
+    if (json) return { ok: true, lines: [JSON.stringify(doc, null, 2)] }
+    const errors = doc.errors.length > 0 ? [`milestone file errors: ${doc.errors.join('; ')}`] : []
+    return { ok: true, lines: [...doc.milestones.map(renderMilestoneLine), ...errors] }
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err)
+    return json ? { ok: false, lines: [JSON.stringify({ error }, null, 2)] } : refused(err)
+  }
+}
+
+export const burndownMilestoneVerb = defineVerb({
+  name: 'burndown.milestone',
+  description:
+    "this week's burn-down per milestone: points, critical path, WIP, throughput, forecast, status",
+  args: z.object({ json: z.boolean().optional(), autonomyRoot: z.string().optional() }),
+  result: Report,
+  cli: {
+    options: {
+      json: { long: '--json', description: 'one JSON document; a failure is {"error"} with exit 1' },
+      autonomyRoot: { long: '--autonomy-root', description: 'directory holding milestones/<week>.yml' },
+    },
+  },
+  async run({ json, autonomyRoot }) {
+    const now = new Date()
+    const read = () =>
+      milestoneReportFromDisk({
+        autonomyRoot: autonomyRoot ?? defaultAutonomyRoot(),
+        activeWorkRoot: activeWorkRoot(),
+        now,
+        today: localDate(now),
+      })
+    return milestoneReportLines(read, json === true)
+  },
+})
 
 export const burndownStatusVerb = defineVerb({
   name: 'burndown.status',
@@ -345,6 +386,7 @@ export function addBurndownCommands(program: Commander): void {
     .command('burndown')
     .description('pick and run unattended work for opted-in initiatives')
   addVerb(burndown, burndownPlanVerb)
+  addVerb(burndown, burndownMilestoneVerb)
   addVerb(burndown, burndownStatusVerb)
   addVerb(burndown, burndownTickVerb)
   addVerb(burndown, burndownPauseVerb)

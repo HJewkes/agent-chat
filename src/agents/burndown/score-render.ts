@@ -100,7 +100,7 @@ export function readWeekMilestones(
   return { week, ...parseMilestoneFile(fs.readFileSync(file, 'utf8'), taskIds) }
 }
 
-const describeError = ({ code, milestone, id, message }: MilestoneResult['errors'][number]) =>
+export const describeError = ({ code, milestone, id, message }: MilestoneResult['errors'][number]) =>
   [code, milestone, id, message].filter(part => part !== undefined).join(' ')
 
 const listDir = (dir: string): string[] => {
@@ -112,7 +112,7 @@ const listDir = (dir: string): string[] => {
 }
 
 /** Every task id under `<root>/<slug>/tasks`, archived ones included, from the `<id>.yml` file names. */
-function taskIdsOnDisk(root: string): string[] {
+export function taskIdsOnDisk(root: string): string[] {
   return listDir(root).flatMap(slug =>
     [path.join(root, slug, 'tasks'), path.join(root, slug, 'tasks', 'archive')].flatMap(dir =>
       listDir(dir)

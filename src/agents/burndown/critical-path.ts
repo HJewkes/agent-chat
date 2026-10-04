@@ -12,7 +12,7 @@ import type { TaggedTask } from './task-tags.js'
  *   task still carries its edges but adds no points to the path.
  * - Tasks in a dependency cycle (each strongly connected group, or a task depending on itself) are
  *   listed in `cycles` and get no float. Every other task is scheduled, and a `dep:` on a cyclic task
- *   constrains nothing.
+ *   constrains nothing, so with any cycle `length` is only a lower bound (`lowerBound`).
  * - A repeated id keeps its first task.
  */
 
@@ -38,6 +38,8 @@ export interface CriticalPathResult {
   criticalPath: string[]
   /** Remaining critical path length in points: the latest early finish. */
   length: number
+  /** True when cycles exist: their tasks and the edges through them add nothing, so `length` may be short. */
+  lowerBound: boolean
   /** Each cycle's task ids in input order; cycles ordered by their first member. */
   cycles: string[][]
   externalDeps: ExternalDep[]
@@ -119,28 +121,25 @@ function acyclicGraph(graph: Graph, cyclic: ReadonlySet<string>): Graph {
   return acyclic
 }
 
-/** Kahn's algorithm, taking ready tasks in input order. */
-function topologicalOrder(graph: Graph): string[] {
-  const pending = new Map([...graph].map(([id, task]) => [id, task.deps.length]))
-  const order: string[] = []
-  while (pending.size > 0) {
-    const ready = [...pending].filter(([, count]) => count === 0).map(([id]) => id)
-    if (ready.length === 0) break
-    for (const id of ready) {
-      pending.delete(id)
-      order.push(id)
-    }
-    for (const [id, task] of graph) {
-      if (pending.has(id)) pending.set(id, task.deps.filter(dep => pending.has(dep)).length)
-    }
-  }
-  return order
-}
-
 function successorsOf(graph: Graph): Map<string, string[]> {
   const successors = new Map([...graph.keys()].map(id => [id, [] as string[]]))
   for (const task of graph.values()) for (const dep of task.deps) successors.get(dep)!.push(task.id)
   return successors
+}
+
+/** Kahn's algorithm in O(tasks + edges), seeded in input order; the graph is acyclic, so every task is placed. */
+function topologicalOrder(graph: Graph): string[] {
+  const successors = successorsOf(graph)
+  const pending = new Map([...graph].map(([id, task]) => [id, task.deps.length]))
+  const order = [...pending].filter(([, count]) => count === 0).map(([id]) => id)
+  for (let next = 0; next < order.length; next++) {
+    for (const successor of successors.get(order[next]!)!) {
+      const left = pending.get(successor)! - 1
+      pending.set(successor, left)
+      if (left === 0) order.push(successor)
+    }
+  }
+  return order
 }
 
 const durationOf = (task: TaggedTask) => (isEstimated(task) ? task.estimate! : 0)
@@ -200,6 +199,7 @@ export function criticalPath(tasks: readonly TaggedTask[], milestone?: string): 
     tasks: scheduled,
     criticalPath: critical.sort((a, b) => a.earlyStart - b.earlyStart).map(task => task.id),
     length,
+    lowerBound: cycles.length > 0,
     cycles,
     externalDeps: externalDeps(graph),
     unestimated: [...graph.values()].filter(task => !isEstimated(task)).map(task => task.id),
