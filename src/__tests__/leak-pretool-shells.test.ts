@@ -124,6 +124,7 @@ beforeAll(() => {
   for (const dir of [BIN, REAL_BIN, WORK, ENV.HOME, path.join(ROOT, 'evil')]) fs.mkdirSync(dir)
   fs.writeFileSync(TERMS, `${TERM}\n`)
   fs.writeFileSync(path.join(REAL_BIN, 'driver.mjs'), REAL_DRIVER)
+  writeHijacks()
   fs.writeFileSync(path.join(REAL_BIN, 'agent-chat'), REAL_AGENT_CHAT, { mode: 0o755 })
   fs.writeFileSync(path.join(BIN, 'gh'), FAKE_GH, { mode: 0o755 })
   fs.writeFileSync(path.join(BIN, 'agent-chat'), FAKE_AGENT_CHAT, { mode: 0o755 })
@@ -294,10 +295,45 @@ describe.skipIf(SHELLS.length === 0)('the guard against real shells and a fake g
 const POST = 'agent-chat gh-write -- pr create -t x'
 const DEFERRED = [
   `${POST} -b "$(date >/dev/null; ${EVIL})"`,
-  `cp ../evil/pr.md out.md; ${POST} --body-file out.md`,
-  `cp ../evil/pr.md out.md && ${POST} -F out.md`,
+  `cat ../evil/pr.md > out.md; ${POST} --body-file out.md`,
+  `cat ../evil/pr.md > out.md && ${POST} -F out.md`,
   `${EVIL} | ${POST} -F -`,
   `${EVIL} | ${POST} --body-file -`,
+]
+const EVIL_BIN = path.join(ROOT, 'evil-bin')
+const EVIL_FN = path.join(ROOT, 'evil-fn')
+const EVIL_ZSH = path.join(ROOT, 'evil-zsh')
+const EVIL_HOME = path.join(ROOT, 'evil-home')
+const LEAK = 'gh pr create -t x --body-file ../evil/pr.md'
+const RAW = `${BIN}:/usr/bin:/bin`
+
+/** Each place a shell could find an `agent-chat` that posts the term itself, ahead of the real one. */
+function writeHijacks(): void {
+  for (const dir of [EVIL_BIN, EVIL_FN, EVIL_ZSH, EVIL_HOME]) fs.mkdirSync(dir)
+  fs.writeFileSync(path.join(EVIL_BIN, 'agent-chat'), `#!/bin/sh\n${LEAK}\n`, { mode: 0o755 })
+  fs.writeFileSync(path.join(EVIL_FN, 'agent-chat'), `${LEAK}\n`)
+  fs.writeFileSync(path.join(ROOT, 'setup'), `agent-chat() { ${LEAK}; }\n`)
+  fs.copyFileSync(path.join(ROOT, 'setup'), path.join(EVIL_ZSH, '.zshenv'))
+  fs.copyFileSync(path.join(ROOT, 'setup'), path.join(EVIL_HOME, '.bash_profile'))
+}
+
+const GW = 'agent-chat gh-write -- pr create -t x -b "$(date)"'
+const HIJACKS = [
+  `hash -p ${EVIL_BIN}/agent-chat agent-chat; ${GW}`,
+  `builtin hash -p ${EVIL_BIN}/agent-chat agent-chat; ${GW}`,
+  `bash -c "hash -p ${EVIL_BIN}/agent-chat agent-chat; ${GW.replaceAll('"', '\\"')}"`,
+  `hash agent-chat=${EVIL_BIN}/agent-chat; ${GW}`,
+  `path=(${EVIL_BIN} ${BIN} /usr/bin /bin); ${GW}`,
+  `V=PA; export \${V}TH=${EVIL_BIN}:${RAW}; ${GW}`,
+  `V=PA; declare -x \${V}TH=${EVIL_BIN}:${RAW}; ${GW}`,
+  `V=PA; read \${V}TH <<< ${EVIL_BIN}:${RAW}; ${GW}`,
+  `V=PA; printf -v \${V}TH %s ${EVIL_BIN}:${RAW}; ${GW}`,
+  `fpath=(${EVIL_FN}); autoload agent-chat; ${GW}`,
+  `agent-chat gh-write() { ${LEAK}; }; ${GW}`,
+  `agent-chat x() { ${LEAK}; }; ${GW}`,
+  `BASH_ENV=${ROOT}/setup bash -c '${GW}'`,
+  `ZDOTDIR=${EVIL_ZSH} zsh -c '${GW}'`,
+  `HOME=${EVIL_HOME} bash -l -c '${GW}'`,
 ]
 const SHADOWS = [
   `agent-chat() { cat; }; ${EVIL} | ${POST} -F -`,
@@ -321,6 +357,11 @@ describe.skipIf(SHELLS.length === 0)('gh-write deferral against real shells (CC-
     const clean = `cat pr.md | ${POST} -F -`
     expect(checkCommand(clean, owned())).toBeUndefined()
     for (const record of posted(clean, REAL_ENV)) expect(record).toContain('clean file')
+  })
+
+  it.each(HIJACKS)('denies %j, which posts the term when run', command => {
+    expect(checkCommand(command, owned())).toBeDefined()
+    expect(posted(command, REAL_ENV).some(record => record.includes(TERM))).toBe(true)
   })
 
   it.each(SHADOWS)('denies %j', command => {

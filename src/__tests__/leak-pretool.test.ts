@@ -1719,6 +1719,36 @@ describe('the hook entry point', () => {
   })
 })
 
+describe('the built hook defers to the install PATH finds (CC-678)', () => {
+  const hook = (command: string, bin: string): string => {
+    const cfg = path.join(SCRATCH, 'defer-cfg')
+    fs.mkdirSync(path.join(cfg, 'titan-egress'), { recursive: true })
+    fs.writeFileSync(path.join(cfg, 'titan-egress', 'private-terms'), `${TERM}\n`, { mode: 0o600 })
+    return execFileSync(process.execPath, [CLI, 'leak-guard', 'pretool'], {
+      input: JSON.stringify({ tool_name: 'Bash', cwd: SCRATCH, tool_input: { command } }),
+      env: { PATH: `${bin}:/usr/bin:/bin`, HOME: SCRATCH, XDG_CONFIG_HOME: cfg },
+      encoding: 'utf8',
+    })
+  }
+  const UNREAD = 'agent-chat gh-write -- pr create -t x -b "$(date)"'
+
+  it('allows an unreadable argument when agent-chat on PATH is the hook entry, and denies when it is not', () => {
+    const own = path.join(SCRATCH, 'own-bin')
+    const other = path.join(SCRATCH, 'other-bin')
+    fs.mkdirSync(own, { recursive: true })
+    fs.mkdirSync(other, { recursive: true })
+    fs.symlinkSync(CLI, path.join(own, 'agent-chat'))
+    fs.writeFileSync(path.join(other, 'agent-chat'), '')
+
+    expect(hook(UNREAD, own)).toBe('')
+    expect(JSON.parse(hook(UNREAD, other)).hookSpecificOutput.permissionDecision).toBe('deny')
+    expect(
+      JSON.parse(hook(`agent-chat gh-write -- pr create -t ${TERM} -b "$(date)"`, own)).hookSpecificOutput
+        .permissionDecisionReason,
+    ).toContain('private-term')
+  })
+})
+
 describe('the shell splitter', () => {
   it('splits operators, strips quotes and keeps heredoc bodies as stdin', () => {
     const cmds = parseShell(`a 'b c' "d\\"e" f\\ g && h|i; j <<-EOF\n\tbody\n\tEOF\nk`)
@@ -1955,6 +1985,40 @@ describe('the guard defers unreadable gh-write text to the run-time scan (CC-678
 
   it.each(SHADOWED)('keeps denying %s', command => {
     expect(checkCommand(command, own())).toBeDefined()
+  })
+
+  const PROBES = [
+    'hash -p /tmp/x/agent-chat agent-chat',
+    'builtin hash -p /tmp/x/agent-chat agent-chat',
+    'sh -c "hash -p /tmp/x/agent-chat agent-chat"',
+    'hash agent-chat=/tmp/x/agent-chat',
+    'path=(/tmp/x $path)',
+    'V=PA; export ${V}TH=/tmp/x',
+    'V=PA; declare -x ${V}TH=/tmp/x',
+    'V=PA; read ${V}TH <<< /tmp/x',
+    'V=PA; printf -v ${V}TH %s /tmp/x',
+    'fpath=(/tmp/x); autoload agent-chat',
+    'agent-chat gh-write() { :; }',
+    'agent-chat x() { :; }',
+    'BASH_ENV=/tmp/x/setup bash -c true',
+    'ZDOTDIR=/tmp/x zsh -c true',
+    'HOME=/tmp/x bash -l -c true',
+    'bash -l -c true',
+    'typeset -x PATH=/tmp/x',
+    'local PATH=/tmp/x',
+    'cp /tmp/a /tmp/b',
+    'echo ${path:=/tmp/x}',
+    'echo *(e:path=/tmp/x:)',
+  ]
+
+  it.each(PROBES)('denies unreadable text after %s', probe => {
+    expect(checkCommand(`${probe}; ${POST} ${UNREADABLE}`, own())).toBeDefined()
+    expect(checkCommand(`sh -c '${probe}; ${POST} ${UNREADABLE}'`, own())).toBeDefined()
+  })
+
+  it('defers after plain commands inside a plain sh -c', () => {
+    expect(checkCommand(`cd /w; sh -c 'echo hi; ${POST} ${UNREADABLE}'`, own())).toBeUndefined()
+    expect(checkCommand(`sh -c 'echo hi'; ${POST} ${UNREADABLE}`, own())).toBeDefined()
   })
 
   it('keeps denying written and stdin text for each shadow form', () => {

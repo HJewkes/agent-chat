@@ -82,6 +82,8 @@ interface Scope {
   line: string
   /** The `-c` and `--config-env` options of the git whose `!` alias runs this command. */
   gitParams: readonly string[]
+  /** Every command before this one on the line is from a short set that cannot change what `agent-chat` resolves to. */
+  deferrable: boolean
   /** Command starts after an expansion the whole call may still check; nested shells draw on the same budget. */
   hiddenStarts: { left: number; reachesGit?: boolean }
 }
@@ -742,8 +744,8 @@ export function findingsIn(texts: readonly Text[], rules: readonly TermRule[]): 
 
 /**
  * Whether the run-time scan in `gh-write` covers what the guard cannot read: the command word is
- * the bare, unwrapped `agent-chat`, the hook's own install is what `PATH` finds, `PATH` is not
- * mentioned on the line, and nothing opaque (or a function named `agent-chat`) ran before it.
+ * the bare, unwrapped `agent-chat` at the top level, the hook's own install is what `PATH` finds,
+ * `PATH` is not mentioned on the line, and every command before it is from the allowlist.
  */
 function defersToGhWrite(
   cmd: SimpleCommand,
@@ -751,15 +753,50 @@ function defersToGhWrite(
   ctx: GuardContext,
   scope: Scope,
 ): boolean {
-  const named = new RegExp(`(?:^|[^\\w./-])agent-chat\\s*\\(`).test(scope.said)
   return (
     ctx.scansGhWrite === true &&
+    scope.deferrable &&
+    !cmd.nested &&
     cmd.marked[0] === 'agent-chat' &&
     assigns.length === 0 &&
-    scope.env?.PATH !== undefined &&
-    !named
+    scope.env?.PATH !== undefined
   )
 }
+
+const PLAIN_COMMANDS = new Set('cd echo printf cat tee mktemp test [ true false : pwd date'.split(' '))
+const GIT_READ_VERBS = new Set('status log diff show rev-parse ls-files'.split(' '))
+// Names that change how a later word resolves or which startup file a shell runs.
+const SHELL_STATE_NAMES =
+  /^(?:path|fpath|cdpath|module_path|manpath|home|ifs|bash_env|env|zdotdir|shellopts|bashopts|prompt_command|ps4|aliases|functions|commands|ld_.*|dyld_.*|bash_func.*)$/i
+
+/** A bare `NAME=value` the shell cannot use to change resolution: a literal name outside the list, a value it can read. */
+function plainAssignment(word: string, cmd: SimpleCommand, ctx: GuardContext, scope: Scope): boolean {
+  const name = ASSIGNMENT.exec(word)?.[1]
+  const value = resolveWord(word.slice(word.indexOf('=') + 1), cmd, ctx, scope)
+  return name !== undefined && !SHELL_STATE_NAMES.test(name) && value !== undefined
+}
+
+/**
+ * Whether a command before `agent-chat` is one that cannot define a function, hash, alias or
+ * autoload a name, change `PATH`, or run a startup file. Anything else, a function definition and
+ * `export`, `declare`, `read`, `printf -v`, `eval` and `source` included, is not.
+ */
+function plainCommand(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): boolean {
+  const lead = cmd.marked.findIndex(word => !ASSIGNMENT.test(word))
+  const split = lead < 0 ? cmd.marked.length : lead
+  const assigns = cmd.marked.slice(0, split)
+  const words = cmd.marked.slice(split)
+  if (!assigns.every(word => plainAssignment(word, cmd, ctx, scope))) return false
+  const [head, ...args] = words
+  if (head === undefined) return true
+  if (!words.every(word => resolveWord(word, cmd, ctx, scope) !== undefined)) return false
+  if (head === 'git') return GIT_READ_VERBS.has(args[0] ?? '')
+  return PLAIN_COMMANDS.has(head) && !(head === 'printf' && args.some(arg => arg.startsWith('-v')))
+}
+
+/** A shell with no startup flag or environment on the line, running one `-c` script. */
+const plainShell = (cmd: SimpleCommand, assigns: readonly string[]): boolean =>
+  SHELLS.has(cmd.marked[0] ?? '') && assigns.length === 0 && cmd.marked[1] === '-c' && cmd.marked.length === 3
 
 /** What `collect` reads, leaving out each file or stdin the guard cannot attribute: `gh-write` scans those at run time. */
 function collectReadable(
@@ -974,8 +1011,11 @@ function checkSimple(
   }
   const args = marked.map(unmark)
   const name = path.basename(head)
-  if (SHELLS.has(name)) return checkShell(args, cmd.stdin, ctx, at, depth)
-  if (name === 'eval') return checkEval(marked, cmd, ctx, at, depth)
+  if (SHELLS.has(name)) {
+    const inner = plainShell(cmd, unwrapped.assigns) ? at : { ...at, deferrable: false }
+    return checkShell(args, cmd.stdin, ctx, inner, depth)
+  }
+  if (name === 'eval') return checkEval(marked, cmd, ctx, { ...at, deferrable: false }, depth)
   if (name === 'git')
     return checkGitRun(gitRun(marked, unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
   if (name === 'gh') return head === 'gh' ? checkGh(marked, cmd, ctx, at) : REASONS.ghByPath
@@ -1047,9 +1087,11 @@ function exported(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): Readonly
 }
 
 function advance(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): Scope {
+  const deferrable = scope.deferrable && plainCommand(cmd, ctx, scope)
   const written = [...scope.written, ...writtenBy(cmd, ctx, scope), ...namedBy(cmd, ctx, scope)]
   scope = {
     ...scope,
+    deferrable,
     written,
     earlier: [...scope.earlier, ...cmd.words.slice(1), ...(cmd.stdin === undefined ? [] : [cmd.stdin])],
   }
@@ -1107,6 +1149,7 @@ export function checkCommand(command: string, ctx: GuardContext): string | undef
     written: [],
     earlier: [],
     said: '',
+    deferrable: true,
     line: command,
     gitParams: [],
     hiddenStarts: { left: MAX_HIDDEN_STARTS },
@@ -1180,7 +1223,12 @@ export function pathFindsOwnInstall(env: NodeJS.ProcessEnv, entry: string | unde
   return false
 }
 
-export function guardContext(env: NodeJS.ProcessEnv, cwd: string, home: string): GuardContext {
+export function guardContext(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  home: string,
+  entry: string | undefined = process.argv[1],
+): GuardContext {
   const terms = termsFile(env, home)
   const hooksDir = hooksDirOf(env as Record<string, string>)
   return {
@@ -1196,7 +1244,7 @@ export function guardContext(env: NodeJS.ProcessEnv, cwd: string, home: string):
     readFile: readText,
     readAlias: aliasReader(env),
     readIncludedHooksPath: includedHooksPathReader(env),
-    scansGhWrite: pathFindsOwnInstall(env, process.argv[1]),
+    scansGhWrite: pathFindsOwnInstall(env, entry),
   }
 }
 

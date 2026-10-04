@@ -616,8 +616,16 @@ agent-chat`, `env agent-chat`, a prefix assignment, `env -S`, or an expansion (`
 - `realpath` of the first `agent-chat` on the hook's `PATH` is the hook's own entry script, and
   every `PATH` entry before it is absolute;
 - the hook knows the environment at that command, `PATH` is not mentioned anywhere on the line,
-  and no function (`agent-chat() {`, `function`), `alias`, `source`, `.`, `eval` or unresolved
-  command word ran before it.
+  and the command is at the top level, not inside a function, group or subshell;
+- every command before it, and every one before it inside an enclosing `sh -c` or `bash -c`
+  with no flag or variable on it, is from a short allowlist: `cd`, `echo`, `printf` without `-v`,
+  `cat`, `tee`, `mktemp`, `test`, `[`, `true`, `false`, `:`, `pwd`, `date`, a git read verb
+  (`status`, `log`, `diff`, `show`, `rev-parse`, `ls-files`), or a plain `NAME=value` whose name is
+  not `PATH`, `path`, `fpath`, `HOME`, `IFS`, `CDPATH`, `BASH_ENV`, `ENV`, `ZDOTDIR` or a similar
+  shell-state name. Every word of such a command must resolve. Anything else keeps the deny: a
+  function definition, `hash`, `builtin`, `autoload`, `alias`, `export`, `declare`, `typeset`,
+  `local`, `read`, `printf -v`, `eval`, `source`, a shell with a startup flag or an environment
+  variable, or any other program.
 
 In that mode the guard still scans the text it can read, and still denies a finding, a missing
 term list and an unreadable term list, even beside text it cannot read.
