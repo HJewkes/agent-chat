@@ -89,8 +89,8 @@ export async function execute(steps: Step[], start: Ledger, deps: ExecuteDeps): 
   const commit = (actions: Action[]): void => {
     const before = ledger
     ledger = applyActions(ledger, actions, deps.now)
-    logFindings(before, ledger, deps.log)
     writeLedger(deps.ledgerFile, ledger)
+    logFindings(before, ledger, deps.log)
   }
   for (const step of steps) {
     if (step.kind === 'ledger') commit(step.actions)

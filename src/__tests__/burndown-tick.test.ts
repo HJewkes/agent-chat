@@ -1157,7 +1157,7 @@ describe('burndown tick with two seats on one pool (CC-275)', () => {
 })
 
 describe('burndown tick advances a seat claim', () => {
-  const seatClaim = (seat: string): { claim: Claim; worktree: string } => {
+  const seatClaim = (seat: string, over: Partial<Claim> = {}): { claim: Claim; worktree: string } => {
     const worktree = path.join(repo(), '.worktrees', 'st-dm-1')
     git(repo(), 'worktree', 'add', '-q', '-b', 'agent-chat/st-dm-1', worktree)
     git(worktree, 'commit', '-q', '--allow-empty', '-m', 'work')
@@ -1172,6 +1172,7 @@ describe('burndown tick advances a seat claim', () => {
       agentName: 'st-dm-1',
       spawned: ['st-dm-1'],
       worktree,
+      ...over,
     }
     writeLedger(burndownLedgerPath(), { version: 1, claims: [claim] })
     return { claim, worktree }
@@ -1301,6 +1302,38 @@ describe('burndown tick advances a seat claim', () => {
       expect(fake.frames).toEqual([])
       expect(lines.join('\n')).toContain('sonnet only')
     })
+  })
+
+  const finding: NonNullable<Claim['finding']> = {
+    kind: 'stalled-after-claim',
+    reason: 'idle',
+    since: NOON.toISOString(),
+    openedAt: NOON.toISOString(),
+    checkedAt: NOON.toISOString(),
+    detail: `idle: no agent event for 6 min since ${NOON.toISOString()}`,
+  }
+
+  it('closes an open finding in the tick that defers the reviewer', async () => {
+    const { worktree } = seatClaim('seat-t', { finding })
+    sevenDayAt(75)
+    const fake = fakeBroker({ agents: [row('st-dm-1', 'exited', worktree)] })
+
+    const lines = await tick(fake)
+
+    expect(lines.join('\n')).toContain('deferred DM-1#: budget: BUDGET-PAUSE pool pool-t')
+    expect(readLedger(burndownLedgerPath()).claims[0]?.finding).toBeUndefined()
+  })
+
+  it('closes an open finding in the tick that stalls the reviewer spawn', async () => {
+    const { worktree } = seatClaim('seat-gone', { finding })
+    const fake = fakeBroker({ agents: [row('st-dm-1', 'exited', worktree)] })
+
+    await tick(fake)
+
+    expect(readLedger(burndownLedgerPath()).claims[0]).toMatchObject({
+      stalledReason: 'seat seat-gone is no longer in the burndown config; left for the owner',
+    })
+    expect(readLedger(burndownLedgerPath()).claims[0]?.finding).toBeUndefined()
   })
 
   it('stalls the claim once, without spawning, when its seat is no longer in the config', async () => {
@@ -2011,5 +2044,66 @@ describe('burndown tick finding on a silent agent', () => {
 
     expect(events).toEqual(['opened', 'closed'])
     expect(readLedger(burndownLedgerPath()).claims[0]?.finding).toBeUndefined()
+  })
+
+  it('tells the seat once per open finding, never on a channel delivery, and closes on progress', async () => {
+    seatPolicy()
+    config({ seats: ['seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    const worker = { ...row('st-dm-1', 'live'), sessionId: 'sess-st-dm-1' }
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [
+        {
+          taskId: 'DM-1',
+          initiative: 'demo',
+          seat: 'seat-t',
+          namePrefix: 'st',
+          agentId: worker.agentId,
+          agentName: worker.name,
+          spawned: [worker.name],
+          spawnedAt: NOON.toISOString(),
+          phase: 'implementing',
+          phaseAt: NOON.toISOString(),
+          notified: ['dispatched'],
+        },
+      ],
+    })
+    const file = transcriptPath(worker.cwd, worker.sessionId, worker.configDir)
+    const lastWork = new Date(NOON.getTime() + MIN)
+    write(file, turn(lastWork))
+    const delivery = (at: Date) =>
+      `${JSON.stringify({ type: 'user', timestamp: at.toISOString(), message: { role: 'user', content: '<channel source="agent-chat" from="peer">ping</channel>' } })}\n`
+    const fake = fakeBroker({ agents: [worker] })
+    const tickAt = async (offset: number) => {
+      const sent = fake.sends.length
+      await tickFromDisk({
+        dryRun: false,
+        broker: fake.broker,
+        now: new Date(NOON.getTime() + offset * MIN),
+        log: () => {},
+        exec: stubGh(),
+      })
+      return { sends: fake.sends.slice(sent), claim: readLedger(burndownLedgerPath()).claims[0] }
+    }
+
+    const first = await tickAt(7)
+    const second = await tickAt(17)
+    fs.appendFileSync(file, delivery(new Date(NOON.getTime() + 18 * MIN)))
+    const third = await tickAt(19)
+    fs.appendFileSync(file, turn(new Date(NOON.getTime() + 20 * MIN)))
+    const fourth = await tickAt(21)
+
+    expect(first.sends).toEqual([
+      {
+        to: 'seat-t',
+        text: `Burndown events for seat-t at ${new Date(NOON.getTime() + 7 * MIN).toISOString()}\nstalled-after-claim DM-1: idle: no agent event for 6 min since ${lastWork.toISOString()}`,
+      },
+    ])
+    expect(second.sends).toEqual([])
+    expect(third.sends).toEqual([])
+    expect(third.claim?.finding).toMatchObject({ reason: 'idle', since: lastWork.toISOString() })
+    expect(fourth.claim?.finding).toBeUndefined()
+    expect(fourth.claim?.notified).toEqual(['dispatched'])
   })
 })

@@ -87,20 +87,38 @@ export function stepsForActions(
       resolved.spawns >= budget
         ? { defer: 'no agent capacity left this tick' }
         : resolveSpawn(spawn, ledger, ctx, resolved.charged)
-    if ('defer' in outcome) resolved.deferred.push(`${key}: ${outcome.defer}`)
-    else if ('stall' in outcome)
-      resolved.steps.push(ledgerStep(stallUpdate(spawn.key, outcome.stall, outcome.cls)))
-    else {
-      resolved.steps.push(...plainSteps(group.filter(a => a !== spawn)))
-      resolved.steps.push({ kind: 'spawn', key: spawn.key, frame: outcome.frame })
-      resolved.spawns += 1
-      if (outcome.pool !== undefined) resolved.charged.push(outcome.pool)
-    }
+    addOutcome(resolved, key, group, spawn, outcome)
   }
   return resolved
 }
 
+function addOutcome(
+  resolved: Resolved,
+  key: string,
+  group: Action[],
+  spawn: SpawnAction,
+  outcome: Outcome,
+): void {
+  if ('defer' in outcome) {
+    resolved.deferred.push(`${key}: ${outcome.defer}`)
+    resolved.steps.push(...plainSteps(findingCloses(group)))
+  } else if ('stall' in outcome)
+    resolved.steps.push(
+      ledgerStep(...findingCloses(group), stallUpdate(spawn.key, outcome.stall, outcome.cls)),
+    )
+  else {
+    resolved.steps.push(...plainSteps(group.filter(a => a !== spawn)))
+    resolved.steps.push({ kind: 'spawn', key: spawn.key, frame: outcome.frame })
+    resolved.spawns += 1
+    if (outcome.pool !== undefined) resolved.charged.push(outcome.pool)
+  }
+}
+
 const ledgerStep = (...actions: Action[]): Step => ({ kind: 'ledger', actions })
+
+/** A claim that moved closes its finding even when its spawn waits or stalls, so the close lands this tick. */
+const findingCloses = (group: Action[]): Action[] =>
+  group.filter(a => a.kind === 'update' && 'finding' in a.patch && a.patch.finding === undefined)
 
 const stallUpdate = (key: ClaimKey, reason: string, cls: ExceptionClass): Action => ({
   kind: 'update',
