@@ -31,7 +31,9 @@ which is today's behaviour: the seat event goes out and the claim waits for
 `routeOf` fails closed: a legacy row, a gate-trip, or a `triage` dial whose triage is not ready
 all route to the owner.
 
-## The job (planned, S2)
+## The job
+
+Built in CC-649 (S2), and dormant until the burndown tick's install is rebuilt.
 
 One headless spawn per stalled occurrence, sent by the tick after the decider and before the
 leak check and seat delivery. The agent runs the `triager` profile (below) with a brief built
@@ -45,7 +47,7 @@ from the claim, in the active-work root. It does one of:
 It ends its turn with a one-line verdict. A claim it released is gone from the ledger, so
 nothing is due to the owner.
 
-## Fallback (planned, S2)
+## Fallback
 
 A claim routed to triage goes to the owner, with the seat event as today, when:
 
@@ -57,6 +59,9 @@ A claim routed to triage goes to the owner, with the seat event as today, when:
 
 With no free agent slot the claim waits one tick with no seat event, up to `maxMinutes`, then
 goes to the owner.
+
+A dry run prints each triage start, wait and fallback, but its seat-event preview leaves out
+the triage records, so it can show a `stalled` event that the real tick would hold back.
 
 ## The profile
 
@@ -86,7 +91,8 @@ The repo carries the profile; nothing in the repo installs it.
 
 1. Copy `profiles/triager.json` to `~/.agent-chat/profiles/triager.json`.
 2. Set `exceptions.triage.account` in the burndown config to the account the triager runs
-   under (planned with S2; the schema rejects the key until then).
+   under. `profile` (default `triager`), `maxPerDay` (12) and `maxMinutes` (30) are optional;
+   without an account, triage is not ready and stalls go to the owner.
 3. Flip `exceptions.route.stalled` (and `failed`, if wanted) to `triage`.
 
 Flipping the dial back to `owner` restores today's behaviour at the next tick.
