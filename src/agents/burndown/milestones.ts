@@ -3,6 +3,7 @@ import { z } from 'zod'
 
 /** CC-626: the weekly milestone file (`milestones/<week>.yml`), loaded and validated purely. The caller reads the file. */
 
+/** CC-720: a check may also name `tasks:` and `epics:` (id lists); a non-list value is a `bad-check-ids` error naming the check, not a schema failure. */
 const DoneWhenCheck = z.looseObject({ kind: z.string().min(1) })
 
 /** Strict, so a misspelt key such as `gate_by:` is a schema error, not a silently ungated milestone. */
@@ -53,6 +54,7 @@ export type MilestoneErrorCode =
   | 'duplicate-rank'
   | 'unknown-epic'
   | 'unknown-gate'
+  | 'bad-check-ids'
   | 'gate-cycle'
 
 export interface MilestoneError {
@@ -95,6 +97,25 @@ function unknownEpics(milestones: RawMilestone[], taskIds: ReadonlySet<string>):
     m.epics
       .filter(epic => !taskIds.has(epic))
       .map(epic => ({ code: 'unknown-epic' as const, milestone: m.id, id: epic })),
+  )
+}
+
+const isIdList = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every(id => typeof id === 'string' && id !== '')
+
+/** The ids a check names under `key`; a value that is not a list of ids names none. */
+export function checkIds(check: DoneWhenCheck, key: 'tasks' | 'epics'): string[] {
+  const value = check[key]
+  return isIdList(value) ? value : []
+}
+
+function badCheckIds(milestones: RawMilestone[]): MilestoneError[] {
+  return milestones.flatMap(m =>
+    m.done_when.flatMap((check, i) =>
+      (['tasks', 'epics'] as const)
+        .filter(key => check[key] !== undefined && !isIdList(check[key]))
+        .map(key => ({ code: 'bad-check-ids' as const, milestone: m.id, id: `${check.kind}[${i}].${key}` })),
+    ),
   )
 }
 
@@ -146,6 +167,7 @@ export function validateMilestones(
     ...duplicateRanks(milestones),
     ...unknownEpics(milestones, new Set(taskIds)),
     ...gateErrors(milestones),
+    ...badCheckIds(milestones),
   ]
   const done = new Set(doneMilestones)
   const ranked = [...milestones].sort((a, b) => a.rank - b.rank).map(m => toMilestone(m, done))

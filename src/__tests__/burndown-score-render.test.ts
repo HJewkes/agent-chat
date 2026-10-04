@@ -4,6 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stringify } from 'yaml'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { parseMilestoneFile } from '../agents/burndown/milestones.js'
 import { mergeDefaults, parseCharter, parseSeat } from '../agents/burndown/policy.js'
 import { isoWeek, renderScored, renderScoredRow, scoredPlan } from '../agents/burndown/score-render.js'
 import { tasksFromList } from '../agents/burndown/score-source.js'
@@ -29,11 +30,11 @@ interface Expected {
 const snapshot = JSON.parse(read('tasks.json')) as Snapshot
 const expected = JSON.parse(read('expected-sample-seat.json')) as Expected
 
-function fixturePlan(top = 10, shareCaps: Record<string, number> = {}) {
+function fixtureInputs(top = 10, shareCaps: Record<string, number> = {}) {
   const charter = parseCharter(read('charter.md'))
   const seat = parseSeat(read('seats/sample-seat.md'), 'sample-seat')
   const defaults = mergeDefaults(charter, seat)
-  return scoredPlan({
+  return {
     tasks: tasksFromList(snapshot),
     weights: expected.initiatives,
     defaults: { ...defaults, share_caps: { ...defaults.share_caps, ...shareCaps } },
@@ -41,8 +42,11 @@ function fixturePlan(top = 10, shareCaps: Record<string, number> = {}) {
     hardStops: charter.hard_stops,
     today: snapshot.today,
     top,
-  })
+  }
 }
+
+const fixturePlan = (top = 10, shareCaps: Record<string, number> = {}) =>
+  scoredPlan(fixtureInputs(top, shareCaps))
 
 const ctx = { warnings: [], format: 'human' as const, withBroker }
 
@@ -250,5 +254,31 @@ describe('burndown plan flag refusals', () => {
     const report = await burndownPlanVerb.run(args, ctx)
 
     expect(report).toEqual({ ok: false, lines: [], errors: [message] })
+  })
+})
+
+describe('unnamed criterion lines', () => {
+  const task = (id: string, tags: string[]) => ({ ...tasksFromList(snapshot)[0]!, id, tags, estimate: 1 })
+  const plan = (milestoneYaml: string) => {
+    const tasks = [
+      task('EX-1', ['milestone:M1', 'ms-role:criterion']),
+      task('EX-2', ['milestone:M1', 'ms-role:criterion']),
+    ]
+    const milestones = parseMilestoneFile(milestoneYaml, ['EX-1', 'EX-2']).file
+    return renderScored(
+      scoredPlan({
+        ...fixtureInputs(),
+        tasks,
+        weights: { ...fixtureInputs().weights },
+        ...(milestones !== undefined && { milestones }),
+      }),
+    )
+  }
+  const yaml = `week: 2030-W01\nappetite_days: 5\nmilestones:\n  - id: M1\n    rank: 1\n    seat: s\n    done_when:\n      - kind: tasks-done\n        tasks: [EX-1]\n`
+
+  it('prints exactly one line for the criterion task no check names', () => {
+    expect(plan(yaml).filter(line => line.startsWith('unnamed-criterion'))).toEqual([
+      'unnamed-criterion EX-2 milestone:M1',
+    ])
   })
 })
