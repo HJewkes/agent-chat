@@ -182,6 +182,23 @@ describe('burndown plan --seat --scored from disk', () => {
     expect(report.lines.at(-2)).toBe('milestones=2026-W40, errors: unknown-epic M1 ZZ-404')
   })
 
+  it("prints a typo'd dep: as an unknown-dep tag error, but not a dep on an archived task (CC-631)", async () => {
+    const first = snapshot.tasks[0]!
+    const archive = path.join(world, first.slug, 'tasks', 'archive')
+    fs.mkdirSync(archive)
+    fs.writeFileSync(path.join(archive, 'AR-1.yml'), stringify({ id: 'AR-1', status: 'closed' }))
+    const tags = [...((first as { tags?: string[] }).tags ?? []), 'dep:AR-1', 'dep:ZZ-404']
+    fs.writeFileSync(path.join(world, first.slug, 'tasks', `${first.id}.yml`), stringify({ ...first, tags }))
+    const args = { seat: 'sample-seat', scored: true, top: 10, autonomyRoot: FIXTURE, today: snapshot.today }
+
+    const report = await burndownPlanVerb.run(args, ctx)
+
+    expect(report.lines.filter(line => line.startsWith('task tags'))).toEqual([
+      `task tags errors: unknown-dep ${first.id} dep:ZZ-404`,
+    ])
+    expect(report.lines.at(-2)).toBe(`task tags errors: unknown-dep ${first.id} dep:ZZ-404`)
+  })
+
   it('refuses a seat the charter does not list', async () => {
     const args = { seat: 'no-such-seat', scored: true, autonomyRoot: FIXTURE }
 

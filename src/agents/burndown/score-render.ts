@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { parseMilestoneFile, type MilestoneFile, type MilestoneResult } from './milestones.js'
 import { planOrder, type PlannedRow } from './plan-order.js'
+import type { TagError } from './task-tags.js'
 import { readInitiatives } from './source.js'
 import { loadPolicy, seatScope } from './policy.js'
 import { readScoredTasks } from './score-source.js'
@@ -31,6 +32,8 @@ export interface ScoredPlan {
   skipped: string[]
   /** The milestone file's week and its validation errors, when one was read. */
   milestones?: { week: string; errors: string[] }
+  /** CC-631: planning-tag errors such as a typo'd `dep:`, which the order otherwise reads as closed. */
+  tagErrors?: string[]
 }
 
 export interface ScoredPlanInputs {
@@ -44,6 +47,8 @@ export interface ScoredPlanInputs {
   skipped?: readonly string[]
   seat?: string
   milestones?: MilestoneFile
+  /** Task ids outside `tasks` that a `dep:` may name; without them every closed dep is `unknown-dep`. */
+  knownIds?: readonly string[]
 }
 
 export function scoredPlan(input: ScoredPlanInputs): ScoredPlan {
@@ -57,6 +62,7 @@ export function scoredPlan(input: ScoredPlanInputs): ScoredPlan {
     today,
     ...(input.seat !== undefined && { seat: input.seat }),
     ...(input.milestones !== undefined && { milestones: input.milestones }),
+    ...(input.knownIds !== undefined && { knownIds: input.knownIds }),
   })
   return {
     order: planned.order,
@@ -64,8 +70,11 @@ export function scoredPlan(input: ScoredPlanInputs): ScoredPlan {
     open: tasks.length,
     refused: { ...scored.refused, ...planned.refused },
     skipped: [...skipped],
+    tagErrors: planned.tagErrors.map(describeTagError),
   }
 }
+
+const describeTagError = ({ code, task, tag }: TagError) => `${code} ${task} ${tag}`
 
 const DAY_MS = 86_400_000
 
@@ -94,6 +103,25 @@ export function readWeekMilestones(
 const describeError = ({ code, milestone, id, message }: MilestoneResult['errors'][number]) =>
   [code, milestone, id, message].filter(part => part !== undefined).join(' ')
 
+const listDir = (dir: string): string[] => {
+  try {
+    return fs.readdirSync(dir)
+  } catch {
+    return []
+  }
+}
+
+/** Every task id under `<root>/<slug>/tasks`, archived ones included, from the `<id>.yml` file names. */
+function taskIdsOnDisk(root: string): string[] {
+  return listDir(root).flatMap(slug =>
+    [path.join(root, slug, 'tasks'), path.join(root, slug, 'tasks', 'archive')].flatMap(dir =>
+      listDir(dir)
+        .filter(file => file.endsWith('.yml'))
+        .map(file => file.slice(0, -'.yml'.length)),
+    ),
+  )
+}
+
 /** Reads the seat's policy from `autonomyRoot` and its scope's open tasks from the active-work root. */
 export function scoredPlanFromDisk(opts: {
   seat: string
@@ -121,6 +149,7 @@ export function scoredPlanFromDisk(opts: {
     hardStops: policy.charter.hard_stops,
     today: opts.today,
     top: opts.top,
+    knownIds: taskIdsOnDisk(opts.activeWorkRoot),
   })
   return read === undefined
     ? plan
@@ -152,9 +181,11 @@ export function renderScored(plan: ScoredPlan): string[] {
   const milestones = plan.milestones
     ? [`milestones=${plan.milestones.week}, errors: ${plan.milestones.errors.join('; ') || 'none'}`]
     : []
+  const tagErrors = plan.tagErrors?.length ? [`task tags errors: ${plan.tagErrors.join('; ')}`] : []
   return [
     ...plan.order.map((row, i) => renderScoredRow(row, i + 1)),
     ...milestones,
+    ...tagErrors,
     `scope=${plan.scope} initiatives, ${plan.open} open, skipped: ${plan.skipped.length}, refused={${refused}}`,
   ]
 }

@@ -94,6 +94,11 @@ describe('semantic errors', () => {
       yaml: file(M('M1', 1) + M('M1', 2)),
       errors: [{ code: 'duplicate-milestone', milestone: 'M1' }],
     },
+    {
+      name: 'two milestones sharing a rank',
+      yaml: file(M('M1', 1) + M('M2', 1)),
+      errors: [{ code: 'duplicate-rank', milestone: 'M2', id: '1', message: 'also M1' }],
+    },
   ])('$name', ({ yaml, errors }) => {
     const result = parseMilestoneFile(yaml, TASK_IDS)
 
@@ -136,6 +141,18 @@ describe('unreadable files', () => {
       id: 'milestones.0.done_when.0.kind',
     },
     { name: 'a scalar document', yaml: 'just text', code: 'schema', id: '' },
+    {
+      name: 'a misspelt gated_by',
+      yaml: file(M('M1', 1, ', gate_by: M2')),
+      code: 'schema',
+      id: 'milestones.0',
+    },
+    {
+      name: 'a misspelt top-level key',
+      yaml: `${file(M('M1', 1))}apetite_days: 7\n`,
+      code: 'schema',
+      id: '',
+    },
   ])('$name returns a $code error and no file without throwing', ({ yaml, code, id }) => {
     const result = parseMilestoneFile(yaml, TASK_IDS)
 

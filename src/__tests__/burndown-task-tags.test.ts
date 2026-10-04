@@ -107,6 +107,26 @@ describe('malformed planning tags', () => {
   it('keeps the first value of a conflicting tag', () => {
     expect(parseTaskTags({ id: 'EX-1', tags: ['cos:expedite', 'cos:intangible'] }).task.cos).toBe('expedite')
   })
+
+  it('reports a null tag as bad-tag instead of throwing, and reads the rest', () => {
+    const result = parseTaskTags({ id: 'EX-1', tags: [null, 'milestone:M1'] })
+
+    expect(result.errors).toEqual([{ code: 'bad-tag', task: 'EX-1', tag: 'null' }])
+    expect(result.task.milestone).toBe('M1')
+  })
+
+  it.each([NaN, Infinity, -1])('rejects estimate %s as bad-estimate and drops it', estimate => {
+    const result = parseTaskTags({ id: 'EX-1', estimate, tags: [] })
+
+    expect(result.errors).toEqual([{ code: 'bad-estimate', task: 'EX-1', tag: `estimate:${estimate}` }])
+    expect(result.task).not.toHaveProperty('estimate')
+  })
+
+  it('carries a bad estimate through parsePlanningTasks', () => {
+    expect(parsePlanningTasks([{ id: 'EX-1', estimate: NaN }]).errors).toEqual([
+      { code: 'bad-estimate', task: 'EX-1', tag: 'estimate:NaN' },
+    ])
+  })
 })
 
 describe('dep: edges across the task list', () => {

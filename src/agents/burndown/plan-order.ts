@@ -10,7 +10,7 @@ import {
   type ScoredTask,
   type ScoringDefaults,
 } from './score.js'
-import { parsePlanningTasks, type TaggedTask } from './task-tags.js'
+import { parsePlanningTasks, type TagError, type TaggedTask } from './task-tags.js'
 
 /**
  * CC-628: `planOrder`, the class-of-service order over the seat's scored rows. Pure: the milestone
@@ -22,7 +22,8 @@ import { parsePlanningTasks, type TaggedTask } from './task-tags.js'
  *
  * Readiness, beyond the prose dependencies `dispatchOrder` already drops:
  * - A `dep:` on an open task (any task in `tasks`) blocks. A `dep:` naming no open task is taken as
- *   closed, so `criticalPath`'s `externalDeps` block only when they name an open task.
+ *   closed, so `criticalPath`'s `externalDeps` block only when they name an open task. One naming no
+ *   task in `tasks` or `knownIds` is also an `unknown-dep` in `tagErrors` (CC-631), so a typo shows.
  * - A task in a dependency cycle, and every task that reaches one through `dep:` edges, is blocked.
  * - An unestimated task stays ready: it only adds no points to the path, and `route` sends it to triage.
  * - A task in a milestone whose gate is open yields nothing.
@@ -58,12 +59,16 @@ export interface PlanOrderInput {
   seat?: string
   milestones?: MilestoneFile
   priorPicks?: Readonly<Record<string, number>>
+  /** Task ids outside `tasks` that a `dep:` may name, such as closed tasks. */
+  knownIds?: Iterable<string>
 }
 
 export interface PlanOrder {
   order: PlannedRow[]
   /** `dispatchOrder`'s share-cap skips, then `dep-blocked`, `cycle-blocked`, `gated:<id>` and `intangible-held`. */
   refused: Record<string, number>
+  /** The planning-tag errors of `tasks`; the order still uses what parsed. */
+  tagErrors: TagError[]
 }
 
 type BlockReason = 'cycle-blocked' | 'dep-blocked'
@@ -97,6 +102,7 @@ export function wsjf(row: ScoreRow): number | undefined {
 
 interface PlanContext {
   tags: Map<string, TaggedTask>
+  tagErrors: TagError[]
   blocks: Map<string, BlockReason>
   remainingPath: Map<string, number>
   owned: Map<string, Milestone>
@@ -142,11 +148,12 @@ function floatsOf(tagged: readonly TaggedTask[], owned: readonly Milestone[]): M
 }
 
 function planContext(input: PlanOrderInput): PlanContext {
-  const { tasks: tagged } = parsePlanningTasks(input.tasks)
+  const { tasks: tagged, errors: tagErrors } = parsePlanningTasks(input.tasks, input.knownIds)
   const whole = criticalPath(tagged)
   const owned = (input.milestones?.milestones ?? []).filter(m => m.seat === input.seat)
   return {
     tags: new Map(tagged.map(task => [task.id, task])),
+    tagErrors,
     blocks: tagBlocks(tagged, whole.cycles),
     remainingPath: new Map(whole.tasks.map(task => [task.id, task.earlyFinish])),
     owned: new Map(owned.map(m => [m.id, m])),
@@ -244,5 +251,5 @@ export function planOrder(input: PlanOrderInput): PlanOrder {
     order.push(...intangible.order)
   }
   addCounts(refused, sorted.refused)
-  return { order, refused }
+  return { order, refused, tagErrors: ctx.tagErrors }
 }
