@@ -123,5 +123,24 @@ describe('a NAME+= or NAME[idx]= prefix is an assignment like NAME=', () => {
     ])('allows %s', command => {
       expect(checkCommand(command, ctx())).toBeUndefined()
     })
+
+    it.each([
+      "env -S 'git\\_push\\_--no-verify'",
+      "env -S 'A.B=1\\_git push --no-verify'",
+      "env -S 'git push --no-verify\\c' x",
+      "env -S 'A=1\ngit push --no-verify'",
+      "env -S 'A=1\vgit push --no-verify'",
+      "env -S 'A=1\fgit push --no-verify'",
+      "env -S 'A=1\rgit push --no-verify'",
+      "env -vS 'A.B=1 git push --no-verify'",
+      "env -vS'A.B=1 git push --no-verify'",
+      "env -vS 'A.B=1' git push --no-verify",
+    ])('denies the env split-string form %j', command => {
+      expect(checkCommand(command, ctx())).toBeDefined()
+    })
+
+    it.each(["env -S 'FOO=1 npm test'", "env -vS 'FOO=1 npm test'"])('allows %s', command => {
+      expect(checkCommand(command, ctx())).toBeUndefined()
+    })
   })
 })

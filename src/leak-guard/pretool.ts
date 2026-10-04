@@ -281,12 +281,18 @@ type EnvRun =
 
 const EXPANDS = new RegExp(`${LIVE}[$\`]`)
 
-/** The value of an `env -S` / `--split-string` word and how many words it takes, in all four spellings. */
+/** The value of an `env -S` / `--split-string` word, alone or ending an option cluster like `-vS`, and how many words it takes. */
 function splitString(a: string, next: string | undefined): { value: string; width: number } | undefined {
-  if (a === '-S' || a === '--split-string') return { value: next ?? '', width: 2 }
-  const glued = /^-S(.+)/s.exec(a)?.[1] ?? /^--split-string=(.*)/s.exec(a)?.[1]
-  return glued === undefined ? undefined : { value: glued, width: 1 }
+  if (a === '--split-string') return { value: next ?? '', width: 2 }
+  const glued = /^--split-string=(.*)/s.exec(a)?.[1]
+  if (glued !== undefined) return { value: glued, width: 1 }
+  const cluster = /^-[a-zA-Z]*S(.*)$/s.exec(a)
+  if (cluster === null) return undefined
+  return cluster[1] === '' ? { value: next ?? '', width: 2 } : { value: cluster[1] as string, width: 1 }
 }
+
+// env splits the value by its own rules: a backslash escapes, and it honours more blanks than the shell does.
+const ENV_SPLIT_ESCAPES = /[\\]|[^\S \t]/
 
 function unwrapEnv(args: readonly string[], i: number): EnvRun {
   let chdir = false
@@ -303,7 +309,8 @@ function unwrapEnv(args: readonly string[], i: number): EnvRun {
     if (a === '-' || a === '--ignore-environment' || /^-[^-]*i/.test(a)) return { reason: REASONS.envClear }
     const split = splitString(a, args[i + 1])
     if (split !== undefined) {
-      if (EXPANDS.test(split.value)) return { reason: REASONS.hiddenCommand }
+      if (EXPANDS.test(split.value) || ENV_SPLIT_ESCAPES.test(split.value))
+        return { reason: REASONS.hiddenCommand }
       const words = [...(parseShell(split.value)[0]?.marked ?? []), ...args.slice(i + split.width)]
       const inner = unwrapEnv(words, 0)
       if ('reason' in inner) return inner
