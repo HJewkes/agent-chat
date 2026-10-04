@@ -103,7 +103,7 @@ describe('an empty world', () => {
     const rendered = text()
 
     expect(rendered).toContain(
-      'Nothing in: Needs you, Decided while you were away, Done, Stalled or failed, Exited with no Status report.',
+      'Nothing in: Needs you, Decided while you were away, Milestones, Done, Stalled or failed, Exited with no Status report.',
     )
     expect(rendered).toContain('events.db: not found')
     expect(section(rendered, 'Spend')).toContain('- agents: no reading at all')
@@ -465,6 +465,35 @@ describe('Next', () => {
 
     expect(rendered).toContain('burndown plan: ledger malformed')
     expect(section(rendered, 'Next')).toContain('the burndown planner did not run')
+  })
+})
+
+describe('Milestones', () => {
+  const weekFile = (): string =>
+    path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy', 'milestones', '2026-W40.yml')
+
+  it("prints one line per milestone in this week's file", () => {
+    write(
+      weekFile(),
+      'week: 2026-W40\nappetite_days: 5\nmilestones:\n' +
+        '  - {id: M1, rank: 1, seat: seat-a}\n  - {id: M2, rank: 2, seat: seat-b}\n',
+    )
+    task('example', 'EX-1', 'status: open\npriority: 1\nestimate: 2\ntags: [milestone:M1]\n')
+    task('example', 'EX-2', 'status: open\npriority: 1\nestimate: 1\ntags: [milestone:M2]\n')
+
+    const lines = section(text(), 'Milestones').split('\n')
+
+    expect(lines).toEqual([
+      '== Milestones (2)',
+      expect.stringMatching(/^- M1 at-risk \(no points done in 3 days\): 0\/2 points done.*path 2;/),
+      expect.stringMatching(/^- M2 at-risk \(no points done in 3 days\): 0\/1 points done.*path 1;/),
+    ])
+  })
+
+  it('reports a malformed milestone file as a gap', () => {
+    write(weekFile(), 'week: nope\n')
+
+    expect(text()).toMatch(/- milestones: milestones\/2026-W40\.yml: schema/)
   })
 })
 
