@@ -587,6 +587,18 @@ plain `$NAME` or `${NAME}`. It treats `$@`, `$*`, `${a[@]}`, zsh `${=v}` and `$=
 globs and any unquoted expansion as possibly splitting. So `git -C $PWD status` and `d=/tmp/x; git
 -C $d status` are denied too: quote the value, as in `git -C "$PWD" status`.
 
+### A `gh api` read with a quoted expansion is allowed
+
+`gh api "repos/o/r/commits/$SHA/check-runs" --jq .check_runs` is allowed although the guard cannot
+resolve `SHA`, because nothing in it can be a write. The call must hold exactly one endpoint, quoted
+so the shell keeps it one word and opening with literal text. Every flag must be on the allowlist:
+`--paginate`, `--slurp`, `--silent`, `-i`, `--include`, `--verbose`, and `-H`, `--header`,
+`--hostname`, `--cache` and `-p`, `--preview` with a literal value (a header that names a method or
+override is denied). Only the value of `--jq`, `-q`, `--template` or `-t` may be an expansion. Any
+`-X`, `--method`, `-f`, `-F`, `--field`, `--raw-field` or `--input`, in any spelling, any other
+flag, or a second positional word, keeps the deny. An unquoted expansion gets its own message: quote
+the endpoint, or post a write with `agent-chat gh-write`.
+
 ### The guard never reads one file while the shell posts another
 
 For a `gh pr` or `gh issue` `create`, `new`, `edit`, `comment`, `review` or `merge`, and for every

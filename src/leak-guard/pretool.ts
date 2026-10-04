@@ -18,7 +18,8 @@ import {
 } from './git-alias.js'
 import { crashCause, type FailOpen } from './failopen.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
-import { hasUnreadableConfig, hasUnreadableOption } from './git-unresolved.js'
+import { classifyApiRead } from './gh-api-read.js'
+import { hasSplittableOption, hasUnreadableConfig, hasUnreadableOption } from './git-unresolved.js'
 import { mayExpandTo, mayExpandToGit } from './git-word.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
@@ -123,6 +124,9 @@ export const REASONS = {
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
   includePath: `leak-guard: git -c or --config-env on include.path or includeIf.*.path pulls in config that sets core.hooksPath or that the guard cannot read in time, or runs beside other commands or a redirect, which would bypass the pre-push leak scan. ${DOCS}`,
   gitConfigUnresolved: `leak-guard: git -c or --config-env with a key or value the guard cannot read, before a command that runs hooks, may set core.hooksPath or include.path and would bypass the pre-push leak scan. Spell the config out, or drop it. ${DOCS}`,
+  gitValueSplits: `leak-guard: a git option or option value here is unquoted, and the shell may split it into several words, one of them an option such as -c core.hooksPath, so the guard cannot tell what git runs. Quote the value, as in git -C "$dir" fetch. ${DOCS}`,
+  aliasHidden: `leak-guard: the command word is an expansion the line ties to git, so the guard cannot tell which alias lookup applies or what git runs. Write the command name out: git <subcommand>, not $cmd. ${DOCS}`,
+  ghApiUnquoted: `leak-guard: this gh api call holds an unquoted expansion the shell may split into flags, such as -X or -f, so the guard cannot tell if it is a read. Quote the endpoint, as in gh api "repos/o/r/commits/$SHA/check-runs", or post a write with agent-chat gh-write -- api <args>. ${DOCS}`,
   nestedScript: `leak-guard: git runs a command here (rebase --exec, submodule foreach, bisect run or the like) that the guard cannot read. Write the command out literally. ${DOCS}`,
   writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. Post it with agent-chat gh-write -- <gh args> --body-file <path>, which scans the file when it runs, from a literal path in your worktree; or write the file in one Bash call and post it in the next. ${DOCS}`,
   ghByPath: `leak-guard: gh called by path skips the agent's gh shim and the gh-write leak scan. Use bare gh for reads and agent-chat gh-write -- <gh args> for every GitHub write. ${DOCS}`,
@@ -363,7 +367,8 @@ function tiedToGit(head: string, cmd: SimpleCommand, ctx: GuardContext, scope: S
 }
 
 /** A lookup the guard cannot make denies where the command is git or an expansion the line ties to git (TP-613). */
-const unsure = (run: GitRun): string | undefined => (run.tied ? REASONS.aliasEnv : undefined)
+const unsure = (run: GitRun): string | undefined =>
+  run.tied ? (run.literal ? REASONS.aliasEnv : REASONS.aliasHidden) : undefined
 
 /** The one boundary every command that is or may be git passes: git's own options, the config they include, then its alias. */
 function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
@@ -376,8 +381,13 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
   )
 }
 
+const unresolvedReason = (run: GitRun): string =>
+  hasSplittableOption(run.resolved, run.marked, run.cmd.splits)
+    ? REASONS.gitValueSplits
+    : REASONS.gitConfigUnresolved
+
 const checkUnresolvedConfig = (run: GitRun): string | undefined =>
-  hasUnreadableConfig(run.resolved, run.marked, run.cmd.splits) ? REASONS.gitConfigUnresolved : undefined
+  hasUnreadableConfig(run.resolved, run.marked, run.cmd.splits) ? unresolvedReason(run) : undefined
 
 const MENTIONS_INCLUDE = /include/i
 const DESCRIPTOR_COPY = /\d*[<>]&(?:\d+|-)(?![\w./])/g
@@ -420,7 +430,7 @@ function checkNestedScripts(run: GitRun, ctx: GuardContext, scope: Scope, depth:
   const spans = gitScripts(run.args, options.at)
   if (spans.length === 0) return undefined
   if (includesConfig(options.params)) return REASONS.includePath
-  if (hasUnreadableOption(run.resolved, run.marked, run.cmd.splits)) return REASONS.gitConfigUnresolved
+  if (hasUnreadableOption(run.resolved, run.marked, run.cmd.splits)) return unresolvedReason(run)
   const inner: Scope = { ...scope, cwd: undefined, env: undefined, gitParams: options.params }
   for (const span of spans) {
     const script = scriptText(span, run.resolved)
@@ -907,6 +917,19 @@ function deferredWritesOnlyBody(
   return writesOnlySafeBody(kind === 'api' ? apiSources(resolved) : prSources(resolved), cmd, ctx, scope)
 }
 
+/** The deny for a gh call with a word the guard cannot resolve; a quoted read-only `gh api` is the one exception. */
+function unsureGh(
+  kind: GhKind,
+  marked: readonly string[],
+  args: readonly (string | undefined)[],
+  cmd: SimpleCommand,
+): string | undefined {
+  const read = kind === 'api' ? classifyApiRead(marked, args, cmd.splits) : 'other'
+  if (read === 'read') return undefined
+  if (read === 'splits') return REASONS.ghApiUnquoted
+  return unread(cmd.substitutions.flatMap(sub => sub.commands))
+}
+
 function checkGh(
   marked: readonly string[],
   cmd: SimpleCommand,
@@ -920,7 +943,7 @@ function checkGh(
   if (defers && deferredWritesOnlyBody(kind, args, cmd, ctx, scope))
     return checkDeferred(kind, args, cmd, ctx, scope)
   const unsure = kind === 'unknown' || !args.every(arg => arg !== undefined)
-  if (unsure) return unread(cmd.substitutions.flatMap(sub => sub.commands))
+  if (unsure) return unsureGh(kind, marked, args, cmd)
   const sources = kind === 'api' ? apiSources(args) : prSources(args)
   if (sources.inline.length + sources.files.length === 0) return undefined
   if (postsWrittenBody(sources, scope, writtenBy(cmd, ctx, scope))) return REASONS.writtenBody

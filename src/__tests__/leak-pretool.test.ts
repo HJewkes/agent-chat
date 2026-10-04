@@ -89,16 +89,22 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
   it.each([
     'git -c "$(cat k)" push',
     'git -c "$K" push',
-    'git -c `cat k` push',
     'git -c"$K" commit',
     'git -c "$(echo core.hooksPath)=/dev/null" push',
     'git -c "$K=x" merge',
-    'git --config-env=include.path=$E push',
-    'git --config-env include.path=$E push',
     'git --config-env "$(cat k)" push',
     'git --config-env="$K" rebase',
     'git -c "$X" hp',
     'git -c "$X" $SUB',
+  ])('denies a config the guard cannot read before a hook-running command: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.gitConfigUnresolved)
+  })
+
+  it.each([
+    'git -c `cat k` push',
+    'git -C `cat d` push',
+    'git --config-env=include.path=$E push',
+    'git --config-env include.path=$E push',
     'git -c {core.hooksPath=/dev/null,-p} push',
     'git -c core.hooks?ath=x push',
     'git -C {.,-c,core.hooksPath=/dev/null} push',
@@ -108,22 +114,24 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
     'git --work-tree {.,-c,core.hooksPath=/dev/null} push',
     'git -C * push',
     'git -C $(cat d) push',
-    'git -C `cat d` push',
     'git --git-dir $(cat d) push',
     'git -C $D push',
     'git -C$(cat d) push',
     'git --git-dir=$(cat d) push',
     'git -c core.hooks[P]ath=x push',
     "git -c $'core.hooks\\cPath=/dev/null' push",
-  ])('denies a config the guard cannot read before a hook-running command: %s', command => {
-    expect(checkCommand(command, ctx())).toBe(REASONS.gitConfigUnresolved)
-  })
+  ])(
+    'denies an unquoted word that may split before a hook-running command, and says to quote it: %s',
+    command => {
+      expect(checkCommand(command, ctx())).toBe(REASONS.gitValueSplits)
+    },
+  )
 
   // Pins the intended deny a coordinator hit (CC-479 item 4) and the quoted form that passes.
   it('denies an unquoted -C value from a for list before worktree, and allows it quoted', () => {
     const loop = (dir: string): string => `for r in a b; do git -C ${dir} worktree list; done`
 
-    expect(checkCommand(loop('~/projects/$r'), ctx())).toBe(REASONS.gitConfigUnresolved)
+    expect(checkCommand(loop('~/projects/$r'), ctx())).toBe(REASONS.gitValueSplits)
     expect(checkCommand(loop('~/projects/"$r"'), ctx())).toBeUndefined()
     expect(checkCommand(loop('"$HOME/projects/$r"'), ctx())).toBeUndefined()
   })
@@ -146,7 +154,7 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
     'git -c {a.b=c,-c,core.hooksPath=/dev/null,push} log',
     'git -C $PWD status',
   ])('denies an unquoted -C value that may split before a hookless subcommand: %s', command => {
-    expect(checkCommand(command, ctx())).toBe(REASONS.gitConfigUnresolved)
+    expect(checkCommand(command, ctx())).toBe(REASONS.gitValueSplits)
   })
 
   it.each(['git -C ~/projects/"$r" log', 'git -C "$HOME/projects/$r" rev-parse'])(
@@ -1213,7 +1221,7 @@ describe('a git alias already in config', () => {
     it.each(['source ./env.sh; x=git; $x pnv', 'source ./env.sh; ${X:-git} pnv'])(
       'denies an expanded command word on a line that names git where it cannot look: %s',
       command => {
-        expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
+        expect(checkCommand(command, inAliased())).toBe(REASONS.aliasHidden)
       },
     )
 
@@ -1225,7 +1233,7 @@ describe('a git alias already in config', () => {
       'source /dev/null; $(echo tig|rev) pnv',
       'source /dev/null; `echo tig|rev` pnv',
     ])('denies an expanded command word the line ties to git where it cannot look (TP-613): %s', command => {
-      expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
+      expect(checkCommand(command, inAliased())).toBe(REASONS.aliasHidden)
     })
 
     it.each([
@@ -1258,7 +1266,14 @@ describe('a git alias already in config', () => {
       'source /dev/null; ${x/a/g"i"t} pnv',
       'source /dev/null; ${x:-git} pnv',
     ])('denies a positional, special or indirect command word where it cannot look (TP-613): %s', command => {
-      expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
+      expect(checkCommand(command, inAliased())).toBe(REASONS.aliasHidden)
+    })
+
+    it.each([
+      ['an ANSI-C hex escape', "$'\\x67it' pnv"],
+      ['an ANSI-C octal escape', "$'\\147it' pnv"],
+    ])('denies a command word that decodes to git where it cannot look (TP-721): %s', (_, word) => {
+      expect(checkCommand(`source /dev/null; ${word}`, inAliased())).toBe(REASONS.aliasEnv)
     })
 
     it.each([
@@ -1266,8 +1281,6 @@ describe('a git alias already in config', () => {
       ['a bracket glob', 'gi[t] pnv'],
       ['a ? glob in a default', '${x:-/usr/bin/g?t} pnv'],
       ['a bracket glob in a default', '${x:-/usr/bin/gi[t]} pnv'],
-      ['an ANSI-C hex escape', "$'\\x67it' pnv"],
-      ['an ANSI-C octal escape', "$'\\147it' pnv"],
       ['an ANSI-C string in a default', "${x:-$'g\\x69t'} pnv"],
       ['a brace expansion', 'g{i,}t pnv'],
       ['an unset variable spliced into a default', '${x:-g${z}it} pnv'],
@@ -1286,7 +1299,7 @@ describe('a git alias already in config', () => {
     ])(
       'denies a command word that may become git through %s where it cannot look (TP-721): %s',
       (_, word) => {
-        expect(checkCommand(`source /dev/null; ${word}`, inAliased())).toBe(REASONS.aliasEnv)
+        expect(checkCommand(`source /dev/null; ${word}`, inAliased())).toBe(REASONS.aliasHidden)
       },
     )
 
@@ -1323,7 +1336,7 @@ describe('a git alias already in config', () => {
         checkCommand(command, inAliased()),
       )
 
-      expect(reasons).toEqual([REASONS.aliasEnv, REASONS.noVerify])
+      expect(reasons).toEqual([REASONS.aliasHidden, REASONS.noVerify])
       expect(performance.now() - started).toBeLessThan(2000)
     })
 
@@ -1350,7 +1363,7 @@ describe('a git alias already in config', () => {
     it('denies an expanded command word whose hook env value is git where it cannot look', () => {
       const command = 'source /dev/null; $G pnv'
       expect(checkCommand(command, { ...inAliased(), env: { HOME: emptyHome, G: 'git' } })).toBe(
-        REASONS.aliasEnv,
+        REASONS.aliasHidden,
       )
     })
 
@@ -2186,5 +2199,59 @@ describe('the guard defers unreadable gh-write text to the run-time scan (CC-678
       false,
     )
     expect(pathFindsOwnInstall(env('bin'), undefined)).toBe(false)
+  })
+})
+
+describe('gh api reads with quoted unresolved words (CC-680)', () => {
+  it.each([
+    'gh api "repos/o/r/commits/$SHA/check-runs"',
+    'gh api "repos/o/r/commits/$SHA/check-runs" --jq .check_runs',
+    'gh api "repos/o/r/commits/${SHA}/check-runs" --paginate -q ".[] | $F"',
+    'gh api -H "Accept: application/vnd.github+json" "repos/o/r/pulls/$N"',
+    'gh api --hostname github.com "repos/o/r/pulls/$N" --template "$T"',
+    'gh api "repos/o/r/pulls/$N" --jq="$F"',
+    'gh api "repos/o/r/commits/$(git rev-parse HEAD)/status"',
+    'gh api \'repos/o/r/issues\' --jq "$F"',
+  ])('allows %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+
+  it.each([
+    'gh api "repos/o/r/issues/$N/comments" -f body=y',
+    'gh api "repos/o/r/issues/$N/comments" -fbody=y',
+    'gh api "repos/o/r/issues/$N/comments" -F body=y',
+    'gh api "repos/o/r/issues/$N/comments" -XPOST',
+    'gh api "repos/o/r/issues/$N/comments" -X POST',
+    'gh api "repos/o/r/issues/$N/comments" --method POST',
+    'gh api "repos/o/r/issues/$N/comments" --method=POST',
+    'gh api "repos/o/r/issues/$N/comments" --field a=b',
+    'gh api "repos/o/r/issues/$N/comments" --raw-field a=b',
+    'gh api "repos/o/r/issues/$N/comments" --input -',
+    'gh api "repos/o/r/issues/$N/comments" --input=p.json',
+    'gh api "repos/o/r/issues/$N/comments" -ifa=b',
+    'gh api "repos/o/r/issues/$N/comments" -H "X-HTTP-Method-Override: POST"',
+    'gh api "repos/o/r/issues/$N/comments" -H "$H"',
+    'gh api "repos/o/r/issues/$N/comments" --hostname "$H"',
+    'gh api "$E/comments"',
+    'gh api "$E" --jq .x',
+    'gh api "repos/o/r/$N" $F',
+    'gh api "repos/o/r/$N" "$@"',
+    'gh api "repos/o/r/$N" "other/$M"',
+    'gh api --unknown "repos/o/r/$N"',
+    'gh api "repos/o/r/$N" --jq',
+    'gh api --jq "$F"',
+    'gh api -q"$F" "repos/o/r/$N"',
+  ])('denies %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.unreadableBody)
+  })
+
+  it.each([
+    'gh api repos/o/r/commits/$SHA/check-runs',
+    'gh api repos/o/r/commits/$SHA/check-runs --jq .x',
+    'gh api repos/o/r/$N --jq $F',
+    'gh api "repos/o/r/${=N}"',
+    'gh api "repos/o/r/$(cat n)"; gh api repos/o/*',
+  ])('denies an unquoted word that may split, and says to quote it: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.ghApiUnquoted)
   })
 })

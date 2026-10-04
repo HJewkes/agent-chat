@@ -46,7 +46,7 @@ function unreadable({ resolved, marked, fromEnv }: ConfigWord): boolean {
  * double-quoted word whose expansions are plain scalars, is one word; anything else, such as `$@`,
  * `${a[@]}`, `${=v}`, a brace list, a glob or an unquoted expansion, may split.
  */
-const expandsToWords = (marked: string, splits: readonly string[]): boolean =>
+export const expandsToWords = (marked: string, splits: readonly string[]): boolean =>
   splits.includes(marked) || marked.replace(SCALAR, '').includes(LIVE)
 
 /** A word that may expand to options, whatever else it holds. */
@@ -130,3 +130,10 @@ export function hasUnreadableConfig(
   const sub = resolved[at]
   return sub === undefined || HOOK_RUNNING.has(sub) || !GIT_BUILTINS.has(sub)
 }
+
+/** Whether git's options hold a word the shell may split into several, which quoting would fix. */
+export const hasSplittableOption = (
+  resolved: readonly (string | undefined)[],
+  marked: readonly string[],
+  splits: readonly string[],
+): boolean => scanOptions(resolved, marked, splits).words.includes(UNKNOWN)
