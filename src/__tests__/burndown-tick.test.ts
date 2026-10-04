@@ -2046,6 +2046,43 @@ describe('burndown tick finding on a silent agent', () => {
     expect(readLedger(burndownLedgerPath()).claims[0]?.finding).toBeUndefined()
   })
 
+  it('logs no finding row when the ledger write that would open it fails', async () => {
+    const blocker = path.join(world, 'not-a-dir')
+    write(blocker, '')
+    const claim: Claim = {
+      taskId: 'DM-1',
+      initiative: 'demo',
+      spawnedAt: NOON.toISOString(),
+      phase: 'implementing',
+      phaseAt: NOON.toISOString(),
+    }
+    const finding: NonNullable<Claim['finding']> = {
+      kind: 'stalled-after-claim',
+      reason: 'idle',
+      since: NOON.toISOString(),
+      openedAt: NOON.toISOString(),
+      checkedAt: NOON.toISOString(),
+      detail: `idle: no agent event for 6 min since ${NOON.toISOString()}`,
+    }
+    const events: string[] = []
+
+    const run = execute(
+      [{ kind: 'ledger', actions: [{ kind: 'update', key: { taskId: 'DM-1' }, patch: { finding } }] }],
+      { version: 1, claims: [claim] },
+      {
+        ledgerFile: path.join(blocker, 'ledger.json'),
+        spawn: async () => ({ ok: true }),
+        retire: async () => ({ ok: true }),
+        register: () => ({ ok: true }),
+        log: event => events.push(event),
+        now: NOON,
+      },
+    )
+
+    await expect(run).rejects.toThrow()
+    expect(events).toEqual([])
+  })
+
   it('tells the seat once per open finding, never on a channel delivery, and closes on progress', async () => {
     seatPolicy()
     config({ seats: ['seat-t'] })
