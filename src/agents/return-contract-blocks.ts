@@ -16,6 +16,11 @@ const NEVER_PARK =
   'Never end a turn on a background task, a sleep or a ScheduleWakeup: a headless agent exits at ' +
   'turn end and the task dies with it.'
 
+/** CC-647: a logging shim named gh resolved gh to itself and forked until swap ran out. */
+const SHIM_RULE =
+  'Never put a script named after a real command (gh, git, node, npm, pnpm) on PATH unless it first ' +
+  "drops its own dir from PATH; agent-chat's src/gh-shim/install.ts is the pattern."
+
 /** CC-452: a brief line reading exactly this keeps the implementer off Shepherd for a seat's own merge path. */
 export const SHEPHERD_NONE_MARKER = 'Shepherd: none'
 
@@ -49,6 +54,7 @@ const OWN_CI_WAIT = [
 
 const IMPLEMENTER_RULES = [
   NEVER_PARK,
+  SHIM_RULE,
   'Only when the brief asks for a load test: record the PID of each burner you start, kill those PIDs',
   'and no others when done, and confirm with `pgrep` that none survive. Never kill by name pattern.',
   'A PR that narrows a timeout reports per-case CI times against the new limit.',
@@ -86,6 +92,7 @@ const REVIEWER = [
   'with `gh api repos/<owner>/<repo>/commits/<head>/check-runs --paginate`; FIX_FIRST if a required',
   'one failed. A skipped check (std / compat) is not a failure.',
   'Never run `git stash`: refs/stash is shared across worktrees. Use `git show <rev>:<path>` instead.',
+  SHIM_RULE,
   "Then blocking items before nits. A verdict counts only when Head equals the PR's current head exactly.",
 ].join('\n')
 
