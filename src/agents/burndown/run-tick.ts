@@ -8,6 +8,7 @@ import { activeWorkRoot } from '../active-work.js'
 import { seatJournal } from '../seats/journal.js'
 import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
 import { advance, applyActions, claimKey, type InboxMessage } from './advance.js'
+import { withFindings } from './finding.js'
 import { verifySection } from './brief.js'
 import { gatePool, pickAccount } from './budget-gate.js'
 import { collisionCheck, type BrokerView, type CollisionReader } from './collision.js'
@@ -269,7 +270,12 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const capacity = agentCapacity(config, ledger.claims, roster)
   const decider = await deciderFor(config, opts, ledger, roster, capacity, now)
   const agents = decider?.wake === true ? { ...capacity, agents: capacity.agents - 1 } : capacity
-  const advanced = stepsForActions(advance(held, observations, now), ledger, ctx, agents.agents)
+  const advanced = stepsForActions(
+    withFindings(advance(held, observations, now), held, observations, now),
+    ledger,
+    ctx,
+    agents.agents,
+  )
   const kept = advanced.steps.flatMap(s => (s.kind === 'ledger' ? s.actions : []))
   const planLedger = applyActions(ledger, kept, now)
   const { check, failures } = await tickCollision(planLedger, opts)

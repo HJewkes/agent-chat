@@ -140,7 +140,7 @@ const isProgress = (turn: RecentSessionTurn): boolean =>
   ((turn.role === 'assistant' && (turn.kind === 'message' || turn.kind === 'tool_call')) ||
     (turn.role === 'user' && turn.kind === 'tool_result'))
 
-/** session-read renders a call as `[tool <Name>] <input>`; `?` when the 80-char cap cut it off. */
+/** session-read renders a call as `[tool <Name>] <input>`; `?` when a longer block ahead of it leaves no marker inside the 80-char cap. */
 const toolName = (text: string): string => /\[tool (?!result)([^\]\s]+)\]/.exec(text)?.[1] ?? '?'
 
 /** Any failed read is "could not tell" for a stall check, never a crash of the tick that asked. */
@@ -168,10 +168,24 @@ export function readActivity(
   const recent = readActivityTurns(transcript.path)
   if (recent === undefined || recent.status === 'unavailable') return 'unreadable'
 
-  const last = recent.turns.filter(isProgress).at(-1)
-  if (last === undefined) return {}
-  const lastAt = last.timestamp ?? ''
-  return last.kind === 'tool_call'
-    ? { lastAt, pending: { tool: toolName(last.text), at: lastAt } }
-    : { lastAt }
+  const progress = recent.turns.filter(isProgress)
+  const lastAt = progress.at(-1)?.timestamp
+  if (lastAt === null || lastAt === undefined) return {}
+  const open = openCalls(progress)
+  return open[0] === undefined
+    ? { lastAt }
+    : { lastAt, pending: { tool: toolName(open[0].text), at: open[0].timestamp ?? lastAt } }
+}
+
+/**
+ * Calls still awaiting a result. session-read exposes no tool_use id, so each
+ * result closes the oldest open call: parallel calls A, B then result A leave B open.
+ */
+function openCalls(progress: readonly RecentSessionTurn[]): RecentSessionTurn[] {
+  const open: RecentSessionTurn[] = []
+  for (const turn of progress) {
+    if (turn.kind === 'tool_call') open.push(turn)
+    else if (turn.kind === 'tool_result') open.shift()
+  }
+  return open
 }

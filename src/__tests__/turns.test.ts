@@ -265,6 +265,20 @@ describe('reading activity for a stall check', () => {
     })
   })
 
+  it('keeps a parallel call pending when only the other one has a result', () => {
+    const second = say(
+      'assistant',
+      [{ type: 'tool_use', id: 'toolu_2', name: 'Write', input: {} }],
+      at('2026-07-30T11:00:30.000Z'),
+    )
+    write([bashCall, second, bashResult])
+
+    expect(readActivity(CWD, SESSION)).toEqual({
+      lastAt: '2026-07-30T11:01:00.000Z',
+      pending: { tool: 'Write', at: '2026-07-30T11:00:30.000Z' },
+    })
+  })
+
   it('reads a missing transcript as missing', () => {
     expect(readActivity(CWD, SESSION)).toBe('missing')
   })

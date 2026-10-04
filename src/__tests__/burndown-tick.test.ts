@@ -1964,3 +1964,51 @@ describe('burndown tick collision check', () => {
     ])
   })
 })
+
+describe('burndown tick finding on a silent agent', () => {
+  const MIN = 60_000
+  const liveWorker = () => ({ ...row('bd-dm-1', 'live'), sessionId: 'sess-dm-1' })
+  const turn = (at: Date) =>
+    `${JSON.stringify({ type: 'assistant', timestamp: at.toISOString(), message: { content: [{ type: 'text', text: 'working' }] } })}\n`
+
+  it('logs one opened and one closed row across three ticks, and nothing for the refresh', async () => {
+    const worker = liveWorker()
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [
+        {
+          taskId: 'DM-1',
+          initiative: 'demo',
+          agentId: worker.agentId,
+          agentName: worker.name,
+          spawned: [worker.name],
+          spawnedAt: NOON.toISOString(),
+          phase: 'implementing',
+          phaseAt: NOON.toISOString(),
+        },
+      ],
+    })
+    const file = transcriptPath(worker.cwd, worker.sessionId, worker.configDir)
+    write(file, turn(new Date(NOON.getTime() + MIN)))
+    const events: string[] = []
+    const log = (event: string, detail: Record<string, unknown>) => {
+      if (event === 'burndown_finding') events.push(`${detail.state}`)
+    }
+    const tickAt = (offset: number) =>
+      tickFromDisk({
+        dryRun: false,
+        broker: fakeBroker({ agents: [worker] }).broker,
+        now: new Date(NOON.getTime() + offset * MIN),
+        log,
+        exec: stubGh(),
+      })
+
+    await tickAt(7)
+    await tickAt(17)
+    fs.appendFileSync(file, turn(new Date(NOON.getTime() + 18 * MIN)))
+    await tickAt(19)
+
+    expect(events).toEqual(['opened', 'closed'])
+    expect(readLedger(burndownLedgerPath()).claims[0]?.finding).toBeUndefined()
+  })
+})

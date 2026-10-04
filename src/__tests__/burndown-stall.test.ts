@@ -1,5 +1,11 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { classify } from '../agents/burndown/stall.js'
+import { applyActions, claimKey, type Observation } from '../agents/burndown/advance.js'
+import { findingActions } from '../agents/burndown/finding.js'
+import { EMPTY_LEDGER, readLedger, writeLedger, type Claim } from '../agents/burndown/ledger.js'
+import { classify, type ActivityRead } from '../agents/burndown/stall.js'
 
 const MIN = 60_000
 const START = Date.parse('2026-10-03T10:00:00.000Z')
@@ -54,5 +60,125 @@ describe('classifying a claimed agent', () => {
       state: 'stalled',
       reason: 'silent',
     })
+  })
+
+  it('reads work at exactly the claim start as silent only past 5 min, with an empty activity', () => {
+    expect(classify({ lastAt: iso(START) }, claim, row, new Date(START + 5 * MIN))).toEqual({
+      state: 'working',
+    })
+    expect(classify({ lastAt: iso(START) }, claim, row, new Date(START + 5 * MIN + 1))).toEqual({
+      state: 'stalled',
+      reason: 'silent',
+    })
+    expect(classify({}, claim, row, new Date(START + 5 * MIN + 1))).toEqual({
+      state: 'stalled',
+      reason: 'silent',
+    })
+  })
+
+  it('treats the exact slow-tool boundaries as still working', () => {
+    const pending = (tool: string) => ({ lastAt: iso(LAST), pending: { tool, at: iso(LAST) } })
+
+    expect(classify(pending('Bash'), claim, row, at(15 * MIN))).toEqual({ state: 'working' })
+    expect(classify(pending('Monitor'), claim, row, at(15 * MIN + 1))).toEqual({
+      state: 'stalled',
+      reason: 'slow-tool',
+    })
+    expect(classify(pending('Write'), claim, row, at(5 * MIN))).toEqual({ state: 'working' })
+    expect(classify(pending('Write'), claim, row, at(5 * MIN + 1))).toEqual({
+      state: 'stalled',
+      reason: 'slow-tool',
+    })
+  })
+
+  it('falls back to the spawn time when phaseAt is invalid and reads unknown when both are', () => {
+    const late = new Date(START + 5 * MIN + 1)
+
+    expect(classify({}, { phaseAt: 'not a date' }, row, late)).toEqual({ state: 'stalled', reason: 'silent' })
+    expect(classify({}, { phaseAt: 'not a date' }, { spawnedAt: Number.NaN }, late)).toEqual({
+      state: 'unknown',
+    })
+  })
+})
+
+describe('the finding on a claim', () => {
+  const NOW0 = new Date(START + 10 * MIN)
+  const held = (patch: Partial<Claim> = {}): Claim => ({
+    taskId: 'CC-1',
+    initiative: 'demo',
+    agentId: 'a1',
+    agentName: 'bd-cc-1',
+    spawnedAt: iso(START),
+    phase: 'implementing',
+    phaseAt: iso(START),
+    ...patch,
+  })
+  const observed = (c: Claim, read: ActivityRead): Map<string, Observation> =>
+    new Map([
+      [claimKey(c), { agent: { id: 'a1', state: 'live' as const }, activity: { read, spawnedAt: START } }],
+    ])
+  const tickAt = (c: Claim, read: ActivityRead, now: Date, moved = new Set<string>()): Claim =>
+    applyActions({ ...EMPTY_LEDGER, claims: [c] }, findingActions([c], observed(c, read), moved, now), now)
+      .claims[0] as Claim
+  const idleSince = { lastAt: iso(LAST) }
+
+  it('keeps openedAt and a single finding across a repeat tick with the same evidence', () => {
+    const opened = tickAt(held(), idleSince, NOW0)
+
+    const refreshed = tickAt(opened, idleSince, new Date(NOW0.getTime() + 10 * MIN))
+
+    expect(opened.finding).toMatchObject({ reason: 'idle', since: iso(LAST), openedAt: NOW0.toISOString() })
+    expect(refreshed.finding).toMatchObject({
+      openedAt: NOW0.toISOString(),
+      checkedAt: new Date(NOW0.getTime() + 10 * MIN).toISOString(),
+    })
+  })
+
+  it('closes the finding once the agent shows a newer progress row', () => {
+    const opened = tickAt(held(), idleSince, NOW0)
+
+    const closed = tickAt(opened, { lastAt: iso(NOW0.getTime() - MIN) }, NOW0)
+
+    expect(closed.finding).toBeUndefined()
+  })
+
+  it('leaves the finding open when notified, inboxCursor and lastTickAt are fresh', () => {
+    const fresh = held({ notified: ['leak'], inboxCursor: '9', phaseAt: iso(START) })
+
+    const opened = tickAt(fresh, idleSince, NOW0)
+
+    expect(opened.finding?.reason).toBe('idle')
+    expect(opened.notified).toEqual(['leak'])
+  })
+
+  it('keeps an open finding untouched when the transcript cannot be read', () => {
+    const opened = tickAt(held(), idleSince, NOW0)
+
+    const later = tickAt(opened, 'unreadable', new Date(NOW0.getTime() + 10 * MIN))
+
+    expect(later.finding).toEqual(opened.finding)
+  })
+
+  it('closes the finding of a claim advance moved', () => {
+    const opened = tickAt(held(), idleSince, NOW0)
+
+    const closed = tickAt(opened, idleSince, NOW0, new Set([claimKey(opened)]))
+
+    expect(closed.finding).toBeUndefined()
+  })
+
+  it('parses a ledger with and without a finding', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'finding-ledger-'))
+    const file = path.join(dir, 'ledger.json')
+    const opened = tickAt(held(), idleSince, NOW0)
+
+    writeLedger(file, { ...EMPTY_LEDGER, claims: [held()] })
+    const without = readLedger(file).claims[0]
+    writeLedger(file, { ...EMPTY_LEDGER, claims: [opened] })
+    const withFinding = readLedger(file).claims[0]
+    fs.rmSync(dir, { recursive: true, force: true })
+
+    expect(without?.finding).toBeUndefined()
+    expect(withFinding?.finding).toEqual(opened.finding)
   })
 })

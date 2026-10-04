@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { advance, applyActions, claimKey, type Action, type Observation } from '../agents/burndown/advance.js'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
+import { withFindings } from '../agents/burndown/finding.js'
 import { observe } from '../agents/burndown/observe.js'
 import { parseReport } from '../agents/burndown/report.js'
 import type { ShepherdRow } from '../agents/burndown/shepherd.js'
@@ -62,6 +63,32 @@ describe('burndown phase machine', () => {
     if (spawning === undefined) throw new Error('no claim after the step')
     const landed = step(spawning, { agent: { id: 'r0', state: 'live' } }).after
     expect(landed).toEqual([expect.objectContaining({ phase: 'reviewing', agentId: 'r0' })])
+  })
+
+  it('advances a DONE worker that held an open finding and closes the finding', () => {
+    const open = claim({
+      finding: {
+        kind: 'stalled-after-claim',
+        reason: 'idle',
+        since: EARLIER,
+        openedAt: EARLIER,
+        checkedAt: EARLIER,
+        detail: 'idle',
+      },
+    })
+    const obs: Observation = {
+      agent: exited,
+      report: parseReport('Status: DONE'),
+      diff: { reviewable: false, reason: 'none' },
+    }
+    const observations = new Map([[claimKey(open), obs]])
+
+    const actions = withFindings(advance([open], observations, NOW), [open], observations, NOW)
+    const after = applyActions({ ...EMPTY_LEDGER, claims: [open] }, actions, NOW).claims[0]
+
+    expect(after?.phase).toBe('done')
+    expect(after?.finding).toBeUndefined()
+    expect(after?.stalledReason).toBeUndefined()
   })
 
   it('finishes a DONE implementer with no diff without spawning a reviewer', () => {

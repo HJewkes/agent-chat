@@ -37,15 +37,21 @@ export function classify(
   now: Date,
 ): Stall {
   if (activity === 'unreadable' || activity === 'unknown') return { state: 'unknown' }
-  const since = Math.max(Date.parse(claim.phaseAt), row.spawnedAt)
-  const lastAt =
+  const since = Math.max(...[Date.parse(claim.phaseAt), row.spawnedAt].filter(Number.isFinite))
+  if (!Number.isFinite(since)) return { state: 'unknown' }
+  const parsed =
     activity === 'missing' || activity.lastAt === undefined ? undefined : Date.parse(activity.lastAt)
+  const lastAt = Number.isFinite(parsed) ? parsed : undefined
   if (lastAt === undefined || !(lastAt > since)) {
     return olderThan(since, SILENT_AFTER_MS, now) ? stalled('silent') : WORKING
   }
-  if (activity !== 'missing' && activity.pending !== undefined) {
-    const limit = LONG_TOOLS.has(activity.pending.tool) ? BASH_TOOL_MS : TOOL_MS
-    return olderThan(Date.parse(activity.pending.at), limit, now) ? stalled('slow-tool') : WORKING
-  }
+  if (activity !== 'missing' && activity.pending !== undefined) return classifyPending(activity.pending, now)
   return olderThan(lastAt, IDLE_AFTER_MS, now) ? stalled('idle') : WORKING
+}
+
+function classifyPending(pending: NonNullable<Activity['pending']>, now: Date): Stall {
+  const openedAt = Date.parse(pending.at)
+  if (!Number.isFinite(openedAt)) return { state: 'unknown' }
+  const limit = LONG_TOOLS.has(pending.tool) ? BASH_TOOL_MS : TOOL_MS
+  return olderThan(openedAt, limit, now) ? stalled('slow-tool') : WORKING
 }
