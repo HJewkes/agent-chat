@@ -1,9 +1,18 @@
 import { execFileSync } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { prReady, spawnRun, type PrReadyOptions, type Run } from '../cli/verbs/pr-ready.js'
+import {
+  prReady,
+  signalTrap,
+  spawnRun,
+  type PrReadyOptions,
+  type Run,
+  type RunResult,
+  type Trap,
+} from '../cli/verbs/pr-ready.js'
 
 const BASE = 'refs/remotes/origin/main'
 const tmpDirs: string[] = []
@@ -14,6 +23,16 @@ afterEach(() => {
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+
+function configure(repo: string): void {
+  for (const [key, value] of Object.entries({
+    'user.name': 'Fixture',
+    'user.email': 'fixture@example.invalid',
+    'commit.gpgsign': 'false',
+  })) {
+    git(repo, 'config', key, value)
+  }
+}
 
 function writeFiles(dir: string, files: Record<string, string>): void {
   for (const [file, content] of Object.entries(files)) {
@@ -28,46 +47,42 @@ function commit(dir: string, files: Record<string, string>, message: string): vo
   git(dir, 'commit', '-q', '-m', message)
 }
 
-/** A synthetic repo with a bare origin, origin/HEAD set, and a feature branch off main. */
+const originOf = (work: string): string => path.join(path.dirname(work), 'origin')
+
+/**
+ * A synthetic origin repo and a clone of it on a feature branch. Upstream commits go straight
+ * into the origin, so the fixture never pushes and only pr-ready's own fetch updates the clone.
+ */
 function fixtureRepo(base: Record<string, string>, feature: Record<string, string>): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-ready-'))
   tmpDirs.push(root)
-  const hooks = path.join(root, 'no-hooks')
   const work = path.join(root, 'work')
-  fs.mkdirSync(hooks)
-  git(root, 'init', '-q', '--bare', '-b', 'main', 'origin.git')
-  git(root, 'init', '-q', '-b', 'main', 'work')
-  for (const [key, value] of Object.entries({
-    'user.name': 'Fixture',
-    'user.email': 'fixture@example.invalid',
-    'commit.gpgsign': 'false',
-    'core.hooksPath': hooks,
-  })) {
-    git(work, 'config', key, value)
-  }
-  commit(work, { 'shared.txt': 'base\n', ...base }, 'base')
-  git(work, 'remote', 'add', 'origin', path.join(root, 'origin.git'))
-  git(work, 'push', '-q', 'origin', 'main')
-  git(work, 'remote', 'set-head', 'origin', 'main')
+  git(root, 'init', '-q', '-b', 'main', 'origin')
+  configure(originOf(work))
+  commit(originOf(work), { 'shared.txt': 'base\n', ...base }, 'base')
+  git(root, 'clone', '-q', originOf(work), work)
+  configure(work)
   git(work, 'checkout', '-q', '-b', 'feature')
   commit(work, feature, 'feature')
   return work
 }
 
-/** Advances origin/main from the work repo, leaving the feature branch checked out. */
-function advanceOrigin(work: string, files: Record<string, string>): void {
-  git(work, 'checkout', '-q', 'main')
-  commit(work, files, 'upstream')
-  git(work, 'push', '-q', 'origin', 'main')
-  git(work, 'checkout', '-q', 'feature')
-}
+const advanceOrigin = (work: string, files: Record<string, string>): void =>
+  commit(originOf(work), files, 'upstream')
+
+const rebaseInProgress = (work: string): boolean =>
+  ['rebase-merge', 'rebase-apply'].some(dir => fs.existsSync(path.join(work, '.git', dir)))
+
+type Override = (line: string, args: string[], cwd: string) => Promise<RunResult> | undefined
 
 /** Real git; every package-manager call is recorded and answered from `failing`. */
-function recorder(failing: string[] = []) {
+function recorder(failing: string[], override?: Override) {
   const calls: string[] = []
   const run: Run = async (cmd, args, cwd) => {
     const line = [cmd, ...args].join(' ')
     calls.push(line)
+    const overridden = override?.(line, args, cwd)
+    if (overridden) return overridden
     if (cmd === 'git') return spawnRun(cmd, args, cwd)
     return failing.includes(line)
       ? { code: 1, output: `synthetic failure: ${line}` }
@@ -76,8 +91,13 @@ function recorder(failing: string[] = []) {
   return { run, calls }
 }
 
-async function runPrReady(cwd: string, failing: string[] = [], opts: PrReadyOptions = {}) {
-  const { run, calls } = recorder(failing)
+interface Extra {
+  override?: Override
+  trap?: Trap
+}
+
+async function runPrReady(cwd: string, failing: string[] = [], opts: PrReadyOptions = {}, extra: Extra = {}) {
+  const { run, calls } = recorder(failing, extra.override)
   const out: string[] = []
   const errLines: string[] = []
   const code = await prReady(opts, {
@@ -85,6 +105,7 @@ async function runPrReady(cwd: string, failing: string[] = [], opts: PrReadyOpti
     cwd,
     out: line => out.push(line),
     err: line => errLines.push(line),
+    trap: extra.trap ?? (() => () => {}),
   })
   return { code, out, calls, errLines, toolCalls: calls.filter(call => !call.startsWith('git ')) }
 }
@@ -100,6 +121,18 @@ interface Kind {
   changeset: string
 }
 
+const WORKSPACE_BASE = {
+  'package.json': pkg({
+    name: 'fixture-root',
+    scripts: { lint: 'pnpm -r lint', typecheck: 'turbo run typecheck', 'capabilities:check': 'x' },
+  }),
+  'pnpm-lock.yaml': "lockfileVersion: '9.0'\n",
+  'pnpm-workspace.yaml': "packages:\n  - 'packages/*'\n  - '!packages/internal'\n",
+  'packages/alpha/package.json': pkg({ name: '@fixture/alpha', scripts: { lint: 'x', typecheck: 'x' } }),
+  'packages/beta/package.json': pkg({ name: '@fixture/beta', scripts: { lint: 'x' } }),
+  'packages/gamma/package.json': pkg({ name: '@fixture/gamma', scripts: { 'format:check': 'x' } }),
+}
+
 const KINDS: Kind[] = [
   {
     name: 'npm',
@@ -107,7 +140,7 @@ const KINDS: Kind[] = [
     feature: { 'src/a.ts': 'export const a = 1\n' },
     checks: ['npm run lint', 'npm run typecheck'],
     failingCheck: 'npm run lint',
-    changeset: `npx changeset status --since=${BASE}`,
+    changeset: `npx --no-install @changesets/cli status --since=${BASE}`,
   },
   {
     name: 'pnpm single package',
@@ -118,21 +151,11 @@ const KINDS: Kind[] = [
     feature: { 'src/a.ts': 'export const a = 1\n' },
     checks: ['pnpm run format:check', 'pnpm run type-check'],
     failingCheck: 'pnpm run type-check',
-    changeset: `pnpm changeset status --since=${BASE}`,
+    changeset: `pnpm exec changeset status --since=${BASE}`,
   },
   {
     name: 'pnpm workspace',
-    base: {
-      'package.json': pkg({
-        name: 'fixture-root',
-        scripts: { lint: 'pnpm -r lint', typecheck: 'turbo run typecheck', 'capabilities:check': 'x' },
-      }),
-      'pnpm-lock.yaml': "lockfileVersion: '9.0'\n",
-      'pnpm-workspace.yaml': "packages:\n  - 'packages/*'\n",
-      'packages/alpha/package.json': pkg({ name: '@fixture/alpha', scripts: { lint: 'x', typecheck: 'x' } }),
-      'packages/beta/package.json': pkg({ name: '@fixture/beta', scripts: { lint: 'x' } }),
-      'packages/gamma/package.json': pkg({ name: '@fixture/gamma', scripts: { 'format:check': 'x' } }),
-    },
+    base: WORKSPACE_BASE,
     feature: {
       'packages/alpha/src/deep/a.ts': 'export const a = 1\n',
       'packages/beta/b.ts': '1\n',
@@ -145,7 +168,7 @@ const KINDS: Kind[] = [
       'pnpm run capabilities:check',
     ],
     failingCheck: 'pnpm --filter @fixture/beta run lint',
-    changeset: `pnpm changeset status --since=${BASE}`,
+    changeset: `pnpm exec changeset status --since=${BASE}`,
   },
 ]
 
@@ -211,16 +234,15 @@ describe.each(KINDS)('pr-ready in a $name fixture repo', kind => {
     expect(result.calls).toEqual(['git status --porcelain'])
   })
 
-  it('rebases onto an advanced origin before running the checks', async () => {
+  it('fetches and rebases onto an advanced origin before running the checks', async () => {
     const work = repo()
     advanceOrigin(work, { 'upstream.txt': 'u\n' })
-    const upstream = git(work, 'rev-parse', BASE)
 
     const result = await runPrReady(work)
 
     expect(result.code).toBe(0)
     expect(result.out).toContain('ok rebase')
-    expect(git(work, 'rev-parse', 'HEAD~1')).toBe(upstream)
+    expect(git(work, 'rev-parse', 'HEAD~1')).toBe(git(originOf(work), 'rev-parse', 'HEAD'))
   })
 
   it('aborts a conflicting rebase, lists the files and runs no checks', async () => {
@@ -236,12 +258,15 @@ describe.each(KINDS)('pr-ready in a $name fixture repo', kind => {
     expect(result.out.at(-1)).toBe('PR-READY FAIL')
     expect(result.calls).toContain('git rebase --abort')
     expect(result.toolCalls).toEqual([])
+    expect(rebaseInProgress(work)).toBe(false)
     expect(git(work, 'rev-parse', 'HEAD')).toBe(before)
-    expect(git(work, 'status', '--porcelain')).toBe('')
   })
 })
 
 describe('pr-ready in a pnpm workspace', () => {
+  const workspaceRepo = (extraBase: Record<string, string>, feature: Record<string, string>) =>
+    fixtureRepo({ ...WORKSPACE_BASE, ...extraBase }, feature)
+
   it('never runs pnpm -r, turbo or a root check script', async () => {
     const workspace = KINDS[2]!
     const result = await runPrReady(fixtureRepo(workspace.base, workspace.feature))
@@ -262,6 +287,55 @@ describe('pr-ready in a pnpm workspace', () => {
     expect(result.out).toContain('FAIL checks: failed: pnpm run capabilities:check (run pnpm capabilities)')
   })
 
+  it('climbs past a nameless nested package.json to the member that holds it', async () => {
+    const work = workspaceRepo(
+      { 'packages/alpha/fixtures/package.json': pkg({ type: 'module' }) },
+      { 'packages/alpha/fixtures/data/x.json': '{}\n' },
+    )
+
+    const result = await runPrReady(work)
+
+    expect(result.code).toBe(0)
+    expect(result.toolCalls).toContain('pnpm --filter @fixture/alpha run lint')
+  })
+
+  it('climbs past a named non-member package nested in a member', async () => {
+    const work = workspaceRepo(
+      { 'packages/alpha/examples/demo/package.json': pkg({ name: '@fixture/demo', scripts: { lint: 'x' } }) },
+      { 'packages/alpha/examples/demo/x.ts': '1\n' },
+    )
+
+    const result = await runPrReady(work)
+
+    expect(result.code).toBe(0)
+    expect(result.toolCalls).toContain('pnpm --filter @fixture/alpha run lint')
+    expect(result.toolCalls.some(call => call.includes('@fixture/demo'))).toBe(false)
+  })
+
+  it.each([
+    ['outside every workspace glob', 'examples/demo', '@fixture/demo'],
+    ['excluded by a negated glob', 'packages/internal', '@fixture/internal'],
+  ])('fails a changed file in a named package %s', async (_, dir, name) => {
+    const work = workspaceRepo(
+      { [`${dir}/package.json`]: pkg({ name, scripts: { lint: 'x' } }) },
+      { [`${dir}/x.ts`]: '1\n' },
+    )
+
+    const result = await runPrReady(work)
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain(`FAIL checks: ${dir}/x.ts is in ${dir}, not a workspace member`)
+    expect(result.toolCalls.some(call => call.includes(name))).toBe(false)
+  })
+
+  it('maps a non-ASCII path to its member', async () => {
+    const work = workspaceRepo({}, { 'packages/beta/ünïcödé.ts': '1\n' })
+
+    const result = await runPrReady(work)
+
+    expect(result.toolCalls).toEqual(['pnpm --filter @fixture/beta run lint', 'pnpm run capabilities:check'])
+  })
+
   it('reports no scripts when no changed package has a check script', async () => {
     const work = fixtureRepo(
       {
@@ -270,13 +344,79 @@ describe('pr-ready in a pnpm workspace', () => {
         'pnpm-workspace.yaml': "packages:\n  - 'packages/*'\n",
         'packages/delta/package.json': pkg({ name: '@fixture/delta', scripts: { build: 'x' } }),
       },
-      { 'packages/delta/index.ts': '1\n' },
+      { 'packages/delta/index.ts': '1\n', 'docs/notes.md': 'root-only\n' },
     )
 
     const result = await runPrReady(work)
 
     expect(result.out).toContain('ok checks: no scripts')
     expect(result.toolCalls).toEqual([])
+  })
+})
+
+describe('pr-ready rebase recovery', () => {
+  const conflictingRepo = (): string => {
+    const work = fixtureRepo({ 'package.json': pkg({}) }, { 'a.txt': '1\n' })
+    commit(work, { 'shared.txt': 'feature side\n' }, 'feature edit')
+    advanceOrigin(work, { 'shared.txt': 'upstream side\n' })
+    return work
+  }
+
+  it('reports a rebase still in progress when git rebase --abort fails', async () => {
+    const work = conflictingRepo()
+    const failAbort: Override = line =>
+      line === 'git rebase --abort'
+        ? Promise.resolve({ code: 128, output: 'synthetic abort failure' })
+        : undefined
+
+    const result = await runPrReady(work, [], {}, { override: failAbort })
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain(
+      'FAIL rebase: conflict in shared.txt; git rebase --abort failed (synthetic abort failure); ' +
+        'a rebase is still in progress, abort it by hand',
+    )
+    expect(rebaseInProgress(work)).toBe(true)
+  })
+
+  it('aborts an in-progress rebase when a signal arrives mid-rebase', async () => {
+    const work = conflictingRepo()
+    let onSignal: (() => void) | undefined
+    const trap: Trap = handler => ((onSignal = handler), () => (onSignal = undefined))
+    let stateAfterSignal: boolean | undefined
+    const signalMidRebase: Override = (line, args, cwd) => {
+      if (line !== `git rebase ${BASE}`) return undefined
+      return spawnRun('git', args, cwd).then(result => {
+        onSignal?.()
+        stateAfterSignal = rebaseInProgress(work)
+        return result
+      })
+    }
+
+    const result = await runPrReady(work, [], {}, { override: signalMidRebase, trap })
+
+    expect(stateAfterSignal).toBe(false)
+    expect(result.out).toContain('FAIL rebase: interrupted; rebase aborted')
+    expect(onSignal).toBeUndefined()
+  })
+
+  it('installs SIGINT and SIGTERM handlers that clean up, exit with the signal code and come off after', () => {
+    const emitter = new EventEmitter()
+    const exits: number[] = []
+    const cleanups: string[] = []
+    const trap = signalTrap({
+      once: (signal, listener) => emitter.once(signal, listener),
+      off: (signal, listener) => emitter.off(signal, listener),
+      exit: code => void exits.push(code),
+    })
+
+    const release = trap(() => cleanups.push('abort'))
+    emitter.emit('SIGTERM')
+    release()
+
+    expect(cleanups).toEqual(['abort'])
+    expect(exits).toEqual([143])
+    expect(emitter.listenerCount('SIGINT') + emitter.listenerCount('SIGTERM')).toBe(0)
   })
 })
 
@@ -301,6 +441,30 @@ describe('pr-ready options and discovery', () => {
     expect(result.out).toContain('ok checks: no scripts')
   })
 
+  it('never lets npx download a changeset package that is not installed', async () => {
+    const work = fixtureRepo(
+      { 'package.json': pkg({}), '.changeset/config.json': '{}\n' },
+      { 'a.txt': '1\n' },
+    )
+
+    const result = await runPrReady(work)
+
+    const changeset = result.toolCalls.filter(call => call.includes('changeset'))
+    expect(changeset).toEqual([`npx --no-install @changesets/cli status --since=${BASE}`])
+  })
+
+  it('turns an unexpected throw into a FAIL line and a non-zero exit', async () => {
+    const work = fixtureRepo({ 'package.json': pkg({ scripts: { lint: 'x' } }) }, { 'a.txt': '1\n' })
+    const throwOnLint: Override = line =>
+      line === 'npm run lint' ? Promise.reject(new Error('synthetic spawn crash')) : undefined
+
+    const result = await runPrReady(work, [], {}, { override: throwOnLint })
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain('FAIL checks: synthetic spawn crash')
+    expect(result.out.at(-1)).toBe('PR-READY FAIL')
+  })
+
   it('skips the fetch and rebase with --no-rebase', async () => {
     const work = fixtureRepo({ 'package.json': pkg({}) }, { 'a.txt': '1\n' })
 
@@ -312,13 +476,13 @@ describe('pr-ready options and discovery', () => {
     )
   })
 
-  it('accepts --title and --body-file and leaves the scan to CC-687', async () => {
+  it('accepts --title and --body-file and says the scan was skipped', async () => {
     const work = fixtureRepo({ 'package.json': pkg({}) }, { 'a.txt': '1\n' })
 
     const result = await runPrReady(work, [], { title: 'Synthetic title', bodyFile: 'body.md' })
 
     expect(result.code).toBe(0)
-    expect(result.out).toContain('ok body: scan lands with CC-687')
+    expect(result.out).toContain('ok body: skipped: scan lands with CC-687')
   })
 
   it('uses the full remote ref, so a local branch named origin/main cannot shadow it', async () => {
@@ -329,7 +493,7 @@ describe('pr-ready options and discovery', () => {
     const result = await runPrReady(work)
 
     expect(result.code).toBe(0)
-    expect(git(work, 'rev-parse', 'HEAD~1')).toBe(git(work, 'rev-parse', BASE))
+    expect(git(work, 'rev-parse', 'HEAD~1')).toBe(git(originOf(work), 'rev-parse', 'HEAD'))
   })
 
   it('fails the base step when origin/HEAD is not set', async () => {
