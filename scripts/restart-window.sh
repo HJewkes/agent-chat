@@ -4,21 +4,27 @@
 #
 # Exit codes:
 #   0  restart-window OK
-#   1  a pre-check refused, or the restart's own guard refused; the broker was not touched
-#   2  a post-check failed
-#   3  the restart failed and the broker may be down (run: agent-chat service start)
-#   4  pull, staged install or staged build failed, or the swap failed; the broker was not
-#      touched and the live node_modules and dist are intact
+#   1  a pre-check refused, or the restart's own guard refused; the broker was not touched, and
+#      after a guard refusal the checkout is rolled back to the old commit and build
+#   2  a post-check failed; the new build is live and the old one is kept as node_modules.prev
+#      and dist.prev (the message names the rollback command)
+#   3  the restart failed; the checkout was rolled back to the old commit and build and the
+#      broker restarted on it, and if that restart failed too the broker may be down
+#      (run: agent-chat service start)
+#   4  fetch, staged install or staged build failed, or the swap failed; the broker was not
+#      touched and the live src, node_modules and dist are on the old commit
 #
-# Install and build run in a staging copy of HEAD beside the checkout (<checkout>.staging), never
-# in the live tree, so a failed `npm ci` cannot empty node_modules under the running broker. The
-# staged node_modules and dist are renamed into the checkout only when both steps passed.
+# Install and build run in a staging copy of the fetched commit beside the checkout
+# (<checkout>.staging), never in the live tree, so a failed `npm ci` cannot empty node_modules
+# under the running broker. The staged node_modules and dist are renamed into the checkout, and
+# the checkout fast-forwarded to that commit, only when both steps passed. The old node_modules
+# and dist stay beside them as .prev until the post-checks pass.
 set -euo pipefail
 
 [ $# -eq 0 ] || { echo "restart-window: takes no arguments; --force is the owner's call" >&2; exit 1; }
 
 log_dir="${AGENT_CHAT_HOME:-$HOME/.agent-chat}"
-PUSH_RE='(^|/)git push( |$)|(^|/)git -C [^ ]+ push( |$)|(^|/)git-remote-http'
+PUSH_RE='(^|/)git( -[Cc] [^ ]+| --[^ ]+)* push( |$)|(^|/)git-remote-http'
 MERGE_RE='(^|/)seat-merge( |$)|(^|/)bin/merge( |$)|(^|/)gh pr merge( |$)|(agent-chat|index\.js) gh-write( |$)'
 blockers=()
 
@@ -42,6 +48,9 @@ else
     branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD)"
     [ "$branch" = main ] || blockers+=("installed checkout $repo is on '$branch', not main")
     [ -z "$(git -C "$repo" status --porcelain)" ] || blockers+=("installed checkout $repo has uncommitted changes")
+    for name in node_modules dist; do
+      [ ! -e "$repo/$name.prev" ] || blockers+=("$repo/$name.prev is left from an earlier run; to roll back: rm -rf $repo/$name && mv $repo/$name.prev $repo/$name && agent-chat service restart; to keep the current build: rm -rf $repo/$name.prev")
+    done
   fi
 fi
 
@@ -57,23 +66,42 @@ swap_in() { # swap_in <stage> <live> <name>
   mv "$1/$3" "$2/$3" || { [ ! -e "$2/$3.prev" ] || mv "$2/$3.prev" "$2/$3"; return 1; }
 }
 
-# Pull and build before the restart, so the broker never starts on old dist while node_modules changes.
+# Puts back every kept .prev build. The caller resets src to $old_head where it had advanced.
+restore_prev() {
+  local name ok=0
+  for name in node_modules dist; do
+    [ -e "$repo/$name.prev" ] || continue
+    { rm -rf "${repo:?}/$name" && mv "$repo/$name.prev" "$repo/$name"; } || ok=1
+  done
+  return $ok
+}
+
+roll_back() {
+  restore_prev && git -C "$repo" reset -q --keep "$old_head"
+}
+
+# Fetch and build before the restart, so the broker never starts on old dist while node_modules
+# changes. Live src stays on the old commit until the build is swapped in.
 stage="$repo.staging"
+old_head="$(git -C "$repo" rev-parse HEAD)"
 stage_and_swap() {
-  git pull --ff-only origin main || return 1
+  git fetch -q origin main || return 1
+  local new_head
+  new_head="$(git rev-parse FETCH_HEAD)" || return 1
+  git merge-base --is-ancestor HEAD "$new_head" || { echo "restart-window: origin/main is not a fast-forward of HEAD" >&2; return 1; }
   rm -rf "$stage" && mkdir "$stage" || return 1
-  git archive HEAD | tar -x -C "$stage" || return 1
+  git archive "$new_head" | tar -x -C "$stage" || return 1
   (cd "$stage" && npm ci && npm run build) || return 1
-  rm -rf "$repo/node_modules.prev" "$repo/dist.prev"
   swap_in "$stage" "$repo" node_modules || return 1
-  swap_in "$stage" "$repo" dist || { rm -rf "$repo/node_modules"; [ ! -e "$repo/node_modules.prev" ] || mv "$repo/node_modules.prev" "$repo/node_modules"; return 1; }
+  swap_in "$stage" "$repo" dist || { restore_prev; return 1; }
+  git merge -q --ff-only "$new_head" || { restore_prev; return 1; }
 }
 if ! (cd "$repo" && stage_and_swap); then
   rm -rf "$stage"
-  echo "restart-window: pull, install or build failed; the broker was not touched" >&2
+  echo "restart-window: fetch, install or build failed; the broker was not touched" >&2
   exit 4
 fi
-rm -rf "$stage" "$repo/node_modules.prev" "$repo/dist.prev"
+rm -rf "$stage"
 
 # Floored to the second, which can only widen the window by under a second.
 started_at="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
@@ -84,10 +112,16 @@ set -e
 [ -z "$restart_out" ] || echo "$restart_out"
 if [ "$restart_code" -ne 0 ]; then
   if [[ "$restart_out" == "refusing to restart:"* ]]; then
+    roll_back || echo "restart-window: rolling the checkout back to $old_head failed" >&2
     echo "restart-window: refusing: the broker has work in flight (message above)" >&2
     exit 1
   fi
-  echo "BROKER MAY BE DOWN: run agent-chat service start"
+  echo "restart-window: the restart failed; rolling back to $old_head and restarting on it" >&2
+  if roll_back && agent-chat service restart; then
+    echo "restart-window: rolled back; the broker runs the old build"
+  else
+    echo "BROKER MAY BE DOWN: run agent-chat service start"
+  fi
   exit 3
 fi
 
@@ -124,5 +158,9 @@ else
   check "agent ls --json parses" 1
 fi
 
-[ "$failed" -eq 0 ] || exit 2
+if [ "$failed" -ne 0 ]; then
+  echo "restart-window: the old build is kept; to roll back: cd $repo && git reset --keep $old_head && rm -rf node_modules dist && mv node_modules.prev node_modules && mv dist.prev dist && agent-chat service restart"
+  exit 2
+fi
+rm -rf "$repo/node_modules.prev" "$repo/dist.prev"
 echo "restart-window OK"

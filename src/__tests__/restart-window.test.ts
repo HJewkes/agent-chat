@@ -11,7 +11,7 @@ const shim = (body: string): string => `#!/usr/bin/env bash\n${body}\n`
 const SHIMS: Record<string, string> = {
   pgrep: shim(`
 case "$*" in
-  *"git push"*) pids="\${FAKE_PGREP_PUSH:-}" ;;
+  *push*) pids="\${FAKE_PGREP_PUSH:-}" ;;
   *) pids="\${FAKE_PGREP_MERGE:-}" ;;
 esac
 [ -n "$pids" ] && { echo "$pids" | tr , "\\n"; exit 0; }
@@ -26,7 +26,11 @@ echo "cwd $PWD" >> "$SHIM_CWD_LOG"
 echo "agent-chat $*" >> "$SHIM_LOG"
 case "$1 $2" in
   "service restart")
+    echo "$(cat "$SHIM_REPO/dist/marker")" >> "$SHIM_DIST_LOG"
     if [ -n "\${FAKE_RESTART_FAIL:-}" ]; then echo "$FAKE_RESTART_FAIL" >&2; exit 1; fi
+    if [ -n "\${FAKE_RESTART_FAIL_ONCE:-}" ] && [ ! -e "$AGENT_CHAT_HOME/failed-once" ]; then
+      touch "$AGENT_CHAT_HOME/failed-once"; echo "$FAKE_RESTART_FAIL_ONCE" >&2; exit 1
+    fi
     now=$(date -u +%Y-%m-%dT%H:%M:%S.999Z)
     for ((i = 0; i < \${FAKE_STARTED:-1}; i++)); do
       echo "{\\"ts\\":\\"$now\\",\\"event\\":\\"broker_started\\"}" >> "$AGENT_CHAT_HOME/broker.log\${FAKE_LOG_SUFFIX:-}"
@@ -49,6 +53,22 @@ const liveMarkers = (): string[] =>
   ['node_modules', 'dist'].map(d => fs.readFileSync(path.join(repo, d, 'marker'), 'utf8').trim())
 
 const git = (...args: string[]): string => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' })
+
+const pushToOrigin = (file: string): string => {
+  const other = path.join(dir, 'other')
+  const inOther = (...args: string[]): string =>
+    execFileSync('git', ['-C', other, '-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args], {
+      encoding: 'utf8',
+    })
+  execFileSync('git', ['clone', '-q', path.join(dir, 'origin.git'), other])
+  fs.writeFileSync(path.join(other, file), 'r')
+  inOther('add', '.')
+  inOther('commit', '-q', '-m', file)
+  inOther('push', '-q', 'origin', 'main')
+  return inOther('rev-parse', 'HEAD').trim()
+}
+
+const distAtRestarts = (): string => fs.readFileSync(path.join(dir, 'dist.log'), 'utf8')
 
 beforeEach(() => {
   dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'restart-window-')))
@@ -94,6 +114,8 @@ const run = (env: Record<string, string> = {}, args: string[] = []) => {
       AGENT_CHAT_HOME: home,
       SHIM_LOG: log,
       SHIM_CWD_LOG: path.join(dir, 'cwd.log'),
+      SHIM_DIST_LOG: path.join(dir, 'dist.log'),
+      SHIM_REPO: repo,
       ...env,
     },
   })
@@ -114,6 +136,12 @@ describe('restart-window process patterns', () => {
     expect(push.test('git push origin main')).toBe(true)
     expect(push.test('/opt/homebrew/bin/git -C /x/work/tree push origin HEAD')).toBe(true)
     expect(push.test('/usr/lib/git-core/git-remote-https origin https://example.invalid/r.git')).toBe(true)
+  })
+
+  it('matches a git push behind -c and long global options', () => {
+    expect(push.test('git -c core.askPass=x push origin main')).toBe(true)
+    expect(push.test('/usr/bin/git --no-pager push')).toBe(true)
+    expect(push.test('git -C /x -c a=b --no-pager push origin HEAD')).toBe(true)
   })
 
   it('does not match other git commands that mention push', () => {
@@ -172,6 +200,17 @@ describe('restart-window pre-checks', () => {
     expect(r.calls).toBe('')
   })
 
+  it.each(['node_modules', 'dist'])('refuses on a leftover %s.prev and names both recoveries', name => {
+    fs.mkdirSync(path.join(repo, `${name}.prev`))
+    const r = run()
+
+    expect(r.code).toBe(1)
+    expect(r.err).toContain(`${name}.prev is left from an earlier run`)
+    expect(r.err).toContain(`mv ${repo}/${name}.prev ${repo}/${name}`)
+    expect(r.err).toContain(`to keep the current build: rm -rf ${repo}/${name}.prev`)
+    expect(r.calls).toBe('')
+  })
+
   it('rejects any argument, including --force', () => {
     const r = run({}, ['--force'])
 
@@ -198,32 +237,38 @@ describe('restart-window update and restart', () => {
     }
   })
 
-  it('exits 4 and leaves the live tree untouched when git pull fails', () => {
-    const other = path.join(dir, 'other')
-    execFileSync('git', ['clone', '-q', path.join(dir, 'origin.git'), other])
-    fs.writeFileSync(path.join(other, 'remote.txt'), 'r')
-    execFileSync('git', ['-C', other, '-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'add', '.'])
-    execFileSync('git', [
-      '-C',
-      other,
-      '-c',
-      'user.email=t@example.invalid',
-      '-c',
-      'user.name=t',
-      'commit',
-      '-q',
-      '-m',
-      'r',
-    ])
-    execFileSync('git', ['-C', other, 'push', '-q', 'origin', 'main'])
+  it('exits 4 and leaves the live tree untouched when origin is not a fast-forward', () => {
+    pushToOrigin('remote.txt')
     fs.writeFileSync(path.join(repo, 'local.txt'), 'l')
     git('add', '.')
     git('commit', '-q', '-m', 'local')
+    const head = git('rev-parse', 'HEAD')
     const r = run()
 
     expect(r.code).toBe(4)
     expect(r.calls).toBe('')
+    expect(git('rev-parse', 'HEAD')).toBe(head)
     expect(liveMarkers()).toEqual(['old', 'old'])
+  })
+
+  it('builds the fetched commit and keeps live src on the old commit when the build fails', () => {
+    const head = git('rev-parse', 'HEAD')
+    pushToOrigin('remote.txt')
+    const r = run({ FAKE_NPM_FAIL: 'run build' })
+
+    expect(r.code).toBe(4)
+    expect(git('rev-parse', 'HEAD')).toBe(head)
+    expect(fs.existsSync(path.join(repo, 'remote.txt'))).toBe(false)
+    expect(liveMarkers()).toEqual(['old', 'old'])
+  })
+
+  it('advances live src to the fetched commit on success', () => {
+    const fetched = pushToOrigin('remote.txt')
+    const r = run()
+
+    expect(r.code).toBe(0)
+    expect(git('rev-parse', 'HEAD').trim()).toBe(fetched)
+    expect(fs.existsSync(path.join(repo, 'remote.txt'))).toBe(true)
   })
 
   it('runs npm in the staging dir and swaps the staged install and build in on success', () => {
@@ -243,6 +288,28 @@ describe('restart-window update and restart', () => {
 
     expect(r.code).toBe(3)
     expect(r.out).toContain('BROKER MAY BE DOWN: run agent-chat service start')
+  })
+
+  it('on a failed restart restores the old build and commit and restarts the broker on it', () => {
+    const head = git('rev-parse', 'HEAD')
+    pushToOrigin('remote.txt')
+    const r = run({ FAKE_RESTART_FAIL_ONCE: 'Started, but nothing is answering' })
+
+    expect(r.code).toBe(3)
+    expect(distAtRestarts()).toBe('new\nold\n')
+    expect(liveMarkers()).toEqual(['old', 'old'])
+    expect(git('rev-parse', 'HEAD')).toBe(head)
+    expect(fs.readdirSync(repo).sort()).toEqual(['.git', '.gitignore', 'bin', 'dist', 'node_modules'])
+    expect(r.out).toContain('rolled back; the broker runs the old build')
+    expect(r.out).not.toContain('BROKER MAY BE DOWN')
+  })
+
+  it('rolls the swap back when the restart guard refuses', () => {
+    const r = run({ FAKE_RESTART_FAIL: 'refusing to restart: unanswered ask from alice' })
+
+    expect(r.code).toBe(1)
+    expect(liveMarkers()).toEqual(['old', 'old'])
+    expect(fs.existsSync(path.join(repo, 'dist.prev'))).toBe(false)
   })
 
   it('installs and builds before it restarts', () => {
@@ -277,6 +344,17 @@ describe('restart-window post-checks', () => {
     expect(r.code).toBe(2)
     expect(r.out).toContain(`FAIL: ${line}`)
     expect(r.out).not.toContain('restart-window OK')
+  })
+
+  it('keeps the old build as .prev and names the rollback when a post-check fails', () => {
+    const r = run({ FAKE_STARTED: '0' })
+
+    expect(r.code).toBe(2)
+    expect(liveMarkers()).toEqual(['new', 'new'])
+    for (const name of ['node_modules', 'dist']) {
+      expect(fs.readFileSync(path.join(repo, `${name}.prev`, 'marker'), 'utf8')).toBe('old')
+    }
+    expect(r.out).toContain('to roll back: cd')
   })
 
   it('ignores log lines from before the restart', () => {
