@@ -591,7 +591,11 @@ globs and any unquoted expansion as possibly splitting. So `git -C $PWD status` 
 
 `gh api "repos/o/r/commits/$SHA/check-runs" --jq .check_runs` is allowed although the guard cannot
 resolve `SHA`, because nothing in it can be a write. The call must hold exactly one endpoint, quoted
-so the shell keeps it one word and opening with literal text. Every flag must be on the allowlist:
+so the shell keeps it one word, and anchored: its literal prefix must be `repos/`, `orgs/` or `users/`
+(with or without a leading `/`) plus the first segment and a `/`, such as `repos/HJewkes/`, with no
+expansion before that point. So `"repos/$OWNER_REPO/commits"` is denied, because the literal stops
+before the owner segment, and so is an endpoint that holds `://`, starts with a scheme, `//` or a
+host, or names `graphql`, which gh POSTs. A header value that starts with `-` is denied. Every flag must be on the allowlist:
 `--paginate`, `--slurp`, `--silent`, `-i`, `--include`, `--verbose`, and `-H`, `--header`,
 `--hostname`, `--cache` and `-p`, `--preview` with a literal value (a header that names a method or
 override is denied). Only the value of `--jq`, `-q`, `--template` or `-t` may be an expansion. Any

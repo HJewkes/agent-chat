@@ -23,6 +23,10 @@ const VALUE_FLAGS = new Map([
 ])
 // An attached filter whose value is an expansion: the literal `--jq=` opens the word.
 const FILTER_PREFIX = /^--(?:jq|template)=/
+// A relative GitHub REST path whose first segment after the collection is literal, so no expansion can
+// form a scheme, a host or another API.
+const REST_PREFIX = /^\/?(?:repos|orgs|users)\/[^/]+\//
+const GRAPHQL = /^\/?graphql/i
 const METHOD_OVERRIDE = /method|override/i
 
 export type ApiRead = 'read' | 'splits' | 'other'
@@ -49,13 +53,19 @@ function flagWidth(words: readonly Word[], i: number): number | 'other' {
     const next = words[i + 1]
     if (next === undefined) return 'other'
     if (next.value === undefined) return open ? 2 : 'other'
-    return !open && METHOD_OVERRIDE.test(next.value) ? 'other' : 2
+    return !open && (METHOD_OVERRIDE.test(next.value) || next.value.startsWith('-')) ? 'other' : 2
   }
   const glued = attached(value)
   const gluedOpen = glued && VALUE_FLAGS.get(glued.name)
   if (glued === undefined || gluedOpen === undefined) return 'other'
   const literal = !marked.slice(glued.name.length + 1).includes(LIVE)
-  return literal && !METHOD_OVERRIDE.test(glued.value) ? 1 : 'other'
+  return literal && !METHOD_OVERRIDE.test(glued.value) && !glued.value.startsWith('-') ? 1 : 'other'
+}
+
+/** An endpoint is a REST path; one the guard cannot resolve must also be anchored by literal text before its first expansion. */
+function anchored(word: Word, raw: string): boolean {
+  if (GRAPHQL.test(raw) || raw.includes('://')) return false
+  return word.value !== undefined || REST_PREFIX.test(word.marked.slice(0, word.marked.indexOf(LIVE)))
 }
 
 /**
@@ -79,6 +89,7 @@ export function classifyApiRead(
       return 'other'
     if (filter) continue
     if (!raw.startsWith('-')) {
+      if (!anchored(word, raw)) return 'other'
       endpoints++
       continue
     }
