@@ -1,6 +1,7 @@
 import { burndownConfigPath, burndownLedgerPath } from '../../paths.js'
 import { activeWorkRoot } from '../active-work.js'
 import { gateAccount } from './budget-gate.js'
+import { backoffHeld } from './backoff.js'
 import { taskRefusal, type Initiative } from './eligibility.js'
 import { heldClaims, isStalled, readLedger, type Claim, type DeciderState, type Ledger } from './ledger.js'
 import type { Roster } from './observe.js'
@@ -142,10 +143,12 @@ function deciderStatus(state: DeciderState, now: Date): string {
 }
 
 /** Tasks that pass eligibility across opted-in initiatives, before budget and trust; the doctor line's `n`. */
-export function eligibleCount(root = activeWorkRoot()): number {
-  const claimed = new Set(heldClaims(readLedger(burndownLedgerPath())).map(c => c.taskId))
+export function eligibleCount(root = activeWorkRoot(), now = new Date()): number {
+  const ledger = readLedger(burndownLedgerPath())
+  const claimed = new Set(heldClaims(ledger).map(c => c.taskId))
+  const held = backoffHeld(ledger, now)
   return readInitiatives(root)
     .filter(i => i.state === 'focused' && i.autonomy !== undefined)
-    .flatMap(i => readTasks(root, i.slug).map(t => taskRefusal(t, i.autonomy?.grants ?? [], claimed)))
+    .flatMap(i => readTasks(root, i.slug).map(t => taskRefusal(t, i.autonomy?.grants ?? [], claimed, held)))
     .filter(refusal => refusal === undefined).length
 }
