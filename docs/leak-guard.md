@@ -371,6 +371,13 @@ re-checked as `git <value> <rest>`, so an alias that sets `-c core.hooksPath` is
 arguments put in for `$1` to `$9`, `$@` and `$*` and appended as git appends them. More than 4
 nested aliases is a deny. A failed lookup allows the call, as a plain push is allowed.
 
+A prefix assignment is `NAME=value`, `NAME+=value`, `NAME[idx]=value` or `NAME[idx]+=value`: the
+shell reads the word after it as the command, so the guard skips all four forms wherever it looks
+for the command word, behind `env`, `command`, `nice` and the like, and in the `gh api` host and
+`git` config reads. An append or a subscripted assignment has a value the guard cannot know, so
+a config variable set that way counts as unreadable. A word that opens a subscript and never
+closes it (`A[a b]=1 git push`) is denied, since the guard cannot tell where the command starts.
+
 Every command that is or may be git reaches this check at one place, after the wrappers above
 are stripped and inside every `sh -c` string, `eval`, `env -S`, `$(...)` and `!` alias body:
 

@@ -112,6 +112,7 @@ export const REASONS = {
   noVerify: `leak-guard: git push --no-verify skips the pre-push leak scan. Push without it. ${DOCS}`,
   gitConfig: `leak-guard: git -c or --config-env on core.hooksPath or an alias would bypass the pre-push leak scan. ${DOCS}`,
   configWrite: `leak-guard: writing core.hooksPath, or an alias that skips hooks, is not allowed for agents. ${DOCS}`,
+  assignmentSubscript: `leak-guard: a word that opens an assignment subscript, NAME[...], but is not a complete NAME[idx]=value, so the guard cannot tell where the command starts. Keep the subscript free of blanks, or run the command without a prefix assignment. ${DOCS}`,
   gitConfigEnv: `leak-guard: setting, exporting or unsetting GIT_CONFIG_* would switch off the pre-push leak scan. ${DOCS}`,
   envClear: `leak-guard: env -i clears the variables that run the pre-push leak scan. ${DOCS}`,
   protectedPath: `leak-guard: the leak guard's hook directory and private term list are off limits to agents. ${DOCS}`,
@@ -180,7 +181,15 @@ const XARGS_LONG_FLAG = new Set([
 ])
 const GIT_VALUE_OPTS = new Set(['-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix'])
 
-const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=/
+// `NAME=`, `NAME+=`, `NAME[idx]=` and `NAME[idx]+=` all assign: the shell reads the next word as the command.
+// The lexer marks the `[` of a subscript as live, since it is a glob character elsewhere.
+const ASSIGNMENT = new RegExp(`^([A-Za-z_][A-Za-z0-9_]*)(?:${LIVE}?\\[.*\\])?\\+?=`, 's')
+const ASSIGNMENT_VALUE = new RegExp(`^[A-Za-z_][A-Za-z0-9_]*(?:${LIVE}?\\[.*\\])?\\+?=(.*)$`, 's')
+const SUBSCRIPTED_OR_APPENDING = new RegExp(`^[A-Za-z_][A-Za-z0-9_]*(?:${LIVE}?\\[|\\+=)`)
+// A word that opens a subscript and never closes it, as in `A[a b]=1 cmd`: no way to tell where the command starts.
+const BROKEN_SUBSCRIPT = new RegExp(`^[A-Za-z_][A-Za-z0-9_]*${LIVE}?\\[[^\\]]*$`)
+const assignedValue = (word: string): string => ASSIGNMENT_VALUE.exec(word)?.[1] ?? ''
+const brokenAssignment = (word: string): boolean => BROKEN_SUBSCRIPT.test(word)
 const isGitConfigVar = (name: string | undefined): boolean => name !== undefined && /^GIT_CONFIG/.test(name)
 const NO_VERIFY = /^--no-veri(?:f|fy)?$/
 const MENTIONS_GIT = /\b(?:git|gh)\b|GIT_CONFIG/
@@ -203,6 +212,7 @@ function unwrap(words: readonly string[]): Unwrapped {
     const name = path.basename(head)
     const assigned = ASSIGNMENT.exec(head)?.[1]
     const next = wrapperEnd(rest, at, name)
+    if (brokenAssignment(head)) return { reason: REASONS.assignmentSubscript }
     if (assigned !== undefined) {
       if (isGitConfigVar(assigned)) return { reason: REASONS.gitConfigEnv }
       assigns.push(head)
@@ -269,6 +279,21 @@ function clusterValueWords(cluster: string): number {
 type EnvRun =
   { words: readonly string[]; at: number; chdir?: boolean; assigns: string[] } | { reason: string }
 
+const EXPANDS = new RegExp(`${LIVE}[$\`]`)
+
+/** The value of an `env -S` / `--split-string` word, alone or ending an option cluster like `-vS`, and how many words it takes. */
+function splitString(a: string, next: string | undefined): { value: string; width: number } | undefined {
+  if (a === '--split-string') return { value: next ?? '', width: 2 }
+  const glued = /^--split-string=(.*)/s.exec(a)?.[1]
+  if (glued !== undefined) return { value: glued, width: 1 }
+  const cluster = /^-[a-zA-Z]*S(.*)$/s.exec(a)
+  if (cluster === null) return undefined
+  return cluster[1] === '' ? { value: next ?? '', width: 2 } : { value: cluster[1] as string, width: 1 }
+}
+
+// env splits the value by its own rules: a backslash escapes, and it honours more blanks than the shell does.
+const ENV_SPLIT_ESCAPES = /[\\]|[^\S \t]/
+
 function unwrapEnv(args: readonly string[], i: number): EnvRun {
   let chdir = false
   const assigns: string[] = []
@@ -282,16 +307,30 @@ function unwrapEnv(args: readonly string[], i: number): EnvRun {
       continue
     }
     if (a === '-' || a === '--ignore-environment' || /^-[^-]*i/.test(a)) return { reason: REASONS.envClear }
-    if (a === '-S' || a === '--split-string') {
-      const split = parseShell(args[i + 1] ?? '')[0]?.marked ?? []
-      return { words: [...split, ...args.slice(i + 2)], at: 0, assigns }
+    const split = splitString(a, args[i + 1])
+    if (split !== undefined) {
+      if (EXPANDS.test(split.value) || ENV_SPLIT_ESCAPES.test(split.value))
+        return { reason: REASONS.hiddenCommand }
+      const words = [...(parseShell(split.value)[0]?.marked ?? []), ...args.slice(i + split.width)]
+      const inner = unwrapEnv(words, 0)
+      if ('reason' in inner) return inner
+      return { ...inner, chdir: chdir || inner.chdir === true, assigns: [...assigns, ...inner.assigns] }
     }
     chdir ||= /^(?:-C|--chdir)/.test(a)
     if (a === '-C' || a === '--chdir' || a === '-P') i++
-    else if (a === '--') return { words: args, at: i + 1, chdir, assigns }
-    else if (!a.startsWith('-') && !ASSIGNMENT.test(a)) break
-    else if (isGitConfigVar(ASSIGNMENT.exec(a)?.[1])) return { reason: REASONS.gitConfigEnv }
-    else if (ASSIGNMENT.test(a)) assigns.push(a)
+    else if (a === '--') {
+      // env still reads NAME=value operands after `--`.
+      let at = i + 1
+      for (; at < args.length && (args[at] as string).includes('='); at++) {
+        const operand = args[at] as string
+        if (isGitConfigVar(operand.split('=')[0])) return { reason: REASONS.gitConfigEnv }
+        assigns.push(operand)
+      }
+      return { words: args, at, chdir, assigns }
+    } else if (brokenAssignment(a)) return { reason: REASONS.assignmentSubscript }
+    else if (!a.startsWith('-') && !a.includes('=')) break
+    else if (isGitConfigVar(a.split('=')[0])) return { reason: REASONS.gitConfigEnv }
+    else if (!a.startsWith('-')) assigns.push(a)
   }
   return { words: args, at: Math.min(i, args.length), chdir, assigns }
 }
@@ -479,9 +518,14 @@ function aliasEnv(
 ): Overrides | undefined {
   const set = new Map(scope.exports)
   for (const word of run.assigns) {
-    const eq = word.indexOf('=')
-    const value = eq < 0 ? undefined : (resolveWord(word.slice(eq + 1), run.cmd, ctx, scope) ?? UNSURE)
-    set.set(eq < 0 ? word : word.slice(0, eq), value)
+    const name = ASSIGNMENT.exec(word)?.[1]
+    const value =
+      name === undefined
+        ? undefined
+        : SUBSCRIPTED_OR_APPENDING.test(word)
+          ? UNSURE
+          : (resolveWord(assignedValue(word), run.cmd, ctx, scope) ?? UNSURE)
+    set.set(name ?? word, value)
   }
   const env: Record<string, string | undefined> = {}
   for (const name of [...CONFIG_ENV, ...vars]) {
@@ -957,8 +1001,10 @@ const DEFAULT_HOST = 'github.com'
 function reroutes(cmd: SimpleCommand): boolean {
   const words = cmd.marked.map(unmark)
   const assigned = words.some(word => {
-    const [, name = '', value = ''] = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(word) ?? []
-    return PROXY_VAR.test(name) || (name === 'GH_HOST' && value !== DEFAULT_HOST)
+    const name = ASSIGNMENT.exec(word)?.[1] ?? ''
+    const value = assignedValue(word)
+    const unknownHost = SUBSCRIPTED_OR_APPENDING.test(word)
+    return PROXY_VAR.test(name) || (name === 'GH_HOST' && (unknownHost || value !== DEFAULT_HOST))
   })
   const hosts = words.flatMap((word, i) =>
     word === '--hostname' ? [words[i + 1]] : word.startsWith('--hostname=') ? [word.slice(11)] : [],
@@ -1227,7 +1273,9 @@ function exported(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): Readonly
   const sure = !cmd.nested && SURE_BEFORE.has(cmd.before) && JOINS_AFTER.has(cmd.after)
   const set = new Map(scope.exports)
   const value = (word: string): Setting =>
-    sure ? (resolveWord(word.slice(word.indexOf('=') + 1), cmd, ctx, scope) ?? UNSURE) : UNSURE
+    sure && !SUBSCRIPTED_OR_APPENDING.test(word)
+      ? (resolveWord(assignedValue(word), cmd, ctx, scope) ?? UNSURE)
+      : UNSURE
   if (head === undefined)
     for (const word of unwrapped.assigns) set.set(ASSIGNMENT.exec(word)?.[1] ?? '', value(word))
   else if (head === 'export')
