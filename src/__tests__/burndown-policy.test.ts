@@ -95,6 +95,22 @@ defaults:
 ---
 `
 
+describe('spend.per_claim_usd', () => {
+  const seatWith = (value: number) => parseSeat(`---\nspend: {per_claim_usd: ${value}}\n---\n`, 'a')
+
+  it('accepts a positive cap', () => {
+    expect(seatWith(30).spend.per_claim_usd).toBe(30)
+  })
+
+  it('leaves the cap undefined when the seat sets none', () => {
+    expect(parseSeat('---\nspend: {}\n---\n', 'a').spend.per_claim_usd).toBeUndefined()
+  })
+
+  it.each([0, -1])('refuses a cap of %d at parse', value => {
+    expect(() => seatWith(value)).toThrow(/per_claim_usd/)
+  })
+})
+
 describe('mergeDefaults', () => {
   it('overrides kind weights and share caps key by key and nothing else', () => {
     const charter = parseCharter(charterText())
