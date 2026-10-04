@@ -2,6 +2,7 @@ import type { AgentLifecycle, DeliveredMessage } from '../../protocol.js'
 import type { ExceptionClass } from './exception.js'
 import { addClaim, isStalled, sameClaim, type AgentPhase, type Claim, type Ledger } from './ledger.js'
 import { agentNameFor, reviewerNameFor, successorNameFor } from './plan.js'
+import type { Progress } from './progress.js'
 import type { PlannedSlice, Report } from './report.js'
 import { shepherdTarget, type Registration, type ShepherdRow } from './shepherd.js'
 import type { ActivityRead } from './stall.js'
@@ -30,6 +31,8 @@ export interface Observation {
   sliceProblems?: string[]
   /** A live lane agent's transcript read for the stall check, with the row's spawn time (CC-654). */
   activity?: { read: ActivityRead; spawnedAt: number }
+  /** A live implementer's worktree HEAD and uncommitted hash (CC-659); read, not yet acted on. */
+  progress?: Progress | 'unreadable'
   diff?: { reviewable: boolean; reason: string }
   /** Shepherd's row for the claim's PR, absent from the row when Shepherd has none; `landed` is read for a finished run. */
   shepherd?: { row?: ShepherdRow; landed?: boolean }

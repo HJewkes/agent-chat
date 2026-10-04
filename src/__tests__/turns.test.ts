@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { projectSlug } from '../agents/transcript.js'
 import { readActivity, readTurns } from '../agents/turns.js'
+import { classify } from '../agents/burndown/stall.js'
 import { ToolHandler } from '../server/tools.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { AgentIdentity, ServerMessage } from '../protocol.js'
@@ -281,5 +282,66 @@ describe('reading activity for a stall check', () => {
 
   it('reads a missing transcript as missing', () => {
     expect(readActivity(CWD, SESSION)).toBe('missing')
+  })
+
+  const callAt = (id: string, name: string, input: unknown, timestamp: string) =>
+    say('assistant', [{ type: 'tool_use', id, name, input }], at(timestamp))
+  const resultAt = (id: string, timestamp: string) =>
+    say('user', [{ type: 'tool_result', tool_use_id: id, content: 'ok' }], at(timestamp))
+  const pollPairs = Array.from({ length: 5 }, (_, i) => {
+    const minute = String(i + 2).padStart(2, '0')
+    return [
+      callAt(
+        `poll_${i}`,
+        'mcp__plugin_agent-chat_agent-chat__chat_inbox',
+        {},
+        `2026-07-30T11:${minute}:00.000Z`,
+      ),
+      resultAt(`poll_${i}`, `2026-07-30T11:${minute}:01.000Z`),
+    ]
+  }).flat()
+
+  it('classifies a session that only polls its inbox for six minutes as stalled', () => {
+    const edit = callAt('toolu_e', 'Edit', { file_path: 'a.ts' }, '2026-07-30T10:59:30.000Z')
+    write([edit, resultAt('toolu_e', '2026-07-30T11:00:00.000Z'), ...pollPairs])
+
+    const activity = readActivity(CWD, SESSION)
+    const stall = classify(
+      activity,
+      { phaseAt: '2026-07-30T10:50:00.000Z' },
+      { spawnedAt: Date.parse('2026-07-30T10:50:00.000Z') },
+      new Date('2026-07-30T11:06:00.000Z'),
+    )
+
+    expect(activity).toEqual({ lastAt: '2026-07-30T11:00:00.000Z' })
+    expect(stall).toEqual({ state: 'stalled', reason: 'idle' })
+  })
+
+  it('classifies a session whose tool calls return real results as working', () => {
+    const work = callAt('toolu_w', 'Edit', { file_path: 'a.ts' }, '2026-07-30T11:05:00.000Z')
+    write([...pollPairs, work, resultAt('toolu_w', '2026-07-30T11:05:30.000Z')])
+
+    const stall = classify(
+      readActivity(CWD, SESSION),
+      { phaseAt: '2026-07-30T10:50:00.000Z' },
+      { spawnedAt: Date.parse('2026-07-30T10:50:00.000Z') },
+      new Date('2026-07-30T11:06:00.000Z'),
+    )
+
+    expect(stall).toEqual({ state: 'working' })
+  })
+
+  it('does not count a Bash sleep as progress', () => {
+    const sleep = callAt('toolu_s', 'Bash', { command: 'sleep 60' }, '2026-07-30T11:02:00.000Z')
+    write([bashCall, bashResult, sleep, resultAt('toolu_s', '2026-07-30T11:03:00.000Z')])
+
+    expect(readActivity(CWD, SESSION)).toEqual({ lastAt: '2026-07-30T11:01:00.000Z' })
+  })
+
+  it('counts a Bash call that runs tests as progress', () => {
+    const test = callAt('toolu_t', 'Bash', { command: 'npm test' }, '2026-07-30T11:02:00.000Z')
+    write([bashCall, bashResult, test, resultAt('toolu_t', '2026-07-30T11:03:00.000Z')])
+
+    expect(readActivity(CWD, SESSION)).toEqual({ lastAt: '2026-07-30T11:03:00.000Z' })
   })
 })

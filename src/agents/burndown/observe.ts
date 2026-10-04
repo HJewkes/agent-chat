@@ -8,6 +8,7 @@ import { planPathFor } from './brief.js'
 import { run, type Runner } from './exec.js'
 import { AGENT_PHASES, type Claim } from './ledger.js'
 import { DEFAULT_NAME_PREFIX, type WorktreeUse } from './plan.js'
+import { readProgress, type Progress } from './progress.js'
 import { parseReport, readSlices } from './report.js'
 import type { ActivityRead } from './stall.js'
 import { assessDiff, GIT_BIN, type DiffVerdict } from './review-diff.js'
@@ -45,6 +46,8 @@ export interface ObserveDeps {
   readFile?: (file: string) => string | undefined
   /** The row's transcript activity; defaults to `readActivity`. */
   activity?: (agent: AgentIdentity) => ActivityRead
+  /** A worktree's progress evidence; defaults to `readProgress`. */
+  progress?: (worktree: string) => Progress | 'unreadable'
 }
 
 export interface Observed {
@@ -75,6 +78,8 @@ const readFileOrUndefined = (file: string): string | undefined => {
 const defaultActivity = (agent: AgentIdentity): ActivityRead =>
   readActivity(agent.cwd, agent.sessionId, agent.configDir === '' ? undefined : agent.configDir)
 
+const defaultProgress = (worktree: string): Progress | 'unreadable' => readProgress(worktree)
+
 const defaultFinalText = (agent: AgentIdentity): string | undefined =>
   finalAssistantText(agent.cwd, agent.sessionId, agent.configDir === '' ? undefined : agent.configDir)
 
@@ -100,6 +105,13 @@ async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Pr
   if (claim.phase === 'awaiting-merge' || claim.phase === 'shepherding') return withShepherd(obs, claim, deps)
   if (row !== undefined && LIVE.has(row.state) && isAgentPhase(claim.phase))
     obs.activity = { read: (deps.activity ?? defaultActivity)(row), spawnedAt: row.spawnedAt }
+  if (
+    row !== undefined &&
+    LIVE.has(row.state) &&
+    claim.phase === 'implementing' &&
+    claim.worktree !== undefined
+  )
+    obs.progress = (deps.progress ?? defaultProgress)(claim.worktree)
   if (row === undefined || !FINISHED.has(row.state) || claim.phase === 'spawning') return obs
   const text = (deps.finalText ?? defaultFinalText)(row)
   if (text !== undefined) obs.report = parseReport(text)
