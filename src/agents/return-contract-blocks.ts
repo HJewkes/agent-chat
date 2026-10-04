@@ -10,7 +10,7 @@ import type { ReturnContract } from './types.js'
  */
 
 /** A block is paid for on every contracted spawn, so it stays a paragraph. */
-export const MAX_BLOCK_CHARS = 2440
+export const MAX_BLOCK_CHARS = 2450
 
 const NEVER_PARK =
   'Never end a turn on a background task, a sleep or a ScheduleWakeup: a headless agent exits at ' +
@@ -38,7 +38,7 @@ export const REVIEWER_BODY_FILE_RULE =
 
 /** CC-690: the mechanical blockers (dirty tree, stale base, red checks, leak terms) cost a reviewer round each. */
 export const PR_READY_RULE =
-  'Before `gh-write -- pr create` run `agent-chat pr-ready --title <t> --body-file <f>`, fix every FAIL.'
+  'Before the first push, never after, run `agent-chat pr-ready --title <t> --body-file <f>`; fix every FAIL.'
 
 export const QUOTE_RULE =
   'Quote expansions in git and gh args (`git -C "$dir"`); never hold a command name in a variable.'

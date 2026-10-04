@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import YAML from 'yaml'
 import { defaultTermsFile, scanDeps, scanGhArgs } from '../../gh-write/scan.js'
+import { pushedBranchStep } from './pr-ready-pushed.js'
 
 export interface RunResult {
   code: number
@@ -20,6 +21,8 @@ export interface PrReadyOptions {
   bodyFile?: string
   /** Commander sets this false for `--no-rebase`. */
   rebase?: boolean
+  /** Fail, rather than note, a pushed branch that is behind the default branch. */
+  strict?: boolean
 }
 
 export interface PrReadyDeps {
@@ -328,8 +331,10 @@ export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultD
     base = await defaultBaseRef(run, cwd)
     return { ok: true, reason: base }
   }
-  const rebase = async (): Promise<StepOutcome> =>
-    opts.rebase === false ? { ok: true, reason: 'skipped (--no-rebase)' } : trappedRebaseStep(deps, base)
+  const rebase = async (): Promise<StepOutcome> => {
+    if (opts.rebase === false) return { ok: true, reason: 'skipped (--no-rebase)' }
+    return (await pushedBranchStep(run, cwd, base, opts.strict === true)) ?? trappedRebaseStep(deps, base)
+  }
   if (!(await step('clean-tree', () => cleanTreeStep(run, cwd)))) return fail()
   if (!(await step('base', resolveBase))) return fail()
   if (!(await step('rebase', rebase))) return fail()
