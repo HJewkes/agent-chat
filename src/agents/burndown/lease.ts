@@ -11,7 +11,10 @@ import type { StallCode } from './stall-code.js'
  */
 
 export const LEASE_MS = 30 * 60_000
-/** Renewals without a commit before the lease reads `no-progress`: about 2.5 h (CC-659 Q1). */
+/**
+ * Renewals without a commit before the lease reads `no-progress`: about 2 h 10 min
+ * of steady evidence at a 600 s tick (CC-659 Q1 aimed at 2.5 h).
+ */
 export const MAX_RENEWALS = 4
 
 export type Lease = NonNullable<Claim['lease']>
@@ -45,13 +48,18 @@ function seenIn(progress: Progress | undefined, obs: Observation): Seen {
   }
 }
 
-/** The fresh-claim grace: a new lease runs from the phase start. */
-function started(claim: Claim, obs: Observation): Lease {
-  const progressAt = Date.parse(claim.phaseAt)
+/**
+ * The fresh-claim grace: a new lease runs from the phase start. A claim first
+ * seen more than a window into its phase (one running at deploy) gets one full
+ * window from now, so it is not born expired.
+ */
+function started(claim: Claim, obs: Observation, now: Date): Lease {
+  const phaseAt = Date.parse(claim.phaseAt)
+  const from = now.getTime() - phaseAt > LEASE_MS ? now.getTime() : phaseAt
   const progress = typeof obs.progress === 'object' ? obs.progress : undefined
   return {
     progressAt: claim.phaseAt,
-    leaseUntil: iso(progressAt + LEASE_MS),
+    leaseUntil: iso(from + LEASE_MS),
     renewals: 0,
     ...seenIn(progress, obs),
   }
@@ -90,10 +98,17 @@ function inWindow(lease: Lease, seen: Seen, obs: Observation, now: Date): LeaseS
   return next.renewals > MAX_RENEWALS ? { lease: next, verdict: 'no-progress' } : { lease: next }
 }
 
+/** A lease from before the claim's current phase began, such as one held before a park and an answer, is stale. */
+function current(claim: Claim, obs: Observation, now: Date): Lease {
+  const held = claim.lease
+  const stale = held === undefined || Date.parse(held.progressAt) < Date.parse(claim.phaseAt)
+  return stale ? started(claim, obs, now) : held
+}
+
 /** The claim's lease after this tick's observation, and the verdict it gives, if any. */
 export function leaseStep(claim: Claim, obs: Observation, { parked, now }: LeaseContext): LeaseStep {
   if (claim.phase !== 'implementing' || claim.worktree === undefined) return {}
-  const lease = claim.lease ?? started(claim, obs)
+  const lease = current(claim, obs, now)
   if (typeof obs.progress !== 'object') return { lease, unknown: true }
   const progress = obs.progress
   const seen = seenIn(progress, obs)

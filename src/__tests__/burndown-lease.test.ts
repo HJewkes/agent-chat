@@ -179,4 +179,44 @@ describe('a fresh claim', () => {
     expect(step(claim({ phase: 'reviewing' }), { progress: progress() }, T0)).toEqual({})
     expect(step(claim({ worktree: undefined }), { progress: progress() }, T0)).toEqual({})
   })
+
+  it('restarts a lease held before a park, an answer and a successor', () => {
+    const dirty = { progress: progress({ dirtyCount: 1 }) }
+    const tick = (c: Claim, now: number): Claim => {
+      const patch = findingActions([c], new Map([['CC-1#', dirty]]), new Set(), new Date(now))[0]?.patch
+      return { ...c, ...patch }
+    }
+    const expired = tick(tick(claim({ lease: undefined }), T0 + 5 * MIN), UNTIL + 10 * MIN)
+    const parked = tick({ ...expired, phase: 'parked', phaseAt: iso(UNTIL + 15 * MIN) }, UNTIL + 20 * MIN)
+    const resumedAt = UNTIL + 60 * MIN
+    const resumed = { ...parked, phase: 'implementing' as const, phaseAt: iso(resumedAt) }
+
+    const after = tick(resumed, resumedAt + 5 * MIN)
+
+    expect(expired.finding?.code).toBe('dirty-uncommitted')
+    expect(parked.lease).toEqual(expired.lease)
+    expect(step(resumed, dirty, resumedAt + 5 * MIN).verdict).toBeUndefined()
+    expect(after.finding).toBeUndefined()
+    expect(after.lease).toMatchObject({ progressAt: iso(resumedAt), leaseUntil: iso(resumedAt + LEASE_MS) })
+  })
+})
+
+describe('a claim first seen more than a window into its phase', () => {
+  const now = T0 + 120 * MIN
+  const old = claim({ lease: undefined })
+
+  it('gives no verdict on the first tick and one full window from then', () => {
+    const result = step(old, { progress: progress() }, now)
+
+    expect(result.verdict).toBeUndefined()
+    expect(result.lease).toMatchObject({ progressAt: iso(T0), leaseUntil: iso(now + LEASE_MS) })
+  })
+
+  it('gives lease-expired 10 min past that window', () => {
+    const first = step(old, { progress: progress() }, now)
+
+    const later = step({ ...old, lease: first.lease }, { progress: progress() }, now + LEASE_MS + 10 * MIN)
+
+    expect(later.verdict).toBe('lease-expired')
+  })
 })

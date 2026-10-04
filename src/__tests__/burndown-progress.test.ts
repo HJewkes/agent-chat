@@ -5,6 +5,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { AgentIdentity } from '../protocol.js'
 import { observe } from '../agents/burndown/observe.js'
+import { run, type Runner } from '../agents/burndown/exec.js'
 import { readProgress, type Progress } from '../agents/burndown/progress.js'
 import type { Claim } from '../agents/burndown/ledger.js'
 
@@ -87,6 +88,23 @@ describe('reading a worktree for progress', () => {
 
   it('reads a failing git as unreadable', () => {
     expect(readProgress(repo, () => ({ status: 128, stdout: '' }))).toBe('unreadable')
+  })
+
+  it('falls back to the status hash when only the diff read fails, so head and dirty still read', () => {
+    writeFile('src/a.ts', 'edited\n')
+    const noDiff: Runner = (bin, args, cwd) =>
+      args[0] === 'diff' ? { status: null, stdout: '' } : run(bin, args, cwd)
+
+    const progress = readProgress(repo, noDiff)
+
+    expect(progress).toEqual({ ...read(), content: read().dirty })
+  })
+
+  it('returns a new content signal when an untracked file appears', () => {
+    const before = read()
+    writeFile('src/new.ts', 'new\n')
+
+    expect(read().content).not.toBe(before.content)
   })
 })
 
