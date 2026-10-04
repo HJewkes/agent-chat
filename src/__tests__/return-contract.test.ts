@@ -11,9 +11,12 @@ import { readLaunchPlan } from '../agents/launch-files.js'
 import { BUILTIN_PROFILES, parseProfile } from '../agents/profiles.js'
 import { carriesContract, contractOf, withReturnContract } from '../agents/return-contract.js'
 import {
+  BODY_FILE_RULE,
   IMPLEMENTER_WITHOUT_SHEPHERD,
   MAX_BLOCK_CHARS,
+  QUOTE_RULE,
   RETURN_CONTRACT_BLOCKS,
+  REVIEWER_BODY_FILE_RULE,
   SHEPHERD_NONE_MARKER,
 } from '../agents/return-contract-blocks.js'
 import { transcriptPath } from '../agents/transcript.js'
@@ -164,7 +167,8 @@ describe('the GitHub write path (CC-456)', () => {
   it('names gh-write as the only write path, with no fallback to plain gh', () => {
     const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
 
-    expect(text).toContain('`agent-chat gh-write -- <gh args>`, the only write path')
+    expect(text).toContain('`agent-chat gh-write -- <gh args> --body-file <f>`')
+    expect(text).toContain('gh-write is the only write path')
     expect(text).not.toContain('otherwise use plain `gh`')
   })
 })
@@ -199,7 +203,7 @@ describe('the check-run rule (CC-357)', () => {
     const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
 
     expect(text).toContain(
-      'CI: <paste of: gh api repos/<owner>/<repo>/commits/<head>/check-runs --paginate --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>',
+      'CI: <paste of: gh api "repos/<owner>/<repo>/commits/<head>/check-runs" --paginate --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>',
     )
     expect(text).toContain('never "green" alone')
     expect(text).toContain('`gh run watch` covers only one workflow')
@@ -213,7 +217,7 @@ describe('the check-run rule (CC-357)', () => {
     const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
 
     expect(text).toContain('Before MERGE, confirm every required check-run (one branch protection names)')
-    expect(text).toContain('commits/<head>/check-runs --paginate')
+    expect(text).toContain('commits/<head>/check-runs" --paginate')
     expect(text).toContain('FIX_FIRST if a required one failed')
     expect(text).toContain('A skipped check (std / compat) is not a failure')
   })
@@ -664,20 +668,27 @@ describe('the load-test rule (CC-473)', () => {
   ])('in the %s block applies only to an asked-for load test and kills by recorded PID', (_which, text) => {
     expect(text).not.toContain('pkill')
     expect(flat(text)).toContain('Only when the brief asks for a load test: record the PID of each burner')
-    expect(flat(text)).toContain('confirm with `pgrep` that none survive')
+    expect(flat(text)).toContain('kill only those, never by name pattern; confirm with `pgrep` none survive')
   })
 })
 
-describe('PR body path (CC-444)', () => {
-  const PR_BODY_RULE =
-    'Write PR bodies to a fresh `$TMPDIR/<your name>/pr-body.md`; cat it before `gh-write -- pr create|edit`.'
-
+describe('PR body path (CC-444, CC-725)', () => {
   // Mutation caught: a shared `$TMPDIR/body.md` lets one agent publish another's stale body.
   it.each([
     ['implementer', RETURN_CONTRACT_BLOCKS.implementer],
     ['implementer without Shepherd', IMPLEMENTER_WITHOUT_SHEPHERD],
-  ])('tells the %s block to use a per-agent PR body file within the size cap', (_name, block) => {
-    expect(block).toContain(PR_BODY_RULE)
+  ])('tells the %s block to post a body file from its own worktree within the size cap', (_name, block) => {
+    expect(block).toContain(BODY_FILE_RULE)
+    expect(BODY_FILE_RULE).toContain('in your own worktree')
+    expect(BODY_FILE_RULE).toContain('not a shared $TMPDIR name')
+    expect(BODY_FILE_RULE).toContain('deleted once posted')
+    expect(block).not.toContain('cat it before')
     expect(block.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+  })
+
+  it('gives the reviewer its body-file rule and the quoting rule', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(REVIEWER_BODY_FILE_RULE)
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(QUOTE_RULE)
+    expect(RETURN_CONTRACT_BLOCKS.reviewer.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
   })
 })

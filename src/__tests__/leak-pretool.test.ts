@@ -836,7 +836,7 @@ describe('a gh command the command line hides', () => {
       `$W -n 5 sh -c 'gh ${BODY}'`,
     ])('names the literal form for a relative body file in %j', command => {
       expect(checkCommand(command, ctx({ readFile: () => 'clean' }))).toBe(REASONS.hiddenBody)
-      expect(REASONS.hiddenBody).toContain('agent-chat gh-write -- pr create --body-file <path>')
+      expect(REASONS.hiddenBody).toContain('agent-chat gh-write -- <gh args> --body-file <path>')
     })
 
     it.each([

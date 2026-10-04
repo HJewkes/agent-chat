@@ -644,6 +644,9 @@ agent-chat`, `env agent-chat`, a prefix assignment, `env -S`, or an expansion (`
   copies such as `2>&1` stay allowed. A path under a symlinked directory, such as `/tmp` on macOS,
   keeps the deny; write the body under the working directory.
 
+A reviewer's working directory under `$TMPDIR` reaches the hook through `/var/folders`, a symlink on
+macOS, so even a relative body path there keeps the deny: write the file in one Bash call and post it in the next.
+
 In that mode the guard still scans the text it can read, and still denies a finding, a missing
 term list and an unreadable term list, even beside text it cannot read.
 
