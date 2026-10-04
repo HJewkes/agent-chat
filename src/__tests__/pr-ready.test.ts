@@ -4,6 +4,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { runGh, runGhWrite } from '../cli/gh-write.js'
+import { scanDeps } from '../gh-write/scan.js'
 import {
   prReady,
   signalTrap,
@@ -15,6 +17,8 @@ import {
 } from '../cli/verbs/pr-ready.js'
 
 const BASE = 'refs/remotes/origin/main'
+// Synthetic only: a made-up private term, never a real one.
+const TERM = 'zq7privateseat'
 const tmpDirs: string[] = []
 
 afterEach(() => {
@@ -91,9 +95,22 @@ function recorder(failing: string[], override?: Override) {
   return { run, calls }
 }
 
+function scratchDir(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-ready-scan-'))
+  tmpDirs.push(dir)
+  return dir
+}
+
+function syntheticTerms(): string {
+  const file = path.join(scratchDir(), 'private-terms')
+  fs.writeFileSync(file, `${TERM}\n`)
+  return file
+}
+
 interface Extra {
   override?: Override
   trap?: Trap
+  termsFile?: string
 }
 
 async function runPrReady(cwd: string, failing: string[] = [], opts: PrReadyOptions = {}, extra: Extra = {}) {
@@ -106,6 +123,7 @@ async function runPrReady(cwd: string, failing: string[] = [], opts: PrReadyOpti
     out: line => out.push(line),
     err: line => errLines.push(line),
     trap: extra.trap ?? (() => () => {}),
+    termsFile: extra.termsFile ?? syntheticTerms(),
   })
   return { code, out, calls, errLines, toolCalls: calls.filter(call => !call.startsWith('git ')) }
 }
@@ -188,7 +206,8 @@ describe.each(KINDS)('pr-ready in a $name fixture repo', kind => {
       'ok rebase',
       'ok checks',
       'ok changeset: not configured',
-      `PR-READY OK ${git(work, 'rev-parse', 'HEAD')}`,
+      'ok scan: skipped (no body file)',
+      `PR-READY OK ${git(work, 'rev-parse', 'HEAD')} (scan skipped: no body file)`,
     ])
     expect(result.toolCalls).toEqual(kind.checks)
   })
@@ -476,15 +495,6 @@ describe('pr-ready options and discovery', () => {
     )
   })
 
-  it('accepts --title and --body-file and says the scan was skipped', async () => {
-    const work = fixtureRepo({ 'package.json': pkg({}) }, { 'a.txt': '1\n' })
-
-    const result = await runPrReady(work, [], { title: 'Synthetic title', bodyFile: 'body.md' })
-
-    expect(result.code).toBe(0)
-    expect(result.out).toContain('ok body: skipped: scan lands with CC-687')
-  })
-
   it('uses the full remote ref, so a local branch named origin/main cannot shadow it', async () => {
     const work = fixtureRepo({ 'package.json': pkg({}) }, { 'a.txt': '1\n' })
     git(work, 'branch', 'origin/main', 'feature')
@@ -508,5 +518,131 @@ describe('pr-ready options and discovery', () => {
       'FAIL base: no origin/HEAD; run git remote set-head origin --auto',
       'PR-READY FAIL',
     ])
+  })
+})
+
+/** What gh-write itself prints to stderr when it refuses these arguments; it never reaches gh. */
+async function ghWriteRefusal(args: string[], termsFile: string): Promise<string> {
+  const unreachable = () => Promise.reject(new Error('gh-write reached gh'))
+  const result = await runGhWrite(args, scanDeps(termsFile), {
+    now: Date.now,
+    sleep: unreachable,
+    runGh,
+    coreRemaining: () => Promise.resolve(undefined),
+    notice: () => undefined,
+    lockDir: path.join(scratchDir(), 'lock'),
+    stampPath: path.join(scratchDir(), 'stamp'),
+    gapMs: 0,
+  })
+  expect(result.code).toBe(1)
+  return result.stderr.toString().trimEnd()
+}
+
+describe('pr-ready scan', () => {
+  const work = () => fixtureRepo({ 'package.json': pkg({}) }, { 'a.txt': '1\n' })
+  const bodyFile = (text: string): string => {
+    const file = path.join(scratchDir(), 'body.md')
+    fs.writeFileSync(file, text)
+    return file
+  }
+
+  it('fails on a finding in the body with the reason gh-write gives', async () => {
+    const terms = syntheticTerms()
+    const body = bodyFile(`Summary line.\nMentions ${TERM} here.\n`)
+    const expected = await ghWriteRefusal(
+      ['pr', 'create', '--title', 'Synthetic title', '--body-file', body],
+      terms,
+    )
+
+    const result = await runPrReady(
+      work(),
+      [],
+      { title: 'Synthetic title', bodyFile: body },
+      { termsFile: terms },
+    )
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain(`FAIL scan: ${expected}`)
+    expect(expected).toContain('leak-guard: this text would publish private data')
+    expect(result.out.join('\n')).not.toContain(TERM)
+    expect(result.out.at(-1)).toBe('PR-READY FAIL')
+  })
+
+  it('fails on a finding in the title', async () => {
+    const terms = syntheticTerms()
+    const body = bodyFile('A clean body.\n')
+    const expected = await ghWriteRefusal(
+      ['pr', 'create', '--title', `Fix ${TERM}`, '--body-file', body],
+      terms,
+    )
+
+    const result = await runPrReady(
+      work(),
+      [],
+      { title: `Fix ${TERM}`, bodyFile: body },
+      { termsFile: terms },
+    )
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain(`FAIL scan: ${expected}`)
+  })
+
+  it('passes a clean title and body and claims no skipped scan', async () => {
+    const dir = work()
+
+    const result = await runPrReady(dir, [], {
+      title: 'Synthetic title',
+      bodyFile: bodyFile('A clean body.\n'),
+    })
+
+    expect(result.code).toBe(0)
+    expect(result.out).toContain('ok scan')
+    expect(result.out.at(-1)).toBe(`PR-READY OK ${git(dir, 'rev-parse', 'HEAD')}`)
+  })
+
+  it('reads a relative body file from the repo it checks', async () => {
+    const dir = work()
+    fs.writeFileSync(path.join(path.dirname(dir), 'body.md'), `Mentions ${TERM}.\n`)
+
+    const result = await runPrReady(dir, [], { bodyFile: '../body.md' })
+
+    expect(result.code).toBe(1)
+    expect(result.out.some(line => line.startsWith('FAIL scan: leak-guard: this text would publish'))).toBe(
+      true,
+    )
+  })
+
+  it('prints the skipped line with no body file and says so on the OK line', async () => {
+    const dir = work()
+
+    const result = await runPrReady(dir)
+
+    expect(result.code).toBe(0)
+    expect(result.out).toContain('ok scan: skipped (no body file)')
+    expect(result.out.at(-1)).toBe(
+      `PR-READY OK ${git(dir, 'rev-parse', 'HEAD')} (scan skipped: no body file)`,
+    )
+  })
+
+  it('fails when the term list is unreadable, as gh-write does', async () => {
+    const unreadable = scratchDir()
+    const body = bodyFile('A clean body.\n')
+    const expected = await ghWriteRefusal(['pr', 'create', '--body-file', body], unreadable)
+
+    const result = await runPrReady(work(), [], { bodyFile: body }, { termsFile: unreadable })
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain(`FAIL scan: ${expected}`)
+  })
+
+  it('fails when the term list is missing, as gh-write does', async () => {
+    const missing = path.join(scratchDir(), 'absent')
+    const body = bodyFile('A clean body.\n')
+    const expected = await ghWriteRefusal(['pr', 'create', '--body-file', body], missing)
+
+    const result = await runPrReady(work(), [], { bodyFile: body }, { termsFile: missing })
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain(`FAIL scan: ${expected}`)
   })
 })
