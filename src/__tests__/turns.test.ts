@@ -338,6 +338,18 @@ describe('reading activity for a stall check', () => {
     expect(readActivity(CWD, SESSION)).toEqual({ lastAt: '2026-07-30T11:01:00.000Z' })
   })
 
+  it('counts a Bash call that sleeps and then works as progress', () => {
+    const work = callAt(
+      'toolu_v',
+      'Bash',
+      { command: 'sleep 5 && npm run verify' },
+      '2026-07-30T11:02:00.000Z',
+    )
+    write([bashCall, bashResult, work, resultAt('toolu_v', '2026-07-30T11:03:00.000Z')])
+
+    expect(readActivity(CWD, SESSION)).toEqual({ lastAt: '2026-07-30T11:03:00.000Z' })
+  })
+
   it('counts a Bash call that runs tests as progress', () => {
     const test = callAt('toolu_t', 'Bash', { command: 'npm test' }, '2026-07-30T11:02:00.000Z')
     write([bashCall, bashResult, test, resultAt('toolu_t', '2026-07-30T11:03:00.000Z')])

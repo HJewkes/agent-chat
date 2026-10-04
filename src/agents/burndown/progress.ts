@@ -5,7 +5,7 @@ import { GIT_BIN } from './review-diff.js'
 /**
  * A worktree's own evidence of progress (CC-659): its HEAD and a hash of what
  * is uncommitted. A transcript shows an agent talking; this shows it changing
- * the code. Reads only: nothing acts on it yet.
+ * the code. `lease.ts` renews a claim's lease from it.
  */
 
 export interface Progress {
@@ -13,6 +13,13 @@ export interface Progress {
   /** sha1 of the sorted `git status --porcelain` lines, runtime paths left out. */
   dirty: string
   dirtyCount: number
+  /**
+   * sha1 of `dirty` and `git diff HEAD`, runtime paths left out: a second edit to a
+   * file already dirty changes it, and so does a new untracked file, which the diff
+   * leaves out. `dirty` alone when the diff cannot be read, such as one over the
+   * runner's output buffer.
+   */
+  content: string
 }
 
 /**
@@ -27,7 +34,19 @@ const pathOf = (line: string): string => line.slice(3).replace(/^"|"$/g, '')
 
 const isRuntime = (file: string): boolean => RUNTIME_DIRS.some(dir => file.startsWith(dir))
 
-/** Any failed git call is `'unreadable'`, never a clean tree: a missing worktree has made no progress we can see. */
+const DIFF_ARGS = [
+  'diff',
+  'HEAD',
+  '--no-color',
+  '--no-ext-diff',
+  '--',
+  '.',
+  ...RUNTIME_DIRS.map(dir => `:(top,exclude)${dir}`),
+]
+
+const sha1 = (text: string): string => createHash('sha1').update(text).digest('hex')
+
+/** A failed head or status read is `'unreadable'`, never a clean tree: a missing worktree has made no progress we can see. */
 export function readProgress(worktree: string, exec: Runner = run): Progress | 'unreadable' {
   const head = exec(GIT_BIN, ['rev-parse', 'HEAD'], worktree)
   if (head.status !== 0 || head.stdout.trim() === '') return 'unreadable'
@@ -37,9 +56,12 @@ export function readProgress(worktree: string, exec: Runner = run): Progress | '
     .split('\n')
     .filter(line => line !== '' && !isRuntime(pathOf(line)))
     .sort()
+  const dirty = sha1(lines.join('\n'))
+  const diff = exec(GIT_BIN, DIFF_ARGS, worktree)
   return {
     head: head.stdout.trim(),
-    dirty: createHash('sha1').update(lines.join('\n')).digest('hex'),
+    dirty,
     dirtyCount: lines.length,
+    content: diff.status === 0 ? sha1(`${dirty}\n${diff.stdout}`) : dirty,
   }
 }

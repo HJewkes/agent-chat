@@ -156,8 +156,11 @@ export const POLL_TOOLS: ReadonlySet<string> = new Set([
   'session_budget',
 ])
 
-/** session-read renders a Bash call's input as JSON, so a sleep is a command that starts `sleep`. */
-const SLEEP_CALL = /^\[tool Bash\] \{"command":"\s*sleep\b/
+/**
+ * session-read renders a Bash call's input as JSON. Only a command that is a bare
+ * sleep waits: `sleep 5 && npm run verify` works, so the closing quote must follow.
+ */
+const SLEEP_CALL = /^\[tool Bash\] \{"command":"\s*sleep(?:\s+\d+(?:\.\d+)?[smhd]?)+\s*"[,}]/
 
 const isPollCall = (turn: RecentSessionTurn): boolean =>
   POLL_TOOLS.has(toolName(turn.text).split('__').at(-1) ?? '') || SLEEP_CALL.test(turn.text)

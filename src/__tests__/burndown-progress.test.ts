@@ -5,6 +5,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { AgentIdentity } from '../protocol.js'
 import { observe } from '../agents/burndown/observe.js'
+import { run, type Runner } from '../agents/burndown/exec.js'
 import { readProgress, type Progress } from '../agents/burndown/progress.js'
 import type { Claim } from '../agents/burndown/ledger.js'
 
@@ -59,9 +60,23 @@ describe('reading a worktree for progress', () => {
     expect(after.dirtyCount).toBe(1)
   })
 
+  it('returns a new content signal after a second edit to a file already dirty', () => {
+    writeFile('src/a.ts', 'edited\n')
+    const first = read()
+    writeFile('src/a.ts', 'edited again\n')
+
+    const second = read()
+
+    expect(second.dirty).toBe(first.dirty)
+    expect(second.content).not.toBe(first.content)
+  })
+
   it('ignores edits under .claude/ and node_modules/', () => {
-    const before = read()
     writeFile('.claude/settings.local.json', '{}\n')
+    git('add', '-f', '.claude')
+    git('commit', '-q', '-m', 'tracked settings')
+    const before = read()
+    writeFile('.claude/settings.local.json', '{"edited":true}\n')
     writeFile('node_modules/pkg/index.js', 'x\n')
 
     expect(read()).toEqual(before)
@@ -73,6 +88,23 @@ describe('reading a worktree for progress', () => {
 
   it('reads a failing git as unreadable', () => {
     expect(readProgress(repo, () => ({ status: 128, stdout: '' }))).toBe('unreadable')
+  })
+
+  it('falls back to the status hash when only the diff read fails, so head and dirty still read', () => {
+    writeFile('src/a.ts', 'edited\n')
+    const noDiff: Runner = (bin, args, cwd) =>
+      args[0] === 'diff' ? { status: null, stdout: '' } : run(bin, args, cwd)
+
+    const progress = readProgress(repo, noDiff)
+
+    expect(progress).toEqual({ ...read(), content: read().dirty })
+  })
+
+  it('returns a new content signal when an untracked file appears', () => {
+    const before = read()
+    writeFile('src/new.ts', 'new\n')
+
+    expect(read().content).not.toBe(before.content)
   })
 })
 
