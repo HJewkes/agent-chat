@@ -37,12 +37,12 @@ function fixtureRepo(base: Record<string, string>, feature: Record<string, strin
   fs.mkdirSync(hooks)
   git(root, 'init', '-q', '--bare', '-b', 'main', 'origin.git')
   git(root, 'init', '-q', '-b', 'main', 'work')
-  for (const [key, value] of [
-    ['user.name', 'Fixture'],
-    ['user.email', 'fixture@example.invalid'],
-    ['commit.gpgsign', 'false'],
-    ['core.hooksPath', hooks],
-  ]) {
+  for (const [key, value] of Object.entries({
+    'user.name': 'Fixture',
+    'user.email': 'fixture@example.invalid',
+    'commit.gpgsign': 'false',
+    'core.hooksPath': hooks,
+  })) {
     git(work, 'config', key, value)
   }
   commit(work, { 'shared.txt': 'base\n', ...base }, 'base')
