@@ -18,7 +18,8 @@ import {
 } from './git-alias.js'
 import { crashCause, type FailOpen } from './failopen.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
-import { hasUnreadableConfig, hasUnreadableOption } from './git-unresolved.js'
+import { classifyApiRead } from './gh-api-read.js'
+import { hasSplittableOption, hasUnreadableConfig, hasUnreadableOption } from './git-unresolved.js'
 import { mayExpandTo, mayExpandToGit } from './git-word.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
@@ -123,6 +124,11 @@ export const REASONS = {
   aliasDepth: `leak-guard: git aliases here expand more than 4 deep, so the guard cannot tell what this runs. Run the git command directly. ${DOCS}`,
   includePath: `leak-guard: git -c or --config-env on include.path or includeIf.*.path pulls in config that sets core.hooksPath or that the guard cannot read in time, or runs beside other commands or a redirect, which would bypass the pre-push leak scan. ${DOCS}`,
   gitConfigUnresolved: `leak-guard: git -c or --config-env with a key or value the guard cannot read, before a command that runs hooks, may set core.hooksPath or include.path and would bypass the pre-push leak scan. Spell the config out, or drop it. ${DOCS}`,
+  gitValueSplits: `leak-guard: a git option or option value here is unquoted, and the shell may split it into several words, one of them an option such as -c core.hooksPath, so the guard cannot tell what git runs. Quote the value, as in git -C "$dir" fetch. ${DOCS}`,
+  aliasHidden: `leak-guard: the command word is an expansion the line ties to git, so the guard cannot tell which alias lookup applies or what git runs. Write the command name out: git <subcommand>, not $cmd. ${DOCS}`,
+  ghApiUnquoted: `leak-guard: this gh api call holds an unquoted expansion the shell may split into flags, such as -X or -f, so the guard cannot tell if it is a read. Quote the endpoint, as in gh api "repos/o/r/commits/$SHA/check-runs", or post a write with agent-chat gh-write -- api <args>. ${DOCS}`,
+  ghApiRoute: `leak-guard: a gh api read with an argument the guard cannot resolve is allowed only alone on its line, beside assignments with literal values. Put the value in literally (gh api repos/o/r/commits/<sha>/check-runs), or run the gh api call on a line of its own with no pipe, redirect, $(...) or other command. ${DOCS}`,
+  ghApiHost: `leak-guard: a gh api read with an argument the guard cannot resolve may go only to github.com, with no proxy variable. Drop the --hostname, GH_HOST or HTTPS_PROXY, HTTP_PROXY or ALL_PROXY setting, or put the value in literally. ${DOCS}`,
   nestedScript: `leak-guard: git runs a command here (rebase --exec, submodule foreach, bisect run or the like) that the guard cannot read. Write the command out literally. ${DOCS}`,
   writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. Post it with agent-chat gh-write -- <gh args> --body-file <path>, which scans the file when it runs, from a literal path in your worktree; or write the file in one Bash call and post it in the next. ${DOCS}`,
   ghByPath: `leak-guard: gh called by path skips the agent's gh shim and the gh-write leak scan. Use bare gh for reads and agent-chat gh-write -- <gh args> for every GitHub write. ${DOCS}`,
@@ -363,7 +369,8 @@ function tiedToGit(head: string, cmd: SimpleCommand, ctx: GuardContext, scope: S
 }
 
 /** A lookup the guard cannot make denies where the command is git or an expansion the line ties to git (TP-613). */
-const unsure = (run: GitRun): string | undefined => (run.tied ? REASONS.aliasEnv : undefined)
+const unsure = (run: GitRun): string | undefined =>
+  run.tied ? (run.literal ? REASONS.aliasEnv : REASONS.aliasHidden) : undefined
 
 /** The one boundary every command that is or may be git passes: git's own options, the config they include, then its alias. */
 function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number): string | undefined {
@@ -376,8 +383,13 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
   )
 }
 
+const unresolvedReason = (run: GitRun): string =>
+  hasSplittableOption(run.resolved, run.marked, run.cmd.splits)
+    ? REASONS.gitValueSplits
+    : REASONS.gitConfigUnresolved
+
 const checkUnresolvedConfig = (run: GitRun): string | undefined =>
-  hasUnreadableConfig(run.resolved, run.marked, run.cmd.splits) ? REASONS.gitConfigUnresolved : undefined
+  hasUnreadableConfig(run.resolved, run.marked, run.cmd.splits) ? unresolvedReason(run) : undefined
 
 const MENTIONS_INCLUDE = /include/i
 const DESCRIPTOR_COPY = /\d*[<>]&(?:\d+|-)(?![\w./])/g
@@ -420,7 +432,7 @@ function checkNestedScripts(run: GitRun, ctx: GuardContext, scope: Scope, depth:
   const spans = gitScripts(run.args, options.at)
   if (spans.length === 0) return undefined
   if (includesConfig(options.params)) return REASONS.includePath
-  if (hasUnreadableOption(run.resolved, run.marked, run.cmd.splits)) return REASONS.gitConfigUnresolved
+  if (hasUnreadableOption(run.resolved, run.marked, run.cmd.splits)) return unresolvedReason(run)
   const inner: Scope = { ...scope, cwd: undefined, env: undefined, gitParams: options.params }
   for (const span of spans) {
     const script = scriptText(span, run.resolved)
@@ -907,6 +919,74 @@ function deferredWritesOnlyBody(
   return writesOnlySafeBody(kind === 'api' ? apiSources(resolved) : prSources(resolved), cmd, ctx, scope)
 }
 
+const LINE_JOINS = new Set(['', ';', '\n'])
+
+/** A command that only sets variables, each to a value no expansion can change. */
+const literalAssignments = (cmd: SimpleCommand): boolean =>
+  cmd.marked.length > 0 && cmd.marked.every(word => ASSIGNMENT.test(word) && !word.includes(LIVE))
+
+/** A `gh api` call, behind literal assignments only, with no redirect, pipe or heredoc. */
+function plainApiCall(cmd: SimpleCommand): boolean {
+  const at = cmd.marked.findIndex(word => !ASSIGNMENT.test(word))
+  const prefix = cmd.marked.slice(0, Math.max(at, 0))
+  return (
+    cmd.marked[at] === 'gh' &&
+    cmd.marked[at + 1] === 'api' &&
+    !prefix.some(word => word.includes(LIVE)) &&
+    cmd.writes.length === 0 &&
+    cmd.stdin === undefined &&
+    !cmd.stdinLive
+  )
+}
+
+const PROXY_VAR = /^(?:https?|all)_proxy$/i
+const DEFAULT_HOST = 'github.com'
+
+/** A literal setting that sends gh to another host or through a proxy; expansions are denied by the line rule. */
+function reroutes(cmd: SimpleCommand): boolean {
+  const words = cmd.marked.map(unmark)
+  const assigned = words.some(word => {
+    const [, name = '', value = ''] = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(word) ?? []
+    return PROXY_VAR.test(name) || (name === 'GH_HOST' && value !== DEFAULT_HOST)
+  })
+  const hosts = words.flatMap((word, i) =>
+    word === '--hostname' ? [words[i + 1]] : word.startsWith('--hostname=') ? [word.slice(11)] : [],
+  )
+  return assigned || hosts.some(host => host !== DEFAULT_HOST)
+}
+
+/**
+ * A read the guard allows unread must not go where the shell's environment, which the guard cannot
+ * read, sends it. So the line may hold only `gh api` calls and literal assignments: anything else,
+ * such as `declare`, `read`, `export`, `env` or a compound, could set GH_HOST, a proxy or a home.
+ */
+function unreadableRoute(scope: Scope): string | undefined {
+  const cmds = parseShell(scope.line)
+  const plain = cmds.every(
+    cmd =>
+      !cmd.nested &&
+      LINE_JOINS.has(cmd.before) &&
+      LINE_JOINS.has(cmd.after) &&
+      (literalAssignments(cmd) || plainApiCall(cmd)),
+  )
+  if (!plain) return REASONS.ghApiRoute
+  return cmds.some(reroutes) ? REASONS.ghApiHost : undefined
+}
+
+/** The deny for a gh call with a word the guard cannot resolve; a quoted read-only `gh api` is the one exception. */
+function unsureGh(
+  kind: GhKind,
+  marked: readonly string[],
+  args: readonly (string | undefined)[],
+  cmd: SimpleCommand,
+  scope: Scope,
+): string | undefined {
+  const read = kind === 'api' ? classifyApiRead(marked, args, cmd.splits) : 'other'
+  if (read === 'read') return unreadableRoute(scope)
+  if (read === 'splits') return REASONS.ghApiUnquoted
+  return unread(cmd.substitutions.flatMap(sub => sub.commands))
+}
+
 function checkGh(
   marked: readonly string[],
   cmd: SimpleCommand,
@@ -920,7 +1000,7 @@ function checkGh(
   if (defers && deferredWritesOnlyBody(kind, args, cmd, ctx, scope))
     return checkDeferred(kind, args, cmd, ctx, scope)
   const unsure = kind === 'unknown' || !args.every(arg => arg !== undefined)
-  if (unsure) return unread(cmd.substitutions.flatMap(sub => sub.commands))
+  if (unsure) return unsureGh(kind, marked, args, cmd, scope)
   const sources = kind === 'api' ? apiSources(args) : prSources(args)
   if (sources.inline.length + sources.files.length === 0) return undefined
   if (postsWrittenBody(sources, scope, writtenBy(cmd, ctx, scope))) return REASONS.writtenBody
