@@ -5,6 +5,7 @@ import { agentNameFor, reviewerNameFor, successorNameFor } from './plan.js'
 import type { Progress } from './progress.js'
 import type { PlannedSlice, Report } from './report.js'
 import { shepherdTarget, type Registration, type ShepherdRow } from './shepherd.js'
+import type { ClaimSpend } from './spend-cap.js'
 import type { ActivityRead } from './stall.js'
 import type { StallCode } from './stall-code.js'
 
@@ -36,6 +37,8 @@ export interface Observation {
   diff?: { reviewable: boolean; reason: string }
   /** Shepherd's row for the claim's PR, absent from the row when Shepherd has none; `landed` is read for a finished run. */
   shepherd?: { row?: ShepherdRow; landed?: boolean }
+  /** CC-723: the claim's transcript spend over every agent it spawned, against its seat's `per_claim_usd`; read, not yet acted on. */
+  spend?: { claim: ClaimSpend; cap: number }
 }
 
 export type SpawnContext =
