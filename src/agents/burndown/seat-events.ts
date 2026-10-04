@@ -1,5 +1,6 @@
 import { claimKey, type ClaimKey } from './advance.js'
 import type { Claim, Ledger } from './ledger.js'
+import type { StallCode } from './stall-code.js'
 
 /**
  * What changed for each seat's claims across one tick, as events the seat is told about (CC-249).
@@ -22,6 +23,8 @@ export interface SeatEvent {
   taskId: string
   slice?: string
   detail?: string
+  /** A stall's or finding's code (CC-663); a seat hears once per kind and code. */
+  code?: StallCode
 }
 
 /** One spawn the tick sent; only a delivered spawn counts as a dispatch. */
@@ -51,29 +54,47 @@ const merged = (before: Claim | undefined, after: Claim): boolean =>
 
 /** Kinds the claim's state holds now; `notified` drops the delivered ones, so an undelivered kind is due again next tick. */
 function kindsOf(before: Claim | undefined, after: Claim, spawned: boolean): SeatEvent[] {
-  const event = (kind: EventKind, detail?: string): SeatEvent => ({
+  const event = (kind: EventKind, detail?: string, code?: StallCode): SeatEvent => ({
     kind,
     taskId: after.taskId,
     ...(after.slice === undefined ? {} : { slice: after.slice }),
     ...(detail === undefined ? {} : { detail }),
+    ...(code === undefined ? {} : { code }),
   })
   const events: SeatEvent[] = []
   if (spawned || after.agentId !== undefined) events.push(event('dispatched'))
   if (after.phase === 'awaiting-merge') events.push(event('ready-to-merge', after.pr))
   if (merged(before, after)) events.push(event('merged', after.pr))
-  if (after.stalledReason !== undefined) events.push(event('stalled', after.stalledReason))
-  if (after.finding !== undefined) events.push(event('stalled-after-claim', after.finding.detail))
+  if (after.stalledReason !== undefined)
+    events.push(event('stalled', withCode(after.stallCode, after.stalledReason), after.stallCode))
+  if (after.finding !== undefined)
+    events.push(event('stalled-after-claim', after.finding.detail, after.finding.code))
   if (after.phase === 'parked') events.push(event('parked'))
   if (after.leak !== undefined)
     events.push(event('leak', `${after.leak.url}: ${after.leak.findings.join('; ')}`))
   return events
 }
 
+const withCode = (code: StallCode | undefined, reason: string): string =>
+  code === undefined ? reason : `${code}: ${reason}`
+
+/** The `notified` entry for an event: `kind`, or `kind:code` for a coded stall or finding. */
+const noticeKey = (e: SeatEvent): string => (e.code === undefined ? e.kind : `${e.kind}:${e.code}`)
+
+/** A bare kind told before CC-663 counts as told for any code, so a deploy does not re-notify open stalls. */
+const told = (notified: readonly string[], e: SeatEvent): boolean =>
+  notified.includes(noticeKey(e)) || notified.includes(e.kind)
+
+/** A coded entry holds only while the claim carries that code; a bare one holds for any. */
+const sameCode = (code: string | undefined, now: StallCode | undefined): boolean =>
+  code === undefined || code === now
+
 /** Whether a delivered kind still describes the claim; once it does not, the kind may fire again (a second park). */
-function stillHolds(claim: Claim, kind: string): boolean {
+function stillHolds(claim: Claim, entry: string): boolean {
+  const [kind, code] = entry.split(':', 2)
   if (kind === 'parked') return claim.phase === 'parked'
-  if (kind === 'stalled') return claim.stalledReason !== undefined
-  if (kind === 'stalled-after-claim') return claim.finding !== undefined
+  if (kind === 'stalled') return claim.stalledReason !== undefined && sameCode(code, claim.stallCode)
+  if (kind === 'stalled-after-claim') return claim.finding !== undefined && sameCode(code, claim.finding.code)
   if (kind === 'leak') return claim.leak !== undefined
   // ready-to-merge stays on a done claim: `merged` reads it there.
   return true
@@ -99,8 +120,8 @@ export function seatEvents(before: Ledger, after: Ledger, spawnResults: readonly
   for (const claim of after.claims) {
     if (claim.seat === undefined) continue
     const spawned = spawnResults.some(r => r.ok && claimKey(r.key) === claimKey(claim))
-    const told = heldNotified(claim)
-    const fresh = kindsOf(at(before, claim), claim, spawned).filter(e => !told.includes(e.kind))
+    const held = heldNotified(claim)
+    const fresh = kindsOf(at(before, claim), claim, spawned).filter(e => !told(held, e))
     if (fresh.length > 0) (out[claim.seat] ??= []).push(...fresh)
   }
   return out
@@ -110,7 +131,7 @@ export function seatEvents(before: Ledger, after: Ledger, spawnResults: readonly
 export function markNotified(ledger: Ledger, seat: string, delivered: readonly SeatEvent[]): Ledger {
   const claims = ledger.claims.map(c => {
     if (c.seat !== seat) return c
-    const kinds = delivered.filter(e => claimKey(e) === claimKey(c)).map(e => e.kind)
+    const kinds = delivered.filter(e => claimKey(e) === claimKey(c)).map(noticeKey)
     if (kinds.length === 0) return c
     return { ...c, notified: [...new Set([...(c.notified ?? []), ...kinds])] }
   })

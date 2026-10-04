@@ -2134,7 +2134,7 @@ describe('burndown tick finding on a silent agent', () => {
     expect(first.sends).toEqual([
       {
         to: 'seat-t',
-        text: `Burndown events for seat-t at ${new Date(NOON.getTime() + 7 * MIN).toISOString()}\nstalled-after-claim DM-1: idle: no agent event for 6 min since ${lastWork.toISOString()}`,
+        text: `Burndown events for seat-t at ${new Date(NOON.getTime() + 7 * MIN).toISOString()}\nstalled-after-claim DM-1: no-progress: idle: no agent event for 6 min since ${lastWork.toISOString()}`,
       },
     ])
     expect(second.sends).toEqual([])

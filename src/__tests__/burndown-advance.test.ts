@@ -5,6 +5,7 @@ import { withFindings } from '../agents/burndown/finding.js'
 import { observe } from '../agents/burndown/observe.js'
 import { parseReport } from '../agents/burndown/report.js'
 import type { ShepherdRow } from '../agents/burndown/shepherd.js'
+import type { StallCode } from '../agents/burndown/stall-code.js'
 import type { AgentIdentity } from '../protocol.js'
 
 /** The phase machine over hand-built claims and observations; no broker, git or transcript. */
@@ -376,4 +377,37 @@ describe('burndown hands a PR to Shepherd', () => {
       expect.objectContaining({ stalledReason: 'no PR recorded for Shepherd to merge' }),
     ])
   })
+})
+
+describe('the code on each stall', () => {
+  const sites: [string, Claim, Observation, StallCode | undefined][] = [
+    [
+      'a spawn that never landed',
+      claim({ phase: 'spawning', agentId: undefined, phaseAt: '2026-09-28T11:49:00.000Z' }),
+      {},
+      'spawn-never-landed',
+    ],
+    ['an implementer past its timeout', claim({ phaseAt: '2026-09-28T07:59:00.000Z' }), {}, 'phase-timeout'],
+    ['a planner without slices', claim({ phase: 'planning' }), { agent: exited }, 'planner-refused'],
+    [
+      'a Shepherd run that ended failed',
+      claim({ phase: 'shepherding', pr: PR }),
+      { shepherd: { row: row('failed', 'merge denied') } },
+      'shepherd-ended',
+    ],
+    [
+      'a BLOCKED worker, outside the closed set',
+      claim(),
+      { agent: exited, report: parseReport('Status: BLOCKED') },
+      undefined,
+    ],
+  ]
+  for (const [site, c, obs, code] of sites) {
+    it(`writes ${code ?? 'no code'} for ${site}`, () => {
+      const { after } = step(c, obs)
+
+      expect(after[0]?.stalledReason).toBeDefined()
+      expect(after[0]?.stallCode).toBe(code)
+    })
+  }
 })

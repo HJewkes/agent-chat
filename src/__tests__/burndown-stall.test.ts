@@ -140,6 +140,13 @@ describe('the finding on a claim', () => {
     })
   })
 
+  it('opens an idle finding with the no-progress code at the head of its detail', () => {
+    const opened = tickAt(held(), idleSince, NOW0)
+
+    expect(opened.finding).toMatchObject({ code: 'no-progress', reason: 'idle' })
+    expect(opened.finding?.detail).toMatch(/^no-progress: idle: /)
+  })
+
   it('closes the finding once the agent shows a newer progress row', () => {
     const opened = tickAt(held(), idleSince, NOW0)
 
@@ -190,9 +197,13 @@ describe('the finding on a claim', () => {
     const without = readLedger(file).claims[0]
     writeLedger(file, { ...EMPTY_LEDGER, claims: [opened] })
     const withFinding = readLedger(file).claims[0]
+    const { code: _code, ...uncoded } = opened.finding!
+    writeLedger(file, { ...EMPTY_LEDGER, claims: [{ ...opened, finding: uncoded }] })
+    const preCode = readLedger(file).claims[0]
     fs.rmSync(dir, { recursive: true, force: true })
 
     expect(without?.finding).toBeUndefined()
     expect(withFinding?.finding).toEqual(opened.finding)
+    expect(preCode?.finding).toEqual(uncoded)
   })
 })
