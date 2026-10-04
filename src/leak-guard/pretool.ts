@@ -918,24 +918,40 @@ function deferredWritesOnlyBody(
   return writesOnlySafeBody(kind === 'api' ? apiSources(resolved) : prSources(resolved), cmd, ctx, scope)
 }
 
-// What picks the host, the credentials or the proxy gh talks through.
-const ROUTING_VAR =
-  /^(?:GH_HOST|GH_ENTERPRISE_TOKEN|GH_TOKEN|GITHUB_TOKEN|GH_REPO|GH_CONFIG_DIR|(?:https?|all)_proxy)$/i
+const LINE_JOINS = new Set(['', ';', '\n'])
 
-/** A read the guard allows unread still must not go where an expansion it cannot read sends it. */
-function unreadableRoute(
-  cmd: SimpleCommand,
-  ctx: GuardContext,
-  scope: Scope,
-  assigns: readonly string[],
-): string | undefined {
-  const own = assigns.some(word => {
-    const name = ASSIGNMENT.exec(word)?.[1] ?? ''
-    const value = word.slice(word.indexOf('=') + 1)
-    return ROUTING_VAR.test(name) && resolveWord(value, cmd, ctx, scope) === undefined
-  })
-  const earlier = [...scope.exports].some(([name, set]) => ROUTING_VAR.test(name) && set === UNSURE)
-  return own || earlier ? REASONS.ghApiRoute : undefined
+/** A command that only sets variables, each to a value no expansion can change. */
+const literalAssignments = (cmd: SimpleCommand): boolean =>
+  cmd.marked.length > 0 && cmd.marked.every(word => ASSIGNMENT.test(word) && !word.includes(LIVE))
+
+/** A `gh api` call, behind literal assignments only, with no redirect, pipe or heredoc. */
+function plainApiCall(cmd: SimpleCommand): boolean {
+  const at = cmd.marked.findIndex(word => !ASSIGNMENT.test(word))
+  const prefix = cmd.marked.slice(0, Math.max(at, 0))
+  return (
+    cmd.marked[at] === 'gh' &&
+    cmd.marked[at + 1] === 'api' &&
+    !prefix.some(word => word.includes(LIVE)) &&
+    cmd.writes.length === 0 &&
+    cmd.stdin === undefined &&
+    !cmd.stdinLive
+  )
+}
+
+/**
+ * A read the guard allows unread must not go where the shell's environment, which the guard cannot
+ * read, sends it. So the line may hold only `gh api` calls and literal assignments: anything else,
+ * such as `declare`, `read`, `export`, `env` or a compound, could set GH_HOST, a proxy or a home.
+ */
+function unreadableRoute(scope: Scope): string | undefined {
+  const plain = parseShell(scope.line).every(
+    cmd =>
+      !cmd.nested &&
+      LINE_JOINS.has(cmd.before) &&
+      LINE_JOINS.has(cmd.after) &&
+      (literalAssignments(cmd) || plainApiCall(cmd)),
+  )
+  return plain ? undefined : REASONS.ghApiRoute
 }
 
 /** The deny for a gh call with a word the guard cannot resolve; a quoted read-only `gh api` is the one exception. */
@@ -944,12 +960,10 @@ function unsureGh(
   marked: readonly string[],
   args: readonly (string | undefined)[],
   cmd: SimpleCommand,
-  ctx: GuardContext,
   scope: Scope,
-  assigns: readonly string[],
 ): string | undefined {
   const read = kind === 'api' ? classifyApiRead(marked, args, cmd.splits) : 'other'
-  if (read === 'read') return unreadableRoute(cmd, ctx, scope, assigns)
+  if (read === 'read') return unreadableRoute(scope)
   if (read === 'splits') return REASONS.ghApiUnquoted
   return unread(cmd.substitutions.flatMap(sub => sub.commands))
 }
@@ -960,7 +974,6 @@ function checkGh(
   ctx: GuardContext,
   scope: Scope,
   defers = false,
-  assigns: readonly string[] = [],
 ): string | undefined {
   const kind = ghKind(marked)
   if (kind === 'other') return undefined
@@ -968,7 +981,7 @@ function checkGh(
   if (defers && deferredWritesOnlyBody(kind, args, cmd, ctx, scope))
     return checkDeferred(kind, args, cmd, ctx, scope)
   const unsure = kind === 'unknown' || !args.every(arg => arg !== undefined)
-  if (unsure) return unsureGh(kind, marked, args, cmd, ctx, scope, assigns)
+  if (unsure) return unsureGh(kind, marked, args, cmd, scope)
   const sources = kind === 'api' ? apiSources(args) : prSources(args)
   if (sources.inline.length + sources.files.length === 0) return undefined
   if (postsWrittenBody(sources, scope, writtenBy(cmd, ctx, scope))) return REASONS.writtenBody
@@ -1130,8 +1143,7 @@ function checkSimple(
   if (name === 'eval') return checkEval(marked, cmd, ctx, { ...at, deferrable: false }, depth)
   if (name === 'git')
     return checkGitRun(gitRun(marked, unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
-  if (name === 'gh')
-    return head === 'gh' ? checkGh(marked, cmd, ctx, at, false, unwrapped.assigns) : REASONS.ghByPath
+  if (name === 'gh') return head === 'gh' ? checkGh(marked, cmd, ctx, at) : REASONS.ghByPath
   if (name === 'agent-chat' && args[0] === 'gh-write') {
     const defers = head === 'agent-chat' && defersToGhWrite(cmd, unwrapped.assigns, ctx, at)
     return checkGh(ghWriteArgs(marked), cmd, ctx, at, defers)

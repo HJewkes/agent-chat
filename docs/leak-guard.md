@@ -596,10 +596,11 @@ so the shell keeps it one word, and anchored: its literal prefix must be `repos/
 expansion before that point. So `"repos/$OWNER_REPO/commits"` is denied, because the literal stops
 before the owner segment, and so is an endpoint that holds `://`, starts with a scheme, `//` or a
 host, or names `graphql`, which gh POSTs. A header value that starts with `-` is denied.
-The call is also denied when its line sets `GH_HOST`, `GH_TOKEN`, `GH_ENTERPRISE_TOKEN`,
-`GITHUB_TOKEN`, `GH_REPO`, `GH_CONFIG_DIR` or a proxy variable (`HTTPS_PROXY`, `HTTP_PROXY`,
-`ALL_PROXY`, any case) from an expansion the guard cannot read, as a prefix, through `env` or by an
-earlier `export`. A literal value, such as `GH_HOST=github.com`, is allowed. Every flag must be on the allowlist:
+The environment decides where gh sends the call, and the guard cannot read it, so the line must
+hold nothing else: only `gh api` calls and assignments whose values are literal, joined by `;` or a
+newline. A pipe, a redirect, `&&`, a subshell or another command, such as `declare`, `typeset`,
+`read`, `export`, `env`, `set`, `eval` or `source`, is denied, as is an assignment from an
+expansion. `GH_HOST=github.com gh api "repos/o/r/commits/$SHA/check-runs"` is allowed. Every flag must be on the allowlist:
 `--paginate`, `--slurp`, `--silent`, `-i`, `--include`, `--verbose`, and `-H`, `--header`,
 `--hostname`, `--cache` and `-p`, `--preview` with a literal value (a header that names a method or
 override is denied). Only the value of `--jq`, `-q`, `--template` or `-t` may be an expansion. Any

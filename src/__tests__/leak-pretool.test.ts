@@ -2209,14 +2209,11 @@ describe('gh api reads with quoted unresolved words (CC-680)', () => {
     'gh api "/orgs/o/members/$U"',
     'gh api "users/o/repos?page=$N"',
     'GH_HOST=github.com gh api "repos/o/r/commits/$SHA/check-runs"',
-    'env GH_HOST=github.com gh api "repos/o/r/commits/$SHA/check-runs"',
-    'export GH_HOST=github.com; gh api "repos/o/r/commits/$SHA/check-runs"',
     'gh api "repos/o/r/commits/$SHA/check-runs" --jq .check_runs',
     'gh api "repos/o/r/commits/${SHA}/check-runs" --paginate -q ".[] | $F"',
     'gh api -H "Accept: application/vnd.github+json" "repos/o/r/pulls/$N"',
     'gh api --hostname github.com "repos/o/r/pulls/$N" --template "$T"',
     'gh api "repos/o/r/pulls/$N" --jq="$F"',
-    'gh api "repos/o/r/commits/$(git rev-parse HEAD)/status"',
     'gh api \'repos/o/r/issues\' --jq "$F"',
   ])('allows %s', command => {
     expect(checkCommand(command, ctx())).toBeUndefined()
@@ -2272,7 +2269,6 @@ describe('gh api reads with quoted unresolved words (CC-680)', () => {
     'gh api repos/o/r/commits/$SHA/check-runs --jq .x',
     'gh api repos/o/r/$N --jq $F',
     'gh api "repos/o/r/${=N}"',
-    'gh api "repos/o/r/$(cat n)"; gh api repos/o/*',
   ])('denies an unquoted word that may split, and says to quote it: %s', command => {
     expect(checkCommand(command, ctx())).toBe(REASONS.ghApiUnquoted)
   })
@@ -2294,6 +2290,18 @@ describe('gh api reads with quoted unresolved words (CC-680)', () => {
     `export GH_HOST="$x"; ${READ}`,
     `GH_HOST="$x"; ${READ}`,
     `export https_proxy="$x"; ${READ}`,
+    `declare -x GH_HOST="$x"; ${READ}`,
+    `typeset -x GH_HOST="$x"; ${READ}`,
+    `read GH_HOST; export GH_HOST; ${READ}`,
+    `HOME="$x" ${READ}`,
+    `XDG_CONFIG_HOME="$x" ${READ}`,
+    `export GH_HOST=github.com; ${READ}`,
+    `env GH_HOST=github.com ${READ}`,
+    `${READ} | cat`,
+    `${READ} > out.json`,
+    `true && ${READ}`,
+    `echo hi; ${READ}`,
+    `gh api "repos/o/r/commits/$(git rev-parse HEAD)/status"`,
   ])('denies a routing variable set from an expansion it cannot read: %s', command => {
     expect(checkCommand(command, ctx())).toBe(REASONS.ghApiRoute)
   })
