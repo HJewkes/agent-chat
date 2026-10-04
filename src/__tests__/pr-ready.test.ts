@@ -439,6 +439,61 @@ describe('pr-ready rebase recovery', () => {
   })
 })
 
+describe('pr-ready on a branch that is already pushed', () => {
+  const pushedBehindRepo = (): string => {
+    const work = fixtureRepo({ 'package.json': pkg({}) }, { 'a.txt': '1\n' })
+    git(work, 'push', '-q', '-u', 'origin', 'feature')
+    advanceOrigin(work, { 'b.txt': '2\n' })
+    return work
+  }
+
+  it('does not rebase a pushed branch that is behind, and leaves HEAD at the upstream', async () => {
+    const work = pushedBehindRepo()
+    const head = git(work, 'rev-parse', 'HEAD')
+
+    const result = await runPrReady(work)
+
+    expect(result.code).toBe(0)
+    expect(result.out).toContain('ok rebase: behind origin/main, branch already pushed; not rebasing')
+    expect(result.calls).not.toContain(`git rebase ${BASE}`)
+    expect(git(work, 'rev-parse', 'HEAD')).toBe(head)
+    expect(git(work, 'rev-parse', 'origin/feature')).toBe(head)
+  })
+
+  it('fails the rebase step under --strict', async () => {
+    const work = pushedBehindRepo()
+
+    const result = await runPrReady(work, [], { strict: true })
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain('FAIL rebase: behind origin/main, branch already pushed; not rebasing')
+  })
+
+  it('reports local unpushed commits and does not reset them', async () => {
+    const work = pushedBehindRepo()
+    commit(work, { 'c.txt': '3\n' }, 'local only')
+    const head = git(work, 'rev-parse', 'HEAD')
+
+    const result = await runPrReady(work)
+
+    expect(result.out).toContain(
+      'ok rebase: behind origin/main, branch already pushed; not rebasing; ' +
+        '1 local commit(s) not pushed to origin/feature',
+    )
+    expect(git(work, 'rev-parse', 'HEAD')).toBe(head)
+  })
+
+  it('still rebases a branch that tracks only the default branch', async () => {
+    const work = fixtureRepo({ 'package.json': pkg({}) }, { 'a.txt': '1\n' })
+    git(work, 'branch', '--set-upstream-to=origin/main')
+    advanceOrigin(work, { 'b.txt': '2\n' })
+
+    const result = await runPrReady(work)
+
+    expect(result.calls).toContain(`git rebase ${BASE}`)
+  })
+})
+
 describe('pr-ready options and discovery', () => {
   it('runs only a root pr-ready script when one exists', async () => {
     const work = fixtureRepo(
