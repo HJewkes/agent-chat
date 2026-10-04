@@ -134,19 +134,25 @@ export function hasUnreadableConfig(
 // zsh matches a group against names, so an alternative, the text glued before it or text glued after it may be an option.
 const QUOTING_CHARS = /['"\\]/g
 const OPTION_GROUP = /^-|[(|)]-/
+// A bracket class that holds `-`, as in `[-]-no-verify`, or an option-shaped word with a class in it, may spell an option.
+const OPTION_CLASS = /^-*\[[^\]]*-|^-.*\[/
 
-/** Whether an argument after the subcommand may expand to an option through a glob group (CC-728). */
+const spellsOption = (word: string): boolean => {
+  const text = unmark(word).replace(QUOTING_CHARS, '')
+  return (
+    (word.includes(`${LIVE}(`) && OPTION_GROUP.test(text)) ||
+    (word.includes(`${LIVE}[`) && OPTION_CLASS.test(text))
+  )
+}
+
+/** Whether an argument after the subcommand may expand to an option through a glob group or bracket class (CC-728). */
 export function hasOptionAlternation(
   marked: readonly string[],
   splits: readonly string[],
   resolved: readonly (string | undefined)[],
 ): boolean {
   const { at } = scanOptions(resolved, marked, splits)
-  const groups = marked.slice(at + 1).filter(word => word.includes(`${LIVE}(`))
-  return (
-    resolved[at] !== undefined &&
-    groups.some(word => OPTION_GROUP.test(unmark(word).replace(QUOTING_CHARS, '')))
-  )
+  return resolved[at] !== undefined && marked.slice(at + 1).some(spellsOption)
 }
 
 /** Whether git's options hold a word the shell may split into several, which quoting would fix. */

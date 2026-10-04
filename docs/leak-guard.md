@@ -341,12 +341,15 @@ and other prefixes are stripped, is one of these. A wrapper is known by its base
 | `git -c` or `--config-env` on an include, or with a key the guard cannot read, before a command git runs (below)       | git passes it on to every git that command runs           |
 
 A `(` in argument position, after the command name (CC-728), is read two ways, and a line is denied
-if either reading is. As a zsh glob group, its balanced span (nesting, quotes and escapes honoured)
-is one non-literal word, so the git option rules deny it before the subcommand and, after it, deny
-an option-shaped alternative such as `(a|--no-verify)`. As a subshell, the span's own commands and
-the words after it are parsed as commands, so a word the splitter does not know, like `coproc`,
-`repeat 1` or `for i`, cannot hide a git inside. A `(` at command position, a case pattern and a
-`[[ ]]` operand keep the subshell reading. The splitter has no bash mode: bash reports a syntax
+if either reading is. As a zsh glob group, its balanced span (nesting, quotes, `$'...'` and escapes
+honoured) is one non-literal word, so the git option rules deny it before the subcommand and, after
+it, deny an option-shaped alternative such as `(a|--no-verify)` or a bracket class such as
+`[-]-no-verify`. As a subshell, the span's own commands and the words after it are parsed as
+commands, so a word the splitter does not know, like `coproc`, `repeat 1` or `for i`, cannot hide a
+git inside. Because spans can still be misread, a line that has a `(` outside command position and a
+`git` or `gh` word after it on the same line is denied as a backstop; put the command on a line of
+its own. A `(` at command position, a case pattern, a `[[ ]]` operand, `name()`, `x=(` and a comment
+keep the subshell reading and are not denied. The splitter has no bash mode: bash reports a syntax
 error for most of these lines and runs nothing.
 
 A git alias that was already in config is expanded before the table is applied (TP-595). For

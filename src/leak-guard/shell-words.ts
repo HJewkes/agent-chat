@@ -119,6 +119,8 @@ class ShellLexer {
   private heredocs: Heredoc[] = []
   private depth = 0
   private closed = false
+  /** Where the first `(` outside command position opens, or undefined; see `mixesParenAndGuarded`. */
+  parenAt: number | undefined
 
   constructor(
     private readonly src: string,
@@ -217,6 +219,7 @@ class ShellLexer {
     const word = this.word
     if (this.pending !== null || (word !== null && /[={]$/.test(word))) return false
     if (/^\(\s*\)/.test(this.src.slice(this.pos)) || (word === null && this.opensCommand())) return false
+    this.parenAt ??= this.pos
     if (word === null && this.single) return false
     const end = this.groupEnd()
     if (end < 0) {
@@ -249,7 +252,8 @@ class ShellLexer {
     const words = this.cur.words
     const head = words.findIndex(w => !COMMAND_PREFIX.has(w))
     if (head < 0) return true
-    return words[head] === '[[' || (words[head] === 'case' && words[words.length - 1] === 'in')
+    if (words[head] === '[[') return !words.includes(']]')
+    return words[head] === 'case' && words[words.length - 1] === 'in'
   }
 
   /** The index after the `)` that closes the `(` at the cursor, or -1 when the span is unbalanced or crosses a line. */
@@ -259,10 +263,20 @@ class ShellLexer {
       const c = this.src[i] as string
       if (c === '\n') return -1
       if (c === '\\') i++
+      else if (c === '$' && this.src[i + 1] === "'") i = this.closeAnsi(i + 1)
       else if (c === "'" || c === '"') i = this.closeQuote(i, c)
       else if (c === '(') depth++
       else if (c === ')' && --depth === 0) return i + 1
       if (i < 0) return -1
+    }
+    return -1
+  }
+
+  /** The index of the quote closing the `$'` quote whose `'` is at `from`; a backslash escapes the next character. */
+  private closeAnsi(from: number): number {
+    for (let i = from + 1; i < this.src.length; i++) {
+      if (this.src[i] === '\\') i++
+      else if (this.src[i] === "'") return i
     }
     return -1
   }
@@ -413,13 +427,16 @@ class ShellLexer {
     const inner = new ShellLexer(this.src, this.pos + 2, true, this.single)
     const commands = inner.run()
     this.pos = Math.min(inner.pos + 1, this.src.length)
+    if (inner.parenAt !== undefined) this.parenAt ??= start
     return this.substituted(this.src.slice(start, this.pos), commands, quoted)
   }
 
   private backtick(quoted: boolean): string {
     const start = this.pos
     const inner = this.until('`')
-    const commands = new ShellLexer(inner, 0, true, this.single).run()
+    const lexer = new ShellLexer(inner, 0, true, this.single)
+    const commands = lexer.run()
+    if (lexer.parenAt !== undefined) this.parenAt ??= start
     if (inner.includes('\\')) commands.forEach(blur)
     return this.substituted(this.src.slice(start, this.pos), commands, quoted)
   }
@@ -520,4 +537,20 @@ export function expandWord(
     return value
   })
   return known && !expanded.includes(LIVE) ? expanded : undefined
+}
+
+const GUARDED_WORD = /\b(?:git|gh)\b/
+
+/**
+ * Whether a `(` outside command position is followed, on its line, by a git or gh word. Such a line
+ * is read two ways by the splitter and a third by some shell, and a span that ends where the
+ * splitter does not expect hides what follows (CC-728), so the line is denied and not guessed at.
+ */
+export function mixesParenAndGuarded(src: string): boolean {
+  const text = unmark(src)
+  const lexer = new ShellLexer(text)
+  lexer.run()
+  if (lexer.parenAt === undefined) return false
+  const end = text.indexOf('\n', lexer.parenAt)
+  return GUARDED_WORD.test(text.slice(lexer.parenAt, end < 0 ? text.length : end))
 }
