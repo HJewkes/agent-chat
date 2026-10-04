@@ -24,11 +24,17 @@ const SHIM_RULE =
 /**
  * CC-501 S3: the forms the leak guard allows. A worktree path defers to gh-write's own scan; a fixed
  * shared `$TMPDIR` name let one agent post another's body (CC-725), and `/tmp` or `$TMPDIR` paths
- * pass through a symlink, which the guard refuses to defer. The repo's profiles/ carry both too.
+ * pass through a symlink, which the guard refuses to defer. The bd-implementer profiles carry both too.
  */
 export const BODY_FILE_RULE =
   'Post text as `agent-chat gh-write -- <gh args> --body-file <f>`, <f> a literal .md path in your ' +
-  "own worktree (uncommitted, not a shared $TMPDIR name) made by Write or `<<'EOF'`."
+  "own worktree (not a shared $TMPDIR name) made by Write or `<<'EOF'`, deleted once posted."
+
+/** A reviewer has no Write and works in the implementer's tree, often under `$TMPDIR`, where only a file written on an earlier call is read. */
+export const REVIEWER_BODY_FILE_RULE =
+  'If you post text, use `agent-chat gh-write -- <gh args> --body-file <f>`: <f> a literal .md path in ' +
+  "the working directory, written with `<<'EOF'` in one Bash call, posted in the next, then deleted; " +
+  'the tree is not yours.'
 
 export const QUOTE_RULE =
   'Quote expansions in git and gh args (`git -C "$dir"`); never hold a command name in a variable.'
@@ -43,9 +49,9 @@ const IMPLEMENTER_HEAD = [
   'First, stop if `git log origin/<default> --oneline --grep <ID>` shows it landed.',
   'Branch from origin/<default>; check `git log origin/<default>..HEAD`.',
   'Commit before mutating; never `git checkout` uncommitted work.',
-  'Keep scratch in the worktree or `$TMPDIR/<your name>`.',
+  'Scratch: the worktree or `$TMPDIR/<your name>`.',
   BODY_FILE_RULE,
-  'gh-write is the only write path; verify each landed. No gh-write: report BLOCKED.',
+  'gh-write is the only write path; check each landed. No gh-write: report BLOCKED.',
   QUOTE_RULE,
   'On a 403 "API rate limit exceeded" with core quota left, retry once in 5 minutes.',
 ]
@@ -105,6 +111,7 @@ const REVIEWER = [
   'one failed. A skipped check (std / compat) is not a failure.',
   'Never run `git stash`: refs/stash is shared across worktrees. Use `git show <rev>:<path>` instead.',
   SHIM_RULE,
+  REVIEWER_BODY_FILE_RULE,
   QUOTE_RULE,
   "Then blocking items before nits. A verdict counts only when Head equals the PR's current head exactly.",
 ].join('\n')

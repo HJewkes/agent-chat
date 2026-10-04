@@ -16,6 +16,7 @@ import {
   MAX_BLOCK_CHARS,
   QUOTE_RULE,
   RETURN_CONTRACT_BLOCKS,
+  REVIEWER_BODY_FILE_RULE,
   SHEPHERD_NONE_MARKER,
 } from '../agents/return-contract-blocks.js'
 import { transcriptPath } from '../agents/transcript.js'
@@ -680,11 +681,13 @@ describe('PR body path (CC-444, CC-725)', () => {
     expect(block).toContain(BODY_FILE_RULE)
     expect(BODY_FILE_RULE).toContain('in your own worktree')
     expect(BODY_FILE_RULE).toContain('not a shared $TMPDIR name')
+    expect(BODY_FILE_RULE).toContain('deleted once posted')
     expect(block).not.toContain('cat it before')
     expect(block.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
   })
 
-  it('gives the reviewer the quoting rule', () => {
+  it('gives the reviewer its body-file rule and the quoting rule', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(REVIEWER_BODY_FILE_RULE)
     expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(QUOTE_RULE)
     expect(RETURN_CONTRACT_BLOCKS.reviewer.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
   })
