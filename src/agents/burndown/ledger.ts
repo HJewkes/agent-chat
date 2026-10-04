@@ -87,7 +87,8 @@ const Claim = z.object({
   finding: z
     .object({
       kind: z.literal('stalled-after-claim'),
-      reason: z.enum(['silent', 'idle', 'slow-tool']),
+      /** `lease` when the claim's lease gave the code (CC-659); the others are CC-653's transcript reads. */
+      reason: z.enum(['silent', 'idle', 'slow-tool', 'lease']),
       /** Absent on a finding opened before CC-663. */
       code: z.enum(STALL_CODES).optional(),
       /** The last progress the transcript showed, or the spawn when it showed none. */
@@ -95,6 +96,21 @@ const Claim = z.object({
       openedAt: z.string(),
       checkedAt: z.string(),
       detail: z.string(),
+    })
+    .optional(),
+  /** An implementing claim's progress lease (CC-659), with the evidence it last saw; `lease.ts` steps it each tick. */
+  lease: z
+    .object({
+      /** The last commit, or the phase start before one. */
+      progressAt: z.string(),
+      leaseUntil: z.string(),
+      /** Renewals without a commit since `progressAt`. */
+      renewals: z.number().int().nonnegative(),
+      head: z.string().optional(),
+      /** The worktree's `Progress.content` hash. */
+      content: z.string().optional(),
+      /** The transcript's newest progress row. */
+      transcriptAt: z.string().optional(),
     })
     .optional(),
   /** The claim's PR as the last leak check found it: redacted `file:line category` rows, never matched text (CC-269). */

@@ -2182,3 +2182,80 @@ describe('burndown tick finding on a silent agent', () => {
     expect(fourth.claim?.notified).toEqual(['dispatched'])
   })
 })
+
+describe('burndown tick lease on an implementing seat claim (CC-659)', () => {
+  const MIN = 60_000
+  const turn = (at: Date) =>
+    `${JSON.stringify({ type: 'assistant', timestamp: at.toISOString(), message: { content: [{ type: 'text', text: 'working' }] } })}\n`
+
+  /** The pool gate reads a stale sample as closed, which would park the claim. */
+  const freshPoolSample = (now: Date) => {
+    const rate_limits = { seven_day: { used_percentage: 10 }, five_hour: { used_percentage: 10 } }
+    write(
+      path.join(accountPath(), 'status-cache', 'sessions', 's1.json'),
+      JSON.stringify({ session_id: 's1', written_at: now.getTime() / 1000 - 30, rate_limits }),
+    )
+  }
+
+  it('tells the seat once when the lease ends without a commit', async () => {
+    seatPolicy()
+    config({ seats: ['seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    const worker = { ...row('st-dm-1', 'live'), sessionId: 'sess-st-dm-1' }
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [
+        {
+          taskId: 'DM-1',
+          initiative: 'demo',
+          seat: 'seat-t',
+          namePrefix: 'st',
+          agentId: worker.agentId,
+          agentName: worker.name,
+          spawned: [worker.name],
+          spawnedAt: NOON.toISOString(),
+          phase: 'implementing',
+          phaseAt: NOON.toISOString(),
+          worktree: repo(),
+          notified: ['dispatched'],
+        },
+      ],
+    })
+    const file = transcriptPath(worker.cwd, worker.sessionId, worker.configDir)
+    const fake = fakeBroker({ agents: [worker] })
+    const tickAt = async (offset: number) => {
+      const now = new Date(NOON.getTime() + offset * MIN)
+      fs.appendFileSync(file, turn(new Date(now.getTime() - MIN)))
+      freshPoolSample(now)
+      const sent = fake.sends.length
+      await tickFromDisk({
+        dryRun: false,
+        broker: fake.broker,
+        now,
+        log: () => {},
+        exec: stubGh(),
+      })
+      return { sends: fake.sends.slice(sent), claim: readLedger(burndownLedgerPath()).claims[0] }
+    }
+    write(file, '')
+
+    const working = await tickAt(5)
+    const expired = await tickAt(40)
+    const later = await tickAt(50)
+
+    expect(working.sends).toEqual([])
+    expect(working.claim?.finding).toBeUndefined()
+    expect(working.claim?.lease).toMatchObject({
+      renewals: 0,
+      leaseUntil: new Date(NOON.getTime() + 30 * MIN).toISOString(),
+    })
+    expect(expired.sends).toEqual([
+      {
+        to: 'seat-t',
+        text: `Burndown events for seat-t at ${new Date(NOON.getTime() + 40 * MIN).toISOString()}\nstalled-after-claim DM-1: lease-expired: lease: no commit for 40 min since ${NOON.toISOString()}`,
+      },
+    ])
+    expect(expired.claim?.finding).toMatchObject({ reason: 'lease', code: 'lease-expired' })
+    expect(later.sends).toEqual([])
+  })
+})

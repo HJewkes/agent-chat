@@ -271,7 +271,10 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const decider = await deciderFor(config, opts, ledger, roster, capacity, now)
   const agents = decider?.wake === true ? { ...capacity, agents: capacity.agents - 1 } : capacity
   const advanced = stepsForActions(
-    withFindings(advance(held, observations, now), held, observations, now),
+    withFindings(advance(held, observations, now), held, observations, now, seat => {
+      const lookup = ctx.seat?.(seat)
+      return lookup !== undefined && 'gate' in lookup && !lookup.gate(0).open
+    }),
     ledger,
     ctx,
     agents.agents,
