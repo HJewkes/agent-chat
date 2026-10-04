@@ -2,7 +2,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { parseMilestoneFile, type MilestoneFile, type MilestoneResult } from './milestones.js'
 import { planOrder, type PlannedRow } from './plan-order.js'
-import type { TagError } from './task-tags.js'
+import { describeUnnamedCriterion, unnamedCriteria } from './ms-role.js'
+import { parsePlanningTasks, type TagError } from './task-tags.js'
 import { readInitiatives } from './source.js'
 import { loadPolicy, seatScope } from './policy.js'
 import { readScoredTasks } from './score-source.js'
@@ -34,6 +35,8 @@ export interface ScoredPlan {
   milestones?: { week: string; errors: string[] }
   /** CC-631: planning-tag errors such as a typo'd `dep:`, which the order otherwise reads as closed. */
   tagErrors?: string[]
+  /** CC-720: one line per open `ms-role:criterion` task that no check of its milestone names; set only when milestones were read. */
+  unnamedCriteria?: string[]
 }
 
 export interface ScoredPlanInputs {
@@ -64,6 +67,7 @@ export function scoredPlan(input: ScoredPlanInputs): ScoredPlan {
     ...(input.milestones !== undefined && { milestones: input.milestones }),
     ...(input.knownIds !== undefined && { knownIds: input.knownIds }),
   })
+  const unnamed = unnamedCriterionLines(input)
   return {
     order: planned.order,
     scope: Object.keys(weights).length,
@@ -71,7 +75,14 @@ export function scoredPlan(input: ScoredPlanInputs): ScoredPlan {
     refused: { ...scored.refused, ...planned.refused },
     skipped: [...skipped],
     tagErrors: planned.tagErrors.map(describeTagError),
+    ...(unnamed.length > 0 && { unnamedCriteria: unnamed }),
   }
+}
+
+function unnamedCriterionLines({ tasks, milestones, knownIds }: ScoredPlanInputs): string[] {
+  if (milestones === undefined) return []
+  const tagged = parsePlanningTasks(tasks, knownIds).tasks
+  return unnamedCriteria(tagged, milestones.milestones).map(describeUnnamedCriterion)
 }
 
 const describeTagError = ({ code, task, tag }: TagError) => `${code} ${task} ${tag}`
@@ -186,6 +197,7 @@ export function renderScored(plan: ScoredPlan): string[] {
     ...plan.order.map((row, i) => renderScoredRow(row, i + 1)),
     ...milestones,
     ...tagErrors,
+    ...(plan.unnamedCriteria ?? []),
     `scope=${plan.scope} initiatives, ${plan.open} open, skipped: ${plan.skipped.length}, refused={${refused}}`,
   ]
 }

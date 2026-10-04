@@ -70,3 +70,16 @@ describe('unnamedCriteria', () => {
     expect(describeUnnamedCriterion({ task: 'EX-1' })).toBe('unnamed-criterion EX-1 no milestone')
   })
 })
+
+describe('check ids that are not lists', () => {
+  it.each(['tasks: EX-1', 'epics: 5', 'tasks: [EX-1, 2]'])(
+    '%s is an error naming the check, not a schema failure',
+    check => {
+      const result = file(check)
+      expect(result.file).toBeDefined()
+      expect(result.errors).toEqual([
+        { code: 'bad-check-ids', milestone: 'M1', id: `tasks-done[0].${check.split(':')[0]}` },
+      ])
+    },
+  )
+})

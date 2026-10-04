@@ -1,4 +1,4 @@
-import type { Milestone } from './milestones.js'
+import { checkIds, type Milestone } from './milestones.js'
 import type { TaggedTask } from './task-tags.js'
 
 /** CC-720: the lint for `ms-role:criterion` tasks. Pure; reports, never refuses. */
@@ -11,7 +11,7 @@ export interface UnnamedCriterion {
 
 function namedIds(milestone: Milestone | undefined): Set<string> {
   const checks = milestone?.doneWhen ?? []
-  return new Set(checks.flatMap(check => [...(check.tasks ?? []), ...(check.epics ?? [])]))
+  return new Set(checks.flatMap(check => [...checkIds(check, 'tasks'), ...checkIds(check, 'epics')]))
 }
 
 /** Each open criterion task that no check of its milestone names by its id or its `epic:`; one with no known milestone is unnamed. */
