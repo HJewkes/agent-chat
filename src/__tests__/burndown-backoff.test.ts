@@ -82,4 +82,16 @@ describe('release count on disk', () => {
 
     expect(readLedger(file).releases).toEqual({ 'X-1': { n: 4, at: T0.toISOString() } })
   })
+
+  it.each([
+    ['an unparseable time', { n: 1, at: 'yesterday' }],
+    ['a zero count', { n: 0, at: T0.toISOString() }],
+    ['a fractional count', { n: 1.5, at: T0.toISOString() }],
+  ])('rejects %s on read', (_label, rec) => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-backoff-'))
+    const file = path.join(dir, 'ledger.json')
+    fs.writeFileSync(file, JSON.stringify({ version: 1, claims: [], releases: { 'X-1': rec } }))
+
+    expect(() => readLedger(file)).toThrow('malformed')
+  })
 })

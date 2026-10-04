@@ -6,6 +6,7 @@ import { parseAutonomy } from '../agents/active-work.js'
 import { readAccountBudget } from '../agents/budget.js'
 import { gateAccount, MAX_READING_AGE_SECONDS } from '../agents/burndown/budget-gate.js'
 import { collisionCheck, type BrokerView } from '../agents/burndown/collision.js'
+import { backoffHeld, RELEASE_BASE_MS } from '../agents/burndown/backoff.js'
 import { grantGap } from '../agents/burndown/eligibility.js'
 import type { Runner } from '../agents/burndown/exec.js'
 import {
@@ -16,6 +17,7 @@ import {
   withLedgerLock,
   writeLedger,
   type Claim,
+  type Ledger,
 } from '../agents/burndown/ledger.js'
 import { planFromDisk, renderPlan } from '../agents/burndown/tick.js'
 import { TRUST_RULE_CLI_VERSION } from '../agents/trust.js'
@@ -717,7 +719,12 @@ describe('burndown release retires spawned agents (CC-656)', () => {
     const report = await releaseTask('DM-9', retire)
 
     expect(retire.mock.calls.map(([name]) => name)).toEqual(['bd-second', 'bd-first'])
-    expect(report.lines).toEqual(['released DM-9 (implementing)', 'retired bd-second', 'retired bd-first'])
+    expect(report.lines).toEqual([
+      'released DM-9 (implementing)',
+      'retired bd-second',
+      'retired bd-first',
+      expect.stringMatching(/^released 1 times; held until \d{4}-/),
+    ])
     expect(readLedger(file).claims).toEqual([])
   })
 
@@ -733,5 +740,69 @@ describe('burndown release retires spawned agents (CC-656)', () => {
     expect(report.lines).toContain('left bd-second: not yours')
     expect(report.lines).toContain('retired bd-first')
     expect(readLedger(file).claims).toEqual([])
+  })
+
+  it('counts each release toward the backoff and prints the hold', async () => {
+    const file = seed()
+    const retire = vi.fn(async (_name: string) => ({ ok: true }))
+    const first = new Date('2026-10-01T12:00:00.000Z')
+    const second = new Date('2026-10-01T12:05:00.000Z')
+
+    await releaseTask('DM-9', retire, first)
+    writeLedger(file, addClaim(readLedger(file), held))
+    const report = await releaseTask('DM-9', retire, second)
+
+    const ledger = readLedger(file)
+    expect(ledger.releases).toEqual({ 'DM-9': { n: 2, at: second.toISOString() } })
+    const until = new Date(second.getTime() + 2 * RELEASE_BASE_MS).toISOString()
+    expect(report.lines).toContain(`released 2 times; held until ${until}`)
+    const hold = backoffHeld(ledger, new Date(second.getTime() + 2 * RELEASE_BASE_MS - 1)).get('DM-9')
+    expect(hold?.until.toISOString()).toBe(until)
+    expect(backoffHeld(ledger, new Date(second.getTime() + 2 * RELEASE_BASE_MS)).has('DM-9')).toBe(false)
+  })
+
+  it('keeps the rest of the ledger byte-equal', async () => {
+    const file = path.join(world, 'home', 'burndown.json')
+    const other: Claim = { ...held, taskId: 'DM-10', agentId: 'a2', spawned: undefined }
+    const rest = {
+      lastTickAt: '2026-09-26T08:00:00.000Z',
+      decider: { wakes: ['2026-09-26T07:00:00.000Z'] },
+      seats: { alpha: { samples: [{ at: 1, sevenDay: 40 }] } },
+      humanFiled: ['k1'],
+      releases: { 'DM-3': { n: 1, at: '2026-09-25T08:00:00.000Z' } },
+    }
+    const before = { version: 1, claims: [held, other], ...rest } as unknown as Ledger
+    writeLedger(file, before)
+    const prior = readLedger(file)
+
+    await releaseTask('DM-9', async () => ({ ok: true }), new Date('2026-10-01T12:00:00.000Z'))
+
+    const { claims, releases, ...after } = readLedger(file)
+    const { claims: priorClaims, releases: priorReleases, ...priorRest } = prior
+    expect(JSON.stringify(after)).toBe(JSON.stringify(priorRest))
+    expect(claims).toEqual(priorClaims.filter(c => c.taskId === 'DM-10'))
+    expect(releases?.['DM-3']).toEqual(priorReleases?.['DM-3'])
+  })
+
+  it('does not bump the count when no claim is held', async () => {
+    const file = seed()
+    await releaseTask('DM-9', async () => ({ ok: true }))
+    const before = fs.readFileSync(file, 'utf8')
+
+    const report = await releaseTask('DM-9', async () => ({ ok: true }))
+
+    expect(report.ok).toBe(false)
+    expect(fs.readFileSync(file, 'utf8')).toBe(before)
+  })
+
+  it('writes nothing when a stored count is malformed', async () => {
+    const file = seed()
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8'))
+    fs.writeFileSync(file, JSON.stringify({ ...stored, releases: { 'DM-9': { n: 0, at: 'soon' } } }))
+    const before = fs.readFileSync(file, 'utf8')
+
+    await expect(releaseTask('DM-9', async () => ({ ok: true }))).rejects.toThrow('malformed')
+
+    expect(fs.readFileSync(file, 'utf8')).toBe(before)
   })
 })
