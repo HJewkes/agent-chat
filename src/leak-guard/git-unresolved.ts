@@ -92,6 +92,8 @@ export function hasUnreadableConfig(
   splits: readonly string[],
 ): boolean {
   const { words, at } = scanOptions(resolved, marked, splits)
+  // The words the shell splits may hide `-c` before the visible subcommand, so that one is not trusted.
+  if (words.includes(UNKNOWN)) return true
   if (!words.some(unreadable)) return false
   const sub = resolved[at]
   return sub === undefined || HOOK_RUNNING.has(sub) || !GIT_BUILTINS.has(sub)

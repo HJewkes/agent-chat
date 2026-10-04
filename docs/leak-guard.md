@@ -576,6 +576,11 @@ the guard gates by subcommand. It also does not track the value a line gives a v
 2026-10-02, CC-479). Quote the expansion, as in `git -C ~/projects/"$r" worktree list` or
 `git -C "$HOME/projects/$r"`: a quoted expansion stays one word and is allowed.
 
+The deny does not depend on the subcommand. The split words may hold `-c core.hooksPath=...`
+and the subcommand after them, so the visible one cannot be trusted: with
+`r='x -c core.hooksPath=/dev/null push origin'`, `git -C $r log` is denied although `log` runs no
+hook, and so is `git -C ~/projects/$r rev-parse` (CC-484).
+
 ### The guard never reads one file while the shell posts another
 
 For a `gh pr` or `gh issue` `create`, `new`, `edit`, `comment`, `review` or `merge`, and for every

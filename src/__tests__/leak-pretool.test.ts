@@ -128,6 +128,22 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
     expect(checkCommand(loop('"$HOME/projects/$r"'), ctx())).toBeUndefined()
   })
 
+  // CC-484: `r='x -c core.hooksPath=/dev/null push origin'` makes `-C $r log` a push with the hooks path set.
+  it.each([
+    "r='x -c core.hooksPath=/dev/null push origin'; git -C $r log",
+    'git -C ~/projects/$r rev-parse',
+    'git -C {.,-c,core.hooksPath=/dev/null} log',
+  ])('denies an unquoted -C value that may split before a hookless subcommand: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.gitConfigUnresolved)
+  })
+
+  it.each(['git -C ~/projects/"$r" log', 'git -C "$HOME/projects/$r" rev-parse'])(
+    'allows a quoted -C value before a hookless subcommand: %s',
+    command => {
+      expect(checkCommand(command, ctx())).toBeUndefined()
+    },
+  )
+
   it.each([
     'git -c user.name=x push',
     'git -c user.name="$(whoami)" push',
