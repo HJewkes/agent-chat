@@ -340,6 +340,11 @@ and other prefixes are stripped, is one of these. A wrapper is known by its base
 | a command git runs for its subcommand that a row above denies, or that the guard cannot read (below)                   | `git rebase -x` runs a shell command unseen               |
 | `git -c` or `--config-env` on an include, or with a key the guard cannot read, before a command git runs (below)       | git passes it on to every git that command runs           |
 
+The splitter reads a parenthesized alternation such as `(-c|push)` after a command name as a zsh glob
+word (CC-728), not a subshell, so the git option rules treat it as a word that may expand to
+options and deny it. A `(` at command position still opens a subshell. The splitter has no bash
+mode: bash reports a syntax error for such a line and runs nothing, and the guard denies it anyway.
+
 A git alias that was already in config is expanded before the table is applied (TP-595). For
 `git <word>`, where `<word>` is not a git builtin, the guard runs `git config --get alias.<word>`
 in the directory the command runs in, after `cd` and `-C`, with a 1 s timeout. The lookup gets

@@ -18,7 +18,7 @@ import {
 } from './git-alias.js'
 import { crashCause, type FailOpen } from './failopen.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
-import { hasUnreadableConfig, hasUnreadableOption } from './git-unresolved.js'
+import { hasOptionAlternation, hasUnreadableConfig, hasUnreadableOption } from './git-unresolved.js'
 import { mayExpandTo, mayExpandToGit } from './git-word.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
@@ -377,7 +377,11 @@ function checkGitRun(run: GitRun, ctx: GuardContext, scope: Scope, depth: number
 }
 
 const checkUnresolvedConfig = (run: GitRun): string | undefined =>
-  hasUnreadableConfig(run.resolved, run.marked, run.cmd.splits) ? REASONS.gitConfigUnresolved : undefined
+  hasUnreadableConfig(run.resolved, run.marked, run.cmd.splits)
+    ? REASONS.gitConfigUnresolved
+    : hasOptionAlternation(run.marked, run.cmd.splits, run.resolved)
+      ? REASONS.noVerify
+      : undefined
 
 const MENTIONS_INCLUDE = /include/i
 const DESCRIPTOR_COPY = /\d*[<>]&(?:\d+|-)(?![\w./])/g

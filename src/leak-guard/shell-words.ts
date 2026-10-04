@@ -205,12 +205,15 @@ class ShellLexer {
    * zsh reads `g(i|x)t` and `*.ts(.)` as one glob word (TP-721). Only a plain group counts: one
    * with a quote, backslash, blank, `$`, backtick or operator inside, or one after `{`, keeps the
    * subshell reading, so no quoted paren can hide a command. `name()` stays a function and `x=(` an array.
+   * A group that starts a word reads as a glob only when it holds `|` and follows the command name (CC-728).
    */
   private globGroup(): boolean {
     const word = this.word
-    if (word === null || /[={]$/.test(word) || this.pending !== null) return false
+    if (this.pending !== null || (word !== null && /[={]$/.test(word))) return false
     const group = PLAIN_GROUP.exec(this.src.slice(this.pos))?.[0]
     if (group === undefined || group === '()') return false
+    // A word of its own after the command name must be an alternation; a `(` at command position is a subshell.
+    if (word === null && (this.cur.words.length === 0 || !group.includes('|'))) return false
     this.split(group)
     this.pos += group.length
     return true

@@ -13,7 +13,7 @@ const HOOK_RUNNING = new Set(
 )
 const VALUE_OPTS = new Set(['-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix'])
 // A glob or brace word may expand to several words, one of them an option; a bare `$VAR` is one word.
-const GLOBBED = new RegExp(`${LIVE}[*?[{]`)
+const GLOBBED = new RegExp(`${LIVE}[*?[{(]`)
 // What one word may expand to without becoming several: a plain scalar, a tilde, or a substitution inside quotes.
 const SCALAR = new RegExp(
   `${LIVE}(?:\\$\\{${NAME}\\}|\\$${NAME}(?![A-Za-z0-9_]|${LIVE}?[:\\[])|\\$\\(|\`|~(?=/|$))`,
@@ -129,4 +129,22 @@ export function hasUnreadableConfig(
   if (!words.some(unreadable)) return false
   const sub = resolved[at]
   return sub === undefined || HOOK_RUNNING.has(sub) || !GIT_BUILTINS.has(sub)
+}
+
+const ALTERNATION = new RegExp(`${LIVE}\\(([^)]*\\|[^)]*)\\)`, 'g')
+
+/** Whether a word holds a glob alternation with an option-shaped alternative, which zsh may expand to `--no-verify`. */
+const hasOptionAlternative = (word: string): boolean =>
+  [...word.matchAll(ALTERNATION)].some(match =>
+    (match[1] as string).split('|').some(alt => alt.startsWith('-')),
+  )
+
+/** Whether a push argument may expand to an option through a glob alternation (CC-728). */
+export function hasOptionAlternation(
+  marked: readonly string[],
+  splits: readonly string[],
+  resolved: readonly (string | undefined)[],
+): boolean {
+  const { at } = scanOptions(resolved, marked, splits)
+  return resolved[at] === 'push' && marked.slice(at + 1).some(hasOptionAlternative)
 }
