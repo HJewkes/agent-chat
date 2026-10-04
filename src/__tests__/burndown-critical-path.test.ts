@@ -51,6 +51,20 @@ describe('total float', () => {
       path: ['EX-1', 'EX-3', 'EX-2'],
       length: 0.3,
     },
+    {
+      name: 'a task whose two successors have different slack takes the tighter one',
+      tasks: [T('EX-1', 1), T('EX-2', 3, ['EX-1']), T('EX-3', 1, ['EX-1'])],
+      floats: { 'EX-1': 0, 'EX-2': 0, 'EX-3': 2 },
+      path: ['EX-1', 'EX-2'],
+      length: 4,
+    },
+    {
+      name: 'a chain listed after its dependents',
+      tasks: [T('EX-3', 1, ['EX-2']), T('EX-2', 2, ['EX-1']), T('EX-1', 1)],
+      floats: { 'EX-1': 0, 'EX-2': 0, 'EX-3': 0 },
+      path: ['EX-1', 'EX-2', 'EX-3'],
+      length: 4,
+    },
     { name: 'an empty input', tasks: [], floats: {}, path: [], length: 0 },
   ])('$name', ({ tasks, floats, path, length }) => {
     const result = criticalPath(tasks)
@@ -59,6 +73,7 @@ describe('total float', () => {
     expect(result.criticalPath).toEqual(path)
     expect(result.length).toBe(length)
     expect(result.cycles).toEqual([])
+    expect(result.lowerBound).toBe(false)
   })
 
   it('reports early and late start and finish for a task with float', () => {
@@ -113,6 +128,15 @@ describe('cycles', () => {
   ])('reports $name without throwing and still floats the rest', ({ tasks, cycles, floats }) => {
     expect(criticalPath(tasks).cycles).toEqual(cycles)
     expect(floatsOf(tasks)).toEqual(floats)
+  })
+
+  it('flags the path length as a lower bound, since a cycle adds no points', () => {
+    const tasks = [T('EX-1', 1, ['EX-2']), T('EX-2', 5, ['EX-1']), T('EX-3', 2, ['EX-1'])]
+
+    const result = criticalPath(tasks)
+
+    expect(result.length).toBe(2)
+    expect(result.lowerBound).toBe(true)
   })
 })
 
