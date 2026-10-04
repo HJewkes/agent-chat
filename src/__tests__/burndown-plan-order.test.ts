@@ -228,13 +228,24 @@ describe('planOrder tiers', () => {
 })
 
 describe('planOrder readiness', () => {
-  it('blocks a task with a dep: on an open task, and treats a dep: on no open task as closed', () => {
+  it('blocks a task with a dep: on an open task, and treats a dep: on a known closed task as closed', () => {
     const tasks = [task('DP-1'), task('DP-2', ['dep:DP-1']), task('DP-3', ['dep:DP-99'])]
 
-    const { order, refused } = planOrder(inputFor(tasks))
+    const { order, refused, tagErrors } = planOrder(inputFor(tasks, { knownIds: ['DP-99'] }))
 
     expect(ids(order).sort()).toEqual(['DP-1', 'DP-3'])
     expect(refused).toEqual({ 'dep-blocked': 1 })
+    expect(tagErrors).toEqual([])
+  })
+
+  it('fails closed on a dep: naming no known task: refused as unknown-dep and listed in tagErrors', () => {
+    const tasks = [task('UD-1'), task('UD-2', ['dep:UD-99']), task('UD-3', ['dep:UD-2'])]
+
+    const { order, refused, tagErrors } = planOrder(inputFor(tasks, { knownIds: ['UD-50'] }))
+
+    expect(ids(order)).toEqual(['UD-1'])
+    expect(refused).toEqual({ 'unknown-dep': 1, 'dep-blocked': 1 })
+    expect(tagErrors).toEqual([{ code: 'unknown-dep', task: 'UD-2', tag: 'dep:UD-99' }])
   })
 
   it('blocks a cycle and everything behind it, which criticalPath alone would schedule at float 0', () => {

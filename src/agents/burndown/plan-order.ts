@@ -21,9 +21,11 @@ import { parsePlanningTasks, type TagError, type TaggedTask } from './task-tags.
  * 4 intangible (`dispatchOrder`, and only when tiers 0 to 3 have no ready row).
  *
  * Readiness, beyond the prose dependencies `dispatchOrder` already drops:
- * - A `dep:` on an open task (any task in `tasks`) blocks. A `dep:` naming no open task is taken as
- *   closed, so `criticalPath`'s `externalDeps` block only when they name an open task. One naming no
- *   task in `tasks` or `knownIds` is also an `unknown-dep` in `tagErrors` (CC-631), so a typo shows.
+ * - A `dep:` on an open task (any task in `tasks`) blocks. A `dep:` on a task in `knownIds` only, such
+ *   as a done or archived one, is taken as closed, so `criticalPath`'s `externalDeps` block only when
+ *   they name an open task. One naming no task in `tasks` or `knownIds` fails closed (CC-711): the task
+ *   is refused as `unknown-dep` and the dep is an `unknown-dep` in `tagErrors` (CC-631), so a typo
+ *   holds the task instead of releasing it.
  * - A task in a dependency cycle, and every task that reaches one through `dep:` edges, is blocked.
  * - An unestimated task stays ready: it only adds no points to the path, and `route` sends it to triage.
  * - A task in a milestone whose gate is open yields nothing.
@@ -65,18 +67,22 @@ export interface PlanOrderInput {
 
 export interface PlanOrder {
   order: PlannedRow[]
-  /** `dispatchOrder`'s share-cap skips, then `dep-blocked`, `cycle-blocked`, `gated:<id>` and `intangible-held`. */
+  /** `dispatchOrder`'s share-cap skips, then `dep-blocked`, `cycle-blocked`, `unknown-dep`, `gated:<id>` and `intangible-held`. */
   refused: Record<string, number>
   /** The planning-tag errors of `tasks`; the order still uses what parsed. */
   tagErrors: TagError[]
 }
 
-type BlockReason = 'cycle-blocked' | 'dep-blocked'
+type BlockReason = 'cycle-blocked' | 'unknown-dep' | 'dep-blocked'
 
-/** Tasks in a cycle and their transitive dependents, then any other task with a `dep:` on an open task. */
+/**
+ * Tasks in a cycle and their transitive dependents, then the `unknownDeps` tasks (a `dep:` naming no
+ * known task), then any other task with a `dep:` on an open task.
+ */
 export function tagBlocks(
   tagged: readonly TaggedTask[],
   cycles: readonly string[][],
+  unknownDeps: ReadonlySet<string> = new Set(),
 ): Map<string, BlockReason> {
   const reasons = new Map<string, BlockReason>(cycles.flat().map(id => [id, 'cycle-blocked']))
   for (let grew = true; grew;) {
@@ -87,6 +93,7 @@ export function tagBlocks(
       grew = true
     }
   }
+  for (const id of unknownDeps) if (!reasons.has(id)) reasons.set(id, 'unknown-dep')
   const open = new Set(tagged.map(task => task.id))
   for (const task of tagged) {
     if (!reasons.has(task.id) && task.deps.some(dep => open.has(dep))) reasons.set(task.id, 'dep-blocked')
@@ -147,6 +154,9 @@ function floatsOf(tagged: readonly TaggedTask[], owned: readonly Milestone[]): M
   return floats
 }
 
+const unknownDepTasks = (errors: readonly TagError[]) =>
+  new Set(errors.filter(error => error.code === 'unknown-dep').map(error => error.task))
+
 function planContext(input: PlanOrderInput): PlanContext {
   const { tasks: tagged, errors: tagErrors } = parsePlanningTasks(input.tasks, input.knownIds)
   const whole = criticalPath(tagged)
@@ -154,7 +164,7 @@ function planContext(input: PlanOrderInput): PlanContext {
   return {
     tags: new Map(tagged.map(task => [task.id, task])),
     tagErrors,
-    blocks: tagBlocks(tagged, whole.cycles),
+    blocks: tagBlocks(tagged, whole.cycles, unknownDepTasks(tagErrors)),
     remainingPath: new Map(whole.tasks.map(task => [task.id, task.earlyFinish])),
     owned: new Map(owned.map(m => [m.id, m])),
     floats: floatsOf(tagged, owned),
