@@ -223,4 +223,18 @@ describe('burndown.config.json seats', () => {
 
     expect(() => loadTickConfig(file)).toThrow('is malformed')
   })
+
+  it('routes both exception classes to the owner when the config has no exceptions', () => {
+    const file = path.join(dir, 'burndown.config.json')
+    fs.writeFileSync(file, JSON.stringify({ enabled: true }))
+
+    expect(loadTickConfig(file).exceptions.route).toEqual({ stalled: 'owner', failed: 'owner' })
+  })
+
+  it.each(['gate-trip', 'unknown'])('rejects a %s key under exceptions.route', key => {
+    const file = path.join(dir, 'burndown.config.json')
+    fs.writeFileSync(file, JSON.stringify({ exceptions: { route: { [key]: 'triage' } } }))
+
+    expect(() => loadTickConfig(file)).toThrow('is malformed')
+  })
 })

@@ -411,6 +411,7 @@ describe('burndown tick hands a finished PR to Shepherd', () => {
     expect(readLedger(burndownLedgerPath()).claims[0]?.stalledReason).toBe(
       `Shepherd refused demo/repo#5 (${refused}); burndown does not merge, so the PR is left for the owner`,
     )
+    expect(readLedger(burndownLedgerPath()).claims[0]?.stalledClass).toBe('gate-trip')
   })
 
   it('registers again next tick after Shepherd was down, and reads nothing while its status cannot be read', async () => {

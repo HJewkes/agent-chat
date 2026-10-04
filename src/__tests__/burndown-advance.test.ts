@@ -112,7 +112,10 @@ describe('burndown phase machine', () => {
 
     expect(spawns(actions)).toEqual([])
     expect(after).toEqual([
-      expect.objectContaining({ stalledReason: expect.stringContaining('second failed review') }),
+      expect.objectContaining({
+        stalledReason: expect.stringContaining('second failed review'),
+        stalledClass: 'failed',
+      }),
     ])
   })
 
@@ -264,7 +267,10 @@ describe('burndown phase machine', () => {
     const { after } = step(spawning, {})
 
     expect(after).toEqual([
-      expect.objectContaining({ stalledReason: expect.stringContaining('never landed') }),
+      expect.objectContaining({
+        stalledReason: expect.stringContaining('never landed'),
+        stalledClass: 'stalled',
+      }),
     ])
   })
 

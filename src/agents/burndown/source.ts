@@ -6,6 +6,7 @@ import { frontmatterField, listField, parseAutonomy, taskScalars } from '../acti
 import { readAccountBudget } from '../budget.js'
 import { profileDir } from '../config-dir.js'
 import { DEFAULT_RULES, type AccountReading, type AccountRule } from './budget-gate.js'
+import { Route } from './exception.js'
 import type { Initiative, Task } from './eligibility.js'
 
 /** Reads the tick's inputs off disk. Read-only: active-work files, status caches and the burndown config. */
@@ -112,6 +113,16 @@ const Config = z.object({
   decider: z
     .object({ name: z.string().min(1), maxPerHour: count.default(4), maxPerDay: count.default(24) })
     .optional(),
+  /** Who handles each exception class; `gate-trip` has no key because an owner gate is never triaged. */
+  exceptions: z
+    .object({
+      route: z
+        .object({ stalled: Route.default('owner'), failed: Route.default('owner') })
+        .strict()
+        .default({ stalled: 'owner', failed: 'owner' }),
+    })
+    .strict()
+    .default({ route: { stalled: 'owner', failed: 'owner' } }),
   /** Seat names for CC-205 seats-mode dispatch; empty means none. */
   seats: z.array(z.string().min(1)).default([]),
 })
