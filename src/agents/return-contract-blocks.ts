@@ -25,24 +25,25 @@ const SHIM_RULE =
 export const SHEPHERD_NONE_MARKER = 'Shepherd: none'
 
 const IMPLEMENTER_HEAD = [
-  'Check `gh api repos/<owner>/<repo> --jq .visibility`. In a public repo, never commit or paste',
-  'captured real data into code, fixtures, PR bodies or comments: task lists, charter or seat files,',
+  'Check `gh api repos/<owner>/<repo> --jq .visibility`. In a public repo, never put real data',
+  'in code, fixtures, PR bodies or comments: task lists, charter or seat files,',
   '/Users paths, emails, or IDs and text from private repos. Use synthetic fixtures.',
   'First, stop if `git log origin/<default> --oneline --grep <ID>` shows it landed.',
   'Branch from origin/<default>; check `git log origin/<default>..HEAD`.',
   'Commit before mutating; never `git checkout` uncommitted work.',
-  'Scratch files go in the worktree or `$TMPDIR/<your name>`.',
+  'Keep scratch in the worktree or `$TMPDIR/<your name>`.',
   'Write PR bodies to a fresh `$TMPDIR/<your name>/pr-body.md`; cat it before `gh-write -- pr create|edit`.',
-  'Make every GitHub write through `agent-chat gh-write -- <gh args>`, the only write path, and verify',
-  'each write landed. Plain `gh` is for reads; a gh called by path is refused. No gh-write: report BLOCKED.',
-  'On a 403 "API rate limit exceeded" with core quota left, retry once after 5 minutes.',
+  'Make each GitHub write via `agent-chat gh-write -- <gh args>`, the only write path; verify',
+  'each landed. Plain `gh` is for reads; gh by path is refused. No gh-write: report BLOCKED.',
+  'On a 403 "API rate limit exceeded" with core quota left, retry once in 5 minutes.',
 ]
 
 const SHEPHERD_HANDOFF = [
-  'Never use --no-verify. Verify locally, push, open the PR over REST, and never wait on CI.',
+  'Never use --no-verify. Verify locally, push, open the PR over REST, never wait on CI.',
   'Only if the brief asks (one saying not to wins), run `titan-factory shepherd register <owner>/<repo>#<n>',
-  '--task <initiative>/<ID> --implementer <your agent name> --kind <correctness|security|feature|refactor>`',
-  'and report `Shepherd: <run id>`, or `Shepherd: refused <first stderr line>` on exit 65. <spawner> watches CI.',
+  '--task <initiative>/<ID> --implementer <your name> --kind <correctness|security|feature|refactor>`',
+  'and report `Shepherd: <run id>`, `Shepherd: refused <first stderr line>` on exit 65, or `Shepherd: down`',
+  'on exit 69 (do not wait for it). <spawner> watches CI.',
 ]
 
 const OWN_CI_WAIT = [
@@ -54,8 +55,8 @@ const OWN_CI_WAIT = [
 const IMPLEMENTER_RULES = [
   NEVER_PARK,
   SHIM_RULE,
-  'Only when the brief asks for a load test: record the PID of each burner you start, kill only those',
-  'when done, and confirm with `pgrep` that none survive. Never kill by name pattern.',
+  'Only when the brief asks for a load test: record the PID of each burner, kill only those,',
+  'confirm with `pgrep` that none survive, never by name pattern.',
   'A PR narrowing a timeout reports per-case CI times against the new limit.',
   'You are NOT done at "PR opened". Your LAST action must be chat_send to <spawner> starting with',
   '`Status: DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT`, `PR: <owner>/<repo>#<n>` and',
