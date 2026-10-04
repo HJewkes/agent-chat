@@ -127,7 +127,8 @@ export const REASONS = {
   gitValueSplits: `leak-guard: a git option or option value here is unquoted, and the shell may split it into several words, one of them an option such as -c core.hooksPath, so the guard cannot tell what git runs. Quote the value, as in git -C "$dir" fetch. ${DOCS}`,
   aliasHidden: `leak-guard: the command word is an expansion the line ties to git, so the guard cannot tell which alias lookup applies or what git runs. Write the command name out: git <subcommand>, not $cmd. ${DOCS}`,
   ghApiUnquoted: `leak-guard: this gh api call holds an unquoted expansion the shell may split into flags, such as -X or -f, so the guard cannot tell if it is a read. Quote the endpoint, as in gh api "repos/o/r/commits/$SHA/check-runs", or post a write with agent-chat gh-write -- api <args>. ${DOCS}`,
-  ghApiRoute: `leak-guard: a variable that picks the host, credentials or proxy for gh (GH_HOST, GH_TOKEN, GH_REPO, HTTPS_PROXY and the like) is set from an expansion the guard cannot read, so this gh api call may send its words to another host. Set it to a literal value, or drop it. ${DOCS}`,
+  ghApiRoute: `leak-guard: a gh api read with an argument the guard cannot resolve is allowed only alone on its line, beside assignments with literal values. Put the value in literally (gh api repos/o/r/commits/<sha>/check-runs), or run the gh api call on a line of its own with no pipe, redirect, $(...) or other command. ${DOCS}`,
+  ghApiHost: `leak-guard: a gh api read with an argument the guard cannot resolve may go only to github.com, with no proxy variable. Drop the --hostname, GH_HOST or HTTPS_PROXY, HTTP_PROXY or ALL_PROXY setting, or put the value in literally. ${DOCS}`,
   nestedScript: `leak-guard: git runs a command here (rebase --exec, submodule foreach, bisect run or the like) that the guard cannot read. Write the command out literally. ${DOCS}`,
   writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. Post it with agent-chat gh-write -- <gh args> --body-file <path>, which scans the file when it runs, from a literal path in your worktree; or write the file in one Bash call and post it in the next. ${DOCS}`,
   ghByPath: `leak-guard: gh called by path skips the agent's gh shim and the gh-write leak scan. Use bare gh for reads and agent-chat gh-write -- <gh args> for every GitHub write. ${DOCS}`,
@@ -938,20 +939,38 @@ function plainApiCall(cmd: SimpleCommand): boolean {
   )
 }
 
+const PROXY_VAR = /^(?:https?|all)_proxy$/i
+const DEFAULT_HOST = 'github.com'
+
+/** A literal setting that sends gh to another host or through a proxy; expansions are denied by the line rule. */
+function reroutes(cmd: SimpleCommand): boolean {
+  const words = cmd.marked.map(unmark)
+  const assigned = words.some(word => {
+    const [, name = '', value = ''] = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(word) ?? []
+    return PROXY_VAR.test(name) || (name === 'GH_HOST' && value !== DEFAULT_HOST)
+  })
+  const hosts = words.flatMap((word, i) =>
+    word === '--hostname' ? [words[i + 1]] : word.startsWith('--hostname=') ? [word.slice(11)] : [],
+  )
+  return assigned || hosts.some(host => host !== DEFAULT_HOST)
+}
+
 /**
  * A read the guard allows unread must not go where the shell's environment, which the guard cannot
  * read, sends it. So the line may hold only `gh api` calls and literal assignments: anything else,
  * such as `declare`, `read`, `export`, `env` or a compound, could set GH_HOST, a proxy or a home.
  */
 function unreadableRoute(scope: Scope): string | undefined {
-  const plain = parseShell(scope.line).every(
+  const cmds = parseShell(scope.line)
+  const plain = cmds.every(
     cmd =>
       !cmd.nested &&
       LINE_JOINS.has(cmd.before) &&
       LINE_JOINS.has(cmd.after) &&
       (literalAssignments(cmd) || plainApiCall(cmd)),
   )
-  return plain ? undefined : REASONS.ghApiRoute
+  if (!plain) return REASONS.ghApiRoute
+  return cmds.some(reroutes) ? REASONS.ghApiHost : undefined
 }
 
 /** The deny for a gh call with a word the guard cannot resolve; a quoted read-only `gh api` is the one exception. */

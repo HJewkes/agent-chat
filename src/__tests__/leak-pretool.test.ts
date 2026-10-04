@@ -2305,4 +2305,41 @@ describe('gh api reads with quoted unresolved words (CC-680)', () => {
   ])('denies a routing variable set from an expansion it cannot read: %s', command => {
     expect(checkCommand(command, ctx())).toBe(REASONS.ghApiRoute)
   })
+
+  it.each([`${READ} | jq .`, `cd /work && ${READ}`, `${READ} > out.json`, `${READ}; echo done`])(
+    'names the real rule and the fix when the line holds more than the read: %s',
+    command => {
+      const reason = checkCommand(command, ctx())
+
+      expect(reason).toBe(REASONS.ghApiRoute)
+      expect(reason).toContain('allowed only alone on its line')
+      expect(reason).toContain('gh api repos/o/r/commits/<sha>/check-runs')
+      expect(reason).not.toContain('is set from')
+    },
+  )
+
+  it.each([
+    `GH_HOST=ghe.example.com ${READ}`,
+    `GH_HOST=; ${READ}`,
+    `${READ} --hostname ghe.example.com`,
+    `${READ} --hostname=ghe.example.com`,
+    `HTTPS_PROXY=http://p.example:3128 ${READ}`,
+    `https_proxy=http://p.example:3128 ${READ}`,
+    `HTTP_PROXY=http://p.example:3128 ${READ}`,
+    `ALL_PROXY=socks5://p.example:1080 ${READ}`,
+    `ALL_PROXY=http://p.example:3128; ${READ}`,
+  ])('denies a literal host other than github.com or any proxy beside an unresolved read: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.ghApiHost)
+  })
+
+  it.each([
+    `GH_HOST=github.com ${READ}`,
+    `${READ} --hostname github.com`,
+    `${READ} --hostname=github.com`,
+    'gh api repos/o/r/commits/abc/check-runs | jq .',
+    'GH_HOST=ghe.example.com gh api repos/o/r/commits/abc/check-runs',
+    'HTTPS_PROXY=http://p.example:3128 gh api repos/o/r/commits/abc/check-runs',
+  ])('allows what the guard could already read, and a github.com host: %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
 })
