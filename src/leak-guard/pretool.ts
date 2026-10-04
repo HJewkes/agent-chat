@@ -279,6 +279,15 @@ function clusterValueWords(cluster: string): number {
 type EnvRun =
   { words: readonly string[]; at: number; chdir?: boolean; assigns: string[] } | { reason: string }
 
+const EXPANDS = new RegExp(`${LIVE}[$\`]`)
+
+/** The value of an `env -S` / `--split-string` word and how many words it takes, in all four spellings. */
+function splitString(a: string, next: string | undefined): { value: string; width: number } | undefined {
+  if (a === '-S' || a === '--split-string') return { value: next ?? '', width: 2 }
+  const glued = /^-S(.+)/s.exec(a)?.[1] ?? /^--split-string=(.*)/s.exec(a)?.[1]
+  return glued === undefined ? undefined : { value: glued, width: 1 }
+}
+
 function unwrapEnv(args: readonly string[], i: number): EnvRun {
   let chdir = false
   const assigns: string[] = []
@@ -292,9 +301,13 @@ function unwrapEnv(args: readonly string[], i: number): EnvRun {
       continue
     }
     if (a === '-' || a === '--ignore-environment' || /^-[^-]*i/.test(a)) return { reason: REASONS.envClear }
-    if (a === '-S' || a === '--split-string') {
-      const split = parseShell(args[i + 1] ?? '')[0]?.marked ?? []
-      return { words: [...split, ...args.slice(i + 2)], at: 0, assigns }
+    const split = splitString(a, args[i + 1])
+    if (split !== undefined) {
+      if (EXPANDS.test(split.value)) return { reason: REASONS.hiddenCommand }
+      const words = [...(parseShell(split.value)[0]?.marked ?? []), ...args.slice(i + split.width)]
+      const inner = unwrapEnv(words, 0)
+      if ('reason' in inner) return inner
+      return { ...inner, chdir: chdir || inner.chdir === true, assigns: [...assigns, ...inner.assigns] }
     }
     chdir ||= /^(?:-C|--chdir)/.test(a)
     if (a === '-C' || a === '--chdir' || a === '-P') i++

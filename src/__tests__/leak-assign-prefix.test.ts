@@ -96,4 +96,32 @@ describe('a NAME+= or NAME[idx]= prefix is an assignment like NAME=', () => {
   it('still allows env with an odd name before an ordinary command', () => {
     expect(checkCommand('env A.B=1 git status', ctx())).toBeUndefined()
   })
+
+  describe('env -S and --split-string', () => {
+    const forms = (split: string, rest = ''): string[] => [
+      `env -S '${split}' ${rest}`,
+      `env -S'${split}' ${rest}`,
+      `env --split-string '${split}' ${rest}`,
+      `env --split-string='${split}' ${rest}`,
+    ]
+
+    it.each([
+      ...forms('A.B=1 git push --no-verify'),
+      ...forms('1=2 git push --no-verify'),
+      ...forms('A.B=1', 'git push --no-verify'),
+      ...forms('-- A.B=1 git push --no-verify'),
+      ...forms('A=1 git push --no-verify'),
+      ...forms(`A.B=1 gh issue comment 1 --body ${TERM}`),
+    ])('denies %s', command => {
+      expect(checkCommand(command, ctx())).toBeDefined()
+    })
+
+    it.each([
+      ...forms('FOO=1 npm test'),
+      ...forms('A.B=1 git status').filter(c => !c.startsWith("env -S'")),
+      ...forms('A.B=1', 'git status'),
+    ])('allows %s', command => {
+      expect(checkCommand(command, ctx())).toBeUndefined()
+    })
+  })
 })
