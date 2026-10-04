@@ -127,6 +127,7 @@ export const REASONS = {
   gitValueSplits: `leak-guard: a git option or option value here is unquoted, and the shell may split it into several words, one of them an option such as -c core.hooksPath, so the guard cannot tell what git runs. Quote the value, as in git -C "$dir" fetch. ${DOCS}`,
   aliasHidden: `leak-guard: the command word is an expansion the line ties to git, so the guard cannot tell which alias lookup applies or what git runs. Write the command name out: git <subcommand>, not $cmd. ${DOCS}`,
   ghApiUnquoted: `leak-guard: this gh api call holds an unquoted expansion the shell may split into flags, such as -X or -f, so the guard cannot tell if it is a read. Quote the endpoint, as in gh api "repos/o/r/commits/$SHA/check-runs", or post a write with agent-chat gh-write -- api <args>. ${DOCS}`,
+  ghApiRoute: `leak-guard: a variable that picks the host, credentials or proxy for gh (GH_HOST, GH_TOKEN, GH_REPO, HTTPS_PROXY and the like) is set from an expansion the guard cannot read, so this gh api call may send its words to another host. Set it to a literal value, or drop it. ${DOCS}`,
   nestedScript: `leak-guard: git runs a command here (rebase --exec, submodule foreach, bisect run or the like) that the guard cannot read. Write the command out literally. ${DOCS}`,
   writtenBody: `leak-guard: this command line writes a PR or issue body file and posts it, so the guard cannot scan a body that does not exist yet. Post it with agent-chat gh-write -- <gh args> --body-file <path>, which scans the file when it runs, from a literal path in your worktree; or write the file in one Bash call and post it in the next. ${DOCS}`,
   ghByPath: `leak-guard: gh called by path skips the agent's gh shim and the gh-write leak scan. Use bare gh for reads and agent-chat gh-write -- <gh args> for every GitHub write. ${DOCS}`,
@@ -917,15 +918,38 @@ function deferredWritesOnlyBody(
   return writesOnlySafeBody(kind === 'api' ? apiSources(resolved) : prSources(resolved), cmd, ctx, scope)
 }
 
+// What picks the host, the credentials or the proxy gh talks through.
+const ROUTING_VAR =
+  /^(?:GH_HOST|GH_ENTERPRISE_TOKEN|GH_TOKEN|GITHUB_TOKEN|GH_REPO|GH_CONFIG_DIR|(?:https?|all)_proxy)$/i
+
+/** A read the guard allows unread still must not go where an expansion it cannot read sends it. */
+function unreadableRoute(
+  cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+  assigns: readonly string[],
+): string | undefined {
+  const own = assigns.some(word => {
+    const name = ASSIGNMENT.exec(word)?.[1] ?? ''
+    const value = word.slice(word.indexOf('=') + 1)
+    return ROUTING_VAR.test(name) && resolveWord(value, cmd, ctx, scope) === undefined
+  })
+  const earlier = [...scope.exports].some(([name, set]) => ROUTING_VAR.test(name) && set === UNSURE)
+  return own || earlier ? REASONS.ghApiRoute : undefined
+}
+
 /** The deny for a gh call with a word the guard cannot resolve; a quoted read-only `gh api` is the one exception. */
 function unsureGh(
   kind: GhKind,
   marked: readonly string[],
   args: readonly (string | undefined)[],
   cmd: SimpleCommand,
+  ctx: GuardContext,
+  scope: Scope,
+  assigns: readonly string[],
 ): string | undefined {
   const read = kind === 'api' ? classifyApiRead(marked, args, cmd.splits) : 'other'
-  if (read === 'read') return undefined
+  if (read === 'read') return unreadableRoute(cmd, ctx, scope, assigns)
   if (read === 'splits') return REASONS.ghApiUnquoted
   return unread(cmd.substitutions.flatMap(sub => sub.commands))
 }
@@ -936,6 +960,7 @@ function checkGh(
   ctx: GuardContext,
   scope: Scope,
   defers = false,
+  assigns: readonly string[] = [],
 ): string | undefined {
   const kind = ghKind(marked)
   if (kind === 'other') return undefined
@@ -943,7 +968,7 @@ function checkGh(
   if (defers && deferredWritesOnlyBody(kind, args, cmd, ctx, scope))
     return checkDeferred(kind, args, cmd, ctx, scope)
   const unsure = kind === 'unknown' || !args.every(arg => arg !== undefined)
-  if (unsure) return unsureGh(kind, marked, args, cmd)
+  if (unsure) return unsureGh(kind, marked, args, cmd, ctx, scope, assigns)
   const sources = kind === 'api' ? apiSources(args) : prSources(args)
   if (sources.inline.length + sources.files.length === 0) return undefined
   if (postsWrittenBody(sources, scope, writtenBy(cmd, ctx, scope))) return REASONS.writtenBody
@@ -1105,7 +1130,8 @@ function checkSimple(
   if (name === 'eval') return checkEval(marked, cmd, ctx, { ...at, deferrable: false }, depth)
   if (name === 'git')
     return checkGitRun(gitRun(marked, unwrapped.assigns, cmd, ctx, at, true), ctx, at, depth)
-  if (name === 'gh') return head === 'gh' ? checkGh(marked, cmd, ctx, at) : REASONS.ghByPath
+  if (name === 'gh')
+    return head === 'gh' ? checkGh(marked, cmd, ctx, at, false, unwrapped.assigns) : REASONS.ghByPath
   if (name === 'agent-chat' && args[0] === 'gh-write') {
     const defers = head === 'agent-chat' && defersToGhWrite(cmd, unwrapped.assigns, ctx, at)
     return checkGh(ghWriteArgs(marked), cmd, ctx, at, defers)

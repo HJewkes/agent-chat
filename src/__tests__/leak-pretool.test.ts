@@ -2208,6 +2208,9 @@ describe('gh api reads with quoted unresolved words (CC-680)', () => {
     'gh api "repos/HJewkes/agent-chat/commits/$H/check-runs"',
     'gh api "/orgs/o/members/$U"',
     'gh api "users/o/repos?page=$N"',
+    'GH_HOST=github.com gh api "repos/o/r/commits/$SHA/check-runs"',
+    'env GH_HOST=github.com gh api "repos/o/r/commits/$SHA/check-runs"',
+    'export GH_HOST=github.com; gh api "repos/o/r/commits/$SHA/check-runs"',
     'gh api "repos/o/r/commits/$SHA/check-runs" --jq .check_runs',
     'gh api "repos/o/r/commits/${SHA}/check-runs" --paginate -q ".[] | $F"',
     'gh api -H "Accept: application/vnd.github+json" "repos/o/r/pulls/$N"',
@@ -2272,5 +2275,26 @@ describe('gh api reads with quoted unresolved words (CC-680)', () => {
     'gh api "repos/o/r/$(cat n)"; gh api repos/o/*',
   ])('denies an unquoted word that may split, and says to quote it: %s', command => {
     expect(checkCommand(command, ctx())).toBe(REASONS.ghApiUnquoted)
+  })
+
+  const READ = 'gh api "repos/o/r/commits/$SHA/check-runs"'
+  it.each([
+    `GH_HOST="$x" ${READ}`,
+    `GH_HOST=$x ${READ}`,
+    `GH_TOKEN="$x" ${READ}`,
+    `GITHUB_TOKEN="$x" ${READ}`,
+    `GH_ENTERPRISE_TOKEN="$x" ${READ}`,
+    `GH_REPO="$x" ${READ}`,
+    `GH_CONFIG_DIR="$x" ${READ}`,
+    `HTTPS_PROXY="$x" ${READ}`,
+    `https_proxy="$x" ${READ}`,
+    `HTTP_PROXY="$x" ${READ}`,
+    `ALL_PROXY="$x" ${READ}`,
+    `env GH_HOST="$x" ${READ}`,
+    `export GH_HOST="$x"; ${READ}`,
+    `GH_HOST="$x"; ${READ}`,
+    `export https_proxy="$x"; ${READ}`,
+  ])('denies a routing variable set from an expansion it cannot read: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.ghApiRoute)
   })
 })
