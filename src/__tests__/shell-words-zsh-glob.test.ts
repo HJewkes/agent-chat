@@ -28,13 +28,32 @@ describe('zsh glob alternation as a command argument', () => {
     'git (-c) core.hooksPath=h push origin HEAD:refs/heads/x',
     'git (-c core.hooksPath=h push origin HEAD:refs/heads/x',
     'git commit -m y (--no-verify|x)',
+    'coproc (git -c core.hooksPath=h push origin HEAD:refs/heads/x)',
+    'repeat 1 (git -c core.hooksPath=h push origin HEAD:refs/heads/x)',
+    'for i (1) git -c core.hooksPath=h push origin HEAD:refs/heads/x',
+    'for i (1) { git -c core.hooksPath=h push origin HEAD:refs/heads/x; }',
+    'foreach i (1) git -c core.hooksPath=h push origin HEAD:refs/heads/x; end',
+    'select i in a; do :; done; select x (git -c core.hooksPath=h push origin HEAD:refs/heads/x)',
+    'noglob (git -c core.hooksPath=h push origin HEAD:refs/heads/x)',
+    'nocorrect (git -c core.hooksPath=h push origin HEAD:refs/heads/x)',
+    'builtin (git -c core.hooksPath=h push origin HEAD:refs/heads/x)',
+    'exec (git -c core.hooksPath=h push origin HEAD:refs/heads/x)',
+    'command (git -c core.hooksPath=h push origin HEAD:refs/heads/x)',
+    '- (git -c core.hooksPath=h push origin HEAD:refs/heads/x)',
+    'time -p (git -c core.hooksPath=h push origin HEAD:refs/heads/x)',
+    'function f (git -c core.hooksPath=h push origin HEAD:refs/heads/x)',
+    "git push origin (a|'--no-verify')",
+    'git push origin (a|)--no-verify',
+    'git push origin (a|\\\\--no-verify)',
+    'git push origin --no-verif(y|z)',
     'case a in (a|b) git -c core.hooksPath=h push origin HEAD:refs/heads/x;; esac',
   ])('denies %j', command => {
     expect(checkCommand(command, ctx())).toBeDefined()
   })
 
   it('reads the alternation as a word of the command, not a subshell', () => {
-    const [cmd] = parseShell('git (a|b) c')
+    // A second reading, as a subshell followed by a command, is kept beside it.
+    const cmd = parseShell('git (a|b) c').find(c => c.words[0] === 'git')
     expect(cmd?.words).toEqual(['git', '(a|b)', 'c'])
     expect(cmd?.nested).toBe(false)
   })

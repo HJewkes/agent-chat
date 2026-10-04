@@ -54,8 +54,8 @@ interface Heredoc {
 const OPERATORS = new Set([';', '&', '|'])
 const WRITE_OPERATORS = new Set(['>', '>>', '>|', '<>'])
 const GLOB = '*?[{'
-// A glob span that holds a substitution, which the shell runs.
-const SPAN_RUNS = /\$\(|`|[<>]\(/
+// A glob span that holds a substitution, a blank or an operator, which the shell may run as commands.
+const SPAN_RUNS = /[\s;&]|\$\(|`|[<>]\(/
 // Words after which a `(` still starts a command.
 const COMMAND_PREFIX = new Set(['{', '!', 'if', 'then', 'elif', 'else', 'while', 'until', 'do', 'time'])
 const BLANK = new Set([' ', '\t', '\n', ';', undefined])
@@ -124,6 +124,8 @@ class ShellLexer {
     private readonly src: string,
     start = 0,
     private readonly nested = false,
+    /** The second reading of a rest (see `globGroup`): it does not fork again, so the cost stays linear. */
+    private readonly single = false,
   ) {
     this.pos = start
     this.cur = this.newCommand()
@@ -215,6 +217,7 @@ class ShellLexer {
     const word = this.word
     if (this.pending !== null || (word !== null && /[={]$/.test(word))) return false
     if (/^\(\s*\)/.test(this.src.slice(this.pos)) || (word === null && this.opensCommand())) return false
+    if (word === null && this.single) return false
     const end = this.groupEnd()
     if (end < 0) {
       this.split('(')
@@ -223,11 +226,22 @@ class ShellLexer {
     }
     const span = this.src.slice(this.pos, end)
     if (SPAN_RUNS.test(span)) {
-      this.substituted(span, new ShellLexer(span.slice(1, -1), 0, true).run(), false)
+      this.substituted(span, new ShellLexer(span.slice(1, -1), 0, true, this.single).run(), false)
     }
     this.split(span)
     this.pos = end
+    if (!this.single) this.readRestAsCommand()
     return true
+  }
+
+  /**
+   * The shell may read the span as a subshell instead: after `coproc`, `repeat 1`, `for i`, `time -p`
+   * and other words, the span's text holds commands and what follows it starts one. So both readings
+   * are kept, and a prefix this splitter does not know cannot hide a command.
+   */
+  private readRestAsCommand(): void {
+    const rest = new ShellLexer(this.src, this.pos, this.nested || this.depth !== 0, true)
+    this.out.push(...rest.run())
   }
 
   /** The `(` starts a command, a case pattern after `in`, or a `[[` operand: not an argument. */
@@ -396,7 +410,7 @@ class ShellLexer {
   /** Parses the inner commands too, so `$(git push --no-verify)` is seen; the word keeps the raw text. */
   private substitution(quoted: boolean): string {
     const start = this.pos
-    const inner = new ShellLexer(this.src, this.pos + 2, true)
+    const inner = new ShellLexer(this.src, this.pos + 2, true, this.single)
     const commands = inner.run()
     this.pos = Math.min(inner.pos + 1, this.src.length)
     return this.substituted(this.src.slice(start, this.pos), commands, quoted)
@@ -405,7 +419,7 @@ class ShellLexer {
   private backtick(quoted: boolean): string {
     const start = this.pos
     const inner = this.until('`')
-    const commands = new ShellLexer(inner, 0, true).run()
+    const commands = new ShellLexer(inner, 0, true, this.single).run()
     if (inner.includes('\\')) commands.forEach(blur)
     return this.substituted(this.src.slice(start, this.pos), commands, quoted)
   }

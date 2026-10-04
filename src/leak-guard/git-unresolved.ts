@@ -46,7 +46,7 @@ function unreadable({ resolved, marked, fromEnv }: ConfigWord): boolean {
  * double-quoted word whose expansions are plain scalars, is one word; anything else, such as `$@`,
  * `${a[@]}`, `${=v}`, a brace list, a glob or an unquoted expansion, may split.
  */
-const expandsToWords = (marked: string, splits: readonly string[]): boolean =>
+export const expandsToWords = (marked: string, splits: readonly string[]): boolean =>
   splits.includes(marked) || marked.replace(SCALAR, '').includes(LIVE)
 
 /** A word that may expand to options, whatever else it holds. */
@@ -131,8 +131,9 @@ export function hasUnreadableConfig(
   return sub === undefined || HOOK_RUNNING.has(sub) || !GIT_BUILTINS.has(sub)
 }
 
-// A glob group whose text holds an option-shaped alternative, as in `(a|--no-verify)` or `((-c|x)|y)`.
-const OPTION_GROUP = new RegExp(`${LIVE}\\((?:[^]*[(|])?-`)
+// zsh matches a group against names, so an alternative, the text glued before it or text glued after it may be an option.
+const QUOTING_CHARS = /['"\\]/g
+const OPTION_GROUP = /^-|[(|)]-/
 
 /** Whether an argument after the subcommand may expand to an option through a glob group (CC-728). */
 export function hasOptionAlternation(
@@ -141,5 +142,16 @@ export function hasOptionAlternation(
   resolved: readonly (string | undefined)[],
 ): boolean {
   const { at } = scanOptions(resolved, marked, splits)
-  return resolved[at] !== undefined && marked.slice(at + 1).some(word => OPTION_GROUP.test(word))
+  const groups = marked.slice(at + 1).filter(word => word.includes(`${LIVE}(`))
+  return (
+    resolved[at] !== undefined &&
+    groups.some(word => OPTION_GROUP.test(unmark(word).replace(QUOTING_CHARS, '')))
+  )
 }
+
+/** Whether git's options hold a word the shell may split into several, which quoting would fix. */
+export const hasSplittableOption = (
+  resolved: readonly (string | undefined)[],
+  marked: readonly string[],
+  splits: readonly string[],
+): boolean => scanOptions(resolved, marked, splits).words.includes(UNKNOWN)

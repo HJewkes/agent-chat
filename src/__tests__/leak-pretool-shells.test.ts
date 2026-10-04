@@ -294,6 +294,24 @@ describe.skipIf(SHELLS.length === 0)('the guard against real shells and a fake g
   })
 })
 
+// CC-680: a hostile variable behind a quoted endpoint stays one word, so gh gets no method or field flag.
+const API_READS = [
+  'gh api "repos/o/r/commits/$SHA/check-runs"',
+  'gh api "repos/o/r/commits/${SHA}/check-runs" --jq .check_runs',
+  'gh api --paginate "repos/o/r/commits/$SHA/check-runs" -q "$SHA"',
+]
+const HOSTILE = `x -X POST -f body=${TERM}`
+
+describe.skipIf(SHELLS.length === 0)('gh api reads against real shells (CC-680)', () => {
+  it.each(API_READS)('allows %j and no shell gives gh a method or field flag', command => {
+    expect(checkCommand(command, guard())).toBeUndefined()
+    for (const record of posted(command, { ...ENV, SHA: HOSTILE })) {
+      const args = record.split('\n').filter(line => line.startsWith('-'))
+      expect(args.filter(arg => /^-[XfF]|^--(method|field|raw-field|input)/.test(arg))).toEqual([])
+    }
+  })
+})
+
 // CC-678: the guard defers these to the run-time scan in gh-write; each carries the term past the guard.
 const POST = 'agent-chat gh-write -- pr create -t x'
 const DEFERRED = [

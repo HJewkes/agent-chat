@@ -340,10 +340,14 @@ and other prefixes are stripped, is one of these. A wrapper is known by its base
 | a command git runs for its subcommand that a row above denies, or that the guard cannot read (below)                   | `git rebase -x` runs a shell command unseen               |
 | `git -c` or `--config-env` on an include, or with a key the guard cannot read, before a command git runs (below)       | git passes it on to every git that command runs           |
 
-The splitter reads a parenthesized alternation such as `(-c|push)` after a command name as a zsh glob
-word (CC-728), not a subshell, so the git option rules treat it as a word that may expand to
-options and deny it. A `(` at command position still opens a subshell. The splitter has no bash
-mode: bash reports a syntax error for such a line and runs nothing, and the guard denies it anyway.
+A `(` in argument position, after the command name (CC-728), is read two ways, and a line is denied
+if either reading is. As a zsh glob group, its balanced span (nesting, quotes and escapes honoured)
+is one non-literal word, so the git option rules deny it before the subcommand and, after it, deny
+an option-shaped alternative such as `(a|--no-verify)`. As a subshell, the span's own commands and
+the words after it are parsed as commands, so a word the splitter does not know, like `coproc`,
+`repeat 1` or `for i`, cannot hide a git inside. A `(` at command position, a case pattern and a
+`[[ ]]` operand keep the subshell reading. The splitter has no bash mode: bash reports a syntax
+error for most of these lines and runs nothing.
 
 A git alias that was already in config is expanded before the table is applied (TP-595). For
 `git <word>`, where `<word>` is not a git builtin, the guard runs `git config --get alias.<word>`
@@ -591,6 +595,32 @@ Before the subcommand, and in the value of `-c`, `--config-env`, `-C`, `--git-di
 plain `$NAME` or `${NAME}`. It treats `$@`, `$*`, `${a[@]}`, zsh `${=v}` and `$=v`, brace lists,
 globs and any unquoted expansion as possibly splitting. So `git -C $PWD status` and `d=/tmp/x; git
 -C $d status` are denied too: quote the value, as in `git -C "$PWD" status`.
+
+### A `gh api` read with a quoted expansion is allowed
+
+`gh api "repos/o/r/commits/$SHA/check-runs" --jq .check_runs` is allowed although the guard cannot
+resolve `SHA`, because nothing in it can be a write. The call must hold exactly one endpoint, quoted
+so the shell keeps it one word, and anchored: its literal prefix must be `repos/`, `orgs/` or `users/`
+(with or without a leading `/`) plus the first segment and a `/`, such as `repos/HJewkes/`, with no
+expansion before that point. So `"repos/$OWNER_REPO/commits"` is denied, because the literal stops
+before the owner segment, and so is an endpoint that holds `://`, starts with a scheme, `//` or a
+host, or names `graphql`, which gh POSTs. A header value that starts with `-` is denied.
+
+Every flag must be on the allowlist: `--paginate`, `--slurp`, `--silent`, `-i`, `--include`,
+`--verbose`, and `-H`, `--header`, `--hostname`, `--cache` and `-p`, `--preview` with a literal value
+(a header that names a method or override is denied). Only the value of `--jq`, `-q`, `--template`
+or `-t` may be an expansion. Any `-X`, `--method`, `-f`, `-F`, `--field`, `--raw-field` or `--input`,
+in any spelling, any other flag, or a second positional word, keeps the deny. An unquoted expansion
+gets its own message: quote the endpoint, or post a write with `agent-chat gh-write`.
+
+The environment decides where gh sends the call, and the guard cannot read it, so the line must
+hold nothing else: only `gh api` calls and assignments whose values are literal, joined by `;` or a
+newline. A pipe, a redirect, `&&`, a subshell, `$(...)` or another command, such as `declare`,
+`typeset`, `read`, `export`, `env`, `set`, `eval` or `source`, is denied, as is an assignment from an
+expansion. `GH_HOST=github.com gh api "repos/o/r/commits/$SHA/check-runs"` is allowed. Such a call
+may go only to `github.com`: a literal `--hostname` or `GH_HOST` for another host, and any
+`HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY` setting, is denied. The deny says to put the value in
+literally, or to run the call alone on its line.
 
 ### The guard never reads one file while the shell posts another
 
