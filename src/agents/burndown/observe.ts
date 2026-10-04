@@ -8,7 +8,7 @@ import { planPathFor } from './brief.js'
 import { run, type Runner } from './exec.js'
 import type { Claim } from './ledger.js'
 import { DEFAULT_NAME_PREFIX, type WorktreeUse } from './plan.js'
-import { parseReport, parseSlices } from './report.js'
+import { parseReport, readSlices } from './report.js'
 import { assessDiff, GIT_BIN, type DiffVerdict } from './review-diff.js'
 import {
   rowFor,
@@ -103,8 +103,9 @@ async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Pr
 function withSlices(obs: Observation, claim: Claim, deps: ObserveDeps): Observation {
   const planPath = obs.report?.plan ?? planPathFor(path.join(deps.root, claim.initiative), claim.taskId)
   const text = (deps.readFile ?? readFileOrUndefined)(planPath)
-  const slices = text === undefined ? undefined : parseSlices(text)
-  return slices === undefined ? obs : { ...obs, slices }
+  if (text === undefined) return { ...obs, sliceProblems: [`no plan file at ${planPath}`] }
+  const read = readSlices(text)
+  return read.slices === undefined ? { ...obs, sliceProblems: read.problems } : { ...obs, slices: read.slices }
 }
 
 const memo = <T>(read: () => T): (() => T) => {

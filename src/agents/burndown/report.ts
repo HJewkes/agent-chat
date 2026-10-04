@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { lintSlices } from './slice-lint.js'
 
 /**
  * Parses what a tick-spawned agent leaves behind: the first line of its final
@@ -55,25 +56,36 @@ const PlannedSlice = z.object({
   title: z.string(),
   dependsOn: z.array(z.string()).default([]),
   owns: z.array(z.string()).default([]),
+  points: z.number().optional(),
+  doneWhen: z.string().optional(),
 })
 export type PlannedSlice = z.infer<typeof PlannedSlice>
 
+/** A planner's slices when they pass the lint, else the reason lines. */
+export type SliceRead = { slices: PlannedSlice[]; problems?: undefined } | { slices?: undefined; problems: string[] }
+
 const SLICES_BLOCK = /^```burndown-slices[ \t]*\n([\s\S]*?)^```[ \t]*$/m
 
-/** The planner's slices, or undefined when the block is missing, not JSON, empty, or names an unknown dependency. */
-export function parseSlices(planText: string): PlannedSlice[] | undefined {
+/** The planner's slices, or why the plan's `burndown-slices` block is missing, unreadable, or fails the lint. */
+export function readSlices(planText: string): SliceRead {
   const body = SLICES_BLOCK.exec(planText)?.[1]
-  if (body === undefined) return undefined
+  if (body === undefined) return { problems: ['plan has no burndown-slices block'] }
   let json: unknown
   try {
     json = JSON.parse(body)
-  } catch {
-    return undefined
+  } catch (err) {
+    return { problems: [`burndown-slices block is not JSON: ${(err as Error).message}`] }
   }
   const parsed = z.array(PlannedSlice).min(1).safeParse(json)
-  if (!parsed.success) return undefined
-  const names = new Set(parsed.data.map(s => s.n))
-  if (names.size !== parsed.data.length) return undefined
-  if (parsed.data.some(s => s.dependsOn.some(dep => !names.has(dep)))) return undefined
-  return parsed.data
+  if (!parsed.success) return { problems: parsed.error.issues.map(shapeProblem) }
+  const problems = lintSlices(parsed.data)
+  return problems.length === 0 ? { slices: parsed.data } : { problems }
 }
+
+const shapeProblem = (issue: z.core.$ZodIssue): string =>
+  issue.path.length === 0
+    ? `burndown-slices block: ${issue.message}`
+    : `burndown-slices block at ${issue.path.join('.')}: ${issue.message}`
+
+/** The planner's slices, or undefined when `readSlices` finds a problem. */
+export const parseSlices = (planText: string): PlannedSlice[] | undefined => readSlices(planText).slices

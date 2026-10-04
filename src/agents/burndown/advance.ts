@@ -23,6 +23,8 @@ export interface Observation {
   inbox?: InboxMessage[]
   /** A finished planner's slices, parsed from its plan file. */
   slices?: PlannedSlice[]
+  /** CC-631: why a finished planner's slices were refused, one line per slice and rule. */
+  sliceProblems?: string[]
   diff?: { reviewable: boolean; reason: string }
   /** Shepherd's row for the claim's PR, absent from the row when Shepherd has none; `landed` is read for a finished run. */
   shepherd?: { row?: ShepherdRow; landed?: boolean }
@@ -96,7 +98,7 @@ const landed = (claim: Claim, agentId: string): Action =>
   update(claim, { phase: claim.nextPhase ?? 'implementing', agentId, nextPhase: undefined })
 
 function afterPlanner(claim: Claim, obs: Observation, now: Date): Action[] {
-  if (obs.slices === undefined) return [stall(claim, 'planner left no machine-readable slices')]
+  if (obs.slices === undefined) return [stall(claim, sliceStallReason(obs.sliceProblems))]
   const at = now.toISOString()
   const slices: Claim[] = obs.slices.map(s => ({
     taskId: claim.taskId,
@@ -111,6 +113,11 @@ function afterPlanner(claim: Claim, obs: Observation, now: Date): Action[] {
   }))
   return [update(claim, { phase: 'done' }), { kind: 'add', claims: slices }, retireAll(claim)]
 }
+
+const sliceStallReason = (problems: string[] | undefined): string =>
+  problems === undefined || problems.length === 0
+    ? 'planner left no machine-readable slices'
+    : problems.join('\n')
 
 /** A slice keeps its planner's seat and name prefix, so its agents are named and counted as the seat's. */
 const seatOf = (claim: Claim): Pick<Claim, 'seat' | 'namePrefix'> => ({
