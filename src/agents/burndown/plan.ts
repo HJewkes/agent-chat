@@ -12,6 +12,7 @@ import {
   type Refusal,
   type Task,
 } from './eligibility.js'
+import { backoffHeld } from './backoff.js'
 import { heldClaims, laneClaims, readySlices, type Ledger } from './ledger.js'
 import { worktreePathFor } from './trust-gate.js'
 
@@ -171,7 +172,8 @@ interface Work {
 /** A ready slice first, since its task is already underway; else the best eligible task with no orphan or collision. */
 function nextWork(initiative: OptedIn, inputs: PlanInputs): { work?: Work; refusals: Refusal[] } {
   const tasks = inputs.tasks.get(initiative.slug) ?? []
-  const [ready] = readySlices(inputs.ledger).filter(c => c.initiative === initiative.slug)
+  const held = backoffHeld(inputs.ledger, inputs.gate.now)
+  const [ready] = readySlices(inputs.ledger, held).filter(c => c.initiative === initiative.slug)
   if (ready?.slice !== undefined) {
     const tags = tasks.find(t => t.id === ready.taskId)?.tags ?? []
     const work = { taskId: ready.taskId, slice: ready.slice, tags, owns: ready.owns ?? [] }
@@ -194,6 +196,7 @@ function nextWork(initiative: OptedIn, inputs: PlanInputs): { work?: Work; refus
       initiative,
       tasks.filter(t => !skip.has(t.id)),
       claimed,
+      held,
     )
     if (task === undefined) return { refusals: [...blocked, ...refusals] }
     const profile = profileFor(task)

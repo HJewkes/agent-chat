@@ -646,6 +646,44 @@ describe('burndown tick ceilings', () => {
   })
 })
 
+/** CC-661: the release count survives a restart because it lives in the ledger file. */
+describe('burndown tick release backoff', () => {
+  const MINUTE = 60_000
+  const releasedAt = (minutesAgo: number): string =>
+    new Date(NOON.getTime() - minutesAgo * MINUTE).toISOString()
+
+  it('refuses a task released three times inside its hold and dispatches another task', async () => {
+    initiative({ 'DM-1': task('DM-1', 1), 'DM-2': task('DM-2', 2) })
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [],
+      releases: { 'DM-1': { n: 3, at: releasedAt(30) } },
+    })
+    const fake = fakeBroker()
+
+    const lines = await tick(fake)
+
+    const until = new Date(NOON.getTime() + 30 * MINUTE).toISOString()
+    expect(lines.join('\n')).toContain(`refused demo DM-1 [backoff]: released 3 times; held until ${until}`)
+    expect(fake.frames.map(f => f.name)).toEqual(['bd-dm-2'])
+    expect(readLedger(burndownLedgerPath()).releases).toEqual({ 'DM-1': { n: 3, at: releasedAt(30) } })
+  })
+
+  it('dispatches the task once its hold has passed', async () => {
+    initiative({ 'DM-1': task('DM-1') })
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [],
+      releases: { 'DM-1': { n: 3, at: releasedAt(61) } },
+    })
+    const fake = fakeBroker()
+
+    await tick(fake)
+
+    expect(fake.frames.map(f => f.name)).toEqual(['bd-dm-1'])
+  })
+})
+
 describe('burndown tick gates', () => {
   it('does nothing while another tick holds the lock', async () => {
     initiative({ 'DM-1': task('DM-1') })

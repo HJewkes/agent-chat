@@ -120,6 +120,10 @@ const SeatSample = z.object({
 const SeatState = z.object({ samples: z.array(SeatSample) })
 export type SeatState = z.infer<typeof SeatState>
 
+/** How often a task was released and when last; `backoff.ts` turns it into a hold (CC-661). */
+const ReleaseRecord = z.object({ n: z.number().int().positive(), at: z.string() })
+export type ReleaseRecord = z.infer<typeof ReleaseRecord>
+
 const Ledger = z.object({
   version: z.literal(1),
   lastTickAt: z.string().optional(),
@@ -131,6 +135,8 @@ const Ledger = z.object({
   humanFiled: z.array(z.string()).optional(),
   /** The deny-list state the leak check last recorded, so a missing list is logged once rather than every tick. */
   leakDenylist: z.string().optional(),
+  /** Release counts by task id, which hold the task back from dispatch (CC-661). */
+  releases: z.record(z.string(), ReleaseRecord).optional(),
 })
 export type Ledger = z.infer<typeof Ledger>
 
@@ -196,12 +202,12 @@ export function addClaim(ledger: Ledger, claim: Claim): Ledger {
   return { ...ledger, claims: [...ledger.claims, claim] }
 }
 
-/** Queued slices whose dependencies are all done, in ledger order. */
-export function readySlices(ledger: Ledger): Claim[] {
+/** Queued slices whose dependencies are all done and whose task is not in `held`, in ledger order. */
+export function readySlices(ledger: Ledger, held: ReadonlyMap<string, unknown> = new Map()): Claim[] {
   const done = (taskId: string, slice: string): boolean =>
     ledger.claims.some(c => c.taskId === taskId && c.slice === slice && c.phase === 'done')
   return ledger.claims.filter(
-    c => c.phase === 'queued' && (c.dependsOn ?? []).every(dep => done(c.taskId, dep)),
+    c => c.phase === 'queued' && !held.has(c.taskId) && (c.dependsOn ?? []).every(dep => done(c.taskId, dep)),
   )
 }
 
