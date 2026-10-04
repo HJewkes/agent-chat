@@ -59,9 +59,23 @@ describe('reading a worktree for progress', () => {
     expect(after.dirtyCount).toBe(1)
   })
 
+  it('returns a new content signal after a second edit to a file already dirty', () => {
+    writeFile('src/a.ts', 'edited\n')
+    const first = read()
+    writeFile('src/a.ts', 'edited again\n')
+
+    const second = read()
+
+    expect(second.dirty).toBe(first.dirty)
+    expect(second.content).not.toBe(first.content)
+  })
+
   it('ignores edits under .claude/ and node_modules/', () => {
-    const before = read()
     writeFile('.claude/settings.local.json', '{}\n')
+    git('add', '-f', '.claude')
+    git('commit', '-q', '-m', 'tracked settings')
+    const before = read()
+    writeFile('.claude/settings.local.json', '{"edited":true}\n')
     writeFile('node_modules/pkg/index.js', 'x\n')
 
     expect(read()).toEqual(before)
