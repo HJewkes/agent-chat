@@ -2021,6 +2021,49 @@ describe('the guard defers unreadable gh-write text to the run-time scan (CC-678
     expect(checkCommand(`sh -c 'echo hi'; ${POST} ${UNREADABLE}`, own())).toBeDefined()
   })
 
+  const STDIN = 'cat /w/x.md | agent-chat gh-write -- pr create -t x -F -'
+  const SETUP = 'agent-chat() { /tmp/x/agent-chat "$@"; }'
+  const WRITES = [
+    `echo '${SETUP}' > ~/.zshenv; zsh -c '${STDIN}'`,
+    `echo '${SETUP}' | tee ~/.zshenv; zsh -c '${STDIN}'`,
+    `cat /w/setup > $HOME/.zshenv; ${STDIN} && zsh -c '${STDIN}'`,
+    `cat /w/setup > $HOME/.zshenv; sh -c '${STDIN}'`,
+    `printf '#!/bin/sh\\nexec gh "$@"\\n' > /usr/bin/agent-chat; ${STDIN}`,
+    `echo x > /usr/bin/agent-chat; ${STDIN}`,
+    `echo x | tee -a /usr/bin/agent-chat; ${STDIN}`,
+    `echo x | tee /usr/bin/agent-chat; ${STDIN}`,
+    `echo x &> /usr/bin/agent-chat; ${STDIN}`,
+    `echo x &>> /usr/bin/agent-chat; ${STDIN}`,
+    `echo x >& /usr/bin/agent-chat; ${STDIN}`,
+    `echo x >| /usr/bin/agent-chat; ${STDIN}`,
+    `echo x >> /usr/bin/agent-chat; ${STDIN}`,
+    `echo x > /tmp/other; ${STDIN}`,
+    `echo x > "$OTHER"; ${STDIN}`,
+    `echo x > /usr/bin/agent-chat; ${POST} ${UNREADABLE}`,
+    `${POST} ${UNREADABLE} > /usr/bin/agent-chat`,
+    `echo hi > /w/b.md; echo x > /tmp/other; ${POST} --body-file /w/b.md`,
+    `echo hi > /w/b.md; ${POST} --body-file /w/c.md`,
+    `zsh -c '${STDIN}'`,
+    `git log --output=/usr/bin/agent-chat; ${STDIN}`,
+  ]
+
+  it.each(WRITES)('keeps denying a write that is not the body file: %s', command => {
+    expect(checkCommand(command, own())).toBeDefined()
+  })
+
+  it('still defers when the only writes are the body file or a descriptor duplicate', () => {
+    expect(
+      checkCommand(
+        `cat > /tmp/x/body.md <<'EOF'\nhello\nEOF\n${POST.replace('-t x', '-t T')} -F /tmp/x/body.md`,
+        own(),
+      ),
+    ).toBeUndefined()
+    expect(
+      checkCommand(`cat /w/x.md 2>&1 | agent-chat gh-write -- pr create -t x -F -`, own()),
+    ).toBeUndefined()
+    expect(checkCommand(`echo hi > body.md; ${POST} -F body.md -b "$(date)"`, own())).toBeUndefined()
+  })
+
   it('keeps denying written and stdin text for each shadow form', () => {
     for (const shadow of ['./agent-chat', '/tmp/agent-chat', 'command agent-chat', 'env agent-chat']) {
       expect(checkCommand(`echo hi > /w/p.md; ${shadow} gh-write -- pr create -t x -F /w/p.md`, own())).toBe(

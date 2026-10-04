@@ -627,6 +627,11 @@ agent-chat`, `env agent-chat`, a prefix assignment, `env -S`, or an expansion (`
   `local`, `read`, `printf -v`, `eval`, `source`, a shell with a startup flag or an environment
   variable, or any other program.
 
+- every write on the line, each `>`, `>>`, `>|`, `<>` or `tee` operand and any `&>` or `>&file`, is
+  the literal body file this same `gh-write` reads through `--body-file` or `-F`. A write to
+  anything else, a dotfile, a `PATH` directory or the install itself, or to a target that is not
+  a literal, keeps the deny. zsh is never a plain shell, because `zsh -c` reads `.zshenv`.
+
 In that mode the guard still scans the text it can read, and still denies a finding, a missing
 term list and an unreadable term list, even beside text it cannot read.
 

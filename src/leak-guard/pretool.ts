@@ -82,6 +82,8 @@ interface Scope {
   line: string
   /** The `-c` and `--config-env` options of the git whose `!` alias runs this command. */
   gitParams: readonly string[]
+  /** Where earlier commands on the line write: the path key of a literal target, undefined for any other. */
+  targets: readonly (string | undefined)[]
   /** Every command before this one on the line is from a short set that cannot change what `agent-chat` resolves to. */
   deferrable: boolean
   /** Command starts after an expansion the whole call may still check; nested shells draw on the same budget. */
@@ -790,13 +792,42 @@ function plainCommand(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): bool
   const [head, ...args] = words
   if (head === undefined) return true
   if (!words.every(word => resolveWord(word, cmd, ctx, scope) !== undefined)) return false
-  if (head === 'git') return GIT_READ_VERBS.has(args[0] ?? '')
+  if (head === 'git') return GIT_READ_VERBS.has(args[0] ?? '') && !args.some(arg => /^--ou/.test(arg))
   return PLAIN_COMMANDS.has(head) && !(head === 'printf' && args.some(arg => arg.startsWith('-v')))
 }
 
+// zsh reads its startup file on every `-c`, and ksh may, so neither is plain.
+const PLAIN_SHELLS = new Set(['sh', 'bash', 'dash'])
+
 /** A shell with no startup flag or environment on the line, running one `-c` script. */
 const plainShell = (cmd: SimpleCommand, assigns: readonly string[]): boolean =>
-  SHELLS.has(cmd.marked[0] ?? '') && assigns.length === 0 && cmd.marked[1] === '-c' && cmd.marked.length === 3
+  PLAIN_SHELLS.has(cmd.marked[0] ?? '') &&
+  assigns.length === 0 &&
+  cmd.marked[1] === '-c' &&
+  cmd.marked.length === 3
+
+/** The marked words a command writes to by redirect or `tee`. */
+function writeWords(cmd: SimpleCommand): string[] {
+  const tee = path.basename(cmd.words[0] ?? '') === 'tee'
+  return [...cmd.writes, ...(tee ? cmd.marked.slice(1).filter(w => !w.startsWith('-')) : [])]
+}
+
+const literalTargets = (cmd: SimpleCommand, scope: Scope): (string | undefined)[] =>
+  writeWords(cmd).map(word => (word.includes(LIVE) ? undefined : pathKey(unmark(word), scope)))
+
+// `&>` and `>&file` write a file the splitter does not record; `>&2` and `>&-` only duplicate a descriptor.
+const UNRECORDED_WRITE = /&>|>&(?![\d-])/
+
+/** Deferral covers only a line whose every write is the literal body file this gh-write reads. */
+function writesOnlyItsBody(sources: Sources, cmd: SimpleCommand, scope: Scope): boolean {
+  if (UNRECORDED_WRITE.test(scope.line)) return false
+  const bodies = new Set(
+    sources.files
+      .filter(({ file }) => file !== '-' && file !== UNRESOLVED)
+      .map(({ file }) => pathKey(file, scope)),
+  )
+  return [...scope.targets, ...literalTargets(cmd, scope)].every(key => key !== undefined && bodies.has(key))
+}
 
 /** What `collect` reads, leaving out each file or stdin the guard cannot attribute: `gh-write` scans those at run time. */
 function collectReadable(
@@ -844,6 +875,16 @@ function checkDeferred(
   return found.length === 0 ? undefined : publishes(found)
 }
 
+function deferredWritesOnlyBody(
+  kind: GhKind,
+  args: readonly (string | undefined)[],
+  cmd: SimpleCommand,
+  scope: Scope,
+): boolean {
+  const resolved = kind === 'unknown' ? [] : args.map(arg => arg ?? UNRESOLVED)
+  return writesOnlyItsBody(kind === 'api' ? apiSources(resolved) : prSources(resolved), cmd, scope)
+}
+
 function checkGh(
   marked: readonly string[],
   cmd: SimpleCommand,
@@ -854,7 +895,8 @@ function checkGh(
   const kind = ghKind(marked)
   if (kind === 'other') return undefined
   const args = marked.map(word => resolveWord(word, cmd, ctx, scope))
-  if (defers) return checkDeferred(kind, args, cmd, ctx, scope)
+  if (defers && deferredWritesOnlyBody(kind, args, cmd, scope))
+    return checkDeferred(kind, args, cmd, ctx, scope)
   const unsure = kind === 'unknown' || !args.every(arg => arg !== undefined)
   if (unsure) return unread(cmd.substitutions.flatMap(sub => sub.commands))
   const sources = kind === 'api' ? apiSources(args) : prSources(args)
@@ -1092,6 +1134,7 @@ function advance(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): Scope {
   scope = {
     ...scope,
     deferrable,
+    targets: [...scope.targets, ...literalTargets(cmd, scope)],
     written,
     earlier: [...scope.earlier, ...cmd.words.slice(1), ...(cmd.stdin === undefined ? [] : [cmd.stdin])],
   }
@@ -1150,6 +1193,7 @@ export function checkCommand(command: string, ctx: GuardContext): string | undef
     earlier: [],
     said: '',
     deferrable: true,
+    targets: [],
     line: command,
     gitParams: [],
     hiddenStarts: { left: MAX_HIDDEN_STARTS },

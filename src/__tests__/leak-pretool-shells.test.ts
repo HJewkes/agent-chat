@@ -294,7 +294,7 @@ describe.skipIf(SHELLS.length === 0)('the guard against real shells and a fake g
 // CC-678: the guard defers these to the run-time scan in gh-write; each carries the term past the guard.
 const POST = 'agent-chat gh-write -- pr create -t x'
 const DEFERRED = [
-  `${POST} -b "$(date >/dev/null; ${EVIL})"`,
+  `${POST} -b "$(date; ${EVIL})"`,
   `cat ../evil/pr.md > out.md; ${POST} --body-file out.md`,
   `cat ../evil/pr.md > out.md && ${POST} -F out.md`,
   `${EVIL} | ${POST} -F -`,
@@ -335,6 +335,22 @@ const HIJACKS = [
   `ZDOTDIR=${EVIL_ZSH} zsh -c '${GW}'`,
   `HOME=${EVIL_HOME} bash -l -c '${GW}'`,
 ]
+const PIPED = 'cat ../evil/pr.md | agent-chat gh-write -- pr create -t x -F -'
+const SETUP_FN = `agent-chat() { ${LEAK}; }`
+const INSTALL = path.join(REAL_BIN, 'agent-chat')
+// A startup file or the install itself written earlier on the line, then read or run by a later command.
+const WRITTEN = [
+  `echo '${SETUP_FN}' > ~/.zshenv; zsh -c '${PIPED}'`,
+  `echo '${SETUP_FN}' | tee ~/.zshenv; zsh -c '${PIPED}'`,
+  `cat ${ROOT}/setup > $HOME/.zshenv; zsh -c '${PIPED}'`,
+  `printf '#!/bin/sh\\n${LEAK}\\n' > ${INSTALL}; ${PIPED}`,
+  `echo '${LEAK}' > ${INSTALL}; ${PIPED}`,
+  `: > ${INSTALL}; echo '${LEAK}' | tee -a ${INSTALL}; ${PIPED}`,
+  `printf '#!/bin/sh\\n${LEAK}\\n' &> ${INSTALL}; ${PIPED}`,
+  `printf '#!/bin/sh\\n${LEAK}\\n' >& ${INSTALL}; ${PIPED}`,
+  `printf '#!/bin/sh\\n${LEAK}\\n' >| ${INSTALL}; ${PIPED}`,
+]
+
 // These only hijack zsh; a host without zsh cannot show the leak, and the guard must still deny.
 const ZSH_ONLY = /^(?:hash agent-chat=|path=|fpath=|agent-chat (?:gh-write|x)\(\)|ZDOTDIR=)/
 const SHADOWS = [
@@ -365,6 +381,26 @@ describe.skipIf(SHELLS.length === 0)('gh-write deferral against real shells (CC-
     expect(checkCommand(command, owned())).toBeDefined()
     const runnable = ZSH_ONLY.test(command) ? SHELLS.some(([shell]) => shell.endsWith('zsh')) : true
     if (runnable) expect(posted(command, REAL_ENV).some(record => record.includes(TERM))).toBe(true)
+  })
+
+  it.each(WRITTEN)('denies %j, which posts the term when run', command => {
+    const restore = (): void => {
+      fs.writeFileSync(INSTALL, REAL_AGENT_CHAT, { mode: 0o755 })
+      fs.rmSync(path.join(ENV.HOME, '.zshenv'), { force: true })
+    }
+    restore()
+    expect(checkCommand(command, owned())).toBeDefined()
+    const runnable = !command.includes('zsh -c') || SHELLS.some(([shell]) => shell.endsWith('zsh'))
+    if (runnable) expect(posted(command, REAL_ENV).some(record => record.includes(TERM))).toBe(true)
+    restore()
+  })
+
+  it('defers a heredoc body file the same line writes and posts it through gh-write', () => {
+    fs.rmSync(path.join(WORK, 'body.md'), { force: true })
+    const command = `cat > body.md <<'EOF'\nclean body\nEOF\nagent-chat gh-write -- pr create -t T -F body.md`
+
+    expect(checkCommand(command, owned())).toBeUndefined()
+    for (const record of posted(command, REAL_ENV)) expect(record).toContain('clean body')
   })
 
   it.each(SHADOWS)('denies %j', command => {
