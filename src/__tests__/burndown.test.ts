@@ -712,7 +712,7 @@ describe('burndown release retires spawned agents (CC-656)', () => {
 
   it('retires both spawned agents newest first and drops the claim', async () => {
     const file = seed()
-    const retire = vi.fn(async () => ({ ok: true }))
+    const retire = vi.fn(async (_name: string) => ({ ok: true }))
 
     const report = await releaseTask('DM-9', retire)
 
