@@ -55,4 +55,42 @@ describe('classifying a claimed agent', () => {
       reason: 'silent',
     })
   })
+
+  it('reads work at exactly the claim start as silent only past 5 min, with an empty activity', () => {
+    expect(classify({ lastAt: iso(START) }, claim, row, new Date(START + 5 * MIN))).toEqual({
+      state: 'working',
+    })
+    expect(classify({ lastAt: iso(START) }, claim, row, new Date(START + 5 * MIN + 1))).toEqual({
+      state: 'stalled',
+      reason: 'silent',
+    })
+    expect(classify({}, claim, row, new Date(START + 5 * MIN + 1))).toEqual({
+      state: 'stalled',
+      reason: 'silent',
+    })
+  })
+
+  it('treats the exact slow-tool boundaries as still working', () => {
+    const pending = (tool: string) => ({ lastAt: iso(LAST), pending: { tool, at: iso(LAST) } })
+
+    expect(classify(pending('Bash'), claim, row, at(15 * MIN))).toEqual({ state: 'working' })
+    expect(classify(pending('Monitor'), claim, row, at(15 * MIN + 1))).toEqual({
+      state: 'stalled',
+      reason: 'slow-tool',
+    })
+    expect(classify(pending('Write'), claim, row, at(5 * MIN))).toEqual({ state: 'working' })
+    expect(classify(pending('Write'), claim, row, at(5 * MIN + 1))).toEqual({
+      state: 'stalled',
+      reason: 'slow-tool',
+    })
+  })
+
+  it('falls back to the spawn time when phaseAt is invalid and reads unknown when both are', () => {
+    const late = new Date(START + 5 * MIN + 1)
+
+    expect(classify({}, { phaseAt: 'not a date' }, row, late)).toEqual({ state: 'stalled', reason: 'silent' })
+    expect(classify({}, { phaseAt: 'not a date' }, { spawnedAt: Number.NaN }, late)).toEqual({
+      state: 'unknown',
+    })
+  })
 })
