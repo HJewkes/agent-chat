@@ -22,6 +22,7 @@ import { TRUST_RULE_CLI_VERSION } from '../agents/trust.js'
 import { BrokerClient } from '../client/broker-client.js'
 import { withBroker } from '../cli/client.js'
 import { burndownPlanVerb } from '../cli/verbs/burndown.js'
+import { releaseTask } from '../cli/verbs/burndown-release.js'
 
 /**
  * The dry-run tick over a fixture world: an active-work root, a profile root
@@ -690,5 +691,47 @@ describe('claim ledger', () => {
     write(file, '{"claims": "nope"}')
 
     expect(() => readLedger(file)).toThrow('malformed')
+  })
+})
+
+describe('burndown release retires spawned agents (CC-656)', () => {
+  const held: Claim = {
+    taskId: 'DM-9',
+    initiative: 'demo',
+    agentId: 'a1',
+    spawnedAt: '2026-09-26T08:00:00.000Z',
+    phase: 'implementing',
+    phaseAt: '2026-09-26T08:00:00.000Z',
+    spawned: ['bd-first', 'bd-second'],
+  }
+  const seed = (): string => {
+    const file = path.join(world, 'home', 'burndown.json')
+    writeLedger(file, addClaim(EMPTY_LEDGER, held))
+    return file
+  }
+
+  it('retires both spawned agents newest first and drops the claim', async () => {
+    const file = seed()
+    const retire = vi.fn(async () => ({ ok: true }))
+
+    const report = await releaseTask('DM-9', retire)
+
+    expect(retire.mock.calls.map(([name]) => name)).toEqual(['bd-second', 'bd-first'])
+    expect(report.lines).toEqual(['released DM-9 (implementing)', 'retired bd-second', 'retired bd-first'])
+    expect(readLedger(file).claims).toEqual([])
+  })
+
+  it('still drops the claim and prints the refusal when a retire is refused', async () => {
+    const file = seed()
+    const retire = vi.fn(async (name: string) =>
+      name === 'bd-second' ? { ok: false, reason: 'not yours' } : { ok: true },
+    )
+
+    const report = await releaseTask('DM-9', retire)
+
+    expect(report.ok).toBe(true)
+    expect(report.lines).toContain('left bd-second: not yours')
+    expect(report.lines).toContain('retired bd-first')
+    expect(readLedger(file).claims).toEqual([])
   })
 })
