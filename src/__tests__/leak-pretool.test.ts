@@ -133,6 +133,18 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
     "r='x -c core.hooksPath=/dev/null push origin'; git -C $r log",
     'git -C ~/projects/$r rev-parse',
     'git -C {.,-c,core.hooksPath=/dev/null} log',
+    "x='a.b=c -c core.hooksPath=/dev/null push origin HEAD:refs/heads/viaC'; git -c $x log",
+    'git -c ${=x} log',
+    'git -c $=x log',
+    'set -- . -c core.hooksPath=/dev/null push origin; git -C "$@" log',
+    'git -C "${a[@]}" log',
+    'git -C "${=r}" log',
+    'git --git-dir "$@" log',
+    'git -c "$@" log',
+    'git --config-env $x log',
+    'git -c a.b=$x push',
+    'git -c {a.b=c,-c,core.hooksPath=/dev/null,push} log',
+    'git -C $PWD status',
   ])('denies an unquoted -C value that may split before a hookless subcommand: %s', command => {
     expect(checkCommand(command, ctx())).toBe(REASONS.gitConfigUnresolved)
   })
