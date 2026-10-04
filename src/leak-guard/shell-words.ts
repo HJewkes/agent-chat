@@ -54,7 +54,10 @@ interface Heredoc {
 const OPERATORS = new Set([';', '&', '|'])
 const WRITE_OPERATORS = new Set(['>', '>>', '>|', '<>'])
 const GLOB = '*?[{'
-const PLAIN_GROUP = /^\([^\s()'"\\`$;&<>]*\)/
+// A glob span that holds a substitution, which the shell runs.
+const SPAN_RUNS = /\$\(|`|[<>]\(/
+// Words after which a `(` still starts a command.
+const COMMAND_PREFIX = new Set(['{', '!', 'if', 'then', 'elif', 'else', 'while', 'until', 'do', 'time'])
 const BLANK = new Set([' ', '\t', '\n', ';', undefined])
 // gh fills these in a `gh api` path itself; no shell expands a brace group that has no comma.
 const GH_PLACEHOLDERS = ['{owner}', '{repo}', '{branch}']
@@ -202,21 +205,61 @@ class ShellLexer {
   }
 
   /**
-   * zsh reads `g(i|x)t` and `*.ts(.)` as one glob word (TP-721). Only a plain group counts: one
-   * with a quote, backslash, blank, `$`, backtick or operator inside, or one after `{`, keeps the
-   * subshell reading, so no quoted paren can hide a command. `name()` stays a function and `x=(` an array.
-   * A group that starts a word reads as a glob only when it holds `|` and follows the command name (CC-728).
+   * zsh reads `g(i|x)t`, `*.ts(.)` and an argument `(-c|push)` as one glob word (TP-721, CC-728). In
+   * argument position every balanced span, with its nesting, quotes and escapes, is one live word, so
+   * no group can hide an option from the git rules; a span with no close keeps its words visible
+   * and marks only the `(` live. `name()` stays a function, `x=(` an array, and a `(` that opens a
+   * subshell, a case pattern or a `[[ ]]` operand keeps the subshell reading.
    */
   private globGroup(): boolean {
     const word = this.word
     if (this.pending !== null || (word !== null && /[={]$/.test(word))) return false
-    const group = PLAIN_GROUP.exec(this.src.slice(this.pos))?.[0]
-    if (group === undefined || group === '()') return false
-    // A word of its own after the command name must be an alternation; a `(` at command position is a subshell.
-    if (word === null && (this.cur.words.length === 0 || !group.includes('|'))) return false
-    this.split(group)
-    this.pos += group.length
+    if (/^\(\s*\)/.test(this.src.slice(this.pos)) || (word === null && this.opensCommand())) return false
+    const end = this.groupEnd()
+    if (end < 0) {
+      this.split('(')
+      this.pos++
+      return true
+    }
+    const span = this.src.slice(this.pos, end)
+    if (SPAN_RUNS.test(span)) {
+      this.substituted(span, new ShellLexer(span.slice(1, -1), 0, true).run(), false)
+    }
+    this.split(span)
+    this.pos = end
     return true
+  }
+
+  /** The `(` starts a command, a case pattern after `in`, or a `[[` operand: not an argument. */
+  private opensCommand(): boolean {
+    const words = this.cur.words
+    const head = words.findIndex(w => !COMMAND_PREFIX.has(w))
+    if (head < 0) return true
+    return words[head] === '[[' || (words[head] === 'case' && words[words.length - 1] === 'in')
+  }
+
+  /** The index after the `)` that closes the `(` at the cursor, or -1 when the span is unbalanced or crosses a line. */
+  private groupEnd(): number {
+    let depth = 0
+    for (let i = this.pos; i < this.src.length; i++) {
+      const c = this.src[i] as string
+      if (c === '\n') return -1
+      if (c === '\\') i++
+      else if (c === "'" || c === '"') i = this.closeQuote(i, c)
+      else if (c === '(') depth++
+      else if (c === ')' && --depth === 0) return i + 1
+      if (i < 0) return -1
+    }
+    return -1
+  }
+
+  /** The index of the quote closing the one at `from`, or -1. */
+  private closeQuote(from: number, quote: string): number {
+    for (let i = from + 1; i < this.src.length; i++) {
+      if (this.src[i] === '\\' && quote === '"') i++
+      else if (this.src[i] === quote) return i
+    }
+    return -1
   }
 
   private skipComment(): void {

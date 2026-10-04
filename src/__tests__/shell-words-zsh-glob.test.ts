@@ -21,6 +21,14 @@ describe('zsh glob alternation as a command argument', () => {
     'git push origin (--no-verify|main)',
     'git push origin (a|--no-verify)',
     'git x(-c|y) push',
+    'git ((-c|zz)|core.hooksPath=h|push) origin HEAD:refs/heads/x',
+    "git (-c|core.hooksPath='h'|push) origin HEAD:refs/heads/x",
+    'git (-c|core.hooksPath=h|push|<1-2>) origin HEAD:refs/heads/x',
+    'git (-c|core.hooksPath=h|push|a\\ b) origin HEAD:refs/heads/x',
+    'git (-c) core.hooksPath=h push origin HEAD:refs/heads/x',
+    'git (-c core.hooksPath=h push origin HEAD:refs/heads/x',
+    'git commit -m y (--no-verify|x)',
+    'case a in (a|b) git -c core.hooksPath=h push origin HEAD:refs/heads/x;; esac',
   ])('denies %j', command => {
     expect(checkCommand(command, ctx())).toBeDefined()
   })
@@ -40,7 +48,12 @@ describe('zsh glob alternation as a command argument', () => {
     expect(cmds.every(c => c.nested)).toBe(true)
   })
 
-  it.each(['(cd x && git status)', 'git status'])('keeps allowing %j', command => {
+  it.each([
+    '(cd x && git status)',
+    'git status',
+    '[[ a == (a|b) ]] && git status',
+    'case a in (a|b) git status;; esac',
+  ])('keeps allowing %j', command => {
     expect(checkCommand(command, ctx())).toBeUndefined()
   })
 })

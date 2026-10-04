@@ -131,20 +131,15 @@ export function hasUnreadableConfig(
   return sub === undefined || HOOK_RUNNING.has(sub) || !GIT_BUILTINS.has(sub)
 }
 
-const ALTERNATION = new RegExp(`${LIVE}\\(([^)]*\\|[^)]*)\\)`, 'g')
+// A glob group whose text holds an option-shaped alternative, as in `(a|--no-verify)` or `((-c|x)|y)`.
+const OPTION_GROUP = new RegExp(`${LIVE}\\((?:[^]*[(|])?-`)
 
-/** Whether a word holds a glob alternation with an option-shaped alternative, which zsh may expand to `--no-verify`. */
-const hasOptionAlternative = (word: string): boolean =>
-  [...word.matchAll(ALTERNATION)].some(match =>
-    (match[1] as string).split('|').some(alt => alt.startsWith('-')),
-  )
-
-/** Whether a push argument may expand to an option through a glob alternation (CC-728). */
+/** Whether an argument after the subcommand may expand to an option through a glob group (CC-728). */
 export function hasOptionAlternation(
   marked: readonly string[],
   splits: readonly string[],
   resolved: readonly (string | undefined)[],
 ): boolean {
   const { at } = scanOptions(resolved, marked, splits)
-  return resolved[at] === 'push' && marked.slice(at + 1).some(hasOptionAlternative)
+  return resolved[at] !== undefined && marked.slice(at + 1).some(word => OPTION_GROUP.test(word))
 }
