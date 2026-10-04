@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
 import { requiredString } from '../../args.js'
@@ -22,7 +23,7 @@ import { tickFromDisk } from '../../agents/burndown/run-tick.js'
 import { planFromDisk, renderPlan, renderStatus, seatPlanFromDisk } from '../../agents/burndown/tick.js'
 import { BrokerClient } from '../../client/broker-client.js'
 import { jobState, startJob, stopJob, systemLaunchctl, type JobControl } from '../../mirror/launchd.js'
-import { jobEnv, renderBurndownPlist } from '../../mirror/plist.js'
+import { jobEnv, launchdJobRefusals, renderBurndownPlist } from '../../mirror/plist.js'
 import { addVerb, defineVerb, Report } from '../command.js'
 import { collisionView, tickBroker } from '../burndown-broker.js'
 
@@ -266,12 +267,13 @@ export function burndownInstall(dryRun: boolean, control: JobControl): Report {
   if (!loadTickConfig(burndownConfigPath()).enabled) {
     return { ok: false, lines, errors: ['refused: burndown.config.json has enabled: false'] }
   }
+  const job = { nodePath: process.execPath, cliEntry: cliEntry(), env: jobEnv(process.env) }
+  const errors = launchdJobRefusals({ ...job, tmpdir: os.tmpdir() })
+  if (errors.length > 0) return { ok: false, lines, errors }
   const plist = renderBurndownPlist({
+    ...job,
     label: BURNDOWN_LABEL,
-    nodePath: process.execPath,
-    cliEntry: cliEntry(),
     logDir: burndownLogDir(),
-    env: jobEnv(process.env),
     intervalSeconds: TICK_INTERVAL_SECONDS,
   })
   const paths = { plist: burndownPlistPath(), logDir: burndownLogDir() }
