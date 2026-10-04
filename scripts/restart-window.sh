@@ -30,6 +30,19 @@ blockers=()
 
 running() { pgrep -f "$1" 2>/dev/null | sort -un | paste -sd, - || true; }
 
+# The commit the kept .prev build was made from, in the git dir so it never dirties the tree.
+head_file() { echo "$(git -C "$1" rev-parse --absolute-git-dir)/restart-window-old-head"; }
+
+# One command that puts back the old commit and every kept .prev build, then restarts.
+rollback_cmd() { # rollback_cmd <checkout> <old head, or empty when unknown>
+  local cmd="cd $1" name
+  [ -z "$2" ] || cmd+=" && git reset --keep $2"
+  for name in node_modules dist; do
+    [ ! -e "$1/$name.prev" ] || cmd+=" && mv $name $name.aside && mv $name.prev $name && rm -rf $name.aside"
+  done
+  echo "$cmd && agent-chat service restart"
+}
+
 pids="$(running "$PUSH_RE")"
 [ -z "$pids" ] || blockers+=("a git push is running (pid $pids)")
 pids="$(running "$MERGE_RE")"
@@ -48,9 +61,10 @@ else
     branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD)"
     [ "$branch" = main ] || blockers+=("installed checkout $repo is on '$branch', not main")
     [ -z "$(git -C "$repo" status --porcelain)" ] || blockers+=("installed checkout $repo has uncommitted changes")
-    for name in node_modules dist; do
-      [ ! -e "$repo/$name.prev" ] || blockers+=("$repo/$name.prev is left from an earlier run; to roll back: rm -rf $repo/$name && mv $repo/$name.prev $repo/$name && agent-chat service restart; to keep the current build: rm -rf $repo/$name.prev")
-    done
+    if [ -e "$repo/node_modules.prev" ] || [ -e "$repo/dist.prev" ]; then
+      prev_head="$(cat "$(head_file "$repo")" 2>/dev/null || true)"
+      blockers+=("a .prev build is left from an earlier run in $repo; to roll back: $(rollback_cmd "$repo" "$prev_head"); to keep the current build: rm -rf $repo/node_modules.prev $repo/dist.prev $(head_file "$repo")")
+    fi
   fi
 fi
 
@@ -66,18 +80,31 @@ swap_in() { # swap_in <stage> <live> <name>
   mv "$1/$3" "$2/$3" || { [ ! -e "$2/$3.prev" ] || mv "$2/$3.prev" "$2/$3"; return 1; }
 }
 
-# Puts back every kept .prev build. The caller resets src to $old_head where it had advanced.
+# Puts back every kept .prev build. The live copy is renamed aside rather than deleted first, so
+# it is absent only between two renames while a broker may still be loading from it.
 restore_prev() {
   local name ok=0
   for name in node_modules dist; do
     [ -e "$repo/$name.prev" ] || continue
-    { rm -rf "${repo:?}/$name" && mv "$repo/$name.prev" "$repo/$name"; } || ok=1
+    rm -rf "${repo:?}/$name.aside"
+    [ ! -e "$repo/$name" ] || mv "$repo/$name" "$repo/$name.aside" || { ok=1; continue; }
+    if mv "$repo/$name.prev" "$repo/$name"; then
+      rm -rf "${repo:?}/$name.aside"
+    else
+      [ ! -e "$repo/$name.aside" ] || mv "$repo/$name.aside" "$repo/$name"
+      ok=1
+    fi
   done
+  [ "$ok" -ne 0 ] || rm -f "$(head_file "$repo")"
   return $ok
 }
 
+# Fails only when the build could not be put back. A failed src reset is reported, not fatal:
+# the old build is what the broker runs, so it should still be restarted on it.
 roll_back() {
-  restore_prev && git -C "$repo" reset -q --keep "$old_head"
+  restore_prev || return 1
+  git -C "$repo" reset -q --keep "$old_head" ||
+    echo "restart-window: the old build is back but src is not; run: git -C $repo reset --keep $old_head" >&2
 }
 
 # Fetch and build before the restart, so the broker never starts on old dist while node_modules
@@ -92,6 +119,7 @@ stage_and_swap() {
   rm -rf "$stage" && mkdir "$stage" || return 1
   git archive "$new_head" | tar -x -C "$stage" || return 1
   (cd "$stage" && npm ci && npm run build) || return 1
+  echo "$old_head" > "$(head_file "$repo")" || return 1
   swap_in "$stage" "$repo" node_modules || return 1
   swap_in "$stage" "$repo" dist || { restore_prev; return 1; }
   git merge -q --ff-only "$new_head" || { restore_prev; return 1; }
@@ -112,7 +140,7 @@ set -e
 [ -z "$restart_out" ] || echo "$restart_out"
 if [ "$restart_code" -ne 0 ]; then
   if [[ "$restart_out" == "refusing to restart:"* ]]; then
-    roll_back || echo "restart-window: rolling the checkout back to $old_head failed" >&2
+    roll_back || echo "restart-window: putting the old build back failed; to finish: $(rollback_cmd "$repo" "$old_head")" >&2
     echo "restart-window: refusing: the broker has work in flight (message above)" >&2
     exit 1
   fi
@@ -159,8 +187,8 @@ else
 fi
 
 if [ "$failed" -ne 0 ]; then
-  echo "restart-window: the old build is kept; to roll back: cd $repo && git reset --keep $old_head && rm -rf node_modules dist && mv node_modules.prev node_modules && mv dist.prev dist && agent-chat service restart"
+  echo "restart-window: the old build is kept; to roll back: $(rollback_cmd "$repo" "$old_head")"
   exit 2
 fi
-rm -rf "$repo/node_modules.prev" "$repo/dist.prev"
+rm -rf "$repo/node_modules.prev" "$repo/dist.prev" "$(head_file "$repo")"
 echo "restart-window OK"
