@@ -24,11 +24,25 @@ set -euo pipefail
 [ $# -eq 0 ] || { echo "restart-window: takes no arguments; --force is the owner's call" >&2; exit 1; }
 
 log_dir="${AGENT_CHAT_HOME:-$HOME/.agent-chat}"
-PUSH_RE='(^|/)git( -[Cc] [^ ]+| --[^ ]+)* push( |$)|(^|/)git-remote-http'
-MERGE_RE='(^|/)seat-merge( |$)|(^|/)bin/merge( |$)|(^|/)gh pr merge( |$)|(agent-chat|index\.js) gh-write( |$)'
+# Anchored to the executable: argv[0], or the script after a shell or node interpreter, so a
+# process that only mentions these commands in its arguments (a claude prompt) never matches
+# (CC-665). Only after a shell may the script path hold spaces, as bin/merge's does under
+# "Application Support".
+PUSH_RE='^([^ ]*/)?git( -[Cc] [^ ]+| --[^ ]+)* push( |$)|^([^ ]*/)?git-remote-https?( |$)'
+MERGE_RE='^(([^ ]*/)?(ba|z)?sh( -[^ ]+)* ([^ /]*(/[^/ ]+( [^/ -][^/ ]*)*)*/)?|([^ ]*/)?)(seat-merge|bin/merge)( |$)|^([^ ]*/)?gh( -[^ ]+)* pr merge( |$)|^(([^ ]*/)?node( -[^ ]+)* )?([^ ]*/)?(agent-chat|index\.js) gh-write( |$)'
 blockers=()
 
-running() { pgrep -f "$1" 2>/dev/null | sort -un | paste -sd, - || true; }
+# RESTART_WINDOW_PROCS names a file of "pid argv" lines to match instead of the live process table.
+running() {
+  if [ -n "${RESTART_WINDOW_PROCS:-}" ]; then
+    local pid args
+    while read -r pid args; do
+      [[ ! "$args" =~ $1 ]] || echo "$pid"
+    done < "$RESTART_WINDOW_PROCS" | sort -un | paste -sd, -
+    return
+  fi
+  pgrep -f "$1" 2>/dev/null | sort -un | paste -sd, - || true
+}
 
 # The commit the kept .prev build was made from, in the git dir so it never dirties the tree.
 head_file() { echo "$(git -C "$1" rev-parse --absolute-git-dir)/restart-window-old-head"; }
