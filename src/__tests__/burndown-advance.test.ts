@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { advance, applyActions, claimKey, type Action, type Observation } from '../agents/burndown/advance.js'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
+import { observe } from '../agents/burndown/observe.js'
 import { parseReport } from '../agents/burndown/report.js'
 import type { ShepherdRow } from '../agents/burndown/shepherd.js'
+import type { AgentIdentity } from '../protocol.js'
 
 /** The phase machine over hand-built claims and observations; no broker, git or transcript. */
 
@@ -169,6 +171,63 @@ describe('burndown phase machine', () => {
       [undefined, 'done', undefined, undefined],
       ['a', 'queued', [], ['src/ledger.ts']],
       ['b', 'queued', ['a'], undefined],
+    ])
+  })
+
+  it.each([
+    ['over 3 points', 'slice a: 5 points, over the 3-point limit'],
+    ['with no owns', 'slice a: owns no files'],
+    ['with an unknown dep', 'slice a: depends on unknown slice z'],
+  ])('stalls the planning phase on a slice %s with its lint reason (CC-631)', (_, reason) => {
+    const planning = claim({ phase: 'planning', worktree: undefined })
+
+    const { actions, after } = step(planning, {
+      agent: exited,
+      sliceProblems: [reason, 'slice b: no points'],
+    })
+
+    expect(spawns(actions)).toEqual([])
+    expect(after).toEqual([
+      expect.objectContaining({ phase: 'planning', stalledReason: `${reason}\nslice b: no points` }),
+    ])
+  })
+
+  it('stalls a planner whose plan file fails the lint with each reason line, read through observe', async () => {
+    const planning = claim({ phase: 'planning', worktree: undefined })
+    const slices = [
+      { n: 'a', title: 'x', points: 5, doneWhen: 'a test passes', owns: ['src/a.ts'] },
+      { n: 'b', title: 'y', points: 1, doneWhen: 'b test passes', owns: [] },
+      { n: 'c', title: 'z', points: 1, doneWhen: 'c test passes', dependsOn: ['q'], owns: ['src/c.ts'] },
+    ]
+    const plan = `# Plan\n\`\`\`burndown-slices\n${JSON.stringify(slices)}\n\`\`\`\n`
+    const row = { agentId: 'a1', name: 'bd-cc-1', state: 'exited', spawnedAt: 1 } as AgentIdentity
+    const { observations } = await observe(
+      [planning],
+      { agents: [row] },
+      {
+        root: '/active-work',
+        inboxSince: async () => [],
+        finalText: () => 'Status: DONE',
+        readFile: () => plan,
+      },
+    )
+
+    const { after } = step(planning, observations.get(claimKey(planning)) ?? {})
+
+    expect(after.map(c => c.stalledReason?.split('\n'))).toEqual([
+      [
+        'slice a: 5 points, over the 3-point limit',
+        'slice b: owns no files',
+        'slice c: depends on unknown slice q',
+      ],
+    ])
+  })
+
+  it('keeps the generic stall for a planner with no slices and no reasons', () => {
+    const { after } = step(claim({ phase: 'planning', worktree: undefined }), { agent: exited })
+
+    expect(after).toEqual([
+      expect.objectContaining({ stalledReason: 'planner left no machine-readable slices' }),
     ])
   })
 

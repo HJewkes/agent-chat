@@ -5,7 +5,8 @@ import { z } from 'zod'
 
 const DoneWhenCheck = z.looseObject({ kind: z.string().min(1) })
 
-const MilestoneShape = z.object({
+/** Strict, so a misspelt key such as `gate_by:` is a schema error, not a silently ungated milestone. */
+const MilestoneShape = z.strictObject({
   id: z.string().min(1),
   rank: z.number().int(),
   seat: z.string().min(1),
@@ -14,7 +15,7 @@ const MilestoneShape = z.object({
   gated_by: z.string().min(1).optional(),
 })
 
-const FileShape = z.object({
+const FileShape = z.strictObject({
   week: z.string().regex(/^\d{4}-W\d{2}$/),
   appetite_days: z.number().positive(),
   milestones: z.array(MilestoneShape),
@@ -46,12 +47,18 @@ export interface MilestoneFile {
 }
 
 export type MilestoneErrorCode =
-  'yaml' | 'schema' | 'duplicate-milestone' | 'unknown-epic' | 'unknown-gate' | 'gate-cycle'
+  | 'yaml'
+  | 'schema'
+  | 'duplicate-milestone'
+  | 'duplicate-rank'
+  | 'unknown-epic'
+  | 'unknown-gate'
+  | 'gate-cycle'
 
 export interface MilestoneError {
   code: MilestoneErrorCode
   milestone?: string
-  /** The offending epic or gate id, or the schema path. */
+  /** The offending epic or gate id, the shared rank, or the schema path. */
   id?: string
   message?: string
 }
@@ -67,6 +74,18 @@ function duplicateIds(milestones: RawMilestone[]): MilestoneError[] {
   return milestones.flatMap(({ id }) => {
     if (seen.has(id)) return [{ code: 'duplicate-milestone' as const, milestone: id }]
     seen.add(id)
+    return []
+  })
+}
+
+/** A rank already held by an earlier milestone; ties would order by file position, silently. */
+function duplicateRanks(milestones: RawMilestone[]): MilestoneError[] {
+  const holder = new Map<number, string>()
+  return milestones.flatMap(({ id, rank }) => {
+    const first = holder.get(rank)
+    if (first !== undefined)
+      return [{ code: 'duplicate-rank' as const, milestone: id, id: String(rank), message: `also ${first}` }]
+    holder.set(rank, id)
     return []
   })
 }
@@ -124,6 +143,7 @@ export function validateMilestones(
   const { week, appetite_days, milestones } = parsed.data
   const errors = [
     ...duplicateIds(milestones),
+    ...duplicateRanks(milestones),
     ...unknownEpics(milestones, new Set(taskIds)),
     ...gateErrors(milestones),
   ]

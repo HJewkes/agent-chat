@@ -9,7 +9,8 @@ export type ClassOfService = (typeof CLASSES_OF_SERVICE)[number]
 export interface PlanTask {
   id: string
   estimate?: number | null
-  tags?: readonly string[] | null
+  /** Read from YAML, so an element may not be a string; one that is not is a `bad-tag` error. */
+  tags?: readonly unknown[] | null
 }
 
 export interface TaggedTask {
@@ -25,7 +26,14 @@ export interface TaggedTask {
 }
 
 export type TagErrorCode =
-  'empty-value' | 'unknown-cos' | 'bad-due' | 'fixed-without-due' | 'conflicting-tag' | 'unknown-dep'
+  | 'empty-value'
+  | 'unknown-cos'
+  | 'bad-due'
+  | 'fixed-without-due'
+  | 'conflicting-tag'
+  | 'unknown-dep'
+  | 'bad-tag'
+  | 'bad-estimate'
 
 export interface TagError {
   code: TagErrorCode
@@ -66,6 +74,10 @@ function collectTags(task: PlanTask): CollectedTags {
   const collected: CollectedTags = { single: {}, deps: new Set(), errors: [] }
   const { single } = collected
   for (const tag of task.tags ?? []) {
+    if (typeof tag !== 'string') {
+      collected.errors.push({ code: 'bad-tag', task: task.id, tag: String(tag) })
+      continue
+    }
     const parsed = splitTag(tag)
     if (!parsed) continue
     const { key, value } = parsed
@@ -78,6 +90,15 @@ function collectTags(task: PlanTask): CollectedTags {
   return collected
 }
 
+/** A finite, non-negative estimate; NaN or worse is a `bad-estimate` error and reads as no estimate. */
+function estimateOf(task: PlanTask, errors: TagError[]): { estimate?: number } {
+  const { estimate } = task
+  if (typeof estimate !== 'number') return {}
+  if (Number.isFinite(estimate) && estimate >= 0) return { estimate }
+  errors.push({ code: 'bad-estimate', task: task.id, tag: `estimate:${estimate}` })
+  return {}
+}
+
 /** One task's planning tags; `cos` defaults to `standard`, and `cos:fixed` needs a valid `due:`. */
 export function parseTaskTags(task: PlanTask): { task: TaggedTask; errors: TagError[] } {
   const { single, deps, errors } = collectTags(task)
@@ -88,7 +109,7 @@ export function parseTaskTags(task: PlanTask): { task: TaggedTask; errors: TagEr
   }
   const { milestone, epic, due } = single
   const optional = {
-    ...(typeof task.estimate === 'number' && { estimate: task.estimate }),
+    ...estimateOf(task, errors),
     ...(milestone !== undefined && { milestone }),
     ...(epic !== undefined && { epic }),
     ...(due !== undefined && { due }),

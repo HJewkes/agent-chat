@@ -41,7 +41,8 @@ agent-chat burndown job-status         launchd state: loaded, pid, and whether t
 `agent-chat burndown plan --seat <name>` prints one seat's dry-run dispatch plan and its
 refusals, as seats mode would plan it without the tick's live slot and worktree ceilings.
 Add `--scored` for the seat's scored order with every component (`--top` and `--today`
-apply only then); `--autonomy-root` points at another charter.
+apply only then); `--autonomy-root` points at another charter. A `task tags errors:` line lists
+malformed planning tags, such as a `dep:` naming no task on disk, which the order reads as closed.
 
 `agent-chat burndown pause` is the kill switch that takes effect fastest: the next tick
 sees the pause marker and spawns nothing, but a running agent finishes on its own.
@@ -146,7 +147,7 @@ the same reason: nothing else rides along from the account that ran `install`.
 | Phase            | Meaning                                                                                                                                                                                                                                                                                                |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `spawning`       | The tick sent a spawn frame and is waiting for the broker's roster to show the agent. Ten minutes with no row stalls the claim.                                                                                                                                                                        |
-| `planning`       | A planner is running. On exit, a `burndown-slices` block adds one `implementing` claim per slice; no block stalls the claim.                                                                                                                                                                           |
+| `planning`       | A planner is running. On exit, a `burndown-slices` block adds one `implementing` claim per slice. A missing block, or one failing the slice lint (over 3 points, no `doneWhen`, no `owns`, an unknown or cyclic dep), stalls the claim with one reason line per slice and rule.                        |
 | `implementing`   | A worker is running. On exit: a park request moves to `parked`; a `DONE` report with a PR registers the PR with Shepherd and moves to `shepherding`; a reviewable diff with no PR spawns a reviewer and moves to `reviewing`; a clean `DONE` with no diff finishes the claim; anything else stalls it. |
 | `parked`         | The worker asked a question and stopped. An answer with the right `inReplyTo` spawns a successor in the same worktree and moves back to `implementing`.                                                                                                                                                |
 | `reviewing`      | A reviewer is running. `Verdict: APPROVE` on a claim with a PR hands the PR to Shepherd and moves to `shepherding`; a first failure spawns one successor; a second stalls the claim.                                                                                                                   |
