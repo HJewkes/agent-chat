@@ -583,7 +583,7 @@ function ghVerb(args: readonly string[]): string {
 type GhKind = 'pr' | 'api' | 'other' | 'unknown'
 
 /** Which text a gh command can post, from its marked words; unknown when the group or verb is expanded. */
-function ghKind(marked: readonly string[]): GhKind {
+export function ghKind(marked: readonly string[]): GhKind {
   const group = marked[0] ?? ''
   if (group.includes(LIVE)) return 'unknown'
   if (group === 'api') return 'api'
@@ -593,11 +593,11 @@ function ghKind(marked: readonly string[]): GhKind {
   return GH_TEXT_VERBS.has(verb) ? 'pr' : 'other'
 }
 
-const longValue = (arg: string, name: string): string | undefined =>
+export const longValue = (arg: string, name: string): string | undefined =>
   arg === name ? '' : arg.startsWith(`${name}=`) ? arg.slice(name.length + 1) : undefined
 
 /** gh takes `-dF file`, a short flag behind other short flags, as well as `-F file` and `-Ffile`. */
-function shortValue(arg: string, name: string): string | undefined {
+export function shortValue(arg: string, name: string): string | undefined {
   const letter = name[1] as string
   const at = /^-[A-Za-z]+/.exec(arg)?.[0].indexOf(letter) ?? -1
   return at < 0 ? undefined : arg.slice(at + 1).replace(/^=/, '')
@@ -678,7 +678,7 @@ function postsWrittenBody(sources: Sources, scope: Scope, own: readonly (string 
   return sources.files.some(body => body.file !== '-' && (unnamed || named(body)))
 }
 
-function prSources(args: readonly string[]): Sources {
+export function prSources(args: readonly string[]): Sources {
   const inline = [
     ...flagValues(args, ['--title', '--subject', '-t']).map(text => ({ label: 'title', text })),
     ...flagValues(args, ['--body', '-b']).map(text => ({ label: 'body', text })),
@@ -687,7 +687,7 @@ function prSources(args: readonly string[]): Sources {
   return { inline, files }
 }
 
-function apiSources(args: readonly string[]): Sources {
+export function apiSources(args: readonly string[]): Sources {
   const value = (f: string): string => f.slice(f.indexOf('=') + 1)
   const raw = flagValues(args, ['-f', '--raw-field']).map(value)
   const typed = flagValues(args, ['-F', '--field']).map(value)
@@ -719,7 +719,7 @@ function apiEndpoints(args: readonly string[]): string[] {
 const MERGE_ENDPOINT = /^\/?repos\/[^/]+\/[^/]+\/pulls\/\d+\/merge$/
 
 /** A merge has no pre-push scan behind it to refuse, so a missing term list must not block every merge. */
-function isMerge(args: readonly string[]): boolean {
+export function isMerge(args: readonly string[]): boolean {
   const endpoints = apiEndpoints(args)
   return args[0] === 'api' && endpoints.length === 1 && MERGE_ENDPOINT.test(endpoints[0] as string)
 }

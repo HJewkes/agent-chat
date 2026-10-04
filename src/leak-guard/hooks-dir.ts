@@ -69,7 +69,7 @@ export interface ScanInputs {
 }
 
 // os.userInfo() reads the passwd entry, not $HOME; os.homedir() is the fallback when there is none.
-function passwdHome(): string {
+export function passwdHome(): string {
   try {
     return os.userInfo().homedir
   } catch {

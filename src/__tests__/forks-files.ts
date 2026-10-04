@@ -7,6 +7,7 @@ export const EXEC_SCRIPT_FILES = [
   'src/__tests__/leak-git-shim.test.ts',
   'src/__tests__/leak-git-shim-stash.test.ts',
   'src/__tests__/gh-write.test.ts',
+  'src/__tests__/gh-write-scan.test.ts',
   'src/__tests__/human-wait.test.ts',
   'src/__tests__/isolation.test.ts',
   'src/__tests__/launch-plan.test.ts',

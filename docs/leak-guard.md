@@ -470,6 +470,53 @@ piped from another command, or a missing or unreadable term list while `MISSING_
 set. An empty term list file counts as a list: the guard then checks the generic rules only and
 refuses nothing for a missing list.
 
+### gh-write scans when it runs (CC-501 S1)
+
+`agent-chat gh-write -- <gh args>` runs the same check on its real argument list before gh starts,
+so a post is scanned even when the PreToolUse hook failed open or was never in the path. It reuses
+the guard's `ghKind`, `prSources`, `apiSources`, `isMerge` and `findingsIn`, so it reads the same
+text: the title (`--title`, `-t`, `--subject`), the body (`--body`, `-b`), a body file
+(`--body-file`, `-F` on `pr` and `issue`), and on `gh api` each `-f`/`--raw-field`, `-F`/`--field`,
+`-F key=@file` and `--input`. A body file is read as a regular file. `--body-file -`, `--input -`
+and `-F key=@-` read stdin once, so a quoted heredoc works:
+
+```sh
+agent-chat gh-write -- pr comment 12 --body-file - <<'EOF'
+...
+EOF
+```
+
+gh never reads the original path or stdin. Each file source is replaced by a 0600 copy of the
+scanned text in a fresh `mkdtemp` directory. The directory is removed after the last retry, and also
+when SIGTERM, SIGINT, SIGHUP or SIGQUIT ends gh-write. The swapped arguments are then scanned again with only
+those copies readable, so a file changed after the scan, or a flag spelling the swap missed, cannot
+reach gh unscanned.
+
+gh parses flags anywhere, so `pr --body x comment 1` is `pr comment`, and it drops empty words,
+so `pr '' comment` is too. gh-write therefore requires the group and verb first: every word up to
+the verb must be one of gh's own groups, a known `pr` or `issue` verb, or an `-R`/`--repo` pair.
+Any other flag there, an empty or blank word, a config alias such as `co`, or an extension
+refuses. `pr create` and `issue create` refuse `--fill` (any spelling, and `-f`),
+`--template`/`-T` and `--recover`, since gh would then post text read from commits, a template or a
+recovery file that gh-write never sees.
+
+It refuses with exit 1, without starting gh, on a finding (the guard's message: locations and rule
+ids, never the matched text), on a body file it cannot read as a regular file, on stdin asked for
+twice, on an unreadable term list, and on a missing term list unless the call is a plain merge. A
+plain merge is `gh api` with exactly one endpoint word, `.../pulls/<n>/merge`, and no flag other than
+`-X`/`--method`, `-H`/`--header`, `-q`/`--jq` and `--input`. This is stricter than the hook, which
+also exempts a merge with `-f` fields.
+
+Any other command (`pr close`, `release create`, `workflow run` and the like) that carries a text
+flag in any spelling refuses, since gh-write does not read its text: `--body`, `-b`, `--body-file`,
+`-F`, `--field`, `-f`, `--raw-field`, `--input`, `--title`, `-t`, `--subject`, `--notes`,
+`--notes-file`, `--comment`, `-c`, `--message`, `-m`, and their `=` forms or short clusters. Reads
+without those flags, such as `pr view`, `pr checks`, `pr list` and `api` GETs, run as before.
+`pr view -c` is refused too; run reads with plain gh.
+It reads the list from the passwd home's `~/.config/titan-egress/private-terms`, like the pre-push
+hook. It does not read `HOME`, `XDG_CONFIG_HOME` or `TITAN_EGRESS_TERMS`. No variable or flag turns
+the scan off. With the hook in place, a post is scanned twice.
+
 ### A command git runs for its subcommand (TP-634)
 
 Some git subcommands run a command line they are given. The guard checks that command like a
