@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { z } from 'zod'
+import { EXCEPTION_CLASSES } from './exception.js'
 
 /**
  * The burndown claim ledger: which task each tick-spawned agent holds.
@@ -60,6 +61,8 @@ const Claim = z.object({
   prHead: z.string().optional(),
   lastReport: z.string().optional(),
   stalledReason: z.string().optional(),
+  /** Set beside `stalledReason`; a row without one predates classes and routes to the owner. */
+  stalledClass: z.enum(EXCEPTION_CLASSES).optional(),
   /** Agents whose retire refused after the claim finished, in retire order; each tick retries them (CC-182). */
   unretired: z
     .array(

@@ -1,4 +1,5 @@
 import type { AgentLifecycle, DeliveredMessage } from '../../protocol.js'
+import type { ExceptionClass } from './exception.js'
 import { addClaim, isStalled, sameClaim, type AgentPhase, type Claim, type Ledger } from './ledger.js'
 import { agentNameFor, reviewerNameFor, successorNameFor } from './plan.js'
 import type { PlannedSlice, Report } from './report.js'
@@ -83,8 +84,12 @@ function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
   if (actions.length > 0 || !isStalled(claim, now)) return actions
   return [
     claim.phase === 'spawning'
-      ? stall(claim, `no agent row named ${claim.agentName ?? '?'}; the spawn failed or never landed`)
-      : stall(claim, `${claim.phase} past its timeout`),
+      ? stall(
+          claim,
+          `no agent row named ${claim.agentName ?? '?'}; the spawn failed or never landed`,
+          'stalled',
+        )
+      : stall(claim, `${claim.phase} past its timeout`, 'stalled'),
   ]
 }
 
@@ -93,7 +98,8 @@ const finished = (obs: Observation): boolean =>
 
 const update = (claim: Claim, patch: ClaimPatch): Action => ({ kind: 'update', key: keyOf(claim), patch })
 
-const stall = (claim: Claim, reason: string): Action => update(claim, { stalledReason: reason })
+const stall = (claim: Claim, reason: string, cls: ExceptionClass): Action =>
+  update(claim, { stalledReason: reason, stalledClass: cls })
 
 const keyOf = (claim: Claim): ClaimKey => ({ taskId: claim.taskId, slice: claim.slice })
 
@@ -101,7 +107,7 @@ const landed = (claim: Claim, agentId: string): Action =>
   update(claim, { phase: claim.nextPhase ?? 'implementing', agentId, nextPhase: undefined })
 
 function afterPlanner(claim: Claim, obs: Observation, now: Date): Action[] {
-  if (obs.slices === undefined) return [stall(claim, sliceStallReason(obs.sliceProblems))]
+  if (obs.slices === undefined) return [stall(claim, sliceStallReason(obs.sliceProblems), 'failed')]
   const at = now.toISOString()
   const slices: Claim[] = obs.slices.map(s => ({
     taskId: claim.taskId,
@@ -134,7 +140,7 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
   if (report?.parked !== undefined)
     return [update(claim, { phase: 'parked', questionId: report.parked, lastReport })]
   if (report?.status === 'BLOCKED' || report?.status === 'NEEDS_CONTEXT')
-    return [stall(claim, report.firstLine)]
+    return [stall(claim, report.firstLine, 'failed')]
   const pr = report?.pr ?? claim.pr
   if (report?.status === 'DONE' && pr !== undefined)
     return handOff(claim, pr, claim.agentName ?? workerOf(claim), { lastReport })
@@ -143,7 +149,9 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
     return spawn(claim, { role: 'reviewer', name }, 'reviewing', { lastReport, pr })
   }
   if (report?.status === 'DONE') return [update(claim, { phase: 'done', lastReport }), retireAll(claim)]
-  return [stall(claim, lastReport === undefined || lastReport === '' ? 'no final report' : lastReport)]
+  return [
+    stall(claim, lastReport === undefined || lastReport === '' ? 'no final report' : lastReport, 'failed'),
+  ]
 }
 
 function afterAnswer(claim: Claim, obs: Observation): Action[] {
@@ -163,7 +171,7 @@ function afterReviewer(claim: Claim, obs: Observation): Action[] {
       : [update(claim, { phase: 'shepherding', lastReport })]
   const why = `verdict ${verdict ?? 'unreadable'}${claim.pr === undefined ? ', no PR' : ''}`
   const round = claim.reviewRound ?? 0
-  if (round >= 1) return [stall(claim, `second failed review (${why})`)]
+  if (round >= 1) return [stall(claim, `second failed review (${why})`, 'failed')]
   return successor(claim, { kind: 'review', review: obs.report?.text ?? why }, { reviewRound: round + 1 })
 }
 
@@ -171,7 +179,7 @@ const ENDED: ReadonlySet<ShepherdRow['phase']> = new Set(['done', 'failed', 'can
 
 /** Shepherd merges; the claim finishes once its run has landed the PR, and stalls on a run that ended any other way. */
 function afterMerge(claim: Claim, obs: Observation): Action[] {
-  if (claim.pr === undefined) return [stall(claim, 'no PR recorded for Shepherd to merge')]
+  if (claim.pr === undefined) return [stall(claim, 'no PR recorded for Shepherd to merge', 'failed')]
   if (obs.shepherd === undefined) return []
   const { row, landed } = obs.shepherd
   if (row === undefined) return handOff(claim, claim.pr, workerOf(claim), {})
@@ -182,6 +190,7 @@ function afterMerge(claim: Claim, obs: Observation): Action[] {
     const why = row.stalled === null ? '' : `: ${row.stalled.reason}`
     return [
       update(claim, {
+        stalledClass: 'failed',
         stalledReason: `Shepherd run ${row.runId} ended ${row.phase} without merging${why}`,
         ...head,
       }),
@@ -193,7 +202,7 @@ function afterMerge(claim: Claim, obs: Observation): Action[] {
 /** A PR Shepherd cannot name stalls here; one it refuses stalls when the register runs. */
 function handOff(claim: Claim, pr: string, implementer: string, patch: ClaimPatch): Action[] {
   const target = shepherdTarget(pr)
-  if (target === undefined) return [stall(claim, `${pr} is not a GitHub PR Shepherd can take`)]
+  if (target === undefined) return [stall(claim, `${pr} is not a GitHub PR Shepherd can take`, 'failed')]
   const registration = { target, task: `${claim.initiative}/${claim.taskId}`, implementer }
   return [
     update(claim, { ...patch, phase: 'shepherding', pr }),
@@ -208,7 +217,8 @@ const workerOf = (claim: Claim): string =>
     : agentNameFor(claim.taskId, claim.slice, claim.namePrefix)
 
 function successor(claim: Claim, context: SpawnContext, patch: ClaimPatch): Action[] {
-  if (claim.worktree === undefined) return [stall(claim, 'no worktree recorded for a successor to adopt')]
+  if (claim.worktree === undefined)
+    return [stall(claim, 'no worktree recorded for a successor to adopt', 'failed')]
   const attempt = (claim.attempt ?? 0) + 1
   const name = successorNameFor(claim.taskId, attempt, claim.slice, claim.namePrefix)
   const request = {

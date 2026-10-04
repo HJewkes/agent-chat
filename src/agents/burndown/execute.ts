@@ -144,7 +144,7 @@ async function spawnOne(
     return `spawned ${frame.name} (${reply.agentId ?? '?'}) as ${frame.profile} on ${frame.configDir}`
   }
   const stalledReason = refusalReason(frame, reply.reason ?? 'refused without a reason')
-  commit([{ kind: 'update', key, patch: { stalledReason } }])
+  commit([{ kind: 'update', key, patch: { stalledReason, stalledClass: 'failed' } }])
   return `not spawned ${frame.name}: ${stalledReason}`
 }
 
@@ -160,7 +160,7 @@ function registerOne(
   if (reply.ok) return `registered ${ref} with Shepherd for ${claimKey(step.key)}`
   if (!reply.refused) return `register ${ref} with Shepherd failed (${reply.reason}); retried next tick`
   const stalledReason = `Shepherd refused ${ref} (${reply.reason}); burndown does not merge, so the PR is left for the owner`
-  commit([{ kind: 'update', key: step.key, patch: { stalledReason } }])
+  commit([{ kind: 'update', key: step.key, patch: { stalledReason, stalledClass: 'gate-trip' } }])
   return `not registered ${ref}: ${stalledReason}`
 }
 
