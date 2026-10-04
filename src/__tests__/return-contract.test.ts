@@ -171,8 +171,8 @@ describe('the GitHub write path (CC-456)', () => {
 
 describe('the PATH shim rule (CC-647)', () => {
   const SHIM_RULE =
-    'Never put a script named after a real command (gh, git, node, npm, pnpm) on PATH unless it first ' +
-    "drops its own dir from PATH; agent-chat's src/gh-shim/install.ts is the pattern."
+    'Never put a shim named gh, git, node, npm or pnpm on PATH unless it drops its own dir from PATH ' +
+    'first (pattern: src/gh-shim/install.ts).'
 
   // Mutation caught: dropping SHIM_RULE from IMPLEMENTER_RULES or from the reviewer block.
   it.each([
