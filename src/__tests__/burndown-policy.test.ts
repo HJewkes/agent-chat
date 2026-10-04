@@ -109,6 +109,10 @@ describe('spend.per_claim_usd', () => {
   it.each([0, -1])('refuses a cap of %d at parse', value => {
     expect(() => seatWith(value)).toThrow(/per_claim_usd/)
   })
+
+  it.each(['"30"', '.nan', '.inf'])('refuses a cap written %s at parse', text => {
+    expect(() => parseSeat(`---\nspend: {per_claim_usd: ${text}}\n---\n`, 'a')).toThrow(/per_claim_usd/)
+  })
 })
 
 describe('mergeDefaults', () => {
