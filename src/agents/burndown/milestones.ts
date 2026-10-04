@@ -3,7 +3,12 @@ import { z } from 'zod'
 
 /** CC-626: the weekly milestone file (`milestones/<week>.yml`), loaded and validated purely. The caller reads the file. */
 
-const DoneWhenCheck = z.looseObject({ kind: z.string().min(1) })
+/** CC-720: a check may also name `tasks:` and `epics:` (ids); an open `ms-role:criterion` task must be named by one, directly or through its `epic:`. */
+const DoneWhenCheck = z.looseObject({
+  kind: z.string().min(1),
+  tasks: z.array(z.string().min(1)).optional(),
+  epics: z.array(z.string().min(1)).optional(),
+})
 
 /** Strict, so a misspelt key such as `gate_by:` is a schema error, not a silently ungated milestone. */
 const MilestoneShape = z.strictObject({

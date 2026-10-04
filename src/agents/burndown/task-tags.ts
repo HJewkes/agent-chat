@@ -1,6 +1,6 @@
 import { parseIsoDay } from './score.js'
 
-/** CC-626: the planning tags `milestone:`, `epic:`, `dep:`, `cos:` and `due:` on a task, parsed purely. Other tags pass through untouched. */
+/** CC-626: the planning tags `milestone:`, `epic:`, `dep:`, `cos:`, `due:` and `ms-role:` on a task, parsed purely. Other tags pass through untouched. */
 
 export const CLASSES_OF_SERVICE = ['expedite', 'fixed', 'standard', 'intangible'] as const
 export type ClassOfService = (typeof CLASSES_OF_SERVICE)[number]
@@ -13,6 +13,9 @@ export interface PlanTask {
   tags?: readonly unknown[] | null
 }
 
+export const MS_ROLES = ['criterion', 'output'] as const
+export type MsRole = (typeof MS_ROLES)[number]
+
 export interface TaggedTask {
   id: string
   estimate?: number
@@ -23,11 +26,15 @@ export interface TaggedTask {
   cos: ClassOfService
   /** ISO day, `YYYY-MM-DD`. */
   due?: string
+  /** CC-720: `criterion` tasks must be named by a milestone check; `output` ones are work the milestone ships. */
+  msRole?: MsRole
 }
 
 export type TagErrorCode =
   | 'empty-value'
   | 'unknown-cos'
+  | 'unknown-ms-role'
+  | 'duplicate-ms-role'
   | 'bad-due'
   | 'fixed-without-due'
   | 'conflicting-tag'
@@ -41,10 +48,10 @@ export interface TagError {
   tag: string
 }
 
-type SingleKey = 'milestone' | 'epic' | 'cos' | 'due'
+type SingleKey = 'milestone' | 'epic' | 'cos' | 'due' | 'ms-role'
 type TagKey = SingleKey | 'dep'
 
-const TAG_KEYS: ReadonlySet<string> = new Set<TagKey>(['milestone', 'epic', 'dep', 'cos', 'due'])
+const TAG_KEYS: ReadonlySet<string> = new Set<TagKey>(['milestone', 'epic', 'dep', 'cos', 'due', 'ms-role'])
 
 function splitTag(tag: string): { key: TagKey; value: string } | undefined {
   const at = tag.indexOf(':')
@@ -56,9 +63,12 @@ function splitTag(tag: string): { key: TagKey; value: string } | undefined {
 const isClassOfService = (value: string): value is ClassOfService =>
   (CLASSES_OF_SERVICE as readonly string[]).includes(value)
 
+const isMsRole = (value: string): value is MsRole => (MS_ROLES as readonly string[]).includes(value)
+
 function valueError(key: TagKey, value: string): TagErrorCode | undefined {
   if (value === '') return 'empty-value'
   if (key === 'cos' && !isClassOfService(value)) return 'unknown-cos'
+  if (key === 'ms-role' && !isMsRole(value)) return 'unknown-ms-role'
   if (key === 'due' && parseIsoDay(value) === undefined) return 'bad-due'
   return undefined
 }
@@ -81,8 +91,11 @@ function collectTags(task: PlanTask): CollectedTags {
     const parsed = splitTag(tag)
     if (!parsed) continue
     const { key, value } = parsed
-    const conflict = key !== 'dep' && single[key] !== undefined && single[key] !== value
-    const code = valueError(key, value) ?? (conflict ? 'conflicting-tag' : undefined)
+    const repeated = key !== 'dep' && single[key] !== undefined
+    const code =
+      valueError(key, value) ??
+      (repeated && key === 'ms-role' ? 'duplicate-ms-role' : undefined) ??
+      (repeated && single[key as SingleKey] !== value ? 'conflicting-tag' : undefined)
     if (code) collected.errors.push({ code, task: task.id, tag })
     else if (key === 'dep') collected.deps.add(value)
     else single[key] = value
@@ -108,11 +121,13 @@ export function parseTaskTags(task: PlanTask): { task: TaggedTask; errors: TagEr
     errors.push({ code: 'fixed-without-due', task: task.id, tag: 'cos:fixed' })
   }
   const { milestone, epic, due } = single
+  const msRole = single['ms-role'] as MsRole | undefined
   const optional = {
     ...estimateOf(task, errors),
     ...(milestone !== undefined && { milestone }),
     ...(epic !== undefined && { epic }),
     ...(due !== undefined && { due }),
+    ...(msRole !== undefined && { msRole }),
   }
   return { task: { id: task.id, ...optional, deps: [...deps], cos }, errors }
 }
