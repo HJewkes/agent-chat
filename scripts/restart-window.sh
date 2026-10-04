@@ -24,15 +24,22 @@ set -euo pipefail
 [ $# -eq 0 ] || { echo "restart-window: takes no arguments; --force is the owner's call" >&2; exit 1; }
 
 log_dir="${AGENT_CHAT_HOME:-$HOME/.agent-chat}"
-# Anchored to the executable: argv[0], or the script after a shell or node interpreter, so a
-# process that only mentions these commands in its arguments (a claude prompt) never matches
-# (CC-665). Only after a shell may the script path hold spaces, as bin/merge's does under
-# "Application Support".
-PUSH_RE='^([^ ]*/)?git( -[Cc] [^ ]+| --[^ ]+)* push( |$)|^([^ ]*/)?git-remote-https?( |$)'
-MERGE_RE='^(([^ ]*/)?(ba|z)?sh( -[^ ]+)* ([^ /]*(/[^/ ]+( [^/ -][^/ ]*)*)*/)?|([^ ]*/)?)(seat-merge|bin/merge)( |$)|^([^ ]*/)?gh( -[^ ]+)* pr merge( |$)|^(([^ ]*/)?node( -[^ ]+)* )?([^ ]*/)?(agent-chat|index\.js) gh-write( |$)'
+# Anchored to the executable: argv[0], or the script after a shell or node interpreter (the git
+# and gh shims run under sh), so a process that only mentions these commands in its arguments
+# (a claude prompt) never matches (CC-665). Only after a shell may the script path hold spaces,
+# as bin/merge's does under "Application Support".
+PUSH_RE='^(([^ ]*/)?(ba|z)?sh( -[^ ]+)* ([^ /]*(/[^/ ]+( [^/ -][^/ ]*)*)*/)?|(([^ ]*/)?node( -[^ ]+)* )?([^ ]*/)?)(git( -[Cc] [^ ]+( [^ -][^ ]*)*| --[^ ]+)* push|git-remote-https?)( |$)'
+MERGE_RE='^(([^ ]*/)?(ba|z)?sh( -[^ ]+)* ([^ /]*(/[^/ ]+( [^/ -][^/ ]*)*)*/)?|(([^ ]*/)?node( -[^ ]+)* )?([^ ]*/)?)(seat-merge|bin/merge|gh( -[^ ]+( [^ -][^ ]*)?)* pr merge|(agent-chat|cli\.js|index\.js) gh-write)( |$)'
 blockers=()
 
-# RESTART_WINDOW_PROCS names a file of "pid argv" lines to match instead of the live process table.
+# A stale or inherited RESTART_WINDOW_PROCS must never stand in for the live process table.
+if [ -n "${RESTART_WINDOW_PROCS:-}" ] && [ "${RESTART_WINDOW_TEST:-}" != 1 ]; then
+  echo "restart-window: refusing: RESTART_WINDOW_PROCS is set outside a test (RESTART_WINDOW_TEST=1); unset it" >&2
+  exit 1
+fi
+
+# Under RESTART_WINDOW_TEST=1, RESTART_WINDOW_PROCS names a file of "pid argv" lines to match
+# instead of the live process table.
 running() {
   if [ -n "${RESTART_WINDOW_PROCS:-}" ]; then
     local pid args
