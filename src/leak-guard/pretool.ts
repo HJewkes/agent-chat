@@ -19,7 +19,12 @@ import {
 import { crashCause, type FailOpen } from './failopen.js'
 import { gitScripts, type ScriptSpan } from './git-scripts.js'
 import { classifyApiRead } from './gh-api-read.js'
-import { hasSplittableOption, hasUnreadableConfig, hasUnreadableOption } from './git-unresolved.js'
+import {
+  hasOptionAlternation,
+  hasSplittableOption,
+  hasUnreadableConfig,
+  hasUnreadableOption,
+} from './git-unresolved.js'
 import { mayExpandTo, mayExpandToGit } from './git-word.js'
 import { includedHooksPathReader, includesConfig, type ReadIncludedHooksPath } from './git-include.js'
 import { hooksDirOf, MISSING_TERMS_REFUSES } from './hooks-dir.js'
@@ -27,6 +32,7 @@ import {
   expandWord,
   HOLE,
   LIVE,
+  mixesParenAndGuarded,
   NAME,
   parseShell,
   unmark,
@@ -125,6 +131,7 @@ export const REASONS = {
   includePath: `leak-guard: git -c or --config-env on include.path or includeIf.*.path pulls in config that sets core.hooksPath or that the guard cannot read in time, or runs beside other commands or a redirect, which would bypass the pre-push leak scan. ${DOCS}`,
   gitConfigUnresolved: `leak-guard: git -c or --config-env with a key or value the guard cannot read, before a command that runs hooks, may set core.hooksPath or include.path and would bypass the pre-push leak scan. Spell the config out, or drop it. ${DOCS}`,
   gitValueSplits: `leak-guard: a git option or option value here is unquoted, and the shell may split it into several words, one of them an option such as -c core.hooksPath, so the guard cannot tell what git runs. Quote the value, as in git -C "$dir" fetch. ${DOCS}`,
+  parenMixed: `leak-guard: this line mixes a parenthesized glob or group with a git or gh command, which the guard cannot read reliably. Put the command on a line of its own. ${DOCS}`,
   aliasHidden: `leak-guard: the command word is an expansion the line ties to git, so the guard cannot tell which alias lookup applies or what git runs. Write the command name out: git <subcommand>, not $cmd. ${DOCS}`,
   ghApiUnquoted: `leak-guard: this gh api call holds an unquoted expansion the shell may split into flags, such as -X or -f, so the guard cannot tell if it is a read. Quote the endpoint, as in gh api "repos/o/r/commits/$SHA/check-runs", or post a write with agent-chat gh-write -- api <args>. ${DOCS}`,
   ghApiRoute: `leak-guard: a gh api read with an argument the guard cannot resolve is allowed only alone on its line, beside assignments with literal values. Put the value in literally (gh api repos/o/r/commits/<sha>/check-runs), or run the gh api call on a line of its own with no pipe, redirect, $(...) or other command. ${DOCS}`,
@@ -389,7 +396,11 @@ const unresolvedReason = (run: GitRun): string =>
     : REASONS.gitConfigUnresolved
 
 const checkUnresolvedConfig = (run: GitRun): string | undefined =>
-  hasUnreadableConfig(run.resolved, run.marked, run.cmd.splits) ? unresolvedReason(run) : undefined
+  hasUnreadableConfig(run.resolved, run.marked, run.cmd.splits)
+    ? unresolvedReason(run)
+    : hasOptionAlternation(run.marked, run.cmd.splits, run.resolved)
+      ? REASONS.noVerify
+      : undefined
 
 const MENTIONS_INCLUDE = /include/i
 const DESCRIPTOR_COPY = /\d*[<>]&(?:\d+|-)(?![\w./])/g
@@ -1278,7 +1289,7 @@ function checkAt(command: string, ctx: GuardContext, scope: Scope, depth: number
     if (reason !== undefined) return reason
     at = advance(cmd, ctx, at)
   }
-  return undefined
+  return mixesParenAndGuarded(command) ? REASONS.parenMixed : undefined
 }
 
 export function checkCommand(command: string, ctx: GuardContext): string | undefined {

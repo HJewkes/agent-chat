@@ -13,7 +13,7 @@ const HOOK_RUNNING = new Set(
 )
 const VALUE_OPTS = new Set(['-C', '--git-dir', '--work-tree', '--namespace', '--super-prefix'])
 // A glob or brace word may expand to several words, one of them an option; a bare `$VAR` is one word.
-const GLOBBED = new RegExp(`${LIVE}[*?[{]`)
+const GLOBBED = new RegExp(`${LIVE}[*?[{(]`)
 // What one word may expand to without becoming several: a plain scalar, a tilde, or a substitution inside quotes.
 const SCALAR = new RegExp(
   `${LIVE}(?:\\$\\{${NAME}\\}|\\$${NAME}(?![A-Za-z0-9_]|${LIVE}?[:\\[])|\\$\\(|\`|~(?=/|$))`,
@@ -129,6 +129,30 @@ export function hasUnreadableConfig(
   if (!words.some(unreadable)) return false
   const sub = resolved[at]
   return sub === undefined || HOOK_RUNNING.has(sub) || !GIT_BUILTINS.has(sub)
+}
+
+// zsh matches a group against names, so an alternative, the text glued before it or text glued after it may be an option.
+const QUOTING_CHARS = /['"\\]/g
+const OPTION_GROUP = /^-|[(|)]-|[(|)]\[[^\]]*-/
+// A bracket class that holds `-`, as in `[-]-no-verify`, or an option-shaped word with a class in it, may spell an option.
+const OPTION_CLASS = /^-*\[[^\]]*-|^-.*\[/
+
+const spellsOption = (word: string): boolean => {
+  const text = unmark(word).replace(QUOTING_CHARS, '')
+  return (
+    (word.includes(`${LIVE}(`) && OPTION_GROUP.test(text)) ||
+    (word.includes(`${LIVE}[`) && OPTION_CLASS.test(text))
+  )
+}
+
+/** Whether an argument after the subcommand may expand to an option through a glob group or bracket class (CC-728). */
+export function hasOptionAlternation(
+  marked: readonly string[],
+  splits: readonly string[],
+  resolved: readonly (string | undefined)[],
+): boolean {
+  const { at } = scanOptions(resolved, marked, splits)
+  return resolved[at] !== undefined && marked.slice(at + 1).some(spellsOption)
 }
 
 /** Whether git's options hold a word the shell may split into several, which quoting would fix. */

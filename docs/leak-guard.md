@@ -340,6 +340,21 @@ and other prefixes are stripped, is one of these. A wrapper is known by its base
 | a command git runs for its subcommand that a row above denies, or that the guard cannot read (below)                   | `git rebase -x` runs a shell command unseen               |
 | `git -c` or `--config-env` on an include, or with a key the guard cannot read, before a command git runs (below)       | git passes it on to every git that command runs           |
 
+A `(` in argument position, after the command name (CC-728), is read two ways, and a line is denied
+if either reading is. As a zsh glob group, its balanced span (nesting, quotes, `$'...'` and escapes
+honoured) is one non-literal word, so the git option rules deny it before the subcommand and, after
+it, deny an option-shaped alternative such as `(a|--no-verify)`, `(a|[-]-no-verify)` or a bracket
+class such as `[-]-no-verify`. As a subshell, the span's own commands are parsed, and so are the words
+after it as a command line of their own, with the same two readings again, so a word the splitter does
+not know, like `coproc`, `repeat 1`, `for i` or `foreach`, cannot hide a git inside or behind the
+group. The readings are bounded (64 forks a line); past that the line is treated as unsettled.
+As a backstop, a span the splitter cannot settle (a group holding a quote, escape, blank, `$` or
+operator, one with no close, or too many groups) denies the line when a command after it, on the
+parsed words, is or may be `git` or `gh`; put such a command on a line of its own. Plain groups such
+as `(ok)` and `*(.)`, `for ((i=0;i<3;i++))`, a `(` at command position, a case pattern, a `[[ ]]`
+operand, `name()`, `x=(` and a comment are not unsettled. The splitter has no bash mode: bash reports
+a syntax error for most of these lines and runs nothing.
+
 A git alias that was already in config is expanded before the table is applied (TP-595). For
 `git <word>`, where `<word>` is not a git builtin, the guard runs `git config --get alias.<word>`
 in the directory the command runs in, after `cd` and `-C`, with a 1 s timeout. The lookup gets
