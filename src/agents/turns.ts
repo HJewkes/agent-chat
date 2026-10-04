@@ -143,6 +143,39 @@ const isProgress = (turn: RecentSessionTurn): boolean =>
 /** session-read renders a call as `[tool <Name>] <input>`; `?` when a longer block ahead of it leaves no marker inside the 80-char cap. */
 const toolName = (text: string): string => /\[tool (?!result)([^\]\s]+)\]/.exec(text)?.[1] ?? '?'
 
+/**
+ * Tools an agent calls to wait rather than to work (CC-659), matched by MCP
+ * suffix so every plugin prefix counts: a poll loop must not read as progress.
+ */
+export const POLL_TOOLS: ReadonlySet<string> = new Set([
+  'chat_inbox',
+  'chat_status',
+  'chat_list',
+  'chat_activity',
+  'agent_list',
+  'session_budget',
+])
+
+/** session-read renders a Bash call's input as JSON, so a sleep is a command that starts `sleep`. */
+const SLEEP_CALL = /^\[tool Bash\] \{"command":"\s*sleep\b/
+
+const isPollCall = (turn: RecentSessionTurn): boolean =>
+  POLL_TOOLS.has(toolName(turn.text).split('__').at(-1) ?? '') || SLEEP_CALL.test(turn.text)
+
+/** Drops poll calls and the results that close them, pairing results with calls oldest first as `openCalls` does. */
+function withoutPolling(progress: readonly RecentSessionTurn[]): RecentSessionTurn[] {
+  const kept: RecentSessionTurn[] = []
+  const openIsPoll: boolean[] = []
+  for (const turn of progress) {
+    if (turn.kind === 'tool_call') {
+      const poll = isPollCall(turn)
+      openIsPoll.push(poll)
+      if (!poll) kept.push(turn)
+    } else if (turn.kind !== 'tool_result' || openIsPoll.shift() !== true) kept.push(turn)
+  }
+  return kept
+}
+
 /** Any failed read is "could not tell" for a stall check, never a crash of the tick that asked. */
 function readActivityTurns(transcriptPath: string): RecentSessionTurns | undefined {
   try {
@@ -168,7 +201,7 @@ export function readActivity(
   const recent = readActivityTurns(transcript.path)
   if (recent === undefined || recent.status === 'unavailable') return 'unreadable'
 
-  const progress = recent.turns.filter(isProgress)
+  const progress = withoutPolling(recent.turns.filter(isProgress))
   const lastAt = progress.at(-1)?.timestamp
   if (lastAt === null || lastAt === undefined) return {}
   const open = openCalls(progress)
