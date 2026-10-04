@@ -4,10 +4,9 @@ CC-642. When a burndown claim stops, the tick can hand it to a short-lived, read
 **triager** before the owner hears about it. This page covers the exception classes, the
 route dial, the fallback rules and how to install the profile.
 
-**Status.** The classes and the dial are on `main` (CC-648) and are inert: nothing reads the
-dial yet. The triage job itself (CC-642 slice S2) is not written. Everything under "The job"
-and "Fallback" below is the planned behaviour, not something the tick does today.
-`exceptions.triage` is part of that slice and is not in the config schema yet.
+**Status.** The classes and the dial (CC-648) and the triage job with its owner fallback
+(CC-649, slice S2) are on `main`, and `exceptions.triage` is in the config schema. Both stay
+dormant until the burndown tick's install is rebuilt, and the dial defaults to `owner`.
 
 ## Exception classes
 

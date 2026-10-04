@@ -1,6 +1,7 @@
 import { claimKey, type ClaimKey } from './advance.js'
 import type { Claim, Ledger } from './ledger.js'
 import type { StallCode } from './stall-code.js'
+import { ownerDue, stallDetail } from './triage.js'
 
 /**
  * What changed for each seat's claims across one tick, as events the seat is told about (CC-249).
@@ -65,8 +66,11 @@ function kindsOf(before: Claim | undefined, after: Claim, spawned: boolean): Sea
   if (spawned || after.agentId !== undefined) events.push(event('dispatched'))
   if (after.phase === 'awaiting-merge') events.push(event('ready-to-merge', after.pr))
   if (merged(before, after)) events.push(event('merged', after.pr))
-  if (after.stalledReason !== undefined)
-    events.push(event('stalled', withCode(after.stallCode, after.stalledReason), after.stallCode))
+  // CC-649: while a triage job waits or runs the owner is not told; once it settles the event carries that it ran.
+  if (after.stalledReason !== undefined && ownerDue(after))
+    events.push(
+      event('stalled', withCode(after.stallCode, stallDetail(after, after.stalledReason)), after.stallCode),
+    )
   if (after.finding !== undefined)
     events.push(event('stalled-after-claim', after.finding.detail, after.finding.code))
   if (after.phase === 'parked') events.push(event('parked'))
