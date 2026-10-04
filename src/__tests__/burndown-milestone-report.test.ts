@@ -191,6 +191,59 @@ describe('in flight', () => {
     expect(m1.wip).toEqual({ building: 1, inReview: 1, awaitingMerge: 0, awaitingOwner: 0 })
     expect(m1.counts.inFlight).toBe(2)
   })
+
+  describe('run folding (CC-658)', () => {
+    const wipOf = (dispatches: DispatchRecord[]) =>
+      report('M1', { dispatches, ledger: { version: 1, claims: [] } }).wip
+
+    it('ages out an open run older than the max age, so the task is not in flight', () => {
+      const dispatches = [run('EX-3', 'dispatched', { ts: '2026-09-23T09:00:00Z' })]
+
+      expect(sum(wipOf(dispatches))).toBe(0)
+    })
+
+    it('keeps an open run younger than the max age in flight', () => {
+      const dispatches = [run('EX-3', 'dispatched', { ts: '2026-09-25T09:00:00Z' })]
+
+      expect(wipOf(dispatches).building).toBe(1)
+    })
+
+    it('orders mixed -06:00 and Z timestamps by instant, not by text', () => {
+      const dispatches = [
+        run('EX-3', 'parked', { note: 'MERGE', ts: '2026-10-01T10:00:00Z' }),
+        run('EX-3', 'parked', { note: 'FIX_FIRST', agent: 'b', ts: '2026-10-01T05:00:00-06:00' }),
+      ]
+
+      expect(wipOf(dispatches)).toMatchObject({ awaitingMerge: 0, awaitingOwner: 1 })
+    })
+
+    it('treats an unparseable ts as oldest', () => {
+      const dispatches = [
+        run('EX-3', 'parked', { note: 'MERGE', ts: 'garbage' }),
+        run('EX-3', 'parked', { note: 'FIX_FIRST', agent: 'b', ts: '2026-10-01T09:00:00Z' }),
+      ]
+
+      expect(wipOf(dispatches)).toMatchObject({ awaitingMerge: 0, awaitingOwner: 1 })
+    })
+
+    it('does not hide an open implementer run behind a newer ended reviewer run', () => {
+      const dispatches = [
+        run('EX-3', 'dispatched', { ts: '2026-10-01T08:00:00Z' }),
+        run('EX-3', 'done', { agent: 'rev', profile: 'reviewer', ts: '2026-10-01T09:00:00Z' }),
+      ]
+
+      expect(wipOf(dispatches).building).toBe(1)
+    })
+
+    it('reads a task merged then dispatched again as in flight', () => {
+      const dispatches = [
+        run('EX-3', 'merged', { ts: '2026-10-01T08:00:00Z' }),
+        run('EX-3', 'dispatched', { ts: '2026-10-01T09:00:00Z' }),
+      ]
+
+      expect(wipOf(dispatches).building).toBe(1)
+    })
+  })
 })
 
 describe('status', () => {
