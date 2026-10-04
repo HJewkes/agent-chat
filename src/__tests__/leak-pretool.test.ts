@@ -1719,6 +1719,68 @@ describe('the hook entry point', () => {
   })
 })
 
+describe('a body file may not be, or lead to, the install or git config (CC-678 r3)', () => {
+  const D = fs.realpathSync(fs.mkdtempSync(path.join(SCRATCH, 'r3-')))
+  const I = path.join(D, 'bin', 'agent-chat')
+  fs.mkdirSync(path.join(D, 'bin'))
+  fs.mkdirSync(path.join(D, '.git'))
+  fs.writeFileSync(I, '#!/bin/sh\n')
+  fs.symlinkSync(I, path.join(D, 'link.md'))
+  fs.linkSync(I, path.join(D, 'hl.md'))
+  const at = (): GuardContext =>
+    ctx({
+      cwd: D,
+      env: { PATH: `${path.join(D, 'bin')}:/usr/bin` },
+      scansGhWrite: true,
+      install: { file: I, dir: path.join(D, 'bin') },
+    })
+  const S = "printf '#!/bin/sh\\nexec gh\\n'"
+  const E = 'cat /w/x.md'
+  const GW = 'agent-chat gh-write -- pr create -t x'
+  const GIT_CONFIG = `printf '[core]\\n\\tfsmonitor = true\\n' >> ${D}/.git/config`
+  const DENIED = [
+    `${S} > ${I}; ${E} | ${GW} -F ${I} -F -`,
+    `${S} > ${I}; ${E} | ${GW} --body-file ${I} --body-file -`,
+    `${S} | tee ${I}; ${E} | ${GW} -F ${I} -F -`,
+    `cd ${D}/bin; ${S} > agent-chat; ${E} | ${GW} -F agent-chat -F -`,
+    `${S} > link.md; ${E} | ${GW} -F link.md -F -`,
+    `${S} > ${I}; ${E} | agent-chat gh-write -- pr comment 1 -F ${I} -F -`,
+    `${S} > ${I}; ${E} | agent-chat gh-write -- api -X POST repos/o/r/issues/1/comments -F body=@${I} --input -`,
+    `${S} > ${I}; ${GW} -F ${I}`,
+    `${S} | tee ${I}; ${GW} -F ${I}`,
+    `${S} > link.md; ${GW} -F link.md`,
+    `${S} > hl.md; ${GW} -F hl.md`,
+    `${S} > hl.md; ${E} | ${GW} -F -`,
+    `${S} > ${D}/bin/notes.md; ${E} | ${GW} -F -`,
+    `${GIT_CONFIG}; git status; ${E} | ${GW} -F ${D}/.git/config -F -`,
+    `${GIT_CONFIG}; ${E} | ${GW} -F ${D}/.git/config`,
+    `${S} > ${D}/.git/body.md; ${GW} -F ${D}/.git/body.md`,
+    `${S} > a.md; ${S} > b.md; ${GW} -F a.md`,
+    `${S} > a.sh; ${GW} -F a.sh`,
+    `cd ${D}; ${S} > n.md; ${GW} -F n.md`,
+    `git status; ${S} > n.md; ${GW} -F n.md`,
+    `X=1; ${S} > n.md; ${GW} -F n.md`,
+  ]
+
+  it.each([...DENIED, ...DENIED.map(line => `sh -c "${line.replaceAll('"', '\\"')}"`)])(
+    'denies %s',
+    command => {
+      expect(checkCommand(command, at())).toBeDefined()
+    },
+  )
+
+  it('defers a plain body file, a /dev/null redirect and a pipe', () => {
+    for (const command of [
+      `${S} > notes.md; ${GW} -F notes.md`,
+      `printf hi > notes.txt; ${E} 2>/dev/null | ${GW} -F -`,
+      `${E} | ${GW} -F - 2>/dev/null`,
+      `cat > notes.md <<'EOF'\nhello\nEOF\ncat notes.md | ${GW} -F -`,
+      `${GW} -b "$(cat < /w/x)" >/dev/null`,
+    ])
+      expect(checkCommand(command, at())).toBeUndefined()
+  })
+})
+
 describe('the built hook defers to the install PATH finds (CC-678)', () => {
   const hook = (command: string, bin: string): string => {
     const cfg = path.join(SCRATCH, 'defer-cfg')
@@ -1730,7 +1792,7 @@ describe('the built hook defers to the install PATH finds (CC-678)', () => {
       encoding: 'utf8',
     })
   }
-  const UNREAD = 'agent-chat gh-write -- pr create -t x -b "$(date)"'
+  const UNREAD = 'agent-chat gh-write -- pr create -t x -b "$(cat < /w/x)"'
 
   it('allows an unreadable argument when agent-chat on PATH is the hook entry, and denies when it is not', () => {
     const own = path.join(SCRATCH, 'own-bin')
@@ -1743,8 +1805,8 @@ describe('the built hook defers to the install PATH finds (CC-678)', () => {
     expect(hook(UNREAD, own)).toBe('')
     expect(JSON.parse(hook(UNREAD, other)).hookSpecificOutput.permissionDecision).toBe('deny')
     expect(
-      JSON.parse(hook(`agent-chat gh-write -- pr create -t ${TERM} -b "$(date)"`, own)).hookSpecificOutput
-        .permissionDecisionReason,
+      JSON.parse(hook(`agent-chat gh-write -- pr create -t ${TERM} -b "$(cat < /w/x)"`, own))
+        .hookSpecificOutput.permissionDecisionReason,
     ).toContain('private-term')
   })
 })
@@ -1926,7 +1988,7 @@ describe('the guard defers unreadable gh-write text to the run-time scan (CC-678
   const POST = 'agent-chat gh-write -- pr create -t x'
 
   const DEFERRED = [
-    `${POST} -b "$(date)"`,
+    `${POST} -b "$(cat < /w/x)"`,
     `${POST} -b "$UNSET_NAME"`,
     `echo hi > /w/pr.md; ${POST} --body-file /w/pr.md`,
     `echo hi > /w/pr.md && ${POST} -F /w/pr.md`,
@@ -1942,24 +2004,26 @@ describe('the guard defers unreadable gh-write text to the run-time scan (CC-678
 
   it('still denies a finding it can read, in any text beside an unreadable one', () => {
     expect(checkCommand(`${POST} -b ${TERM}`, own())).toContain('private-term')
-    expect(checkCommand(`${POST} -t ${TERM} -b "$(date)"`, own())).toContain('private-term')
-    expect(checkCommand(`${POST} -b "$(date)" --body-file /w/ok.md -t ${TERM}`, own())).toContain(
+    expect(checkCommand(`${POST} -t ${TERM} -b "$(cat < /w/x)"`, own())).toContain('private-term')
+    expect(checkCommand(`${POST} -b "$(cat < /w/x)" --body-file /w/ok.md -t ${TERM}`, own())).toContain(
       'private-term',
     )
     const withTerm = own({ readFile: () => `${TERM}\n` })
-    expect(checkCommand(`${POST} -b "$(date)" --body-file /w/pr.md`, withTerm)).toContain('private-term')
+    expect(checkCommand(`${POST} -b "$(cat < /w/x)" --body-file /w/pr.md`, withTerm)).toContain(
+      'private-term',
+    )
   })
 
   it.each([
     ['missing', { kind: 'missing' } as const, REASONS.missingTerms],
     ['unreadable', { kind: 'unreadable' } as const, REASONS.unreadableTerms],
   ])('still denies a %s term list, even for text it cannot read', (_name, terms, reason) => {
-    expect(checkCommand(`${POST} -b "$(date)"`, own({ terms }))).toBe(reason)
+    expect(checkCommand(`${POST} -b "$(cat < /w/x)"`, own({ terms }))).toBe(reason)
     expect(checkCommand(`${POST} -b y`, own({ terms }))).toBe(reason)
     expect(checkCommand(`cat f | ${POST} -F -`, own({ terms }))).toBe(reason)
   })
 
-  const UNREADABLE = `-b "$(date)"`
+  const UNREADABLE = `-b "$(cat < /w/x)"`
   const SHADOWED = [
     `agent-chat() { :; }; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
     `function agent-chat { :; }; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
@@ -2017,7 +2081,7 @@ describe('the guard defers unreadable gh-write text to the run-time scan (CC-678
   })
 
   it('defers after plain commands inside a plain sh -c', () => {
-    expect(checkCommand(`cd /w; sh -c 'echo hi; ${POST} ${UNREADABLE}'`, own())).toBeUndefined()
+    expect(checkCommand(`echo hi; sh -c 'echo hi; ${POST} ${UNREADABLE}'`, own())).toBeUndefined()
     expect(checkCommand(`sh -c 'echo hi'; ${POST} ${UNREADABLE}`, own())).toBeDefined()
   })
 
@@ -2042,7 +2106,6 @@ describe('the guard defers unreadable gh-write text to the run-time scan (CC-678
     `echo x > /usr/bin/agent-chat; ${POST} ${UNREADABLE}`,
     `${POST} ${UNREADABLE} > /usr/bin/agent-chat`,
     `echo hi > /w/b.md; echo x > /tmp/other; ${POST} --body-file /w/b.md`,
-    `echo hi > /w/b.md; ${POST} --body-file /w/c.md`,
     `zsh -c '${STDIN}'`,
     `git log --output=/usr/bin/agent-chat; ${STDIN}`,
   ]
@@ -2053,15 +2116,12 @@ describe('the guard defers unreadable gh-write text to the run-time scan (CC-678
 
   it('still defers when the only writes are the body file or a descriptor duplicate', () => {
     expect(
-      checkCommand(
-        `cat > /tmp/x/body.md <<'EOF'\nhello\nEOF\n${POST.replace('-t x', '-t T')} -F /tmp/x/body.md`,
-        own(),
-      ),
+      checkCommand(`cat > body.md <<'EOF'\nhello\nEOF\n${POST.replace('-t x', '-t T')} -F body.md`, own()),
     ).toBeUndefined()
     expect(
       checkCommand(`cat /w/x.md 2>&1 | agent-chat gh-write -- pr create -t x -F -`, own()),
     ).toBeUndefined()
-    expect(checkCommand(`echo hi > body.md; ${POST} -F body.md -b "$(date)"`, own())).toBeUndefined()
+    expect(checkCommand(`echo hi > body.md; ${POST} -F body.md -b "$(cat < /w/x)"`, own())).toBeUndefined()
   })
 
   it('keeps denying written and stdin text for each shadow form', () => {

@@ -617,20 +617,21 @@ agent-chat`, `env agent-chat`, a prefix assignment, `env -S`, or an expansion (`
   every `PATH` entry before it is absolute;
 - the hook knows the environment at that command, `PATH` is not mentioned anywhere on the line,
   and the command is at the top level, not inside a function, group or subshell;
-- every command before it, and every one before it inside an enclosing `sh -c` or `bash -c`
-  with no flag or variable on it, is from a short allowlist: `cd`, `echo`, `printf` without `-v`,
-  `cat`, `tee`, `mktemp`, `test`, `[`, `true`, `false`, `:`, `pwd`, `date`, a git read verb
-  (`status`, `log`, `diff`, `show`, `rev-parse`, `ls-files`), or a plain `NAME=value` whose name is
-  not `PATH`, `path`, `fpath`, `HOME`, `IFS`, `CDPATH`, `BASH_ENV`, `ENV`, `ZDOTDIR` or a similar
-  shell-state name. Every word of such a command must resolve. Anything else keeps the deny: a
-  function definition, `hash`, `builtin`, `autoload`, `alias`, `export`, `declare`, `typeset`,
-  `local`, `read`, `printf -v`, `eval`, `source`, a shell with a startup flag or an environment
-  variable, or any other program.
-
-- every write on the line, each `>`, `>>`, `>|`, `<>` or `tee` operand and any `&>` or `>&file`, is
-  the literal body file this same `gh-write` reads through `--body-file` or `-F`. A write to
-  anything else, a dotfile, a `PATH` directory or the install itself, or to a target that is not
-  a literal, keeps the deny. zsh is never a plain shell, because `zsh -c` reads `.zshenv`.
+- every command before it, including one inside `$(...)` and one inside an enclosing `sh -c`,
+  `bash -c` or `dash -c` that has no flag or variable on it, is `cat`, `printf` without `-v`,
+  `echo` or `tee`, with no variable on it and words the guard can resolve. Anything else keeps
+  the deny: `cd`, `git`, an assignment, a function definition, `hash`, `builtin`, `autoload`,
+  `alias`, `export`, `declare`, `read`, `eval`, `source`, zsh or ksh as a shell (`zsh -c` reads
+  `.zshenv`), a shell with a startup flag or variable, or any other program;
+- the gh-write has at most one body source: one of `-F`, `--body-file`, `--input` or `body=@file`,
+  or stdin, never two;
+- the earlier commands write at most one file, which is a literal `.md` or `.txt` path with no
+  symlink in any component, no `.git` directory above it, and that is neither the install, a file
+  in the `PATH` directory that holds it, nor a hard link to it. A `>` or `>>` or `tee` to any other
+  file, a target that is not a literal, a `&>` or `>&file`, or a redirect on the `agent-chat`
+  command to anything but `/dev/null` keeps the deny. Redirects to `/dev/null` and descriptor
+  copies such as `2>&1` stay allowed. A path under a symlinked directory, such as `/tmp` on macOS,
+  keeps the deny; write the body under the working directory.
 
 In that mode the guard still scans the text it can read, and still denies a finding, a missing
 term list and an unreadable term list, even beside text it cannot read.

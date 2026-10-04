@@ -56,6 +56,8 @@ export interface GuardContext {
   readIncludedHooksPath: ReadIncludedHooksPath
   /** `realpath` proved that `agent-chat` on the hook's `PATH` is the hook's own entry script, whose `gh-write` scans at run time. */
   scansGhWrite?: boolean
+  /** The real path of that install and of the `PATH` directory that holds it, which a body file may not be or share. */
+  install?: { file: string; dir: string }
 }
 
 /** What the guard knows of the shell before one command; undefined where it cannot tell. */
@@ -765,35 +767,18 @@ function defersToGhWrite(
   )
 }
 
-const PLAIN_COMMANDS = new Set('cd echo printf cat tee mktemp test [ true false : pwd date'.split(' '))
-const GIT_READ_VERBS = new Set('status log diff show rev-parse ls-files'.split(' '))
-// Names that change how a later word resolves or which startup file a shell runs.
-const SHELL_STATE_NAMES =
-  /^(?:path|fpath|cdpath|module_path|manpath|home|ifs|bash_env|env|zdotdir|shellopts|bashopts|prompt_command|ps4|aliases|functions|commands|ld_.*|dyld_.*|bash_func.*)$/i
-
-/** A bare `NAME=value` the shell cannot use to change resolution: a literal name outside the list, a value it can read. */
-function plainAssignment(word: string, cmd: SimpleCommand, ctx: GuardContext, scope: Scope): boolean {
-  const name = ASSIGNMENT.exec(word)?.[1]
-  const value = resolveWord(word.slice(word.indexOf('=') + 1), cmd, ctx, scope)
-  return name !== undefined && !SHELL_STATE_NAMES.test(name) && value !== undefined
-}
+const PLAIN_COMMANDS = new Set(['cat', 'printf', 'echo', 'tee'])
 
 /**
- * Whether a command before `agent-chat` is one that cannot define a function, hash, alias or
- * autoload a name, change `PATH`, or run a startup file. Anything else, a function definition and
- * `export`, `declare`, `read`, `printf -v`, `eval` and `source` included, is not.
+ * Whether a command before `agent-chat` is one of `cat`, `printf`, `echo` and `tee`, with no
+ * variable on it and words the guard can resolve. Anything else, `cd`, `git`, an assignment, a
+ * function definition, `export`, `eval` and `source` included, is not.
  */
 function plainCommand(cmd: SimpleCommand, ctx: GuardContext, scope: Scope): boolean {
-  const lead = cmd.marked.findIndex(word => !ASSIGNMENT.test(word))
-  const split = lead < 0 ? cmd.marked.length : lead
-  const assigns = cmd.marked.slice(0, split)
-  const words = cmd.marked.slice(split)
-  if (!assigns.every(word => plainAssignment(word, cmd, ctx, scope))) return false
-  const [head, ...args] = words
-  if (head === undefined) return true
-  if (!words.every(word => resolveWord(word, cmd, ctx, scope) !== undefined)) return false
-  if (head === 'git') return GIT_READ_VERBS.has(args[0] ?? '') && !args.some(arg => /^--ou/.test(arg))
-  return PLAIN_COMMANDS.has(head) && !(head === 'printf' && args.some(arg => arg.startsWith('-v')))
+  const [head, ...args] = cmd.marked
+  if (head === undefined || !PLAIN_COMMANDS.has(head)) return false
+  if (!cmd.marked.every(word => resolveWord(word, cmd, ctx, scope) !== undefined)) return false
+  return !(head === 'printf' && args.some(arg => arg.startsWith('-v')))
 }
 
 // zsh reads its startup file on every `-c`, and ksh may, so neither is plain.
@@ -818,15 +803,51 @@ const literalTargets = (cmd: SimpleCommand, scope: Scope): (string | undefined)[
 // `&>` and `>&file` write a file the splitter does not record; `>&2` and `>&-` only duplicate a descriptor.
 const UNRECORDED_WRITE = /&>|>&(?![\d-])/
 
-/** Deferral covers only a line whose every write is the literal body file this gh-write reads. */
-function writesOnlyItsBody(sources: Sources, cmd: SimpleCommand, scope: Scope): boolean {
-  if (UNRECORDED_WRITE.test(scope.line)) return false
-  const bodies = new Set(
-    sources.files
-      .filter(({ file }) => file !== '-' && file !== UNRESOLVED)
-      .map(({ file }) => pathKey(file, scope)),
-  )
-  return [...scope.targets, ...literalTargets(cmd, scope)].every(key => key !== undefined && bodies.has(key))
+const NULL_DEVICE = '/dev/null'
+const BODY_NAME = /\.(?:md|txt)$/i
+
+const isSymlink = (file: string): boolean => {
+  try {
+    return fs.lstatSync(file).isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+
+const sameFile = (a: string, b: string): boolean => {
+  try {
+    const [x, y] = [fs.statSync(a), fs.statSync(b)]
+    return x.ino === y.ino && x.dev === y.dev
+  } catch {
+    return false
+  }
+}
+
+/**
+ * A file the line may write and `gh-write` may read: a `.md` or `.txt` path with no symlink in any
+ * component and no `.git` directory above it, that is neither the install nor a file in its
+ * `PATH` directory, nor a hard link to it.
+ */
+function safeBodyPath(key: string, ctx: GuardContext): boolean {
+  if (!path.isAbsolute(key) || !BODY_NAME.test(key)) return false
+  const parts = key.split(path.sep).filter(part => part !== '')
+  if (parts.includes('.git')) return false
+  const prefixes = parts.map((_, i) => path.sep + parts.slice(0, i + 1).join(path.sep))
+  if (prefixes.some(isSymlink)) return false
+  const { install } = ctx
+  if (install === undefined) return true
+  return path.dirname(key) !== install.dir && key !== install.file && !sameFile(key, install.file)
+}
+
+/**
+ * Deferral covers only a line with at most one body source, whose earlier commands write at most
+ * one safe body file (and `/dev/null`), and whose own redirects write nothing else.
+ */
+function writesOnlySafeBody(sources: Sources, cmd: SimpleCommand, ctx: GuardContext, scope: Scope): boolean {
+  if (UNRECORDED_WRITE.test(scope.line) || sources.files.length > 1) return false
+  if (literalTargets(cmd, scope).some(key => key !== NULL_DEVICE)) return false
+  const written = new Set(scope.targets.filter(key => key !== NULL_DEVICE))
+  return written.size <= 1 && [...written].every(key => key !== undefined && safeBodyPath(key, ctx))
 }
 
 /** What `collect` reads, leaving out each file or stdin the guard cannot attribute: `gh-write` scans those at run time. */
@@ -879,10 +900,11 @@ function deferredWritesOnlyBody(
   kind: GhKind,
   args: readonly (string | undefined)[],
   cmd: SimpleCommand,
+  ctx: GuardContext,
   scope: Scope,
 ): boolean {
   const resolved = kind === 'unknown' ? [] : args.map(arg => arg ?? UNRESOLVED)
-  return writesOnlyItsBody(kind === 'api' ? apiSources(resolved) : prSources(resolved), cmd, scope)
+  return writesOnlySafeBody(kind === 'api' ? apiSources(resolved) : prSources(resolved), cmd, ctx, scope)
 }
 
 function checkGh(
@@ -895,7 +917,7 @@ function checkGh(
   const kind = ghKind(marked)
   if (kind === 'other') return undefined
   const args = marked.map(word => resolveWord(word, cmd, ctx, scope))
-  if (defers && deferredWritesOnlyBody(kind, args, cmd, scope))
+  if (defers && deferredWritesOnlyBody(kind, args, cmd, ctx, scope))
     return checkDeferred(kind, args, cmd, ctx, scope)
   const unsure = kind === 'unknown' || !args.every(arg => arg !== undefined)
   if (unsure) return unread(cmd.substitutions.flatMap(sub => sub.commands))
@@ -1254,18 +1276,26 @@ const realOf = (file: string): string | undefined => {
   }
 }
 
-/** Whether the first `agent-chat` on PATH is the file this hook runs from, the one whose `gh-write` scans. */
-export function pathFindsOwnInstall(env: NodeJS.ProcessEnv, entry: string | undefined): boolean {
+/** The real install and its `PATH` directory when the first `agent-chat` on PATH is the file this hook runs from. */
+export function ownInstall(
+  env: NodeJS.ProcessEnv,
+  entry: string | undefined,
+): { file: string; dir: string } | undefined {
   const own = entry === undefined ? undefined : realOf(entry)
-  if (own === undefined) return false
+  if (own === undefined) return undefined
   for (const dir of (env.PATH ?? '').split(path.delimiter)) {
     // A relative or empty entry searches the working directory, which the hook does not track.
-    if (!path.isAbsolute(dir)) return false
+    if (!path.isAbsolute(dir)) return undefined
     const file = path.join(dir, 'agent-chat')
-    if (fs.existsSync(file)) return realOf(file) === own
+    if (!fs.existsSync(file)) continue
+    const realDir = realOf(dir)
+    return realOf(file) === own && realDir !== undefined ? { file: own, dir: realDir } : undefined
   }
-  return false
+  return undefined
 }
+
+export const pathFindsOwnInstall = (env: NodeJS.ProcessEnv, entry: string | undefined): boolean =>
+  ownInstall(env, entry) !== undefined
 
 export function guardContext(
   env: NodeJS.ProcessEnv,
@@ -1275,6 +1305,7 @@ export function guardContext(
 ): GuardContext {
   const terms = termsFile(env, home)
   const hooksDir = hooksDirOf(env as Record<string, string>)
+  const install = ownInstall(env, entry)
   return {
     terms: loadTerms(terms),
     cwd,
@@ -1288,7 +1319,8 @@ export function guardContext(
     readFile: readText,
     readAlias: aliasReader(env),
     readIncludedHooksPath: includedHooksPathReader(env),
-    scansGhWrite: pathFindsOwnInstall(env, entry),
+    scansGhWrite: install !== undefined,
+    ...(install === undefined ? {} : { install }),
   }
 }
 

@@ -86,10 +86,11 @@ const inShell = (
   flags: string[],
   command: string,
   env: Record<string, string> = ENV,
+  cwd = WORK,
 ): string => {
   try {
     return execFileSync(shell, [...flags, '-c', command], {
-      cwd: WORK,
+      cwd,
       env,
       stdio: ['ignore', 'pipe', 'ignore'],
       encoding: 'utf8',
@@ -101,10 +102,10 @@ const inShell = (
 }
 
 /** What each shell's fake gh recorded for one command. */
-function posted(command: string, env: Record<string, string> = ENV): string[] {
+function posted(command: string, env: Record<string, string> = ENV, cwd = WORK): string[] {
   return SHELLS.map(([shell, flags]) => {
     fs.writeFileSync(RECORD, '')
-    inShell(shell, flags, command, env)
+    inShell(shell, flags, command, env, cwd)
     return fs.readFileSync(RECORD, 'utf8')
   })
 }
@@ -125,11 +126,13 @@ beforeAll(() => {
   fs.writeFileSync(TERMS, `${TERM}\n`)
   fs.writeFileSync(path.join(REAL_BIN, 'driver.mjs'), REAL_DRIVER)
   writeHijacks()
+  writeRepo()
   fs.writeFileSync(path.join(REAL_BIN, 'agent-chat'), REAL_AGENT_CHAT, { mode: 0o755 })
   fs.writeFileSync(path.join(BIN, 'gh'), FAKE_GH, { mode: 0o755 })
   fs.writeFileSync(path.join(BIN, 'agent-chat'), FAKE_AGENT_CHAT, { mode: 0o755 })
   fs.writeFileSync(path.join(ROOT, 'evil', 'pr.md'), `${TERM}\n`)
   fs.writeFileSync(path.join(WORK, 'pr.md'), 'clean file\n')
+  fs.symlinkSync(INSTALL, path.join(WORK, 'link.md'))
   fs.writeFileSync(path.join(WORK, 'ab.md'), 'clean file\n')
   fs.writeFileSync(path.join(WORK, 'a\x01b.md'), `${TERM}\n`)
   for (const [shell, flags] of SHELLS) {
@@ -294,11 +297,13 @@ describe.skipIf(SHELLS.length === 0)('the guard against real shells and a fake g
 // CC-678: the guard defers these to the run-time scan in gh-write; each carries the term past the guard.
 const POST = 'agent-chat gh-write -- pr create -t x'
 const DEFERRED = [
-  `${POST} -b "$(date; ${EVIL})"`,
+  `${POST} -b "$(cat < ../evil/pr.md)"`,
   `cat ../evil/pr.md > out.md; ${POST} --body-file out.md`,
   `cat ../evil/pr.md > out.md && ${POST} -F out.md`,
   `${EVIL} | ${POST} -F -`,
   `${EVIL} | ${POST} --body-file -`,
+  `${EVIL} 2>/dev/null | ${POST} -F -`,
+  `${EVIL} | ${POST} -F - 2>/dev/null`,
 ]
 const EVIL_BIN = path.join(ROOT, 'evil-bin')
 const EVIL_FN = path.join(ROOT, 'evil-fn')
@@ -317,7 +322,7 @@ function writeHijacks(): void {
   fs.copyFileSync(path.join(ROOT, 'setup'), path.join(EVIL_HOME, '.bash_profile'))
 }
 
-const GW = 'agent-chat gh-write -- pr create -t x -b "$(date)"'
+const GW = 'agent-chat gh-write -- pr create -t x -b "$(cat < ../evil/pr.md)"'
 const HIJACKS = [
   `hash -p ${EVIL_BIN}/agent-chat agent-chat; ${GW}`,
   `builtin hash -p ${EVIL_BIN}/agent-chat agent-chat; ${GW}`,
@@ -335,6 +340,20 @@ const HIJACKS = [
   `ZDOTDIR=${EVIL_ZSH} zsh -c '${GW}'`,
   `HOME=${EVIL_HOME} bash -l -c '${GW}'`,
 ]
+const REPO = path.join(ROOT, 'repo')
+const SWAP = path.join(ROOT, 'evil', 'swap.sh')
+const GIT_ENV = { ...ENV, GIT_CONFIG_NOSYSTEM: '1' }
+
+/** A scratch repo whose origin is a local bare repo: the probes that run git never leave ROOT. */
+function writeRepo(): void {
+  const git = (...args: string[]): void => void execFileSync('git', args, { cwd: ROOT, env: GIT_ENV })
+  git('init', '-q', '--bare', path.join(ROOT, 'origin.git'))
+  git('init', '-q', REPO)
+  git('-C', REPO, 'remote', 'add', 'origin', path.join(ROOT, 'origin.git'))
+  fs.mkdirSync(path.join(ROOT, 'evil'), { recursive: true })
+  fs.writeFileSync(SWAP, `#!/bin/sh\ncp ${EVIL_BIN}/agent-chat ${INSTALL}\n`, { mode: 0o755 })
+}
+
 const PIPED = 'cat ../evil/pr.md | agent-chat gh-write -- pr create -t x -F -'
 const SETUP_FN = `agent-chat() { ${LEAK}; }`
 const INSTALL = path.join(REAL_BIN, 'agent-chat')
@@ -351,6 +370,22 @@ const WRITTEN = [
   `printf '#!/bin/sh\\n${LEAK}\\n' >| ${INSTALL}; ${PIPED}`,
 ]
 
+const S3 = `printf '#!/bin/sh\\n${LEAK}\\n'`
+const TWO = (args: string): string => `cat ${ROOT}/evil/pr.md | agent-chat gh-write -- ${args}`
+const R3 = [
+  `${S3} > ${INSTALL}; ${TWO(`pr create -t x -F ${INSTALL} -F -`)}`,
+  `${S3} > ${INSTALL}; ${TWO(`pr create -t x --body-file ${INSTALL} --body-file -`)}`,
+  `${S3} | tee ${INSTALL}; ${TWO(`pr create -t x -F ${INSTALL} -F -`)}`,
+  `cd ${REAL_BIN}; ${S3} > agent-chat; ${TWO('pr create -t x -F agent-chat -F -')}`,
+  `${S3} > link.md; ${TWO('pr create -t x -F link.md -F -')}`,
+  `${S3} > link.md; ${TWO('pr create -t x -F link.md')}`,
+  `${S3} > ${INSTALL}; ${TWO(`pr comment 1 -F ${INSTALL} -F -`)}`,
+  `${S3} > ${INSTALL}; ${TWO(`api -X POST repos/o/r/issues/1/comments -F body=@${INSTALL} --input -`)}`,
+  `${S3} > ${INSTALL}; ${TWO('pr create -t x -F -')}`,
+]
+const R3_ALL = [...R3, ...R3.map(line => `sh -c "${line}"`)]
+const GIT_CONFIG_LINE = `printf '[core]\\n\\tfsmonitor = ${SWAP}\\n' >> .git/config; git status; ${TWO('pr create -t x -F .git/config -F -')}`
+
 // These only hijack zsh; a host without zsh cannot show the leak, and the guard must still deny.
 const ZSH_ONLY = /^(?:hash agent-chat=|path=|fpath=|agent-chat (?:gh-write|x)\(\)|ZDOTDIR=)/
 const SHADOWS = [
@@ -363,7 +398,8 @@ const SHADOWS = [
 ]
 
 describe.skipIf(SHELLS.length === 0)('gh-write deferral against real shells (CC-678)', () => {
-  const owned = (): GuardContext => guard({ env: REAL_ENV, scansGhWrite: true })
+  const owned = (): GuardContext =>
+    guard({ env: REAL_ENV, scansGhWrite: true, install: { file: INSTALL, dir: REAL_BIN } })
 
   it.each(DEFERRED)('allows %j and no shell posts the term', command => {
     fs.rmSync(path.join(WORK, 'out.md'), { force: true })
@@ -392,6 +428,26 @@ describe.skipIf(SHELLS.length === 0)('gh-write deferral against real shells (CC-
     expect(checkCommand(command, owned())).toBeDefined()
     const runnable = !command.includes('zsh -c') || SHELLS.some(([shell]) => shell.endsWith('zsh'))
     if (runnable) expect(posted(command, REAL_ENV).some(record => record.includes(TERM))).toBe(true)
+    restore()
+  })
+
+  it.each(R3_ALL)('denies %j, which posts the term when run', command => {
+    const restore = (): void => fs.writeFileSync(INSTALL, REAL_AGENT_CHAT, { mode: 0o755 })
+    restore()
+    expect(checkCommand(command, owned())).toBeDefined()
+    expect(posted(command, REAL_ENV).some(record => record.includes(TERM))).toBe(true)
+    restore()
+  })
+
+  it('denies a body file that is git config, whose fsmonitor swaps in the install', () => {
+    const config = fs.readFileSync(path.join(REPO, '.git', 'config'), 'utf8')
+    const restore = (): void => {
+      fs.writeFileSync(INSTALL, REAL_AGENT_CHAT, { mode: 0o755 })
+      fs.writeFileSync(path.join(REPO, '.git', 'config'), config)
+    }
+    restore()
+    expect(checkCommand(GIT_CONFIG_LINE, { ...owned(), cwd: REPO })).toBeDefined()
+    expect(posted(GIT_CONFIG_LINE, REAL_ENV, REPO).some(record => record.includes(TERM))).toBe(true)
     restore()
   })
 
