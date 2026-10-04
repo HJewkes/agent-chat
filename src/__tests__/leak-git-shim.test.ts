@@ -243,6 +243,24 @@ describe('the agent git shim failing closed when it cannot resolve a push (fix r
     expect(remoteHasMain(fx)).toBe(false)
   })
 
+  // At 446bc7a4 these arguments passed the shim and the alias body's eval assembled push.
+  it.each([
+    ['command substitution', '$(echo pu)sh'],
+    ['variable expansion', '${P:-pu}sh'],
+    ['bare variable', '$P'],
+    ['backtick substitution', '`echo pu`sh'],
+    ['brace expansion', '{pu,}sh'],
+  ])('refuses a shell alias whose eval could build push from %s', (_form, arg) => {
+    const fx = fixture()
+    git(fx.work, 'config', 'alias.ev', '!f() { eval "git $*"; }; f')
+
+    const run = runScript(fx, `git ev '${arg}' origin main`)
+
+    expect(run.status).toBe(2)
+    expect(run.stderr).toContain('git-shim: push refused (shell-alias)')
+    expect(remoteHasMain(fx)).toBe(false)
+  })
+
   it('still runs a shell alias that does not mention push', () => {
     const fx = fixture()
     git(fx.work, 'config', 'alias.hi', '!echo hello')
@@ -559,6 +577,7 @@ describe('where the agent git shim is put on PATH', () => {
     profile,
     brief: 'brief',
     cwd: '/repo',
+    cwdHoldsUserSettings: false,
     mcpConfigPath: '/state/agents/ag000001/mcp.json',
     ...over,
   })
@@ -632,5 +651,41 @@ describe('where the agent git shim is put on PATH', () => {
 
     expect(entries.some(entry => entry.endsWith('git-bin'))).toBe(false)
     expect(process.env.PATH).toBe(before)
+  })
+})
+
+describe('the agent git shim under a UTF-8 locale (CC-612)', () => {
+  const utf8 = (fx: Fixture): Fixture => ({ ...fx, env: { ...fx.env, LANG: 'en_US.UTF-8' } })
+  const evAlias = (fx: Fixture): void => {
+    git(fx.work, 'config', 'alias.ev', '!f() { eval "git $*"; }; f')
+  }
+  it('refuses an alias call whose -c value holds byte 0xff before push --no-verify', () => {
+    const fx = utf8(fixture())
+    evAlias(fx)
+    const run = runScript(fx, `git ev -c "x.y=$(printf '\\377')" push ${NO_VERIFY} origin main`)
+
+    expect(run.status).toBe(2)
+    expect(run.stderr).toContain('git-shim: push refused')
+    expect(remoteHasMain(fx)).toBe(false)
+  })
+
+  it('still runs a plain push and the pre-push hook', () => {
+    const fx = utf8(fixture())
+
+    const run = runScript(fx, 'git push -q origin main')
+
+    expect(run.status).toBe(0)
+    expect(remoteHasMain(fx)).toBe(true)
+    expect(fs.existsSync(fx.marker)).toBe(true)
+  })
+
+  it('still runs a commit whose message holds valid non-ASCII UTF-8 through a shell alias', () => {
+    const fx = utf8(fixture())
+    git(fx.work, 'config', 'alias.ci', '!git commit --allow-empty -q -m')
+
+    const run = runScript(fx, "git -c user.name=t -c user.email=t@example.com ci 'café'")
+
+    expect(run.status).toBe(0)
+    expect(git(fx.work, 'log', '-1', '--format=%s').trim()).toBe('café')
   })
 })

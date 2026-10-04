@@ -29,6 +29,7 @@ Agent commands:
   watch [options] <name>     stream messages for a session that cannot receive channel pushes
   agent                      durable agents
   teleport                   teleport control
+  handoff                    stored teleport handoffs
   profiles                   agent profiles available to spawn with
   gh-write <gh-args...>      one gh write after --, spaced machine-wide and retried on the secondary
                              rate limit
@@ -221,19 +222,23 @@ Usage: agent-chat burndown [options] [command]
 pick and run unattended work for opted-in initiatives
 
 Options:
-  -h, --help         display help for command
+  -h, --help           display help for command
 
 Commands:
-  plan [options]     dry run: what the tick would dispatch now, and why every other task was refused
-  status             claim ledger, stalled claims and each account budget gate
-  tick [options]     one pass: advance every claim a phase, then spawn new work inside the ceilings
-  pause              stop new spawns from the next tick on; running agents finish
-  resume             let the tick spawn again
-  release <task>     drop every claim on a task, stalled or not, so the tick may pick it again
-  install [options]  print the sign-off checklist, then install and start the launchd tick job
-  uninstall          stop the launchd tick job and keep it from starting at login
-  job-status         launchd state for the tick job: loaded, pid, and whether it may spawn
-  help [command]     display help for command
+  plan [options]       dry run: what the tick would dispatch now, and why every other task was
+                       refused
+  milestone [options]  this week's burn-down per milestone: points, critical path, WIP, throughput,
+                       forecast, status
+  status               claim ledger, stalled claims and each account budget gate
+  tick [options]       one pass: advance every claim a phase, then spawn new work inside the
+                       ceilings
+  pause                stop new spawns from the next tick on; running agents finish
+  resume               let the tick spawn again
+  release <task>       drop every claim on a task, stalled or not, so the tick may pick it again
+  install [options]    print the sign-off checklist, then install and start the launchd tick job
+  uninstall            stop the launchd tick job and keep it from starting at login
+  job-status           launchd state for the tick job: loaded, pid, and whether it may spawn
+  help [command]       display help for command
 
 === agent-chat burndown plan
 Usage: agent-chat burndown plan [options]
@@ -246,6 +251,16 @@ Options:
   --top <value>            picks to print with --scored (default 20)
   --autonomy-root <value>  directory holding charter.md and seats/
   --today <value>          pin the staleness clock (YYYY-MM-DD) with --scored
+  -h, --help               display help for command
+
+=== agent-chat burndown milestone
+Usage: agent-chat burndown milestone [options]
+
+this week's burn-down per milestone: points, critical path, WIP, throughput, forecast, status
+
+Options:
+  --json                   one JSON document; a failure is {"error"} with exit 1
+  --autonomy-root <value>  directory holding milestones/<week>.yml
   -h, --help               display help for command
 
 === agent-chat burndown status
@@ -337,10 +352,11 @@ Commands:
   status [options] <seat>      what a seat reads before it dispatches (CC-317), read-only:
                                implementers, reviewers and planners against their caps, its other
                                running agents, parked implementers, the pool reading with its age
-                               and the charter stop that applies, unread inbox messages since the
-                               seat last sent one, the machine-wide headless agents, free memory and
-                               full-suite slots against their limits, swap used, and the top
-                               eligible tasks. A spend cap with no saved meter to count it is a stop
+                               and the charter stop that applies, the pace of every pool against its
+                               glide path, unread inbox messages since the seat last sent one, the
+                               machine-wide headless agents, free memory and full-suite slots
+                               against their limits, swap used, and the top eligible tasks. A spend
+                               cap with no saved meter to count it is a stop
   dispatches [options] <seat>  one folded record per agent run from a seat's dispatch log (CC-332),
                                read-only: the broker's spawn and retire rows and the seat's own rows
                                merged, with the spend. Lines that are not a JSON object with an
@@ -388,9 +404,10 @@ Usage: agent-chat seats status [options] <seat>
 
 what a seat reads before it dispatches (CC-317), read-only: implementers, reviewers and planners
 against their caps, its other running agents, parked implementers, the pool reading with its age and
-the charter stop that applies, unread inbox messages since the seat last sent one, the machine-wide
-headless agents, free memory and full-suite slots against their limits, swap used, and the top
-eligible tasks. A spend cap with no saved meter to count it is a stop
+the charter stop that applies, the pace of every pool against its glide path, unread inbox messages
+since the seat last sent one, the machine-wide headless agents, free memory and full-suite slots
+against their limits, swap used, and the top eligible tasks. A spend cap with no saved meter to
+count it is a stop
 
 Options:
   --json          the same facts as one JSON object; a failure is {"seat", "error"} with exit 1
@@ -633,6 +650,7 @@ bring a stopped agent back on its own conversation (headless by default)
 
 Options:
   --message <value>  the turn it resumes on
+  --message-stdin    read the turn from stdin, not argv
   --surface <value>  where it comes back: headless, iterm-pane, iterm-tab, iterm-window
   -h, --help         display help for command
 
@@ -681,6 +699,26 @@ Commands:
 Usage: agent-chat teleport abort [options] <name>
 
 stop a session ending itself for a successor
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat handoff
+Usage: agent-chat handoff [options] [command]
+
+stored teleport handoffs
+
+Options:
+  -h, --help      display help for command
+
+Commands:
+  last <name>     print the latest handoff a session stored when it teleported
+  help [command]  display help for command
+
+=== agent-chat handoff last
+Usage: agent-chat handoff last [options] <name>
+
+print the latest handoff a session stored when it teleported
 
 Options:
   -h, --help  display help for command

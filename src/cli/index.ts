@@ -23,6 +23,7 @@ import { digestVerb } from './verbs/digest.js'
 import { dismissVerb } from './verbs/dismiss.js'
 import { doctorVerb } from './verbs/doctor.js'
 import { endorseVerb } from './verbs/endorse.js'
+import { handoffLastVerb } from './verbs/handoff-last.js'
 import { inboxVerb } from './verbs/inbox.js'
 import { addMirrorCommands } from './verbs/mirror.js'
 import { addBurndownCommands } from './verbs/burndown.js'
@@ -174,6 +175,9 @@ function addAgentCommands(program: Command): void {
 
   const teleport = program.command('teleport').description('teleport control').helpGroup(AGENTS)
   addVerb(teleport, teleportAbortVerb)
+
+  const handoff = program.command('handoff').description('stored teleport handoffs').helpGroup(AGENTS)
+  addVerb(handoff, handoffLastVerb)
 
   addVerb(program, profilesVerb, { helpGroup: AGENTS })
 

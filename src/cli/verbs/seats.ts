@@ -11,10 +11,12 @@ import {
   readLoad5,
   readMemoryFree,
   readMemoryPressure,
+  readPressureLevel,
   readSwapUsage,
+  swapPercent,
   type MachineStatus,
 } from '../../agents/machine-guard.js'
-import { resolveMachineLimits, resolveMachineStopLimits } from '../../config.js'
+import { resolveMachineLimits, resolveMachineStopLimits, resolvePoolProbe } from '../../config.js'
 import { machineStop, type MachineStop } from '../../agents/seats/stops.js'
 import { slotUsage } from '../../suite-slots.js'
 import { suiteSlotDeps } from '../suite-slot.js'
@@ -34,10 +36,13 @@ import {
   readText,
   saveDoc,
   scorerEligible,
+  seatFileNames,
   seatJournalDays,
 } from '../../agents/seats/io.js'
 import { readDispatches, renderDispatches } from '../../agents/seats/dispatch-read.js'
 import { acquireRunLock } from '../../agents/seats/lock.js'
+import { diskPaceStore } from '../../agents/seats/pace-pass.js'
+import { probePool } from '../../agents/seats/pool-probe.js'
 import { renderRunStart, startRun, type RunStartDeps } from '../../agents/seats/run-start.js'
 import {
   parseLogReadings,
@@ -63,6 +68,7 @@ import {
   WAITING_OWNER_TAG,
   type StatusDeps,
 } from '../../agents/seats/status.js'
+import { readPoolPicks } from '../../agents/seats/pool-pick-log.js'
 import type { OwnerMessage } from '../../agents/seats/stops.js'
 import { FIRE_CAP, WATCHDOG_MINUTES } from '../../agents/seats/watchdog.js'
 import { BrokerClient } from '../../client/broker-client.js'
@@ -81,9 +87,15 @@ const refused = (err: unknown): Report => ({
 })
 
 async function roster(client: BrokerClient): Promise<Roster> {
-  const agents = (await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>
-  const live = (await client.request({ t: 'list' }, 'list_result')) as Reply<'list_result'>
-  return { agents: agents.agents, connected: live.sessions.map(s => s.name) }
+  try {
+    const agents = (await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>
+    const live = (await client.request({ t: 'list' }, 'list_result')) as Reply<'list_result'>
+    return { agents: agents.agents, connected: live.sessions.map(s => s.name) }
+  } catch (err) {
+    // Only a missed reply is unknown; any other failure is a real fault and ends the run.
+    if (!(err instanceof Error) || !err.message.startsWith('broker did not answer')) throw err
+    return { agents: [], connected: [], unknown: err.message }
+  }
 }
 
 /** The surface a stopped seat comes back on, and where that was read from. */
@@ -206,6 +218,9 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
     loadDoc: () => loadDoc(),
     saveDoc: doc => saveDoc(doc),
     lock: () => acquireRunLock(),
+    pace: diskPaceStore(root),
+    ...(resolvePoolProbe() ? { probe: (configDir: string) => probePool(configDir) } : {}),
+    seatNames: () => seatFileNames(root),
     wake: async (seat, message, connected) =>
       wakeSeat(
         client,
@@ -380,6 +395,7 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
     readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
     loadDoc: () => readDoc(),
     inbox: seat => readInbox(path.join(home(), 'events.db'), seat),
+    poolPicks: seat => readPoolPicks(path.join(home(), 'events.db'), seat),
     scored: (seat, today) =>
       scoredPlanFromDisk({
         seat,
@@ -393,10 +409,15 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
   }
 }
 
-/** CC-431: the live memory and load readings against the stop limits. */
+/** CC-431, CC-492: the live memory, swap, pressure level and load readings against the stop limits. */
 function readMachineStop(): MachineStop | null {
   return machineStop(
-    { memoryFreePercent: readMemoryPressure(), load5: readLoad5() },
+    {
+      memoryFreePercent: readMemoryPressure(),
+      load5: readLoad5(),
+      swapUsedPercent: swapPercent(readSwapUsage()),
+      pressureLevel: readPressureLevel(),
+    },
     resolveMachineStopLimits(),
   )
 }
@@ -433,7 +454,8 @@ export const seatsStatusVerb = defineVerb({
   description:
     'what a seat reads before it dispatches (CC-317), read-only: implementers, reviewers and planners ' +
     'against their caps, its other running agents, parked implementers, the pool reading with its age ' +
-    'and the charter stop that applies, unread inbox messages since the seat last sent one, the ' +
+    'and the charter stop that applies, the pace of every pool against its glide path, unread inbox ' +
+    'messages since the seat last sent one, the ' +
     'machine-wide headless agents, free memory and full-suite slots against their limits, swap used, and the ' +
     'top eligible tasks. A spend cap with no saved meter to count it is a stop',
   args: z.object({ seat: requiredString('seat'), json: z.boolean().optional(), root: z.string().optional() }),

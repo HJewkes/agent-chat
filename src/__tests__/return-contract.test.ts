@@ -169,6 +169,30 @@ describe('the GitHub write path (CC-456)', () => {
   })
 })
 
+describe('the PATH shim rule (CC-647)', () => {
+  const SHIM_RULE =
+    'Never put a shim named gh, git, node, npm or pnpm on PATH unless it drops its own dir from PATH ' +
+    'first (pattern: src/gh-shim/install.ts).'
+
+  // Mutation caught: dropping SHIM_RULE from IMPLEMENTER_RULES or from the reviewer block.
+  it.each([
+    ['an implementer with a Shepherd handoff', 'add the parser'],
+    ['an implementer that waits on its own CI', `${SHEPHERD_NONE_MARKER}\nadd the parser`],
+    ['a reviewer', 'review PR 7'],
+  ])('reaches %s in the spawned brief', async (_, brief) => {
+    const profile = brief.startsWith('review') ? 'reviewer' : 'implementer'
+
+    const { text } = await delivered({ brief, profile })
+
+    expect(occurrences(text, SHIM_RULE)).toBe(1)
+  })
+
+  it('sits in both implementer variants', () => {
+    expect(flat(RETURN_CONTRACT_BLOCKS.implementer)).toContain(SHIM_RULE)
+    expect(flat(IMPLEMENTER_WITHOUT_SHEPHERD)).toContain(SHIM_RULE)
+  })
+})
+
 describe('the check-run rule (CC-357)', () => {
   // Mutation caught: reverting the implementer CI line to a bare "then CI status".
   it('has the implementer paste each check-run at the head instead of reporting "green"', () => {
@@ -540,6 +564,20 @@ describe('the Shepherd handoff (TP-468)', () => {
     expect(text).toContain('never wait on CI')
     expect(text).not.toContain('gh run watch <id>')
     expect(text).toContain('Shepherd: refused <first stderr line>')
+  })
+
+  // Mutation caught: an unconditional register line, which implementers followed over a brief saying not to (CC-635).
+  it('makes the implementer register only when its brief asks, and lets a brief saying not to win', () => {
+    const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
+    const gate = 'Only if the brief asks (one saying not to wins), run `titan-factory shepherd register'
+
+    expect(text).toContain(gate)
+    expect(text.split('titan-factory shepherd register')).toHaveLength(2)
+    expect(text).not.toContain('Then run `titan-factory shepherd register')
+  })
+
+  it('leaves the reviewer block free of any Shepherd register line', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).not.toMatch(/shepherd register|Register with Shepherd/i)
   })
 
   // Mutation caught: any change to the three lines bin/premerge and Shepherd parse.

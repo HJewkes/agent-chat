@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url'
 import { stringify } from 'yaml'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mergeDefaults, parseCharter, parseSeat } from '../agents/burndown/policy.js'
-import { renderScored, renderScoredRow, scoredPlan } from '../agents/burndown/score-render.js'
+import { isoWeek, renderScored, renderScoredRow, scoredPlan } from '../agents/burndown/score-render.js'
 import { tasksFromList } from '../agents/burndown/score-source.js'
-import type { DispatchRow } from '../agents/burndown/score.js'
+import type { PlannedRow } from '../agents/burndown/plan-order.js'
 import { withBroker } from '../cli/client.js'
 import { burndownPlanVerb, planFlagError } from '../cli/verbs/burndown.js'
 
@@ -52,7 +52,7 @@ describe('scored plan rendering of the parity fixture', () => {
   it('prints the top pick with rank, both scores, kind source and every component', () => {
     expect(lines[0]).toBe(
       ' 1  72.0 ( 72.0) AL-1      alpha            security/regex  ' +
-        'S=1.00 P=1.00 U=0.00 A=1.00 W=1.00 K=1.00 R=1.00 Z=0.90 H=1.00 est=5 route=planner | ' +
+        'S=1.00 P=1.00 U=0.00 A=1.00 W=1.00 K=1.00 R=1.00 Z=0.90 H=1.00 est=5 route=planner tier=3 float=- wsjf=0.20 | ' +
         'Harden the secret store against injection',
     )
   })
@@ -94,17 +94,24 @@ describe('scored plan refusal counts', () => {
 })
 
 describe('scored row flags', () => {
-  const row = (): DispatchRow => {
+  const row = (): PlannedRow => {
     const [first] = fixturePlan().order
     if (first === undefined) throw new Error('fixture has no picks')
     return first
   }
 
   it('appends stop-short names and prints a missing estimate as a dash', () => {
-    const line = renderScoredRow({ ...row(), estimate: null, stopShort: ['deploy', 'npm-publish'] }, 3)
+    const { wsjf: _unsized, ...unestimated } = row()
+    const line = renderScoredRow({ ...unestimated, estimate: null, stopShort: ['deploy', 'npm-publish'] }, 3)
 
-    expect(line).toContain(' est=- route=planner stop-short:deploy,npm-publish | ')
+    expect(line).toContain(' est=- route=planner tier=3 float=- wsjf=- stop-short:deploy,npm-publish | ')
     expect(line.startsWith(' 3 ')).toBe(true)
+  })
+
+  it("prints a milestone row's tier, float and WSJF", () => {
+    const line = renderScoredRow({ ...row(), tier: 2, float: 1.5, wsjf: 0.25, milestone: 'M1' }, 1)
+
+    expect(line).toContain(' route=planner tier=2 float=1.5 wsjf=0.25 | ')
   })
 
   it('cuts a long title at 90 characters and a long initiative at 16', () => {
@@ -154,6 +161,44 @@ describe('burndown plan --seat --scored from disk', () => {
     expect(report).toEqual({ ok: true, lines: renderScored(fixturePlan()) })
   })
 
+  it("orders by this week's milestone file in the autonomy root and prints its errors", async () => {
+    const root = path.join(world, 'autonomy')
+    fs.cpSync(FIXTURE, root, { recursive: true })
+    fs.mkdirSync(path.join(root, 'milestones'))
+    const milestones = {
+      week: '2026-W40',
+      appetite_days: 5,
+      milestones: [{ id: 'M1', rank: 1, seat: 'sample-seat', epics: ['AL-1', 'ZZ-404'] }],
+    }
+    fs.writeFileSync(path.join(root, 'milestones', '2026-W40.yml'), stringify(milestones))
+    const last = snapshot.tasks.find(t => t.id === expected.order.at(-1)!.id)!
+    const tagged = { ...last, tags: [...((last as { tags?: string[] }).tags ?? []), 'milestone:M1'] }
+    fs.writeFileSync(path.join(world, last.slug, 'tasks', `${last.id}.yml`), stringify(tagged))
+    const args = { seat: 'sample-seat', scored: true, top: 10, autonomyRoot: root, today: snapshot.today }
+
+    const report = await burndownPlanVerb.run(args, ctx)
+
+    expect(report.lines[0]).toMatch(new RegExp(`^ 1 .* ${last.id} .* tier=2 float=0\\.0 wsjf=`))
+    expect(report.lines.at(-2)).toBe('milestones=2026-W40, errors: unknown-epic M1 ZZ-404')
+  })
+
+  it("prints a typo'd dep: as an unknown-dep tag error, but not a dep on an archived task (CC-631)", async () => {
+    const first = snapshot.tasks[0]!
+    const archive = path.join(world, first.slug, 'tasks', 'archive')
+    fs.mkdirSync(archive)
+    fs.writeFileSync(path.join(archive, 'AR-1.yml'), stringify({ id: 'AR-1', status: 'closed' }))
+    const tags = [...((first as { tags?: string[] }).tags ?? []), 'dep:AR-1', 'dep:ZZ-404']
+    fs.writeFileSync(path.join(world, first.slug, 'tasks', `${first.id}.yml`), stringify({ ...first, tags }))
+    const args = { seat: 'sample-seat', scored: true, top: 10, autonomyRoot: FIXTURE, today: snapshot.today }
+
+    const report = await burndownPlanVerb.run(args, ctx)
+
+    expect(report.lines.filter(line => line.startsWith('task tags'))).toEqual([
+      `task tags errors: unknown-dep ${first.id} dep:ZZ-404`,
+    ])
+    expect(report.lines.at(-2)).toBe(`task tags errors: unknown-dep ${first.id} dep:ZZ-404`)
+  })
+
   it('refuses a seat the charter does not list', async () => {
     const args = { seat: 'no-such-seat', scored: true, autonomyRoot: FIXTURE }
 
@@ -161,6 +206,18 @@ describe('burndown plan --seat --scored from disk', () => {
 
     expect(report.ok).toBe(false)
     expect(report.errors).toEqual([`no-such-seat is not a seat in ${FIXTURE}/charter.md`])
+  })
+})
+
+describe('the milestone file week', () => {
+  it.each([
+    ['2026-10-03', '2026-W40'],
+    ['2026-10-05', '2026-W41'],
+    ['2026-01-01', '2026-W01'],
+    ['2024-12-30', '2025-W01'],
+    ['2027-01-01', '2026-W53'],
+  ])('%s falls in ISO week %s', (day, week) => {
+    expect(isoWeek(day)).toBe(week)
   })
 })
 

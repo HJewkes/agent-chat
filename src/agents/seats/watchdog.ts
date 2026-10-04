@@ -31,7 +31,12 @@ export interface SeatAgent {
   profile: string
   state: string
   spawnedBy: string
+  /** Epoch ms of the agent's launch; a replay's roster has none. */
+  spawnedAt?: number
 }
+
+/** CC-402: a seat agent still in `spawning` past this never started, and nothing else says so. */
+export const SPAWNING_STUCK_MS = 10 * 60_000
 
 export interface BudgetVerdict {
   open: boolean
@@ -78,6 +83,27 @@ export function runningImplementers(agents: SeatAgent[], seat: Pick<Seat, 'name'
     .map(a => a.name)
 }
 
+const ofSeat = (agent: SeatAgent, seat: Pick<Seat, 'name' | 'prefix'>): boolean =>
+  agent.name === seat.name || agent.name.startsWith(`${seat.prefix}-`) || agent.spawnedBy === seat.name
+
+export interface StuckAgent {
+  name: string
+  minutes: number
+}
+
+/** CC-402: the seat's own successor and its agents that have sat in `spawning` for over ten minutes. */
+export function stuckSpawning(
+  agents: SeatAgent[],
+  seat: Pick<Seat, 'name' | 'prefix'>,
+  nowMs: number,
+): StuckAgent[] {
+  return agents.flatMap(a => {
+    if (!ofSeat(a, seat) || a.state !== 'spawning' || a.spawnedAt === undefined) return []
+    const waited = nowMs - a.spawnedAt
+    return waited > SPAWNING_STUCK_MS ? [{ name: a.name, minutes: Math.floor(waited / 60_000) }] : []
+  })
+}
+
 const windowUsed = (window: BudgetWindow | undefined, nowMs: number): number | undefined =>
   window === undefined
     ? undefined
@@ -105,6 +131,8 @@ export interface PoolReading {
   at: number
   sevenDay: number
   fiveHour: number
+  /** Epoch ms the seven_day window resets; absent on a reading kept before CC-605. */
+  resetsAt?: number
 }
 
 /** The reading to keep: this one when it holds both windows, else the one kept before. */
@@ -114,7 +142,13 @@ export function keepReading(
   nowMs: number,
 ): PoolReading | undefined {
   if (reading?.sevenDay === undefined || reading.fiveHour === undefined) return kept
-  return { at: nowMs - reading.ageSeconds * 1000, sevenDay: reading.sevenDay, fiveHour: reading.fiveHour }
+  const resetsAt = reading.sevenDayResetsAt === undefined ? {} : { resetsAt: reading.sevenDayResetsAt }
+  return {
+    at: nowMs - reading.ageSeconds * 1000,
+    sevenDay: reading.sevenDay,
+    fiveHour: reading.fiveHour,
+    ...resetsAt,
+  }
 }
 
 /** A kept reading aged to now; one missing a figure from a hand-edited doc is no reading. */

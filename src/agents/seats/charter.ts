@@ -124,3 +124,50 @@ export function seatSurface(seatFile: string | undefined): SurfaceName | undefin
   const declared = seatFile === undefined ? undefined : frontmatterField(seatFile, 'surface')
   return SURFACE_NAMES.find(name => name === declared)
 }
+
+/** A `key: [a, b]` flow list in the frontmatter, which may wrap over lines; absent reads as undefined. */
+function flowList(text: string, key: string): string[] | undefined {
+  const inner = new RegExp(`^${key}:\\s*\\[([^\\]]*)\\]`, 'm').exec(frontmatter(text))?.[1]
+  if (inner === undefined) return undefined
+  return inner
+    .split(',')
+    .map(item => item.trim())
+    .filter(item => item !== '')
+}
+
+/** CC-606: which pools may pay for an initiative's work. `fallback` covers every initiative `only` does not name. */
+export interface FundsMap {
+  only: Map<string, string[]>
+  fallback?: string[]
+  /** Initiatives no pool pays for. */
+  never: string[]
+}
+
+/** The charter's `funds:` block of `initiative: [pool, ...]` lines, where `default` is the fallback; undefined without the block. */
+export function parseFunds(charter: string): FundsMap | undefined {
+  const lines = frontmatter(charter).split('\n')
+  const start = lines.findIndex(line => /^funds:/.test(line))
+  if (start === -1) return undefined
+  const only = new Map<string, string[]>()
+  for (const line of lines.slice(start + 1)) {
+    if (!/^\s/.test(line)) break
+    const entry = /^\s+([\w-]+):\s*\[(.*?)\]/.exec(line)
+    if (entry?.[1] === undefined) continue
+    const pools = (entry[2] ?? '').split(',').map(item => item.trim())
+    only.set(
+      entry[1],
+      pools.filter(item => item !== ''),
+    )
+  }
+  const fallback = only.get('default')
+  only.delete('default')
+  const never = flowList(charter, 'human_only_initiatives') ?? []
+  return { only, never, ...(fallback === undefined ? {} : { fallback }) }
+}
+
+/** CC-606: the seat file's `pools:` list, the pools its spawns may bill; undefined when it names none. */
+export const seatPools = (seatFile: string): string[] | undefined => flowList(seatFile, 'pools')
+
+/** The slugs in the seat file's `initiatives:` map. */
+export const seatInitiatives = (seatFile: string): string[] =>
+  Object.keys(nestedNumbers(seatFile, 'initiatives'))

@@ -33,6 +33,7 @@ import {
   type SwapReading,
 } from '../agents/machine-guard.js'
 import { machineStop } from '../agents/seats/stops.js'
+import { readPoolPicks } from '../agents/seats/pool-pick-log.js'
 
 /**
  * CC-317: `seats status` answers a seat's tick questions in one read-only call.
@@ -182,7 +183,12 @@ interface AgentSeed {
 const GIB = 1024 ** 3
 let swap: SwapReading
 let memory: MemoryReading
-let pressure: { memoryFreePercent: number | null; load5: number | null }
+let pressure: {
+  memoryFreePercent: number | null
+  load5: number | null
+  swapUsedPercent: number | null
+  pressureLevel: number | null
+}
 
 function seedAgent(seed: AgentSeed): void {
   const { name, profile, spawnedBy = SEAT, cwd = tmp, isolation = 'worktree', surface = 'headless' } = seed
@@ -215,6 +221,7 @@ function deps(over: Partial<StatusDeps> = {}): StatusDeps {
     readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
     loadDoc: () => structuredClone(doc),
     inbox: seat => readInbox(path.join(tmp, 'events.db'), seat),
+    poolPicks: seat => readPoolPicks(path.join(tmp, 'events.db'), seat),
     scored: (seat, today) =>
       scoredPlanFromDisk({
         seat,
@@ -229,7 +236,8 @@ function deps(over: Partial<StatusDeps> = {}): StatusDeps {
         { headlessAgents: 10, memoryFreePercent: 15 },
         { inUse: 1, total: 4 },
       ),
-    machineStop: () => machineStop(pressure, { memoryFreePercent: 20, load5: 28 }),
+    machineStop: () =>
+      machineStop(pressure, { memoryFreePercent: 20, load5: 28, swapUsedPercent: 60, pressureLevel: 2 }),
     ...over,
   }
 }
@@ -244,7 +252,7 @@ const scorerExplodes = (): never => {
 }
 
 beforeEach(() => {
-  pressure = { memoryFreePercent: 60, load5: 2 }
+  pressure = { memoryFreePercent: 60, load5: 2, swapUsedPercent: 10, pressureLevel: 1 }
   tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ac-seat-status-')))
   autonomy = path.join(tmp, 'autonomy')
   activeWork = path.join(tmp, 'active-work')
@@ -928,6 +936,62 @@ describe('seat caps on days 6 and 7 of the window (CC-474)', () => {
   })
 })
 
+describe("the seat's last pool picks", () => {
+  const pick = (seat: string, agent: string, chosen: string): void => {
+    core.append({
+      kind: 'notice',
+      actor: 'agent-chat',
+      target: seat,
+      body: `pool pick (shadow) for ${agent}: would bill ${chosen}, home alpha: ${chosen} is most behind pace (12)`,
+      meta: { pool_pick: 'shadow', would: 'true', agent, chosen },
+    })
+  }
+
+  it('lists the newest three picks for the seat, newest first', async () => {
+    for (const n of [1, 2, 3, 4]) pick(SEAT, `ss-al-${n}`, 'beta')
+    pick('other-seat', 'os-1', 'gamma')
+    core.append({
+      kind: 'notice',
+      actor: 'peer-b',
+      target: SEAT,
+      body: 'peer-b tagged it',
+      meta: { tag_add: 'x' },
+    })
+
+    const { poolPicks } = await status()
+
+    expect(poolPicks.last.map(p => p.text.split(':')[0])).toEqual([
+      'pool pick (shadow) for ss-al-4',
+      'pool pick (shadow) for ss-al-3',
+      'pool pick (shadow) for ss-al-2',
+    ])
+  })
+
+  it('prints a pool pick line per pick, and none before the broker has picked', async () => {
+    const before = (await statusReport(deps(), SEAT, false)).lines
+    pick(SEAT, 'ss-al-1', 'beta')
+
+    const after = (await statusReport(deps(), SEAT, false)).lines
+
+    expect(before.filter(l => l.startsWith('pool pick'))).toEqual([])
+    expect(after.filter(l => l.startsWith('pool pick'))).toEqual([
+      expect.stringMatching(
+        /^pool pick {5}\S+Z {2}pool pick \(shadow\) for ss-al-1: would bill beta, home alpha: beta is most behind pace \(12\)$/,
+      ),
+    ])
+  })
+
+  it('reports an unreadable event log on the line in place of the picks', async () => {
+    const poolPicks = () => {
+      throw new Error('events.db is locked')
+    }
+
+    const { lines } = await statusReport(deps({ poolPicks }), SEAT, false)
+
+    expect(lines).toContain('pool pick     unavailable: events.db is locked')
+  })
+})
+
 describe("the seat's unread inbox", () => {
   it('reports an empty inbox when only other sessions have mail', async () => {
     join(SEAT)
@@ -1015,7 +1079,7 @@ describe("the seat's unread inbox", () => {
     expect(result.implementers.active).toBe(1)
     expect(result.budget.sevenDay).toBe(41)
     expect(result.eligible.top).toHaveLength(3)
-    expect(report.lines[9]).toBe(`inbox         unavailable: ${result.inbox.error}`)
+    expect(report.lines[10]).toBe(`inbox         unavailable: ${result.inbox.error}`)
   })
 })
 
@@ -1101,39 +1165,54 @@ describe('the machine stop (CC-431)', () => {
   }
 
   it('stops on machine with the memory reading when free memory is under 20%', async () => {
-    const result = await breach({ memoryFreePercent: 19, load5: 4 })
+    const result = await breach({ ...pressure, memoryFreePercent: 19, load5: 4 })
 
     expect(result.stop).toBe('machine')
     expect(result.machineStop).toEqual({
       memoryFreePercent: 19,
       load5: 4,
+      swapUsedPercent: 10,
+      pressureLevel: 1,
       reason: 'machine under pressure: memory 19% free (floor 20%)',
     })
   })
 
   it('stops on machine with the load5 reading when load5 is over 28', async () => {
-    const result = await breach({ memoryFreePercent: 60, load5: 28.5 })
+    const result = await breach({ ...pressure, memoryFreePercent: 60, load5: 28.5 })
 
     expect(result.stop).toBe('machine')
     expect(result.machineStop?.reason).toBe('machine under pressure: load5 28.5 (limit 28)')
   })
 
+  it('seats status --json reports stop machine with swapUsedPercent and pressureLevel in machineStop', async () => {
+    const result = await breach({ ...pressure, swapUsedPercent: 72.4, pressureLevel: 2 })
+
+    expect(JSON.parse(JSON.stringify(result))).toMatchObject({
+      stop: 'machine',
+      machineStop: {
+        swapUsedPercent: 72.4,
+        pressureLevel: 2,
+        reason: 'machine under pressure: swap 72.4% used (limit 60%), pressure level 2 (limit 2)',
+      },
+    })
+  })
+
   it('reports no stop at exactly 20% free and exactly load5 28', async () => {
-    const result = await breach({ memoryFreePercent: 20, load5: 28 })
+    const result = await breach({ ...pressure, memoryFreePercent: 20, load5: 28 })
 
     expect(result.stop).toBeNull()
     expect(result.machineStop).toBeNull()
   })
 
   it('does not stop on a memory reading that could not be taken', async () => {
-    const result = await breach({ memoryFreePercent: null, load5: 3 })
+    const result = await breach({ ...pressure, memoryFreePercent: null, load5: 3 })
 
     expect(result.stop).toBeNull()
   })
 
   it('takes the stop line before the budget stop in the table', async () => {
     const report = await (async () => {
-      pressure = { memoryFreePercent: 5, load5: 40 }
+      pressure = { memoryFreePercent: 5, load5: 40, swapUsedPercent: 10, pressureLevel: 1 }
       return statusReport(deps(), SEAT, false)
     })()
 
@@ -1170,12 +1249,63 @@ describe('the status verb', () => {
       'parked        1  tree on disk: ss-al-4',
       `budget        pool ${POOL}: seven_day 70%, five_hour 12% (reading 30s old)`,
       `stop          BUDGET-PAUSE pool ${POOL}: seven_day 70% at or above line 65% (no seven_day resets_at, flat reserve)`,
+      `pace          ${POOL}: 70 | no pace, the reading has no seven_day reset time`,
       'machine       headless 2/10, memory 50% free/15% floor, swap 25% used, suite slots 1/4',
       'inbox         0 unread (the seat has sent nothing)',
       'eligible      AL-1  72.0  alpha  Harden the secret store against injection',
       '              AL-2  51.6  alpha  Add the export feature to the dashboard',
       '              BE-3  51.2  beta  Survey the queue behaviour',
     ])
+  })
+
+  it('carries a pace block for the pool: glide target, points behind and needs a day', async () => {
+    const midWindow = NOW.getTime() + 4 * DAY_MS
+    writeReading(12, 39, 30, NOW, midWindow)
+
+    const { pace } = await status()
+    const { lines } = await statusReport(deps(), SEAT, false)
+
+    expect(pace).toEqual([
+      {
+        pool: POOL,
+        sevenDay: 39,
+        fiveHour: 12,
+        ageSeconds: 30,
+        stale: false,
+        resetsAt: midWindow,
+        target: 47.5,
+        behind: 8.5,
+        needs: 18.7,
+        level: 'behind',
+      },
+    ])
+    expect(lines).toContain(
+      `pace          ${POOL}: 39 | target 48 | behind 9 | needs 18.7/day | 5h 12 | resets in 4d 0h | reading 0 min old`,
+    )
+  })
+
+  it('reads 0 for a pool whose reset has passed and gives a reading over 15 minutes old no pace level', async () => {
+    writeReading(12, 93, 30, NOW, NOW.getTime() - 3 * DAY_MS)
+    const rolled = (await status()).pace[0]
+    writeReading(12, 39, 901, NOW, NOW.getTime() + 4 * DAY_MS)
+    const old = (await status()).pace[0]
+
+    expect(rolled).toMatchObject({
+      sevenDay: 0,
+      stale: true,
+      level: 'stale',
+      resetsAt: NOW.getTime() + 4 * DAY_MS,
+    })
+    expect(old).toMatchObject({ sevenDay: 39, ageSeconds: 901, stale: true, level: 'stale' })
+  })
+
+  it('gives a pool no pace when it has no status file or its reading has no reset time', async () => {
+    const noReset = (await status()).pace
+    fs.rmSync(path.join(poolDir, 'status-cache'), { recursive: true })
+    const noFile = (await status()).pace
+
+    expect(noReset).toMatchObject([{ pool: POOL, level: 'no_reading', sevenDay: 41, target: null }])
+    expect(noFile).toMatchObject([{ pool: POOL, level: 'no_reading', sevenDay: null, ageSeconds: null }])
   })
 
   it('marks a stale reading, an open gate and a failed scorer in the table', async () => {
@@ -1186,6 +1316,7 @@ describe('the status verb', () => {
     expect(lines.slice(6)).toEqual([
       `budget        pool ${POOL}: seven_day 41%, five_hour 12% (reading 300s old, STALE)`,
       `stop          none; pool ${POOL}: five_hour 12% vs ceiling 70%, seven_day 41% vs line 65% (no seven_day resets_at, flat reserve)`,
+      `pace          ${POOL}: 41 | no pace, the reading has no seven_day reset time`,
       'machine       headless 0/10, memory 50% free/15% floor, swap 25% used, suite slots 1/4',
       'inbox         0 unread (the seat has sent nothing)',
       'eligible      unavailable: scorer exploded',

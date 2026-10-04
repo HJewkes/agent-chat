@@ -1,3 +1,4 @@
+import os from 'node:os'
 import path from 'node:path'
 import {
   LaunchBinUnresolved,
@@ -15,6 +16,9 @@ import { LAUNCHER_PID_ENV } from './launcher.js'
 import { watchLauncherSignals } from './launcher-signals.js'
 import { diskPaneSources } from './pane-sources.js'
 import { readLaunchPlan } from './launch-files.js'
+import { holderOf } from './launch-guard.js'
+import { continueStarted } from './launch-plan.js'
+import { findTranscript } from './transcript.js'
 
 /**
  * Resolve `plan.bin` to an absolute path without depending on `PATH` (CC-132). Only
@@ -80,9 +84,30 @@ export function launchOptions(agentId: string): RunAgentOptions {
   }
 }
 
+/** The account dir the launched claude will use: the plan's, else the home one if the plan unsets it. */
+export function planConfigDir(plan: LaunchPlan, base: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (plan.env.CLAUDE_CONFIG_DIR !== undefined) return plan.env.CLAUDE_CONFIG_DIR
+  if (plan.unsetEnv?.includes('CLAUDE_CONFIG_DIR')) return path.join(os.homedir(), '.claude')
+  return base.CLAUDE_CONFIG_DIR
+}
+
 /** `agent-chat run-agent <id>`: the verb every stored relaunch script calls. */
 export function runAgentVerb(agentId: string): void {
-  const plan = withShims(readLaunchPlan(agentId))
+  const stored = readLaunchPlan(agentId)
+  const dir = planConfigDir(stored)
+  const continued = continueStarted(stored, id => findTranscript(stored.cwd, id, dir).exists)
+  if (continued !== stored) refuseIfHeld(agentId, continued, dir)
+  const plan = withShims(continued)
   watchLauncherSignals(agentDir(agentId), plan.title || agentId)
   runAgent(plan, launchOptions(agentId))
+}
+
+function refuseIfHeld(agentId: string, plan: LaunchPlan, dir: string | undefined): void {
+  const sessionId = plan.args[plan.args.indexOf('--resume') + 1] ?? ''
+  const holder = holderOf(agentId, sessionId, [process.pid, process.ppid], undefined, dir)
+  if (holder !== undefined) {
+    process.stderr.write(`agent-chat run-agent: already running as pid ${holder}; not launched twice\n`)
+    process.exit(75)
+  }
+  process.stderr.write(`agent-chat run-agent: transcript for session ${sessionId} exists; resuming it\n`)
 }

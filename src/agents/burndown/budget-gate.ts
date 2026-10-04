@@ -103,8 +103,12 @@ export function gateAccount(
   const stale = staleReason(reading.ageSeconds, maxReadingAgeSeconds)
   if (stale !== undefined) return { open: false, account, reason: stale }
 
-  const { line, note } = sevenDayLine(rule.reserve_seven_day, reading.sevenDayResetsAt, ctx.now.getTime())
-  const present = !humanAbsentFor(ctx, PRESENT_WITHIN_MS)
+  const { line, note, capsLifted } = sevenDayLine(
+    rule.reserve_seven_day,
+    reading.sevenDayResetsAt,
+    ctx.now.getTime(),
+  )
+  const present = !capsLifted && !humanAbsentFor(ctx, PRESENT_WITHIN_MS)
   const ceiling = present ? Math.min(rule.ceiling_five_hour, PRESENT_CEILING) : rule.ceiling_five_hour
   const { sevenDay, fiveHour } = reading
   const figures = `seven_day ${sevenDay}% vs line ${line}% (${note}), five_hour ${fiveHour}% vs ceiling ${ceiling}%`
@@ -235,7 +239,7 @@ function windowLines(pool: PricedPool, input: PoolGateInput): WindowLines {
   const { ctx } = input
   const seven = sevenDayLine(pool.reserve_seven_day, input.reading?.sevenDayResetsAt, ctx.now.getTime())
   const present = pool.human_uses && !humanAbsentFor(ctx, PRESENT_WITHIN_MS)
-  const lowered = present && pool.ceiling_five_hour > PRESENT_CEILING
+  const lowered = present && !seven.capsLifted && pool.ceiling_five_hour > PRESENT_CEILING
   return {
     ceiling: lowered ? PRESENT_CEILING : pool.ceiling_five_hour,
     line: seven.line,

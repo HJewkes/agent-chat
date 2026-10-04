@@ -11,6 +11,10 @@ import {
   type Ledger,
 } from '../agents/burndown/ledger.js'
 import type { Plan } from '../agents/burndown/plan.js'
+import type { MilestoneReport } from '../agents/burndown/milestone-report.js'
+import { milestoneReportFromDisk } from '../agents/burndown/milestone-source.js'
+import { defaultAutonomyRoot } from '../agents/burndown/policy.js'
+import { localDate } from '../agents/burndown/seat-tick.js'
 import { accountDir, loadRules } from '../agents/burndown/source.js'
 import { planFromDisk } from '../agents/burndown/tick.js'
 import { EMPTY_FACTS, readLedgerFacts } from './ledger.js'
@@ -28,6 +32,7 @@ export interface CollectOptions {
   prs: boolean
   search?: Search
   plan?: (now: Date) => Plan
+  milestones?: (now: Date) => MilestoneReport[]
 }
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err))
@@ -53,6 +58,14 @@ const awaitingMerge = (ledger: Ledger): NamedItem[] =>
       label: c.taskId,
       detail: `${c.initiative}, ${agentOf(c)} awaiting merge since ${c.phaseAt}`,
     }))
+
+const milestonesFromDisk = (now: Date): MilestoneReport[] =>
+  milestoneReportFromDisk({
+    autonomyRoot: defaultAutonomyRoot(),
+    activeWorkRoot: activeWorkRoot(),
+    now,
+    today: localDate(now),
+  })?.milestones ?? []
 
 export function collectDigest(options: CollectOptions): Digest {
   const { now, sinceMs } = options
@@ -85,6 +98,9 @@ export function collectDigest(options: CollectOptions): Digest {
       notOptedIn: planned?.notOptedIn.length ?? 0,
       ...(planned === undefined ? { error: 'the burndown planner did not run; see gaps' } : {}),
     },
+    milestones: attempt(gaps, 'milestones', [], () =>
+      (options.milestones ?? milestonesFromDisk)(new Date(now)),
+    ),
     gaps: [...gaps, ...prs.gaps],
   }
 }

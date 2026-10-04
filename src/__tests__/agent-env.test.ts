@@ -96,6 +96,8 @@ describe('isSecretName', () => {
   })
 })
 
+const tmp = { tmpDir: () => '/var/folders/xx/T/' }
+
 describe('agentEnv', () => {
   it('passes ordinary variables through and drops the credentials', () => {
     const env = agentEnv({
@@ -105,20 +107,41 @@ describe('agentEnv', () => {
       AWS_SECRET_ACCESS_KEY: 'aws_secret',
     })
 
-    expect(env).toEqual({ PATH: '/usr/bin', HOME: '/Users/test' })
+    expect(env).toMatchObject({ HOME: '/Users/test' })
+    expect(Object.keys(env)).not.toContain('NPM_TOKEN')
+    expect(Object.keys(env)).not.toContain('AWS_SECRET_ACCESS_KEY')
   })
 
   it('drops undefined values rather than passing them to spawn', () => {
     // process.env is typed as possibly-undefined per key, and an explicit
     // undefined is not the same thing as an absent key.
-    expect(agentEnv({ PATH: '/usr/bin', EMPTY: undefined })).toEqual({
-      PATH: '/usr/bin',
-    })
+    expect(Object.keys(agentEnv({ PATH: '/usr/bin', EMPTY: undefined }, tmp))).not.toContain('EMPTY')
   })
 
   it('reads the real environment by default without mutating it', () => {
     const before = { ...process.env }
     agentEnv()
     expect({ ...process.env }).toEqual(before)
+  })
+
+  it('sets TMPDIR from the resolver when the parent has none', () => {
+    expect(agentEnv({ PATH: '/usr/bin' }, tmp).TMPDIR).toBe('/var/folders/xx/T/')
+  })
+
+  it('keeps a TMPDIR the parent set', () => {
+    const tmpDir = () => {
+      throw new Error('resolver must not run')
+    }
+    expect(agentEnv({ TMPDIR: '/custom/tmp' }, { tmpDir }).TMPDIR).toBe('/custom/tmp')
+  })
+
+  it('appends only the missing required dirs and keeps the existing order first', () => {
+    const { PATH } = agentEnv({ PATH: '/shim:/usr/bin:/custom' }, tmp)
+
+    expect(PATH).toBe('/shim:/usr/bin:/custom:/opt/homebrew/bin:/usr/local/bin:/bin:/usr/sbin:/sbin')
+  })
+
+  it('builds the full PATH when the parent has none', () => {
+    expect(agentEnv({}, tmp).PATH).toBe('/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin')
   })
 })

@@ -57,6 +57,8 @@ export interface HarnessOptions {
   machineGuard?: SupervisorOptions['machineGuard']
   /** CC-288: a faked seat budget reader; absent leaves the gate off. */
   seatBudget?: SupervisorOptions['seatBudget']
+  /** CC-606: a faked pool pick reader and mode; absent leaves the pick off. */
+  poolPick?: SupervisorOptions['poolPick']
   /** CC-450: defaults to one that proves nothing dead, so no test reads the host's process table. */
   processProbe?: ProcessProbe
 }
@@ -138,6 +140,7 @@ function boot(home: string, options: HarnessOptions): Generation {
     ...(ledger === undefined ? {} : { ledger }),
     ...(options.machineGuard === undefined ? {} : { machineGuard: options.machineGuard }),
     ...(options.seatBudget === undefined ? {} : { seatBudget: options.seatBudget }),
+    ...(options.poolPick === undefined ? {} : { poolPick: options.poolPick }),
     processProbe: options.processProbe ?? unprovenProbe,
     surface: {
       platform: options.appleScript === undefined ? 'linux' : 'darwin',

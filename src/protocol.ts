@@ -871,8 +871,10 @@ export type ClientMessage =
    * and absent means false — the safe direction, since the field only ever adds
    * destruction. There is no agent-facing route to this: `retire` is a CLI verb,
    * and forcing it is a human deciding to throw work away.
+   * CC-218: `caller` is the retiring session's AGENT_CHAT_NAME, which the one-shot CLI
+   * connection cannot register; absent means a person at a terminal.
    */
-  | { t: 'retire'; name: string; force?: boolean }
+  | { t: 'retire'; name: string; force?: boolean; caller?: string }
   /** CC-282: remove an exited agent's clean, pushed worktree and keep its branch. CLI-only, like `retire`. */
   | { t: 'park'; name: string }
   /** CC-323: retire every finished agent in scope that holds no work. CLI-only, like `retire`; no `force`. */

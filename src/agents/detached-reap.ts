@@ -34,6 +34,7 @@ export const hostProbe: ProcessProbe = {
 }
 
 export type Liveness = { dead: true; pid?: number; reason: string } | { dead: false; reason: string }
+export type DeadLiveness = Extract<Liveness, { dead: true }>
 
 /** The launcher's own argv: `<node> <cli> run-agent <id>`. */
 const runsAgent = (argv: string, agentId: string): boolean =>

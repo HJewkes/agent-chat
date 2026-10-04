@@ -468,6 +468,39 @@ describe('Next', () => {
   })
 })
 
+describe('Milestones', () => {
+  const weekFile = (): string =>
+    path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy', 'milestones', '2026-W40.yml')
+
+  it("prints one line per milestone in this week's file", () => {
+    write(
+      weekFile(),
+      'week: 2026-W40\nappetite_days: 5\nmilestones:\n' +
+        '  - {id: M1, rank: 1, seat: seat-a}\n  - {id: M2, rank: 2, seat: seat-b}\n',
+    )
+    task('example', 'EX-1', 'status: open\npriority: 1\nestimate: 2\ntags: [milestone:M1]\n')
+    task('example', 'EX-2', 'status: open\npriority: 1\nestimate: 1\ntags: [milestone:M2]\n')
+
+    const lines = section(text(), 'Milestones').split('\n')
+
+    expect(lines).toEqual([
+      '== Milestones (2)',
+      expect.stringMatching(/^- M1 at-risk \(no points done in 3 days\): 0\/2 points done.*path 2;/),
+      expect.stringMatching(/^- M2 at-risk \(no points done in 3 days\): 0\/1 points done.*path 1;/),
+    ])
+  })
+
+  it('leaves the digest as it was when the week has no milestone file', () => {
+    expect(text()).not.toContain('Milestones')
+  })
+
+  it('reports a malformed milestone file as a gap', () => {
+    write(weekFile(), 'week: nope\n')
+
+    expect(text()).toMatch(/- milestones: milestones\/2026-W40\.yml: schema/)
+  })
+})
+
 describe('--since', () => {
   it('accepts minutes, hours and days and refuses anything else', () => {
     expect(parseSince('90m')).toBe(90 * 60_000)

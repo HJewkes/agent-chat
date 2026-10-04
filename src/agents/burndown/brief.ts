@@ -5,6 +5,8 @@
  * (relay R-63) so a task cannot steer its own review.
  */
 
+import { MAX_SLICE_POINTS } from './slice-lint.js'
+
 /** What every agent the tick spawns needs to know about where it runs and who hears its report. */
 export interface Seat {
   /** The chat_send recipient for the report. */
@@ -136,7 +138,8 @@ export function workerBrief(t: TaskBrief): string {
   ].join('\n\n')
 }
 
-const SLICES_EXAMPLE = '[{ "n": "a", "title": "...", "dependsOn": [], "owns": ["src/..."] }]'
+const SLICES_EXAMPLE =
+  '[{ "n": "a", "title": "...", "points": 2, "doneWhen": "...", "dependsOn": [], "owns": ["src/..."] }]'
 
 const PLAN_PARTS = [
   '0. Inventory, before any design: for each need, the existing unit it reuses or the gap and its task id; for every model or tool call, the runtime path, credential and smoke check.',
@@ -151,7 +154,8 @@ const PLAN_PARTS = [
 function slicesRequirement(): string {
   return (
     'The plan must also hold one fenced block tagged `burndown-slices` with a JSON array, one entry per slice ' +
-    `from part 3, shaped like ${SLICES_EXAMPLE}. The tick parses this block; a plan without it stalls.`
+    `from part 3, shaped like ${SLICES_EXAMPLE}. Each slice is at most ${MAX_SLICE_POINTS} points, has a doneWhen, owns at least one file, ` +
+    'and depends only on slices in the block, without cycles. The tick lints this block; a plan without it, or failing the lint, stalls.'
   )
 }
 

@@ -118,6 +118,15 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
     expect(checkCommand(command, ctx())).toBe(REASONS.gitConfigUnresolved)
   })
 
+  // Pins the intended deny a coordinator hit (CC-479 item 4) and the quoted form that passes.
+  it('denies an unquoted -C value from a for list before worktree, and allows it quoted', () => {
+    const loop = (dir: string): string => `for r in a b; do git -C ${dir} worktree list; done`
+
+    expect(checkCommand(loop('~/projects/$r'), ctx())).toBe(REASONS.gitConfigUnresolved)
+    expect(checkCommand(loop('~/projects/"$r"'), ctx())).toBeUndefined()
+    expect(checkCommand(loop('"$HOME/projects/$r"'), ctx())).toBeUndefined()
+  })
+
   it.each([
     'git -c user.name=x push',
     'git -c user.name="$(whoami)" push',
@@ -834,7 +843,7 @@ describe('a gh command the command line hides', () => {
 
       const reason = checkCommand(command, ctx())
 
-      expect(reason).toBe(REASONS.hiddenCommand)
+      expect(reason).toBe(REASONS.hiddenStarts)
       expect(performance.now() - started).toBeLessThan(1000)
     })
 
@@ -842,18 +851,58 @@ describe('a gh command the command line hides', () => {
       expect(checkCommand(`$E env -S '$W -n 5 gh ${BODY}'`, ctx())).toBe(REASONS.hiddenCommand)
     })
 
-    it('denies more command words after an expansion than it checks, well within the hook timeout', () => {
+    it('denies more command words after an expansion than it checks on a line naming gh, well within the hook timeout', () => {
       const padding = 'a '.repeat(20000)
       const started = performance.now()
 
       const reasons = [`$E ${'nice '.repeat(65)}${padding}`, `$E ${'$A '.repeat(65)}${padding}`].map(
-        command => checkCommand(command, ctx()),
+        command => checkCommand(`${command}; gh pr view 1`, ctx()),
       )
-      const under = checkCommand(`$E ${'nice '.repeat(64)}${padding}`, ctx())
+      const under = checkCommand(`$E ${'nice '.repeat(64)}${padding}; gh pr view 1`, ctx())
 
-      expect(reasons).toEqual([REASONS.hiddenCommand, REASONS.hiddenCommand])
+      expect(reasons).toEqual([REASONS.hiddenStarts, REASONS.hiddenStarts])
       expect(under).toBeUndefined()
       expect(performance.now() - started).toBeLessThan(2000)
+    })
+  })
+
+  describe('a line past the command-start budget (CC-478)', () => {
+    const SCRIPTS = Array(40).fill('"$PY" "$SCRIPT" --out "$DIR"').join('; ')
+    const NICE = Array(25).fill('"$PY" env X=1 nice -n 5 "$SCRIPT"').join('; ')
+
+    // Kills: the budget deny applied to every line that exhausts it.
+    it.each([
+      ['40 script runs', SCRIPTS],
+      ['25 wrapped script runs', NICE],
+    ])('allows %s that name neither git nor gh', (_, command) => {
+      expect(checkCommand(command, ctx())).toBeUndefined()
+    })
+
+    // Kills: a line that reaches git or gh only through an expansion treated as naming neither.
+    it.each([
+      ['a literal gh', `${SCRIPTS}; gh pr view 1`],
+      ['a literal git', `${NICE}; git status`],
+      ['an expansion that may be git', `${SCRIPTS}; g\${z}it status`],
+      ['a variable the hook holds as gh', `${SCRIPTS}; "$TOOL" pr view 1`],
+      ['a variable the line assigns', `T=x; ${SCRIPTS}; "$T" pr view 1`],
+      ['a command substitution', `${SCRIPTS}; "$(printf x)" status`],
+      ['an ANSI-C gh', `${SCRIPTS}; $E $'\\x67h' pr create -t x --body y`],
+      ['a gh joined from hook variables', `${SCRIPTS}; $E "$A$B" pr create -t x --body y`],
+      ['a gh joined from text and a hook variable', `${SCRIPTS}; $E g"$B" pr create -t x --body y`],
+      ['a glob that may be gh', `${SCRIPTS}; $E g? pr create -t x --body y`],
+      ['a trimmed hook variable', `${SCRIPTS}; $E "\${TOOL%x}" pr create -t x --body y`],
+      ['a hook variable with a prefix trim', `${SCRIPTS}; $E "\${TOOL#x}" pr create -t x --body y`],
+      ['a hook variable with a default', `${SCRIPTS}; $E "\${TOOL:-x}" pr create -t x --body y`],
+      ['a hook variable with a replacement', `${SCRIPTS}; $E \${TOOL/x/y} pr create -t x --body y`],
+      ['a hook variable holding push', `${SCRIPTS}; $E $G "\${P%x}" $N`],
+      ['a hidden push that skips hooks', `${SCRIPTS}; $E $X push --no-verify`],
+      ['a hidden push spelled as a glob', `${SCRIPTS}; $E $X p?sh`],
+      ['a hidden abbreviated no-verify', `${SCRIPTS}; $E $X "$R" --no-veri`],
+    ])('denies a line that reaches git or gh through %s', (_, command) => {
+      const reason = checkCommand(command, ctx({ env: { TOOL: 'gh', A: 'g', B: 'h', P: 'push' } }))
+
+      expect(reason).toBe(REASONS.hiddenStarts)
+      expect(reason).not.toContain('out literally')
     })
   })
 
