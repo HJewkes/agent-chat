@@ -74,4 +74,26 @@ describe('a NAME+= or NAME[idx]= prefix is an assignment like NAME=', () => {
     'A[0]+=1 git log',
     'env A+=1 git status',
   ])('still allows %s', command => expect(checkCommand(command, ctx())).toBeUndefined())
+
+  it('denies a GH_HOST append on its own line before an unresolved gh api read', () => {
+    const read = 'gh api "repos/o/r/commits/$SHA/check-runs"'
+    for (const prefix of [
+      'GH_HOST+=github.com;',
+      'GH_HOST=github.com GH_HOST+=github.com',
+      'GH_HOST[0]=github.com;',
+    ])
+      expect(checkCommand(`${prefix} ${read}`, ctx()), prefix).toBeDefined()
+  })
+
+  it.each(['env A.B=1', 'env 1=2', 'env -- A.B=1', 'env A-B=1 C.D=2'])(
+    'reads every word with an = after %s as an env assignment',
+    prefix => {
+      expect(checkCommand(`${prefix} git push --no-verify`, ctx())).toBeDefined()
+      expect(checkCommand(`${prefix} gh issue comment 1 --body ${TERM}`, ctx())).toBeDefined()
+    },
+  )
+
+  it('still allows env with an odd name before an ordinary command', () => {
+    expect(checkCommand('env A.B=1 git status', ctx())).toBeUndefined()
+  })
 })

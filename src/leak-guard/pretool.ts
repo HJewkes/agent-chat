@@ -298,11 +298,19 @@ function unwrapEnv(args: readonly string[], i: number): EnvRun {
     }
     chdir ||= /^(?:-C|--chdir)/.test(a)
     if (a === '-C' || a === '--chdir' || a === '-P') i++
-    else if (a === '--') return { words: args, at: i + 1, chdir, assigns }
-    else if (brokenAssignment(a)) return { reason: REASONS.assignmentSubscript }
-    else if (!a.startsWith('-') && !ASSIGNMENT.test(a)) break
-    else if (isGitConfigVar(ASSIGNMENT.exec(a)?.[1])) return { reason: REASONS.gitConfigEnv }
-    else if (ASSIGNMENT.test(a)) assigns.push(a)
+    else if (a === '--') {
+      // env still reads NAME=value operands after `--`.
+      let at = i + 1
+      for (; at < args.length && (args[at] as string).includes('='); at++) {
+        const operand = args[at] as string
+        if (isGitConfigVar(operand.split('=')[0])) return { reason: REASONS.gitConfigEnv }
+        assigns.push(operand)
+      }
+      return { words: args, at, chdir, assigns }
+    } else if (brokenAssignment(a)) return { reason: REASONS.assignmentSubscript }
+    else if (!a.startsWith('-') && !a.includes('=')) break
+    else if (isGitConfigVar(a.split('=')[0])) return { reason: REASONS.gitConfigEnv }
+    else if (!a.startsWith('-')) assigns.push(a)
   }
   return { words: args, at: Math.min(i, args.length), chdir, assigns }
 }
@@ -975,7 +983,8 @@ function reroutes(cmd: SimpleCommand): boolean {
   const assigned = words.some(word => {
     const name = ASSIGNMENT.exec(word)?.[1] ?? ''
     const value = assignedValue(word)
-    return PROXY_VAR.test(name) || (name === 'GH_HOST' && value !== DEFAULT_HOST)
+    const unknownHost = SUBSCRIPTED_OR_APPENDING.test(word)
+    return PROXY_VAR.test(name) || (name === 'GH_HOST' && (unknownHost || value !== DEFAULT_HOST))
   })
   const hosts = words.flatMap((word, i) =>
     word === '--hostname' ? [words[i + 1]] : word.startsWith('--hostname=') ? [word.slice(11)] : [],
