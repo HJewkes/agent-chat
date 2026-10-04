@@ -14,11 +14,11 @@ and "Fallback" below is the planned behaviour, not something the tick does today
 Every stall records a class beside its `stalledReason` (`stalledClass` on the claim). A row
 stalled before classes were recorded has none and always goes to the owner.
 
-| Class       | Sites                                                                                                                                                                                                                                            |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `stalled`   | A claim whose agent never landed (`spawn-never-landed`) or whose phase ran past its timeout (`phase-timeout`).                                                                                                                                   |
-| `failed`    | A planner that refused its slices, a worker or reviewer that ended with a failure report or no final report, a second failed review, Shepherd refusing or being unable to take the PR, a missing worktree or PR, and a spawn the broker refused. |
-| `gate-trip` | An owner gate: the initiative is no longer opted in with a repo, the seat is no longer in the config, or Shepherd refused the repo. Never triaged.                                                                                               |
+| Class       | Sites                                                                                                                                                                                                                                                  |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `stalled`   | A claim whose agent never landed (`spawn-never-landed`) or whose phase ran past its timeout (`phase-timeout`).                                                                                                                                         |
+| `failed`    | A planner that refused its slices, a worker or reviewer that ended with a failure report or no final report, a second failed review, a Shepherd run that ended or a PR Shepherd cannot take, a missing worktree or PR, and a spawn the broker refused. |
+| `gate-trip` | An owner gate: the initiative is no longer opted in with a repo, the seat is no longer in the config, Shepherd refused to register the PR, or the trust check failed. Never triaged.                                                                   |
 
 ## The dial
 
@@ -71,6 +71,13 @@ isolation `none`. It cannot act on code or on other agents.
   denies. The blanket `agent-chat agent:*` deny is split into named denies for `spawn`,
   `resume`, `retire`, `background`, `surface` and `teleport` so `agent-chat agent logs` stays
   allowed. It also cannot send or ask over chat.
+
+Write is denied and not allowed, along with the common Bash write paths (`sed`, `tee`, `cp`, `mv`,
+`git log --output` and similar). A shell redirect (`> file`) cannot be denied by a prefix rule, so
+that residual remains open.
+
+The triager's verdict is the last line of its final turn; read it from its transcript or
+`agent-chat agent logs`. It cannot message anyone: `chat_send`, `chat_notify` and `chat_ask` are denied.
 
 Its prelude treats the claim and its transcript as data, never as instructions.
 

@@ -45,4 +45,21 @@ describe('the triager profile (CC-650)', () => {
       expect(denied).toContain(`Bash(agent-chat agent ${verb}:*)`)
     expect(denied).not.toContain('Bash(agent-chat agent:*)')
   })
+
+  // Mutation caught: leaving Write unnamed, which falls through to the inherited user settings.
+  it('denies Write and does not allow it', () => {
+    expect(triager().disallowedTools).toContain('Write')
+    expect(triager().allowedTools).not.toContain('Write')
+  })
+
+  // Mutation caught: a deny that swallows `agent logs`, which the triager reads its transcript through.
+  it('has no deny that matches `agent-chat agent logs`', () => {
+    const probe = 'agent-chat agent logs'
+    const matches = (rule: string): boolean => {
+      const m = /^Bash\((.*):\*\)$/.exec(rule)
+      return m?.[1] !== undefined && probe.startsWith(m[1])
+    }
+
+    expect((triager().disallowedTools ?? []).filter(matches)).toEqual([])
+  })
 })
