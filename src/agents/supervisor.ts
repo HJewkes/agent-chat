@@ -418,7 +418,8 @@ export interface SpawnRequest {
   anchor?: string
 }
 
-export type SpawnRefusalCode = 'surface_refused' | MachineRefusalCode | SeatBudgetRefusalCode
+export type SpawnRefusalCode =
+  'surface_refused' | 'spawn_rate_limit' | MachineRefusalCode | SeatBudgetRefusalCode
 
 /** CC-288: reads a seat-prefixed spawn's pool and meters. Absent in tests, which own no autonomy root. */
 export interface SeatBudgetReaders {
@@ -1011,7 +1012,8 @@ export class Supervisor implements TeleportHost {
   private refuse(
     req: SpawnRequest,
     reason: string,
-    cause: { code: MachineRefusalCode | SeatBudgetRefusalCode; retryable: boolean } | {} = {},
+    cause:
+      { code: 'spawn_rate_limit' | MachineRefusalCode | SeatBudgetRefusalCode; retryable: boolean } | {} = {},
   ): SpawnOutcome {
     // An event, not just a reply string: refusals are the security-relevant
     // thing and belong in the log whether or not anyone was watching.
@@ -1063,15 +1065,21 @@ export class Supervisor implements TeleportHost {
         `${req.requestedBy} is a worker (profile ${requester.profile || 'unknown'}) and cannot spawn ` +
         'agents; report the need to your spawner via chat_send'
       )
-    // Checked last of the cheap gates and first of the stateful ones: the human
-    // at the CLI is exempt, same reasoning as checkCwd's exemption — they hold
-    // no registry entry to be rate-limited by and reaching the socket already
-    // means being the local user.
-    if (req.requestedBy !== HUMAN) {
-      const rate = this.spawnRateBudget.check(req.requestedBy)
-      if (!rate.ok) return rate.reason
-    }
     return undefined
+  }
+
+  /**
+   * Checked right after preflight's cheap gates and first of the stateful ones:
+   * the human at the CLI is exempt, same reasoning as checkCwd's exemption — they
+   * hold no registry entry to be rate-limited by and reaching the socket already
+   * means being the local user. Retryable (CC-717): the window slides, so the
+   * same spawn succeeds once older attempts age out.
+   */
+  private rateRefusal(req: SpawnRequest): SpawnOutcome | undefined {
+    if (req.requestedBy === HUMAN) return undefined
+    const rate = this.spawnRateBudget.check(req.requestedBy)
+    if (rate.ok) return undefined
+    return this.refuse(req, rate.reason, { code: 'spawn_rate_limit', retryable: true })
   }
 
   /** CC-406: refuses when the machine is at its headless-agent total or below its memory-free floor. */
@@ -1403,6 +1411,8 @@ export class Supervisor implements TeleportHost {
     const requester = this.requesterOf(req.parentAgentId)
     const blocked = this.preflight(req, requester)
     if (blocked) return this.refuse(req, blocked)
+    const rateLimited = this.rateRefusal(req)
+    if (rateLimited) return rateLimited
 
     const profile = loadProfile(req.profile)
     if ('error' in profile) return this.refuse(req, profile.error)
