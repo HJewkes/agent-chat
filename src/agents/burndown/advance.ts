@@ -5,6 +5,7 @@ import { agentNameFor, reviewerNameFor, successorNameFor } from './plan.js'
 import type { PlannedSlice, Report } from './report.js'
 import { shepherdTarget, type Registration, type ShepherdRow } from './shepherd.js'
 import type { ActivityRead } from './stall.js'
+import type { StallCode } from './stall-code.js'
 
 /**
  * The tick's phase machine: given every claim and what the tick observed
@@ -88,8 +89,9 @@ function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
           claim,
           `no agent row named ${claim.agentName ?? '?'}; the spawn failed or never landed`,
           'stalled',
+          'spawn-never-landed',
         )
-      : stall(claim, `${claim.phase} past its timeout`, 'stalled'),
+      : stall(claim, `${claim.phase} past its timeout`, 'stalled', 'phase-timeout'),
   ]
 }
 
@@ -98,8 +100,12 @@ const finished = (obs: Observation): boolean =>
 
 const update = (claim: Claim, patch: ClaimPatch): Action => ({ kind: 'update', key: keyOf(claim), patch })
 
-const stall = (claim: Claim, reason: string, cls: ExceptionClass): Action =>
-  update(claim, { stalledReason: reason, stalledClass: cls })
+const stall = (claim: Claim, reason: string, cls: ExceptionClass, code?: StallCode): Action =>
+  update(claim, {
+    stalledReason: reason,
+    stalledClass: cls,
+    ...(code === undefined ? {} : { stallCode: code }),
+  })
 
 const keyOf = (claim: Claim): ClaimKey => ({ taskId: claim.taskId, slice: claim.slice })
 
@@ -107,7 +113,8 @@ const landed = (claim: Claim, agentId: string): Action =>
   update(claim, { phase: claim.nextPhase ?? 'implementing', agentId, nextPhase: undefined })
 
 function afterPlanner(claim: Claim, obs: Observation, now: Date): Action[] {
-  if (obs.slices === undefined) return [stall(claim, sliceStallReason(obs.sliceProblems), 'failed')]
+  if (obs.slices === undefined)
+    return [stall(claim, sliceStallReason(obs.sliceProblems), 'failed', 'planner-refused')]
   const at = now.toISOString()
   const slices: Claim[] = obs.slices.map(s => ({
     taskId: claim.taskId,
@@ -191,6 +198,7 @@ function afterMerge(claim: Claim, obs: Observation): Action[] {
     return [
       update(claim, {
         stalledClass: 'failed',
+        stallCode: 'shepherd-ended',
         stalledReason: `Shepherd run ${row.runId} ended ${row.phase} without merging${why}`,
         ...head,
       }),

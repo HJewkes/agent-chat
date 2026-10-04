@@ -266,6 +266,7 @@ describe('the PR head a merged line carries', () => {
         key: { taskId: 'AB-12', slice: undefined },
         patch: {
           stalledClass: 'failed',
+          stallCode: 'shepherd-ended',
           stalledReason: 'Shepherd run run-7 ended cancelled without merging',
           prHead: HEAD,
         },

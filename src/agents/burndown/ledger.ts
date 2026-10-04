@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { z } from 'zod'
 import { EXCEPTION_CLASSES } from './exception.js'
+import { STALL_CODES } from './stall-code.js'
 
 /**
  * The burndown claim ledger: which task each tick-spawned agent holds.
@@ -63,6 +64,8 @@ const Claim = z.object({
   stalledReason: z.string().optional(),
   /** Set beside `stalledReason`; a row without one predates classes and routes to the owner. */
   stalledClass: z.enum(EXCEPTION_CLASSES).optional(),
+  /** Set beside `stalledReason` for a stall of one of the closed kinds (CC-663). */
+  stallCode: z.enum(STALL_CODES).optional(),
   /** Agents whose retire refused after the claim finished, in retire order; each tick retries them (CC-182). */
   unretired: z
     .array(
@@ -78,13 +81,15 @@ const Claim = z.object({
   seat: z.string().optional(),
   /** Prefix of every agent name the claim spawns; absent means `bd`. */
   namePrefix: z.string().optional(),
-  /** Event kinds already delivered to the claim's seat, so a delivered event is never re-sent. */
+  /** Event kinds (`kind:code` for a coded stall) already delivered to the claim's seat, so a delivered event is never re-sent. */
   notified: z.array(z.string()).optional(),
   /** Set while the claim's live agent shows no progress in its transcript; the tick opens, refreshes and closes it (CC-654). */
   finding: z
     .object({
       kind: z.literal('stalled-after-claim'),
       reason: z.enum(['silent', 'idle', 'slow-tool']),
+      /** Absent on a finding opened before CC-663. */
+      code: z.enum(STALL_CODES).optional(),
       /** The last progress the transcript showed, or the spawn when it showed none. */
       since: z.string(),
       openedAt: z.string(),

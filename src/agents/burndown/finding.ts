@@ -1,6 +1,7 @@
 import { claimKey, type Action, type ClaimKey, type Observation } from './advance.js'
 import { AGENT_PHASES, type Claim, type Ledger } from './ledger.js'
 import { classify } from './stall.js'
+import type { StallCode } from './stall-code.js'
 
 /**
  * The stalled-after-claim finding on a claim (CC-654): opened when the live
@@ -25,9 +26,12 @@ const setFinding = (key: ClaimKey, finding: Finding | undefined): Update => ({
   patch: { finding },
 })
 
-function describeStall(reason: Finding['reason'], since: string, now: Date): string {
+/** A transcript with no progress is the one verdict this check gives (CC-653). */
+const IDLE_CODE: StallCode = 'no-progress'
+
+function describeStall(code: StallCode, reason: Finding['reason'], since: string, now: Date): string {
   const minutes = Math.floor((now.getTime() - Date.parse(since)) / MINUTE_MS)
-  return `${reason}: no agent event for ${minutes} min since ${since}`
+  return `${code}: ${reason}: no agent event for ${minutes} min since ${since}`
 }
 
 function stalledFinding(claim: Claim, reason: Finding['reason'], since: string, now: Date): Finding {
@@ -35,10 +39,11 @@ function stalledFinding(claim: Claim, reason: Finding['reason'], since: string, 
   return {
     kind: 'stalled-after-claim',
     reason,
+    code: IDLE_CODE,
     since,
     openedAt: claim.finding?.openedAt ?? at,
     checkedAt: at,
-    detail: describeStall(reason, since, now),
+    detail: describeStall(IDLE_CODE, reason, since, now),
   }
 }
 
@@ -103,7 +108,7 @@ function report(
   log: (event: string, detail: Record<string, unknown>) => void,
   claim: Claim,
   state: 'opened' | 'closed',
-  { reason, since }: Finding,
+  { reason, code, since }: Finding,
 ): void {
-  log('burndown_finding', { task: claim.taskId, slice: claim.slice, reason, state, since })
+  log('burndown_finding', { task: claim.taskId, slice: claim.slice, reason, code, state, since })
 }
