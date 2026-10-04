@@ -542,6 +542,20 @@ describe('the Shepherd handoff (TP-468)', () => {
     expect(text).toContain('Shepherd: refused <first stderr line>')
   })
 
+  // Mutation caught: an unconditional register line, which implementers followed over a brief saying not to (CC-635).
+  it('makes the implementer register only when its brief asks, and lets a brief saying not to win', () => {
+    const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
+    const gate = 'Only if the brief asks (one saying not to wins), run `titan-factory shepherd register'
+
+    expect(text).toContain(gate)
+    expect(text.split('titan-factory shepherd register')).toHaveLength(2)
+    expect(text).not.toContain('Then run `titan-factory shepherd register')
+  })
+
+  it('leaves the reviewer block free of any Shepherd register line', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).not.toMatch(/shepherd register|Register with Shepherd/i)
+  })
+
   // Mutation caught: any change to the three lines bin/premerge and Shepherd parse.
   it('pins the reviewer verdict block', () => {
     expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(
