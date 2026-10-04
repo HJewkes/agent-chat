@@ -470,6 +470,34 @@ piped from another command, or a missing or unreadable term list while `MISSING_
 set. An empty term list file counts as a list: the guard then checks the generic rules only and
 refuses nothing for a missing list.
 
+### gh-write scans when it runs (CC-501 S1)
+
+`agent-chat gh-write -- <gh args>` runs the same check on its real argument list before gh starts,
+so a post is scanned even when the PreToolUse hook failed open or was never in the path. It reuses
+the guard's `ghKind`, `prSources`, `apiSources`, `isMerge` and `findingsIn`, so it reads the same
+text: the title (`--title`, `-t`, `--subject`), the body (`--body`, `-b`), a body file
+(`--body-file`, `-F` on `pr` and `issue`), and on `gh api` each `-f`/`--raw-field`, `-F`/`--field`,
+`-F key=@file` and `--input`. A body file is read as a regular file. `--body-file -`, `--input -`
+and `-F key=@-` read stdin once, so a quoted heredoc works:
+
+```sh
+agent-chat gh-write -- pr comment 12 --body-file - <<'EOF'
+...
+EOF
+```
+
+gh never reads the original path or stdin. Each file source is replaced by a 0600 copy of the
+scanned text in a fresh `mkdtemp` directory, which is removed after the last retry. The swapped
+arguments are then scanned again with only those copies readable, so a file changed after the
+scan, or a flag spelling the swap missed, cannot reach gh unscanned.
+
+It refuses with exit 1, without starting gh, on a finding (the guard's message: locations and rule
+ids, never the matched text), on a body file it cannot read as a regular file, on stdin asked for
+twice, on an unreadable term list, and on a missing term list unless the call is a `gh api` merge.
+It reads the list from the passwd home's `~/.config/titan-egress/private-terms`, like the pre-push
+hook. It does not read `HOME`, `XDG_CONFIG_HOME` or `TITAN_EGRESS_TERMS`. No variable or flag turns
+the scan off. With the hook in place, a post is scanned twice.
+
 ### A command git runs for its subcommand (TP-634)
 
 Some git subcommands run a command line they are given. The guard checks that command like a
