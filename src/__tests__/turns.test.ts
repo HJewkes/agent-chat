@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { projectSlug } from '../agents/transcript.js'
-import { readTurns } from '../agents/turns.js'
+import { readActivity, readTurns } from '../agents/turns.js'
 import { ToolHandler } from '../server/tools.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { AgentIdentity, ServerMessage } from '../protocol.js'
@@ -229,5 +229,43 @@ describe('the chat_transcript tool', () => {
     const rendered = textOf(await handler.handle('chat_transcript', { name: 'peer' }))
     expect(rendered).toContain('No transcript on disk')
     expect(rendered).toContain('miss, not an error')
+  })
+})
+
+describe('reading activity for a stall check', () => {
+  const at = (timestamp: string) => ({ timestamp })
+  const bashCall = say(
+    'assistant',
+    [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm run verify' } }],
+    at('2026-07-30T11:00:00.000Z'),
+  )
+  const bashResult = say(
+    'user',
+    [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'ok' }],
+    at('2026-07-30T11:01:00.000Z'),
+  )
+
+  it('dates progress from the tool result, not a channel delivery after it', () => {
+    const delivery = say(
+      'user',
+      '<channel source="plugin:agent-chat:agent-chat" from="peer">hello</channel>',
+      at('2026-07-30T11:09:00.000Z'),
+    )
+    write([bashCall, bashResult, delivery])
+
+    expect(readActivity(CWD, SESSION)).toEqual({ lastAt: '2026-07-30T11:01:00.000Z' })
+  })
+
+  it('reports an unanswered Bash call as pending', () => {
+    write([bashResult, bashCall])
+
+    expect(readActivity(CWD, SESSION)).toEqual({
+      lastAt: '2026-07-30T11:00:00.000Z',
+      pending: { tool: 'Bash', at: '2026-07-30T11:00:00.000Z' },
+    })
+  })
+
+  it('reads a missing transcript as missing', () => {
+    expect(readActivity(CWD, SESSION)).toBe('missing')
   })
 })
