@@ -48,8 +48,22 @@ describe('burndown report parser', () => {
     ].join('\n')
 
     expect(parseSlices(plan)).toEqual([
-      { n: 'a', title: 'ledger', points: 2, doneWhen: 'ledger test passes', dependsOn: [], owns: ['src/a.ts'] },
-      { n: 'b', title: 'tick', points: 1, doneWhen: 'tick test passes', dependsOn: ['a'], owns: ['src/b.ts'] },
+      {
+        n: 'a',
+        title: 'ledger',
+        points: 2,
+        doneWhen: 'ledger test passes',
+        dependsOn: [],
+        owns: ['src/a.ts'],
+      },
+      {
+        n: 'b',
+        title: 'tick',
+        points: 1,
+        doneWhen: 'tick test passes',
+        dependsOn: ['a'],
+        owns: ['src/b.ts'],
+      },
     ])
   })
 

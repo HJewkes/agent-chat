@@ -105,7 +105,9 @@ function withSlices(obs: Observation, claim: Claim, deps: ObserveDeps): Observat
   const text = (deps.readFile ?? readFileOrUndefined)(planPath)
   if (text === undefined) return { ...obs, sliceProblems: [`no plan file at ${planPath}`] }
   const read = readSlices(text)
-  return read.slices === undefined ? { ...obs, sliceProblems: read.problems } : { ...obs, slices: read.slices }
+  return read.slices === undefined
+    ? { ...obs, sliceProblems: read.problems }
+    : { ...obs, slices: read.slices }
 }
 
 const memo = <T>(read: () => T): (() => T) => {

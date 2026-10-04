@@ -62,7 +62,8 @@ const PlannedSlice = z.object({
 export type PlannedSlice = z.infer<typeof PlannedSlice>
 
 /** A planner's slices when they pass the lint, else the reason lines. */
-export type SliceRead = { slices: PlannedSlice[]; problems?: undefined } | { slices?: undefined; problems: string[] }
+export type SliceRead =
+  { slices: PlannedSlice[]; problems?: undefined } | { slices?: undefined; problems: string[] }
 
 const SLICES_BLOCK = /^```burndown-slices[ \t]*\n([\s\S]*?)^```[ \t]*$/m
 

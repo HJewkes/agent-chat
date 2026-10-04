@@ -19,7 +19,8 @@ const RULES: Rule[] = [
       : [],
   s => (s.doneWhen === undefined || s.doneWhen.trim() === '' ? [`slice ${s.n}: no doneWhen`] : []),
   s => (s.owns.length === 0 ? [`slice ${s.n}: owns no files`] : []),
-  (s, names) => s.dependsOn.filter(dep => !names.has(dep)).map(dep => `slice ${s.n}: depends on unknown slice ${dep}`),
+  (s, names) =>
+    s.dependsOn.filter(dep => !names.has(dep)).map(dep => `slice ${s.n}: depends on unknown slice ${dep}`),
 ]
 
 /** One reason line per failing slice and rule; empty when every slice passes. */

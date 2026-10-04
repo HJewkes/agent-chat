@@ -181,7 +181,10 @@ describe('burndown phase machine', () => {
   ])('stalls the planning phase on a slice %s with its lint reason (CC-631)', (_, reason) => {
     const planning = claim({ phase: 'planning', worktree: undefined })
 
-    const { actions, after } = step(planning, { agent: exited, sliceProblems: [reason, 'slice b: no points'] })
+    const { actions, after } = step(planning, {
+      agent: exited,
+      sliceProblems: [reason, 'slice b: no points'],
+    })
 
     expect(spawns(actions)).toEqual([])
     expect(after).toEqual([
@@ -198,12 +201,16 @@ describe('burndown phase machine', () => {
     ]
     const plan = `# Plan\n\`\`\`burndown-slices\n${JSON.stringify(slices)}\n\`\`\`\n`
     const row = { agentId: 'a1', name: 'bd-cc-1', state: 'exited', spawnedAt: 1 } as AgentIdentity
-    const { observations } = await observe([planning], { agents: [row] }, {
-      root: '/active-work',
-      inboxSince: async () => [],
-      finalText: () => 'Status: DONE',
-      readFile: () => plan,
-    })
+    const { observations } = await observe(
+      [planning],
+      { agents: [row] },
+      {
+        root: '/active-work',
+        inboxSince: async () => [],
+        finalText: () => 'Status: DONE',
+        readFile: () => plan,
+      },
+    )
 
     const { after } = step(planning, observations.get(claimKey(planning)) ?? {})
 
