@@ -110,6 +110,8 @@ export interface WatchdogDoc {
   probeFailed?: Record<string, number>
   /** The attended seats seen so far, so a pass can say when one's file stops gating its spawns. */
   attended?: string[]
+  /** CC-598: the cause the last `service check` gave; absent while the service was healthy. */
+  serviceCause?: string
 }
 
 const emptyDoc = (): WatchdogDoc => ({ seats: {}, pools: {}, stopped: {} })
@@ -146,6 +148,7 @@ export function readDoc(file = watchdogStatePath()): WatchdogDoc {
     ...(doc.held === undefined ? {} : { held: doc.held }),
     ...(doc.probeFailed === undefined ? {} : { probeFailed: doc.probeFailed }),
     ...(Array.isArray(doc.attended) ? { attended: doc.attended } : {}),
+    ...(typeof doc.serviceCause === 'string' ? { serviceCause: doc.serviceCause } : {}),
   }
 }
 
@@ -183,6 +186,7 @@ export function loadDoc(file = watchdogStatePath()): WatchdogDoc {
     ...(doc.held === undefined ? {} : { held: doc.held }),
     ...(doc.probeFailed === undefined ? {} : { probeFailed: doc.probeFailed }),
     ...(Array.isArray(doc.attended) ? { attended: doc.attended } : {}),
+    ...(typeof doc.serviceCause === 'string' ? { serviceCause: doc.serviceCause } : {}),
   }
 }
 

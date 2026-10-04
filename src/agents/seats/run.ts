@@ -24,6 +24,7 @@ import {
 } from './liveness.js'
 import type { RunLock } from './lock.js'
 import { checkAttended } from './attended.js'
+import { judgeService, runServiceCheck, type ServiceCheckRunner } from './service-check.js'
 import { poolPace } from './pace.js'
 import { publishPace, type PaceStore } from './pace-pass.js'
 import {
@@ -100,6 +101,8 @@ export interface WatchdogDeps {
   probe?: (configDir: string) => boolean
   /** The seat files under the root, charter-listed or not; throws when they cannot be listed. */
   seatNames?: () => string[]
+  /** CC-598: runs `titan-factory service check --json`; absent, the pass does not check. */
+  serviceCheck?: ServiceCheckRunner
 }
 
 export interface WatchdogOptions {
@@ -446,6 +449,7 @@ function save(pass: Pass): void {
     ...(pass.doc.held === undefined ? {} : { held: pass.doc.held }),
     ...(pass.doc.probeFailed === undefined ? {} : { probeFailed: pass.doc.probeFailed }),
     ...(pass.doc.attended === undefined ? {} : { attended: pass.doc.attended }),
+    ...(pass.doc.serviceCause === undefined ? {} : { serviceCause: pass.doc.serviceCause }),
   })
 }
 
@@ -503,6 +507,29 @@ function attendedChange(pass: Pass, charter: string): string | undefined {
   return check.warning
 }
 
+/** CC-598: the attended seats hear of a service cause once; a cause no seat could be told of is sent again next pass. */
+async function serviceChange(pass: Pass): Promise<string[]> {
+  const { serviceCheck } = pass.deps
+  if (serviceCheck === undefined) return []
+  const notice = judgeService(pass.doc.serviceCause, await runServiceCheck(serviceCheck))
+  if (notice.message === undefined) return []
+  const message = notice.message
+  const seats = (pass.doc.attended ?? []).filter(seat => pass.roster.connected.includes(seat))
+  const lines: string[] = []
+  let delivered = true
+  for (const seat of seats) {
+    const woke = await pass.deps.wake(seat, message, true)
+    delivered &&= woke.ok
+    pass.deps.appendLog(seat, pass.deps.now(), message)
+    lines.push(`${seat}: ${message}${woke.ok ? '' : ` (not delivered: ${woke.detail})`}`)
+  }
+  if (delivered && seats.length > 0) {
+    if (notice.cause === undefined) delete pass.doc.serviceCause
+    else pass.doc.serviceCause = notice.cause
+  }
+  return lines
+}
+
 async function startPass(deps: WatchdogDeps, options: WatchdogOptions): Promise<[Pass, string]> {
   const charter = deps.readCharter()
   if (charter === undefined) throw new Error('no autonomy charter.md under the root')
@@ -552,6 +579,7 @@ async function runPass(deps: WatchdogDeps, options: WatchdogOptions, lines: stri
     else if (decision.fire) lines.push(await act(pass, name, decision))
     else if (journalFault !== undefined) lines.push(`${name}: Watchdog: held: ${journalFault}`)
   }
+  if (!options.dryRun) lines.push(...(await serviceChange(pass)))
   const paceFault = options.dryRun ? undefined : publishPoolPace(pass)
   if (paceFault !== undefined) lines.push(paceFault)
   lines.push(...pass.probeFaults)
