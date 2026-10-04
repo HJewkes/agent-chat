@@ -2,6 +2,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import YAML from 'yaml'
+import { defaultTermsFile, scanDeps, scanGhArgs } from '../../gh-write/scan.js'
 
 export interface RunResult {
   code: number
@@ -27,6 +28,8 @@ export interface PrReadyDeps {
   out: (line: string) => void
   err: (line: string) => void
   trap: Trap
+  /** The private-term list gh-write reads; injected so tests use a synthetic one. */
+  termsFile: string
 }
 
 interface StepOutcome {
@@ -276,6 +279,24 @@ export async function changesetStep(run: Run, cwd: string, base: string): Promis
   return { ok: false, reason: lastLine(result.output) }
 }
 
+const SCAN_SKIPPED = 'skipped (no body file)'
+
+const nothingToScan = (opts: PrReadyOptions): boolean =>
+  opts.bodyFile === undefined && opts.title === undefined
+
+/**
+ * gh-write's own scan over the text `gh pr create` would post, so a finding fails here with the
+ * reason gh-write would give. An early warning only: gh-write scans again at post time.
+ */
+export async function scanStep(opts: PrReadyOptions, cwd: string, termsFile: string): Promise<StepOutcome> {
+  if (nothingToScan(opts)) return { ok: true, reason: SCAN_SKIPPED }
+  const args = ['pr', 'create']
+  if (opts.title !== undefined) args.push('--title', opts.title)
+  if (opts.bodyFile !== undefined) args.push('--body-file', path.resolve(cwd, opts.bodyFile))
+  const scan = await scanGhArgs(args, scanDeps(termsFile))
+  return 'reason' in scan ? { ok: false, reason: scan.reason } : { ok: true }
+}
+
 function reporter(out: (line: string) => void) {
   return (step: string, outcome: StepOutcome): boolean => {
     const suffix = outcome.reason ? `: ${outcome.reason}` : ''
@@ -294,7 +315,7 @@ async function guarded(step: () => Promise<StepOutcome>): Promise<StepOutcome> {
 }
 
 /**
- * Order: clean tree, base, rebase, checks, changeset. A dirty tree or a failed rebase stops the
+ * Order: clean tree, base, rebase, checks, changeset, scan. A dirty tree or a failed rebase stops the
  * run, since the checks would not see the tree that merges. Exit 0 only when every step passed.
  */
 export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultDeps()): Promise<number> {
@@ -314,11 +335,11 @@ export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultD
   if (!(await step('rebase', rebase))) return fail()
   let ok = await step('checks', () => checksStep(run, cwd, base, deps.err))
   ok = (await step('changeset', () => changesetStep(run, cwd, base))) && ok
-  if (opts.title !== undefined || opts.bodyFile !== undefined)
-    report('body', { ok: true, reason: 'skipped: scan lands with CC-687' })
+  ok = (await step('scan', () => scanStep(opts, cwd, deps.termsFile))) && ok
   if (!ok) return fail()
   const head = await run('git', ['rev-parse', 'HEAD'], cwd)
-  deps.out(`PR-READY OK ${head.output.trim()}`)
+  const caveat = nothingToScan(opts) ? ' (scan skipped: no body file)' : ''
+  deps.out(`PR-READY OK ${head.output.trim()}${caveat}`)
   return 0
 }
 
@@ -363,4 +384,5 @@ const defaultDeps = (): PrReadyDeps => ({
   out: line => process.stdout.write(`${line}\n`),
   err: line => process.stderr.write(`${line}\n`),
   trap: signalTrap(),
+  termsFile: defaultTermsFile(),
 })
