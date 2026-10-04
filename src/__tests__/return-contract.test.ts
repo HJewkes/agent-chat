@@ -566,6 +566,14 @@ describe('the Shepherd handoff (TP-468)', () => {
     expect(text).toContain('Shepherd: refused <first stderr line>')
   })
 
+  // Mutation caught: dropping the exit-69 line, so an implementer has no report for a Shepherd that is down (TP-245).
+  it('maps exit 69 to Shepherd: down and leaves CI to the spawner', () => {
+    const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
+
+    expect(text).toContain('or `Shepherd: down` on exit 69 (do not wait for it). <spawner> watches CI.')
+    expect(flat(IMPLEMENTER_WITHOUT_SHEPHERD)).not.toContain('Shepherd: down')
+  })
+
   // Mutation caught: an unconditional register line, which implementers followed over a brief saying not to (CC-635).
   it('makes the implementer register only when its brief asks, and lets a brief saying not to win', () => {
     const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
