@@ -151,7 +151,7 @@ const SeatState = z.object({ samples: z.array(SeatSample) })
 export type SeatState = z.infer<typeof SeatState>
 
 /** How often a task was released and when last; `backoff.ts` turns it into a hold (CC-661). */
-const ReleaseRecord = z.object({ n: z.number().int().positive(), at: z.string() })
+const ReleaseRecord = z.object({ n: z.number().int().positive(), at: z.string().datetime() })
 export type ReleaseRecord = z.infer<typeof ReleaseRecord>
 
 const Ledger = z.object({

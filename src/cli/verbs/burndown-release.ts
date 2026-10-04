@@ -1,4 +1,5 @@
 import { burndownLedgerPath } from '../../paths.js'
+import { heldUntil } from '../../agents/burndown/backoff.js'
 import { readLedger, withLedgerLock, writeLedger, type Claim } from '../../agents/burndown/ledger.js'
 import type { Report } from '../command.js'
 
@@ -21,18 +22,26 @@ async function retireNames(claim: Claim, retire: RetireCall): Promise<string[]> 
   return lines
 }
 
-/** Drops every held claim on `task`, then retires each one's spawned agents; a refused retire never keeps a claim. */
-export async function releaseTask(task: string, retire: RetireCall): Promise<Report> {
+/**
+ * Drops every held claim on `task`, counts the release toward its backoff (CC-700), then retires each
+ * one's spawned agents; a refused retire never keeps a claim. A release with no held claim changes nothing.
+ */
+export async function releaseTask(task: string, retire: RetireCall, now = new Date()): Promise<Report> {
   const file = burndownLedgerPath()
   const locked = await withLedgerLock(file, () => {
     const ledger = readLedger(file)
     const dropped = ledger.claims.filter(c => c.taskId === task && c.phase !== 'done')
-    writeLedger(file, { ...ledger, claims: ledger.claims.filter(c => !dropped.includes(c)) })
-    return dropped
+    if (dropped.length === 0) return { dropped, hold: undefined }
+    const record = { n: (ledger.releases?.[task]?.n ?? 0) + 1, at: now.toISOString() }
+    const claims = ledger.claims.filter(c => !dropped.includes(c))
+    writeLedger(file, { ...ledger, claims, releases: { ...ledger.releases, [task]: record } })
+    return { dropped, hold: record }
   })
   if (!locked.ran) return refusedReport(`a tick holds the ledger lock (pid ${locked.holder}); try again`)
-  if (locked.value.length === 0) return refusedReport(`no held claim on ${task}`)
+  const { dropped, hold } = locked.value
+  if (hold === undefined) return refusedReport(`no held claim on ${task}`)
   const lines: string[] = []
-  for (const claim of locked.value) lines.push(describeClaim(claim), ...(await retireNames(claim, retire)))
+  for (const claim of dropped) lines.push(describeClaim(claim), ...(await retireNames(claim, retire)))
+  lines.push(`released ${hold.n} times; held until ${new Date(heldUntil(hold)).toISOString()}`)
   return { ok: true, lines }
 }
