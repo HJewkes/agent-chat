@@ -21,20 +21,32 @@ const SHIM_RULE =
   'Never put a shim named gh, git, node, npm or pnpm on PATH unless it drops its own dir from PATH ' +
   'first (pattern: src/gh-shim/install.ts).'
 
+/**
+ * CC-501 S3: the forms the leak guard allows. A worktree path defers to gh-write's own scan; a fixed
+ * shared `$TMPDIR` name let one agent post another's body (CC-725), and `/tmp` or `$TMPDIR` paths
+ * pass through a symlink, which the guard refuses to defer. The repo's profiles/ carry both too.
+ */
+export const BODY_FILE_RULE =
+  'Post text as `agent-chat gh-write -- <gh args> --body-file <f>`, <f> a literal .md path in your ' +
+  "own worktree (uncommitted, not a shared $TMPDIR name) made by Write or `<<'EOF'`."
+
+export const QUOTE_RULE =
+  'Quote expansions in git and gh args (`git -C "$dir"`); never hold a command name in a variable.'
+
 /** CC-452: a brief line reading exactly this keeps the implementer off Shepherd for a seat's own merge path. */
 export const SHEPHERD_NONE_MARKER = 'Shepherd: none'
 
 const IMPLEMENTER_HEAD = [
   'Check `gh api repos/<owner>/<repo> --jq .visibility`. In a public repo, never put real data',
   'in code, fixtures, PR bodies or comments: task lists, charter or seat files,',
-  '/Users paths, emails, or IDs and text from private repos. Use synthetic fixtures.',
+  '/Users paths, emails, or IDs and text from private repos.',
   'First, stop if `git log origin/<default> --oneline --grep <ID>` shows it landed.',
   'Branch from origin/<default>; check `git log origin/<default>..HEAD`.',
   'Commit before mutating; never `git checkout` uncommitted work.',
   'Keep scratch in the worktree or `$TMPDIR/<your name>`.',
-  'Write PR bodies to a fresh `$TMPDIR/<your name>/pr-body.md`; cat it before `gh-write -- pr create|edit`.',
-  'Make each GitHub write via `agent-chat gh-write -- <gh args>`, the only write path; verify',
-  'each landed. Plain `gh` is for reads; gh by path is refused. No gh-write: report BLOCKED.',
+  BODY_FILE_RULE,
+  'gh-write is the only write path; verify each landed. No gh-write: report BLOCKED.',
+  QUOTE_RULE,
   'On a 403 "API rate limit exceeded" with core quota left, retry once in 5 minutes.',
 ]
 
@@ -55,13 +67,13 @@ const OWN_CI_WAIT = [
 const IMPLEMENTER_RULES = [
   NEVER_PARK,
   SHIM_RULE,
-  'Only when the brief asks for a load test: record the PID of each burner, kill only those,',
-  'confirm with `pgrep` that none survive, never by name pattern.',
+  'Only when the brief asks for a load test: record the PID of each burner, kill only those, never by',
+  'name pattern; confirm with `pgrep` none survive.',
   'A PR narrowing a timeout reports per-case CI times against the new limit.',
   'You are NOT done at "PR opened". Your LAST action must be chat_send to <spawner> starting with',
   '`Status: DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT`, `PR: <owner>/<repo>#<n>` and',
   '`Head: <full sha>` lines, then',
-  'CI: <paste of: gh api repos/<owner>/<repo>/commits/<head>/check-runs --paginate --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>,',
+  'CI: <paste of: gh api "repos/<owner>/<repo>/commits/<head>/check-runs" --paginate --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>,',
 ]
 
 const ciTail = (ciAt: string): string[] => [
@@ -89,10 +101,11 @@ const REVIEWER = [
   'PR: <owner>/<repo>#<n>',
   'Head: <full 40-hex head sha>',
   'Before MERGE, confirm every required check-run (one branch protection names) at the reviewed head',
-  'with `gh api repos/<owner>/<repo>/commits/<head>/check-runs --paginate`; FIX_FIRST if a required',
+  'with `gh api "repos/<owner>/<repo>/commits/<head>/check-runs" --paginate`; FIX_FIRST if a required',
   'one failed. A skipped check (std / compat) is not a failure.',
   'Never run `git stash`: refs/stash is shared across worktrees. Use `git show <rev>:<path>` instead.',
   SHIM_RULE,
+  QUOTE_RULE,
   "Then blocking items before nits. A verdict counts only when Head equals the PR's current head exactly.",
 ].join('\n')
 
