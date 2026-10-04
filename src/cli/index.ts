@@ -212,6 +212,18 @@ function addAgentCommands(program: Command): void {
       const { leakScan } = await import('./verbs/leak-scan.js')
       process.exitCode = await leakScan(options)
     })
+
+  program
+    .command('pr-ready')
+    .description('before gh pr create: clean tree, rebase, checks, changeset; exit 0 only when all pass')
+    .helpGroup(AGENTS)
+    .option('--title <t>', 'PR title (scanned once CC-687 lands)')
+    .option('--body-file <path>', 'PR body file (scanned once CC-687 lands)')
+    .option('--no-rebase', 'check and report only; do not rebase onto the default branch')
+    .action(async (options: { title?: string; bodyFile?: string; rebase?: boolean }) => {
+      const { prReady } = await import('./verbs/pr-ready.js')
+      process.exitCode = await prReady(options)
+    })
 }
 
 /**

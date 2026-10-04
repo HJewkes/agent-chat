@@ -37,6 +37,8 @@ Agent commands:
                              full-suite slots
   leak-scan [options]        scan added lines for private data; exit 0 clean, 1 findings, 2 cannot
                              pass
+  pr-ready [options]         before gh pr create: clean tree, rebase, checks, changeset; exit 0 only
+                             when all pass
 
 === agent-chat inbox
 Usage: agent-chat inbox [options]
@@ -756,6 +758,17 @@ Options:
   --range <from..to>  scan added lines, added file names and commit messages in this range
   --text-file <file>  scan every line of a file, such as a PR body
   --json              print one JSON object with the findings
+  -h, --help          display help for command
+
+=== agent-chat pr-ready
+Usage: agent-chat pr-ready [options]
+
+before gh pr create: clean tree, rebase, checks, changeset; exit 0 only when all pass
+
+Options:
+  --title <t>         PR title (scanned once CC-687 lands)
+  --body-file <path>  PR body file (scanned once CC-687 lands)
+  --no-rebase         check and report only; do not rebase onto the default branch
   -h, --help          display help for command
 
 === agent-chat broker
