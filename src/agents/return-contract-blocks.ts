@@ -10,11 +10,16 @@ import type { ReturnContract } from './types.js'
  */
 
 /** A block is paid for on every contracted spawn, so it stays a paragraph. */
-export const MAX_BLOCK_CHARS = 2400
+export const MAX_BLOCK_CHARS = 2440
 
 const NEVER_PARK =
   'Never end a turn on a background task, a sleep or a ScheduleWakeup: a headless agent exits at ' +
   'turn end and the task dies with it.'
+
+/** CC-647: a logging shim named gh resolved gh to itself and forked until swap ran out. */
+const SHIM_RULE =
+  'Never put a shim named gh, git, node, npm or pnpm on PATH unless it drops its own dir from PATH ' +
+  'first (pattern: src/gh-shim/install.ts).'
 
 /** CC-452: a brief line reading exactly this keeps the implementer off Shepherd for a seat's own merge path. */
 export const SHEPHERD_NONE_MARKER = 'Shepherd: none'
@@ -23,15 +28,14 @@ const IMPLEMENTER_HEAD = [
   'Check `gh api repos/<owner>/<repo> --jq .visibility`. In a public repo, never commit or paste',
   'captured real data into code, fixtures, PR bodies or comments: task lists, charter or seat files,',
   '/Users paths, emails, or IDs and text from private repos. Use synthetic fixtures.',
-  'First run `git log origin/<default> --oneline --grep <ID>` and stop if it has landed.',
+  'First, stop if `git log origin/<default> --oneline --grep <ID>` shows it landed.',
   'Branch from origin/<default>; check `git log origin/<default>..HEAD`.',
   'Commit before mutating; never `git checkout` uncommitted work.',
   'Scratch files go in the worktree or `$TMPDIR/<your name>`.',
   'Write PR bodies to a fresh `$TMPDIR/<your name>/pr-body.md`; cat it before `gh-write -- pr create|edit`.',
-  'Make every GitHub write (merge PUT, PR create, comment, PR body PATCH) through',
-  '`agent-chat gh-write -- <gh args>`, the only write path, and verify each write landed. Plain `gh` is',
-  'for reads; a gh called by path (`/opt/homebrew/bin/gh`) is refused. No gh-write: report BLOCKED.',
-  'On a 403 "API rate limit exceeded" with core quota left, wait 5 minutes and retry once.',
+  'Make every GitHub write through `agent-chat gh-write -- <gh args>`, the only write path, and verify',
+  'each write landed. Plain `gh` is for reads; a gh called by path is refused. No gh-write: report BLOCKED.',
+  'On a 403 "API rate limit exceeded" with core quota left, retry once after 5 minutes.',
 ]
 
 const SHEPHERD_HANDOFF = [
@@ -49,9 +53,10 @@ const OWN_CI_WAIT = [
 
 const IMPLEMENTER_RULES = [
   NEVER_PARK,
-  'Only when the brief asks for a load test: record the PID of each burner you start, kill those PIDs',
-  'and no others when done, and confirm with `pgrep` that none survive. Never kill by name pattern.',
-  'A PR that narrows a timeout reports per-case CI times against the new limit.',
+  SHIM_RULE,
+  'Only when the brief asks for a load test: record the PID of each burner you start, kill only those',
+  'when done, and confirm with `pgrep` that none survive. Never kill by name pattern.',
+  'A PR narrowing a timeout reports per-case CI times against the new limit.',
   'You are NOT done at "PR opened". Your LAST action must be chat_send to <spawner> starting with',
   '`Status: DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT`, `PR: <owner>/<repo>#<n>` and',
   '`Head: <full sha>` lines, then',
@@ -86,6 +91,7 @@ const REVIEWER = [
   'with `gh api repos/<owner>/<repo>/commits/<head>/check-runs --paginate`; FIX_FIRST if a required',
   'one failed. A skipped check (std / compat) is not a failure.',
   'Never run `git stash`: refs/stash is shared across worktrees. Use `git show <rev>:<path>` instead.',
+  SHIM_RULE,
   "Then blocking items before nits. A verdict counts only when Head equals the PR's current head exactly.",
 ].join('\n')
 

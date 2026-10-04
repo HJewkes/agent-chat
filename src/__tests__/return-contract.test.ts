@@ -169,6 +169,30 @@ describe('the GitHub write path (CC-456)', () => {
   })
 })
 
+describe('the PATH shim rule (CC-647)', () => {
+  const SHIM_RULE =
+    'Never put a shim named gh, git, node, npm or pnpm on PATH unless it drops its own dir from PATH ' +
+    'first (pattern: src/gh-shim/install.ts).'
+
+  // Mutation caught: dropping SHIM_RULE from IMPLEMENTER_RULES or from the reviewer block.
+  it.each([
+    ['an implementer with a Shepherd handoff', 'add the parser'],
+    ['an implementer that waits on its own CI', `${SHEPHERD_NONE_MARKER}\nadd the parser`],
+    ['a reviewer', 'review PR 7'],
+  ])('reaches %s in the spawned brief', async (_, brief) => {
+    const profile = brief.startsWith('review') ? 'reviewer' : 'implementer'
+
+    const { text } = await delivered({ brief, profile })
+
+    expect(occurrences(text, SHIM_RULE)).toBe(1)
+  })
+
+  it('sits in both implementer variants', () => {
+    expect(flat(RETURN_CONTRACT_BLOCKS.implementer)).toContain(SHIM_RULE)
+    expect(flat(IMPLEMENTER_WITHOUT_SHEPHERD)).toContain(SHIM_RULE)
+  })
+})
+
 describe('the check-run rule (CC-357)', () => {
   // Mutation caught: reverting the implementer CI line to a bare "then CI status".
   it('has the implementer paste each check-run at the head instead of reporting "green"', () => {
