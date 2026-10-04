@@ -335,6 +335,8 @@ const HIJACKS = [
   `ZDOTDIR=${EVIL_ZSH} zsh -c '${GW}'`,
   `HOME=${EVIL_HOME} bash -l -c '${GW}'`,
 ]
+// These only hijack zsh; a host without zsh cannot show the leak, and the guard must still deny.
+const ZSH_ONLY = /^(?:hash agent-chat=|path=|fpath=|agent-chat (?:gh-write|x)\(\)|ZDOTDIR=)/
 const SHADOWS = [
   `agent-chat() { cat; }; ${EVIL} | ${POST} -F -`,
   `alias agent-chat=cat; ${EVIL} | agent-chat gh-write -- pr create -t x -F -`,
@@ -361,7 +363,8 @@ describe.skipIf(SHELLS.length === 0)('gh-write deferral against real shells (CC-
 
   it.each(HIJACKS)('denies %j, which posts the term when run', command => {
     expect(checkCommand(command, owned())).toBeDefined()
-    expect(posted(command, REAL_ENV).some(record => record.includes(TERM))).toBe(true)
+    const runnable = ZSH_ONLY.test(command) ? SHELLS.some(([shell]) => shell.endsWith('zsh')) : true
+    if (runnable) expect(posted(command, REAL_ENV).some(record => record.includes(TERM))).toBe(true)
   })
 
   it.each(SHADOWS)('denies %j', command => {
