@@ -20,6 +20,14 @@ const claim = (over: Partial<Claim> = {}): Claim => ({
   ...over,
 })
 const ledger = (...claims: Claim[]): Ledger => ({ ...EMPTY_LEDGER, claims })
+const finding: NonNullable<Claim['finding']> = {
+  kind: 'stalled-after-claim',
+  reason: 'idle',
+  since: '2026-01-01T00:01:00.000Z',
+  openedAt: '2026-01-01T00:07:00.000Z',
+  checkedAt: '2026-01-01T00:07:00.000Z',
+  detail: 'idle: no agent event for 6 min since 2026-01-01T00:01:00.000Z',
+}
 const kinds = (l: Ledger, b: Ledger = ledger(), r: { key: { taskId: string }; ok: boolean }[] = []) =>
   (seatEvents(b, l, r).alpha ?? []).map(e => e.kind)
 
@@ -80,6 +88,7 @@ describe('seatEvents', () => {
     'ready-to-merge': { phase: 'awaiting-merge' },
     merged: { phase: 'done', notified: ['ready-to-merge'] },
     stalled: { stalledReason: 'timed out' },
+    'stalled-after-claim': { finding },
     parked: { phase: 'parked' },
     leak: {
       leak: {
@@ -134,6 +143,37 @@ describe('settleNotified', () => {
       ['ready-to-merge', 'merged'],
       ['parked'],
     ])
+  })
+})
+
+describe('the stalled-after-claim notice', () => {
+  /** One tick as the seat sees it: settle, diff, and mark whatever was due as delivered. */
+  const deliver = (before: Ledger, after: Ledger): { sent: SeatEvent[]; ledger: Ledger } => {
+    const settled = settleNotified(after)
+    const sent = seatEvents(before, settled, []).alpha ?? []
+    return { sent, ledger: markNotified(settled, 'alpha', sent) }
+  }
+
+  it('fires once with the finding detail while the finding stays open', () => {
+    const open = ledger(claim({ finding }))
+
+    const first = deliver(ledger(claim()), open)
+    const second = deliver(first.ledger, ledger({ ...first.ledger.claims[0]!, finding }))
+
+    expect(first.sent).toEqual([{ kind: 'stalled-after-claim', taskId: 'T-1', detail: finding.detail }])
+    expect(second.sent).toEqual([])
+  })
+
+  it('is dropped from notified after the finding closes, and fires again on a reopen', () => {
+    const told = claim({ finding, notified: ['stalled-after-claim'] })
+    const { finding: _closed, ...closedClaim } = told
+
+    const closed = deliver(ledger(told), ledger(closedClaim))
+    const reopened = deliver(closed.ledger, ledger({ ...closed.ledger.claims[0]!, finding }))
+
+    expect(closed.sent).toEqual([])
+    expect(closed.ledger.claims[0]?.notified).toBeUndefined()
+    expect(reopened.sent.map(e => e.kind)).toEqual(['stalled-after-claim'])
   })
 })
 

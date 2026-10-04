@@ -91,6 +91,12 @@ describe('classifying a claimed agent', () => {
     })
   })
 
+  it('reads an open tool call with an unparseable start as unknown', () => {
+    const activity = { lastAt: iso(LAST), pending: { tool: 'Bash', at: 'not a date' } }
+
+    expect(classify(activity, claim, row, at(60 * MIN))).toEqual({ state: 'unknown' })
+  })
+
   it('falls back to the spawn time when phaseAt is invalid and reads unknown when both are', () => {
     const late = new Date(START + 5 * MIN + 1)
 
@@ -163,6 +169,14 @@ describe('the finding on a claim', () => {
     const opened = tickAt(held(), idleSince, NOW0)
 
     const closed = tickAt(opened, idleSince, NOW0, new Set([claimKey(opened)]))
+
+    expect(closed.finding).toBeUndefined()
+  })
+
+  it('closes the finding of a claim stalled for the owner', () => {
+    const opened = tickAt(held(), idleSince, NOW0)
+
+    const closed = tickAt({ ...opened, stalledReason: 'timed out' }, idleSince, NOW0)
 
     expect(closed.finding).toBeUndefined()
   })
