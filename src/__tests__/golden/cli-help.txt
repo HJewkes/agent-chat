@@ -769,6 +769,7 @@ Options:
   --title <t>         PR title, scanned with gh-write's leak scan
   --body-file <path>  PR body file, scanned with gh-write's leak scan
   --no-rebase         check and report only; do not rebase onto the default branch
+  --strict            fail, not just note, a pushed branch that is behind the default branch
   -h, --help          display help for command
 
 === agent-chat broker
