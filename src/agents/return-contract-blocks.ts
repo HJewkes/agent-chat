@@ -36,9 +36,9 @@ const IMPLEMENTER_HEAD = [
 
 const SHEPHERD_HANDOFF = [
   'Never use --no-verify. Verify locally, push, open the PR over REST, and never wait on CI.',
-  'Then run `titan-factory shepherd register <owner>/<repo>#<n> --task <initiative>/<ID> --implementer',
-  '<your agent name> --kind <correctness|security|feature|refactor>`. Report `Shepherd: <run id>`; if it',
-  'refuses (exit 65, a repo no seat lists), report `Shepherd: refused <first stderr line>`: <spawner> watches CI.',
+  'Only if the brief asks (one saying not to wins), run `titan-factory shepherd register <owner>/<repo>#<n>',
+  '--task <initiative>/<ID> --implementer <your agent name> --kind <correctness|security|feature|refactor>`',
+  'and report `Shepherd: <run id>`, or `Shepherd: refused <first stderr line>` on exit 65. <spawner> watches CI.',
 ]
 
 const OWN_CI_WAIT = [
