@@ -133,7 +133,7 @@ export function hasUnreadableConfig(
 
 // zsh matches a group against names, so an alternative, the text glued before it or text glued after it may be an option.
 const QUOTING_CHARS = /['"\\]/g
-const OPTION_GROUP = /^-|[(|)]-/
+const OPTION_GROUP = /^-|[(|)]-|[(|)]\[[^\]]*-/
 // A bracket class that holds `-`, as in `[-]-no-verify`, or an option-shaped word with a class in it, may spell an option.
 const OPTION_CLASS = /^-*\[[^\]]*-|^-.*\[/
 

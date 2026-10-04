@@ -54,6 +54,21 @@ interface Heredoc {
 const OPERATORS = new Set([';', '&', '|'])
 const WRITE_OPERATORS = new Set(['>', '>>', '>|', '<>'])
 const GLOB = '*?[{'
+// A group the splitter can end without doubt: no quote, escape, blank, `$`, backtick or operator inside.
+const PLAIN_GROUP = /^\([^\s()'"\\`$;&<>]*\)$/
+const MAX_FORKS = 64
+
+/** The commands after `after`, bar `skip`, are checked when the span is not settled. */
+interface Mark {
+  after: number
+  skip: SimpleCommand
+}
+
+/** Shared by every lexer of one parse, so a line of many groups ends in a deny and not in a long run. */
+interface Budget {
+  forks: number
+}
+
 // A glob span that holds a substitution, a blank or an operator, which the shell may run as commands.
 const SPAN_RUNS = /[\s;&]|\$\(|`|[<>]\(/
 // Words after which a `(` still starts a command.
@@ -119,15 +134,14 @@ class ShellLexer {
   private heredocs: Heredoc[] = []
   private depth = 0
   private closed = false
-  /** Where the first `(` outside command position opens, or undefined; see `mixesParenAndGuarded`. */
-  parenAt: number | undefined
+  /** Where the first span the splitter cannot settle opens; see `mixesParenAndGuarded`. */
+  mark: Mark | undefined
 
   constructor(
     private readonly src: string,
     start = 0,
     private readonly nested = false,
-    /** The second reading of a rest (see `globGroup`): it does not fork again, so the cost stays linear. */
-    private readonly single = false,
+    private readonly budget: Budget = { forks: MAX_FORKS },
   ) {
     this.pos = start
     this.cur = this.newCommand()
@@ -219,9 +233,8 @@ class ShellLexer {
     const word = this.word
     if (this.pending !== null || (word !== null && /[={]$/.test(word))) return false
     if (/^\(\s*\)/.test(this.src.slice(this.pos)) || (word === null && this.opensCommand())) return false
-    this.parenAt ??= this.pos
-    if (word === null && this.single) return false
     const end = this.groupEnd()
+    if (end < 0 || !PLAIN_GROUP.test(this.src.slice(this.pos, end))) this.unsettled()
     if (end < 0) {
       this.split('(')
       this.pos++
@@ -229,11 +242,11 @@ class ShellLexer {
     }
     const span = this.src.slice(this.pos, end)
     if (SPAN_RUNS.test(span)) {
-      this.substituted(span, new ShellLexer(span.slice(1, -1), 0, true, this.single).run(), false)
+      this.substituted(span, new ShellLexer(span.slice(1, -1), 0, true, this.budget).run(), false)
     }
     this.split(span)
     this.pos = end
-    if (!this.single) this.readRestAsCommand()
+    this.readRestAsCommand()
     return true
   }
 
@@ -243,8 +256,14 @@ class ShellLexer {
    * are kept, and a prefix this splitter does not know cannot hide a command.
    */
   private readRestAsCommand(): void {
-    const rest = new ShellLexer(this.src, this.pos, this.nested || this.depth !== 0, true)
+    if (this.budget.forks-- <= 0) return this.unsettled()
+    const rest = new ShellLexer(this.src, this.pos, this.nested || this.depth !== 0, this.budget)
     this.out.push(...rest.run())
+  }
+
+  /** A span whose end or reading the splitter cannot be sure of: the commands after it are held to account. */
+  private unsettled(): void {
+    this.mark ??= { after: this.out.length, skip: this.cur }
   }
 
   /** The `(` starts a command, a case pattern after `in`, or a `[[` operand: not an argument. */
@@ -252,6 +271,8 @@ class ShellLexer {
     const words = this.cur.words
     const head = words.findIndex(w => !COMMAND_PREFIX.has(w))
     if (head < 0) return true
+    // `for ((i=0; i<3; i++))` is arithmetic, not a glob.
+    if (words[head] === 'for' && words.length === head + 1 && this.src.startsWith('((', this.pos)) return true
     if (words[head] === '[[') return !words.includes(']]')
     return words[head] === 'case' && words[words.length - 1] === 'in'
   }
@@ -424,19 +445,19 @@ class ShellLexer {
   /** Parses the inner commands too, so `$(git push --no-verify)` is seen; the word keeps the raw text. */
   private substitution(quoted: boolean): string {
     const start = this.pos
-    const inner = new ShellLexer(this.src, this.pos + 2, true, this.single)
+    const inner = new ShellLexer(this.src, this.pos + 2, true, this.budget)
     const commands = inner.run()
     this.pos = Math.min(inner.pos + 1, this.src.length)
-    if (inner.parenAt !== undefined) this.parenAt ??= start
+    if (inner.mark !== undefined) this.unsettled()
     return this.substituted(this.src.slice(start, this.pos), commands, quoted)
   }
 
   private backtick(quoted: boolean): string {
     const start = this.pos
     const inner = this.until('`')
-    const lexer = new ShellLexer(inner, 0, true, this.single)
+    const lexer = new ShellLexer(inner, 0, true, this.budget)
     const commands = lexer.run()
-    if (lexer.parenAt !== undefined) this.parenAt ??= start
+    if (lexer.mark !== undefined) this.unsettled()
     if (inner.includes('\\')) commands.forEach(blur)
     return this.substituted(this.src.slice(start, this.pos), commands, quoted)
   }
@@ -539,18 +560,21 @@ export function expandWord(
   return known && !expanded.includes(LIVE) ? expanded : undefined
 }
 
-const GUARDED_WORD = /\b(?:git|gh)\b/
+const GUARDED_COMMAND = /(?:^|\/)(?:git|gh)$/
+
+/** A command word the shell may turn into git or gh, or that is one, among the words a wrapper leaves before it. */
+const namesGuarded = (cmd: SimpleCommand): boolean =>
+  cmd.words.slice(0, 4).some(word => GUARDED_COMMAND.test(word)) || (cmd.marked[0]?.includes(LIVE) ?? false)
 
 /**
- * Whether a `(` outside command position is followed, on its line, by a git or gh word. Such a line
- * is read two ways by the splitter and a third by some shell, and a span that ends where the
- * splitter does not expect hides what follows (CC-728), so the line is denied and not guessed at.
+ * Whether a span the splitter cannot settle (a `(` outside command position that holds a quote, an
+ * escape, a blank or an operator, has no close, or comes in too many groups) is followed by a command
+ * that is, or may be, git or gh. Such a line is denied and not guessed at (CC-728). The test is on parsed
+ * words, after quotes, escapes and continuations are read, never on the raw text.
  */
 export function mixesParenAndGuarded(src: string): boolean {
-  const text = unmark(src)
-  const lexer = new ShellLexer(text)
-  lexer.run()
-  if (lexer.parenAt === undefined) return false
-  const end = text.indexOf('\n', lexer.parenAt)
-  return GUARDED_WORD.test(text.slice(lexer.parenAt, end < 0 ? text.length : end))
+  const lexer = new ShellLexer(unmark(src))
+  const commands = lexer.run()
+  const { mark } = lexer
+  return mark !== undefined && commands.slice(mark.after).some(cmd => cmd !== mark.skip && namesGuarded(cmd))
 }
