@@ -541,6 +541,23 @@ describe('the spawn rate budget', () => {
     expect(third.reason).toMatch(/peer has attempted 2 spawns in the last 60s \(limit 2\)/)
   })
 
+  it('types a spawn past the rate budget as a retryable spawn_rate_limit, reason text unchanged', async () => {
+    const spawnRateBudget = new SpawnRateBudget(60_000, 1)
+    const sup = withStubbedSurface({ spawnRateBudget })
+    const shared = workspace()
+    registerPeer('peer', shared)
+
+    await sup.spawn(spawnReq({ name: 'scout-1', requestedBy: 'peer', cwd: shared }))
+    const refused = await sup.spawn(spawnReq({ name: 'scout-2', requestedBy: 'peer', cwd: shared }))
+
+    expect(refused).toEqual({
+      ok: false,
+      code: 'spawn_rate_limit',
+      retryable: true,
+      reason: 'peer has attempted 1 spawns in the last 60s (limit 1); wait before spawning again',
+    })
+  })
+
   it('records the refusal as an event, not just a reply string', async () => {
     const spawnRateBudget = new SpawnRateBudget(60_000, 1)
     const sup = withStubbedSurface({ spawnRateBudget })
