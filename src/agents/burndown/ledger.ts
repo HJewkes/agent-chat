@@ -115,6 +115,20 @@ const Claim = z.object({
     .optional(),
   /** The claim's PR as the last leak check found it: redacted `file:line category` rows, never matched text (CC-269). */
   leak: z.object({ repo: z.string(), url: z.string(), findings: z.array(z.string()) }).optional(),
+  /** This stall's triage job (CC-649); kept once it ends, so one occurrence never starts a second job. */
+  triage: z
+    .object({
+      /** The stall it is for; a record of another occurrence is dropped at the next settle. */
+      occurrence: z.string(),
+      /** When the stall first routed to triage; a capacity wait runs from here. */
+      since: z.string(),
+      outcome: z.enum(['waiting', 'started', 'refused', 'ended', 'fallback']),
+      name: z.string().optional(),
+      /** When the frame was sent; `maxMinutes` runs from here. */
+      startedAt: z.string().optional(),
+      detail: z.string().optional(),
+    })
+    .optional(),
 })
 export type Claim = z.infer<typeof Claim>
 
@@ -153,6 +167,8 @@ const Ledger = z.object({
   leakDenylist: z.string().optional(),
   /** Release counts by task id, which hold the task back from dispatch (CC-661). */
   releases: z.record(z.string(), ReleaseRecord).optional(),
+  /** When each triage job was started, pruned to the last day; `exceptions.triage.maxPerDay` counts these. */
+  triageStarts: z.array(z.string()).optional(),
 })
 export type Ledger = z.infer<typeof Ledger>
 

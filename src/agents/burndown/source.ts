@@ -120,6 +120,16 @@ const Config = z.object({
         .object({ stalled: Route.default('owner'), failed: Route.default('owner') })
         .strict()
         .default({ stalled: 'owner', failed: 'owner' }),
+      /** The triage job (CC-649); unset, or without an account, a `triage` dial falls back to the owner. */
+      triage: z
+        .object({
+          profile: z.string().min(1).default('triager'),
+          account: z.string().min(1).optional(),
+          maxPerDay: count.default(12),
+          maxMinutes: count.default(30),
+        })
+        .strict()
+        .optional(),
     })
     .strict()
     .default({ route: { stalled: 'owner', failed: 'owner' } }),

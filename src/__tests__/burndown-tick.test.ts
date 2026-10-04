@@ -2259,3 +2259,235 @@ describe('burndown tick lease on an implementing seat claim (CC-659)', () => {
     expect(later.sends).toEqual([])
   })
 })
+
+describe('burndown tick triage jobs (CC-649)', () => {
+  const TRIAGER = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../profiles/triager.json')
+  const ALL_TRIAGE = { stalled: 'triage', failed: 'triage' }
+  const READY = { route: ALL_TRIAGE, triage: { account: 'agents' } }
+  const at = (minutes: number) => new Date(NOON.getTime() + minutes * MINUTE)
+
+  const stalledClaim = (taskId = 'DM-1', over: Partial<Claim> = {}): Claim => {
+    const name = `st-${taskId.toLowerCase()}`
+    return {
+      taskId,
+      initiative: 'demo',
+      seat: 'seat-t',
+      namePrefix: 'st',
+      agentId: `id-${name}`,
+      agentName: name,
+      spawned: [name],
+      spawnedAt: NOON.toISOString(),
+      phase: 'implementing',
+      phaseAt: NOON.toISOString(),
+      stalledReason: 'no final report',
+      stalledClass: 'failed',
+      notified: ['dispatched'],
+      ...over,
+    }
+  }
+
+  /** Seats mode, the triager installed under the test home, and the claims already stalled. */
+  function setup(extra: Record<string, unknown>, claims: Claim[] = [stalledClaim()]): AgentIdentity[] {
+    seatPolicy()
+    config({ seats: ['seat-t'], ...extra })
+    seatInitiative(Object.fromEntries(claims.map(c => [c.taskId, seatTask(c.taskId)])))
+    write(path.join(world, 'home', 'profiles', 'triager.json'), fs.readFileSync(TRIAGER, 'utf8'))
+    writeLedger(burndownLedgerPath(), { version: 1, claims })
+    return claims.map(c => row(c.agentName ?? '?', 'exited'))
+  }
+
+  const tickAt = (fake: Fake, minutes: number) =>
+    tickFromDisk({ dryRun: false, broker: fake.broker, now: at(minutes), log: () => {}, exec: stubGh() })
+  const triageFrames = (fake: Fake) => fake.frames.filter(f => f.tags.includes('triage'))
+  const stalledLines = (fake: Fake) =>
+    fake.sends.flatMap(s => s.text.split('\n').filter(l => l.startsWith('stalled ')))
+  const claimOf = (taskId = 'DM-1') => readLedger(burndownLedgerPath()).claims.find(c => c.taskId === taskId)
+
+  it('with the dial at its default sends the stall to the owner as before, and spawns nothing', async () => {
+    const fake = fakeBroker({ agents: setup({}) })
+
+    await tickAt(fake, 0)
+    await tickAt(fake, 1)
+
+    expect(fake.frames).toEqual([])
+    expect(fake.sends.map(s => s.text)).toEqual([
+      `Burndown events for seat-t at ${NOON.toISOString()}\nstalled DM-1: no final report`,
+    ])
+    expect(claimOf()?.triage).toBeUndefined()
+  })
+
+  it('starts one triager per stall across three ticks and tells the owner nothing while it runs', async () => {
+    const agents = setup({ exceptions: READY })
+    const fake = fakeBroker({ agents })
+
+    const first = await tickAt(fake, 0)
+    agents.push(row('triage-dm-1-1', 'live', path.join(world, 'aw')))
+    await tickAt(fake, 1)
+    await tickAt(fake, 2)
+
+    expect(triageFrames(fake)).toEqual([
+      expect.objectContaining({
+        name: 'triage-dm-1-1',
+        profile: 'triager',
+        configDir: accountPath(),
+        cwd: path.join(world, 'aw'),
+        surface: 'headless',
+        tags: ['burndown', 'triage', 'task:DM-1'],
+        brief: expect.stringContaining('stalled: no final report'),
+      }),
+    ])
+    expect(first.join('\n')).toContain('started triage triage-dm-1-1 for DM-1#')
+    expect(stalledLines(fake)).toEqual([])
+    expect(claimOf()?.triage).toMatchObject({ outcome: 'started', name: 'triage-dm-1-1' })
+  })
+
+  it('writes the start, the spawned name and the day count before the frame goes out', async () => {
+    const agents = setup({ exceptions: READY })
+    let seen: { claim: Claim | undefined; starts: string[] | undefined } = {
+      claim: undefined,
+      starts: undefined,
+    }
+    const fake = fakeBroker({
+      agents,
+      spawn: () => {
+        const ledger = readLedger(burndownLedgerPath())
+        seen = { claim: ledger.claims[0], starts: ledger.triageStarts }
+        return { ok: true }
+      },
+    })
+
+    await tickAt(fake, 0)
+
+    expect(seen.claim?.triage).toMatchObject({ outcome: 'started', name: 'triage-dm-1-1' })
+    expect(seen.claim?.spawned).toEqual(['st-dm-1', 'triage-dm-1-1'])
+    expect(seen.starts).toEqual([NOON.toISOString()])
+  })
+
+  it('falls back to the owner this tick, with a note, when the dial says triage but nothing is configured', async () => {
+    const fake = fakeBroker({ agents: setup({ exceptions: { route: ALL_TRIAGE } }) })
+
+    const lines = await tickAt(fake, 0)
+
+    expect(fake.frames).toEqual([])
+    expect(stalledLines(fake)).toEqual(['stalled DM-1: no final report'])
+    expect(lines).toContain(
+      'triage of DM-1# falls back to the owner: triage is not ready: no exceptions.triage in the burndown config',
+    )
+  })
+
+  it('tells the owner the same tick when the triage spawn is refused', async () => {
+    const agents = setup({ exceptions: READY })
+    const fake = fakeBroker({ agents, spawn: () => ({ ok: false, reason: 'no slot' }) })
+
+    const lines = await tickAt(fake, 0)
+
+    expect(triageFrames(fake)).toHaveLength(1)
+    expect(stalledLines(fake)).toEqual(['stalled DM-1: no final report'])
+    expect(claimOf()?.triage).toMatchObject({
+      outcome: 'refused',
+      detail: 'triage triage-dm-1-1 refused: no slot',
+    })
+    expect(lines).toContain('triage triage-dm-1-1 refused: no slot; the owner is told')
+  })
+
+  it('tells the owner once the triager exits with the claim still stalled, and never starts a second job', async () => {
+    const agents = setup({ exceptions: READY })
+    const fake = fakeBroker({ agents })
+
+    await tickAt(fake, 0)
+    agents.push(row('triage-dm-1-1', 'exited', path.join(world, 'aw')))
+    await tickAt(fake, 1)
+    await tickAt(fake, 2)
+    await tickAt(fake, 3)
+
+    expect(triageFrames(fake)).toHaveLength(1)
+    expect(stalledLines(fake)).toEqual([
+      'stalled DM-1: no final report (triage triage-dm-1-1 ran, claim still stalled)',
+    ])
+    expect(claimOf()?.triage?.outcome).toBe('ended')
+  })
+
+  it('tells the owner once a live triager runs past maxMinutes', async () => {
+    const agents = setup({ exceptions: { route: ALL_TRIAGE, triage: { account: 'agents', maxMinutes: 30 } } })
+    const fake = fakeBroker({ agents })
+
+    await tickAt(fake, 0)
+    agents.push(row('triage-dm-1-1', 'live', path.join(world, 'aw')))
+    await tickAt(fake, 30)
+    const before = stalledLines(fake)
+    await tickAt(fake, 31)
+
+    expect(before).toEqual([])
+    expect(stalledLines(fake)).toEqual([
+      'stalled DM-1: no final report (triage triage-dm-1-1 ran, claim still stalled)',
+    ])
+  })
+
+  it('raises nothing for a claim the triager released', async () => {
+    const agents = setup({ exceptions: READY })
+    const fake = fakeBroker({ agents })
+
+    await tickAt(fake, 0)
+    writeLedger(burndownLedgerPath(), { ...readLedger(burndownLedgerPath()), claims: [] })
+    agents.push(row('triage-dm-1-1', 'exited', path.join(world, 'aw')))
+    await tickAt(fake, 1)
+
+    expect(stalledLines(fake)).toEqual([])
+    expect(triageFrames(fake)).toHaveLength(1)
+  })
+
+  it('never triages a gate-trip, even with every dial at triage', async () => {
+    const gate = stalledClaim('DM-1', {
+      stalledClass: 'gate-trip',
+      stalledReason: 'Shepherd refused demo/repo#5',
+    })
+    const fake = fakeBroker({ agents: setup({ exceptions: READY }, [gate]) })
+
+    await tickAt(fake, 0)
+
+    expect(fake.frames).toEqual([])
+    expect(stalledLines(fake)).toEqual(['stalled DM-1: Shepherd refused demo/repo#5'])
+  })
+
+  it('starts one job under maxPerDay 1 and sends the second stall to the owner with a cap note', async () => {
+    const claims = [stalledClaim('DM-1'), stalledClaim('DM-2')]
+    const exceptions = { route: ALL_TRIAGE, triage: { account: 'agents', maxPerDay: 1 } }
+    const fake = fakeBroker({ agents: setup({ exceptions }, claims) })
+
+    const lines = await tickAt(fake, 0)
+
+    expect(triageFrames(fake).map(f => f.name)).toEqual(['triage-dm-1-1'])
+    expect(stalledLines(fake)).toEqual(['stalled DM-2: no final report'])
+    expect(lines).toContain(
+      'triage of DM-2# falls back to the owner: triage day cap spent (1 of maxPerDay 1)',
+    )
+  })
+
+  it('waits without a seat event while maxAgents is full, then tells the owner past maxMinutes', async () => {
+    const agents = setup({ maxAgents: 1, exceptions: READY })
+    agents.splice(0, agents.length, row('st-dm-1', 'live'))
+    const fake = fakeBroker({ agents })
+
+    const waiting = await tickAt(fake, 0)
+    await tickAt(fake, 29)
+    const before = stalledLines(fake)
+    const late = await tickAt(fake, 31)
+
+    expect(triageFrames(fake)).toEqual([])
+    expect(before).toEqual([])
+    expect(waiting.join('\n')).toContain('triage of DM-1# waits: no agent capacity')
+    expect(stalledLines(fake)).toEqual(['stalled DM-1: no final report'])
+    expect(late).toContain(
+      'triage of DM-1# falls back to the owner: no agent capacity for triage in maxMinutes 30',
+    )
+  })
+
+  it('shows the class, route and triage outcome on the status line', async () => {
+    const fake = fakeBroker({ agents: setup({ exceptions: READY }) })
+    await tickAt(fake, 0)
+
+    const lines = renderStatus(readLedger(burndownLedgerPath()), at(1))
+
+    expect(lines.join('\n')).toContain('STALLED (class failed, route triage, triage triage-dm-1-1 started)')
+  })
+})
