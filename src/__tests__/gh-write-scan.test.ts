@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -37,6 +37,8 @@ beforeEach(() => {
       'for a in "$@"; do f=${a##*[=@]}; case "$f" in */gh-write-*/source-*) cat "$f" >> "' +
         bodies() +
         '";; esac; done',
+      `[ -n "$GH_SLEEP" ] && { echo $$ > "${file('gh.pid.tmp')}"; mv "${file('gh.pid.tmp')}" "${file('gh.pid')}"; exec sleep "$GH_SLEEP"; }`,
+      'exit 0',
       '',
     ].join('\n'),
     { mode: 0o755 },
@@ -129,6 +131,85 @@ describe('gh-write refuses a finding in every input channel before gh starts', (
   })
 })
 
+describe('gh-write refuses a command whose text it cannot place, before gh starts', () => {
+  const dirty = (): string => {
+    fs.writeFileSync(file('dirty.md'), `${TERM}\n`)
+    return file('dirty.md')
+  }
+  const rows: [string, () => string[], string, TermsLoad?][] = [
+    ['a body flag before the verb', () => ['pr', '--body', TERM, 'comment', '1'], SCAN_REASONS.flagFirst],
+    [
+      'a body file before the verb',
+      () => ['pr', '--body-file', dirty(), 'comment', '1'],
+      SCAN_REASONS.flagFirst,
+    ],
+    ['a body flag before the group', () => ['--body', TERM, 'pr', 'comment', '1'], SCAN_REASONS.flagFirst],
+    [
+      'an input file before api',
+      () => ['--input', dirty(), 'api', 'repos/o/r/issues'],
+      SCAN_REASONS.flagFirst,
+    ],
+    ['-R before the group', () => ['-R', 'o/r', 'pr', 'comment', '1', '--body', TERM], 'private-term #1'],
+    [
+      '--repo= between group and verb',
+      () => ['pr', '--repo=o/r', 'comment', '1', '-b', TERM],
+      'private-term #1',
+    ],
+    ['pr create --recover', () => ['pr', 'create', '--recover', dirty()], SCAN_REASONS.unscannedCreate],
+    [
+      'issue create --recover=',
+      () => ['issue', 'create', `--recover=${dirty()}`],
+      SCAN_REASONS.unscannedCreate,
+    ],
+    ['pr create --template', () => ['pr', 'create', '--template', dirty()], SCAN_REASONS.unscannedCreate],
+    ['issue create -T', () => ['issue', 'create', '-T', 'Bug'], SCAN_REASONS.unscannedCreate],
+    ['pr create --fill', () => ['pr', 'create', '--fill'], SCAN_REASONS.unscannedCreate],
+    ['pr create --fill-first', () => ['pr', 'create', '--fill-first'], SCAN_REASONS.unscannedCreate],
+    [
+      'pr create --fill-verbose',
+      () => ['pr', 'create', '--fill-verbose', '-t', 'x'],
+      SCAN_REASONS.unscannedCreate,
+    ],
+    ['pr create -df', () => ['pr', 'create', '-df'], SCAN_REASONS.unscannedCreate],
+    [
+      'a merge path behind a flag cluster, missing list',
+      () => ['api', '-ip', '-X', 'repos/o/r/issues', '-ip', 'repos/o/r/pulls/7/merge', '-f', 'body=x'],
+      REASONS.missingTerms,
+      { kind: 'missing' },
+    ],
+    [
+      'a merge with a field, missing list',
+      () => ['api', '-X', 'PUT', 'repos/o/r/pulls/7/merge', '-f', 'merge_method=squash'],
+      REASONS.missingTerms,
+      { kind: 'missing' },
+    ],
+    [
+      'a merge with a second endpoint, missing list',
+      () => ['api', '-X', 'PUT', 'repos/o/r/pulls/7/merge', 'repos/o/r/issues', '--input', file('in.json')],
+      REASONS.missingTerms,
+      { kind: 'missing' },
+    ],
+  ]
+
+  it.each(rows)('%s', async (_name, args, reason, terms) => {
+    fs.writeFileSync(file('in.json'), '{}')
+
+    const result = await runGhWrite(args(), deps(terms === undefined ? {} : { terms }), throttle())
+
+    expect(result.code).toBe(1)
+    expect(result.stderr.toString()).toContain(reason)
+    expect(result.stderr.toString()).not.toContain(TERM)
+    expect(ghStarted()).toBe(false)
+  })
+
+  it('runs a clean post with -R before the group', async () => {
+    const result = await runGhWrite(['-R', 'o/r', 'pr', 'comment', '1', '--body', 'ok'], deps(), throttle())
+
+    expect(result.code).toBe(0)
+    expect(fs.readFileSync(calls(), 'utf8')).toBe('-R o/r pr comment 1 --body ok\n')
+  })
+})
+
 describe('gh gets the bytes gh-write scanned', () => {
   it('hands a clean body file to gh byte for byte, through a copy', async () => {
     fs.writeFileSync(file('b.md'), CLEAN)
@@ -197,10 +278,11 @@ describe('gh gets the bytes gh-write scanned', () => {
 })
 
 describe('gh-write and the term list', () => {
-  const merge = ['api', '-X', 'PUT', 'repos/o/r/pulls/7/merge', '-f', 'merge_method=squash']
+  const merge = ['api', '-X', 'PUT', 'repos/o/r/pulls/7/merge', '--input', '-']
+  const MERGE_BODY = '{"merge_method":"squash"}\n'
 
   it('refuses PR text while the list is missing, but lets a merge through', async () => {
-    const missing = deps({ terms: { kind: 'missing' } })
+    const missing = deps({ terms: { kind: 'missing' }, stdin: MERGE_BODY })
 
     const refused = await runGhWrite(['pr', 'create', '-t', 'x', '-b', 'y'], missing, throttle())
     expect([refused.code, refused.stderr.toString().trim()]).toEqual([1, REASONS.missingTerms])
@@ -212,7 +294,7 @@ describe('gh-write and the term list', () => {
   })
 
   it('refuses everything that posts text, merge included, while the list is unreadable', async () => {
-    const unreadable = deps({ terms: { kind: 'unreadable' } })
+    const unreadable = deps({ terms: { kind: 'unreadable' }, stdin: MERGE_BODY })
 
     const results = await Promise.all([
       runGhWrite(['pr', 'create', '-t', 'x', '-b', 'y'], unreadable, throttle()),
@@ -297,7 +379,11 @@ describe('gh-write scan parity with the PreToolUse guard', () => {
       { args: ['api', 'repos/o/r/issues', '--input', file('clean.md')] },
       { args: ['api', 'repos/o/r/issues', '--input', '-'], stdin: TERM },
       { args: ['api', 'repos/o/r/pulls/7/merge', '-X', 'PUT'], terms: { kind: 'missing' } },
-      { args: ['api', '-X', 'PUT', 'repos/o/r/pulls/7/merge', '-f', 'm=s'], terms: { kind: 'missing' } },
+      {
+        args: ['api', '-X', 'PUT', 'repos/o/r/pulls/7/merge', '--input', '-'],
+        stdin: '{}',
+        terms: { kind: 'missing' },
+      },
       { args: ['pr', 'create', '-t', 'x', '-b', 'y'], terms: { kind: 'missing' } },
       { args: ['pr', 'create', '-t', 'x', '-b', 'y'], terms: { kind: 'unreadable' } },
       { args: ['pr', 'view', '3'], terms: { kind: 'unreadable' } },
@@ -319,12 +405,59 @@ describe('gh-write scan parity with the PreToolUse guard', () => {
 })
 
 describe('agent-chat gh-write from a shell', () => {
-  it('reads --input - from a heredoc and hands gh exactly that text', () => {
-    // A merge, so the run is the same with or without a term list in this machine's real home.
-    const script = `"${process.execPath}" "${CLI}" gh-write -- api -X PUT repos/o/r/pulls/7/merge --input - <<'EOF'\n{"merge_method":"squash"}\nEOF\n`
+  // A merge, so each run is the same with or without a term list in this machine's real home.
+  const MERGE = ['gh-write', '--', 'api', '-X', 'PUT', 'repos/o/r/pulls/7/merge', '--input', '-']
+  const env = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => ({
+    ...process.env,
+    AGENT_CHAT_HOME: file('home'),
+    ...extra,
+  })
 
-    execFileSync('/bin/sh', ['-c', script])
+  /** The sleeping fake gh outlives a SIGTERM to gh-write; only its recorded pid is killed. */
+  const killFakeGh = (): void => {
+    if (!fs.existsSync(file('gh.pid'))) return
+    try {
+      process.kill(Number(fs.readFileSync(file('gh.pid'), 'utf8')), 'SIGKILL')
+    } catch {
+      // Already gone.
+    }
+  }
+
+  const until = async (done: () => boolean): Promise<void> => {
+    for (let waited = 0; !done(); waited += 50) {
+      if (waited > 10_000) throw new Error('timed out')
+      await realSleep(50)
+    }
+  }
+
+  it('reads --input - from a heredoc and hands gh exactly that text', () => {
+    const script = `"${process.execPath}" "${CLI}" ${MERGE.join(' ')} <<'EOF'\n{"merge_method":"squash"}\nEOF\n`
+
+    execFileSync('/bin/sh', ['-c', script], { env: env() })
 
     expect(fs.readFileSync(bodies(), 'utf8')).toBe('{"merge_method":"squash"}\n')
+    expect(fs.existsSync(file('home/gh-write.stamp.json'))).toBe(true)
+  })
+
+  it('removes its copy when SIGTERM ends it while gh runs', async () => {
+    const child = spawn(process.execPath, [CLI, ...MERGE], {
+      env: env({ GH_SLEEP: '30' }),
+      stdio: ['pipe', 'ignore', 'ignore'],
+    })
+    const exited = new Promise(resolve => child.on('exit', (_code, signal) => resolve(signal)))
+    child.stdin.end('{}\n')
+    try {
+      await until(() => fs.existsSync(file('gh.pid')))
+      const copy = /(\S*gh-write-[^/\s]*)\/source-0/.exec(fs.readFileSync(calls(), 'utf8'))?.[1] as string
+      expect(fs.existsSync(copy)).toBe(true)
+
+      child.kill('SIGTERM')
+
+      expect(await exited).toBe('SIGTERM')
+      expect(fs.existsSync(copy)).toBe(false)
+    } finally {
+      child.kill('SIGKILL')
+      killFakeGh()
+    }
   })
 })

@@ -29,6 +29,8 @@ export const SCAN_REASONS = {
   unreadableSource: `leak-guard: gh-write could not read a body or input file as a regular file, so it neither checked nor posted it. ${DOCS}`,
   stdinTwice: `leak-guard: gh-write reads stdin once, so only one body or input may be -. ${DOCS}`,
   unknownCommand: `leak-guard: gh-write could not tell which text this gh command posts, so it did not run it. ${DOCS}`,
+  flagFirst: `leak-guard: gh-write needs gh's group and verb first; only -R/--repo may come before them. Put every other flag after the verb. ${DOCS}`,
+  unscannedCreate: `leak-guard: --fill, --template and --recover make gh read text gh-write cannot scan. Pass --title and --body or --body-file instead. ${DOCS}`,
 } as const
 
 /** The guard's own deny for a finding: locations and rule ids, never the matched text. */
@@ -66,11 +68,49 @@ export const scanDeps = (termsFile: string): ScanDeps => ({
 
 const NO_TEXT: Scan = { files: new Map() }
 
+const REPO_FLAGS = new Set(['-R', '--repo'])
+
+/** The words after any leading `-R <repo>`, or undefined when another flag comes first. */
+function afterRepo(words: readonly string[]): readonly string[] | undefined {
+  let i = 0
+  for (let word = words[0]; word?.startsWith('-'); word = words[i]) {
+    if (REPO_FLAGS.has(word)) i += 2
+    else if (word.startsWith('--repo=') || /^-R./.test(word)) i += 1
+    else return undefined
+  }
+  return words.slice(i)
+}
+
+/**
+ * The command as gh-write classifies it, with `-R` pairs before the group and verb removed. gh
+ * accepts any flag there (`pr --body x comment 1`), which the guard's classifier would read as
+ * another command, so any other flag before them leaves the command undefined.
+ */
+function commandOf(args: readonly string[]): readonly string[] | undefined {
+  const rest = afterRepo(args)
+  const [group = '', ...tail] = rest ?? []
+  if (rest === undefined || (group !== 'pr' && group !== 'issue')) return rest
+  const verbOn = afterRepo(tail)
+  return verbOn === undefined ? undefined : [group, ...verbOn]
+}
+
+const CREATE_VERBS = new Set(['create', 'new'])
+const UNSCANNED_LONG = /^--(?:fill|recover|template)(?:[-=]|$)/
+/** `-f` is `--fill` on pr create and `-T` is `--template`, alone or in a cluster. */
+const UNSCANNED_SHORT = /^-[A-Za-z]*[fT]/
+
+const readsUnscanned = (command: readonly string[]): boolean =>
+  CREATE_VERBS.has(command[1] ?? '') &&
+  command.some(word => UNSCANNED_LONG.test(word) || UNSCANNED_SHORT.test(word))
+
 export async function scanGhArgs(args: readonly string[], deps: ScanDeps): Promise<Scan> {
-  const kind = ghKind(args)
+  const command = commandOf(args)
+  if (command === undefined) return { reason: SCAN_REASONS.flagFirst }
+  const kind = ghKind(command)
   if (kind === 'other') return NO_TEXT
   if (kind === 'unknown') return { reason: SCAN_REASONS.unknownCommand }
-  const sources = kind === 'api' ? apiSources(args) : prSources(args)
+  if (kind === 'pr' && readsUnscanned(command)) return { reason: SCAN_REASONS.unscannedCreate }
+  const sources = kind === 'api' ? apiSources(command) : prSources(command)
   if (sources.inline.length + sources.files.length === 0) return NO_TEXT
   const read = await readSources(
     sources.files.map(({ file }) => file),
@@ -81,8 +121,25 @@ export async function scanGhArgs(args: readonly string[], deps: ScanDeps): Promi
     ...sources.inline,
     ...sources.files.map(({ label, file }) => ({ label, text: read.files.get(file) ?? '' })),
   ]
-  const reason = verdict(args, deps.terms(), texts)
+  const reason = verdict(command, deps.terms(), texts)
   return reason === undefined ? read : { reason }
+}
+
+const MERGE_VALUE_FLAGS = new Set(['-X', '--method', '--input', '-H', '--header', '-q', '--jq'])
+
+/**
+ * Stricter than the guard's `isMerge`: one endpoint word and no flag beyond a method, headers, a jq
+ * filter and `--input`, so a cluster or a field cannot pass a second endpoint or text off as a merge.
+ */
+function plainMerge(command: readonly string[]): boolean {
+  const positionals: string[] = []
+  for (let i = 1; i < command.length; i++) {
+    const word = command[i] as string
+    if (MERGE_VALUE_FLAGS.has(word)) i++
+    else if (word.startsWith('-')) return false
+    else positionals.push(word)
+  }
+  return positionals.length === 1 && isMerge(command)
 }
 
 async function readSources(files: readonly string[], deps: ScanDeps): Promise<Scan> {
@@ -96,14 +153,14 @@ async function readSources(files: readonly string[], deps: ScanDeps): Promise<Sc
   return { files: read }
 }
 
-/** The guard's order: an unreadable list always refuses, a missing one unless the call is a merge. */
+/** The guard's order: an unreadable list always refuses, a missing one unless the call is a plain merge. */
 function verdict(
-  args: readonly string[],
+  command: readonly string[],
   terms: TermsLoad,
   texts: readonly { label: string; text: string }[],
 ): string | undefined {
   if (terms.kind === 'unreadable') return REASONS.unreadableTerms
-  if (terms.kind === 'missing' && MISSING_TERMS_REFUSES && !isMerge(args)) return REASONS.missingTerms
+  if (terms.kind === 'missing' && MISSING_TERMS_REFUSES && !plainMerge(command)) return REASONS.missingTerms
   const found = findingsIn(texts, terms.kind === 'ok' ? terms.rules : [])
   return found.length === 0 ? undefined : findingReason(found)
 }
@@ -136,7 +193,7 @@ function handOver(
 ): { prepared: Prepared; copies: ReadonlyMap<string, string> } {
   if (files.size === 0) return { prepared: { args: [...args], cleanup: () => undefined }, copies: new Map() }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gh-write-'))
-  const cleanup = (): void => fs.rmSync(dir, { recursive: true, force: true })
+  const cleanup = removeOnSignal(dir)
   try {
     const copyOf = new Map<string, string>()
     const copies = new Map<string, string>()
@@ -153,6 +210,25 @@ function handOver(
   }
 }
 
+const SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const
+
+/**
+ * The cleanup for a copy directory, also run when a signal ends the process, so a killed
+ * gh-write leaves no copy behind. The signal is raised again once the handler is gone.
+ */
+function removeOnSignal(dir: string): () => void {
+  const onSignal = (signal: NodeJS.Signals): void => {
+    cleanup()
+    process.kill(process.pid, signal)
+  }
+  const cleanup = (): void => {
+    for (const signal of SIGNALS) process.off(signal, onSignal)
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+  for (const signal of SIGNALS) process.once(signal, onSignal)
+  return cleanup
+}
+
 type Swap = (value: string) => string
 
 function swapSources(args: readonly string[], copyOf: ReadonlyMap<string, string>): string[] {
@@ -163,7 +239,8 @@ function swapSources(args: readonly string[], copyOf: ReadonlyMap<string, string
     return value.startsWith('@') ? `${field.slice(0, at)}@${swapFile(value.slice(1))}` : field
   }
   const out = [...args]
-  if (ghKind(args) === 'api') {
+  const command = commandOf(args)
+  if (command !== undefined && ghKind(command) === 'api') {
     swapFlag(out, args, ['-F', '--field'], swapField)
     swapFlag(out, args, ['--input'], swapFile)
   } else swapFlag(out, args, ['--body-file', '-F'], swapFile)

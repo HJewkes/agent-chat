@@ -487,13 +487,26 @@ EOF
 ```
 
 gh never reads the original path or stdin. Each file source is replaced by a 0600 copy of the
-scanned text in a fresh `mkdtemp` directory, which is removed after the last retry. The swapped
-arguments are then scanned again with only those copies readable, so a file changed after the
-scan, or a flag spelling the swap missed, cannot reach gh unscanned.
+scanned text in a fresh `mkdtemp` directory. The directory is removed after the last retry, and also
+when SIGTERM, SIGINT or SIGHUP ends gh-write. The swapped arguments are then scanned again with only
+those copies readable, so a file changed after the scan, or a flag spelling the swap missed, cannot
+reach gh unscanned.
+
+gh parses flags anywhere, so `pr --body x comment 1` is `pr comment`. gh-write therefore requires
+the group and verb first: only `-R`/`--repo` and its value may come before either, and any other
+flag there refuses. `pr create` and `issue create` refuse `--fill` (any spelling, and `-f`),
+`--template`/`-T` and `--recover`, since gh would then post text read from commits, a template or a
+recovery file that gh-write never sees.
 
 It refuses with exit 1, without starting gh, on a finding (the guard's message: locations and rule
 ids, never the matched text), on a body file it cannot read as a regular file, on stdin asked for
-twice, on an unreadable term list, and on a missing term list unless the call is a `gh api` merge.
+twice, on an unreadable term list, and on a missing term list unless the call is a plain merge. A
+plain merge is `gh api` with exactly one endpoint word, `.../pulls/<n>/merge`, and no flag other than
+`-X`/`--method`, `-H`/`--header`, `-q`/`--jq` and `--input`. This is stricter than the hook, which
+also exempts a merge with `-f` fields.
+
+`pr close --comment`, `issue close --comment` and `release create --notes` are not scanned yet; they
+are classified as other commands, as in the hook.
 It reads the list from the passwd home's `~/.config/titan-egress/private-terms`, like the pre-push
 hook. It does not read `HOME`, `XDG_CONFIG_HOME` or `TITAN_EGRESS_TERMS`. No variable or flag turns
 the scan off. With the hook in place, a post is scanned twice.
