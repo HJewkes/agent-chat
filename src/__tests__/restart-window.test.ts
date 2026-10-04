@@ -18,7 +18,10 @@ esac
 exit 1`),
   npm: shim(`
 echo "npm $*" >> "$SHIM_LOG"
-[ "$*" != "\${FAKE_NPM_FAIL:-}" ] || exit 1`),
+echo "cwd $PWD" >> "$SHIM_CWD_LOG"
+[ "$*" != "\${FAKE_NPM_FAIL:-}" ] || exit 1
+[ "$*" != "ci" ] || { mkdir -p node_modules; echo new > node_modules/marker; }
+[ "$*" != "run build" ] || { mkdir -p dist; echo new > dist/marker; }`),
   'agent-chat-real': shim(`
 echo "agent-chat $*" >> "$SHIM_LOG"
 case "$1 $2" in
@@ -42,6 +45,9 @@ let repo: string
 let home: string
 let log: string
 
+const liveMarkers = (): string[] =>
+  ['node_modules', 'dist'].map(d => fs.readFileSync(path.join(repo, d, 'marker'), 'utf8').trim())
+
 const git = (...args: string[]): string => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' })
 
 beforeEach(() => {
@@ -60,6 +66,11 @@ beforeEach(() => {
     fs.writeFileSync(dest, body, { mode: 0o755 })
   }
   fs.symlinkSync(path.join(repo, 'bin', 'agent-chat'), path.join(bin, 'agent-chat'))
+  fs.writeFileSync(path.join(repo, '.gitignore'), 'node_modules\ndist\n')
+  for (const live of ['node_modules', 'dist']) {
+    fs.mkdirSync(path.join(repo, live))
+    fs.writeFileSync(path.join(repo, live, 'marker'), 'old')
+  }
   git('add', '.')
   git('commit', '-q', '-m', 'init')
   git('remote', 'add', 'origin', origin)
@@ -82,6 +93,7 @@ const run = (env: Record<string, string> = {}, args: string[] = []) => {
       HOME: dir,
       AGENT_CHAT_HOME: home,
       SHIM_LOG: log,
+      SHIM_CWD_LOG: path.join(dir, 'cwd.log'),
       ...env,
     },
   })
@@ -100,6 +112,7 @@ describe('restart-window process patterns', () => {
   it('matches the absolute-path git push the agent shim runs', () => {
     expect(push.test('/opt/homebrew/bin/git push --dry-run origin main')).toBe(true)
     expect(push.test('git push origin main')).toBe(true)
+    expect(push.test('/opt/homebrew/bin/git -C /x/work/tree push origin HEAD')).toBe(true)
     expect(push.test('/usr/lib/git-core/git-remote-https origin https://example.invalid/r.git')).toBe(true)
   })
 
@@ -173,6 +186,56 @@ describe('restart-window update and restart', () => {
 
     expect(r.code).toBe(4)
     expect(r.calls).not.toContain('service restart')
+  })
+
+  it('leaves the live node_modules and dist intact when the staged step fails', () => {
+    for (const step of ['ci', 'run build']) {
+      const r = run({ FAKE_NPM_FAIL: step })
+
+      expect(r.code).toBe(4)
+      expect(liveMarkers()).toEqual(['old', 'old'])
+      expect(fs.existsSync(`${repo}.staging`)).toBe(false)
+    }
+  })
+
+  it('exits 4 and leaves the live tree untouched when git pull fails', () => {
+    const other = path.join(dir, 'other')
+    execFileSync('git', ['clone', '-q', path.join(dir, 'origin.git'), other])
+    fs.writeFileSync(path.join(other, 'remote.txt'), 'r')
+    execFileSync('git', ['-C', other, '-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'add', '.'])
+    execFileSync('git', [
+      '-C',
+      other,
+      '-c',
+      'user.email=t@example.invalid',
+      '-c',
+      'user.name=t',
+      'commit',
+      '-q',
+      '-m',
+      'r',
+    ])
+    execFileSync('git', ['-C', other, 'push', '-q', 'origin', 'main'])
+    fs.writeFileSync(path.join(repo, 'local.txt'), 'l')
+    git('add', '.')
+    git('commit', '-q', '-m', 'local')
+    const r = run()
+
+    expect(r.code).toBe(4)
+    expect(r.calls).toBe('')
+    expect(liveMarkers()).toEqual(['old', 'old'])
+  })
+
+  it('runs npm in the staging dir and swaps the staged install and build in on success', () => {
+    const r = run()
+
+    expect(r.code).toBe(0)
+    expect(fs.readFileSync(path.join(dir, 'cwd.log'), 'utf8')).toBe(
+      `cwd ${repo}.staging\ncwd ${repo}.staging\n`,
+    )
+    expect(liveMarkers()).toEqual(['new', 'new'])
+    expect(fs.readdirSync(repo).sort()).toEqual(['.git', '.gitignore', 'bin', 'dist', 'node_modules'])
+    expect(fs.existsSync(`${repo}.staging`)).toBe(false)
   })
 
   it('exits 3 and says the broker may be down when the restart fails', () => {
