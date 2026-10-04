@@ -11,6 +11,7 @@ import {
   type ReportTask,
 } from '../agents/burndown/milestone-report.js'
 import { milestoneReportFromDisk, reportTaskOf } from '../agents/burndown/milestone-source.js'
+import type { DispatchRecord } from '../agents/seats/dispatch-record.js'
 import { validateMilestones, type MilestoneFile } from '../agents/burndown/milestones.js'
 import { milestoneReportLines } from '../cli/verbs/burndown.js'
 
@@ -108,7 +109,7 @@ describe('the section 4.4 fields', () => {
       points: { scope: 9, done: 3, remaining: 6, addedThisWeek: 3, unestimated: ['EX-5'] },
       criticalPath: { points: 4, slices: ['EX-2', 'EX-3'], lowerBound: false, cycles: [] },
       counts: { ready: 2, blocked: 1, inFlight: 1 },
-      wip: { building: 1, inReview: 1, awaitingMerge: 0, awaitingOwner: 0 },
+      wip: { building: 1, inReview: 0, awaitingMerge: 0, awaitingOwner: 0 },
       throughput: { pointsPerDay: 0.67, days: 3 },
       forecast: { days: 5.97, daysLeft: 2 },
     })
@@ -134,6 +135,61 @@ describe('the section 4.4 fields', () => {
     expect(m3.status).toBe('on-track')
     expect(m3.reason).toBeUndefined()
     expect(m3.forecast).toEqual({ days: 0.5, daysLeft: 2 })
+  })
+})
+
+const run = (task: string, outcome: DispatchRecord['outcome'], extra: Partial<DispatchRecord> = {}) =>
+  ({
+    ts: '2026-10-01T09:00:00Z',
+    task,
+    profile: 'implementer',
+    agent: `vc-${task}`,
+    outcome,
+    note: null,
+    ...extra,
+  }) as DispatchRecord
+
+const sum = (wip: Record<string, number>) => Object.values(wip).reduce((a, b) => a + b, 0)
+
+describe('in flight', () => {
+  it('puts a queued claim in building, so the WIP stages sum to inFlight', () => {
+    const ledger: Ledger = { version: 1, claims: [...LEDGER.claims, claim('EX-4', 'queued')] }
+
+    const m1 = report('M1', { ledger })
+
+    expect(m1.counts).toEqual({ ready: 1, blocked: 1, inFlight: 2 })
+    expect(m1.wip.building).toBe(2)
+    expect(sum(m1.wip)).toBe(m1.counts.inFlight)
+  })
+
+  it('reads open seat runs by profile and parked runs by verdict, and drops ended runs', () => {
+    const dispatches = [
+      run('EX-4', 'dispatched', { profile: 'bd-reviewer' }),
+      run('EX-5', 'parked', { note: 'MERGE at abc123; queued for owner' }),
+      run('EX-12', 'parked', { note: 'FIX_FIRST at abc123' }),
+      run('EX-3', 'dispatched'),
+      run('EX-3', 'merged', { ts: '2026-10-01T10:00:00Z' }),
+    ]
+
+    const doc = milestoneReport(input({ ledger: { version: 1, claims: [] }, dispatches }))
+    const [m1, , m3] = doc.milestones
+
+    expect(m1!.counts).toEqual({ ready: 1, blocked: 1, inFlight: 2 })
+    expect(m1!.wip).toEqual({ building: 0, inReview: 1, awaitingMerge: 1, awaitingOwner: 0 })
+    expect(m3!.wip).toEqual({ building: 0, inReview: 0, awaitingMerge: 0, awaitingOwner: 1 })
+  })
+
+  it('takes the latest sighting of a task, and keeps a held claim over an ended run', () => {
+    const dispatches = [
+      run('EX-4', 'parked', { note: 'MERGE', ts: '2026-10-01T08:00:00Z' }),
+      run('EX-4', 'dispatched', { profile: 'reviewer', ts: '2026-10-01T09:00:00Z' }),
+      run('EX-2', 'done', { ts: '2026-10-01T12:00:00Z' }),
+    ]
+
+    const m1 = report('M1', { dispatches })
+
+    expect(m1.wip).toEqual({ building: 1, inReview: 1, awaitingMerge: 0, awaitingOwner: 0 })
+    expect(m1.counts.inFlight).toBe(2)
   })
 })
 
@@ -258,6 +314,64 @@ describe('reading the report from disk', () => {
       counts: { ready: 0, blocked: 0, inFlight: 1 },
       wip: { inReview: 1 },
       throughput: { pointsPerDay: 0.33 },
+    })
+  })
+
+  it('counts open runs from a seat dispatch log, and not a closed one', () => {
+    const tasks = path.join(world, 'aw', 'example', 'tasks')
+    const auto = path.join(world, 'auto')
+    write(
+      path.join(auto, 'milestones', '2026-W40.yml'),
+      'week: 2026-W40\nappetite_days: 5\nmilestones:\n  - {id: M1, rank: 1, seat: seat-a}\n',
+    )
+    for (const id of ['EX-1', 'EX-2', 'EX-3'])
+      write(path.join(tasks, `${id}.yml`), `id: ${id}\nstatus: open\nestimate: 1\ntags: [milestone:M1]\n`)
+    write(path.join(auto, 'seats', 'seat-a.md'), '---\nprefix: sa\npool: pool-a\n---\n')
+    const rows = [
+      {
+        ts: '2026-10-01T08:00:00Z',
+        task: 'EX-1',
+        profile: 'implementer',
+        agent: 'sa-1',
+        agent_id: 'a1',
+        outcome: 'dispatched',
+        by: 'broker',
+      },
+      {
+        ts: '2026-10-01T08:10:00Z',
+        task: 'EX-2',
+        profile: 'bd-reviewer',
+        agent: 'sa-2',
+        agent_id: 'a2',
+        outcome: 'dispatched',
+        by: 'broker',
+      },
+      {
+        ts: '2026-10-01T08:20:00Z',
+        task: 'EX-3',
+        profile: 'implementer-lite',
+        agent: 'sa-3',
+        agent_id: 'a3',
+        outcome: 'dispatched',
+        by: 'broker',
+      },
+      { ts: '2026-10-01T09:00:00Z', task: 'EX-3', agent: 'sa-3', outcome: 'merged', note: 'merged abc123' },
+    ]
+    write(
+      path.join(auto, 'logs', 'seat-a', 'dispatch.jsonl'),
+      rows.map(r => JSON.stringify(r)).join('\n') + '\n',
+    )
+
+    const read = milestoneReportFromDisk({
+      autonomyRoot: auto,
+      activeWorkRoot: path.join(world, 'aw'),
+      now: NOW,
+      today: TODAY,
+    })!
+
+    expect(read.milestones[0]).toMatchObject({
+      counts: { ready: 1, blocked: 0, inFlight: 2 },
+      wip: { building: 1, inReview: 1, awaitingMerge: 0, awaitingOwner: 0 },
     })
   })
 

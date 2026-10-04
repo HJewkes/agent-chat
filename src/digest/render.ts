@@ -142,10 +142,16 @@ function next(d: Digest, s: Style): Section {
   return { title: 'Next (burndown dry run)', lines }
 }
 
-const milestones = (d: Digest): Section => ({
-  title: `Milestones (${d.milestones.length})`,
-  lines: d.milestones.map(m => `- ${renderMilestoneLine(m)}`),
-})
+/** Absent with no milestone file this week, so that digest reads as it did before CC-630. */
+const milestones = (d: Digest): Section[] =>
+  d.milestones.length === 0
+    ? []
+    : [
+        {
+          title: `Milestones (${d.milestones.length})`,
+          lines: d.milestones.map(m => `- ${renderMilestoneLine(m)}`),
+        },
+      ]
 
 const headline = (d: Digest): string =>
   `agent-chat digest for ${agoFrom(d.generatedAt, d.sinceMs).replace(' ago', '')} since ${new Date(d.sinceMs).toISOString()}`
@@ -155,7 +161,7 @@ export function renderDigest(d: Digest, format: Format): string[] {
   const sections = [
     needsYou(d, s),
     decided(d, s),
-    milestones(d),
+    ...milestones(d),
     done(d),
     stalled(d),
     unreported(d),

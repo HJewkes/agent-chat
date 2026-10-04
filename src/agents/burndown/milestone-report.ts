@@ -1,5 +1,7 @@
 import { criticalPath, type CriticalPathResult } from './critical-path.js'
-import { heldClaims, isStalled, type Claim, type Ledger, type Phase } from './ledger.js'
+import type { DispatchRecord } from '../seats/dispatch-record.js'
+import { inFlightStages, STAGES, type Stage } from './in-flight.js'
+import { heldClaims, type Ledger } from './ledger.js'
 import type { Milestone, MilestoneFile } from './milestones.js'
 import { tagBlocks } from './plan-order.js'
 import { checkToday, parseIsoDay } from './score.js'
@@ -7,14 +9,15 @@ import { parsePlanningTasks, type PlanTask, type TaggedTask } from './task-tags.
 
 /**
  * CC-630: the burn-down per milestone that `burndown milestone --json` prints and the digest reads.
- * Pure: the milestone file, the tasks, the claim ledger and the clock are parameters.
+ * Pure: the milestone file, the tasks, the claim ledger, the seats' dispatch runs and the clock are parameters.
  *
  * - A task belongs to a milestone by its `milestone:` tag. Points are estimates; an unestimated task
  *   adds none and is listed.
  * - The critical path runs over the milestone's open tasks. A task in a dependency cycle counts as
  *   blocked, and with any cycle the path is a lower bound.
- * - An open task is in flight while it holds a claim, blocked when its milestone's gate is open or a
- *   `dep:` blocks it (as in `planOrder`), and ready otherwise.
+ * - An open task is in flight while `inFlightStages` gives it a stage (a held claim, an open seat run or a
+ *   parked one), blocked when its milestone's gate is open or a `dep:` blocks it (as in `planOrder`),
+ *   and ready otherwise.
  * - Throughput is the points of the milestone's tasks done in the last three days, today included, over three.
  */
 
@@ -32,6 +35,8 @@ export interface MilestoneReportInput {
   milestones: MilestoneFile
   tasks: readonly ReportTask[]
   ledger: Ledger
+  /** Every seat's folded dispatch runs. */
+  dispatches?: readonly DispatchRecord[]
   now: Date
   /** ISO day; the clock for days left and throughput. */
   today: string
@@ -41,7 +46,7 @@ export interface MilestoneReportInput {
   stoppedSeats?: Readonly<Record<string, string>>
 }
 
-export type Stage = 'building' | 'inReview' | 'awaitingMerge' | 'awaitingOwner'
+export type { Stage } from './in-flight.js'
 export type MilestoneStatus = 'on-track' | 'at-risk' | 'stopped'
 
 export interface MilestoneReport {
@@ -54,7 +59,7 @@ export interface MilestoneReport {
   points: { scope: number; done: number; remaining: number; addedThisWeek: number; unestimated: string[] }
   criticalPath: { points: number; slices: string[]; lowerBound: boolean; cycles: string[][] }
   counts: { ready: number; blocked: number; inFlight: number }
-  /** Held claims (one per slice) by stage; a queued slice is in none. */
+  /** In-flight tasks by stage; the stages sum to `counts.inFlight`. */
   wip: Record<Stage, number>
   throughput: { pointsPerDay: number; days: number }
   /** `days` is the remaining path over throughput, null with no throughput; `daysLeft` is the appetite's. */
@@ -76,33 +81,19 @@ const round2 = (n: number) => Math.round(n * 100) / 100
 
 const isoDayOf = (day: number) => new Date(day * DAY_MS).toISOString().slice(0, 10)
 
-/** The day number of an ISO week's Monday; week 1 holds January 4th. */
+/** The day number of an ISO week's Monday; the week starts Monday 00:00 UTC, and week 1 holds January 4th. */
 export function weekStartDay(week: string): number {
   const [year, number] = week.split('-W').map(Number) as [number, number]
   const jan4 = Date.UTC(year, 0, 4) / DAY_MS
   return jan4 - ((jan4 + 3) % 7) + (number - 1) * 7
 }
 
-const STAGES: Partial<Record<Phase, Stage>> = {
-  spawning: 'building',
-  planning: 'building',
-  implementing: 'building',
-  reviewing: 'inReview',
-  'awaiting-merge': 'awaitingMerge',
-  shepherding: 'awaitingMerge',
-  parked: 'awaitingOwner',
-}
-
-/** A stalled claim waits on the owner, whatever its phase. */
-const stageOf = (claim: Claim, now: Date): Stage | undefined =>
-  isStalled(claim, now) ? 'awaitingOwner' : STAGES[claim.phase]
-
 interface Context {
   input: MilestoneReportInput
   tagged: TaggedTask[]
   byId: Map<string, ReportTask>
   blocks: ReturnType<typeof tagBlocks>
-  claims: Claim[]
+  stages: Map<string, Stage>
   today: number
   weekStart: number
 }
@@ -126,18 +117,15 @@ function pointsReport(members: TaggedTask[], ctx: Context): MilestoneReport['poi
 }
 
 function countsAndWip(open: TaggedTask[], milestone: Milestone, ctx: Context) {
-  const ids = new Set(open.map(t => t.id))
-  const held = ctx.claims.filter(c => ids.has(c.taskId))
-  const inFlight = new Set(held.map(c => c.taskId))
+  const flying = open.flatMap(t => ctx.stages.get(t.id) ?? [])
   const gated = milestone.gate?.state === 'open'
-  const waiting = open.filter(t => !inFlight.has(t.id))
+  const waiting = open.filter(t => !ctx.stages.has(t.id))
   const blocked = waiting.filter(t => gated || ctx.blocks.has(t.id)).length
-  const wip: Record<Stage, number> = { building: 0, inReview: 0, awaitingMerge: 0, awaitingOwner: 0 }
-  for (const claim of held) {
-    const stage = stageOf(claim, ctx.input.now)
-    if (stage !== undefined) wip[stage]++
-  }
-  return { counts: { ready: waiting.length - blocked, blocked, inFlight: inFlight.size }, wip }
+  const wip = Object.fromEntries(STAGES.map(s => [s, flying.filter(f => f === s).length])) as Record<
+    Stage,
+    number
+  >
+  return { counts: { ready: waiting.length - blocked, blocked, inFlight: flying.length }, wip }
 }
 
 function throughputOf(members: TaggedTask[], ctx: Context): number {
@@ -214,7 +202,7 @@ function context(input: MilestoneReportInput): Context {
     tagged,
     byId,
     blocks: tagBlocks(open, criticalPath(open).cycles),
-    claims: heldClaims(input.ledger),
+    stages: inFlightStages(heldClaims(input.ledger), input.dispatches ?? [], input.now),
     today: checkToday(input.today),
     weekStart: weekStartDay(input.milestones.week),
   }

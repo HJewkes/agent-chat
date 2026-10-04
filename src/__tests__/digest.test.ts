@@ -103,7 +103,7 @@ describe('an empty world', () => {
     const rendered = text()
 
     expect(rendered).toContain(
-      'Nothing in: Needs you, Decided while you were away, Milestones, Done, Stalled or failed, Exited with no Status report.',
+      'Nothing in: Needs you, Decided while you were away, Done, Stalled or failed, Exited with no Status report.',
     )
     expect(rendered).toContain('events.db: not found')
     expect(section(rendered, 'Spend')).toContain('- agents: no reading at all')
@@ -488,6 +488,10 @@ describe('Milestones', () => {
       expect.stringMatching(/^- M1 at-risk \(no points done in 3 days\): 0\/2 points done.*path 2;/),
       expect.stringMatching(/^- M2 at-risk \(no points done in 3 days\): 0\/1 points done.*path 1;/),
     ])
+  })
+
+  it('leaves the digest as it was when the week has no milestone file', () => {
+    expect(text()).not.toContain('Milestones')
   })
 
   it('reports a malformed milestone file as a gap', () => {

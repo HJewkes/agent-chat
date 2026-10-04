@@ -3,11 +3,13 @@ import path from 'node:path'
 import { parse } from 'yaml'
 import { burndownLedgerPath } from '../../paths.js'
 import { taskScalars } from '../active-work.js'
+import { readDispatches } from '../seats/dispatch-read.js'
+import type { DispatchRecord } from '../seats/dispatch-record.js'
 import { loadDoc } from '../seats/io.js'
 import { readLedger } from './ledger.js'
 import { milestoneReport, type MilestoneReportDoc, type ReportTask } from './milestone-report.js'
 import { parseIsoDay } from './score.js'
-import { readWeekMilestones, taskIdsOnDisk } from './score-render.js'
+import { describeError, readWeekMilestones, taskIdsOnDisk } from './score-render.js'
 
 /** CC-630: the milestone report's inputs read from disk. CLI-only; `milestoneReport` is the pure part. */
 
@@ -68,6 +70,28 @@ export function readReportTasks(root: string): ReportTask[] {
   })
 }
 
+/** Every seat's folded dispatch runs; a seat with no readable log adds none. */
+export function readSeatDispatches(autonomyRoot: string): DispatchRecord[] {
+  return seatNames(autonomyRoot).flatMap(seat => {
+    try {
+      return readDispatches(autonomyRoot, seat).records
+    } catch {
+      return []
+    }
+  })
+}
+
+function seatNames(autonomyRoot: string): string[] {
+  try {
+    return fs
+      .readdirSync(path.join(autonomyRoot, 'seats'))
+      .filter(name => name.endsWith('.md'))
+      .map(name => name.slice(0, -'.md'.length))
+  } catch {
+    return []
+  }
+}
+
 export interface MilestoneReportRead extends MilestoneReportDoc {
   /** The milestone file's validation errors; the report still uses what parsed. */
   errors: string[]
@@ -82,13 +106,14 @@ export function milestoneReportFromDisk(opts: {
 }): MilestoneReportRead | undefined {
   const read = readWeekMilestones(opts.autonomyRoot, opts.today, taskIdsOnDisk(opts.activeWorkRoot))
   if (read === undefined) return undefined
-  const errors = read.errors.map(e => [e.code, e.milestone, e.id, e.message].filter(Boolean).join(' '))
+  const errors = read.errors.map(describeError)
   if (read.file === undefined) throw new Error(`milestones/${read.week}.yml: ${errors.join('; ')}`)
   const watchdog = loadDoc()
   const doc = milestoneReport({
     milestones: read.file,
     tasks: readReportTasks(opts.activeWorkRoot),
     ledger: readLedger(burndownLedgerPath()),
+    dispatches: readSeatDispatches(opts.autonomyRoot),
     now: opts.now,
     today: opts.today,
     stoppedSeats: watchdog.stopped,
