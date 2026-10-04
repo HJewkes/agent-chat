@@ -181,6 +181,10 @@ A claim with a `stalledReason` keeps its task and worktree but never respawns; o
 `agent-chat burndown release <task>` clears it. `agent-chat doctor` reports the stalled
 count.
 
+The tick can route a stall to a read-only triager before the owner hears about it. The exception
+classes and the `exceptions.route` dial (default `owner`) are on `main`; the triage job is not
+yet. See [`triage.md`](triage.md).
+
 ## Sign-off checklist
 
 Every item is yours to check by hand; nothing here is verified by an agent.
