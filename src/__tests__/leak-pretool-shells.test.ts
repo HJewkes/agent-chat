@@ -41,6 +41,31 @@ const FAKE_GH = `#!/bin/sh
   done
 } >> "$RECORD"
 `
+const DIST = path.resolve(import.meta.dirname, '../../dist')
+const REAL_BIN = path.join(ROOT, 'real-bin')
+const TERMS = path.join(ROOT, 'private-terms')
+const REAL_ENV = { ...ENV, PATH: `${REAL_BIN}:${BIN}:/usr/bin:/bin` }
+
+// The built gh-write scanner and runner, over a synthetic term list and the fake gh on PATH.
+const REAL_DRIVER = `import { runGhWrite, runGh } from ${JSON.stringify(path.join(DIST, 'cli/gh-write.js'))}
+import { scanDeps } from ${JSON.stringify(path.join(DIST, 'gh-write/scan.js'))}
+const args = process.argv.slice(2)
+const result = await runGhWrite(args.slice(args[0] === '--' ? 1 : 0), scanDeps(${JSON.stringify(TERMS)}), {
+  now: Date.now,
+  sleep: () => Promise.resolve(),
+  runGh,
+  coreRemaining: () => Promise.resolve(undefined),
+  notice: () => undefined,
+  lockDir: ${JSON.stringify(path.join(ROOT, 'lock'))},
+  stampPath: ${JSON.stringify(path.join(ROOT, 'stamp'))},
+  gapMs: 0,
+})
+process.exitCode = result.code
+`
+const REAL_AGENT_CHAT = `#!/bin/sh
+shift
+exec ${JSON.stringify(process.execPath)} ${JSON.stringify(path.join(REAL_BIN, 'driver.mjs'))} "$@"
+`
 const FAKE_AGENT_CHAT = `#!/bin/sh
 shift
 if [ "$1" = "--" ]; then shift; fi
@@ -56,11 +81,16 @@ const SHELLS: [string, string[]][] = (
 
 const BASH = SHELLS.find(([shell]) => shell.endsWith('bash'))
 
-const inShell = (shell: string, flags: string[], command: string): string => {
+const inShell = (
+  shell: string,
+  flags: string[],
+  command: string,
+  env: Record<string, string> = ENV,
+): string => {
   try {
     return execFileSync(shell, [...flags, '-c', command], {
       cwd: WORK,
-      env: ENV,
+      env,
       stdio: ['ignore', 'pipe', 'ignore'],
       encoding: 'utf8',
       timeout: 10_000,
@@ -71,15 +101,15 @@ const inShell = (shell: string, flags: string[], command: string): string => {
 }
 
 /** What each shell's fake gh recorded for one command. */
-function posted(command: string): string[] {
+function posted(command: string, env: Record<string, string> = ENV): string[] {
   return SHELLS.map(([shell, flags]) => {
     fs.writeFileSync(RECORD, '')
-    inShell(shell, flags, command)
+    inShell(shell, flags, command, env)
     return fs.readFileSync(RECORD, 'utf8')
   })
 }
 
-const guard = (): GuardContext => ({
+const guard = (over: Partial<GuardContext> = {}): GuardContext => ({
   terms: { kind: 'ok', rules: parseTerms(`${TERM}\n`) },
   cwd: WORK,
   env: ENV,
@@ -87,10 +117,14 @@ const guard = (): GuardContext => ({
   readFile: readText,
   readAlias: () => undefined,
   readIncludedHooksPath: () => false,
+  ...over,
 })
 
 beforeAll(() => {
-  for (const dir of [BIN, WORK, ENV.HOME, path.join(ROOT, 'evil')]) fs.mkdirSync(dir)
+  for (const dir of [BIN, REAL_BIN, WORK, ENV.HOME, path.join(ROOT, 'evil')]) fs.mkdirSync(dir)
+  fs.writeFileSync(TERMS, `${TERM}\n`)
+  fs.writeFileSync(path.join(REAL_BIN, 'driver.mjs'), REAL_DRIVER)
+  fs.writeFileSync(path.join(REAL_BIN, 'agent-chat'), REAL_AGENT_CHAT, { mode: 0o755 })
   fs.writeFileSync(path.join(BIN, 'gh'), FAKE_GH, { mode: 0o755 })
   fs.writeFileSync(path.join(BIN, 'agent-chat'), FAKE_AGENT_CHAT, { mode: 0o755 })
   fs.writeFileSync(path.join(ROOT, 'evil', 'pr.md'), `${TERM}\n`)
@@ -253,5 +287,43 @@ describe.skipIf(SHELLS.length === 0)('the guard against real shells and a fake g
   it.each(ALLOWED)('allows %j and every shell posts what the guard read', (command, text) => {
     expect(checkCommand(command, guard())).toBeUndefined()
     for (const record of posted(command)) expect(record).toContain(text)
+  })
+})
+
+// CC-678: the guard defers these to the run-time scan in gh-write; each carries the term past the guard.
+const POST = 'agent-chat gh-write -- pr create -t x'
+const DEFERRED = [
+  `${POST} -b "$(date >/dev/null; ${EVIL})"`,
+  `cp ../evil/pr.md out.md; ${POST} --body-file out.md`,
+  `cp ../evil/pr.md out.md && ${POST} -F out.md`,
+  `${EVIL} | ${POST} -F -`,
+  `${EVIL} | ${POST} --body-file -`,
+]
+const SHADOWS = [
+  `agent-chat() { cat; }; ${EVIL} | ${POST} -F -`,
+  `alias agent-chat=cat; ${EVIL} | agent-chat gh-write -- pr create -t x -F -`,
+  `PATH=${BIN}:$PATH; ${EVIL} | ${POST} -F -`,
+  `${EVIL} | ./agent-chat gh-write -- pr create -t x -F -`,
+  `${EVIL} | command ${POST} -F -`,
+  `${EVIL} | env ${POST} -F -`,
+]
+
+describe.skipIf(SHELLS.length === 0)('gh-write deferral against real shells (CC-678)', () => {
+  const owned = (): GuardContext => guard({ env: REAL_ENV, scansGhWrite: true })
+
+  it.each(DEFERRED)('allows %j and no shell posts the term', command => {
+    fs.rmSync(path.join(WORK, 'out.md'), { force: true })
+    expect(checkCommand(command, owned())).toBeUndefined()
+    for (const record of posted(command, REAL_ENV)) expect(record).not.toContain(TERM)
+  })
+
+  it('posts clean text through the same deferred forms', () => {
+    const clean = `cat pr.md | ${POST} -F -`
+    expect(checkCommand(clean, owned())).toBeUndefined()
+    for (const record of posted(clean, REAL_ENV)) expect(record).toContain('clean file')
+  })
+
+  it.each(SHADOWS)('denies %j', command => {
+    expect(checkCommand(command, owned())).toBeDefined()
   })
 })
