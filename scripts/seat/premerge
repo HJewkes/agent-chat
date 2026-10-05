@@ -1,0 +1,223 @@
+#!/bin/bash
+# Pre-merge gate: prints a verdict line, then one final line, `OK ...` or `FAIL <reason>`.
+# Any gh, git or sqlite3 call that errors, or returns an unexpected shape, is a FAIL.
+# usage: premerge <owner/repo> <pr> <head sha> <local clone> [reviewed head]
+set -u
+usage="usage: premerge <owner/repo> <pr> <head sha> <local clone> [reviewed head]"
+[ $# -ge 4 ] || { echo "$usage" >&2; exit 2; }
+R=$1 N=$2 S=$3 L=$4 RV=${5:-$3}
+[[ $R =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] && [[ $N =~ ^[0-9]+$ ]] && [[ $S =~ ^[0-9a-f]{40}$ ]] && [[ $RV =~ ^[0-9a-f]{40}$ ]] \
+  || { echo "bad argument: $usage" >&2; exit 2; }
+DB=${EVENTS_DB:-$HOME/.agent-chat/events.db}
+COORDS=${COORDINATORS:-}
+REVIEWER_PATTERN=${REVIEWER_PATTERN:-'(^rv-|-review(-r[0-9]+)?$)'}
+fail=()
+
+die() { fail+=("$1"); echo "FAIL $R#$N: ${fail[*]}"; exit 1; }
+
+# ghget <path>: sets $code and $body from `gh api -i`; callers demand code 200.
+ghget() {
+  local raw
+  raw=$(gh api -i "$1" 2>/dev/null)
+  code=$(head -1 <<<"$raw" | awk '{print $2}')
+  body=$(awk 'f{print} /^\r?$/{f=1}' <<<"$raw")
+}
+
+# ghjson <path> <jq type test> <what>: sets $body, dies unless HTTP 200 and the shape holds.
+ghjson() {
+  ghget "$1"
+  [ "$code" = 200 ] || die "$3 api status ${code:-none}"
+  jq -e "$2" <<<"$body" >/dev/null 2>&1 || die "$3 unexpected shape"
+}
+
+# Free-plan private repos answer 403 "Upgrade to GitHub Pro..." for rules: that means no rules.
+upgrade_403() {
+  [ "$code" = 403 ] && jq -e '.message|type=="string" and startswith("Upgrade to GitHub Pro")' <<<"$body" >/dev/null 2>&1
+}
+
+load_rules() {
+  ghget "repos/$R/rules/branches/$base"
+  if upgrade_403; then code=200 body='[]'; fi
+  [ "$code" = 200 ] || die "rulesets api status ${code:-none}"
+  jq -e 'type=="array"' <<<"$body" >/dev/null 2>&1 || die "rulesets unexpected shape"
+  req=$(jq -r '[.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context] | unique | .[]' <<<"$body") || die "rulesets unexpected shape"
+  strict=$(jq -r '[.[] | select(.type=="required_status_checks") | .parameters.strict_required_status_checks_policy] | any' <<<"$body") || die "rulesets unexpected shape"
+  pins=$(jq -c '[.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[] | select(.integration_id != null)]
+    | group_by(.context) | map({key: .[0].context, value: (map(.integration_id) | unique)}) | from_entries' <<<"$body") || die "rulesets unexpected shape"
+  [ -n "$req" ] && return
+  ghget "repos/$R/branches/$base/protection/required_status_checks"
+  upgrade_403 && return
+  case "$code" in
+    404) return;;
+    200) jq -e 'type=="object"' <<<"$body" >/dev/null 2>&1 || die "classic protection unexpected shape";;
+    *) die "classic protection api status ${code:-none}";;
+  esac
+  req=$(jq -r '.contexts // [] | .[]' <<<"$body") || die "classic protection unexpected shape"
+  [ "$(jq -r '.strict // false' <<<"$body")" = true ] && strict=true
+}
+
+# Unpinned context: the newest run must be a GitHub Actions success, or a commit status must be success.
+check_unpinned() {
+  local c=$1 r s
+  r=$(jq -r --arg c "$c" '[.[] | select(.name==$c)] | sort_by(.started_at) | last | "\(.conclusion) \(.app.id)"' <<<"$runs")
+  s=$(jq -r --arg c "$c" '[.[] | select(.context==$c)] | first | .state // empty' <<<"$stat")
+  case "$r" in "success 15368") ;; *) [ "$s" = success ] || fail+=("req $c: run=$r status=$s");; esac
+}
+
+# Pinned context: for each pinned app, its newest run of that name must be success; statuses never count.
+check_pinned() {
+  local c=$1 bad
+  bad=$(jq -r --arg c "$c" --argjson pins "$pins" '$pins[$c][] as $a | [.[] | select(.name==$c and .app.id==$a)]
+    | sort_by(.started_at) | last | select(.conclusion != "success") | "app=\($a) run=\(.conclusion // "none")"' <<<"$runs") \
+    || bad="pin check failed"
+  [ -n "$bad" ] && fail+=("req $c: pinned $(paste -sd, - <<<"$bad")")
+}
+
+check_required() {
+  local c
+  while read -r c; do
+    [ -z "$c" ] && continue
+    if jq -e --arg c "$c" 'has($c)' <<<"$pins" >/dev/null 2>&1; then check_pinned "$c"; else check_unpinned "$c"; fi
+  done <<<"$req"
+}
+
+check_all_runs() {
+  local bad
+  bad=$(jq -r '[.[] | select(.status!="completed" or (.conclusion|IN("success","skipped","neutral")|not)) | "\(.name)=\(.status)/\(.conclusion)"] | join(",")' <<<"$runs")
+  [ -n "$bad" ] && fail+=("no required list; not green: $bad")
+  [ "$(jq length <<<"$runs")" = 0 ] && fail+=("no required list and no check runs")
+}
+
+fetch_commits() {
+  git -C "$L" fetch -q origin "+refs/heads/$base:refs/remotes/origin/$base" 2>/dev/null || die "git fetch of $base failed"
+  local sha
+  for sha in "$S" "$RV"; do
+    git -C "$L" cat-file -e "$sha^{commit}" 2>/dev/null && continue
+    git -C "$L" fetch -q origin "$sha" 2>/dev/null || git -C "$L" fetch -q origin "pull/$N/head" 2>/dev/null
+    git -C "$L" cat-file -e "$sha^{commit}" 2>/dev/null || die "commit $sha not available locally after fetch"
+  done
+}
+
+MAX_BASE_MERGES=5
+
+# chain_fail <depth> <commit>: the reason for a first-parent chain that stops at a non-merge before RV.
+chain_fail() {
+  case $1 in
+    0) fail+=("head $S is not a two-parent merge of reviewed $RV");;
+    1) fail+=("reviewed $RV is not a parent of $S");;
+    *) fail+=("first-parent chain from $S reaches non-merge $2 before reviewed $RV");;
+  esac
+}
+
+# walk_to_reviewed: follows first parents from S through two-parent merges until one has RV as a parent.
+# Sets $others to each merge's other parent, newest first; returns 1 after recording a reason.
+walk_to_reviewed() {
+  local c=$S parents p1 p2 extra
+  others=()
+  while [ ${#others[@]} -lt $MAX_BASE_MERGES ]; do
+    parents=$(git -C "$L" rev-list --parents -n1 "$c" 2>/dev/null) || die "cannot read parents of $c"
+    p1="" p2="" extra=""
+    read -r _ p1 p2 extra <<<"$parents"
+    [ -n "$p1" ] && [ -n "$p2" ] && [ -z "$extra" ] || { chain_fail ${#others[@]} "$c"; return 1; }
+    if [ "$p1" = "$RV" ]; then others+=("$p2"); return 0; fi
+    if [ "$p2" = "$RV" ]; then others+=("$p1"); return 0; fi
+    others+=("$p2"); c=$p1
+  done
+  fail+=("head $S is more than $MAX_BASE_MERGES base merges past reviewed $RV"); return 1
+}
+
+# Base parents must be ordered: each earlier one inside the newest, or the newest merge could drop base commits.
+check_base_order() {
+  local other
+  for other in "${others[@]}"; do
+    git -C "$L" merge-base --is-ancestor "$other" "origin/$base" 2>/dev/null || { fail+=("merged parent $other is not in origin/$base"); return 1; }
+    git -C "$L" merge-base --is-ancestor "$other" "${others[0]}" 2>/dev/null \
+      || { fail+=("earlier merged parent $other is not in newest merged parent ${others[0]}"); return 1; }
+  done
+}
+
+# S must be RV plus up to MAX_BASE_MERGES merges of the base branch: same tree as a clean merge of the newest into RV.
+# Tree equality proves no PR content changed across the merges, conflict resolutions included.
+check_reviewed_head() {
+  [ "$RV" = "$S" ] && return
+  local out tree plus="a base merge"
+  walk_to_reviewed && check_base_order || return
+  [ ${#others[@]} -gt 1 ] && plus="its base merges"
+  out=$(git -C "$L" merge-tree --write-tree "${others[0]}" "$RV" 2>/dev/null) \
+    || { fail+=("reviewed $RV conflicts with merged parent ${others[0]}"); return; }
+  tree=$(head -1 <<<"$out")
+  [ -n "$tree" ] && [ "$tree" = "$(git -C "$L" rev-parse "$S^{tree}" 2>/dev/null)" ] || fail+=("head $S differs from reviewed $RV plus $plus")
+}
+
+check_merge_tree() {
+  git -C "$L" merge-tree --write-tree "origin/$base" "$S" >/dev/null 2>&1 || fail+=("merge-tree conflict vs origin/$base")
+}
+
+is_coordinator() { local c; for c in $COORDS; do [ "$c" = "$1" ] && return 0; done; return 1; }
+
+# Verdict rows for this PR, newest first: "<id> <actor>".
+verdict_rows() {
+  sqlite3 -readonly -separator ' ' "$DB" "select id, actor from events where kind='message' and body like 'Verdict:%' and (body||char(10)) like '%PR: $R#$N'||char(10)||'%' order by id desc"
+}
+
+# Newest verdict that counts: from a reviewer, or a coordinator's non-MERGE. Sets id actor first vh.
+pick_verdict() {
+  local rows rid ractor body
+  rows=$(verdict_rows) || die "cannot read verdicts from $DB"
+  id="" actor="" first="" vh=""
+  while read -r rid ractor; do
+    [ -n "$rid" ] || continue
+    [ "$ractor" = "$branch_agent" ] && continue
+    body=$(sqlite3 -readonly "$DB" "select body from events where id=$rid") || die "cannot read verdict $rid"
+    body=$(tr -d '\r' <<<"$body")
+    grep -qxF "PR: $R#$N" <<<"$body" || continue
+    if is_coordinator "$ractor"; then
+      [[ $(head -1 <<<"$body") =~ ^Verdict:\ MERGE([[:space:]]|$) ]] && continue
+    else
+      [[ $ractor =~ $REVIEWER_PATTERN ]] || continue
+    fi
+    id=$rid actor=$ractor first=$(head -1 <<<"$body")
+    vh=$(sed -n 's/^Head: *\([0-9a-f]\{40\}\).*/\1/p' <<<"$body" | head -1)
+    msg=$(sqlite3 -readonly "$DB" "select msg_id from events where id=$rid") || die "cannot read verdict $rid"
+    return
+  done <<<"$rows"
+}
+
+check_verdict() {
+  pick_verdict
+  echo "  verdict: ${actor:-none} ${msg:-none} $first head=$vh"
+  if [ -z "$id" ]; then fail+=("no verdict from a reviewer matching $REVIEWER_PATTERN"); return; fi
+  if [[ $first =~ ^Verdict:\ MERGE([[:space:]]|$) ]]; then
+    [ "$vh" = "$RV" ] || fail+=("latest MERGE verdict head $vh != reviewed $RV")
+  else
+    fail+=("latest verdict not MERGE: $first")
+  fi
+}
+
+ghget "repos/$R/pulls/$N"
+[ "$code" = 200 ] || { echo "FAIL $R#$N api status ${code:-none}"; exit 1; }
+pr=$body
+jq -e '(.head.sha|type=="string") and (.base.ref|type=="string") and (.state|type=="string")' <<<"$pr" >/dev/null 2>&1 || die "pull request unexpected shape"
+head=$(jq -r .head.sha <<<"$pr"); base=$(jq -r .base.ref <<<"$pr"); state=$(jq -r .state <<<"$pr"); merged=$(jq -r .merged <<<"$pr")
+href=$(jq -r '.head.ref // ""' <<<"$pr"); branch_agent=""; [[ $href == agent-chat/* ]] && branch_agent=${href#agent-chat/}
+[[ $base =~ ^[A-Za-z0-9._/-]+$ ]] || die "unsafe base ref"
+[ "$state" = open ] || fail+=("state=$state merged=$merged")
+[ "$head" = "$S" ] || fail+=("head $head != $S")
+load_rules
+ghjson "repos/$R/commits/$S/check-runs?per_page=100" '.check_runs|type=="array"' check-runs
+runs=$(jq -c .check_runs <<<"$body")
+ghjson "repos/$R/commits/$S/status" '.statuses|type=="array"' status
+stat=$(jq -c .statuses <<<"$body")
+if [ -n "$req" ]; then check_required; else check_all_runs; fi
+ghjson "repos/$R/compare/$base...$S" '.behind_by|type=="number"' compare
+cmp=$(jq -r .behind_by <<<"$body")
+[ "$strict" = true ] && [ "$cmp" != 0 ] && fail+=("strict and behind_by=$cmp")
+fetch_commits
+check_reviewed_head
+check_merge_tree
+check_verdict
+if [ ${#fail[@]} = 0 ]; then
+  echo "OK $R#$N head=$S base=$base req=[$(paste -sd, - <<<"$req")] strict=$strict behind=$cmp actor=$actor msg=$msg"
+else
+  echo "FAIL $R#$N: ${fail[*]}"; exit 1
+fi
