@@ -18,7 +18,8 @@ fail() { echo "bin/queue: $*" >&2; exit 1; }
 [ "$#" -ge 3 ] || usage
 seat=$1 verb=$2
 shift 2
-root=${AUTONOMY_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}
+root=${AUTONOMY_ROOT:-${ACTIVE_ROOT:+$ACTIVE_ROOT/claude-channels/sources/autonomy}}
+[ -n "$root" ] || { echo "bin/queue: AUTONOMY_ROOT and ACTIVE_ROOT unset: export one" >&2; exit 2; }
 file="$root/queues/$seat.md"
 case "$seat" in */*|"") fail "bad seat name '$seat'" ;; esac
 [ -f "$file" ] || fail "no queue file for seat '$seat' ($file)"

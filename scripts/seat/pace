@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """Print one PACE line per charter pool (CC-609). A read-only view once the seat watchdog publishes pace.
 
-Usage: bin/pace. Env: AUTONOMY_ROOT, PACE_WATCHDOG (watchdog json), PACE_FILE (the watchdog's pace.json),
+Usage: bin/pace. Env: AUTONOMY_ROOT (default $ACTIVE_ROOT/claude-channels/sources/autonomy), PACE_WATCHDOG (watchdog json), PACE_FILE (the watchdog's pace.json),
 PACE_NOW (epoch seconds) for tests.
 Target is a straight glide from the window start to the day 7 line at reset minus 24 h.
 The watchdog pass is the one writer of pool-readings.jsonl (CC-605). This script appends a reading only
 while no pass has written pace.json in the last hour, so the history has one writer at any time.
 """
-import glob, json, os, re, time
+import glob, json, os, re, sys, time
 
-ROOT = os.environ.get('AUTONOMY_ROOT') or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ACTIVE_ROOT = os.environ.get('ACTIVE_ROOT')
+ROOT = os.environ.get('AUTONOMY_ROOT') or (ACTIVE_ROOT and os.path.join(ACTIVE_ROOT, 'claude-channels', 'sources', 'autonomy'))
+if not ROOT:
+    sys.stderr.write('bin/pace: AUTONOMY_ROOT and ACTIVE_ROOT unset: export one\n')
+    sys.exit(2)
 WATCHDOG = os.environ.get('PACE_WATCHDOG') or os.path.expanduser('~/.agent-chat/seat-watchdog.json')
 PACE_FILE = os.environ.get('PACE_FILE') or os.path.expanduser('~/.agent-chat/pace.json')
 HISTORY = os.path.join(ROOT, 'pool-readings.jsonl')

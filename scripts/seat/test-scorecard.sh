@@ -67,11 +67,17 @@ case "$err" in *"WAL contents are not read"*) report "immutable fallback warns o
 out=$("$here/scorecard" --since 2026-10-05 2>&1)
 expect "an empty window prints not measured for the merge rate" "Merges per day by Shepherd with no human step" "not measured"
 
+out=$(unset SCORECARD_TASKS AUTONOMY_ROOT; ACTIVE_ROOT="$fx/tasks" "$here/scorecard" 2>&1)
+expect "the task root defaults to ACTIVE_ROOT" "Task ready to merged" "median 630 min, p90 654 min"
 export SCORECARD_FACTORY_DB="$scratch/missing.db" SCORECARD_EVENTS_DB="$scratch/missing-events.db" SCORECARD_LOGS="$scratch/none"
 out=$("$here/scorecard" 2>&1)
 missing=$(printf '%s\n' "$out" | grep -c ': not measured')
 [ "$missing" -eq 11 ] && report "missing sources print not measured on every row" ok || report "missing sources print not measured on every row" "$missing rows"
 case "$out" in *": 0 "*|*": 0.00"*) report "missing sources never print 0" "found a zero" ;; *) report "missing sources never print 0" ok ;; esac
+
+out=$(unset AUTONOMY_ROOT ACTIVE_ROOT SCORECARD_LOGS SCORECARD_TASKS; "$here/scorecard" 2>&1); rc=$?
+[ "$rc" -eq 2 ] && case "$out" in *"AUTONOMY_ROOT and ACTIVE_ROOT unset"*) true ;; *) false ;; esac \
+  && report "both roots unset fails loudly" ok || report "both roots unset fails loudly" "exit $rc: $out"
 
 echo "scorecard: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

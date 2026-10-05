@@ -7,7 +7,8 @@ if [ "$#" -lt 2 ]; then
 fi
 seat=$1
 shift
-root=$(cd "$(dirname "$0")/.." && pwd)
+root=${AUTONOMY_ROOT:-${ACTIVE_ROOT:+$ACTIVE_ROOT/claude-channels/sources/autonomy}}
+[ -n "$root" ] || { echo "bin/log: AUTONOMY_ROOT and ACTIVE_ROOT unset: export one" >&2; exit 2; }
 dir="$root/logs/$seat"
 if [ ! -d "$dir" ]; then
   echo "bin/log: no log dir for seat '$seat'" >&2
