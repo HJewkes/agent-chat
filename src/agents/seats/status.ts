@@ -16,6 +16,7 @@ import type { DispatchRow } from '../burndown/score.js'
 import { expandHome } from '../burndown/seat-dispatch.js'
 import { localDate } from '../burndown/seat-tick.js'
 import { openEvents, type WatchdogDoc } from './io.js'
+import { paceLine, poolPace, type PoolPace } from './pace.js'
 import {
   advanceMeter,
   meterHistory,
@@ -28,6 +29,7 @@ import {
   type SpendMeter,
 } from './stops.js'
 import { accountReading, lastGoodReading } from './watchdog.js'
+import type { PoolPickLine, PoolPickStatus } from './pool-pick-log.js'
 import type { MachineStatus } from '../machine-guard.js'
 
 /**
@@ -48,7 +50,12 @@ export interface AgentLoad {
 export interface RoleLoad extends AgentLoad {
   cap: number
   atCap: boolean
+  /** CC-405: running agents tagged `waiting-owner`, left out of every other field; always empty without `cap_excludes_waiting_owner`. */
+  waitingOwner: string[]
 }
+
+/** The session tag that marks an agent as blocked on the owner; set with `chat_tag`. */
+export const WAITING_OWNER_TAG = 'waiting-owner'
 
 export interface ParkedLoad {
   /** The seat's implementers that exited and are not retired. */
@@ -115,11 +122,15 @@ export interface SeatStatus {
   other: AgentLoad
   parked: ParkedLoad
   budget: BudgetStatus
+  /** CC-605: every charter pool against its glide path, so a tick reads pace without running `bin/pace`. */
+  pace: PoolPace[]
   inbox: InboxReading
+  /** CC-606: the broker's last pool picks for the seat's spawns; in shadow mode, what it would have billed. */
+  poolPicks: PoolPickStatus
   eligible: EligibleStatus
   /** CC-406: the machine-wide guard's readings against its limits, across every seat. */
   machine: MachineStatus
-  /** CC-431: 'machine' when memory or load is past its limit, which takes the `stop` line before the budget's. */
+  /** CC-431: 'machine' when memory, swap, pressure level or load is past its limit, which takes the `stop` line before the budget's. */
   stop: 'machine' | null
   /** The readings behind a machine stop; null without one. */
   machineStop: MachineStop | null
@@ -131,11 +142,15 @@ export interface StatusDeps {
   homeDir: string
   /** The broker's roster without retired agents. */
   agents: () => Promise<AgentIdentity[]>
+  /** CC-405: names of the sessions that carry `WAITING_OWNER_TAG`. */
+  waitingOwner: () => Promise<string[]>
   readBudget: (configDir: string, nowMs: number) => BudgetRead
   /** Throws when seat-watchdog.json exists and cannot be read or parsed. */
   loadDoc: () => WatchdogDoc
   /** Throws when events.db cannot be read. */
   inbox: (seat: string) => InboxReading
+  /** Newest first. Throws when events.db cannot be read. */
+  poolPicks: (seat: string) => PoolPickLine[]
   scored: (seat: string, today: string) => ScoredPlan
   /** Given the whole roster, not the seat's share of it. */
   machine: (agents: AgentIdentity[]) => MachineStatus
@@ -194,9 +209,13 @@ function agentLoad(agents: AgentIdentity[], role: Role): AgentLoad {
   return { active: active.length, names: namesOf(active), detached }
 }
 
-function roleLoad(agents: AgentIdentity[], role: Role, cap: number): RoleLoad {
-  const { active, names, detached } = agentLoad(agents, role)
-  return { active, cap, atCap: active >= cap, names, detached }
+function roleLoad(agents: AgentIdentity[], role: Role, cap: number, waiting: ReadonlySet<string>): RoleLoad {
+  const parked = agents.filter(a => waiting.has(a.name) && roleOf(a) === role && running(a))
+  const { active, names, detached } = agentLoad(
+    agents.filter(a => !parked.includes(a)),
+    role,
+  )
+  return { active, cap, atCap: active >= cap, names, detached, waitingOwner: namesOf(parked) }
 }
 
 function parkedLoad(agents: AgentIdentity[]): ParkedLoad {
@@ -351,12 +370,30 @@ function budgetStatus(deps: StatusDeps, policy: Policy, seat: string, now: Date,
   }
 }
 
+/** A pool with no reserve has no day 7 line to pace against, so it has no row. */
+function poolPaces(deps: StatusDeps, policy: Policy, now: Date): PoolPace[] {
+  const nowMs = now.getTime()
+  return Object.entries(policy.charter.pools).flatMap(([name, pool]) => {
+    if (pool.reserve_seven_day === undefined) return []
+    const read = deps.readBudget(expandHome(pool.config_dir, deps.homeDir), nowMs)
+    return [poolPace(name, accountReading(read, nowMs), pool.reserve_seven_day, nowMs)]
+  })
+}
+
 /** An events.db that cannot be read costs the status its inbox count, not the other readings. */
 function inboxReading(deps: StatusDeps, seat: string, plain: Plain): InboxReading {
   try {
     return deps.inbox(seat)
   } catch (err) {
     return { unread: null, sinceLastSend: null, error: plain(err) }
+  }
+}
+
+function poolPickStatus(deps: StatusDeps, seat: string, plain: Plain): PoolPickStatus {
+  try {
+    return { last: deps.poolPicks(seat) }
+  } catch (err) {
+    return { last: [], error: plain(err) }
   }
 }
 
@@ -388,17 +425,20 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
   const roster = await deps.agents()
   const machineStop = deps.machineStop()
   const mine = ownedBy(roster, seat, prefix)
+  const waiting = new Set(policy.seat.cap_excludes_waiting_owner ? await deps.waitingOwner() : [])
   const plain: Plain = err => plainError(err, [deps.autonomyRoot, deps.homeDir])
   return {
     seat,
     at: now.toISOString(),
-    implementers: roleLoad(mine, 'implementer', concurrency.implementers),
-    reviewers: roleLoad(mine, 'reviewer', concurrency.reviewers),
-    planners: roleLoad(mine, 'planner', concurrency.planners),
+    implementers: roleLoad(mine, 'implementer', concurrency.implementers, waiting),
+    reviewers: roleLoad(mine, 'reviewer', concurrency.reviewers, waiting),
+    planners: roleLoad(mine, 'planner', concurrency.planners, waiting),
     other: agentLoad(mine, 'other'),
     parked: parkedLoad(mine),
     budget: budgetStatus(deps, policy, seat, now, plain),
+    pace: poolPaces(deps, policy, now),
     inbox: inboxReading(deps, seat, plain),
+    poolPicks: poolPickStatus(deps, seat, plain),
     eligible: eligibleStatus(deps, seat, localDate(now), plain),
     machine: deps.machine(roster),
     stop: machineStop === null ? null : 'machine',
@@ -479,6 +519,17 @@ function inboxLine(inbox: InboxReading): string {
   return line('inbox', `${inbox.unread} unread (${since})`)
 }
 
+function paceLines(status: SeatStatus): string[] {
+  const nowMs = Date.parse(status.at)
+  return status.pace.map((row, i) => line(i === 0 ? 'pace' : '', paceLine(row, nowMs)))
+}
+
+/** No line until the broker has picked for the seat, so a seat it never routes reads as before. */
+function poolPickLines(picks: PoolPickStatus): string[] {
+  if (picks.error !== undefined) return [line('pool pick', `unavailable: ${picks.error}`)]
+  return picks.last.map((pick, i) => line(i === 0 ? 'pool pick' : '', `${pick.at}  ${pick.text}`))
+}
+
 export function renderStatus(status: SeatStatus): string[] {
   const { parked, budget } = status
   const trees = parked.treeOnDisk.length === 0 ? '' : `  tree on disk: ${parked.treeOnDisk.join(', ')}`
@@ -493,8 +544,10 @@ export function renderStatus(status: SeatStatus): string[] {
     line('stop', status.machineStop?.reason ?? budget.stop ?? `none; ${budget.margin}`),
     ...(budget.note === null ? [] : [line('note', budget.note)]),
     ...pacingLines(budget),
+    ...paceLines(status),
     machineLine(status.machine),
     inboxLine(status.inbox),
+    ...poolPickLines(status.poolPicks),
     ...eligibleLines(status.eligible),
   ]
 }

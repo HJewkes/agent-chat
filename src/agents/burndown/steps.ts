@@ -1,4 +1,5 @@
 import path from 'node:path'
+import type { ExceptionClass } from './exception.js'
 import { claimKey, type Action, type ClaimKey } from './advance.js'
 import {
   planPathFor,
@@ -60,7 +61,8 @@ export interface Resolved {
 }
 
 type SpawnAction = Extract<Action, { kind: 'spawn' }>
-type Outcome = { frame: SpawnFrame; pool?: string } | { defer: string } | { stall: string }
+type Stall = { stall: string; cls: ExceptionClass }
+type Outcome = { frame: SpawnFrame; pool?: string } | { defer: string } | Stall
 
 /** Groups each claim's actions so a deferred spawn also drops the intent write that precedes it. */
 export function stepsForActions(
@@ -85,24 +87,43 @@ export function stepsForActions(
       resolved.spawns >= budget
         ? { defer: 'no agent capacity left this tick' }
         : resolveSpawn(spawn, ledger, ctx, resolved.charged)
-    if ('defer' in outcome) resolved.deferred.push(`${key}: ${outcome.defer}`)
-    else if ('stall' in outcome) resolved.steps.push(ledgerStep(stallUpdate(spawn.key, outcome.stall)))
-    else {
-      resolved.steps.push(...plainSteps(group.filter(a => a !== spawn)))
-      resolved.steps.push({ kind: 'spawn', key: spawn.key, frame: outcome.frame })
-      resolved.spawns += 1
-      if (outcome.pool !== undefined) resolved.charged.push(outcome.pool)
-    }
+    addOutcome(resolved, key, group, spawn, outcome)
   }
   return resolved
 }
 
+function addOutcome(
+  resolved: Resolved,
+  key: string,
+  group: Action[],
+  spawn: SpawnAction,
+  outcome: Outcome,
+): void {
+  if ('defer' in outcome) {
+    resolved.deferred.push(`${key}: ${outcome.defer}`)
+    resolved.steps.push(...plainSteps(findingCloses(group)))
+  } else if ('stall' in outcome)
+    resolved.steps.push(
+      ledgerStep(...findingCloses(group), stallUpdate(spawn.key, outcome.stall, outcome.cls)),
+    )
+  else {
+    resolved.steps.push(...plainSteps(group.filter(a => a !== spawn)))
+    resolved.steps.push({ kind: 'spawn', key: spawn.key, frame: outcome.frame })
+    resolved.spawns += 1
+    if (outcome.pool !== undefined) resolved.charged.push(outcome.pool)
+  }
+}
+
 const ledgerStep = (...actions: Action[]): Step => ({ kind: 'ledger', actions })
 
-const stallUpdate = (key: ClaimKey, reason: string): Action => ({
+/** A claim that moved closes its finding even when its spawn waits or stalls, so the close lands this tick. */
+const findingCloses = (group: Action[]): Action[] =>
+  group.filter(a => a.kind === 'update' && 'finding' in a.patch && a.patch.finding === undefined)
+
+const stallUpdate = (key: ClaimKey, reason: string, cls: ExceptionClass): Action => ({
   kind: 'update',
   key,
-  patch: { stalledReason: reason },
+  patch: { stalledReason: reason, stalledClass: cls },
 })
 
 function plainSteps(actions: Action[]): Step[] {
@@ -167,13 +188,17 @@ function spawnSetup(
   claim: Claim,
   ctx: StepContext,
   charged: readonly string[],
-): SpawnSetup | { stall: string } | { defer: string } {
+): SpawnSetup | Stall | { defer: string } {
   const initiative = ctx.initiatives.get(claim.initiative)
-  if (initiative === undefined) return { stall: 'initiative is no longer opted in with a repo' }
+  if (initiative === undefined)
+    return { stall: 'initiative is no longer opted in with a repo', cls: 'gate-trip' }
   if (claim.seat === undefined) return autonomySetup(initiative, ctx)
   const seat = ctx.seat?.(claim.seat)
   if (seat === undefined)
-    return { stall: `seat ${claim.seat} is no longer in the burndown config; left for the owner` }
+    return {
+      stall: `seat ${claim.seat} is no longer in the burndown config; left for the owner`,
+      cls: 'gate-trip',
+    }
   if ('skipped' in seat) return { defer: `seat ${claim.seat} skipped this tick: ${seat.skipped}` }
   return seatSetup(claim, seat, initiative, charged)
 }
@@ -185,17 +210,17 @@ function resolveSpawn(
   charged: readonly string[],
 ): Outcome {
   const claim = heldClaims(ledger).find(c => sameClaim(c, action.key))
-  if (claim === undefined) return { stall: 'initiative is no longer opted in with a repo' }
+  if (claim === undefined) return { stall: 'initiative is no longer opted in with a repo', cls: 'gate-trip' }
   const setup = spawnSetup(claim, ctx, charged)
   if ('stall' in setup || 'defer' in setup) return setup
   const { initiative, repo, gate } = setup
-  if (repo === undefined) return { stall: 'initiative is no longer opted in with a repo' }
-  if (claim.worktree === undefined) return { stall: 'no worktree recorded for the claim' }
+  if (repo === undefined) return { stall: 'initiative is no longer opted in with a repo', cls: 'gate-trip' }
+  if (claim.worktree === undefined) return { stall: 'no worktree recorded for the claim', cls: 'failed' }
   if ('closed' in gate) return { defer: `budget: ${gate.closed}` }
   const untrusted = setup.trust(repo, claim.worktree, gate.account)
-  if (untrusted !== undefined) return { stall: `trust: ${untrusted}` }
+  if (untrusted !== undefined) return { stall: `trust: ${untrusted}`, cls: 'gate-trip' }
   const t = taskBrief(claim.taskId, claim.slice, initiative, setup.placement(gate.account), ctx)
-  if (typeof t === 'string') return { stall: t }
+  if (typeof t === 'string') return { stall: t, cls: 'failed' }
   const spec = {
     name: action.name,
     configDir: t.configDir,

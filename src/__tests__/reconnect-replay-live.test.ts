@@ -77,6 +77,21 @@ async function registeredClient(name: string, onDropped?: () => void): Promise<B
   return created
 }
 
+/**
+ * A registered client whose broker has stopped, returned once the client has seen the drop.
+ * A frame issued before that is written to the dead socket and rejects as delivery unknown (CC-462).
+ */
+async function clientAfterRestartBegins(name: string): Promise<BrokerClient> {
+  let dropped: () => void = () => undefined
+  const socketDown = new Promise<void>(resolve => {
+    dropped = resolve
+  })
+  const created = await registeredClient(name, () => dropped())
+  await stopBroker()
+  await socketDown
+  return created
+}
+
 const statusOf = (name: string): string | undefined => core.registry.list().find(s => s.name === name)?.status
 
 beforeEach(async () => {
@@ -106,8 +121,7 @@ afterEach(async () => {
 
 describe('frames issued while the broker is restarting', () => {
   it('holds status and subscribe, then sends them after the reconnect re-registers', async () => {
-    client = await registeredClient('worker')
-    await stopBroker()
+    client = await clientAfterRestartBegins('worker')
 
     const status = client.request(
       { t: 'status', status: 'working', workingOn: 'mid-restart' },
@@ -130,8 +144,7 @@ describe('frames issued while the broker is restarting', () => {
   })
 
   it('answers a register issued in the gap with the reconnect registration, sending it once', async () => {
-    client = await registeredClient('worker')
-    await stopBroker()
+    client = await clientAfterRestartBegins('worker')
     seen = []
 
     const renamed = client.request(
@@ -146,8 +159,7 @@ describe('frames issued while the broker is restarting', () => {
   })
 
   it('refuses send with a retryable error and never sends it, even once the broker is back', async () => {
-    client = await registeredClient('worker')
-    await stopBroker()
+    client = await clientAfterRestartBegins('worker')
 
     const send = client.request({ t: 'send', to: 'peer', text: 'hello' }, 'send_result')
 

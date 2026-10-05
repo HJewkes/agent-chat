@@ -17,6 +17,8 @@ import {
   type SupervisorOptions,
 } from '../agents/supervisor.js'
 import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
+import type { LauncherProbe } from '../agents/launcher.js'
+import type { ProcessProbe } from '../agents/detached-reap.js'
 import { pairPresence } from '../agents/identity.js'
 import type { AgentIdentity } from '../protocol.js'
 import {
@@ -156,6 +158,8 @@ function withStubbedSurface(
     semaphore?: Semaphore
     spawnRateBudget?: SpawnRateBudget
     hookSpawn?: HookSpawnFn
+    launcherRunning?: LauncherProbe
+    processProbe?: ProcessProbe
   } = {},
 ): Supervisor {
   supervisor = new Supervisor(core, withShadow({ ...opts, surface: { platform: 'linux', spawn: liveChild } }))
@@ -537,6 +541,23 @@ describe('the spawn rate budget', () => {
     expect(third.reason).toMatch(/peer has attempted 2 spawns in the last 60s \(limit 2\)/)
   })
 
+  it('types a spawn past the rate budget as a retryable spawn_rate_limit, reason text unchanged', async () => {
+    const spawnRateBudget = new SpawnRateBudget(60_000, 1)
+    const sup = withStubbedSurface({ spawnRateBudget })
+    const shared = workspace()
+    registerPeer('peer', shared)
+
+    await sup.spawn(spawnReq({ name: 'scout-1', requestedBy: 'peer', cwd: shared }))
+    const refused = await sup.spawn(spawnReq({ name: 'scout-2', requestedBy: 'peer', cwd: shared }))
+
+    expect(refused).toEqual({
+      ok: false,
+      code: 'spawn_rate_limit',
+      retryable: true,
+      reason: 'peer has attempted 1 spawns in the last 60s (limit 1); wait before spawning again',
+    })
+  })
+
   it('records the refusal as an event, not just a reply string', async () => {
     const spawnRateBudget = new SpawnRateBudget(60_000, 1)
     const sup = withStubbedSurface({ spawnRateBudget })
@@ -632,7 +653,11 @@ describe('inferring the exit of a visible agent', () => {
     const exit = core.events.agentEvents().find(r => r.kind === 'agent_exited')
     expect(exit?.meta.inferred).toBe('true')
     expect(exit?.meta.code).toBeUndefined()
-    expect(core.agents.get('a1')?.exit).toEqual({ code: null, summary: expect.stringMatching(/inferred/) })
+    expect(core.agents.get('a1')?.exit).toEqual({
+      code: null,
+      summary: expect.stringMatching(/inferred/),
+      inferred: true,
+    })
   })
 
   it('cancels the settle when the agent comes back, so a reconnect is not a death', () => {
@@ -3128,7 +3153,7 @@ describe('resuming an agent on its own conversation', () => {
 
     const plan = readLaunchPlan(spawned.agentId as string)
     expect('CLAUDE_CONFIG_DIR' in plan.env).toBe(false)
-    expect(plan.unsetEnv).toEqual(['CLAUDE_CONFIG_DIR'])
+    expect(plan.unsetEnv).toContain('CLAUDE_CONFIG_DIR')
   })
 
   it('refuses a live agent', async () => {
@@ -3140,6 +3165,126 @@ describe('resuming an agent on its own conversation', () => {
 
     expect(result.ok).toBe(false)
     expect(result.reason).toMatch(/already live/)
+  })
+
+  /** CC-488: a reboot leaves the row `live` with no connection and no process. */
+  describe('a row marked live that nothing holds', () => {
+    const deadProbe = (records: { pid: number; sessionId: string }[] = []): ProcessProbe => ({
+      isAlive: pid => records.some(r => r.pid === pid),
+      readArgv: () => '/usr/local/bin/claude --resume x',
+      sessionRecords: () => records,
+    })
+    const staleLive = async (
+      launcherRunning: LauncherProbe,
+      processProbe: ProcessProbe = deadProbe(),
+    ): Promise<{ sup: Supervisor; agent: AgentIdentity }> => {
+      const sup = withStubbedSurface({ launcherRunning, processProbe })
+      const agent = await finishedAgent(sup)
+      writeTranscriptFor(agent)
+      core.append({ kind: 'agent_attached', actor: agent.name, ref: agent.agentId })
+      expect(core.agents.get(agent.agentId)?.state).toBe('live')
+      return { sup, agent }
+    }
+    const rowKinds = (agentId: string): string[] => kindsFor(agentId).filter(k => k !== 'agent_attached')
+
+    it('resumes a live row whose launcher and session are gone', async () => {
+      const { sup, agent } = await staleLive(async () => false)
+
+      const result = await sup.resume('scout')
+
+      expect(result.reason).toBeUndefined()
+      expect(result.ok).toBe(true)
+      const kinds = rowKinds(agent.agentId)
+      expect(kinds.filter(k => k === 'agent_exited')).toHaveLength(2)
+      expect(kinds.indexOf('agent_resumed')).toBeGreaterThan(kinds.lastIndexOf('agent_exited'))
+      const inferred = core.events.agentEvents().filter(r => r.kind === 'agent_exited' && r.meta.inferred)
+      expect(inferred).toHaveLength(1)
+      const plan = readLaunchPlan(agent.agentId)
+      expect(plan.args[plan.args.indexOf('--resume') + 1]).toBe(agent.sessionId)
+    })
+
+    it('refuses a live row whose run-agent still runs', async () => {
+      const { sup, agent } = await staleLive(async () => true)
+
+      const result = await sup.resume('scout')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/run-agent is still running/)
+      expect(rowKinds(agent.agentId)).not.toContain('agent_resumed')
+      expect(core.events.agentEvents().some(r => r.meta.inferred)).toBe(false)
+    })
+
+    it('refuses when the process table cannot be read', async () => {
+      const { sup, agent } = await staleLive(async () => undefined)
+
+      const result = await sup.resume('scout')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/process table could not be read/)
+      expect(core.events.agentEvents().some(r => r.meta.inferred)).toBe(false)
+      expect(rowKinds(agent.agentId)).not.toContain('agent_resumed')
+    })
+
+    it('refuses a live row a claude process still holds', async () => {
+      let held = ''
+      const holder = deadProbe()
+      holder.sessionRecords = () => [{ pid: 777, sessionId: held }]
+      holder.isAlive = pid => pid === 777
+      const { sup, agent } = await staleLive(async () => false, holder)
+      held = agent.sessionId
+      fs.rmSync(runtimeStatePath(agent.agentId), { force: true })
+
+      const result = await sup.resume('scout')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/session pid 777 is running/)
+      expect(core.events.agentEvents().some(r => r.meta.inferred)).toBe(false)
+    })
+
+    it('refuses a connected live row', async () => {
+      const { sup } = await staleLive(async () => false)
+      core.register(fakeConn(), { t: 'register', name: 'scout', workingOn: '', cwd: workspace(), pid: 1 })
+
+      const result = await sup.resume('scout')
+
+      expect(result.ok).toBe(false)
+      expect(result.reason).toMatch(/already live/)
+      expect(core.events.agentEvents().some(r => r.meta.inferred)).toBe(false)
+    })
+
+    it('resumes into its own dirty worktree without releasing it', async () => {
+      const { sup, agent } = await staleLive(async () => false)
+      const allocation = await worktreeStrategy.allocate({
+        agentId: agent.agentId,
+        agentName: 'scout',
+        baseCwd: makeRepo(),
+      })
+      writeRuntimeState(agent.agentId, {
+        handle: { surface: 'headless', pid: 4242 },
+        allocation,
+        isolation: 'worktree',
+      })
+      fs.writeFileSync(path.join(allocation.cwd, 'wip.ts'), 'unsaved\n')
+
+      const result = await sup.resume('scout')
+
+      expect(result.reason).toBeUndefined()
+      expect(result.ok).toBe(true)
+      expect(readLaunchPlan(agent.agentId).cwd).toBe(allocation.cwd)
+      expect(fs.existsSync(path.join(allocation.cwd, 'wip.ts'))).toBe(true)
+      expect(rowKinds(agent.agentId)).not.toContain('isolation_released')
+    })
+
+    it('heals a false inference when the agent reattaches', async () => {
+      const { sup, agent } = await staleLive(async () => false)
+      expect((await sup.resume('scout')).ok).toBe(true)
+
+      core.append({ kind: 'agent_attached', actor: 'scout', ref: agent.agentId })
+
+      const row = core.agents.get(agent.agentId)
+      expect(row?.state).toBe('live')
+      expect(row?.exitedAt).toBeUndefined()
+    })
   })
 
   it('refuses when the transcript is gone, and names where it looked', async () => {

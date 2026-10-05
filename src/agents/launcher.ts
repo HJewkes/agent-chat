@@ -1,3 +1,5 @@
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import {
   surfaceFor as packageSurfaceFor,
   type Launcher,
@@ -28,3 +30,23 @@ export const relaunchScriptPath = (agentId: string): string => `${agentDir(agent
 
 export const surfaceFor = (name: SurfaceName, options: SurfaceOptions = {}): Surface =>
   packageSurfaceFor(name, agentChatLauncher(), options)
+
+/** Answers whether `run-agent <id>` is running anywhere; undefined when the process table could not be read. */
+export type LauncherProbe = (agentId: string) => Promise<boolean | undefined>
+
+const execFileAsync = promisify(execFile)
+
+const runsAgent = (line: string, agentId: string): boolean => {
+  const words = line.trim().split(/\s+/)
+  return words.some((word, i) => word === 'run-agent' && words[i + 1] === agentId)
+}
+
+/** CC-402: machine-wide rather than per pane, so it also finds a launcher a retry would open beside. */
+export const psLauncherProbe: LauncherProbe = async agentId => {
+  try {
+    const { stdout } = await execFileAsync('ps', ['-axww', '-o', 'command='], { encoding: 'utf8' })
+    return stdout.split('\n').some(line => runsAgent(line, agentId))
+  } catch {
+    return undefined
+  }
+}

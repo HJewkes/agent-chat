@@ -69,13 +69,21 @@ export const agentRetire = defineVerb({
   },
   async run(args, ctx) {
     if (args.finished === true) return retireFinished(args, ctx)
-    return retireOne(args.name ?? '', args.force === true, ctx)
+    return retireOne(args.name ?? '', args.force === true, ctx, process.env.AGENT_CHAT_NAME)
   },
 })
 
-async function retireOne(name: string, force: boolean, ctx: VerbContext): Promise<Report> {
+async function retireOne(
+  name: string,
+  force: boolean,
+  ctx: VerbContext,
+  caller: string | undefined,
+): Promise<Report> {
   const res = (await ctx.withBroker(b =>
-    b.request({ t: 'retire', name, ...(force ? { force: true } : {}) }, 'spawn_result'),
+    b.request(
+      { t: 'retire', name, ...(force ? { force: true } : {}), ...(caller ? { caller } : {}) },
+      'spawn_result',
+    ),
   )) as Extract<ServerMessage, { t: 'spawn_result' }>
   if (!res.ok) return { ok: false, lines: [`Not retired: ${res.reason}`] }
   // `reason` on a successful retire is a caveat, not a failure: what the broker

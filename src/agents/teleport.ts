@@ -15,6 +15,7 @@ import {
 } from '../protocol.js'
 import type { Allocation } from './isolation/index.js'
 import { loadProfile, recordedRole } from './profiles.js'
+import { appendixFacts, renderAppendix, reportsSinceWrap, type WrapGap } from './teleport-appendix.js'
 import { observedModel } from './transcript.js'
 import type { AgentProfile } from './types.js'
 
@@ -61,6 +62,25 @@ const NAME_FREE_POLL_MS = 100
  * anywhere, which is the worst way for this to fail.
  */
 export const PANE_SETTLE_MS = 750
+
+/** CC-402: how long a reused pane waits for the predecessor's pid to exit; past the SIGKILL grace, so only a stuck kill hits it. */
+export const PANE_EXIT_TIMEOUT_MS = 10_000
+const PANE_EXIT_POLL_MS = 100
+
+/** Thrown by a host that already told the human its successor did not start, so `finish` does not tell them twice. */
+export class SuccessorNotStarted extends Error {
+  override name = 'SuccessorNotStarted'
+}
+
+/** EPERM means the pid exists under another user, which still counts as running. */
+const pidAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
 
 /** What every descendant is told about its own origin, in place of PEER_PREAMBLE. */
 export const TELEPORT_PREAMBLE = [
@@ -169,6 +189,10 @@ interface Pending {
   inherited: InheritedIsolation | undefined
   remoteControl: boolean
   reason?: TeleportReason
+  /** When the predecessor's session began: the window the appendix counts inbox arrivals over. */
+  since: number
+  /** The predecessor's Claude session id, which names its active-work session record. */
+  sessionId: string
   timer?: NodeJS.Timeout
 }
 
@@ -260,6 +284,8 @@ export class Teleport {
       inherited: this.host.inheritedIsolation(subject.agentId),
       // CC-163: a worker's successor never inherits Remote Control, even one its argv shows.
       remoteControl: worker ? false : (req.remoteControl ?? this.predecessorRemoteControl(subject)),
+      since: identity.spawnedAt,
+      sessionId: identity.sessionId,
       ...(req.reason === undefined ? {} : { reason: req.reason }),
     }
     this.pending.set(subject.agentId, entry)
@@ -383,7 +409,31 @@ export class Teleport {
       `${arrived} message(s) arrived for ${name} during this session. They stay addressed to the ` +
         'name, so your successor can read them with chat_inbox — but it will not know which you ' +
         'had already handled. Say so in the handoff.',
+      ...this.wrapWarning(identity, name),
     ]
+  }
+
+  /**
+   * CC-524: a wrap records what the session knew when it ran, so a report that arrived later is in no record.
+   * The handoff is already stored when this runs, so a failed read drops the warning and never the teleport.
+   */
+  private wrapWarning(identity: AgentIdentity, name: string): string[] {
+    const gap = this.wrapGap(identity, name)
+    if (gap === undefined) return []
+    return [
+      `${gap.reports} agent report(s) arrived after your last active-work wrap ` +
+        `(${new Date(gap.wrapAt).toISOString()}), so no session record holds them. Your successor ` +
+        'is told the count, not what they said.',
+    ]
+  }
+
+  private wrapGap(identity: AgentIdentity, name: string): WrapGap | undefined {
+    try {
+      return reportsSinceWrap(this.core.agents, this.core.events, { name, sessionId: identity.sessionId })
+    } catch (err) {
+      logEvent('teleport_wrap_check_failed', { name, error: (err as Error).message })
+      return undefined
+    }
   }
 
   /**
@@ -457,10 +507,11 @@ export class Teleport {
     })
 
     try {
-      if (subject.anchor !== undefined) await sleep(PANE_SETTLE_MS)
-      await this.host.relaunch(this.relaunchFor(entry))
+      const paneFree = subject.anchor !== undefined && (await this.waitForPaneFree(subject))
+      await this.host.relaunch(this.relaunchFor(entry, paneFree))
       logEvent('teleport_completed', { name: subject.name, from: agentId, to: entry.descendantId })
     } catch (err) {
+      if (err instanceof SuccessorNotStarted) return
       // The one genuinely bad state this feature can reach: predecessor gone,
       // descendant never started. Nobody is left inside the session to notice,
       // so it goes to the only party outside it.
@@ -477,7 +528,8 @@ export class Teleport {
     }
   }
 
-  private relaunchFor(entry: Pending): RelaunchInput {
+  /** `paneFree` false keeps the anchor but opens beside it: typing into a pane the predecessor still holds reaches its prompt. */
+  private relaunchFor(entry: Pending, paneFree: boolean): RelaunchInput {
     const { subject } = entry
     const previous = this.core.agents.spawnMeta(subject.agentId)
     const generation = Number.parseInt(previous.generation ?? '1', 10)
@@ -489,7 +541,7 @@ export class Teleport {
       agentId: entry.descendantId,
       name: subject.name,
       profile: entry.profile,
-      brief: entry.reason === 'park' ? `${PARK_LINE}\n\n${entry.handoff}` : entry.handoff,
+      brief: this.briefFor(entry),
       cwd: entry.inherited?.allocation.cwd ?? subject.cwd,
       surface: entry.surface,
       preamble: TELEPORT_PREAMBLE,
@@ -511,9 +563,29 @@ export class Teleport {
       ...(entry.remoteControl ? { remoteControl: true } : {}),
       ...(subject.tags.length > 0 ? { tags: subject.tags } : {}),
       ...(subject.subscriptions.length > 0 ? { subscriptions: subject.subscriptions } : {}),
-      ...(subject.anchor === undefined ? {} : { anchor: subject.anchor, reuseAnchor: true }),
+      ...(subject.anchor === undefined ? {} : { anchor: subject.anchor }),
+      ...(paneFree ? { reuseAnchor: true } : {}),
       ...(entry.inherited === undefined ? {} : { inherited: entry.inherited }),
       ...(entry.inherited === undefined ? {} : { inheritedFrom: subject.agentId }),
+    }
+  }
+
+  /**
+   * CC-524: the handoff, then what the broker knows that the handoff may have left out.
+   * This runs after the predecessor stood down, so a failed read costs the appendix and never the successor.
+   */
+  private briefFor(entry: Pending): string {
+    const handoff = entry.reason === 'park' ? `${PARK_LINE}\n\n${entry.handoff}` : entry.handoff
+    try {
+      const facts = appendixFacts(this.core.agents, this.core.events, {
+        name: entry.subject.name,
+        since: entry.since,
+        sessionId: entry.sessionId,
+      })
+      return `${handoff}\n\n${renderAppendix(facts)}`
+    } catch (err) {
+      logEvent('teleport_appendix_failed', { name: entry.subject.name, error: (err as Error).message })
+      return handoff
     }
   }
 
@@ -533,6 +605,21 @@ export class Teleport {
       await sleep(NAME_FREE_POLL_MS)
     }
     logEvent('teleport_name_held', { name, waitedMs: NAME_FREE_TIMEOUT_MS })
+  }
+
+  /** CC-402: a command typed while the predecessor still owns the pane is swallowed, so wait for its pid to exit. */
+  private async waitForPaneFree(subject: TeleportSubject): Promise<boolean> {
+    const pid = subject.hostPid as number
+    const deadline = Date.now() + PANE_EXIT_TIMEOUT_MS
+    while (pidAlive(pid)) {
+      if (Date.now() >= deadline) {
+        logEvent('teleport_pane_held', { name: subject.name, pid, waitedMs: PANE_EXIT_TIMEOUT_MS })
+        return false
+      }
+      await sleep(PANE_EXIT_POLL_MS)
+    }
+    await sleep(PANE_SETTLE_MS)
+    return true
   }
 
   /** Session ids are minted per descendant, never reused: a teleport is not a resume. */

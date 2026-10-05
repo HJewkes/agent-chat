@@ -19,9 +19,10 @@ export const agentProfiles = defineTool({
         ? `\n    denies: ${profile.disallowedTools.join(', ')}`
         : ''
       const effort = profile.effort === undefined ? '' : `, effort ${profile.effort}`
+      const warned = (profile.warnings ?? []).map(w => `\n    warning: ${w}`).join('')
       return (
         `- ${name} [${roleOf(profile)}, ${profile.model}${effort}, ${profile.surface}, isolation ${profile.isolation}]\n` +
-        `    ${profile.description}\n    tools: ${profile.allowedTools.join(', ')}${denies}`
+        `    ${profile.description}\n    tools: ${profile.allowedTools.join(', ')}${denies}${warned}`
       )
     })
     return rows.length === 0 ? 'No profiles available.' : `Profiles for agent_spawn:\n${rows.join('\n')}`

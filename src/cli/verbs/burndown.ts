@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
 import { requiredString } from '../../args.js'
@@ -14,6 +15,8 @@ import {
 import { activeWorkRoot } from '../../agents/active-work.js'
 import { defaultAutonomyRoot } from '../../agents/burndown/policy.js'
 import { renderScored, scoredPlanFromDisk } from '../../agents/burndown/score-render.js'
+import { renderMilestoneLine } from '../../agents/burndown/milestone-report.js'
+import { milestoneReportFromDisk, type MilestoneReportRead } from '../../agents/burndown/milestone-source.js'
 import { localDate } from '../../agents/burndown/seat-tick.js'
 import { collisionCheck, type BrokerView } from '../../agents/burndown/collision.js'
 import { readLedger, withLedgerLock, writeLedger } from '../../agents/burndown/ledger.js'
@@ -22,9 +25,10 @@ import { tickFromDisk } from '../../agents/burndown/run-tick.js'
 import { planFromDisk, renderPlan, renderStatus, seatPlanFromDisk } from '../../agents/burndown/tick.js'
 import { BrokerClient } from '../../client/broker-client.js'
 import { jobState, startJob, stopJob, systemLaunchctl, type JobControl } from '../../mirror/launchd.js'
-import { jobEnv, renderBurndownPlist } from '../../mirror/plist.js'
+import { jobEnv, launchdJobRefusals, renderBurndownPlist } from '../../mirror/plist.js'
 import { addVerb, defineVerb, Report } from '../command.js'
 import { collisionView, tickBroker } from '../burndown-broker.js'
+import { releaseTask, type RetireCall } from './burndown-release.js'
 
 /** How often launchd fires `burndown tick --once`; independent of any phase timeout. */
 const TICK_INTERVAL_SECONDS = 600
@@ -168,6 +172,45 @@ async function readBroker<T>(read: (client: BrokerClient) => Promise<T>): Promis
   }
 }
 
+/** The milestone verb's body, taking its reader explicitly so a test can point it at a fixture. */
+export function milestoneReportLines(read: () => MilestoneReportRead | undefined, json: boolean): Report {
+  try {
+    const doc = read()
+    if (doc === undefined) throw new Error('no milestones/<week>.yml for this ISO week')
+    if (json) return { ok: true, lines: [JSON.stringify(doc, null, 2)] }
+    const errors = doc.errors.length > 0 ? [`milestone file errors: ${doc.errors.join('; ')}`] : []
+    return { ok: true, lines: [...doc.milestones.map(renderMilestoneLine), ...errors] }
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err)
+    return json ? { ok: false, lines: [JSON.stringify({ error }, null, 2)] } : refused(err)
+  }
+}
+
+export const burndownMilestoneVerb = defineVerb({
+  name: 'burndown.milestone',
+  description:
+    "this week's burn-down per milestone: points, critical path, WIP, throughput, forecast, status",
+  args: z.object({ json: z.boolean().optional(), autonomyRoot: z.string().optional() }),
+  result: Report,
+  cli: {
+    options: {
+      json: { long: '--json', description: 'one JSON document; a failure is {"error"} with exit 1' },
+      autonomyRoot: { long: '--autonomy-root', description: 'directory holding milestones/<week>.yml' },
+    },
+  },
+  async run({ json, autonomyRoot }) {
+    const now = new Date()
+    const read = () =>
+      milestoneReportFromDisk({
+        autonomyRoot: autonomyRoot ?? defaultAutonomyRoot(),
+        activeWorkRoot: activeWorkRoot(),
+        now,
+        today: localDate(now),
+      })
+    return milestoneReportLines(read, json === true)
+  },
+})
+
 export const burndownStatusVerb = defineVerb({
   name: 'burndown.status',
   description: 'claim ledger, stalled claims and each account budget gate',
@@ -240,22 +283,22 @@ export const burndownReleaseVerb = defineVerb({
   result: Report,
   cli: { positional: ['task'] },
   async run({ task }) {
-    const file = burndownLedgerPath()
-    const locked = await withLedgerLock(file, () => {
-      const ledger = readLedger(file)
-      const dropped = ledger.claims.filter(c => c.taskId === task && c.phase !== 'done')
-      writeLedger(file, { ...ledger, claims: ledger.claims.filter(c => !dropped.includes(c)) })
-      return dropped
+    // Never autostart: a release that brought up a broker would own it, and the broker serves every session.
+    const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
+      autoStart: false,
     })
-    if (!locked.ran)
-      return refused(new Error(`a tick holds the ledger lock (pid ${locked.holder}); try again`))
-    if (locked.value.length === 0) return { ok: false, lines: [], errors: [`no held claim on ${task}`] }
-    return {
-      ok: true,
-      lines: locked.value.map(
-        c =>
-          `released ${c.taskId}${c.slice === undefined ? '' : ` slice ${c.slice}`} (${c.phase}${c.stalledReason === undefined ? '' : `, stalled: ${c.stalledReason}`})`,
-      ),
+    let connected = false
+    const retire: RetireCall = async name => {
+      if (!connected) {
+        await client.connect()
+        connected = true
+      }
+      return tickBroker(client).retire(name)
+    }
+    try {
+      return await releaseTask(task, retire)
+    } finally {
+      client.close()
     }
   },
 })
@@ -266,12 +309,13 @@ export function burndownInstall(dryRun: boolean, control: JobControl): Report {
   if (!loadTickConfig(burndownConfigPath()).enabled) {
     return { ok: false, lines, errors: ['refused: burndown.config.json has enabled: false'] }
   }
+  const job = { nodePath: process.execPath, cliEntry: cliEntry(), env: jobEnv(process.env) }
+  const errors = launchdJobRefusals({ ...job, tmpdir: os.tmpdir() })
+  if (errors.length > 0) return { ok: false, lines, errors }
   const plist = renderBurndownPlist({
+    ...job,
     label: BURNDOWN_LABEL,
-    nodePath: process.execPath,
-    cliEntry: cliEntry(),
     logDir: burndownLogDir(),
-    env: jobEnv(process.env),
     intervalSeconds: TICK_INTERVAL_SECONDS,
   })
   const paths = { plist: burndownPlistPath(), logDir: burndownLogDir() }
@@ -343,6 +387,7 @@ export function addBurndownCommands(program: Commander): void {
     .command('burndown')
     .description('pick and run unattended work for opted-in initiatives')
   addVerb(burndown, burndownPlanVerb)
+  addVerb(burndown, burndownMilestoneVerb)
   addVerb(burndown, burndownStatusVerb)
   addVerb(burndown, burndownTickVerb)
   addVerb(burndown, burndownPauseVerb)

@@ -325,7 +325,7 @@ describe('poolBudget', () => {
 
   it("closes with charter section 4's BUDGET-PAUSE line", () => {
     expect(verdict(claude, { ageSeconds: 0, fiveHour: 70, sevenDay: 19 }).reason).toBe(
-      'BUDGET-PAUSE pool claude: five_hour 70% at or above ceiling 70%',
+      'BUDGET-PAUSE pool claude: five_hour 70% at or above ceiling 70% (no seven_day resets_at, flat reserve)',
     )
   })
 })

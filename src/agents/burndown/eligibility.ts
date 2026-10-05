@@ -1,4 +1,5 @@
 import type { Autonomy } from '../active-work.js'
+import type { Hold } from './backoff.js'
 
 /**
  * Which task an opted-in initiative would hand to an unattended agent next.
@@ -50,6 +51,7 @@ export type RefusalKind =
   | 'stop-short'
   | 'no-repo'
   | 'role-cap'
+  | 'backoff'
 
 export interface Refusal {
   initiative: string
@@ -92,6 +94,7 @@ export function taskRefusal(
   task: Task,
   grants: string[],
   claimed: ReadonlySet<string>,
+  held: ReadonlyMap<string, Hold> = new Map(),
 ): { kind: RefusalKind; reason: string } | undefined {
   if (task.status !== 'open') return { kind: 'not-open', reason: `status is ${task.status ?? 'missing'}` }
   if (task.doneWhen === undefined)
@@ -100,6 +103,9 @@ export function taskRefusal(
   const reserved = task.tags.filter(tag => RESERVED_TAGS.includes(tag))
   if (reserved.length > 0) return { kind: 'reserved-tag', reason: `tagged ${reserved.join(', ')}` }
   if (claimed.has(task.id)) return { kind: 'claimed', reason: 'held in the burndown claim ledger' }
+  const hold = held.get(task.id)
+  if (hold !== undefined)
+    return { kind: 'backoff', reason: `released ${hold.n} times; held until ${hold.until.toISOString()}` }
   const gap = grantGap(task.doneWhen, grants)
   return gap === undefined ? undefined : { kind: 'needs-grant', reason: gap }
 }
@@ -112,11 +118,12 @@ export function pickTask(
   initiative: Initiative & { autonomy: Autonomy },
   tasks: Task[],
   claimed: ReadonlySet<string>,
+  held: ReadonlyMap<string, Hold> = new Map(),
 ): { task?: Task; refusals: Refusal[] } {
   const refusals: Refusal[] = []
   const eligible: Task[] = []
   for (const task of tasks.filter(t => t.status === 'open')) {
-    const refusal = taskRefusal(task, initiative.autonomy.grants, claimed)
+    const refusal = taskRefusal(task, initiative.autonomy.grants, claimed, held)
     if (refusal === undefined) eligible.push(task)
     else refusals.push({ initiative: initiative.slug, task: task.id, ...refusal })
   }

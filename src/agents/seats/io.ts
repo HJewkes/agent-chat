@@ -86,6 +86,12 @@ export type SeatRecord = SeatState & {
   resumeRetry?: number
   /** CC-326: when the watchdog first saw the seat absent with log row `register` as its last presence row. */
   absent?: { register: number; since: number }
+  /** CC-463: epoch ms of the watchdog's last relaunch, saved before the launch call. */
+  relaunchedAt?: number
+  /** CC-463: relaunches since the seat last registered, counting the one at `relaunchedAt`. */
+  relaunchTries?: number
+  /** CC-402: the seat's agents already flagged as stuck in `spawning`, so each is logged once. */
+  spawningFlagged?: string[]
 }
 
 /**
@@ -100,6 +106,12 @@ export interface WatchdogDoc {
   stopped: Record<string, string>
   /** Whether a hold on every seat (restart window, unreadable events.db) was open at the last run. */
   held?: boolean
+  /** Epoch ms of each pool's last failed probe; the pool is not probed again for an hour. */
+  probeFailed?: Record<string, number>
+  /** The attended seats seen so far, so a pass can say when one's file stops gating its spawns. */
+  attended?: string[]
+  /** CC-598: the cause the last `service check` gave; absent while the service was healthy. */
+  serviceCause?: string
 }
 
 const emptyDoc = (): WatchdogDoc => ({ seats: {}, pools: {}, stopped: {} })
@@ -134,6 +146,9 @@ export function readDoc(file = watchdogStatePath()): WatchdogDoc {
     stopped: doc.stopped ?? {},
     ...(doc.lastReadings === undefined ? {} : { lastReadings: doc.lastReadings }),
     ...(doc.held === undefined ? {} : { held: doc.held }),
+    ...(doc.probeFailed === undefined ? {} : { probeFailed: doc.probeFailed }),
+    ...(Array.isArray(doc.attended) ? { attended: doc.attended } : {}),
+    ...(typeof doc.serviceCause === 'string' ? { serviceCause: doc.serviceCause } : {}),
   }
 }
 
@@ -153,8 +168,8 @@ function parseDoc(text: string, file: string): Partial<WatchdogDoc> {
     throw unusable(err instanceof Error ? err.message : String(err))
   }
   if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) throw unusable('not a JSON object')
-  const maps = doc as Record<'seats' | 'pools' | 'lastReadings' | 'stopped', unknown>
-  for (const key of ['seats', 'pools', 'lastReadings', 'stopped'] as const)
+  const maps = doc as Record<'seats' | 'pools' | 'lastReadings' | 'stopped' | 'probeFailed', unknown>
+  for (const key of ['seats', 'pools', 'lastReadings', 'stopped', 'probeFailed'] as const)
     if (!isMap(maps[key])) throw unusable(`\`${key}\` is not an object`)
   return doc as Partial<WatchdogDoc>
 }
@@ -169,6 +184,9 @@ export function loadDoc(file = watchdogStatePath()): WatchdogDoc {
     stopped: doc.stopped ?? {},
     ...(doc.lastReadings === undefined ? {} : { lastReadings: doc.lastReadings }),
     ...(doc.held === undefined ? {} : { held: doc.held }),
+    ...(doc.probeFailed === undefined ? {} : { probeFailed: doc.probeFailed }),
+    ...(Array.isArray(doc.attended) ? { attended: doc.attended } : {}),
+    ...(typeof doc.serviceCause === 'string' ? { serviceCause: doc.serviceCause } : {}),
   }
 }
 
@@ -180,6 +198,13 @@ export function saveDoc(doc: Omit<WatchdogDoc, 'stopped'>, file = watchdogStateP
   fs.writeFileSync(tmp, `${JSON.stringify({ ...doc, stopped }, null, 2)}\n`)
   fs.renameSync(tmp, file)
 }
+
+/** The names of the seat files under `root`; throws when `seats/` cannot be listed. */
+export const seatFileNames = (root: string): string[] =>
+  fs
+    .readdirSync(path.join(root, 'seats'))
+    .filter(file => file.endsWith('.md'))
+    .map(file => file.slice(0, -'.md'.length))
 
 const pad = (n: number): string => String(n).padStart(2, '0')
 
@@ -308,6 +333,25 @@ function wokenByWatchdog(db: DatabaseSyncType, seat: string, registered: number)
   return countAfter(db, NEVER_STARTED, woke, seat) === countAfter(db, NEVER_STARTED, registered, seat)
 }
 
+// CC-463: an adopted session registered by itself, so its `agent_spawned` row is no launch.
+const LAUNCH_ROWS =
+  "target = ? AND kind IN ('agent_resumed', 'agent_spawned') AND COALESCE(json_extract(meta, '$.origin'), '') != 'adopted'"
+const HANDOFF_ROWS = "actor = ? AND kind = 'agent_handoff'"
+
+const tsOf = (db: DatabaseSyncType, id: number): number | undefined =>
+  id === 0 ? undefined : (db.prepare('SELECT ts FROM events WHERE id = ?').get(id) as { ts: number }).ts
+
+/** CC-463: the times the relaunch rule reads: last register, last launch, and a handoff no register followed. */
+function relaunchTimes(db: DatabaseSyncType, seat: string, registered: number): Partial<Presence> {
+  const handoff = maxId(db, HANDOFF_ROWS, seat)
+  const times = {
+    registeredAt: tsOf(db, registered),
+    lastLaunchAt: tsOf(db, maxId(db, LAUNCH_ROWS, seat)),
+    handoffAt: handoff > registered ? tsOf(db, handoff) : undefined,
+  }
+  return Object.fromEntries(Object.entries(times).filter(([, at]) => at !== undefined))
+}
+
 /** CC-320: a seat's latest presence rows. Throws when events.db cannot be read. */
 export function readPresence(dbPath: string, seat: string): Presence {
   const db = openEvents(dbPath)
@@ -324,6 +368,7 @@ export function readPresence(dbPath: string, seat: string): Presence {
       resumeStarted: resumesLaunched(db, seat, dark?.id ?? registered) > 0,
       teleported: countAfter(db, TELEPORT_ROWS, registered, seat) > 0,
       wokenByWatchdog: wokenByWatchdog(db, seat, registered),
+      ...relaunchTimes(db, seat, registered),
     }
   } finally {
     db.close()

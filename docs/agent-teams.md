@@ -579,6 +579,14 @@ requires, to a CLI spawn, to a resume, a surface switch or a teleport, or when t
 `return_contract: "none"`. Pass that when the brief states a report format of its own. A brief
 with a `Status:` or `Verdict:` line of its own that still gets the block draws a spawn warning.
 
+A brief with a line that reads exactly `Shepherd: none` (`SHEPHERD_NONE_MARKER`; case-insensitive,
+surrounding whitespace allowed, never matched inside a sentence) gets a variant implementer block
+(CC-452). It drops the "never wait on CI" clause and the `titan-factory shepherd register` sentence,
+and tells the agent to wait for CI as the brief directs and report each check-run's conclusion at the
+final head. Seats that merge through their own reviewer and `bin/merge` use it, because the appended
+block comes after the brief and overrode prose that said not to register. The opt-out needs no spawn
+parameter. Without the marker the block is unchanged.
+
 Profile `env` is trusted local config, not a sandbox. It can set `PATH`, `HOME`,
 `ANTHROPIC_*`, `NODE_OPTIONS`, and the credential names `agentEnv` strips from
 the broker's own environment. Values are stored in plaintext in the launch plan
@@ -1394,6 +1402,13 @@ agent-chat run-agent <id>          internal; the fixed launch command of §5.3
 matches the whole name recorded as `spawnedBy` when the agent was spawned, so `boss`
 does not match an agent spawned by `boss2`. A rename since then does not move an
 agent to the new name; a successor that reuses the name does match.
+
+`agent ls --json` rows carry `spawnedAt` (ISO time of the spawn record) and `inferred`
+(CC-333). `inferred` is true when the agent's `agent_exited` row was written by the settle
+timer or a presence check, not by a recorded process exit. It is false for a recorded exit
+and for an agent that has not exited. A row with `presence: "exited"` and `inferred: true`
+does not prove the process stopped writing: a reboot or a dead launcher can leave a
+reviewer still mid-turn. Treat such a row with care, for example by checking its transcript.
 
 `agent retire --finished` (CC-323) retires in one call every agent in scope that is not
 live: exited, detached or failed to start. It needs `--spawner` or `--prefix`, so one call

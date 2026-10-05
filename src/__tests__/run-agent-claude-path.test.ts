@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -196,5 +196,86 @@ describe('run-agent keeping the stderr tail of a headless claude (CC-161)', () =
     runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
 
     expect(fs.existsSync(tailFile())).toBe(false)
+  })
+})
+
+describe('run-agent continuing a conversation that already exists (CC-488)', () => {
+  const SID = '00000000-0000-4000-8000-0000000000aa'
+  let seen: string
+
+  beforeEach(() => {
+    seen = path.join(stateDir, 'argv.json')
+    fs.writeFileSync(
+      fakeClaude,
+      `require('node:fs').writeFileSync(${JSON.stringify(seen)}, JSON.stringify(process.argv.slice(2)))\n`,
+    )
+  })
+
+  const writeTranscript = (configDir: string): void => {
+    const file = path.join(configDir, 'projects', stateDir.replace(/[^A-Za-z0-9]/g, '-'), `${SID}.jsonl`)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, '{}\n')
+  }
+
+  const argvSeen = (): string[] => JSON.parse(fs.readFileSync(seen, 'utf8')) as string[]
+
+  it('hands claude --resume for a stored --session-id plan whose transcript exists', () => {
+    const configDir = path.join(stateDir, 'account')
+    writeTranscript(configDir)
+    writePlan('agt-test', { CLAUDE_CONFIG_DIR: configDir }, 'the brief', {
+      args: [fakeClaude, '--session-id', SID],
+    })
+
+    const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
+
+    expect(argvSeen()).toEqual(['--resume', SID])
+    expect(result.stderr).toContain(SID)
+  })
+
+  it('keeps --session-id when no transcript exists', () => {
+    writePlan('agt-test', { CLAUDE_CONFIG_DIR: path.join(stateDir, 'account') }, 'the brief', {
+      args: [fakeClaude, '--session-id', SID],
+    })
+
+    runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
+
+    expect(argvSeen()).toEqual(['--session-id', SID])
+  })
+
+  it('reads the home .claude when the plan unsets CLAUDE_CONFIG_DIR', () => {
+    const home = path.join(stateDir, 'home')
+    writeTranscript(path.join(home, '.claude'))
+    writePlan('agt-test', {}, 'the brief', {
+      args: [fakeClaude, '--session-id', SID],
+      unsetEnv: ['CLAUDE_CONFIG_DIR'],
+    })
+
+    runAgent({
+      AGENT_CHAT_CLAUDE: process.execPath,
+      HOME: home,
+      CLAUDE_CONFIG_DIR: path.join(stateDir, 'other'),
+    })
+
+    expect(argvSeen()).toEqual(['--resume', SID])
+  })
+
+  it('refuses with exit 75 when another run-agent already holds the agent', () => {
+    const configDir = path.join(stateDir, 'account')
+    writeTranscript(configDir)
+    writePlan('agt-test', { CLAUDE_CONFIG_DIR: configDir }, 'the brief', {
+      args: [fakeClaude, '--session-id', SID],
+    })
+    const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)', 'run-agent', 'agt-test'], {
+      stdio: 'ignore',
+    })
+    try {
+      const result = runAgent({ AGENT_CHAT_CLAUDE: process.execPath })
+
+      expect(result.status).toBe(75)
+      expect(result.stderr).toContain(`already running as pid ${holder.pid}`)
+      expect(fs.existsSync(seen)).toBe(false)
+    } finally {
+      holder.kill()
+    }
   })
 })

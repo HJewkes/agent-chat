@@ -12,9 +12,13 @@ const shQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
 
 // Global options whose value is the next word; every other leading dash word stands alone.
 const VALUED_GLOBALS =
-  '-C | -c | --git-dir | --work-tree | --namespace | --config-env | --attr-source | --super-prefix'
+  '-C | -c | --git-dir | --work-tree | --namespace | --config-env | --attr-source | --super-prefix | --shallow-file'
 
 const DOCS = 'See docs/leak-guard.md.'
+
+// Every text filter runs as `LC_ALL=C`, so a byte that is not valid UTF-8 cannot make tr fail and blank a check; a failure still refuses.
+const FILTER_FAILED =
+  'refuse unresolved "a text filter failed, so the shim cannot tell whether this is a push."'
 
 // Pure sh, no fork: sets q to $1 single-quoted for eval.
 const QUOTE_FN = `sq="'"
@@ -76,6 +80,16 @@ const AUTOCORRECT_FN = `autocorrect_off() {
   return 1
 }`
 
+// git's own "most similar command" list for a word, read with autocorrect off so nothing runs.
+const TYPO_FN = `refuse_typo() {
+  similar=$(eval "\\"\\$real\\"$globals -c help.autocorrect=0 \\"\\$1\\"" 2>&1)
+  case $similar$nl in *"$tab"push"$nl"*)
+    refuse autocorrect "$1 is not a git command and help.autocorrect would run its correction unchecked; set it to show or never." ;;
+  esac
+  echo "git-shim: refused (autocorrect): '$1' is not a git command and help.autocorrect would run git's guess at it unchecked; fix the typo, or set help.autocorrect to show or never. ${DOCS}" >&2
+  exit 2
+}`
+
 // A word git finds as git-<word> on its exec path or PATH runs that command, so git never autocorrects it.
 const EXTERNAL_FN = `external() {
   case $1 in */*) return 1 ;; esac
@@ -87,16 +101,36 @@ const EXTERNAL_FN = `external() {
   return $found
 }`
 
-// git stash push is the one subcommand named push that is not a push.
+// git stash push is not a push; push passes only right after stash as git's subcommand, past its global options.
 const MENTIONS_PUSH_FN = `mentions_push() {
+  stripped=$(printf '%s' "\${1#!}" | LC_ALL=C tr -d "\\"'\\\\\\\\") || ${FILTER_FAILED}
   set -f
-  set -- $(printf '%s' "$1" | tr -d "\\"'\\\\\\\\")
+  set -- $stripped
   set +f
-  prev=
+  at=
   for tok; do
-    case $tok in *push*) [ "$prev" = stash ] || return 0 ;; esac
-    prev=$tok
+    case $at in
+    globals)
+      case $tok in
+      ${VALUED_GLOBALS}) at=value ;;
+      -*) ;;
+      stash) at=stash ;;
+      *) at= ;;
+      esac ;;
+    value) at=globals ;;
+    stash) at=; [ "$tok" = push ] && continue ;;
+    *) [ "$tok" = git ] && at=globals ;;
+    esac
+    case $tok in *push*) return 0 ;; esac
   done
+  return 1
+}`
+
+// git appends the arguments to a ! alias, which may read, glob, decode or eval them, so push in any case, a glob, an escape or a $, backtick or { counts.
+const ARGS_PUSH_FN = `args_push() {
+  flat=$(printf '%s' "$*" | LC_ALL=C tr -d " \\t\\n\\"'") || ${FILTER_FAILED}
+  flat=$(printf '%s' "$flat" | LC_ALL=C tr A-Z a-z) || ${FILTER_FAILED}
+  case $flat in *push* | *'\\'* | *'?'* | *'*'* | *'['* | *'$'* | *'\`'* | *'{'*) return 0 ;; esac
   return 1
 }`
 
@@ -116,15 +150,18 @@ const RESOLVE_FN = `resolve() {
     case $? in
     0) ;;
     1)
-      external "$1" || autocorrect_off ||
-        refuse autocorrect "$1 is not a git command and help.autocorrect would run its correction unchecked; set it to show or never."
+      external "$1" || autocorrect_off || refuse_typo "$1"
       return 1 ;;
     *) refuse unresolved "git could not read alias.$1, so the shim cannot tell whether this is a push." ;;
     esac
     case $alias in
     !*)
+      name=$1
+      shift
+      args_push "$@" &&
+        refuse shell-alias "alias.$name runs a shell command and its arguments mention push or hold a glob, backslash, $, backtick or brace; run the command directly."
       mentions_push "$alias $*" &&
-        refuse shell-alias "alias.$1 runs a shell command and the command mentions push; run git push directly."
+        refuse shell-alias "alias.$name runs a shell command and the command mentions push; run git push directly."
       return 1 ;;
     esac
     split "$alias" || refuse unresolved "alias.$1 has an open quote or a trailing backslash."
@@ -152,7 +189,8 @@ values() {
   vals=
   cfg --get-all "$1" >/dev/null 2>&1
   case $? in 0) ;; 1) return 1 ;; *) return 2 ;; esac
-  vals=$({ cfg -z --get-all "$1" 2>/dev/null || echo "$soh"; } | tr '\\n\\0' '\\001\\n' | sed 's/^/=/')
+  raw=$({ cfg -z --get-all "$1" 2>/dev/null || echo "$soh"; } | LC_ALL=C tr '\\n\\0' '\\001\\n') || return 2
+  vals=$(printf '%s\\n' "$raw" | LC_ALL=C sed 's/^/=/') || return 2
   case $vals in *"$soh"*) return 2 ;; esac
 }`
 
@@ -340,13 +378,15 @@ real=${shQuote(real)}
 guard=${shQuote(guard)}
 exec_path=${shQuote(execPath)}
 builtins=${shQuote(builtins.join(' '))}
-[ -n "$builtins" ] || builtins=$("$real" --list-cmds=builtins 2>/dev/null | tr '\\n' ' ')
+[ -n "$builtins" ] || builtins=$("$real" --list-cmds=builtins 2>/dev/null | LC_ALL=C tr '\\n' ' ')
 ${QUOTE_FN}
 ${REFUSE_FN}
 ${SPLIT_FN}
 ${AUTOCORRECT_FN}
+${TYPO_FN}
 ${EXTERNAL_FN}
 ${MENTIONS_PUSH_FN}
+${ARGS_PUSH_FN}
 ${RESOLVE_FN}
 ${CFG_FN}
 ${VALUES_FN}

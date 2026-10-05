@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import type { HealthPayload } from '../api-contract.js'
 import { probeHealth } from '../broker/doctor.js'
 import { activeHold, clearHold, writeHold } from '../broker/hold.js'
+import { exitWithWatchedPid } from '../broker/parent-watch.js'
 import { isProcessAlive, probeSocket, readMeta, readPidFile, removeStateFiles } from '../broker/lifecycle.js'
 import { recordLoginPath, resolveBasePath } from '../agents/base-path.js'
 import { cliEntry, defaultPort, home, logPath, socketPath } from '../paths.js'
@@ -81,6 +82,7 @@ export async function start(options: { port?: number; foreground?: boolean }): P
     if (port !== undefined) process.env.AGENT_CHAT_PORT = String(port)
     // Every auto-start lands here, so the broker's own children get a full PATH (CC-456).
     process.env.PATH = resolveBasePath({ env: process.env, stateDir: home() })
+    exitWithWatchedPid(process.env)
     const { startBroker } = await import('../broker/index.js')
     const server = await startBroker()
     if (!server) console.error(refusedStart())

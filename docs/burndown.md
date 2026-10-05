@@ -41,7 +41,8 @@ agent-chat burndown job-status         launchd state: loaded, pid, and whether t
 `agent-chat burndown plan --seat <name>` prints one seat's dry-run dispatch plan and its
 refusals, as seats mode would plan it without the tick's live slot and worktree ceilings.
 Add `--scored` for the seat's scored order with every component (`--top` and `--today`
-apply only then); `--autonomy-root` points at another charter.
+apply only then); `--autonomy-root` points at another charter. A `task tags errors:` line lists
+malformed planning tags, such as a `dep:` naming no task on disk, which the order reads as closed.
 
 `agent-chat burndown pause` is the kill switch that takes effect fastest: the next tick
 sees the pause marker and spawns nothing, but a running agent finishes on its own.
@@ -60,7 +61,8 @@ For each listed seat, in order, the tick:
 - takes one sample of the seat pool's `seven_day` reading from the status file under the
   pool's `config_dir`, and keeps the seat's samples for 26 hours in the ledger's `seats`;
 - gates the pool with `gatePool`, using the run start the seat watchdog shares
-  (`runStartAt`, capped at 12 hours) and the samples as history;
+  (`runStartAt`, capped at 12 hours) and the samples as history (see "The run meter"
+  below);
 - dispatches the seat planners' ready slices first, then scores the seat's scope and walks
   the order through `planSeat`: eligibility, route, repo, the post-advance collision
   check, orphan, trust on the pool's `config_dir`, role caps, worktree caps, then the pool
@@ -81,6 +83,25 @@ They are resolved before new work is planned, so each one gates on the reading c
 with the spawns before it on its pool, and new dispatches then gate on all of them. When
 the pool has headroom for one, an in-flight claim's reviewer wins over a new dispatch. A
 spawn the charge closes is deferred, not stalled, and comes back next tick.
+
+### The run meter
+
+The seat watchdog keeps each seat's run meter in `$AGENT_CHAT_HOME/seat-watchdog.json` at
+`seats.<seat>.run = {since, last, spent, before?}`. The watchdog starts a new run only once
+the meter is 12 hours old. The charter's run, though, starts at the owner's last message to
+the seat. When the owner starts a new run, reset the meter (CC-472):
+
+```
+agent-chat seats run-start <seat> [--root <autonomy dir>]
+```
+
+It sets the meter to `{since: now, last: <pool seven_day now>, spent: 0, before: <the old
+meter's last>}` and leaves every other seat and map untouched. It takes the watchdog's run
+lock (`seat-watchdog.lock`), so a watchdog pass never overwrites the reset and the reset never
+overwrites a pass; it waits up to 90 seconds for a pass to finish. It refuses and writes
+nothing on `unknown_seat`, `no_reading` (no `seven_day` in the pool's status file, or one older
+than 15 minutes) or `lock_held`. The watchdog, `seats status` and the CC-288 spawn gate read
+the new run at once.
 
 A seat file may set `pacing: reset-aware` (CC-404). The tick, the seat watchdog and
 `seats status` then replace both `per_day_points` caps with one day allowance, built by
@@ -126,7 +147,7 @@ the same reason: nothing else rides along from the account that ran `install`.
 | Phase            | Meaning                                                                                                                                                                                                                                                                                                |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `spawning`       | The tick sent a spawn frame and is waiting for the broker's roster to show the agent. Ten minutes with no row stalls the claim.                                                                                                                                                                        |
-| `planning`       | A planner is running. On exit, a `burndown-slices` block adds one `implementing` claim per slice; no block stalls the claim.                                                                                                                                                                           |
+| `planning`       | A planner is running. On exit, a `burndown-slices` block adds one `implementing` claim per slice. A missing block, or one failing the slice lint (over 3 points, no `doneWhen`, no `owns`, an unknown or cyclic dep), stalls the claim with one reason line per slice and rule.                        |
 | `implementing`   | A worker is running. On exit: a park request moves to `parked`; a `DONE` report with a PR registers the PR with Shepherd and moves to `shepherding`; a reviewable diff with no PR spawns a reviewer and moves to `reviewing`; a clean `DONE` with no diff finishes the claim; anything else stalls it. |
 | `parked`         | The worker asked a question and stopped. An answer with the right `inReplyTo` spawns a successor in the same worktree and moves back to `implementing`.                                                                                                                                                |
 | `reviewing`      | A reviewer is running. `Verdict: APPROVE` on a claim with a PR hands the PR to Shepherd and moves to `shepherding`; a first failure spawns one successor; a second stalls the claim.                                                                                                                   |
@@ -160,18 +181,24 @@ A claim with a `stalledReason` keeps its task and worktree but never respawns; o
 `agent-chat burndown release <task>` clears it. `agent-chat doctor` reports the stalled
 count.
 
+The tick can route a stall to a read-only triager before the owner hears about it. The exception
+classes and the `exceptions.route` dial (default `owner`) are on `main`; the triage job is not
+yet. See [`triage.md`](triage.md).
+
 ## Sign-off checklist
 
 Every item is yours to check by hand; nothing here is verified by an agent.
 `agent-chat burndown install` prints this list and refuses while `enabled` is false.
 
-- **Settings allowlist.** `permissions.allow` in the shared `~/.claude/settings.json`
-  covers what a burndown worker runs: `git fetch`, `git merge --ff-only`, `git add`,
-  `git commit`, `git push -u origin agent-chat/*` (the existing worktree branch prefix,
-  not `bd/*`), `npm run format`, `npm run format:check`, `npm run typecheck`,
-  `npm run build`, `npx vitest run`, `gh pr create`, `gh pr view`, `gh pr checks`.
-  `gh pr merge` stays out until the merge-chore slice. Checked by one manual run that
-  raised no approval request.
+- **Profile allowlist.** A worker no longer loads the shared `~/.claude/settings.json`
+  (see [`permission-relay.md`](permission-relay.md), "What a worker launch loads"), so
+  the `bd-*` profile's own `allowedTools` must cover what a burndown worker runs:
+  `git fetch`, `git merge --ff-only`, `git add`, `git commit`,
+  `git push -u origin agent-chat/*` (the existing worktree branch prefix, not `bd/*`),
+  `npm run format`, `npm run format:check`, `npm run typecheck`, `npm run build`,
+  `npx vitest run`, `gh pr create`, `gh pr view`, `gh pr checks`. `gh pr merge` stays
+  denied until the merge-chore slice. Checked by one manual run that raised no approval
+  request.
 - **Decider deployed** in a restart window, or explicitly waived (parked questions wait
   for you until then).
 - **Lean profiles live**: the `bd-*` profiles merged and installed after a broker
@@ -193,3 +220,10 @@ Every item is yours to check by hand; nothing here is verified by an agent.
   each.
 - **Kill switch known**: `agent-chat burndown pause` stops new spawns on the next tick;
   `agent-chat burndown uninstall` removes the job.
+
+A seat file may set `cap_excludes_waiting_owner: true` (CC-405). A running agent that carries
+the session tag `waiting-owner` then no longer counts toward its role's cap in
+`seats status`: it drops out of `active`, `names` and `detached` and is listed under
+`waitingOwner` in that role's block of `--json`. Set the tag with `chat_tag` on the agent
+(or on a peer), and remove it when the owner has answered. Without the key, or for an
+untagged agent, the count is unchanged and `waitingOwner` is empty.

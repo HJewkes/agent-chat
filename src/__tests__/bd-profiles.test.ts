@@ -102,6 +102,20 @@ describe.each(WORKER_PROFILES)('the %s profile', name => {
   })
 })
 
+describe('the bd-reviewer profile', () => {
+  const profile = loadBdProfile('bd-reviewer')
+
+  it('denies git stash, Monitor and ScheduleWakeup', () => {
+    expect(profile.disallowedTools).toEqual(
+      expect.arrayContaining(['Bash(git stash:*)', 'Monitor', 'ScheduleWakeup']),
+    )
+  })
+
+  it('pins the prompt cache TTL to five minutes', () => {
+    expect(profile.env).toEqual({ CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' })
+  })
+})
+
 describe('the bd-planner profile', () => {
   const profile = loadBdProfile('bd-planner')
   const denied = profile.disallowedTools ?? []

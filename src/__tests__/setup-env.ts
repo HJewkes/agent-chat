@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { EXIT_WITH_PID_VAR } from '../broker/parent-watch.js'
 import { withoutInjectedHooksPath } from './helpers/git-config-env.js'
 
 /**
@@ -38,9 +39,13 @@ delete process.env.CLAUDE_CODE_SESSION_ID
  * silently disabled every live test — they read it at module load, after this
  * file has run, so `AGENT_CHAT_LIVE=1 npx vitest run live-toolset` reported two
  * skipped tests and a green suite. Found while wiring `live-fork.test.ts` (CC-44).
+ *
+ * `AGENT_CHAT_EXIT_WITH_PID` survives too: global-setup.ts sets it to the vitest pid, so a
+ * broker any test starts exits within seconds of the run dying instead of reparenting (CC-435).
  */
+const KEPT = new Set(['AGENT_CHAT_LIVE', EXIT_WITH_PID_VAR])
 for (const key of Object.keys(process.env)) {
-  if (key.startsWith('AGENT_CHAT_') && key !== 'AGENT_CHAT_LIVE') delete process.env[key]
+  if (key.startsWith('AGENT_CHAT_') && !KEPT.has(key)) delete process.env[key]
 }
 
 /**

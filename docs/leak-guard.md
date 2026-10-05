@@ -259,6 +259,20 @@ The trust limit is the OS account. An agent runs as the owner's user, so it can 
 file, the term list or the installed scanner. The hook stops a careless agent and the variable
 and repository-state tricks listed above; it does not sandbox one that sets out to get past it.
 
+### Binary files are scanned as text (CC-343)
+
+From `@titan-design/egress-scan` 0.2.0 the scanner passes `--text` to git, so a file git calls
+binary, one NUL byte is enough, is scanned line by line like any other. A commit whose patch text
+is over 128 MiB is refused, with one line naming the commit and the limit. UTF-16 text is not
+matched: the scanner reads bytes as UTF-8, so a term written as UTF-16 still passes.
+
+The hook checks for this. A scanner whose `--help` lacks `scanned as text`, that is 0.1.x, skips
+binary files, so the hook refuses the push and prints the install hint. A missing scanner or one
+without `pre-push` still warns and lets the push go.
+
+Upgrade the global scanner before the broker restart that loads this hook, or every agent push is
+refused: `npm i -g @titan-design/egress-scan@0.2.0`.
+
 ### The private term list
 
 egress-scan reads its private terms from `$TITAN_EGRESS_TERMS`, else
@@ -326,6 +340,21 @@ and other prefixes are stripped, is one of these. A wrapper is known by its base
 | a command git runs for its subcommand that a row above denies, or that the guard cannot read (below)                   | `git rebase -x` runs a shell command unseen               |
 | `git -c` or `--config-env` on an include, or with a key the guard cannot read, before a command git runs (below)       | git passes it on to every git that command runs           |
 
+A `(` in argument position, after the command name (CC-728), is read two ways, and a line is denied
+if either reading is. As a zsh glob group, its balanced span (nesting, quotes, `$'...'` and escapes
+honoured) is one non-literal word, so the git option rules deny it before the subcommand and, after
+it, deny an option-shaped alternative such as `(a|--no-verify)`, `(a|[-]-no-verify)` or a bracket
+class such as `[-]-no-verify`. As a subshell, the span's own commands are parsed, and so are the words
+after it as a command line of their own, with the same two readings again, so a word the splitter does
+not know, like `coproc`, `repeat 1`, `for i` or `foreach`, cannot hide a git inside or behind the
+group. The readings are bounded (64 forks a line); past that the line is treated as unsettled.
+As a backstop, a span the splitter cannot settle (a group holding a quote, escape, blank, `$` or
+operator, one with no close, or too many groups) denies the line when a command after it, on the
+parsed words, is or may be `git` or `gh`; put such a command on a line of its own. Plain groups such
+as `(ok)` and `*(.)`, `for ((i=0;i<3;i++))`, a `(` at command position, a case pattern, a `[[ ]]`
+operand, `name()`, `x=(` and a comment are not unsettled. The splitter has no bash mode: bash reports
+a syntax error for most of these lines and runs nothing.
+
 A git alias that was already in config is expanded before the table is applied (TP-595). For
 `git <word>`, where `<word>` is not a git builtin, the guard runs `git config --get alias.<word>`
 in the directory the command runs in, after `cd` and `-C`, with a 1 s timeout. The lookup gets
@@ -341,6 +370,13 @@ re-checked as `git <value> <rest>`, so an alias that sets `-c core.hooksPath` is
 `!` value is re-checked as a shell command, run from the top of the work tree, with its
 arguments put in for `$1` to `$9`, `$@` and `$*` and appended as git appends them. More than 4
 nested aliases is a deny. A failed lookup allows the call, as a plain push is allowed.
+
+A prefix assignment is `NAME=value`, `NAME+=value`, `NAME[idx]=value` or `NAME[idx]+=value`: the
+shell reads the word after it as the command, so the guard skips all four forms wherever it looks
+for the command word, behind `env`, `command`, `nice` and the like, and in the `gh api` host and
+`git` config reads. An append or a subscripted assignment has a value the guard cannot know, so
+a config variable set that way counts as unreadable. A word that opens a subscript and never
+closes it (`A[a b]=1 git push`) is denied, since the guard cannot tell where the command starts.
 
 Every command that is or may be git reaches this check at one place, after the wrappers above
 are stripped and inside every `sh -c` string, `eval`, `env -S`, `$(...)` and `!` alias body:
@@ -456,6 +492,53 @@ piped from another command, or a missing or unreadable term list while `MISSING_
 set. An empty term list file counts as a list: the guard then checks the generic rules only and
 refuses nothing for a missing list.
 
+### gh-write scans when it runs (CC-501 S1)
+
+`agent-chat gh-write -- <gh args>` runs the same check on its real argument list before gh starts,
+so a post is scanned even when the PreToolUse hook failed open or was never in the path. It reuses
+the guard's `ghKind`, `prSources`, `apiSources`, `isMerge` and `findingsIn`, so it reads the same
+text: the title (`--title`, `-t`, `--subject`), the body (`--body`, `-b`), a body file
+(`--body-file`, `-F` on `pr` and `issue`), and on `gh api` each `-f`/`--raw-field`, `-F`/`--field`,
+`-F key=@file` and `--input`. A body file is read as a regular file. `--body-file -`, `--input -`
+and `-F key=@-` read stdin once, so a quoted heredoc works:
+
+```sh
+agent-chat gh-write -- pr comment 12 --body-file - <<'EOF'
+...
+EOF
+```
+
+gh never reads the original path or stdin. Each file source is replaced by a 0600 copy of the
+scanned text in a fresh `mkdtemp` directory. The directory is removed after the last retry, and also
+when SIGTERM, SIGINT, SIGHUP or SIGQUIT ends gh-write. The swapped arguments are then scanned again with only
+those copies readable, so a file changed after the scan, or a flag spelling the swap missed, cannot
+reach gh unscanned.
+
+gh parses flags anywhere, so `pr --body x comment 1` is `pr comment`, and it drops empty words,
+so `pr '' comment` is too. gh-write therefore requires the group and verb first: every word up to
+the verb must be one of gh's own groups, a known `pr` or `issue` verb, or an `-R`/`--repo` pair.
+Any other flag there, an empty or blank word, a config alias such as `co`, or an extension
+refuses. `pr create` and `issue create` refuse `--fill` (any spelling, and `-f`),
+`--template`/`-T` and `--recover`, since gh would then post text read from commits, a template or a
+recovery file that gh-write never sees.
+
+It refuses with exit 1, without starting gh, on a finding (the guard's message: locations and rule
+ids, never the matched text), on a body file it cannot read as a regular file, on stdin asked for
+twice, on an unreadable term list, and on a missing term list unless the call is a plain merge. A
+plain merge is `gh api` with exactly one endpoint word, `.../pulls/<n>/merge`, and no flag other than
+`-X`/`--method`, `-H`/`--header`, `-q`/`--jq` and `--input`. This is stricter than the hook, which
+also exempts a merge with `-f` fields.
+
+Any other command (`pr close`, `release create`, `workflow run` and the like) that carries a text
+flag in any spelling refuses, since gh-write does not read its text: `--body`, `-b`, `--body-file`,
+`-F`, `--field`, `-f`, `--raw-field`, `--input`, `--title`, `-t`, `--subject`, `--notes`,
+`--notes-file`, `--comment`, `-c`, `--message`, `-m`, and their `=` forms or short clusters. Reads
+without those flags, such as `pr view`, `pr checks`, `pr list` and `api` GETs, run as before.
+`pr view -c` is refused too; run reads with plain gh.
+It reads the list from the passwd home's `~/.config/titan-egress/private-terms`, like the pre-push
+hook. It does not read `HOME`, `XDG_CONFIG_HOME` or `TITAN_EGRESS_TERMS`. No variable or flag turns
+the scan off. With the hook in place, a post is scanned twice.
+
 ### A command git runs for its subcommand (TP-634)
 
 Some git subcommands run a command line they are given. The guard checks that command like a
@@ -506,6 +589,52 @@ protect the pre-push scan, and those commands run no hook. A literal key with a 
 as in `git -c user.name="$(whoami)" push`, is allowed too, since the key alone decides what the
 setting does. `git -c user.name=x push` and `git -c core.pager=less log` stay allowed.
 
+An unquoted expansion in the value of `-C`, `--git-dir`, `--work-tree`, `--namespace` or
+`--super-prefix` counts as an unreadable config word too, since the shell may split it into
+`-c core.hooksPath=...` words. So `for r in a b; do git -C ~/projects/$r worktree list; done`
+is denied, although `worktree list` runs no hook: `worktree` runs `post-checkout` for `add`, and
+the guard gates by subcommand. It also does not track the value a line gives a variable, so
+`r=x` or a `for` list of literal words leaves `$r` unknown. This is intended (checked
+2026-10-02, CC-479). Quote the expansion, as in `git -C ~/projects/"$r" worktree list` or
+`git -C "$HOME/projects/$r"`: a quoted expansion stays one word and is allowed.
+
+The deny does not depend on the subcommand. The split words may hold `-c core.hooksPath=...`
+and the subcommand after them, so the visible one cannot be trusted: with
+`r='x -c core.hooksPath=/dev/null push origin'`, `git -C $r log` is denied although `log` runs no
+hook, and so is `git -C ~/projects/$r rev-parse` (CC-484).
+
+Before the subcommand, and in the value of `-c`, `--config-env`, `-C`, `--git-dir` and
+`--work-tree`, the guard allows only a literal word or one double-quoted word whose expansions are
+plain `$NAME` or `${NAME}`. It treats `$@`, `$*`, `${a[@]}`, zsh `${=v}` and `$=v`, brace lists,
+globs and any unquoted expansion as possibly splitting. So `git -C $PWD status` and `d=/tmp/x; git
+-C $d status` are denied too: quote the value, as in `git -C "$PWD" status`.
+
+### A `gh api` read with a quoted expansion is allowed
+
+`gh api "repos/o/r/commits/$SHA/check-runs" --jq .check_runs` is allowed although the guard cannot
+resolve `SHA`, because nothing in it can be a write. The call must hold exactly one endpoint, quoted
+so the shell keeps it one word, and anchored: its literal prefix must be `repos/`, `orgs/` or `users/`
+(with or without a leading `/`) plus the first segment and a `/`, such as `repos/HJewkes/`, with no
+expansion before that point. So `"repos/$OWNER_REPO/commits"` is denied, because the literal stops
+before the owner segment, and so is an endpoint that holds `://`, starts with a scheme, `//` or a
+host, or names `graphql`, which gh POSTs. A header value that starts with `-` is denied.
+
+Every flag must be on the allowlist: `--paginate`, `--slurp`, `--silent`, `-i`, `--include`,
+`--verbose`, and `-H`, `--header`, `--hostname`, `--cache` and `-p`, `--preview` with a literal value
+(a header that names a method or override is denied). Only the value of `--jq`, `-q`, `--template`
+or `-t` may be an expansion. Any `-X`, `--method`, `-f`, `-F`, `--field`, `--raw-field` or `--input`,
+in any spelling, any other flag, or a second positional word, keeps the deny. An unquoted expansion
+gets its own message: quote the endpoint, or post a write with `agent-chat gh-write`.
+
+The environment decides where gh sends the call, and the guard cannot read it, so the line must
+hold nothing else: only `gh api` calls and assignments whose values are literal, joined by `;` or a
+newline. A pipe, a redirect, `&&`, a subshell, `$(...)` or another command, such as `declare`,
+`typeset`, `read`, `export`, `env`, `set`, `eval` or `source`, is denied, as is an assignment from an
+expansion. `GH_HOST=github.com gh api "repos/o/r/commits/$SHA/check-runs"` is allowed. Such a call
+may go only to `github.com`: a literal `--hostname` or `GH_HOST` for another host, and any
+`HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY` setting, is denied. The deny says to put the value in
+literally, or to run the call alone on its line.
+
 ### The guard never reads one file while the shell posts another
 
 For a `gh pr` or `gh issue` `create`, `new`, `edit`, `comment`, `review` or `merge`, and for every
@@ -537,6 +666,38 @@ the named escapes (`\n`, `\t`, `\e` and the rest), `\xHH`, octal `\NNN`, `\uHHHH
 A `gh` whose group or verb is an expansion (`gh pr $V`) is unknown even when the value is known,
 because the guard picks the flags to read from the literal subcommand.
 
+**Exception for `gh-write` (CC-678).** A bare `agent-chat gh-write` does not get this deny for an
+argument the guard cannot resolve: `gh-write` scans the text itself before gh starts. The mode
+applies only when all of these hold, and a plain `gh` post never gets it:
+
+- the command word is exactly `agent-chat`: not `/tmp/agent-chat`, `./agent-chat`, `command
+agent-chat`, `env agent-chat`, a prefix assignment, `env -S`, or an expansion (`$E agent-chat`);
+- `realpath` of the first `agent-chat` on the hook's `PATH` is the hook's own entry script, and
+  every `PATH` entry before it is absolute;
+- the hook knows the environment at that command, `PATH` is not mentioned anywhere on the line,
+  and the command is at the top level, not inside a function, group or subshell;
+- every command before it, including one inside `$(...)` and one inside an enclosing `sh -c`,
+  `bash -c` or `dash -c` that has no flag or variable on it, is `cat`, `printf` without `-v`,
+  `echo` or `tee`, with no variable on it and words the guard can resolve. Anything else keeps
+  the deny: `cd`, `git`, an assignment, a function definition, `hash`, `builtin`, `autoload`,
+  `alias`, `export`, `declare`, `read`, `eval`, `source`, zsh or ksh as a shell (`zsh -c` reads
+  `.zshenv`), a shell with a startup flag or variable, or any other program;
+- the gh-write has at most one body source: one of `-F`, `--body-file`, `--input` or `body=@file`,
+  or stdin, never two;
+- the earlier commands write at most one file, which is a literal `.md` or `.txt` path with no
+  symlink in any component, no `.git` directory above it, and that is neither the install, a file
+  in the `PATH` directory that holds it, nor a hard link to it. A `>` or `>>` or `tee` to any other
+  file, a target that is not a literal, a `&>` or `>&file`, or a redirect on the `agent-chat`
+  command to anything but `/dev/null` keeps the deny. Redirects to `/dev/null` and descriptor
+  copies such as `2>&1` stay allowed. A path under a symlinked directory, such as `/tmp` on macOS,
+  keeps the deny; write the body under the working directory.
+
+A reviewer's working directory under `$TMPDIR` reaches the hook through `/var/folders`, a symlink on
+macOS, so even a relative body path there keeps the deny: write the file in one Bash call and post it in the next.
+
+In that mode the guard still scans the text it can read, and still denies a finding, a missing
+term list and an unreadable term list, even beside text it cannot read.
+
 ### A body file written on the line that posts it (CC-371)
 
 A Bash line that writes a PR or issue body file and then posts it is denied. The guard cannot
@@ -555,6 +716,10 @@ scan a body that does not exist yet when it checks the line. The body file is th
 guard cannot resolve counts as a possible match. A write inside `$(...)` is seen. Write the file
 in one Bash call and post it in the next. A body file that exists before the line and is not
 named by it, or one written on another line, is read and scanned as before.
+
+With `gh-write` in the mode above, this line is allowed instead: the post goes through
+`gh-write`, which reads the body file after the line has written it and refuses on a finding
+before gh starts. Plain `gh` and every other spelling of `agent-chat` keep the deny.
 
 The check is by name, so the remaining gaps are a writer that builds the path at run time
 (`python3 -c "open('b' + '.md', 'w')"`), a script that already sits on disk, and a body file that
@@ -585,6 +750,10 @@ has exactly one source that it has read: one heredoc or one here-string on descr
 - a backtick substitution that holds a backslash. The shell rewrites `\\`, `\$` and a backslash
   before a newline inside backticks before it parses them. Use `$(...)`.
 
+With `gh-write` in the mode described under "The guard never reads one file while the shell posts
+another", stdin the guard cannot attribute is allowed: `gh-write` reads stdin once, scans it and
+hands gh a copy. A source the guard did read is still scanned and still denied on a finding.
+
 The two heredoc denies that a backslash causes say so: the message names the backslash and asks
 for a body file. Every other deny in this list uses the general "could not be read" message.
 
@@ -614,6 +783,26 @@ it checks the words after it twice: as the arguments of git or gh, and as a comm
 because the expansion may be empty or may be a wrapper. For that second check it trusts neither
 the directory nor any variable. A literal title or body and a body file at a literal absolute
 path are scanned; a relative body file or a `$VAR` in an argument is a deny.
+
+Two cases of this check are denied outright, so the check stays fast (CC-347):
+
+- more than 64 command starts after expanded command words across one command line, nested
+  shells included, on a line that may reach git or gh. A command start is a later word that may
+  begin a command: an expansion, a wrapper, an assignment, a shell keyword, or `git`, `gh` and
+  the other names the guard reads. A line may reach git or gh when it names either one anywhere,
+  holds a command substitution or any `$'...'` string, a word that may expand to `git` or `gh`
+  (as above, `g?` included), an expansion that hides its name or reads `$1`, `$@` and the like, a
+  variable that the line mentions outside a `$` reference, or a word that names either one once
+  the hook's env values are put in, so `"$A$B"` with `A=g` and `B=h` counts, or reads a variable
+  whose hook env value would count, through any operator, as `${TOOL%x}` with `TOOL=gh` (CC-478). Since
+  the arguments of a hidden git past the budget go unchecked, a line that names `push`,
+  `--no-verify` or `--no-veri`, a word that may expand to one of them (`p?sh`), `hooksPath`,
+  `include`, `alias` or `GIT_CONFIG` counts as reaching git too.
+  A line past the budget that may reach neither, such as 40 joined
+  `"$PY" "$SCRIPT" --out "$DIR"` commands, is allowed, and its starts past the budget go
+  unchecked. An unchecked start can reach git only through a variable set where the guard cannot
+  see, the accepted gap above;
+- an `env -S` split behind another expansion, such as `$E env -S '$W -n 5 gh ...'`.
 
 ### Known false deny: eval beside git or gh
 
@@ -744,6 +933,17 @@ refused with exit 2 and a line `git-shim: push refused (<rule>)` when:
 | `alias-depth` | aliases chain more than 10 deep                                                                                                          |
 | `autocorrect` | the word is no builtin, alias or `git-<word>` command, and `help.autocorrect` is not unset, `0`, `false`, `off`, `no`, `show` or `never` |
 
+git appends the arguments to a `!` alias's shell command, which can read them in more ways than
+any list covers (`$1`, `"$@"`, `for a;`, `$0` under a nested `sh -c`, `shift`, `getopts`). So
+`shell-alias` also refuses a `!` alias whenever its arguments mention `push` in any case, `stash
+push` included, after removing quotes and blanks, so `pu sh` split across two arguments counts
+(CC-479). It refuses, too, when the arguments hold a backslash, which the body may decode
+(`printf "$1"` over `\x70ush`), or a glob character `?`, `*` or `[`, which the body may expand
+into `push` (`p?sh` beside a file named `push`). The accepted cost is a false refusal such as `git st push` for `st = !git
+stash`; run the command the alias stands for instead.
+
+Every text filter in the shim (`tr`, `sed`) runs under `LC_ALL=C`, so a byte that is not valid UTF-8, such as `0xff`, is read as a byte and cannot make a filter fail and blank a check (CC-612). A filter that still fails refuses with `unresolved`.
+
 The builtin list is read from the real git at each spawn. If that read fails, the shim reads it
 on each call instead, and `push` is still matched by name.
 
@@ -786,7 +986,16 @@ Not covered:
   command line);
 - a `git` binary inside git's exec-path directory, which git puts first on PATH for its hooks,
   `!` aliases and `rebase --exec`. A `!` alias that builds the word push at run time, such as
-  `$(echo pu)sh`, is in this class;
+  `$(echo pu)sh`, is in this class, and so is one that builds push by transforming arguments
+  that do not mention it, such as `tr a-z b-za` over `otrg` or printf over an octal number the
+  body puts the backslash before, or reads push from a variable rather than its arguments, such
+  as `!git $P --no-verify origin main; true` run as `P=push git g`. One whose arguments mention push,
+  such as `!f(){ git $2; }; f` run as `git g stash push`, is refused (above);
+- a `!` alias whose body builds and runs a git command without `$`, a backtick or a brace in
+  its arguments, such as `echo hsup | rev | xargs -I% git % --no-verify ...`, or `tr` or `base64`
+  piped to `sh` (CC-613, open; found in review d16c219d);
+- an executable `git-<word>` on PATH or in git's exec-path: `git <word>` runs it unchecked, with
+  git's exec-path first on PATH as for a `!` alias;
 - pushing without git.
 
 The shim is live for an agent only after a broker restart picks up the

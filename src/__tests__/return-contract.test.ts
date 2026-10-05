@@ -10,7 +10,15 @@ import { Supervisor } from '../agents/supervisor.js'
 import { readLaunchPlan } from '../agents/launch-files.js'
 import { BUILTIN_PROFILES, parseProfile } from '../agents/profiles.js'
 import { carriesContract, contractOf, withReturnContract } from '../agents/return-contract.js'
-import { MAX_BLOCK_CHARS, RETURN_CONTRACT_BLOCKS } from '../agents/return-contract-blocks.js'
+import {
+  BODY_FILE_RULE,
+  IMPLEMENTER_WITHOUT_SHEPHERD,
+  MAX_BLOCK_CHARS,
+  QUOTE_RULE,
+  RETURN_CONTRACT_BLOCKS,
+  REVIEWER_BODY_FILE_RULE,
+  SHEPHERD_NONE_MARKER,
+} from '../agents/return-contract-blocks.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { RETURN_CONTRACTS, type AgentProfile, type ReturnContract } from '../agents/types.js'
 import type { ServerMessage } from '../protocol.js'
@@ -159,8 +167,33 @@ describe('the GitHub write path (CC-456)', () => {
   it('names gh-write as the only write path, with no fallback to plain gh', () => {
     const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
 
-    expect(text).toContain('`agent-chat gh-write -- <gh args>`, the only write path')
+    expect(text).toContain('`agent-chat gh-write -- <gh args> --body-file <f>`')
+    expect(text).toContain('gh-write is the only write path')
     expect(text).not.toContain('otherwise use plain `gh`')
+  })
+})
+
+describe('the PATH shim rule (CC-647)', () => {
+  const SHIM_RULE =
+    'Never put a shim named gh, git, node, npm or pnpm on PATH unless it drops its own dir from PATH ' +
+    'first (pattern: src/gh-shim/install.ts).'
+
+  // Mutation caught: dropping SHIM_RULE from IMPLEMENTER_RULES or from the reviewer block.
+  it.each([
+    ['an implementer with a Shepherd handoff', 'add the parser'],
+    ['an implementer that waits on its own CI', `${SHEPHERD_NONE_MARKER}\nadd the parser`],
+    ['a reviewer', 'review PR 7'],
+  ])('reaches %s in the spawned brief', async (_, brief) => {
+    const profile = brief.startsWith('review') ? 'reviewer' : 'implementer'
+
+    const { text } = await delivered({ brief, profile })
+
+    expect(occurrences(text, SHIM_RULE)).toBe(1)
+  })
+
+  it('sits in both implementer variants', () => {
+    expect(flat(RETURN_CONTRACT_BLOCKS.implementer)).toContain(SHIM_RULE)
+    expect(flat(IMPLEMENTER_WITHOUT_SHEPHERD)).toContain(SHIM_RULE)
   })
 })
 
@@ -170,7 +203,7 @@ describe('the check-run rule (CC-357)', () => {
     const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
 
     expect(text).toContain(
-      'CI: <paste of: gh api repos/<owner>/<repo>/commits/<head>/check-runs --paginate --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>',
+      'CI: <paste of: gh api "repos/<owner>/<repo>/commits/<head>/check-runs" --paginate --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>',
     )
     expect(text).toContain('never "green" alone')
     expect(text).toContain('`gh run watch` covers only one workflow')
@@ -184,7 +217,7 @@ describe('the check-run rule (CC-357)', () => {
     const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
 
     expect(text).toContain('Before MERGE, confirm every required check-run (one branch protection names)')
-    expect(text).toContain('commits/<head>/check-runs --paginate')
+    expect(text).toContain('commits/<head>/check-runs" --paginate')
     expect(text).toContain('FIX_FIRST if a required one failed')
     expect(text).toContain('A skipped check (std / compat) is not a failure')
   })
@@ -338,6 +371,7 @@ describe('a brief that already carries the contract', () => {
     ['reviewer', 'in the older wording', OLDER_REVIEWER_BLOCK],
     ['reviewer', 'as MERGE or FIX_FIRST', `Verdict: MERGE or FIX_FIRST\n${PR_AND_HEAD}`],
     ['reviewer', 'as MERGE | FIX_FIRST', `Verdict: MERGE | FIX_FIRST\n${PR_AND_HEAD}`],
+    ['reviewer', 'with WAIT added', `Verdict: MERGE (or FIX_FIRST or WAIT)\n${PR_AND_HEAD}`],
   ]
 
   it.each(PASTED)(
@@ -537,10 +571,156 @@ describe('the Shepherd handoff (TP-468)', () => {
     expect(text).toContain('Shepherd: refused <first stderr line>')
   })
 
+  // Mutation caught: dropping the exit-69 line, so an implementer has no report for a Shepherd that is down (TP-245).
+  it('maps exit 69 to Shepherd: down and leaves CI to the spawner', () => {
+    const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
+
+    expect(text).toContain('or `Shepherd: down` on exit 69 (do not wait for it). <spawner> watches CI.')
+    expect(flat(IMPLEMENTER_WITHOUT_SHEPHERD)).not.toContain('Shepherd: down')
+  })
+
+  // Mutation caught: an unconditional register line, which implementers followed over a brief saying not to (CC-635).
+  it('makes the implementer register only when its brief asks, and lets a brief saying not to win', () => {
+    const text = flat(RETURN_CONTRACT_BLOCKS.implementer)
+    const gate = 'Only if the brief asks (one saying not to wins), run `titan-factory shepherd register'
+
+    expect(text).toContain(gate)
+    expect(text.split('titan-factory shepherd register')).toHaveLength(2)
+    expect(text).not.toContain('Then run `titan-factory shepherd register')
+  })
+
+  it('leaves the reviewer block free of any Shepherd register line', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).not.toMatch(/shepherd register|Register with Shepherd/i)
+  })
+
   // Mutation caught: any change to the three lines bin/premerge and Shepherd parse.
   it('pins the reviewer verdict block', () => {
     expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(
-      'exactly these three lines:\nVerdict: MERGE            (or FIX_FIRST)\nPR: <owner>/<repo>#<n>\nHead: <full 40-hex head sha>\n',
+      'exactly these three lines:\nVerdict: MERGE            (or FIX_FIRST or WAIT)\nPR: <owner>/<repo>#<n>\nHead: <full 40-hex head sha>\n',
     )
+  })
+})
+
+describe('a brief that opts out of Shepherd (CC-452)', () => {
+  const REGISTER = 'titan-factory shepherd register <owner>/<repo>#<n>'
+  const CI_WAIT = "Wait for CI as the brief directs and report each check-run's conclusion at the final head"
+
+  it('keeps the variant block whole, generic and under the size cap', () => {
+    expect(IMPLEMENTER_WITHOUT_SHEPHERD).toContain('<spawner>')
+    expect(carriesContract(IMPLEMENTER_WITHOUT_SHEPHERD, 'implementer')).toBe(true)
+    expect(IMPLEMENTER_WITHOUT_SHEPHERD.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+  })
+
+  // Mutation caught: ignoring the marker hands the agent the register sentence again.
+  it.each([SHEPHERD_NONE_MARKER, 'shepherd: NONE', '   Shepherd: none\t'])(
+    'drops the register and no-wait text for the line %j',
+    async marker => {
+      const brief = `add the parser\n${marker}\nwait for CI with bin/ci-wait`
+
+      const { text } = await delivered({ brief })
+
+      const appended = flat(text.slice(brief.length))
+      expect(appended).not.toContain(REGISTER)
+      expect(appended).not.toContain('never wait on CI')
+      expect(appended).not.toContain('you do not wait for CI')
+      expect(appended).toContain('Do not run `titan-factory shepherd register`.')
+      expect(appended).toContain(CI_WAIT)
+      expect(appended).toContain('chat_send to coord')
+    },
+  )
+
+  // Mutation caught: a substring test opts out a brief that only talks about the marker.
+  it('keeps Shepherd for a brief that mentions the marker mid-sentence', async () => {
+    const brief = 'add the parser; a seat may write Shepherd: none in its brief'
+
+    const { text } = await delivered({ brief })
+
+    expect(text).toBe(`${brief}\n\n${block('implementer')}`)
+  })
+
+  it('hands a brief without the marker the default block unchanged', async () => {
+    const { text } = await delivered()
+
+    expect(text).toBe(`add the parser\n\n${block('implementer')}`)
+    expect(flat(text)).toContain(REGISTER)
+  })
+
+  it('leaves a reviewer brief carrying the marker on the reviewer block', async () => {
+    const { text } = await delivered({ profile: 'reviewer', brief: `review it\n${SHEPHERD_NONE_MARKER}` })
+
+    expect(occurrences(text, block('reviewer'))).toBe(1)
+  })
+
+  it('does not double a brief that already pastes the contract and carries the marker', async () => {
+    const brief = `add the parser\n${SHEPHERD_NONE_MARKER}\n\n${block('implementer')}`
+
+    const { text, warnings } = await delivered({ brief })
+
+    expect(text).toBe(brief)
+    expect(warnings.join(' ')).toMatch(PASTED_WARNING)
+  })
+})
+
+describe('the load-test rule (CC-473)', () => {
+  // Mutation caught: restoring the pkill -f line in either implementer block.
+  it.each([
+    ['default', RETURN_CONTRACT_BLOCKS.implementer],
+    ['Shepherd: none', IMPLEMENTER_WITHOUT_SHEPHERD],
+  ])('in the %s block applies only to an asked-for load test and kills by recorded PID', (_which, text) => {
+    expect(text).not.toContain('pkill')
+    expect(flat(text)).toContain('Only when the brief asks for a load test: record the PID of each burner')
+    expect(flat(text)).toContain('kill only those, never by name pattern; confirm with `pgrep` none survive')
+  })
+})
+
+describe('PR body path (CC-444, CC-725)', () => {
+  // Mutation caught: a shared `$TMPDIR/body.md` lets one agent publish another's stale body.
+  it.each([
+    ['implementer', RETURN_CONTRACT_BLOCKS.implementer],
+    ['implementer without Shepherd', IMPLEMENTER_WITHOUT_SHEPHERD],
+  ])('tells the %s block to post a body file from its own worktree within the size cap', (_name, block) => {
+    expect(block).toContain(BODY_FILE_RULE)
+    expect(BODY_FILE_RULE).toContain('in your own worktree')
+    expect(BODY_FILE_RULE).toContain('not a shared $TMPDIR name')
+    expect(BODY_FILE_RULE).toContain('deleted once posted')
+    expect(block).not.toContain('cat it before')
+    expect(block.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+  })
+
+  it('gives the reviewer its body-file rule and the quoting rule', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(REVIEWER_BODY_FILE_RULE)
+    expect(RETURN_CONTRACT_BLOCKS.reviewer).toContain(QUOTE_RULE)
+    expect(RETURN_CONTRACT_BLOCKS.reviewer.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
+  })
+})
+
+describe('CC-690: pr-ready, WAIT and the Class line', () => {
+  it('has both implementer blocks run pr-ready with --title and --body-file and fix every FAIL before pr create', () => {
+    for (const block of [RETURN_CONTRACT_BLOCKS.implementer, IMPLEMENTER_WITHOUT_SHEPHERD]) {
+      const text = flat(block)
+      expect(text).toContain('agent-chat pr-ready --title <t> --body-file <f>')
+      expect(text).toContain('fix every FAIL')
+      expect(text.indexOf('pr-ready')).toBeLessThan(text.indexOf('gh-write -- <gh args>'))
+    }
+  })
+
+  it('lets the reviewer say WAIT only for a clean review whose required checks have not finished', () => {
+    const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
+    expect(text).toContain('Verdict: MERGE (or FIX_FIRST or WAIT)')
+    expect(text).toContain('WAIT only for a clean review whose required checks have not finished')
+  })
+
+  it('asks for a Class line naming the first blocker on FIX_FIRST', () => {
+    const text = flat(RETURN_CONTRACT_BLOCKS.reviewer)
+    expect(text).toContain('Class: defect|test|pr-text|leak|lint|rebase|ci-red|changeset')
+    expect(text).toMatch(/FIX_FIRST[^.]*Class:/)
+  })
+
+  it('runs risky probes only in a scratch repo whose origin is a local bare repo', () => {
+    expect(flat(RETURN_CONTRACT_BLOCKS.reviewer)).toContain('scratch repo whose origin is a local bare repo')
+  })
+
+  it('stays under the cap with the reviewer under its own 1,200-character report limit named', () => {
+    expect(RETURN_CONTRACT_BLOCKS.reviewer.length).toBeLessThanOrEqual(MAX_BLOCK_CHARS)
   })
 })

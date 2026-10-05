@@ -1,3 +1,4 @@
+import { logFindings } from './finding.js'
 import { applyActions, claimKey, type Action, type ClaimKey } from './advance.js'
 import { sameClaim, writeLedger, type Claim, type Ledger } from './ledger.js'
 import { targetRef, type RegisterReply, type Registration } from './shepherd.js'
@@ -86,8 +87,10 @@ export async function execute(steps: Step[], start: Ledger, deps: ExecuteDeps): 
   let ledger = start
   const lines: string[] = []
   const commit = (actions: Action[]): void => {
+    const before = ledger
     ledger = applyActions(ledger, actions, deps.now)
     writeLedger(deps.ledgerFile, ledger)
+    logFindings(before, ledger, deps.log)
   }
   for (const step of steps) {
     if (step.kind === 'ledger') commit(step.actions)
@@ -141,7 +144,7 @@ async function spawnOne(
     return `spawned ${frame.name} (${reply.agentId ?? '?'}) as ${frame.profile} on ${frame.configDir}`
   }
   const stalledReason = refusalReason(frame, reply.reason ?? 'refused without a reason')
-  commit([{ kind: 'update', key, patch: { stalledReason } }])
+  commit([{ kind: 'update', key, patch: { stalledReason, stalledClass: 'failed' } }])
   return `not spawned ${frame.name}: ${stalledReason}`
 }
 
@@ -157,7 +160,7 @@ function registerOne(
   if (reply.ok) return `registered ${ref} with Shepherd for ${claimKey(step.key)}`
   if (!reply.refused) return `register ${ref} with Shepherd failed (${reply.reason}); retried next tick`
   const stalledReason = `Shepherd refused ${ref} (${reply.reason}); burndown does not merge, so the PR is left for the owner`
-  commit([{ kind: 'update', key: step.key, patch: { stalledReason } }])
+  commit([{ kind: 'update', key: step.key, patch: { stalledReason, stalledClass: 'gate-trip' } }])
   return `not registered ${ref}: ${stalledReason}`
 }
 

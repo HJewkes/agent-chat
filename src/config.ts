@@ -10,11 +10,14 @@ import {
 import {
   DEFAULT_MACHINE_STOP_LOAD5,
   DEFAULT_MACHINE_STOP_MEMORY_FREE_PERCENT,
+  DEFAULT_MACHINE_STOP_PRESSURE_LEVEL,
+  DEFAULT_MACHINE_STOP_SWAP_USED_PERCENT,
   type MachineStopLimits,
 } from './agents/seats/stops.js'
 import { DEFAULT_FULL_SUITE_SLOTS } from './suite-slots.js'
 import { isHexColour, type PaneColourConfig } from '@titan-design/agent-surface'
 import { isInteractiveSurface, type SurfaceName } from './protocol.js'
+import { POOL_PICK_MODES, type PoolPickMode } from './agents/seats/pool-pick.js'
 
 interface AgentChatConfig {
   agentSlots?: unknown
@@ -22,6 +25,7 @@ interface AgentChatConfig {
   contextHints?: unknown
   parkAdvice?: unknown
   ledgerShadow?: unknown
+  poolPick?: unknown
   permissionHookTimeoutSeconds?: unknown
   decider?: unknown
   noticeTtlHours?: unknown
@@ -32,8 +36,11 @@ interface AgentChatConfig {
   machineMemoryFreePercent?: unknown
   machineStopMemoryFreePercent?: unknown
   machineStopLoad5?: unknown
+  machineStopSwapUsedPercent?: unknown
+  machineStopPressureLevel?: unknown
   fullSuiteSlots?: unknown
   coordinatorGrantableTools?: unknown
+  poolProbe?: unknown
 }
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
@@ -83,6 +90,30 @@ export function resolveLedgerShadow(): boolean {
   if (value === undefined || typeof value === 'boolean') return value !== false
   logEvent('config_invalid', { key: 'ledgerShadow', value, fallback: true })
   return true
+}
+
+/**
+ * CC-529: whether the seat watchdog may spend a headless turn to read a pool with no fresh reading.
+ * Off unless `poolProbe` is `true`: the turn is unattended and starts a five_hour window on an idle pool.
+ */
+export function resolvePoolProbe(): boolean {
+  const value = readConfig().poolProbe
+  if (value === undefined || typeof value === 'boolean') return value === true
+  logEvent('config_invalid', { key: 'poolProbe', value, fallback: false })
+  return false
+}
+
+/**
+ * CC-606: whether the broker's pool pick for an unpinned seat spawn is only recorded (`shadow`, the default)
+ * or also billed (`enforce`); `off` skips it. From `config.json`'s `poolPick`, read per spawn.
+ */
+export function resolvePoolPickMode(): PoolPickMode {
+  const value = readConfig().poolPick
+  if (value === undefined) return 'shadow'
+  const mode = POOL_PICK_MODES.find(known => known === value)
+  if (mode !== undefined) return mode
+  logEvent('config_invalid', { key: 'poolPick', value, fallback: 'shadow' })
+  return 'shadow'
 }
 
 /**
@@ -177,7 +208,28 @@ export function resolveMachineStopLimits(): MachineStopLimits {
       100,
     ),
     load5: numberFrom('machineStopLoad5', config.machineStopLoad5, DEFAULT_MACHINE_STOP_LOAD5),
+    swapUsedPercent:
+      config.machineStopSwapUsedPercent === null
+        ? null
+        : numberFrom(
+            'machineStopSwapUsedPercent',
+            config.machineStopSwapUsedPercent,
+            DEFAULT_MACHINE_STOP_SWAP_USED_PERCENT,
+            100,
+          ),
+    pressureLevel: pressureLevelFrom(config.machineStopPressureLevel),
   }
+}
+
+function pressureLevelFrom(value: unknown): number {
+  if (value === undefined) return DEFAULT_MACHINE_STOP_PRESSURE_LEVEL
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 4) return value
+  logEvent('config_invalid', {
+    key: 'machineStopPressureLevel',
+    value,
+    fallback: DEFAULT_MACHINE_STOP_PRESSURE_LEVEL,
+  })
+  return DEFAULT_MACHINE_STOP_PRESSURE_LEVEL
 }
 
 function numberFrom(key: string, value: unknown, fallback: number, max = Infinity): number {
