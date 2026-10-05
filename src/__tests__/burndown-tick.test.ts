@@ -2419,7 +2419,7 @@ describe('burndown tick triage jobs (CC-649)', () => {
 
     expect(before).toEqual([])
     expect(stalledLines(fake)).toEqual([
-      'stalled DM-1: no final report (triage triage-dm-1-1 ran, claim still stalled)',
+      'stalled DM-1: no final report (triage triage-dm-1-1 still running past maxMinutes 30, claim still stalled)',
     ])
   })
 
