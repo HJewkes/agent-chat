@@ -21,7 +21,15 @@ const RULES: Rule[] = [
   s => (s.owns.length === 0 ? [`slice ${s.n}: owns no files`] : []),
   (s, names) =>
     s.dependsOn.filter(dep => !names.has(dep)).map(dep => `slice ${s.n}: depends on unknown slice ${dep}`),
+  s => repeatedScopes(s).map(scope => `slice ${s.n}: contract scope ${scope} is declared more than once`),
 ]
+
+function repeatedScopes(slice: PlannedSlice): string[] {
+  const seen = new Set<string>()
+  const repeated = new Set<string>()
+  for (const { scope } of slice.contracts ?? []) (seen.has(scope) ? repeated : seen).add(scope)
+  return [...repeated]
+}
 
 /** One reason line per failing slice and rule; empty when every slice passes. */
 export function lintSlices(slices: readonly PlannedSlice[]): string[] {
