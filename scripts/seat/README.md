@@ -16,7 +16,9 @@ This copy differs from the live one on purpose, because the repository is public
 dirs and agent names are neutral (`seat-test-*`, `seat-9-*`). `premerge` has no built-in
 coordinator list and exits 2 when `COORDINATORS` is unset, so the cutover must export
 `COORDINATORS` in `seat-merge` before pointing it at this copy. `task-note` has no default data
-root and exits 2 when `ACTIVE_ROOT` is unset.
+root and exits 2 when `ACTIVE_ROOT` is unset. `queue` tries GNU `stat -c` before BSD `stat -f`,
+because GNU `stat -f` prints a filesystem report instead of failing, which broke the stale-lock
+age on Linux.
 
 The `.bak-*` backups from the live `bin/` are not imported; they stay in the nightly archive.
 Deleting them from the live `bin/` is an owner step after the cutover.

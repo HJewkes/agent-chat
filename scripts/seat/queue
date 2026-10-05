@@ -183,7 +183,7 @@ trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
 lock_age() {
-  m=$(stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock" 2>/dev/null) || return 1
+  m=$(stat -c %Y "$lock" 2>/dev/null) || m=$(stat -f %m "$lock" 2>/dev/null) || return 1
   echo $(( $(date +%s) - m ))
 }
 acquire() {
