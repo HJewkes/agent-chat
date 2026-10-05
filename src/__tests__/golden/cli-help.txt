@@ -231,6 +231,7 @@ Commands:
                        refused
   milestone [options]  this week's burn-down per milestone: points, critical path, WIP, throughput,
                        forecast, status
+  seats                seats mode checks (CC-205)
   status               claim ledger, stalled claims and each account budget gate
   tick [options]       one pass: advance every claim a phase, then spawn new work inside the
                        ceilings
@@ -263,6 +264,30 @@ this week's burn-down per milestone: points, critical path, WIP, throughput, for
 Options:
   --json                   one JSON document; a failure is {"error"} with exit 1
   --autonomy-root <value>  directory holding milestones/<week>.yml
+  -h, --help               display help for command
+
+=== agent-chat burndown seats
+Usage: agent-chat burndown seats [options] [command]
+
+seats mode checks (CC-205)
+
+Options:
+  -h, --help         display help for command
+
+Commands:
+  compare [options]  check a seat's dry-run plan against score.py: each ID dispatched in order,
+                     refused, held or beyond caps
+  help [command]     display help for command
+
+=== agent-chat burndown seats compare
+Usage: agent-chat burndown seats compare [options]
+
+check a seat's dry-run plan against score.py: each ID dispatched in order, refused, held or beyond
+caps
+
+Options:
+  --seat <value>           autonomy seat to compare
+  --autonomy-root <value>  directory holding score.py, charter.md and seats/
   -h, --help               display help for command
 
 === agent-chat burndown status
