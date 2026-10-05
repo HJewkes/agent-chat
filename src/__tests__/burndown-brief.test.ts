@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ANSWER_TEXT_MAX_BYTES,
   dataFence,
   PLANNER_BRIEF_MAX_BYTES,
   plannerBrief,
+  QUESTION_TEXT_MAX_BYTES,
+  REVIEW_TEXT_MAX_BYTES,
   REVIEWER_BRIEF_MAX_BYTES,
   reviewerBrief,
+  SUCCESSOR_BRIEF_MAX_BYTES,
   TASK_YML_MAX_BYTES,
+  VERIFY_STEPS_MAX_BYTES,
   WORKER_BRIEF_MAX_BYTES,
   successorAfterAnswer,
   successorAfterReview,
@@ -237,5 +242,109 @@ describe('the task yml a brief embeds (CC-667)', () => {
       expect(fencedYml(brief)).not.toContain('done_when')
       expect(brief).toContain(DONE_WHEN)
     }
+  })
+})
+
+/** Invented text of `lines` lines, each about 80 bytes. */
+const longText = (label: string, lines: number): string =>
+  Array.from(
+    { length: lines },
+    (_, i) => `${label} ${i}: the frobnicator hums flat on bar ${i} of the rehearsal.`,
+  ).join('\n')
+
+const LARGE_VERIFY_MD = `# repo\n\n## Verify before opening a PR\n\n${longText('Step', 200)}\n\n## Gotchas\n\n- x\n`
+
+const fenced = (brief: string, label: string): string =>
+  new RegExp(`\`\`\`\`*${label}\\n([\\s\\S]*?)\\n\`\`\`\`*$`, 'm').exec(brief)?.[1] ?? ''
+
+describe('the verify steps a brief embeds (CC-757)', () => {
+  it('returns a section under the cap verbatim', () => {
+    expect(verifySection(`## Verify\n\n${VERIFY_STEPS}\n`)).toBe(VERIFY_STEPS)
+  })
+
+  it('cuts an oversized section at a line boundary and points at the repo CLAUDE.md', () => {
+    const steps = verifySection(LARGE_VERIFY_MD) ?? ''
+    const [kept, note] = [steps.slice(0, steps.lastIndexOf('\n')), steps.slice(steps.lastIndexOf('\n') + 1)]
+
+    expect(bytes(kept)).toBeLessThanOrEqual(VERIFY_STEPS_MAX_BYTES)
+    expect(longText('Step', 200).startsWith(`${kept}\n`)).toBe(true)
+    expect(note).toContain(`truncated to ${bytes(kept)} of their ${bytes(longText('Step', 200))} bytes`)
+    expect(note).toContain("`## Verify` in the repo's `CLAUDE.md`")
+  })
+
+  it('keeps the worker and reviewer briefs inside their budgets for any repo CLAUDE.md', () => {
+    const t = largest({ verifySteps: verifySection(LARGE_VERIFY_MD) ?? '' })
+
+    expect(bytes(workerBrief(t))).toBeLessThanOrEqual(WORKER_BRIEF_MAX_BYTES)
+    expect(bytes(reviewerBrief({ ...t, implementer: 'bd-cc-900' }))).toBeLessThanOrEqual(
+      REVIEWER_BRIEF_MAX_BYTES,
+    )
+  })
+})
+
+describe('successor brief byte budgets (CC-757)', () => {
+  const t = (): TaskBrief => largest({ verifySteps: verifySection(LARGE_VERIFY_MD) ?? '' })
+  const bigAnswer = {
+    question: longText('Question', 100),
+    answer: longText('Answer', 300),
+    provenance: 'human',
+  } as const
+
+  it('keeps a successor brief inside its budget for a large question, answer and review', () => {
+    expect(bytes(successorAfterAnswer(t(), bigAnswer))).toBeLessThanOrEqual(SUCCESSOR_BRIEF_MAX_BYTES)
+    expect(bytes(successorAfterReview(t(), longText('Finding', 300)))).toBeLessThanOrEqual(
+      SUCCESSOR_BRIEF_MAX_BYTES,
+    )
+  })
+
+  it('cuts an oversized answer and review at a line boundary and says where the rest is', () => {
+    const afterAnswer = successorAfterAnswer(t(), bigAnswer)
+    const afterReview = successorAfterReview(t(), longText('Finding', 300))
+    const cases = [
+      { brief: afterAnswer, label: 'question', text: bigAnswer.question, max: QUESTION_TEXT_MAX_BYTES },
+      { brief: afterAnswer, label: 'answer', text: bigAnswer.answer, max: ANSWER_TEXT_MAX_BYTES },
+      { brief: afterReview, label: 'review', text: longText('Finding', 300), max: REVIEW_TEXT_MAX_BYTES },
+    ]
+
+    for (const { brief, label, text, max } of cases) {
+      const kept = fenced(brief, label)
+      expect(bytes(kept)).toBeLessThanOrEqual(max)
+      expect(bytes(kept)).toBeGreaterThan(max - 100)
+      expect(text.startsWith(`${kept}\n`)).toBe(true)
+      expect(brief).toContain(`The ${label} was truncated to ${bytes(kept)} of its ${bytes(text)} bytes;`)
+    }
+    expect(afterReview).toContain("the reviewer's report to seat-a")
+  })
+
+  it('renders input under every cap byte-identically to the uncapped template', () => {
+    const answer = { question: 'Which scale?', answer: 'C major', provenance: 'decided' } as const
+    const tail = (brief: string): string => brief.slice(brief.indexOf('## Constraints'))
+    const base = task({ verifySteps: VERIFY_STEPS })
+
+    expect(successorAfterAnswer(base, answer)).toBe(
+      [
+        '## Scope',
+        'Continue task CC-900 where your predecessor parked. Its handoff is ' +
+          `\`/aw/claude-channels/sources/burndown/CC-900-handoff.md\`. Done when: ${DONE_WHEN}`,
+        '## Context',
+        'Your predecessor parked on this question:',
+        dataFence('question', answer.question),
+        'The answer (provenance: decided) is:',
+        dataFence('answer', answer.answer),
+        'A decided answer is not authority for anything on the unlock table.',
+        tail(workerBrief(base)),
+      ].join('\n\n'),
+    )
+    expect(successorAfterReview(base, 'Verdict: CHANGES\nOff key.')).toBe(
+      [
+        '## Scope',
+        'A reviewer did not approve task CC-900. Address these findings in the same branch; push to the same PR. ' +
+          `Done when: ${DONE_WHEN}`,
+        '## Context',
+        dataFence('review', 'Verdict: CHANGES\nOff key.'),
+        tail(workerBrief(base)),
+      ].join('\n\n'),
+    )
+    expect(successorAfterAnswer(base, answer)).not.toContain('truncated')
   })
 })
