@@ -183,6 +183,11 @@ export const PHASE_TIMEOUT_MS: Partial<Record<Phase, number>> = {
   reviewing: 2 * HOUR_MS,
 }
 
+/** Named so a recorded failure says what failed without carrying the file path in the message. */
+export class LedgerMalformedError extends Error {
+  override name = 'LedgerMalformedError'
+}
+
 /** A missing file is an empty ledger; a malformed one throws, because guessing would double-dispatch. */
 export function readLedger(file: string): Ledger {
   let raw: string
@@ -197,7 +202,7 @@ export function readLedger(file: string): Ledger {
   } catch {
     parsed = undefined
   }
-  if (parsed?.success !== true) throw new Error(`burndown ledger ${file} is malformed`)
+  if (parsed?.success !== true) throw new LedgerMalformedError(`burndown ledger ${file} is malformed`)
   return parsed.data
 }
 

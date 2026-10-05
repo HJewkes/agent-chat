@@ -2,7 +2,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { logEvent } from '../../broker/log.js'
 import { resolveDeciderAgentId, resolveWorktreeBudget } from '../../config.js'
-import { burndownConfigPath, burndownLedgerPath, burndownPausePath } from '../../paths.js'
+import {
+  burndownConfigPath,
+  burndownLedgerPath,
+  burndownPausePath,
+  burndownTickStatusPath,
+} from '../../paths.js'
 import type { QueueItem } from '../../protocol.js'
 import { activeWorkRoot } from '../active-work.js'
 import { seatMergedLog } from '../seats/dispatch-log.js'
@@ -58,6 +63,7 @@ import {
 } from './source.js'
 import { registerWithShepherd, shepherdLanded, shepherdRows, targetRef } from './shepherd.js'
 import { retrySteps, stepsForActions, stepsForDispatch, type StepContext } from './steps.js'
+import { recordTick, type StopCode, type TickResult } from './tick-status.js'
 import { loadWorld, type World } from './tick.js'
 import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
 import {
@@ -129,16 +135,33 @@ export function modeConflict(config: TickConfig, initiatives: readonly Initiativ
   return `config error: ${burndownConfigPath()} lists seats, and brief.md of ${optedIn.join(', ')} has an autonomy: block; remove one, since both modes would dispatch the same work`
 }
 
+/** Never rejects for a real tick: a throw is recorded in the status file (CC-756). A dry run records nothing and throws as before. */
 export async function tickFromDisk(opts: TickOptions): Promise<string[]> {
+  if (opts.dryRun) return (await tickOnce(opts)).lines
+  const now = opts.now ?? new Date()
+  return recordTick(burndownTickStatusPath(), () => tickOnce({ ...opts, now }), now, opts.log)
+}
+
+const stopCode = (config: TickConfig, paused: boolean): StopCode =>
+  !config.enabled ? 'disabled' : paused ? 'paused' : 'no-report-to'
+
+async function tickOnce(opts: TickOptions): Promise<TickResult> {
   const config = loadTickConfig(burndownConfigPath())
-  const stop = stopReason(config, fs.existsSync(burndownPausePath()))
-  if (stop !== undefined && !opts.dryRun) return [stop]
+  const paused = fs.existsSync(burndownPausePath())
+  const stop = stopReason(config, paused)
+  if (stop !== undefined && !opts.dryRun)
+    return { lines: [stop], outcome: { kind: 'stopped', reason: stopCode(config, paused) } }
   const head = stop === undefined ? [] : [`${stop}; dry run proceeds anyway`]
   const conflict = modeConflict(config, readInitiatives(opts.root ?? activeWorkRoot()))
-  if (conflict !== undefined) return [...head, conflict]
+  if (conflict !== undefined)
+    return { lines: [...head, conflict], outcome: { kind: 'failed', errorClass: 'ModeConflict' } }
   const locked = await withLedgerLock(burndownLedgerPath(), () => runTick(config, opts))
-  if (!locked.ran) return [...head, `another tick holds the ledger lock (pid ${locked.holder}); did nothing`]
-  return [...head, ...locked.value]
+  if (!locked.ran)
+    return {
+      lines: [...head, `another tick holds the ledger lock (pid ${locked.holder}); did nothing`],
+      outcome: { kind: 'skipped' },
+    }
+  return { lines: [...head, ...locked.value], outcome: { kind: 'ok' } }
 }
 
 async function runTick(config: TickConfig, opts: TickOptions): Promise<string[]> {
