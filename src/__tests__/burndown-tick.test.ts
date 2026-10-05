@@ -11,7 +11,7 @@ import { readLedger, writeLedger, type Claim } from '../agents/burndown/ledger.j
 import { SHEPHERD_BIN } from '../agents/burndown/shepherd.js'
 import { tickFromDisk, type TickBroker } from '../agents/burndown/run-tick.js'
 import { renderPlan, renderStatus, seatPlanFromDisk } from '../agents/burndown/tick.js'
-import { TRUST_RULE_CLI_VERSION } from '../agents/trust.js'
+import { TRUST_RULE_BASELINE_CLI_VERSION } from '../agents/trust.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { burndownLedgerPath, burndownPausePath, configPath } from '../paths.js'
 import { tickBroker } from '../cli/burndown-broker.js'
@@ -79,7 +79,7 @@ function account(): void {
 }
 
 function installClaude(): void {
-  const target = path.join(world, 'claude', 'versions', TRUST_RULE_CLI_VERSION)
+  const target = path.join(world, 'claude', 'versions', TRUST_RULE_BASELINE_CLI_VERSION)
   write(target, '')
   fs.chmodSync(target, 0o755)
   const link = path.join(world, 'bin', 'claude')

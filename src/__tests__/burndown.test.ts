@@ -20,7 +20,7 @@ import {
   type Ledger,
 } from '../agents/burndown/ledger.js'
 import { planFromDisk, renderPlan } from '../agents/burndown/tick.js'
-import { TRUST_RULE_CLI_VERSION } from '../agents/trust.js'
+import { TRUST_RULE_BASELINE_CLI_VERSION } from '../agents/trust.js'
 import { BrokerClient } from '../client/broker-client.js'
 import { withBroker } from '../cli/client.js'
 import { burndownPlanVerb } from '../cli/verbs/burndown.js'
@@ -90,7 +90,7 @@ beforeEach(() => {
   process.env.CLAUDE_PROFILE_ROOT = path.join(world, 'profiles')
   delete process.env.AGENT_CHAT_STATUS_CACHE
   fs.mkdirSync(path.join(repo(), '.git'), { recursive: true })
-  installClaude(TRUST_RULE_CLI_VERSION)
+  installClaude(TRUST_RULE_BASELINE_CLI_VERSION)
 })
 
 afterEach(() => {
