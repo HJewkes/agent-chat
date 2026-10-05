@@ -51,6 +51,20 @@ const field = (lines: string[], label: string): string | undefined =>
     .map(line => new RegExp(`^${label}:\\s*(\\S.*?)\\s*$`).exec(line)?.[1])
     .find(value => value !== undefined)
 
+export const CONTRACT_OPS = ['replace', 'remove', 'rename', 'migrate', 'add', 'extend', 'modify'] as const
+export const DESTRUCTIVE_OPS: readonly (typeof CONTRACT_OPS)[number][] = [
+  'replace',
+  'remove',
+  'rename',
+  'migrate',
+]
+
+const Contract = z.object({
+  scope: z.string().trim().min(1),
+  op: z.enum(CONTRACT_OPS),
+})
+export type Contract = z.infer<typeof Contract>
+
 const PlannedSlice = z.object({
   n: z.string().min(1),
   title: z.string(),
@@ -58,8 +72,10 @@ const PlannedSlice = z.object({
   owns: z.array(z.string()).default([]),
   points: z.number().optional(),
   doneWhen: z.string().optional(),
+  contracts: z.array(Contract).default([]),
 })
-export type PlannedSlice = z.infer<typeof PlannedSlice>
+/** `contracts` is optional on the type so fixtures built by hand stay valid; `readSlices` always fills it. */
+export type PlannedSlice = Omit<z.infer<typeof PlannedSlice>, 'contracts'> & { contracts?: Contract[] }
 
 /** A planner's slices when they pass the lint, else the reason lines. */
 export type SliceRead =

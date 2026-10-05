@@ -194,7 +194,7 @@ export function workerBrief(t: TaskBrief): string {
 }
 
 const SLICES_EXAMPLE =
-  '[{ "n": "a", "title": "...", "points": 2, "doneWhen": "...", "dependsOn": [], "owns": ["src/..."] }]'
+  '[{ "n": "a", "title": "...", "points": 2, "doneWhen": "...", "dependsOn": [], "owns": ["src/..."], "contracts": [{ "scope": "...", "op": "extend" }] }]'
 
 const PLAN_PARTS = [
   '0. Inventory, before any design: for each need, the existing unit it reuses or the gap and its task id; for every model or tool call, the runtime path, credential and smoke check.',
@@ -210,7 +210,10 @@ function slicesRequirement(): string {
   return (
     'The plan must also hold one fenced block tagged `burndown-slices` with a JSON array, one entry per slice ' +
     `from part 3, shaped like ${SLICES_EXAMPLE}. Each slice is at most ${MAX_SLICE_POINTS} points, has a doneWhen, owns at least one file, ` +
-    'and depends only on slices in the block, without cycles. The tick lints this block; a plan without it, or failing the lint, stalls.'
+    'and depends only on slices in the block, without cycles. ' +
+    'Contracts are optional: list the named interfaces a slice changes, each scope written exactly as another planner would write it, ' +
+    'with an op of replace, remove, rename, migrate, add, extend or modify; a replace, remove, rename or migrate blocks any concurrent work on that exact scope. ' +
+    'The tick lints this block; a plan without it, or failing the lint, stalls.'
   )
 }
 

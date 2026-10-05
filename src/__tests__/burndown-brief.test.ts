@@ -93,6 +93,15 @@ describe('planner brief', () => {
     expect(brief).toContain('0. Inventory')
     expect(brief).not.toContain('You may not merge')
   })
+
+  it('names contracts and the seven ops', () => {
+    const brief = plannerBrief(task())
+
+    expect(brief).toContain('"contracts": [{ "scope": "...", "op": "extend" }]')
+    for (const op of ['replace', 'remove', 'rename', 'migrate', 'add', 'extend', 'modify']) {
+      expect(brief).toContain(op)
+    }
+  })
 })
 
 describe('successor briefs', () => {

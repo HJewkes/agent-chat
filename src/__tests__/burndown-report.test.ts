@@ -55,6 +55,7 @@ describe('burndown report parser', () => {
         doneWhen: 'ledger test passes',
         dependsOn: [],
         owns: ['src/a.ts'],
+        contracts: [],
       },
       {
         n: 'b',
@@ -63,6 +64,7 @@ describe('burndown report parser', () => {
         doneWhen: 'tick test passes',
         dependsOn: ['a'],
         owns: ['src/b.ts'],
+        contracts: [],
       },
     ])
   })
@@ -126,6 +128,52 @@ describe('burndown lints planner slices (CC-631)', () => {
       'slice a: 4 points, over the 3-point limit',
       'slice a: owns no files',
       'slice b: depends on unknown slice q',
+    ])
+  })
+
+  it('parses a slice with contracts intact', () => {
+    const contracts = [{ scope: 'api:/v1/report', op: 'replace' }]
+
+    const read = readSlices(planOf({ ...good, contracts }))
+
+    expect(read.slices?.[0]?.contracts).toEqual(contracts)
+  })
+
+  it('parses a slice without contracts to an empty list', () => {
+    const read = readSlices(planOf(good))
+
+    expect(read.slices?.[0]?.contracts).toEqual([])
+  })
+
+  it('stalls an unknown op with a line naming its path', () => {
+    const read = readSlices(planOf({ ...good, contracts: [{ scope: 'api:/v1/report', op: 'delete' }] }))
+
+    expect(read.problems).toHaveLength(1)
+    expect(read.problems?.[0]).toContain('contracts.0.op')
+  })
+
+  it.each(['replace', 'remove', 'rename', 'migrate', 'add', 'extend', 'modify'])('parses the op %s', op => {
+    const read = readSlices(planOf({ ...good, contracts: [{ scope: 'sym:a', op }] }))
+
+    expect(read.problems).toBeUndefined()
+  })
+
+  it('stalls a whitespace scope with a line naming its path', () => {
+    const read = readSlices(planOf({ ...good, contracts: [{ scope: '   ', op: 'add' }] }))
+
+    expect(read.problems).toHaveLength(1)
+    expect(read.problems?.[0]).toContain('contracts.0.scope')
+  })
+
+  it('gives one lint line for a scope repeated in one slice', () => {
+    const contracts = [
+      { scope: 'sym:a', op: 'add' },
+      { scope: ' sym:a ', op: 'extend' },
+      { scope: 'sym:a', op: 'modify' },
+    ]
+
+    expect(readSlices(planOf({ ...good, contracts })).problems).toEqual([
+      'slice a: contract scope sym:a is declared more than once',
     ])
   })
 })
