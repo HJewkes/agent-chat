@@ -23,7 +23,14 @@ import { readLedger, withLedgerLock, writeLedger } from '../../agents/burndown/l
 import { loadTickConfig } from '../../agents/burndown/source.js'
 import { tickFromDisk } from '../../agents/burndown/run-tick.js'
 import { TICK_INTERVAL_SECONDS } from '../../agents/burndown/tick-status.js'
-import { planFromDisk, renderPlan, renderStatus, seatPlanFromDisk } from '../../agents/burndown/tick.js'
+import { seatCompareFromDisk } from '../../agents/burndown/seat-compare.js'
+import {
+  planFromDisk,
+  renderPlan,
+  renderStatus,
+  seatPlanFromDisk,
+  type SeatPlanOptions,
+} from '../../agents/burndown/tick.js'
 import { BrokerClient } from '../../client/broker-client.js'
 import { jobState, startJob, stopJob, systemLaunchctl, type JobControl } from '../../mirror/launchd.js'
 import { jobEnv, launchdJobRefusals, renderBurndownPlist } from '../../mirror/plist.js'
@@ -53,7 +60,9 @@ const SIGN_OFF_CHECKLIST = [
   '[ ] reportTo set to a registered session in burndown.config.json (a real tick refuses without it).',
   '[ ] Opt-in scope: exactly one initiative, lanes: 1, grants: [].',
   '[ ] Three supervised `burndown tick --once` runs done by hand; `burndown status` read after each.',
-  '[ ] Kill switch known: `burndown pause` stops new spawns; `burndown uninstall` removes the job.',
+  '[ ] Seats mode: per listed seat, three dry runs each followed by `burndown seats compare`, all exiting 0.',
+  '[ ] Seats mode: each listed seat no longer dispatches scored work itself; no brief has an autonomy: block.',
+  '[ ] Kill switch known:`burndown pause` stops new spawns; `burndown uninstall` removes the job.',
 ]
 
 const refused = (err: unknown): Report => ({
@@ -124,22 +133,50 @@ async function plainPlan(): Promise<Report> {
 }
 
 async function seatDispatchPlan(seat: string, autonomyRoot: string | undefined): Promise<Report> {
-  const now = new Date()
-  const facts = await readBroker(async client => ({
-    view: await collisionView(client),
-    roster: await tickBroker(client).roster(),
-  }))
-  const broker = facts?.view
+  const opts = await seatPlanOptions(seat, autonomyRoot)
+  return { ok: true, lines: renderPlan(seatPlanFromDisk(opts), opts.now) }
+}
+
+export const burndownSeatsCompareVerb = defineVerb({
+  name: 'burndown.seats.compare',
+  description:
+    "check a seat's dry-run plan against score.py: each ID dispatched in order, refused, held or beyond caps",
+  args: z.object({ seat: requiredString('seat'), autonomyRoot: z.string().optional() }),
+  result: Report,
+  cli: {
+    options: {
+      seat: { long: '--seat', description: 'autonomy seat to compare' },
+      autonomyRoot: {
+        long: '--autonomy-root',
+        description: 'directory holding score.py, charter.md and seats/',
+      },
+    },
+  },
+  async run({ seat, autonomyRoot }) {
+    try {
+      return seatCompareFromDisk(await seatPlanOptions(seat, autonomyRoot))
+    } catch (err) {
+      return refused(err)
+    }
+  },
+})
+
+/**
+ * The seat plan's live inputs. The collision view and the roster are read apart, so a roster read
+ * that fails only counts every held tree instead of losing the view and refusing every task as `claimed`.
+ */
+async function seatPlanOptions(seat: string, autonomyRoot: string | undefined): Promise<SeatPlanOptions> {
+  const view = await readCollisionView()
+  const roster = await readBroker(client => tickBroker(client).roster())
   const root = activeWorkRoot()
-  const planned = seatPlanFromDisk({
+  return {
     seat,
-    now,
+    now: new Date(),
     root,
     autonomyRoot: autonomyRoot ?? defaultAutonomyRoot(root),
-    collision: ledger => collisionCheck(ledger, broker),
-    ...(facts === undefined ? {} : { roster: facts.roster }),
-  })
-  return { ok: true, lines: renderPlan(planned, now) }
+    collision: ledger => collisionCheck(ledger, view),
+    ...(roster === undefined ? {} : { roster }),
+  }
 }
 
 function scoredSeatPlan(seat: string, { top, autonomyRoot, today }: PlanArgs): string[] {
@@ -386,6 +423,8 @@ export function addBurndownCommands(program: Commander): void {
     .description('pick and run unattended work for opted-in initiatives')
   addVerb(burndown, burndownPlanVerb)
   addVerb(burndown, burndownMilestoneVerb)
+  const seats = burndown.command('seats').description('seats mode checks (CC-205)')
+  addVerb(seats, burndownSeatsCompareVerb)
   addVerb(burndown, burndownStatusVerb)
   addVerb(burndown, burndownTickVerb)
   addVerb(burndown, burndownPauseVerb)
