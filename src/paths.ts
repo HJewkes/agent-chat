@@ -105,6 +105,9 @@ export const ghShimDir = (): string => path.join(home(), 'gh-shim')
 /** The burndown claim ledger: which task each tick-spawned agent holds, and in what phase. */
 export const burndownLedgerPath = (): string => path.join(home(), 'burndown.json')
 
+/** The burndown tick's heartbeat and consecutive-failure count; agent-chat writes it, titan-factory reads it. */
+export const burndownTickStatusPath = (): string => path.join(home(), 'burndown-status.json')
+
 /** Per-account reserve and ceiling for `agent-chat burndown`; the design's defaults apply when absent. */
 export const burndownConfigPath = (): string => path.join(home(), 'burndown.config.json')
 

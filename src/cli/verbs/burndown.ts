@@ -22,6 +22,7 @@ import { collisionCheck, type BrokerView } from '../../agents/burndown/collision
 import { readLedger, withLedgerLock, writeLedger } from '../../agents/burndown/ledger.js'
 import { loadTickConfig } from '../../agents/burndown/source.js'
 import { tickFromDisk } from '../../agents/burndown/run-tick.js'
+import { TICK_INTERVAL_SECONDS } from '../../agents/burndown/tick-status.js'
 import { planFromDisk, renderPlan, renderStatus, seatPlanFromDisk } from '../../agents/burndown/tick.js'
 import { BrokerClient } from '../../client/broker-client.js'
 import { jobState, startJob, stopJob, systemLaunchctl, type JobControl } from '../../mirror/launchd.js'
@@ -29,9 +30,6 @@ import { jobEnv, launchdJobRefusals, renderBurndownPlist } from '../../mirror/pl
 import { addVerb, defineVerb, Report } from '../command.js'
 import { collisionView, tickBroker } from '../burndown-broker.js'
 import { releaseTask, type RetireCall } from './burndown-release.js'
-
-/** How often launchd fires `burndown tick --once`; independent of any phase timeout. */
-const TICK_INTERVAL_SECONDS = 600
 
 /** Production control; every verb below takes one as a parameter so tests can inject a stub. */
 const defaultControl = (dryRun = false): JobControl => ({
