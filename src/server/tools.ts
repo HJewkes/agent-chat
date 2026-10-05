@@ -27,6 +27,9 @@ import { agentSpawn } from './commands/agent-spawn.js'
 import { agentTeleport } from './commands/agent-teleport.js'
 import { TOOL_COMMANDS } from './commands/index.js'
 
+/** Ceiling on the JSON bytes of the listed tools, which every session pays for; 32.5 kB measured on 2026-10-05. */
+export const TOOL_CATALOGUE_MAX_BYTES = 36_000
+
 export const TOOL_DEFINITIONS = [
   toolDefinition(chatRegister),
   toolDefinition(chatStatus),
