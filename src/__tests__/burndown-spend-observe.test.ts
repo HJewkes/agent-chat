@@ -177,4 +177,69 @@ describe('observing a claim spend', () => {
 
     expect(capped).toEqual(['alpha', 'beta'])
   })
+
+  it('puts an agent whose spend read throws into unknown and keeps the rest of the observation', async () => {
+    const throwing = baseDeps({
+      spend: agent => {
+        if (agent.name === 'sd-cc-1-s1') throw new Error('transcript path unresolvable')
+        return Promise.resolve({ ok: false, path: agent.name, reason: 'recorded' })
+      },
+    })
+
+    const { observations, unread } = await observe([claim()], threeAgents(), throwing)
+
+    expect(unread).toEqual([])
+    expect(observations.get(KEY)).toMatchObject({
+      agent: { id: 'id-sd-cc-1-s1', state: 'live' },
+      activity: { read: 'unknown', spawnedAt: 1 },
+      progress: 'unreadable',
+      spend: { cap: 30, claim: { agents: 3, unknown: ['sd-cc-1', 'sd-cc-1-s1', 'sd-cc-1-r0'] } },
+    })
+  })
+
+  it('puts an agent whose spend read rejects into unknown', async () => {
+    const rejecting = baseDeps({ spend: () => Promise.reject(new Error('read failed')) })
+
+    const { observations } = await observe([claim({ spawned: ['sd-cc-1'] })], threeAgents(), rejecting)
+
+    expect(observations.get(KEY)?.spend?.claim).toMatchObject({ agents: 1, unknown: ['sd-cc-1'] })
+  })
+
+  it('puts a roster row with no cwd into unknown under the default reader', async () => {
+    writeTranscript('s-0', 100_000)
+    const noCwd = { ...agentRow('sd-cc-1-s1', 's-1'), cwd: undefined } as unknown as AgentIdentity
+    const roster = { agents: [agentRow('sd-cc-1', 's-0'), noCwd] }
+
+    const { observations, unread } = await observe(
+      [claim({ spawned: ['sd-cc-1', 'sd-cc-1-s1'] })],
+      roster,
+      baseDeps(),
+    )
+
+    expect(unread).toEqual([])
+    expect(observations.get(KEY)?.spend?.claim).toMatchObject({
+      agents: 2,
+      tokens: 101_000,
+      unknown: ['sd-cc-1-s1'],
+    })
+  })
+
+  it('still observes a second claim when the first claim spend read throws', async () => {
+    const roster = { agents: [...threeAgents().agents, agentRow('sd-cc-2', 's-3')] }
+    const throwing = baseDeps({
+      spend: agent => {
+        if (agent.name !== 'sd-cc-2') throw new Error('transcript path unresolvable')
+        return Promise.resolve({ ok: false, path: agent.name, reason: 'recorded' })
+      },
+    })
+    const second = claim({ taskId: 'CC-2', agentName: 'sd-cc-2', spawned: ['sd-cc-2'] })
+
+    const { observations } = await observe([claim(), second], roster, throwing)
+
+    expect(observations.get(KEY)?.spend?.claim.unknown).toHaveLength(3)
+    expect(observations.get('CC-2#')).toMatchObject({
+      agent: { id: 'id-sd-cc-2', state: 'live' },
+      spend: { cap: 30, claim: { agents: 1, unknown: ['sd-cc-2'] } },
+    })
+  })
 })

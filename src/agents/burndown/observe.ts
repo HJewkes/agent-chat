@@ -182,10 +182,22 @@ async function claimSpend(claim: Claim, roster: Roster, deps: ObserveDeps): Prom
       const row = rowNamed(roster, name)
       return row === undefined
         ? Promise.resolve<TranscriptSpendRead>({ ok: false, path: name, reason: 'no agent row' })
-        : readOne(row)
+        : spendOrUnknown(readOne, row)
     }),
   )
   return { claim: sumSpend(reads), cap }
+}
+
+/** A read that throws or rejects is that one agent's unknown, so it never loses the tick's other observations (CC-729). */
+async function spendOrUnknown(
+  readOne: (agent: AgentIdentity) => Promise<TranscriptSpendRead>,
+  row: AgentIdentity,
+): Promise<TranscriptSpendRead> {
+  try {
+    return await readOne(row)
+  } catch (err) {
+    return { ok: false, path: row.name, reason: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 function withSlices(obs: Observation, claim: Claim, deps: ObserveDeps): Observation {
