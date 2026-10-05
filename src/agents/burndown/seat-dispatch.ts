@@ -54,13 +54,15 @@ function seatPool(
   return { pool: { ...found, name: seat.pool ?? '' }, configDir: found.config_dir }
 }
 
-/** Throws for a hub seat, a seat without a prefix, an unknown pool, or a config_dir that differs from the pool's. */
+/**
+ * Throws for a seat with role hub, a seat without a prefix, an unknown pool, or a config_dir that differs from the pool's.
+ * The charter's `hub:` names the charter and restart-window owner, not a non-dispatching seat (CC-775).
+ */
 export function resolveSeatDispatch(policy: Policy, name: string, home = os.homedir()): SeatDispatch {
   const { charter } = policy
   const seat = policy.seats[name]
   if (seat === undefined) throw new Error(`${name} is not a seat`)
-  if (seat.role === 'hub' || charter.hub === name)
-    throw new Error(`${name} is the hub seat and dispatches nothing`)
+  if (seat.role === 'hub') throw new Error(`${name} is the hub seat and dispatches nothing`)
   if (seat.prefix === undefined) throw new Error(`${name} has no agent-name prefix`)
   return {
     seat: name,

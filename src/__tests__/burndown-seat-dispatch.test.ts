@@ -67,10 +67,14 @@ describe('resolveSeatDispatch', () => {
     expect(() => resolveSeatDispatch(hub, 'seat-hub', HOME)).toThrow('seat-hub is the hub seat')
   })
 
-  it('refuses the seat the charter names as hub even when its role is not hub', () => {
-    const hub = withSeat(policy, 'seat-hub', { role: 'product', prefix: 'sh' })
+  it('resolves the seat the charter names as hub like any seat when its role is not hub', () => {
+    const concurrency = { implementers: 2, reviewers: 1, planners: 0 }
+    const hub = withSeat(policy, 'seat-hub', { role: 'coordinator', prefix: 'sh', concurrency })
 
-    expect(() => resolveSeatDispatch(hub, 'seat-hub', HOME)).toThrow('seat-hub is the hub seat')
+    const dispatch = resolveSeatDispatch(hub, 'seat-hub', HOME)
+
+    expect(policy.charter.hub).toBe('seat-hub')
+    expect(dispatch).toMatchObject({ seat: 'seat-hub', prefix: 'sh', caps: concurrency })
   })
 
   it('refuses a seat whose config_dir differs from its pool', () => {

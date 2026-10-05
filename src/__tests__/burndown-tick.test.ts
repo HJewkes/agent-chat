@@ -809,19 +809,21 @@ function seatPolicy({
   poolExtra = '',
   extraRepo = '',
   grants = '',
+  hub = '',
 } = {}): void {
   const root = path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy')
   const pool = `pool-t: {config_dir: ${accountPath()}, human_uses: false, reserve_seven_day: 30, ceiling_five_hour: 75${poolExtra}}`
   write(
     path.join(root, 'charter.md'),
-    `---\nseats: [seat-t, seat-e${extraSeats}]\n${DEFAULTS}\npools:\n  ${pool}\n---\n`,
+    `---\nseats: [seat-t, seat-e${extraSeats}]\n${hub === '' ? '' : `hub: ${hub}\n`}${DEFAULTS}\npools:\n  ${pool}\n---\n`,
   )
   const concurrency = `concurrency: {implementers: ${implementers}, reviewers: 1, planners: 1}`
   const more = extraRepo === '' ? '' : `\n  - {path: ${extraRepo}, initiatives: [demo]}`
   const granted = grants === '' ? '' : `\ngrants_extra: [${grants}]`
+  const role = hub === 'seat-t' ? 'role: coordinator\n' : ''
   write(
     path.join(root, 'seats', 'seat-t.md'),
-    `---\nprefix: st\npool: pool-t\ninitiatives: {demo: 1.0}\nrepos:\n  - {path: ${repo()}, initiatives: [demo]}${more}\n${concurrency}${granted}\n---\n`,
+    `---\n${role}prefix: st\npool: pool-t\ninitiatives: {demo: 1.0}\nrepos:\n  - {path: ${repo()}, initiatives: [demo]}${more}\n${concurrency}${granted}\n---\n`,
   )
   write(path.join(root, 'seats', 'seat-e.md'), '---\nprefix: se\npool: pool-t\n---\n')
 }
@@ -971,6 +973,32 @@ describe('burndown tick in seats mode', () => {
     ])
     expect(() => seatPlanFromDisk({ seat: 'seat-e', now: NOON, root, autonomyRoot })).toThrow(
       'seat-e has no dispatch scope',
+    )
+  })
+
+  it("burndown plan --seat plans the charter's hub seat from its seat file when its role is not hub", () => {
+    seatPolicy({ hub: 'seat-t' })
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    const root = path.join(world, 'aw')
+    const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
+
+    const lines = renderPlan(seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot }), NOON)
+
+    expect(lines).toContainEqual(
+      expect.stringMatching(
+        `^would dispatch demo DM-1 as bd-implementer on pool-t in ${repo()}/.worktrees/st-dm-1`,
+      ),
+    )
+  })
+
+  it('burndown plan --seat still refuses a seat whose role is hub', () => {
+    seatPolicy({ hub: 'seat-t' })
+    const root = path.join(world, 'aw')
+    const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
+    write(path.join(autonomyRoot, 'seats', 'seat-e.md'), '---\nrole: hub\nprefix: se\npool: pool-t\n---\n')
+
+    expect(() => seatPlanFromDisk({ seat: 'seat-e', now: NOON, root, autonomyRoot })).toThrow(
+      'seat-e is the hub seat and dispatches nothing',
     )
   })
 

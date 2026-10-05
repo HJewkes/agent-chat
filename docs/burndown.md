@@ -58,6 +58,12 @@ instead of for briefs' `autonomy:` blocks. It reads the charter and seat files u
 block together are a config error: the tick refuses before it reads the roster, since
 both modes could dispatch the same work.
 
+A seat file with `role: hub` dispatches nothing: the tick skips it and `burndown plan
+--seat` refuses it. The charter's `hub:` key does not: it names the charter and
+restart-window owner, whose seat dispatches like any other under its own prefix, pool and
+`concurrency` block (CC-775). A seat without a `concurrency` block still dispatches nothing,
+since every cap defaults to 0.
+
 For each listed seat, in order, the tick:
 
 - takes one sample of the seat pool's `seven_day` reading from the status file under the
