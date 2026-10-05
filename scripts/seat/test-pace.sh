@@ -70,5 +70,13 @@ run $NOW
 [ "$(wc -l < "$H" | tr -d ' ')" -eq $((before + 1)) ] && report "a pace.json no pass has written for an hour hands the history back" ok \
   || report "a pace.json no pass has written for an hour hands the history back" "$before rows before, $(wc -l < "$H") after"
 
+active="$scratch/active"; mkdir -p "$active/claude-channels/sources"
+ln -s "$scratch" "$active/claude-channels/sources/autonomy"
+out=$(unset AUTONOMY_ROOT; ACTIVE_ROOT="$active" PACE_NOW=$NOW "$here/pace" 2>&1)
+expect "AUTONOMY_ROOT defaults to the autonomy dir under ACTIVE_ROOT" claude " 50 | target 49 |"
+out=$(unset AUTONOMY_ROOT ACTIVE_ROOT; "$here/pace" 2>&1); rc=$?
+[ "$rc" -eq 2 ] && case "$out" in *"AUTONOMY_ROOT and ACTIVE_ROOT unset"*) true ;; *) false ;; esac \
+  && report "both roots unset fails loudly" ok || report "both roots unset fails loudly" "exit $rc: $out"
+
 echo "$pass passed, $failn failed"
 [ "$failn" -eq 0 ]

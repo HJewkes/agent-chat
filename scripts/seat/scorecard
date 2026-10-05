@@ -2,18 +2,22 @@
 """Print the W41 scorecard (CC-634): every row of factory-w41-design-2026-10-03.md section 4.4, from ledgers only.
 
 Usage: bin/scorecard [--since YYYY-MM-DD] [--json]. Default window starts 2026-10-03 (UTC) and ends now.
-Env (tests point these at fixtures): SCORECARD_FACTORY_DB, SCORECARD_EVENTS_DB, SCORECARD_LOGS (dir of
-<seat>/dispatch.jsonl), SCORECARD_TASKS (dir of <initiative>/tasks/*.yml), SCORECARD_NOW (epoch seconds).
+Env: ACTIVE_ROOT (tasks root) or AUTONOMY_ROOT (default $ACTIVE_ROOT/claude-channels/sources/autonomy).
+Tests point these at fixtures: SCORECARD_FACTORY_DB, SCORECARD_EVENTS_DB, SCORECARD_LOGS (dir of <seat>/dispatch.jsonl), SCORECARD_TASKS (dir of <initiative>/tasks/*.yml), SCORECARD_NOW (epoch seconds).
 Every source opens read-only. A row whose source is absent or empty prints 'not measured', never 0.
 """
 import argparse, glob, json, os, re, sqlite3, statistics, sys, time
 from datetime import datetime, timezone
 
-ROOT = os.environ.get('AUTONOMY_ROOT') or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ACTIVE_ROOT = os.environ.get('ACTIVE_ROOT')
+ROOT = os.environ.get('AUTONOMY_ROOT') or (ACTIVE_ROOT and os.path.join(ACTIVE_ROOT, 'claude-channels', 'sources', 'autonomy'))
 FACTORY_DB = os.environ.get('SCORECARD_FACTORY_DB') or os.path.expanduser('~/.local/state/titan-factory/factory.sqlite3')
 EVENTS_DB = os.environ.get('SCORECARD_EVENTS_DB') or os.path.expanduser('~/.agent-chat/events.db')
-LOGS = os.environ.get('SCORECARD_LOGS') or os.path.join(ROOT, 'logs')
-TASKS = os.environ.get('SCORECARD_TASKS') or os.path.dirname(os.path.dirname(os.path.dirname(ROOT)))
+LOGS = os.environ.get('SCORECARD_LOGS') or (ROOT and os.path.join(ROOT, 'logs'))
+TASKS = os.environ.get('SCORECARD_TASKS') or ACTIVE_ROOT or (ROOT and os.path.dirname(os.path.dirname(os.path.dirname(ROOT))))
+if not (LOGS and TASKS):
+    sys.stderr.write('bin/scorecard: AUTONOMY_ROOT and ACTIVE_ROOT unset: export one\n')
+    sys.exit(2)
 NOW = float(os.environ.get('SCORECARD_NOW') or time.time())
 NOT_MEASURED = 'not measured'
 WAIT_MIN = 60
