@@ -114,6 +114,7 @@ out=$("$BIN/premerge" 'acme/wid gets' 7 "$SHA" "$W/clone" 2>&1); rc=$?;   check 
 out=$("$BIN/premerge" "$R" 7x "$SHA" "$W/clone" 2>&1); rc=$?;             check "8 bad PR number" 2 "^bad argument"
 out=$("$BIN/premerge" "$R" 7 abc123 "$W/clone" 2>&1); rc=$?;              check "8 short head sha" 2 "^bad argument"
 out=$("$BIN/premerge" "$R" 7 "$CLEAN" "$W/clone" "zz$CLEAN" 2>&1); rc=$?; check "8 bad reviewed head" 2 "^bad argument"
+ok_case; out=$(env -u COORDINATORS "$BIN/premerge" "$R" "$N" "$SHA" "$W/clone" 2>&1); rc=$?; check "8 unset COORDINATORS" 2 "^COORDINATORS unset"
 
 # 9: required contexts with spaces print intact
 ok_case; mut rules_branches_main.json '.[0].parameters.required_status_checks=[{"context":"build (20)"},{"context":"lint"}]'

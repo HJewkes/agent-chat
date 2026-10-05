@@ -10,6 +10,7 @@ R=$1 N=$2 S=$3 L=$4 RV=${5:-$3}
   || { echo "bad argument: $usage" >&2; exit 2; }
 DB=${EVENTS_DB:-$HOME/.agent-chat/events.db}
 COORDS=${COORDINATORS:-}
+[ -n "$COORDS" ] || { echo "COORDINATORS unset: export the space-separated coordinator seat names" >&2; exit 2; }
 REVIEWER_PATTERN=${REVIEWER_PATTERN:-'(^rv-|-review(-r[0-9]+)?$)'}
 fail=()
 

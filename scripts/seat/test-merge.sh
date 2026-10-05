@@ -39,4 +39,5 @@ check "OK merges a base-merge head" 0 "^OK merged"
 grep -q -- "commit_message=Reviewer seat-9-review Verdict: MERGE at head ${CLEAN:0:8} .*Merged head $MERGED is the reviewed head plus a merge" "$STUB_LOG" \
   && { echo "PASS commit_message carries S when RV differs"; pass=$((pass+1)); } || { echo "FAIL commit_message with differing S"; failn=$((failn+1)); }
 out=$("$BIN/merge" "$R" "$N" bad "$W/clone" 2>&1); rc=$?;   check "FAIL on a bad argument names the reason" 1 "^FAIL premerge: bad argument"
+ok_case; out=$(env -u COORDINATORS "$BIN/merge" "$R" "$N" "$SHA" "$W/clone" 2>&1); rc=$?; check "FAIL on unset COORDINATORS" 1 "^FAIL premerge: COORDINATORS unset"; no_put "unset COORDINATORS"
 finish
