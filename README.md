@@ -168,6 +168,12 @@ The broker starts itself on first use and outlives the session that spawned it.
 State lives in `~/.agent-chat/` (`chat.sock`, `events.db`, `broker.log`);
 override with `AGENT_CHAT_HOME`.
 
+Set `AGENT_CHAT_NO_AUTOSTART=1` to stop the CLI starting a broker: when none is
+listening, a verb prints one stderr line starting `broker unavailable` and exits 69
+(`EX_UNAVAILABLE`), so a caller can tell a down broker from any other failure. Only
+`1` enables it. `agent-chat agent resume <name> --message-stdin` reads the resume
+message from stdin instead of `--message`, keeping the text out of `ps` and argv limits.
+
 ## Tools
 
 | Tool                                                                      | Purpose                                                                                                              |
@@ -269,6 +275,12 @@ gh's `pr view`, `pr list` and `pr checks` read through GraphQL. Every agent on t
 JSON output uses gh's field names and its compact, key-sorted form. `--jq` runs through `jq -rc`, which matches gh's output. Without `jq` on `PATH`, the command passes through. `author.name` is always empty, because REST does not return it. `pr view` and `pr list` refuse fields that REST cannot answer, such as `reviewDecision`, `commits` and `mergeable` on a list. Those commands pass through.
 
 Every other command goes to the real gh with its argv untouched, writes included, and so does any command whose flags, fields or selector the shim does not recognise. When a REST read fails, the shim prints nothing and reruns the command on the real gh, so the error shown is gh's own. Set `AGENT_CHAT_GH_SHIM_OFF=1` to send every command straight through. The shim takes effect for agents launched after a broker restart.
+
+## Restart window
+
+`scripts/restart-window.sh` runs the daily broker restart in one command. It refuses, one line per blocker, when a `git push`, `git-remote-http*`, `seat-merge`, `bin/merge`, `gh pr merge` or `agent-chat gh-write` process is running (it names the pids), or when the checkout behind the installed `agent-chat` is not a clean `main`. It then runs `git pull --ff-only origin main`, `npm ci` and `npm run build` in that checkout, and only then `agent-chat service restart`, which itself refuses on an unanswered ask or a mid-spawn agent. Last it checks `broker.log` (and the rotated `broker.log.1`) for exactly one `broker_started` and no `ledger_shadow_error` since the restart, plus a parseable `agent ls --json`. It accepts no `--force`, and running it needs the owner's approval of the day's window. `AGENT_CHAT_HOME` moves the log directory.
+
+Exit codes: `0` prints `restart-window OK`. `1` means a pre-check or the restart guard refused and the broker was not touched. `2` means a post-check failed. `3` means the restart failed and the broker may be down; the script prints `BROKER MAY BE DOWN: run agent-chat service start`. `4` means pull, install or build failed and the broker was not touched.
 
 ## Tests
 

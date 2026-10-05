@@ -1,6 +1,7 @@
 import type { BudgetRead, BudgetWindow } from '../budget.js'
 import { gatePool, type AccountReading, type PoolRule, type SevenDaySample } from '../burndown/budget-gate.js'
 import type { Pool, Seat, SeatSpend } from './charter.js'
+import { pacedCaps } from './stops.js'
 
 /**
  * The idle watchdog's decision (CC-203): wake a seat that has no implementer
@@ -30,7 +31,12 @@ export interface SeatAgent {
   profile: string
   state: string
   spawnedBy: string
+  /** Epoch ms of the agent's launch; a replay's roster has none. */
+  spawnedAt?: number
 }
+
+/** CC-402: a seat agent still in `spawning` past this never started, and nothing else says so. */
+export const SPAWNING_STUCK_MS = 10 * 60_000
 
 export interface BudgetVerdict {
   open: boolean
@@ -77,6 +83,27 @@ export function runningImplementers(agents: SeatAgent[], seat: Pick<Seat, 'name'
     .map(a => a.name)
 }
 
+const ofSeat = (agent: SeatAgent, seat: Pick<Seat, 'name' | 'prefix'>): boolean =>
+  agent.name === seat.name || agent.name.startsWith(`${seat.prefix}-`) || agent.spawnedBy === seat.name
+
+export interface StuckAgent {
+  name: string
+  minutes: number
+}
+
+/** CC-402: the seat's own successor and its agents that have sat in `spawning` for over ten minutes. */
+export function stuckSpawning(
+  agents: SeatAgent[],
+  seat: Pick<Seat, 'name' | 'prefix'>,
+  nowMs: number,
+): StuckAgent[] {
+  return agents.flatMap(a => {
+    if (!ofSeat(a, seat) || a.state !== 'spawning' || a.spawnedAt === undefined) return []
+    const waited = nowMs - a.spawnedAt
+    return waited > SPAWNING_STUCK_MS ? [{ name: a.name, minutes: Math.floor(waited / 60_000) }] : []
+  })
+}
+
 const windowUsed = (window: BudgetWindow | undefined, nowMs: number): number | undefined =>
   window === undefined
     ? undefined
@@ -89,10 +116,12 @@ export function accountReading(read: BudgetRead, nowMs: number): AccountReading 
   if (!read.found) return undefined
   const fiveHour = windowUsed(read.budget.rate_limits.five_hour, nowMs)
   const sevenDay = windowUsed(read.budget.rate_limits.seven_day, nowMs)
+  const resetsAt = read.budget.rate_limits.seven_day?.resets_at
   return {
     ageSeconds: read.age_seconds,
     ...(fiveHour === undefined ? {} : { fiveHour }),
     ...(sevenDay === undefined ? {} : { sevenDay }),
+    ...(resetsAt === undefined ? {} : { sevenDayResetsAt: resetsAt * 1000 }),
   }
 }
 
@@ -102,6 +131,8 @@ export interface PoolReading {
   at: number
   sevenDay: number
   fiveHour: number
+  /** Epoch ms the seven_day window resets; absent on a reading kept before CC-605. */
+  resetsAt?: number
 }
 
 /** The reading to keep: this one when it holds both windows, else the one kept before. */
@@ -111,7 +142,13 @@ export function keepReading(
   nowMs: number,
 ): PoolReading | undefined {
   if (reading?.sevenDay === undefined || reading.fiveHour === undefined) return kept
-  return { at: nowMs - reading.ageSeconds * 1000, sevenDay: reading.sevenDay, fiveHour: reading.fiveHour }
+  const resetsAt = reading.sevenDayResetsAt === undefined ? {} : { resetsAt: reading.sevenDayResetsAt }
+  return {
+    at: nowMs - reading.ageSeconds * 1000,
+    sevenDay: reading.sevenDay,
+    fiveHour: reading.fiveHour,
+    ...resetsAt,
+  }
 }
 
 /** A kept reading aged to now; one missing a figure from a hand-edited doc is no reading. */
@@ -133,9 +170,12 @@ export interface PoolBudgetInput {
   history: readonly SevenDaySample[]
   runStartAt: number
   now: Date
+  /** CC-404: the seat's `pacing:` and the epoch ms the pool's seven_day resets, for a reset-aware day stop. */
+  pacing?: string | undefined
+  resetsAt?: number | undefined
 }
 
-const poolRule = (pool: Pool): PoolRule => ({
+export const poolRule = (pool: Pool): PoolRule => ({
   name: pool.name,
   human_uses: pool.humanUses,
   reserve_seven_day: pool.rule.reserve_seven_day,
@@ -147,10 +187,19 @@ const poolRule = (pool: Pool): PoolRule => ({
 /** Charter section 4's budget stops for the seat, with the owner assumed present because nothing here can tell. */
 export function poolBudget(input: PoolBudgetInput): BudgetVerdict {
   const { pool, spend, reading, lastGood, history, runStartAt, now } = input
+  const paced = pacedCaps({
+    pacing: input.pacing,
+    pool: pool === undefined ? undefined : poolRule(pool),
+    spend: { per_run_points: spend.perRunPoints, per_day_points: spend.perDayPoints },
+    sevenDay: reading?.sevenDay,
+    resetsAt: input.resetsAt,
+    history,
+    now,
+  })
   const gate = gatePool(
     {
-      pool: pool === undefined ? undefined : poolRule(pool),
-      spend: { per_run_points: spend.perRunPoints, per_day_points: spend.perDayPoints },
+      pool: paced.pool,
+      spend: paced.spend,
       reading,
       lastGood,
       history,

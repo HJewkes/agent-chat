@@ -875,8 +875,10 @@ export type ClientMessage =
    * and absent means false — the safe direction, since the field only ever adds
    * destruction. There is no agent-facing route to this: `retire` is a CLI verb,
    * and forcing it is a human deciding to throw work away.
+   * CC-218: `caller` is the retiring session's AGENT_CHAT_NAME, which the one-shot CLI
+   * connection cannot register; absent means a person at a terminal.
    */
-  | { t: 'retire'; name: string; force?: boolean }
+  | { t: 'retire'; name: string; force?: boolean; caller?: string }
   /** CC-282: remove an exited agent's clean, pushed worktree and keep its branch. CLI-only, like `retire`. */
   | { t: 'park'; name: string }
   /** CC-323: retire every finished agent in scope that holds no work. CLI-only, like `retire`; no `force`. */
@@ -1032,7 +1034,12 @@ export type ServerMessage =
       name?: string
       reason?: string
       /** CC-441: the surface refused to launch (iTerm2 down, not macOS), so a headless launch may still work. */
-      code?: 'surface_refused' | 'machine_headless_limit' | 'machine_memory_floor'
+      code?:
+        | 'surface_refused'
+        | 'spawn_rate_limit'
+        | 'machine_headless_limit'
+        | 'machine_memory_floor'
+        | 'seat_budget_stop'
       /** CC-445: the machine guard's refusals clear as load drops, so the same spawn may be retried later. */
       retryable?: boolean
       warnings?: string[]
@@ -1163,6 +1170,8 @@ export interface AgentIdentity {
   lastEventAt: number
   /** Timestamp of the `agent_exited` row, cleared by a resume; the reclaim grace window's start. */
   exitedAt?: number
+  /** Timestamp of the newest `agent_detached` row, cleared by a resume or attach; stands in for `exitedAt` while no exit is recorded. */
+  detachedAt?: number
   /**
    * How many teleports deep this identity is: 1 for one that has never
    * teleported, incrementing per hop. Broker-derived, like `teleportFrom` —
@@ -1179,7 +1188,14 @@ export interface AgentIdentity {
    * terminal — and only the roster needs to say WHICH kind, which it does without
    * every consumer of `AgentLifecycle` growing a case for it.
    */
-  exit?: { code: number | null; summary: string; costUsd?: number; failedToStart?: boolean }
+  exit?: {
+    code: number | null
+    summary: string
+    costUsd?: number
+    failedToStart?: boolean
+    /** CC-333: written by the settle timer or a presence check, not by a recorded process exit. */
+    inferred?: boolean
+  }
 }
 
 /** One agent in a bulk retire's plan: retired, or skipped for `reason`. */

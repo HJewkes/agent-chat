@@ -6,6 +6,7 @@ import { frontmatterField, listField, parseAutonomy, taskScalars } from '../acti
 import { readAccountBudget } from '../budget.js'
 import { profileDir } from '../config-dir.js'
 import { DEFAULT_RULES, type AccountReading, type AccountRule } from './budget-gate.js'
+import { Route } from './exception.js'
 import type { Initiative, Task } from './eligibility.js'
 
 /** Reads the tick's inputs off disk. Read-only: active-work files, status caches and the burndown config. */
@@ -112,6 +113,26 @@ const Config = z.object({
   decider: z
     .object({ name: z.string().min(1), maxPerHour: count.default(4), maxPerDay: count.default(24) })
     .optional(),
+  /** Who handles each exception class; `gate-trip` has no key because an owner gate is never triaged. */
+  exceptions: z
+    .object({
+      route: z
+        .object({ stalled: Route.default('owner'), failed: Route.default('owner') })
+        .strict()
+        .default({ stalled: 'owner', failed: 'owner' }),
+      /** The triage job (CC-649); unset, or without an account, a `triage` dial falls back to the owner. */
+      triage: z
+        .object({
+          profile: z.string().min(1).default('triager'),
+          account: z.string().min(1).optional(),
+          maxPerDay: count.default(12),
+          maxMinutes: count.default(30),
+        })
+        .strict()
+        .optional(),
+    })
+    .strict()
+    .default({ route: { stalled: 'owner', failed: 'owner' } }),
   /** Seat names for CC-205 seats-mode dispatch; empty means none. */
   seats: z.array(z.string().min(1)).default([]),
 })
@@ -150,6 +171,7 @@ export function readReadings(accounts: string[], now = Date.now()): Map<string, 
       ageSeconds: read.age_seconds,
       ...(seven_day === undefined ? {} : { sevenDay: seven_day.used_pct }),
       ...(five_hour === undefined ? {} : { fiveHour: five_hour.used_pct }),
+      ...(seven_day?.resets_at === undefined ? {} : { sevenDayResetsAt: seven_day.resets_at * 1000 }),
     })
   }
   return readings

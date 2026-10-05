@@ -411,6 +411,7 @@ describe('burndown tick hands a finished PR to Shepherd', () => {
     expect(readLedger(burndownLedgerPath()).claims[0]?.stalledReason).toBe(
       `Shepherd refused demo/repo#5 (${refused}); burndown does not merge, so the PR is left for the owner`,
     )
+    expect(readLedger(burndownLedgerPath()).claims[0]?.stalledClass).toBe('gate-trip')
   })
 
   it('registers again next tick after Shepherd was down, and reads nothing while its status cannot be read', async () => {
@@ -642,6 +643,44 @@ describe('burndown tick ceilings', () => {
 
     expect(lines.join('\n')).toContain('refused demo DM-1 [orphan]: branch agent-chat/bd-dm-1')
     expect(fake.frames.map(f => f.name)).toEqual(['bd-dm-2'])
+  })
+})
+
+/** CC-661: the release count survives a restart because it lives in the ledger file. */
+describe('burndown tick release backoff', () => {
+  const MINUTE = 60_000
+  const releasedAt = (minutesAgo: number): string =>
+    new Date(NOON.getTime() - minutesAgo * MINUTE).toISOString()
+
+  it('refuses a task released three times inside its hold and dispatches another task', async () => {
+    initiative({ 'DM-1': task('DM-1', 1), 'DM-2': task('DM-2', 2) })
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [],
+      releases: { 'DM-1': { n: 3, at: releasedAt(30) } },
+    })
+    const fake = fakeBroker()
+
+    const lines = await tick(fake)
+
+    const until = new Date(NOON.getTime() + 30 * MINUTE).toISOString()
+    expect(lines.join('\n')).toContain(`refused demo DM-1 [backoff]: released 3 times; held until ${until}`)
+    expect(fake.frames.map(f => f.name)).toEqual(['bd-dm-2'])
+    expect(readLedger(burndownLedgerPath()).releases).toEqual({ 'DM-1': { n: 3, at: releasedAt(30) } })
+  })
+
+  it('dispatches the task once its hold has passed', async () => {
+    initiative({ 'DM-1': task('DM-1') })
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [],
+      releases: { 'DM-1': { n: 3, at: releasedAt(61) } },
+    })
+    const fake = fakeBroker()
+
+    await tick(fake)
+
+    expect(fake.frames.map(f => f.name)).toEqual(['bd-dm-1'])
   })
 })
 
@@ -1156,7 +1195,7 @@ describe('burndown tick with two seats on one pool (CC-275)', () => {
 })
 
 describe('burndown tick advances a seat claim', () => {
-  const seatClaim = (seat: string): { claim: Claim; worktree: string } => {
+  const seatClaim = (seat: string, over: Partial<Claim> = {}): { claim: Claim; worktree: string } => {
     const worktree = path.join(repo(), '.worktrees', 'st-dm-1')
     git(repo(), 'worktree', 'add', '-q', '-b', 'agent-chat/st-dm-1', worktree)
     git(worktree, 'commit', '-q', '--allow-empty', '-m', 'work')
@@ -1171,6 +1210,7 @@ describe('burndown tick advances a seat claim', () => {
       agentName: 'st-dm-1',
       spawned: ['st-dm-1'],
       worktree,
+      ...over,
     }
     writeLedger(burndownLedgerPath(), { version: 1, claims: [claim] })
     return { claim, worktree }
@@ -1300,6 +1340,38 @@ describe('burndown tick advances a seat claim', () => {
       expect(fake.frames).toEqual([])
       expect(lines.join('\n')).toContain('sonnet only')
     })
+  })
+
+  const finding: NonNullable<Claim['finding']> = {
+    kind: 'stalled-after-claim',
+    reason: 'idle',
+    since: NOON.toISOString(),
+    openedAt: NOON.toISOString(),
+    checkedAt: NOON.toISOString(),
+    detail: `idle: no agent event for 6 min since ${NOON.toISOString()}`,
+  }
+
+  it('closes an open finding in the tick that defers the reviewer', async () => {
+    const { worktree } = seatClaim('seat-t', { finding })
+    sevenDayAt(75)
+    const fake = fakeBroker({ agents: [row('st-dm-1', 'exited', worktree)] })
+
+    const lines = await tick(fake)
+
+    expect(lines.join('\n')).toContain('deferred DM-1#: budget: BUDGET-PAUSE pool pool-t')
+    expect(readLedger(burndownLedgerPath()).claims[0]?.finding).toBeUndefined()
+  })
+
+  it('closes an open finding in the tick that stalls the reviewer spawn', async () => {
+    const { worktree } = seatClaim('seat-gone', { finding })
+    const fake = fakeBroker({ agents: [row('st-dm-1', 'exited', worktree)] })
+
+    await tick(fake)
+
+    expect(readLedger(burndownLedgerPath()).claims[0]).toMatchObject({
+      stalledReason: 'seat seat-gone is no longer in the burndown config; left for the owner',
+    })
+    expect(readLedger(burndownLedgerPath()).claims[0]?.finding).toBeUndefined()
   })
 
   it('stalls the claim once, without spawning, when its seat is no longer in the config', async () => {
@@ -1962,5 +2034,460 @@ describe('burndown tick collision check', () => {
     expect(logged.filter(l => l.event === 'burndown_collision_skipped')).toEqual([
       { event: 'burndown_collision_skipped', detail: { initiative: 'norepo', reason: 'no repo' } },
     ])
+  })
+})
+
+describe('burndown tick finding on a silent agent', () => {
+  const MIN = 60_000
+  const liveWorker = () => ({ ...row('bd-dm-1', 'live'), sessionId: 'sess-dm-1' })
+  const turn = (at: Date) =>
+    `${JSON.stringify({ type: 'assistant', timestamp: at.toISOString(), message: { content: [{ type: 'text', text: 'working' }] } })}\n`
+
+  it('logs one opened and one closed row across three ticks, and nothing for the refresh', async () => {
+    const worker = liveWorker()
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [
+        {
+          taskId: 'DM-1',
+          initiative: 'demo',
+          agentId: worker.agentId,
+          agentName: worker.name,
+          spawned: [worker.name],
+          spawnedAt: NOON.toISOString(),
+          phase: 'implementing',
+          phaseAt: NOON.toISOString(),
+        },
+      ],
+    })
+    const file = transcriptPath(worker.cwd, worker.sessionId, worker.configDir)
+    write(file, turn(new Date(NOON.getTime() + MIN)))
+    const events: string[] = []
+    const log = (event: string, detail: Record<string, unknown>) => {
+      if (event === 'burndown_finding') events.push(`${detail.state}`)
+    }
+    const tickAt = (offset: number) =>
+      tickFromDisk({
+        dryRun: false,
+        broker: fakeBroker({ agents: [worker] }).broker,
+        now: new Date(NOON.getTime() + offset * MIN),
+        log,
+        exec: stubGh(),
+      })
+
+    await tickAt(7)
+    await tickAt(17)
+    fs.appendFileSync(file, turn(new Date(NOON.getTime() + 18 * MIN)))
+    await tickAt(19)
+
+    expect(events).toEqual(['opened', 'closed'])
+    expect(readLedger(burndownLedgerPath()).claims[0]?.finding).toBeUndefined()
+  })
+
+  it('logs no finding row when the ledger write that would open it fails', async () => {
+    const blocker = path.join(world, 'not-a-dir')
+    write(blocker, '')
+    const claim: Claim = {
+      taskId: 'DM-1',
+      initiative: 'demo',
+      spawnedAt: NOON.toISOString(),
+      phase: 'implementing',
+      phaseAt: NOON.toISOString(),
+    }
+    const finding: NonNullable<Claim['finding']> = {
+      kind: 'stalled-after-claim',
+      reason: 'idle',
+      since: NOON.toISOString(),
+      openedAt: NOON.toISOString(),
+      checkedAt: NOON.toISOString(),
+      detail: `idle: no agent event for 6 min since ${NOON.toISOString()}`,
+    }
+    const events: string[] = []
+
+    const run = execute(
+      [{ kind: 'ledger', actions: [{ kind: 'update', key: { taskId: 'DM-1' }, patch: { finding } }] }],
+      { version: 1, claims: [claim] },
+      {
+        ledgerFile: path.join(blocker, 'ledger.json'),
+        spawn: async () => ({ ok: true }),
+        retire: async () => ({ ok: true }),
+        register: () => ({ ok: true }),
+        log: event => events.push(event),
+        now: NOON,
+      },
+    )
+
+    await expect(run).rejects.toThrow()
+    expect(events).toEqual([])
+  })
+
+  it('tells the seat once per open finding, never on a channel delivery, and closes on progress', async () => {
+    seatPolicy()
+    config({ seats: ['seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    const worker = { ...row('st-dm-1', 'live'), sessionId: 'sess-st-dm-1' }
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [
+        {
+          taskId: 'DM-1',
+          initiative: 'demo',
+          seat: 'seat-t',
+          namePrefix: 'st',
+          agentId: worker.agentId,
+          agentName: worker.name,
+          spawned: [worker.name],
+          spawnedAt: NOON.toISOString(),
+          phase: 'implementing',
+          phaseAt: NOON.toISOString(),
+          notified: ['dispatched'],
+        },
+      ],
+    })
+    const file = transcriptPath(worker.cwd, worker.sessionId, worker.configDir)
+    const lastWork = new Date(NOON.getTime() + MIN)
+    write(file, turn(lastWork))
+    const delivery = (at: Date) =>
+      `${JSON.stringify({ type: 'user', timestamp: at.toISOString(), message: { role: 'user', content: '<channel source="agent-chat" from="peer">ping</channel>' } })}\n`
+    const fake = fakeBroker({ agents: [worker] })
+    const tickAt = async (offset: number) => {
+      const sent = fake.sends.length
+      await tickFromDisk({
+        dryRun: false,
+        broker: fake.broker,
+        now: new Date(NOON.getTime() + offset * MIN),
+        log: () => {},
+        exec: stubGh(),
+      })
+      return { sends: fake.sends.slice(sent), claim: readLedger(burndownLedgerPath()).claims[0] }
+    }
+
+    const first = await tickAt(7)
+    const second = await tickAt(17)
+    fs.appendFileSync(file, delivery(new Date(NOON.getTime() + 18 * MIN)))
+    const third = await tickAt(19)
+    fs.appendFileSync(file, turn(new Date(NOON.getTime() + 20 * MIN)))
+    const fourth = await tickAt(21)
+
+    expect(first.sends).toEqual([
+      {
+        to: 'seat-t',
+        text: `Burndown events for seat-t at ${new Date(NOON.getTime() + 7 * MIN).toISOString()}\nstalled-after-claim DM-1: no-progress: idle: no agent event for 6 min since ${lastWork.toISOString()}`,
+      },
+    ])
+    expect(second.sends).toEqual([])
+    expect(third.sends).toEqual([])
+    expect(third.claim?.finding).toMatchObject({ reason: 'idle', since: lastWork.toISOString() })
+    expect(fourth.claim?.finding).toBeUndefined()
+    expect(fourth.claim?.notified).toEqual(['dispatched'])
+  })
+})
+
+describe('burndown tick lease on an implementing seat claim (CC-659)', () => {
+  const MIN = 60_000
+  const turn = (at: Date) =>
+    `${JSON.stringify({ type: 'assistant', timestamp: at.toISOString(), message: { content: [{ type: 'text', text: 'working' }] } })}\n`
+
+  /** The pool gate reads a stale sample as closed, which would park the claim. */
+  const freshPoolSample = (now: Date) => {
+    const rate_limits = { seven_day: { used_percentage: 10 }, five_hour: { used_percentage: 10 } }
+    write(
+      path.join(accountPath(), 'status-cache', 'sessions', 's1.json'),
+      JSON.stringify({ session_id: 's1', written_at: now.getTime() / 1000 - 30, rate_limits }),
+    )
+  }
+
+  it('tells the seat once when the lease ends without a commit', async () => {
+    seatPolicy()
+    config({ seats: ['seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    const worker = { ...row('st-dm-1', 'live'), sessionId: 'sess-st-dm-1' }
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [
+        {
+          taskId: 'DM-1',
+          initiative: 'demo',
+          seat: 'seat-t',
+          namePrefix: 'st',
+          agentId: worker.agentId,
+          agentName: worker.name,
+          spawned: [worker.name],
+          spawnedAt: NOON.toISOString(),
+          phase: 'implementing',
+          phaseAt: NOON.toISOString(),
+          worktree: repo(),
+          notified: ['dispatched'],
+        },
+      ],
+    })
+    const file = transcriptPath(worker.cwd, worker.sessionId, worker.configDir)
+    const fake = fakeBroker({ agents: [worker] })
+    const tickAt = async (offset: number) => {
+      const now = new Date(NOON.getTime() + offset * MIN)
+      fs.appendFileSync(file, turn(new Date(now.getTime() - MIN)))
+      freshPoolSample(now)
+      const sent = fake.sends.length
+      await tickFromDisk({
+        dryRun: false,
+        broker: fake.broker,
+        now,
+        log: () => {},
+        exec: stubGh(),
+      })
+      return { sends: fake.sends.slice(sent), claim: readLedger(burndownLedgerPath()).claims[0] }
+    }
+    write(file, '')
+
+    const working = await tickAt(5)
+    const expired = await tickAt(40)
+    const later = await tickAt(50)
+
+    expect(working.sends).toEqual([])
+    expect(working.claim?.finding).toBeUndefined()
+    expect(working.claim?.lease).toMatchObject({
+      renewals: 0,
+      leaseUntil: new Date(NOON.getTime() + 30 * MIN).toISOString(),
+    })
+    expect(expired.sends).toEqual([
+      {
+        to: 'seat-t',
+        text: `Burndown events for seat-t at ${new Date(NOON.getTime() + 40 * MIN).toISOString()}\nstalled-after-claim DM-1: lease-expired: lease: no commit for 40 min since ${NOON.toISOString()}`,
+      },
+    ])
+    expect(expired.claim?.finding).toMatchObject({ reason: 'lease', code: 'lease-expired' })
+    expect(later.sends).toEqual([])
+  })
+})
+
+describe('burndown tick triage jobs (CC-649)', () => {
+  const TRIAGER = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../profiles/triager.json')
+  const ALL_TRIAGE = { stalled: 'triage', failed: 'triage' }
+  const READY = { route: ALL_TRIAGE, triage: { account: 'agents' } }
+  const at = (minutes: number) => new Date(NOON.getTime() + minutes * MINUTE)
+
+  const stalledClaim = (taskId = 'DM-1', over: Partial<Claim> = {}): Claim => {
+    const name = `st-${taskId.toLowerCase()}`
+    return {
+      taskId,
+      initiative: 'demo',
+      seat: 'seat-t',
+      namePrefix: 'st',
+      agentId: `id-${name}`,
+      agentName: name,
+      spawned: [name],
+      spawnedAt: NOON.toISOString(),
+      phase: 'implementing',
+      phaseAt: NOON.toISOString(),
+      stalledReason: 'no final report',
+      stalledClass: 'failed',
+      notified: ['dispatched'],
+      ...over,
+    }
+  }
+
+  /** Seats mode, the triager installed under the test home, and the claims already stalled. */
+  function setup(extra: Record<string, unknown>, claims: Claim[] = [stalledClaim()]): AgentIdentity[] {
+    seatPolicy()
+    config({ seats: ['seat-t'], ...extra })
+    seatInitiative(Object.fromEntries(claims.map(c => [c.taskId, seatTask(c.taskId)])))
+    write(path.join(world, 'home', 'profiles', 'triager.json'), fs.readFileSync(TRIAGER, 'utf8'))
+    writeLedger(burndownLedgerPath(), { version: 1, claims })
+    return claims.map(c => row(c.agentName ?? '?', 'exited'))
+  }
+
+  const tickAt = (fake: Fake, minutes: number) =>
+    tickFromDisk({ dryRun: false, broker: fake.broker, now: at(minutes), log: () => {}, exec: stubGh() })
+  const triageFrames = (fake: Fake) => fake.frames.filter(f => f.tags.includes('triage'))
+  const stalledLines = (fake: Fake) =>
+    fake.sends.flatMap(s => s.text.split('\n').filter(l => l.startsWith('stalled ')))
+  const claimOf = (taskId = 'DM-1') => readLedger(burndownLedgerPath()).claims.find(c => c.taskId === taskId)
+
+  it('with the dial at its default sends the stall to the owner as before, and spawns nothing', async () => {
+    const fake = fakeBroker({ agents: setup({}) })
+
+    await tickAt(fake, 0)
+    await tickAt(fake, 1)
+
+    expect(fake.frames).toEqual([])
+    expect(fake.sends.map(s => s.text)).toEqual([
+      `Burndown events for seat-t at ${NOON.toISOString()}\nstalled DM-1: no final report`,
+    ])
+    expect(claimOf()?.triage).toBeUndefined()
+  })
+
+  it('starts one triager per stall across three ticks and tells the owner nothing while it runs', async () => {
+    const agents = setup({ exceptions: READY })
+    const fake = fakeBroker({ agents })
+
+    const first = await tickAt(fake, 0)
+    agents.push(row('triage-dm-1-1', 'live', path.join(world, 'aw')))
+    await tickAt(fake, 1)
+    await tickAt(fake, 2)
+
+    expect(triageFrames(fake)).toEqual([
+      expect.objectContaining({
+        name: 'triage-dm-1-1',
+        profile: 'triager',
+        configDir: accountPath(),
+        cwd: path.join(world, 'aw'),
+        surface: 'headless',
+        tags: ['burndown', 'triage', 'task:DM-1'],
+        brief: expect.stringContaining('stalled: no final report'),
+      }),
+    ])
+    expect(first.join('\n')).toContain('started triage triage-dm-1-1 for DM-1#')
+    expect(stalledLines(fake)).toEqual([])
+    expect(claimOf()?.triage).toMatchObject({ outcome: 'started', name: 'triage-dm-1-1' })
+  })
+
+  it('writes the start, the spawned name and the day count before the frame goes out', async () => {
+    const agents = setup({ exceptions: READY })
+    let seen: { claim: Claim | undefined; starts: string[] | undefined } = {
+      claim: undefined,
+      starts: undefined,
+    }
+    const fake = fakeBroker({
+      agents,
+      spawn: () => {
+        const ledger = readLedger(burndownLedgerPath())
+        seen = { claim: ledger.claims[0], starts: ledger.triageStarts }
+        return { ok: true }
+      },
+    })
+
+    await tickAt(fake, 0)
+
+    expect(seen.claim?.triage).toMatchObject({ outcome: 'started', name: 'triage-dm-1-1' })
+    expect(seen.claim?.spawned).toEqual(['st-dm-1', 'triage-dm-1-1'])
+    expect(seen.starts).toEqual([NOON.toISOString()])
+  })
+
+  it('falls back to the owner this tick, with a note, when the dial says triage but nothing is configured', async () => {
+    const fake = fakeBroker({ agents: setup({ exceptions: { route: ALL_TRIAGE } }) })
+
+    const lines = await tickAt(fake, 0)
+
+    expect(fake.frames).toEqual([])
+    expect(stalledLines(fake)).toEqual(['stalled DM-1: no final report'])
+    expect(lines).toContain(
+      'triage of DM-1# falls back to the owner: triage is not ready: no exceptions.triage in the burndown config',
+    )
+  })
+
+  it('tells the owner the same tick when the triage spawn is refused', async () => {
+    const agents = setup({ exceptions: READY })
+    const fake = fakeBroker({ agents, spawn: () => ({ ok: false, reason: 'no slot' }) })
+
+    const lines = await tickAt(fake, 0)
+
+    expect(triageFrames(fake)).toHaveLength(1)
+    expect(stalledLines(fake)).toEqual(['stalled DM-1: no final report'])
+    expect(claimOf()?.triage).toMatchObject({
+      outcome: 'refused',
+      detail: 'triage triage-dm-1-1 refused: no slot',
+    })
+    expect(lines).toContain('triage triage-dm-1-1 refused: no slot; the owner is told')
+  })
+
+  it('tells the owner once the triager exits with the claim still stalled, and never starts a second job', async () => {
+    const agents = setup({ exceptions: READY })
+    const fake = fakeBroker({ agents })
+
+    await tickAt(fake, 0)
+    agents.push(row('triage-dm-1-1', 'exited', path.join(world, 'aw')))
+    await tickAt(fake, 1)
+    await tickAt(fake, 2)
+    await tickAt(fake, 3)
+
+    expect(triageFrames(fake)).toHaveLength(1)
+    expect(stalledLines(fake)).toEqual([
+      'stalled DM-1: no final report (triage triage-dm-1-1 ran, claim still stalled)',
+    ])
+    expect(claimOf()?.triage?.outcome).toBe('ended')
+  })
+
+  it('tells the owner once a live triager runs past maxMinutes', async () => {
+    const agents = setup({ exceptions: { route: ALL_TRIAGE, triage: { account: 'agents', maxMinutes: 30 } } })
+    const fake = fakeBroker({ agents })
+
+    await tickAt(fake, 0)
+    agents.push(row('triage-dm-1-1', 'live', path.join(world, 'aw')))
+    await tickAt(fake, 30)
+    const before = stalledLines(fake)
+    await tickAt(fake, 31)
+
+    expect(before).toEqual([])
+    expect(stalledLines(fake)).toEqual([
+      'stalled DM-1: no final report (triage triage-dm-1-1 still running past maxMinutes 30, claim still stalled)',
+    ])
+  })
+
+  it('raises nothing for a claim the triager released', async () => {
+    const agents = setup({ exceptions: READY })
+    const fake = fakeBroker({ agents })
+
+    await tickAt(fake, 0)
+    writeLedger(burndownLedgerPath(), { ...readLedger(burndownLedgerPath()), claims: [] })
+    agents.push(row('triage-dm-1-1', 'exited', path.join(world, 'aw')))
+    await tickAt(fake, 1)
+
+    expect(stalledLines(fake)).toEqual([])
+    expect(triageFrames(fake)).toHaveLength(1)
+  })
+
+  it('never triages a gate-trip, even with every dial at triage', async () => {
+    const gate = stalledClaim('DM-1', {
+      stalledClass: 'gate-trip',
+      stalledReason: 'Shepherd refused demo/repo#5',
+    })
+    const fake = fakeBroker({ agents: setup({ exceptions: READY }, [gate]) })
+
+    await tickAt(fake, 0)
+
+    expect(fake.frames).toEqual([])
+    expect(stalledLines(fake)).toEqual(['stalled DM-1: Shepherd refused demo/repo#5'])
+  })
+
+  it('starts one job under maxPerDay 1 and sends the second stall to the owner with a cap note', async () => {
+    const claims = [stalledClaim('DM-1'), stalledClaim('DM-2')]
+    const exceptions = { route: ALL_TRIAGE, triage: { account: 'agents', maxPerDay: 1 } }
+    const fake = fakeBroker({ agents: setup({ exceptions }, claims) })
+
+    const lines = await tickAt(fake, 0)
+
+    expect(triageFrames(fake).map(f => f.name)).toEqual(['triage-dm-1-1'])
+    expect(stalledLines(fake)).toEqual(['stalled DM-2: no final report'])
+    expect(lines).toContain(
+      'triage of DM-2# falls back to the owner: triage day cap spent (1 of maxPerDay 1)',
+    )
+  })
+
+  it('waits without a seat event while maxAgents is full, then tells the owner past maxMinutes', async () => {
+    const agents = setup({ maxAgents: 1, exceptions: READY })
+    agents.splice(0, agents.length, row('st-dm-1', 'live'))
+    const fake = fakeBroker({ agents })
+
+    const waiting = await tickAt(fake, 0)
+    await tickAt(fake, 29)
+    const before = stalledLines(fake)
+    const late = await tickAt(fake, 31)
+
+    expect(triageFrames(fake)).toEqual([])
+    expect(before).toEqual([])
+    expect(waiting.join('\n')).toContain('triage of DM-1# waits: no agent capacity')
+    expect(stalledLines(fake)).toEqual(['stalled DM-1: no final report'])
+    expect(late).toContain(
+      'triage of DM-1# falls back to the owner: no agent capacity for triage in maxMinutes 30',
+    )
+  })
+
+  it('shows the class, route and triage outcome on the status line', async () => {
+    const fake = fakeBroker({ agents: setup({ exceptions: READY }) })
+    await tickAt(fake, 0)
+
+    const lines = renderStatus(readLedger(burndownLedgerPath()), at(1))
+
+    expect(lines.join('\n')).toContain('STALLED (class failed, route triage, triage triage-dm-1-1 started)')
   })
 })

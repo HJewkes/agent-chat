@@ -1,3 +1,5 @@
+import type { MilestoneReport } from '../agents/burndown/milestone-report.js'
+
 /** The morning digest's model: every section as plain data, rendered by `render.ts`. */
 
 export interface QueueEntry {
@@ -119,6 +121,8 @@ export interface Digest {
   stalled: StalledClaim[]
   spend: AccountSpend[]
   next: { picks: NextPick[]; refused: number; notOptedIn: number; error?: string }
+  /** CC-630: this week's milestones in rank order; empty when the week has no milestone file. */
+  milestones: MilestoneReport[]
   /** Sources that could not be read, each a one-line reason; shown so a gap is never silent. */
   gaps: string[]
 }

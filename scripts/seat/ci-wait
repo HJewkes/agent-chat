@@ -1,0 +1,82 @@
+#!/bin/bash
+# Block until CI on a commit is green, red or out of time. REST only, never GraphQL.
+# usage: ci-wait <owner/repo> <sha> [--timeout <seconds>] [--interval <seconds>]
+# exit: 0 GREEN, 1 RED, 2 TIMEOUT (run again), 64 bad arguments
+set -u
+export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/sbin:/sbin:$PATH
+GH=${GH:-gh}
+usage() { echo "usage: ci-wait <owner/repo> <sha> [--timeout <seconds>] [--interval <seconds>]" >&2; exit 64; }
+
+timeout=540 interval=30 pos=()
+while [ $# -gt 0 ]; do
+  case $1 in
+    --timeout|--interval)
+      [ $# -ge 2 ] && [[ $2 =~ ^[0-9]+$ ]] || usage
+      [ "$1" = --timeout ] && timeout=$2 || interval=$2; shift 2 ;;
+    -*) usage ;;
+    *) pos+=("$1"); shift ;;
+  esac
+done
+[ ${#pos[@]} -eq 2 ] || usage
+repo=${pos[0]} sha=${pos[1]}
+[[ $repo =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || usage
+[[ $sha =~ ^[0-9a-fA-F]{7,40}$ ]] || usage
+
+# Prints "GREEN", "RED <list>" or "PENDING <names>" for the two --paginate --slurp payloads (arrays of pages).
+# Exits non-zero when the pages hold fewer items than total_count, so the caller retries.
+classify() {
+  python3 -c '
+import json, sys
+def collect(raw, key):
+    pages = json.loads(raw)
+    items = [i for p in pages for i in p[key]]
+    if len(items) != pages[0]["total_count"]:
+        sys.exit(1)
+    return items
+runs = collect(sys.argv[1], "check_runs")
+statuses = collect(sys.argv[2], "statuses")
+pending, bad = [], []
+for r in runs:
+    if r["status"] != "completed":
+        pending.append(r["name"])
+    elif r["conclusion"] not in ("success", "skipped", "neutral"):
+        bad.append("%s=%s" % (r["name"], r["conclusion"]))
+for s in statuses:
+    if s["state"] == "pending":
+        pending.append(s["context"])
+    elif s["state"] != "success":
+        bad.append("%s=%s" % (s["context"], s["state"]))
+if not runs and not statuses:
+    print("PENDING (nothing reported yet)")
+elif pending:
+    print("PENDING " + ", ".join(pending))
+elif bad:
+    print("RED " + "; ".join(bad))
+else:
+    print("GREEN")
+' "$1" "$2"
+}
+
+# Sets $state; returns 1 on a transient gh or JSON failure.
+poll() {
+  local runs status
+  runs=$("$GH" api --paginate --slurp "repos/$repo/commits/$sha/check-runs?per_page=100" 2>/dev/null) || return 1
+  status=$("$GH" api --paginate --slurp "repos/$repo/commits/$sha/status?per_page=100" 2>/dev/null) || return 1
+  state=$(classify "$runs" "$status" 2>/dev/null) || return 1
+}
+
+start=$SECONDS pending="(no successful poll)"
+while :; do
+  if poll; then
+    case $state in
+      GREEN) echo "GREEN $repo $sha"; exit 0 ;;
+      RED*) echo "RED $repo $sha: ${state#RED }"; exit 1 ;;
+      *) pending=${state#PENDING } ;;
+    esac
+  fi
+  elapsed=$((SECONDS - start))
+  if [ $((elapsed + interval)) -gt "$timeout" ]; then
+    echo "TIMEOUT $repo $sha after ${elapsed}s: pending $pending"; exit 2
+  fi
+  sleep "$interval"
+done

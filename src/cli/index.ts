@@ -23,6 +23,7 @@ import { digestVerb } from './verbs/digest.js'
 import { dismissVerb } from './verbs/dismiss.js'
 import { doctorVerb } from './verbs/doctor.js'
 import { endorseVerb } from './verbs/endorse.js'
+import { handoffLastVerb } from './verbs/handoff-last.js'
 import { inboxVerb } from './verbs/inbox.js'
 import { addMirrorCommands } from './verbs/mirror.js'
 import { addBurndownCommands } from './verbs/burndown.js'
@@ -182,6 +183,9 @@ function addAgentCommands(program: Command): void {
   const teleport = program.command('teleport').description('teleport control').helpGroup(AGENTS)
   addVerb(teleport, teleportAbortVerb)
 
+  const handoff = program.command('handoff').description('stored teleport handoffs').helpGroup(AGENTS)
+  addVerb(handoff, handoffLastVerb)
+
   addVerb(program, profilesVerb, { helpGroup: AGENTS })
 
   program
@@ -214,6 +218,21 @@ function addAgentCommands(program: Command): void {
     .action(async (options: { range?: string; textFile?: string; json?: boolean }) => {
       const { leakScan } = await import('./verbs/leak-scan.js')
       process.exitCode = await leakScan(options)
+    })
+
+  program
+    .command('pr-ready')
+    .description(
+      'before gh pr create: clean tree, rebase, checks, changeset, leak scan; exit 0 only when all pass',
+    )
+    .helpGroup(AGENTS)
+    .option('--title <t>', "PR title, scanned with gh-write's leak scan")
+    .option('--body-file <path>', "PR body file, scanned with gh-write's leak scan")
+    .option('--no-rebase', 'check and report only; do not rebase onto the default branch')
+    .option('--strict', 'fail, not just note, a pushed branch that is behind the default branch')
+    .action(async (options: { title?: string; bodyFile?: string; rebase?: boolean; strict?: boolean }) => {
+      const { prReady } = await import('./verbs/pr-ready.js')
+      process.exitCode = await prReady(options)
     })
 }
 

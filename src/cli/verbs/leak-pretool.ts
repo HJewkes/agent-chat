@@ -9,7 +9,7 @@ const DECISION_DEADLINE_MS = 12_000
 
 function decideInWorker(raw: string, logFile: string): { run: Promise<string>; stop: () => void } {
   const worker = new Worker(new URL('../../leak-guard/pretool-worker.js', import.meta.url), {
-    workerData: { raw, logFile },
+    workerData: { raw, logFile, entry: process.argv[1] },
   })
   const run = new Promise<string>((resolve, reject) => {
     worker.once('message', resolve)

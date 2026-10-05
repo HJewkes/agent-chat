@@ -54,6 +54,25 @@ interface Heredoc {
 const OPERATORS = new Set([';', '&', '|'])
 const WRITE_OPERATORS = new Set(['>', '>>', '>|', '<>'])
 const GLOB = '*?[{'
+// A group the splitter can end without doubt: no quote, escape, blank, `$`, backtick or operator inside.
+const PLAIN_GROUP = /^\([^\s()'"\\`$;&<>]*\)$/
+const MAX_FORKS = 64
+
+/** The commands after `after`, bar `skip`, are checked when the span is not settled. */
+interface Mark {
+  after: number
+  skip: SimpleCommand
+}
+
+/** Shared by every lexer of one parse, so a line of many groups ends in a deny and not in a long run. */
+interface Budget {
+  forks: number
+}
+
+// A glob span that holds a substitution, a blank or an operator, which the shell may run as commands.
+const SPAN_RUNS = /[\s;&]|\$\(|`|[<>]\(/
+// Words after which a `(` still starts a command.
+const COMMAND_PREFIX = new Set(['{', '!', 'if', 'then', 'elif', 'else', 'while', 'until', 'do', 'time'])
 const BLANK = new Set([' ', '\t', '\n', ';', undefined])
 // gh fills these in a `gh api` path itself; no shell expands a brace group that has no comma.
 const GH_PLACEHOLDERS = ['{owner}', '{repo}', '{branch}']
@@ -69,7 +88,35 @@ const blur = (cmd: SimpleCommand): void => {
   cmd.stdinLive = true
 }
 
-const ANSI_C: Record<string, string> = { n: '\n', t: '\t', r: '\r', '\\': '\\', "'": "'", '"': '"' }
+const ANSI_C: Record<string, string> = {
+  a: '\x07',
+  b: '\b',
+  e: '\x1b',
+  E: '\x1b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+  v: '\v',
+  '\\': '\\',
+  "'": "'",
+  '"': '"',
+  '?': '?',
+}
+const ANSI_C_CODE = /^(?:x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|([0-7]{1,3}))/
+
+/** The `$'...'` escape whose backslash is at `src[at]`; `live` when the splitter cannot decode it, as with `\cX`. */
+export function ansiCEscape(src: string, at: number): { text: string; width: number; live: boolean } {
+  const next = src[at + 1] ?? ''
+  const named = ANSI_C[next]
+  if (named !== undefined) return { text: named, width: 2, live: false }
+  const code = ANSI_C_CODE.exec(src.slice(at + 1))
+  const octal = code?.[4]
+  const point = code ? parseInt(octal ?? code[1] ?? code[2] ?? code[3] ?? '', octal ? 8 : 16) : -1
+  // NUL ends the word in bash, and 1 is HOLE, so neither decodes.
+  if (code === null || point < 2 || point > 0x10ffff) return { text: next, width: 2, live: true }
+  return { text: String.fromCodePoint(point), width: code[0].length + 1, live: false }
+}
 
 class ShellLexer {
   pos: number
@@ -87,11 +134,14 @@ class ShellLexer {
   private heredocs: Heredoc[] = []
   private depth = 0
   private closed = false
+  /** Where the first span the splitter cannot settle opens; see `mixesParenAndGuarded`. */
+  mark: Mark | undefined
 
   constructor(
     private readonly src: string,
     start = 0,
     private readonly nested = false,
+    private readonly budget: Budget = { forks: MAX_FORKS },
   ) {
     this.pos = start
     this.cur = this.newCommand()
@@ -158,6 +208,7 @@ class ShellLexer {
 
   /** `name(`, `name ()` and `<(`: a glob qualifier, a function and a process substitution, none modelled. */
   private paren(c: string): void {
+    if (c === '(' && this.globGroup()) return
     const fed = c === '(' && this.word === null && this.pending !== null
     if (fed) this.pending = null
     if (fed || (c === '(' && this.word !== null)) this.append('', true)
@@ -169,6 +220,95 @@ class ShellLexer {
     this.depth += c === '(' ? 1 : -1
     this.pos++
     this.cur = this.newCommand()
+  }
+
+  /**
+   * zsh reads `g(i|x)t`, `*.ts(.)` and an argument `(-c|push)` as one glob word (TP-721, CC-728). In
+   * argument position every balanced span, with its nesting, quotes and escapes, is one live word, so
+   * no group can hide an option from the git rules; a span with no close keeps its words visible
+   * and marks only the `(` live. `name()` stays a function, `x=(` an array, and a `(` that opens a
+   * subshell, a case pattern or a `[[ ]]` operand keeps the subshell reading.
+   */
+  private globGroup(): boolean {
+    const word = this.word
+    if (this.pending !== null || (word !== null && /[={]$/.test(word))) return false
+    if (/^\(\s*\)/.test(this.src.slice(this.pos)) || (word === null && this.opensCommand())) return false
+    const end = this.groupEnd()
+    if (end < 0 || !PLAIN_GROUP.test(this.src.slice(this.pos, end))) this.unsettled()
+    if (end < 0) {
+      this.split('(')
+      this.pos++
+      return true
+    }
+    const span = this.src.slice(this.pos, end)
+    if (SPAN_RUNS.test(span)) {
+      this.substituted(span, new ShellLexer(span.slice(1, -1), 0, true, this.budget).run(), false)
+    }
+    this.split(span)
+    this.pos = end
+    this.readRestAsCommand()
+    return true
+  }
+
+  /**
+   * The shell may read the span as a subshell instead: after `coproc`, `repeat 1`, `for i`, `time -p`
+   * and other words, the span's text holds commands and what follows it starts one. So both readings
+   * are kept, and a prefix this splitter does not know cannot hide a command.
+   */
+  private readRestAsCommand(): void {
+    if (this.budget.forks-- <= 0) return this.unsettled()
+    const rest = new ShellLexer(this.src, this.pos, this.nested || this.depth !== 0, this.budget)
+    this.out.push(...rest.run())
+  }
+
+  /** A span whose end or reading the splitter cannot be sure of: the commands after it are held to account. */
+  private unsettled(): void {
+    this.mark ??= { after: this.out.length, skip: this.cur }
+  }
+
+  /** The `(` starts a command, a case pattern after `in`, or a `[[` operand: not an argument. */
+  private opensCommand(): boolean {
+    const words = this.cur.words
+    const head = words.findIndex(w => !COMMAND_PREFIX.has(w))
+    if (head < 0) return true
+    // `for ((i=0; i<3; i++))` is arithmetic, not a glob.
+    if (words[head] === 'for' && words.length === head + 1 && this.src.startsWith('((', this.pos)) return true
+    if (words[head] === '[[') return !words.includes(']]')
+    return words[head] === 'case' && words[words.length - 1] === 'in'
+  }
+
+  /** The index after the `)` that closes the `(` at the cursor, or -1 when the span is unbalanced or crosses a line. */
+  private groupEnd(): number {
+    let depth = 0
+    for (let i = this.pos; i < this.src.length; i++) {
+      const c = this.src[i] as string
+      if (c === '\n') return -1
+      if (c === '\\') i++
+      else if (c === '$' && this.src[i + 1] === "'") i = this.closeAnsi(i + 1)
+      else if (c === "'" || c === '"') i = this.closeQuote(i, c)
+      else if (c === '(') depth++
+      else if (c === ')' && --depth === 0) return i + 1
+      if (i < 0) return -1
+    }
+    return -1
+  }
+
+  /** The index of the quote closing the `$'` quote whose `'` is at `from`; a backslash escapes the next character. */
+  private closeAnsi(from: number): number {
+    for (let i = from + 1; i < this.src.length; i++) {
+      if (this.src[i] === '\\') i++
+      else if (this.src[i] === "'") return i
+    }
+    return -1
+  }
+
+  /** The index of the quote closing the one at `from`, or -1. */
+  private closeQuote(from: number, quote: string): number {
+    for (let i = from + 1; i < this.src.length; i++) {
+      if (this.src[i] === '\\' && quote === '"') i++
+      else if (this.src[i] === quote) return i
+    }
+    return -1
   }
 
   private skipComment(): void {
@@ -289,16 +429,15 @@ class ShellLexer {
     this.pos++
   }
 
-  /** An escape outside the table, such as `\x65`, stays LIVE: the splitter does not decode it. */
+  /** Decodes `\x67`, `\147` and the rest, so `$'\x67it'` reads as git (TP-721); an escape it cannot decode stays LIVE. */
   private ansiC(): void {
     this.append('')
     this.pos += 2
     while (this.pos < this.src.length && this.src[this.pos] !== "'") {
       const c = this.src[this.pos] as string
-      const next = this.src[this.pos + 1] ?? ''
-      if (c === '\\') this.append(ANSI_C[next] ?? next, ANSI_C[next] === undefined)
-      else this.append(c)
-      this.pos += c === '\\' ? 2 : 1
+      const escape = c === '\\' ? ansiCEscape(this.src, this.pos) : { text: c, width: 1, live: false }
+      this.append(escape.text, escape.live)
+      this.pos += escape.width
     }
     this.pos++
   }
@@ -306,16 +445,19 @@ class ShellLexer {
   /** Parses the inner commands too, so `$(git push --no-verify)` is seen; the word keeps the raw text. */
   private substitution(quoted: boolean): string {
     const start = this.pos
-    const inner = new ShellLexer(this.src, this.pos + 2, true)
+    const inner = new ShellLexer(this.src, this.pos + 2, true, this.budget)
     const commands = inner.run()
     this.pos = Math.min(inner.pos + 1, this.src.length)
+    if (inner.mark !== undefined) this.unsettled()
     return this.substituted(this.src.slice(start, this.pos), commands, quoted)
   }
 
   private backtick(quoted: boolean): string {
     const start = this.pos
     const inner = this.until('`')
-    const commands = new ShellLexer(inner, 0, true).run()
+    const lexer = new ShellLexer(inner, 0, true, this.budget)
+    const commands = lexer.run()
+    if (lexer.mark !== undefined) this.unsettled()
     if (inner.includes('\\')) commands.forEach(blur)
     return this.substituted(this.src.slice(start, this.pos), commands, quoted)
   }
@@ -416,4 +558,23 @@ export function expandWord(
     return value
   })
   return known && !expanded.includes(LIVE) ? expanded : undefined
+}
+
+const GUARDED_COMMAND = /(?:^|\/)(?:git|gh)$/
+
+/** A command word the shell may turn into git or gh, or that is one, among the words a wrapper leaves before it. */
+const namesGuarded = (cmd: SimpleCommand): boolean =>
+  cmd.words.slice(0, 4).some(word => GUARDED_COMMAND.test(word)) || (cmd.marked[0]?.includes(LIVE) ?? false)
+
+/**
+ * Whether a span the splitter cannot settle (a `(` outside command position that holds a quote, an
+ * escape, a blank or an operator, has no close, or comes in too many groups) is followed by a command
+ * that is, or may be, git or gh. Such a line is denied and not guessed at (CC-728). The test is on parsed
+ * words, after quotes, escapes and continuations are read, never on the raw text.
+ */
+export function mixesParenAndGuarded(src: string): boolean {
+  const lexer = new ShellLexer(unmark(src))
+  const commands = lexer.run()
+  const { mark } = lexer
+  return mark !== undefined && commands.slice(mark.after).some(cmd => cmd !== mark.skip && namesGuarded(cmd))
 }

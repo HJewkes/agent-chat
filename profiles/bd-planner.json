@@ -1,7 +1,7 @@
 {
   "description": "Burndown planner: the builtin planner, headless, on a lean bootstrap (only agent-chat and active-work MCP, no skills). Shares the checkout and writes one plan file.",
   "model": "opus",
-  "allowedTools": ["Read", "Grep", "Glob", "Write", "Bash"],
+  "allowedTools": ["Read", "Grep", "Glob", "Write", "Bash", "mcp__active-work__*"],
   "disallowedTools": [
     "Edit",
     "Bash(git commit:*)",

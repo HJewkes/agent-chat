@@ -4,7 +4,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { SURFACE_NAMES } from '../protocol.js'
-import { AGENT_CHAT_TOOLS, buildLaunchPlan, HOOK_DENIAL_NOTE, permModeFor } from '../agents/launch-plan.js'
+import { RESUMED_BRIEF } from '../agents/resume-session.js'
+import {
+  AGENT_CHAT_TOOLS,
+  buildLaunchPlan,
+  continueStarted,
+  HOOK_DENIAL_NOTE,
+  permModeFor,
+} from '../agents/launch-plan.js'
 import { BUILTIN_PROFILES, listProfileNames, loadProfile, parseProfile, roleOf } from '../agents/profiles.js'
 import { agentProfiles } from '../server/commands/agent-profiles.js'
 import { DEFAULT_SURFACE_LIFETIME } from '../agents/types.js'
@@ -16,7 +23,8 @@ import {
   readLaunchPlan,
   writeLaunchFiles,
 } from '../agents/launch-files.js'
-import { oscTitle } from '@titan-design/agent-surface'
+import { launchEnv, oscTitle } from '@titan-design/agent-surface'
+import { terminalAnchor } from '../server/anchor.js'
 import { relaunchScriptPath } from '../agents/launcher.js'
 import type { AgentProfile, LaunchPlanInput } from '../agents/types.js'
 
@@ -51,6 +59,7 @@ const input = (over: Partial<LaunchPlanInput> = {}): LaunchPlanInput => ({
   profile: profile(),
   brief: 'find every caller of foo()',
   cwd: '/repo',
+  cwdHoldsUserSettings: false,
   mcpConfigPath: '/state/agents/ag000001/mcp.json',
   ...over,
 })
@@ -76,6 +85,9 @@ describe('the argv every surface shares', () => {
       Be brief.",
         "--mcp-config",
         "/state/agents/ag000001/mcp.json",
+        "--strict-mcp-config",
+        "--setting-sources",
+        "project,local",
         "--channels",
         "plugin:agent-chat@agent-chat-local",
         "--allowed-tools",
@@ -214,7 +226,15 @@ describe('the one thing surfaces are allowed to differ on', () => {
   it('differs on nothing else across all four surfaces', () => {
     // If this fails, someone added a second axis of divergence — which is the
     // wart the single builder exists to prevent.
-    const promptFlags = new Set(['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode'])
+    // `--strict-mcp-config` rides the same axis: only a headless worker has no pane to answer for an unnamed server.
+    const promptFlags = new Set([
+      '-p',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--permission-mode',
+      '--strict-mcp-config',
+    ])
     const stripped = SURFACE_NAMES.map(surface => {
       const args = buildLaunchPlan(input({ surface })).args
       const kept: string[] = []
@@ -384,6 +404,7 @@ describe('every builtin profile, on every surface', () => {
     expect(named('reviewer')?.disallowedTools).toEqual([
       'Write',
       'Edit',
+      'Bash(git stash:*)',
       'Bash(agent-chat endorse:*)',
       'Bash(agent-chat dismiss:*)',
       'Bash(agent-chat send:*)',
@@ -676,7 +697,8 @@ describe('the launch files', () => {
     // chat_send, and did once this was removed and agent-chat was left to load
     // via the plugin's normal auto-load path instead. See launch-plan.ts's
     // --channels flag, which is the other half of this fix.
-    const config = buildMcpConfig(profile({ mcpServers: { extra: { command: 'x' } } }), '/repo/dist/cli.js')
+    const visible = profile({ surface: 'iterm-pane', mcpServers: { extra: { command: 'x' } } })
+    const config = buildMcpConfig(visible, '/repo/dist/cli.js')
     const servers = (config as { mcpServers: Record<string, unknown> }).mcpServers
 
     expect(Object.keys(servers)).toEqual(['extra'])
@@ -887,12 +909,13 @@ describe('the leak guard PreToolUse hook (CC-270)', () => {
 })
 
 describe('a lean profile', () => {
-  const lean = profile({ strictMcpConfig: true, disableSlashCommands: true })
+  const lean = profile({ surface: 'iterm-pane', strictMcpConfig: true, disableSlashCommands: true })
+  const plain = profile({ surface: 'iterm-pane' })
 
   // Mutation caught: emitting --strict-mcp-config unconditionally, which strips every normal spawn.
   it('drops the ambient MCP servers and skills only when the profile asks', () => {
     const leanArgs = buildLaunchPlan(input({ profile: lean })).args
-    const plainArgs = buildLaunchPlan(input()).args
+    const plainArgs = buildLaunchPlan(input({ profile: plain })).args
 
     expect(leanArgs.indexOf('--strict-mcp-config')).toBe(leanArgs.indexOf('--mcp-config') + 2)
     expect(leanArgs).toContain('--disable-slash-commands')
@@ -902,7 +925,7 @@ describe('a lean profile', () => {
 
   it('keeps agent-chat in its own MCP config, since strict mode drops the plugin', () => {
     const leanServers = buildMcpConfig(lean, '/repo/dist/cli.js').mcpServers as Record<string, unknown>
-    const plainServers = buildMcpConfig(profile(), '/repo/dist/cli.js').mcpServers as Record<string, unknown>
+    const plainServers = buildMcpConfig(plain, '/repo/dist/cli.js').mcpServers as Record<string, unknown>
 
     expect(leanServers['plugin:agent-chat:agent-chat']).toMatchObject({ args: ['/repo/dist/cli.js', 'mcp'] })
     expect(plainServers).toEqual({})
@@ -936,14 +959,50 @@ describe('the account a plan hands the launched process (CC-200)', () => {
     const plan = buildLaunchPlan(input({ configDir: '/Users/test/.claude-profiles/agents' }))
 
     expect(plan.env.CLAUDE_CONFIG_DIR).toBe('/Users/test/.claude-profiles/agents')
-    expect(plan.unsetEnv).toBeUndefined()
+    expect(plan.unsetEnv).not.toContain('CLAUDE_CONFIG_DIR')
   })
 
   it('marks CLAUDE_CONFIG_DIR for deletion, not an empty value, when the spawner ran with it unset', () => {
     const plan = buildLaunchPlan(input({ configDir: '/Users/test/.claude', configDirUnset: true }))
 
     expect('CLAUDE_CONFIG_DIR' in plan.env).toBe(false)
-    expect(plan.unsetEnv).toEqual(['CLAUDE_CONFIG_DIR'])
+    expect(plan.unsetEnv).toContain('CLAUDE_CONFIG_DIR')
+  })
+})
+
+describe('the terminal ids a plan keeps from a headless agent (CC-497)', () => {
+  const brokerEnv = {
+    HOME: '/h',
+    ITERM_SESSION_ID: 'w0t0p0:BROKER-PANE',
+    TERM_SESSION_ID: 'w0t0p0:BROKER-PANE',
+  }
+
+  it('marks ITERM_SESSION_ID and TERM_SESSION_ID for deletion on a headless plan', () => {
+    const plan = buildLaunchPlan(input({ surface: 'headless' }))
+
+    expect(plan.unsetEnv).toEqual(['ITERM_SESSION_ID', 'TERM_SESSION_ID'])
+  })
+
+  it('keeps the account marker beside them when the spawner ran with CLAUDE_CONFIG_DIR unset', () => {
+    const plan = buildLaunchPlan(input({ surface: 'headless', configDirUnset: true }))
+
+    expect(plan.unsetEnv).toEqual(['CLAUDE_CONFIG_DIR', 'ITERM_SESSION_ID', 'TERM_SESSION_ID'])
+  })
+
+  it.each(['iterm-pane', 'iterm-tab', 'iterm-window'] as const)('marks nothing on %s', surface => {
+    const plan = buildLaunchPlan(input({ surface }))
+
+    expect(plan.unsetEnv).toBeUndefined()
+  })
+
+  // The 10-01 case: a headless agent registered the pane of the terminal the broker was started from.
+  it('registers a headless agent with no anchor, though the broker was started from an iTerm pane', () => {
+    const plan = buildLaunchPlan(input({ surface: 'headless' }))
+
+    const agentEnv = launchEnv(plan.env, brokerEnv, 4242, plan.unsetEnv)
+
+    expect(terminalAnchor(agentEnv)).toEqual({})
+    expect('TERM_SESSION_ID' in agentEnv).toBe(false)
   })
 })
 
@@ -1031,5 +1090,43 @@ describe('per-profile env (CC-259)', () => {
     expect(parsed).toHaveProperty('error', expect.stringContaining('cachey'))
     expect(parseProfile('cachey', { ...base, env: 'x' })).toHaveProperty('error')
     expect(parseProfile('ok', { ...base, env: { TTL: '5m' } })).toMatchObject({ env: { TTL: '5m' } })
+  })
+})
+
+describe('continueStarted (CC-488)', () => {
+  const stored = (over: Partial<LaunchPlanInput> = {}) => buildLaunchPlan(input(over))
+  const SID = '00000000-0000-4000-8000-000000000001'
+
+  it('resumes a stored interactive plan whose transcript exists, without the brief', () => {
+    const plan = stored({ surface: 'iterm-tab' })
+    expect(plan.args).toContain('--session-id')
+
+    const next = continueStarted(plan, id => id === SID)
+
+    expect(flag(next.args, '--resume')).toBe(SID)
+    expect(next.args).not.toContain('--session-id')
+    expect(next.args).not.toContain('--')
+    expect(next.args).not.toContain('find every caller of foo()')
+  })
+
+  it('resumes a stored headless plan on the resumed brief', () => {
+    const plan = stored()
+
+    const next = continueStarted(plan, () => true)
+
+    expect(flag(next.args, '--resume')).toBe(SID)
+    expect(next.stdin).toBe(RESUMED_BRIEF)
+  })
+
+  it('leaves a plan unchanged when its transcript is absent', () => {
+    const plan = stored()
+
+    expect(continueStarted(plan, () => false)).toEqual(plan)
+  })
+
+  it('never rewrites a fork plan, even with the parent transcript present', () => {
+    const plan = stored({ forkFrom: '/projects/parent.jsonl' })
+
+    expect(continueStarted(plan, () => true)).toEqual(plan)
   })
 })

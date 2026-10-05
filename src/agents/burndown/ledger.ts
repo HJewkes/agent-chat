@@ -1,6 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { z } from 'zod'
+import { EXCEPTION_CLASSES } from './exception.js'
+import { STALL_CODES } from './stall-code.js'
 
 /**
  * The burndown claim ledger: which task each tick-spawned agent holds.
@@ -60,6 +62,10 @@ const Claim = z.object({
   prHead: z.string().optional(),
   lastReport: z.string().optional(),
   stalledReason: z.string().optional(),
+  /** Set beside `stalledReason`; a row without one predates classes and routes to the owner. */
+  stalledClass: z.enum(EXCEPTION_CLASSES).optional(),
+  /** Set beside `stalledReason` for a stall of one of the closed kinds (CC-663). */
+  stallCode: z.enum(STALL_CODES).optional(),
   /** Agents whose retire refused after the claim finished, in retire order; each tick retries them (CC-182). */
   unretired: z
     .array(
@@ -75,10 +81,54 @@ const Claim = z.object({
   seat: z.string().optional(),
   /** Prefix of every agent name the claim spawns; absent means `bd`. */
   namePrefix: z.string().optional(),
-  /** Event kinds already delivered to the claim's seat, so a delivered event is never re-sent. */
+  /** Event kinds (`kind:code` for a coded stall) already delivered to the claim's seat, so a delivered event is never re-sent. */
   notified: z.array(z.string()).optional(),
+  /** Set while the claim's live agent shows no progress in its transcript; the tick opens, refreshes and closes it (CC-654). */
+  finding: z
+    .object({
+      kind: z.literal('stalled-after-claim'),
+      /** `lease` when the claim's lease gave the code (CC-659); the others are CC-653's transcript reads. */
+      reason: z.enum(['silent', 'idle', 'slow-tool', 'lease']),
+      /** Absent on a finding opened before CC-663. */
+      code: z.enum(STALL_CODES).optional(),
+      /** The last progress the transcript showed, or the spawn when it showed none. */
+      since: z.string(),
+      openedAt: z.string(),
+      checkedAt: z.string(),
+      detail: z.string(),
+    })
+    .optional(),
+  /** An implementing claim's progress lease (CC-659), with the evidence it last saw; `lease.ts` steps it each tick. */
+  lease: z
+    .object({
+      /** The last commit, or the phase start before one. */
+      progressAt: z.string(),
+      leaseUntil: z.string(),
+      /** Renewals without a commit since `progressAt`. */
+      renewals: z.number().int().nonnegative(),
+      head: z.string().optional(),
+      /** The worktree's `Progress.content` hash. */
+      content: z.string().optional(),
+      /** The transcript's newest progress row. */
+      transcriptAt: z.string().optional(),
+    })
+    .optional(),
   /** The claim's PR as the last leak check found it: redacted `file:line category` rows, never matched text (CC-269). */
   leak: z.object({ repo: z.string(), url: z.string(), findings: z.array(z.string()) }).optional(),
+  /** This stall's triage job (CC-649); kept once it ends, so one occurrence never starts a second job. */
+  triage: z
+    .object({
+      /** The stall it is for; a record of another occurrence is dropped at the next settle. */
+      occurrence: z.string(),
+      /** When the stall first routed to triage; a capacity wait runs from here. */
+      since: z.string(),
+      outcome: z.enum(['waiting', 'started', 'refused', 'ended', 'fallback']),
+      name: z.string().optional(),
+      /** When the frame was sent; `maxMinutes` runs from here. */
+      startedAt: z.string().optional(),
+      detail: z.string().optional(),
+    })
+    .optional(),
 })
 export type Claim = z.infer<typeof Claim>
 
@@ -100,6 +150,10 @@ const SeatSample = z.object({
 const SeatState = z.object({ samples: z.array(SeatSample) })
 export type SeatState = z.infer<typeof SeatState>
 
+/** How often a task was released and when last; `backoff.ts` turns it into a hold (CC-661). */
+const ReleaseRecord = z.object({ n: z.number().int().positive(), at: z.string().datetime() })
+export type ReleaseRecord = z.infer<typeof ReleaseRecord>
+
 const Ledger = z.object({
   version: z.literal(1),
   lastTickAt: z.string().optional(),
@@ -111,6 +165,10 @@ const Ledger = z.object({
   humanFiled: z.array(z.string()).optional(),
   /** The deny-list state the leak check last recorded, so a missing list is logged once rather than every tick. */
   leakDenylist: z.string().optional(),
+  /** Release counts by task id, which hold the task back from dispatch (CC-661). */
+  releases: z.record(z.string(), ReleaseRecord).optional(),
+  /** When each triage job was started, pruned to the last day; `exceptions.triage.maxPerDay` counts these. */
+  triageStarts: z.array(z.string()).optional(),
 })
 export type Ledger = z.infer<typeof Ledger>
 
@@ -123,6 +181,11 @@ export const PHASE_TIMEOUT_MS: Partial<Record<Phase, number>> = {
   planning: 2 * HOUR_MS,
   implementing: 4 * HOUR_MS,
   reviewing: 2 * HOUR_MS,
+}
+
+/** Named so a recorded failure says what failed without carrying the file path in the message. */
+export class LedgerMalformedError extends Error {
+  override name = 'LedgerMalformedError'
 }
 
 /** A missing file is an empty ledger; a malformed one throws, because guessing would double-dispatch. */
@@ -139,7 +202,7 @@ export function readLedger(file: string): Ledger {
   } catch {
     parsed = undefined
   }
-  if (parsed?.success !== true) throw new Error(`burndown ledger ${file} is malformed`)
+  if (parsed?.success !== true) throw new LedgerMalformedError(`burndown ledger ${file} is malformed`)
   return parsed.data
 }
 
@@ -176,12 +239,12 @@ export function addClaim(ledger: Ledger, claim: Claim): Ledger {
   return { ...ledger, claims: [...ledger.claims, claim] }
 }
 
-/** Queued slices whose dependencies are all done, in ledger order. */
-export function readySlices(ledger: Ledger): Claim[] {
+/** Queued slices whose dependencies are all done and whose task is not in `held`, in ledger order. */
+export function readySlices(ledger: Ledger, held: ReadonlyMap<string, unknown> = new Map()): Claim[] {
   const done = (taskId: string, slice: string): boolean =>
     ledger.claims.some(c => c.taskId === taskId && c.slice === slice && c.phase === 'done')
   return ledger.claims.filter(
-    c => c.phase === 'queued' && (c.dependsOn ?? []).every(dep => done(c.taskId, dep)),
+    c => c.phase === 'queued' && !held.has(c.taskId) && (c.dependsOn ?? []).every(dep => done(c.taskId, dep)),
   )
 }
 

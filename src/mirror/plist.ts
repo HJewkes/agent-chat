@@ -16,6 +16,47 @@ export function jobEnv(source: NodeJS.ProcessEnv): Record<string, string> {
 /** Kept for existing call sites; identical to `jobEnv`. */
 export const mirrorJobEnv = jobEnv
 
+/** Worktrees are parked (deleted) after merge, so a job pointing into one dies with MODULE_NOT_FOUND. */
+const WORKTREE_SEGMENTS = [['.worktrees'], ['.claude', 'worktrees']] as const
+
+/** macOS and POSIX scratch roots; the OS reaps them, so state homed there vanishes under the job. */
+const SCRATCH_ROOTS = ['/tmp', '/private/tmp', '/var/folders', '/private/var/folders']
+
+export interface JobPathsInput {
+  nodePath: string
+  cliEntry: string
+  env: Record<string, string>
+  tmpdir: string
+}
+
+function hasWorktreeSegment(file: string): boolean {
+  const parts = path.normalize(file).split(path.sep)
+  return WORKTREE_SEGMENTS.some(seg => parts.some((_, i) => seg.every((name, j) => parts[i + j] === name)))
+}
+
+function isInside(file: string, root: string): boolean {
+  const rel = path.relative(path.normalize(root), path.normalize(file))
+  return rel === '' || (rel.split(path.sep)[0] !== '..' && !path.isAbsolute(rel))
+}
+
+/** Pure: why a launchd job built from these paths would break once the tree or scratch dir goes; empty when sound. */
+export function launchdJobRefusals(input: JobPathsInput): string[] {
+  const errors: string[] = []
+  for (const [what, file] of [
+    ['CLI entry', input.cliEntry],
+    ['node path', input.nodePath],
+  ] as const) {
+    if (hasWorktreeSegment(file))
+      errors.push(`refused: ${what} ${file} is inside a worktree; install from the main checkout`)
+  }
+  const home = input.env.AGENT_CHAT_HOME
+  if (home !== undefined && [input.tmpdir, ...SCRATCH_ROOTS].some(root => isInside(home, root)))
+    errors.push(
+      `refused: AGENT_CHAT_HOME ${home} is inside a temp dir; unset it or point it at durable state`,
+    )
+  return errors
+}
+
 const escapeXml = (text: string): string =>
   text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 

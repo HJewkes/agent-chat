@@ -1,12 +1,15 @@
 import { burndownConfigPath, burndownLedgerPath } from '../../paths.js'
 import { activeWorkRoot } from '../active-work.js'
 import { gateAccount } from './budget-gate.js'
+import { classOf, routeOf, type RouteConfig } from './exception.js'
+import { backoffHeld } from './backoff.js'
 import { taskRefusal, type Initiative } from './eligibility.js'
-import { heldClaims, isStalled, readLedger, type DeciderState, type Ledger } from './ledger.js'
+import { heldClaims, isStalled, readLedger, type Claim, type DeciderState, type Ledger } from './ledger.js'
 import type { Roster } from './observe.js'
 import { plan, type Plan, type PlanInputs } from './plan.js'
 import { diskSeatDeps, loadSeats, planSeats } from './seat-tick.js'
-import { accountDir, loadRules, readInitiatives, readReadings, readTasks } from './source.js'
+import { accountDir, loadRules, loadTickConfig, readInitiatives, readReadings, readTasks } from './source.js'
+import { currentTriage } from './triage.js'
 import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
 
 /** The dry-run tick over the live files, and its two renderings: `burndown plan` and `burndown status`. */
@@ -109,16 +112,29 @@ export function renderPlan(result: Plan, now: Date): string[] {
   return lines
 }
 
+const findingSuffix = (c: Claim): string =>
+  c.finding === undefined ? '' : ` FINDING ${c.finding.kind} (${c.finding.reason}, since ${c.finding.since})`
+
+/** A stall's class, the dial's route for it, and its triage job's outcome once one exists (CC-649). */
+function stallSuffix(c: Claim, route: RouteConfig): string {
+  if (c.stalledReason === undefined) return ''
+  const cls = classOf(c)
+  const triage = currentTriage(c)
+  const job = triage === undefined ? '' : `, triage ${triage.name ?? '-'} ${triage.outcome}`
+  return ` (class ${cls ?? 'none'}, route ${routeOf(cls, route, true).route}${job})`
+}
+
 export function renderStatus(ledger: Ledger, now: Date): string[] {
   const rules = loadRules(burndownConfigPath())
   const readings = readReadings(Object.keys(rules), now.getTime())
   const held = heldClaims(ledger)
+  const { route } = loadTickConfig(burndownConfigPath()).exceptions
   const lines = [
     `ledger ${burndownLedgerPath()}: ${held.length} held, last tick ${ledger.lastTickAt ?? 'never'}`,
   ]
   for (const c of held)
     lines.push(
-      `${c.taskId} (${c.initiative}) ${c.agentId ?? c.agentName ?? 'unspawned'} ${c.phase} since ${c.phaseAt}${isStalled(c, now) ? ' STALLED' : ''}`,
+      `${c.taskId} (${c.initiative}) ${c.agentId ?? c.agentName ?? 'unspawned'} ${c.phase} since ${c.phaseAt}${isStalled(c, now) ? ' STALLED' : ''}${stallSuffix(c, route)}${findingSuffix(c)}`,
     )
   for (const c of ledger.claims.filter(c => c.phase === 'done'))
     for (const u of c.unretired ?? [])
@@ -139,10 +155,12 @@ function deciderStatus(state: DeciderState, now: Date): string {
 }
 
 /** Tasks that pass eligibility across opted-in initiatives, before budget and trust; the doctor line's `n`. */
-export function eligibleCount(root = activeWorkRoot()): number {
-  const claimed = new Set(heldClaims(readLedger(burndownLedgerPath())).map(c => c.taskId))
+export function eligibleCount(root = activeWorkRoot(), now = new Date()): number {
+  const ledger = readLedger(burndownLedgerPath())
+  const claimed = new Set(heldClaims(ledger).map(c => c.taskId))
+  const held = backoffHeld(ledger, now)
   return readInitiatives(root)
     .filter(i => i.state === 'focused' && i.autonomy !== undefined)
-    .flatMap(i => readTasks(root, i.slug).map(t => taskRefusal(t, i.autonomy?.grants ?? [], claimed)))
+    .flatMap(i => readTasks(root, i.slug).map(t => taskRefusal(t, i.autonomy?.grants ?? [], claimed, held)))
     .filter(refusal => refusal === undefined).length
 }

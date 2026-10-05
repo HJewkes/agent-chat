@@ -69,7 +69,7 @@ export interface ScanInputs {
 }
 
 // os.userInfo() reads the passwd entry, not $HOME; os.homedir() is the fallback when there is none.
-function passwdHome(): string {
+export function passwdHome(): string {
   try {
     return os.userInfo().homedir
   } catch {
@@ -188,7 +188,8 @@ const runScanner = (refuses: boolean, termsFile: string): string =>
 /**
  * The scan runs in a subshell. `clean` starts git and the scanner with an environment of PATH
  * alone, so no variable of the agent's reaches them. A missing node or scanner, or one whose help
- * lacks `pre-push`, warns and lets the push go. A scanner that crashes still refuses. The scan's
+ * lacks `pre-push`, warns and lets the push go. A scanner that crashes, or whose help lacks
+ * `scanned as text` (it skips binary files), refuses. The scan's
  * refusal does not skip the repo's own hook; either one failing refuses.
  */
 const scanStep = ({ missingTermsRefuses: refuses, home }: ScanInputs): string => `(
@@ -204,6 +205,12 @@ elif ! help=$(clean titan-egress-scan --help 2>&1); then
 else
   case $help in
   *pre-push*)
+    case $help in
+    *'scanned as text'*) ;;
+    *)
+      echo "leak-scan: the titan-egress-scan on the broker's PATH skips binary files, so the push is refused. ${INSTALL_HINT}" >&2
+      exit 2 ;;
+    esac
     ${OBJECT_VIEW}
     ${remoteTip(home)}
     ${SCAN_REFS}

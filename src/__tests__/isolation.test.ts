@@ -818,11 +818,11 @@ describe('worktree release', () => {
     const repo = makeRepo()
     const alloc = await worktreeStrategy.allocate(ctxFor(repo))
 
-    const justExited = ctxFor(repo, { exitedAt: Date.now() })
+    const justExited = ctxFor(repo, { stoppedAt: Date.now() })
     expect(await worktreeStrategy.release(justExited, alloc)).toBe(false)
     expect(fs.existsSync(alloc.cwd)).toBe(true)
 
-    const longExited = ctxFor(repo, { exitedAt: Date.now() - RECLAIM_GRACE_MS - 1000 })
+    const longExited = ctxFor(repo, { stoppedAt: Date.now() - RECLAIM_GRACE_MS - 1000 })
     expect(await worktreeStrategy.release(longExited, alloc)).toBe(true)
   })
 

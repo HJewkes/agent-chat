@@ -15,6 +15,7 @@ import type {
 import { wakeSource, type CursoredMessage, type DecisionCitation } from '../protocol.js'
 import { resolveNoticeTtlMs } from '../config.js'
 import { DECISION_AUDIT_MS, decidedText, overruleText } from './decisions.js'
+import { undeliveredHandoffs, type StoredHandoff } from './handoffs.js'
 import { NOTICE_LIVE } from './notice-expiry.js'
 import type {
   AgentEventRow,
@@ -202,6 +203,17 @@ const toQueueItem = (row: Row): QueueItem => ({
   from: row.actor,
   text: row.body ?? '',
   at: row.ts,
+  meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
+})
+
+const toAgentEventRow = (row: Row): AgentEventRow => ({
+  kind: row.kind as EventKind,
+  ts: row.ts,
+  actor: row.actor,
+  target: row.target,
+  msgId: row.msg_id,
+  ref: row.ref,
+  body: row.body,
   meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
 })
 
@@ -540,6 +552,10 @@ export class EventLog implements EventStore {
     return row.n
   }
 
+  undeliveredHandoffs(since: number): StoredHandoff[] {
+    return undeliveredHandoffs(this.db, since)
+  }
+
   /** An open `question` nobody has decided yet: the only thing a decider may answer. */
   undecidedQuestion(msgId: string): QueueItem | undefined {
     const row = this.db
@@ -632,16 +648,19 @@ export class EventLog implements EventStore {
     const rows = this.db
       .prepare(`SELECT * FROM events WHERE kind IN (${AGENT_KINDS_SQL}) ORDER BY id ASC`)
       .all() as unknown as Row[]
-    return rows.map(row => ({
-      kind: row.kind as EventKind,
-      ts: row.ts,
-      actor: row.actor,
-      target: row.target,
-      msgId: row.msg_id,
-      ref: row.ref,
-      body: row.body,
-      meta: (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>,
-    }))
+    return rows.map(toAgentEventRow)
+  }
+
+  /** CC-476: one agent's rows, by the same id rule as `groupByAgent`, so a lookup skips the full fold. */
+  agentEventsFor(agentId: string): AgentEventRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM events WHERE kind IN (${AGENT_KINDS_SQL}) AND (
+           (kind = 'agent_spawned' AND msg_id = ?) OR (kind <> 'agent_spawned' AND ref = ?)
+         ) ORDER BY id ASC`,
+      )
+      .all(agentId, agentId) as unknown as Row[]
+    return rows.map(toAgentEventRow)
   }
 
   history(limit: number): QueueItem[] {

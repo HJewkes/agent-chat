@@ -1,0 +1,17 @@
+#!/bin/sh
+# Append one clock-stamped line to a seat's journal (charter section 10).
+set -eu
+if [ "$#" -lt 2 ]; then
+  echo "usage: bin/log <seat> <text...>" >&2
+  exit 2
+fi
+seat=$1
+shift
+root=${AUTONOMY_ROOT:-${ACTIVE_ROOT:+$ACTIVE_ROOT/claude-channels/sources/autonomy}}
+[ -n "$root" ] || { echo "bin/log: AUTONOMY_ROOT and ACTIVE_ROOT unset: export one" >&2; exit 2; }
+dir="$root/logs/$seat"
+if [ ! -d "$dir" ]; then
+  echo "bin/log: no log dir for seat '$seat'" >&2
+  exit 1
+fi
+printf '%s %s\n' "$(date +%H:%M)" "$*" >> "$dir/$(date +%F).md"

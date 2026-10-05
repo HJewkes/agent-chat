@@ -9,6 +9,7 @@ import {
   type EventKind,
   type SeatEvent,
 } from '../agents/burndown/seat-events.js'
+import type { StallCode } from '../agents/burndown/stall-code.js'
 
 const claim = (over: Partial<Claim> = {}): Claim => ({
   taskId: 'T-1',
@@ -20,6 +21,14 @@ const claim = (over: Partial<Claim> = {}): Claim => ({
   ...over,
 })
 const ledger = (...claims: Claim[]): Ledger => ({ ...EMPTY_LEDGER, claims })
+const finding: NonNullable<Claim['finding']> = {
+  kind: 'stalled-after-claim',
+  reason: 'idle',
+  since: '2026-01-01T00:01:00.000Z',
+  openedAt: '2026-01-01T00:07:00.000Z',
+  checkedAt: '2026-01-01T00:07:00.000Z',
+  detail: 'idle: no agent event for 6 min since 2026-01-01T00:01:00.000Z',
+}
 const kinds = (l: Ledger, b: Ledger = ledger(), r: { key: { taskId: string }; ok: boolean }[] = []) =>
   (seatEvents(b, l, r).alpha ?? []).map(e => e.kind)
 
@@ -80,6 +89,7 @@ describe('seatEvents', () => {
     'ready-to-merge': { phase: 'awaiting-merge' },
     merged: { phase: 'done', notified: ['ready-to-merge'] },
     stalled: { stalledReason: 'timed out' },
+    'stalled-after-claim': { finding },
     parked: { phase: 'parked' },
     leak: {
       leak: {
@@ -134,6 +144,106 @@ describe('settleNotified', () => {
       ['ready-to-merge', 'merged'],
       ['parked'],
     ])
+  })
+})
+
+describe('the stalled-after-claim notice', () => {
+  /** One tick as the seat sees it: settle, diff, and mark whatever was due as delivered. */
+  const deliver = (before: Ledger, after: Ledger): { sent: SeatEvent[]; ledger: Ledger } => {
+    const settled = settleNotified(after)
+    const sent = seatEvents(before, settled, []).alpha ?? []
+    return { sent, ledger: markNotified(settled, 'alpha', sent) }
+  }
+
+  it('fires once with the finding detail while the finding stays open', () => {
+    const open = ledger(claim({ finding }))
+
+    const first = deliver(ledger(claim()), open)
+    const second = deliver(first.ledger, ledger({ ...first.ledger.claims[0]!, finding }))
+
+    expect(first.sent).toEqual([{ kind: 'stalled-after-claim', taskId: 'T-1', detail: finding.detail }])
+    expect(second.sent).toEqual([])
+  })
+
+  it('is dropped from notified after the finding closes, and fires again on a reopen', () => {
+    const told = claim({ finding, notified: ['stalled-after-claim'] })
+    const { finding: _closed, ...closedClaim } = told
+
+    const closed = deliver(ledger(told), ledger(closedClaim))
+    const reopened = deliver(closed.ledger, ledger({ ...closed.ledger.claims[0]!, finding }))
+
+    expect(closed.sent).toEqual([])
+    expect(closed.ledger.claims[0]?.notified).toBeUndefined()
+    expect(reopened.sent.map(e => e.kind)).toEqual(['stalled-after-claim'])
+  })
+
+  const coded = (code: StallCode): NonNullable<Claim['finding']> => ({
+    ...finding,
+    code,
+    detail: `${code}: ${finding.detail}`,
+  })
+
+  it('fires once per code across repeat ticks and records the code in notified', () => {
+    const first = deliver(ledger(claim()), ledger(claim({ finding: coded('no-progress') })))
+    const second = deliver(
+      first.ledger,
+      ledger({ ...first.ledger.claims[0]!, finding: coded('no-progress') }),
+    )
+
+    expect(first.sent).toEqual([
+      {
+        kind: 'stalled-after-claim',
+        taskId: 'T-1',
+        detail: coded('no-progress').detail,
+        code: 'no-progress',
+      },
+    ])
+    expect(second.sent).toEqual([])
+    expect(second.ledger.claims[0]?.notified).toEqual(['stalled-after-claim:no-progress'])
+  })
+
+  it('fires once more when the open finding changes code', () => {
+    const first = deliver(ledger(claim()), ledger(claim({ finding: coded('no-progress') })))
+    const changed = deliver(
+      first.ledger,
+      ledger({ ...first.ledger.claims[0]!, finding: coded('lease-expired') }),
+    )
+
+    expect(changed.sent.map(e => e.code)).toEqual(['lease-expired'])
+    expect(changed.ledger.claims[0]?.notified).toEqual(['stalled-after-claim:lease-expired'])
+  })
+
+  it('sends nothing for a claim told before codes existed', () => {
+    const findingTold = claim({ finding: coded('no-progress'), notified: ['stalled-after-claim'] })
+    const stallTold = claim({
+      taskId: 'T-2',
+      stalledReason: 'implementing past its timeout',
+      stallCode: 'phase-timeout',
+      notified: ['stalled'],
+    })
+    const both = ledger(findingTold, stallTold)
+
+    expect(deliver(both, both).sent).toEqual([])
+  })
+})
+
+describe('the stalled notice', () => {
+  it('starts its detail with the code and records the code once delivered', () => {
+    const stalled = claim({ stalledReason: 'implementing past its timeout', stallCode: 'phase-timeout' })
+
+    const sent = seatEvents(ledger(claim()), ledger(stalled), []).alpha ?? []
+    const marked = markNotified(ledger(stalled), 'alpha', sent)
+
+    expect(sent).toEqual([
+      {
+        kind: 'stalled',
+        taskId: 'T-1',
+        detail: 'phase-timeout: implementing past its timeout',
+        code: 'phase-timeout',
+      },
+    ])
+    expect(seatEvents(marked, marked, []).alpha).toBeUndefined()
+    expect(marked.claims[0]?.notified).toEqual(['stalled:phase-timeout'])
   })
 })
 

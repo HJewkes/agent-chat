@@ -340,7 +340,7 @@ describe('agent-chat gh-write', () => {
   })
 
   it('spaces two concurrent processes by the configured gap', async () => {
-    await Promise.all([run(['a']), run(['b'])])
+    await Promise.all([run(['pr', 'view', '1']), run(['pr', 'view', '2'])])
 
     const starts = fs.readFileSync(path.join(dir, 'starts'), 'utf8').trim().split('\n').map(Number)
     expect(starts).toHaveLength(2)

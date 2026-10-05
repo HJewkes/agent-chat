@@ -267,7 +267,9 @@ its context as the scarce resource, not the agents' time.
   PR's reviewer while it is warm; a new PR never reuses a reviewer. Retire the reviewer when
   its PR merges or closes. A reviewer reviews in a detached worktree at the head under
   `$TMPDIR/<reviewer name>`, never under `<repo>/.worktrees` and never in the implementer's
-  tree, and removes it at verdict. Read a diff yourself only where the judgement is the point
+  tree, and removes it at verdict. A reviewer never runs `git stash`, because refs/stash is
+  shared by every worktree: read a file at a revision with `git show <rev>:<path>`, or copy
+  files into the session scratchpad. Read a diff yourself only where the judgement is the point
   (safety paths, lifecycle and migration changes), not for routine hygiene PRs.
 - Before any read that will return more than ~100 lines, ask whether a sonnet agent could
   return a 10-line answer instead.
@@ -304,6 +306,16 @@ runs `titan-factory shepherd register <owner>/<repo>#<n> --task <initiative>/<ID
 and `Shepherd: <run id>`. It never waits on CI; Shepherd owns CI, review and merge. When register
 refuses (exit 65: a repo no seat policy lists, agent-chat today), it reports `Shepherd: refused
 <first stderr line>` and still reports Status, PR and Head, and you watch CI for that PR.
+
+When your seat merges through its own path (its own reviewer, then `bin/merge`), put a line that
+reads exactly `Shepherd: none` in the brief, on a line of its own. The broker then appends an
+implementer block that says not to run `titan-factory shepherd register`, to wait for CI as the
+brief directs, and to report each check-run's conclusion at the final head. A brief that only
+mentions the marker inside a sentence keeps the Shepherd block. Saying "do not register" in prose
+is not enough: the appended block comes last and wins.
+
+The implementer block's load-test rule applies only when the brief asks for a load test. The agent
+kills the burners it started by their recorded PIDs and confirms with `pgrep`, never `pkill -f`.
 
 A reviewer's report starts with the three lines `Verdict: MERGE` (or `FIX_FIRST`),
 `PR: <owner>/<repo>#<n>` and `Head: <40-hex sha>`. Shepherd, `bin/premerge` and `parseReport` read

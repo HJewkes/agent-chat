@@ -1,6 +1,10 @@
 import { HUMAN } from '../protocol.js'
 import { roleOf } from './profiles.js'
-import { RETURN_CONTRACT_BLOCKS } from './return-contract-blocks.js'
+import {
+  IMPLEMENTER_WITHOUT_SHEPHERD,
+  RETURN_CONTRACT_BLOCKS,
+  SHEPHERD_NONE_MARKER,
+} from './return-contract-blocks.js'
 import { RETURN_CONTRACTS, type AgentProfile, type ReturnContract } from './types.js'
 
 /**
@@ -15,7 +19,8 @@ const PLACEHOLDER = '<spawner>'
 
 const LAST_ACTION = /\blast action\b/i
 const STATUS_LINE = /\bStatus:\s*DONE\s*\|\s*DONE_WITH_CONCERNS\s*\|\s*BLOCKED\s*\|\s*NEEDS_CONTEXT\b/
-const VERDICT_LINE = /\bVerdict:\s*MERGE\s*(?:\(\s*or\s+FIX_FIRST\s*\)|or\s+FIX_FIRST\b|\|\s*FIX_FIRST\b)/
+const VERDICT_LINE =
+  /\bVerdict:\s*MERGE\s*(?:\(\s*or\s+FIX_FIRST(?:\s+or\s+WAIT)?\s*\)|or\s+FIX_FIRST\b|\|\s*FIX_FIRST\b)/
 const PR_LINE = /\bPR:\s*\S/
 const HEAD_LINE = /\bHead:\s*\S/
 
@@ -78,6 +83,15 @@ function contractFor(input: ContractInput): ReturnContract | undefined {
   return contractOf(input.profile)
 }
 
+/** Only a line of its own counts, so a brief that mentions the marker in a sentence keeps Shepherd. */
+export const optsOutOfShepherd = (brief: string): boolean =>
+  brief.split(/\r?\n/).some(line => line.trim().toLowerCase() === SHEPHERD_NONE_MARKER.toLowerCase())
+
+const blockFor = (contract: ReturnContract, brief: string): string =>
+  contract === 'implementer' && optsOutOfShepherd(brief)
+    ? IMPLEMENTER_WITHOUT_SHEPHERD
+    : RETURN_CONTRACT_BLOCKS[contract]
+
 const pastedWarning = (contract: ReturnContract): string =>
   `the brief already carries the ${contract} return contract; the broker appends it, so stop pasting it`
 
@@ -92,7 +106,7 @@ export function withReturnContract(input: ContractInput): Contracted {
   if (contract === undefined) return { brief, warnings: [] }
   if (carriesContract(brief, contract)) return { brief, warnings: [pastedWarning(contract)] }
   // A function, so `$&` in a spawner name is text and not a replacement pattern.
-  const block = RETURN_CONTRACT_BLOCKS[contract].replaceAll(PLACEHOLDER, () => spawner)
+  const block = blockFor(contract, brief).replaceAll(PLACEHOLDER, () => spawner)
   const warnings = OWN_REPORT_LINE.test(brief) ? [ownFormatWarning(contract)] : []
   return { brief: `${brief}\n\n${block}`, warnings }
 }

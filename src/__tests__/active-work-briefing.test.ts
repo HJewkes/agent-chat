@@ -139,3 +139,37 @@ describe('deciding which initiative a spawn belongs to', () => {
     expect(result).toEqual({ warning: expect.stringContaining('could not tell which active-work') })
   })
 })
+
+/** BRIEFING_MAX in active-work.ts; this pins it, so changing it means changing this too (CC-667). */
+const BRIEFING_MAX = 9_000
+const OVERFLOW_NOTE = '\n… (truncated)'
+
+describe('the briefing size cap (CC-667)', () => {
+  it('truncates a briefing over the cap to exactly the cap plus its overflow note', () => {
+    const root = activeWorkRoot()
+    initiative(root, 'widgets')
+    const related = `## Related\n\n${'- an invented related note about widgets\n'.repeat(400)}`
+
+    const { text } = briefingFor('widgets', root, related) as { text: string }
+
+    expect(text.length).toBe(BRIEFING_MAX + OVERFLOW_NOTE.length)
+    expect(text.endsWith(OVERFLOW_NOTE)).toBe(true)
+  })
+
+  it('sheds tasks and session text to keep a crowded initiative under the cap', () => {
+    const root = activeWorkRoot()
+    const dir = initiative(root, 'widgets')
+    for (let i = 10; i < 60; i++)
+      fs.writeFileSync(
+        path.join(dir, 'tasks', `XX-${i}.yml`),
+        `id: XX-${i}\ntitle: ${'Teach the widget to hum a longer tune '.repeat(4)}\npriority: ${i}\nstatus: open\n`,
+      )
+    fs.writeFileSync(path.join(dir, 'sessions', '2026-08-01-0900-long.md'), 'Hummed. '.repeat(1_000))
+    const related = `## Related\n\n${'- an invented related note\n'.repeat(150)}`
+
+    const { text } = briefingFor('widgets', root, related) as { text: string }
+
+    expect(text.length).toBeLessThanOrEqual(BRIEFING_MAX)
+    expect(text.match(/^- XX-\d+:/gm)?.length).toBeLessThan(25)
+  })
+})

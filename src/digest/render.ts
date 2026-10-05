@@ -1,3 +1,4 @@
+import { renderMilestoneLine } from '../agents/burndown/milestone-report.js'
 import type { AccountSpend, Digest, NamedItem, QueueEntry, Reading } from './types.js'
 
 /** Renders a collected digest as terminal text or markdown; the sections of design section 8 plus CC-266's unreported exits, empty ones named once at the end. */
@@ -141,12 +142,32 @@ function next(d: Digest, s: Style): Section {
   return { title: 'Next (burndown dry run)', lines }
 }
 
+/** Absent with no milestone file this week, so that digest reads as it did before CC-630. */
+const milestones = (d: Digest): Section[] =>
+  d.milestones.length === 0
+    ? []
+    : [
+        {
+          title: `Milestones (${d.milestones.length})`,
+          lines: d.milestones.map(m => `- ${renderMilestoneLine(m)}`),
+        },
+      ]
+
 const headline = (d: Digest): string =>
   `agent-chat digest for ${agoFrom(d.generatedAt, d.sinceMs).replace(' ago', '')} since ${new Date(d.sinceMs).toISOString()}`
 
 export function renderDigest(d: Digest, format: Format): string[] {
   const s = STYLES[format]
-  const sections = [needsYou(d, s), decided(d, s), done(d), stalled(d), unreported(d), spend(d), next(d, s)]
+  const sections = [
+    needsYou(d, s),
+    decided(d, s),
+    ...milestones(d),
+    done(d),
+    stalled(d),
+    unreported(d),
+    spend(d),
+    next(d, s),
+  ]
   const out = [format === 'markdown' ? `# ${headline(d)}` : headline(d)]
   const empty: string[] = []
   for (const section of sections) {

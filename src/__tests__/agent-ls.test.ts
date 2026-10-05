@@ -93,6 +93,33 @@ describe('agent ls --json', () => {
   })
 })
 
+describe('agent ls --json inferred and spawnedAt', () => {
+  const exited = (exit: NonNullable<AgentIdentity['exit']>): AgentIdentity => ({
+    ...liveAgent(),
+    state: 'exited',
+    exit,
+  })
+
+  it('marks an exit written by the settle timer as inferred', async () => {
+    roster.sessions = []
+    roster.agents = [exited({ code: null, summary: 'exit inferred from presence', inferred: true })]
+    const [row] = JSON.parse(await lsOutput('--json')) as Record<string, unknown>[]
+    expect(row).toMatchObject({ presence: 'exited', inferred: true })
+  })
+
+  it('marks a recorded exit, and an agent that has not exited, as not inferred', async () => {
+    roster.sessions = []
+    roster.agents = [exited({ code: 0, summary: 'done' }), { ...liveAgent(), name: 'other', agentId: 'a2' }]
+    const rows = JSON.parse(await lsOutput('--json')) as Record<string, unknown>[]
+    expect(rows.map(r => r.inferred)).toEqual([false, false])
+  })
+
+  it('reports the spawn time as an ISO string', async () => {
+    const [row] = JSON.parse(await lsOutput('--json')) as Record<string, unknown>[]
+    expect(row?.spawnedAt).toBe('1970-01-01T00:00:00.001Z')
+  })
+})
+
 describe('agent ls --json when one transcript cannot be read', () => {
   // Mutation caught: the per-agent read rethrows, so one bad transcript aborts the whole listing.
   it('reports model null for that agent and still lists the others', async () => {
