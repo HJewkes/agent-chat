@@ -32,6 +32,9 @@ fresh; mkdir "$W/task-note-demo-D-1.lock"; out=$(LOCK_TRIES=2 "$BIN/task-note" d
   && { echo "PASS held lock fails and writes nothing"; pass=$((pass+1)); } || { echo "FAIL held lock: rc=$rc $out"; failn=$((failn+1)); }
 fresh; out=$("$BIN/task-note" demo D-9 x 2>&1); rc=$?
 [ "$rc" = 1 ] && grep -q "^FAIL no task file" <<<"$out" && { echo "PASS missing task fails"; pass=$((pass+1)); } || { echo "FAIL missing task: rc=$rc $out"; failn=$((failn+1)); }
+fresh; out=$(env -u ACTIVE_ROOT "$BIN/task-note" demo D-1 x 2>&1); rc=$?
+[ "$rc" = 2 ] && grep -q "^ACTIVE_ROOT unset" <<<"$out" && [ "$(notes)" = "NoneType:None" ] \
+  && { echo "PASS unset ACTIVE_ROOT fails and writes nothing"; pass=$((pass+1)); } || { echo "FAIL unset ACTIVE_ROOT: rc=$rc $out"; failn=$((failn+1)); }
 fresh; ls "$W"/task-note-*.lock >/dev/null 2>&1; "$BIN/task-note" demo D-1 y >/dev/null 2>&1
 ls "$W"/task-note-*.lock >/dev/null 2>&1 && { echo "FAIL lock left behind"; failn=$((failn+1)); } || { echo "PASS lock released"; pass=$((pass+1)); }
 echo "$pass passed, $failn failed"; rm -rf "$W"; [ "$failn" = 0 ]

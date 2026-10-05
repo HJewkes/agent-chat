@@ -15,7 +15,8 @@ lands in both places in the same change, with `diff -r <live bin> scripts/seat` 
 This copy differs from the live one on purpose, because the repository is public. Test temp
 dirs and agent names are neutral (`seat-test-*`, `seat-9-*`). `premerge` has no built-in
 coordinator list and exits 2 when `COORDINATORS` is unset, so the cutover must export
-`COORDINATORS` in `seat-merge` before pointing it at this copy.
+`COORDINATORS` in `seat-merge` before pointing it at this copy. `task-note` has no default data
+root and exits 2 when `ACTIVE_ROOT` is unset.
 
 The `.bak-*` backups from the live `bin/` are not imported; they stay in the nightly archive.
 Deleting them from the live `bin/` is an owner step after the cutover.

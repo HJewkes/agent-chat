@@ -5,6 +5,7 @@ set -u
 [ $# -eq 3 ] || { echo "usage: task-note <initiative> <task id> <text>" >&2; exit 2; }
 init=$1 tid=$2 add=$3
 root=${ACTIVE_ROOT:-}
+[ -n "$root" ] || { echo "ACTIVE_ROOT unset: export the active-work data root" >&2; exit 2; }
 file="$root/$init/tasks/$tid.yml"
 lock="${TMPDIR:-/tmp}/task-note-${init//[^A-Za-z0-9._-]/_}-${tid//[^A-Za-z0-9._-]/_}.lock"
 
