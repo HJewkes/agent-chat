@@ -88,12 +88,17 @@ describe('a broker restart over a backlog of detached rows with no launcher pid'
     expect(inferred).toHaveLength(BACKLOG)
   })
 
-  it('reads the session records once per batch, not once per row', async () => {
+  it('reads the session records once per batch, not once per row', () => {
+    // Real timers spread the 300 settle timers over several ms, so the first batches can
+    // run short (a drain turn finds only the rows due so far) and the batch count drifts.
+    // Fake timers fire them all in one advance: one lone first row, then full batches.
+    vi.useFakeTimers()
     seedBacklog()
 
     h.restart()
-    await longestStall(() => stillDetached() === 0)
+    vi.advanceTimersByTime(SETTLE_MS * 20)
 
+    expect(stillDetached()).toBe(0)
     expect(recordReads).toBeLessThanOrEqual(Math.ceil(BACKLOG / 25) + 1)
   })
 
