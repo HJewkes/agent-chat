@@ -209,25 +209,22 @@ function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, taken: T
   return { planned, tasks, skipped: read.skipped }
 }
 
-function weekMilestones(autonomyRoot: string | undefined, today: string, tasks: OrderInputs['tasks']) {
+/** Epics are checked against every task on disk, as `plan --scored` does: the file is shared across seats and an epic may be done. */
+function weekMilestones(autonomyRoot: string | undefined, today: string, knownIds: readonly string[]) {
   if (autonomyRoot === undefined) return { faults: [] as string[] }
   try {
-    const read = readWeekMilestones(
-      autonomyRoot,
-      today,
-      tasks.map(task => task.id),
-    )
+    const read = readWeekMilestones(autonomyRoot, today, knownIds)
     if (read === undefined) return { faults: [] as string[] }
     const faults = read.errors.map(error => `milestones ${read.week}: ${describeError(error)}`)
-    return faults.length === 0 && read.file !== undefined ? { milestones: read.file, faults } : { faults }
+    return read.file === undefined ? { faults } : { milestones: read.file, faults }
   } catch (err) {
     return { faults: [`milestones: ${message(err)}`] }
   }
 }
 
 /**
- * CC-768: what `planOrder` reads, assembled as `scoredPlanFromDisk` does. A milestone file with errors is
- * left out, so the order falls back to the tags alone, and each error is returned for the tick to report.
+ * CC-768: what `planOrder` reads, assembled as `scoredPlanFromDisk` does. The file is used whenever it parses,
+ * and each error is returned for the tick to report; one that does not parse leaves the order to the tags.
  */
 function orderInputs(
   seat: LoadedSeat,
@@ -235,9 +232,10 @@ function orderInputs(
   root: string,
   today: string,
 ): { inputs: OrderInputs; faults: string[] } {
-  const { milestones, faults } = weekMilestones(seat.autonomyRoot, today, tasks)
+  const knownIds = taskIdsOnDisk(root)
+  const { milestones, faults } = weekMilestones(seat.autonomyRoot, today, knownIds)
   return {
-    inputs: { tasks, today, knownIds: taskIdsOnDisk(root), ...(milestones && { milestones }) },
+    inputs: { tasks, today, knownIds, ...(milestones && { milestones }) },
     faults,
   }
 }

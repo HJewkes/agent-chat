@@ -223,15 +223,50 @@ describe('planSeats over the week milestone file', () => {
     ])
   })
 
-  it('falls back to the tag-free order and reports a milestone file with errors', () => {
-    writeMilestones(
-      'week: 2026-W40\nappetite_days: 5\nmilestones:\n  - {id: M1, rank: 1, seat: seat-a, epics: [NOPE-1]}\n',
+  const M1 = '  - {id: M1, rank: 1, seat: seat-a, epics: [AA-2]}\n'
+  const file = (...milestones: string[]) =>
+    `week: 2026-W40\nappetite_days: 5\nmilestones:\n${milestones.join('')}`
+  const dispatched = () => run().dispatch.map(d => [d.task, d.tier])
+
+  it("keeps ordering by a file that names another seat's epic, which is on disk", () => {
+    fs.mkdirSync(path.join(root, 'init-beta', 'tasks'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'init-beta', 'tasks', 'BB-9.yml'), 'id: BB-9\nstatus: open\n')
+    writeMilestones(file(M1, '  - {id: M2, rank: 2, seat: seat-b, epics: [BB-9]}\n'))
+    expect(dispatched()).toEqual([
+      ['AA-2', 2],
+      ['AA-1', 3],
+    ])
+    expect(run().refusals).toEqual([])
+  })
+
+  it('keeps ordering by a file whose epic is a finished task', () => {
+    fs.mkdirSync(path.join(root, 'init-alpha', 'tasks', 'archive'))
+    fs.writeFileSync(
+      path.join(root, 'init-alpha', 'tasks', 'archive', 'AA-0.yml'),
+      'id: AA-0\nstatus: done\n',
     )
+    writeMilestones(file('  - {id: M1, rank: 1, seat: seat-a, epics: [AA-0]}\n'))
+    expect(dispatched()).toEqual([
+      ['AA-2', 2],
+      ['AA-1', 3],
+    ])
+    expect(run().refusals).toEqual([])
+  })
+
+  it('reports a real file error as a refusal and still orders as plan --scored does', () => {
+    writeMilestones(file('  - {id: M1, rank: 1, seat: seat-a, epics: [NOPE-1]}\n'))
     const plan = run()
-    expect(plan.dispatch.map(d => d.task)).toEqual(['AA-1', 'AA-2'])
+    expect(plan.dispatch.map(d => d.task)).toEqual(['AA-2', 'AA-1'])
     expect(plan.refusals).toEqual([
       expect.objectContaining({ kind: 'plan-blocked', reason: expect.stringContaining('unknown-epic') }),
     ])
+  })
+
+  it('orders by the tags alone when the file does not parse, and reports it', () => {
+    writeMilestones('week: [unclosed\n')
+    const plan = run()
+    expect(plan.dispatch.map(d => d.task)).toEqual(['AA-1', 'AA-2'])
+    expect(plan.refusals).toHaveLength(1)
   })
 
   it('orders by the tags alone when there is no milestone file', () => {
