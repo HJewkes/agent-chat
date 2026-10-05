@@ -5,9 +5,11 @@ import { resolveDeciderAgentId, resolveWorktreeBudget } from '../../config.js'
 import { burndownConfigPath, burndownLedgerPath, burndownPausePath } from '../../paths.js'
 import type { QueueItem } from '../../protocol.js'
 import { activeWorkRoot } from '../active-work.js'
+import { seatMergedLog } from '../seats/dispatch-log.js'
 import { seatJournal } from '../seats/journal.js'
 import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
 import { advance, applyActions, claimKey, type InboxMessage } from './advance.js'
+import { withFindings } from './finding.js'
 import { verifySection } from './brief.js'
 import { gatePool, pickAccount } from './budget-gate.js'
 import { collisionCheck, type BrokerView, type CollisionReader } from './collision.js'
@@ -58,6 +60,15 @@ import { registerWithShepherd, shepherdLanded, shepherdRows, targetRef } from '.
 import { retrySteps, stepsForActions, stepsForDispatch, type StepContext } from './steps.js'
 import { loadWorld, type World } from './tick.js'
 import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
+import {
+  actOnTriage,
+  describeTriage,
+  triageNotes,
+  triageReadiness,
+  triageVerdicts,
+  type TriageDeps,
+  type TriagePlan,
+} from './triage.js'
 
 /**
  * `agent-chat burndown tick --once`: one pass under the ledger lock. Observe
@@ -146,6 +157,7 @@ async function runTick(config: TickConfig, opts: TickOptions): Promise<string[]>
       `burndown tick at ${now.toISOString()} (dry run)`,
       ...steps.map(describe),
       ...describeDecider(config, decider),
+      ...describeTriage(decided.triage),
       ...describeSeatEvents(diff, now),
       ...notes,
     ]
@@ -159,7 +171,7 @@ async function actOn(
   config: TickConfig,
   opts: TickOptions,
   ledger: Ledger,
-  { steps, decider, failures, unchecked, seatStates, skippedSeats }: Decided,
+  { steps, decider, triage, failures, unchecked, seatStates, skippedSeats }: Decided,
   now: Date,
 ): Promise<string[]> {
   const log = opts.log ?? logEvent
@@ -176,11 +188,17 @@ async function actOn(
     log,
     now,
   })
-  const woken = await actOnDecider(config, decider, executed.ledger, { broker: opts.broker, log, now })
+  const woken = await actOnTriage(
+    config,
+    triage,
+    await actOnDecider(config, decider, executed.ledger, { broker: opts.broker, log, now }),
+    triageDeps(opts, log, now),
+  )
   const leaks = await leakCheck(woken.ledger, { exec: opts.exec ?? run, log, seats: config.seats })
   const diff = { seats: config.seats, before: ledger, after: leaks.ledger, spawns, human: leaks.human }
   const journal = seatJournal(defaultAutonomyRoot(opts.root), { log, now: () => now })
-  const told = await deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now, journal })
+  const dispatch = seatMergedLog(defaultAutonomyRoot(opts.root), { log, now: () => now })
+  const told = await deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now, journal, dispatch })
   writeLedger(burndownLedgerPath(), { ...told.ledger, lastTickAt: now.toISOString() })
   return [...executed.lines, ...woken.lines, ...leaks.lines, ...told.lines]
 }
@@ -238,6 +256,7 @@ interface Decided {
   steps: Step[]
   notes: string[]
   decider?: DeciderVerdict
+  triage: TriagePlan
   failures: ReaderFailure[]
   unchecked: string[]
   /** Seats mode only: every seat's pool samples, this tick's included. */
@@ -269,14 +288,29 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const capacity = agentCapacity(config, ledger.claims, roster)
   const decider = await deciderFor(config, opts, ledger, roster, capacity, now)
   const agents = decider?.wake === true ? { ...capacity, agents: capacity.agents - 1 } : capacity
-  const advanced = stepsForActions(advance(held, observations, now), ledger, ctx, agents.agents)
+  const advanced = stepsForActions(
+    withFindings(advance(held, observations, now), held, observations, now, seat => {
+      const lookup = ctx.seat?.(seat)
+      return lookup !== undefined && 'gate' in lookup && !lookup.gate(0).open
+    }),
+    ledger,
+    ctx,
+    agents.agents,
+  )
   const kept = advanced.steps.flatMap(s => (s.kind === 'ledger' ? s.actions : []))
   const planLedger = applyActions(ledger, kept, now)
+  const triage = triageFor(
+    config,
+    planLedger,
+    roster,
+    { ...agents, agents: agents.agents - advanced.spawns },
+    now,
+  )
   const { check, failures } = await tickCollision(planLedger, opts)
   const prefixes = [DEFAULT_NAME_PREFIX, ...(seats?.loaded.map(s => s.dispatch.prefix) ?? [])]
   const planned = planNew(world, seats, root, roster, {
     ledger: planLedger,
-    capacity: worktreeCapacity(config, { ...agents, agents: agents.agents - advanced.spawns }, prefixes),
+    capacity: worktreeCapacity(config, triage.left, prefixes),
     orphan: (repo, name) => orphanAt(repo, name),
     collision: check,
     charged: advanced.charged,
@@ -288,6 +322,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     ...advanced.deferred.map(d => `deferred ${d}`),
     ...dispatched.flatMap(d => (typeof d === 'string' ? [`not dispatched: ${d}`] : [])),
     ...refusalLines(planned.refusals),
+    ...triageNotes(triage.plan.verdicts),
     ...planned.skipped.map(s => `seat ${s.seat} skipped: ${s.reason}`),
     ...planned.skippedTasks.map(
       s => `seat ${s.seat} scorer skipped: ${s.files.length} (${s.files.join(', ')})`,
@@ -308,6 +343,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     failures,
     unchecked,
     skippedSeats: planned.skipped,
+    triage: triage.plan,
     ...(decider === undefined ? {} : { decider }),
     ...(seatStates === undefined ? {} : { seatStates }),
   }
@@ -399,6 +435,33 @@ async function deciderFor(
     capacityReason: capacity.agentsReason,
     now,
   })
+}
+
+/** Triage takes its capacity after the decider and the advance spawns, before new work; `left` is what new work may use. */
+function triageFor(
+  config: TickConfig,
+  ledger: Ledger,
+  roster: Roster,
+  capacity: Pick<Capacity, 'agents' | 'agentsReason'>,
+  now: Date,
+): { plan: TriagePlan; left: Pick<Capacity, 'agents' | 'agentsReason'> } {
+  const readiness = triageReadiness(config)
+  const { agents: free, agentsReason } = capacity
+  const verdicts = triageVerdicts({
+    config,
+    readiness,
+    ledger,
+    capacity: free,
+    capacityReason: agentsReason,
+    now,
+  })
+  const starts = verdicts.filter(v => v.kind === 'start').length
+  return { plan: { verdicts, readiness, roster }, left: { ...capacity, agents: free - starts } }
+}
+
+function triageDeps(opts: TickOptions, log: TriageDeps['log'], now: Date): TriageDeps {
+  const write = (l: Ledger): void => writeLedger(burndownLedgerPath(), l)
+  return { spawn: opts.broker.spawn, write, log, root: opts.root ?? activeWorkRoot(), now }
 }
 
 /** New agents this tick may start: under `maxAgents`, and under the broker's free slots less a reserve. */

@@ -1,7 +1,7 @@
 {
   "description": "Burndown implementer: the builtin implementer (opus), headless, in its own worktree, on a lean bootstrap (only agent-chat and active-work MCP, no skills).",
   "model": "opus",
-  "allowedTools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "Monitor"],
+  "allowedTools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "Monitor", "mcp__active-work__*"],
   "disallowedTools": [
     "Bash(agent-chat endorse:*)",
     "Bash(agent-chat dismiss:*)",
@@ -49,7 +49,7 @@
   "isolation": "worktree",
   "surface": "headless",
   "surfaceLifetime": "close-on-exit",
-  "promptPrelude": "You are headless: no one is watching and no pane can answer a permission prompt. You are implementing in an isolated worktree. Keep diffs small and reviewable, and run the project's tests before reporting done.",
+  "promptPrelude": "You are headless: no one is watching and no pane can answer a permission prompt. You are implementing in an isolated worktree. Keep diffs small and reviewable, and run the project's tests before reporting done. Post text as `agent-chat gh-write -- <gh args> --body-file <f>`, <f> a literal .md path in your own worktree (not a shared $TMPDIR name) made by Write or `<<'EOF'`, deleted once posted. Quote expansions in git and gh args (`git -C \"$dir\"`); never hold a command name in a variable.",
   "strictMcpConfig": true,
   "disableSlashCommands": true,
   "mcpServers": {

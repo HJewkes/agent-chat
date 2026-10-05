@@ -118,6 +118,8 @@ function lsJsonRow(agent: AgentIdentity, connected: boolean, index: ProfileIndex
     account: agent.configDir || null,
     generation: agent.generation,
     teleportFrom: agent.teleportFrom ?? null,
+    inferred: agent.exit?.inferred === true,
+    spawnedAt: new Date(agent.spawnedAt).toISOString(),
   }
 }
 
@@ -356,6 +358,7 @@ export function profiles(): Report {
       `${name.padEnd(14)} ${profile.model.padEnd(7)} ${profile.surface.padEnd(12)} ${profile.description}`,
     )
     lines.push(`${' '.repeat(14)} tools: ${profile.allowedTools.join(', ')}`)
+    for (const warning of profile.warnings ?? []) lines.push(`${' '.repeat(14)} warning: ${warning}`)
   }
   return { ok: true, lines }
 }

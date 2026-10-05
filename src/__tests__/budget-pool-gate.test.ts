@@ -27,7 +27,7 @@ function budgetOf(seat: string) {
   return seatBudget(charter, policy)
 }
 
-/** seat-b on pool-y: no human use, line 80 (92 at night), ceiling 80, 18 a day; seat caps 14 a run, 25 a day. */
+/** seat-b on pool-y: no human use, line 80 with no reset known, ceiling 80, 18 a day; seat caps 14 a run, 25 a day. */
 const SEAT_B = budgetOf('seat-b')
 /** seat-a on pool-x: human use, line 70, ceiling 75, 12 a day; seat caps 5 a run, 9 a day. */
 const SEAT_A = budgetOf('seat-a')
@@ -43,6 +43,8 @@ interface Case {
   ageSeconds?: number
   maxReadingAgeSeconds?: number
   dispatched?: number
+  /** Epoch ms the pool's seven_day window resets. */
+  resetsAt?: number
 }
 
 function gate(c: Case) {
@@ -53,7 +55,12 @@ function gate(c: Case) {
     {
       pool: budget.pool,
       spend: budget.spend,
-      reading: { fiveHour: c.fiveHour ?? 10, sevenDay, ageSeconds: c.ageSeconds ?? 5 },
+      reading: {
+        fiveHour: c.fiveHour ?? 10,
+        sevenDay,
+        ageSeconds: c.ageSeconds ?? 5,
+        ...(c.resetsAt === undefined ? {} : { sevenDayResetsAt: c.resetsAt }),
+      },
       history: c.history ?? [
         { at: dayStart(now) - HOUR, sevenDay },
         { at: now.getTime() - HOUR, sevenDay },
@@ -112,7 +119,9 @@ describe('five_hour ceiling', () => {
   it('pauses at the pool ceiling and names the pool and the figure', () => {
     const result = gate({ fiveHour: 80 })
     expect(result.open).toBe(false)
-    expect(result.reason).toBe('BUDGET-PAUSE pool pool-y: five_hour 80% at or above ceiling 80%')
+    expect(result.reason).toBe(
+      'BUDGET-PAUSE pool pool-y: five_hour 80% at or above ceiling 80% (no seven_day resets_at, flat reserve)',
+    )
   })
 
   it('stays open one point under the ceiling', () => {
@@ -122,7 +131,7 @@ describe('five_hour ceiling', () => {
   it('lowers the ceiling to 70 on a human-used pool when the owner typed in the last 15 minutes', () => {
     const result = gate({ budget: SEAT_A, fiveHour: 70, ownerTypedMinAgo: 14 })
     expect(result.reason).toBe(
-      'BUDGET-PAUSE pool pool-x: five_hour 70% at or above ceiling 70% (owner typed in the last 15 min)',
+      'BUDGET-PAUSE pool pool-x: five_hour 70% at or above ceiling 70% (no seven_day resets_at, flat reserve, owner typed in the last 15 min)',
     )
   })
 
@@ -138,26 +147,87 @@ describe('five_hour ceiling', () => {
 describe('seven_day reserve', () => {
   it('pauses at 100 minus the reserve and names the line', () => {
     const result = gate({ budget: SEAT_A, sevenDay: 70 })
-    expect(result.reason).toBe('BUDGET-PAUSE pool pool-x: seven_day 70% at or above line 70%')
+    expect(result.reason).toBe(
+      'BUDGET-PAUSE pool pool-x: seven_day 70% at or above line 70% (no seven_day resets_at, flat reserve)',
+    )
   })
 
   it('stays open one point under the line', () => {
     expect(gate({ budget: SEAT_A, sevenDay: 69 }).open).toBe(true)
   })
 
-  it('uses the night reserve between 23:00 and 07:00 when the owner has been silent 30 minutes', () => {
-    expect(gate({ now: at(2), sevenDay: 91, ownerTypedMinAgo: 30 }).open).toBe(true)
-    expect(gate({ now: at(2), sevenDay: 92, ownerTypedMinAgo: 30 }).reason).toBe(
-      'BUDGET-PAUSE pool pool-y: seven_day 92% at or above line 92% (night reserve)',
+  /** A reset `days` days after `now`, so `now` falls on day 8 - days of the window. */
+  const resetIn = (now: Date, days: number) => now.getTime() + days * 24 * HOUR - MIN
+
+  it('holds the full reserve on day 1 of the window (CC-474)', () => {
+    const now = at(15)
+    expect(gate({ now, sevenDay: 79, resetsAt: resetIn(now, 7) }).open).toBe(true)
+    expect(gate({ now, sevenDay: 80, resetsAt: resetIn(now, 7) }).reason).toBe(
+      'BUDGET-PAUSE pool pool-y: seven_day 80% at or above line 80% (day 1 of 7)',
     )
   })
 
-  it('keeps the day reserve at night while the owner is active', () => {
-    expect(gate({ now: at(2), sevenDay: 85, ownerTypedMinAgo: 29 }).reason).toContain('line 80%')
+  it('lowers the reserve to 2/7 of it on day 6 and 1/7 on day 7: 92.86 and 96.43 for reserve 25', () => {
+    const now = at(15)
+    const pool25 = { ...SEAT_B, pool: { ...SEAT_B.pool, reserve_seven_day: 25 } as PoolRule }
+    expect(gate({ budget: pool25, now, sevenDay: 93, resetsAt: resetIn(now, 2) }).reason).toBe(
+      'BUDGET-PAUSE pool pool-y: seven_day 93% at or above line 92.86% (day 6 of 7, seat caps lifted)',
+    )
+    expect(gate({ budget: pool25, now, sevenDay: 92.85, resetsAt: resetIn(now, 2) }).open).toBe(true)
+    expect(gate({ budget: pool25, now, sevenDay: 96.43, resetsAt: resetIn(now, 1) }).reason).toBe(
+      'BUDGET-PAUSE pool pool-y: seven_day 96.43% at or above line 96.43% (day 7 of 7, seat caps lifted)',
+    )
   })
 
-  it('keeps the day reserve outside the night hours', () => {
-    expect(gate({ now: at(7), sevenDay: 85, ownerTypedMinAgo: 120 }).reason).toContain('line 80%')
+  it('applies the pool ceiling, not 70, on day 7 while the owner types, but still 70 on day 3', () => {
+    const now = at(15)
+    const pool85 = { ...SEAT_A, pool: { ...SEAT_A.pool, ceiling_five_hour: 85 } as PoolRule }
+    const owner = { budget: pool85, now, fiveHour: 75, ownerTypedMinAgo: 1 }
+    expect(gate({ ...owner, resetsAt: resetIn(now, 1) }).open).toBe(true)
+    expect(gate({ ...owner, resetsAt: resetIn(now, 5) }).reason).toContain(
+      'five_hour 75% at or above ceiling 70%',
+    )
+  })
+
+  it('ignores the night reserve at night with the owner away', () => {
+    expect(gate({ now: at(2), sevenDay: 85, ownerTypedMinAgo: 120 }).reason).toContain('line 80%')
+  })
+
+  it('falls back to the flat reserve and says so when the reset is passed', () => {
+    const now = at(15)
+    expect(gate({ now, sevenDay: 85, resetsAt: now.getTime() - MIN }).reason).toContain(
+      'line 80% (no seven_day resets_at, flat reserve)',
+    )
+  })
+})
+
+describe('seat caps on days 6 and 7 (CC-474)', () => {
+  const now = at(15)
+  const runStartAt = now.getTime() - 2 * HOUR
+  const history: SevenDaySample[] = [
+    { at: at(6).getTime(), sevenDay: 40 },
+    { at: runStartAt, sevenDay: 40 },
+  ]
+
+  it('stops on per_run_points on day 5', () => {
+    const resetsAt = now.getTime() + 3 * 24 * HOUR - MIN
+    expect(gate({ now, runStartAt, history, sevenDay: 54, resetsAt }).reason).toContain('per_run_points 14')
+  })
+
+  it('lifts per_run_points and the seat per_day_points on day 6 but keeps the pool per_day_points', () => {
+    const resetsAt = now.getTime() + 2 * 24 * HOUR - MIN
+    const lifted = gate({ now, runStartAt, history, sevenDay: 57, resetsAt })
+    expect(lifted.open).toBe(true)
+    expect(lifted.reason).toContain('(day 6 of 7, seat caps lifted)')
+    expect(gate({ now, runStartAt, history, sevenDay: 58, resetsAt }).reason).toBe(
+      "BUDGET-PAUSE pool pool-y: day spend 18 points since 07:00 at or above the pool pool-y's per_day_points 18",
+    )
+  })
+
+  it('lifts every seat cap on day 7 when the pool sets no day cap', () => {
+    const resetsAt = now.getTime() + 24 * HOUR - MIN
+    const budget = { ...SEAT_B, pool: { ...SEAT_B.pool, per_day_points: undefined } as PoolRule }
+    expect(gate({ budget, now, runStartAt, history, sevenDay: 75, resetsAt }).open).toBe(true)
   })
 })
 
@@ -411,7 +481,7 @@ describe("this tick's dispatches charged against the pool (CC-275)", () => {
     const result = gate({ budget: priced({}), now, history, sevenDay: 31, dispatched: 1 })
 
     expect(result.reason).toContain(
-      `seven_day ${31 + DEFAULT_DISPATCH_COST.sevenDay}% vs line 80%; charged 1 dispatch(es) this tick at +${DEFAULT_DISPATCH_COST.sevenDay} seven_day, +${DEFAULT_DISPATCH_COST.fiveHour} five_hour`,
+      `seven_day ${31 + DEFAULT_DISPATCH_COST.sevenDay}% vs line 80% (no seven_day resets_at, flat reserve); charged 1 dispatch(es) this tick at +${DEFAULT_DISPATCH_COST.sevenDay} seven_day, +${DEFAULT_DISPATCH_COST.fiveHour} five_hour`,
     )
   })
 })

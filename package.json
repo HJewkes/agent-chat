@@ -47,7 +47,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@titan-design/egress-scan": "^0.1.0",
+    "@titan-design/egress-scan": "0.2.0",
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",

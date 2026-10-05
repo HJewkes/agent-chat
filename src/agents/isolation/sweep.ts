@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { gitChildEnv } from '../../git.js'
 import { agentsDir } from '../../paths.js'
+import { stoppedAt } from '../identity.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import { readRuntimeState, runtimeStatePath } from '../launch-files.js'
 import { BRANCH_PREFIX, inspectForRelease, RECLAIM_GRACE_MS, worktreeStrategy } from './worktree.js'
@@ -122,7 +123,7 @@ function classifyByAgent(
 ): { status: SweepStatus; detail: string } | undefined {
   if (agent === undefined) return undefined
   if (isLive(agent.state)) return { status: 'held', detail: `${agent.name} is ${agent.state}` }
-  const since = now - (agent.exitedAt ?? agent.lastEventAt)
+  const since = now - (stoppedAt(agent) ?? agent.lastEventAt)
   if (since < RECLAIM_GRACE_MS)
     return {
       status: 'in-grace',
@@ -238,7 +239,7 @@ export async function reclaim(
   // Forced at the strategy either way: the grace window and the dirty/unmerged
   // check have already run, in `classify`, against the report the caller read.
   // Letting release re-derive them would refuse a reclaim the human just saw
-  // offered, on an `exitedAt` this call site does not have.
+  // offered, on a `stoppedAt` this call site does not have.
   const released = await worktreeStrategy.release(
     { agentId: alloc?.agentId ?? '', agentName: entry.agent?.name ?? entry.branch, baseCwd: entry.gitRoot },
     allocation,

@@ -122,17 +122,34 @@ describe('finding what nobody is using', () => {
     expect(swept[0]?.status).toBe('reclaimable')
   })
 
-  it('times the grace window from the last event for a detached agent that never exited', async () => {
+  it('times the grace window from the detach for an agent that never exited', async () => {
     const repo = makeRepo()
     await abandonedWorktree(repo)
-    const lastEventAt = 1_000_000
+    const detachedAt = 1_000_000
 
-    const swept = await sweepWorktrees([identity({ state: 'detached', lastEventAt })], {
-      list: lister,
-      now: () => lastEventAt + RECLAIM_GRACE_MS / 2,
-    })
+    const swept = await sweepWorktrees(
+      [identity({ state: 'detached', detachedAt, lastEventAt: detachedAt })],
+      {
+        list: lister,
+        now: () => detachedAt + RECLAIM_GRACE_MS / 2,
+      },
+    )
 
     expect(swept[0]?.status).toBe('in-grace')
+  })
+
+  it('reclaims an agent with no exit time once its detach is old, whatever row came after', async () => {
+    const repo = makeRepo()
+    await abandonedWorktree(repo)
+    const detachedAt = 1_000_000
+    const refusedRetireAt = detachedAt + 100_000
+
+    const swept = await sweepWorktrees(
+      [identity({ state: 'detached', detachedAt, lastEventAt: refusedRetireAt })],
+      { list: lister, now: () => detachedAt + RECLAIM_GRACE_MS + 1 },
+    )
+
+    expect(swept[0]?.status).toBe('reclaimable')
   })
 
   it('refuses one holding commits that exist nowhere else', async () => {

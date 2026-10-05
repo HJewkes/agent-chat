@@ -55,11 +55,19 @@ export interface HarnessOptions {
   ledger?: (events: EventLog) => ShadowLedger | undefined
   /** CC-406: mocked swap and limit readers; absent leaves the guard off. */
   machineGuard?: SupervisorOptions['machineGuard']
+  /** CC-288: a faked seat budget reader; absent leaves the gate off. */
+  seatBudget?: SupervisorOptions['seatBudget']
+  /** CC-606: a faked pool pick reader and mode; absent leaves the pick off. */
+  poolPick?: SupervisorOptions['poolPick']
   /** CC-450: defaults to one that proves nothing dead, so no test reads the host's process table. */
   processProbe?: ProcessProbe
 }
 
-const unprovenProbe: ProcessProbe = { isAlive: () => true, readArgv: () => undefined }
+const unprovenProbe: ProcessProbe = {
+  isAlive: () => true,
+  readArgv: () => undefined,
+  sessionRecords: () => [],
+}
 
 /** A child that starts and never exits, so the attach path decides what a test sees. */
 const liveChild = (): { pid: number; unref: () => void; once: () => undefined } => ({
@@ -131,6 +139,8 @@ function boot(home: string, options: HarnessOptions): Generation {
     ...(options.settleMs === undefined ? {} : { settleMs: options.settleMs }),
     ...(ledger === undefined ? {} : { ledger }),
     ...(options.machineGuard === undefined ? {} : { machineGuard: options.machineGuard }),
+    ...(options.seatBudget === undefined ? {} : { seatBudget: options.seatBudget }),
+    ...(options.poolPick === undefined ? {} : { poolPick: options.poolPick }),
     processProbe: options.processProbe ?? unprovenProbe,
     surface: {
       platform: options.appleScript === undefined ? 'linux' : 'darwin',

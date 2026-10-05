@@ -1,4 +1,5 @@
 import type { CursoredMessage, DecidedItem, DeliveredMessage, EventKind, QueueItem } from '../protocol.js'
+import type { StoredHandoff } from './handoffs.js'
 
 /**
  * The storage seam. Everything downstream of the broker depends on this
@@ -122,6 +123,9 @@ export interface EventStore {
   /** Peer traffic that landed in `name`'s inbox since `since`. */
   inboxCountSince(name: string, since: number): number
 
+  /** CC-524: handoffs since `since` whose teleport went through and whose text nobody has read, newest first. */
+  undeliveredHandoffs(since: number): StoredHandoff[]
+
   /** An open `question` nobody has decided yet: the only thing a decider may answer. */
   undecidedQuestion(msgId: string): QueueItem | undefined
 
@@ -138,6 +142,9 @@ export interface EventStore {
 
   /** Every row that bears on an agent identity, oldest first. */
   agentEvents(): AgentEventRow[]
+
+  /** The rows `agentEvents` would group under `agentId`, oldest first. */
+  agentEventsFor(agentId: string): AgentEventRow[]
 
   history(limit: number): QueueItem[]
 

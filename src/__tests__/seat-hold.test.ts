@@ -298,6 +298,7 @@ describe('readPresence', () => {
     seatGoesDark()
     expect(presence()).toEqual({
       darkSince: T0,
+      registeredAt: T0 - 35 * MINUTE,
       teleported: false,
       wokenByWatchdog: false,
       resumeStarted: false,

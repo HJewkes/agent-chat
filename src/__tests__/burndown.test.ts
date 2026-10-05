@@ -6,6 +6,7 @@ import { parseAutonomy } from '../agents/active-work.js'
 import { readAccountBudget } from '../agents/budget.js'
 import { gateAccount, MAX_READING_AGE_SECONDS } from '../agents/burndown/budget-gate.js'
 import { collisionCheck, type BrokerView } from '../agents/burndown/collision.js'
+import { backoffHeld, RELEASE_BASE_MS } from '../agents/burndown/backoff.js'
 import { grantGap } from '../agents/burndown/eligibility.js'
 import type { Runner } from '../agents/burndown/exec.js'
 import {
@@ -16,12 +17,14 @@ import {
   withLedgerLock,
   writeLedger,
   type Claim,
+  type Ledger,
 } from '../agents/burndown/ledger.js'
 import { planFromDisk, renderPlan } from '../agents/burndown/tick.js'
 import { TRUST_RULE_CLI_VERSION } from '../agents/trust.js'
 import { BrokerClient } from '../client/broker-client.js'
 import { withBroker } from '../cli/client.js'
 import { burndownPlanVerb } from '../cli/verbs/burndown.js'
+import { releaseTask } from '../cli/verbs/burndown-release.js'
 
 /**
  * The dry-run tick over a fixture world: an active-work root, a profile root
@@ -501,16 +504,35 @@ describe('budget gate', () => {
   const rule = { reserve_seven_day: 25, ceiling_five_hour: 70, night: { reserve_seven_day: 10 } }
   const reading = { sevenDay: 80, fiveHour: 10, ageSeconds: 5 }
   const night = new Date(2026, 8, 26, 2, 0)
+  const DAY_MS = 24 * 3_600_000
 
-  it('lowers the reserve at night only when the human has been gone half an hour', () => {
-    const away = gateAccount('agents', rule, reading, {
-      now: night,
-      humanLastTurnAt: night.getTime() - 3_600_000,
-    })
-    const unknown = gateAccount('agents', rule, reading, { now: night })
+  it('applies the account ceiling, not 70, on day 7 while the owner types, but still 70 on day 3', () => {
+    const wide = { ...rule, ceiling_five_hour: 85 }
+    const typing = { now: night, humanLastTurnAt: night.getTime() - 60_000 }
+    const busy = { ...reading, fiveHour: 75 }
+    const resetIn = (days: number) => night.getTime() + days * DAY_MS - 60_000
+    const day7 = gateAccount('agents', wide, { ...busy, sevenDayResetsAt: resetIn(1) }, typing)
+    const day3 = gateAccount('agents', wide, { ...busy, sevenDayResetsAt: resetIn(5) }, typing)
 
-    expect(away.open).toBe(true)
-    expect(unknown.open).toBe(false)
+    expect(day7.open).toBe(true)
+    expect(day3.open).toBe(false)
+    expect(day3.reason).toContain('five_hour 75% vs ceiling 70%')
+  })
+
+  it('ignores the night reserve and declines the reserve over the seven_day window (CC-474)', () => {
+    const away = { now: night, humanLastTurnAt: night.getTime() - 3_600_000 }
+    const dayOne = gateAccount('agents', rule, reading, away)
+    const daySix = gateAccount(
+      'agents',
+      rule,
+      { ...reading, sevenDayResetsAt: night.getTime() + 2 * DAY_MS - 60_000 },
+      away,
+    )
+
+    expect(dayOne.open).toBe(false)
+    expect(dayOne.reason).toContain('line 75% (no seven_day resets_at, flat reserve)')
+    expect(daySix.open).toBe(true)
+    expect(daySix.reason).toContain('seven_day 80% vs line 92.86% (day 6 of 7, seat caps lifted)')
   })
 
   it('stays closed with no reading rather than assuming zero usage', () => {
@@ -671,5 +693,116 @@ describe('claim ledger', () => {
     write(file, '{"claims": "nope"}')
 
     expect(() => readLedger(file)).toThrow('malformed')
+  })
+})
+
+describe('burndown release retires spawned agents (CC-656)', () => {
+  const held: Claim = {
+    taskId: 'DM-9',
+    initiative: 'demo',
+    agentId: 'a1',
+    spawnedAt: '2026-09-26T08:00:00.000Z',
+    phase: 'implementing',
+    phaseAt: '2026-09-26T08:00:00.000Z',
+    spawned: ['bd-first', 'bd-second'],
+  }
+  const seed = (): string => {
+    const file = path.join(world, 'home', 'burndown.json')
+    writeLedger(file, addClaim(EMPTY_LEDGER, held))
+    return file
+  }
+
+  it('retires both spawned agents newest first and drops the claim', async () => {
+    const file = seed()
+    const retire = vi.fn(async (_name: string) => ({ ok: true }))
+
+    const report = await releaseTask('DM-9', retire)
+
+    expect(retire.mock.calls.map(([name]) => name)).toEqual(['bd-second', 'bd-first'])
+    expect(report.lines).toEqual([
+      'released DM-9 (implementing)',
+      'retired bd-second',
+      'retired bd-first',
+      expect.stringMatching(/^released 1 times; held until \d{4}-/),
+    ])
+    expect(readLedger(file).claims).toEqual([])
+  })
+
+  it('still drops the claim and prints the refusal when a retire is refused', async () => {
+    const file = seed()
+    const retire = vi.fn(async (name: string) =>
+      name === 'bd-second' ? { ok: false, reason: 'not yours' } : { ok: true },
+    )
+
+    const report = await releaseTask('DM-9', retire)
+
+    expect(report.ok).toBe(true)
+    expect(report.lines).toContain('left bd-second: not yours')
+    expect(report.lines).toContain('retired bd-first')
+    expect(readLedger(file).claims).toEqual([])
+  })
+
+  it('counts each release toward the backoff and prints the hold', async () => {
+    const file = seed()
+    const retire = vi.fn(async (_name: string) => ({ ok: true }))
+    const first = new Date('2026-10-01T12:00:00.000Z')
+    const second = new Date('2026-10-01T12:05:00.000Z')
+
+    await releaseTask('DM-9', retire, first)
+    writeLedger(file, addClaim(readLedger(file), held))
+    const report = await releaseTask('DM-9', retire, second)
+
+    const ledger = readLedger(file)
+    expect(ledger.releases).toEqual({ 'DM-9': { n: 2, at: second.toISOString() } })
+    const until = new Date(second.getTime() + 2 * RELEASE_BASE_MS).toISOString()
+    expect(report.lines).toContain(`released 2 times; held until ${until}`)
+    const hold = backoffHeld(ledger, new Date(second.getTime() + 2 * RELEASE_BASE_MS - 1)).get('DM-9')
+    expect(hold?.until.toISOString()).toBe(until)
+    expect(backoffHeld(ledger, new Date(second.getTime() + 2 * RELEASE_BASE_MS)).has('DM-9')).toBe(false)
+  })
+
+  it('keeps the rest of the ledger byte-equal', async () => {
+    const file = path.join(world, 'home', 'burndown.json')
+    const other: Claim = { ...held, taskId: 'DM-10', agentId: 'a2', spawned: undefined }
+    const rest = {
+      lastTickAt: '2026-09-26T08:00:00.000Z',
+      decider: { wakes: ['2026-09-26T07:00:00.000Z'] },
+      seats: { alpha: { samples: [{ at: 1, sevenDay: 40 }] } },
+      humanFiled: ['k1'],
+      releases: { 'DM-3': { n: 1, at: '2026-09-25T08:00:00.000Z' } },
+    }
+    const before = { version: 1, claims: [held, other], ...rest } as unknown as Ledger
+    writeLedger(file, before)
+    const prior = readLedger(file)
+
+    await releaseTask('DM-9', async () => ({ ok: true }), new Date('2026-10-01T12:00:00.000Z'))
+
+    const { claims, releases, ...after } = readLedger(file)
+    const { claims: priorClaims, releases: priorReleases, ...priorRest } = prior
+    expect(JSON.stringify(after)).toBe(JSON.stringify(priorRest))
+    expect(claims).toEqual(priorClaims.filter(c => c.taskId === 'DM-10'))
+    expect(releases?.['DM-3']).toEqual(priorReleases?.['DM-3'])
+  })
+
+  it('does not bump the count when no claim is held', async () => {
+    const file = seed()
+    await releaseTask('DM-9', async () => ({ ok: true }))
+    const before = fs.readFileSync(file, 'utf8')
+
+    const report = await releaseTask('DM-9', async () => ({ ok: true }))
+
+    expect(report.ok).toBe(false)
+    expect(fs.readFileSync(file, 'utf8')).toBe(before)
+  })
+
+  it('writes nothing when a stored count is malformed', async () => {
+    const file = seed()
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8'))
+    fs.writeFileSync(file, JSON.stringify({ ...stored, releases: { 'DM-9': { n: 0, at: 'soon' } } }))
+    const before = fs.readFileSync(file, 'utf8')
+
+    await expect(releaseTask('DM-9', async () => ({ ok: true }))).rejects.toThrow('malformed')
+
+    expect(fs.readFileSync(file, 'utf8')).toBe(before)
   })
 })

@@ -16,3 +16,6 @@ src/__tests__/fixtures/autonomy-2026-09-29/
 
 # Frozen score.py parity input and output; expected-sample-seat.json is score.py's byte output.
 src/__tests__/fixtures/score-2026-09-29/
+
+# Byte fixtures for the seat script suites, imported verbatim from the live copy (CC-746).
+scripts/seat/testdata/

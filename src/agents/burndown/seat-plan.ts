@@ -9,6 +9,7 @@ import {
   type Task,
 } from './eligibility.js'
 import type { CollisionWork, SameTickClaim } from './collision.js'
+import { backoffHeld, type Hold } from './backoff.js'
 import { heldClaims, readySlices, type Claim, type Ledger } from './ledger.js'
 import {
   agentNameFor,
@@ -98,6 +99,8 @@ interface Walk {
   inputs: SeatPlanInputs
   gate: PoolGateResult
   claimed: Set<string>
+  /** Tasks inside their release backoff (CC-661). */
+  held: ReadonlyMap<string, Hold>
   roles: Record<Role, number>
   /** The seat's active worktrees per repo: held claims with an active tree plus this plan's dispatches. */
   seatWorktrees: Map<string, number>
@@ -123,7 +126,7 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
       record(dispatch, outcome.role, walk)
     }
   }
-  for (const claim of readySlices(inputs.ledger).filter(c => c.seat === inputs.seat.seat))
+  for (const claim of readySlices(inputs.ledger, walk.held).filter(c => c.seat === inputs.seat.seat))
     take(claim.initiative, claim.taskId, considerSlice(claim, walk))
   for (const row of order) take(row.initiative, row.id, consider(row, walk))
   return plan
@@ -145,6 +148,7 @@ function startWalk(inputs: SeatPlanInputs): Walk {
     inputs,
     gate: gatePool(inputs.budget),
     claimed: new Set(held.map(c => c.taskId)),
+    held: backoffHeld(inputs.ledger, inputs.budget.ctx.now),
     roles,
     seatWorktrees,
     capacity: withLeftFree(inputs.capacity, inputs.seat.worktrees.leftFreePerRepo),
@@ -225,7 +229,7 @@ function considerSlice(claim: Claim, walk: Walk): Taken | Refused {
 }
 
 function eligibility(row: DispatchRow, task: Task, walk: Walk): Refused | undefined {
-  const refused = taskRefusal(task, walk.inputs.seat.grants, walk.claimed)
+  const refused = taskRefusal(task, walk.inputs.seat.grants, walk.claimed, walk.held)
   if (refused?.kind === 'no-done-when' || refused?.kind === 'no-estimate')
     return { kind: 'untriaged', reason: `${refused.reason}; triage stays with the seat's Discovery` }
   if (refused !== undefined) return refused

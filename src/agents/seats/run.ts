@@ -1,5 +1,10 @@
 import type { BudgetRead } from '../budget.js'
-import { dayStart, runStartAt, type AccountReading } from '../burndown/budget-gate.js'
+import {
+  MAX_READING_AGE_SECONDS,
+  dayStart,
+  runStartAt,
+  type AccountReading,
+} from '../burndown/budget-gate.js'
 import {
   charterOwnerSeat,
   charterSeats,
@@ -18,6 +23,10 @@ import {
   type Presence,
 } from './liveness.js'
 import type { RunLock } from './lock.js'
+import { checkAttended } from './attended.js'
+import { judgeService, runServiceCheck, type ServiceCheckRunner } from './service-check.js'
+import { poolPace } from './pace.js'
+import { publishPace, type PaceStore } from './pace-pass.js'
 import {
   RESTART_WINDOW_MAX_MS,
   advanceMeter,
@@ -39,6 +48,7 @@ import {
   lastGoodReading,
   poolBudget,
   runningImplementers,
+  stuckSpawning,
   type BudgetVerdict,
   type Decision,
   type Observation,
@@ -51,6 +61,8 @@ export interface Roster {
   agents: SeatAgent[]
   /** Names with a connected session right now. */
   connected: string[]
+  /** Why the roster could not be read; a timeout or error means unknown, never absent. */
+  unknown?: string
 }
 
 export interface WakeResult {
@@ -83,6 +95,14 @@ export interface WatchdogDeps {
   appendLog: (seat: string, at: Date, text: string) => void
   /** CC-326: taken by every run that may wake or resume, so two runs never act on the same seat. */
   lock: () => RunLock
+  /** CC-605: where the pass publishes every pool's pace and appends the reading history. */
+  pace?: PaceStore
+  /** CC-529: takes a reading for a pool whose status cache has none under 15 minutes old; false when it took none. */
+  probe?: (configDir: string) => boolean
+  /** The seat files under the root, charter-listed or not; throws when they cannot be listed. */
+  seatNames?: () => string[]
+  /** CC-598: runs `titan-factory service check --json`; absent, the pass does not check. */
+  serviceCheck?: ServiceCheckRunner
 }
 
 export interface WatchdogOptions {
@@ -101,16 +121,56 @@ interface Pass {
   restart: string | undefined
   machine: string | undefined
   readings: Map<string, AccountReading | undefined>
+  /** CC-404: epoch ms each pool's seven_day window resets, from the same status file as its reading. */
+  resets: Map<string, number | undefined>
   fireCap: number | undefined
+  dryRun: boolean
   /** Pools whose day meter started with no reading at or before 07:00, reported once when it starts. */
   gaps: string[]
+  /** Probes that failed in this pass, one line each. */
+  probeFaults: string[]
+}
+
+const PROBE_BACKOFF_MS = 3_600_000
+
+/** Why the probe took no reading; a throw is one too, so it never ends the pass. */
+function probeFault(probe: (configDir: string) => boolean, configDir: string): string | undefined {
+  try {
+    return probe(configDir) ? undefined : 'the headless turn carried no reading'
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err)
+  }
+}
+
+/** A failed probe is logged and keeps its pool unprobed for an hour; a good one clears that. */
+function probe(pass: Pass, pool: Pool, run: (configDir: string) => boolean, nowMs: number): void {
+  const fault = probeFault(run, pool.configDir)
+  const before = Object.entries(pass.doc.probeFailed ?? {})
+  const others = Object.fromEntries(before.filter(([name]) => name !== pool.name))
+  pass.doc.probeFailed = fault === undefined ? others : { ...others, [pool.name]: nowMs }
+  if (fault !== undefined)
+    pass.probeFaults.push(`pool ${pool.name}: Watchdog: probe failed (${fault}); not probed again for 1 h`)
+}
+
+/** CC-491: a pool with no reading under 15 minutes old is probed once, and never under --dry-run. */
+function freshRead(pass: Pass, pool: Pool, nowMs: number): BudgetRead {
+  const read = pass.deps.readBudget(pool.configDir, nowMs)
+  const fresh = read.found && read.age_seconds <= MAX_READING_AGE_SECONDS
+  const failedAt = pass.doc.probeFailed?.[pool.name]
+  const backedOff = failedAt !== undefined && nowMs - failedAt < PROBE_BACKOFF_MS
+  if (fresh || pass.dryRun || pass.deps.probe === undefined || backedOff) return read
+  probe(pass, pool, pass.deps.probe, nowMs)
+  return pass.deps.readBudget(pool.configDir, nowMs)
 }
 
 function poolReading(pass: Pass, pool: Pool): AccountReading | undefined {
   if (!pass.readings.has(pool.name)) {
     const nowMs = pass.now.getTime()
-    const reading = accountReading(pass.deps.readBudget(pool.configDir, nowMs), nowMs)
+    const read = freshRead(pass, pool, nowMs)
+    const reading = accountReading(read, nowMs)
+    const resetsAt = read.found ? read.budget.rate_limits.seven_day?.resets_at : undefined
     pass.readings.set(pool.name, reading)
+    pass.resets.set(pool.name, resetsAt === undefined ? undefined : resetsAt * 1000)
     const kept = keepReading(pass.doc.lastReadings?.[pool.name], reading, nowMs)
     if (kept !== undefined) pass.doc.lastReadings = { ...pass.doc.lastReadings, [pool.name]: kept }
     const meter = advanceMeter(pass.doc.pools[pool.name], reading?.sevenDay, nowMs, sameSpendDay)
@@ -187,6 +247,8 @@ function seatBudget(
     history,
     runStartAt: runStart,
     now: pass.now,
+    pacing: seat.pacing,
+    resetsAt: pool === undefined ? undefined : pass.resets.get(pool.name),
   })
 }
 
@@ -220,16 +282,48 @@ function resumeMark(attempted: number | undefined, retry: number | undefined, ab
   }
 }
 
+/** TP-812: how long a live roster row outranks a seat that stayed dark; a crashed broker can leave the row live for good. */
+export const LIVE_ROW_GRACE_MS = 30 * 60_000
+
+/** TP-812: an unreadable roster says nothing about a seat, so nothing is resumed and no try is counted. */
+function unknownRoster(roster: Roster): LivenessVerdict | undefined {
+  if (roster.unknown === undefined) return undefined
+  return { resume: false, reason: 'roster unknown', idleHold: `roster unknown: ${roster.unknown}` }
+}
+
+const rowLive = (roster: Roster, seat: string): boolean =>
+  roster.agents.some(a => a.name === seat && a.state === 'live') && !roster.connected.includes(seat)
+
+/** TP-812: a resume the roster says is pointless waits out the grace, is logged each run, and then goes ahead. */
+function heldByLiveRow(verdict: LivenessVerdict, nowMs: number): LivenessVerdict {
+  if (verdict.resume && nowMs - (verdict.episode ?? nowMs) > LIVE_ROW_GRACE_MS) return verdict
+  const idleHold = 'roster shows it live'
+  if (!verdict.resume) return { ...verdict, idleHold: verdict.idleHold ?? idleHold }
+  return {
+    resume: false,
+    reason: `${verdict.reason}; not resumed: roster shows it live`,
+    refused: true,
+    idleHold,
+  }
+}
+
 function seatLiveness(pass: Pass, seat: string, hold: string | undefined): SeatLiveness {
+  const previous = pass.doc.seats[seat]
+  const unknown = unknownRoster(pass.roster)
+  if (unknown !== undefined)
+    return {
+      verdict: unknown,
+      mark: resumeMark(previous?.resumedDark, previous?.resumeRetry, previous?.absent),
+    }
   const connected = pass.roster.connected.includes(seat)
   const presence = connected ? undefined : pass.deps.presence(seat)
-  const previous = pass.doc.seats[seat]
   const nowMs = pass.now.getTime()
   const absent = connected ? undefined : absence(previous?.absent, presence, nowMs)
   const attempted = previous?.resumedDark
   const unconfirmed = previous?.resumeRetry
   const input = { connected, presence, hold, absentSince: absent?.since, attempted, unconfirmed, nowMs }
-  const verdict = judgeLiveness(input)
+  const judged = judgeLiveness(input)
+  const verdict = rowLive(pass.roster, seat) ? heldByLiveRow(judged, nowMs) : judged
   const mark = verdict.resume
     ? resumeMark(verdict.episode, verdict.tries, absent)
     : resumeMark(attempted, unconfirmed, absent)
@@ -315,6 +409,21 @@ function capChange(pass: Pass, seat: string, record: SeatRecord): string | undef
   return `${seat}: ${line}`
 }
 
+/** CC-402: each seat agent stuck in `spawning` is logged once; the record keeps the names still stuck. */
+function spawningChange(pass: Pass, seat: Seat, record: SeatRecord, dryRun: boolean): string[] {
+  const stuck = stuckSpawning(pass.roster.agents, seat, pass.now.getTime())
+  const flagged = pass.doc.seats[seat.name]?.spawningFlagged ?? []
+  if (stuck.length > 0) record.spawningFlagged = stuck.map(agent => agent.name)
+  else delete record.spawningFlagged
+  return stuck
+    .filter(agent => !flagged.includes(agent.name))
+    .map(agent => {
+      const line = `Watchdog: ${agent.name} in state spawning for ${agent.minutes} min; its launch never registered`
+      if (!dryRun) pass.deps.appendLog(seat.name, pass.now, line)
+      return `${seat.name}: ${line}`
+    })
+}
+
 /** A hold on every seat starting or ending is logged once, in the run output. */
 function holdChange(pass: Pass): string | undefined {
   const wasHeld = pass.doc.held ?? false
@@ -338,6 +447,9 @@ function save(pass: Pass): void {
     pools: pass.doc.pools,
     ...(pass.doc.lastReadings === undefined ? {} : { lastReadings: pass.doc.lastReadings }),
     ...(pass.doc.held === undefined ? {} : { held: pass.doc.held }),
+    ...(pass.doc.probeFailed === undefined ? {} : { probeFailed: pass.doc.probeFailed }),
+    ...(pass.doc.attended === undefined ? {} : { attended: pass.doc.attended }),
+    ...(pass.doc.serviceCause === undefined ? {} : { serviceCause: pass.doc.serviceCause }),
   })
 }
 
@@ -372,6 +484,52 @@ function seatOrSkip(deps: WatchdogDeps, name: string): Seat | string {
   return seat ?? `${name}: skipped, seats/${name}.md has no prefix or pool`
 }
 
+/** Every charter pool is read, seat or no seat, so a pool no seat calls home still has a pace. */
+function publishPoolPace(pass: Pass): string | undefined {
+  const nowMs = pass.now.getTime()
+  const rows = [...pass.pools.values()].map(pool =>
+    poolPace(pool.name, poolReading(pass, pool), pool.rule.reserve_seven_day, nowMs),
+  )
+  try {
+    if (pass.deps.pace !== undefined) publishPace(pass.deps.pace, rows, nowMs)
+    return undefined
+  } catch (err) {
+    return `Watchdog: pace not published: ${err instanceof Error ? err.message : String(err)}`
+  }
+}
+
+/** One warning a pass for the attended seats whose files no longer gate their spawns. */
+function attendedChange(pass: Pass, charter: string): string | undefined {
+  const { seatNames, readSeatFile } = pass.deps
+  if (seatNames === undefined) return undefined
+  const check = checkAttended({ seatNames, readSeatFile }, charter, pass.doc.attended ?? [])
+  pass.doc.attended = check.seats
+  return check.warning
+}
+
+/** CC-598: the attended seats hear of a service cause once; a cause no seat could be told of is sent again next pass. */
+async function serviceChange(pass: Pass): Promise<string[]> {
+  const { serviceCheck } = pass.deps
+  if (serviceCheck === undefined) return []
+  const notice = judgeService(pass.doc.serviceCause, await runServiceCheck(serviceCheck))
+  if (notice.message === undefined) return []
+  const message = notice.message
+  const seats = (pass.doc.attended ?? []).filter(seat => pass.roster.connected.includes(seat))
+  const lines: string[] = []
+  let delivered = true
+  for (const seat of seats) {
+    const woke = await pass.deps.wake(seat, message, true)
+    delivered &&= woke.ok
+    pass.deps.appendLog(seat, pass.deps.now(), message)
+    lines.push(`${seat}: ${message}${woke.ok ? '' : ` (not delivered: ${woke.detail})`}`)
+  }
+  if (delivered && seats.length > 0) {
+    if (notice.cause === undefined) delete pass.doc.serviceCause
+    else pass.doc.serviceCause = notice.cause
+  }
+  return lines
+}
+
 async function startPass(deps: WatchdogDeps, options: WatchdogOptions): Promise<[Pass, string]> {
   const charter = deps.readCharter()
   if (charter === undefined) throw new Error('no autonomy charter.md under the root')
@@ -385,8 +543,11 @@ async function startPass(deps: WatchdogDeps, options: WatchdogOptions): Promise<
     restart: openRestartWindow(deps, charter, now),
     machine: deps.machineStop?.(),
     readings: new Map(),
+    resets: new Map(),
     fireCap: options.fireCap,
+    dryRun: options.dryRun,
     gaps: [],
+    probeFaults: [],
   }
   return [pass, charter]
 }
@@ -395,6 +556,10 @@ async function runPass(deps: WatchdogDeps, options: WatchdogOptions, lines: stri
   const [pass, charter] = await startPass(deps, options)
   const hold = options.dryRun ? undefined : holdChange(pass)
   if (hold !== undefined) lines.push(hold)
+  const ungated = attendedChange(pass, charter)
+  if (ungated !== undefined) lines.push(ungated)
+  if (pass.roster.unknown !== undefined)
+    lines.push(`Watchdog: roster unreadable (${pass.roster.unknown}); no seat resumed this run`)
   for (const name of options.seats ?? charterSeats(charter)) {
     const seat = seatOrSkip(deps, name)
     if (typeof seat === 'string') {
@@ -406,6 +571,7 @@ async function runPass(deps: WatchdogDeps, options: WatchdogOptions, lines: stri
     if (change !== undefined) lines.push(change)
     const capLine = options.dryRun ? undefined : capChange(pass, name, record)
     if (capLine !== undefined) lines.push(capLine)
+    lines.push(...spawningChange(pass, seat, record, options.dryRun))
     pass.doc.seats[name] = record
     if (options.dryRun) lines.push(`${name}: ${dryRunLine(decision, liveness)}`)
     else if (liveness.resume) lines.push(await resumeDark(pass, name, liveness))
@@ -413,6 +579,10 @@ async function runPass(deps: WatchdogDeps, options: WatchdogOptions, lines: stri
     else if (decision.fire) lines.push(await act(pass, name, decision))
     else if (journalFault !== undefined) lines.push(`${name}: Watchdog: held: ${journalFault}`)
   }
+  if (!options.dryRun) lines.push(...(await serviceChange(pass)))
+  const paceFault = options.dryRun ? undefined : publishPoolPace(pass)
+  if (paceFault !== undefined) lines.push(paceFault)
+  lines.push(...pass.probeFaults)
   for (const pool of pass.gaps)
     lines.push(
       `pool ${pool}: no seven_day reading at or before 07:00, so the day's spend counts from the first sample`,
@@ -421,7 +591,7 @@ async function runPass(deps: WatchdogDeps, options: WatchdogOptions, lines: stri
   return lines
 }
 
-/** Output lines: one per seat under --dry-run, else only wakes, refused resumes, unreadable journals and misconfigured seats. */
+/** Output lines: one per seat under --dry-run, else only wakes, refused resumes, agents stuck spawning, unreadable journals and misconfigured seats. */
 export async function runWatchdog(deps: WatchdogDeps, options: WatchdogOptions): Promise<string[]> {
   if (options.dryRun) return runPass(deps, options, [])
   const lock = deps.lock()

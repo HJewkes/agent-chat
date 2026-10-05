@@ -19,6 +19,7 @@ afterAll(() => fs.rmSync(SCRATCH, { recursive: true, force: true }))
 
 const HELP = `usage: titan-egress-scan <command>
   pre-push <remote>     scan the commits a push sends (reads git's pre-push stdin)
+files git calls binary are scanned as text; a commit or tree over 128 MiB of patch text exits 2
 exit: 0 clean, 1 findings, 2 usage or configuration error`
 
 // Every fixture is synthetic: a made-up home and a made-up marker term.
@@ -26,7 +27,7 @@ const HOME = '/Users/zq7-probe-home'
 const LEAK = 'zq7leakterm'
 
 /**
- * Mirrors titan-egress-scan 0.1.0: a CI value skips the term list, a missing list exits 2 only under
+ * Mirrors titan-egress-scan 0.2.0, which scans binary files as text: a CI value skips the term list, a missing list exits 2 only under
  * TITAN_EGRESS_REQUIRE_TERMS=1, and a pushed commit holding the marker is a finding (exit 1). It
  * logs to a baked path, because the hook hands it no variable of the agent's.
  */
@@ -47,7 +48,7 @@ case \${CI:-} in
   fi ;;
 esac
 for sha in $(printf '%s\\n' "$refs" | awk '{ print $2 }'); do
-  grep -q ${LEAK} "$terms" 2>/dev/null && git show "$sha" | grep -q ${LEAK} && { echo 'commit 1 notes.md:1 private-term'; exit 1; }
+  grep -q ${LEAK} "$terms" 2>/dev/null && git show --text "$sha" | grep -q ${LEAK} && { echo 'commit 1 notes.md:1 private-term'; exit 1; }
 done
 exit 0`
 
@@ -424,6 +425,25 @@ echo "titan-egress-scan: unknown command" >&2; exit 2`
   })
 })
 
+describe('a scanner that skips binary files', () => {
+  // CC-343: a 0.1.x scanner has pre-push but skips a file git calls binary; its help lacks the text-scan line.
+  const NO_TEXT_SCAN = `[ "$1" = --help ] && { echo '  pre-push <remote>'; exit 0; }; exit 0`
+
+  it('refuses a clean push with the install hint instead of the fail-open warning', () => {
+    const f = fixture({ scanPath: pathWithStub(NO_TEXT_SCAN) })
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain(
+      'skips binary files, so the push is refused. Run npm i -g @titan-design/egress-scan',
+    )
+    expect(run.stderr).not.toContain('guard NOT run')
+    expect(remoteHas(f, 'clean')).toBe(false)
+  })
+})
+
 describe('scanner inputs the agent environment cannot change', () => {
   // CC-310: egress-scan derives the term list from XDG_CONFIG_HOME or HOME, which the agent controls.
   it('scans with the owner term list when the agent points XDG_CONFIG_HOME and HOME at an empty one', () => {
@@ -603,6 +623,18 @@ describe('the real titan-egress-scan under a hostile agent env', () => {
 
     expect(run.code).not.toBe(0)
     expect(run.stdout).toContain('private-term')
+    expect(remoteHas(f, 'leaky')).toBe(false)
+  })
+
+  // CC-343: one NUL byte made git call the file binary, and 0.1.x skipped it.
+  it('refuses a push whose only leak sits in a file with one NUL byte', () => {
+    const f = fixture({ scanPath: realScanPath() })
+    commitFile(f, 'leaky', 'blob.dat', `the ${LEAK} seat\0tail`)
+
+    const run = push(f, 'leaky')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stdout).toContain('blob.dat:1 private-term')
     expect(remoteHas(f, 'leaky')).toBe(false)
   })
 })

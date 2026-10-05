@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { burndownInstall, burndownJobStatus, burndownUninstall } from '../cli/verbs/burndown.js'
 import type { JobControl, Launchctl } from '../mirror/launchd.js'
-import { renderBurndownPlist } from '../mirror/plist.js'
+import { launchdJobRefusals, renderBurndownPlist } from '../mirror/plist.js'
 
 const LABEL = 'dev.hjewkes.agent-chat-burndown'
 const SERVICE = `gui/501/${LABEL}`
@@ -62,6 +62,53 @@ describe('burndownInstall', () => {
     expect(report.lines[0]).toMatch(/Sign-off checklist/)
     expect(report.lines.some(l => l.includes('git push -u origin agent-chat/*'))).toBe(true)
     expect(report.lines.some(l => l.includes('reportTo'))).toBe(true)
+  })
+
+  it('refuses a dry run whose AGENT_CHAT_HOME is a temp dir, before rendering any plist', () => {
+    fs.writeFileSync(path.join(home, 'burndown.config.json'), JSON.stringify({ enabled: true }))
+    const report = burndownInstall(true, refusingControl)
+    expect(report.ok).toBe(false)
+    expect(report.errors).toContain(
+      `refused: AGENT_CHAT_HOME ${home} is inside a temp dir; unset it or point it at durable state`,
+    )
+    expect(report.lines.some(l => l.includes('<plist'))).toBe(false)
+  })
+})
+
+describe('launchdJobRefusals', () => {
+  const TMPDIR = '/var/folders/ab/xyz123/T'
+  const sound = { nodePath: '/opt/homebrew/bin/node', cliEntry: '/home/o/projects/agent-chat/dist/cli.js' }
+  const worktreeEntry = '/home/o/projects/agent-chat/.worktrees/s4e-launchd/dist/cli.js'
+  const claudeWorktreeEntry = '/home/o/projects/agent-chat/.claude/worktrees/x/dist/cli.js'
+
+  it.each([
+    ['a .worktrees CLI entry', { ...sound, cliEntry: worktreeEntry }, {}, `CLI entry ${worktreeEntry}`],
+    ['a .claude/worktrees CLI entry', { ...sound, cliEntry: claudeWorktreeEntry }, {}, 'CLI entry'],
+    ['a node binary inside a worktree', { ...sound, nodePath: '/r/.worktrees/w/node' }, {}, 'node path'],
+    ['AGENT_CHAT_HOME under os.tmpdir()', sound, { AGENT_CHAT_HOME: `${TMPDIR}/ac-x` }, 'AGENT_CHAT_HOME'],
+    ['AGENT_CHAT_HOME equal to os.tmpdir()', sound, { AGENT_CHAT_HOME: TMPDIR }, 'AGENT_CHAT_HOME'],
+    [
+      'AGENT_CHAT_HOME under /private/var/folders',
+      sound,
+      { AGENT_CHAT_HOME: '/private/var/folders/zz/q/T/h' },
+      'temp dir',
+    ],
+    ['AGENT_CHAT_HOME under /tmp', sound, { AGENT_CHAT_HOME: '/tmp/ac' }, 'temp dir'],
+    ['AGENT_CHAT_HOME under /private/tmp', sound, { AGENT_CHAT_HOME: '/private/tmp/ac' }, 'temp dir'],
+    ['AGENT_CHAT_HOME with a .. into /tmp', sound, { AGENT_CHAT_HOME: '/home/o/../../tmp/ac' }, 'temp dir'],
+  ])('refuses %s', (_name, paths, env, expected) => {
+    const errors = launchdJobRefusals({ ...paths, env, tmpdir: TMPDIR })
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatch(/^refused: /)
+    expect(errors[0]).toContain(expected)
+  })
+
+  it.each([
+    ['the main checkout with no AGENT_CHAT_HOME', {}],
+    ['a durable AGENT_CHAT_HOME', { AGENT_CHAT_HOME: '/home/o/.agent-chat' }],
+    ['a home whose name merely starts with tmp', { AGENT_CHAT_HOME: '/tmpfoo/ac' }],
+  ])('accepts %s', (_name, env) => {
+    expect(launchdJobRefusals({ ...sound, env, tmpdir: TMPDIR })).toEqual([])
   })
 })
 

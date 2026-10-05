@@ -3,11 +3,16 @@ import { RUN_CAP_MS, dayStart } from '../agents/burndown/budget-gate.js'
 import {
   RESTART_WINDOW_MAX_MS,
   advanceMeter,
+  dayAllowance,
+  machineStop,
   meterHistory,
+  pacedCaps,
   readSeatLog,
   restartWindow,
   sameSpendDay,
   withinRun,
+  type MachineStopLimits,
+  type MachineStopReadings,
   type SpendMeter,
 } from '../agents/seats/stops.js'
 import { poolBudget } from '../agents/seats/watchdog.js'
@@ -163,6 +168,11 @@ describe('readSeatLog', () => {
     expect(verdict).toEqual({ stop: 'seat logged "PARKED"', activityAt: at(6, 30) })
   })
 
+  it("does not count the watchdog's relaunch line as the seat's activity", () => {
+    const log = '06:30 heartbeat\n07:08 watchdog relaunch seat-a (no log line for 38 min; resumed)\n'
+    expect(readSeatLog(log, day)).toEqual({ activityAt: at(6, 30) })
+  })
+
   it('reads an empty log as nothing', () => {
     expect(readSeatLog('', day)).toEqual({})
   })
@@ -196,5 +206,179 @@ describe('restartWindow', () => {
 
   it('is closed with no messages', () => {
     expect(restartWindow([], now)).toBeUndefined()
+  })
+})
+
+describe('the reset-aware day allowance (CC-404)', () => {
+  const DAY = 24 * 3_600_000
+  const base = {
+    pacing: 'reset-aware',
+    reserveSevenDay: 25,
+    perDayPoints: [12],
+    sevenDay: 55,
+    daySpend: 10,
+    dayStartMs: at(7),
+    nowMs: at(7),
+  }
+
+  // CC-474: the line is 100 - 25 * (8 - d) / 7 on day d of the window at 07:00.
+  it.each([
+    [0.5, 96.43, 102.86],
+    [3, 89.29, 14.76],
+    [6, 78.57, 5.59],
+  ])(
+    'spreads the points left at 07:00 under the declining line over %s days to reset: line %s, %s a day',
+    (days, stopLine, points) => {
+      const allowance = dayAllowance({ ...base, resetsAt: at(7) + days * DAY })
+      expect(allowance).toMatchObject({
+        source: 'reset-aware',
+        points,
+        stopLine,
+        dayStartSevenDay: 45,
+        basis: 'day-start',
+        daysToReset: days,
+      })
+    },
+  )
+
+  it("counts from the day start, so the day's own spend does not shrink its allowance", () => {
+    const allowance = dayAllowance({ ...base, sevenDay: 60, daySpend: 10, resetsAt: at(7) + 0.5 * DAY })
+    expect(allowance).toMatchObject({ points: 92.86, sevenDay: 60, dayStartSevenDay: 50, basis: 'day-start' })
+  })
+
+  it('holds the same allowance at 23:00 as at 07:00, measuring days from the day start', () => {
+    const resetsAt = at(7) + 3 * DAY
+    const morning = dayAllowance({ ...base, resetsAt })
+    const night = dayAllowance({ ...base, nowMs: at(23), resetsAt })
+    expect(night).toEqual(morning)
+  })
+
+  it('spreads from the current seven_day over the days from now when the day spend is unknown', () => {
+    const allowance = dayAllowance({
+      ...base,
+      daySpend: undefined,
+      nowMs: at(19),
+      resetsAt: at(19) + 2 * DAY,
+    })
+    expect(allowance).toMatchObject({ points: 18.93, dayStartSevenDay: 55, basis: 'current', daysToReset: 2 })
+  })
+
+  it('falls back to the smallest per_day_points with no resets_at', () => {
+    const allowance = dayAllowance({ ...base, perDayPoints: [12, undefined, 9], resetsAt: undefined })
+    expect(allowance).toMatchObject({ source: 'per_day_points', points: 9, daysToReset: null })
+  })
+
+  it('falls back to per_day_points once the reset is at or before now', () => {
+    const allowance = dayAllowance({ ...base, nowMs: at(9), resetsAt: at(9) })
+    expect(allowance).toMatchObject({ source: 'per_day_points', points: 12 })
+  })
+
+  it('falls back for any pacing value other than reset-aware', () => {
+    const allowance = dayAllowance({ ...base, pacing: 'even', resetsAt: at(7) + 3 * DAY })
+    expect(allowance).toMatchObject({ source: 'per_day_points', points: 12 })
+  })
+
+  it('allows nothing once seven_day at the day start is past the line', () => {
+    const allowance = dayAllowance({ ...base, sevenDay: 99, daySpend: 2, resetsAt: at(7) + DAY })
+    expect(allowance).toMatchObject({ source: 'reset-aware', points: 0 })
+  })
+})
+
+describe('the paced caps every gate hands gatePool (CC-404)', () => {
+  const DAY = 24 * 3_600_000
+  const now = new Date(2026, 8, 29, 10)
+  const input = {
+    pacing: 'reset-aware',
+    pool: {
+      name: 'agents',
+      human_uses: false,
+      reserve_seven_day: 30,
+      ceiling_five_hour: 70,
+      per_day_points: 12,
+    },
+    spend: { per_run_points: 6, per_day_points: 9 },
+    sevenDay: 46,
+    resetsAt: at(7) + 3 * DAY,
+    history: [{ at: at(6), sevenDay: 40 }],
+    now,
+  }
+
+  it('replaces both day caps with the allowance and names it, leaving the run cap', () => {
+    const paced = pacedCaps(input)
+    expect(paced.allowance).toMatchObject({ points: 15.71, dayStartSevenDay: 40, basis: 'day-start' })
+    expect(paced.pool?.per_day_points).toBeUndefined()
+    expect(paced.spend).toEqual({
+      per_run_points: 6,
+      per_day_points: 15.71,
+      per_day_label: "seat's reset-aware day allowance",
+    })
+  })
+
+  it('leaves the pool day cap on the pool on day 6, when gatePool lifts the seat caps (CC-474)', () => {
+    const paced = pacedCaps({ ...input, resetsAt: now.getTime() + 2 * DAY - 60_000 })
+    expect(paced.pool).toBe(input.pool)
+    expect(paced.spend).toBe(input.spend)
+  })
+
+  it('returns the caps unchanged for a seat without the key', () => {
+    const paced = pacedCaps({ ...input, pacing: undefined })
+    expect(paced.pool).toBe(input.pool)
+    expect(paced.spend).toBe(input.spend)
+  })
+
+  it("holds the watchdog gate at the pool's per_day_points on day 7, half a day from the reset (CC-474)", () => {
+    const verdict = poolBudget({
+      pool: {
+        name: 'agents',
+        configDir: '/pool',
+        humanUses: false,
+        rule: { reserve_seven_day: 30, ceiling_five_hour: 70 },
+        perDayPoints: 12,
+      },
+      spend: { perDayPoints: 9 },
+      reading: { ageSeconds: 0, fiveHour: 5, sevenDay: 52, sevenDayResetsAt: at(7) + 0.5 * DAY },
+      history: input.history,
+      runStartAt: at(9),
+      now,
+      pacing: 'reset-aware',
+      resetsAt: at(7) + 0.5 * DAY,
+    })
+    expect(verdict.open).toBe(false)
+    expect(verdict.reason).toContain("at or above the pool agents's per_day_points 12")
+  })
+})
+
+describe('machineStop swap and pressure level (CC-492)', () => {
+  const limits: MachineStopLimits = {
+    memoryFreePercent: 20,
+    load5: 28,
+    swapUsedPercent: 60,
+    pressureLevel: 2,
+  }
+  const calm: MachineStopReadings = { memoryFreePercent: 60, load5: 2, swapUsedPercent: 10, pressureLevel: 1 }
+
+  it('swap at 60.1 percent with memory and load fine stops the seat and names swap', () => {
+    const stop = machineStop({ ...calm, swapUsedPercent: 60.1 }, limits)
+
+    expect(stop?.reason).toBe('machine under pressure: swap 60.1% used (limit 60%)')
+  })
+
+  it('swap at exactly 60 percent does not stop', () => {
+    expect(machineStop({ ...calm, swapUsedPercent: 60 }, limits)).toBeNull()
+  })
+
+  it('pressure level 2 stops and level 1 does not', () => {
+    expect(machineStop({ ...calm, pressureLevel: 2 }, limits)?.reason).toBe(
+      'machine under pressure: pressure level 2 (limit 2)',
+    )
+    expect(machineStop({ ...calm, pressureLevel: 1 }, limits)).toBeNull()
+  })
+
+  it('null swap and null pressure readings never stop', () => {
+    expect(machineStop({ ...calm, swapUsedPercent: null, pressureLevel: null }, limits)).toBeNull()
+  })
+
+  it('swap limit set to null in config disables the swap trigger', () => {
+    expect(machineStop({ ...calm, swapUsedPercent: 95 }, { ...limits, swapUsedPercent: null })).toBeNull()
   })
 })

@@ -123,3 +123,105 @@ export function finalAssistantText(cwd: string, sessionId: string, dir?: string)
   const own = recent.turns.filter(t => t.role === 'assistant' && t.sidechain !== true && t.kind === 'message')
   return own.at(-1)?.text
 }
+
+/**
+ * What a stall check needs from a transcript (CC-653): when the agent last made
+ * progress, and the tool call it is waiting on, if any. `lastAt` is absent when
+ * the window holds no progress row at all.
+ */
+export type Activity = { lastAt?: string; pending?: { tool: string; at: string } }
+
+/**
+ * Rows that show the agent itself moving. A `user/message` is a delivery, hook,
+ * reminder or resume and a `system` row is the harness, so neither counts.
+ */
+const isProgress = (turn: RecentSessionTurn): boolean =>
+  turn.timestamp !== null &&
+  ((turn.role === 'assistant' && (turn.kind === 'message' || turn.kind === 'tool_call')) ||
+    (turn.role === 'user' && turn.kind === 'tool_result'))
+
+/** session-read renders a call as `[tool <Name>] <input>`; `?` when a longer block ahead of it leaves no marker inside the 80-char cap. */
+const toolName = (text: string): string => /\[tool (?!result)([^\]\s]+)\]/.exec(text)?.[1] ?? '?'
+
+/**
+ * Tools an agent calls to wait rather than to work (CC-659), matched by MCP
+ * suffix so every plugin prefix counts: a poll loop must not read as progress.
+ */
+export const POLL_TOOLS: ReadonlySet<string> = new Set([
+  'chat_inbox',
+  'chat_status',
+  'chat_list',
+  'chat_activity',
+  'agent_list',
+  'session_budget',
+])
+
+/**
+ * session-read renders a Bash call's input as JSON. Only a command that is a bare
+ * sleep waits: `sleep 5 && npm run verify` works, so the closing quote must follow.
+ */
+const SLEEP_CALL = /^\[tool Bash\] \{"command":"\s*sleep(?:\s+\d+(?:\.\d+)?[smhd]?)+\s*"[,}]/
+
+const isPollCall = (turn: RecentSessionTurn): boolean =>
+  POLL_TOOLS.has(toolName(turn.text).split('__').at(-1) ?? '') || SLEEP_CALL.test(turn.text)
+
+/** Drops poll calls and the results that close them, pairing results with calls oldest first as `openCalls` does. */
+function withoutPolling(progress: readonly RecentSessionTurn[]): RecentSessionTurn[] {
+  const kept: RecentSessionTurn[] = []
+  const openIsPoll: boolean[] = []
+  for (const turn of progress) {
+    if (turn.kind === 'tool_call') {
+      const poll = isPollCall(turn)
+      openIsPoll.push(poll)
+      if (!poll) kept.push(turn)
+    } else if (turn.kind !== 'tool_result' || openIsPoll.shift() !== true) kept.push(turn)
+  }
+  return kept
+}
+
+/** Any failed read is "could not tell" for a stall check, never a crash of the tick that asked. */
+function readActivityTurns(transcriptPath: string): RecentSessionTurns | undefined {
+  try {
+    return readRecentSessionTurnsSync(claudeSourceFromPath(transcriptPath, 'local'), {
+      maxBytes: TURN_TAIL_BYTES,
+      maxTurns: 50,
+      maxCharsPerTurn: 80,
+      projection: 'activity',
+    })
+  } catch {
+    return undefined
+  }
+}
+
+/** The newest progress row of a session's transcript, and its open tool call when that row is one. */
+export function readActivity(
+  cwd: string,
+  sessionId: string,
+  dir?: string,
+): Activity | 'missing' | 'unreadable' {
+  const transcript = findTranscript(cwd, sessionId, dir)
+  if (!transcript.exists) return 'missing'
+  const recent = readActivityTurns(transcript.path)
+  if (recent === undefined || recent.status === 'unavailable') return 'unreadable'
+
+  const progress = withoutPolling(recent.turns.filter(isProgress))
+  const lastAt = progress.at(-1)?.timestamp
+  if (lastAt === null || lastAt === undefined) return {}
+  const open = openCalls(progress)
+  return open[0] === undefined
+    ? { lastAt }
+    : { lastAt, pending: { tool: toolName(open[0].text), at: open[0].timestamp ?? lastAt } }
+}
+
+/**
+ * Calls still awaiting a result. session-read exposes no tool_use id, so each
+ * result closes the oldest open call: parallel calls A, B then result A leave B open.
+ */
+function openCalls(progress: readonly RecentSessionTurn[]): RecentSessionTurn[] {
+  const open: RecentSessionTurn[] = []
+  for (const turn of progress) {
+    if (turn.kind === 'tool_call') open.push(turn)
+    else if (turn.kind === 'tool_result') open.shift()
+  }
+  return open
+}

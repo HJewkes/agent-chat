@@ -8,6 +8,7 @@ import {
   checkCommand,
   checkToolCall,
   guardContext,
+  pathFindsOwnInstall,
   loadTerms,
   pretoolDecision,
   readText,
@@ -80,6 +81,7 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
     'git --config-env=core.hooksPath=X push',
     'git --config-env core.hooksPath=X push',
     "git -c alias.p='push --no-verify' p",
+    "git -c $'core.hooks\\x50ath=/dev/null' push",
   ])('%s', command => {
     expect(checkCommand(command, ctx())).toBe(REASONS.gitConfig)
   })
@@ -87,16 +89,22 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
   it.each([
     'git -c "$(cat k)" push',
     'git -c "$K" push',
-    'git -c `cat k` push',
     'git -c"$K" commit',
     'git -c "$(echo core.hooksPath)=/dev/null" push',
     'git -c "$K=x" merge',
-    'git --config-env=include.path=$E push',
-    'git --config-env include.path=$E push',
     'git --config-env "$(cat k)" push',
     'git --config-env="$K" rebase',
     'git -c "$X" hp',
     'git -c "$X" $SUB',
+  ])('denies a config the guard cannot read before a hook-running command: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.gitConfigUnresolved)
+  })
+
+  it.each([
+    'git -c `cat k` push',
+    'git -C `cat d` push',
+    'git --config-env=include.path=$E push',
+    'git --config-env include.path=$E push',
     'git -c {core.hooksPath=/dev/null,-p} push',
     'git -c core.hooks?ath=x push',
     'git -C {.,-c,core.hooksPath=/dev/null} push',
@@ -106,16 +114,55 @@ describe('the bypass guard denies skipping the pre-push hook', () => {
     'git --work-tree {.,-c,core.hooksPath=/dev/null} push',
     'git -C * push',
     'git -C $(cat d) push',
-    'git -C `cat d` push',
     'git --git-dir $(cat d) push',
     'git -C $D push',
     'git -C$(cat d) push',
     'git --git-dir=$(cat d) push',
     'git -c core.hooks[P]ath=x push',
-    "git -c $'core.hooks\\x50ath=/dev/null' push",
-  ])('denies a config the guard cannot read before a hook-running command: %s', command => {
-    expect(checkCommand(command, ctx())).toBe(REASONS.gitConfigUnresolved)
+    "git -c $'core.hooks\\cPath=/dev/null' push",
+  ])(
+    'denies an unquoted word that may split before a hook-running command, and says to quote it: %s',
+    command => {
+      expect(checkCommand(command, ctx())).toBe(REASONS.gitValueSplits)
+    },
+  )
+
+  // Pins the intended deny a coordinator hit (CC-479 item 4) and the quoted form that passes.
+  it('denies an unquoted -C value from a for list before worktree, and allows it quoted', () => {
+    const loop = (dir: string): string => `for r in a b; do git -C ${dir} worktree list; done`
+
+    expect(checkCommand(loop('~/projects/$r'), ctx())).toBe(REASONS.gitValueSplits)
+    expect(checkCommand(loop('~/projects/"$r"'), ctx())).toBeUndefined()
+    expect(checkCommand(loop('"$HOME/projects/$r"'), ctx())).toBeUndefined()
   })
+
+  // CC-484: `r='x -c core.hooksPath=/dev/null push origin'` makes `-C $r log` a push with the hooks path set.
+  it.each([
+    "r='x -c core.hooksPath=/dev/null push origin'; git -C $r log",
+    'git -C ~/projects/$r rev-parse',
+    'git -C {.,-c,core.hooksPath=/dev/null} log',
+    "x='a.b=c -c core.hooksPath=/dev/null push origin HEAD:refs/heads/viaC'; git -c $x log",
+    'git -c ${=x} log',
+    'git -c $=x log',
+    'set -- . -c core.hooksPath=/dev/null push origin; git -C "$@" log',
+    'git -C "${a[@]}" log',
+    'git -C "${=r}" log',
+    'git --git-dir "$@" log',
+    'git -c "$@" log',
+    'git --config-env $x log',
+    'git -c a.b=$x push',
+    'git -c {a.b=c,-c,core.hooksPath=/dev/null,push} log',
+    'git -C $PWD status',
+  ])('denies an unquoted -C value that may split before a hookless subcommand: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.gitValueSplits)
+  })
+
+  it.each(['git -C ~/projects/"$r" log', 'git -C "$HOME/projects/$r" rev-parse'])(
+    'allows a quoted -C value before a hookless subcommand: %s',
+    command => {
+      expect(checkCommand(command, ctx())).toBeUndefined()
+    },
+  )
 
   it.each([
     'git -c user.name=x push',
@@ -350,7 +397,7 @@ describe('body file paths are expanded from the hook env', () => {
     ['a zsh glob qualifier', '$TMPDIR/pr.md(:h)'],
     ['a zsh command path', '=pr.md'],
     ['a process substitution', '<(cat pr.md)'],
-    ['an ANSI-C escape the splitter does not decode', "$'\\x70r.md'"],
+    ['an ANSI-C escape the splitter does not decode', "$'\\cAr.md'"],
     ['a zsh modifier', '$TMPDIR:h/pr.md'],
     ['a quoted zsh modifier', '"$TMPDIR:h/pr.md"'],
     ['a zsh subscript', '"$TMPDIR[1]pr.md"'],
@@ -779,10 +826,155 @@ describe('a gh command the command line hides', () => {
   it('trusts no directory and no variable behind a command word it cannot resolve', () => {
     const read = ctx({ env: { T: '/w' }, readFile: () => 'clean' })
 
-    expect(checkCommand('$E gh pr create -t x --body-file pr.md', read)).toBe(REASONS.unreadableBody)
-    expect(checkCommand('$E gh pr create -t x --body-file "$T/pr.md"', read)).toBe(REASONS.unreadableBody)
+    expect(checkCommand('$E gh pr create -t x --body-file pr.md', read)).toBe(REASONS.hiddenBody)
+    expect(checkCommand('$E gh pr create -t x --body-file "$T/pr.md"', read)).toBe(REASONS.hiddenBody)
     expect(checkCommand('gh pr create -t x --body-file "$T/pr.md"', read)).toBeUndefined()
     expect(checkCommand('$E git push --no-verify', read)).toBe(REASONS.noVerify)
+  })
+
+  describe('gh after an option the expanded command word may take (CC-347)', () => {
+    const BODY = 'pr create -t x --body-file pr.md'
+
+    it.each([
+      `W=nice; $W -n 5 gh ${BODY}`,
+      `W=env; $W -u X gh ${BODY}`,
+      `OPT=-u; env $OPT X gh ${BODY}`,
+      `$W -n 5 agent-chat gh-write -- ${BODY}`,
+      `$W -n 5 $V gh ${BODY}`,
+      `$W -n 5 sh -c 'gh ${BODY}'`,
+    ])('names the literal form for a relative body file in %j', command => {
+      expect(checkCommand(command, ctx({ readFile: () => 'clean' }))).toBe(REASONS.hiddenBody)
+      expect(REASONS.hiddenBody).toContain('agent-chat gh-write -- <gh args> --body-file <path>')
+    })
+
+    it.each([
+      `W=nice; $W -n 5 gh pr create -t ${TERM} -b y`,
+      `W=timeout; $W -s KILL 5 gh pr create -t ${TERM} -b y`,
+      `$W -n 5 gh pr create -t x --body-file /w/pr.md`,
+    ])('scans the text of %j', command => {
+      expect(checkCommand(command, ctx({ readFile: () => TERM }))).toContain('line 1 private-term #1')
+    })
+
+    it.each([
+      ['W=nice; $W -n 5 git push --no-verify', REASONS.noVerify],
+      ['$W -n 5 env -i git push', REASONS.envClear],
+      ['$W -n 5 GIT_CONFIG_COUNT=1 git push', REASONS.gitConfigEnv],
+      ['$W -n 5 $G pr create -t x -b y', REASONS.hiddenCommand],
+    ])('denies %j', (command, reason) => {
+      expect(checkCommand(command, ctx())).toBe(reason)
+    })
+
+    it.each([
+      '$W -n 5 gh pr view 12',
+      '$W -n 5 gh pr create -t x -b y',
+      '$X run -- pr create -t x -b y',
+      `$CC ${'-I inc '.repeat(500)}main.c`,
+    ])('leaves %j alone', command => {
+      expect(checkCommand(command, ctx())).toBeUndefined()
+    })
+
+    it('draws command starts in nested shells from one budget, well within the hook timeout', () => {
+      const inner = `$E ${'nice '.repeat(63)}${'a '.repeat(30000)}`
+      const command = `$E ${'nice '.repeat(63)}sh -c '${inner}'; gh pr create -t x -b ${TERM}`
+      const started = performance.now()
+
+      const reason = checkCommand(command, ctx())
+
+      expect(reason).toBe(REASONS.hiddenStarts)
+      expect(performance.now() - started).toBeLessThan(1000)
+    })
+
+    it('denies a split command behind another expansion rather than rescanning it', () => {
+      expect(checkCommand(`$E env -S '$W -n 5 gh ${BODY}'`, ctx())).toBe(REASONS.hiddenCommand)
+    })
+
+    it('denies more command words after an expansion than it checks on a line naming gh, well within the hook timeout', () => {
+      const padding = 'a '.repeat(20000)
+      const started = performance.now()
+
+      const reasons = [`$E ${'nice '.repeat(65)}${padding}`, `$E ${'$A '.repeat(65)}${padding}`].map(
+        command => checkCommand(`${command}; gh pr view 1`, ctx()),
+      )
+      const under = checkCommand(`$E ${'nice '.repeat(64)}${padding}; gh pr view 1`, ctx())
+
+      expect(reasons).toEqual([REASONS.hiddenStarts, REASONS.hiddenStarts])
+      expect(under).toBeUndefined()
+      expect(performance.now() - started).toBeLessThan(2000)
+    })
+  })
+
+  describe('a line past the command-start budget (CC-478)', () => {
+    const SCRIPTS = Array(40).fill('"$PY" "$SCRIPT" --out "$DIR"').join('; ')
+    const NICE = Array(25).fill('"$PY" env X=1 nice -n 5 "$SCRIPT"').join('; ')
+
+    // Kills: the budget deny applied to every line that exhausts it.
+    it.each([
+      ['40 script runs', SCRIPTS],
+      ['25 wrapped script runs', NICE],
+    ])('allows %s that name neither git nor gh', (_, command) => {
+      expect(checkCommand(command, ctx())).toBeUndefined()
+    })
+
+    // Kills: a line that reaches git or gh only through an expansion treated as naming neither.
+    it.each([
+      ['a literal gh', `${SCRIPTS}; gh pr view 1`],
+      ['a literal git', `${NICE}; git status`],
+      ['an expansion that may be git', `${SCRIPTS}; g\${z}it status`],
+      ['a variable the hook holds as gh', `${SCRIPTS}; "$TOOL" pr view 1`],
+      ['a variable the line assigns', `T=x; ${SCRIPTS}; "$T" pr view 1`],
+      ['a command substitution', `${SCRIPTS}; "$(printf x)" status`],
+      ['an ANSI-C gh', `${SCRIPTS}; $E $'\\x67h' pr create -t x --body y`],
+      ['a gh joined from hook variables', `${SCRIPTS}; $E "$A$B" pr create -t x --body y`],
+      ['a gh joined from text and a hook variable', `${SCRIPTS}; $E g"$B" pr create -t x --body y`],
+      ['a glob that may be gh', `${SCRIPTS}; $E g? pr create -t x --body y`],
+      ['a trimmed hook variable', `${SCRIPTS}; $E "\${TOOL%x}" pr create -t x --body y`],
+      ['a hook variable with a prefix trim', `${SCRIPTS}; $E "\${TOOL#x}" pr create -t x --body y`],
+      ['a hook variable with a default', `${SCRIPTS}; $E "\${TOOL:-x}" pr create -t x --body y`],
+      ['a hook variable with a replacement', `${SCRIPTS}; $E \${TOOL/x/y} pr create -t x --body y`],
+      ['a hook variable holding push', `${SCRIPTS}; $E $G "\${P%x}" $N`],
+      ['a hidden push that skips hooks', `${SCRIPTS}; $E $X push --no-verify`],
+      ['a hidden push spelled as a glob', `${SCRIPTS}; $E $X p?sh`],
+      ['a hidden abbreviated no-verify', `${SCRIPTS}; $E $X "$R" --no-veri`],
+    ])('denies a line that reaches git or gh through %s', (_, command) => {
+      const reason = checkCommand(command, ctx({ env: { TOOL: 'gh', A: 'g', B: 'h', P: 'push' } }))
+
+      expect(reason).toBe(REASONS.hiddenStarts)
+      expect(reason).not.toContain('out literally')
+    })
+  })
+
+  it.each([
+    'exec -a name gh pr create -t x --body-file pr.md',
+    'exec -a name -c gh pr create -t x --body-file pr.md',
+    'exec -a name /usr/bin/gh pr view 1',
+  ])('checks gh behind exec -a: %j', command => {
+    const reason = checkCommand(command, ctx({ readFile: () => TERM }))
+
+    expect(reason).toMatch(command.includes('/usr/bin/gh') ? REASONS.ghByPath : /line 1 private-term #1/)
+  })
+
+  it('checks the body of a function the function keyword defines as if it ran now', () => {
+    const command = 'function f { gh pr create -t x --body-file pr.md; }; f'
+
+    expect(checkCommand(command, ctx({ readFile: () => TERM }))).toContain('line 1 private-term #1')
+    expect(checkCommand(command, ctx({ readFile: () => 'clean' }))).toBeUndefined()
+  })
+
+  it.each([
+    ['/usr/bin/env', ''],
+    ['/usr/bin/env', '-u X'],
+    ['/opt/homebrew/bin/timeout', '5'],
+    ['/opt/homebrew/bin/timeout', '-s KILL -k 1 5'],
+  ])('matches the wrapper %s %s by its base name', (wrapper, options) => {
+    expect(checkCommand(`${wrapper} ${options} gh pr create -t ${TERM} -b y`, ctx())).toContain(
+      'title line 1',
+    )
+    expect(checkCommand(`${wrapper} ${options} git push --no-verify`, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it('denies env -i and a GIT_CONFIG assignment behind env called by path', () => {
+    expect(checkCommand('/usr/bin/env -i git push', ctx())).toBe(REASONS.envClear)
+    expect(checkCommand('/usr/bin/env GIT_CONFIG_COUNT=1 git push', ctx())).toBe(REASONS.gitConfigEnv)
   })
 
   it.each([
@@ -1029,7 +1221,7 @@ describe('a git alias already in config', () => {
     it.each(['source ./env.sh; x=git; $x pnv', 'source ./env.sh; ${X:-git} pnv'])(
       'denies an expanded command word on a line that names git where it cannot look: %s',
       command => {
-        expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
+        expect(checkCommand(command, inAliased())).toBe(REASONS.aliasHidden)
       },
     )
 
@@ -1041,7 +1233,7 @@ describe('a git alias already in config', () => {
       'source /dev/null; $(echo tig|rev) pnv',
       'source /dev/null; `echo tig|rev` pnv',
     ])('denies an expanded command word the line ties to git where it cannot look (TP-613): %s', command => {
-      expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
+      expect(checkCommand(command, inAliased())).toBe(REASONS.aliasHidden)
     })
 
     it.each([
@@ -1074,13 +1266,104 @@ describe('a git alias already in config', () => {
       'source /dev/null; ${x/a/g"i"t} pnv',
       'source /dev/null; ${x:-git} pnv',
     ])('denies a positional, special or indirect command word where it cannot look (TP-613): %s', command => {
-      expect(checkCommand(command, inAliased())).toBe(REASONS.aliasEnv)
+      expect(checkCommand(command, inAliased())).toBe(REASONS.aliasHidden)
     })
+
+    it.each([
+      ['an ANSI-C hex escape', "$'\\x67it' pnv"],
+      ['an ANSI-C octal escape', "$'\\147it' pnv"],
+    ])('denies a command word that decodes to git where it cannot look (TP-721): %s', (_, word) => {
+      expect(checkCommand(`source /dev/null; ${word}`, inAliased())).toBe(REASONS.aliasEnv)
+    })
+
+    it.each([
+      ['a ? glob on a path', '/usr/bin/gi? pnv'],
+      ['a bracket glob', 'gi[t] pnv'],
+      ['a ? glob in a default', '${x:-/usr/bin/g?t} pnv'],
+      ['a bracket glob in a default', '${x:-/usr/bin/gi[t]} pnv'],
+      ['an ANSI-C string in a default', "${x:-$'g\\x69t'} pnv"],
+      ['a brace expansion', 'g{i,}t pnv'],
+      ['an unset variable spliced into a default', '${x:-g${z}it} pnv'],
+      ['a bracket that opens with ]', 'gi[]t] pnv'],
+      ['a negated bracket that opens with ]', 'gi[!]x] pnv'],
+      ['a bracket that opens with ] on a path', '/usr/bin/gi[]t] pnv'],
+      ['a bracket that opens with ] in a default', '${x:-gi[]t]} pnv'],
+      ['zsh alternation', 'g(i|x)t pnv'],
+      ['zsh alternation on a path', '/usr/bin/g(i|x)t pnv'],
+      ['zsh alternation in a default', '${x:-g(i|x)t} pnv'],
+      ['a default joined to the text after it', '${x:-gi}t pnv'],
+      ['zsh alternation before a glob qualifier', 'g(i|x)t(N) pnv'],
+      ['a glob qualifier closing a default', '${x:-/usr/bin/g?t(N)} pnv'],
+      ['a group and a qualifier closing a default', '${x:-/usr/bin/gi(t)(N)} pnv'],
+      ['a group and a . qualifier closing a default', '${x:-/usr/bin/g(i)t(.)} pnv'],
+    ])(
+      'denies a command word that may become git through %s where it cannot look (TP-721): %s',
+      (_, word) => {
+        expect(checkCommand(`source /dev/null; ${word}`, inAliased())).toBe(REASONS.aliasHidden)
+      },
+    )
+
+    it.each([
+      'g(i|x)t pnv',
+      '/usr/bin/g(i|x)t pnv',
+      '${x:-g(i|x)t} pnv',
+      '${x:-/usr/bin/g?t(N)} pnv',
+      '${x:-/usr/bin/gi(t)(N)} pnv',
+      '${x:-/usr/bin/g(i)t(.)} pnv',
+    ])('reads the alias behind a zsh alternation that may be git where it can look (TP-721): %s', command => {
+      expect(checkCommand(command, inAliased())).toBe(REASONS.noVerify)
+    })
+
+    it('still checks a substitution inside a zsh glob group (TP-721)', () => {
+      expect(checkCommand('ls x(a|$(git push --no-verify))', inAliased())).toBe(REASONS.noVerify)
+    })
+
+    it.each([
+      "echo x(a|'(') ; git push --no-verify ; echo ')' # '",
+      "echo x(a|\"(\") ; git push --no-verify ; echo ')' # '",
+      "echo x(a|')') ; git push --no-verify ; echo ')' # '",
+      "echo x(a|'(') && git push --no-verify # )",
+      '{(git push --no-verify)}',
+    ])('still sees a command beside a group with a quoted paren or after a brace (TP-721): %s', command => {
+      expect(checkCommand(command, inAliased())).toBe(REASONS.noVerify)
+    })
+
+    it('denies a command word too deeply nested to check, well within the hook timeout (TP-721)', () => {
+      const word = `${'{'.repeat(80000)}x${'}'.repeat(80000)}`
+      const started = performance.now()
+
+      const reasons = [`source /dev/null; ${word} pnv`, `${word}; git push --no-verify`].map(command =>
+        checkCommand(command, inAliased()),
+      )
+
+      expect(reasons).toEqual([REASONS.aliasHidden, REASONS.noVerify])
+      expect(performance.now() - started).toBeLessThan(2000)
+    })
+
+    it.each([
+      'ls src/*.ts',
+      'cp file{,.bak}',
+      "printf $'a\\tb\\n'",
+      'echo {1..3}',
+      'rm -f dist/*.js && git status',
+      './scripts/*.sh run && git status',
+      '~/bin/*-tool x; git log',
+      '${PYTHON:-python{3,}} -m pytest && git status',
+      'ls *.ts(.)',
+      'f() { echo hi; }; f',
+      'arr=(a b); echo $arr',
+    ])(
+      'allows a glob, brace or ANSI-C word that cannot become git where it cannot look (TP-721): %s',
+      line => {
+        expect(checkCommand(`source /dev/null; ${line}`, inAliased())).toBeUndefined()
+        expect(checkCommand(line, inAliased())).toBeUndefined()
+      },
+    )
 
     it('denies an expanded command word whose hook env value is git where it cannot look', () => {
       const command = 'source /dev/null; $G pnv'
       expect(checkCommand(command, { ...inAliased(), env: { HOME: emptyHome, G: 'git' } })).toBe(
-        REASONS.aliasEnv,
+        REASONS.aliasHidden,
       )
     })
 
@@ -1477,6 +1760,98 @@ describe('the hook entry point', () => {
   })
 })
 
+describe('a body file may not be, or lead to, the install or git config (CC-678 r3)', () => {
+  const D = fs.realpathSync(fs.mkdtempSync(path.join(SCRATCH, 'r3-')))
+  const I = path.join(D, 'bin', 'agent-chat')
+  fs.mkdirSync(path.join(D, 'bin'))
+  fs.mkdirSync(path.join(D, '.git'))
+  fs.writeFileSync(I, '#!/bin/sh\n')
+  fs.symlinkSync(I, path.join(D, 'link.md'))
+  fs.linkSync(I, path.join(D, 'hl.md'))
+  const at = (): GuardContext =>
+    ctx({
+      cwd: D,
+      env: { PATH: `${path.join(D, 'bin')}:/usr/bin` },
+      scansGhWrite: true,
+      install: { file: I, dir: path.join(D, 'bin') },
+    })
+  const S = "printf '#!/bin/sh\\nexec gh\\n'"
+  const E = 'cat /w/x.md'
+  const GW = 'agent-chat gh-write -- pr create -t x'
+  const GIT_CONFIG = `printf '[core]\\n\\tfsmonitor = true\\n' >> ${D}/.git/config`
+  const DENIED = [
+    `${S} > ${I}; ${E} | ${GW} -F ${I} -F -`,
+    `${S} > ${I}; ${E} | ${GW} --body-file ${I} --body-file -`,
+    `${S} | tee ${I}; ${E} | ${GW} -F ${I} -F -`,
+    `cd ${D}/bin; ${S} > agent-chat; ${E} | ${GW} -F agent-chat -F -`,
+    `${S} > link.md; ${E} | ${GW} -F link.md -F -`,
+    `${S} > ${I}; ${E} | agent-chat gh-write -- pr comment 1 -F ${I} -F -`,
+    `${S} > ${I}; ${E} | agent-chat gh-write -- api -X POST repos/o/r/issues/1/comments -F body=@${I} --input -`,
+    `${S} > ${I}; ${GW} -F ${I}`,
+    `${S} | tee ${I}; ${GW} -F ${I}`,
+    `${S} > link.md; ${GW} -F link.md`,
+    `${S} > hl.md; ${GW} -F hl.md`,
+    `${S} > hl.md; ${E} | ${GW} -F -`,
+    `${S} > ${D}/bin/notes.md; ${E} | ${GW} -F -`,
+    `${GIT_CONFIG}; git status; ${E} | ${GW} -F ${D}/.git/config -F -`,
+    `${GIT_CONFIG}; ${E} | ${GW} -F ${D}/.git/config`,
+    `${S} > ${D}/.git/body.md; ${GW} -F ${D}/.git/body.md`,
+    `${S} > a.md; ${S} > b.md; ${GW} -F a.md`,
+    `${S} > a.sh; ${GW} -F a.sh`,
+    `cd ${D}; ${S} > n.md; ${GW} -F n.md`,
+    `git status; ${S} > n.md; ${GW} -F n.md`,
+    `X=1; ${S} > n.md; ${GW} -F n.md`,
+  ]
+
+  it.each([...DENIED, ...DENIED.map(line => `sh -c "${line.replaceAll('"', '\\"')}"`)])(
+    'denies %s',
+    command => {
+      expect(checkCommand(command, at())).toBeDefined()
+    },
+  )
+
+  it('defers a plain body file, a /dev/null redirect and a pipe', () => {
+    for (const command of [
+      `${S} > notes.md; ${GW} -F notes.md`,
+      `printf hi > notes.txt; ${E} 2>/dev/null | ${GW} -F -`,
+      `${E} | ${GW} -F - 2>/dev/null`,
+      `cat > notes.md <<'EOF'\nhello\nEOF\ncat notes.md | ${GW} -F -`,
+      `${GW} -b "$(cat < /w/x)" >/dev/null`,
+    ])
+      expect(checkCommand(command, at())).toBeUndefined()
+  })
+})
+
+describe('the built hook defers to the install PATH finds (CC-678)', () => {
+  const hook = (command: string, bin: string): string => {
+    const cfg = path.join(SCRATCH, 'defer-cfg')
+    fs.mkdirSync(path.join(cfg, 'titan-egress'), { recursive: true })
+    fs.writeFileSync(path.join(cfg, 'titan-egress', 'private-terms'), `${TERM}\n`, { mode: 0o600 })
+    return execFileSync(process.execPath, [CLI, 'leak-guard', 'pretool'], {
+      input: JSON.stringify({ tool_name: 'Bash', cwd: SCRATCH, tool_input: { command } }),
+      env: { PATH: `${bin}:/usr/bin:/bin`, HOME: SCRATCH, XDG_CONFIG_HOME: cfg },
+      encoding: 'utf8',
+    })
+  }
+  const UNREAD = 'agent-chat gh-write -- pr create -t x -b "$(cat < /w/x)"'
+
+  it('allows an unreadable argument when agent-chat on PATH is the hook entry, and denies when it is not', () => {
+    const own = path.join(SCRATCH, 'own-bin')
+    const other = path.join(SCRATCH, 'other-bin')
+    fs.mkdirSync(own, { recursive: true })
+    fs.mkdirSync(other, { recursive: true })
+    fs.symlinkSync(CLI, path.join(own, 'agent-chat'))
+    fs.writeFileSync(path.join(other, 'agent-chat'), '')
+
+    expect(hook(UNREAD, own)).toBe('')
+    expect(JSON.parse(hook(UNREAD, other)).hookSpecificOutput.permissionDecision).toBe('deny')
+    expect(
+      JSON.parse(hook(`agent-chat gh-write -- pr create -t ${TERM} -b "$(cat < /w/x)"`, own))
+        .hookSpecificOutput.permissionDecisionReason,
+    ).toContain('private-term')
+  })
+})
+
 describe('the shell splitter', () => {
   it('splits operators, strips quotes and keeps heredoc bodies as stdin', () => {
     const cmds = parseShell(`a 'b c' "d\\"e" f\\ g && h|i; j <<-EOF\n\tbody\n\tEOF\nk`)
@@ -1639,6 +2014,332 @@ describe('a command git runs for its subcommand (TP-634)', () => {
     'git push origin main',
     'git log --grep exec',
   ])('allows %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+})
+
+describe('the guard defers unreadable gh-write text to the run-time scan (CC-678)', () => {
+  const own = (over: Partial<GuardContext> = {}): GuardContext =>
+    ctx({
+      env: { PATH: '/usr/bin' },
+      scansGhWrite: true,
+      readFile: file => (file === '/w/ok.md' ? 'fine\n' : undefined),
+      ...over,
+    })
+  const POST = 'agent-chat gh-write -- pr create -t x'
+
+  const DEFERRED = [
+    `${POST} -b "$(cat < /w/x)"`,
+    `${POST} -b "$UNSET_NAME"`,
+    `echo hi > /w/pr.md; ${POST} --body-file /w/pr.md`,
+    `echo hi > /w/pr.md && ${POST} -F /w/pr.md`,
+    `${POST} --body-file /w/never-written.md`,
+    `cat /w/x.md | ${POST} -F -`,
+    `${POST} -F -`,
+  ]
+
+  it.each(DEFERRED)("allows %s for the hook's own install", command => {
+    expect(checkCommand(command, own())).toBeUndefined()
+    expect(checkCommand(command, ctx({ env: { PATH: '/usr/bin' } }))).toBeDefined()
+  })
+
+  it('still denies a finding it can read, in any text beside an unreadable one', () => {
+    expect(checkCommand(`${POST} -b ${TERM}`, own())).toContain('private-term')
+    expect(checkCommand(`${POST} -t ${TERM} -b "$(cat < /w/x)"`, own())).toContain('private-term')
+    expect(checkCommand(`${POST} -b "$(cat < /w/x)" --body-file /w/ok.md -t ${TERM}`, own())).toContain(
+      'private-term',
+    )
+    const withTerm = own({ readFile: () => `${TERM}\n` })
+    expect(checkCommand(`${POST} -b "$(cat < /w/x)" --body-file /w/pr.md`, withTerm)).toContain(
+      'private-term',
+    )
+  })
+
+  it.each([
+    ['missing', { kind: 'missing' } as const, REASONS.missingTerms],
+    ['unreadable', { kind: 'unreadable' } as const, REASONS.unreadableTerms],
+  ])('still denies a %s term list, even for text it cannot read', (_name, terms, reason) => {
+    expect(checkCommand(`${POST} -b "$(cat < /w/x)"`, own({ terms }))).toBe(reason)
+    expect(checkCommand(`${POST} -b y`, own({ terms }))).toBe(reason)
+    expect(checkCommand(`cat f | ${POST} -F -`, own({ terms }))).toBe(reason)
+  })
+
+  const UNREADABLE = `-b "$(cat < /w/x)"`
+  const SHADOWED = [
+    `agent-chat() { :; }; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `function agent-chat { :; }; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `alias agent-chat=/tmp/evil; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `PATH=/tmp:$PATH agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `export PATH=/tmp:$PATH; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `PATH=/tmp:$PATH; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `./agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `/tmp/agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `command agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `env agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `env -S 'agent-chat gh-write -- pr create -t x' ${UNREADABLE}`,
+    `FOO=1 agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `$E agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `source /tmp/setup; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `eval "$SETUP"; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `. /tmp/setup; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `$SETUP; agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `(agent-chat() { :; }); agent-chat gh-write -- pr create -t x ${UNREADABLE}`,
+    `gh pr create -t x ${UNREADABLE}`,
+    `/usr/bin/gh pr create -t x -F -`,
+  ]
+
+  it.each(SHADOWED)('keeps denying %s', command => {
+    expect(checkCommand(command, own())).toBeDefined()
+  })
+
+  const PROBES = [
+    'hash -p /tmp/x/agent-chat agent-chat',
+    'builtin hash -p /tmp/x/agent-chat agent-chat',
+    'sh -c "hash -p /tmp/x/agent-chat agent-chat"',
+    'hash agent-chat=/tmp/x/agent-chat',
+    'path=(/tmp/x $path)',
+    'V=PA; export ${V}TH=/tmp/x',
+    'V=PA; declare -x ${V}TH=/tmp/x',
+    'V=PA; read ${V}TH <<< /tmp/x',
+    'V=PA; printf -v ${V}TH %s /tmp/x',
+    'fpath=(/tmp/x); autoload agent-chat',
+    'agent-chat gh-write() { :; }',
+    'agent-chat x() { :; }',
+    'BASH_ENV=/tmp/x/setup bash -c true',
+    'ZDOTDIR=/tmp/x zsh -c true',
+    'HOME=/tmp/x bash -l -c true',
+    'bash -l -c true',
+    'typeset -x PATH=/tmp/x',
+    'local PATH=/tmp/x',
+    'cp /tmp/a /tmp/b',
+    'echo ${path:=/tmp/x}',
+    'echo *(e:path=/tmp/x:)',
+  ]
+
+  it.each(PROBES)('denies unreadable text after %s', probe => {
+    expect(checkCommand(`${probe}; ${POST} ${UNREADABLE}`, own())).toBeDefined()
+    expect(checkCommand(`sh -c '${probe}; ${POST} ${UNREADABLE}'`, own())).toBeDefined()
+  })
+
+  it('defers after plain commands inside a plain sh -c', () => {
+    expect(checkCommand(`echo hi; sh -c 'echo hi; ${POST} ${UNREADABLE}'`, own())).toBeUndefined()
+    expect(checkCommand(`sh -c 'echo hi'; ${POST} ${UNREADABLE}`, own())).toBeDefined()
+  })
+
+  const STDIN = 'cat /w/x.md | agent-chat gh-write -- pr create -t x -F -'
+  const SETUP = 'agent-chat() { /tmp/x/agent-chat "$@"; }'
+  const WRITES = [
+    `echo '${SETUP}' > ~/.zshenv; zsh -c '${STDIN}'`,
+    `echo '${SETUP}' | tee ~/.zshenv; zsh -c '${STDIN}'`,
+    `cat /w/setup > $HOME/.zshenv; ${STDIN} && zsh -c '${STDIN}'`,
+    `cat /w/setup > $HOME/.zshenv; sh -c '${STDIN}'`,
+    `printf '#!/bin/sh\\nexec gh "$@"\\n' > /usr/bin/agent-chat; ${STDIN}`,
+    `echo x > /usr/bin/agent-chat; ${STDIN}`,
+    `echo x | tee -a /usr/bin/agent-chat; ${STDIN}`,
+    `echo x | tee /usr/bin/agent-chat; ${STDIN}`,
+    `echo x &> /usr/bin/agent-chat; ${STDIN}`,
+    `echo x &>> /usr/bin/agent-chat; ${STDIN}`,
+    `echo x >& /usr/bin/agent-chat; ${STDIN}`,
+    `echo x >| /usr/bin/agent-chat; ${STDIN}`,
+    `echo x >> /usr/bin/agent-chat; ${STDIN}`,
+    `echo x > /tmp/other; ${STDIN}`,
+    `echo x > "$OTHER"; ${STDIN}`,
+    `echo x > /usr/bin/agent-chat; ${POST} ${UNREADABLE}`,
+    `${POST} ${UNREADABLE} > /usr/bin/agent-chat`,
+    `echo hi > /w/b.md; echo x > /tmp/other; ${POST} --body-file /w/b.md`,
+    `zsh -c '${STDIN}'`,
+    `git log --output=/usr/bin/agent-chat; ${STDIN}`,
+  ]
+
+  it.each(WRITES)('keeps denying a write that is not the body file: %s', command => {
+    expect(checkCommand(command, own())).toBeDefined()
+  })
+
+  it('still defers when the only writes are the body file or a descriptor duplicate', () => {
+    expect(
+      checkCommand(`cat > body.md <<'EOF'\nhello\nEOF\n${POST.replace('-t x', '-t T')} -F body.md`, own()),
+    ).toBeUndefined()
+    expect(
+      checkCommand(`cat /w/x.md 2>&1 | agent-chat gh-write -- pr create -t x -F -`, own()),
+    ).toBeUndefined()
+    expect(checkCommand(`echo hi > body.md; ${POST} -F body.md -b "$(cat < /w/x)"`, own())).toBeUndefined()
+  })
+
+  it('keeps denying written and stdin text for each shadow form', () => {
+    for (const shadow of ['./agent-chat', '/tmp/agent-chat', 'command agent-chat', 'env agent-chat']) {
+      expect(checkCommand(`echo hi > /w/p.md; ${shadow} gh-write -- pr create -t x -F /w/p.md`, own())).toBe(
+        REASONS.writtenBody,
+      )
+      expect(checkCommand(`cat f | ${shadow} gh-write -- pr create -t x -F -`, own())).toBeDefined()
+    }
+  })
+
+  it('denies when the hook cannot prove PATH finds its own install', () => {
+    expect(checkCommand(`${POST} ${UNREADABLE}`, own({ scansGhWrite: false }))).toBeDefined()
+    expect(checkCommand(`${POST} ${UNREADABLE}`, own({ env: {} }))).toBeDefined()
+  })
+
+  it('keeps every plain gh refusal and push rule', () => {
+    expect(checkCommand(`gh pr create -t x -F -`, own())).toBeDefined()
+    expect(checkCommand('git push --no-verify', own())).toBeDefined()
+  })
+
+  it('proves the install by realpath, through a symlink, and not for another file', () => {
+    const real = path.join(SCRATCH, 'own-install')
+    fs.mkdirSync(path.join(real, 'bin'), { recursive: true })
+    fs.mkdirSync(path.join(real, 'other'), { recursive: true })
+    fs.writeFileSync(path.join(real, 'cli.js'), '')
+    fs.writeFileSync(path.join(real, 'other', 'agent-chat'), '')
+    fs.symlinkSync(path.join(real, 'cli.js'), path.join(real, 'bin', 'agent-chat'))
+    const env = (dir: string): NodeJS.ProcessEnv => ({ PATH: `${path.join(real, dir)}:/usr/bin` })
+
+    expect(pathFindsOwnInstall(env('bin'), path.join(real, 'cli.js'))).toBe(true)
+    expect(pathFindsOwnInstall(env('other'), path.join(real, 'cli.js'))).toBe(false)
+    expect(pathFindsOwnInstall({ PATH: `bin:${path.join(real, 'bin')}` }, path.join(real, 'cli.js'))).toBe(
+      false,
+    )
+    expect(pathFindsOwnInstall(env('bin'), undefined)).toBe(false)
+  })
+})
+
+describe('gh api reads with quoted unresolved words (CC-680)', () => {
+  it.each([
+    'gh api "repos/o/r/commits/$SHA/check-runs"',
+    'gh api "repos/HJewkes/agent-chat/commits/$H/check-runs"',
+    'gh api "/orgs/o/members/$U"',
+    'gh api "users/o/repos?page=$N"',
+    'GH_HOST=github.com gh api "repos/o/r/commits/$SHA/check-runs"',
+    'gh api "repos/o/r/commits/$SHA/check-runs" --jq .check_runs',
+    'gh api "repos/o/r/commits/${SHA}/check-runs" --paginate -q ".[] | $F"',
+    'gh api -H "Accept: application/vnd.github+json" "repos/o/r/pulls/$N"',
+    'gh api --hostname github.com "repos/o/r/pulls/$N" --template "$T"',
+    'gh api "repos/o/r/pulls/$N" --jq="$F"',
+    'gh api \'repos/o/r/issues\' --jq "$F"',
+  ])('allows %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+
+  it.each([
+    'gh api "repos/o/r/issues/$N/comments" -f body=y',
+    'gh api "repos/o/r/issues/$N/comments" -fbody=y',
+    'gh api "repos/o/r/issues/$N/comments" -F body=y',
+    'gh api "repos/o/r/issues/$N/comments" -XPOST',
+    'gh api "repos/o/r/issues/$N/comments" -X POST',
+    'gh api "repos/o/r/issues/$N/comments" --method POST',
+    'gh api "repos/o/r/issues/$N/comments" --method=POST',
+    'gh api "repos/o/r/issues/$N/comments" --field a=b',
+    'gh api "repos/o/r/issues/$N/comments" --raw-field a=b',
+    'gh api "repos/o/r/issues/$N/comments" --input -',
+    'gh api "repos/o/r/issues/$N/comments" --input=p.json',
+    'gh api "repos/o/r/issues/$N/comments" -ifa=b',
+    'gh api "repos/o/r/issues/$N/comments" -H "X-HTTP-Method-Override: POST"',
+    'gh api "repos/o/r/issues/$N/comments" -H "$H"',
+    'gh api "repos/o/r/issues/$N/comments" --hostname "$H"',
+    'gh api "$E/comments"',
+    'gh api "$E" --jq .x',
+    'gh api "repos/o/r/$N" $F',
+    'gh api "repos/o/r/$N" "$@"',
+    'gh api "repos/o/r/$N" "other/$M"',
+    'gh api --unknown "repos/o/r/$N"',
+    'gh api "repos/o/r/$N" --jq',
+    'gh api "h$x"',
+    'gh api "/$x"',
+    'gh api "https://$x/y"',
+    'gh api "repos/o/r/$N" --jq .x "https://h/$N"',
+    'gh api "//$h/x"',
+    'gh api "repos/$OWNER_REPO/commits"',
+    'gh api "repos/o$X/commits"',
+    'gh api "repos$X/o/commits"',
+    'gh api "repos/o/r/?u=http://h/$N"',
+    'gh api "graphql$x"',
+    'gh api graphql --jq "$F"',
+    'gh api "/graphql$x"',
+    'gh api -H -XPOST "repos/o/r/$N"',
+    'gh api --header=-XPOST "repos/o/r/$N"',
+    'gh api -H "X-Method-Override: POST" "repos/o/r/$N"',
+    'gh api -H "x-http-method-override:POST" "repos/o/r/$N"',
+    'gh api --jq "$F"',
+    'gh api -q"$F" "repos/o/r/$N"',
+  ])('denies %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.unreadableBody)
+  })
+
+  it.each([
+    'gh api repos/o/r/commits/$SHA/check-runs',
+    'gh api repos/o/r/commits/$SHA/check-runs --jq .x',
+    'gh api repos/o/r/$N --jq $F',
+    'gh api "repos/o/r/${=N}"',
+  ])('denies an unquoted word that may split, and says to quote it: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.ghApiUnquoted)
+  })
+
+  const READ = 'gh api "repos/o/r/commits/$SHA/check-runs"'
+  it.each([
+    `GH_HOST="$x" ${READ}`,
+    `GH_HOST=$x ${READ}`,
+    `GH_TOKEN="$x" ${READ}`,
+    `GITHUB_TOKEN="$x" ${READ}`,
+    `GH_ENTERPRISE_TOKEN="$x" ${READ}`,
+    `GH_REPO="$x" ${READ}`,
+    `GH_CONFIG_DIR="$x" ${READ}`,
+    `HTTPS_PROXY="$x" ${READ}`,
+    `https_proxy="$x" ${READ}`,
+    `HTTP_PROXY="$x" ${READ}`,
+    `ALL_PROXY="$x" ${READ}`,
+    `env GH_HOST="$x" ${READ}`,
+    `export GH_HOST="$x"; ${READ}`,
+    `GH_HOST="$x"; ${READ}`,
+    `export https_proxy="$x"; ${READ}`,
+    `declare -x GH_HOST="$x"; ${READ}`,
+    `typeset -x GH_HOST="$x"; ${READ}`,
+    `read GH_HOST; export GH_HOST; ${READ}`,
+    `HOME="$x" ${READ}`,
+    `XDG_CONFIG_HOME="$x" ${READ}`,
+    `export GH_HOST=github.com; ${READ}`,
+    `env GH_HOST=github.com ${READ}`,
+    `${READ} | cat`,
+    `${READ} > out.json`,
+    `true && ${READ}`,
+    `echo hi; ${READ}`,
+    `gh api "repos/o/r/commits/$(git rev-parse HEAD)/status"`,
+  ])('denies a routing variable set from an expansion it cannot read: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.ghApiRoute)
+  })
+
+  it.each([`${READ} | jq .`, `cd /work && ${READ}`, `${READ} > out.json`, `${READ}; echo done`])(
+    'names the real rule and the fix when the line holds more than the read: %s',
+    command => {
+      const reason = checkCommand(command, ctx())
+
+      expect(reason).toBe(REASONS.ghApiRoute)
+      expect(reason).toContain('allowed only alone on its line')
+      expect(reason).toContain('gh api repos/o/r/commits/<sha>/check-runs')
+      expect(reason).not.toContain('is set from')
+    },
+  )
+
+  it.each([
+    `GH_HOST=ghe.example.com ${READ}`,
+    `GH_HOST=; ${READ}`,
+    `${READ} --hostname ghe.example.com`,
+    `${READ} --hostname=ghe.example.com`,
+    `HTTPS_PROXY=http://p.example:3128 ${READ}`,
+    `https_proxy=http://p.example:3128 ${READ}`,
+    `HTTP_PROXY=http://p.example:3128 ${READ}`,
+    `ALL_PROXY=socks5://p.example:1080 ${READ}`,
+    `ALL_PROXY=http://p.example:3128; ${READ}`,
+  ])('denies a literal host other than github.com or any proxy beside an unresolved read: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.ghApiHost)
+  })
+
+  it.each([
+    `GH_HOST=github.com ${READ}`,
+    `${READ} --hostname github.com`,
+    `${READ} --hostname=github.com`,
+    'gh api repos/o/r/commits/abc/check-runs | jq .',
+    'GH_HOST=ghe.example.com gh api repos/o/r/commits/abc/check-runs',
+    'HTTPS_PROXY=http://p.example:3128 gh api repos/o/r/commits/abc/check-runs',
+  ])('allows what the guard could already read, and a github.com host: %s', command => {
     expect(checkCommand(command, ctx())).toBeUndefined()
   })
 })

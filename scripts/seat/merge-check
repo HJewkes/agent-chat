@@ -1,0 +1,137 @@
+#!/bin/bash
+# Checks that a PR head still merges into origin's default branch, in a throwaway worktree.
+# Fetches origin every run, never touches the checkout's tree, index, HEAD or branches, never pushes.
+# Prints main:, merge-base:, the merge result, then one final line, `OK ...` or `FAIL <reason>`.
+# Output of git, build and test is prefixed `| `, so only the last line starts with OK or FAIL.
+# Build and test run in a worktree sharing the repository's refs: a test that runs git can create branches or stashes in the target.
+# A .gitattributes merge=union or custom driver can make git merge what GitHub reports as a conflict; see `note: merge driver on`.
+# usage: merge-check [--no-build|--no-test] <repo-path> <full 40-hex sha>
+set -u
+usage="usage: merge-check [--no-build|--no-test] <repo-path> <sha>"
+build=1 test=1 n=0 repo="" sha=""
+for a in "$@"; do
+  case $a in
+    --no-build) build=0;;
+    --no-test) test=0;;
+    *) n=$((n+1)); [ $n = 1 ] && repo=$a; [ $n = 2 ] && sha=$a;;
+  esac
+done
+[ $n = 2 ] || { echo "$usage" >&2; exit 2; }
+wt="" verdict="" leftover=""
+
+g() { git -C "$repo" "$@"; }
+quote() { sed 's/^/| /'; }
+die() { verdict="FAIL $*"; exit 1; }
+
+cleanup() {
+  leftover=""
+  [ -n "$wt" ] || return 0
+  g worktree remove --force "$wt" 2>&1 | quote
+  rm -rf "$wt" "$wt.log" 2>&1 | quote
+  g worktree prune 2>&1 | quote
+  if [ -e "$wt" ] || g worktree list --porcelain | grep -q "^worktree .*/$(basename "$wt")\$"; then
+    echo "cleanup: could not remove $wt"; leftover=$wt
+  fi
+}
+# The last line printed is always the verdict, whatever ended the run.
+finish() {
+  local code=$?
+  trap '' INT TERM HUP
+  trap - EXIT
+  cleanup
+  [ -z "$leftover" ] || { verdict="FAIL cleanup: $leftover left behind"; code=1; }
+  [ -n "$verdict" ] || { verdict="FAIL internal error (exit $code)"; code=1; }
+  echo "$verdict"
+  exit $code
+}
+trap finish EXIT
+trap 'verdict="FAIL interrupted"; exit 1' INT TERM HUP
+
+# step <name> <cmd...>: runs in the temp worktree; a failure prints the last 20 lines of output.
+step() {
+  local name=$1; shift
+  (cd "$wt" && "$@") >"$wt.log" 2>&1 || { tail -20 "$wt.log" | quote; die "$name"; }
+}
+
+build_and_test() {
+  local pm=npm
+  [ -f "$wt/package.json" ] || die "no package.json: pass --no-build"
+  [ -f "$wt/pnpm-lock.yaml" ] && pm=pnpm
+  if [ $pm = pnpm ]; then step install pnpm install --frozen-lockfile; step build pnpm run --if-present build
+  else step install npm ci; step build npm run build --if-present; fi
+  suffix=", build"
+  [ $test = 1 ] || return 0
+  step test $pm test
+  suffix=", build, test"
+}
+
+# note_drivers: paths on stdin; a merge= attribute means git may merge what GitHub calls a conflict.
+note_drivers() {
+  local p v
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    v=$(git -C "$wt" check-attr merge -- "$p" | sed 's/^.*: merge: //')
+    case $v in unspecified|"") ;; *) echo "note: merge driver on $p";; esac
+  done
+}
+
+fetch_default() {
+  local i out
+  for i in 1 2 3 4 5 6; do
+    out=$(g fetch -q origin "+refs/heads/$def:refs/remotes/origin/$def" 2>&1) && return 0
+    grep -q "cannot lock ref" <<<"$out" || break
+    sleep 0.5
+  done
+  quote <<<"$out"; die "fetch: git fetch origin $def failed"
+}
+
+merge_head() {
+  local out paths
+  out=$(git -C "$wt" -c rerere.enabled=false -c commit.gpgsign=false -c user.name=merge-check -c user.email=merge-check@localhost merge --no-edit "$sha" 2>&1)
+  if [ $? != 0 ]; then
+    paths=$(git -C "$wt" diff --name-only --diff-filter=U | paste -sd' ' -)
+    [ -n "$paths" ] || { quote <<<"$out" | tail -20; die merge; }
+    git -C "$wt" diff --name-only --diff-filter=U | note_drivers
+    git -C "$wt" diff --name-only --diff-filter=U | sed 's/^/conflicted: /'
+    die "conflict: $paths"
+  fi
+  git -C "$wt" diff --name-only "$tip" HEAD | note_drivers
+  if [ "$(git -C "$wt" rev-parse HEAD)" = "$sha" ]; then
+    echo "fast-forward: head descends from $def"; kind=fast-forward; return 0
+  fi
+  local parents; parents=$(git -C "$wt" rev-list --parents -n1 HEAD | cut -d' ' -f2-)
+  echo "parents: $parents"; kind=merge
+  [ "$parents" = "$tip $sha" ] || die "merge parents are not origin/$def and the head"
+}
+
+[ -d "$repo" ] && g rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository: $repo"
+[[ $sha =~ ^[0-9a-f]{40}$ ]] || die "not a full 40-hex sha: $sha"
+
+remote=$(g ls-remote --symref origin HEAD 2>&1) || { quote <<<"$remote"; die "fetch: cannot reach origin"; }
+def=$(sed -n 's|^ref: refs/heads/\(.*\)[[:space:]]HEAD$|\1|p' <<<"$remote")
+remsha=$(awk '$1 != "ref:" && $2 == "HEAD" {print $1}' <<<"$remote")
+[[ $def =~ ^[A-Za-z0-9._/-]+$ ]] || die "fetch: cannot find the default branch of origin"
+fetch_default
+# The full ref name: a tag or branch called origin/<default> must not shadow the remote-tracking ref.
+tip=$(g rev-parse --verify -q "refs/remotes/origin/$def^{commit}") || die "cannot resolve refs/remotes/origin/$def"
+[ "$tip" = "$remsha" ] || die "origin/$def is $tip but origin reports ${remsha:-nothing}"
+
+have() { g cat-file -e "$sha" 2>/dev/null; }
+have || g fetch -q origin "$sha" 2>&1 | quote
+have || die "unknown sha $sha"
+[ "$(g cat-file -t "$sha")" = commit ] || die "not a commit: $sha"
+
+echo "main: $tip"
+mb=$(g merge-base "$tip" "$sha" 2>/dev/null) || mb=""
+[ -n "$mb" ] || [ "$(g rev-parse --is-shallow-repository)" != true ] || die "shallow clone: cannot find a merge base"
+echo "merge-base: ${mb:-none}"
+g merge-base --is-ancestor "$sha" "$tip" && die "head is already in $def: nothing to merge"
+
+wt=$(mktemp -d "${TMPDIR:-/tmp}/merge-check.XXXXXX") || die "mktemp"
+out=$(g worktree add -q --detach "$wt" "$tip" 2>&1) || { quote <<<"$out"; die "worktree add"; }
+merge_head
+
+suffix=""
+[ $build = 0 ] || build_and_test
+verdict="OK $repo $sha merges into $def $tip ($kind$suffix)"
+exit 0
