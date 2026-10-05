@@ -43,6 +43,9 @@ export function errorClass(err: unknown): string {
   return name
 }
 
+const describeError = (err: unknown): string =>
+  err instanceof Error ? (err.stack ?? err.message) : String(err)
+
 /** A missing, unreadable or malformed file is no history: zero failures. */
 export function readTickStatus(file: string): Partial<TickStatus> {
   try {
@@ -102,7 +105,8 @@ function writeStatus(file: string, status: TickStatus): void {
 
 /**
  * Runs one tick and records its heartbeat and failure count in `file`. Never
- * rejects: a throw becomes a `failed` record and one line naming the class. A
+ * rejects: a throw becomes a `failed` record, one line naming the class and the
+ * error itself for the local log. A
  * failed status write is logged and swallowed.
  */
 export async function recordTick(
@@ -118,7 +122,8 @@ export async function recordTick(
     const errorClassName = errorClass(err)
     log('burndown_tick_failed', { errorClass: errorClassName })
     result = {
-      lines: [`burndown tick failed (${errorClassName}); status in ${file}`],
+      // The printed lines reach the local launchd log only; the status file and event row stay class-only.
+      lines: [`burndown tick failed (${errorClassName}); status in ${file}`, describeError(err)],
       outcome: { kind: 'failed', errorClass: errorClassName },
     }
   }

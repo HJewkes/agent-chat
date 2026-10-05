@@ -52,7 +52,7 @@ afterEach(() => {
 
 describe('burndown tick status', () => {
   // Mutation caught: rethrowing after the record, or writing err.message.
-  it('records a malformed ledger as a failure by class without rejecting or leaking the message', async () => {
+  it('records a malformed ledger as a failure by class in the file, without rejecting, and prints the error for the local log', async () => {
     breakLedger()
 
     const lines = await tickFromDisk(options())
@@ -66,7 +66,8 @@ describe('burndown tick status', () => {
       intervalSeconds: 600,
     })
     expect(fs.readFileSync(burndownTickStatusPath(), 'utf8')).not.toContain('malformed')
-    expect(lines.join('\n')).not.toContain('malformed')
+    expect(lines.join('\n')).toContain('burndown ledger')
+    expect(lines.join('\n')).toContain('malformed')
     expect(fs.statSync(burndownTickStatusPath()).mode & 0o777).toBe(0o600)
   })
 
