@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { frontmatter } from '../burndown/policy.js'
-import { openEvents, readText, seatLogPath } from './io.js'
+import { openEvents, readSeatJournal, readText, seatJournalDays, seatLogPath } from './io.js'
 
 /** CC-318: the readers behind `seats boot`, each read-only. */
 
@@ -105,6 +105,31 @@ export function readLogSection(root: string, seat: string, now: Date): LogSectio
     found: text !== undefined,
     section: section === undefined ? null : capText(section, LOG_CAP),
   }
+}
+
+export const TELEPORT_LOOKBACK_DAYS = 7
+
+export interface TeleportSection {
+  /** Local `YYYY-MM-DD` of the journal the section came from. */
+  day: string
+  section: string
+}
+
+const DAY_MS = 86_400_000
+const startOfDay = (at: Date): number => new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime()
+const dayName = (at: Date): string =>
+  [at.getFullYear(), at.getMonth() + 1, at.getDate()].map(n => String(n).padStart(2, '0')).join('-')
+
+/** The newest `State at teleport` section in a journal dated within the lookback of `now`, not only today's. */
+export function latestTeleportSection(root: string, seat: string, now: Date): TeleportSection | undefined {
+  const oldest = startOfDay(now) - TELEPORT_LOOKBACK_DAYS * DAY_MS
+  for (const day of seatJournalDays(root, seat)) {
+    if (startOfDay(day) < oldest) break
+    const text = readSeatJournal(root, seat, day)
+    const section = text === undefined ? undefined : latestTeleportState(text)
+    if (section !== undefined) return { day: dayName(day), section }
+  }
+  return undefined
 }
 
 export const INBOX_TAIL = 5
