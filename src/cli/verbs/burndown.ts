@@ -161,20 +161,21 @@ export const burndownSeatsCompareVerb = defineVerb({
   },
 })
 
-/** The seat plan's live inputs: the broker's collision view and roster, when a broker answers. */
+/**
+ * The seat plan's live inputs. The collision view and the roster are read apart, so a roster read
+ * that fails only counts every held tree instead of losing the view and refusing every task as `claimed`.
+ */
 async function seatPlanOptions(seat: string, autonomyRoot: string | undefined): Promise<SeatPlanOptions> {
-  const facts = await readBroker(async client => ({
-    view: await collisionView(client),
-    roster: await tickBroker(client).roster(),
-  }))
+  const view = await readCollisionView()
+  const roster = await readBroker(client => tickBroker(client).roster())
   const root = activeWorkRoot()
   return {
     seat,
     now: new Date(),
     root,
     autonomyRoot: autonomyRoot ?? defaultAutonomyRoot(root),
-    collision: ledger => collisionCheck(ledger, facts?.view),
-    ...(facts === undefined ? {} : { roster: facts.roster }),
+    collision: ledger => collisionCheck(ledger, view),
+    ...(roster === undefined ? {} : { roster }),
   }
 }
 
