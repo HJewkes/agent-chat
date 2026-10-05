@@ -2,17 +2,21 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import type { SpawnFrame } from '../agents/burndown/execute.js'
 import type { Claim, Ledger } from '../agents/burndown/ledger.js'
+import type { Roster } from '../agents/burndown/observe.js'
 import { loadTickConfig, type TickConfig } from '../agents/burndown/source.js'
 import {
+  actOnTriage,
   ownerDue,
+  settleTriage,
   triageReadiness,
   triageVerdicts,
   type Readiness,
   type VerdictInputs,
 } from '../agents/burndown/triage.js'
 
-/** CC-649: triage readiness and the per-claim verdict, pure over a hand-built config and ledger. */
+/** CC-649: triage readiness, the per-claim verdict, and the job's start and settle, over a hand-built config and ledger. */
 
 const NOW = new Date('2026-09-28T12:00:00.000Z')
 const MIN = 60_000
@@ -169,5 +173,71 @@ describe('ownerDue', () => {
     const claim = triage === undefined ? stalled('CC-1') : { ...stalled('CC-1'), triage }
 
     expect(ownerDue(claim)).toBe(due)
+  })
+})
+
+const rosterOf = (...agents: [string, string][]): Roster => ({
+  agents: agents.map(([name, state]) => ({ name, state, spawnedAt: 0 }) as Roster['agents'][number]),
+})
+
+describe('settling a started triage job', () => {
+  const occurrence = `${NOW.toISOString()} no final report`
+  const startedAt = (minutesAgo: number): Claim =>
+    stalled('CC-1', {
+      triage: {
+        occurrence,
+        since: NOW.toISOString(),
+        outcome: 'started',
+        name: 'triage-cc-1-1',
+        startedAt: new Date(NOW.getTime() - minutesAgo * MIN).toISOString(),
+      },
+    })
+  const detailAfter = (roster: Roster, minutesAgo: number): string | undefined =>
+    settleTriage({ version: 1, claims: [startedAt(minutesAgo)] }, roster, 30, NOW).claims[0]?.triage?.detail
+
+  it('says a triager past maxMinutes with no roster row never started', () => {
+    expect(detailAfter(rosterOf(), 31)).toBe('triage triage-cc-1-1 never started, claim still stalled')
+  })
+
+  it('says a triager whose agent exited ran', () => {
+    expect(detailAfter(rosterOf(['triage-cc-1-1', 'exited']), 5)).toBe(
+      'triage triage-cc-1-1 ran, claim still stalled',
+    )
+  })
+})
+
+describe('starting a triage job', () => {
+  const config = (): TickConfig => configFrom({ route: ALL_TRIAGE, triage: { account: 'a' } })
+
+  async function startOn(claim: Claim, roster: Roster, spawn: (f: SpawnFrame) => Promise<{ ok: boolean }>) {
+    const ledger: Ledger = { version: 1, claims: [claim] }
+    const verdicts = triageVerdicts(inputs({ claims: [claim] }))
+    const deps = { spawn, write: () => {}, log: () => {}, root: '/aw', now: NOW }
+    return actOnTriage(config(), { verdicts, readiness: READY, roster }, { ledger, lines: [] }, deps)
+  }
+
+  it('reports a start whose spawn went unanswered as never started once maxMinutes pass', async () => {
+    const unanswered = (): Promise<{ ok: boolean }> => Promise.reject(new Error('broker gone'))
+
+    const { ledger } = await startOn(stalled('CC-1'), rosterOf(), unanswered)
+    const later = new Date(NOW.getTime() + 31 * MIN)
+    const settled = settleTriage(ledger, rosterOf(), 30, later)
+
+    expect(settled.claims[0]?.triage).toMatchObject({
+      outcome: 'ended',
+      detail: 'triage triage-cc-1-1 never started, claim still stalled',
+    })
+  })
+
+  it("names a second claim's triager past the retired triager of an earlier claim on the task", async () => {
+    const frames: SpawnFrame[] = []
+    const spawn = (f: SpawnFrame): Promise<{ ok: boolean }> => {
+      frames.push(f)
+      return Promise.resolve({ ok: true })
+    }
+
+    await startOn(stalled('CC-1'), rosterOf(['triage-cc-1-1', 'retired'], ['triage-cc-10-4', 'live']), spawn)
+
+    expect(frames.map(f => f.name)).toEqual(['triage-cc-1-2'])
   })
 })

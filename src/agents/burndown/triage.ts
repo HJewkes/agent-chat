@@ -114,12 +114,20 @@ function capacityWait(
   return { kind: 'wait', ...at, reason: `no agent capacity: ${input.capacityReason}` }
 }
 
-/** `triage-<task>[-<slice>]-<n>`, numbered past every triager the claim already ran. */
-export function triageNameFor(claim: Claim): string {
+/**
+ * `triage-<task>[-<slice>]-<n>`, numbered past every triager the claim ran and every `taken` name.
+ * A release drops the claim, so only the roster remembers an earlier claim's triager.
+ */
+export function triageNameFor(claim: Claim, taken: readonly string[] = []): string {
   const base = `triage-${claim.taskId.toLowerCase()}${claim.slice === undefined ? '' : `-${claim.slice.toLowerCase()}`}`
-  const earlier = (claim.spawned ?? []).filter(n => n.startsWith(`${base}-`)).length
-  return `${base}-${earlier + 1}`
+  const numberOf = (name: string): number => {
+    const rest = name.startsWith(`${base}-`) ? name.slice(base.length + 1) : ''
+    return /^\d+$/.test(rest) ? Number(rest) : 0
+  }
+  return `${base}-${Math.max(0, ...[...(claim.spawned ?? []), ...taken].map(numberOf)) + 1}`
 }
+
+const rosterNames = (roster: Roster): string[] => roster.agents.map(a => a.name)
 
 export function triageBrief(claim: Claim): string {
   const field = (label: string, value: string | undefined): string[] =>
@@ -164,11 +172,15 @@ export function settleTriage(ledger: Ledger, roster: Roster, maxMinutes: number,
     const row = rowNamed(roster, c.triage.name)
     const overdue = now.getTime() - Date.parse(c.triage.startedAt ?? c.triage.since) > maxMinutes * MINUTE_MS
     if (!overdue && (row === undefined || !FINISHED.has(row.state))) return c
-    const detail = `triage ${c.triage.name ?? '?'} ran, claim still stalled`
+    const detail = `triage ${c.triage.name ?? '?'} ${endedAs(row)}, claim still stalled`
     return { ...c, triage: { ...c.triage, outcome: 'ended' as const, detail } }
   })
   return { ...ledger, claims }
 }
+
+/** A job with no roster row past `maxMinutes` never landed: no agent row, or the spawn frame went unanswered. */
+const endedAs = (row: Roster['agents'][number] | undefined): string =>
+  row === undefined ? 'never started' : 'ran'
 
 /** The `stalled` event's detail: the reason, and that triage ran when it has. */
 export function stallDetail(claim: Claim, reason: string): string {
@@ -207,7 +219,7 @@ export async function actOnTriage(
     const claim = heldClaims(ledger).find(c => sameClaim(c, v.key))
     if (claim === undefined || claim.stalledReason === undefined || occurrenceOf(claim) !== v.occurrence)
       continue
-    const done = await actOnVerdict(ledger, claim, v, readiness, deps)
+    const done = await actOnVerdict(ledger, claim, v, { readiness, roster }, deps)
     ledger = done.ledger
     if (done.line !== undefined) lines.push(done.line)
   }
@@ -219,11 +231,12 @@ async function actOnVerdict(
   ledger: Ledger,
   claim: Claim,
   v: TriageVerdict,
-  readiness: Readiness,
+  { readiness, roster }: Pick<TriagePlan, 'readiness' | 'roster'>,
   deps: TriageDeps,
 ): Promise<{ ledger: Ledger; line?: string }> {
   const record = { occurrence: v.occurrence, since: currentTriage(claim)?.since ?? deps.now.toISOString() }
-  if (v.kind === 'start' && readiness.ready) return startTriage(ledger, claim, v.name, readiness, deps)
+  if (v.kind === 'start' && readiness.ready)
+    return startTriage(ledger, claim, triageNameFor(claim, rosterNames(roster)), readiness, deps)
   if (v.kind === 'wait') return { ledger: withTriage(ledger, v.key, { ...record, outcome: 'waiting' }) }
   const reason = v.kind === 'owner' ? v.reason : 'triage is not ready'
   deps.log('burndown_triage_fallback', { task: claim.taskId, reason })
