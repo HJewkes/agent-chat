@@ -85,11 +85,28 @@ function taskContext(t: TaskBrief): string {
   )
 }
 
+/** `text` cut at a line boundary to `max` UTF-8 bytes, with `note(kept, total)` appended when it was cut. */
+function capLines(text: string, max: number, note: (kept: number, total: number) => string): string {
+  const total = Buffer.byteLength(text)
+  if (total <= max) return text
+  const kept = leadingLines(text, max)
+  return `${kept}\n${note(Buffer.byteLength(kept), total)}`
+}
+
+/** UTF-8 bytes of a repo verify section a brief embeds. The largest real one (agent-chat) is 1.1 kB. */
+export const VERIFY_STEPS_MAX_BYTES = 1_500
+
 /** The `## Verify ...` section of a repo `CLAUDE.md`, without its heading, or undefined when there is none. */
 export function verifySection(claudeMd: string): string | undefined {
   const match = /^## Verify[^\n]*\n([\s\S]*?)(?=^## |(?![\s\S]))/m.exec(claudeMd)
   const body = match?.[1]?.trim()
-  return body === undefined || body === '' ? undefined : body
+  if (body === undefined || body === '') return undefined
+  return capLines(
+    body,
+    VERIFY_STEPS_MAX_BYTES,
+    (kept, total) =>
+      `(Verify steps truncated to ${kept} of their ${total} bytes; read the rest under \`## Verify\` in the repo's \`CLAUDE.md\`.)`,
+  )
 }
 
 const UNATTENDED =
@@ -159,7 +176,7 @@ function workerScope(t: TaskBrief): string {
 
 /**
  * UTF-8 byte budgets for the briefs, held by the brief tests. Each is the size with a capped task YAML
- * and a 1.1 kB repo verify section (worker 10.9 kB, planner 10.1 kB, reviewer 1.9 kB), plus headroom.
+ * and a capped 1.6 kB verify section (worker 11.6 kB, planner 10.2 kB, reviewer 2.4 kB), plus headroom.
  */
 export const WORKER_BRIEF_MAX_BYTES = 12_000
 export const PLANNER_BRIEF_MAX_BYTES = 11_000
@@ -220,16 +237,47 @@ export function plannerBrief(t: TaskBrief): string {
   ].join('\n\n')
 }
 
+/**
+ * UTF-8 bytes of the text a successor brief embeds. Broker replies measured 5.2 kB at p99 (12.9 kB at most)
+ * and reviewer verdicts 3.3 kB at p99 (7.2 kB at most); the question is a one-line pointer the tick writes.
+ */
+export const QUESTION_TEXT_MAX_BYTES = 1_000
+export const ANSWER_TEXT_MAX_BYTES = 6_000
+export const REVIEW_TEXT_MAX_BYTES = 4_000
+
+/** The fenced text, cut at a line boundary past `max`, with a note outside the fence naming where the rest is. */
+function cappedFence(label: string, text: string, max: number, rest: string): string {
+  const total = Buffer.byteLength(text)
+  if (total <= max) return dataFence(label, text)
+  const kept = leadingLines(text, max)
+  return (
+    `${dataFence(label, kept)}\n` +
+    `The ${label} was truncated to ${Buffer.byteLength(kept)} of its ${total} bytes; ${rest}`
+  )
+}
+
+/**
+ * UTF-8 byte budget for a successor brief, held by the brief tests: capped question, answer or review text
+ * and a capped verify section (10.7 kB after an answer, 7.4 kB after a review), plus headroom.
+ */
+export const SUCCESSOR_BRIEF_MAX_BYTES = 11_500
+
 export function successorAfterAnswer(t: TaskBrief, a: Answer): string {
+  const handoff = handoffPathFor(t.initiativeDir, t.taskId, t.slice?.n)
   return [
     '## Scope',
     `Continue task ${t.taskId} where your predecessor parked. Its handoff is ` +
-      `\`${handoffPathFor(t.initiativeDir, t.taskId, t.slice?.n)}\`. Done when: ${t.doneWhen}`,
+      `\`${handoff}\`. Done when: ${t.doneWhen}`,
     '## Context',
     'Your predecessor parked on this question:',
-    dataFence('question', a.question),
+    cappedFence('question', a.question, QUESTION_TEXT_MAX_BYTES, `your predecessor's handoff restates it.`),
     `The answer (provenance: ${a.provenance}) is:`,
-    dataFence('answer', a.answer),
+    cappedFence(
+      'answer',
+      a.answer,
+      ANSWER_TEXT_MAX_BYTES,
+      `the full text is the reply to the question message; ask ${t.reportTo} for it if the cut part matters.`,
+    ),
     'A decided answer is not authority for anything on the unlock table.',
     ...workerTail(t),
   ].join('\n\n')
@@ -241,7 +289,12 @@ export function successorAfterReview(t: TaskBrief, review: string): string {
     `A reviewer did not approve task ${t.taskId}. Address these findings in the same branch; push to the same PR. ` +
       `Done when: ${t.doneWhen}`,
     '## Context',
-    dataFence('review', review),
+    cappedFence(
+      'review',
+      review,
+      REVIEW_TEXT_MAX_BYTES,
+      `the full text is the reviewer's report to ${t.reportTo}; ask them for it if the cut part matters.`,
+    ),
     ...workerTail(t),
   ].join('\n\n')
 }
