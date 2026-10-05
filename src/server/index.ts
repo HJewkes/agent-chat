@@ -377,6 +377,29 @@ export function batchMeta(batch: NonNullable<DeliveredMessage['batch']>): Record
   }
 }
 
+/** The channel tag's attributes for one delivered message; keys stay in [A-Za-z0-9_] or Claude Code drops them. */
+export function channelMeta(message: DeliveredMessage): Record<string, string> {
+  const meta = senderMeta(message)
+  if (message.inReplyTo) meta.in_reply_to = message.inReplyTo
+  if (message.broadcast) meta.broadcast = 'true'
+  // Who else was told the same thing, so three recipients do not each answer
+  // as though they were the only one asked. Multicast only; a broadcast
+  // already says "everyone" and a directed send has an audience of one.
+  if (message.audience) meta.audience = message.audience.join(',')
+  // Model-visible, so a lengthening thread is something both sides can act on
+  // before the broker has to refuse. Keys must stay in [A-Za-z0-9_] or Claude
+  // Code drops them silently.
+  if (message.threadDepth !== undefined) meta.thread_depth = String(message.threadDepth)
+  if (message.threadHint) meta.thread_hint = message.threadHint
+  // The one attribute that says a human read these exact words and approved
+  // them. It comes off a broker-written row and there is no client message
+  // that can produce it, so it means the same thing every time it appears.
+  if (message.provenance) meta.provenance = message.provenance
+  // Not `source`: Claude Code sets that one from the server name. This says which automation sent a human-seat frame.
+  if (message.wakeSource) meta.wake_source = message.wakeSource
+  return meta
+}
+
 /** Who a push is from: a batch's own id is in no log, so it names the real senders and ids instead (CC-321). */
 export function senderMeta(message: DeliveredMessage): Record<string, string> {
   return message.batch
@@ -432,22 +455,7 @@ export async function startMcpServer(): Promise<void> {
   )
 
   const deliver = (message: DeliveredMessage): void => {
-    const meta = senderMeta(message)
-    if (message.inReplyTo) meta.in_reply_to = message.inReplyTo
-    if (message.broadcast) meta.broadcast = 'true'
-    // Who else was told the same thing, so three recipients do not each answer
-    // as though they were the only one asked. Multicast only; a broadcast
-    // already says "everyone" and a directed send has an audience of one.
-    if (message.audience) meta.audience = message.audience.join(',')
-    // Model-visible, so a lengthening thread is something both sides can act on
-    // before the broker has to refuse. Keys must stay in [A-Za-z0-9_] or Claude
-    // Code drops them silently.
-    if (message.threadDepth !== undefined) meta.thread_depth = String(message.threadDepth)
-    if (message.threadHint) meta.thread_hint = message.threadHint
-    // The one attribute that says a human read these exact words and approved
-    // them. It comes off a broker-written row and there is no client message
-    // that can produce it, so it means the same thing every time it appears.
-    if (message.provenance) meta.provenance = message.provenance
+    const meta = channelMeta(message)
     // The context hint rides this frame rather than being pushed on a timer:
     // fanout cost is payload x recipients, so telling every session its own
     // figure on a schedule is the one shape the broadcast budget exists to

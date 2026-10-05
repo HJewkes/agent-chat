@@ -419,6 +419,8 @@ export interface DeliveredMessage {
   text: string
   /** Absent on every ordinary message. See {@link Provenance}. */
   provenance?: Provenance
+  /** CC-436: set when the human seat's frame was sent by a known automation, so it is not read as the human typing. */
+  wakeSource?: WakeSource
   /** Set when this message answers an earlier one, carrying that message's id. */
   inReplyTo?: string
   /** True when the sender addressed everyone rather than this session specifically. */
@@ -524,12 +526,14 @@ export const isTeleportReason = (value: unknown): value is TeleportReason =>
 /** The surfaces that put the agent in front of a human who can answer a prompt. */
 export const isInteractiveSurface = (surface: SurfaceName): boolean => surface !== 'headless'
 
-/** CC-203: marks a send or resume the seat watchdog made, so its event row is not read as the human typing. */
-export type WakeSource = 'watchdog'
+export const WAKE_SOURCES = ['watchdog', 'shepherd'] as const
+
+/** CC-203, CC-436: marks a send or resume the seat watchdog or Shepherd made, so its event row is not read as the human typing. */
+export type WakeSource = (typeof WAKE_SOURCES)[number]
 
 /** A frame's `source` is untrusted wire input, so anything but a known source is dropped. */
 export const wakeSource = (value: unknown): WakeSource | undefined =>
-  value === 'watchdog' ? value : undefined
+  WAKE_SOURCES.find(source => source === value)
 
 /** Session -> broker. */
 export type ClientMessage =

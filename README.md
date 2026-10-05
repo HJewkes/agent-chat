@@ -224,6 +224,8 @@ transcript is readable by every other session here.
 Inbound messages arrive as `<channel source="plugin:agent-chat:agent-chat"
 from="alice" msg_id="a1b2c3d4" thread_depth="1">`, plus `in_reply_to` and
 `broadcast` when they apply, and `thread_hint="wrap_up"` on a long chain.
+A wake the seat watchdog or Shepherd sent in the human's name carries
+`wake_source="watchdog"` or `wake_source="shepherd"`; a message the human typed has none.
 `source` is set by Claude Code from the server name and cannot be spoofed;
 `from` is chosen by the sender and can be.
 
