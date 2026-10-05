@@ -35,6 +35,8 @@ export interface Dispatch {
   /** The worktree the spawn cuts; absent for a planner, which shares the checkout. */
   worktree?: string
   reason: string
+  /** The class-of-service tier `planOrder` placed the task in (CC-768); absent for a slice and for an initiative's own plan. */
+  tier?: number
   /** The seat that dispatched it (CC-205); absent for an initiative's autonomy block. */
   seat?: string
   /** Prefix of the agent names the claim spawns; absent means `bd`. */

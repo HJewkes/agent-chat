@@ -20,11 +20,14 @@ import {
   type PlanInputs,
   type Tally,
 } from './plan.js'
+import type { MilestoneFile } from './milestones.js'
+import { planOrder, type PlannedRow } from './plan-order.js'
 import {
   dispatchOrder,
   type DispatchRow,
   type Route,
   type ScoreRow,
+  type ScoredTask,
   type ScoringDefaults,
   type ShareCapRefusals,
 } from './score.js'
@@ -38,11 +41,22 @@ import { worktreePathFor } from './trust-gate.js'
  * orphan checks.
  */
 
+/** What `planOrder` reads beyond the scored rows (CC-768); a plan without it keeps `dispatchOrder`'s order. */
+export interface OrderInputs {
+  /** Every open task in scope, excluded ones included, as `scoredPlan` passes them. */
+  tasks: readonly ScoredTask[]
+  /** ISO day. */
+  today: string
+  milestones?: MilestoneFile
+  knownIds?: readonly string[]
+}
+
 export interface SeatPlanInputs {
   seat: SeatDispatch
   /** `scoreAll` rows over the seat's scope. */
   rows: readonly ScoreRow[]
   defaults: ScoringDefaults
+  order?: OrderInputs
   /** Task files by initiative, for the eligibility checks the scorer does not make. */
   tasks: ReadonlyMap<string, Task[]>
   ledger: Ledger
@@ -114,7 +128,7 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
   const { budget } = inputs
   const runStart = Math.max(budget.runStartAt, budget.ctx.now.getTime() - RUN_CAP_MS)
   const priorPicks = priorPicksOf(inputs.ledger, inputs.seat.seat, runStart)
-  const { order, refused } = dispatchOrder(inputs.rows, inputs.defaults, inputs.rows.length, priorPicks)
+  const { order, refused, planRefusals } = orderRows(inputs, priorPicks)
   const walk = startWalk(inputs)
   const plan: SeatPlan = { dispatch: [], claims: [], refusals: [], priorPicks, shareCapped: refused }
   const take = (initiative: string, task: string, outcome: Taken | Refused): void => {
@@ -129,7 +143,60 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
   for (const claim of readySlices(inputs.ledger, walk.held).filter(c => c.seat === inputs.seat.seat))
     take(claim.initiative, claim.taskId, considerSlice(claim, walk))
   for (const row of order) take(row.initiative, row.id, consider(row, walk))
+  for (const { initiative, task, reason } of planRefusals)
+    plan.refusals.push({ initiative, task, kind: 'plan-blocked', reason })
   return plan
+}
+
+interface Ordered {
+  order: (DispatchRow & Partial<Pick<PlannedRow, 'tier'>>)[]
+  refused: ShareCapRefusals
+  /** Rows `planOrder` dropped for a tag reason, one per task. */
+  planRefusals: { initiative: string; task: string; reason: string }[]
+}
+
+/** `planOrder`'s order when the tick passed its inputs, else `dispatchOrder`'s. */
+function orderRows(inputs: SeatPlanInputs, priorPicks: Record<string, number>): Ordered {
+  const { rows, defaults, order: extra } = inputs
+  if (extra === undefined)
+    return { ...dispatchOrder(rows, defaults, rows.length, priorPicks), planRefusals: [] }
+  const base = {
+    tasks: extra.tasks,
+    defaults,
+    today: extra.today,
+    seat: inputs.seat.seat,
+    ...(extra.milestones !== undefined && { milestones: extra.milestones }),
+    ...(extra.knownIds !== undefined && { knownIds: extra.knownIds }),
+  }
+  const planned = planOrder({ ...base, rows, n: rows.length, priorPicks })
+  const shareCapped = Object.entries(planned.refused).filter(([key]) => key.startsWith('share-cap:'))
+  return {
+    order: planned.order,
+    refused: Object.fromEntries(shareCapped) as ShareCapRefusals,
+    planRefusals: tagRefusals(rows, planned, base),
+  }
+}
+
+const HOLDS = (key: string) => key.startsWith('share-cap:') || key === 'intangible-held'
+
+/**
+ * `planOrder` counts its tag refusals (`dep-blocked`, `gated:<id>`, ...) without naming the task, so each
+ * row it dropped is placed alone to learn its reason. Placement reads the tags of every task, not the rows.
+ */
+function tagRefusals(
+  rows: readonly ScoreRow[],
+  planned: ReturnType<typeof planOrder>,
+  base: Omit<Parameters<typeof planOrder>[0], 'rows' | 'n'>,
+): Ordered['planRefusals'] {
+  if (!Object.keys(planned.refused).some(key => !HOLDS(key))) return []
+  const placed = new Set(planned.order.map(row => row.id))
+  return rows
+    .filter(row => row.blocked.length === 0 && !placed.has(row.id))
+    .flatMap(row => {
+      const alone = planOrder({ ...base, rows: [row], n: 1 })
+      const reason = Object.keys(alone.refused).find(key => !HOLDS(key))
+      return reason === undefined ? [] : [{ initiative: row.initiative, task: row.id, reason }]
+    })
 }
 
 function startWalk(inputs: SeatPlanInputs): Walk {
@@ -182,7 +249,7 @@ function record(d: Dispatch, role: Role, walk: Walk): void {
   bump(walk.seatWorktrees, d.repo)
 }
 
-function consider(row: DispatchRow, walk: Walk): Taken | Refused {
+function consider(row: DispatchRow & Partial<Pick<PlannedRow, 'tier'>>, walk: Walk): Taken | Refused {
   const { seat, tasks } = walk.inputs
   const task = tasks.get(row.initiative)?.find(t => t.id === row.id)
   if (task === undefined) return { kind: 'not-open', reason: 'scored, but no open task file was read for it' }
@@ -195,12 +262,10 @@ function consider(row: DispatchRow, walk: Walk): Taken | Refused {
   if (repo === undefined)
     return { kind: 'no-repo', reason: `seat ${seat.seat} lists no repo for ${row.initiative}` }
   const reason = `score ${row.score}, effective ${row.effective}`
-  const dispatch = dispatchFor(
-    { initiative: row.initiative, task: row.id, profile: route.profile },
-    repo,
-    reason,
-    walk,
-  )
+  const dispatch = {
+    ...dispatchFor({ initiative: row.initiative, task: row.id, profile: route.profile }, repo, reason, walk),
+    ...(row.tier === undefined ? {} : { tier: row.tier }),
+  }
   const work = { taskId: row.id, tags: task.tags, owns: [] }
   return blocker(dispatch, work, route.role, walk) ?? { dispatch, role: route.role, work }
 }
