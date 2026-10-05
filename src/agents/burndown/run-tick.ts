@@ -5,6 +5,7 @@ import { resolveDeciderAgentId, resolveWorktreeBudget } from '../../config.js'
 import { burndownConfigPath, burndownLedgerPath, burndownPausePath } from '../../paths.js'
 import type { QueueItem } from '../../protocol.js'
 import { activeWorkRoot } from '../active-work.js'
+import { seatMergedLog } from '../seats/dispatch-log.js'
 import { seatJournal } from '../seats/journal.js'
 import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
 import { advance, applyActions, claimKey, type InboxMessage } from './advance.js'
@@ -196,7 +197,8 @@ async function actOn(
   const leaks = await leakCheck(woken.ledger, { exec: opts.exec ?? run, log, seats: config.seats })
   const diff = { seats: config.seats, before: ledger, after: leaks.ledger, spawns, human: leaks.human }
   const journal = seatJournal(defaultAutonomyRoot(opts.root), { log, now: () => now })
-  const told = await deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now, journal })
+  const dispatch = seatMergedLog(defaultAutonomyRoot(opts.root), { log, now: () => now })
+  const told = await deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now, journal, dispatch })
   writeLedger(burndownLedgerPath(), { ...told.ledger, lastTickAt: now.toISOString() })
   return [...executed.lines, ...woken.lines, ...leaks.lines, ...told.lines]
 }
