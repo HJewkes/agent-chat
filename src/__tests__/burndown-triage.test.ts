@@ -199,6 +199,12 @@ describe('settling a started triage job', () => {
     expect(detailAfter(rosterOf(), 31)).toBe('triage triage-cc-1-1 never started, claim still stalled')
   })
 
+  it('says a triager past maxMinutes whose agent is still live is still running', () => {
+    expect(detailAfter(rosterOf(['triage-cc-1-1', 'live']), 31)).toBe(
+      'triage triage-cc-1-1 still running past maxMinutes 30, claim still stalled',
+    )
+  })
+
   it('says a triager whose agent exited ran', () => {
     expect(detailAfter(rosterOf(['triage-cc-1-1', 'exited']), 5)).toBe(
       'triage triage-cc-1-1 ran, claim still stalled',

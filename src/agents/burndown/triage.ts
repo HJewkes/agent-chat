@@ -172,15 +172,20 @@ export function settleTriage(ledger: Ledger, roster: Roster, maxMinutes: number,
     const row = rowNamed(roster, c.triage.name)
     const overdue = now.getTime() - Date.parse(c.triage.startedAt ?? c.triage.since) > maxMinutes * MINUTE_MS
     if (!overdue && (row === undefined || !FINISHED.has(row.state))) return c
-    const detail = `triage ${c.triage.name ?? '?'} ${endedAs(row)}, claim still stalled`
+    const detail = `triage ${c.triage.name ?? '?'} ${endedAs(row, maxMinutes)}, claim still stalled`
     return { ...c, triage: { ...c.triage, outcome: 'ended' as const, detail } }
   })
   return { ...ledger, claims }
 }
 
-/** A job with no roster row past `maxMinutes` never landed: no agent row, or the spawn frame went unanswered. */
-const endedAs = (row: Roster['agents'][number] | undefined): string =>
-  row === undefined ? 'never started' : 'ran'
+/**
+ * No roster row past `maxMinutes` means the job never landed: no agent row, or the spawn frame went
+ * unanswered. The settle step has no stop dep, so an overrun triager is reported as still running.
+ */
+function endedAs(row: Roster['agents'][number] | undefined, maxMinutes: number): string {
+  if (row === undefined) return 'never started'
+  return FINISHED.has(row.state) ? 'ran' : `still running past maxMinutes ${maxMinutes}`
+}
 
 /** The `stalled` event's detail: the reason, and that triage ran when it has. */
 export function stallDetail(claim: Claim, reason: string): string {
