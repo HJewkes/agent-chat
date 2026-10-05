@@ -75,9 +75,22 @@ export function trustGap(
  * A folder is trusted when either key below has `hasTrustDialogAccepted`:
  * the canonical repo root (a linked worktree resolves through `.git` to its main
  * checkout), or the folder itself or an ancestor no higher than its git root.
- * Any other release may differ, so callers must refuse on a version mismatch.
+ * Any other release may differ, so callers must refuse a version not listed in
+ * `VERIFIED_TRUST_RULE_VERSIONS`.
  */
-export const TRUST_RULE_CLI_VERSION = '2.1.284'
+export const TRUST_RULE_BASELINE_CLI_VERSION = '2.1.284'
+
+/**
+ * Releases whose startup trust rule was read from their own bundle, each mapped to the
+ * release whose rule it was compared against. Adding one needs the check recorded in
+ * `docs/trust-rule-versions.md`; `scripts/verify-trust-rule.mjs` prints the code to read.
+ */
+export const VERIFIED_TRUST_RULE_VERSIONS: Readonly<Record<string, string>> = {
+  [TRUST_RULE_BASELINE_CLI_VERSION]: TRUST_RULE_BASELINE_CLI_VERSION,
+  '2.1.287': TRUST_RULE_BASELINE_CLI_VERSION,
+  '2.1.288': TRUST_RULE_BASELINE_CLI_VERSION,
+  '2.1.289': TRUST_RULE_BASELINE_CLI_VERSION,
+}
 
 /** The nearest directory at or above `dir` holding a `.git` file or directory, as the CLI's `findGitRoot`. */
 export function gitRootOf(dir: string): string | undefined {

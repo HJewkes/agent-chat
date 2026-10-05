@@ -12,7 +12,7 @@ import type {
   Provenance,
   QueueItem,
 } from '../protocol.js'
-import type { CursoredMessage, DecisionCitation } from '../protocol.js'
+import { wakeSource, type CursoredMessage, type DecisionCitation } from '../protocol.js'
 import { resolveNoticeTtlMs } from '../config.js'
 import { DECISION_AUDIT_MS, decidedText, overruleText } from './decisions.js'
 import { undeliveredHandoffs, type StoredHandoff } from './handoffs.js'
@@ -177,6 +177,7 @@ function messageText(row: Row, meta: Record<string, string>): string {
 const toMessage = (row: Row): DeliveredMessage => {
   const meta = (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>
   const decided = row.kind === 'decided'
+  const woken = row.kind === 'message' ? wakeSource(meta.source) : undefined
   return {
     msgId: row.msg_id ?? String(row.id),
     from: row.actor,
@@ -185,6 +186,7 @@ const toMessage = (row: Row): DeliveredMessage => {
     ...(row.ref ? { inReplyTo: row.ref } : {}),
     ...(row.kind === 'broadcast' ? { broadcast: true } : {}),
     ...(meta.event ? { event: meta.event } : {}),
+    ...(woken === undefined ? {} : { wakeSource: woken }),
     // Replayed from the row the broker wrote, so a message re-read from the
     // inbox carries the same marker the live push did. Nothing a client sends
     // reaches `meta`, which is what keeps this as trustworthy on the way out as

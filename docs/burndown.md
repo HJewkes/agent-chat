@@ -36,6 +36,8 @@ agent-chat burndown install [--dry-run]
                                         print the checklist, then install and start the launchd job
 agent-chat burndown uninstall          stop the launchd job and keep it from starting at login
 agent-chat burndown job-status         launchd state: loaded, pid, and whether the tick may spawn
+agent-chat burndown seats compare --seat <name> [--autonomy-root <dir>]
+                                        check a seat's dry-run plan against score.py's order
 ```
 
 `agent-chat burndown plan --seat <name>` prints one seat's dry-run dispatch plan and its
@@ -62,6 +64,12 @@ instead of for briefs' `autonomy:` blocks. It reads the charter and seat files u
 `claude-channels/sources/autonomy/` once per tick. Seats and a brief with an `autonomy:`
 block together are a config error: the tick refuses before it reads the roster, since
 both modes could dispatch the same work.
+
+A seat file with `role: hub` dispatches nothing: the tick skips it and `burndown plan
+--seat` refuses it. The charter's `hub:` key does not: it names the charter and
+restart-window owner, whose seat dispatches like any other under its own prefix, pool and
+`concurrency` block (CC-775). A seat without a `concurrency` block still dispatches nothing,
+since every cap defaults to 0.
 
 For each listed seat, in order, the tick:
 
@@ -90,6 +98,48 @@ They are resolved before new work is planned, so each one gates on the reading c
 with the spawns before it on its pool, and new dispatches then gate on all of them. When
 the pool has headroom for one, an in-flight claim's reviewer wins over a new dispatch. A
 spawn the charge closes is deferred, not stalled, and comes back next tick.
+
+### Checking the seat plan against score.py: `seats compare` (CC-251)
+
+`agent-chat burndown seats compare --seat <name>` makes the seat's dry-run plan, as
+`burndown plan --seat` does, then runs
+`python3 <autonomy root>/score.py --seat <name> --check-landed --json --top 1000` in the same
+process, with `--today` pinned to the plan's day and one `--prior <initiative>=<n>` per claim
+the seat dispatched this run. score.py therefore decays each initiative as the plan does, and
+the raw and decayed scores it prints for each ID match the plan's exactly; no decay tolerance
+is applied.
+
+It walks score.py's order and prints each ID with its raw and decayed score and one verdict:
+
+- `dispatched as pick <n>`;
+- `refused [<kind>]: <reason>`, the plan's refusal;
+- `held`, when the claim ledger holds the task;
+- `beyond caps [<kind>]: <reason>`, for a `role-cap`, `worktrees`, `slots`, `budget` or
+  `lanes-full` refusal, or for a `share-cap:<kind>` skip, which the plan counts by kind
+  rather than by ID: each count explains that many of the kind's lowest-ranked silent IDs.
+
+It exits 1 on any of these, with the line in capitals:
+
+- `UNEXPLAINED SKIP`: score.py lists the ID and the plan neither dispatched nor refused it;
+- `OUT OF ORDER`: a dispatch comes before another dispatch that score.py ranks higher, with
+  no recorded reason;
+- `EXTRA DISPATCH`: the plan dispatched a task score.py does not list, such as one
+  `--check-landed` found landed.
+
+**The reorder rule.** A dispatch ahead of a higher-ranked one is explained, and passes with its
+reason printed, only when:
+
+- `planOrder` (CC-628) places it in a higher class-of-service tier than the ID it overtook:
+  expedite, a fixed date with under 2 days of slack, or a milestone the seat owns (the line
+  names the milestone and its float); or
+- a share-capped ID of its own initiative ranks above it in score.py, which decays that
+  initiative once more than the plan does.
+
+Any other reorder fails. Ready slices are dispatched ahead of the scored order by design; they
+are counted on their own line and left out of the order check. The tiers are read from the
+same scope and this ISO week's milestone file as `burndown plan --seat --scored`; today the
+seat plan itself walks `dispatchOrder`, so a tier reorder appears only once it walks
+`planOrder`'s order.
 
 ### The run meter
 
@@ -225,6 +275,15 @@ Every item is yours to check by hand; nothing here is verified by an agent.
 - **Three supervised ticks**: `agent-chat burndown tick --once` run by hand three times
   across one worker's life (spawn, shepherding, done), `burndown status` read after
   each.
+- **Seats mode, rehearsed** (only when `burndown.config.json` lists `seats`): for each
+  listed seat, three dry runs, each `burndown tick --once --dry-run` (or
+  `burndown plan --seat <name>` while the config lists no seats) followed by
+  `burndown seats compare --seat <name>`, all three exiting 0. The output holds task data,
+  so it goes to a private note, never to a PR.
+- **Seats mode, one dispatcher**: each listed seat no longer dispatches scored work itself,
+  so the tick's dispatches do not double the load on the seat's caps.
+- **Seats mode, no autonomy blocks**: no brief carries an `autonomy:` block (the tick refuses
+  both modes together).
 - **Kill switch known**: `agent-chat burndown pause` stops new spawns on the next tick;
   `agent-chat burndown uninstall` removes the job.
 

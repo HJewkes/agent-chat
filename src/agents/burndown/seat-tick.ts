@@ -168,13 +168,13 @@ function lessDispatched(capacity: Capacity | undefined, taken: readonly Dispatch
 }
 
 /** What earlier seats planned this tick: their dispatches and the work each one's collision check saw. */
-interface Taken {
+export interface Taken {
   dispatch: Dispatch[]
   claims: SameTickClaim[]
   charged: readonly string[]
 }
 
-function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, taken: Taken) {
+export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, taken: Taken) {
   const { charter, seats, defaults } = seat.policy
   const name = seat.dispatch.seat
   const weights = seatScope(charter, seats, name, deps.initiatives)

@@ -7,7 +7,7 @@ import { taskRefusal, type Initiative } from './eligibility.js'
 import { heldClaims, isStalled, readLedger, type Claim, type DeciderState, type Ledger } from './ledger.js'
 import type { Roster } from './observe.js'
 import { plan, type Plan, type PlanInputs } from './plan.js'
-import { diskSeatDeps, loadSeats, planSeats } from './seat-tick.js'
+import { diskSeatDeps, loadSeats, planSeats, type LoadedSeats, type SeatPlanDeps } from './seat-tick.js'
 import { accountDir, loadRules, loadTickConfig, readInitiatives, readReadings, readTasks } from './source.js'
 import { currentTriage } from './triage.js'
 import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
@@ -57,8 +57,7 @@ export function planFromDisk(
   return plan({ ...loadWorld(now, root), ledger, ...(check === undefined ? {} : { collision: check }) })
 }
 
-/** `burndown plan --seat <name>`: one seat's dispatches as the tick would plan them, without the tick's live ceilings; with no roster it counts every held tree. */
-export function seatPlanFromDisk(opts: {
+export interface SeatPlanOptions {
   seat: string
   now: Date
   root: string
@@ -66,22 +65,32 @@ export function seatPlanFromDisk(opts: {
   collision?: (ledger: Ledger) => PlanInputs['collision']
   /** The broker's roster; with it only active trees count against the seat's cap, as the tick counts them. */
   roster?: Roster
-}): Plan {
+}
+
+/** The ledger, the seat as the tick loads it, and the planning deps the tick passes; shared by `plan --seat` and `seats compare`. */
+export function seatPlanSetup(opts: SeatPlanOptions): {
+  ledger: Ledger
+  seats: LoadedSeats
+  deps: SeatPlanDeps
+} {
   const ledger = readLedger(burndownLedgerPath())
   const seats = loadSeats([opts.seat], ledger, diskSeatDeps(opts.autonomyRoot, opts.root, opts.now))
   const check = opts.collision?.(ledger)
   const cliVersion = installedClaudeVersion()
-  const planned = planSeats(
-    seats.loaded,
-    {
-      ledger,
-      initiatives: readInitiatives(opts.root),
-      trust: (repo, cwd, configDir) => trustRefusal(repo, cwd, configDir, cliVersion),
-      ...(check === undefined ? {} : { collision: check }),
-      ...(opts.roster === undefined ? {} : { roster: opts.roster }),
-    },
-    opts.root,
-  )
+  const deps: SeatPlanDeps = {
+    ledger,
+    initiatives: readInitiatives(opts.root),
+    trust: (repo, cwd, configDir) => trustRefusal(repo, cwd, configDir, cliVersion),
+    ...(check === undefined ? {} : { collision: check }),
+    ...(opts.roster === undefined ? {} : { roster: opts.roster }),
+  }
+  return { ledger, seats, deps }
+}
+
+/** `burndown plan --seat <name>`: one seat's dispatches as the tick would plan them, without the tick's live ceilings; with no roster it counts every held tree. */
+export function seatPlanFromDisk(opts: SeatPlanOptions): Plan {
+  const { seats, deps } = seatPlanSetup(opts)
+  const planned = planSeats(seats.loaded, deps, opts.root)
   const [skipped] = [...seats.skipped, ...planned.skipped]
   if (skipped !== undefined) throw new Error(skipped.reason)
   return {

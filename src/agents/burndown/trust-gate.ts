@@ -6,7 +6,7 @@ import {
   claudeConfigPath,
   hasTrustEntry,
   plannedWorktreeTrustKeys,
-  TRUST_RULE_CLI_VERSION,
+  VERIFIED_TRUST_RULE_VERSIONS,
 } from '../trust.js'
 
 /**
@@ -39,8 +39,8 @@ export function trustRefusal(
 ): string | undefined {
   if (cliVersion === undefined)
     return 'cannot determine the installed Claude Code version, so its trust rule is unknown'
-  if (cliVersion !== TRUST_RULE_CLI_VERSION)
-    return `installed Claude Code ${cliVersion} differs from ${TRUST_RULE_CLI_VERSION}, the release whose trust rule this gate reproduces`
+  if (!Object.hasOwn(VERIFIED_TRUST_RULE_VERSIONS, cliVersion))
+    return `installed Claude Code ${cliVersion} differs from ${Object.keys(VERIFIED_TRUST_RULE_VERSIONS).join(', ')}, the releases whose trust rule this gate reproduces`
   const keys = plannedWorktreeTrustKeys(repo, cwd)
   if (keys === undefined) return `${repo} is not inside a git repository, so no worktree can be cut there`
   const file = claudeConfigPath(configDir)
