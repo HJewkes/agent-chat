@@ -23,8 +23,11 @@ age on Linux.
 The `.bak-*` backups from the live `bin/` are not imported; they stay in the nightly archive.
 Deleting them from the live `bin/` is an owner step after the cutover.
 
-Until data paths are made location-independent, `queue`, `log`, `pace` and `scorecard` find
-their data relative to their own directory. Do not run them from this checkout.
+`queue`, `log`, `pace` and `scorecard` find their data in the autonomy directory named by
+`AUTONOMY_ROOT`, which defaults to `$ACTIVE_ROOT/claude-channels/sources/autonomy`. `scorecard`
+reads task files under `ACTIVE_ROOT`. With neither variable set, each exits 2. The live copies
+fell back to their own parent directory instead, so the cutover must export `ACTIVE_ROOT` (or
+`AUTONOMY_ROOT`) wherever these run.
 
 ## Retirement list
 

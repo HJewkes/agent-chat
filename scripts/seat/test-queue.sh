@@ -210,8 +210,20 @@ t_race() {
     report "a change between read and write is refused, nothing written" ok
   else report "a change between read and write is refused, nothing written" "rc=$before $(cat "$scratch/err")"; fi
 }
+t_roots() {
+  active="$scratch/active"; aq="$active/claude-channels/sources/autonomy/queues"
+  mkdir -p "$aq"; cp "$here/testdata/queue/alpha.md" "$aq/alpha.md"
+  rc=$(unset AUTONOMY_ROOT; ACTIVE_ROOT="$active" "$Q" alpha done AA-101 >/dev/null 2>&1; echo $?)
+  if [ "$rc" = 0 ] && ! grep -qF AA-101 "$aq/alpha.md"; then
+    report "AUTONOMY_ROOT defaults to the autonomy dir under ACTIVE_ROOT" ok
+  else report "AUTONOMY_ROOT defaults to the autonomy dir under ACTIVE_ROOT" "exit $rc"; fi
+  rc=$(unset AUTONOMY_ROOT ACTIVE_ROOT; "$Q" alpha done AA-101 2>"$scratch/err" >/dev/null; echo $?)
+  if [ "$rc" = 2 ] && grep -q 'AUTONOMY_ROOT and ACTIVE_ROOT unset' "$scratch/err"; then
+    report "both roots unset fails loudly" ok
+  else report "both roots unset fails loudly" "exit $rc: $(cat "$scratch/err")"; fi
+}
 t_done; t_done_all; t_done_next; t_done_pr; t_park; t_add; t_move
 t_leading; t_blank; t_lock; t_race
-t_size; t_failures; t_missing; t_atomic
+t_size; t_failures; t_missing; t_atomic; t_roots
 echo "$pass passed, $failn failed"
 [ "$failn" -eq 0 ]
