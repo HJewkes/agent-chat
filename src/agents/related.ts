@@ -39,6 +39,8 @@ const RELATED_BUDGET = 1_500
 export const RELATED_RESERVE = 2_600
 const RELATED_CLASSES = ['notes', 'sources', 'tasks', 'sessions']
 const TITLE_MAX = 80
+/** CC-759: the daemon allows 160; half keeps six annotated lines inside RELATED_RESERVE. */
+const READ_IF_MAX = 80
 
 export interface RelatedHit {
   ref: string
@@ -46,6 +48,8 @@ export interface RelatedHit {
   title: string
   /** Relative to the active-work root, as the daemon reports it. */
   path: string
+  /** CC-759: a note's own `read_if`, present only when its file declares one. */
+  readIf?: string
 }
 
 export type RelatedResult = { hits: RelatedHit[] } | { warning: string }
@@ -97,6 +101,13 @@ const isHit = (value: unknown): value is RelatedHit => {
   )
 }
 
+/** A malformed `readIf` costs the annotation, not the hit. */
+const withValidReadIf = (hit: RelatedHit): RelatedHit => {
+  if (hit.readIf === undefined || typeof hit.readIf === 'string') return hit
+  const { readIf: _dropped, ...rest } = hit
+  return rest
+}
+
 async function readEnvelope(res: Response): Promise<unknown> {
   let body: { ok?: unknown; error?: unknown; data?: { hits?: unknown } }
   try {
@@ -140,18 +151,22 @@ export async function fetchRelated(q: RelatedQuery): Promise<RelatedResult> {
   const startedAt = now()
   try {
     const hits = await Promise.race([postRelated(q, query, signal), aborted(signal)])
-    return { hits: (hits as unknown[]).filter(isHit) }
+    return { hits: (hits as unknown[]).filter(isHit).map(withValidReadIf) }
   } catch (err) {
     return unavailable(reasonFor(err, timeoutMs), now() - startedAt, timeoutMs)
   }
 }
 
-const shortTitle = (title: string): string =>
-  title.length <= TITLE_MAX ? title : `${title.slice(0, TITLE_MAX - 1).trimEnd()}…`
+const bounded = (text: string, max: number): string =>
+  text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`
+
+const readIfNote = (readIf: string | undefined): string =>
+  readIf ? ` (read if: ${bounded(readIf, READ_IF_MAX)})` : ''
 
 const hitLine = (hit: RelatedHit, slug: string, root: string): string => {
   const foreign = hit.initiative === slug ? '' : `[from \`${hit.initiative}\`] `
-  return `- ${foreign}${hit.ref} "${shortTitle(hit.title)}" ${path.join(root, hit.path)}`
+  const title = `"${bounded(hit.title, TITLE_MAX)}"${readIfNote(hit.readIf)}`
+  return `- ${foreign}${hit.ref} ${title} ${path.join(root, hit.path)}`
 }
 
 export interface RenderedRelated {

@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { resolveBriefing, resolveSpawnBriefing } from '../agents/active-work.js'
+import { RELATED_RESERVE } from '../agents/related.js'
 
 /**
  * CC-101. The spawn briefing's last section is ranked against the assignment by
@@ -321,5 +322,81 @@ describe('the related section’s reserve (CC-164)', () => {
     expect(requests).toHaveLength(2)
     expect(requests[0]).not.toHaveProperty('trigger')
     expect(requests[1]).toMatchObject({ limit: 3, trigger: 'spawn' })
+  })
+})
+
+const noteHit = (name: string, extra: Record<string, unknown>) => ({
+  ref: `note:widgets/${name}`,
+  class: 'notes',
+  initiative: 'widgets',
+  title: `Title of ${name}`,
+  path: `widgets/sources/notes/${name}`,
+  excerpt: 'not rendered',
+  ...extra,
+})
+
+const relatedLines = async (answer: unknown[]): Promise<string[]> => {
+  const result = await resolveSpawnBriefing({
+    briefing: 'widgets',
+    brief: 'fix it',
+    root,
+    fetch: recordingDaemon([], answer),
+  })
+  const text = (result as { text: string }).text
+  return text.slice(text.indexOf('## Related')).split('\n').slice(2)
+}
+
+describe('a related note’s read_if (CC-759)', () => {
+  it.each([
+    {
+      scenario: 'renders after the title when present',
+      extra: { readIf: 'you touch the frobnicator' },
+      line: (r: string) =>
+        `- note:widgets/a.md "Title of a.md" (read if: you touch the frobnicator) ${r}/widgets/sources/notes/a.md`,
+    },
+    {
+      scenario: 'leaves the line byte-identical when absent',
+      extra: {},
+      line: (r: string) => `- note:widgets/a.md "Title of a.md" ${r}/widgets/sources/notes/a.md`,
+    },
+    {
+      scenario: 'leaves the line byte-identical when empty',
+      extra: { readIf: '' },
+      line: (r: string) => `- note:widgets/a.md "Title of a.md" ${r}/widgets/sources/notes/a.md`,
+    },
+    {
+      scenario: 'drops a non-string readIf but keeps the hit',
+      extra: { readIf: { when: 'never' } },
+      line: (r: string) => `- note:widgets/a.md "Title of a.md" ${r}/widgets/sources/notes/a.md`,
+    },
+    {
+      scenario: 'bounds a long readIf like a long title',
+      extra: { readIf: 'q'.repeat(100) },
+      line: (r: string) =>
+        `- note:widgets/a.md "Title of a.md" (read if: ${'q'.repeat(79)}…) ${r}/widgets/sources/notes/a.md`,
+    },
+  ])('$scenario', async ({ extra, line }) => {
+    const lines = await relatedLines([noteHit('a.md', extra)])
+
+    expect(lines).toEqual([line(root)])
+  })
+
+  it('fits six annotated hits within the reserve and the cap on a titan-platform-sized initiative', async () => {
+    titanPlatform(root)
+    const six = [1, 2, 3, 4, 5, 6].map(i => ({ ...titanHit(i), class: 'notes', readIf: 'r'.repeat(160) }))
+
+    const result = await resolveSpawnBriefing({
+      briefing: 'titan-platform',
+      brief: 'fix it',
+      root,
+      fetch: recordingDaemon([], six),
+    })
+
+    const text = (result as { text: string }).text
+    const section = text.slice(text.indexOf('## Related'))
+    expect(text.length).toBeLessThanOrEqual(9_000)
+    expect(section.length).toBeLessThanOrEqual(RELATED_RESERVE)
+    expect(section).toContain('## Related to this assignment (6, ranked; open with Read)')
+    expect(section.match(/\(read if: r{79}…\)/g)).toHaveLength(6)
   })
 })
