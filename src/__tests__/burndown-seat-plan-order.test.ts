@@ -45,6 +45,7 @@ const SEAT: SeatDispatch = {
   repos: Object.fromEntries(Object.keys(WEIGHTS).map(slug => [slug, [`/tmp/repos/${slug}`]])),
   caps: { implementers: 100, reviewers: 100, planners: 100 },
   worktrees: { perRepoPerSeat: 100, capName: 'worktrees_per_repo_per_seat', leftFreePerRepo: 0 },
+  wipLimits: {},
   excludedTags: [],
   grants: ['merge-on-green-approve'],
 }

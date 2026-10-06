@@ -34,6 +34,7 @@ describe('resolveSeatDispatch', () => {
       repos: { 'init-alpha': ['/tmp/repos/alpha-app', '/tmp/repos/alpha-docs'] },
       caps: { implementers: 4, reviewers: 2, planners: 1 },
       worktrees: { perRepoPerSeat: 3, capName: 'worktrees_per_repo_per_seat', leftFreePerRepo: 2 },
+      wipLimits: {},
       excludedTags: ['human-only', 'blocked'],
       grants: ['grant-merge-alpha'],
     })

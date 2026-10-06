@@ -9,6 +9,7 @@ import { sameTickCollision, type SameTickClaim } from './collision.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
 import { isLive, occupantOf } from '../isolation/sweep.js'
 import type { Claim, Ledger, SeatState } from './ledger.js'
+import type { Downstream } from './flow-gate.js'
 import { rowNamed, type Roster } from './observe.js'
 import type { Capacity, Dispatch, PlanInputs } from './plan.js'
 import { loadPolicy, mergeDefaults, seatBudget, seatScope, type Policy, type SeatPolicy } from './policy.js'
@@ -155,6 +156,8 @@ export interface SeatPlanDeps {
   trust?: (repo: string, cwd: string, configDir: string) => string | undefined
   /** Pools already charged this tick by claims' reviewer and successor spawns, one entry per spawn. */
   charged?: readonly string[]
+  /** Each seat's downstream WIP answer for a checkout (CC-784); absent, no WIP limit applies. */
+  downstream?: (dispatch: SeatDispatch) => (repo: string) => Downstream
   /** The broker's roster, which decides which held trees are active; absent, every held tree counts. */
   roster?: Roster
 }
@@ -233,6 +236,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
       dispatched: chargesOn(pool, [...taken.charged, ...taken.dispatch.map(d => d.account)]),
     },
     collision: (repo, work) => sameTickCollision(taken.claims, repo, work) ?? deps.collision?.(repo, work),
+    ...(deps.downstream === undefined ? {} : { downstream: deps.downstream(seat.dispatch) }),
     ...optional(deps, lessDispatched(deps.capacity, taken.dispatch)),
   })
   planned.refusals.push(

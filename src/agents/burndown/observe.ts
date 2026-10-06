@@ -214,7 +214,7 @@ function withSlices(obs: Observation, claim: Claim, deps: ObserveDeps): Observat
     : { ...obs, slices: read.slices }
 }
 
-const memo = <T>(read: () => T): (() => T) => {
+export const memo = <T>(read: () => T): (() => T) => {
   let cached: { value: T } | undefined
   return () => (cached ??= { value: read() }).value
 }

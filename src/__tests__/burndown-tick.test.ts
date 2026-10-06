@@ -207,7 +207,17 @@ const stubGh =
     factory: (args: string[]) => Answer = () => ({ status: 0, stdout: '[]' }),
   ): Runner =>
   (bin, args, cwd) =>
-    bin === 'gh' ? gh(args, cwd) : bin === SHEPHERD_BIN ? factory(args) : run(bin, args, cwd)
+    bin === 'gh'
+      ? gh(args, cwd)
+      : bin === SHEPHERD_BIN
+        ? factory(args)
+        : isOriginLookup(bin, args)
+          ? { status: 0, stdout: 'https://github.com/Acme/Widgets.git\n' }
+          : run(bin, args, cwd)
+
+/** The downstream WIP read asks the fixture checkout for its origin, which is a local bare repo; the stub names a GitHub one. */
+const isOriginLookup = (bin: string, args: string[]): boolean =>
+  bin === 'git' && args.includes('remote') && args.includes('get-url')
 
 const tick = (
   fake: Fake,
@@ -870,6 +880,33 @@ describe('burndown tick in seats mode', () => {
     expect(ledger.seats).toEqual({ 'seat-t': { samples: [{ at: NOON.getTime(), sevenDay: 40 }] } })
   })
 
+  it('one tick reads Shepherd status once for observe and planning', async () => {
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    const inFlight: Claim = {
+      taskId: 'DM-9',
+      initiative: 'demo',
+      seat: 'seat-t',
+      namePrefix: 'st',
+      spawnedAt: NOON.toISOString(),
+      agentId: 'a9',
+      agentName: 'st-dm-9',
+      spawned: ['st-dm-9'],
+      phase: 'shepherding',
+      phaseAt: NOON.toISOString(),
+      pr: 'https://github.com/acme/widgets/pull/1',
+    }
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [inFlight] })
+    const statusReads: string[][] = []
+    const exec = stubGh(
+      undefined,
+      args => (args[1] === 'status' && statusReads.push(args), { status: 0, stdout: '[]' }),
+    )
+
+    await tick(fakeBroker(), true, () => {}, exec)
+
+    expect(statusReads).toHaveLength(1)
+  })
+
   it('stops at the pool gate with the BUDGET-PAUSE reason', async () => {
     seatInitiative({ 'DM-1': seatTask('DM-1') })
     sevenDayAt(75)
@@ -962,7 +999,10 @@ describe('burndown tick in seats mode', () => {
     const root = path.join(world, 'aw')
     const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
 
-    const lines = renderPlan(seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot }), NOON)
+    const lines = renderPlan(
+      seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot, exec: stubGh() }),
+      NOON,
+    )
 
     expect(lines.map(l => l.replace(/: score .*$/, ''))).toEqual([
       `burndown plan at ${NOON.toISOString()} (dry run: nothing spawned, nothing claimed)`,
@@ -982,7 +1022,10 @@ describe('burndown tick in seats mode', () => {
     const root = path.join(world, 'aw')
     const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
 
-    const lines = renderPlan(seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot }), NOON)
+    const lines = renderPlan(
+      seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot, exec: stubGh() }),
+      NOON,
+    )
 
     expect(lines).toContainEqual(
       expect.stringMatching(
@@ -1007,7 +1050,10 @@ describe('burndown tick in seats mode', () => {
     const root = path.join(world, 'aw')
     const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
 
-    const plan = renderPlan(seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot }), NOON)
+    const plan = renderPlan(
+      seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot, exec: stubGh() }),
+      NOON,
+    )
     const ticked = await tick(fakeBroker(), true)
 
     expect(plan).toContain('scorer skipped: 1 (demo/DM-2.yml)')
@@ -1038,7 +1084,14 @@ describe('burndown tick in seats mode', () => {
       ],
     })
     const dry = (roster?: { agents: AgentIdentity[] }) =>
-      seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot, ...(roster ? { roster } : {}) })
+      seatPlanFromDisk({
+        seat: 'seat-t',
+        now: NOON,
+        root,
+        autonomyRoot,
+        exec: stubGh(),
+        ...(roster ? { roster } : {}),
+      })
 
     expect(dry().refusals.map(r => r.kind)).toEqual(['worktrees'])
     const parked = dry({ agents: [row('st-dm-1', 'exited', worktree)] })

@@ -32,6 +32,7 @@ const SEAT: SeatDispatch = {
   repos: { alpha: [REPO, '/tmp/repos/alpha-docs'], beta: ['/tmp/repos/beta'] },
   caps: { implementers: 2, reviewers: 1, planners: 1 },
   worktrees: { perRepoPerSeat: 3, capName: 'worktrees_per_repo_per_seat', leftFreePerRepo: 2 },
+  wipLimits: {},
   excludedTags: [],
   grants: [],
 }

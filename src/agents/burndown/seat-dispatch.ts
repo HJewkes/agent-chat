@@ -15,6 +15,8 @@ export interface SeatDispatch {
   caps: { implementers: number; reviewers: number; planners: number }
   /** `perRepoPerSeat` caps active trees (CC-279); `capName` says which setting set it, for the refusal. */
   worktrees: { perRepoPerSeat: number; capName: string; leftFreePerRepo: number }
+  /** Checkout to its `wip_limit` override (CC-784); a checkout without one uses the default from `caps.reviewers`. */
+  wipLimits: Record<string, number>
   excludedTags: string[]
   grants: string[]
 }
@@ -28,6 +30,13 @@ function repoMap(seat: SeatPolicy, home: string): Record<string, string[]> {
     for (const slug of repo.initiatives) (map[slug] ??= []).push(expandHome(repo.path, home))
   }
   return map
+}
+
+function wipLimits(seat: SeatPolicy, home: string): Record<string, number> {
+  const limits: Record<string, number> = {}
+  for (const repo of seat.repos)
+    if (repo.wip_limit !== undefined) limits[expandHome(repo.path, home)] = repo.wip_limit
+  return limits
 }
 
 /** The seat's implementers cap its active trees per repo; worktrees_per_repo_per_seat, when set, is a ceiling over that. */
@@ -71,6 +80,7 @@ export function resolveSeatDispatch(policy: Policy, name: string, home = os.home
     repos: repoMap(seat, home),
     caps: { ...seat.concurrency },
     worktrees: worktreeCaps(charter, seat.concurrency.implementers),
+    wipLimits: wipLimits(seat, home),
     excludedTags: seat.excluded_tags,
     grants: seat.grants_extra,
   }
