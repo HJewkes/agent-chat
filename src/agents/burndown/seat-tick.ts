@@ -1,6 +1,6 @@
 import { readAccountBudget } from '../budget.js'
 import { loadDoc } from '../seats/io.js'
-import { pacedCaps } from '../seats/stops.js'
+import { meterSpend, pacedCaps, type SpendMeter } from '../seats/stops.js'
 import { accountReading } from '../seats/watchdog.js'
 import { chargesOn, runStartAt, type PoolGateInput, type SevenDaySample } from './budget-gate.js'
 import { sameTickCollision, type SameTickClaim } from './collision.js'
@@ -36,6 +36,11 @@ export interface SeatTickDeps {
   reading: (configDir: string) => { reading?: PoolGateInput['reading']; resetsAt?: number }
   /** The watchdog's recorded run start for the seat, so the tick and the watchdog agree on the run. */
   recordedRunStart: (seat: string) => number | undefined
+  /**
+   * The watchdog's saved run meter for the seat and day meter for its pool. They stand in for the
+   * run-start and day-start readings a seat with no ledger samples yet cannot supply.
+   */
+  meters?: (seat: string, pool: string) => { run?: SpendMeter | undefined; day?: SpendMeter | undefined }
 }
 
 export interface LoadedSeat {
@@ -69,7 +74,18 @@ function sampled(previous: SeatState | undefined, deps: SeatTickDeps, dispatch: 
     reading?.sevenDay === undefined
       ? []
       : [{ at: nowMs, sevenDay: reading.sevenDay, ...(resetsAt === undefined ? {} : { resetsAt }) }]
-  return { reading, resetsAt, history: kept, state: { samples: [...kept, ...sample] } }
+  const metered =
+    reading?.sevenDay === undefined
+      ? []
+      : meterHistory(dispatch.seat, dispatch.pool.name, reading.sevenDay, deps)
+  const history = [...metered, ...kept].sort((a, b) => a.at - b.at)
+  return { reading, resetsAt, history, state: { samples: [...kept, ...sample] } }
+}
+
+/** The watchdog meters as samples at the run and day starts, counted as the spawn gate and `seats status` count them. */
+function meterHistory(seat: string, pool: string, sevenDay: number, deps: SeatTickDeps): SevenDaySample[] {
+  const saved = deps.meters?.(seat, pool)
+  return saved === undefined ? [] : meterSpend(saved, sevenDay, deps.now).history
 }
 
 function loadSeat(policy: Policy, name: string, ledger: Ledger, deps: SeatTickDeps): LoadedSeat {
@@ -290,5 +306,6 @@ export function diskSeatDeps(autonomyRoot: string, root: string, now: Date): Sea
       }
     },
     recordedRunStart: seat => doc.seats[seat]?.run?.since,
+    meters: (seat, pool) => ({ run: doc.seats[seat]?.run, day: doc.pools[pool] }),
   }
 }

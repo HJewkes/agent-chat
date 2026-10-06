@@ -1,6 +1,7 @@
 import {
   RUN_CAP_MS,
   dayStart,
+  runStartAt,
   sevenDayLine,
   spendSince,
   type PoolRule,
@@ -82,6 +83,36 @@ export function meterHistory(starts: readonly MeterStart[], nowMs: number): Seve
     chain.unshift({ at: sample.at, sevenDay: floor })
   }
   return chain
+}
+
+export interface MeterSpend {
+  history: SevenDaySample[]
+  runStart: number
+  run: SpendMeter | undefined
+  day: SpendMeter | undefined
+}
+
+/**
+ * The saved run and day meters advanced to this reading, as `gatePool` history. The tick, the spawn gate
+ * and `seats status` all count spend through this. `ownRun` false keeps the run meter out of the history
+ * (a pool the seat does not own) while the run start still follows it.
+ */
+export function meterSpend(
+  saved: { run?: SpendMeter | undefined; day?: SpendMeter | undefined },
+  sevenDay: number | undefined,
+  now: Date,
+  ownRun = true,
+): MeterSpend {
+  const nowMs = now.getTime()
+  const run =
+    ownRun && saved.run !== undefined ? advanceMeter(saved.run, sevenDay, nowMs, withinRun) : undefined
+  const day = saved.day === undefined ? undefined : advanceMeter(saved.day, sevenDay, nowMs, sameSpendDay)
+  const runStart = runStartAt(now, saved.run === undefined ? {} : { recordedAt: saved.run.since })
+  const starts = [
+    { at: runStart, meter: run },
+    { at: dayStart(now), meter: day },
+  ]
+  return { history: meterHistory(starts, nowMs), runStart, run, day }
 }
 
 const DAY_MS = 24 * 3_600_000
