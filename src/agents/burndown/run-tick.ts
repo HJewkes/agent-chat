@@ -300,7 +300,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const { observations, unread } = await observe(held, roster, {
     inboxSince: opts.broker.inboxSince,
     root,
-    shepherdRows: () => shepherdRows(opts.exec ?? run),
+    shepherdRows: () => shepherdRows(opts.exec ?? run, opts.log),
     landed: target => shepherdLanded(target, opts.exec ?? run),
   })
   const ctx = {
