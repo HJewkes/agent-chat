@@ -91,6 +91,7 @@ export const VERIFIED_TRUST_RULE_VERSIONS: Readonly<Record<string, string>> = Ob
   '2.1.288': TRUST_RULE_BASELINE_CLI_VERSION,
   '2.1.289': TRUST_RULE_BASELINE_CLI_VERSION,
   '2.1.290': '2.1.289',
+  '2.1.291': '2.1.290',
 })
 
 /** The nearest directory at or above `dir` holding a `.git` file or directory, as the CLI's `findGitRoot`. */
