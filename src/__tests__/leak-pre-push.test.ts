@@ -162,6 +162,8 @@ interface FixtureOpts {
   missingTermsRefuses?: boolean
   /** The broker PATH baked into the hook; the agent's own PATH never reaches the scan. */
   scanPath?: string
+  /** The interpreter the guard hooks are written for; the default is the host's choice. */
+  shell?: string
 }
 
 /** A work repo whose origin is a local bare repo, with the guard hooks and a repo-local pre-push hook. */
@@ -183,11 +185,15 @@ function fixture(opts: FixtureOpts = {}): Fixture {
   )
   const hooksDir = path.join(chatHome, 'git-hooks')
   const stubLog = path.join(root, 'stub.log')
-  writeGitHooks(hooksDir, {
-    missingTermsRefuses: opts.missingTermsRefuses ?? MISSING_TERMS_REFUSES,
-    home: ownerHome,
-    path: opts.scanPath ?? pathWithStub(egressStub(stubLog)),
-  })
+  writeGitHooks(
+    hooksDir,
+    {
+      missingTermsRefuses: opts.missingTermsRefuses ?? MISSING_TERMS_REFUSES,
+      home: ownerHome,
+      path: opts.scanPath ?? pathWithStub(egressStub(stubLog)),
+    },
+    opts.shell,
+  )
   const agentEnv = { ...baseEnv(), ...gitHooksEnv(hooksDir) }
   return { work, remote, chatHome, ownerHome, marker, stubLog, termsFile, agentEnv }
 }
@@ -1218,3 +1224,33 @@ describe('the scan view and the repo hook under a hostile agent env', () => {
     expect(fs.existsSync(alternates)).toBe(false)
   })
 })
+
+// Run directly: a push to a local path starts receive-pack through sh, which noexec also stops.
+describe.each(['/bin/dash', '/bin/sh'].filter(shell => fs.existsSync(shell)))(
+  'the repo pre-push hook under a hostile SHELLOPTS with the guard shim on %s',
+  shell => {
+    it.each(['#!/bin/sh', '#!/bin/bash'])(
+      'still runs a %s hook that refuses, so the shim exits nonzero',
+      shebang => {
+        const f = fixture({ shell })
+        fs.writeFileSync(
+          path.join(f.work, '.git', 'hooks', 'pre-push'),
+          `${shebang}\necho ran >> '${f.marker}'\nexit 7\n`,
+          { mode: 0o755 },
+        )
+        commitFile(f, 'clean', 'notes.md', 'fine')
+        const sha = git(f.work, baseEnv(), 'rev-parse', 'clean')
+
+        const run = spawnSync(path.join(f.chatHome, 'git-hooks', 'pre-push'), ['origin', f.remote], {
+          cwd: f.work,
+          env: { ...f.agentEnv, SHELLOPTS: 'xtrace:noexec', BASHOPTS: 'extglob' },
+          input: `refs/heads/clean ${sha} refs/heads/clean ${'0'.repeat(40)}\n`,
+          encoding: 'utf8',
+        })
+
+        expect(repoHookRuns(f)).toEqual(['ran'])
+        expect(run.status).toBe(7)
+      },
+    )
+  },
+)

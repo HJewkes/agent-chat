@@ -16,8 +16,13 @@ const isExecutableFile = (file: string): boolean => {
  * The interpreter a generated script names on its first line, fixed when the script is written.
  * macOS `/bin/sh` re-execs bash, so dash saves one exec per run; no PATH or env lookup is involved.
  */
-export const posixShell = (probe: (file: string) => boolean = isExecutableFile): string =>
-  probe(DASH) ? DASH : FALLBACK
+export const posixShell = (probe: (file: string) => boolean = isExecutableFile): string => {
+  try {
+    return probe(DASH) ? DASH : FALLBACK
+  } catch {
+    return FALLBACK
+  }
+}
 
 /**
  * `-p` makes bash-as-sh ignore SHELLOPTS and imported functions. Dash has no such option (it rejects `-p`)

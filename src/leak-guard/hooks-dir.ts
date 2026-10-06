@@ -49,7 +49,8 @@ const WRITTEN_BY = '# Written by agent-chat at each spawn (CC-268); local edits 
 const chainShim = (shell: string): string =>
   `#!${shell}\n${WRITTEN_BY}${FIND_REPO_HOOK}\n[ -n "$hook" ] || exit 0\nexec "$hook" "$@"\n`
 
-// -p: bash as sh imports no functions and ignores SHELLOPTS from the agent's environment; dash takes the flag.
+// -p: bash as sh imports no functions and ignores SHELLOPTS from the agent's environment; dash has no such import and rejects the flag, so hardenedShebang omits it there.
+// Dash exports an inherited SHELLOPTS untouched, which could noexec a bash repo hook, so the pre-push shim unsets it.
 const prePushHeader = (shell: string): string => `${hardenedShebang(shell)}\n${WRITTEN_BY}`
 
 const NOT_RUN = 'leak-scan: guard NOT run, this push was not scanned'
@@ -130,7 +131,7 @@ const remoteTip = (home: string): string => `remote() {
     GIT_TERMINAL_PROMPT=0 GIT_DIR="$view/.git" git "$@"
 }
 [ "$(remote ls-remote --get-url "$2" 2>/dev/null)" = "$2" ] || {
-  echo "${REWRITTEN_URL}" >&2
+  printf '%s\n' "${REWRITTEN_URL}" >&2
   exit 2
 }
 [ -z "$(remote config --get core.sshCommand 2>/dev/null)" ] || {
@@ -164,7 +165,7 @@ const SCAN_REFS = `while read -r lref lsha rref rsha; do
     *) rsha=$tip ;;
     esac
     [ -n "$rsha" ] || {
-      [ -z "$lookup_failed" ] || { echo "${LOOKUP_FAILED}" >&2; exit 2; }
+      [ -z "$lookup_failed" ] || { printf '%s\n' "${LOOKUP_FAILED}" >&2; exit 2; }
       printf '%s\n' "leak-scan: push refused: $1 names no default branch to scan $lref against; see docs/leak-guard.md." >&2
       exit 2
     } ;;
@@ -226,7 +227,8 @@ fi
 )`
 
 // The broker's PATH covers the whole shim, not only the scan; the repo hook gets the agent's PATH back.
-const prePushShim = (inputs: ScanInputs, shell: string): string => `${prePushHeader(shell)}agent_path=$PATH
+const prePushShim = (inputs: ScanInputs, shell: string): string => `${prePushHeader(shell)}unset SHELLOPTS
+agent_path=$PATH
 PATH=${shQuote(inputs.path)}; export PATH
 tmp=$(mktemp -d) || exit 1
 trap 'rm -rf "$tmp"' EXIT

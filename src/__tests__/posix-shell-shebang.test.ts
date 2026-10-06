@@ -27,6 +27,14 @@ describe('posixShell', () => {
     expect(posixShell(() => false)).toBe('/bin/sh')
   })
 
+  it('falls back to /bin/sh when the probe throws', () => {
+    expect(
+      posixShell(() => {
+        throw new Error('stat failed')
+      }),
+    ).toBe('/bin/sh')
+  })
+
   it('treats a directory or a non-executable file at /bin/dash as missing', () => {
     expect(posixShell(file => file !== '/bin/dash')).toBe('/bin/sh')
   })
