@@ -143,6 +143,31 @@ fx locktmp main; mkbranch feat g.txt x; adv h.txt y
 mkdir -p "$C/.git/refs/remotes/origin"; : > "$C/.git/refs/remotes/origin/main.lock"
 ( sleep 1; rm -f "$C/.git/refs/remotes/origin/main.lock" ) & lockpid=$!
 case_run --no-build "$C" "$HEAD_SHA"; wait $lockpid; check "5 fetch retries past a transient lock" 0 "^OK "
+# git 2.53 words the same ref race differently; a stub fails the default-branch fetch with each message, then runs real git
+REALGIT=$(command -v git); mkdir -p "$W/fetchshim"
+cat > "$W/fetchshim/git" <<STUB
+#!/bin/bash
+for a in "\$@"; do case \$a in +refs/heads/*)
+  n=\$(cat "\$FS_COUNT" 2>/dev/null || echo 0); echo \$((n + 1)) > "\$FS_COUNT"
+  if [ "\$FS_FAILS" = all ] || [ \$n -lt "\$FS_FAILS" ]; then echo "\$FS_MSG" >&2; exit 1; fi;;
+esac; done
+exec "$REALGIT" "\$@"
+STUB
+chmod +x "$W/fetchshim/git"
+fetchrow() { # <label> <message> <failures|all> <exit> <pattern> <expected fetch calls>
+  fx "fs$1" main; mkbranch feat g.txt x; adv h.txt y; local calls=$W/fs$1.count
+  FS_COUNT=$calls FS_MSG=$2 FS_FAILS=$3 PATH="$W/fetchshim:$PATH" case_run --no-build "$C" "$HEAD_SHA"
+  check "5 fetch $1" "$4" "$5"
+  [ "$(cat "$calls")" = "$6" ] && ok "5 fetch $1 calls" || bad "5 fetch $1 calls" "got $(cat "$calls") want $6"
+  clean_state "5 fetch $1" "$SNAP"
+}
+EXISTS="error: fetching ref refs/remotes/origin/main failed: reference already exists"
+OLDVAL="error: fetching ref refs/remotes/origin/main failed: incorrect old value provided"
+fetchrow "retries past a transient reference-exists" "$EXISTS" 2 0 "^OK " 3
+fetchrow "retries past a transient incorrect-old-value" "$OLDVAL" 1 0 "^OK " 2
+fetchrow "keeps failing on reference-exists" "$EXISTS" all 1 "^FAIL fetch: git fetch origin main failed$" 6
+fetchrow "keeps failing on incorrect-old-value" "$OLDVAL" all 1 "^FAIL fetch: git fetch origin main failed$" 6
+fetchrow "unrelated error is not retried" "fatal: unable to access origin: denied" all 1 "^FAIL fetch: git fetch origin main failed$" 1
 # a rewritten default branch needs a forced fetch
 fx forced main; mkbranch feat g.txt x; adv h.txt y; git -C "$C" fetch -q origin; advforce k.txt z
 case_run --no-build "$C" "$HEAD_SHA"; check "force-pushed default branch" 0 "^OK .* \(merge\)$"
@@ -158,7 +183,7 @@ case_run --no-build "$C" "$HEAD_SHA"; check "5 shallow clone" 1 "^FAIL shallow c
 clean_state "5 shallow clone" "$SNAP"
 
 # origin moving between ls-remote and the fetch: a git shim reports a different tip than the fetch delivers
-REALGIT=$(command -v git); mkdir -p "$W/shim"
+mkdir -p "$W/shim"
 printf '#!/bin/bash\nfor a in "$@"; do [ "$a" = ls-remote ] && { "%s" "$@" | sed "s/^[0-9a-f]\\{40\\}/%s/"; exit 0; }; done\nexec "%s" "$@"\n' "$REALGIT" "$(printf '1%.0s' {1..40})" "$REALGIT" > "$W/shim/git"; chmod +x "$W/shim/git"
 fx race main; mkbranch feat g.txt x; adv h.txt y
 PATH="$W/shim:$PATH" case_run --no-build "$C" "$HEAD_SHA"; check "origin tip differs from what ls-remote reported" 1 "^FAIL origin/main is [0-9a-f]{40} but origin reports 1{40}$"
