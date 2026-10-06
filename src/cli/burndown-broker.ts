@@ -3,7 +3,7 @@ import type { ServerMessage } from '../protocol.js'
 import type { TickBroker } from '../agents/burndown/run-tick.js'
 import { refusedSender, type OpenSender, type SeatSender } from '../agents/burndown/seat-deliver.js'
 import type { BrokerView } from '../agents/burndown/collision.js'
-import { LIVE } from '../agents/burndown/observe.js'
+import { LIVE, type Roster } from '../agents/burndown/observe.js'
 
 /** The tick's broker calls over one unregistered connection, which the broker treats as the human; seat events are the exception. */
 
@@ -19,13 +19,7 @@ export function tickBroker(
   seatSender: OpenSender = burndownSender(connectBroker),
 ): TickBroker {
   return {
-    async roster() {
-      const res = (await client.request(
-        { t: 'agents', includeRetired: true },
-        'agents_result',
-      )) as Reply<'agents_result'>
-      return { agents: res.agents, ...(res.slots === undefined ? {} : { slots: res.slots }) }
-    },
+    roster: () => tickRoster(client),
     async inboxSince(name, afterId) {
       const frame = { t: 'inbox_since' as const, name, afterId, limit: INBOX_PAGE }
       const res = (await client.request(frame, 'inbox_since_result')) as Reply<'inbox_since_result'>
@@ -55,6 +49,25 @@ export function tickBroker(
     },
     collisionView: () => collisionView(client),
     seatSender,
+  }
+}
+
+/**
+ * Every row, retired ones included, so observe can read a finished agent's report.
+ * A slow retired read falls back to the live rows and says so (CC-777): failing the
+ * whole tick on it would also cost the collision view.
+ */
+async function tickRoster(client: BrokerClient): Promise<Roster> {
+  const read = async (includeRetired: boolean): Promise<Roster> => {
+    const frame = includeRetired ? { t: 'agents' as const, includeRetired } : { t: 'agents' as const }
+    const res = (await client.request(frame, 'agents_result')) as Reply<'agents_result'>
+    return { agents: res.agents, ...(res.slots === undefined ? {} : { slots: res.slots }) }
+  }
+  try {
+    return await read(true)
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    return { ...(await read(false)), partial: `retired rows unread (${reason})` }
   }
 }
 
