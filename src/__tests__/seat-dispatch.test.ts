@@ -83,8 +83,8 @@ const spawnReq = (name: string) => ({
   spawnerConfigDir: tmp('dispatch-account-'),
 })
 
-/** A hand-built transcript at the path retire reads, with two requests and invented ids. */
-function writeTranscript(name: string, model = MODEL): void {
+/** A hand-built transcript at the path retire reads, with two requests, invented ids and any `extra` records. */
+function writeTranscript(name: string, model = MODEL, extra: object[] = []): void {
   const identity = core.agents.byName(name)
   if (identity === undefined) throw new Error(`no identity for ${name}`)
   const file = identityTranscript(identity).path
@@ -94,9 +94,23 @@ function writeTranscript(name: string, model = MODEL): void {
     message: { id, model, role: 'assistant', usage: { input_tokens: input, output_tokens: output } },
   })
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  const lines = [request('msg-1', 100, 20), request('msg-2', 300, 80)]
+  const lines = [request('msg-1', 100, 20), ...extra, request('msg-2', 300, 80)]
   fs.writeFileSync(file, lines.map(line => JSON.stringify(line)).join('\n') + '\n')
 }
+
+const HEAD = '0123456789abcdef0123456789abcdef01234567'
+
+const failedTool = {
+  type: 'user',
+  message: { content: [{ type: 'tool_result', tool_use_id: 'tu-1', is_error: true, content: 'exit 1' }] },
+}
+
+const reportTo = (to: string, text: string) => ({
+  type: 'assistant',
+  message: {
+    content: [{ type: 'tool_use', id: 'tu-2', name: 'mcp__agent-chat__chat_send', input: { to, text } }],
+  },
+})
 
 beforeEach(() => {
   root = autonomyRoot()
@@ -192,6 +206,53 @@ describe('a seat agent’s retire', () => {
     expect(row).toMatchObject({ agent: AGENT, task: 'AB-12', tokens: 500, models: [MODEL] })
     expect(row?.usd_est).toEqual(expect.any(Number))
     expect(row?.usd_est).toBeGreaterThan(0)
+  })
+
+  it('writes the pr, head, failure class and tool errors read from the same transcript', async () => {
+    const s = supervisorWith(writerOver(root))
+    await s.spawn(spawnReq(AGENT))
+    writeTranscript(AGENT, MODEL, [
+      failedTool,
+      reportTo('human', `Status: DONE\nPR: example-org/widget#7\nHead: ${HEAD}`),
+    ])
+
+    await s.retire(AGENT)
+
+    await expect.poll(() => retiredRows().length).toBe(1)
+    expect(retiredRows()[0]).toMatchObject({
+      pr: 'example-org/widget#7',
+      head: HEAD,
+      failure_class: 'none',
+      tool_errors: 1,
+    })
+  })
+
+  it('writes a no-report class and null pr and head for an agent with no report and no worktree', async () => {
+    const s = supervisorWith(writerOver(root))
+    await s.spawn(spawnReq(AGENT))
+    writeTranscript(AGENT)
+
+    await s.retire(AGENT)
+
+    await expect.poll(() => retiredRows().length).toBe(1)
+    expect(retiredRows()[0]).toMatchObject({
+      pr: null,
+      head: null,
+      failure_class: 'no-report',
+      tool_errors: 0,
+    })
+  })
+
+  it('writes the predecessor a successor was spawned with', async () => {
+    const s = supervisorWith(writerOver(root))
+    await s.spawn(spawnReq(AGENT))
+    const successor = `${AGENT}-again`
+    await s.spawn({ ...spawnReq(successor), predecessor: AGENT })
+
+    await s.retire(successor)
+
+    await expect.poll(() => retiredRows().length).toBe(1)
+    expect(retiredRows()[0]).toMatchObject({ agent: successor, predecessor: AGENT })
   })
 
   it('writes the row with null tokens and usd_est when the transcript is missing', async () => {
