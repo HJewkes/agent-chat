@@ -170,8 +170,8 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
   }
   const walk = startWalk({
     ...inputs,
-    collision: (repo, work) =>
-      inputs.collision?.(repo, work) ?? contractOverlap(work, acceptedContracts(plan)),
+    collision: (repo, work, landedRepos) =>
+      inputs.collision?.(repo, work, landedRepos) ?? contractOverlap(work, acceptedContracts(plan)),
   })
   const take = (initiative: string, task: string, outcome: Taken | Refused): void => {
     if ('kind' in outcome) plan.refusals.push({ initiative, task, ...outcome })
