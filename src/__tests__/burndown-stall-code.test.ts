@@ -21,8 +21,15 @@ describe('stall code precedence', () => {
       'shepherd-ended',
       'planner-refused',
       'retry-spent',
+      'budget',
     ])
     expect(firstCode(['no-progress', 'retry-spent'])).toBe('retry-spent')
+  })
+
+  it('has budget as a code and keeps it off the ladder', () => {
+    expect(STALL_CODES).toContain('budget')
+    expect(LADDER_CODES).not.toContain('budget')
+    expect(STALL_CODES.indexOf('budget')).toBe(STALL_CODES.indexOf('retry-spent') + 1)
   })
 
   it('builds the park update with the class of its code', () => {
