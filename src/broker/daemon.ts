@@ -27,6 +27,7 @@ import {
   writeMeta,
   writePidFile,
 } from './lifecycle.js'
+import { hostLeaseRefusal } from '../host-lease.js'
 import { logEvent } from './log.js'
 import { installedCliPaths, lsofCwd, readPsTable, startReaper } from './reaper.js'
 import { deliver, SocketServer } from './socket.js'
@@ -70,7 +71,7 @@ export function newAgentSlots(): Semaphore {
 export async function startBroker(options: StartBrokerOptions = {}): Promise<net.Server | null> {
   const sock = socketPath()
   fs.mkdirSync(home(), { recursive: true })
-  if (isHeld() || !(await claimSocketPath(sock))) return null
+  if (isHeld() || isOffLease() || !(await claimSocketPath(sock))) return null
   const listener = await listenOn(sock)
   if (listener === null) return null
 
@@ -180,6 +181,14 @@ function isHeld(): boolean {
   const until = activeHold()
   if (until === undefined) return false
   logEvent('broker_exit', { reason: 'held by service stop --hold', until: new Date(until).toISOString() })
+  return true
+}
+
+/** CC-806: the factory host lease names another machine, so this broker must not bind. */
+function isOffLease(): boolean {
+  const message = hostLeaseRefusal()
+  if (message === undefined) return false
+  logEvent('broker_exit', { reason: message })
   return true
 }
 
