@@ -235,7 +235,7 @@ function orderRows(inputs: SeatPlanInputs, priorPicks: Record<string, number>): 
 }
 
 /** The highest tier `planOrder` sorts itself; tiers 3 and 4 follow `dispatchOrder`, decayed by the rows above them. */
-const LAST_SORTED_TIER = 2
+export const LAST_SORTED_TIER = 2
 
 function placementOf(planned: ReturnType<typeof planOrder>): Placement {
   const tiers: Record<string, PlacedTier> = {}

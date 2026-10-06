@@ -208,6 +208,17 @@ describe('seats compare order', () => {
     expect(compareSeat(input({ ...reordered, placement }, { held: new Set(['ZZ-3']) })).ok).toBe(false)
   })
 
+  it('fails a lower tier dispatched ahead of a higher tier row from another initiative', () => {
+    const plan = {
+      dispatch: [dispatch('ZZ-4'), dispatch('ZZ-1', { initiative: 'beta' })],
+      placement: placed({ 'ZZ-1': { tier: 0 }, 'ZZ-4': { tier: 3 } }, decayedBy('ZZ-1')),
+    }
+    const result = compareSeat(input(plan, { score: betaFirst, held: new Set(['ZZ-3']) }))
+
+    expect(result.ok).toBe(false)
+    expect(verdictLine(result.lines, 'ZZ-4')).toContain('OUT OF ORDER')
+  })
+
   it('fails a reorder when the plan recorded no placement, as compare infers none', () => {
     const tiered = { ...reordered, dispatch: [dispatch('ZZ-4', { tier: 1 }), dispatch('ZZ-1', { tier: 3 })] }
 

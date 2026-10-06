@@ -140,14 +140,16 @@ reason printed, only when:
   names the milestone and its float);
 - both sit in the same tier 0, 1 or 2, which the plan sorts by age, slack, float and WSJF rather
   than by score;
-- a share-capped ID of its own initiative ranks above it in score.py, which decays that
-  initiative once more than the plan does; or
-- the plan placed a tier 0 to 2 row of the overtaken ID's initiative, dispatched or not (the
-  ledger may hold it, or a cap refuse it), which decays that initiative in the plan's tier 3 and
-  4 order and not in score.py.
+- both sit in tier 3 or 4, and a share-capped ID of its own initiative ranks above it in
+  score.py, which decays that initiative once more than the plan does; or
+- both sit in tier 3 or 4, and the plan placed a tier 0 to 2 row of the overtaken ID's
+  initiative, dispatched or not (the ledger may hold it, or a cap refuse it), which decays that
+  initiative in the plan's tier 3 and 4 order and not in score.py.
 
-Tiers 3 (standard) and 4 (intangible) follow score.py's order, so any other reorder fails. Ready slices are dispatched ahead of the scored order by design; they
-are counted on their own line and left out of the order check. The milestone and slack
+Tiers 3 (standard) and 4 (intangible) follow score.py's order, so any other reorder fails,
+and so does a lower tier dispatched ahead of a higher one. Ready slices are dispatched ahead
+of the scored order by design; they are counted on their own line and left out of the order
+check. The milestone and slack
 named in a reason are the ones `planOrder` placed the row by.
 
 ### The run meter

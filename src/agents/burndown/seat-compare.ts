@@ -2,7 +2,7 @@ import path from 'node:path'
 import type { Refusal } from './eligibility.js'
 import { run, type Runner } from './exec.js'
 import { heldClaims } from './ledger.js'
-import type { Placement, PlacedTier, SeatPlan } from './seat-plan.js'
+import { LAST_SORTED_TIER, type Placement, type PlacedTier, type SeatPlan } from './seat-plan.js'
 import { localDate, planLoaded } from './seat-tick.js'
 import { seatPlanSetup, type SeatPlanOptions } from './tick.js'
 
@@ -16,10 +16,10 @@ import { seatPlanSetup, type SeatPlanOptions } from './tick.js'
  * A reorder is explained only by the plan's own record (`SeatPlan.placement`), never a recomputation:
  * `planOrder` placed the jumper in a higher class-of-service tier (expedite, fixed date, or an
  * owned milestone) than the ID it overtook; both sit in one of tiers 0 to 2, which the plan sorts
- * by age, slack and float; a share-capped ID of the jumper's initiative ranks above it, so
- * score.py decayed that initiative once more than the plan did; or a tier 0 to 2 row the plan
- * placed, dispatched or not, decayed the overtaken ID's initiative in the plan only. Tiers 3 and 4
- * follow score.py's order, so any other reorder there fails.
+ * by age, slack and float; or both sit in tier 3 or 4 and either a share-capped ID of the jumper's
+ * initiative ranks above it, so score.py decayed that initiative once more than the plan did, or a
+ * tier 0 to 2 row the plan placed, dispatched or not, decayed the overtaken ID's initiative in the
+ * plan only. Tiers 3 and 4 follow score.py's order, so any other reorder there fails.
  */
 
 /** One row of score.py's `--json` order. */
@@ -148,9 +148,6 @@ interface Ranked {
 
 const NO_PLACEMENT: Placement = { tiers: {}, decaying: [], intangibleHeld: [] }
 
-/** The highest tier `planOrder` sorts itself, by age, slack, float and WSJF; tiers 3 and 4 follow score.py's order. */
-const LAST_SORTED_TIER = 2
-
 /** Why `jumper` may go ahead of `overtaken` by tier, or undefined when the tiers explain nothing. */
 function tierReason(jumper: ScorePyRow, overtaken: ScorePyRow, ranked: Ranked): string | undefined {
   const [a, b] = [ranked.placement.tiers[jumper.id], ranked.placement.tiers[overtaken.id]]
@@ -161,7 +158,10 @@ function tierReason(jumper: ScorePyRow, overtaken: ScorePyRow, ranked: Ranked): 
   return undefined
 }
 
-/** A decay the plan applies and score.py lacks: a share-capped ID score.py counted, or this tick's tier 0 to 2 pick. */
+/**
+ * A decay the plan applies and score.py lacks: a share-capped ID score.py counted, or this tick's tier 0 to 2 pick.
+ * Only for a pair the plan places in tiers 3 and 4, the band where `dispatchOrder` applies those decays.
+ */
 function decayReason(jumper: ScorePyRow, overtaken: ScorePyRow, ranked: Ranked): string | undefined {
   const before = ranked.rows.slice(0, ranked.rank.get(jumper.id))
   const capped = before.find(r => r.initiative === jumper.initiative && ranked.capped.has(r.id))
@@ -173,9 +173,17 @@ function decayReason(jumper: ScorePyRow, overtaken: ScorePyRow, ranked: Ranked):
     : `tier ${row.tier} row ${row.id} decays ${overtaken.initiative} in the plan only`
 }
 
+const inDispatchOrder = (id: string, ranked: Ranked) => {
+  const placed = ranked.placement.tiers[id]
+  return placed !== undefined && placed.tier > LAST_SORTED_TIER
+}
+
 /** Why `jumper` may go ahead of `overtaken`, or undefined when nothing on record says so. */
 function reorderReason(jumper: ScorePyRow, overtaken: ScorePyRow, ranked: Ranked): string | undefined {
-  return tierReason(jumper, overtaken, ranked) ?? decayReason(jumper, overtaken, ranked)
+  const tier = tierReason(jumper, overtaken, ranked)
+  if (tier !== undefined) return tier
+  const bothDecayed = inDispatchOrder(jumper.id, ranked) && inDispatchOrder(overtaken.id, ranked)
+  return bothDecayed ? decayReason(jumper, overtaken, ranked) : undefined
 }
 
 /** For each dispatched ID, the best-ranked ID dispatched after it that score.py ranks above it. */
