@@ -7,7 +7,7 @@ import { gatePool } from '../agents/burndown/budget-gate.js'
 import type { Ledger } from '../agents/burndown/ledger.js'
 import { loadSeats, type SeatTickDeps } from '../agents/burndown/seat-tick.js'
 import type { Pool, Seat } from '../agents/seats/charter.js'
-import type { SpendMeter } from '../agents/seats/stops.js'
+import { meterSpend, type SpendMeter } from '../agents/seats/stops.js'
 import { seatSpawnGate } from '../agents/seats/spawn-gate.js'
 
 /** The tick reads the watchdog's run meter when its own ledger holds no run-start sample. Synthetic fixtures. */
@@ -36,7 +36,6 @@ function tickGate(run: SpendMeter | undefined, input: TickInput = {}) {
     root,
     now: input.now ?? NOW,
     reading: () => ({ reading: { sevenDay: input.sevenDay ?? 50, fiveHour: 10, ageSeconds: 30 } }),
-    recordedRunStart: () => run?.since,
     meters: () => ({ run, day: input.day ?? dayMeter }),
   }
   const { loaded, skipped } = loadSeats(['seat-a'], input.ledger ?? EMPTY, deps)
@@ -69,6 +68,15 @@ describe('the seat tick with a watchdog run meter and no ledger samples', () => 
 
   it('refuses with the unknown-run-start reason when there is no meter either', () => {
     const gate = tickGate(undefined)
+
+    expect(gate).toMatchObject({ open: false })
+    expect(JSON.stringify(gate)).toContain(NO_START)
+  })
+
+  it('refuses with the unknown-run-start reason when the saved meter lacks spent', () => {
+    const malformed = { since: RUN_START, last: 50 } as unknown as SpendMeter
+
+    const gate = tickGate(malformed)
 
     expect(gate).toMatchObject({ open: false })
     expect(JSON.stringify(gate)).toContain(NO_START)
@@ -123,5 +131,19 @@ describe('the seat tick with ledger samples and a watchdog meter across a seven_
     )
 
     expect(gate.open).toBe(true)
+  })
+})
+
+describe('meterSpend with a malformed saved meter', () => {
+  it('counts the meter as absent, so no caller gets NaN history', () => {
+    const malformed = { since: RUN_START, last: 50 } as unknown as SpendMeter
+
+    const spend = meterSpend(
+      { run: malformed, day: { since: DAY_START, last: Number.NaN, spent: 0 } },
+      50,
+      NOW,
+    )
+
+    expect(spend).toMatchObject({ history: [], run: undefined, day: undefined })
   })
 })
