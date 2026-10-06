@@ -111,6 +111,7 @@ import type { SeatDispatchLog, SpawnFacts } from './seats/dispatch-log.js'
 import type { SeatSpawnRead, SeatSpawnRequest } from './seats/spawn-gate-read.js'
 import { SEAT_BUDGET_STOP, seatSpawnGate, type SeatBudgetRefusalCode } from './seats/spawn-gate.js'
 import type { RetireSpend } from './seats/dispatch-record.js'
+import { branchHead, retireOutcomeOf } from './seats/retire-outcome.js'
 import {
   poolPickText,
   routePool,
@@ -2177,8 +2178,12 @@ export class Supervisor implements TeleportHost {
       predecessor: meta.predecessor ?? null,
     }
     const sessionId = identity.sessionId || null
+    const tree = allocatedWorktree(this.core.events.agentEvents(), identity.agentId)
     void readTranscriptSpend(transcript)
-      .then(read => writeDispatch(() => log.retired(facts, sessionId, retireSpendOf(read))))
+      .then(async read => {
+        const outcome = await retireOutcomeOf(read.ok ? read.work : undefined, () => branchHead(tree))
+        writeDispatch(() => log.retired(facts, sessionId, retireSpendOf(read), outcome))
+      })
       .catch(dispatchUnavailable)
   }
 
