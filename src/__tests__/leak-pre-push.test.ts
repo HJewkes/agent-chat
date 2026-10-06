@@ -9,6 +9,10 @@ import {
   gitHooksEnv,
   hookScripts,
   MISSING_TERMS_REFUSES,
+  probeScanner,
+  type ScanInputs,
+  type ScanVerdict,
+  STAMP_FILE,
   termsFileFor,
   writeGitHooks,
 } from '../leak-guard/hooks-dir.js'
@@ -164,6 +168,8 @@ interface FixtureOpts {
   scanPath?: string
   /** The interpreter the guard hooks are written for; the default is the host's choice. */
   shell?: string
+  /** The hook-write-time scanner check; absent, the hook checks the scanner at every push. */
+  probe?: ScanInputs['probe']
 }
 
 /** A work repo whose origin is a local bare repo, with the guard hooks and a repo-local pre-push hook. */
@@ -191,6 +197,7 @@ function fixture(opts: FixtureOpts = {}): Fixture {
       missingTermsRefuses: opts.missingTermsRefuses ?? MISSING_TERMS_REFUSES,
       home: ownerHome,
       path: opts.scanPath ?? pathWithStub(egressStub(stubLog)),
+      ...(opts.probe === undefined ? {} : { probe: opts.probe }),
     },
     opts.shell,
   )
@@ -1357,3 +1364,226 @@ describe.each(['/bin/dash', '/bin/sh', '/bin/bash'].filter(shell => fs.existsSyn
     )
   },
 )
+
+describe('the scanner verdict baked when the hooks are written', () => {
+  interface Counted {
+    f: Fixture
+    /** The PATH entry the hook finds, a symlink to the scanner file, as a global npm bin is. */
+    link: string
+    scanner: string
+    /** One line per scanner start: its first argument. */
+    starts: () => string[]
+    /** One line per start of the baked node. */
+    nodeStarts: () => string[]
+  }
+
+  const lines = (file: string): string[] =>
+    fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean) : []
+
+  const countingStub = (count: string, body: string): string =>
+    `#!/bin/sh\nprintf '%s\\n' "$1" >> '${count}'\n${body}\n`
+
+  /** Pins the scanner the baked PATH finds, with its real mtime, as probeScanner would. */
+  const bakedProbe =
+    (node: string, verdict: ScanVerdict = 'scans-text') =>
+    (bakedPath: string) => {
+      const dir = bakedPath.split(':').find(entry => fs.existsSync(path.join(entry, 'titan-egress-scan')))
+      const scanner = fs.realpathSync(path.join(dir ?? '', 'titan-egress-scan'))
+      return { scanner, node, verdict, mtimeMs: fs.statSync(scanner).mtimeMs }
+    }
+
+  function counted(verdict?: ScanVerdict, shell?: string): Counted {
+    const root = fs.mkdtempSync(path.join(SCRATCH, 'counted-'))
+    const [count, nodeLog, stubLog] = ['starts', 'node-starts', 'stub.log'].map(name =>
+      path.join(root, name),
+    ) as [string, string, string]
+    const scanner = path.join(root, 'bin.js')
+    fs.writeFileSync(scanner, countingStub(count, egressStub(stubLog)), { mode: 0o755 })
+    const node = path.join(root, 'node')
+    fs.writeFileSync(node, `#!/bin/sh\necho node >> '${nodeLog}'\nexec /bin/sh "$@"\n`, { mode: 0o755 })
+    const bin = binWith({ node: true, git: true })
+    const link = path.join(bin, 'titan-egress-scan')
+    fs.symlinkSync(scanner, link)
+    const f = fixture({
+      scanPath: `${bin}:${SYSTEM_PATH}`,
+      probe: bakedProbe(node, verdict),
+      ...(shell === undefined ? {} : { shell }),
+    })
+    return { f, link, scanner, starts: () => lines(count), nodeStarts: () => lines(nodeLog) }
+  }
+
+  const shells = ['/bin/dash', '/bin/sh', '/bin/bash'].filter(shell => fs.existsSync(shell))
+
+  it.each(shells)(
+    'starts the scanner once per push under %s, through the baked node, while it is unchanged',
+    shell => {
+      const c = counted(undefined, shell)
+      commitFile(c.f, 'clean', 'notes.md', 'fine')
+
+      const run = push(c.f, 'clean')
+
+      expect(run.code).toBe(0)
+      expect(c.starts()).toEqual(['pre-push'])
+      expect(c.nodeStarts()).toEqual(['node'])
+      expect(remoteHas(c.f, 'clean')).toBe(true)
+    },
+  )
+
+  it('still refuses a leaky push on the one start', () => {
+    const c = counted()
+    commitFile(c.f, 'leaky', 'notes.md', `the ${LEAK} seat`)
+
+    const run = push(c.f, 'leaky')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stdout).toContain('private-term')
+    expect(c.starts()).toEqual(['pre-push'])
+    expect(remoteHas(c.f, 'leaky')).toBe(false)
+  })
+
+  it('runs the scanner from the PATH when the baked node is gone, still skipping the help run', () => {
+    const c = counted()
+    commitFile(c.f, 'clean', 'notes.md', 'fine')
+    fs.rmSync(path.join(path.dirname(c.scanner), 'node'))
+
+    const run = push(c.f, 'clean')
+
+    expect(run.code).toBe(0)
+    expect(c.starts()).toEqual(['pre-push'])
+    expect(remoteHas(c.f, 'clean')).toBe(true)
+  })
+
+  const later = (file: string): void => {
+    const next = new Date(fs.statSync(file).mtimeMs + 10_000)
+    fs.utimesSync(file, next, next)
+  }
+
+  const replaceInPlace = (c: Counted, body: string): void => {
+    fs.writeFileSync(c.scanner, countingStub(path.join(path.dirname(c.scanner), 'starts'), body))
+    later(c.scanner)
+  }
+
+  const repoint = (c: Counted, body: string): void => {
+    const other = path.join(path.dirname(c.scanner), 'other.js')
+    fs.writeFileSync(other, countingStub(path.join(path.dirname(c.scanner), 'starts'), body), { mode: 0o755 })
+    fs.rmSync(c.link)
+    fs.symlinkSync(other, c.link)
+  }
+
+  const dropStamp = (c: Counted): void => fs.rmSync(path.join(c.f.chatHome, 'git-hooks', STAMP_FILE))
+
+  it.each([
+    ['is replaced at the same path with a newer mtime', replaceInPlace],
+    ['the PATH finds resolves to a different file', repoint],
+    ['is unchanged but the stamp is gone', (c: Counted) => dropStamp(c)],
+  ])('runs the help check again when the scanner %s', (_, change) => {
+    const c = counted()
+    commitFile(c.f, 'clean', 'notes.md', 'fine')
+    change(c, egressStub(path.join(path.dirname(c.scanner), 'stub.log')))
+
+    const run = push(c.f, 'clean')
+
+    expect(run.code).toBe(0)
+    expect(c.starts()).toEqual(['--help', 'pre-push'])
+    expect(c.nodeStarts()).toEqual([])
+  })
+
+  it.each([
+    ['replaced at the same path', replaceInPlace],
+    ['repointed', repoint],
+  ])('refuses as today when a scanner %s fails its help check', (_, change) => {
+    const c = counted()
+    commitFile(c.f, 'clean', 'notes.md', 'fine')
+    change(c, 'echo boom >&2; exit 1')
+
+    const run = push(c.f, 'clean')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('failed while checking for its pre-push command')
+    expect(c.starts()).toEqual(['--help'])
+    expect(remoteHas(c.f, 'clean')).toBe(false)
+  })
+
+  it.each(['skips-binary', 'no-pre-push'] as const)('never skips the help check on a %s verdict', verdict => {
+    const c = counted(verdict)
+    commitFile(c.f, 'clean', 'notes.md', 'fine')
+
+    const run = push(c.f, 'clean')
+
+    expect(run.code).toBe(0)
+    expect(c.starts()).toEqual(['--help', 'pre-push'])
+    expect(fs.existsSync(path.join(c.f.chatHome, 'git-hooks', STAMP_FILE))).toBe(false)
+  })
+
+  it('probes the installed scanner to its realpath and a scans-text verdict', () => {
+    const facts = probeScanner(realScanPath())
+
+    expect(facts?.verdict).toBe('scans-text')
+    expect(facts?.scanner).toBe(fs.realpathSync(scannerBin))
+  })
+
+  it('bakes nothing when the help run fails, so the hook keeps checking at every push', () => {
+    expect(probeScanner(pathWithStub('echo boom >&2; exit 1'))).toBeUndefined()
+    expect(probeScanner(binWith({ node: true }))).toBeUndefined()
+  })
+
+  /** A broker PATH whose scanner is a node script, aged a minute unless `fresh`, as the probe runs it. */
+  const nodeScanner = (body: string, fresh = false): string => {
+    const bin = binWith({ node: true })
+    const file = path.join(bin, 'titan-egress-scan')
+    fs.writeFileSync(file, `${body}\n`, { mode: 0o755 })
+    if (!fresh) {
+      const settled = new Date(Date.now() - 60_000)
+      fs.utimesSync(file, settled, settled)
+    }
+    return `${bin}:${SYSTEM_PATH}`
+  }
+
+  const printsHelp = `console.log(${JSON.stringify(HELP)})`
+
+  it('bakes nothing, and returns at the timeout, when the help run ignores SIGTERM and hangs', () => {
+    const scanPath = nodeScanner(
+      `process.on('SIGTERM', () => {})\n${printsHelp}\nsetInterval(() => {}, 1000)`,
+    )
+    const started = Date.now()
+
+    const facts = probeScanner(scanPath)
+
+    expect(facts).toBeUndefined()
+    expect(Date.now() - started).toBeLessThan(9000)
+  }, 20_000)
+
+  it('bakes nothing when the help run exits but a grandchild holds its output open past the timeout', () => {
+    const pidFile = path.join(fs.mkdtempSync(path.join(SCRATCH, 'grandchild-')), 'pid')
+    const scanPath = nodeScanner(
+      `const child = require('node:child_process').spawn('/bin/sleep', ['8'], { stdio: 'inherit', detached: true })
+require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(child.pid))
+child.unref()
+${printsHelp}`,
+    )
+    try {
+      const facts = probeScanner(scanPath)
+
+      expect(facts).toBeUndefined()
+    } finally {
+      if (fs.existsSync(pidFile)) spawnSync('kill', [fs.readFileSync(pidFile, 'utf8')])
+    }
+  }, 20_000)
+
+  it('bakes a settled scanner, but not one written within the last two seconds', () => {
+    expect(probeScanner(nodeScanner(printsHelp, true))).toBeUndefined()
+    expect(probeScanner(nodeScanner(printsHelp))?.verdict).toBe('scans-text')
+  })
+
+  it('refuses a leaky push through the installed scanner the real probe baked', () => {
+    const f = fixture({ scanPath: realScanPath(), probe: probeScanner })
+    commitFile(f, 'leaky', 'notes.md', `the ${LEAK} seat`)
+
+    const run = push(f, 'leaky')
+
+    expect(fs.existsSync(path.join(f.chatHome, 'git-hooks', STAMP_FILE))).toBe(true)
+    expect(run.code).not.toBe(0)
+    expect(run.stdout).toContain('private-term')
+    expect(remoteHas(f, 'leaky')).toBe(false)
+  })
+})
