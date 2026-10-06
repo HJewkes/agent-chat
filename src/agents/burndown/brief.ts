@@ -144,11 +144,24 @@ function reportContract(reportTo: string, lines: string): string {
 
 const WORKER_REPORT = '`Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`, then `PR: <url>`'
 
-const SHEPHERD_STEP =
-  'After the PR opens, run `titan-factory shepherd register <owner>/<repo>#<n> --task <initiative>/<ID> ' +
-  '--implementer <your agent name> --kind <correctness|security|feature|refactor>`. Report `PR: <url>`, ' +
-  '`Head: <full sha>` and `Shepherd: <run id>`; if it refuses (exit 65), report ' +
-  '`Shepherd: refused <first stderr line>` and still report Status, PR and Head: the tick watches CI.'
+const MACHINE_RULE =
+  'Machine rule, over any verify steps above: run named tests only, as ' +
+  "`timeout 300 npx vitest run <files> --testTimeout=20000` (or the repo's equivalent); " +
+  'never the full suite or `npm run verify`, and never `run_in_background`.'
+
+/** A slice registers with `--slice` so its merge notes the task instead of closing it. */
+function shepherdStep(t: TaskBrief): string {
+  const target =
+    t.slice === undefined
+      ? '--task <initiative>/<ID>'
+      : `--slice ${t.slice.n} --task ${t.initiative}/${t.taskId}`
+  return (
+    `After the PR opens, run \`titan-factory shepherd register <owner>/<repo>#<n> ${target} ` +
+    '--implementer <your agent name> --kind <correctness|security|feature|refactor>`. Report `PR: <url>`, ' +
+    '`Head: <full sha>` and `Shepherd: <run id>`; if it refuses (exit 65), report ' +
+    '`Shepherd: refused <first stderr line>` and still report Status, PR and Head: the tick watches CI.'
+  )
+}
 
 /** Constraints and return contract shared by the first worker and its successors. */
 function workerTail(t: TaskBrief): string[] {
@@ -159,7 +172,8 @@ function workerTail(t: TaskBrief): string[] {
     accountLine(t.configDir),
     parkLine(handoffPathFor(t.initiativeDir, t.taskId, t.slice?.n)),
     ...verifyBlock(t.verifySteps),
-    SHEPHERD_STEP,
+    MACHINE_RULE,
+    shepherdStep(t),
     '## Report',
     reportContract(t.reportTo, WORKER_REPORT),
   ]
@@ -176,7 +190,7 @@ function workerScope(t: TaskBrief): string {
 
 /**
  * UTF-8 byte budgets for the briefs, held by the brief tests. Each is the size with a capped task YAML
- * and a capped 1.6 kB verify section (worker 11.6 kB, planner 10.2 kB, reviewer 2.4 kB), plus headroom.
+ * and a capped 1.6 kB verify section (worker 11.8 kB, planner 10.2 kB, reviewer 2.4 kB), plus headroom.
  */
 export const WORKER_BRIEF_MAX_BYTES = 12_000
 export const PLANNER_BRIEF_MAX_BYTES = 11_000
@@ -261,7 +275,7 @@ function cappedFence(label: string, text: string, max: number, rest: string): st
 
 /**
  * UTF-8 byte budget for a successor brief, held by the brief tests: capped question, answer or review text
- * and a capped verify section (10.7 kB after an answer, 7.4 kB after a review), plus headroom.
+ * and a capped verify section (10.9 kB after an answer, 7.5 kB after a review), plus headroom.
  */
 export const SUCCESSOR_BRIEF_MAX_BYTES = 11_500
 
