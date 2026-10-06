@@ -62,7 +62,7 @@ const SIGN_OFF_CHECKLIST = [
   '[ ] Three supervised `burndown tick --once` runs done by hand; `burndown status` read after each.',
   '[ ] Seats mode: per listed seat, three dry runs each followed by `burndown seats compare`, all exiting 0.',
   '[ ] Seats mode: each listed seat no longer dispatches scored work itself; no brief has an autonomy: block.',
-  '[ ] Kill switch known:`burndown pause` stops new spawns; `burndown uninstall` removes the job.',
+  '[ ] Kill switch known: `burndown pause` stops new spawns; `burndown uninstall` removes the job.',
 ]
 
 const refused = (err: unknown): Report => ({

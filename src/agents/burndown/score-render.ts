@@ -35,6 +35,8 @@ export interface ScoredPlan {
   milestones?: { week: string; errors: string[] }
   /** CC-631: planning-tag errors such as a typo'd `dep:`, which the order otherwise reads as closed. */
   tagErrors?: string[]
+  /** CC-778: the ready intangible IDs `planOrder` held back, one per `refused['intangible-held']`. */
+  intangibleHeld: string[]
   /** CC-720: one line per open `ms-role:criterion` task that no check of its milestone names; set only when milestones were read. */
   unnamedCriteria?: string[]
 }
@@ -75,6 +77,7 @@ export function scoredPlan(input: ScoredPlanInputs): ScoredPlan {
     refused: { ...scored.refused, ...planned.refused },
     skipped: [...skipped],
     tagErrors: planned.tagErrors.map(describeTagError),
+    intangibleHeld: planned.intangibleHeld,
     ...(unnamed.length > 0 && { unnamedCriteria: unnamed }),
   }
 }

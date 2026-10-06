@@ -114,6 +114,8 @@ It walks score.py's order and prints each ID with its raw and decayed score and 
 - `dispatched as pick <n>`;
 - `refused [<kind>]: <reason>`, the plan's refusal;
 - `held`, when the claim ledger holds the task;
+- `held [intangible]`, when `planOrder` holds the intangible task back for a ready row of a
+  higher tier (CC-778);
 - `beyond caps [<kind>]: <reason>`, for a `role-cap`, `worktrees`, `slots`, `budget` or
   `lanes-full` refusal, or for a `share-cap:<kind>` skip, which the plan counts by kind
   rather than by ID: each count explains that many of the kind's lowest-ranked silent IDs.
@@ -129,17 +131,18 @@ It exits 1 on any of these, with the line in capitals:
 **The reorder rule.** A dispatch ahead of a higher-ranked one is explained, and passes with its
 reason printed, only when:
 
-- `planOrder` (CC-628) places it in a higher class-of-service tier than the ID it overtook:
-  expedite, a fixed date with under 2 days of slack, or a milestone the seat owns (the line
-  names the milestone and its float); or
+- the plan's own Dispatch rows put it in a higher class-of-service tier (`Dispatch.tier`, CC-768)
+  than the ID it overtook, not a tier recomputed here: expedite, a fixed date with under 2 days of slack, or a milestone the seat owns (the line
+  names the milestone and its float);
+- both sit in the same tier, where the plan orders by age, slack, float and WSJF ties and any
+  order is accepted; or
 - a share-capped ID of its own initiative ranks above it in score.py, which decays that
   initiative once more than the plan does.
 
 Any other reorder fails. Ready slices are dispatched ahead of the scored order by design; they
-are counted on their own line and left out of the order check. The tiers are read from the
-same scope and this ISO week's milestone file as `burndown plan --seat --scored`; today the
-seat plan itself walks `dispatchOrder`, so a tier reorder appears only once it walks
-`planOrder`'s order.
+are counted on their own line and left out of the order check. The milestone and slack
+named in a reason are read from the same scope and this ISO week's milestone file as
+`burndown plan --seat --scored`.
 
 ### The run meter
 

@@ -52,6 +52,7 @@ const input = (plan: Partial<CompareInput['plan']>, patch: Partial<CompareInput>
   plan: { dispatch: [], refusals: [], shareCapped: {}, ...plan },
   held: new Set(),
   tiers: new Map(),
+  intangibleHeld: new Set(),
   ...patch,
 })
 
@@ -84,6 +85,16 @@ describe('seats compare verdicts', () => {
     const result = compareSeat(input(explained, { held: new Set(['ZZ-3']) }))
 
     expect(verdictLine(result.lines, 'ZZ-3')).toContain('ZZ-3 beta score 70 effective 70')
+  })
+
+  it('reports an intangible-held ID as held, not as an unexplained skip', () => {
+    const result = compareSeat(input(explained, { intangibleHeld: new Set(['ZZ-3']) }))
+
+    expect(result.ok).toBe(true)
+    expect(verdictLine(result.lines, 'ZZ-3')).toContain('held [intangible]')
+    expect(result.lines.at(-1)).toBe(
+      'PASS: 5 score.py IDs; 2 dispatched, 1 refused, 1 held, 1 beyond caps, 0 unexplained',
+    )
   })
 
   it('fails on an ID the plan neither dispatched nor refused', () => {
@@ -123,7 +134,8 @@ describe('seats compare order', () => {
       ['ZZ-4', { tier: 2, milestone: 'M-1', float: 0 }],
       ['ZZ-1', { tier: 3 }],
     ])
-    const result = compareSeat(input(reordered, { held: new Set(['ZZ-3']), tiers }))
+    const tiered = { ...reordered, dispatch: [dispatch('ZZ-4', { tier: 2 }), dispatch('ZZ-1', { tier: 3 })] }
+    const result = compareSeat(input(tiered, { held: new Set(['ZZ-3']), tiers }))
 
     expect(result.ok).toBe(true)
     expect(verdictLine(result.lines, 'ZZ-4')).toContain(
@@ -131,13 +143,53 @@ describe('seats compare order', () => {
     )
   })
 
-  it('still fails a jump within the same tier', () => {
+  it('accepts any order within one tier, as the plan breaks ties by age, slack and float', () => {
+    const tiered = { ...reordered, dispatch: [dispatch('ZZ-4', { tier: 3 }), dispatch('ZZ-1', { tier: 3 })] }
+    const result = compareSeat(input(tiered, { held: new Set(['ZZ-3']) }))
+
+    expect(result.ok).toBe(true)
+    expect(verdictLine(result.lines, 'ZZ-4')).toContain('same tier 3 (standard)')
+  })
+
+  it('still fails a lower tier dispatched ahead of a higher one with no reason', () => {
+    const tiered = { ...reordered, dispatch: [dispatch('ZZ-4', { tier: 3 }), dispatch('ZZ-1', { tier: 2 })] }
+
+    expect(compareSeat(input(tiered, { held: new Set(['ZZ-3']) })).ok).toBe(false)
+  })
+
+  it('takes the tier from the Dispatch row, not from the recomputed planOrder placement', () => {
     const tiers = new Map<string, TierReason>([
       ['ZZ-4', { tier: 3 }],
       ['ZZ-1', { tier: 3 }],
     ])
+    const tiered = { ...reordered, dispatch: [dispatch('ZZ-4', { tier: 1 }), dispatch('ZZ-1', { tier: 3 })] }
+    const result = compareSeat(input(tiered, { held: new Set(['ZZ-3']), tiers }))
 
-    expect(compareSeat(input(reordered, { held: new Set(['ZZ-3']), tiers })).ok).toBe(false)
+    expect(result.ok).toBe(true)
+    expect(verdictLine(result.lines, 'ZZ-4')).toContain('tier 1 (fixed date) over tier 3 (standard)')
+  })
+
+  it('keeps a share-cap reorder explained', () => {
+    const plan = {
+      dispatch: [dispatch('ZZ-4', { tier: 3 }), dispatch('ZZ-1', { tier: 3 })],
+      refusals: [refusal('ZZ-2', 'not-open', 'x'), refusal('ZZ-5', 'budget', 'pool closed')],
+      shareCapped: { 'share-cap:feature': 1 } as const,
+    }
+    const score = parseScorePy(
+      JSON.stringify({
+        order: [
+          scoreRow('ZZ-1', 90),
+          scoreRow('ZZ-3', 85),
+          scoreRow('ZZ-2', 80),
+          scoreRow('ZZ-4', 60),
+          scoreRow('ZZ-5', 50),
+        ],
+      }),
+    )
+    const result = compareSeat(input(plan, { score }))
+
+    expect(result.ok).toBe(true)
+    expect(verdictLine(result.lines, 'ZZ-3')).toContain('beyond caps [share-cap:feature]')
   })
 
   it('fails a dispatch score.py does not list and names the landed commit', () => {
@@ -187,6 +239,12 @@ describe('running score.py', () => {
 
     expect(calls).toEqual([['python3', '/tmp/autonomy/score.py', '--seat', 'seat-a']])
     expect(out.order.map(r => r.id)).toEqual(['ZZ-1', 'ZZ-2', 'ZZ-3', 'ZZ-4', 'ZZ-5'])
+  })
+
+  it('says python3 is missing when score.py never ran', () => {
+    const runner = (): RunResult => ({ status: null, stdout: '', stderr: '' })
+
+    expect(() => runScorePy('/tmp/autonomy', [], runner)).toThrow('python3 is missing')
   })
 
   it('throws with the last stderr line when score.py fails', () => {

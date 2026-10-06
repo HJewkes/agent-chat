@@ -2,7 +2,7 @@ import path from 'node:path'
 import type { Refusal } from './eligibility.js'
 import { run, type Runner } from './exec.js'
 import { heldClaims } from './ledger.js'
-import type { PlannedRow } from './plan-order.js'
+import type { PlannedRow, Tier } from './plan-order.js'
 import { scoredPlanFromDisk } from './score-render.js'
 import type { SeatPlan } from './seat-plan.js'
 import { localDate, planLoaded } from './seat-tick.js'
@@ -43,8 +43,10 @@ export interface CompareInput {
   plan: Pick<SeatPlan, 'dispatch' | 'refusals' | 'shareCapped'>
   /** Task IDs the claim ledger holds. */
   held: ReadonlySet<string>
-  /** `planOrder`'s placement of each ID, the record a tier or milestone reorder is checked against. */
+  /** `planOrder`'s placement of each ID; it only names the milestone or slack in a reorder's reason, the tier itself is the Dispatch's. */
   tiers: ReadonlyMap<string, TierReason>
+  /** The ready intangible IDs `planOrder` held back for a ready row of a higher tier. */
+  intangibleHeld: ReadonlySet<string>
 }
 
 export interface Comparison {
@@ -81,7 +83,9 @@ export function runScorePy(autonomyRoot: string, args: string[], runner: Runner 
   const result = runner('python3', [path.join(autonomyRoot, 'score.py'), ...args])
   if (result.status !== 0) {
     const first = (result.stderr ?? '').trim().split('\n').at(-1) ?? ''
-    throw new Error(`score.py exited ${result.status ?? 'on a signal or timeout'}: ${first}`)
+    if (result.status === null)
+      throw new Error('score.py did not run: python3 is missing from PATH, or timed out')
+    throw new Error(`score.py exited ${result.status}: ${first}`)
   }
   return parseScorePy(result.stdout, result.stderr)
 }
@@ -89,6 +93,7 @@ export function runScorePy(autonomyRoot: string, args: string[], runner: Runner 
 type Verdict =
   | { kind: 'dispatched'; pick: number }
   | { kind: 'held' }
+  | { kind: 'intangible-held' }
   | { kind: 'refused' | 'beyond-caps'; refusal: { kind: string; reason: string } }
   | { kind: 'unexplained' }
 
@@ -101,6 +106,7 @@ function verdictOf(
   const pick = picks.get(id)
   if (pick !== undefined) return { kind: 'dispatched', pick }
   if (input.held.has(id)) return { kind: 'held' }
+  if (input.intangibleHeld.has(id)) return { kind: 'intangible-held' }
   const refusal = refusals.get(id)
   if (refusal === undefined) return { kind: 'unexplained' }
   return { kind: CAP_KINDS.has(refusal.kind) ? 'beyond-caps' : 'refused', refusal }
@@ -135,18 +141,27 @@ export function describeTier(t: TierReason): string {
   return `tier ${t.tier} (${TIER_NAMES[t.tier]})`
 }
 
+function tierOf(id: string, tier: number, ranked: Ranked): TierReason {
+  const note = ranked.tiers.get(id)
+  return note?.tier === tier ? note : { tier: tier as Tier }
+}
+
 interface Ranked {
   rank: Map<string, number>
   rows: readonly ScorePyRow[]
   capped: ReadonlySet<string>
   tiers: CompareInput['tiers']
+  /** Each dispatched ID's tier, as the plan's Dispatch rows record it. */
+  dispatchTier: ReadonlyMap<string, number>
 }
 
 /** Why `jumper` may go ahead of `overtaken`, or undefined when nothing on record says so. */
 function reorderReason(jumper: ScorePyRow, overtaken: ScorePyRow, ranked: Ranked): string | undefined {
-  const [a, b] = [ranked.tiers.get(jumper.id), ranked.tiers.get(overtaken.id)]
-  if (a !== undefined && b !== undefined && a.tier < b.tier)
-    return `${describeTier(a)} over ${describeTier(b)}`
+  const [a, b] = [ranked.dispatchTier.get(jumper.id), ranked.dispatchTier.get(overtaken.id)]
+  if (a !== undefined && b !== undefined && a < b)
+    return `${describeTier(tierOf(jumper.id, a, ranked))} over ${describeTier(tierOf(overtaken.id, b, ranked))}`
+  if (a !== undefined && a === b)
+    return `same tier ${a} (${TIER_NAMES[a]}): the plan orders a tier by age, slack and float`
   const before = ranked.rows.slice(0, ranked.rank.get(jumper.id))
   const decayed = before.find(r => r.initiative === jumper.initiative && ranked.capped.has(r.id))
   return decayed === undefined
@@ -174,6 +189,11 @@ function verdictText(
   jumps: Map<string, string>,
 ): { text: string; ok: boolean } {
   if (v.kind === 'held') return { text: 'held: the claim ledger holds it', ok: true }
+  if (v.kind === 'intangible-held')
+    return {
+      text: 'held [intangible]: planOrder holds intangible tasks while a higher tier has a ready row',
+      ok: true,
+    }
   if (v.kind === 'unexplained') return { text: 'UNEXPLAINED SKIP: neither dispatched nor refused', ok: false }
   if (v.kind !== 'dispatched') {
     const label = v.kind === 'refused' ? 'refused' : 'beyond caps'
@@ -216,6 +236,11 @@ export function compareSeat(input: CompareInput): Comparison {
     rows,
     capped: shareCapped(rows, verdicts, input.plan.shareCapped),
     tiers: input.tiers,
+    dispatchTier: new Map(
+      input.plan.dispatch.flatMap(d =>
+        d.slice === undefined && d.tier !== undefined ? [[d.task, d.tier]] : [],
+      ),
+    ),
   }
   const jumps = overtakes(
     whole.filter(id => rank.has(id)),
@@ -256,6 +281,7 @@ export function seatCompareFromDisk(opts: SeatPlanOptions & { runner?: Runner })
     plan: planned,
     held: new Set(heldClaims(ledger).map(c => c.taskId)),
     tiers: new Map(scored.order.map(row => [row.id, row])),
+    intangibleHeld: new Set(scored.intangibleHeld),
   })
   const head = `seats compare ${opts.seat} at ${opts.now.toISOString()}: score.py ${args.join(' ')} against a dry-run seat plan`
   return { ...compared, lines: [head, ...compared.lines] }
@@ -266,7 +292,7 @@ function summary(verdicts: readonly Verdict[], ok: boolean): string {
   const parts = [
     `${count('dispatched')} dispatched`,
     `${count('refused')} refused`,
-    `${count('held')} held`,
+    `${count('held') + count('intangible-held')} held`,
     `${count('beyond-caps')} beyond caps`,
     `${count('unexplained')} unexplained`,
   ]
