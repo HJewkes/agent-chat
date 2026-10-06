@@ -186,6 +186,26 @@ describe('burndown plan --seat --scored from disk', () => {
     expect(report.lines.at(-2)).toBe('milestones=2026-W40, errors: unknown-epic M1 ZZ-404')
   })
 
+  it("does not report an epic as unknown when its task is on disk outside the seat's scope (CC-625)", async () => {
+    const root = path.join(world, 'autonomy')
+    fs.cpSync(FIXTURE, root, { recursive: true })
+    fs.mkdirSync(path.join(root, 'milestones'))
+    const milestones = {
+      week: '2026-W40',
+      appetite_days: 5,
+      milestones: [{ id: 'M1', rank: 1, seat: 'sample-seat', epics: ['XX-1', 'ZZ-404'] }],
+    }
+    fs.writeFileSync(path.join(root, 'milestones', '2026-W40.yml'), stringify(milestones))
+    const archive = path.join(world, 'out-of-scope', 'tasks', 'archive')
+    fs.mkdirSync(archive, { recursive: true })
+    fs.writeFileSync(path.join(archive, 'XX-1.yml'), stringify({ id: 'XX-1', status: 'done' }))
+    const args = { seat: 'sample-seat', scored: true, top: 10, autonomyRoot: root, today: snapshot.today }
+
+    const report = await burndownPlanVerb.run(args, ctx)
+
+    expect(report.lines.at(-2)).toBe('milestones=2026-W40, errors: unknown-epic M1 ZZ-404')
+  })
+
   it("prints a typo'd dep: as an unknown-dep tag error, but not a dep on an archived task (CC-631)", async () => {
     const first = snapshot.tasks[0]!
     const archive = path.join(world, first.slug, 'tasks', 'archive')
