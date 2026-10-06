@@ -34,7 +34,7 @@ export type FailureClass = (typeof FAILURE_CLASSES)[number]
 
 /** Each field is null only when nothing the broker holds says what it was. */
 export interface RetireOutcome {
-  /** `owner/repo#n`, from the report's `PR:` line. */
+  /** `owner/repo#n` from the report's `PR:` line: the PR the agent reported on, which for a reviewer is the PR it reviewed. */
   pr: string | null
   /** From the report's `Head:` line, else the run's worktree branch. */
   head: string | null
@@ -52,10 +52,12 @@ export const UNREAD_OUTCOME: RetireOutcome = {
 
 const LEAD = String.raw`^[\s*_\x60>#-]*`
 const KEY_END = String.raw`[*_\x60]*\s*:[\s*_\x60]*`
-const lineOf = (key: string, value: string): RegExp => new RegExp(`${LEAD}${key}${KEY_END}${value}`, 'im')
+const lineOf = (key: string, value: string, flags = 'im'): RegExp =>
+  new RegExp(`${LEAD}${key}${KEY_END}${value}`, flags)
 
-const STATUS = lineOf('status', '([A-Za-z_]+)')
-const VERDICT = lineOf('verdict', '')
+/** Matched on the opening line only, so a later `Verdict:` or `Status:` line never overrides it. */
+const STATUS = lineOf('status', '([A-Za-z_]+)', 'i')
+const VERDICT = lineOf('verdict', '', 'i')
 const PR_LINE = lineOf('pr', String.raw`(\S+)`)
 const HEAD_LINE = lineOf('head', String.raw`([0-9a-f]{40})\b`)
 const PR_REF = /^([\w.-]+\/[\w.-]+)#(\d+)$/
@@ -75,8 +77,9 @@ export const reportHead = (report: string): string | null => HEAD_LINE.exec(repo
 export function failureClassOf(work: TranscriptWork | undefined): FailureClass {
   if (work === undefined) return 'unknown'
   if (work.report === null) return work.api_stop ?? (work.denied ? 'tool-denied' : 'no-report')
-  if (VERDICT.test(work.report)) return 'none'
-  switch (STATUS.exec(work.report)?.[1]?.toUpperCase()) {
+  const opening = work.report.trimStart().split('\n')[0] ?? ''
+  if (VERDICT.test(opening)) return 'none'
+  switch (STATUS.exec(opening)?.[1]?.toUpperCase()) {
     case 'DONE':
     case 'DONE_WITH_CONCERNS':
       return 'none'

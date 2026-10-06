@@ -66,8 +66,17 @@ describe('the work a transcript shows', () => {
     expect(observed(toolUse('Bash', { text: REPORT })).report).toBeNull()
   })
 
-  it('marks a permission denial from the row that carries its kind', () => {
-    expect(observed(toolResult(true, { toolDenialKind: 'rule' })).denied).toBe(true)
+  it.each([
+    ['permission-rule', true],
+    ['automode-blocked', true],
+    ['automode-unavailable', true],
+    ['interrupted', false],
+    ['user-rejected', false],
+  ])('counts a %s row as a permission denial: %s', (kind, denied) => {
+    expect(observed(toolResult(true, { toolDenialKind: kind })).denied).toBe(denied)
+  })
+
+  it('marks no denial for an errored tool result without a kind', () => {
     expect(observed(toolResult(true)).denied).toBe(false)
   })
 
@@ -77,6 +86,18 @@ describe('the work a transcript shows', () => {
     ['server_error', 'Internal server error', 'api-error'],
   ])('names an API refusal of kind %s', (error, text, stop) => {
     expect(observed(apiError(error, text)).api_stop).toBe(stop)
+  })
+
+  it('clears an API refusal the session recovered from with a normal assistant turn', () => {
+    const turn = JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'retrying' }] },
+    })
+
+    expect(observed(apiError('server_error', 'Internal server error'), turn).api_stop).toBeNull()
+    expect(observed(turn, apiError('rate_limit', "You've hit your session limit")).api_stop).toBe(
+      'rate-limited',
+    )
   })
 })
 
@@ -106,6 +127,9 @@ describe('the failure class', () => {
     ['Status: BLOCKED', true, 'tool-denied'],
     ['Status: NEEDS_CONTEXT', false, 'needs-context'],
     ['Status: HALF_DONE', false, 'unknown'],
+    ['Status: BLOCKED\nPR: example-org/widget#12\nVerdict: FIX_FIRST', false, 'blocked'],
+    ['Verdict: MERGE\nStatus: BLOCKED', false, 'none'],
+    ['Status: DONE\nStatus: NEEDS_CONTEXT', false, 'none'],
   ])('maps a report of %j (denied %s) to %s', (report, denied, cls) => {
     expect(failureClassOf(work({ report, denied }))).toBe(cls)
   })
@@ -118,6 +142,23 @@ describe('the failure class', () => {
     [{ api_stop: 'api-error' as const }, 'api-error'],
   ])('maps a run with no report and %j to %s', (over, cls) => {
     expect(failureClassOf(work({ report: null, ...over }))).toBe(cls)
+  })
+
+  it('maps a run interrupted or rejected by a person, with no report, to no-report', () => {
+    const lines = ['interrupted', 'user-rejected'].map(kind => toolResult(true, { toolDenialKind: kind }))
+
+    expect(failureClassOf(observed(...lines))).toBe('no-report')
+  })
+
+  it('maps a run that recovered from an API error and sent no report to no-report', () => {
+    const turn = JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'go on' }] },
+    })
+
+    expect(failureClassOf(observed(apiError('server_error', 'Internal server error'), turn))).toBe(
+      'no-report',
+    )
   })
 
   it('is unknown when the transcript was not read', () => {

@@ -13,9 +13,9 @@ export type ApiStop = 'rate-limited' | 'context-exhausted' | 'api-error'
 export interface TranscriptWork {
   /** `tool_result` blocks with `is_error: true`, permission denials included. */
   tool_errors: number
-  /** A tool call the permission layer refused: a row carrying `toolDenialKind` (see `denials.ts`). */
+  /** A tool call the permission layer refused: a row whose `toolDenialKind` is in `isPermissionDenial`. */
   denied: boolean
-  /** The last API refusal in the session, or null when there was none. */
+  /** The API refusal that ended the session: reset by any later normal assistant row, so a recovered one is null. */
   api_stop: ApiStop | null
   /** The text of the last `chat_send` that opens as a return-contract report. */
   report: string | null
@@ -27,7 +27,15 @@ export interface WorkObserver {
 }
 
 /** Most lines are tool output; only these markers make a line worth parsing for work. */
-const MARKERS = ['"is_error":true', 'toolDenialKind', 'isApiErrorMessage', 'chat_send']
+const MARKERS = ['"is_error":true', 'toolDenialKind', 'isApiErrorMessage', 'chat_send', '"type":"assistant"']
+
+/**
+ * Which `toolDenialKind` values are a permission refusal. `permission-rule`: a settings rule denied the call.
+ * `automode-*` (`automode-blocked`, `automode-unavailable`): the auto mode classifier refused it or could not
+ * run. Not denials: `interrupted` (the turn was interrupted) and `user-rejected` (a person declined the prompt).
+ */
+const isPermissionDenial = (kind: unknown): boolean =>
+  typeof kind === 'string' && (kind === 'permission-rule' || kind.startsWith('automode-'))
 
 export function workObserver(): WorkObserver {
   const work: TranscriptWork = { tool_errors: 0, denied: false, api_stop: null, report: null }
@@ -42,8 +50,9 @@ export function workObserver(): WorkObserver {
 }
 
 function observeRow(work: TranscriptWork, row: Record<string, unknown>): void {
-  if (typeof row.toolDenialKind === 'string') work.denied = true
+  if (isPermissionDenial(row.toolDenialKind)) work.denied = true
   if (row.isApiErrorMessage === true) work.api_stop = apiStopOf(row)
+  else if (row.type === 'assistant') work.api_stop = null
   for (const block of contentOf(row)) {
     if (block.type === 'tool_result' && block.is_error === true) work.tool_errors++
     const report = reportOf(block)
