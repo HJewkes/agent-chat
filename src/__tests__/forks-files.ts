@@ -13,6 +13,7 @@ export const EXEC_SCRIPT_FILES = [
   'src/__tests__/launch-plan.test.ts',
   'src/__tests__/leak-pre-push.test.ts',
   'src/__tests__/leak-pretool-shells.test.ts',
+  'src/__tests__/posix-shell-shebang.test.ts',
   'src/__tests__/spawn-attach-live.test.ts',
   'src/__tests__/worktree-setup.test.ts',
   'src/__tests__/restart-window.test.ts',
