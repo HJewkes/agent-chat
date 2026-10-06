@@ -143,12 +143,45 @@ describe('seats compare order', () => {
     )
   })
 
-  it('accepts any order within one tier, as the plan breaks ties by age, slack and float', () => {
-    const tiered = { ...reordered, dispatch: [dispatch('ZZ-4', { tier: 3 }), dispatch('ZZ-1', { tier: 3 })] }
+  it('accepts any order within tier 1, as the plan sorts it by slack and age', () => {
+    const tiered = { ...reordered, dispatch: [dispatch('ZZ-4', { tier: 1 }), dispatch('ZZ-1', { tier: 1 })] }
     const result = compareSeat(input(tiered, { held: new Set(['ZZ-3']) }))
 
     expect(result.ok).toBe(true)
-    expect(verdictLine(result.lines, 'ZZ-4')).toContain('same tier 3 (standard)')
+    expect(verdictLine(result.lines, 'ZZ-4')).toContain('same tier 1 (fixed date)')
+  })
+
+  it('still fails a jump within the standard tier, which follows score.py order', () => {
+    const tiered = { ...reordered, dispatch: [dispatch('ZZ-4', { tier: 3 }), dispatch('ZZ-1', { tier: 3 })] }
+    const result = compareSeat(input(tiered, { held: new Set(['ZZ-3']) }))
+
+    expect(result.ok).toBe(false)
+    expect(verdictLine(result.lines, 'ZZ-4')).toContain('OUT OF ORDER')
+  })
+
+  it('explains a standard jump by a tier 0 to 2 pick that decays the overtaken initiative in the plan only', () => {
+    const score = parseScorePy(
+      JSON.stringify({
+        order: [
+          scoreRow('ZZ-1', 90, { initiative: 'beta' }),
+          scoreRow('ZZ-2', 80),
+          scoreRow('ZZ-3', 70, { initiative: 'beta' }),
+          scoreRow('ZZ-4', 60),
+        ],
+      }),
+    )
+    const plan = {
+      dispatch: [
+        dispatch('ZZ-3', { initiative: 'beta', tier: 0 }),
+        dispatch('ZZ-4', { tier: 3 }),
+        dispatch('ZZ-1', { initiative: 'beta', tier: 3 }),
+      ],
+      refusals: [refusal('ZZ-2', 'not-open', 'x')],
+    }
+    const result = compareSeat(input(plan, { score }))
+
+    expect(result.ok).toBe(true)
+    expect(verdictLine(result.lines, 'ZZ-4')).toContain('tier 0 pick ZZ-3 decays beta in the plan only')
   })
 
   it('still fails a lower tier dispatched ahead of a higher one with no reason', () => {
