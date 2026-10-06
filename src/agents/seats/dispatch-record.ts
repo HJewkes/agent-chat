@@ -8,6 +8,8 @@
  * Pure: the writer and the reader do the I/O.
  */
 
+import type { FailureClass, RetireOutcome } from './retire-outcome.js'
+
 /** The end states only a seat can know. */
 export const SEAT_OUTCOMES = ['merged', 'done', 'parked', 'stalled', 'abandoned'] as const
 export type SeatOutcome = (typeof SEAT_OUTCOMES)[number]
@@ -59,7 +61,7 @@ interface BrokerRow<Outcome extends string> {
   score: null
   profile: string | null
   agent: string
-  pr: null
+  pr: string | null
   outcome: Outcome
   note: null
   tokens: number | null
@@ -76,6 +78,9 @@ export type DispatchedRow = BrokerRow<typeof DISPATCHED>
 
 export interface RetiredRow extends BrokerRow<typeof RETIRED> {
   session_id: string | null
+  head: string | null
+  failure_class: FailureClass
+  tool_errors: number | null
   usage?: DispatchUsage
   models?: string[]
   price_table?: number
@@ -117,13 +122,20 @@ export const dispatchedRow = (run: DispatchRun): DispatchedRow => brokerRow(run,
 export const abandonedRow = (run: DispatchRun): BrokerRow<'abandoned'> =>
   brokerRow(run, 'abandoned', null, null)
 
-export function retiredRow(run: DispatchRun, sessionId: string | null, spend: RetireSpend): RetiredRow {
+export function retiredRow(
+  run: DispatchRun,
+  sessionId: string | null,
+  spend: RetireSpend,
+  { pr, ...outcome }: RetireOutcome,
+): RetiredRow {
+  const ended = { session_id: sessionId, ...outcome }
   if ('usage_miss' in spend) {
-    return { ...brokerRow(run, RETIRED, null, null), session_id: sessionId, usage_miss: spend.usage_miss }
+    return { ...brokerRow(run, RETIRED, null, null), pr, ...ended, usage_miss: spend.usage_miss }
   }
   return {
     ...brokerRow(run, RETIRED, spend.tokens, spend.usd_est),
-    session_id: sessionId,
+    pr,
+    ...ended,
     usage: spend.usage,
     models: spend.models,
     price_table: spend.price_table,
@@ -238,7 +250,8 @@ function recordOf(group: readonly Row[]): DispatchRecord {
     score: lastOf(seat, 'score', scalar),
     profile: firstOf(owner, 'profile', text),
     agent: (group[0] as Row).agent,
-    pr: lastOf(seat, 'pr', scalar),
+    // The seat knows its PR better than the broker's reading of a report, so the broker's is only a fallback.
+    pr: lastOf(seat, 'pr', scalar) ?? lastOf(broker, 'pr', scalar),
     outcome: outcomeOf(broker, seat),
     note: lastOf(seat, 'note', scalar),
     ...(broker.length > 0 ? brokerSpend(broker) : seatSpend(seat)),
