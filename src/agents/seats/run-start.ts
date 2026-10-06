@@ -3,7 +3,7 @@ import { MAX_READING_AGE_SECONDS } from '../burndown/budget-gate.js'
 import { charterSeats, isSeatName, parsePools, parseSeat, type Pool } from './charter.js'
 import type { SeatRecord, WatchdogDoc } from './io.js'
 import type { RunLock } from './lock.js'
-import type { SpendMeter } from './stops.js'
+import { usableMeter, type SpendMeter } from './stops.js'
 import { accountReading } from './watchdog.js'
 
 /**
@@ -83,9 +83,6 @@ async function heldLock(deps: RunStartDeps): Promise<Extract<RunLock, { held: tr
   }
 }
 
-const usable = (meter: SpendMeter | undefined): SpendMeter | undefined =>
-  [meter?.since, meter?.last, meter?.spent].every(Number.isFinite) ? meter : undefined
-
 /** Only this seat's `run` changes; a seat the watchdog never saw gets the state of a first run. */
 function withRun(
   doc: WatchdogDoc,
@@ -110,7 +107,7 @@ export async function startRun(deps: RunStartDeps, seat: string): Promise<RunSta
     const nowMs = deps.now().getTime()
     const sevenDay = currentSevenDay(deps, pool, nowMs)
     const doc = deps.loadDoc()
-    const previous = usable(doc.seats[seat]?.run)
+    const previous = usableMeter(doc.seats[seat]?.run)
     const meter: SpendMeter = {
       since: nowMs,
       last: sevenDay,

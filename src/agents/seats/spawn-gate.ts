@@ -1,6 +1,5 @@
 import {
   MAX_READING_AGE_SECONDS,
-  dayStart,
   gatePool,
   runStartAt,
   type AccountReading,
@@ -10,7 +9,7 @@ import {
   type SpendCaps,
 } from '../burndown/budget-gate.js'
 import type { Pool, Seat } from './charter.js'
-import { advanceMeter, meterHistory, pacedCaps, sameSpendDay, withinRun, type SpendMeter } from './stops.js'
+import { meterSpend, pacedCaps, type SpendMeter } from './stops.js'
 import { poolRule } from './watchdog.js'
 
 /**
@@ -67,19 +66,12 @@ interface SpendHistory {
 /** The saved meters advanced to this reading, as `seats status` advances them, so both count the same spend. */
 function spendHistory(input: SeatSpawnInput, sevenDay: number, own: boolean): SpendHistory {
   const { now, runMeter, dayMeter } = input
-  const nowMs = now.getTime()
-  const run = own && runMeter !== undefined ? advanceMeter(runMeter, sevenDay, nowMs, withinRun) : undefined
-  const day = dayMeter === undefined ? undefined : advanceMeter(dayMeter, sevenDay, nowMs, sameSpendDay)
-  const runStart = runStartAt(now, runMeter === undefined ? {} : { recordedAt: runMeter.since })
-  const starts = [
-    { at: runStart, meter: run },
-    { at: dayStart(now), meter: day },
-  ]
+  const spend = meterSpend({ run: runMeter, day: dayMeter }, sevenDay, now, own)
   return {
-    history: meterHistory(starts, nowMs),
-    runStart,
-    hasRun: run !== undefined,
-    hasDay: day !== undefined,
+    history: spend.history,
+    runStart: spend.runStart,
+    hasRun: spend.run !== undefined,
+    hasDay: spend.day !== undefined,
   }
 }
 

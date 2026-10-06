@@ -38,7 +38,7 @@ function deps(autonomyRoot: string, sevenDay: number, resetDays: number): SeatTi
       reading: { sevenDay, fiveHour: 10, ageSeconds: 30, sevenDayResetsAt: DAY_START + resetDays * DAY_MS },
       resetsAt: DAY_START + resetDays * DAY_MS,
     }),
-    recordedRunStart: () => RUN_START,
+    meters: () => ({ run: { since: RUN_START, last: 0, spent: 0 } }),
   }
 }
 
