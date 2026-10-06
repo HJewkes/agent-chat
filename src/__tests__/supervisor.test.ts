@@ -2539,6 +2539,63 @@ describe('lifecycle hooks', () => {
     })
   })
 
+  /** CC-763: a tracked agent with a profile, so its facts pass the schema. */
+  async function completeTracked(messages: { body: string; target: string }[]): Promise<Record<string, any>> {
+    writeHooksConfig({ on_complete: ['/bin/on-complete.sh'] })
+    const { spawn, calls } = capturingHookSpawn()
+    const sup = withStubbedSurface({ hookSpawn: spawn })
+    stopAutoAttach()
+    core.append({
+      kind: 'agent_spawned',
+      actor: 'coordinator',
+      target: 'tc-xy-1234-scout',
+      msgId: 'a1',
+      body: 'work',
+      meta: { profile: 'implementer' },
+    })
+    ;(sup as unknown as { live: Map<string, unknown> }).live.set('a1', {
+      agentId: 'a1',
+      name: 'tc-xy-1234-scout',
+      handle: { surface: 'iterm-pane' },
+      allocation: { cwd: '/tmp' },
+      isolation: 'none',
+    })
+    for (const { body, target } of messages)
+      core.append({ kind: 'message', actor: 'tc-xy-1234-scout', target, msgId: `m-${target}`, body })
+
+    await (sup as unknown as { recordExit: (id: string, o: unknown) => Promise<void> }).recordExit('a1', {
+      code: 0,
+      signal: null,
+    })
+    expect(calls).toHaveLength(1)
+    return JSON.parse(calls[0]?.stdin ?? '{}')
+  }
+
+  it('adds the worker facts of a reported run beside the legacy fields', async () => {
+    const payload = await completeTracked([
+      { target: 'coordinator', body: 'Status: DONE\nPR: example-org/example-repo#7' },
+    ])
+
+    expect(payload).toMatchObject({ agentId: 'a1', code: 0, signal: null, inferred: false })
+    expect(payload.lastAction).toBeUndefined()
+    expect(payload.facts).toMatchObject({
+      agent: 'tc-xy-1234-scout',
+      profile: 'implementer',
+      spawner: 'coordinator',
+      taskId: 'XY-1234',
+      report: { messageId: 'm-coordinator', kind: 'status' },
+      pr: { repo: 'example-org/example-repo', number: 7 },
+      exit: { code: 0, signal: null, inferred: false },
+    })
+  })
+
+  it('names the last action of a run whose only report went to someone other than its spawner', async () => {
+    const payload = await completeTracked([{ target: 'peer', body: 'Status: DONE' }])
+
+    expect(payload.facts.report).toBeNull()
+    expect(payload.lastAction).toBe('unknown')
+  })
+
   it('fires on_complete with inferred: true on a synthesised exit', async () => {
     writeHooksConfig({ on_complete: ['/bin/on-complete.sh'] })
     const { spawn, calls } = capturingHookSpawn()

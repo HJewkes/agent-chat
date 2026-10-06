@@ -5,9 +5,9 @@ import { agentNameFor, reviewerNameFor, successorNameFor } from './plan.js'
 import type { Progress } from './progress.js'
 import type { PlannedSlice, Report } from './report.js'
 import { shepherdTarget, type Registration, type ShepherdRow } from './shepherd.js'
-import type { ClaimSpend } from './spend-cap.js'
+import { capVerdict, type ClaimSpend } from './spend-cap.js'
 import type { ActivityRead } from './stall.js'
-import type { StallCode } from './stall-code.js'
+import { parkUpdate, type StallCode } from './stall-code.js'
 
 /**
  * The tick's phase machine: given every claim and what the tick observed
@@ -87,6 +87,8 @@ const STEPS: Partial<Record<Claim['phase'], Step>> = {
 
 function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
   if (claim.phase === 'done' || claim.stalledReason !== undefined) return []
+  if (obs.spend !== undefined && capVerdict(obs.spend.claim, obs.spend.cap) === 'over')
+    return overBudget(claim, obs.spend)
   const actions = STEPS[claim.phase]?.(claim, obs, now) ?? []
   if (actions.length > 0 || !isStalled(claim, now)) return actions
   return [
@@ -100,6 +102,12 @@ function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
       : stall(claim, `${claim.phase} past its timeout`, 'stalled', 'phase-timeout'),
   ]
 }
+
+/** Parks in place of the step's actions, so no reviewer or successor spawns; the branch and worktree stay. */
+const overBudget = (claim: Claim, { claim: spend, cap }: NonNullable<Observation['spend']>): Action[] => [
+  parkUpdate(keyOf(claim), 'budget', `spent $${spend.usd.toFixed(2)} of $${cap} (${spend.agents} agents)`),
+  retireAll(claim),
+]
 
 const finished = (obs: Observation): boolean =>
   obs.agent?.state === 'exited' || obs.agent?.state === 'retired'

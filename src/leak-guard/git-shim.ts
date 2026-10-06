@@ -2,6 +2,8 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { ENVIRONMENT_SCRUB, hardenedShebang, posixShell } from './posix-shell.js'
+
 /** Names the dir holding the agent's `git` shim in the launch plan; `run-agent` puts it first on PATH. */
 export const GIT_SHIM_DIR_ENV = 'AGENT_CHAT_GIT_SHIM_DIR'
 
@@ -33,7 +35,7 @@ quote() {
 }`
 
 const REFUSE_FN = `refuse() {
-  echo "git-shim: push refused ($1): $2 ${DOCS}" >&2
+  printf '%s\\n' "git-shim: push refused ($1): $2 ${DOCS}" >&2
   exit 2
 }`
 
@@ -86,7 +88,7 @@ const TYPO_FN = `refuse_typo() {
   case $similar$nl in *"$tab"push"$nl"*)
     refuse autocorrect "$1 is not a git command and help.autocorrect would run its correction unchecked; set it to show or never." ;;
   esac
-  echo "git-shim: refused (autocorrect): '$1' is not a git command and help.autocorrect would run git's guess at it unchecked; fix the typo, or set help.autocorrect to show or never. ${DOCS}" >&2
+  printf '%s\\n' "git-shim: refused (autocorrect): '$1' is not a git command and help.autocorrect would run git's guess at it unchecked; fix the typo, or set help.autocorrect to show or never. ${DOCS}" >&2
   exit 2
 }`
 
@@ -371,10 +373,11 @@ export const gitShimScript = (
   guard: string,
   builtins: readonly string[],
   execPath = '',
+  shell = posixShell(),
 ): string =>
-  `#!/bin/sh -p
+  `${hardenedShebang(shell)}
 # Written by agent-chat at each spawn (TP-596); local edits are overwritten.
-real=${shQuote(real)}
+${ENVIRONMENT_SCRUB}real=${shQuote(real)}
 guard=${shQuote(guard)}
 exec_path=${shQuote(execPath)}
 builtins=${shQuote(builtins.join(' '))}
