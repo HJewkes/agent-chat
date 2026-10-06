@@ -2,6 +2,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+import { hardenedShebang, posixShell } from './posix-shell.js'
+
 /**
  * Client hooks shimmed to chain to the repo's own hook, since overriding the hooks path hides it.
  * Each shim costs a shell and a git call, so the hooks that fire on every commit without gating it
@@ -37,17 +39,18 @@ export const hooksDirOf = (env: Record<string, string>): string | undefined =>
   env.GIT_CONFIG_COUNT === '1' && env.GIT_CONFIG_KEY_0 === HOOKS_PATH_KEY ? env.GIT_CONFIG_VALUE_0 : undefined
 
 // One git call: `--git-path hooks` honours the repo's own core.hooksPath once the guard's override is removed.
-const FIND_REPO_HOOK = `own=$(env -u GIT_CONFIG_COUNT git rev-parse --git-path hooks 2>/dev/null)
+const FIND_REPO_HOOK = `own=$(unset GIT_CONFIG_COUNT; git rev-parse --git-path hooks 2>/dev/null)
 hook="$own/\${0##*/}"
 [ -n "$own" ] && [ -f "$hook" ] && [ -x "$hook" ] || hook=
 [ -n "$hook" ] && [ "$(cd "$own" && pwd -P)" = "$(cd "\${0%/*}" && pwd -P)" ] && hook=`
 
 const WRITTEN_BY = '# Written by agent-chat at each spawn (CC-268); local edits are overwritten.\n'
 
-const CHAIN_SHIM = `#!/bin/sh\n${WRITTEN_BY}${FIND_REPO_HOOK}\n[ -n "$hook" ] || exit 0\nexec "$hook" "$@"\n`
+const chainShim = (shell: string): string =>
+  `#!${shell}\n${WRITTEN_BY}${FIND_REPO_HOOK}\n[ -n "$hook" ] || exit 0\nexec "$hook" "$@"\n`
 
 // -p: bash as sh imports no functions and ignores SHELLOPTS from the agent's environment; dash takes the flag.
-const PRE_PUSH_HEADER = `#!/bin/sh -p\n${WRITTEN_BY}`
+const prePushHeader = (shell: string): string => `${hardenedShebang(shell)}\n${WRITTEN_BY}`
 
 const NOT_RUN = 'leak-scan: guard NOT run, this push was not scanned'
 
@@ -147,13 +150,13 @@ const SCAN_REFS = `while read -r lref lsha rref rsha; do
   case $lsha in
   *[!0]*)
     [ "$(vgit cat-file -t "$lsha" 2>/dev/null)" = commit ] || {
-      echo "leak-scan: push refused: $rref is not a commit, and the scan reads commits only; see docs/leak-guard.md." >&2
+      printf '%s\n' "leak-scan: push refused: $rref is not a commit, and the scan reads commits only; see docs/leak-guard.md." >&2
       exit 2
     }
     case $(allow_mode "$lsha") in
     '' | 100644 | 100755) ;;
     *)
-      echo "leak-scan: push refused: .egress-allow in $lref is not a regular file; see docs/leak-guard.md." >&2
+      printf '%s\n' "leak-scan: push refused: .egress-allow in $lref is not a regular file; see docs/leak-guard.md." >&2
       exit 2 ;;
     esac
     case $rsha in
@@ -162,7 +165,7 @@ const SCAN_REFS = `while read -r lref lsha rref rsha; do
     esac
     [ -n "$rsha" ] || {
       [ -z "$lookup_failed" ] || { echo "${LOOKUP_FAILED}" >&2; exit 2; }
-      echo "leak-scan: push refused: $1 names no default branch to scan $lref against; see docs/leak-guard.md." >&2
+      printf '%s\n' "leak-scan: push refused: $1 names no default branch to scan $lref against; see docs/leak-guard.md." >&2
       exit 2
     } ;;
   esac
@@ -223,7 +226,7 @@ fi
 )`
 
 // The broker's PATH covers the whole shim, not only the scan; the repo hook gets the agent's PATH back.
-const prePushShim = (inputs: ScanInputs): string => `${PRE_PUSH_HEADER}agent_path=$PATH
+const prePushShim = (inputs: ScanInputs, shell: string): string => `${prePushHeader(shell)}agent_path=$PATH
 PATH=${shQuote(inputs.path)}; export PATH
 tmp=$(mktemp -d) || exit 1
 trap 'rm -rf "$tmp"' EXIT
@@ -239,10 +242,13 @@ if [ -n "$hook" ]; then PATH=$agent_path "$hook" "$@" < "$refs"; own_status=$?; 
 exit "$own_status"
 `
 
-export function hookScripts(inputs: ScanInputs = defaultScanInputs()): Map<string, string> {
+export function hookScripts(
+  inputs: ScanInputs = defaultScanInputs(),
+  shell = posixShell(),
+): Map<string, string> {
   return new Map([
-    ['pre-push', prePushShim(inputs)],
-    ...CHAINED_HOOKS.map(name => [name, CHAIN_SHIM] as const),
+    ['pre-push', prePushShim(inputs, shell)],
+    ...CHAINED_HOOKS.map(name => [name, chainShim(shell)] as const),
   ])
 }
 
@@ -259,7 +265,11 @@ function writeIfChanged(file: string, body: string): void {
   fs.renameSync(tmp, file)
 }
 
-export function writeGitHooks(dir: string, inputs: ScanInputs = defaultScanInputs()): void {
+export function writeGitHooks(
+  dir: string,
+  inputs: ScanInputs = defaultScanInputs(),
+  shell = posixShell(),
+): void {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-  for (const [name, body] of hookScripts(inputs)) writeIfChanged(path.join(dir, name), body)
+  for (const [name, body] of hookScripts(inputs, shell)) writeIfChanged(path.join(dir, name), body)
 }
