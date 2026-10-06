@@ -737,7 +737,7 @@ describe('burndown tick gates', () => {
 
   it('pins the dry-run output of a tick with no seats configured', async () => {
     // The brief names the fixture repo twice, so its length moves with the temp dir.
-    const BRIEF_CHARS_BESIDE_PATHS = 1691
+    const BRIEF_CHARS_BESIDE_PATHS = 1918
     initiative({ 'DM-1': task('DM-1', 1), 'DM-2': task('DM-2', 2), 'DM-3': 'id: DM-3\nstatus: open\n' })
     writeLedger(burndownLedgerPath(), {
       version: 1,
