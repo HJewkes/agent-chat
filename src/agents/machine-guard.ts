@@ -1,6 +1,17 @@
 import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import type { AgentIdentity } from '../protocol.js'
+import {
+  PROC_MEMINFO,
+  PROC_PRESSURE_MEMORY,
+  parseMeminfoFree,
+  parseMeminfoSwap,
+  parsePsiMemory,
+  psiPressureLevel,
+  readProc,
+  readProcFile,
+  type ReadFile,
+} from './machine-guard-linux.js'
 
 /**
  * CC-406: a machine-wide spawn guard. The semaphore bounds the broker's standing
@@ -98,11 +109,13 @@ export function parseMemoryLevel(text: string): MemoryReading {
   return { freePercent: level }
 }
 
-/** Only macOS is read; elsewhere the reading is an error and so never refuses. */
+/** macOS and Linux are read; elsewhere the reading is an error and so never refuses. */
 export function readMemoryFree(
   platform: NodeJS.Platform = process.platform,
   exec: ExecFile = execFileSync,
+  readFile: ReadFile = readProcFile,
 ): MemoryReading {
+  if (platform === 'linux') return readProc(PROC_MEMINFO, parseMeminfoFree, readFile)
   if (platform !== 'darwin') return { error: `memory is not read on ${platform}` }
   try {
     return parseMemoryLevel(sysctl('kern.memorystatus_level', exec))
@@ -130,7 +143,9 @@ export function parseSwapUsage(text: string): SwapReading {
 export function readSwapUsage(
   platform: NodeJS.Platform = process.platform,
   exec: ExecFile = execFileSync,
+  readFile: ReadFile = readProcFile,
 ): SwapReading {
+  if (platform === 'linux') return readProc(PROC_MEMINFO, parseMeminfoSwap, readFile)
   if (platform !== 'darwin') return { error: `swap is not read on ${platform}` }
   try {
     return parseSwapUsage(sysctl('vm.swapusage', exec))
@@ -175,8 +190,15 @@ export function parseMemoryPressure(text: string): number | null {
   return percent >= 0 && percent <= 100 ? percent : null
 }
 
-/** CC-431: free memory from `memory_pressure`; null when it is missing, fails or does not parse. */
-export function readMemoryPressure(platform: NodeJS.Platform = process.platform): number | null {
+const freePercentOf = (memory: MemoryReading): number | null =>
+  'error' in memory ? null : memory.freePercent
+
+/** CC-431: free memory from `memory_pressure`, on Linux from /proc/meminfo; null when it fails or does not parse. */
+export function readMemoryPressure(
+  platform: NodeJS.Platform = process.platform,
+  readFile: ReadFile = readProcFile,
+): number | null {
+  if (platform === 'linux') return freePercentOf(readMemoryFree(platform, execFileSync, readFile))
   if (platform !== 'darwin') return null
   try {
     const out = execFileSync('/usr/bin/memory_pressure', [], { encoding: 'utf8', timeout: 5000 })
@@ -194,11 +216,19 @@ export function parsePressureLevel(text: string): number | null {
   return level <= 4 ? level : null
 }
 
-/** CC-492: the kernel memory pressure level; null off macOS or when sysctl fails or does not parse. */
+/**
+ * CC-492: the kernel memory pressure level; on Linux, PSI mapped onto the same scale (CC-805).
+ * Null elsewhere or when the reading fails or does not parse.
+ */
 export function readPressureLevel(
   platform: NodeJS.Platform = process.platform,
   exec: ExecFile = execFileSync,
+  readFile: ReadFile = readProcFile,
 ): number | null {
+  if (platform === 'linux') {
+    const psi = readProc(PROC_PRESSURE_MEMORY, parsePsiMemory, readFile)
+    return 'error' in psi ? null : psiPressureLevel(psi)
+  }
   if (platform !== 'darwin') return null
   try {
     return parsePressureLevel(sysctl('kern.memorystatus_vm_pressure_level', exec))
