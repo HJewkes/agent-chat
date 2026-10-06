@@ -1,0 +1,51 @@
+[
+  {
+    "kind": "agent_spawned",
+    "actor": "coordinator",
+    "target": "tc-xy-1234-sample-fix",
+    "msgId": "spawn01",
+    "body": "brief",
+    "meta": {
+      "profile": "implementer",
+      "name": "tc-xy-1234-sample-fix"
+    }
+  },
+  {
+    "kind": "agent_attached",
+    "actor": "tc-xy-1234-sample-fix",
+    "ref": "spawn01"
+  },
+  {
+    "kind": "message",
+    "actor": "tc-xy-1234-sample-fix",
+    "target": "coordinator",
+    "msgId": "msg-prog",
+    "body": "Status: IN_PROGRESS\nTests written, implementing now."
+  },
+  {
+    "kind": "message",
+    "actor": "tc-xy-1234-sample-fix",
+    "target": "peer-reviewer",
+    "msgId": "msg-peer",
+    "body": "Status: DONE\nPR: other-org/other-repo#9"
+  },
+  {
+    "kind": "message",
+    "actor": "tc-xy-1234-sample-fix",
+    "target": "coordinator",
+    "msgId": "msg-done",
+    "body": "Status: DONE\nPR: example-org/example-repo#42\nHead: 0123456789abcdef0123456789abcdef01234567\nCI: check success\n\nNotes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. Notes on the change. "
+  },
+  {
+    "kind": "message",
+    "actor": "tc-xy-1234-sample-fix",
+    "target": "coordinator",
+    "msgId": "msg-after",
+    "body": "One more thing: the follow-up is filed."
+  },
+  {
+    "kind": "agent_detached",
+    "actor": "tc-xy-1234-sample-fix",
+    "ref": "spawn01"
+  }
+]
