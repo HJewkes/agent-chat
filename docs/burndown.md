@@ -117,6 +117,8 @@ It walks score.py's order and prints each ID with its raw and decayed score and 
 - `dispatched as pick <n>`;
 - `refused [<kind>]: <reason>`, the plan's refusal;
 - `held`, when the claim ledger holds the task;
+- `held [intangible]`, when `planOrder` holds the intangible task back for a ready row of a
+  higher tier (CC-778);
 - `beyond caps [<kind>]: <reason>`, for a `role-cap`, `worktrees`, `slots`, `budget` or
   `lanes-full` refusal, or for a `share-cap:<kind>` skip, which the plan counts by kind
   rather than by ID: each count explains that many of the kind's lowest-ranked silent IDs.
@@ -132,17 +134,23 @@ It exits 1 on any of these, with the line in capitals:
 **The reorder rule.** A dispatch ahead of a higher-ranked one is explained, and passes with its
 reason printed, only when:
 
-- `planOrder` (CC-628) places it in a higher class-of-service tier than the ID it overtook:
+- the plan's own placement (`SeatPlan.placement`, recorded by `planOrder` during the dry run,
+  never recomputed here) puts it in a higher class-of-service tier than the ID it overtook:
   expedite, a fixed date with under 2 days of slack, or a milestone the seat owns (the line
-  names the milestone and its float); or
-- a share-capped ID of its own initiative ranks above it in score.py, which decays that
-  initiative once more than the plan does.
+  names the milestone and its float);
+- both sit in the same tier 0, 1 or 2, which the plan sorts by age, slack, float and WSJF rather
+  than by score;
+- both sit in tier 3 or 4, and the initiative decays each side applied at that pick flip the
+  pair. The plan's count for an initiative is its prior picks plus every `planOrder` pick before
+  the jumper: tier 0 to 2 rows dispatched or not (the ledger may hold one, or a cap refuse it),
+  but no share-cap skip. score.py's is its prior picks plus every row it ranks above the
+  overtaken ID, share-capped rows included. The reorder passes only when score.py's counts
+  favour the overtaken ID and the plan's favour the jumper; the line prints both counts.
 
-Any other reorder fails. Ready slices are dispatched ahead of the scored order by design; they
-are counted on their own line and left out of the order check. The tiers are read from the
-same scope and this ISO week's milestone file as `burndown plan --seat --scored`; today the
-seat plan itself walks `dispatchOrder`, so a tier reorder appears only once it walks
-`planOrder`'s order.
+Tiers 3 (standard) and 4 (intangible) follow score.py's order, so any other reorder fails,
+and so does a lower tier dispatched ahead of a higher one. Ready slices are dispatched ahead
+of the scored order by design; they are counted on their own line and left out of the order
+check. The milestone and slack named in a reason are the ones `planOrder` placed the row by.
 
 ### The run meter
 

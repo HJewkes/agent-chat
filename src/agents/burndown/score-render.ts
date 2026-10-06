@@ -144,11 +144,8 @@ export function scoredPlanFromDisk(opts: {
   const policy = loadPolicy(opts.autonomyRoot, opts.seat)
   const weights = seatScope(policy.charter, policy.seats, opts.seat, readInitiatives(opts.activeWorkRoot))
   const { tasks, skipped } = readScoredTasks(opts.activeWorkRoot, Object.keys(weights))
-  const read = readWeekMilestones(
-    opts.autonomyRoot,
-    opts.today,
-    tasks.map(task => task.id),
-  )
+  const knownIds = taskIdsOnDisk(opts.activeWorkRoot)
+  const read = readWeekMilestones(opts.autonomyRoot, opts.today, knownIds)
   const plan = scoredPlan({
     tasks,
     skipped,
@@ -160,7 +157,7 @@ export function scoredPlanFromDisk(opts: {
     hardStops: policy.charter.hard_stops,
     today: opts.today,
     top: opts.top,
-    knownIds: taskIdsOnDisk(opts.activeWorkRoot),
+    knownIds,
   })
   return read === undefined
     ? plan

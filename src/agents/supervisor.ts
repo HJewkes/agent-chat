@@ -122,6 +122,7 @@ import {
 } from './seats/pool-route.js'
 import type { PoolPickMode } from './seats/pool-pick.js'
 import { readTranscriptSpend, type TranscriptSpendRead } from './transcript-spend.js'
+import { completionPayload, type CompletionPayload, type ExitFacts } from './worker-facts.js'
 import type { ShadowLedger } from './ledger/shadow-ledger.js'
 import { exitTerminal, LifecycleShadow } from './ledger/lifecycle-shadow.js'
 import { readExitTail, unreportedExitText, UNREPORTED_EXIT } from './exit-report.js'
@@ -567,6 +568,10 @@ function retireSpendOf(read: TranscriptSpendRead): RetireSpend {
   return { tokens, usd_est, usage, models, price_table }
 }
 
+/** Who a run's return-contract report may go to. */
+const reportRecipients = (spawner: string): string[] =>
+  spawner === HUMAN ? [spawner, ...burndownReportTo()] : [spawner]
+
 /** Burndown spawns as the human, but its agents report to the configured `reportTo` (CC-266). */
 function burndownReportTo(): string[] {
   try {
@@ -969,12 +974,35 @@ export class Supervisor implements TeleportHost {
     // has no value here and keeps its pane, which is the safe direction: a
     // silent upgrade would start destroying panes nobody opted in for.
     if (this.closesOnExit(agentId)) await this.closeSurface(entry)
-    this.fireHook('on_complete', {
-      agentId,
-      code: outcome.code,
-      signal: outcome.signal,
-      inferred: outcome.inferred ?? false,
-    })
+    const exit = { code: outcome.code, signal: outcome.signal, inferred: outcome.inferred ?? false }
+    this.fireHook('on_complete', { ...(await this.completionPayloadFor(agentId, exit)) })
+  }
+
+  /** CC-763: never rejects; anything that goes wrong gathering the facts leaves the legacy fields. */
+  private async completionPayloadFor(agentId: string, exit: ExitFacts): Promise<CompletionPayload> {
+    const identity = this.core.agents.get(agentId)
+    if (identity === undefined) return { agentId, ...exit }
+    try {
+      const report = this.core.events.lastStatusReport(
+        identity.name,
+        reportRecipients(identity.spawnedBy),
+        this.core.runStartedAt(identity),
+      )
+      const transcript = identity.sessionId ? identityTranscript(identity).path : undefined
+      return completionPayload({
+        agentId,
+        agent: identity.name,
+        profile: this.core.agents.spawnMeta(agentId).profile ?? identity.profile,
+        spawner: identity.spawnedBy,
+        exit,
+        ...(report === undefined ? {} : { report }),
+        ...(transcript === undefined ? {} : { spend: await readTranscriptSpend(transcript) }),
+        ...(report === undefined ? { lastAction: readExitTail(transcript).lastAction } : {}),
+      })
+    } catch (err) {
+      logEvent('worker_facts_invalid', { agentId, error: String(err) })
+      return { agentId, ...exit }
+    }
   }
 
   /**
@@ -985,7 +1013,7 @@ export class Supervisor implements TeleportHost {
     const identity = this.core.agents.get(agentId)
     if (identity === undefined) return
     const spawner = identity.spawnedBy
-    const recipients = spawner === HUMAN ? [spawner, ...burndownReportTo()] : [spawner]
+    const recipients = reportRecipients(spawner)
     if (this.core.events.hasStatusReport(name, recipients, this.core.runStartedAt(identity))) return
     const tail = readExitTail(identity.sessionId ? identityTranscript(identity).path : undefined)
     const body = unreportedExitText(name, tail)
