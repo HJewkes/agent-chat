@@ -28,11 +28,12 @@ bundles in `~/.local/share/claude/versions/`.
 | 2.1.287 | 2.1.284 rule                   | yes | yes | yes | yes |
 | 2.1.288 | 2.1.284 rule                   | yes | yes | yes | yes |
 | 2.1.289 | 2.1.284 rule                   | yes | yes | yes | yes |
+| 2.1.290 | 2.1.289                        | yes | yes | yes | yes |
 
-2.1.287, 2.1.288 and 2.1.289 are identical in all four snippets below once minified
+2.1.287, 2.1.288, 2.1.289 and 2.1.290 are identical in all four snippets below once minified
 identifiers are renamed (a token-level comparison; only the names differ).
 
-## 2.1.289 code
+## 2.1.289 code (2.1.290 is token-identical)
 
 `node scripts/verify-trust-rule.mjs <version>` prints these snippets for any installed release.
 
@@ -132,12 +133,15 @@ function Dlr() {
 
 - `jE` has a `rootOnly` branch fed by `Vrr`. In 2.1.289 its input finder (`sB`) is a stub
   that returns `null`, so the branch is unreachable and the folder-and-ancestors walk always runs.
+  Re-checked in 2.1.290: the finder (`mj`) is still `function mj(e,{uncached:n=!1}={}){return null}`.
   If a later release makes it live, re-read it before adding that release.
 - The CLI trusts unconditionally when `CLAUDE_CODE_SANDBOXED` is set or `cge()` is true. That
   is more permissive than the gate, which stays strict.
 - The config file name carries `kV()`: empty for the production OAuth endpoint, `-custom-oauth`,
   `-local-oauth` or `-staging-oauth` otherwise. `trust.ts` reads the production name, so a
-  non-production OAuth setup would read a different file than the gate does.
+  non-production OAuth setup would read a different file than the gate does. `kV()` (`Hq()` in
+  2.1.290) returns `-custom-oauth` whenever `CLAUDE_CODE_CUSTOM_OAUTH_URL` is non-empty and
+  otherwise `""` for prod, so the gate refuses while that variable is set (`trustRefusal`).
 - The CLI's ancestor walk accepts any truthy flag; the gate requires `=== true`. Stricter, so safe.
 
 ## Adding a release

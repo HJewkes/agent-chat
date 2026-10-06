@@ -36,7 +36,10 @@ export function trustRefusal(
   cwd: string,
   configDir: string,
   cliVersion: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
+  if (env.CLAUDE_CODE_CUSTOM_OAUTH_URL)
+    return 'CLAUDE_CODE_CUSTOM_OAUTH_URL is set, so Claude Code reads a differently named trust config file than this gate does'
   if (cliVersion === undefined)
     return 'cannot determine the installed Claude Code version, so its trust rule is unknown'
   if (!Object.hasOwn(VERIFIED_TRUST_RULE_VERSIONS, cliVersion))
