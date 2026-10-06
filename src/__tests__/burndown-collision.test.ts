@@ -372,6 +372,13 @@ describe('collisionCheck holds contracts from the ledger (CC-710)', () => {
     expect(check([claim('b', { phase: 'done' })], ours)).toBeUndefined()
   })
 
+  it('never refuses against a queued claim, so two queued claims cannot block each other', () => {
+    const queuedRemove = claim('a', { taskId: 'CC-2', phase: 'queued' })
+
+    expect(check([queuedRemove], ours)).toBeUndefined()
+    expect(check([queuedRemove], [contract('api:/v1/report', 'remove')])).toBeUndefined()
+  })
+
   it('refuses another task holding a destructive overlap', () => {
     expect(check([claim('a', { taskId: 'CC-2' })], ours)?.kind).toBe('contract-overlap')
   })

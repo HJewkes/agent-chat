@@ -307,10 +307,13 @@ const oursFor = (ledger: Ledger, taskId: string): ReadonlySet<string> =>
       .flatMap(c => [...(c.spawned ?? []), ...(c.agentName === undefined ? [] : [c.agentName])]),
   )
 
-/** Every held claim with contracts except the work's own: a sibling slice of the same task still counts. */
+/**
+ * Every dispatched, undone claim with contracts except the work's own; a sibling slice of the same task still
+ * counts. A queued claim holds nothing yet: counting it would let two queued claims refuse each other forever.
+ */
 const heldContracts = (ledger: Ledger, work: CollisionWork): HeldContracts[] =>
   heldClaims(ledger)
-    .filter(c => !sameClaim(c, work) && (c.contracts ?? []).length > 0)
+    .filter(c => c.phase !== 'queued' && !sameClaim(c, work) && (c.contracts ?? []).length > 0)
     .map(c => ({
       holder: `${c.taskId}${c.slice === undefined ? '' : ` slice ${c.slice}`}`,
       contracts: c.contracts ?? [],
