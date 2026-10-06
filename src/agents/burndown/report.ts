@@ -59,7 +59,7 @@ export const DESTRUCTIVE_OPS: readonly (typeof CONTRACT_OPS)[number][] = [
   'migrate',
 ]
 
-const Contract = z.object({
+export const Contract = z.object({
   scope: z.string().trim().min(1),
   op: z.enum(CONTRACT_OPS),
 })
