@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { environmentScrub, hardenedShebang, posixShell } from './posix-shell.js'
+import { ENVIRONMENT_SCRUB, hardenedShebang, posixShell } from './posix-shell.js'
 
 /**
  * Client hooks shimmed to chain to the repo's own hook, since overriding the hooks path hides it.
@@ -47,7 +47,7 @@ hook="$own/\${0##*/}"
 const WRITTEN_BY = '# Written by agent-chat at each spawn (CC-268); local edits are overwritten.\n'
 
 const chainShim = (shell: string): string =>
-  `#!${shell}\n${WRITTEN_BY}${environmentScrub(shell)}${FIND_REPO_HOOK}\n[ -n "$hook" ] || exit 0\nexec "$hook" "$@"\n`
+  `#!${shell}\n${WRITTEN_BY}${ENVIRONMENT_SCRUB}${FIND_REPO_HOOK}\n[ -n "$hook" ] || exit 0\nexec "$hook" "$@"\n`
 
 // -p: bash as sh imports no functions and ignores SHELLOPTS from the agent's environment; dash has no such import and rejects the flag, so hardenedShebang omits it there.
 const prePushHeader = (shell: string): string => `${hardenedShebang(shell)}\n${WRITTEN_BY}`
@@ -130,7 +130,7 @@ const remoteTip = (home: string): string => `remote() {
     GIT_TERMINAL_PROMPT=0 GIT_DIR="$view/.git" git "$@"
 }
 [ "$(remote ls-remote --get-url "$2" 2>/dev/null)" = "$2" ] || {
-  printf '%s\n' "${REWRITTEN_URL}" >&2
+  printf '%s\\n' "${REWRITTEN_URL}" >&2
   exit 2
 }
 [ -z "$(remote config --get core.sshCommand 2>/dev/null)" ] || {
@@ -150,13 +150,13 @@ const SCAN_REFS = `while read -r lref lsha rref rsha; do
   case $lsha in
   *[!0]*)
     [ "$(vgit cat-file -t "$lsha" 2>/dev/null)" = commit ] || {
-      printf '%s\n' "leak-scan: push refused: $rref is not a commit, and the scan reads commits only; see docs/leak-guard.md." >&2
+      printf '%s\\n' "leak-scan: push refused: $rref is not a commit, and the scan reads commits only; see docs/leak-guard.md." >&2
       exit 2
     }
     case $(allow_mode "$lsha") in
     '' | 100644 | 100755) ;;
     *)
-      printf '%s\n' "leak-scan: push refused: .egress-allow in $lref is not a regular file; see docs/leak-guard.md." >&2
+      printf '%s\\n' "leak-scan: push refused: .egress-allow in $lref is not a regular file; see docs/leak-guard.md." >&2
       exit 2 ;;
     esac
     case $rsha in
@@ -164,8 +164,8 @@ const SCAN_REFS = `while read -r lref lsha rref rsha; do
     *) rsha=$tip ;;
     esac
     [ -n "$rsha" ] || {
-      [ -z "$lookup_failed" ] || { printf '%s\n' "${LOOKUP_FAILED}" >&2; exit 2; }
-      printf '%s\n' "leak-scan: push refused: $1 names no default branch to scan $lref against; see docs/leak-guard.md." >&2
+      [ -z "$lookup_failed" ] || { printf '%s\\n' "${LOOKUP_FAILED}" >&2; exit 2; }
+      printf '%s\\n' "leak-scan: push refused: $1 names no default branch to scan $lref against; see docs/leak-guard.md." >&2
       exit 2
     } ;;
   esac
@@ -229,7 +229,7 @@ fi
 const prePushShim = (
   inputs: ScanInputs,
   shell: string,
-): string => `${prePushHeader(shell)}${environmentScrub(shell)}agent_path=$PATH
+): string => `${prePushHeader(shell)}${ENVIRONMENT_SCRUB}agent_path=$PATH
 PATH=${shQuote(inputs.path)}; export PATH
 tmp=$(mktemp -d) || exit 1
 trap 'rm -rf "$tmp"' EXIT

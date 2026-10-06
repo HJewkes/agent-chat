@@ -1226,7 +1226,7 @@ describe('the scan view and the repo hook under a hostile agent env', () => {
 })
 
 // Run directly: a push to a local path starts receive-pack through sh, which noexec also stops.
-describe.each(['/bin/dash', '/bin/sh'].filter(shell => fs.existsSync(shell)))(
+describe.each(['/bin/dash', '/bin/sh', '/bin/bash'].filter(shell => fs.existsSync(shell)))(
   'the repo pre-push hook under a hostile SHELLOPTS with the guard shim on %s',
   shell => {
     it.each(['#!/bin/sh', '#!/bin/bash'])(

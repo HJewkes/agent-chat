@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { ghShimScript } from '../gh-shim/install.js'
 import { findRealGit, gitShimScript } from '../leak-guard/git-shim.js'
 import { gitHooksEnv, hookScripts, writeGitHooks } from '../leak-guard/hooks-dir.js'
-import { hardenedShebang, posixShell } from '../leak-guard/posix-shell.js'
+import { ENVIRONMENT_SCRUB, hardenedShebang, posixShell } from '../leak-guard/posix-shell.js'
 
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-posix-shell-'))
 afterAll(() => fs.rmSync(SCRATCH, { recursive: true, force: true }))
@@ -29,7 +29,8 @@ const HOST_PATH = (process.env.PATH ?? '')
 
 const REAL_GIT = findRealGit(HOST_PATH, path.join(SCRATCH, 'none')) as string
 const INPUTS = { missingTermsRefuses: true, home: SCRATCH, path: '/usr/bin:/bin' }
-const SHELLS = ['/bin/dash', '/bin/sh'].filter(shell => fs.existsSync(shell))
+// /bin/sh is bash on macOS and dash on Ubuntu; /bin/bash adds a bash-backed pass wherever sh is not.
+const SHELLS = ['/bin/dash', '/bin/sh', '/bin/bash'].filter(shell => fs.existsSync(shell))
 const firstLine = (script: string): string => script.split('\n')[0] ?? ''
 
 describe('posixShell', () => {
@@ -54,43 +55,42 @@ describe('posixShell', () => {
   })
 })
 
-describe.each([
-  ['dash', '/bin/dash'],
-  ['sh', '/bin/sh'],
-])('generated scripts written for %s', (_name, shell) => {
-  const scripts = (): { gitShim: string; prePush: string; chain: string; gh: string } => ({
-    gitShim: gitShimScript(REAL_GIT, SCRATCH, [], '', shell),
-    prePush: hookScripts(INPUTS, shell).get('pre-push') ?? '',
-    chain: hookScripts(INPUTS, shell).get('pre-commit') ?? '',
-    gh: ghShimScript(SCRATCH, '/node', '/main.js', shell),
-  })
+describe.each(SHELLS.map(shell => [path.basename(shell), shell]))(
+  'generated scripts written for %s',
+  (_name, shell) => {
+    const scripts = (): { gitShim: string; prePush: string; chain: string; gh: string } => ({
+      gitShim: gitShimScript(REAL_GIT, SCRATCH, [], '', shell),
+      prePush: hookScripts(INPUTS, shell).get('pre-push') ?? '',
+      chain: hookScripts(INPUTS, shell).get('pre-commit') ?? '',
+      gh: ghShimScript(SCRATCH, '/node', '/main.js', shell),
+    })
 
-  it('names the fixed interpreter on line 1, with -p wherever the interpreter takes it', () => {
-    const { gitShim, prePush, chain, gh } = scripts()
-    const hardened = hardenedShebang(shell)
+    it('names the fixed interpreter on line 1, with -p wherever the interpreter takes it', () => {
+      const { gitShim, prePush, chain, gh } = scripts()
+      const hardened = hardenedShebang(shell)
 
-    expect([firstLine(gitShim), firstLine(prePush)]).toEqual([hardened, hardened])
-    expect(firstLine(chain)).toBe(`#!${shell}`)
-    expect(firstLine(gh)).toBe(`#!${shell}`)
-    expect(hardened.endsWith(' -p')).toBe(shell !== '/bin/dash')
-  })
+      expect([firstLine(gitShim), firstLine(prePush)]).toEqual([hardened, hardened])
+      expect(firstLine(chain)).toBe(`#!${shell}`)
+      expect(firstLine(gh)).toBe(`#!${shell}`)
+      expect(hardened.endsWith(' -p')).toBe(shell !== '/bin/dash')
+    })
 
-  it('scrubs SHELLOPTS in the shim, chain hook and pre-push under dash only, since bash keeps it read-only', () => {
-    const { gitShim, prePush, chain } = scripts()
+    it('scrubs SHELLOPTS the same way in the shim, chain hook and pre-push, whatever the interpreter', () => {
+      const { gitShim, prePush, chain } = scripts()
 
-    for (const script of [gitShim, prePush, chain])
-      expect(script.includes('unset SHELLOPTS\n')).toBe(shell === '/bin/dash')
-  })
+      for (const script of [gitShim, prePush, chain]) expect(script).toContain(ENVIRONMENT_SCRUB)
+    })
 
-  it('looks the repo hook up without env, in a subshell that unsets GIT_CONFIG_COUNT', () => {
-    const { chain, prePush } = scripts()
+    it('looks the repo hook up without env, in a subshell that unsets GIT_CONFIG_COUNT', () => {
+      const { chain, prePush } = scripts()
 
-    for (const script of [chain, prePush]) {
-      expect(script).not.toContain('env -u')
-      expect(script).toContain('own=$(unset GIT_CONFIG_COUNT; git rev-parse --git-path hooks 2>/dev/null)')
-    }
-  })
-})
+      for (const script of [chain, prePush]) {
+        expect(script).not.toContain('env -u')
+        expect(script).toContain('own=$(unset GIT_CONFIG_COUNT; git rev-parse --git-path hooks 2>/dev/null)')
+      }
+    })
+  },
+)
 
 describe.each(SHELLS)('the git shim under %s', shell => {
   it('refuses a push that skips verification and fails with its message intact', () => {
@@ -195,7 +195,7 @@ describe.each(SHELLS)('a commit through the git shim on %s under a hostile SHELL
 
     const run = spawnSync(shim, ['commit', '-q', '-m', 'x'], {
       cwd: repo,
-      env: { ...clean, ...gitHooksEnv(guard), SHELLOPTS: 'noexec' },
+      env: { ...clean, ...gitHooksEnv(guard), SHELLOPTS: 'noexec', BASH_VERSION: '5.2.0' },
       encoding: 'utf8',
     })
 
