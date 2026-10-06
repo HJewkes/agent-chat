@@ -557,11 +557,53 @@ describe('planSeat pool charges and same-tick claims (CC-275)', () => {
         seat: 'seat-a',
         repo: REPO,
         agentName: 'sa-a-1-b',
-        work: { taskId: 'A-1', slice: 'b', tags: ['ui'], owns: ['src/x.ts'] },
+        work: { taskId: 'A-1', slice: 'b', tags: ['ui'], owns: ['src/x.ts'], contracts: [] },
       },
       { seat: 'seat-a', repo: REPO, agentName: 'sa-a-5', work: { taskId: 'A-5', tags: ['api'], owns: [] } },
     ])
     expect(seen).toEqual(plan.claims.map(c => c.work))
+  })
+
+  it('dispatches one of two ready sibling slices that clash on a scope and refuses the other (CC-710)', () => {
+    const scope = 'api:/v1/report'
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [
+        queued('A-1', { slice: 'b', contracts: [{ scope, op: 'remove' }] }),
+        queued('A-1', { slice: 'c', contracts: [{ scope, op: 'extend' }] }),
+      ],
+    }
+
+    const plan = planSeat(inputs([], [task('A-1')], { ledger }))
+
+    expect(plan.dispatch.map(d => d.slice)).toEqual(['b'])
+    expect(plan.refusals).toEqual([expect.objectContaining({ task: 'A-1', kind: 'contract-overlap' })])
+  })
+
+  it('dispatches two ready sibling slices whose contracts are both additive', () => {
+    const scope = 'api:/v1/report'
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [
+        queued('A-1', { slice: 'b', contracts: [{ scope, op: 'add' }] }),
+        queued('A-1', { slice: 'c', contracts: [{ scope, op: 'extend' }] }),
+      ],
+    }
+
+    const plan = planSeat(inputs([], [task('A-1')], { ledger }))
+
+    expect(plan.dispatch.map(d => d.slice)).toEqual(['b', 'c'])
+  })
+
+  it("passes a ready slice's contracts to the collision check (CC-710)", () => {
+    const contracts = [{ scope: 'api:/v1/report', op: 'remove' as const }]
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: [queued('A-1', { contracts })] }
+    const seen: { contracts?: unknown }[] = []
+    const collision = (_repo: string, work: { contracts?: unknown }) => (seen.push(work), undefined)
+
+    planSeat(inputs([row('A-5', 50)], [task('A-1'), task('A-5')], { ledger, collision }))
+
+    expect(seen[0]?.contracts).toEqual(contracts)
   })
 })
 

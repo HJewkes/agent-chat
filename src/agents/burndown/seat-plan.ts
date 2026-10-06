@@ -8,7 +8,7 @@ import {
   type Refusal,
   type Task,
 } from './eligibility.js'
-import type { CollisionWork, SameTickClaim } from './collision.js'
+import { contractOverlap, type CollisionWork, type SameTickClaim } from './collision.js'
 import { stopLineRefusal, wipRefusal, type Downstream, type LineStop } from './flow-gate.js'
 import { backoffHeld, type Hold } from './backoff.js'
 import { heldClaims, readySlices, type Claim, type Ledger } from './ledger.js'
@@ -134,8 +134,12 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
   const runStart = Math.max(budget.runStartAt, budget.ctx.now.getTime() - RUN_CAP_MS)
   const priorPicks = priorPicksOf(inputs.ledger, inputs.seat.seat, runStart)
   const { order, refused, planRefusals } = orderRows(inputs, priorPicks)
-  const walk = startWalk(inputs)
   const plan: SeatPlan = { dispatch: [], claims: [], refusals: [], priorPicks, shareCapped: refused }
+  const walk = startWalk({
+    ...inputs,
+    collision: (repo, work) =>
+      inputs.collision?.(repo, work) ?? contractOverlap(work, acceptedContracts(plan)),
+  })
   const take = (initiative: string, task: string, outcome: Taken | Refused): void => {
     if ('kind' in outcome) plan.refusals.push({ initiative, task, ...outcome })
     else {
@@ -152,6 +156,10 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
     plan.refusals.push({ initiative, task, kind: 'plan-blocked', reason })
   return plan
 }
+
+/** The dispatches this pass already accepted: a queued claim holds nothing in the ledger until it goes out. */
+const acceptedContracts = (plan: SeatPlan) =>
+  plan.claims.map(c => ({ holder: c.agentName, contracts: c.work.contracts ?? [] }))
 
 interface Ordered {
   order: (DispatchRow & Partial<Pick<PlannedRow, 'tier'>>)[]
@@ -294,6 +302,7 @@ function considerSlice(claim: Claim, walk: Walk): Taken | Refused {
     ...(claim.slice === undefined ? {} : { slice: claim.slice }),
     tags,
     owns: claim.owns ?? [],
+    contracts: claim.contracts ?? [],
   }
   return blocker(dispatch, checked, 'implementers', walk) ?? { dispatch, role: 'implementers', work: checked }
 }
