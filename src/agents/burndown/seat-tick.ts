@@ -235,7 +235,8 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
       ...seat.budget,
       dispatched: chargesOn(pool, [...taken.charged, ...taken.dispatch.map(d => d.account)]),
     },
-    collision: (repo, work) => sameTickCollision(taken.claims, repo, work) ?? deps.collision?.(repo, work),
+    collision: (repo, work, landedRepos) =>
+      sameTickCollision(taken.claims, repo, work) ?? deps.collision?.(repo, work, landedRepos),
     ...(deps.downstream === undefined ? {} : { downstream: deps.downstream(seat.dispatch) }),
     ...optional(deps, lessDispatched(deps.capacity, taken.dispatch)),
   })

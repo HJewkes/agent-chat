@@ -78,7 +78,8 @@ export interface PlanInputs {
   /** A leftover branch or worktree named for `agentName` that no claim accounts for. */
   orphan?: (repo: string, agentName: string) => string | undefined
   /** Why `work` collides with work landed, open or held in `repo` (CC-202), or undefined when it does not. */
-  collision?: (repo: string, work: CollisionWork) => Collision | undefined
+  /** `landedRepos` are the other checkouts whose default branch also counts as landing the task (a seat's repos). */
+  collision?: (repo: string, work: CollisionWork, landedRepos?: readonly string[]) => Collision | undefined
 }
 
 export interface Plan {

@@ -255,17 +255,40 @@ export function collisionCheck(
   broker: BrokerView | undefined,
   exec: Runner = run,
   failed: ReaderFailed = () => {},
-): (repo: string, work: CollisionWork) => Collision | undefined {
+): (repo: string, work: CollisionWork, landedRepos?: readonly string[]) => Collision | undefined {
   const perRepo = new Map<string, CollisionFacts>()
-  return (repo, work) => {
-    const facts = perRepo.get(repo) ?? readFacts(repo, broker, exec, failed)
+  const perSubjects = new Map<string, string[] | undefined>()
+  const subjectsOf = (repo: string): string[] | undefined => {
+    if (perSubjects.has(repo)) return perSubjects.get(repo)
+    const read = readSubjects(repo, defaultBranch(repo, exec), exec)
+    perSubjects.set(repo, read)
+    if (read === undefined) failed('git-subjects', repo)
+    return read
+  }
+  return (repo, work, landedRepos = []) => {
+    const facts = perRepo.get(repo) ?? readFacts(repo, broker, exec, failed, subjectsOf(repo))
     perRepo.set(repo, facts)
     return collision(work, {
       ...facts,
+      subjects: landedSubjects(
+        facts.subjects,
+        landedRepos.filter(other => other !== repo),
+        subjectsOf,
+      ),
       ours: oursFor(ledger, work.taskId),
       held: heldContracts(ledger, work),
     })
   }
+}
+
+/** The home repo's subjects plus every other listed repo's; a task ID lands wherever its PR merged. */
+function landedSubjects(
+  home: string[] | undefined,
+  others: readonly string[],
+  subjectsOf: (repo: string) => string[] | undefined,
+): string[] | undefined {
+  const all = [home, ...others.map(subjectsOf)]
+  return all.some(s => s === undefined) ? undefined : all.flatMap(s => s ?? [])
 }
 
 /** One repo's facts, reporting each reader that fails once, so the caller can log it by name. */
@@ -274,10 +297,9 @@ function readFacts(
   broker: BrokerView | undefined,
   exec: Runner,
   failed: ReaderFailed,
+  subjects: string[] | undefined,
 ): CollisionFacts {
-  const subjects = readSubjects(repo, defaultBranch(repo, exec), exec)
   const prs = readOpenPrs(repo, exec)
-  if (subjects === undefined) failed('git-subjects', repo)
   if (prs === undefined) failed('gh-pulls', repo)
   if (broker === undefined) failed('broker-view', repo)
   const files = new Map<number, string[] | undefined>()

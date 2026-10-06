@@ -250,6 +250,26 @@ describe('collisionCheck reader failures', () => {
   })
 })
 
+describe('collisionCheck landed in any listed repo (CC-794)', () => {
+  const exec: Runner = (bin, args, cwd) => {
+    if (bin === 'gh') return { status: 0, stdout: '' }
+    const landed = cwd === '/repo-b' ? 'T-1 Land it (#9)\n' : 'init\n'
+    return { status: 0, stdout: args[0] === 'log' ? landed : '' }
+  }
+  const check = () => collisionCheck({ version: 1, claims: [] }, { names: [], claims: [] }, exec)
+
+  it('refuses a task landed in another listed repo than the one its initiative maps to', () => {
+    const found = check()('/repo-a', work('T-1'), ['/repo-a', '/repo-b'])
+
+    expect(found?.kind).toBe('landed')
+    expect(found?.reason).toContain('T-1 Land it (#9)')
+  })
+
+  it('checks only the home repo when no other repos are listed', () => {
+    expect(check()('/repo-a', work('T-1'))).toBeUndefined()
+  })
+})
+
 describe('sameTickCollision over earlier seats this tick (CC-275)', () => {
   const earlier = [
     {
