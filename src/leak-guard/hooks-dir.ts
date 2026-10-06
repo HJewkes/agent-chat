@@ -2,6 +2,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+import { ghShimDir } from '../paths.js'
+import { gitShimDirFor } from './git-shim.js'
 import { ENVIRONMENT_SCRUB, hardenedShebang, posixShell } from './posix-shell.js'
 
 /**
@@ -225,12 +227,40 @@ else
 fi
 )`
 
+// Symlinks and `..` resolved, so an alias of a shim dir is still recognised; a dir that is gone keeps its lexical form.
+const canonical = (dir: string): string => {
+  try {
+    return fs.realpathSync(dir)
+  } catch {
+    return path.resolve(dir)
+  }
+}
+
+const isWithin = (dir: string, root: string): boolean => dir === root || dir.startsWith(`${root}${path.sep}`)
+
+/** The broker PATH less every entry at or under a shim dir; exact paths, so a lookalike name stays. */
+function withoutShimDirs(brokerPath: string, shimDirs: readonly string[]): string {
+  const roots = shimDirs.map(canonical)
+  return brokerPath
+    .split(':')
+    .filter(dir => dir !== '' && !roots.some(root => isWithin(canonical(dir), root)))
+    .join(':')
+}
+
+// An empty PATH makes sh search the current directory, the repo being pushed, so it refuses instead.
+const bakePath = (brokerPath: string): string =>
+  brokerPath === ''
+    ? `echo "leak-scan: push refused: the broker PATH holds no directory but the agent shims; see docs/leak-guard.md." >&2
+exit 2`
+    : `PATH=${shQuote(brokerPath)}; export PATH`
+
 // The broker's PATH covers the whole shim, not only the scan; the repo hook gets the agent's PATH back.
 const prePushShim = (
   inputs: ScanInputs,
   shell: string,
+  shimDirs: readonly string[],
 ): string => `${prePushHeader(shell)}${ENVIRONMENT_SCRUB}agent_path=$PATH
-PATH=${shQuote(inputs.path)}; export PATH
+${bakePath(withoutShimDirs(inputs.path, shimDirs))}
 tmp=$(mktemp -d) || exit 1
 trap 'rm -rf "$tmp"' EXIT
 refs=$tmp/refs
@@ -245,12 +275,17 @@ if [ -n "$hook" ]; then PATH=$agent_path "$hook" "$@" < "$refs"; own_status=$?; 
 exit "$own_status"
 `
 
+/**
+ * The hook never pushes, so its git calls skip the agent's git and gh shims, which the broker's
+ * PATH inherits when an agent session autostarts it: every exec costs kernel memory (CC-795).
+ */
 export function hookScripts(
   inputs: ScanInputs = defaultScanInputs(),
   shell = posixShell(),
+  shimDirs: readonly string[] = [ghShimDir()],
 ): Map<string, string> {
   return new Map([
-    ['pre-push', prePushShim(inputs, shell)],
+    ['pre-push', prePushShim(inputs, shell, shimDirs)],
     ...CHAINED_HOOKS.map(name => [name, chainShim(shell)] as const),
   ])
 }
@@ -274,5 +309,6 @@ export function writeGitHooks(
   shell = posixShell(),
 ): void {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-  for (const [name, body] of hookScripts(inputs, shell)) writeIfChanged(path.join(dir, name), body)
+  const shimDirs = [gitShimDirFor(dir), ghShimDir()]
+  for (const [name, body] of hookScripts(inputs, shell, shimDirs)) writeIfChanged(path.join(dir, name), body)
 }
