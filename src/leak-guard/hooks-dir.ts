@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -71,6 +72,68 @@ export interface ScanInputs {
   home: string
   /** The broker's own PATH, absolute entries only; the hook never uses the agent's PATH. */
   path: string
+  /** Checks the scanner on the PATH the hook bakes once, at write time; absent, every push checks it. */
+  probe?: (bakedPath: string) => ScannerFacts | undefined
+}
+
+/** What `titan-egress-scan --help` said when the hooks were written. */
+export type ScanVerdict = 'scans-text' | 'skips-binary' | 'no-pre-push'
+
+export interface ScannerFacts {
+  /** The realpath of the scanner the baked PATH finds, which the hook runs as `node <scanner>`. */
+  scanner: string
+  /** The node the scanner's env shebang finds on the baked PATH, as found, so an upgrade keeps it. */
+  node: string
+  verdict: ScanVerdict
+  /** The scanner's mtime, unchanged across the --help run; the stamp file beside the hooks carries it. */
+  mtimeMs: number
+}
+
+const SCANNER = 'titan-egress-scan'
+const PROBE_TIMEOUT_MS = 5000
+
+const executableOnPath = (name: string, searchPath: string): string | undefined =>
+  searchPath
+    .split(':')
+    .map(dir => path.join(dir, name))
+    .find(file => {
+      try {
+        fs.accessSync(file, fs.constants.X_OK)
+        return fs.statSync(file).isFile()
+      } catch {
+        return false
+      }
+    })
+
+const verdictOf = (help: string): ScanVerdict =>
+  !help.includes('pre-push')
+    ? 'no-pre-push'
+    : help.includes('scanned as text')
+      ? 'scans-text'
+      : 'skips-binary'
+
+/**
+ * Runs the scanner's --help once, the way the hook would, with an environment of PATH alone. A
+ * scanner or node that is missing, a help run that fails or times out, or a scanner whose mtime
+ * moved during the run yields nothing, so the hook keeps checking at every push.
+ */
+export function probeScanner(bakedPath: string): ScannerFacts | undefined {
+  const found = executableOnPath(SCANNER, bakedPath)
+  const node = executableOnPath('node', bakedPath)
+  if (found === undefined || node === undefined) return undefined
+  try {
+    const scanner = fs.realpathSync(found)
+    const { mtimeMs } = fs.statSync(scanner)
+    const run = spawnSync(node, [scanner, '--help'], {
+      env: { PATH: bakedPath },
+      encoding: 'utf8',
+      timeout: PROBE_TIMEOUT_MS,
+    })
+    if (run.status !== 0 || fs.statSync(scanner).mtimeMs !== mtimeMs) return undefined
+    return { scanner, node, verdict: verdictOf(`${run.stdout}${run.stderr}`), mtimeMs }
+  } catch {
+    return undefined
+  }
 }
 
 // os.userInfo() reads the passwd entry, not $HOME; os.homedir() is the fallback when there is none.
@@ -179,9 +242,27 @@ const ALLOW_LIST = `[ -z "$tip" ] || case $(allow_mode "$tip") in
 100644 | 100755) vgit cat-file blob "$tip:.egress-allow" > "$view/.egress-allow" || exit 2 ;;
 esac`
 
-const runScanner = (refuses: boolean, termsFile: string): string =>
+/** A `scans-text` verdict and the stamp file whose mtime pins the scanner it was found for. */
+export interface Bake {
+  facts: ScannerFacts
+  stamp: string
+}
+
+// The baked node runs the scanner directly, skipping its env shebang, only while the verdict holds.
+const scanInvocation = (settings: string, bake: Bake | undefined): string => {
+  const onPath = `clean ${settings} titan-egress-scan pre-push "$1"`
+  if (bake === undefined) return `${onPath} < "$tmp/scan-refs" 2> "$errs"`
+  const node = shQuote(bake.facts.node)
+  return `if [ -n "$fresh" ] && [ -f ${node} ] && [ -x ${node} ]; then
+      clean ${settings} ${node} ${shQuote(bake.facts.scanner)} pre-push "$1"
+    else
+      ${onPath}
+    fi < "$tmp/scan-refs" 2> "$errs"`
+}
+
+const runScanner = (refuses: boolean, termsFile: string, bake: Bake | undefined): string =>
   `cd "$view" || exit 2
-    clean TITAN_EGRESS_TERMS=${shQuote(termsFile)} TITAN_EGRESS_REQUIRE_TERMS=${refuses ? '1' : ''} titan-egress-scan pre-push "$1" < "$tmp/scan-refs" 2> "$errs"
+    ${scanInvocation(`TITAN_EGRESS_TERMS=${shQuote(termsFile)} TITAN_EGRESS_REQUIRE_TERMS=${refuses ? '1' : ''}`, bake)}
     scan=$?
     cat "$errs" >&2
     if grep -q '${MISSING_TERMS_LINE}' "$errs"; then
@@ -190,20 +271,37 @@ const runScanner = (refuses: boolean, termsFile: string): string =>
     [ "$scan" -ne 1 ] || echo ${shQuote(ALLOW_HINT)} >&2
     exit "$scan" ;;`
 
+const BAKED_HELP = 'pre-push: binary files are scanned as text, as checked when this hook was written'
+
+// -ef follows symlinks, so a PATH entry that now names another file fails it; a missing stamp fails it too.
+const freshCheck = ({ facts, stamp }: Bake): string => {
+  const scanner = shQuote(facts.scanner)
+  const stampFile = shQuote(stamp)
+  return `fresh=
+if [ -f ${stampFile} ] && [ "$(command -v titan-egress-scan)" -ef ${scanner} ] && ! [ ${scanner} -nt ${stampFile} ]; then
+  fresh=1
+  help='${BAKED_HELP}'
+fi
+`
+}
+
 /**
  * The scan runs in a subshell. `clean` starts git and the scanner with an environment of PATH
  * alone, so no variable of the agent's reaches them. A missing node or scanner, or one whose help
  * lacks `pre-push`, warns and lets the push go. A scanner that crashes, or whose help lacks
  * `scanned as text` (it skips binary files), refuses. The scan's
  * refusal does not skip the repo's own hook; either one failing refuses.
+ *
+ * With a bake, the help run is skipped only while the PATH still finds the baked scanner file and
+ * that file is not newer than the stamp; `[` is a shell builtin, so the check starts no process.
  */
-const scanStep = ({ missingTermsRefuses: refuses, home }: ScanInputs): string => `(
+const scanStep = ({ missingTermsRefuses: refuses, home }: ScanInputs, bake?: Bake): string => `(
 clean() { /usr/bin/env -i PATH="$PATH" "$@"; }
-if ! command -v node >/dev/null 2>&1; then
+${bake === undefined ? '' : freshCheck(bake)}if ! command -v node >/dev/null 2>&1; then
   echo "${NOT_RUN}: no node on the broker's PATH. Put node on it and restart the broker; see docs/leak-guard.md." >&2
 elif ! command -v titan-egress-scan >/dev/null 2>&1; then
   echo "${NOT_RUN}: no titan-egress-scan on the broker's PATH. ${INSTALL_HINT}" >&2
-elif ! help=$(clean titan-egress-scan --help 2>&1); then
+elif ${bake === undefined ? '' : '[ -z "$fresh" ] && '}! help=$(clean titan-egress-scan --help 2>&1); then
   printf '%s\\n' "$help" >&2
   echo "leak-scan: titan-egress-scan failed while checking for its pre-push command, so the push is refused." >&2
   exit 2
@@ -220,7 +318,7 @@ else
     ${remoteTip(home)}
     ${SCAN_REFS}
     ${ALLOW_LIST}
-    ${runScanner(refuses, termsFileFor(home))}
+    ${runScanner(refuses, termsFileFor(home), bake)}
   *)
     echo "${NOT_RUN}: the titan-egress-scan on the broker's PATH has no pre-push command. ${INSTALL_HINT}" >&2 ;;
   esac
@@ -259,6 +357,7 @@ const prePushShim = (
   inputs: ScanInputs,
   shell: string,
   shimDirs: readonly string[],
+  bake: Bake | undefined,
 ): string => `${prePushHeader(shell)}${ENVIRONMENT_SCRUB}agent_path=$PATH
 ${bakePath(withoutShimDirs(inputs.path, shimDirs))}
 tmp=$(mktemp -d) || exit 1
@@ -266,7 +365,7 @@ trap 'rm -rf "$tmp"' EXIT
 refs=$tmp/refs
 errs=$tmp/errs
 cat > "$refs"
-${scanStep(inputs)}
+${scanStep(inputs, bake)}
 scan=$?
 ${FIND_REPO_HOOK}
 own_status=0
@@ -283,9 +382,13 @@ export function hookScripts(
   inputs: ScanInputs = defaultScanInputs(),
   shell = posixShell(),
   shimDirs: readonly string[] = [ghShimDir()],
+  bake?: Bake,
 ): Map<string, string> {
   return new Map([
-    ['pre-push', prePushShim(inputs, shell, shimDirs)],
+    [
+      'pre-push',
+      prePushShim(inputs, shell, shimDirs, bake?.facts.verdict === 'scans-text' ? bake : undefined),
+    ],
     ...CHAINED_HOOKS.map(name => [name, chainShim(shell)] as const),
   ])
 }
@@ -310,5 +413,33 @@ export function writeGitHooks(
 ): void {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   const shimDirs = [gitShimDirFor(dir), ghShimDir()]
-  for (const [name, body] of hookScripts(inputs, shell, shimDirs)) writeIfChanged(path.join(dir, name), body)
+  const bake = bakeScanner(inputs, shimDirs, path.join(dir, STAMP_FILE))
+  for (const [name, body] of hookScripts(inputs, shell, shimDirs, bake))
+    writeIfChanged(path.join(dir, name), body)
+}
+
+/** Not a hook name, so git never runs it; only its mtime is read. */
+export const STAMP_FILE = 'egress-scan.stamp'
+
+/**
+ * The stamp is written before the hook that reads it, and removed before a hook without a bake
+ * lands, so a hook mid-run never pairs a verdict with a stamp from a scanner it was not found for.
+ */
+function bakeScanner(inputs: ScanInputs, shimDirs: readonly string[], stamp: string): Bake | undefined {
+  const facts = inputs.probe?.(withoutShimDirs(inputs.path, shimDirs))
+  if (facts?.verdict !== 'scans-text') {
+    fs.rmSync(stamp, { force: true })
+    return undefined
+  }
+  writeStamp(stamp, facts.mtimeMs)
+  return { facts, stamp }
+}
+
+// utimes takes float seconds, which drops nanoseconds; one ms above the mtime keeps the probed file not newer.
+function writeStamp(stamp: string, mtimeMs: number): void {
+  const tmp = `${stamp}.${process.pid}.tmp`
+  const seconds = (Math.ceil(mtimeMs) + 1) / 1000
+  fs.writeFileSync(tmp, '', { mode: 0o600 })
+  fs.utimesSync(tmp, seconds, seconds)
+  fs.renameSync(tmp, stamp)
 }
