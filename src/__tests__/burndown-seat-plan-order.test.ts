@@ -134,7 +134,7 @@ describe('planSeat ordered by planOrder', () => {
     for (const d of ticked.dispatch) expect(d.tier).toBe(tierOf.get(d.task))
   })
 
-  it("records planOrder's placement, with a held tier 0 row still decaying its initiative", () => {
+  it("records planOrder's picks in order, with a held tier 0 row still decaying its initiative", () => {
     const ids = tasksFromList(snapshot).map(t => t.id)
     const spawnedAt = '2026-09-29T09:00:00.000Z'
     const gamma = tagged(tags).find(t => t.id === 'GA-22')!.slug
@@ -155,7 +155,10 @@ describe('planSeat ordered by planOrder', () => {
     const { ticked, scored } = fixtureTick(tagged(tags), milestoneFile(ids), snapshot.today, held)
 
     expect(ticked.dispatch.map(d => d.task)).not.toContain('GA-22')
-    expect(ticked.placement?.decaying).toContainEqual({ id: 'GA-22', initiative: gamma, tier: 0 })
+    expect(ticked.placement?.picks).toContainEqual({ id: 'GA-22', initiative: gamma, tier: 0 })
+    expect(ticked.placement?.picks).toEqual(
+      scored.order.map(({ id, initiative, tier }) => ({ id, initiative, tier })),
+    )
     for (const row of scored.order) expect(ticked.placement?.tiers[row.id]?.tier).toBe(row.tier)
   })
 

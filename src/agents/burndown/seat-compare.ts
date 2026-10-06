@@ -16,10 +16,10 @@ import { seatPlanSetup, type SeatPlanOptions } from './tick.js'
  * A reorder is explained only by the plan's own record (`SeatPlan.placement`), never a recomputation:
  * `planOrder` placed the jumper in a higher class-of-service tier (expedite, fixed date, or an
  * owned milestone) than the ID it overtook; both sit in one of tiers 0 to 2, which the plan sorts
- * by age, slack and float; or both sit in tier 3 or 4 and either a share-capped ID of the jumper's
- * initiative ranks above it, so score.py decayed that initiative once more than the plan did, or a
- * tier 0 to 2 row the plan placed, dispatched or not, decayed the overtaken ID's initiative in the
- * plan only. Tiers 3 and 4 follow score.py's order, so any other reorder there fails.
+ * by age, slack and float; or both sit in tier 3 or 4 and the decays each side applied at that
+ * pick flip the pair: the plan's from every `planOrder` pick before the jumper (tier 0 to 2 rows,
+ * dispatched or not, but no share-cap skip), score.py's from every row it ranks above the overtaken
+ * ID. Tiers 3 and 4 follow score.py's order, so any other reorder there fails.
  */
 
 /** One row of score.py's `--json` order. */
@@ -40,7 +40,7 @@ export interface ScorePyOutput {
 export interface CompareInput {
   score: ScorePyOutput
   /** The plan's own record: its dispatches, refusals, share-cap counts and `planOrder` placement. */
-  plan: Pick<SeatPlan, 'dispatch' | 'refusals' | 'shareCapped' | 'placement'>
+  plan: Pick<SeatPlan, 'dispatch' | 'refusals' | 'shareCapped' | 'priorPicks' | 'placement'>
   /** Task IDs the claim ledger holds. */
   held: ReadonlySet<string>
 }
@@ -115,19 +115,16 @@ function shareCapped(
   order: readonly ScorePyRow[],
   verdicts: Verdict[],
   capped: SeatPlan['shareCapped'],
-): Set<string> {
+): void {
   const left = new Map(Object.entries(capped).map(([key, n]) => [key.slice('share-cap:'.length), n]))
-  const ids = new Set<string>()
   for (let i = order.length - 1; i >= 0; i--) {
     const row = order[i]!
     const n = left.get(row.kind) ?? 0
     if (verdicts[i]!.kind !== 'unexplained' || n === 0) continue
     left.set(row.kind, n - 1)
-    ids.add(row.id)
     const reason = `the plan's dispatch order skipped ${capped[`share-cap:${row.kind}`]} ${row.kind} rows over the share cap`
     verdicts[i] = { kind: 'beyond-caps', refusal: { kind: `share-cap:${row.kind}`, reason } }
   }
-  return ids
 }
 
 const TIER_NAMES = ['expedite', 'fixed date', 'milestone', 'standard', 'intangible']
@@ -142,11 +139,11 @@ export function describeTier(t: PlacedTier): string {
 interface Ranked {
   rank: Map<string, number>
   rows: readonly ScorePyRow[]
-  capped: ReadonlySet<string>
+  prior: Readonly<Record<string, number>>
   placement: Placement
 }
 
-const NO_PLACEMENT: Placement = { tiers: {}, decaying: [], intangibleHeld: [] }
+const NO_PLACEMENT: Placement = { tiers: {}, picks: [], decay: 1, intangibleHeld: [] }
 
 /** Why `jumper` may go ahead of `overtaken` by tier, or undefined when the tiers explain nothing. */
 function tierReason(jumper: ScorePyRow, overtaken: ScorePyRow, ranked: Ranked): string | undefined {
@@ -158,19 +155,32 @@ function tierReason(jumper: ScorePyRow, overtaken: ScorePyRow, ranked: Ranked): 
   return undefined
 }
 
+/** Each initiative's decay count: its prior picks plus its picks in `ahead`. */
+function decayCounts(prior: Readonly<Record<string, number>>, ahead: readonly { initiative: string }[]) {
+  const counts = new Map(Object.entries(prior))
+  for (const { initiative } of ahead) counts.set(initiative, (counts.get(initiative) ?? 0) + 1)
+  return counts
+}
+
 /**
- * A decay the plan applies and score.py lacks: a share-capped ID score.py counted, or this tick's tier 0 to 2 pick.
- * Only for a pair the plan places in tiers 3 and 4, the band where `dispatchOrder` applies those decays.
+ * The exact decay difference, for a pair the plan places in tiers 3 and 4. The plan picked the jumper
+ * with every `planOrder` pick before it applied, held, refused and tier 0 to 2 rows included, and
+ * share-cap skips not; score.py picked the overtaken ID with every row it ranks above that ID applied.
+ * Explained only when score.py's counts favour the overtaken ID and the plan's favour the jumper.
  */
 function decayReason(jumper: ScorePyRow, overtaken: ScorePyRow, ranked: Ranked): string | undefined {
-  const before = ranked.rows.slice(0, ranked.rank.get(jumper.id))
-  const capped = before.find(r => r.initiative === jumper.initiative && ranked.capped.has(r.id))
-  if (capped !== undefined) return `share-capped ${capped.id} decays ${jumper.initiative} in score.py only`
-  if (overtaken.initiative === jumper.initiative) return undefined
-  const row = ranked.placement.decaying.find(d => d.initiative === overtaken.initiative)
-  return row === undefined
-    ? undefined
-    : `tier ${row.tier} row ${row.id} decays ${overtaken.initiative} in the plan only`
+  const { picks, decay } = ranked.placement
+  const at = picks.findIndex(p => p.id === jumper.id)
+  if (at < 0) return undefined
+  const plan = decayCounts(ranked.prior, picks.slice(0, at))
+  const score = decayCounts(ranked.prior, ranked.rows.slice(0, ranked.rank.get(overtaken.id)))
+  const n = (counts: Map<string, number>, row: ScorePyRow) => counts.get(row.initiative) ?? 0
+  const favoursJumper = (counts: Map<string, number>) =>
+    jumper.score * decay ** n(counts, jumper) > overtaken.score * decay ** n(counts, overtaken)
+  if (favoursJumper(score) || !favoursJumper(plan)) return undefined
+  const side = (row: ScorePyRow) =>
+    `${row.initiative} ${n(plan, row)} in the plan, ${n(score, row)} in score.py`
+  return `decays at this pick: ${side(overtaken)}; ${side(jumper)}`
 }
 
 const inDispatchOrder = (id: string, ranked: Ranked) => {
@@ -248,10 +258,11 @@ export function compareSeat(input: CompareInput): Comparison {
   for (const r of input.plan.refusals)
     if (r.task !== undefined && !refusals.has(r.task)) refusals.set(r.task, r)
   const verdicts = rows.map(r => verdictOf(r.id, input, picks, refusals))
+  shareCapped(rows, verdicts, input.plan.shareCapped)
   const ranked: Ranked = {
     rank,
     rows,
-    capped: shareCapped(rows, verdicts, input.plan.shareCapped),
+    prior: input.plan.priorPicks,
     placement: input.plan.placement ?? NO_PLACEMENT,
   }
   const jumps = overtakes(

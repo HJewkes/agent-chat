@@ -98,8 +98,13 @@ export type PlacedTier = Pick<PlannedRow, 'tier' | 'milestone' | 'slack' | 'floa
 export interface Placement {
   /** Every row `planOrder` placed, by task ID. */
   tiers: Record<string, PlacedTier>
-  /** The tier 0 to 2 rows; each decays its initiative in the tier 3 and 4 order, dispatched or not. */
-  decaying: { id: string; initiative: string; tier: number }[]
+  /**
+   * `planOrder`'s picks in order, dispatched or not; each decays its initiative for the tier 3 and 4
+   * rows picked after it. A share-cap skip is no pick, so it decays nothing.
+   */
+  picks: { id: string; initiative: string; tier: number }[]
+  /** The `initiative_decay` factor each pick applies. */
+  decay: number
   /** The ready intangible IDs held back for a ready row of a higher tier. */
   intangibleHeld: string[]
 }
@@ -230,14 +235,14 @@ function orderRows(inputs: SeatPlanInputs, priorPicks: Record<string, number>): 
     order: planned.order,
     refused: Object.fromEntries(shareCapped) as ShareCapRefusals,
     planRefusals: tagRefusals(rows, planned, base),
-    placement: placementOf(planned),
+    placement: placementOf(planned, defaults.initiative_decay),
   }
 }
 
 /** The highest tier `planOrder` sorts itself; tiers 3 and 4 follow `dispatchOrder`, decayed by the rows above them. */
 export const LAST_SORTED_TIER = 2
 
-function placementOf(planned: ReturnType<typeof planOrder>): Placement {
+function placementOf(planned: ReturnType<typeof planOrder>, decay: number): Placement {
   const tiers: Record<string, PlacedTier> = {}
   for (const { id, tier, milestone, slack, float } of planned.order)
     tiers[id] = {
@@ -246,10 +251,8 @@ function placementOf(planned: ReturnType<typeof planOrder>): Placement {
       ...(slack !== undefined && { slack }),
       ...(float !== undefined && { float }),
     }
-  const decaying = planned.order
-    .filter(row => row.tier <= LAST_SORTED_TIER)
-    .map(({ id, initiative, tier }) => ({ id, initiative, tier }))
-  return { tiers, decaying, intangibleHeld: planned.intangibleHeld }
+  const picks = planned.order.map(({ id, initiative, tier }) => ({ id, initiative, tier }))
+  return { tiers, picks, decay, intangibleHeld: planned.intangibleHeld }
 }
 
 const HOLDS = (key: string) => key.startsWith('share-cap:') || key === 'intangible-held'
