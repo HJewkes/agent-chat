@@ -8,10 +8,11 @@ import {
   type Refusal,
   type Task,
 } from './eligibility.js'
-import type { CollisionWork, SameTickClaim } from './collision.js'
+import { contractOverlap, type CollisionWork, type SameTickClaim } from './collision.js'
 import { stopLineRefusal, wipRefusal, type Downstream, type LineStop } from './flow-gate.js'
 import { backoffHeld, type Hold } from './backoff.js'
 import { heldClaims, readySlices, type Claim, type Ledger } from './ledger.js'
+import type { AgentIdentity } from '../../protocol.js'
 import {
   agentNameFor,
   capacityRefusal,
@@ -33,6 +34,7 @@ import {
   type ShareCapRefusals,
 } from './score.js'
 import { repoForTask, type SeatDispatch } from './seat-dispatch.js'
+import { scopeRefusal, type SeatScope } from './seat-scope.js'
 import { worktreePathFor } from './trust-gate.js'
 
 /**
@@ -74,6 +76,10 @@ export interface SeatPlanInputs {
   downstream?: (repo: string) => Downstream
   /** Set while the service check has failed twice running (CC-629); absent, the line runs. */
   lineStop?: LineStop
+  /** The seat's `scope_tags` and backlog (CC-779); absent, every scored row is in scope. */
+  scope?: SeatScope
+  /** The broker's roster (CC-779): the seat's running agents count against its caps; absent, only claims do. */
+  agents?: readonly AgentIdentity[]
 }
 
 export interface SeatPlan {
@@ -133,9 +139,14 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
   const { budget } = inputs
   const runStart = Math.max(budget.runStartAt, budget.ctx.now.getTime() - RUN_CAP_MS)
   const priorPicks = priorPicksOf(inputs.ledger, inputs.seat.seat, runStart)
-  const { order, refused, planRefusals } = orderRows(inputs, priorPicks)
-  const walk = startWalk(inputs)
+  const { rows, outOfScope } = inScope(inputs)
+  const { order, refused, planRefusals } = orderRows({ ...inputs, rows }, priorPicks)
   const plan: SeatPlan = { dispatch: [], claims: [], refusals: [], priorPicks, shareCapped: refused }
+  const walk = startWalk({
+    ...inputs,
+    collision: (repo, work) =>
+      inputs.collision?.(repo, work) ?? contractOverlap(work, acceptedContracts(plan)),
+  })
   const take = (initiative: string, task: string, outcome: Taken | Refused): void => {
     if ('kind' in outcome) plan.refusals.push({ initiative, task, ...outcome })
     else {
@@ -150,8 +161,26 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
   for (const row of order) take(row.initiative, row.id, consider(row, walk))
   for (const { initiative, task, reason } of planRefusals)
     plan.refusals.push({ initiative, task, kind: 'plan-blocked', reason })
+  plan.refusals.push(...outOfScope)
   return plan
 }
+
+/** Rows outside the seat's scope leave before ordering, so they spend no share cap or initiative decay. */
+function inScope(inputs: SeatPlanInputs): { rows: ScoreRow[]; outOfScope: Refusal[] } {
+  const rows: ScoreRow[] = []
+  const outOfScope: Refusal[] = []
+  for (const row of inputs.rows) {
+    const tags = inputs.tasks.get(row.initiative)?.find(t => t.id === row.id)?.tags ?? []
+    const reason = scopeRefusal(inputs.scope, row.initiative, { id: row.id, tags })
+    if (reason === undefined) rows.push(row)
+    else outOfScope.push({ initiative: row.initiative, task: row.id, kind: 'out-of-scope', reason })
+  }
+  return { rows, outOfScope }
+}
+
+/** The dispatches this pass already accepted: a queued claim holds nothing in the ledger until it goes out. */
+const acceptedContracts = (plan: SeatPlan) =>
+  plan.claims.map(c => ({ holder: c.agentName, contracts: c.work.contracts ?? [] }))
 
 interface Ordered {
   order: (DispatchRow & Partial<Pick<PlannedRow, 'tier'>>)[]
@@ -216,6 +245,7 @@ function startWalk(inputs: SeatPlanInputs): Walk {
     if (claim.worktree !== undefined && active(claim))
       bump(seatWorktrees, path.dirname(path.dirname(claim.worktree)))
   }
+  for (const role of handSpawnRoles(inputs.agents ?? [], inputs.seat.prefix, held)) roles[role] += 1
   return {
     inputs,
     gate: gatePool(inputs.budget),
@@ -226,6 +256,31 @@ function startWalk(inputs: SeatPlanInputs): Walk {
     capacity: withLeftFree(inputs.capacity, inputs.seat.worktrees.leftFreePerRepo),
     tally: { agents: 0, worktrees: new Map() },
   }
+}
+
+const HAND_ROLES: readonly [string, Role][] = [
+  ['implementer', 'implementers'],
+  ['reviewer', 'reviewers'],
+  ['planner', 'planners'],
+]
+
+/** Every name a held claim's agents carry: the claim's own, its spawns, and its `-r<n>` and `-s<n>` names. */
+function claimAgent(held: readonly Claim[]): (name: string) => boolean {
+  const names = new Set(held.flatMap(c => [c.agentName ?? '', ...(c.spawned ?? [])]))
+  const bases = new Set(held.map(c => agentNameFor(c.taskId, c.slice, c.namePrefix)))
+  return name => names.has(name) || bases.has(name.replace(/-[rs]\d+$/, ''))
+}
+
+/**
+ * CC-779: the seat's running agents its prefix names that no held claim accounts for, by the first role
+ * word in the profile as `seats status` counts them; a profile naming no role counts toward no cap.
+ */
+function handSpawnRoles(agents: readonly AgentIdentity[], prefix: string, held: readonly Claim[]): Role[] {
+  const ofClaim = claimAgent(held)
+  return agents
+    .filter(a => a.name.startsWith(`${prefix}-`) && a.state !== 'exited' && a.state !== 'retired')
+    .filter(a => !ofClaim(a.name))
+    .flatMap(a => HAND_ROLES.find(([word]) => a.profile.includes(word))?.[1] ?? [])
 }
 
 const bump = (counts: Map<string, number>, key: string): void => {
@@ -294,6 +349,7 @@ function considerSlice(claim: Claim, walk: Walk): Taken | Refused {
     ...(claim.slice === undefined ? {} : { slice: claim.slice }),
     tags,
     owns: claim.owns ?? [],
+    contracts: claim.contracts ?? [],
   }
   return blocker(dispatch, checked, 'implementers', walk) ?? { dispatch, role: 'implementers', work: checked }
 }

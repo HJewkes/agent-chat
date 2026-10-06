@@ -5,7 +5,7 @@ import { parsePools, type Pool } from './charter.js'
 import { loadDoc, readText, type WatchdogDoc } from './io.js'
 import { ownsSpawns, seatOf } from './seat-of.js'
 import type { SeatSpawnInput } from './spawn-gate.js'
-import type { SpendMeter } from './stops.js'
+import { savedMeters } from './stops.js'
 import { accountReading } from './watchdog.js'
 
 /** CC-288: what the spawn gate needs from disk. `none` is a spawn no seat owns; `skip` names why a seat's is not gated. */
@@ -31,9 +31,6 @@ const defaultDeps: SeatSpawnReadDeps = {
   loadDoc: () => loadDoc(),
   home: os.homedir(),
 }
-
-const usable = (meter: SpendMeter | undefined): SpendMeter | undefined =>
-  [meter?.since, meter?.last, meter?.spent].every(Number.isFinite) ? meter : undefined
 
 /** The charter pool billed through `configDir`, matched on the resolved path. */
 export const poolForConfigDir = (pools: ReadonlyMap<string, Pool>, configDir: string): Pool | undefined =>
@@ -69,14 +66,14 @@ export function readSeatSpawn(
   const nowMs = spawn.now.getTime()
   const read = deps.readBudget(pool.configDir, nowMs)
   const resetsAt = read.found ? read.budget.rate_limits.seven_day?.resets_at : undefined
-  const doc = savedDoc(deps.loadDoc)
+  const meters = savedMeters(savedDoc(deps.loadDoc), seat.name, pool.name)
   const input: Omit<SeatSpawnInput, 'model'> = {
     seat,
     pool,
     reading: accountReading(read, nowMs),
     resetsAt: resetsAt === undefined ? undefined : resetsAt * 1000,
-    runMeter: usable(doc?.seats[seat.name]?.run),
-    dayMeter: usable(doc?.pools[pool.name]),
+    runMeter: meters.run,
+    dayMeter: meters.day,
     now: spawn.now,
   }
   return { kind: 'gate', input }

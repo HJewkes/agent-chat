@@ -47,6 +47,7 @@ export type RefusalKind =
   | 'landed'
   | 'open-pr'
   | 'file-overlap'
+  | 'contract-overlap'
   | 'untriaged'
   | 'stop-short'
   | 'no-repo'
@@ -55,6 +56,7 @@ export type RefusalKind =
   | 'plan-blocked'
   | 'wip'
   | 'stop-line'
+  | 'out-of-scope'
 
 export interface Refusal {
   initiative: string

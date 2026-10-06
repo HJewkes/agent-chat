@@ -12,6 +12,7 @@ import { checkSeatPrefixes, loadPolicy, type SeatPolicy } from '../agents/burndo
 import type { ScoreRow, ScoringDefaults } from '../agents/burndown/score.js'
 import type { SeatDispatch } from '../agents/burndown/seat-dispatch.js'
 import { planSeat, priorPicksOf, type SeatPlanInputs } from '../agents/burndown/seat-plan.js'
+import { backlogIds, seatScopeOf } from '../agents/burndown/seat-scope.js'
 import { activeTreeOf } from '../agents/burndown/seat-tick.js'
 import type { Step } from '../agents/burndown/execute.js'
 import { stepsForDispatch, type StepContext } from '../agents/burndown/steps.js'
@@ -558,11 +559,53 @@ describe('planSeat pool charges and same-tick claims (CC-275)', () => {
         seat: 'seat-a',
         repo: REPO,
         agentName: 'sa-a-1-b',
-        work: { taskId: 'A-1', slice: 'b', tags: ['ui'], owns: ['src/x.ts'] },
+        work: { taskId: 'A-1', slice: 'b', tags: ['ui'], owns: ['src/x.ts'], contracts: [] },
       },
       { seat: 'seat-a', repo: REPO, agentName: 'sa-a-5', work: { taskId: 'A-5', tags: ['api'], owns: [] } },
     ])
     expect(seen).toEqual(plan.claims.map(c => c.work))
+  })
+
+  it('dispatches one of two ready sibling slices that clash on a scope and refuses the other (CC-710)', () => {
+    const scope = 'api:/v1/report'
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [
+        queued('A-1', { slice: 'b', contracts: [{ scope, op: 'remove' }] }),
+        queued('A-1', { slice: 'c', contracts: [{ scope, op: 'extend' }] }),
+      ],
+    }
+
+    const plan = planSeat(inputs([], [task('A-1')], { ledger }))
+
+    expect(plan.dispatch.map(d => d.slice)).toEqual(['b'])
+    expect(plan.refusals).toEqual([expect.objectContaining({ task: 'A-1', kind: 'contract-overlap' })])
+  })
+
+  it('dispatches two ready sibling slices whose contracts are both additive', () => {
+    const scope = 'api:/v1/report'
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [
+        queued('A-1', { slice: 'b', contracts: [{ scope, op: 'add' }] }),
+        queued('A-1', { slice: 'c', contracts: [{ scope, op: 'extend' }] }),
+      ],
+    }
+
+    const plan = planSeat(inputs([], [task('A-1')], { ledger }))
+
+    expect(plan.dispatch.map(d => d.slice)).toEqual(['b', 'c'])
+  })
+
+  it("passes a ready slice's contracts to the collision check (CC-710)", () => {
+    const contracts = [{ scope: 'api:/v1/report', op: 'remove' as const }]
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: [queued('A-1', { contracts })] }
+    const seen: { contracts?: unknown }[] = []
+    const collision = (_repo: string, work: { contracts?: unknown }) => (seen.push(work), undefined)
+
+    planSeat(inputs([row('A-5', 50)], [task('A-1'), task('A-5')], { ledger, collision }))
+
+    expect(seen[0]?.contracts).toEqual(contracts)
   })
 })
 
@@ -781,5 +824,79 @@ describe('planSeat downstream WIP and stop the line (CC-629)', () => {
     const tasks = [task('A-1'), task('A-2')]
 
     expect(planSeat(inputs(rows, tasks, { downstream: below }))).toEqual(planSeat(inputs(rows, tasks)))
+  })
+})
+
+describe('planSeat seat scope (CC-779)', () => {
+  const policy = (patch: Record<string, unknown>) =>
+    ({ initiatives: {}, scope_tags: [], ...patch }) as unknown as SeatPolicy
+  const SEATS = {
+    'seat-a': policy({ initiatives: { alpha: 1, beta: 1 }, scope_tags: ['lane:a'], backlog: 'backlog.md' }),
+    'seat-b': policy({ initiatives: { alpha: 1 } }),
+  }
+  const scoped = (backlog: string[] = []) => seatScopeOf(SEATS, 'seat-a', new Set(backlog))
+
+  it('refuses a task in a shared initiative that carries none of the scope tags, with the reason', () => {
+    const plan = one('A-1', { tags: ['lane:b'] }, {}, { scope: scoped() })
+
+    expect(plan.dispatch).toEqual([])
+    expect(plan.refusals).toEqual([
+      expect.objectContaining({
+        task: 'A-1',
+        kind: 'out-of-scope',
+        reason: expect.stringMatching(/scope_tags \[lane:a\] and backlog\.md does not name it/),
+      }),
+    ])
+  })
+
+  it('keeps a task the backlog names, whatever its tags', () => {
+    const plan = one('A-1', { tags: ['lane:b'] }, {}, { scope: scoped(['A-1']) })
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+  })
+
+  it('keeps a task carrying a scope tag, and every task of an initiative no other seat lists', () => {
+    const rows = [row('A-1', 50), row('B-1', 40, { initiative: 'beta' })]
+    const plan = planSeat(inputs(rows, [task('A-1', { tags: ['lane:a'] }), task('B-1')], { scope: scoped() }))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1', 'B-1'])
+  })
+
+  it('reads the task IDs a backlog file names', () => {
+    expect([...backlogIds('1. Take CC-12 first, then AB-3; not cc-4 or X-y.')]).toEqual(['CC-12', 'AB-3'])
+  })
+})
+
+describe('planSeat hand spawns against the caps (CC-779)', () => {
+  const agent = (name: string, profile: string, state: AgentLifecycle = 'live'): AgentIdentity =>
+    ({ name, profile, state, cwd: '/tmp/elsewhere', spawnedAt: 1 }) as AgentIdentity
+  const seat = { ...SEAT, caps: { ...SEAT.caps, implementers: 3 } }
+
+  it('fills a cap of three with two live hand spawns and one claim', () => {
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: [claim('A-9', { agentName: 'sa-a-9' })] }
+    const agents = [agent('sa-cc-1-fix', 'implementer'), agent('sa-hand-2', 'opus-implementer')]
+
+    const plan = one('A-1', {}, {}, { seat, ledger, agents })
+
+    expect(refusalOf(plan)).toEqual([['A-1', 'role-cap']])
+    expect(plan.refusals[0]?.reason).toMatch(/holds 3 of 3 implementers/)
+  })
+
+  it('does not count again an agent a claim holds, nor exited, other-prefix or roleless agents', () => {
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [claim('A-9', { agentName: 'sa-a-9', spawned: ['sa-a-9'] })],
+    }
+    const agents = [
+      agent('sa-a-9', 'implementer'),
+      agent('sa-a-9-s1', 'implementer'),
+      agent('sa-done', 'implementer', 'exited'),
+      agent('sb-other', 'implementer'),
+      agent('sa-architect', 'fable-architect'),
+    ]
+
+    const plan = one('A-1', {}, {}, { seat, ledger, agents })
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
   })
 })

@@ -1,12 +1,14 @@
 import {
   RUN_CAP_MS,
   dayStart,
+  runStartAt,
   sevenDayLine,
   spendSince,
   type PoolRule,
   type SevenDaySample,
   type SpendCaps,
 } from '../burndown/budget-gate.js'
+import type { WatchdogDoc } from './io.js'
 import { isJournalText } from './journal-line.js'
 
 /**
@@ -82,6 +84,62 @@ export function meterHistory(starts: readonly MeterStart[], nowMs: number): Seve
     chain.unshift({ at: sample.at, sevenDay: floor })
   }
   return chain
+}
+
+/** A saved meter missing a figure is no meter, so the cap it would cover reads as unknown. */
+export const usableMeter = (meter: SpendMeter | undefined): SpendMeter | undefined =>
+  [meter?.since, meter?.last, meter?.spent].every(Number.isFinite) ? meter : undefined
+
+export interface SavedMeters {
+  run?: SpendMeter | undefined
+  day?: SpendMeter | undefined
+}
+
+export const usableMeters = (given: SavedMeters): SavedMeters => ({
+  run: usableMeter(given.run),
+  day: usableMeter(given.day),
+})
+
+/** The seat's run meter and its pool's day meter from the watchdog doc, each held to `usableMeter`. */
+export function savedMeters(
+  doc: WatchdogDoc | undefined,
+  seat: string,
+  pool: string | undefined,
+): SavedMeters {
+  return usableMeters({ run: doc?.seats[seat]?.run, day: pool === undefined ? undefined : doc?.pools[pool] })
+}
+
+export interface MeterSpend {
+  history: SevenDaySample[]
+  runStart: number
+  run: SpendMeter | undefined
+  day: SpendMeter | undefined
+}
+
+/**
+ * The saved run and day meters advanced to this reading, as `gatePool` history. The spawn gate,
+ * `seats status`, and the tick when its ledger lacks a run-start sample count spend through this.
+ * `ownRun` false keeps the run meter out of the history (a pool the seat does not own) while the
+ * run start still follows it. Every meter is held to `usableMeter` here, so no caller can count a
+ * malformed one: its NaN spend would compare below every cap and open the gate.
+ */
+export function meterSpend(
+  given: SavedMeters,
+  sevenDay: number | undefined,
+  now: Date,
+  ownRun = true,
+): MeterSpend {
+  const saved = usableMeters(given)
+  const nowMs = now.getTime()
+  const run =
+    ownRun && saved.run !== undefined ? advanceMeter(saved.run, sevenDay, nowMs, withinRun) : undefined
+  const day = saved.day === undefined ? undefined : advanceMeter(saved.day, sevenDay, nowMs, sameSpendDay)
+  const runStart = runStartAt(now, saved.run === undefined ? {} : { recordedAt: saved.run.since })
+  const starts = [
+    { at: runStart, meter: run },
+    { at: dayStart(now), meter: day },
+  ]
+  return { history: meterHistory(starts, nowMs), runStart, run, day }
 }
 
 const DAY_MS = 24 * 3_600_000

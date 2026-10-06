@@ -76,8 +76,11 @@ For each listed seat, in order, the tick:
 - takes one sample of the seat pool's `seven_day` reading from the status file under the
   pool's `config_dir`, and keeps the seat's samples for 26 hours in the ledger's `seats`;
 - gates the pool with `gatePool`, using the run start the seat watchdog shares
-  (`runStartAt`, capped at 12 hours) and the samples as history (see "The run meter"
-  below);
+  (`runStartAt`, capped at 12 hours) and the samples as history. A seat with no ledger
+  sample at or before its run start uses the watchdog's saved run and day meters as its
+  whole history instead. The two sources are never mixed, because the meters' estimated
+  samples never drop, and among real readings across a `seven_day` reset they would count
+  the pre-reset readings again (see "The run meter" below);
 - dispatches the seat planners' ready slices first, then scores the seat's scope and walks
   the order through `planSeat`: eligibility, route, repo, the post-advance collision
   check, orphan, trust on the pool's `config_dir`, role caps, worktree caps, then the pool
