@@ -90,6 +90,10 @@ const Seat = z.looseObject({
   unclaimed_weight: orEmpty(z.number(), 0.5),
   excluded_tags: orEmpty(z.array(z.string()), []),
   excluded_title_patterns: orEmpty(z.array(z.string()), []),
+  /** CC-779: narrow the initiatives the seat shares with another seat; see `seat-scope.ts`. */
+  scope_tags: orEmpty(z.array(z.string()), []),
+  /** CC-779: a file under the autonomy root whose task IDs are in scope whatever their tags. */
+  backlog: z.string().min(1).optional(),
   kind_weights: orEmpty(Weights, {}),
   share_caps: orEmpty(Weights, {}),
   pool: z.string().optional(),
