@@ -24,8 +24,8 @@ describe('trustRefusal by CLI version', () => {
 
   afterEach(() => fs.rmSync(world, { recursive: true, force: true }))
 
-  const refusal = (version: string | undefined) =>
-    trustRefusal(repo, path.join(repo, '.worktrees', 'agent'), configDir, version)
+  const refusal = (version: string | undefined, env: NodeJS.ProcessEnv = {}) =>
+    trustRefusal(repo, path.join(repo, '.worktrees', 'agent'), configDir, version, env)
 
   it.each(Object.keys(VERIFIED_TRUST_RULE_VERSIONS))(
     'accepts verified release %s under a trusted repo',
@@ -38,9 +38,28 @@ describe('trustRefusal by CLI version', () => {
     expect(VERIFIED_TRUST_RULE_VERSIONS).toHaveProperty('2.1.289')
   })
 
+  it('verifies 2.1.290 against 2.1.289', () => {
+    expect(VERIFIED_TRUST_RULE_VERSIONS['2.1.290']).toBe('2.1.289')
+    expect(refusal('2.1.290')).toBeUndefined()
+  })
+
+  it('freezes the verified release map', () => {
+    expect(Object.isFrozen(VERIFIED_TRUST_RULE_VERSIONS)).toBe(true)
+  })
+
+  it('refuses a verified release while CLAUDE_CODE_CUSTOM_OAUTH_URL is set', () => {
+    expect(refusal('2.1.290', { CLAUDE_CODE_CUSTOM_OAUTH_URL: 'https://oauth.example.test' })).toMatch(
+      /CLAUDE_CODE_CUSTOM_OAUTH_URL.*trust config file/,
+    )
+  })
+
+  it.each([undefined, ''])('passes when CLAUDE_CODE_CUSTOM_OAUTH_URL is %j', value => {
+    expect(refusal('2.1.290', { CLAUDE_CODE_CUSTOM_OAUTH_URL: value })).toBeUndefined()
+  })
+
   it('refuses an unverified release, naming the verified set', () => {
-    expect(refusal('2.1.290')).toBe(
-      `installed Claude Code 2.1.290 differs from ${Object.keys(VERIFIED_TRUST_RULE_VERSIONS).join(', ')}, the releases whose trust rule this gate reproduces`,
+    expect(refusal('2.1.291')).toBe(
+      `installed Claude Code 2.1.291 differs from ${Object.keys(VERIFIED_TRUST_RULE_VERSIONS).join(', ')}, the releases whose trust rule this gate reproduces`,
     )
   })
 
