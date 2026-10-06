@@ -56,6 +56,7 @@ export type RefusalKind =
   | 'plan-blocked'
   | 'wip'
   | 'stop-line'
+  | 'out-of-scope'
 
 export interface Refusal {
   initiative: string
