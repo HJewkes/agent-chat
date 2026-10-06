@@ -71,6 +71,8 @@ export interface PlanOrder {
   refused: Record<string, number>
   /** The planning-tag errors of `tasks`; the order still uses what parsed. */
   tagErrors: TagError[]
+  /** The ready intangible tasks held back for a ready tier 0 to 3 row; `refused['intangible-held']` counts them. */
+  intangibleHeld: string[]
 }
 
 type BlockReason = 'cycle-blocked' | 'unknown-dep' | 'dep-blocked'
@@ -252,14 +254,16 @@ export function planOrder(input: PlanOrderInput): PlanOrder {
   const standard = dispatched(sorted.standard, 3, input, order)
   const refused = { ...standard.refused }
   order.push(...standard.order)
+  const intangibleHeld: string[] = []
   if (picked.length > 0 || hasReady(sorted.standard)) {
-    const held = sorted.intangible.filter(row => row.blocked.length === 0).length
-    if (held > 0) sorted.refused['intangible-held'] = held
+    const held = sorted.intangible.filter(row => row.blocked.length === 0)
+    intangibleHeld.push(...held.map(row => row.id))
+    if (held.length > 0) sorted.refused['intangible-held'] = held.length
   } else {
     const intangible = dispatched(sorted.intangible, 4, input, order)
     addCounts(refused, intangible.refused)
     order.push(...intangible.order)
   }
   addCounts(refused, sorted.refused)
-  return { order, refused, tagErrors: ctx.tagErrors }
+  return { order, refused, tagErrors: ctx.tagErrors, intangibleHeld }
 }

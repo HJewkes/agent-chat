@@ -216,6 +216,7 @@ describe('planOrder tiers', () => {
 
     expect(ids(held.order)).toEqual(['IN-2'])
     expect(held.refused).toEqual({ 'intangible-held': 1 })
+    expect(held.intangibleHeld).toEqual(['IN-1'])
     expect(alone.order.map(row => [row.id, row.tier])).toEqual([['IN-1', 4]])
   })
 
