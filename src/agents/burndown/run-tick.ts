@@ -341,6 +341,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const dispatchCtx = { ...ctx, tasks: new Map([...ctx.tasks, ...planned.tasks]) }
   const dispatched = planned.dispatch.map(d => stepsForDispatch(d, dispatchCtx))
   const notes = [
+    ...(roster.partial === undefined ? [] : [`roster partial: ${roster.partial}`]),
     ...unread.map(u => `unread ${u}`),
     ...advanced.deferred.map(d => `deferred ${d}`),
     ...dispatched.flatMap(d => (typeof d === 'string' ? [`not dispatched: ${d}`] : [])),

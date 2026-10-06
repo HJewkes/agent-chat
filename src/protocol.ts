@@ -862,6 +862,8 @@ export type ClientMessage =
       predecessor?: string
       /** CC-286: `none` stops the broker appending its return contract to `brief`. */
       returnContract?: 'none'
+      /** CC-774: the class-of-service tier the burndown plan placed the task in; recorded on the `dispatched` row. */
+      tier?: number
     }
   | { t: 'agents'; includeRetired?: boolean }
   /**

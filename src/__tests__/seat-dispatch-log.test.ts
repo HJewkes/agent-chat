@@ -93,6 +93,27 @@ describe('the rows the writer appends', () => {
     expect(logged).toEqual([])
   })
 
+  it('writes the planned tier on the dispatched row, and no tier key for a spawn with none', () => {
+    writerOver().dispatched(facts({ tier: 2 }))
+    writerOver().dispatched(facts({ agent: 'sx-cd-34-fix', agent_id: 'id-2' }))
+
+    const [tiered, plain] = rowsOf(logFile('seat-x'))
+    expect(tiered).toMatchObject({ outcome: 'dispatched', tier: 2 })
+    expect(plain).not.toHaveProperty('tier')
+    expect(foldDispatch(fs.readFileSync(logFile('seat-x'), 'utf8')).records.map(r => r.tier)).toEqual([
+      2,
+      undefined,
+    ])
+  })
+
+  it('folds a dispatched row written before tier existed', () => {
+    writerOver().dispatched(facts())
+
+    const { records } = foldDispatch(fs.readFileSync(logFile('seat-x'), 'utf8'))
+    expect(records).toHaveLength(1)
+    expect(records[0]).not.toHaveProperty('tier')
+  })
+
   it('writes a retired row with the session and spend, which folds with the dispatched row into one record', () => {
     const writer = writerOver()
     const usage = { input: 10, cache_read: 0, cache_write_5m: 0, cache_write_1h: 0, output: 5 }

@@ -32,6 +32,8 @@ export interface DispatchRun {
   spawner: string | null
   model: string | null
   predecessor: string | null
+  /** The burndown plan's class-of-service tier (CC-774); absent for a hand spawn. */
+  tier?: number
 }
 
 export interface DispatchUsage {
@@ -74,7 +76,7 @@ interface BrokerRow<Outcome extends string> {
   predecessor: string | null
 }
 
-export type DispatchedRow = BrokerRow<typeof DISPATCHED>
+export type DispatchedRow = BrokerRow<typeof DISPATCHED> & { tier?: number }
 
 export interface RetiredRow extends BrokerRow<typeof RETIRED> {
   session_id: string | null
@@ -116,7 +118,10 @@ function brokerRow<Outcome extends string>(
   }
 }
 
-export const dispatchedRow = (run: DispatchRun): DispatchedRow => brokerRow(run, DISPATCHED, null, null)
+export const dispatchedRow = (run: DispatchRun): DispatchedRow => ({
+  ...brokerRow(run, DISPATCHED, null, null),
+  ...(run.tier === undefined ? {} : { tier: run.tier }),
+})
 
 /** Broker-written end state for a dispatched agent that never attached; no seat exists to write it. */
 export const abandonedRow = (run: DispatchRun): BrokerRow<'abandoned'> =>
@@ -165,6 +170,8 @@ export interface DispatchRecord {
   spawner: string | null
   model: string | null
   predecessor: string | null
+  /** Absent on a row written before CC-774 and on a hand spawn. */
+  tier?: number
 }
 
 export interface DispatchFold {
@@ -242,6 +249,7 @@ function recordOf(group: readonly Row[]): DispatchRecord {
   // A group with no broker row predates the broker's writes, so the seat's own values stand in.
   const owner = broker.length > 0 ? broker : seat
   const filled = (key: string): string | null => lastOf(seat, key, text) ?? firstOf(broker, key, text)
+  const tier = firstOf(broker, 'tier', count)
   return {
     ts: firstOf(owner, 'ts', text),
     task: filled('task'),
@@ -260,6 +268,7 @@ function recordOf(group: readonly Row[]): DispatchRecord {
     spawner: firstOf(owner, 'spawner', text),
     model: firstOf(owner, 'model', text),
     predecessor: firstOf(owner, 'predecessor', text),
+    ...(tier === null ? {} : { tier }),
   }
 }
 

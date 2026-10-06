@@ -2065,6 +2065,54 @@ describe('burndown tick collision check', () => {
   })
 })
 
+describe('burndown tick when the retired roster read times out (CC-777)', () => {
+  /** A broker whose includeRetired read never answers in time, while the live reads do. */
+  const slowRetired = (live: AgentIdentity[]): BrokerClient =>
+    ({
+      request: async (frame: { t: string; includeRetired?: boolean }) => {
+        if (frame.t === 'list') return { t: 'list_result', sessions: [], claims: [] }
+        if (frame.includeRetired === true) throw new Error('broker did not answer agents_result')
+        return { t: 'agents_result', agents: live, slots: { held: 4, cap: 36 } }
+      },
+    }) as unknown as BrokerClient
+
+  const brokerOver = (client: BrokerClient): Fake => {
+    const fake = fakeBroker()
+    const real = tickBroker(client, fake.broker.seatSender)
+    return { ...fake, broker: { ...fake.broker, roster: real.roster, collisionView: real.collisionView } }
+  }
+
+  it('dispatches free tasks and reports the partial roster instead of refusing them as claimed', async () => {
+    initiative({ 'DM-1': task('DM-1') })
+    const fake = brokerOver(slowRetired([]))
+
+    const lines = await tick(fake)
+
+    expect(lines.join('\n')).not.toContain('[claimed]')
+    expect(fake.frames.map(f => f.name)).toEqual(['bd-dm-1'])
+    expect(lines).toContain('roster partial: retired rows unread (broker did not answer agents_result)')
+  })
+
+  it('leaves a held claim whose agent has no live row unread rather than gone', async () => {
+    initiative({ 'DM-1': task('DM-1') })
+    const held: Claim = {
+      taskId: 'DM-1',
+      initiative: 'demo',
+      spawnedAt: NOON.toISOString(),
+      phase: 'implementing',
+      phaseAt: NOON.toISOString(),
+      agentName: 'bd-dm-1',
+      spawned: ['bd-dm-1'],
+    }
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [held] })
+
+    const lines = await tick(brokerOver(slowRetired([])))
+
+    expect(lines.join('\n')).toContain('unread DM-1#: no live row for bd-dm-1 and retired rows unread')
+    expect(readLedger(burndownLedgerPath()).claims[0]?.phase).toBe('implementing')
+  })
+})
+
 describe('burndown tick finding on a silent agent', () => {
   const MIN = 60_000
   const liveWorker = () => ({ ...row('bd-dm-1', 'live'), sessionId: 'sess-dm-1' })

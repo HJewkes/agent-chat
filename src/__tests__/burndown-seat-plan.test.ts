@@ -12,7 +12,9 @@ import { checkSeatPrefixes, loadPolicy, type SeatPolicy } from '../agents/burndo
 import type { ScoreRow, ScoringDefaults } from '../agents/burndown/score.js'
 import type { SeatDispatch } from '../agents/burndown/seat-dispatch.js'
 import { planSeat, priorPicksOf, type SeatPlanInputs } from '../agents/burndown/seat-plan.js'
+import { backlogIds, seatScopeOf } from '../agents/burndown/seat-scope.js'
 import { activeTreeOf } from '../agents/burndown/seat-tick.js'
+import type { Step } from '../agents/burndown/execute.js'
 import { stepsForDispatch, type StepContext } from '../agents/burndown/steps.js'
 import type { AgentIdentity, AgentLifecycle } from '../protocol.js'
 
@@ -654,6 +656,31 @@ describe('seat seams from the CC-246 review', () => {
       }),
     ])
   })
+
+  it('(c) carries the planned tier on the spawn frame, and leaves it off when the plan placed none', () => {
+    const d: Dispatch = {
+      initiative: 'alpha',
+      task: 'A-1',
+      profile: 'bd-implementer',
+      account: 'pool-x',
+      cwd: `${REPO}/.worktrees/sa-a-1`,
+      repo: REPO,
+      agentName: 'sa-a-1',
+      worktree: `${REPO}/.worktrees/sa-a-1`,
+      reason: 'test',
+      seat: 'seat-a',
+      namePrefix: 'sa',
+      configDir: '/tmp/pool-x',
+    }
+    const frameOf = (dispatch: Dispatch): Record<string, unknown> => {
+      const steps = stepsForDispatch(dispatch, stepContext())
+      const spawn = (steps as Step[]).find(s => s.kind === 'spawn')
+      return (spawn as Extract<Step, { kind: 'spawn' }>).frame as unknown as Record<string, unknown>
+    }
+
+    expect(frameOf({ ...d, tier: 2 })).toMatchObject({ tier: 2 })
+    expect(frameOf(d)).not.toHaveProperty('tier')
+  })
 })
 
 describe('(e) checkSeatPrefixes', () => {
@@ -797,5 +824,79 @@ describe('planSeat downstream WIP and stop the line (CC-629)', () => {
     const tasks = [task('A-1'), task('A-2')]
 
     expect(planSeat(inputs(rows, tasks, { downstream: below }))).toEqual(planSeat(inputs(rows, tasks)))
+  })
+})
+
+describe('planSeat seat scope (CC-779)', () => {
+  const policy = (patch: Record<string, unknown>) =>
+    ({ initiatives: {}, scope_tags: [], ...patch }) as unknown as SeatPolicy
+  const SEATS = {
+    'seat-a': policy({ initiatives: { alpha: 1, beta: 1 }, scope_tags: ['lane:a'], backlog: 'backlog.md' }),
+    'seat-b': policy({ initiatives: { alpha: 1 } }),
+  }
+  const scoped = (backlog: string[] = []) => seatScopeOf(SEATS, 'seat-a', new Set(backlog))
+
+  it('refuses a task in a shared initiative that carries none of the scope tags, with the reason', () => {
+    const plan = one('A-1', { tags: ['lane:b'] }, {}, { scope: scoped() })
+
+    expect(plan.dispatch).toEqual([])
+    expect(plan.refusals).toEqual([
+      expect.objectContaining({
+        task: 'A-1',
+        kind: 'out-of-scope',
+        reason: expect.stringMatching(/scope_tags \[lane:a\] and backlog\.md does not name it/),
+      }),
+    ])
+  })
+
+  it('keeps a task the backlog names, whatever its tags', () => {
+    const plan = one('A-1', { tags: ['lane:b'] }, {}, { scope: scoped(['A-1']) })
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+  })
+
+  it('keeps a task carrying a scope tag, and every task of an initiative no other seat lists', () => {
+    const rows = [row('A-1', 50), row('B-1', 40, { initiative: 'beta' })]
+    const plan = planSeat(inputs(rows, [task('A-1', { tags: ['lane:a'] }), task('B-1')], { scope: scoped() }))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1', 'B-1'])
+  })
+
+  it('reads the task IDs a backlog file names', () => {
+    expect([...backlogIds('1. Take CC-12 first, then AB-3; not cc-4 or X-y.')]).toEqual(['CC-12', 'AB-3'])
+  })
+})
+
+describe('planSeat hand spawns against the caps (CC-779)', () => {
+  const agent = (name: string, profile: string, state: AgentLifecycle = 'live'): AgentIdentity =>
+    ({ name, profile, state, cwd: '/tmp/elsewhere', spawnedAt: 1 }) as AgentIdentity
+  const seat = { ...SEAT, caps: { ...SEAT.caps, implementers: 3 } }
+
+  it('fills a cap of three with two live hand spawns and one claim', () => {
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: [claim('A-9', { agentName: 'sa-a-9' })] }
+    const agents = [agent('sa-cc-1-fix', 'implementer'), agent('sa-hand-2', 'opus-implementer')]
+
+    const plan = one('A-1', {}, {}, { seat, ledger, agents })
+
+    expect(refusalOf(plan)).toEqual([['A-1', 'role-cap']])
+    expect(plan.refusals[0]?.reason).toMatch(/holds 3 of 3 implementers/)
+  })
+
+  it('does not count again an agent a claim holds, nor exited, other-prefix or roleless agents', () => {
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [claim('A-9', { agentName: 'sa-a-9', spawned: ['sa-a-9'] })],
+    }
+    const agents = [
+      agent('sa-a-9', 'implementer'),
+      agent('sa-a-9-s1', 'implementer'),
+      agent('sa-done', 'implementer', 'exited'),
+      agent('sb-other', 'implementer'),
+      agent('sa-architect', 'fable-architect'),
+    ]
+
+    const plan = one('A-1', {}, {}, { seat, ledger, agents })
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
   })
 })

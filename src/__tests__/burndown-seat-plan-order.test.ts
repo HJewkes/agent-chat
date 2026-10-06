@@ -15,6 +15,7 @@ import type { SeatDispatch } from '../agents/burndown/seat-dispatch.js'
 import { planSeat } from '../agents/burndown/seat-plan.js'
 import { loadSeats, localDate, planSeats, type SeatTickDeps } from '../agents/burndown/seat-tick.js'
 import { readInitiatives } from '../agents/burndown/source.js'
+import type { AgentIdentity } from '../protocol.js'
 
 /** CC-768: the tick's seat plan is ordered by `planOrder`, as `burndown plan --scored` is. */
 
@@ -300,5 +301,63 @@ describe('planSeats over the week milestone file', () => {
     const plan = run()
     expect(plan.dispatch.map(d => d.task)).toEqual(['AA-1', 'AA-2'])
     expect(plan.refusals).toEqual([])
+  })
+  const scopeSeats = (backlog?: string) => {
+    const seats = path.join(root, 'seats')
+    const seatA = fs.readFileSync(path.join(seats, 'seat-a.md'), 'utf8')
+    const scope = `scope_tags: [lane:a]\n${backlog === undefined ? '' : `backlog: ${backlog}\n`}`
+    fs.writeFileSync(
+      path.join(seats, 'seat-a.md'),
+      seatA.replace('unclaimed_engineering:', `${scope}unclaimed_engineering:`),
+    )
+    const seatB = fs.readFileSync(path.join(seats, 'seat-b.md'), 'utf8')
+    fs.writeFileSync(
+      path.join(seats, 'seat-b.md'),
+      seatB.replace('initiatives:\n', 'initiatives:\n  init-alpha: 0.5\n'),
+    )
+  }
+
+  it('refuses a shared-initiative task outside scope_tags and keeps one its backlog names (CC-779)', () => {
+    scopeSeats('backlog.md')
+    fs.writeFileSync(path.join(root, 'backlog.md'), '1. AA-2 first.\n')
+    const plan = run()
+    expect(plan.dispatch.map(d => d.task)).toEqual(['AA-2'])
+    expect(plan.refusals).toEqual([
+      expect.objectContaining({
+        task: 'AA-1',
+        kind: 'out-of-scope',
+        reason: expect.stringContaining('backlog.md'),
+      }),
+    ])
+  })
+
+  it('reports an unreadable backlog and keeps only the tagged work (CC-779)', () => {
+    scopeSeats('missing.md')
+    addTask('AA-3', 3, ['lane:a'])
+    const plan = run()
+    expect(plan.dispatch.map(d => d.task)).toEqual(['AA-3'])
+    expect(plan.refusals.map(r => [r.task, r.kind])).toEqual([
+      ['AA-1', 'out-of-scope'],
+      ['AA-2', 'out-of-scope'],
+      [undefined, 'plan-blocked'],
+    ])
+  })
+
+  it("counts the seat's live hand spawns from the roster against its caps (CC-779)", () => {
+    const hand = (n: number) =>
+      ({
+        name: `sa-hand-${n}`,
+        profile: 'implementer',
+        state: 'live',
+        cwd: '/tmp/x',
+        spawnedAt: 1,
+      }) as AgentIdentity
+    const { loaded } = loadSeats(['seat-a'], ledger, deps())
+    const roster = { agents: [1, 2, 3].map(hand) }
+    const plan = planSeats(loaded, { ledger, initiatives: readInitiatives(root), roster }, root)
+    expect(plan.dispatch.map(d => d.task)).toEqual(['AA-1'])
+    expect(plan.refusals).toEqual([
+      expect.objectContaining({ task: 'AA-2', kind: 'role-cap', reason: expect.stringContaining('4 of 4') }),
+    ])
   })
 })

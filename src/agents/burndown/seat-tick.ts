@@ -1,3 +1,5 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { readAccountBudget } from '../budget.js'
 import { loadDoc } from '../seats/io.js'
 import { meterSpend, pacedCaps, savedMeters, usableMeters, type SavedMeters } from '../seats/stops.js'
@@ -14,6 +16,7 @@ import { scoreAll } from './score.js'
 import { readScoredTasks } from './score-source.js'
 import { resolveSeatDispatch, type SeatDispatch } from './seat-dispatch.js'
 import { planSeat, type OrderInputs } from './seat-plan.js'
+import { backlogIds, seatScopeOf, type SeatScope } from './seat-scope.js'
 import { describeError, readWeekMilestones, taskIdsOnDisk } from './score-render.js'
 import { readTasks } from './source.js'
 
@@ -216,11 +219,13 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
   const tasks = new Map(slugs.map(slug => [slug, readTasks(root, slug)]))
   const pool = seat.dispatch.pool.name
   const order = orderInputs(seat, read.tasks, root, today)
+  const scope = scopeInputs(seat)
   const planned = planSeat({
     seat: seat.dispatch,
     rows,
     defaults,
     order: order.inputs,
+    scope: scope.scope,
     tasks,
     ledger: deps.ledger,
     budget: {
@@ -231,9 +236,31 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     ...optional(deps, lessDispatched(deps.capacity, taken.dispatch)),
   })
   planned.refusals.push(
-    ...order.faults.map(reason => ({ initiative: '-', kind: 'plan-blocked' as const, reason })),
+    ...[...order.faults, ...scope.faults].map(reason => ({
+      initiative: '-',
+      kind: 'plan-blocked' as const,
+      reason,
+    })),
   )
   return { planned, tasks, skipped: read.skipped }
+}
+
+/**
+ * CC-779: the seat's scope with its backlog's task IDs. A backlog that cannot be read names no task, so
+ * the seat keeps only its tagged work in shared initiatives, and the fault is returned for the tick to report.
+ */
+function scopeInputs(seat: LoadedSeat): { scope: SeatScope; faults: string[] } {
+  const { seats } = seat.policy
+  const name = seat.dispatch.seat
+  const file = seats[name]?.backlog
+  if (file === undefined || seat.autonomyRoot === undefined)
+    return { scope: seatScopeOf(seats, name, new Set()), faults: [] }
+  try {
+    const ids = backlogIds(fs.readFileSync(path.join(seat.autonomyRoot, file), 'utf8'))
+    return { scope: seatScopeOf(seats, name, ids), faults: [] }
+  } catch (err) {
+    return { scope: seatScopeOf(seats, name, new Set()), faults: [`backlog ${file}: ${message(err)}`] }
+  }
 }
 
 /** Epics are checked against every task on disk, as `plan --scored` does: the file is shared across seats and an epic may be done. */
@@ -272,7 +299,9 @@ function optional(deps: SeatPlanDeps, capacity: Capacity | undefined) {
     ...(capacity === undefined ? {} : { capacity }),
     ...(deps.orphan === undefined ? {} : { orphan: deps.orphan }),
     ...(deps.trust === undefined ? {} : { trust: deps.trust }),
-    ...(deps.roster === undefined ? {} : { activeTree: activeTreeOf(deps.roster) }),
+    ...(deps.roster === undefined
+      ? {}
+      : { activeTree: activeTreeOf(deps.roster), agents: deps.roster.agents }),
   }
 }
 

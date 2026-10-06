@@ -36,6 +36,8 @@ export interface Roster {
   agents: AgentIdentity[]
   /** The broker's live semaphore; absent from an older broker, which the tick treats as no free slots. */
   slots?: { held: number; cap: number }
+  /** Why the retired rows are missing (CC-777): a name absent from a partial roster is unknown, not gone. */
+  partial?: string
 }
 
 export interface ObserveDeps {
@@ -135,6 +137,8 @@ export async function observe(claims: Claim[], roster: Roster, deps: ObserveDeps
 
 async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Promise<Observation | string> {
   const row = rowNamed(roster, claim.agentName)
+  if (row === undefined && claim.agentName !== undefined && roster.partial !== undefined)
+    return `no live row for ${claim.agentName} and ${roster.partial}`
   const obs: Observation = row === undefined ? {} : { agent: { id: row.agentId, state: row.state } }
   if (claim.phase === 'parked' && claim.agentName !== undefined) {
     const afterId = Number.parseInt(claim.inboxCursor ?? '0', 10)
