@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { hardenedShebang, posixShell } from './posix-shell.js'
+import { environmentScrub, hardenedShebang, posixShell } from './posix-shell.js'
 
 /** Names the dir holding the agent's `git` shim in the launch plan; `run-agent` puts it first on PATH. */
 export const GIT_SHIM_DIR_ENV = 'AGENT_CHAT_GIT_SHIM_DIR'
@@ -377,7 +377,7 @@ export const gitShimScript = (
 ): string =>
   `${hardenedShebang(shell)}
 # Written by agent-chat at each spawn (TP-596); local edits are overwritten.
-real=${shQuote(real)}
+${environmentScrub(shell)}real=${shQuote(real)}
 guard=${shQuote(guard)}
 exec_path=${shQuote(execPath)}
 builtins=${shQuote(builtins.join(' '))}

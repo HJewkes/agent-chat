@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { hardenedShebang, posixShell } from './posix-shell.js'
+import { environmentScrub, hardenedShebang, posixShell } from './posix-shell.js'
 
 /**
  * Client hooks shimmed to chain to the repo's own hook, since overriding the hooks path hides it.
@@ -47,10 +47,9 @@ hook="$own/\${0##*/}"
 const WRITTEN_BY = '# Written by agent-chat at each spawn (CC-268); local edits are overwritten.\n'
 
 const chainShim = (shell: string): string =>
-  `#!${shell}\n${WRITTEN_BY}${FIND_REPO_HOOK}\n[ -n "$hook" ] || exit 0\nexec "$hook" "$@"\n`
+  `#!${shell}\n${WRITTEN_BY}${environmentScrub(shell)}${FIND_REPO_HOOK}\n[ -n "$hook" ] || exit 0\nexec "$hook" "$@"\n`
 
 // -p: bash as sh imports no functions and ignores SHELLOPTS from the agent's environment; dash has no such import and rejects the flag, so hardenedShebang omits it there.
-// Dash exports an inherited SHELLOPTS untouched, which could noexec a bash repo hook, so the pre-push shim unsets it.
 const prePushHeader = (shell: string): string => `${hardenedShebang(shell)}\n${WRITTEN_BY}`
 
 const NOT_RUN = 'leak-scan: guard NOT run, this push was not scanned'
@@ -227,8 +226,10 @@ fi
 )`
 
 // The broker's PATH covers the whole shim, not only the scan; the repo hook gets the agent's PATH back.
-const prePushShim = (inputs: ScanInputs, shell: string): string => `${prePushHeader(shell)}unset SHELLOPTS
-agent_path=$PATH
+const prePushShim = (
+  inputs: ScanInputs,
+  shell: string,
+): string => `${prePushHeader(shell)}${environmentScrub(shell)}agent_path=$PATH
 PATH=${shQuote(inputs.path)}; export PATH
 tmp=$(mktemp -d) || exit 1
 trap 'rm -rf "$tmp"' EXIT

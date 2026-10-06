@@ -29,3 +29,10 @@ export const posixShell = (probe: (file: string) => boolean = isExecutableFile):
  * and has no such import, so it needs none; any other interpreter keeps the flag.
  */
 export const hardenedShebang = (shell: string): string => (shell === DASH ? `#!${shell}` : `#!${shell} -p`)
+
+/**
+ * Under bash `-p` the inherited SHELLOPTS is ignored and re-exported clean; dash exports it untouched, so a
+ * hostile `noexec` would reach a bash repo hook and silently skip it. Bash keeps the variable read-only
+ * (unset errors there), so only dash scrubs it.
+ */
+export const environmentScrub = (shell: string): string => (shell === DASH ? 'unset SHELLOPTS\n' : '')

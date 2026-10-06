@@ -7,13 +7,27 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { ghShimScript } from '../gh-shim/install.js'
 import { findRealGit, gitShimScript } from '../leak-guard/git-shim.js'
-import { hookScripts, writeGitHooks } from '../leak-guard/hooks-dir.js'
+import { gitHooksEnv, hookScripts, writeGitHooks } from '../leak-guard/hooks-dir.js'
 import { hardenedShebang, posixShell } from '../leak-guard/posix-shell.js'
 
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-posix-shell-'))
 afterAll(() => fs.rmSync(SCRATCH, { recursive: true, force: true }))
 
-const REAL_GIT = findRealGit(process.env.PATH ?? '', path.join(SCRATCH, 'none')) as string
+const isAgentShim = (dir: string): boolean => {
+  try {
+    return fs.readFileSync(path.join(dir, 'git'), 'utf8').includes('# Written by agent-chat')
+  } catch {
+    return false
+  }
+}
+
+// The live agent git shim may lead PATH; a test against it would run through its own bash -p layer.
+const HOST_PATH = (process.env.PATH ?? '')
+  .split(path.delimiter)
+  .filter(dir => !isAgentShim(dir))
+  .join(path.delimiter)
+
+const REAL_GIT = findRealGit(HOST_PATH, path.join(SCRATCH, 'none')) as string
 const INPUTS = { missingTermsRefuses: true, home: SCRATCH, path: '/usr/bin:/bin' }
 const SHELLS = ['/bin/dash', '/bin/sh'].filter(shell => fs.existsSync(shell))
 const firstLine = (script: string): string => script.split('\n')[0] ?? ''
@@ -59,6 +73,13 @@ describe.each([
     expect(firstLine(chain)).toBe(`#!${shell}`)
     expect(firstLine(gh)).toBe(`#!${shell}`)
     expect(hardened.endsWith(' -p')).toBe(shell !== '/bin/dash')
+  })
+
+  it('scrubs SHELLOPTS in the shim, chain hook and pre-push under dash only, since bash keeps it read-only', () => {
+    const { gitShim, prePush, chain } = scripts()
+
+    for (const script of [gitShim, prePush, chain])
+      expect(script.includes('unset SHELLOPTS\n')).toBe(shell === '/bin/dash')
   })
 
   it('looks the repo hook up without env, in a subshell that unsets GIT_CONFIG_COUNT', () => {
@@ -136,5 +157,49 @@ describe('a chain hook counting the commands it runs from PATH', () => {
 
     expect(run.status).toBe(0)
     expect(fs.existsSync(marker)).toBe(false)
+  })
+})
+
+describe.each(SHELLS)('a commit through the git shim on %s under a hostile SHELLOPTS', shell => {
+  it.each(['#!/bin/sh', '#!/bin/bash'])('still runs a refusing %s repo pre-commit hook', shebang => {
+    const root = fs.mkdtempSync(path.join(SCRATCH, 'commit-'))
+    const repo = path.join(root, 'repo')
+    const guard = path.join(root, 'git-hooks')
+    const marker = path.join(root, 'hook-ran')
+    const shim = path.join(root, 'git')
+    const identity = {
+      GIT_AUTHOR_NAME: 't',
+      GIT_AUTHOR_EMAIL: 't@example.com',
+      GIT_COMMITTER_NAME: 't',
+      GIT_COMMITTER_EMAIL: 't@example.com',
+    }
+    const clean = {
+      PATH: HOST_PATH,
+      HOME: root,
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_NOSYSTEM: '1',
+      ...identity,
+    }
+    execFileSync(REAL_GIT, ['init', '-q', repo], { env: clean })
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n')
+    execFileSync(REAL_GIT, ['add', 'a.txt'], { cwd: repo, env: clean })
+    fs.writeFileSync(
+      path.join(repo, '.git', 'hooks', 'pre-commit'),
+      `${shebang}\necho ran >> '${marker}'\nexit 1\n`,
+      {
+        mode: 0o755,
+      },
+    )
+    writeGitHooks(guard, INPUTS, shell)
+    fs.writeFileSync(shim, gitShimScript(REAL_GIT, guard, [], '', shell), { mode: 0o755 })
+
+    const run = spawnSync(shim, ['commit', '-q', '-m', 'x'], {
+      cwd: repo,
+      env: { ...clean, ...gitHooksEnv(guard), SHELLOPTS: 'noexec' },
+      encoding: 'utf8',
+    })
+
+    expect(fs.existsSync(marker)).toBe(true)
+    expect(run.status).not.toBe(0)
   })
 })
