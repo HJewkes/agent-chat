@@ -85,12 +85,13 @@ export const TRUST_RULE_BASELINE_CLI_VERSION = '2.1.284'
  * release whose rule it was compared against. Adding one needs the check recorded in
  * `docs/trust-rule-versions.md`; `scripts/verify-trust-rule.mjs` prints the code to read.
  */
-export const VERIFIED_TRUST_RULE_VERSIONS: Readonly<Record<string, string>> = {
+export const VERIFIED_TRUST_RULE_VERSIONS: Readonly<Record<string, string>> = Object.freeze({
   [TRUST_RULE_BASELINE_CLI_VERSION]: TRUST_RULE_BASELINE_CLI_VERSION,
   '2.1.287': TRUST_RULE_BASELINE_CLI_VERSION,
   '2.1.288': TRUST_RULE_BASELINE_CLI_VERSION,
   '2.1.289': TRUST_RULE_BASELINE_CLI_VERSION,
-}
+  '2.1.290': '2.1.289',
+})
 
 /** The nearest directory at or above `dir` holding a `.git` file or directory, as the CLI's `findGitRoot`. */
 export function gitRootOf(dir: string): string | undefined {
