@@ -204,7 +204,7 @@ describe('planSeats over the week milestone file', () => {
     root,
     now: NOW,
     reading: () => ({ reading: { sevenDay: 40, fiveHour: 10, ageSeconds: 30 } }),
-    recordedRunStart: () => runStart,
+    meters: () => ({ run: { since: runStart, last: 40, spent: 0 } }),
   })
 
   const addTask = (id: string, priority: number, tags: string[]) => {

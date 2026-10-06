@@ -3,6 +3,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import type { Claim } from '../agents/burndown/ledger.js'
+import { EMPTY_LEDGER } from '../agents/burndown/ledger.js'
+import type { Contract } from '../agents/burndown/report.js'
 import {
   collision,
   collisionCheck,
@@ -25,6 +28,7 @@ const facts = (over: Partial<CollisionFacts> = {}): CollisionFacts => ({
   names: [],
   claims: [],
   ours: new Set(),
+  held: [],
   ...over,
 })
 
@@ -267,5 +271,142 @@ describe('sameTickCollision over earlier seats this tick (CC-275)', () => {
 
   it('passes an overlapping owns in another repo', () => {
     expect(sameTickCollision(earlier, '/other', work('CC-2', { owns: ['src/**'] }))).toBeUndefined()
+  })
+})
+
+const contract = (scope: string, op: Contract['op']): Contract => ({ scope, op })
+const heldBy = (holder: string, ...contracts: Contract[]) => ({ holder, contracts })
+
+describe('collision on contracts (CC-710)', () => {
+  const refusal = (ours: Contract[], theirs: Contract[], over: Partial<CollisionFacts> = {}) =>
+    collision(
+      work('CC-1', { slice: 'a', contracts: ours }),
+      facts({ held: [heldBy('CC-2', ...theirs)], ...over }),
+    )
+
+  it.each([
+    ['replace against extend', contract('api:/v1/report', 'replace'), contract('api:/v1/report', 'extend')],
+    [
+      'extend against held replace',
+      contract('api:/v1/report', 'extend'),
+      contract('api:/v1/report', 'replace'),
+    ],
+    ['remove against add', contract('api:/v1/report', 'remove'), contract('api:/v1/report', 'add')],
+    ['rename against modify', contract('api:/v1/report', 'rename'), contract('api:/v1/report', 'modify')],
+    ['migrate against extend', contract('api:/v1/report', 'migrate'), contract('api:/v1/report', 'extend')],
+    ['add against held migrate', contract('api:/v1/report', 'add'), contract('api:/v1/report', 'migrate')],
+    ['remove against remove', contract('api:/v1/report', 'remove'), contract('api:/v1/report', 'remove')],
+  ])('%s on one scope refuses with contract-overlap', (_, ours, theirs) => {
+    const result = refusal([ours], [theirs])
+
+    expect(result?.kind).toBe('contract-overlap')
+    expect(result?.reason).toContain('api:/v1/report')
+    expect(result?.reason).toContain('CC-2')
+  })
+
+  it.each([
+    ['extend against add', contract('s', 'extend'), contract('s', 'add')],
+    ['modify against modify', contract('s', 'modify'), contract('s', 'modify')],
+    [
+      'a different middle segment',
+      contract('App/Billing/Report', 'replace'),
+      contract('App/Admin/Report', 'replace'),
+    ],
+    ['a prefix scope', contract('App/Billing', 'replace'), contract('App/Billing/Report', 'extend')],
+    ['a different case', contract('src/a.ts#foo', 'replace'), contract('src/a.ts#Foo', 'replace')],
+  ])('%s passes', (_, ours, theirs) => {
+    expect(refusal([ours], [theirs])).toBeUndefined()
+  })
+
+  it('work with no contracts behaves as today, against a held destructive contract', () => {
+    const result = collision(work('CC-1'), facts({ held: [heldBy('CC-2', contract('s', 'remove'))] }))
+
+    expect(result).toBeUndefined()
+  })
+
+  it('reports file-overlap, not contract-overlap, when both clash', () => {
+    const result = refusal([contract('s', 'remove')], [contract('s', 'remove')], {
+      prs: [pr(7)],
+      prFiles: () => ['src/x.ts'],
+    })
+    const owned = collision(
+      work('CC-1', { owns: ['src/x.ts'], contracts: [contract('s', 'remove')] }),
+      facts({ held: [heldBy('CC-2', contract('s', 'remove'))], prs: [pr(7)], prFiles: () => ['src/x.ts'] }),
+    )
+
+    expect(result?.kind).toBe('contract-overlap')
+    expect(owned?.kind).toBe('file-overlap')
+  })
+})
+
+describe('collisionCheck holds contracts from the ledger (CC-710)', () => {
+  const claim = (slice: string, over: Partial<Claim> = {}): Claim => ({
+    taskId: 'CC-1',
+    initiative: 'alpha',
+    spawnedAt: '2026-10-06T09:00:00.000Z',
+    phase: 'implementing',
+    phaseAt: '2026-10-06T09:00:00.000Z',
+    slice,
+    contracts: [contract('api:/v1/report', 'remove')],
+    ...over,
+  })
+  const check = (claims: Claim[], ours: Contract[]) => {
+    const exec: Runner = (bin, args) =>
+      bin === 'gh'
+        ? { status: 0, stdout: '' }
+        : { status: args[0] === 'log' || args[0] === 'fetch' ? 0 : 1, stdout: '' }
+    const run = collisionCheck({ ...EMPTY_LEDGER, claims }, { names: [], claims: [] }, exec)
+    return run('/repo', work('CC-1', { slice: 'a', contracts: ours }))
+  }
+  const ours = [contract('api:/v1/report', 'extend')]
+
+  it("never refuses a work on its own held claim's contracts", () => {
+    expect(check([claim('a')], ours)).toBeUndefined()
+  })
+
+  it('refuses a sibling slice of the same task with a destructive overlap', () => {
+    expect(check([claim('a'), claim('b')], ours)?.kind).toBe('contract-overlap')
+  })
+
+  it("ignores a done claim's contracts", () => {
+    expect(check([claim('b', { phase: 'done' })], ours)).toBeUndefined()
+  })
+
+  it('never refuses against a queued claim, so two queued claims cannot block each other', () => {
+    const queuedRemove = claim('a', { taskId: 'CC-2', phase: 'queued' })
+
+    expect(check([queuedRemove], ours)).toBeUndefined()
+    expect(check([queuedRemove], [contract('api:/v1/report', 'remove')])).toBeUndefined()
+  })
+
+  it('refuses another task holding a destructive overlap', () => {
+    expect(check([claim('a', { taskId: 'CC-2' })], ours)?.kind).toBe('contract-overlap')
+  })
+})
+
+describe('sameTickCollision on contracts (CC-710)', () => {
+  const earlier = (...contracts: Contract[]) => [
+    { seat: 'seat-a', repo: '/repo', agentName: 'sa-cc-1-a', work: work('CC-1', { slice: 'a', contracts }) },
+  ]
+
+  it("refuses an earlier seat's replace on the scope this tick, across repos", () => {
+    const result = sameTickCollision(
+      earlier(contract('api:/v1/report', 'replace')),
+      '/other',
+      work('CC-2', { contracts: [contract('api:/v1/report', 'extend')] }),
+    )
+
+    expect(result?.kind).toBe('contract-overlap')
+    expect(result?.reason).toContain('sa-cc-1-a')
+  })
+
+  it("passes an earlier seat's add against our extend", () => {
+    const result = sameTickCollision(
+      earlier(contract('api:/v1/report', 'add')),
+      '/repo',
+      work('CC-2', { contracts: [contract('api:/v1/report', 'extend')] }),
+    )
+
+    expect(result).toBeUndefined()
   })
 })

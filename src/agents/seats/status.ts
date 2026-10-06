@@ -5,7 +5,6 @@ import type { BudgetRead } from '../budget.js'
 import {
   dayStart,
   gatePool,
-  runStartAt,
   standInReading,
   type SevenDaySample,
   type AccountReading,
@@ -18,11 +17,10 @@ import { localDate } from '../burndown/seat-tick.js'
 import { openEvents, type WatchdogDoc } from './io.js'
 import { paceLine, poolPace, type PoolPace } from './pace.js'
 import {
-  advanceMeter,
-  meterHistory,
+  meterSpend,
+  savedMeters,
+  type SavedMeters,
   pacedCaps,
-  sameSpendDay,
-  withinRun,
   type DayAllowance,
   type MachineStop,
   type PacedCaps,
@@ -226,20 +224,13 @@ function parkedLoad(agents: AgentIdentity[]): ParkedLoad {
 
 type SeatBudget = ReturnType<typeof seatBudget>
 
-interface SavedMeters {
-  run: SpendMeter | undefined
-  day: SpendMeter | undefined
+interface SeatMeters extends SavedMeters {
   lastGood: AccountReading | undefined
 }
 
-/** A saved meter missing a figure is no meter, so the cap it would cover reads as unknown. */
-const usable = (meter: SpendMeter | undefined): SpendMeter | undefined =>
-  [meter?.since, meter?.last, meter?.spent].every(Number.isFinite) ? meter : undefined
-
-function savedMeters(doc: WatchdogDoc, seat: string, pool: string | undefined, nowMs: number): SavedMeters {
-  if (pool === undefined) return { run: usable(doc.seats[seat]?.run), day: undefined, lastGood: undefined }
-  const lastGood = lastGoodReading(doc.lastReadings?.[pool], nowMs)
-  return { run: usable(doc.seats[seat]?.run), day: usable(doc.pools[pool]), lastGood }
+function seatMeters(doc: WatchdogDoc, seat: string, pool: string | undefined, nowMs: number): SeatMeters {
+  const lastGood = pool === undefined ? undefined : lastGoodReading(doc.lastReadings?.[pool], nowMs)
+  return { ...savedMeters(doc, seat, pool), lastGood }
 }
 
 interface SeatHistory {
@@ -254,17 +245,8 @@ interface SeatHistory {
  * A run meter past 12 hours counts from its last reading, because this read saves no restart.
  */
 function seatHistory(saved: SavedMeters, reading: AccountReading | undefined, now: Date): SeatHistory {
-  const nowMs = now.getTime()
-  const advance = (meter: SpendMeter | undefined, current: typeof withinRun): SpendMeter | undefined =>
-    meter === undefined ? undefined : advanceMeter(meter, reading?.sevenDay, nowMs, current)
-  const run = advance(saved.run, withinRun)
-  const day = advance(saved.day, sameSpendDay)
-  const runStart = runStartAt(now, saved.run === undefined ? {} : { recordedAt: saved.run.since })
-  const starts = [
-    { at: runStart, meter: run },
-    { at: dayStart(now), meter: day },
-  ]
-  return { history: meterHistory(starts, nowMs), runStart, day }
+  const { history, runStart, day } = meterSpend(saved, reading?.sevenDay, now)
+  return { history, runStart, day }
 }
 
 type Verdict = Pick<BudgetStatus, 'stop' | 'margin' | 'sonnetOnly' | 'spendSince' | 'note'> & {
@@ -312,7 +294,7 @@ function spendVerdict(
     const why = `BUDGET-PAUSE pool ${name ?? 'unknown'}: ${plain(err)}, so spend is unknown`
     return { ...stopped(why), allowance: pace([]).allowance }
   }
-  const saved = savedMeters(doc, seat, name, now.getTime())
+  const saved = seatMeters(doc, seat, name, now.getTime())
   const meters = seatHistory(saved, reading, now)
   const { allowance, ...caps } = pace(meters.history)
   const gate = gatePool({

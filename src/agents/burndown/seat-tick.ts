@@ -1,6 +1,6 @@
 import { readAccountBudget } from '../budget.js'
 import { loadDoc } from '../seats/io.js'
-import { pacedCaps } from '../seats/stops.js'
+import { meterSpend, pacedCaps, savedMeters, usableMeters, type SavedMeters } from '../seats/stops.js'
 import { accountReading } from '../seats/watchdog.js'
 import { chargesOn, runStartAt, type PoolGateInput, type SevenDaySample } from './budget-gate.js'
 import { sameTickCollision, type SameTickClaim } from './collision.js'
@@ -34,8 +34,12 @@ export interface SeatTickDeps {
   now: Date
   /** The pool's reading and the epoch ms its seven_day window resets, from the status file under its config dir. */
   reading: (configDir: string) => { reading?: PoolGateInput['reading']; resetsAt?: number }
-  /** The watchdog's recorded run start for the seat, so the tick and the watchdog agree on the run. */
-  recordedRunStart: (seat: string) => number | undefined
+  /**
+   * The watchdog's saved run meter for the seat and day meter for its pool, held to `usableMeters`.
+   * The run meter's start is the run start, so the tick and the watchdog agree on the run; the meters
+   * stand in for the run-start and day-start readings a seat with no ledger samples yet cannot supply.
+   */
+  meters: (seat: string, pool: string) => SavedMeters
 }
 
 export interface LoadedSeat {
@@ -61,7 +65,12 @@ export interface SkippedSeat {
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
 /** One pool sample per seat per tick, appended to the seat's ledger samples and pruned to 26 hours. */
-function sampled(previous: SeatState | undefined, deps: SeatTickDeps, dispatch: SeatDispatch) {
+function sampled(
+  previous: SeatState | undefined,
+  deps: SeatTickDeps,
+  dispatch: SeatDispatch,
+  saved: SavedMeters,
+) {
   const nowMs = deps.now.getTime()
   const { reading, resetsAt } = deps.reading(dispatch.configDir)
   const kept = (previous?.samples ?? []).filter(s => s.at > nowMs - SAMPLE_KEEP_MS && s.at < nowMs)
@@ -69,14 +78,32 @@ function sampled(previous: SeatState | undefined, deps: SeatTickDeps, dispatch: 
     reading?.sevenDay === undefined
       ? []
       : [{ at: nowMs, sevenDay: reading.sevenDay, ...(resetsAt === undefined ? {} : { resetsAt }) }]
-  return { reading, resetsAt, history: kept, state: { samples: [...kept, ...sample] } }
+  const history = reading?.sevenDay === undefined ? kept : oneSource(kept, saved, reading.sevenDay, deps.now)
+  return { reading, resetsAt, history, state: { samples: [...kept, ...sample] } }
+}
+
+/**
+ * The ledger's samples when they hold a reading at or before the run start, as before CC-782, else the
+ * watchdog meters alone. Never both: a meter's samples are estimates that never drop, so sorted among
+ * real readings across a seven_day reset, `pointsSpent` would count the pre-reset readings again.
+ */
+function oneSource(
+  kept: SevenDaySample[],
+  saved: SavedMeters,
+  sevenDay: number,
+  now: Date,
+): SevenDaySample[] {
+  const { history, runStart } = meterSpend(saved, sevenDay, now)
+  if (kept.some(s => s.at <= runStart)) return kept
+  return history.length === 0 ? kept : history
 }
 
 function loadSeat(policy: Policy, name: string, ledger: Ledger, deps: SeatTickDeps): LoadedSeat {
   const dispatch = resolveSeatDispatch(policy, name)
   const seat = policy.seats[name] as SeatPolicy
-  const { reading, resetsAt, history, state } = sampled(ledger.seats?.[name], deps, dispatch)
-  const recordedAt = deps.recordedRunStart(name)
+  const saved = usableMeters(deps.meters(name, dispatch.pool.name))
+  const { reading, resetsAt, history, state } = sampled(ledger.seats?.[name], deps, dispatch, saved)
+  const recordedAt = saved.run?.since
   const { pool, spend } = pacedCaps({
     pacing: seat.pacing,
     ...seatBudget(policy.charter, seat),
@@ -289,6 +316,6 @@ export function diskSeatDeps(autonomyRoot: string, root: string, now: Date): Sea
         ...(resets === undefined ? {} : { resetsAt: resets * 1000 }),
       }
     },
-    recordedRunStart: seat => doc.seats[seat]?.run?.since,
+    meters: (seat, pool) => savedMeters(doc, seat, pool),
   }
 }

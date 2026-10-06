@@ -76,8 +76,11 @@ For each listed seat, in order, the tick:
 - takes one sample of the seat pool's `seven_day` reading from the status file under the
   pool's `config_dir`, and keeps the seat's samples for 26 hours in the ledger's `seats`;
 - gates the pool with `gatePool`, using the run start the seat watchdog shares
-  (`runStartAt`, capped at 12 hours) and the samples as history (see "The run meter"
-  below);
+  (`runStartAt`, capped at 12 hours) and the samples as history. A seat with no ledger
+  sample at or before its run start uses the watchdog's saved run and day meters as its
+  whole history instead. The two sources are never mixed, because the meters' estimated
+  samples never drop, and among real readings across a `seven_day` reset they would count
+  the pre-reset readings again (see "The run meter" below);
 - dispatches the seat planners' ready slices first, then scores the seat's scope and walks
   the order through `planSeat`: eligibility, route, repo, the post-advance collision
   check, orphan, trust on the pool's `config_dir`, role caps, worktree caps, then the pool
@@ -299,3 +302,16 @@ the session tag `waiting-owner` then no longer counts toward its role's cap in
 `waitingOwner` in that role's block of `--json`. Set the tag with `chat_tag` on the agent
 (or on a peer), and remove it when the owner has answered. Without the key, or for an
 untagged agent, the count is unchanged and `waitingOwner` is empty.
+
+## Spawn door audit (CC-646)
+
+Criterion 3 of M1, "every spawn made by the tick", has to be countable, so CI lists every
+code path that can start a planner or implementer. `audit/spawn-doors.json` records one entry
+per allowed door: `path`, `kind` (`spawn-frame`, `resume-frame`, `claude-launch` or
+`broker-handler`), `why`, `owner` (a seat or `owner`), and `coordinatorSideDoor`, true when
+a coordinator can use it to start a worker outside the tick (MCP `agent_spawn`, the CLI spawn).
+
+`npm run audit:spawn-doors` (part of `npm run verify`) scans `src/`, skipping tests and
+comments. It fails with `path:line` for a site with no record, and for a record whose site is gone.
+To add a door, add its entry in the same change as the code, with the reason and owner. Review
+tooling's `claude -p` lives outside `src/` and is kept as a record with `external: true`, which the stale check skips.

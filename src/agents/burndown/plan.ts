@@ -1,5 +1,6 @@
 import type { Autonomy } from '../active-work.js'
-import type { Collision, CollisionWork } from './collision.js'
+import { contractOverlap, type Collision, type CollisionWork, type HeldContracts } from './collision.js'
+import type { Contract } from './report.js'
 import { pickAccount, type AccountReading, type AccountRule, type GateContext } from './budget-gate.js'
 import {
   byRank,
@@ -127,8 +128,9 @@ export function plan(inputs: PlanInputs): Plan {
     notOptedIn: focused.filter(i => i.autonomy === undefined).map(i => i.slug),
   }
   const tally: Tally = { agents: 0, worktrees: new Map() }
+  const accepted: HeldContracts[] = []
   for (const initiative of optedIn) {
-    const outcome = planInitiative(initiative, inputs, tally)
+    const outcome = planInitiative(initiative, inputs, tally, accepted)
     result.refusals.push(...outcome.refusals)
     if (outcome.dispatch !== undefined) result.dispatch.push(outcome.dispatch)
   }
@@ -139,13 +141,14 @@ function planInitiative(
   initiative: OptedIn,
   inputs: PlanInputs,
   tally: Tally,
+  accepted: HeldContracts[],
 ): { dispatch?: Dispatch; refusals: Refusal[] } {
   const lanesHeld = laneClaims(inputs.ledger).filter(c => c.initiative === initiative.slug).length
   if (lanesHeld >= initiative.autonomy.lanes) {
     const reason = `${lanesHeld} of ${initiative.autonomy.lanes} lanes held`
     return { refusals: [{ initiative: initiative.slug, kind: 'lanes-full', reason }] }
   }
-  const { work, refusals } = nextWork(initiative, inputs)
+  const { work, refusals } = nextWork(initiative, inputs, accepted)
   if (work === undefined) return { refusals }
   const refuse = (r: Pick<Refusal, 'kind' | 'reason'>): Refusal => ({
     initiative: initiative.slug,
@@ -157,6 +160,7 @@ function planInitiative(
   const capped = capacityRefusal(placed, inputs.capacity, tally)
   if (capped !== undefined) return { refusals: [...refusals, refuse(capped)] }
   tally.agents += 1
+  if (work.contracts !== undefined) accepted.push({ holder: placed.agentName, contracts: work.contracts })
   if (placed.worktree !== undefined)
     tally.worktrees.set(placed.repo, (tally.worktrees.get(placed.repo) ?? 0) + 1)
   return { dispatch: placed, refusals }
@@ -169,24 +173,41 @@ interface Work {
   /** A queued slice's claim prefix and seat, so its implementer shares the planner's. */
   namePrefix?: string
   seat?: string
+  contracts?: Contract[]
 }
 
 /** A ready slice first, since its task is already underway; else the best eligible task with no orphan or collision. */
-function nextWork(initiative: OptedIn, inputs: PlanInputs): { work?: Work; refusals: Refusal[] } {
+function nextWork(
+  initiative: OptedIn,
+  inputs: PlanInputs,
+  accepted: readonly HeldContracts[],
+): { work?: Work; refusals: Refusal[] } {
   const tasks = inputs.tasks.get(initiative.slug) ?? []
   const held = backoffHeld(inputs.ledger, inputs.gate.now)
   const [ready] = readySlices(inputs.ledger, held).filter(c => c.initiative === initiative.slug)
   if (ready?.slice !== undefined) {
     const tags = tasks.find(t => t.id === ready.taskId)?.tags ?? []
-    const work = { taskId: ready.taskId, slice: ready.slice, tags, owns: ready.owns ?? [] }
-    const collided = collisionOf(initiative, work, inputs)
+    const work = {
+      taskId: ready.taskId,
+      slice: ready.slice,
+      tags,
+      owns: ready.owns ?? [],
+      contracts: ready.contracts ?? [],
+    }
+    const collided = collisionOf(initiative, work, inputs, accepted)
     if (collided !== undefined) return { refusals: [collided] }
     const identity = {
       ...(ready.namePrefix === undefined ? {} : { namePrefix: ready.namePrefix }),
       ...(ready.seat === undefined ? {} : { seat: ready.seat }),
     }
     return {
-      work: { taskId: ready.taskId, slice: ready.slice, profile: IMPLEMENTER_PROFILE, ...identity },
+      work: {
+        taskId: ready.taskId,
+        slice: ready.slice,
+        profile: IMPLEMENTER_PROFILE,
+        contracts: work.contracts,
+        ...identity,
+      },
       refusals: [],
     }
   }
@@ -203,7 +224,7 @@ function nextWork(initiative: OptedIn, inputs: PlanInputs): { work?: Work; refus
     if (task === undefined) return { refusals: [...blocked, ...refusals] }
     const profile = profileFor(task)
     const refusal =
-      collisionOf(initiative, { taskId: task.id, tags: task.tags, owns: [] }, inputs) ??
+      collisionOf(initiative, { taskId: task.id, tags: task.tags, owns: [] }, inputs, accepted) ??
       orphanRefusal(
         { initiative: initiative.slug, repo: initiative.autonomy.repo },
         task.id,
@@ -216,10 +237,15 @@ function nextWork(initiative: OptedIn, inputs: PlanInputs): { work?: Work; refus
   }
 }
 
-function collisionOf(initiative: OptedIn, work: CollisionWork, inputs: PlanInputs): Refusal | undefined {
+function collisionOf(
+  initiative: OptedIn,
+  work: CollisionWork,
+  inputs: PlanInputs,
+  accepted: readonly HeldContracts[],
+): Refusal | undefined {
   const repo = initiative.autonomy.repo
   if (repo === undefined || inputs.collision === undefined) return undefined
-  const found = inputs.collision(repo, work)
+  const found = inputs.collision(repo, work) ?? contractOverlap(work, accepted)
   return found === undefined ? undefined : { initiative: initiative.slug, task: work.taskId, ...found }
 }
 

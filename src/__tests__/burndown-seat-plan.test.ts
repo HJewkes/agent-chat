@@ -557,11 +557,53 @@ describe('planSeat pool charges and same-tick claims (CC-275)', () => {
         seat: 'seat-a',
         repo: REPO,
         agentName: 'sa-a-1-b',
-        work: { taskId: 'A-1', slice: 'b', tags: ['ui'], owns: ['src/x.ts'] },
+        work: { taskId: 'A-1', slice: 'b', tags: ['ui'], owns: ['src/x.ts'], contracts: [] },
       },
       { seat: 'seat-a', repo: REPO, agentName: 'sa-a-5', work: { taskId: 'A-5', tags: ['api'], owns: [] } },
     ])
     expect(seen).toEqual(plan.claims.map(c => c.work))
+  })
+
+  it('dispatches one of two ready sibling slices that clash on a scope and refuses the other (CC-710)', () => {
+    const scope = 'api:/v1/report'
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [
+        queued('A-1', { slice: 'b', contracts: [{ scope, op: 'remove' }] }),
+        queued('A-1', { slice: 'c', contracts: [{ scope, op: 'extend' }] }),
+      ],
+    }
+
+    const plan = planSeat(inputs([], [task('A-1')], { ledger }))
+
+    expect(plan.dispatch.map(d => d.slice)).toEqual(['b'])
+    expect(plan.refusals).toEqual([expect.objectContaining({ task: 'A-1', kind: 'contract-overlap' })])
+  })
+
+  it('dispatches two ready sibling slices whose contracts are both additive', () => {
+    const scope = 'api:/v1/report'
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [
+        queued('A-1', { slice: 'b', contracts: [{ scope, op: 'add' }] }),
+        queued('A-1', { slice: 'c', contracts: [{ scope, op: 'extend' }] }),
+      ],
+    }
+
+    const plan = planSeat(inputs([], [task('A-1')], { ledger }))
+
+    expect(plan.dispatch.map(d => d.slice)).toEqual(['b', 'c'])
+  })
+
+  it("passes a ready slice's contracts to the collision check (CC-710)", () => {
+    const contracts = [{ scope: 'api:/v1/report', op: 'remove' as const }]
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: [queued('A-1', { contracts })] }
+    const seen: { contracts?: unknown }[] = []
+    const collision = (_repo: string, work: { contracts?: unknown }) => (seen.push(work), undefined)
+
+    planSeat(inputs([row('A-5', 50)], [task('A-1'), task('A-5')], { ledger, collision }))
+
+    expect(seen[0]?.contracts).toEqual(contracts)
   })
 })
 
@@ -665,3 +707,95 @@ function stepContext(): StepContext {
     readFile: () => undefined,
   }
 }
+
+describe('planSeat downstream WIP and stop the line (CC-629)', () => {
+  const atLimit = () => ({ name: 'acme/widgets', count: 2, limit: 2, setting: 'wip_limit' })
+  const below = () => ({ ...atLimit(), count: 1 })
+  const stop = { previous: 'not loaded', current: 'not loaded', message: 'serve is not loaded' }
+  const expedite = { tags: ['cos:expedite'] }
+
+  it('refuses an implementer with kind wip in a repo at its WIP limit', () => {
+    const plan = one('A-1', {}, {}, { downstream: atLimit })
+
+    expect(plan.dispatch).toEqual([])
+    expect(plan.refusals).toEqual([
+      expect.objectContaining({
+        task: 'A-1',
+        kind: 'wip',
+        reason: expect.stringContaining('WIP limit of 2'),
+      }),
+    ])
+  })
+
+  it('dispatches an implementer in a repo one below its WIP limit', () => {
+    const seen: string[] = []
+    const downstream = (repo: string) => (seen.push(repo), below())
+
+    expect(one('A-1', {}, {}, { downstream }).dispatch.map(d => d.task)).toEqual(['A-1'])
+    expect(seen).toEqual([REPO])
+  })
+
+  it('refuses with kind wip and says unknown when downstream could not be read', () => {
+    const downstream = () => ({ unknown: 'could not read Shepherd status' })
+
+    expect(one('A-1', {}, {}, { downstream }).refusals).toEqual([
+      expect.objectContaining({ kind: 'wip', reason: expect.stringContaining('is unknown') }),
+    ])
+  })
+
+  it('dispatches an expedite task at the WIP limit', () => {
+    expect(one('A-1', expedite, {}, { downstream: atLimit }).dispatch.map(d => d.task)).toEqual(['A-1'])
+  })
+
+  it('lets a planner route ignore the WIP limit', () => {
+    const plan = one('A-1', { estimate: 5 }, { route: 'planner' }, { downstream: atLimit })
+
+    expect(plan.dispatch.map(d => d.profile)).toEqual(['bd-planner'])
+  })
+
+  it('reports a worktree cap before the WIP limit', () => {
+    const seat = { ...SEAT, worktrees: { ...SEAT.worktrees, perRepoPerSeat: 0 } }
+
+    expect(refusalOf(one('A-1', {}, {}, { seat, downstream: atLimit }))).toEqual([['A-1', 'worktrees']])
+  })
+
+  it('refuses every implementer row but cos:expedite on a stopped line, before collision', () => {
+    const collision = () => ({ kind: 'file-overlap' as const, reason: 'overlaps' })
+    const rows = [row('A-1', 60), row('A-2', 50, { route: 'implementer-lite' }), row('A-3', 40)]
+    const tasks = [task('A-1'), task('A-2'), task('A-3', expedite)]
+
+    const plan = planSeat(inputs(rows, tasks, { lineStop: stop }))
+    const withCollision = planSeat(inputs(rows, tasks, { lineStop: stop, collision }))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-3'])
+    expect(refusalOf(plan)).toEqual([
+      ['A-1', 'stop-line'],
+      ['A-2', 'stop-line'],
+    ])
+    expect(plan.refusals[0]?.reason).toBe(
+      'service check failed twice (not loaded, then not loaded): serve is not loaded; only cos:expedite dispatches',
+    )
+    expect(refusalOf(withCollision).slice(0, 2)).toEqual([
+      ['A-1', 'stop-line'],
+      ['A-2', 'stop-line'],
+    ])
+  })
+
+  it("dispatches a ready slice of an expedite task on a stopped line, and refuses another's", () => {
+    const queued = (taskId: string) => claim(taskId, { phase: 'queued', slice: 'b', owns: [] })
+    const ledger: Ledger = { ...EMPTY_LEDGER, claims: [queued('A-1'), queued('A-2')] }
+    const tasks = [task('A-1', expedite), task('A-2')]
+
+    const plan = planSeat(inputs([], tasks, { ledger, lineStop: stop, tasks: new Map([['alpha', tasks]]) }))
+
+    expect(plan.dispatch.map(d => [d.task, d.slice])).toEqual([['A-1', 'b']])
+    expect(refusalOf(plan)).toEqual([['A-2', 'stop-line']])
+  })
+
+  it('plans a repo below its WIP limit exactly as one with no flow inputs', () => {
+    const rows = [row('A-1', 60), row('A-2', 50)]
+    const tasks = [task('A-1'), task('A-2')]
+
+    expect(planSeat(inputs(rows, tasks, { downstream: below }))).toEqual(planSeat(inputs(rows, tasks)))
+  })
+})
