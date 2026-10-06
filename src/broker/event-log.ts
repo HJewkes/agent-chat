@@ -139,8 +139,14 @@ const AGENT_KINDS_SQL = AGENT_KINDS.map(k => `'${k}'`).join(',')
 /** A return-contract report: `Status:` or a reviewer's `Verdict:`, after any markdown decoration (CC-266). */
 const REPORT_OPENING = /^[\s*_`#>]*(status|verdict)[*_`]*\s*:/i
 
+export type ReportKind = 'status' | 'verdict'
+
+/** Which return-contract report a message opens as, if any (CC-763). */
+export const reportKindOf = (text: string): ReportKind | undefined =>
+  REPORT_OPENING.exec(text)?.[1]?.toLowerCase() as ReportKind | undefined
+
 /** Whether a message opens as a return-contract report; the one test CC-266 and CC-321 share. */
-export const isReport = (text: string): boolean => REPORT_OPENING.test(text)
+export const isReport = (text: string): boolean => reportKindOf(text) !== undefined
 
 /** A report that says the sender is finished: a closing return-contract status, or any `Verdict:` (CC-321). */
 const TERMINAL_OPENING =
@@ -368,14 +374,28 @@ export class EventLog implements EventStore {
   }
 
   hasStatusReport(from: string, to: readonly string[], since: number): boolean {
-    if (to.length === 0) return false
+    return this.lastStatusReport(from, to, since) !== undefined
+  }
+
+  lastStatusReport(from: string, to: readonly string[], since: number): QueueItem | undefined {
+    if (to.length === 0) return undefined
     const rows = this.db
       .prepare(
-        `SELECT body FROM events
-         WHERE actor = ? AND kind = 'message' AND ts >= ? AND target IN (${to.map(() => '?').join(', ')})`,
+        `SELECT * FROM events
+         WHERE actor = ? AND kind = 'message' AND ts >= ? AND target IN (${to.map(() => '?').join(', ')})
+         ORDER BY id DESC`,
       )
-      .all(from, since, ...to) as { body: string | null }[]
-    return rows.some(row => isReport(row.body ?? ''))
+      .all(from, since, ...to) as unknown as Row[]
+    const row = rows.find(r => isReport(r.body ?? ''))
+    if (row === undefined) return undefined
+    return {
+      msgId: row.msg_id ?? String(row.id),
+      kind: 'message',
+      from: row.actor,
+      text: row.body ?? '',
+      at: row.ts,
+      meta: row.target ? { target: row.target } : {},
+    }
   }
 
   lastAgentEventAt(ref: string, kind: EventKind): number | undefined {
