@@ -27,6 +27,8 @@ export interface SpawnFrame {
   tags: string[]
   predecessor?: string
   worktree?: string
+  /** The tier the plan placed the task in (CC-774); the broker writes it on the `dispatched` row. */
+  tier?: number
 }
 
 export interface SpawnSpec {
@@ -39,6 +41,7 @@ export interface SpawnSpec {
   taskId: string
   predecessor?: string
   worktree?: string
+  tier?: number
 }
 
 export function spawnFrame(s: SpawnSpec): SpawnFrame {
@@ -54,6 +57,7 @@ export function spawnFrame(s: SpawnSpec): SpawnFrame {
     tags: ['burndown', `task:${s.taskId}`],
     ...(s.predecessor === undefined ? {} : { predecessor: s.predecessor }),
     ...(s.worktree === undefined ? {} : { worktree: s.worktree }),
+    ...(s.tier === undefined ? {} : { tier: s.tier }),
   }
 }
 

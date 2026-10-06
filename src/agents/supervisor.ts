@@ -404,6 +404,8 @@ export interface SpawnRequest {
   predecessor?: string
   /** CC-286: `none` keeps the broker's return contract out of a brief that states its own report format. */
   returnContract?: 'none'
+  /** CC-774: the burndown plan's tier for the task, written on the `dispatched` row. */
+  tier?: number
   /** Empty for a human-initiated spawn; otherwise the requesting agent's id. */
   parentAgentId?: string
   requestedBy: string
@@ -1686,6 +1688,7 @@ export class Supervisor implements TeleportHost {
       profile: profile.name,
       model: profile.model,
       predecessor: req.predecessor ?? null,
+      ...(req.tier === undefined ? {} : { tier: req.tier }),
     }
     if (verdict.kind === 'pending') {
       this.awaitLateAttach(req, agentId, handle, site, launchedAt, announce, facts)

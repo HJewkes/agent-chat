@@ -13,6 +13,7 @@ import type { ScoreRow, ScoringDefaults } from '../agents/burndown/score.js'
 import type { SeatDispatch } from '../agents/burndown/seat-dispatch.js'
 import { planSeat, priorPicksOf, type SeatPlanInputs } from '../agents/burndown/seat-plan.js'
 import { activeTreeOf } from '../agents/burndown/seat-tick.js'
+import type { Step } from '../agents/burndown/execute.js'
 import { stepsForDispatch, type StepContext } from '../agents/burndown/steps.js'
 import type { AgentIdentity, AgentLifecycle } from '../protocol.js'
 
@@ -611,6 +612,31 @@ describe('seat seams from the CC-246 review', () => {
         frame: expect.objectContaining({ name: 'sa-a-1', configDir: '/tmp/pool-x' }),
       }),
     ])
+  })
+
+  it('(c) carries the planned tier on the spawn frame, and leaves it off when the plan placed none', () => {
+    const d: Dispatch = {
+      initiative: 'alpha',
+      task: 'A-1',
+      profile: 'bd-implementer',
+      account: 'pool-x',
+      cwd: `${REPO}/.worktrees/sa-a-1`,
+      repo: REPO,
+      agentName: 'sa-a-1',
+      worktree: `${REPO}/.worktrees/sa-a-1`,
+      reason: 'test',
+      seat: 'seat-a',
+      namePrefix: 'sa',
+      configDir: '/tmp/pool-x',
+    }
+    const frameOf = (dispatch: Dispatch): Record<string, unknown> => {
+      const steps = stepsForDispatch(dispatch, stepContext())
+      const spawn = (steps as Step[]).find(s => s.kind === 'spawn')
+      return (spawn as Extract<Step, { kind: 'spawn' }>).frame as unknown as Record<string, unknown>
+    }
+
+    expect(frameOf({ ...d, tier: 2 })).toMatchObject({ tier: 2 })
+    expect(frameOf(d)).not.toHaveProperty('tier')
   })
 })
 
