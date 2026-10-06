@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   defaultScanInputs,
   gitHooksEnv,
@@ -1164,6 +1164,109 @@ describe("the allow list: the remote default branch's .egress-allow and no other
 
     expect(run).toMatchObject({ code: 0 })
     expect(remoteHas(f, 'clean')).toBe(true)
+  })
+})
+
+// CC-795: each exec leaks kernel buffers, so the hook's own git calls must skip the agent's push guard.
+describe('the shim dirs on the broker PATH the pre-push hook bakes in', () => {
+  // Every git here, setup included, is the system one: the live agent PATH may hold a git shim.
+  const systemGit = execFileSync('sh', ['-c', 'command -v git'], {
+    env: { PATH: SYSTEM_PATH },
+    encoding: 'utf8',
+  }).trim()
+  beforeEach(() => vi.stubEnv('PATH', SYSTEM_PATH))
+  afterEach(() => vi.unstubAllEnvs())
+
+  const bakedPath = (shim: string): string[] =>
+    (/^PATH='([^']*)'; export PATH$/m.exec(shim)?.[1] ?? '').split(':')
+
+  /** node and the scanner stub, with git left to the system dirs after it. */
+  const scanTools = (log: string): string => binWith({ node: true, egress: egressStub(log) })
+
+  const rewriteHooks = (f: Fixture, scanPath: string): void =>
+    writeGitHooks(path.join(f.chatHome, 'git-hooks'), {
+      missingTermsRefuses: true,
+      home: f.ownerHome,
+      path: scanPath,
+    })
+
+  it('drops the git shim dir and every gh shim dir, keeping every other entry in order', () => {
+    const chat = path.join(SCRATCH, 'baked-chat')
+    const gitBin = path.join(chat, 'git-bin')
+    const ghRoot = path.join(chat, 'gh-shim')
+    const kept = ['/opt/zq7/git-bin', `${gitBin}-tools`, `${ghRoot}-old`, '/opt/zq7/bin', '/usr/bin', '/bin']
+    const input = [
+      gitBin,
+      path.join(ghRoot, 'a1b2c3'),
+      kept[0],
+      `${gitBin}/`,
+      kept[1],
+      kept[2],
+      `${chat}/./gh-shim/d4e5f6`,
+      ...kept.slice(3),
+    ]
+    const inputs = { missingTermsRefuses: true, home: HOME, path: input.join(':') }
+
+    const shim = hookScripts(inputs, undefined, [gitBin, ghRoot]).get('pre-push') ?? ''
+
+    expect(bakedPath(shim)).toEqual(kept)
+  })
+
+  it('drops them in writeGitHooks whatever PATH the caller passes, gh shim dirs following AGENT_CHAT_HOME', () => {
+    const chat = path.join(SCRATCH, 'written-chat')
+    vi.stubEnv('AGENT_CHAT_HOME', chat)
+    const hooks = path.join(chat, 'git-hooks')
+    const scanPath = `${chat}/git-bin:${chat}/gh-shim/a1b2c3:${SYSTEM_PATH}`
+
+    writeGitHooks(hooks, { missingTermsRefuses: true, home: HOME, path: scanPath })
+
+    expect(bakedPath(fs.readFileSync(path.join(hooks, 'pre-push'), 'utf8'))).toEqual(SYSTEM_PATH.split(':'))
+  })
+
+  it('refuses every push when no entry is left, rather than baking an empty PATH', () => {
+    const f = fixture()
+    const gitBin = path.join(f.chatHome, 'git-bin')
+    fs.renameSync(scanTools('/dev/null'), gitBin)
+    rewriteHooks(f, gitBin)
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = push(f, 'clean')
+
+    expect(run.code).not.toBe(0)
+    expect(run.stderr).toContain('leak-scan: push refused: the broker PATH holds no directory')
+    expect(remoteHas(f, 'clean')).toBe(false)
+  })
+
+  it('runs no git through a git shim dir that was first on the broker PATH', () => {
+    const f = fixture()
+    const gitBin = path.join(f.chatHome, 'git-bin')
+    const calls = path.join(path.dirname(f.work), 'git-calls')
+    fs.mkdirSync(gitBin)
+    fs.writeFileSync(
+      path.join(gitBin, 'git'),
+      [
+        '#!/bin/sh',
+        `echo "$*" >> '${calls}'`,
+        `PATH=$(printf '%s' "$PATH" | tr ':' '\\n' | grep -vxF '${gitBin}' | paste -sd: -)`,
+        'export PATH',
+        `exec '${systemGit}' "$@"`,
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    )
+    rewriteHooks(f, `${gitBin}:${scanTools(f.stubLog)}:${SYSTEM_PATH}`)
+    commitFile(f, 'clean', 'notes.md', 'fine')
+
+    const run = spawnSync(systemGit, ['push', '-q', 'origin', 'clean'], {
+      cwd: f.work,
+      env: f.agentEnv,
+      encoding: 'utf8',
+    })
+
+    expect(run).toMatchObject({ status: 0, stderr: '' })
+    expect(remoteHas(f, 'clean')).toBe(true)
+    expect(stubSaw(f)[0]).toBe('args=pre-push origin CI=unset REQUIRE=1')
+    expect(fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').trim().split('\n') : []).toEqual([])
   })
 })
 
