@@ -379,6 +379,7 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
     configDir: t.configDir,
     initiative: d.initiative,
     taskId: d.task,
+    ...(d.tier === undefined ? {} : { tier: d.tier }),
   })
   return [ledgerStep(write), { kind: 'spawn', key, frame }]
 }
