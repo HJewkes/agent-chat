@@ -63,6 +63,8 @@ export interface CollisionFacts {
   repo: string
   /** Commit subjects on `origin/<default>`, never bodies: a body mention is not a landing. */
   subjects: string[] | undefined
+  /** The seat's other repos' subjects: a task lands wherever its PR merged, so each counts, and a failed read names its repo. */
+  landedElsewhere?: { repo: string; subjects: string[] | undefined }[]
   prs: OpenPr[] | undefined
   prFiles: (pr: number) => string[] | undefined
   /** Live agent and session names on the broker. */
@@ -97,12 +99,12 @@ const RECONCILED = 'reconciled'
 
 function landed(work: CollisionWork, facts: CollisionFacts): Collision | undefined {
   if (work.slice !== undefined || work.tags.some(tag => tag.startsWith(RECONCILED))) return undefined
-  if (facts.subjects === undefined)
-    return {
-      kind: 'landed',
-      reason: `reader git-subjects failed: no default-branch subjects in ${facts.repo}`,
-    }
-  const hit = facts.subjects.find(subject => namesId(subject, work.taskId))
+  const reads = [{ repo: facts.repo, subjects: facts.subjects }, ...(facts.landedElsewhere ?? [])]
+  for (const { repo, subjects } of reads) {
+    if (subjects === undefined)
+      return { kind: 'landed', reason: `reader git-subjects failed: no default-branch subjects in ${repo}` }
+  }
+  const hit = reads.flatMap(read => read.subjects ?? []).find(subject => namesId(subject, work.taskId))
   if (hit === undefined) return undefined
   return { kind: 'landed', reason: `"${hit}" is on the default branch; reconcile it, then tag it reconciled` }
 }
@@ -270,25 +272,13 @@ export function collisionCheck(
     perRepo.set(repo, facts)
     return collision(work, {
       ...facts,
-      subjects: landedSubjects(
-        facts.subjects,
-        landedRepos.filter(other => other !== repo),
-        subjectsOf,
-      ),
+      landedElsewhere: landedRepos
+        .filter(other => other !== repo)
+        .map(other => ({ repo: other, subjects: subjectsOf(other) })),
       ours: oursFor(ledger, work.taskId),
       held: heldContracts(ledger, work),
     })
   }
-}
-
-/** The home repo's subjects plus every other listed repo's; a task ID lands wherever its PR merged. */
-function landedSubjects(
-  home: string[] | undefined,
-  others: readonly string[],
-  subjectsOf: (repo: string) => string[] | undefined,
-): string[] | undefined {
-  const all = [home, ...others.map(subjectsOf)]
-  return all.some(s => s === undefined) ? undefined : all.flatMap(s => s ?? [])
 }
 
 /** One repo's facts, reporting each reader that fails once, so the caller can log it by name. */
