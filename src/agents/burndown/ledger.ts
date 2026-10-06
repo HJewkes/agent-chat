@@ -154,6 +154,20 @@ export type SeatState = z.infer<typeof SeatState>
 const ReleaseRecord = z.object({ n: z.number().int().positive(), at: z.string().datetime() })
 export type ReleaseRecord = z.infer<typeof ReleaseRecord>
 
+/** Failures of one action for one claim, counted per fact fingerprint (CC-671). */
+const LivenessRecord = z.object({
+  byFact: z.record(
+    z.string(),
+    z.object({
+      n: z.number().int().positive(),
+      firstAt: z.string().datetime(),
+      lastAt: z.string().datetime(),
+      lastText: z.string(),
+    }),
+  ),
+})
+export type LivenessRecord = z.infer<typeof LivenessRecord>
+
 const Ledger = z.object({
   version: z.literal(1),
   lastTickAt: z.string().optional(),
@@ -169,6 +183,8 @@ const Ledger = z.object({
   releases: z.record(z.string(), ReleaseRecord).optional(),
   /** When each triage job was started, pruned to the last day; `exceptions.triage.maxPerDay` counts these. */
   triageStarts: z.array(z.string()).optional(),
+  /** Action failures by `<claim key>|<action>`; kept on the ledger so a claim drop does not reset the count. */
+  liveness: z.record(z.string(), LivenessRecord).optional(),
 })
 export type Ledger = z.infer<typeof Ledger>
 
