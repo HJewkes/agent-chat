@@ -77,6 +77,20 @@ export interface SeatPlan {
   refusals: Refusal[]
   priorPicks: Record<string, number>
   shareCapped: ShareCapRefusals
+  /** `planOrder`'s own decisions for this tick (CC-778); absent when the tick ordered by `dispatchOrder` alone. */
+  placement?: Placement
+}
+
+/** A placed row's tier, with the milestone, slack and float that put it there. */
+export type PlacedTier = Pick<PlannedRow, 'tier' | 'milestone' | 'slack' | 'float'>
+
+export interface Placement {
+  /** Every row `planOrder` placed, by task ID. */
+  tiers: Record<string, PlacedTier>
+  /** The tier 0 to 2 rows; each decays its initiative in the tier 3 and 4 order, dispatched or not. */
+  decaying: { id: string; initiative: string; tier: number }[]
+  /** The ready intangible IDs held back for a ready row of a higher tier. */
+  intangibleHeld: string[]
 }
 
 type Role = keyof SeatDispatch['caps']
@@ -128,9 +142,16 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
   const { budget } = inputs
   const runStart = Math.max(budget.runStartAt, budget.ctx.now.getTime() - RUN_CAP_MS)
   const priorPicks = priorPicksOf(inputs.ledger, inputs.seat.seat, runStart)
-  const { order, refused, planRefusals } = orderRows(inputs, priorPicks)
+  const { order, refused, planRefusals, placement } = orderRows(inputs, priorPicks)
   const walk = startWalk(inputs)
-  const plan: SeatPlan = { dispatch: [], claims: [], refusals: [], priorPicks, shareCapped: refused }
+  const plan: SeatPlan = {
+    dispatch: [],
+    claims: [],
+    refusals: [],
+    priorPicks,
+    shareCapped: refused,
+    ...(placement !== undefined && { placement }),
+  }
   const take = (initiative: string, task: string, outcome: Taken | Refused): void => {
     if ('kind' in outcome) plan.refusals.push({ initiative, task, ...outcome })
     else {
@@ -153,6 +174,7 @@ interface Ordered {
   refused: ShareCapRefusals
   /** Rows `planOrder` dropped for a tag reason, one per task. */
   planRefusals: { initiative: string; task: string; reason: string }[]
+  placement?: Placement
 }
 
 /** `planOrder`'s order when the tick passed its inputs, else `dispatchOrder`'s. */
@@ -174,7 +196,26 @@ function orderRows(inputs: SeatPlanInputs, priorPicks: Record<string, number>): 
     order: planned.order,
     refused: Object.fromEntries(shareCapped) as ShareCapRefusals,
     planRefusals: tagRefusals(rows, planned, base),
+    placement: placementOf(planned),
   }
+}
+
+/** The highest tier `planOrder` sorts itself; tiers 3 and 4 follow `dispatchOrder`, decayed by the rows above them. */
+const LAST_SORTED_TIER = 2
+
+function placementOf(planned: ReturnType<typeof planOrder>): Placement {
+  const tiers: Record<string, PlacedTier> = {}
+  for (const { id, tier, milestone, slack, float } of planned.order)
+    tiers[id] = {
+      tier,
+      ...(milestone !== undefined && { milestone }),
+      ...(slack !== undefined && { slack }),
+      ...(float !== undefined && { float }),
+    }
+  const decaying = planned.order
+    .filter(row => row.tier <= LAST_SORTED_TIER)
+    .map(({ id, initiative, tier }) => ({ id, initiative, tier }))
+  return { tiers, decaying, intangibleHeld: planned.intangibleHeld }
 }
 
 const HOLDS = (key: string) => key.startsWith('share-cap:') || key === 'intangible-held'

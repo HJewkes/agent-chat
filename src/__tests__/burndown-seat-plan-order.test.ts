@@ -80,11 +80,12 @@ function fixtureTick(
   tasks: ScoredTask[],
   milestones?: ReturnType<typeof milestoneFile>,
   today = snapshot.today,
+  ledger: Ledger = EMPTY_LEDGER,
 ) {
   const { rows } = scoreAll(tasks, WEIGHTS, defaults, exclusions, charter.hard_stops, today)
   const byInitiative = new Map<string, Task[]>()
   for (const t of tasks) byInitiative.set(t.slug, [...(byInitiative.get(t.slug) ?? []), taskFile(t)])
-  const common = { seat: SEAT, rows, defaults, tasks: byInitiative, ledger: EMPTY_LEDGER, budget: POOL }
+  const common = { seat: SEAT, rows, defaults, tasks: byInitiative, ledger, budget: POOL }
   const order = { tasks, today, ...(milestones && { milestones }) }
   return {
     ticked: planSeat({ ...common, order }),
@@ -132,6 +133,31 @@ describe('planSeat ordered by planOrder', () => {
     for (const d of ticked.dispatch) expect(d.tier).toBe(tierOf.get(d.task))
   })
 
+  it("records planOrder's placement, with a held tier 0 row still decaying its initiative", () => {
+    const ids = tasksFromList(snapshot).map(t => t.id)
+    const spawnedAt = '2026-09-29T09:00:00.000Z'
+    const gamma = tagged(tags).find(t => t.id === 'GA-22')!.slug
+    const held: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [
+        {
+          taskId: 'GA-22',
+          initiative: gamma,
+          seat: 'other',
+          namePrefix: 'ot',
+          spawnedAt,
+          phase: 'implementing',
+          phaseAt: spawnedAt,
+        },
+      ],
+    }
+    const { ticked, scored } = fixtureTick(tagged(tags), milestoneFile(ids), snapshot.today, held)
+
+    expect(ticked.dispatch.map(d => d.task)).not.toContain('GA-22')
+    expect(ticked.placement?.decaying).toContainEqual({ id: 'GA-22', initiative: gamma, tier: 0 })
+    for (const row of scored.order) expect(ticked.placement?.tiers[row.id]?.tier).toBe(row.tier)
+  })
+
   it('refuses a dep-blocked task with its reason instead of dropping it', () => {
     const { ticked } = fixtureTick(tagged(tags), milestoneFile([]))
     expect(ticked.refusals.filter(r => r.task === 'AL-2')).toEqual([
@@ -155,6 +181,7 @@ describe('planSeat ordered by planOrder', () => {
     expect(withoutTier(ticked)).toBe(withoutTier(today))
     expect(JSON.stringify(ticked.refusals)).toBe(JSON.stringify(today.refusals))
     expect(ticked.shareCapped).toEqual(today.shareCapped)
+    expect(today.placement).toBeUndefined()
   })
 })
 

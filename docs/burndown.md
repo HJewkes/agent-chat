@@ -131,20 +131,21 @@ It exits 1 on any of these, with the line in capitals:
 **The reorder rule.** A dispatch ahead of a higher-ranked one is explained, and passes with its
 reason printed, only when:
 
-- the plan's own Dispatch rows put it in a higher class-of-service tier (`Dispatch.tier`, CC-768)
-  than the ID it overtook, not a tier recomputed here: expedite, a fixed date with under 2 days of slack, or a milestone the seat owns (the line
+- the plan's own placement (`SeatPlan.placement`, recorded by `planOrder` during the dry run,
+  never recomputed here) puts it in a higher class-of-service tier than the ID it overtook:
+  expedite, a fixed date with under 2 days of slack, or a milestone the seat owns (the line
   names the milestone and its float);
 - both sit in the same tier 0, 1 or 2, which the plan sorts by age, slack, float and WSJF rather
   than by score;
 - a share-capped ID of its own initiative ranks above it in score.py, which decays that
   initiative once more than the plan does; or
-- this tick dispatched a tier 0 to 2 pick of the overtaken ID's initiative, which decays that
-  initiative in the plan's tier 3 and 4 order and not in score.py.
+- the plan placed a tier 0 to 2 row of the overtaken ID's initiative, dispatched or not (the
+  ledger may hold it, or a cap refuse it), which decays that initiative in the plan's tier 3 and
+  4 order and not in score.py.
 
 Tiers 3 (standard) and 4 (intangible) follow score.py's order, so any other reorder fails. Ready slices are dispatched ahead of the scored order by design; they
 are counted on their own line and left out of the order check. The milestone and slack
-named in a reason are read from the same scope and this ISO week's milestone file as
-`burndown plan --seat --scored`.
+named in a reason are the ones `planOrder` placed the row by.
 
 ### The run meter
 

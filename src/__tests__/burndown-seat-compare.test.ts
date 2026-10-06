@@ -8,8 +8,8 @@ import {
   runScorePy,
   scorePyArgs,
   type CompareInput,
-  type TierReason,
 } from '../agents/burndown/seat-compare.js'
+import type { PlacedTier, Placement } from '../agents/burndown/seat-plan.js'
 
 /** CC-251: `burndown seats compare` over a canned, synthetic score.py `--json` output. */
 
@@ -51,8 +51,16 @@ const input = (plan: Partial<CompareInput['plan']>, patch: Partial<CompareInput>
   score: parseScorePy(SCORE_PY_STDOUT),
   plan: { dispatch: [], refusals: [], shareCapped: {}, ...plan },
   held: new Set(),
-  tiers: new Map(),
-  intangibleHeld: new Set(),
+  ...patch,
+})
+
+/** The plan's `planOrder` placement: each ID's tier, its tier 0 to 2 rows, and its intangible holds. */
+const placed = (tiers: Record<string, PlacedTier>, patch: Partial<Placement> = {}): Placement => ({
+  tiers,
+  decaying: Object.entries(tiers).flatMap(([id, t]) =>
+    t.tier <= 2 ? [{ id, initiative: 'alpha', tier: t.tier }] : [],
+  ),
+  intangibleHeld: [],
   ...patch,
 })
 
@@ -88,7 +96,8 @@ describe('seats compare verdicts', () => {
   })
 
   it('reports an intangible-held ID as held, not as an unexplained skip', () => {
-    const result = compareSeat(input(explained, { intangibleHeld: new Set(['ZZ-3']) }))
+    const plan = { ...explained, placement: placed({}, { intangibleHeld: ['ZZ-3'] }) }
+    const result = compareSeat(input(plan))
 
     expect(result.ok).toBe(true)
     expect(verdictLine(result.lines, 'ZZ-3')).toContain('held [intangible]')
@@ -130,12 +139,8 @@ describe('seats compare order', () => {
   })
 
   it('explains a jump that planOrder records as a higher milestone tier, and prints the reason', () => {
-    const tiers = new Map<string, TierReason>([
-      ['ZZ-4', { tier: 2, milestone: 'M-1', float: 0 }],
-      ['ZZ-1', { tier: 3 }],
-    ])
-    const tiered = { ...reordered, dispatch: [dispatch('ZZ-4', { tier: 2 }), dispatch('ZZ-1', { tier: 3 })] }
-    const result = compareSeat(input(tiered, { held: new Set(['ZZ-3']), tiers }))
+    const placement = placed({ 'ZZ-4': { tier: 2, milestone: 'M-1', float: 0 }, 'ZZ-1': { tier: 3 } })
+    const result = compareSeat(input({ ...reordered, placement }, { held: new Set(['ZZ-3']) }))
 
     expect(result.ok).toBe(true)
     expect(verdictLine(result.lines, 'ZZ-4')).toContain(
@@ -144,68 +149,76 @@ describe('seats compare order', () => {
   })
 
   it('accepts any order within tier 1, as the plan sorts it by slack and age', () => {
-    const tiered = { ...reordered, dispatch: [dispatch('ZZ-4', { tier: 1 }), dispatch('ZZ-1', { tier: 1 })] }
-    const result = compareSeat(input(tiered, { held: new Set(['ZZ-3']) }))
+    const placement = placed({ 'ZZ-4': { tier: 1, slack: 1 }, 'ZZ-1': { tier: 1, slack: 0 } })
+    const result = compareSeat(input({ ...reordered, placement }, { held: new Set(['ZZ-3']) }))
 
     expect(result.ok).toBe(true)
     expect(verdictLine(result.lines, 'ZZ-4')).toContain('same tier 1 (fixed date)')
   })
 
   it('still fails a jump within the standard tier, which follows score.py order', () => {
-    const tiered = { ...reordered, dispatch: [dispatch('ZZ-4', { tier: 3 }), dispatch('ZZ-1', { tier: 3 })] }
-    const result = compareSeat(input(tiered, { held: new Set(['ZZ-3']) }))
+    const placement = placed({ 'ZZ-4': { tier: 3 }, 'ZZ-1': { tier: 3 } })
+    const result = compareSeat(input({ ...reordered, placement }, { held: new Set(['ZZ-3']) }))
 
     expect(result.ok).toBe(false)
     expect(verdictLine(result.lines, 'ZZ-4')).toContain('OUT OF ORDER')
   })
 
-  it('explains a standard jump by a tier 0 to 2 pick that decays the overtaken initiative in the plan only', () => {
-    const score = parseScorePy(
-      JSON.stringify({
-        order: [
-          scoreRow('ZZ-1', 90, { initiative: 'beta' }),
-          scoreRow('ZZ-2', 80),
-          scoreRow('ZZ-3', 70, { initiative: 'beta' }),
-          scoreRow('ZZ-4', 60),
-        ],
-      }),
-    )
+  const betaFirst = parseScorePy(
+    JSON.stringify({
+      order: [
+        scoreRow('ZZ-1', 90, { initiative: 'beta' }),
+        scoreRow('ZZ-3', 70, { initiative: 'beta' }),
+        scoreRow('ZZ-4', 60),
+      ],
+    }),
+  )
+  const betaDecayed = { 'ZZ-1': { tier: 3 }, 'ZZ-3': { tier: 0 }, 'ZZ-4': { tier: 3 } } as const
+  const decayedBy = (id: string) => ({ decaying: [{ id, initiative: 'beta', tier: 0 }] })
+
+  it('explains a standard jump by a dispatched tier 0 row that decays the overtaken initiative in the plan only', () => {
     const plan = {
       dispatch: [
-        dispatch('ZZ-3', { initiative: 'beta', tier: 0 }),
-        dispatch('ZZ-4', { tier: 3 }),
-        dispatch('ZZ-1', { initiative: 'beta', tier: 3 }),
+        dispatch('ZZ-3', { initiative: 'beta' }),
+        dispatch('ZZ-4'),
+        dispatch('ZZ-1', { initiative: 'beta' }),
       ],
-      refusals: [refusal('ZZ-2', 'not-open', 'x')],
+      placement: placed(betaDecayed, decayedBy('ZZ-3')),
     }
-    const result = compareSeat(input(plan, { score }))
+    const result = compareSeat(input(plan, { score: betaFirst }))
 
     expect(result.ok).toBe(true)
-    expect(verdictLine(result.lines, 'ZZ-4')).toContain('tier 0 pick ZZ-3 decays beta in the plan only')
+    expect(verdictLine(result.lines, 'ZZ-4')).toContain('tier 0 row ZZ-3 decays beta in the plan only')
+  })
+
+  it('explains the same jump when the ledger holds the tier 0 row, as planOrder decays it dispatched or not', () => {
+    const plan = {
+      dispatch: [dispatch('ZZ-4'), dispatch('ZZ-1', { initiative: 'beta' })],
+      placement: placed(betaDecayed, decayedBy('ZZ-3')),
+    }
+    const result = compareSeat(input(plan, { score: betaFirst, held: new Set(['ZZ-3']) }))
+
+    expect(result.ok).toBe(true)
+    expect(verdictLine(result.lines, 'ZZ-4')).toContain('tier 0 row ZZ-3 decays beta in the plan only')
   })
 
   it('still fails a lower tier dispatched ahead of a higher one with no reason', () => {
-    const tiered = { ...reordered, dispatch: [dispatch('ZZ-4', { tier: 3 }), dispatch('ZZ-1', { tier: 2 })] }
+    const placement = placed({ 'ZZ-4': { tier: 3 }, 'ZZ-1': { tier: 2 } }, { decaying: [] })
+
+    expect(compareSeat(input({ ...reordered, placement }, { held: new Set(['ZZ-3']) })).ok).toBe(false)
+  })
+
+  it('fails a reorder when the plan recorded no placement, as compare infers none', () => {
+    const tiered = { ...reordered, dispatch: [dispatch('ZZ-4', { tier: 1 }), dispatch('ZZ-1', { tier: 3 })] }
 
     expect(compareSeat(input(tiered, { held: new Set(['ZZ-3']) })).ok).toBe(false)
   })
 
-  it('takes the tier from the Dispatch row, not from the recomputed planOrder placement', () => {
-    const tiers = new Map<string, TierReason>([
-      ['ZZ-4', { tier: 3 }],
-      ['ZZ-1', { tier: 3 }],
-    ])
-    const tiered = { ...reordered, dispatch: [dispatch('ZZ-4', { tier: 1 }), dispatch('ZZ-1', { tier: 3 })] }
-    const result = compareSeat(input(tiered, { held: new Set(['ZZ-3']), tiers }))
-
-    expect(result.ok).toBe(true)
-    expect(verdictLine(result.lines, 'ZZ-4')).toContain('tier 1 (fixed date) over tier 3 (standard)')
-  })
-
   it('keeps a share-cap reorder explained', () => {
     const plan = {
-      dispatch: [dispatch('ZZ-4', { tier: 3 }), dispatch('ZZ-1', { tier: 3 })],
+      dispatch: [dispatch('ZZ-4'), dispatch('ZZ-1')],
       refusals: [refusal('ZZ-2', 'not-open', 'x'), refusal('ZZ-5', 'budget', 'pool closed')],
+      placement: placed({ 'ZZ-4': { tier: 3 }, 'ZZ-1': { tier: 3 } }),
       shareCapped: { 'share-cap:feature': 1 } as const,
     }
     const score = parseScorePy(

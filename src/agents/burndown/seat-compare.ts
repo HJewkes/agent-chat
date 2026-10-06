@@ -2,10 +2,7 @@ import path from 'node:path'
 import type { Refusal } from './eligibility.js'
 import { run, type Runner } from './exec.js'
 import { heldClaims } from './ledger.js'
-import type { Dispatch } from './plan.js'
-import type { PlannedRow, Tier } from './plan-order.js'
-import { scoredPlanFromDisk } from './score-render.js'
-import type { SeatPlan } from './seat-plan.js'
+import type { Placement, PlacedTier, SeatPlan } from './seat-plan.js'
 import { localDate, planLoaded } from './seat-tick.js'
 import { seatPlanSetup, type SeatPlanOptions } from './tick.js'
 
@@ -16,12 +13,13 @@ import { seatPlanSetup, type SeatPlanOptions } from './tick.js'
  * reason, and on a dispatch score.py does not list. Pure but for `runScorePy`.
  *
  * score.py runs with the plan's prior picks as `--prior`, so the decayed scores match exactly.
- * A reorder is explained only by a recorded reason: `planOrder` placed the jumper in a higher
- * class-of-service tier (expedite, fixed date, or an owned milestone) than the ID it overtook;
- * both sit in one of tiers 0 to 2, which the plan sorts by age, slack and float; a share-capped
- * ID of the jumper's initiative ranks above it, so score.py decayed that initiative once more
- * than the plan did; or this tick's tier 0 to 2 pick decayed the overtaken ID's initiative in the
- * plan only. Tiers 3 and 4 follow score.py's order, so any other reorder there fails.
+ * A reorder is explained only by the plan's own record (`SeatPlan.placement`), never a recomputation:
+ * `planOrder` placed the jumper in a higher class-of-service tier (expedite, fixed date, or an
+ * owned milestone) than the ID it overtook; both sit in one of tiers 0 to 2, which the plan sorts
+ * by age, slack and float; a share-capped ID of the jumper's initiative ranks above it, so
+ * score.py decayed that initiative once more than the plan did; or a tier 0 to 2 row the plan
+ * placed, dispatched or not, decayed the overtaken ID's initiative in the plan only. Tiers 3 and 4
+ * follow score.py's order, so any other reorder there fails.
  */
 
 /** One row of score.py's `--json` order. */
@@ -39,17 +37,12 @@ export interface ScorePyOutput {
   landed: Map<string, string>
 }
 
-export type TierReason = Pick<PlannedRow, 'tier' | 'milestone' | 'slack' | 'float'>
-
 export interface CompareInput {
   score: ScorePyOutput
-  plan: Pick<SeatPlan, 'dispatch' | 'refusals' | 'shareCapped'>
+  /** The plan's own record: its dispatches, refusals, share-cap counts and `planOrder` placement. */
+  plan: Pick<SeatPlan, 'dispatch' | 'refusals' | 'shareCapped' | 'placement'>
   /** Task IDs the claim ledger holds. */
   held: ReadonlySet<string>
-  /** `planOrder`'s placement of each ID; it only names the milestone or slack in a reorder's reason, the tier itself is the Dispatch's. */
-  tiers: ReadonlyMap<string, TierReason>
-  /** The ready intangible IDs `planOrder` held back for a ready row of a higher tier. */
-  intangibleHeld: ReadonlySet<string>
 }
 
 export interface Comparison {
@@ -111,7 +104,7 @@ function verdictOf(
   const pick = picks.get(id)
   if (pick !== undefined) return { kind: 'dispatched', pick }
   if (input.held.has(id)) return { kind: 'held' }
-  if (input.intangibleHeld.has(id)) return { kind: 'intangible-held' }
+  if (input.plan.placement?.intangibleHeld.includes(id)) return { kind: 'intangible-held' }
   const refusal = refusals.get(id)
   if (refusal === undefined) return { kind: 'unexplained' }
   return { kind: CAP_KINDS.has(refusal.kind) ? 'beyond-caps' : 'refused', refusal }
@@ -139,40 +132,32 @@ function shareCapped(
 
 const TIER_NAMES = ['expedite', 'fixed date', 'milestone', 'standard', 'intangible']
 
-export function describeTier(t: TierReason): string {
+export function describeTier(t: PlacedTier): string {
   if (t.tier === 1 && t.slack !== undefined) return `tier 1 (fixed date, slack ${t.slack})`
   if (t.tier === 2 && t.milestone !== undefined)
     return `tier 2 (milestone ${t.milestone}, float ${t.float ?? '?'})`
   return `tier ${t.tier} (${TIER_NAMES[t.tier]})`
 }
 
-function tierOf(id: string, tier: number, ranked: Ranked): TierReason {
-  const note = ranked.tiers.get(id)
-  return note?.tier === tier ? note : { tier: tier as Tier }
-}
-
 interface Ranked {
   rank: Map<string, number>
   rows: readonly ScorePyRow[]
   capped: ReadonlySet<string>
-  tiers: CompareInput['tiers']
-  /** Each dispatched ID's tier, as the plan's Dispatch rows record it. */
-  dispatchTier: ReadonlyMap<string, number>
-  /** This tick's tier 0 to 2 dispatches, which decay their initiatives in the plan's tier 3 and 4 order only. */
-  sortedPicks: readonly Pick<Dispatch, 'initiative' | 'task' | 'tier'>[]
+  placement: Placement
 }
+
+const NO_PLACEMENT: Placement = { tiers: {}, decaying: [], intangibleHeld: [] }
 
 /** The highest tier `planOrder` sorts itself, by age, slack, float and WSJF; tiers 3 and 4 follow score.py's order. */
 const LAST_SORTED_TIER = 2
 
 /** Why `jumper` may go ahead of `overtaken` by tier, or undefined when the tiers explain nothing. */
 function tierReason(jumper: ScorePyRow, overtaken: ScorePyRow, ranked: Ranked): string | undefined {
-  const [a, b] = [ranked.dispatchTier.get(jumper.id), ranked.dispatchTier.get(overtaken.id)]
+  const [a, b] = [ranked.placement.tiers[jumper.id], ranked.placement.tiers[overtaken.id]]
   if (a === undefined || b === undefined) return undefined
-  if (a < b)
-    return `${describeTier(tierOf(jumper.id, a, ranked))} over ${describeTier(tierOf(overtaken.id, b, ranked))}`
-  if (a === b && a <= LAST_SORTED_TIER)
-    return `same tier ${a} (${TIER_NAMES[a]}): the plan orders a tier by age, slack and float`
+  if (a.tier < b.tier) return `${describeTier(a)} over ${describeTier(b)}`
+  if (a.tier === b.tier && a.tier <= LAST_SORTED_TIER)
+    return `same tier ${a.tier} (${TIER_NAMES[a.tier]}): the plan orders a tier by age, slack and float`
   return undefined
 }
 
@@ -182,10 +167,10 @@ function decayReason(jumper: ScorePyRow, overtaken: ScorePyRow, ranked: Ranked):
   const capped = before.find(r => r.initiative === jumper.initiative && ranked.capped.has(r.id))
   if (capped !== undefined) return `share-capped ${capped.id} decays ${jumper.initiative} in score.py only`
   if (overtaken.initiative === jumper.initiative) return undefined
-  const sorted = ranked.sortedPicks.find(d => d.initiative === overtaken.initiative)
-  return sorted === undefined
+  const row = ranked.placement.decaying.find(d => d.initiative === overtaken.initiative)
+  return row === undefined
     ? undefined
-    : `tier ${sorted.tier} pick ${sorted.task} decays ${overtaken.initiative} in the plan only`
+    : `tier ${row.tier} row ${row.id} decays ${overtaken.initiative} in the plan only`
 }
 
 /** Why `jumper` may go ahead of `overtaken`, or undefined when nothing on record says so. */
@@ -259,15 +244,7 @@ export function compareSeat(input: CompareInput): Comparison {
     rank,
     rows,
     capped: shareCapped(rows, verdicts, input.plan.shareCapped),
-    tiers: input.tiers,
-    dispatchTier: new Map(
-      input.plan.dispatch.flatMap(d =>
-        d.slice === undefined && d.tier !== undefined ? [[d.task, d.tier]] : [],
-      ),
-    ),
-    sortedPicks: input.plan.dispatch.filter(
-      d => d.slice === undefined && d.tier !== undefined && d.tier <= LAST_SORTED_TIER,
-    ),
+    placement: input.plan.placement ?? NO_PLACEMENT,
   }
   const jumps = overtakes(
     whole.filter(id => rank.has(id)),
@@ -291,7 +268,7 @@ export function compareSeat(input: CompareInput): Comparison {
 
 /**
  * The dry-run seat plan, as `burndown plan --seat` makes it, then score.py with the plan's prior
- * picks and the same day, then `planOrder`'s tiers for the reorder reasons. CLI-only.
+ * picks and the same day; the reorder reasons read the plan's own `planOrder` placement. CLI-only.
  */
 export function seatCompareFromDisk(opts: SeatPlanOptions & { runner?: Runner }): Comparison {
   const { ledger, seats, deps } = seatPlanSetup(opts)
@@ -301,15 +278,7 @@ export function seatCompareFromDisk(opts: SeatPlanOptions & { runner?: Runner })
   const today = localDate(opts.now)
   const args = scorePyArgs(opts.seat, today, planned.priorPicks)
   const score = runScorePy(opts.autonomyRoot, args, opts.runner)
-  const { seat, autonomyRoot, root } = opts
-  const scored = scoredPlanFromDisk({ seat, autonomyRoot, activeWorkRoot: root, top: SCORE_PY_TOP, today })
-  const compared = compareSeat({
-    score,
-    plan: planned,
-    held: new Set(heldClaims(ledger).map(c => c.taskId)),
-    tiers: new Map(scored.order.map(row => [row.id, row])),
-    intangibleHeld: new Set(scored.intangibleHeld ?? []),
-  })
+  const compared = compareSeat({ score, plan: planned, held: new Set(heldClaims(ledger).map(c => c.taskId)) })
   const head = `seats compare ${opts.seat} at ${opts.now.toISOString()}: score.py ${args.join(' ')} against a dry-run seat plan`
   return { ...compared, lines: [head, ...compared.lines] }
 }
