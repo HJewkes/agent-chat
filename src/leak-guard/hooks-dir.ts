@@ -113,9 +113,30 @@ const verdictOf = (help: string): ScanVerdict =>
       : 'skips-binary'
 
 /**
+ * `test -nt` in dash and bash 3.2 compares whole seconds, so a scanner replaced within the second
+ * it was probed in would pass the push-time check. A scanner written this recently is not baked;
+ * any later npm install then lands in a later second, and the check sees it.
+ */
+const SETTLED_MS = 2000
+
+// SIGKILL, since the broker waits on this run and a scanner may ignore SIGTERM.
+function helpText(node: string, scanner: string, bakedPath: string): string | undefined {
+  const run = spawnSync(node, [scanner, '--help'], {
+    env: { PATH: bakedPath },
+    encoding: 'utf8',
+    timeout: PROBE_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
+  })
+  // A timeout sets error even when the scanner exited 0 and a grandchild held its output open.
+  if (run.error !== undefined || run.signal !== null || run.status !== 0) return undefined
+  return `${run.stdout}${run.stderr}`
+}
+
+/**
  * Runs the scanner's --help once, the way the hook would, with an environment of PATH alone. A
- * scanner or node that is missing, a help run that fails or times out, or a scanner whose mtime
- * moved during the run yields nothing, so the hook keeps checking at every push.
+ * scanner or node that is missing, a help run that fails, is killed or times out, a scanner
+ * written within the last two seconds, or one whose mtime moved during the run yields nothing,
+ * so the hook keeps checking at every push.
  */
 export function probeScanner(bakedPath: string): ScannerFacts | undefined {
   const found = executableOnPath(SCANNER, bakedPath)
@@ -124,13 +145,10 @@ export function probeScanner(bakedPath: string): ScannerFacts | undefined {
   try {
     const scanner = fs.realpathSync(found)
     const { mtimeMs } = fs.statSync(scanner)
-    const run = spawnSync(node, [scanner, '--help'], {
-      env: { PATH: bakedPath },
-      encoding: 'utf8',
-      timeout: PROBE_TIMEOUT_MS,
-    })
-    if (run.status !== 0 || fs.statSync(scanner).mtimeMs !== mtimeMs) return undefined
-    return { scanner, node, verdict: verdictOf(`${run.stdout}${run.stderr}`), mtimeMs }
+    if (Date.now() - mtimeMs < SETTLED_MS) return undefined
+    const help = helpText(node, scanner, bakedPath)
+    if (help === undefined || fs.statSync(scanner).mtimeMs !== mtimeMs) return undefined
+    return { scanner, node, verdict: verdictOf(help), mtimeMs }
   } catch {
     return undefined
   }
@@ -436,6 +454,7 @@ function bakeScanner(inputs: ScanInputs, shimDirs: readonly string[], stamp: str
 }
 
 // utimes takes float seconds, which drops nanoseconds; one ms above the mtime keeps the probed file not newer.
+// Shells that compare whole seconds miss a replacement whose mtime is not after the end of the probed second.
 function writeStamp(stamp: string, mtimeMs: number): void {
   const tmp = `${stamp}.${process.pid}.tmp`
   const seconds = (Math.ceil(mtimeMs) + 1) / 1000

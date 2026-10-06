@@ -1527,6 +1527,54 @@ describe('the scanner verdict baked when the hooks are written', () => {
     expect(probeScanner(binWith({ node: true }))).toBeUndefined()
   })
 
+  /** A broker PATH whose scanner is a node script, aged a minute unless `fresh`, as the probe runs it. */
+  const nodeScanner = (body: string, fresh = false): string => {
+    const bin = binWith({ node: true })
+    const file = path.join(bin, 'titan-egress-scan')
+    fs.writeFileSync(file, `${body}\n`, { mode: 0o755 })
+    if (!fresh) {
+      const settled = new Date(Date.now() - 60_000)
+      fs.utimesSync(file, settled, settled)
+    }
+    return `${bin}:${SYSTEM_PATH}`
+  }
+
+  const printsHelp = `console.log(${JSON.stringify(HELP)})`
+
+  it('bakes nothing, and returns at the timeout, when the help run ignores SIGTERM and hangs', () => {
+    const scanPath = nodeScanner(
+      `process.on('SIGTERM', () => {})\n${printsHelp}\nsetInterval(() => {}, 1000)`,
+    )
+    const started = Date.now()
+
+    const facts = probeScanner(scanPath)
+
+    expect(facts).toBeUndefined()
+    expect(Date.now() - started).toBeLessThan(9000)
+  }, 20_000)
+
+  it('bakes nothing when the help run exits but a grandchild holds its output open past the timeout', () => {
+    const pidFile = path.join(fs.mkdtempSync(path.join(SCRATCH, 'grandchild-')), 'pid')
+    const scanPath = nodeScanner(
+      `const child = require('node:child_process').spawn('/bin/sleep', ['8'], { stdio: 'inherit', detached: true })
+require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(child.pid))
+child.unref()
+${printsHelp}`,
+    )
+    try {
+      const facts = probeScanner(scanPath)
+
+      expect(facts).toBeUndefined()
+    } finally {
+      if (fs.existsSync(pidFile)) spawnSync('kill', [fs.readFileSync(pidFile, 'utf8')])
+    }
+  }, 20_000)
+
+  it('bakes a settled scanner, but not one written within the last two seconds', () => {
+    expect(probeScanner(nodeScanner(printsHelp, true))).toBeUndefined()
+    expect(probeScanner(nodeScanner(printsHelp))?.verdict).toBe('scans-text')
+  })
+
   it('refuses a leaky push through the installed scanner the real probe baked', () => {
     const f = fixture({ scanPath: realScanPath(), probe: probeScanner })
     commitFile(f, 'leaky', 'notes.md', `the ${LEAK} seat`)
