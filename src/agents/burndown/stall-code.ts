@@ -12,6 +12,7 @@ export const STALL_CODES = [
   'shepherd-ended',
   'planner-refused',
   'retry-spent',
+  'budget',
   'phase-timeout',
   'dirty-uncommitted',
   'lease-expired',
@@ -19,7 +20,7 @@ export const STALL_CODES = [
 ] as const
 export type StallCode = (typeof STALL_CODES)[number]
 
-/** Codes a respawn or release can fix; `shepherd-ended`, `planner-refused` and `retry-spent` go straight to the owner. */
+/** Codes a respawn or release can fix; `shepherd-ended`, `planner-refused`, `retry-spent` and `budget` go straight to the owner (a respawn under `budget` would spend more). */
 export const LADDER_CODES: readonly StallCode[] = [
   'spawn-never-landed',
   'phase-timeout',
@@ -37,6 +38,7 @@ const PARK_CLASS: Record<StallCode, ExceptionClass> = {
   'shepherd-ended': 'failed',
   'planner-refused': 'failed',
   'retry-spent': 'failed',
+  budget: 'failed',
   'phase-timeout': 'stalled',
   'dirty-uncommitted': 'stalled',
   'lease-expired': 'stalled',

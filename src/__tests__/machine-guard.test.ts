@@ -133,10 +133,10 @@ describe('the readers', () => {
     expect(parseSwapUsage('vm.swapusage: unknown')).toEqual({ error: expect.stringContaining('unparsed') })
   })
 
-  it('reports a platform other than macOS as unread for both readers', () => {
-    expect([readMemoryFree('linux'), readSwapUsage('linux')]).toEqual([
-      { error: 'memory is not read on linux' },
-      { error: 'swap is not read on linux' },
+  it('reports a platform other than macOS or Linux as unread for both readers', () => {
+    expect([readMemoryFree('win32'), readSwapUsage('win32')]).toEqual([
+      { error: 'memory is not read on win32' },
+      { error: 'swap is not read on win32' },
     ])
   })
 })
