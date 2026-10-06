@@ -46,6 +46,13 @@ Add `--scored` for the seat's scored order with every component (`--top` and `--
 apply only then); `--autonomy-root` points at another charter. A `task tags errors:` line lists
 malformed planning tags, such as a `dep:` naming no task on disk, which the order reads as closed.
 
+The tick walks that same order (CC-768): `planSeat` orders rows with `planOrder` over this week's
+`milestones/<week>.yml` in the autonomy root, and each dispatch carries its `tier`. With no file and no planning
+tags the order is `dispatchOrder`'s. A task `planOrder` drops as `dep-blocked` or `gated:<id>` is a `plan-blocked`
+refusal with that reason. The file is read as `plan --scored` reads it, with epics checked against every task on disk. A file that
+parses is used even when it has errors, and each error is reported as a `plan-blocked` refusal; a file that does
+not parse is left out, so the tick orders by the tags alone.
+
 `agent-chat burndown pause` is the kill switch that takes effect fastest: the next tick
 sees the pause marker and spawns nothing, but a running agent finishes on its own.
 `agent-chat burndown uninstall` also removes the scheduled job itself.

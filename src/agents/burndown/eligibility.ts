@@ -52,6 +52,7 @@ export type RefusalKind =
   | 'no-repo'
   | 'role-cap'
   | 'backoff'
+  | 'plan-blocked'
 
 export interface Refusal {
   initiative: string

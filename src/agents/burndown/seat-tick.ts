@@ -13,7 +13,8 @@ import { loadPolicy, mergeDefaults, seatBudget, seatScope, type Policy, type Sea
 import { scoreAll } from './score.js'
 import { readScoredTasks } from './score-source.js'
 import { resolveSeatDispatch, type SeatDispatch } from './seat-dispatch.js'
-import { planSeat } from './seat-plan.js'
+import { planSeat, type OrderInputs } from './seat-plan.js'
+import { describeError, readWeekMilestones, taskIdsOnDisk } from './score-render.js'
 import { readTasks } from './source.js'
 
 /**
@@ -42,6 +43,8 @@ export interface LoadedSeat {
   policy: Policy
   budget: PoolGateInput
   state: SeatState
+  /** The charter's root, where the week's milestone file lives; absent, no file is read. */
+  autonomyRoot?: string
 }
 
 export interface LoadedSeats {
@@ -94,6 +97,7 @@ function loadSeat(policy: Policy, name: string, ledger: Ledger, deps: SeatTickDe
       ctx: { now: deps.now },
     },
     state,
+    autonomyRoot: deps.autonomyRoot,
   }
 }
 
@@ -184,10 +188,12 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
   const { rows } = scoreAll(read.tasks, weights, defaults, exclusions, charter.hard_stops, today)
   const tasks = new Map(slugs.map(slug => [slug, readTasks(root, slug)]))
   const pool = seat.dispatch.pool.name
+  const order = orderInputs(seat, read.tasks, root, today)
   const planned = planSeat({
     seat: seat.dispatch,
     rows,
     defaults,
+    order: order.inputs,
     tasks,
     ledger: deps.ledger,
     budget: {
@@ -197,7 +203,41 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     collision: (repo, work) => sameTickCollision(taken.claims, repo, work) ?? deps.collision?.(repo, work),
     ...optional(deps, lessDispatched(deps.capacity, taken.dispatch)),
   })
+  planned.refusals.push(
+    ...order.faults.map(reason => ({ initiative: '-', kind: 'plan-blocked' as const, reason })),
+  )
   return { planned, tasks, skipped: read.skipped }
+}
+
+/** Epics are checked against every task on disk, as `plan --scored` does: the file is shared across seats and an epic may be done. */
+function weekMilestones(autonomyRoot: string | undefined, today: string, knownIds: readonly string[]) {
+  if (autonomyRoot === undefined) return { faults: [] as string[] }
+  try {
+    const read = readWeekMilestones(autonomyRoot, today, knownIds)
+    if (read === undefined) return { faults: [] as string[] }
+    const faults = read.errors.map(error => `milestones ${read.week}: ${describeError(error)}`)
+    return read.file === undefined ? { faults } : { milestones: read.file, faults }
+  } catch (err) {
+    return { faults: [`milestones: ${message(err)}`] }
+  }
+}
+
+/**
+ * CC-768: what `planOrder` reads, assembled as `scoredPlanFromDisk` does. The file is used whenever it parses,
+ * and each error is returned for the tick to report; one that does not parse leaves the order to the tags.
+ */
+function orderInputs(
+  seat: LoadedSeat,
+  tasks: OrderInputs['tasks'],
+  root: string,
+  today: string,
+): { inputs: OrderInputs; faults: string[] } {
+  const knownIds = taskIdsOnDisk(root)
+  const { milestones, faults } = weekMilestones(seat.autonomyRoot, today, knownIds)
+  return {
+    inputs: { tasks, today, knownIds, ...(milestones && { milestones }) },
+    faults,
+  }
 }
 
 function optional(deps: SeatPlanDeps, capacity: Capacity | undefined) {
