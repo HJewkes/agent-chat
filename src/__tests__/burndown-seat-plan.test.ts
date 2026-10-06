@@ -564,6 +564,37 @@ describe('planSeat pool charges and same-tick claims (CC-275)', () => {
     expect(seen).toEqual(plan.claims.map(c => c.work))
   })
 
+  it('dispatches one of two ready sibling slices that clash on a scope and refuses the other (CC-710)', () => {
+    const scope = 'api:/v1/report'
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [
+        queued('A-1', { slice: 'b', contracts: [{ scope, op: 'remove' }] }),
+        queued('A-1', { slice: 'c', contracts: [{ scope, op: 'extend' }] }),
+      ],
+    }
+
+    const plan = planSeat(inputs([], [task('A-1')], { ledger }))
+
+    expect(plan.dispatch.map(d => d.slice)).toEqual(['b'])
+    expect(plan.refusals).toEqual([expect.objectContaining({ task: 'A-1', kind: 'contract-overlap' })])
+  })
+
+  it('dispatches two ready sibling slices whose contracts are both additive', () => {
+    const scope = 'api:/v1/report'
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [
+        queued('A-1', { slice: 'b', contracts: [{ scope, op: 'add' }] }),
+        queued('A-1', { slice: 'c', contracts: [{ scope, op: 'extend' }] }),
+      ],
+    }
+
+    const plan = planSeat(inputs([], [task('A-1')], { ledger }))
+
+    expect(plan.dispatch.map(d => d.slice)).toEqual(['b', 'c'])
+  })
+
   it("passes a ready slice's contracts to the collision check (CC-710)", () => {
     const contracts = [{ scope: 'api:/v1/report', op: 'remove' as const }]
     const ledger: Ledger = { ...EMPTY_LEDGER, claims: [queued('A-1', { contracts })] }

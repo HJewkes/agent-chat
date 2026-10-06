@@ -159,7 +159,8 @@ export function contractClash(
   return undefined
 }
 
-function contractOverlap(work: CollisionWork, held: readonly HeldContracts[]): Collision | undefined {
+/** Also the same-pass check: a planner passes the dispatches it has already accepted this tick as `held`. */
+export function contractOverlap(work: CollisionWork, held: readonly HeldContracts[]): Collision | undefined {
   for (const other of held) {
     const clash = contractClash(work.contracts, other.contracts)
     if (clash !== undefined) return { kind: 'contract-overlap', reason: clashReason(clash, other.holder) }
