@@ -281,7 +281,7 @@ export function seatCompareFromDisk(opts: SeatPlanOptions & { runner?: Runner })
     plan: planned,
     held: new Set(heldClaims(ledger).map(c => c.taskId)),
     tiers: new Map(scored.order.map(row => [row.id, row])),
-    intangibleHeld: new Set(scored.intangibleHeld),
+    intangibleHeld: new Set(scored.intangibleHeld ?? []),
   })
   const head = `seats compare ${opts.seat} at ${opts.now.toISOString()}: score.py ${args.join(' ')} against a dry-run seat plan`
   return { ...compared, lines: [head, ...compared.lines] }

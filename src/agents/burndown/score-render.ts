@@ -36,7 +36,7 @@ export interface ScoredPlan {
   /** CC-631: planning-tag errors such as a typo'd `dep:`, which the order otherwise reads as closed. */
   tagErrors?: string[]
   /** CC-778: the ready intangible IDs `planOrder` held back, one per `refused['intangible-held']`. */
-  intangibleHeld: string[]
+  intangibleHeld?: string[]
   /** CC-720: one line per open `ms-role:criterion` task that no check of its milestone names; set only when milestones were read. */
   unnamedCriteria?: string[]
 }
