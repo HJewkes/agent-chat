@@ -5,7 +5,8 @@ spawns at most one new agent per opted-in initiative: a planner for estimate 3 o
 otherwise an implementer, headless, on the account the budget gate picked. A worker that
 must ask parks and waits for an answer; a worker that reports `DONE` with a PR hands the PR to
 Shepherd, which owns CI, review and merge from then on.
-`agent-chat burndown install` runs the tick on a schedule through launchd. Full design:
+`agent-chat burndown install` runs the tick on a schedule through launchd, or a systemd --user
+timer on Linux. Full design:
 `claude-channels/sources/surplus-2026-09-26/autonomous-burndown-design.md`; slice plan:
 `claude-channels/sources/CC-slice4-plan.md`.
 
@@ -207,6 +208,28 @@ launchd's problem, not something this job asks to be kept alive through. Its log
 `~/Library/Logs/agent-chat-burndown/burndown.log`. The job's environment is `HOME` and
 `PATH`, plus `AGENT_CHAT_HOME` when set — the same allowlist the mirror job uses, and for
 the same reason: nothing else rides along from the account that ran `install`.
+
+## On Linux: systemd --user units (CC-816)
+
+On Linux the same verbs write and drive systemd --user units in `$XDG_CONFIG_HOME/systemd/user`
+(else `~/.config/systemd/user`), named after the launchd label without `dev.hjewkes.`:
+
+| launchd schedule       | systemd units                                                                       |
+| ---------------------- | ----------------------------------------------------------------------------------- |
+| `KeepAlive`            | `.service`, `Restart=always`, `WantedBy=default.target`                             |
+| `StartInterval` N      | `Type=oneshot` `.service` + `.timer` with `OnBootSec=N` and `OnUnitActiveSec=N`     |
+| minutes past each hour | `Type=oneshot` `.service` + `.timer` with one `OnCalendar=*-*-* *:MM:00` per minute |
+
+The burndown tick is `agent-chat-burndown.{service,timer}`; the seat watchdog
+(`agent-chat seats watchdog-install|watchdog-uninstall|watchdog-status`) is
+`agent-chat-seat-watchdog.{service,timer}`. The service carries the plist's environment as
+`Environment=` lines, `PATH` included, since the user manager's own `PATH` lacks `~/.local/bin`
+and node's dir. Logs keep their file names under `$XDG_STATE_HOME` (else `~/.local/state`),
+for example `~/.local/state/agent-chat-burndown/burndown.log`. `install` runs `daemon-reload`
+and `enable --now` on the timer; the timer's elapsed `OnBootSec` starts one tick at once, as
+launchd's kickstart does. `uninstall` runs `disable --now`, removes the units and reloads;
+`job-status` reads `systemctl --user show`. The units only fire while the user manager runs, so
+a server needs `loginctl enable-linger`.
 
 ## What each ledger phase means
 
