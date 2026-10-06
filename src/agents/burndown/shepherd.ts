@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { logEvent } from '../../broker/log.js'
 import { run, type Runner } from './exec.js'
 
 /**
@@ -43,27 +44,61 @@ const PHASES = [
   'cancelled',
 ] as const
 
+const KNOWN_PHASES: ReadonlySet<string> = new Set(PHASES)
+
+/** `phase` is any string here so one row in a phase Shepherd added later does not fail the read (CC-791). */
 const Row = z.object({
   repo: z.string(),
   pr: z.number().int().nullable(),
   runId: z.string(),
-  phase: z.enum(PHASES),
+  phase: z.string(),
   headSha: z.string().nullable(),
   stalled: z.object({ reason: z.string() }).nullable(),
 })
-export type ShepherdRow = z.infer<typeof Row>
 
-/** Every shepherded PR, from `shepherd status --json`; undefined when Shepherd is down or answers in another shape. */
-export function shepherdRows(exec: Runner = run): ShepherdRow[] | undefined {
+/**
+ * A row in a phase this build does not know reads as `unknown`: kept, so its
+ * claim still finds it and is neither re-registered nor taken as merged or ended.
+ */
+export type ShepherdRow = Omit<z.infer<typeof Row>, 'phase'> & {
+  phase: (typeof PHASES)[number] | 'unknown'
+}
+
+type Log = (event: string, detail: Record<string, unknown>) => void
+
+/**
+ * Every shepherded PR, from `shepherd status --json`; undefined when Shepherd is
+ * down or the answer is not a JSON array. Read row by row: a malformed row is
+ * skipped and an unknown phase kept as `unknown`, each logged once per read.
+ */
+export function shepherdRows(exec: Runner = run, log: Log = logEvent): ShepherdRow[] | undefined {
   const result = exec(SHEPHERD_BIN, ['shepherd', 'status', '--json'])
   if (result.status !== 0) return undefined
+  let parsed: unknown
   try {
-    const parsed = z.array(Row).safeParse(JSON.parse(result.stdout))
-    return parsed.success ? parsed.data : undefined
+    parsed = JSON.parse(result.stdout)
   } catch {
     return undefined
   }
+  if (!Array.isArray(parsed)) return undefined
+  return parsed.flatMap((raw, index) => readRow(raw, index, log))
 }
+
+function readRow(raw: unknown, index: number, log: Log): ShepherdRow[] {
+  const parsed = Row.safeParse(raw)
+  if (!parsed.success) {
+    const reason = parsed.error.issues.map(i => `${i.path.join('.') || 'row'}: ${i.message}`).join('; ')
+    log('burndown_shepherd_row_skipped', { index, reason })
+    return []
+  }
+  const row = parsed.data
+  if (KNOWN_PHASES.has(row.phase)) return [row as ShepherdRow]
+  log('burndown_shepherd_row_unknown_phase', { target: rowRef(row), runId: row.runId, phase: row.phase })
+  return [{ ...row, phase: 'unknown' }]
+}
+
+const rowRef = (row: { repo: string; pr: number | null }): string =>
+  row.pr === null ? row.repo : `${row.repo}#${row.pr}`
 
 /** Shepherd lowercases the repos it stores, so a target matches its row case-insensitively. */
 export const rowFor = (rows: readonly ShepherdRow[], t: ShepherdTarget): ShepherdRow | undefined =>
