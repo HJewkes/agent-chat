@@ -58,6 +58,8 @@ const rows = (): Record<string, unknown>[] =>
         .map(line => JSON.parse(line) as Record<string, unknown>)
     : []
 
+const dispatchedRows = (): Record<string, unknown>[] => rows().filter(row => row.outcome === 'dispatched')
+
 const retiredRows = (): Record<string, unknown>[] => rows().filter(row => row.outcome === 'retired')
 
 function supervisorWith(seatDispatch: SeatDispatchLog, attachMs?: number): Supervisor {
@@ -253,6 +255,16 @@ describe('a seat agent’s retire', () => {
 
     await expect.poll(() => retiredRows().length).toBe(1)
     expect(retiredRows()[0]).toMatchObject({ agent: successor, predecessor: AGENT })
+  })
+
+  it('writes the tier a spawn carries on its dispatched row, and no tier key without one', async () => {
+    const s = supervisorWith(writerOver(root))
+    await s.spawn({ ...spawnReq(AGENT), tier: 2 })
+    await s.spawn(spawnReq(`${AGENT}-hand`))
+
+    const [tiered, plain] = dispatchedRows()
+    expect(tiered).toMatchObject({ agent: AGENT, tier: 2 })
+    expect(plain).not.toHaveProperty('tier')
   })
 
   it('writes the row with null tokens and usd_est when the transcript is missing', async () => {

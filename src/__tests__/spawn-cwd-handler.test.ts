@@ -6,6 +6,7 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import { SocketServer } from '../broker/socket.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
+import type { ClientMessage } from '../protocol.js'
 import { Supervisor, type SpawnRequest } from '../agents/supervisor.js'
 
 /**
@@ -28,7 +29,11 @@ afterEach(() => {
   fs.rmSync(home, { recursive: true, force: true })
 })
 
-async function spawnedRequest(frame: { cwd?: string; worktree?: string }): Promise<SpawnRequest> {
+async function spawnedRequest(frame: {
+  cwd?: string
+  worktree?: string
+  tier?: unknown
+}): Promise<SpawnRequest> {
   const seen: SpawnRequest[] = []
   vi.spyOn(Supervisor.prototype, 'spawn').mockImplementation(async req => {
     seen.push(req)
@@ -40,7 +45,13 @@ async function spawnedRequest(frame: { cwd?: string; worktree?: string }): Promi
   })
   server = new SocketServer(core)
   const conn = { write: () => undefined } as unknown as Conn
-  server.handleMessage(conn, { t: 'spawn', name: 'w', profile: 'implementer', brief: 'b', ...frame })
+  server.handleMessage(conn, {
+    t: 'spawn',
+    name: 'w',
+    profile: 'implementer',
+    brief: 'b',
+    ...frame,
+  } as ClientMessage)
   await vi.waitFor(() => expect(seen).toHaveLength(1))
   return seen[0] as SpawnRequest
 }
@@ -57,6 +68,21 @@ describe('handleSpawn cwd', () => {
     const request = await spawnedRequest({ cwd: '/tmp/cc178-explicit', worktree: '/tmp/cc178-worktree' })
 
     expect(request.cwd).toBe('/tmp/cc178-explicit')
+  })
+})
+
+/** CC-774: the tick's planned tier reaches the supervisor, and only as an integer. */
+describe('handleSpawn tier', () => {
+  it('hands the supervisor the integer tier the frame carries', async () => {
+    const request = await spawnedRequest({ tier: 2 })
+
+    expect(request.tier).toBe(2)
+  })
+
+  it.each([undefined, 1.5, '2'])('leaves tier off the request for %s', async tier => {
+    const request = await spawnedRequest({ tier })
+
+    expect(request).not.toHaveProperty('tier')
   })
 })
 
