@@ -1,0 +1,117 @@
+{
+  "doors": [
+    {
+      "path": "src/agents/burndown/execute.ts",
+      "kind": "spawn-frame",
+      "why": "The burndown tick's dispatch: the sanctioned door for planners and implementers.",
+      "owner": "owner",
+      "coordinatorSideDoor": false
+    },
+    {
+      "path": "src/agents/burndown/triage.ts",
+      "kind": "spawn-frame",
+      "why": "Tick job: one read-only triager per classified stall, never from a timer.",
+      "owner": "owner",
+      "coordinatorSideDoor": false
+    },
+    {
+      "path": "src/cli/burndown-broker.ts",
+      "kind": "resume-frame",
+      "why": "The tick's broker adapter resumes a parked claim's worker.",
+      "owner": "owner",
+      "coordinatorSideDoor": false
+    },
+    {
+      "path": "src/broker/socket.ts",
+      "kind": "broker-handler",
+      "why": "The broker's spawn and resume handlers: every frame lands here.",
+      "owner": "owner",
+      "coordinatorSideDoor": false
+    },
+    {
+      "path": "src/cli/agents.ts",
+      "kind": "spawn-frame",
+      "why": "`agent-chat agent spawn`, used by the agent-dispatch package for fixers and successors.",
+      "owner": "owner",
+      "coordinatorSideDoor": true
+    },
+    {
+      "path": "src/server/commands/agent-spawn.ts",
+      "kind": "spawn-frame",
+      "why": "The MCP agent_spawn tool coordinators use.",
+      "owner": "owner",
+      "coordinatorSideDoor": true
+    },
+    {
+      "path": "src/cli/verbs/agent-resume.ts",
+      "kind": "resume-frame",
+      "why": "`agent-chat agent resume` restarts a listed, non-live agent.",
+      "owner": "owner",
+      "coordinatorSideDoor": true
+    },
+    {
+      "path": "src/server/commands/agent-resume.ts",
+      "kind": "resume-frame",
+      "why": "The MCP agent_resume tool restarts a listed, non-live agent.",
+      "owner": "owner",
+      "coordinatorSideDoor": true
+    },
+    {
+      "path": "src/cli/verbs/seats.ts",
+      "kind": "resume-frame",
+      "why": "The seat watchdog resumes a stopped seat on its declared surface.",
+      "owner": "owner",
+      "coordinatorSideDoor": false
+    },
+    {
+      "path": "src/agents/launch-agent.ts",
+      "kind": "claude-launch",
+      "why": "The broker's own launch of an agent's claude process, behind the spawn handler.",
+      "owner": "owner",
+      "coordinatorSideDoor": false
+    },
+    {
+      "path": "src/agents/launch-plan.ts",
+      "kind": "claude-launch",
+      "why": "Builds the claude launch plan the broker runs; starts nothing itself.",
+      "owner": "owner",
+      "coordinatorSideDoor": false
+    },
+    {
+      "path": "src/agents/resume.ts",
+      "kind": "claude-launch",
+      "why": "Builds the headless `claude -p --resume` command the broker runs on resume.",
+      "owner": "owner",
+      "coordinatorSideDoor": false
+    },
+    {
+      "path": "src/agents/seats/pool-probe.ts",
+      "kind": "claude-launch",
+      "why": "A budget probe of the account pool, not a worker.",
+      "owner": "owner",
+      "coordinatorSideDoor": false
+    },
+    {
+      "path": "src/agents/burndown/trust-gate.ts",
+      "kind": "claude-launch",
+      "why": "Reads the installed claude version for the trust rule; executes nothing.",
+      "owner": "owner",
+      "coordinatorSideDoor": false
+    },
+    {
+      "path": "src/broker/doctor.ts",
+      "kind": "claude-launch",
+      "why": "Doctor check that the claude binary resolves; executes nothing.",
+      "owner": "owner",
+      "coordinatorSideDoor": false
+    },
+    {
+      "path": "review tooling",
+      "kind": "claude-launch",
+      "why": "Known exception: review tooling runs `claude -p` for code review outside this repo's src/.",
+      "owner": "owner",
+      "coordinatorSideDoor": false,
+      "external": true
+    }
+  ]
+}
