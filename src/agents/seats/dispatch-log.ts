@@ -11,6 +11,7 @@ import {
   type DispatchRun,
   type RetireSpend,
 } from './dispatch-record.js'
+import type { RetireOutcome } from './retire-outcome.js'
 import { taskOf } from './journal-line.js'
 import { readText } from './io.js'
 import { seatOf, type SeatFile } from './seat-of.js'
@@ -24,7 +25,7 @@ export type SpawnFacts = Omit<DispatchRun, 'ts' | 'task' | 'initiative' | 'kind'
 export interface SeatDispatchLog {
   dispatched: (spawn: SpawnFacts) => void
   abandoned: (spawn: SpawnFacts) => void
-  retired: (spawn: SpawnFacts, sessionId: string | null, spend: RetireSpend) => void
+  retired: (spawn: SpawnFacts, sessionId: string | null, spend: RetireSpend, outcome: RetireOutcome) => void
 }
 
 type Log = (event: string, detail: Record<string, unknown>) => void
@@ -78,7 +79,8 @@ export function seatDispatchLog(root: string, deps: DispatchLogDeps = {}): SeatD
   return {
     dispatched: spawn => write(spawn, dispatchedRow),
     abandoned: spawn => write(spawn, abandonedRow),
-    retired: (spawn, sessionId, spend) => write(spawn, run => retiredRow(run, sessionId, spend)),
+    retired: (spawn, sessionId, spend, outcome) =>
+      write(spawn, run => retiredRow(run, sessionId, spend, outcome)),
   }
 }
 

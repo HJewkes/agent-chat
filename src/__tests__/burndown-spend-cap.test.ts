@@ -13,6 +13,7 @@ const ok = (usd: number | null, tokens = 1000, path = '/t/ok.jsonl'): Transcript
   models: [],
   unpriced: [],
   price_table: 1,
+  work: { tool_errors: 0, denied: false, api_stop: null, report: null },
 })
 const missing: TranscriptSpendRead = { ok: false, path: '/t/gone.jsonl', reason: 'ENOENT' }
 
