@@ -149,9 +149,9 @@ describe('a facts block that fails the schema', () => {
 
 describe('the task id in an agent name', () => {
   it.each([
-    ['tc-tp-1735-heap-cap', 'TP-1735'],
-    ['tc-cc-763-worker-facts', 'CC-763'],
-    ['tc-cc-625-a', 'CC-625'],
+    ['ab-tp-1735-heap-cap', 'TP-1735'],
+    ['ab-cc-763-worker-facts', 'CC-763'],
+    ['ab-cc-625-a', 'CC-625'],
     ['scout', null],
     ['tc-review-fix', null],
   ])('%s gives %s', (name, id) => {
