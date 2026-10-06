@@ -178,7 +178,13 @@ function nextWork(initiative: OptedIn, inputs: PlanInputs): { work?: Work; refus
   const [ready] = readySlices(inputs.ledger, held).filter(c => c.initiative === initiative.slug)
   if (ready?.slice !== undefined) {
     const tags = tasks.find(t => t.id === ready.taskId)?.tags ?? []
-    const work = { taskId: ready.taskId, slice: ready.slice, tags, owns: ready.owns ?? [] }
+    const work = {
+      taskId: ready.taskId,
+      slice: ready.slice,
+      tags,
+      owns: ready.owns ?? [],
+      contracts: ready.contracts ?? [],
+    }
     const collided = collisionOf(initiative, work, inputs)
     if (collided !== undefined) return { refusals: [collided] }
     const identity = {

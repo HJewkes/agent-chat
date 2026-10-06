@@ -383,6 +383,17 @@ describe('burndown plan collision check (CC-202)', () => {
     expect(result.dispatch).toEqual([expect.objectContaining({ task: 'DM-1', slice: 'b' })])
   })
 
+  it("refuses a ready slice whose contracts clash with a sibling's held destructive contract (CC-710)", () => {
+    ledgerOf(
+      sliceClaim('a', { phase: 'awaiting-merge', contracts: [{ scope: 'api:/v1/report', op: 'remove' }] }),
+      sliceClaim('b', { contracts: [{ scope: 'api:/v1/report', op: 'extend' }] }),
+    )
+
+    const result = planWith({})
+
+    expect(result.refusals).toEqual([expect.objectContaining({ task: 'DM-1', kind: 'contract-overlap' })])
+  })
+
   it("names a ready slice's implementer and worktree with its claim's seat prefix", () => {
     ledgerOf(sliceClaim('b', { seat: 'seat-a', namePrefix: 'tc' }))
 

@@ -289,6 +289,7 @@ function considerSlice(claim: Claim, walk: Walk): Taken | Refused {
     ...(claim.slice === undefined ? {} : { slice: claim.slice }),
     tags,
     owns: claim.owns ?? [],
+    contracts: claim.contracts ?? [],
   }
   return blocker(dispatch, checked, 'implementers', walk) ?? { dispatch, role: 'implementers', work: checked }
 }

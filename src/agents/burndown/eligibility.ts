@@ -47,6 +47,7 @@ export type RefusalKind =
   | 'landed'
   | 'open-pr'
   | 'file-overlap'
+  | 'contract-overlap'
   | 'untriaged'
   | 'stop-short'
   | 'no-repo'
