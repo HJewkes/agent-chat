@@ -19,7 +19,9 @@ import { renderMilestoneLine } from '../../agents/burndown/milestone-report.js'
 import { milestoneReportFromDisk, type MilestoneReportRead } from '../../agents/burndown/milestone-source.js'
 import { localDate } from '../../agents/burndown/seat-tick.js'
 import { collisionCheck, type BrokerView } from '../../agents/burndown/collision.js'
-import { readLedger, withLedgerLock, writeLedger } from '../../agents/burndown/ledger.js'
+import { claimCustody } from '../../agents/burndown/custody.js'
+import { shepherdRows, shepherdTarget } from '../../agents/burndown/shepherd.js'
+import { heldClaims, readLedger, withLedgerLock, writeLedger } from '../../agents/burndown/ledger.js'
 import { loadTickConfig } from '../../agents/burndown/source.js'
 import { tickFromDisk } from '../../agents/burndown/run-tick.js'
 import { TICK_INTERVAL_SECONDS } from '../../agents/burndown/tick-status.js'
@@ -254,7 +256,10 @@ export const burndownStatusVerb = defineVerb({
   async run() {
     const now = new Date()
     try {
-      return { ok: true, lines: renderStatus(readLedger(burndownLedgerPath()), now) }
+      const ledger = readLedger(burndownLedgerPath())
+      const held = heldClaims(ledger)
+      const shepherd = held.some(c => shepherdTarget(c.pr) !== undefined) ? shepherdRows() : []
+      return { ok: true, lines: [...renderStatus(ledger, now), ...claimCustody(held, now, shepherd)] }
     } catch (err) {
       return refused(err)
     }
