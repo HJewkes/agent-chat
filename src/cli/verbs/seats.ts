@@ -75,6 +75,7 @@ import { FIRE_CAP, WATCHDOG_MINUTES } from '../../agents/seats/watchdog.js'
 import { BrokerClient } from '../../client/broker-client.js'
 import { startJob, systemLaunchctl, type JobControl } from '../../mirror/launchd.js'
 import { jobEnv, renderWatchdogPlist } from '../../mirror/plist.js'
+import { hostLeaseRefusal } from '../../host-lease.js'
 import { WATCHDOG_LABEL, cliEntry, home, watchdogLogDir, watchdogPlistPath } from '../../paths.js'
 import { SURFACE_NAMES, type ServerMessage, type SurfaceName } from '../../protocol.js'
 import { addVerb, defineVerb, Report } from '../command.js'
@@ -330,6 +331,8 @@ export const seatsWatchdogVerb = defineVerb({
     },
   },
   async run({ dryRun, replay: day, seat, reading, root, fireCap }) {
+    const offLease = hostLeaseRefusal()
+    if (offLease !== undefined) return refused(new Error(offLease))
     const dir = root ?? defaultAutonomyRoot()
     try {
       if (day !== undefined) return replayRun(dir, day, seat, reading ?? [])
