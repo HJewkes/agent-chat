@@ -165,6 +165,34 @@ describe('the worker hands its PR to Shepherd (TP-468)', () => {
   })
 })
 
+describe('a burndown worker on a busy machine (CC-803)', () => {
+  const slice = { n: 'b', title: 'Wire it', planPath: '/aw/p.md' }
+  const machineRule =
+    "`timeout 300 npx vitest run <files> --testTimeout=20000` (or the repo's equivalent); " +
+    'never the full suite or `npm run verify`, and never `run_in_background`.'
+
+  it('limits a plain and a slice worker to named tests', () => {
+    expect(workerBrief(task())).toContain(machineRule)
+    expect(workerBrief(task({ slice }))).toContain(machineRule)
+  })
+
+  it('registers a slice with --slice and its task so the merge notes the task', () => {
+    expect(workerBrief(task({ slice }))).toContain(
+      'shepherd register <owner>/<repo>#<n> --slice b --task claude-channels/CC-900 --implementer',
+    )
+    expect(successorAfterReview(task({ slice }), 'fix it')).toContain(
+      '--slice b --task claude-channels/CC-900',
+    )
+  })
+
+  it('keeps the plain registration line when there is no slice', () => {
+    const brief = workerBrief(task())
+
+    expect(brief).toContain('shepherd register <owner>/<repo>#<n> --task <initiative>/<ID> --implementer')
+    expect(brief).not.toContain('--slice')
+  })
+})
+
 const bytes = (s: string): number => Buffer.byteLength(s)
 
 /** An invented task whose notes run past the YAML cap, with done_when last so the cap would cut it. */
