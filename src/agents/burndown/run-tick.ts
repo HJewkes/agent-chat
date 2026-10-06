@@ -35,6 +35,7 @@ import {
 import {
   defaultBranch,
   liveBurndownAgents,
+  memo,
   observe,
   orphanAt,
   worktreesUnder,
@@ -50,6 +51,7 @@ import {
   loadSeats,
   planSeats,
   type LoadedSeats,
+  type SeatPlanDeps,
   type SeatsPlan,
   type SkippedSeat,
 } from './seat-tick.js'
@@ -61,7 +63,13 @@ import {
   readTasks,
   type TickConfig,
 } from './source.js'
-import { registerWithShepherd, shepherdLanded, shepherdRows, targetRef } from './shepherd.js'
+import {
+  downstreamReader,
+  registerWithShepherd,
+  shepherdLanded,
+  shepherdRows,
+  targetRef,
+} from './shepherd.js'
 import { retrySteps, stepsForActions, stepsForDispatch, type StepContext } from './steps.js'
 import { recordTick, type StopCode, type TickResult } from './tick-status.js'
 import { loadWorld, type World } from './tick.js'
@@ -297,10 +305,11 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
       ? undefined
       : loadSeats(config.seats, ledger, diskSeatDeps(defaultAutonomyRoot(root), root, now))
   const held = heldClaims(ledger)
+  const shepherd = memo(() => shepherdRows(opts.exec ?? run, opts.log))
   const { observations, unread } = await observe(held, roster, {
     inboxSince: opts.broker.inboxSince,
     root,
-    shepherdRows: () => shepherdRows(opts.exec ?? run, opts.log),
+    shepherdRows: shepherd,
     landed: target => shepherdLanded(target, opts.exec ?? run),
   })
   const ctx = {
@@ -331,13 +340,20 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   )
   const { check, failures } = await tickCollision(planLedger, opts)
   const prefixes = [DEFAULT_NAME_PREFIX, ...(seats?.loaded.map(s => s.dispatch.prefix) ?? [])]
-  const planned = planNew(world, seats, root, roster, {
-    ledger: planLedger,
-    capacity: worktreeCapacity(config, triage.left, prefixes),
-    orphan: (repo, name) => orphanAt(repo, name),
-    collision: check,
-    charged: advanced.charged,
-  })
+  const planned = planNew(
+    world,
+    seats,
+    root,
+    roster,
+    {
+      ledger: planLedger,
+      capacity: worktreeCapacity(config, triage.left, prefixes),
+      orphan: (repo, name) => orphanAt(repo, name),
+      collision: check,
+      charged: advanced.charged,
+    },
+    downstreamReader(shepherd, opts.exec ?? run),
+  )
   const dispatchCtx = { ...ctx, tasks: new Map([...ctx.tasks, ...planned.tasks]) }
   const dispatched = planned.dispatch.map(d => stepsForDispatch(d, dispatchCtx))
   const notes = [
@@ -393,6 +409,7 @@ function planNew(
   root: string,
   roster: Roster,
   work: NewWork,
+  downstream: NonNullable<SeatPlanDeps['downstream']>,
 ): Planned {
   if (seats === undefined)
     return { ...plan({ ...world, ...work }), skipped: [], tasks: new Map(), skippedTasks: [] }
@@ -403,6 +420,7 @@ function planNew(
       ...work,
       initiatives: world.initiatives,
       trust: (repo, cwd, configDir) => trustRefusal(repo, cwd, configDir, cliVersion),
+      downstream,
       roster,
     },
     root,

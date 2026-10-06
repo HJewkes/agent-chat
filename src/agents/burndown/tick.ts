@@ -5,7 +5,9 @@ import { classOf, routeOf, type RouteConfig } from './exception.js'
 import { backoffHeld } from './backoff.js'
 import { taskRefusal, type Initiative } from './eligibility.js'
 import { heldClaims, isStalled, readLedger, type Claim, type DeciderState, type Ledger } from './ledger.js'
-import type { Roster } from './observe.js'
+import type { Runner } from './exec.js'
+import { memo, type Roster } from './observe.js'
+import { downstreamReader, shepherdRows } from './shepherd.js'
 import { plan, type Plan, type PlanInputs } from './plan.js'
 import { diskSeatDeps, loadSeats, planSeats, type LoadedSeats, type SeatPlanDeps } from './seat-tick.js'
 import { accountDir, loadRules, loadTickConfig, readInitiatives, readReadings, readTasks } from './source.js'
@@ -65,6 +67,8 @@ export interface SeatPlanOptions {
   collision?: (ledger: Ledger) => PlanInputs['collision']
   /** The broker's roster; with it only active trees count against the seat's cap, as the tick counts them. */
   roster?: Roster
+  /** Runs `titan-factory` and `git` for the downstream WIP read; defaults to the real runner. */
+  exec?: Runner
 }
 
 /** The ledger, the seat as the tick loads it, and the planning deps the tick passes; shared by `plan --seat` and `seats compare`. */
@@ -81,6 +85,10 @@ export function seatPlanSetup(opts: SeatPlanOptions): {
     ledger,
     initiatives: readInitiatives(opts.root),
     trust: (repo, cwd, configDir) => trustRefusal(repo, cwd, configDir, cliVersion),
+    downstream: downstreamReader(
+      memo(() => shepherdRows(opts.exec)),
+      opts.exec,
+    ),
     ...(check === undefined ? {} : { collision: check }),
     ...(opts.roster === undefined ? {} : { roster: opts.roster }),
   }

@@ -1,6 +1,8 @@
 import { z } from 'zod'
 import { logEvent } from '../../broker/log.js'
 import { run, type Runner } from './exec.js'
+import { wipLimitFor, type Downstream } from './flow-gate.js'
+import type { SeatDispatch } from './seat-dispatch.js'
 
 /**
  * Burndown's only door to Shepherd, the factory's PR-shepherding service: the
@@ -165,3 +167,63 @@ const firstLine = (text: string | undefined): string | undefined =>
     .map(l => l.trim())
     .find(l => l.length > 0)
     ?.slice(0, 300)
+
+/** The phases where a PR has left its implementer and waits on review, the owner or merge (CC-629). */
+const DOWNSTREAM_PHASES: readonly ShepherdRow['phase'][] = ['review', 'awaiting-approval', 'merging']
+
+/** Rows in a downstream phase per lowercased `owner/name`, stalled ones included. */
+export function downstreamCounts(rows: readonly ShepherdRow[]): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const row of rows) {
+    if (!DOWNSTREAM_PHASES.includes(row.phase)) continue
+    const key = row.repo.toLowerCase()
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  return counts
+}
+
+/** `owner/name`, lowercased, from an ssh (`git@host:o/n.git`, `ssh://`) or https remote URL. */
+export function repoKeyFromRemote(url: string): string | undefined {
+  const match =
+    /^(?:[\w.+-]+:\/\/(?:[^/@]+@)?[^/:]+(?::\d+)?\/|[^/@\s]+@[^/:\s]+:)([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/.exec(
+      url.trim(),
+    )
+  return match === null ? undefined : (match[1] as string).toLowerCase()
+}
+
+/**
+ * Builds each seat's `downstream(repo)` answer from one lazily memoized Shepherd read and one `origin`
+ * lookup per checkout. Either failing is `unknown`, which fails closed for a non-expedite implementer.
+ */
+export function downstreamReader(
+  readRows: () => ShepherdRow[] | undefined,
+  exec: Runner = run,
+): (dispatch: SeatDispatch) => (repo: string) => Downstream {
+  let counts: Map<string, number> | undefined | null = null
+  const counted = (): Map<string, number> | undefined => {
+    if (counts === null) {
+      const rows = readRows()
+      counts = rows === undefined ? undefined : downstreamCounts(rows)
+    }
+    return counts
+  }
+  const keys = new Map<string, string | undefined>()
+  const keyOf = (repo: string): string | undefined => {
+    if (!keys.has(repo)) {
+      const result = exec('git', ['-C', repo, 'remote', 'get-url', 'origin'])
+      keys.set(repo, result.status === 0 ? repoKeyFromRemote(result.stdout) : undefined)
+    }
+    return keys.get(repo)
+  }
+  return dispatch => repo => {
+    const name = keyOf(repo)
+    if (name === undefined) return { unknown: `no origin remote for ${repo}` }
+    const known = counted()
+    if (known === undefined) return { unknown: 'could not read Shepherd status' }
+    return {
+      name,
+      count: known.get(name) ?? 0,
+      ...wipLimitFor(dispatch.caps.reviewers, dispatch.wipLimits[repo]),
+    }
+  }
+}
