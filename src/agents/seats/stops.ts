@@ -93,9 +93,10 @@ export interface MeterSpend {
 }
 
 /**
- * The saved run and day meters advanced to this reading, as `gatePool` history. The tick, the spawn gate
- * and `seats status` all count spend through this. `ownRun` false keeps the run meter out of the history
- * (a pool the seat does not own) while the run start still follows it.
+ * The saved run and day meters advanced to this reading, as `gatePool` history. The spawn gate,
+ * `seats status`, and the tick when its ledger lacks a run-start sample count spend through this.
+ * `ownRun` false keeps the run meter out of the history (a pool the seat does not own) while the
+ * run start still follows it.
  */
 export function meterSpend(
   saved: { run?: SpendMeter | undefined; day?: SpendMeter | undefined },

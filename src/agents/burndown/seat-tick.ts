@@ -74,18 +74,27 @@ function sampled(previous: SeatState | undefined, deps: SeatTickDeps, dispatch: 
     reading?.sevenDay === undefined
       ? []
       : [{ at: nowMs, sevenDay: reading.sevenDay, ...(resetsAt === undefined ? {} : { resetsAt }) }]
-  const metered =
-    reading?.sevenDay === undefined
-      ? []
-      : meterHistory(dispatch.seat, dispatch.pool.name, reading.sevenDay, deps)
-  const history = [...metered, ...kept].sort((a, b) => a.at - b.at)
+  const history = reading?.sevenDay === undefined ? kept : oneSource(kept, dispatch, reading.sevenDay, deps)
   return { reading, resetsAt, history, state: { samples: [...kept, ...sample] } }
 }
 
-/** The watchdog meters as samples at the run and day starts, counted as the spawn gate and `seats status` count them. */
-function meterHistory(seat: string, pool: string, sevenDay: number, deps: SeatTickDeps): SevenDaySample[] {
-  const saved = deps.meters?.(seat, pool)
-  return saved === undefined ? [] : meterSpend(saved, sevenDay, deps.now).history
+/**
+ * The ledger's samples when they hold a reading at or before the run start, as before CC-782, else the
+ * watchdog meters alone. Never both: a meter's samples are estimates that never drop, so sorted among
+ * real readings across a seven_day reset, `pointsSpent` would count the pre-reset readings again.
+ */
+function oneSource(
+  kept: SevenDaySample[],
+  dispatch: SeatDispatch,
+  sevenDay: number,
+  deps: SeatTickDeps,
+): SevenDaySample[] {
+  const recordedAt = deps.recordedRunStart(dispatch.seat)
+  const runStart = runStartAt(deps.now, recordedAt === undefined ? {} : { recordedAt })
+  if (kept.some(s => s.at <= runStart)) return kept
+  const saved = deps.meters?.(dispatch.seat, dispatch.pool.name)
+  const metered = saved === undefined ? [] : meterSpend(saved, sevenDay, deps.now).history
+  return metered.length === 0 ? kept : metered
 }
 
 function loadSeat(policy: Policy, name: string, ledger: Ledger, deps: SeatTickDeps): LoadedSeat {

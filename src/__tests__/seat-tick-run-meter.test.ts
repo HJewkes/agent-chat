@@ -23,16 +23,23 @@ let root: string
 
 const dayMeter: SpendMeter = { since: DAY_START, last: 50, spent: 0 }
 
-function tickGate(run: SpendMeter | undefined) {
+interface TickInput {
+  ledger?: Ledger
+  now?: Date
+  sevenDay?: number
+  day?: SpendMeter
+}
+
+function tickGate(run: SpendMeter | undefined, input: TickInput = {}) {
   const deps: SeatTickDeps = {
     autonomyRoot: root,
     root,
-    now: NOW,
-    reading: () => ({ reading: { sevenDay: 50, fiveHour: 10, ageSeconds: 30 } }),
+    now: input.now ?? NOW,
+    reading: () => ({ reading: { sevenDay: input.sevenDay ?? 50, fiveHour: 10, ageSeconds: 30 } }),
     recordedRunStart: () => run?.since,
-    meters: () => ({ run, day: dayMeter }),
+    meters: () => ({ run, day: input.day ?? dayMeter }),
   }
-  const { loaded, skipped } = loadSeats(['seat-a'], EMPTY, deps)
+  const { loaded, skipped } = loadSeats(['seat-a'], input.ledger ?? EMPTY, deps)
   expect(skipped).toEqual([])
   return gatePool(loaded[0]!.budget)
 }
@@ -91,5 +98,30 @@ describe('the seat tick with a watchdog run meter and no ledger samples', () => 
     expect(JSON.stringify(tickGate(meter))).toContain(
       "run spend 6 points at or above the seat's per_run_points 5",
     )
+  })
+})
+
+describe('the seat tick with ledger samples and a watchdog meter across a seven_day reset', () => {
+  const at = (hour: number, minute = 0) => new Date(2026, 8, 29, hour, minute).getTime()
+  const ledger = {
+    seats: {
+      'seat-a': {
+        samples: [
+          { at: at(6, 30), sevenDay: 84 },
+          { at: at(9), sevenDay: 85 },
+          { at: at(10), sevenDay: 86 },
+          { at: at(11), sevenDay: 0 },
+        ],
+      },
+    },
+  } as unknown as Ledger
+
+  it('counts run and day spend from the ledger alone and stays open', () => {
+    const gate = tickGate(
+      { since: at(9), last: 0, spent: 1 },
+      { ledger, now: new Date(at(11, 30)), sevenDay: 1, day: { since: DAY_START, last: 0, spent: 2 } },
+    )
+
+    expect(gate.open).toBe(true)
   })
 })

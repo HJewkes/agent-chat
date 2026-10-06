@@ -5,7 +5,6 @@ import type { BudgetRead } from '../budget.js'
 import {
   dayStart,
   gatePool,
-  runStartAt,
   standInReading,
   type SevenDaySample,
   type AccountReading,
@@ -18,11 +17,8 @@ import { localDate } from '../burndown/seat-tick.js'
 import { openEvents, type WatchdogDoc } from './io.js'
 import { paceLine, poolPace, type PoolPace } from './pace.js'
 import {
-  advanceMeter,
-  meterHistory,
+  meterSpend,
   pacedCaps,
-  sameSpendDay,
-  withinRun,
   type DayAllowance,
   type MachineStop,
   type PacedCaps,
@@ -254,17 +250,8 @@ interface SeatHistory {
  * A run meter past 12 hours counts from its last reading, because this read saves no restart.
  */
 function seatHistory(saved: SavedMeters, reading: AccountReading | undefined, now: Date): SeatHistory {
-  const nowMs = now.getTime()
-  const advance = (meter: SpendMeter | undefined, current: typeof withinRun): SpendMeter | undefined =>
-    meter === undefined ? undefined : advanceMeter(meter, reading?.sevenDay, nowMs, current)
-  const run = advance(saved.run, withinRun)
-  const day = advance(saved.day, sameSpendDay)
-  const runStart = runStartAt(now, saved.run === undefined ? {} : { recordedAt: saved.run.since })
-  const starts = [
-    { at: runStart, meter: run },
-    { at: dayStart(now), meter: day },
-  ]
-  return { history: meterHistory(starts, nowMs), runStart, day }
+  const { history, runStart, day } = meterSpend(saved, reading?.sevenDay, now)
+  return { history, runStart, day }
 }
 
 type Verdict = Pick<BudgetStatus, 'stop' | 'margin' | 'sonnetOnly' | 'spendSince' | 'note'> & {
