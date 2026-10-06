@@ -1,6 +1,9 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { advance, applyActions, claimKey, type Action, type Observation } from '../agents/burndown/advance.js'
-import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
+import { EMPTY_LEDGER, readLedger, writeLedger, type Claim, type Ledger } from '../agents/burndown/ledger.js'
 import { withFindings } from '../agents/burndown/finding.js'
 import { observe } from '../agents/burndown/observe.js'
 import { parseReport } from '../agents/burndown/report.js'
@@ -203,6 +206,67 @@ describe('burndown phase machine', () => {
       ['a', 'queued', [], ['src/ledger.ts']],
       ['b', 'queued', ['a'], undefined],
     ])
+  })
+
+  it("a planner slice's contracts reach its queued claim", () => {
+    const planning = claim({ phase: 'planning', worktree: undefined })
+    const contracts = [{ scope: 'api:/v1/report', op: 'remove' as const }]
+
+    const { after } = step(planning, {
+      agent: exited,
+      slices: [{ n: 'a', title: 'report', dependsOn: [], owns: ['src/report.ts'], contracts }],
+    })
+
+    expect(after.find(c => c.slice === 'a')?.contracts).toEqual(contracts)
+  })
+
+  it('a slice with no contracts makes a claim without the field', () => {
+    const planning = claim({ phase: 'planning', worktree: undefined })
+
+    const { after } = step(planning, {
+      agent: exited,
+      slices: [{ n: 'a', title: 'report', dependsOn: [], owns: ['src/report.ts'], contracts: [] }],
+    })
+
+    const queued = after.find(c => c.slice === 'a')
+    expect(queued).toBeDefined()
+    expect('contracts' in (queued as Claim)).toBe(false)
+  })
+
+  it('a stored ledger with no contracts on any claim parses and round-trips', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bd-ledger-'))
+    const file = path.join(dir, 'ledger.json')
+    const stored: Ledger = {
+      version: 1,
+      lastTickAt: EARLIER,
+      claims: [
+        { taskId: 'CC-1', initiative: 'demo', spawnedAt: EARLIER, phase: 'implementing', phaseAt: EARLIER },
+        {
+          taskId: 'CC-2',
+          initiative: 'demo',
+          spawnedAt: EARLIER,
+          phase: 'queued',
+          phaseAt: EARLIER,
+          slice: 'a',
+          owns: ['src/a.ts'],
+        },
+      ],
+      liveness: {
+        'CC-1|spawn': {
+          byFact: { f1: { n: 2, firstAt: EARLIER, lastAt: EARLIER, lastText: 'spawn refused' } },
+        },
+      },
+    }
+    const raw = `${JSON.stringify(stored, null, 2)}\n`
+    fs.writeFileSync(file, raw)
+
+    try {
+      writeLedger(file, readLedger(file))
+
+      expect(fs.readFileSync(file, 'utf8')).toBe(raw)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it.each([

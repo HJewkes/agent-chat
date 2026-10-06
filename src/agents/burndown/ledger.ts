@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { z } from 'zod'
 import { EXCEPTION_CLASSES } from './exception.js'
+import { Contract } from './report.js'
 import { STALL_CODES } from './stall-code.js'
 
 /**
@@ -46,6 +47,8 @@ const Claim = z.object({
   dependsOn: z.array(z.string()).optional(),
   /** The paths a planner's slice declares it touches; the collision check compares them to open PRs and file claims. */
   owns: z.array(z.string()).optional(),
+  /** The contracts a planner's slice declares; absent means none, so claims stored before CC-709 parse unchanged. */
+  contracts: z.array(Contract).optional(),
   /** The agent the claim is waiting on now. */
   agentName: z.string().optional(),
   /** Every agent spawned for this claim, oldest first; retired newest first. */
