@@ -63,6 +63,8 @@ export interface CollisionFacts {
   repo: string
   /** Commit subjects on `origin/<default>`, never bodies: a body mention is not a landing. */
   subjects: string[] | undefined
+  /** The seat's other repos' subjects: a task lands wherever its PR merged, so each counts, and a failed read names its repo. */
+  landedElsewhere?: { repo: string; subjects: string[] | undefined }[]
   prs: OpenPr[] | undefined
   prFiles: (pr: number) => string[] | undefined
   /** Live agent and session names on the broker. */
@@ -97,12 +99,12 @@ const RECONCILED = 'reconciled'
 
 function landed(work: CollisionWork, facts: CollisionFacts): Collision | undefined {
   if (work.slice !== undefined || work.tags.some(tag => tag.startsWith(RECONCILED))) return undefined
-  if (facts.subjects === undefined)
-    return {
-      kind: 'landed',
-      reason: `reader git-subjects failed: no default-branch subjects in ${facts.repo}`,
-    }
-  const hit = facts.subjects.find(subject => namesId(subject, work.taskId))
+  const reads = [{ repo: facts.repo, subjects: facts.subjects }, ...(facts.landedElsewhere ?? [])]
+  for (const { repo, subjects } of reads) {
+    if (subjects === undefined)
+      return { kind: 'landed', reason: `reader git-subjects failed: no default-branch subjects in ${repo}` }
+  }
+  const hit = reads.flatMap(read => read.subjects ?? []).find(subject => namesId(subject, work.taskId))
   if (hit === undefined) return undefined
   return { kind: 'landed', reason: `"${hit}" is on the default branch; reconcile it, then tag it reconciled` }
 }
@@ -255,13 +257,24 @@ export function collisionCheck(
   broker: BrokerView | undefined,
   exec: Runner = run,
   failed: ReaderFailed = () => {},
-): (repo: string, work: CollisionWork) => Collision | undefined {
+): (repo: string, work: CollisionWork, landedRepos?: readonly string[]) => Collision | undefined {
   const perRepo = new Map<string, CollisionFacts>()
-  return (repo, work) => {
-    const facts = perRepo.get(repo) ?? readFacts(repo, broker, exec, failed)
+  const perSubjects = new Map<string, string[] | undefined>()
+  const subjectsOf = (repo: string): string[] | undefined => {
+    if (perSubjects.has(repo)) return perSubjects.get(repo)
+    const read = readSubjects(repo, defaultBranch(repo, exec), exec)
+    perSubjects.set(repo, read)
+    if (read === undefined) failed('git-subjects', repo)
+    return read
+  }
+  return (repo, work, landedRepos = []) => {
+    const facts = perRepo.get(repo) ?? readFacts(repo, broker, exec, failed, subjectsOf(repo))
     perRepo.set(repo, facts)
     return collision(work, {
       ...facts,
+      landedElsewhere: landedRepos
+        .filter(other => other !== repo)
+        .map(other => ({ repo: other, subjects: subjectsOf(other) })),
       ours: oursFor(ledger, work.taskId),
       held: heldContracts(ledger, work),
     })
@@ -274,10 +287,9 @@ function readFacts(
   broker: BrokerView | undefined,
   exec: Runner,
   failed: ReaderFailed,
+  subjects: string[] | undefined,
 ): CollisionFacts {
-  const subjects = readSubjects(repo, defaultBranch(repo, exec), exec)
   const prs = readOpenPrs(repo, exec)
-  if (subjects === undefined) failed('git-subjects', repo)
   if (prs === undefined) failed('gh-pulls', repo)
   if (broker === undefined) failed('broker-view', repo)
   const files = new Map<number, string[] | undefined>()

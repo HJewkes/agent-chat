@@ -225,6 +225,22 @@ describe('planSeat refusals', () => {
     expect(seen).toEqual([REPO])
   })
 
+  it('hands the check every repo in the seat so a landing in any of them refuses', () => {
+    const listed: (readonly string[] | undefined)[] = []
+    const collision = (_repo: string, _work: unknown, landedRepos?: readonly string[]) => {
+      listed.push(landedRepos)
+      return undefined
+    }
+
+    one('A-1', {}, {}, { collision })
+
+    expect(listed.find(repos => repos !== undefined)).toEqual([
+      REPO,
+      '/tmp/repos/alpha-docs',
+      '/tmp/repos/beta',
+    ])
+  })
+
   it('refuses an orphan found under the seat-prefixed agent name', () => {
     const names: string[] = []
     const orphan = (_repo: string, name: string) => {
