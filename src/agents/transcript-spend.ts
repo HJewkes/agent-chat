@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import { PRICE_TABLE_VERSION, priceRequest } from '@titan-design/session-analytics'
+import { workObserver, type TranscriptWork } from './transcript-work.js'
 
 /**
  * What a whole session spent, summed from its transcript (CC-329).
@@ -29,6 +30,8 @@ export interface TranscriptSpend {
   /** The models that made `usd_est` null. */
   unpriced: string[]
   price_table: number
+  /** CC-645: what the session produced and how it ended, from the same pass. */
+  work: TranscriptWork
 }
 
 export type TranscriptSpendRead = TranscriptSpend | { ok: false; path: string; reason: string }
@@ -45,11 +48,11 @@ const USAGE_KEYS = ['input', 'cache_read', 'cache_write_5m', 'cache_write_1h', '
 /** Never rejects: the transcript belongs to another program and may be anything, or absent. */
 export async function readTranscriptSpend(file: string): Promise<TranscriptSpendRead> {
   try {
-    const requests = await readRequests(file)
+    const { requests, work } = await readRequests(file)
     if (requests.length === 0) {
       return { ok: false, path: file, reason: 'no assistant usage record in the transcript' }
     }
-    return { ok: true, path: file, ...spendOf(requests) }
+    return { ok: true, path: file, ...spendOf(requests), work }
   } catch (error) {
     return { ok: false, path: file, reason: missReason(error) }
   }
@@ -63,14 +66,16 @@ function missReason(error: unknown): string {
 }
 
 /** Claude Code writes one record per content block of a response, each with the response's usage, so the last per id stands. */
-async function readRequests(file: string): Promise<Request[]> {
+async function readRequests(file: string): Promise<{ requests: Request[]; work: TranscriptWork }> {
   const byMessage = new Map<string, Request>()
+  const observer = workObserver()
   let unnamed = 0
   for await (const line of transcriptLines(file)) {
+    observer.observe(line)
     const found = requestOf(line)
     if (found !== undefined) byMessage.set(found.id ?? `#${unnamed++}`, found.request)
   }
-  return [...byMessage.values()]
+  return { requests: [...byMessage.values()], work: observer.work() }
 }
 
 async function* transcriptLines(file: string): AsyncGenerator<string> {
@@ -114,7 +119,7 @@ function usageOf(usage: Record<string, unknown>): SpendUsage {
   }
 }
 
-function spendOf(requests: readonly Request[]): Omit<TranscriptSpend, 'ok' | 'path'> {
+function spendOf(requests: readonly Request[]): Omit<TranscriptSpend, 'ok' | 'path' | 'work'> {
   const usage: SpendUsage = { input: 0, cache_read: 0, cache_write_5m: 0, cache_write_1h: 0, output: 0 }
   const models = new Set<string>()
   const unpriced = new Set<string>()

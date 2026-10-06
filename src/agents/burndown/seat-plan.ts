@@ -9,6 +9,7 @@ import {
   type Task,
 } from './eligibility.js'
 import type { CollisionWork, SameTickClaim } from './collision.js'
+import { stopLineRefusal, wipRefusal, type Downstream, type LineStop } from './flow-gate.js'
 import { backoffHeld, type Hold } from './backoff.js'
 import { heldClaims, readySlices, type Claim, type Ledger } from './ledger.js'
 import {
@@ -69,6 +70,10 @@ export interface SeatPlanInputs {
   trust?: (repo: string, cwd: string, configDir: string) => string | undefined
   /** Whether a held claim's tree is active (CC-279); absent, every held tree counts. */
   activeTree?: (claim: Claim) => boolean
+  /** A checkout's PRs in review or waiting (CC-629); absent, no WIP limit applies. */
+  downstream?: (repo: string) => Downstream
+  /** Set while the service check has failed twice running (CC-629); absent, the line runs. */
+  lineStop?: LineStop
 }
 
 export interface SeatPlan {
@@ -324,21 +329,24 @@ function dispatchFor(work: Work, repo: string, reason: string, walk: Walk): Disp
   }
 }
 
-/** In D6's order: collision, orphan, trust, role cap, worktree caps, then the pool gate. */
+/** In D6's order: stop-line, collision, orphan, trust, role cap, worktree caps, WIP, then the pool gate. */
 function blocker(d: Dispatch, work: CollisionWork, role: Role, walk: Walk): Refused | undefined {
   const { inputs } = walk
+  const flow = { tags: work.tags, planner: role === 'planners' }
   const at = { initiative: d.initiative, repo: d.repo, prefix: d.namePrefix }
   const untrusted = (): Refused | undefined => {
     const reason = inputs.trust?.(d.repo, d.cwd, inputs.seat.configDir)
     return reason === undefined ? undefined : { kind: 'trust', reason }
   }
   return (
+    stopLineRefusal(flow, inputs.lineStop) ??
     inputs.collision?.(d.repo, work) ??
     // A slice's branch is named for the slice, so the whole-task orphan check does not apply to it.
     (d.slice === undefined ? orphanRefusal(at, d.task, d.profile, inputs.orphan) : undefined) ??
     untrusted() ??
     roleCap(role, walk) ??
     worktreeCap(d, walk) ??
+    wipRefusal(flow, d.repo, inputs.downstream?.(d.repo)) ??
     budgetRefusal(d.profile, walk.gate)
   )
 }
