@@ -77,7 +77,7 @@ function kindsOf(before: Claim | undefined, after: Claim, spawned: boolean): Sea
     events.push(
       event('stalled', withCode(after.stallCode, stallDetail(after, after.stalledReason)), after.stallCode),
     )
-  if (after.finding !== undefined)
+  if (after.finding !== undefined && ownerDue(after))
     events.push(event('stalled-after-claim', after.finding.detail, after.finding.code))
   if (after.phase === 'parked') events.push(event('parked'))
   if (after.leak !== undefined)
