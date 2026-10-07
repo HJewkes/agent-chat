@@ -411,17 +411,16 @@ describe('burndown tick hands a finished PR to Shepherd', () => {
     expect(seen.filter(argv => argv.includes('graphql'))).toEqual([])
   })
 
-  it('stalls the claim for the owner when Shepherd refuses the repo, and does not ask again', async () => {
+  it('stalls the claim for the owner when Shepherd refuses the repo three times, and does not ask again', async () => {
     const fake = finishedWorker()
     const refused = 'Error: registration refused: demo/repo is in denyRepos'
     const factory = shepherd(() => ({ status: 65, stdout: '', stderr: `${refused}\n` }))
 
-    await tick(fake, false, () => {}, stubGh(undefined, factory.factory))
-    await tick(fake, false, () => {}, stubGh(undefined, factory.factory))
+    for (let i = 0; i < 4; i++) await tick(fake, false, () => {}, stubGh(undefined, factory.factory))
 
-    expect(factory.registers()).toHaveLength(1)
+    expect(factory.registers()).toHaveLength(3)
     expect(readLedger(burndownLedgerPath()).claims[0]?.stalledReason).toBe(
-      `Shepherd refused demo/repo#5 (${refused}); burndown does not merge, so the PR is left for the owner`,
+      `retry-spent: Shepherd refused demo/repo#5 3 times with unchanged facts (${refused}); burndown does not merge, so the PR is left for the owner`,
     )
     expect(readLedger(burndownLedgerPath()).claims[0]?.stalledClass).toBe('gate-trip')
   })
