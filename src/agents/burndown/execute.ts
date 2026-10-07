@@ -164,7 +164,7 @@ function spendHeldRetire(
 function parkRetire(
   ledger: Ledger,
   key: ClaimKey,
-  { name, n, claim, refusal }: { name: string; n: number; claim?: Claim; refusal: Unretired },
+  { name, n, claim, refusal }: { name: string; n: number; claim: Claim | undefined; refusal: Unretired },
   now: Date,
 ): { ledger: Ledger; lines: string[] } {
   const kept = claim?.worktree === undefined ? '' : `; worktree ${claim.worktree} kept`
