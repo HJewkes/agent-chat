@@ -6,9 +6,10 @@ import { burndownInstallOn, burndownJobStatusOn, burndownUninstallOn } from '../
 import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from '../cli/verbs/watchdog-job.js'
 import type { JobHost } from '../mirror/job-host.js'
 import type { Launchctl } from '../mirror/launchd.js'
-import { burndownJob, watchdogJob, type JobSpec } from '../mirror/plist.js'
+import { burndownJob, jobEnv, watchdogJob, type JobSpec } from '../mirror/plist.js'
 import type { Systemctl } from '../mirror/systemd.js'
-import { quoteArg, renderUnits, unitName } from '../mirror/systemd-unit.js'
+import { quoteArg, renderUnits, unitName, unitNameForHome } from '../mirror/systemd-unit.js'
+import { cliEntry, watchdogLogDir, watchdogPlistPath } from '../paths.js'
 
 const ENV = { HOME: '/srv/u', PATH: '/srv/u/.local/bin:/usr/bin' }
 
@@ -119,12 +120,17 @@ describe('renderUnits', () => {
 })
 
 let scratch: string
-const savedEnv = { home: process.env.AGENT_CHAT_HOME, state: process.env.XDG_STATE_HOME }
+const savedEnv = {
+  home: process.env.AGENT_CHAT_HOME,
+  state: process.env.XDG_STATE_HOME,
+  activeRoot: process.env.ACTIVE_ROOT,
+}
 
 beforeEach(() => {
   scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-systemd-units-'))
   process.env.AGENT_CHAT_HOME = path.join(scratch, 'home')
   process.env.XDG_STATE_HOME = path.join(scratch, 'state')
+  delete process.env.ACTIVE_ROOT
 })
 
 afterEach(() => {
@@ -132,6 +138,7 @@ afterEach(() => {
   for (const [key, value] of [
     ['AGENT_CHAT_HOME', savedEnv.home],
     ['XDG_STATE_HOME', savedEnv.state],
+    ['ACTIVE_ROOT', savedEnv.activeRoot],
   ] as const) {
     if (value === undefined) delete process.env[key]
     else process.env[key] = value
@@ -164,6 +171,10 @@ function linuxHost(systemctl: Systemctl, dryRun = false): JobHost {
 const unitFile = (host: JobHost, file: string): string => path.join(host.unitDir, file)
 
 describe('watchdog on Linux', () => {
+  beforeEach(() => {
+    delete process.env.AGENT_CHAT_HOME
+  })
+
   it('dry-runs by printing both units and the systemctl calls, writing and calling nothing', () => {
     const { systemctl, calls } = fakeSystemctl()
     const host = linuxHost(systemctl, true)
@@ -292,5 +303,199 @@ describe('burndown job', () => {
     expect(burndownJobStatusOn(darwinHost(launchctl)).lines[0]).toBe('launchd loaded, pid 4242')
     burndownUninstallOn(darwinHost(launchctl))
     expect(calls.at(-1)).toBe('disable gui/501/dev.hjewkes.agent-chat-burndown')
+  })
+})
+
+const PILOT = '/srv/u/.agent-chat-pilot'
+const PILOT_ROOT = '/srv/u/active-work-pilot'
+const DEFAULT_HOME = path.join(os.homedir(), '.agent-chat')
+const WATCHDOG = 'agent-chat-seat-watchdog'
+
+const envLines = (): string[] => [
+  `Environment="HOME=${process.env.HOME}"`,
+  `Environment="PATH=${process.env.PATH}"`,
+]
+
+/** The watchdog service main renders with neither AGENT_CHAT_HOME nor ACTIVE_ROOT set. */
+const mainService = (): string =>
+  [
+    '[Unit]',
+    'Description=dev.hjewkes.agent-chat-seat-watchdog',
+    '',
+    '[Service]',
+    'Type=oneshot',
+    `ExecStart=${quoteArg(process.execPath)} ${quoteArg(cliEntry())} seats watchdog`,
+    ...envLines(),
+    `StandardOutput=append:${scratch}/state/${WATCHDOG}/watchdog.log`,
+    `StandardError=append:${scratch}/state/${WATCHDOG}/watchdog.log`,
+    '',
+  ].join('\n')
+
+const mainTimer = [
+  '[Unit]',
+  `Description=Schedule for ${WATCHDOG}.service`,
+  '',
+  '[Timer]',
+  'OnCalendar=*-*-* *:08:00',
+  'OnCalendar=*-*-* *:23:00',
+  'OnCalendar=*-*-* *:38:00',
+  'OnCalendar=*-*-* *:53:00',
+  'AccuracySec=1s',
+  '',
+  '[Install]',
+  'WantedBy=timers.target',
+  '',
+].join('\n')
+
+const xml = (text: string): string => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+/** The watchdog plist main renders with neither AGENT_CHAT_HOME nor ACTIVE_ROOT set. */
+const mainPlist = (): string => {
+  const minute = (m: number): string =>
+    `    <dict>\n      <key>Minute</key>\n      <integer>${m}</integer>\n    </dict>`
+  const log = path.join(watchdogLogDir(), 'watchdog.log')
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0">',
+    '<dict>',
+    '  <key>Label</key>\n  <string>dev.hjewkes.agent-chat-seat-watchdog</string>',
+    '  <key>ProgramArguments</key>',
+    '  <array>',
+    `    <string>${xml(process.execPath)}</string>`,
+    `    <string>${xml(cliEntry())}</string>`,
+    '    <string>seats</string>',
+    '    <string>watchdog</string>',
+    '  </array>',
+    '  <key>RunAtLoad</key>\n  <false/>',
+    '  <key>StartCalendarInterval</key>',
+    '  <array>',
+    ...[8, 23, 38, 53].map(minute),
+    '  </array>',
+    `  <key>StandardOutPath</key>\n  <string>${xml(log)}</string>`,
+    `  <key>StandardErrorPath</key>\n  <string>${xml(log)}</string>`,
+    '  <key>EnvironmentVariables</key>',
+    '  <dict>',
+    `    <key>HOME</key>\n    <string>${xml(process.env.HOME ?? '')}</string>`,
+    `    <key>PATH</key>\n    <string>${xml(process.env.PATH ?? '')}</string>`,
+    '  </dict>',
+    '</dict>',
+    '</plist>',
+    '',
+  ].join('\n')
+}
+
+describe('watchdog home (CC-819)', () => {
+  beforeEach(() => {
+    delete process.env.AGENT_CHAT_HOME
+  })
+
+  it('passes ACTIVE_ROOT through the job env only when set and non-empty', () => {
+    expect(jobEnv({ HOME: '/h', PATH: '/p', ACTIVE_ROOT: PILOT_ROOT, SECRET: 'x' })).toEqual({
+      HOME: '/h',
+      PATH: '/p',
+      ACTIVE_ROOT: PILOT_ROOT,
+    })
+    expect(jobEnv({ HOME: '/h', PATH: '/p', ACTIVE_ROOT: '' })).toEqual({ HOME: '/h', PATH: '/p' })
+  })
+
+  it('names units after the base for the default home and suffixes any other home with its basename', () => {
+    expect(unitNameForHome(WATCHDOG, DEFAULT_HOME, DEFAULT_HOME)).toBe(WATCHDOG)
+    expect(unitNameForHome(WATCHDOG, PILOT, DEFAULT_HOME)).toBe(`${WATCHDOG}-pilot`)
+    expect(unitNameForHome(WATCHDOG, '/data/my home!', DEFAULT_HOME)).toBe(`${WATCHDOG}-my_home_`)
+    expect(unitNameForHome(WATCHDOG, '/elsewhere/.agent-chat', DEFAULT_HOME)).toBe(`${WATCHDOG}-agent-chat`)
+  })
+
+  it('renders the Linux units byte-identical to main when neither variable is set', () => {
+    const { systemctl } = fakeSystemctl()
+    const host = linuxHost(systemctl, true)
+    const report = watchdogInstallOn(host)
+    expect(report.lines[0]).toBe(mainService())
+    expect(report.lines[1]).toBe(mainTimer)
+    expect(report.lines[2]).toBe(`write ${unitFile(host, `${WATCHDOG}.service`)}`)
+  })
+
+  it('bakes a non-default shell home and ACTIVE_ROOT into suffixed Linux units', () => {
+    process.env.AGENT_CHAT_HOME = PILOT
+    process.env.ACTIVE_ROOT = PILOT_ROOT
+    const { systemctl } = fakeSystemctl()
+    const host = linuxHost(systemctl, true)
+    const report = watchdogInstallOn(host)
+    expect(report.lines[0]).toContain(
+      `Environment="AGENT_CHAT_HOME=${PILOT}"\nEnvironment="ACTIVE_ROOT=${PILOT_ROOT}"\n`,
+    )
+    expect(report.lines[0]).toContain(`StandardOutput=append:${scratch}/state/${WATCHDOG}-pilot/watchdog.log`)
+    expect(report.lines[1]).toContain(`Description=Schedule for ${WATCHDOG}-pilot.service`)
+    expect(report.lines.slice(2)).toEqual([
+      `write ${unitFile(host, `${WATCHDOG}-pilot.service`)}`,
+      `write ${unitFile(host, `${WATCHDOG}-pilot.timer`)}`,
+      'systemctl --user daemon-reload',
+      `systemctl --user enable --now ${WATCHDOG}-pilot.timer`,
+    ])
+  })
+
+  it('lets --agent-chat-home beat the shell AGENT_CHAT_HOME, resolved to an absolute path', () => {
+    process.env.AGENT_CHAT_HOME = '/srv/u/.agent-chat-other'
+    const { systemctl } = fakeSystemctl()
+    const report = watchdogInstallOn(linuxHost(systemctl, true), {
+      agentChatHome: '/srv/u/x/../.agent-chat-pilot',
+    })
+    expect(report.lines[0]).toContain(`Environment="AGENT_CHAT_HOME=${PILOT}"`)
+    expect(report.lines[0]).not.toContain('agent-chat-other')
+    expect(report.lines.at(-1)).toBe(`systemctl --user enable --now ${WATCHDOG}-pilot.timer`)
+  })
+
+  it('keeps the base names but bakes the home when the flag names the default home', () => {
+    const { systemctl } = fakeSystemctl()
+    const report = watchdogInstallOn(linuxHost(systemctl, true), { agentChatHome: DEFAULT_HOME })
+    expect(report.lines[0]).toContain(`Environment="AGENT_CHAT_HOME=${DEFAULT_HOME}"`)
+    expect(report.lines.at(-1)).toBe(`systemctl --user enable --now ${WATCHDOG}.timer`)
+  })
+
+  it.each([
+    ['a temp dir', path.join(os.tmpdir(), 'pilot-home'), /is inside a temp dir/],
+    ['a worktree', '/repo/.worktrees/cc-1/home', /is inside a worktree/],
+  ])('refuses a --agent-chat-home inside %s, writing and calling nothing', (_, home, error) => {
+    const { systemctl, calls } = fakeSystemctl()
+    const host = linuxHost(systemctl)
+    const report = watchdogInstallOn(host, { agentChatHome: home })
+    expect(report.ok).toBe(false)
+    expect(report.errors?.[0]).toMatch(error)
+    expect(calls).toEqual([])
+    expect(fs.existsSync(host.unitDir)).toBe(false)
+  })
+
+  it('uninstalls and reports the suffixed units the flag names', () => {
+    const { systemctl, calls } = fakeSystemctl('LoadState=not-found\n')
+    const host = linuxHost(systemctl)
+    watchdogInstallOn(host, { agentChatHome: PILOT })
+    calls.length = 0
+    expect(watchdogUninstallOn(host, { agentChatHome: PILOT }).ok).toBe(true)
+    expect(calls).toEqual([`--user disable --now ${WATCHDOG}-pilot.timer`, '--user daemon-reload'])
+    expect(fs.readdirSync(host.unitDir)).toEqual([])
+    expect(watchdogStatusOn(host, { agentChatHome: PILOT }).lines).toEqual([
+      `systemd ${WATCHDOG}-pilot.service not loaded`,
+      `systemd ${WATCHDOG}-pilot.timer not loaded`,
+    ])
+  })
+
+  it('renders the darwin plist byte-identical to main when neither variable is set', () => {
+    const { launchctl } = fakeLaunchctl()
+    expect(watchdogInstallOn(darwinHost(launchctl, true)).lines[0]).toBe(mainPlist())
+  })
+
+  it('keeps the darwin label and plist path on every home input', () => {
+    process.env.AGENT_CHAT_HOME = '/srv/u/.agent-chat-other'
+    process.env.ACTIVE_ROOT = PILOT_ROOT
+    const target = { agentChatHome: PILOT }
+    const { launchctl, calls } = fakeLaunchctl()
+    const report = watchdogInstallOn(darwinHost(launchctl, true), target)
+    expect(report.lines[0]).toContain('<string>dev.hjewkes.agent-chat-seat-watchdog</string>')
+    expect(report.lines).toContain(`launchctl bootstrap gui/501 ${watchdogPlistPath()}`)
+    calls.length = 0
+    watchdogUninstallOn(darwinHost(launchctl), target)
+    const service = 'gui/501/dev.hjewkes.agent-chat-seat-watchdog'
+    expect(calls).toEqual([`print ${service}`, `bootout ${service}`, `disable ${service}`])
+    expect(watchdogStatusOn(darwinHost(launchctl), target).lines[1]).toBe(`plist ${watchdogPlistPath()}`)
   })
 })

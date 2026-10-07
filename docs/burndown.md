@@ -224,7 +224,16 @@ The burndown tick is `agent-chat-burndown.{service,timer}`; the seat watchdog
 (`agent-chat seats watchdog-install|watchdog-uninstall|watchdog-status`) is
 `agent-chat-seat-watchdog.{service,timer}`. The service carries the plist's environment as
 `Environment=` lines, `PATH` included, since the user manager's own `PATH` lacks `~/.local/bin`
-and node's dir. Logs keep their file names under `$XDG_STATE_HOME` (else `~/.local/state`),
+and node's dir. That environment is `HOME` and `PATH`, plus `AGENT_CHAT_HOME` and `ACTIVE_ROOT`
+when the installing shell sets them. The watchdog verbs take `--agent-chat-home <dir>`, which
+wins over the shell's `AGENT_CHAT_HOME`. It is resolved to an absolute path, and install refuses
+one inside a temp dir or a worktree. On Linux a home other than `~/.agent-chat` suffixes the
+watchdog's unit names with its basename, minus leading dots and an `agent-chat-` prefix, so a
+pilot and a default install can coexist: `~/.agent-chat-pilot` installs
+`agent-chat-seat-watchdog-pilot.{service,timer}`, while `~/.agent-chat` keeps
+`agent-chat-seat-watchdog.{service,timer}`. Pass the same flag or shell value to
+`watchdog-uninstall` and `watchdog-status` to address those units. The launchd label and plist
+path never change. Logs keep their file names under `$XDG_STATE_HOME` (else `~/.local/state`),
 for example `~/.local/state/agent-chat-burndown/burndown.log`. `install` runs `daemon-reload`
 and `enable --now` on the timer; the timer's elapsed `OnBootSec` starts one tick at once, as
 launchd's kickstart does. `uninstall` runs `disable --now`, removes the units and reloads;

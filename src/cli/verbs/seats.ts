@@ -349,12 +349,15 @@ export const seatsWatchdogVerb = defineVerb({
 
 export { watchdogInstall } from './watchdog-job.js'
 
+const AGENT_CHAT_HOME_FLAG =
+  'the home the job runs against, over $AGENT_CHAT_HOME; on Linux a non-default home suffixes the unit names'
+
 export const seatsWatchdogInstallVerb = defineVerb({
   name: 'seats.watchdog-install',
   description:
     'install the launchd job (systemd --user units on Linux) that runs `seats watchdog` four times an hour; ' +
     'the first run waits for the next scheduled minute',
-  args: z.object({ dryRun: z.boolean().optional() }),
+  args: z.object({ dryRun: z.boolean().optional(), agentChatHome: z.string().optional() }),
   result: Report,
   cli: {
     options: {
@@ -362,30 +365,33 @@ export const seatsWatchdogInstallVerb = defineVerb({
         long: '--dry-run',
         description: 'print the plist and launchctl calls (units and systemctl calls on Linux); load nothing',
       },
+      agentChatHome: { long: '--agent-chat-home', description: AGENT_CHAT_HOME_FLAG },
     },
   },
-  async run({ dryRun }) {
-    return watchdogInstallOn(systemHost(dryRun === true))
+  async run({ dryRun, agentChatHome }) {
+    return watchdogInstallOn(systemHost(dryRun === true), { agentChatHome })
   },
 })
 
 export const seatsWatchdogUninstallVerb = defineVerb({
   name: 'seats.watchdog-uninstall',
   description: 'stop the watchdog job and keep it from starting at login; on Linux, also remove its units',
-  args: z.object({}),
+  args: z.object({ agentChatHome: z.string().optional() }),
   result: Report,
-  async run() {
-    return watchdogUninstallOn(systemHost())
+  cli: { options: { agentChatHome: { long: '--agent-chat-home', description: AGENT_CHAT_HOME_FLAG } } },
+  async run({ agentChatHome }) {
+    return watchdogUninstallOn(systemHost(), { agentChatHome })
   },
 })
 
 export const seatsWatchdogStatusVerb = defineVerb({
   name: 'seats.watchdog-status',
   description: 'launchd state of the watchdog job, or its systemd units on Linux',
-  args: z.object({}),
+  args: z.object({ agentChatHome: z.string().optional() }),
   result: Report,
-  async run() {
-    return watchdogStatusOn(systemHost())
+  cli: { options: { agentChatHome: { long: '--agent-chat-home', description: AGENT_CHAT_HOME_FLAG } } },
+  async run({ agentChatHome }) {
+    return watchdogStatusOn(systemHost(), { agentChatHome })
   },
 })
 

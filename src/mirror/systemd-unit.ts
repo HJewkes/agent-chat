@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+import path from 'node:path'
 import type { JobSpec, PlistSchedule } from './plist.js'
 
 /** Unit names drop the launchd reverse-DNS prefix, as active-work's `active-work.service` does. */
@@ -5,6 +7,24 @@ const LABEL_PREFIX = 'dev.hjewkes.'
 
 export const unitName = (label: string): string =>
   label.startsWith(LABEL_PREFIX) ? label.slice(LABEL_PREFIX.length) : label
+
+/** A home's basename as a unit-name token: no leading dots or `agent-chat-`, only systemd-safe characters. */
+function homeToken(home: string): string {
+  const token = path
+    .basename(home)
+    .replace(/^\.+/, '')
+    .replace(/^agent-chat-/, '')
+    .replace(/[^A-Za-z0-9_-]+/g, '_')
+  return token !== '' ? token : createHash('sha256').update(home).digest('hex').slice(0, 8)
+}
+
+/**
+ * Pure: `base` for the default home, else `base-<token>`, so a second home's units sit beside the
+ * default's instead of overwriting them (CC-819).
+ */
+export function unitNameForHome(base: string, home: string, defaultHome: string): string {
+  return path.resolve(home) === path.resolve(defaultHome) ? base : `${base}-${homeToken(path.resolve(home))}`
+}
 
 /** The units for one job; `timer` is absent for a kept-alive service. */
 export interface RenderedUnits {
@@ -73,8 +93,7 @@ function renderTimer(name: string, schedule: Exclude<PlistSchedule, { kind: 'kee
 }
 
 /** Pure: the systemd --user units equivalent to `renderPlist(spec)`; like the plist, they hold no token. */
-export function renderUnits(spec: JobSpec): RenderedUnits {
-  const name = unitName(spec.label)
+export function renderUnits(spec: JobSpec, name = unitName(spec.label)): RenderedUnits {
   const { schedule } = spec
   if (schedule.kind === 'keep-alive') return { name, service: renderService(spec, false) }
   return { name, service: renderService(spec, true), timer: renderTimer(name, schedule) }
