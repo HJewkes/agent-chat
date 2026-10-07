@@ -31,6 +31,8 @@ export interface SpawnFrame {
   worktree?: string
   /** The tier the plan placed the task in (CC-774); the broker writes it on the `dispatched` row. */
   tier?: number
+  /** CC-802: the dispatch row's spawner; this frame goes out on the CLI socket, which holds no session. */
+  spawnedAs: 'burndown'
 }
 
 export interface SpawnSpec {
@@ -57,6 +59,7 @@ export function spawnFrame(s: SpawnSpec): SpawnFrame {
     surface: 'headless',
     briefing: s.initiative,
     tags: ['burndown', `task:${s.taskId}`],
+    spawnedAs: 'burndown',
     ...(s.predecessor === undefined ? {} : { predecessor: s.predecessor }),
     ...(s.worktree === undefined ? {} : { worktree: s.worktree }),
     ...(s.tier === undefined ? {} : { tier: s.tier }),

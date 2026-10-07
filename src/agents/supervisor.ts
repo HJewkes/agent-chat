@@ -409,6 +409,8 @@ export interface SpawnRequest {
   returnContract?: 'none'
   /** CC-774: the burndown plan's tier for the task, written on the `dispatched` row. */
   tier?: number
+  /** CC-802: the automation a human-requested spawn runs for; the `dispatched` row's spawner. */
+  spawnedAs?: 'burndown' | 'shepherd'
   /** Empty for a human-initiated spawn; otherwise the requesting agent's id. */
   parentAgentId?: string
   requestedBy: string
@@ -1719,6 +1721,7 @@ export class Supervisor implements TeleportHost {
       model: profile.model,
       predecessor: req.predecessor ?? null,
       ...(req.tier === undefined ? {} : { tier: req.tier }),
+      ...(req.spawnedAs === undefined ? {} : { spawnedAs: req.spawnedAs }),
     }
     if (verdict.kind === 'pending') {
       this.awaitLateAttach(req, agentId, handle, site, launchedAt, announce, facts)

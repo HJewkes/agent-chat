@@ -34,6 +34,8 @@ export interface DispatchRun {
   predecessor: string | null
   /** The burndown plan's class-of-service tier (CC-774); absent for a hand spawn. */
   tier?: number
+  /** CC-802: the owning seat, written when the spawner is an automation rather than the seat. */
+  seat?: string
 }
 
 export interface DispatchUsage {
@@ -76,7 +78,7 @@ interface BrokerRow<Outcome extends string> {
   predecessor: string | null
 }
 
-export type DispatchedRow = BrokerRow<typeof DISPATCHED> & { tier?: number }
+export type DispatchedRow = BrokerRow<typeof DISPATCHED> & { tier?: number; seat?: string }
 
 export interface RetiredRow extends BrokerRow<typeof RETIRED> {
   session_id: string | null
@@ -121,6 +123,7 @@ function brokerRow<Outcome extends string>(
 export const dispatchedRow = (run: DispatchRun): DispatchedRow => ({
   ...brokerRow(run, DISPATCHED, null, null),
   ...(run.tier === undefined ? {} : { tier: run.tier }),
+  ...(run.seat === undefined ? {} : { seat: run.seat }),
 })
 
 /** Broker-written end state for a dispatched agent that never attached; no seat exists to write it. */
