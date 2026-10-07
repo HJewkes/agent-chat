@@ -138,7 +138,9 @@ export function apiRoutes(core: BrokerCore): Hono {
     if (msgId === null) return badRequest(c, 'msgId is required')
     if (text === null || text === '') return badRequest(c, 'text is required')
 
-    const channel = (body as { channel?: unknown }).channel ?? 'dashboard'
+    // Only an absent channel defaults; an explicit null is refused, as the socket refuses it (CC-831).
+    const given = (body as { channel?: unknown }).channel
+    const channel = given === undefined ? 'dashboard' : given
     if (!isAnswerChannel(channel))
       return badRequest(c, `channel must be one of ${ANSWER_CHANNELS.join(', ')}`)
 
