@@ -3,6 +3,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { advance, applyActions, claimKey, type Action } from '../agents/burndown/advance.js'
+import { execute } from '../agents/burndown/execute.js'
+import { orphanRefusal } from '../agents/burndown/plan.js'
+import { stepsForActions, type StepContext } from '../agents/burndown/steps.js'
 import { ladderActions, type LadderDeps } from '../agents/burndown/ladder.js'
 import { EMPTY_LEDGER, readLedger, writeLedger, type Claim, type Ledger } from '../agents/burndown/ledger.js'
 import { seatEvents } from '../agents/burndown/seat-events.js'
@@ -221,6 +224,91 @@ describe('ladderActions rung 2 (CC-698)', () => {
 
     expect(after.claims[0]?.stalledReason).toBeDefined()
     expect(after.ladder?.[KEY]?.releases).toBeUndefined()
+  })
+})
+
+describe('a refused retire under a release (CC-698)', () => {
+  const refuse = async (): Promise<{ ok: false; reason: string }> => ({ ok: false, reason: 'worktree busy' })
+
+  it.each([
+    ['whole-task', undefined],
+    ['slice', 'a'],
+  ])(
+    'keeps the %s claim held and live, spends the budget, and parks retry-spent on the third refusal',
+    async (_, slice) => {
+      const c = claim({ slice, phaseAt: SECOND_PHASE })
+      const key = `CC-1#${slice ?? ''}`
+      const release: Action = {
+        kind: 'release',
+        key: { taskId: 'CC-1', slice },
+        requeue: slice !== undefined,
+        code: 'phase-timeout',
+      }
+      let ledger = withClaim(c, { liveness: LIVENESS })
+      const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'release-retire-')), 'ledger.json')
+
+      const afterOne = await runRelease(ledger, release, file)
+      ledger = afterOne
+      ledger = await runRelease(ledger, release, file)
+      const afterThree = await runRelease(ledger, release, file)
+
+      expect(afterOne.claims).toMatchObject([
+        {
+          phase: 'implementing',
+          unretired: expect.arrayContaining([expect.objectContaining({ name: 'bd-cc-1' })]),
+        },
+      ])
+      expect(afterOne.releases).toBeUndefined()
+      expect(afterOne.ladder).toBeUndefined()
+      expect(afterOne.liveness?.[`${key}|retire:bd-cc-1`]).toBeDefined()
+      expect(afterThree.claims[0]).toMatchObject({ stallCode: 'retry-spent', phase: 'implementing' })
+      expect(afterThree.releases).toBeUndefined()
+    },
+  )
+
+  async function runRelease(ledger: Ledger, release: Action, file: string): Promise<Ledger> {
+    const { steps } = stepsForActions([release], ledger, {} as StepContext, 0)
+    const done = await execute(steps, ledger, {
+      ledgerFile: file,
+      spawn: async () => ({ ok: true }),
+      retire: refuse,
+      register: () => ({ ok: true }) as never,
+      prHead: () => undefined,
+      log: () => {},
+      now: NOW,
+    })
+    return done.ledger
+  }
+})
+
+describe('the orphan check and a released branch (CC-698)', () => {
+  const exists = (): string => 'branch agent-chat/bd-cc-1 already exist with no ledger claim'
+  const at = { initiative: 'demo', repo: '/repo' }
+
+  it('refuses a branch no ledger record explains', () => {
+    expect(orphanRefusal(at, 'CC-1', 'bd-implementer', exists, EMPTY_LEDGER)).toMatchObject({
+      kind: 'orphan',
+    })
+  })
+
+  it('lets the branch a release kept be adopted by the re-dispatch', () => {
+    const ledger = {
+      ...EMPTY_LEDGER,
+      ladder: {
+        [KEY]: { respawns: 1, releases: 1, lastAt: NOW.toISOString(), branch: 'agent-chat/bd-cc-1' },
+      },
+    }
+
+    expect(orphanRefusal(at, 'CC-1', 'bd-implementer', exists, ledger)).toBeUndefined()
+  })
+
+  it('still refuses when the recorded branch is another one', () => {
+    const ledger = {
+      ...EMPTY_LEDGER,
+      ladder: { [KEY]: { respawns: 1, releases: 1, lastAt: NOW.toISOString(), branch: 'agent-chat/other' } },
+    }
+
+    expect(orphanRefusal(at, 'CC-1', 'bd-implementer', exists, ledger)).toMatchObject({ kind: 'orphan' })
   })
 })
 

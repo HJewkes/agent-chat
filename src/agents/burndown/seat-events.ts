@@ -134,7 +134,10 @@ export function seatEvents(before: Ledger, after: Ledger, spawnResults: readonly
   }
   for (const r of releasesSince(before, after)) {
     if (r.seat === undefined) continue
-    const detail = r.branch === undefined ? 'no branch was readable' : `branch ${r.branch} kept`
+    const detail =
+      r.branch === undefined
+        ? 'no branch was readable'
+        : `branch ${r.branch} kept on origin if pushed; a clean pushed worktree may lose its local copy`
     ;(out[r.seat] ??= []).push({
       kind: 'released',
       taskId: r.taskId,

@@ -14,6 +14,7 @@ import {
   type Task,
 } from './eligibility.js'
 import { backoffHeld } from './backoff.js'
+import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import { heldClaims, laneClaims, readySlices, type Ledger } from './ledger.js'
 import { worktreePathFor } from './trust-gate.js'
 
@@ -231,6 +232,7 @@ function nextWork(
         task.id,
         profile,
         inputs.orphan,
+        inputs.ledger,
       )
     if (refusal === undefined)
       return { work: { taskId: task.id, profile }, refusals: [...blocked, ...refusals] }
@@ -256,9 +258,13 @@ export function orphanRefusal(
   taskId: string,
   profile: string,
   orphan: PlanInputs['orphan'],
+  ledger?: Ledger,
 ): Refusal | undefined {
   if (profile === PLANNER_PROFILE || at.repo === undefined || orphan === undefined) return undefined
-  const reason = orphan(at.repo, agentNameFor(taskId, undefined, at.prefix))
+  const name = agentNameFor(taskId, undefined, at.prefix)
+  // The branch a ladder release kept (CC-698) is the prior attempt, not an orphan: the re-dispatch adopts it.
+  if (ledger?.ladder?.[`${taskId}#`]?.branch === `${BRANCH_PREFIX}${name}`) return undefined
+  const reason = orphan(at.repo, name)
   return reason === undefined
     ? undefined
     : { initiative: at.initiative, task: taskId, kind: 'orphan', reason }

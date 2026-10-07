@@ -653,7 +653,7 @@ function describe(step: Step): string {
   if (step.kind === 'retire')
     return step.names.length === 0
       ? `would clear ${claimKey(step.key)}'s unretired agents, all since retired by hand`
-      : `would retire ${step.names.join(', ')}`
+      : `would retire ${step.names.join(', ')}${step.then === undefined ? '' : `, then ${step.then.map(a => a.kind).join(', ')}`}`
   if (step.kind === 'register')
     return `would register ${targetRef(step.registration.target)} with Shepherd for ${claimKey(step.key)}`
   if (step.kind === 'ledger')

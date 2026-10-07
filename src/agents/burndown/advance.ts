@@ -82,7 +82,14 @@ export type Action =
   | { kind: 'release'; key: ClaimKey; branch?: string; requeue: boolean; code: StallCode }
 
 /** Retire in the order given; `held` records a refusal on the held claim rather than a done one (CC-660). */
-export type RetireAction = { kind: 'retire'; key: ClaimKey; names: string[]; held?: true }
+export type RetireAction = {
+  kind: 'retire'
+  key: ClaimKey
+  names: string[]
+  held?: true
+  /** Applied only once every name retired, so a refused retire leaves the claim as it was (CC-698). */
+  then?: Action[]
+}
 
 export const claimKey = (c: ClaimKey): string => `${c.taskId}#${c.slice ?? ''}`
 

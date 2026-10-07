@@ -114,6 +114,7 @@ export async function execute(steps: Step[], start: Ledger, deps: ExecuteDeps): 
         step.held === true ? spendHeldRetire(recorded, step, retired.left, deps.now) : undefined
       ledger = budgeted?.ledger ?? recorded
       writeLedger(deps.ledgerFile, ledger)
+      if (step.then !== undefined && retired.left.length === 0) commit(step.then)
       lines.push(...retired.lines, ...(budgeted?.lines ?? []))
     } else if (step.kind === 'register') lines.push(registerOne(step, { ledger, save }, deps))
     else lines.push(await spawnOne(step, { start, ledger, save }, deps))

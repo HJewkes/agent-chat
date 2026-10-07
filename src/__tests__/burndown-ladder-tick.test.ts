@@ -142,7 +142,11 @@ function fakeBroker(spawns: SpawnReply[], retires: SpawnReply[] = []): Fake {
     spawn: async frame => {
       fake.frames.push(frame)
       const reply = nextReply(spawns, fake.frames.length)
-      if (reply.ok) fake.agents.push(row(frame.name, 'live', worktree()))
+      if (reply.ok) {
+        // A name spawned again replaces its retired row, as the broker's roster does.
+        fake.agents = fake.agents.filter(a => a.name !== frame.name)
+        fake.agents.push(row(frame.name, 'live', worktree()))
+      }
       return reply.ok ? { ok: true, agentId: `id-${frame.name}` } : reply
     },
     retire: async name => {
@@ -391,34 +395,52 @@ describe('a refused rung-1 retire (CC-660 E1)', () => {
 const releasedSends = (fake: Fake): string[] =>
   fake.sends.flatMap(text => text.split('\n').filter(l => l.startsWith('released ')))
 
-/** DM-1 as a fresh claim again, the way a dispatch after the release backoff would leave it, its ledger records kept. */
-function redispatched(fake: Fake, minutes: number): void {
-  const held = ledger()
-  const again: Claim = { ...timedOutClaimShape(), phaseAt: at(minutes - 300).toISOString() }
-  writeLedger(burndownLedgerPath(), { ...held, claims: [again] })
-  fake.agents.find(a => a.name === 'st-dm-1')!.state = 'live'
-}
-
 describe('rung 2, release with the branch kept (CC-698)', () => {
-  it('respawns, then releases, then tells the owner once, over four ticks with the ledger re-read each time', async () => {
+  it('keeps the claim held and both agents live while the release retire is refused, then parks it retry-spent', async () => {
+    const fake = fakeBroker([{ ok: true }])
+    for (const minutes of [0, 10, 20]) await tickAt(fake, minutes)
+    fake.broker.retire = async name => {
+      fake.retires.push(name)
+      return { ok: false, reason: 'worktree holds unmerged work' }
+    }
+
+    const afterFirst = (await tickAt(fake, 320), { claim: heldClaim(), live: liveAgents(fake) })
+    for (const minutes of [330, 340]) await tickAt(fake, minutes)
+
+    expect(afterFirst.claim).toMatchObject({
+      phase: 'implementing',
+      unretired: expect.arrayContaining([expect.objectContaining({ name: 'st-dm-1-s1' })]),
+    })
+    expect(afterFirst.live).toEqual(['st-dm-1-s1'])
+    expect(ledger().releases).toBeUndefined()
+    expect(heldClaim()).toMatchObject({ stallCode: 'retry-spent' })
+    expect(stalledSends(fake)).toHaveLength(1)
+    expect(ledger().liveness?.['DM-1#|retire:st-dm-1-s1']).toBeDefined()
+  })
+
+  it('respawns, releases, re-dispatches onto the kept branch once the backoff ends, then tells the owner once, re-reading the ledger every tick', async () => {
     const fake = fakeBroker([{ ok: true }])
 
     for (const minutes of [0, 10, 20]) await tickAt(fake, minutes)
     const respawned = { names: names(fake), claim: heldClaim() }
     await tickAt(fake, 320)
     const released = { claim: heldClaim(), ladder: ledger().ladder?.['DM-1#'], releases: ledger().releases }
-    redispatched(fake, 330)
     await tickAt(fake, 330)
+    const heldBack = { names: names(fake), claim: heldClaim() }
+    for (const minutes of [340, 350, 600]) await tickAt(fake, minutes)
 
     expect(respawned.names).toEqual(['st-dm-1-s1'])
     expect(respawned.claim).toMatchObject({ phase: 'implementing', agentName: 'st-dm-1-s1' })
     expect(released.claim).toBeUndefined()
     expect(released.ladder).toMatchObject({ respawns: 1, releases: 1, branch: 'agent-chat/st-dm-1' })
     expect(released.releases?.['DM-1']).toMatchObject({ n: 1 })
+    expect(heldBack).toEqual({ names: ['st-dm-1-s1'], claim: undefined })
+    expect(names(fake)).toEqual(['st-dm-1-s1', 'st-dm-1'])
+    expect(fake.frames[1]?.brief).toContain('A previous attempt left branch agent-chat/st-dm-1')
     expect(heldClaim()).toMatchObject({ stallCode: expect.any(String), stalledClass: 'stalled' })
     expect(heldClaim()?.stalledReason).toMatch(/ladder exhausted after a respawn/)
     expect(stalledSends(fake)).toHaveLength(1)
-    expect(ledger().ladder?.['DM-1#']).toMatchObject({ releases: 1, owner: at(330).toISOString() })
+    expect(ledger().ladder?.['DM-1#']).toMatchObject({ releases: 1, owner: at(600).toISOString() })
   })
 
   it('writes no branch deletion, worktree removal or remote branch delete, and keeps the branch', async () => {

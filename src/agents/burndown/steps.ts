@@ -178,10 +178,13 @@ const stallUpdate = (key: ClaimKey, reason: string, cls: ExceptionClass): Action
   patch: { stalledReason: reason, stalledClass: cls },
 })
 
-/** A release is its ledger write, then the retire of every agent on the claim as it stood before the write. */
+/**
+ * A release retires every agent on the claim first, held so a refusal is recorded on the claim and
+ * spends its liveness budget; the ledger write rides along and lands only when all of them retired.
+ */
 function releaseSteps(a: Extract<Action, { kind: 'release' }>, ledger: Ledger): Step[] {
   const claim = heldClaims(ledger).find(c => sameClaim(c, a.key))
-  return claim === undefined ? [ledgerStep(a)] : [ledgerStep(a), retireAll(claim)]
+  return claim === undefined ? [ledgerStep(a)] : [{ ...retireAll(claim), held: true, then: [a] }]
 }
 
 function plainSteps(actions: Action[], ledger: Ledger): Step[] {
