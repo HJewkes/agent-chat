@@ -123,6 +123,9 @@ export interface EventStore {
   /** A still-open approval request, with who is blocked on it. Channel rows age out; hook rows do not. */
   openApproval(msgId: string): OpenApproval | undefined
 
+  /** Whether `msgId` names an approval request, whatever its age, meta or state (CC-831). */
+  isApprovalRequest(msgId: string): boolean
+
   /** The questions this session still has outstanding, not just how many. */
   openQuestions(actor: string): QueueItem[]
 
