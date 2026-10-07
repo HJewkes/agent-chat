@@ -91,6 +91,8 @@ const Claim = z.object({
   namePrefix: z.string().optional(),
   /** Event kinds (`kind:code` for a coded stall) already delivered to the claim's seat, so a delivered event is never re-sent. */
   notified: z.array(z.string()).optional(),
+  /** The fact fingerprint of each delivered stall notice by its `notified` key; outlives that entry so an unchanged reopen stays quiet (CC-641). */
+  noticeFacts: z.record(z.string(), z.string()).optional(),
   /** Set while the claim's live agent shows no progress in its transcript; the tick opens, refreshes and closes it (CC-654). */
   finding: z
     .object({
