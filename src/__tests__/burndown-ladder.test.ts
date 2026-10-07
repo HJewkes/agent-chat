@@ -569,14 +569,23 @@ describe('the brake (CC-699)', () => {
     expect(kinds(fourth.actions)).toEqual(['release'])
   })
 
-  it('still stalls a claim past rung 2 for its owner while braked', () => {
+  it('still stalls a claim past rung 2 for its owner while braked, and holds a first occurrence beside it', () => {
     const c = claim({ phaseAt: SECOND_PHASE })
+    const [, other] = trio() as [Claim, Claim]
+    const before: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [c, other],
+      ladder: releasedBefore(FIRST_PHASE),
+      brake: braked(10),
+    }
 
-    const { after } = tick([c], withClaim(c, { ladder: releasedBefore(FIRST_PHASE), brake: braked(10) }))
+    const { actions, after } = tick([c, other], before)
 
     expect(after.claims[0]?.stalledReason).toMatch(/^phase-timeout: ladder exhausted/)
     expect(after.ladder?.[KEY]).toMatchObject({ releases: 1, owner: NOW.toISOString() })
-    expect(after.brake?.at).toHaveLength(3)
+    expect(after.ladder?.['CC-2#']).toBeUndefined()
+    expect(kinds(actions)).not.toContain('retire')
+    expect(after.brake?.at).toHaveLength(4)
   })
 
   it('does not count a braked occurrence toward the claim, so its next one after the window is rung 1', () => {
