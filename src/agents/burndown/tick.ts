@@ -2,7 +2,7 @@ import os from 'node:os'
 import { burndownConfigPath, burndownLedgerPath } from '../../paths.js'
 import { activeWorkRoot } from '../active-work.js'
 import { gateAccount, type AccountReading } from './budget-gate.js'
-import { classOf, routeOf, type RouteConfig } from './exception.js'
+import { routeOf, type RouteConfig } from './exception.js'
 import { backoffHeld } from './backoff.js'
 import { taskRefusal, type Initiative } from './eligibility.js'
 import { heldClaims, isStalled, readLedger, type Claim, type DeciderState, type Ledger } from './ledger.js'
@@ -14,7 +14,7 @@ import { defaultAutonomyRoot, loadCharterPools, type CharterPool } from './polic
 import { expandHome } from './seat-dispatch.js'
 import { diskSeatDeps, loadSeats, planSeats, type LoadedSeats, type SeatPlanDeps } from './seat-tick.js'
 import { accountDir, loadTickConfig, readInitiatives, readReadings, readTasks } from './source.js'
-import { currentTriage } from './triage.js'
+import { currentTriage, exceptionOf } from './triage.js'
 import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
 
 /** The dry-run tick over the live files, and its two renderings: `burndown plan` and `burndown status`. */
@@ -159,10 +159,11 @@ export function renderPlan(result: Plan, now: Date): string[] {
 const findingSuffix = (c: Claim): string =>
   c.finding === undefined ? '' : ` FINDING ${c.finding.kind} (${c.finding.reason}, since ${c.finding.since})`
 
-/** A stall's class, the dial's route for it, and its triage job's outcome once one exists (CC-649). */
+/** A stall's or open finding's class, the dial's route for it, and its triage job's outcome once one exists (CC-649). */
 function stallSuffix(c: Claim, route: RouteConfig): string {
-  if (c.stalledReason === undefined) return ''
-  const cls = classOf(c)
+  const exception = exceptionOf(c)
+  if (exception === undefined) return ''
+  const { cls } = exception
   const triage = currentTriage(c)
   const job = triage === undefined ? '' : `, triage ${triage.name ?? '-'} ${triage.outcome}`
   return ` (class ${cls ?? 'none'}, route ${routeOf(cls, route, true).route}${job})`
