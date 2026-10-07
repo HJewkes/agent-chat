@@ -69,12 +69,15 @@ export type Action =
       context?: SpawnContext
     }
   /** Retire in the order given: successors and reviewers first, the original agent last (CC-141). */
-  | { kind: 'retire'; key: ClaimKey; names: string[] }
+  | RetireAction
   | { kind: 'add'; claims: Claim[] }
   /** Hands the claim's PR to Shepherd, after the update that moves it to `shepherding`. */
   | { kind: 'register'; key: ClaimKey; registration: Registration }
   /** Writes the claim's triage ladder record (CC-660). */
   | { kind: 'ladder'; key: ClaimKey; record: LadderRecord }
+
+/** Retire in the order given; `held` records a refusal on the held claim rather than a done one (CC-660). */
+export type RetireAction = { kind: 'retire'; key: ClaimKey; names: string[]; held?: true }
 
 export const claimKey = (c: ClaimKey): string => `${c.taskId}#${c.slice ?? ''}`
 
@@ -102,6 +105,7 @@ function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
   if (claim.phase === 'done' || claim.stalledReason !== undefined) return []
   if (obs.spend !== undefined && capVerdict(obs.spend.claim, obs.spend.cap) === 'over')
     return overBudget(claim, obs.spend)
+  if (claim.respawn !== undefined) return []
   const actions = STEPS[claim.phase]?.(claim, obs, now) ?? []
   if (actions.length > 0 || !isStalled(claim, now)) return actions
   return [
@@ -283,7 +287,7 @@ function spawn(claim: Claim, request: SpawnRequest, nextPhase: AgentPhase, patch
   return [update(claim, intent), { kind: 'spawn', key: keyOf(claim), ...request }]
 }
 
-export function retireAll(claim: Claim): Action {
+export function retireAll(claim: Claim): RetireAction {
   const names = [
     ...new Set(
       [...(claim.spawned ?? [])].reverse().concat(agentNameFor(claim.taskId, claim.slice, claim.namePrefix)),

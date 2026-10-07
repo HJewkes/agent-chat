@@ -33,6 +33,7 @@ const claim = (patch: Partial<Claim> = {}): Claim => ({
 const deps = (over: Partial<LadderDeps> = {}): LadderDeps => ({
   enabled: true,
   diffSummary: () => DIFF,
+  live: () => true,
   now: NOW,
   ...over,
 })
@@ -58,45 +59,67 @@ const respawned = (occurrence: string): NonNullable<Ledger['ladder']> => ({
 const kinds = (actions: Action[]): string[] => actions.map(a => a.kind)
 
 describe('ladderActions rung 1', () => {
-  it('turns a first phase-timeout stall into a retire, then a stall successor, and counts the respawn', () => {
+  it('marks a first phase-timeout stall and retires its agents newest first, without counting a respawn yet', () => {
     const c = claim({ spawned: ['bd-cc-1', 'bd-cc-1-s1'], attempt: 1 })
 
     const { actions, after } = ladder(c, withClaim(c), timedOut(c))
 
-    const retire = actions.findIndex(a => a.kind === 'retire')
-    const spawn = actions.findIndex(a => a.kind === 'spawn')
-    expect(retire).toBeGreaterThanOrEqual(0)
-    expect(retire).toBeLessThan(spawn)
-    expect(actions[retire]).toMatchObject({ names: ['bd-cc-1-s1', 'bd-cc-1'] })
-    expect(actions[spawn]).toMatchObject({
+    expect(kinds(actions)).not.toContain('spawn')
+    expect(actions.find(a => a.kind === 'retire')).toMatchObject({
+      names: ['bd-cc-1-s1', 'bd-cc-1'],
+      held: true,
+    })
+    expect(after.claims[0]).toMatchObject({ respawn: { code: 'phase-timeout', occurrence: FIRST_PHASE } })
+    expect(after.claims[0]?.stalledReason).toBeUndefined()
+    expect(after.ladder?.[KEY]).toMatchObject({ respawns: 0, occurrence: FIRST_PHASE })
+  })
+
+  it('spawns the stall successor on a later tick once every agent is retired, clearing the mark', () => {
+    const c = claim({ attempt: 1, respawn: { code: 'phase-timeout', occurrence: FIRST_PHASE } })
+
+    const { actions, after } = ladder(c, withClaim(c), [], { live: () => false })
+
+    expect(kinds(actions)).toEqual(['update', 'spawn'])
+    expect(actions[1]).toMatchObject({
       role: 'successor',
       context: { kind: 'stall', code: 'phase-timeout', diffSummary: DIFF },
     })
     expect(after.claims[0]).toMatchObject({ phase: 'spawning', attempt: 2 })
-    expect(after.claims[0]?.stalledReason).toBeUndefined()
-    expect(after.ladder?.[KEY]).toMatchObject({ respawns: 1, occurrence: FIRST_PHASE })
+    expect(after.claims[0]?.respawn).toBeUndefined()
+  })
+
+  it('retries the retire and holds the spawn while an agent is still live', () => {
+    const c = claim({
+      spawned: ['bd-cc-1', 'bd-cc-1-s1'],
+      respawn: { code: 'phase-timeout', occurrence: FIRST_PHASE },
+    })
+
+    const { actions } = ladder(c, withClaim(c), [], { live: name => name === 'bd-cc-1' })
+
+    expect(actions).toEqual([{ kind: 'retire', key: { taskId: 'CC-1' }, names: ['bd-cc-1'], held: true }])
   })
 
   it('ignores attempt and reviewRound when choosing the rung', () => {
     const c = claim({ attempt: 2, reviewRound: 1 })
 
-    const { actions } = ladder(c, withClaim(c), timedOut(c))
+    const { after } = ladder(c, withClaim(c), timedOut(c))
 
-    expect(actions.find(a => a.kind === 'spawn')).toMatchObject({ context: { kind: 'stall' } })
-  })
-
-  it('retries rung 1 when the same occurrence comes back after a refused respawn', () => {
-    const c = claim()
-    const ledger = withClaim(c, { ladder: respawned(FIRST_PHASE) })
-
-    const { actions, after } = ladder(c, ledger, timedOut(c))
-
-    expect(kinds(actions)).toContain('spawn')
+    expect(after.claims[0]?.respawn).toMatchObject({ code: 'phase-timeout' })
     expect(after.claims[0]?.stalledReason).toBeUndefined()
-    expect(after.ladder?.[KEY]?.owner).toBeUndefined()
   })
 
-  it('respawns on a lease-expired finding', () => {
+  it('counts the respawn once the successor has moved the claim to a new phase', () => {
+    const c = claim({ phase: 'spawning', phaseAt: SECOND_PHASE })
+    const ledger = withClaim(c, {
+      ladder: { [KEY]: { respawns: 0, lastAt: NOW.toISOString(), occurrence: FIRST_PHASE } },
+    })
+
+    const { after } = ladder(c, ledger, [])
+
+    expect(after.ladder?.[KEY]).toMatchObject({ respawns: 1, occurrence: FIRST_PHASE })
+  })
+
+  it('marks the claim on a lease-expired finding', () => {
     const c = claim()
     const finding = {
       kind: 'stalled-after-claim' as const,
@@ -109,11 +132,9 @@ describe('ladderActions rung 1', () => {
     }
     const update: Action = { kind: 'update', key: { taskId: 'CC-1' }, patch: { finding } }
 
-    const { actions } = ladder(c, withClaim(c), [update])
+    const { after } = ladder(c, withClaim(c), [update])
 
-    expect(actions.find(a => a.kind === 'spawn')).toMatchObject({
-      context: { kind: 'stall', code: 'lease-expired' },
-    })
+    expect(after.claims[0]?.respawn).toMatchObject({ code: 'lease-expired' })
   })
 })
 
@@ -214,6 +235,18 @@ describe('ladderActions with ladder.enabled false', () => {
 
     expect(out.actions).toEqual(stall)
     expect(out.notes).toEqual([`ladder off: would stall-owner ${KEY} (phase-timeout)`])
+  })
+})
+
+describe('a respawn under way when the ladder is turned off', () => {
+  it('goes to the owner rather than waiting on the ladder', () => {
+    const c = claim({ respawn: { code: 'phase-timeout', occurrence: FIRST_PHASE } })
+
+    const { actions, after } = ladder(c, withClaim(c), [], { enabled: false })
+
+    expect(kinds(actions)).not.toContain('spawn')
+    expect(after.claims[0]).toMatchObject({ stallCode: 'phase-timeout', stalledClass: 'stalled' })
+    expect(after.claims[0]?.respawn).toBeUndefined()
   })
 })
 

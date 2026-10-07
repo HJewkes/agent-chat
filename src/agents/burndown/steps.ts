@@ -129,7 +129,7 @@ const stallUpdate = (key: ClaimKey, reason: string, cls: ExceptionClass): Action
 
 function plainSteps(actions: Action[]): Step[] {
   return actions.flatMap((a): Step[] => {
-    if (a.kind === 'retire') return [{ kind: 'retire', key: a.key, names: a.names }]
+    if (a.kind === 'retire') return [a]
     if (a.kind === 'register') return [{ kind: 'register', key: a.key, registration: a.registration }]
     if (a.kind === 'spawn') return []
     return [ledgerStep(a)]

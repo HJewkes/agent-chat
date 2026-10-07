@@ -39,6 +39,7 @@ import {
   memo,
   observe,
   orphanAt,
+  rowNamed,
   worktreesUnder,
   worktreeUse,
   type Roster,
@@ -297,6 +298,12 @@ interface Decided {
   skippedSeats: SkippedSeat[]
 }
 
+/** Any row not retired may still run, and so may a name missing from a partial roster. */
+function mayRun(roster: Roster, name: string): boolean {
+  const row = rowNamed(roster, name)
+  return row === undefined ? roster.partial !== undefined : row.state !== 'retired'
+}
+
 /** Observe, advance and plan: every step the tick would take, in order, and a note for everything it would not. */
 async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now: Date): Promise<Decided> {
   const root = opts.root ?? activeWorkRoot()
@@ -329,7 +336,12 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     }),
     held,
     ledger,
-    { enabled: config.ladder.enabled, diffSummary: w => diffSummary(w, opts.exec ?? run), now },
+    {
+      enabled: config.ladder.enabled,
+      diffSummary: w => diffSummary(w, opts.exec ?? run),
+      live: name => mayRun(roster, name),
+      now,
+    },
   )
   const advanced = stepsForActions(laddered.actions, ledger, ctx, agents.agents)
   const kept = advanced.steps.flatMap(s => (s.kind === 'ledger' ? s.actions : []))

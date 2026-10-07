@@ -69,7 +69,12 @@ const Claim = z.object({
   stalledClass: z.enum(EXCEPTION_CLASSES).optional(),
   /** Set beside `stalledReason` for a stall of one of the closed kinds (CC-663). */
   stallCode: z.enum(STALL_CODES).optional(),
-  /** Agents whose retire refused after the claim finished, in retire order; each tick retries them (CC-182). */
+  /** A ladder rung-1 respawn under way (CC-660): set as its agents are retired and cleared by the successor's spawn intent, so a refused spawn is undone back to it. */
+  respawn: z.object({ code: z.enum(STALL_CODES), occurrence: z.string() }).optional(),
+  /**
+   * Agents whose retire refused, in retire order: after the claim finished, where each tick retries
+   * them (CC-182), or during a ladder respawn, which retries them before its successor spawns (CC-660).
+   */
   unretired: z
     .array(
       z.object({
@@ -173,9 +178,10 @@ export type LivenessRecord = z.infer<typeof LivenessRecord>
 
 /** A claim's place on the triage ladder (CC-660); kept on the ledger, apart from `attempt` and `reviewRound`. */
 const LadderRecord = z.object({
+  /** Respawns whose successor spawned; one still under way is not counted. */
   respawns: z.number().int().nonnegative(),
   lastAt: z.string().datetime(),
-  /** The occurrence (the claim's `phaseAt`) rung 1 was spent on; the same one again retries rung 1. */
+  /** The occurrence (the claim's `phaseAt`) rung 1 started on. */
   occurrence: z.string().optional(),
   /** When the ladder last stalled the claim for its owner. */
   owner: z.string().datetime().optional(),

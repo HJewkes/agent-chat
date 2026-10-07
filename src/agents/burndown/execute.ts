@@ -1,5 +1,5 @@
 import { logFindings } from './finding.js'
-import { applyActions, claimKey, type Action, type ClaimKey } from './advance.js'
+import { applyActions, claimKey, type Action, type ClaimKey, type RetireAction } from './advance.js'
 import { sameClaim, writeLedger, type Claim, type Ledger } from './ledger.js'
 import { clearLiveness, factFingerprint, LIVENESS_LIMIT, maskText, pruneLiveness, spend } from './liveness.js'
 import { parkUpdate } from './stall-code.js'
@@ -66,7 +66,7 @@ export function spawnFrame(s: SpawnSpec): SpawnFrame {
 export type Step =
   | { kind: 'ledger'; actions: Action[] }
   | { kind: 'spawn'; key: ClaimKey; frame: SpawnFrame }
-  | { kind: 'retire'; key: ClaimKey; names: string[] }
+  | RetireAction
   | { kind: 'register'; key: ClaimKey; registration: Registration }
 
 export interface SpawnReply {
@@ -107,7 +107,7 @@ export async function execute(steps: Step[], start: Ledger, deps: ExecuteDeps): 
     if (step.kind === 'ledger') commit(step.actions)
     else if (step.kind === 'retire') {
       const retired = await retireAll(step, deps)
-      ledger = withUnretired(ledger, step.key, retired.left)
+      ledger = withUnretired(ledger, step.key, retired.left, step.held === true)
       writeLedger(deps.ledgerFile, ledger)
       lines.push(...retired.lines)
     } else if (step.kind === 'register') lines.push(registerOne(step, commit, deps))
@@ -116,9 +116,9 @@ export async function execute(steps: Step[], start: Ledger, deps: ExecuteDeps): 
   return { ledger, lines }
 }
 
-/** The claim was marked done before its retire ran, so the refusals go on the newest done claim with that key. */
-export function withUnretired(ledger: Ledger, key: ClaimKey, left: Unretired[]): Ledger {
-  const index = ledger.claims.findLastIndex(c => c.phase === 'done' && sameClaim(c, key))
+/** A finished claim was marked done before its retire ran, so the refusals go on the newest done claim with that key; a `held` retire's go on the held one. */
+export function withUnretired(ledger: Ledger, key: ClaimKey, left: Unretired[], held = false): Ledger {
+  const index = ledger.claims.findLastIndex(c => (c.phase !== 'done') === held && sameClaim(c, key))
   if (index === -1) return ledger
   const { unretired: _previous, ...claim } = ledger.claims[index] as Claim
   const claims = [...ledger.claims]
