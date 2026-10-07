@@ -5,6 +5,7 @@ import { claimKey } from './advance.js'
 import type { Ledger } from './ledger.js'
 import { agentNameFor } from './plan.js'
 import {
+  EVENT_KINDS,
   foldBraked,
   markNotified,
   markReleaseDue,
@@ -21,7 +22,19 @@ import {
  * A delivered message marks its kinds `notified`; an undelivered one leaves them due for the next tick.
  */
 
-export type SendAs = (to: string, text: string) => Promise<{ ok: boolean; reason?: string }>
+/**
+ * `unknown` on a failed send means the frame went out and no answer came, so it may have been delivered;
+ * it is told once, never retried. Any other failure is a refusal and counts toward the wake ladder (CC-640).
+ */
+export type SendAs = (
+  to: string,
+  text: string,
+) => Promise<{ ok: boolean; reason?: string; unknown?: boolean }>
+
+/** Refused deliveries in a row after which a seat is no longer sent to and one human-queue notice is filed. */
+export const WAKE_LIMIT = 3
+/** A stopped seat with events due is probed with one send on every Nth such tick. */
+export const WAKE_PROBE_EVERY = 5
 
 /** Files a notice on the human queue; the broker takes one only from a registered connection. */
 export type NotifyAs = (text: string, task?: string) => Promise<{ ok: boolean; reason?: string }>
@@ -85,7 +98,7 @@ export async function deliverSeatEvents(
   const sender = await deps.open().catch((err: Error) => refusedSender(err.message))
   try {
     const told = await sendAll(due, settled.after, sender, deps)
-    const filed = await fileAll(human, told.ledger, sender, deps)
+    const filed = await fileAll([...human, ...wakeNotices(due, told.ledger)], told.ledger, sender, deps)
     return { ledger: filed.ledger, lines: [...told.lines, ...filed.lines] }
   } finally {
     sender.close()
@@ -101,22 +114,90 @@ async function sendAll(
   let ledger = start
   const lines: string[] = []
   for (const [seat, events] of due) {
+    const probe = probeTurn(ledger, seat)
+    if (probe.hold) {
+      ledger = probe.ledger
+      lines.push(`holding ${seat}'s ${events.length} event(s): ${WAKE_LIMIT} deliveries refused in a row`)
+      continue
+    }
     const text = renderSeatEvents(seat, events, deps.now)
     const reply = await sender.send(seat, text).catch((err: Error) => ({ ok: false, reason: err.message }))
-    deps.log('burndown_seat_events', { seat, events: events.length, ok: reply.ok, reason: reply.reason })
-    if (reply.ok) {
-      const told = events.flatMap(e => [e, ...(e.covers ?? [])])
+    const unknown = 'unknown' in reply && reply.unknown === true
+    deps.log('burndown_seat_events', {
+      seat,
+      events: events.length,
+      ok: reply.ok,
+      unknown,
+      reason: reply.reason,
+    })
+    const told = events.flatMap(e => [e, ...(e.covers ?? [])])
+    if (reply.ok || unknown) {
       ledger = markReleaseDue(markNotified(ledger, seat, told), told, false)
       journalEvents(told, ledger, deps.journal)
-      lines.push(`told ${seat} of ${events.length} event(s)`)
+      ledger = reply.ok ? clearWake(ledger, seat) : ledger
+      lines.push(
+        reply.ok
+          ? `told ${seat} of ${events.length} event(s)`
+          : `sent ${seat} ${events.length} event(s) with no answer (${reply.reason ?? 'unknown'}); not retried`,
+      )
     } else {
-      ledger = markReleaseDue(ledger, events, true)
+      ledger = failWake(markReleaseDue(ledger, events, true), seat, reply.reason)
       lines.push(
         `could not tell ${seat} of ${events.length} event(s): ${reply.reason ?? 'refused'}; retried next tick`,
       )
     }
   }
   return { ledger, lines }
+}
+
+const wakeKey = (seat: string): string => `wake:${seat}`
+
+/** A stopped seat is held back except on every Nth tick, when it is sent one probe. */
+function probeTurn(ledger: Ledger, seat: string): { hold: boolean; ledger: Ledger } {
+  const rec = ledger.wake?.[seat]
+  if (rec === undefined || rec.failed < WAKE_LIMIT) return { hold: false, ledger }
+  const skipped = (rec.skipped ?? 0) + 1
+  const probing = skipped >= WAKE_PROBE_EVERY
+  const next = { ...rec, skipped: probing ? 0 : skipped }
+  return { hold: !probing, ledger: { ...ledger, wake: { ...ledger.wake, [seat]: next } } }
+}
+
+function failWake(ledger: Ledger, seat: string, reason: string | undefined): Ledger {
+  const failed = (ledger.wake?.[seat]?.failed ?? 0) + 1
+  const skipped = ledger.wake?.[seat]?.skipped
+  const rec = {
+    failed,
+    ...(reason === undefined ? {} : { reason }),
+    ...(skipped === undefined ? {} : { skipped }),
+  }
+  return { ...ledger, wake: { ...ledger.wake, [seat]: rec } }
+}
+
+/** A delivered message closes the seat's record and its open notice, so a later stop files a new one. */
+function clearWake(ledger: Ledger, seat: string): Ledger {
+  const { [seat]: _gone, ...wake } = ledger.wake ?? {}
+  const { wake: _old, ...rest } = ledger
+  const humanFiled = (ledger.humanFiled ?? []).filter(k => k !== wakeKey(seat))
+  const cleared = Object.keys(wake).length === 0 ? rest : { ...rest, wake }
+  if (ledger.humanFiled === undefined) return cleared
+  const { humanFiled: _filed, ...bare } = cleared
+  return humanFiled.length === 0 ? bare : { ...bare, humanFiled }
+}
+
+/** One notice per stopped seat, counting its pending events by kind; it stays unfiled-and-retried until the broker takes it. */
+function wakeNotices(due: [string, SeatEvent[]][], ledger: Ledger): HumanItem[] {
+  return due.flatMap(([seat, events]) => {
+    const rec = ledger.wake?.[seat]
+    if (rec === undefined || rec.failed < WAKE_LIMIT) return []
+    if ((ledger.humanFiled ?? []).includes(wakeKey(seat))) return []
+    const counts = EVENT_KINDS.map(k => [k, events.filter(e => e.kind === k).length] as const)
+      .filter(([, n]) => n > 0)
+      .map(([k, n]) => `${n} ${k}`)
+    const text =
+      `Seat ${seat} has refused ${rec.failed} deliveries in a row (last: ${rec.reason ?? 'refused'}); ` +
+      `no more are sent until it answers a probe. Pending: ${counts.join(', ')}.`
+    return [{ key: wakeKey(seat), text }]
+  })
 }
 
 /** Written once delivered, so an event retried next tick is never journaled twice; the line names the claim's implementer. */
