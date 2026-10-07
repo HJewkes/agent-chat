@@ -4,6 +4,7 @@ import {
   checkToday,
   compareRows,
   dispatchOrder,
+  namedDependencies,
   parseIsoDay,
   type DispatchRow,
   type ScoreRow,
@@ -110,9 +111,21 @@ export function tagBlocks(
 }
 
 /** Severity weight times one plus capped unblocks, over the estimate. */
-export function wsjf(row: ScoreRow): number | undefined {
+export function wsjf(row: ScoreRow, unblocks = row.unblocks): number | undefined {
   if (row.estimate === null || row.estimate <= 0) return undefined
-  return (row.components.S * (1 + Math.min(row.unblocks, 3))) / row.estimate
+  return (row.components.S * (1 + Math.min(unblocks, 3))) / row.estimate
+}
+
+/** Open tasks per id by prose or `dep:` tag; a task naming an id both ways counts once. */
+function unblocksByTask(tasks: readonly ScoredTask[], tagged: readonly TaggedTask[]): Map<string, number> {
+  const open = new Set(tasks.map(task => task.id))
+  const dependents = new Map<string, Set<string>>()
+  const add = (id: string, dependent: string) => {
+    if (open.has(id) && id !== dependent) dependents.set(id, (dependents.get(id) ?? new Set()).add(dependent))
+  }
+  for (const task of tasks) for (const id of namedDependencies(task)) add(id, task.id)
+  for (const task of tagged) for (const id of task.deps) add(id, task.id)
+  return new Map([...dependents].map(([id, set]) => [id, set.size]))
 }
 
 interface PlanContext {
@@ -120,6 +133,7 @@ interface PlanContext {
   tagErrors: TagError[]
   blocks: Map<string, BlockReason>
   remainingPath: Map<string, number>
+  unblocks: Map<string, number>
   owned: Map<string, Milestone>
   /** Total float of each task in an owned milestone. */
   floats: Map<string, number>
@@ -175,6 +189,7 @@ function planContext(input: PlanOrderInput): PlanContext {
     tags: new Map(tagged.map(task => [task.id, task])),
     tagErrors,
     blocks: tagBlocks(tagged, whole.cycles, unknownDepTasks(tagErrors)),
+    unblocks: unblocksByTask(input.tasks, tagged),
     remainingPath: new Map(whole.tasks.map(task => [task.id, task.earlyFinish])),
     owned: new Map(owned.map(m => [m.id, m])),
     floats: floatsOf(tagged, owned),
@@ -203,8 +218,13 @@ interface Sorted {
 
 const isEpicRefusal = (refusal: string) => refusal.startsWith('epic:') || refusal.startsWith('epic-estimate:')
 
-function planned(row: ScoreRow & { effective?: number }, tier: Tier, extra: PlanExtra = {}): PlannedRow {
-  const weight = wsjf(row)
+function planned(
+  row: ScoreRow & { effective?: number },
+  tier: Tier,
+  ctx: PlanContext,
+  extra: PlanExtra = {},
+): PlannedRow {
+  const weight = wsjf(row, ctx.unblocks.get(row.id) ?? 0)
   return {
     ...row,
     effective: row.effective ?? row.score,
@@ -227,7 +247,7 @@ function sortRows(rows: readonly ScoreRow[], ctx: PlanContext): Sorted {
       if (isEpicRefusal(placement.refusal)) sorted.epicsHeld.push(`${row.id} ${placement.refusal}`)
     } else if (placement.tier === 3) sorted.standard.push(row)
     else if (placement.tier === 4) sorted.intangible.push(row)
-    else sorted.ranked[placement.tier].push(planned(row, placement.tier, placement.extra))
+    else sorted.ranked[placement.tier].push(planned(row, placement.tier, ctx, placement.extra))
   }
   return sorted
 }
@@ -246,14 +266,20 @@ function picksAfter(
   return picks
 }
 
-function dispatched(rows: readonly ScoreRow[], tier: 3 | 4, input: PlanOrderInput, picked: PlannedRow[]) {
+function dispatched(
+  rows: readonly ScoreRow[],
+  tier: 3 | 4,
+  input: PlanOrderInput,
+  picked: PlannedRow[],
+  ctx: PlanContext,
+) {
   const { order, refused } = dispatchOrder(
     rows,
     input.defaults,
     input.n - picked.length,
     picksAfter(input.priorPicks ?? {}, picked),
   )
-  return { order: order.map(row => planned(row, tier)), refused }
+  return { order: order.map(row => planned(row, tier, ctx)), refused }
 }
 
 const hasReady = (rows: readonly ScoreRow[]) => rows.some(row => row.blocked.length === 0)
@@ -264,7 +290,7 @@ export function planOrder(input: PlanOrderInput): PlanOrder {
   const sorted = sortRows(input.rows, ctx)
   const picked = ([0, 1, 2] as const).flatMap(tier => sorted.ranked[tier].sort(tierOrder(tier, ctx.owned)))
   const order = picked.slice(0, Math.max(0, input.n))
-  const standard = dispatched(sorted.standard, 3, input, order)
+  const standard = dispatched(sorted.standard, 3, input, order, ctx)
   const refused = { ...standard.refused }
   order.push(...standard.order)
   const intangibleHeld: string[] = []
@@ -273,7 +299,7 @@ export function planOrder(input: PlanOrderInput): PlanOrder {
     intangibleHeld.push(...held.map(row => row.id))
     if (held.length > 0) sorted.refused['intangible-held'] = held.length
   } else {
-    const intangible = dispatched(sorted.intangible, 4, input, order)
+    const intangible = dispatched(sorted.intangible, 4, input, order, ctx)
     addCounts(refused, intangible.refused)
     order.push(...intangible.order)
   }
