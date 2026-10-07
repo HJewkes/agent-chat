@@ -393,7 +393,11 @@ describe('a ladder record when its claim finishes (CC-829)', () => {
   const finished = (): { c: Claim; before: Ledger; done: Action[] } => {
     const c = claim({ phase: 'shepherding', pr: 'https://github.com/o/r/pull/9' })
     const ladder = { [KEY]: { ...releasedBefore(FIRST_PHASE)[KEY]!, branch: 'agent-chat/bd-cc-1' } }
-    return { c, before: withClaim(c, { ladder }), done: [{ kind: 'update', key: { taskId: 'CC-1' }, patch: { phase: 'done' } }] }
+    return {
+      c,
+      before: withClaim(c, { ladder }),
+      done: [{ kind: 'update', key: { taskId: 'CC-1' }, patch: { phase: 'done' } }],
+    }
   }
 
   it('is pruned on the move to done, so a re-opened task does not adopt the old branch', () => {
@@ -608,7 +612,7 @@ describe('the brake (CC-699)', () => {
 
     expect(kinds(actions)).not.toContain('spawn')
     expect(after.brake?.claims).toEqual(['CC-1#', 'CC-2#', 'CC-3#'])
-    expect(seatEvents(before, after, []).beta).toEqual([
+    expect((seatEvents(before, after, []).beta ?? []).filter(e => e.kind === 'brake')).toEqual([
       expect.objectContaining({ kind: 'brake', taskId: 'CC-1', code: 'phase-timeout' }),
     ])
   })

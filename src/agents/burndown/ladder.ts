@@ -234,11 +234,27 @@ function nextBrake(
   }
 }
 
-/** One notice per cause per brake: `notified` and the keys whose seats are told change only on a new cause. */
-function noticed(brake: BrakeState, suppressed: readonly Trigger[]): BrakeState {
+/**
+ * One notice per cause per brake: `notified` and the keys whose seats are told change only on a new cause.
+ * The keys are every claim the brake holds: this tick's suppressed stalls and each respawn under way (CC-829).
+ */
+function noticed(brake: BrakeState, suppressed: readonly Trigger[], claims: readonly Claim[]): BrakeState {
   const cause = mostCommon(suppressed.map(t => t.code))
   if (cause === undefined || brake.notified === `brake:${cause}`) return brake
-  return { ...brake, notified: `brake:${cause}`, claims: suppressed.map(t => claimKey(t.claim)) }
+  const keys = new Set(suppressed.map(t => claimKey(t.claim)))
+  const held = claims.filter(
+    c => keys.has(claimKey(c)) || (c.respawn !== undefined && c.stalledReason === undefined),
+  )
+  return { ...brake, notified: `brake:${cause}`, claims: held.map(claimKey) }
+}
+
+/** A claim that finishes drops its ladder record, so a re-opened task starts clean (CC-829). */
+function pruned(actions: readonly Action[], ledger: Ledger): Action[] {
+  return actions.flatMap((a): Action[] =>
+    a.kind === 'update' && a.patch.phase === 'done' && ledger.ladder?.[claimKey(a.key)] !== undefined
+      ? [{ kind: 'ladder', key: a.key }]
+      : [],
+  )
 }
 
 const sameBrake = (a: BrakeState | undefined, b: BrakeState): boolean =>
@@ -275,9 +291,13 @@ export function ladderActions(
     if (trigger.fresh) notes.push(`ladder off: would ${rung} ${key} (${trigger.code})`)
     return [action]
   })
-  const after = brake === undefined ? undefined : noticed(brake, suppressed)
+  const after = brake === undefined ? undefined : noticed(brake, suppressed, claims)
   return {
-    actions: [...out, ...underWay(claims, ledger, { ...deps, braked })],
+    actions: [
+      ...out,
+      ...underWay(claims, ledger, { ...deps, braked }),
+      ...(deps.enabled ? pruned(actions, ledger) : []),
+    ],
     notes,
     brake: after === undefined ? [] : brakeAction(ledger.brake, after),
   }
@@ -293,23 +313,30 @@ export interface Released {
   n: number
 }
 
+function releasedOf(key: string, record: LadderRecord, ledger: Ledger): Released {
+  const [taskId = '', slice] = key.split('#')
+  return {
+    taskId,
+    n: ledger.releases?.[taskId]?.n ?? record.releases ?? 1,
+    ...(slice === undefined || slice === '' ? {} : { slice }),
+    ...(record.seat === undefined ? {} : { seat: record.seat }),
+    ...(record.code === undefined ? {} : { code: record.code }),
+    ...(record.branch === undefined ? {} : { branch: record.branch }),
+  }
+}
+
 /** The releases a tick made: each ladder key whose count rose between two ledgers. */
 export function releasesSince(before: Ledger, after: Ledger): Released[] {
-  return Object.entries(after.ladder ?? {}).flatMap(([key, record]) => {
-    if ((record.releases ?? 0) <= (before.ladder?.[key]?.releases ?? 0)) return []
-    const [taskId = '', slice] = key.split('#')
-    return [
-      {
-        taskId,
-        n: after.releases?.[taskId]?.n ?? record.releases ?? 1,
-        ...(slice === undefined || slice === '' ? {} : { slice }),
-        ...(record.seat === undefined ? {} : { seat: record.seat }),
-        ...(record.code === undefined ? {} : { code: record.code }),
-        ...(record.branch === undefined ? {} : { branch: record.branch }),
-      },
-    ]
-  })
+  return Object.entries(after.ladder ?? {}).flatMap(([key, record]) =>
+    (record.releases ?? 0) <= (before.ladder?.[key]?.releases ?? 0) ? [] : [releasedOf(key, record, after)],
+  )
 }
+
+/** Earlier releases whose seat notice did not land, so it is sent again (CC-829). */
+export const releasesDue = (ledger: Ledger): Released[] =>
+  Object.entries(ledger.ladder ?? {}).flatMap(([key, record]) =>
+    record.releaseDue === true ? [releasedOf(key, record, ledger)] : [],
+  )
 
 export interface BrakeNotice {
   cause: StallCode
