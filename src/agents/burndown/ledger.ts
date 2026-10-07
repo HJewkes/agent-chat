@@ -171,6 +171,17 @@ const LivenessRecord = z.object({
 })
 export type LivenessRecord = z.infer<typeof LivenessRecord>
 
+/** A claim's place on the triage ladder (CC-660); kept on the ledger, apart from `attempt` and `reviewRound`. */
+const LadderRecord = z.object({
+  respawns: z.number().int().nonnegative(),
+  lastAt: z.string().datetime(),
+  /** The occurrence (the claim's `phaseAt`) rung 1 was spent on; the same one again retries rung 1. */
+  occurrence: z.string().optional(),
+  /** When the ladder last stalled the claim for its owner. */
+  owner: z.string().datetime().optional(),
+})
+export type LadderRecord = z.infer<typeof LadderRecord>
+
 const Ledger = z.object({
   version: z.literal(1),
   lastTickAt: z.string().optional(),
@@ -188,6 +199,8 @@ const Ledger = z.object({
   triageStarts: z.array(z.string()).optional(),
   /** Action failures by `<claim key>|<action>`; kept on the ledger so a claim drop does not reset the count. */
   liveness: z.record(z.string(), LivenessRecord).optional(),
+  /** Triage ladder records by claim key, outside the claim so a release keeps them (CC-660). */
+  ladder: z.record(z.string(), LadderRecord).optional(),
 })
 export type Ledger = z.infer<typeof Ledger>
 

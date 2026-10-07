@@ -133,6 +133,11 @@ const Config = z.object({
     })
     .strict()
     .default({ route: { stalled: 'owner', failed: 'owner' } }),
+  /** The triage ladder (CC-660); off, it only notes what it would do. */
+  ladder: z
+    .object({ enabled: z.boolean().default(false) })
+    .strict()
+    .default({ enabled: false }),
   /** Seat names for CC-205 seats-mode dispatch; empty means none. */
   seats: z.array(z.string().min(1)).default([]),
 })

@@ -1,6 +1,14 @@
 import type { AgentLifecycle, DeliveredMessage } from '../../protocol.js'
 import type { ExceptionClass } from './exception.js'
-import { addClaim, isStalled, sameClaim, type AgentPhase, type Claim, type Ledger } from './ledger.js'
+import {
+  addClaim,
+  isStalled,
+  sameClaim,
+  type AgentPhase,
+  type Claim,
+  type LadderRecord,
+  type Ledger,
+} from './ledger.js'
 import { agentNameFor, reviewerNameFor, successorNameFor } from './plan.js'
 import type { Progress } from './progress.js'
 import type { PlannedSlice, Report } from './report.js'
@@ -42,7 +50,10 @@ export interface Observation {
 }
 
 export type SpawnContext =
-  { kind: 'answer'; questionId: string; answer: InboxMessage } | { kind: 'review'; review: string }
+  | { kind: 'answer'; questionId: string; answer: InboxMessage }
+  | { kind: 'review'; review: string }
+  /** A ladder respawn (CC-660): the stall's code and what the predecessor left in the worktree. */
+  | { kind: 'stall'; code: StallCode; diffSummary: string }
 
 type ClaimPatch = Partial<Omit<Claim, 'taskId' | 'slice' | 'initiative'>>
 
@@ -62,6 +73,8 @@ export type Action =
   | { kind: 'add'; claims: Claim[] }
   /** Hands the claim's PR to Shepherd, after the update that moves it to `shepherding`. */
   | { kind: 'register'; key: ClaimKey; registration: Registration }
+  /** Writes the claim's triage ladder record (CC-660). */
+  | { kind: 'ladder'; key: ClaimKey; record: LadderRecord }
 
 export const claimKey = (c: ClaimKey): string => `${c.taskId}#${c.slice ?? ''}`
 
@@ -239,7 +252,7 @@ const workerOf = (claim: Claim): string =>
     ? successorNameFor(claim.taskId, claim.attempt ?? 0, claim.slice, claim.namePrefix)
     : agentNameFor(claim.taskId, claim.slice, claim.namePrefix)
 
-function successor(claim: Claim, context: SpawnContext, patch: ClaimPatch): Action[] {
+export function successor(claim: Claim, context: SpawnContext, patch: ClaimPatch): Action[] {
   if (claim.worktree === undefined)
     return [stall(claim, 'no worktree recorded for a successor to adopt', 'failed')]
   const attempt = (claim.attempt ?? 0) + 1
@@ -270,7 +283,7 @@ function spawn(claim: Claim, request: SpawnRequest, nextPhase: AgentPhase, patch
   return [update(claim, intent), { kind: 'spawn', key: keyOf(claim), ...request }]
 }
 
-function retireAll(claim: Claim): Action {
+export function retireAll(claim: Claim): Action {
   const names = [
     ...new Set(
       [...(claim.spawned ?? [])].reverse().concat(agentNameFor(claim.taskId, claim.slice, claim.namePrefix)),
@@ -284,6 +297,8 @@ export function applyActions(ledger: Ledger, actions: Action[], now: Date): Ledg
   const at = now.toISOString()
   return actions.reduce<Ledger>((current, action) => {
     if (action.kind === 'add') return action.claims.reduce(addClaim, current)
+    if (action.kind === 'ladder')
+      return { ...current, ladder: { ...current.ladder, [claimKey(action.key)]: action.record } }
     if (action.kind !== 'update') return current
     const claims = current.claims.map(c =>
       c.phase !== 'done' && sameClaim(c, action.key) ? patched(c, action.patch, at) : c,

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { run, type Runner } from './exec.js'
-import { GIT_BIN } from './review-diff.js'
+import { GIT_BIN, resolveBaseRef } from './review-diff.js'
 
 /**
  * A worktree's own evidence of progress (CC-659): its HEAD and a hash of what
@@ -64,4 +64,24 @@ export function readProgress(worktree: string, exec: Runner = run): Progress | '
     dirtyCount: lines.length,
     content: diff.status === 0 ? sha1(`${dirty}\n${diff.stdout}`) : dirty,
   }
+}
+
+/**
+ * What a stalled agent left in its worktree, for its successor's brief (CC-660):
+ * `git diff --stat` of the branch against its base, then `git status --short`.
+ * Raw git output; the brief caps and fences it.
+ */
+export function diffSummary(worktree: string, exec: Runner = run): string {
+  const base = resolveBaseRef(worktree, exec)
+  const stat =
+    base === undefined
+      ? undefined
+      : exec(GIT_BIN, ['diff', '--stat', '--no-color', `${base}...HEAD`], worktree)
+  const status = exec(GIT_BIN, ['status', '--short'], worktree)
+  return [
+    `committed since ${base ?? 'the base'}:`,
+    stat?.status === 0 ? stat.stdout.trimEnd() || '(none)' : '(unreadable)',
+    'uncommitted:',
+    status.status === 0 ? status.stdout.trimEnd() || '(none)' : '(unreadable)',
+  ].join('\n')
 }

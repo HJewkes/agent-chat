@@ -7,6 +7,7 @@ import {
   reviewerBrief,
   successorAfterAnswer,
   successorAfterReview,
+  successorAfterStall,
   workerBrief,
   type TaskBrief,
 } from './brief.js'
@@ -245,23 +246,25 @@ function successorFrame(
   spec: { name: string; configDir: string; initiative: string; taskId: string },
   repo: string,
 ): SpawnFrame {
-  const context = action.context
-  const brief =
-    context?.kind === 'answer'
-      ? successorAfterAnswer(t, {
-          question: `message ${context.questionId}; your predecessor's handoff restates it`,
-          answer: context.answer.text,
-          provenance: context.answer.provenance === 'decided' ? 'decided' : 'human',
-        })
-      : successorAfterReview(t, context?.kind === 'review' ? context.review : 'no review text was readable')
   return spawnFrame({
     ...spec,
     profile: IMPLEMENTER_PROFILE,
-    brief,
+    brief: successorBrief(t, action.context),
     cwd: repo,
     ...(action.predecessor === undefined ? {} : { predecessor: action.predecessor }),
     ...(action.worktree === undefined ? {} : { worktree: action.worktree }),
   })
+}
+
+function successorBrief(t: TaskBrief, context: SpawnAction['context']): string {
+  if (context?.kind === 'stall') return successorAfterStall(t, context)
+  if (context?.kind === 'answer')
+    return successorAfterAnswer(t, {
+      question: `message ${context.questionId}; your predecessor's handoff restates it`,
+      answer: context.answer.text,
+      provenance: context.answer.provenance === 'decided' ? 'decided' : 'human',
+    })
+  return successorAfterReview(t, context?.kind === 'review' ? context.review : 'no review text was readable')
 }
 
 /** Where a brief's agent works and what it may do: an initiative's autonomy block, or a seat's dispatch. */
