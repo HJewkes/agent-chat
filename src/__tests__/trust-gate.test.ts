@@ -48,6 +48,11 @@ describe('trustRefusal by CLI version', () => {
     expect(refusal('2.1.291')).toBeUndefined()
   })
 
+  it('verifies 2.1.292 against 2.1.291', () => {
+    expect(VERIFIED_TRUST_RULE_VERSIONS['2.1.292']).toBe('2.1.291')
+    expect(refusal('2.1.292')).toBeUndefined()
+  })
+
   it('freezes the verified release map', () => {
     expect(Object.isFrozen(VERIFIED_TRUST_RULE_VERSIONS)).toBe(true)
   })
@@ -63,8 +68,8 @@ describe('trustRefusal by CLI version', () => {
   })
 
   it('refuses an unverified release, naming the verified set', () => {
-    expect(refusal('2.1.292')).toBe(
-      `installed Claude Code 2.1.292 differs from ${Object.keys(VERIFIED_TRUST_RULE_VERSIONS).join(', ')}, the releases whose trust rule this gate reproduces`,
+    expect(refusal('2.1.293')).toBe(
+      `installed Claude Code 2.1.293 differs from ${Object.keys(VERIFIED_TRUST_RULE_VERSIONS).join(', ')}, the releases whose trust rule this gate reproduces`,
     )
   })
 
