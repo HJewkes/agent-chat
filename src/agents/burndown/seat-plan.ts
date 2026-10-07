@@ -442,7 +442,9 @@ function blocker(d: Dispatch, work: CollisionWork, role: Role, walk: Walk): Refu
     stopLineRefusal(flow, inputs.lineStop) ??
     inputs.collision?.(d.repo, work, Object.values(inputs.seat.repos).flat()) ??
     // A slice's branch is named for the slice, so the whole-task orphan check does not apply to it.
-    (d.slice === undefined ? orphanRefusal(at, d.task, d.profile, inputs.orphan) : undefined) ??
+    (d.slice === undefined
+      ? orphanRefusal(at, d.task, d.profile, inputs.orphan, inputs.ledger)
+      : undefined) ??
     untrusted() ??
     roleCap(role, walk) ??
     worktreeCap(d, walk) ??

@@ -30,6 +30,8 @@ export interface TaskBrief extends Seat {
   grants: string[]
   /** Set when the task was split by a planner; the worker implements this slice only. */
   slice?: { n: string; title: string; planPath: string }
+  /** A branch a released earlier attempt left (CC-698); the worker reads it before starting over. */
+  priorBranch?: string
 }
 
 export interface Answer {
@@ -180,8 +182,13 @@ function workerTail(t: TaskBrief): string[] {
   ]
 }
 
+const priorAttempt = (t: TaskBrief): string =>
+  t.priorBranch === undefined
+    ? ''
+    : ` A previous attempt left branch ${t.priorBranch}: read its commits first and keep what serves the task.`
+
 function workerScope(t: TaskBrief): string {
-  const done = `Done when: ${t.doneWhen}`
+  const done = `Done when: ${t.doneWhen}${priorAttempt(t)}`
   if (t.slice === undefined) return `Implement task ${t.taskId} of initiative ${t.initiative}. ${done}`
   return (
     `Implement slice ${t.slice.n} ("${t.slice.title}") of task ${t.taskId} only. ` +
