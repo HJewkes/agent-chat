@@ -18,7 +18,7 @@ export const GIT_BIN = '/usr/bin/git'
 
 const BASE_REF_CANDIDATES = ['origin/HEAD', 'origin/main', 'main', 'origin/master', 'master']
 
-function resolveBaseRef(cwd: string, exec: Runner): string | undefined {
+export function resolveBaseRef(cwd: string, exec: Runner): string | undefined {
   return BASE_REF_CANDIDATES.find(
     ref => exec(GIT_BIN, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd).status === 0,
   )

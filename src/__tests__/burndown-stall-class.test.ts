@@ -99,6 +99,7 @@ function context(patch: Partial<StepContext> = {}): StepContext {
     trust: () => undefined,
     taskText: () => 'id: CC-1\n',
     readFile: () => undefined,
+    running: () => false,
     ...patch,
   }
 }

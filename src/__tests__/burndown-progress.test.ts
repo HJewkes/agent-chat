@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { AgentIdentity } from '../protocol.js'
 import { observe } from '../agents/burndown/observe.js'
 import { run, type Runner } from '../agents/burndown/exec.js'
-import { readProgress, type Progress } from '../agents/burndown/progress.js'
+import { diffSummary, readProgress, type Progress } from '../agents/burndown/progress.js'
 import type { Claim } from '../agents/burndown/ledger.js'
 
 let repo: string
@@ -150,5 +150,25 @@ describe('observing progress', () => {
     await observe([claim({})], { agents: [exited] }, finished)
 
     expect(seen).toEqual([])
+  })
+})
+
+describe('summarising a stalled worktree for its successor', () => {
+  it('lists the commits since the base and the uncommitted files', () => {
+    git('branch', '-M', 'main')
+    git('checkout', '-q', '-b', 'work')
+    writeFile('src/b.ts', 'new\n')
+    git('add', '.')
+    git('commit', '-q', '-m', 'add b')
+    writeFile('src/a.ts', 'edited\n')
+
+    const summary = diffSummary(repo)
+
+    expect(summary).toMatch(/committed since main:\n src\/b\.ts \| 1 \+/)
+    expect(summary).toMatch(/uncommitted:\n M src\/a\.ts$/)
+  })
+
+  it('says unreadable rather than empty for a missing worktree', () => {
+    expect(diffSummary(path.join(repo, 'gone'))).toContain('uncommitted:\n(unreadable)')
   })
 })

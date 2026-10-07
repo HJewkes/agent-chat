@@ -115,7 +115,7 @@ export function findingActions(
   return claims.flatMap(claim => {
     if (claim.phase === 'done') return []
     const key = claimKey(claim)
-    if (moved.has(key) || claim.stalledReason !== undefined)
+    if (moved.has(key) || claim.stalledReason !== undefined || claim.respawn !== undefined)
       return claim.finding === undefined ? [] : [setFinding(claim, undefined)]
     if (!inLane(claim)) return []
     return actionFor(claim, observations.get(key) ?? {}, parked, now)
