@@ -110,11 +110,15 @@ function task(id: string, tags: string[] = [], fields: Partial<ScoredTask> = {})
   }
 }
 
-type RawMilestone = { id: string; rank: number; seat: string; gated_by?: string }
+type RawMilestone = { id: string; rank: number; seat: string; gated_by?: string; epics?: string[] }
 
 function milestoneFile(milestones: RawMilestone[], done: string[] = []): MilestoneFile {
   const raw = { week: '2026-W40', appetite_days: 5, milestones }
-  const { file, errors } = validateMilestones(raw, [], done)
+  const { file, errors } = validateMilestones(
+    raw,
+    milestones.flatMap(m => m.epics ?? []),
+    done,
+  )
   expect(errors).toEqual([])
   return file!
 }
@@ -206,6 +210,41 @@ describe('planOrder tiers', () => {
     expect(ids(gated.order)).toEqual(['GT-2'])
     expect(gated.refused).toEqual({ 'gated:M3': 1 })
     expect(ids(open.order)).toEqual(['GT-1', 'GT-2'])
+  })
+
+  describe('CC-769: epics of an owned milestone', () => {
+    const milestones = milestoneFile([{ id: 'M1', rank: 1, seat: 'sample-seat', epics: ['EP-1'] }])
+
+    it('refuses an epic: entry at float 0 instead of putting it in tier 2', () => {
+      const tasks = [task('EP-1', ['milestone:M1'], { estimate: 3 })]
+
+      const planned = planOrder(inputFor(tasks, { milestones }))
+
+      expect(criticalPath(parsePlanningTasks(tasks).tasks, 'M1').tasks[0]!.float).toBe(0)
+      expect(planned.order).toEqual([])
+      expect(planned.refused).toEqual({ 'epic:M1': 1 })
+      expect(planned.epicsHeld).toEqual(['EP-1 epic:M1'])
+    })
+
+    it('refuses an estimate-13 task and keeps a 1-point slice of the same milestone in tier 2', () => {
+      const tasks = [
+        task('EP-2', ['milestone:M1'], { estimate: 13 }),
+        task('EP-3', ['milestone:M1'], { estimate: 1 }),
+      ]
+
+      const planned = planOrder(inputFor(tasks, { milestones }))
+
+      expect(planned.order.map(row => [row.id, row.tier])).toEqual([['EP-3', 2]])
+      expect(planned.refused).toEqual({ 'epic-estimate:M1': 1 })
+      expect(planned.epicsHeld).toEqual(['EP-2 epic-estimate:M1'])
+    })
+
+    it('leaves a big task outside an owned milestone in tier 3', () => {
+      const { order, epicsHeld } = planOrder(inputFor([task('EP-4', [], { estimate: 13 })], { milestones }))
+
+      expect(order.map(row => [row.id, row.tier])).toEqual([['EP-4', 3]])
+      expect(epicsHeld).toEqual([])
+    })
   })
 
   it('holds intangible tasks while anything else is ready, then dispatches them', () => {
