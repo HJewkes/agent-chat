@@ -47,6 +47,8 @@ const KEPT = new Set(['AGENT_CHAT_LIVE', EXIT_WITH_PID_VAR])
 for (const key of Object.keys(process.env)) {
   if (key.startsWith('AGENT_CHAT_') && !KEPT.has(key)) delete process.env[key]
 }
+/** active-work's own root override, which `activeWorkRoot()` honours too (CC-819). */
+delete process.env.ACTIVE_ROOT
 
 /**
  * A spawned agent's env points core.hooksPath at the live leak guard (CC-268). Kept, every fixture

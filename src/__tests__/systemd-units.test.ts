@@ -2,13 +2,15 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { activeWorkRoot } from '../agents/active-work.js'
 import { burndownInstallOn, burndownJobStatusOn, burndownUninstallOn } from '../cli/verbs/burndown-job.js'
 import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from '../cli/verbs/watchdog-job.js'
 import type { JobHost } from '../mirror/job-host.js'
 import type { Launchctl } from '../mirror/launchd.js'
-import { burndownJob, watchdogJob, type JobSpec } from '../mirror/plist.js'
+import { burndownJob, jobEnv, watchdogJob, type JobSpec } from '../mirror/plist.js'
 import type { Systemctl } from '../mirror/systemd.js'
-import { quoteArg, renderUnits, unitName } from '../mirror/systemd-unit.js'
+import { quoteArg, renderUnits, unitName, unitNameForHome } from '../mirror/systemd-unit.js'
+import { cliEntry, watchdogLogDir, watchdogPlistPath } from '../paths.js'
 
 const ENV = { HOME: '/srv/u', PATH: '/srv/u/.local/bin:/usr/bin' }
 
@@ -119,12 +121,19 @@ describe('renderUnits', () => {
 })
 
 let scratch: string
-const savedEnv = { home: process.env.AGENT_CHAT_HOME, state: process.env.XDG_STATE_HOME }
+const savedEnv = {
+  home: process.env.AGENT_CHAT_HOME,
+  state: process.env.XDG_STATE_HOME,
+  activeRoot: process.env.ACTIVE_ROOT,
+  workRoot: process.env.AGENT_CHAT_ACTIVE_WORK_ROOT,
+}
 
 beforeEach(() => {
   scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-systemd-units-'))
   process.env.AGENT_CHAT_HOME = path.join(scratch, 'home')
   process.env.XDG_STATE_HOME = path.join(scratch, 'state')
+  delete process.env.ACTIVE_ROOT
+  delete process.env.AGENT_CHAT_ACTIVE_WORK_ROOT
 })
 
 afterEach(() => {
@@ -132,6 +141,8 @@ afterEach(() => {
   for (const [key, value] of [
     ['AGENT_CHAT_HOME', savedEnv.home],
     ['XDG_STATE_HOME', savedEnv.state],
+    ['ACTIVE_ROOT', savedEnv.activeRoot],
+    ['AGENT_CHAT_ACTIVE_WORK_ROOT', savedEnv.workRoot],
   ] as const) {
     if (value === undefined) delete process.env[key]
     else process.env[key] = value
@@ -164,6 +175,10 @@ function linuxHost(systemctl: Systemctl, dryRun = false): JobHost {
 const unitFile = (host: JobHost, file: string): string => path.join(host.unitDir, file)
 
 describe('watchdog on Linux', () => {
+  beforeEach(() => {
+    delete process.env.AGENT_CHAT_HOME
+  })
+
   it('dry-runs by printing both units and the systemctl calls, writing and calling nothing', () => {
     const { systemctl, calls } = fakeSystemctl()
     const host = linuxHost(systemctl, true)
@@ -294,3 +309,264 @@ describe('burndown job', () => {
     expect(calls.at(-1)).toBe('disable gui/501/dev.hjewkes.agent-chat-burndown')
   })
 })
+
+const PILOT = '/srv/u/.agent-chat-pilot'
+const PILOT_ROOT = '/srv/u/active-work-pilot'
+const DEFAULT_HOME = path.join(os.homedir(), '.agent-chat')
+const WATCHDOG = 'agent-chat-seat-watchdog'
+
+const envLines = (): string[] => [
+  `Environment="HOME=${process.env.HOME}"`,
+  `Environment="PATH=${process.env.PATH}"`,
+]
+
+/** The watchdog service main renders with neither AGENT_CHAT_HOME nor ACTIVE_ROOT set. */
+const mainService = (): string =>
+  [
+    '[Unit]',
+    'Description=dev.hjewkes.agent-chat-seat-watchdog',
+    '',
+    '[Service]',
+    'Type=oneshot',
+    `ExecStart=${quoteArg(process.execPath)} ${quoteArg(cliEntry())} seats watchdog`,
+    ...envLines(),
+    `StandardOutput=append:${scratch}/state/${WATCHDOG}/watchdog.log`,
+    `StandardError=append:${scratch}/state/${WATCHDOG}/watchdog.log`,
+    '',
+  ].join('\n')
+
+const mainTimer = [
+  '[Unit]',
+  `Description=Schedule for ${WATCHDOG}.service`,
+  '',
+  '[Timer]',
+  'OnCalendar=*-*-* *:08:00',
+  'OnCalendar=*-*-* *:23:00',
+  'OnCalendar=*-*-* *:38:00',
+  'OnCalendar=*-*-* *:53:00',
+  'AccuracySec=1s',
+  '',
+  '[Install]',
+  'WantedBy=timers.target',
+  '',
+].join('\n')
+
+const xml = (text: string): string => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+/** The watchdog plist main renders with neither AGENT_CHAT_HOME nor ACTIVE_ROOT set. */
+const mainPlist = (): string => {
+  const minute = (m: number): string =>
+    `    <dict>\n      <key>Minute</key>\n      <integer>${m}</integer>\n    </dict>`
+  const log = path.join(watchdogLogDir(), 'watchdog.log')
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0">',
+    '<dict>',
+    '  <key>Label</key>\n  <string>dev.hjewkes.agent-chat-seat-watchdog</string>',
+    '  <key>ProgramArguments</key>',
+    '  <array>',
+    `    <string>${xml(process.execPath)}</string>`,
+    `    <string>${xml(cliEntry())}</string>`,
+    '    <string>seats</string>',
+    '    <string>watchdog</string>',
+    '  </array>',
+    '  <key>RunAtLoad</key>\n  <false/>',
+    '  <key>StartCalendarInterval</key>',
+    '  <array>',
+    ...[8, 23, 38, 53].map(minute),
+    '  </array>',
+    `  <key>StandardOutPath</key>\n  <string>${xml(log)}</string>`,
+    `  <key>StandardErrorPath</key>\n  <string>${xml(log)}</string>`,
+    '  <key>EnvironmentVariables</key>',
+    '  <dict>',
+    `    <key>HOME</key>\n    <string>${xml(process.env.HOME ?? '')}</string>`,
+    `    <key>PATH</key>\n    <string>${xml(process.env.PATH ?? '')}</string>`,
+    '  </dict>',
+    '</dict>',
+    '</plist>',
+    '',
+  ].join('\n')
+}
+
+describe('watchdog home (CC-819)', () => {
+  beforeEach(() => {
+    delete process.env.AGENT_CHAT_HOME
+  })
+
+  it('passes ACTIVE_ROOT through the job env only when set and non-empty', () => {
+    expect(jobEnv({ HOME: '/h', PATH: '/p', ACTIVE_ROOT: PILOT_ROOT, SECRET: 'x' })).toEqual({
+      HOME: '/h',
+      PATH: '/p',
+      ACTIVE_ROOT: PILOT_ROOT,
+    })
+    expect(jobEnv({ HOME: '/h', PATH: '/p', ACTIVE_ROOT: '' })).toEqual({ HOME: '/h', PATH: '/p' })
+  })
+
+  it('names units after the base for the default home and suffixes any other home with its basename', () => {
+    expect(unitNameForHome(WATCHDOG, DEFAULT_HOME, DEFAULT_HOME)).toBe(WATCHDOG)
+    expect(unitNameForHome(WATCHDOG, PILOT, DEFAULT_HOME)).toBe(`${WATCHDOG}-pilot`)
+    expect(unitNameForHome(WATCHDOG, '/data/my home!', DEFAULT_HOME)).toBe(`${WATCHDOG}-my_home_`)
+    expect(unitNameForHome(WATCHDOG, '/elsewhere/.agent-chat', DEFAULT_HOME)).toBe(`${WATCHDOG}-agent-chat`)
+  })
+
+  it('renders the Linux units byte-identical to main when neither variable is set', () => {
+    const { systemctl } = fakeSystemctl()
+    const host = linuxHost(systemctl, true)
+    const report = watchdogInstallOn(host)
+    expect(report.lines[0]).toBe(mainService())
+    expect(report.lines[1]).toBe(mainTimer)
+    expect(report.lines[2]).toBe(`write ${unitFile(host, `${WATCHDOG}.service`)}`)
+  })
+
+  it('bakes a non-default shell home and ACTIVE_ROOT into suffixed Linux units', () => {
+    process.env.AGENT_CHAT_HOME = PILOT
+    process.env.ACTIVE_ROOT = PILOT_ROOT
+    const { systemctl } = fakeSystemctl()
+    const host = linuxHost(systemctl, true)
+    const report = watchdogInstallOn(host)
+    expect(report.lines[0]).toContain(
+      `Environment="AGENT_CHAT_HOME=${PILOT}"\nEnvironment="ACTIVE_ROOT=${PILOT_ROOT}"\n`,
+    )
+    expect(report.lines[0]).toContain(`StandardOutput=append:${scratch}/state/${WATCHDOG}-pilot/watchdog.log`)
+    expect(report.lines[1]).toContain(`Description=Schedule for ${WATCHDOG}-pilot.service`)
+    expect(report.lines.slice(2)).toEqual([
+      `write ${unitFile(host, `${WATCHDOG}-pilot.service`)}`,
+      `write ${unitFile(host, `${WATCHDOG}-pilot.timer`)}`,
+      'systemctl --user daemon-reload',
+      `systemctl --user enable --now ${WATCHDOG}-pilot.timer`,
+    ])
+  })
+
+  it('lets --agent-chat-home beat the shell AGENT_CHAT_HOME, resolved to an absolute path', () => {
+    process.env.AGENT_CHAT_HOME = '/srv/u/.agent-chat-other'
+    const { systemctl } = fakeSystemctl()
+    const report = watchdogInstallOn(linuxHost(systemctl, true), {
+      agentChatHome: '/srv/u/x/../.agent-chat-pilot',
+    })
+    expect(report.lines[0]).toContain(`Environment="AGENT_CHAT_HOME=${PILOT}"`)
+    expect(report.lines[0]).not.toContain('agent-chat-other')
+    expect(report.lines.at(-1)).toBe(`systemctl --user enable --now ${WATCHDOG}-pilot.timer`)
+  })
+
+  it('keeps the base names but bakes the home when the flag names the default home', () => {
+    const { systemctl } = fakeSystemctl()
+    const report = watchdogInstallOn(linuxHost(systemctl, true), { agentChatHome: DEFAULT_HOME })
+    expect(report.lines[0]).toContain(`Environment="AGENT_CHAT_HOME=${DEFAULT_HOME}"`)
+    expect(report.lines.at(-1)).toBe(`systemctl --user enable --now ${WATCHDOG}.timer`)
+  })
+
+  it.each([
+    ['a temp dir', path.join(os.tmpdir(), 'pilot-home'), /is inside a temp dir/],
+    ['a worktree', '/repo/.worktrees/cc-1/home', /is inside a worktree/],
+  ])('refuses a --agent-chat-home inside %s, writing and calling nothing', (_, home, error) => {
+    const { systemctl, calls } = fakeSystemctl()
+    const host = linuxHost(systemctl)
+    const report = watchdogInstallOn(host, { agentChatHome: home })
+    expect(report.ok).toBe(false)
+    expect(report.errors?.[0]).toMatch(error)
+    expect(calls).toEqual([])
+    expect(fs.existsSync(host.unitDir)).toBe(false)
+  })
+
+  it('uninstalls and reports the suffixed units the flag names', () => {
+    const { systemctl, calls } = fakeSystemctl('LoadState=not-found\n')
+    const host = linuxHost(systemctl)
+    watchdogInstallOn(host, { agentChatHome: PILOT })
+    calls.length = 0
+    expect(watchdogUninstallOn(host, { agentChatHome: PILOT }).ok).toBe(true)
+    expect(calls).toEqual([`--user disable --now ${WATCHDOG}-pilot.timer`, '--user daemon-reload'])
+    expect(fs.readdirSync(host.unitDir)).toEqual([])
+    expect(watchdogStatusOn(host, { agentChatHome: PILOT }).lines).toEqual([
+      `systemd ${WATCHDOG}-pilot.service not loaded`,
+      `systemd ${WATCHDOG}-pilot.timer not loaded`,
+    ])
+  })
+
+  it('carries ACTIVE_ROOT alone into the unit, where it moves the active-work root to the pilot', () => {
+    process.env.ACTIVE_ROOT = PILOT_ROOT
+    const { systemctl } = fakeSystemctl()
+    const service = watchdogInstallOn(linuxHost(systemctl, true)).lines[0] ?? ''
+    expect(service).toContain(`Environment="ACTIVE_ROOT=${PILOT_ROOT}"`)
+    expect(service).not.toContain('AGENT_CHAT_ACTIVE_WORK_ROOT')
+    expect(rootUnder(unitEnv(service))).toBe(PILOT_ROOT)
+  })
+
+  it('carries AGENT_CHAT_ACTIVE_WORK_ROOT into the unit, where it beats ACTIVE_ROOT', () => {
+    process.env.ACTIVE_ROOT = '/srv/u/active-work-other'
+    process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = PILOT_ROOT
+    const { systemctl } = fakeSystemctl()
+    const service = watchdogInstallOn(linuxHost(systemctl, true)).lines[0] ?? ''
+    expect(service).toContain(`Environment="AGENT_CHAT_ACTIVE_WORK_ROOT=${PILOT_ROOT}"`)
+    expect(rootUnder(unitEnv(service))).toBe(PILOT_ROOT)
+  })
+
+  it('resolves the default active-work root when neither variable is set', () => {
+    const expected =
+      process.platform === 'darwin'
+        ? path.join(os.homedir(), 'Library', 'Application Support', 'active-work')
+        : path.join(process.env.XDG_DATA_HOME ?? path.join(os.homedir(), '.local', 'share'), 'active-work')
+    expect(activeWorkRoot()).toBe(expected)
+  })
+
+  it('refuses an empty --agent-chat-home rather than resolving it to the cwd', () => {
+    const { systemctl, calls } = fakeSystemctl()
+    const report = watchdogInstallOn(linuxHost(systemctl), { agentChatHome: '' })
+    expect(report.ok).toBe(false)
+    expect(report.errors).toEqual(['refused: --agent-chat-home is empty'])
+    expect(calls).toEqual([])
+  })
+
+  it('falls back to a hash token when the basename would push the unit name past 255 characters', () => {
+    const name = unitNameForHome(WATCHDOG, `/srv/u/${'p'.repeat(240)}`, DEFAULT_HOME)
+    expect(name).toMatch(new RegExp(`^${WATCHDOG}-[0-9a-f]{8}$`))
+    expect(`${unitNameForHome(WATCHDOG, `/srv/u/${'p'.repeat(222)}`, DEFAULT_HOME)}.service`).toHaveLength(
+      255,
+    )
+  })
+
+  it('renders the darwin plist byte-identical to main when neither variable is set', () => {
+    const { launchctl } = fakeLaunchctl()
+    expect(watchdogInstallOn(darwinHost(launchctl, true)).lines[0]).toBe(mainPlist())
+  })
+
+  it('keeps the darwin label and plist path on every home input', () => {
+    process.env.AGENT_CHAT_HOME = '/srv/u/.agent-chat-other'
+    process.env.ACTIVE_ROOT = PILOT_ROOT
+    const target = { agentChatHome: PILOT }
+    const { launchctl, calls } = fakeLaunchctl()
+    const report = watchdogInstallOn(darwinHost(launchctl, true), target)
+    expect(report.lines[0]).toContain('<string>dev.hjewkes.agent-chat-seat-watchdog</string>')
+    expect(report.lines).toContain(`launchctl bootstrap gui/501 ${watchdogPlistPath()}`)
+    calls.length = 0
+    watchdogUninstallOn(darwinHost(launchctl), target)
+    const service = 'gui/501/dev.hjewkes.agent-chat-seat-watchdog'
+    expect(calls).toEqual([`print ${service}`, `bootout ${service}`, `disable ${service}`])
+    expect(watchdogStatusOn(darwinHost(launchctl), target).lines[1]).toBe(`plist ${watchdogPlistPath()}`)
+  })
+})
+
+/** The `Environment=` pairs of a rendered service, unescaped for the plain values these tests use. */
+function unitEnv(service: string): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const match of service.matchAll(/^Environment="([^=]+)=(.*)"$/gm)) env[match[1] ?? ''] = match[2] ?? ''
+  return env
+}
+
+/** `activeWorkRoot()` as a job started with exactly `env` would resolve it. */
+function rootUnder(env: Record<string, string>): string {
+  const keys = ['ACTIVE_ROOT', 'AGENT_CHAT_ACTIVE_WORK_ROOT'] as const
+  const saved = keys.map(key => process.env[key])
+  for (const key of keys) {
+    if (env[key] === undefined) delete process.env[key]
+    else process.env[key] = env[key]
+  }
+  try {
+    return activeWorkRoot()
+  } finally {
+    keys.forEach((key, i) => {
+      if (saved[i] === undefined) delete process.env[key]
+      else process.env[key] = saved[i]
+    })
+  }
+}
