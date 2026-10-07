@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { Runner } from '../agents/burndown/exec.js'
-import { registerWithShepherd } from '../agents/burndown/shepherd.js'
+import { execute, type ExecuteDeps, type Step } from '../agents/burndown/execute.js'
+import { readLedger, writeLedger, type Claim, type Ledger } from '../agents/burndown/ledger.js'
+import { prHeadOf, registerWithShepherd } from '../agents/burndown/shepherd.js'
 
 const reg = {
   target: { repo: 'Acme/Widgets', pr: 7 },
@@ -59,5 +64,124 @@ describe('burndown registering a PR with Shepherd (TP-468)', () => {
     registerWithShepherd(reg, exec)
 
     expect(calls.some(a => a[1] === 'register')).toBe(true)
+  })
+})
+
+/** CC-671 S3: a refused register spends the claim's liveness budget; the ledger is re-read from disk between ticks. */
+describe('burndown Shepherd register liveness (CC-716)', () => {
+  let dir: string
+  let file: string
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bd-register-'))
+    file = path.join(dir, 'ledger.json')
+  })
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }))
+
+  const NOW = new Date(2026, 9, 6, 12, 0)
+  const registration = { target: { repo: 'o/r', pr: 9 }, task: 'demo/CC-1', implementer: 'bd-cc-1' }
+  const step: Step = { kind: 'register', key: { taskId: 'CC-1' }, registration }
+  const shepherding = (prHead: string): Claim => ({
+    taskId: 'CC-1',
+    initiative: 'demo',
+    agentId: 'a1',
+    agentName: 'bd-cc-1',
+    spawned: ['bd-cc-1'],
+    worktree: '/w/bd-cc-1',
+    spawnedAt: NOW.toISOString(),
+    phase: 'shepherding',
+    pr: 'o/r#9',
+    prHead,
+    phaseAt: NOW.toISOString(),
+  })
+  const REFUSED = { ok: false, refused: true, reason: 'denyRepos' }
+
+  function ticker(
+    replies: Array<typeof REFUSED | { ok: boolean; refused?: boolean; reason?: string }>,
+    observedHead: () => string | undefined = () => undefined,
+  ): {
+    tick: () => Promise<Ledger>
+    calls: () => number
+  } {
+    let calls = 0
+    const deps: ExecuteDeps = {
+      ledgerFile: file,
+      spawn: async () => ({ ok: true }),
+      retire: async () => ({ ok: true }),
+      register: () => replies[Math.min(calls++, replies.length - 1)] as ReturnType<ExecuteDeps['register']>,
+      log: () => {},
+      prHead: observedHead,
+      now: NOW,
+    }
+    return { tick: async () => (await execute([step], readLedger(file), deps)).ledger, calls: () => calls }
+  }
+
+  it('retries the first two refusals and parks the third as retry-spent', async () => {
+    writeLedger(file, { version: 1, claims: [shepherding('aaa111')] })
+    const { tick, calls } = ticker([REFUSED])
+
+    const first = await tick()
+    const second = await tick()
+    const third = await tick()
+
+    expect(first.claims[0]?.stalledReason).toBeUndefined()
+    expect(second.claims[0]?.stalledReason).toBeUndefined()
+    expect(calls()).toBe(3)
+    expect(third.claims[0]).toMatchObject({ stalledClass: 'gate-trip', stallCode: 'retry-spent' })
+  })
+
+  it('spends nothing when Shepherd never answers', async () => {
+    writeLedger(file, { version: 1, claims: [shepherding('aaa111')] })
+    const { tick } = ticker([{ ok: false, reason: 'shepherd down' }])
+
+    let ledger: Ledger = readLedger(file)
+    for (let i = 0; i < 5; i++) ledger = await tick()
+
+    expect(ledger.liveness).toBeUndefined()
+    expect(ledger.claims[0]?.stalledReason).toBeUndefined()
+  })
+
+  it('counts a refusal after the observed PR head changed as a retry', async () => {
+    writeLedger(file, { version: 1, claims: [{ ...shepherding('aaa111'), prHead: undefined }] })
+    let head = 'aaa111'
+    const { tick } = ticker([REFUSED], () => head)
+    await tick()
+    await tick()
+    head = 'bbb222'
+
+    const after = await tick()
+
+    expect(after.claims[0]?.stalledReason).toBeUndefined()
+  })
+
+  it('parks the third refusal when the observed PR head never changed', async () => {
+    writeLedger(file, { version: 1, claims: [shepherding('aaa111')] })
+    const { tick } = ticker([REFUSED], () => 'aaa111')
+    await tick()
+    await tick()
+
+    const after = await tick()
+
+    expect(after.claims[0]?.stallCode).toBe('retry-spent')
+  })
+
+  it('reads the PR head from GitHub, and nothing when GitHub does not answer', () => {
+    const target = { repo: 'o/r', pr: 9 }
+    const answer =
+      (status: number, stdout: string): Runner =>
+      () => ({ status, stdout })
+
+    expect(prHeadOf(target, answer(0, 'abc1234def\n'))).toBe('abc1234def')
+    expect(prHeadOf(target, answer(1, ''))).toBeUndefined()
+    expect(prHeadOf(target, answer(0, 'not a sha'))).toBeUndefined()
+  })
+
+  it('clears the record when a register succeeds', async () => {
+    writeLedger(file, { version: 1, claims: [shepherding('aaa111')] })
+    const { tick } = ticker([REFUSED, { ok: true }])
+    await tick()
+
+    const after = await tick()
+
+    expect(after.liveness).toEqual({})
   })
 })

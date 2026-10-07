@@ -68,6 +68,7 @@ import {
 } from './source.js'
 import {
   downstreamReader,
+  prHeadOf,
   registerWithShepherd,
   shepherdLanded,
   shepherdRows,
@@ -219,6 +220,7 @@ async function actOn(
     spawn: recordingSpawn(steps, opts.broker.spawn, spawns),
     retire: opts.broker.retire,
     register: registration => registerWithShepherd(registration, opts.exec ?? run),
+    prHead: target => prHeadOf(target, opts.exec ?? run),
     log,
     now,
   })

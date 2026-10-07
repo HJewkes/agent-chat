@@ -131,6 +131,13 @@ export interface Registration {
   headSha?: string
 }
 
+/** The PR's head sha as GitHub reports it now; a refused PR has no Shepherd row to read it from. */
+export function prHeadOf(target: ShepherdTarget, exec: Runner = run): string | undefined {
+  const result = exec('gh', ['api', `repos/${target.repo}/pulls/${target.pr}`, '--jq', '.head.sha'])
+  const sha = result.status === 0 ? result.stdout.trim() : ''
+  return /^[0-9a-f]{7,64}$/.test(sha) ? sha : undefined
+}
+
 export type RegisterReply = { ok: true } | { ok: false; refused: boolean; reason: string }
 
 /** Idempotent on `repo#pr` at Shepherd's end, so a repeat after an unanswered call starts no second run. */
