@@ -306,6 +306,12 @@ function mayRun(roster: Roster, name: string): boolean {
   return row === undefined ? roster.partial !== undefined : row.state !== 'retired'
 }
 
+/** A row still spawning, live or detached; a missing row has exited, been retired, or never landed. */
+function isRunning(roster: Roster, name: string): boolean {
+  const state = rowNamed(roster, name)?.state
+  return state !== undefined && state !== 'exited' && state !== 'retired'
+}
+
 /** Observe, advance and plan: every step the tick would take, in order, and a note for everything it would not. */
 async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now: Date): Promise<Decided> {
   const root = opts.root ?? activeWorkRoot()
@@ -326,6 +332,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const ctx = {
     ...stepContext(world, config, now, root),
     ...(seats === undefined ? {} : { seat: seatLookup(seats) }),
+    running: (name: string) => isRunning(roster, name),
     tasks: new Map([...world.tasks, ...seatClaimTasks(held, world, root)]),
   }
   const capacity = agentCapacity(config, ledger.claims, roster)
@@ -587,7 +594,12 @@ function seatLookup(seats: LoadedSeats): NonNullable<StepContext['seat']> {
   }
 }
 
-function stepContext(world: World, config: TickConfig, now: Date, root: string): StepContext {
+function stepContext(
+  world: World,
+  config: TickConfig,
+  now: Date,
+  root: string,
+): Omit<StepContext, 'running'> {
   const facts = new Map<string, { defaultBranch: string; verifySteps?: string }>()
   return {
     now,
