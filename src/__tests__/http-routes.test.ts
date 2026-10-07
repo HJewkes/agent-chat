@@ -20,6 +20,7 @@ import { buildHttpApp } from '../broker/http.js'
 import { projectSlug } from '../agents/transcript.js'
 import { dashboardDir } from '../paths.js'
 import { Registry } from '../broker/registry.js'
+import { SocketServer } from '../broker/socket.js'
 import { HUMAN } from '../protocol.js'
 
 /**
@@ -304,13 +305,122 @@ describe('write routes', () => {
   it('reports a second verdict as a 200 with ok:false, not as an error status', async () => {
     const core = makeCore()
     const item = core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'q' })
-    core.answer(item.msgId, 'answered from the CLI')
+    core.answer(item.msgId, 'answered from the CLI', 'cli')
 
     const res = await post(core, '/api/answer', { msgId: item.msgId, text: 'answered from the browser' })
     expect(res.status).toBe(200)
     const body = (await res.json()) as VerdictResponse
     expect(body.ok).toBe(false)
     expect(body.reason).toContain('not an open item')
+  })
+
+  describe('answer channel and concurrent arbitration (CC-812)', () => {
+    const answerRows = (core: BrokerCore, ref: string) =>
+      core.events.since(0, 1000).filter(e => e.kind === 'answer' && e.ref === ref)
+    const metaOf = (core: BrokerCore, ref: string) => answerRows(core, ref)[0]!.meta
+
+    it('records the dashboard channel by default and the named one when given', async () => {
+      const core = makeCore()
+      const a = core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'q1' })
+      const b = core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'q2' })
+
+      await post(core, '/api/answer', { msgId: a.msgId, text: 'one' })
+      await post(core, '/api/answer', { msgId: b.msgId, text: 'two', channel: 'factory' })
+
+      expect(metaOf(core, a.msgId).channel).toBe('dashboard')
+      expect(metaOf(core, b.msgId).channel).toBe('factory')
+    })
+
+    it('400s on a channel outside the closed set and leaves the item open', async () => {
+      const core = makeCore()
+      const item = core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'q' })
+
+      const res = await post(core, '/api/answer', { msgId: item.msgId, text: 'x', channel: 'carrier-pigeon' })
+
+      expect(res.status).toBe(400)
+      expect(core.events.isOpen(item.msgId)).toBe(true)
+    })
+
+    it('delivers exactly one answer when two HTTP channels answer at once', async () => {
+      const delivered: string[] = []
+      const core = new BrokerCore((_conn, m) => void delivered.push(m.text), {
+        events: new EventLog(path.join(tmpDir('agent-chat-arb-'), 'events.db')),
+        registry: new Registry<Conn>(),
+      })
+      core.register(fakeConn(), { t: 'register', name: 'alpha', cwd: '/x', workingOn: 'w', pid: 1 })
+      const item = core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'q' })
+
+      const results = await Promise.all([
+        post(core, '/api/answer', { msgId: item.msgId, text: 'from dashboard', channel: 'dashboard' }),
+        post(core, '/api/answer', { msgId: item.msgId, text: 'from factory', channel: 'factory' }),
+      ]).then(rs => Promise.all(rs.map(r => r.json() as Promise<VerdictResponse>)))
+
+      const winners = results.filter(r => r.ok)
+      expect(winners).toHaveLength(1)
+      expect(results.find(r => !r.ok)?.reason).toContain('not an open item')
+      expect(delivered).toHaveLength(1)
+      const events = answerRows(core, item.msgId)
+      expect(events).toHaveLength(1)
+      expect(metaOf(core, item.msgId).channel).toBe(
+        events[0]!.body === 'from factory' ? 'factory' : 'dashboard',
+      )
+    })
+
+    it('arbitrates one socket answer against one HTTP answer', async () => {
+      const core = makeCore()
+      const server = new SocketServer(core)
+      const item = core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'q' })
+      const frames: { t: string; ok?: boolean; reason?: string }[] = []
+      const human = { write: (line: string) => frames.push(JSON.parse(line)) } as unknown as Conn
+
+      const [http] = await Promise.all([
+        post(core, '/api/answer', { msgId: item.msgId, text: 'http', channel: 'factory' }),
+        Promise.resolve().then(() =>
+          server.handleMessage(human, { t: 'answer', msgId: item.msgId, text: 'cli' }),
+        ),
+      ])
+
+      const verdicts = [
+        ((await http.json()) as VerdictResponse).ok,
+        frames.find(f => f.t === 'answer_result')?.ok,
+      ]
+      expect(verdicts.filter(Boolean)).toHaveLength(1)
+      expect(answerRows(core, item.msgId)).toHaveLength(1)
+      expect(metaOf(core, item.msgId).channel).toBe(verdicts[0] ? 'factory' : 'cli')
+    })
+
+    it('refuses an unknown channel on the socket and records cli by default', () => {
+      const core = makeCore()
+      const server = new SocketServer(core)
+      const [a, b] = [1, 2].map(() =>
+        core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'q' }),
+      )
+      const frames: { t: string; ok?: boolean }[] = []
+      const human = { write: (line: string) => frames.push(JSON.parse(line)) } as unknown as Conn
+
+      server.handleMessage(human, { t: 'answer', msgId: a!.msgId, text: 'x', channel: 'nope' as never })
+      server.handleMessage(human, { t: 'answer', msgId: b!.msgId, text: 'y' })
+
+      expect(frames.map(f => f.ok)).toEqual([false, true])
+      expect(core.events.isOpen(a!.msgId)).toBe(true)
+      expect(metaOf(core, b!.msgId).channel).toBe('cli')
+    })
+
+    it('cannot answer an approval request over HTTP', async () => {
+      const core = makeCore()
+      const item = core.append({
+        kind: 'approval_request',
+        actor: 'alpha',
+        target: HUMAN,
+        body: 'Bash: ls',
+        meta: { tool_name: 'Bash', request_id: 'abcde' },
+      })
+
+      const res = await post(core, '/api/answer', { msgId: item.msgId, text: 'allow' })
+
+      expect(((await res.json()) as VerdictResponse).ok).toBe(false)
+      expect(core.events.isOpen(item.msgId)).toBe(true)
+    })
   })
 
   it.each([

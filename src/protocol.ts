@@ -397,6 +397,17 @@ export interface DecisionCitation {
   reversible: string
 }
 
+/**
+ * Where a human's answer came in from. Provenance only: it is recorded on the
+ * `answer` event's meta and never changes the actor (always HUMAN) or feeds any
+ * authority check.
+ */
+export const ANSWER_CHANNELS = ['cli', 'inbox-file', 'dashboard', 'factory'] as const
+export type AnswerChannel = (typeof ANSWER_CHANNELS)[number]
+
+export const isAnswerChannel = (value: unknown): value is AnswerChannel =>
+  ANSWER_CHANNELS.some(channel => channel === value)
+
 /** What `meta.kind` may say on a queued item (autonomy design section 4). */
 export const QUEUE_ITEM_KINDS = ['decision', 'needs-grant', 'stalled', 'ready-to-merge'] as const
 export type QueueItemKind = (typeof QUEUE_ITEM_KINDS)[number]
@@ -704,7 +715,7 @@ export type ClientMessage =
   | ({ t: 'ask'; text: string } & ItemShape)
   | ({ t: 'notify'; text: string } & Pick<ItemShape, 'kind' | 'task'>)
   | { t: 'queue' }
-  | { t: 'answer'; msgId: string; text: string }
+  | { t: 'answer'; msgId: string; text: string; channel?: AnswerChannel }
   /**
    * The decider answering an open `question` (autonomy slice 3). Accepted only
    * from a registered connection whose durable agent id is `decider.agentId` in

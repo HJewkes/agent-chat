@@ -175,9 +175,9 @@ describe('a batch answer is a single answer', () => {
     const one = seed(single)
     const human = single.wire()
     await approveVerb.run({ id: one.ids.approval, 'allow|deny': 'allow' }, single.ctx)
-    single.send(human, { t: 'answer', msgId: one.ids.question, text: 'sqlite' })
+    single.send(human, { t: 'answer', msgId: one.ids.question, text: 'sqlite', channel: 'inbox-file' })
     await endorseVerb.run({ id: one.ids.endorse, text: 'please rebase', to: 'bob' }, single.ctx)
-    single.send(human, { t: 'answer', msgId: one.ids.decided, text: 'stop here' })
+    single.send(human, { t: 'answer', msgId: one.ids.decided, text: 'stop here', channel: 'inbox-file' })
     await dismissVerb.run({ id: one.ids.notice }, single.ctx)
 
     const batch = makeEnv('batch.db')
