@@ -267,6 +267,40 @@ describe('a seat agent’s retire', () => {
     expect(plain).not.toHaveProperty('tier')
   })
 
+  it('records burndown as the spawner of a CLI spawn it marks, with the seat in a seat field (CC-802)', async () => {
+    const s = supervisorWith(writerOver(root))
+    await s.spawn({ ...spawnReq(AGENT), spawnedAs: 'burndown' })
+
+    expect(dispatchedRows()[0]).toMatchObject({ agent: AGENT, spawner: 'burndown', seat: SEAT })
+  })
+
+  it('records shepherd as the spawner of a fix-round successor it marks (CC-802)', async () => {
+    const s = supervisorWith(writerOver(root))
+    await s.spawn({ ...spawnReq(`${AGENT}-s1`), spawnedAs: 'shepherd' })
+
+    expect(dispatchedRows()[0]).toMatchObject({ agent: `${AGENT}-s1`, spawner: 'shepherd', seat: SEAT })
+  })
+
+  it('writes the same spawner and seat on the retired row as on the dispatched one (CC-802)', async () => {
+    const s = supervisorWith(writerOver(root))
+    await s.spawn({ ...spawnReq(AGENT), spawnedAs: 'burndown' })
+    writeTranscript(AGENT)
+
+    await s.retire(AGENT)
+
+    await expect.poll(() => retiredRows().length).toBe(1)
+    expect(retiredRows()[0]).toMatchObject({ spawner: 'burndown', seat: SEAT })
+  })
+
+  it('keeps recording the spawning seat for a spawn made through MCP (CC-802)', async () => {
+    const s = supervisorWith(writerOver(root))
+    await s.spawn({ ...spawnReq(AGENT), requestedBy: SEAT })
+
+    const [row] = dispatchedRows()
+    expect(row).toMatchObject({ agent: AGENT, spawner: SEAT })
+    expect(row).not.toHaveProperty('seat')
+  })
+
   it('writes the row with null tokens and usd_est when the transcript is missing', async () => {
     const s = supervisorWith(writerOver(root))
     await s.spawn(spawnReq(AGENT))

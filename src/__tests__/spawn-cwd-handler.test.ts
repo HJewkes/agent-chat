@@ -30,9 +30,11 @@ afterEach(() => {
 })
 
 async function spawnedRequest(frame: {
+  name?: string
   cwd?: string
   worktree?: string
   tier?: unknown
+  spawnedAs?: unknown
 }): Promise<SpawnRequest> {
   const seen: SpawnRequest[] = []
   vi.spyOn(Supervisor.prototype, 'spawn').mockImplementation(async req => {
@@ -83,6 +85,36 @@ describe('handleSpawn tier', () => {
     const request = await spawnedRequest({ tier })
 
     expect(request).not.toHaveProperty('tier')
+  })
+})
+
+/** CC-802: a CLI spawn names the automation it runs for, so the dispatch row does not record the human. */
+describe('handleSpawn spawnedAs', () => {
+  it('hands the supervisor the marker an unregistered caller sends', async () => {
+    const request = await spawnedRequest({ spawnedAs: 'burndown' })
+
+    expect(request.spawnedAs).toBe('burndown')
+  })
+
+  it('reads a Shepherd fix-round name as shepherd when no marker is sent', async () => {
+    const request = await spawnedRequest({ name: 'sx-ab-12-fix-s2-s1' })
+
+    expect(request.spawnedAs).toBe('shepherd')
+  })
+
+  it.each(['sx-seat', 7, null, {}])(
+    'drops the marker %j that is not burndown or shepherd',
+    async spawnedAs => {
+      const request = await spawnedRequest({ spawnedAs })
+
+      expect(request).not.toHaveProperty('spawnedAs')
+    },
+  )
+
+  it('leaves a hand-named spawn without a marker', async () => {
+    const request = await spawnedRequest({})
+
+    expect(request).not.toHaveProperty('spawnedAs')
   })
 })
 

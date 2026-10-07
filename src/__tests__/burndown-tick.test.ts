@@ -307,6 +307,20 @@ describe('burndown tick spawns', () => {
     expect(after.lastTickAt).toBe(NOON.toISOString())
   })
 
+  it("marks its spawn frame as burndown's, so the dispatch row does not record the human (CC-802)", () => {
+    const frame = spawnFrame({
+      name: 'bd-x',
+      profile: 'bd-implementer',
+      brief: 'b',
+      cwd: repo(),
+      configDir: accountPath(),
+      initiative: 'demo',
+      taskId: 'X',
+    })
+
+    expect(frame.spawnedAs).toBe('burndown')
+  })
+
   it('refuses to send a spawn whose claim was never recorded', async () => {
     const frames: SpawnFrame[] = []
     const frame = spawnFrame({

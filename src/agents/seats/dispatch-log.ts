@@ -19,7 +19,10 @@ import { seatOf, type SeatFile } from './seat-of.js'
 /** CC-330: the broker's side of a seat's dispatch log, one appended line per verified spawn and per retire. */
 
 /** What the broker knows at a spawn; the writer adds the time, the seat and the task. */
-export type SpawnFacts = Omit<DispatchRun, 'ts' | 'task' | 'initiative' | 'kind'>
+export type SpawnFacts = Omit<DispatchRun, 'ts' | 'task' | 'initiative' | 'kind' | 'seat'> & {
+  /** CC-802: the automation that spawned through the CLI; it replaces the human as the row's spawner. */
+  spawnedAs?: string
+}
 
 /** Never throws and returns nothing: a dispatch row must not fail the spawn or retire that caused it. */
 export interface SeatDispatchLog {
@@ -108,6 +111,7 @@ interface WriteContext {
 interface Target {
   file: string
   task: string | null
+  seat: string
   refuse: (reason?: string) => void
 }
 
@@ -123,7 +127,7 @@ function targetOf(ctx: WriteContext, agent: string, spawner: string | undefined)
   const refuse = (reason = OUTSIDE): void => ctx.once(`${REFUSED}:${seat}`, REFUSED, { seat, reason })
   const file = dispatchLogPath(ctx.root, match.seat)
   if (file === undefined) return void refuse()
-  return { file, task: taskOf(agent, match.seat.seat.prefix) ?? null, refuse }
+  return { file, task: taskOf(agent, match.seat.seat.prefix) ?? null, seat, refuse }
 }
 
 function appendTo(ctx: WriteContext, target: Target, row: Row, skip?: (log: string) => boolean): void {
@@ -138,7 +142,15 @@ function appendTo(ctx: WriteContext, target: Target, row: Row, skip?: (log: stri
 function writeRow(ctx: WriteContext, spawn: SpawnFacts, ts: string, rowOf: (run: DispatchRun) => Row): void {
   const target = targetOf(ctx, spawn.agent, spawn.spawner ?? undefined)
   if (target === undefined) return
-  const run: DispatchRun = { ...spawn, ts, task: target.task, ...taskContext(ctx.activeWork, target.task) }
+  const { spawnedAs, ...facts } = spawn
+  const attribution = spawnedAs === undefined ? {} : { spawner: spawnedAs, seat: target.seat }
+  const run: DispatchRun = {
+    ...facts,
+    ts,
+    task: target.task,
+    ...taskContext(ctx.activeWork, target.task),
+    ...attribution,
+  }
   appendTo(ctx, target, rowOf(run))
 }
 
