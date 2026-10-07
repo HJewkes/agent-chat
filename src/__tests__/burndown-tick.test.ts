@@ -326,15 +326,17 @@ describe('burndown tick spawns', () => {
     expect(result.lines[0]).toContain('no spawning claim recorded')
   })
 
-  it('stalls the claim and names the leftover worktree when the spawn fails after allocation', async () => {
+  it('parks the claim on the third failed spawn and names the leftover worktree', async () => {
     initiative({ 'DM-1': task('DM-1') })
     const fake = fakeBroker({ spawn: () => ({ ok: false, reason: 'spawn failed: claude exited 1' }) })
 
     await tick(fake)
+    await tick(fake)
+    await tick(fake)
 
-    expect(readLedger(burndownLedgerPath()).claims[0]?.stalledReason).toContain(
-      `${repo()}/.worktrees/bd-dm-1 may be left behind`,
-    )
+    const claim = readLedger(burndownLedgerPath()).claims[0]
+    expect(claim?.stallCode).toBe('retry-spent')
+    expect(claim?.stalledReason).toContain(`${repo()}/.worktrees/bd-dm-1 may be left behind`)
   })
 })
 

@@ -163,7 +163,7 @@ describe('every stall site records its exception class', () => {
       ...patch,
     })
 
-    it('a refused spawn records failed', async () => {
+    it('a spawn refused three times with unchanged facts records failed', async () => {
       const spawning = claim({ phase: 'spawning', agentName: 'bd-cc-1-r0' })
       const frame = spawnFrame({
         name: 'bd-cc-1-r0',
@@ -176,13 +176,11 @@ describe('every stall site records its exception class', () => {
       })
       const step: Step = { kind: 'spawn', key: { taskId: 'CC-1' }, frame }
 
-      const done = await execute(
-        [step],
-        { version: 1, claims: [spawning] },
-        deps({ spawn: async () => ({ ok: false }) }),
-      )
+      let ledger: Ledger = { version: 1, claims: [spawning] }
+      for (let tick = 0; tick < 3; tick++)
+        ledger = (await execute([step], ledger, deps({ spawn: async () => ({ ok: false }) }))).ledger
 
-      expect(done.ledger.claims[0]?.stalledClass).toBe('failed')
+      expect(ledger.claims[0]?.stalledClass).toBe('failed')
     })
 
     it('a Shepherd refusal records gate-trip', async () => {

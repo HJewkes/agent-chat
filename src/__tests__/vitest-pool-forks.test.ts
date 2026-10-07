@@ -14,6 +14,8 @@ const EXECS = /\b(?:spawnSync|execFileSync|execSync|execFile|spawn)\(/
 const SAFE_ON_THREADS: Record<string, string> = {
   'src/__tests__/burndown-tick.test.ts':
     'the stub claude binary is only resolved; its one spawn is the system git',
+  'src/__tests__/burndown-liveness-tick.test.ts':
+    'the stub claude binary is only resolved; its one spawn is the system git',
   'src/__tests__/surface-consume.test.ts':
     'runs the written script as an argument to /bin/sh, which reads it and never execs it',
   'src/__tests__/seat-watchdog-run.test.ts':

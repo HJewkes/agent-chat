@@ -1,6 +1,8 @@
 import { logFindings } from './finding.js'
 import { applyActions, claimKey, type Action, type ClaimKey } from './advance.js'
 import { sameClaim, writeLedger, type Claim, type Ledger } from './ledger.js'
+import { clearLiveness, factFingerprint, LIVENESS_LIMIT, maskText, pruneLiveness, spend } from './liveness.js'
+import { parkUpdate } from './stall-code.js'
 import { targetRef, type RegisterReply, type Registration } from './shepherd.js'
 
 type Unretired = NonNullable<Claim['unretired']>[number]
@@ -71,6 +73,10 @@ export interface SpawnReply {
   ok: boolean
   agentId?: string
   reason?: string
+  /** The broker's typed refusal, such as `machine_headless_limit`. */
+  code?: string
+  /** A refusal that clears by itself (a rate or capacity limit), so it spends no liveness budget. */
+  retryable?: boolean
 }
 
 export interface ExecuteDeps {
@@ -88,14 +94,15 @@ export interface Executed {
 }
 
 export async function execute(steps: Step[], start: Ledger, deps: ExecuteDeps): Promise<Executed> {
-  let ledger = start
+  let ledger = pruneLiveness(start, deps.now)
   const lines: string[] = []
-  const commit = (actions: Action[]): void => {
+  const save = (next: Ledger): void => {
     const before = ledger
-    ledger = applyActions(ledger, actions, deps.now)
+    ledger = next
     writeLedger(deps.ledgerFile, ledger)
     logFindings(before, ledger, deps.log)
   }
+  const commit = (actions: Action[]): void => save(applyActions(ledger, actions, deps.now))
   for (const step of steps) {
     if (step.kind === 'ledger') commit(step.actions)
     else if (step.kind === 'retire') {
@@ -104,7 +111,7 @@ export async function execute(steps: Step[], start: Ledger, deps: ExecuteDeps): 
       writeLedger(deps.ledgerFile, ledger)
       lines.push(...retired.lines)
     } else if (step.kind === 'register') lines.push(registerOne(step, commit, deps))
-    else lines.push(await spawnOne(step, ledger, commit, deps))
+    else lines.push(await spawnOne(step, { start, ledger, save }, deps))
   }
   return { ledger, lines }
 }
@@ -124,15 +131,34 @@ function intentRecorded(ledger: Ledger, key: ClaimKey, name: string): boolean {
   return ledger.claims.some(c => c.phase === 'spawning' && c.agentName === name && sameClaim(c, key))
 }
 
+/** The claim for `key` as it stood at tick start, or none when the tick added it (a fresh dispatch). */
+export function undoIntent(ledger: Ledger, start: Ledger, key: ClaimKey): Ledger {
+  const held = (claims: Claim[]): number => claims.findIndex(c => c.phase !== 'done' && sameClaim(c, key))
+  const index = held(ledger.claims)
+  if (index === -1) return ledger
+  const was = start.claims[held(start.claims)]
+  const claims =
+    was === undefined ? ledger.claims.filter((_, i) => i !== index) : ledger.claims.with(index, was)
+  return { ...ledger, claims }
+}
+
+/** The liveness action a spawn spends under: one budget per claim and profile. */
+const spawnAction = (frame: SpawnFrame): string => `spawn:${frame.profile}`
+
+interface SpawnState {
+  start: Ledger
+  ledger: Ledger
+  save: (next: Ledger) => void
+}
+
 async function spawnOne(
   step: Extract<Step, { kind: 'spawn' }>,
-  ledger: Ledger,
-  commit: (actions: Action[]) => void,
+  state: SpawnState,
   deps: ExecuteDeps,
 ): Promise<string> {
   const { frame, key } = step
   const { brief, ...shown } = frame
-  if (!intentRecorded(ledger, key, frame.name))
+  if (!intentRecorded(state.ledger, key, frame.name))
     return `not spawned ${frame.name}: no spawning claim recorded for ${claimKey(key)}`
   deps.log('burndown_spawn_intent', { ...shown, briefChars: brief.length })
   let reply: SpawnReply
@@ -142,14 +168,46 @@ async function spawnOne(
     // The frame may have landed; the claim stays `spawning` and the next tick finds the row by name.
     return `spawn ${frame.name} unanswered (${(err as Error).message}); left spawning for the next tick`
   }
-  deps.log('burndown_spawn_result', { name: frame.name, ok: reply.ok, reason: reply.reason })
+  deps.log('burndown_spawn_result', {
+    name: frame.name,
+    ok: reply.ok,
+    reason: reply.reason,
+    code: reply.code,
+  })
   if (reply.ok) {
-    commit([{ kind: 'update', key, patch: { agentId: reply.agentId } }])
+    const patch = { agentId: reply.agentId }
+    state.save(
+      clearLiveness(
+        applyActions(state.ledger, [{ kind: 'update', key, patch }], deps.now),
+        key,
+        spawnAction(frame),
+      ),
+    )
     return `spawned ${frame.name} (${reply.agentId ?? '?'}) as ${frame.profile} on ${frame.configDir}`
   }
-  const stalledReason = refusalReason(frame, reply.reason ?? 'refused without a reason')
-  commit([{ kind: 'update', key, patch: { stalledReason, stalledClass: 'failed' } }])
-  return `not spawned ${frame.name}: ${stalledReason}`
+  return refused(step, reply, state, deps)
+}
+
+/** A retryable refusal is undone for free; any other spends the budget, undone within it and parked once spent. */
+function refused(
+  { frame, key }: Extract<Step, { kind: 'spawn' }>,
+  reply: SpawnReply,
+  { start, ledger, save }: SpawnState,
+  deps: ExecuteDeps,
+): string {
+  const reason = reply.reason ?? 'refused without a reason'
+  if (reply.retryable === true) {
+    save(undoIntent(ledger, start, key))
+    return `not spawned ${frame.name}: waiting: ${reply.code ?? reason}; retried next tick`
+  }
+  const spent = spend(ledger, key, spawnAction(frame), factFingerprint(frame), reason, deps.now)
+  if (spent.verdict === 'retry') {
+    save(undoIntent(spent.ledger, start, key))
+    return `not spawned ${frame.name}: ${refusalReason(frame, reason)}; refused ${spent.n}/${LIVENESS_LIMIT}, retried next tick`
+  }
+  const detail = `${spent.n} refusals with unchanged facts; last ${refusalReason(frame, maskText(reason))}`
+  save(applyActions(spent.ledger, [parkUpdate(key, 'retry-spent', detail)], deps.now))
+  return `not spawned ${frame.name}: retry-spent: ${detail}`
 }
 
 /** A refused registration stalls the claim, since burndown never merges; an unanswered one is retried next tick. */
