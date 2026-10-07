@@ -97,7 +97,7 @@ describe('handleSpawn spawnedAs', () => {
   })
 
   it('reads a Shepherd fix-round name as shepherd when no marker is sent', async () => {
-    const request = await spawnedRequest({ name: 'tc-cc-778-compare-tiers-s2-s1-s1' })
+    const request = await spawnedRequest({ name: 'sx-ab-12-fix-s2-s1' })
 
     expect(request.spawnedAs).toBe('shepherd')
   })
