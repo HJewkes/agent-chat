@@ -4,6 +4,7 @@ import {
   encode,
   lineReader,
   HUMAN,
+  isAnswerChannel,
   isTeleportReason,
   type ClientMessage,
   type DeliveredMessage,
@@ -856,7 +857,7 @@ export class SocketServer {
    * the caller already legitimately holds. No MCP tool exposes `answer`, so a
    * model reaches this only by talking to the socket directly; see `isHuman`.
    */
-  private handleAnswer(conn: Conn, msgId: string, text: string): void {
+  private handleAnswer(conn: Conn, msgId: string, text: string, channel: unknown = 'cli'): void {
     if (!this.isHuman(conn)) {
       this.refuseToSession(conn, 'answer a queue item')
       return reply(conn, {
@@ -865,7 +866,14 @@ export class SocketServer {
         reason: 'answering is the human’s call; a session cannot answer on the human’s behalf',
       })
     }
-    const result = this.core.answer(msgId, text)
+    if (!isAnswerChannel(channel)) {
+      return reply(conn, {
+        t: 'answer_result',
+        ok: false,
+        reason: `unknown answer channel ${String(channel)}`,
+      })
+    }
+    const result = this.core.answer(msgId, text, channel)
     reply(conn, {
       t: 'answer_result',
       ok: result.ok,
@@ -1350,7 +1358,7 @@ export class SocketServer {
       case 'decided':
         return this.handleDecided(conn, msg)
       case 'answer':
-        return this.handleAnswer(conn, msg.msgId, msg.text)
+        return this.handleAnswer(conn, msg.msgId, msg.text, msg.channel)
       case 'dismiss':
         return this.handleDismiss(conn, msg.msgId)
       case 'approve_permission':
