@@ -10,6 +10,7 @@ export const EXEC_SCRIPT_FILES = [
   'src/__tests__/gh-write-scan.test.ts',
   'src/__tests__/human-wait.test.ts',
   'src/__tests__/isolation.test.ts',
+  'src/__tests__/tmux-surface.test.ts',
   'src/__tests__/launch-plan.test.ts',
   'src/__tests__/leak-pre-push.test.ts',
   'src/__tests__/leak-pretool-shells.test.ts',

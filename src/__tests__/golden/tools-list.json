@@ -450,7 +450,8 @@
               "headless",
               "iterm-pane",
               "iterm-tab",
-              "iterm-window"
+              "iterm-window",
+              "tmux-window"
             ],
             "description": "Overrides the profile's surface. Visible surfaces land in your window and can answer permission prompts; headless cannot be prompted at all."
           },
@@ -589,7 +590,8 @@
               "headless",
               "iterm-pane",
               "iterm-tab",
-              "iterm-window"
+              "iterm-window",
+              "tmux-window"
             ]
           }
         },
