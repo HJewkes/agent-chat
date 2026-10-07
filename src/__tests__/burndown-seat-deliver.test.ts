@@ -65,16 +65,18 @@ describe('deliverSeatEvents', () => {
 
   it('an undelivered notice records no fingerprint', async () => {
     const stall = { stalledReason: 'implementing past its timeout', stallCode: 'phase-timeout' } as const
-    const restall = (l: Ledger): Ledger => {
-      const { stalledReason: _r, stallCode: _c, ...cleared } = l.claims[0] as Claim
-      return ledger({ ...cleared, ...stall })
-    }
     const accepting = recorder()
+    /** One tick that clears the stall and one that raises it again with unchanged facts. */
+    const restall = async (from: Ledger): Promise<Ledger> => {
+      const { stalledReason: _r, stallCode: _c, ...cleared } = from.claims[0] as Claim
+      const quiet = await deliver(['alpha'], from, ledger(cleared), accepting.open)
+      const next = ledger({ ...(quiet.ledger.claims[0] as Claim), ...stall })
+      return (await deliver(['alpha'], quiet.ledger, next, accepting.open)).ledger
+    }
     const stalled = ledger(claim(stall))
 
     const refused = await deliver(['alpha'], stalled, stalled, recorder(async () => ({ ok: false })).open)
-    const sent = await deliver(['alpha'], refused.ledger, restall(refused.ledger), accepting.open)
-    await deliver(['alpha'], sent.ledger, restall(sent.ledger), accepting.open)
+    await restall(await restall(refused.ledger))
 
     expect(refused.ledger.claims[0]?.noticeFacts).toBeUndefined()
     expect(accepting.seen.sent).toEqual(['alpha: stalled T-1: phase-timeout: implementing past its timeout'])
