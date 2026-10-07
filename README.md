@@ -243,7 +243,8 @@ agent-chat mirror start|stop|status
 agent-chat burndown plan|status dry run: the task each opted-in initiative
                                 would dispatch next, and every refusal
 agent-chat burndown install|uninstall|job-status
-                                the launchd tick job (docs/burndown.md)
+                                the launchd tick job, systemd --user timer
+                                on Linux (docs/burndown.md)
 agent-chat gh-write -- <gh args...>
                                 one gh write, spaced machine-wide (config.json
                                 ghWriteGapSeconds, default 3) and retried on

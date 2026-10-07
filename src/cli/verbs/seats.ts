@@ -71,14 +71,14 @@ import {
 } from '../../agents/seats/status.js'
 import { readPoolPicks } from '../../agents/seats/pool-pick-log.js'
 import type { OwnerMessage } from '../../agents/seats/stops.js'
-import { FIRE_CAP, WATCHDOG_MINUTES } from '../../agents/seats/watchdog.js'
+import { FIRE_CAP } from '../../agents/seats/watchdog.js'
 import { BrokerClient } from '../../client/broker-client.js'
-import { startJob, systemLaunchctl, type JobControl } from '../../mirror/launchd.js'
-import { jobEnv, renderWatchdogPlist } from '../../mirror/plist.js'
+import { systemHost } from '../../mirror/job-host.js'
 import { hostLeaseRefusal } from '../../host-lease.js'
-import { WATCHDOG_LABEL, cliEntry, home, watchdogLogDir, watchdogPlistPath } from '../../paths.js'
+import { home } from '../../paths.js'
 import { SURFACE_NAMES, type ServerMessage, type SurfaceName } from '../../protocol.js'
 import { addVerb, defineVerb, Report } from '../command.js'
+import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from './watchdog-job.js'
 
 type Reply<T extends ServerMessage['t']> = Extract<ServerMessage, { t: T }>
 
@@ -347,42 +347,45 @@ export const seatsWatchdogVerb = defineVerb({
   },
 })
 
-/** The install verb's body, taking its `JobControl` explicitly so a test can inject a stub. */
-export function watchdogInstall(control: JobControl): Report {
-  const plist = renderWatchdogPlist({
-    label: WATCHDOG_LABEL,
-    nodePath: process.execPath,
-    cliEntry: cliEntry(),
-    logDir: watchdogLogDir(),
-    env: jobEnv(process.env),
-    minutes: WATCHDOG_MINUTES,
-  })
-  // No kickstart: the first wake waits for the next scheduled minute, not the install.
-  const result = startJob({ plist: watchdogPlistPath(), logDir: watchdogLogDir() }, plist, control, {
-    kickstart: false,
-  })
-  return control.dryRun ? { ok: true, lines: [plist, ...result.lines] } : result
-}
+export { watchdogInstall } from './watchdog-job.js'
 
 export const seatsWatchdogInstallVerb = defineVerb({
   name: 'seats.watchdog-install',
   description:
-    'install the launchd job that runs `seats watchdog` four times an hour; the first run waits for the next scheduled minute',
+    'install the launchd job (systemd --user units on Linux) that runs `seats watchdog` four times an hour; ' +
+    'the first run waits for the next scheduled minute',
   args: z.object({ dryRun: z.boolean().optional() }),
   result: Report,
   cli: {
     options: {
-      dryRun: { long: '--dry-run', description: 'print the plist and launchctl calls; load nothing' },
+      dryRun: {
+        long: '--dry-run',
+        description: 'print the plist and launchctl calls (units and systemctl calls on Linux); load nothing',
+      },
     },
   },
   async run({ dryRun }) {
-    const control = {
-      launchctl: systemLaunchctl,
-      uid: process.getuid?.() ?? 0,
-      dryRun: dryRun === true,
-      label: WATCHDOG_LABEL,
-    }
-    return watchdogInstall(control)
+    return watchdogInstallOn(systemHost(dryRun === true))
+  },
+})
+
+export const seatsWatchdogUninstallVerb = defineVerb({
+  name: 'seats.watchdog-uninstall',
+  description: 'stop the watchdog job and keep it from starting at login; on Linux, also remove its units',
+  args: z.object({}),
+  result: Report,
+  async run() {
+    return watchdogUninstallOn(systemHost())
+  },
+})
+
+export const seatsWatchdogStatusVerb = defineVerb({
+  name: 'seats.watchdog-status',
+  description: 'launchd state of the watchdog job, or its systemd units on Linux',
+  args: z.object({}),
+  result: Report,
+  async run() {
+    return watchdogStatusOn(systemHost())
   },
 })
 
@@ -646,4 +649,6 @@ export function addSeatsCommands(program: Commander): void {
   addVerb(seats, seatsBootVerb)
   addVerb(seats, seatsRunStartVerb)
   addVerb(seats, seatsWatchdogInstallVerb)
+  addVerb(seats, seatsWatchdogUninstallVerb)
+  addVerb(seats, seatsWatchdogStatusVerb)
 }

@@ -71,7 +71,8 @@ export type PlistSchedule =
   | { kind: 'interval'; seconds: number }
   | { kind: 'minutes'; minutes: readonly number[] }
 
-interface PlistInput {
+/** One scheduled job, rendered as a launchd plist on darwin and as systemd units on Linux. */
+export interface JobSpec {
   label: string
   args: string[]
   logFile: string
@@ -95,7 +96,7 @@ function scheduleLines(schedule: PlistSchedule): string[] {
 }
 
 /** Pure: the shared shape of every agent-chat launchd job. It holds no token. */
-function renderPlist(input: PlistInput): string {
+export function renderPlist(input: JobSpec): string {
   const env = Object.entries(input.env).map(([key, value]) => keyString(key, value, '    '))
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -151,16 +152,18 @@ export interface BurndownPlistInput {
 }
 
 /** `agent-chat burndown tick --once` on a schedule; never kept alive between runs. */
-export function renderBurndownPlist(input: BurndownPlistInput): string {
-  return renderPlist({
+export function burndownJob(input: BurndownPlistInput): JobSpec {
+  return {
     label: input.label,
     args: [input.nodePath, input.cliEntry, 'burndown', 'tick', '--once'],
     logFile: path.join(input.logDir, 'burndown.log'),
     runAtLoad: false,
     schedule: { kind: 'interval', seconds: input.intervalSeconds },
     env: input.env,
-  })
+  }
 }
+
+export const renderBurndownPlist = (input: BurndownPlistInput): string => renderPlist(burndownJob(input))
 
 export interface WatchdogPlistInput {
   label: string
@@ -172,13 +175,15 @@ export interface WatchdogPlistInput {
 }
 
 /** `agent-chat seats watchdog` at fixed minutes, so a replay's run times are the installed job's. */
-export function renderWatchdogPlist(input: WatchdogPlistInput): string {
-  return renderPlist({
+export function watchdogJob(input: WatchdogPlistInput): JobSpec {
+  return {
     label: input.label,
     args: [input.nodePath, input.cliEntry, 'seats', 'watchdog'],
     logFile: path.join(input.logDir, 'watchdog.log'),
     runAtLoad: false,
     schedule: { kind: 'minutes', minutes: input.minutes },
     env: input.env,
-  })
+  }
 }
+
+export const renderWatchdogPlist = (input: WatchdogPlistInput): string => renderPlist(watchdogJob(input))

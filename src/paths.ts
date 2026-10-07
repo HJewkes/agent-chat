@@ -133,6 +133,14 @@ export const watchdogPlistPath = (): string =>
 export const watchdogLogDir = (): string =>
   path.join(os.homedir(), 'Library', 'Logs', 'agent-chat-seat-watchdog')
 
+/** The systemd user manager reads units from here (CC-816); like launchd's, it ignores `AGENT_CHAT_HOME`. */
+export const systemdUserUnitDir = (): string =>
+  path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'systemd', 'user')
+
+/** A Linux job's log dir under the XDG state dir, as active-work's unit logs; `name` is the unit name. */
+export const linuxJobLogDir = (name: string): string =>
+  path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), name)
+
 /** The package root, reached identically from `dist/paths.js` and `src/paths.ts`. */
 const packageRoot = (): string => path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 

@@ -238,9 +238,12 @@ Commands:
   pause                stop new spawns from the next tick on; running agents finish
   resume               let the tick spawn again
   release <task>       drop every claim on a task, stalled or not, so the tick may pick it again
-  install [options]    print the sign-off checklist, then install and start the launchd tick job
-  uninstall            stop the launchd tick job and keep it from starting at login
-  job-status           launchd state for the tick job: loaded, pid, and whether it may spawn
+  install [options]    print the sign-off checklist, then install and start the launchd tick job (a
+                       systemd --user timer on Linux)
+  uninstall            stop the launchd tick job and keep it from starting at login; on Linux, also
+                       remove its units
+  job-status           launchd state for the tick job (its systemd units on Linux): loaded, pid, and
+                       whether it may spawn
   help [command]       display help for command
 
 === agent-chat burndown plan
@@ -335,16 +338,17 @@ Options:
 === agent-chat burndown install
 Usage: agent-chat burndown install [options]
 
-print the sign-off checklist, then install and start the launchd tick job
+print the sign-off checklist, then install and start the launchd tick job (a systemd --user timer on
+Linux)
 
 Options:
-  --dry-run   print the plist and launchctl calls; load nothing
+  --dry-run   print the plist and launchctl calls (units and systemctl calls on Linux); load nothing
   -h, --help  display help for command
 
 === agent-chat burndown uninstall
 Usage: agent-chat burndown uninstall [options]
 
-stop the launchd tick job and keep it from starting at login
+stop the launchd tick job and keep it from starting at login; on Linux, also remove its units
 
 Options:
   -h, --help  display help for command
@@ -352,7 +356,7 @@ Options:
 === agent-chat burndown job-status
 Usage: agent-chat burndown job-status [options]
 
-launchd state for the tick job: loaded, pid, and whether it may spawn
+launchd state for the tick job (its systemd units on Linux): loaded, pid, and whether it may spawn
 
 Options:
   -h, --help  display help for command
@@ -401,8 +405,12 @@ Commands:
                                was. Refuses and writes nothing on unknown_seat, no_reading (no
                                seven_day reading, or one over 15 min old) or lock_held (a watchdog
                                run held the lock for 90 s)
-  watchdog-install [options]   install the launchd job that runs `seats watchdog` four times an
-                               hour; the first run waits for the next scheduled minute
+  watchdog-install [options]   install the launchd job (systemd --user units on Linux) that runs
+                               `seats watchdog` four times an hour; the first run waits for the next
+                               scheduled minute
+  watchdog-uninstall           stop the watchdog job and keep it from starting at login; on Linux,
+                               also remove its units
+  watchdog-status              launchd state of the watchdog job, or its systemd units on Linux
   help [command]               display help for command
 
 === agent-chat seats watchdog
@@ -486,11 +494,27 @@ Options:
 === agent-chat seats watchdog-install
 Usage: agent-chat seats watchdog-install [options]
 
-install the launchd job that runs `seats watchdog` four times an hour; the first run waits for the
-next scheduled minute
+install the launchd job (systemd --user units on Linux) that runs `seats watchdog` four times an
+hour; the first run waits for the next scheduled minute
 
 Options:
-  --dry-run   print the plist and launchctl calls; load nothing
+  --dry-run   print the plist and launchctl calls (units and systemctl calls on Linux); load nothing
+  -h, --help  display help for command
+
+=== agent-chat seats watchdog-uninstall
+Usage: agent-chat seats watchdog-uninstall [options]
+
+stop the watchdog job and keep it from starting at login; on Linux, also remove its units
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat seats watchdog-status
+Usage: agent-chat seats watchdog-status [options]
+
+launchd state of the watchdog job, or its systemd units on Linux
+
+Options:
   -h, --help  display help for command
 
 === agent-chat debug
