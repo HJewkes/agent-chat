@@ -51,3 +51,20 @@ export async function pushedBranchStep(
     return { ok: true, reason: `not behind ${baseName}${note}` }
   return { ok: !strict, reason: `behind ${baseName}, branch already pushed; not rebasing${note}` }
 }
+
+const revision = async (run: Run, cwd: string, ref: string): Promise<string | undefined> => {
+  const result = await run('git', ['rev-parse', '--verify', '--quiet', ref], cwd)
+  return result.code === 0 ? text(result) : undefined
+}
+
+/**
+ * CC-824: basement-suite fetches `refs/heads/<branch>` from origin, so HEAD is testable there only when
+ * an origin ref holds it. Returns that ref's branch name, which may differ from the local branch.
+ */
+export async function pushedHeadBranch(run: Run, cwd: string, base: string): Promise<string | undefined> {
+  const pushed = await pushedRef(run, cwd, base)
+  if (!pushed?.startsWith(ORIGIN_PREFIX)) return undefined
+  const head = await revision(run, cwd, 'HEAD')
+  if (head === undefined || head !== (await revision(run, cwd, pushed))) return undefined
+  return pushed.slice(ORIGIN_PREFIX.length)
+}
