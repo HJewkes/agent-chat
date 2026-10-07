@@ -441,6 +441,19 @@ export class EventLog implements EventStore {
     }))
   }
 
+  agedOutCandidates(cutoff: number): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT msg_id FROM events
+         WHERE target = 'human' AND kind IN ('message', 'notice') AND ts <= ?
+           AND json_extract(meta, '$.kind') IS NULL
+           AND msg_id IS NOT NULL AND msg_id NOT IN (${CLOSED})
+         ORDER BY id ASC`,
+      )
+      .all(cutoff) as unknown as { msg_id: string }[]
+    return rows.map(row => row.msg_id)
+  }
+
   /** How many items of one kind this session has outstanding, for budgeting. */
   openCount(actor: string, kind: EventKind): number {
     const row = this.db
@@ -696,6 +709,7 @@ export class EventLog implements EventStore {
       meta: {
         ...((row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>),
         ...(row.target ? { target: row.target } : {}),
+        ...(row.ref ? { ref: row.ref } : {}),
       },
     }))
   }
