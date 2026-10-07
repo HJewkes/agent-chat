@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { frontmatterField, listField, parseAutonomy, taskScalars } from '../active-work.js'
 import { readAccountBudget } from '../budget.js'
 import { profileDir } from '../config-dir.js'
-import { DEFAULT_RULES, type AccountReading, type AccountRule } from './budget-gate.js'
+import type { AccountReading } from './budget-gate.js'
 import { Route } from './exception.js'
 import type { Initiative, Task } from './eligibility.js'
 
@@ -91,14 +91,8 @@ export function readTaskText(root: string, slug: string, id: string): string | u
   return undefined
 }
 
-const Rule = z.object({
-  reserve_seven_day: z.number().min(0).max(100),
-  ceiling_five_hour: z.number().min(0).max(100),
-  night: z.object({ reserve_seven_day: z.number().min(0).max(100) }).optional(),
-})
 const count = z.number().int().nonnegative()
 const Config = z.object({
-  accounts: z.record(z.string(), Rule).optional(),
   enabled: z.boolean().default(false),
   /** Burndown agents alive at once, across every initiative. */
   maxAgents: count.default(3),
@@ -141,7 +135,7 @@ const Config = z.object({
   /** Seat names for CC-205 seats-mode dispatch; empty means none. */
   seats: z.array(z.string().min(1)).default([]),
 })
-export type TickConfig = Omit<z.infer<typeof Config>, 'accounts'>
+export type TickConfig = z.infer<typeof Config>
 
 function parseConfig(file: string): z.infer<typeof Config> | undefined {
   const raw = readText(file)
@@ -151,25 +145,22 @@ function parseConfig(file: string): z.infer<typeof Config> | undefined {
   return parsed.data
 }
 
-/** The design's starting numbers when no config file or no `accounts` exists; a malformed file throws. */
-export function loadRules(file: string): Record<string, AccountRule> {
-  return (parseConfig(file)?.accounts as Record<string, AccountRule> | undefined) ?? DEFAULT_RULES
-}
-
-/** The tick's switches and ceilings; absent means disabled. */
-export function loadTickConfig(file: string): TickConfig {
-  const { accounts: _accounts, ...config } = parseConfig(file) ?? Config.parse({})
-  return config
-}
+/** The tick's switches and ceilings; absent means disabled. CC-801: an old `accounts` key is dropped unread; the charter's pools replaced it. */
+export const loadTickConfig = (file: string): TickConfig => parseConfig(file) ?? Config.parse({})
 
 /** The Claude config dir an account name resolves to, the way a spawn's `profile` would. */
 export const accountDir = (account: string, env = process.env, home = os.homedir()): string =>
   profileDir(account, env, home)
 
-export function readReadings(accounts: string[], now = Date.now()): Map<string, AccountReading> {
+/** Each account's reading from `dirOf(account)`, the charter pool's `config_dir` where it has one. */
+export function readReadings(
+  accounts: string[],
+  now = Date.now(),
+  dirOf: (account: string) => string = accountDir,
+): Map<string, AccountReading> {
   const readings = new Map<string, AccountReading>()
   for (const account of accounts) {
-    const read = readAccountBudget(accountDir(account), now)
+    const read = readAccountBudget(dirOf(account), now)
     if (!read.found) continue
     const { seven_day, five_hour } = read.budget.rate_limits
     readings.set(account, {
