@@ -2701,4 +2701,80 @@ describe('burndown tick triage jobs (CC-649)', () => {
 
     expect(lines.join('\n')).toContain('STALLED (class failed, route triage, triage triage-dm-1-1 started)')
   })
+
+  /** CC-651: a live, silent worker whose transcript last moved one minute past noon, so a finding opens at +7. */
+  function silentWorker(exceptions: Record<string, unknown>) {
+    const claim = stalledClaim('DM-1', { stalledReason: undefined, stalledClass: undefined })
+    setup({ exceptions }, [claim])
+    const worker = { ...row('st-dm-1', 'live'), sessionId: 'sess-st-dm-1' }
+    const file = transcriptPath(worker.cwd, worker.sessionId, worker.configDir)
+    const lastWork = at(1)
+    write(file, turn(lastWork))
+    return { agents: [worker], file, lastWork }
+  }
+  const turn = (when: Date) =>
+    `${JSON.stringify({ type: 'assistant', timestamp: when.toISOString(), message: { content: [{ type: 'text', text: 'working' }] } })}\n`
+  const findingLines = (fake: Fake) =>
+    fake.sends.flatMap(s => s.text.split('\n').filter(l => l.startsWith('stalled-after-claim ')))
+
+  it('triages a finding once under its id, through refreshes, and tells no one when it closes mid-job', async () => {
+    const { agents, file } = silentWorker(READY)
+    const fake = fakeBroker({ agents })
+
+    await tickAt(fake, 7)
+    const openedAt = claimOf()?.finding?.openedAt
+    await tickAt(fake, 8)
+    agents.push(row('triage-dm-1-1', 'live', path.join(world, 'aw')))
+    await tickAt(fake, 17)
+    const status = renderStatus(readLedger(burndownLedgerPath()), at(17))
+    fs.appendFileSync(file, turn(at(18)))
+    await tickAt(fake, 19)
+    agents[1] = row('triage-dm-1-1', 'exited', path.join(world, 'aw'))
+    await tickAt(fake, 21)
+
+    expect(openedAt).toBe(at(7).toISOString())
+    expect(triageFrames(fake)).toEqual([
+      expect.objectContaining({
+        name: 'triage-dm-1-1',
+        brief: expect.stringMatching(/class: stalled\nfinding: no-progress: idle/),
+      }),
+    ])
+    expect(status.join('\n')).toContain(
+      '(class stalled, route triage, triage triage-dm-1-1 started) FINDING stalled-after-claim',
+    )
+    expect(findingLines(fake)).toEqual([])
+    expect(claimOf()?.finding).toBeUndefined()
+    expect(claimOf()?.triage).toBeUndefined()
+  })
+
+  it('tells the owner of a finding whose triager exits with it still open, once', async () => {
+    const { agents, lastWork } = silentWorker(READY)
+    const fake = fakeBroker({ agents })
+
+    await tickAt(fake, 7)
+    await tickAt(fake, 8)
+    agents.push(row('triage-dm-1-1', 'exited', path.join(world, 'aw')))
+    await tickAt(fake, 9)
+    await tickAt(fake, 10)
+
+    expect(triageFrames(fake)).toHaveLength(1)
+    expect(findingLines(fake)).toEqual([
+      `stalled-after-claim DM-1: no-progress: idle: no agent event for 8 min since ${lastWork.toISOString()}`,
+    ])
+  })
+
+  it('with the dial at owner delivers a finding exactly as before, even with triage configured', async () => {
+    const { agents, lastWork } = silentWorker({ triage: { account: 'agents' } })
+    const fake = fakeBroker({ agents })
+
+    await tickAt(fake, 7)
+
+    expect(fake.frames).toEqual([])
+    expect(fake.sends).toEqual([
+      {
+        to: 'seat-t',
+        text: `Burndown events for seat-t at ${at(7).toISOString()}\nstalled-after-claim DM-1: no-progress: idle: no agent event for 6 min since ${lastWork.toISOString()}`,
+      },
+    ])
+  })
 })

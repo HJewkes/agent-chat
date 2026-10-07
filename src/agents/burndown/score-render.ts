@@ -39,6 +39,8 @@ export interface ScoredPlan {
   unnamedCriteria?: string[]
   /** CC-769: `<id> <reason>` for each milestone epic `planOrder` held out of tier 2. */
   epicsHeld?: string[]
+  /** CC-644: self edges, missing deps, cycles and dependents of a failed upstream, with the task ids named. */
+  edgeLines?: string[]
 }
 
 export interface ScoredPlanInputs {
@@ -54,6 +56,8 @@ export interface ScoredPlanInputs {
   milestones?: MilestoneFile
   /** Task ids outside `tasks` that a `dep:` may name; without them every closed dep is `unknown-dep`. */
   knownIds?: readonly string[]
+  /** CC-644: task id to why it failed; its dependents are blocked. */
+  failedUpstreams?: Readonly<Record<string, string>>
 }
 
 export function scoredPlan(input: ScoredPlanInputs): ScoredPlan {
@@ -68,6 +72,7 @@ export function scoredPlan(input: ScoredPlanInputs): ScoredPlan {
     ...(input.seat !== undefined && { seat: input.seat }),
     ...(input.milestones !== undefined && { milestones: input.milestones }),
     ...(input.knownIds !== undefined && { knownIds: input.knownIds }),
+    ...(input.failedUpstreams !== undefined && { failedUpstreams: input.failedUpstreams }),
   })
   const unnamed = unnamedCriterionLines(input)
   return {
@@ -79,6 +84,7 @@ export function scoredPlan(input: ScoredPlanInputs): ScoredPlan {
     tagErrors: planned.tagErrors.map(describeTagError),
     ...(unnamed.length > 0 && { unnamedCriteria: unnamed }),
     ...(planned.epicsHeld.length > 0 && { epicsHeld: planned.epicsHeld }),
+    ...(planned.edgeLines.length > 0 && { edgeLines: planned.edgeLines }),
   }
 }
 
@@ -197,6 +203,7 @@ export function renderScored(plan: ScoredPlan): string[] {
   return [
     ...plan.order.map((row, i) => renderScoredRow(row, i + 1)),
     ...milestones,
+    ...(plan.edgeLines ?? []),
     ...tagErrors,
     ...epics,
     ...(plan.unnamedCriteria ?? []),
