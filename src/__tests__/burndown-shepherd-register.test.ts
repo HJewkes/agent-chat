@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { Runner } from '../agents/burndown/exec.js'
 import { execute, type ExecuteDeps, type Step } from '../agents/burndown/execute.js'
 import { readLedger, writeLedger, type Claim, type Ledger } from '../agents/burndown/ledger.js'
-import { registerWithShepherd } from '../agents/burndown/shepherd.js'
+import { prHeadOf, registerWithShepherd } from '../agents/burndown/shepherd.js'
 
 const reg = {
   target: { repo: 'Acme/Widgets', pr: 7 },
@@ -95,7 +95,10 @@ describe('burndown Shepherd register liveness (CC-716)', () => {
   })
   const REFUSED = { ok: false, refused: true, reason: 'denyRepos' }
 
-  function ticker(replies: Array<typeof REFUSED | { ok: boolean; refused?: boolean; reason?: string }>): {
+  function ticker(
+    replies: Array<typeof REFUSED | { ok: boolean; refused?: boolean; reason?: string }>,
+    observedHead: () => string | undefined = () => undefined,
+  ): {
     tick: () => Promise<Ledger>
     calls: () => number
   } {
@@ -106,6 +109,7 @@ describe('burndown Shepherd register liveness (CC-716)', () => {
       retire: async () => ({ ok: true }),
       register: () => replies[Math.min(calls++, replies.length - 1)] as ReturnType<ExecuteDeps['register']>,
       log: () => {},
+      prHead: observedHead,
       now: NOW,
     }
     return { tick: async () => (await execute([step], readLedger(file), deps)).ledger, calls: () => calls }
@@ -136,17 +140,39 @@ describe('burndown Shepherd register liveness (CC-716)', () => {
     expect(ledger.claims[0]?.stalledReason).toBeUndefined()
   })
 
-  it('counts a refusal after the PR head changed as a retry', async () => {
-    writeLedger(file, { version: 1, claims: [shepherding('aaa111')] })
-    const { tick } = ticker([REFUSED])
+  it('counts a refusal after the observed PR head changed as a retry', async () => {
+    writeLedger(file, { version: 1, claims: [{ ...shepherding('aaa111'), prHead: undefined }] })
+    let head = 'aaa111'
+    const { tick } = ticker([REFUSED], () => head)
     await tick()
     await tick()
-    const ledger = readLedger(file)
-    writeLedger(file, { ...ledger, claims: [shepherding('bbb222')] })
+    head = 'bbb222'
 
     const after = await tick()
 
     expect(after.claims[0]?.stalledReason).toBeUndefined()
+  })
+
+  it('parks the third refusal when the observed PR head never changed', async () => {
+    writeLedger(file, { version: 1, claims: [shepherding('aaa111')] })
+    const { tick } = ticker([REFUSED], () => 'aaa111')
+    await tick()
+    await tick()
+
+    const after = await tick()
+
+    expect(after.claims[0]?.stallCode).toBe('retry-spent')
+  })
+
+  it('reads the PR head from GitHub, and nothing when GitHub does not answer', () => {
+    const target = { repo: 'o/r', pr: 9 }
+    const answer =
+      (status: number, stdout: string): Runner =>
+      () => ({ status, stdout })
+
+    expect(prHeadOf(target, answer(0, 'abc1234def\n'))).toBe('abc1234def')
+    expect(prHeadOf(target, answer(1, ''))).toBeUndefined()
+    expect(prHeadOf(target, answer(0, 'not a sha'))).toBeUndefined()
   })
 
   it('clears the record when a register succeeds', async () => {

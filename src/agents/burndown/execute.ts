@@ -3,7 +3,7 @@ import { applyActions, claimKey, type Action, type ClaimKey } from './advance.js
 import { sameClaim, writeLedger, type Claim, type Ledger } from './ledger.js'
 import { clearLiveness, factFingerprint, LIVENESS_LIMIT, maskText, pruneLiveness, spend } from './liveness.js'
 import { parkUpdate } from './stall-code.js'
-import { targetRef, type RegisterReply, type Registration } from './shepherd.js'
+import { targetRef, type RegisterReply, type Registration, type ShepherdTarget } from './shepherd.js'
 
 type Unretired = NonNullable<Claim['unretired']>[number]
 
@@ -84,6 +84,8 @@ export interface ExecuteDeps {
   spawn: (frame: SpawnFrame) => Promise<SpawnReply>
   retire: (name: string) => Promise<SpawnReply>
   register: (registration: Registration) => RegisterReply
+  /** The PR's head as observed now; the register fingerprint falls back to the claim's when it is unknown. */
+  prHead?: (target: ShepherdTarget) => string | undefined
   log: (event: string, detail: Record<string, unknown>) => void
   now: Date
 }
@@ -231,7 +233,9 @@ function registerOne(
     return `registered ${ref} with Shepherd for ${claimKey(key)}`
   }
   if (!reply.refused) return `register ${ref} with Shepherd failed (${reply.reason}); retried next tick`
-  const prHead = ledger.claims.find(c => c.phase !== 'done' && sameClaim(c, key))?.prHead
+  const prHead =
+    deps.prHead?.(registration.target) ??
+    ledger.claims.find(c => c.phase !== 'done' && sameClaim(c, key))?.prHead
   const spent = spend(
     ledger,
     key,
