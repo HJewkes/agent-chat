@@ -54,6 +54,19 @@ const MAX_OPEN_QUESTIONS = 3
  */
 const MAX_OPEN_ENDORSEMENTS = 2
 
+/** Shepherd names a fix-round successor with `-s<N>`; a caller that sends no marker is still read by it. */
+const FIX_ROUND = /-s\d+$/
+
+/** CC-802: the marker the CLI caller sent, else `shepherd` for a fix-round name, else none. */
+const spawnedAsOf = (msg: {
+  name: string
+  spawnedAs?: 'burndown' | 'shepherd'
+}): { spawnedAs?: 'burndown' | 'shepherd' } => {
+  const claimed = msg.spawnedAs === 'burndown' || msg.spawnedAs === 'shepherd' ? msg.spawnedAs : undefined
+  const spawnedAs = claimed ?? (FIX_ROUND.test(msg.name) ? 'shepherd' : undefined)
+  return spawnedAs === undefined ? {} : { spawnedAs }
+}
+
 const reply = (conn: Conn, message: ServerMessage): void => {
   conn.write(encode(message))
 }
@@ -261,6 +274,7 @@ export class SocketServer {
       ...(msg.predecessor === undefined ? {} : { predecessor: msg.predecessor }),
       ...(msg.returnContract === undefined ? {} : { returnContract: msg.returnContract }),
       ...(Number.isInteger(msg.tier) ? { tier: msg.tier } : {}),
+      ...(requestedBy === HUMAN ? spawnedAsOf(msg) : {}),
       ...(msg.tags === undefined ? {} : { tags: msg.tags }),
       ...(msg.subscriptions === undefined ? {} : { subscriptions: msg.subscriptions }),
       // CC-100. The explicit ask is the request's to make; the spawner's own

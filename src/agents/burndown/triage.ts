@@ -308,6 +308,7 @@ function triageFrame(
     surface: 'headless',
     briefing: claim.initiative,
     tags: ['burndown', 'triage', `task:${claim.taskId}`],
+    spawnedAs: 'burndown',
   }
 }
 

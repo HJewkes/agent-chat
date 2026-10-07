@@ -409,6 +409,8 @@ export interface SpawnRequest {
   returnContract?: 'none'
   /** CC-774: the burndown plan's tier for the task, written on the `dispatched` row. */
   tier?: number
+  /** CC-802: the automation a human-requested spawn runs for; the `dispatched` row's spawner. */
+  spawnedAs?: 'burndown' | 'shepherd'
   /** Empty for a human-initiated spawn; otherwise the requesting agent's id. */
   parentAgentId?: string
   requestedBy: string
@@ -1684,6 +1686,8 @@ export class Supervisor implements TeleportHost {
         ...(fork ? { inherit: 'context', fork_from: fork.sessionId } : {}),
         ...(resumed ? { resumed_session: resumed.sessionId, transcript: resumed.path } : {}),
         ...(req.predecessor === undefined ? {} : { predecessor: req.predecessor }),
+        // CC-802: stored so the retire row names the same spawner as the dispatched one.
+        ...(req.spawnedAs === undefined ? {} : { spawned_as: req.spawnedAs }),
       },
     })
 
@@ -1719,6 +1723,7 @@ export class Supervisor implements TeleportHost {
       model: profile.model,
       predecessor: req.predecessor ?? null,
       ...(req.tier === undefined ? {} : { tier: req.tier }),
+      ...(req.spawnedAs === undefined ? {} : { spawnedAs: req.spawnedAs }),
     }
     if (verdict.kind === 'pending') {
       this.awaitLateAttach(req, agentId, handle, site, launchedAt, announce, facts)
@@ -2215,6 +2220,7 @@ export class Supervisor implements TeleportHost {
       profile: meta.profile ?? identity.profile,
       model: meta.model ?? null,
       predecessor: meta.predecessor ?? null,
+      ...(meta.spawned_as === undefined ? {} : { spawnedAs: meta.spawned_as }),
     }
     const sessionId = identity.sessionId || null
     const tree = allocatedWorktree(this.core.events.agentEvents(), identity.agentId)

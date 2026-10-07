@@ -881,6 +881,11 @@ export type ClientMessage =
       returnContract?: 'none'
       /** CC-774: the class-of-service tier the burndown plan placed the task in; recorded on the `dispatched` row. */
       tier?: number
+      /**
+       * CC-802: who a CLI spawn is on behalf of. Only an unregistered connection's claim is read, since a
+       * session is already named by its registration; the row then records it in place of the human.
+       */
+      spawnedAs?: 'burndown' | 'shepherd'
     }
   | { t: 'agents'; includeRetired?: boolean }
   /**
