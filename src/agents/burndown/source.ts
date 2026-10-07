@@ -95,7 +95,7 @@ const count = z.number().int().nonnegative()
 const Config = z.object({
   enabled: z.boolean().default(false),
   /** Burndown agents alive at once, across every initiative. */
-  maxAgents: count.default(3),
+  maxAgents: z.number().int().positive({ error: 'maxAgents must be a positive integer' }).default(3),
   /** Broker agent slots the tick leaves free for the human's own spawns. */
   reserveSlots: count.default(2),
   maxWorktreesPerRepo: count.default(3),

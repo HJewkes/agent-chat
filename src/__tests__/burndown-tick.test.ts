@@ -872,7 +872,10 @@ function seatPolicy({
     path.join(root, 'seats', 'seat-t.md'),
     `---\n${role}prefix: st\npool: pool-t\ninitiatives: {demo: 1.0}\nrepos:\n  - {path: ${repo()}, initiatives: [demo]}${more}\n${concurrency}${granted}\n---\n`,
   )
-  write(path.join(root, 'seats', 'seat-e.md'), '---\nprefix: se\npool: pool-t\n---\n')
+  write(
+    path.join(root, 'seats', 'seat-e.md'),
+    '---\nprefix: se\npool: pool-t\nconcurrency: {implementers: 1}\n---\n',
+  )
 }
 
 /** A focused initiative with no autonomy block, which only seats mode dispatches from. */
