@@ -77,7 +77,7 @@ const advanceOrigin = (work: string, files: Record<string, string>): void =>
 const rebaseInProgress = (work: string): boolean =>
   ['rebase-merge', 'rebase-apply'].some(dir => fs.existsSync(path.join(work, '.git', dir)))
 
-type Override = (line: string, args: string[], cwd: string) => Promise<RunResult> | undefined
+type Override = (line: string, args: string[], cwd: string) => Promise<RunResult> | RunResult | undefined
 
 /** Real git; every package-manager call is recorded and answered from `failing`. */
 function recorder(failing: string[], override?: Override) {
