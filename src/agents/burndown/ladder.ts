@@ -5,8 +5,9 @@ import { LADDER_CODES, parkUpdate, type StallCode } from './stall-code.js'
 /**
  * The triage ladder (CC-660): a claim stopped with a ladder code goes up one
  * rung per occurrence. Rung 3 stalls it for the owner, whose `stalled` seat
- * event is the one notice. Rung 2 (release) is CC-698; until it lands a second
- * occurrence goes to rung 3. Pure, apart from the injected readers.
+ * event is the one notice. Rung 2 (release, CC-698) sits between them: the second
+ * occurrence on a key never released lets the claim go and keeps its branch.
+ * Pure, apart from the injected readers.
  *
  * Rung 1 spans ticks. The first marks the claim (`respawn`), which `advance`
  * then leaves alone, and retires its agents. A later tick spawns one successor,
@@ -23,6 +24,8 @@ export interface LadderDeps {
   enabled: boolean
   /** What a worktree holds; read only for a claim the ladder respawns. */
   diffSummary: (worktree: string) => string
+  /** The branch a worktree has checked out; read only for a claim the ladder releases. */
+  branch?: (worktree: string) => string | undefined
   /** Whether a named agent may still be running. */
   live: (name: string) => boolean
   now: Date
@@ -34,7 +37,7 @@ export interface Laddered {
 }
 
 type Update = Extract<Action, { kind: 'update' }>
-type Rung = 'respawn' | 'stall-owner'
+type Rung = 'respawn' | 'release' | 'stall-owner'
 
 interface Trigger {
   claim: Claim
@@ -73,18 +76,36 @@ const respawned = (claim: Claim, record: LadderRecord | undefined): boolean =>
 const respawnCount = (claim: Claim, record: LadderRecord | undefined): number =>
   Math.max(respawned(claim, record) ? 1 : 0, record?.respawns ?? 0)
 
-const rungFor = (claim: Claim, record: LadderRecord | undefined): Rung =>
-  claim.worktree !== undefined && !respawned(claim, record) ? 'respawn' : 'stall-owner'
+function rungFor(claim: Claim, record: LadderRecord | undefined): Rung {
+  if (claim.worktree === undefined) return 'stall-owner'
+  if (!respawned(claim, record)) return 'respawn'
+  return (record?.releases ?? 0) === 0 ? 'release' : 'stall-owner'
+}
 
 /** Rung 1's first tick: mark the claim and retire its agents, newest first. */
 function startRespawn({ claim, code }: Trigger, record: LadderRecord | undefined, now: Date): Action[] {
   const key = keyOf(claim)
   const occurrence = claim.phaseAt
-  const counted = { respawns: record?.respawns ?? 0, lastAt: now.toISOString(), occurrence }
+  const counted = { ...record, respawns: record?.respawns ?? 0, lastAt: now.toISOString(), occurrence }
   return [
     { kind: 'update', key, patch: { respawn: { code, occurrence } } },
     { kind: 'ladder', key, record: counted },
     { ...retireAll(claim), held: true },
+  ]
+}
+
+/** Rung 2: the claim lets go, its agents retire (the step layer adds the retire), and the branch stays. */
+function release({ claim, code }: Trigger, deps: LadderDeps): Action[] {
+  const branch = claim.worktree === undefined ? undefined : deps.branch?.(claim.worktree)
+  return [
+    {
+      kind: 'release',
+      key: keyOf(claim),
+      requeue: claim.slice !== undefined,
+      code,
+      names: retireAll(claim).names.filter(deps.live),
+      ...(branch === undefined ? {} : { branch }),
+    },
   ]
 }
 
@@ -102,11 +123,12 @@ function stallOwner({ claim, code }: Trigger, record: LadderRecord | undefined, 
 function climb(action: Update, trigger: Trigger, ledger: Ledger, deps: LadderDeps): Action[] {
   const record = ledger.ladder?.[claimKey(trigger.claim)]
   const kept = action.patch.stallCode === undefined ? [action] : []
-  const rung =
-    rungFor(trigger.claim, record) === 'respawn'
-      ? startRespawn(trigger, record, deps.now)
-      : stallOwner(trigger, record, deps.now)
-  return [...kept, ...rung]
+  const rung = rungFor(trigger.claim, record)
+  if (rung === 'release') return release(trigger, deps)
+  return [
+    ...kept,
+    ...(rung === 'respawn' ? startRespawn(trigger, record, deps.now) : stallOwner(trigger, record, deps.now)),
+  ]
 }
 
 type Marked = Claim & { respawn: NonNullable<Claim['respawn']> }
@@ -163,4 +185,32 @@ export function ladderActions(
     return [action]
   })
   return { actions: [...out, ...underWay(claims, ledger, deps)], notes }
+}
+
+export interface Released {
+  taskId: string
+  slice?: string
+  seat?: string
+  code?: StallCode
+  branch?: string
+  /** The task's release count, which sets its backoff. */
+  n: number
+}
+
+/** The releases a tick made: each ladder key whose count rose between two ledgers. */
+export function releasesSince(before: Ledger, after: Ledger): Released[] {
+  return Object.entries(after.ladder ?? {}).flatMap(([key, record]) => {
+    if ((record.releases ?? 0) <= (before.ladder?.[key]?.releases ?? 0)) return []
+    const [taskId = '', slice] = key.split('#')
+    return [
+      {
+        taskId,
+        n: after.releases?.[taskId]?.n ?? record.releases ?? 1,
+        ...(slice === undefined || slice === '' ? {} : { slice }),
+        ...(record.seat === undefined ? {} : { seat: record.seat }),
+        ...(record.code === undefined ? {} : { code: record.code }),
+        ...(record.branch === undefined ? {} : { branch: record.branch }),
+      },
+    ]
+  })
 }

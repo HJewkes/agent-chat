@@ -43,6 +43,8 @@ export interface StepContext {
   readFile: (file: string) => string | undefined
   /** Whether a named agent's process may still be running; an exited or retired one is not. */
   running: (name: string) => boolean
+  /** The branch a released claim with this key left behind (CC-698), for the next worker's brief. */
+  priorBranch?: (key: ClaimKey) => string | undefined
   /** Seats mode only: a listed seat's spawn inputs, why a listed seat is out this tick, or undefined for a seat not listed. */
   seat?: (name: string) => SeatSpawn | { skipped: string } | undefined
 }
@@ -165,9 +167,18 @@ const stallUpdate = (key: ClaimKey, reason: string, cls: ExceptionClass): Action
   patch: { stalledReason: reason, stalledClass: cls },
 })
 
+/**
+ * A release retires every agent that may still run first, held so a refusal is recorded on the claim and
+ * spends its liveness budget; the ledger write rides along and lands only when all of them retired.
+ */
+function releaseSteps(a: Extract<Action, { kind: 'release' }>): Step[] {
+  return [{ kind: 'retire', key: a.key, names: a.names, held: true, then: [a] }]
+}
+
 function plainSteps(actions: Action[]): Step[] {
   return actions.flatMap((a): Step[] => {
     if (a.kind === 'retire') return [a]
+    if (a.kind === 'release') return releaseSteps(a)
     if (a.kind === 'register') return [{ kind: 'register', key: a.key, registration: a.registration }]
     if (a.kind === 'spawn') return []
     return [ledgerStep(a)]
@@ -396,6 +407,8 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
   if (typeof t === 'string') return t
   const planner = d.profile === PLANNER_PROFILE
   const key: ClaimKey = d.slice === undefined ? { taskId: d.task } : { taskId: d.task, slice: d.slice }
+  const priorBranch = ctx.priorBranch?.(key)
+  if (priorBranch !== undefined) t.priorBranch = priorBranch
   const at = ctx.now.toISOString()
   const intent = {
     phase: 'spawning' as const,
