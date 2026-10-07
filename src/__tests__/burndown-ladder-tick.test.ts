@@ -467,3 +467,108 @@ describe('rung 2, release with the branch kept (CC-698)', () => {
     expect(releasedSends(fake)[0]).toContain('agent-chat/st-dm-1')
   })
 })
+
+const brakeSends = (fake: Fake): string[] =>
+  fake.sends.flatMap(text => text.split('\n').filter(l => l.startsWith('brake ')))
+
+/** DM-2 and DM-3 beside DM-1: each implementing five hours in its own worktree with a live agent. */
+function twoMoreTimedOut(fake: Fake): void {
+  const claims = ['DM-2', 'DM-3'].map(id => {
+    const name = `st-${id.toLowerCase()}`
+    const tree = path.join(repo(), '.worktrees', name)
+    git(repo(), 'worktree', 'add', '-q', '-b', `agent-chat/${name}`, tree)
+    write(path.join(world, 'aw', 'demo', 'tasks', `${id}.yml`), TASK.replaceAll('DM-1', id))
+    fake.agents.push(row(name, 'live', tree))
+    return {
+      ...timedOutClaimShape(),
+      taskId: id,
+      agentId: `id-${name}`,
+      agentName: name,
+      spawned: [name],
+      worktree: tree,
+    }
+  })
+  writeLedger(burndownLedgerPath(), { ...ledger(), claims: [...ledger().claims, ...claims] })
+}
+
+const brakeOf = (minutes: number) => ({
+  at: [at(minutes).toISOString(), at(minutes).toISOString(), at(minutes).toISOString()],
+  notified: 'brake:phase-timeout',
+  claims: ['DM-7#', 'DM-8#', 'DM-9#'],
+})
+
+describe('the brake (CC-699)', () => {
+  it('stops every respawn and release when three claims stall in one tick, with one brake notice', async () => {
+    const fake = fakeBroker([{ ok: true }])
+    twoMoreTimedOut(fake)
+
+    for (const minutes of [0, 10, 20]) await tickAt(fake, minutes)
+
+    expect(names(fake)).toEqual([])
+    expect(fake.retires).toEqual([])
+    expect(liveAgents(fake)).toEqual(['st-dm-1', 'st-dm-2', 'st-dm-3'])
+    expect(ledger().releases).toBeUndefined()
+    expect(ledger().ladder).toBeUndefined()
+    expect(stalledSends(fake)).toHaveLength(3)
+    expect(brakeSends(fake)).toEqual([expect.stringMatching(/^brake DM-1, DM-2, DM-3: phase-timeout: 3 /)])
+    const rows = logged.filter(l => l.event === 'burndown_brake')
+    expect(rows.map(r => r.detail)).toEqual([
+      { count: 3, window_ms: 30 * MIN, cause: 'phase-timeout', claims: ['DM-1#', 'DM-2#', 'DM-3#'] },
+    ])
+  })
+
+  it('stays braked after a restart inside the window, with no second notice', async () => {
+    writeLedger(burndownLedgerPath(), { ...ledger(), brake: brakeOf(-20) })
+    const fake = fakeBroker([{ ok: true }])
+
+    for (const minutes of [0, 5]) await tickAt(fake, minutes)
+
+    expect(fake.retires).toEqual([])
+    expect(names(fake)).toEqual([])
+    expect(heldClaim()).toMatchObject({ stallCode: 'phase-timeout' })
+    expect(heldClaim()?.respawn).toBeUndefined()
+    expect(ledger().brake).toMatchObject({ notified: 'brake:phase-timeout' })
+    expect(ledger().brake?.at).toHaveLength(4)
+    expect(brakeSends(fake)).toEqual([])
+    expect(logged.filter(l => l.event === 'burndown_brake')).toEqual([])
+  })
+
+  it('still stalls a claim past rung 2 for its owner while braked', async () => {
+    const ladder = { 'DM-1#': { respawns: 1, releases: 1, lastAt: at(-60).toISOString() } }
+    writeLedger(burndownLedgerPath(), { ...ledger(), ladder, brake: brakeOf(-10) })
+    const fake = fakeBroker([{ ok: true }])
+
+    await tickAt(fake, 0)
+
+    expect(heldClaim()?.stalledReason).toMatch(/^phase-timeout: ladder exhausted after a respawn/)
+    expect(ledger().ladder?.['DM-1#']).toMatchObject({ releases: 1, owner: at(0).toISOString() })
+    expect(ledger().brake?.at).toHaveLength(3)
+    expect(fake.retires).toEqual([])
+  })
+
+  it('respawns a new occurrence at rung 1 once the window has cleared', async () => {
+    const fake = fakeBroker([{ ok: true }])
+    twoMoreTimedOut(fake)
+    await tickAt(fake, 0)
+    const ownerCleared = ledger().claims.map(c =>
+      c.taskId === 'DM-1'
+        ? {
+            ...c,
+            stalledReason: undefined,
+            stalledClass: undefined,
+            stallCode: undefined,
+            phaseAt: at(-260).toISOString(),
+          }
+        : c,
+    )
+    writeLedger(burndownLedgerPath(), { ...ledger(), claims: ownerCleared })
+
+    for (const minutes of [40, 50]) await tickAt(fake, minutes)
+
+    expect(fake.retires).toEqual(['st-dm-1'])
+    expect(names(fake)).toEqual(['st-dm-1-s1'])
+    expect(ledger().brake?.at).toEqual([at(40).toISOString()])
+    expect(ledger().brake?.notified).toBeUndefined()
+    expect(brakeSends(fake)).toHaveLength(1)
+  })
+})

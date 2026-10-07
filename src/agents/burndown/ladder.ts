@@ -1,5 +1,5 @@
 import { claimKey, retireAll, successor, type Action, type ClaimKey } from './advance.js'
-import type { Claim, LadderRecord, Ledger } from './ledger.js'
+import type { BrakeState, Claim, LadderRecord, Ledger } from './ledger.js'
 import { LADDER_CODES, parkUpdate, type StallCode } from './stall-code.js'
 
 /**
@@ -17,7 +17,15 @@ import { LADDER_CODES, parkUpdate, type StallCode } from './stall-code.js'
  * liveness (CC-671) budgets those retries, so the ladder keeps no failure count.
  * An occurrence is the claim's `phaseAt`, and a respawn counts once the
  * successor's spawn has moved the claim to a new one.
+ *
+ * The brake (CC-699): `BRAKE_COUNT` new rung-1 or rung-2 occurrences inside
+ * `BRAKE_WINDOW_MS` stop rungs 1 and 2 for every claim until the window clears.
+ * A braked stall passes through as it would with the ladder off, so no rung is
+ * counted and the claim's owner hears of it; rung 3 still acts.
  */
+
+export const BRAKE_COUNT = 3
+export const BRAKE_WINDOW_MS = 30 * 60_000
 
 export interface LadderDeps {
   /** `ladder.enabled`; off, the actions pass through and each new occurrence gets one note. */
@@ -34,6 +42,8 @@ export interface LadderDeps {
 export interface Laddered {
   actions: Action[]
   notes: string[]
+  /** The brake's write, when this tick changed it; the caller appends it to the actions. */
+  brake: Action[]
 }
 
 type Update = Extract<Action, { kind: 'update' }>
@@ -149,42 +159,128 @@ const abandonRespawn = (claim: Marked): Action[] => [
   { kind: 'update', key: keyOf(claim), patch: { respawn: undefined } },
 ]
 
-/** A held claim's respawn under way, and the count of one that has spawned. */
-function underWay(claims: readonly Claim[], ledger: Ledger, deps: LadderDeps): Action[] {
+/** A held claim's respawn under way, unless braked, and the count of one that has spawned. */
+function underWay(
+  claims: readonly Claim[],
+  ledger: Ledger,
+  deps: LadderDeps & { braked: boolean },
+): Action[] {
   return claims.flatMap((claim): Action[] => {
     const record = ledger.ladder?.[claimKey(claim)]
     if (claim.respawn === undefined) {
       if (record === undefined || record.respawns > 0 || !respawned(claim, record)) return []
       return [{ kind: 'ladder', key: keyOf(claim), record: { ...record, respawns: 1 } }]
     }
-    if (claim.stalledReason !== undefined) return []
+    // Braked, a respawn under way holds rather than spawning its successor.
+    if (claim.stalledReason !== undefined || deps.braked) return []
     const marked = { ...claim, respawn: claim.respawn }
     return deps.enabled ? continueRespawn(marked, deps) : abandonRespawn(marked)
   })
 }
 
-/** Rewrites each claim's first ladder-code stall or lease finding into its rung's actions. */
+/** Each claim's first trigger, keyed by the action that carries it. */
+function firstTriggers(actions: readonly Action[], claims: readonly Claim[]): Map<Action, Trigger> {
+  const byKey = new Map(claims.map(c => [claimKey(c), c]))
+  const seen = new Set<string>()
+  const out = new Map<Action, Trigger>()
+  for (const action of actions) {
+    const trigger = action.kind === 'update' ? triggerOf(action, byKey) : undefined
+    if (trigger === undefined || seen.has(claimKey(trigger.claim))) continue
+    seen.add(claimKey(trigger.claim))
+    out.set(action, trigger)
+  }
+  return out
+}
+
+const actsBelowOwner = (rung: Rung): boolean => rung !== 'stall-owner'
+
+/** The brake's times inside the window ending `now`; a tick and a status read prune by it. */
+export const brakeTimes = (brake: BrakeState | undefined, now: Date): string[] =>
+  (brake?.at ?? []).filter(t => now.getTime() - Date.parse(t) < BRAKE_WINDOW_MS)
+
+const mostCommon = (codes: readonly StallCode[]): StallCode | undefined => {
+  const counts = new Map<StallCode, number>()
+  for (const c of codes) counts.set(c, (counts.get(c) ?? 0) + 1)
+  return [...counts].sort((a, b) => b[1] - a[1])[0]?.[0]
+}
+
+const occurrenceOf = (claim: Claim): string => `${claimKey(claim)}@${claim.phaseAt}`
+
+/**
+ * This tick's brake: prior times pruned, and one time added per rung-1 or rung-2 occurrence not counted before.
+ * A lifted brake forgets its notice; `seen` keeps only occurrences a held claim still sits on.
+ */
+function nextBrake(
+  triggers: readonly Trigger[],
+  claims: readonly Claim[],
+  ledger: Ledger,
+  now: Date,
+): BrakeState {
+  const prior = brakeTimes(ledger.brake, now)
+  const current = new Set(claims.map(occurrenceOf))
+  const seen = (ledger.brake?.seen ?? []).filter(o => current.has(o))
+  const counted = triggers
+    .filter(t => actsBelowOwner(rungFor(t.claim, ledger.ladder?.[claimKey(t.claim)])))
+    .map(t => occurrenceOf(t.claim))
+    .filter(o => !seen.includes(o))
+  const at = [...prior, ...counted.map(() => now.toISOString())]
+  const held = prior.length >= BRAKE_COUNT ? ledger.brake : undefined
+  const kept = [...seen, ...counted]
+  return {
+    at,
+    ...(held?.notified === undefined ? {} : { notified: held.notified }),
+    ...(held?.claims === undefined ? {} : { claims: held.claims }),
+    ...(kept.length === 0 ? {} : { seen: kept }),
+  }
+}
+
+/** One notice per cause per brake: `notified` and the keys whose seats are told change only on a new cause. */
+function noticed(brake: BrakeState, suppressed: readonly Trigger[]): BrakeState {
+  const cause = mostCommon(suppressed.map(t => t.code))
+  if (cause === undefined || brake.notified === `brake:${cause}`) return brake
+  return { ...brake, notified: `brake:${cause}`, claims: suppressed.map(t => claimKey(t.claim)) }
+}
+
+const sameBrake = (a: BrakeState | undefined, b: BrakeState): boolean =>
+  JSON.stringify(a ?? { at: [] }) === JSON.stringify(b)
+
+const brakeAction = (before: BrakeState | undefined, after: BrakeState): Action[] => {
+  if (sameBrake(before, after)) return []
+  const empty = after.at.length === 0 && after.seen === undefined
+  return [empty ? { kind: 'brake' } : { kind: 'brake', brake: after }]
+}
+
+/** Rewrites each claim's first ladder-code stall or lease finding into its rung's actions, unless braked. */
 export function ladderActions(
   actions: Action[],
   claims: readonly Claim[],
   ledger: Ledger,
   deps: LadderDeps,
 ): Laddered {
-  const byKey = new Map(claims.map(c => [claimKey(c), c]))
-  const seen = new Set<string>()
+  const triggers = firstTriggers(actions, claims)
   const notes: string[] = []
+  const brake = deps.enabled ? nextBrake([...triggers.values()], claims, ledger, deps.now) : undefined
+  const braked = brake !== undefined && brake.at.length >= BRAKE_COUNT
+  const suppressed: Trigger[] = []
   const out = actions.flatMap(action => {
-    const trigger = action.kind === 'update' ? triggerOf(action, byKey) : undefined
+    const trigger = triggers.get(action)
     if (action.kind !== 'update' || trigger === undefined) return [action]
     const key = claimKey(trigger.claim)
-    if (seen.has(key)) return [action]
-    seen.add(key)
+    const rung = rungFor(trigger.claim, ledger.ladder?.[key])
+    if (braked && actsBelowOwner(rung)) {
+      suppressed.push(trigger)
+      return [action]
+    }
     if (deps.enabled) return climb(action, trigger, ledger, deps)
-    if (trigger.fresh)
-      notes.push(`ladder off: would ${rungFor(trigger.claim, ledger.ladder?.[key])} ${key} (${trigger.code})`)
+    if (trigger.fresh) notes.push(`ladder off: would ${rung} ${key} (${trigger.code})`)
     return [action]
   })
-  return { actions: [...out, ...underWay(claims, ledger, deps)], notes }
+  const after = brake === undefined ? undefined : noticed(brake, suppressed)
+  return {
+    actions: [...out, ...underWay(claims, ledger, { ...deps, braked })],
+    notes,
+    brake: after === undefined ? [] : brakeAction(ledger.brake, after),
+  }
 }
 
 export interface Released {
@@ -213,4 +309,26 @@ export function releasesSince(before: Ledger, after: Ledger): Released[] {
       },
     ]
   })
+}
+
+export interface BrakeNotice {
+  cause: StallCode
+  /** Occurrences inside the window. */
+  count: number
+  /** The braked claim keys, each with its seat when the claim has one. */
+  claims: { key: string; seat?: string }[]
+}
+
+/** The brake notice a tick made: `brake.notified` changed to a new cause between two ledgers. */
+export function brakeSince(before: Ledger, after: Ledger): BrakeNotice | undefined {
+  const notified = after.brake?.notified
+  if (notified === undefined || notified === before.brake?.notified) return undefined
+  const cause = notified.slice('brake:'.length) as StallCode
+  const seatOf = (key: string): string | undefined =>
+    [...after.claims, ...before.claims].find(c => claimKey(c) === key)?.seat
+  const claims = (after.brake?.claims ?? []).map(key => {
+    const seat = seatOf(key)
+    return seat === undefined ? { key } : { key, seat }
+  })
+  return { cause, count: after.brake?.at.length ?? 0, claims }
 }

@@ -13,9 +13,9 @@ import { activeWorkRoot } from '../active-work.js'
 import { seatMergedLog } from '../seats/dispatch-log.js'
 import { seatJournal } from '../seats/journal.js'
 import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
-import { advance, applyActions, claimKey, type ClaimKey, type InboxMessage } from './advance.js'
+import { advance, applyActions, claimKey, type Action, type ClaimKey, type InboxMessage } from './advance.js'
 import { withFindings } from './finding.js'
-import { ladderActions, releasesSince } from './ladder.js'
+import { BRAKE_WINDOW_MS, brakeSince, ladderActions, releasesSince } from './ladder.js'
 import { verifySection } from './brief.js'
 import { gatePool, pickAccount } from './budget-gate.js'
 import { collisionCheck, type BrokerView, type CollisionReader } from './collision.js'
@@ -224,8 +224,7 @@ async function actOn(
     log,
     now,
   })
-  for (const r of releasesSince(ledger, executed.ledger))
-    log('burndown_release', { task: r.taskId, slice: r.slice, code: r.code, branch: r.branch, n: r.n })
+  logLadder(ledger, executed.ledger, log)
   const woken = await actOnTriage(
     config,
     triage,
@@ -239,6 +238,16 @@ async function actOn(
   const told = await deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now, journal, dispatch })
   writeLedger(burndownLedgerPath(), { ...told.ledger, lastTickAt: now.toISOString() })
   return [...executed.lines, ...woken.lines, ...leaks.lines, ...told.lines]
+}
+
+/** The tick's releases and its brake notice, each logged once. */
+function logLadder(before: Ledger, after: Ledger, log: NonNullable<TickOptions['log']>): void {
+  for (const r of releasesSince(before, after))
+    log('burndown_release', { task: r.taskId, slice: r.slice, code: r.code, branch: r.branch, n: r.n })
+  const brake = brakeSince(before, after)
+  if (brake === undefined) return
+  const claims = brake.claims.map(c => c.key)
+  log('burndown_brake', { count: brake.count, window_ms: BRAKE_WINDOW_MS, cause: brake.cause, claims })
 }
 
 /** Spawns through the broker and records which claim each answered spawn was for. */
@@ -356,7 +365,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
       now,
     },
   )
-  const advanced = stepsForActions(laddered.actions, ledger, ctx, agents.agents)
+  const advanced = stepsForActions([...laddered.actions, ...laddered.brake], ledger, ctx, agents.agents)
   const kept = advanced.steps.flatMap(s => (s.kind === 'ledger' ? s.actions : []))
   const planLedger = applyActions(ledger, kept, now)
   const triage = triageFor(
@@ -649,6 +658,12 @@ const readOrUndefined = (file: string): string | undefined => {
   }
 }
 
+const recorded = (a: Action): string => {
+  if (a.kind === 'add') return `add ${a.claims.map(c => c.taskId).join(',')}`
+  if (a.kind === 'brake') return `brake ${a.brake?.at.length ?? 0} in window`
+  return `${a.kind} ${a.key.taskId}${a.key.slice ?? ''}`
+}
+
 function describe(step: Step): string {
   if (step.kind === 'retire')
     return step.names.length === 0
@@ -656,8 +671,7 @@ function describe(step: Step): string {
       : `would retire ${step.names.join(', ')}${step.then === undefined ? '' : `, then ${step.then.map(a => a.kind).join(', ')}`}`
   if (step.kind === 'register')
     return `would register ${targetRef(step.registration.target)} with Shepherd for ${claimKey(step.key)}`
-  if (step.kind === 'ledger')
-    return `would record ${step.actions.map(a => (a.kind === 'add' ? `add ${a.claims.map(c => c.taskId).join(',')}` : `${a.kind} ${a.key.taskId}${a.key.slice ?? ''}`)).join('; ')}`
+  if (step.kind === 'ledger') return `would record ${step.actions.map(recorded).join('; ')}`
   const f = step.frame
   const extra = [f.worktree && `adopting ${f.worktree}`, f.predecessor && `after ${f.predecessor}`].filter(
     Boolean,

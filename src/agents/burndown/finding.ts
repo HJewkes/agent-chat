@@ -20,7 +20,7 @@ const MINUTE_MS = 60_000
 const inLane = (claim: Claim): boolean => (AGENT_PHASES as readonly string[]).includes(claim.phase)
 
 const keysOf = (actions: readonly Action[]): Set<string> =>
-  new Set(actions.flatMap(a => (a.kind === 'add' ? [] : [claimKey(a.key)])))
+  new Set(actions.flatMap(a => ('key' in a ? [claimKey(a.key)] : [])))
 
 const setFinding = (key: ClaimKey, finding: Finding | undefined): Update => ({
   kind: 'update',
