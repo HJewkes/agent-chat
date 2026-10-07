@@ -79,7 +79,15 @@ export type Action =
    * Ladder rung 2 (CC-698): the claim lets go of its worktree and branch, which stay. A slice goes back to
    * `queued` for the planner's work to survive; a whole task is dropped. Never clears `ledger.liveness`.
    */
-  | { kind: 'release'; key: ClaimKey; branch?: string; requeue: boolean; code: StallCode }
+  | {
+      kind: 'release'
+      key: ClaimKey
+      branch?: string
+      requeue: boolean
+      code: StallCode
+      /** The agents that may still run, newest first; a retired one is no longer the broker's to retire. */
+      names: string[]
+    }
 
 /** Retire in the order given; `held` records a refusal on the held claim rather than a done one (CC-660). */
 export type RetireAction = {

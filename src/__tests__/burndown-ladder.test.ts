@@ -168,6 +168,7 @@ describe('ladderActions rung 2 (CC-698)', () => {
         key: { taskId: 'CC-1' },
         requeue: false,
         code: 'phase-timeout',
+        names: ['bd-cc-1-s1', 'bd-cc-1'],
         branch: 'agent/cc-1',
       },
     ])
@@ -180,6 +181,14 @@ describe('ladderActions rung 2 (CC-698)', () => {
     })
     expect(after.releases?.['CC-1']).toMatchObject({ n: 1 })
     expect(after.liveness).toEqual(LIVENESS)
+  })
+
+  it('retires only the agents that may still run, so a predecessor rung 1 retired is not asked again', () => {
+    const { c, before } = second()
+
+    const { actions } = ladder(c, before, timedOut(c), { live: name => name === 'bd-cc-1-s1' })
+
+    expect(actions[0]).toMatchObject({ kind: 'release', names: ['bd-cc-1-s1'] })
   })
 
   it('sends a released slice claim back to queued, with its slice fields and no agent fields', () => {
@@ -243,6 +252,7 @@ describe('a refused retire under a release (CC-698)', () => {
         key: { taskId: 'CC-1', slice },
         requeue: slice !== undefined,
         code: 'phase-timeout',
+        names: ['bd-cc-1'],
       }
       let ledger = withClaim(c, { liveness: LIVENESS })
       const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'release-retire-')), 'ledger.json')
@@ -266,12 +276,37 @@ describe('a refused retire under a release (CC-698)', () => {
     },
   )
 
-  async function runRelease(ledger: Ledger, release: Action, file: string): Promise<Ledger> {
+  it('records only the refused agent when another retired, and does not release', async () => {
+    const c = claim({ spawned: ['bd-cc-1', 'bd-cc-1-s1'], phaseAt: SECOND_PHASE })
+    const release: Action = {
+      kind: 'release',
+      key: { taskId: 'CC-1' },
+      requeue: false,
+      code: 'phase-timeout',
+      names: ['bd-cc-1-s1', 'bd-cc-1'],
+    }
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'release-retire-')), 'ledger.json')
+
+    const after = await runRelease(withClaim(c), release, file, async name =>
+      name === 'bd-cc-1-s1' ? { ok: true } : { ok: false, reason: 'worktree busy' },
+    )
+
+    expect(after.claims).toMatchObject([{ phase: 'implementing' }])
+    expect(after.claims[0]?.unretired).toMatchObject([{ name: 'bd-cc-1', reason: 'worktree busy' }])
+    expect(after.releases).toBeUndefined()
+  })
+
+  async function runRelease(
+    ledger: Ledger,
+    release: Action,
+    file: string,
+    retire: (name: string) => Promise<{ ok: boolean; reason?: string }> = refuse,
+  ): Promise<Ledger> {
     const { steps } = stepsForActions([release], ledger, {} as StepContext, 0)
     const done = await execute(steps, ledger, {
       ledgerFile: file,
       spawn: async () => ({ ok: true }),
-      retire: refuse,
+      retire,
       register: () => ({ ok: true }) as never,
       prHead: () => undefined,
       log: () => {},

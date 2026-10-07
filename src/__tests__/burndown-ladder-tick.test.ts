@@ -152,8 +152,10 @@ function fakeBroker(spawns: SpawnReply[], retires: SpawnReply[] = []): Fake {
     retire: async name => {
       fake.retires.push(name)
       const reply = nextReply(retires, fake.retires.length)
-      const agent = fake.agents.find(a => a.name === name)
-      if (reply.ok && agent !== undefined) agent.state = 'retired'
+      const agent = fake.agents.find(a => a.name === name && a.state !== 'retired')
+      // The real broker's byName skips retired rows, so a retired or unknown name is refused (supervisor.ts).
+      if (agent === undefined) return { ok: false, reason: `no agent named "${name}"` }
+      if (reply.ok) agent.state = 'retired'
       return reply
     },
     queue: async () => [],

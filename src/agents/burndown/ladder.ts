@@ -103,6 +103,7 @@ function release({ claim, code }: Trigger, deps: LadderDeps): Action[] {
       key: keyOf(claim),
       requeue: claim.slice !== undefined,
       code,
+      names: retireAll(claim).names.filter(deps.live),
       ...(branch === undefined ? {} : { branch }),
     },
   ]

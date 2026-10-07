@@ -1,6 +1,6 @@
 import path from 'node:path'
 import type { ExceptionClass } from './exception.js'
-import { claimKey, retireAll, type Action, type ClaimKey } from './advance.js'
+import { claimKey, type Action, type ClaimKey } from './advance.js'
 import {
   planPathFor,
   plannerBrief,
@@ -85,25 +85,20 @@ export function stepsForActions(
   for (const [key, group] of groups) {
     const spawn = group.find((a): a is SpawnAction => a.kind === 'spawn')
     if (spawn === undefined) {
-      resolved.steps.push(...plainSteps(group, ledger))
+      resolved.steps.push(...plainSteps(group))
       continue
     }
     const refused = spawnRefusal(group, spawn, ledger, ctx)
     if (refused !== undefined) {
       resolved.deferred.push(`${key}: ${refused}`)
-      resolved.steps.push(
-        ...plainSteps(
-          group.filter(a => a !== spawn && !isIntent(a, spawn)),
-          ledger,
-        ),
-      )
+      resolved.steps.push(...plainSteps(group.filter(a => a !== spawn && !isIntent(a, spawn))))
       continue
     }
     const outcome =
       resolved.spawns >= budget
         ? { defer: 'no agent capacity left this tick' }
         : resolveSpawn(spawn, ledger, ctx, resolved.charged)
-    addOutcome(resolved, key, group, spawn, outcome, ledger)
+    addOutcome(resolved, key, group, spawn, outcome)
   }
   return resolved
 }
@@ -144,22 +139,16 @@ function addOutcome(
   group: Action[],
   spawn: SpawnAction,
   outcome: Outcome,
-  ledger: Ledger,
 ): void {
   if ('defer' in outcome) {
     resolved.deferred.push(`${key}: ${outcome.defer}`)
-    resolved.steps.push(...plainSteps(findingCloses(group), ledger))
+    resolved.steps.push(...plainSteps(findingCloses(group)))
   } else if ('stall' in outcome)
     resolved.steps.push(
       ledgerStep(...findingCloses(group), stallUpdate(spawn.key, outcome.stall, outcome.cls)),
     )
   else {
-    resolved.steps.push(
-      ...plainSteps(
-        group.filter(a => a !== spawn),
-        ledger,
-      ),
-    )
+    resolved.steps.push(...plainSteps(group.filter(a => a !== spawn)))
     resolved.steps.push({ kind: 'spawn', key: spawn.key, frame: outcome.frame })
     resolved.spawns += 1
     if (outcome.pool !== undefined) resolved.charged.push(outcome.pool)
@@ -179,18 +168,17 @@ const stallUpdate = (key: ClaimKey, reason: string, cls: ExceptionClass): Action
 })
 
 /**
- * A release retires every agent on the claim first, held so a refusal is recorded on the claim and
+ * A release retires every agent that may still run first, held so a refusal is recorded on the claim and
  * spends its liveness budget; the ledger write rides along and lands only when all of them retired.
  */
-function releaseSteps(a: Extract<Action, { kind: 'release' }>, ledger: Ledger): Step[] {
-  const claim = heldClaims(ledger).find(c => sameClaim(c, a.key))
-  return claim === undefined ? [ledgerStep(a)] : [{ ...retireAll(claim), held: true, then: [a] }]
+function releaseSteps(a: Extract<Action, { kind: 'release' }>): Step[] {
+  return [{ kind: 'retire', key: a.key, names: a.names, held: true, then: [a] }]
 }
 
-function plainSteps(actions: Action[], ledger: Ledger): Step[] {
+function plainSteps(actions: Action[]): Step[] {
   return actions.flatMap((a): Step[] => {
     if (a.kind === 'retire') return [a]
-    if (a.kind === 'release') return releaseSteps(a, ledger)
+    if (a.kind === 'release') return releaseSteps(a)
     if (a.kind === 'register') return [{ kind: 'register', key: a.key, registration: a.registration }]
     if (a.kind === 'spawn') return []
     return [ledgerStep(a)]
