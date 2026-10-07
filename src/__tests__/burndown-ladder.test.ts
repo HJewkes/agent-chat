@@ -8,6 +8,7 @@ import { orphanRefusal } from '../agents/burndown/plan.js'
 import { stepsForActions, type StepContext } from '../agents/burndown/steps.js'
 import { ladderActions, type LadderDeps } from '../agents/burndown/ladder.js'
 import { EMPTY_LEDGER, readLedger, writeLedger, type Claim, type Ledger } from '../agents/burndown/ledger.js'
+import { deliverSeatEvents } from '../agents/burndown/seat-deliver.js'
 import { seatEvents } from '../agents/burndown/seat-events.js'
 import { loadTickConfig } from '../agents/burndown/source.js'
 
@@ -226,6 +227,45 @@ describe('ladderActions rung 2 (CC-698)', () => {
     expect(seatEvents(after, after, []).alpha ?? []).toEqual([])
   })
 
+  describe('a released notice whose delivery failed (CC-829)', () => {
+    const deliver = async (before: Ledger, after: Ledger, ok: boolean) => {
+      const sent: string[] = []
+      const send = async (_: string, text: string) => (sent.push(text), { ok, reason: 'socket closed' })
+      const open = async () => ({ send, notify: async () => ({ ok }), close: () => {} })
+      const told = await deliverSeatEvents(
+        { seats: ['alpha'], before, after, spawns: [] },
+        { open, log: () => {}, now: NOW },
+      )
+      return { ledger: told.ledger, released: sent.filter(t => t.includes('\nreleased CC-1')) }
+    }
+    const releasedOnce = (): { before: Ledger; after: Ledger } => {
+      const { c, before } = second()
+      return { before, after: ladder(c, before, timedOut(c), { branch: () => 'agent/cc-1' }).after }
+    }
+
+    it('is sent again on the next tick, then not again once it lands', async () => {
+      const { before, after } = releasedOnce()
+
+      const failed = await deliver(before, after, false)
+      const retried = await deliver(failed.ledger, failed.ledger, true)
+      const third = await deliver(retried.ledger, retried.ledger, true)
+
+      expect(failed.released).toHaveLength(1)
+      expect(retried.released).toEqual([expect.stringContaining('agent/cc-1')])
+      expect(third.released).toEqual([])
+    })
+
+    it('is not sent twice when the first delivery landed', async () => {
+      const { before, after } = releasedOnce()
+
+      const landed = await deliver(before, after, true)
+      const next = await deliver(landed.ledger, landed.ledger, true)
+
+      expect(landed.released).toHaveLength(1)
+      expect(next.released).toEqual([])
+    })
+  })
+
   it('releases once per key: with no worktree to adopt, the first occurrence still goes to the owner', () => {
     const c = claim({ worktree: undefined })
 
@@ -344,6 +384,39 @@ describe('the orphan check and a released branch (CC-698)', () => {
     }
 
     expect(orphanRefusal(at, 'CC-1', 'bd-implementer', exists, ledger)).toMatchObject({ kind: 'orphan' })
+  })
+})
+
+describe('a ladder record when its claim finishes (CC-829)', () => {
+  const exists = (): string => 'branch agent-chat/bd-cc-1 already exist with no ledger claim'
+  const at = { initiative: 'demo', repo: '/repo' }
+  const finished = (): { c: Claim; before: Ledger; done: Action[] } => {
+    const c = claim({ phase: 'shepherding', pr: 'https://github.com/o/r/pull/9' })
+    const ladder = { [KEY]: { ...releasedBefore(FIRST_PHASE)[KEY]!, branch: 'agent-chat/bd-cc-1' } }
+    return {
+      c,
+      before: withClaim(c, { ladder }),
+      done: [{ kind: 'update', key: { taskId: 'CC-1' }, patch: { phase: 'done' } }],
+    }
+  }
+
+  it('is pruned on the move to done, so a re-opened task does not adopt the old branch', () => {
+    const { c, before, done } = finished()
+
+    const { after } = ladder(c, before, done)
+
+    expect(after.claims[0]?.phase).toBe('done')
+    expect(after.ladder?.[KEY]).toBeUndefined()
+    expect(orphanRefusal(at, 'CC-1', 'bd-implementer', exists, after)).toMatchObject({ kind: 'orphan' })
+  })
+
+  it('is kept with the ladder off', () => {
+    const { c, before, done } = finished()
+
+    const { actions, after } = ladder(c, before, done, { enabled: false })
+
+    expect(actions).toEqual(done)
+    expect(after.ladder).toEqual(before.ladder)
   })
 })
 
@@ -521,6 +594,26 @@ describe('the brake (CC-699)', () => {
         code: 'phase-timeout',
         detail: expect.stringMatching(/^phase-timeout: 3 ladder stalls in 30 min/),
       },
+    ])
+  })
+
+  it('tells the seat of a respawn the brake holds, not only the seats of this tick’s stalls (CC-829)', () => {
+    const [, two, three] = trio() as [Claim, Claim, Claim]
+    const respawning = claim({ seat: 'beta', respawn: { code: 'phase-timeout', occurrence: FIRST_PHASE } })
+    const claims = [respawning, two, three]
+    const before: Ledger = {
+      ...EMPTY_LEDGER,
+      claims,
+      ladder: { [KEY]: { respawns: 0, lastAt: ago(10), occurrence: FIRST_PHASE } },
+      brake: { at: [ago(10)], seen: [`${KEY}@${FIRST_PHASE}`] },
+    }
+
+    const { actions, after } = tick(claims, before, { live: () => false })
+
+    expect(kinds(actions)).not.toContain('spawn')
+    expect(after.brake?.claims).toEqual(['CC-1#', 'CC-2#', 'CC-3#'])
+    expect((seatEvents(before, after, []).beta ?? []).filter(e => e.kind === 'brake')).toEqual([
+      expect.objectContaining({ kind: 'brake', taskId: 'CC-1', code: 'phase-timeout' }),
     ])
   })
 

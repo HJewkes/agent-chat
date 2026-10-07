@@ -191,6 +191,8 @@ const LadderRecord = z.object({
   branch: z.string().optional(),
   code: z.enum(STALL_CODES).optional(),
   seat: z.string().optional(),
+  /** Set when the seat's `released` notice failed to send, and cleared once one lands (CC-829). */
+  releaseDue: z.literal(true).optional(),
 })
 export type LadderRecord = z.infer<typeof LadderRecord>
 

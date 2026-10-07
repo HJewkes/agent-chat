@@ -455,6 +455,24 @@ describe('rung 2, release with the branch kept (CC-698)', () => {
     expect(fs.existsSync(worktree())).toBe(true)
   })
 
+  it('releases on a partial roster that leaves out the retired predecessor, spending no retire budget (CC-829)', async () => {
+    const fake = fakeBroker([{ ok: true }])
+    for (const minutes of [0, 10, 20]) await tickAt(fake, minutes)
+    fake.broker.roster = async () => ({
+      agents: fake.agents.filter(a => a.state !== 'retired').map(a => ({ ...a })),
+      slots: { held: 4, cap: 36 },
+      partial: 'retired rows unreadable',
+    })
+
+    await tickAt(fake, 320)
+
+    expect(fake.retires).toEqual(['st-dm-1', 'st-dm-1-s1', 'st-dm-1'])
+    expect(heldClaim()).toBeUndefined()
+    expect(ledger().releases?.['DM-1']).toMatchObject({ n: 1 })
+    expect(ledger().liveness?.['DM-1#|retire:st-dm-1']).toBeUndefined()
+    expect(releasedSends(fake)).toHaveLength(1)
+  })
+
   it('logs burndown_release and tells the seat, both naming the branch', async () => {
     const fake = fakeBroker([{ ok: true }])
 
@@ -509,11 +527,27 @@ describe('the brake (CC-699)', () => {
     expect(liveAgents(fake)).toEqual(['st-dm-1', 'st-dm-2', 'st-dm-3'])
     expect(ledger().releases).toBeUndefined()
     expect(ledger().ladder).toBeUndefined()
-    expect(stalledSends(fake)).toHaveLength(3)
+    expect(stalledSends(fake)).toEqual([])
     expect(brakeSends(fake)).toEqual([expect.stringMatching(/^brake DM-1, DM-2, DM-3: phase-timeout: 3 /)])
     const rows = logged.filter(l => l.event === 'burndown_brake')
     expect(rows.map(r => r.detail)).toEqual([
       { count: 3, window_ms: 30 * MIN, cause: 'phase-timeout', claims: ['DM-1#', 'DM-2#', 'DM-3#'] },
+    ])
+  })
+
+  it('folds each braked stall into the brake line, one notice per seat, and never sends the stall later (CC-829)', async () => {
+    const fake = fakeBroker([{ ok: true }])
+    twoMoreTimedOut(fake)
+
+    for (const minutes of [0, 10, 20]) await tickAt(fake, minutes)
+
+    expect(fake.sends).toHaveLength(1)
+    expect(fake.sends[0]?.split('\n').slice(1)).toEqual([expect.stringMatching(/^brake DM-1, DM-2, DM-3: /)])
+    expect(fake.sends[0]).toContain('each named claim is stalled for its owner')
+    expect(ledger().claims.map(c => c.notified)).toEqual([
+      ['dispatched', 'stalled:phase-timeout'],
+      ['dispatched', 'stalled:phase-timeout'],
+      ['dispatched', 'stalled:phase-timeout'],
     ])
   })
 

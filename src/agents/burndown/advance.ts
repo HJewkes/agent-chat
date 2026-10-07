@@ -74,8 +74,8 @@ export type Action =
   | { kind: 'add'; claims: Claim[] }
   /** Hands the claim's PR to Shepherd, after the update that moves it to `shepherding`. */
   | { kind: 'register'; key: ClaimKey; registration: Registration }
-  /** Writes the claim's triage ladder record (CC-660). */
-  | { kind: 'ladder'; key: ClaimKey; record: LadderRecord }
+  /** Writes the claim's triage ladder record (CC-660); absent prunes it (CC-829). */
+  | { kind: 'ladder'; key: ClaimKey; record?: LadderRecord }
   /** Writes the ladder's brake (CC-699); absent clears it. */
   | { kind: 'brake'; brake?: BrakeState }
   /**
@@ -324,8 +324,7 @@ export function applyActions(ledger: Ledger, actions: Action[], now: Date): Ledg
   const at = now.toISOString()
   return actions.reduce<Ledger>((current, action) => {
     if (action.kind === 'add') return action.claims.reduce(addClaim, current)
-    if (action.kind === 'ladder')
-      return { ...current, ladder: { ...current.ladder, [claimKey(action.key)]: action.record } }
+    if (action.kind === 'ladder') return withLadder(current, claimKey(action.key), action.record)
     if (action.kind === 'release') return released(current, action, at)
     if (action.kind === 'brake') {
       const { brake: _cleared, ...rest } = current
@@ -337,6 +336,13 @@ export function applyActions(ledger: Ledger, actions: Action[], now: Date): Ledg
     )
     return { ...current, claims }
   }, ledger)
+}
+
+function withLadder(ledger: Ledger, key: string, record: LadderRecord | undefined): Ledger {
+  if (record !== undefined) return { ...ledger, ladder: { ...ledger.ladder, [key]: record } }
+  const { ladder: _all, ...rest } = ledger
+  const { [key]: _pruned, ...kept } = ledger.ladder ?? {}
+  return Object.keys(kept).length === 0 ? rest : { ...rest, ladder: kept }
 }
 
 /** What a requeued slice keeps: the planner's slice and who dispatched it, none of the last attempt. */

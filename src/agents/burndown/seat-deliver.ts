@@ -5,7 +5,9 @@ import { claimKey } from './advance.js'
 import type { Ledger } from './ledger.js'
 import { agentNameFor } from './plan.js'
 import {
+  foldBraked,
   markNotified,
+  markReleaseDue,
   renderSeatEvents,
   seatEvents,
   settleNotified,
@@ -67,7 +69,7 @@ export interface HumanItem {
 }
 
 function dueEvents({ seats, before, after, spawns }: SeatDiff): SeatEvents {
-  const all = seatEvents(before, after, spawns)
+  const all = foldBraked(seatEvents(before, after, spawns), before, after)
   return Object.fromEntries(Object.entries(all).filter(([seat]) => seats.includes(seat)))
 }
 
@@ -103,13 +105,16 @@ async function sendAll(
     const reply = await sender.send(seat, text).catch((err: Error) => ({ ok: false, reason: err.message }))
     deps.log('burndown_seat_events', { seat, events: events.length, ok: reply.ok, reason: reply.reason })
     if (reply.ok) {
-      ledger = markNotified(ledger, seat, events)
-      journalEvents(events, ledger, deps.journal)
+      const told = events.flatMap(e => [e, ...(e.covers ?? [])])
+      ledger = markReleaseDue(markNotified(ledger, seat, told), told, false)
+      journalEvents(told, ledger, deps.journal)
       lines.push(`told ${seat} of ${events.length} event(s)`)
-    } else
+    } else {
+      ledger = markReleaseDue(ledger, events, true)
       lines.push(
         `could not tell ${seat} of ${events.length} event(s): ${reply.reason ?? 'refused'}; retried next tick`,
       )
+    }
   }
   return { ledger, lines }
 }

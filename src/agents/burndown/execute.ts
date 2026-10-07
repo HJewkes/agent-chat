@@ -312,6 +312,12 @@ export function refusalReason(frame: SpawnFrame, reason: string): string {
     : `spawn refused: ${reason}; the worktree ${leftover} may be left behind, reclaim it by hand`
 }
 
+/**
+ * The broker's answer for a name with no unretired row (supervisor.ts). A partial roster cannot show a retired
+ * agent, so a ladder retire may ask for one; it is already gone, not refused (CC-829).
+ */
+const gone = (reason: string | undefined): boolean => reason?.startsWith('no agent named ') === true
+
 async function retireAll(
   step: Extract<Step, { kind: 'retire' }>,
   deps: ExecuteDeps,
@@ -322,6 +328,7 @@ async function retireAll(
     const reply = await deps.retire(name).catch((err: Error) => ({ ok: false, reason: err.message }))
     deps.log('burndown_retire', { name, ok: reply.ok, reason: reply.reason })
     if (reply.ok) lines.push(`retired ${name}`)
+    else if (step.held === true && gone(reply.reason)) lines.push(`${name} already gone: ${reply.reason}`)
     else {
       left.push({ name, reason: reply.reason ?? 'refused', at: deps.now.toISOString() })
       lines.push(
