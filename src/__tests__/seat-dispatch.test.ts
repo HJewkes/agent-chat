@@ -281,6 +281,17 @@ describe('a seat agent’s retire', () => {
     expect(dispatchedRows()[0]).toMatchObject({ agent: `${AGENT}-s1`, spawner: 'shepherd', seat: SEAT })
   })
 
+  it('writes the same spawner and seat on the retired row as on the dispatched one (CC-802)', async () => {
+    const s = supervisorWith(writerOver(root))
+    await s.spawn({ ...spawnReq(AGENT), spawnedAs: 'burndown' })
+    writeTranscript(AGENT)
+
+    await s.retire(AGENT)
+
+    await expect.poll(() => retiredRows().length).toBe(1)
+    expect(retiredRows()[0]).toMatchObject({ spawner: 'burndown', seat: SEAT })
+  })
+
   it('keeps recording the spawning seat for a spawn made through MCP (CC-802)', async () => {
     const s = supervisorWith(writerOver(root))
     await s.spawn({ ...spawnReq(AGENT), requestedBy: SEAT })

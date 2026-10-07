@@ -76,9 +76,10 @@ interface BrokerRow<Outcome extends string> {
   spawner: string | null
   model: string | null
   predecessor: string | null
+  seat?: string
 }
 
-export type DispatchedRow = BrokerRow<typeof DISPATCHED> & { tier?: number; seat?: string }
+export type DispatchedRow = BrokerRow<typeof DISPATCHED> & { tier?: number }
 
 export interface RetiredRow extends BrokerRow<typeof RETIRED> {
   session_id: string | null
@@ -117,13 +118,13 @@ function brokerRow<Outcome extends string>(
     spawner: run.spawner,
     model: run.model,
     predecessor: run.predecessor,
+    ...(run.seat === undefined ? {} : { seat: run.seat }),
   }
 }
 
 export const dispatchedRow = (run: DispatchRun): DispatchedRow => ({
   ...brokerRow(run, DISPATCHED, null, null),
   ...(run.tier === undefined ? {} : { tier: run.tier }),
-  ...(run.seat === undefined ? {} : { seat: run.seat }),
 })
 
 /** Broker-written end state for a dispatched agent that never attached; no seat exists to write it. */

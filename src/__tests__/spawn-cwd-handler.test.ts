@@ -102,6 +102,15 @@ describe('handleSpawn spawnedAs', () => {
     expect(request.spawnedAs).toBe('shepherd')
   })
 
+  it.each(['sx-seat', 7, null, {}])(
+    'drops the marker %j that is not burndown or shepherd',
+    async spawnedAs => {
+      const request = await spawnedRequest({ spawnedAs })
+
+      expect(request).not.toHaveProperty('spawnedAs')
+    },
+  )
+
   it('leaves a hand-named spawn without a marker', async () => {
     const request = await spawnedRequest({})
 

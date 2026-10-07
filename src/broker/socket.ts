@@ -62,7 +62,8 @@ const spawnedAsOf = (msg: {
   name: string
   spawnedAs?: 'burndown' | 'shepherd'
 }): { spawnedAs?: 'burndown' | 'shepherd' } => {
-  const spawnedAs = msg.spawnedAs ?? (FIX_ROUND.test(msg.name) ? 'shepherd' : undefined)
+  const claimed = msg.spawnedAs === 'burndown' || msg.spawnedAs === 'shepherd' ? msg.spawnedAs : undefined
+  const spawnedAs = claimed ?? (FIX_ROUND.test(msg.name) ? 'shepherd' : undefined)
   return spawnedAs === undefined ? {} : { spawnedAs }
 }
 

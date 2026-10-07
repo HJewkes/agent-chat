@@ -1686,6 +1686,8 @@ export class Supervisor implements TeleportHost {
         ...(fork ? { inherit: 'context', fork_from: fork.sessionId } : {}),
         ...(resumed ? { resumed_session: resumed.sessionId, transcript: resumed.path } : {}),
         ...(req.predecessor === undefined ? {} : { predecessor: req.predecessor }),
+        // CC-802: stored so the retire row names the same spawner as the dispatched one.
+        ...(req.spawnedAs === undefined ? {} : { spawned_as: req.spawnedAs }),
       },
     })
 
@@ -2218,6 +2220,7 @@ export class Supervisor implements TeleportHost {
       profile: meta.profile ?? identity.profile,
       model: meta.model ?? null,
       predecessor: meta.predecessor ?? null,
+      ...(meta.spawned_as === undefined ? {} : { spawnedAs: meta.spawned_as }),
     }
     const sessionId = identity.sessionId || null
     const tree = allocatedWorktree(this.core.events.agentEvents(), identity.agentId)
