@@ -1,3 +1,8 @@
+import {
+  SURFACE_NAMES as PACKAGE_SURFACE_NAMES,
+  type SurfaceName as PackageSurfaceName,
+} from '@titan-design/agent-surface'
+
 // Wire protocol between a session's MCP subprocess and the shared broker.
 // Newline-delimited JSON over a unix socket.
 
@@ -511,9 +516,10 @@ export const ISOLATION_NAMES = ['none', 'worktree', 'file-ownership', 'toolset-l
 
 export type IsolationName = (typeof ISOLATION_NAMES)[number]
 
-export const SURFACE_NAMES = ['headless', 'iterm-pane', 'iterm-tab', 'iterm-window'] as const
+/** Derived from the package so the two lists cannot drift. */
+export const SURFACE_NAMES = PACKAGE_SURFACE_NAMES
 
-export type SurfaceName = (typeof SURFACE_NAMES)[number]
+export type SurfaceName = PackageSurfaceName
 
 /** Why a session teleported; absent is the ordinary build-refresh case. */
 export const TELEPORT_REASONS = ['park'] as const
