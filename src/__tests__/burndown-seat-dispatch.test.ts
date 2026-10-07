@@ -17,6 +17,18 @@ const withSeat = (policy: Policy, name: string, patch: Record<string, unknown>):
   seats: { ...policy.seats, [name]: { ...policy.seats[name], ...patch } as Policy['seat'] },
 })
 
+describe('spawn config maxAgents', () => {
+  const load = (maxAgents: number) => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cc668-')), 'burndown.config.json')
+    fs.writeFileSync(file, JSON.stringify({ enabled: true, maxAgents }))
+    return loadTickConfig(file)
+  }
+
+  it.each([0, -1])('refuses maxAgents %i', maxAgents => {
+    expect(() => load(maxAgents)).toThrow(/maxAgents/)
+  })
+})
+
 describe('resolveSeatDispatch', () => {
   let policy: Policy
   beforeEach(() => {
@@ -42,7 +54,8 @@ describe('resolveSeatDispatch', () => {
   })
 
   it('takes the pool config_dir when the seat names none and expands a home-relative repo path', () => {
-    const dispatch = resolveSeatDispatch(policy, 'seat-b', HOME)
+    const capped = withSeat(policy, 'seat-b', { concurrency: { implementers: 1 } })
+    const dispatch = resolveSeatDispatch(capped, 'seat-b', HOME)
 
     expect(dispatch.configDir).toBe('/tmp/pool-y')
     expect(dispatch.repos).toEqual({
@@ -51,11 +64,26 @@ describe('resolveSeatDispatch', () => {
     })
   })
 
-  it('gives zero caps and no grants to a seat without concurrency or grants_extra', () => {
-    const dispatch = resolveSeatDispatch(policy, 'seat-b', HOME)
+  it('gives no grants to a seat without grants_extra', () => {
+    const dispatch = resolveSeatDispatch(
+      withSeat(policy, 'seat-b', { concurrency: { implementers: 1 } }),
+      'seat-b',
+      HOME,
+    )
 
-    expect(dispatch.caps).toEqual({ implementers: 0, reviewers: 0, planners: 0 })
     expect(dispatch.grants).toEqual([])
+  })
+
+  it('refuses a seat with no concurrency block', () => {
+    expect(() => resolveSeatDispatch(policy, 'seat-b', HOME)).toThrow(
+      /seat-b concurrency\.implementers is unset/,
+    )
+  })
+
+  it.each([0, -1])('refuses a seat whose implementers cap is %i', implementers => {
+    const bad = withSeat(policy, 'seat-a', { concurrency: { implementers, reviewers: 1, planners: 1 } })
+
+    expect(() => resolveSeatDispatch(bad, 'seat-a', HOME)).toThrow(/not positive/)
   })
 
   it('refuses the hub seat', () => {

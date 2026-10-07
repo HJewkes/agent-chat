@@ -75,10 +75,13 @@ export function resolveSeatDispatch(policy: Policy, name: string, home = os.home
   if (seat === undefined) throw new Error(`${name} is not a seat`)
   if (seat.role === 'hub') throw new Error(`${name} is the hub seat and dispatches nothing`)
   if (seat.prefix === undefined) throw new Error(`${name} has no agent-name prefix`)
+  const pool = seatPool(charter, seat, name)
+  if (!(seat.concurrency.implementers > 0))
+    throw new Error(`${name} concurrency.implementers is unset or not positive; a seat needs a cap`)
   return {
     seat: name,
     prefix: seat.prefix,
-    ...seatPool(charter, seat, name),
+    ...pool,
     repos: repoMap(seat, home),
     nonGitRepos: seat.repos.filter(r => r.git === false).map(r => expandHome(r.path, home)),
     caps: { ...seat.concurrency },
