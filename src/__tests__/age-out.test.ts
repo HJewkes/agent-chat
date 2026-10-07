@@ -99,6 +99,20 @@ describe('aging out notices and messages to the human (CC-811)', () => {
     expect(log.humanQueue().map(item => item.meta.kind)).toEqual(['ready-to-merge'])
   })
 
+  it('leaves agent-to-agent messages and notices alone, however old', () => {
+    const log = freshLog()
+    const message = log.append({ kind: 'message', actor: 'bob', target: 'alice', body: 'rebase done' }).msgId
+    const notice = log.append({ kind: 'notice', actor: 'bob', target: 'alice', body: 'pushed' }).msgId
+    vi.setSystemTime(T0 + 8 * DAY)
+
+    const closed = sweepAgedOut(brokerOf(log))
+
+    expect(closed).toEqual([])
+    expect(agedOutRows(log)).toEqual([])
+    expect(log.isOpen(message)).toBe(true)
+    expect(log.isOpen(notice)).toBe(true)
+  })
+
   it('writes nothing on a second sweep', () => {
     const log = freshLog()
     toHuman(log, 'notice', 'migration finished')
