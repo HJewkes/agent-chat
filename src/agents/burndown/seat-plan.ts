@@ -410,6 +410,14 @@ function eligibility(row: DispatchRow, task: Task, walk: Walk): Refused | undefi
 
 type Work = Pick<Dispatch, 'initiative' | 'task' | 'slice' | 'profile'>
 
+/** The seat's git checkouts: a `git: false` path is no repo to read, and reading it would refuse every task (CC-834). */
+function landedRepos(seat: SeatDispatch): string[] {
+  const nonGit = new Set(seat.nonGitRepos ?? [])
+  return Object.values(seat.repos)
+    .flat()
+    .filter(repo => !nonGit.has(repo))
+}
+
 function dispatchFor(work: Work, repo: string, reason: string, walk: Walk): Dispatch {
   const { seat } = walk.inputs
   const agentName = agentNameFor(work.task, work.slice, seat.prefix)
@@ -440,7 +448,7 @@ function blocker(d: Dispatch, work: CollisionWork, role: Role, walk: Walk): Refu
   }
   return (
     stopLineRefusal(flow, inputs.lineStop) ??
-    inputs.collision?.(d.repo, work, Object.values(inputs.seat.repos).flat()) ??
+    inputs.collision?.(d.repo, work, landedRepos(inputs.seat)) ??
     // A slice's branch is named for the slice, so the whole-task orphan check does not apply to it.
     (d.slice === undefined
       ? orphanRefusal(at, d.task, d.profile, inputs.orphan, inputs.ledger)

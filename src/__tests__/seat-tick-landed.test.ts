@@ -14,6 +14,7 @@ import { readInitiatives } from '../agents/burndown/source.js'
 const AUTONOMY = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'autonomy-2026-09-29')
 const NOW = new Date(2026, 8, 29, 10)
 const SIBLING = '/tmp/repos/alpha-docs'
+const NON_GIT = '/tmp/repos/alpha-bin'
 const runStart = NOW.getTime() - 3_600_000
 const ledger: Ledger = {
   ...EMPTY_LEDGER,
@@ -38,8 +39,9 @@ const deps = (): SeatTickDeps => ({
 })
 
 /** Plans seat-a over one task, git answering per checkout: `log` gives its subjects, `fetch` fails for `broken`. */
-function plan(subjectsByRepo: Record<string, string>, broken?: string) {
+function plan(subjectsByRepo: Record<string, string>, broken?: string, read: string[] = []) {
   const exec: Runner = (bin, args, cwd) => {
+    if (cwd !== undefined) read.push(cwd)
     if (bin === 'gh') return { status: 0, stdout: '' }
     if (args[0] === 'fetch' && cwd === broken) return { status: 1, stdout: '' }
     return { status: 0, stdout: args[0] === 'log' ? (subjectsByRepo[cwd ?? ''] ?? 'init\n') : '' }
@@ -94,5 +96,26 @@ describe('planSeats landed check across the seat repos', () => {
         reason: `reader git-subjects failed: no default-branch subjects in ${SIBLING}`,
       }),
     ])
+  })
+
+  it('never reads a repo marked git: false, and dispatches past it', () => {
+    const seatFile = path.join(root, 'seats', 'seat-a.md')
+    fs.writeFileSync(
+      seatFile,
+      fs
+        .readFileSync(seatFile, 'utf8')
+        .replace(
+          'concurrency:',
+          `  - {path: ${NON_GIT}, git: false, initiatives: [init-alpha]}\nconcurrency:`,
+        ),
+    )
+    const read: string[] = []
+
+    const planned = plan({}, NON_GIT, read)
+
+    expect(planned.refusals).toEqual([])
+    expect(planned.dispatch.map(d => d.task)).toEqual(['AA-1'])
+    expect(read).not.toContain(NON_GIT)
+    expect(read).toContain(SIBLING)
   })
 })
