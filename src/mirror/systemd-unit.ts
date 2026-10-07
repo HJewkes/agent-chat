@@ -8,22 +8,29 @@ const LABEL_PREFIX = 'dev.hjewkes.'
 export const unitName = (label: string): string =>
   label.startsWith(LABEL_PREFIX) ? label.slice(LABEL_PREFIX.length) : label
 
+/** systemd refuses a unit file name, `.service` included, over 255 characters. */
+const MAX_UNIT_NAME = 255 - '.service'.length
+
+const hashToken = (home: string): string => createHash('sha256').update(home).digest('hex').slice(0, 8)
+
 /** A home's basename as a unit-name token: no leading dots or `agent-chat-`, only systemd-safe characters. */
-function homeToken(home: string): string {
-  const token = path
+const homeToken = (home: string): string =>
+  path
     .basename(home)
     .replace(/^\.+/, '')
     .replace(/^agent-chat-/, '')
     .replace(/[^A-Za-z0-9_-]+/g, '_')
-  return token !== '' ? token : createHash('sha256').update(home).digest('hex').slice(0, 8)
-}
 
 /**
  * Pure: `base` for the default home, else `base-<token>`, so a second home's units sit beside the
- * default's instead of overwriting them (CC-819).
+ * default's instead of overwriting them (CC-819). An empty or overlong token falls back to a hash.
  */
 export function unitNameForHome(base: string, home: string, defaultHome: string): string {
-  return path.resolve(home) === path.resolve(defaultHome) ? base : `${base}-${homeToken(path.resolve(home))}`
+  const resolved = path.resolve(home)
+  if (resolved === path.resolve(defaultHome)) return base
+  const named = `${base}-${homeToken(resolved)}`
+  const usable = named.length > base.length + 1 && named.length <= MAX_UNIT_NAME
+  return usable ? named : `${base}-${hashToken(resolved)}`
 }
 
 /** The units for one job; `timer` is absent for a kept-alive service. */

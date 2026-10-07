@@ -53,6 +53,8 @@ const units = (target: WatchdogTarget): RenderedUnits =>
 
 /** A scratch or worktree home vanishes under the job, so an explicit one is refused before anything renders. */
 function refusal(target: WatchdogTarget): Report | null {
+  if (target.agentChatHome === '')
+    return { ok: false, lines: [], errors: ['refused: --agent-chat-home is empty'] }
   const home = flagHome(target)
   const errors = home === undefined ? [] : agentChatHomeRefusals(home, os.tmpdir())
   return errors.length === 0 ? null : { ok: false, lines: [], errors }

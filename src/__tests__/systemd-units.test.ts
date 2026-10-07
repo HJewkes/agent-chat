@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { activeWorkRoot } from '../agents/active-work.js'
 import { burndownInstallOn, burndownJobStatusOn, burndownUninstallOn } from '../cli/verbs/burndown-job.js'
 import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from '../cli/verbs/watchdog-job.js'
 import type { JobHost } from '../mirror/job-host.js'
@@ -124,6 +125,7 @@ const savedEnv = {
   home: process.env.AGENT_CHAT_HOME,
   state: process.env.XDG_STATE_HOME,
   activeRoot: process.env.ACTIVE_ROOT,
+  workRoot: process.env.AGENT_CHAT_ACTIVE_WORK_ROOT,
 }
 
 beforeEach(() => {
@@ -131,6 +133,7 @@ beforeEach(() => {
   process.env.AGENT_CHAT_HOME = path.join(scratch, 'home')
   process.env.XDG_STATE_HOME = path.join(scratch, 'state')
   delete process.env.ACTIVE_ROOT
+  delete process.env.AGENT_CHAT_ACTIVE_WORK_ROOT
 })
 
 afterEach(() => {
@@ -139,6 +142,7 @@ afterEach(() => {
     ['AGENT_CHAT_HOME', savedEnv.home],
     ['XDG_STATE_HOME', savedEnv.state],
     ['ACTIVE_ROOT', savedEnv.activeRoot],
+    ['AGENT_CHAT_ACTIVE_WORK_ROOT', savedEnv.workRoot],
   ] as const) {
     if (value === undefined) delete process.env[key]
     else process.env[key] = value
@@ -479,6 +483,48 @@ describe('watchdog home (CC-819)', () => {
     ])
   })
 
+  it('carries ACTIVE_ROOT alone into the unit, where it moves the active-work root to the pilot', () => {
+    process.env.ACTIVE_ROOT = PILOT_ROOT
+    const { systemctl } = fakeSystemctl()
+    const service = watchdogInstallOn(linuxHost(systemctl, true)).lines[0] ?? ''
+    expect(service).toContain(`Environment="ACTIVE_ROOT=${PILOT_ROOT}"`)
+    expect(service).not.toContain('AGENT_CHAT_ACTIVE_WORK_ROOT')
+    expect(rootUnder(unitEnv(service))).toBe(PILOT_ROOT)
+  })
+
+  it('carries AGENT_CHAT_ACTIVE_WORK_ROOT into the unit, where it beats ACTIVE_ROOT', () => {
+    process.env.ACTIVE_ROOT = '/srv/u/active-work-other'
+    process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = PILOT_ROOT
+    const { systemctl } = fakeSystemctl()
+    const service = watchdogInstallOn(linuxHost(systemctl, true)).lines[0] ?? ''
+    expect(service).toContain(`Environment="AGENT_CHAT_ACTIVE_WORK_ROOT=${PILOT_ROOT}"`)
+    expect(rootUnder(unitEnv(service))).toBe(PILOT_ROOT)
+  })
+
+  it('resolves the default active-work root when neither variable is set', () => {
+    const expected =
+      process.platform === 'darwin'
+        ? path.join(os.homedir(), 'Library', 'Application Support', 'active-work')
+        : path.join(process.env.XDG_DATA_HOME ?? path.join(os.homedir(), '.local', 'share'), 'active-work')
+    expect(activeWorkRoot()).toBe(expected)
+  })
+
+  it('refuses an empty --agent-chat-home rather than resolving it to the cwd', () => {
+    const { systemctl, calls } = fakeSystemctl()
+    const report = watchdogInstallOn(linuxHost(systemctl), { agentChatHome: '' })
+    expect(report.ok).toBe(false)
+    expect(report.errors).toEqual(['refused: --agent-chat-home is empty'])
+    expect(calls).toEqual([])
+  })
+
+  it('falls back to a hash token when the basename would push the unit name past 255 characters', () => {
+    const name = unitNameForHome(WATCHDOG, `/srv/u/${'p'.repeat(240)}`, DEFAULT_HOME)
+    expect(name).toMatch(new RegExp(`^${WATCHDOG}-[0-9a-f]{8}$`))
+    expect(`${unitNameForHome(WATCHDOG, `/srv/u/${'p'.repeat(222)}`, DEFAULT_HOME)}.service`).toHaveLength(
+      255,
+    )
+  })
+
   it('renders the darwin plist byte-identical to main when neither variable is set', () => {
     const { launchctl } = fakeLaunchctl()
     expect(watchdogInstallOn(darwinHost(launchctl, true)).lines[0]).toBe(mainPlist())
@@ -499,3 +545,28 @@ describe('watchdog home (CC-819)', () => {
     expect(watchdogStatusOn(darwinHost(launchctl), target).lines[1]).toBe(`plist ${watchdogPlistPath()}`)
   })
 })
+
+/** The `Environment=` pairs of a rendered service, unescaped for the plain values these tests use. */
+function unitEnv(service: string): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const match of service.matchAll(/^Environment="([^=]+)=(.*)"$/gm)) env[match[1] ?? ''] = match[2] ?? ''
+  return env
+}
+
+/** `activeWorkRoot()` as a job started with exactly `env` would resolve it. */
+function rootUnder(env: Record<string, string>): string {
+  const keys = ['ACTIVE_ROOT', 'AGENT_CHAT_ACTIVE_WORK_ROOT'] as const
+  const saved = keys.map(key => process.env[key])
+  for (const key of keys) {
+    if (env[key] === undefined) delete process.env[key]
+    else process.env[key] = env[key]
+  }
+  try {
+    return activeWorkRoot()
+  } finally {
+    keys.forEach((key, i) => {
+      if (saved[i] === undefined) delete process.env[key]
+      else process.env[key] = saved[i]
+    })
+  }
+}

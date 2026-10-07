@@ -1,9 +1,9 @@
 import path from 'node:path'
 
 /** The only variables a launchd job inherits; a token must never ride along from the caller's env. */
-const PASSED_ENV = ['HOME', 'PATH', 'AGENT_CHAT_HOME', 'ACTIVE_ROOT'] as const
+const PASSED_ENV = ['HOME', 'PATH', 'AGENT_CHAT_HOME', 'ACTIVE_ROOT', 'AGENT_CHAT_ACTIVE_WORK_ROOT'] as const
 
-/** HOME and PATH always, AGENT_CHAT_HOME and ACTIVE_ROOT only when set; nothing else from `source`. */
+/** HOME and PATH always, the home and active-work roots only when set; nothing else from `source`. */
 export function jobEnv(source: NodeJS.ProcessEnv): Record<string, string> {
   const env: Record<string, string> = {}
   for (const key of PASSED_ENV) {

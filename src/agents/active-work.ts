@@ -99,9 +99,10 @@ export type BriefingResult =
 /**
  * Where `active-work` keeps its initiatives. Mirrors `env-paths`, which is what
  * that tool uses — and which ignores `XDG_DATA_HOME` on macOS, so this does too.
+ * `ACTIVE_ROOT` is active-work's own override, honoured so both tools agree on one root (CC-819).
  */
 export const activeWorkRoot = (): string => {
-  const override = process.env.AGENT_CHAT_ACTIVE_WORK_ROOT
+  const override = process.env.AGENT_CHAT_ACTIVE_WORK_ROOT || process.env.ACTIVE_ROOT
   if (override) return override
   if (process.platform === 'darwin')
     return path.join(os.homedir(), 'Library', 'Application Support', 'active-work')
