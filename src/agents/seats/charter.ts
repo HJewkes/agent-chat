@@ -1,8 +1,15 @@
 import os from 'node:os'
 import path from 'node:path'
 import { frontmatterField, listField } from '../active-work.js'
-import type { AccountRule } from '../burndown/budget-gate.js'
 import { SURFACE_NAMES, type SurfaceName } from '../../protocol.js'
+
+/** A pool's two stops, both required here: a pool missing either is dropped. */
+export interface PoolStops {
+  reserve_seven_day: number
+  ceiling_five_hour: number
+  /** CC-474: still parsed from old charters, never read; the declining reserve replaced it. */
+  night?: { reserve_seven_day: number }
+}
 
 /** One billing pool from the autonomy charter's `pools:` map. */
 export interface Pool {
@@ -10,7 +17,7 @@ export interface Pool {
   configDir: string
   /** Unset reads as true, which keeps the stricter five_hour ceiling while the owner may be typing. */
   humanUses: boolean
-  rule: AccountRule
+  rule: PoolStops
   /** Charter section 4's daily cap on the pool's seven_day points, counted from 07:00 local. */
   perDayPoints?: number
 }

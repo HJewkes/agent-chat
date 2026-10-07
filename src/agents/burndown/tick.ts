@@ -1,6 +1,7 @@
+import os from 'node:os'
 import { burndownConfigPath, burndownLedgerPath } from '../../paths.js'
 import { activeWorkRoot } from '../active-work.js'
-import { gateAccount } from './budget-gate.js'
+import { gateAccount, type AccountReading } from './budget-gate.js'
 import { classOf, routeOf, type RouteConfig } from './exception.js'
 import { backoffHeld } from './backoff.js'
 import { taskRefusal, type Initiative } from './eligibility.js'
@@ -9,8 +10,10 @@ import type { Runner } from './exec.js'
 import { memo, type Roster } from './observe.js'
 import { downstreamReader, shepherdRows } from './shepherd.js'
 import { plan, type Plan, type PlanInputs } from './plan.js'
+import { defaultAutonomyRoot, loadCharterPools, type CharterPool } from './policy.js'
+import { expandHome } from './seat-dispatch.js'
 import { diskSeatDeps, loadSeats, planSeats, type LoadedSeats, type SeatPlanDeps } from './seat-tick.js'
-import { accountDir, loadRules, loadTickConfig, readInitiatives, readReadings, readTasks } from './source.js'
+import { accountDir, loadTickConfig, readInitiatives, readReadings, readTasks } from './source.js'
 import { currentTriage } from './triage.js'
 import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
 
@@ -30,19 +33,43 @@ const accountsOf = (initiatives: Initiative[]): string[] => [
   ),
 ]
 
+export interface CharterRules {
+  rules: Record<string, CharterPool>
+  /** Why the charter could not be read; every pool's gate is then closed. */
+  error?: string
+}
+
+/** CC-801: the charter's pools, the one source `burndown status`, the tick and `seats status` judge a pool by. */
+export function charterRules(autonomyRoot: string): CharterRules {
+  try {
+    return { rules: loadCharterPools(autonomyRoot) }
+  } catch (err) {
+    return { rules: {}, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/** The pool's charter `config_dir`, as `seats status` reads it; an account the charter lacks keeps its profile dir. */
+export const poolDir =
+  (rules: CharterRules['rules'], home = os.homedir()) =>
+  (account: string): string => {
+    const dir = rules[account]?.config_dir
+    return dir === undefined ? accountDir(account) : expandHome(dir, home)
+  }
+
 /** Everything `plan` reads off disk, which the tick also needs for briefs and the account gate. */
 export type World = Omit<PlanInputs, 'ledger' | 'capacity' | 'orphan'>
 
 export function loadWorld(now: Date, root: string): World {
   const initiatives = readInitiatives(root)
-  const rules = loadRules(burndownConfigPath())
+  const { rules } = charterRules(defaultAutonomyRoot(root))
   const cliVersion = installedClaudeVersion()
+  const accounts = [...new Set([...accountsOf(initiatives), ...Object.keys(rules)])]
   return {
     initiatives,
     tasks: new Map(initiatives.map(i => [i.slug, i.autonomy === undefined ? [] : readTasks(root, i.slug)])),
     rules,
-    readings: readReadings([...new Set([...accountsOf(initiatives), ...Object.keys(rules)])], now.getTime()),
-    // No human-presence signal exists yet, so the gate assumes the human is here: day rules, capped ceiling.
+    readings: readReadings(accounts, now.getTime(), poolDir(rules)),
+    // No human-presence signal exists yet, so the gate assumes the human is here: a pool they use gets the capped ceiling.
     gate: { now },
     trust: (repo, cwd, account) => trustRefusal(repo, cwd, accountDir(account), cliVersion),
   }
@@ -141,9 +168,23 @@ function stallSuffix(c: Claim, route: RouteConfig): string {
   return ` (class ${cls ?? 'none'}, route ${routeOf(cls, route, true).route}${job})`
 }
 
-export function renderStatus(ledger: Ledger, now: Date): string[] {
-  const rules = loadRules(burndownConfigPath())
-  const readings = readReadings(Object.keys(rules), now.getTime())
+/** One line per charter pool, judged by `gateAccount` on the same line and ceiling `seats status` prints. */
+export function poolStatusLines(
+  { rules, error }: CharterRules,
+  readings: ReadonlyMap<string, AccountReading>,
+  now: Date,
+): string[] {
+  const lines = error === undefined ? [] : [`pools: closed, no charter pools: ${error}`]
+  for (const [account, rule] of Object.entries(rules)) {
+    const gate = gateAccount(account, rule, readings.get(account), { now })
+    lines.push(`account ${account}: ${gate.open ? 'open' : 'closed'}, ${gate.reason}`)
+  }
+  return lines
+}
+
+export function renderStatus(ledger: Ledger, now: Date, autonomyRoot = defaultAutonomyRoot()): string[] {
+  const pools = charterRules(autonomyRoot)
+  const readings = readReadings(Object.keys(pools.rules), now.getTime(), poolDir(pools.rules))
   const held = heldClaims(ledger)
   const { route } = loadTickConfig(burndownConfigPath()).exceptions
   const lines = [
@@ -159,11 +200,7 @@ export function renderStatus(ledger: Ledger, now: Date): string[] {
         `${c.taskId} (${c.initiative}) ${c.phase === 'done' ? 'done' : 'respawning'}, UNRETIRED ${u.name}: ${u.reason}`,
       )
   if (ledger.decider !== undefined) lines.push(deciderStatus(ledger.decider, now))
-  for (const account of Object.keys(rules)) {
-    const gate = gateAccount(account, rules[account], readings.get(account), { now })
-    lines.push(`account ${account}: ${gate.open ? 'open' : 'closed'}, ${gate.reason}`)
-  }
-  return lines
+  return [...lines, ...poolStatusLines(pools, readings, now)]
 }
 
 function deciderStatus(state: DeciderState, now: Date): string {

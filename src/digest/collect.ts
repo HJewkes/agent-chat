@@ -1,7 +1,6 @@
 import path from 'node:path'
-import { burndownConfigPath, burndownLedgerPath, home } from '../paths.js'
+import { burndownLedgerPath, home } from '../paths.js'
 import { activeWorkRoot } from '../agents/active-work.js'
-import { DEFAULT_RULES } from '../agents/burndown/budget-gate.js'
 import {
   EMPTY_LEDGER,
   heldClaims,
@@ -15,8 +14,7 @@ import type { MilestoneReport } from '../agents/burndown/milestone-report.js'
 import { milestoneReportFromDisk } from '../agents/burndown/milestone-source.js'
 import { defaultAutonomyRoot } from '../agents/burndown/policy.js'
 import { localDate } from '../agents/burndown/seat-tick.js'
-import { accountDir, loadRules } from '../agents/burndown/source.js'
-import { planFromDisk } from '../agents/burndown/tick.js'
+import { charterRules, planFromDisk, poolDir } from '../agents/burndown/tick.js'
 import { EMPTY_FACTS, readLedgerFacts } from './ledger.js'
 import { lookupPrs, type Search } from './prs.js'
 import { accountSpend } from './spend.js'
@@ -73,7 +71,8 @@ export function collectDigest(options: CollectOptions): Digest {
   const ledger = attempt(gaps, 'events.db', EMPTY_FACTS, () => readLedgerFacts(eventsDbPath(), sinceMs, now))
   if (!ledger.available) gaps.push(`events.db: not found at ${eventsDbPath()}`)
   const claims = attempt(gaps, 'burndown ledger', EMPTY_LEDGER, () => readLedger(burndownLedgerPath()))
-  const rules = attempt(gaps, 'burndown config', DEFAULT_RULES, () => loadRules(burndownConfigPath()))
+  const pools = charterRules(defaultAutonomyRoot())
+  if (pools.error !== undefined) gaps.push(`charter pools: ${pools.error}`)
   const planned = attempt<Plan | undefined>(gaps, 'burndown plan', undefined, () =>
     (options.plan ?? planFromDisk)(new Date(now)),
   )
@@ -91,7 +90,9 @@ export function collectDigest(options: CollectOptions): Digest {
     stalled: heldClaims(claims)
       .filter(c => isStalled(c, new Date(now)))
       .map(c => ({ ...c, agentId: agentOf(c) })),
-    spend: Object.keys(rules).map(account => accountSpend(account, accountDir(account), sinceMs, now)),
+    spend: Object.keys(pools.rules).map(account =>
+      accountSpend(account, poolDir(pools.rules)(account), sinceMs, now),
+    ),
     next: {
       picks: planned?.dispatch ?? [],
       refused: planned?.refusals.length ?? 0,

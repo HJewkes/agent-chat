@@ -108,6 +108,9 @@ export interface EventStore {
   /** Open items for the human: addressed to them and not yet answered or dismissed. */
   humanQueue(): QueueItem[]
 
+  /** Open plain notices and messages to the human written at or before `cutoff` (CC-811), oldest first. */
+  agedOutCandidates(cutoff: number): string[]
+
   /** How many items of one kind this session has outstanding, for budgeting. */
   openCount(actor: string, kind: EventKind): number
 
@@ -119,6 +122,9 @@ export interface EventStore {
 
   /** A still-open approval request, with who is blocked on it. Channel rows age out; hook rows do not. */
   openApproval(msgId: string): OpenApproval | undefined
+
+  /** Whether `msgId` names an approval request, whatever its age, meta or state (CC-831). */
+  isApprovalRequest(msgId: string): boolean
 
   /** The questions this session still has outstanding, not just how many. */
   openQuestions(actor: string): QueueItem[]

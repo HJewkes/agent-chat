@@ -54,13 +54,15 @@ const Pool = z.looseObject({
   dispatch_five_hour_points: z.number().nonnegative().optional(),
 })
 
+const Pools = orEmpty(z.record(z.string(), Pool), {})
+
 const Charter = z.looseObject({
   seats: z.array(z.string()),
   hub: z.string().optional(),
   human_only_initiatives: orEmpty(z.array(z.string()), []),
   hard_stops: orEmpty(z.array(z.string()), []),
   defaults: Defaults,
-  pools: orEmpty(z.record(z.string(), Pool), {}),
+  pools: Pools,
 })
 
 const count = z.number().int().nonnegative()
@@ -113,6 +115,7 @@ const Seat = z.looseObject({
 })
 
 export type CharterPolicy = z.infer<typeof Charter>
+export type CharterPool = z.infer<typeof Pool>
 export type SeatPolicy = z.infer<typeof Seat>
 
 export interface Policy {
@@ -161,6 +164,17 @@ export function loadPolicy(root: string, seatName: string): Policy {
   return { charter, seats, seat, defaults: mergeDefaults(charter, seat) }
 }
 
+/**
+ * CC-801: the charter's `pools:` through the schema `seats status` reads them with, for `burndown status`
+ * and the tick, which need no seat or scoring default. Throws on an unreadable charter or a malformed pool.
+ */
+export const loadCharterPools = (root: string): Record<string, CharterPool> =>
+  validate(
+    z.looseObject({ pools: Pools }),
+    frontmatter(fs.readFileSync(path.join(root, 'charter.md'), 'utf8')),
+    'autonomy charter pools',
+  ).pools
+
 /** The tick's own agents are `bd-...`; seat agents must never share a name with them or with another seat's. */
 const RESERVED_PREFIX = 'bd'
 const PREFIX_CHARS = /^[a-z0-9]+$/
@@ -178,14 +192,17 @@ export function checkSeatPrefixes(seats: Readonly<Record<string, SeatPolicy>>): 
   }
 }
 
-/** The seat's pool from the charter and its own spend caps, as `gatePool` reads them; an unknown pool is undefined, which closes the gate. */
+/**
+ * The seat's pool from the charter and its own spend caps, as `gatePool` reads them. A pool the charter
+ * lacks has no stops, which closes the gate under its own name (CC-801); no pool at all is undefined.
+ */
 export function seatBudget(
   charter: CharterPolicy,
   seat: SeatPolicy,
 ): { pool: PoolRule | undefined; spend: SpendCaps } {
-  const found = seat.pool === undefined ? undefined : charter.pools[seat.pool]
   const spend = { per_run_points: seat.spend.per_run_points, per_day_points: seat.spend.per_day_points }
-  return { pool: found === undefined ? undefined : { ...found, name: seat.pool ?? '' }, spend }
+  if (seat.pool === undefined) return { pool: undefined, spend }
+  return { pool: { human_uses: true, ...charter.pools[seat.pool], name: seat.pool }, spend }
 }
 
 /** score.py `seat_initiatives`: slug to scope weight, adding focused unclaimed initiatives when the seat takes them. */

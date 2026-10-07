@@ -441,6 +441,19 @@ export class EventLog implements EventStore {
     }))
   }
 
+  agedOutCandidates(cutoff: number): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT msg_id FROM events
+         WHERE target = 'human' AND kind IN ('message', 'notice') AND ts <= ?
+           AND json_extract(meta, '$.kind') IS NULL
+           AND msg_id IS NOT NULL AND msg_id NOT IN (${CLOSED})
+         ORDER BY id ASC`,
+      )
+      .all(cutoff) as unknown as { msg_id: string }[]
+    return rows.map(row => row.msg_id)
+  }
+
   /** How many items of one kind this session has outstanding, for budgeting. */
   openCount(actor: string, kind: EventKind): number {
     const row = this.db
@@ -526,6 +539,14 @@ export class EventLog implements EventStore {
     if (meta.source === 'hook') return { source: 'hook', session: row.actor, toolName }
     if (!meta.request_id) return undefined
     return { source: 'channel', session: row.actor, requestId: meta.request_id, toolName }
+  }
+
+  /** Keyed on the row's kind alone: `openApproval`'s age and meta cutoffs say whether a prompt is answerable, not what it is. */
+  isApprovalRequest(msgId: string): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 AS hit FROM events WHERE msg_id = ? AND kind = 'approval_request' LIMIT 1`)
+      .get(msgId) as unknown as { hit: number } | undefined
+    return row !== undefined
   }
 
   /**
@@ -696,6 +717,7 @@ export class EventLog implements EventStore {
       meta: {
         ...((row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>),
         ...(row.target ? { target: row.target } : {}),
+        ...(row.ref ? { ref: row.ref } : {}),
       },
     }))
   }

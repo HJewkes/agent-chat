@@ -194,6 +194,18 @@ const LadderRecord = z.object({
 })
 export type LadderRecord = z.infer<typeof LadderRecord>
 
+/** The ladder's mass-death brake (CC-699): occurrence times inside the window, and the notice sent for this brake. */
+const BrakeState = z.object({
+  at: z.array(z.string().datetime()),
+  /** `brake:<code>` once told, so a later tick of the same brake is quiet. */
+  notified: z.string().optional(),
+  /** The claim keys the notice was about; their seats are told. */
+  claims: z.array(z.string()).optional(),
+  /** Occurrences already counted, as `<claim key>@<phaseAt>`, so a retried rung is not a new one; kept while the claim holds it. */
+  seen: z.array(z.string()).optional(),
+})
+export type BrakeState = z.infer<typeof BrakeState>
+
 const Ledger = z.object({
   version: z.literal(1),
   lastTickAt: z.string().optional(),
@@ -213,6 +225,8 @@ const Ledger = z.object({
   liveness: z.record(z.string(), LivenessRecord).optional(),
   /** Triage ladder records by claim key, outside the claim so a release keeps them (CC-660). */
   ladder: z.record(z.string(), LadderRecord).optional(),
+  /** Persisted, so a restart inside the window stays braked. */
+  brake: BrakeState.optional(),
 })
 export type Ledger = z.infer<typeof Ledger>
 

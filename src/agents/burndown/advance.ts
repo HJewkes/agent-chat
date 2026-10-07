@@ -5,6 +5,7 @@ import {
   isStalled,
   sameClaim,
   type AgentPhase,
+  type BrakeState,
   type Claim,
   type LadderRecord,
   type Ledger,
@@ -75,6 +76,8 @@ export type Action =
   | { kind: 'register'; key: ClaimKey; registration: Registration }
   /** Writes the claim's triage ladder record (CC-660). */
   | { kind: 'ladder'; key: ClaimKey; record: LadderRecord }
+  /** Writes the ladder's brake (CC-699); absent clears it. */
+  | { kind: 'brake'; brake?: BrakeState }
   /**
    * Ladder rung 2 (CC-698): the claim lets go of its worktree and branch, which stay. A slice goes back to
    * `queued` for the planner's work to survive; a whole task is dropped. Never clears `ledger.liveness`.
@@ -324,6 +327,10 @@ export function applyActions(ledger: Ledger, actions: Action[], now: Date): Ledg
     if (action.kind === 'ladder')
       return { ...current, ladder: { ...current.ladder, [claimKey(action.key)]: action.record } }
     if (action.kind === 'release') return released(current, action, at)
+    if (action.kind === 'brake') {
+      const { brake: _cleared, ...rest } = current
+      return action.brake === undefined ? rest : { ...rest, brake: action.brake }
+    }
     if (action.kind !== 'update') return current
     const claims = current.claims.map(c =>
       c.phase !== 'done' && sameClaim(c, action.key) ? patched(c, action.patch, at) : c,

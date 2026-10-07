@@ -17,6 +17,7 @@ import { burndownLedgerPath, burndownPausePath, configPath } from '../paths.js'
 import { tickBroker } from '../cli/burndown-broker.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { AgentIdentity, QueueItem } from '../protocol.js'
+import { writePoolCharter } from './helpers/pool-charter.js'
 
 /**
  * `burndown tick` over a fixture world: a real git repo, an active-work root,
@@ -233,6 +234,15 @@ beforeEach(() => {
   process.env.CLAUDE_PROFILE_ROOT = path.join(world, 'profiles')
   delete process.env.CLAUDE_CONFIG_DIR
   delete process.env.AGENT_CHAT_STATUS_CACHE
+  // CC-801: the gate reads the charter's pools; these are the numbers the retired default rules held.
+  writePoolCharter(path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy'), {
+    agents: {
+      config_dir: path.join(world, 'profiles', 'agents'),
+      human_uses: true,
+      reserve_seven_day: 25,
+      ceiling_five_hour: 70,
+    },
+  })
   write(path.join(world, 'home', 'config.json'), JSON.stringify({ worktreeBudget: 10 }))
   fs.mkdirSync(repo(), { recursive: true })
   git(repo(), 'init', '-q', '-b', 'main')

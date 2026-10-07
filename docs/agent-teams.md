@@ -2341,7 +2341,7 @@ GET  /api/queue              EventLog.humanQueue()              event-log.ts:135
 GET  /api/sessions           Registry.list() + brokerUptimeMs   registry.ts:89
 GET  /api/history?limit=     EventLog.history()                 event-log.ts:180
 GET  /events                 SSE tail, §6.1–6.3
-POST /api/answer             {msgId,text} -> core.answer()
+POST /api/answer             {msgId,text,channel?} -> core.answer()
 POST /api/dismiss            {msgId}      -> core.dismiss()
 GET  /ui, /ui/*              SPA + placeholder when unbuilt
 ANY  /mcp                    404 with an explanatory body, §7.5
