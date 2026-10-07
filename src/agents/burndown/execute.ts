@@ -110,7 +110,7 @@ export async function execute(steps: Step[], start: Ledger, deps: ExecuteDeps): 
       ledger = withUnretired(ledger, step.key, retired.left)
       writeLedger(deps.ledgerFile, ledger)
       lines.push(...retired.lines)
-    } else if (step.kind === 'register') lines.push(registerOne(step, commit, deps))
+    } else if (step.kind === 'register') lines.push(registerOne(step, { ledger, save }, deps))
     else lines.push(await spawnOne(step, { start, ledger, save }, deps))
   }
   return { ledger, lines }
@@ -210,20 +210,46 @@ function refused(
   return `not spawned ${frame.name}: retry-spent: ${detail}`
 }
 
-/** A refused registration stalls the claim, since burndown never merges; an unanswered one is retried next tick. */
+/** The liveness action a register spends under: one budget per claim. */
+const REGISTER_ACTION = 'register:shepherd'
+
+/**
+ * A refusal spends the budget and leaves the claim `shepherding`, so the next tick registers again; the third with
+ * an unchanged PR head stalls it, since burndown never merges. An unanswered register spends nothing.
+ */
 function registerOne(
   step: Extract<Step, { kind: 'register' }>,
-  commit: (actions: Action[]) => void,
+  { ledger, save }: Pick<SpawnState, 'ledger' | 'save'>,
   deps: ExecuteDeps,
 ): string {
-  const ref = targetRef(step.registration.target)
-  const reply = deps.register(step.registration)
-  deps.log('burndown_shepherd_register', { pr: ref, task: step.registration.task, ...reply })
-  if (reply.ok) return `registered ${ref} with Shepherd for ${claimKey(step.key)}`
+  const { key, registration } = step
+  const ref = targetRef(registration.target)
+  const reply = deps.register(registration)
+  deps.log('burndown_shepherd_register', { pr: ref, task: registration.task, ...reply })
+  if (reply.ok) {
+    save(clearLiveness(ledger, key, REGISTER_ACTION))
+    return `registered ${ref} with Shepherd for ${claimKey(key)}`
+  }
   if (!reply.refused) return `register ${ref} with Shepherd failed (${reply.reason}); retried next tick`
-  const stalledReason = `Shepherd refused ${ref} (${reply.reason}); burndown does not merge, so the PR is left for the owner`
-  commit([{ kind: 'update', key: step.key, patch: { stalledReason, stalledClass: 'gate-trip' } }])
-  return `not registered ${ref}: ${stalledReason}`
+  const prHead = ledger.claims.find(c => c.phase !== 'done' && sameClaim(c, key))?.prHead
+  const spent = spend(
+    ledger,
+    key,
+    REGISTER_ACTION,
+    factFingerprint({ registration, prHead }),
+    reply.reason,
+    deps.now,
+  )
+  if (spent.verdict === 'retry') {
+    save(spent.ledger)
+    return `not registered ${ref}: Shepherd refused (${reply.reason}); refused ${spent.n}/${LIVENESS_LIMIT}, retried next tick`
+  }
+  const detail = `Shepherd refused ${ref} ${spent.n} times with unchanged facts (${maskText(reply.reason)}); burndown does not merge, so the PR is left for the owner`
+  const park = parkUpdate(key, 'retry-spent', detail)
+  save(
+    applyActions(spent.ledger, [{ ...park, patch: { ...park.patch, stalledClass: 'gate-trip' } }], deps.now),
+  )
+  return `not registered ${ref}: retry-spent: ${detail}`
 }
 
 /** A refusal after allocation leaves the worktree behind (the supervisor releases the slot only), so name it. */
