@@ -44,6 +44,8 @@ export interface Observation {
   /** A live implementer's worktree HEAD and uncommitted hash (CC-659); read, not yet acted on. */
   progress?: Progress | 'unreadable'
   diff?: { reviewable: boolean; reason: string }
+  /** CC-669: the files a finished implementer's branch touches outside its slice's `owns`; absent when the slice owns nothing. */
+  owned?: { outside: string[] } | 'unreadable'
   /** Shepherd's row for the claim's PR, absent from the row when Shepherd has none; `landed` is read for a finished run. */
   shepherd?: { row?: ShepherdRow; landed?: boolean }
   /** CC-723: the claim's transcript spend over every agent it spawned, against its seat's `per_claim_usd`; read, not yet acted on. */
@@ -125,7 +127,9 @@ const STEPS: Partial<Record<Claim['phase'], Step>> = {
 }
 
 function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
-  if (claim.phase === 'done' || claim.stalledReason !== undefined) return []
+  if (claim.phase === 'done') return []
+  if (claim.stallCode === 'outside-owns') return unfenced(claim, obs, now)
+  if (claim.stalledReason !== undefined) return []
   if (obs.spend !== undefined && capVerdict(obs.spend.claim, obs.spend.cap) === 'over')
     return overBudget(claim, obs.spend)
   if (claim.respawn !== undefined) return []
@@ -141,6 +145,13 @@ function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
         )
       : stall(claim, `${claim.phase} past its timeout`, 'stalled', 'phase-timeout'),
   ]
+}
+
+/** CC-669: a fresh read with nothing outside owns clears the stall, and the claim moves on this tick; a re-read, not a retry. */
+function unfenced(claim: Claim, obs: Observation, now: Date): Action[] {
+  if (obs.owned === undefined || obs.owned === 'unreadable' || obs.owned.outside.length > 0) return []
+  const cleared = { stalledReason: undefined, stalledClass: undefined, stallCode: undefined }
+  return [update(claim, cleared), ...advanceClaim({ ...claim, ...cleared }, obs, now)]
 }
 
 /** Parks in place of the step's actions, so no reviewer or successor spawns; the branch and worktree stay. */
@@ -204,6 +215,9 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
   if (report?.status === 'BLOCKED' || report?.status === 'NEEDS_CONTEXT')
     return [stall(claim, report.firstLine, 'failed')]
   const pr = report?.pr ?? claim.pr
+  const handsOff = report?.status === 'DONE' && pr !== undefined
+  const held = handsOff || obs.diff?.reviewable === true ? fenced(claim, obs.owned) : undefined
+  if (held !== undefined) return held
   if (report?.status === 'DONE' && pr !== undefined)
     return handOff(claim, pr, claim.agentName ?? workerOf(claim), { lastReport })
   if (obs.diff?.reviewable === true) {
@@ -214,6 +228,16 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
   return [
     stall(claim, lastReport === undefined || lastReport === '' ? 'no final report' : lastReport, 'failed'),
   ]
+}
+
+/** CC-669: a branch outside its slice's owns stalls once with no register and no reviewer; an unreadable one waits. */
+function fenced(claim: Claim, owned: Observation['owned']): Action[] | undefined {
+  if (owned === undefined) return undefined
+  if (owned === 'unreadable') return []
+  const [first, ...rest] = owned.outside
+  if (first === undefined) return undefined
+  const more = rest.length === 0 ? '' : ` (+${rest.length} more)`
+  return [parkUpdate(keyOf(claim), 'outside-owns', `PR touches ${first}${more} outside its slice owns`)]
 }
 
 function afterAnswer(claim: Claim, obs: Observation): Action[] {
