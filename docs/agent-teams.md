@@ -319,7 +319,7 @@ name          agent name (the registry name it will hold)
 parent        spawning agent id, or "" when the human spawned it
 profile       profile name (§4)
 model         resolved model id
-surface       headless | iterm-pane | iterm-tab | iterm-window
+surface       headless | iterm-pane | iterm-tab | iterm-window | tmux-window
 isolation     none | worktree | file-ownership | toolset-limited
 cwd           resolved working directory (post-isolation)
 session_id    the uuid passed to --session-id; the resume handle

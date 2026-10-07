@@ -30,7 +30,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@titan-design/agent-lifecycle": "^0.1.5",
     "@titan-design/agent-protocol": "^0.5.0",
-    "@titan-design/agent-surface": "^0.1.0",
+    "@titan-design/agent-surface": "^0.3.0",
     "@titan-design/daemon": "^0.3.1",
     "@titan-design/matrix-bus": "^0.1.0",
     "@titan-design/queue-mirror": "^0.2.0",

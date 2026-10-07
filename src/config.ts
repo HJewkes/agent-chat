@@ -41,6 +41,7 @@ interface AgentChatConfig {
   fullSuiteSlots?: unknown
   coordinatorGrantableTools?: unknown
   poolProbe?: unknown
+  tmuxSurfaceOnLinux?: unknown
 }
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
@@ -100,6 +101,14 @@ export function resolvePoolProbe(): boolean {
   const value = readConfig().poolProbe
   if (value === undefined || typeof value === 'boolean') return value === true
   logEvent('config_invalid', { key: 'poolProbe', value, fallback: false })
+  return false
+}
+
+/** CC-804: whether a Linux host puts iTerm surfaces in tmux windows. Off unless `tmuxSurfaceOnLinux` is `true`. */
+export function resolveTmuxOnLinux(): boolean {
+  const value = readConfig().tmuxSurfaceOnLinux
+  if (value === undefined || typeof value === 'boolean') return value === true
+  logEvent('config_invalid', { key: 'tmuxSurfaceOnLinux', value, fallback: false })
   return false
 }
 
