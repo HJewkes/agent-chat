@@ -255,7 +255,7 @@ describe('planSeats over the week milestone file', () => {
     ])
   })
 
-  const M1 = '  - {id: M1, rank: 1, seat: seat-a, epics: [AA-2]}\n'
+  const M1 = '  - {id: M1, rank: 1, seat: seat-a}\n'
   const file = (...milestones: string[]) =>
     `week: 2026-W40\nappetite_days: 5\nmilestones:\n${milestones.join('')}`
   const dispatched = () => run().dispatch.map(d => [d.task, d.tier])
