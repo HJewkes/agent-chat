@@ -69,7 +69,7 @@ export function loadWorld(now: Date, root: string): World {
     tasks: new Map(initiatives.map(i => [i.slug, i.autonomy === undefined ? [] : readTasks(root, i.slug)])),
     rules,
     readings: readReadings(accounts, now.getTime(), poolDir(rules)),
-    // No human-presence signal exists yet, so the gate assumes the human is here: day rules, capped ceiling.
+    // No human-presence signal exists yet, so the gate assumes the human is here: a pool they use gets the capped ceiling.
     gate: { now },
     trust: (repo, cwd, account) => trustRefusal(repo, cwd, accountDir(account), cliVersion),
   }
