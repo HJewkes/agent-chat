@@ -110,9 +110,15 @@ export interface WatchdogDoc {
   probeFailed?: Record<string, number>
   /** The attended seats seen so far, so a pass can say when one's file stops gating its spawns. */
   attended?: string[]
-  /** CC-598: the cause the last `service check` gave; absent while the service was healthy. */
-  serviceCause?: string
+  /** CC-598, CC-693: the service cause each attended seat was last told; a seat absent was told of none. */
+  serviceHeard?: Record<string, string>
 }
+
+const isCauseMap = (value: unknown): value is Record<string, string> =>
+  typeof value === 'object' &&
+  value !== null &&
+  !Array.isArray(value) &&
+  Object.values(value).every(cause => typeof cause === 'string')
 
 const emptyDoc = (): WatchdogDoc => ({ seats: {}, pools: {}, stopped: {} })
 
@@ -148,7 +154,7 @@ export function readDoc(file = watchdogStatePath()): WatchdogDoc {
     ...(doc.held === undefined ? {} : { held: doc.held }),
     ...(doc.probeFailed === undefined ? {} : { probeFailed: doc.probeFailed }),
     ...(Array.isArray(doc.attended) ? { attended: doc.attended } : {}),
-    ...(typeof doc.serviceCause === 'string' ? { serviceCause: doc.serviceCause } : {}),
+    ...(isCauseMap(doc.serviceHeard) ? { serviceHeard: doc.serviceHeard } : {}),
   }
 }
 
@@ -186,7 +192,7 @@ export function loadDoc(file = watchdogStatePath()): WatchdogDoc {
     ...(doc.held === undefined ? {} : { held: doc.held }),
     ...(doc.probeFailed === undefined ? {} : { probeFailed: doc.probeFailed }),
     ...(Array.isArray(doc.attended) ? { attended: doc.attended } : {}),
-    ...(typeof doc.serviceCause === 'string' ? { serviceCause: doc.serviceCause } : {}),
+    ...(isCauseMap(doc.serviceHeard) ? { serviceHeard: doc.serviceHeard } : {}),
   }
 }
 
