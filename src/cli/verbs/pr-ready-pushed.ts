@@ -57,10 +57,14 @@ const revision = async (run: Run, cwd: string, ref: string): Promise<string | un
   return result.code === 0 ? text(result) : undefined
 }
 
-/** CC-824: basement-suite fetches the branch from origin, so it only sees a head that is pushed. */
-export async function headIsPushed(run: Run, cwd: string, base: string): Promise<boolean> {
+/**
+ * CC-824: basement-suite fetches `refs/heads/<branch>` from origin, so HEAD is testable there only when
+ * an origin ref holds it. Returns that ref's branch name, which may differ from the local branch.
+ */
+export async function pushedHeadBranch(run: Run, cwd: string, base: string): Promise<string | undefined> {
   const pushed = await pushedRef(run, cwd, base)
-  if (!pushed) return false
+  if (!pushed?.startsWith(ORIGIN_PREFIX)) return undefined
   const head = await revision(run, cwd, 'HEAD')
-  return head !== undefined && head === (await revision(run, cwd, pushed))
+  if (head === undefined || head !== (await revision(run, cwd, pushed))) return undefined
+  return pushed.slice(ORIGIN_PREFIX.length)
 }

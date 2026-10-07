@@ -1,5 +1,5 @@
 import type { Run } from './pr-ready.js'
-import { headIsPushed } from './pr-ready-pushed.js'
+import { pushedHeadBranch } from './pr-ready-pushed.js'
 
 export const BASEMENT_HOST_ENV = 'AGENT_CHAT_BASEMENT_HOST'
 const DEFAULT_HOST = 'basement'
@@ -50,13 +50,20 @@ const commandFor = (t: BasementTarget, script: string): string[] => [
 export const basementCommandText = (t: BasementTarget, script: string): string =>
   ['ssh', ...commandFor(t, script)].join(' ')
 
-async function target(run: Run, cwd: string, host: string, env: NodeJS.ProcessEnv): Promise<BasementTarget> {
-  const branch = trimmed((await run('git', ['symbolic-ref', '--short', 'HEAD'], cwd)).output)
+async function target(
+  run: Run,
+  cwd: string,
+  host: string,
+  env: NodeJS.ProcessEnv,
+  pushed: string | undefined,
+): Promise<BasementTarget> {
+  const local = trimmed((await run('git', ['symbolic-ref', '--short', 'HEAD'], cwd)).output)
+  const branch = pushed ?? local
   const origin = await run('git', ['remote', 'get-url', 'origin'], cwd)
   const repo = repoNameOf(origin.output)
   if (origin.code !== 0 || repo === '')
     throw new Error('no origin remote to name the repo for basement-suite')
-  return { host, repo, branch, agent: env.AGENT_CHAT_NAME || branch.split('/').at(-1) || branch }
+  return { host, repo, branch, agent: env.AGENT_CHAT_NAME || local.split('/').at(-1) || local }
 }
 
 /** One short ssh probe per run decides where the repo-wide checks go. */
@@ -75,8 +82,9 @@ export async function routeChecks(
       kind: 'local',
       warning: `basement unreachable (probe exit ${probe.code}); running checks locally`,
     }
-  const t = await target(run, cwd, host, env)
-  if (await headIsPushed(run, cwd, base)) return { kind: 'remote', target: t }
+  const pushed = await pushedHeadBranch(run, cwd, base)
+  const t = await target(run, cwd, host, env, pushed)
+  if (pushed !== undefined) return { kind: 'remote', target: t }
   return { kind: 'deferred', commands: scripts.map(script => basementCommandText(t, script)) }
 }
 

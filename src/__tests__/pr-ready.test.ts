@@ -738,6 +738,27 @@ describe('pr-ready routes checks through basement-suite (CC-824)', () => {
     expect(result.toolCalls.filter(c => !c.startsWith('ssh -o'))).toEqual([])
   })
 
+  it('names the branch origin holds when the upstream differs from the local branch', async () => {
+    const work = lintKind()
+    git(work, 'push', '-q', '-u', 'origin', 'feature:pr-head')
+    const result = await runPrReady(work, [], {}, { override: probeOk, env: REACHABLE })
+
+    expect(sshCalls(result.calls)).toEqual([
+      'ssh basement basement-suite origin pr-head --agent agent-x --run lint',
+      'ssh basement basement-suite origin pr-head --agent agent-x --run typecheck',
+    ])
+  })
+
+  it('defers when only a non-origin remote holds the head, since basement fetches from origin', async () => {
+    const work = lintKind()
+    git(work, 'remote', 'add', 'fork', git(work, 'remote', 'get-url', 'origin').trim())
+    git(work, 'push', '-q', '-u', 'fork', 'feature:fork-head')
+    const result = await runPrReady(work, [], {}, { override: probeOk, env: REACHABLE })
+
+    expect(sshCalls(result.calls)).toEqual([])
+    expect(result.out.join('\n')).toContain('deferred to basement after push:')
+  })
+
   it('defers when the pushed ref is behind head', async () => {
     const work = lintKind()
     pushHead(work)
