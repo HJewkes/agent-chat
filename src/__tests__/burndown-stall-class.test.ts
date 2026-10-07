@@ -183,14 +183,15 @@ describe('every stall site records its exception class', () => {
       expect(ledger.claims[0]?.stalledClass).toBe('failed')
     })
 
-    it('a Shepherd refusal records gate-trip', async () => {
+    it('a Shepherd refusal three times with unchanged facts records gate-trip', async () => {
       const registration = { target: { repo: 'o/r', pr: 9 }, task: 'demo/CC-1', implementer: 'bd-cc-1' }
       const step: Step = { kind: 'register', key: { taskId: 'CC-1' }, registration }
       const refused = deps({ register: () => ({ ok: false, refused: true, reason: 'denyRepos' }) })
 
-      const done = await execute([step], { version: 1, claims: [claim({ phase: 'shepherding' })] }, refused)
+      let ledger: Ledger = { version: 1, claims: [claim({ phase: 'shepherding' })] }
+      for (let tick = 0; tick < 3; tick++) ledger = (await execute([step], ledger, refused)).ledger
 
-      expect(done.ledger.claims[0]?.stalledClass).toBe('gate-trip')
+      expect(ledger.claims[0]?.stalledClass).toBe('gate-trip')
     })
   })
 })
