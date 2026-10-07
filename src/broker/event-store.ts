@@ -108,6 +108,9 @@ export interface EventStore {
   /** Open items for the human: addressed to them and not yet answered or dismissed. */
   humanQueue(): QueueItem[]
 
+  /** Open plain notices and messages to the human written at or before `cutoff` (CC-811), oldest first. */
+  agedOutCandidates(cutoff: number): string[]
+
   /** How many items of one kind this session has outstanding, for budgeting. */
   openCount(actor: string, kind: EventKind): number
 
