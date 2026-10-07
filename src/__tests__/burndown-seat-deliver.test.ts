@@ -63,6 +63,25 @@ describe('deliverSeatEvents', () => {
     expect(told.ledger.claims[0]?.notified).toEqual(['dispatched'])
   })
 
+  it('an undelivered notice records no fingerprint', async () => {
+    const stall = { stalledReason: 'implementing past its timeout', stallCode: 'phase-timeout' } as const
+    const accepting = recorder()
+    /** One tick that clears the stall and one that raises it again with unchanged facts. */
+    const restall = async (from: Ledger): Promise<Ledger> => {
+      const { stalledReason: _r, stallCode: _c, ...cleared } = from.claims[0] as Claim
+      const quiet = await deliver(['alpha'], from, ledger(cleared), accepting.open)
+      const next = ledger({ ...(quiet.ledger.claims[0] as Claim), ...stall })
+      return (await deliver(['alpha'], quiet.ledger, next, accepting.open)).ledger
+    }
+    const stalled = ledger(claim(stall))
+
+    const refused = await deliver(['alpha'], stalled, stalled, recorder(async () => ({ ok: false })).open)
+    await restall(await restall(refused.ledger))
+
+    expect(refused.ledger.claims[0]?.noticeFacts).toBeUndefined()
+    expect(accepting.seen.sent).toEqual(['alpha: stalled T-1: phase-timeout: implementing past its timeout'])
+  })
+
   it('fails every seat with the reason when the sender cannot open', async () => {
     const after = ledger(claim({ phase: 'parked' }))
 
