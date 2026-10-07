@@ -108,8 +108,16 @@ export function burndownSender(connect: () => Promise<BrokerClient>): OpenSender
 
 const registeredSender = (client: BrokerClient): SeatSender => ({
   async send(to, text) {
-    const res = (await client.request({ t: 'send', to, text }, 'send_result')) as Reply<'send_result'>
-    return { ok: res.ok, ...(res.reason === undefined ? {} : { reason: res.reason }) }
+    try {
+      const res = (await client.request({ t: 'send', to, text }, 'send_result')) as Reply<'send_result'>
+      return { ok: res.ok, ...(res.reason === undefined ? {} : { reason: res.reason }) }
+    } catch (err) {
+      // The frame was written; a silent broker may have routed it (CC-640).
+      if (err instanceof Error && err.message.startsWith('broker did not answer')) {
+        return { ok: false, unknown: true, reason: err.message }
+      }
+      throw err
+    }
   },
   async notify(text, task) {
     const frame = { t: 'notify' as const, text, ...(task === undefined ? {} : { task }) }
