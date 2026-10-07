@@ -32,6 +32,7 @@ describe('resolveSeatDispatch', () => {
       pool: expect.objectContaining({ name: 'pool-x', config_dir: '/tmp/pool-x', human_uses: true }),
       configDir: '/tmp/pool-x',
       repos: { 'init-alpha': ['/tmp/repos/alpha-app', '/tmp/repos/alpha-docs'] },
+      nonGitRepos: [],
       caps: { implementers: 4, reviewers: 2, planners: 1 },
       worktrees: { perRepoPerSeat: 3, capName: 'worktrees_per_repo_per_seat', leftFreePerRepo: 2 },
       wipLimits: {},

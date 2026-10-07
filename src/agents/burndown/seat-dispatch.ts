@@ -12,6 +12,8 @@ export interface SeatDispatch {
   configDir: string
   /** Initiative slug to its checkouts, in the seat file's order. */
   repos: Record<string, string[]>
+  /** Checkouts marked `git: false` (CC-834): dispatch still uses them, the landed check never reads them. */
+  nonGitRepos?: string[]
   caps: { implementers: number; reviewers: number; planners: number }
   /** `perRepoPerSeat` caps active trees (CC-279); `capName` says which setting set it, for the refusal. */
   worktrees: { perRepoPerSeat: number; capName: string; leftFreePerRepo: number }
@@ -78,6 +80,7 @@ export function resolveSeatDispatch(policy: Policy, name: string, home = os.home
     prefix: seat.prefix,
     ...seatPool(charter, seat, name),
     repos: repoMap(seat, home),
+    nonGitRepos: seat.repos.filter(r => r.git === false).map(r => expandHome(r.path, home)),
     caps: { ...seat.concurrency },
     worktrees: worktreeCaps(charter, seat.concurrency.implementers),
     wipLimits: wipLimits(seat, home),
