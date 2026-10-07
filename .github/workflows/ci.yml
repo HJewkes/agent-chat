@@ -10,6 +10,11 @@ on:
   # nothing. Every PR is checked, whatever it targets.
   pull_request:
 
+# A newer push cancels a superseded PR run; a push to main is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # The whole grant. A called workflow can never hold more than its caller grants,
 # and node.yml asks for nothing beyond this.
 permissions:
