@@ -4,6 +4,7 @@ import type { TickBroker } from '../agents/burndown/run-tick.js'
 import { refusedSender, type OpenSender, type SeatSender } from '../agents/burndown/seat-deliver.js'
 import type { BrokerView } from '../agents/burndown/collision.js'
 import { LIVE, type Roster } from '../agents/burndown/observe.js'
+import type { SpawnReply } from '../agents/burndown/execute.js'
 
 /** The tick's broker calls over one unregistered connection, which the broker treats as the human; seat events are the exception. */
 
@@ -118,10 +119,12 @@ const registeredSender = (client: BrokerClient): SeatSender => ({
   close: () => client.close(),
 })
 
-const spawnReply = (res: Reply<'spawn_result'>): { ok: boolean; agentId?: string; reason?: string } => ({
+const spawnReply = (res: Reply<'spawn_result'>): SpawnReply => ({
   ok: res.ok,
   ...(res.agentId === undefined ? {} : { agentId: res.agentId }),
   ...(res.reason === undefined ? {} : { reason: res.reason }),
+  ...(res.code === undefined ? {} : { code: res.code }),
+  ...(res.retryable === undefined ? {} : { retryable: res.retryable }),
 })
 
 /** Live agent and session names and every `files` claim, for `burndown plan`'s collision check (CC-202). */
