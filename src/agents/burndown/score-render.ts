@@ -203,9 +203,9 @@ export function renderScored(plan: ScoredPlan): string[] {
   return [
     ...plan.order.map((row, i) => renderScoredRow(row, i + 1)),
     ...milestones,
+    ...(plan.edgeLines ?? []),
     ...tagErrors,
     ...epics,
-    ...(plan.edgeLines ?? []),
     ...(plan.unnamedCriteria ?? []),
     `scope=${plan.scope} initiatives, ${plan.open} open, skipped: ${plan.skipped.length}, refused={${refused}}`,
   ]
