@@ -37,6 +37,8 @@ export interface ScoredPlan {
   tagErrors?: string[]
   /** CC-720: one line per open `ms-role:criterion` task that no check of its milestone names; set only when milestones were read. */
   unnamedCriteria?: string[]
+  /** CC-769: `<id> <reason>` for each milestone epic `planOrder` held out of tier 2. */
+  epicsHeld?: string[]
 }
 
 export interface ScoredPlanInputs {
@@ -76,6 +78,7 @@ export function scoredPlan(input: ScoredPlanInputs): ScoredPlan {
     skipped: [...skipped],
     tagErrors: planned.tagErrors.map(describeTagError),
     ...(unnamed.length > 0 && { unnamedCriteria: unnamed }),
+    ...(planned.epicsHeld.length > 0 && { epicsHeld: planned.epicsHeld }),
   }
 }
 
@@ -190,10 +193,12 @@ export function renderScored(plan: ScoredPlan): string[] {
     ? [`milestones=${plan.milestones.week}, errors: ${plan.milestones.errors.join('; ') || 'none'}`]
     : []
   const tagErrors = plan.tagErrors?.length ? [`task tags errors: ${plan.tagErrors.join('; ')}`] : []
+  const epics = plan.epicsHeld?.length ? [`epics held out of tier 2: ${plan.epicsHeld.join('; ')}`] : []
   return [
     ...plan.order.map((row, i) => renderScoredRow(row, i + 1)),
     ...milestones,
     ...tagErrors,
+    ...epics,
     ...(plan.unnamedCriteria ?? []),
     `scope=${plan.scope} initiatives, ${plan.open} open, skipped: ${plan.skipped.length}, refused={${refused}}`,
   ]

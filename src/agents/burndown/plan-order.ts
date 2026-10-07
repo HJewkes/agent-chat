@@ -29,11 +29,15 @@ import { parsePlanningTasks, type TagError, type TaggedTask } from './task-tags.
  * - A task in a dependency cycle, and every task that reaches one through `dep:` edges, is blocked.
  * - An unestimated task stays ready: it only adds no points to the path, and `route` sends it to triage.
  * - A task in a milestone whose gate is open yields nothing.
+ * - CC-769: an epic of an owned milestone never takes tier 2. One its `epics:` lists is refused as
+ *   `epic:<milestone>`, one estimated at `EPIC_ESTIMATE` points or more as `epic-estimate:<milestone>`;
+ *   `epicsHeld` names each. Float would otherwise put the biggest isolated task first.
  *
  * The tier-3 daily share cap belongs to the dispatcher; each row carries its tier for it.
  */
 
 export const SLACK_DAYS = 2
+export const EPIC_ESTIMATE = 8
 
 export type Tier = 0 | 1 | 2 | 3 | 4
 
@@ -73,6 +77,8 @@ export interface PlanOrder {
   tagErrors: TagError[]
   /** The ready intangible tasks held back for a ready tier 0 to 3 row; `refused['intangible-held']` counts them. */
   intangibleHeld: string[]
+  /** CC-769: `<id> <reason>` for each epic held out of tier 2; `refused` counts them under the same reason. */
+  epicsHeld: string[]
 }
 
 type BlockReason = 'cycle-blocked' | 'unknown-dep' | 'dep-blocked'
@@ -139,6 +145,8 @@ function placeTagged(task: TaggedTask, ctx: PlanContext): Placement {
   const milestone = task.milestone === undefined ? undefined : ctx.owned.get(task.milestone)
   if (milestone === undefined) return { tier: 3 }
   if (milestone.gate?.state === 'open') return { refusal: `gated:${milestone.id}` }
+  if (milestone.epics.includes(task.id)) return { refusal: `epic:${milestone.id}` }
+  if ((task.estimate ?? 0) >= EPIC_ESTIMATE) return { refusal: `epic-estimate:${milestone.id}` }
   return { tier: 2, extra: { float: ctx.floats.get(task.id)!, milestone: milestone.id } }
 }
 
@@ -190,7 +198,10 @@ interface Sorted {
   standard: ScoreRow[]
   intangible: ScoreRow[]
   refused: Record<string, number>
+  epicsHeld: string[]
 }
+
+const isEpicRefusal = (refusal: string) => refusal.startsWith('epic:') || refusal.startsWith('epic-estimate:')
 
 function planned(row: ScoreRow & { effective?: number }, tier: Tier, extra: PlanExtra = {}): PlannedRow {
   const weight = wsjf(row)
@@ -208,11 +219,13 @@ const bump = (counts: Record<string, number>, key: string, n = 1) => {
 }
 
 function sortRows(rows: readonly ScoreRow[], ctx: PlanContext): Sorted {
-  const sorted: Sorted = { ranked: [[], [], []], standard: [], intangible: [], refused: {} }
+  const sorted: Sorted = { ranked: [[], [], []], standard: [], intangible: [], refused: {}, epicsHeld: [] }
   for (const row of rows) {
     const placement = place(row, ctx)
-    if ('refusal' in placement) bump(sorted.refused, placement.refusal)
-    else if (placement.tier === 3) sorted.standard.push(row)
+    if ('refusal' in placement) {
+      bump(sorted.refused, placement.refusal)
+      if (isEpicRefusal(placement.refusal)) sorted.epicsHeld.push(`${row.id} ${placement.refusal}`)
+    } else if (placement.tier === 3) sorted.standard.push(row)
     else if (placement.tier === 4) sorted.intangible.push(row)
     else sorted.ranked[placement.tier].push(planned(row, placement.tier, placement.extra))
   }
@@ -265,5 +278,5 @@ export function planOrder(input: PlanOrderInput): PlanOrder {
     order.push(...intangible.order)
   }
   addCounts(refused, sorted.refused)
-  return { order, refused, tagErrors: ctx.tagErrors, intangibleHeld }
+  return { order, refused, tagErrors: ctx.tagErrors, intangibleHeld, epicsHeld: sorted.epicsHeld }
 }

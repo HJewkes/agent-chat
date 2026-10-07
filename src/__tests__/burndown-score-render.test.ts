@@ -302,3 +302,23 @@ describe('unnamed criterion lines', () => {
     ])
   })
 })
+
+describe('held epic lines', () => {
+  it('names each milestone epic held out of tier 2 with its reason', () => {
+    const task = (id: string, estimate: number) => ({
+      ...tasksFromList(snapshot)[0]!,
+      id,
+      tags: ['milestone:M1'],
+      estimate,
+    })
+    const yaml = `week: 2030-W01\nappetite_days: 5\nmilestones:\n  - id: M1\n    rank: 1\n    seat: s\n    epics: [EP-1]\n`
+    const milestones = parseMilestoneFile(yaml, ['EP-1']).file!
+
+    const lines = renderScored(
+      scoredPlan({ ...fixtureInputs(), tasks: [task('EP-1', 3), task('EP-2', 13)], seat: 's', milestones }),
+    )
+
+    expect(lines).toContain('epics held out of tier 2: EP-1 epic:M1; EP-2 epic-estimate:M1')
+    expect(lines.at(-1)).toContain('epic:M1: 1, epic-estimate:M1: 1')
+  })
+})
