@@ -710,11 +710,25 @@ describe('pr-ready routes checks through basement-suite (CC-824)', () => {
   const pushHead = (work: string): void => {
     git(work, 'push', '-q', 'origin', 'feature')
   }
-  const lintKind = () =>
+  /** Points origin at a symlink named `repo`, since basement-suite only serves the repos it lists. */
+  const servedAs = (work: string, repo: string): string => {
+    const named = path.join(path.dirname(work), repo)
+    fs.symlinkSync(originOf(work), named)
+    git(work, 'remote', 'set-url', 'origin', named)
+    return work
+  }
+  const lintFixture = () =>
     fixtureRepo({ 'package.json': pkg({ scripts: { lint: 'x', typecheck: 'x' } }) }, { 'a.ts': '1\n' })
+  const lintKind = () => servedAs(lintFixture(), 'agent-chat')
   const sshCalls = (calls: string[]) => calls.filter(c => c.startsWith('ssh basement basement-suite'))
   const suite = (script: string) =>
-    `ssh basement basement-suite origin feature --agent agent-x --run ${script}`
+    `ssh basement basement-suite agent-chat feature --agent agent-x --run ${script}`
+  const pushedAnswering = async (script: string, answer: RunResult) => {
+    const work = lintKind()
+    pushHead(work)
+    const override: Override = (line, args) => (line === suite(script) ? answer : probeOk(line, args, work))
+    return runPrReady(work, [], {}, { override, env: REACHABLE })
+  }
 
   it('runs each script on basement and nothing locally when the head is pushed', async () => {
     const work = lintKind()
@@ -744,8 +758,8 @@ describe('pr-ready routes checks through basement-suite (CC-824)', () => {
     const result = await runPrReady(work, [], {}, { override: probeOk, env: REACHABLE })
 
     expect(sshCalls(result.calls)).toEqual([
-      'ssh basement basement-suite origin pr-head --agent agent-x --run lint',
-      'ssh basement basement-suite origin pr-head --agent agent-x --run typecheck',
+      'ssh basement basement-suite agent-chat pr-head --agent agent-x --run lint',
+      'ssh basement basement-suite agent-chat pr-head --agent agent-x --run typecheck',
     ])
   })
 
@@ -819,7 +833,7 @@ describe('pr-ready routes checks through basement-suite (CC-824)', () => {
 
   it('collapses per-member workspace commands into one run per script', async () => {
     const workspace = KINDS[2]!
-    const work = fixtureRepo(workspace.base, workspace.feature)
+    const work = servedAs(fixtureRepo(workspace.base, workspace.feature), 'titan-platform')
     pushHead(work)
     const result = await runPrReady(work, [], {}, { override: probeOk, env: REACHABLE })
 
@@ -827,5 +841,59 @@ describe('pr-ready routes checks through basement-suite (CC-824)', () => {
     expect(scripts).toEqual([...new Set(scripts)])
     expect(scripts).toContain('capabilities:check')
     expect(result.toolCalls.filter(c => c.startsWith('pnpm '))).toEqual([])
+  })
+
+  it('runs locally without probing in a repo basement-suite does not serve', async () => {
+    const work = servedAs(lintFixture(), 'relay')
+    pushHead(work)
+    const result = await runPrReady(work, [], {}, { override: probeOk, env: REACHABLE })
+
+    expect(result.calls.filter(c => c.startsWith('ssh'))).toEqual([])
+    expect(result.toolCalls).toEqual(['npm run lint', 'npm run typecheck'])
+    expect(result.errLines).toContain(
+      "warning: basement-suite does not serve repo 'relay'; running checks locally",
+    )
+  })
+
+  it('runs locally when royal_road_player would be asked for a script other than test', async () => {
+    const work = servedAs(lintFixture(), 'royal_road_player')
+    pushHead(work)
+    const result = await runPrReady(work, [], {}, { override: probeOk, env: REACHABLE })
+
+    expect(sshCalls(result.calls)).toEqual([])
+    expect(result.errLines).toContain(
+      "warning: basement-suite cannot run script 'lint' in royal_road_player; running checks locally",
+    )
+  })
+
+  it('runs locally when the agent name breaks basement-suite rules', async () => {
+    const work = lintKind()
+    pushHead(work)
+    const env = { AGENT_CHAT_NAME: 'agent x;rm' }
+    const result = await runPrReady(work, [], {}, { override: probeOk, env })
+
+    expect(sshCalls(result.calls)).toEqual([])
+    expect(result.errLines).toContain(
+      "warning: basement-suite refuses agent name 'agent x;rm'; running checks locally",
+    )
+  })
+
+  it('reports a setup failure on exit 69 as basement trouble and stops there', async () => {
+    const result = await pushedAnswering('lint', { code: 69, output: 'install failed' })
+
+    expect(sshCalls(result.calls)).toEqual([suite('lint')])
+    expect(result.code).toBe(1)
+    expect(result.out.join('\n')).toContain(
+      'FAIL checks: basement could not set up the run (fetch, install or build failed) (lint exit 69)',
+    )
+  })
+
+  it('reports a usage refusal on exit 64 as basement trouble, not a failed check', async () => {
+    const result = await pushedAnswering('lint', { code: 64, output: 'usage' })
+
+    expect(result.out.join('\n')).toContain(
+      'FAIL checks: basement-suite refused the arguments (lint exit 64)',
+    )
+    expect(result.out.join('\n')).not.toContain('failed on basement')
   })
 })

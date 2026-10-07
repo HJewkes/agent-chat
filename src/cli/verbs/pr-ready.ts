@@ -6,7 +6,7 @@ import { defaultTermsFile, scanDeps, scanGhArgs } from '../../gh-write/scan.js'
 import {
   basementCommandText,
   describeExit,
-  isBusy,
+  infraFailure,
   routeChecks,
   runOnBasement,
   type BasementTarget,
@@ -284,7 +284,8 @@ async function basementChecks(
   const results = await runOnBasement(run, cwd, target, scripts)
   const codes = results.map(describeExit).join(', ')
   for (const result of results.filter(r => r.code !== 0)) err(result.output.trimEnd())
-  if (results.some(isBusy)) return { reasons: [`basement busy, retry in a few minutes (${codes})`], codes }
+  const infra = results.map(infraFailure).find(reason => reason !== undefined)
+  if (infra) return { reasons: [`${infra} (${codes})`], codes }
   const failed = results.filter(r => r.code !== 0).map(r => basementCommandText(target, r.script))
   return { reasons: failed.length > 0 ? [`failed on basement: ${failed.join('; ')} (${codes})`] : [], codes }
 }
