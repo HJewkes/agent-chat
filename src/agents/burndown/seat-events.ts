@@ -1,6 +1,8 @@
 import { claimKey, type ClaimKey } from './advance.js'
 import type { Claim, Ledger } from './ledger.js'
 import type { StallCode } from './stall-code.js'
+import { BRAKE_WINDOW_MS, brakeSince, releasesDue, releasesSince } from './ladder.js'
+import { factFingerprint } from './liveness.js'
 import { ownerDue, stallDetail } from './triage.js'
 
 /**
@@ -16,6 +18,8 @@ export const EVENT_KINDS = [
   'stalled-after-claim',
   'parked',
   'leak',
+  'released',
+  'brake',
 ] as const
 export type EventKind = (typeof EVENT_KINDS)[number]
 
@@ -26,6 +30,8 @@ export interface SeatEvent {
   detail?: string
   /** A stall's or finding's code (CC-663); a seat hears once per kind and code. */
   code?: StallCode
+  /** On a brake event: the braked claims' stalls it stands for, told and journaled with it but given no line (CC-829). */
+  covers?: SeatEvent[]
 }
 
 /** One spawn the tick sent; only a delivered spawn counts as a dispatch. */
@@ -71,7 +77,7 @@ function kindsOf(before: Claim | undefined, after: Claim, spawned: boolean): Sea
     events.push(
       event('stalled', withCode(after.stallCode, stallDetail(after, after.stalledReason)), after.stallCode),
     )
-  if (after.finding !== undefined)
+  if (after.finding !== undefined && ownerDue(after))
     events.push(event('stalled-after-claim', after.finding.detail, after.finding.code))
   if (after.phase === 'parked') events.push(event('parked'))
   if (after.leak !== undefined)
@@ -100,9 +106,31 @@ function stillHolds(claim: Claim, entry: string): boolean {
   if (kind === 'stalled') return claim.stalledReason !== undefined && sameCode(code, claim.stallCode)
   if (kind === 'stalled-after-claim') return claim.finding !== undefined && sameCode(code, claim.finding.code)
   if (kind === 'leak') return claim.leak !== undefined
+  // A release or brake is told from the ledger diff, so a claim never holds it.
+  if (kind === 'released' || kind === 'brake') return false
   // ready-to-merge stays on a done claim: `merged` reads it there.
   return true
 }
+
+/** Stall kinds told once per material state: a reopen with the facts last delivered wakes no one (CC-641). */
+const GATED: readonly EventKind[] = ['stalled', 'stalled-after-claim']
+
+/**
+ * The facts behind a stall notice. The tick's own notes (finding body, lease timers, transcript times, triage,
+ * ladder) are left out, so a transcript row the wake itself caused never re-arms it.
+ */
+const noticeFingerprint = (claim: Claim, e: SeatEvent): string =>
+  factFingerprint({
+    kind: e.kind,
+    code: e.code,
+    phase: claim.phase,
+    agentName: claim.agentName,
+    head: claim.lease?.head ?? claim.prHead,
+    content: claim.lease?.content,
+  })
+
+const unchanged = (claim: Claim, e: SeatEvent): boolean =>
+  GATED.includes(e.kind) && claim.noticeFacts?.[noticeKey(e)] === noticeFingerprint(claim, e)
 
 const heldNotified = (claim: Claim): string[] => (claim.notified ?? []).filter(k => stillHolds(claim, k))
 
@@ -118,15 +146,73 @@ export function settleNotified(ledger: Ledger): Ledger {
   return { ...ledger, claims }
 }
 
-/** Events for claims with a seat whose held `notified` lacks that kind; a claim without a seat yields none. */
+/** One `brake` event per seat with a braked claim; its task names every braked claim of that seat. */
+function brakeEvents(before: Ledger, after: Ledger): [string, SeatEvent][] {
+  const notice = brakeSince(before, after)
+  if (notice === undefined) return []
+  const bySeat = new Map<string, string[]>()
+  for (const { key, seat } of notice.claims)
+    if (seat !== undefined) bySeat.set(seat, [...(bySeat.get(seat) ?? []), key.replace(/#$/, '')])
+  const minutes = BRAKE_WINDOW_MS / 60_000
+  const detail = `${notice.cause}: ${notice.count} ladder stalls in ${minutes} min; respawns and releases paused until the window clears`
+  return [...bySeat].map(([seat, keys]) => [
+    seat,
+    { kind: 'brake', taskId: keys.join(', '), detail, code: notice.cause },
+  ])
+}
+
+/**
+ * One notice per seat per tick (CC-829): a braked claim's stall with the brake's cause goes inside the seat's
+ * brake event rather than on a line of its own. A stall with another code keeps its line.
+ */
+export function foldBraked(events: SeatEvents, before: Ledger, after: Ledger): SeatEvents {
+  const notice = brakeSince(before, after)
+  if (notice === undefined) return events
+  const braked = new Set(notice.claims.map(c => c.key))
+  const folds = (e: SeatEvent): boolean =>
+    e.kind === 'stalled' && e.code === notice.cause && braked.has(claimKey(e))
+  const fold = (list: SeatEvent[]): SeatEvent[] => {
+    const covers = list.filter(folds)
+    if (covers.length === 0 || !list.some(e => e.kind === 'brake')) return list
+    return list
+      .filter(e => !folds(e))
+      .map(e =>
+        e.kind === 'brake'
+          ? { ...e, detail: `${e.detail ?? ''}; each named claim is stalled for its owner`, covers }
+          : e,
+      )
+  }
+  return Object.fromEntries(Object.entries(events).map(([seat, list]) => [seat, fold(list)]))
+}
+
+/** Events for claims with a seat whose held `notified` lacks that kind, less a stall told with these facts; a claim without a seat yields none. */
 export function seatEvents(before: Ledger, after: Ledger, spawnResults: readonly SpawnResult[]): SeatEvents {
   const out: SeatEvents = {}
   for (const claim of after.claims) {
     if (claim.seat === undefined) continue
     const spawned = spawnResults.some(r => r.ok && claimKey(r.key) === claimKey(claim))
     const held = heldNotified(claim)
-    const fresh = kindsOf(at(before, claim), claim, spawned).filter(e => !told(held, e))
+    const fresh = kindsOf(at(before, claim), claim, spawned).filter(
+      e => !told(held, e) && !unchanged(claim, e),
+    )
     if (fresh.length > 0) (out[claim.seat] ??= []).push(...fresh)
+  }
+  for (const [seat, event] of brakeEvents(before, after)) (out[seat] ??= []).push(event)
+  const made = releasesSince(before, after)
+  const due = releasesDue(after).filter(d => !made.some(r => claimKey(r) === claimKey(d)))
+  for (const r of [...made, ...due]) {
+    if (r.seat === undefined) continue
+    const detail =
+      r.branch === undefined
+        ? 'no branch was readable'
+        : `branch ${r.branch} kept on origin if pushed; a clean pushed worktree may lose its local copy`
+    ;(out[r.seat] ??= []).push({
+      kind: 'released',
+      taskId: r.taskId,
+      ...(r.slice === undefined ? {} : { slice: r.slice }),
+      detail: withCode(r.code, detail),
+      ...(r.code === undefined ? {} : { code: r.code }),
+    })
   }
   return out
 }
@@ -135,11 +221,27 @@ export function seatEvents(before: Ledger, after: Ledger, spawnResults: readonly
 export function markNotified(ledger: Ledger, seat: string, delivered: readonly SeatEvent[]): Ledger {
   const claims = ledger.claims.map(c => {
     if (c.seat !== seat) return c
-    const kinds = delivered.filter(e => claimKey(e) === claimKey(c)).map(noticeKey)
-    if (kinds.length === 0) return c
-    return { ...c, notified: [...new Set([...(c.notified ?? []), ...kinds])] }
+    const mine = delivered.filter(e => claimKey(e) === claimKey(c))
+    if (mine.length === 0) return c
+    const notified = [...new Set([...(c.notified ?? []), ...mine.map(noticeKey)])]
+    const facts = mine.filter(e => GATED.includes(e.kind)).map(e => [noticeKey(e), noticeFingerprint(c, e)])
+    if (facts.length === 0) return { ...c, notified }
+    return { ...c, notified, noticeFacts: { ...c.noticeFacts, ...Object.fromEntries(facts) } }
   })
   return { ...ledger, claims }
+}
+
+/** A `released` notice lives on the ladder record, not the dropped claim: due after a failed send, cleared by a delivered one. */
+export function markReleaseDue(ledger: Ledger, events: readonly SeatEvent[], due: boolean): Ledger {
+  const keys = events.filter(e => e.kind === 'released').map(e => claimKey(e))
+  const ladder = { ...ledger.ladder }
+  for (const key of keys) {
+    const record = ladder[key]
+    if (record === undefined || (record.releaseDue === true) === due) continue
+    const { releaseDue: _was, ...rest } = record
+    ladder[key] = due ? { ...rest, releaseDue: true } : rest
+  }
+  return keys.some(k => ladder[k] !== ledger.ladder?.[k]) ? { ...ledger, ladder } : ledger
 }
 
 const line = (e: SeatEvent): string => {

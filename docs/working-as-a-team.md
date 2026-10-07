@@ -127,7 +127,11 @@ prompts**.
 | `iterm-pane`   | stacks in a column beside you          | yes              |
 | `iterm-tab`    | a tab in your window                   | yes              |
 | `iterm-window` | its own window; the no-anchor fallback | yes              |
+| `tmux-window`  | a window of the `fac` tmux session     | yes              |
 | `headless`     | no terminal at all                     | **no**           |
+
+On a Linux host, set `"tmuxSurfaceOnLinux": true` in `config.json` and every iTerm surface
+lands in a tmux window instead (CC-804); macOS is unchanged.
 
 A headless agent that hits a permission prompt cannot ask anyone. It degrades silently and
 produces worse output rather than blocking — which is the right behavior, but only if you chose

@@ -17,6 +17,7 @@ import { burndownLedgerPath, burndownPausePath, configPath } from '../paths.js'
 import { tickBroker } from '../cli/burndown-broker.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { AgentIdentity, QueueItem } from '../protocol.js'
+import { writePoolCharter } from './helpers/pool-charter.js'
 
 /**
  * `burndown tick` over a fixture world: a real git repo, an active-work root,
@@ -233,6 +234,15 @@ beforeEach(() => {
   process.env.CLAUDE_PROFILE_ROOT = path.join(world, 'profiles')
   delete process.env.CLAUDE_CONFIG_DIR
   delete process.env.AGENT_CHAT_STATUS_CACHE
+  // CC-801: the gate reads the charter's pools; these are the numbers the retired default rules held.
+  writePoolCharter(path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy'), {
+    agents: {
+      config_dir: path.join(world, 'profiles', 'agents'),
+      human_uses: true,
+      reserve_seven_day: 25,
+      ceiling_five_hour: 70,
+    },
+  })
   write(path.join(world, 'home', 'config.json'), JSON.stringify({ worktreeBudget: 10 }))
   fs.mkdirSync(repo(), { recursive: true })
   git(repo(), 'init', '-q', '-b', 'main')
@@ -295,6 +305,20 @@ describe('burndown tick spawns', () => {
       worktree: path.join(repo(), '.worktrees', 'bd-dm-1'),
     })
     expect(after.lastTickAt).toBe(NOON.toISOString())
+  })
+
+  it("marks its spawn frame as burndown's, so the dispatch row does not record the human (CC-802)", () => {
+    const frame = spawnFrame({
+      name: 'bd-x',
+      profile: 'bd-implementer',
+      brief: 'b',
+      cwd: repo(),
+      configDir: accountPath(),
+      initiative: 'demo',
+      taskId: 'X',
+    })
+
+    expect(frame.spawnedAs).toBe('burndown')
   })
 
   it('refuses to send a spawn whose claim was never recorded', async () => {
@@ -527,6 +551,18 @@ describe('burndown tick retires refused after a claim is done', () => {
     const lines = renderStatus(ledger, NOON)
 
     expect(lines).toContain(`DM-1 (demo) done, UNRETIRED bd-dm-1: ${TENANCY}`)
+  })
+
+  it('shows the unretired agent of a claim mid-respawn in burndown status', () => {
+    const marked = doneClaim({
+      phase: 'implementing',
+      respawn: { code: 'phase-timeout', occurrence: NOON.toISOString() },
+      unretired: [{ name: 'bd-dm-1', reason: TENANCY, at: REFUSED }],
+    })
+
+    const lines = renderStatus({ version: 1, claims: [marked] }, NOON)
+
+    expect(lines).toContain(`DM-1 (demo) respawning, UNRETIRED bd-dm-1: ${TENANCY}`)
   })
 
   it('retries in the recorded order, so a successor still goes before its predecessor', async () => {
@@ -2664,5 +2700,81 @@ describe('burndown tick triage jobs (CC-649)', () => {
     const lines = renderStatus(readLedger(burndownLedgerPath()), at(1))
 
     expect(lines.join('\n')).toContain('STALLED (class failed, route triage, triage triage-dm-1-1 started)')
+  })
+
+  /** CC-651: a live, silent worker whose transcript last moved one minute past noon, so a finding opens at +7. */
+  function silentWorker(exceptions: Record<string, unknown>) {
+    const claim = stalledClaim('DM-1', { stalledReason: undefined, stalledClass: undefined })
+    setup({ exceptions }, [claim])
+    const worker = { ...row('st-dm-1', 'live'), sessionId: 'sess-st-dm-1' }
+    const file = transcriptPath(worker.cwd, worker.sessionId, worker.configDir)
+    const lastWork = at(1)
+    write(file, turn(lastWork))
+    return { agents: [worker], file, lastWork }
+  }
+  const turn = (when: Date) =>
+    `${JSON.stringify({ type: 'assistant', timestamp: when.toISOString(), message: { content: [{ type: 'text', text: 'working' }] } })}\n`
+  const findingLines = (fake: Fake) =>
+    fake.sends.flatMap(s => s.text.split('\n').filter(l => l.startsWith('stalled-after-claim ')))
+
+  it('triages a finding once under its id, through refreshes, and tells no one when it closes mid-job', async () => {
+    const { agents, file } = silentWorker(READY)
+    const fake = fakeBroker({ agents })
+
+    await tickAt(fake, 7)
+    const openedAt = claimOf()?.finding?.openedAt
+    await tickAt(fake, 8)
+    agents.push(row('triage-dm-1-1', 'live', path.join(world, 'aw')))
+    await tickAt(fake, 17)
+    const status = renderStatus(readLedger(burndownLedgerPath()), at(17))
+    fs.appendFileSync(file, turn(at(18)))
+    await tickAt(fake, 19)
+    agents[1] = row('triage-dm-1-1', 'exited', path.join(world, 'aw'))
+    await tickAt(fake, 21)
+
+    expect(openedAt).toBe(at(7).toISOString())
+    expect(triageFrames(fake)).toEqual([
+      expect.objectContaining({
+        name: 'triage-dm-1-1',
+        brief: expect.stringMatching(/class: stalled\nfinding: no-progress: idle/),
+      }),
+    ])
+    expect(status.join('\n')).toContain(
+      '(class stalled, route triage, triage triage-dm-1-1 started) FINDING stalled-after-claim',
+    )
+    expect(findingLines(fake)).toEqual([])
+    expect(claimOf()?.finding).toBeUndefined()
+    expect(claimOf()?.triage).toBeUndefined()
+  })
+
+  it('tells the owner of a finding whose triager exits with it still open, once', async () => {
+    const { agents, lastWork } = silentWorker(READY)
+    const fake = fakeBroker({ agents })
+
+    await tickAt(fake, 7)
+    await tickAt(fake, 8)
+    agents.push(row('triage-dm-1-1', 'exited', path.join(world, 'aw')))
+    await tickAt(fake, 9)
+    await tickAt(fake, 10)
+
+    expect(triageFrames(fake)).toHaveLength(1)
+    expect(findingLines(fake)).toEqual([
+      `stalled-after-claim DM-1: no-progress: idle: no agent event for 8 min since ${lastWork.toISOString()}`,
+    ])
+  })
+
+  it('with the dial at owner delivers a finding exactly as before, even with triage configured', async () => {
+    const { agents, lastWork } = silentWorker({ triage: { account: 'agents' } })
+    const fake = fakeBroker({ agents })
+
+    await tickAt(fake, 7)
+
+    expect(fake.frames).toEqual([])
+    expect(fake.sends).toEqual([
+      {
+        to: 'seat-t',
+        text: `Burndown events for seat-t at ${at(7).toISOString()}\nstalled-after-claim DM-1: no-progress: idle: no agent event for 6 min since ${lastWork.toISOString()}`,
+      },
+    ])
   })
 })

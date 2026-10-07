@@ -6,6 +6,7 @@ import {
   type DecidedRefusal,
   type DecisionCitation,
   type DeliveredMessage,
+  type AnswerChannel,
   type WakeSource,
 } from '../protocol.js'
 import { checkDecision, decidedText, overruleText } from './decisions.js'
@@ -411,10 +412,13 @@ export class BrokerCore<C = Conn> {
    * asker is offline and will pick it up from its inbox, which is a query over
    * the log rather than a buffer, so nothing is lost.
    */
-  answer(msgId: string, text: string): VerdictResult {
+  answer(msgId: string, text: string, channel: AnswerChannel): VerdictResult {
     if (!this.events.isOpen(msgId)) return { ok: false, reason: `${msgId} is not an open item` }
     const author = this.events.authorOf(msgId)
     if (!author) return { ok: false, reason: `no item with id ${msgId}` }
+    // A permission prompt is a verdict, answerable only from the socket's `approve_permission`; words never close one.
+    if (this.events.isApprovalRequest(msgId))
+      return { ok: false, reason: `${msgId} is a permission prompt; it is approved or denied, not answered` }
 
     // An answer on a decided question overrules the decider; the asker must be told which one stands.
     const decision = this.events.decisionFor(msgId)
@@ -439,7 +443,7 @@ export class BrokerCore<C = Conn> {
       msgId: message.msgId,
       ref: msgId,
       body: text,
-      ...(overrule ? { meta: overrule } : {}),
+      meta: { ...overrule, channel },
     })
 
     const live = this.deliverTo(author, message)

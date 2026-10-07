@@ -6,6 +6,7 @@
  */
 
 import { MAX_SLICE_POINTS } from './slice-lint.js'
+import type { StallCode } from './stall-code.js'
 
 /** What every agent the tick spawns needs to know about where it runs and who hears its report. */
 export interface Seat {
@@ -29,6 +30,8 @@ export interface TaskBrief extends Seat {
   grants: string[]
   /** Set when the task was split by a planner; the worker implements this slice only. */
   slice?: { n: string; title: string; planPath: string }
+  /** A branch a released earlier attempt left (CC-698); the worker reads it before starting over. */
+  priorBranch?: string
 }
 
 export interface Answer {
@@ -179,8 +182,13 @@ function workerTail(t: TaskBrief): string[] {
   ]
 }
 
+const priorAttempt = (t: TaskBrief): string =>
+  t.priorBranch === undefined
+    ? ''
+    : ` A previous attempt left branch ${t.priorBranch}: read its commits first and keep what serves the task.`
+
 function workerScope(t: TaskBrief): string {
-  const done = `Done when: ${t.doneWhen}`
+  const done = `Done when: ${t.doneWhen}${priorAttempt(t)}`
   if (t.slice === undefined) return `Implement task ${t.taskId} of initiative ${t.initiative}. ${done}`
   return (
     `Implement slice ${t.slice.n} ("${t.slice.title}") of task ${t.taskId} only. ` +
@@ -312,6 +320,32 @@ export function successorAfterReview(t: TaskBrief, review: string): string {
       REVIEW_TEXT_MAX_BYTES,
       `the full text is the reviewer's report to ${t.reportTo}; ask them for it if the cut part matters.`,
     ),
+    ...workerTail(t),
+  ].join('\n\n')
+}
+
+/** Lines of a predecessor's diff summary a stall successor's brief carries (CC-660). */
+export const DIFF_SUMMARY_MAX_LINES = 40
+/** Bytes of those lines, so 40 long paths cannot push the brief past its budget. */
+export const DIFF_SUMMARY_MAX_BYTES = 4_000
+
+function cappedSummary(summary: string): string {
+  const lines = summary.split('\n')
+  const cut = lines.length - DIFF_SUMMARY_MAX_LINES
+  const kept = lines.slice(0, DIFF_SUMMARY_MAX_LINES).join('\n')
+  const fenced = cappedFence('diff-summary', kept, DIFF_SUMMARY_MAX_BYTES, 'run `git status` for the rest.')
+  return cut > 0 ? `${fenced}\n${cut} more lines cut; run \`git diff --stat\` for the rest.` : fenced
+}
+
+export function successorAfterStall(t: TaskBrief, s: { code: StallCode; diffSummary: string }): string {
+  return [
+    '## Scope',
+    `Your predecessor on task ${t.taskId} stalled (${s.code}) and was retired. Adopt its branch in this worktree: ` +
+      'read its commits and uncommitted changes, keep what serves the task, commit as you go, and push to the same PR if one exists. ' +
+      `Done when: ${t.doneWhen}`,
+    '## Context',
+    'What your predecessor left, as the tick read it:',
+    cappedSummary(s.diffSummary),
     ...workerTail(t),
   ].join('\n\n')
 }

@@ -166,7 +166,7 @@ describe('core.answer', () => {
     const conn = registerSession(core, 'alpha')
     const { msgId } = core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'which branch?' })
 
-    const result = core.answer(msgId, 'the feature one')
+    const result = core.answer(msgId, 'the feature one', 'cli')
 
     expect(result).toEqual({ ok: true })
     expect(delivered).toHaveLength(1)
@@ -185,7 +185,7 @@ describe('core.answer', () => {
     const { msgId } = core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'which branch?' })
     core.registry.drop(conn)
 
-    const result = core.answer(msgId, 'the feature one')
+    const result = core.answer(msgId, 'the feature one', 'cli')
 
     expect(result.ok).toBe(true)
     expect(result.reason).toMatch(/alpha is offline/)
@@ -197,9 +197,9 @@ describe('core.answer', () => {
     const { core } = makeCore()
     registerSession(core, 'alpha')
     const { msgId } = core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'which branch?' })
-    core.answer(msgId, 'first')
+    core.answer(msgId, 'first', 'cli')
 
-    const second = core.answer(msgId, 'second')
+    const second = core.answer(msgId, 'second', 'cli')
 
     expect(second.ok).toBe(false)
     expect(second.reason).toMatch(/not an open item/)
@@ -211,12 +211,12 @@ describe('core.answer', () => {
     const { msgId } = core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'which branch?' })
     core.dismiss(msgId)
 
-    expect(core.answer(msgId, 'too late').ok).toBe(false)
+    expect(core.answer(msgId, 'too late', 'cli').ok).toBe(false)
   })
 
   it('refuses a msg_id that was never written', () => {
     const { core } = makeCore()
-    const result = core.answer('deadbeef', 'into the void')
+    const result = core.answer('deadbeef', 'into the void', 'cli')
     expect(result).toEqual({ ok: false, reason: 'deadbeef is not an open item' })
   })
 })

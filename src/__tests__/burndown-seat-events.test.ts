@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { EMPTY_LEDGER, type Claim, type Ledger } from '../agents/burndown/ledger.js'
 import {
   MESSAGE_LIMIT,
+  foldBraked,
   markNotified,
   settleNotified,
   renderSeatEvents,
@@ -91,6 +92,9 @@ describe('seatEvents', () => {
     stalled: { stalledReason: 'timed out' },
     'stalled-after-claim': { finding },
     parked: { phase: 'parked' },
+    // These two are told from a ledger diff, never from claim state.
+    released: {},
+    brake: {},
     leak: {
       leak: {
         repo: 'example/repo',
@@ -165,16 +169,54 @@ describe('the stalled-after-claim notice', () => {
     expect(second.sent).toEqual([])
   })
 
-  it('is dropped from notified after the finding closes, and fires again on a reopen', () => {
-    const told = claim({ finding, notified: ['stalled-after-claim'] })
-    const { finding: _closed, ...closedClaim } = told
+  const lease = (over: Partial<NonNullable<Claim['lease']>> = {}): NonNullable<Claim['lease']> => ({
+    progressAt: '2026-01-01T00:00:00.000Z',
+    leaseUntil: '2026-01-01T00:30:00.000Z',
+    renewals: 0,
+    head: 'aaaa111',
+    content: 'tree-1',
+    ...over,
+  })
+  /** One close and one reopen of the claim's finding, with `over` applied to the reopened claim. */
+  const cycle = (from: Ledger, over: Partial<Claim> = {}): ReturnType<typeof deliver> => {
+    const { finding: _closed, ...closedClaim } = from.claims[0]!
+    const closed = deliver(from, ledger(closedClaim))
+    return deliver(closed.ledger, ledger({ ...closed.ledger.claims[0]!, finding, ...over }))
+  }
+  const told = (): Ledger =>
+    deliver(ledger(claim()), ledger(claim({ agentName: 'bd-T-1', lease: lease(), finding }))).ledger
 
-    const closed = deliver(ledger(told), ledger(closedClaim))
-    const reopened = deliver(closed.ledger, ledger({ ...closed.ledger.claims[0]!, finding }))
+  it('two ticks with an unchanged stalled claim send one wake', () => {
+    const reopened = cycle(told())
 
-    expect(closed.sent).toEqual([])
-    expect(closed.ledger.claims[0]?.notified).toBeUndefined()
-    expect(reopened.sent.map(e => e.kind)).toEqual(['stalled-after-claim'])
+    expect(reopened.ledger.claims[0]?.notified).toBeUndefined()
+    expect(reopened.sent).toEqual([])
+  })
+
+  it("a new commit on the claim's branch changes the fingerprint", () => {
+    const committed = cycle(told(), { lease: lease({ head: 'bbbb222' }) })
+    const again = cycle(committed.ledger)
+
+    expect(committed.sent.map(e => e.kind)).toEqual(['stalled-after-claim'])
+    expect(again.sent).toEqual([])
+  })
+
+  it("the tick's own notes are excluded", () => {
+    const notes = cycle(told(), {
+      finding: { ...finding, detail: 'idle: no agent event for 12 min', since: 'later', checkedAt: 'later' },
+      lease: lease({ renewals: 4, transcriptAt: '2026-01-01T00:20:00.000Z', progressAt: 'later' }),
+      notified: ['dispatched'],
+    })
+
+    expect(notes.sent).toEqual([])
+  })
+
+  it('an uncommitted edit re-arms the notice', () => {
+    const edited = cycle(told(), { lease: lease({ content: 'tree-2' }) })
+    const again = cycle(edited.ledger)
+
+    expect(edited.sent.map(e => e.kind)).toEqual(['stalled-after-claim'])
+    expect(again.sent).toEqual([])
   })
 
   const coded = (code: StallCode): NonNullable<Claim['finding']> => ({
@@ -244,6 +286,45 @@ describe('the stalled notice', () => {
     ])
     expect(seatEvents(marked, marked, []).alpha).toBeUndefined()
     expect(marked.claims[0]?.notified).toEqual(['stalled:phase-timeout'])
+  })
+
+  it('a stalled notice of the same code with unchanged facts is not re-sent', () => {
+    const stalled = claim({ stalledReason: 'implementing past its timeout', stallCode: 'phase-timeout' })
+    const marked = markNotified(
+      ledger(stalled),
+      'alpha',
+      seatEvents(ledger(claim()), ledger(stalled), []).alpha ?? [],
+    )
+    const { stalledReason: _r, stallCode: _c, ...cleared } = marked.claims[0]!
+    const settled = settleNotified(ledger(cleared))
+
+    const again = ledger({
+      ...settled.claims[0]!,
+      stalledReason: 'implementing past its timeout again',
+      stallCode: 'phase-timeout',
+    })
+
+    expect(settled.claims[0]?.notified).toBeUndefined()
+    expect(seatEvents(settled, settleNotified(again), []).alpha).toBeUndefined()
+  })
+
+  it('a brake-covered stall with unchanged facts is not re-sent', () => {
+    const stalled = claim({ stalledReason: 'implementing past its timeout', stallCode: 'phase-timeout' })
+    const marked = markNotified(
+      ledger(stalled),
+      'alpha',
+      seatEvents(ledger(claim()), ledger(stalled), []).alpha ?? [],
+    )
+    const { notified: _told, ...again } = marked.claims[0]!
+    const before = ledger(again)
+    const braked: Ledger = {
+      ...before,
+      brake: { at: ['2026-01-01T00:10:00.000Z'], notified: 'brake:phase-timeout', claims: ['T-1#'] },
+    }
+
+    const events = foldBraked(seatEvents(before, braked, []), before, braked).alpha ?? []
+
+    expect(events.map(e => [e.kind, (e.covers ?? []).length])).toEqual([['brake', 0]])
   })
 })
 

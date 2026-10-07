@@ -34,6 +34,8 @@ export interface DispatchRun {
   predecessor: string | null
   /** The burndown plan's class-of-service tier (CC-774); absent for a hand spawn. */
   tier?: number
+  /** CC-802: the owning seat, written when the spawner is an automation rather than the seat. */
+  seat?: string
 }
 
 export interface DispatchUsage {
@@ -74,6 +76,7 @@ interface BrokerRow<Outcome extends string> {
   spawner: string | null
   model: string | null
   predecessor: string | null
+  seat?: string
 }
 
 export type DispatchedRow = BrokerRow<typeof DISPATCHED> & { tier?: number }
@@ -115,6 +118,7 @@ function brokerRow<Outcome extends string>(
     spawner: run.spawner,
     model: run.model,
     predecessor: run.predecessor,
+    ...(run.seat === undefined ? {} : { seat: run.seat }),
   }
 }
 

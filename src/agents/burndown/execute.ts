@@ -1,5 +1,5 @@
 import { logFindings } from './finding.js'
-import { applyActions, claimKey, type Action, type ClaimKey } from './advance.js'
+import { applyActions, claimKey, type Action, type ClaimKey, type RetireAction } from './advance.js'
 import { sameClaim, writeLedger, type Claim, type Ledger } from './ledger.js'
 import { clearLiveness, factFingerprint, LIVENESS_LIMIT, maskText, pruneLiveness, spend } from './liveness.js'
 import { parkUpdate } from './stall-code.js'
@@ -31,6 +31,8 @@ export interface SpawnFrame {
   worktree?: string
   /** The tier the plan placed the task in (CC-774); the broker writes it on the `dispatched` row. */
   tier?: number
+  /** CC-802: the dispatch row's spawner; this frame goes out on the CLI socket, which holds no session. */
+  spawnedAs: 'burndown'
 }
 
 export interface SpawnSpec {
@@ -57,6 +59,7 @@ export function spawnFrame(s: SpawnSpec): SpawnFrame {
     surface: 'headless',
     briefing: s.initiative,
     tags: ['burndown', `task:${s.taskId}`],
+    spawnedAs: 'burndown',
     ...(s.predecessor === undefined ? {} : { predecessor: s.predecessor }),
     ...(s.worktree === undefined ? {} : { worktree: s.worktree }),
     ...(s.tier === undefined ? {} : { tier: s.tier }),
@@ -66,7 +69,7 @@ export function spawnFrame(s: SpawnSpec): SpawnFrame {
 export type Step =
   | { kind: 'ledger'; actions: Action[] }
   | { kind: 'spawn'; key: ClaimKey; frame: SpawnFrame }
-  | { kind: 'retire'; key: ClaimKey; names: string[] }
+  | RetireAction
   | { kind: 'register'; key: ClaimKey; registration: Registration }
 
 export interface SpawnReply {
@@ -109,23 +112,70 @@ export async function execute(steps: Step[], start: Ledger, deps: ExecuteDeps): 
     if (step.kind === 'ledger') commit(step.actions)
     else if (step.kind === 'retire') {
       const retired = await retireAll(step, deps)
-      ledger = withUnretired(ledger, step.key, retired.left)
+      const recorded = withUnretired(ledger, step.key, retired.left, step.held === true)
+      const budgeted =
+        step.held === true ? spendHeldRetire(recorded, step, retired.left, deps.now) : undefined
+      ledger = budgeted?.ledger ?? recorded
       writeLedger(deps.ledgerFile, ledger)
-      lines.push(...retired.lines)
+      if (step.then !== undefined && retired.left.length === 0) commit(step.then)
+      lines.push(...retired.lines, ...(budgeted?.lines ?? []))
     } else if (step.kind === 'register') lines.push(registerOne(step, { ledger, save }, deps))
     else lines.push(await spawnOne(step, { start, ledger, save }, deps))
   }
   return { ledger, lines }
 }
 
-/** The claim was marked done before its retire ran, so the refusals go on the newest done claim with that key. */
-export function withUnretired(ledger: Ledger, key: ClaimKey, left: Unretired[]): Ledger {
-  const index = ledger.claims.findLastIndex(c => c.phase === 'done' && sameClaim(c, key))
+/** A finished claim was marked done before its retire ran, so the refusals go on the newest done claim with that key; a `held` retire's go on the held one. */
+export function withUnretired(ledger: Ledger, key: ClaimKey, left: Unretired[], held = false): Ledger {
+  const index = ledger.claims.findLastIndex(c => (c.phase !== 'done') === held && sameClaim(c, key))
   if (index === -1) return ledger
   const { unretired: _previous, ...claim } = ledger.claims[index] as Claim
   const claims = [...ledger.claims]
   claims[index] = left.length === 0 ? claim : { ...claim, unretired: left }
   return { ...ledger, claims }
+}
+
+/** The liveness action a held retire spends under: one budget per claim and agent. */
+const retireAction = (name: string): string => `retire:${name}`
+
+/**
+ * A held (ladder) retire spends the claim's liveness budget per agent (CC-660): a
+ * success forgets that agent's refusals, and the third refusal with unchanged facts
+ * parks the claim retry-spent, its respawn mark cleared, for the owner.
+ */
+function spendHeldRetire(
+  ledger: Ledger,
+  step: Extract<Step, { kind: 'retire' }>,
+  left: readonly Unretired[],
+  now: Date,
+): { ledger: Ledger; lines: string[] } {
+  const claim = ledger.claims.findLast(c => c.phase !== 'done' && sameClaim(c, step.key))
+  let next = ledger
+  for (const name of step.names) {
+    const refusal = left.find(u => u.name === name)
+    if (refusal === undefined) {
+      next = clearLiveness(next, step.key, retireAction(name))
+      continue
+    }
+    const facts = factFingerprint({ name, worktree: claim?.worktree })
+    const spent = spend(next, step.key, retireAction(name), facts, refusal.reason, now)
+    next = spent.ledger
+    if (spent.verdict === 'park') return parkRetire(next, step.key, { name, n: spent.n, claim, refusal }, now)
+  }
+  return { ledger: next, lines: [] }
+}
+
+function parkRetire(
+  ledger: Ledger,
+  key: ClaimKey,
+  { name, n, claim, refusal }: { name: string; n: number; claim: Claim | undefined; refusal: Unretired },
+  now: Date,
+): { ledger: Ledger; lines: string[] } {
+  const kept = claim?.worktree === undefined ? '' : `; worktree ${claim.worktree} kept`
+  const detail = `retire of ${name} refused ${n} times with unchanged facts${kept}; last: ${maskText(refusal.reason)}`
+  const park = parkUpdate(key, 'retry-spent', detail)
+  const parked = applyActions(ledger, [{ ...park, patch: { ...park.patch, respawn: undefined } }], now)
+  return { ledger: parked, lines: [`not respawned ${claimKey(key)}: retry-spent: ${detail}`] }
 }
 
 /** A spawn whose claim is not already recorded in `spawning` under this name is refused, whatever built the steps. */
@@ -265,6 +315,12 @@ export function refusalReason(frame: SpawnFrame, reason: string): string {
     : `spawn refused: ${reason}; the worktree ${leftover} may be left behind, reclaim it by hand`
 }
 
+/**
+ * The broker's answer for a name with no unretired row (supervisor.ts). A partial roster cannot show a retired
+ * agent, so a ladder retire may ask for one; it is already gone, not refused (CC-829).
+ */
+const gone = (reason: string | undefined): boolean => reason?.startsWith('no agent named ') === true
+
 async function retireAll(
   step: Extract<Step, { kind: 'retire' }>,
   deps: ExecuteDeps,
@@ -275,6 +331,7 @@ async function retireAll(
     const reply = await deps.retire(name).catch((err: Error) => ({ ok: false, reason: err.message }))
     deps.log('burndown_retire', { name, ok: reply.ok, reason: reply.reason })
     if (reply.ok) lines.push(`retired ${name}`)
+    else if (step.held === true && gone(reply.reason)) lines.push(`${name} already gone: ${reply.reason}`)
     else {
       left.push({ name, reason: reply.reason ?? 'refused', at: deps.now.toISOString() })
       lines.push(

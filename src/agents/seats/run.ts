@@ -449,7 +449,7 @@ function save(pass: Pass): void {
     ...(pass.doc.held === undefined ? {} : { held: pass.doc.held }),
     ...(pass.doc.probeFailed === undefined ? {} : { probeFailed: pass.doc.probeFailed }),
     ...(pass.doc.attended === undefined ? {} : { attended: pass.doc.attended }),
-    ...(pass.doc.serviceCause === undefined ? {} : { serviceCause: pass.doc.serviceCause }),
+    ...(pass.doc.serviceHeard === undefined ? {} : { serviceHeard: pass.doc.serviceHeard }),
   })
 }
 
@@ -507,26 +507,26 @@ function attendedChange(pass: Pass, charter: string): string | undefined {
   return check.warning
 }
 
-/** CC-598: the attended seats hear of a service cause once; a cause no seat could be told of is sent again next pass. */
+/** CC-598, CC-693: each attended seat hears of a service cause once; a seat that missed it is sent it again next pass. */
 async function serviceChange(pass: Pass): Promise<string[]> {
   const { serviceCheck } = pass.deps
   if (serviceCheck === undefined) return []
-  const notice = judgeService(pass.doc.serviceCause, await runServiceCheck(serviceCheck))
-  if (notice.message === undefined) return []
-  const message = notice.message
+  const run = await runServiceCheck(serviceCheck)
+  const heard = { ...pass.doc.serviceHeard }
   const seats = (pass.doc.attended ?? []).filter(seat => pass.roster.connected.includes(seat))
   const lines: string[] = []
-  let delivered = true
   for (const seat of seats) {
-    const woke = await pass.deps.wake(seat, message, true)
-    delivered &&= woke.ok
-    pass.deps.appendLog(seat, pass.deps.now(), message)
-    lines.push(`${seat}: ${message}${woke.ok ? '' : ` (not delivered: ${woke.detail})`}`)
+    const notice = judgeService(heard[seat], run)
+    if (notice.message === undefined) continue
+    const woke = await pass.deps.wake(seat, notice.message, true)
+    pass.deps.appendLog(seat, pass.deps.now(), notice.message)
+    lines.push(`${seat}: ${notice.message}${woke.ok ? '' : ` (not delivered: ${woke.detail})`}`)
+    if (!woke.ok) continue
+    if (notice.cause === undefined) delete heard[seat]
+    else heard[seat] = notice.cause
   }
-  if (delivered && seats.length > 0) {
-    if (notice.cause === undefined) delete pass.doc.serviceCause
-    else pass.doc.serviceCause = notice.cause
-  }
+  if (Object.keys(heard).length === 0) delete pass.doc.serviceHeard
+  else pass.doc.serviceHeard = heard
   return lines
 }
 

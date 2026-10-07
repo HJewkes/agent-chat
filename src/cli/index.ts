@@ -230,6 +230,15 @@ function addAgentCommands(program: Command): void {
     .option('--body-file <path>', "PR body file, scanned with gh-write's leak scan")
     .option('--no-rebase', 'check and report only; do not rebase onto the default branch')
     .option('--strict', 'fail, not just note, a pushed branch that is behind the default branch')
+    .addHelpText(
+      'after',
+      [
+        '',
+        'Checks run on basement (ssh <host> basement-suite) when it answers a probe and the head is pushed;',
+        'with an unpushed head they are deferred until after the push, and with basement unreachable they run here.',
+        'AGENT_CHAT_BASEMENT_HOST sets the host (default basement); off forces local checks.',
+      ].join('\n'),
+    )
     .action(async (options: { title?: string; bodyFile?: string; rebase?: boolean; strict?: boolean }) => {
       const { prReady } = await import('./verbs/pr-ready.js')
       process.exitCode = await prReady(options)

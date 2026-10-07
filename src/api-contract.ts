@@ -1,5 +1,5 @@
 import { EVENT_KINDS, NON_KIND_SSE_EVENTS } from './protocol.js'
-import type { EventKind, QueueItem, SessionInfo } from './protocol.js'
+import type { AnswerChannel, EventKind, QueueItem, SessionInfo } from './protocol.js'
 import type { SessionAnalytics } from './agents/analytics/types.js'
 
 /**
@@ -145,6 +145,8 @@ export interface VerdictResponse {
 export interface AnswerRequest {
   msgId: string
   text: string
+  /** Where the answer came from, recorded as provenance only; defaults to `dashboard`. */
+  channel?: AnswerChannel
 }
 
 export interface DismissRequest {

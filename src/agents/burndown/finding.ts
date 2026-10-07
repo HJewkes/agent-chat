@@ -20,7 +20,7 @@ const MINUTE_MS = 60_000
 const inLane = (claim: Claim): boolean => (AGENT_PHASES as readonly string[]).includes(claim.phase)
 
 const keysOf = (actions: readonly Action[]): Set<string> =>
-  new Set(actions.flatMap(a => (a.kind === 'add' ? [] : [claimKey(a.key)])))
+  new Set(actions.flatMap(a => ('key' in a ? [claimKey(a.key)] : [])))
 
 const setFinding = (key: ClaimKey, finding: Finding | undefined): Update => ({
   kind: 'update',
@@ -115,7 +115,7 @@ export function findingActions(
   return claims.flatMap(claim => {
     if (claim.phase === 'done') return []
     const key = claimKey(claim)
-    if (moved.has(key) || claim.stalledReason !== undefined)
+    if (moved.has(key) || claim.stalledReason !== undefined || claim.respawn !== undefined)
       return claim.finding === undefined ? [] : [setFinding(claim, undefined)]
     if (!inLane(claim)) return []
     return actionFor(claim, observations.get(key) ?? {}, parked, now)

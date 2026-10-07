@@ -235,7 +235,7 @@ describe('what teleport refuses before it commits to anything', () => {
   it('lets the same session teleport once the question is answered', async () => {
     const agentId = await spawnAgent()
     const { msgId } = core.append({ kind: 'question', actor: 'scout', target: 'human', body: 'q' })
-    core.answer(msgId, 'main')
+    core.answer(msgId, 'main', 'cli')
 
     expect((await supervisor.teleport({ subject: subject(agentId), handoff: 'ok' })).ok).toBe(true)
   })

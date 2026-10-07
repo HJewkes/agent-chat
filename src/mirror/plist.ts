@@ -1,9 +1,9 @@
 import path from 'node:path'
 
 /** The only variables a launchd job inherits; a token must never ride along from the caller's env. */
-const PASSED_ENV = ['HOME', 'PATH', 'AGENT_CHAT_HOME'] as const
+const PASSED_ENV = ['HOME', 'PATH', 'AGENT_CHAT_HOME', 'ACTIVE_ROOT', 'AGENT_CHAT_ACTIVE_WORK_ROOT'] as const
 
-/** HOME and PATH always, AGENT_CHAT_HOME only when set; nothing else from `source`. */
+/** HOME and PATH always, the home and active-work roots only when set; nothing else from `source`. */
 export function jobEnv(source: NodeJS.ProcessEnv): Record<string, string> {
   const env: Record<string, string> = {}
   for (const key of PASSED_ENV) {
@@ -39,6 +39,16 @@ function isInside(file: string, root: string): boolean {
   return rel === '' || (rel.split(path.sep)[0] !== '..' && !path.isAbsolute(rel))
 }
 
+const inScratch = (file: string, tmpdir: string): boolean =>
+  [tmpdir, ...SCRATCH_ROOTS].some(root => isInside(file, root))
+
+/** Pure: why an explicitly named agent-chat home must not be baked into a job; empty when sound. */
+export function agentChatHomeRefusals(home: string, tmpdir: string): string[] {
+  if (inScratch(home, tmpdir)) return [`refused: --agent-chat-home ${home} is inside a temp dir`]
+  if (hasWorktreeSegment(home)) return [`refused: --agent-chat-home ${home} is inside a worktree`]
+  return []
+}
+
 /** Pure: why a launchd job built from these paths would break once the tree or scratch dir goes; empty when sound. */
 export function launchdJobRefusals(input: JobPathsInput): string[] {
   const errors: string[] = []
@@ -50,7 +60,7 @@ export function launchdJobRefusals(input: JobPathsInput): string[] {
       errors.push(`refused: ${what} ${file} is inside a worktree; install from the main checkout`)
   }
   const home = input.env.AGENT_CHAT_HOME
-  if (home !== undefined && [input.tmpdir, ...SCRATCH_ROOTS].some(root => isInside(home, root)))
+  if (home !== undefined && inScratch(home, input.tmpdir))
     errors.push(
       `refused: AGENT_CHAT_HOME ${home} is inside a temp dir; unset it or point it at durable state`,
     )

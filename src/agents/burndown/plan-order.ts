@@ -1,9 +1,17 @@
 import { criticalPath } from './critical-path.js'
+import {
+  cycleLines,
+  unknownDepLines,
+  upstreamBlocks,
+  upstreamLine,
+  type FailedUpstreams,
+} from './dep-edges.js'
 import type { Milestone, MilestoneFile } from './milestones.js'
 import {
   checkToday,
   compareRows,
   dispatchOrder,
+  namedDependencies,
   parseIsoDay,
   type DispatchRow,
   type ScoreRow,
@@ -27,6 +35,8 @@ import { parsePlanningTasks, type TagError, type TaggedTask } from './task-tags.
  *   is refused as `unknown-dep` and the dep is an `unknown-dep` in `tagErrors` (CC-631), so a typo
  *   holds the task instead of releasing it.
  * - A task in a dependency cycle, and every task that reaches one through `dep:` edges, is blocked.
+ * - CC-644: a task whose `dep:` reaches a `failedUpstreams` id, directly or through other tasks, is refused as
+ *   `upstream-failed`. `edgeLines` names every self edge, missing dep, cycle (in order) and blocked dependent.
  * - An unestimated task stays ready: it only adds no points to the path, and `route` sends it to triage.
  * - A task in a milestone whose gate is open yields nothing.
  * - CC-769: an epic of an owned milestone never takes tier 2. One its `epics:` lists is refused as
@@ -67,11 +77,13 @@ export interface PlanOrderInput {
   priorPicks?: Readonly<Record<string, number>>
   /** Task ids outside `tasks` that a `dep:` may name, such as closed tasks. */
   knownIds?: Iterable<string>
+  /** CC-644: task id to why it failed (a failed or released stall); its `dep:` dependents are blocked. */
+  failedUpstreams?: FailedUpstreams
 }
 
 export interface PlanOrder {
   order: PlannedRow[]
-  /** `dispatchOrder`'s share-cap skips, then `dep-blocked`, `cycle-blocked`, `unknown-dep`, `gated:<id>` and `intangible-held`. */
+  /** `dispatchOrder`'s share-cap skips, then `dep-blocked`, `cycle-blocked`, `unknown-dep`, `upstream-failed`, `gated:<id>` and `intangible-held`. */
   refused: Record<string, number>
   /** The planning-tag errors of `tasks`; the order still uses what parsed. */
   tagErrors: TagError[]
@@ -79,18 +91,21 @@ export interface PlanOrder {
   intangibleHeld: string[]
   /** CC-769: `<id> <reason>` for each epic held out of tier 2; `refused` counts them under the same reason. */
   epicsHeld: string[]
+  /** CC-644: a line per self edge, missing dep, cycle and task blocked behind a failed upstream, with the ids named. */
+  edgeLines: string[]
 }
 
-type BlockReason = 'cycle-blocked' | 'unknown-dep' | 'dep-blocked'
+type BlockReason = 'cycle-blocked' | 'unknown-dep' | 'upstream-failed' | 'dep-blocked'
 
 /**
  * Tasks in a cycle and their transitive dependents, then the `unknownDeps` tasks (a `dep:` naming no
- * known task), then any other task with a `dep:` on an open task.
+ * known task), then those behind a failed upstream, then any other task with a `dep:` on an open task.
  */
 export function tagBlocks(
   tagged: readonly TaggedTask[],
   cycles: readonly string[][],
   unknownDeps: ReadonlySet<string> = new Set(),
+  upstreamFailed: ReadonlySet<string> = new Set(),
 ): Map<string, BlockReason> {
   const reasons = new Map<string, BlockReason>(cycles.flat().map(id => [id, 'cycle-blocked']))
   for (let grew = true; grew;) {
@@ -102,6 +117,7 @@ export function tagBlocks(
     }
   }
   for (const id of unknownDeps) if (!reasons.has(id)) reasons.set(id, 'unknown-dep')
+  for (const id of upstreamFailed) if (!reasons.has(id)) reasons.set(id, 'upstream-failed')
   const open = new Set(tagged.map(task => task.id))
   for (const task of tagged) {
     if (!reasons.has(task.id) && task.deps.some(dep => open.has(dep))) reasons.set(task.id, 'dep-blocked')
@@ -110,16 +126,30 @@ export function tagBlocks(
 }
 
 /** Severity weight times one plus capped unblocks, over the estimate. */
-export function wsjf(row: ScoreRow): number | undefined {
+export function wsjf(row: ScoreRow, unblocks = row.unblocks): number | undefined {
   if (row.estimate === null || row.estimate <= 0) return undefined
-  return (row.components.S * (1 + Math.min(row.unblocks, 3))) / row.estimate
+  return (row.components.S * (1 + Math.min(unblocks, 3))) / row.estimate
+}
+
+/** Open tasks per id by prose or `dep:` tag; a task naming an id both ways counts once. */
+function unblocksByTask(tasks: readonly ScoredTask[], tagged: readonly TaggedTask[]): Map<string, number> {
+  const open = new Set(tasks.map(task => task.id))
+  const dependents = new Map<string, Set<string>>()
+  const add = (id: string, dependent: string) => {
+    if (open.has(id) && id !== dependent) dependents.set(id, (dependents.get(id) ?? new Set()).add(dependent))
+  }
+  for (const task of tasks) for (const id of namedDependencies(task)) add(id, task.id)
+  for (const task of tagged) for (const id of task.deps) add(id, task.id)
+  return new Map([...dependents].map(([id, set]) => [id, set.size]))
 }
 
 interface PlanContext {
   tags: Map<string, TaggedTask>
   tagErrors: TagError[]
   blocks: Map<string, BlockReason>
+  edgeLines: string[]
   remainingPath: Map<string, number>
+  unblocks: Map<string, number>
   owned: Map<string, Milestone>
   /** Total float of each task in an owned milestone. */
   floats: Map<string, number>
@@ -170,11 +200,18 @@ const unknownDepTasks = (errors: readonly TagError[]) =>
 function planContext(input: PlanOrderInput): PlanContext {
   const { tasks: tagged, errors: tagErrors } = parsePlanningTasks(input.tasks, input.knownIds)
   const whole = criticalPath(tagged)
+  const upstream = upstreamBlocks(tagged, input.failedUpstreams ?? {})
   const owned = (input.milestones?.milestones ?? []).filter(m => m.seat === input.seat)
   return {
     tags: new Map(tagged.map(task => [task.id, task])),
     tagErrors,
-    blocks: tagBlocks(tagged, whole.cycles, unknownDepTasks(tagErrors)),
+    blocks: tagBlocks(tagged, whole.cycles, unknownDepTasks(tagErrors), new Set(upstream.map(b => b.task))),
+    edgeLines: [
+      ...cycleLines(whole.cycles, tagged),
+      ...unknownDepLines(tagErrors),
+      ...upstream.map(upstreamLine),
+    ],
+    unblocks: unblocksByTask(input.tasks, tagged),
     remainingPath: new Map(whole.tasks.map(task => [task.id, task.earlyFinish])),
     owned: new Map(owned.map(m => [m.id, m])),
     floats: floatsOf(tagged, owned),
@@ -203,8 +240,13 @@ interface Sorted {
 
 const isEpicRefusal = (refusal: string) => refusal.startsWith('epic:') || refusal.startsWith('epic-estimate:')
 
-function planned(row: ScoreRow & { effective?: number }, tier: Tier, extra: PlanExtra = {}): PlannedRow {
-  const weight = wsjf(row)
+function planned(
+  row: ScoreRow & { effective?: number },
+  tier: Tier,
+  ctx: PlanContext,
+  extra: PlanExtra = {},
+): PlannedRow {
+  const weight = wsjf(row, ctx.unblocks.get(row.id) ?? 0)
   return {
     ...row,
     effective: row.effective ?? row.score,
@@ -227,7 +269,7 @@ function sortRows(rows: readonly ScoreRow[], ctx: PlanContext): Sorted {
       if (isEpicRefusal(placement.refusal)) sorted.epicsHeld.push(`${row.id} ${placement.refusal}`)
     } else if (placement.tier === 3) sorted.standard.push(row)
     else if (placement.tier === 4) sorted.intangible.push(row)
-    else sorted.ranked[placement.tier].push(planned(row, placement.tier, placement.extra))
+    else sorted.ranked[placement.tier].push(planned(row, placement.tier, ctx, placement.extra))
   }
   return sorted
 }
@@ -246,14 +288,20 @@ function picksAfter(
   return picks
 }
 
-function dispatched(rows: readonly ScoreRow[], tier: 3 | 4, input: PlanOrderInput, picked: PlannedRow[]) {
+function dispatched(
+  rows: readonly ScoreRow[],
+  tier: 3 | 4,
+  input: PlanOrderInput,
+  picked: PlannedRow[],
+  ctx: PlanContext,
+) {
   const { order, refused } = dispatchOrder(
     rows,
     input.defaults,
     input.n - picked.length,
     picksAfter(input.priorPicks ?? {}, picked),
   )
-  return { order: order.map(row => planned(row, tier)), refused }
+  return { order: order.map(row => planned(row, tier, ctx)), refused }
 }
 
 const hasReady = (rows: readonly ScoreRow[]) => rows.some(row => row.blocked.length === 0)
@@ -264,7 +312,7 @@ export function planOrder(input: PlanOrderInput): PlanOrder {
   const sorted = sortRows(input.rows, ctx)
   const picked = ([0, 1, 2] as const).flatMap(tier => sorted.ranked[tier].sort(tierOrder(tier, ctx.owned)))
   const order = picked.slice(0, Math.max(0, input.n))
-  const standard = dispatched(sorted.standard, 3, input, order)
+  const standard = dispatched(sorted.standard, 3, input, order, ctx)
   const refused = { ...standard.refused }
   order.push(...standard.order)
   const intangibleHeld: string[] = []
@@ -273,10 +321,17 @@ export function planOrder(input: PlanOrderInput): PlanOrder {
     intangibleHeld.push(...held.map(row => row.id))
     if (held.length > 0) sorted.refused['intangible-held'] = held.length
   } else {
-    const intangible = dispatched(sorted.intangible, 4, input, order)
+    const intangible = dispatched(sorted.intangible, 4, input, order, ctx)
     addCounts(refused, intangible.refused)
     order.push(...intangible.order)
   }
   addCounts(refused, sorted.refused)
-  return { order, refused, tagErrors: ctx.tagErrors, intangibleHeld, epicsHeld: sorted.epicsHeld }
+  return {
+    order,
+    refused,
+    tagErrors: ctx.tagErrors,
+    intangibleHeld,
+    epicsHeld: sorted.epicsHeld,
+    edgeLines: ctx.edgeLines,
+  }
 }

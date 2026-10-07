@@ -52,10 +52,12 @@ import {
 import {
   SurfaceRefused,
   itermSessionPresent,
+  tmuxWindowPresent,
   loginGap,
   readOutputTail,
   type SurfaceOptions,
 } from '@titan-design/agent-surface'
+import { resolveSurface } from './surface-resolution.js'
 import { psLauncherProbe, relaunchScriptPath, surfaceFor, type LauncherProbe } from './launcher.js'
 import { Semaphore, type SlotUsage } from './semaphore.js'
 import {
@@ -407,6 +409,8 @@ export interface SpawnRequest {
   returnContract?: 'none'
   /** CC-774: the burndown plan's tier for the task, written on the `dispatched` row. */
   tier?: number
+  /** CC-802: the automation a human-requested spawn runs for; the `dispatched` row's spawner. */
+  spawnedAs?: 'burndown' | 'shepherd'
   /** Empty for a human-initiated spawn; otherwise the requesting agent's id. */
   parentAgentId?: string
   requestedBy: string
@@ -1453,7 +1457,7 @@ export class Supervisor implements TeleportHost {
     }
     const roleBlocked = this.checkRole(req, profile, lineage.coordinatorDepth)
     if (roleBlocked) return this.refuse(req, roleBlocked)
-    const machine = this.machineRefusal(req.surface ?? profile.surface)
+    const machine = this.machineRefusal(this.resolve(req.surface ?? profile.surface))
     if (machine) return this.refuse(req, machine.reason, { code: machine.code, retryable: machine.retryable })
     const escalation = this.checkEscalation(req, profile)
     if ('refusal' in escalation) return this.refuse(req, escalation.refusal)
@@ -1589,7 +1593,7 @@ export class Supervisor implements TeleportHost {
       body: allocation.note ?? '',
       meta: { strategy: isolationName, ...(allocation.ref ?? {}) },
     })
-    const surface = req.surface ?? profile.surface
+    const surface = this.resolve(req.surface ?? profile.surface)
     // CC-158: on disk before anything can fail, so a launch that dies still leaves something to release.
     writeRuntimeState(agentId, { handle: { surface }, allocation, isolation: isolationName })
 
@@ -1682,6 +1686,8 @@ export class Supervisor implements TeleportHost {
         ...(fork ? { inherit: 'context', fork_from: fork.sessionId } : {}),
         ...(resumed ? { resumed_session: resumed.sessionId, transcript: resumed.path } : {}),
         ...(req.predecessor === undefined ? {} : { predecessor: req.predecessor }),
+        // CC-802: stored so the retire row names the same spawner as the dispatched one.
+        ...(req.spawnedAs === undefined ? {} : { spawned_as: req.spawnedAs }),
       },
     })
 
@@ -1717,6 +1723,7 @@ export class Supervisor implements TeleportHost {
       model: profile.model,
       predecessor: req.predecessor ?? null,
       ...(req.tier === undefined ? {} : { tier: req.tier }),
+      ...(req.spawnedAs === undefined ? {} : { spawnedAs: req.spawnedAs }),
     }
     if (verdict.kind === 'pending') {
       this.awaitLateAttach(req, agentId, handle, site, launchedAt, announce, facts)
@@ -1922,10 +1929,11 @@ export class Supervisor implements TeleportHost {
     })
   }
 
-  /** A pane iTerm2 still lists. Unknown counts as gone: keeping a pane needs a positive answer. */
+  /** A pane iTerm2 or tmux still lists. Unknown counts as gone: keeping a pane needs a positive answer. */
   private async paneStillOpen(handle: LaunchHandle): Promise<boolean> {
     if (handle.surface === 'headless' || handle.paneRef === undefined) return false
-    return (await itermSessionPresent(handle.paneRef, { ...this.surfaceOptions })) === true
+    const present = handle.surface === 'tmux-window' ? tmuxWindowPresent : itermSessionPresent
+    return (await present(handle.paneRef, { ...this.surfaceOptions })) === true
   }
 
   /**
@@ -2035,6 +2043,11 @@ export class Supervisor implements TeleportHost {
       if (entry.anchor === anchor && entry.handle.paneRef) bottom = entry.handle.paneRef
     }
     return bottom
+  }
+
+  /** CC-804: the surface a requested name lands on, given this host's platform. */
+  private resolve(surface: SurfaceName): SurfaceName {
+    return resolveSurface(surface, this.surfaceOptions?.platform)
   }
 
   private async launchOn(
@@ -2207,6 +2220,7 @@ export class Supervisor implements TeleportHost {
       profile: meta.profile ?? identity.profile,
       model: meta.model ?? null,
       predecessor: meta.predecessor ?? null,
+      ...(meta.spawned_as === undefined ? {} : { spawnedAs: meta.spawned_as }),
     }
     const sessionId = identity.sessionId || null
     const tree = allocatedWorktree(this.core.events.agentEvents(), identity.agentId)
@@ -2630,7 +2644,7 @@ export class Supervisor implements TeleportHost {
     const state = this.live.get(agent.agentId) ?? readRuntimeState(agent.agentId)
     const allocation = reattached ?? state?.allocation ?? { cwd: agent.cwd }
     const isolation = reattached ? 'worktree' : (state?.isolation ?? (agent.isolation as IsolationName))
-    const surface = req.surface ?? 'headless'
+    const surface = this.resolve(req.surface ?? 'headless')
     const plan = buildLaunchPlan({
       agentId: agent.agentId,
       sessionId: agent.sessionId,
@@ -2738,7 +2752,7 @@ export class Supervisor implements TeleportHost {
     profile: AgentProfile,
   ): Promise<SwitchOutcome> {
     const entry = this.live.get(agent.agentId)
-    const surface = req.to === 'headless' ? 'headless' : placementFor(req.anchor)
+    const surface = req.to === 'headless' ? 'headless' : this.resolve(placementFor(req.anchor))
     const allocation = entry?.allocation ?? { cwd: agent.cwd }
     const isolation = entry?.isolation ?? (agent.isolation as IsolationName)
 

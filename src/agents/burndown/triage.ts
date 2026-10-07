@@ -1,6 +1,6 @@
 import { loadProfile } from '../profiles.js'
 import { claimKey, type ClaimKey } from './advance.js'
-import { classOf, routeOf } from './exception.js'
+import { classOf, routeOf, type ExceptionClass } from './exception.js'
 import type { SpawnFrame, SpawnReply } from './execute.js'
 import { heldClaims, sameClaim, type Claim, type Ledger } from './ledger.js'
 import { rowNamed, type Roster } from './observe.js'
@@ -9,11 +9,12 @@ import { accountDir, type TickConfig } from './source.js'
 /**
  * The triage job (CC-642 S2): one headless, read-only triager per stalled occurrence of a claim
  * whose class the dial routes to triage. The owner hears of the stall only once triage cannot
- * run, was refused, or ran and left the claim stalled. Starts come only from a classified stall,
- * never from a timer.
+ * run, was refused, or ran and left the claim stalled. Starts come only from a classified stall
+ * or an open stalled-after-claim finding (CC-651), never from a timer.
  */
 
 type Triage = NonNullable<Claim['triage']>
+type Finding = NonNullable<Claim['finding']>
 type Log = (event: string, detail: Record<string, unknown>) => void
 
 const MINUTE_MS = 60_000
@@ -29,8 +30,35 @@ export type TriageVerdict =
   | { kind: 'wait'; key: ClaimKey; occurrence: string; reason: string }
   | { kind: 'owner'; key: ClaimKey; occurrence: string; reason: string }
 
-/** One stall of a claim; S4 replaces this with the CC-639 finding id. */
-export const occurrenceOf = (claim: Claim): string => `${claim.phaseAt} ${claim.stalledReason ?? ''}`
+/** What the dial routes for one claim: its class, and the occurrence one triage job is for. */
+export interface Exception {
+  claim: Claim
+  cls: ExceptionClass | undefined
+  occurrence: string
+}
+
+/** `Claim.finding` has no id; `openedAt` is kept across refreshes, and a reopened finding gets a new one. */
+export const findingId = (finding: Finding): string => `finding:${finding.openedAt}`
+
+const stallOf = (claim: Claim): Exception[] =>
+  claim.stalledReason === undefined
+    ? []
+    : [{ claim, cls: classOf(claim), occurrence: `${claim.phaseAt} ${claim.stalledReason}` }]
+
+/** A terminal stall closes the finding, so a claim carrying both is routed by its stall. */
+const findingOf = (claim: Claim): Exception[] =>
+  claim.finding === undefined || claim.stalledReason !== undefined
+    ? []
+    : [{ claim, cls: 'stalled', occurrence: findingId(claim.finding) }]
+
+/** Each held claim's open stalled-after-claim finding, as class `stalled` keyed by the finding id (CC-651). */
+export const openFindings = (ledger: Ledger): Exception[] => heldClaims(ledger).flatMap(findingOf)
+
+export const exceptionOf = (claim: Claim): Exception | undefined =>
+  [...stallOf(claim), ...findingOf(claim)][0]
+
+/** The stall or finding the claim holds now; one that has cleared matches no triage record. */
+export const occurrenceOf = (claim: Claim): string => exceptionOf(claim)?.occurrence ?? `${claim.phaseAt} `
 
 /** The claim's triage record when it is for the stall the claim holds now. */
 export const currentTriage = (claim: Claim): Triage | undefined =>
@@ -42,10 +70,11 @@ export function ownerDue(claim: Claim): boolean {
   return outcome !== 'waiting' && outcome !== 'started'
 }
 
-/** Whether the dial sends this claim's stall to triage; a gate-trip or a legacy row never goes. */
-const routedToTriage = (claim: Claim, config: TickConfig): boolean =>
-  claim.stalledReason !== undefined &&
-  routeOf(classOf(claim), config.exceptions.route, true).route === 'triage'
+/** Whether the dial sends this exception to triage; a gate-trip or a legacy row never goes. */
+const toTriage = (exception: Exception | undefined, config: TickConfig): boolean =>
+  exception !== undefined && routeOf(exception.cls, config.exceptions.route, true).route === 'triage'
+
+const routedToTriage = (claim: Claim, config: TickConfig): boolean => toTriage(exceptionOf(claim), config)
 
 /** Ready means configured, its profile loads, and an account is named to spawn it on. */
 export function triageReadiness(
@@ -76,16 +105,17 @@ export interface VerdictInputs {
 const startsInDay = (starts: readonly string[] | undefined, now: Date): string[] =>
   (starts ?? []).filter(s => now.getTime() - Date.parse(s) < DAY_MS)
 
-/** Per stalled claim the dial routes to triage and no job has settled: readiness, then the day cap, then capacity. */
+/** Per stall, then per open finding, the dial routes to triage and no job has settled: readiness, then the day cap, then capacity. */
 export function triageVerdicts(input: VerdictInputs): TriageVerdict[] {
   const { readiness, now } = input
   let capacity = input.capacity
   let started = startsInDay(input.ledger.triageStarts, now).length
-  const open = heldClaims(input.ledger).filter(
-    c => routedToTriage(c, input.config) && [undefined, 'waiting'].includes(currentTriage(c)?.outcome),
+  const exceptions = [...heldClaims(input.ledger).flatMap(stallOf), ...openFindings(input.ledger)]
+  const open = exceptions.filter(
+    e => toTriage(e, input.config) && [undefined, 'waiting'].includes(currentTriage(e.claim)?.outcome),
   )
-  return open.map(claim => {
-    const at = { key: { taskId: claim.taskId, slice: claim.slice }, occurrence: occurrenceOf(claim) }
+  return open.map(({ claim, occurrence }) => {
+    const at = { key: { taskId: claim.taskId, slice: claim.slice }, occurrence }
     if (!readiness.ready) return { kind: 'owner', ...at, reason: `triage is not ready: ${readiness.reason}` }
     if (started >= readiness.maxPerDay)
       return {
@@ -137,8 +167,9 @@ export function triageBrief(claim: Claim): string {
     ...field('task', claim.taskId),
     ...field('initiative', claim.initiative),
     ...field('slice', claim.slice),
-    ...field('class', claim.stalledClass),
+    ...field('class', exceptionOf(claim)?.cls),
     ...field('stalled', claim.stalledReason),
+    ...field('finding', claim.finding?.detail),
     ...field('agent', claim.agentName),
     ...field('worktree', claim.worktree),
     ...field('PR', claim.pr),
@@ -222,8 +253,7 @@ export async function actOnTriage(
   const lines = [...start.lines]
   for (const v of verdicts) {
     const claim = heldClaims(ledger).find(c => sameClaim(c, v.key))
-    if (claim === undefined || claim.stalledReason === undefined || occurrenceOf(claim) !== v.occurrence)
-      continue
+    if (claim === undefined || exceptionOf(claim)?.occurrence !== v.occurrence) continue
     const done = await actOnVerdict(ledger, claim, v, { readiness, roster }, deps)
     ledger = done.ledger
     if (done.line !== undefined) lines.push(done.line)
@@ -278,6 +308,7 @@ function triageFrame(
     surface: 'headless',
     briefing: claim.initiative,
     tags: ['burndown', 'triage', `task:${claim.taskId}`],
+    spawnedAs: 'burndown',
   }
 }
 

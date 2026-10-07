@@ -9,7 +9,7 @@ import { sameTickCollision, type SameTickClaim } from './collision.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
 import { isLive, occupantOf } from '../isolation/sweep.js'
 import type { Claim, Ledger, SeatState } from './ledger.js'
-import type { Downstream } from './flow-gate.js'
+import type { Downstream, LineStop } from './flow-gate.js'
 import { rowNamed, type Roster } from './observe.js'
 import type { Capacity, Dispatch, PlanInputs } from './plan.js'
 import { loadPolicy, mergeDefaults, seatBudget, seatScope, type Policy, type SeatPolicy } from './policy.js'
@@ -158,6 +158,8 @@ export interface SeatPlanDeps {
   charged?: readonly string[]
   /** Each seat's downstream WIP answer for a checkout (CC-784); absent, no WIP limit applies. */
   downstream?: (dispatch: SeatDispatch) => (repo: string) => Downstream
+  /** Two stopping service-check reads in a row (CC-785); absent, the line runs. */
+  lineStop?: LineStop
   /** The broker's roster, which decides which held trees are active; absent, every held tree counts. */
   roster?: Roster
 }
@@ -238,6 +240,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     collision: (repo, work, landedRepos) =>
       sameTickCollision(taken.claims, repo, work) ?? deps.collision?.(repo, work, landedRepos),
     ...(deps.downstream === undefined ? {} : { downstream: deps.downstream(seat.dispatch) }),
+    ...(deps.lineStop === undefined ? {} : { lineStop: deps.lineStop }),
     ...optional(deps, lessDispatched(deps.capacity, taken.dispatch)),
   })
   planned.refusals.push(

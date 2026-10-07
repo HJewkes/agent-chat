@@ -1,6 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { z } from 'zod'
+import { logEvent } from '../../broker/log.js'
+import { IllegalPhaseEdgeError, illegalEdges } from './claim-phase.js'
 import { EXCEPTION_CLASSES } from './exception.js'
 import { Contract } from './report.js'
 import { STALL_CODES } from './stall-code.js'
@@ -69,7 +71,12 @@ const Claim = z.object({
   stalledClass: z.enum(EXCEPTION_CLASSES).optional(),
   /** Set beside `stalledReason` for a stall of one of the closed kinds (CC-663). */
   stallCode: z.enum(STALL_CODES).optional(),
-  /** Agents whose retire refused after the claim finished, in retire order; each tick retries them (CC-182). */
+  /** A ladder rung-1 respawn under way (CC-660): set as its agents are retired and cleared by the successor's spawn intent, so a refused spawn is undone back to it. */
+  respawn: z.object({ code: z.enum(STALL_CODES), occurrence: z.string() }).optional(),
+  /**
+   * Agents whose retire refused, in retire order: after the claim finished, where each tick retries
+   * them (CC-182), or during a ladder respawn, which retries them before its successor spawns (CC-660).
+   */
   unretired: z
     .array(
       z.object({
@@ -86,6 +93,8 @@ const Claim = z.object({
   namePrefix: z.string().optional(),
   /** Event kinds (`kind:code` for a coded stall) already delivered to the claim's seat, so a delivered event is never re-sent. */
   notified: z.array(z.string()).optional(),
+  /** The fact fingerprint of each delivered stall notice by its `notified` key; outlives that entry so an unchanged reopen stays quiet (CC-641). */
+  noticeFacts: z.record(z.string(), z.string()).optional(),
   /** Set while the claim's live agent shows no progress in its transcript; the tick opens, refreshes and closes it (CC-654). */
   finding: z
     .object({
@@ -171,6 +180,46 @@ const LivenessRecord = z.object({
 })
 export type LivenessRecord = z.infer<typeof LivenessRecord>
 
+/** A claim's place on the triage ladder (CC-660); kept on the ledger, apart from `attempt` and `reviewRound`. */
+const LadderRecord = z.object({
+  /** Respawns whose successor spawned; one still under way is not counted. */
+  respawns: z.number().int().nonnegative(),
+  lastAt: z.string().datetime(),
+  /** The occurrence (the claim's `phaseAt`) rung 1 started on. */
+  occurrence: z.string().optional(),
+  /** When the ladder last stalled the claim for its owner. */
+  owner: z.string().datetime().optional(),
+  /** Rung-2 releases of this key (CC-698); absent before the first. */
+  releases: z.number().int().nonnegative().optional(),
+  /** The branch the last release kept, the stall code that sent it there, and the seat to tell. */
+  branch: z.string().optional(),
+  code: z.enum(STALL_CODES).optional(),
+  seat: z.string().optional(),
+  /** Set when the seat's `released` notice failed to send, and cleared once one lands (CC-829). */
+  releaseDue: z.literal(true).optional(),
+})
+export type LadderRecord = z.infer<typeof LadderRecord>
+
+/** The ladder's mass-death brake (CC-699): occurrence times inside the window, and the notice sent for this brake. */
+const BrakeState = z.object({
+  at: z.array(z.string().datetime()),
+  /** `brake:<code>` once told, so a later tick of the same brake is quiet. */
+  notified: z.string().optional(),
+  /** The claim keys the notice was about; their seats are told. */
+  claims: z.array(z.string()).optional(),
+  /** Occurrences already counted, as `<claim key>@<phaseAt>`, so a retried rung is not a new one; kept while the claim holds it. */
+  seen: z.array(z.string()).optional(),
+})
+export type BrakeState = z.infer<typeof BrakeState>
+
+/** A seat's run of refused deliveries (CC-640); `skipped` counts the ticks a stopped seat was held back since its last probe. */
+const WakeRecord = z.object({
+  failed: z.number().int().positive(),
+  reason: z.string().optional(),
+  skipped: z.number().int().nonnegative().optional(),
+})
+export type WakeRecord = z.infer<typeof WakeRecord>
+
 const Ledger = z.object({
   version: z.literal(1),
   lastTickAt: z.string().optional(),
@@ -188,6 +237,14 @@ const Ledger = z.object({
   triageStarts: z.array(z.string()).optional(),
   /** Action failures by `<claim key>|<action>`; kept on the ledger so a claim drop does not reset the count. */
   liveness: z.record(z.string(), LivenessRecord).optional(),
+  /** Triage ladder records by claim key, outside the claim so a release keeps them (CC-660). */
+  ladder: z.record(z.string(), LadderRecord).optional(),
+  /** Persisted, so a restart inside the window stays braked. */
+  brake: BrakeState.optional(),
+  /** The last `titan-factory service check` read; the line stops on two stopping reads in a row (CC-785). */
+  serviceCheck: z.object({ at: z.string().datetime(), cause: z.string().nullable() }).optional(),
+  /** Consecutive refused deliveries by seat name; a delivered message drops the seat's entry (CC-640). */
+  wake: z.record(z.string(), WakeRecord).optional(),
 })
 export type Ledger = z.infer<typeof Ledger>
 
@@ -225,8 +282,23 @@ export function readLedger(file: string): Ledger {
   return parsed.data
 }
 
+/** A ledger that cannot be read is not a baseline, so the first write after it is unchecked (CC-674). */
+function refuseIllegalEdges(file: string, next: Ledger): void {
+  let before: Ledger
+  try {
+    before = readLedger(file)
+  } catch {
+    return
+  }
+  const [edge] = illegalEdges(before.claims, next.claims)
+  if (edge === undefined) return
+  logEvent('burndown_illegal_phase_edge', { ...edge })
+  throw new IllegalPhaseEdgeError(`claim ${edge.claim} may not move from ${edge.from} to ${edge.to}`)
+}
+
 /** Write-then-rename in the same directory, so a reader never sees half a ledger. */
 export function writeLedger(file: string, ledger: Ledger): void {
+  refuseIllegalEdges(file, ledger)
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const tmp = `${file}.${process.pid}.tmp`
   fs.writeFileSync(tmp, `${JSON.stringify(ledger, null, 2)}\n`, { mode: 0o600 })

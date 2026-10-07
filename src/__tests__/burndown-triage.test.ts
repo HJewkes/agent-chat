@@ -8,6 +8,7 @@ import type { Roster } from '../agents/burndown/observe.js'
 import { loadTickConfig, type TickConfig } from '../agents/burndown/source.js'
 import {
   actOnTriage,
+  openFindings,
   ownerDue,
   settleTriage,
   triageReadiness,
@@ -245,5 +246,74 @@ describe('starting a triage job', () => {
     await startOn(stalled('CC-1'), rosterOf(['triage-cc-1-1', 'retired'], ['triage-cc-10-4', 'live']), spawn)
 
     expect(frames.map(f => f.name)).toEqual(['triage-cc-1-2'])
+  })
+})
+
+describe('a stalled-after-claim finding routed through the dial (CC-651)', () => {
+  const OPENED = new Date(NOW.getTime() - 10 * MIN).toISOString()
+  const finding = (patch: Partial<NonNullable<Claim['finding']>> = {}): NonNullable<Claim['finding']> => ({
+    kind: 'stalled-after-claim',
+    reason: 'idle',
+    code: 'no-progress',
+    since: OPENED,
+    openedAt: OPENED,
+    checkedAt: OPENED,
+    detail: `no-progress: idle: no agent event for 6 min since ${OPENED}`,
+    ...patch,
+  })
+  const finder = (patch: Partial<Claim> = {}): Claim =>
+    stalled('CC-1', { stalledReason: undefined, stalledClass: undefined, finding: finding(), ...patch })
+
+  it('maps an open finding to class stalled with the finding id as occurrence, kept across a refresh', () => {
+    const refreshed = finder({ finding: finding({ checkedAt: NOW.toISOString(), code: 'lease-expired' }) })
+
+    const first = openFindings({ version: 1, claims: [finder()] })
+    const second = openFindings({ version: 1, claims: [refreshed] })
+
+    expect(first.map(f => [f.claim.taskId, f.cls, f.occurrence])).toEqual([
+      ['CC-1', 'stalled', `finding:${OPENED}`],
+    ])
+    expect(second.map(f => f.occurrence)).toEqual([`finding:${OPENED}`])
+  })
+
+  it('starts at most one triage job per finding', () => {
+    const started = {
+      occurrence: `finding:${OPENED}`,
+      since: OPENED,
+      outcome: 'started' as const,
+      name: 'triage-cc-1-1',
+    }
+
+    const fresh = triageVerdicts(inputs({ claims: [finder()] }))
+    const running = triageVerdicts(inputs({ claims: [finder({ triage: started })] }))
+
+    expect(fresh).toEqual([expect.objectContaining({ kind: 'start', occurrence: `finding:${OPENED}` })])
+    expect(running).toEqual([])
+  })
+
+  it("holds the owner notice while the finding's job runs, and drops the job once the finding closes", () => {
+    const triage = {
+      occurrence: `finding:${OPENED}`,
+      since: OPENED,
+      outcome: 'started' as const,
+      name: 'triage-cc-1-1',
+    }
+    const { finding: _closed, ...closed } = finder({ triage })
+
+    const settled = settleTriage(
+      { version: 1, claims: [closed] },
+      rosterOf(['triage-cc-1-1', 'live']),
+      30,
+      NOW,
+    )
+
+    expect(ownerDue(finder({ triage }))).toBe(false)
+    expect(settled.claims[0]?.triage).toBeUndefined()
+  })
+
+  it('never lets a finding route a gate-trip stall to triage', () => {
+    const claims = [stalled('CC-1', { stalledClass: 'gate-trip', finding: finding() })]
+
+    expect(triageVerdicts(inputs({ claims }))).toEqual([])
   })
 })

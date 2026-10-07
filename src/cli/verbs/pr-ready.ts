@@ -3,6 +3,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import YAML from 'yaml'
 import { defaultTermsFile, scanDeps, scanGhArgs } from '../../gh-write/scan.js'
+import {
+  basementCommandText,
+  describeExit,
+  infraFailure,
+  routeChecks,
+  runOnBasement,
+  type BasementTarget,
+} from './pr-ready-basement.js'
 import { pushedBranchStep } from './pr-ready-pushed.js'
 
 export interface RunResult {
@@ -33,6 +41,8 @@ export interface PrReadyDeps {
   trap: Trap
   /** The private-term list gh-write reads; injected so tests use a synthetic one. */
   termsFile: string
+  /** Read for AGENT_CHAT_BASEMENT_HOST and AGENT_CHAT_NAME; injected so tests never see the real one. */
+  env?: NodeJS.ProcessEnv
 }
 
 interface StepOutcome {
@@ -248,14 +258,12 @@ export async function planChecks(run: Run, cwd: string, base: string): Promise<C
   return { commands: scriptsIn(root).map(script => ({ cmd: pm, args: ['run', script] })), problems: [] }
 }
 
-export async function checksStep(
-  run: Run,
-  cwd: string,
-  base: string,
-  err: (line: string) => void,
-): Promise<StepOutcome> {
-  const { commands, problems } = await planChecks(run, cwd, base)
-  if (commands.length === 0 && problems.length === 0) return { ok: true, reason: 'no scripts' }
+/** Every planned command ends in its script name, so one repo-level run covers all members. */
+const distinctScripts = (commands: Command[]): string[] => [
+  ...new Set(commands.map(c => c.args.at(-1)).filter((s): s is string => s !== undefined)),
+]
+
+async function localChecks(run: Run, cwd: string, commands: Command[], err: (l: string) => void) {
   const failed: string[] = []
   for (const command of commands) {
     const result = await run(command.cmd, command.args, cwd)
@@ -263,8 +271,48 @@ export async function checksStep(
     err(result.output.trimEnd())
     failed.push(command.hint ? `${commandText(command)} (${command.hint})` : commandText(command))
   }
-  const reasons = [...(failed.length > 0 ? [`failed: ${failed.join('; ')}`] : []), ...problems]
-  return reasons.length === 0 ? { ok: true } : { ok: false, reason: reasons.join('; ') }
+  return failed.length > 0 ? [`failed: ${failed.join('; ')}`] : []
+}
+
+async function basementChecks(
+  run: Run,
+  cwd: string,
+  target: BasementTarget,
+  scripts: string[],
+  err: (line: string) => void,
+) {
+  const results = await runOnBasement(run, cwd, target, scripts)
+  const codes = results.map(describeExit).join(', ')
+  for (const result of results.filter(r => r.code !== 0)) err(result.output.trimEnd())
+  const infra = results.map(infraFailure).find(reason => reason !== undefined)
+  if (infra) return { reasons: [`${infra} (${codes})`], codes }
+  const failed = results.filter(r => r.code !== 0).map(r => basementCommandText(target, r.script))
+  return { reasons: failed.length > 0 ? [`failed on basement: ${failed.join('; ')} (${codes})`] : [], codes }
+}
+
+export async function checksStep(
+  run: Run,
+  cwd: string,
+  base: string,
+  err: (line: string) => void,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<StepOutcome> {
+  const { commands, problems } = await planChecks(run, cwd, base)
+  if (commands.length === 0 && problems.length === 0) return { ok: true, reason: 'no scripts' }
+  const scripts = distinctScripts(commands)
+  const route =
+    scripts.length === 0 ? { kind: 'local' as const } : await routeChecks(run, cwd, base, scripts, env)
+  if (route.kind === 'deferred')
+    return {
+      ok: problems.length === 0,
+      reason: [`deferred to basement after push: ${route.commands.join('; ')}`, ...problems].join('; '),
+    }
+  if (route.kind === 'local' && route.warning) err(`warning: ${route.warning}`)
+  const remote =
+    route.kind === 'remote' ? await basementChecks(run, cwd, route.target, scripts, err) : undefined
+  const reasons = [...(remote?.reasons ?? (await localChecks(run, cwd, commands, err))), ...problems]
+  if (reasons.length > 0) return { ok: false, reason: reasons.join('; ') }
+  return remote ? { ok: true, reason: `basement ${remote.codes}` } : { ok: true }
 }
 
 /** Never a bare `npx changeset`: without `--no-install` npx downloads an unrelated package of that name. */
@@ -338,7 +386,7 @@ export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultD
   if (!(await step('clean-tree', () => cleanTreeStep(run, cwd)))) return fail()
   if (!(await step('base', resolveBase))) return fail()
   if (!(await step('rebase', rebase))) return fail()
-  let ok = await step('checks', () => checksStep(run, cwd, base, deps.err))
+  let ok = await step('checks', () => checksStep(run, cwd, base, deps.err, deps.env))
   ok = (await step('changeset', () => changesetStep(run, cwd, base))) && ok
   ok = (await step('scan', () => scanStep(opts, cwd, deps.termsFile))) && ok
   if (!ok) return fail()

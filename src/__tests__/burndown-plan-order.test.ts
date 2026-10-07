@@ -326,4 +326,44 @@ describe('planOrder readiness', () => {
 
     expect(order.find(row => row.id === 'WS-1')!.wsjf).toBe((1.0 * (1 + 3)) / 4)
   })
+
+  it('counts open tasks whose dep: tags name a task, so it outranks an equal task with none', () => {
+    const tasks = [
+      task('DE-1', [], { estimate: 2 }),
+      task('DE-2', [], { estimate: 2 }),
+      task('DE-3', ['dep:DE-2']),
+      task('DE-4', ['dep:DE-2']),
+    ]
+
+    const { order } = planOrder(inputFor(tasks))
+    const wsjfOf = (id: string) => order.find(row => row.id === id)!.wsjf
+
+    expect(wsjfOf('DE-2')).toBeCloseTo(3 * wsjfOf('DE-1')!)
+  })
+
+  it('counts a dependent named in prose and by dep: tag once, and caps the combined count', () => {
+    const tasks = [
+      task('DC-1', [], { severity: 'critical', estimate: 4 }),
+      task('DC-2', ['dep:DC-1'], { notes: 'Depends on DC-1.' }),
+      ...['DC-3', 'DC-4', 'DC-5'].map(id => task(id, ['dep:DC-1'])),
+      task('DC-6', [], { notes: 'Depends on DC-1.' }),
+    ]
+
+    const { order } = planOrder(inputFor(tasks))
+
+    expect(order.find(row => row.id === 'DC-1')!.wsjf).toBe((1.0 * (1 + 3)) / 4)
+  })
+
+  it('ignores dep: tags on tasks that are not open', () => {
+    const tasks = [task('DX-1'), task('DX-2'), task('DX-3', ['dep:DX-2'])]
+    const withDep = planOrder(inputFor(tasks, { knownIds: ['DX-9'] })).order
+    const closed = planOrder(
+      inputFor([task('DX-1'), task('DX-2', ['dep:DX-9'])], { knownIds: ['DX-9'] }),
+    ).order
+
+    expect(closed.find(row => row.id === 'DX-1')!.wsjf).toBe(closed.find(row => row.id === 'DX-2')!.wsjf)
+    expect(withDep.find(row => row.id === 'DX-2')!.wsjf).toBeGreaterThan(
+      withDep.find(row => row.id === 'DX-1')!.wsjf!,
+    )
+  })
 })

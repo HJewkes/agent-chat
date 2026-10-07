@@ -7,6 +7,7 @@ import {
   reviewerBrief,
   successorAfterAnswer,
   successorAfterReview,
+  successorAfterStall,
   workerBrief,
   type TaskBrief,
 } from './brief.js'
@@ -40,6 +41,10 @@ export interface StepContext {
   trust: (repo: string, cwd: string, account: string) => string | undefined
   taskText: (slug: string, taskId: string) => string | undefined
   readFile: (file: string) => string | undefined
+  /** Whether a named agent's process may still be running; an exited or retired one is not. */
+  running: (name: string) => boolean
+  /** The branch a released claim with this key left behind (CC-698), for the next worker's brief. */
+  priorBranch?: (key: ClaimKey) => string | undefined
   /** Seats mode only: a listed seat's spawn inputs, why a listed seat is out this tick, or undefined for a seat not listed. */
   seat?: (name: string) => SeatSpawn | { skipped: string } | undefined
 }
@@ -73,7 +78,7 @@ export function stepsForActions(
 ): Resolved {
   const groups = new Map<string, Action[]>()
   for (const action of actions) {
-    const key = action.kind === 'add' ? `add:${groups.size}` : claimKey(action.key)
+    const key = 'key' in action ? claimKey(action.key) : `${action.kind}:${groups.size}`
     groups.set(key, [...(groups.get(key) ?? []), action])
   }
   const resolved: Resolved = { steps: [], spawns: 0, deferred: [], charged: [] }
@@ -83,6 +88,12 @@ export function stepsForActions(
       resolved.steps.push(...plainSteps(group))
       continue
     }
+    const refused = spawnRefusal(group, spawn, ledger, ctx)
+    if (refused !== undefined) {
+      resolved.deferred.push(`${key}: ${refused}`)
+      resolved.steps.push(...plainSteps(group.filter(a => a !== spawn && !isIntent(a, spawn))))
+      continue
+    }
     const outcome =
       resolved.spawns >= budget
         ? { defer: 'no agent capacity left this tick' }
@@ -90,6 +101,36 @@ export function stepsForActions(
     addOutcome(resolved, key, group, spawn, outcome)
   }
   return resolved
+}
+
+/** The update that moves the claim to `spawning` for this spawn's agent. */
+const isIntent = (action: Action, spawn: SpawnAction): boolean =>
+  action.kind === 'update' && action.patch.agentName === spawn.name
+
+/**
+ * The one gate every spawn producer passes (CC-660): the claim as this tick's other
+ * actions on its key leave it must not be stalled, and none of its agents may still
+ * run. A refused spawn drops its intent too, so the claim keeps its phase and the
+ * producer decides again next tick; the group's other actions still land.
+ */
+function spawnRefusal(
+  group: readonly Action[],
+  spawn: SpawnAction,
+  ledger: Ledger,
+  ctx: StepContext,
+): string | undefined {
+  const held = heldClaims(ledger).find(c => sameClaim(c, spawn.key))
+  if (held === undefined) return undefined
+  const claim = group.reduce<Claim>(
+    (c, a) => (a.kind === 'update' && !isIntent(a, spawn) ? { ...c, ...a.patch } : c),
+    held,
+  )
+  if (claim.stalledReason !== undefined) return `spawn of ${spawn.name} refused: claim stalls this tick`
+  const running = [...new Set([...(claim.spawned ?? []), claim.agentName])].filter(
+    (n): n is string => n !== undefined && ctx.running(n),
+  )
+  if (running.length > 0) return `spawn of ${spawn.name} refused: ${running.join(', ')} still running`
+  return undefined
 }
 
 function addOutcome(
@@ -126,9 +167,18 @@ const stallUpdate = (key: ClaimKey, reason: string, cls: ExceptionClass): Action
   patch: { stalledReason: reason, stalledClass: cls },
 })
 
+/**
+ * A release retires every agent that may still run first, held so a refusal is recorded on the claim and
+ * spends its liveness budget; the ledger write rides along and lands only when all of them retired.
+ */
+function releaseSteps(a: Extract<Action, { kind: 'release' }>): Step[] {
+  return [{ kind: 'retire', key: a.key, names: a.names, held: true, then: [a] }]
+}
+
 function plainSteps(actions: Action[]): Step[] {
   return actions.flatMap((a): Step[] => {
-    if (a.kind === 'retire') return [{ kind: 'retire', key: a.key, names: a.names }]
+    if (a.kind === 'retire') return [a]
+    if (a.kind === 'release') return releaseSteps(a)
     if (a.kind === 'register') return [{ kind: 'register', key: a.key, registration: a.registration }]
     if (a.kind === 'spawn') return []
     return [ledgerStep(a)]
@@ -245,23 +295,25 @@ function successorFrame(
   spec: { name: string; configDir: string; initiative: string; taskId: string },
   repo: string,
 ): SpawnFrame {
-  const context = action.context
-  const brief =
-    context?.kind === 'answer'
-      ? successorAfterAnswer(t, {
-          question: `message ${context.questionId}; your predecessor's handoff restates it`,
-          answer: context.answer.text,
-          provenance: context.answer.provenance === 'decided' ? 'decided' : 'human',
-        })
-      : successorAfterReview(t, context?.kind === 'review' ? context.review : 'no review text was readable')
   return spawnFrame({
     ...spec,
     profile: IMPLEMENTER_PROFILE,
-    brief,
+    brief: successorBrief(t, action.context),
     cwd: repo,
     ...(action.predecessor === undefined ? {} : { predecessor: action.predecessor }),
     ...(action.worktree === undefined ? {} : { worktree: action.worktree }),
   })
+}
+
+function successorBrief(t: TaskBrief, context: SpawnAction['context']): string {
+  if (context?.kind === 'stall') return successorAfterStall(t, context)
+  if (context?.kind === 'answer')
+    return successorAfterAnswer(t, {
+      question: `message ${context.questionId}; your predecessor's handoff restates it`,
+      answer: context.answer.text,
+      provenance: context.answer.provenance === 'decided' ? 'decided' : 'human',
+    })
+  return successorAfterReview(t, context?.kind === 'review' ? context.review : 'no review text was readable')
 }
 
 /** Where a brief's agent works and what it may do: an initiative's autonomy block, or a seat's dispatch. */
@@ -355,6 +407,8 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
   if (typeof t === 'string') return t
   const planner = d.profile === PLANNER_PROFILE
   const key: ClaimKey = d.slice === undefined ? { taskId: d.task } : { taskId: d.task, slice: d.slice }
+  const priorBranch = ctx.priorBranch?.(key)
+  if (priorBranch !== undefined) t.priorBranch = priorBranch
   const at = ctx.now.toISOString()
   const intent = {
     phase: 'spawning' as const,

@@ -13,8 +13,9 @@ import { activeWorkRoot } from '../active-work.js'
 import { seatMergedLog } from '../seats/dispatch-log.js'
 import { seatJournal } from '../seats/journal.js'
 import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
-import { advance, applyActions, claimKey, type InboxMessage } from './advance.js'
+import { advance, applyActions, claimKey, type Action, type ClaimKey, type InboxMessage } from './advance.js'
 import { withFindings } from './finding.js'
+import { BRAKE_WINDOW_MS, brakeSince, ladderActions, releasesSince } from './ladder.js'
 import { verifySection } from './brief.js'
 import { gatePool, pickAccount } from './budget-gate.js'
 import { collisionCheck, type BrokerView, type CollisionReader } from './collision.js'
@@ -38,11 +39,13 @@ import {
   memo,
   observe,
   orphanAt,
+  rowNamed,
   worktreesUnder,
   worktreeUse,
   type Roster,
 } from './observe.js'
 import { DEFAULT_NAME_PREFIX, plan, type Capacity, type Dispatch, type PlanInputs } from './plan.js'
+import { branchOf, diffSummary } from './progress.js'
 import { defaultAutonomyRoot } from './policy.js'
 import { describeSeatEvents, deliverSeatEvents, type OpenSender } from './seat-deliver.js'
 import type { SpawnResult } from './seat-events.js'
@@ -71,6 +74,13 @@ import {
   shepherdRows,
   targetRef,
 } from './shepherd.js'
+import {
+  lineStopFrom,
+  persisted,
+  readServiceCheck,
+  serviceCheckNote,
+  type PersistedRead,
+} from './service-check.js'
 import { retrySteps, stepsForActions, stepsForDispatch, type StepContext } from './steps.js'
 import { recordTick, type StopCode, type TickResult } from './tick-status.js'
 import { loadWorld, type World } from './tick.js'
@@ -203,7 +213,7 @@ async function actOn(
   config: TickConfig,
   opts: TickOptions,
   ledger: Ledger,
-  { steps, decider, triage, failures, unchecked, seatStates, skippedSeats }: Decided,
+  { steps, decider, triage, failures, unchecked, seatStates, skippedSeats, serviceCheck }: Decided,
   now: Date,
 ): Promise<string[]> {
   const log = opts.log ?? logEvent
@@ -221,6 +231,7 @@ async function actOn(
     log,
     now,
   })
+  logLadder(ledger, executed.ledger, log)
   const woken = await actOnTriage(
     config,
     triage,
@@ -232,8 +243,22 @@ async function actOn(
   const journal = seatJournal(defaultAutonomyRoot(opts.root), { log, now: () => now })
   const dispatch = seatMergedLog(defaultAutonomyRoot(opts.root), { log, now: () => now })
   const told = await deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now, journal, dispatch })
-  writeLedger(burndownLedgerPath(), { ...told.ledger, lastTickAt: now.toISOString() })
+  writeLedger(burndownLedgerPath(), {
+    ...told.ledger,
+    lastTickAt: now.toISOString(),
+    ...(serviceCheck === undefined ? {} : { serviceCheck }),
+  })
   return [...executed.lines, ...woken.lines, ...leaks.lines, ...told.lines]
+}
+
+/** The tick's releases and its brake notice, each logged once. */
+function logLadder(before: Ledger, after: Ledger, log: NonNullable<TickOptions['log']>): void {
+  for (const r of releasesSince(before, after))
+    log('burndown_release', { task: r.taskId, slice: r.slice, code: r.code, branch: r.branch, n: r.n })
+  const brake = brakeSince(before, after)
+  if (brake === undefined) return
+  const claims = brake.claims.map(c => c.key)
+  log('burndown_brake', { count: brake.count, window_ms: BRAKE_WINDOW_MS, cause: brake.cause, claims })
 }
 
 /** Spawns through the broker and records which claim each answered spawn was for. */
@@ -295,6 +320,20 @@ interface Decided {
   /** Seats mode only: every seat's pool samples, this tick's included. */
   seatStates?: Record<string, SeatState>
   skippedSeats: SkippedSeat[]
+  /** Seats mode only: this tick's service-check read, persisted for the next tick's two-read rule. */
+  serviceCheck?: PersistedRead
+}
+
+/** Any row not retired may still run, and so may a name missing from a partial roster. */
+function mayRun(roster: Roster, name: string): boolean {
+  const row = rowNamed(roster, name)
+  return row === undefined ? roster.partial !== undefined : row.state !== 'retired'
+}
+
+/** A row still spawning, live or detached; a missing row has exited, been retired, or never landed. */
+function isRunning(roster: Roster, name: string): boolean {
+  const state = rowNamed(roster, name)?.state
+  return state !== undefined && state !== 'exited' && state !== 'retired'
 }
 
 /** Observe, advance and plan: every step the tick would take, in order, and a note for everything it would not. */
@@ -317,20 +356,29 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const ctx = {
     ...stepContext(world, config, now, root),
     ...(seats === undefined ? {} : { seat: seatLookup(seats) }),
+    running: (name: string) => isRunning(roster, name),
+    priorBranch: (key: ClaimKey) => ledger.ladder?.[claimKey(key)]?.branch,
     tasks: new Map([...world.tasks, ...seatClaimTasks(held, world, root)]),
   }
   const capacity = agentCapacity(config, ledger.claims, roster)
   const decider = await deciderFor(config, opts, ledger, roster, capacity, now)
   const agents = decider?.wake === true ? { ...capacity, agents: capacity.agents - 1 } : capacity
-  const advanced = stepsForActions(
+  const laddered = ladderActions(
     withFindings(advance(held, observations, now), held, observations, now, seat => {
       const lookup = ctx.seat?.(seat)
       return lookup !== undefined && 'gate' in lookup && !lookup.gate(0).open
     }),
+    held,
     ledger,
-    ctx,
-    agents.agents,
+    {
+      enabled: config.ladder.enabled,
+      diffSummary: w => diffSummary(w, opts.exec ?? run),
+      branch: w => branchOf(w, opts.exec ?? run),
+      live: name => mayRun(roster, name),
+      now,
+    },
   )
+  const advanced = stepsForActions([...laddered.actions, ...laddered.brake], ledger, ctx, agents.agents)
   const kept = advanced.steps.flatMap(s => (s.kind === 'ledger' ? s.actions : []))
   const planLedger = applyActions(ledger, kept, now)
   const triage = triageFor(
@@ -342,6 +390,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   )
   const { check, failures } = await tickCollision(planLedger, opts)
   const prefixes = [DEFAULT_NAME_PREFIX, ...(seats?.loaded.map(s => s.dispatch.prefix) ?? [])]
+  const service = seats === undefined ? undefined : serviceGate(ledger, opts, now)
   const planned = planNew(
     world,
     seats,
@@ -354,13 +403,18 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
       collision: check,
       charged: advanced.charged,
     },
-    downstreamReader(shepherd, opts.exec ?? run),
+    {
+      downstream: downstreamReader(shepherd, opts.exec ?? run),
+      ...(service?.lineStop === undefined ? {} : { lineStop: service.lineStop }),
+    },
   )
   const dispatchCtx = { ...ctx, tasks: new Map([...ctx.tasks, ...planned.tasks]) }
   const dispatched = planned.dispatch.map(d => stepsForDispatch(d, dispatchCtx))
   const notes = [
     ...(roster.partial === undefined ? [] : [`roster partial: ${roster.partial}`]),
     ...unread.map(u => `unread ${u}`),
+    ...laddered.notes,
+    ...(service?.note === undefined ? [] : [service.note]),
     ...advanced.deferred.map(d => `deferred ${d}`),
     ...dispatched.flatMap(d => (typeof d === 'string' ? [`not dispatched: ${d}`] : [])),
     ...refusalLines(planned.refusals),
@@ -388,6 +442,23 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     triage: triage.plan,
     ...(decider === undefined ? {} : { decider }),
     ...(seatStates === undefined ? {} : { seatStates }),
+    ...(service === undefined ? {} : { serviceCheck: service.read }),
+  }
+}
+
+/** Seats mode's one service-check read per tick, judged against the read the last tick persisted. */
+function serviceGate(
+  ledger: Ledger,
+  opts: TickOptions,
+  now: Date,
+): { read: PersistedRead; lineStop?: SeatPlanDeps['lineStop']; note?: string } {
+  const current = readServiceCheck(opts.exec ?? run)
+  const lineStop = lineStopFrom(current, ledger.serviceCheck, now)
+  const note = serviceCheckNote(current)
+  return {
+    read: persisted(current, now),
+    ...(lineStop === undefined ? {} : { lineStop }),
+    ...(note === undefined ? {} : { note }),
   }
 }
 
@@ -411,7 +482,7 @@ function planNew(
   root: string,
   roster: Roster,
   work: NewWork,
-  downstream: NonNullable<SeatPlanDeps['downstream']>,
+  flow: Pick<SeatPlanDeps, 'downstream' | 'lineStop'>,
 ): Planned {
   if (seats === undefined)
     return { ...plan({ ...world, ...work }), skipped: [], tasks: new Map(), skippedTasks: [] }
@@ -422,7 +493,7 @@ function planNew(
       ...work,
       initiatives: world.initiatives,
       trust: (repo, cwd, configDir) => trustRefusal(repo, cwd, configDir, cliVersion),
-      downstream,
+      ...flow,
       roster,
     },
     root,
@@ -571,7 +642,12 @@ function seatLookup(seats: LoadedSeats): NonNullable<StepContext['seat']> {
   }
 }
 
-function stepContext(world: World, config: TickConfig, now: Date, root: string): StepContext {
+function stepContext(
+  world: World,
+  config: TickConfig,
+  now: Date,
+  root: string,
+): Omit<StepContext, 'running'> {
   const facts = new Map<string, { defaultBranch: string; verifySteps?: string }>()
   return {
     now,
@@ -617,15 +693,20 @@ const readOrUndefined = (file: string): string | undefined => {
   }
 }
 
+const recorded = (a: Action): string => {
+  if (a.kind === 'add') return `add ${a.claims.map(c => c.taskId).join(',')}`
+  if (a.kind === 'brake') return `brake ${a.brake?.at.length ?? 0} in window`
+  return `${a.kind} ${a.key.taskId}${a.key.slice ?? ''}`
+}
+
 function describe(step: Step): string {
   if (step.kind === 'retire')
     return step.names.length === 0
       ? `would clear ${claimKey(step.key)}'s unretired agents, all since retired by hand`
-      : `would retire ${step.names.join(', ')}`
+      : `would retire ${step.names.join(', ')}${step.then === undefined ? '' : `, then ${step.then.map(a => a.kind).join(', ')}`}`
   if (step.kind === 'register')
     return `would register ${targetRef(step.registration.target)} with Shepherd for ${claimKey(step.key)}`
-  if (step.kind === 'ledger')
-    return `would record ${step.actions.map(a => (a.kind === 'add' ? `add ${a.claims.map(c => c.taskId).join(',')}` : `${a.kind} ${a.key.taskId}${a.key.slice ?? ''}`)).join('; ')}`
+  if (step.kind === 'ledger') return `would record ${step.actions.map(recorded).join('; ')}`
   const f = step.frame
   const extra = [f.worktree && `adopting ${f.worktree}`, f.predecessor && `after ${f.predecessor}`].filter(
     Boolean,

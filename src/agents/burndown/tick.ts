@@ -1,7 +1,8 @@
+import os from 'node:os'
 import { burndownConfigPath, burndownLedgerPath } from '../../paths.js'
 import { activeWorkRoot } from '../active-work.js'
-import { gateAccount } from './budget-gate.js'
-import { classOf, routeOf, type RouteConfig } from './exception.js'
+import { gateAccount, type AccountReading } from './budget-gate.js'
+import { routeOf, type RouteConfig } from './exception.js'
 import { backoffHeld } from './backoff.js'
 import { taskRefusal, type Initiative } from './eligibility.js'
 import { heldClaims, isStalled, readLedger, type Claim, type DeciderState, type Ledger } from './ledger.js'
@@ -9,9 +10,12 @@ import type { Runner } from './exec.js'
 import { memo, type Roster } from './observe.js'
 import { downstreamReader, shepherdRows } from './shepherd.js'
 import { plan, type Plan, type PlanInputs } from './plan.js'
+import { lineStopFrom, readServiceCheck } from './service-check.js'
+import { defaultAutonomyRoot, loadCharterPools, type CharterPool } from './policy.js'
+import { expandHome } from './seat-dispatch.js'
 import { diskSeatDeps, loadSeats, planSeats, type LoadedSeats, type SeatPlanDeps } from './seat-tick.js'
-import { accountDir, loadRules, loadTickConfig, readInitiatives, readReadings, readTasks } from './source.js'
-import { currentTriage } from './triage.js'
+import { accountDir, loadTickConfig, readInitiatives, readReadings, readTasks } from './source.js'
+import { currentTriage, exceptionOf } from './triage.js'
 import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
 
 /** The dry-run tick over the live files, and its two renderings: `burndown plan` and `burndown status`. */
@@ -30,19 +34,43 @@ const accountsOf = (initiatives: Initiative[]): string[] => [
   ),
 ]
 
+export interface CharterRules {
+  rules: Record<string, CharterPool>
+  /** Why the charter could not be read; every pool's gate is then closed. */
+  error?: string
+}
+
+/** CC-801: the charter's pools, the one source `burndown status`, the tick and `seats status` judge a pool by. */
+export function charterRules(autonomyRoot: string): CharterRules {
+  try {
+    return { rules: loadCharterPools(autonomyRoot) }
+  } catch (err) {
+    return { rules: {}, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/** The pool's charter `config_dir`, as `seats status` reads it; an account the charter lacks keeps its profile dir. */
+export const poolDir =
+  (rules: CharterRules['rules'], home = os.homedir()) =>
+  (account: string): string => {
+    const dir = rules[account]?.config_dir
+    return dir === undefined ? accountDir(account) : expandHome(dir, home)
+  }
+
 /** Everything `plan` reads off disk, which the tick also needs for briefs and the account gate. */
 export type World = Omit<PlanInputs, 'ledger' | 'capacity' | 'orphan'>
 
 export function loadWorld(now: Date, root: string): World {
   const initiatives = readInitiatives(root)
-  const rules = loadRules(burndownConfigPath())
+  const { rules } = charterRules(defaultAutonomyRoot(root))
   const cliVersion = installedClaudeVersion()
+  const accounts = [...new Set([...accountsOf(initiatives), ...Object.keys(rules)])]
   return {
     initiatives,
     tasks: new Map(initiatives.map(i => [i.slug, i.autonomy === undefined ? [] : readTasks(root, i.slug)])),
     rules,
-    readings: readReadings([...new Set([...accountsOf(initiatives), ...Object.keys(rules)])], now.getTime()),
-    // No human-presence signal exists yet, so the gate assumes the human is here: day rules, capped ceiling.
+    readings: readReadings(accounts, now.getTime(), poolDir(rules)),
+    // No human-presence signal exists yet, so the gate assumes the human is here: a pool they use gets the capped ceiling.
     gate: { now },
     trust: (repo, cwd, account) => trustRefusal(repo, cwd, accountDir(account), cliVersion),
   }
@@ -67,7 +95,7 @@ export interface SeatPlanOptions {
   collision?: (ledger: Ledger) => PlanInputs['collision']
   /** The broker's roster; with it only active trees count against the seat's cap, as the tick counts them. */
   roster?: Roster
-  /** Runs `titan-factory` and `git` for the downstream WIP read; defaults to the real runner. */
+  /** Runs `titan-factory` and `git` for the downstream WIP and service-check reads; defaults to the real runner. */
   exec?: Runner
 }
 
@@ -81,6 +109,8 @@ export function seatPlanSetup(opts: SeatPlanOptions): {
   const seats = loadSeats([opts.seat], ledger, diskSeatDeps(opts.autonomyRoot, opts.root, opts.now))
   const check = opts.collision?.(ledger)
   const cliVersion = installedClaudeVersion()
+  // A dry run judges this read against the persisted one and writes neither.
+  const lineStop = lineStopFrom(readServiceCheck(opts.exec), ledger.serviceCheck, opts.now)
   const deps: SeatPlanDeps = {
     ledger,
     initiatives: readInitiatives(opts.root),
@@ -90,6 +120,7 @@ export function seatPlanSetup(opts: SeatPlanOptions): {
       opts.exec,
     ),
     ...(check === undefined ? {} : { collision: check }),
+    ...(lineStop === undefined ? {} : { lineStop }),
     ...(opts.roster === undefined ? {} : { roster: opts.roster }),
   }
   return { ledger, seats, deps }
@@ -132,18 +163,33 @@ export function renderPlan(result: Plan, now: Date): string[] {
 const findingSuffix = (c: Claim): string =>
   c.finding === undefined ? '' : ` FINDING ${c.finding.kind} (${c.finding.reason}, since ${c.finding.since})`
 
-/** A stall's class, the dial's route for it, and its triage job's outcome once one exists (CC-649). */
+/** A stall's or open finding's class, the dial's route for it, and its triage job's outcome once one exists (CC-649). */
 function stallSuffix(c: Claim, route: RouteConfig): string {
-  if (c.stalledReason === undefined) return ''
-  const cls = classOf(c)
+  const exception = exceptionOf(c)
+  if (exception === undefined) return ''
+  const { cls } = exception
   const triage = currentTriage(c)
   const job = triage === undefined ? '' : `, triage ${triage.name ?? '-'} ${triage.outcome}`
   return ` (class ${cls ?? 'none'}, route ${routeOf(cls, route, true).route}${job})`
 }
 
-export function renderStatus(ledger: Ledger, now: Date): string[] {
-  const rules = loadRules(burndownConfigPath())
-  const readings = readReadings(Object.keys(rules), now.getTime())
+/** One line per charter pool, judged by `gateAccount` on the same line and ceiling `seats status` prints. */
+export function poolStatusLines(
+  { rules, error }: CharterRules,
+  readings: ReadonlyMap<string, AccountReading>,
+  now: Date,
+): string[] {
+  const lines = error === undefined ? [] : [`pools: closed, no charter pools: ${error}`]
+  for (const [account, rule] of Object.entries(rules)) {
+    const gate = gateAccount(account, rule, readings.get(account), { now })
+    lines.push(`account ${account}: ${gate.open ? 'open' : 'closed'}, ${gate.reason}`)
+  }
+  return lines
+}
+
+export function renderStatus(ledger: Ledger, now: Date, autonomyRoot = defaultAutonomyRoot()): string[] {
+  const pools = charterRules(autonomyRoot)
+  const readings = readReadings(Object.keys(pools.rules), now.getTime(), poolDir(pools.rules))
   const held = heldClaims(ledger)
   const { route } = loadTickConfig(burndownConfigPath()).exceptions
   const lines = [
@@ -153,15 +199,13 @@ export function renderStatus(ledger: Ledger, now: Date): string[] {
     lines.push(
       `${c.taskId} (${c.initiative}) ${c.agentId ?? c.agentName ?? 'unspawned'} ${c.phase} since ${c.phaseAt}${isStalled(c, now) ? ' STALLED' : ''}${stallSuffix(c, route)}${findingSuffix(c)}`,
     )
-  for (const c of ledger.claims.filter(c => c.phase === 'done'))
+  for (const c of ledger.claims.filter(c => c.phase === 'done' || c.respawn !== undefined))
     for (const u of c.unretired ?? [])
-      lines.push(`${c.taskId} (${c.initiative}) done, UNRETIRED ${u.name}: ${u.reason}`)
+      lines.push(
+        `${c.taskId} (${c.initiative}) ${c.phase === 'done' ? 'done' : 'respawning'}, UNRETIRED ${u.name}: ${u.reason}`,
+      )
   if (ledger.decider !== undefined) lines.push(deciderStatus(ledger.decider, now))
-  for (const account of Object.keys(rules)) {
-    const gate = gateAccount(account, rules[account], readings.get(account), { now })
-    lines.push(`account ${account}: ${gate.open ? 'open' : 'closed'}, ${gate.reason}`)
-  }
-  return lines
+  return [...lines, ...poolStatusLines(pools, readings, now)]
 }
 
 function deciderStatus(state: DeciderState, now: Date): string {

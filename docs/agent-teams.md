@@ -319,7 +319,7 @@ name          agent name (the registry name it will hold)
 parent        spawning agent id, or "" when the human spawned it
 profile       profile name (§4)
 model         resolved model id
-surface       headless | iterm-pane | iterm-tab | iterm-window
+surface       headless | iterm-pane | iterm-tab | iterm-window | tmux-window
 isolation     none | worktree | file-ownership | toolset-limited
 cwd           resolved working directory (post-isolation)
 session_id    the uuid passed to --session-id; the resume handle
@@ -2341,7 +2341,7 @@ GET  /api/queue              EventLog.humanQueue()              event-log.ts:135
 GET  /api/sessions           Registry.list() + brokerUptimeMs   registry.ts:89
 GET  /api/history?limit=     EventLog.history()                 event-log.ts:180
 GET  /events                 SSE tail, §6.1–6.3
-POST /api/answer             {msgId,text} -> core.answer()
+POST /api/answer             {msgId,text,channel?} -> core.answer()
 POST /api/dismiss            {msgId}      -> core.dismiss()
 GET  /ui, /ui/*              SPA + placeholder when unbuilt
 ANY  /mcp                    404 with an explanatory body, §7.5

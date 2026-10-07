@@ -1,3 +1,8 @@
+import {
+  SURFACE_NAMES as PACKAGE_SURFACE_NAMES,
+  type SurfaceName as PackageSurfaceName,
+} from '@titan-design/agent-surface'
+
 // Wire protocol between a session's MCP subprocess and the shared broker.
 // Newline-delimited JSON over a unix socket.
 
@@ -392,6 +397,17 @@ export interface DecisionCitation {
   reversible: string
 }
 
+/**
+ * Where a human's answer came in from. Provenance only: it is recorded on the
+ * `answer` event's meta and never changes the actor (always HUMAN) or feeds any
+ * authority check.
+ */
+export const ANSWER_CHANNELS = ['cli', 'inbox-file', 'dashboard', 'factory'] as const
+export type AnswerChannel = (typeof ANSWER_CHANNELS)[number]
+
+export const isAnswerChannel = (value: unknown): value is AnswerChannel =>
+  ANSWER_CHANNELS.some(channel => channel === value)
+
 /** What `meta.kind` may say on a queued item (autonomy design section 4). */
 export const QUEUE_ITEM_KINDS = ['decision', 'needs-grant', 'stalled', 'ready-to-merge'] as const
 export type QueueItemKind = (typeof QUEUE_ITEM_KINDS)[number]
@@ -511,9 +527,10 @@ export const ISOLATION_NAMES = ['none', 'worktree', 'file-ownership', 'toolset-l
 
 export type IsolationName = (typeof ISOLATION_NAMES)[number]
 
-export const SURFACE_NAMES = ['headless', 'iterm-pane', 'iterm-tab', 'iterm-window'] as const
+/** Derived from the package so the two lists cannot drift. */
+export const SURFACE_NAMES = PACKAGE_SURFACE_NAMES
 
-export type SurfaceName = (typeof SURFACE_NAMES)[number]
+export type SurfaceName = PackageSurfaceName
 
 /** Why a session teleported; absent is the ordinary build-refresh case. */
 export const TELEPORT_REASONS = ['park'] as const
@@ -698,7 +715,7 @@ export type ClientMessage =
   | ({ t: 'ask'; text: string } & ItemShape)
   | ({ t: 'notify'; text: string } & Pick<ItemShape, 'kind' | 'task'>)
   | { t: 'queue' }
-  | { t: 'answer'; msgId: string; text: string }
+  | { t: 'answer'; msgId: string; text: string; channel?: AnswerChannel }
   /**
    * The decider answering an open `question` (autonomy slice 3). Accepted only
    * from a registered connection whose durable agent id is `decider.agentId` in
@@ -864,6 +881,11 @@ export type ClientMessage =
       returnContract?: 'none'
       /** CC-774: the class-of-service tier the burndown plan placed the task in; recorded on the `dispatched` row. */
       tier?: number
+      /**
+       * CC-802: who a CLI spawn is on behalf of. Only an unregistered connection's claim is read, since a
+       * session is already named by its registration; the row then records it in place of the human.
+       */
+      spawnedAs?: 'burndown' | 'shepherd'
     }
   | { t: 'agents'; includeRetired?: boolean }
   /**

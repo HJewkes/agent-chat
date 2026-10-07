@@ -749,6 +749,7 @@ function stepContext(): StepContext {
     trust: () => undefined,
     taskText: () => 'id: A-1',
     readFile: () => undefined,
+    running: () => false,
   }
 }
 

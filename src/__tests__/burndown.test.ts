@@ -25,6 +25,7 @@ import { BrokerClient } from '../client/broker-client.js'
 import { withBroker } from '../cli/client.js'
 import { burndownPlanVerb } from '../cli/verbs/burndown.js'
 import { releaseTask } from '../cli/verbs/burndown-release.js'
+import { writePoolCharter } from './helpers/pool-charter.js'
 
 /**
  * The dry-run tick over a fixture world: an active-work root, a profile root
@@ -89,6 +90,15 @@ beforeEach(() => {
   process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = path.join(world, 'aw')
   process.env.CLAUDE_PROFILE_ROOT = path.join(world, 'profiles')
   delete process.env.AGENT_CHAT_STATUS_CACHE
+  // CC-801: the gate reads the charter's pools; these are the numbers the retired default rules held.
+  writePoolCharter(path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy'), {
+    agents: {
+      config_dir: path.join(world, 'profiles', 'agents'),
+      human_uses: true,
+      reserve_seven_day: 25,
+      ceiling_five_hour: 70,
+    },
+  })
   fs.mkdirSync(path.join(repo(), '.git'), { recursive: true })
   installClaude(TRUST_RULE_BASELINE_CLI_VERSION)
 })

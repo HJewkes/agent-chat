@@ -1,6 +1,15 @@
 import type { AgentLifecycle, DeliveredMessage } from '../../protocol.js'
 import type { ExceptionClass } from './exception.js'
-import { addClaim, isStalled, sameClaim, type AgentPhase, type Claim, type Ledger } from './ledger.js'
+import {
+  addClaim,
+  isStalled,
+  sameClaim,
+  type AgentPhase,
+  type BrakeState,
+  type Claim,
+  type LadderRecord,
+  type Ledger,
+} from './ledger.js'
 import { agentNameFor, reviewerNameFor, successorNameFor } from './plan.js'
 import type { Progress } from './progress.js'
 import type { PlannedSlice, Report } from './report.js'
@@ -42,7 +51,10 @@ export interface Observation {
 }
 
 export type SpawnContext =
-  { kind: 'answer'; questionId: string; answer: InboxMessage } | { kind: 'review'; review: string }
+  | { kind: 'answer'; questionId: string; answer: InboxMessage }
+  | { kind: 'review'; review: string }
+  /** A ladder respawn (CC-660): the stall's code and what the predecessor left in the worktree. */
+  | { kind: 'stall'; code: StallCode; diffSummary: string }
 
 type ClaimPatch = Partial<Omit<Claim, 'taskId' | 'slice' | 'initiative'>>
 
@@ -58,10 +70,37 @@ export type Action =
       context?: SpawnContext
     }
   /** Retire in the order given: successors and reviewers first, the original agent last (CC-141). */
-  | { kind: 'retire'; key: ClaimKey; names: string[] }
+  | RetireAction
   | { kind: 'add'; claims: Claim[] }
   /** Hands the claim's PR to Shepherd, after the update that moves it to `shepherding`. */
   | { kind: 'register'; key: ClaimKey; registration: Registration }
+  /** Writes the claim's triage ladder record (CC-660); absent prunes it (CC-829). */
+  | { kind: 'ladder'; key: ClaimKey; record?: LadderRecord }
+  /** Writes the ladder's brake (CC-699); absent clears it. */
+  | { kind: 'brake'; brake?: BrakeState }
+  /**
+   * Ladder rung 2 (CC-698): the claim lets go of its worktree and branch, which stay. A slice goes back to
+   * `queued` for the planner's work to survive; a whole task is dropped. Never clears `ledger.liveness`.
+   */
+  | {
+      kind: 'release'
+      key: ClaimKey
+      branch?: string
+      requeue: boolean
+      code: StallCode
+      /** The agents that may still run, newest first; a retired one is no longer the broker's to retire. */
+      names: string[]
+    }
+
+/** Retire in the order given; `held` records a refusal on the held claim rather than a done one (CC-660). */
+export type RetireAction = {
+  kind: 'retire'
+  key: ClaimKey
+  names: string[]
+  held?: true
+  /** Applied only once every name retired, so a refused retire leaves the claim as it was (CC-698). */
+  then?: Action[]
+}
 
 export const claimKey = (c: ClaimKey): string => `${c.taskId}#${c.slice ?? ''}`
 
@@ -89,6 +128,7 @@ function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
   if (claim.phase === 'done' || claim.stalledReason !== undefined) return []
   if (obs.spend !== undefined && capVerdict(obs.spend.claim, obs.spend.cap) === 'over')
     return overBudget(claim, obs.spend)
+  if (claim.respawn !== undefined) return []
   const actions = STEPS[claim.phase]?.(claim, obs, now) ?? []
   if (actions.length > 0 || !isStalled(claim, now)) return actions
   return [
@@ -239,7 +279,7 @@ const workerOf = (claim: Claim): string =>
     ? successorNameFor(claim.taskId, claim.attempt ?? 0, claim.slice, claim.namePrefix)
     : agentNameFor(claim.taskId, claim.slice, claim.namePrefix)
 
-function successor(claim: Claim, context: SpawnContext, patch: ClaimPatch): Action[] {
+export function successor(claim: Claim, context: SpawnContext, patch: ClaimPatch): Action[] {
   if (claim.worktree === undefined)
     return [stall(claim, 'no worktree recorded for a successor to adopt', 'failed')]
   const attempt = (claim.attempt ?? 0) + 1
@@ -270,7 +310,7 @@ function spawn(claim: Claim, request: SpawnRequest, nextPhase: AgentPhase, patch
   return [update(claim, intent), { kind: 'spawn', key: keyOf(claim), ...request }]
 }
 
-function retireAll(claim: Claim): Action {
+export function retireAll(claim: Claim): RetireAction {
   const names = [
     ...new Set(
       [...(claim.spawned ?? [])].reverse().concat(agentNameFor(claim.taskId, claim.slice, claim.namePrefix)),
@@ -279,11 +319,17 @@ function retireAll(claim: Claim): Action {
   return { kind: 'retire', key: keyOf(claim), names }
 }
 
-/** The ledger after `actions`; a phase change restarts the phase clock. */
+/** The ledger after `actions`; a phase change restarts the phase clock, and so does a new agent, such as a successor spawned from `spawning` (CC-660). */
 export function applyActions(ledger: Ledger, actions: Action[], now: Date): Ledger {
   const at = now.toISOString()
   return actions.reduce<Ledger>((current, action) => {
     if (action.kind === 'add') return action.claims.reduce(addClaim, current)
+    if (action.kind === 'ladder') return withLadder(current, claimKey(action.key), action.record)
+    if (action.kind === 'release') return released(current, action, at)
+    if (action.kind === 'brake') {
+      const { brake: _cleared, ...rest } = current
+      return action.brake === undefined ? rest : { ...rest, brake: action.brake }
+    }
     if (action.kind !== 'update') return current
     const claims = current.claims.map(c =>
       c.phase !== 'done' && sameClaim(c, action.key) ? patched(c, action.patch, at) : c,
@@ -292,8 +338,68 @@ export function applyActions(ledger: Ledger, actions: Action[], now: Date): Ledg
   }, ledger)
 }
 
+function withLadder(ledger: Ledger, key: string, record: LadderRecord | undefined): Ledger {
+  if (record !== undefined) return { ...ledger, ladder: { ...ledger.ladder, [key]: record } }
+  const { ladder: _all, ...rest } = ledger
+  const { [key]: _pruned, ...kept } = ledger.ladder ?? {}
+  return Object.keys(kept).length === 0 ? rest : { ...rest, ladder: kept }
+}
+
+/** What a requeued slice keeps: the planner's slice and who dispatched it, none of the last attempt. */
+function requeued(claim: Claim, at: string): Claim {
+  const { taskId, initiative, slice, dependsOn, owns, contracts, seat, namePrefix, spawnedAt } = claim
+  return {
+    taskId,
+    initiative,
+    spawnedAt,
+    phase: 'queued',
+    phaseAt: at,
+    ...(slice === undefined ? {} : { slice }),
+    ...(dependsOn === undefined ? {} : { dependsOn }),
+    ...(owns === undefined ? {} : { owns }),
+    ...(contracts === undefined ? {} : { contracts }),
+    ...(seat === undefined ? {} : { seat }),
+    ...(namePrefix === undefined ? {} : { namePrefix }),
+  }
+}
+
+/** Counts the release on the key's ladder record and the task's release record, so the backoff applies. */
+function released(ledger: Ledger, action: Extract<Action, { kind: 'release' }>, at: string): Ledger {
+  const key = claimKey(action.key)
+  const held = (c: Claim): boolean => c.phase !== 'done' && sameClaim(c, action.key)
+  const claim = ledger.claims.find(held)
+  const record = ledger.ladder?.[key]
+  const claims = action.requeue
+    ? ledger.claims.map(c => (held(c) ? requeued(c, at) : c))
+    : ledger.claims.filter(c => !held(c))
+  return {
+    ...ledger,
+    claims,
+    releases: {
+      ...ledger.releases,
+      [action.key.taskId]: { n: (ledger.releases?.[action.key.taskId]?.n ?? 0) + 1, at },
+    },
+    ladder: {
+      ...ledger.ladder,
+      [key]: {
+        respawns: record?.respawns ?? 0,
+        ...record,
+        releases: (record?.releases ?? 0) + 1,
+        lastAt: at,
+        code: action.code,
+        ...(action.branch === undefined ? {} : { branch: action.branch }),
+        ...(claim?.seat === undefined ? {} : { seat: claim.seat }),
+      },
+    },
+  }
+}
+
+const restarts = (claim: Claim, patch: ClaimPatch): boolean =>
+  (patch.phase !== undefined && patch.phase !== claim.phase) ||
+  (patch.agentName !== undefined && patch.agentName !== claim.agentName)
+
 const patched = (claim: Claim, patch: ClaimPatch, at: string): Claim => ({
   ...claim,
   ...patch,
-  phaseAt: patch.phase !== undefined && patch.phase !== claim.phase ? at : claim.phaseAt,
+  phaseAt: restarts(claim, patch) ? at : claim.phaseAt,
 })
