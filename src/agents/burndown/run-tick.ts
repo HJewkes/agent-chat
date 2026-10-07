@@ -74,6 +74,13 @@ import {
   shepherdRows,
   targetRef,
 } from './shepherd.js'
+import {
+  lineStopFrom,
+  persisted,
+  readServiceCheck,
+  serviceCheckNote,
+  type PersistedRead,
+} from './service-check.js'
 import { retrySteps, stepsForActions, stepsForDispatch, type StepContext } from './steps.js'
 import { recordTick, type StopCode, type TickResult } from './tick-status.js'
 import { loadWorld, type World } from './tick.js'
@@ -206,7 +213,7 @@ async function actOn(
   config: TickConfig,
   opts: TickOptions,
   ledger: Ledger,
-  { steps, decider, triage, failures, unchecked, seatStates, skippedSeats }: Decided,
+  { steps, decider, triage, failures, unchecked, seatStates, skippedSeats, serviceCheck }: Decided,
   now: Date,
 ): Promise<string[]> {
   const log = opts.log ?? logEvent
@@ -236,7 +243,11 @@ async function actOn(
   const journal = seatJournal(defaultAutonomyRoot(opts.root), { log, now: () => now })
   const dispatch = seatMergedLog(defaultAutonomyRoot(opts.root), { log, now: () => now })
   const told = await deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now, journal, dispatch })
-  writeLedger(burndownLedgerPath(), { ...told.ledger, lastTickAt: now.toISOString() })
+  writeLedger(burndownLedgerPath(), {
+    ...told.ledger,
+    lastTickAt: now.toISOString(),
+    ...(serviceCheck === undefined ? {} : { serviceCheck }),
+  })
   return [...executed.lines, ...woken.lines, ...leaks.lines, ...told.lines]
 }
 
@@ -309,6 +320,8 @@ interface Decided {
   /** Seats mode only: every seat's pool samples, this tick's included. */
   seatStates?: Record<string, SeatState>
   skippedSeats: SkippedSeat[]
+  /** Seats mode only: this tick's service-check read, persisted for the next tick's two-read rule. */
+  serviceCheck?: PersistedRead
 }
 
 /** Any row not retired may still run, and so may a name missing from a partial roster. */
@@ -377,6 +390,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   )
   const { check, failures } = await tickCollision(planLedger, opts)
   const prefixes = [DEFAULT_NAME_PREFIX, ...(seats?.loaded.map(s => s.dispatch.prefix) ?? [])]
+  const service = seats === undefined ? undefined : serviceGate(ledger, opts, now)
   const planned = planNew(
     world,
     seats,
@@ -389,7 +403,10 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
       collision: check,
       charged: advanced.charged,
     },
-    downstreamReader(shepherd, opts.exec ?? run),
+    {
+      downstream: downstreamReader(shepherd, opts.exec ?? run),
+      ...(service?.lineStop === undefined ? {} : { lineStop: service.lineStop }),
+    },
   )
   const dispatchCtx = { ...ctx, tasks: new Map([...ctx.tasks, ...planned.tasks]) }
   const dispatched = planned.dispatch.map(d => stepsForDispatch(d, dispatchCtx))
@@ -397,6 +414,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     ...(roster.partial === undefined ? [] : [`roster partial: ${roster.partial}`]),
     ...unread.map(u => `unread ${u}`),
     ...laddered.notes,
+    ...(service?.note === undefined ? [] : [service.note]),
     ...advanced.deferred.map(d => `deferred ${d}`),
     ...dispatched.flatMap(d => (typeof d === 'string' ? [`not dispatched: ${d}`] : [])),
     ...refusalLines(planned.refusals),
@@ -424,6 +442,23 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     triage: triage.plan,
     ...(decider === undefined ? {} : { decider }),
     ...(seatStates === undefined ? {} : { seatStates }),
+    ...(service === undefined ? {} : { serviceCheck: service.read }),
+  }
+}
+
+/** Seats mode's one service-check read per tick, judged against the read the last tick persisted. */
+function serviceGate(
+  ledger: Ledger,
+  opts: TickOptions,
+  now: Date,
+): { read: PersistedRead; lineStop?: SeatPlanDeps['lineStop']; note?: string } {
+  const current = readServiceCheck(opts.exec ?? run)
+  const lineStop = lineStopFrom(current, ledger.serviceCheck, now)
+  const note = serviceCheckNote(current)
+  return {
+    read: persisted(current, now),
+    ...(lineStop === undefined ? {} : { lineStop }),
+    ...(note === undefined ? {} : { note }),
   }
 }
 
@@ -447,7 +482,7 @@ function planNew(
   root: string,
   roster: Roster,
   work: NewWork,
-  downstream: NonNullable<SeatPlanDeps['downstream']>,
+  flow: Pick<SeatPlanDeps, 'downstream' | 'lineStop'>,
 ): Planned {
   if (seats === undefined)
     return { ...plan({ ...world, ...work }), skipped: [], tasks: new Map(), skippedTasks: [] }
@@ -458,7 +493,7 @@ function planNew(
       ...work,
       initiatives: world.initiatives,
       trust: (repo, cwd, configDir) => trustRefusal(repo, cwd, configDir, cliVersion),
-      downstream,
+      ...flow,
       roster,
     },
     root,

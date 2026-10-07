@@ -140,12 +140,15 @@ function fakeBroker(replies: SpawnReply[], agents: AgentIdentity[] = []): Fake {
   return fake
 }
 
+/** A passing `service check --json`, so the CC-785 two-read rule never stops the line here. */
+const SERVICE_OK = JSON.stringify({ ok: true, cause: null, message: 'ok', health: null, detail: {} })
+
 /** `gh` and `titan-factory` answer from stubs; `git` runs for real against the fixture repo. */
 const exec: Runner = (bin, args, cwd) =>
   bin === 'gh'
     ? { status: 0, stdout: '' }
     : bin === SHEPHERD_BIN
-      ? { status: 0, stdout: '[]' }
+      ? { status: 0, stdout: args[0] === 'service' ? SERVICE_OK : '[]' }
       : bin === 'git' && args.includes('remote') && args.includes('get-url')
         ? { status: 0, stdout: 'https://github.com/Acme/Widgets.git\n' }
         : run(bin, args, cwd)

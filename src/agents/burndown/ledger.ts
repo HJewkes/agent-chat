@@ -233,6 +233,8 @@ const Ledger = z.object({
   ladder: z.record(z.string(), LadderRecord).optional(),
   /** Persisted, so a restart inside the window stays braked. */
   brake: BrakeState.optional(),
+  /** The last `titan-factory service check` read; the line stops on two stopping reads in a row (CC-785). */
+  serviceCheck: z.object({ at: z.string().datetime(), cause: z.string().nullable() }).optional(),
 })
 export type Ledger = z.infer<typeof Ledger>
 

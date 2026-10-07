@@ -10,6 +10,7 @@ import type { Runner } from './exec.js'
 import { memo, type Roster } from './observe.js'
 import { downstreamReader, shepherdRows } from './shepherd.js'
 import { plan, type Plan, type PlanInputs } from './plan.js'
+import { lineStopFrom, readServiceCheck } from './service-check.js'
 import { defaultAutonomyRoot, loadCharterPools, type CharterPool } from './policy.js'
 import { expandHome } from './seat-dispatch.js'
 import { diskSeatDeps, loadSeats, planSeats, type LoadedSeats, type SeatPlanDeps } from './seat-tick.js'
@@ -94,7 +95,7 @@ export interface SeatPlanOptions {
   collision?: (ledger: Ledger) => PlanInputs['collision']
   /** The broker's roster; with it only active trees count against the seat's cap, as the tick counts them. */
   roster?: Roster
-  /** Runs `titan-factory` and `git` for the downstream WIP read; defaults to the real runner. */
+  /** Runs `titan-factory` and `git` for the downstream WIP and service-check reads; defaults to the real runner. */
   exec?: Runner
 }
 
@@ -108,6 +109,8 @@ export function seatPlanSetup(opts: SeatPlanOptions): {
   const seats = loadSeats([opts.seat], ledger, diskSeatDeps(opts.autonomyRoot, opts.root, opts.now))
   const check = opts.collision?.(ledger)
   const cliVersion = installedClaudeVersion()
+  // A dry run judges this read against the persisted one and writes neither.
+  const lineStop = lineStopFrom(readServiceCheck(opts.exec), ledger.serviceCheck, opts.now)
   const deps: SeatPlanDeps = {
     ledger,
     initiatives: readInitiatives(opts.root),
@@ -117,6 +120,7 @@ export function seatPlanSetup(opts: SeatPlanOptions): {
       opts.exec,
     ),
     ...(check === undefined ? {} : { collision: check }),
+    ...(lineStop === undefined ? {} : { lineStop }),
     ...(opts.roster === undefined ? {} : { roster: opts.roster }),
   }
   return { ledger, seats, deps }
