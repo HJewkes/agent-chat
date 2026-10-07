@@ -296,7 +296,7 @@ export function retireAll(claim: Claim): RetireAction {
   return { kind: 'retire', key: keyOf(claim), names }
 }
 
-/** The ledger after `actions`; a phase change restarts the phase clock. */
+/** The ledger after `actions`; a phase change restarts the phase clock, and so does a new agent, such as a successor spawned from `spawning` (CC-660). */
 export function applyActions(ledger: Ledger, actions: Action[], now: Date): Ledger {
   const at = now.toISOString()
   return actions.reduce<Ledger>((current, action) => {
@@ -311,8 +311,12 @@ export function applyActions(ledger: Ledger, actions: Action[], now: Date): Ledg
   }, ledger)
 }
 
+const restarts = (claim: Claim, patch: ClaimPatch): boolean =>
+  (patch.phase !== undefined && patch.phase !== claim.phase) ||
+  (patch.agentName !== undefined && patch.agentName !== claim.agentName)
+
 const patched = (claim: Claim, patch: ClaimPatch, at: string): Claim => ({
   ...claim,
   ...patch,
-  phaseAt: patch.phase !== undefined && patch.phase !== claim.phase ? at : claim.phaseAt,
+  phaseAt: restarts(claim, patch) ? at : claim.phaseAt,
 })

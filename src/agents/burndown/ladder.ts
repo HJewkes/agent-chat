@@ -88,8 +88,9 @@ function startRespawn({ claim, code }: Trigger, record: LadderRecord | undefined
 function stallOwner({ claim, code }: Trigger, record: LadderRecord | undefined, now: Date): Action[] {
   const at = now.toISOString()
   const respawns = respawnCount(claim, record)
+  const why = respawns > 0 ? 'ladder exhausted after a respawn' : 'no worktree for a respawn to adopt'
   return [
-    parkUpdate(keyOf(claim), code, 'ladder exhausted after a respawn'),
+    parkUpdate(keyOf(claim), code, why),
     { kind: 'ladder', key: keyOf(claim), record: { ...record, respawns, lastAt: at, owner: at } },
   ]
 }

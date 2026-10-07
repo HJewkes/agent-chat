@@ -158,6 +158,17 @@ describe('ladderActions rung 3', () => {
   })
 })
 
+describe('ladderActions without a worktree', () => {
+  it('stalls a first occurrence for the owner and says no respawn could adopt it', () => {
+    const c = claim({ worktree: undefined })
+
+    const { after } = ladder(c, withClaim(c), timedOut(c))
+
+    expect(after.claims[0]?.stalledReason).toBe('phase-timeout: no worktree for a respawn to adopt')
+    expect(after.ladder?.[KEY]).toMatchObject({ respawns: 0 })
+  })
+})
+
 describe('ladderActions leaves non-ladder stalls alone', () => {
   it('takes no action on a CC-653 idle finding', () => {
     const c = claim()

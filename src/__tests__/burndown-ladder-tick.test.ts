@@ -268,6 +268,32 @@ describe('a refused rung-1 respawn (CC-660 E1)', () => {
   })
 })
 
+describe('a spawn that never lands (CC-660 E1)', () => {
+  it('respawns once, then stalls for the owner once', async () => {
+    const stuck: Claim = {
+      ...(heldClaim() as Claim),
+      agentId: undefined,
+      phase: 'spawning',
+      phaseAt: at(-30).toISOString(),
+      nextPhase: 'implementing',
+    }
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [stuck] })
+    const fake = fakeBroker([{ ok: true }])
+    fake.agents.length = 0
+    fake.broker.spawn = async frame => {
+      fake.frames.push(frame)
+      return { ok: true, agentId: `id-${frame.name}` }
+    }
+
+    for (const minutes of [0, 10, 20, 30, 40, 50, 60]) await tickAt(fake, minutes)
+
+    expect(names(fake)).toEqual(['st-dm-1-s1'])
+    expect(heldClaim()).toMatchObject({ stallCode: 'spawn-never-landed', stalledClass: 'stalled' })
+    expect(heldClaim()?.stalledReason).toMatch(/^spawn-never-landed: ladder exhausted after a respawn/)
+    expect(ledger().ladder?.['DM-1#']).toMatchObject({ respawns: 1, owner: at(30).toISOString() })
+  })
+})
+
 describe('a refused rung-1 retire (CC-660 E1)', () => {
   it('spawns nothing that tick, retries the retire next tick, then spawns the successor', async () => {
     const fake = fakeBroker([{ ok: true }], [{ ok: false, reason: 'agent busy' }, { ok: true }])
