@@ -111,6 +111,7 @@ interface Extra {
   override?: Override
   trap?: Trap
   termsFile?: string
+  env?: NodeJS.ProcessEnv
 }
 
 async function runPrReady(cwd: string, failing: string[] = [], opts: PrReadyOptions = {}, extra: Extra = {}) {
@@ -124,6 +125,7 @@ async function runPrReady(cwd: string, failing: string[] = [], opts: PrReadyOpti
     err: line => errLines.push(line),
     trap: extra.trap ?? (() => () => {}),
     termsFile: extra.termsFile ?? syntheticTerms(),
+    env: extra.env ?? { AGENT_CHAT_BASEMENT_HOST: 'off' },
   })
   return { code, out, calls, errLines, toolCalls: calls.filter(call => !call.startsWith('git ')) }
 }
@@ -699,5 +701,110 @@ describe('pr-ready scan', () => {
 
     expect(result.code).toBe(1)
     expect(result.out).toContain(`FAIL scan: ${expected}`)
+  })
+})
+
+describe('pr-ready routes checks through basement-suite (CC-824)', () => {
+  const REACHABLE = { AGENT_CHAT_NAME: 'agent-x' }
+  const probeOk: Override = line => (line.startsWith('ssh -o') ? { code: 0, output: '' } : undefined)
+  const pushHead = (work: string): void => {
+    git(work, 'push', '-q', 'origin', 'feature')
+  }
+  const lintKind = () =>
+    fixtureRepo({ 'package.json': pkg({ scripts: { lint: 'x', typecheck: 'x' } }) }, { 'a.ts': '1\n' })
+  const sshCalls = (calls: string[]) => calls.filter(c => c.startsWith('ssh basement basement-suite'))
+  const suite = (script: string) =>
+    `ssh basement basement-suite origin feature --agent agent-x --run ${script}`
+
+  it('runs each script on basement and nothing locally when the head is pushed', async () => {
+    const work = lintKind()
+    pushHead(work)
+    const result = await runPrReady(work, [], {}, { override: probeOk, env: REACHABLE })
+
+    expect(result.code).toBe(0)
+    expect(sshCalls(result.calls)).toEqual([suite('lint'), suite('typecheck')])
+    expect(result.calls.filter(c => c.startsWith('npm '))).toEqual([])
+    expect(result.out).toContain('ok checks: basement lint exit 0, typecheck exit 0')
+  })
+
+  it('defers with the exact commands and runs nothing when the head is not pushed', async () => {
+    const result = await runPrReady(lintKind(), [], {}, { override: probeOk, env: REACHABLE })
+
+    expect(result.code).toBe(0)
+    expect(result.out).toContain(
+      `ok checks: deferred to basement after push: ${suite('lint')}; ${suite('typecheck')}`,
+    )
+    expect(sshCalls(result.calls)).toEqual([])
+    expect(result.toolCalls.filter(c => !c.startsWith('ssh -o'))).toEqual([])
+  })
+
+  it('defers when the pushed ref is behind head', async () => {
+    const work = lintKind()
+    pushHead(work)
+    commit(work, { 'b.ts': '2\n' }, 'more')
+    const result = await runPrReady(work, [], {}, { override: probeOk, env: REACHABLE })
+
+    expect(result.out.join('\n')).toContain('deferred to basement after push:')
+  })
+
+  it('falls back to local checks with a warning when the probe fails', async () => {
+    const override: Override = line =>
+      line.startsWith('ssh -o') ? { code: 255, output: 'no route' } : undefined
+    const result = await runPrReady(lintKind(), [], {}, { override, env: REACHABLE })
+
+    expect(result.code).toBe(0)
+    expect(result.toolCalls.filter(c => c.startsWith('npm '))).toEqual(['npm run lint', 'npm run typecheck'])
+    expect(result.errLines).toContain(
+      'warning: basement unreachable (probe exit 255); running checks locally',
+    )
+  })
+
+  it('fails as busy, not as a failed check, on exit 75', async () => {
+    const work = lintKind()
+    pushHead(work)
+    const override: Override = (line, args) =>
+      line === suite('lint') ? { code: 75, output: 'all slots busy' } : probeOk(line, args, work)
+    const result = await runPrReady(work, [], {}, { override, env: REACHABLE })
+
+    expect(result.code).toBe(1)
+    expect(result.out.join('\n')).toContain(
+      'FAIL checks: basement busy, retry in a few minutes (lint exit 75',
+    )
+  })
+
+  it('reports a failing basement check by its command and exit code', async () => {
+    const work = lintKind()
+    pushHead(work)
+    const override: Override = (line, args) =>
+      line === suite('typecheck') ? { code: 1, output: 'tsc errors' } : probeOk(line, args, work)
+    const result = await runPrReady(work, [], {}, { override, env: REACHABLE })
+
+    expect(result.out.join('\n')).toContain(
+      `FAIL checks: failed on basement: ${suite('typecheck')} (lint exit 0, typecheck exit 1)`,
+    )
+  })
+
+  it('runs locally and never probes when the host is off', async () => {
+    const result = await runPrReady(
+      lintKind(),
+      [],
+      {},
+      { override: probeOk, env: { AGENT_CHAT_BASEMENT_HOST: 'off' } },
+    )
+
+    expect(result.calls.filter(c => c.startsWith('ssh'))).toEqual([])
+    expect(result.toolCalls).toEqual(['npm run lint', 'npm run typecheck'])
+  })
+
+  it('collapses per-member workspace commands into one run per script', async () => {
+    const workspace = KINDS[2]!
+    const work = fixtureRepo(workspace.base, workspace.feature)
+    pushHead(work)
+    const result = await runPrReady(work, [], {}, { override: probeOk, env: REACHABLE })
+
+    const scripts = sshCalls(result.calls).map(c => c.split(' ').at(-1))
+    expect(scripts).toEqual([...new Set(scripts)])
+    expect(scripts).toContain('capabilities:check')
+    expect(result.toolCalls.filter(c => c.startsWith('pnpm '))).toEqual([])
   })
 })

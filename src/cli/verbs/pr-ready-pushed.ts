@@ -51,3 +51,16 @@ export async function pushedBranchStep(
     return { ok: true, reason: `not behind ${baseName}${note}` }
   return { ok: !strict, reason: `behind ${baseName}, branch already pushed; not rebasing${note}` }
 }
+
+const revision = async (run: Run, cwd: string, ref: string): Promise<string | undefined> => {
+  const result = await run('git', ['rev-parse', '--verify', '--quiet', ref], cwd)
+  return result.code === 0 ? text(result) : undefined
+}
+
+/** CC-824: basement-suite fetches the branch from origin, so it only sees a head that is pushed. */
+export async function headIsPushed(run: Run, cwd: string, base: string): Promise<boolean> {
+  const pushed = await pushedRef(run, cwd, base)
+  if (!pushed) return false
+  const head = await revision(run, cwd, 'HEAD')
+  return head !== undefined && head === (await revision(run, cwd, pushed))
+}
