@@ -15,6 +15,7 @@ import {
 } from '../protocol.js'
 import type { Allocation } from './isolation/index.js'
 import { loadProfile, recordedRole } from './profiles.js'
+import { resolveSurface } from './surface-resolution.js'
 import { appendixFacts, renderAppendix, reportsSinceWrap, type WrapGap } from './teleport-appendix.js'
 import { observedModel } from './transcript.js'
 import type { AgentProfile } from './types.js'
@@ -386,13 +387,13 @@ export class Teleport {
       // harness default (CC-100).
       const observed = observedModel(subject.cwd, identity.sessionId, accountOf(subject, identity))
       const inherited = inheritedProfile(model ?? observed)
-      return { profile: inherited, surface: inherited.surface }
+      return { profile: inherited, surface: resolveSurface(inherited.surface) }
     }
     const profile = loadProfile(identity.profile)
     if ('error' in profile) return { error: `cannot reload profile "${identity.profile}": ${profile.error}` }
     return {
       profile: model === undefined ? profile : { ...profile, model },
-      surface: isSurfaceName(identity.surface) ? identity.surface : profile.surface,
+      surface: resolveSurface(isSurfaceName(identity.surface) ? identity.surface : profile.surface),
     }
   }
 

@@ -9,7 +9,7 @@ import { budgetDir } from '../agents/budget.js'
 import { resolveClaudeBin } from '../agents/claude-bin.js'
 import { AgentLog } from '../agents/identity.js'
 import { readRuntimeState } from '../agents/launch-files.js'
-import { itermSessionPresent } from '@titan-design/agent-surface'
+import { itermSessionPresent, tmuxWindowPresent } from '@titan-design/agent-surface'
 import { ATTACH_TIMEOUT_MS } from '../agents/supervisor.js'
 import { describeMirror, readMirrorFacts } from '../mirror/status.js'
 import { heldClaims, isStalled, readLedger } from '../agents/burndown/ledger.js'
@@ -367,7 +367,7 @@ export interface SurfaceProbes {
   /** The pane an agent was recorded as holding, or undefined for no record. */
   paneOf: (agentId: string) => { surface: string; paneRef: string } | undefined
   /** Whether the terminal still lists it. Undefined means "cannot say". */
-  present: (paneRef: string) => Promise<boolean | undefined>
+  present: (paneRef: string, surface: string) => Promise<boolean | undefined>
 }
 
 const defaultProbes: SurfaceProbes = {
@@ -376,7 +376,8 @@ const defaultProbes: SurfaceProbes = {
     if (handle?.ownsSurface !== true || handle.paneRef === undefined) return undefined
     return { surface: handle.surface, paneRef: handle.paneRef }
   },
-  present: paneRef => itermSessionPresent(paneRef),
+  present: (paneRef, surface) =>
+    (surface === 'tmux-window' ? tmuxWindowPresent : itermSessionPresent)(paneRef),
 }
 
 export async function checkOrphanSurfaces(
@@ -395,7 +396,7 @@ export async function checkOrphanSurfaces(
 
   const open: string[] = []
   for (const { agent, pane } of candidates) {
-    const present = await probes.present(pane.paneRef)
+    const present = await probes.present(pane.paneRef, pane.surface)
     // Unknown ends the scan: every later answer would be unknown too, and each
     // one costs an osascript round trip.
     if (present === undefined) return []
