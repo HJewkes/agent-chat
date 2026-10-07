@@ -15,7 +15,7 @@ import type {
 } from '../api-contract.js'
 import { TOKEN_HEADER } from '../api-contract.js'
 import { BrokerCore, type Conn } from '../broker/core.js'
-import { EventLog } from '../broker/event-log.js'
+import { APPROVAL_TTL_MS, EventLog } from '../broker/event-log.js'
 import { buildHttpApp } from '../broker/http.js'
 import { projectSlug } from '../agents/transcript.js'
 import { dashboardDir } from '../paths.js'
@@ -420,6 +420,58 @@ describe('write routes', () => {
 
       expect(((await res.json()) as VerdictResponse).ok).toBe(false)
       expect(core.events.isOpen(item.msgId)).toBe(true)
+    })
+
+    it('cannot answer an approval request that has aged past APPROVAL_TTL_MS', async () => {
+      const log = new EventLog(path.join(tmpDir('agent-chat-aged-'), 'events.db'))
+      const core = new BrokerCore(() => undefined, { events: log, registry: new Registry<Conn>() })
+      const item = core.append({
+        kind: 'approval_request',
+        actor: 'alpha',
+        target: HUMAN,
+        body: 'Bash: ls',
+        meta: { tool_name: 'Bash', request_id: 'abcde' },
+      })
+      log.db.exec(`UPDATE events SET ts = ts - ${APPROVAL_TTL_MS + 1000} WHERE kind = 'approval_request'`)
+
+      const res = await post(core, '/api/answer', { msgId: item.msgId, text: 'allow' })
+
+      const body = (await res.json()) as VerdictResponse
+      expect(body.ok).toBe(false)
+      expect(body.reason).toContain('is a permission prompt')
+      expect(core.events.isOpen(item.msgId)).toBe(true)
+    })
+
+    it('cannot answer a channel approval request that carries no request_id', async () => {
+      const core = makeCore()
+      const item = core.append({
+        kind: 'approval_request',
+        actor: 'alpha',
+        target: HUMAN,
+        body: 'Bash: ls',
+        meta: { tool_name: 'Bash' },
+      })
+
+      const res = await post(core, '/api/answer', { msgId: item.msgId, text: 'allow' })
+
+      const body = (await res.json()) as VerdictResponse
+      expect(body.ok).toBe(false)
+      expect(body.reason).toContain('is a permission prompt')
+      expect(core.events.isOpen(item.msgId)).toBe(true)
+    })
+
+    it('400s on an explicit null channel, while an absent one still records dashboard', async () => {
+      const core = makeCore()
+      const [refused, defaulted] = [1, 2].map(() =>
+        core.append({ kind: 'question', actor: 'alpha', target: HUMAN, body: 'q' }),
+      )
+
+      const res = await post(core, '/api/answer', { msgId: refused!.msgId, text: 'x', channel: null })
+      await post(core, '/api/answer', { msgId: defaulted!.msgId, text: 'y' })
+
+      expect(res.status).toBe(400)
+      expect(core.events.isOpen(refused!.msgId)).toBe(true)
+      expect(metaOf(core, defaulted!.msgId).channel).toBe('dashboard')
     })
   })
 

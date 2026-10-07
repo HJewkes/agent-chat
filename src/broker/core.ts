@@ -417,7 +417,7 @@ export class BrokerCore<C = Conn> {
     const author = this.events.authorOf(msgId)
     if (!author) return { ok: false, reason: `no item with id ${msgId}` }
     // A permission prompt is a verdict, answerable only from the socket's `approve_permission`; words never close one.
-    if (this.events.openApproval(msgId))
+    if (this.events.isApprovalRequest(msgId))
       return { ok: false, reason: `${msgId} is a permission prompt; it is approved or denied, not answered` }
 
     // An answer on a decided question overrules the decider; the asker must be told which one stands.

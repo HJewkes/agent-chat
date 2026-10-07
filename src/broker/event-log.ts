@@ -541,6 +541,14 @@ export class EventLog implements EventStore {
     return { source: 'channel', session: row.actor, requestId: meta.request_id, toolName }
   }
 
+  /** Keyed on the row's kind alone: `openApproval`'s age and meta cutoffs say whether a prompt is answerable, not what it is. */
+  isApprovalRequest(msgId: string): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 AS hit FROM events WHERE msg_id = ? AND kind = 'approval_request' LIMIT 1`)
+      .get(msgId) as unknown as { hit: number } | undefined
+    return row !== undefined
+  }
+
   /**
    * The questions this session still has outstanding, not just how many.
    *
