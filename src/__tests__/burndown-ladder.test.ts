@@ -482,3 +482,121 @@ describe('the ladder record', () => {
     expect(claimKey(c)).toBe(KEY)
   })
 })
+
+describe('the brake (CC-699)', () => {
+  const MIN = 60_000
+  const ago = (minutes: number): string => new Date(NOW.getTime() - minutes * MIN).toISOString()
+  const trio = (): Claim[] =>
+    ['CC-1', 'CC-2', 'CC-3'].map(id => {
+      const name = `bd-${id.toLowerCase()}`
+      return claim({ taskId: id, agentName: name, spawned: [name], worktree: `/repo/.worktrees/${name}` })
+    })
+  const tick = (claims: Claim[], ledger: Ledger, over: Partial<LadderDeps> = {}) => {
+    const out = ladderActions(advance(claims, new Map(), NOW), claims, ledger, deps(over))
+    return { ...out, after: applyActions(ledger, [...out.actions, ...out.brake], NOW) }
+  }
+  const brakeEvents = (before: Ledger, after: Ledger) =>
+    Object.values(seatEvents(before, after, [])).flatMap(es => es.filter(e => e.kind === 'brake'))
+  const braked = (minutesAgo: number): Ledger['brake'] => ({
+    at: [ago(minutesAgo), ago(minutesAgo), ago(minutesAgo)],
+    notified: 'brake:phase-timeout',
+    claims: ['CC-7#', 'CC-8#', 'CC-9#'],
+  })
+
+  it('gives three stalls in one tick one brake notice and no respawn or release', () => {
+    const claims = trio()
+    const before: Ledger = { ...EMPTY_LEDGER, claims }
+
+    const { actions, after } = tick(claims, before)
+
+    expect(kinds(actions).filter(k => ['spawn', 'retire', 'release', 'ladder'].includes(k))).toEqual([])
+    expect(after.claims.map(c => c.respawn)).toEqual([undefined, undefined, undefined])
+    expect(after.claims.map(c => c.stallCode)).toEqual(['phase-timeout', 'phase-timeout', 'phase-timeout'])
+    expect(after.ladder).toBeUndefined()
+    expect(after.brake).toMatchObject({ at: [NOW.toISOString(), NOW.toISOString(), NOW.toISOString()] })
+    expect(brakeEvents(before, after)).toEqual([
+      {
+        kind: 'brake',
+        taskId: 'CC-1, CC-2, CC-3',
+        code: 'phase-timeout',
+        detail: expect.stringMatching(/^phase-timeout: 3 ladder stalls in 30 min/),
+      },
+    ])
+  })
+
+  it('stays braked across a ledger re-read inside the window, with no second notice', () => {
+    const c = claim()
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'brake-')), 'ledger.json')
+    writeLedger(file, withClaim(c, { brake: braked(20) }))
+    const before = readLedger(file)
+
+    const { actions, after } = tick([c], before)
+
+    expect(kinds(actions).filter(k => ['spawn', 'retire', 'release', 'ladder'].includes(k))).toEqual([])
+    expect(after.claims[0]?.respawn).toBeUndefined()
+    expect(after.brake?.at).toHaveLength(4)
+    expect(after.brake?.notified).toBe('brake:phase-timeout')
+    expect(brakeEvents(before, after)).toEqual([])
+  })
+
+  it('gives a new occurrence rung 1 once the window has cleared, forgetting the old times and notice', () => {
+    const claims = trio()
+    const first = tick(claims, { ...EMPTY_LEDGER, claims }).after
+    const fourth = claim({ taskId: 'CC-4', worktree: '/repo/.worktrees/bd-cc-4' })
+    const later = new Date(NOW.getTime() + 31 * MIN)
+
+    const out = ladderActions(advance([fourth], new Map(), later), [fourth], first, deps({ now: later }))
+    const after = applyActions(
+      { ...first, claims: [...first.claims, fourth] },
+      [...out.actions, ...out.brake],
+      later,
+    )
+
+    expect(first.brake?.at).toHaveLength(3)
+    expect(out.actions.find(a => a.kind === 'retire')).toMatchObject({ key: { taskId: 'CC-4' }, held: true })
+    expect(after.claims[3]?.respawn).toMatchObject({ code: 'phase-timeout' })
+    expect(after.brake).toEqual({ at: [later.toISOString()], seen: [`CC-4#@${FIRST_PHASE}`] })
+  })
+
+  it('counts a release retried on later ticks as one occurrence, so it never brakes itself', () => {
+    const c = claim({ phaseAt: SECOND_PHASE, spawned: ['bd-cc-1', 'bd-cc-1-s1'] })
+    let ledger = withClaim(c, { ladder: respawned(FIRST_PHASE) })
+
+    for (const _ of [1, 2, 3]) ledger = applyActions(ledger, tick([c], ledger).brake, NOW)
+    const fourth = tick([c], ledger)
+
+    expect(ledger.brake?.at).toHaveLength(1)
+    expect(kinds(fourth.actions)).toEqual(['release'])
+  })
+
+  it('still stalls a claim past rung 2 for its owner while braked', () => {
+    const c = claim({ phaseAt: SECOND_PHASE })
+
+    const { after } = tick([c], withClaim(c, { ladder: releasedBefore(FIRST_PHASE), brake: braked(10) }))
+
+    expect(after.claims[0]?.stalledReason).toMatch(/^phase-timeout: ladder exhausted/)
+    expect(after.ladder?.[KEY]).toMatchObject({ releases: 1, owner: NOW.toISOString() })
+    expect(after.brake?.at).toHaveLength(3)
+  })
+
+  it('does not count a braked occurrence toward the claim, so its next one after the window is rung 1', () => {
+    const c = claim()
+    const first = tick([c], withClaim(c, { brake: braked(10) })).after
+    const cleared: Claim = {
+      ...(first.claims[0] as Claim),
+      stalledReason: undefined,
+      stalledClass: undefined,
+      stallCode: undefined,
+      phaseAt: SECOND_PHASE,
+    }
+    const later = new Date(NOW.getTime() + 40 * MIN)
+
+    const out = ladderActions(advance([cleared], new Map(), later), [cleared], first, deps({ now: later }))
+    const after = applyActions({ ...first, claims: [cleared] }, [...out.actions, ...out.brake], later)
+
+    expect(first.ladder).toBeUndefined()
+    expect(first.claims[0]?.stallCode).toBe('phase-timeout')
+    expect(kinds(out.actions)).not.toContain('release')
+    expect(after.claims[0]?.respawn).toMatchObject({ code: 'phase-timeout' })
+  })
+})

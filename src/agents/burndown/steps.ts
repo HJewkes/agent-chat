@@ -78,7 +78,7 @@ export function stepsForActions(
 ): Resolved {
   const groups = new Map<string, Action[]>()
   for (const action of actions) {
-    const key = action.kind === 'add' ? `add:${groups.size}` : claimKey(action.key)
+    const key = 'key' in action ? claimKey(action.key) : `${action.kind}:${groups.size}`
     groups.set(key, [...(groups.get(key) ?? []), action])
   }
   const resolved: Resolved = { steps: [], spawns: 0, deferred: [], charged: [] }

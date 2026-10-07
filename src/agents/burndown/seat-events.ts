@@ -1,7 +1,7 @@
 import { claimKey, type ClaimKey } from './advance.js'
 import type { Claim, Ledger } from './ledger.js'
 import type { StallCode } from './stall-code.js'
-import { releasesSince } from './ladder.js'
+import { BRAKE_WINDOW_MS, brakeSince, releasesSince } from './ladder.js'
 import { ownerDue, stallDetail } from './triage.js'
 
 /**
@@ -18,6 +18,7 @@ export const EVENT_KINDS = [
   'parked',
   'leak',
   'released',
+  'brake',
 ] as const
 export type EventKind = (typeof EVENT_KINDS)[number]
 
@@ -102,8 +103,8 @@ function stillHolds(claim: Claim, entry: string): boolean {
   if (kind === 'stalled') return claim.stalledReason !== undefined && sameCode(code, claim.stallCode)
   if (kind === 'stalled-after-claim') return claim.finding !== undefined && sameCode(code, claim.finding.code)
   if (kind === 'leak') return claim.leak !== undefined
-  // A release is told from the ledger diff, so a claim never holds it.
-  if (kind === 'released') return false
+  // A release or brake is told from the ledger diff, so a claim never holds it.
+  if (kind === 'released' || kind === 'brake') return false
   // ready-to-merge stays on a done claim: `merged` reads it there.
   return true
 }
@@ -122,6 +123,21 @@ export function settleNotified(ledger: Ledger): Ledger {
   return { ...ledger, claims }
 }
 
+/** One `brake` event per seat with a braked claim; its task names every braked claim of that seat. */
+function brakeEvents(before: Ledger, after: Ledger): [string, SeatEvent][] {
+  const notice = brakeSince(before, after)
+  if (notice === undefined) return []
+  const bySeat = new Map<string, string[]>()
+  for (const { key, seat } of notice.claims)
+    if (seat !== undefined) bySeat.set(seat, [...(bySeat.get(seat) ?? []), key.replace(/#$/, '')])
+  const minutes = BRAKE_WINDOW_MS / 60_000
+  const detail = `${notice.cause}: ${notice.count} ladder stalls in ${minutes} min; respawns and releases paused until the window clears`
+  return [...bySeat].map(([seat, keys]) => [
+    seat,
+    { kind: 'brake', taskId: keys.join(', '), detail, code: notice.cause },
+  ])
+}
+
 /** Events for claims with a seat whose held `notified` lacks that kind; a claim without a seat yields none. */
 export function seatEvents(before: Ledger, after: Ledger, spawnResults: readonly SpawnResult[]): SeatEvents {
   const out: SeatEvents = {}
@@ -132,6 +148,7 @@ export function seatEvents(before: Ledger, after: Ledger, spawnResults: readonly
     const fresh = kindsOf(at(before, claim), claim, spawned).filter(e => !told(held, e))
     if (fresh.length > 0) (out[claim.seat] ??= []).push(...fresh)
   }
+  for (const [seat, event] of brakeEvents(before, after)) (out[seat] ??= []).push(event)
   for (const r of releasesSince(before, after)) {
     if (r.seat === undefined) continue
     const detail =

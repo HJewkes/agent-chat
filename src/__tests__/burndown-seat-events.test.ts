@@ -91,8 +91,9 @@ describe('seatEvents', () => {
     stalled: { stalledReason: 'timed out' },
     'stalled-after-claim': { finding },
     parked: { phase: 'parked' },
-    // Told from a ledger diff, never from claim state.
+    // These two are told from a ledger diff, never from claim state.
     released: {},
+    brake: {},
     leak: {
       leak: {
         repo: 'example/repo',
