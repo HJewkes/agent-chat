@@ -56,6 +56,16 @@ const respawned = (occurrence: string): NonNullable<Ledger['ladder']> => ({
   [KEY]: { respawns: 1, lastAt: '2026-10-05T10:00:00.000Z', occurrence },
 })
 
+const releasedBefore = (occurrence: string): NonNullable<Ledger['ladder']> => ({
+  [KEY]: { ...(respawned(occurrence)[KEY] as NonNullable<Ledger['ladder']>[string]), releases: 1 },
+})
+
+const LIVENESS: NonNullable<Ledger['liveness']> = {
+  'CC-1#|retire:bd-cc-1': {
+    byFact: { f: { n: 2, firstAt: FIRST_PHASE, lastAt: SECOND_PHASE, lastText: 'busy' } },
+  },
+}
+
 const kinds = (actions: Action[]): string[] => actions.map(a => a.kind)
 
 describe('ladderActions rung 1', () => {
@@ -138,22 +148,98 @@ describe('ladderActions rung 1', () => {
   })
 })
 
+describe('ladderActions rung 2 (CC-698)', () => {
+  const second = (): { c: Claim; before: Ledger } => {
+    const c = claim({ phaseAt: SECOND_PHASE, attempt: 1, spawned: ['bd-cc-1', 'bd-cc-1-s1'] })
+    return { c, before: withClaim(c, { ladder: respawned(FIRST_PHASE), liveness: LIVENESS }) }
+  }
+
+  it('releases a second occurrence: the whole-task claim is dropped, the branch named, liveness kept', () => {
+    const { c, before } = second()
+
+    const { actions, after } = ladder(c, before, timedOut(c), { branch: () => 'agent/cc-1' })
+
+    expect(actions).toEqual([
+      {
+        kind: 'release',
+        key: { taskId: 'CC-1' },
+        requeue: false,
+        code: 'phase-timeout',
+        branch: 'agent/cc-1',
+      },
+    ])
+    expect(after.claims).toEqual([])
+    expect(after.ladder?.[KEY]).toMatchObject({
+      respawns: 1,
+      releases: 1,
+      branch: 'agent/cc-1',
+      seat: 'alpha',
+    })
+    expect(after.releases?.['CC-1']).toMatchObject({ n: 1 })
+    expect(after.liveness).toEqual(LIVENESS)
+  })
+
+  it('sends a released slice claim back to queued, with its slice fields and no agent fields', () => {
+    const c = claim({ slice: 'a', dependsOn: ['b'], owns: ['src/a.ts'], phaseAt: SECOND_PHASE, pr: 'u' })
+    const key = 'CC-1#a'
+    const before = withClaim(c, { ladder: { [key]: { ...respawned(FIRST_PHASE)[KEY]!, releases: 0 } } })
+
+    const { after } = ladder(c, before, timedOut(c), { branch: () => 'agent/cc-1-a' })
+
+    expect(after.claims).toEqual([
+      {
+        taskId: 'CC-1',
+        initiative: 'demo',
+        spawnedAt: FIRST_PHASE,
+        phase: 'queued',
+        phaseAt: NOW.toISOString(),
+        slice: 'a',
+        dependsOn: ['b'],
+        owns: ['src/a.ts'],
+        seat: 'alpha',
+      },
+    ])
+    expect(after.ladder?.[key]).toMatchObject({ releases: 1, branch: 'agent/cc-1-a' })
+  })
+
+  it('tells the seat once, naming the branch', () => {
+    const { c, before } = second()
+
+    const { after } = ladder(c, before, timedOut(c), { branch: () => 'agent/cc-1' })
+
+    const events = seatEvents(before, after, []).alpha ?? []
+    expect(events).toMatchObject([
+      { kind: 'released', taskId: 'CC-1', detail: expect.stringContaining('agent/cc-1') },
+    ])
+    expect(seatEvents(after, after, []).alpha ?? []).toEqual([])
+  })
+
+  it('releases once per key: with no worktree to adopt, the first occurrence still goes to the owner', () => {
+    const c = claim({ worktree: undefined })
+
+    const { after } = ladder(c, withClaim(c), timedOut(c))
+
+    expect(after.claims[0]?.stalledReason).toBeDefined()
+    expect(after.ladder?.[KEY]?.releases).toBeUndefined()
+  })
+})
+
 describe('ladderActions rung 3', () => {
-  it('stalls a second occurrence for the owner once, with its code and one stalled notice', () => {
+  it('stalls a third occurrence for the owner once, with its code and one stalled notice', () => {
     const c = claim({
       phaseAt: SECOND_PHASE,
       attempt: 1,
       spawned: ['bd-cc-1', 'bd-cc-1-s1'],
       notified: ['dispatched'],
     })
-    const before = withClaim(c, { ladder: respawned(FIRST_PHASE) })
+    const before = withClaim(c, { ladder: releasedBefore(FIRST_PHASE) })
 
     const { actions, after } = ladder(c, before, timedOut(c))
 
     expect(kinds(actions)).not.toContain('spawn')
     expect(after.claims[0]).toMatchObject({ stalledClass: 'stalled', stallCode: 'phase-timeout' })
     expect(after.claims[0]?.stalledReason).toMatch(/^phase-timeout: ladder exhausted/)
-    expect(after.ladder?.[KEY]).toMatchObject({ respawns: 1, owner: NOW.toISOString() })
+    expect(after.ladder?.[KEY]).toMatchObject({ respawns: 1, releases: 1, owner: NOW.toISOString() })
     expect((seatEvents(before, after, []).alpha ?? []).map(e => e.kind)).toEqual(['stalled'])
   })
 })
@@ -238,11 +324,11 @@ describe('ladderActions with ladder.enabled false', () => {
     expect(read).toBe(0)
   })
 
-  it('writes one would-stall-owner line for a second occurrence', () => {
+  it('writes one would-stall-owner line for a third occurrence', () => {
     const c = claim({ phaseAt: SECOND_PHASE })
     const stall = timedOut(c)
 
-    const out = ladder(c, withClaim(c, { ladder: respawned(FIRST_PHASE) }), stall, { enabled: false })
+    const out = ladder(c, withClaim(c, { ladder: releasedBefore(FIRST_PHASE) }), stall, { enabled: false })
 
     expect(out.actions).toEqual(stall)
     expect(out.notes).toEqual([`ladder off: would stall-owner ${KEY} (phase-timeout)`])

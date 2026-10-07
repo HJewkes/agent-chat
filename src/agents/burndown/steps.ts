@@ -1,6 +1,6 @@
 import path from 'node:path'
 import type { ExceptionClass } from './exception.js'
-import { claimKey, type Action, type ClaimKey } from './advance.js'
+import { claimKey, retireAll, type Action, type ClaimKey } from './advance.js'
 import {
   planPathFor,
   plannerBrief,
@@ -43,6 +43,8 @@ export interface StepContext {
   readFile: (file: string) => string | undefined
   /** Whether a named agent's process may still be running; an exited or retired one is not. */
   running: (name: string) => boolean
+  /** The branch a released claim with this key left behind (CC-698), for the next worker's brief. */
+  priorBranch?: (key: ClaimKey) => string | undefined
   /** Seats mode only: a listed seat's spawn inputs, why a listed seat is out this tick, or undefined for a seat not listed. */
   seat?: (name: string) => SeatSpawn | { skipped: string } | undefined
 }
@@ -83,20 +85,25 @@ export function stepsForActions(
   for (const [key, group] of groups) {
     const spawn = group.find((a): a is SpawnAction => a.kind === 'spawn')
     if (spawn === undefined) {
-      resolved.steps.push(...plainSteps(group))
+      resolved.steps.push(...plainSteps(group, ledger))
       continue
     }
     const refused = spawnRefusal(group, spawn, ledger, ctx)
     if (refused !== undefined) {
       resolved.deferred.push(`${key}: ${refused}`)
-      resolved.steps.push(...plainSteps(group.filter(a => a !== spawn && !isIntent(a, spawn))))
+      resolved.steps.push(
+        ...plainSteps(
+          group.filter(a => a !== spawn && !isIntent(a, spawn)),
+          ledger,
+        ),
+      )
       continue
     }
     const outcome =
       resolved.spawns >= budget
         ? { defer: 'no agent capacity left this tick' }
         : resolveSpawn(spawn, ledger, ctx, resolved.charged)
-    addOutcome(resolved, key, group, spawn, outcome)
+    addOutcome(resolved, key, group, spawn, outcome, ledger)
   }
   return resolved
 }
@@ -137,16 +144,22 @@ function addOutcome(
   group: Action[],
   spawn: SpawnAction,
   outcome: Outcome,
+  ledger: Ledger,
 ): void {
   if ('defer' in outcome) {
     resolved.deferred.push(`${key}: ${outcome.defer}`)
-    resolved.steps.push(...plainSteps(findingCloses(group)))
+    resolved.steps.push(...plainSteps(findingCloses(group), ledger))
   } else if ('stall' in outcome)
     resolved.steps.push(
       ledgerStep(...findingCloses(group), stallUpdate(spawn.key, outcome.stall, outcome.cls)),
     )
   else {
-    resolved.steps.push(...plainSteps(group.filter(a => a !== spawn)))
+    resolved.steps.push(
+      ...plainSteps(
+        group.filter(a => a !== spawn),
+        ledger,
+      ),
+    )
     resolved.steps.push({ kind: 'spawn', key: spawn.key, frame: outcome.frame })
     resolved.spawns += 1
     if (outcome.pool !== undefined) resolved.charged.push(outcome.pool)
@@ -165,9 +178,16 @@ const stallUpdate = (key: ClaimKey, reason: string, cls: ExceptionClass): Action
   patch: { stalledReason: reason, stalledClass: cls },
 })
 
-function plainSteps(actions: Action[]): Step[] {
+/** A release is its ledger write, then the retire of every agent on the claim as it stood before the write. */
+function releaseSteps(a: Extract<Action, { kind: 'release' }>, ledger: Ledger): Step[] {
+  const claim = heldClaims(ledger).find(c => sameClaim(c, a.key))
+  return claim === undefined ? [ledgerStep(a)] : [ledgerStep(a), retireAll(claim)]
+}
+
+function plainSteps(actions: Action[], ledger: Ledger): Step[] {
   return actions.flatMap((a): Step[] => {
     if (a.kind === 'retire') return [a]
+    if (a.kind === 'release') return releaseSteps(a, ledger)
     if (a.kind === 'register') return [{ kind: 'register', key: a.key, registration: a.registration }]
     if (a.kind === 'spawn') return []
     return [ledgerStep(a)]
@@ -396,6 +416,8 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
   if (typeof t === 'string') return t
   const planner = d.profile === PLANNER_PROFILE
   const key: ClaimKey = d.slice === undefined ? { taskId: d.task } : { taskId: d.task, slice: d.slice }
+  const priorBranch = ctx.priorBranch?.(key)
+  if (priorBranch !== undefined) t.priorBranch = priorBranch
   const at = ctx.now.toISOString()
   const intent = {
     phase: 'spawning' as const,

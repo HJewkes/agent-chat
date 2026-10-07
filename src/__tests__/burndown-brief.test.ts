@@ -127,6 +127,15 @@ describe('successor briefs', () => {
   })
 })
 
+describe('worker brief after a release (CC-698)', () => {
+  it('names the branch a previous attempt left, and says nothing of one otherwise', () => {
+    expect(workerBrief(task({ priorBranch: 'agent-chat/st-dm-1' }))).toContain(
+      'A previous attempt left branch agent-chat/st-dm-1',
+    )
+    expect(workerBrief(task())).not.toContain('previous attempt')
+  })
+})
+
 describe('successor after a stall', () => {
   it('fences the diff summary as data and caps it at 40 lines', () => {
     const summary = Array.from({ length: 60 }, (_, i) => ` src/file-${i}.ts | 2 +-`).join('\n')

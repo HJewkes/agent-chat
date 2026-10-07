@@ -185,6 +185,12 @@ const LadderRecord = z.object({
   occurrence: z.string().optional(),
   /** When the ladder last stalled the claim for its owner. */
   owner: z.string().datetime().optional(),
+  /** Rung-2 releases of this key (CC-698); absent before the first. */
+  releases: z.number().int().nonnegative().optional(),
+  /** The branch the last release kept, the stall code that sent it there, and the seat to tell. */
+  branch: z.string().optional(),
+  code: z.enum(STALL_CODES).optional(),
+  seat: z.string().optional(),
 })
 export type LadderRecord = z.infer<typeof LadderRecord>
 

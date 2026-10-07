@@ -66,6 +66,13 @@ export function readProgress(worktree: string, exec: Runner = run): Progress | '
   }
 }
 
+/** The branch a worktree has checked out, or undefined when git cannot say (detached HEAD included). */
+export function branchOf(worktree: string, exec: Runner = run): string | undefined {
+  const out = exec(GIT_BIN, ['symbolic-ref', '--short', 'HEAD'], worktree)
+  const name = out.status === 0 ? out.stdout.trim() : ''
+  return name === '' ? undefined : name
+}
+
 /**
  * What a stalled agent left in its worktree, for its successor's brief (CC-660):
  * `git diff --stat` of the branch against its base, then `git status --short`.

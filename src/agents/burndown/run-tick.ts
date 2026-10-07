@@ -13,9 +13,9 @@ import { activeWorkRoot } from '../active-work.js'
 import { seatMergedLog } from '../seats/dispatch-log.js'
 import { seatJournal } from '../seats/journal.js'
 import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
-import { advance, applyActions, claimKey, type InboxMessage } from './advance.js'
+import { advance, applyActions, claimKey, type ClaimKey, type InboxMessage } from './advance.js'
 import { withFindings } from './finding.js'
-import { ladderActions } from './ladder.js'
+import { ladderActions, releasesSince } from './ladder.js'
 import { verifySection } from './brief.js'
 import { gatePool, pickAccount } from './budget-gate.js'
 import { collisionCheck, type BrokerView, type CollisionReader } from './collision.js'
@@ -45,7 +45,7 @@ import {
   type Roster,
 } from './observe.js'
 import { DEFAULT_NAME_PREFIX, plan, type Capacity, type Dispatch, type PlanInputs } from './plan.js'
-import { diffSummary } from './progress.js'
+import { branchOf, diffSummary } from './progress.js'
 import { defaultAutonomyRoot } from './policy.js'
 import { describeSeatEvents, deliverSeatEvents, type OpenSender } from './seat-deliver.js'
 import type { SpawnResult } from './seat-events.js'
@@ -224,6 +224,8 @@ async function actOn(
     log,
     now,
   })
+  for (const r of releasesSince(ledger, executed.ledger))
+    log('burndown_release', { task: r.taskId, slice: r.slice, code: r.code, branch: r.branch, n: r.n })
   const woken = await actOnTriage(
     config,
     triage,
@@ -333,6 +335,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     ...stepContext(world, config, now, root),
     ...(seats === undefined ? {} : { seat: seatLookup(seats) }),
     running: (name: string) => isRunning(roster, name),
+    priorBranch: (key: ClaimKey) => ledger.ladder?.[claimKey(key)]?.branch,
     tasks: new Map([...world.tasks, ...seatClaimTasks(held, world, root)]),
   }
   const capacity = agentCapacity(config, ledger.claims, roster)
@@ -348,6 +351,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     {
       enabled: config.ladder.enabled,
       diffSummary: w => diffSummary(w, opts.exec ?? run),
+      branch: w => branchOf(w, opts.exec ?? run),
       live: name => mayRun(roster, name),
       now,
     },

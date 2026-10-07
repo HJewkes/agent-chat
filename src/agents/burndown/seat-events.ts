@@ -1,6 +1,7 @@
 import { claimKey, type ClaimKey } from './advance.js'
 import type { Claim, Ledger } from './ledger.js'
 import type { StallCode } from './stall-code.js'
+import { releasesSince } from './ladder.js'
 import { ownerDue, stallDetail } from './triage.js'
 
 /**
@@ -16,6 +17,7 @@ export const EVENT_KINDS = [
   'stalled-after-claim',
   'parked',
   'leak',
+  'released',
 ] as const
 export type EventKind = (typeof EVENT_KINDS)[number]
 
@@ -100,6 +102,8 @@ function stillHolds(claim: Claim, entry: string): boolean {
   if (kind === 'stalled') return claim.stalledReason !== undefined && sameCode(code, claim.stallCode)
   if (kind === 'stalled-after-claim') return claim.finding !== undefined && sameCode(code, claim.finding.code)
   if (kind === 'leak') return claim.leak !== undefined
+  // A release is told from the ledger diff, so a claim never holds it.
+  if (kind === 'released') return false
   // ready-to-merge stays on a done claim: `merged` reads it there.
   return true
 }
@@ -127,6 +131,17 @@ export function seatEvents(before: Ledger, after: Ledger, spawnResults: readonly
     const held = heldNotified(claim)
     const fresh = kindsOf(at(before, claim), claim, spawned).filter(e => !told(held, e))
     if (fresh.length > 0) (out[claim.seat] ??= []).push(...fresh)
+  }
+  for (const r of releasesSince(before, after)) {
+    if (r.seat === undefined) continue
+    const detail = r.branch === undefined ? 'no branch was readable' : `branch ${r.branch} kept`
+    ;(out[r.seat] ??= []).push({
+      kind: 'released',
+      taskId: r.taskId,
+      ...(r.slice === undefined ? {} : { slice: r.slice }),
+      detail: withCode(r.code, detail),
+      ...(r.code === undefined ? {} : { code: r.code }),
+    })
   }
   return out
 }

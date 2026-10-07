@@ -171,6 +171,8 @@ const registers: string[][] = []
 
 /** `gh` and `titan-factory` answer from stubs, with every Shepherd register recorded; `git` runs for real. */
 const exec: Runner = (bin, args, cwd) => {
+  if (bin === 'git' && /\b(branch -D|worktree remove|push --delete)\b/.test(args.join(' ')))
+    gitWrites.push(args.join(' '))
   if (bin === SHEPHERD_BIN && args.includes('register')) registers.push(args)
   return bin === 'gh'
     ? { status: 0, stdout: '' }
@@ -186,12 +188,31 @@ const heldClaim = (): Claim | undefined => ledger().claims.find(c => c.phase !==
 const names = (fake: Fake): string[] => fake.frames.map(f => f.name)
 const liveAgents = (fake: Fake): string[] => fake.agents.filter(a => a.state === 'live').map(a => a.name)
 
+const logged: { event: string; detail: Record<string, unknown> }[] = []
+const gitWrites: string[] = []
+
 /** One tick at `minutes`, returning the claim's live agents once it ends. */
 async function tickAt(fake: Fake, minutes: number): Promise<string[]> {
   freshAccount(at(minutes))
-  await tickFromDisk({ dryRun: false, broker: fake.broker, now: at(minutes), log: () => {}, exec })
+  const logRow = (event: string, detail: Record<string, unknown>): void => void logged.push({ event, detail })
+  await tickFromDisk({ dryRun: false, broker: fake.broker, now: at(minutes), log: logRow, exec })
   return liveAgents(fake)
 }
+
+const timedOutClaimShape = (): Claim => ({
+  taskId: 'DM-1',
+  initiative: 'demo',
+  seat: 'seat-t',
+  namePrefix: 'st',
+  agentId: 'id-st-dm-1',
+  agentName: 'st-dm-1',
+  spawned: ['st-dm-1'],
+  worktree: worktree(),
+  spawnedAt: at(-300).toISOString(),
+  phase: 'implementing',
+  phaseAt: at(-300).toISOString(),
+  notified: ['dispatched'],
+})
 
 /** DM-1 implementing for five hours (past its four-hour timeout), with a commit and an edit left in its worktree. */
 function timedOutClaim(): void {
@@ -200,21 +221,7 @@ function timedOutClaim(): void {
   git(worktree(), 'add', '.')
   git(worktree(), 'commit', '-q', '-m', 'start DM-1')
   write(path.join(worktree(), 'src', 'a.ts'), 'two\n')
-  const claim: Claim = {
-    taskId: 'DM-1',
-    initiative: 'demo',
-    seat: 'seat-t',
-    namePrefix: 'st',
-    agentId: 'id-st-dm-1',
-    agentName: 'st-dm-1',
-    spawned: ['st-dm-1'],
-    worktree: worktree(),
-    spawnedAt: at(-300).toISOString(),
-    phase: 'implementing',
-    phaseAt: at(-300).toISOString(),
-    notified: ['dispatched'],
-  }
-  writeLedger(burndownLedgerPath(), { version: 1, claims: [claim] })
+  writeLedger(burndownLedgerPath(), { version: 1, claims: [timedOutClaimShape()] })
 }
 
 beforeEach(() => {
@@ -237,6 +244,8 @@ beforeEach(() => {
   seatWorld()
   timedOutClaim()
   registers.length = 0
+  logged.length = 0
+  gitWrites.length = 0
 })
 
 afterEach(() => {
@@ -331,7 +340,11 @@ describe('a spawn that never lands (CC-660 E1)', () => {
       phaseAt: at(-30).toISOString(),
       nextPhase: 'implementing',
     }
-    writeLedger(burndownLedgerPath(), { version: 1, claims: [stuck] })
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [stuck],
+      ladder: { 'DM-1#': { respawns: 0, releases: 1, lastAt: at(-60).toISOString() } },
+    })
     const fake = fakeBroker([{ ok: true }])
     fake.agents.length = 0
     fake.broker.spawn = async frame => {
@@ -372,5 +385,61 @@ describe('a refused rung-1 retire (CC-660 E1)', () => {
 
     expect(live).toEqual([['st-dm-1'], ['st-dm-1'], ['st-dm-1'], ['st-dm-1']])
     expect(names(fake)).toEqual([])
+  })
+})
+
+const releasedSends = (fake: Fake): string[] =>
+  fake.sends.flatMap(text => text.split('\n').filter(l => l.startsWith('released ')))
+
+/** DM-1 as a fresh claim again, the way a dispatch after the release backoff would leave it, its ledger records kept. */
+function redispatched(fake: Fake, minutes: number): void {
+  const held = ledger()
+  const again: Claim = { ...timedOutClaimShape(), phaseAt: at(minutes - 300).toISOString() }
+  writeLedger(burndownLedgerPath(), { ...held, claims: [again] })
+  fake.agents.find(a => a.name === 'st-dm-1')!.state = 'live'
+}
+
+describe('rung 2, release with the branch kept (CC-698)', () => {
+  it('respawns, then releases, then tells the owner once, over four ticks with the ledger re-read each time', async () => {
+    const fake = fakeBroker([{ ok: true }])
+
+    for (const minutes of [0, 10, 20]) await tickAt(fake, minutes)
+    const respawned = { names: names(fake), claim: heldClaim() }
+    await tickAt(fake, 320)
+    const released = { claim: heldClaim(), ladder: ledger().ladder?.['DM-1#'], releases: ledger().releases }
+    redispatched(fake, 330)
+    await tickAt(fake, 330)
+
+    expect(respawned.names).toEqual(['st-dm-1-s1'])
+    expect(respawned.claim).toMatchObject({ phase: 'implementing', agentName: 'st-dm-1-s1' })
+    expect(released.claim).toBeUndefined()
+    expect(released.ladder).toMatchObject({ respawns: 1, releases: 1, branch: 'agent-chat/st-dm-1' })
+    expect(released.releases?.['DM-1']).toMatchObject({ n: 1 })
+    expect(heldClaim()).toMatchObject({ stallCode: expect.any(String), stalledClass: 'stalled' })
+    expect(heldClaim()?.stalledReason).toMatch(/ladder exhausted after a respawn/)
+    expect(stalledSends(fake)).toHaveLength(1)
+    expect(ledger().ladder?.['DM-1#']).toMatchObject({ releases: 1, owner: at(330).toISOString() })
+  })
+
+  it('writes no branch deletion, worktree removal or remote branch delete, and keeps the branch', async () => {
+    const fake = fakeBroker([{ ok: true }])
+
+    for (const minutes of [0, 10, 20, 320]) await tickAt(fake, minutes)
+
+    expect(gitWrites).toEqual([])
+    expect(git(repo(), 'branch', '--list', 'agent-chat/st-dm-1')).toContain('agent-chat/st-dm-1')
+    expect(fs.existsSync(worktree())).toBe(true)
+  })
+
+  it('logs burndown_release and tells the seat, both naming the branch', async () => {
+    const fake = fakeBroker([{ ok: true }])
+
+    for (const minutes of [0, 10, 20, 320]) await tickAt(fake, minutes)
+
+    const rows = logged.filter(l => l.event === 'burndown_release')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.detail).toMatchObject({ task: 'DM-1', branch: 'agent-chat/st-dm-1', n: 1 })
+    expect(releasedSends(fake)).toHaveLength(1)
+    expect(releasedSends(fake)[0]).toContain('agent-chat/st-dm-1')
   })
 })
