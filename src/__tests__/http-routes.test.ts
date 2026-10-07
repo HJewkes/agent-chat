@@ -423,8 +423,8 @@ describe('write routes', () => {
     })
 
     it('cannot answer an approval request that has aged past APPROVAL_TTL_MS', async () => {
-      const log = new EventLog(path.join(tmpDir('agent-chat-aged-'), 'events.db'))
-      const core = new BrokerCore(() => undefined, { events: log, registry: new Registry<Conn>() })
+      const core = makeCore()
+      const log = core.events as unknown as { db: { exec: (sql: string) => void } }
       const item = core.append({
         kind: 'approval_request',
         actor: 'alpha',
