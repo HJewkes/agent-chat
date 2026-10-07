@@ -121,6 +121,7 @@ interface Fake {
   frames: SpawnFrame[]
   retires: string[]
   agents: AgentIdentity[]
+  sends: string[]
 }
 
 const nextReply = (replies: SpawnReply[], n: number): SpawnReply =>
@@ -132,6 +133,7 @@ function fakeBroker(spawns: SpawnReply[], retires: SpawnReply[] = []): Fake {
     frames: [],
     retires: [],
     agents: [row('st-dm-1', 'live', worktree())],
+    sends: [],
     broker: {} as TickBroker,
   }
   fake.broker = {
@@ -154,7 +156,10 @@ function fakeBroker(spawns: SpawnReply[], retires: SpawnReply[] = []): Fake {
     resume: async name => ({ ok: true, agentId: `id-${name}` }),
     collisionView: async () => ({ names: [], claims: [] }),
     seatSender: async () => ({
-      send: async () => ({ ok: true }),
+      send: async (_to, text) => {
+        fake.sends.push(text)
+        return { ok: true }
+      },
       notify: async () => ({ ok: true }),
       close: () => {},
     }),
@@ -264,6 +269,55 @@ describe('a refused rung-1 respawn (CC-660 E1)', () => {
     for (const minutes of [0, 10]) await tickAt(fake, minutes)
 
     expect(names(fake)).toEqual(['st-dm-1-s1'])
+    expect(ledger().ladder?.['DM-1#']).toMatchObject({ respawns: 0 })
+  })
+})
+
+const stalledSends = (fake: Fake): string[] =>
+  fake.sends.flatMap(text => text.split('\n').filter(l => l.startsWith('stalled ')))
+
+const retireBudget = (): unknown => ledger().liveness?.['DM-1#|retire:st-dm-1']
+
+describe('a rung-1 retire against the liveness budget (CC-660 E1)', () => {
+  it('parks the claim retry-spent on the third refusal, with one stalled notice and no spawn', async () => {
+    const fake = fakeBroker([{ ok: true }], [{ ok: false, reason: 'worktree holds unmerged work' }])
+
+    for (const minutes of [0, 10, 20, 30, 40]) await tickAt(fake, minutes)
+
+    expect(fake.retires).toEqual(['st-dm-1', 'st-dm-1', 'st-dm-1'])
+    expect(names(fake)).toEqual([])
+    expect(heldClaim()).toMatchObject({ stallCode: 'retry-spent', stalledClass: 'failed' })
+    expect(heldClaim()?.stalledReason).toContain('st-dm-1')
+    expect(heldClaim()?.stalledReason).toContain(worktree())
+    expect(heldClaim()?.respawn).toBeUndefined()
+    expect(stalledSends(fake)).toHaveLength(1)
+    expect(stalledSends(fake)[0]).toMatch(/^stalled DM-1: retry-spent: /)
+  })
+
+  it('spawns the successor after a retire refused twice is accepted, and forgets the refusals', async () => {
+    const busy: SpawnReply = { ok: false, reason: 'worktree holds unmerged work' }
+    const fake = fakeBroker([{ ok: true }], [busy, busy, { ok: true }])
+
+    await tickAt(fake, 0)
+    await tickAt(fake, 10)
+    const spentAfterTwo = retireBudget()
+    await tickAt(fake, 20)
+    await tickAt(fake, 30)
+
+    expect(spentAfterTwo).toMatchObject({ byFact: expect.any(Object) })
+    expect(Object.values((spentAfterTwo as { byFact: Record<string, { n: number }> }).byFact)[0]?.n).toBe(2)
+    expect(names(fake)).toEqual(['st-dm-1-s1'])
+    expect(retireBudget()).toBeUndefined()
+    expect(heldClaim()?.stalledReason).toBeUndefined()
+  })
+
+  it('counts no respawn when the successor spawn parks retry-spent', async () => {
+    const fake = fakeBroker([REFUSED])
+
+    for (const minutes of [0, 10, 20, 30, 40, 50]) await tickAt(fake, minutes)
+
+    expect(names(fake)).toEqual(['st-dm-1-s1', 'st-dm-1-s1', 'st-dm-1-s1'])
+    expect(heldClaim()).toMatchObject({ stallCode: 'retry-spent' })
     expect(ledger().ladder?.['DM-1#']).toMatchObject({ respawns: 0 })
   })
 })

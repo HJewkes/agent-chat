@@ -61,11 +61,14 @@ function triggerOf(action: Update, claims: ReadonlyMap<string, Claim>): Trigger 
 
 const keyOf = (claim: Claim): ClaimKey => ({ taskId: claim.taskId, slice: claim.slice })
 
-/** Rung 1 ran for an earlier occurrence: counted, or started on one the claim has since left by spawning. */
+/** Rung 1 ran for an earlier occurrence: counted, or started on one the claim has since left by a spawn that went out; a spawn parked retry-spent never did. */
 const respawned = (claim: Claim, record: LadderRecord | undefined): boolean =>
   record !== undefined &&
   (record.respawns > 0 ||
-    (record.occurrence !== undefined && record.occurrence !== claim.phaseAt && claim.respawn === undefined))
+    (record.occurrence !== undefined &&
+      record.occurrence !== claim.phaseAt &&
+      claim.respawn === undefined &&
+      claim.stallCode !== 'retry-spent'))
 
 const respawnCount = (claim: Claim, record: LadderRecord | undefined): number =>
   Math.max(respawned(claim, record) ? 1 : 0, record?.respawns ?? 0)

@@ -529,6 +529,18 @@ describe('burndown tick retires refused after a claim is done', () => {
     expect(lines).toContain(`DM-1 (demo) done, UNRETIRED bd-dm-1: ${TENANCY}`)
   })
 
+  it('shows the unretired agent of a claim mid-respawn in burndown status', () => {
+    const marked = doneClaim({
+      phase: 'implementing',
+      respawn: { code: 'phase-timeout', occurrence: NOON.toISOString() },
+      unretired: [{ name: 'bd-dm-1', reason: TENANCY, at: REFUSED }],
+    })
+
+    const lines = renderStatus({ version: 1, claims: [marked] }, NOON)
+
+    expect(lines).toContain(`DM-1 (demo) respawning, UNRETIRED bd-dm-1: ${TENANCY}`)
+  })
+
   it('retries in the recorded order, so a successor still goes before its predecessor', async () => {
     initiative({})
     const unretired = ['bd-dm-1-s1', 'bd-dm-1'].map(name => ({ name, reason: TENANCY, at: REFUSED }))

@@ -109,9 +109,12 @@ export async function execute(steps: Step[], start: Ledger, deps: ExecuteDeps): 
     if (step.kind === 'ledger') commit(step.actions)
     else if (step.kind === 'retire') {
       const retired = await retireAll(step, deps)
-      ledger = withUnretired(ledger, step.key, retired.left, step.held === true)
+      const recorded = withUnretired(ledger, step.key, retired.left, step.held === true)
+      const budgeted =
+        step.held === true ? spendHeldRetire(recorded, step, retired.left, deps.now) : undefined
+      ledger = budgeted?.ledger ?? recorded
       writeLedger(deps.ledgerFile, ledger)
-      lines.push(...retired.lines)
+      lines.push(...retired.lines, ...(budgeted?.lines ?? []))
     } else if (step.kind === 'register') lines.push(registerOne(step, { ledger, save }, deps))
     else lines.push(await spawnOne(step, { start, ledger, save }, deps))
   }
@@ -126,6 +129,49 @@ export function withUnretired(ledger: Ledger, key: ClaimKey, left: Unretired[], 
   const claims = [...ledger.claims]
   claims[index] = left.length === 0 ? claim : { ...claim, unretired: left }
   return { ...ledger, claims }
+}
+
+/** The liveness action a held retire spends under: one budget per claim and agent. */
+const retireAction = (name: string): string => `retire:${name}`
+
+/**
+ * A held (ladder) retire spends the claim's liveness budget per agent (CC-660): a
+ * success forgets that agent's refusals, and the third refusal with unchanged facts
+ * parks the claim retry-spent, its respawn mark cleared, for the owner.
+ */
+function spendHeldRetire(
+  ledger: Ledger,
+  step: Extract<Step, { kind: 'retire' }>,
+  left: readonly Unretired[],
+  now: Date,
+): { ledger: Ledger; lines: string[] } {
+  const claim = ledger.claims.findLast(c => c.phase !== 'done' && sameClaim(c, step.key))
+  let next = ledger
+  for (const name of step.names) {
+    const refusal = left.find(u => u.name === name)
+    if (refusal === undefined) {
+      next = clearLiveness(next, step.key, retireAction(name))
+      continue
+    }
+    const facts = factFingerprint({ name, worktree: claim?.worktree })
+    const spent = spend(next, step.key, retireAction(name), facts, refusal.reason, now)
+    next = spent.ledger
+    if (spent.verdict === 'park') return parkRetire(next, step.key, { name, n: spent.n, claim, refusal }, now)
+  }
+  return { ledger: next, lines: [] }
+}
+
+function parkRetire(
+  ledger: Ledger,
+  key: ClaimKey,
+  { name, n, claim, refusal }: { name: string; n: number; claim?: Claim; refusal: Unretired },
+  now: Date,
+): { ledger: Ledger; lines: string[] } {
+  const kept = claim?.worktree === undefined ? '' : `; worktree ${claim.worktree} kept`
+  const detail = `retire of ${name} refused ${n} times with unchanged facts${kept}; last: ${maskText(refusal.reason)}`
+  const park = parkUpdate(key, 'retry-spent', detail)
+  const parked = applyActions(ledger, [{ ...park, patch: { ...park.patch, respawn: undefined } }], now)
+  return { ledger: parked, lines: [`not respawned ${claimKey(key)}: retry-spent: ${detail}`] }
 }
 
 /** A spawn whose claim is not already recorded in `spawning` under this name is refused, whatever built the steps. */
