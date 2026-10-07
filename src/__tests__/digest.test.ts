@@ -9,11 +9,12 @@ import { reportStatus } from '../digest/ledger.js'
 import type { Search } from '../digest/prs.js'
 import { renderDigest } from '../digest/render.js'
 import { parseSince } from '../digest/window.js'
+import { writePoolCharter } from './helpers/pool-charter.js'
 
 /**
  * The digest over a fixture world: an events.db written through the real
- * EventLog, an active-work root, a burndown ledger and config, and one
- * account's status cache. Nothing here reads the developer's own files.
+ * EventLog, an active-work root, a burndown ledger, a charter's pools, and
+ * one account's status cache. Nothing here reads the developer's own files.
  */
 
 const HOUR = 3_600_000
@@ -84,10 +85,15 @@ beforeEach(() => {
   process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = path.join(world, 'aw')
   process.env.CLAUDE_PROFILE_ROOT = path.join(world, 'profiles')
   delete process.env.AGENT_CHAT_STATUS_CACHE
-  write(
-    path.join(homeDir(), 'burndown.config.json'),
-    JSON.stringify({ accounts: { agents: { reserve_seven_day: 25, ceiling_five_hour: 70 } } }),
-  )
+  // CC-801: the gate reads the charter's pools; these are the numbers the retired default rules held.
+  writePoolCharter(path.join(world, 'aw', 'claude-channels', 'sources', 'autonomy'), {
+    agents: {
+      config_dir: path.join(world, 'profiles', 'agents'),
+      human_uses: true,
+      reserve_seven_day: 25,
+      ceiling_five_hour: 70,
+    },
+  })
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(NOW)
 })

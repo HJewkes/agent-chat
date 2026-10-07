@@ -89,13 +89,13 @@ describe('seat budget from the charter and seat file', () => {
     expect(SEAT_B.spend).toEqual({ per_run_points: 14, per_day_points: 25 })
   })
 
-  it('leaves the pool unset for a seat whose pool the charter lacks, which closes the gate', () => {
+  it('names a pool the charter lacks and closes its gate (CC-801)', () => {
     const { charter, seat } = loadPolicy(FIXTURE, 'seat-b')
     const budget = seatBudget(charter, { ...seat, pool: 'pool-missing' })
 
-    expect(budget.pool).toBeUndefined()
+    expect(budget.pool).toEqual({ name: 'pool-missing', human_uses: true })
     expect(gate({ budget }).reason).toBe(
-      'BUDGET-PAUSE pool unknown: no reserve_seven_day and ceiling_five_hour for this pool in the charter',
+      'BUDGET-PAUSE pool pool-missing: no reserve_seven_day and ceiling_five_hour for this pool in the charter',
     )
   })
 
