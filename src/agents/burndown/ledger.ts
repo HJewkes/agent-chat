@@ -212,6 +212,14 @@ const BrakeState = z.object({
 })
 export type BrakeState = z.infer<typeof BrakeState>
 
+/** A seat's run of refused deliveries (CC-640); `skipped` counts the ticks a stopped seat was held back since its last probe. */
+const WakeRecord = z.object({
+  failed: z.number().int().positive(),
+  reason: z.string().optional(),
+  skipped: z.number().int().nonnegative().optional(),
+})
+export type WakeRecord = z.infer<typeof WakeRecord>
+
 const Ledger = z.object({
   version: z.literal(1),
   lastTickAt: z.string().optional(),
@@ -235,6 +243,8 @@ const Ledger = z.object({
   brake: BrakeState.optional(),
   /** The last `titan-factory service check` read; the line stops on two stopping reads in a row (CC-785). */
   serviceCheck: z.object({ at: z.string().datetime(), cause: z.string().nullable() }).optional(),
+  /** Consecutive refused deliveries by seat name; a delivered message drops the seat's entry (CC-640). */
+  wake: z.record(z.string(), WakeRecord).optional(),
 })
 export type Ledger = z.infer<typeof Ledger>
 
