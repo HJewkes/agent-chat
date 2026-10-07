@@ -1,6 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { z } from 'zod'
+import { logEvent } from '../../broker/log.js'
+import { IllegalPhaseEdgeError, illegalEdges } from './claim-phase.js'
 import { EXCEPTION_CLASSES } from './exception.js'
 import { Contract } from './report.js'
 import { STALL_CODES } from './stall-code.js'
@@ -268,8 +270,23 @@ export function readLedger(file: string): Ledger {
   return parsed.data
 }
 
+/** A ledger that cannot be read is not a baseline, so the first write after it is unchecked (CC-674). */
+function refuseIllegalEdges(file: string, next: Ledger): void {
+  let before: Ledger
+  try {
+    before = readLedger(file)
+  } catch {
+    return
+  }
+  const [edge] = illegalEdges(before.claims, next.claims)
+  if (edge === undefined) return
+  logEvent('burndown_illegal_phase_edge', { ...edge })
+  throw new IllegalPhaseEdgeError(`claim ${edge.claim} may not move from ${edge.from} to ${edge.to}`)
+}
+
 /** Write-then-rename in the same directory, so a reader never sees half a ledger. */
 export function writeLedger(file: string, ledger: Ledger): void {
+  refuseIllegalEdges(file, ledger)
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const tmp = `${file}.${process.pid}.tmp`
   fs.writeFileSync(tmp, `${JSON.stringify(ledger, null, 2)}\n`, { mode: 0o600 })
