@@ -216,7 +216,6 @@ const stubGh =
           ? { status: 0, stdout: 'https://github.com/Acme/Widgets.git\n' }
           : run(bin, args, cwd)
 
-/** The downstream WIP read asks the fixture checkout for its origin, which is a local bare repo; the stub names a GitHub one. */
 const isOriginLookup = (bin: string, args: string[]): boolean =>
   bin === 'git' && args.includes('remote') && args.includes('get-url')
 
@@ -960,36 +959,18 @@ describe('burndown tick in seats mode', () => {
     expect(statusReads).toHaveLength(1)
   })
 
-  it('refuses the implementer when Shepherd holds the repo at its downstream WIP limit', async () => {
+  it('spawns an implementer with three PRs downstream and one reviewer when the seat cap allows it', async () => {
+    seatPolicy({ implementers: 4 })
     seatInitiative({ 'DM-1': seatTask('DM-1') })
-    const exec = stubGh(undefined, () => ({ status: 0, stdout: shepherdStatus(['review', 'merging', 'ci']) }))
-    const root = path.join(world, 'aw')
-    const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
+    const exec = stubGh(undefined, () => ({
+      status: 0,
+      stdout: shepherdStatus(['review', 'merging', 'awaiting-approval']),
+    }))
 
     const lines = await tick(fakeBroker(), true, () => {}, exec)
-    const planned = seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot, exec })
 
-    const reason =
-      'acme/widgets has 2 PRs in review or waiting, at its WIP limit of 2 (2x concurrency.reviewers, at least 2)'
-    expect(lines).toContainEqual(expect.stringContaining(`refused demo DM-1 [wip]: ${reason}`))
-    expect(lines.join('\n')).not.toContain('would spawn st-dm-1')
-    expect(planned.dispatch).toEqual([])
-    expect(planned.refusals).toEqual([expect.objectContaining({ task: 'DM-1', kind: 'wip', reason })])
-  })
-
-  it('refuses the implementer as unknown downstream WIP when Shepherd status fails', async () => {
-    seatInitiative({ 'DM-1': seatTask('DM-1') })
-    const exec = stubGh(undefined, () => ({ status: 1, stdout: '', stderr: 'shepherd down' }))
-    const root = path.join(world, 'aw')
-    const autonomyRoot = path.join(root, 'claude-channels', 'sources', 'autonomy')
-
-    const lines = await tick(fakeBroker(), true, () => {}, exec)
-    const planned = seatPlanFromDisk({ seat: 'seat-t', now: NOON, root, autonomyRoot, exec })
-
-    const reason = `could not read Shepherd status, so downstream WIP for ${repo()} is unknown`
-    expect(lines).toContainEqual(expect.stringContaining(`refused demo DM-1 [wip]: ${reason}`))
-    expect(planned.dispatch).toEqual([])
-    expect(planned.refusals).toEqual([expect.objectContaining({ task: 'DM-1', kind: 'wip', reason })])
+    expect(lines.join('\n')).toContain('would spawn st-dm-1')
+    expect(lines.join('\n')).not.toContain('[wip]')
   })
 
   it('stops at the pool gate with the BUDGET-PAUSE reason', async () => {

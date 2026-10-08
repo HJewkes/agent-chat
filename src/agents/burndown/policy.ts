@@ -79,8 +79,6 @@ const Repo = z.looseObject({
   path: z.string().min(1),
   default: z.string().optional(),
   initiatives: orEmpty(z.array(z.string()), []),
-  /** CC-784: overrides the seat's default downstream WIP limit for this checkout. */
-  wip_limit: z.number().int().nonnegative().optional(),
   /** CC-834: `false` marks a path that is not a git checkout, so the landed check never reads it. */
   git: z.boolean().optional(),
 })
