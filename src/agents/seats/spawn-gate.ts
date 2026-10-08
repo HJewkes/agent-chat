@@ -103,7 +103,7 @@ function spawnCaps(
   }
 }
 
-/** Allows on a missing or stale reading; refuses past a stop, and opus inside 10 points of a ceiling. */
+/** Allows on a missing or stale reading; refuses past a stop, and opus inside the pool's sonnet band. */
 export function seatSpawnGate(input: SeatSpawnInput): SeatSpawnVerdict {
   const { seat, pool, reading, now } = input
   const who = `seat ${seat.name}`

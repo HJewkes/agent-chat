@@ -174,6 +174,46 @@ describe('the seat spawn gate', () => {
     expect(sonnet.allow).toBe(true)
   })
 
+  describe("with the pool's sonnet_band_points", () => {
+    const banded = (band: number | undefined, sevenDay: number) =>
+      seatSpawnGate(
+        input({
+          pool: { ...AGENTS, ...(band === undefined ? {} : { sonnetBandPoints: band }) },
+          reading: { sevenDay, fiveHour: 20, ageSeconds: 30 },
+          dayMeter: { since: DAY_START, last: sevenDay, spent: 0 },
+        }),
+      )
+
+    it('refuses opus 5 points under the seven_day line with a band of 10', () => {
+      const verdict = banded(10, 70)
+
+      expect(verdict.allow).toBe(false)
+      expect(verdict.reason).toContain('within 10 points, sonnet only')
+    })
+
+    it('allows opus 5 points under the seven_day line with a band of 0', () => {
+      const verdict = banded(0, 70)
+
+      expect(verdict.allow).toBe(true)
+      expect(verdict.reason).not.toContain('sonnet only')
+    })
+
+    it('treats a pool without the field as a band of 10', () => {
+      expect(banded(undefined, 70)).toEqual(banded(10, 70))
+    })
+
+    it('names the band it applied', () => {
+      expect(banded(6, 70).reason).toContain('within 6 points, sonnet only')
+    })
+
+    it('still closes at the seven_day line itself with a band of 0', () => {
+      const verdict = banded(0, 75)
+
+      expect(verdict.allow).toBe(false)
+      expect(verdict.reason).toContain('seven_day 75% at or above line 75%')
+    })
+  })
+
   it('refuses sonnet past the ceiling itself', () => {
     const verdict = seatSpawnGate(
       input({ model: 'sonnet', reading: { sevenDay: 40, fiveHour: 86, ageSeconds: 30 } }),

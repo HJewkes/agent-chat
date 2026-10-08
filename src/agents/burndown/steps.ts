@@ -17,7 +17,7 @@ import { heldClaims, sameClaim, type Claim, type Ledger } from './ledger.js'
 import { rowNamed, type Roster } from './observe.js'
 import type { Dispatch } from './plan.js'
 import { parseSlices } from './report.js'
-import { chargesOn, type PoolGateResult } from './budget-gate.js'
+import { chargesOn, sonnetBand, type PoolGateResult } from './budget-gate.js'
 import type { SeatDispatch } from './seat-dispatch.js'
 
 /**
@@ -222,7 +222,7 @@ function seatSetup(
   const closed = !gate.open
     ? gate.reason
     : gate.sonnetOnly
-      ? `${gate.pool} is within 10 points of a stop, sonnet only`
+      ? `${gate.pool} is within ${sonnetBand(dispatch.pool)} points of a stop, sonnet only`
       : undefined
   return {
     initiative,

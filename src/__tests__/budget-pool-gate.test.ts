@@ -384,6 +384,17 @@ describe('sonnet-only band', () => {
     expect(band.reason).toContain('within 10 points, sonnet only')
     expect(gate({ sevenDay: 69 })).toMatchObject({ open: true, sonnetOnly: false })
   })
+
+  it("narrows to the pool's sonnet_band_points and lifts at 0", () => {
+    const banded = (band: number) => ({
+      ...SEAT_B,
+      pool: { ...SEAT_B.pool, sonnet_band_points: band } as PoolRule,
+    })
+    expect(gate({ budget: banded(3), sevenDay: 77 }).reason).toContain('within 3 points, sonnet only')
+    expect(gate({ budget: banded(3), sevenDay: 76 })).toMatchObject({ open: true, sonnetOnly: false })
+    expect(gate({ budget: banded(0), fiveHour: 79 })).toMatchObject({ open: true, sonnetOnly: false })
+    expect(gate({ budget: banded(0), fiveHour: 80 }).open).toBe(false)
+  })
 })
 
 describe('points spent', () => {
