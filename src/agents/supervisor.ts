@@ -36,9 +36,10 @@ import {
   agentLiveness,
   awaitsExit,
   DetachedReaper,
-  detachedAtStart,
   hostProbe,
+  isStaleLive,
   launcherPid,
+  staleAtStart,
   type DeadLiveness,
   type ProcessProbe,
 } from './detached-reap.js'
@@ -725,6 +726,8 @@ export class Supervisor implements TeleportHost {
   private readonly poolPick: PoolPickReaders | undefined
   private readonly processProbe: ProcessProbe
   private readonly reaper: DetachedReaper
+  /** CC-489: rows the previous broker left without an exit, to their `lastEventAt`; each is probed once. */
+  private readonly staleAtBoot: Map<string, number>
 
   constructor(
     private readonly core: BrokerCore,
@@ -752,10 +755,14 @@ export class Supervisor implements TeleportHost {
     this.unwatch = core.onAppend(row => this.onRow(row))
     this.teleporter = new Teleport(core, this, options.countdownMs, options.argvReader)
     this.shadow = new LifecycleShadow(options.ledger)
-    for (const agent of detachedAtStart(core.agents.roster())) this.reapAtStart(agent.agentId)
+    this.staleAtBoot = staleAtStart(core.agents.roster())
+    for (const agentId of [...this.staleAtBoot.keys()]) this.reapAtStart(agentId)
   }
 
-  /** A launcher pid is direct evidence now; a session lookup waits one settle window for a reconnect. */
+  /**
+   * A launcher pid is direct evidence now; a session lookup waits one settle window for a reconnect.
+   * SETTLE_MS (30 s) is the boot window too: it clears the client's 8.85 s reconnect ladder with room for a slow start.
+   */
   private reapAtStart(agentId: string): void {
     if (launcherPid(agentId) === undefined) this.reaper.schedule(agentId)
     else this.reapIfDead(agentId)
@@ -807,6 +814,7 @@ export class Supervisor implements TeleportHost {
    * settle window infers an exit only once its launcher pid or its Claude Code session is gone.
    */
   private onUnwatchedRow(kind: string, agentId: string): void {
+    this.staleAtBoot.delete(agentId)
     if (kind === 'agent_detached') this.reaper.schedule(agentId)
     else this.reaper.cancel(agentId)
     if (kind === 'agent_attached') return this.countReattach(agentId)
@@ -846,10 +854,21 @@ export class Supervisor implements TeleportHost {
   /** CC-450: the row and the ledger only; the process is not ours to signal and has no surface to close. */
   private reapIfDead(agentId: string, probe: ProcessProbe = this.processProbe): void {
     const agent = this.core.agents.get(agentId)
-    if (!awaitsExit(agent) || this.live.has(agentId)) return
+    const since = this.staleAtBoot.get(agentId)
+    this.staleAtBoot.delete(agentId)
+    if (this.live.has(agentId)) return
+    if (awaitsExit(agent)) return this.reapProven(agent, probe, 'exit inferred while detached: ')
+    if (isStaleLive(agent, since) && this.core.registry.connFor(agent.name) === undefined)
+      this.reapProven(
+        agent,
+        probe,
+        'exit inferred at broker start: no reconnect since the previous broker stopped; ',
+      )
+  }
+
+  private reapProven(agent: AgentIdentity, probe: ProcessProbe, prefix: string): void {
     const liveness = agentLiveness(agent, probe)
-    if (!liveness.dead) return
-    this.recordInferredExit(agent, liveness, `exit inferred while detached: ${liveness.reason}`)
+    if (liveness.dead) this.recordInferredExit(agent, liveness, `${prefix}${liveness.reason}`)
   }
 
   /** The row and ledger write both the boot reaper and a resume of a stale `live` row make. */
