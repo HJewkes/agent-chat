@@ -856,14 +856,16 @@ export class Supervisor implements TeleportHost {
     const agent = this.core.agents.get(agentId)
     const since = this.staleAtBoot.get(agentId)
     this.staleAtBoot.delete(agentId)
-    if (this.live.has(agentId)) return
-    if (awaitsExit(agent)) return this.reapProven(agent, probe, 'exit inferred while detached: ')
-    if (isStaleLive(agent, since) && this.core.registry.connFor(agent.name) === undefined)
-      this.reapProven(
+    if (agent === undefined || this.live.has(agentId)) return
+    if (isStaleLive(agent, since)) {
+      if (this.core.registry.connFor(agent.name) !== undefined) return
+      return this.reapProven(
         agent,
         probe,
         'exit inferred at broker start: no reconnect since the previous broker stopped; ',
       )
+    }
+    if (awaitsExit(agent)) this.reapProven(agent, probe, 'exit inferred while detached: ')
   }
 
   private reapProven(agent: AgentIdentity, probe: ProcessProbe, prefix: string): void {
