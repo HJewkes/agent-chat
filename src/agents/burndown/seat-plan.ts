@@ -9,7 +9,7 @@ import {
   type Task,
 } from './eligibility.js'
 import { contractOverlap, type CollisionWork, type SameTickClaim } from './collision.js'
-import { stopLineRefusal, wipRefusal, type Downstream, type LineStop } from './flow-gate.js'
+import { stopLineRefusal, type LineStop } from './flow-gate.js'
 import { backoffHeld, type Hold } from './backoff.js'
 import { heldClaims, readySlices, type Claim, type Ledger } from './ledger.js'
 import type { AgentIdentity } from '../../protocol.js'
@@ -72,8 +72,6 @@ export interface SeatPlanInputs {
   trust?: (repo: string, cwd: string, configDir: string) => string | undefined
   /** Whether a held claim's tree is active (CC-279); absent, every held tree counts. */
   activeTree?: (claim: Claim) => boolean
-  /** A checkout's PRs in review or waiting (CC-629); absent, no WIP limit applies. */
-  downstream?: (repo: string) => Downstream
   /** Set while the service check has failed twice running (CC-629); absent, the line runs. */
   lineStop?: LineStop
   /** The seat's `scope_tags` and backlog (CC-779); absent, every scored row is in scope. */
@@ -437,7 +435,7 @@ function dispatchFor(work: Work, repo: string, reason: string, walk: Walk): Disp
   }
 }
 
-/** In D6's order: stop-line, collision, orphan, trust, role cap, worktree caps, WIP, then the pool gate. */
+/** In D6's order: stop-line, collision, orphan, trust, role cap, worktree caps, then the pool gate. */
 function blocker(d: Dispatch, work: CollisionWork, role: Role, walk: Walk): Refused | undefined {
   const { inputs } = walk
   const flow = { tags: work.tags, planner: role === 'planners' }
@@ -456,7 +454,6 @@ function blocker(d: Dispatch, work: CollisionWork, role: Role, walk: Walk): Refu
     untrusted() ??
     roleCap(role, walk) ??
     worktreeCap(d, walk) ??
-    wipRefusal(flow, d.repo, inputs.downstream?.(d.repo)) ??
     budgetRefusal(d.profile, walk.gate)
   )
 }

@@ -32,7 +32,6 @@ const SEAT: SeatDispatch = {
   repos: { alpha: [REPO, '/tmp/repos/alpha-docs'], beta: ['/tmp/repos/beta'] },
   caps: { implementers: 2, reviewers: 1, planners: 1 },
   worktrees: { perRepoPerSeat: 3, capName: 'worktrees_per_repo_per_seat', leftFreePerRepo: 2 },
-  wipLimits: {},
   excludedTags: [],
   grants: [],
 }
@@ -753,56 +752,9 @@ function stepContext(): StepContext {
   }
 }
 
-describe('planSeat downstream WIP and stop the line (CC-629)', () => {
-  const atLimit = () => ({ name: 'acme/widgets', count: 2, limit: 2, setting: 'wip_limit' })
-  const below = () => ({ ...atLimit(), count: 1 })
+describe('planSeat stop the line (CC-629)', () => {
   const stop = { previous: 'not loaded', current: 'not loaded', message: 'serve is not loaded' }
   const expedite = { tags: ['cos:expedite'] }
-
-  it('refuses an implementer with kind wip in a repo at its WIP limit', () => {
-    const plan = one('A-1', {}, {}, { downstream: atLimit })
-
-    expect(plan.dispatch).toEqual([])
-    expect(plan.refusals).toEqual([
-      expect.objectContaining({
-        task: 'A-1',
-        kind: 'wip',
-        reason: expect.stringContaining('WIP limit of 2'),
-      }),
-    ])
-  })
-
-  it('dispatches an implementer in a repo one below its WIP limit', () => {
-    const seen: string[] = []
-    const downstream = (repo: string) => (seen.push(repo), below())
-
-    expect(one('A-1', {}, {}, { downstream }).dispatch.map(d => d.task)).toEqual(['A-1'])
-    expect(seen).toEqual([REPO])
-  })
-
-  it('refuses with kind wip and says unknown when downstream could not be read', () => {
-    const downstream = () => ({ unknown: 'could not read Shepherd status' })
-
-    expect(one('A-1', {}, {}, { downstream }).refusals).toEqual([
-      expect.objectContaining({ kind: 'wip', reason: expect.stringContaining('is unknown') }),
-    ])
-  })
-
-  it('dispatches an expedite task at the WIP limit', () => {
-    expect(one('A-1', expedite, {}, { downstream: atLimit }).dispatch.map(d => d.task)).toEqual(['A-1'])
-  })
-
-  it('lets a planner route ignore the WIP limit', () => {
-    const plan = one('A-1', { estimate: 5 }, { route: 'planner' }, { downstream: atLimit })
-
-    expect(plan.dispatch.map(d => d.profile)).toEqual(['bd-planner'])
-  })
-
-  it('reports a worktree cap before the WIP limit', () => {
-    const seat = { ...SEAT, worktrees: { ...SEAT.worktrees, perRepoPerSeat: 0 } }
-
-    expect(refusalOf(one('A-1', {}, {}, { seat, downstream: atLimit }))).toEqual([['A-1', 'worktrees']])
-  })
 
   it('refuses every implementer row but cos:expedite on a stopped line, before collision', () => {
     const collision = () => ({ kind: 'file-overlap' as const, reason: 'overlaps' })
@@ -835,13 +787,6 @@ describe('planSeat downstream WIP and stop the line (CC-629)', () => {
 
     expect(plan.dispatch.map(d => [d.task, d.slice])).toEqual([['A-1', 'b']])
     expect(refusalOf(plan)).toEqual([['A-2', 'stop-line']])
-  })
-
-  it('plans a repo below its WIP limit exactly as one with no flow inputs', () => {
-    const rows = [row('A-1', 60), row('A-2', 50)]
-    const tasks = [task('A-1'), task('A-2')]
-
-    expect(planSeat(inputs(rows, tasks, { downstream: below }))).toEqual(planSeat(inputs(rows, tasks)))
   })
 })
 

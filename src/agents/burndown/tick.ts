@@ -7,8 +7,7 @@ import { backoffHeld } from './backoff.js'
 import { taskRefusal, type Initiative } from './eligibility.js'
 import { heldClaims, isStalled, readLedger, type Claim, type DeciderState, type Ledger } from './ledger.js'
 import type { Runner } from './exec.js'
-import { memo, type Roster } from './observe.js'
-import { downstreamReader, shepherdRows } from './shepherd.js'
+import type { Roster } from './observe.js'
 import { plan, type Plan, type PlanInputs } from './plan.js'
 import { lineStopFrom, readServiceCheck } from './service-check.js'
 import { defaultAutonomyRoot, loadCharterPools, type CharterPool } from './policy.js'
@@ -95,7 +94,7 @@ export interface SeatPlanOptions {
   collision?: (ledger: Ledger) => PlanInputs['collision']
   /** The broker's roster; with it only active trees count against the seat's cap, as the tick counts them. */
   roster?: Roster
-  /** Runs `titan-factory` and `git` for the downstream WIP and service-check reads; defaults to the real runner. */
+  /** Runs `titan-factory` and `git` for the service-check read; defaults to the real runner. */
   exec?: Runner
 }
 
@@ -115,10 +114,6 @@ export function seatPlanSetup(opts: SeatPlanOptions): {
     ledger,
     initiatives: readInitiatives(opts.root),
     trust: (repo, cwd, configDir) => trustRefusal(repo, cwd, configDir, cliVersion),
-    downstream: downstreamReader(
-      memo(() => shepherdRows(opts.exec)),
-      opts.exec,
-    ),
     ...(check === undefined ? {} : { collision: check }),
     ...(lineStop === undefined ? {} : { lineStop }),
     ...(opts.roster === undefined ? {} : { roster: opts.roster }),

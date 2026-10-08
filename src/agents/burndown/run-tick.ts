@@ -66,14 +66,7 @@ import {
   readTasks,
   type TickConfig,
 } from './source.js'
-import {
-  downstreamReader,
-  prHeadOf,
-  registerWithShepherd,
-  shepherdLanded,
-  shepherdRows,
-  targetRef,
-} from './shepherd.js'
+import { prHeadOf, registerWithShepherd, shepherdLanded, shepherdRows, targetRef } from './shepherd.js'
 import {
   lineStopFrom,
   persisted,
@@ -404,7 +397,6 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
       charged: advanced.charged,
     },
     {
-      downstream: downstreamReader(shepherd, opts.exec ?? run),
       ...(service?.lineStop === undefined ? {} : { lineStop: service.lineStop }),
     },
   )
@@ -482,7 +474,7 @@ function planNew(
   root: string,
   roster: Roster,
   work: NewWork,
-  flow: Pick<SeatPlanDeps, 'downstream' | 'lineStop'>,
+  flow: Pick<SeatPlanDeps, 'lineStop'>,
 ): Planned {
   if (seats === undefined)
     return { ...plan({ ...world, ...work }), skipped: [], tasks: new Map(), skippedTasks: [] }
