@@ -52,6 +52,7 @@ const Pool = z.looseObject({
   per_day_points: z.number().optional(),
   dispatch_seven_day_points: z.number().nonnegative().optional(),
   dispatch_five_hour_points: z.number().nonnegative().optional(),
+  sonnet_band_points: z.number().nonnegative().optional(),
 })
 
 const Pools = orEmpty(z.record(z.string(), Pool), {})

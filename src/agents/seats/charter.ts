@@ -20,6 +20,8 @@ export interface Pool {
   rule: PoolStops
   /** Charter section 4's daily cap on the pool's seven_day points, counted from 07:00 local. */
   perDayPoints?: number
+  /** CC-843: the pool's sonnet-only band width; unset keeps the gate's default. */
+  sonnetBandPoints?: number
 }
 
 /** What the watchdog needs from `seats/<seat>.md`. */
@@ -61,6 +63,7 @@ function poolFrom(name: string, fields: Record<string, string>, home: string): P
   const ceiling = Number(fields.ceiling_five_hour)
   const night = Number(fields.night_reserve_seven_day)
   const perDay = Number(fields.per_day_points)
+  const band = fields.sonnet_band_points === undefined ? NaN : Number(fields.sonnet_band_points)
   if (fields.config_dir === undefined || !Number.isFinite(reserve) || !Number.isFinite(ceiling))
     return undefined
   return {
@@ -73,6 +76,7 @@ function poolFrom(name: string, fields: Record<string, string>, home: string): P
       ...(Number.isFinite(night) ? { night: { reserve_seven_day: night } } : {}),
     },
     ...(Number.isFinite(perDay) ? { perDayPoints: perDay } : {}),
+    ...(Number.isFinite(band) && band >= 0 ? { sonnetBandPoints: band } : {}),
   }
 }
 

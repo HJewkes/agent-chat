@@ -121,7 +121,14 @@ export interface PoolRule {
   /** What one dispatch is expected to spend, charged before the next gate in the same tick. */
   dispatch_seven_day_points?: number | undefined
   dispatch_five_hour_points?: number | undefined
+  /** CC-843: points below a stop where only sonnet may spawn; unset is 10, 0 lifts the band. */
+  sonnet_band_points?: number | undefined
 }
+
+export const DEFAULT_SONNET_BAND_POINTS = 10
+
+/** The sonnet-only band width the pool's gate applies. */
+export const sonnetBand = (pool: PoolRule): number => pool.sonnet_band_points ?? DEFAULT_SONNET_BAND_POINTS
 
 /** The charge for a pool that prices no dispatch; the charter should set its own. */
 export const DEFAULT_DISPATCH_COST = { sevenDay: 2, fiveHour: 10 }
@@ -170,7 +177,6 @@ export const LAST_GOOD_MAX_AGE_SECONDS = 60 * 60
 const LAST_GOOD_SEVEN_DAY_MARGIN = 5
 const LAST_GOOD_FIVE_HOUR_MARGIN = 10
 const DAY_START_HOUR = 7
-const SONNET_BAND_POINTS = 10
 
 /** Charter section 4: a drop in seven_day, or a sample past the window's reset, counts from zero. */
 export function pointsSpent(samples: readonly SevenDaySample[]): number {
@@ -386,12 +392,13 @@ function gateWindows(
   if (sevenDay >= line) return closed(`seven_day ${sevenDay}% at or above line ${line}%${why}`)
   const stop = spendStop(input, { at: ctx.now.getTime(), sevenDay }, capsLifted)
   if (stop !== undefined) return closed(`${stop}${charged.note}`)
-  const sonnetOnly = fiveHour >= ceiling - SONNET_BAND_POINTS || sevenDay >= line - SONNET_BAND_POINTS
+  const band = sonnetBand(pool)
+  const sonnetOnly = fiveHour >= ceiling - band || sevenDay >= line - band
   return {
     open: true,
     pool: pool.name,
     sonnetOnly,
-    reason: `pool ${pool.name}: five_hour ${fiveHour}% vs ceiling ${ceiling}%, seven_day ${sevenDay}% vs line ${line}%${why}${sonnetOnly ? '; within 10 points, sonnet only' : ''}`,
+    reason: `pool ${pool.name}: five_hour ${fiveHour}% vs ceiling ${ceiling}%, seven_day ${sevenDay}% vs line ${line}%${why}${sonnetOnly ? `; within ${band} points, sonnet only` : ''}`,
   }
 }
 

@@ -136,6 +136,14 @@ describe('mergeDefaults', () => {
     expect(charter.defaults.worktrees_left_free_per_repo).toBe(2)
   })
 
+  it("reads a pool's sonnet_band_points and refuses a negative one", () => {
+    const withBand = (band: number) =>
+      charterText().replace('---\n', `---\npools:\n  p: {config_dir: /x, sonnet_band_points: ${band}}\n`)
+
+    expect(parseCharter(withBand(0)).pools.p?.sonnet_band_points).toBe(0)
+    expect(() => parseCharter(withBand(-1))).toThrow(/sonnet_band_points/)
+  })
+
   it('throws with the zod message on a charter missing a default the scorer reads', () => {
     expect(() => parseCharter(charterText().replace('  stop_short_factor: 0.8\n', ''))).toThrow(
       /autonomy charter is malformed: .*stop_short_factor/s,

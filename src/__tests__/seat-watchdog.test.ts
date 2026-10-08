@@ -16,6 +16,7 @@ import {
   accountReading,
   decide,
   poolBudget,
+  poolRule,
   runningImplementers,
   type Observation,
   type SeatAgent,
@@ -346,6 +347,15 @@ describe('charter and seat parsing', () => {
       humanUses: false,
       rule: { reserve_seven_day: 25, ceiling_five_hour: 85, night: { reserve_seven_day: 10 } },
     })
+  })
+
+  it("reads a pool's sonnet_band_points, including 0, and carries it to the pool rule", () => {
+    const charter = CHARTER.replace('ceiling_five_hour: 85}', 'ceiling_five_hour: 85, sonnet_band_points: 0}')
+    const agents = parsePools(charter, '/Users/o').get('agents') as Pool
+
+    expect(agents.sonnetBandPoints).toBe(0)
+    expect(poolRule(agents).sonnet_band_points).toBe(0)
+    expect(parsePools(CHARTER, '/Users/o').get('agents')?.sonnetBandPoints).toBeUndefined()
   })
 
   it('drops a pool missing its config dir or a stop, so its gate stays closed', () => {

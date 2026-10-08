@@ -182,6 +182,7 @@ export const poolRule = (pool: Pool): PoolRule => ({
   ceiling_five_hour: pool.rule.ceiling_five_hour,
   night_reserve_seven_day: pool.rule.night?.reserve_seven_day,
   per_day_points: pool.perDayPoints,
+  sonnet_band_points: pool.sonnetBandPoints,
 })
 
 /** Charter section 4's budget stops for the seat, with the owner assumed present because nothing here can tell. */
