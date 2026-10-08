@@ -249,7 +249,7 @@ describe('a broker start over a live row with no launcher pid', () => {
     records = [otherSession]
 
     h.restart()
-    h.core.registry.register(fakeConn(), { t: 'register', name: 'desk', workingOn: '', cwd: '/tmp', pid: 1 })
+    h.core.registry.register(fakeConn(), { name: 'desk', workingOn: '', cwd: '/tmp', pid: 1 })
     vi.advanceTimersByTime(SETTLE_MS * 2)
 
     expect(exitsOf(agentId)).toHaveLength(0)
