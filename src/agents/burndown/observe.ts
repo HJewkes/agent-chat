@@ -12,10 +12,11 @@ import { AGENT_PHASES, type Claim, type Phase } from './ledger.js'
 import { DEFAULT_NAME_PREFIX, type WorktreeUse } from './plan.js'
 import { readProgress, type Progress } from './progress.js'
 import { defaultAutonomyRoot, loadPolicy } from './policy.js'
+import { outsideOwns } from './owns-fence.js'
 import { parseReport, readSlices } from './report.js'
 import { sumSpend } from './spend-cap.js'
 import type { ActivityRead } from './stall.js'
-import { assessDiff, GIT_BIN, type DiffVerdict } from './review-diff.js'
+import { assessDiff, GIT_BIN, resolveBaseRef, type DiffVerdict } from './review-diff.js'
 import {
   rowFor,
   shepherdLanded,
@@ -46,6 +47,8 @@ export interface ObserveDeps {
   root: string
   finalText?: (agent: AgentIdentity) => string | undefined
   diff?: (cwd: string) => DiffVerdict
+  /** The files a worktree's branch changed against its base (CC-669); undefined when git could not tell. */
+  changedFiles?: (cwd: string) => string[] | undefined
   /** Every row `shepherd status` lists; observe calls it at most once per tick. */
   shepherdRows?: () => ShepherdRow[] | undefined
   landed?: (target: ShepherdTarget) => boolean | undefined
@@ -162,8 +165,22 @@ async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Pr
   if (claim.phase === 'planning') return withSlices(obs, claim, deps)
   if (claim.phase === 'implementing' && claim.worktree !== undefined)
     obs.diff = (deps.diff ?? assessDiff)(claim.worktree)
+  if (claim.phase === 'implementing' && (claim.owns ?? []).length > 0) obs.owned = ownedRead(claim, deps)
   if (claim.phase === 'reviewing') return withShepherd(obs, claim, deps)
   return obs
+}
+
+function ownedRead(claim: Claim, deps: ObserveDeps): NonNullable<Observation['owned']> {
+  const files = claim.worktree === undefined ? undefined : (deps.changedFiles ?? changedFiles)(claim.worktree)
+  return files === undefined ? 'unreadable' : { outside: outsideOwns(files, claim.owns ?? []) }
+}
+
+/** Committed changes only: the PR carries what was pushed, not what the worktree still holds. */
+export function changedFiles(cwd: string, exec: Runner = run): string[] | undefined {
+  const base = resolveBaseRef(cwd, exec)
+  if (base === undefined) return undefined
+  const result = exec(GIT_BIN, ['diff', '--name-only', `${base}...HEAD`], cwd)
+  return result.status === 0 ? result.stdout.split('\n').filter(line => line !== '') : undefined
 }
 
 const SPEND_PHASES: ReadonlySet<Phase> = new Set([

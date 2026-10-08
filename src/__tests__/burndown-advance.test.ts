@@ -475,3 +475,105 @@ describe('the code on each stall', () => {
     })
   }
 })
+
+describe('a slice PR against its owns at PR open (CC-669)', () => {
+  const OWNED = 'src/agents/burndown/collision.ts'
+  const sliced = (patch: Partial<Claim> = {}): Claim => claim({ slice: 'a', owns: [OWNED], ...patch })
+  const donePr = { agent: exited, report: parseReport(`Status: DONE\nPR: ${PR}`) }
+  const exitedRow = { agentId: 'a1', name: 'bd-cc-1', state: 'exited', spawnedAt: 1 } as AgentIdentity
+
+  async function observed(c: Claim, files: string[] | undefined, calls: string[] = []): Promise<Observation> {
+    const { observations } = await observe(
+      [c],
+      { agents: [exitedRow] },
+      {
+        root: '/active-work',
+        inboxSince: async () => [],
+        finalText: () => `Status: DONE\nPR: ${PR}`,
+        diff: () => ({ reviewable: true, reason: '1 commit ahead' }),
+        changedFiles: cwd => {
+          calls.push(cwd)
+          return files
+        },
+      },
+    )
+    return observations.get(claimKey(c)) ?? {}
+  }
+
+  it('stalls a DONE PR outside its owns with outside-owns, registering and reviewing nothing', () => {
+    const outside = { owned: { outside: ['src/agents/burndown/ledger.ts', 'README.md'] } }
+
+    const shipped = step(sliced(), { ...donePr, ...outside })
+    const unshipped = step(sliced(), {
+      agent: exited,
+      diff: { reviewable: true, reason: 'ahead' },
+      ...outside,
+    })
+
+    for (const { actions, after } of [shipped, unshipped]) {
+      expect(registers(actions)).toEqual([])
+      expect(spawns(actions)).toEqual([])
+      expect(after).toEqual([
+        expect.objectContaining({
+          stallCode: 'outside-owns',
+          stalledClass: 'failed',
+          stalledReason:
+            'outside-owns: PR touches src/agents/burndown/ledger.ts (+1 more) outside its slice owns',
+        }),
+      ])
+    }
+  })
+
+  it('hands off a PR inside its owns plus companion tests as before', async () => {
+    const c = sliced()
+    const obs = await observed(c, [OWNED, 'src/__tests__/burndown-collision.test.ts'])
+
+    const { actions, after } = step(c, obs)
+
+    expect(obs.owned).toEqual({ outside: [] })
+    expect(registers(actions)).toHaveLength(1)
+    expect(after).toEqual([expect.objectContaining({ phase: 'shepherding', pr: PR })])
+  })
+
+  it('waits on an unreadable diff, never registering on a guess', async () => {
+    const c = sliced()
+    const obs = await observed(c, undefined)
+
+    expect(obs.owned).toBe('unreadable')
+    expect(step(c, obs).actions).toEqual([])
+  })
+
+  it('clears the stall once the PR drops the file, and hands off that tick', () => {
+    const stalled = step(sliced(), { ...donePr, owned: { outside: ['README.md'] } }).after[0]
+    if (stalled === undefined) throw new Error('no claim after the step')
+
+    const { actions, after } = step(stalled, { ...donePr, owned: { outside: [] } })
+
+    expect(registers(actions)).toHaveLength(1)
+    expect(after).toEqual([expect.objectContaining({ phase: 'shepherding', pr: PR })])
+    expect(after[0]?.stalledReason).toBeUndefined()
+    expect(after[0]?.stallCode).toBeUndefined()
+  })
+
+  it('keeps the stall with no actions while the file remains or the read fails', () => {
+    const stalled = step(sliced(), { ...donePr, owned: { outside: ['README.md'] } }).after[0]
+    if (stalled === undefined) throw new Error('no claim after the step')
+
+    expect(stalled.stallCode).toBe('outside-owns')
+    expect(step(stalled, { ...donePr, owned: { outside: ['README.md'] } }).actions).toEqual([])
+    expect(step(stalled, { ...donePr, owned: 'unreadable' }).actions).toEqual([])
+  })
+
+  it('reads no diff for a claim that owns nothing, and checks the one that does', async () => {
+    const calls: string[] = []
+    const unowned = claim({ slice: 'a' })
+
+    const free = await observed(unowned, ['README.md'], calls)
+    const fenced = await observed(sliced(), ['README.md'], calls)
+
+    expect(free.owned).toBeUndefined()
+    expect(registers(step(unowned, free).actions)).toHaveLength(1)
+    expect(fenced.owned).toEqual({ outside: ['README.md'] })
+    expect(calls).toEqual([WORKTREE])
+  })
+})
