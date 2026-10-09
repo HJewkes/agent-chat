@@ -4,7 +4,7 @@ import { DECLARED_MAX_KEYS, DECLARED_MAX_VALUE_CHARS, type ServerMessage } from 
 import { observedRegistration } from '../../git.js'
 import { cliEntry } from '../../paths.js'
 import { terminalAnchor } from '../anchor.js'
-import { hostIdentity } from '../host.js'
+import { hostIdentity, hostMarker } from '../host.js'
 import { declaredField, declaredLabels, defineTool } from '../command.js'
 
 export const chatRegister = defineTool({
@@ -50,6 +50,7 @@ export const chatRegister = defineTool({
         // which is what lets the broker mint an identity for an ordinary session
         // without that identity being self-asserted.
         ...hostIdentity(),
+        ...hostMarker(),
         ...terminalAnchor(),
         // CC-11. Derived from this process's directory, never asked of the model:
         // "which checkout am I in" is knowable, and a self-reported answer to a

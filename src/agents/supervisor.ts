@@ -1,3 +1,4 @@
+import { signalSessionPid } from '../broker/host-guard.js'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -268,6 +269,8 @@ export interface SwitchRequest {
   /** The requester's own pane. Decides same-window placement; absent is not an error. */
   anchor?: string
   hostPid?: number
+  /** The machine `hostPid` lives on (CC-880). */
+  host?: string
   /** CC-225: the requester's own agent id, resolved by the broker from its connection. */
   requesterAgentId?: string
 }
@@ -2451,7 +2454,7 @@ export class Supervisor implements TeleportHost {
     if (presence === 'other') return 'another_agent'
     const hostPid = this.core.registry.hostPidFor(name)
     if (hostPid === undefined) return 'no_host_pid'
-    return this.endSession(name, hostPid).ok ? 'true' : 'already_gone'
+    return this.endSession(name, hostPid, this.core.registry.hostFor(name)).ok ? 'true' : 'already_gone'
   }
 
   /** CC-408: an unbound connection counts as this agent's, so the doubt falls on not retiring. */
@@ -2764,7 +2767,7 @@ export class Supervisor implements TeleportHost {
     const entry = this.live.get(agent.agentId)
     if (entry === undefined) return { ok: true }
     const stopped =
-      req.to === 'headless' ? this.endSession(req.name, req.hostPid as number) : this.kill(req.name)
+      req.to === 'headless' ? this.endSession(req.name, req.hostPid as number, req.host) : this.kill(req.name)
     if (stopped.ok) entry.cancelReason = MODE_SWITCH
     return stopped
   }
@@ -2892,20 +2895,18 @@ export class Supervisor implements TeleportHost {
    * human was offered 30 seconds to say no, and nothing here can be aimed at
    * anyone else, since the pid came from the caller's own registration.
    */
-  endSession(name: string, hostPid: number): { ok: boolean; reason?: string } {
-    try {
-      process.kill(hostPid, 'SIGTERM')
-    } catch {
-      return { ok: false, reason: `${name} (pid ${hostPid}) was already gone` }
-    }
-    setTimeout(() => {
-      try {
-        process.kill(hostPid, 'SIGKILL')
-      } catch {
-        // exited on the polite signal, which is the good case
-      }
-    }, KILL_GRACE_MS).unref?.()
+  endSession(name: string, hostPid: number, host: string | undefined): { ok: boolean; reason?: string } {
+    const polite = signalSessionPid(name, hostPid, 'SIGTERM', host)
+    if (!polite.ok) return polite
+    setTimeout(() => signalSessionPid(name, hostPid, 'SIGKILL', host), KILL_GRACE_MS).unref?.()
     return { ok: true }
+  }
+
+  /** CC-880: why a surface cannot launch here, so teleport refuses before ending anyone. */
+  surfaceBlocker(surface: SurfaceName): string | undefined {
+    const platform = this.surfaceOptions?.platform ?? process.platform
+    if (!surface.startsWith('iterm') || platform === 'darwin') return undefined
+    return `iTerm2 surfaces need macOS (this broker is ${platform}); use surface 'headless'`
   }
 
   /**
