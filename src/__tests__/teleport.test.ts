@@ -15,6 +15,8 @@ import { logPath, profilesDir } from '../paths.js'
 import type { LaunchPlan } from '../agents/types.js'
 import type { ArgvReader } from '../broker/host-channels.js'
 import type { JournalEntry } from '../agents/seats/journal-line.js'
+import type { SeatTeleportDeps } from '../agents/seats/teleport-state.js'
+import type { ShepherdRow } from '../agents/burndown/shepherd.js'
 
 /**
  * CC-20 — teleport. What is being proved is that a session can end itself into a
@@ -70,9 +72,14 @@ const fakeConn = (): Conn => ({}) as unknown as net.Socket
  * and hands back a pane id. No AppleScript reaches the machine, and no window
  * opens on whatever laptop is running the suite.
  */
-function makeSupervisor(semaphore?: Semaphore, argvReader: ArgvReader = () => 'claude'): Supervisor {
+function makeSupervisor(
+  semaphore?: Semaphore,
+  argvReader: ArgvReader = () => 'claude',
+  seatTeleport?: SeatTeleportDeps,
+): Supervisor {
   supervisor = new Supervisor(core, {
     countdownMs: COUNTDOWN_MS,
+    ...(seatTeleport ? { seatTeleport } : {}),
     argvReader,
     launcherRunning: async () => false,
     ...(semaphore ? { semaphore } : {}),
@@ -1164,5 +1171,105 @@ describe('remote control across a teleport', () => {
   it('lets the session say so itself, for Remote Control switched on mid-session', async () => {
     expect(await successorArgs('claude', true)).toContain('--remote-control')
     expect(await successorArgs(PRIMARY, false)).not.toContain('--remote-control')
+  })
+})
+
+describe('a seat teleport (CC-863)', () => {
+  let root: string
+  let shepherd: () => Promise<ShepherdRow[] | undefined>
+
+  const shepherdRow: ShepherdRow = {
+    repo: 'example/widgets',
+    pr: 7,
+    runId: 'run-1',
+    phase: 'review',
+    headSha: 'abcdef0123456789',
+    stalled: null,
+    branch: 'agent-chat/al-fix-7',
+    task: 'demo/D-7',
+    held: null,
+  }
+
+  beforeEach(() => {
+    root = workspace()
+    fs.mkdirSync(path.join(root, 'seats'))
+    fs.writeFileSync(path.join(root, 'seats', 'alpha.md'), '---\nname: alpha\nprefix: al\npool: p1\n---\n')
+    shepherd = async () => [shepherdRow]
+    supervisor.close()
+    makeSupervisor(undefined, undefined, { autonomyRoot: root, now: () => new Date(), shepherd: () => shepherd() })
+  })
+
+  const seatLog = (): string => {
+    const dir = path.join(root, 'logs', 'alpha')
+    const [day] = fs.readdirSync(dir)
+    return fs.readFileSync(path.join(dir, day as string), 'utf8')
+  }
+
+  /** The seat, one agent it spawned that is still live, and one message it had before it teleported. */
+  async function seatWithAgent(): Promise<{ agentId: string; cursor: string }> {
+    const agentId = await spawnAgent({ name: 'alpha' })
+    const { msgId: child } = core.append({
+      kind: 'agent_spawned',
+      actor: 'alpha',
+      target: 'al-fix-7',
+      body: 'a brief',
+      meta: { name: 'al-fix-7', profile: 'implementer' },
+    })
+    core.append({ kind: 'agent_attached', actor: 'al-fix-7', ref: child })
+    const { msgId: cursor } = core.append({ kind: 'message', actor: 'peer', target: 'alpha', body: 'seen' })
+    return { agentId, cursor }
+  }
+
+  it('appends the State block with the roster, Shepherd and the broker’s inbox cursor', async () => {
+    const { agentId, cursor } = await seatWithAgent()
+
+    const result = await supervisor.teleport({ subject: subject(agentId, { name: 'alpha' }), handoff: 'mine' })
+    core.append({ kind: 'message', actor: 'peer', target: 'alpha', body: 'arrived during the hop' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(result.ok).toBe(true)
+    expect(seatLog()).toContain(
+      [
+        '## State at teleport 1',
+        '- al-fix-7 (profile implementer, live)',
+        '- Shepherd example/widgets#7 demo/D-7 review, at abcdef01 (al-fix-7)',
+        `Inbox handled through ${cursor}.`,
+      ].join('\n'),
+    )
+  })
+
+  it('opens the successor’s first turn with the rendered seat handoff, then its own words', async () => {
+    const { agentId, cursor } = await seatWithAgent()
+
+    const result = await supervisor.teleport({ subject: subject(agentId, { name: 'alpha' }), handoff: 'mine' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    const stdin = planFor(result.agentId as string).stdin ?? ''
+    expect(stdin.startsWith('Teleport: alpha handed off')).toBe(true)
+    expect(stdin).toContain(`\`agent-chat seats boot alpha --after ${cursor}\``)
+    expect(stdin).toContain('## State at teleport 1\n- al-fix-7')
+    expect(stdin).toContain("Your predecessor's handoff:\n\nmine\n\n---\n\n## Broker appendix")
+  })
+
+  it('still writes the block, and still teleports, when Shepherd is down', async () => {
+    const { agentId } = await seatWithAgent()
+    shepherd = async () => undefined
+
+    const result = await supervisor.teleport({ subject: subject(agentId, { name: 'alpha' }), handoff: 'mine' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(spawnRowFor(result.agentId as string)?.target).toBe('alpha')
+    expect(seatLog()).toContain('- al-fix-7 (profile implementer, live)')
+    expect(seatLog()).toContain('- Shepherd unreachable at teleport; its runs are not listed.')
+  })
+
+  it('writes no block and keeps the plain handoff for a name with no seat file', async () => {
+    const agentId = await spawnAgent()
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'the handoff' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(handoffPart(result.agentId as string)).toBe('the handoff')
+    expect(fs.existsSync(path.join(root, 'logs'))).toBe(false)
   })
 })
