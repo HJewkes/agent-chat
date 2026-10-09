@@ -1,9 +1,13 @@
+import nodeFs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { AgentIdentity } from '../protocol.js'
 import { agentEnv } from '../agents/agent-env.js'
 import {
   agentTmpPath,
   ensureAgentTmpDir,
+  realTmpFs,
   removeAgentTmpDir,
   removeOwnTmpDir,
   sweepAgentTmpDirs,
@@ -25,6 +29,8 @@ interface FakeNode {
 class FakeFs implements TmpFs {
   readonly removed: string[] = []
   readonly made: Array<[string, number]> = []
+  /** Paths whose rm throws EACCES after removing nothing, as a 0555 subdir makes a real rm do. */
+  readonly denied = new Set<string>()
   constructor(readonly nodes = new Map<string, FakeNode>([['/tmp', { kind: 'dir', uid: 0 }]])) {}
 
   add(path: string, kind: FakeNode['kind'] = 'dir', uid = UID): this {
@@ -55,6 +61,9 @@ class FakeFs implements TmpFs {
     if (node !== undefined) node.mode = mode
   }
   rm(path: string): void {
+    if (this.denied.has(path)) {
+      throw Object.assign(new Error(`EACCES: permission denied, rmdir '${path}/ro'`), { code: 'EACCES' })
+    }
     this.removed.push(path)
     for (const p of [...this.nodes.keys()]) if (p === path || p.startsWith(`${path}/`)) this.nodes.delete(p)
   }
@@ -348,6 +357,52 @@ describe('removing the TMPDIR at run-agent exit', () => {
     expect(fs.removed).toEqual([])
     expect(events).toEqual([])
   })
+
+  it('logs a failed removal with its error code instead of throwing out of the exit handler', () => {
+    const fs = new FakeFs().add(DIR)
+    fs.denied.add(DIR)
+    const events: Array<[string, Record<string, unknown>]> = []
+    const exitCode = process.exitCode
+    process.exitCode = 3
+
+    try {
+      expect(() =>
+        removeOwnTmpDir('worker', 'a1', 4242, {
+          ...deps(fs),
+          self: 4242,
+          platform: 'linux',
+          log: (e, d) => events.push([e, d]),
+        }),
+      ).not.toThrow()
+      expect(process.exitCode).toBe(3)
+    } finally {
+      process.exitCode = exitCode
+    }
+    expect(events).toEqual([
+      [
+        'tmpdir_remove_failed',
+        expect.objectContaining({ source: 'exit', agentId: 'a1', path: DIR, code: 'EACCES' }),
+      ],
+    ])
+  })
+})
+
+describe('a real removal of a tree it cannot fully delete', () => {
+  it('throws EACCES with a code, which is what the callers must catch', () => {
+    if (process.getuid?.() === 0) return
+    const root = nodeFs.mkdtempSync(path.join(os.tmpdir(), 'cc901-rm-'))
+    const readOnly = path.join(root, 'tree', 'ro')
+    nodeFs.mkdirSync(readOnly, { recursive: true })
+    nodeFs.writeFileSync(path.join(readOnly, 'f'), '')
+    nodeFs.chmodSync(readOnly, 0o555)
+
+    try {
+      expect(() => realTmpFs.rm(path.join(root, 'tree'))).toThrow(expect.objectContaining({ code: 'EACCES' }))
+    } finally {
+      nodeFs.chmodSync(readOnly, 0o755)
+      nodeFs.rmSync(root, { recursive: true })
+    }
+  })
 })
 
 const row = (agentId: string, name: string, state: AgentIdentity['state'], exitedAt = 0): AgentIdentity =>
@@ -437,6 +492,36 @@ describe('sweeping per-agent TMPDIRs of finished agents', () => {
 
     expect(fs.removed).toEqual([])
     expect(events).toEqual(['tmpdir_kept'])
+  })
+
+  it('logs a failed removal once and still removes the entries after it', () => {
+    const fs = new FakeFs().add('/tmp/ac-worker-11').add('/tmp/ac-worker-12')
+    fs.denied.add('/tmp/ac-worker-11')
+    const events: Array<[string, Record<string, unknown>]> = []
+    const sweep = {
+      roster: () => [row('a1', 'worker', 'exited')],
+      now: () => now,
+      ...deps(fs),
+      log: (e: string, d: Record<string, unknown>) => events.push([e, d]),
+      announced: new Set<string>(),
+    }
+
+    sweepAgentTmpDirs(sweep)
+    fs.add('/tmp/ac-worker-13')
+    sweepAgentTmpDirs(sweep)
+
+    expect(fs.removed).toEqual(['/tmp/ac-worker-12', '/tmp/ac-worker-13'])
+    expect(events.filter(([e]) => e === 'tmpdir_remove_failed')).toEqual([
+      [
+        'tmpdir_remove_failed',
+        expect.objectContaining({
+          source: 'sweep',
+          agentId: 'a1',
+          path: '/tmp/ac-worker-11',
+          code: 'EACCES',
+        }),
+      ],
+    ])
   })
 
   it('does nothing when no agent is finished', () => {

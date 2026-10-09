@@ -128,7 +128,8 @@ export function ensureAgentTmpDir(request: AgentTmpRequest): string | undefined 
 }
 
 export type TmpRemoval =
-  { removed: true; path: string; inodes: number } | { removed: false; path: string; reason: string }
+  | { removed: true; path: string; inodes: number }
+  | { removed: false; path: string; reason: string; code?: string }
 
 export interface RemovalTarget {
   name: string
@@ -206,9 +207,36 @@ export function removeAgentTmpDir(target: RemovalTarget, deps: RemovalDeps): Tmp
 
 type Log = (event: string, detail: Record<string, unknown>) => void
 
+/**
+ * `removeAgentTmpDir` that reports a throw instead of raising it. A tree with a 0555 subdir makes
+ * rm throw EACCES part-way; uncaught, that is a stack trace at run-agent exit and, in the sweep,
+ * one undeletable dir ending every later pass before the entries after it.
+ */
+function tryRemove(target: RemovalTarget, deps: RemovalDeps): TmpRemoval {
+  try {
+    return removeAgentTmpDir(target, deps)
+  } catch (err) {
+    const { code, message } = err as NodeJS.ErrnoException
+    return {
+      removed: false,
+      path: agentTmpPath(target.name, target.pid) ?? '',
+      reason: message,
+      code: code ?? 'unknown',
+    }
+  }
+}
+
 function logRemoval(log: Log, source: 'exit' | 'sweep', agentId: string, result: TmpRemoval): void {
   if (result.removed) {
     log('tmpdir_removed', { source, agentId, path: result.path, inodes: result.inodes })
+  } else if (result.code !== undefined) {
+    log('tmpdir_remove_failed', {
+      source,
+      agentId,
+      path: result.path,
+      code: result.code,
+      reason: result.reason,
+    })
   } else if (result.reason !== 'missing') {
     log('tmpdir_kept', { source, agentId, path: result.path, reason: result.reason })
   }
@@ -231,7 +259,7 @@ export const realExitTmpDeps = (log: Log): ExitTmpDeps => ({
 /** Run by `run-agent` as it exits, after the orphan reap: removes its own launch's dir. */
 export function removeOwnTmpDir(name: string, agentId: string, launcherPid: number, deps: ExitTmpDeps): void {
   if (deps.platform !== 'linux') return
-  const result = removeAgentTmpDir({ name, pid: launcherPid, agentIds: new Set([agentId]) }, deps)
+  const result = tryRemove({ name, pid: launcherPid, agentIds: new Set([agentId]) }, deps)
   logRemoval(deps.log, 'exit', agentId, result)
 }
 
@@ -269,7 +297,7 @@ function sweepOne(target: RemovalTarget, deps: TmpSweepDeps): void {
   // The launcher itself does not carry the launch identity, so a still-running one is checked by argv.
   const command = deps.table.command(target.pid)
   if (deps.table.isAlive(target.pid) && [...target.agentIds].some(id => isLauncherOf(command, id))) return
-  const result = removeAgentTmpDir(target, deps)
+  const result = tryRemove(target, deps)
   if (!result.removed && deps.announced?.has(result.path)) return
   if (!result.removed) deps.announced?.add(result.path)
   logRemoval(deps.log, 'sweep', [...target.agentIds].join(','), result)
