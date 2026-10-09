@@ -14,7 +14,9 @@ import { agentPark } from './verbs/agent-park.js'
 import { agentResume } from './verbs/agent-resume.js'
 import { agentSurfaceVerb } from './verbs/agent-surface.js'
 import { agentWorktreesVerb } from './verbs/agent-worktrees.js'
+import { answersVerb } from './verbs/answers.js'
 import { approveVerb } from './verbs/approve.js'
+import { askVerb, USAGE_EXIT } from './verbs/ask.js'
 import { debugClaimsVerb } from './verbs/debug-claims.js'
 import { debugHistoryVerb } from './verbs/debug-history.js'
 import { debugLogVerb } from './verbs/debug-log.js'
@@ -39,6 +41,7 @@ import { watch, type WatchOptions } from './watch.js'
 
 const HUMAN = 'Human commands:'
 const AGENTS = 'Agent commands:'
+const SERVICES = 'Service commands:'
 
 /**
  * `inbox`/`answer`/`dismiss` are top-level rather than under a `human` noun on
@@ -141,6 +144,12 @@ function addDebugCommands(program: Command): void {
       'record the send as made by this source (watchdog, shepherd) in the event log',
     )
     .action(debug.send)
+}
+
+/** For processes that are not Claude sessions, such as a factory gate notifier (CC-169). */
+function addServiceAskCommands(program: Command): void {
+  addVerb(program, askVerb, { helpGroup: SERVICES, usageExit: USAGE_EXIT })
+  addVerb(program, answersVerb, { helpGroup: SERVICES, usageExit: USAGE_EXIT })
 }
 
 function addAgentCommands(program: Command): void {
@@ -334,6 +343,7 @@ export function buildProgram(): Command {
   addVerb(program, doctorVerb).addCommand(doctorLifecycleCommand())
   addLifecycleCommands(program)
   addAgentCommands(program)
+  addServiceAskCommands(program)
   addHiddenCommands(program)
   return program
 }
