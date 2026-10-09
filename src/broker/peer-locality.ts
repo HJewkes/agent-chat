@@ -1,6 +1,8 @@
 import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
+import path from 'node:path'
 import type net from 'node:net'
+import { psArgvReader } from './host-channels.js'
 
 /**
  * CC-896: a session that registered before CC-880 reported no host, so the broker
@@ -14,6 +16,8 @@ export interface PeerPorts {
   /** The pid holding the client end of `conn`, or undefined when it cannot be established. */
   peerPid(conn: net.Socket): number | undefined
   /** Parent pid and command name of `pid`, or undefined when it cannot be read. */
+  /** The command line of `pid`, or undefined when it cannot be read. */
+  argv(pid: number): string | undefined
   process(pid: number): { ppid: number; comm: string } | undefined
 }
 
@@ -34,11 +38,22 @@ export function provePeerLocal(conn: net.Socket, hostPid: number | undefined, po
   for (let depth = 0; depth < MAX_DEPTH; depth++) {
     const proc = ports.process(pid)
     if (proc === undefined || FORWARDERS.test(proc.comm)) return false
-    if (proc.ppid === hostPid) return !forwarderAt(hostPid, ports)
+    if (proc.ppid === hostPid) return !forwarderAt(hostPid, ports) && runsClaudeCode(hostPid, ports)
     if (proc.ppid <= 1) return false
     pid = proc.ppid
   }
   return false
+}
+
+/**
+ * A positive check, since no denylist of relays is complete: the session's own pid must
+ * be Claude Code itself, by its executable or by a runtime running the Claude Code package.
+ */
+const runsClaudeCode = (pid: number, ports: PeerPorts): boolean => {
+  const [exe, entry] = ports.argv(pid)?.trim().split(/\s+/) ?? []
+  if (exe === undefined) return false
+  if (path.basename(exe) === 'claude') return true
+  return ['node', 'bun'].includes(path.basename(exe)) && (entry?.includes('/claude-code/') ?? false)
 }
 
 const forwarderAt = (pid: number, ports: PeerPorts): boolean => {
@@ -105,6 +120,7 @@ export const linuxPeerPorts: PeerPorts = {
       return undefined
     }
   },
+  argv: psArgvReader,
   process(pid) {
     try {
       return parseStat(fs.readFileSync(`/proc/${pid}/stat`, 'utf8'))

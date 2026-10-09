@@ -22,8 +22,14 @@ import {
 const conn = {} as net.Socket
 const HOST_PID = 500
 
-const tree = (procs: Record<number, [number, string]>, peer: number | undefined): PeerPorts => ({
+const tree = (
+  procs: Record<number, [number, string]>,
+  peer: number | undefined,
+  argvs: Record<number, string> = {},
+): PeerPorts => ({
   peerPid: () => peer,
+  argv: pid =>
+    pid in argvs ? argvs[pid] : procs[pid] === undefined ? undefined : `/usr/bin/${procs[pid]![1]} --flag`,
   process: pid => (procs[pid] === undefined ? undefined : { ppid: procs[pid]![0], comm: procs[pid]![1] }),
 })
 
@@ -59,6 +65,40 @@ describe('provePeerLocal', () => {
     const ports = tree({ 800: [790, 'node'], 790: [HOST_PID, 'socat'], [HOST_PID]: [1, 'claude'] }, 800)
 
     expect(provePeerLocal(conn, HOST_PID, ports)).toBe(false)
+  })
+
+  it.each([
+    'dbclient',
+    'stunnel',
+    'websocat',
+    'python3',
+    'node',
+    'busybox',
+    'et',
+    'tsh',
+    'nc.openbsd',
+    'nc.traditional',
+    'renamed',
+  ])('refuses a %s relay when the host pid is a shell, not Claude Code', relay => {
+    const ports = tree({ 800: [777, relay], 777: [1, 'zsh'] }, 800)
+
+    expect(provePeerLocal(conn, 777, ports)).toBe(false)
+  })
+
+  it.each([
+    ['its executable', '/usr/local/bin/claude --model opus'],
+    ['a node run of the Claude Code package', 'node /opt/claude-code/cli.js --resume x'],
+  ])('accepts a host pid running Claude Code by %s', (_, argv) => {
+    const ports = tree({ 700: [HOST_PID, 'node'], [HOST_PID]: [1, 'x'] }, 700, { [HOST_PID]: argv })
+
+    expect(provePeerLocal(conn, HOST_PID, ports)).toBe(true)
+  })
+
+  it('refuses a host pid whose argv is unreadable or only mentions claude as an argument', () => {
+    const base = { 700: [HOST_PID, 'node'], [HOST_PID]: [1, 'claude'] } as Record<number, [number, string]>
+
+    expect(provePeerLocal(conn, HOST_PID, { ...tree(base, 700), argv: () => undefined })).toBe(false)
+    expect(provePeerLocal(conn, HOST_PID, tree(base, 700, { [HOST_PID]: 'nc -l claude' }))).toBe(false)
   })
 
   it('refuses a host pid that is itself a forwarder, or unreadable', () => {
