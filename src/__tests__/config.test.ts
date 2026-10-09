@@ -9,6 +9,7 @@ import {
   resolveCoordinatorGrantableTools,
   resolveContextHintPolicy,
   resolveFullSuiteSlots,
+  resolveGitShellAliases,
   resolveMachineLimits,
   resolveNoticeTtlMs,
   resolvePermissionHookTimeout,
@@ -21,6 +22,10 @@ import {
 } from '../config.js'
 import { newAgentSlots } from '../broker/daemon.js'
 import { Semaphore, DEFAULT_SLOTS } from '../agents/semaphore.js'
+import { writeLaunchFiles } from '../agents/launch-files.js'
+import type { LaunchPlan } from '../agents/types.js'
+import { GIT_SHIM_DIR_ENV, gitShimDirFor } from '../leak-guard/git-shim.js'
+import { gitHooksEnv } from '../leak-guard/hooks-dir.js'
 
 /**
  * `resolveAgentSlots` is exercised against a real tmp `AGENT_CHAT_HOME`, the
@@ -404,6 +409,47 @@ describe('process guard config (CC-495)', () => {
     for (let tick = 0; tick < 5; tick++) resolveProcessGuardMode()
 
     expect(invalidLines()).toHaveLength(1)
+  })
+})
+
+describe('gitShellAliases (CC-613)', () => {
+  it('lists no shell alias when the key is missing', () => {
+    writeConfigJson({ worktreeBudget: 8 })
+
+    expect(resolveGitShellAliases()).toEqual([])
+  })
+
+  it('keeps alias names lowercased and drops the rest, logged', () => {
+    writeConfigJson({ gitShellAliases: ['p', 'Up', 'bad name', 3] })
+
+    expect(resolveGitShellAliases()).toEqual(['p', 'up'])
+    expect(invalidLines()).toEqual([expect.stringContaining('"key":"gitShellAliases"')])
+  })
+
+  it('lists nothing for a string value rather than reading it as names', () => {
+    writeConfigJson({ gitShellAliases: 'p up' })
+
+    expect(resolveGitShellAliases()).toEqual([])
+    expect(invalidLines()).toEqual([expect.stringContaining('"value":"p up"')])
+  })
+
+  it('bakes the configured names into the git shim written at spawn', () => {
+    writeConfigJson({ gitShellAliases: ['p'] })
+    const hooksDir = path.join(dir, 'git-hooks')
+    const plan: LaunchPlan = {
+      agentId: 'agt-config',
+      bin: 'claude',
+      args: [],
+      cwd: dir,
+      env: { ...gitHooksEnv(hooksDir), [GIT_SHIM_DIR_ENV]: gitShimDirFor(hooksDir) },
+      title: 'agt-config',
+      surface: 'headless',
+    }
+
+    writeLaunchFiles(plan, {})
+
+    const shim = fs.readFileSync(path.join(gitShimDirFor(hooksDir), 'git'), 'utf8')
+    expect(shim).toContain("shell_aliases='p'")
   })
 })
 
