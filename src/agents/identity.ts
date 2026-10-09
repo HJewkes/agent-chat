@@ -168,18 +168,21 @@ export function groupByAgent(rows: readonly AgentEventRow[]): Map<string, AgentE
   return groups
 }
 
+/** Every status the roster can show; `failed` is spawned but never registered: the process is gone and did no work (CC-95). */
+export const ROSTER_STATUSES = [
+  'starting',
+  'running',
+  'blocked',
+  'stalled?',
+  'reconnecting',
+  'detached',
+  'finished',
+  'failed',
+  'retired',
+] as const
+
 /** How a paired identity and presence should render on the roster. */
-export type RosterStatus =
-  | 'starting'
-  | 'running'
-  | 'blocked'
-  | 'stalled?'
-  | 'reconnecting'
-  | 'detached'
-  | 'finished'
-  /** Spawned, but never registered: the process is gone and did no work (CC-95). */
-  | 'failed'
-  | 'retired'
+export type RosterStatus = (typeof ROSTER_STATUSES)[number]
 
 export interface PresenceInput {
   /** `registry.connFor(name) !== undefined`. */

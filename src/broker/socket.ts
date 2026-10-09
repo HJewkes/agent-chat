@@ -435,6 +435,7 @@ export class SocketServer {
       handoff: msg.handoff,
       ...(msg.model === undefined ? {} : { model: msg.model }),
       ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
+      ...(msg.remoteControlSeen === undefined ? {} : { remoteControlSeen: msg.remoteControlSeen }),
       ...(msg.reason === undefined ? {} : { reason: msg.reason }),
     })
     reply(conn, {
@@ -625,6 +626,7 @@ export class SocketServer {
       ...(msg.surface === undefined ? {} : { surface: msg.surface }),
       ...(msg.message === undefined ? {} : { message: msg.message }),
       ...(source === undefined ? {} : { source }),
+      ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
     })
     reply(conn, { t: 'spawn_result', ...outcome })
   }

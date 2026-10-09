@@ -1250,6 +1250,7 @@ describe('wakeSeat', () => {
   })
 
   // Catches: the surface hard-coded to 'headless' again, or the declared surface dropped from the frame.
+  // CC-883: a visible resume asks for Remote Control; the broker grants it to a coordinator only.
   it('resumes a seat declared on iterm-window on iterm-window and holds the message as a send', async () => {
     const c = client({ t: 'spawn_result', ok: true, msgId: 'm2' })
     const woke = await wakeSeat(c.client, 's', 'Watchdog: x', false, {
@@ -1257,7 +1258,7 @@ describe('wakeSeat', () => {
       from: 'seat file',
     })
     expect(c.frames).toEqual([
-      { t: 'resume', name: 's', surface: 'iterm-window', source: 'watchdog' },
+      { t: 'resume', name: 's', surface: 'iterm-window', source: 'watchdog', remoteControl: true },
       { t: 'human_send', to: 's', text: 'Watchdog: x', source: 'watchdog' },
     ])
     expect(woke).toEqual({ ok: true, detail: 'resumed on iterm-window (seat file); message m2' })
@@ -1300,7 +1301,7 @@ describe('wakeSeat', () => {
       from: 'seat file',
     })
     expect(frames).toEqual([
-      { t: 'resume', name: 's', surface: 'iterm-window', source: 'watchdog' },
+      { t: 'resume', name: 's', surface: 'iterm-window', source: 'watchdog', remoteControl: true },
       { t: 'resume', name: 's', surface: 'headless', message: 'Watchdog: x', source: 'watchdog' },
     ])
     expect(woke).toEqual({

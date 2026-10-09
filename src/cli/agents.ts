@@ -1,7 +1,7 @@
 import { budgetMiss, formatBudget, readBudget } from '../agents/budget.js'
 import { findGitRoot } from '../git.js'
 import { callerName, filterRoster, type RosterFilter } from '../agents/roster-filter.js'
-import { pairPresence } from '../agents/identity.js'
+import { pairPresence, ROSTER_STATUSES, type RosterStatus } from '../agents/identity.js'
 import { reclaim, sweepWorktrees } from '../agents/isolation/sweep.js'
 import { listProfileNames, loadProfile } from '../agents/profiles.js'
 import {
@@ -23,9 +23,19 @@ import { fail, withBroker } from './client.js'
  * query over the log and only presence depends on a socket being up.
  */
 export async function agentLs(
-  options: { json?: boolean; mine?: boolean; spawner?: string; prefix?: string } = {},
+  options: {
+    json?: boolean
+    mine?: boolean
+    spawner?: string
+    prefix?: string
+    state?: string[]
+    name?: string
+    format?: string
+  } = {},
 ): Promise<void> {
   const filter = rosterFilter(options)
+  if (options.format !== undefined && options.format !== 'line') fail(`--format must be: line`)
+  const states = stateFilter(options.state)
   const [all, sessions] = await withBroker(async b => {
     const roster = (await b.request({ t: 'agents' }, 'agents_result')) as Extract<
       ServerMessage,
@@ -37,7 +47,12 @@ export async function agentLs(
     >
     return [roster.agents, live.sessions] as const
   })
-  const agents = filterRoster(all, filter)
+  const connectedNames = new Set(sessions.map(s => s.name))
+  const agents = filterRoster(all, filter).filter(
+    a =>
+      (options.name === undefined || a.name === options.name) &&
+      (states === undefined || states.has(pairPresence(a, { connected: connectedNames.has(a.name) }).status)),
+  )
   const index = createProfileIndex()
 
   if (options.json) {
@@ -49,6 +64,13 @@ export async function agentLs(
       ),
     )
     console.log(JSON.stringify(rows, null, 2))
+    return
+  }
+  if (options.format === 'line') {
+    for (const agent of agents) {
+      const { status } = pairPresence(agent, { connected: connectedNames.has(agent.name) })
+      console.log([agent.name, status, agent.profile, agent.agentId, agent.cwd].join(' '))
+    }
     return
   }
   if (agents.length === 0) {
@@ -73,6 +95,15 @@ export async function agentLs(
     if (agent.configDir) console.log(`${' '.repeat(16)} account: ${agent.configDir}`)
     console.log(`${' '.repeat(16)} ${transcriptLine(agent.cwd, agent.sessionId, agent.configDir, index)}`)
   }
+}
+
+/** `--state` takes the status column's words; anything else would silently match nothing. */
+function stateFilter(raw: string[] | undefined): Set<string> | undefined {
+  if (raw === undefined) return undefined
+  const bad = raw.filter(s => !ROSTER_STATUSES.includes(s as RosterStatus))
+  if (bad.length > 0)
+    fail(`--state ${bad.join(', ')} is not a roster state; use: ${ROSTER_STATUSES.join(', ')}`)
+  return new Set(raw)
 }
 
 /** `--spawner` names the spawner outright; `--mine` resolves the caller or exits; printing everything instead would defeat the flag. */
