@@ -140,6 +140,7 @@ function adoptSession(name: string, cwd: string): string {
     pid: 111,
     sessionId: 'session-uuid-1',
     hostPid: 222,
+    host: os.hostname(),
   })
   const agentId = core.registry.entryFor(conn)?.agentId
   expect(agentId).toBeDefined()
@@ -155,6 +156,7 @@ const subject = (agentId: string, over: Record<string, unknown> = {}) => ({
   name: 'scout',
   cwd: workspace(),
   hostPid: 9999,
+  host: os.hostname(),
   tags: [] as string[],
   subscriptions: [],
   ...over,

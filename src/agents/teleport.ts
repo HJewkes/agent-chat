@@ -1,3 +1,4 @@
+import { brokerHost, isLocalHost } from '../broker/host-guard.js'
 import { randomUUID } from 'node:crypto'
 import type { BrokerCore } from '../broker/core.js'
 import { hostRemoteControl, psArgvReader, type ArgvReader } from '../broker/host-channels.js'
@@ -118,6 +119,8 @@ export interface TeleportSubject {
   name: string
   cwd: string
   hostPid?: number
+  /** The machine `hostPid` lives on; absent means unreported, which is never treated as local (CC-880). */
+  host?: string
   anchor?: string
   tags: string[]
   subscriptions: Subscription[]
@@ -184,11 +187,20 @@ export interface RelaunchInput {
   remoteControl?: boolean
 }
 
+function hostReason(subject: TeleportSubject): string {
+  return (
+    `${subject.name} runs on host ${subject.host ?? 'unknown'}, not on the broker's host ${brokerHost()}, ` +
+    'so the broker cannot end it or relaunch it there'
+  )
+}
+
 /** What teleport borrows from the supervisor: process control and the launch path. */
 export interface TeleportHost {
   inheritedIsolation(agentId: string): InheritedIsolation | undefined
   /** SIGTERM then SIGKILL, on the pid that ends Claude Code itself. */
-  endSession(name: string, hostPid: number): { ok: boolean; reason?: string }
+  endSession(name: string, hostPid: number, host: string | undefined): { ok: boolean; reason?: string }
+  /** Why a surface cannot launch on this broker's platform, if it cannot. */
+  surfaceBlocker(surface: SurfaceName): string | undefined
   relaunch(input: RelaunchInput): Promise<void>
 }
 
@@ -281,6 +293,8 @@ export class Teleport {
 
     const config = this.configFor(identity, subject, req.model)
     if ('error' in config) return { ok: false, reason: config.error }
+    const impossible = this.host.surfaceBlocker(config.surface)
+    if (impossible !== undefined) return this.cannotComplete(subject, impossible)
     const worker = recordedRole(this.core.agents.spawnMeta(subject.agentId)) === 'worker'
     if (worker && req.remoteControl === true)
       return {
@@ -362,6 +376,22 @@ export class Teleport {
     return found ?? false
   }
 
+  /**
+   * CC-880: a teleport this broker cannot finish is refused up front, to the caller and to the
+   * human, because failing after the predecessor ended is silent and leaves nobody in the session.
+   */
+  private cannotComplete(subject: TeleportSubject, why: string): { ok: false; reason: string } {
+    const reason = `teleport cannot be completed: ${why}. ${subject.name} was not ended.`
+    this.core.append({
+      kind: 'notice',
+      actor: 'agent-chat',
+      target: HUMAN,
+      body: `${subject.name} asked to teleport and the broker refused: ${why}`,
+    })
+    logEvent('teleport_refused', { name: subject.name, reason: why })
+    return { ok: false, reason }
+  }
+
   /** Everything checkable before the handoff is written and the sequence is entered. */
   private preflight(req: TeleportRequest): string | undefined {
     const { subject } = req
@@ -376,6 +406,8 @@ export class Teleport {
         'without severing the bus and leaving it running. Its MCP server predates teleport — ' +
         'restart the session (or run /mcp reconnect) and try again.'
       )
+
+    if (!isLocalHost(subject.host)) return this.cannotComplete(subject, hostReason(subject)).reason
 
     const size = bytes(req.handoff)
     if (size > HANDOFF_MAX_BYTES)
@@ -530,7 +562,7 @@ export class Teleport {
     this.core.append({ kind: 'agent_stood_down', actor: subject.name, ref: agentId })
     // Non-null because `preflight` refuses a subject without one, and a pending
     // entry only exists once preflight has passed.
-    const ended = this.host.endSession(subject.name, subject.hostPid as number)
+    const ended = this.host.endSession(subject.name, subject.hostPid as number, subject.host)
     await this.waitForNameFree(subject.name)
     this.core.append({
       kind: 'agent_retired',

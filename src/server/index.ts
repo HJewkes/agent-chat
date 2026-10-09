@@ -13,7 +13,7 @@ import type {
 import { cliEntry } from '../paths.js'
 import { TOOL_DEFINITIONS, ToolHandler } from './tools.js'
 import { terminalAnchor } from './anchor.js'
-import { hostIdentity, isLaunchedProcess } from './host.js'
+import { hostIdentity, hostMarker, isLaunchedProcess } from './host.js'
 import { observedRegistration } from '../git.js'
 import { disambiguated, provisionalName } from './provisional.js'
 import { exitWhenStdinEnds } from './stdio-lifetime.js'
@@ -214,6 +214,7 @@ async function registerSpawned(broker: BrokerClient, spawned: SpawnedIdentity): 
         // it: a pane agent's Claude Code process has no pid anywhere else, since
         // the surface hands back a pane rather than a child.
         ...hostIdentity(),
+        ...hostMarker(),
         // CC-11. A spawned agent is the case this matters most for: it usually
         // runs in a worktree of its own, and the branch is the fastest way for a
         // peer to see whether it is somewhere its edits can collide.
@@ -278,6 +279,7 @@ async function readopt(broker: BrokerClient): Promise<string | undefined> {
         pid: process.pid,
         build: cliEntry(),
         ...(host.hostPid === undefined ? {} : { hostPid: host.hostPid }),
+        ...hostMarker(),
         ...(await observedRegistration()),
         ...terminalAnchor(),
       },
@@ -333,6 +335,7 @@ async function registerProvisionally(broker: BrokerClient): Promise<string | und
         pid: process.pid,
         provisional: true,
         ...host,
+        ...hostMarker(),
         ...observed,
         ...terminalAnchor(),
         build: cliEntry(),

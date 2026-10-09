@@ -423,6 +423,7 @@ export class SocketServer {
         tags: registry.selfTagsOf(conn),
         subscriptions: registry.subscriptionsOf(conn),
         ...(entry.hostPid === undefined ? {} : { hostPid: entry.hostPid }),
+        ...(entry.host === undefined ? {} : { host: entry.host }),
         ...(registry.anchorFor(conn) === undefined ? {} : { anchor: registry.anchorFor(conn) as string }),
         // CC-100: read from the registration, not from the message, exactly like
         // every other field here. A successor continues its predecessor's work and
@@ -570,6 +571,7 @@ export class SocketServer {
       pid: msg.pid,
       sessionId: msg.sessionId,
       ...(msg.hostPid === undefined ? {} : { hostPid: msg.hostPid }),
+      ...(msg.host === undefined ? {} : { host: msg.host }),
       ...(msg.termSessionId === undefined ? {} : { termSessionId: msg.termSessionId }),
       ...(msg.observed === undefined ? {} : { observed: msg.observed }),
       ...(msg.build === undefined ? {} : { build: msg.build }),
@@ -632,6 +634,7 @@ export class SocketServer {
       to: 'headless',
       requestedBy: entry.name,
       ...(entry.hostPid === undefined ? {} : { hostPid: entry.hostPid }),
+      ...(entry.host === undefined ? {} : { host: entry.host }),
     })
     replySwitch(conn, outcome)
   }

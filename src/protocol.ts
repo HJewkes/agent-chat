@@ -585,6 +585,8 @@ export type ClientMessage =
        * asks `process.kill(pid, 0)` to decide whether a session is up.
        */
       hostPid?: number
+      /** The machine `hostPid` lives on (CC-880); absent from an older client, which the broker treats as remote. */
+      host?: string
       termSessionId?: string
       /**
        * Many, not one: a session is usually in more than one conversation. Still
@@ -648,6 +650,7 @@ export type ClientMessage =
       cwd: string
       pid: number
       hostPid?: number
+      host?: string
       termSessionId?: string
       /** Re-derived on the way back in; a reclaimed registration is still a registration. */
       observed?: ObservedPresence

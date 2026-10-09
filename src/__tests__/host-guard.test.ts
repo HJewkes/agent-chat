@@ -132,7 +132,7 @@ describe('a teleport the broker cannot complete', () => {
       handoff: 'carry on',
     })
 
-  const humanNotices = () => core.events.agentEvents().filter(r => r.kind === 'notice' && r.target === 'human')
+  const humanNotices = () => core.events.humanQueue().filter(item => item.text.includes('teleport'))
 
   it('errors to a caller on another host, notifies the human once, and ends nobody', async () => {
     const agentId = adopt(REMOTE)
