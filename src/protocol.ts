@@ -714,7 +714,11 @@ export type ClientMessage =
    */
   | { t: 'tag'; target?: string; add?: string[]; remove?: string[] }
   | { t: 'broadcast'; text: string }
-  | { t: 'inbox'; limit: number }
+  /**
+   * `after` (CC-886) switches to "what arrived after this msg_id", oldest first;
+   * absent, the frame is the newest-N replay it always was.
+   */
+  | { t: 'inbox'; limit: number; after?: string }
   | ({ t: 'ask'; text: string } & ItemShape)
   | ({ t: 'notify'; text: string } & Pick<ItemShape, 'kind' | 'task'>)
   | { t: 'queue' }
@@ -999,7 +1003,7 @@ export type ServerMessage =
     }
   /** `tags` is the subject's full set after the change, so a caller sees the result. */
   | { t: 'tag_result'; ok: boolean; reason?: string; subject?: string; tags: SessionTag[] }
-  | { t: 'inbox_result'; messages: DeliveredMessage[] }
+  | { t: 'inbox_result'; messages: DeliveredMessage[]; truncated?: boolean; error?: string }
   /** `decided` lists questions the decider answered in the last 24 hours, for the human to audit. */
   | { t: 'queue_result'; items: QueueItem[]; decided?: DecidedItem[] }
   | { t: 'decided_result'; ok: boolean; reason?: string; code?: DecidedRefusal }

@@ -85,6 +85,7 @@ export interface EventStore {
    * newest-N window answers a different question — it re-reports what was
    * already seen and silently drops anything that arrived faster than N.
    */
+  inboxRowId(name: string, msgId: string): number | undefined
   inboxSince(name: string, afterId: number, limit: number): CursoredMessage[]
 
   /** Everything one session did or had done to it, newest last. */
