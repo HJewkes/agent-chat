@@ -8,6 +8,7 @@ import { finalAssistantText, readActivity } from '../turns.js'
 import { claimKey, type InboxMessage, type Observation } from './advance.js'
 import { planPathFor } from './brief.js'
 import { run, type Runner } from './exec.js'
+import { readExitedWork, type ExitedWork } from './exited-adopt.js'
 import { AGENT_PHASES, type Claim, type Phase } from './ledger.js'
 import { DEFAULT_NAME_PREFIX, type WorktreeUse } from './plan.js'
 import { readProgress, type Progress } from './progress.js'
@@ -58,6 +59,8 @@ export interface ObserveDeps {
   spend?: (agent: AgentIdentity) => Promise<TranscriptSpendRead>
   /** A seat's `spend.per_claim_usd`; observe reads it once per seat per tick, and a throw means no cap. */
   spendCap?: (seat: string) => number | undefined
+  /** What an exited implementer with no readable status left in its worktree (CC-673); defaults to `readExitedWork`. */
+  exitedWork?: (worktree: string) => ExitedWork | undefined
 }
 
 export interface Observed {
@@ -160,10 +163,20 @@ async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Pr
   const text = (deps.finalText ?? defaultFinalText)(row)
   if (text !== undefined) obs.report = parseReport(text)
   if (claim.phase === 'planning') return withSlices(obs, claim, deps)
-  if (claim.phase === 'implementing' && claim.worktree !== undefined)
+  if (claim.phase === 'implementing' && claim.worktree !== undefined) {
     obs.diff = (deps.diff ?? assessDiff)(claim.worktree)
+    return withExitedWork(obs, claim.worktree, deps)
+  }
   if (claim.phase === 'reviewing') return withShepherd(obs, claim, deps)
   return obs
+}
+
+/** Read only for an exit with no status line: a report already says what the agent left. */
+function withExitedWork(obs: Observation, worktree: string, deps: ObserveDeps): Observation {
+  const silent =
+    obs.report === undefined || (obs.report.status === 'unknown' && obs.report.parked === undefined)
+  if (!silent || !fs.existsSync(worktree)) return obs
+  return { ...obs, exitedWork: (deps.exitedWork ?? readExitedWork)(worktree) ?? 'unreadable' }
 }
 
 const SPEND_PHASES: ReadonlySet<Phase> = new Set([
