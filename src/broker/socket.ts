@@ -33,6 +33,8 @@ import { resolveSpawnCwd } from './spawn-default-cwd.js'
 import { readMeta } from './lifecycle.js'
 import { resolveDeciderAgentId } from '../config.js'
 import { shapeMeta } from '../inbox/item-shape.js'
+import { brokerHost } from './host-guard.js'
+import { linuxPeerPorts, provePeerLocal, type PeerPorts } from './peer-locality.js'
 
 /**
  * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
@@ -151,6 +153,8 @@ const replySwitch = (conn: Conn, outcome: SwitchOutcome): void => {
   })
 }
 
+const optionalHost = (host: string | undefined): { host?: string } => (host === undefined ? {} : { host })
+
 /**
  * The socket transport. Everything here is about turning bytes into `core`
  * calls and results back into bytes; all state and every write to the log lives
@@ -169,6 +173,7 @@ export class SocketServer {
     private readonly core: BrokerCore,
     supervisorOptions: SupervisorOptions = {},
     ledgerDb?: DatabaseSync,
+    private readonly peer: PeerPorts = linuxPeerPorts,
   ) {
     this.feed = new SystemEventFeed<Conn>(
       core.registry,
@@ -387,6 +392,16 @@ export class SocketServer {
   }
 
   /**
+   * CC-896: the host a signal on `conn`'s session is judged against. A reported host
+   * (CC-880) is taken as given; for a session that reported none, locality is proven
+   * from the kernel's view of its socket, and anything short of proof stays unreported.
+   */
+  private hostOf(conn: Conn, entry: { host?: string; hostPid?: number }): string | undefined {
+    if (entry.host !== undefined) return entry.host
+    return provePeerLocal(conn, entry.hostPid, this.peer) ? brokerHost() : undefined
+  }
+
+  /**
    * Teleport on behalf of `conn`, resolving WHO from its own registry entry.
    *
    * Every field the supervisor acts on — the identity to retire, the pid to
@@ -423,7 +438,7 @@ export class SocketServer {
         tags: registry.selfTagsOf(conn),
         subscriptions: registry.subscriptionsOf(conn),
         ...(entry.hostPid === undefined ? {} : { hostPid: entry.hostPid }),
-        ...(entry.host === undefined ? {} : { host: entry.host }),
+        ...optionalHost(this.hostOf(conn, entry)),
         ...(registry.anchorFor(conn) === undefined ? {} : { anchor: registry.anchorFor(conn) as string }),
         // CC-100: read from the registration, not from the message, exactly like
         // every other field here. A successor continues its predecessor's work and
@@ -660,7 +675,7 @@ export class SocketServer {
       to: 'headless',
       requestedBy: entry.name,
       ...(entry.hostPid === undefined ? {} : { hostPid: entry.hostPid }),
-      ...(entry.host === undefined ? {} : { host: entry.host }),
+      ...optionalHost(this.hostOf(conn, entry)),
     })
     replySwitch(conn, outcome)
   }

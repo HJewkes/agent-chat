@@ -161,7 +161,11 @@ export interface Registration {
   implementer: string
   /** The PR's current head; when known, a listed row at any other head is stale. */
   headSha?: string
+  /** Shepherd's `--kind`; absent, the flag is left off so a worker's own kind survives. */
+  kind?: ShepherdKind
 }
+
+export type ShepherdKind = 'correctness' | 'security' | 'feature' | 'refactor' | 'unknown'
 
 /** The PR's head sha as GitHub reports it now; a refused PR has no Shepherd row to read it from. */
 export function prHeadOf(target: ShepherdTarget, exec: Runner = run): string | undefined {
@@ -178,6 +182,11 @@ export function registerWithShepherd(reg: Registration, exec: Runner = run): Reg
   const listed = shepherdRows(exec)
   const row = listed && rowFor(listed, reg.target)
   if (row && isLiveAtHead(row, reg.headSha)) return { ok: true }
+  return shepherdRegister(reg, exec)
+}
+
+/** `shepherd register` itself, with no listing first; a repeat updates the run in place. */
+export function shepherdRegister(reg: Registration, exec: Runner = run): RegisterReply {
   const args = [
     'shepherd',
     'register',
@@ -186,6 +195,7 @@ export function registerWithShepherd(reg: Registration, exec: Runner = run): Reg
     reg.task,
     '--implementer',
     reg.implementer,
+    ...(reg.kind === undefined ? [] : ['--kind', reg.kind]),
   ]
   const result = exec(SHEPHERD_BIN, [...args, '--json'])
   if (result.status === 0) return { ok: true }
@@ -193,6 +203,38 @@ export function registerWithShepherd(reg: Registration, exec: Runner = run): Reg
     firstLine(result.stderr) ?? (result.status === null ? 'did not run' : `exit ${result.status}`)
   return { ok: false, refused: result.status === REFUSED_EXIT, reason }
 }
+
+/** What `shepherd status --json` lists, read from raw rows so one the schema skips as malformed still counts. */
+export interface ShepherdListing {
+  /** Every lowercased `repo#pr`. */
+  prs: Set<string>
+  /** Every row's branch in any repo, a branch-only run awaiting its PR (`pr: null`) included. */
+  branches: Set<string>
+}
+
+/** Undefined when Shepherd is down or the answer is not a JSON array. */
+export function shepherdListed(exec: Runner = run): ShepherdListing | undefined {
+  const result = exec(SHEPHERD_BIN, SHEPHERD_STATUS_ARGS)
+  if (result.status !== 0) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(result.stdout)
+  } catch {
+    return undefined
+  }
+  if (!Array.isArray(parsed)) return undefined
+  const listing: ShepherdListing = { prs: new Set(), branches: new Set() }
+  for (const raw of parsed) {
+    const ref = ListedRef.safeParse(raw)
+    if (ref.success) listing.prs.add(targetRef(ref.data).toLowerCase())
+    const branch = ListedBranch.safeParse(raw)
+    if (branch.success) listing.branches.add(branch.data.branch)
+  }
+  return listing
+}
+
+const ListedRef = z.object({ repo: z.string(), pr: z.number().int() })
+const ListedBranch = z.object({ branch: z.string().min(1) })
 
 const FINISHED_PHASES: readonly ShepherdRow['phase'][] = ['done', 'failed', 'cancelled']
 

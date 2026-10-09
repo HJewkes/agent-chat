@@ -41,6 +41,8 @@ const Defaults = z.looseObject({
   gate_free_bonus: z.number().positive().optional(),
   worktrees_per_repo_per_seat: z.number().int().nonnegative().optional(),
   worktrees_left_free_per_repo: z.number().int().nonnegative().optional(),
+  /** CC-861: idle days before the tick flags a seat's unregistered PR. */
+  stale_pr_days: z.number().int().nonnegative().optional(),
 })
 
 // An unset human_uses reads as true, which keeps the stricter five_hour ceiling.
@@ -104,6 +106,7 @@ const Seat = z.looseObject({
   backlog: z.string().min(1).optional(),
   kind_weights: orEmpty(Weights, {}),
   share_caps: orEmpty(Weights, {}),
+  stale_pr_days: z.number().int().nonnegative().optional(),
   pool: z.string().optional(),
   /** CC-405: agents tagged `waiting-owner` stay out of the seat's cap count in `seats status`. */
   cap_excludes_waiting_owner: orEmpty(z.boolean(), false),
