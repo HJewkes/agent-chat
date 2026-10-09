@@ -9,7 +9,13 @@ import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { RELAUNCH_RETRY_MS, Supervisor } from '../agents/supervisor.js'
-import { HANDOFF_MAX_BYTES, PANE_EXIT_TIMEOUT_MS, PANE_SETTLE_MS, PARK_LINE } from '../agents/teleport.js'
+import {
+  HANDOFF_MAX_BYTES,
+  PANE_EXIT_TIMEOUT_MS,
+  PANE_SETTLE_MS,
+  PARK_LINE,
+  REMOTE_LAUNCH_TIMEOUT_MS,
+} from '../agents/teleport.js'
 import { planPath } from '../agents/launch-files.js'
 import { logPath, profilesDir } from '../paths.js'
 import type { LaunchPlan } from '../agents/types.js'
@@ -1095,6 +1101,111 @@ describe('an ordinary human-started session', () => {
 
     const { args } = planFor(result.agentId as string)
     expect(args[args.indexOf('--model') + 1]).toBe('claude-sonnet-5')
+  })
+})
+
+/**
+ * CC-881: a session on another host (the broker forwarded over a socket) cannot be ended or
+ * relaunched from here, so the broker hands its relaunch plan back for the caller to execute.
+ */
+describe('a session on another host', () => {
+  async function teleportRemote() {
+    const cwd = workspace()
+    const agentId = adoptSession('cc27', cwd)
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27', cwd, remote: true }),
+      handoff: 'what I was mid-way through',
+    })
+    return { agentId, cwd, result, plan: supervisor.teleportPlan(agentId) }
+  }
+
+  it('gets its relaunch plan back, and the broker launches and signals nothing', async () => {
+    const { cwd, result, plan } = await teleportRemote()
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+
+    const reply = await plan
+    expect(result).toMatchObject({ ok: true, remote: true, countdownMs: COUNTDOWN_MS })
+    expect(reply.ok).toBe(true)
+    expect(reply.launch?.plan.agentId).toBe(result.agentId)
+    expect(reply.launch?.plan.cwd).toBe(cwd)
+    expect(reply.launch?.plan.stdin ?? reply.launch?.plan.args.join(' ')).toContain(
+      'what I was mid-way through',
+    )
+    expect(reply.launch?.surface).toBe('iterm-tab')
+    expect(reply.launch?.mcpConfig).toHaveProperty('mcpServers')
+    expect(killed).toEqual([])
+    expect(fs.existsSync(planPath(result.agentId as string))).toBe(false)
+    expect(spawnRowFor(result.agentId as string)).toBeDefined()
+  })
+
+  it('retires the predecessor once its host reports the successor launched', async () => {
+    const { agentId, plan } = await teleportRemote()
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    await plan
+
+    expect(supervisor.teleportLaunched(agentId, { ok: true })).toEqual({ ok: true })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(rowsFor(agentId).map(r => r.kind)).toContain('agent_retired')
+    expect(killed).toEqual([])
+  })
+
+  it('releases the successor and leaves the predecessor live when its host fails to launch', async () => {
+    const { agentId, result, plan } = await teleportRemote()
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    await plan
+
+    supervisor.teleportLaunched(agentId, { ok: false, reason: 'iTerm is not running' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
+    expect(rowsFor(result.agentId as string).map(r => r.kind)).toContain('agent_retired')
+    const told = core.events.inboxFor('cc27', 5).map(r => r.text)
+    expect(told.join('\n')).toMatch(/iTerm is not running/)
+    // Released, so the same session may try again.
+    const again = await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27', remote: true }),
+      handoff: 'second try',
+    })
+    expect(again.ok).toBe(true)
+  })
+
+  it('releases the successor when its host never reports back', async () => {
+    const { agentId, result, plan } = await teleportRemote()
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    await plan
+
+    await vi.advanceTimersByTimeAsync(REMOTE_LAUNCH_TIMEOUT_MS)
+
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
+    expect(rowsFor(result.agentId as string).map(r => r.kind)).toContain('agent_retired')
+  })
+
+  it('tells a waiting host there is nothing to run when the human aborts', async () => {
+    const { plan } = await teleportRemote()
+
+    supervisor.abortTeleport('cc27')
+
+    expect(await plan).toMatchObject({ ok: false })
+  })
+
+  it('answers a plan request with a refusal when nothing is teleporting', async () => {
+    expect(await supervisor.teleportPlan('nobody')).toMatchObject({ ok: false })
+  })
+
+  it('leaves a same-host teleport launching locally', async () => {
+    const cwd = workspace()
+    const agentId = adoptSession('cc27', cwd)
+
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27', cwd }),
+      handoff: 'h',
+    })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+
+    expect(result.remote).toBeUndefined()
+    expect(killed[0]).toEqual({ pid: 9999, signal: 'SIGTERM' })
+    expect(fs.existsSync(planPath(result.agentId as string))).toBe(true)
   })
 })
 

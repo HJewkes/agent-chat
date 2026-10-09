@@ -1,10 +1,23 @@
 import {
   SURFACE_NAMES as PACKAGE_SURFACE_NAMES,
+  type LaunchPlan,
   type SurfaceName as PackageSurfaceName,
 } from '@titan-design/agent-surface'
 
 // Wire protocol between a session's MCP subprocess and the shared broker.
 // Newline-delimited JSON over a unix socket.
+
+/**
+ * CC-881: a teleport successor for a session on another host. The broker builds it and records
+ * the successor; the caller's MCP process writes the launch files and opens the surface there.
+ */
+export interface RemoteLaunch {
+  agentId: string
+  plan: LaunchPlan
+  mcpConfig: Record<string, unknown>
+  surface: PackageSurfaceName
+  anchor?: string
+}
 
 export const SESSION_STATUSES = ['working', 'available', 'blocked'] as const
 
@@ -928,6 +941,13 @@ export type ClientMessage =
    */
   | { t: 'teleport_abort'; name: string }
   /**
+   * CC-881: a session on another host waits here for the relaunch plan the broker cannot run
+   * itself. Names no agent, like `teleport`: the subject is this connection's own registration.
+   */
+  | { t: 'teleport_plan_wait' }
+  /** CC-881: that host's report on the plan, sent before it ends its own Claude Code. */
+  | { t: 'teleport_launched'; ok: boolean; reason?: string }
+  /**
    * Pull a headless agent into a terminal window. This one DOES name an agent,
    * and that is the deliberate divergence from `teleport` above: the case it
    * exists for is an agent too blocked to ask for itself, because a headless
@@ -1108,7 +1128,11 @@ export type ServerMessage =
       /** Milliseconds until shutdown. Absent for a headless predecessor: there is no wait. */
       countdownMs?: number
       warnings?: string[]
+      /** CC-881: the session is on another host, so its MCP process runs the relaunch plan. */
+      remote?: boolean
     }
+  | { t: 'teleport_plan'; ok: boolean; reason?: string; launch?: RemoteLaunch }
+  | { t: 'teleport_launched_result'; ok: boolean; reason?: string }
   /**
    * `surface` is where it ACTUALLY landed, which is not always what was asked
    * for: the iTerm ladder downgrades a pane or tab to a new window when the

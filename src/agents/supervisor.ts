@@ -9,6 +9,7 @@ import {
   RESERVED_NAMES,
   type AgentIdentity,
   type IsolationName,
+  type RemoteLaunch,
   type Subscription,
   type SurfaceName,
   type WakeSource,
@@ -107,6 +108,7 @@ import { isTrusted, trustGap } from './trust.js'
 import { stoppedAt } from './identity.js'
 import { agentDir, burndownConfigPath, cliEntry, gitHooksDir, home } from '../paths.js'
 import { logEvent } from '../broker/log.js'
+import { endHostSession } from './end-session.js'
 import { resolveCoordinatorGrantableTools } from '../config.js'
 import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { SeatJournal } from './seats/journal.js'
@@ -136,6 +138,8 @@ import {
   Teleport,
   type InheritedIsolation,
   type RelaunchInput,
+  type RemoteLaunchReport,
+  type RemotePlanReply,
   type TeleportHost,
   type TeleportOutcome,
   type TeleportRequest,
@@ -703,6 +707,8 @@ export interface MachineGuardReaders {
 
 export class Supervisor implements TeleportHost {
   private readonly live = new Map<string, Live>()
+  /** CC-881: a remote successor's session id, held between its plan and its host's report. */
+  private readonly remoteSessions = new Map<string, string>()
   private readonly cwdLister: CwdLister
   /** CC-282: agents mid-park, to the canonical tree being removed. */
   private readonly parking = new Map<string, string>()
@@ -2868,6 +2874,15 @@ export class Supervisor implements TeleportHost {
     return this.teleporter.start(req)
   }
 
+  /** CC-881: what a session teleporting from another host waits on: the launch to run there. */
+  teleportPlan(agentId: string): Promise<RemotePlanReply> {
+    return this.teleporter.remotePlan(agentId)
+  }
+
+  teleportLaunched(agentId: string, report: RemoteLaunchReport): { ok: boolean; reason?: string } {
+    return this.teleporter.remoteLaunched(agentId, report)
+  }
+
   /** The human's veto on a countdown. No agent-facing path reaches this. */
   abortTeleport(name: string): { ok: boolean; reason?: string } {
     return this.teleporter.abort(name)
@@ -2893,19 +2908,7 @@ export class Supervisor implements TeleportHost {
    * anyone else, since the pid came from the caller's own registration.
    */
   endSession(name: string, hostPid: number): { ok: boolean; reason?: string } {
-    try {
-      process.kill(hostPid, 'SIGTERM')
-    } catch {
-      return { ok: false, reason: `${name} (pid ${hostPid}) was already gone` }
-    }
-    setTimeout(() => {
-      try {
-        process.kill(hostPid, 'SIGKILL')
-      } catch {
-        // exited on the polite signal, which is the good case
-      }
-    }, KILL_GRACE_MS).unref?.()
-    return { ok: true }
+    return endHostSession(name, hostPid)
   }
 
   /**
@@ -2950,6 +2953,59 @@ export class Supervisor implements TeleportHost {
         },
       })
 
+    const { plan, sessionId } = this.successorPlan(input, allocation)
+    writeLaunchFiles(plan, buildMcpConfig(input.profile, cliEntry(), plan.surface))
+    this.appendSuccessorSpawn(input, sessionId, allocation, isolation)
+
+    const executionId = this.openSuccessor(input, predecessor)
+    const launch: SuccessorLaunch = { input, plan, predecessor, allocation, isolation }
+    const { handle, retried } = await this.launchSuccessor(launch, executionId)
+    this.trackSuccessor(launch, handle)
+    this.bindExecution(input.agentId, executionId)
+    this.watchSuccessor(launch, handle, retried)
+    this.announceSuccessor(input, sessionId, allocation.cwd)
+  }
+
+  /**
+   * CC-881: the successor of a session on another host. Its row is recorded here, so it
+   * registers into an identity the broker already holds, but its files and surface are the
+   * caller's to make: this host can neither write that host's disk nor open its terminal.
+   */
+  prepareRemoteRelaunch(input: RelaunchInput): RemoteLaunch {
+    const allocation = { cwd: input.cwd }
+    const { plan, sessionId } = this.successorPlan(input, allocation)
+    this.appendSuccessorSpawn(input, sessionId, allocation, 'none')
+    this.remoteSessions.set(input.agentId, sessionId)
+    return {
+      agentId: input.agentId,
+      plan,
+      mcpConfig: buildMcpConfig(input.profile, cliEntry(), plan.surface),
+      surface: input.surface,
+      ...(input.anchor === undefined ? {} : { anchor: input.anchor }),
+    }
+  }
+
+  confirmRemoteRelaunch(input: RelaunchInput): void {
+    this.bindExecution(input.agentId, this.openSuccessor(input, undefined))
+    this.announceSuccessor(input, this.remoteSessions.get(input.agentId) ?? '', input.cwd)
+    this.remoteSessions.delete(input.agentId)
+  }
+
+  releaseRemoteRelaunch(input: RelaunchInput, reason: string): void {
+    this.remoteSessions.delete(input.agentId)
+    this.core.append({
+      kind: 'agent_retired',
+      actor: 'agent-chat',
+      target: input.name,
+      ref: input.agentId,
+      body: `teleport successor not launched on its caller's host: ${reason}`,
+    })
+  }
+
+  private successorPlan(
+    input: RelaunchInput,
+    allocation: Allocation,
+  ): { plan: LaunchPlan; sessionId: string } {
     const sessionId = Teleport.newSessionId()
     const plan = buildLaunchPlan({
       agentId: input.agentId,
@@ -2972,8 +3028,15 @@ export class Supervisor implements TeleportHost {
       ...(input.configDirUnset ? { configDirUnset: true } : {}),
       ...(input.remoteControl ? { remoteControl: true } : {}),
     })
-    writeLaunchFiles(plan, buildMcpConfig(input.profile, cliEntry(), plan.surface))
+    return { plan, sessionId }
+  }
 
+  private appendSuccessorSpawn(
+    input: RelaunchInput,
+    sessionId: string,
+    allocation: Allocation,
+    isolation: IsolationName,
+  ): void {
     this.core.append({
       kind: 'agent_spawned',
       actor: input.name,
@@ -2998,19 +3061,15 @@ export class Supervisor implements TeleportHost {
         ...input.meta,
       },
     })
+  }
 
-    const executionId = this.openSuccessor(input, predecessor)
-    const launch: SuccessorLaunch = { input, plan, predecessor, allocation, isolation }
-    const { handle, retried } = await this.launchSuccessor(launch, executionId)
-    this.trackSuccessor(launch, handle)
-    this.bindExecution(input.agentId, executionId)
-    this.watchSuccessor(launch, handle, retried)
+  private announceSuccessor(input: RelaunchInput, sessionId: string, cwd: string): void {
     logEvent('agent_teleported', { agentId: input.agentId, name: input.name, from: input.inheritedFrom })
     this.fireHook('on_spawn', {
       agentId: input.agentId,
       name: input.name,
       session_id: sessionId,
-      cwd: allocation.cwd,
+      cwd,
       parent: null,
       profile: input.profile.name,
       briefing: null,
