@@ -1,5 +1,5 @@
 import { brokerHost, isLocalHost } from '../broker/host-guard.js'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
 import type { BrokerCore } from '../broker/core.js'
 import { hostRemoteControl, psArgvReader, type ArgvReader } from '../broker/host-channels.js'
 import { newMsgId } from '../broker/event-log.js'
@@ -83,6 +83,19 @@ const PANE_EXIT_POLL_MS = 100
 
 /** CC-881: how long a remote caller has to report its launch before the successor is released. */
 export const REMOTE_LAUNCH_TIMEOUT_MS = 60_000
+
+/** CC-913: how long an armed successor's helper may report it unplaced; well past its pane wait and two launches. */
+export const LAND_WINDOW_MS = 5 * 60_000
+
+export interface LandFailedReply {
+  ok: boolean
+  reason?: string
+  /** Whether the predecessor was kept rather than retired; only on an accepted report. */
+  predecessorLive?: boolean
+}
+
+/** CC-913: a helper's failure reason becomes a human notice, so it is bounded. */
+const LAND_REASON_MAX = 1000
 
 /** Thrown by a host that already told the human its successor did not start, so `finish` does not tell them twice. */
 export class SuccessorNotStarted extends Error {
@@ -267,7 +280,19 @@ interface Pending {
   inboxThrough: string | undefined
   timer?: NodeJS.Timeout
   remote?: RemoteWait
+  /** CC-913: its successor could not be placed before this predecessor was retired, so it is kept. */
+  landFailed?: boolean
 }
+
+/** CC-913: an armed successor not yet registered; only the holder of `token` may report it unplaced. */
+interface Landing {
+  token: string
+  entry: Pending
+  timer: NodeJS.Timeout
+}
+
+const sameToken = (a: string, b: string): boolean =>
+  a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b))
 
 const bytes = (text: string): number => Buffer.byteLength(text, 'utf8')
 
@@ -316,6 +341,9 @@ export const defaultSeatTeleportDeps = (): SeatTeleportDeps => ({
 
 export class Teleport {
   private readonly pending = new Map<string, Pending>()
+  /** CC-913: armed remote successors by id, each cleared when it registers or its window ends. */
+  private readonly landings = new Map<string, Landing>()
+  private readonly unwatch: () => void
 
   constructor(
     private readonly core: BrokerCore,
@@ -323,7 +351,11 @@ export class Teleport {
     private readonly countdownMs: number = COUNTDOWN_MS,
     private readonly readArgv: ArgvReader = psArgvReader,
     private readonly seatTeleport: SeatTeleportDeps = defaultSeatTeleportDeps(),
-  ) {}
+  ) {
+    this.unwatch = core.onAppend(row => {
+      if (row.kind === 'agent_attached' && row.ref !== undefined) this.closeLanding(row.ref)
+    })
+  }
 
   /**
    * Record the handoff and commit to the sequence. Answers immediately: a
@@ -679,6 +711,61 @@ export class Teleport {
   }
 
   /**
+   * CC-913: an armed successor its host could not place, reported with the landing's token by the
+   * helper or the caller that armed it. Its row is retired so the name frees. The predecessor is kept
+   * and told only when it sent this itself and is not yet retired; otherwise the human is told.
+   */
+  landFailed(agentId: string, token: string, reason: string, from?: string): LandFailedReply {
+    const landing = this.landings.get(agentId)
+    if (landing === undefined || !sameToken(landing.token, token))
+      return { ok: false, reason: 'no armed teleport landing matches that successor and token' }
+    this.closeLanding(agentId)
+    const successor = this.core.agents.get(agentId)
+    if (successor === undefined || successor.state !== 'spawning')
+      return { ok: false, reason: 'that successor already registered, so it did start' }
+    const said = reason.slice(0, LAND_REASON_MAX)
+    const { entry } = landing
+    const { name, agentId: predecessorId } = entry.subject
+    this.core.append({
+      kind: 'agent_retired',
+      actor: 'agent-chat',
+      target: name,
+      ref: agentId,
+      body: `teleport successor not placed on its caller's host: ${said}`,
+    })
+    logEvent('teleport_failed', { name, from: predecessorId, reason: said, remote: true })
+    // Only the predecessor's own connection proves it is alive: the helper reports after its pid exited.
+    const predecessorLive = from === predecessorId && this.pending.get(predecessorId) === entry
+    if (predecessorLive) {
+      entry.landFailed = true
+      this.tell(name, `Your teleport did not happen: ${said}. You are still live, on the old build.`)
+    } else this.noticeUnplaced(name, said)
+    return { ok: true, predecessorLive }
+  }
+
+  private noticeUnplaced(name: string, reason: string): void {
+    this.core.append({
+      kind: 'notice',
+      actor: 'agent-chat',
+      target: HUMAN,
+      body: `${name} shut down for a teleport and its successor failed to start: ${reason}`,
+    })
+  }
+
+  private openLanding(entry: Pending, token: string): void {
+    const timer = setTimeout(() => this.landings.delete(entry.descendantId), LAND_WINDOW_MS)
+    timer.unref?.()
+    this.landings.set(entry.descendantId, { token, entry, timer })
+  }
+
+  private closeLanding(agentId: string): void {
+    const landing = this.landings.get(agentId)
+    if (landing === undefined) return
+    clearTimeout(landing.timer)
+    this.landings.delete(agentId)
+  }
+
+  /**
    * CC-881: the broker can neither signal nor open a terminal on another host, so it records the
    * successor, hands its launch to the caller and waits for the report. The predecessor stands
    * down only once its host says the successor launched; anything else releases the successor.
@@ -689,15 +776,19 @@ export class Teleport {
     let launch: RemoteLaunch
     try {
       input = this.relaunchFor(entry, false, await this.briefFor(entry))
-      launch = this.host.prepareRemoteRelaunch(input)
+      launch = { ...this.host.prepareRemoteRelaunch(input), landToken: randomUUID() }
     } catch (err) {
       return this.remoteFailed(entry, undefined, (err as Error).message)
     }
     const report = await this.awaitReport(remote, launch)
     if (!report.ok) return this.remoteFailed(entry, input, report.reason ?? 'no reason given')
     this.host.confirmRemoteRelaunch(input)
-    this.core.append({ kind: 'agent_stood_down', actor: subject.name, ref: subject.agentId })
+    this.openLanding(entry, launch.landToken as string)
+    // CC-913: written once the predecessor is gone, not at the report: until its own connection
+    // drops it may still be kept (`landFailed`), and a stand-down row reads as superseded for good.
     await this.waitForNameFree(subject.name)
+    if (entry.landFailed === true) return void this.pending.delete(subject.agentId)
+    this.core.append({ kind: 'agent_stood_down', actor: subject.name, ref: subject.agentId })
     this.core.append({
       kind: 'agent_retired',
       actor: 'agent-chat',
@@ -875,5 +966,7 @@ export class Teleport {
   close(): void {
     for (const entry of this.pending.values()) if (entry.timer) clearTimeout(entry.timer)
     this.pending.clear()
+    for (const agentId of [...this.landings.keys()]) this.closeLanding(agentId)
+    this.unwatch()
   }
 }

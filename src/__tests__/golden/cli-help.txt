@@ -902,6 +902,15 @@ Usage: agent-chat run-agent [options] <id>
 Options:
   -h, --help  display help for command
 
+=== agent-chat teleport-land
+Usage: agent-chat teleport-land [options] <id>
+
+Options:
+  --pid <pid>          the predecessor's Claude Code, whose exit frees its pane
+  --surface <surface>  where the successor runs
+  --anchor <anchor>    the predecessor's pane
+  -h, --help           display help for command
+
 === agent-chat permission-hook
 Usage: agent-chat permission-hook [options]
 

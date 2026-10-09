@@ -137,6 +137,7 @@ import {
   SuccessorNotStarted,
   Teleport,
   type InheritedIsolation,
+  type LandFailedReply,
   type RelaunchInput,
   type RemoteLaunchReport,
   type RemotePlanReply,
@@ -2901,6 +2902,11 @@ export class Supervisor implements TeleportHost {
 
   teleportLaunched(agentId: string, report: RemoteLaunchReport): { ok: boolean; reason?: string } {
     return this.teleporter.remoteLaunched(agentId, report)
+  }
+
+  /** CC-913: the caller's helper could not place an armed successor after its predecessor exited. */
+  teleportLandFailed(agentId: string, token: string, reason: string, from?: string): LandFailedReply {
+    return this.teleporter.landFailed(agentId, token, reason, from)
   }
 
   /** The human's veto on a countdown. No agent-facing path reaches this. */

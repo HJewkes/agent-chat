@@ -1,19 +1,25 @@
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import fs from 'node:fs'
+import path from 'node:path'
 import { endHostSession } from '../agents/end-session.js'
 import { buildMcpConfig, hookSettingsPath, mcpConfigPath, writeLaunchFiles } from '../agents/launch-files.js'
 import { buildLaunchPlan } from '../agents/launch-plan.js'
 import { cwdHoldsUserSettings } from '../agents/launch-policy.js'
-import { surfaceFor } from '../agents/launcher.js'
 import type { AgentProfile, LaunchPlan } from '../agents/types.js'
 import type { BrokerClient } from '../client/broker-client.js'
-import { cliEntry, gitHooksDir, home } from '../paths.js'
+import { agentDir, cliEntry, gitHooksDir, home } from '../paths.js'
 import { SURFACE_NAMES, type RemoteLaunch, type ServerMessage, type SurfaceName } from '../protocol.js'
 
 /**
  * CC-881: the half of a teleport that runs on the caller's host. When the broker is on another
  * machine it can neither write this machine's launch files, nor open its terminal, nor signal its
  * Claude Code. It sends a host-neutral spec; this process validates it, builds the plan, every
- * path, the env and the MCP config from its OWN host, launches, and ends its parent only once
- * the broker accepted the launch report. A refused or lost report closes the successor instead.
+ * path, the env and the MCP config from its OWN host, arms a detached helper, and ends its parent
+ * only once the broker accepted the report. A refused or lost report disarms the helper instead.
+ *
+ * CC-913: the report means armed, not launched. The successor reuses the predecessor's pane, which
+ * frees only when the predecessor exits, so the launch (`caller-land.ts`) runs after that exit.
  */
 
 /** What this host contributes to the plan: never taken from the broker. */
@@ -23,28 +29,67 @@ export interface LocalHost {
   env: NodeJS.ProcessEnv
 }
 
-export interface Launched {
-  /** Close the surface this process opened, ending the successor in it. */
-  abandon(): Promise<void>
+export interface Armed {
+  /** Release the helper, handing it the landing token, to place the successor once this session's Claude Code exits; false when it already died. */
+  go(token: string): boolean
+  /** Disarm the helper, so it never places the successor. */
+  abandon(): void
 }
 
 export interface CallerLaunchDeps {
   local: LocalHost
   writeFiles(plan: LaunchPlan, mcpConfig: Record<string, unknown>): void
-  launch(surface: SurfaceName, plan: LaunchPlan, anchor: string | undefined): Promise<Launched>
+  arm(spec: RemoteLaunch, hostPid: number): Promise<Armed>
   endParent(pid: number): void
 }
 
-export const defaultCallerLaunch = (): CallerLaunchDeps => ({
-  local: { cliEntry: cliEntry(), cwd: process.cwd(), env: process.env },
-  writeFiles: writeLaunchFiles,
-  launch: async (name, plan, anchor) => {
-    const surface = surfaceFor(name, anchor === undefined ? {} : { anchor })
-    const handle = await surface.launch(plan)
-    return { abandon: async () => void (await surface.close({ ...handle, ownsSurface: true })) }
-  },
-  endParent: pid => void endHostSession('this session', pid),
-})
+function landArgs(local: LocalHost, spec: RemoteLaunch, hostPid: number): string[] {
+  const anchor = spec.anchor === undefined ? [] : [`--anchor=${spec.anchor}`]
+  return [
+    local.cliEntry,
+    'teleport-land',
+    spec.agentId,
+    `--pid=${hostPid}`,
+    `--surface=${spec.surface}`,
+    ...anchor,
+  ]
+}
+
+/** Detached and in its own session, so it outlives this process and the Claude Code it is about to end. */
+export async function armHelper(local: LocalHost, spec: RemoteLaunch, hostPid: number): Promise<Armed> {
+  const log = fs.openSync(path.join(agentDir(spec.agentId), 'land.log'), 'a', 0o600)
+  const child = spawn(process.execPath, landArgs(local, spec, hostPid), {
+    cwd: local.cwd,
+    env: local.env,
+    detached: true,
+    stdio: ['pipe', log, log],
+  })
+  fs.closeSync(log)
+  await once(child, 'spawn')
+  child.unref()
+  const alive = () => child.exitCode === null && child.signalCode === null
+  return {
+    go: token => {
+      if (!alive()) return false
+      child.stdin?.end(`go ${token}\n`)
+      return true
+    },
+    abandon: () => {
+      child.stdin?.destroy()
+      child.kill()
+    },
+  }
+}
+
+export const defaultCallerLaunch = (): CallerLaunchDeps => {
+  const local = { cliEntry: cliEntry(), cwd: process.cwd(), env: process.env }
+  return {
+    local,
+    writeFiles: writeLaunchFiles,
+    arm: (spec, hostPid) => armHelper(local, spec, hostPid),
+    endParent: pid => void endHostSession('this session', pid),
+  }
+}
 
 const AGENT_ID = /^[0-9a-f]{8}$/
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -130,6 +175,25 @@ type Broker = Pick<BrokerClient, 'request'>
 
 type Ack = Extract<ServerMessage, { t: 'teleport_launched_result' }>
 
+type LandFailedResult = Extract<ServerMessage, { t: 'teleport_land_failed_result' }>
+
+/** CC-913: the one report that retires an armed successor, from whichever side holds its token. */
+export async function reportUnplaced(
+  broker: Broker,
+  agentId: string,
+  token: string,
+  reason: string,
+): Promise<LandFailedResult> {
+  try {
+    return (await broker.request(
+      { t: 'teleport_land_failed', agentId, token, reason },
+      'teleport_land_failed_result',
+    )) as LandFailedResult
+  } catch (err) {
+    return { t: 'teleport_land_failed_result', ok: false, reason: (err as Error).message }
+  }
+}
+
 /** The broker's verdict on the report; a report that could not be delivered is not accepted. */
 async function report(broker: Broker, agentId: string, ok: boolean, reason?: string): Promise<Ack> {
   try {
@@ -142,16 +206,16 @@ async function report(broker: Broker, agentId: string, ok: boolean, reason?: str
   }
 }
 
-async function launchLocally(spec: RemoteLaunch, hostPid: number | undefined, deps: CallerLaunchDeps) {
+async function armLocally(spec: RemoteLaunch, hostPid: number | undefined, deps: CallerLaunchDeps) {
   const refused = checkLaunch(spec)
   if (refused !== undefined) throw new Error(refused)
   if (hostPid === undefined) throw new Error('this MCP process does not know the pid of its Claude Code')
   const { plan, mcpConfig } = buildCallerLaunch(spec, deps.local)
   deps.writeFiles(plan, mcpConfig)
-  return deps.launch(spec.surface, plan, spec.anchor)
+  return deps.arm(spec, hostPid)
 }
 
-/** Waits out the countdown for the spec, runs it, and ends `hostPid` only on an accepted report. */
+/** Waits out the countdown for the spec, arms it, and ends `hostPid` only on an accepted report. */
 export async function runCallerTeleport(
   broker: Broker,
   hostPid: number | undefined,
@@ -163,22 +227,45 @@ export async function runCallerTeleport(
   >
   if (!reply.ok || reply.launch === undefined) return
   const spec = reply.launch
-  let launched: Launched
+  let armed: Armed
   try {
-    launched = await launchLocally(spec, hostPid, deps)
+    armed = await armLocally(spec, hostPid, deps)
   } catch (err) {
     await report(broker, spec.agentId, false, (err as Error).message)
     return
   }
   const ack = await report(broker, spec.agentId, true)
   if (!ack.ok) {
-    // The broker already released the successor, so it is closed and this session stays live.
-    process.stderr.write(
-      `agent-chat: teleport launch report not accepted (${ack.reason ?? 'no reason'}); ` +
-        `closed successor ${spec.agentId} and this session stays live\n`,
-    )
-    await launched.abandon()
-    return
+    // The broker already released the successor, so it is never placed and this session stays live.
+    armed.abandon()
+    return warn(`report not accepted (${ack.reason ?? 'no reason'}); disarmed successor ${spec.agentId}`)
   }
-  deps.endParent(hostPid as number)
+  const token = spec.landToken ?? ''
+  if (armed.go(token)) return deps.endParent(hostPid as number)
+  await helperLost(broker, spec, token, hostPid as number, deps)
 }
+
+/**
+ * CC-913: the broker has already accepted the report and is retiring this session, so a helper that
+ * died unreleased is reported here with the token. Only the broker's answer says this session stays.
+ */
+async function helperLost(
+  broker: Broker,
+  spec: RemoteLaunch,
+  token: string,
+  hostPid: number,
+  deps: CallerLaunchDeps,
+) {
+  const reason = 'its helper exited before it was released'
+  const answer = await reportUnplaced(broker, spec.agentId, token, reason)
+  if (answer.ok && answer.predecessorLive === true)
+    return warn(`successor ${spec.agentId} was not placed: ${reason}`)
+  if (answer.ok) return deps.endParent(hostPid)
+  process.stderr.write(
+    `agent-chat: teleport successor ${spec.agentId} was not placed (${reason}) and the broker did not ` +
+      `confirm this session stays live: ${answer.reason ?? 'no reason'}\n`,
+  )
+}
+
+const warn = (what: string): void =>
+  void process.stderr.write(`agent-chat: teleport ${what}, and this session stays live\n`)
