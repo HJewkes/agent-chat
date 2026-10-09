@@ -22,6 +22,7 @@ import { slotUsage } from '../../suite-slots.js'
 import { suiteSlotDeps } from '../suite-slot.js'
 import type { AgentIdentity } from '../../protocol.js'
 import { scoredPlanFromDisk } from '../../agents/burndown/score-render.js'
+import { renderPlan, seatPlanFromDisk, type SeatPlanOptions } from '../../agents/burndown/tick.js'
 import { renderBoot, seatBoot, type BootDeps } from '../../agents/seats/boot.js'
 import { charterSeats, isSeatName, parsePools, parseSeat, seatSurface } from '../../agents/seats/charter.js'
 import {
@@ -64,6 +65,7 @@ import {
   STATUS_TOP,
   plainError,
   readInbox,
+  renderBrief,
   renderStatus,
   seatStatus,
   WAITING_OWNER_TAG,
@@ -78,6 +80,7 @@ import { hostLeaseRefusal } from '../../host-lease.js'
 import { home } from '../../paths.js'
 import { SURFACE_NAMES, type ServerMessage, type SurfaceName } from '../../protocol.js'
 import { addVerb, defineVerb, Report } from '../command.js'
+import { seatPlanOptions } from './burndown.js'
 import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from './watchdog-job.js'
 
 type Reply<T extends ServerMessage['t']> = Extract<ServerMessage, { t: T }>
@@ -456,10 +459,20 @@ function statusFailure(seat: string, json: boolean, error: string): Report {
 }
 
 /** The status verb's body, taking its readers explicitly so a test can point them at a fixture broker. */
-export async function statusReport(deps: StatusDeps, seat: string, json: boolean): Promise<Report> {
+export async function statusReport(
+  deps: StatusDeps,
+  seat: string,
+  json: boolean,
+  brief = false,
+): Promise<Report> {
   try {
     const status = await seatStatus(deps, seat)
-    return { ok: true, lines: json ? [JSON.stringify(status, null, 2)] : renderStatus(status) }
+    const lines = json
+      ? [JSON.stringify(status, null, 2)]
+      : brief
+        ? renderBrief(status)
+        : renderStatus(status)
+    return { ok: true, lines }
   } catch (err) {
     return statusFailure(seat, json, plainError(err, [deps.autonomyRoot, deps.homeDir]))
   }
@@ -474,7 +487,12 @@ export const seatsStatusVerb = defineVerb({
     'messages since the seat last sent one, the ' +
     'machine-wide headless agents, free memory and full-suite slots against their limits, swap used, and the ' +
     'top eligible tasks. A spend cap with no saved meter to count it is a stop',
-  args: z.object({ seat: requiredString('seat'), json: z.boolean().optional(), root: z.string().optional() }),
+  args: z.object({
+    seat: requiredString('seat'),
+    json: z.boolean().optional(),
+    brief: z.boolean().optional(),
+    root: z.string().optional(),
+  }),
   result: Report,
   cli: {
     positional: ['seat'],
@@ -483,16 +501,70 @@ export const seatsStatusVerb = defineVerb({
         long: '--json',
         description: 'the same facts as one JSON object; a failure is {"seat", "error"} with exit 1',
       },
+      brief: {
+        long: '--brief',
+        description: 'only caps per role with names, the pool reading and stop, unread and parked counts',
+      },
       root: { long: '--root', description: 'autonomy directory holding charter.md and seats/' },
     },
   },
-  async run({ seat, json, root }) {
+  async run({ seat, json, brief, root }) {
+    if (json === true && brief === true)
+      return statusFailure(seat, true, 'seats status takes --brief or --json, not both')
     const dir = root ?? defaultAutonomyRoot()
     try {
-      return await withRunningBroker(client => statusReport(statusDeps(dir, client), seat, json === true))
+      return await withRunningBroker(client =>
+        statusReport(statusDeps(dir, client), seat, json === true, brief === true),
+      )
     } catch (err) {
       return statusFailure(seat, json === true, plainError(err, [dir, os.homedir()]))
     }
+  },
+})
+
+/**
+ * CC-889: a live tick for one seat is refused. The timer's tick advances every held claim under the
+ * ledger lock, and the respawn ladder's first rung spans two ticks, so an extra tick between timer
+ * ticks would retire or respawn a stalled agent early, for this seat's claims and every other seat's.
+ */
+const LIVE_TICK_REFUSAL =
+  'seats tick runs only with --dry-run: a live tick off the timer would advance every claim a phase early; ' +
+  '`agent-chat burndown tick --once` is the one live tick'
+
+/** The tick verb's body, taking the plan inputs as a loader so a test can point it at a fixture world. */
+export async function seatTickReport(dryRun: boolean, load: () => Promise<SeatPlanOptions>): Promise<Report> {
+  if (!dryRun) return { ok: false, lines: [], errors: [LIVE_TICK_REFUSAL] }
+  try {
+    const opts = await load()
+    const [, ...decision] = renderPlan(seatPlanFromDisk(opts), opts.now)
+    return { ok: true, lines: [`seat ${opts.seat} tick at ${opts.now.toISOString()} (dry run)`, ...decision] }
+  } catch (err) {
+    return { ok: false, lines: [], errors: [err instanceof Error ? err.message : String(err)] }
+  }
+}
+
+export const seatsTickVerb = defineVerb({
+  name: 'seats.tick',
+  description:
+    "one seat's burndown decision on demand (CC-889): the dispatches the tick would make for it under " +
+    'its service-check stop line, trust gate, role and worktree caps and pool gate, and why every other ' +
+    'task was refused. ' +
+    'Dry run only: it spawns nothing and writes no ledger',
+  args: z.object({
+    seat: requiredString('seat'),
+    dryRun: z.boolean().optional(),
+    root: z.string().optional(),
+  }),
+  result: Report,
+  cli: {
+    positional: ['seat'],
+    options: {
+      dryRun: { long: '--dry-run', description: 'print the decision without spawning (required)' },
+      root: { long: '--root', description: 'autonomy directory holding charter.md and seats/' },
+    },
+  },
+  async run({ seat, dryRun, root }) {
+    return seatTickReport(dryRun === true, () => seatPlanOptions(seat, root))
   },
 })
 
@@ -654,6 +726,7 @@ export function addSeatsCommands(program: Commander): void {
   const seats = program.command('seats').description('autonomy seats: the idle watchdog')
   addVerb(seats, seatsWatchdogVerb)
   addVerb(seats, seatsStatusVerb)
+  addVerb(seats, seatsTickVerb)
   addVerb(seats, seatsDispatchesVerb)
   addVerb(seats, seatsBootVerb)
   addVerb(seats, seatsRunStartVerb)

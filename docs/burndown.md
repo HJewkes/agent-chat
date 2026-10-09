@@ -47,6 +47,13 @@ Add `--scored` for the seat's scored order with every component (`--top` and `--
 apply only then); `--autonomy-root` points at another charter. A `task tags errors:` line lists
 malformed planning tags, such as a `dep:` naming no task on disk, which the order reads as closed.
 
+`agent-chat seats tick <seat> --dry-run` prints the same plan under a `seat <seat> tick at <time>
+(dry run)` header (CC-889). It runs only with `--dry-run`. The timer's tick advances every held
+claim, and the respawn ladder's first rung spans two ticks, so a live tick between timer ticks
+would retire or respawn a stalled agent early. `agent-chat seats status <seat> --brief` prints
+eight lines: the caps per role with names, the pool reading, the stop, the unread count and the
+parked count. `--json` is unchanged, and it cannot be combined with `--brief`.
+
 The tick walks that same order (CC-768): `planSeat` orders rows with `planOrder` over this week's
 `milestones/<week>.yml` in the autonomy root, and each dispatch carries its `tier`. With no file and no planning
 tags the order is `dispatchOrder`'s. A task `planOrder` drops as `dep-blocked` or `gated:<id>` is a `plan-blocked`

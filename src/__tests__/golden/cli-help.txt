@@ -30,7 +30,7 @@ Agent commands:
   agent                      durable agents
   teleport                   teleport control
   handoff                    stored teleport handoffs
-  profiles                   agent profiles available to spawn with
+  profiles [name]            agent profiles available to spawn with
   gh-write <gh-args...>      one gh write after --, spaced machine-wide and retried on the secondary
                              rate limit
   suite-slot <command...>    run a full test suite after --, holding one of the machine-wide
@@ -388,6 +388,10 @@ Commands:
                                 the machine-wide headless agents, free memory and full-suite slots
                                 against their limits, swap used, and the top eligible tasks. A spend
                                 cap with no saved meter to count it is a stop
+  tick [options] <seat>         one seat's burndown decision on demand (CC-889): the dispatches the
+                                tick would make for it under its service-check stop line, trust
+                                gate, role and worktree caps and pool gate, and why every other task
+                                was refused. Dry run only: it spawns nothing and writes no ledger
   dispatches [options] <seat>   one folded record per agent run from a seat's dispatch log (CC-332),
                                 read-only: the broker's spawn and retire rows and the seat's own
                                 rows merged, with the spend. Lines that are not a JSON object with
@@ -447,6 +451,19 @@ count it is a stop
 
 Options:
   --json          the same facts as one JSON object; a failure is {"seat", "error"} with exit 1
+  --brief         only caps per role with names, the pool reading and stop, unread and parked counts
+  --root <value>  autonomy directory holding charter.md and seats/
+  -h, --help      display help for command
+
+=== agent-chat seats tick
+Usage: agent-chat seats tick [options] <seat>
+
+one seat's burndown decision on demand (CC-889): the dispatches the tick would make for it under its
+service-check stop line, trust gate, role and worktree caps and pool gate, and why every other task
+was refused. Dry run only: it spawns nothing and writes no ledger
+
+Options:
+  --dry-run       print the decision without spawning (required)
   --root <value>  autonomy directory holding charter.md and seats/
   -h, --help      display help for command
 
@@ -790,7 +807,7 @@ Options:
   -h, --help  display help for command
 
 === agent-chat profiles
-Usage: agent-chat profiles [options]
+Usage: agent-chat profiles [options] [name]
 
 agent profiles available to spawn with
 
