@@ -267,30 +267,44 @@ const unknownKeyWarnings = (file: string, body: Record<string, unknown>): string
     .filter(key => key !== DENY_ALIAS && !Object.hasOwn(PROFILE_KEYS, key))
     .map(key => `${file}: unknown key "${key}" is ignored; no AgentProfile field has that name`)
 
-const INBOX_DENY = 'Bash(agent-chat inbox:*)'
+const APPROVE_DENY = 'Bash(agent-chat approve:*)'
 
-/** The verbs `inbox --batch --answers` reaches through one door (CC-425). */
-const INBOX_REACHES = ['Bash(agent-chat approve:*)', 'Bash(agent-chat endorse:*)']
+/** A deny a file implies by denying `when`, unless it allows that pattern by name. */
+interface DerivedDeny {
+  deny: string
+  when: string[]
+  why: string
+}
 
-/**
- * CC-558: a file that denies approve or endorse but not inbox leaves that door
- * open. A profile that allows an inbox pattern by name, as the decider does, keeps it.
- */
-const needsInboxDeny = (denied: string[], allowed: string[]): boolean =>
-  INBOX_REACHES.some(verb => denied.includes(verb)) &&
-  !denied.includes(INBOX_DENY) &&
-  !allowed.some(tool => tool.startsWith('Bash(agent-chat inbox'))
+const DERIVED_DENIES: DerivedDeny[] = [
+  {
+    // CC-558: `inbox --batch --answers` reaches approve and endorse through one door (CC-425).
+    deny: 'Bash(agent-chat inbox:*)',
+    when: [APPROVE_DENY, 'Bash(agent-chat endorse:*)'],
+    why: 'the file denies approve or endorse, and inbox reaches both',
+  },
+  {
+    // CC-169: a file that keeps the human's verbs from an agent keeps it from asking under a service label too.
+    deny: 'Bash(agent-chat ask:*)',
+    when: [APPROVE_DENY],
+    why: 'the file denies approve, and ask puts a question to the human under a service label',
+  },
+]
 
-/** `disallowedTools` and its alias as one list, plus the inbox deny when the file needs it. */
+const needs = ({ deny, when }: DerivedDeny, denied: string[], allowed: string[]): boolean =>
+  when.some(verb => denied.includes(verb)) &&
+  !denied.includes(deny) &&
+  !allowed.some(tool => tool.startsWith(deny.slice(0, deny.indexOf(':'))))
+
+/** `disallowedTools` and its alias as one list, plus each derived deny the file needs. */
 function fileDenies(file: string, body: Record<string, unknown>): { denied?: string[]; warnings: string[] } {
   const listed = [...((body.disallowedTools as string[]) ?? []), ...((body[DENY_ALIAS] as string[]) ?? [])]
   const denied = [...new Set(listed)]
-  if (needsInboxDeny(denied, body.allowedTools as string[])) {
-    const why = 'the file denies approve or endorse, and inbox reaches both'
-    return { denied: [...denied, INBOX_DENY], warnings: [`${file}: "${INBOX_DENY}" is denied too; ${why}`] }
-  }
+  const added = DERIVED_DENIES.filter(rule => needs(rule, denied, body.allowedTools as string[]))
+  const warnings = added.map(({ deny, why }) => `${file}: "${deny}" is denied too; ${why}`)
   const named = body.disallowedTools !== undefined || body[DENY_ALIAS] !== undefined
-  return { ...(named ? { denied } : {}), warnings: [] }
+  if (!named && added.length === 0) return { warnings }
+  return { denied: [...denied, ...added.map(rule => rule.deny)], warnings }
 }
 
 /**

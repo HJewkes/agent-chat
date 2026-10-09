@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { buildLaunchPlan } from '../agents/launch-plan.js'
@@ -7,6 +8,8 @@ import type { AgentProfile } from '../agents/types.js'
 const INBOX = 'Bash(agent-chat inbox:*)'
 const APPROVE = 'Bash(agent-chat approve:*)'
 const ENDORSE = 'Bash(agent-chat endorse:*)'
+const ASK = 'Bash(agent-chat ask:*)'
+const SHIPPED = path.join(__dirname, '../../profiles')
 
 const valid = { model: 'sonnet', allowedTools: ['Read', 'Bash'], isolation: 'none', surface: 'headless' }
 
@@ -71,21 +74,21 @@ describe('the inbox deny on a profile file (CC-558)', () => {
 
     expect(profile.disallowedTools?.filter(tool => tool === INBOX)).toEqual([INBOX])
     expect(deniedAtLaunch(profile)).toContain(INBOX)
-    expect(profile.warnings).toEqual([expect.stringMatching(/fixture\.json.*agent-chat inbox/)])
+    expect(profile.warnings).toContainEqual(expect.stringMatching(/fixture\.json.*agent-chat inbox/))
   })
 
   it('adds nothing to a file that already denies it', () => {
-    const profile = parsed({ disallowedTools: [APPROVE, INBOX] })
+    const profile = parsed({ disallowedTools: [APPROVE, INBOX, ASK] })
 
-    expect(profile.disallowedTools).toEqual([APPROVE, INBOX])
+    expect(profile.disallowedTools).toEqual([APPROVE, INBOX, ASK])
     expect(profile).not.toHaveProperty('warnings')
   })
 
   it('keeps inbox for a profile that allows it by name, as the decider does', () => {
-    const profile = parsed({ allowedTools: ['Read', INBOX], disallowedTools: [APPROVE, ENDORSE] })
-    const shipped = loadProfile('decider', path.join(__dirname, '../../profiles'))
+    const profile = parsed({ allowedTools: ['Read', INBOX], disallowedTools: [APPROVE, ENDORSE, ASK] })
+    const shipped = loadProfile('decider', SHIPPED)
 
-    expect(profile.disallowedTools).toEqual([APPROVE, ENDORSE])
+    expect(profile.disallowedTools).toEqual([APPROVE, ENDORSE, ASK])
     expect(profile).not.toHaveProperty('warnings')
     expect(shipped).not.toHaveProperty('error')
     expect((shipped as AgentProfile).disallowedTools).not.toContain(INBOX)
@@ -101,11 +104,44 @@ describe('the inbox deny on a profile file (CC-558)', () => {
   })
 })
 
-describe('the ask deny on builtin profiles (CC-169)', () => {
+describe('the ask deny (CC-169)', () => {
   // Mutation caught: dropping the line, which lets an agent with Bash ask the human under a service label.
-  it.each(['implementer', 'peer', 'reviewer', 'planner'])('denies agent-chat ask to %s', name => {
+  it.each(['implementer', 'peer', 'reviewer', 'planner'])('denies agent-chat ask to builtin %s', name => {
     const builtin = BUILTIN_PROFILES.find(p => p.name === name)
 
-    expect(builtin?.disallowedTools).toContain('Bash(agent-chat ask:*)')
+    expect(builtin?.disallowedTools).toContain(ASK)
+  })
+
+  // Mutation caught: no derived deny, which left every user profile file (bd-*, peer.json) able to ask.
+  it.each([
+    ['a worker that denies approve', { disallowedTools: ['Write', APPROVE] }],
+    ['a file that names approve under the alias', { denies: [APPROVE] }],
+  ])('adds it to %s, and says so', (_shape, body) => {
+    const profile = parsed(body)
+
+    expect(profile.disallowedTools?.filter(tool => tool === ASK)).toEqual([ASK])
+    expect(deniedAtLaunch(profile)).toContain(ASK)
+    expect(profile.warnings).toContainEqual(expect.stringMatching(/fixture\.json.*agent-chat ask/))
+  })
+
+  it('keeps ask for a profile that allows it by name', () => {
+    const profile = parsed({ allowedTools: ['Read', ASK], disallowedTools: [APPROVE, INBOX] })
+
+    expect(profile.disallowedTools).toEqual([APPROVE, INBOX])
+    expect(profile).not.toHaveProperty('warnings')
+  })
+
+  it('leaves a file that does not deny approve alone', () => {
+    expect(parsed({ disallowedTools: [ENDORSE, INBOX] }).disallowedTools).toEqual([ENDORSE, INBOX])
+  })
+
+  it('is named outright in every shipped profile file, so none loads with a warning about it', () => {
+    const names = fs.readdirSync(SHIPPED).filter(f => f.endsWith('.json'))
+
+    for (const name of names.map(f => f.replace(/\.json$/, ''))) {
+      const profile = loadProfile(name, SHIPPED) as AgentProfile
+      expect(profile.disallowedTools, name).toContain(ASK)
+      expect(profile.warnings ?? [], name).not.toContainEqual(expect.stringContaining('agent-chat ask'))
+    }
   })
 })
