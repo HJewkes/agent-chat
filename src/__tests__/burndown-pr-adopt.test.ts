@@ -9,7 +9,12 @@ import {
   type ChangedFile,
   type OpenPull,
 } from '../agents/burndown/pr-adopt.js'
-import { shepherdListed, shepherdRegister, type Registration } from '../agents/burndown/shepherd.js'
+import {
+  shepherdListed,
+  shepherdRegister,
+  type Registration,
+  type ShepherdListing,
+} from '../agents/burndown/shepherd.js'
 
 const NOW = new Date('2026-10-08T12:00:00Z')
 const DAY_MS = 86_400_000
@@ -44,13 +49,18 @@ interface Fake {
   registered: Registration[]
   seatLog: string[]
   events: string[]
-  listed: Set<string> | undefined
+  listed: ShepherdListing | undefined
 }
+
+const listing = (prs: string[] = [], branches: string[] = []): ShepherdListing => ({
+  prs: new Set(prs),
+  branches: new Set(branches),
+})
 
 function fake(opts: {
   pulls?: OpenPull[]
   tasks?: Task[]
-  listed?: Set<string> | undefined
+  listed?: ShepherdListing | undefined
   files?: ChangedFile[] | undefined
   registerExit?: number
 }): Fake {
@@ -58,7 +68,7 @@ function fake(opts: {
     registered: [],
     seatLog: [],
     events: [],
-    listed: 'listed' in opts ? opts.listed : new Set(),
+    listed: 'listed' in opts ? opts.listed : listing(),
     ports: undefined as unknown as AdoptPorts,
   }
   f.ports = {
@@ -74,7 +84,7 @@ function fake(opts: {
       if (opts.registerExit !== undefined)
         return { ok: false, refused: opts.registerExit === 65, reason: `exit ${opts.registerExit}` }
       f.registered.push(reg)
-      f.listed?.add(`acme/widgets#${reg.target.pr}`)
+      f.listed?.prs.add(`acme/widgets#${reg.target.pr}`)
       return { ok: true }
     },
     logged: (_seat, key) => f.seatLog.some(line => line.includes(key)),
@@ -257,7 +267,7 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.registered).toEqual([])
     expect(f.events).toContain('burndown_pr_adopt_shepherd_down')
 
-    f.listed = new Set()
+    f.listed = listing()
     tick(f)
     expect(f.registered).toHaveLength(1)
   })
@@ -284,7 +294,7 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     ])
   })
 
-  it('leaves alone PRs of other prefixes, forks, PRs Shepherd lists and PRs a claim holds', () => {
+  it('leaves alone other prefixes, forks, PRs Shepherd lists by number or branch, and claimed PRs', () => {
     const f = fake({
       pulls: [
         pull({ number: 1, branch: 'agent-chat/zz-t-1-other' }),
@@ -292,15 +302,34 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
         pull({ number: 3 }),
         pull({ number: 4, headRepo: 'Stranger/Widgets' }),
         pull({ number: 5, headRepo: '' }),
+        pull({ number: 6, branch: 'agent-chat/sa-t-1-awaiting' }),
       ],
       tasks: [task()],
-      listed: new Set(['acme/widgets#2']),
+      listed: listing(['acme/widgets#2'], ['agent-chat/sa-t-1-awaiting']),
     })
 
     tick(f, new Set(['acme/widgets#3']))
 
     expect(f.registered).toEqual([])
     expect(f.seatLog).toEqual([])
+  })
+
+  it('registers a PR from the same repo named in another case, which is no fork', () => {
+    const f = fake({ pulls: [pull({ headRepo: 'acme/WIDGETS' })], tasks: [task()] })
+
+    tick(f)
+
+    expect(f.registered).toHaveLength(1)
+  })
+
+  it('flags a PR that renames a non-test file into a test path', () => {
+    const renamed = { ...file('src/__tests__/scan.test.ts'), previousPath: 'src/leak-guard/scan.ts' }
+    const f = fake({ pulls: [pull()], tasks: [task()], files: [renamed] })
+
+    tick(f)
+
+    expect(f.registered).toEqual([])
+    expect(f.seatLog[0]).toContain('path src/leak-guard/scan.ts is not a test or doc')
   })
 })
 
@@ -342,13 +371,33 @@ describe('the tick’s real PR adoption ports (CC-861)', () => {
     ).toBeUndefined()
   })
 
-  it('lists a Shepherd row the schema would skip, so it is never registered again', () => {
+  it('keeps a rename’s previous path from the files list', () => {
+    const calls: string[][] = []
+    const exec: Runner = (_bin, args) => {
+      calls.push(args)
+      return {
+        status: 0,
+        stdout: '{"path":"t/a.test.ts","previousPath":"src/a.ts","additions":0,"deletions":0}\n',
+      }
+    }
+
+    expect(changedFiles({ repo: 'Acme/Widgets', pr: 7 }, exec)).toEqual([
+      { path: 't/a.test.ts', previousPath: 'src/a.ts', additions: 0, deletions: 0 },
+    ])
+    expect(calls[0]?.join(' ')).toContain('.previous_filename')
+  })
+
+  it('lists a malformed row and a branch-only run, so neither is registered again', () => {
     const exec: Runner = () => ({
       status: 0,
-      stdout: JSON.stringify([{ repo: 'Acme/Widgets', pr: 7, phase: 42 }, { junk: true }]),
+      stdout: JSON.stringify([
+        { repo: 'Acme/Widgets', pr: 7, phase: 42 },
+        { repo: 'Acme/Widgets', pr: null, branch: 'agent-chat/sa-t-2', phase: 'awaiting-pr' },
+        { junk: true },
+      ]),
     })
 
-    expect(shepherdListed(exec)).toEqual(new Set(['acme/widgets#7']))
+    expect(shepherdListed(exec)).toEqual(listing(['acme/widgets#7'], ['agent-chat/sa-t-2']))
   })
 
   it('names a checkout’s GitHub repo from its origin, ssh or https', () => {

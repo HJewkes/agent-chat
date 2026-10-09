@@ -5,6 +5,7 @@ import {
   type Registration,
   type RegisterReply,
   type ShepherdKind,
+  type ShepherdListing,
   type ShepherdTarget,
 } from './shepherd.js'
 
@@ -31,6 +32,8 @@ export interface OpenPull {
 
 export interface ChangedFile {
   path: string
+  /** A rename's old path, which must be ordinary too: moving a guard into `__tests__/` changes the guard. */
+  previousPath?: string
   additions: number
   deletions: number
 }
@@ -52,8 +55,8 @@ export interface AdoptPorts {
   /** The PR's changed files, read over REST; undefined when the read failed. */
   files: (target: ShepherdTarget) => ChangedFile[] | undefined
   task: (initiatives: readonly string[], id: string) => { initiative: string; task: Task } | undefined
-  /** Every lowercased `repo#pr` Shepherd lists, malformed rows included; undefined when serve did not answer. */
-  listed: () => ReadonlySet<string> | undefined
+  /** What Shepherd lists, malformed and branch-only rows included; undefined when serve did not answer. */
+  listed: () => ShepherdListing | undefined
   /** `shepherd register` without a listing first. */
   register: (reg: Registration) => RegisterReply
   /** Whether today's seat log already has a line containing `key`. */
@@ -149,7 +152,7 @@ export function adoptSeatPrs(
 }
 
 interface RepoCtx {
-  listed: ReadonlySet<string>
+  listed: ShepherdListing
   claimed: ReadonlySet<string>
   ports: AdoptPorts
   now: Date
@@ -157,7 +160,11 @@ interface RepoCtx {
   budget: { left: number }
 }
 
-/** The seat's own PRs: its branch prefix, pushed to this repo and not a fork, neither listed nor claimed. */
+/**
+ * The seat's own PRs: its branch prefix, pushed to this repo and not a fork, neither
+ * claimed nor listed by number or branch. A register would find a branch-only run
+ * by its branch and overwrite its task, implementer and policy.
+ */
 function unregisteredPulls(seat: AdoptSeat, repo: string, pulls: OpenPull[], ctx: RepoCtx): OpenPull[] {
   const own = `${BRANCH_PREFIX}${seat.prefix}-`
   return pulls.filter(p => {
@@ -165,7 +172,8 @@ function unregisteredPulls(seat: AdoptSeat, repo: string, pulls: OpenPull[], ctx
     return (
       p.branch.startsWith(own) &&
       p.headRepo.toLowerCase() === repo.toLowerCase() &&
-      !ctx.listed.has(ref) &&
+      !ctx.listed.prs.has(ref) &&
+      !ctx.listed.branches.has(p.branch) &&
       !ctx.claimed.has(ref)
     )
   })
@@ -250,8 +258,10 @@ function sensitiveHit(task: Task, pull: OpenPull, files: readonly ChangedFile[])
   const texts = [task.title, pull.title, ...task.tags.map(t => t.replace(/[:_]/g, ' '))]
   const word = texts.map(t => SENSITIVE_TEXT.exec(t)?.[1]).find(w => w !== undefined)
   if (word !== undefined) return `sensitive word "${word}"`
-  const other = files.find(f => !isOrdinaryPath(f.path))
-  return other === undefined ? undefined : `path ${other.path} is not a test or doc`
+  const other = files
+    .flatMap(f => (f.previousPath === undefined ? [f.path] : [f.previousPath, f.path]))
+    .find(p => !isOrdinaryPath(p))
+  return other === undefined ? undefined : `path ${other} is not a test or doc`
 }
 
 function staleFlag(seat: AdoptSeat, pull: OpenPull, target: ShepherdTarget, ctx: RepoCtx): string[] {

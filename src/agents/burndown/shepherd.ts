@@ -204,12 +204,16 @@ export function shepherdRegister(reg: Registration, exec: Runner = run): Registe
   return { ok: false, refused: result.status === REFUSED_EXIT, reason }
 }
 
-/**
- * Every `repo#pr` (lowercased) that `shepherd status --json` lists, a row the
- * schema skips as malformed included, so no caller re-registers it; undefined
- * when Shepherd is down or the answer is not a JSON array.
- */
-export function shepherdListed(exec: Runner = run): Set<string> | undefined {
+/** What `shepherd status --json` lists, read from raw rows so one the schema skips as malformed still counts. */
+export interface ShepherdListing {
+  /** Every lowercased `repo#pr`. */
+  prs: Set<string>
+  /** Every row's branch in any repo, a branch-only run awaiting its PR (`pr: null`) included. */
+  branches: Set<string>
+}
+
+/** Undefined when Shepherd is down or the answer is not a JSON array. */
+export function shepherdListed(exec: Runner = run): ShepherdListing | undefined {
   const result = exec(SHEPHERD_BIN, SHEPHERD_STATUS_ARGS)
   if (result.status !== 0) return undefined
   let parsed: unknown
@@ -219,14 +223,18 @@ export function shepherdListed(exec: Runner = run): Set<string> | undefined {
     return undefined
   }
   if (!Array.isArray(parsed)) return undefined
-  const ListedRef = z.object({ repo: z.string(), pr: z.number().int() })
-  return new Set(
-    parsed.flatMap(raw => {
-      const ref = ListedRef.safeParse(raw)
-      return ref.success ? [targetRef(ref.data).toLowerCase()] : []
-    }),
-  )
+  const listing: ShepherdListing = { prs: new Set(), branches: new Set() }
+  for (const raw of parsed) {
+    const ref = ListedRef.safeParse(raw)
+    if (ref.success) listing.prs.add(targetRef(ref.data).toLowerCase())
+    const branch = ListedBranch.safeParse(raw)
+    if (branch.success) listing.branches.add(branch.data.branch)
+  }
+  return listing
 }
+
+const ListedRef = z.object({ repo: z.string(), pr: z.number().int() })
+const ListedBranch = z.object({ branch: z.string().min(1) })
 
 const FINISHED_PHASES: readonly ShepherdRow['phase'][] = ['done', 'failed', 'cancelled']
 

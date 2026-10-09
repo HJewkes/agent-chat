@@ -14,7 +14,7 @@ const GITHUB_REMOTE = /github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/
 const PULL_JQ =
   '.[] | {number, title, branch: .head.ref, headRepo: (.head.repo.full_name // ""), updatedAt: .updated_at}'
 
-const FILES_JQ = '.[] | {path: .filename, additions, deletions}'
+const FILES_JQ = '.[] | {path: .filename, previousPath: (.previous_filename // null), additions, deletions}'
 
 interface Deps {
   exec: Runner
@@ -98,7 +98,8 @@ export function changedFiles(target: ShepherdTarget, exec: Runner): ChangedFile[
     const f = line as Partial<ChangedFile> | undefined
     if (typeof f?.path !== 'string' || typeof f.additions !== 'number' || typeof f.deletions !== 'number')
       return undefined
-    files.push({ path: f.path, additions: f.additions, deletions: f.deletions })
+    const previous = typeof f.previousPath === 'string' ? { previousPath: f.previousPath } : {}
+    files.push({ path: f.path, ...previous, additions: f.additions, deletions: f.deletions })
   }
   return files
 }
