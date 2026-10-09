@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { ALIAS_NAME } from './git-alias.js'
 import { ENVIRONMENT_SCRUB, hardenedShebang, posixShell } from './posix-shell.js'
 
 /** Names the dir holding the agent's `git` shim in the launch plan; `run-agent` puts it first on PATH. */
@@ -37,6 +38,19 @@ quote() {
 const REFUSE_FN = `refuse() {
   printf '%s\\n' "git-shim: push refused ($1): $2 ${DOCS}" >&2
   exit 2
+}`
+
+// A refused shell alias need not be a push, so this reason does not say "push refused".
+const REFUSE_ALIAS_FN = `refuse_alias() {
+  printf '%s\\n' "git-shim: refused (shell-alias): $1 ${DOCS}" >&2
+  exit 2
+}
+
+listed() {
+  for listed_name in $shell_aliases; do
+    [ "$listed_name" = "$1" ] && return 0
+  done
+  return 1
 }`
 
 // git's split_cmdline: quotes group, a backslash escapes outside single quotes, an open quote fails.
@@ -159,11 +173,13 @@ const RESOLVE_FN = `resolve() {
     case $alias in
     !*)
       name=$1
+      listed "$name" ||
+        refuse_alias "alias.$name runs a shell command and is not on the shell alias allowlist; run the command directly."
       shift
       args_push "$@" &&
-        refuse shell-alias "alias.$name runs a shell command and its arguments mention push or hold a glob, backslash, $, backtick or brace; run the command directly."
+        refuse shell-alias "alias.$name is an allowlisted shell alias and its arguments mention push or hold a glob, backslash, $, backtick or brace; run the command directly."
       mentions_push "$alias $*" &&
-        refuse shell-alias "alias.$name runs a shell command and the command mentions push; run git push directly."
+        refuse shell-alias "alias.$name is an allowlisted shell alias and the command mentions push; run git push directly."
       return 1 ;;
     esac
     split "$alias" || refuse unresolved "alias.$1 has an open quote or a trailing backslash."
@@ -363,10 +379,18 @@ const HOOKS_CHECK = `hooks=$(eval "\\"\\$real\\"$globals config --get core.hooks
 [ "$hooks" = "$guard" ] || local_only ||
   refuse hooks-path "core.hooksPath is not the leak guard's hooks dir and a destination is not a local repository, so the pre-push leak scan would not run."`
 
+/** Only names an alias can have, lowercased, so a listed name can never inject shell into the shim. */
+const bakedShellAliases = (names: readonly string[]): string =>
+  names
+    .filter(name => ALIAS_NAME.test(name))
+    .map(name => name.toLowerCase())
+    .join(' ')
+
 /**
  * The agent's `git`: a push, found after global options or through `alias.<word>`, is refused when
- * it skips verification or when the hooks path git resolves is not the guard's. Everything else
- * execs the real git, baked as an absolute path so the shim never finds itself.
+ * it skips verification or when the hooks path git resolves is not the guard's. A shell (`!`)
+ * alias runs only when its name is in `shellAliases` (CC-613). Everything else execs the real
+ * git, baked as an absolute path so the shim never finds itself.
  */
 export const gitShimScript = (
   real: string,
@@ -374,6 +398,7 @@ export const gitShimScript = (
   builtins: readonly string[],
   execPath = '',
   shell = posixShell(),
+  shellAliases: readonly string[] = [],
 ): string =>
   `${hardenedShebang(shell)}
 # Written by agent-chat at each spawn (TP-596); local edits are overwritten.
@@ -382,8 +407,10 @@ guard=${shQuote(guard)}
 exec_path=${shQuote(execPath)}
 builtins=${shQuote(builtins.join(' '))}
 [ -n "$builtins" ] || builtins=$("$real" --list-cmds=builtins 2>/dev/null | LC_ALL=C tr '\\n' ' ')
+shell_aliases=${shQuote(bakedShellAliases(shellAliases))}
 ${QUOTE_FN}
 ${REFUSE_FN}
+${REFUSE_ALIAS_FN}
 ${SPLIT_FN}
 ${AUTOCORRECT_FN}
 ${TYPO_FN}
@@ -460,13 +487,18 @@ export function writeGitShim(
   dir: string,
   guard: string,
   pathValue: string = process.env.PATH ?? '',
+  shellAliases: readonly string[] = [],
 ): boolean {
   const real = findRealGit(pathValue, dir)
   if (real === undefined) return false
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   const target = path.join(dir, 'git')
   const temp = `${target}.${process.pid}.tmp`
-  fs.writeFileSync(temp, gitShimScript(real, guard, gitBuiltins(real), gitExecPath(real)), { mode: 0o755 })
+  fs.writeFileSync(
+    temp,
+    gitShimScript(real, guard, gitBuiltins(real), gitExecPath(real), posixShell(), shellAliases),
+    { mode: 0o755 },
+  )
   fs.chmodSync(temp, 0o755)
   fs.renameSync(temp, target)
   return true

@@ -937,12 +937,23 @@ refused with exit 2 and a line `git-shim: push refused (<rule>)` when:
 | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `no-verify`   | an argument after `push`, including one an alias supplies, starts with `--no-veri`                                                       |
 | `hooks-path`  | `core.hooksPath`, as the real git resolves it with the same options, is not the guard, and a destination is not local (below)            |
-| `shell-alias` | the word is a `!` alias, and its text or the arguments after it mention `push` other than as `stash push`, quotes aside                  |
+| `shell-alias` | the word is a listed `!` alias, and its text or the arguments after it mention `push` other than as `stash push`, quotes aside           |
 | `unresolved`  | the alias read fails for a reason other than "no such key", or the alias has an open quote                                               |
 | `alias-depth` | aliases chain more than 10 deep                                                                                                          |
 | `autocorrect` | the word is no builtin, alias or `git-<word>` command, and `help.autocorrect` is not unset, `0`, `false`, `off`, `no`, `show` or `never` |
 
-git appends the arguments to a `!` alias's shell command, which can read them in more ways than
+A `!` alias whose name is not on the shell alias allowlist is refused before it runs, push or
+not, with exit 2 and a line `git-shim: refused (shell-alias)` (CC-613). Inside a `!` alias git
+puts its exec-path first on PATH, so the body's own `git` skips the shim, and a body can build
+`push` in more ways than any check can see (`echo hsup | rev | xargs -I% git %`, a `tr` or
+`base64 | sh` pipeline, a variable from the environment). So only named aliases run. The allowlist is baked into the shim at each spawn and defaults to
+empty, so until agent-chat reads it from config every `!` alias is refused for agents. Names
+match exactly and in lowercase: `git HI` finds `alias.hi`, but the shim refuses it. In a chain
+the name checked is the `!` alias the chain reaches, not the word typed. A listed alias keeps
+the rule in the table and the argument checks below. The list holds names, not alias text, so
+a listed alias whose text is changed runs the new text.
+
+git appends the arguments to a listed `!` alias's shell command, which can read them in more ways than
 any list covers (`$1`, `"$@"`, `for a;`, `$0` under a nested `sh -c`, `shift`, `getopts`). So
 `shell-alias` also refuses a `!` alias whenever its arguments mention `push` in any case, `stash
 push` included, after removing quotes and blanks, so `pu sh` split across two arguments counts
@@ -994,15 +1005,13 @@ Not covered:
 - a `git` that the agent puts ahead of the shim on its own PATH (the PreToolUse guard reads that
   command line);
 - a `git` binary inside git's exec-path directory, which git puts first on PATH for its hooks,
-  `!` aliases and `rebase --exec`. A `!` alias that builds the word push at run time, such as
-  `$(echo pu)sh`, is in this class, and so is one that builds push by transforming arguments
-  that do not mention it, such as `tr a-z b-za` over `otrg` or printf over an octal number the
-  body puts the backslash before, or reads push from a variable rather than its arguments, such
-  as `!git $P --no-verify origin main; true` run as `P=push git g`. One whose arguments mention push,
-  such as `!f(){ git $2; }; f` run as `git g stash push`, is refused (above);
-- a `!` alias whose body builds and runs a git command without `$`, a backtick or a brace in
-  its arguments, such as `echo hsup | rev | xargs -I% git % --no-verify ...`, or `tr` or `base64`
-  piped to `sh` (CC-613, open; found in review d16c219d);
+  `!` aliases and `rebase --exec`. An unlisted `!` alias never runs (above), so only a listed
+  one is in this class: its body can build push at run time without any argument, such as
+  `echo hsup | rev | xargs -I% git %`, a `tr` or `base64 | sh` pipeline, or
+  `!git $P --no-verify origin main; true` run as `P=push git g`. One whose arguments or text
+  mention push is refused (above);
+- a listed `!` alias whose text an agent rewrites by editing `.git/config` directly, since the
+  allowlist holds names and not alias text;
 - an executable `git-<word>` on PATH or in git's exec-path: `git <word>` runs it unchecked, with
   git's exec-path first on PATH as for a `!` alias;
 - pushing without git.
