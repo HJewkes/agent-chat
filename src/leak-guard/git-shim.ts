@@ -150,11 +150,14 @@ const ARGS_PUSH_FN = `args_push() {
   return 1
 }`
 
-// A listed name runs only the body in config files: a -c, --config-env or GIT_CONFIG_* value, or an include one adds, must not replace it.
+// A listed name runs only the body in the config files the agent had at spawn: a -c, --config-env or
+// GIT_CONFIG_* value, an include one adds, or a HOME, XDG_CONFIG_HOME or GIT_CONFIG_* file swap must not replace it.
 const SHADOWED_FN = `shadowed() {
   origins=$(eval "\\"\\$real\\"$globals config --show-origin --get-all \\"alias.\\$1\\"" 2>/dev/null) || return 0
   case $nl$origins in *"$nl"'command line:'*) return 0 ;; esac
-  body=$(unset GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
+  body=$(unset GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM HOME XDG_CONFIG_HOME
+    [ -z "$spawn_home" ] || export HOME="$spawn_home"
+    [ -z "$spawn_xdg" ] || export XDG_CONFIG_HOME="$spawn_xdg"
     eval "\\"\\$real\\"$fileglobals config --get \\"alias.\\$1\\"" 2>/dev/null) || return 0
   [ "$body" != "$alias" ]
 }`
@@ -402,6 +405,12 @@ const bakedShellAliases = (names: readonly string[]): string =>
     .map(name => name.toLowerCase())
     .join(' ')
 
+/** The config-file locations the agent starts with, baked so one call cannot swap them. */
+export interface SpawnConfigHome {
+  HOME?: string
+  XDG_CONFIG_HOME?: string
+}
+
 /**
  * The agent's `git`: a push, found after global options or through `alias.<word>`, is refused when
  * it skips verification or when the hooks path git resolves is not the guard's. A shell (`!`)
@@ -415,6 +424,7 @@ export const gitShimScript = (
   execPath = '',
   shell = posixShell(),
   shellAliases: readonly string[] = [],
+  spawnHome: SpawnConfigHome = {},
 ): string =>
   `${hardenedShebang(shell)}
 # Written by agent-chat at each spawn (TP-596); local edits are overwritten.
@@ -424,6 +434,8 @@ exec_path=${shQuote(execPath)}
 builtins=${shQuote(builtins.join(' '))}
 [ -n "$builtins" ] || builtins=$("$real" --list-cmds=builtins 2>/dev/null | LC_ALL=C tr '\\n' ' ')
 shell_aliases=${shQuote(bakedShellAliases(shellAliases))}
+spawn_home=${shQuote(spawnHome.HOME ?? '')}
+spawn_xdg=${shQuote(spawnHome.XDG_CONFIG_HOME ?? '')}
 ${QUOTE_FN}
 ${REFUSE_FN}
 ${REFUSE_ALIAS_FN}
@@ -505,6 +517,7 @@ export function writeGitShim(
   guard: string,
   pathValue: string = process.env.PATH ?? '',
   shellAliases: readonly string[] = [],
+  spawnHome: SpawnConfigHome = process.env,
 ): boolean {
   const real = findRealGit(pathValue, dir)
   if (real === undefined) return false
@@ -513,7 +526,7 @@ export function writeGitShim(
   const temp = `${target}.${process.pid}.tmp`
   fs.writeFileSync(
     temp,
-    gitShimScript(real, guard, gitBuiltins(real), gitExecPath(real), posixShell(), shellAliases),
+    gitShimScript(real, guard, gitBuiltins(real), gitExecPath(real), posixShell(), shellAliases, spawnHome),
     { mode: 0o755 },
   )
   fs.chmodSync(temp, 0o755)
