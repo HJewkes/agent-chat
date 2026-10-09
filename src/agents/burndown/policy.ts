@@ -77,6 +77,8 @@ const Concurrency = z.object({
   implementers: count.default(0),
   reviewers: count.default(0),
   planners: count.default(0),
+  /** CC-494: globs over a linked tree's branch or basename; `*` crosses `/`. Matching trees in the seat's repos count as implementers. */
+  counted_trees: z.array(z.string().min(1)).default([]),
 })
 
 const Repo = z.looseObject({
@@ -93,7 +95,7 @@ const Seat = z.looseObject({
   prefix: z.string().min(1).optional(),
   config_dir: z.string().optional(),
   role: z.string().optional(),
-  concurrency: orEmpty(Concurrency, { implementers: 0, reviewers: 0, planners: 0 }),
+  concurrency: orEmpty(Concurrency, { implementers: 0, reviewers: 0, planners: 0, counted_trees: [] }),
   repos: orEmpty(z.array(Repo), []),
   grants_extra: orEmpty(z.array(z.string()), []),
   initiatives: orEmpty(Weights, {}),
