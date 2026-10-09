@@ -721,8 +721,10 @@ runs (CC-887), or write the file in one Bash call and post it in the next:
 agent-chat gh-write -- pr create -R o/r -t 'Title' --body-file - <<'EOF'
 ...
 EOF
-``` A body file that exists before the line and is not
-named by it, or one written on another line, is read and scanned as before.
+```
+
+A body file that exists before the line and is not named by it, or one written on another line,
+is read and scanned as before.
 
 With `gh-write` in the mode above, this line is allowed instead: the post goes through
 `gh-write`, which reads the body file after the line has written it and refuses on a finding
