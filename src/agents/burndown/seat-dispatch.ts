@@ -78,7 +78,11 @@ export function resolveSeatDispatch(policy: Policy, name: string, home = os.home
     ...pool,
     repos: repoMap(seat, home),
     nonGitRepos: seat.repos.filter(r => r.git === false).map(r => expandHome(r.path, home)),
-    caps: { ...seat.concurrency },
+    caps: {
+      implementers: seat.concurrency.implementers,
+      reviewers: seat.concurrency.reviewers,
+      planners: seat.concurrency.planners,
+    },
     worktrees: worktreeCaps(charter, seat.concurrency.implementers),
     excludedTags: seat.excluded_tags,
     grants: seat.grants_extra,
