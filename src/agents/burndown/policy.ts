@@ -3,6 +3,7 @@ import path from 'node:path'
 import { parse } from 'yaml'
 import { z } from 'zod'
 import { activeWorkRoot } from '../active-work.js'
+import { currentAutonomyRoot } from '../autonomy-root.js'
 import type { PoolRule, SpendCaps } from './budget-gate.js'
 import type { Initiative } from './eligibility.js'
 import type { ScoringDefaults } from './score.js'
@@ -162,8 +163,7 @@ export function mergeDefaults(charter: CharterPolicy, seat: SeatPolicy): Scoring
   }
 }
 
-export const defaultAutonomyRoot = (root = activeWorkRoot()): string =>
-  path.join(root, 'claude-channels', 'sources', 'autonomy')
+export const defaultAutonomyRoot = (root = activeWorkRoot()): string => currentAutonomyRoot(root)
 
 /** Reads `charter.md` and every seat it lists under `seats/`; throws on a seat the charter does not list. */
 export function loadPolicy(root: string, seatName: string): Policy {
