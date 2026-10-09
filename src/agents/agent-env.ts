@@ -168,6 +168,9 @@ export interface AgentEnvOptions {
  *
  * A launchd-started broker has no TMPDIR and a PATH without `/opt/homebrew/bin` or
  * `/usr/sbin` (CC-500). TMPDIR is set only when absent and PATH only gains missing dirs.
+ *
+ * Node's compile cache defaults under TMPDIR, which on Linux is one /tmp shared by
+ * every agent (CC-899), so an absent NODE_COMPILE_CACHE points under HOME instead.
  */
 export function agentEnv(
   parent: NodeJS.ProcessEnv = process.env,
@@ -181,5 +184,8 @@ export function agentEnv(
   }
   kept.PATH = withRequiredPathDirs(kept.PATH)
   if (kept.TMPDIR === undefined || kept.TMPDIR === '') kept.TMPDIR = (options.tmpDir ?? defaultTmpDir)()
+  if (kept.NODE_COMPILE_CACHE === undefined || kept.NODE_COMPILE_CACHE === '') {
+    kept.NODE_COMPILE_CACHE = path.join(kept.HOME || os.homedir(), '.cache', 'node-compile-cache')
+  }
   return kept
 }
