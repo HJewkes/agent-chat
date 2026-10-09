@@ -21,7 +21,7 @@ export interface PeerPorts {
 const MAX_DEPTH = 4
 
 /** Whatever holds the broker's end of a forwarded socket: sshd for an inbound one, the ssh client for `ssh -R`. */
-const FORWARDERS = /^(sshd|ssh|autossh|socat)/
+const FORWARDERS = /^(ssh|autossh|mosh|socat|ncat|netcat|nc$)/
 
 /**
  * True only when the peer's process tree reaches `hostPid` without passing through

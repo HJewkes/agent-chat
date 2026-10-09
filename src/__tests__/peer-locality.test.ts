@@ -46,6 +46,21 @@ describe('provePeerLocal', () => {
     expect(provePeerLocal(conn, 777, ports)).toBe(false)
   })
 
+  it.each(['ssh', 'sshd-session', 'ssh-agent', 'autossh', 'mosh-server', 'socat', 'nc', 'ncat', 'netcat'])(
+    'refuses a %s relay as the peer',
+    comm => {
+      const ports = tree({ 800: [HOST_PID, comm], [HOST_PID]: [1, 'claude'] }, 800)
+
+      expect(provePeerLocal(conn, HOST_PID, ports)).toBe(false)
+    },
+  )
+
+  it('refuses a relay between the peer and the host pid', () => {
+    const ports = tree({ 800: [790, 'node'], 790: [HOST_PID, 'socat'], [HOST_PID]: [1, 'claude'] }, 800)
+
+    expect(provePeerLocal(conn, HOST_PID, ports)).toBe(false)
+  })
+
   it('refuses a host pid that is itself a forwarder, or unreadable', () => {
     expect(
       provePeerLocal(conn, HOST_PID, tree({ 700: [HOST_PID, 'node'], [HOST_PID]: [1, 'ssh'] }, 700)),
