@@ -18,6 +18,12 @@ import { DEFAULT_FULL_SUITE_SLOTS } from './suite-slots.js'
 import { isHexColour, type PaneColourConfig } from '@titan-design/agent-surface'
 import { isInteractiveSurface, type SurfaceName } from './protocol.js'
 import { POOL_PICK_MODES, type PoolPickMode } from './agents/seats/pool-pick.js'
+import {
+  DEFAULT_PROCESS_KILL_BYTES,
+  MIN_PROCESS_KILL_BYTES,
+  PROCESS_GUARD_MODES,
+  type ProcessGuardMode,
+} from './agents/process-guard.js'
 
 interface AgentChatConfig {
   agentSlots?: unknown
@@ -26,6 +32,7 @@ interface AgentChatConfig {
   contextHints?: unknown
   parkAdvice?: unknown
   ledgerShadow?: unknown
+  orphanReapKill?: unknown
   poolPick?: unknown
   permissionHookTimeoutSeconds?: unknown
   decider?: unknown
@@ -43,6 +50,8 @@ interface AgentChatConfig {
   coordinatorGrantableTools?: unknown
   poolProbe?: unknown
   tmuxSurfaceOnLinux?: unknown
+  processKillBytes?: unknown
+  processGuardMode?: unknown
 }
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
@@ -108,6 +117,20 @@ export function resolveLedgerShadow(): boolean {
   if (value === undefined || typeof value === 'boolean') return value !== false
   logEvent('config_invalid', { key: 'ledgerShadow', value, fallback: true })
   return true
+}
+
+/**
+ * CC-898: whether the orphan reap may signal. Off unless `orphanReapKill` is `true` in config (or
+ * `AGENT_CHAT_ORPHAN_REAP=kill`): until then it only logs `orphans_would_reap`, so the owner sees
+ * live output before anything is killed.
+ */
+export function resolveOrphanReapKill(): boolean {
+  const override = process.env.AGENT_CHAT_ORPHAN_REAP
+  if (override === 'kill' || override === 'dry-run') return override === 'kill'
+  const value = readConfig().orphanReapKill
+  if (value === undefined || typeof value === 'boolean') return value === true
+  logEvent('config_invalid', { key: 'orphanReapKill', value, fallback: false })
+  return false
 }
 
 /**
@@ -256,6 +279,25 @@ function pressureLevelFrom(value: unknown): number {
     fallback: DEFAULT_MACHINE_STOP_PRESSURE_LEVEL,
   })
   return DEFAULT_MACHINE_STOP_PRESSURE_LEVEL
+}
+
+/** CC-495: the rss above which an agent-descended process is a runaway. Read every guard tick. */
+export function resolveProcessKillBytes(): number {
+  const value = readConfig().processKillBytes
+  if (value === undefined) return DEFAULT_PROCESS_KILL_BYTES
+  if (typeof value === 'number' && Number.isFinite(value) && value >= MIN_PROCESS_KILL_BYTES) return value
+  logEvent('config_invalid', { key: 'processKillBytes', value, fallback: DEFAULT_PROCESS_KILL_BYTES })
+  return DEFAULT_PROCESS_KILL_BYTES
+}
+
+/** CC-495: `log` by default, and an unknown value falls back to `log` so a typo never turns killing on. */
+export function resolveProcessGuardMode(): ProcessGuardMode {
+  const value = readConfig().processGuardMode
+  if (value === undefined) return 'log'
+  const mode = PROCESS_GUARD_MODES.find(known => known === value)
+  if (mode !== undefined) return mode
+  logEvent('config_invalid', { key: 'processGuardMode', value, fallback: 'log' })
+  return 'log'
 }
 
 function numberFrom(key: string, value: unknown, fallback: number, max = Infinity): number {

@@ -33,6 +33,8 @@ import { resolveSpawnCwd } from './spawn-default-cwd.js'
 import { readMeta } from './lifecycle.js'
 import { resolveDeciderAgentId } from '../config.js'
 import { shapeMeta } from '../inbox/item-shape.js'
+import { brokerHost } from './host-guard.js'
+import { linuxPeerPorts, provePeerLocal, type PeerPorts } from './peer-locality.js'
 
 /**
  * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
@@ -151,6 +153,8 @@ const replySwitch = (conn: Conn, outcome: SwitchOutcome): void => {
   })
 }
 
+const optionalHost = (host: string | undefined): { host?: string } => (host === undefined ? {} : { host })
+
 /**
  * The socket transport. Everything here is about turning bytes into `core`
  * calls and results back into bytes; all state and every write to the log lives
@@ -169,6 +173,7 @@ export class SocketServer {
     private readonly core: BrokerCore,
     supervisorOptions: SupervisorOptions = {},
     ledgerDb?: DatabaseSync,
+    private readonly peer: PeerPorts = linuxPeerPorts,
   ) {
     this.feed = new SystemEventFeed<Conn>(
       core.registry,
@@ -387,6 +392,16 @@ export class SocketServer {
   }
 
   /**
+   * CC-896: the host a signal on `conn`'s session is judged against. A reported host
+   * (CC-880) is taken as given; for a session that reported none, locality is proven
+   * from the kernel's view of its socket, and anything short of proof stays unreported.
+   */
+  private hostOf(conn: Conn, entry: { host?: string; hostPid?: number }): string | undefined {
+    if (entry.host !== undefined) return entry.host
+    return provePeerLocal(conn, entry.hostPid, this.peer) ? brokerHost() : undefined
+  }
+
+  /**
    * Teleport on behalf of `conn`, resolving WHO from its own registry entry.
    *
    * Every field the supervisor acts on — the identity to retire, the pid to
@@ -423,7 +438,7 @@ export class SocketServer {
         tags: registry.selfTagsOf(conn),
         subscriptions: registry.subscriptionsOf(conn),
         ...(entry.hostPid === undefined ? {} : { hostPid: entry.hostPid }),
-        ...(entry.host === undefined ? {} : { host: entry.host }),
+        ...optionalHost(this.hostOf(conn, entry)),
         ...(registry.anchorFor(conn) === undefined ? {} : { anchor: registry.anchorFor(conn) as string }),
         // CC-100: read from the registration, not from the message, exactly like
         // every other field here. A successor continues its predecessor's work and
@@ -660,7 +675,7 @@ export class SocketServer {
       to: 'headless',
       requestedBy: entry.name,
       ...(entry.hostPid === undefined ? {} : { hostPid: entry.hostPid }),
-      ...(entry.host === undefined ? {} : { host: entry.host }),
+      ...optionalHost(this.hostOf(conn, entry)),
     })
     replySwitch(conn, outcome)
   }
@@ -1261,6 +1276,22 @@ export class SocketServer {
     })
   }
 
+  /** CC-886: oldest-first read of what followed `after`; one extra row detects truncation. */
+  private inboxAfter(
+    name: string | undefined,
+    after: string,
+    limit: number,
+  ): Extract<ServerMessage, { t: 'inbox_result' }> {
+    const events = this.core.events
+    const afterId = name ? events.inboxRowId(name, after) : undefined
+    if (!name || afterId === undefined) {
+      return { t: 'inbox_result', messages: [], error: `no message ${after} in your inbox` }
+    }
+    const rows = events.inboxSince(name, afterId, limit + 1)
+    const messages = rows.slice(0, limit).map(({ id: _id, ...message }) => message)
+    return { t: 'inbox_result', messages, ...(rows.length > limit ? { truncated: true } : {}) }
+  }
+
   /** CC-524: read before `core.register`, which mints an identity for a session that has none. */
   private returning(msg: Extract<ClientMessage, { t: 'register' }>): boolean {
     try {
@@ -1390,6 +1421,7 @@ export class SocketServer {
         return this.handleEndorseApprove(conn, msg.msgId, { text: msg.text, to: msg.to })
       case 'inbox': {
         const name = core.registry.nameOf(conn)
+        if (msg.after !== undefined) return reply(conn, this.inboxAfter(name, msg.after, msg.limit))
         return reply(conn, { t: 'inbox_result', messages: name ? core.events.inboxFor(name, msg.limit) : [] })
       }
       case 'queue':

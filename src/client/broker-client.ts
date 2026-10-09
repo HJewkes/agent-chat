@@ -11,6 +11,7 @@ import {
   type ReplyType,
   type ServerMessage,
 } from '../protocol.js'
+import { withoutLaunchIdentity } from '../launch-identity.js'
 import { cliEntry, home, socketPath } from '../paths.js'
 
 const REQUEST_TIMEOUT_MS = 5000
@@ -296,7 +297,11 @@ export class BrokerClient {
   /** Starts a broker detached, so it outlives whichever session happened to spawn it. */
   private spawnBroker(): void {
     fs.mkdirSync(home(), { recursive: true })
-    spawn(process.execPath, [cliEntry(), 'broker'], { detached: true, stdio: 'ignore' }).unref()
+    spawn(process.execPath, [cliEntry(), 'broker'], {
+      detached: true,
+      stdio: 'ignore',
+      env: withoutLaunchIdentity(process.env),
+    }).unref()
   }
 
   /**

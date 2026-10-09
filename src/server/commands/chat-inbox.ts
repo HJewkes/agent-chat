@@ -6,8 +6,8 @@ import { defineTool } from '../command.js'
 /** Upper bound on a replay request, so one tool call cannot flood a session's context. */
 const INBOX_MAX = 50
 
-function formatInbox(messages: DeliveredMessage[]): string {
-  if (messages.length === 0) return 'No messages yet.'
+function formatInbox(messages: DeliveredMessage[], after?: string): string {
+  if (messages.length === 0) return after ? `No messages after ${after}.` : 'No messages yet.'
   const rows = messages.map(m => {
     const tags = [
       m.broadcast ? 'broadcast' : null,
@@ -24,22 +24,38 @@ function formatInbox(messages: DeliveredMessage[]): string {
     const suffix = tags.length > 0 ? ` (${tags.join(', ')})` : ''
     return `- [${m.msgId}] from ${m.from}${suffix}: ${m.text}`
   })
-  return `Recent messages:\n${rows.join('\n')}`
+  return `${after ? 'Messages' : 'Recent messages'}:\n${rows.join('\n')}`
 }
 
 export const chatInbox = defineTool({
   name: 'chat_inbox',
   description:
-    'Re-read recent messages sent to this session. Useful if several arrived at once or one was missed.',
+    'Re-read recent messages sent to this session. Useful if several arrived at once or one was missed. ' +
+    'Pass after: <msg_id> to get only what arrived after that message, oldest first, instead of the newest N.',
   args: z.object({
     limit: positiveLimit('limit').describe('How many recent messages to return (default 10)').optional(),
+    after: z
+      .string()
+      .min(1)
+      .describe(
+        'A msg_id from this inbox. Returns only messages newer than it, oldest first, capped by limit ' +
+          '(default 50); a truncation note gives the msg_id to continue from. Unknown ids are an error.',
+      )
+      .optional(),
   }),
   result: z.string(),
-  async run({ limit }, ctx) {
+  async run({ limit, after }, ctx) {
     const res = (await ctx.broker.request(
-      { t: 'inbox', limit: clampLimit(limit, 10, INBOX_MAX) },
+      after === undefined
+        ? { t: 'inbox', limit: clampLimit(limit, 10, INBOX_MAX) }
+        : { t: 'inbox', limit: clampLimit(limit, INBOX_MAX, INBOX_MAX), after },
       'inbox_result',
     )) as Extract<ServerMessage, { t: 'inbox_result' }>
-    return formatInbox(res.messages)
+    if (res.error) throw new Error(res.error)
+    const text = formatInbox(res.messages, after)
+    const last = res.messages.at(-1)
+    return res.truncated && last
+      ? `${text}\n(truncated: more messages follow; continue with after: ${last.msgId})`
+      : text
   },
 })

@@ -22,19 +22,19 @@ const SHIM_RULE =
   'first (pattern: src/gh-shim/install.ts).'
 
 /**
- * CC-501 S3: the forms the leak guard allows. A worktree path defers to gh-write's own scan; a fixed
- * shared `$TMPDIR` name let one agent post another's body (CC-725), and `/tmp` or `$TMPDIR` paths
- * pass through a symlink, which the guard refuses to defer. The bd-implementer profiles carry both too.
+ * CC-501 S3: the forms the leak guard allows. CC-897: a heredoc on stdin is scanned by the guard as it
+ * stands and by gh-write again, so a body is posted in one call; writing a .md file and posting it on
+ * the same line is the guard's writtenBody denial. pr-ready still reads a file: a fixed shared
+ * `$TMPDIR` name let one agent post another's body (CC-725). The bd-implementer profiles carry both too.
  */
 export const BODY_FILE_RULE =
-  'Post text as `agent-chat gh-write -- <gh args> --body-file <f>`, <f> a literal .md path in your ' +
-  "own worktree (not a shared $TMPDIR name) made by Write or `<<'EOF'`, deleted once posted."
+  "Post a body or comment in one call: `agent-chat gh-write -- <gh args> --body-file - <<'EOF'`, text, " +
+  "EOF, no file. pr-ready's <f>: a .md Write put in your own worktree, deleted after."
 
-/** A reviewer has no Write and works in the implementer's tree, often under `$TMPDIR`, where only a file written on an earlier call is read. */
+/** A reviewer has no Write and works in the implementer's tree, so it writes no file there. */
 export const REVIEWER_BODY_FILE_RULE =
-  'If you post text, use `agent-chat gh-write -- <gh args> --body-file <f>`: <f> a literal .md path in ' +
-  "the working directory, written with `<<'EOF'` in one Bash call, posted in the next, then deleted; " +
-  'the tree is not yours.'
+  "If you post text, use one call: `agent-chat gh-write -- <gh args> --body-file - <<'EOF'`, text, " +
+  'EOF; write no file, the tree is not yours.'
 
 /** CC-690: the mechanical blockers (dirty tree, stale base, red checks, leak terms) cost a reviewer round each. */
 export const PR_READY_RULE =
