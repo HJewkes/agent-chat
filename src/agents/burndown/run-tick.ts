@@ -13,6 +13,7 @@ import { activeWorkRoot } from '../active-work.js'
 import { appendSeatLog } from '../seats/io.js'
 import { seatMergedLog } from '../seats/dispatch-log.js'
 import { seatJournal } from '../seats/journal.js'
+import { ownerQueueSpoolDir, spoolOwnerQueue } from './owner-queue-spool.js'
 import { adoptSeatPrs, type AdoptSeat } from './pr-adopt.js'
 import { adoptSeatOf, diskAdoptPorts } from './pr-adopt-ports.js'
 import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
@@ -59,6 +60,7 @@ import {
   diskSeatDeps,
   loadSeats,
   planSeats,
+  scopeExhausted,
   type LoadedSeats,
   type SeatPlanDeps,
   type SeatsPlan,
@@ -133,6 +135,8 @@ export interface TickOptions {
   exec?: Runner
   /** The leak check's scanner; a test injects one so no run reads the owner's term list. */
   egress?: EgressRunner
+  /** The owner-queue spool the scope-exhausted item is filed into; defaults to the console's inbox spool. */
+  ownerQueueDir?: string
 }
 
 interface ReaderFailure {
@@ -229,6 +233,7 @@ async function actOn(
     failures,
     unchecked,
     seatStates,
+    outcomes,
     skippedSeats,
     serviceCheck,
     reasons,
@@ -241,7 +246,8 @@ async function actOn(
   for (const failure of failures) log('burndown_collision_reader_failed', { ...failure })
   for (const initiative of unchecked) log('burndown_collision_skipped', { initiative, reason: 'no repo' })
   for (const skipped of skippedSeats) log('burndown_seat_skipped', { ...skipped })
-  const sampled = seatStates === undefined ? ledger : { ...ledger, seats: seatStates }
+  const exhausted = await fileScopeExhausted(outcomes, seatStates, opts, now)
+  const sampled = exhausted === undefined ? ledger : { ...ledger, seats: exhausted }
   const spawns: SpawnResult[] = []
   const executed = await execute(steps, sampled, {
     ledgerFile: burndownLedgerPath(),
@@ -276,6 +282,27 @@ async function actOn(
     ...(serviceCheck === undefined ? {} : { serviceCheck }),
   })
   return [...executed.lines, ...adopted, ...woken.lines, ...leaks.lines, ...told.lines]
+}
+
+/**
+ * CC-864: after the dispatch decision, once per seat, files the scope-exhausted owner item and carries the streak in
+ * the seat states. A spool that cannot be written is an event, never a failed tick; the streak then stays as it was.
+ */
+async function fileScopeExhausted(
+  outcomes: readonly SeatOutcome[],
+  states: Record<string, SeatState> | undefined,
+  opts: TickOptions,
+  now: Date,
+): Promise<Record<string, SeatState> | undefined> {
+  if (states === undefined) return undefined
+  try {
+    const port = spoolOwnerQueue(opts.ownerQueueDir ?? ownerQueueSpoolDir())
+    return await scopeExhausted(outcomes, states, now, port)
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    ;(opts.log ?? logEvent)('burndown_scope_exhausted_failed', { detail })
+    return states
+  }
 }
 
 /** CC-861: after the claims' own registrations, so a claimed PR is never adopted; a throw is an event, and the tick carries on. */
@@ -387,6 +414,8 @@ interface Decided {
   unchecked: string[]
   /** Seats mode only: every seat's pool samples, this tick's included. */
   seatStates?: Record<string, SeatState>
+  /** Seats mode only: each seat's dispatch outcome this tick, for the scope-exhausted streak (CC-864). */
+  outcomes: SeatOutcome[]
   skippedSeats: SkippedSeat[]
   /** Seats mode only: this tick's service-check read, persisted for the next tick's two-read rule. */
   serviceCheck?: PersistedRead
@@ -509,6 +538,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   return {
     steps,
     reasons: marked?.due ?? [],
+    outcomes: planned.outcomes,
     adopt: seats?.loaded.map(s => adoptSeatOf(s)) ?? [],
     notes,
     failures,
