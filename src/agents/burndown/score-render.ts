@@ -176,7 +176,7 @@ export function scoredPlanFromDisk(opts: {
     : { ...plan, milestones: { week: read.week, errors: read.errors.map(describeError) } }
 }
 
-const COMPONENT_KEYS: (keyof Components)[] = ['S', 'P', 'U', 'A', 'W', 'K', 'R', 'Z', 'H']
+const COMPONENT_KEYS: Exclude<keyof Components, 'G'>[] = ['S', 'P', 'U', 'A', 'W', 'K', 'R', 'Z', 'H']
 const TITLE_WIDTH = 90
 
 const fixed = (x: number, width: number) => x.toFixed(1).padStart(width)

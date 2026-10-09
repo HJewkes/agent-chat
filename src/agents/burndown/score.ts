@@ -35,7 +35,7 @@ export interface ScoringDefaults {
   size: { le3: number; le8: number; gt8: number }
   stop_short_factor: number
   /** Multiplier for work whose value lands without a human gate; absent reads as 1. */
-  gate_free_bonus?: number
+  gate_free_bonus?: number | undefined
 }
 
 export interface Exclusions {
