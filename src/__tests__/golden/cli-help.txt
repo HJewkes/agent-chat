@@ -745,6 +745,8 @@ Options:
   --mine            only agents you spawned (needs a registered session name)
   --spawner <name>  only agents spawned by <name>
   --prefix <p>      only agents whose name starts with <p>
+  --accounts        one line per account config dir: both rate-limit windows, resets and reading age
+  --json            with --accounts, the same rows as one JSON array
   -h, --help        display help for command
 
 === agent-chat teleport
