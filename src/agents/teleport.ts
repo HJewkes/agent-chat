@@ -246,10 +246,13 @@ const isSurfaceName = (value: string): value is SurfaceName =>
 const accountOf = (subject: TeleportSubject, identity: AgentIdentity): string | undefined =>
   subject.configDir ?? identity.configDir
 
+/** The successor waits on this read, so it gets less time than burndown's. */
+const TELEPORT_SHEPHERD_MS = 5_000
+
 export const defaultSeatTeleportDeps = (): SeatTeleportDeps => ({
   autonomyRoot: defaultAutonomyRoot(),
   now: () => new Date(),
-  shepherd: () => shepherdRowsAsync(),
+  shepherd: () => shepherdRowsAsync(undefined, TELEPORT_SHEPHERD_MS),
 })
 
 export class Teleport {
@@ -624,8 +627,9 @@ export class Teleport {
   }
 
   /**
-   * CC-863: for a seat, append its `State at teleport N` and render the handoff that boots from it.
-   * Undefined for any other name, and on a failed write, which costs the block and never the successor.
+   * CC-863: for a seat, append its `State at teleport N` (or keep the one it wrote this session)
+   * and render the handoff that boots from it. Undefined for any other name, and on a failed
+   * write, which costs the block and never the successor.
    */
   private async seatHandoff(entry: Pending): Promise<string | undefined> {
     const seat = entry.subject.name
@@ -634,11 +638,12 @@ export class Teleport {
         seat,
         running: runningSpawnedBy(this.core.agents, seat),
         inboxThrough: entry.inboxThrough,
+        sessionStart: entry.since,
       })
       if (written === undefined) return undefined
       const { autonomyRoot: root, now } = this.seatTeleport
       const found = latestTeleportSection(root, seat, now())
-      return renderTeleportHandoff({ root, seat, found, after: entry.inboxThrough })
+      return renderTeleportHandoff({ root, seat, found, after: written.after })
     } catch (err) {
       logEvent('teleport_seat_state_failed', { name: seat, error: (err as Error).message })
       return undefined

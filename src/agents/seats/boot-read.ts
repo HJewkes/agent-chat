@@ -69,7 +69,7 @@ export const LOG_CAP = 1_500
 const TELEPORT_HEADING = /^## State at teleport (\d+)\b/
 
 /** The line index and number of the highest-numbered `## State at teleport N` heading; the later one wins a tie. */
-function latestTeleportHeading(lines: string[]): { at: number; n: number } | undefined {
+export function latestTeleportHeading(lines: string[]): { at: number; n: number } | undefined {
   let best: { at: number; n: number } | undefined
   lines.forEach((line, at) => {
     const n = Number(TELEPORT_HEADING.exec(line)?.[1] ?? NaN)

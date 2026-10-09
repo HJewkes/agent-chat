@@ -5,7 +5,7 @@ import type { ShepherdRow } from '../burndown/shepherd.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import { agentLine } from '../teleport-appendix.js'
 import type { AgentIdentity } from '../../protocol.js'
-import { latestTeleportNumber } from './boot-read.js'
+import { latestTeleportHeading, latestTeleportNumber, latestTeleportState } from './boot-read.js'
 import { isSeatName } from './charter.js'
 import { readText, seatLogPath } from './io.js'
 
@@ -13,7 +13,14 @@ import { readText, seatLogPath } from './io.js'
  * CC-863: charter section 11 step 2, written by agent-chat at `agent_teleport` instead of by
  * the seat. The block is what `seats boot` reads back (boot-read.ts), so it keeps that format:
  * a `## State at teleport N` heading, one line per in-flight agent, then the inbox cursor.
+ *
+ * While charter section 11 still has the seat write its own block, a block the seat wrote in
+ * this session wins: its cursor is the last message it actually handled, and a later block
+ * from agent-chat would hide both that cursor and the seat's own account from `seats boot`.
  */
+
+/** Marks agent-chat's blocks, so a later teleport never takes one for the seat's own. */
+export const GENERATED_MARK = '(agent-chat)'
 
 export type InFlightAgent = Pick<AgentIdentity, 'name' | 'profile' | 'state'>
 
@@ -26,6 +33,8 @@ export interface TeleportStateFacts {
   shepherd: ShepherdRow[] | undefined
   /** The msg_id of the seat's newest inbox row when it asked to teleport. */
   inboxThrough: string | undefined
+  /** Lines after the in-flight ones, for what could not be listed. */
+  notes?: string[]
 }
 
 export interface SeatTeleportDeps {
@@ -39,7 +48,22 @@ export interface SeatTeleportInput {
   seat: string
   running: InFlightAgent[]
   inboxThrough: string | undefined
+  /** Epoch ms the teleporting session began, which tells a block it wrote from an earlier one's. */
+  sessionStart: number
 }
+
+export interface TeleportStateWritten {
+  file: string
+  n: number
+  /** False when the seat's own block from this session was kept instead. */
+  written: boolean
+  /** The cursor the successor boots after: the kept block's, or the broker's. */
+  after: string | undefined
+}
+
+const NO_PREFIX_NOTE = '- Shepherd runs not listed: the seat file has no prefix to match their branches.'
+const CURSOR_LINE = /^Inbox handled through (\S+?)\.?$/m
+const CLOCK_LINE = /^(\d\d):(\d\d)\s/
 
 const FINISHED: ReadonlySet<string> = new Set(['done', 'cancelled'])
 const REASON_TEXT = 120
@@ -76,10 +100,13 @@ export function renderTeleportState(facts: TeleportStateFacts): string {
       : facts.shepherd.map(shepherdLine)
   const inFlight = [...agents, ...runs]
   return [
-    `## State at teleport ${facts.n}`,
+    `## State at teleport ${facts.n} ${GENERATED_MARK}`,
     ...(facts.grant === undefined ? [] : [`GRANT: ${facts.grant}`]),
     ...(inFlight.length === 0 ? ['- No agent in flight.'] : inFlight),
-    `Inbox handled through ${facts.inboxThrough ?? 'none'}.`,
+    ...(facts.notes ?? []),
+    facts.inboxThrough === undefined
+      ? 'Inbox: no message had arrived, so boot without --after.'
+      : `Inbox handled through ${facts.inboxThrough}.`,
   ].join('\n')
 }
 
@@ -91,32 +118,70 @@ async function readShepherd(deps: SeatTeleportDeps): Promise<ShepherdRow[] | und
   }
 }
 
+/** Clock time of the nearest `HH:MM` line above `at`, on the log's day; undefined when there is none. */
+function clockAbove(lines: string[], at: number, day: Date): number | undefined {
+  for (let i = at - 1; i >= 0; i--) {
+    const m = CLOCK_LINE.exec(lines[i] as string)
+    if (m)
+      return new Date(day.getFullYear(), day.getMonth(), day.getDate(), Number(m[1]), Number(m[2])).getTime()
+  }
+  return undefined
+}
+
 /**
- * Appends the block to the seat's log for today and returns where and which N.
+ * The cursor of today's latest block when the seat wrote it this session; undefined otherwise.
+ * A block with no clock line above it counts as this session's: re-showing messages is the safe error.
+ */
+export function seatBlockThisSession(
+  log: string,
+  day: Date,
+  sessionStart: number,
+): { after: string | undefined } | undefined {
+  const lines = log.split('\n')
+  const latest = latestTeleportHeading(lines)
+  if (latest === undefined || (lines[latest.at] as string).includes(GENERATED_MARK)) return undefined
+  const at = clockAbove(lines, latest.at, day)
+  if (at !== undefined && at < sessionStart - (sessionStart % 60_000)) return undefined
+  return { after: CURSOR_LINE.exec(latestTeleportState(log) ?? '')?.[1] }
+}
+
+async function shepherdFacts(
+  deps: SeatTeleportDeps,
+  prefix: string | undefined,
+): Promise<Pick<TeleportStateFacts, 'shepherd' | 'notes'>> {
+  if (prefix === undefined) return { shepherd: [], notes: [NO_PREFIX_NOTE] }
+  const rows = await readShepherd(deps)
+  return { shepherd: rows && seatShepherdRows(rows, prefix) }
+}
+
+/**
+ * Appends the block to the seat's log for today, or keeps the one the seat wrote this session.
  * Undefined, writing nothing, when `seat` names no seat file. Throws only when the log cannot be written.
  */
 export async function writeTeleportState(
   deps: SeatTeleportDeps,
   input: SeatTeleportInput,
-): Promise<{ file: string; n: number } | undefined> {
-  const { autonomyRoot: root, now } = deps
+): Promise<TeleportStateWritten | undefined> {
+  const { autonomyRoot: root } = deps
   const seatFile = isSeatName(input.seat) ? readText(path.join(root, 'seats', `${input.seat}.md`)) : undefined
   if (seatFile === undefined) return undefined
-  const prefix = frontmatterField(seatFile, 'prefix')
-  const rows = await readShepherd(deps)
-  const grant = frontmatterField(seatFile, 'grant')
-  const file = seatLogPath(root, input.seat, now())
+  const now = deps.now()
+  const file = seatLogPath(root, input.seat, now)
   const log = readText(file)
+  const kept = log === undefined ? undefined : seatBlockThisSession(log, now, input.sessionStart)
+  if (kept !== undefined)
+    return { file, n: latestTeleportNumber(log as string) as number, written: false, after: kept.after }
+  const grant = frontmatterField(seatFile, 'grant')
   const n = nextTeleportNumber(log)
   const block = renderTeleportState({
     n,
     ...(grant === undefined || grant === '' ? {} : { grant }),
     running: input.running,
-    shepherd: rows && (prefix === undefined ? [] : seatShepherdRows(rows, prefix)),
+    ...(await shepherdFacts(deps, frontmatterField(seatFile, 'prefix'))),
     inboxThrough: input.inboxThrough,
   })
   const lead = log === undefined || log === '' ? '' : log.endsWith('\n') ? '\n' : '\n\n'
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.appendFileSync(file, `${lead}${block}\n`)
-  return { file, n }
+  return { file, n, written: true, after: input.inboxThrough }
 }

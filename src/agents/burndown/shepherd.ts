@@ -89,12 +89,15 @@ const STATUS_TIMEOUT_MS = 15_000
 const STATUS_MAX_BYTES = 64 * 1024 * 1024
 
 /** CC-863: `shepherdRows` without blocking, for the broker, whose event loop serves every session. */
-export async function shepherdRowsAsync(log: Log = logEvent): Promise<ShepherdRow[] | undefined> {
+export async function shepherdRowsAsync(
+  log: Log = logEvent,
+  timeoutMs = STATUS_TIMEOUT_MS,
+): Promise<ShepherdRow[] | undefined> {
   try {
     const { stdout } = await promisify(execFile)(SHEPHERD_BIN, SHEPHERD_STATUS_ARGS, {
       env: childEnv(),
       encoding: 'utf8',
-      timeout: STATUS_TIMEOUT_MS,
+      timeout: timeoutMs,
       maxBuffer: STATUS_MAX_BYTES,
     })
     return parseShepherdRows(stdout, log)

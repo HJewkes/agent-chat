@@ -18,6 +18,8 @@ import {
 /** CC-863: the 'State at teleport N' block agent-chat writes for a seat. Every name and path is synthetic. */
 
 const NOW = new Date(2026, 9, 2, 9, 30)
+/** The teleporting session began at 08:30 local. */
+const SESSION_START = new Date(2026, 9, 2, 8, 30).getTime()
 const TODAY = '2026-10-02'
 
 let dir: string
@@ -104,7 +106,7 @@ describe('renderTeleportState', () => {
     })
     expect(text).toBe(
       [
-        '## State at teleport 3',
+        '## State at teleport 3 (agent-chat)',
         '- al-fix-7 (profile implementer, live)',
         '- al-plan-2 (profile planner, detached)',
         '- Shepherd example/widgets#7 demo/D-7 review, held g10-review: opus, at abcdef01 (al-fix-7)',
@@ -122,10 +124,10 @@ describe('renderTeleportState', () => {
       inboxThrough: undefined,
     })
     expect(text.split('\n')).toEqual([
-      '## State at teleport 1',
+      '## State at teleport 1 (agent-chat)',
       'GRANT: merge on green, owner 2026-01-01',
       '- No agent in flight.',
-      'Inbox handled through none.',
+      'Inbox: no message had arrived, so boot without --after.',
     ])
   })
 
@@ -145,15 +147,16 @@ describe('writeTeleportState', () => {
         seat: 'scout',
         running,
         inboxThrough: 'msg-1',
+        sessionStart: SESSION_START,
       },
     )
     expect(written).toBeUndefined()
     expect(fs.existsSync(path.join(root, 'logs', 'scout'))).toBe(false)
   })
 
-  it('appends block N+1 after today’s last block, carrying the grant line', async () => {
+  it('appends block N+1 after a seat block from an earlier session, carrying the grant line', async () => {
     seatFile('alpha', 'grant: merge on green\n')
-    writeLog('alpha', '## State at teleport 4\nold\n09:00 heartbeat')
+    writeLog('alpha', '07:00 boot\n## State at teleport 4\nold\n09:00 heartbeat')
 
     const written = await writeTeleportState(
       deps(async () => [row({})]),
@@ -161,14 +164,17 @@ describe('writeTeleportState', () => {
         seat: 'alpha',
         running,
         inboxThrough: 'msg-9',
+        sessionStart: SESSION_START,
       },
     )
 
-    expect(written?.n).toBe(5)
+    expect(written).toMatchObject({ n: 5, written: true, after: 'msg-9' })
     const log = readLog('alpha')
-    expect(log.startsWith('## State at teleport 4\nold\n09:00 heartbeat\n\n## State at teleport 5\n')).toBe(
-      true,
-    )
+    expect(
+      log.startsWith(
+        '07:00 boot\n## State at teleport 4\nold\n09:00 heartbeat\n\n## State at teleport 5 (agent-chat)\n',
+      ),
+    ).toBe(true)
     expect(log).toContain('\nGRANT: merge on green\n- al-fix-7')
   })
 
@@ -178,13 +184,53 @@ describe('writeTeleportState', () => {
       deps(async () => {
         throw new Error('spawn titan-factory ENOENT')
       }),
-      { seat: 'alpha', running, inboxThrough: 'msg-9' },
+      { seat: 'alpha', running, inboxThrough: 'msg-9', sessionStart: SESSION_START },
     )
     expect(written?.n).toBe(1)
     const log = readLog('alpha')
     expect(log).toContain('- al-plan-2 (profile planner, detached)')
     expect(log).toContain('Shepherd unreachable at teleport')
     expect(log).toContain('Inbox handled through msg-9.')
+  })
+
+  it('keeps the block the seat wrote this session, and boots after its own cursor', async () => {
+    seatFile('alpha')
+    const seatBlock =
+      '09:10 writing state\n## State at teleport 7\n- al-fix-7 mid-review\nInbox handled through msg-5.\n'
+    writeLog('alpha', seatBlock)
+
+    const written = await writeTeleportState(
+      deps(async () => [row({})]),
+      { seat: 'alpha', running, inboxThrough: 'msg-9', sessionStart: SESSION_START },
+    )
+
+    expect(written).toEqual({ file: expect.any(String), n: 7, written: false, after: 'msg-5' })
+    expect(readLog('alpha')).toBe(seatBlock)
+    expect(readLogSection(root, 'alpha', NOW).section).toContain('- al-fix-7 mid-review')
+  })
+
+  it('supersedes its own earlier block, whatever its time', async () => {
+    seatFile('alpha')
+    writeLog('alpha', '09:10 x\n## State at teleport 2 (agent-chat)\n- old\nInbox handled through msg-1.\n')
+
+    const written = await writeTeleportState(
+      deps(async () => []),
+      { seat: 'alpha', running, inboxThrough: 'msg-9', sessionStart: SESSION_START },
+    )
+
+    expect(written).toMatchObject({ n: 3, written: true, after: 'msg-9' })
+  })
+
+  it('says why Shepherd runs are missing when the seat file has no prefix', async () => {
+    fs.writeFileSync(path.join(root, 'seats', 'alpha.md'), '---\nname: alpha\npool: p1\n---\n')
+
+    await writeTeleportState(
+      deps(async () => [row({})]),
+      { seat: 'alpha', running: [], inboxThrough: 'msg-9', sessionStart: SESSION_START },
+    )
+
+    const log = readLog('alpha')
+    expect(log).toContain('- Shepherd runs not listed: the seat file has no prefix to match their branches.')
   })
 })
 
@@ -203,7 +249,7 @@ describe('the block round-trips through the boot readers', () => {
 
     await writeTeleportState(
       deps(async () => [row({})]),
-      { seat: 'alpha', running, inboxThrough: cursor },
+      { seat: 'alpha', running, inboxThrough: cursor, sessionStart: SESSION_START },
     )
     const section = readLogSection(root, 'alpha', NOW).section
     const expected = renderTeleportState({ n: 1, running, shepherd: [row({})], inboxThrough: cursor })

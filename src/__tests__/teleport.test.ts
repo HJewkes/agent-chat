@@ -72,14 +72,21 @@ const fakeConn = (): Conn => ({}) as unknown as net.Socket
  * and hands back a pane id. No AppleScript reaches the machine, and no window
  * opens on whatever laptop is running the suite.
  */
+/** CC-863: no teleport here may reach the owner's seat logs or the real Shepherd, whatever its name. */
+const isolatedSeatTeleport = (): SeatTeleportDeps => ({
+  autonomyRoot: workspace(),
+  now: () => new Date(),
+  shepherd: async () => undefined,
+})
+
 function makeSupervisor(
   semaphore?: Semaphore,
   argvReader: ArgvReader = () => 'claude',
-  seatTeleport?: SeatTeleportDeps,
+  seatTeleport: SeatTeleportDeps = isolatedSeatTeleport(),
 ): Supervisor {
   supervisor = new Supervisor(core, {
     countdownMs: COUNTDOWN_MS,
-    ...(seatTeleport ? { seatTeleport } : {}),
+    seatTeleport,
     argvReader,
     launcherRunning: async () => false,
     ...(semaphore ? { semaphore } : {}),
@@ -1237,7 +1244,7 @@ describe('a seat teleport (CC-863)', () => {
     expect(result.ok).toBe(true)
     expect(seatLog()).toContain(
       [
-        '## State at teleport 1',
+        '## State at teleport 1 (agent-chat)',
         '- al-fix-7 (profile implementer, live)',
         '- Shepherd example/widgets#7 demo/D-7 review, at abcdef01 (al-fix-7)',
         `Inbox handled through ${cursor}.`,
@@ -1257,8 +1264,32 @@ describe('a seat teleport (CC-863)', () => {
     const stdin = planFor(result.agentId as string).stdin ?? ''
     expect(stdin.startsWith('Teleport: alpha handed off')).toBe(true)
     expect(stdin).toContain(`\`agent-chat seats boot alpha --after ${cursor}\``)
-    expect(stdin).toContain('## State at teleport 1\n- al-fix-7')
+    expect(stdin).toContain('## State at teleport 1 (agent-chat)\n- al-fix-7')
     expect(stdin).toContain("Your predecessor's handoff:\n\nmine\n\n---\n\n## Broker appendix")
+  })
+
+  it('keeps the State block the seat wrote this session, and boots after its own cursor', async () => {
+    const { agentId, cursor } = await seatWithAgent()
+    core.append({ kind: 'message', actor: 'peer', target: 'alpha', body: 'arrived in its last turn' })
+    const clock = new Date()
+    const hhmm = [clock.getHours(), clock.getMinutes()].map(n => String(n).padStart(2, '0')).join(':')
+    const day = [clock.getFullYear(), clock.getMonth() + 1, clock.getDate()]
+      .map(n => String(n).padStart(2, '0'))
+      .join('-')
+    fs.mkdirSync(path.join(root, 'logs', 'alpha'), { recursive: true })
+    const own = `${hhmm} writing state\n## State at teleport 4\n- al-fix-7 mid-review\nInbox handled through ${cursor}.\n`
+    fs.writeFileSync(path.join(root, 'logs', 'alpha', `${day}.md`), own)
+
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'alpha' }),
+      handoff: 'mine',
+    })
+    await vi.advanceTimersByTimeAsync(0)
+
+    const stdin = planFor(result.agentId as string).stdin ?? ''
+    expect(seatLog()).toBe(own)
+    expect(stdin).toContain(`\`agent-chat seats boot alpha --after ${cursor}\``)
+    expect(stdin).toContain('## State at teleport 4\n- al-fix-7 mid-review')
   })
 
   it('still writes the block, and still teleports, when Shepherd is down', async () => {
