@@ -89,25 +89,52 @@ async function armedLanding(): Promise<{ successor: string; token: string; prede
   return { successor: launch.agentId, token: launch.landToken, predecessor }
 }
 
-const landFailed = (agentId: string, token: string) => {
-  const anyone = wire()
-  anyone.send({ t: 'teleport_land_failed', agentId, token, reason: 'iTerm is not running' })
-  return lastOf(anyone, 'teleport_land_failed_result')
+/** Sent from `sender`, or from a fresh unregistered connection, which is what the helper is. */
+const landFailed = (agentId: string, token: string, sender: Wire = wire()) => {
+  sender.send({ t: 'teleport_land_failed', agentId, token, reason: 'iTerm is not running' })
+  return lastOf(sender, 'teleport_land_failed_result')
 }
+
+const kinds = (agentId: string) =>
+  core.events
+    .agentEvents()
+    .filter(row => row.ref === agentId || row.msgId === agentId)
+    .map(row => row.kind)
+const idOf = (caller: Wire) => core.registry.entryFor(caller.conn as unknown as Conn)?.agentId as string
 
 const stateOf = (agentId: string) => core.agents.get(agentId)?.state
 const failedNotices = () => core.events.humanQueue().filter(item => item.text.includes('failed to start'))
 
 describe('reporting an armed teleport successor unplaced', () => {
-  it('accepts the landing token while the successor has never registered, and keeps a live predecessor', async () => {
-    const { successor, token } = await armedLanding()
+  it('keeps the predecessor only when it reports from its own connection, and never marks it superseded', async () => {
+    const { successor, token, predecessor } = await armedLanding()
 
-    expect(landFailed(successor, token)).toEqual({
+    expect(landFailed(successor, token, predecessor)).toEqual({
       t: 'teleport_land_failed_result',
       ok: true,
       predecessorLive: true,
     })
+    await vi.advanceTimersByTimeAsync(10_000)
+
     expect(stateOf(successor)).toBe('retired')
+    expect(stateOf(idOf(predecessor))).not.toBe('retired')
+    expect(kinds(idOf(predecessor))).not.toContain('agent_stood_down')
+    expect(core.agents.stoodDown(idOf(predecessor))).toBe(false)
+    expect(failedNotices()).toEqual([])
+  })
+
+  // The reviewer's interleaving: the helper reports after the pid exited, before the connection dropped.
+  it('lets the retirement finish and tells the human when the helper reports during the name wait', async () => {
+    const { successor, token, predecessor } = await armedLanding()
+    const predecessorId = idOf(predecessor)
+
+    expect(landFailed(successor, token)).toMatchObject({ ok: true, predecessorLive: false })
+    predecessor.conn.emit('close')
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    expect(kinds(predecessorId)).toEqual(expect.arrayContaining(['agent_stood_down', 'agent_retired']))
+    expect(stateOf(successor)).toBe('retired')
+    expect(failedNotices()).toHaveLength(1)
   })
 
   it('tells the human once the predecessor was already retired', async () => {
@@ -131,6 +158,20 @@ describe('reporting an armed teleport successor unplaced', () => {
     expect(landFailed(successor, token)).toMatchObject({ ok: false })
     expect(stateOf(successor)).not.toBe('retired')
     expect(failedNotices()).toEqual([])
+  })
+
+  // The attach clears the landing: a successor resumed later reads as spawning again, so the state check alone would pass it.
+  it('refuses the token after the successor registered, even once a resume makes it spawning again', async () => {
+    const { successor, token, predecessor } = await armedLanding()
+    predecessor.conn.emit('close')
+    const started = wire()
+    register(started, { agentId: successor })
+    started.conn.emit('close')
+    core.append({ kind: 'agent_resumed', actor: 'agent-chat', target: 'cc27', ref: successor })
+    expect(stateOf(successor)).toBe('spawning')
+
+    expect(landFailed(successor, token)).toMatchObject({ ok: false })
+    expect(stateOf(successor)).not.toBe('retired')
   })
 
   it('refuses a wrong token and leaves the successor alone', async () => {
@@ -157,8 +198,6 @@ describe('reporting an armed teleport successor unplaced', () => {
 
   it('refuses an agent that has no armed landing', async () => {
     const { token, predecessor } = await armedLanding()
-    const predecessorId = core.registry.entryFor(predecessor.conn as unknown as Conn)?.agentId as string
-
-    expect(landFailed(predecessorId, token)).toMatchObject({ ok: false })
+    expect(landFailed(idOf(predecessor), token)).toMatchObject({ ok: false })
   })
 })

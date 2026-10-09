@@ -712,10 +712,10 @@ export class Teleport {
 
   /**
    * CC-913: an armed successor its host could not place, reported with the landing's token by the
-   * helper or the caller that armed it. Its row is retired so the name frees. A predecessor not yet
-   * retired is kept and told; otherwise nobody is left in the session, so the human is told.
+   * helper or the caller that armed it. Its row is retired so the name frees. The predecessor is kept
+   * and told only when it sent this itself and is not yet retired; otherwise the human is told.
    */
-  landFailed(agentId: string, token: string, reason: string): LandFailedReply {
+  landFailed(agentId: string, token: string, reason: string, from?: string): LandFailedReply {
     const landing = this.landings.get(agentId)
     if (landing === undefined || !sameToken(landing.token, token))
       return { ok: false, reason: 'no armed teleport landing matches that successor and token' }
@@ -725,7 +725,7 @@ export class Teleport {
       return { ok: false, reason: 'that successor already registered, so it did start' }
     const said = reason.slice(0, LAND_REASON_MAX)
     const { entry } = landing
-    const { name } = entry.subject
+    const { name, agentId: predecessorId } = entry.subject
     this.core.append({
       kind: 'agent_retired',
       actor: 'agent-chat',
@@ -733,8 +733,9 @@ export class Teleport {
       ref: agentId,
       body: `teleport successor not placed on its caller's host: ${said}`,
     })
-    logEvent('teleport_failed', { name, from: entry.subject.agentId, reason: said, remote: true })
-    const predecessorLive = this.pending.get(entry.subject.agentId) === entry
+    logEvent('teleport_failed', { name, from: predecessorId, reason: said, remote: true })
+    // Only the predecessor's own connection proves it is alive: the helper reports after its pid exited.
+    const predecessorLive = from === predecessorId && this.pending.get(predecessorId) === entry
     if (predecessorLive) {
       entry.landFailed = true
       this.tell(name, `Your teleport did not happen: ${said}. You are still live, on the old build.`)
@@ -783,9 +784,11 @@ export class Teleport {
     if (!report.ok) return this.remoteFailed(entry, input, report.reason ?? 'no reason given')
     this.host.confirmRemoteRelaunch(input)
     this.openLanding(entry, launch.landToken as string)
-    this.core.append({ kind: 'agent_stood_down', actor: subject.name, ref: subject.agentId })
+    // CC-913: written once the predecessor is gone, not at the report: until its own connection
+    // drops it may still be kept (`landFailed`), and a stand-down row reads as superseded for good.
     await this.waitForNameFree(subject.name)
     if (entry.landFailed === true) return void this.pending.delete(subject.agentId)
+    this.core.append({ kind: 'agent_stood_down', actor: subject.name, ref: subject.agentId })
     this.core.append({
       kind: 'agent_retired',
       actor: 'agent-chat',

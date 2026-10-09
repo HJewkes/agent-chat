@@ -554,6 +554,18 @@ export class SocketServer {
     reply(conn, { t: 'teleport_launched_result', ...result })
   }
 
+  /** CC-913: the sender's own registration, never the frame, says whether it is the predecessor. */
+  private handleTeleportLandFailed(
+    conn: Conn,
+    msg: Extract<ClientMessage, { t: 'teleport_land_failed' }>,
+  ): void {
+    const from = this.core.registry.entryFor(conn)?.agentId
+    reply(conn, {
+      t: 'teleport_land_failed_result',
+      ...this.supervisor.teleportLandFailed(msg.agentId, msg.token, msg.reason, from),
+    })
+  }
+
   /**
    * Say out loud when a client is running a different build from the broker.
    *
@@ -1543,10 +1555,7 @@ export class SocketServer {
       case 'teleport_launched':
         return this.handleTeleportLaunched(conn, msg)
       case 'teleport_land_failed':
-        return reply(conn, {
-          t: 'teleport_land_failed_result',
-          ...this.supervisor.teleportLandFailed(msg.agentId, msg.token, msg.reason),
-        })
+        return this.handleTeleportLandFailed(conn, msg)
       case 'surface':
         void this.handleSurface(conn, msg.name)
         return

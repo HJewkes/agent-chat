@@ -2905,8 +2905,8 @@ export class Supervisor implements TeleportHost {
   }
 
   /** CC-913: the caller's helper could not place an armed successor after its predecessor exited. */
-  teleportLandFailed(agentId: string, token: string, reason: string): LandFailedReply {
-    return this.teleporter.landFailed(agentId, token, reason)
+  teleportLandFailed(agentId: string, token: string, reason: string, from?: string): LandFailedReply {
+    return this.teleporter.landFailed(agentId, token, reason, from)
   }
 
   /** The human's veto on a countdown. No agent-facing path reaches this. */
