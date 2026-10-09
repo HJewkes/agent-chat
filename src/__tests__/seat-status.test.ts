@@ -1415,6 +1415,39 @@ describe('a status that cannot be read', () => {
   })
 })
 
+describe('the brief page (CC-889)', () => {
+  it('prints caps per role with names, the pool reading and stop, unread and parked', async () => {
+    seedAgent({ name: 'ss-al-1', profile: 'implementer' })
+    seedAgent({ name: 'ss-al-2', profile: 'implementer' })
+    seedAgent({ name: 'ss-al-3', profile: 'implementer', exited: true })
+    seedAgent({ name: 'ss-rv-1', profile: 'reviewer' })
+    join(SEAT)
+    const peer = join('peer-b')
+    send(peer, SEAT, 'first')
+    writeReading(12, 70)
+
+    const report = await statusReport(deps(), SEAT, false, true)
+
+    expect(report.ok).toBe(true)
+    expect(report.lines).toEqual([
+      `seat ${SEAT} at ${NOW.toISOString()}`,
+      'implementers  2/2  AT CAP  ss-al-1, ss-al-2',
+      'reviewers     1/1  AT CAP  ss-rv-1',
+      'planners      0/3',
+      `pool          pool ${POOL}: seven_day 70%, five_hour 12% (reading 30s old)`,
+      `stop          BUDGET-PAUSE pool ${POOL}: seven_day 70% at or above line 65% (no seven_day resets_at, flat reserve)`,
+      'unread        1',
+      'parked        1',
+    ])
+  })
+
+  it('reads "none" on the stop line while the gate is open', async () => {
+    const report = await statusReport(deps(), SEAT, false, true)
+
+    expect(report.lines.slice(5)).toEqual(['stop          none', 'unread        0', 'parked        0'])
+  })
+})
+
 describe('the verb wired to a running broker', () => {
   const ctx = { warnings: [], format: 'human' as const, withBroker }
   const saved = { ...process.env }
@@ -1473,6 +1506,24 @@ describe('the verb wired to a running broker', () => {
     expect(report.ok).toBe(true)
     expect(report.lines[0]).toMatch(new RegExp(`^seat ${SEAT} at `))
     expect(report.lines[1]).toBe('implementers  0/2')
+  })
+
+  it('prints the brief page with --brief', async () => {
+    const report = await seatsStatusVerb.run({ seat: SEAT, brief: true, root: autonomy }, ctx)
+
+    expect(report.ok).toBe(true)
+    expect(report.lines[0]).toMatch(new RegExp(`^seat ${SEAT} at `))
+    expect(report.lines).toHaveLength(8)
+  })
+
+  it('refuses --brief with --json, so the JSON document never changes shape', async () => {
+    const report = await seatsStatusVerb.run({ seat: SEAT, brief: true, json: true, root: autonomy }, ctx)
+
+    expect(report.ok).toBe(false)
+    expect(JSON.parse(report.lines.join('\n'))).toEqual({
+      seat: SEAT,
+      error: 'seats status takes --brief or --json, not both',
+    })
   })
 
   it('prints one error document and starts no broker when none is running', async () => {

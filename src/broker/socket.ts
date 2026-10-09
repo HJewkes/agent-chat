@@ -435,6 +435,7 @@ export class SocketServer {
       handoff: msg.handoff,
       ...(msg.model === undefined ? {} : { model: msg.model }),
       ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
+      ...(msg.remoteControlSeen === undefined ? {} : { remoteControlSeen: msg.remoteControlSeen }),
       ...(msg.reason === undefined ? {} : { reason: msg.reason }),
     })
     reply(conn, {
@@ -445,6 +446,7 @@ export class SocketServer {
       ...(outcome.agentId === undefined ? {} : { agentId: outcome.agentId }),
       ...(outcome.countdownMs === undefined ? {} : { countdownMs: outcome.countdownMs }),
       ...(outcome.warnings === undefined ? {} : { warnings: outcome.warnings }),
+      ...(outcome.remote === undefined ? {} : { remote: outcome.remote }),
     })
   }
 
@@ -509,6 +511,29 @@ export class SocketServer {
       ...(result.reason === undefined ? {} : { reason: result.reason }),
       ...(result.ok ? { name } : {}),
     })
+  }
+
+  /** CC-881: like `teleport`, resolved from this connection's own registration and never from the frame. */
+  private async handleTeleportPlanWait(conn: Conn): Promise<void> {
+    const agentId = this.core.registry.entryFor(conn)?.agentId
+    const plan =
+      agentId === undefined
+        ? { ok: false, reason: 'this connection has no durable identity to teleport' }
+        : await this.supervisor.teleportPlan(agentId)
+    reply(conn, { t: 'teleport_plan', ...plan })
+  }
+
+  private handleTeleportLaunched(conn: Conn, msg: Extract<ClientMessage, { t: 'teleport_launched' }>): void {
+    const agentId = this.core.registry.entryFor(conn)?.agentId
+    const result =
+      agentId === undefined
+        ? { ok: false, reason: 'this connection has no durable identity to teleport' }
+        : this.supervisor.teleportLaunched(agentId, {
+            successor: msg.agentId,
+            ok: msg.ok,
+            ...(msg.reason === undefined ? {} : { reason: msg.reason }),
+          })
+    reply(conn, { t: 'teleport_launched_result', ...result })
   }
 
   /**
@@ -601,6 +626,7 @@ export class SocketServer {
       ...(msg.surface === undefined ? {} : { surface: msg.surface }),
       ...(msg.message === undefined ? {} : { message: msg.message }),
       ...(source === undefined ? {} : { source }),
+      ...(msg.remoteControl === undefined ? {} : { remoteControl: msg.remoteControl }),
     })
     reply(conn, { t: 'spawn_result', ...outcome })
   }
@@ -1457,6 +1483,11 @@ export class SocketServer {
         return
       case 'teleport_abort':
         return this.handleTeleportAbort(conn, msg.name)
+      case 'teleport_plan_wait':
+        void this.handleTeleportPlanWait(conn)
+        return
+      case 'teleport_launched':
+        return this.handleTeleportLaunched(conn, msg)
       case 'surface':
         void this.handleSurface(conn, msg.name)
         return

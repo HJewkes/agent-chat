@@ -2,6 +2,9 @@ import { z } from 'zod'
 import { present, requiredString } from '../../args.js'
 import { TELEPORT_REASONS, type ServerMessage } from '../../protocol.js'
 import { defineTool } from '../command.js'
+import { defaultCallerLaunch, runCallerTeleport } from '../caller-teleport.js'
+import { hostIdentity } from '../host.js'
+import { hostRemoteControl } from '../../broker/host-channels.js'
 
 function describeTeleport(res: Extract<ServerMessage, { t: 'teleport_result' }>): string {
   if (!res.ok) return `Not teleporting: ${res.reason}`
@@ -57,7 +60,7 @@ export const agentTeleport = defineTool({
       .boolean()
       .describe(
         'Optional. Omit to carry Remote Control across when this session was launched with ' +
-          '--remote-control. Set true if you turned it on mid-session with /remote-control, which ' +
+          '--remote-control; a coordinator seat always keeps it. Set true if you turned it on mid-session with /remote-control, which ' +
           'the broker cannot see; set false to drop it. A worker successor never gets it, and true ' +
           'is refused for one. Headless successors ignore it.',
       )
@@ -79,16 +82,24 @@ export const agentTeleport = defineTool({
         'have one yet.'
       )
     const model = present(requested)
+    // CC-883: a broker on another host cannot read this session's argv, so this process reports it.
+    const seen = remoteControl === undefined && hostRemoteControl(hostIdentity().hostPid) === true
     const res = (await ctx.broker.request(
       {
         t: 'teleport',
         handoff,
         ...(model === undefined ? {} : { model }),
         ...(remoteControl === undefined ? {} : { remoteControl }),
+        ...(seen ? { remoteControlSeen: true } : {}),
         ...(reason === undefined ? {} : { reason }),
       },
       'teleport_result',
     )) as Extract<ServerMessage, { t: 'teleport_result' }>
+    // CC-881: the broker is on another host, so the relaunch runs here once the countdown ends.
+    if (res.ok && res.remote === true)
+      void runCallerTeleport(ctx.broker, hostIdentity().hostPid, defaultCallerLaunch()).catch(err =>
+        process.stderr.write(`agent-chat: teleport launch on this host failed: ${(err as Error).message}\n`),
+      )
     return describeTeleport(res)
   },
 })
