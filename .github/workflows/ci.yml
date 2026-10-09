@@ -31,7 +31,8 @@ jobs:
   std:
     uses: HJewkes/ci/.github/workflows/node.yml@v1
     with:
-      node-version: '22'
+      # HJewkes/ci node.yml has no node-version-file input; keep this equal to .node-version.
+      node-version: '24.21.0'
 
   # A merge gate behind the pre-push hook `prepare` installs. CI has no private term list.
   egress-scan:
@@ -43,7 +44,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version-file: .node-version
       # The PR head sha, not the merge ref, so GitHub's synthetic merge commit is not scanned.
       - name: Scan the pushed commits
         env:
