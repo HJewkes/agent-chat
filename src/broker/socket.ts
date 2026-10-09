@@ -168,6 +168,8 @@ export class SocketServer {
   private readonly verifier: LifecycleVerifier | undefined
   /** Open hook rows by msg_id. Memory only: a restart drops every hook connection, so none can outlive it. */
   private readonly hooks = new Map<string, HookWait>()
+  /** Each connection's open service asks, for the per-connection cap; dies with the connection. */
+  private readonly serviceAsks = new WeakMap<Conn, Set<string>>()
 
   /** `ledgerDb` is the shadow ledger's connection, passed only while `ledgerShadow` is on. */
   constructor(
@@ -1149,7 +1151,21 @@ export class SocketServer {
         reason: 'service_ask is for processes that never register; a session asks with ask',
       })
     }
-    reply(conn, { t: 'service_ask_result', ...fileServiceAsk(this.core, msg) })
+    const held = this.serviceAsks.get(conn) ?? new Set<string>()
+    this.serviceAsks.set(conn, held)
+    reply(conn, { t: 'service_ask_result', ...fileServiceAsk(this.core, msg, held) })
+  }
+
+  /** CC-169: a pure read like `activity`; an unknown `after` is an error, never a replay from row 0. */
+  private answersSince(msg: Extract<ClientMessage, { t: 'answers_since' }>): ServerMessage {
+    const events = this.core.events
+    const afterId = msg.after === undefined ? 0 : events.rowIdOf(msg.after)
+    if (afterId === undefined)
+      return { t: 'answers_since_result', answers: [], error: `no message ${msg.after}` }
+    const limit = Math.max(1, Math.min(msg.limit, WATCH_MAX_BATCH))
+    const answers = events.answersFor(msg.name, afterId, limit)
+    const next = answers.at(-1)?.msgId
+    return { t: 'answers_since_result', answers, ...(next ? { next } : {}) }
   }
 
   /** Only the connection that raised a row may withdraw it; anyone else learns nothing about it. */
@@ -1505,6 +1521,8 @@ export class SocketServer {
         return this.handlePermissionHookWithdrawn(conn, msg.msgId)
       case 'service_ask':
         return this.handleServiceAsk(conn, msg)
+      case 'answers_since':
+        return reply(conn, this.answersSince(msg))
       case 'spawn':
         void this.handleSpawn(conn, msg)
         return

@@ -25,7 +25,9 @@ import {
   type ProcessGuardMode,
 } from './agents/process-guard.js'
 
-interface AgentChatConfig {
+export interface AgentChatConfig {
+  /** Path to a coordinator document; its `state_dir` relocates the autonomy root. */
+  coordinatorConfig?: unknown
   agentSlots?: unknown
   worktreeBudget?: unknown
   worktreeOwnerReserve?: unknown
@@ -66,6 +68,8 @@ function logInvalidOnce(detail: Record<string, unknown>): void {
   loggedInvalid.add(key)
   logEvent('config_invalid', detail)
 }
+
+export const readAgentChatConfig = (): AgentChatConfig => readConfig()
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
 function readConfig(): AgentChatConfig {

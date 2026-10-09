@@ -20,6 +20,9 @@ const LABEL: Record<string, string> = {
   endorse_request: 'ENDR ',
 }
 
+/** A service ask's label is not vouched for and no session waits on it live (CC-169). */
+const sender = (i: QueueItem): string => (i.meta.source === 'service' ? `${i.from} (service)` : i.from)
+
 /** Things that need an answer first; notices are just there when you look. */
 const needsAnswer = (i: QueueItem): boolean =>
   i.kind === 'question' || i.kind === 'approval_request' || i.kind === 'endorse_request'
@@ -53,7 +56,7 @@ export function describeInbox(res: Extract<ServerMessage, { t: 'queue_result' }>
   const ordered = [...res.items].sort((a, b) => Number(needsAnswer(b)) - Number(needsAnswer(a)))
 
   for (const item of ordered) {
-    lines.push(`${LABEL[item.kind] ?? item.kind} ${item.msgId}  ${item.from.padEnd(14)} ${ago(item.at)}`)
+    lines.push(`${LABEL[item.kind] ?? item.kind} ${item.msgId}  ${sender(item).padEnd(14)} ${ago(item.at)}`)
     // The exact bytes that will be delivered, in full and untruncated. This
     // print IS the thing being endorsed — anything elided here would be
     // approved unread, which is the failure the whole flow exists to prevent.

@@ -7,6 +7,7 @@ import type { AgentEventRow } from '../../broker/event-store.js'
 import { home } from '../../paths.js'
 import type { EventKind } from '../../protocol.js'
 import { activeWorkRoot } from '../active-work.js'
+import { currentAutonomyRoot } from '../autonomy-root.js'
 import { scoredPlanFromDisk } from '../burndown/score-render.js'
 import { localDate } from '../burndown/seat-tick.js'
 import type { HeartbeatMark } from './heartbeat.js'
@@ -24,8 +25,7 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
 export const openEvents = (dbPath: string): DatabaseSyncType =>
   new DatabaseSync(dbPath, { readOnly: true, timeout: BUSY_TIMEOUT_MS })
 
-export const defaultAutonomyRoot = (): string =>
-  path.join(activeWorkRoot(), 'claude-channels', 'sources', 'autonomy')
+export const defaultAutonomyRoot = (): string => currentAutonomyRoot()
 
 export const watchdogStatePath = (): string => path.join(home(), 'seat-watchdog.json')
 
