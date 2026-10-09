@@ -69,15 +69,18 @@ describe('the agent git shim running every text filter under LC_ALL=C (CC-613 sl
   })
 
   // What the mutated run above would show: a failed filter in values() keeps the hooks-path rule.
-  it.each(['tr', 'sed'] as Filter[])('refuses as hooks-path when %s fails in the destination check', filter => {
-    const fx = withFakeFilters(fixture(), { [filter]: 'exit 1' })
+  it.each(['tr', 'sed'] as Filter[])(
+    'refuses as hooks-path when %s fails in the destination check',
+    filter => {
+      const fx = withFakeFilters(fixture(), { [filter]: 'exit 1' })
 
-    const run = runScript(fx, LOCAL_PUSH_SKIPPING_HOOKS)
+      const run = runScript(fx, LOCAL_PUSH_SKIPPING_HOOKS)
 
-    expect(run.status).toBe(2)
-    expect(run.stderr).toContain('git-shim: push refused (hooks-path)')
-    expect(remoteHasMain(fx)).toBe(false)
-  })
+      expect(run.status).toBe(2)
+      expect(run.stderr).toContain('git-shim: push refused (hooks-path)')
+      expect(remoteHasMain(fx)).toBe(false)
+    },
+  )
 
   // Kills: LC_ALL=C removed from the tr that reads the builtin list when none was baked in.
   it('reads the builtin list itself, so a shell alias named like a builtin never runs', () => {
