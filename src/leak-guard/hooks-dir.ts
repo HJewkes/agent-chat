@@ -207,6 +207,18 @@ const LOOKUP_FAILED = 'leak-scan: push refused: the scan base lookup on $2 faile
 const REWRITTEN_URL =
   'leak-scan: push refused: git config rewrites the push URL $2 for reads, so the scan base cannot be read from it; see docs/leak-guard.md.'
 
+// The scanner lists its push URL with no HOME or SSH_AUTH_SOCK, so a private remote would fail it (CC-906).
+// It is handed a local repository holding the tips the scrubbed lookup above already read.
+// packed-refs needs no objects: they come through the alternates, and git skips a ref it cannot resolve.
+const LISTING_REPO = `listing=$tmp/listing
+if clean git init -q --bare --template= "$listing" >/dev/null 2>&1 &&
+  printf '%s\\n' "$objects" > "$listing/objects/info/alternates" &&
+  printf '%s\\n' "$heads" | awk '$1 ~ /^[0-9a-f]+$/ && length($1) >= 40 { printf "%s refs/tips/%d\\n", $1, NR }' > "$listing/packed-refs"; then
+  push_url=$listing
+else
+  push_url=$2
+fi`
+
 // Asked of the push URL with only system and owner config, since agent config can send the read elsewhere.
 const remoteTip = (home: string): string => `remote() {
   /usr/bin/env -i PATH="$PATH" HOME=${shQuote(home)} SSH_AUTH_SOCK="\${SSH_AUTH_SOCK-}" \\
@@ -220,13 +232,14 @@ const remoteTip = (home: string): string => `remote() {
   echo "${SSH_COMMAND_SET}" >&2
   exit 2
 }
-heads=$(remote ls-remote --upload-pack=git-upload-pack "$2" HEAD 2>/dev/null) || lookup_failed=1
+heads=$(remote ls-remote --upload-pack=git-upload-pack "$2" 2>/dev/null) || lookup_failed=1
 tip=$(printf '%s\\n' "$heads" | awk '$2 == "HEAD" { print $1; exit }')
 case $tip in *[!0-9a-f]*) tip= ;; esac
 if [ -n "$tip" ] && ! vgit cat-file -e "$tip^{commit}" 2>/dev/null; then
   remote fetch -q --upload-pack=git-upload-pack --no-tags --no-write-fetch-head --no-recurse-submodules "$2" HEAD >/dev/null 2>&1
   vgit cat-file -e "$tip^{commit}" 2>/dev/null || tip=
-fi`
+fi
+${LISTING_REPO}`
 
 // A new ref, or one whose remote sha is not here, is scanned from the remote's default branch. A non-commit is refused.
 const SCAN_REFS = `while read -r lref lsha rref rsha; do
@@ -266,14 +279,14 @@ export interface Bake {
   stamp: string
 }
 
-// $2 is the push URL: the view repo has no such remote, so the scanner lists it to exclude what the remote already has (CC-906).
+// The second argument is the push URL, so the scanner excludes the tips the remote already has (CC-906).
 // The baked node runs the scanner directly, skipping its env shebang, only while the verdict holds.
 const scanInvocation = (settings: string, bake: Bake | undefined): string => {
-  const onPath = `clean ${settings} titan-egress-scan pre-push "$1" "$2"`
+  const onPath = `clean ${settings} titan-egress-scan pre-push "$1" "$push_url"`
   if (bake === undefined) return `${onPath} < "$tmp/scan-refs" 2> "$errs"`
   const node = shQuote(bake.facts.node)
   return `if [ -n "$fresh" ] && [ -f ${node} ] && [ -x ${node} ]; then
-      clean ${settings} ${node} ${shQuote(bake.facts.scanner)} pre-push "$1" "$2"
+      clean ${settings} ${node} ${shQuote(bake.facts.scanner)} pre-push "$1" "$push_url"
     else
       ${onPath}
     fi < "$tmp/scan-refs" 2> "$errs"`
