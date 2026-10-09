@@ -94,6 +94,7 @@ interface World {
   /** What the stub's range scan finds on the pushed branch. */
   branch: EgressFinding[]
   ranges: { cwd: string; base: string; head: string; allowFrom?: string | undefined }[]
+  fetchFails?: boolean
   /** The range scan alone returns this when set. */
   rangeDown?: EgressOutcome | undefined
   /** Every scanner call returns this when set: a missing scanner, term list or a crash. */
@@ -116,7 +117,7 @@ const exec =
   (w: World): Runner =>
   (bin, args) => {
     w.calls.push({ bin, args })
-    if (bin !== 'gh') return { status: 0, stdout: '' }
+    if (bin !== 'gh') return { status: w.fetchFails === true && args[0] === 'fetch' ? 1 : 0, stdout: '' }
     if (w.ghFails !== undefined) return { status: 1, stdout: '', stderr: w.ghFails }
     return { status: 0, stdout: w.pulls.map(p => JSON.stringify(p)).join('\n') }
   }
@@ -262,18 +263,33 @@ describe('the tick leak check on a claimed PR', () => {
     expect(leakSends(w)).toHaveLength(2)
   })
 
-  it('keeps an earlier branch finding when a later range scan fails', async () => {
+  const parked = (ledger: Ledger): Ledger => ({
+    ...ledger,
+    claims: ledger.claims.map(c => ({ ...c, worktree: path.join(checkout, 'gone', '.worktrees', 'x') })),
+  })
+  const throwing = (w: World): EgressRunner => ({
+    ...egress(w),
+    range: () => {
+      throw new Error('mkdtemp failed')
+    },
+  })
+
+  it.each<[string, (w: World) => Partial<LeakDeps>, (l: Ledger) => Ledger]>([
+    ['the scanner reported error', w => ((w.rangeDown = { state: 'error' }), {}), l => l],
+    ['git fetch failed', w => ((w.fetchFails = true), {}), l => l],
+    ['no local checkout', () => ({}), parked],
+    ['the branch scan failed', w => ({ egress: throwing(w) }), l => l],
+  ])('keeps an earlier branch finding when the next branch scan stops with %s', async (why, fail, move) => {
     const w = newWorld([pull()])
     w.branch = [{ location: `commit ${'a'.repeat(7)} src/a.ts:3`, rule: 'home-path' }]
     const once = await tick(w, ledgerOf(claim()))
-    w.rangeDown = { state: 'error', detail: '.egress-allow is malformed' }
+    const over = fail(w)
 
-    const after = await tick(w, once)
+    const after = await tick(w, move(once), over)
 
     expect(after.claims[0]?.leak).toEqual(once.claims[0]?.leak)
-    expect(w.lines).toContain(
-      'leak check skipped the branch of DM-1: the scanner reported error; its last result stands',
-    )
+    expect(leakSends(w)).toHaveLength(1)
+    expect(w.lines).toContain(`leak check skipped the branch of DM-1: ${why}; its last result stands`)
   })
 
   it('tells the seat again when the findings change', async () => {
@@ -655,7 +671,9 @@ describe('the tick leak check when the scanner is down', () => {
       egress: egress(w),
     })
 
-    expect(leaks.lines).toEqual(['leak check skipped the branch of DM-1: no local checkout'])
+    expect(leaks.lines).toEqual([
+      'leak check skipped the branch of DM-1: no local checkout; its last result stands',
+    ])
     expect(leaks.ledger.claims[0]?.leak?.findings).toEqual(['title 1:1 private-term'])
   })
 })

@@ -219,11 +219,8 @@ async function checkPull(pass: Pass, pull: Pull, found: Found, where: RepoView):
   const url = where.shown ? pull.url : '[redacted url]'
   const text = scanPullText(pass, pull)
   if (text === undefined) return textUnscanned(pass, where.repo, url, claim)
-  const none = { rows: [], lines: [], unscanned: false }
-  const branch = claim === undefined ? none : await scanBranch(claim, pull, pass)
-  pass.lines.push(...branch.lines)
-  if (claim !== undefined && branch.unscanned === true) pass.unscanned.add(claim)
-  const rows = [...new Set([...text, ...branch.rows])]
+  const branch = claim === undefined ? [] : branchRows(pass, claim, pull)
+  const rows = [...new Set([...text, ...branch])]
   if (claim?.seat !== undefined && pass.deps.seats.includes(claim.seat)) {
     found.set(claim, [...(found.get(claim) ?? []), { number: pull.number, url, rows }])
     return
@@ -327,28 +324,32 @@ function checkoutOf(claim: Claim): string | undefined {
   return [claim.worktree, repo].find(dir => fs.existsSync(dir))
 }
 
+/** A branch scan's rows, or why there are none; only a scanner result is ever a scan. */
+type BranchScan = { rows: string[] } | { skipped: string }
+
+/** The branch's rows; a branch not scanned keeps its claim's last rows, whatever stopped the scan. */
+function branchRows(pass: Pass, claim: Claim, pull: Pull): string[] {
+  const scan = scanBranch(claim, pull, pass)
+  if ('rows' in scan) return scan.rows
+  pass.lines.push(`leak check skipped the branch of ${claim.taskId}: ${scan.skipped}; its last result stands`)
+  pass.unscanned.add(claim)
+  return []
+}
+
 /** Every commit the PR's branch adds over its base, through the scanner's per-commit range scan. */
-async function scanBranch(
-  claim: Claim,
-  pull: Pull,
-  pass: Pass,
-): Promise<{ rows: string[]; lines: string[]; unscanned?: boolean }> {
+function scanBranch(claim: Claim, pull: Pull, pass: Pass): BranchScan {
   const cwd = checkoutOf(claim)
-  const skipped = (why: string) => ({
-    rows: [],
-    lines: [`leak check skipped the branch of ${claim.taskId}: ${why}`],
-  })
-  if (cwd === undefined) return skipped('no local checkout')
+  if (cwd === undefined) return { skipped: 'no local checkout' }
   const refs = scanRefs(pull.number)
   try {
     if (pass.deps.exec(GIT_BIN, privateFetch(pull, refs), cwd).status !== 0)
-      return skipped('git fetch failed')
+      return { skipped: 'git fetch failed' }
     const allowFrom = pull.base === pull.defaultBranch ? refs.base : undefined
     const scanned = pass.egress.range(cwd, refs.base, refs.head, allowFrom)
-    if (scanned.state !== 'ok') {
-      return { ...skipped(`the scanner reported ${scanned.state}; its last result stands`), unscanned: true }
-    }
-    return { rows: scanned.findings.map(branchRow), lines: [] }
+    if (scanned.state !== 'ok') return { skipped: `the scanner reported ${scanned.state}` }
+    return { rows: scanned.findings.map(branchRow) }
+  } catch {
+    return { skipped: 'the branch scan failed' }
   } finally {
     for (const ref of [refs.base, refs.head]) pass.deps.exec(GIT_BIN, ['update-ref', '-d', ref], cwd)
   }
