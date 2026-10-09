@@ -12,7 +12,15 @@ import type { Claim, Ledger, SeatState } from './ledger.js'
 import type { LineStop } from './flow-gate.js'
 import { rowNamed, type Roster } from './observe.js'
 import type { Capacity, Dispatch, PlanInputs } from './plan.js'
-import { loadPolicy, mergeDefaults, seatBudget, seatScope, type Policy, type SeatPolicy } from './policy.js'
+import {
+  dormantInitiatives,
+  loadPolicy,
+  mergeDefaults,
+  seatBudget,
+  seatScope,
+  type Policy,
+  type SeatPolicy,
+} from './policy.js'
 import { scoreAll } from './score.js'
 import { readScoredTasks } from './score-source.js'
 import { resolveSeatDispatch, type SeatDispatch } from './seat-dispatch.js'
@@ -218,7 +226,15 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
   }
   const today = localDate(seat.budget.ctx.now)
   const read = readScoredTasks(root, slugs)
-  const { rows } = scoreAll(read.tasks, weights, defaults, exclusions, charter.hard_stops, today)
+  const { rows } = scoreAll(
+    read.tasks,
+    weights,
+    defaults,
+    exclusions,
+    charter.hard_stops,
+    today,
+    dormantInitiatives(seat.policy.seat),
+  )
   const tasks = new Map(slugs.map(slug => [slug, readTasks(root, slug)]))
   const pool = seat.dispatch.pool.name
   const order = orderInputs(seat, read.tasks, root, today)

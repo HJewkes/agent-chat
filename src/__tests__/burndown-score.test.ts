@@ -656,3 +656,34 @@ describe('scoreAll', () => {
     ).toThrow('no scope weight for initiative elsewhere')
   })
 })
+
+describe('gate_free_bonus', () => {
+  const withBonus: ScoringDefaults = { ...DEFAULTS, gate_free_bonus: 1.15 }
+  const pair = [task({ id: 'G-1', slug: 'live' }), task({ id: 'G-2', slug: 'dormant' })]
+  const scoreOf = (defaults: ScoringDefaults, dormant: ReadonlySet<string>) => {
+    const { rows } = scoreAll(pair, { live: 1, dormant: 1 }, defaults, { tags: [] }, [], TODAY, dormant)
+    return Object.fromEntries(rows.map(r => [r.id, r.components.G]))
+  }
+
+  it('multiplies a gate-free task by the charter bonus and leaves a dormant one alone', () => {
+    expect(scoreOf(withBonus, new Set(['dormant']))).toEqual({ 'G-1': 1.15, 'G-2': 1 })
+  })
+
+  it('scores two otherwise equal tasks apart by exactly the bonus', () => {
+    const { rows } = scoreAll(
+      pair,
+      { live: 1, dormant: 1 },
+      { ...withBonus, gate_free_bonus: 2 },
+      { tags: [] },
+      [],
+      TODAY,
+      new Set(['dormant']),
+    )
+    const [free, dormant] = [rows.find(r => r.id === 'G-1'), rows.find(r => r.id === 'G-2')]
+    expect(free?.score).toBeCloseTo((dormant?.score ?? 0) * 2, 0)
+  })
+
+  it('applies no bonus when the charter defaults lack the key', () => {
+    expect(scoreOf(DEFAULTS, new Set(['dormant']))).toEqual({ 'G-1': 1, 'G-2': 1 })
+  })
+})

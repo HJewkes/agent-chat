@@ -4,6 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
+  dormantInitiatives,
   frontmatter,
   loadPolicy,
   mergeDefaults,
@@ -346,5 +347,22 @@ describe('policy and task reader feeding scoreAll', () => {
       '2026-09-29',
     )
     expect(rows.map(r => [r.id, r.kind, r.kindSource, r.score])).toEqual([['CC-1', 'security', 'tag', 61]])
+  })
+})
+
+describe('dormantInitiatives', () => {
+  it('names the initiatives of repos that go live only after a broker restart or v1 move', () => {
+    const seat = parseSeat(
+      [
+        '---',
+        'repos:',
+        '  - {path: /a, initiatives: [x], live_after: broker-restart}',
+        '  - {path: /b, initiatives: [y]}',
+        '  - {path: /c, initiatives: [z], live_after: v1-move}',
+        '---',
+      ].join('\n'),
+      't',
+    )
+    expect([...dormantInitiatives(seat)].sort()).toEqual(['x', 'z'])
   })
 })
