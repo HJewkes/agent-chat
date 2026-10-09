@@ -21,7 +21,7 @@ import { reapBroker } from './broker-harness.js'
  *
  * A short socket directory, deliberately — see the note in `reregister-live.test.ts`.
  */
-const shortTmp = (): string => (fs.existsSync('/tmp') ? '/tmp' : os.tmpdir())
+const shortTmp = (): string => os.tmpdir()
 
 let dir: string
 let workspace: string

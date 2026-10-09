@@ -24,7 +24,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
  *
  * A short socket directory, deliberately — see the note in `reregister-live.test.ts`.
  */
-const shortTmp = (): string => (fs.existsSync('/tmp') ? '/tmp' : os.tmpdir())
+const shortTmp = (): string => os.tmpdir()
 
 const SESSION_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 

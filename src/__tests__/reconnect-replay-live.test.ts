@@ -22,7 +22,7 @@ import type { ClientMessage, ServerMessage } from '../protocol.js'
  *
  * Short socket directory for the reason `reregister-live.test.ts` gives.
  */
-const shortTmp = (): string => (fs.existsSync('/tmp') ? '/tmp' : os.tmpdir())
+const shortTmp = (): string => os.tmpdir()
 
 let dir: string
 let core: BrokerCore
