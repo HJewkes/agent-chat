@@ -130,6 +130,7 @@ import type { ShadowLedger } from './ledger/shadow-ledger.js'
 import { exitTerminal, LifecycleShadow } from './ledger/lifecycle-shadow.js'
 import { readExitTail, unreportedExitText, UNREPORTED_EXIT } from './exit-report.js'
 import { loadTickConfig } from './burndown/source.js'
+import type { SeatTeleportDeps } from './seats/teleport-state.js'
 import {
   SuccessorNotStarted,
   Teleport,
@@ -526,6 +527,8 @@ export interface SupervisorOptions {
   launcherRunning?: LauncherProbe
   /** How teleport reads a predecessor's argv for `--remote-control`. Faked in tests. */
   argvReader?: ArgvReader
+  /** CC-863: where a seat's teleport State block is written and how Shepherd is read. Faked in tests. */
+  seatTeleport?: SeatTeleportDeps
   /**
    * How long a mode switch waits for the stopped process's socket to go before
    * reclaiming its name. Shortened in tests, where nothing ever closes a fake
@@ -753,7 +756,7 @@ export class Supervisor implements TeleportHost {
       this.reapIfDead(agentId, probe),
     )
     this.unwatch = core.onAppend(row => this.onRow(row))
-    this.teleporter = new Teleport(core, this, options.countdownMs, options.argvReader)
+    this.teleporter = new Teleport(core, this, options.countdownMs, options.argvReader, options.seatTeleport)
     this.shadow = new LifecycleShadow(options.ledger)
     this.staleAtBoot = staleAtStart(core.agents.roster())
     for (const agentId of [...this.staleAtBoot.keys()]) this.reapAtStart(agentId)

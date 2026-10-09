@@ -10,6 +10,7 @@ import {
 } from '../../paths.js'
 import type { QueueItem } from '../../protocol.js'
 import { activeWorkRoot } from '../active-work.js'
+import { appendSeatLog } from '../seats/io.js'
 import { seatMergedLog } from '../seats/dispatch-log.js'
 import { seatJournal } from '../seats/journal.js'
 import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
@@ -44,6 +45,7 @@ import {
   worktreeUse,
   type Roster,
 } from './observe.js'
+import { dueReasons, type NoDispatchReason, type SeatOutcome } from './no-dispatch.js'
 import { DEFAULT_NAME_PREFIX, plan, type Capacity, type Dispatch, type PlanInputs } from './plan.js'
 import { branchOf, diffSummary } from './progress.js'
 import { defaultAutonomyRoot } from './policy.js'
@@ -194,6 +196,7 @@ async function runTick(config: TickConfig, opts: TickOptions): Promise<string[]>
       ...describeDecider(config, decider),
       ...describeTriage(decided.triage),
       ...describeSeatEvents(diff, now),
+      ...decided.reasons.map(r => `would log for seat ${r.seat}: ${r.text}`),
       ...notes,
     ]
   }
@@ -206,10 +209,11 @@ async function actOn(
   config: TickConfig,
   opts: TickOptions,
   ledger: Ledger,
-  { steps, decider, triage, failures, unchecked, seatStates, skippedSeats, serviceCheck }: Decided,
+  { steps, decider, triage, failures, unchecked, seatStates, skippedSeats, serviceCheck, reasons }: Decided,
   now: Date,
 ): Promise<string[]> {
   const log = opts.log ?? logEvent
+  logReasons(defaultAutonomyRoot(opts.root), reasons, now, log)
   for (const failure of failures) log('burndown_collision_reader_failed', { ...failure })
   for (const initiative of unchecked) log('burndown_collision_skipped', { initiative, reason: 'no repo' })
   for (const skipped of skippedSeats) log('burndown_seat_skipped', { ...skipped })
@@ -242,6 +246,22 @@ async function actOn(
     ...(serviceCheck === undefined ? {} : { serviceCheck }),
   })
   return [...executed.lines, ...woken.lines, ...leaks.lines, ...told.lines]
+}
+
+/** Each seat's "dispatched nothing" line; a write that fails is an event, and the tick carries on. */
+function logReasons(
+  autonomyRoot: string,
+  reasons: readonly NoDispatchReason[],
+  now: Date,
+  log: NonNullable<TickOptions['log']>,
+): void {
+  for (const { seat, text } of reasons) {
+    try {
+      appendSeatLog(autonomyRoot, seat, now, text)
+    } catch (err) {
+      log('burndown_seat_log_failed', { seat, reason: err instanceof Error ? err.message : String(err) })
+    }
+  }
 }
 
 /** The tick's releases and its brake notice, each logged once. */
@@ -315,6 +335,8 @@ interface Decided {
   skippedSeats: SkippedSeat[]
   /** Seats mode only: this tick's service-check read, persisted for the next tick's two-read rule. */
   serviceCheck?: PersistedRead
+  /** Seats mode only: the "dispatched nothing" lines due this tick (CC-859). */
+  reasons: NoDispatchReason[]
 }
 
 /** Any row not retired may still run, and so may a name missing from a partial roster. */
@@ -424,16 +446,18 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const unchecked = world.initiatives
     .filter(i => i.state === 'focused' && i.autonomy !== undefined && i.autonomy.repo === undefined)
     .map(i => i.slug)
-  const seatStates = seats === undefined ? undefined : samplesAfter(ledger, seats)
+  const marked =
+    seats === undefined ? undefined : dueReasons(planned.outcomes, samplesAfter(ledger, seats), now)
   return {
     steps,
+    reasons: marked?.due ?? [],
     notes,
     failures,
     unchecked,
     skippedSeats: planned.skipped,
     triage: triage.plan,
     ...(decider === undefined ? {} : { decider }),
-    ...(seatStates === undefined ? {} : { seatStates }),
+    ...(marked === undefined ? {} : { seatStates: marked.states }),
     ...(service === undefined ? {} : { serviceCheck: service.read }),
   }
 }
@@ -465,6 +489,7 @@ interface Planned {
   /** Task files seats mode read beyond the world's, for the dispatch briefs. */
   tasks: Map<string, Task[]>
   skippedTasks: SeatsPlan['skippedTasks']
+  outcomes: SeatOutcome[]
 }
 
 /** Without seats, `plan()` over the briefs' autonomy blocks; with seats, `planSeat` for each loaded seat. */
@@ -477,7 +502,7 @@ function planNew(
   flow: Pick<SeatPlanDeps, 'lineStop'>,
 ): Planned {
   if (seats === undefined)
-    return { ...plan({ ...world, ...work }), skipped: [], tasks: new Map(), skippedTasks: [] }
+    return { ...plan({ ...world, ...work }), skipped: [], tasks: new Map(), skippedTasks: [], outcomes: [] }
   const cliVersion = installedClaudeVersion()
   const planned = planSeats(
     seats.loaded,
@@ -490,7 +515,12 @@ function planNew(
     },
     root,
   )
-  return { ...planned, skipped: [...seats.skipped, ...planned.skipped] }
+  const unloaded = seats.skipped.map(s => ({ seat: s.seat, dispatched: 0, refusals: [], skipped: s.reason }))
+  return {
+    ...planned,
+    skipped: [...seats.skipped, ...planned.skipped],
+    outcomes: [...unloaded, ...planned.outcomes],
+  }
 }
 
 const samplesAfter = (ledger: Ledger, seats: LoadedSeats): Record<string, SeatState> => ({

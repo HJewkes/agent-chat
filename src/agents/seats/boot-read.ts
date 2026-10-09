@@ -68,16 +68,70 @@ export const LOG_CAP = 1_500
 
 const TELEPORT_HEADING = /^## State at teleport (\d+)\b/
 
-/** The highest-numbered `## State at teleport N` section to the next heading; the later one wins a tie. */
-export function latestTeleportState(log: string): string | undefined {
-  const lines = log.split('\n')
+/** The line index and number of the highest-numbered `## State at teleport N` heading; the later one wins a tie. */
+export function latestTeleportHeading(lines: string[]): { at: number; n: number } | undefined {
   let best: { at: number; n: number } | undefined
   lines.forEach((line, at) => {
     const n = Number(TELEPORT_HEADING.exec(line)?.[1] ?? NaN)
     if (Number.isFinite(n) && (best === undefined || n >= best.n)) best = { at, n }
   })
-  return best === undefined ? undefined : sectionFrom(lines, best.at, QUEUE_STOP)
+  return best
 }
+
+/** CC-863: the N of the log's highest `## State at teleport N`, or undefined when it has none. */
+export const latestTeleportNumber = (log: string): number | undefined =>
+  latestTeleportHeading(log.split('\n'))?.n
+
+/** CC-863: ends the heading of a block agent-chat wrote, so it is never taken for the seat's own. */
+export const GENERATED_MARK = '(agent-chat)'
+
+/**
+ * CC-863: seats write the cursor bare, after a clock, as a bullet, inside a `tick:` line, and with a
+ * note after it (`(supersedes <id> above)`). A broker msg_id is 8 hex characters (`newMsgId`).
+ */
+const CURSOR = /\binbox handled through ([0-9a-f]{8})\b/gi
+const CLOCK_LINE = /^(\d\d):(\d\d)\s/
+
+export interface TeleportBlock {
+  n: number
+  /** The heading ends with `GENERATED_MARK`. */
+  generated: boolean
+  section: string
+  /** The last msg_id the section names as handled, since a later line supersedes an earlier one. */
+  cursor: string | undefined
+  /** `HH:MM` of the nearest clock line above the heading, as minutes after midnight. */
+  clockAbove: number | undefined
+}
+
+/** The last `inbox handled through <msg_id>` in `text`, in any of the forms seats write it. */
+export const handledThrough = (text: string): string | undefined =>
+  [...text.matchAll(CURSOR)].at(-1)?.[1]?.toLowerCase()
+
+function clockAbove(lines: string[], at: number): number | undefined {
+  for (let i = at - 1; i >= 0; i--) {
+    const m = CLOCK_LINE.exec(lines[i] as string)
+    if (m) return Number(m[1]) * 60 + Number(m[2])
+  }
+  return undefined
+}
+
+/** CC-863: the log's latest `State at teleport` block, read the one way teleport and `seats boot` both use. */
+export function readTeleportBlock(log: string): TeleportBlock | undefined {
+  const lines = log.split('\n')
+  const best = latestTeleportHeading(lines)
+  if (best === undefined) return undefined
+  const section = sectionFrom(lines, best.at, QUEUE_STOP)
+  return {
+    n: best.n,
+    generated: (lines[best.at] as string).trimEnd().endsWith(GENERATED_MARK),
+    section,
+    cursor: handledThrough(section),
+    clockAbove: clockAbove(lines, best.at),
+  }
+}
+
+/** The highest-numbered `## State at teleport N` section to the next heading; the later one wins a tie. */
+export const latestTeleportState = (log: string): string | undefined => readTeleportBlock(log)?.section
 
 /** `text` cut to at most `cap` characters at a line end where one exists, with a note on what was cut. */
 export function capText(text: string, cap: number): string {
@@ -94,16 +148,19 @@ export interface LogSection {
   file: string
   found: boolean
   section: string | null
+  /** CC-863: the msg_id the section names as handled, which `seats boot` reads the inbox after by default. */
+  cursor: string | null
 }
 
 export function readLogSection(root: string, seat: string, now: Date): LogSection {
   const file = seatLogPath(root, seat, now)
   const text = readText(file)
-  const section = text === undefined ? undefined : latestTeleportState(text)
+  const block = text === undefined ? undefined : readTeleportBlock(text)
   return {
     file,
     found: text !== undefined,
-    section: section === undefined ? null : capText(section, LOG_CAP),
+    section: block === undefined ? null : capText(block.section, LOG_CAP),
+    cursor: block?.cursor ?? null,
   }
 }
 
