@@ -16,7 +16,18 @@ import {
 import type { Allocation } from './isolation/index.js'
 import { loadProfile, recordedRole } from './profiles.js'
 import { resolveSurface } from './surface-resolution.js'
-import { appendixFacts, renderAppendix, reportsSinceWrap, type WrapGap } from './teleport-appendix.js'
+import { shepherdRowsAsync } from './burndown/shepherd.js'
+import { latestTeleportSection } from './seats/boot-read.js'
+import { defaultAutonomyRoot } from './seats/io.js'
+import { renderTeleportHandoff } from './seats/relaunch-handoff.js'
+import { writeTeleportState, type SeatTeleportDeps } from './seats/teleport-state.js'
+import {
+  appendixFacts,
+  renderAppendix,
+  reportsSinceWrap,
+  runningSpawnedBy,
+  type WrapGap,
+} from './teleport-appendix.js'
 import { observedModel } from './transcript.js'
 import type { AgentProfile } from './types.js'
 
@@ -194,6 +205,8 @@ interface Pending {
   since: number
   /** The predecessor's Claude session id, which names its active-work session record. */
   sessionId: string
+  /** CC-863: the newest inbox row when it asked to teleport, which a seat's State block names as handled. */
+  inboxThrough: string | undefined
   timer?: NodeJS.Timeout
 }
 
@@ -233,6 +246,15 @@ const isSurfaceName = (value: string): value is SurfaceName =>
 const accountOf = (subject: TeleportSubject, identity: AgentIdentity): string | undefined =>
   subject.configDir ?? identity.configDir
 
+/** The successor waits on this read, so it gets less time than burndown's. */
+const TELEPORT_SHEPHERD_MS = 5_000
+
+export const defaultSeatTeleportDeps = (): SeatTeleportDeps => ({
+  autonomyRoot: defaultAutonomyRoot(),
+  now: () => new Date(),
+  shepherd: () => shepherdRowsAsync(undefined, TELEPORT_SHEPHERD_MS),
+})
+
 export class Teleport {
   private readonly pending = new Map<string, Pending>()
 
@@ -241,6 +263,7 @@ export class Teleport {
     private readonly host: TeleportHost,
     private readonly countdownMs: number = COUNTDOWN_MS,
     private readonly readArgv: ArgvReader = psArgvReader,
+    private readonly seatTeleport: SeatTeleportDeps = defaultSeatTeleportDeps(),
   ) {}
 
   /**
@@ -287,6 +310,7 @@ export class Teleport {
       remoteControl: worker ? false : (req.remoteControl ?? this.predecessorRemoteControl(subject)),
       since: identity.spawnedAt,
       sessionId: identity.sessionId,
+      inboxThrough: this.inboxCursor(subject.name),
       ...(req.reason === undefined ? {} : { reason: req.reason }),
     }
     this.pending.set(subject.agentId, entry)
@@ -315,6 +339,16 @@ export class Teleport {
     entry.timer = setTimeout(() => void this.finish(subject.agentId), this.countdownMs)
     entry.timer.unref?.()
     return { ...result, countdownMs: this.countdownMs }
+  }
+
+  /** CC-863: the handoff is already stored when this runs, so a failed read drops the cursor and never the teleport. */
+  private inboxCursor(name: string): string | undefined {
+    try {
+      return this.core.events.inboxFor(name, 1)[0]?.msgId
+    } catch (err) {
+      logEvent('teleport_inbox_cursor_failed', { name, error: (err as Error).message })
+      return undefined
+    }
   }
 
   /** Read now, while the predecessor is still running: once it ends there is no argv left to read. */
@@ -509,7 +543,7 @@ export class Teleport {
 
     try {
       const paneFree = subject.anchor !== undefined && (await this.waitForPaneFree(subject))
-      await this.host.relaunch(this.relaunchFor(entry, paneFree))
+      await this.host.relaunch(this.relaunchFor(entry, paneFree, await this.briefFor(entry)))
       logEvent('teleport_completed', { name: subject.name, from: agentId, to: entry.descendantId })
     } catch (err) {
       if (err instanceof SuccessorNotStarted) return
@@ -530,7 +564,7 @@ export class Teleport {
   }
 
   /** `paneFree` false keeps the anchor but opens beside it: typing into a pane the predecessor still holds reaches its prompt. */
-  private relaunchFor(entry: Pending, paneFree: boolean): RelaunchInput {
+  private relaunchFor(entry: Pending, paneFree: boolean, brief: string): RelaunchInput {
     const { subject } = entry
     const previous = this.core.agents.spawnMeta(subject.agentId)
     const generation = Number.parseInt(previous.generation ?? '1', 10)
@@ -542,7 +576,7 @@ export class Teleport {
       agentId: entry.descendantId,
       name: subject.name,
       profile: entry.profile,
-      brief: this.briefFor(entry),
+      brief,
       cwd: entry.inherited?.allocation.cwd ?? subject.cwd,
       surface: entry.surface,
       preamble: TELEPORT_PREAMBLE,
@@ -575,8 +609,10 @@ export class Teleport {
    * CC-524: the handoff, then what the broker knows that the handoff may have left out.
    * This runs after the predecessor stood down, so a failed read costs the appendix and never the successor.
    */
-  private briefFor(entry: Pending): string {
-    const handoff = entry.reason === 'park' ? `${PARK_LINE}\n\n${entry.handoff}` : entry.handoff
+  private async briefFor(entry: Pending): Promise<string> {
+    const own = entry.reason === 'park' ? `${PARK_LINE}\n\n${entry.handoff}` : entry.handoff
+    const seat = await this.seatHandoff(entry)
+    const handoff = seat === undefined ? own : `${seat}\n\nYour predecessor's handoff:\n\n${own}`
     try {
       const facts = appendixFacts(this.core.agents, this.core.events, {
         name: entry.subject.name,
@@ -587,6 +623,31 @@ export class Teleport {
     } catch (err) {
       logEvent('teleport_appendix_failed', { name: entry.subject.name, error: (err as Error).message })
       return handoff
+    }
+  }
+
+  /**
+   * CC-863: for a seat, append its `State at teleport N` (or keep the one it wrote this session)
+   * and render the handoff that boots from it. Undefined for any other name, and on a failed
+   * write, which costs the block and never the successor.
+   */
+  private async seatHandoff(entry: Pending): Promise<string | undefined> {
+    const seat = entry.subject.name
+    try {
+      const written = await writeTeleportState(this.seatTeleport, {
+        seat,
+        running: runningSpawnedBy(this.core.agents, seat),
+        inboxThrough: entry.inboxThrough,
+        sessionStart: entry.since,
+      })
+      if (written === undefined) return undefined
+      const { autonomyRoot: root, now } = this.seatTeleport
+      const found = latestTeleportSection(root, seat, now())
+      const { after, cursorMissing } = written
+      return renderTeleportHandoff({ root, seat, found, after, cursorMissing })
+    } catch (err) {
+      logEvent('teleport_seat_state_failed', { name: seat, error: (err as Error).message })
+      return undefined
     }
   }
 

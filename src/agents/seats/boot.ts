@@ -44,11 +44,14 @@ export async function seatBoot(deps: BootDeps, seat: string, after?: string): Pr
   if (!isSeatName(seat)) throw new Error(`${seat} is not a seat name`)
   const plain = (err: unknown): string => plainError(err, [deps.autonomyRoot, deps.homeDir])
   const now = deps.now()
+  const log = readLogSection(deps.autonomyRoot, seat, now)
+  // CC-863: without --after, the State block's own cursor, so a successor never falls back to the last few.
+  const cutoff = after ?? log.cursor ?? undefined
   let inbox: BootInbox
   try {
-    inbox = readBootInbox(deps.eventsDb, seat, after)
+    inbox = readBootInbox(deps.eventsDb, seat, cutoff)
   } catch (err) {
-    inbox = { after: after ?? null, warning: null, messages: [], error: plain(err) }
+    inbox = { after: cutoff ?? null, warning: null, messages: [], error: plain(err) }
   }
   let status: SeatBoot['status']
   try {
@@ -61,7 +64,7 @@ export async function seatBoot(deps: BootDeps, seat: string, after?: string): Pr
     at: now.toISOString(),
     seatFile: readSeatDigest(deps.autonomyRoot, seat),
     queue: readQueueSections(deps.autonomyRoot, seat),
-    log: readLogSection(deps.autonomyRoot, seat, now),
+    log,
     inbox,
     status,
   }
