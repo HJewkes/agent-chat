@@ -247,6 +247,25 @@ describe('the inbox section', () => {
     expect(inboxLines(await boot('m2'))).toEqual(['inbox: none after m2'])
   })
 
+  it('reads after the State block’s own cursor when no --after is given (CC-863)', async () => {
+    events.append({ kind: 'message', actor: 'peer', target: SEAT, msgId: '0000aa01', body: 'handled' })
+    sendMessages(7)
+    writeLog('09:00 started\n## State at teleport 1\n- sc-one: task A\n- Inbox handled through 0000aa01.\n')
+
+    const lines = await boot()
+
+    expect(lines.find(line => line.startsWith('== inbox'))).toBe('== inbox after 0000aa01')
+    expect(inboxLines(lines).map(line => line.slice(0, 4))).toEqual([
+      '[m1]',
+      '[m2]',
+      '[m3]',
+      '[m4]',
+      '[m5]',
+      '[m6]',
+      '[m7]',
+    ])
+  })
+
   it('warns on an unknown msg_id and falls back to the last five', async () => {
     sendMessages(7)
 
