@@ -266,13 +266,14 @@ export interface Bake {
   stamp: string
 }
 
+// $2 is the push URL: the view repo has no such remote, so the scanner lists it to exclude what the remote already has (CC-906).
 // The baked node runs the scanner directly, skipping its env shebang, only while the verdict holds.
 const scanInvocation = (settings: string, bake: Bake | undefined): string => {
-  const onPath = `clean ${settings} titan-egress-scan pre-push "$1"`
+  const onPath = `clean ${settings} titan-egress-scan pre-push "$1" "$2"`
   if (bake === undefined) return `${onPath} < "$tmp/scan-refs" 2> "$errs"`
   const node = shQuote(bake.facts.node)
   return `if [ -n "$fresh" ] && [ -f ${node} ] && [ -x ${node} ]; then
-      clean ${settings} ${node} ${shQuote(bake.facts.scanner)} pre-push "$1"
+      clean ${settings} ${node} ${shQuote(bake.facts.scanner)} pre-push "$1" "$2"
     else
       ${onPath}
     fi < "$tmp/scan-refs" 2> "$errs"`
