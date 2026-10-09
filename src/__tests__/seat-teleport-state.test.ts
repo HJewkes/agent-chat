@@ -102,7 +102,7 @@ describe('renderTeleportState', () => {
       n: 3,
       running,
       shepherd: [row({ held: { reason: 'g10-review:\nopus' } })],
-      inboxThrough: 'msg-42',
+      inboxThrough: '0000aa42',
     })
     expect(text).toBe(
       [
@@ -110,7 +110,7 @@ describe('renderTeleportState', () => {
         '- al-fix-7 (profile implementer, live)',
         '- al-plan-2 (profile planner, detached)',
         '- Shepherd example/widgets#7 demo/D-7 review, held g10-review: opus, at abcdef01 (al-fix-7)',
-        'Inbox handled through msg-42.',
+        'Inbox handled through 0000aa42.',
       ].join('\n'),
     )
   })
@@ -132,10 +132,10 @@ describe('renderTeleportState', () => {
   })
 
   it('says Shepherd could not be read, and still lists the roster', () => {
-    const text = renderTeleportState({ n: 2, running, shepherd: undefined, inboxThrough: 'msg-1' })
+    const text = renderTeleportState({ n: 2, running, shepherd: undefined, inboxThrough: '0000aa01' })
     expect(text).toContain('- al-fix-7 (profile implementer, live)')
     expect(text).toContain('- Shepherd unreachable at teleport; its runs are not listed.')
-    expect(text.endsWith('Inbox handled through msg-1.')).toBe(true)
+    expect(text.endsWith('Inbox handled through 0000aa01.')).toBe(true)
   })
 })
 
@@ -146,7 +146,7 @@ describe('writeTeleportState', () => {
       {
         seat: 'scout',
         running,
-        inboxThrough: 'msg-1',
+        inboxThrough: '0000aa01',
         sessionStart: SESSION_START,
       },
     )
@@ -163,12 +163,12 @@ describe('writeTeleportState', () => {
       {
         seat: 'alpha',
         running,
-        inboxThrough: 'msg-9',
+        inboxThrough: '0000aa09',
         sessionStart: SESSION_START,
       },
     )
 
-    expect(written).toMatchObject({ n: 5, written: true, after: 'msg-9' })
+    expect(written).toMatchObject({ n: 5, written: true, after: '0000aa09', cursorMissing: false })
     const log = readLog('alpha')
     expect(
       log.startsWith(
@@ -184,41 +184,99 @@ describe('writeTeleportState', () => {
       deps(async () => {
         throw new Error('spawn titan-factory ENOENT')
       }),
-      { seat: 'alpha', running, inboxThrough: 'msg-9', sessionStart: SESSION_START },
+      { seat: 'alpha', running, inboxThrough: '0000aa09', sessionStart: SESSION_START },
     )
     expect(written?.n).toBe(1)
     const log = readLog('alpha')
     expect(log).toContain('- al-plan-2 (profile planner, detached)')
     expect(log).toContain('Shepherd unreachable at teleport')
-    expect(log).toContain('Inbox handled through msg-9.')
+    expect(log).toContain('Inbox handled through 0000aa09.')
   })
 
   it('keeps the block the seat wrote this session, and boots after its own cursor', async () => {
     seatFile('alpha')
     const seatBlock =
-      '09:10 writing state\n## State at teleport 7\n- al-fix-7 mid-review\nInbox handled through msg-5.\n'
+      '09:10 writing state\n## State at teleport 7\n- al-fix-7 mid-review\nInbox handled through 0000aa05.\n'
     writeLog('alpha', seatBlock)
 
     const written = await writeTeleportState(
       deps(async () => [row({})]),
-      { seat: 'alpha', running, inboxThrough: 'msg-9', sessionStart: SESSION_START },
+      { seat: 'alpha', running, inboxThrough: '0000aa09', sessionStart: SESSION_START },
     )
 
-    expect(written).toEqual({ file: expect.any(String), n: 7, written: false, after: 'msg-5' })
+    expect(written).toEqual({
+      file: expect.any(String),
+      n: 7,
+      written: false,
+      after: '0000aa05',
+      cursorMissing: false,
+    })
     expect(readLog('alpha')).toBe(seatBlock)
     expect(readLogSection(root, 'alpha', NOW).section).toContain('- al-fix-7 mid-review')
   })
 
-  it('supersedes its own earlier block, whatever its time', async () => {
+  it('reads the seat’s cursor when it writes it as a bullet', async () => {
     seatFile('alpha')
-    writeLog('alpha', '09:10 x\n## State at teleport 2 (agent-chat)\n- old\nInbox handled through msg-1.\n')
+    writeLog(
+      'alpha',
+      '09:10 writing state\n## State at teleport 7\n- al-fix-7 mid-review\n- Inbox handled through 0000aa05.\n',
+    )
 
     const written = await writeTeleportState(
       deps(async () => []),
-      { seat: 'alpha', running, inboxThrough: 'msg-9', sessionStart: SESSION_START },
+      { seat: 'alpha', running, inboxThrough: '0000aa09', sessionStart: SESSION_START },
     )
 
-    expect(written).toMatchObject({ n: 3, written: true, after: 'msg-9' })
+    expect(written).toMatchObject({ written: false, after: '0000aa05', cursorMissing: false })
+  })
+
+  it('keeps a seat block with no readable cursor, and says the cursor is missing', async () => {
+    seatFile('alpha')
+    writeLog(
+      'alpha',
+      '09:10 writing state\n## State at teleport 7\n- al-fix-7 mid-review\nInbox: read up to the review.\n',
+    )
+
+    const written = await writeTeleportState(
+      deps(async () => []),
+      { seat: 'alpha', running, inboxThrough: '0000aa09', sessionStart: SESSION_START },
+    )
+
+    expect(written).toMatchObject({ written: false, after: undefined, cursorMissing: true })
+  })
+
+  it('keeps the block a seat wrote just before midnight in yesterday’s log', async () => {
+    seatFile('alpha')
+    const dir = path.join(root, 'logs', 'alpha')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(
+      path.join(dir, '2026-10-01.md'),
+      '23:59 state\n## State at teleport 3\nInbox handled through 0000aa05.\n',
+    )
+    const lateStart = new Date(2026, 9, 1, 22, 0).getTime()
+
+    const written = await writeTeleportState(
+      deps(async () => []),
+      { seat: 'alpha', running, inboxThrough: '0000aa09', sessionStart: lateStart },
+    )
+
+    expect(written).toMatchObject({ n: 3, written: false, after: '0000aa05' })
+    expect(fs.existsSync(path.join(dir, `${TODAY}.md`))).toBe(false)
+  })
+
+  it('supersedes its own earlier block, whatever its time', async () => {
+    seatFile('alpha')
+    writeLog(
+      'alpha',
+      '09:10 x\n## State at teleport 2 (agent-chat)\n- old\nInbox handled through 0000aa01.\n',
+    )
+
+    const written = await writeTeleportState(
+      deps(async () => []),
+      { seat: 'alpha', running, inboxThrough: '0000aa09', sessionStart: SESSION_START },
+    )
+
+    expect(written).toMatchObject({ n: 3, written: true, after: '0000aa09' })
   })
 
   it('says why Shepherd runs are missing when the seat file has no prefix', async () => {
@@ -226,7 +284,7 @@ describe('writeTeleportState', () => {
 
     await writeTeleportState(
       deps(async () => [row({})]),
-      { seat: 'alpha', running: [], inboxThrough: 'msg-9', sessionStart: SESSION_START },
+      { seat: 'alpha', running: [], inboxThrough: '0000aa09', sessionStart: SESSION_START },
     )
 
     const log = readLog('alpha')
@@ -253,7 +311,7 @@ describe('the block round-trips through the boot readers', () => {
     )
     const section = readLogSection(root, 'alpha', NOW).section
     const expected = renderTeleportState({ n: 1, running, shepherd: [row({})], inboxThrough: cursor })
-    const after = /^Inbox handled through (\S+)\.$/m.exec(section ?? '')?.[1]
+    const after = readLogSection(root, 'alpha', NOW).cursor ?? undefined
     const inbox = readBootInbox(dbPath, 'alpha', after)
 
     expect(section).toBe(expected)

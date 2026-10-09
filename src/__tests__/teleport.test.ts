@@ -1277,7 +1277,8 @@ describe('a seat teleport (CC-863)', () => {
       .map(n => String(n).padStart(2, '0'))
       .join('-')
     fs.mkdirSync(path.join(root, 'logs', 'alpha'), { recursive: true })
-    const own = `${hhmm} writing state\n## State at teleport 4\n- al-fix-7 mid-review\nInbox handled through ${cursor}.\n`
+    // The bullet form some seats write, which a bare-line reader missed (review of 9507e12).
+    const own = `${hhmm} writing state\n## State at teleport 4\n- al-fix-7 mid-review\n- Inbox handled through ${cursor}.\n`
     fs.writeFileSync(path.join(root, 'logs', 'alpha', `${day}.md`), own)
 
     const result = await supervisor.teleport({
@@ -1290,6 +1291,30 @@ describe('a seat teleport (CC-863)', () => {
     expect(seatLog()).toBe(own)
     expect(stdin).toContain(`\`agent-chat seats boot alpha --after ${cursor}\``)
     expect(stdin).toContain('## State at teleport 4\n- al-fix-7 mid-review')
+  })
+
+  it('tells the successor the cursor is missing rather than booting on the last few messages', async () => {
+    const { agentId } = await seatWithAgent()
+    const clock = new Date()
+    const hhmm = [clock.getHours(), clock.getMinutes()].map(n => String(n).padStart(2, '0')).join(':')
+    const day = [clock.getFullYear(), clock.getMonth() + 1, clock.getDate()]
+      .map(n => String(n).padStart(2, '0'))
+      .join('-')
+    fs.mkdirSync(path.join(root, 'logs', 'alpha'), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, 'logs', 'alpha', `${day}.md`),
+      `${hhmm} s\n## State at teleport 4\n- al-fix-7\n`,
+    )
+
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'alpha' }),
+      handoff: 'mine',
+    })
+    await vi.advanceTimersByTimeAsync(0)
+
+    const stdin = planFor(result.agentId as string).stdin ?? ''
+    expect(stdin).toContain('names no inbox cursor agent-chat could read')
+    expect(stdin).not.toContain('`agent-chat seats boot alpha`')
   })
 
   it('still writes the block, and still teleports, when Shepherd is down', async () => {

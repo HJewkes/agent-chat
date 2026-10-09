@@ -629,7 +629,8 @@ export const seatsBootVerb = defineVerb({
     options: {
       after: {
         long: '--after',
-        description: 'show inbox messages after this msg_id; default the last 5',
+        description:
+          "show inbox messages after this msg_id; default the State block's own cursor, else the last 5",
       },
       json: {
         long: '--json',

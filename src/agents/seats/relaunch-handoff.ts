@@ -18,6 +18,8 @@ export interface HandoffInput extends SeatHandoffInput {
 export interface TeleportHandoffInput extends SeatHandoffInput {
   /** The msg_id the State block names as handled through. */
   after: string | undefined
+  /** The seat's own block was kept but names no cursor that could be read. */
+  cursorMissing?: boolean
 }
 
 /** Charter section 11 step 3, opened by `why` and capped so the first turn stays bounded. */
@@ -26,7 +28,7 @@ function renderSeatHandoff(why: string, boot: string, { root, seat, found }: Sea
     why,
     `Run the autonomy charter at @${root}/charter.md as seat ${seat}. Read @${root}/seats/${seat}.md`,
     `and @${root}/queues/${seat}.md, then the 'State at teleport N' below only. Recreate the`,
-    `heartbeat first. \`${boot}\` prints the same digest with your inbox.`,
+    `heartbeat first. ${boot}`,
     `Latest State at teleport${found === undefined ? '' : ` (from logs/${seat}/${found.day}.md)`}:`,
     found?.section ?? NO_TELEPORT_STATE,
   ].join('\n')
@@ -37,7 +39,7 @@ function renderSeatHandoff(why: string, boot: string, { root, seat, found }: Sea
 export const renderRelaunchHandoff = (input: HandoffInput): string =>
   renderSeatHandoff(
     `Watchdog relaunch: ${input.seat} had no heartbeat for ${input.quietMinutes} min and no live session.`,
-    `agent-chat seats boot ${input.seat}`,
+    `\`agent-chat seats boot ${input.seat}\` prints the same digest with your inbox.`,
     input,
   )
 
@@ -46,9 +48,19 @@ export const renderTeleportHandoff = (input: TeleportHandoffInput): string =>
   renderSeatHandoff(
     `Teleport: ${input.seat} handed off and ended; you are its successor. agent-chat wrote this ` +
       'section and the State block below from the roster, Shepherd and the broker inbox.',
-    `agent-chat seats boot ${input.seat}${input.after === undefined ? '' : ` --after ${input.after}`}`,
+    teleportBoot(input),
     input,
   )
+
+function teleportBoot({ seat, after, cursorMissing }: TeleportHandoffInput): string {
+  if (cursorMissing)
+    return (
+      `The State block below names no inbox cursor agent-chat could read: find the last message ` +
+      `it handled there and run \`agent-chat seats boot ${seat} --after <msg_id>\` for your inbox.`
+    )
+  const flag = after === undefined ? '' : ` --after ${after}`
+  return `\`agent-chat seats boot ${seat}${flag}\` prints the same digest with your inbox.`
+}
 
 /** The handoff for `seat`, reading its journals under `root`. */
 export function buildRelaunchHandoff(root: string, seat: string, quietMinutes: number, now: Date): string {

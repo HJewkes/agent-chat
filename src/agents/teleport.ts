@@ -643,7 +643,8 @@ export class Teleport {
       if (written === undefined) return undefined
       const { autonomyRoot: root, now } = this.seatTeleport
       const found = latestTeleportSection(root, seat, now())
-      return renderTeleportHandoff({ root, seat, found, after: written.after })
+      const { after, cursorMissing } = written
+      return renderTeleportHandoff({ root, seat, found, after, cursorMissing })
     } catch (err) {
       logEvent('teleport_seat_state_failed', { name: seat, error: (err as Error).message })
       return undefined
