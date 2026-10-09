@@ -31,6 +31,12 @@ export function installedClaudeVersion(): string | undefined {
   }
 }
 
+/** Fails closed on a release nobody has read the trust rule of, and names the step that would admit it. */
+const unverifiedVersionRefusal = (cliVersion: string): string =>
+  `installed Claude Code ${cliVersion} is not one of ${Object.keys(VERIFIED_TRUST_RULE_VERSIONS).join(', ')}, the releases whose trust rule this gate reproduces. ` +
+  `Owner step: run \`node scripts/verify-trust-rule.mjs ${cliVersion}\`, compare its output with (a) to (d) in docs/trust-rule-versions.md, ` +
+  'and if all four match add the version to VERIFIED_TRUST_RULE_VERSIONS in src/agents/trust.ts with a table row'
+
 export function trustRefusal(
   repo: string,
   cwd: string,
@@ -42,8 +48,7 @@ export function trustRefusal(
     return 'CLAUDE_CODE_CUSTOM_OAUTH_URL is set, so Claude Code reads a differently named trust config file than this gate does'
   if (cliVersion === undefined)
     return 'cannot determine the installed Claude Code version, so its trust rule is unknown'
-  if (!Object.hasOwn(VERIFIED_TRUST_RULE_VERSIONS, cliVersion))
-    return `installed Claude Code ${cliVersion} differs from ${Object.keys(VERIFIED_TRUST_RULE_VERSIONS).join(', ')}, the releases whose trust rule this gate reproduces`
+  if (!Object.hasOwn(VERIFIED_TRUST_RULE_VERSIONS, cliVersion)) return unverifiedVersionRefusal(cliVersion)
   const keys = plannedWorktreeTrustKeys(repo, cwd)
   if (keys === undefined) return `${repo} is not inside a git repository, so no worktree can be cut there`
   const file = claudeConfigPath(configDir)
