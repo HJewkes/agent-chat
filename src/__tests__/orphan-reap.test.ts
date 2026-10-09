@@ -81,6 +81,17 @@ describe('reaping the processes an exiting run-agent leaves behind', () => {
     expect(t.signals).toEqual([])
   })
 
+  it("leaves the broker and other agents' launchers that merely inherited the identity", () => {
+    const t = table({
+      100: { env: launch('a1', 100), command: 'agent-chat run-agent a1' },
+      900: { env: launch('a1', 100), command: 'node /x/dist/cli.js broker', ppid: 1 },
+      901: { env: launch('a1', 100), command: 'node /x/dist/cli.js run-agent b', ppid: 1 },
+      902: { env: launch('a1', 100), command: 'yes', ppid: 1 },
+    })
+    reapOwnLaunch('a1', 100, { table: t, log: () => undefined, ...noSleep })
+    expect(t.pids().sort()).toEqual([100, 900, 901])
+  })
+
   it('sends TERM first, then KILL only to what survived, and reports what outlives both', () => {
     const t = table({
       700: { env: launch('a1', 100), command: 'polite' },
@@ -160,6 +171,16 @@ describe('the periodic orphan sweep', () => {
     })
     await run(t, [row('a1', 'retired', 0)])
     expect(t.signals).toEqual([])
+  })
+
+  it("never sweeps the broker or a launcher that inherited a finished agent's identity", async () => {
+    const t = table({
+      1: { env: launch('a1', 50), command: 'node /x/dist/cli.js broker' },
+      2: { env: launch('a1', 50), command: 'node /x/dist/cli.js run-agent b' },
+      3: { env: launch('a1', 50), command: 'yes' },
+    })
+    await run(t, [row('a1', 'retired', 0)])
+    expect(t.signals).toEqual([[3, 'SIGTERM']])
   })
 
   it('skips unreadable environs and processes without the variable', async () => {

@@ -97,7 +97,7 @@ export const procTable = (): ProcessTable => ({
 export const isLauncherOf = (command: string, agentId: string): boolean =>
   command.split(/\s+/).some((word, i, words) => word === 'run-agent' && words[i + 1] === agentId)
 
-/** Never the caller, its ancestors, or an MCP server (`<node> <cli> mcp`) that the agent's claude started. */
+/** Never the caller, its ancestors, or agent-chat's own infrastructure. */
 function protectedPids(table: ProcessTable, self: number): Set<number> {
   const chain = new Set<number>([self])
   for (
@@ -110,7 +110,18 @@ function protectedPids(table: ProcessTable, self: number): Set<number> {
   return chain
 }
 
-const isMcpServer = (command: string): boolean => command.split(/\s+/).slice(1).includes('mcp')
+/**
+ * The environment says which launch a process descends from, not that it is a disposable stray:
+ * the broker and every `run-agent` inherit the identity of whichever agent started them.
+ * So agent-chat's own broker, launchers and MCP servers are never targets. Loose on purpose:
+ * a stray that merely mentions one of these words is left alone.
+ */
+const INFRASTRUCTURE_VERBS = new Set(['broker', 'run-agent', 'mcp'])
+const isAgentChatInfrastructure = (command: string): boolean =>
+  command
+    .split(/\s+/)
+    .slice(1)
+    .some(word => INFRASTRUCTURE_VERBS.has(word))
 
 /** Processes whose environment satisfies `match`, minus every one the safety rules protect. */
 export function findTargets(table: ProcessTable, match: LaunchMatch, self = process.pid): Target[] {
@@ -121,7 +132,7 @@ export function findTargets(table: ProcessTable, match: LaunchMatch, self = proc
     const env = table.environ(pid)
     if (env === undefined || !match(env)) continue
     const command = table.command(pid)
-    if (isMcpServer(command)) continue
+    if (isAgentChatInfrastructure(command)) continue
     targets.push({ pid, command, agentId: env[AGENT_ID_ENV] ?? '' })
   }
   return targets
