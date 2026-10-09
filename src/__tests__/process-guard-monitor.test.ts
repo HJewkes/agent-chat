@@ -95,6 +95,20 @@ describe('process guard monitor (CC-495)', () => {
     expect(d.kill).not.toHaveBeenCalled()
   })
 
+  it('flipping log to kill kills a runaway already recorded on the next poll', async () => {
+    let mode: ProcessGuardMode = 'log'
+    const d = deps('log', { mode: () => mode })
+    const stop = startProcessGuard(d, TICK)
+
+    await vi.advanceTimersByTimeAsync(2 * TICK)
+    expect(events(d, 'process_over_limit')).toHaveLength(1)
+    mode = 'kill'
+    await vi.advanceTimersByTimeAsync(TICK)
+    stop()
+
+    expect(d.kill).toHaveBeenCalledWith(400)
+  })
+
   it('mode kill sends SIGKILL once and logs process_killed', async () => {
     const d = deps('kill')
 

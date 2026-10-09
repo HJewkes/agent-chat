@@ -6,7 +6,8 @@ import { runawayVictims, type ProcessGuardMode, type Victim } from './process-gu
  * CC-495: polls the process table and stops a runaway agent-descended process before it takes the
  * machine into swap. Kills only in `kill` mode, which the owner sets in config; `log` (the default)
  * records `process_over_limit` and signals nothing. The mode and limit are read every tick, so
- * flipping the mode needs no broker restart.
+ * flipping the mode needs no broker restart. Every descendant of a `claude` process counts, owner
+ * sessions included, which is why killing is opt-in: see docs/process-guard.md.
  */
 
 export const PROCESS_GUARD_INTERVAL_MS = 2_000
@@ -30,7 +31,9 @@ export interface GuardDeps {
 
 export interface GuardState {
   lastReaderFailureAt?: number
-  /** Pid to the time it may next be acted on. */
+  /** The mode the quiet windows were set under. */
+  lastMode?: ProcessGuardMode
+  /** Pid to the time it may next be acted on. Only ever suppresses: victims come from the fresh table. */
   quietUntil: Map<number, number>
 }
 
@@ -47,13 +50,20 @@ export async function guardOnce(deps: GuardDeps, state: GuardState): Promise<voi
   }
   const now = deps.now()
   const limitBytes = deps.limitBytes()
-  for (const [pid, until] of state.quietUntil) if (until <= now) state.quietUntil.delete(pid)
+  forgetStale(state, mode, now)
   for (const victim of runawayVictims(rows, limitBytes, { brokerPid: deps.brokerPid, uid: deps.uid })) {
     if (state.quietUntil.has(victim.row.pid)) continue
     const detail = describe(victim, limitBytes, mode)
     const quietFor = act(deps, victim, mode, detail)
     state.quietUntil.set(victim.row.pid, now + quietFor)
   }
+}
+
+/** A log-mode window must not delay the first kill after the owner flips to kill (or back). */
+function forgetStale(state: GuardState, mode: ProcessGuardMode, now: number): void {
+  if (state.lastMode !== mode) state.quietUntil.clear()
+  state.lastMode = mode
+  for (const [pid, until] of state.quietUntil) if (until <= now) state.quietUntil.delete(pid)
 }
 
 /** Kills or only records one victim, logs which, and returns how long to leave the pid alone. */
