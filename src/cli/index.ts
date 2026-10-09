@@ -162,6 +162,13 @@ function addAgentCommands(program: Command): void {
     .option('--mine', 'only agents you spawned (needs a registered session name)')
     .option('--spawner <name>', 'only agents spawned by <name>')
     .option('--prefix <p>', 'only agents whose name starts with <p>')
+    .option(
+      '--state <state>',
+      'only agents showing this status, e.g. running, finished, retired (repeatable)',
+      (value: string, previous: string[] | undefined) => [...(previous ?? []), value],
+    )
+    .option('--name <name>', 'only the agent with exactly this name')
+    .option('--format <format>', 'line: one line per agent (name state profile id cwd)')
     .action(agents.agentLs)
   agent
     // The brief is OPTIONAL in argv only because `--brief-stdin` is the other

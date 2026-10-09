@@ -155,6 +155,10 @@ async function shepherdFacts(
   return { shepherd: rows && seatShepherdRows(rows, prefix) }
 }
 
+/** The seat file for `seat` under `root`, or undefined when `seat` names no seat. */
+export const readSeatFile = (root: string, seat: string): string | undefined =>
+  isSeatName(seat) ? readText(path.join(root, 'seats', `${seat}.md`)) : undefined
+
 /**
  * Appends the block to the seat's log for today, or keeps the one the seat wrote this session.
  * Undefined, writing nothing, when `seat` names no seat file. Throws only when the log cannot be written.
@@ -164,7 +168,7 @@ export async function writeTeleportState(
   input: SeatTeleportInput,
 ): Promise<TeleportStateWritten | undefined> {
   const { autonomyRoot: root } = deps
-  const seatFile = isSeatName(input.seat) ? readText(path.join(root, 'seats', `${input.seat}.md`)) : undefined
+  const seatFile = readSeatFile(root, input.seat)
   if (seatFile === undefined) return undefined
   const file = seatLogPath(root, input.seat, deps.now())
   const kept = seatBlockThisSession(root, input.seat, input.sessionStart)

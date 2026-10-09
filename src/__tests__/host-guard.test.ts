@@ -134,17 +134,15 @@ describe('a teleport the broker cannot complete', () => {
 
   const humanNotices = () => core.events.humanQueue().filter(item => item.text.includes('teleport'))
 
-  it('errors to a caller on another host, notifies the human once, and ends nobody', async () => {
+  /** CC-881 replaced the refusal: the caller's host runs the relaunch, and the broker still signals nobody. */
+  it('hands a caller on another host its own relaunch, and ends nobody', async () => {
     const agentId = adopt(REMOTE)
 
     const result = await teleport(agentId, REMOTE)
-    await vi.advanceTimersByTimeAsync(60_000)
+    await vi.advanceTimersByTimeAsync(120_000)
 
-    expect(result.ok).toBe(false)
-    expect(result.reason).toContain(REMOTE)
-    expect(humanNotices()).toHaveLength(1)
+    expect(result).toMatchObject({ ok: true, remote: true })
     expect(signals).toEqual([])
-    expect(core.events.agentEvents().map(r => r.kind)).not.toContain('agent_handoff')
   })
 
   it('errors when the session reported no host, rather than assuming it is local', async () => {

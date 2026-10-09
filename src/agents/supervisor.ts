@@ -10,6 +10,7 @@ import {
   RESERVED_NAMES,
   type AgentIdentity,
   type IsolationName,
+  type RemoteLaunch,
   type Subscription,
   type SurfaceName,
   type WakeSource,
@@ -137,6 +138,8 @@ import {
   Teleport,
   type InheritedIsolation,
   type RelaunchInput,
+  type RemoteLaunchReport,
+  type RemotePlanReply,
   type TeleportHost,
   type TeleportOutcome,
   type TeleportRequest,
@@ -487,6 +490,8 @@ export interface ResumeRequest {
   requesterAgentId?: string
   /** CC-497: the requester's pane, resolved by the broker from its connection, as for a spawn. */
   anchor?: string
+  /** CC-883: `--remote-control` for a coordinator; a worker resumes without it and is told so. */
+  remoteControl?: boolean
 }
 
 interface Live {
@@ -706,6 +711,8 @@ export interface MachineGuardReaders {
 
 export class Supervisor implements TeleportHost {
   private readonly live = new Map<string, Live>()
+  /** CC-881: a remote successor's session id, held between its plan and its host's report. */
+  private readonly remoteSessions = new Map<string, string>()
   private readonly cwdLister: CwdLister
   /** CC-282: agents mid-park, to the canonical tree being removed. */
   private readonly parking = new Map<string, string>()
@@ -2566,10 +2573,11 @@ export class Supervisor implements TeleportHost {
       identity.sessionId,
     )
     const warnings: string[] = []
+    const relaunch = this.resumeRemoteControl(identity, req, warnings)
     try {
       const reattached = gone ? await this.reattachForResume(identity, gone, req) : undefined
       warnings.push(...(reattached?.warnings ?? []))
-      await this.relaunchResumed(identity, profile, req, transcript, executionId, reattached)
+      await this.relaunchResumed(identity, profile, relaunch, transcript, executionId, reattached)
     } catch (err) {
       this.semaphore.release(identity.agentId)
       const reason = `resume failed: ${(err as Error).message}`
@@ -2582,6 +2590,20 @@ export class Supervisor implements TeleportHost {
         'a visible resume opens on the conversation as it was left; the message was not delivered',
       )
     return { ok: true, agentId: identity.agentId, name, transcript, ...(warnings.length ? { warnings } : {}) }
+  }
+
+  /** CC-883: the watchdog asks for Remote Control without knowing the role, so a worker's resume drops it rather than fails. */
+  private resumeRemoteControl(
+    identity: AgentIdentity,
+    req: ResumeRequest,
+    warnings: string[],
+  ): ResumeRequest {
+    if (!req.remoteControl || recordedRole(this.core.agents.spawnMeta(identity.agentId)) !== 'worker')
+      return req
+    warnings.push(
+      `${identity.name} is a worker, so it resumed without Remote Control; only a coordinator may run with it`,
+    )
+    return { ...req, remoteControl: false }
   }
 
   /**
@@ -2689,6 +2711,7 @@ export class Supervisor implements TeleportHost {
       gitHooksDir: gitHooksDir(),
       ...(agent.configDir ? { configDir: agent.configDir } : {}),
       ...(agent.configDirUnset ? { configDirUnset: true } : {}),
+      ...(req.remoteControl ? { remoteControl: true } : {}),
     })
     writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry(), plan.surface))
     this.core.append({
@@ -2871,6 +2894,15 @@ export class Supervisor implements TeleportHost {
     return this.teleporter.start(req)
   }
 
+  /** CC-881: what a session teleporting from another host waits on: the launch to run there. */
+  teleportPlan(agentId: string): Promise<RemotePlanReply> {
+    return this.teleporter.remotePlan(agentId)
+  }
+
+  teleportLaunched(agentId: string, report: RemoteLaunchReport): { ok: boolean; reason?: string } {
+    return this.teleporter.remoteLaunched(agentId, report)
+  }
+
   /** The human's veto on a countdown. No agent-facing path reaches this. */
   abortTeleport(name: string): { ok: boolean; reason?: string } {
     return this.teleporter.abort(name)
@@ -2951,6 +2983,65 @@ export class Supervisor implements TeleportHost {
         },
       })
 
+    const { plan, sessionId } = this.successorPlan(input, allocation)
+    writeLaunchFiles(plan, buildMcpConfig(input.profile, cliEntry(), plan.surface))
+    this.appendSuccessorSpawn(input, sessionId, allocation, isolation)
+
+    const executionId = this.openSuccessor(input, predecessor)
+    const launch: SuccessorLaunch = { input, plan, predecessor, allocation, isolation }
+    const { handle, retried } = await this.launchSuccessor(launch, executionId)
+    this.trackSuccessor(launch, handle)
+    this.bindExecution(input.agentId, executionId)
+    this.watchSuccessor(launch, handle, retried)
+    this.announceSuccessor(input, sessionId, allocation.cwd)
+  }
+
+  /**
+   * CC-881: the successor of a session on another host. Its row is recorded here, so it
+   * registers into an identity the broker already holds, but its files and surface are the
+   * caller's to make: this host can neither write that host's disk nor open its terminal.
+   */
+  prepareRemoteRelaunch(input: RelaunchInput): RemoteLaunch {
+    const sessionId = Teleport.newSessionId()
+    this.appendSuccessorSpawn(input, sessionId, { cwd: input.cwd }, 'none')
+    this.remoteSessions.set(input.agentId, sessionId)
+    const { env: _env, mcpServers: _servers, warnings: _warnings, ...profile } = input.profile
+    return {
+      agentId: input.agentId,
+      sessionId,
+      name: input.name,
+      profile,
+      brief: input.brief,
+      preamble: input.preamble,
+      surface: input.surface,
+      ...(input.tags?.length ? { tags: input.tags } : {}),
+      ...(input.subscriptions?.length ? { subscriptions: input.subscriptions } : {}),
+      ...(input.remoteControl ? { remoteControl: true } : {}),
+      ...(input.anchor === undefined ? {} : { anchor: input.anchor }),
+    }
+  }
+
+  confirmRemoteRelaunch(input: RelaunchInput): void {
+    this.bindExecution(input.agentId, this.openSuccessor(input, undefined))
+    this.announceSuccessor(input, this.remoteSessions.get(input.agentId) ?? '', input.cwd)
+    this.remoteSessions.delete(input.agentId)
+  }
+
+  releaseRemoteRelaunch(input: RelaunchInput, reason: string): void {
+    this.remoteSessions.delete(input.agentId)
+    this.core.append({
+      kind: 'agent_retired',
+      actor: 'agent-chat',
+      target: input.name,
+      ref: input.agentId,
+      body: `teleport successor not launched on its caller's host: ${reason}`,
+    })
+  }
+
+  private successorPlan(
+    input: RelaunchInput,
+    allocation: Allocation,
+  ): { plan: LaunchPlan; sessionId: string } {
     const sessionId = Teleport.newSessionId()
     const plan = buildLaunchPlan({
       agentId: input.agentId,
@@ -2973,8 +3064,15 @@ export class Supervisor implements TeleportHost {
       ...(input.configDirUnset ? { configDirUnset: true } : {}),
       ...(input.remoteControl ? { remoteControl: true } : {}),
     })
-    writeLaunchFiles(plan, buildMcpConfig(input.profile, cliEntry(), plan.surface))
+    return { plan, sessionId }
+  }
 
+  private appendSuccessorSpawn(
+    input: RelaunchInput,
+    sessionId: string,
+    allocation: Allocation,
+    isolation: IsolationName,
+  ): void {
     this.core.append({
       kind: 'agent_spawned',
       actor: input.name,
@@ -2999,19 +3097,15 @@ export class Supervisor implements TeleportHost {
         ...input.meta,
       },
     })
+  }
 
-    const executionId = this.openSuccessor(input, predecessor)
-    const launch: SuccessorLaunch = { input, plan, predecessor, allocation, isolation }
-    const { handle, retried } = await this.launchSuccessor(launch, executionId)
-    this.trackSuccessor(launch, handle)
-    this.bindExecution(input.agentId, executionId)
-    this.watchSuccessor(launch, handle, retried)
+  private announceSuccessor(input: RelaunchInput, sessionId: string, cwd: string): void {
     logEvent('agent_teleported', { agentId: input.agentId, name: input.name, from: input.inheritedFrom })
     this.fireHook('on_spawn', {
       agentId: input.agentId,
       name: input.name,
       session_id: sessionId,
-      cwd: allocation.cwd,
+      cwd,
       parent: null,
       profile: input.profile.name,
       briefing: null,
