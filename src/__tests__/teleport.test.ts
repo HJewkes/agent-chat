@@ -1332,7 +1332,11 @@ describe('remote control for a coordinator seat (CC-883)', () => {
     fs.mkdirSync(path.join(root, 'seats'))
     fs.writeFileSync(path.join(root, 'seats', 'alpha.md'), '---\nname: alpha\nprefix: al\npool: p1\n---\n')
     supervisor.close()
-    makeSupervisor(undefined, () => 'claude', { autonomyRoot: root, now: () => new Date(), shepherd: async () => undefined })
+    makeSupervisor(undefined, () => 'claude', {
+      autonomyRoot: root,
+      now: () => new Date(),
+      shepherd: async () => undefined,
+    })
   })
 
   async function seatSuccessor(over: Record<string, unknown> = {}, remoteControl?: boolean) {
@@ -1356,7 +1360,9 @@ describe('remote control for a coordinator seat (CC-883)', () => {
   })
 
   it('lets a coordinator seat drop it outright', async () => {
-    expect(await seatSuccessor({ profile: installCoordinatorProfile() }, false)).not.toContain('--remote-control')
+    expect(await seatSuccessor({ profile: installCoordinatorProfile() }, false)).not.toContain(
+      '--remote-control',
+    )
   })
 
   async function remoteLaunch(agentId: string, name: string) {
@@ -1382,13 +1388,18 @@ describe('remote control for a coordinator seat (CC-883)', () => {
 
   async function resumedArgs(over: Record<string, unknown>) {
     const agentId = await spawnAgent({ surface: 'iterm-pane', ...over })
-    const exit = (supervisor as unknown as { recordExit: (id: string, o: unknown) => Promise<void> }).recordExit
+    const exit = (supervisor as unknown as { recordExit: (id: string, o: unknown) => Promise<void> })
+      .recordExit
     await exit.call(supervisor, agentId, { code: 0, signal: null })
     const agent = core.agents.get(agentId)!
     const transcript = transcriptPath(agent.cwd, agent.sessionId, agent.configDir)
     fs.mkdirSync(path.dirname(transcript), { recursive: true })
     fs.writeFileSync(transcript, '{}\n')
-    const resumed = await supervisor.resume(agent.name, { surface: 'iterm-pane', remoteControl: true, source: 'watchdog' })
+    const resumed = await supervisor.resume(agent.name, {
+      surface: 'iterm-pane',
+      remoteControl: true,
+      source: 'watchdog',
+    })
     expect(resumed.ok).toBe(true)
     return { args: planFor(agentId).args, warnings: resumed.warnings ?? [] }
   }

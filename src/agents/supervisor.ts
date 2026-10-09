@@ -490,6 +490,8 @@ export interface ResumeRequest {
   requesterAgentId?: string
   /** CC-497: the requester's pane, resolved by the broker from its connection, as for a spawn. */
   anchor?: string
+  /** CC-883: `--remote-control` for a coordinator; a worker resumes without it and is told so. */
+  remoteControl?: boolean
 }
 
 interface Live {
@@ -2571,10 +2573,11 @@ export class Supervisor implements TeleportHost {
       identity.sessionId,
     )
     const warnings: string[] = []
+    const relaunch = this.resumeRemoteControl(identity, req, warnings)
     try {
       const reattached = gone ? await this.reattachForResume(identity, gone, req) : undefined
       warnings.push(...(reattached?.warnings ?? []))
-      await this.relaunchResumed(identity, profile, req, transcript, executionId, reattached)
+      await this.relaunchResumed(identity, profile, relaunch, transcript, executionId, reattached)
     } catch (err) {
       this.semaphore.release(identity.agentId)
       const reason = `resume failed: ${(err as Error).message}`
@@ -2587,6 +2590,20 @@ export class Supervisor implements TeleportHost {
         'a visible resume opens on the conversation as it was left; the message was not delivered',
       )
     return { ok: true, agentId: identity.agentId, name, transcript, ...(warnings.length ? { warnings } : {}) }
+  }
+
+  /** CC-883: the watchdog asks for Remote Control without knowing the role, so a worker's resume drops it rather than fails. */
+  private resumeRemoteControl(
+    identity: AgentIdentity,
+    req: ResumeRequest,
+    warnings: string[],
+  ): ResumeRequest {
+    if (!req.remoteControl || recordedRole(this.core.agents.spawnMeta(identity.agentId)) !== 'worker')
+      return req
+    warnings.push(
+      `${identity.name} is a worker, so it resumed without Remote Control; only a coordinator may run with it`,
+    )
+    return { ...req, remoteControl: false }
   }
 
   /**
@@ -2694,6 +2711,7 @@ export class Supervisor implements TeleportHost {
       gitHooksDir: gitHooksDir(),
       ...(agent.configDir ? { configDir: agent.configDir } : {}),
       ...(agent.configDirUnset ? { configDirUnset: true } : {}),
+      ...(req.remoteControl ? { remoteControl: true } : {}),
     })
     writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry(), plan.surface))
     this.core.append({

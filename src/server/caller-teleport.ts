@@ -120,7 +120,8 @@ export function buildCallerLaunch(
     agentChatHome: home(),
     gitHooksDir: gitHooksDir(),
     ...(configDir ? { configDir } : { configDirUnset: true }),
-    ...(spec.remoteControl ? { remoteControl: true } : {}),
+    // CC-883: checked again here, so a worker never gets Remote Control whatever the broker sent.
+    ...(spec.remoteControl && profile.role === 'coordinator' ? { remoteControl: true } : {}),
   })
   return { plan, mcpConfig: buildMcpConfig(profile, local.cliEntry, plan.surface) }
 }
