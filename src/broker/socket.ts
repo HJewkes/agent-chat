@@ -33,6 +33,7 @@ import { resolveSpawnCwd } from './spawn-default-cwd.js'
 import { readMeta } from './lifecycle.js'
 import { resolveDeciderAgentId } from '../config.js'
 import { shapeMeta } from '../inbox/item-shape.js'
+import { fileServiceAsk } from './service-ask.js'
 import { brokerHost } from './host-guard.js'
 import { linuxPeerPorts, provePeerLocal, type PeerPorts } from './peer-locality.js'
 
@@ -1133,6 +1134,24 @@ export class SocketServer {
     reply(conn, { t: 'permission_hook_result', ok: true, msgId })
   }
 
+  /**
+   * A process that is not a session asks the human under a label (CC-169).
+   *
+   * Only from an UNREGISTERED connection, as `permission_hook`: a session asks
+   * with `ask`, under its own name and budget. The label is not vouched for.
+   */
+  private handleServiceAsk(conn: Conn, msg: Extract<ClientMessage, { t: 'service_ask' }>): void {
+    if (!this.isHuman(conn)) {
+      this.refuseToSession(conn, 'ask the human through the service_ask frame')
+      return reply(conn, {
+        t: 'service_ask_result',
+        ok: false,
+        reason: 'service_ask is for processes that never register; a session asks with ask',
+      })
+    }
+    reply(conn, { t: 'service_ask_result', ...fileServiceAsk(this.core, msg) })
+  }
+
   /** Only the connection that raised a row may withdraw it; anyone else learns nothing about it. */
   private handlePermissionHookWithdrawn(conn: Conn, msgId: string): void {
     if (this.hooks.get(msgId)?.conn !== conn) {
@@ -1484,6 +1503,8 @@ export class SocketServer {
         return this.handlePermissionHook(conn, msg)
       case 'permission_hook_withdrawn':
         return this.handlePermissionHookWithdrawn(conn, msg.msgId)
+      case 'service_ask':
+        return this.handleServiceAsk(conn, msg)
       case 'spawn':
         void this.handleSpawn(conn, msg)
         return

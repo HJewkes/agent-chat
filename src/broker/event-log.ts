@@ -614,6 +614,7 @@ export class EventLog implements EventStore {
       .prepare(
         `SELECT * FROM events
          WHERE msg_id = ? AND kind = 'question' AND target = 'human'
+           AND json_extract(meta, '$.source') IS NOT 'service'
            AND msg_id NOT IN (${CLOSED}) AND msg_id NOT IN (${DECIDED})
          LIMIT 1`,
       )
