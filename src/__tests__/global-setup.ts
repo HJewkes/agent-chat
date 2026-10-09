@@ -6,7 +6,7 @@ import { EXIT_WITH_PID_VAR } from '../broker/parent-watch.js'
 const ROOT_VAR = 'TEST_HOME_ROOT'
 
 /** `/tmp` over a long darwin `$TMPDIR`, which would push a unix socket path past its length limit. */
-const shortTmp = (): string => os.tmpdir()
+const shortTmp = (): string => (fs.existsSync('/tmp') ? '/tmp' : os.tmpdir())
 
 export default function setup(): () => void {
   const root = fs.mkdtempSync(path.join(shortTmp(), 'agent-chat-test-run-'))

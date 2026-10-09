@@ -14,6 +14,8 @@ describe('vitest globalSetup temp-root wiring', () => {
     expect(root).toBeDefined()
     expect(fs.statSync(root as string).isDirectory()).toBe(true)
     expect(os.tmpdir()).toBe(root)
+    // A unix socket path is bounded (~104 bytes on darwin), so the root must not sit under a long $TMPDIR.
+    if (fs.existsSync('/tmp')) expect(path.dirname(root as string)).toBe('/tmp')
     expect(path.dirname(process.env.npm_config_store_dir as string)).toBe(root)
   })
 
