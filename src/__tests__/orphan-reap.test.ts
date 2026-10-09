@@ -100,6 +100,7 @@ describe('reaping the processes an exiting run-agent leaves behind', () => {
       910: { env: launch('a1', 100), command: 'tmux: server (/tmp/tmux-1/default)', ppid: 1, sid: 910 },
       911: { env: launch('a1', 100), command: 'titan-factory serve', ppid: 1, sid: 5 },
       912: { env: launch('a1', 100), command: 'some-daemon', ppid: 1, sid: 912 },
+      914: { env: launch('a1', 100), command: "zsh -c 'while :; do :; done'", ppid: 1, sid: 914 },
       913: { env: launch('a1', 100), command: 'yes', ppid: 1, sid: 5 },
     })
     reapOwnLaunch('a1', 100, { table: t, log: () => undefined, ...noSleep })

@@ -122,7 +122,8 @@ function protectedPids(table: ProcessTable, self: number): Set<number> {
  * The environment says which launch a process descends from, not that it is a disposable stray:
  * a daemon started from inside an agent inherits that agent's identity. Reparenting to init
  * erases the process tree, so ownership cannot be proved by ancestry. What can be told apart
- * is a daemon: it either calls setsid (its session id is its own pid) or runs a known
+ * is a daemon: it either calls setsid (its session id is its own pid, unless it is a shell, which
+ * a tool's spawn makes a session leader too) or runs a known
  * long-lived agent-chat or host command. Both are spared; a plain background job such as
  * `yes &` or a busy-wait loop stays in its launcher's session and is reaped. Loose on purpose:
  * a stray that merely mentions one of these words is left alone.
@@ -133,7 +134,13 @@ const isKnownDaemon = (command: string): boolean => {
   return (argv0.split('/').pop() ?? '').startsWith('tmux') || rest.some(word => DAEMON_WORDS.has(word))
 }
 
-const isSessionLeader = (table: ProcessTable, pid: number): boolean => table.sessionOf(pid) === pid
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash'])
+const isShell = (command: string): boolean =>
+  SHELLS.has(((command.split(/\s+/)[0] ?? '').split('/').pop() ?? '').replace(/^-/, ''))
+
+/** A shell leads its own session whenever a tool spawns it, so a shell leader is a job, not a daemon. */
+const isDaemonLeader = (table: ProcessTable, pid: number, command: string): boolean =>
+  table.sessionOf(pid) === pid && !isShell(command)
 
 /** Processes whose environment satisfies `match`, minus every one the safety rules protect. */
 export function findTargets(table: ProcessTable, match: LaunchMatch, self = process.pid): Target[] {
@@ -144,7 +151,7 @@ export function findTargets(table: ProcessTable, match: LaunchMatch, self = proc
     const env = table.environ(pid)
     if (env === undefined || !match(env)) continue
     const command = table.command(pid)
-    if (isKnownDaemon(command) || isSessionLeader(table, pid)) continue
+    if (isKnownDaemon(command) || isDaemonLeader(table, pid, command)) continue
     targets.push({ pid, command, agentId: env[AGENT_ID_ENV] ?? '' })
   }
   return targets
