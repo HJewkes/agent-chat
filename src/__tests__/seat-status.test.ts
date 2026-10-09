@@ -1421,6 +1421,7 @@ describe('the brief page (CC-889)', () => {
     seedAgent({ name: 'ss-al-2', profile: 'implementer' })
     seedAgent({ name: 'ss-al-3', profile: 'implementer', exited: true })
     seedAgent({ name: 'ss-rv-1', profile: 'reviewer' })
+    join(SEAT)
     const peer = join('peer-b')
     send(peer, SEAT, 'first')
     writeReading(12, 70)
@@ -1432,7 +1433,7 @@ describe('the brief page (CC-889)', () => {
       `seat ${SEAT} at ${NOW.toISOString()}`,
       'implementers  2/2  AT CAP  ss-al-1, ss-al-2',
       'reviewers     1/1  AT CAP  ss-rv-1',
-      'planners      0/1',
+      'planners      0/3',
       `pool          pool ${POOL}: seven_day 70%, five_hour 12% (reading 30s old)`,
       `stop          BUDGET-PAUSE pool ${POOL}: seven_day 70% at or above line 65% (no seven_day resets_at, flat reserve)`,
       'unread        1',
