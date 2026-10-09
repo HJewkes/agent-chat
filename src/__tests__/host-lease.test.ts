@@ -10,7 +10,7 @@ import { reapBroker } from './broker-harness.js'
 
 /** CC-806: the factory host lease. Every lease file lives under a per-test AGENT_CHAT_HOME. */
 
-const shortTmp = (): string => (fs.existsSync('/tmp') ? '/tmp' : os.tmpdir())
+const shortTmp = (): string => os.tmpdir()
 const entry = (): string => path.join(import.meta.dirname, '..', '..', 'dist', 'cli.js')
 const ctx = { warnings: [], format: 'human' as const, withBroker }
 const FILE = '/home/x/factory-host'

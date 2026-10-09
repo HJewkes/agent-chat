@@ -8,12 +8,13 @@ import { describe, expect, it } from 'vitest'
  * and every temp state dir behind. The run root is the only trace the wiring leaves.
  */
 describe('vitest globalSetup temp-root wiring', () => {
-  it('gives every worker a run root under the temp dir that global-setup removes', () => {
+  it("makes the run root every worker's temp dir, so a mkdtemp under it is removed with the run (CC-900)", () => {
     const root = process.env.TEST_HOME_ROOT
 
     expect(root).toBeDefined()
-    expect(path.dirname(root as string)).toBe(os.tmpdir().replace(/\/$/, ''))
     expect(fs.statSync(root as string).isDirectory()).toBe(true)
+    expect(os.tmpdir()).toBe(root)
+    expect(path.dirname(process.env.npm_config_store_dir as string)).toBe(root)
   })
 
   it('creates the per-file state dir inside that run root', () => {
