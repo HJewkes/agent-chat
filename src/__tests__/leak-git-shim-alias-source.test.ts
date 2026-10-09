@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { type GitShimFixture, gitShimHarness } from './helpers/git-shim-fixture.js'
+import { type GitShimFixture, gitShimHarness, NO_VERIFY } from './helpers/git-shim-fixture.js'
 
 /**
  * CC-613 slice d, against real git, temp repos and a local bare remote: a listed `!` alias runs
@@ -149,6 +149,62 @@ describe('the agent git shim refusing a listed shell alias set outside config fi
 
     expect(run.stderr).toBe('')
     expect(run.stdout.trim()).toBe('hello')
+    expect(run.status).toBe(0)
+  })
+})
+
+// git config reads only $GIT_CONFIG when it is set, but git ignores it when it runs an alias (review 9504baf5).
+const GIT_CONFIG_PROBES: [string, string, string[], string][] = [
+  [
+    'a benign file hides a listed -c alias',
+    `printf '[alias]\\n\\thi = !echo hello\\n' >../benign; GIT_CONFIG="$PWD/../benign" git -c "alias.hi=$BODY" hi`,
+    ['hi'],
+    'git-shim: refused (shell-alias)',
+  ],
+  [
+    '/dev/null hides a listed -c alias',
+    'GIT_CONFIG=/dev/null git -c "alias.hi=$BODY" hi',
+    ['hi'],
+    'git-shim: refused (shell-alias)',
+  ],
+  [
+    '/dev/null hides an unlisted -c alias',
+    'GIT_CONFIG=/dev/null git -c "alias.zz=$BODY" zz',
+    [],
+    'git-shim: refused (shell-alias)',
+  ],
+  [
+    '/dev/null hides a -c push alias',
+    `GIT_CONFIG=/dev/null git -c "alias.p=push ${NO_VERIFY}" p origin main`,
+    [],
+    'git-shim: push refused (no-verify)',
+  ],
+]
+
+describe('the agent git shim ignoring GIT_CONFIG for its own config reads (CC-613 d)', () => {
+  // Kills: any shim-internal git config read that still honours the caller's GIT_CONFIG.
+  it.each(GIT_CONFIG_PROBES)('refuses when %s', (_probe, command, listed, refusal) => {
+    const fx = fixture(listed)
+
+    const run = runScript(fx, `${BODY}\n${command}`)
+
+    expect(remoteHasMain(fx)).toBe(false)
+    expect(fs.existsSync(fx.marker)).toBe(false)
+    expect(run.stderr).toContain(refusal)
+    expect(run.status).toBe(2)
+  })
+
+  // Kills: unsetting GIT_CONFIG for the git the shim finally runs, which would change what git config reads.
+  it("passes the caller's GIT_CONFIG on to git config", () => {
+    const fx = fixture()
+
+    const run = runScript(
+      fx,
+      `printf '[x]\\n\\ty = from-file\\n' >../own; GIT_CONFIG="$PWD/../own" git config --get x.y`,
+    )
+
+    expect(run.stderr).toBe('')
+    expect(run.stdout.trim()).toBe('from-file')
     expect(run.status).toBe(0)
   })
 })

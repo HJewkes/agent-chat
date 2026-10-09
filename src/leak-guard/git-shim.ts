@@ -150,6 +150,11 @@ const ARGS_PUSH_FN = `args_push() {
   return 1
 }`
 
+// git config reads only $GIT_CONFIG while git ignores it for aliases and hooks, so every read the shim makes runs without it.
+const HIDE_GIT_CONFIG = `unset caller_git_config
+case \${GIT_CONFIG+set} in set) caller_git_config=$GIT_CONFIG; unset GIT_CONFIG ;; esac`
+const RESTORE_GIT_CONFIG = `[ -z "\${caller_git_config+set}" ] || export GIT_CONFIG="$caller_git_config"`
+
 // A listed name runs only the body in the config files the agent had at spawn: a -c, --config-env or
 // GIT_CONFIG_* value, an include one adds, or a HOME, XDG_CONFIG_HOME or GIT_CONFIG_* file swap must not replace it.
 const SHADOWED_FN = `shadowed() {
@@ -428,7 +433,8 @@ export const gitShimScript = (
 ): string =>
   `${hardenedShebang(shell)}
 # Written by agent-chat at each spawn (TP-596); local edits are overwritten.
-${ENVIRONMENT_SCRUB}real=${shQuote(real)}
+${ENVIRONMENT_SCRUB}${HIDE_GIT_CONFIG}
+real=${shQuote(real)}
 guard=${shQuote(guard)}
 exec_path=${shQuote(execPath)}
 builtins=${shQuote(builtins.join(' '))}
@@ -460,6 +466,7 @@ ${LOCAL_ONLY_FN}
 if resolve "$@"; then
 ${HOOKS_CHECK}
 fi
+${RESTORE_GIT_CONFIG}
 exec "$real" "$@"
 `
 

@@ -963,7 +963,10 @@ shim also refuses it when the text differs from a second read that drops `-c` an
 `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_NOSYSTEM`, and puts back the `HOME` and
 `XDG_CONFIG_HOME` baked at spawn. That covers a `-c include.path` that pulls in another file
 and a per-call swap of the global or system config file. A `-c` of an unrelated key, such as
-`-c user.name=x`, does not stop a listed alias (CC-613 d).
+`-c user.name=x`, does not stop a listed alias (CC-613 d). Every config read the shim makes
+runs with `GIT_CONFIG` unset, because `git config` then reads only that file while git ignores
+it when it runs an alias or a push. The shim puts `GIT_CONFIG` back for the git it finally
+runs, so the agent's own `GIT_CONFIG=<file> git config` still reads that file.
 
 The repository is not pinned. `-C`, `--git-dir`, `GIT_DIR` and `GIT_COMMON_DIR` choose a
 repository the way `cd` does, and its config counts as a config file. Like an edit to
