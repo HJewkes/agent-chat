@@ -90,7 +90,7 @@ export function cliArgs<Args>(verb: Verb<Args>, positionals: unknown[], opts: Re
 export function addVerb<Args>(
   parent: Commander,
   verb: Verb<Args>,
-  options: { helpGroup?: string; hidden?: boolean } = {},
+  options: { helpGroup?: string; hidden?: boolean; usageExit?: number } = {},
 ): Commander {
   const sub = parent.command(
     commandPath(verb.name).at(-1) ?? verb.name,
@@ -105,14 +105,22 @@ export function addVerb<Args>(
     if (parser) sub.option(spec, option.description, parser)
     else sub.option(spec, option.description)
   }
-  sub.action(() => runVerb(verb, sub.processedArgs, sub.opts()))
+  const usageExit = options.usageExit ?? EXIT.USAGE
+  if (options.usageExit !== undefined)
+    sub.exitOverride(err => process.exit(err.exitCode === 0 ? 0 : usageExit))
+  sub.action(() => runVerb(verb, sub.processedArgs, sub.opts(), usageExit))
   return sub
 }
 
-async function runVerb<Args>(verb: Verb<Args>, positionals: unknown[], opts: Record<string, unknown>) {
+async function runVerb<Args>(
+  verb: Verb<Args>,
+  positionals: unknown[],
+  opts: Record<string, unknown>,
+  usageExit: number,
+) {
   const ctx: VerbContext = { warnings: [], format: 'human', withBroker, terminal: stdinTerminal() }
   const args = cliArgs(verb, positionals, opts)
-  const { envelope, exitCode } = await invokeCommand(verb, args, ctx, { invalidArgsCode: EXIT.USAGE })
+  const { envelope, exitCode } = await invokeCommand(verb, args, ctx, { invalidArgsCode: usageExit })
   if (!envelope.ok) {
     console.error(envelope.error)
     process.exit(exitCode)

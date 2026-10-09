@@ -129,6 +129,22 @@ open questions, and the text is capped at 4000 characters. The question is store
 `meta.source = "service"`, `agent-chat inbox` shows the label followed by `(service)`, and
 the decider never decides it.
 
+From a shell, `agent-chat ask` files the question and `agent-chat answers` reads back what
+happened to it, from any later process:
+
+```sh
+id=$(printf 'Merge gate 7?' | agent-chat ask --as factory --text-stdin --option approve --option decline)
+agent-chat answers factory --since "$id" --json
+# {"answers":[{"msgId":"…","questionId":"…","outcome":"answered","text":"approve",…}],"next":"…"}
+```
+
+`ask` prints the msg_id alone (or `{"msgId": …}` with `--json`). `answers` prints one line
+per row, `<outcome> <questionId> <msgId>: <text>`, where the outcome is `answered` or
+`dismissed`; pass the last `next` as `--since` to read only what is new. Both exit 1 on a
+broker refusal (including an unknown `--since`), 2 on a usage error, and 69 when the broker
+is down or is too old to know these frames, which means it needs a restart. Builtin agent
+profiles deny `Bash(agent-chat ask:*)`: an agent asks with `chat_ask` under its own name.
+
 Two caveats:
 
 - **Labels are not vouched for.** Any unregistered connection can ask under any free
