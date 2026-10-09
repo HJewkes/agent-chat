@@ -68,14 +68,24 @@ export const LOG_CAP = 1_500
 
 const TELEPORT_HEADING = /^## State at teleport (\d+)\b/
 
-/** The highest-numbered `## State at teleport N` section to the next heading; the later one wins a tie. */
-export function latestTeleportState(log: string): string | undefined {
-  const lines = log.split('\n')
+/** The line index and number of the highest-numbered `## State at teleport N` heading; the later one wins a tie. */
+function latestTeleportHeading(lines: string[]): { at: number; n: number } | undefined {
   let best: { at: number; n: number } | undefined
   lines.forEach((line, at) => {
     const n = Number(TELEPORT_HEADING.exec(line)?.[1] ?? NaN)
     if (Number.isFinite(n) && (best === undefined || n >= best.n)) best = { at, n }
   })
+  return best
+}
+
+/** CC-863: the N of the log's highest `## State at teleport N`, or undefined when it has none. */
+export const latestTeleportNumber = (log: string): number | undefined =>
+  latestTeleportHeading(log.split('\n'))?.n
+
+/** The highest-numbered `## State at teleport N` section to the next heading; the later one wins a tie. */
+export function latestTeleportState(log: string): string | undefined {
+  const lines = log.split('\n')
+  const best = latestTeleportHeading(lines)
   return best === undefined ? undefined : sectionFrom(lines, best.at, QUEUE_STOP)
 }
 

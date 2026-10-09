@@ -1196,7 +1196,11 @@ describe('a seat teleport (CC-863)', () => {
     fs.writeFileSync(path.join(root, 'seats', 'alpha.md'), '---\nname: alpha\nprefix: al\npool: p1\n---\n')
     shepherd = async () => [shepherdRow]
     supervisor.close()
-    makeSupervisor(undefined, undefined, { autonomyRoot: root, now: () => new Date(), shepherd: () => shepherd() })
+    makeSupervisor(undefined, undefined, {
+      autonomyRoot: root,
+      now: () => new Date(),
+      shepherd: () => shepherd(),
+    })
   })
 
   const seatLog = (): string => {
@@ -1223,7 +1227,10 @@ describe('a seat teleport (CC-863)', () => {
   it('appends the State block with the roster, Shepherd and the broker’s inbox cursor', async () => {
     const { agentId, cursor } = await seatWithAgent()
 
-    const result = await supervisor.teleport({ subject: subject(agentId, { name: 'alpha' }), handoff: 'mine' })
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'alpha' }),
+      handoff: 'mine',
+    })
     core.append({ kind: 'message', actor: 'peer', target: 'alpha', body: 'arrived during the hop' })
     await vi.advanceTimersByTimeAsync(0)
 
@@ -1241,7 +1248,10 @@ describe('a seat teleport (CC-863)', () => {
   it('opens the successor’s first turn with the rendered seat handoff, then its own words', async () => {
     const { agentId, cursor } = await seatWithAgent()
 
-    const result = await supervisor.teleport({ subject: subject(agentId, { name: 'alpha' }), handoff: 'mine' })
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'alpha' }),
+      handoff: 'mine',
+    })
     await vi.advanceTimersByTimeAsync(0)
 
     const stdin = planFor(result.agentId as string).stdin ?? ''
@@ -1255,7 +1265,10 @@ describe('a seat teleport (CC-863)', () => {
     const { agentId } = await seatWithAgent()
     shepherd = async () => undefined
 
-    const result = await supervisor.teleport({ subject: subject(agentId, { name: 'alpha' }), handoff: 'mine' })
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'alpha' }),
+      handoff: 'mine',
+    })
     await vi.advanceTimersByTimeAsync(0)
 
     expect(spawnRowFor(result.agentId as string)?.target).toBe('alpha')

@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { z } from 'zod'
 import { logEvent } from '../../broker/log.js'
-import { run, type Runner } from './exec.js'
+import { childEnv, run, type Runner } from './exec.js'
 
 /**
  * Burndown's only door to Shepherd, the factory's PR-shepherding service: the
@@ -54,6 +56,10 @@ const Row = z.object({
   phase: z.string(),
   headSha: z.string().nullable(),
   stalled: z.object({ reason: z.string() }).nullable(),
+  /** CC-863: read only to name the run's agent and task in a seat's teleport State; absent on an older Shepherd. */
+  branch: z.string().nullable().optional(),
+  task: z.string().nullable().optional(),
+  held: z.object({ reason: z.string() }).nullable().optional(),
 })
 
 /**
@@ -66,17 +72,42 @@ export type ShepherdRow = Omit<z.infer<typeof Row>, 'phase'> & {
 
 type Log = (event: string, detail: Record<string, unknown>) => void
 
+export const SHEPHERD_STATUS_ARGS = ['shepherd', 'status', '--json']
+
 /**
  * Every shepherded PR, from `shepherd status --json`; undefined when Shepherd is
  * down or the answer is not a JSON array. Read row by row: a malformed row is
  * skipped and an unknown phase kept as `unknown`, each logged once per read.
  */
 export function shepherdRows(exec: Runner = run, log: Log = logEvent): ShepherdRow[] | undefined {
-  const result = exec(SHEPHERD_BIN, ['shepherd', 'status', '--json'])
-  if (result.status !== 0) return undefined
+  const result = exec(SHEPHERD_BIN, SHEPHERD_STATUS_ARGS)
+  return result.status === 0 ? parseShepherdRows(result.stdout, log) : undefined
+}
+
+const STATUS_TIMEOUT_MS = 15_000
+/** Shepherd lists its finished runs too, so the answer can outgrow execFile's 1 MB default. */
+const STATUS_MAX_BYTES = 64 * 1024 * 1024
+
+/** CC-863: `shepherdRows` without blocking, for the broker, whose event loop serves every session. */
+export async function shepherdRowsAsync(log: Log = logEvent): Promise<ShepherdRow[] | undefined> {
+  try {
+    const { stdout } = await promisify(execFile)(SHEPHERD_BIN, SHEPHERD_STATUS_ARGS, {
+      env: childEnv(),
+      encoding: 'utf8',
+      timeout: STATUS_TIMEOUT_MS,
+      maxBuffer: STATUS_MAX_BYTES,
+    })
+    return parseShepherdRows(stdout, log)
+  } catch {
+    return undefined
+  }
+}
+
+/** `shepherd status --json` output as rows; undefined when it is not a JSON array. */
+export function parseShepherdRows(stdout: string, log: Log = logEvent): ShepherdRow[] | undefined {
   let parsed: unknown
   try {
-    parsed = JSON.parse(result.stdout)
+    parsed = JSON.parse(stdout)
   } catch {
     return undefined
   }

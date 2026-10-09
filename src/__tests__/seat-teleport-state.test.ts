@@ -42,7 +42,8 @@ const writeLog = (seat: string, text: string): void => {
   fs.writeFileSync(path.join(root, 'logs', seat, `${TODAY}.md`), text)
 }
 
-const readLog = (seat: string): string => fs.readFileSync(path.join(root, 'logs', seat, `${TODAY}.md`), 'utf8')
+const readLog = (seat: string): string =>
+  fs.readFileSync(path.join(root, 'logs', seat, `${TODAY}.md`), 'utf8')
 
 const row = (over: Partial<ShepherdRow>): ShepherdRow => ({
   repo: 'example/widgets',
@@ -138,11 +139,14 @@ describe('renderTeleportState', () => {
 
 describe('writeTeleportState', () => {
   it('writes nothing for a name with no seat file', async () => {
-    const written = await writeTeleportState(deps(async () => []), {
-      seat: 'scout',
-      running,
-      inboxThrough: 'msg-1',
-    })
+    const written = await writeTeleportState(
+      deps(async () => []),
+      {
+        seat: 'scout',
+        running,
+        inboxThrough: 'msg-1',
+      },
+    )
     expect(written).toBeUndefined()
     expect(fs.existsSync(path.join(root, 'logs', 'scout'))).toBe(false)
   })
@@ -151,15 +155,20 @@ describe('writeTeleportState', () => {
     seatFile('alpha', 'grant: merge on green\n')
     writeLog('alpha', '## State at teleport 4\nold\n09:00 heartbeat')
 
-    const written = await writeTeleportState(deps(async () => [row({})]), {
-      seat: 'alpha',
-      running,
-      inboxThrough: 'msg-9',
-    })
+    const written = await writeTeleportState(
+      deps(async () => [row({})]),
+      {
+        seat: 'alpha',
+        running,
+        inboxThrough: 'msg-9',
+      },
+    )
 
     expect(written?.n).toBe(5)
     const log = readLog('alpha')
-    expect(log.startsWith('## State at teleport 4\nold\n09:00 heartbeat\n\n## State at teleport 5\n')).toBe(true)
+    expect(log.startsWith('## State at teleport 4\nold\n09:00 heartbeat\n\n## State at teleport 5\n')).toBe(
+      true,
+    )
     expect(log).toContain('\nGRANT: merge on green\n- al-fix-7')
   })
 
@@ -192,7 +201,10 @@ describe('the block round-trips through the boot readers', () => {
     const cursor = core.events.inboxFor('alpha', 1)[0]?.msgId
     core.append({ kind: 'message', actor: 'peer', target: 'alpha', body: 'arrived after' })
 
-    await writeTeleportState(deps(async () => [row({})]), { seat: 'alpha', running, inboxThrough: cursor })
+    await writeTeleportState(
+      deps(async () => [row({})]),
+      { seat: 'alpha', running, inboxThrough: cursor },
+    )
     const section = readLogSection(root, 'alpha', NOW).section
     const expected = renderTeleportState({ n: 1, running, shepherd: [row({})], inboxThrough: cursor })
     const after = /^Inbox handled through (\S+)\.$/m.exec(section ?? '')?.[1]
