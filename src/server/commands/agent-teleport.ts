@@ -2,6 +2,8 @@ import { z } from 'zod'
 import { present, requiredString } from '../../args.js'
 import { TELEPORT_REASONS, type ServerMessage } from '../../protocol.js'
 import { defineTool } from '../command.js'
+import { defaultCallerLaunch, runCallerTeleport } from '../caller-teleport.js'
+import { hostIdentity } from '../host.js'
 
 function describeTeleport(res: Extract<ServerMessage, { t: 'teleport_result' }>): string {
   if (!res.ok) return `Not teleporting: ${res.reason}`
@@ -89,6 +91,11 @@ export const agentTeleport = defineTool({
       },
       'teleport_result',
     )) as Extract<ServerMessage, { t: 'teleport_result' }>
+    // CC-881: the broker is on another host, so the relaunch runs here once the countdown ends.
+    if (res.ok && res.remote === true)
+      void runCallerTeleport(ctx.broker, hostIdentity().hostPid, defaultCallerLaunch()).catch(err =>
+        process.stderr.write(`agent-chat: teleport launch on this host failed: ${(err as Error).message}\n`),
+      )
     return describeTeleport(res)
   },
 })

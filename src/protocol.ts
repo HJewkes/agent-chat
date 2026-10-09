@@ -2,9 +2,32 @@ import {
   SURFACE_NAMES as PACKAGE_SURFACE_NAMES,
   type SurfaceName as PackageSurfaceName,
 } from '@titan-design/agent-surface'
+import type { AgentProfile } from './agents/types.js'
 
 // Wire protocol between a session's MCP subprocess and the shared broker.
 // Newline-delimited JSON over a unix socket.
+
+/**
+ * CC-881: a teleport successor for a session on another host, in host-neutral terms only. The
+ * broker records the successor; the caller's MCP process builds the plan, every path, the env and
+ * the MCP config from its OWN host, so nothing here names a binary, a directory or a variable.
+ */
+export interface RemoteLaunch {
+  agentId: string
+  sessionId: string
+  name: string
+  profile: RemoteProfile
+  brief: string
+  preamble: string
+  surface: PackageSurfaceName
+  tags?: string[]
+  subscriptions?: Subscription[]
+  remoteControl?: boolean
+  anchor?: string
+}
+
+/** A profile without the fields that run something or set the environment on the caller's host. */
+export type RemoteProfile = Omit<AgentProfile, 'env' | 'mcpServers' | 'warnings'>
 
 export const SESSION_STATUSES = ['working', 'available', 'blocked'] as const
 
@@ -931,6 +954,13 @@ export type ClientMessage =
    */
   | { t: 'teleport_abort'; name: string }
   /**
+   * CC-881: a session on another host waits here for the relaunch plan the broker cannot run
+   * itself. Names no agent, like `teleport`: the subject is this connection's own registration.
+   */
+  | { t: 'teleport_plan_wait' }
+  /** CC-881: that host's report on the plan, sent before it ends its own Claude Code. */
+  | { t: 'teleport_launched'; agentId: string; ok: boolean; reason?: string }
+  /**
    * Pull a headless agent into a terminal window. This one DOES name an agent,
    * and that is the deliberate divergence from `teleport` above: the case it
    * exists for is an agent too blocked to ask for itself, because a headless
@@ -1111,7 +1141,11 @@ export type ServerMessage =
       /** Milliseconds until shutdown. Absent for a headless predecessor: there is no wait. */
       countdownMs?: number
       warnings?: string[]
+      /** CC-881: the session is on another host, so its MCP process runs the relaunch plan. */
+      remote?: boolean
     }
+  | { t: 'teleport_plan'; ok: boolean; reason?: string; launch?: RemoteLaunch }
+  | { t: 'teleport_launched_result'; ok: boolean; reason?: string }
   /**
    * `surface` is where it ACTUALLY landed, which is not always what was asked
    * for: the iTerm ladder downgrades a pane or tab to a new window when the
