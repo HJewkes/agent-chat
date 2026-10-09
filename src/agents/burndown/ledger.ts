@@ -61,6 +61,8 @@ const Claim = z.object({
   questionId: z.string().optional(),
   inboxCursor: z.string().optional(),
   attempt: z.number().int().nonnegative().optional(),
+  /** Set once a silent exit with commits ahead got its one resume successor (CC-673). */
+  resumed: z.literal(true).optional(),
   reviewRound: z.number().int().nonnegative().optional(),
   pr: z.string().optional(),
   /** The PR's head commit when the tick last read it at a merge or a close (CC-316). */

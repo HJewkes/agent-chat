@@ -26,6 +26,7 @@ import { deciderVerdict, recordRefusal, wakeDecider, type DeciderVerdict } from 
 import type { Initiative, Refusal, Task } from './eligibility.js'
 import type { EgressRunner } from './egress-runner.js'
 import { leakCheck } from './leak-check.js'
+import { readExitedWork } from './exited-adopt.js'
 import { run, type Runner } from './exec.js'
 import { execute, type SpawnFrame, type SpawnReply, type Step } from './execute.js'
 import {
@@ -423,6 +424,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     root,
     shepherdRows: shepherd,
     landed: target => shepherdLanded(target, opts.exec ?? run),
+    exitedWork: worktree => readExitedWork(worktree, opts.exec ?? run),
   })
   const ctx = {
     ...stepContext(world, config, now, root),
