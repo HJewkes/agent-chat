@@ -2903,6 +2903,11 @@ export class Supervisor implements TeleportHost {
     return this.teleporter.remoteLaunched(agentId, report)
   }
 
+  /** CC-913: the caller's helper could not place an armed successor after its predecessor exited. */
+  teleportLandFailed(agentId: string, reason: string): { ok: boolean; reason?: string } {
+    return this.teleporter.landFailed(agentId, reason)
+  }
+
   /** The human's veto on a countdown. No agent-facing path reaches this. */
   abortTeleport(name: string): { ok: boolean; reason?: string } {
     return this.teleporter.abort(name)

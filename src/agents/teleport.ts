@@ -84,6 +84,9 @@ const PANE_EXIT_POLL_MS = 100
 /** CC-881: how long a remote caller has to report its launch before the successor is released. */
 export const REMOTE_LAUNCH_TIMEOUT_MS = 60_000
 
+/** CC-913: a helper's failure reason becomes a human notice, so it is bounded. */
+const LAND_REASON_MAX = 1000
+
 /** Thrown by a host that already told the human its successor did not start, so `finish` does not tell them twice. */
 export class SuccessorNotStarted extends Error {
   override name = 'SuccessorNotStarted'
@@ -675,6 +678,40 @@ export class Teleport {
     if (remote?.report === undefined || entry?.descendantId !== report.successor)
       return { ok: false, reason: 'no teleport launch is awaiting a report for that successor' }
     remote.report(report)
+    return { ok: true }
+  }
+
+  /**
+   * CC-913: an armed successor its host could not place once the predecessor exited. The same bad
+   * state `finish` reports on this host, so the same notice; the row is retired so the name frees.
+   */
+  landFailed(agentId: string, reason: string): { ok: boolean; reason?: string } {
+    const successor = this.core.agents.lineageFrom(agentId)[0]
+    if (successor?.teleportFrom === undefined || successor.state === 'retired')
+      return { ok: false, reason: 'that agent is not a live teleport successor' }
+    const held = this.core.registry.connFor(successor.name)
+    if (held !== undefined && this.core.registry.entryFor(held)?.agentId === agentId)
+      return { ok: false, reason: `${successor.name}'s successor is registered, so it did start` }
+    const said = reason.slice(0, LAND_REASON_MAX)
+    this.core.append({
+      kind: 'agent_retired',
+      actor: 'agent-chat',
+      target: successor.name,
+      ref: agentId,
+      body: `teleport successor not placed on its caller's host: ${said}`,
+    })
+    this.core.append({
+      kind: 'notice',
+      actor: 'agent-chat',
+      target: HUMAN,
+      body: `${successor.name} shut down for a teleport and its successor failed to start: ${said}`,
+    })
+    logEvent('teleport_failed', {
+      name: successor.name,
+      from: successor.teleportFrom,
+      reason: said,
+      remote: true,
+    })
     return { ok: true }
   }
 

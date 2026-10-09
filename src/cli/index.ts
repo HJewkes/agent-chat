@@ -298,6 +298,17 @@ function addHiddenCommands(program: Command): void {
     runAgentVerb(id)
   })
 
+  // Spawned detached by a teleporting session's MCP process on another host than the broker (CC-913).
+  program
+    .command('teleport-land <id>', { hidden: true })
+    .requiredOption('--pid <pid>', "the predecessor's Claude Code, whose exit frees its pane")
+    .requiredOption('--surface <surface>', 'where the successor runs')
+    .option('--anchor <anchor>', "the predecessor's pane")
+    .action(async (id: string, options: { pid: string; surface: string; anchor?: string }) => {
+      const { runLandVerb } = await import('../server/caller-land.js')
+      await runLandVerb(id, options)
+    })
+
   // Run by Claude Code as a headless agent's PermissionRequest hook (CC-144), never by a person.
   program
     .command('permission-hook', { hidden: true })

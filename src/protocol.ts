@@ -1007,8 +1007,16 @@ export type ClientMessage =
    * itself. Names no agent, like `teleport`: the subject is this connection's own registration.
    */
   | { t: 'teleport_plan_wait' }
-  /** CC-881: that host's report on the plan, sent before it ends its own Claude Code. */
+  /**
+   * CC-881: that host's report on the plan, sent before it ends its own Claude Code. Since CC-913
+   * `ok` means armed, not launched: the successor is typed into the predecessor's pane once it exits.
+   */
   | { t: 'teleport_launched'; agentId: string; ok: boolean; reason?: string }
+  /**
+   * CC-913: the armed successor could not be placed after its predecessor exited, in its pane or
+   * beside it. Names the successor; the broker retires it and tells the human.
+   */
+  | { t: 'teleport_land_failed'; agentId: string; reason: string }
   /**
    * Pull a headless agent into a terminal window. This one DOES name an agent,
    * and that is the deliberate divergence from `teleport` above: the case it
@@ -1202,6 +1210,7 @@ export type ServerMessage =
     }
   | { t: 'teleport_plan'; ok: boolean; reason?: string; launch?: RemoteLaunch }
   | { t: 'teleport_launched_result'; ok: boolean; reason?: string }
+  | { t: 'teleport_land_failed_result'; ok: boolean; reason?: string }
   /**
    * `surface` is where it ACTUALLY landed, which is not always what was asked
    * for: the iTerm ladder downgrades a pane or tab to a new window when the

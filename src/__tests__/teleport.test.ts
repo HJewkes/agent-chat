@@ -1214,6 +1214,30 @@ describe('a session on another host', () => {
     expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
   })
 
+  // CC-913: the report means armed; a successor its host then cannot place has nobody left to tell but the human.
+  it('retires an armed successor its host could not place and tells the human', async () => {
+    const { agentId, result, plan } = await teleportRemote()
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    await plan
+    launched(agentId, result.agentId as string)
+    await vi.advanceTimersByTimeAsync(0)
+
+    const answer = supervisor.teleportLandFailed(result.agentId as string, 'beside it: iTerm is not running')
+
+    expect(answer).toEqual({ ok: true })
+    expect(rowsFor(result.agentId as string).map(r => r.kind)).toContain('agent_retired')
+    const notice = core.events.humanQueue().find(item => item.text.includes('failed to start'))
+    expect(notice?.text).toContain('cc27 shut down for a teleport')
+    expect(notice?.text).toContain('iTerm is not running')
+  })
+
+  it('refuses a placement failure for an agent that is not a teleport successor', async () => {
+    const { agentId } = await teleportRemote()
+
+    expect(supervisor.teleportLandFailed(agentId, 'x').ok).toBe(false)
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
+  })
+
   it('tells a waiting host there is nothing to run when the human aborts', async () => {
     const { plan } = await teleportRemote()
 

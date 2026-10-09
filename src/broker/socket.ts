@@ -1542,6 +1542,11 @@ export class SocketServer {
         return
       case 'teleport_launched':
         return this.handleTeleportLaunched(conn, msg)
+      case 'teleport_land_failed':
+        return reply(conn, {
+          t: 'teleport_land_failed_result',
+          ...this.supervisor.teleportLandFailed(msg.agentId, msg.reason),
+        })
       case 'surface':
         void this.handleSurface(conn, msg.name)
         return
