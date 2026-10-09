@@ -1261,6 +1261,22 @@ export class SocketServer {
     })
   }
 
+  /** CC-886: oldest-first read of what followed `after`; one extra row detects truncation. */
+  private inboxAfter(
+    name: string | undefined,
+    after: string,
+    limit: number,
+  ): Extract<ServerMessage, { t: 'inbox_result' }> {
+    const events = this.core.events
+    const afterId = name ? events.inboxRowId(name, after) : undefined
+    if (!name || afterId === undefined) {
+      return { t: 'inbox_result', messages: [], error: `no message ${after} in your inbox` }
+    }
+    const rows = events.inboxSince(name, afterId, limit + 1)
+    const messages = rows.slice(0, limit).map(({ id: _id, ...message }) => message)
+    return { t: 'inbox_result', messages, ...(rows.length > limit ? { truncated: true } : {}) }
+  }
+
   /** CC-524: read before `core.register`, which mints an identity for a session that has none. */
   private returning(msg: Extract<ClientMessage, { t: 'register' }>): boolean {
     try {
@@ -1390,6 +1406,7 @@ export class SocketServer {
         return this.handleEndorseApprove(conn, msg.msgId, { text: msg.text, to: msg.to })
       case 'inbox': {
         const name = core.registry.nameOf(conn)
+        if (msg.after !== undefined) return reply(conn, this.inboxAfter(name, msg.after, msg.limit))
         return reply(conn, { t: 'inbox_result', messages: name ? core.events.inboxFor(name, msg.limit) : [] })
       }
       case 'queue':

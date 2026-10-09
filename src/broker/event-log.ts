@@ -311,6 +311,17 @@ export class EventLog implements EventStore {
     return rows.map(toMessage)
   }
 
+  /**
+   * Position of one of `name`'s own inbox rows by msg_id, for `inbox after`.
+   * Scoped to the target so an id from someone else's inbox cannot be probed.
+   */
+  inboxRowId(name: string, msgId: string): number | undefined {
+    const row = this.db
+      .prepare(`SELECT id FROM events WHERE target = ? AND kind IN (${INBOX_KINDS}) AND msg_id = ? LIMIT 1`)
+      .get(name, msgId) as { id: number } | undefined
+    return row?.id
+  }
+
   inboxSince(name: string, afterId: number, limit: number): CursoredMessage[] {
     // Ascending straight out of the query, unlike `inboxFor`: a watcher wants
     // the OLDEST unseen rows, so the limit must cut the far end of a backlog

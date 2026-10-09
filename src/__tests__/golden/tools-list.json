@@ -363,13 +363,18 @@
     },
     {
       "name": "chat_inbox",
-      "description": "Re-read recent messages sent to this session. Useful if several arrived at once or one was missed.",
+      "description": "Re-read recent messages sent to this session. Useful if several arrived at once or one was missed. Pass after: <msg_id> to get only what arrived after that message, oldest first, instead of the newest N.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "limit": {
             "type": "number",
             "description": "How many recent messages to return (default 10)"
+          },
+          "after": {
+            "type": "string",
+            "minLength": 1,
+            "description": "A msg_id from this inbox. Returns only messages newer than it, oldest first, capped by limit (default 50); a truncation note gives the msg_id to continue from. Unknown ids are an error."
           }
         }
       }
