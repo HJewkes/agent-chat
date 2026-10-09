@@ -1,4 +1,5 @@
 import { claimKey, type ClaimKey } from './advance.js'
+import { checkpointHolds, undeliverable } from './checkpoint.js'
 import type { Claim, Ledger } from './ledger.js'
 import type { StallCode } from './stall-code.js'
 import { BRAKE_WINDOW_MS, brakeSince, releasesDue, releasesSince } from './ladder.js'
@@ -77,13 +78,17 @@ function kindsOf(before: Claim | undefined, after: Claim, spawned: boolean): Sea
     events.push(
       event('stalled', withCode(after.stallCode, stallDetail(after, after.stalledReason)), after.stallCode),
     )
-  if (after.finding !== undefined && ownerDue(after))
-    events.push(event('stalled-after-claim', after.finding.detail, after.finding.code))
+  // CC-663: a dirty, uncommitted claim's notice waits one tick behind its checkpoint request.
+  if (after.finding !== undefined && ownerDue(after) && !checkpointHolds(before, after))
+    events.push(event('stalled-after-claim', findingDetail(after, after.finding.detail), after.finding.code))
   if (after.phase === 'parked') events.push(event('parked'))
   if (after.leak !== undefined)
     events.push(event('leak', `${after.leak.url}: ${after.leak.findings.join('; ')}`))
   return events
 }
+
+const findingDetail = (claim: Claim, detail: string): string =>
+  undeliverable(claim) ? `${detail}; checkpoint undeliverable` : detail
 
 const withCode = (code: StallCode | undefined, reason: string): string =>
   code === undefined ? reason : `${code}: ${reason}`
