@@ -118,6 +118,27 @@ The answer routes back to whoever asked, arriving as a channel message with
 queue into a Matrix room; see [`docs/phone-queue.md`](docs/phone-queue.md). Sessions are limited to **3 open questions** — "ask the human"
 is cheaper for an agent than deciding, and the budget forces triage.
 
+### Service asks (`service_ask`, CC-169)
+
+A process that is not a Claude session, such as a factory gate notifier, can put a
+question on this queue with a `service_ask` frame `{ as, text }` plus the usual item shape
+(`kind`, `task`, `options`, `recommended`, `onNoAnswer`). Only an unregistered connection
+may send it. `as` is a label of 1-48 characters from `a-z0-9._-`, refused while a session
+holds that name, when it names a roster agent, or when it is reserved. A label may have 20
+open questions, and the text is capped at 4000 characters. The question is stored with
+`meta.source = "service"`, `agent-chat inbox` shows the label followed by `(service)`, and
+the decider never decides it.
+
+Two caveats:
+
+- **Labels are not vouched for.** Any unregistered connection can ask under any free
+  label. This is not an escalation: an unregistered socket already holds human authority.
+  The `(service)` marker is there so that a label like `owner` does not pass for a session.
+- **The answer goes to the label, not to the asker's process.** Like any answer, it is
+  delivered live to whichever session holds that name when it lands. A session that
+  registers over an open service label after the ask receives it. This is accepted
+  because the asker reads its answers back by label, not over a live socket.
+
 ## Setup
 
 You need Claude Code with the **channels** research preview available to your
