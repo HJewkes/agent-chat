@@ -10,6 +10,7 @@ import type { Initiative, Refusal, Task } from './eligibility.js'
 import { isLive, occupantOf } from '../isolation/sweep.js'
 import type { Claim, Ledger, SeatState } from './ledger.js'
 import type { LineStop } from './flow-gate.js'
+import type { SeatOutcome } from './no-dispatch.js'
 import { rowNamed, type Roster } from './observe.js'
 import type { Capacity, Dispatch, PlanInputs } from './plan.js'
 import {
@@ -91,7 +92,8 @@ function sampled(
       ? []
       : [{ at: nowMs, sevenDay: reading.sevenDay, ...(resetsAt === undefined ? {} : { resetsAt }) }]
   const history = reading?.sevenDay === undefined ? kept : oneSource(kept, saved, reading.sevenDay, deps.now)
-  return { reading, resetsAt, history, state: { samples: [...kept, ...sample] } }
+  const mark = previous?.noDispatch === undefined ? {} : { noDispatch: previous.noDispatch }
+  return { reading, resetsAt, history, state: { samples: [...kept, ...sample], ...mark } }
 }
 
 /**
@@ -192,6 +194,8 @@ export interface SeatsPlan {
   tasks: Map<string, Task[]>
   /** Malformed open tasks the scorer left out of each seat's scope, `<slug>/<file>`. */
   skippedTasks: { seat: string; files: string[] }[]
+  /** What each seat's planning came to, for its "dispatched nothing" line (CC-859). */
+  outcomes: SeatOutcome[]
 }
 
 /** The broker-wide ceilings less what earlier seats dispatched this tick. */
@@ -332,7 +336,14 @@ export const localDate = (now: Date): string =>
 
 /** Each loaded seat in config order, sharing the tick's ceilings, pool charges and claims; a seat whose planning throws is skipped. */
 export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root: string): SeatsPlan {
-  const result: SeatsPlan = { dispatch: [], refusals: [], skipped: [], tasks: new Map(), skippedTasks: [] }
+  const result: SeatsPlan = {
+    dispatch: [],
+    refusals: [],
+    skipped: [],
+    tasks: new Map(),
+    skippedTasks: [],
+    outcomes: [],
+  }
   const claims: SameTickClaim[] = []
   for (const seat of seats) {
     try {
@@ -343,8 +354,11 @@ export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root
       result.refusals.push(...planned.refusals)
       result.dispatch.push(...planned.dispatch)
       claims.push(...planned.claims)
+      const { dispatch, refusals } = planned
+      result.outcomes.push({ seat: seat.dispatch.seat, dispatched: dispatch.length, refusals })
     } catch (err) {
       result.skipped.push({ seat: seat.dispatch.seat, reason: message(err) })
+      result.outcomes.push({ seat: seat.dispatch.seat, dispatched: 0, refusals: [], skipped: message(err) })
     }
   }
   return result
