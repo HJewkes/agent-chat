@@ -3,7 +3,12 @@ import net from 'node:net'
 import { serve, type ServerType } from '@hono/node-server'
 import type { Hono } from 'hono'
 import { defaultPort, home, socketPath } from '../paths.js'
-import { resolveAgentSlots, resolveMachineLimits, resolvePoolPickMode } from '../config.js'
+import {
+  resolveOrphanReapKill,
+  resolveAgentSlots,
+  resolveMachineLimits,
+  resolvePoolPickMode,
+} from '../config.js'
 import { readMemoryFree } from '../agents/machine-guard.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { backfillAtBoot } from '../agents/ledger/backfill-run.js'
@@ -30,7 +35,9 @@ import {
 import { hostLeaseRefusal } from '../host-lease.js'
 import { logEvent } from './log.js'
 import { installedCliPaths, lsofCwd, readPsTable, startReaper } from './reaper.js'
+import { LAUNCH_IDENTITY_ENV } from '../launch-identity.js'
 import { startAgeOutSweep } from './age-out.js'
+import { startOrphanSweep } from '../agents/orphan-sweep.js'
 import { deliver, SocketServer } from './socket.js'
 import { ensureToken } from './token.js'
 import { VERSION } from './version.js'
@@ -70,6 +77,8 @@ export function newAgentSlots(): Semaphore {
  * not shift under a caller that only wants to know whether it won the race.
  */
 export async function startBroker(options: StartBrokerOptions = {}): Promise<net.Server | null> {
+  // A broker started by hand from inside an agent still must not hand that launch's identity to its children.
+  for (const key of LAUNCH_IDENTITY_ENV) delete process.env[key]
   const sock = socketPath()
   fs.mkdirSync(home(), { recursive: true })
   if (isHeld() || isOffLease() || !(await claimSocketPath(sock))) return null
@@ -81,6 +90,11 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   socketServer.startLifecycleVerifier()
   const stopReaper = startBrokerReaper()
   const stopAgeOut = startAgeOutSweep(core)
+  const stopOrphanSweep = startOrphanSweep(
+    () => core.agents.roster({ includeRetired: true }),
+    logEvent,
+    resolveOrphanReapKill,
+  )
   const { server, openConnections } = listener
 
   // Only after the socket is serving, and only ever best-effort.
@@ -112,6 +126,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
       stopIdleWatch?.()
       stopReaper()
       stopAgeOut()
+      stopOrphanSweep()
     },
   })
 
