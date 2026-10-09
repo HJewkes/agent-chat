@@ -156,11 +156,11 @@ export function startReaper(deps: ReaperDeps, intervalMs = 60_000): () => void {
   return () => clearInterval(timer)
 }
 
-export async function readPsTable(now = Date.now()): Promise<ProcRow[]> {
+export async function readPsTable(now = Date.now(), timeoutMs = 5000): Promise<ProcRow[]> {
   const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,ppid=,uid=,etime=,rss=,command='], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
-    timeout: 5000,
+    timeout: timeoutMs,
   })
   return parseTable(stdout, now)
 }

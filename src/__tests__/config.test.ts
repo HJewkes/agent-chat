@@ -382,4 +382,34 @@ describe('process guard config (CC-495)', () => {
     writeConfigJson({ processKillBytes: 8 })
     expect(resolveProcessKillBytes()).toBe(8 * 1024 ** 3)
   })
+
+  it('a bad value read on every guard tick is logged once, and a different bad value again', () => {
+    writeConfigJson({ processGuardMode: 'murder', processKillBytes: 8 })
+    for (let tick = 0; tick < 5; tick++) {
+      resolveProcessGuardMode()
+      resolveProcessKillBytes()
+    }
+    writeConfigJson({ processGuardMode: 'kil', processKillBytes: 8 })
+    resolveProcessGuardMode()
+
+    expect(invalidLines()).toEqual([
+      expect.stringContaining('"value":"murder"'),
+      expect.stringContaining('"value":8'),
+      expect.stringContaining('"value":"kil"'),
+    ])
+  })
+
+  it('malformed config.json read on every guard tick is logged once', () => {
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"processGuardMode": ')
+    for (let tick = 0; tick < 5; tick++) resolveProcessGuardMode()
+
+    expect(invalidLines()).toHaveLength(1)
+  })
 })
+
+function invalidLines(): string[] {
+  return fs
+    .readFileSync(path.join(dir, 'broker.log'), 'utf8')
+    .split('\n')
+    .filter(line => line.includes('"config_invalid"'))
+}

@@ -56,6 +56,19 @@ export interface AgentChatConfig {
   processGuardMode?: unknown
 }
 
+const loggedInvalid = new Set<string>()
+
+/**
+ * The guard reads config every 2 s (CC-495), so one typo would log on every read. Each distinct bad
+ * content is logged once per config file per process; fixing it and breaking it differently logs again.
+ */
+function logInvalidOnce(detail: Record<string, unknown>): void {
+  const key = JSON.stringify([configPath(), detail])
+  if (loggedInvalid.has(key)) return
+  loggedInvalid.add(key)
+  logEvent('config_invalid', detail)
+}
+
 export const readAgentChatConfig = (): AgentChatConfig => readConfig()
 
 /** Mirrors `loadHooksConfig` in `agents/hooks.ts`: missing file is fine, malformed JSON is logged and ignored. */
@@ -70,7 +83,7 @@ function readConfig(): AgentChatConfig {
     const parsed: unknown = JSON.parse(raw)
     return typeof parsed === 'object' && parsed !== null ? (parsed as AgentChatConfig) : {}
   } catch (err) {
-    logEvent('config_invalid', { path: configPath(), error: String(err) })
+    logInvalidOnce({ path: configPath(), error: String(err) })
     return {}
   }
 }
@@ -119,7 +132,7 @@ export function resolveLedgerShadow(): boolean {
   if (override === '0' || override === '1') return override === '1'
   const value = readConfig().ledgerShadow
   if (value === undefined || typeof value === 'boolean') return value !== false
-  logEvent('config_invalid', { key: 'ledgerShadow', value, fallback: true })
+  logInvalidOnce({ key: 'ledgerShadow', value, fallback: true })
   return true
 }
 
@@ -133,7 +146,7 @@ export function resolveOrphanReapKill(): boolean {
   if (override === 'kill' || override === 'dry-run') return override === 'kill'
   const value = readConfig().orphanReapKill
   if (value === undefined || typeof value === 'boolean') return value === true
-  logEvent('config_invalid', { key: 'orphanReapKill', value, fallback: false })
+  logInvalidOnce({ key: 'orphanReapKill', value, fallback: false })
   return false
 }
 
@@ -144,7 +157,7 @@ export function resolveOrphanReapKill(): boolean {
 export function resolvePoolProbe(): boolean {
   const value = readConfig().poolProbe
   if (value === undefined || typeof value === 'boolean') return value === true
-  logEvent('config_invalid', { key: 'poolProbe', value, fallback: false })
+  logInvalidOnce({ key: 'poolProbe', value, fallback: false })
   return false
 }
 
@@ -152,7 +165,7 @@ export function resolvePoolProbe(): boolean {
 export function resolveTmuxOnLinux(): boolean {
   const value = readConfig().tmuxSurfaceOnLinux
   if (value === undefined || typeof value === 'boolean') return value === true
-  logEvent('config_invalid', { key: 'tmuxSurfaceOnLinux', value, fallback: false })
+  logInvalidOnce({ key: 'tmuxSurfaceOnLinux', value, fallback: false })
   return false
 }
 
@@ -165,7 +178,7 @@ export function resolvePoolPickMode(): PoolPickMode {
   if (value === undefined) return 'shadow'
   const mode = POOL_PICK_MODES.find(known => known === value)
   if (mode !== undefined) return mode
-  logEvent('config_invalid', { key: 'poolPick', value, fallback: 'shadow' })
+  logInvalidOnce({ key: 'poolPick', value, fallback: 'shadow' })
   return 'shadow'
 }
 
@@ -180,7 +193,7 @@ export function resolveDeciderAgentId(): string | undefined {
   if (decider === undefined) return undefined
   const agentId = isObject(decider) ? decider.agentId : undefined
   if (typeof agentId === 'string' && agentId !== '') return agentId
-  logEvent('config_invalid', { key: 'decider.agentId', value: agentId, fallback: 'no decider' })
+  logInvalidOnce({ key: 'decider.agentId', value: agentId, fallback: 'no decider' })
   return undefined
 }
 
@@ -229,7 +242,7 @@ function reportBatchSeconds(value: unknown): number | undefined {
   if (value === undefined) return undefined
   if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= MAX_REPORT_BATCH_S)
     return value
-  logEvent('config_invalid', { key: 'reportBatchSeconds', value, fallback: DEFAULT_REPORT_BATCH_S })
+  logInvalidOnce({ key: 'reportBatchSeconds', value, fallback: DEFAULT_REPORT_BATCH_S })
   return undefined
 }
 
@@ -237,7 +250,7 @@ function reportBatchSeconds(value: unknown): number | undefined {
 export function resolveMachineLimits(): MachineLimits {
   let memoryFreePercent = positiveIntegerFrom('machineMemoryFreePercent', DEFAULT_MACHINE_MEMORY_FREE_PERCENT)
   if (memoryFreePercent > 100) {
-    logEvent('config_invalid', {
+    logInvalidOnce({
       key: 'machineMemoryFreePercent',
       value: memoryFreePercent,
       fallback: DEFAULT_MACHINE_MEMORY_FREE_PERCENT,
@@ -277,7 +290,7 @@ export function resolveMachineStopLimits(): MachineStopLimits {
 function pressureLevelFrom(value: unknown): number {
   if (value === undefined) return DEFAULT_MACHINE_STOP_PRESSURE_LEVEL
   if (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 4) return value
-  logEvent('config_invalid', {
+  logInvalidOnce({
     key: 'machineStopPressureLevel',
     value,
     fallback: DEFAULT_MACHINE_STOP_PRESSURE_LEVEL,
@@ -290,7 +303,7 @@ export function resolveProcessKillBytes(): number {
   const value = readConfig().processKillBytes
   if (value === undefined) return DEFAULT_PROCESS_KILL_BYTES
   if (typeof value === 'number' && Number.isFinite(value) && value >= MIN_PROCESS_KILL_BYTES) return value
-  logEvent('config_invalid', { key: 'processKillBytes', value, fallback: DEFAULT_PROCESS_KILL_BYTES })
+  logInvalidOnce({ key: 'processKillBytes', value, fallback: DEFAULT_PROCESS_KILL_BYTES })
   return DEFAULT_PROCESS_KILL_BYTES
 }
 
@@ -300,14 +313,14 @@ export function resolveProcessGuardMode(): ProcessGuardMode {
   if (value === undefined) return 'log'
   const mode = PROCESS_GUARD_MODES.find(known => known === value)
   if (mode !== undefined) return mode
-  logEvent('config_invalid', { key: 'processGuardMode', value, fallback: 'log' })
+  logInvalidOnce({ key: 'processGuardMode', value, fallback: 'log' })
   return 'log'
 }
 
 function numberFrom(key: string, value: unknown, fallback: number, max = Infinity): number {
   if (value === undefined) return fallback
   if (typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= max) return value
-  logEvent('config_invalid', { key, value, fallback })
+  logInvalidOnce({ key, value, fallback })
   return fallback
 }
 
@@ -328,7 +341,7 @@ export function resolveCoordinatorGrantableTools(): string[] {
   const value = readConfig().coordinatorGrantableTools
   if (value === undefined) return [...WEB_READ_TOOLS]
   if (!Array.isArray(value)) {
-    logEvent('config_invalid', { key: 'coordinatorGrantableTools', value, fallback: [] })
+    logInvalidOnce({ key: 'coordinatorGrantableTools', value, fallback: [] })
     return []
   }
   const known = value.filter(
@@ -336,7 +349,7 @@ export function resolveCoordinatorGrantableTools(): string[] {
   )
   const ignored = value.filter(tool => !known.includes(tool as string))
   if (ignored.length > 0)
-    logEvent('config_invalid', { key: 'coordinatorGrantableTools', value: ignored, fallback: 'ignored' })
+    logInvalidOnce({ key: 'coordinatorGrantableTools', value: ignored, fallback: 'ignored' })
   return known
 }
 
@@ -344,7 +357,7 @@ function positiveIntegerFrom(key: keyof AgentChatConfig, fallback: number): numb
   const value = readConfig()[key]
   if (value === undefined) return fallback
   if (typeof value === 'number' && Number.isInteger(value) && value >= 1) return value
-  logEvent('config_invalid', { key, value, fallback })
+  logInvalidOnce({ key, value, fallback })
   return fallback
 }
 
@@ -402,7 +415,7 @@ function policyFrom(key: string, value: unknown, fallback: ContextHintPolicy): C
       typeof value.boundary === 'string' && value.boundary !== '' ? value.boundary : fallback.boundary
     return { tokens: value.tokens, boundary }
   }
-  logEvent('config_invalid', { key: `contextHints.${key}`, value, fallback })
+  logInvalidOnce({ key: `contextHints.${key}`, value, fallback })
   return fallback
 }
 
@@ -434,7 +447,7 @@ export function resolveParkAdvicePolicy(
   const number = (key: keyof ParkAdvicePolicy): number => {
     const value = configured[key]
     if (value === undefined || isPositiveInteger(value)) return value ?? DEFAULT_PARK_ADVICE[key]
-    logEvent('config_invalid', { key: `parkAdvice.${key}`, value, fallback: DEFAULT_PARK_ADVICE[key] })
+    logInvalidOnce({ key: `parkAdvice.${key}`, value, fallback: DEFAULT_PARK_ADVICE[key] })
     return DEFAULT_PARK_ADVICE[key]
   }
   return { tokens: number('tokens'), leadMinutes: number('leadMinutes'), ttlMinutes: number('ttlMinutes') }
@@ -457,7 +470,7 @@ function hexEntries(group: string, value: unknown): Record<string, string> {
   if (!isObject(value)) return {}
   const entries = Object.entries(value).filter(([key, colour]) => {
     if (isHexColour(colour)) return true
-    logEvent('config_invalid', {
+    logInvalidOnce({
       key: `paneColours.${group}.${key}`,
       value: colour,
       fallback: 'hashed colour',
