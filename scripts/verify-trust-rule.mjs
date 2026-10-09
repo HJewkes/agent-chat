@@ -5,6 +5,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { extractProbes } from './trust-rule-probes.mjs'
 
 const version = process.argv[2]
 if (!/^\d+\.\d+\.\d+$/.test(version ?? '')) {
@@ -15,31 +16,8 @@ const bundle = fs
   .readFileSync(path.join(os.homedir(), '.local/share/claude/versions', version))
   .toString('latin1')
 
-const probes = [
-  [
-    'trust check: canonical root, then folder and ancestors up to the git root; flag hasTrustDialogAccepted',
-    /function \w+\(\)\{if\(\w+\.CLAUDE_CODE_SANDBOXED\)return!0;if\(\w+\(\)\)return!0;let \w+=\w+\(\),\w+=\w+\(\);if\(\w+\.projects\?\.\[\w+\]\?\.hasTrustDialogAccepted\)/,
-    1050,
-  ],
-  [
-    'worktree to main checkout',
-    /function \w+\(\w+,\w+\)\{try\{let \w+=\w+\.trim\(\);if\(!\w+\.startsWith\("gitdir:"\)\)/,
-    800,
-  ],
-  [
-    'git root finder',
-    /function \w+\(\w+\)\{let \w+=Date\.now\(\);\w+\("info","find_git_root_started"\)/,
-    420,
-  ],
-  [
-    'global config file',
-    /function \w+\(\)\{if\(\w+\(\)\.existsSync\(\w+\(\w+\(\),"\.config\.json"\)\)\)/,
-    330,
-  ],
-]
-for (const [label, pattern, length] of probes) {
-  const at = bundle.search(pattern)
-  console.log(`## ${label}`)
-  console.log(at < 0 ? 'NOT FOUND' : bundle.slice(at, at + length))
+for (const { label, at, code } of extractProbes(bundle)) {
+  console.log(`## ${label}${at < 0 ? '' : ` (offset ${at})`}`)
+  console.log(code ?? 'NOT FOUND')
   console.log()
 }
