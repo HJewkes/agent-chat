@@ -5,15 +5,18 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { BrokerView } from '../agents/burndown/collision.js'
+import { egressRunner, type EgressRunner } from '../agents/burndown/egress-runner.js'
 import { run, type Runner } from '../agents/burndown/exec.js'
 import { execute, spawnFrame, type SpawnFrame, type SpawnReply } from '../agents/burndown/execute.js'
 import { readLedger, writeLedger, type Claim } from '../agents/burndown/ledger.js'
+import { GIT_BIN } from '../agents/burndown/review-diff.js'
 import { SHEPHERD_BIN } from '../agents/burndown/shepherd.js'
 import { tickFromDisk, type TickBroker } from '../agents/burndown/run-tick.js'
 import { renderPlan, renderStatus, seatPlanFromDisk } from '../agents/burndown/tick.js'
 import { TRUST_RULE_BASELINE_CLI_VERSION } from '../agents/trust.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { burndownLedgerPath, burndownPausePath, configPath } from '../paths.js'
+import { probeScanner } from '../leak-guard/hooks-dir.js'
 import { tickBroker } from '../cli/burndown-broker.js'
 import type { BrokerClient } from '../client/broker-client.js'
 import type { AgentIdentity, QueueItem } from '../protocol.js'
@@ -219,12 +222,19 @@ const stubGh =
 const isOriginLookup = (bin: string, args: string[]): boolean =>
   bin === 'git' && args.includes('remote') && args.includes('get-url')
 
+/** No tick reads the owner's term list; the leak check's own tests run the real scanner on a synthetic one. */
+const CLEAN_SCAN: EgressRunner = {
+  text: () => ({ state: 'ok', findings: [] }),
+  range: () => ({ state: 'ok', findings: [] }),
+}
+
 const tick = (
   fake: Fake,
   dryRun = false,
   log: (e: string, d: Record<string, unknown>) => void = () => {},
   exec: Runner = stubGh(),
-) => tickFromDisk({ dryRun, broker: fake.broker, now: NOON, log, exec })
+  egress: EgressRunner = CLEAN_SCAN,
+) => tickFromDisk({ dryRun, broker: fake.broker, now: NOON, log, exec, egress })
 
 beforeEach(() => {
   world = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-tick-')))
@@ -1535,15 +1545,26 @@ describe('burndown tick advances a seat claim', () => {
   })
 })
 
-describe('burndown tick leak check', () => {
+// The scanner runs git by name; CI's node lives in a toolcache dir without one.
+const SCAN_PATH = [
+  path.resolve('node_modules/.bin'),
+  path.dirname(process.execPath),
+  path.dirname(GIT_BIN),
+].join(':')
+const scanner = probeScanner(SCAN_PATH)
+
+describe.skipIf(scanner === undefined)('burndown tick leak check', () => {
   const PR = 'https://github.com/example/demo/pull/7'
-  const PRIVATE = 'quokkaproject'
+  const PRIVATE = 'zz-private-fixture'
+  let egress: EgressRunner
 
   beforeEach(() => {
     seatPolicy()
     config({ seats: ['seat-t'] })
     seatInitiative({ 'DM-1': seatTask('DM-1') })
-    write(path.join(world, 'home', 'private-denylist.json'), JSON.stringify({ 'private-name': [PRIVATE] }))
+    const termsFile = path.join(world, 'private-terms')
+    fs.writeFileSync(termsFile, `${PRIVATE}\n`, { mode: 0o600 })
+    egress = egressRunner({ path: SCAN_PATH, home: world, termsFile, probe: () => scanner })
   })
 
   function claimWithPr(): string {
@@ -1593,12 +1614,12 @@ describe('burndown tick leak check', () => {
     const fake = fakeBroker({ agents: [row('st-dm-1', 'live', worktree)] })
     const exec = pulls(openPr({ body: `Imports the ${PRIVATE} tables` }))
 
-    await tick(fake, false, () => {}, exec)
-    await tick(fake, false, () => {}, exec)
+    await tick(fake, false, () => {}, exec, egress)
+    await tick(fake, false, () => {}, exec, egress)
 
     expect(fake.sends).toHaveLength(1)
     expect(fake.sends[0]?.to).toBe('seat-t')
-    expect(fake.sends[0]?.text).toContain(`leak DM-1: ${PR}: body:1 private-name`)
+    expect(fake.sends[0]?.text).toContain(`leak DM-1: ${PR}: body 1:13 private-term`)
     expect(fake.sends[0]?.text).not.toContain(PRIVATE)
     expect(readLedger(burndownLedgerPath()).claims[0]?.notified).toEqual(['dispatched', 'leak'])
   })
@@ -1613,10 +1634,10 @@ describe('burndown tick leak check', () => {
     const refsBefore = git(repo(), 'for-each-ref', '--format=%(refname) %(objectname)')
     const fake = fakeBroker({ agents: [row('st-dm-1', 'live', worktree)] })
 
-    await tick(fake, false, () => {}, pulls(openPr()))
+    await tick(fake, false, () => {}, pulls(openPr()), egress)
 
     expect(fake.sends).toHaveLength(1)
-    expect(fake.sends[0]?.text).toMatch(/leak DM-1: .*: [0-9a-f]{12} notes\.md:1 private-name/)
+    expect(fake.sends[0]?.text).toMatch(/leak DM-1: .*: [0-9a-f]{7,} notes\.md:1 private-term/)
     expect(fake.sends[0]?.text).not.toContain(PRIVATE)
     expect(git(repo(), 'for-each-ref', '--format=%(refname) %(objectname)')).toBe(refsBefore)
   })
@@ -1632,11 +1653,11 @@ describe('burndown tick leak check', () => {
     })
     const exec = pulls(openPr(), stray)
 
-    await tick(fake, false, () => {}, exec)
-    await tick(fake, false, () => {}, exec)
+    await tick(fake, false, () => {}, exec, egress)
+    await tick(fake, false, () => {}, exec, egress)
 
     expect(fake.notices).toHaveLength(1)
-    expect(fake.notices[0]).toContain('title private-name')
+    expect(fake.notices[0]).toContain('title 1:1 private-term')
     expect(fake.notices[0]).not.toContain(PRIVATE)
     expect(fake.sends).toEqual([])
   })

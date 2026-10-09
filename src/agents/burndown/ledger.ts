@@ -232,8 +232,18 @@ const Ledger = z.object({
   seats: z.record(z.string(), SeatState).optional(),
   /** Keys of human-queue items the tick filed, so a finding that still holds is filed once (CC-269). */
   humanFiled: z.array(z.string()).optional(),
-  /** The deny-list state the leak check last recorded, so a missing list is logged once rather than every tick. */
-  leakDenylist: z.string().optional(),
+  /** The scanner state the leak check last recorded, so a missing scanner is logged once rather than every tick. */
+  leakScanner: z.string().optional(),
+  /**
+   * The last finding rows of each part of a PR's leak scan, by PR URL, so a part a tick cannot
+   * scan keeps its last result while the other part's fresh one replaces its own. A clean part is absent.
+   */
+  leakScans: z
+    .record(
+      z.string(),
+      z.object({ text: z.array(z.string()).optional(), branch: z.array(z.string()).optional() }),
+    )
+    .optional(),
   /** Release counts by task id, which hold the task back from dispatch (CC-661). */
   releases: z.record(z.string(), ReleaseRecord).optional(),
   /** When each triage job was started, pruned to the last day; `exceptions.triage.maxPerDay` counts these. */

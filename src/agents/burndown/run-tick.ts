@@ -24,6 +24,7 @@ import { gatePool, pickAccount } from './budget-gate.js'
 import { collisionCheck, type BrokerView, type CollisionReader } from './collision.js'
 import { deciderVerdict, recordRefusal, wakeDecider, type DeciderVerdict } from './decider.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
+import type { EgressRunner } from './egress-runner.js'
 import { leakCheck } from './leak-check.js'
 import { run, type Runner } from './exec.js'
 import { execute, type SpawnFrame, type SpawnReply, type Step } from './execute.js'
@@ -129,6 +130,8 @@ export interface TickOptions {
   log?: (event: string, detail: Record<string, unknown>) => void
   /** Runs the collision check's `git` and `gh` readers and the `titan-factory` calls; a test injects one that reaches neither. */
   exec?: Runner
+  /** The leak check's scanner; a test injects one so no run reads the owner's term list. */
+  egress?: EgressRunner
 }
 
 interface ReaderFailure {
@@ -256,7 +259,12 @@ async function actOn(
     await actOnDecider(config, decider, executed.ledger, { broker: opts.broker, log, now }),
     triageDeps(opts, log, now),
   )
-  const leaks = await leakCheck(woken.ledger, { exec: opts.exec ?? run, log, seats: config.seats })
+  const leaks = await leakCheck(woken.ledger, {
+    exec: opts.exec ?? run,
+    log,
+    seats: config.seats,
+    ...(opts.egress === undefined ? {} : { egress: opts.egress }),
+  })
   const diff = { seats: config.seats, before: ledger, after: leaks.ledger, spawns, human: leaks.human }
   const journal = seatJournal(defaultAutonomyRoot(opts.root), { log, now: () => now })
   const dispatch = seatMergedLog(defaultAutonomyRoot(opts.root), { log, now: () => now })
