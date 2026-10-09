@@ -146,7 +146,7 @@ interface Walk {
   roles: Record<Role, number>
   /** The seat's active worktrees per repo: held claims with an active tree plus this plan's dispatches. */
   seatWorktrees: Map<string, number>
-  /** The broker-wide ceilings, with the charter's worktrees_left_free_per_repo added to the reserve. */
+  /** The broker-wide ceilings, with the config's worktreeOwnerReserve added to the reserve. */
   capacity: Capacity | undefined
   tally: Tally
 }

@@ -22,6 +22,7 @@ import { POOL_PICK_MODES, type PoolPickMode } from './agents/seats/pool-pick.js'
 interface AgentChatConfig {
   agentSlots?: unknown
   worktreeBudget?: unknown
+  worktreeOwnerReserve?: unknown
   contextHints?: unknown
   parkAdvice?: unknown
   ledgerShadow?: unknown
@@ -77,6 +78,22 @@ export function resolveAgentSlots(): number {
 /** Per-repository worktree cap (`worktreeBudget`), read per spawn so a new value needs no broker restart. */
 export function resolveWorktreeBudget(fallback: number): number {
   return positiveIntegerFrom('worktreeBudget', fallback)
+}
+
+export const DEFAULT_WORKTREE_OWNER_RESERVE = 2
+
+/**
+ * CC-872: worktree slots per repo kept free for the owner, from `worktreeOwnerReserve`.
+ * Unlike the fallback-and-log keys, a present value that is not a non-negative integer throws:
+ * a silent fallback would hand the owner's slots to agents.
+ */
+export function resolveWorktreeOwnerReserve(): number {
+  const value = readConfig().worktreeOwnerReserve
+  if (value === undefined) return DEFAULT_WORKTREE_OWNER_RESERVE
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) return value
+  throw new Error(
+    `config.json worktreeOwnerReserve must be a non-negative integer, got ${JSON.stringify(value)}`,
+  )
 }
 
 /**

@@ -1,5 +1,6 @@
 import os from 'node:os'
 import path from 'node:path'
+import { resolveWorktreeOwnerReserve } from '../../config.js'
 import type { PoolRule } from './budget-gate.js'
 import type { CharterPolicy, Policy, SeatPolicy } from './policy.js'
 
@@ -32,11 +33,13 @@ function repoMap(seat: SeatPolicy, home: string): Record<string, string[]> {
   return map
 }
 
-/** The seat's implementers cap its active trees per repo; worktrees_per_repo_per_seat, when set, is a ceiling over that. */
+/**
+ * The seat's implementers cap its active trees per repo; worktrees_per_repo_per_seat, when set, is a ceiling over that.
+ * The owner reserve comes from agent-chat config; the charter's worktrees_left_free_per_repo is ignored (CC-872).
+ */
 function worktreeCaps(charter: CharterPolicy, implementers: number): SeatDispatch['worktrees'] {
-  const { worktrees_per_repo_per_seat: ceiling, worktrees_left_free_per_repo: leftFreePerRepo } =
-    charter.defaults
-  if (leftFreePerRepo === undefined) throw new Error('charter defaults lack worktrees_left_free_per_repo')
+  const ceiling = charter.defaults.worktrees_per_repo_per_seat
+  const leftFreePerRepo = resolveWorktreeOwnerReserve()
   if (ceiling !== undefined && ceiling < implementers)
     return { perRepoPerSeat: ceiling, capName: 'worktrees_per_repo_per_seat', leftFreePerRepo }
   return { perRepoPerSeat: implementers, capName: 'concurrency.implementers', leftFreePerRepo }
