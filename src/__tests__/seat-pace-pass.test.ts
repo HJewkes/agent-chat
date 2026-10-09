@@ -416,7 +416,13 @@ describe('pace files on disk', () => {
 
     const env = probeEnv(parent, '/synthetic/alpha')
 
-    expect(Object.keys(env).sort()).toEqual(['CLAUDE_CONFIG_DIR', 'HOME', 'PATH', 'TMPDIR'])
+    expect(Object.keys(env).sort()).toEqual([
+      'CLAUDE_CONFIG_DIR',
+      'HOME',
+      'NODE_COMPILE_CACHE',
+      'PATH',
+      'TMPDIR',
+    ])
     expect(env).toMatchObject({ CLAUDE_CONFIG_DIR: '/synthetic/alpha', HOME: '/synthetic/home' })
   })
 
