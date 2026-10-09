@@ -9,6 +9,7 @@ import type { EventKind } from '../../protocol.js'
 import { activeWorkRoot } from '../active-work.js'
 import { scoredPlanFromDisk } from '../burndown/score-render.js'
 import { localDate } from '../burndown/seat-tick.js'
+import type { HeartbeatMark } from './heartbeat.js'
 import { watchedSeats, type Presence } from './liveness.js'
 import type { OwnerMessage, SpendMeter } from './stops.js'
 import type { PoolReading, SeatState } from './watchdog.js'
@@ -92,6 +93,8 @@ export type SeatRecord = SeatState & {
   relaunchTries?: number
   /** CC-402: the seat's agents already flagged as stuck in `spawning`, so each is logged once. */
   spawningFlagged?: string[]
+  /** CC-862: the last heartbeat slot and pause reset the watchdog acted on. */
+  heartbeat?: HeartbeatMark
 }
 
 /**

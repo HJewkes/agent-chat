@@ -14,6 +14,7 @@ import {
   type Pool,
   type Seat,
 } from './charter.js'
+import { heartbeatStep } from './heartbeat.js'
 import type { Eligibility, SeatRecord, WatchdogDoc } from './io.js'
 import {
   RESUME_MESSAGE,
@@ -337,6 +338,7 @@ interface Judgement {
   liveness: LivenessVerdict
   /** CC-326: set when the seat's journal could not be read. */
   journalFault?: string
+  log: SeatJournal
 }
 
 /** What the idle wake is decided on; the scorer is asked only for a seat nothing else holds. */
@@ -383,9 +385,10 @@ function judgeSeat(pass: Pass, seat: Seat): Judgement {
     budgetPaused: !budget.open,
     capped,
     ...liveness.mark,
+    ...(previous?.heartbeat === undefined ? {} : { heartbeat: previous.heartbeat }),
   }
   const journalFault = log.unreadable === undefined ? {} : { journalFault: log.unreadable }
-  return { decision, budget, record, liveness: liveness.verdict, ...journalFault }
+  return { decision, budget, record, liveness: liveness.verdict, log, ...journalFault }
 }
 
 /** A BUDGET-PAUSE and its lifting are each logged once, on the run that sees the gate change. */
@@ -470,6 +473,31 @@ async function resumeDark(pass: Pass, seat: string, liveness: LivenessVerdict): 
   const line = `Watchdog: ${liveness.reason}; ${outcome}`
   pass.deps.appendLog(seat, pass.deps.now(), line)
   return `${seat}: ${line}`
+}
+
+/**
+ * CC-862: the seat's `Heartbeat tick`, or its wake at a BUDGET-PAUSE reset plus two minutes.
+ * Only a connected seat is ticked; a dark one is the resume's, and an owner stop or a hold on every seat stops the tick too.
+ */
+async function heartbeat(pass: Pass, seat: Seat, log: SeatJournal): Promise<string[]> {
+  const name = seat.name
+  const record = pass.doc.seats[name]
+  if (record === undefined || log.unreadable !== undefined) return []
+  if (!pass.roster.connected.includes(name) || holdFor(pass, seat, undefined) !== undefined) return []
+  const step = heartbeatStep({
+    cron: seat.heartbeatCron,
+    nowMs: pass.now.getTime(),
+    stopped: log.stop !== undefined && log.paused !== true,
+    paused: log.paused === true,
+    pauseUntil: log.pauseUntil,
+    activityAt: log.activityAt,
+    mark: record.heartbeat,
+  })
+  if (step.mark === undefined) return []
+  record.heartbeat = step.mark
+  if (step.message === undefined) return []
+  const woke = await pass.deps.wake(name, step.message, true)
+  return woke.ok ? [] : [`${name}: Watchdog: heartbeat FAILED (${woke.detail})`]
 }
 
 function dryRunLine(decision: Decision, liveness: LivenessVerdict): string {
@@ -566,7 +594,7 @@ async function runPass(deps: WatchdogDeps, options: WatchdogOptions, lines: stri
       lines.push(seat)
       continue
     }
-    const { decision, budget, record, liveness, journalFault } = judgeSeat(pass, seat)
+    const { decision, budget, record, liveness, journalFault, log } = judgeSeat(pass, seat)
     const change = options.dryRun ? undefined : budgetChange(pass, name, budget)
     if (change !== undefined) lines.push(change)
     const capLine = options.dryRun ? undefined : capChange(pass, name, record)
@@ -578,6 +606,7 @@ async function runPass(deps: WatchdogDeps, options: WatchdogOptions, lines: stri
     else if (liveness.refused) lines.push(`${name}: Watchdog: ${liveness.reason}`)
     else if (decision.fire) lines.push(await act(pass, name, decision))
     else if (journalFault !== undefined) lines.push(`${name}: Watchdog: held: ${journalFault}`)
+    if (!options.dryRun && !liveness.resume) lines.push(...(await heartbeat(pass, seat, log)))
   }
   if (!options.dryRun) lines.push(...(await serviceChange(pass)))
   const paceFault = options.dryRun ? undefined : publishPoolPace(pass)
