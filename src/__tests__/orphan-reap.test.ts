@@ -147,6 +147,7 @@ describe('reaping the processes an exiting run-agent leaves behind', () => {
       log: e => events.push(e),
       sleepSync: () => undefined,
       platform: 'darwin',
+      kill: true,
     })
     expect(t.signals).toEqual([])
     expect(events).toEqual(['orphan_reap_skipped'])
