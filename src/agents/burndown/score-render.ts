@@ -5,7 +5,7 @@ import { planOrder, type PlannedRow } from './plan-order.js'
 import { describeUnnamedCriterion, unnamedCriteria } from './ms-role.js'
 import { parsePlanningTasks, type TagError } from './task-tags.js'
 import { readInitiatives } from './source.js'
-import { loadPolicy, seatScope } from './policy.js'
+import { dormantInitiatives, loadPolicy, seatScope } from './policy.js'
 import { readScoredTasks } from './score-source.js'
 import {
   checkToday,
@@ -51,6 +51,8 @@ export interface ScoredPlanInputs {
   hardStops: readonly string[]
   today: string
   top: number
+  /** Initiatives whose work waits on a gate, so they earn no `gate_free_bonus`. */
+  dormant?: ReadonlySet<string>
   skipped?: readonly string[]
   seat?: string
   milestones?: MilestoneFile
@@ -62,7 +64,7 @@ export interface ScoredPlanInputs {
 
 export function scoredPlan(input: ScoredPlanInputs): ScoredPlan {
   const { tasks, weights, defaults, exclusions, hardStops, today, top, skipped = [] } = input
-  const scored = scoreAll(tasks, weights, defaults, exclusions, hardStops, today)
+  const scored = scoreAll(tasks, weights, defaults, exclusions, hardStops, today, input.dormant)
   const planned = planOrder({
     rows: scored.rows,
     tasks,
@@ -166,6 +168,7 @@ export function scoredPlanFromDisk(opts: {
     hardStops: policy.charter.hard_stops,
     today: opts.today,
     top: opts.top,
+    dormant: dormantInitiatives(policy.seat),
     knownIds,
   })
   return read === undefined
@@ -173,7 +176,7 @@ export function scoredPlanFromDisk(opts: {
     : { ...plan, milestones: { week: read.week, errors: read.errors.map(describeError) } }
 }
 
-const COMPONENT_KEYS: (keyof Components)[] = ['S', 'P', 'U', 'A', 'W', 'K', 'R', 'Z', 'H']
+const COMPONENT_KEYS: Exclude<keyof Components, 'G'>[] = ['S', 'P', 'U', 'A', 'W', 'K', 'R', 'Z', 'H']
 const TITLE_WIDTH = 90
 
 const fixed = (x: number, width: number) => x.toFixed(1).padStart(width)
