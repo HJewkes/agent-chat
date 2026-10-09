@@ -10,6 +10,12 @@ import { logEvent } from './log.js'
  */
 export const MAX_OPEN_SERVICE_QUESTIONS = 20
 
+/**
+ * Open service questions one connection may hold across every label. The
+ * per-label cap alone lets one connection fill the queue by inventing labels.
+ */
+export const MAX_OPEN_SERVICE_ASKS_PER_CONNECTION = 50
+
 const MAX_TEXT = 4000
 const LABEL = /^[a-z0-9][a-z0-9._-]{0,47}$/
 
@@ -42,12 +48,20 @@ function textRefusal(text: unknown): string | undefined {
   return undefined
 }
 
+/** Drops `held` ids the human has since closed, then says whether the connection is at its cap. */
+function connectionRefusal(core: BrokerCore, held: Set<string>): string | undefined {
+  for (const msgId of held) if (!core.events.isOpen(msgId)) held.delete(msgId)
+  if (held.size < MAX_OPEN_SERVICE_ASKS_PER_CONNECTION) return undefined
+  return `this connection already has ${MAX_OPEN_SERVICE_ASKS_PER_CONNECTION} open service questions; resolve or dismiss one first`
+}
+
 /**
  * File a service question for the human. The caller has already established the
- * connection is unregistered; this checks the frame and writes the row.
+ * connection is unregistered; this checks the frame and writes the row. `held`
+ * is the connection's own open asks, and gains the new one.
  */
-export function fileServiceAsk(core: BrokerCore, msg: ServiceAsk): ServiceAskOutcome {
-  const reason = labelRefusal(core, msg.as) ?? textRefusal(msg.text)
+export function fileServiceAsk(core: BrokerCore, msg: ServiceAsk, held: Set<string>): ServiceAskOutcome {
+  const reason = connectionRefusal(core, held) ?? labelRefusal(core, msg.as) ?? textRefusal(msg.text)
   if (reason) return { ok: false, reason }
   const { msgId } = core.append({
     kind: 'question',
@@ -65,5 +79,6 @@ export function fileServiceAsk(core: BrokerCore, msg: ServiceAsk): ServiceAskOut
     recipients: [HUMAN],
     source: SERVICE_SOURCE,
   })
+  held.add(msgId)
   return { ok: true, msgId }
 }
