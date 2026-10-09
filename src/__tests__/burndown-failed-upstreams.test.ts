@@ -44,12 +44,12 @@ const ledgerWith = (claims: Claim[], ladder: Ledger['ladder'] = {}): Ledger => (
 describe('burndown plan --seat behind a failed upstream', () => {
   let root: string
 
-  const writeTask = (id: string, tags: string[], dir = 'tasks', status = 'open') => {
-    fs.mkdirSync(path.join(root, 'init-alpha', dir), { recursive: true })
+  const writeTask = (id: string, tags: string[], initiative = 'init-alpha') => {
+    fs.mkdirSync(path.join(root, initiative, 'tasks'), { recursive: true })
     fs.writeFileSync(
-      path.join(root, 'init-alpha', dir, `${id}.yml`),
+      path.join(root, initiative, 'tasks', `${id}.yml`),
       `id: ${id}\ntitle: task ${id}\npriority: 3\nseverity: high\nestimate: 2\n` +
-        `done_when: The widget renders.\nstatus: ${status}\ntags: [${tags.join(', ')}]\nnotes: ''\n` +
+        `done_when: The widget renders.\nstatus: open\ntags: [${tags.join(', ')}]\nnotes: ''\n` +
         'created: 2026-09-01\nupdated: 2026-09-20\ndone_at: null\n',
     )
   }
@@ -81,63 +81,75 @@ describe('burndown plan --seat behind a failed upstream', () => {
     fs.rmSync(root, { recursive: true, force: true })
   })
 
-  it('refuses a dependent of a failed-stall task as upstream-failed and does not dispatch it', () => {
-    writeTask('AA-1', [])
-    writeTask('AA-2', ['dep:AA-1'])
-    const failed = claim('AA-1', {
+  const failedClaim = (taskId: string, patch: Partial<Claim> = {}) =>
+    claim(taskId, {
       stalledReason: 'retry-spent: three attempts',
       stalledClass: 'failed',
       stallCode: 'retry-spent',
+      ...patch,
     })
 
-    const { lines, dispatched } = planLines(ledgerWith([failed]))
+  /** Another seat's task is on disk but outside seat-a's scope, so `planOrder` would take its `dep:` as closed. */
+  const otherSeatsTask = () => writeTask('BB-1', [], 'init-beta')
+  const otherSeat = { initiative: 'init-beta', seat: 'seat-b', namePrefix: 'sb' }
+
+  it("refuses a dependent of another seat's failed-stall task instead of dispatching it", () => {
+    otherSeatsTask()
+    writeTask('AA-2', ['dep:BB-1'])
+
+    const { lines, dispatched } = planLines(ledgerWith([failedClaim('BB-1', otherSeat)]))
 
     expect(dispatched).not.toContain('AA-2')
     expect(lines).toContain('refused init-alpha AA-2 [plan-blocked]: upstream-failed')
   })
 
-  it('refuses a dependent of a released task as upstream-failed', () => {
+  it("dispatches a dependent of another seat's merged task", () => {
+    otherSeatsTask()
+    writeTask('AA-2', ['dep:BB-1'])
+    const merged = claim('BB-1', { ...otherSeat, phase: 'done', pr: 'https://example.invalid/pr/1' })
+
+    const { lines, dispatched } = planLines(ledgerWith([merged]))
+
+    expect(dispatched).toContain('AA-2')
+    expect(lines.join('\n')).not.toContain('upstream-failed')
+  })
+
+  it('names an in-scope failed upstream as upstream-failed rather than dep-blocked', () => {
+    writeTask('AA-1', [])
+    writeTask('AA-2', ['dep:AA-1'])
+
+    const { lines, dispatched } = planLines(ledgerWith([failedClaim('AA-1')]))
+
+    expect(dispatched).not.toContain('AA-2')
+    expect(lines).toContain('refused init-alpha AA-2 [plan-blocked]: upstream-failed')
+  })
+
+  it('keeps a dependent of a released task dep-blocked while the task goes out again', () => {
     writeTask('AA-1', [])
     writeTask('AA-2', ['dep:AA-1'])
     const ladder = { 'AA-1#': { respawns: 1, lastAt: AT, releases: 1, code: 'no-progress' as const } }
 
     const { lines, dispatched } = planLines(ledgerWith([], ladder))
 
-    expect(dispatched).not.toContain('AA-2')
-    expect(lines).toContain('refused init-alpha AA-2 [plan-blocked]: upstream-failed')
+    expect(dispatched).toContain('AA-1')
+    expect(lines).toContain('refused init-alpha AA-2 [plan-blocked]: dep-blocked')
   })
 
-  it('leaves a dependent of a merged task free to dispatch', () => {
-    writeTask('AA-1', [], path.join('tasks', 'archive'), 'done')
-    writeTask('AA-2', ['dep:AA-1'])
-    const merged = claim('AA-1', { phase: 'done', pr: 'https://example.invalid/pr/1' })
-    const ladder = { 'AA-1#': { respawns: 0, lastAt: AT, releases: 1, code: 'no-progress' as const } }
-
-    const { lines, dispatched } = planLines(ledgerWith([merged], ladder))
-
-    expect(dispatched).toContain('AA-2')
-    expect(lines.join('\n')).not.toContain('upstream-failed')
-  })
-
-  it('keeps a dependent of an open task dep-blocked, not upstream-failed', () => {
+  it('keeps a dependent of an open task dep-blocked', () => {
     writeTask('AA-1', [])
     writeTask('AA-2', ['dep:AA-1'])
-    const running = claim('AA-1', {})
 
-    const { lines, dispatched } = planLines(ledgerWith([running]))
+    const { lines, dispatched } = planLines(ledgerWith([claim('AA-1', {})]))
 
     expect(dispatched).not.toContain('AA-2')
     expect(lines).toContain('refused init-alpha AA-2 [plan-blocked]: dep-blocked')
   })
 
-  it('names each terminal upstream by its stall code and skips a stalled or requeued one', () => {
-    const open = ['AA-1', 'AA-2', 'AA-3', 'AA-4'].map(id => ({ id }) as never)
-    const ladder = {
-      'AA-2#': { respawns: 1, lastAt: AT, releases: 1, code: 'lease-expired' as const },
-      'AA-4#': { respawns: 1, lastAt: AT, releases: 1, code: 'no-progress' as const },
-    }
+  it('names only held failed claims, by stall code', () => {
+    const ladder = { 'AA-4#': { respawns: 1, lastAt: AT, releases: 1, code: 'no-progress' as const } }
     const claims = [
-      claim('AA-1', { stalledReason: 'budget: spent', stalledClass: 'failed', stallCode: 'budget' }),
+      failedClaim('AA-1', { stalledReason: 'budget: spent', stallCode: 'budget' }),
+      failedClaim('AA-2', { phase: 'done' }),
       claim('AA-3', {
         stalledReason: 'no-progress: idle',
         stalledClass: 'stalled',
@@ -146,9 +158,6 @@ describe('burndown plan --seat behind a failed upstream', () => {
       claim('AA-4', { phase: 'queued' }),
     ]
 
-    expect(failedUpstreamsOf(ledgerWith(claims, ladder), open)).toEqual({
-      'AA-1': 'budget',
-      'AA-2': 'lease-expired',
-    })
+    expect(failedUpstreamsOf(ledgerWith(claims, ladder))).toEqual({ 'AA-1': 'budget' })
   })
 })
