@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import type { AgentIdentity } from '../protocol.js'
-import { LAUNCHER_PID_ENV } from './launcher.js'
+import { AGENT_ID_ENV, LAUNCHER_PID_ENV } from '../launch-identity.js'
 
 /**
  * CC-898: kill what a finished headless agent left behind.
@@ -13,8 +13,6 @@ import { LAUNCHER_PID_ENV } from './launcher.js'
  * The environment is read from /proc, which only Linux has. A process whose environ cannot
  * be read is skipped, never guessed at.
  */
-
-export const AGENT_ID_ENV = 'AGENT_CHAT_AGENT_ID'
 
 /** How long a row stays exited or retired before the sweep trusts that its processes are strays. */
 export const SWEEP_GRACE_MS = 3 * 60_000

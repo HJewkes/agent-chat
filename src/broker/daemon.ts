@@ -30,6 +30,7 @@ import {
 import { hostLeaseRefusal } from '../host-lease.js'
 import { logEvent } from './log.js'
 import { installedCliPaths, lsofCwd, readPsTable, startReaper } from './reaper.js'
+import { LAUNCH_IDENTITY_ENV } from '../launch-identity.js'
 import { startAgeOutSweep } from './age-out.js'
 import { startOrphanSweep } from '../agents/orphan-sweep.js'
 import { deliver, SocketServer } from './socket.js'
@@ -71,6 +72,8 @@ export function newAgentSlots(): Semaphore {
  * not shift under a caller that only wants to know whether it won the race.
  */
 export async function startBroker(options: StartBrokerOptions = {}): Promise<net.Server | null> {
+  // A broker started by hand from inside an agent still must not hand that launch's identity to its children.
+  for (const key of LAUNCH_IDENTITY_ENV) delete process.env[key]
   const sock = socketPath()
   fs.mkdirSync(home(), { recursive: true })
   if (isHeld() || isOffLease() || !(await claimSocketPath(sock))) return null
