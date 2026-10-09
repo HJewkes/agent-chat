@@ -1,29 +1,19 @@
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
-import { EMPTY_DENYLIST, loadDenylist, type DenylistLoad } from '../../leak-guard/denylist.js'
-import { gitRangeSource } from '../../leak-guard/git-source.js'
-import {
-  buildMatchers,
-  redactText,
-  scanRange,
-  scanText,
-  type Finding,
-  type RangeSource,
-  type ScanContext,
-} from '../../leak-guard/scan.js'
-import { denylistPath } from '../../paths.js'
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
+import { egressRunner, type EgressFinding, type EgressOutcome, type EgressRunner } from './egress-runner.js'
 import type { Runner } from './exec.js'
 import { heldClaims, type Claim, type Ledger } from './ledger.js'
 import type { HumanItem } from './seat-deliver.js'
 import { GIT_BIN } from './review-diff.js'
 
 /**
- * The tick's leak backstop (CC-265 S3): scan the open PRs of every repo the ledger has a PR in.
- * A claim's finding becomes its seat's `leak` event; any other agent PR's goes to the human queue.
- * It reads PRs over REST only and never edits or closes one. Findings carry location and category, never text.
+ * The tick's leak backstop (CC-265): scan the open PRs of every repo the ledger has a PR in, with
+ * the scanner and private term list the pre-push hook uses. A claim's finding becomes its seat's
+ * `leak` event; any other agent PR's goes to the human queue. It reads PRs over REST only and never
+ * edits or closes one. Findings carry location and rule, never text. With no scanner or no term
+ * list it scans nothing and says so, so no PR is ever reported clean unscanned.
  */
 
 export interface LeakDeps {
@@ -31,10 +21,8 @@ export interface LeakDeps {
   log: (event: string, detail: Record<string, unknown>) => void
   /** Seats the tick tells; a claim of any other seat, or of none, goes to the human queue. */
   seats: readonly string[]
-  home?: string
-  denylist?: DenylistLoad
-  /** Reads a checkout's commits for the pushed-branch scan; a test injects one. */
-  source?: (cwd: string) => RangeSource
+  /** The scanner; a test injects one. */
+  egress?: EgressRunner
 }
 
 export interface LeakResult {
@@ -103,32 +91,54 @@ export async function leakCheck(ledger: Ledger, deps: LeakDeps): Promise<LeakRes
   const repos = reposOf(ledger)
   if (repos.length === 0) return { ledger, human: [], lines: [] }
   sweepScanRefs(ledger, deps.exec)
-  const load = deps.denylist ?? loadDenylist(denylistPath())
-  const list = load.kind === 'ok' ? load.list : EMPTY_DENYLIST
+  const egress = deps.egress ?? egressRunner()
+  const health = egress.text('')
   const pass: Pass = {
-    ctx: { list, home: deps.home ?? os.homedir() },
+    egress,
     deps,
-    ledger: recordDenylist(ledger, load.kind, deps),
+    ledger: recordScanner(ledger, health, deps),
     human: [],
     lines: [],
     current: new Set(),
     read: new Set(),
+    unscanned: new Set(),
   }
-  for (const repo of repos) await checkRepo(pass, repo)
+  if (health.state === 'ok') for (const repo of repos) await checkRepo(pass, repo)
+  else scannerDown(pass, health)
   return { ledger: pruneFiled(pass.ledger, pass.current, pass.read), human: pass.human, lines: pass.lines }
 }
 
 /** One tick's running state across repos. */
 interface Pass {
-  ctx: ScanContext
+  egress: EgressRunner
   deps: LeakDeps
   ledger: Ledger
   human: HumanItem[]
   lines: string[]
   /** Keys of every human item whose finding holds this tick, filed or not. */
   current: Set<string>
-  /** Repos whose open PRs were read this tick. */
+  /** Repos whose open PRs were read and scanned this tick. */
   read: Set<string>
+  /** Claims with a PR the scanner failed on, whose last record stands. */
+  unscanned: Set<Claim>
+}
+
+/** Human-queue keys for a scanner outage; never a PR URL, so only a healthy tick clears one. */
+const SCANNER_KEY = 'leak-scanner:'
+
+const SCANNER_WHY: Record<Exclude<EgressOutcome['state'], 'ok'>, string> = {
+  'no-scanner': "no titan-egress-scan (or node) on the tick's PATH",
+  'no-terms': 'the private term list is missing, unreadable or empty',
+  error: 'titan-egress-scan failed',
+}
+
+function scannerDown(pass: Pass, outcome: Exclude<EgressOutcome, { state: 'ok' }>): void {
+  const why = SCANNER_WHY[outcome.state]
+  pass.lines.push(`leak check scanned no PR: ${why}; no PR is reported clean`)
+  fileHuman(pass, {
+    key: `${SCANNER_KEY}${outcome.state}`,
+    text: `Leak check is down: ${why}, so the tick scanned no PR title, body or branch. Install @titan-design/egress-scan where the tick can find it and keep the term list in place; see docs/leak-guard.md.`,
+  })
 }
 
 /** One PR's findings for a seated claim; a claim collects every PR it owns before its record is compared. */
@@ -139,6 +149,12 @@ interface PrRows {
 }
 
 type Found = Map<Claim, PrRows[]>
+
+/** The repo a PR is listed under, and whether its name may be shown in a message. */
+interface RepoView {
+  repo: string
+  shown: boolean
+}
 
 const reposOf = (ledger: Ledger): string[] => [
   ...new Set(heldClaims(ledger).flatMap(c => repoOfPr(c.pr ?? '') ?? [])),
@@ -152,8 +168,17 @@ async function checkRepo(pass: Pass, repo: string): Promise<void> {
   if (!Array.isArray(pulls)) return readFailed(pass, repo, pulls)
   pass.read.add(repo)
   const found: Found = new Map()
-  for (const pull of pulls.filter(p => fromBaseRepo(p, repo))) await checkPull(pass, pull, found, repo)
-  pass.ledger = settleClaims(pass.ledger, repo, found)
+  const shownRepo = repoShown(pass, repo)
+  for (const pull of pulls.filter(p => fromBaseRepo(p, repo))) {
+    await checkPull(pass, pull, found, { repo, shown: shownRepo === repo })
+  }
+  pass.ledger = settleClaims(pass.ledger, repo, found, pass.unscanned)
+}
+
+/** The repo name as a message may show it: redacted when it holds a finding or could not be scanned. */
+function repoShown(pass: Pass, repo: string): string {
+  const scanned = pass.egress.text(repo)
+  return scanned.state === 'ok' && scanned.findings.length === 0 ? repo : '[redacted repo]'
 }
 
 function readFailed(pass: Pass, repo: string, failure: ReadFailure): void {
@@ -162,26 +187,40 @@ function readFailed(pass: Pass, repo: string, failure: ReadFailure): void {
     failure.http === undefined ? `exit ${failure.exit ?? 'none'}` : `HTTP ${failure.http}`,
     ...(failure.rateLimited ? ['rate limited'] : []),
   ].join(', ')
-  const shown = redactText(repo, buildMatchers(pass.ctx))
-  pass.lines.push(`leak check could not list open PRs of ${shown} (${why}); retried next tick`)
+  pass.lines.push(
+    `leak check could not list open PRs of ${repoShown(pass, repo)} (${why}); retried next tick`,
+  )
 }
 
-/** Logs the deny-list state when it changes, so a missing list is one event rather than one per tick. */
-function recordDenylist(ledger: Ledger, state: DenylistLoad['kind'], deps: LeakDeps): Ledger {
-  if (ledger.leakDenylist === state) return ledger
-  deps.log('burndown_leak_denylist', { state, checked: state === 'ok' ? 'all categories' : 'home-path only' })
-  return { ...ledger, leakDenylist: state }
+/** Logs the scanner state when it changes, so a missing scanner is one event rather than one per tick. */
+function recordScanner(ledger: Ledger, outcome: EgressOutcome, deps: LeakDeps): Ledger {
+  if (ledger.leakScanner === outcome.state) return ledger
+  const detail = outcome.state === 'ok' || outcome.detail === undefined ? {} : { detail: outcome.detail }
+  deps.log('burndown_leak_scanner', { state: outcome.state, ...detail })
+  return { ...ledger, leakScanner: outcome.state }
 }
 
-async function checkPull(pass: Pass, pull: Pull, found: Found, repo: string): Promise<void> {
-  const claim = owningClaim(pass.ledger, pull, repo)
+/** Title and body in one scan: the title is line 1, so body line n is scanner line n + 1. */
+function scanPullText(pass: Pass, pull: Pull): string[] | undefined {
+  const title = pull.title.replace(/[\r\n]+/g, ' ')
+  const scanned = pass.egress.text(`${title}\n${pull.body}`)
+  if (scanned.state !== 'ok') return undefined
+  return scanned.findings.map(({ location, rule }) => {
+    const [line = '', col = ''] = location.split(':')
+    return Number(line) === 1 ? `title 1:${col} ${rule}` : `body ${Number(line) - 1}:${col} ${rule}`
+  })
+}
+
+async function checkPull(pass: Pass, pull: Pull, found: Found, where: RepoView): Promise<void> {
+  const claim = owningClaim(pass.ledger, pull, where.repo)
   if (claim === undefined && !pull.branch.startsWith(BRANCH_PREFIX)) return
-  const text = [...scanText(pull.title, pass.ctx, 'title'), ...scanText(pull.body, pass.ctx, 'body')]
-  const none = { findings: [], lines: [] }
-  const branch = claim === undefined ? none : await scanBranch(claim, pull, pass.ctx, pass.deps)
+  const url = where.shown ? pull.url : '[redacted url]'
+  const text = scanPullText(pass, pull)
+  if (text === undefined) return textUnscanned(pass, where.repo, url, claim)
+  const none = { rows: [], lines: [] }
+  const branch = claim === undefined ? none : await scanBranch(claim, pull, pass)
   pass.lines.push(...branch.lines)
-  const rows = [...new Set([...text, ...branch.findings].map(where))]
-  const url = redactText(pull.url, buildMatchers(pass.ctx))
+  const rows = [...new Set([...text, ...branch.rows])]
   if (claim?.seat !== undefined && pass.deps.seats.includes(claim.seat)) {
     found.set(claim, [...(found.get(claim) ?? []), { number: pull.number, url, rows }])
     return
@@ -205,8 +244,12 @@ function owningClaim(ledger: Ledger, pull: Pull, repo: string): Claim | undefine
   )
 }
 
-const where = (f: Finding): string =>
-  `${f.commit === undefined ? '' : `${f.commit} `}${f.file === 'title' ? 'title' : `${f.file}:${f.line}`} ${f.category}`
+/** A PR the scanner failed on keeps its claim's last record and its repo's filed items. */
+function textUnscanned(pass: Pass, repo: string, url: string, claim: Claim | undefined): void {
+  pass.lines.push(`leak check could not scan the text of ${url}; its last result stands`)
+  pass.read.delete(repo)
+  if (claim !== undefined) pass.unscanned.add(claim)
+}
 
 function capped(rows: readonly string[]): string[] {
   if (rows.length <= SHOWN_FINDINGS) return [...rows]
@@ -226,8 +269,9 @@ function mergedLeak(repo: string, prs: readonly PrRows[]): Leak | undefined {
 }
 
 /** Each seated claim's union this tick, and no finding for one whose PRs in `repo` have all closed. */
-function settleClaims(ledger: Ledger, repo: string, found: Found): Ledger {
+function settleClaims(ledger: Ledger, repo: string, found: Found, unscanned: ReadonlySet<Claim>): Ledger {
   const claims = ledger.claims.map(c => {
+    if (unscanned.has(c)) return c
     const prs = found.get(c)
     if (prs !== undefined) return withLeak(c, mergedLeak(repo, prs))
     return c.leak?.repo === repo ? withLeak(c, undefined) : c
@@ -256,7 +300,9 @@ function humanItem(pull: Pull, url: string, rows: string[], claim: Claim | undef
 /** Drops filed keys that no longer hold, keeping those of repos this tick could not read. */
 function pruneFiled(ledger: Ledger, current: ReadonlySet<string>, read: ReadonlySet<string>): Ledger {
   if (ledger.humanFiled === undefined) return ledger
-  const kept = ledger.humanFiled.filter(k => current.has(k) || !read.has(repoOfPr(k) ?? ''))
+  const holds = (k: string): boolean =>
+    current.has(k) || (!k.startsWith(SCANNER_KEY) && !read.has(repoOfPr(k) ?? ''))
+  const kept = ledger.humanFiled.filter(holds)
   const { humanFiled: _old, ...rest } = ledger
   return kept.length === 0 ? rest : { ...rest, humanFiled: kept }
 }
@@ -268,30 +314,32 @@ function checkoutOf(claim: Claim): string | undefined {
   return [claim.worktree, repo].find(dir => fs.existsSync(dir))
 }
 
-/** Every commit the PR's branch adds over its base, through S1's per-commit range scan. */
+/** Every commit the PR's branch adds over its base, through the scanner's per-commit range scan. */
 async function scanBranch(
   claim: Claim,
   pull: Pull,
-  ctx: ScanContext,
-  deps: LeakDeps,
-): Promise<{ findings: Finding[]; lines: string[] }> {
+  pass: Pass,
+): Promise<{ rows: string[]; lines: string[] }> {
   const cwd = checkoutOf(claim)
   const skipped = (why: string) => ({
-    findings: [],
+    rows: [],
     lines: [`leak check skipped the branch of ${claim.taskId}: ${why}`],
   })
   if (cwd === undefined) return skipped('no local checkout')
   const refs = scanRefs(pull.number)
   try {
-    if (deps.exec(GIT_BIN, privateFetch(pull, refs), cwd).status !== 0) return skipped('git fetch failed')
-    const range = `${refs.base}..${refs.head}`
-    return { findings: await scanRange(range, ctx, (deps.source ?? gitRangeSource)(cwd)), lines: [] }
-  } catch {
-    return skipped('git could not read the range')
+    if (pass.deps.exec(GIT_BIN, privateFetch(pull, refs), cwd).status !== 0)
+      return skipped('git fetch failed')
+    const scanned = pass.egress.range(cwd, refs.base, refs.head)
+    if (scanned.state !== 'ok') return skipped(`the scanner reported ${scanned.state}`)
+    return { rows: scanned.findings.map(branchRow), lines: [] }
   } finally {
-    for (const ref of [refs.base, refs.head]) deps.exec(GIT_BIN, ['update-ref', '-d', ref], cwd)
+    for (const ref of [refs.base, refs.head]) pass.deps.exec(GIT_BIN, ['update-ref', '-d', ref], cwd)
   }
 }
+
+/** `commit <sha> <file>:<line>` from the scanner, shown as `<sha> <file>:<line> <rule>`. */
+const branchRow = ({ location, rule }: EgressFinding): string => `${location.replace(/^commit /, '')} ${rule}`
 
 const SCAN_REF_ROOT = 'refs/agent-chat/leak-scan/'
 

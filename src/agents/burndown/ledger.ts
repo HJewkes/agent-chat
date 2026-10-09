@@ -232,8 +232,8 @@ const Ledger = z.object({
   seats: z.record(z.string(), SeatState).optional(),
   /** Keys of human-queue items the tick filed, so a finding that still holds is filed once (CC-269). */
   humanFiled: z.array(z.string()).optional(),
-  /** The deny-list state the leak check last recorded, so a missing list is logged once rather than every tick. */
-  leakDenylist: z.string().optional(),
+  /** The scanner state the leak check last recorded, so a missing scanner is logged once rather than every tick. */
+  leakScanner: z.string().optional(),
   /** Release counts by task id, which hold the task back from dispatch (CC-661). */
   releases: z.record(z.string(), ReleaseRecord).optional(),
   /** When each triage job was started, pruned to the last day; `exceptions.triage.maxPerDay` counts these. */
