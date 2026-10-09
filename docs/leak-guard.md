@@ -962,7 +962,11 @@ push` included, after removing quotes and blanks, so `pu sh` split across two ar
 into `push` (`p?sh` beside a file named `push`). The accepted cost is a false refusal such as `git st push` for `st = !git
 stash`; run the command the alias stands for instead.
 
-Every text filter in the shim (`tr`, `sed`) runs under `LC_ALL=C`, so a byte that is not valid UTF-8, such as `0xff`, is read as a byte and cannot make a filter fail and blank a check (CC-612). A filter that still fails refuses with `unresolved`.
+Every text filter in the shim (`tr`, `sed`) runs under `LC_ALL=C`, so a byte that is not valid
+UTF-8, such as `0xff`, is read as a byte and cannot make a filter fail and blank a check
+(CC-612). A filter that still fails never lets a check pass. In the alias checks it refuses
+with `unresolved`. In the destination check it leaves the push not known to be local, so the
+push keeps the hooks-path rule and a refusal says `hooks-path`, not `unresolved`.
 
 The builtin list is read from the real git at each spawn. If that read fails, the shim reads it
 on each call instead, and `push` is still matched by name.
@@ -1010,8 +1014,9 @@ Not covered:
   `echo hsup | rev | xargs -I% git %`, a `tr` or `base64 | sh` pipeline, or
   `!git $P --no-verify origin main; true` run as `P=push git g`. One whose arguments or text
   mention push is refused (above);
-- a listed `!` alias whose text an agent rewrites by editing `.git/config` directly, since the
-  allowlist holds names and not alias text;
+- a listed `!` alias whose text an agent replaces, since the allowlist holds names and not alias
+  text. Editing `.git/config` directly is one source; `git -c alias.<name>=...` and the
+  `GIT_CONFIG_*` variables, set inside a script the PreToolUse guard does not read, are others;
 - an executable `git-<word>` on PATH or in git's exec-path: `git <word>` runs it unchecked, with
   git's exec-path first on PATH as for a `!` alias;
 - pushing without git.
