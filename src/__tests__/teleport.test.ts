@@ -1121,32 +1121,36 @@ describe('a session on another host', () => {
     return { agentId, cwd, result, plan: supervisor.teleportPlan(agentId) }
   }
 
-  it('gets its relaunch plan back, and the broker launches and signals nothing', async () => {
-    const { cwd, result, plan } = await teleportRemote()
+  const launched = (agentId: string, successor: string, ok = true) =>
+    supervisor.teleportLaunched(agentId, { successor, ok })
+
+  it('gets a host-neutral launch spec back, and the broker launches and signals nothing', async () => {
+    const { result, plan } = await teleportRemote()
     await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
 
     const reply = await plan
     expect(result).toMatchObject({ ok: true, remote: true, countdownMs: COUNTDOWN_MS })
     expect(reply.ok).toBe(true)
-    expect(reply.launch?.plan.agentId).toBe(result.agentId)
-    expect(reply.launch?.plan.cwd).toBe(cwd)
-    expect(reply.launch?.plan.stdin ?? reply.launch?.plan.args.join(' ')).toContain(
-      'what I was mid-way through',
-    )
+    expect(reply.launch?.agentId).toBe(result.agentId)
+    expect(reply.launch?.brief).toContain('what I was mid-way through')
     expect(reply.launch?.surface).toBe('iterm-tab')
-    expect(reply.launch?.mcpConfig).toHaveProperty('mcpServers')
-    expect(reply.launch?.origin.execPath).toBe(process.execPath)
+    // Nothing that names this host: no home, no node, no CLI entry, no env.
+    const wire = JSON.stringify(reply.launch)
+    expect(wire).not.toContain(process.env.AGENT_CHAT_HOME as string)
+    expect(wire).not.toContain(process.execPath)
+    expect(reply.launch?.profile).not.toHaveProperty('env')
+    expect(reply.launch?.profile).not.toHaveProperty('mcpServers')
     expect(killed).toEqual([])
     expect(fs.existsSync(planPath(result.agentId as string))).toBe(false)
     expect(spawnRowFor(result.agentId as string)).toBeDefined()
   })
 
   it('retires the predecessor once its host reports the successor launched', async () => {
-    const { agentId, plan } = await teleportRemote()
+    const { agentId, result, plan } = await teleportRemote()
     await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
     await plan
 
-    expect(supervisor.teleportLaunched(agentId, { ok: true })).toEqual({ ok: true })
+    expect(launched(agentId, result.agentId as string)).toEqual({ ok: true })
     await vi.advanceTimersByTimeAsync(0)
 
     expect(rowsFor(agentId).map(r => r.kind)).toContain('agent_retired')
@@ -1158,7 +1162,11 @@ describe('a session on another host', () => {
     await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
     await plan
 
-    supervisor.teleportLaunched(agentId, { ok: false, reason: 'iTerm is not running' })
+    supervisor.teleportLaunched(agentId, {
+      successor: result.agentId as string,
+      ok: false,
+      reason: 'iTerm is not running',
+    })
     await vi.advanceTimersByTimeAsync(0)
 
     expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
@@ -1182,6 +1190,27 @@ describe('a session on another host', () => {
 
     expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
     expect(rowsFor(result.agentId as string).map(r => r.kind)).toContain('agent_retired')
+  })
+
+  it('refuses a report that arrives after the timeout released the successor', async () => {
+    const { agentId, result, plan } = await teleportRemote()
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    await plan
+    await vi.advanceTimersByTimeAsync(REMOTE_LAUNCH_TIMEOUT_MS)
+
+    expect(launched(agentId, result.agentId as string).ok).toBe(false)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
+  })
+
+  it('refuses a report naming a different successor', async () => {
+    const { agentId, plan } = await teleportRemote()
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    await plan
+
+    expect(launched(agentId, 'ffffffff').ok).toBe(false)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
   })
 
   it('tells a waiting host there is nothing to run when the human aborts', async () => {

@@ -528,6 +528,7 @@ export class SocketServer {
       agentId === undefined
         ? { ok: false, reason: 'this connection has no durable identity to teleport' }
         : this.supervisor.teleportLaunched(agentId, {
+            successor: msg.agentId,
             ok: msg.ok,
             ...(msg.reason === undefined ? {} : { reason: msg.reason }),
           })

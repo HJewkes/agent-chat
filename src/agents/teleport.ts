@@ -169,9 +169,13 @@ export interface RemotePlanReply {
 
 /** CC-881: the remote caller's report on the launch it was handed. */
 export interface RemoteLaunchReport {
+  /** The successor the report is about, so a report can only settle the teleport it names. */
+  successor: string
   ok: boolean
   reason?: string
 }
+
+type LaunchOutcome = Omit<RemoteLaunchReport, 'successor'>
 
 /** The predecessor's isolation, carried across rather than re-allocated (§9). */
 export interface InheritedIsolation {
@@ -235,7 +239,7 @@ export interface TeleportHost {
 interface RemoteWait {
   plan: Promise<RemotePlanReply>
   answer: (reply: RemotePlanReply) => void
-  report?: (report: RemoteLaunchReport) => void
+  report?: (report: LaunchOutcome) => void
 }
 
 const remoteWait = (): RemoteWait => {
@@ -657,9 +661,11 @@ export class Teleport {
 
   /** CC-881: the caller's report, accepted only while a handed-out plan awaits one. */
   remoteLaunched(agentId: string, report: RemoteLaunchReport): { ok: boolean; reason?: string } {
-    const remote = this.pending.get(agentId)?.remote
-    if (remote?.report === undefined)
-      return { ok: false, reason: 'no teleport launch is awaiting a report from this session' }
+    const entry = this.pending.get(agentId)
+    const remote = entry?.remote
+    // One winner: the timeout clears `report`, so a late report is refused here and never acted on.
+    if (remote?.report === undefined || entry?.descendantId !== report.successor)
+      return { ok: false, reason: 'no teleport launch is awaiting a report for that successor' }
     remote.report(report)
     return { ok: true }
   }
@@ -700,7 +706,7 @@ export class Teleport {
     })
   }
 
-  private awaitReport(remote: RemoteWait, launch: RemoteLaunch): Promise<RemoteLaunchReport> {
+  private awaitReport(remote: RemoteWait, launch: RemoteLaunch): Promise<LaunchOutcome> {
     return new Promise(resolve => {
       const timer = setTimeout(() => {
         delete remote.report

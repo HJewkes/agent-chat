@@ -2984,17 +2984,22 @@ export class Supervisor implements TeleportHost {
    * caller's to make: this host can neither write that host's disk nor open its terminal.
    */
   prepareRemoteRelaunch(input: RelaunchInput): RemoteLaunch {
-    const allocation = { cwd: input.cwd }
-    const { plan, sessionId } = this.successorPlan(input, allocation)
-    this.appendSuccessorSpawn(input, sessionId, allocation, 'none')
+    const sessionId = Teleport.newSessionId()
+    this.appendSuccessorSpawn(input, sessionId, { cwd: input.cwd }, 'none')
     this.remoteSessions.set(input.agentId, sessionId)
+    const { env: _env, mcpServers: _servers, warnings: _warnings, ...profile } = input.profile
     return {
       agentId: input.agentId,
-      plan,
-      mcpConfig: buildMcpConfig(input.profile, cliEntry(), plan.surface),
+      sessionId,
+      name: input.name,
+      profile,
+      brief: input.brief,
+      preamble: input.preamble,
       surface: input.surface,
+      ...(input.tags?.length ? { tags: input.tags } : {}),
+      ...(input.subscriptions?.length ? { subscriptions: input.subscriptions } : {}),
+      ...(input.remoteControl ? { remoteControl: true } : {}),
       ...(input.anchor === undefined ? {} : { anchor: input.anchor }),
-      origin: { execPath: process.execPath, cliEntry: cliEntry(), home: home() },
     }
   }
 
