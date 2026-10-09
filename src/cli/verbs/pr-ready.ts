@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import YAML from 'yaml'
 import { defaultTermsFile, scanDeps, scanGhArgs } from '../../gh-write/scan.js'
@@ -43,6 +44,8 @@ export interface PrReadyDeps {
   termsFile: string
   /** Read for AGENT_CHAT_BASEMENT_HOST and AGENT_CHAT_NAME; injected so tests never see the real one. */
   env?: NodeJS.ProcessEnv
+  /** Compared with the basement host to call basement-suite directly there; injected for tests. */
+  hostname?: string
 }
 
 interface StepOutcome {
@@ -296,12 +299,15 @@ export async function checksStep(
   base: string,
   err: (line: string) => void,
   env: NodeJS.ProcessEnv = process.env,
+  hostname: string = os.hostname(),
 ): Promise<StepOutcome> {
   const { commands, problems } = await planChecks(run, cwd, base)
   if (commands.length === 0 && problems.length === 0) return { ok: true, reason: 'no scripts' }
   const scripts = distinctScripts(commands)
   const route =
-    scripts.length === 0 ? { kind: 'local' as const } : await routeChecks(run, cwd, base, scripts, env)
+    scripts.length === 0
+      ? { kind: 'local' as const }
+      : await routeChecks(run, cwd, base, scripts, env, hostname)
   if (route.kind === 'deferred')
     return {
       ok: problems.length === 0,
@@ -386,7 +392,7 @@ export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultD
   if (!(await step('clean-tree', () => cleanTreeStep(run, cwd)))) return fail()
   if (!(await step('base', resolveBase))) return fail()
   if (!(await step('rebase', rebase))) return fail()
-  let ok = await step('checks', () => checksStep(run, cwd, base, deps.err, deps.env))
+  let ok = await step('checks', () => checksStep(run, cwd, base, deps.err, deps.env, deps.hostname))
   ok = (await step('changeset', () => changesetStep(run, cwd, base))) && ok
   ok = (await step('scan', () => scanStep(opts, cwd, deps.termsFile))) && ok
   if (!ok) return fail()

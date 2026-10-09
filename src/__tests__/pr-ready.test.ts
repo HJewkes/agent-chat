@@ -112,6 +112,7 @@ interface Extra {
   trap?: Trap
   termsFile?: string
   env?: NodeJS.ProcessEnv
+  hostname?: string
 }
 
 async function runPrReady(cwd: string, failing: string[] = [], opts: PrReadyOptions = {}, extra: Extra = {}) {
@@ -126,6 +127,7 @@ async function runPrReady(cwd: string, failing: string[] = [], opts: PrReadyOpti
     trap: extra.trap ?? (() => () => {}),
     termsFile: extra.termsFile ?? syntheticTerms(),
     env: extra.env ?? { AGENT_CHAT_BASEMENT_HOST: 'off' },
+    hostname: extra.hostname ?? 'workstation',
   })
   return { code, out, calls, errLines, toolCalls: calls.filter(call => !call.startsWith('git ')) }
 }
@@ -829,6 +831,50 @@ describe('pr-ready routes checks through basement-suite (CC-824)', () => {
 
     expect(result.calls.filter(c => c.startsWith('ssh'))).toEqual([])
     expect(result.toolCalls).toEqual(['npm run lint', 'npm run typecheck'])
+  })
+
+  describe('on basement itself (CC-909)', () => {
+    const direct = (script: string) => `basement-suite agent-chat feature --agent agent-x --run ${script}`
+    const onHost = (hostname: string) => ({ override: probeOk, env: REACHABLE, hostname })
+
+    it('calls basement-suite directly and never ssh when the hostname is the basement host', async () => {
+      const work = lintKind()
+      pushHead(work)
+      const result = await runPrReady(work, [], {}, onHost('basement'))
+
+      expect(result.code).toBe(0)
+      expect(result.toolCalls).toEqual([direct('lint'), direct('typecheck')])
+      expect(result.out).toContain('ok checks: basement lint exit 0, typecheck exit 0')
+    })
+
+    it('matches a fully qualified hostname by its first label', async () => {
+      const work = lintKind()
+      pushHead(work)
+      const result = await runPrReady(work, [], {}, onHost('Basement.lan'))
+
+      expect(result.toolCalls).toEqual([direct('lint'), direct('typecheck')])
+    })
+
+    it('defers with direct commands when the head is not pushed', async () => {
+      const result = await runPrReady(lintKind(), [], {}, onHost('basement'))
+
+      expect(result.out).toContain(
+        `ok checks: deferred to basement after push: ${direct('lint')}; ${direct('typecheck')}`,
+      )
+      expect(result.toolCalls).toEqual([])
+    })
+
+    it('keeps the ssh probe and call on any other host', async () => {
+      const work = lintKind()
+      pushHead(work)
+      const result = await runPrReady(work, [], {}, onHost('workstation'))
+
+      expect(result.toolCalls).toEqual([
+        'ssh -o BatchMode=yes -o ConnectTimeout=3 basement true',
+        suite('lint'),
+        suite('typecheck'),
+      ])
+    })
   })
 
   it('collapses per-member workspace commands into one run per script', async () => {
