@@ -1,5 +1,6 @@
 import type { AgentLifecycle, DeliveredMessage } from '../../protocol.js'
 import type { ExceptionClass } from './exception.js'
+import type { ExitedWork } from './exited-adopt.js'
 import {
   addClaim,
   isStalled,
@@ -48,6 +49,8 @@ export interface Observation {
   shepherd?: { row?: ShepherdRow; landed?: boolean }
   /** CC-723: the claim's transcript spend over every agent it spawned, against its seat's `per_claim_usd`; read, not yet acted on. */
   spend?: { claim: ClaimSpend; cap: number }
+  /** CC-673: an implementer that exited with no status line: its branch's open PR and commits ahead. */
+  exitedWork?: ExitedWork | 'unreadable'
 }
 
 export type SpawnContext =
@@ -55,6 +58,8 @@ export type SpawnContext =
   | { kind: 'review'; review: string }
   /** A ladder respawn (CC-660): the stall's code and what the predecessor left in the worktree. */
   | { kind: 'stall'; code: StallCode; diffSummary: string }
+  /** CC-673: the predecessor exited with no status line and left commits ahead; at most once per claim. */
+  | { kind: 'resume'; ahead: number }
 
 type ClaimPatch = Partial<Omit<Claim, 'taskId' | 'slice' | 'initiative'>>
 
@@ -206,6 +211,9 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
   const pr = report?.pr ?? claim.pr
   if (report?.status === 'DONE' && pr !== undefined)
     return handOff(claim, pr, claim.agentName ?? workerOf(claim), { lastReport })
+  const silent = report === undefined || report.status === 'unknown'
+  const adopted = silent ? adoptExited(claim, obs.exitedWork, lastReport) : undefined
+  if (adopted !== undefined) return adopted
   if (obs.diff?.reviewable === true) {
     const name = reviewerNameFor(claim.taskId, claim.reviewRound ?? 0, claim.slice, claim.namePrefix)
     return spawn(claim, { role: 'reviewer', name }, 'reviewing', { lastReport, pr })
@@ -214,6 +222,25 @@ function afterWorker(claim: Claim, obs: Observation): Action[] {
   return [
     stall(claim, lastReport === undefined || lastReport === '' ? 'no final report' : lastReport, 'failed'),
   ]
+}
+
+/**
+ * CC-673: adopt what a silent exit left. An open PR goes to Shepherd; commits ahead get one
+ * resume successor per claim. An unreadable read waits a tick, under the phase timeout, rather
+ * than move on a guess. Nothing here releases the claim; undefined falls through to review or a stall.
+ */
+function adoptExited(
+  claim: Claim,
+  work: Observation['exitedWork'],
+  lastReport: string | undefined,
+): Action[] | undefined {
+  if (work === undefined) return undefined
+  if (work === 'unreadable') return []
+  if (work.openPr !== null)
+    return handOff(claim, work.openPr, claim.agentName ?? workerOf(claim), { lastReport })
+  if (work.ahead > 0 && claim.resumed !== true)
+    return successor(claim, { kind: 'resume', ahead: work.ahead }, { resumed: true, lastReport })
+  return undefined
 }
 
 function afterAnswer(claim: Claim, obs: Observation): Action[] {
