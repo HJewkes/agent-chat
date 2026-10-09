@@ -85,6 +85,9 @@ export interface PromptCache {
  */
 export const STALE_AFTER_SECONDS = 120
 
+/** The oldest reading a budget gate trusts; an older one may hide spend since. */
+export const MAX_ACCOUNT_READING_AGE_SECONDS = 15 * 60
+
 export type BudgetMiss = 'no_file' | 'unreadable' | 'malformed'
 
 /** Absent means the status line wrote it; `transcript` means it was derived from usage (CC-179). */
@@ -407,6 +410,8 @@ export function accountUsageLine(budgets: NamedBudgetRead[], slots?: SlotUsage):
   return `Account usage (from ${freshest.name}'s reading, ${freshest.age_seconds}s old): ${usage}.${suffix}`
 }
 
+type FoundRead = Extract<BudgetRead, { found: true }>
+
 /**
  * The account-level figure for one config dir: the freshest reading of any
  * session under it, since rate-limit windows are the same for all of them.
@@ -422,7 +427,33 @@ export function readAccountBudget(dir: string, now = Date.now()): BudgetRead {
   }
   const reads = files
     .map(name => readStatusLineBudget(name.slice(0, -'.json'.length), now, dir))
-    .filter((read): read is Extract<BudgetRead, { found: true }> => read.found)
+    .filter((read): read is FoundRead => read.found)
   if (reads.length === 0) return { found: false, path: cache, reason: 'no_file' }
-  return reads.reduce((a, b) => (b.budget.written_at > a.budget.written_at ? b : a))
+  return mergeWindows(reads, now)
+}
+
+/**
+ * CC-895: the newest file, with each window it lacks taken whole from the freshest other file that has it.
+ * A status line drops five_hour after its reset while the usage poller's file still carries it. Only a
+ * fresh file lends a window, and never one whose reset has passed; the result is as old as its oldest lender.
+ */
+export function mergeWindows(reads: readonly FoundRead[], now: number): FoundRead {
+  const [newest, ...rest] = [...reads].sort((a, b) => b.budget.written_at - a.budget.written_at) as [
+    FoundRead,
+    ...FoundRead[],
+  ]
+  const rate_limits = { ...newest.budget.rate_limits }
+  let age = newest.age_seconds
+  for (const read of rest.filter(r => r.age_seconds <= MAX_ACCOUNT_READING_AGE_SECONDS))
+    for (const [name, window] of Object.entries(read.budget.rate_limits)) {
+      if (name in rate_limits || (window.resets_at !== undefined && window.resets_at * 1000 <= now)) continue
+      rate_limits[name] = window
+      age = Math.max(age, read.age_seconds)
+    }
+  return {
+    ...newest,
+    budget: { ...newest.budget, rate_limits },
+    age_seconds: age,
+    stale: age > STALE_AFTER_SECONDS,
+  }
 }

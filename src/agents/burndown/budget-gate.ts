@@ -1,3 +1,5 @@
+import { MAX_ACCOUNT_READING_AGE_SECONDS } from '../budget.js'
+
 /**
  * Whether the tick may spend on an account right now (design section 7).
  *
@@ -35,8 +37,8 @@ export type GateResult =
 const PRESENT_WITHIN_MS = 15 * 60_000
 const PRESENT_CEILING = 70
 const SONNET_ONLY_ABOVE = 85
-/** Both gates use the freshest status file; an older one may hide spend since. */
-export const MAX_READING_AGE_SECONDS = 15 * 60
+/** Both gates use the pool's freshest windows; an older one may hide spend since. */
+export const MAX_READING_AGE_SECONDS = MAX_ACCOUNT_READING_AGE_SECONDS
 
 const humanAbsentFor = (ctx: GateContext, ms: number): boolean =>
   ctx.humanLastTurnAt !== undefined && ctx.now.getTime() - ctx.humanLastTurnAt >= ms

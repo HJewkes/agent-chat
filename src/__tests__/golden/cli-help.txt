@@ -388,6 +388,10 @@ Commands:
                                 the machine-wide headless agents, free memory and full-suite slots
                                 against their limits, swap used, and the top eligible tasks. A spend
                                 cap with no saved meter to count it is a stop
+  tick [options] <seat>         one seat's burndown decision on demand (CC-889): the dispatches the
+                                tick would make for it under its service-check stop line, trust
+                                gate, role and worktree caps and pool gate, and why every other task
+                                was refused. Dry run only: it spawns nothing and writes no ledger
   dispatches [options] <seat>   one folded record per agent run from a seat's dispatch log (CC-332),
                                 read-only: the broker's spawn and retire rows and the seat's own
                                 rows merged, with the spend. Lines that are not a JSON object with
@@ -447,6 +451,19 @@ count it is a stop
 
 Options:
   --json          the same facts as one JSON object; a failure is {"seat", "error"} with exit 1
+  --brief         only caps per role with names, the pool reading and stop, unread and parked counts
+  --root <value>  autonomy directory holding charter.md and seats/
+  -h, --help      display help for command
+
+=== agent-chat seats tick
+Usage: agent-chat seats tick [options] <seat>
+
+one seat's burndown decision on demand (CC-889): the dispatches the tick would make for it under its
+service-check stop line, trust gate, role and worktree caps and pool gate, and why every other task
+was refused. Dry run only: it spawns nothing and writes no ledger
+
+Options:
+  --dry-run       print the decision without spawning (required)
   --root <value>  autonomy directory holding charter.md and seats/
   -h, --help      display help for command
 
@@ -649,7 +666,7 @@ Options:
 Commands:
   ls [options]                                 agents, with lifecycle and presence
   spawn [options] <name> <profile> [brief...]  start a new agent
-  retire [options] [name]                      release isolation, end the process, and free the name
+  retire [options] [name...]                   release isolation, end the process, and free the name
   park <name>                                  remove an exited agent's clean, pushed worktree and
                                                keep its branch
   resume [options] <name>                      bring a stopped agent back on its own conversation
@@ -666,11 +683,14 @@ Usage: agent-chat agent ls [options]
 agents, with lifecycle and presence
 
 Options:
-  --json            print one JSON array, one object per agent
-  --mine            only agents you spawned (needs a registered session name)
-  --spawner <name>  only agents spawned by <name>
-  --prefix <p>      only agents whose name starts with <p>
-  -h, --help        display help for command
+  --json             print one JSON array, one object per agent
+  --mine             only agents you spawned (needs a registered session name)
+  --spawner <name>   only agents spawned by <name>
+  --prefix <p>       only agents whose name starts with <p>
+  --state <state>    only agents showing this status, e.g. running, finished, retired (repeatable)
+  --name <name>      only the agent with exactly this name
+  --format <format>  line: one line per agent (name state profile id cwd)
+  -h, --help         display help for command
 
 === agent-chat agent spawn
 Usage: agent-chat agent spawn [options] <name> <profile> [brief...]
@@ -684,7 +704,7 @@ Options:
   -h, --help              display help for command
 
 === agent-chat agent retire
-Usage: agent-chat agent retire [options] [name]
+Usage: agent-chat agent retire [options] [name...]
 
 release isolation, end the process, and free the name
 
@@ -742,6 +762,8 @@ Options:
   --mine            only agents you spawned (needs a registered session name)
   --spawner <name>  only agents spawned by <name>
   --prefix <p>      only agents whose name starts with <p>
+  --accounts        one line per account config dir: both rate-limit windows, resets and reading age
+  --json            with --accounts, the same rows as one JSON array
   -h, --help        display help for command
 
 === agent-chat teleport
