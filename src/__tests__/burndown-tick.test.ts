@@ -825,6 +825,8 @@ describe('burndown tick advances claims', () => {
       agentName: 'bd-dm-1',
       spawned: ['bd-dm-1'],
       worktree,
+      // Already resumed once, so this silent exit goes to review (CC-673).
+      resumed: true,
     }
     writeLedger(burndownLedgerPath(), { version: 1, claims: [claim] })
     const fake = fakeBroker({ agents: [row('bd-dm-1', 'exited', worktree)] })
@@ -843,6 +845,37 @@ describe('burndown tick advances claims', () => {
       phase: 'spawning',
       nextPhase: 'reviewing',
     })
+  })
+  it('resumes an implementer that exited silently with commits and no PR, once (CC-673)', async () => {
+    initiative({ 'DM-1': task('DM-1') })
+    const worktree = path.join(repo(), '.worktrees', 'bd-dm-1')
+    git(repo(), 'worktree', 'add', '-q', '-b', 'agent-chat/bd-dm-1', worktree)
+    git(worktree, 'commit', '-q', '--allow-empty', '-m', 'work')
+    const claim: Claim = {
+      taskId: 'DM-1',
+      initiative: 'demo',
+      spawnedAt: NOON.toISOString(),
+      phase: 'implementing',
+      phaseAt: NOON.toISOString(),
+      agentName: 'bd-dm-1',
+      spawned: ['bd-dm-1'],
+      worktree,
+    }
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [claim] })
+    const fake = fakeBroker({ agents: [row('bd-dm-1', 'exited', worktree)] })
+
+    await tick(fake)
+
+    expect(fake.frames).toEqual([
+      expect.objectContaining({
+        name: 'bd-dm-1-s1',
+        brief: expect.stringContaining('Resume task DM-1'),
+        worktree,
+      }),
+    ])
+    expect(readLedger(burndownLedgerPath()).claims).toEqual([
+      expect.objectContaining({ phase: 'spawning', nextPhase: 'implementing', resumed: true }),
+    ])
   })
 })
 
@@ -1367,6 +1400,7 @@ describe('burndown tick advances a seat claim', () => {
       agentName: 'st-dm-1',
       spawned: ['st-dm-1'],
       worktree,
+      resumed: true,
       ...over,
     }
     writeLedger(burndownLedgerPath(), { version: 1, claims: [claim] })
@@ -1682,6 +1716,7 @@ describe('burndown tick charges seat claim spawns to their pool (CC-292)', () =>
       agentName: name,
       spawned: [name],
       worktree,
+      resumed: true,
     }
     return { claim, name, worktree }
   }

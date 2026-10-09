@@ -324,6 +324,19 @@ export function successorAfterReview(t: TaskBrief, review: string): string {
   ].join('\n\n')
 }
 
+/** CC-673: the predecessor exited without a status line and left commits but no open PR. */
+export function successorAfterExit(t: TaskBrief, ahead: number): string {
+  const handoff = handoffPathFor(t.initiativeDir, t.taskId, t.slice?.n)
+  return [
+    '## Scope',
+    `Resume task ${t.taskId}. Your predecessor exited without a report and left ${ahead} commit(s) on this branch ` +
+      `and no open PR. Read its commits, any uncommitted changes and \`${handoff}\` if it exists, keep what serves ` +
+      `the task, finish it and open the PR. You are its only resume: no further successor follows a silent exit. ` +
+      `Done when: ${t.doneWhen}`,
+    ...workerTail(t),
+  ].join('\n\n')
+}
+
 /** Lines of a predecessor's diff summary a stall successor's brief carries (CC-660). */
 export const DIFF_SUMMARY_MAX_LINES = 40
 /** Bytes of those lines, so 40 long paths cannot push the brief past its budget. */
