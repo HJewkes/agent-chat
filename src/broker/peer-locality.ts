@@ -17,11 +17,15 @@ export interface PeerPorts {
   process(pid: number): { ppid: number; comm: string } | undefined
 }
 
-const MAX_DEPTH = 64
+/** The MCP server sits at most a wrapper or two below Claude Code; a longer chain is not that shape. */
+const MAX_DEPTH = 4
+
+/** Whatever holds the broker's end of a forwarded socket: sshd for an inbound one, the ssh client for `ssh -R`. */
+const FORWARDERS = /^(sshd|ssh|autossh|socat)/
 
 /**
  * True only when the peer's process tree reaches `hostPid` without passing through
- * sshd. Anything unreadable, ambiguous or missing is false: this gates a signal.
+ * a socket forwarder (sshd, ssh, autossh, socat) and within a few steps. Anything unreadable, ambiguous or missing is false: this gates a signal.
  */
 export function provePeerLocal(conn: net.Socket, hostPid: number | undefined, ports: PeerPorts): boolean {
   if (hostPid === undefined || hostPid <= 1) return false
@@ -29,12 +33,17 @@ export function provePeerLocal(conn: net.Socket, hostPid: number | undefined, po
   if (pid === undefined || pid === hostPid) return false
   for (let depth = 0; depth < MAX_DEPTH; depth++) {
     const proc = ports.process(pid)
-    if (proc === undefined || proc.comm.startsWith('sshd')) return false
-    if (proc.ppid === hostPid) return true
+    if (proc === undefined || FORWARDERS.test(proc.comm)) return false
+    if (proc.ppid === hostPid) return !forwarderAt(hostPid, ports)
     if (proc.ppid <= 1) return false
     pid = proc.ppid
   }
   return false
+}
+
+const forwarderAt = (pid: number, ports: PeerPorts): boolean => {
+  const proc = ports.process(pid)
+  return proc === undefined || FORWARDERS.test(proc.comm)
 }
 
 /** `pid (comm) S ppid ...`; comm may itself contain parentheses, so cut at the last one. */

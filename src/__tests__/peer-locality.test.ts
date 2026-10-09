@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
@@ -38,6 +38,28 @@ describe('provePeerLocal', () => {
     const ports = tree({ 900: [1, 'sshd'] }, 900)
 
     expect(provePeerLocal(conn, HOST_PID, ports)).toBe(false)
+  })
+
+  it('refuses an ssh -R client peer whose parent shell shares the session’s host pid', () => {
+    const ports = tree({ 800: [777, 'ssh'], 777: [1, 'zsh'] }, 800)
+
+    expect(provePeerLocal(conn, 777, ports)).toBe(false)
+  })
+
+  it('refuses a host pid that is itself a forwarder, or unreadable', () => {
+    expect(
+      provePeerLocal(conn, HOST_PID, tree({ 700: [HOST_PID, 'node'], [HOST_PID]: [1, 'ssh'] }, 700)),
+    ).toBe(false)
+    expect(provePeerLocal(conn, HOST_PID, tree({ 700: [HOST_PID, 'node'] }, 700))).toBe(false)
+  })
+
+  it('refuses a chain deeper than an MCP server wrapper', () => {
+    const deep = tree(
+      { 6: [5, 'z'], 5: [4, 'a'], 4: [3, 'b'], 3: [2, 'c'], 2: [HOST_PID, 'd'], [HOST_PID]: [1, 'claude'] },
+      6,
+    )
+
+    expect(provePeerLocal(conn, HOST_PID, deep)).toBe(false)
   })
 
   it('refuses sshd in the chain below the host pid even if the host pid is reached', () => {
@@ -152,7 +174,7 @@ describe('a session that reported no host, asking the broker to end its Claude C
   it.each(['background', 'teleport'] as const)(
     '%s treats a peer inside its process tree as local',
     async kind => {
-      const { send, seen, dir } = setup(tree({ 700: [HOST, 'node'] }, 700))
+      const { send, seen, dir } = setup(tree({ 700: [HOST, 'node'], [HOST]: [1, 'claude'] }, 700))
 
       send(kind === 'background' ? { t: 'background' } : { t: 'teleport', handoff: 'x' })
       await vi.waitFor(() => expect(seen).toHaveLength(1))
