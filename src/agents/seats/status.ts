@@ -144,8 +144,8 @@ export interface StatusDeps {
   homeDir: string
   /** The broker's roster without retired agents. */
   agents: () => Promise<AgentIdentity[]>
-  /** CC-494: `git worktree list --porcelain` text for one repo path. Throws when git fails; the repo then adds no trees. */
-  repoTrees: (repo: string) => Promise<string>
+  /** CC-494: `git worktree list --porcelain` text for one repo path. Absent: no repo trees. Throws when git fails; the repo then adds no trees. */
+  repoTrees?: (repo: string) => Promise<string>
   /** CC-405: names of the sessions that carry `WAITING_OWNER_TAG`. */
   waitingOwner: () => Promise<string[]>
   readBudget: (configDir: string, nowMs: number) => BudgetRead
@@ -249,7 +249,9 @@ async function countedTrees(
 ): Promise<SeatTree[]> {
   const repos = policy.seat.repos.filter(r => r.git !== false)
   const repoTrees = await Promise.all(
-    repos.map(r => deps.repoTrees(expandHome(r.path, deps.homeDir)).catch(() => '')),
+    repos.map(r =>
+      (deps.repoTrees?.(expandHome(r.path, deps.homeDir)) ?? Promise.resolve('')).catch(() => ''),
+    ),
   )
   return seatTrees({
     agents: agents.filter(a => !waiting.has(a.name)),
