@@ -103,11 +103,11 @@ export async function leakCheck(ledger: Ledger, deps: LeakDeps): Promise<LeakRes
     lines: [],
     current: new Set(),
     read: new Set(),
-    unscanned: new Set(),
+    scans: { ...ledger.leakScans },
   }
   if (health.state === 'ok') for (const repo of repos) await checkRepo(pass, repo)
   else scannerDown(pass, health)
-  const ledgerOut = pruneFiled(pass.ledger, pass.current, pass.read, pass.unscanned)
+  const ledgerOut = withScans(pruneFiled(pass.ledger, pass.current, pass.read), pass.scans)
   return { ledger: ledgerOut, human: pass.human, lines: pass.lines }
 }
 
@@ -122,9 +122,12 @@ interface Pass {
   current: Set<string>
   /** Repos whose open PRs were read this tick. */
   read: Set<string>
-  /** URLs of PRs whose text or branch was not scanned this tick; their last results stand. */
-  unscanned: Set<string>
+  /** Each PR's last rows per part; a part scanned this tick replaces its own, an unscanned one stands. */
+  scans: Scans
 }
+
+type Scans = NonNullable<Ledger['leakScans']>
+type PartRows = Scans[string]
 
 /** Human-queue keys for a scanner outage; never a PR URL, so only a healthy tick clears one. */
 const SCANNER_KEY = 'leak-scanner:'
@@ -149,8 +152,6 @@ interface PrRows {
   number: number
   url: string
   rows: string[]
-  /** False when the text or branch went unscanned, so the claim keeps its last rows. */
-  scanned: boolean
 }
 
 type Found = Map<Claim, PrRows[]>
@@ -174,10 +175,17 @@ async function checkRepo(pass: Pass, repo: string): Promise<void> {
   pass.read.add(repo)
   const found: Found = new Map()
   const shownRepo = repoShown(pass, repo)
-  for (const pull of pulls.filter(p => fromBaseRepo(p, repo))) {
-    await checkPull(pass, pull, found, { repo, shown: shownRepo === repo })
-  }
+  const listed = pulls.filter(p => fromBaseRepo(p, repo))
+  for (const pull of listed) await checkPull(pass, pull, found, { repo, shown: shownRepo === repo })
+  dropClosed(pass, repo, new Set(listed.map(p => p.url)))
   pass.ledger = settleClaims(pass.ledger, repo, found)
+}
+
+/** Forgets the stored rows of the repo's PRs that are no longer open. */
+function dropClosed(pass: Pass, repo: string, open: ReadonlySet<string>): void {
+  for (const url of Object.keys(pass.scans)) {
+    if (repoOfPr(url) === repo && !open.has(url)) delete pass.scans[url]
+  }
 }
 
 /** The repo name as a message may show it: redacted when it holds a finding or could not be scanned. */
@@ -220,44 +228,50 @@ async function checkPull(pass: Pass, pull: Pull, found: Found, where: RepoView):
   const claim = owningClaim(pass.ledger, pull, where.repo)
   if (claim === undefined && !pull.branch.startsWith(BRANCH_PREFIX)) return
   const url = where.shown ? pull.url : '[redacted url]'
-  const { rows, scanned } = scanPull(pass, pull, claim, url)
-  if (!scanned) pass.unscanned.add(pull.url)
+  const rows = scanPull(pass, pull, claim, url)
   if (claim?.seat !== undefined && pass.deps.seats.includes(claim.seat)) {
-    found.set(claim, [...(found.get(claim) ?? []), { number: pull.number, url, rows, scanned }])
+    found.set(claim, [...(found.get(claim) ?? []), { number: pull.number, url, rows }])
     return
   }
-  // A partial scan files only for a PR with nothing filed, so it never doubles a kept item.
-  if (rows.length > 0 && (scanned || !hasFiled(pass.ledger, pull.url))) {
-    fileHuman(pass, humanItem(pull, url, rows, claim))
-  }
+  if (rows.length > 0) fileHuman(pass, humanItem(pull, url, rows, claim))
 }
 
-/** One PR's rows, and whether its text and (for a claim) its branch were both scanned. */
-function scanPull(
-  pass: Pass,
-  pull: Pull,
-  claim: Claim | undefined,
-  url: string,
-): Omit<PrRows, 'number' | 'url'> {
-  const text = scanPullText(pass, pull)
-  if (text === undefined) {
-    pass.lines.push(`leak check could not scan the text of ${url}; its last result stands`)
-    return { rows: [], scanned: false }
-  }
-  if (claim === undefined) return { rows: text, scanned: true }
+/**
+ * One PR's rows: each part scanned this tick replaces its stored rows, and a part that could not be
+ * scanned keeps them. Only a claim's PR has a branch part; any other PR's is dropped.
+ */
+function scanPull(pass: Pass, pull: Pull, claim: Claim | undefined, url: string): string[] {
+  const last = pass.scans[pull.url] ?? {}
+  const text = scanPullText(pass, pull) ?? lastRows(pass, `could not scan the text of ${url}`, last.text)
+  const branch = claim === undefined ? [] : branchRows(pass, claim, pull, last.branch)
+  storeScan(pass, pull.url, { text, branch })
+  return [...new Set([...text, ...branch])]
+}
+
+function branchRows(pass: Pass, claim: Claim, pull: Pull, last: string[] | undefined): string[] {
   const branch = scanBranch(claim, pull, pass)
-  if ('rows' in branch) return { rows: [...new Set([...text, ...branch.rows])], scanned: true }
-  pass.lines.push(
-    `leak check skipped the branch of ${claim.taskId}: ${branch.skipped}; its last result stands`,
-  )
-  return { rows: text, scanned: false }
+  if ('rows' in branch) return branch.rows
+  return lastRows(pass, `skipped the branch of ${claim.taskId}: ${branch.skipped}`, last)
 }
 
-/** The PR URL a human-queue key was filed for. */
-const keyUrl = (key: string): string => key.slice(0, key.lastIndexOf('#'))
+function lastRows(pass: Pass, why: string, last: string[] | undefined): string[] {
+  pass.lines.push(`leak check ${why}; its last result stands`)
+  return last ?? []
+}
 
-const hasFiled = (ledger: Ledger, url: string): boolean =>
-  (ledger.humanFiled ?? []).some(k => keyUrl(k) === url)
+function storeScan(pass: Pass, url: string, parts: { text: string[]; branch: string[] }): void {
+  const kept: PartRows = {
+    ...(parts.text.length === 0 ? {} : { text: parts.text }),
+    ...(parts.branch.length === 0 ? {} : { branch: parts.branch }),
+  }
+  if (Object.keys(kept).length === 0) delete pass.scans[url]
+  else pass.scans[url] = kept
+}
+
+function withScans(ledger: Ledger, scans: Scans): Ledger {
+  const { leakScans: _old, ...rest } = ledger
+  return Object.keys(scans).length === 0 ? rest : { ...rest, leakScans: scans }
+}
 
 function fileHuman(pass: Pass, item: HumanItem): void {
   pass.current.add(item.key)
@@ -296,21 +310,10 @@ function mergedLeak(repo: string, prs: readonly PrRows[]): Leak | undefined {
 function settleClaims(ledger: Ledger, repo: string, found: Found): Ledger {
   const claims = ledger.claims.map(c => {
     const prs = found.get(c)
-    const now = prs === undefined ? undefined : mergedLeak(repo, prs)
-    if (prs?.some(p => !p.scanned) === true) return withLeak(c, keptLeak(c.leak, now))
-    if (prs !== undefined) return withLeak(c, now)
+    if (prs !== undefined) return withLeak(c, mergedLeak(repo, prs))
     return c.leak?.repo === repo ? withLeak(c, undefined) : c
   })
   return { ...ledger, claims }
-}
-
-const MORE = /^and \d+ more$/
-
-/** What part of a claim went unscanned may still hold, so its last rows stay beside this tick's. */
-function keptLeak(before: Leak | undefined, now: Leak | undefined): Leak | undefined {
-  if (before === undefined || now === undefined) return now ?? before
-  const rows = [...new Set([...before.findings, ...now.findings].filter(r => !MORE.test(r)))]
-  return { ...now, findings: capped(rows) }
 }
 
 /** A changed record drops the delivered `leak`, so the seat hears of it once per real change. */
@@ -331,17 +334,11 @@ function humanItem(pull: Pull, url: string, rows: string[], claim: Claim | undef
   return { key: `${pull.url}#${digest}`, text, ...(claim === undefined ? {} : { task: claim.taskId }) }
 }
 
-/** Drops filed keys that no longer hold, keeping those of repos not read and PRs not fully scanned. */
-function pruneFiled(
-  ledger: Ledger,
-  current: ReadonlySet<string>,
-  read: ReadonlySet<string>,
-  unscanned: ReadonlySet<string>,
-): Ledger {
+/** Drops filed keys that no longer hold, keeping those of repos not read. */
+function pruneFiled(ledger: Ledger, current: ReadonlySet<string>, read: ReadonlySet<string>): Ledger {
   if (ledger.humanFiled === undefined) return ledger
   const holds = (k: string): boolean =>
-    current.has(k) ||
-    (!k.startsWith(SCANNER_KEY) && (!read.has(repoOfPr(k) ?? '') || unscanned.has(keyUrl(k))))
+    current.has(k) || (!k.startsWith(SCANNER_KEY) && !read.has(repoOfPr(k) ?? ''))
   const kept = ledger.humanFiled.filter(holds)
   const { humanFiled: _old, ...rest } = ledger
   return kept.length === 0 ? rest : { ...rest, humanFiled: kept }

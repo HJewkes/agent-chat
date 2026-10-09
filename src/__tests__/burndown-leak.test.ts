@@ -257,10 +257,51 @@ describe('the tick leak check on a claimed PR', () => {
     const after = await tick(w, once)
 
     expect(after.claims[0]?.leak?.findings).toEqual([
-      'aaaaaaa src/a.ts:3 home-path',
       'title 1:1 private-term',
+      'aaaaaaa src/a.ts:3 home-path',
     ])
     expect(leakSends(w)).toHaveLength(2)
+  })
+
+  it('clears a fixed body finding while the branch scan fails', async () => {
+    const w = newWorld([pull({ body: EMAIL })])
+    const once = await tick(w, ledgerOf(claim()))
+    w.fetchFails = true
+    w.pulls = [pull()]
+
+    const after = await tick(w, once)
+
+    expect(once.claims[0]?.leak?.findings).toEqual(['body 1:1 private-term'])
+    expect(after.claims[0]?.leak).toBeUndefined()
+    expect(after.leakScans).toBeUndefined()
+  })
+
+  it('keeps one row format when a kept branch finding meets a second flagged PR', async () => {
+    const second = `${PR.replace('/7', '/8')}`
+    const w = newWorld([pull()])
+    w.branch = [{ location: `commit ${'a'.repeat(7)} src/a.ts:3`, rule: 'home-path' }]
+    const once = await tick(w, ledgerOf(claim()))
+    w.fetchFails = true
+    w.branch = []
+    w.pulls = [pull(), pull({ number: 8, url: second, title: NAME })]
+
+    const after = await tick(w, once)
+
+    expect(after.claims[0]?.leak?.findings).toEqual([
+      '#7 aaaaaaa src/a.ts:3 home-path',
+      '#8 title 1:1 private-term',
+    ])
+  })
+
+  it('forgets the stored rows of a PR once it has closed', async () => {
+    const w = newWorld([pull({ title: NAME })])
+    const once = await tick(w, ledgerOf(claim()))
+    w.pulls = []
+
+    const after = await tick(w, once)
+
+    expect(once.leakScans).toEqual({ [PR]: { text: ['title 1:1 private-term'] } })
+    expect(after.leakScans).toBeUndefined()
   })
 
   const parked = (ledger: Ledger): Ledger => ({
@@ -517,6 +558,32 @@ describe('the tick leak check on other PRs', () => {
 
     expect(failed.humanFiled).toEqual(once.humanFiled)
     expect(w.notices).toHaveLength(1)
+  })
+
+  it('files a new text finding of an unseated claim while its branch scan fails', async () => {
+    const w = newWorld([pull({ title: NAME })])
+    const once = await tick(w, ledgerOf(claim({ seat: 'seat-off' })))
+    w.fetchFails = true
+    w.pulls = [pull({ title: NAME, body: EMAIL })]
+
+    const after = await tick(w, once)
+
+    expect(w.notices).toHaveLength(2)
+    expect(w.notices[1]).toContain('title 1:1 private-term; body 1:1 private-term')
+    expect(after.humanFiled).toHaveLength(1)
+    expect(after.humanFiled).not.toEqual(once.humanFiled)
+  })
+
+  it('keeps the branch finding of an unseated claim in a new item while its branch scan fails', async () => {
+    const w = newWorld([pull()])
+    w.branch = [{ location: `commit ${'a'.repeat(7)} src/a.ts:3`, rule: 'home-path' }]
+    const once = await tick(w, ledgerOf(claim({ seat: 'seat-off' })))
+    w.fetchFails = true
+    w.pulls = [pull({ title: NAME })]
+
+    await tick(w, once)
+
+    expect(w.notices[1]).toContain('title 1:1 private-term; aaaaaaa src/a.ts:3 home-path')
   })
 
   it('files a partial scan of an unseated claim when nothing is filed for its PR', async () => {
