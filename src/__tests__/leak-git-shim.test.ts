@@ -1,13 +1,17 @@
-import { execFileSync, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { writeLaunchFiles } from '../agents/launch-files.js'
 import { buildLaunchPlan } from '../agents/launch-plan.js'
 import type { AgentProfile, LaunchPlan, LaunchPlanInput } from '../agents/types.js'
 import { findRealGit, GIT_SHIM_DIR_ENV, gitShimScript, writeGitShim } from '../leak-guard/git-shim.js'
-import { gitHooksEnv } from '../leak-guard/hooks-dir.js'
+import {
+  type GitShimFixture as Fixture,
+  gitShimHarness,
+  HOST_PATH,
+  NO_VERIFY,
+} from './helpers/git-shim-fixture.js'
 import { expectSpawned } from './helpers/spawn-result.js'
 
 /**
@@ -15,97 +19,13 @@ import { expectSpawned } from './helpers/spawn-result.js'
  * mutation of the shim it kills; the negative controls are in the PR description.
  */
 
-const SCRATCH = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-git-shim-')))
+const harness = gitShimHarness()
+const { scratch: SCRATCH, realGit: REAL_GIT, git, runScript, remoteHasMain } = harness
 
-afterAll(() => fs.rmSync(SCRATCH, { recursive: true, force: true }))
+// Every shell alias these tests define is listed, so they exercise args_push and mentions_push, not the CC-613 allowlist gate.
+const LISTED_SHELL_ALIASES = ['g', 'p', 'ev', 'hi', 'ci', 'sp', 'ship']
 
-const isAgentShim = (dir: string): boolean => {
-  try {
-    return fs.readFileSync(path.join(dir, 'git'), 'utf8').includes('# Written by agent-chat')
-  } catch {
-    return false
-  }
-}
-
-/** PATH without an agent session's own shim, so the shim under test never execs a second shim (CC-442). */
-const HOST_PATH = (process.env.PATH ?? '')
-  .split(path.delimiter)
-  .filter(dir => !isAgentShim(dir))
-  .join(path.delimiter)
-
-const REAL_GIT = findRealGit(HOST_PATH, path.join(SCRATCH, 'none')) as string
-const NO_VERIFY = ['--no', 'verify'].join('-')
-
-const git = (cwd: string, ...args: string[]): string =>
-  execFileSync(REAL_GIT, args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' } })
-
-interface Fixture {
-  work: string
-  remote: string
-  guard: string
-  shimDir: string
-  marker: string
-  env: Record<string, string> & { PATH: string }
-}
-
-let count = 0
-
-/** A repo with one commit, a bare remote, a guard dir whose pre-push leaves a marker, and the shim. */
-function fixture(): Fixture {
-  const root = path.join(SCRATCH, `case-${++count}`)
-  const work = path.join(root, 'work')
-  const remote = path.join(root, 'remote.git')
-  const guard = path.join(root, 'git-hooks')
-  const shimDir = path.join(root, 'git-bin')
-  const home = path.join(root, 'home')
-  const marker = path.join(root, 'pre-push-ran')
-  for (const dir of [work, guard, home]) fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(path.join(guard, 'pre-push'), `#!/bin/sh\ncat >/dev/null\ntouch '${marker}'\n`, {
-    mode: 0o755,
-  })
-  git(root, 'init', '-q', '--bare', remote)
-  git(work, 'init', '-q', '-b', 'main')
-  git(
-    work,
-    '-c',
-    'user.name=t',
-    '-c',
-    'user.email=t@example.com',
-    'commit',
-    '-q',
-    '--allow-empty',
-    '-m',
-    'one',
-  )
-  git(work, 'remote', 'add', 'origin', remote)
-  git(work, 'remote', 'add', 'net', 'ssh://git.invalid/remote.git')
-  expect(writeGitShim(shimDir, guard, HOST_PATH)).toBe(true)
-  const env = {
-    PATH: `${shimDir}:/usr/bin:/bin`,
-    HOME: home,
-    GIT_CONFIG_NOSYSTEM: '1',
-    GIT_SSH_COMMAND: 'false',
-    GIT_TERMINAL_PROMPT: '0',
-    ...gitHooksEnv(guard),
-  }
-  return { work, remote, guard, shimDir, marker, env }
-}
-
-/** Runs a script file, as make or an npm script would; a recursing shim is killed by the timeout. */
-function runScript(
-  fx: Fixture,
-  body: string,
-): ReturnType<typeof spawnSync> & { stdout: string; stderr: string } {
-  const script = path.join(fx.work, '..', `script-${++count}.sh`)
-  fs.writeFileSync(script, `#!/bin/sh\n${body}\n`, { mode: 0o755 })
-  return expectSpawned(
-    spawnSync(script, { cwd: fx.work, env: fx.env, encoding: 'utf8', timeout: 10_000 }),
-    body,
-  )
-}
-
-const remoteHasMain = (fx: Fixture): boolean =>
-  spawnSync(REAL_GIT, ['--git-dir', fx.remote, 'rev-parse', '-q', '--verify', 'refs/heads/main']).status === 0
+const fixture = (): Fixture => harness.fixture(LISTED_SHELL_ALIASES)
 
 describe('the agent git shim refusing pushes that skip the leak scan', () => {
   // Kills: the argv check removed.
