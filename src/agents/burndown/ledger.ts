@@ -159,7 +159,10 @@ const SeatSample = z.object({
   resetsAt: z.number().optional(),
 })
 
-const SeatState = z.object({ samples: z.array(SeatSample) })
+/** The reason set of the seat's last "dispatched nothing" log line and when it was written (CC-859). */
+const NoDispatchMark = z.object({ key: z.string(), at: z.string() })
+
+const SeatState = z.object({ samples: z.array(SeatSample), noDispatch: NoDispatchMark.optional() })
 export type SeatState = z.infer<typeof SeatState>
 
 /** How often a task was released and when last; `backoff.ts` turns it into a hold (CC-661). */

@@ -8,6 +8,7 @@ import {
   type SevenDaySample,
   type SpendCaps,
 } from '../burndown/budget-gate.js'
+import { NO_DISPATCH_PREFIX } from '../burndown/no-dispatch.js'
 import type { WatchdogDoc } from './io.js'
 import { isJournalText } from './journal-line.js'
 
@@ -256,8 +257,9 @@ interface SeatLine {
 }
 
 // CC-463: a relaunch line counted as activity would mask the relaunch failing.
+// CC-859: nor is the tick's own line activity, and written after a PARKED line it would hide the marker.
 const isWatchdogText = (text: string): boolean =>
-  text.startsWith('Watchdog:') || text.startsWith('watchdog relaunch ')
+  text.startsWith('Watchdog:') || text.startsWith('watchdog relaunch ') || text.startsWith(NO_DISPATCH_PREFIX)
 
 function seatLines(log: string, day: Date): SeatLine[] {
   return log.split('\n').flatMap(line => {

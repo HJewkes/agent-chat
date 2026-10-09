@@ -38,6 +38,7 @@ const Defaults = z.looseObject({
   readiness: z.object({ ready: z.number(), untriaged: z.number(), blocked: z.number() }),
   size: z.object({ le3: z.number(), le8: z.number(), gt8: z.number() }),
   stop_short_factor: z.number(),
+  gate_free_bonus: z.number().positive().optional(),
   worktrees_per_repo_per_seat: z.number().int().nonnegative().optional(),
   worktrees_left_free_per_repo: z.number().int().nonnegative().optional(),
 })
@@ -81,6 +82,8 @@ const Repo = z.looseObject({
   initiatives: orEmpty(z.array(z.string()), []),
   /** CC-834: `false` marks a path that is not a git checkout, so the landed check never reads it. */
   git: z.boolean().optional(),
+  /** The repo's merged work stays dormant until this happens, e.g. `broker-restart` or `v1-move`. */
+  live_after: z.string().min(1).optional(),
 })
 
 const Seat = z.looseObject({
@@ -138,6 +141,14 @@ export const parseCharter = (text: string): CharterPolicy =>
 
 export const parseSeat = (text: string, name: string): SeatPolicy =>
   validate(Seat, frontmatter(text), `seat file ${name}`)
+
+/**
+ * Initiatives with a repo that has `live_after`. A task names no repo, so an initiative that spans a dormant
+ * repo and a live one counts as dormant: the scorer never pays the bonus for work that may wait on a gate.
+ */
+export function dormantInitiatives(seat: SeatPolicy): Set<string> {
+  return new Set(seat.repos.filter(r => r.live_after !== undefined).flatMap(r => r.initiatives))
+}
 
 /** score.py merges only these two keys; every other default is charter-only. */
 export function mergeDefaults(charter: CharterPolicy, seat: SeatPolicy): ScoringDefaults {
