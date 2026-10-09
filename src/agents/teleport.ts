@@ -1,3 +1,4 @@
+import { brokerHost, isLocalHost } from '../broker/host-guard.js'
 import { randomUUID } from 'node:crypto'
 import type { BrokerCore } from '../broker/core.js'
 import { hostRemoteControl, psArgvReader, type ArgvReader } from '../broker/host-channels.js'
@@ -122,6 +123,8 @@ export interface TeleportSubject {
   name: string
   cwd: string
   hostPid?: number
+  /** The machine `hostPid` lives on; absent means unreported, which is never treated as local (CC-880). */
+  host?: string
   anchor?: string
   tags: string[]
   subscriptions: Subscription[]
@@ -135,8 +138,6 @@ export interface TeleportSubject {
    * exists, since there is no launch plan that ever recorded one.
    */
   configDir?: string
-  /** CC-881: registered from another host, so its pid and its terminal are not this machine's. */
-  remote?: boolean
 }
 
 export interface TeleportRequest {
@@ -204,11 +205,24 @@ export interface RelaunchInput {
   remoteControl?: boolean
 }
 
+/** CC-881: a reported host that is not the broker's; its pid and its terminal are that host's to act on. */
+const onAnotherHost = (subject: TeleportSubject): boolean =>
+  subject.host !== undefined && !isLocalHost(subject.host)
+
+function hostReason(subject: TeleportSubject): string {
+  return (
+    `${subject.name} runs on host ${subject.host ?? 'unknown'}, not on the broker's host ${brokerHost()}, ` +
+    'so the broker cannot end it or relaunch it there'
+  )
+}
+
 /** What teleport borrows from the supervisor: process control and the launch path. */
 export interface TeleportHost {
   inheritedIsolation(agentId: string): InheritedIsolation | undefined
   /** SIGTERM then SIGKILL, on the pid that ends Claude Code itself. */
-  endSession(name: string, hostPid: number): { ok: boolean; reason?: string }
+  endSession(name: string, hostPid: number, host: string | undefined): { ok: boolean; reason?: string }
+  /** Why a surface cannot launch on this broker's platform, if it cannot. */
+  surfaceBlocker(surface: SurfaceName): string | undefined
   relaunch(input: RelaunchInput): Promise<void>
   /** CC-881: record the successor and build its launch for another host, launching nothing here. */
   prepareRemoteRelaunch(input: RelaunchInput): RemoteLaunch
@@ -320,6 +334,9 @@ export class Teleport {
 
     const config = this.configFor(identity, subject, req.model)
     if ('error' in config) return { ok: false, reason: config.error }
+    const remote = onAnotherHost(subject)
+    const impossible = remote ? undefined : this.host.surfaceBlocker(config.surface)
+    if (impossible !== undefined) return this.cannotComplete(subject, impossible)
     const worker = recordedRole(this.core.agents.spawnMeta(subject.agentId)) === 'worker'
     if (worker && req.remoteControl === true)
       return {
@@ -345,10 +362,10 @@ export class Teleport {
       profile: config.profile,
       surface: config.surface,
       // CC-881: a remote predecessor's pid names a process on its own host, not one here.
-      inherited: subject.remote ? undefined : this.host.inheritedIsolation(subject.agentId),
+      inherited: remote ? undefined : this.host.inheritedIsolation(subject.agentId),
       // CC-163: a worker's successor never inherits Remote Control, even one its argv shows.
       remoteControl: worker ? false : (req.remoteControl ?? this.predecessorRemoteControl(subject)),
-      ...(subject.remote ? { remote: remoteWait() } : {}),
+      ...(remote ? { remote: remoteWait() } : {}),
       since: identity.spawnedAt,
       sessionId: identity.sessionId,
       inboxThrough: this.inboxCursor(subject.name),
@@ -368,7 +385,7 @@ export class Teleport {
       name: subject.name,
       agentId: descendantId,
       ...(warnings.length > 0 ? { warnings } : {}),
-      ...(subject.remote ? { remote: true } : {}),
+      ...(remote ? { remote: true } : {}),
     }
     // A headless predecessor has no pane and no human watching it in the moment,
     // so a countdown would be latency bought in exchange for a veto nobody is
@@ -395,7 +412,7 @@ export class Teleport {
 
   /** Read now, while the predecessor is still running: once it ends there is no argv left to read. */
   private predecessorRemoteControl(subject: TeleportSubject): boolean {
-    if (subject.remote) return false
+    if (onAnotherHost(subject)) return false
     const found = hostRemoteControl(subject.hostPid, this.readArgv)
     if (found === undefined)
       logEvent('teleport_remote_control_unknown', {
@@ -403,6 +420,22 @@ export class Teleport {
         reason: `could not read the argv of pid ${subject.hostPid}; successor starts without Remote Control`,
       })
     return found ?? false
+  }
+
+  /**
+   * CC-880: a teleport this broker cannot finish is refused up front, to the caller and to the
+   * human, because failing after the predecessor ended is silent and leaves nobody in the session.
+   */
+  private cannotComplete(subject: TeleportSubject, why: string): { ok: false; reason: string } {
+    const reason = `teleport cannot be completed: ${why}. ${subject.name} was not ended.`
+    this.core.append({
+      kind: 'notice',
+      actor: 'agent-chat',
+      target: HUMAN,
+      body: `${subject.name} asked to teleport and the broker refused: ${why}`,
+    })
+    logEvent('teleport_refused', { name: subject.name, reason: why })
+    return { ok: false, reason }
   }
 
   /** Everything checkable before the handoff is written and the sequence is entered. */
@@ -419,6 +452,9 @@ export class Teleport {
         'without severing the bus and leaving it running. Its MCP server predates teleport — ' +
         'restart the session (or run /mcp reconnect) and try again.'
       )
+
+    // CC-881: a reported other host runs its own relaunch; an unreported one cannot, so it is refused.
+    if (subject.host === undefined) return this.cannotComplete(subject, hostReason(subject)).reason
 
     const size = bytes(req.handoff)
     if (size > HANDOFF_MAX_BYTES)
@@ -575,7 +611,7 @@ export class Teleport {
     this.core.append({ kind: 'agent_stood_down', actor: subject.name, ref: agentId })
     // Non-null because `preflight` refuses a subject without one, and a pending
     // entry only exists once preflight has passed.
-    const ended = this.host.endSession(subject.name, subject.hostPid as number)
+    const ended = this.host.endSession(subject.name, subject.hostPid as number, subject.host)
     await this.waitForNameFree(subject.name)
     this.core.append({
       kind: 'agent_retired',

@@ -867,7 +867,7 @@ const CHAT_STATUS_CASES: CallCase[] = [
 ]
 
 /** Fields `register` reads from this process and its checkout; they vary by machine, so the golden omits them. */
-const PROCESS_FIELDS = ['cwd', 'pid', 'hostPid', 'sessionId', 'termSessionId', 'observed', 'build']
+const PROCESS_FIELDS = ['cwd', 'pid', 'hostPid', 'host', 'sessionId', 'termSessionId', 'observed', 'build']
 
 function frameLine(frame: ClientMessage): string {
   if (frame.t !== 'register') return JSON.stringify(frame)

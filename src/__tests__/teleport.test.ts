@@ -146,6 +146,7 @@ function adoptSession(name: string, cwd: string): string {
     pid: 111,
     sessionId: 'session-uuid-1',
     hostPid: 222,
+    host: os.hostname(),
   })
   const agentId = core.registry.entryFor(conn)?.agentId
   expect(agentId).toBeDefined()
@@ -161,6 +162,7 @@ const subject = (agentId: string, over: Record<string, unknown> = {}) => ({
   name: 'scout',
   cwd: workspace(),
   hostPid: 9999,
+  host: os.hostname(),
   tags: [] as string[],
   subscriptions: [],
   ...over,
@@ -1113,7 +1115,7 @@ describe('a session on another host', () => {
     const cwd = workspace()
     const agentId = adoptSession('cc27', cwd)
     const result = await supervisor.teleport({
-      subject: subject(agentId, { name: 'cc27', cwd, remote: true }),
+      subject: subject(agentId, { name: 'cc27', cwd, host: 'caller-host' }),
       handoff: 'what I was mid-way through',
     })
     return { agentId, cwd, result, plan: supervisor.teleportPlan(agentId) }
@@ -1164,7 +1166,7 @@ describe('a session on another host', () => {
     expect(told.join('\n')).toMatch(/iTerm is not running/)
     // Released, so the same session may try again.
     const again = await supervisor.teleport({
-      subject: subject(agentId, { name: 'cc27', remote: true }),
+      subject: subject(agentId, { name: 'cc27', host: 'caller-host' }),
       handoff: 'second try',
     })
     expect(again.ok).toBe(true)
