@@ -70,9 +70,9 @@ function observedLine(s: SessionInfo): string {
 }
 
 interface RosterFilter {
-  name?: string
-  tag?: string
-  active?: boolean
+  name?: string | undefined
+  tag?: string | undefined
+  active?: boolean | undefined
 }
 
 const matchesFilter = (s: SessionInfo, { name, tag, active }: RosterFilter): boolean =>
