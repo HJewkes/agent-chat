@@ -45,7 +45,7 @@ function counts(refusals: readonly Refusal[]): [string, number][] {
 }
 
 /** The stop that applied, first in STOPS order, with the reading of its first refusal. */
-function stopOf(refusals: readonly Refusal[]): { name: string; reading: string } | undefined {
+export function stopOf(refusals: readonly Refusal[]): { name: string; reading: string } | undefined {
   for (const stop of STOPS) {
     const hit = refusals.find(r => stop.kinds.includes(r.kind))
     if (hit !== undefined) return { name: stop.name, reading: oneLine(hit.reason) }
