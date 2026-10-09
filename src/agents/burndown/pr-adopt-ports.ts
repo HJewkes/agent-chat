@@ -1,5 +1,6 @@
 import os from 'node:os'
 import { appendSeatLog, readSeatJournal } from '../seats/io.js'
+import { githubRepoOf } from '../spawn-provenance.js'
 import { expandHome } from './seat-dispatch.js'
 import type { LoadedSeat } from './seat-tick.js'
 import type { Runner } from './exec.js'
@@ -8,8 +9,6 @@ import { shepherdListed, shepherdRegister, type ShepherdTarget } from './shepher
 import { parseTask, readTaskText } from './source.js'
 
 /** CC-861: the tick's real ports for `adoptSeatPrs`: gh reads over REST, Shepherd through its CLI, the seat's daily log. */
-
-const GITHUB_REMOTE = /github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/
 
 const PULL_JQ =
   '.[] | {number, title, branch: .head.ref, headRepo: (.head.repo.full_name // ""), updatedAt: .updated_at}'
@@ -54,7 +53,7 @@ export function adoptSeatOf(loaded: LoadedSeat, home = os.homedir()): AdoptSeat 
 
 export function originRepo(checkout: string, exec: Runner): string | undefined {
   const result = exec('git', ['-C', checkout, 'remote', 'get-url', 'origin'])
-  return result.status === 0 ? GITHUB_REMOTE.exec(result.stdout.trim())?.[1] : undefined
+  return result.status === 0 ? githubRepoOf(result.stdout) : undefined
 }
 
 // REST, never GraphQL: the owner's account hits GraphQL rate limits.

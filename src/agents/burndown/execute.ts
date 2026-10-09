@@ -27,6 +27,8 @@ export interface SpawnFrame {
   surface: 'headless'
   briefing: string
   tags: string[]
+  /** CC-915: the task the agent runs, recorded on its agent record; the broker refuses the frame without it. */
+  task: string
   predecessor?: string
   worktree?: string
   /** The tier the plan placed the task in (CC-774); the broker writes it on the `dispatched` row. */
@@ -59,6 +61,7 @@ export function spawnFrame(s: SpawnSpec): SpawnFrame {
     surface: 'headless',
     briefing: s.initiative,
     tags: ['burndown', `task:${s.taskId}`],
+    task: s.taskId,
     spawnedAs: 'burndown',
     ...(s.predecessor === undefined ? {} : { predecessor: s.predecessor }),
     ...(s.worktree === undefined ? {} : { worktree: s.worktree }),

@@ -283,6 +283,8 @@ export class SocketServer {
       ...(msg.returnContract === undefined ? {} : { returnContract: msg.returnContract }),
       ...(Number.isInteger(msg.tier) ? { tier: msg.tier } : {}),
       ...(requestedBy === HUMAN ? spawnedAsOf(msg) : {}),
+      ...(typeof msg.task === 'string' ? { task: msg.task } : {}),
+      ...(typeof msg.workRole === 'string' ? { workRole: msg.workRole } : {}),
       ...(msg.tags === undefined ? {} : { tags: msg.tags }),
       ...(msg.subscriptions === undefined ? {} : { subscriptions: msg.subscriptions }),
       // CC-100. The explicit ask is the request's to make; the spawner's own

@@ -269,7 +269,7 @@ describe('a seat agent’s retire', () => {
 
   it('records burndown as the spawner of a CLI spawn it marks, with the seat in a seat field (CC-802)', async () => {
     const s = supervisorWith(writerOver(root))
-    await s.spawn({ ...spawnReq(AGENT), spawnedAs: 'burndown' })
+    await s.spawn({ ...spawnReq(AGENT), spawnedAs: 'burndown', task: 'AB-12' })
 
     expect(dispatchedRows()[0]).toMatchObject({ agent: AGENT, spawner: 'burndown', seat: SEAT })
   })
@@ -283,7 +283,7 @@ describe('a seat agent’s retire', () => {
 
   it('writes the same spawner and seat on the retired row as on the dispatched one (CC-802)', async () => {
     const s = supervisorWith(writerOver(root))
-    await s.spawn({ ...spawnReq(AGENT), spawnedAs: 'burndown' })
+    await s.spawn({ ...spawnReq(AGENT), spawnedAs: 'burndown', task: 'AB-12' })
     writeTranscript(AGENT)
 
     await s.retire(AGENT)

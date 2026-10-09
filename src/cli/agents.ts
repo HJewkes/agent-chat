@@ -261,7 +261,8 @@ export async function agentSpawn(
   // shell's own `CLAUDE_CONFIG_DIR` is forwarded instead — there is no registry
   // entry for the human to read one from, and their shell is where the account
   // they think they are on actually lives.
-  options: { briefing?: string; briefStdin?: boolean; configDir?: string } = {},
+  // CC-915: `--task` and `--role` land on the agent record; the broker validates the role.
+  options: { briefing?: string; briefStdin?: boolean; configDir?: string; task?: string; role?: string } = {},
 ): Promise<void> {
   let brief: string
   try {
@@ -281,6 +282,8 @@ export async function agentSpawn(
         cwd: process.cwd(),
         ...(options.briefing === undefined ? {} : { briefing: options.briefing }),
         ...(options.configDir === undefined ? {} : { configDir: options.configDir }),
+        ...(options.task === undefined ? {} : { task: options.task }),
+        ...(options.role === undefined ? {} : { workRole: options.role }),
         ...(process.env.CLAUDE_CONFIG_DIR === undefined
           ? {}
           : { spawnerConfigDir: process.env.CLAUDE_CONFIG_DIR }),
