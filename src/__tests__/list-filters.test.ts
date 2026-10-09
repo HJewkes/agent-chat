@@ -6,7 +6,7 @@ import { ToolHandler } from '../server/tools.js'
 import { agentProfiles } from '../server/commands/agent-profiles.js'
 import { profiles } from '../cli/agents.js'
 import type { BrokerClient } from '../client/broker-client.js'
-import type { ServerMessage, SessionInfo } from '../protocol.js'
+import type { ServerMessage, SessionClaim, SessionInfo } from '../protocol.js'
 
 const session = (name: string, over: Partial<SessionInfo> = {}): SessionInfo => ({
   name,
@@ -23,12 +23,21 @@ const roster: SessionInfo[] = [
   session('beta'),
   session('gamma', { status: 'working' }),
 ]
-const handler = () =>
-  new ToolHandler({
-    request: async () => ({ t: 'list_result', sessions: roster }) as ServerMessage,
-  } as unknown as BrokerClient)
-const list = async (args: Record<string, unknown>) =>
-  ((await handler().handle('chat_list', args)) as { content: { text: string }[] }).content[0]!.text
+const handler = (sessions: SessionInfo[], claims: SessionClaim[], self?: string) =>
+  new ToolHandler(
+    {
+      request: async () => ({ t: 'list_result', sessions, claims }) as ServerMessage,
+    } as unknown as BrokerClient,
+    self,
+  )
+const list = async (
+  args: Record<string, unknown>,
+  sessions: SessionInfo[] = roster,
+  claims: SessionClaim[] = [],
+  self?: string,
+) =>
+  ((await handler(sessions, claims, self).handle('chat_list', args)) as { content: { text: string }[] })
+    .content[0]!.text
 const rowNames = (out: string) =>
   out
     .split('\n')
@@ -48,8 +57,28 @@ describe('chat_list filters', () => {
   it('filters to working sessions with active', async () => {
     expect(rowNames(await list({ active: true }))).toEqual(['alpha', 'gamma'])
   })
-  it('returns an empty list, not an error, for an unknown name', async () => {
-    expect(await list({ name: 'nobody' })).toBe('No sessions are registered.')
+  it('says no session matches, and how many are registered, for an unknown name', async () => {
+    const out = await list({ name: 'nobody' })
+    expect(out).toContain('No sessions match name=nobody (3 registered).')
+    expect(out).not.toContain('No sessions are registered.')
+  })
+  it('names every filter in the no-match line', async () => {
+    expect(await list({ tag: 'owner:src', active: true, name: 'beta' })).toContain(
+      'No sessions match name=beta, tag=owner:src, active (3 registered).',
+    )
+  })
+  it('still says nobody is registered when the roster is empty', async () => {
+    expect(await list({ active: true }, [])).toBe('No sessions are registered.')
+  })
+  it('keeps the worktree claims warning when the filter leaves out the caller', async () => {
+    const inTree = { observed: { worktreePath: '/repo' } } as Partial<SessionInfo>
+    const sessions = [session('me', inTree), session('peer', { ...inTree, status: 'working' })]
+    const claims: SessionClaim[] = [
+      { owner: 'peer', worktreePath: '/repo', kind: 'worktree', patterns: [], at: 0 },
+    ]
+    const out = await list({ active: true }, sessions, claims, 'me')
+    expect(rowNames(out)).toEqual(['peer'])
+    expect(out).toContain('In your worktree (/repo), "peer" has claimed work.')
   })
 })
 

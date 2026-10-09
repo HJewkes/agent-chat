@@ -64,7 +64,7 @@
     },
     {
       "name": "chat_list",
-      "description": "Check who else is active before you start any work that could overlap with someone else — an independent parallel task, editing a file another session might also touch, or before deciding to spawn an agent to do something a peer might already be doing. This is free and answers \"is anyone already on this?\" in one call. Call it proactively, at the start of a session and again before diverging into independent work — don't wait to be asked, and don't assume you're the only session in this checkout. Optional filters narrow the roster: name (one session), tag (sessions carrying it), active (only sessions whose status is working). A filter that matches nothing returns an empty roster, not an error.",
+      "description": "Check who else is active before you start any work that could overlap with someone else — an independent parallel task, editing a file another session might also touch, or before deciding to spawn an agent to do something a peer might already be doing. This is free and answers \"is anyone already on this?\" in one call. Call it proactively, at the start of a session and again before diverging into independent work — don't wait to be asked, and don't assume you're the only session in this checkout. Optional filters narrow the roster: name (one session), tag (sessions carrying it), active (only sessions whose status is working). A filter that matches nothing says so and counts the registered sessions, not an error.",
       "inputSchema": {
         "type": "object",
         "properties": {
