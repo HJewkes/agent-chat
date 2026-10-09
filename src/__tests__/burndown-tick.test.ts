@@ -9,6 +9,7 @@ import { egressRunner, type EgressRunner } from '../agents/burndown/egress-runne
 import { run, type Runner } from '../agents/burndown/exec.js'
 import { execute, spawnFrame, type SpawnFrame, type SpawnReply } from '../agents/burndown/execute.js'
 import { readLedger, writeLedger, type Claim } from '../agents/burndown/ledger.js'
+import { GIT_BIN } from '../agents/burndown/review-diff.js'
 import { SHEPHERD_BIN } from '../agents/burndown/shepherd.js'
 import { tickFromDisk, type TickBroker } from '../agents/burndown/run-tick.js'
 import { renderPlan, renderStatus, seatPlanFromDisk } from '../agents/burndown/tick.js'
@@ -1544,7 +1545,12 @@ describe('burndown tick advances a seat claim', () => {
   })
 })
 
-const SCAN_PATH = [path.resolve('node_modules/.bin'), path.dirname(process.execPath)].join(':')
+// The scanner runs git by name; CI's node lives in a toolcache dir without one.
+const SCAN_PATH = [
+  path.resolve('node_modules/.bin'),
+  path.dirname(process.execPath),
+  path.dirname(GIT_BIN),
+].join(':')
 const scanner = probeScanner(SCAN_PATH)
 
 describe.skipIf(scanner === undefined)('burndown tick leak check', () => {

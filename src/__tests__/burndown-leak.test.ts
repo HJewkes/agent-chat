@@ -651,7 +651,12 @@ describe('the tick leak check sweep of stale scan refs', () => {
   })
 })
 
-const REAL_PATH = [path.resolve('node_modules/.bin'), path.dirname(process.execPath)].join(':')
+// The scanner runs git by name; CI's node lives in a toolcache dir without one.
+const REAL_PATH = [
+  path.resolve('node_modules/.bin'),
+  path.dirname(process.execPath),
+  path.dirname(GIT_BIN),
+].join(':')
 const realScanner = probeScanner(REAL_PATH)
 
 describe.skipIf(realScanner === undefined)('the tick leak check on the real titan-egress-scan', () => {
