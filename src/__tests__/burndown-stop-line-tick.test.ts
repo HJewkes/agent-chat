@@ -12,6 +12,7 @@ import { SERVICE_CHECK_WINDOW_MS } from '../agents/burndown/service-check.js'
 import { seatPlanFromDisk } from '../agents/burndown/tick.js'
 import { TRUST_RULE_BASELINE_CLI_VERSION } from '../agents/trust.js'
 import { burndownLedgerPath } from '../paths.js'
+import { seatTickReport } from '../cli/verbs/seats.js'
 
 /**
  * CC-785: the tick reads `titan-factory service check --json` once, persists the read, and stops
@@ -267,5 +268,39 @@ describe('the dry-run seat verbs', () => {
 
     expect(fake.checks).toHaveLength(1)
     expect(fs.readFileSync(burndownLedgerPath(), 'utf8')).toBe(before)
+  })
+
+  it('seats tick --dry-run prints the seat plan and does not write the ledger', async () => {
+    previous('stale pid')
+    const before = fs.readFileSync(burndownLedgerPath(), 'utf8')
+    const fake = factory('crash loop', 'serve restarted 3 times')
+
+    const report = await seatTickReport(true, async () => opts(fake.exec))
+
+    expect(report.ok).toBe(true)
+    expect(report.lines[0]).toBe(`seat seat-t tick at ${NOW.toISOString()} (dry run)`)
+    expect(report.lines).toContain(`refused demo T-1 [stop-line]: ${STOP_REASON}`)
+    expect(fake.checks).toHaveLength(1)
+    expect(fs.readFileSync(burndownLedgerPath(), 'utf8')).toBe(before)
+  })
+
+  it('seats tick --dry-run names the dispatch the tick would make when the line runs', async () => {
+    const report = await seatTickReport(true, async () => opts(factory(null).exec))
+
+    expect(report.lines.some(line => line.startsWith('would dispatch demo T-1 '))).toBe(true)
+  })
+
+  it('seats tick without --dry-run refuses before reading anything', async () => {
+    let loaded = false
+
+    const report = await seatTickReport(false, async () => {
+      loaded = true
+      return opts(factory(null).exec)
+    })
+
+    expect(report.ok).toBe(false)
+    expect(report.errors?.[0]).toMatch(/^seats tick runs only with --dry-run/)
+    expect(loaded).toBe(false)
+    expect(fs.existsSync(burndownLedgerPath())).toBe(false)
   })
 })
