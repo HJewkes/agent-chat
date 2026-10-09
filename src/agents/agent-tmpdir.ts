@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import type { AgentIdentity } from '../protocol.js'
-import { AGENT_ID_ENV, LAUNCHER_PID_ENV } from '../launch-identity.js'
+import { AGENT_ID_ENV, AGENT_NAME_PATTERN, LAUNCHER_PID_ENV } from '../launch-identity.js'
 import { finishedIds, isLauncherOf, procTable, type ProcessTable } from './orphan-reap.js'
 
 /**
@@ -18,8 +18,7 @@ import { finishedIds, isLauncherOf, procTable, type ProcessTable } from './orpha
 
 export const TMP_ROOT = '/tmp'
 const DIR_MODE = 0o700
-/** No `.`, `/` or `\`, so a valid name can never leave /tmp or name a parent. */
-const VALID_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/i
+const VALID_NAME = new RegExp(`^${AGENT_NAME_PATTERN}$`, 'i')
 const PREFIX = 'ac-'
 
 export interface TmpStat {

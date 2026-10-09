@@ -187,6 +187,30 @@ describe('agentEnv with an agent launch', () => {
     expect(env.TMPDIR).toBe(DIR)
   })
 
+  it('makes its own dir when the parent carries another agent’s, as a broker an agent started does', () => {
+    const fs = new FakeFs()
+    const parent = { TMPDIR: '/tmp/ac-lead-123', TMP: '/tmp/ac-lead-123', TEMP: '/tmp/ac-lead-123' }
+    const env = agentEnv(parent, { agentTmp: linux(fs) })
+
+    expect([env.TMPDIR, env.TMP, env.TEMP]).toEqual([DIR, DIR, DIR])
+    expect(fs.made).toEqual([[DIR, 0o700]])
+  })
+
+  it('never passes another agent’s dir on, even when its own cannot be made', () => {
+    const parent = { TMPDIR: '/tmp/ac-lead-123', TMP: '/tmp/ac-lead-123' }
+    const env = agentEnv(parent, { agentTmp: linux(new FakeFs().add(DIR, 'symlink')), tmpDir: () => '/tmp' })
+
+    expect(env.TMPDIR).toBe('/tmp')
+    expect(env.TMP).toBeUndefined()
+  })
+
+  it('drops another agent’s dir for an env with no launch of its own', () => {
+    const env = agentEnv({ TMPDIR: '/tmp/ac-lead-123', TEMP: '/tmp/ac-lead-123' }, { tmpDir: () => '/tmp' })
+
+    expect(env.TMPDIR).toBe('/tmp')
+    expect(env.TEMP).toBeUndefined()
+  })
+
   it('keeps a TMPDIR the parent pointed somewhere other than /tmp', () => {
     const fs = new FakeFs()
     const env = agentEnv(

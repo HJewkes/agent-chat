@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { ensureAgentTmpDir, TMP_ROOT, type AgentTmpRequest } from './agent-tmpdir.js'
+import { clearLaunchTmpDirs } from '../launch-identity.js'
 
 /**
  * What a spawned agent's environment is allowed to carry.
@@ -166,6 +167,8 @@ const isSharedTmp = (dir: string | undefined): boolean =>
   dir === undefined || dir === '' || path.resolve(dir) === TMP_ROOT
 
 function withTmpDir(env: Record<string, string>, options: AgentEnvOptions): void {
+  // Another launch's private dir is never passed on: it goes when that launch exits (CC-901).
+  clearLaunchTmpDirs(env)
   const own =
     options.agentTmp !== undefined && isSharedTmp(env.TMPDIR)
       ? ensureAgentTmpDir(options.agentTmp)
