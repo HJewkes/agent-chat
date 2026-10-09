@@ -473,7 +473,8 @@ after a cutoff and the seat status, in 6,000 characters. Over that the oldest in
 then the log section; the queue and status are never cut
 
 Options:
-  --after <value>  show inbox messages after this msg_id; default the last 5
+  --after <value>  show inbox messages after this msg_id; default the State block's own cursor, else
+                   the last 5
   --json           the sections without the 6,000-character cut, as one JSON object; a failure is
                    {"seat", "error"} with exit 1
   --root <value>   autonomy directory holding charter.md, seats/, queues/ and logs/
