@@ -17,6 +17,7 @@ import {
   REMOTE_LAUNCH_TIMEOUT_MS,
 } from '../agents/teleport.js'
 import { planPath } from '../agents/launch-files.js'
+import { transcriptPath } from '../agents/transcript.js'
 import { logPath, profilesDir } from '../paths.js'
 import type { LaunchPlan } from '../agents/types.js'
 import type { ArgvReader } from '../broker/host-channels.js'
@@ -1321,6 +1322,86 @@ describe('remote control across a teleport', () => {
   it('lets the session say so itself, for Remote Control switched on mid-session', async () => {
     expect(await successorArgs('claude', true)).toContain('--remote-control')
     expect(await successorArgs(PRIMARY, false)).not.toContain('--remote-control')
+  })
+})
+
+/** CC-883: a coordinator seat runs with Remote Control after a watchdog resume and across a teleport; a worker never does. */
+describe('remote control for a coordinator seat (CC-883)', () => {
+  beforeEach(() => {
+    const root = workspace()
+    fs.mkdirSync(path.join(root, 'seats'))
+    fs.writeFileSync(path.join(root, 'seats', 'alpha.md'), '---\nname: alpha\nprefix: al\npool: p1\n---\n')
+    supervisor.close()
+    makeSupervisor(undefined, () => 'claude', { autonomyRoot: root, now: () => new Date(), shepherd: async () => undefined })
+  })
+
+  async function seatSuccessor(over: Record<string, unknown> = {}, remoteControl?: boolean) {
+    const agentId = await spawnAgent({ name: 'alpha', surface: 'iterm-pane', ...over })
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'alpha' }),
+      handoff: 'h',
+      ...(remoteControl === undefined ? {} : { remoteControl }),
+    })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    expect(result.ok).toBe(true)
+    return planFor(result.agentId as string).args
+  }
+
+  it("launches a coordinator seat's successor with --remote-control though its argv lacks it", async () => {
+    expect(await seatSuccessor({ profile: installCoordinatorProfile() })).toContain('--remote-control')
+  })
+
+  it("omits --remote-control from a worker seat's successor", async () => {
+    expect(await seatSuccessor()).not.toContain('--remote-control')
+  })
+
+  it('lets a coordinator seat drop it outright', async () => {
+    expect(await seatSuccessor({ profile: installCoordinatorProfile() }, false)).not.toContain('--remote-control')
+  })
+
+  async function remoteLaunch(agentId: string, name: string) {
+    await supervisor.teleport({
+      subject: subject(agentId, { name, host: 'caller-host' }),
+      handoff: 'h',
+      remoteControlSeen: true,
+    })
+    const plan = supervisor.teleportPlan(agentId)
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    return (await plan).launch
+  }
+
+  it('carries it to a caller-side launch when the caller saw it in its own argv', async () => {
+    const agentId = adoptSession('cc27', workspace())
+    expect((await remoteLaunch(agentId, 'cc27'))?.remoteControl).toBe(true)
+  })
+
+  it('never hands it to a worker on another host, whatever the caller saw', async () => {
+    const agentId = await spawnAgent({ surface: 'iterm-pane' })
+    expect((await remoteLaunch(agentId, 'scout'))?.remoteControl).toBeUndefined()
+  })
+
+  async function resumedArgs(over: Record<string, unknown>) {
+    const agentId = await spawnAgent({ surface: 'iterm-pane', ...over })
+    const exit = (supervisor as unknown as { recordExit: (id: string, o: unknown) => Promise<void> }).recordExit
+    await exit.call(supervisor, agentId, { code: 0, signal: null })
+    const agent = core.agents.get(agentId)!
+    const transcript = transcriptPath(agent.cwd, agent.sessionId, agent.configDir)
+    fs.mkdirSync(path.dirname(transcript), { recursive: true })
+    fs.writeFileSync(transcript, '{}\n')
+    const resumed = await supervisor.resume(agent.name, { surface: 'iterm-pane', remoteControl: true, source: 'watchdog' })
+    expect(resumed.ok).toBe(true)
+    return { args: planFor(agentId).args, warnings: resumed.warnings ?? [] }
+  }
+
+  it('resumes a coordinator with --remote-control when the watchdog asks', async () => {
+    const { args } = await resumedArgs({ name: 'lead-1', profile: installCoordinatorProfile() })
+    expect(args).toContain('--remote-control')
+  })
+
+  it('resumes a worker without it, and says so', async () => {
+    const { args, warnings } = await resumedArgs({})
+    expect(args).not.toContain('--remote-control')
+    expect(warnings.join(' ')).toMatch(/scout is a worker, so it resumed without Remote Control/)
   })
 })
 
