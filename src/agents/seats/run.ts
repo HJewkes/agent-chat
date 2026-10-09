@@ -494,10 +494,15 @@ async function heartbeat(pass: Pass, seat: Seat, log: SeatJournal): Promise<stri
     mark: record.heartbeat,
   })
   if (step.mark === undefined) return []
-  record.heartbeat = step.mark
-  if (step.message === undefined) return []
+  if (step.message === undefined) {
+    record.heartbeat = step.mark
+    return []
+  }
   const woke = await pass.deps.wake(name, step.message, true)
-  return woke.ok ? [] : [`${name}: Watchdog: heartbeat FAILED (${woke.detail})`]
+  // The mark advances only on delivery, so a failed tick or pause wake is retried next run.
+  if (!woke.ok) return [`${name}: Watchdog: heartbeat FAILED (${woke.detail})`]
+  record.heartbeat = step.mark
+  return []
 }
 
 function dryRunLine(decision: Decision, liveness: LivenessVerdict): string {

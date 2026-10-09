@@ -35,6 +35,8 @@ const budget: BudgetRead = {
 interface Rig {
   deps: WatchdogDeps
   sent: { at: string; message: string }[]
+  /** Fail every wake until set back to false. */
+  failWakes: (fail: boolean) => void
   /** Set the seat's own log for 2026-10-08. */
   log: (text: string) => void
   /** Run the watchdog at local HH:MM on 2026-10-08. */
@@ -46,6 +48,7 @@ function rig(cron = '"17,47 * * * *"'): Rig {
   let seatLog = ''
   let doc: WatchdogDoc = { seats: {}, pools: {}, stopped: {} }
   const sent: Rig['sent'] = []
+  let failing = false
   const hhmm = (d: Date): string => `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`
   const deps: WatchdogDeps = {
     now: () => now,
@@ -62,6 +65,7 @@ function rig(cron = '"17,47 * * * *"'): Rig {
     loadDoc: () => structuredClone(doc),
     saveDoc: saved => void (doc = { ...saved, stopped: doc.stopped }),
     wake: async (_seat, message) => {
+      if (failing) return { ok: false, detail: 'broker down' }
       sent.push({ at: hhmm(now), message })
       return { ok: true, detail: 'ok' }
     },
@@ -71,6 +75,7 @@ function rig(cron = '"17,47 * * * *"'): Rig {
   return {
     deps,
     sent,
+    failWakes: fail => void (failing = fail),
     log: text => void (seatLog = text),
     at: async (hh, mm) => {
       now = new Date(2026, 9, 8, hh, mm)
@@ -116,6 +121,28 @@ describe('watchdog heartbeat', () => {
     expect(r.sent).toHaveLength(1)
     expect(r.sent[0]?.at).toBe('13:02')
     expect(r.sent[0]?.message).toMatch(/BUDGET-PAUSE/)
+  })
+
+  it('retries a pause wake that failed at the reset on the next run', async () => {
+    const r = rig()
+    r.log('08:50 BUDGET-PAUSE five_hour 71% until 13:00')
+    r.failWakes(true)
+    await r.at(13, 2)
+    r.failWakes(false)
+    await everyMinute(r, [13, 3], [13, 30])
+    expect(r.sent).toHaveLength(1)
+    expect(r.sent[0]?.at).toBe('13:03')
+    expect(r.sent[0]?.message).toMatch(/BUDGET-PAUSE/)
+  })
+
+  it('retries a tick that failed within its slot', async () => {
+    const r = rig()
+    await r.at(9, 0)
+    r.failWakes(true)
+    await r.at(9, 17)
+    r.failWakes(false)
+    await everyMinute(r, [9, 18], [9, 30])
+    expect(r.sent).toEqual([{ at: '9:18', message: TICK }])
   })
 
   it('reads a reset earlier than the pause line as the next day', () => {
