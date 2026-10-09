@@ -57,6 +57,15 @@ describe('spoolOwnerQueue', () => {
 })
 
 describe('ownerQueueSpoolDir', () => {
+  it('resolves inside the per-run temp root under test, never the real console spool', () => {
+    const root = process.env.TEST_HOME_ROOT ?? ''
+
+    const relative = path.relative(root, ownerQueueSpoolDir())
+
+    expect(root).not.toBe('')
+    expect(relative.startsWith('..') || path.isAbsolute(relative)).toBe(false)
+  })
+
   it('follows the console: TITAN_CONSOLE_INBOX_DIR first', () => {
     expect(ownerQueueSpoolDir({ TITAN_CONSOLE_INBOX_DIR: '/x/in', TITAN_CONSOLE_STATE: '/x/st' }, '/h')).toBe(
       '/x/in',
