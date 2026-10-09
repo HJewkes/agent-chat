@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import type { OwnerItem, OwnerItemDeposit } from '@titan-design/owner-queue'
 import { readAccountBudget } from '../budget.js'
 import { loadDoc } from '../seats/io.js'
 import { meterSpend, pacedCaps, savedMeters, usableMeters, type SavedMeters } from '../seats/stops.js'
@@ -10,7 +11,7 @@ import type { Initiative, Refusal, Task } from './eligibility.js'
 import { isLive, occupantOf } from '../isolation/sweep.js'
 import type { Claim, Ledger, SeatState } from './ledger.js'
 import type { LineStop } from './flow-gate.js'
-import type { SeatOutcome } from './no-dispatch.js'
+import { noDispatchReason, stopOf, type SeatOutcome } from './no-dispatch.js'
 import { rowNamed, type Roster } from './observe.js'
 import type { Capacity, Dispatch, PlanInputs } from './plan.js'
 import {
@@ -92,8 +93,11 @@ function sampled(
       ? []
       : [{ at: nowMs, sevenDay: reading.sevenDay, ...(resetsAt === undefined ? {} : { resetsAt }) }]
   const history = reading?.sevenDay === undefined ? kept : oneSource(kept, saved, reading.sevenDay, deps.now)
-  const mark = previous?.noDispatch === undefined ? {} : { noDispatch: previous.noDispatch }
-  return { reading, resetsAt, history, state: { samples: [...kept, ...sample], ...mark } }
+  const marks = {
+    ...(previous?.noDispatch === undefined ? {} : { noDispatch: previous.noDispatch }),
+    ...(previous?.exhaustedTicks === undefined ? {} : { exhaustedTicks: previous.exhaustedTicks }),
+  }
+  return { reading, resetsAt, history, state: { samples: [...kept, ...sample], ...marks } }
 }
 
 /**
@@ -382,4 +386,74 @@ export function diskSeatDeps(autonomyRoot: string, root: string, now: Date): Sea
     },
     meters: (seat, pool) => savedMeters(doc, seat, pool),
   }
+}
+
+/** Ticks in a row a seat must find nothing eligible in scope before it asks the owner. */
+export const SCOPE_EXHAUSTED_TICKS = 2
+
+const SCOPE_EXHAUSTED_REC =
+  "Rec: let the seat run Discovery overflow from another seat's Overflow list, or wind down; nothing is eligible in scope"
+
+/** The owner queue as the tick sees it: its open items, and a deposit into it. */
+export interface OwnerQueuePort {
+  open(): Promise<OwnerItem[]>
+  deposit(deposit: OwnerItemDeposit): Promise<void>
+}
+
+const exhaustedKey = (seat: string): string => `scope-exhausted:${seat}`
+
+function exhaustedDeposit(outcome: SeatOutcome, ticks: number, now: Date): OwnerItemDeposit {
+  const counts = noDispatchReason(outcome)?.text.split('; ').pop() ?? ''
+  return {
+    depositId: `scope-exhausted-${outcome.seat}-${now.getTime()}`,
+    asker: 'burndown-tick',
+    kind: 'decide',
+    door: 'two-way',
+    summary: `Seat ${outcome.seat} found nothing eligible in scope on ${ticks} ticks in a row`,
+    context: `Seat ${outcome.seat} dispatched nothing on ${ticks} consecutive ticks; ${counts}. ${SCOPE_EXHAUSTED_REC}`,
+    options: [
+      { id: 'overflow', label: 'Run Discovery overflow from another seat’s Overflow list' },
+      { id: 'wind-down', label: 'Wind the seat down' },
+    ],
+    recommended: { optionId: 'overflow', by: 'burndown-tick', rationale: SCOPE_EXHAUSTED_REC },
+    keys: [exhaustedKey(outcome.seat)],
+    seat: outcome.seat,
+  }
+}
+
+/**
+ * Nothing in scope was eligible: no open task at all, or every candidate refused for its own sake. A stop or a
+ * full cap (charter 4.2) is not exhaustion: the seat has work and is waiting.
+ */
+const nothingEligible = (o: SeatOutcome): boolean => o.dispatched === 0 && stopOf(o.refusals) === undefined
+
+/**
+ * CC-864 (charter S17, 7.8): a seat with nothing eligible in scope on two ticks in a row files one "scope
+ * exhausted" owner item, unless the queue already holds an open one for the seat. The streak lives in the seat's
+ * ledger state as `exhaustedTicks`; a tick that dispatched or met a stop drops it, and a tick that could not plan
+ * the seat leaves it.
+ */
+export async function scopeExhausted(
+  outcomes: readonly SeatOutcome[],
+  states: Record<string, SeatState>,
+  now: Date,
+  port: OwnerQueuePort,
+): Promise<Record<string, SeatState>> {
+  const next = { ...states }
+  let open: OwnerItem[] | undefined
+  for (const outcome of outcomes) {
+    const { exhaustedTicks: streak = 0, ...state } = next[outcome.seat] ?? { samples: [] }
+    if (outcome.skipped !== undefined) continue
+    if (!nothingEligible(outcome)) {
+      next[outcome.seat] = state
+      continue
+    }
+    const ticks = streak + 1
+    next[outcome.seat] = { ...state, exhaustedTicks: ticks }
+    if (ticks < SCOPE_EXHAUSTED_TICKS) continue
+    open ??= await port.open()
+    if (open.some(i => i.keys.includes(exhaustedKey(outcome.seat)))) continue
+    await port.deposit(exhaustedDeposit(outcome, ticks, now))
+  }
+  return next
 }
