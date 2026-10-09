@@ -512,6 +512,21 @@ function poolPickLines(picks: PoolPickStatus): string[] {
   return picks.last.map((pick, i) => line(i === 0 ? 'pool pick' : '', `${pick.at}  ${pick.text}`))
 }
 
+/** CC-889: the few lines a coordinator reads every tick; `--json` carries the rest. */
+export function renderBrief(status: SeatStatus): string[] {
+  const { budget, inbox } = status
+  return [
+    `seat ${status.seat} at ${status.at}`,
+    roleLine('implementers', status.implementers),
+    roleLine('reviewers', status.reviewers),
+    roleLine('planners', status.planners),
+    line('pool', poolReadingText(budget)),
+    line('stop', status.machineStop?.reason ?? budget.stop ?? 'none'),
+    line('unread', inbox.unread === null ? `unavailable: ${inbox.error}` : String(inbox.unread)),
+    line('parked', String(status.parked.count)),
+  ]
+}
+
 export function renderStatus(status: SeatStatus): string[] {
   const { parked, budget } = status
   const trees = parked.treeOnDisk.length === 0 ? '' : `  tree on disk: ${parked.treeOnDisk.join(', ')}`
