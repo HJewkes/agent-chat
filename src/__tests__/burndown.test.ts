@@ -194,7 +194,7 @@ describe('burndown plan', () => {
   })
 
   it.each([
-    ['a different release', '2.1.285', 'differs from'],
+    ['a different release', '2.1.285', 'is not one of'],
     ['no readable version', 'claude', 'cannot determine'],
   ])('refuses on trust when the installed CLI has %s, even under a trusted repo', (_, installed, reason) => {
     installClaude(installed)
