@@ -9,6 +9,8 @@ import {
   type SevenDaySample,
   type AccountReading,
 } from '../burndown/budget-gate.js'
+import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
+import { seatTrees, type SeatTree } from './trees.js'
 import { loadPolicy, seatBudget, type Policy } from '../burndown/policy.js'
 import type { ScoredPlan } from '../burndown/score-render.js'
 import type { DispatchRow } from '../burndown/score.js'
@@ -50,6 +52,8 @@ export interface RoleLoad extends AgentLoad {
   atCap: boolean
   /** CC-405: running agents tagged `waiting-owner`, left out of every other field; always empty without `cap_excludes_waiting_owner`. */
   waitingOwner: string[]
+  /** CC-494: set on implementers only: the worktrees counted in `active` and why. `active` may exceed `names.length`. */
+  trees?: SeatTree[]
 }
 
 /** The session tag that marks an agent as blocked on the owner; set with `chat_tag`. */
@@ -140,6 +144,8 @@ export interface StatusDeps {
   homeDir: string
   /** The broker's roster without retired agents. */
   agents: () => Promise<AgentIdentity[]>
+  /** CC-494: `git worktree list --porcelain` text for one repo path. Throws when git fails; the repo then adds no trees. */
+  repoTrees: (repo: string) => Promise<string>
   /** CC-405: names of the sessions that carry `WAITING_OWNER_TAG`. */
   waitingOwner: () => Promise<string[]>
   readBudget: (configDir: string, nowMs: number) => BudgetRead
@@ -214,6 +220,42 @@ function roleLoad(agents: AgentIdentity[], role: Role, cap: number, waiting: Rea
     role,
   )
   return { active, cap, atCap: active >= cap, names, detached, waitingOwner: namesOf(parked) }
+}
+
+/**
+ * CC-494: running implementers whose checkout is not a counted tree, plus every counted tree.
+ * An implementer and its own tree count once.
+ */
+function implementerLoad(
+  agents: AgentIdentity[],
+  cap: number,
+  waiting: ReadonlySet<string>,
+  trees: SeatTree[],
+): RoleLoad {
+  const load = roleLoad(agents, 'implementer', cap, waiting)
+  const inTree = (a: AgentIdentity): boolean => trees.some(t => isAtOrUnder(canonicalPath(a.cwd), t.path))
+  const loose = agents.filter(
+    a => roleOf(a) === 'implementer' && running(a) && !waiting.has(a.name) && !inTree(a),
+  )
+  const active = loose.length + trees.length
+  return { ...load, active, atCap: active >= cap, trees }
+}
+
+async function countedTrees(
+  deps: StatusDeps,
+  policy: Policy,
+  agents: AgentIdentity[],
+  waiting: ReadonlySet<string>,
+): Promise<SeatTree[]> {
+  const repos = policy.seat.repos.filter(r => r.git !== false)
+  const repoTrees = await Promise.all(
+    repos.map(r => deps.repoTrees(expandHome(r.path, deps.homeDir)).catch(() => '')),
+  )
+  return seatTrees({
+    agents: agents.filter(a => !waiting.has(a.name)),
+    repoTrees,
+    patterns: policy.seat.concurrency.counted_trees,
+  })
 }
 
 function parkedLoad(agents: AgentIdentity[]): ParkedLoad {
@@ -409,10 +451,11 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
   const mine = ownedBy(roster, seat, prefix)
   const waiting = new Set(policy.seat.cap_excludes_waiting_owner ? await deps.waitingOwner() : [])
   const plain: Plain = err => plainError(err, [deps.autonomyRoot, deps.homeDir])
+  const trees = await countedTrees(deps, policy, mine, waiting)
   return {
     seat,
     at: now.toISOString(),
-    implementers: roleLoad(mine, 'implementer', concurrency.implementers, waiting),
+    implementers: implementerLoad(mine, concurrency.implementers, waiting, trees),
     reviewers: roleLoad(mine, 'reviewer', concurrency.reviewers, waiting),
     planners: roleLoad(mine, 'planner', concurrency.planners, waiting),
     other: agentLoad(mine, 'other'),
@@ -438,8 +481,12 @@ function agentLine(label: string, load: AgentLoad, count: string, flag = ''): st
   return line(label, [count, flag, load.names.join(', '), detached].filter(Boolean).join('  '))
 }
 
-const roleLine = (label: string, load: RoleLoad): string =>
-  agentLine(label, load, `${load.active}/${load.cap}`, load.atCap ? 'AT CAP' : '')
+function roleLine(label: string, load: RoleLoad): string {
+  const trees = load.trees ?? []
+  const shown = trees.map(t => `${path.basename(t.path)}(${t.cause})`).join(', ')
+  const text = agentLine(label, load, `${load.active}/${load.cap}`, load.atCap ? 'AT CAP' : '')
+  return trees.length === 0 ? text : `${text}  trees: ${shown}`
+}
 
 /** The pool's reading in words, shared with the boot page. */
 export function poolReadingText(budget: BudgetStatus): string {
