@@ -94,13 +94,10 @@ function provenanceOf(row: AgentEventRow): Partial<AgentIdentity> {
 const baseOf = (row: AgentEventRow): { base?: { sha: string; ref: string } } =>
   row.meta.base_sha && row.meta.base_ref ? { base: { sha: row.meta.base_sha, ref: row.meta.base_ref } } : {}
 
-/**
- * A resume onto a branch that survived keeps the base it was first cut from; only a
- * fresh branch, cut because the old one was gone, has a new one.
- */
+/** A resume row carries a base only when it cut a fresh branch; a surviving branch keeps its first one. */
 function applyResumeProvenance(agent: AgentIdentity, row: AgentEventRow): void {
   const base = baseOf(row).base
-  if (base !== undefined && (row.meta.reattached === 'fresh' || agent.base === undefined)) agent.base = base
+  if (base !== undefined) agent.base = base
   if (row.meta.repo) agent.repo = row.meta.repo
   if (row.meta.branch) agent.branch = row.meta.branch
 }

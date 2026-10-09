@@ -283,7 +283,8 @@ export class SocketServer {
       ...(msg.returnContract === undefined ? {} : { returnContract: msg.returnContract }),
       ...(Number.isInteger(msg.tier) ? { tier: msg.tier } : {}),
       ...(requestedBy === HUMAN ? spawnedAsOf(msg) : {}),
-      ...(typeof msg.task === 'string' ? { task: msg.task } : {}),
+      // A blank task from the CLI is no task, as the MCP tool's `present()` already reads it.
+      ...(typeof msg.task === 'string' && msg.task.trim() !== '' ? { task: msg.task.trim() } : {}),
       ...(typeof msg.workRole === 'string' ? { workRole: msg.workRole } : {}),
       ...(msg.tags === undefined ? {} : { tags: msg.tags }),
       ...(msg.subscriptions === undefined ? {} : { subscriptions: msg.subscriptions }),

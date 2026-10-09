@@ -35,6 +35,8 @@ async function spawnedRequest(frame: {
   worktree?: string
   tier?: unknown
   spawnedAs?: unknown
+  task?: unknown
+  workRole?: unknown
 }): Promise<SpawnRequest> {
   const seen: SpawnRequest[] = []
   vi.spyOn(Supervisor.prototype, 'spawn').mockImplementation(async req => {
@@ -115,6 +117,21 @@ describe('handleSpawn spawnedAs', () => {
     const request = await spawnedRequest({})
 
     expect(request).not.toHaveProperty('spawnedAs')
+  })
+})
+
+/** CC-915: a blank `--task` from the CLI is no task, as the MCP tool already reads it. */
+describe('handleSpawn task and role', () => {
+  it('hands the supervisor a trimmed task and the role as sent', async () => {
+    const request = await spawnedRequest({ task: ' AB-7 ', workRole: 'reviewer' })
+
+    expect(request).toMatchObject({ task: 'AB-7', workRole: 'reviewer' })
+  })
+
+  it.each(['', '   ', 7])('drops the task %j', async task => {
+    const request = await spawnedRequest({ task })
+
+    expect(request).not.toHaveProperty('task')
   })
 })
 

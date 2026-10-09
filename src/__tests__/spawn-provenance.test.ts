@@ -9,7 +9,7 @@ import { Registry } from '../broker/registry.js'
 import { Supervisor } from '../agents/supervisor.js'
 import { transcriptPath } from '../agents/transcript.js'
 import { foldAgent } from '../agents/identity.js'
-import { githubRepoOf, inferWorkRole, isWorkRole } from '../agents/spawn-provenance.js'
+import { githubRepoOf, inferWorkRole, isWorkRole, worktreeProvenance } from '../agents/spawn-provenance.js'
 import type { AgentEventRow } from '../broker/event-store.js'
 import type { AgentIdentity } from '../protocol.js'
 import { spawnFrame } from '../agents/burndown/execute.js'
@@ -189,34 +189,91 @@ describe("burndown's spawn frame", () => {
   })
 })
 
-describe('a resume that re-creates a parked worktree', () => {
-  it('records the repo, branch and base it was re-created from on the resume row', async () => {
+/** Lands a commit on origin's main, so the tip a new branch would be cut from moves on. */
+function advanceMain(repo: string): string {
+  fs.writeFileSync(path.join(repo, 'later.md'), 'later\n')
+  git(['add', 'later.md'], repo)
+  git(['commit', '-m', 'later'], repo)
+  git(['push', '-q', 'origin', 'main'], repo)
+  return git(['rev-parse', 'HEAD'], repo)
+}
+
+/** An exited agent whose pushed work survives on its branch after its tree is parked. */
+async function parkedWithWork(name: string, repo: string): Promise<AgentIdentity> {
+  const agent = await spawnIn(name, repo, { task: 'CC-915' })
+  const transcript = transcriptPath(agent.cwd, agent.sessionId, agent.configDir)
+  fs.mkdirSync(path.dirname(transcript), { recursive: true })
+  fs.writeFileSync(transcript, '{}\n')
+  fs.writeFileSync(path.join(agent.cwd, 'feature.ts'), 'work\n')
+  git(['add', 'feature.ts'], agent.cwd)
+  git(['commit', '-m', 'work'], agent.cwd)
+  git(['push', '-q', 'origin', `agent-chat/${name}`], agent.cwd)
+  const recordExit = (sup as unknown as { recordExit: (id: string, o: unknown) => Promise<void> }).recordExit
+  await recordExit.call(sup, agent.agentId, { code: 0, signal: null })
+  expect((await sup.park(name)).ok).toBe(true)
+  return agent
+}
+
+const resumeRow = (agentId: string) =>
+  core.events.agentEvents().findLast(r => r.kind === 'agent_resumed' && r.ref === agentId)
+
+describe('a resume that re-creates a parked worktree on its surviving branch', () => {
+  it('records repo and branch but no base, and the agent keeps the base it was cut from', async () => {
     const { repo, tip } = repoWithGithubOrigin()
-    const agent = await spawnIn('worker-a', repo, { task: 'CC-915' })
-    const transcript = transcriptPath(agent.cwd, agent.sessionId, agent.configDir)
-    fs.mkdirSync(path.dirname(transcript), { recursive: true })
-    fs.writeFileSync(transcript, '{}\n')
-    fs.writeFileSync(path.join(agent.cwd, 'feature.ts'), 'work\n')
-    git(['add', 'feature.ts'], agent.cwd)
-    git(['commit', '-m', 'work'], agent.cwd)
-    git(['push', '-q', 'origin', 'agent-chat/worker-a'], agent.cwd)
-    const recordExit = (sup as unknown as { recordExit: (id: string, o: unknown) => Promise<void> })
-      .recordExit
-    await recordExit.call(sup, agent.agentId, { code: 0, signal: null })
-    expect((await sup.park('worker-a')).ok).toBe(true)
+    const agent = await parkedWithWork('worker-a', repo)
+    advanceMain(repo)
 
     const resumed = await sup.resume('worker-a')
 
     expect(resumed.reason).toBeUndefined()
-    const row = core.events.agentEvents().findLast(r => r.kind === 'agent_resumed' && r.ref === agent.agentId)
-    expect(row?.meta).toMatchObject({
+    expect(resumeRow(agent.agentId)?.meta).toMatchObject({
       repo: 'acme/widget',
       branch: 'agent-chat/worker-a',
-      base_sha: tip,
-      base_ref: 'origin/main',
       reattached: 'local',
     })
+    expect(resumeRow(agent.agentId)?.meta).not.toHaveProperty('base_sha')
     expect(core.agents.get(agent.agentId)).toMatchObject({ base: { sha: tip }, task: 'CC-915' })
+  })
+})
+
+describe('a re-spawn under a name whose branch still holds commits', () => {
+  it('records no base, since this spawn adopted the branch rather than cutting it', async () => {
+    const { repo } = repoWithGithubOrigin()
+    fs.writeFileSync(path.join(repo, 'earlier.ts'), 'earlier run\n')
+    git(['add', 'earlier.ts'], repo)
+    git(['commit', '-q', '-m', 'earlier run'], repo)
+    git(['branch', '-f', 'agent-chat/worker-a', 'HEAD'], repo)
+    git(['reset', '-q', '--hard', 'HEAD~1'], repo)
+    advanceMain(repo)
+
+    const again = await spawnIn('worker-a', repo)
+
+    const allocated = core.events
+      .agentEvents()
+      .find(r => r.kind === 'isolation_allocated' && r.ref === again.agentId)
+    expect(allocated?.meta).toMatchObject({ reused: 'true' })
+    expect(spawnRow(again.agentId)?.meta).toMatchObject({ branch: 'agent-chat/worker-a' })
+    expect(spawnRow(again.agentId)?.meta).not.toHaveProperty('base_sha')
+    expect(again).not.toHaveProperty('base')
+  })
+})
+
+describe('which allocations record a base', () => {
+  const noGit = async () => null
+  const cut = { gitRoot: '/r', branch: 'b', base: 'abc', base_ref: 'origin/main' }
+
+  it.each([
+    ['a branch this spawn cut', {}, true],
+    ['a fresh branch a resume cut', { reattached: 'fresh' }, true],
+    ['a reused branch', { reused: 'true' }, false],
+    ['a surviving local branch', { reattached: 'local' }, false],
+    ['a branch fetched from origin', { reattached: 'origin' }, false],
+    ['a re-created assigned worktree', { reattached: 'fresh', assigned: 'true' }, false],
+  ])('%s', async (_label, extra, recorded) => {
+    const meta = await worktreeProvenance({ cwd: '/w', ref: { ...cut, ...extra } }, noGit)
+
+    expect('base_sha' in meta).toBe(recorded)
+    expect(meta.branch).toBe('b')
   })
 })
 

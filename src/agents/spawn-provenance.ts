@@ -52,9 +52,17 @@ async function originRepo(gitRoot: string, git: GitRunner): Promise<string | und
 }
 
 /**
- * The worktree half of the provenance, as row meta: repo, branch and base. An
- * adopted worktree has a branch but no base this spawn cut it from, so it records
- * none rather than guessing one; a non-worktree allocation records nothing.
+ * `ref.base` is the tip a new branch WOULD be cut from, so it is the branch's base
+ * only when this allocation cut one: a new branch at spawn, or a fresh one at
+ * resume. A reused, surviving or assigned branch started somewhere else.
+ */
+const cutBranch = (ref: Record<string, string>): boolean =>
+  ref.reused !== 'true' && ref.assigned !== 'true' && (ref.reattached ?? 'fresh') === 'fresh'
+
+/**
+ * The worktree half of the provenance, as row meta: repo, branch and base. A
+ * branch this allocation did not cut records no base rather than a wrong one; a
+ * non-worktree allocation records nothing.
  */
 export async function worktreeProvenance(
   allocation: Allocation,
@@ -66,7 +74,7 @@ export async function worktreeProvenance(
   return {
     ...(repo === undefined ? {} : { repo }),
     ...(ref.branch === undefined ? {} : { branch: ref.branch }),
-    ...(ref.base && ref.base_ref ? { base_sha: ref.base, base_ref: ref.base_ref } : {}),
+    ...(ref.base && ref.base_ref && cutBranch(ref) ? { base_sha: ref.base, base_ref: ref.base_ref } : {}),
     ...(ref.reattached === undefined ? {} : { reattached: ref.reattached }),
   }
 }
