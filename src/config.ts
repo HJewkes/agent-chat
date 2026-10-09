@@ -366,8 +366,9 @@ export function resolveGitShellAliases(): string[] {
     logInvalidOnce({ key: 'gitShellAliases', value, fallback: [] })
     return []
   }
-  const names = value.filter((name): name is string => typeof name === 'string' && ALIAS_NAME.test(name))
-  const ignored = value.filter(name => !names.includes(name as string))
+  const isName = (name: unknown): name is string => typeof name === 'string' && ALIAS_NAME.test(name)
+  const names = value.filter(isName)
+  const ignored = value.filter(name => !isName(name))
   if (ignored.length > 0) logInvalidOnce({ key: 'gitShellAliases', value: ignored, fallback: 'ignored' })
   return names.map(name => name.toLowerCase())
 }
