@@ -226,6 +226,7 @@ function orderRows(inputs: SeatPlanInputs, priorPicks: Record<string, number>): 
     seat: inputs.seat.seat,
     ...(extra.milestones !== undefined && { milestones: extra.milestones }),
     ...(extra.knownIds !== undefined && { knownIds: extra.knownIds }),
+    failedUpstreams: failedUpstreamsOf(inputs.ledger, extra.tasks),
   }
   const planned = planOrder({ ...base, rows, n: rows.length, priorPicks })
   const shareCapped = Object.entries(planned.refused).filter(([key]) => key.startsWith('share-cap:'))
@@ -235,6 +236,24 @@ function orderRows(inputs: SeatPlanInputs, priorPicks: Record<string, number>): 
     planRefusals: tagRefusals(rows, planned, base),
     placement: placementOf(planned, defaults.initiative_decay),
   }
+}
+
+/**
+ * CC-833: open tasks whose last attempt ended terminally, by stall code: a held claim stalled as `failed`, or a
+ * task released by the ladder that no claim holds again. A merged task is closed, so it names no dependent.
+ */
+export function failedUpstreamsOf(ledger: Ledger, open: readonly ScoredTask[]): Record<string, string> {
+  const openIds = new Set(open.map(task => task.id))
+  const held = ledger.claims.filter(c => c.phase !== 'done')
+  const failed: Record<string, string> = {}
+  for (const [key, record] of Object.entries(ledger.ladder ?? {})) {
+    const taskId = key.split('#')[0] ?? ''
+    if ((record.releases ?? 0) > 0 && !held.some(c => c.taskId === taskId))
+      failed[taskId] = record.code ?? 'released'
+  }
+  for (const c of held)
+    if (c.stalledClass === 'failed') failed[c.taskId] = c.stallCode ?? c.stalledReason ?? 'failed'
+  return Object.fromEntries(Object.entries(failed).filter(([id]) => openIds.has(id)))
 }
 
 /** The highest tier `planOrder` sorts itself; tiers 3 and 4 follow `dispatchOrder`, decayed by the rows above them. */
