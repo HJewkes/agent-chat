@@ -1,3 +1,10 @@
+=== agent-chat agent retire bob amy
+frame: {"t":"retire","name":"bob"}
+frame: {"t":"retire","name":"amy"}
+stdout: Not retired bob: no such agent
+stdout: Not retired amy: no such agent
+exit 1
+
 === agent-chat agent retire bob
 frame: {"t":"retire","name":"bob"}
 stdout: Retired bob.

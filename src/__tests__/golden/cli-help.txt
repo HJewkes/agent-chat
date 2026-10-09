@@ -666,7 +666,7 @@ Options:
 Commands:
   ls [options]                                 agents, with lifecycle and presence
   spawn [options] <name> <profile> [brief...]  start a new agent
-  retire [options] [name]                      release isolation, end the process, and free the name
+  retire [options] [name...]                   release isolation, end the process, and free the name
   park <name>                                  remove an exited agent's clean, pushed worktree and
                                                keep its branch
   resume [options] <name>                      bring a stopped agent back on its own conversation
@@ -683,11 +683,14 @@ Usage: agent-chat agent ls [options]
 agents, with lifecycle and presence
 
 Options:
-  --json            print one JSON array, one object per agent
-  --mine            only agents you spawned (needs a registered session name)
-  --spawner <name>  only agents spawned by <name>
-  --prefix <p>      only agents whose name starts with <p>
-  -h, --help        display help for command
+  --json             print one JSON array, one object per agent
+  --mine             only agents you spawned (needs a registered session name)
+  --spawner <name>   only agents spawned by <name>
+  --prefix <p>       only agents whose name starts with <p>
+  --state <state>    only agents showing this status, e.g. running, finished, retired (repeatable)
+  --name <name>      only the agent with exactly this name
+  --format <format>  line: one line per agent (name state profile id cwd)
+  -h, --help         display help for command
 
 === agent-chat agent spawn
 Usage: agent-chat agent spawn [options] <name> <profile> [brief...]
@@ -701,7 +704,7 @@ Options:
   -h, --help              display help for command
 
 === agent-chat agent retire
-Usage: agent-chat agent retire [options] [name]
+Usage: agent-chat agent retire [options] [name...]
 
 release isolation, end the process, and free the name
 
@@ -759,6 +762,8 @@ Options:
   --mine            only agents you spawned (needs a registered session name)
   --spawner <name>  only agents spawned by <name>
   --prefix <p>      only agents whose name starts with <p>
+  --accounts        one line per account config dir: both rate-limit windows, resets and reading age
+  --json            with --accounts, the same rows as one JSON array
   -h, --help        display help for command
 
 === agent-chat teleport

@@ -1,12 +1,11 @@
 import { z } from 'zod'
-import { requiredString } from '../../args.js'
 import type { RetirePlanEntry, RetireResult, ServerMessage } from '../../protocol.js'
 import { SCOPE_REQUIRED } from '../../agents/isolation/retire-finished.js'
 import { defineVerb, Report, type VerbContext } from '../command.js'
 
 const RetireArgs = z
   .object({
-    name: requiredString('name').optional(),
+    name: z.array(z.string()).optional(),
     force: z.boolean().optional(),
     finished: z.boolean().optional(),
     spawner: z.string().optional(),
@@ -22,15 +21,16 @@ type RetireArgs = z.infer<typeof RetireArgs>
 
 /** CC-323: the bulk form is scoped, never forced, and never mixed with a name. */
 function argsProblem(args: RetireArgs): { path: string; message: string } | undefined {
+  const names = args.name ?? []
   const scoped = Boolean(args.spawner?.trim() || args.prefix?.trim())
   if (args.finished !== true) {
     if (scoped || args.dryRun === true)
       return { path: 'finished', message: '--spawner, --prefix and --dry-run need --finished' }
-    if (args.name === undefined)
+    if (names.length === 0 || names.some(n => n.trim() === ''))
       return { path: 'name', message: 'name is required and must be a non-empty string' }
     return undefined
   }
-  if (args.name !== undefined) return { path: 'name', message: '--finished retires by scope; drop the name' }
+  if (names.length > 0) return { path: 'name', message: '--finished retires by scope; drop the name' }
   if (args.force === true)
     return { path: 'force', message: '--force is refused with --finished; force one agent by name' }
   return scoped ? undefined : { path: 'finished', message: SCOPE_REQUIRED }
@@ -69,9 +69,32 @@ export const agentRetire = defineVerb({
   },
   async run(args, ctx) {
     if (args.finished === true) return retireFinished(args, ctx)
-    return retireOne(args.name ?? '', args.force === true, ctx, process.env.AGENT_CHAT_NAME)
+    return retireNamed(args.name ?? [], args.force === true, ctx, process.env.AGENT_CHAT_NAME)
   },
 })
+
+/** One name keeps the long-standing output; several get a line each, every name judged on its own. */
+async function retireNamed(
+  names: string[],
+  force: boolean,
+  ctx: VerbContext,
+  caller: string | undefined,
+): Promise<Report> {
+  const [only] = names
+  if (names.length === 1 && only !== undefined) return retireOne(only, force, ctx, caller)
+  const reports: Report[] = []
+  for (const name of names) reports.push(await retireOne(name, force, ctx, caller))
+  return {
+    ok: reports.every(r => r.ok),
+    lines: reports.map((r, i) => nameLine(names[i] ?? '', r)),
+  }
+}
+
+function nameLine(name: string, report: Report): string {
+  const [first = '', ...caveats] = report.lines
+  const line = report.ok ? first : first.replace('Not retired:', `Not retired ${name}:`)
+  return caveats.length === 0 ? line : `${line} (${caveats.join('; ')})`
+}
 
 async function retireOne(
   name: string,

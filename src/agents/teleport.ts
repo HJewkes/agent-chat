@@ -10,6 +10,7 @@ import {
   SURFACE_NAMES,
   type AgentIdentity,
   type IsolationName,
+  type RemoteLaunch,
   type Subscription,
   type SurfaceName,
   type TeleportReason,
@@ -21,7 +22,7 @@ import { shepherdRowsAsync } from './burndown/shepherd.js'
 import { latestTeleportSection } from './seats/boot-read.js'
 import { defaultAutonomyRoot } from './seats/io.js'
 import { renderTeleportHandoff } from './seats/relaunch-handoff.js'
-import { writeTeleportState, type SeatTeleportDeps } from './seats/teleport-state.js'
+import { readSeatFile, writeTeleportState, type SeatTeleportDeps } from './seats/teleport-state.js'
 import {
   appendixFacts,
   renderAppendix,
@@ -79,6 +80,9 @@ export const PANE_SETTLE_MS = 750
 /** CC-402: how long a reused pane waits for the predecessor's pid to exit; past the SIGKILL grace, so only a stuck kill hits it. */
 export const PANE_EXIT_TIMEOUT_MS = 10_000
 const PANE_EXIT_POLL_MS = 100
+
+/** CC-881: how long a remote caller has to report its launch before the successor is released. */
+export const REMOTE_LAUNCH_TIMEOUT_MS = 60_000
 
 /** Thrown by a host that already told the human its successor did not start, so `finish` does not tell them twice. */
 export class SuccessorNotStarted extends Error {
@@ -143,6 +147,8 @@ export interface TeleportRequest {
   model?: string
   /** Overrides argv detection, for a session that enabled Remote Control with `/remote-control` (H-12). */
   remoteControl?: boolean
+  /** CC-883: what the caller read from its own argv; read here instead when absent and on this host. */
+  remoteControlSeen?: boolean
   reason?: TeleportReason
 }
 
@@ -153,7 +159,25 @@ export interface TeleportOutcome {
   agentId?: string
   countdownMs?: number
   warnings?: string[]
+  remote?: boolean
 }
+
+/** CC-881: what a remote caller is handed: the successor to launch, or why there is none. */
+export interface RemotePlanReply {
+  ok: boolean
+  reason?: string
+  launch?: RemoteLaunch
+}
+
+/** CC-881: the remote caller's report on the launch it was handed. */
+export interface RemoteLaunchReport {
+  /** The successor the report is about, so a report can only settle the teleport it names. */
+  successor: string
+  ok: boolean
+  reason?: string
+}
+
+type LaunchOutcome = Omit<RemoteLaunchReport, 'successor'>
 
 /** The predecessor's isolation, carried across rather than re-allocated (§9). */
 export interface InheritedIsolation {
@@ -187,6 +211,10 @@ export interface RelaunchInput {
   remoteControl?: boolean
 }
 
+/** CC-881: a reported host that is not the broker's; its pid and its terminal are that host's to act on. */
+const onAnotherHost = (subject: TeleportSubject): boolean =>
+  subject.host !== undefined && !isLocalHost(subject.host)
+
 function hostReason(subject: TeleportSubject): string {
   return (
     `${subject.name} runs on host ${subject.host ?? 'unknown'}, not on the broker's host ${brokerHost()}, ` +
@@ -202,6 +230,24 @@ export interface TeleportHost {
   /** Why a surface cannot launch on this broker's platform, if it cannot. */
   surfaceBlocker(surface: SurfaceName): string | undefined
   relaunch(input: RelaunchInput): Promise<void>
+  /** CC-881: record the successor and build its launch for another host, launching nothing here. */
+  prepareRemoteRelaunch(input: RelaunchInput): RemoteLaunch
+  /** CC-881: the other host launched it, so the successor's execution opens. */
+  confirmRemoteRelaunch(input: RelaunchInput): void
+  /** CC-881: the other host did not launch it, so the successor's row is retired unused. */
+  releaseRemoteRelaunch(input: RelaunchInput, reason: string): void
+}
+
+interface RemoteWait {
+  plan: Promise<RemotePlanReply>
+  answer: (reply: RemotePlanReply) => void
+  report?: (report: LaunchOutcome) => void
+}
+
+const remoteWait = (): RemoteWait => {
+  let answer: (reply: RemotePlanReply) => void = () => undefined
+  const plan = new Promise<RemotePlanReply>(resolve => (answer = resolve))
+  return { plan, answer }
 }
 
 interface Pending {
@@ -220,6 +266,7 @@ interface Pending {
   /** CC-863: the newest inbox row when it asked to teleport, which a seat's State block names as handled. */
   inboxThrough: string | undefined
   timer?: NodeJS.Timeout
+  remote?: RemoteWait
 }
 
 const bytes = (text: string): number => Buffer.byteLength(text, 'utf8')
@@ -293,7 +340,8 @@ export class Teleport {
 
     const config = this.configFor(identity, subject, req.model)
     if ('error' in config) return { ok: false, reason: config.error }
-    const impossible = this.host.surfaceBlocker(config.surface)
+    const remote = onAnotherHost(subject)
+    const impossible = remote ? undefined : this.host.surfaceBlocker(config.surface)
     if (impossible !== undefined) return this.cannotComplete(subject, impossible)
     const worker = recordedRole(this.core.agents.spawnMeta(subject.agentId)) === 'worker'
     if (worker && req.remoteControl === true)
@@ -319,9 +367,11 @@ export class Teleport {
       handoff: req.handoff,
       profile: config.profile,
       surface: config.surface,
-      inherited: this.host.inheritedIsolation(subject.agentId),
+      // CC-881: a remote predecessor's pid names a process on its own host, not one here.
+      inherited: remote ? undefined : this.host.inheritedIsolation(subject.agentId),
       // CC-163: a worker's successor never inherits Remote Control, even one its argv shows.
-      remoteControl: worker ? false : (req.remoteControl ?? this.predecessorRemoteControl(subject)),
+      remoteControl: worker ? false : (req.remoteControl ?? this.carriedRemoteControl(req)),
+      ...(remote ? { remote: remoteWait() } : {}),
       since: identity.spawnedAt,
       sessionId: identity.sessionId,
       inboxThrough: this.inboxCursor(subject.name),
@@ -341,6 +391,7 @@ export class Teleport {
       name: subject.name,
       agentId: descendantId,
       ...(warnings.length > 0 ? { warnings } : {}),
+      ...(remote ? { remote: true } : {}),
     }
     // A headless predecessor has no pane and no human watching it in the moment,
     // so a countdown would be latency bought in exchange for a veto nobody is
@@ -365,8 +416,15 @@ export class Teleport {
     }
   }
 
+  /** CC-883: a coordinator seat runs with Remote Control (10-06 plan D6); anyone else keeps what it launched with. */
+  private carriedRemoteControl(req: TeleportRequest): boolean {
+    if (readSeatFile(this.seatTeleport.autonomyRoot, req.subject.name) !== undefined) return true
+    return req.remoteControlSeen ?? this.predecessorRemoteControl(req.subject)
+  }
+
   /** Read now, while the predecessor is still running: once it ends there is no argv left to read. */
   private predecessorRemoteControl(subject: TeleportSubject): boolean {
+    if (onAnotherHost(subject)) return false
     const found = hostRemoteControl(subject.hostPid, this.readArgv)
     if (found === undefined)
       logEvent('teleport_remote_control_unknown', {
@@ -407,7 +465,8 @@ export class Teleport {
         'restart the session (or run /mcp reconnect) and try again.'
       )
 
-    if (!isLocalHost(subject.host)) return this.cannotComplete(subject, hostReason(subject)).reason
+    // CC-881: a reported other host runs its own relaunch; an unreported one cannot, so it is refused.
+    if (subject.host === undefined) return this.cannotComplete(subject, hostReason(subject)).reason
 
     const size = bytes(req.handoff)
     if (size > HANDOFF_MAX_BYTES)
@@ -540,6 +599,7 @@ export class Teleport {
         return { ok: false, reason: `${name}'s teleport is already under way and cannot be stopped` }
       clearTimeout(entry.timer)
       this.pending.delete(agentId)
+      entry.remote?.answer({ ok: false, reason: 'the human aborted this teleport' })
       this.tell(name, 'Your teleport was aborted by the human. You are still live, still on the old build.')
       logEvent('teleport_aborted', { name, agentId })
       return { ok: true }
@@ -558,6 +618,7 @@ export class Teleport {
     if (entry === undefined) return
     delete entry.timer
     const { subject } = entry
+    if (entry.remote !== undefined) return this.finishRemote(entry, entry.remote)
 
     this.core.append({ kind: 'agent_stood_down', actor: subject.name, ref: agentId })
     // Non-null because `preflight` refuses a subject without one, and a pending
@@ -593,6 +654,96 @@ export class Teleport {
     } finally {
       this.pending.delete(agentId)
     }
+  }
+
+  /** CC-881: the plan a remote caller waits on; refused when this session is not teleporting from another host. */
+  remotePlan(agentId: string): Promise<RemotePlanReply> {
+    const remote = this.pending.get(agentId)?.remote
+    if (remote === undefined)
+      return Promise.resolve({
+        ok: false,
+        reason: 'no teleport from another host is pending for this session',
+      })
+    return remote.plan
+  }
+
+  /** CC-881: the caller's report, accepted only while a handed-out plan awaits one. */
+  remoteLaunched(agentId: string, report: RemoteLaunchReport): { ok: boolean; reason?: string } {
+    const entry = this.pending.get(agentId)
+    const remote = entry?.remote
+    // One winner: the timeout clears `report`, so a late report is refused here and never acted on.
+    if (remote?.report === undefined || entry?.descendantId !== report.successor)
+      return { ok: false, reason: 'no teleport launch is awaiting a report for that successor' }
+    remote.report(report)
+    return { ok: true }
+  }
+
+  /**
+   * CC-881: the broker can neither signal nor open a terminal on another host, so it records the
+   * successor, hands its launch to the caller and waits for the report. The predecessor stands
+   * down only once its host says the successor launched; anything else releases the successor.
+   */
+  private async finishRemote(entry: Pending, remote: RemoteWait): Promise<void> {
+    const { subject } = entry
+    let input: RelaunchInput
+    let launch: RemoteLaunch
+    try {
+      input = this.relaunchFor(entry, false, await this.briefFor(entry))
+      launch = this.host.prepareRemoteRelaunch(input)
+    } catch (err) {
+      return this.remoteFailed(entry, undefined, (err as Error).message)
+    }
+    const report = await this.awaitReport(remote, launch)
+    if (!report.ok) return this.remoteFailed(entry, input, report.reason ?? 'no reason given')
+    this.host.confirmRemoteRelaunch(input)
+    this.core.append({ kind: 'agent_stood_down', actor: subject.name, ref: subject.agentId })
+    await this.waitForNameFree(subject.name)
+    this.core.append({
+      kind: 'agent_retired',
+      actor: 'agent-chat',
+      target: subject.name,
+      ref: subject.agentId,
+      body: 'superseded by teleport',
+    })
+    this.pending.delete(subject.agentId)
+    logEvent('teleport_completed', {
+      name: subject.name,
+      from: subject.agentId,
+      to: entry.descendantId,
+      remote: true,
+    })
+  }
+
+  private awaitReport(remote: RemoteWait, launch: RemoteLaunch): Promise<LaunchOutcome> {
+    return new Promise(resolve => {
+      const timer = setTimeout(() => {
+        delete remote.report
+        resolve({
+          ok: false,
+          reason: `its host did not report a launch within ${REMOTE_LAUNCH_TIMEOUT_MS / 1000}s`,
+        })
+      }, REMOTE_LAUNCH_TIMEOUT_MS)
+      timer.unref?.()
+      remote.report = report => {
+        clearTimeout(timer)
+        delete remote.report
+        resolve(report)
+      }
+      remote.answer({ ok: true, launch })
+    })
+  }
+
+  /** Fail closed: the predecessor was never signalled, so it is told it is still live and may try again. */
+  private remoteFailed(entry: Pending, input: RelaunchInput | undefined, reason: string): void {
+    const { subject } = entry
+    this.pending.delete(subject.agentId)
+    entry.remote?.answer({ ok: false, reason })
+    if (input !== undefined) this.host.releaseRemoteRelaunch(input, reason)
+    this.tell(
+      subject.name,
+      `Your teleport did not happen: ${reason}. You are still live, on the old build, and your successor was released.`,
+    )
+    logEvent('teleport_failed', { name: subject.name, from: subject.agentId, reason, remote: true })
   }
 
   /** `paneFree` false keeps the anchor but opens beside it: typing into a pane the predecessor still holds reaches its prompt. */

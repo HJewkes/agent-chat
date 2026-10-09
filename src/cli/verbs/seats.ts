@@ -139,6 +139,8 @@ async function resumeOn(
     surface,
     ...(message === undefined ? {} : { message }),
     source: 'watchdog' as const,
+    // CC-883: a seat runs with Remote Control (10-06 plan D6); the broker drops it for a worker.
+    ...(surface === 'headless' ? {} : { remoteControl: true }),
   }
   return (await client.request(frame, 'spawn_result')) as Reply<'spawn_result'>
 }

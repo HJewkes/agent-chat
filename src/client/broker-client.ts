@@ -42,6 +42,8 @@ const REPLY_TIMEOUT_MS: Partial<Record<ReplyType, number>> = {
   retire_finished_result: 600_000,
   // CC-777: with retired rows the reply is over 6,000 agents and 23 MB, measured at 7.9-9.1s.
   agents_result: 30_000,
+  // CC-881: held through the teleport countdown and the successor's brief, both on the broker.
+  teleport_plan: 120_000,
 }
 // Front-loaded to catch a broker already starting, tailed off for a cold one; the sum is the give-up budget.
 const RECONNECT_DELAYS_MS = [100, 250, 500, 1000, 2000, 5000]
