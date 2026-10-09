@@ -82,7 +82,7 @@ export function gitShimHarness(): GitShimHarness {
     )
     git(work, 'remote', 'add', 'origin', remote)
     git(work, 'remote', 'add', 'net', 'ssh://git.invalid/remote.git')
-    expect(writeGitShim(shimDir, guard, HOST_PATH, shellAliases)).toBe(true)
+    expect(writeGitShim(shimDir, guard, HOST_PATH, shellAliases, { HOME: home })).toBe(true)
     const env = {
       PATH: `${shimDir}:/usr/bin:/bin`,
       HOME: home,

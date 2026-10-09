@@ -961,6 +961,26 @@ the name checked is the `!` alias the chain reaches, not the word typed. A liste
 the rule in the table and the argument checks below. The list holds names, not alias text, so
 a listed alias whose text is changed runs the new text.
 
+A listed name runs only the text that the agent's own config files give it: the system
+config, the global config under the `HOME` and `XDG_CONFIG_HOME` the shim was written with,
+and the repository's config. The shim refuses it with `git-shim: refused (shell-alias)` when
+git reports any value of `alias.<name>` from the command line. That covers `-c`,
+`--config-env`, `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`, in any case of the key. The
+shim also refuses it when the text differs from a second read that drops `-c` and
+`--config-env`, unsets `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_GLOBAL`,
+`GIT_CONFIG_SYSTEM` and `GIT_CONFIG_NOSYSTEM`, and puts back the `HOME` and
+`XDG_CONFIG_HOME` baked at spawn. That covers a `-c include.path` that pulls in another file
+and a per-call swap of the global or system config file. A `-c` of an unrelated key, such as
+`-c user.name=x`, does not stop a listed alias (CC-613 d). Every config read the shim makes
+runs with `GIT_CONFIG` unset, because `git config` then reads only that file while git ignores
+it when it runs an alias or a push. The shim puts `GIT_CONFIG` back for the git it finally
+runs, so the agent's own `GIT_CONFIG=<file> git config` still reads that file.
+
+The repository is not pinned. `-C`, `--git-dir`, `GIT_DIR` and `GIT_COMMON_DIR` choose a
+repository the way `cd` does, and its config counts as a config file. Like an edit to
+`.git/config`, a repository the agent writes can still give a listed name new text; only
+baking each listed alias's text at spawn would close that.
+
 git appends the arguments to a listed `!` alias's shell command, which can read them in more ways than
 any list covers (`$1`, `"$@"`, `for a;`, `$0` under a nested `sh -c`, `shift`, `getopts`). So
 `shell-alias` also refuses a `!` alias whenever its arguments mention `push` in any case, `stash
