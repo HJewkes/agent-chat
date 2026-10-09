@@ -79,6 +79,9 @@ function shownCommands(block: string): string[] {
 }
 
 const BODY = 'A synthetic PR body.\n'
+const HEREDOC_POST = "agent-chat gh-write -- <gh args> --body-file - <<'EOF'"
+/** A shown heredoc opener runs as the agent sends it: text, then the EOF line. */
+const asSent = (form: string): string => (form.endsWith("<<'EOF'") ? `${form}\n${BODY}EOF` : form)
 const POST = fill('agent-chat gh-write -- <gh args> --body-file <f>')
 const WRITE = `cat > pr-body.md <<'EOF'\n${BODY}EOF`
 const ONE_CALL = `${WRITE}\n${POST}`
@@ -101,7 +104,7 @@ describe('every command form the return contract teaches is one the leak guard a
   const forms = [...new Set(blocks.flatMap(shownCommands))]
 
   it('finds the forms it is meant to check', () => {
-    expect(forms).toContain('agent-chat gh-write -- <gh args> --body-file <f>')
+    expect(forms).toContain(HEREDOC_POST)
     expect(forms).toContain('agent-chat pr-ready --title <t> --body-file <f>')
     expect(forms).toContain('git -C "$dir"')
     expect(forms).toContain('pgrep')
@@ -112,7 +115,7 @@ describe('every command form the return contract teaches is one the leak guard a
   })
 
   it.each(forms)('allows %s', form => {
-    const command = fill(form)
+    const command = asSent(fill(form))
     expect(command).not.toMatch(/<[a-z][^>]*>/)
     expect(checkCommand(command, at(WORKTREE))).toBeUndefined()
   })
@@ -121,17 +124,16 @@ describe('every command form the return contract teaches is one the leak guard a
     expect(checkCommand('git -C "$dir" log --oneline -1', at(WORKTREE))).toBeUndefined()
   })
 
-  it('allows the implementer form: write and post on one line, then delete the file', () => {
-    allowsEach([ONE_CALL, DELETE], WORKTREE)
+  it.each([
+    ['the worktree', WORKTREE],
+    ['a symlinked working directory', LINKED],
+  ])('allows the one-call stdin form from %s', (_where, cwd) => {
+    expect(checkCommand(asSent(fill(HEREDOC_POST)), at(cwd))).toBeUndefined()
   })
 
   it('allows a body file the Write tool left in the worktree, posted and then deleted', () => {
     fs.writeFileSync(path.join(WORKTREE, 'pr-body.md'), BODY)
     allowsEach([POST, DELETE], WORKTREE)
-  })
-
-  it('allows the reviewer form from a symlinked working directory: write, post, delete in three calls', () => {
-    allowsEach([WRITE, POST, DELETE], LINKED)
   })
 
   // The docs/leak-guard.md caveat: a reviewer's cwd under $TMPDIR arrives through /var, a symlink.
@@ -140,6 +142,7 @@ describe('every command form the return contract teaches is one the leak guard a
   })
 
   it('gets the same answers from the built hook', () => {
+    expect(hook(asSent(fill(HEREDOC_POST)), LINKED)).toBe('')
     expect(hook(ONE_CALL, WORKTREE)).toBe('')
     expect(JSON.parse(hook(ONE_CALL, LINKED)).hookSpecificOutput.permissionDecision).toBe('deny')
   })
@@ -157,8 +160,8 @@ describe('the repo profile templates', () => {
     expect(prelude).toContain(QUOTE_RULE)
   })
 
-  it('tells both roles to delete the body file once posted', () => {
-    expect(BODY_FILE_RULE).toContain('deleted once posted')
-    expect(REVIEWER_BODY_FILE_RULE).toContain('then deleted')
+  it('has the implementer delete its pr-ready file and the reviewer write none', () => {
+    expect(BODY_FILE_RULE).toContain('deleted after')
+    expect(REVIEWER_BODY_FILE_RULE).toContain('write no file')
   })
 })
