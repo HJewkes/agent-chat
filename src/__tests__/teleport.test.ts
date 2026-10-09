@@ -1135,6 +1135,7 @@ describe('a session on another host', () => {
     )
     expect(reply.launch?.surface).toBe('iterm-tab')
     expect(reply.launch?.mcpConfig).toHaveProperty('mcpServers')
+    expect(reply.launch?.origin.execPath).toBe(process.execPath)
     expect(killed).toEqual([])
     expect(fs.existsSync(planPath(result.agentId as string))).toBe(false)
     expect(spawnRowFor(result.agentId as string)).toBeDefined()

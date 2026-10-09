@@ -2994,6 +2994,7 @@ export class Supervisor implements TeleportHost {
       mcpConfig: buildMcpConfig(input.profile, cliEntry(), plan.surface),
       surface: input.surface,
       ...(input.anchor === undefined ? {} : { anchor: input.anchor }),
+      origin: { execPath: process.execPath, cliEntry: cliEntry(), home: home() },
     }
   }
 

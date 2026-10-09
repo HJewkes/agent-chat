@@ -17,6 +17,15 @@ export interface RemoteLaunch {
   mcpConfig: Record<string, unknown>
   surface: PackageSurfaceName
   anchor?: string
+  /** The broker host's own paths baked into the plan, which the caller swaps for its own. */
+  origin: HostPaths
+}
+
+/** CC-881: the node, CLI entry and agent-chat home a launch plan names, which differ by host. */
+export interface HostPaths {
+  execPath: string
+  cliEntry: string
+  home: string
 }
 
 export const SESSION_STATUSES = ['working', 'available', 'blocked'] as const
