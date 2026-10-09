@@ -335,6 +335,14 @@ describe('agent-chat gh-write', () => {
     expect(stderr).toBe('err:api -X PUT repos/o/r/pulls/1/merge\n')
   })
 
+  it('shows how to post a body from a quoted heredoc in its help', async () => {
+    const { stdout } = await execFileAsync(process.execPath, [CLI, 'gh-write', '--help'])
+
+    expect(stdout).toContain(
+      "agent-chat gh-write -- pr create -R <owner>/<repo> -t <title> --body-file - <<'EOF'",
+    )
+  })
+
   it("exits with gh's exit code on a plain failure", async () => {
     await expect(run(['pr', 'create'], { FAKE_GH_CODE: '3' })).rejects.toMatchObject({ code: 3 })
   })

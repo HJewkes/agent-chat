@@ -6,7 +6,14 @@ import { setTimeout as realSleep } from 'node:timers/promises'
 import { parseTerms } from '@titan-design/egress-scan'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { runGh, runGhWrite } from '../cli/gh-write.js'
-import { defaultTermsFile, scanDeps, scanGhArgs, SCAN_REASONS, type ScanDeps } from '../gh-write/scan.js'
+import {
+  defaultTermsFile,
+  findingReason,
+  scanDeps,
+  scanGhArgs,
+  SCAN_REASONS,
+  type ScanDeps,
+} from '../gh-write/scan.js'
 import type { ThrottleDeps } from '../gh-write/throttle.js'
 import { aliasReader } from '../leak-guard/git-alias.js'
 import { includedHooksPathReader } from '../leak-guard/git-include.js'
@@ -248,6 +255,72 @@ describe('gh-write refuses a command whose text it cannot place, before gh start
 
     expect(result.code).toBe(0)
     expect(fs.readFileSync(calls(), 'utf8')).toBe('-R o/r pr comment 1 --body ok\n')
+  })
+})
+
+describe('gh-write posts a PR or issue body from stdin or a path (CC-887)', () => {
+  const VERBS = [
+    ['pr', 'create', '-t', 'T'],
+    ['pr', 'edit', '3'],
+    ['pr', 'comment', '3'],
+    ['issue', 'create', '-t', 'T'],
+    ['issue', 'comment', '4'],
+  ]
+  const HOME_BODY = `see ${['', 'Users', 'zq7-probe-home', 'notes'].join('/')}\n`
+
+  /** Records the mode of each copy gh is handed while gh runs. */
+  const modesSeen = (modes: number[]): Partial<ThrottleDeps> => ({
+    runGh: args => {
+      for (const arg of args.filter(a => a.includes('gh-write-'))) modes.push(fs.statSync(arg).mode & 0o777)
+      return runGh(args)
+    },
+  })
+
+  it.each(VERBS)('posts a clean stdin body through a 0600 copy that is removed: %s %s', async (...verb) => {
+    const modes: number[] = []
+
+    const result = await runGhWrite(
+      [...verb, '--body-file', '-'],
+      deps({ stdin: CLEAN }),
+      throttle(modesSeen(modes)),
+    )
+
+    expect(result.code).toBe(0)
+    expect(fs.readFileSync(bodies(), 'utf8')).toBe(CLEAN)
+    expect(modes).toEqual([0o600])
+    const copy =
+      fs
+        .readFileSync(calls(), 'utf8')
+        .split(' ')
+        .find(a => a.includes('gh-write-')) ?? ''
+    expect(fs.existsSync(path.dirname(copy))).toBe(false)
+  })
+
+  it.each(VERBS)('posts a clean body file given by path: %s %s', async (...verb) => {
+    fs.writeFileSync(file('b.md'), CLEAN)
+
+    const result = await runGhWrite([...verb, '--body-file', file('b.md')], deps(), throttle())
+
+    expect(result.code).toBe(0)
+    expect(fs.readFileSync(bodies(), 'utf8')).toBe(CLEAN)
+  })
+
+  it.each(VERBS)('refuses a stdin body with a home path before gh starts: %s %s', async (...verb) => {
+    const result = await runGhWrite([...verb, '--body-file', '-'], deps({ stdin: HOME_BODY }), throttle())
+
+    expect(result.code).toBe(1)
+    expect(result.stderr.toString()).toBe(`${findingReason(['body line 1 home-path'])}\n`)
+    expect(ghStarted()).toBe(false)
+  })
+
+  it.each(VERBS)('refuses a body file with a home path before gh starts: %s %s', async (...verb) => {
+    fs.writeFileSync(file('b.md'), HOME_BODY)
+
+    const result = await runGhWrite([...verb, '--body-file', file('b.md')], deps(), throttle())
+
+    expect(result.code).toBe(1)
+    expect(result.stderr.toString()).toBe(`${findingReason(['body line 1 home-path'])}\n`)
+    expect(ghStarted()).toBe(false)
   })
 })
 
