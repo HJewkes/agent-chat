@@ -15,6 +15,7 @@ import {
   type MachineStopLimits,
 } from './agents/seats/stops.js'
 import { DEFAULT_FULL_SUITE_SLOTS } from './suite-slots.js'
+import { ALIAS_NAME } from './leak-guard/git-alias.js'
 import { isHexColour, type PaneColourConfig } from '@titan-design/agent-surface'
 import { isInteractiveSurface, type SurfaceName } from './protocol.js'
 import { POOL_PICK_MODES, type PoolPickMode } from './agents/seats/pool-pick.js'
@@ -54,6 +55,7 @@ export interface AgentChatConfig {
   tmuxSurfaceOnLinux?: unknown
   processKillBytes?: unknown
   processGuardMode?: unknown
+  gitShellAliases?: unknown
 }
 
 const loggedInvalid = new Set<string>()
@@ -351,6 +353,23 @@ export function resolveCoordinatorGrantableTools(): string[] {
   if (ignored.length > 0)
     logInvalidOnce({ key: 'coordinatorGrantableTools', value: ignored, fallback: 'ignored' })
   return known
+}
+
+/**
+ * CC-613: the `!` git aliases an agent's git shim lets run, from `gitShellAliases`, read per spawn.
+ * It fails closed: a non-array lists nothing, and an entry that is not an alias name is logged and dropped.
+ */
+export function resolveGitShellAliases(): string[] {
+  const value = readConfig().gitShellAliases
+  if (value === undefined) return []
+  if (!Array.isArray(value)) {
+    logInvalidOnce({ key: 'gitShellAliases', value, fallback: [] })
+    return []
+  }
+  const names = value.filter((name): name is string => typeof name === 'string' && ALIAS_NAME.test(name))
+  const ignored = value.filter(name => !names.includes(name as string))
+  if (ignored.length > 0) logInvalidOnce({ key: 'gitShellAliases', value: ignored, fallback: 'ignored' })
+  return names.map(name => name.toLowerCase())
 }
 
 function positiveIntegerFrom(key: keyof AgentChatConfig, fallback: number): number {

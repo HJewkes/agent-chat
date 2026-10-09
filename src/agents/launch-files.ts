@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { resolvePermissionHookTimeout } from '../config.js'
+import { resolveGitShellAliases, resolvePermissionHookTimeout } from '../config.js'
 import { GIT_SHIM_DIR_ENV, writeGitShim } from '../leak-guard/git-shim.js'
 import { defaultScanInputs, hooksDirOf, probeScanner, writeGitHooks } from '../leak-guard/hooks-dir.js'
 import { agentDir, cliEntry } from '../paths.js'
@@ -237,7 +237,10 @@ export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknow
   if (hooksDir === undefined) return
   writeGitHooks(hooksDir, { ...defaultScanInputs(), probe: probeScanner })
   const shimDir = plan.env[GIT_SHIM_DIR_ENV]
-  if (shimDir !== undefined && !writeGitShim(shimDir, hooksDir))
+  if (
+    shimDir !== undefined &&
+    !writeGitShim(shimDir, hooksDir, process.env.PATH ?? '', resolveGitShellAliases())
+  )
     process.stderr.write(`agent-chat: git shim not written to ${shimDir}: no git on PATH\n`)
 }
 
