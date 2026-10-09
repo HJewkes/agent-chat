@@ -48,6 +48,7 @@ interface PullStub {
   body?: string
   branch?: string
   headRepo?: string
+  base?: string
   private?: boolean
 }
 
@@ -77,6 +78,7 @@ const pull = (over: PullStub = {}) => ({
   branch: 'agent-chat/st-dm-1',
   headRepo: 'example/demo',
   base: 'main',
+  defaultBranch: 'main',
   private: false,
   ...over,
 })
@@ -91,7 +93,9 @@ interface World {
   logged: { event: string; detail: Record<string, unknown> }[]
   /** What the stub's range scan finds on the pushed branch. */
   branch: EgressFinding[]
-  ranges: { cwd: string; base: string; head: string }[]
+  ranges: { cwd: string; base: string; head: string; allowFrom?: string | undefined }[]
+  /** The range scan alone returns this when set. */
+  rangeDown?: EgressOutcome | undefined
   /** Every scanner call returns this when set: a missing scanner, term list or a crash. */
   down?: EgressOutcome | undefined
   lines: string[]
@@ -119,9 +123,9 @@ const exec =
 
 const egress = (w: World): EgressRunner => ({
   text: input => w.down ?? { state: 'ok', findings: stubFindings(input) },
-  range: (cwd, base, head) => {
-    w.ranges.push({ cwd, base, head })
-    return w.down ?? { state: 'ok', findings: w.branch }
+  range: (cwd, base, head, allowFrom) => {
+    w.ranges.push({ cwd, base, head, allowFrom })
+    return w.down ?? w.rangeDown ?? { state: 'ok', findings: w.branch }
   },
 })
 
@@ -225,8 +229,51 @@ describe('the tick leak check on a claimed PR', () => {
       ['update-ref', '-d', 'refs/agent-chat/leak-scan/7/head'],
     ])
     expect(w.ranges).toEqual([
-      { cwd: checkout, base: 'refs/agent-chat/leak-scan/7/base', head: 'refs/agent-chat/leak-scan/7/head' },
+      {
+        cwd: checkout,
+        base: 'refs/agent-chat/leak-scan/7/base',
+        head: 'refs/agent-chat/leak-scan/7/head',
+        allowFrom: 'refs/agent-chat/leak-scan/7/base',
+      },
     ])
+  })
+
+  it('takes no allow file from a base that is not the default branch', async () => {
+    const w = newWorld([pull({ base: 'agent-chat/other' })])
+
+    await tick(w, ledgerOf(claim()))
+
+    expect(w.ranges[0]?.allowFrom).toBeUndefined()
+  })
+
+  it('adds a new title finding beside the kept branch finding when the range scan fails', async () => {
+    const w = newWorld([pull()])
+    w.branch = [{ location: `commit ${'a'.repeat(7)} src/a.ts:3`, rule: 'home-path' }]
+    const once = await tick(w, ledgerOf(claim()))
+    w.rangeDown = { state: 'error' }
+    w.pulls = [pull({ title: NAME })]
+
+    const after = await tick(w, once)
+
+    expect(after.claims[0]?.leak?.findings).toEqual([
+      'aaaaaaa src/a.ts:3 home-path',
+      'title 1:1 private-term',
+    ])
+    expect(leakSends(w)).toHaveLength(2)
+  })
+
+  it('keeps an earlier branch finding when a later range scan fails', async () => {
+    const w = newWorld([pull()])
+    w.branch = [{ location: `commit ${'a'.repeat(7)} src/a.ts:3`, rule: 'home-path' }]
+    const once = await tick(w, ledgerOf(claim()))
+    w.rangeDown = { state: 'error', detail: '.egress-allow is malformed' }
+
+    const after = await tick(w, once)
+
+    expect(after.claims[0]?.leak).toEqual(once.claims[0]?.leak)
+    expect(w.lines).toContain(
+      'leak check skipped the branch of DM-1: the scanner reported error; its last result stands',
+    )
   })
 
   it('tells the seat again when the findings change', async () => {
@@ -693,15 +740,22 @@ describe.skipIf(realScanner === undefined)('the tick leak check on the real tita
     expect(leakSends(w)).toEqual([])
   })
 
-  it('scans the commits the fetched head adds over the fetched base', async () => {
-    const git = (...args: string[]): string =>
-      execFileSync('git', ['-c', 'user.name=Probe', '-c', 'user.email=probe@example.com', ...args], {
-        cwd: checkout,
-        encoding: 'utf8',
-        env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
-      }).trim()
-    const terms = writeTerms()
+  const git = (...args: string[]): string =>
+    execFileSync('git', ['-c', 'user.name=Probe', '-c', 'user.email=probe@example.com', ...args], {
+      cwd: checkout,
+      encoding: 'utf8',
+      env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+    }).trim()
+
+  const ALLOW_SRC = 'src/** home-path CC-1 synthetic\n'
+
+  /** A base commit, optionally holding an allow file, and a head commit adding a home path under src/. */
+  function branchRepo(baseAllow?: string): void {
     git('init', '-q', '-b', 'main')
+    if (baseAllow !== undefined) {
+      fs.writeFileSync(path.join(checkout, '.egress-allow'), baseAllow)
+      git('add', '.egress-allow')
+    }
     git('commit', '-q', '--allow-empty', '-m', 'base')
     git('update-ref', 'refs/agent-chat/leak-scan/7/base', 'HEAD')
     fs.mkdirSync(path.join(checkout, 'src'))
@@ -709,10 +763,60 @@ describe.skipIf(realScanner === undefined)('the tick leak check on the real tita
     git('add', 'src/a.ts')
     git('commit', '-q', '-m', 'add')
     git('update-ref', 'refs/agent-chat/leak-scan/7/head', 'HEAD')
+  }
+
+  const BRANCH_ROW = /leak DM-1: \S+: [0-9a-f]{7,} src\/a\.ts:1 home-path/
+
+  it('scans the commits the fetched head adds over the fetched base', async () => {
+    const terms = writeTerms()
+    branchRepo()
     const w = newWorld([pull()])
 
     await tick(w, ledgerOf(claim()), { egress: real(terms) })
 
-    expect(leakSends(w)[0]?.text).toMatch(/leak DM-1: \S+: [0-9a-f]{7,} src\/a\.ts:1 home-path/)
+    expect(leakSends(w)[0]?.text).toMatch(BRANCH_ROW)
+  })
+
+  it('ignores an allow file the agent wrote into its checkout', async () => {
+    const terms = writeTerms()
+    branchRepo()
+    fs.writeFileSync(path.join(checkout, '.egress-allow'), ALLOW_SRC)
+    const w = newWorld([pull()])
+
+    await tick(w, ledgerOf(claim()), { egress: real(terms) })
+
+    expect(leakSends(w)[0]?.text).toMatch(BRANCH_ROW)
+  })
+
+  it('ignores a malformed allow file in the checkout rather than failing the scan', async () => {
+    const terms = writeTerms()
+    branchRepo()
+    fs.writeFileSync(path.join(checkout, '.egress-allow'), 'not an allow line\n')
+    const w = newWorld([pull()])
+
+    await tick(w, ledgerOf(claim()), { egress: real(terms) })
+
+    expect(leakSends(w)[0]?.text).toMatch(BRANCH_ROW)
+  })
+
+  it("honours the default branch's committed allow file", async () => {
+    const terms = writeTerms()
+    branchRepo(ALLOW_SRC)
+    const w = newWorld([pull()])
+
+    const after = await tick(w, ledgerOf(claim()), { egress: real(terms) })
+
+    expect(after.claims[0]?.leak).toBeUndefined()
+    expect(w.lines).toEqual([])
+  })
+
+  it('takes no allow file from a base that is not the default branch', async () => {
+    const terms = writeTerms()
+    branchRepo(ALLOW_SRC)
+    const w = newWorld([pull({ base: 'agent-chat/other' })])
+
+    await tick(w, ledgerOf(claim()), { egress: real(terms) })
+
+    expect(leakSends(w)[0]?.text).toMatch(BRANCH_ROW)
   })
 })

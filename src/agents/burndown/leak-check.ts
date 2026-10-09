@@ -40,6 +40,8 @@ interface Pull {
   /** `owner/name` of the head's repo; a fork's differs from the base, and a deleted fork's is empty. */
   headRepo: string
   base: string
+  /** The base repo's default branch; only its `.egress-allow` counts in the branch scan. */
+  defaultBranch: string
   private: boolean
 }
 
@@ -61,7 +63,7 @@ export const repoOfPr = (url: string): string | undefined => {
 }
 
 const PULL_JQ =
-  '.[] | {number, url: .html_url, title, body: (.body // ""), branch: .head.ref, headRepo: (.head.repo.full_name // ""), base: .base.ref, private: (.base.repo.private // false)}'
+  '.[] | {number, url: .html_url, title, body: (.body // ""), branch: .head.ref, headRepo: (.head.repo.full_name // ""), base: .base.ref, defaultBranch: (.base.repo.default_branch // ""), private: (.base.repo.private // false)}'
 
 // REST, never GraphQL: the owner's account hits GraphQL rate limits.
 export function readPulls(repo: string, exec: Runner): Pull[] | ReadFailure {
@@ -119,7 +121,7 @@ interface Pass {
   current: Set<string>
   /** Repos whose open PRs were read and scanned this tick. */
   read: Set<string>
-  /** Claims with a PR the scanner failed on, whose last record stands. */
+  /** Claims with a PR or branch the scanner failed on, whose last rows are kept. */
   unscanned: Set<Claim>
 }
 
@@ -217,9 +219,10 @@ async function checkPull(pass: Pass, pull: Pull, found: Found, where: RepoView):
   const url = where.shown ? pull.url : '[redacted url]'
   const text = scanPullText(pass, pull)
   if (text === undefined) return textUnscanned(pass, where.repo, url, claim)
-  const none = { rows: [], lines: [] }
+  const none = { rows: [], lines: [], unscanned: false }
   const branch = claim === undefined ? none : await scanBranch(claim, pull, pass)
   pass.lines.push(...branch.lines)
+  if (claim !== undefined && branch.unscanned === true) pass.unscanned.add(claim)
   const rows = [...new Set([...text, ...branch.rows])]
   if (claim?.seat !== undefined && pass.deps.seats.includes(claim.seat)) {
     found.set(claim, [...(found.get(claim) ?? []), { number: pull.number, url, rows }])
@@ -271,12 +274,22 @@ function mergedLeak(repo: string, prs: readonly PrRows[]): Leak | undefined {
 /** Each seated claim's union this tick, and no finding for one whose PRs in `repo` have all closed. */
 function settleClaims(ledger: Ledger, repo: string, found: Found, unscanned: ReadonlySet<Claim>): Ledger {
   const claims = ledger.claims.map(c => {
-    if (unscanned.has(c)) return c
     const prs = found.get(c)
-    if (prs !== undefined) return withLeak(c, mergedLeak(repo, prs))
+    const now = prs === undefined ? undefined : mergedLeak(repo, prs)
+    if (unscanned.has(c)) return withLeak(c, keptLeak(c.leak, now))
+    if (prs !== undefined) return withLeak(c, now)
     return c.leak?.repo === repo ? withLeak(c, undefined) : c
   })
   return { ...ledger, claims }
+}
+
+const MORE = /^and \d+ more$/
+
+/** What part of a claim went unscanned may still hold, so its last rows stay beside this tick's. */
+function keptLeak(before: Leak | undefined, now: Leak | undefined): Leak | undefined {
+  if (before === undefined || now === undefined) return now ?? before
+  const rows = [...new Set([...before.findings, ...now.findings].filter(r => !MORE.test(r)))]
+  return { ...now, findings: capped(rows) }
 }
 
 /** A changed record drops the delivered `leak`, so the seat hears of it once per real change. */
@@ -319,7 +332,7 @@ async function scanBranch(
   claim: Claim,
   pull: Pull,
   pass: Pass,
-): Promise<{ rows: string[]; lines: string[] }> {
+): Promise<{ rows: string[]; lines: string[]; unscanned?: boolean }> {
   const cwd = checkoutOf(claim)
   const skipped = (why: string) => ({
     rows: [],
@@ -330,8 +343,11 @@ async function scanBranch(
   try {
     if (pass.deps.exec(GIT_BIN, privateFetch(pull, refs), cwd).status !== 0)
       return skipped('git fetch failed')
-    const scanned = pass.egress.range(cwd, refs.base, refs.head)
-    if (scanned.state !== 'ok') return skipped(`the scanner reported ${scanned.state}`)
+    const allowFrom = pull.base === pull.defaultBranch ? refs.base : undefined
+    const scanned = pass.egress.range(cwd, refs.base, refs.head, allowFrom)
+    if (scanned.state !== 'ok') {
+      return { ...skipped(`the scanner reported ${scanned.state}; its last result stands`), unscanned: true }
+    }
     return { rows: scanned.findings.map(branchRow), lines: [] }
   } finally {
     for (const ref of [refs.base, refs.head]) pass.deps.exec(GIT_BIN, ['update-ref', '-d', ref], cwd)
