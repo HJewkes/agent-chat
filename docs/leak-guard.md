@@ -946,8 +946,7 @@ A `!` alias whose name is not on the shell alias allowlist is refused before it 
 not, with exit 2 and a line `git-shim: refused (shell-alias)` (CC-613). Inside a `!` alias git
 puts its exec-path first on PATH, so the body's own `git` skips the shim, and a body can build
 `push` in more ways than any check can see (`echo hsup | rev | xargs -I% git %`, a `tr` or
-`base64 | sh` pipeline, a variable from the environment). The owner chose named aliases only
-(decision 23b, 2026-10-03). The allowlist is baked into the shim at each spawn and defaults to
+`base64 | sh` pipeline, a variable from the environment). So only named aliases run. The allowlist is baked into the shim at each spawn and defaults to
 empty, so until agent-chat reads it from config every `!` alias is refused for agents. Names
 match exactly and in lowercase: `git HI` finds `alias.hi`, but the shim refuses it. In a chain
 the name checked is the `!` alias the chain reaches, not the word typed. A listed alias keeps
