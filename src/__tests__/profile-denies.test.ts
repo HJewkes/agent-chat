@@ -100,3 +100,12 @@ describe('the inbox deny on a profile file (CC-558)', () => {
       expect(builtin.disallowedTools).toContain(INBOX)
   })
 })
+
+describe('the ask deny on builtin profiles (CC-169)', () => {
+  // Mutation caught: dropping the line, which lets an agent with Bash ask the human under a service label.
+  it.each(['implementer', 'peer', 'reviewer', 'planner'])('denies agent-chat ask to %s', name => {
+    const builtin = BUILTIN_PROFILES.find(p => p.name === name)
+
+    expect(builtin?.disallowedTools).toContain('Bash(agent-chat ask:*)')
+  })
+})

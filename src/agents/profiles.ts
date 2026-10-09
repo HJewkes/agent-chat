@@ -62,6 +62,8 @@ import {
  * different literal string and will not match; a raw socket write bypasses the
  * CLI, and therefore this list, entirely. Real defense in depth, not a fix —
  * `broker/socket.ts`'s `isHuman` states the same limit from the broker side.
+ * `ask` (CC-169) is here too: it puts a question to the human under a service
+ * label, which an agent has its own `chat_ask` for and must not borrow.
  */
 const HUMAN_ONLY_CLI_DENY = [
   'Bash(agent-chat endorse:*)',
@@ -70,6 +72,7 @@ const HUMAN_ONLY_CLI_DENY = [
   'Bash(agent-chat answer:*)',
   'Bash(agent-chat approve:*)',
   'Bash(agent-chat inbox:*)',
+  'Bash(agent-chat ask:*)',
 ]
 
 /**

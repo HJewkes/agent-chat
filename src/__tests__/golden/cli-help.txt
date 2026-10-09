@@ -40,6 +40,10 @@ Agent commands:
   pr-ready [options]         before gh pr create: clean tree, rebase, checks, changeset, leak scan;
                              exit 0 only when all pass
 
+Service commands:
+  ask [options] [text...]    put a question to the human under a service label and print its msg_id
+  answers [options] <name>   read answers and dismissals to a service label's asks
+
 === agent-chat inbox
 Usage: agent-chat inbox [options]
 
@@ -852,6 +856,33 @@ Options:
   --no-rebase         check and report only; do not rebase onto the default branch
   --strict            fail, not just note, a pushed branch that is behind the default branch
   -h, --help          display help for command
+
+=== agent-chat ask
+Usage: agent-chat ask [options] [text...]
+
+put a question to the human under a service label and print its msg_id
+
+Options:
+  --as <label>            the label answers are read back under
+  --text-stdin            read the question from stdin, not argv
+  --kind <kind>           one of decision, needs-grant, stalled, ready-to-merge
+  --task <id>             the task or gate the question is about
+  --option <value>        an answer to offer (repeatable)
+  --recommended <option>  the option you recommend
+  --on-no-answer <text>   what happens if nobody answers
+  --json                  print {"msgId": ...} instead of the bare id
+  -h, --help              display help for command
+
+=== agent-chat answers
+Usage: agent-chat answers [options] <name>
+
+read answers and dismissals to a service label's asks
+
+Options:
+  --since <msgId>  only rows after this msg_id: an ask, or a last next
+  --limit <n>      at most this many rows (default 50)
+  --json           print the reply as one JSON object: { answers, next? }
+  -h, --help       display help for command
 
 === agent-chat broker
 Usage: agent-chat broker [options]
