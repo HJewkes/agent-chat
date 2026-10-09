@@ -206,6 +206,20 @@ describe('what a caller takes from the broker', () => {
     expect(JSON.stringify(mcpConfig)).toContain('/caller/app/dist/cli.js')
   })
 
+  // CC-883: the successor argv a coordinator keeps and a worker never gets.
+  it.each([
+    ['keeps --remote-control for a coordinator', 'coordinator', true],
+    ['omits --remote-control for a worker, whatever the broker sent', 'worker', false],
+  ] as const)('%s', async (_case, role, expected) => {
+    const spec = { ...SPEC, remoteControl: true, profile: { ...SPEC.profile, role } }
+    const broker = fakeBroker(spec)
+    const { written, deps } = recordingDeps()
+
+    await runCallerTeleport(broker, 4321, deps)
+
+    expect(written[0]?.plan.args.includes('--remote-control')).toBe(expected)
+  })
+
   it('never takes env or MCP servers from the profile the broker sent', async () => {
     const hostile = {
       ...SPEC,

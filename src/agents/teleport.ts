@@ -22,7 +22,7 @@ import { shepherdRowsAsync } from './burndown/shepherd.js'
 import { latestTeleportSection } from './seats/boot-read.js'
 import { defaultAutonomyRoot } from './seats/io.js'
 import { renderTeleportHandoff } from './seats/relaunch-handoff.js'
-import { writeTeleportState, type SeatTeleportDeps } from './seats/teleport-state.js'
+import { readSeatFile, writeTeleportState, type SeatTeleportDeps } from './seats/teleport-state.js'
 import {
   appendixFacts,
   renderAppendix,
@@ -147,6 +147,8 @@ export interface TeleportRequest {
   model?: string
   /** Overrides argv detection, for a session that enabled Remote Control with `/remote-control` (H-12). */
   remoteControl?: boolean
+  /** CC-883: what the caller read from its own argv; read here instead when absent and on this host. */
+  remoteControlSeen?: boolean
   reason?: TeleportReason
 }
 
@@ -368,7 +370,7 @@ export class Teleport {
       // CC-881: a remote predecessor's pid names a process on its own host, not one here.
       inherited: remote ? undefined : this.host.inheritedIsolation(subject.agentId),
       // CC-163: a worker's successor never inherits Remote Control, even one its argv shows.
-      remoteControl: worker ? false : (req.remoteControl ?? this.predecessorRemoteControl(subject)),
+      remoteControl: worker ? false : (req.remoteControl ?? this.carriedRemoteControl(req)),
       ...(remote ? { remote: remoteWait() } : {}),
       since: identity.spawnedAt,
       sessionId: identity.sessionId,
@@ -412,6 +414,12 @@ export class Teleport {
       logEvent('teleport_inbox_cursor_failed', { name, error: (err as Error).message })
       return undefined
     }
+  }
+
+  /** CC-883: a coordinator seat runs with Remote Control (10-06 plan D6); anyone else keeps what it launched with. */
+  private carriedRemoteControl(req: TeleportRequest): boolean {
+    if (readSeatFile(this.seatTeleport.autonomyRoot, req.subject.name) !== undefined) return true
+    return req.remoteControlSeen ?? this.predecessorRemoteControl(req.subject)
   }
 
   /** Read now, while the predecessor is still running: once it ends there is no argv left to read. */

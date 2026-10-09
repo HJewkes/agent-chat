@@ -918,7 +918,15 @@ export type ClientMessage =
    * CC-126: bring a listed, non-live agent back on its own conversation.
    * Headless unless `surface` says otherwise; answered with `spawn_result`.
    */
-  | { t: 'resume'; name: string; surface?: SurfaceName; message?: string; source?: WakeSource }
+  | {
+      t: 'resume'
+      name: string
+      surface?: SurfaceName
+      message?: string
+      source?: WakeSource
+      /** CC-883: run with `--remote-control` if the agent is a coordinator; a worker resumes without it. */
+      remoteControl?: boolean
+    }
   /**
    * `force` bypasses the isolation's dirty/unmerged refusal, and destroys the
    * commits it was protecting. Optional so an older client still type-checks,
@@ -945,7 +953,15 @@ export type ClientMessage =
    * deliberately succeed itself onto a cheaper or stronger model. Absent means
    * "whatever this session is running on now", which is the point of teleport.
    */
-  | { t: 'teleport'; handoff: string; model?: string; remoteControl?: boolean; reason?: TeleportReason }
+  | {
+      t: 'teleport'
+      handoff: string
+      model?: string
+      remoteControl?: boolean
+      /** CC-883: the caller's own read of its Claude Code argv, which a broker on another host cannot make. */
+      remoteControlSeen?: boolean
+      reason?: TeleportReason
+    }
   /**
    * Stop a countdown that has not fired yet. The human's veto, and it has no
    * MCP tool — see `docs/teleport.md` §4.2. The broker refuses it from a
