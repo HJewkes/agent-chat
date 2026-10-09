@@ -30,7 +30,7 @@ Agent commands:
   agent                      durable agents
   teleport                   teleport control
   handoff                    stored teleport handoffs
-  profiles                   agent profiles available to spawn with
+  profiles [name]            agent profiles available to spawn with
   gh-write <gh-args...>      one gh write after --, spaced machine-wide and retried on the secondary
                              rate limit
   suite-slot <command...>    run a full test suite after --, holding one of the machine-wide
@@ -785,7 +785,7 @@ Options:
   -h, --help  display help for command
 
 === agent-chat profiles
-Usage: agent-chat profiles [options]
+Usage: agent-chat profiles [options] [name]
 
 agent profiles available to spawn with
 

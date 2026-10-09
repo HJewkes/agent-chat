@@ -3,7 +3,7 @@ import { findGitRoot } from '../git.js'
 import { callerName, filterRoster, type RosterFilter } from '../agents/roster-filter.js'
 import { pairPresence } from '../agents/identity.js'
 import { reclaim, sweepWorktrees } from '../agents/isolation/sweep.js'
-import { listProfileNames, loadProfile } from '../agents/profiles.js'
+import { loadProfile, selectProfileNames } from '../agents/profiles.js'
 import {
   createProfileIndex,
   findAgentTranscript,
@@ -346,9 +346,15 @@ export async function agentBudget(
   return { ok: true, lines }
 }
 
-export function profiles(): Report {
+export function profiles(only?: string): Report {
+  let names: string[]
+  try {
+    names = selectProfileNames(only)
+  } catch (e) {
+    return { ok: false, lines: [], errors: [(e as Error).message] }
+  }
   const lines: string[] = []
-  for (const name of listProfileNames()) {
+  for (const name of names) {
     const profile = loadProfile(name)
     if ('error' in profile) {
       lines.push(`${name.padEnd(14)} !! ${profile.error}`)

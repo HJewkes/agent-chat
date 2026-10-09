@@ -144,21 +144,33 @@ export const chatList = defineTool({
     'spawn an agent to do something a peer might already be doing. This is free and answers "is anyone ' +
     'already on this?" in one call. Call it proactively, at the start of a session and again before ' +
     "diverging into independent work — don't wait to be asked, and don't assume you're the only session " +
-    'in this checkout.',
-  args: z.object({}),
+    'in this checkout. ' +
+    'Optional filters narrow the roster: name (one session), tag (sessions carrying it), active ' +
+    '(only sessions whose status is working). A filter that matches nothing returns an empty roster, not an error.',
+  args: z.object({
+    name: z.string().optional().describe('Only the session with this name.'),
+    tag: z.string().optional().describe('Only sessions carrying this tag.'),
+    active: z.boolean().optional().describe('Only sessions whose status is working.'),
+  }),
   result: z.string(),
-  async run(_args, ctx) {
+  async run({ name, tag, active }, ctx) {
     const res = (await ctx.broker.request({ t: 'list' }, 'list_result')) as Extract<
       ServerMessage,
       { t: 'list_result' }
     >
-    const budgets = res.sessions.map(s => ({
+    const sessions = res.sessions.filter(
+      s =>
+        (name === undefined || s.name === name) &&
+        (tag === undefined || (s.tags ?? []).some(t => t.tag === tag)) &&
+        (active !== true || s.status === 'working'),
+    )
+    const budgets = sessions.map(s => ({
       name: s.name,
       // The status line writes into the cache of the account its own session runs
       // on, so a peer on a different one publishes where this process would never
       // look (CC-100).
       read: readBudgetSafe(s.observed?.claudeSessionId, s.observed?.configDir),
     }))
-    return formatSessions(res.sessions, ctx.registeredName, res.claims ?? [], budgets, res.slots)
+    return formatSessions(sessions, ctx.registeredName, res.claims ?? [], budgets, res.slots)
   },
 })

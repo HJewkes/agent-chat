@@ -411,3 +411,24 @@ export function recordedRole(
   const profile = loadProfile(meta.profile, dir)
   return 'error' in profile ? 'worker' : roleOf(profile)
 }
+
+const editDistance = (a: string, b: string): number => {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i]
+    for (let j = 1; j <= b.length; j++) {
+      row[j] = Math.min(prev[j]! + 1, row[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1))
+    }
+    prev = row
+  }
+  return prev[b.length]!
+}
+
+/** Every profile name when `name` is omitted, else just that one; an unknown name throws naming close matches. */
+export function selectProfileNames(name?: string): string[] {
+  const all = listProfileNames()
+  if (name === undefined || all.includes(name)) return name === undefined ? all : [name]
+  const close = all.filter(n => n.includes(name) || name.includes(n) || editDistance(n, name) <= 2)
+  const hint = close.length > 0 ? `Close matches: ${close.join(', ')}.` : `Available: ${all.join(', ')}.`
+  throw new Error(`No profile "${name}". ${hint}`)
+}
