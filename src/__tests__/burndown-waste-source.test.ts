@@ -78,7 +78,10 @@ function writeEvents(rows: Row[]): void {
   db.close()
 }
 
-const input = (dispatches: DispatchRecord[], tasks = [{ task: 'T-1', seat: 'seat-a' }]): WasteInput => ({
+const input = (
+  dispatches: DispatchRecord[],
+  tasks: WasteInput['tasks'] = [{ task: 'T-1', seat: 'seat-a' }],
+): WasteInput => ({
   tasks,
   dispatches,
   window: { startMs: START, endMs: NOW },
