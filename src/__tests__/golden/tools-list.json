@@ -64,10 +64,23 @@
     },
     {
       "name": "chat_list",
-      "description": "Check who else is active before you start any work that could overlap with someone else — an independent parallel task, editing a file another session might also touch, or before deciding to spawn an agent to do something a peer might already be doing. This is free and answers \"is anyone already on this?\" in one call. Call it proactively, at the start of a session and again before diverging into independent work — don't wait to be asked, and don't assume you're the only session in this checkout.",
+      "description": "Check who else is active before you start any work that could overlap with someone else — an independent parallel task, editing a file another session might also touch, or before deciding to spawn an agent to do something a peer might already be doing. This is free and answers \"is anyone already on this?\" in one call. Call it proactively, at the start of a session and again before diverging into independent work — don't wait to be asked, and don't assume you're the only session in this checkout. Optional filters narrow the roster: name (one session), tag (sessions carrying it), active (only sessions whose status is working). A filter that matches nothing says so and counts the registered sessions, not an error.",
       "inputSchema": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "name": {
+            "description": "Only the session with this name.",
+            "type": "string"
+          },
+          "tag": {
+            "description": "Only sessions carrying this tag.",
+            "type": "string"
+          },
+          "active": {
+            "description": "Only sessions whose status is working.",
+            "type": "boolean"
+          }
+        }
       }
     },
     {
@@ -350,13 +363,18 @@
     },
     {
       "name": "chat_inbox",
-      "description": "Re-read recent messages sent to this session. Useful if several arrived at once or one was missed.",
+      "description": "Re-read recent messages sent to this session. Useful if several arrived at once or one was missed. Pass after: <msg_id> to get only what arrived after that message, oldest first, instead of the newest N.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "limit": {
             "type": "number",
             "description": "How many recent messages to return (default 10)"
+          },
+          "after": {
+            "type": "string",
+            "minLength": 1,
+            "description": "A msg_id from this inbox. Returns only messages newer than it, oldest first, capped by limit (default 50); a truncation note gives the msg_id to continue from. Unknown ids are an error."
           }
         }
       }
@@ -610,10 +628,15 @@
     },
     {
       "name": "agent_profiles",
-      "description": "Call this automatically as step one of any spawn decision — even ones you're fairly sure about. It's free, and guessing a profile name risks silently granting the wrong tool set. List the profiles agent_spawn can use, with the role, model, tool set, surface and isolation each grants. Only a coordinator may spawn agents or run with Remote Control; a worker reports needs to its spawner.",
+      "description": "Call this automatically as step one of any spawn decision — even ones you're fairly sure about. It's free, and guessing a profile name risks silently granting the wrong tool set. List the profiles agent_spawn can use, with the role, model, tool set, surface and isolation each grants. Only a coordinator may spawn agents or run with Remote Control; a worker reports needs to its spawner. Pass name to read one profile; an unknown name errors with close matches.",
       "inputSchema": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "name": {
+            "description": "Return only this profile.",
+            "type": "string"
+          }
+        }
       }
     },
     {

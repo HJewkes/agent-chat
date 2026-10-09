@@ -14,6 +14,8 @@ import {
   resolvePermissionHookTimeout,
   resolvePoolProbe,
   resolvePoolPickMode,
+  resolveProcessGuardMode,
+  resolveProcessKillBytes,
   resolveReportBatchMs,
   resolveWorktreeBudget,
 } from '../config.js'
@@ -356,5 +358,28 @@ describe('resolvePoolPickMode', () => {
 
     expect(resolvePoolPickMode()).toBe('shadow')
     expect(fs.readFileSync(path.join(dir, 'broker.log'), 'utf8')).toContain('"key":"poolPick"')
+  })
+})
+
+describe('process guard config (CC-495)', () => {
+  it('defaults processGuardMode to log and falls back to log on an unknown value', () => {
+    expect(resolveProcessGuardMode()).toBe('log')
+
+    writeConfigJson({ processGuardMode: 'kill' })
+    expect(resolveProcessGuardMode()).toBe('kill')
+
+    writeConfigJson({ processGuardMode: 'murder' })
+    expect(resolveProcessGuardMode()).toBe('log')
+    expect(fs.readFileSync(path.join(dir, 'broker.log'), 'utf8')).toContain('"key":"processGuardMode"')
+  })
+
+  it('falls back to 8 GiB when processKillBytes is below 1 GiB', () => {
+    expect(resolveProcessKillBytes()).toBe(8 * 1024 ** 3)
+
+    writeConfigJson({ processKillBytes: 16 * 1024 ** 3 })
+    expect(resolveProcessKillBytes()).toBe(16 * 1024 ** 3)
+
+    writeConfigJson({ processKillBytes: 8 })
+    expect(resolveProcessKillBytes()).toBe(8 * 1024 ** 3)
   })
 })

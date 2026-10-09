@@ -226,6 +226,7 @@ function orderRows(inputs: SeatPlanInputs, priorPicks: Record<string, number>): 
     seat: inputs.seat.seat,
     ...(extra.milestones !== undefined && { milestones: extra.milestones }),
     ...(extra.knownIds !== undefined && { knownIds: extra.knownIds }),
+    failedUpstreams: failedUpstreamsOf(inputs.ledger),
   }
   const planned = planOrder({ ...base, rows, n: rows.length, priorPicks })
   const shareCapped = Object.entries(planned.refused).filter(([key]) => key.startsWith('share-cap:'))
@@ -235,6 +236,19 @@ function orderRows(inputs: SeatPlanInputs, priorPicks: Record<string, number>): 
     planRefusals: tagRefusals(rows, planned, base),
     placement: placementOf(planned, defaults.initiative_decay),
   }
+}
+
+/**
+ * CC-833: tasks held by a claim that stalled as `failed`, by stall code, from any seat. A task outside the seat's
+ * scope is in `knownIds` only, which `planOrder` takes as closed, so without this its dependent would dispatch.
+ * A ladder release is no failure: the task goes back to the pool after its backoff.
+ */
+export function failedUpstreamsOf(ledger: Ledger): Record<string, string> {
+  return Object.fromEntries(
+    ledger.claims
+      .filter(c => c.phase !== 'done' && c.stalledClass === 'failed')
+      .map(c => [c.taskId, c.stallCode ?? c.stalledReason ?? 'failed']),
+  )
 }
 
 /** The highest tier `planOrder` sorts itself; tiers 3 and 4 follow `dispatchOrder`, decayed by the rows above them. */
