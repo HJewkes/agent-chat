@@ -166,10 +166,18 @@ A replace ref over the pushed commit did the same.
 The commits scanned for each pushed ref are `<base>..<pushed sha>`. The base is the sha git
 reports for that ref on the remote, on the hook's stdin, when the ref exists there and the
 commit is in the local object store. For a new ref, or a remote sha that is not local, the base
-is the tip of the remote's default branch. The hook asks the push URL for it with
-`git ls-remote <url> HEAD`, and fetches it into the scratch repository when it is not local.
+is the tip of the remote's default branch. The hook lists the push URL with
+`git ls-remote <url>`, reads `HEAD` from that listing, and fetches the tip into the scratch repository
+when it is not local.
 Local remote-tracking refs are never used, because `git update-ref refs/remotes/origin/x <sha>`
-writes one. This costs one more connection per push. A new ref pushed to a remote that names no
+writes one. This costs one more connection per push. The scanner also excludes every commit that listing
+advertises, so commits already on the remote (a main merged into the branch) are not rescanned.
+The scanner runs with `PATH` alone, so it cannot log in to a private remote; the hook therefore
+hands it a local bare repository under the scratch directory, whose `packed-refs` holds the listed
+tips and whose objects come from the same alternates, as its push URL. The scanner's own
+`ls-remote` of that path touches no network. If the hook's listing fails, the list is empty and
+only the remote sha of each ref is excluded: the full `<remote sha>..<pushed sha>` range. A merge
+commit is still a new commit, and the scanner reads its diff against each parent. A new ref pushed to a remote that names no
 default branch is refused.
 
 Both calls run scrubbed: `env -i` with the baked `PATH`, `HOME` set to the passwd home,
