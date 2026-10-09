@@ -953,6 +953,14 @@ the name checked is the `!` alias the chain reaches, not the word typed. A liste
 the rule in the table and the argument checks below. The list holds names, not alias text, so
 a listed alias whose text is changed runs the new text.
 
+A listed name runs only the text a config file gives it. The shim also refuses it with
+`git-shim: refused (shell-alias)` when git reports any value of `alias.<name>` from the
+command line, which covers `-c`, `--config-env`, `GIT_CONFIG_PARAMETERS` and
+`GIT_CONFIG_COUNT`, in any case of the key. It refuses as well when the text differs from what
+the config files give with those options dropped and those two variables unset, which covers
+a `-c include.path` that pulls in another file. A `-c` of an unrelated key, such as
+`-c user.name=x`, does not stop a listed alias (CC-613 d).
+
 git appends the arguments to a listed `!` alias's shell command, which can read them in more ways than
 any list covers (`$1`, `"$@"`, `for a;`, `$0` under a nested `sh -c`, `shift`, `getopts`). So
 `shell-alias` also refuses a `!` alias whenever its arguments mention `push` in any case, `stash

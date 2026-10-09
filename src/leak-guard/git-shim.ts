@@ -150,15 +150,29 @@ const ARGS_PUSH_FN = `args_push() {
   return 1
 }`
 
+// A listed name runs only the body in config files: a -c, --config-env or GIT_CONFIG_* value, or an include one adds, must not replace it.
+const SHADOWED_FN = `shadowed() {
+  origins=$(eval "\\"\\$real\\"$globals config --show-origin --get-all \\"alias.\\$1\\"" 2>/dev/null) || return 0
+  case $nl$origins in *"$nl"'command line:'*) return 0 ;; esac
+  body=$(unset GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
+    eval "\\"\\$real\\"$fileglobals config --get \\"alias.\\$1\\"" 2>/dev/null) || return 0
+  [ "$body" != "$alias" ]
+}`
+
 // Fails closed: a word it cannot resolve, or an alias chain past the cap, refuses rather than execs.
 const RESOLVE_FN = `resolve() {
-  globals= depth=0
+  globals= fileglobals= depth=0
   while [ $# -gt 0 ]; do
     case $1 in
     ${VALUED_GLOBALS})
       [ $# -ge 2 ] || return 1
-      quote "$1"; globals="$globals $q"; quote "$2"; globals="$globals $q"; shift 2; continue ;;
-    -*) quote "$1"; globals="$globals $q"; shift; continue ;;
+      quote "$1"; globals="$globals $q"; option=$q; quote "$2"; globals="$globals $q"
+      case $1 in -c | --config-env) ;; *) fileglobals="$fileglobals $option $q" ;; esac
+      shift 2; continue ;;
+    -*)
+      quote "$1"; globals="$globals $q"
+      case $1 in -c?* | --config-env=*) ;; *) fileglobals="$fileglobals $q" ;; esac
+      shift; continue ;;
     push) break ;;
     esac
     case " $builtins " in *" $1 "*) return 1 ;; esac
@@ -175,6 +189,8 @@ const RESOLVE_FN = `resolve() {
       name=$1
       listed "$name" ||
         refuse_alias "alias.$name runs a shell command and is not on the shell alias allowlist; run the command directly."
+      shadowed "$name" &&
+        refuse_alias "alias.$name is on the shell alias allowlist but is set by -c, --config-env, GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT or an include they add; only its config file text runs."
       shift
       args_push "$@" &&
         refuse shell-alias "alias.$name is an allowlisted shell alias and its arguments mention push or hold a glob, backslash, $, backtick or brace; run the command directly."
@@ -417,6 +433,7 @@ ${TYPO_FN}
 ${EXTERNAL_FN}
 ${MENTIONS_PUSH_FN}
 ${ARGS_PUSH_FN}
+${SHADOWED_FN}
 ${RESOLVE_FN}
 ${CFG_FN}
 ${VALUES_FN}
