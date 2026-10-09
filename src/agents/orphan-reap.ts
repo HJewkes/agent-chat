@@ -129,7 +129,7 @@ function protectedPids(table: ProcessTable, self: number): Set<number> {
  * a stray that merely mentions one of these words is left alone.
  */
 const DAEMON_WORDS = new Set(['broker', 'run-agent', 'mcp', 'serve'])
-const isKnownDaemon = (command: string): boolean => {
+export const isKnownDaemon = (command: string): boolean => {
   const [argv0 = '', ...rest] = command.split(/\s+/).map(word => word.replace(/['"]/g, ''))
   return (argv0.split('/').pop() ?? '').startsWith('tmux') || rest.some(word => DAEMON_WORDS.has(word))
 }

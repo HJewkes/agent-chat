@@ -8,6 +8,8 @@ import {
   resolveAgentSlots,
   resolveMachineLimits,
   resolvePoolPickMode,
+  resolveProcessGuardMode,
+  resolveProcessKillBytes,
 } from '../config.js'
 import { readMemoryFree } from '../agents/machine-guard.js'
 import { Semaphore } from '../agents/semaphore.js'
@@ -38,6 +40,7 @@ import { installedCliPaths, lsofCwd, readPsTable, startReaper } from './reaper.j
 import { LAUNCH_IDENTITY_ENV } from '../launch-identity.js'
 import { startAgeOutSweep } from './age-out.js'
 import { startOrphanSweep } from '../agents/orphan-sweep.js'
+import { startProcessGuard } from '../agents/process-guard-monitor.js'
 import { deliver, SocketServer } from './socket.js'
 import { ensureToken } from './token.js'
 import { VERSION } from './version.js'
@@ -95,6 +98,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
     logEvent,
     resolveOrphanReapKill,
   )
+  const stopProcessGuard = isEphemeralHome(home()) ? () => undefined : startBrokerProcessGuard()
   const { server, openConnections } = listener
 
   // Only after the socket is serving, and only ever best-effort.
@@ -127,6 +131,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
       stopReaper()
       stopAgeOut()
       stopOrphanSweep()
+      stopProcessGuard()
     },
   })
 
@@ -175,6 +180,23 @@ function startBrokerReaper(): () => void {
       selfPid: process.pid,
       excludePaths,
     }),
+  })
+}
+
+/** A ps slower than this fails the tick rather than stacking behind the 2 s interval. */
+const PROCESS_GUARD_PS_TIMEOUT_MS = 1000
+
+/** CC-495: never under an ephemeral home, so a test broker cannot signal the machine's processes. */
+function startBrokerProcessGuard(): () => void {
+  return startProcessGuard({
+    readTable: () => readPsTable(Date.now(), PROCESS_GUARD_PS_TIMEOUT_MS),
+    kill: pid => process.kill(pid, 'SIGKILL'),
+    log: logEvent,
+    mode: resolveProcessGuardMode,
+    limitBytes: resolveProcessKillBytes,
+    now: Date.now,
+    brokerPid: process.pid,
+    uid: process.getuid?.() ?? -1,
   })
 }
 
