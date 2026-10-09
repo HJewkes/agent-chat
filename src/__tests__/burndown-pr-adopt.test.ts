@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import type { Task } from '../agents/burndown/eligibility.js'
+import type { Runner } from '../agents/burndown/exec.js'
+import { openPulls, originRepo } from '../agents/burndown/pr-adopt-ports.js'
 import { adoptSeatPrs, type AdoptPorts, type AdoptSeat, type OpenPull } from '../agents/burndown/pr-adopt.js'
-import type { Registration, ShepherdRow, ShepherdTarget } from '../agents/burndown/shepherd.js'
+import {
+  holdWithShepherd,
+  registerWithShepherd,
+  type Registration,
+  type ShepherdRow,
+  type ShepherdTarget,
+} from '../agents/burndown/shepherd.js'
 
 const NOW = new Date('2026-10-08T12:00:00Z')
 const DAY_MS = 86_400_000
@@ -21,7 +29,12 @@ const pull = (over: Partial<OpenPull> = {}): OpenPull => ({
   ...over,
 })
 
-const task = (over: Partial<Task> = {}): Task => ({ id: 'T-1', title: 'Add the widget', tags: ['kind:feature'], ...over })
+const task = (over: Partial<Task> = {}): Task => ({
+  id: 'T-1',
+  title: 'Add the widget',
+  tags: ['kind:feature'],
+  ...over,
+})
 
 const row = (pr: number): ShepherdRow => ({
   repo: 'acme/widgets',
@@ -176,7 +189,9 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     adoptSeatPrs([seat], new Set(), f.ports, NOW)
 
     const stale = f.seatLog.filter(l => l.includes('stale'))
-    expect(stale).toEqual(['burndown: Acme/Widgets#7 stale: idle 9 days, over stale_pr_days 7 (sa-t-1-widget)'])
+    expect(stale).toEqual([
+      'burndown: Acme/Widgets#7 stale: idle 9 days, over stale_pr_days 7 (sa-t-1-widget)',
+    ])
   })
 
   it('leaves alone PRs of other prefixes, PRs Shepherd lists and PRs a claim holds', () => {
@@ -194,5 +209,47 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
 
     expect(f.registered).toEqual([])
     expect(f.seatLog).toEqual([])
+  })
+})
+
+describe('the tick’s real PR adoption ports (CC-861)', () => {
+  it('reads open PRs from the REST list, one JSON object per line', () => {
+    const exec: Runner = () => ({
+      status: 0,
+      stdout:
+        '{"number":7,"title":"T-1: x","branch":"agent-chat/sa-t-1","updatedAt":"2026-10-01T00:00:00Z"}\nnot json\n',
+    })
+
+    expect(openPulls('Acme/Widgets', exec)).toEqual([
+      { number: 7, title: 'T-1: x', branch: 'agent-chat/sa-t-1', updatedAt: '2026-10-01T00:00:00Z' },
+    ])
+  })
+
+  it('names a checkout’s GitHub repo from its origin, ssh or https', () => {
+    const at =
+      (url: string): Runner =>
+      () => ({ status: 0, stdout: `${url}\n` })
+
+    expect(originRepo('/c', at('git@github.com:Acme/Widgets.git'))).toBe('Acme/Widgets')
+    expect(originRepo('/c', at('https://github.com/Acme/Widgets'))).toBe('Acme/Widgets')
+    expect(originRepo('/c', at('/srv/bare/widgets.git'))).toBeUndefined()
+  })
+
+  it('registers with --kind and holds with the reason, never --offline', () => {
+    const calls: string[][] = []
+    const exec: Runner = (_bin, args) => {
+      calls.push(args)
+      return args[1] === 'status' ? { status: 0, stdout: '[]' } : { status: 0, stdout: '' }
+    }
+    const target = { repo: 'Acme/Widgets', pr: 7 }
+
+    registerWithShepherd({ target, task: 'init/T-1', implementer: 'sa-t-1', kind: 'feature' }, exec)
+    holdWithShepherd(target, 'g10-review: big; T-1', exec)
+
+    expect(calls.find(a => a[1] === 'register')).toEqual(expect.arrayContaining(['--kind', 'feature']))
+    expect(calls.find(a => a[1] === 'hold')).toEqual(
+      expect.arrayContaining(['Acme/Widgets#7', '--reason', 'g10-review: big; T-1']),
+    )
+    expect(calls.flat()).not.toContain('--offline')
   })
 })

@@ -161,7 +161,11 @@ export interface Registration {
   implementer: string
   /** The PR's current head; when known, a listed row at any other head is stale. */
   headSha?: string
+  /** Shepherd's `--kind`; absent, the flag is left off so a worker's own kind survives. */
+  kind?: ShepherdKind
 }
+
+export type ShepherdKind = 'correctness' | 'security' | 'feature' | 'refactor' | 'unknown'
 
 /** The PR's head sha as GitHub reports it now; a refused PR has no Shepherd row to read it from. */
 export function prHeadOf(target: ShepherdTarget, exec: Runner = run): string | undefined {
@@ -186,12 +190,20 @@ export function registerWithShepherd(reg: Registration, exec: Runner = run): Reg
     reg.task,
     '--implementer',
     reg.implementer,
+    ...(reg.kind === undefined ? [] : ['--kind', reg.kind]),
   ]
   const result = exec(SHEPHERD_BIN, [...args, '--json'])
   if (result.status === 0) return { ok: true }
   const reason =
     firstLine(result.stderr) ?? (result.status === null ? 'did not run' : `exit ${result.status}`)
   return { ok: false, refused: result.status === REFUSED_EXIT, reason }
+}
+
+/** `shepherd hold`, so no merge goes through until the hold is released; false when Shepherd did not take it. */
+export function holdWithShepherd(target: ShepherdTarget, reason: string, exec: Runner = run): boolean {
+  return (
+    exec(SHEPHERD_BIN, ['shepherd', 'hold', targetRef(target), '--reason', reason, '--json']).status === 0
+  )
 }
 
 const FINISHED_PHASES: readonly ShepherdRow['phase'][] = ['done', 'failed', 'cancelled']

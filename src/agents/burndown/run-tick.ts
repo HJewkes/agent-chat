@@ -13,6 +13,8 @@ import { activeWorkRoot } from '../active-work.js'
 import { appendSeatLog } from '../seats/io.js'
 import { seatMergedLog } from '../seats/dispatch-log.js'
 import { seatJournal } from '../seats/journal.js'
+import { adoptSeatPrs, type AdoptSeat } from './pr-adopt.js'
+import { adoptSeatOf, diskAdoptPorts } from './pr-adopt-ports.js'
 import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
 import { advance, applyActions, claimKey, type Action, type ClaimKey, type InboxMessage } from './advance.js'
 import { withFindings } from './finding.js'
@@ -68,7 +70,14 @@ import {
   readTasks,
   type TickConfig,
 } from './source.js'
-import { prHeadOf, registerWithShepherd, shepherdLanded, shepherdRows, targetRef } from './shepherd.js'
+import {
+  prHeadOf,
+  registerWithShepherd,
+  shepherdLanded,
+  shepherdRows,
+  shepherdTarget,
+  targetRef,
+} from './shepherd.js'
 import {
   lineStopFrom,
   persisted,
@@ -209,7 +218,18 @@ async function actOn(
   config: TickConfig,
   opts: TickOptions,
   ledger: Ledger,
-  { steps, decider, triage, failures, unchecked, seatStates, skippedSeats, serviceCheck, reasons }: Decided,
+  {
+    steps,
+    decider,
+    triage,
+    failures,
+    unchecked,
+    seatStates,
+    skippedSeats,
+    serviceCheck,
+    reasons,
+    adopt,
+  }: Decided,
   now: Date,
 ): Promise<string[]> {
   const log = opts.log ?? logEvent
@@ -229,6 +249,7 @@ async function actOn(
     now,
   })
   logLadder(ledger, executed.ledger, log)
+  const adopted = adoptPrs(adopt, executed.ledger, opts, now)
   const woken = await actOnTriage(
     config,
     triage,
@@ -245,7 +266,32 @@ async function actOn(
     lastTickAt: now.toISOString(),
     ...(serviceCheck === undefined ? {} : { serviceCheck }),
   })
-  return [...executed.lines, ...woken.lines, ...leaks.lines, ...told.lines]
+  return [...executed.lines, ...adopted, ...woken.lines, ...leaks.lines, ...told.lines]
+}
+
+/** CC-861: after the claims' own registrations, so a claimed PR is never adopted; a throw is an event, and the tick carries on. */
+function adoptPrs(seats: readonly AdoptSeat[], ledger: Ledger, opts: TickOptions, now: Date): string[] {
+  const log = opts.log ?? logEvent
+  const claimed = new Set(
+    heldClaims(ledger).flatMap(c => {
+      const target = shepherdTarget(c.pr)
+      return target === undefined ? [] : [targetRef(target).toLowerCase()]
+    }),
+  )
+  const root = opts.root ?? activeWorkRoot()
+  const ports = diskAdoptPorts({
+    exec: opts.exec ?? run,
+    root,
+    autonomyRoot: defaultAutonomyRoot(root),
+    now,
+    log,
+  })
+  try {
+    return adoptSeatPrs(seats, claimed, ports, now)
+  } catch (err) {
+    log('burndown_pr_adopt_failed', { reason: err instanceof Error ? err.message : String(err) })
+    return []
+  }
 }
 
 /** Each seat's "dispatched nothing" line; a write that fails is an event, and the tick carries on. */
@@ -337,6 +383,8 @@ interface Decided {
   serviceCheck?: PersistedRead
   /** Seats mode only: the "dispatched nothing" lines due this tick (CC-859). */
   reasons: NoDispatchReason[]
+  /** Seats mode only: the seats whose unregistered PRs the tick registers or flags (CC-861). */
+  adopt: AdoptSeat[]
 }
 
 /** Any row not retired may still run, and so may a name missing from a partial roster. */
@@ -451,6 +499,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   return {
     steps,
     reasons: marked?.due ?? [],
+    adopt: seats?.loaded.map(s => adoptSeatOf(s)) ?? [],
     notes,
     failures,
     unchecked,
