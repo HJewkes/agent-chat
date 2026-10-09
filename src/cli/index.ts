@@ -192,6 +192,17 @@ function addAgentCommands(program: Command): void {
     .command('gh-write <gh-args...>')
     .description('one gh write after --, spaced machine-wide and retried on the secondary rate limit')
     .helpGroup(AGENTS)
+    .addHelpText(
+      'after',
+      [
+        '',
+        'Every title and body is leak-scanned before gh starts. Post a body in one call from a quoted heredoc:',
+        "  agent-chat gh-write -- pr create -R <owner>/<repo> -t <title> --body-file - <<'EOF'",
+        '  ...',
+        '  EOF',
+        '--body-file <path> works too, for pr and issue create, edit and comment.',
+      ].join('\n'),
+    )
     .action(async (args: string[]) => {
       const { ghWriteCommand } = await import('./gh-write.js')
       await ghWriteCommand(args)
