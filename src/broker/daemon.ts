@@ -31,6 +31,7 @@ import { hostLeaseRefusal } from '../host-lease.js'
 import { logEvent } from './log.js'
 import { installedCliPaths, lsofCwd, readPsTable, startReaper } from './reaper.js'
 import { startAgeOutSweep } from './age-out.js'
+import { startOrphanSweep } from '../agents/orphan-sweep.js'
 import { deliver, SocketServer } from './socket.js'
 import { ensureToken } from './token.js'
 import { VERSION } from './version.js'
@@ -81,6 +82,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   socketServer.startLifecycleVerifier()
   const stopReaper = startBrokerReaper()
   const stopAgeOut = startAgeOutSweep(core)
+  const stopOrphanSweep = startOrphanSweep(() => core.agents.roster(), logEvent)
   const { server, openConnections } = listener
 
   // Only after the socket is serving, and only ever best-effort.
@@ -112,6 +114,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
       stopIdleWatch?.()
       stopReaper()
       stopAgeOut()
+      stopOrphanSweep()
     },
   })
 
