@@ -33,7 +33,7 @@ const launch = (agentId: string, launcher: number) => ({
 })
 const table = (entries: Record<number, FakeProc>) =>
   new FakeTable(new Map(Object.entries(entries).map(([pid, p]) => [Number(pid), p])))
-const noSleep = { sleepSync: () => undefined, platform: 'linux' as const }
+const noSleep = { sleepSync: () => undefined, platform: 'linux' as const, kill: true }
 
 describe('reaping the processes an exiting run-agent leaves behind', () => {
   it('kills an orphan that carries the exited launch identity', () => {
@@ -119,6 +119,7 @@ describe('reaping the processes an exiting run-agent leaves behind', () => {
       log: () => undefined,
       platform: 'linux',
       sleepSync: ms => void slept.push(ms),
+      kill: true,
     })
 
     expect(t.signals).toEqual([
@@ -128,6 +129,14 @@ describe('reaping the processes an exiting run-agent leaves behind', () => {
     ])
     expect(slept).toHaveLength(1)
     expect(report?.survivors).toEqual([])
+  })
+
+  it('only logs the exit reap, and signals nothing, unless killing is on', () => {
+    const t = table({ 1: { env: launch('a1', 100), command: 'pnpm storybook', sid: 5 } })
+    const events: string[] = []
+    reapOwnLaunch('a1', 100, { table: t, log: e => events.push(e), ...noSleep, kill: false })
+    expect(events).toEqual(['orphans_would_reap'])
+    expect(t.signals).toEqual([])
   })
 
   it('is a logged no-op without /proc', () => {
@@ -149,7 +158,7 @@ const row = (agentId: string, state: AgentIdentity['state'], exitedAt?: number):
 const NOW = 10_000_000
 
 describe('the periodic orphan sweep', () => {
-  const run = (t: FakeTable, roster: AgentIdentity[]) => {
+  const run = (t: FakeTable, roster: AgentIdentity[], kill = true) => {
     const events: string[] = []
     return sweepOrphans({
       roster: () => roster,
@@ -157,6 +166,8 @@ describe('the periodic orphan sweep', () => {
       log: e => events.push(e),
       sleep: async () => undefined,
       now: () => NOW,
+      kill: () => kill,
+      announced: new Set(),
     }).then(report => ({ report, events }))
   }
 
@@ -196,6 +207,14 @@ describe('the periodic orphan sweep', () => {
     })
     await run(t, [row('a1', 'retired', 0)])
     expect(t.signals).toEqual([[3, 'SIGTERM']])
+  })
+
+  it('only logs what it would reap, and signals nothing, unless killing is on', async () => {
+    const t = table({ 1: { env: launch('a1', 50), command: 'pnpm storybook', sid: 5 } })
+    const { report, events } = await run(t, [row('a1', 'retired', 0)], false)
+    expect(report?.count).toBe(1)
+    expect(events).toEqual(['orphans_would_reap'])
+    expect(t.signals).toEqual([])
   })
 
   it('sweeps a retired row too', async () => {

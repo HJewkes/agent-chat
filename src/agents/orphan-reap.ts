@@ -231,13 +231,16 @@ export interface ExitReapDeps {
   /** Synchronous: a `process.on('exit')` handler cannot await. */
   sleepSync: (ms: number) => void
   platform: NodeJS.Platform
+  /** False logs `orphans_would_reap` and signals nothing. */
+  kill: boolean
 }
 
-export const realExitDeps = (log: ExitReapDeps['log']): ExitReapDeps => ({
+export const realExitDeps = (log: ExitReapDeps['log'], kill: boolean): ExitReapDeps => ({
   table: procTable(),
   log,
   sleepSync: ms => void Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms),
   platform: process.platform,
+  kill,
 })
 
 /** Run by `run-agent` as it exits: kills what its own launch left behind, then logs it. */
@@ -250,7 +253,15 @@ export function reapOwnLaunch(
     deps.log('orphan_reap_skipped', { agentId, reason: `no /proc on ${deps.platform}` })
     return undefined
   }
-  const targets = startReap(deps.table, matchLaunch(agentId, String(launcherPid)), launcherPid)
+  const match = matchLaunch(agentId, String(launcherPid))
+  if (!deps.kill) {
+    const wouldReap = findTargets(deps.table, match, launcherPid)
+    if (wouldReap.length === 0) return undefined
+    const report = reportOf(wouldReap, [])
+    deps.log('orphans_would_reap', { source: 'exit', ...report })
+    return report
+  }
+  const targets = startReap(deps.table, match, launcherPid)
   if (targets.length === 0) return undefined
   deps.sleepSync(KILL_GRACE_MS)
   const report = reportOf(targets, finishReap(deps.table, targets))

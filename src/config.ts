@@ -32,6 +32,7 @@ interface AgentChatConfig {
   contextHints?: unknown
   parkAdvice?: unknown
   ledgerShadow?: unknown
+  orphanReapKill?: unknown
   poolPick?: unknown
   permissionHookTimeoutSeconds?: unknown
   decider?: unknown
@@ -116,6 +117,20 @@ export function resolveLedgerShadow(): boolean {
   if (value === undefined || typeof value === 'boolean') return value !== false
   logEvent('config_invalid', { key: 'ledgerShadow', value, fallback: true })
   return true
+}
+
+/**
+ * CC-898: whether the orphan reap may signal. Off unless `orphanReapKill` is `true` in config (or
+ * `AGENT_CHAT_ORPHAN_REAP=kill`): until then it only logs `orphans_would_reap`, so the owner sees
+ * live output before anything is killed.
+ */
+export function resolveOrphanReapKill(): boolean {
+  const override = process.env.AGENT_CHAT_ORPHAN_REAP
+  if (override === 'kill' || override === 'dry-run') return override === 'kill'
+  const value = readConfig().orphanReapKill
+  if (value === undefined || typeof value === 'boolean') return value === true
+  logEvent('config_invalid', { key: 'orphanReapKill', value, fallback: false })
+  return false
 }
 
 /**

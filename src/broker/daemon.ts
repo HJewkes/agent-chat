@@ -3,7 +3,12 @@ import net from 'node:net'
 import { serve, type ServerType } from '@hono/node-server'
 import type { Hono } from 'hono'
 import { defaultPort, home, socketPath } from '../paths.js'
-import { resolveAgentSlots, resolveMachineLimits, resolvePoolPickMode } from '../config.js'
+import {
+  resolveOrphanReapKill,
+  resolveAgentSlots,
+  resolveMachineLimits,
+  resolvePoolPickMode,
+} from '../config.js'
 import { readMemoryFree } from '../agents/machine-guard.js'
 import { Semaphore } from '../agents/semaphore.js'
 import { backfillAtBoot } from '../agents/ledger/backfill-run.js'
@@ -85,7 +90,11 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   socketServer.startLifecycleVerifier()
   const stopReaper = startBrokerReaper()
   const stopAgeOut = startAgeOutSweep(core)
-  const stopOrphanSweep = startOrphanSweep(() => core.agents.roster({ includeRetired: true }), logEvent)
+  const stopOrphanSweep = startOrphanSweep(
+    () => core.agents.roster({ includeRetired: true }),
+    logEvent,
+    resolveOrphanReapKill,
+  )
   const { server, openConnections } = listener
 
   // Only after the socket is serving, and only ever best-effort.

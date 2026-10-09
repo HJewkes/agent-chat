@@ -12,6 +12,7 @@ import { agentDir, distDir, ghShimDir, home } from '../paths.js'
 import { agentEnv } from './agent-env.js'
 import { resolveBasePath } from './base-path.js'
 import { recordClaudeBin, resolveClaudeBin } from './claude-bin.js'
+import { resolveOrphanReapKill } from '../config.js'
 import { logEvent } from '../broker/log.js'
 import { LAUNCHER_PID_ENV } from './launcher.js'
 import { reapOwnLaunch, realExitDeps } from './orphan-reap.js'
@@ -101,7 +102,9 @@ export function runAgentVerb(agentId: string): void {
   if (continued !== stored) refuseIfHeld(agentId, continued, dir)
   const plan = withShims(continued)
   watchLauncherSignals(agentDir(agentId), plan.title || agentId)
-  process.on('exit', () => reapOwnLaunch(agentId, process.pid, realExitDeps(logEvent)))
+  process.on('exit', () =>
+    reapOwnLaunch(agentId, process.pid, realExitDeps(logEvent, resolveOrphanReapKill())),
+  )
   runAgent(plan, launchOptions(agentId))
 }
 

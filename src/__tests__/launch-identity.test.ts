@@ -29,7 +29,13 @@ describe('what a broker spawned by an agent carries', () => {
       isAlive: () => true,
       signal: pid => void signals.push(pid),
     }
-    reapOwnLaunch('a1', 100, { table, log: () => undefined, sleepSync: () => undefined, platform: 'linux' })
+    reapOwnLaunch('a1', 100, {
+      table,
+      log: () => undefined,
+      sleepSync: () => undefined,
+      platform: 'linux',
+      kill: true,
+    })
     expect(signals).toEqual([])
   })
 })

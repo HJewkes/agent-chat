@@ -1,5 +1,6 @@
 import type { AgentIdentity } from '../protocol.js'
 import {
+  findTargets,
   finishedIds,
   finishReap,
   KILL_GRACE_MS,
@@ -19,6 +20,10 @@ export interface SweepDeps {
   log: (event: string, detail: Record<string, unknown>) => void
   sleep: (ms: number) => Promise<void>
   now: () => number
+  /** False logs `orphans_would_reap` and signals nothing. */
+  kill: () => boolean
+  /** Pids already logged as would-reap, so a standing stray is announced once rather than every minute. */
+  announced: Set<number>
 }
 
 /** One sweep. Returns the report when anything was reaped. */
@@ -26,7 +31,16 @@ export async function sweepOrphans(deps: SweepDeps): Promise<ReapReport | undefi
   const finished = finishedIds(deps.roster(), deps.now())
   if (finished.size === 0) return undefined
   const table = deps.table()
-  const targets = startReap(table, matchFinished(finished, table))
+  const match = matchFinished(finished, table)
+  if (!deps.kill()) {
+    const wouldReap = findTargets(table, match).filter(t => !deps.announced.has(t.pid))
+    if (wouldReap.length === 0) return undefined
+    for (const t of wouldReap) deps.announced.add(t.pid)
+    const report = reportOf(wouldReap, [])
+    deps.log('orphans_would_reap', { source: 'sweep', ...report })
+    return report
+  }
+  const targets = startReap(table, match)
   if (targets.length === 0) return undefined
   await deps.sleep(KILL_GRACE_MS)
   const survivors = finishReap(table, targets)
@@ -39,6 +53,7 @@ export async function sweepOrphans(deps: SweepDeps): Promise<ReapReport | undefi
 export function startOrphanSweep(
   roster: SweepDeps['roster'],
   log: SweepDeps['log'],
+  kill: SweepDeps['kill'],
   intervalMs = ORPHAN_SWEEP_MS,
 ): () => void {
   if (process.platform !== 'linux') {
@@ -51,6 +66,8 @@ export function startOrphanSweep(
     log,
     sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
     now: Date.now,
+    kill,
+    announced: new Set(),
   }
   let running = false
   const timer = setInterval(() => {
