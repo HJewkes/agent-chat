@@ -5,7 +5,10 @@ import type { SeatState } from '../agents/burndown/ledger.js'
 import type { SeatOutcome } from '../agents/burndown/no-dispatch.js'
 import { scopeExhausted, type OwnerQueuePort } from '../agents/burndown/seat-tick.js'
 
-/** CC-864: two refuse-all ticks in a row file one scope-exhausted owner item, and none while it is open. */
+/**
+ * CC-864: two ticks in a row with nothing eligible in scope file one scope-exhausted owner item, and none while it
+ * is open. A stop or a full cap is not exhaustion.
+ */
 
 const NOW = new Date(2026, 1, 3, 12, 0)
 const refused = (kind: Refusal['kind']): Refusal => ({ initiative: 'demo', kind, reason: 'synthetic' })
@@ -15,6 +18,12 @@ const refuseAll: SeatOutcome = {
   refusals: [refused('trust'), refused('trust'), refused('claimed')],
 }
 const dispatching: SeatOutcome = { seat: 'alpha', dispatched: 1, refusals: [] }
+const emptyScope: SeatOutcome = { seat: 'alpha', dispatched: 0, refusals: [] }
+const stoppedBy = (kind: Refusal['kind']): SeatOutcome => ({
+  seat: 'alpha',
+  dispatched: 0,
+  refusals: [refused(kind), refused('out-of-scope')],
+})
 
 /** The owner-queue fake port: deposits become open items, as `fromDeposit` files them. */
 function fakePort() {
@@ -80,5 +89,33 @@ describe('scope-exhausted owner item', () => {
     await scopeExhausted([refuseAll, { ...beta, dispatched: 1 }], states, NOW, port)
 
     expect(items.map(i => i.seat)).toEqual(['alpha'])
+  })
+
+  it('files an item when the seat has no open task in scope', async () => {
+    const { port, items } = fakePort()
+
+    await ticks(port, [emptyScope, emptyScope])
+
+    expect(items).toHaveLength(1)
+    expect(items[0]?.context).toContain('scope exhausted: no open task in scope')
+  })
+
+  it.each(['worktrees', 'slots', 'role-cap', 'budget', 'stop-line'] as const)(
+    'files nothing while a %s stop holds the seat',
+    async kind => {
+      const { port, items } = fakePort()
+
+      await ticks(port, [stoppedBy(kind), stoppedBy(kind), stoppedBy(kind)])
+
+      expect(items).toHaveLength(0)
+    },
+  )
+
+  it('restarts the count after a tick that met a stop', async () => {
+    const { port, items } = fakePort()
+
+    await ticks(port, [refuseAll, stoppedBy('budget'), refuseAll])
+
+    expect(items).toHaveLength(0)
   })
 })

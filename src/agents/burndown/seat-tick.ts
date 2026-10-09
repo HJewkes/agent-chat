@@ -11,7 +11,7 @@ import type { Initiative, Refusal, Task } from './eligibility.js'
 import { isLive, occupantOf } from '../isolation/sweep.js'
 import type { Claim, Ledger, SeatState } from './ledger.js'
 import type { LineStop } from './flow-gate.js'
-import { noDispatchReason, type SeatOutcome } from './no-dispatch.js'
+import { noDispatchReason, stopOf, type SeatOutcome } from './no-dispatch.js'
 import { rowNamed, type Roster } from './observe.js'
 import type { Capacity, Dispatch, PlanInputs } from './plan.js'
 import {
@@ -95,7 +95,7 @@ function sampled(
   const history = reading?.sevenDay === undefined ? kept : oneSource(kept, saved, reading.sevenDay, deps.now)
   const marks = {
     ...(previous?.noDispatch === undefined ? {} : { noDispatch: previous.noDispatch }),
-    ...(previous?.refusedAll === undefined ? {} : { refusedAll: previous.refusedAll }),
+    ...(previous?.exhaustedTicks === undefined ? {} : { exhaustedTicks: previous.exhaustedTicks }),
   }
   return { reading, resetsAt, history, state: { samples: [...kept, ...sample], ...marks } }
 }
@@ -388,7 +388,7 @@ export function diskSeatDeps(autonomyRoot: string, root: string, now: Date): Sea
   }
 }
 
-/** Ticks in a row a seat must refuse every candidate before it asks the owner. */
+/** Ticks in a row a seat must find nothing eligible in scope before it asks the owner. */
 export const SCOPE_EXHAUSTED_TICKS = 2
 
 const SCOPE_EXHAUSTED_REC =
@@ -409,7 +409,7 @@ function exhaustedDeposit(outcome: SeatOutcome, ticks: number, now: Date): Owner
     asker: 'burndown-tick',
     kind: 'decide',
     door: 'two-way',
-    summary: `Seat ${outcome.seat} refused every candidate on ${ticks} ticks in a row`,
+    summary: `Seat ${outcome.seat} found nothing eligible in scope on ${ticks} ticks in a row`,
     context: `Seat ${outcome.seat} dispatched nothing on ${ticks} consecutive ticks; ${counts}. ${SCOPE_EXHAUSTED_REC}`,
     options: [
       { id: 'overflow', label: 'Run Discovery overflow from another seat’s Overflow list' },
@@ -421,13 +421,17 @@ function exhaustedDeposit(outcome: SeatOutcome, ticks: number, now: Date): Owner
   }
 }
 
-const refusedAll = (o: SeatOutcome): boolean =>
-  o.skipped === undefined && o.dispatched === 0 && o.refusals.length > 0
+/**
+ * Nothing in scope was eligible: no open task at all, or every candidate refused for its own sake. A stop or a
+ * full cap (charter 4.2) is not exhaustion: the seat has work and is waiting.
+ */
+const nothingEligible = (o: SeatOutcome): boolean => o.dispatched === 0 && stopOf(o.refusals) === undefined
 
 /**
- * CC-864 (charter S17): a seat that refused every candidate on two ticks in a row files one "scope exhausted"
- * owner item, unless the queue already holds an open one for the seat. The streak lives in the seat's ledger
- * state as `refusedAll`; a tick that dispatched drops it, and a tick that could not plan the seat leaves it.
+ * CC-864 (charter S17, 7.8): a seat with nothing eligible in scope on two ticks in a row files one "scope
+ * exhausted" owner item, unless the queue already holds an open one for the seat. The streak lives in the seat's
+ * ledger state as `exhaustedTicks`; a tick that dispatched or met a stop drops it, and a tick that could not plan
+ * the seat leaves it.
  */
 export async function scopeExhausted(
   outcomes: readonly SeatOutcome[],
@@ -438,14 +442,14 @@ export async function scopeExhausted(
   const next = { ...states }
   let open: OwnerItem[] | undefined
   for (const outcome of outcomes) {
-    const { refusedAll: streak = 0, ...state } = next[outcome.seat] ?? { samples: [] }
+    const { exhaustedTicks: streak = 0, ...state } = next[outcome.seat] ?? { samples: [] }
     if (outcome.skipped !== undefined) continue
-    if (!refusedAll(outcome)) {
+    if (!nothingEligible(outcome)) {
       next[outcome.seat] = state
       continue
     }
     const ticks = streak + 1
-    next[outcome.seat] = { ...state, refusedAll: ticks }
+    next[outcome.seat] = { ...state, exhaustedTicks: ticks }
     if (ticks < SCOPE_EXHAUSTED_TICKS) continue
     open ??= await port.open()
     if (open.some(i => i.keys.includes(exhaustedKey(outcome.seat)))) continue
