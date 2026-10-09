@@ -29,6 +29,7 @@ bundles in `~/.local/share/claude/versions/`.
 | 2.1.288 | 2.1.284 rule                   | yes | yes | yes | yes |
 | 2.1.289 | 2.1.284 rule                   | yes | yes | yes | yes |
 | 2.1.290 | 2.1.289                        | yes | yes | yes | yes |
+| 2.1.295 | 2.1.292 (2026-10-08)           | yes | yes | yes | yes |
 
 2.1.287, 2.1.288, 2.1.289 and 2.1.290 are identical in all four snippets below once minified
 identifiers are renamed (a token-level comparison; only the names differ).
@@ -128,6 +129,28 @@ function Dlr() {
   return i(process.env.CLAUDE_CONFIG_DIR || Ao(), o)
 }
 ```
+
+## 2.1.295 (checked 2026-10-08 against the 2.1.292 bundle)
+
+`node scripts/verify-trust-rule.mjs 2.1.295` printed NOT FOUND for the trust check and the
+git-root finder only because the old matcher used `\w` for identifiers and 2.1.295 names
+two of them with `$` (`gl`, `j$e`). The rule itself is unchanged. Byte offsets in
+`~/.local/share/claude/versions/2.1.295`, compared token by token (identifiers renamed in
+order of appearance) with 2.1.292:
+
+- trust check `jB` at 209633308, key walk `Ow`, `YEr`, `Mw`: identical to 2.1.292's `Y0`, `zE`, `ogr`, `VE`. The one change is the config source: `let e=gl()` where 2.1.292 had `ce()`, and `gl()` is `De()?{}:ce()`.
+- project key `j$e` (209665952), `JA`, `Uz`, `oy`: identical to 2.1.292's `$0e`, `sA`, `fW`, `E_`.
+- worktree resolver `Xn` (208640846): identical to 2.1.292.
+- git root finder `zn` (208639170): identical except a new first statement `if(De())return G8;` (`G8` is the not-found sentinel).
+- global config file `Tt`/`jRr` (206870003): identical; suffix function `BY()` unchanged (`-custom-oauth` when `CLAUDE_CODE_CUSTOM_OAUTH_URL` is set).
+- the `rootOnly` input finder is still dead: `xr(e,{uncached:n=!1}={}){return!1}` (near 208693100), so `MTr` never returns a root.
+
+`De()` is `host.launchOptions.diskless()`, a session with no storage backend (no shell, no
+skills, no config reads). In that mode the CLI sees no config and no git root, so it
+treats every folder as untrusted. A local tmux seat is never diskless, and the gate is the
+looser side of that difference only in a mode where the CLI cannot run commands at all.
+
+2.1.293 and 2.1.294 are on disk but were not part of this check and stay unverified.
 
 ## Differences that do not change the verdict
 
