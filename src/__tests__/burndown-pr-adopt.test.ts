@@ -1,13 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import type { Task } from '../agents/burndown/eligibility.js'
 import type { Runner } from '../agents/burndown/exec.js'
-import { openPulls, originRepo } from '../agents/burndown/pr-adopt-ports.js'
-import { adoptSeatPrs, type AdoptPorts, type AdoptSeat, type OpenPull } from '../agents/burndown/pr-adopt.js'
+import { changedFiles, openPulls, originRepo } from '../agents/burndown/pr-adopt-ports.js'
+import {
+  adoptSeatPrs,
+  type AdoptPorts,
+  type AdoptSeat,
+  type ChangedFile,
+  type OpenPull,
+} from '../agents/burndown/pr-adopt.js'
 import {
   holdWithShepherd,
-  registerWithShepherd,
+  shepherdListed,
+  shepherdRegister,
   type Registration,
-  type ShepherdRow,
   type ShepherdTarget,
 } from '../agents/burndown/shepherd.js'
 
@@ -25,6 +31,7 @@ const pull = (over: Partial<OpenPull> = {}): OpenPull => ({
   number: 7,
   title: 'T-1: Add the widget',
   branch: 'agent-chat/sa-t-1-widget',
+  headRepo: 'Acme/Widgets',
   updatedAt: NOW.toISOString(),
   ...over,
 })
@@ -36,14 +43,7 @@ const task = (over: Partial<Task> = {}): Task => ({
   ...over,
 })
 
-const row = (pr: number): ShepherdRow => ({
-  repo: 'acme/widgets',
-  pr,
-  runId: `run-${pr}`,
-  phase: 'ci',
-  headSha: null,
-  stalled: null,
-})
+const file = (path: string, additions = 10, deletions = 5): ChangedFile => ({ path, additions, deletions })
 
 interface Fake {
   ports: AdoptPorts
@@ -51,41 +51,43 @@ interface Fake {
   held: { target: ShepherdTarget; reason: string }[]
   seatLog: string[]
   events: string[]
-  rows: ShepherdRow[] | undefined
+  listed: Set<string> | undefined
 }
 
 function fake(opts: {
   pulls?: OpenPull[]
   tasks?: Task[]
-  rows?: ShepherdRow[] | undefined
-  size?: { additions: number; deletions: number }
+  listed?: Set<string> | undefined
+  files?: ChangedFile[] | undefined
   registerExit?: number
+  holdFails?: boolean
 }): Fake {
   const f: Fake = {
     registered: [],
     held: [],
     seatLog: [],
     events: [],
-    rows: 'rows' in opts ? opts.rows : [],
+    listed: 'listed' in opts ? opts.listed : new Set(),
     ports: undefined as unknown as AdoptPorts,
   }
   f.ports = {
     repoOf: checkout => (checkout === '/checkouts/widgets' ? 'Acme/Widgets' : undefined),
     pulls: () => opts.pulls ?? [],
-    diffSize: () => opts.size ?? { additions: 10, deletions: 5 },
+    files: () => ('files' in opts ? opts.files : [file('src/widget.ts')]),
     task: (initiatives, id) => {
       const found = (opts.tasks ?? []).find(t => t.id === id)
       return found === undefined ? undefined : { initiative: initiatives[0] as string, task: found }
     },
-    shepherdRows: () => f.rows,
+    listed: () => f.listed,
     register: reg => {
       if (opts.registerExit !== undefined)
         return { ok: false, refused: opts.registerExit === 65, reason: `exit ${opts.registerExit}` }
       f.registered.push(reg)
-      f.rows = [...(f.rows ?? []), row(reg.target.pr)]
+      f.listed?.add(`acme/widgets#${reg.target.pr}`)
       return { ok: true }
     },
     hold: (target, reason) => {
+      if (opts.holdFails === true) return false
       f.held.push({ target, reason })
       return true
     },
@@ -96,12 +98,15 @@ function fake(opts: {
   return f
 }
 
+const tick = (f: Fake, claimed: ReadonlySet<string> = new Set()): string[] =>
+  adoptSeatPrs([seat], claimed, f.ports, NOW)
+
 describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
   it('registers a small unregistered seat PR with the task, implementer and kind, once', () => {
     const f = fake({ pulls: [pull()], tasks: [task()] })
 
-    adoptSeatPrs([seat], new Set(), f.ports, NOW)
-    adoptSeatPrs([seat], new Set(), f.ports, NOW)
+    tick(f)
+    tick(f)
 
     expect(f.registered).toEqual([
       {
@@ -114,12 +119,16 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.held).toEqual([])
   })
 
-  it('registers a PR over 400 changed lines and holds it as g10-review', () => {
-    const f = fake({ pulls: [pull()], tasks: [task()], size: { additions: 380, deletions: 40 } })
+  it('registers a PR over 400 changed lines owner-gated, holds it, then drops the gate', () => {
+    const f = fake({
+      pulls: [pull()],
+      tasks: [task()],
+      files: [file('src/a.ts', 300, 20), file('src/b.ts', 80, 20)],
+    })
 
-    adoptSeatPrs([seat], new Set(), f.ports, NOW)
+    tick(f)
 
-    expect(f.registered).toHaveLength(1)
+    expect(f.registered.map(r => r.policy)).toEqual([{ merge: 'owner-gate' }, undefined])
     expect(f.held).toEqual([
       {
         target: { repo: 'Acme/Widgets', pr: 7 },
@@ -128,54 +137,134 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     ])
   })
 
+  it('leaves a large PR owner-gated and flagged when the hold fails', () => {
+    const f = fake({ pulls: [pull()], tasks: [task()], files: [file('src/a.ts', 500, 0)], holdFails: true })
+
+    tick(f)
+    tick(f)
+
+    expect(f.registered.map(r => r.policy)).toEqual([{ merge: 'owner-gate' }])
+    expect(f.events).toContain('burndown_pr_adopt_hold_failed')
+    expect(f.seatLog).toEqual([
+      'burndown: Acme/Widgets#7 not held: registered owner-gated; hold it: g10-review: diff +500/-0 over 400 (size only); T-1',
+    ])
+  })
+
   it('only flags a security-kind PR for the seat, once', () => {
     const f = fake({ pulls: [pull()], tasks: [task({ tags: ['kind:security'] })] })
 
-    adoptSeatPrs([seat], new Set(), f.ports, NOW)
-    adoptSeatPrs([seat], new Set(), f.ports, NOW)
+    tick(f)
+    tick(f)
 
     expect(f.registered).toEqual([])
     expect(f.seatLog).toHaveLength(1)
-    expect(f.seatLog[0]).toMatch(/^burndown: Acme\/Widgets#7 .*g10-adversary/)
+    expect(f.seatLog[0]).toMatch(/^burndown: Acme\/Widgets#7 unregistered: /)
   })
+
+  it.each(['agent-tooling', 'platform', 'docs', ''])(
+    'flags a task of kind "%s" it does not register',
+    kind => {
+      const f = fake({ pulls: [pull()], tasks: [task({ tags: kind === '' ? [] : [`kind:${kind}`] })] })
+
+      tick(f)
+
+      expect(f.registered).toEqual([])
+      expect(f.seatLog).toHaveLength(1)
+    },
+  )
 
   it('flags rather than registers a PR whose task it cannot find', () => {
     const f = fake({ pulls: [pull()], tasks: [] })
 
-    adoptSeatPrs([seat], new Set(), f.ports, NOW)
+    tick(f)
 
     expect(f.registered).toEqual([])
     expect(f.seatLog).toHaveLength(1)
   })
 
-  it('flags an authority change even when its kind is not security', () => {
+  it.each([
+    'security',
+    'authority',
+    'permission',
+    'merge policy',
+    'trust gate',
+    'grant',
+    'secret',
+    'credential',
+    'tool-guard',
+    'leak-guard',
+    'egress',
+    'seat-merge',
+    'gate resolve',
+    'owner-presence',
+    'proof',
+    'allowlist',
+    'deny',
+    'bypass',
+    'sandbox',
+    'token',
+    'authz',
+  ])('flags a correctness task whose title names "%s"', word => {
     const f = fake({
-      pulls: [pull({ title: 'T-1: Widen the permission profile' })],
-      tasks: [task({ title: 'Widen the permission profile', tags: ['kind:agent-tooling'] })],
+      pulls: [pull()],
+      tasks: [task({ title: `Fix the ${word} check`, tags: ['kind:correctness'] })],
     })
 
-    adoptSeatPrs([seat], new Set(), f.ports, NOW)
+    tick(f)
 
     expect(f.registered).toEqual([])
-    expect(f.seatLog).toHaveLength(1)
+    expect(f.seatLog[0]).toContain('unregistered')
+  })
+
+  it('flags a PR whose title is plain but whose diff touches a guard path', () => {
+    const f = fake({
+      pulls: [pull()],
+      tasks: [task()],
+      files: [file('src/widget.ts'), file('src/leak-guard/scan.ts')],
+    })
+
+    tick(f)
+
+    expect(f.registered).toEqual([])
+    expect(f.seatLog[0]).toContain('sensitive path src/leak-guard/scan.ts')
+  })
+
+  it('waits a tick when it cannot read the changed files', () => {
+    const f = fake({ pulls: [pull()], tasks: [task()], files: undefined })
+
+    tick(f)
+
+    expect(f.registered).toEqual([])
+    expect(f.events).toContain('burndown_pr_adopt_files_unread')
+  })
+
+  it('registers at most three PRs per seat per tick', () => {
+    const pulls = [1, 2, 3, 4, 5].map(n => pull({ number: n }))
+    const f = fake({ pulls, tasks: [task()] })
+
+    tick(f)
+    expect(f.registered.map(r => r.target.pr)).toEqual([1, 2, 3])
+
+    tick(f)
+    expect(f.registered.map(r => r.target.pr)).toEqual([1, 2, 3, 4, 5])
   })
 
   it('logs when Shepherd is down and registers on the next tick', () => {
-    const f = fake({ pulls: [pull()], tasks: [task()], rows: undefined })
+    const f = fake({ pulls: [pull()], tasks: [task()], listed: undefined })
 
-    adoptSeatPrs([seat], new Set(), f.ports, NOW)
+    tick(f)
     expect(f.registered).toEqual([])
     expect(f.events).toContain('burndown_pr_adopt_shepherd_down')
 
-    f.rows = []
-    adoptSeatPrs([seat], new Set(), f.ports, NOW)
+    f.listed = new Set()
+    tick(f)
     expect(f.registered).toHaveLength(1)
   })
 
   it('logs a register that serve did not answer and adds no seat line', () => {
     const f = fake({ pulls: [pull()], tasks: [task()], registerExit: 69 })
 
-    adoptSeatPrs([seat], new Set(), f.ports, NOW)
+    tick(f)
 
     expect(f.events).toContain('burndown_pr_adopt_register_failed')
     expect(f.seatLog).toEqual([])
@@ -185,8 +274,8 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     const idle = new Date(NOW.getTime() - 9 * DAY_MS).toISOString()
     const f = fake({ pulls: [pull({ updatedAt: idle })], tasks: [task({ tags: ['kind:security'] })] })
 
-    adoptSeatPrs([seat], new Set(), f.ports, NOW)
-    adoptSeatPrs([seat], new Set(), f.ports, NOW)
+    tick(f)
+    tick(f)
 
     const stale = f.seatLog.filter(l => l.includes('stale'))
     expect(stale).toEqual([
@@ -194,18 +283,20 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     ])
   })
 
-  it('leaves alone PRs of other prefixes, PRs Shepherd lists and PRs a claim holds', () => {
+  it('leaves alone PRs of other prefixes, forks, PRs Shepherd lists and PRs a claim holds', () => {
     const f = fake({
       pulls: [
         pull({ number: 1, branch: 'agent-chat/zz-t-1-other' }),
         pull({ number: 2 }),
         pull({ number: 3 }),
+        pull({ number: 4, headRepo: 'Stranger/Widgets' }),
+        pull({ number: 5, headRepo: '' }),
       ],
       tasks: [task()],
-      rows: [row(2)],
+      listed: new Set(['acme/widgets#2']),
     })
 
-    adoptSeatPrs([seat], new Set(['acme/widgets#3']), f.ports, NOW)
+    tick(f, new Set(['acme/widgets#3']))
 
     expect(f.registered).toEqual([])
     expect(f.seatLog).toEqual([])
@@ -213,16 +304,50 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
 })
 
 describe('the tick’s real PR adoption ports (CC-861)', () => {
-  it('reads open PRs from the REST list, one JSON object per line', () => {
-    const exec: Runner = () => ({
-      status: 0,
-      stdout:
-        '{"number":7,"title":"T-1: x","branch":"agent-chat/sa-t-1","updatedAt":"2026-10-01T00:00:00Z"}\nnot json\n',
-    })
+  it('reads open PRs, with the head repo, from the REST list, one JSON object per line', () => {
+    const calls: string[][] = []
+    const exec: Runner = (_bin, args) => {
+      calls.push(args)
+      return {
+        status: 0,
+        stdout:
+          '{"number":7,"title":"T-1: x","branch":"agent-chat/sa-t-1","headRepo":"Stranger/Widgets","updatedAt":"2026-10-01T00:00:00Z"}\nnot json\n',
+      }
+    }
 
     expect(openPulls('Acme/Widgets', exec)).toEqual([
-      { number: 7, title: 'T-1: x', branch: 'agent-chat/sa-t-1', updatedAt: '2026-10-01T00:00:00Z' },
+      {
+        number: 7,
+        title: 'T-1: x',
+        branch: 'agent-chat/sa-t-1',
+        headRepo: 'Stranger/Widgets',
+        updatedAt: '2026-10-01T00:00:00Z',
+      },
     ])
+    expect(calls[0]?.join(' ')).toContain('.head.repo.full_name')
+  })
+
+  it('reads every changed file, and nothing when one line is unreadable', () => {
+    const at =
+      (stdout: string): Runner =>
+      () => ({ status: 0, stdout })
+    const target = { repo: 'Acme/Widgets', pr: 7 }
+
+    expect(changedFiles(target, at('{"path":"a.ts","additions":3,"deletions":1}\n'))).toEqual([
+      file('a.ts', 3, 1),
+    ])
+    expect(
+      changedFiles(target, at('{"path":"a.ts","additions":3,"deletions":1}\nnot json\n')),
+    ).toBeUndefined()
+  })
+
+  it('lists a Shepherd row the schema would skip, so it is never registered again', () => {
+    const exec: Runner = () => ({
+      status: 0,
+      stdout: JSON.stringify([{ repo: 'Acme/Widgets', pr: 7, phase: 42 }, { junk: true }]),
+    })
+
+    expect(shepherdListed(exec)).toEqual(new Set(['acme/widgets#7']))
   })
 
   it('names a checkout’s GitHub repo from its origin, ssh or https', () => {
@@ -235,21 +360,22 @@ describe('the tick’s real PR adoption ports (CC-861)', () => {
     expect(originRepo('/c', at('/srv/bare/widgets.git'))).toBeUndefined()
   })
 
-  it('registers with --kind and holds with the reason, never --offline', () => {
+  it('registers with --kind and --policy and holds with the reason, never --offline', () => {
     const calls: string[][] = []
     const exec: Runner = (_bin, args) => {
       calls.push(args)
-      return args[1] === 'status' ? { status: 0, stdout: '[]' } : { status: 0, stdout: '' }
+      return { status: 0, stdout: '' }
     }
     const target = { repo: 'Acme/Widgets', pr: 7 }
+    const reg = { target, task: 'init/T-1', implementer: 'sa-t-1', kind: 'feature' as const }
 
-    registerWithShepherd({ target, task: 'init/T-1', implementer: 'sa-t-1', kind: 'feature' }, exec)
+    shepherdRegister({ ...reg, policy: { merge: 'owner-gate' } }, exec)
     holdWithShepherd(target, 'g10-review: big; T-1', exec)
 
-    expect(calls.find(a => a[1] === 'register')).toEqual(expect.arrayContaining(['--kind', 'feature']))
-    expect(calls.find(a => a[1] === 'hold')).toEqual(
-      expect.arrayContaining(['Acme/Widgets#7', '--reason', 'g10-review: big; T-1']),
+    expect(calls[0]).toEqual(
+      expect.arrayContaining(['--kind', 'feature', '--policy', '{"merge":"owner-gate"}']),
     )
+    expect(calls[1]).toEqual(expect.arrayContaining(['Acme/Widgets#7', '--reason', 'g10-review: big; T-1']))
     expect(calls.flat()).not.toContain('--offline')
   })
 })

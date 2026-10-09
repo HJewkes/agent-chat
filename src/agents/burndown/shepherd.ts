@@ -163,6 +163,8 @@ export interface Registration {
   headSha?: string
   /** Shepherd's `--kind`; absent, the flag is left off so a worker's own kind survives. */
   kind?: ShepherdKind
+  /** Shepherd's `--policy`, which can only narrow the seat's policy. */
+  policy?: { merge: 'owner-gate' }
 }
 
 export type ShepherdKind = 'correctness' | 'security' | 'feature' | 'refactor' | 'unknown'
@@ -182,6 +184,15 @@ export function registerWithShepherd(reg: Registration, exec: Runner = run): Reg
   const listed = shepherdRows(exec)
   const row = listed && rowFor(listed, reg.target)
   if (row && isLiveAtHead(row, reg.headSha)) return { ok: true }
+  return shepherdRegister(reg, exec)
+}
+
+/**
+ * `shepherd register` itself, with no listing first. A repeat updates the run in
+ * place and recomputes its policy from the seat narrowed by this call's `--policy`,
+ * so a repeat without one drops a narrowing an earlier call set.
+ */
+export function shepherdRegister(reg: Registration, exec: Runner = run): RegisterReply {
   const args = [
     'shepherd',
     'register',
@@ -191,12 +202,37 @@ export function registerWithShepherd(reg: Registration, exec: Runner = run): Reg
     '--implementer',
     reg.implementer,
     ...(reg.kind === undefined ? [] : ['--kind', reg.kind]),
+    ...(reg.policy === undefined ? [] : ['--policy', JSON.stringify(reg.policy)]),
   ]
   const result = exec(SHEPHERD_BIN, [...args, '--json'])
   if (result.status === 0) return { ok: true }
   const reason =
     firstLine(result.stderr) ?? (result.status === null ? 'did not run' : `exit ${result.status}`)
   return { ok: false, refused: result.status === REFUSED_EXIT, reason }
+}
+
+/**
+ * Every `repo#pr` (lowercased) that `shepherd status --json` lists, a row the
+ * schema skips as malformed included, so no caller re-registers it; undefined
+ * when Shepherd is down or the answer is not a JSON array.
+ */
+export function shepherdListed(exec: Runner = run): Set<string> | undefined {
+  const result = exec(SHEPHERD_BIN, SHEPHERD_STATUS_ARGS)
+  if (result.status !== 0) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(result.stdout)
+  } catch {
+    return undefined
+  }
+  if (!Array.isArray(parsed)) return undefined
+  const ListedRef = z.object({ repo: z.string(), pr: z.number().int() })
+  return new Set(
+    parsed.flatMap(raw => {
+      const ref = ListedRef.safeParse(raw)
+      return ref.success ? [targetRef(ref.data).toLowerCase()] : []
+    }),
+  )
 }
 
 /** `shepherd hold`, so no merge goes through until the hold is released; false when Shepherd did not take it. */

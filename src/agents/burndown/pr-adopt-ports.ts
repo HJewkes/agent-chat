@@ -3,15 +3,18 @@ import { appendSeatLog, readSeatJournal } from '../seats/io.js'
 import { expandHome } from './seat-dispatch.js'
 import type { LoadedSeat } from './seat-tick.js'
 import type { Runner } from './exec.js'
-import type { AdoptPorts, AdoptSeat, OpenPull } from './pr-adopt.js'
-import { holdWithShepherd, registerWithShepherd, shepherdRows } from './shepherd.js'
+import type { AdoptPorts, AdoptSeat, ChangedFile, OpenPull } from './pr-adopt.js'
+import { holdWithShepherd, shepherdListed, shepherdRegister, type ShepherdTarget } from './shepherd.js'
 import { parseTask, readTaskText } from './source.js'
 
 /** CC-861: the tick's real ports for `adoptSeatPrs`: gh reads over REST, Shepherd through its CLI, the seat's daily log. */
 
 const GITHUB_REMOTE = /github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/
 
-const PULL_JQ = '.[] | {number, title, branch: .head.ref, updatedAt: .updated_at}'
+const PULL_JQ =
+  '.[] | {number, title, branch: .head.ref, headRepo: (.head.repo.full_name // ""), updatedAt: .updated_at}'
+
+const FILES_JQ = '.[] | {path: .filename, additions, deletions}'
 
 interface Deps {
   exec: Runner
@@ -25,22 +28,10 @@ export function diskAdoptPorts({ exec, root, autonomyRoot, now, log }: Deps): Ad
   return {
     repoOf: checkout => originRepo(checkout, exec),
     pulls: repo => openPulls(repo, exec),
-    diffSize: target => {
-      const result = exec('gh', [
-        'api',
-        `repos/${target.repo}/pulls/${target.pr}`,
-        '--jq',
-        '[.additions, .deletions]',
-      ])
-      const parsed = result.status === 0 ? parseJson(result.stdout) : undefined
-      const [additions, deletions] = Array.isArray(parsed) ? parsed : []
-      return typeof additions === 'number' && typeof deletions === 'number'
-        ? { additions, deletions }
-        : undefined
-    },
+    files: target => changedFiles(target, exec),
     task: (initiatives, id) => findTask(root, initiatives, id),
-    shepherdRows: () => shepherdRows(exec, log),
-    register: reg => registerWithShepherd(reg, exec),
+    listed: () => shepherdListed(exec),
+    register: reg => shepherdRegister(reg, exec),
     hold: (target, reason) => holdWithShepherd(target, reason, exec),
     logged: (seat, key) => readSeatJournal(autonomyRoot, seat, now)?.includes(key) ?? false,
     append: (seat, text) => void appendSeatLog(autonomyRoot, seat, now, text),
@@ -77,16 +68,47 @@ export function openPulls(repo: string, exec: Runner): OpenPull[] | undefined {
     PULL_JQ,
   ])
   if (result.status !== 0) return undefined
-  return result.stdout
+  return jsonLines(result.stdout).flatMap(line => {
+    const p = line as Partial<OpenPull> | undefined
+    return typeof p?.number === 'number' && typeof p.branch === 'string'
+      ? [
+          {
+            number: p.number,
+            title: p.title ?? '',
+            branch: p.branch,
+            headRepo: p.headRepo ?? '',
+            updatedAt: p.updatedAt ?? '',
+          },
+        ]
+      : []
+  })
+}
+
+/** Every changed file, or undefined when any line is unreadable: a partial list could hide a sensitive path. */
+export function changedFiles(target: ShepherdTarget, exec: Runner): ChangedFile[] | undefined {
+  const result = exec('gh', [
+    'api',
+    '--paginate',
+    `repos/${target.repo}/pulls/${target.pr}/files?per_page=100`,
+    '--jq',
+    FILES_JQ,
+  ])
+  if (result.status !== 0) return undefined
+  const files: ChangedFile[] = []
+  for (const line of jsonLines(result.stdout)) {
+    const f = line as Partial<ChangedFile> | undefined
+    if (typeof f?.path !== 'string' || typeof f.additions !== 'number' || typeof f.deletions !== 'number')
+      return undefined
+    files.push({ path: f.path, additions: f.additions, deletions: f.deletions })
+  }
+  return files
+}
+
+const jsonLines = (stdout: string): unknown[] =>
+  stdout
     .split('\n')
     .filter(line => line.trim() !== '')
-    .flatMap(line => {
-      const p = parseJson(line) as Partial<OpenPull> | undefined
-      return typeof p?.number === 'number' && typeof p.branch === 'string'
-        ? [{ number: p.number, title: p.title ?? '', branch: p.branch, updatedAt: p.updatedAt ?? '' }]
-        : []
-    })
-}
+    .map(parseJson)
 
 function findTask(root: string, initiatives: readonly string[], id: string): ReturnType<AdoptPorts['task']> {
   for (const initiative of initiatives) {

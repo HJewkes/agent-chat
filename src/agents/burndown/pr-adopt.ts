@@ -1,28 +1,36 @@
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import type { Task } from './eligibility.js'
 import {
-  rowFor,
   targetRef,
   type Registration,
   type RegisterReply,
   type ShepherdKind,
-  type ShepherdRow,
   type ShepherdTarget,
 } from './shepherd.js'
 
 /**
  * CC-861: each tick, register a seat's open PRs that Shepherd does not list, which
- * the coordinator did by hand after every DONE report. A security, authority or
- * merge-policy PR needs a `g10-adversary` hold and a seat reviewer, so it is only
- * flagged in the seat's log, as is any PR the tick cannot classify. Shepherd down
- * is logged and retried next tick; registration never goes `--offline`.
+ * the coordinator did by hand after every DONE report. It registers only what it
+ * can prove ordinary: a correctness, bug, feature or refactor task whose title,
+ * tags and changed paths touch nothing sensitive. Everything else, a security,
+ * authority or merge-policy PR included, is only flagged in the seat's log for the
+ * seat to register and hold. Shepherd down is logged and retried next tick;
+ * registration never goes `--offline`.
  */
 
 export interface OpenPull {
   number: number
   title: string
   branch: string
+  /** `owner/name` of the head's repo; a fork's differs from the base. */
+  headRepo: string
   updatedAt: string
+}
+
+export interface ChangedFile {
+  path: string
+  additions: number
+  deletions: number
 }
 
 export interface AdoptSeat {
@@ -39,10 +47,12 @@ export interface AdoptPorts {
   repoOf: (checkout: string) => string | undefined
   /** The repo's open PRs, read over REST; undefined when the read failed. */
   pulls: (repo: string) => OpenPull[] | undefined
-  diffSize: (target: ShepherdTarget) => { additions: number; deletions: number } | undefined
+  /** The PR's changed files, read over REST; undefined when the read failed. */
+  files: (target: ShepherdTarget) => ChangedFile[] | undefined
   task: (initiatives: readonly string[], id: string) => { initiative: string; task: Task } | undefined
-  /** Every Shepherd run; undefined when serve did not answer. */
-  shepherdRows: () => ShepherdRow[] | undefined
+  /** Every lowercased `repo#pr` Shepherd lists, malformed rows included; undefined when serve did not answer. */
+  listed: () => ReadonlySet<string> | undefined
+  /** `shepherd register` without a listing first. */
   register: (reg: Registration) => RegisterReply
   hold: (target: ShepherdTarget, reason: string) => boolean
   /** Whether today's seat log already has a line containing `key`. */
@@ -54,16 +64,75 @@ export interface AdoptPorts {
 /** Charter G10: a diff over this many changed lines is held for Shepherd's opus review. */
 export const G10_DIFF_LINES = 400
 
-const DAY_MS = 86_400_000
+/** The most PRs one seat registers in a tick; the rest wait for the next. */
+export const REGISTERS_PER_SEAT = 3
 
-const ADVERSARY_WORDS =
-  /\b(security|authority|permissions?|merge[- ]policy|trust[- ]gate|grants?|secrets?|credentials?)\b/i
+const DAY_MS = 86_400_000
 
 const SHEPHERD_KINDS: Readonly<Record<string, ShepherdKind>> = {
   correctness: 'correctness',
   bug: 'correctness',
   feature: 'feature',
   refactor: 'refactor',
+}
+
+/** Words in a title or tag that may mean authority, merge policy or a guard; a match is flagged, never registered. */
+const SENSITIVE_WORDS = [
+  'security',
+  'authority',
+  'authz',
+  'auth',
+  'permission',
+  'merge[- ]?policy',
+  'trust',
+  'trust[- ]?gate',
+  'grant',
+  'secret',
+  'credential',
+  'tool[- ]?guard',
+  'leak[- ]?guard',
+  'guard',
+  'egress',
+  'seat[- ]?merge',
+  'gate resolve',
+  'owner[- ]?presence',
+  'proof',
+  'allowlist',
+  'deny',
+  'denylist',
+  'bypass',
+  'sandbox',
+  'token',
+]
+
+const SENSITIVE_TEXT = new RegExp(`\\b(${SENSITIVE_WORDS.join('|')})s?\\b`, 'i')
+
+/** Fragments of a changed path that may mean the same; matched anywhere in the lowercased path. */
+const SENSITIVE_PATHS = [
+  'guard',
+  'egress',
+  'profile',
+  'permission',
+  'gate',
+  'owner-presence',
+  'merge',
+  'trust',
+  'authority',
+  'authz',
+  'auth',
+  'secret',
+  'credential',
+  'allowlist',
+  'deny',
+  'bypass',
+  'sandbox',
+  'token',
+  'proof',
+]
+
+const sensitivePath = (p: string): string | undefined => {
+  const lower = p.toLowerCase()
+  return SENSITIVE_PATHS.find(fragment => lower.includes(fragment))
 }
 
 type Verdict = { flag: string } | { register: Registration }
@@ -76,24 +145,42 @@ export function adoptSeatPrs(
   now: Date,
 ): string[] {
   if (seats.length === 0) return []
-  const rows = ports.shepherdRows()
-  if (rows === undefined) {
+  const listed = ports.listed()
+  if (listed === undefined) {
     ports.log('burndown_pr_adopt_shepherd_down', {})
     return ['shepherd did not answer; seat PR adoption retries next tick']
   }
-  return seats.flatMap(seat =>
-    seat.repos.flatMap(repo => {
+  const ctx = { listed, claimed, ports, now }
+  return seats.flatMap(seat => {
+    const budget = { left: REGISTERS_PER_SEAT }
+    return seat.repos.flatMap(repo => {
       const slug = ports.repoOf(repo.checkout)
-      return slug === undefined ? [] : adoptRepo(seat, slug, repo.initiatives, { rows, claimed, ports, now })
-    }),
-  )
+      return slug === undefined ? [] : adoptRepo(seat, slug, repo.initiatives, { ...ctx, budget })
+    })
+  })
 }
 
 interface RepoCtx {
-  rows: readonly ShepherdRow[]
+  listed: ReadonlySet<string>
   claimed: ReadonlySet<string>
   ports: AdoptPorts
   now: Date
+  /** Registrations this seat may still make this tick. */
+  budget: { left: number }
+}
+
+/** The seat's own PRs: its branch prefix, pushed to this repo and not a fork, neither listed nor claimed. */
+function unregisteredPulls(seat: AdoptSeat, repo: string, pulls: OpenPull[], ctx: RepoCtx): OpenPull[] {
+  const own = `${BRANCH_PREFIX}${seat.prefix}-`
+  return pulls.filter(p => {
+    const ref = targetRef({ repo, pr: p.number }).toLowerCase()
+    return (
+      p.branch.startsWith(own) &&
+      p.headRepo.toLowerCase() === repo.toLowerCase() &&
+      !ctx.listed.has(ref) &&
+      !ctx.claimed.has(ref)
+    )
+  })
 }
 
 function adoptRepo(seat: AdoptSeat, repo: string, initiatives: string[], ctx: RepoCtx): string[] {
@@ -102,17 +189,14 @@ function adoptRepo(seat: AdoptSeat, repo: string, initiatives: string[], ctx: Re
     ctx.ports.log('burndown_pr_adopt_read_failed', { seat: seat.seat, repo })
     return []
   }
-  const own = `${BRANCH_PREFIX}${seat.prefix}-`
-  return pulls
-    .filter(p => p.branch.startsWith(own))
-    .map(p => ({ pull: p, target: { repo, pr: p.number } }))
-    .filter(({ target }) => !rowFor(ctx.rows, target) && !ctx.claimed.has(targetRef(target).toLowerCase()))
-    .flatMap(({ pull, target }) => {
-      const adopted = adoptPull(seat, pull, target, initiatives, ctx.ports)
-      return adopted
-        ? [`registered ${targetRef(target)} with Shepherd for seat ${seat.seat}`]
-        : staleFlag(seat, pull, target, ctx)
-    })
+  return unregisteredPulls(seat, repo, pulls, ctx).flatMap(pull => {
+    const target = { repo, pr: pull.number }
+    if (ctx.budget.left <= 0) return staleFlag(seat, pull, target, ctx)
+    const adopted = adoptPull(seat, pull, target, initiatives, ctx)
+    return adopted
+      ? [`registered ${targetRef(target)} with Shepherd for seat ${seat.seat}`]
+      : staleFlag(seat, pull, target, ctx)
+  })
 }
 
 /** True once the PR is registered; false leaves it unregistered for the stale check. */
@@ -121,48 +205,68 @@ function adoptPull(
   pull: OpenPull,
   target: ShepherdTarget,
   initiatives: readonly string[],
-  ports: AdoptPorts,
+  ctx: RepoCtx,
 ): boolean {
-  const verdict = classify(pull, target, initiatives, ports)
+  const { ports } = ctx
+  const files = ports.files(target)
+  if (files === undefined) {
+    ports.log('burndown_pr_adopt_files_unread', { seat: seat.seat, target: targetRef(target) })
+    return false
+  }
+  const verdict = classify(pull, target, files, initiatives, ports)
   if ('flag' in verdict) {
     flagOnce(seat.seat, `burndown: ${targetRef(target)} unregistered`, verdict.flag, ports)
     return false
   }
-  const size = ports.diffSize(target)
-  if (size === undefined) {
-    ports.log('burndown_pr_adopt_size_unread', { seat: seat.seat, target: targetRef(target) })
-    return false
-  }
-  return registerAndHold(seat, verdict.register, size, ports)
+  ctx.budget.left -= 1
+  const added = files.reduce((n, f) => n + f.additions, 0)
+  const deleted = files.reduce((n, f) => n + f.deletions, 0)
+  if (added + deleted <= G10_DIFF_LINES) return registerOnce(seat, verdict.register, ports)
+  return registerHeld(seat, verdict.register, `diff +${added}/-${deleted}`, ports)
 }
 
-function registerAndHold(
-  seat: AdoptSeat,
-  reg: Registration,
-  size: { additions: number; deletions: number },
-  ports: AdoptPorts,
-): boolean {
-  const ref = targetRef(reg.target)
+function registerOnce(seat: AdoptSeat, reg: Registration, ports: AdoptPorts): boolean {
   const reply = ports.register(reg)
-  if (!reply.ok) {
-    ports.log('burndown_pr_adopt_register_failed', { seat: seat.seat, target: ref, reason: reply.reason })
-    if (reply.refused) flagOnce(seat.seat, `burndown: ${ref} refused`, `by Shepherd: ${reply.reason}`, ports)
-    return false
-  }
-  if (size.additions + size.deletions <= G10_DIFF_LINES) return true
+  if (reply.ok) return true
+  const ref = targetRef(reg.target)
+  ports.log('burndown_pr_adopt_register_failed', { seat: seat.seat, target: ref, reason: reply.reason })
+  if (reply.refused) flagOnce(seat.seat, `burndown: ${ref} refused`, `by Shepherd: ${reply.reason}`, ports)
+  return false
+}
+
+/**
+ * A G10-size PR. Shepherd holds only a run that exists, so the register comes
+ * first, under an owner-gate policy that blocks any merge until the hold is in
+ * place. The repeat register without a policy then drops that gate, since Shepherd
+ * recomputes a run's policy on every register. A failed step leaves the gate on.
+ */
+function registerHeld(seat: AdoptSeat, reg: Registration, diff: string, ports: AdoptPorts): boolean {
+  if (!registerOnce(seat, { ...reg, policy: { merge: 'owner-gate' } }, ports)) return false
+  const ref = targetRef(reg.target)
   const taskId = reg.task.split('/').pop() ?? reg.task
-  const reason = `g10-review: diff +${size.additions}/-${size.deletions} over ${G10_DIFF_LINES} (size only); ${taskId}`
+  const reason = `g10-review: ${diff} over ${G10_DIFF_LINES} (size only); ${taskId}`
   if (!ports.hold(reg.target, reason)) {
     ports.log('burndown_pr_adopt_hold_failed', { seat: seat.seat, target: ref })
-    flagOnce(seat.seat, `burndown: ${ref} not held`, `registered, but hold it by hand: ${reason}`, ports)
+    flagOnce(seat.seat, `burndown: ${ref} not held`, `registered owner-gated; hold it: ${reason}`, ports)
+    return true
+  }
+  if (!ports.register(reg).ok) {
+    ports.log('burndown_pr_adopt_ungate_failed', { seat: seat.seat, target: ref })
+    flagOnce(
+      seat.seat,
+      `burndown: ${ref} owner-gated`,
+      'held, but the owner-gate policy stayed on; register it again',
+      ports,
+    )
   }
   return true
 }
 
-/** The registration, or why the seat must decide: the task or its kind is unknown, or it is an adversary class. */
+/** The registration, or why the seat must decide. Unknown is never ordinary. */
 function classify(
   pull: OpenPull,
   target: ShepherdTarget,
+  files: readonly ChangedFile[],
   initiatives: readonly string[],
   ports: AdoptPorts,
 ): Verdict {
@@ -171,27 +275,24 @@ function classify(
   if (id === undefined) return { flag: `no task id in branch ${pull.branch}` }
   const found = ports.task(initiatives, id)
   if (found === undefined) return { flag: `task ${id} not found in the seat's initiatives` }
-  const kind = found.task.tags.find(t => t.startsWith('kind:'))?.slice('kind:'.length)
-  if (kind === undefined || kind === '') return { flag: `task ${id} has no kind: tag` }
-  if (isAdversaryClass(kind, found.task, pull))
-    return {
-      flag: `task ${id} looks security, authority or merge-policy: register and hold g10-adversary by hand`,
-    }
-  return {
-    register: {
-      target,
-      task: `${found.initiative}/${id}`,
-      implementer,
-      kind: SHEPHERD_KINDS[kind] ?? 'unknown',
-    },
-  }
+  const kind = found.task.tags.find(t => t.startsWith('kind:'))?.slice('kind:'.length) ?? ''
+  const shepherdKind = SHEPHERD_KINDS[kind]
+  if (shepherdKind === undefined) return { flag: `task ${id} kind "${kind}" is not one the tick registers` }
+  const hit = sensitiveHit(found.task, pull, files)
+  if (hit !== undefined) return { flag: `${hit}: register and hold it by hand (${id})` }
+  return { register: { target, task: `${found.initiative}/${id}`, implementer, kind: shepherdKind } }
 }
 
-const isAdversaryClass = (kind: string, task: Task, pull: OpenPull): boolean =>
-  kind === 'security' ||
-  task.tags.some(t => ADVERSARY_WORDS.test(t.replace(/[:_]/g, ' '))) ||
-  ADVERSARY_WORDS.test(task.title) ||
-  ADVERSARY_WORDS.test(pull.title)
+function sensitiveHit(task: Task, pull: OpenPull, files: readonly ChangedFile[]): string | undefined {
+  const texts = [task.title, pull.title, ...task.tags.map(t => t.replace(/[:_]/g, ' '))]
+  const word = texts.map(t => SENSITIVE_TEXT.exec(t)?.[1]).find(w => w !== undefined)
+  if (word !== undefined) return `sensitive word "${word}"`
+  for (const f of files) {
+    const fragment = sensitivePath(f.path)
+    if (fragment !== undefined) return `sensitive path ${f.path} ("${fragment}")`
+  }
+  return undefined
+}
 
 function staleFlag(seat: AdoptSeat, pull: OpenPull, target: ShepherdTarget, ctx: RepoCtx): string[] {
   if (seat.staleDays === undefined) return []
