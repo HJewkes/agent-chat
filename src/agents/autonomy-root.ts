@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { logEvent } from '../broker/log.js'
 import { readAgentChatConfig, type AgentChatConfig } from '../config.js'
 import { activeWorkRoot } from './active-work.js'
 
@@ -8,6 +9,8 @@ const activeRootFrom = (env: NodeJS.ProcessEnv): string =>
   env.AGENT_CHAT_ACTIVE_WORK_ROOT || env.ACTIVE_ROOT || activeWorkRoot()
 
 function documentStateDir(file: string): string | null {
+  if (!path.isAbsolute(file))
+    throw new Error(`config.json coordinatorConfig must be an absolute path, got ${file}`)
   let state: unknown
   try {
     state = (JSON.parse(fs.readFileSync(file, 'utf8')) as { state_dir?: unknown }).state_dir
@@ -15,8 +18,8 @@ function documentStateDir(file: string): string | null {
     throw new Error(`config.json coordinatorConfig ${file} is unreadable: ${String(err)}`)
   }
   if (state === undefined || state === null) return null
-  if (typeof state === 'string' && state !== '') return state
-  throw new Error(`config.json coordinatorConfig ${file}: state_dir must be a non-empty string or null`)
+  if (typeof state === 'string' && path.isAbsolute(state)) return state
+  throw new Error(`config.json coordinatorConfig ${file}: state_dir must be an absolute path or null`)
 }
 
 /**
@@ -37,6 +40,19 @@ export function autonomyRoot(
   return path.join(activeRoot ?? activeRootFrom(env), 'claude-channels', 'sources', 'autonomy')
 }
 
-/** `autonomyRoot` against this machine's config.json and process env. */
-export const currentAutonomyRoot = (activeRoot?: string): string =>
-  autonomyRoot(readAgentChatConfig(), process.env, activeRoot)
+/** Holds no charter or seat files, so every reader sees "no seats" while the document is broken. */
+export const INVALID_ROOT_DIR = '.coordinator-config-invalid'
+
+/**
+ * `autonomyRoot` against this machine's config.json and process env. The broker and agent launch
+ * read this on hot paths, where a bad document must not take them down: it logs and answers a root
+ * with no seats, rather than the default root, so nothing is read or written against the wrong state.
+ */
+export function currentAutonomyRoot(activeRoot?: string): string {
+  try {
+    return autonomyRoot(readAgentChatConfig(), process.env, activeRoot)
+  } catch (err) {
+    logEvent('config_invalid', { key: 'coordinatorConfig', error: String(err) })
+    return path.join(activeRoot ?? activeRootFrom(process.env), INVALID_ROOT_DIR)
+  }
+}
