@@ -3,6 +3,8 @@ import { z } from 'zod'
 import {
   EXIT,
   collectCliArgs,
+  fieldSchema,
+  schemaKind,
   collectOptionParser,
   commandPath,
   defineCommand,
@@ -59,6 +61,12 @@ const flagSpec = (verb: Verb<unknown>, key: string, option: Parameters<typeof op
     ? `${option.short ? `${option.short}, ` : ''}${option.long}`
     : optionFlagSpec(verb, key, option)
 
+/** An array-typed positional takes every remaining word: `[name...]`. */
+function variadicAware<Args>(verb: Verb<Args>, name: string): string {
+  const spec = positionalSpec(verb, name)
+  return schemaKind(fieldSchema(verb.args, name)) === 'array' ? spec.replace(/([\]>])$/, '...$1') : spec
+}
+
 /** The registry's `flagToKey` keeps a `<value>` placeholder in the key, so its read of the option misses; strip it here until the package does. */
 const stripPlaceholder = (long: string): string => long.replace(/\s+[<[].*$/, '')
 
@@ -90,7 +98,7 @@ export function addVerb<Args>(
   )
   if (!options.hidden) sub.description(verb.description)
   if (options.helpGroup !== undefined) sub.helpGroup(options.helpGroup)
-  for (const name of verb.cli?.positional ?? []) sub.argument(positionalSpec(verb, name))
+  for (const name of verb.cli?.positional ?? []) sub.argument(variadicAware(verb, name))
   for (const [key, option] of Object.entries(verb.cli?.options ?? {})) {
     const parser = collectOptionParser(verb, key)
     const spec = flagSpec(verb, key, option)
