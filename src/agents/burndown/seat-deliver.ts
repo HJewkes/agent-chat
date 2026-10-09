@@ -2,6 +2,7 @@ import type { SeatMergedLog } from '../seats/dispatch-log.js'
 import type { SeatJournal } from '../seats/journal.js'
 import { prRef } from '../seats/journal-line.js'
 import { claimKey } from './advance.js'
+import { checkpointsDue, sendCheckpoints, settleCheckpoints } from './checkpoint.js'
 import type { Ledger } from './ledger.js'
 import { agentNameFor } from './plan.js'
 import {
@@ -90,16 +91,19 @@ export async function deliverSeatEvents(
   diff: SeatDiff,
   deps: DeliverDeps,
 ): Promise<{ ledger: Ledger; lines: string[] }> {
-  const settled = { ...diff, after: settleNotified(diff.after) }
+  const settled = { ...diff, after: settleNotified(settleCheckpoints(diff.after)) }
   const due = Object.entries(dueEvents(settled))
   recordMerges(due, settled.after, deps.dispatch)
   const human = diff.human ?? []
-  if (due.length === 0 && human.length === 0) return { ledger: settled.after, lines: [] }
+  const asking = checkpointsDue(settled.after)
+  if (due.length === 0 && human.length === 0 && asking.length === 0)
+    return { ledger: settled.after, lines: [] }
   const sender = await deps.open().catch((err: Error) => refusedSender(err.message))
   try {
-    const told = await sendAll(due, settled.after, sender, deps)
+    const asked = await sendCheckpoints(asking, settled.after, { ...deps, send: sender.send })
+    const told = await sendAll(due, asked.ledger, sender, deps)
     const filed = await fileAll([...human, ...wakeNotices(due, told.ledger)], told.ledger, sender, deps)
-    return { ledger: filed.ledger, lines: [...told.lines, ...filed.lines] }
+    return { ledger: filed.ledger, lines: [...asked.lines, ...told.lines, ...filed.lines] }
   } finally {
     sender.close()
   }
@@ -253,6 +257,14 @@ async function fileAll(
 
 /** The dry run's view: each message the tick would send, verbatim. */
 export function describeSeatEvents(diff: SeatDiff, now: Date): string[] {
+  const settled = { ...diff, after: settleCheckpoints(diff.after) }
+  const asks = checkpointsDue(settled.after).map(
+    c => `would ask ${c.agentName} for a checkpoint of ${c.taskId}`,
+  )
+  return [...asks, ...describeEvents(settled, now)]
+}
+
+function describeEvents(diff: SeatDiff, now: Date): string[] {
   return Object.entries(dueEvents(diff)).flatMap(([seat, events]) => [
     `would send to ${seat}:`,
     ...renderSeatEvents(seat, events, now)

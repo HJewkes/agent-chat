@@ -61,6 +61,8 @@ const Claim = z.object({
   questionId: z.string().optional(),
   inboxCursor: z.string().optional(),
   attempt: z.number().int().nonnegative().optional(),
+  /** Set once a silent exit with commits ahead got its one resume successor (CC-673). */
+  resumed: z.literal(true).optional(),
   reviewRound: z.number().int().nonnegative().optional(),
   pr: z.string().optional(),
   /** The PR's head commit when the tick last read it at a merge or a close (CC-316). */
@@ -109,6 +111,13 @@ const Claim = z.object({
       checkedAt: z.string(),
       detail: z.string(),
     })
+    .optional(),
+  /**
+   * The checkpoint request for the open `dirty-uncommitted` finding (CC-663): `sentAt` once one went out, `failed`
+   * counting refused sends before that. Cleared once the finding closes or changes code, so a later one asks again.
+   */
+  checkpoint: z
+    .object({ sentAt: z.string().optional(), failed: z.number().int().positive().optional() })
     .optional(),
   /** An implementing claim's progress lease (CC-659), with the evidence it last saw; `lease.ts` steps it each tick. */
   lease: z

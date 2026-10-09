@@ -6,6 +6,7 @@ import {
   plannerBrief,
   reviewerBrief,
   successorAfterAnswer,
+  successorAfterExit,
   successorAfterReview,
   successorAfterStall,
   workerBrief,
@@ -307,6 +308,7 @@ function successorFrame(
 
 function successorBrief(t: TaskBrief, context: SpawnAction['context']): string {
   if (context?.kind === 'stall') return successorAfterStall(t, context)
+  if (context?.kind === 'resume') return successorAfterExit(t, context.ahead)
   if (context?.kind === 'answer')
     return successorAfterAnswer(t, {
       question: `message ${context.questionId}; your predecessor's handoff restates it`,
