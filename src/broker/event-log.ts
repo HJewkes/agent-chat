@@ -11,6 +11,7 @@ import type {
   EventKind,
   Provenance,
   QueueItem,
+  ServiceAnswer,
 } from '../protocol.js'
 import { wakeSource, type CursoredMessage, type DecisionCitation } from '../protocol.js'
 import { resolveNoticeTtlMs } from '../config.js'
@@ -203,6 +204,19 @@ const toMessage = (row: Row): DeliveredMessage => {
   }
 }
 
+const toServiceAnswer = (row: Row): ServiceAnswer => {
+  const meta = (row.meta ? JSON.parse(row.meta) : {}) as Record<string, string>
+  return {
+    msgId: row.msg_id ?? String(row.id),
+    questionId: row.ref ?? '',
+    outcome: row.kind === 'answer' ? 'answered' : 'dismissed',
+    text: row.body ?? '',
+    by: 'human',
+    ...(meta.channel ? { channel: meta.channel } : {}),
+    at: row.ts,
+  }
+}
+
 const toQueueItem = (row: Row): QueueItem => ({
   msgId: row.msg_id ?? String(row.id),
   kind: row.kind as QueueItem['kind'],
@@ -334,6 +348,31 @@ export class EventLog implements EventStore {
       )
       .all(name, afterId, limit) as unknown as Row[]
     return rows.map(row => ({ ...toMessage(row), id: row.id }))
+  }
+
+  rowIdOf(msgId: string): number | undefined {
+    const row = this.db.prepare(`SELECT id FROM events WHERE msg_id = ? LIMIT 1`).get(msgId) as
+      { id: number } | undefined
+    return row?.id
+  }
+
+  /**
+   * The join on `ref` is what scopes this: only rows closing a `question` the
+   * label filed as a service. A session's own asks under the same name, and
+   * anything else addressed to it, never appear.
+   */
+  answersFor(name: string, afterId: number, limit: number): ServiceAnswer[] {
+    const rows = this.db
+      .prepare(
+        `SELECT a.* FROM events a
+         JOIN events q ON q.msg_id = a.ref
+         WHERE a.kind IN ('answer', 'resolution') AND a.id > ?
+           AND q.kind = 'question' AND q.actor = ?
+           AND json_extract(q.meta, '$.source') = 'service'
+         ORDER BY a.id ASC LIMIT ?`,
+      )
+      .all(afterId, name, limit) as unknown as Row[]
+    return rows.map(toServiceAnswer)
   }
 
   /**

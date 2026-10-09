@@ -520,6 +520,20 @@ export interface CursoredMessage extends DeliveredMessage {
 }
 
 /**
+ * What the human did with one service question (CC-169). `text` is the human's
+ * words for an answer and the resolution body for a dismissal.
+ */
+export interface ServiceAnswer {
+  msgId: string
+  questionId: string
+  outcome: 'answered' | 'dismissed'
+  text: string
+  by: 'human'
+  channel?: string
+  at: number
+}
+
+/**
  * Per addressee rather than per route, because a multicast can succeed for some
  * names and fail for others, and collapsing that into one ok/reason pair makes
  * the sender guess which. Additive: `recipients` still lists who took it.
@@ -793,6 +807,12 @@ export type ClientMessage =
    * session being read, so a watcher costs its own peer nothing.
    */
   | { t: 'inbox_since'; name: string; afterId: number; limit: number }
+  /**
+   * Answers and dismissals of the service questions filed under label `name`
+   * (CC-169), oldest first, after the row whose msg_id is `after`, or from the
+   * start when it is absent. A pure read, open to an unregistered connection.
+   */
+  | { t: 'answers_since'; name: string; after?: string; limit: number }
   /** Read one session's trail. Never delivers anything to the session being read. */
   | { t: 'activity'; name: string; limit: number }
   /** Whether `from` sent `to` a `Status:` or `Verdict:` report at or after `since` (CC-135), with no row window. */
@@ -1076,6 +1096,11 @@ export type ServerMessage =
    * quiet inbox would re-scan the same rows on every poll forever.
    */
   | { t: 'inbox_since_result'; messages: CursoredMessage[]; nextCursor: number }
+  /**
+   * `next` is the msgId of the last answer returned, absent when none was. An
+   * `after` the log does not hold gives `error` and no rows, never a replay.
+   */
+  | { t: 'answers_since_result'; answers: ServiceAnswer[]; next?: string; error?: string }
   /** `session` is absent when the name has no live registration; `events` outlives it. */
   | { t: 'activity_result'; session?: SessionInfo; events: QueueItem[] }
   | { t: 'reported_result'; reported: boolean }
