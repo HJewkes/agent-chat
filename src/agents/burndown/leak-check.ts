@@ -107,7 +107,8 @@ export async function leakCheck(ledger: Ledger, deps: LeakDeps): Promise<LeakRes
   }
   if (health.state === 'ok') for (const repo of repos) await checkRepo(pass, repo)
   else scannerDown(pass, health)
-  return { ledger: pruneFiled(pass.ledger, pass.current, pass.read), human: pass.human, lines: pass.lines }
+  const ledgerOut = pruneFiled(pass.ledger, pass.current, pass.read, pass.unscanned)
+  return { ledger: ledgerOut, human: pass.human, lines: pass.lines }
 }
 
 /** One tick's running state across repos. */
@@ -119,10 +120,10 @@ interface Pass {
   lines: string[]
   /** Keys of every human item whose finding holds this tick, filed or not. */
   current: Set<string>
-  /** Repos whose open PRs were read and scanned this tick. */
+  /** Repos whose open PRs were read this tick. */
   read: Set<string>
-  /** Claims with a PR or branch the scanner failed on, whose last rows are kept. */
-  unscanned: Set<Claim>
+  /** URLs of PRs whose text or branch was not scanned this tick; their last results stand. */
+  unscanned: Set<string>
 }
 
 /** Human-queue keys for a scanner outage; never a PR URL, so only a healthy tick clears one. */
@@ -148,6 +149,8 @@ interface PrRows {
   number: number
   url: string
   rows: string[]
+  /** False when the text or branch went unscanned, so the claim keeps its last rows. */
+  scanned: boolean
 }
 
 type Found = Map<Claim, PrRows[]>
@@ -174,7 +177,7 @@ async function checkRepo(pass: Pass, repo: string): Promise<void> {
   for (const pull of pulls.filter(p => fromBaseRepo(p, repo))) {
     await checkPull(pass, pull, found, { repo, shown: shownRepo === repo })
   }
-  pass.ledger = settleClaims(pass.ledger, repo, found, pass.unscanned)
+  pass.ledger = settleClaims(pass.ledger, repo, found)
 }
 
 /** The repo name as a message may show it: redacted when it holds a finding or could not be scanned. */
@@ -217,16 +220,44 @@ async function checkPull(pass: Pass, pull: Pull, found: Found, where: RepoView):
   const claim = owningClaim(pass.ledger, pull, where.repo)
   if (claim === undefined && !pull.branch.startsWith(BRANCH_PREFIX)) return
   const url = where.shown ? pull.url : '[redacted url]'
-  const text = scanPullText(pass, pull)
-  if (text === undefined) return textUnscanned(pass, where.repo, url, claim)
-  const branch = claim === undefined ? [] : branchRows(pass, claim, pull)
-  const rows = [...new Set([...text, ...branch])]
+  const { rows, scanned } = scanPull(pass, pull, claim, url)
+  if (!scanned) pass.unscanned.add(pull.url)
   if (claim?.seat !== undefined && pass.deps.seats.includes(claim.seat)) {
-    found.set(claim, [...(found.get(claim) ?? []), { number: pull.number, url, rows }])
+    found.set(claim, [...(found.get(claim) ?? []), { number: pull.number, url, rows, scanned }])
     return
   }
-  if (rows.length > 0) fileHuman(pass, humanItem(pull, url, rows, claim))
+  // A partial scan files only for a PR with nothing filed, so it never doubles a kept item.
+  if (rows.length > 0 && (scanned || !hasFiled(pass.ledger, pull.url))) {
+    fileHuman(pass, humanItem(pull, url, rows, claim))
+  }
 }
+
+/** One PR's rows, and whether its text and (for a claim) its branch were both scanned. */
+function scanPull(
+  pass: Pass,
+  pull: Pull,
+  claim: Claim | undefined,
+  url: string,
+): Omit<PrRows, 'number' | 'url'> {
+  const text = scanPullText(pass, pull)
+  if (text === undefined) {
+    pass.lines.push(`leak check could not scan the text of ${url}; its last result stands`)
+    return { rows: [], scanned: false }
+  }
+  if (claim === undefined) return { rows: text, scanned: true }
+  const branch = scanBranch(claim, pull, pass)
+  if ('rows' in branch) return { rows: [...new Set([...text, ...branch.rows])], scanned: true }
+  pass.lines.push(
+    `leak check skipped the branch of ${claim.taskId}: ${branch.skipped}; its last result stands`,
+  )
+  return { rows: text, scanned: false }
+}
+
+/** The PR URL a human-queue key was filed for. */
+const keyUrl = (key: string): string => key.slice(0, key.lastIndexOf('#'))
+
+const hasFiled = (ledger: Ledger, url: string): boolean =>
+  (ledger.humanFiled ?? []).some(k => keyUrl(k) === url)
 
 function fileHuman(pass: Pass, item: HumanItem): void {
   pass.current.add(item.key)
@@ -242,13 +273,6 @@ function owningClaim(ledger: Ledger, pull: Pull, repo: string): Claim | undefine
     held.find(c => c.pr === pull.url) ??
     held.find(c => inRepo(c) && (c.spawned ?? []).some(name => `${BRANCH_PREFIX}${name}` === pull.branch))
   )
-}
-
-/** A PR the scanner failed on keeps its claim's last record and its repo's filed items. */
-function textUnscanned(pass: Pass, repo: string, url: string, claim: Claim | undefined): void {
-  pass.lines.push(`leak check could not scan the text of ${url}; its last result stands`)
-  pass.read.delete(repo)
-  if (claim !== undefined) pass.unscanned.add(claim)
 }
 
 function capped(rows: readonly string[]): string[] {
@@ -269,11 +293,11 @@ function mergedLeak(repo: string, prs: readonly PrRows[]): Leak | undefined {
 }
 
 /** Each seated claim's union this tick, and no finding for one whose PRs in `repo` have all closed. */
-function settleClaims(ledger: Ledger, repo: string, found: Found, unscanned: ReadonlySet<Claim>): Ledger {
+function settleClaims(ledger: Ledger, repo: string, found: Found): Ledger {
   const claims = ledger.claims.map(c => {
     const prs = found.get(c)
     const now = prs === undefined ? undefined : mergedLeak(repo, prs)
-    if (unscanned.has(c)) return withLeak(c, keptLeak(c.leak, now))
+    if (prs?.some(p => !p.scanned) === true) return withLeak(c, keptLeak(c.leak, now))
     if (prs !== undefined) return withLeak(c, now)
     return c.leak?.repo === repo ? withLeak(c, undefined) : c
   })
@@ -307,11 +331,17 @@ function humanItem(pull: Pull, url: string, rows: string[], claim: Claim | undef
   return { key: `${pull.url}#${digest}`, text, ...(claim === undefined ? {} : { task: claim.taskId }) }
 }
 
-/** Drops filed keys that no longer hold, keeping those of repos this tick could not read. */
-function pruneFiled(ledger: Ledger, current: ReadonlySet<string>, read: ReadonlySet<string>): Ledger {
+/** Drops filed keys that no longer hold, keeping those of repos not read and PRs not fully scanned. */
+function pruneFiled(
+  ledger: Ledger,
+  current: ReadonlySet<string>,
+  read: ReadonlySet<string>,
+  unscanned: ReadonlySet<string>,
+): Ledger {
   if (ledger.humanFiled === undefined) return ledger
   const holds = (k: string): boolean =>
-    current.has(k) || (!k.startsWith(SCANNER_KEY) && !read.has(repoOfPr(k) ?? ''))
+    current.has(k) ||
+    (!k.startsWith(SCANNER_KEY) && (!read.has(repoOfPr(k) ?? '') || unscanned.has(keyUrl(k))))
   const kept = ledger.humanFiled.filter(holds)
   const { humanFiled: _old, ...rest } = ledger
   return kept.length === 0 ? rest : { ...rest, humanFiled: kept }
@@ -326,15 +356,6 @@ function checkoutOf(claim: Claim): string | undefined {
 
 /** A branch scan's rows, or why there are none; only a scanner result is ever a scan. */
 type BranchScan = { rows: string[] } | { skipped: string }
-
-/** The branch's rows; a branch not scanned keeps its claim's last rows, whatever stopped the scan. */
-function branchRows(pass: Pass, claim: Claim, pull: Pull): string[] {
-  const scan = scanBranch(claim, pull, pass)
-  if ('rows' in scan) return scan.rows
-  pass.lines.push(`leak check skipped the branch of ${claim.taskId}: ${scan.skipped}; its last result stands`)
-  pass.unscanned.add(claim)
-  return []
-}
 
 /** Every commit the PR's branch adds over its base, through the scanner's per-commit range scan. */
 function scanBranch(claim: Claim, pull: Pull, pass: Pass): BranchScan {

@@ -505,6 +505,47 @@ describe('the tick leak check on other PRs', () => {
     expect(w.notices).toHaveLength(2)
   })
 
+  it('keeps the human item of an unseated claim while its branch scan fails, and files it once', async () => {
+    const w = newWorld([pull({ title: NAME })])
+    w.branch = [{ location: `commit ${'a'.repeat(7)} src/a.ts:3`, rule: 'home-path' }]
+    const once = await tick(w, ledgerOf(claim({ seat: 'seat-off' })))
+    w.fetchFails = true
+    const failed = await tick(w, once)
+    w.fetchFails = false
+
+    await tick(w, failed)
+
+    expect(failed.humanFiled).toEqual(once.humanFiled)
+    expect(w.notices).toHaveLength(1)
+  })
+
+  it('files a partial scan of an unseated claim when nothing is filed for its PR', async () => {
+    const w = newWorld([pull({ title: NAME })])
+    w.fetchFails = true
+
+    await tick(w, ledgerOf(claim({ seat: 'seat-off' })))
+
+    expect(w.notices).toHaveLength(1)
+    expect(w.notices[0]).toContain('title 1:1 private-term')
+  })
+
+  it('holds back only the filed keys of the PR that went unscanned', async () => {
+    const stray = (n: number, body: string) =>
+      pull({ number: n, url: `${PR}${n}`, branch: `agent-chat/lone-${n}`, body })
+    const w = newWorld([pull(), stray(8, NAME), stray(9, NAME)])
+    const once = await tick(w, ledgerOf(claim()))
+    w.pulls = [pull(), stray(8, ''), stray(9, `${NAME} again`)]
+    const failing: EgressRunner = {
+      ...egress(w),
+      text: input => (input.includes('again') ? { state: 'error' } : egress(w).text(input)),
+    }
+
+    const after = await tick(w, once, { egress: failing })
+
+    expect(once.humanFiled).toHaveLength(2)
+    expect(after.humanFiled).toEqual(once.humanFiled?.filter(k => k.startsWith(`${PR}9#`)))
+  })
+
   it('files a claim whose seat is not enabled to the human queue with its task', async () => {
     const w = newWorld([pull({ title: NAME, private: true })])
 
