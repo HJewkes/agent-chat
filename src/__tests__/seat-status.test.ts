@@ -190,8 +190,16 @@ let pressure: {
   pressureLevel: number | null
 }
 
+/** A checkout of its own per agent, so two agents never share one tree. */
+function treeDir(name: string): string {
+  const dir = path.join(tmp, 'trees', name)
+  fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
 function seedAgent(seed: AgentSeed): void {
-  const { name, profile, spawnedBy = SEAT, cwd = tmp, isolation = 'worktree', surface = 'headless' } = seed
+  const { name, profile, spawnedBy = SEAT, isolation = 'none', surface = 'headless' } = seed
+  const cwd = seed.cwd ?? treeDir(name)
   const id = `agent-${++agentIds}`
   core.append({
     kind: 'agent_spawned',
@@ -218,6 +226,7 @@ function deps(over: Partial<StatusDeps> = {}): StatusDeps {
       return reply?.t === 'agents_result' ? reply.agents : []
     },
     waitingOwner: async () => waiting,
+    repoTrees: async () => '',
     readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
     loadDoc: () => structuredClone(doc),
     inbox: seat => readInbox(path.join(tmp, 'events.db'), seat),
@@ -277,6 +286,117 @@ afterEach(() => {
   fs.rmSync(tmp, { recursive: true, force: true })
 })
 
+/** `git worktree list --porcelain` for a repo whose first block is the main checkout. */
+const porcelain = (main: string, ...linked: { dir: string; branch?: string }[]): string =>
+  [
+    `worktree ${main}\nHEAD aaaa\nbranch refs/heads/main`,
+    ...linked.map(
+      t =>
+        `worktree ${t.dir}\nHEAD bbbb\n${t.branch === undefined ? 'detached' : `branch refs/heads/${t.branch}`}`,
+    ),
+  ].join('\n\n') + '\n'
+
+const REPO_A = '/fake/repo-a'
+const REPO_B = '/fake/repo-b'
+
+const countingSeat = (
+  concurrency = '{implementers: 2, reviewers: 1, planners: 3, counted_trees: ["eval/*"]}',
+) => writeAutonomy({ concurrency, seatLines: `repos: [{path: ${REPO_A}}]` })
+
+describe('every worktree a seat causes counts against the implementer cap', () => {
+  it('a reviewer with a worktree counts against the implementer cap', async () => {
+    seedAgent({ name: 'ss-al-1-review', profile: 'reviewer', isolation: 'worktree' })
+
+    const { implementers, reviewers } = await status()
+
+    expect(implementers.active).toBe(1)
+    expect(implementers.trees).toEqual([
+      { path: treeDir('ss-al-1-review'), cause: 'agent', agent: 'ss-al-1-review' },
+    ])
+    expect(reviewers.active).toBe(1)
+  })
+
+  it('an eval tree matching counted_trees counts, and one in another seat repo does not', async () => {
+    countingSeat()
+    const own = treeDir('ev-own')
+    const other = treeDir('ev-other')
+    const repoTrees = async (repo: string): Promise<string> =>
+      repo === REPO_A
+        ? porcelain(REPO_A, { dir: own, branch: 'eval/r1/c1/tok' })
+        : porcelain(REPO_B, { dir: other, branch: 'eval/r1/c2/tok' })
+
+    const { implementers } = await status({ repoTrees })
+
+    expect(implementers.active).toBe(1)
+    expect(implementers.trees).toEqual([{ path: own, cause: 'pattern', branch: 'eval/r1/c1/tok' }])
+  })
+
+  it('an implementer agent and its own tree count once', async () => {
+    countingSeat()
+    seedAgent({ name: 'ss-al-1', profile: 'implementer', isolation: 'worktree' })
+    const repoTrees = async (): Promise<string> =>
+      porcelain(REPO_A, { dir: treeDir('ss-al-1'), branch: 'eval/r1/c1/tok' })
+
+    const { implementers } = await status({ repoTrees })
+
+    expect(implementers.active).toBe(1)
+    expect(implementers.names).toEqual(['ss-al-1'])
+    expect(implementers.trees).toEqual([{ path: treeDir('ss-al-1'), cause: 'agent', agent: 'ss-al-1' }])
+  })
+
+  it('an exited implementer whose tree is still on disk counts, and a parked one does not', async () => {
+    seedAgent({
+      name: 'ss-al-3',
+      profile: 'implementer',
+      exited: true,
+      isolation: 'worktree',
+      cwd: path.join(tmp, 'removed'),
+    })
+    seedAgent({ name: 'ss-al-4', profile: 'implementer', exited: true, isolation: 'worktree' })
+
+    const { implementers } = await status()
+
+    expect(implementers.active).toBe(1)
+    expect(implementers.names).toEqual([])
+    expect(implementers.trees?.map(t => t.agent)).toEqual(['ss-al-4'])
+  })
+
+  it('a repo whose worktree list fails adds nothing and does not throw', async () => {
+    countingSeat()
+    const repoTrees = async (): Promise<string> => {
+      throw new Error('git failed')
+    }
+
+    const { implementers } = await status({ repoTrees })
+
+    expect(implementers.active).toBe(0)
+    expect(implementers.trees).toEqual([])
+  })
+
+  it('with implementers 2, one live implementer and one eval tree, atCap is true', async () => {
+    countingSeat()
+    seedAgent({ name: 'ss-al-1', profile: 'implementer', isolation: 'worktree' })
+    const repoTrees = async (): Promise<string> =>
+      porcelain(REPO_A, { dir: treeDir('ev-1'), branch: 'eval/r1/c1/tok' })
+
+    const { implementers } = await status({ repoTrees })
+
+    expect(implementers.active).toBe(2)
+    expect(implementers.names).toEqual(['ss-al-1'])
+    expect(implementers.atCap).toBe(true)
+  })
+
+  it('names trees in the text line only when there are some', async () => {
+    seedAgent({ name: 'ss-al-1', profile: 'implementer', isolation: 'worktree' })
+    const withTree = await statusReport(deps(), SEAT, false)
+    fs.rmSync(treeDir('ss-al-1'), { recursive: true })
+    const without = await statusReport(deps(), SEAT, false)
+
+    expect(withTree.lines[1]).toContain(`trees: ss-al-1(agent)`)
+    expect(without.lines[1]).not.toContain('trees:')
+  })
+})
+
 describe('a seat against its concurrency caps', () => {
   it('reports a seat with as many running implementers as its cap as at cap', async () => {
     seedAgent({ name: 'ss-al-1', profile: 'implementer', spawnedBy: 'an-earlier-generation' })
@@ -292,6 +412,7 @@ describe('a seat against its concurrency caps', () => {
       names: ['helper', 'ss-al-1'],
       detached: [],
       waitingOwner: [],
+      trees: [],
     })
   })
 
@@ -401,13 +522,19 @@ describe('a seat against its concurrency caps', () => {
   })
 
   it('counts exited implementers as parked and names the ones whose tree is still on disk', async () => {
-    seedAgent({ name: 'ss-al-3', profile: 'implementer', exited: true, cwd: path.join(tmp, 'removed-tree') })
-    seedAgent({ name: 'ss-al-4', profile: 'implementer', exited: true, cwd: autonomy })
+    seedAgent({
+      name: 'ss-al-3',
+      profile: 'implementer',
+      exited: true,
+      isolation: 'worktree',
+      cwd: path.join(tmp, 'removed-tree'),
+    })
+    seedAgent({ name: 'ss-al-4', profile: 'implementer', exited: true, isolation: 'worktree', cwd: autonomy })
 
     const { parked, implementers } = await status()
 
     expect(parked).toEqual({ count: 2, names: ['ss-al-3', 'ss-al-4'], treeOnDisk: ['ss-al-4'] })
-    expect(implementers.active).toBe(0)
+    expect(implementers.active).toBe(1)
   })
 
   it('counts no exited reviewer or roleless agent as parked', async () => {
@@ -1235,14 +1362,14 @@ describe('the status verb', () => {
   it('prints the same facts as a short table without --json', async () => {
     seedAgent({ name: 'ss-al-1', profile: 'implementer' })
     seedAgent({ name: 'ss-al-2', profile: 'implementer' })
-    seedAgent({ name: 'ss-al-4', profile: 'implementer', exited: true, cwd: autonomy })
+    seedAgent({ name: 'ss-al-4', profile: 'implementer', exited: true, isolation: 'worktree', cwd: autonomy })
     writeReading(12, 70)
 
     const { lines } = await statusReport(deps(), SEAT, false)
 
     expect(lines).toEqual([
       `seat ${SEAT} at ${NOW.toISOString()}`,
-      'implementers  2/2  AT CAP  ss-al-1, ss-al-2',
+      'implementers  3/2  AT CAP  ss-al-1, ss-al-2  trees: autonomy(agent)',
       'reviewers     0/1',
       'planners      0/3',
       'other         0',

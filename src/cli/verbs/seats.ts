@@ -1,8 +1,11 @@
+import { execFile } from 'node:child_process'
 import os from 'node:os'
+import { promisify } from 'node:util'
 import path from 'node:path'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
 import { requiredString } from '../../args.js'
+import { gitChildEnv } from '../../git.js'
 import { activeWorkRoot } from '../../agents/active-work.js'
 import { readAccountBudget } from '../../agents/budget.js'
 import {
@@ -400,6 +403,8 @@ export const seatsWatchdogStatusVerb = defineVerb({
   },
 })
 
+const execFileAsync = promisify(execFile)
+
 function statusDeps(root: string, client: BrokerClient): StatusDeps {
   return {
     now: () => new Date(),
@@ -411,6 +416,14 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
       const live = (await client.request({ t: 'list' }, 'list_result')) as Reply<'list_result'>
       return live.sessions.filter(s => s.tags?.some(t => t.tag === WAITING_OWNER_TAG)).map(s => s.name)
     },
+    repoTrees: async repo =>
+      (
+        await execFileAsync('git', ['-C', repo, 'worktree', 'list', '--porcelain'], {
+          timeout: 5000,
+          encoding: 'utf8',
+          env: gitChildEnv(),
+        })
+      ).stdout,
     readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
     loadDoc: () => readDoc(),
     inbox: seat => readInbox(path.join(home(), 'events.db'), seat),
