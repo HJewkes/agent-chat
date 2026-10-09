@@ -32,6 +32,8 @@ export interface Seat {
   spend: SeatSpend
   /** CC-404: `reset-aware` paces the day stop to the seven_day reset; anything else keeps `per_day_points`. */
   pacing?: string
+  /** CC-862: the cron the watchdog sends `Heartbeat tick` on, e.g. `17,47 * * * *`. */
+  heartbeatCron?: string
 }
 
 /** The seat file's `spend:` block; either stop may be absent. */
@@ -127,7 +129,15 @@ export function parseSeat(name: string, seatFile: string): Seat | undefined {
   const pool = frontmatterField(seatFile, 'pool')
   if (prefix === undefined || pool === undefined) return undefined
   const pacing = frontmatterField(seatFile, 'pacing')
-  return { name, prefix, pool, spend: parseSpend(seatFile), ...(pacing === undefined ? {} : { pacing }) }
+  const heartbeatCron = frontmatterField(seatFile, 'heartbeat_cron')
+  return {
+    name,
+    prefix,
+    pool,
+    spend: parseSpend(seatFile),
+    ...(pacing === undefined ? {} : { pacing }),
+    ...(heartbeatCron === undefined || heartbeatCron === '' ? {} : { heartbeatCron }),
+  }
 }
 
 /** CC-441: the seat file's `surface:`, the one record a headless resume cannot overwrite. */

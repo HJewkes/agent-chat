@@ -275,6 +275,20 @@ export interface LogVerdict {
   stop?: string
   /** Epoch ms of the seat's latest line. */
   activityAt?: number
+  /** CC-862: epoch ms of the reset in a latest `BUDGET-PAUSE ... until HH:MM` line, the next such time after the line. */
+  pauseUntil?: number
+  /** CC-862: the latest line is a `BUDGET-PAUSE`. */
+  paused?: boolean
+}
+
+/** The first `HH:MM` after `line` on the clock, which is the next day when the clock already passed it. */
+function resetAfter(line: SeatLine): number | undefined {
+  const m = /^BUDGET-PAUSE\b.*\buntil (\d{1,2}):(\d\d)\b/.exec(line.text)
+  if (m === null) return undefined
+  const from = new Date(line.at)
+  const reset = new Date(from.getFullYear(), from.getMonth(), from.getDate(), Number(m[1]), Number(m[2]))
+  if (reset.getTime() <= line.at) reset.setDate(reset.getDate() + 1)
+  return reset.getTime()
 }
 
 /** Reads the seat's log for local day `day`: its latest line decides whether it parked itself. */
@@ -285,7 +299,13 @@ export function readSeatLog(log: string, day: Date): LogVerdict {
   )
   if (latest === undefined) return {}
   const marker = /^(BUDGET-PAUSE|PARKED|WRAP)\b/.test(latest.text)
-  return { activityAt: latest.at, ...(marker ? { stop: `seat logged "${latest.text.slice(0, 80)}"` } : {}) }
+  const pauseUntil = resetAfter(latest)
+  return {
+    activityAt: latest.at,
+    ...(marker ? { stop: `seat logged "${latest.text.slice(0, 80)}"` } : {}),
+    ...(latest.text.startsWith('BUDGET-PAUSE') ? { paused: true } : {}),
+    ...(pauseUntil === undefined ? {} : { pauseUntil }),
+  }
 }
 
 export interface OwnerMessage {
