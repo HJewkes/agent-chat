@@ -263,6 +263,7 @@ function addAgentCommands(program: Command): void {
         '',
         'Checks run on basement (ssh <host> basement-suite) when it answers a probe and the head is pushed;',
         'with an unpushed head they are deferred until after the push, and with basement unreachable they run here.',
+        'On the basement host itself pr-ready calls basement-suite directly, without ssh.',
         'AGENT_CHAT_BASEMENT_HOST sets the host (default basement); off forces local checks.',
       ].join('\n'),
     )
