@@ -27,6 +27,8 @@ export interface ProcessTable {
   environ(pid: number): Record<string, string> | undefined
   command(pid: number): string
   parentOf(pid: number): number | undefined
+  /** The session id; a process whose session id is its own pid called setsid and is a daemon. */
+  sessionOf(pid: number): number | undefined
   isAlive(pid: number): boolean
   signal(pid: number, signal: 'SIGTERM' | 'SIGKILL'): void
 }
@@ -80,6 +82,14 @@ export const procTable = (): ProcessTable => ({
       return undefined
     }
   },
+  sessionOf: pid => {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8')
+      return Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[3])
+    } catch {
+      return undefined
+    }
+  },
   isAlive: pid => {
     try {
       process.kill(pid, 0)
@@ -110,16 +120,20 @@ function protectedPids(table: ProcessTable, self: number): Set<number> {
 
 /**
  * The environment says which launch a process descends from, not that it is a disposable stray:
- * the broker and every `run-agent` inherit the identity of whichever agent started them.
- * So agent-chat's own broker, launchers and MCP servers are never targets. Loose on purpose:
+ * a daemon started from inside an agent inherits that agent's identity. Reparenting to init
+ * erases the process tree, so ownership cannot be proved by ancestry. What can be told apart
+ * is a daemon: it either calls setsid (its session id is its own pid) or runs a known
+ * long-lived agent-chat or host command. Both are spared; a plain background job such as
+ * `yes &` or a busy-wait loop stays in its launcher's session and is reaped. Loose on purpose:
  * a stray that merely mentions one of these words is left alone.
  */
-const INFRASTRUCTURE_VERBS = new Set(['broker', 'run-agent', 'mcp'])
-const isAgentChatInfrastructure = (command: string): boolean =>
-  command
-    .split(/\s+/)
-    .slice(1)
-    .some(word => INFRASTRUCTURE_VERBS.has(word))
+const DAEMON_WORDS = new Set(['broker', 'run-agent', 'mcp', 'serve'])
+const isKnownDaemon = (command: string): boolean => {
+  const [argv0 = '', ...rest] = command.split(/\s+/).map(word => word.replace(/['"]/g, ''))
+  return (argv0.split('/').pop() ?? '').startsWith('tmux') || rest.some(word => DAEMON_WORDS.has(word))
+}
+
+const isSessionLeader = (table: ProcessTable, pid: number): boolean => table.sessionOf(pid) === pid
 
 /** Processes whose environment satisfies `match`, minus every one the safety rules protect. */
 export function findTargets(table: ProcessTable, match: LaunchMatch, self = process.pid): Target[] {
@@ -130,7 +144,7 @@ export function findTargets(table: ProcessTable, match: LaunchMatch, self = proc
     const env = table.environ(pid)
     if (env === undefined || !match(env)) continue
     const command = table.command(pid)
-    if (isAgentChatInfrastructure(command)) continue
+    if (isKnownDaemon(command) || isSessionLeader(table, pid)) continue
     targets.push({ pid, command, agentId: env[AGENT_ID_ENV] ?? '' })
   }
   return targets

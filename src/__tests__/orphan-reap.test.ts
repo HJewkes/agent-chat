@@ -7,6 +7,7 @@ interface FakeProc {
   env: Record<string, string> | undefined
   command: string
   ppid?: number
+  sid?: number
   ignoresTerm?: boolean
 }
 
@@ -17,6 +18,7 @@ class FakeTable implements ProcessTable {
   environ = (pid: number) => this.procs.get(pid)?.env
   command = (pid: number) => this.procs.get(pid)?.command ?? ''
   parentOf = (pid: number) => this.procs.get(pid)?.ppid
+  sessionOf = (pid: number) => this.procs.get(pid)?.sid
   isAlive = (pid: number) => this.procs.has(pid)
   signal(pid: number, signal: 'SIGTERM' | 'SIGKILL') {
     this.signals.push([pid, signal])
@@ -90,6 +92,18 @@ describe('reaping the processes an exiting run-agent leaves behind', () => {
     })
     reapOwnLaunch('a1', 100, { table: t, log: () => undefined, ...noSleep })
     expect(t.pids().sort()).toEqual([100, 900, 901])
+  })
+
+  it('leaves daemons that inherited the identity, and still reaps a plain background burner', () => {
+    const t = table({
+      100: { env: launch('a1', 100), command: 'agent-chat run-agent a1' },
+      910: { env: launch('a1', 100), command: 'tmux: server (/tmp/tmux-1/default)', ppid: 1, sid: 910 },
+      911: { env: launch('a1', 100), command: 'titan-factory serve', ppid: 1, sid: 5 },
+      912: { env: launch('a1', 100), command: 'some-daemon', ppid: 1, sid: 912 },
+      913: { env: launch('a1', 100), command: 'yes', ppid: 1, sid: 5 },
+    })
+    reapOwnLaunch('a1', 100, { table: t, log: () => undefined, ...noSleep })
+    expect(t.pids().sort()).toEqual([100, 910, 911, 912])
   })
 
   it('sends TERM first, then KILL only to what survived, and reports what outlives both', () => {
@@ -181,6 +195,12 @@ describe('the periodic orphan sweep', () => {
     })
     await run(t, [row('a1', 'retired', 0)])
     expect(t.signals).toEqual([[3, 'SIGTERM']])
+  })
+
+  it('sweeps a retired row too', async () => {
+    const t = table({ 1: { env: launch('a1', 50), command: 'yes', sid: 5 } })
+    await run(t, [row('a1', 'retired', 0)])
+    expect(t.signals).toEqual([[1, 'SIGTERM']])
   })
 
   it('skips unreadable environs and processes without the variable', async () => {

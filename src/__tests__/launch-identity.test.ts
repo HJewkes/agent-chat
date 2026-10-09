@@ -25,6 +25,7 @@ describe('what a broker spawned by an agent carries', () => {
       environ: () => brokerChildEnv as Record<string, string>,
       command: () => "tmux: server (/tmp/tmux-1/default) 'run-agent'",
       parentOf: () => 1,
+      sessionOf: () => 5,
       isAlive: () => true,
       signal: pid => void signals.push(pid),
     }

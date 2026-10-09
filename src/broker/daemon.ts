@@ -85,7 +85,7 @@ export async function startBroker(options: StartBrokerOptions = {}): Promise<net
   socketServer.startLifecycleVerifier()
   const stopReaper = startBrokerReaper()
   const stopAgeOut = startAgeOutSweep(core)
-  const stopOrphanSweep = startOrphanSweep(() => core.agents.roster(), logEvent)
+  const stopOrphanSweep = startOrphanSweep(() => core.agents.roster({ includeRetired: true }), logEvent)
   const { server, openConnections } = listener
 
   // Only after the socket is serving, and only ever best-effort.
