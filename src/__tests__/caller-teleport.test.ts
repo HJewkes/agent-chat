@@ -34,12 +34,19 @@ const SPEC: RemoteLaunch = {
   brief: 'what I was mid-way through',
   preamble: 'you are a continuation',
   surface: 'iterm-tab',
+  landToken: 'c0ffee00-0000-4000-8000-00000000beef',
 }
 
 type Ack = Extract<ServerMessage, { t: 'teleport_launched_result' }>
 const ACCEPTED: Ack = { t: 'teleport_launched_result', ok: true }
 
-function fakeBroker(launch: RemoteLaunch | undefined, ack: Ack | Error = ACCEPTED) {
+type LandAnswer = Extract<ServerMessage, { t: 'teleport_land_failed_result' }>
+
+function fakeBroker(
+  launch: RemoteLaunch | undefined,
+  ack: Ack | Error = ACCEPTED,
+  land?: LandAnswer | Error,
+) {
   const sent: ClientMessage[] = []
   return {
     sent,
@@ -49,8 +56,10 @@ function fakeBroker(launch: RemoteLaunch | undefined, ack: Ack | Error = ACCEPTE
         return launch === undefined
           ? { t: 'teleport_plan', ok: false, reason: 'aborted by the human' }
           : { t: 'teleport_plan', ok: true, launch }
-      if (ack instanceof Error) throw ack
-      return ack as ServerMessage
+      const answer = message.t === 'teleport_land_failed' ? land : ack
+      if (answer === undefined) throw new Error(`unexpected ${message.t}`)
+      if (answer instanceof Error) throw answer
+      return answer as ServerMessage
     },
   }
 }
@@ -81,7 +90,7 @@ function recordingDeps(over: Partial<CallerLaunchDeps> = {}) {
     },
     arm: async (spec, hostPid) => {
       steps.push(`arm ${spec.surface} ${hostPid}`)
-      return { go: () => (steps.push('go'), true), abandon: () => void steps.push('abandon') }
+      return { go: token => (steps.push(`go ${token}`), true), abandon: () => void steps.push('abandon') }
     },
     endParent: pid => void steps.push(`end ${pid}`),
     ...over,
@@ -98,7 +107,7 @@ describe('a caller-side teleport', () => {
 
     await runCallerTeleport(broker, 4321, deps)
 
-    expect(steps).toEqual(['write abcd1234', 'arm iterm-tab 4321', 'go', 'end 4321'])
+    expect(steps).toEqual(['write abcd1234', 'arm iterm-tab 4321', `go ${SPEC.landToken}`, 'end 4321'])
     expect(reports(broker.sent)).toEqual([{ t: 'teleport_launched', agentId: 'abcd1234', ok: true }])
   })
 
@@ -136,15 +145,57 @@ describe('a caller-side teleport', () => {
     ])
   })
 
-  it('keeps its parent when the helper died before it could be released', async () => {
-    const broker = fakeBroker(SPEC)
-    const { steps, deps } = recordingDeps({
-      arm: async () => ({ go: () => false, abandon: () => undefined }),
+  describe('when the helper died before it could be released', () => {
+    const deadHelper = { arm: async () => ({ go: () => false, abandon: () => undefined }) }
+    const unplaced = (sent: ClientMessage[]) => sent.filter(m => m.t === 'teleport_land_failed')
+
+    it('reports the successor unplaced with the landing token, and stays live only because the broker kept it', async () => {
+      const broker = fakeBroker(SPEC, ACCEPTED, {
+        t: 'teleport_land_failed_result',
+        ok: true,
+        predecessorLive: true,
+      })
+      const { steps, deps } = recordingDeps(deadHelper)
+
+      await runCallerTeleport(broker, 4321, deps)
+
+      expect(unplaced(broker.sent)).toEqual([
+        {
+          t: 'teleport_land_failed',
+          agentId: 'abcd1234',
+          token: SPEC.landToken,
+          reason: 'its helper exited before it was released',
+        },
+      ])
+      expect(steps).toEqual(['write abcd1234'])
     })
 
-    await runCallerTeleport(broker, 4321, deps)
+    it('ends its parent when the broker had already retired this session', async () => {
+      const broker = fakeBroker(SPEC, ACCEPTED, {
+        t: 'teleport_land_failed_result',
+        ok: true,
+        predecessorLive: false,
+      })
+      const { steps, deps } = recordingDeps(deadHelper)
 
-    expect(steps).toEqual(['write abcd1234'])
+      await runCallerTeleport(broker, 4321, deps)
+
+      expect(steps).toEqual(['write abcd1234', 'end 4321'])
+    })
+
+    it('claims nothing when the broker does not confirm', async () => {
+      const broker = fakeBroker(
+        SPEC,
+        ACCEPTED,
+        new Error('broker did not answer teleport_land_failed_result'),
+      )
+      const { steps, deps } = recordingDeps(deadHelper)
+
+      await runCallerTeleport(broker, 4321, deps)
+
+      expect(unplaced(broker.sent)).toHaveLength(1)
+      expect(steps).toEqual(['write abcd1234'])
+    })
   })
 
   it('does not launch when the launch files cannot be written', async () => {
@@ -339,13 +390,13 @@ describe("landing a cross-host successor in its predecessor's pane", () => {
 })
 
 describe("the helper's release", () => {
-  it("goes on the caller's go line", async () => {
+  it("goes on the caller's go line, with the landing token it carries", async () => {
     const stdin = new PassThrough()
     const go = waitForGo(stdin)
 
-    stdin.write('go\n')
+    stdin.write('go tok-123\n')
 
-    await expect(go).resolves.toBe(true)
+    await expect(go).resolves.toBe('tok-123')
   })
 
   it('does nothing when the caller closes its stdin without releasing it', async () => {
@@ -354,7 +405,7 @@ describe("the helper's release", () => {
 
     stdin.end()
 
-    await expect(go).resolves.toBe(false)
+    await expect(go).resolves.toBeUndefined()
   })
 })
 
@@ -388,11 +439,11 @@ describe('the armed helper process', () => {
   it('is told which pane and pid to wait on, and released by one go line', async () => {
     const { armed, out } = await armRecorder()
 
-    expect(armed.go()).toBe(true)
+    expect(armed.go('tok-123')).toBe(true)
 
     expect(await settle(out)).toEqual({
       argv: ['teleport-land', SPEC.agentId, '--pid=4321', '--surface=iterm-tab', `--anchor=${ANCHOR}`],
-      got: 'go\n',
+      got: 'go tok-123\n',
     })
   })
 

@@ -1545,7 +1545,7 @@ export class SocketServer {
       case 'teleport_land_failed':
         return reply(conn, {
           t: 'teleport_land_failed_result',
-          ...this.supervisor.teleportLandFailed(msg.agentId, msg.reason),
+          ...this.supervisor.teleportLandFailed(msg.agentId, msg.token, msg.reason),
         })
       case 'surface':
         void this.handleSurface(conn, msg.name)

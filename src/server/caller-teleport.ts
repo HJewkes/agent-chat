@@ -30,8 +30,8 @@ export interface LocalHost {
 }
 
 export interface Armed {
-  /** Release the helper to place the successor once this session's Claude Code exits; false when it already died. */
-  go(): boolean
+  /** Release the helper, handing it the landing token, to place the successor once this session's Claude Code exits; false when it already died. */
+  go(token: string): boolean
   /** Disarm the helper, so it never places the successor. */
   abandon(): void
 }
@@ -69,9 +69,9 @@ export async function armHelper(local: LocalHost, spec: RemoteLaunch, hostPid: n
   child.unref()
   const alive = () => child.exitCode === null && child.signalCode === null
   return {
-    go: () => {
+    go: token => {
       if (!alive()) return false
-      child.stdin?.end('go\n')
+      child.stdin?.end(`go ${token}\n`)
       return true
     },
     abandon: () => {
@@ -175,6 +175,25 @@ type Broker = Pick<BrokerClient, 'request'>
 
 type Ack = Extract<ServerMessage, { t: 'teleport_launched_result' }>
 
+type LandFailedResult = Extract<ServerMessage, { t: 'teleport_land_failed_result' }>
+
+/** CC-913: the one report that retires an armed successor, from whichever side holds its token. */
+export async function reportUnplaced(
+  broker: Broker,
+  agentId: string,
+  token: string,
+  reason: string,
+): Promise<LandFailedResult> {
+  try {
+    return (await broker.request(
+      { t: 'teleport_land_failed', agentId, token, reason },
+      'teleport_land_failed_result',
+    )) as LandFailedResult
+  } catch (err) {
+    return { t: 'teleport_land_failed_result', ok: false, reason: (err as Error).message }
+  }
+}
+
 /** The broker's verdict on the report; a report that could not be delivered is not accepted. */
 async function report(broker: Broker, agentId: string, ok: boolean, reason?: string): Promise<Ack> {
   try {
@@ -221,8 +240,31 @@ export async function runCallerTeleport(
     armed.abandon()
     return warn(`report not accepted (${ack.reason ?? 'no reason'}); disarmed successor ${spec.agentId}`)
   }
-  if (!armed.go()) return warn(`helper for successor ${spec.agentId} exited before it was released`)
-  deps.endParent(hostPid as number)
+  const token = spec.landToken ?? ''
+  if (armed.go(token)) return deps.endParent(hostPid as number)
+  await helperLost(broker, spec, token, hostPid as number, deps)
+}
+
+/**
+ * CC-913: the broker has already accepted the report and is retiring this session, so a helper that
+ * died unreleased is reported here with the token. Only the broker's answer says this session stays.
+ */
+async function helperLost(
+  broker: Broker,
+  spec: RemoteLaunch,
+  token: string,
+  hostPid: number,
+  deps: CallerLaunchDeps,
+) {
+  const reason = 'its helper exited before it was released'
+  const answer = await reportUnplaced(broker, spec.agentId, token, reason)
+  if (answer.ok && answer.predecessorLive === true)
+    return warn(`successor ${spec.agentId} was not placed: ${reason}`)
+  if (answer.ok) return deps.endParent(hostPid)
+  process.stderr.write(
+    `agent-chat: teleport successor ${spec.agentId} was not placed (${reason}) and the broker did not ` +
+      `confirm this session stays live: ${answer.reason ?? 'no reason'}\n`,
+  )
 }
 
 const warn = (what: string): void =>

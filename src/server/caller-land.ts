@@ -4,6 +4,7 @@ import { PANE_EXIT_TIMEOUT_MS, PANE_SETTLE_MS } from '../agents/teleport.js'
 import type { LaunchPlan } from '../agents/types.js'
 import { withBroker } from '../cli/client.js'
 import { SURFACE_NAMES, type SurfaceName } from '../protocol.js'
+import { reportUnplaced } from './caller-teleport.js'
 
 /**
  * CC-913: the detached half of a teleport from another host. The caller's MCP process dies with
@@ -74,17 +75,24 @@ export async function landSuccessor(input: LandInput, deps: LandDeps): Promise<v
   await deps.failed(reasons.join('; '))
 }
 
-/** Resolves true on the caller's "go" line; false when its stdin closes first, which means do nothing. */
-export function waitForGo(stdin: NodeJS.ReadableStream): Promise<boolean> {
+const GO = /^go(?: (\S+))?$/
+
+/** The landing token on the caller's "go" line ('' when the broker sent none); undefined when stdin closes first. */
+export function waitForGo(stdin: NodeJS.ReadableStream): Promise<string | undefined> {
   return new Promise(resolve => {
     let seen = ''
     stdin.setEncoding('utf8')
     stdin.on('data', (chunk: string) => {
       seen += chunk
-      if (seen.split('\n').includes('go')) resolve(true)
+      const go = seen
+        .split('\n')
+        .slice(0, -1)
+        .map(line => GO.exec(line))
+        .find(match => match !== null)
+      if (go) resolve(go[1] ?? '')
     })
-    stdin.on('end', () => resolve(false))
-    stdin.on('error', () => resolve(false))
+    stdin.on('end', () => resolve(undefined))
+    stdin.on('error', () => resolve(undefined))
   })
 }
 
@@ -97,18 +105,16 @@ const pidAlive = (pid: number): boolean => {
   }
 }
 
-const tellBroker = (agentId: string) => async (reason: string) => {
-  await withBroker(broker =>
-    broker.request({ t: 'teleport_land_failed', agentId, reason }, 'teleport_land_failed_result'),
-  )
-}
-
-export const defaultLandDeps = (agentId: string): LandDeps => ({
+export const defaultLandDeps = (agentId: string, token: string): LandDeps => ({
   pidAlive,
   now: Date.now,
   sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
   launch: async (surface, plan, placement) => void (await surfaceFor(surface, placement).launch(plan)),
-  failed: tellBroker(agentId),
+  failed: async reason => {
+    const answer = await withBroker(broker => reportUnplaced(broker, agentId, token, reason))
+    if (!answer.ok)
+      process.stderr.write(`teleport-land: broker refused the failure report: ${answer.reason}\n`)
+  },
 })
 
 export interface LandOptions {
@@ -131,9 +137,10 @@ function checkLandArgs(agentId: string, options: LandOptions): number {
 /** `agent-chat teleport-land`: spawned by the caller's MCP process, never by a person. */
 export async function runLandVerb(agentId: string, options: LandOptions): Promise<void> {
   const hostPid = checkLandArgs(agentId, options)
-  if (!(await waitForGo(process.stdin))) return
+  const token = await waitForGo(process.stdin)
+  if (token === undefined) return
   process.stdin.destroy()
-  const deps = defaultLandDeps(agentId)
+  const deps = defaultLandDeps(agentId, token)
   let plan: LaunchPlan
   try {
     plan = readLaunchPlan(agentId)
