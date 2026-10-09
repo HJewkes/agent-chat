@@ -180,7 +180,10 @@ describe('agentEnv with an agent launch', () => {
 
   it('keeps a TMPDIR the parent pointed somewhere other than /tmp', () => {
     const fs = new FakeFs()
-    const env = agentEnv({ HOME: '/home/example', TMPDIR: '/home/example/.cache/rounds' }, { agentTmp: linux(fs) })
+    const env = agentEnv(
+      { HOME: '/home/example', TMPDIR: '/home/example/.cache/rounds' },
+      { agentTmp: linux(fs) },
+    )
 
     expect(env.TMPDIR).toBe('/home/example/.cache/rounds')
     expect(fs.made).toEqual([])
