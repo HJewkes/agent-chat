@@ -815,6 +815,15 @@ export type ClientMessage =
   | { t: 'permission_hook'; session: string; toolName: string; toolInput: unknown; description?: string }
   /** The hook gave up before a verdict (its deadline or SIGTERM); closes the row. */
   | { t: 'permission_hook_withdrawn'; msgId: string }
+  /**
+   * A process that is not a session asks the human a question under a label (CC-169).
+   *
+   * Same caller rule as `permission_hook`: an UNREGISTERED connection only, and
+   * `as` is a label the caller supplies, not an identity the broker vouches for.
+   * The row carries `meta.source = 'service'`, which the decider path refuses,
+   * so only an answer from the human queue can close it.
+   */
+  | ({ t: 'service_ask'; as: string; text: string } & ItemShape)
   // Agent teams. Declared ahead of the handlers so the wire shape is frozen
   // before three tracks start building against it; nothing routes these yet.
   | {
@@ -1084,6 +1093,8 @@ export type ServerMessage =
   | { t: 'permission_verdict'; requestId: string; behavior: PermissionBehavior }
   /** The immediate answer to `permission_hook`: the queue id it was filed under, or why not. */
   | { t: 'permission_hook_result'; ok: boolean; msgId?: string; reason?: string }
+  /** The answer to `service_ask`: the question's msg_id, or why it was not filed. */
+  | { t: 'service_ask_result'; ok: boolean; msgId?: string; reason?: string }
   /**
    * `fatal` means stop, do not reconnect. It exists for exactly one case and the
    * case is not optional: a connection displaced by a resume takeover would
