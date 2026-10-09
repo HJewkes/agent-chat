@@ -1,0 +1,183 @@
+import { endHostSession } from '../agents/end-session.js'
+import { buildMcpConfig, hookSettingsPath, mcpConfigPath, writeLaunchFiles } from '../agents/launch-files.js'
+import { buildLaunchPlan } from '../agents/launch-plan.js'
+import { cwdHoldsUserSettings } from '../agents/launch-policy.js'
+import { surfaceFor } from '../agents/launcher.js'
+import type { AgentProfile, LaunchPlan } from '../agents/types.js'
+import type { BrokerClient } from '../client/broker-client.js'
+import { cliEntry, gitHooksDir, home } from '../paths.js'
+import { SURFACE_NAMES, type RemoteLaunch, type ServerMessage, type SurfaceName } from '../protocol.js'
+
+/**
+ * CC-881: the half of a teleport that runs on the caller's host. When the broker is on another
+ * machine it can neither write this machine's launch files, nor open its terminal, nor signal its
+ * Claude Code. It sends a host-neutral spec; this process validates it, builds the plan, every
+ * path, the env and the MCP config from its OWN host, launches, and ends its parent only once
+ * the broker accepted the launch report. A refused or lost report closes the successor instead.
+ */
+
+/** What this host contributes to the plan: never taken from the broker. */
+export interface LocalHost {
+  cliEntry: string
+  cwd: string
+  env: NodeJS.ProcessEnv
+}
+
+export interface Launched {
+  /** Close the surface this process opened, ending the successor in it. */
+  abandon(): Promise<void>
+}
+
+export interface CallerLaunchDeps {
+  local: LocalHost
+  writeFiles(plan: LaunchPlan, mcpConfig: Record<string, unknown>): void
+  launch(surface: SurfaceName, plan: LaunchPlan, anchor: string | undefined): Promise<Launched>
+  endParent(pid: number): void
+}
+
+export const defaultCallerLaunch = (): CallerLaunchDeps => ({
+  local: { cliEntry: cliEntry(), cwd: process.cwd(), env: process.env },
+  writeFiles: writeLaunchFiles,
+  launch: async (name, plan, anchor) => {
+    const surface = surfaceFor(name, anchor === undefined ? {} : { anchor })
+    const handle = await surface.launch(plan)
+    return { abandon: async () => void (await surface.close({ ...handle, ownsSurface: true })) }
+  },
+  endParent: pid => void endHostSession('this session', pid),
+})
+
+const AGENT_ID = /^[0-9a-f]{8}$/
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const CONTROL = /[\u0000-\u001f\u007f]/
+
+/** A name becomes a pane title and a registry key; it must never steer a path. */
+const badName = (name: string): boolean =>
+  name === '' || name.length > 128 || /[/\\]/.test(name) || name.includes('..') || CONTROL.test(name)
+
+/** Profile values that become argv words: one starting with `-` would be read as a flag. */
+function flagWords(profile: RemoteLaunch['profile']): string[] {
+  return [
+    profile.model,
+    ...profile.allowedTools,
+    ...(profile.disallowedTools ?? []),
+    ...(profile.settingSources ?? []),
+    profile.effort ?? '',
+  ]
+}
+
+/** Why the spec cannot be run here, or undefined when it can. */
+export function checkLaunch(spec: RemoteLaunch): string | undefined {
+  if (!AGENT_ID.test(spec.agentId))
+    return `the successor id ${JSON.stringify(spec.agentId)} is not an agent id`
+  if (!SESSION_ID.test(spec.sessionId)) return 'the successor session id is not a uuid'
+  if (badName(spec.name)) return `the name ${JSON.stringify(spec.name)} is not a valid session name`
+  if (!(SURFACE_NAMES as readonly string[]).includes(spec.surface)) return `unknown surface ${spec.surface}`
+  if (flagWords(spec.profile).some(word => word.startsWith('-')))
+    return 'the successor profile has a value that would be read as a flag'
+  return undefined
+}
+
+/** Only these profile fields are read from the broker; env and MCP servers never are. */
+const profileOf = (p: RemoteLaunch['profile']): AgentProfile => ({
+  name: p.name,
+  description: p.description,
+  model: p.model,
+  allowedTools: [...p.allowedTools],
+  ...(p.disallowedTools === undefined ? {} : { disallowedTools: [...p.disallowedTools] }),
+  isolation: p.isolation,
+  surface: p.surface,
+  ...(p.surfaceLifetime === undefined ? {} : { surfaceLifetime: p.surfaceLifetime }),
+  ...(p.role === undefined ? {} : { role: p.role }),
+  ...(p.returnContract === undefined ? {} : { returnContract: p.returnContract }),
+  ...(p.effort === undefined ? {} : { effort: p.effort }),
+  promptPrelude: p.promptPrelude,
+  ...(p.strictMcpConfig === undefined ? {} : { strictMcpConfig: p.strictMcpConfig }),
+  ...(p.settingSources === undefined ? {} : { settingSources: [...p.settingSources] }),
+  ...(p.disableSlashCommands === undefined ? {} : { disableSlashCommands: p.disableSlashCommands }),
+})
+
+/** The plan and MCP config, every path, binary and variable from this host. */
+export function buildCallerLaunch(
+  spec: RemoteLaunch,
+  local: LocalHost,
+): { plan: LaunchPlan; mcpConfig: Record<string, unknown> } {
+  const profile = profileOf(spec.profile)
+  const configDir = local.env.CLAUDE_CONFIG_DIR
+  const plan = buildLaunchPlan({
+    agentId: spec.agentId,
+    sessionId: spec.sessionId,
+    name: spec.name,
+    profile,
+    brief: spec.brief,
+    cwd: local.cwd,
+    cwdHoldsUserSettings: cwdHoldsUserSettings(local.cwd, configDir),
+    surface: spec.surface,
+    preamble: spec.preamble,
+    mcpConfigPath: mcpConfigPath(spec.agentId),
+    hookSettingsPath: hookSettingsPath(spec.agentId),
+    ...(spec.tags?.length ? { tags: spec.tags } : {}),
+    ...(spec.subscriptions?.length ? { subscriptions: spec.subscriptions } : {}),
+    agentChatHome: home(),
+    gitHooksDir: gitHooksDir(),
+    ...(configDir ? { configDir } : { configDirUnset: true }),
+    ...(spec.remoteControl ? { remoteControl: true } : {}),
+  })
+  return { plan, mcpConfig: buildMcpConfig(profile, local.cliEntry, plan.surface) }
+}
+
+type Broker = Pick<BrokerClient, 'request'>
+
+type Ack = Extract<ServerMessage, { t: 'teleport_launched_result' }>
+
+/** The broker's verdict on the report; a report that could not be delivered is not accepted. */
+async function report(broker: Broker, agentId: string, ok: boolean, reason?: string): Promise<Ack> {
+  try {
+    return (await broker.request(
+      { t: 'teleport_launched', agentId, ok, ...(reason === undefined ? {} : { reason }) },
+      'teleport_launched_result',
+    )) as Ack
+  } catch (err) {
+    return { t: 'teleport_launched_result', ok: false, reason: (err as Error).message }
+  }
+}
+
+async function launchLocally(spec: RemoteLaunch, hostPid: number | undefined, deps: CallerLaunchDeps) {
+  const refused = checkLaunch(spec)
+  if (refused !== undefined) throw new Error(refused)
+  if (hostPid === undefined) throw new Error('this MCP process does not know the pid of its Claude Code')
+  const { plan, mcpConfig } = buildCallerLaunch(spec, deps.local)
+  deps.writeFiles(plan, mcpConfig)
+  return deps.launch(spec.surface, plan, spec.anchor)
+}
+
+/** Waits out the countdown for the spec, runs it, and ends `hostPid` only on an accepted report. */
+export async function runCallerTeleport(
+  broker: Broker,
+  hostPid: number | undefined,
+  deps: CallerLaunchDeps,
+): Promise<void> {
+  const reply = (await broker.request({ t: 'teleport_plan_wait' }, 'teleport_plan')) as Extract<
+    ServerMessage,
+    { t: 'teleport_plan' }
+  >
+  if (!reply.ok || reply.launch === undefined) return
+  const spec = reply.launch
+  let launched: Launched
+  try {
+    launched = await launchLocally(spec, hostPid, deps)
+  } catch (err) {
+    await report(broker, spec.agentId, false, (err as Error).message)
+    return
+  }
+  const ack = await report(broker, spec.agentId, true)
+  if (!ack.ok) {
+    // The broker already released the successor, so it is closed and this session stays live.
+    process.stderr.write(
+      `agent-chat: teleport launch report not accepted (${ack.reason ?? 'no reason'}); ` +
+        `closed successor ${spec.agentId} and this session stays live\n`,
+    )
+    await launched.abandon()
+    return
+  }
+  deps.endParent(hostPid as number)
+}
