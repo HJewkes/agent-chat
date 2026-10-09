@@ -9,13 +9,7 @@ import {
   type ChangedFile,
   type OpenPull,
 } from '../agents/burndown/pr-adopt.js'
-import {
-  holdWithShepherd,
-  shepherdListed,
-  shepherdRegister,
-  type Registration,
-  type ShepherdTarget,
-} from '../agents/burndown/shepherd.js'
+import { shepherdListed, shepherdRegister, type Registration } from '../agents/burndown/shepherd.js'
 
 const NOW = new Date('2026-10-08T12:00:00Z')
 const DAY_MS = 86_400_000
@@ -48,7 +42,6 @@ const file = (path: string, additions = 10, deletions = 5): ChangedFile => ({ pa
 interface Fake {
   ports: AdoptPorts
   registered: Registration[]
-  held: { target: ShepherdTarget; reason: string }[]
   seatLog: string[]
   events: string[]
   listed: Set<string> | undefined
@@ -60,11 +53,9 @@ function fake(opts: {
   listed?: Set<string> | undefined
   files?: ChangedFile[] | undefined
   registerExit?: number
-  holdFails?: boolean
 }): Fake {
   const f: Fake = {
     registered: [],
-    held: [],
     seatLog: [],
     events: [],
     listed: 'listed' in opts ? opts.listed : new Set(),
@@ -73,7 +64,7 @@ function fake(opts: {
   f.ports = {
     repoOf: checkout => (checkout === '/checkouts/widgets' ? 'Acme/Widgets' : undefined),
     pulls: () => opts.pulls ?? [],
-    files: () => ('files' in opts ? opts.files : [file('src/widget.ts')]),
+    files: () => ('files' in opts ? opts.files : [file('src/__tests__/widget.test.ts')]),
     task: (initiatives, id) => {
       const found = (opts.tasks ?? []).find(t => t.id === id)
       return found === undefined ? undefined : { initiative: initiatives[0] as string, task: found }
@@ -85,11 +76,6 @@ function fake(opts: {
       f.registered.push(reg)
       f.listed?.add(`acme/widgets#${reg.target.pr}`)
       return { ok: true }
-    },
-    hold: (target, reason) => {
-      if (opts.holdFails === true) return false
-      f.held.push({ target, reason })
-      return true
     },
     logged: (_seat, key) => f.seatLog.some(line => line.includes(key)),
     append: (_seat, text) => void f.seatLog.push(text),
@@ -116,37 +102,21 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
         kind: 'feature',
       },
     ])
-    expect(f.held).toEqual([])
   })
 
-  it('registers a PR over 400 changed lines owner-gated, holds it, then drops the gate', () => {
+  it('flags a PR over 400 changed lines for the seat to register and hold, never registering it', () => {
     const f = fake({
       pulls: [pull()],
       tasks: [task()],
-      files: [file('src/a.ts', 300, 20), file('src/b.ts', 80, 20)],
+      files: [file('docs/a.md', 300, 20), file('src/__tests__/b.test.ts', 80, 20)],
     })
 
     tick(f)
-
-    expect(f.registered.map(r => r.policy)).toEqual([{ merge: 'owner-gate' }, undefined])
-    expect(f.held).toEqual([
-      {
-        target: { repo: 'Acme/Widgets', pr: 7 },
-        reason: 'g10-review: diff +380/-40 over 400 (size only); T-1',
-      },
-    ])
-  })
-
-  it('leaves a large PR owner-gated and flagged when the hold fails', () => {
-    const f = fake({ pulls: [pull()], tasks: [task()], files: [file('src/a.ts', 500, 0)], holdFails: true })
-
-    tick(f)
     tick(f)
 
-    expect(f.registered.map(r => r.policy)).toEqual([{ merge: 'owner-gate' }])
-    expect(f.events).toContain('burndown_pr_adopt_hold_failed')
+    expect(f.registered).toEqual([])
     expect(f.seatLog).toEqual([
-      'burndown: Acme/Widgets#7 not held: registered owner-gated; hold it: g10-review: diff +500/-0 over 400 (size only); T-1',
+      'burndown: Acme/Widgets#7 unregistered: diff +380/-40 over 400: register and hold g10-review by hand (T-1)',
     ])
   })
 
@@ -204,6 +174,14 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     'sandbox',
     'token',
     'authz',
+    'authentication',
+    'authorization',
+    'denied',
+    'approve',
+    'endorse',
+    'provenance',
+    'hook',
+    'policy',
   ])('flags a correctness task whose title names "%s"', word => {
     const f = fake({
       pulls: [pull()],
@@ -216,17 +194,40 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.seatLog[0]).toContain('unregistered')
   })
 
-  it('flags a PR whose title is plain but whose diff touches a guard path', () => {
-    const f = fake({
-      pulls: [pull()],
-      tasks: [task()],
-      files: [file('src/widget.ts'), file('src/leak-guard/scan.ts')],
-    })
+  it.each([
+    'src/cli/verbs/approve.ts',
+    'src/cli/verbs/endorse.ts',
+    'src/endorse-command.ts',
+    'src/server/commands/chat-endorse.ts',
+    'src/broker/core.ts',
+    'src/agents/hooks.ts',
+    'src/agents/launch-policy.ts',
+    'src/agents/identity.ts',
+    'src/agents/burndown/policy.ts',
+    'src/leak-guard/scan.ts',
+    'CLAUDE.md',
+  ])('flags a plainly titled PR whose diff touches %s, which is not a test or doc', path => {
+    const f = fake({ pulls: [pull()], tasks: [task()], files: [file('src/__tests__/a.test.ts'), file(path)] })
 
     tick(f)
 
     expect(f.registered).toEqual([])
-    expect(f.seatLog[0]).toContain('sensitive path src/leak-guard/scan.ts')
+    expect(f.seatLog[0]).toContain(`path ${path} is not a test or doc`)
+  })
+
+  it('registers a PR that changes only tests and docs', () => {
+    const files = [
+      'src/__tests__/a.test.ts',
+      'pkg/b.test.tsx',
+      'docs/guide.md',
+      'site/index.md',
+      'README.md',
+    ].map(p => file(p))
+    const f = fake({ pulls: [pull()], tasks: [task()], files })
+
+    tick(f)
+
+    expect(f.registered).toHaveLength(1)
   })
 
   it('waits a tick when it cannot read the changed files', () => {
@@ -360,22 +361,20 @@ describe('the tick’s real PR adoption ports (CC-861)', () => {
     expect(originRepo('/c', at('/srv/bare/widgets.git'))).toBeUndefined()
   })
 
-  it('registers with --kind and --policy and holds with the reason, never --offline', () => {
+  it('registers with --kind, never --offline', () => {
     const calls: string[][] = []
     const exec: Runner = (_bin, args) => {
       calls.push(args)
       return { status: 0, stdout: '' }
     }
-    const target = { repo: 'Acme/Widgets', pr: 7 }
-    const reg = { target, task: 'init/T-1', implementer: 'sa-t-1', kind: 'feature' as const }
 
-    shepherdRegister({ ...reg, policy: { merge: 'owner-gate' } }, exec)
-    holdWithShepherd(target, 'g10-review: big; T-1', exec)
-
-    expect(calls[0]).toEqual(
-      expect.arrayContaining(['--kind', 'feature', '--policy', '{"merge":"owner-gate"}']),
+    shepherdRegister(
+      { target: { repo: 'Acme/Widgets', pr: 7 }, task: 'init/T-1', implementer: 'sa-t-1', kind: 'feature' },
+      exec,
     )
-    expect(calls[1]).toEqual(expect.arrayContaining(['Acme/Widgets#7', '--reason', 'g10-review: big; T-1']))
+
+    expect(calls[0]).toEqual(expect.arrayContaining(['register', 'Acme/Widgets#7', '--kind', 'feature']))
     expect(calls.flat()).not.toContain('--offline')
+    expect(calls.flat()).not.toContain('--policy')
   })
 })

@@ -4,7 +4,7 @@ import { expandHome } from './seat-dispatch.js'
 import type { LoadedSeat } from './seat-tick.js'
 import type { Runner } from './exec.js'
 import type { AdoptPorts, AdoptSeat, ChangedFile, OpenPull } from './pr-adopt.js'
-import { holdWithShepherd, shepherdListed, shepherdRegister, type ShepherdTarget } from './shepherd.js'
+import { shepherdListed, shepherdRegister, type ShepherdTarget } from './shepherd.js'
 import { parseTask, readTaskText } from './source.js'
 
 /** CC-861: the tick's real ports for `adoptSeatPrs`: gh reads over REST, Shepherd through its CLI, the seat's daily log. */
@@ -32,7 +32,6 @@ export function diskAdoptPorts({ exec, root, autonomyRoot, now, log }: Deps): Ad
     task: (initiatives, id) => findTask(root, initiatives, id),
     listed: () => shepherdListed(exec),
     register: reg => shepherdRegister(reg, exec),
-    hold: (target, reason) => holdWithShepherd(target, reason, exec),
     logged: (seat, key) => readSeatJournal(autonomyRoot, seat, now)?.includes(key) ?? false,
     append: (seat, text) => void appendSeatLog(autonomyRoot, seat, now, text),
     log,

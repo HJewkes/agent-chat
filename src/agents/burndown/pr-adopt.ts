@@ -11,11 +11,13 @@ import {
 /**
  * CC-861: each tick, register a seat's open PRs that Shepherd does not list, which
  * the coordinator did by hand after every DONE report. It registers only what it
- * can prove ordinary: a correctness, bug, feature or refactor task whose title,
- * tags and changed paths touch nothing sensitive. Everything else, a security,
- * authority or merge-policy PR included, is only flagged in the seat's log for the
- * seat to register and hold. Shepherd down is logged and retried next tick;
- * registration never goes `--offline`.
+ * can prove ordinary: a correctness, bug, feature or refactor task whose title and
+ * tags name nothing sensitive, whose every changed path is on an allow-list of tests
+ * and docs, and whose diff is G10-small. Everything else is only flagged in the
+ * seat's log, for the seat to register and hold by hand: Shepherd holds only a run
+ * that exists and never loosens a run's policy, so the tick has no way to register
+ * a PR that is held from its first moment. Shepherd down is logged and retried next tick; registration never
+ * goes `--offline`.
  */
 
 export interface OpenPull {
@@ -54,7 +56,6 @@ export interface AdoptPorts {
   listed: () => ReadonlySet<string> | undefined
   /** `shepherd register` without a listing first. */
   register: (reg: Registration) => RegisterReply
-  hold: (target: ShepherdTarget, reason: string) => boolean
   /** Whether today's seat log already has a line containing `key`. */
   logged: (seat: string, key: string) => boolean
   append: (seat: string, text: string) => void
@@ -76,68 +77,55 @@ const SHEPHERD_KINDS: Readonly<Record<string, ShepherdKind>> = {
   refactor: 'refactor',
 }
 
-/** Words in a title or tag that may mean authority, merge policy or a guard; a match is flagged, never registered. */
-const SENSITIVE_WORDS = [
-  'security',
-  'authority',
-  'authz',
+/**
+ * Stems in a title or tag that may mean authority, merge policy, a guard or provenance;
+ * matched from a word start, so `auth` also catches authentication and authorization.
+ */
+const SENSITIVE_STEMS = [
+  'secur',
   'auth',
-  'permission',
-  'merge[- ]?policy',
+  'permi',
+  'polic',
   'trust',
-  'trust[- ]?gate',
   'grant',
   'secret',
   'credential',
-  'tool[- ]?guard',
-  'leak[- ]?guard',
   'guard',
   'egress',
-  'seat[- ]?merge',
-  'gate resolve',
+  'merge',
+  'gate',
   'owner[- ]?presence',
   'proof',
-  'allowlist',
-  'deny',
-  'denylist',
+  'allow[- ]?list',
+  'den(y|ie)',
   'bypass',
   'sandbox',
   'token',
+  'approv',
+  'endors',
+  'provenance',
+  'hook',
+  'identit',
+  'escalat',
+  'privileg',
 ]
 
-const SENSITIVE_TEXT = new RegExp(`\\b(${SENSITIVE_WORDS.join('|')})s?\\b`, 'i')
+const SENSITIVE_TEXT = new RegExp(`\\b(${SENSITIVE_STEMS.join('|')})`, 'i')
 
-/** Fragments of a changed path that may mean the same; matched anywhere in the lowercased path. */
-const SENSITIVE_PATHS = [
-  'guard',
-  'egress',
-  'profile',
-  'permission',
-  'gate',
-  'owner-presence',
-  'merge',
-  'trust',
-  'authority',
-  'authz',
-  'auth',
-  'secret',
-  'credential',
-  'allowlist',
-  'deny',
-  'bypass',
-  'sandbox',
-  'token',
-  'proof',
+/** The only paths a registered PR may change: tests and docs, which grant nothing. Anything else is flagged. */
+const ORDINARY_PATHS = [
+  /(^|\/)__tests__\//,
+  /\.test\.[cm]?[jt]sx?$/,
+  /^docs\//,
+  /^site\//,
+  /(^|\/)(README|CHANGELOG)\.md$/i,
 ]
 
-const sensitivePath = (p: string): string | undefined => {
-  const lower = p.toLowerCase()
-  return SENSITIVE_PATHS.find(fragment => lower.includes(fragment))
-}
+const isOrdinaryPath = (p: string): boolean => ORDINARY_PATHS.some(re => re.test(p))
 
 type Verdict = { flag: string } | { register: Registration }
 
-/** Registers, holds and flags each seat's unregistered PRs; returns the tick's lines. */
+/** Registers or flags each seat's unregistered PRs; returns the tick's lines. */
 export function adoptSeatPrs(
   seats: readonly AdoptSeat[],
   claimed: ReadonlySet<string>,
@@ -219,10 +207,7 @@ function adoptPull(
     return false
   }
   ctx.budget.left -= 1
-  const added = files.reduce((n, f) => n + f.additions, 0)
-  const deleted = files.reduce((n, f) => n + f.deletions, 0)
-  if (added + deleted <= G10_DIFF_LINES) return registerOnce(seat, verdict.register, ports)
-  return registerHeld(seat, verdict.register, `diff +${added}/-${deleted}`, ports)
+  return registerOnce(seat, verdict.register, ports)
 }
 
 function registerOnce(seat: AdoptSeat, reg: Registration, ports: AdoptPorts): boolean {
@@ -232,34 +217,6 @@ function registerOnce(seat: AdoptSeat, reg: Registration, ports: AdoptPorts): bo
   ports.log('burndown_pr_adopt_register_failed', { seat: seat.seat, target: ref, reason: reply.reason })
   if (reply.refused) flagOnce(seat.seat, `burndown: ${ref} refused`, `by Shepherd: ${reply.reason}`, ports)
   return false
-}
-
-/**
- * A G10-size PR. Shepherd holds only a run that exists, so the register comes
- * first, under an owner-gate policy that blocks any merge until the hold is in
- * place. The repeat register without a policy then drops that gate, since Shepherd
- * recomputes a run's policy on every register. A failed step leaves the gate on.
- */
-function registerHeld(seat: AdoptSeat, reg: Registration, diff: string, ports: AdoptPorts): boolean {
-  if (!registerOnce(seat, { ...reg, policy: { merge: 'owner-gate' } }, ports)) return false
-  const ref = targetRef(reg.target)
-  const taskId = reg.task.split('/').pop() ?? reg.task
-  const reason = `g10-review: ${diff} over ${G10_DIFF_LINES} (size only); ${taskId}`
-  if (!ports.hold(reg.target, reason)) {
-    ports.log('burndown_pr_adopt_hold_failed', { seat: seat.seat, target: ref })
-    flagOnce(seat.seat, `burndown: ${ref} not held`, `registered owner-gated; hold it: ${reason}`, ports)
-    return true
-  }
-  if (!ports.register(reg).ok) {
-    ports.log('burndown_pr_adopt_ungate_failed', { seat: seat.seat, target: ref })
-    flagOnce(
-      seat.seat,
-      `burndown: ${ref} owner-gated`,
-      'held, but the owner-gate policy stayed on; register it again',
-      ports,
-    )
-  }
-  return true
 }
 
 /** The registration, or why the seat must decide. Unknown is never ordinary. */
@@ -279,7 +236,13 @@ function classify(
   const shepherdKind = SHEPHERD_KINDS[kind]
   if (shepherdKind === undefined) return { flag: `task ${id} kind "${kind}" is not one the tick registers` }
   const hit = sensitiveHit(found.task, pull, files)
-  if (hit !== undefined) return { flag: `${hit}: register and hold it by hand (${id})` }
+  if (hit !== undefined) return { flag: `${hit}: register it by hand (${id})` }
+  const added = files.reduce((n, f) => n + f.additions, 0)
+  const deleted = files.reduce((n, f) => n + f.deletions, 0)
+  if (added + deleted > G10_DIFF_LINES)
+    return {
+      flag: `diff +${added}/-${deleted} over ${G10_DIFF_LINES}: register and hold g10-review by hand (${id})`,
+    }
   return { register: { target, task: `${found.initiative}/${id}`, implementer, kind: shepherdKind } }
 }
 
@@ -287,11 +250,8 @@ function sensitiveHit(task: Task, pull: OpenPull, files: readonly ChangedFile[])
   const texts = [task.title, pull.title, ...task.tags.map(t => t.replace(/[:_]/g, ' '))]
   const word = texts.map(t => SENSITIVE_TEXT.exec(t)?.[1]).find(w => w !== undefined)
   if (word !== undefined) return `sensitive word "${word}"`
-  for (const f of files) {
-    const fragment = sensitivePath(f.path)
-    if (fragment !== undefined) return `sensitive path ${f.path} ("${fragment}")`
-  }
-  return undefined
+  const other = files.find(f => !isOrdinaryPath(f.path))
+  return other === undefined ? undefined : `path ${other.path} is not a test or doc`
 }
 
 function staleFlag(seat: AdoptSeat, pull: OpenPull, target: ShepherdTarget, ctx: RepoCtx): string[] {
