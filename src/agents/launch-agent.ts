@@ -9,13 +9,14 @@ import {
 import { withShimOnPath, writeGhShim } from '../gh-shim/install.js'
 import { GIT_SHIM_DIR_ENV } from '../leak-guard/git-shim.js'
 import { agentDir, distDir, ghShimDir, home } from '../paths.js'
-import { agentEnv } from './agent-env.js'
+import { agentEnv, type AgentEnvOptions } from './agent-env.js'
 import { resolveBasePath } from './base-path.js'
 import { recordClaudeBin, resolveClaudeBin } from './claude-bin.js'
 import { resolveOrphanReapKill } from '../config.js'
 import { logEvent } from '../broker/log.js'
 import { LAUNCHER_PID_ENV } from './launcher.js'
 import { reapOwnLaunch, realExitDeps } from './orphan-reap.js'
+import { realExitTmpDeps, removeOwnTmpDir } from './agent-tmpdir.js'
 import { watchLauncherSignals } from './launcher-signals.js'
 import { diskPaneSources } from './pane-sources.js'
 import { readLaunchPlan } from './launch-files.js'
@@ -58,8 +59,9 @@ function withGitShim(env: Record<string, string>): Record<string, string> {
 export function agentBaseEnv(
   parent: NodeJS.ProcessEnv = process.env,
   resolvePath: (env: NodeJS.ProcessEnv) => string = env => resolveBasePath({ env, stateDir: home() }),
+  options: AgentEnvOptions = {},
 ): Record<string, string> {
-  return { ...agentEnv(parent), PATH: resolvePath(parent) }
+  return { ...agentEnv(parent, options), PATH: resolvePath(parent) }
 }
 
 /**
@@ -76,10 +78,11 @@ export function withShims(plan: LaunchPlan, base: Record<string, string> = agent
 }
 
 /** `agentEnv()`, never `process.env`: the launched agent must not inherit the broker's credentials. */
-export function launchOptions(agentId: string): RunAgentOptions {
+export function launchOptions(agentId: string, name?: string): RunAgentOptions {
+  const options = name === undefined ? {} : { agentTmp: { name, pid: process.pid } }
   return {
     agentDir: agentDir(agentId),
-    baseEnv: agentBaseEnv(),
+    baseEnv: agentBaseEnv(process.env, undefined, options),
     resolveBin,
     launcherPidEnv: LAUNCHER_PID_ENV,
     paneSources: diskPaneSources,
@@ -102,10 +105,12 @@ export function runAgentVerb(agentId: string): void {
   if (continued !== stored) refuseIfHeld(agentId, continued, dir)
   const plan = withShims(continued)
   watchLauncherSignals(agentDir(agentId), plan.title || agentId)
-  process.on('exit', () =>
-    reapOwnLaunch(agentId, process.pid, realExitDeps(logEvent, resolveOrphanReapKill())),
-  )
-  runAgent(plan, launchOptions(agentId))
+  const name = plan.env.AGENT_CHAT_NAME
+  process.on('exit', () => {
+    reapOwnLaunch(agentId, process.pid, realExitDeps(logEvent, resolveOrphanReapKill()))
+    if (name !== undefined) removeOwnTmpDir(name, agentId, process.pid, realExitTmpDeps(logEvent))
+  })
+  runAgent(plan, launchOptions(agentId, name))
 }
 
 function refuseIfHeld(agentId: string, plan: LaunchPlan, dir: string | undefined): void {
