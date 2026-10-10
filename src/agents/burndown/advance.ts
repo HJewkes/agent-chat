@@ -14,6 +14,7 @@ import {
 import { agentNameFor, reviewerNameFor, successorNameFor } from './plan.js'
 import type { Progress } from './progress.js'
 import type { PlannedSlice, Report } from './report.js'
+import { sliceClaims } from './seed-slices.js'
 import { shepherdTarget, type Registration, type ShepherdRow } from './shepherd.js'
 import { capVerdict, type ClaimSpend } from './spend-cap.js'
 import type { ActivityRead } from './stall.js'
@@ -174,19 +175,7 @@ const landed = (claim: Claim, agentId: string): Action =>
 function afterPlanner(claim: Claim, obs: Observation, now: Date): Action[] {
   if (obs.slices === undefined)
     return [stall(claim, sliceStallReason(obs.sliceProblems), 'failed', 'planner-refused')]
-  const at = now.toISOString()
-  const slices: Claim[] = obs.slices.map(s => ({
-    taskId: claim.taskId,
-    initiative: claim.initiative,
-    spawnedAt: at,
-    phase: 'queued',
-    phaseAt: at,
-    slice: s.n,
-    dependsOn: s.dependsOn,
-    ...(s.owns.length === 0 ? {} : { owns: s.owns }),
-    ...((s.contracts ?? []).length === 0 ? {} : { contracts: s.contracts }),
-    ...seatOf(claim),
-  }))
+  const slices = sliceClaims(claim, obs.slices, now)
   return [update(claim, { phase: 'done' }), { kind: 'add', claims: slices }, retireAll(claim)]
 }
 
@@ -194,12 +183,6 @@ const sliceStallReason = (problems: string[] | undefined): string =>
   problems === undefined || problems.length === 0
     ? 'planner left no machine-readable slices'
     : problems.join('\n')
-
-/** A slice keeps its planner's seat and name prefix, so its agents are named and counted as the seat's. */
-const seatOf = (claim: Claim): Pick<Claim, 'seat' | 'namePrefix'> => ({
-  ...(claim.seat === undefined ? {} : { seat: claim.seat }),
-  ...(claim.namePrefix === undefined ? {} : { namePrefix: claim.namePrefix }),
-})
 
 function afterWorker(claim: Claim, obs: Observation): Action[] {
   const report = obs.report

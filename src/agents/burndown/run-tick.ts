@@ -66,6 +66,7 @@ import {
   type SeatsPlan,
   type SkippedSeat,
 } from './seat-tick.js'
+import { seedSteps } from './seed-slices.js'
 import {
   accountDir,
   loadTickConfig,
@@ -530,6 +531,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const steps = [
     ...retrySteps(ledger, roster),
     ...advanced.steps,
+    ...seedSteps(planned.seeds),
     ...dispatched.flatMap(d => (typeof d === 'string' ? [] : d)),
   ]
   const unchecked = world.initiatives
@@ -582,6 +584,8 @@ interface Planned {
   skippedTasks: SeatsPlan['skippedTasks']
   outcomes: SeatOutcome[]
   notes: string[]
+  /** Seats mode only: slice claims seeded from seat-written plans (CC-927). */
+  seeds?: Claim[]
 }
 
 /** Without seats, `plan()` over the briefs' autonomy blocks; with seats, `planSeat` for each loaded seat. */

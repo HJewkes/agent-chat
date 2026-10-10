@@ -27,6 +27,7 @@ import { scoreAll } from './score.js'
 import { readScoredTasks } from './score-source.js'
 import { resolveSeatDispatch, type SeatDispatch } from './seat-dispatch.js'
 import { planSeat, type OrderInputs, type SeatBriefGate } from './seat-plan.js'
+import { diskPlanReader } from './seed-slices.js'
 import { backlogIds, seatScopeOf, type SeatScope } from './seat-scope.js'
 import { describeError, readWeekMilestones, taskIdsOnDisk } from './score-render.js'
 import { readTasks, type TickConfig } from './source.js'
@@ -204,6 +205,8 @@ export interface SeatsPlan {
   outcomes: SeatOutcome[]
   /** Every seat's plan notes, such as a shadow brief gate's `would-refuse` lines (CC-925). */
   notes: string[]
+  /** Slice claims seeded from seat-written plans (CC-927), for the tick to add to the ledger. */
+  seeds: Claim[]
 }
 
 /** The broker-wide ceilings less what earlier seats dispatched this tick. */
@@ -268,6 +271,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     ...(deps.lineStop === undefined ? {} : { lineStop: deps.lineStop }),
     ...optional(deps, lessDispatched(deps.capacity, taken.dispatch)),
     ...briefGateOf(deps, name),
+    readPlan: diskPlanReader(root),
   })
   planned.refusals.push(
     ...[...order.faults, ...scope.faults].map(reason => ({
@@ -359,16 +363,20 @@ export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root
     skippedTasks: [],
     outcomes: [],
     notes: [],
+    seeds: [],
   }
   const claims: SameTickClaim[] = []
   for (const seat of seats) {
     try {
       const taken = { dispatch: result.dispatch, claims, charged: deps.charged ?? [] }
-      const { planned, tasks, skipped } = planLoaded(seat, deps, root, taken)
+      // An earlier seat's seeds hold their task, so a later seat neither plans nor seeds it again (CC-927).
+      const ledger = { ...deps.ledger, claims: [...deps.ledger.claims, ...result.seeds] }
+      const { planned, tasks, skipped } = planLoaded(seat, { ...deps, ledger }, root, taken)
       if (skipped.length > 0) result.skippedTasks.push({ seat: seat.dispatch.seat, files: skipped })
       for (const [slug, list] of tasks) result.tasks.set(slug, list)
       result.refusals.push(...planned.refusals)
       result.notes.push(...planned.notes)
+      result.seeds.push(...planned.seeds)
       result.dispatch.push(...planned.dispatch)
       claims.push(...planned.claims)
       const { dispatch, refusals } = planned
