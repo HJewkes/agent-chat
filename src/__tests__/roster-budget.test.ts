@@ -107,10 +107,12 @@ describe('agent_list carries budget per row', () => {
       }),
     )
 
+    vi.spyOn(Date, 'now').mockReturnValue(NOW * 1000)
     const out = textOf(await handler.handle('agent_list', {}))
+    vi.restoreAllMocks()
     const occurrences = out.match(/five_hour/g) ?? []
     expect(occurrences).toHaveLength(1)
-    expect(out).toContain("Account usage (from fresh-scout's reading")
+    expect(out).toMatch(/^Account usage on \S+ \(\d+s old\): five_hour 21.4%/m)
   })
 
   it('never fails the roster call when nothing has written a reading', async () => {
@@ -170,22 +172,24 @@ describe('agent_list carries budget per row', () => {
    */
   it('skips both the read and the segment for a non-live agent', async () => {
     write('sess-retired', payload('sess-retired'))
-    const readFileSpy = vi.spyOn(fs, 'readFileSync')
+    const liveRow = agent({ name: 'fresh-scout', state: 'live', sessionId: 'sess-retired' })
+    const readsFor = async (agents: AgentIdentity[]): Promise<{ out: string; reads: number }> => {
+      const readFileSpy = vi.spyOn(fs, 'readFileSync')
+      const out = textOf(
+        await new ToolHandler(stubBroker({ t: 'agents_result', agents })).handle('agent_list', {}),
+      )
+      // Read the call history before restoring: mockRestore() also clears it.
+      const reads = readFileSpy.mock.calls.filter(c => String(c[0]).includes('sess-retired')).length
+      readFileSpy.mockRestore()
+      return { out, reads }
+    }
 
-    const handler = new ToolHandler(
-      stubBroker({
-        t: 'agents_result',
-        agents: [
-          agent({ name: 'retired-scout', state: 'retired', sessionId: 'sess-retired' }),
-          agent({ name: 'exited-scout', state: 'exited', sessionId: 'sess-retired' }),
-          agent({ name: 'fresh-scout', state: 'live', sessionId: 'sess-retired' }),
-        ],
-      }),
-    )
-    const out = textOf(await handler.handle('agent_list', {}))
-    // Read the call history before restoring: mockRestore() also clears it.
-    const readsOfThatSession = readFileSpy.mock.calls.filter(c => String(c[0]).includes('sess-retired'))
-    readFileSpy.mockRestore()
+    const liveOnly = await readsFor([liveRow])
+    const { out, reads } = await readsFor([
+      agent({ name: 'retired-scout', state: 'retired', sessionId: 'sess-retired' }),
+      agent({ name: 'exited-scout', state: 'exited', sessionId: 'sess-retired' }),
+      liveRow,
+    ])
 
     const retiredLine = out.split('\n').find(line => line.startsWith('- retired-scout'))
     const exitedLine = out.split('\n').find(line => line.startsWith('- exited-scout'))
@@ -194,7 +198,8 @@ describe('agent_list carries budget per row', () => {
     // The live row shares the same session id, proving the file really was
     // readable — the other two rows' absence is a filtering choice, not luck.
     expect(out).toContain('claude-opus-5 · $1.3 · 43.2%/200k')
-    expect(readsOfThatSession).toHaveLength(1)
+    // The live row's read plus its account header's: the two non-live rows add none.
+    expect(reads).toBe(liveOnly.reads)
   })
 })
 
