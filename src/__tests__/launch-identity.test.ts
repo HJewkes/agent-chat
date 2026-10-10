@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { withoutLaunchIdentity } from '../launch-identity.js'
+import { clearLaunchIdentity, withoutLaunchIdentity } from '../launch-identity.js'
 import { reapOwnLaunch, type ProcessTable } from '../agents/orphan-reap.js'
 
 describe('what a broker spawned by an agent carries', () => {
@@ -12,6 +12,28 @@ describe('what a broker spawned by an agent carries', () => {
       PATH: '/bin',
     })
     expect(env).toEqual({ AGENT_CHAT_HOME: '/h', PATH: '/bin' })
+  })
+
+  it('drops another launch’s private temp dir, which is per-launch like the identity (CC-901)', () => {
+    const env = withoutLaunchIdentity({
+      TMPDIR: '/tmp/ac-lead-123',
+      TMP: '/tmp/ac-lead-123/',
+      TEMP: '/tmp/ac-lead-123',
+      PATH: '/bin',
+    })
+    expect(env).toEqual({ PATH: '/bin' })
+  })
+
+  it('keeps a shared or custom temp dir, and a path that only resembles a launch dir', () => {
+    const kept = { TMPDIR: '/tmp', TMP: '/home/example/.cache/rounds', TEMP: '/tmp/ac-lead-123/sub' }
+    expect(withoutLaunchIdentity(kept)).toEqual(kept)
+    expect(withoutLaunchIdentity({ TMPDIR: '/tmp/ac-../x-1' })).toEqual({ TMPDIR: '/tmp/ac-../x-1' })
+  })
+
+  it('clears both in place, as a broker started by hand does to its own environment', () => {
+    const env: NodeJS.ProcessEnv = { AGENT_CHAT_AGENT_ID: 'a1', TMPDIR: '/tmp/ac-lead-123', PATH: '/bin' }
+    clearLaunchIdentity(env)
+    expect(env).toEqual({ PATH: '/bin' })
   })
 
   it('leaves a quoted, renamed child of such a broker unmatched by the reap', () => {

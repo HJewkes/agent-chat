@@ -1,6 +1,8 @@
 import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
+import { ensureAgentTmpDir, TMP_ROOT, type AgentTmpRequest } from './agent-tmpdir.js'
+import { clearLaunchTmpDirs } from '../launch-identity.js'
 
 /**
  * What a spawned agent's environment is allowed to carry.
@@ -157,6 +159,25 @@ export function defaultTmpDir(): string {
 export interface AgentEnvOptions {
   /** Injected so tests do not shell out. Called only when the parent has no TMPDIR. */
   tmpDir?: () => string
+  /** CC-901: the launch this env is for, which on Linux gets its own TMPDIR instead of the shared /tmp. */
+  agentTmp?: AgentTmpRequest
+}
+
+const isSharedTmp = (dir: string | undefined): boolean =>
+  dir === undefined || dir === '' || path.resolve(dir) === TMP_ROOT
+
+function withTmpDir(env: Record<string, string>, options: AgentEnvOptions): void {
+  // Another launch's private dir is never passed on: it goes when that launch exits (CC-901).
+  clearLaunchTmpDirs(env)
+  const own =
+    options.agentTmp !== undefined && isSharedTmp(env.TMPDIR)
+      ? ensureAgentTmpDir(options.agentTmp)
+      : undefined
+  if (own !== undefined) {
+    env.TMPDIR = env.TMP = env.TEMP = own
+    return
+  }
+  if (env.TMPDIR === undefined || env.TMPDIR === '') env.TMPDIR = (options.tmpDir ?? defaultTmpDir)()
 }
 
 /**
@@ -168,6 +189,9 @@ export interface AgentEnvOptions {
  *
  * A launchd-started broker has no TMPDIR and a PATH without `/opt/homebrew/bin` or
  * `/usr/sbin` (CC-500). TMPDIR is set only when absent and PATH only gains missing dirs.
+ *
+ * On Linux an agent launch gets its own TMPDIR, TMP and TEMP under /tmp when the parent's is /tmp
+ * or absent (CC-901); macOS keeps the per-user temp dir.
  *
  * Node's compile cache defaults under TMPDIR, which on Linux is one /tmp shared by
  * every agent (CC-899), so an absent NODE_COMPILE_CACHE points under HOME instead.
@@ -183,7 +207,7 @@ export function agentEnv(
     kept[name] = value
   }
   kept.PATH = withRequiredPathDirs(kept.PATH)
-  if (kept.TMPDIR === undefined || kept.TMPDIR === '') kept.TMPDIR = (options.tmpDir ?? defaultTmpDir)()
+  withTmpDir(kept, options)
   if (kept.NODE_COMPILE_CACHE === undefined || kept.NODE_COMPILE_CACHE === '') {
     kept.NODE_COMPILE_CACHE = path.join(kept.HOME || os.homedir(), '.cache', 'node-compile-cache')
   }

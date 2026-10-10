@@ -11,6 +11,7 @@ import {
   type ProcessTable,
   type ReapReport,
 } from './orphan-reap.js'
+import { realTmpFs, realTmpProcessTable, sweepAgentTmpDirs } from './agent-tmpdir.js'
 
 export const ORPHAN_SWEEP_MS = 60_000
 
@@ -69,12 +70,25 @@ export function startOrphanSweep(
     kill,
     announced: new Set(),
   }
+  // CC-901: after the reap, so a launch's dir goes once its strays have been killed.
+  const tmpDeps = {
+    roster,
+    now: Date.now,
+    log,
+    fs: realTmpFs,
+    table: realTmpProcessTable(),
+    uid: process.getuid?.() ?? -1,
+    self: process.pid,
+    announced: new Set<string>(),
+  }
   let running = false
   const timer = setInterval(() => {
     if (running) return
     running = true
     // A failed sweep must never take the broker down.
     void sweepOrphans(deps)
+      .catch(() => undefined)
+      .then(() => sweepAgentTmpDirs(tmpDeps))
       .catch(() => undefined)
       .finally(() => {
         running = false
