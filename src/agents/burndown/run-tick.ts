@@ -7,6 +7,7 @@ import {
   burndownLedgerPath,
   burndownPausePath,
   burndownTickStatusPath,
+  burndownTicksPath,
 } from '../../paths.js'
 import type { QueueItem } from '../../protocol.js'
 import { activeWorkRoot } from '../active-work.js'
@@ -81,6 +82,7 @@ import {
   shepherdRows,
   shepherdTarget,
   targetRef,
+  type Registration,
 } from './shepherd.js'
 import {
   lineStopFrom,
@@ -91,6 +93,13 @@ import {
 } from './service-check.js'
 import { retrySteps, stepsForActions, stepsForDispatch, type StepContext } from './steps.js'
 import { recordTick, type StopCode, type TickResult } from './tick-status.js'
+import {
+  recordingRegister,
+  tickSummary,
+  tickSummaryWriter,
+  type RegisterRecord,
+  type SummaryPlan,
+} from './tick-summary.js'
 import { loadWorld, type World } from './tick.js'
 import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
 import {
@@ -147,6 +156,9 @@ interface ReaderFailure {
 
 /** Shown in dry-run briefs when no `reportTo` is configured; a real tick refuses instead. */
 const UNSET_REPORT_TO = '<reportTo unset>'
+
+/** One writer per process, so a summary file that cannot be written is logged once, not once per tick. */
+const appendTickSummary = tickSummaryWriter(burndownTicksPath)
 
 /** Why the tick may not act at all, or undefined when it may. */
 export function stopReason(config: TickConfig, paused: boolean): string | undefined {
@@ -238,6 +250,7 @@ async function actOn(
     serviceCheck,
     reasons,
     adopt,
+    summary,
   }: Decided,
   now: Date,
 ): Promise<string[]> {
@@ -249,11 +262,13 @@ async function actOn(
   const exhausted = await fileScopeExhausted(outcomes, seatStates, opts, now)
   const sampled = exhausted === undefined ? ledger : { ...ledger, seats: exhausted }
   const spawns: SpawnResult[] = []
+  const registrations: RegisterRecord[] = []
+  const register = (registration: Registration) => registerWithShepherd(registration, opts.exec ?? run)
   const executed = await execute(steps, sampled, {
     ledgerFile: burndownLedgerPath(),
     spawn: recordingSpawn(steps, opts.broker.spawn, spawns),
     retire: opts.broker.retire,
-    register: registration => registerWithShepherd(registration, opts.exec ?? run),
+    register: recordingRegister(steps, sampled, register, registrations),
     prHead: target => prHeadOf(target, opts.exec ?? run),
     log,
     now,
@@ -276,11 +291,13 @@ async function actOn(
   const journal = seatJournal(defaultAutonomyRoot(opts.root), { log, now: () => now })
   const dispatch = seatMergedLog(defaultAutonomyRoot(opts.root), { log, now: () => now })
   const told = await deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now, journal, dispatch })
-  writeLedger(burndownLedgerPath(), {
+  const written = {
     ...told.ledger,
     lastTickAt: now.toISOString(),
     ...(serviceCheck === undefined ? {} : { serviceCheck }),
-  })
+  }
+  writeLedger(burndownLedgerPath(), written)
+  appendTickSummary(tickSummary({ ...summary, now, ledger: written, registrations }), log)
   return [...executed.lines, ...adopted, ...woken.lines, ...leaks.lines, ...told.lines]
 }
 
@@ -423,6 +440,8 @@ interface Decided {
   reasons: NoDispatchReason[]
   /** Seats mode only: the seats whose unregistered PRs the tick registers or flags (CC-861). */
   adopt: AdoptSeat[]
+  /** What this tick's summary row reads from the plan (CC-929). */
+  summary: SummaryPlan
 }
 
 /** Any row not retired may still run, and so may a name missing from a partial roster. */
@@ -542,6 +561,13 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     reasons: marked?.due ?? [],
     outcomes: planned.outcomes,
     adopt: seats?.loaded.map(s => adoptSeatOf(s)) ?? [],
+    summary: {
+      maxAgeDays: config.briefMaxAgeDays,
+      caps: Object.fromEntries(seats?.loaded.map(s => [s.dispatch.seat, s.dispatch.caps]) ?? []),
+      outcomes: planned.outcomes,
+      dispatch: planned.dispatch,
+      tasks: dispatchCtx.tasks,
+    },
     notes,
     failures,
     unchecked,
