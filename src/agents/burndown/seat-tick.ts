@@ -176,7 +176,9 @@ export interface SeatPlanDeps {
   /** The broker's roster, which decides which held trees are active; absent, every held tree counts. */
   roster?: Roster
   /** The config's per-seat brief gates (CC-925) and hand reserves (CC-936); absent, every gate is off and no slot is reserved. */
-  brief?: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve' | 'scopeTagAliases'>
+  brief?: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve'>
+  /** CC-945: the config's tag-family aliases; required so no caller plans a seat's scope without them. */
+  scopeTagAliases: TickConfig['scopeTagAliases']
 }
 
 /**
@@ -253,7 +255,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
   const tasks = new Map(slugs.map(slug => [slug, readTasks(root, slug)]))
   const pool = seat.dispatch.pool.name
   const order = orderInputs(seat, read.tasks, root, today)
-  const scope = scopeInputs(seat, deps.brief?.scopeTagAliases)
+  const scope = scopeInputs(seat, deps.scopeTagAliases)
   const planned = planSeat({
     seat: seat.dispatch,
     rows,

@@ -221,10 +221,10 @@ describe('planSeats over the week milestone file', () => {
     )
   }
 
-  const run = () => {
+  const run = (scopeTagAliases: Record<string, string> = {}) => {
     const { loaded, skipped } = loadSeats(['seat-a'], ledger, deps())
     expect(skipped).toEqual([])
-    return planSeats(loaded, { ledger, initiatives: readInitiatives(root) }, root)
+    return planSeats(loaded, { ledger, initiatives: readInitiatives(root), scopeTagAliases }, root)
   }
 
   const writeMilestones = (text: string) => {
@@ -305,10 +305,10 @@ describe('planSeats over the week milestone file', () => {
     expect(plan.dispatch.map(d => d.task)).toEqual(['AA-1', 'AA-2'])
     expect(plan.refusals).toEqual([])
   })
-  const scopeSeats = (backlog?: string) => {
+  const scopeSeats = (backlog?: string, tag = 'lane:a') => {
     const seats = path.join(root, 'seats')
     const seatA = fs.readFileSync(path.join(seats, 'seat-a.md'), 'utf8')
-    const scope = `scope_tags: [lane:a]\n${backlog === undefined ? '' : `backlog: ${backlog}\n`}`
+    const scope = `scope_tags: [${tag}]\n${backlog === undefined ? '' : `backlog: ${backlog}\n`}`
     fs.writeFileSync(
       path.join(seats, 'seat-a.md'),
       seatA.replace('unclaimed_engineering:', `${scope}unclaimed_engineering:`),
@@ -332,6 +332,14 @@ describe('planSeats over the week milestone file', () => {
         reason: expect.stringContaining('backlog.md'),
       }),
     ])
+  })
+
+  it('takes a milestone-tagged task for a spine-scoped seat through the configured aliases (CC-945)', () => {
+    scopeSeats(undefined, 'spine:M3')
+    addTask('AA-3', 3, ['milestone:M3'])
+
+    expect(run({ spine: 'milestone' }).dispatch.map(d => d.task)).toEqual(['AA-3'])
+    expect(run().dispatch.map(d => d.task)).toEqual([])
   })
 
   it('reports an unreadable backlog and keeps only the tagged work (CC-779)', () => {
