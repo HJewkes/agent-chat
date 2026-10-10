@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
@@ -255,6 +255,64 @@ describe('a re-spawn under a name whose branch still holds commits', () => {
     expect(spawnRow(again.agentId)?.meta).toMatchObject({ branch: 'agent-chat/worker-a' })
     expect(spawnRow(again.agentId)?.meta).not.toHaveProperty('base_sha')
     expect(again).not.toHaveProperty('base')
+  })
+})
+
+/** Teleports a live agent into its successor; the predecessor exits on its first SIGTERM. */
+async function teleported(agent: AgentIdentity): Promise<string> {
+  const signalled = new Set<number>()
+  vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: unknown) => {
+    if (signal === 0 && signalled.has(pid)) throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
+    signalled.add(pid)
+    return true
+  })
+  const result = await sup.teleport({
+    subject: {
+      agentId: agent.agentId,
+      name: agent.name,
+      cwd: agent.cwd,
+      hostPid: 9999,
+      host: os.hostname(),
+      tags: [],
+      subscriptions: [],
+    },
+    handoff: 'carry on',
+  })
+  expect(result.reason).toBeUndefined()
+  await vi.waitFor(() => expect(spawnRow(result.agentId as string)).toBeDefined())
+  return result.agentId as string
+}
+
+describe('a teleport successor', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it("carries its predecessor's repo, branch, base, task and stated role", async () => {
+    const { repo, tip } = repoWithGithubOrigin()
+    const agent = await spawnIn('worker-a', repo, { task: 'CC-915', workRole: 'reviewer' })
+
+    const successor = await teleported(agent)
+
+    expect(spawnRow(successor)?.meta).toMatchObject({
+      repo: 'acme/widget',
+      branch: 'agent-chat/worker-a',
+      base_sha: tip,
+      base_ref: 'origin/main',
+      task: 'CC-915',
+      work_role: 'reviewer',
+    })
+    expect(spawnRow(successor)?.meta).not.toHaveProperty('work_role_inferred')
+    const record = core.agents.get(successor)
+    expect(record).toMatchObject({ base: { sha: tip }, task: 'CC-915', workRole: 'reviewer' })
+    expect(record?.workRoleInferred).toBeUndefined()
+  })
+
+  it('keeps an inferred role marked inferred', async () => {
+    const { repo } = repoWithGithubOrigin()
+    const agent = await spawnIn('worker-a', repo)
+
+    const successor = await teleported(agent)
+
+    expect(spawnRow(successor)?.meta).toMatchObject({ work_role: 'other', work_role_inferred: 'true' })
   })
 })
 

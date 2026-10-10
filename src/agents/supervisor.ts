@@ -117,7 +117,7 @@ import type { SeatSpawnRead, SeatSpawnRequest } from './seats/spawn-gate-read.js
 import { SEAT_BUDGET_STOP, seatSpawnGate, type SeatBudgetRefusalCode } from './seats/spawn-gate.js'
 import type { RetireSpend } from './seats/dispatch-record.js'
 import { branchHead, retireOutcomeOf } from './seats/retire-outcome.js'
-import { assignmentMeta, assignmentRefusal, worktreeProvenance } from './spawn-provenance.js'
+import { assignmentRefusal, spawnProvenance, worktreeProvenance } from './spawn-provenance.js'
 import {
   poolPickText,
   routePool,
@@ -1673,7 +1673,7 @@ export class Supervisor implements TeleportHost {
       ...(account.unset ? { configDirUnset: true } : {}),
     })
     writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry(), plan.surface))
-    const provenance = await worktreeProvenance(allocation)
+    const provenance = await spawnProvenance(allocation, req, profile.name)
 
     // Appended BEFORE the launch. If the launch then fails, the identity exists
     // in `spawning` with a refusal beside it, which is exactly what you want when
@@ -1731,7 +1731,6 @@ export class Supervisor implements TeleportHost {
         ...(req.spawnedAs === undefined ? {} : { spawned_as: req.spawnedAs }),
         // CC-915: read by the session-origin miner, which sees only this row's meta.
         ...provenance,
-        ...assignmentMeta(req, profile.name),
       },
     })
 

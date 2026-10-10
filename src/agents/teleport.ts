@@ -30,6 +30,7 @@ import {
   runningSpawnedBy,
   type WrapGap,
 } from './teleport-appendix.js'
+import { successorProvenance } from './spawn-provenance.js'
 import { observedModel } from './transcript.js'
 import type { AgentProfile } from './types.js'
 
@@ -866,6 +867,8 @@ export class Teleport {
         origin: previous.origin === 'adopted' ? 'adopted' : 'spawned',
         teleport_from: subject.agentId,
         generation: String((Number.isFinite(generation) ? generation : 1) + 1),
+        // CC-915: the session-origin reader sees only this row, and the successor keeps the tree and task.
+        ...successorProvenance(this.core.agents.get(subject.agentId)),
       },
       ...(configDir ? { configDir } : {}),
       ...(unset ? { configDirUnset: true } : {}),

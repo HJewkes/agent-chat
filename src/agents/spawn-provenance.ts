@@ -1,4 +1,5 @@
 import { runGit, type GitRunner } from '../git.js'
+import type { AgentIdentity } from '../protocol.js'
 import type { Allocation } from './isolation/index.js'
 
 /**
@@ -106,5 +107,34 @@ export function assignmentMeta(
     ...(req.workRole === undefined
       ? { work_role: inferWorkRole(profile, req.name), work_role_inferred: 'true' }
       : { work_role: req.workRole }),
+  }
+}
+
+/** Everything a spawn row carries: the worktree half from the allocation, the assignment half from the request. */
+export async function spawnProvenance(
+  allocation: Allocation,
+  req: { task?: string; workRole?: string; name: string },
+  profile: string,
+  git: GitRunner = runGit,
+): Promise<Record<string, string>> {
+  return { ...(await worktreeProvenance(allocation, git)), ...assignmentMeta(req, profile) }
+}
+
+/**
+ * A teleport successor stands in its predecessor's tree on its predecessor's task,
+ * so it carries the predecessor's folded provenance rather than re-deriving it: the
+ * fold already holds a base a fresh-branch resume replaced, and a stated role stays
+ * stated rather than becoming a guess from the profile.
+ */
+export function successorProvenance(predecessor: AgentIdentity | undefined): Record<string, string> {
+  if (predecessor === undefined) return {}
+  const { repo, branch, base, task, workRole, workRoleInferred } = predecessor
+  return {
+    ...(repo === undefined ? {} : { repo }),
+    ...(branch === undefined ? {} : { branch }),
+    ...(base === undefined ? {} : { base_sha: base.sha, base_ref: base.ref }),
+    ...(task === undefined ? {} : { task }),
+    ...(workRole === undefined ? {} : { work_role: workRole }),
+    ...(workRoleInferred ? { work_role_inferred: 'true' } : {}),
   }
 }
