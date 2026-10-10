@@ -27,6 +27,7 @@ import {
 } from './plan.js'
 import type { MilestoneFile } from './milestones.js'
 import { planOrder, type PlannedRow } from './plan-order.js'
+import { readyOrder } from './ready-order.js'
 import {
   dispatchOrder,
   type DispatchRow,
@@ -229,9 +230,19 @@ interface Ordered {
   placement?: Placement
 }
 
-/** `planOrder`'s order when the tick passed its inputs, else `dispatchOrder`'s. */
+/** `planOrder`'s order when the tick passed its inputs, else `dispatchOrder`'s; an `on` brief gate re-ranks it. */
 function orderRows(inputs: SeatPlanInputs, priorPicks: Record<string, number>): Ordered {
-  const { rows, defaults, order: extra } = inputs
+  const ordered = baseOrder(inputs, priorPicks)
+  return inputs.brief?.gate === 'on' ? { ...ordered, order: briefReadyFirst(inputs, ordered.order) } : ordered
+}
+
+/** CC-926: share caps and initiative decay do not apply to the ready set, so the base order is built without them. */
+function baseOrder(inputs: SeatPlanInputs, priorPicks: Record<string, number>): Ordered {
+  const { rows, order: extra } = inputs
+  const defaults =
+    inputs.brief?.gate === 'on'
+      ? { ...inputs.defaults, share_caps: {}, initiative_decay: 1 }
+      : inputs.defaults
   if (extra === undefined)
     return { ...dispatchOrder(rows, defaults, rows.length, priorPicks), planRefusals: [] }
   const base = {
@@ -249,8 +260,21 @@ function orderRows(inputs: SeatPlanInputs, priorPicks: Record<string, number>): 
     order: planned.order,
     refused: Object.fromEntries(shareCapped) as ShareCapRefusals,
     planRefusals: tagRefusals(rows, planned, base),
-    placement: placementOf(planned, defaults.initiative_decay),
+    placement: placementOf(planned, inputs.defaults.initiative_decay),
   }
+}
+
+/** Brief-ready rows by `readyOrder`; the rest follow in their base order, where the gate refuses them. */
+function briefReadyFirst(inputs: SeatPlanInputs, order: Ordered['order']): Ordered['order'] {
+  const { brief, budget } = inputs
+  if (brief === undefined) return order
+  const check: BriefCheck = { maxAgeDays: brief.maxAgeDays, now: budget.ctx.now }
+  const taskOf = (r: Ordered['order'][number]) => inputs.tasks.get(r.initiative)?.find(t => t.id === r.id)
+  const ready = (r: Ordered['order'][number]) => {
+    const t = taskOf(r)
+    return t !== undefined && briefRefusal(t, check) === undefined
+  }
+  return [...readyOrder(order.filter(ready), r => taskOf(r)?.priority), ...order.filter(r => !ready(r))]
 }
 
 /**
