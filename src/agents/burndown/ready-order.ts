@@ -1,4 +1,6 @@
-import { briefRefusal, type BriefCheck } from './eligibility.js'
+import { briefRefusal, localDay, type BriefCheck } from './eligibility.js'
+import { parseTaskTags } from './task-tags.js'
+import { parseIsoDay } from './score.js'
 import { scopeRefusal, type SeatScope } from './seat-scope.js'
 
 /**
@@ -48,20 +50,59 @@ export interface ReadyTask {
   priority?: number
 }
 
+/** CC-928: one pick in every `every` goes to the longest-ready row; `picks` is the seat's picks so far. */
+export interface AgingSlot {
+  every: number
+  picks: number
+}
+
+/**
+ * The aging slot's reorder: position `i` is the aging slot when `picks + i` is the last of a window of
+ * `every`, and takes the row whose `brief:ready` day is oldest (ties by task id) among those ready a
+ * day or more; the rest keep their order. With no aged row the order is unchanged.
+ */
+export function withAgingSlot<T extends { id: string }>(
+  ordered: readonly T[],
+  readyDay: (row: T) => number | undefined,
+  today: number,
+  slot: AgingSlot,
+): T[] {
+  const day = (row: T): number => readyDay(row) ?? today
+  const byAge = (a: T, b: T): number => day(a) - day(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  const aged = ordered.filter(row => today - day(row) >= 1).sort(byAge)
+  const remaining = [...ordered]
+  const out: T[] = []
+  while (remaining.length > 0) {
+    const turn = (slot.picks + out.length) % slot.every === slot.every - 1
+    const next = (turn ? aged.find(row => remaining.includes(row)) : undefined) ?? remaining[0]!
+    remaining.splice(remaining.indexOf(next), 1)
+    out.push(next)
+  }
+  return out
+}
+
 /**
  * CC-935: the rows an `on` brief gate takes as ready, in `readyOrder`'s order: the task is in the seat's
- * scope and carries a `brief:ready` no older than `check.maxAgeDays`. The tick and `seats boot` share it.
+ * scope and carries a `brief:ready` no older than `check.maxAgeDays`. The tick and `seats boot` share it;
+ * only the tick passes `aging`, since `seats boot` shows the order and spends no pick.
  */
 export function readySet<T extends ReadyOrderRow & { initiative: string }>(
   rows: readonly T[],
   taskOf: (row: T) => ReadyTask | undefined,
   check: BriefCheck,
   scope?: SeatScope,
+  aging?: AgingSlot,
 ): T[] {
   const ready = (row: T): boolean => {
     const task = taskOf(row)
     if (task === undefined || scopeRefusal(scope, row.initiative, task) !== undefined) return false
     return briefRefusal(task, check) === undefined
   }
-  return readyOrder(rows.filter(ready), row => taskOf(row)?.priority)
+  const ordered = readyOrder(rows.filter(ready), row => taskOf(row)?.priority)
+  if (aging === undefined) return ordered
+  const readyDay = (row: T): number | undefined => {
+    const day = parseTaskTags({ id: row.id, tags: taskOf(row)?.tags ?? [] }).task.briefReady
+    return day === undefined ? undefined : parseIsoDay(day)
+  }
+  return withAgingSlot(ordered, readyDay, localDay(check.now), aging)
 }

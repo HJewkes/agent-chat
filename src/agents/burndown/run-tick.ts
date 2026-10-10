@@ -537,7 +537,11 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     },
     {
       ...(service?.lineStop === undefined ? {} : { lineStop: service.lineStop }),
-      brief: { briefGate: config.briefGate, briefMaxAgeDays: config.briefMaxAgeDays },
+      brief: {
+        briefGate: config.briefGate,
+        briefMaxAgeDays: config.briefMaxAgeDays,
+        maxAgents: config.maxAgents,
+      },
     },
   )
   const dispatchCtx = { ...ctx, tasks: new Map([...ctx.tasks, ...planned.tasks]) }

@@ -176,7 +176,7 @@ export interface SeatPlanDeps {
   /** The broker's roster, which decides which held trees are active; absent, every held tree counts. */
   roster?: Roster
   /** The config's per-seat brief gates (CC-925); absent, every seat's is off. */
-  brief?: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays'>
+  brief?: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents'>
 }
 
 /**
@@ -342,7 +342,9 @@ function orderInputs(
 /** A seat the config does not name keeps its gate off, and an off gate is passed as none. */
 function briefGateOf({ brief }: SeatPlanDeps, seat: string): { brief?: SeatBriefGate } {
   const gate = brief?.briefGate[seat] ?? 'off'
-  return brief === undefined || gate === 'off' ? {} : { brief: { gate, maxAgeDays: brief.briefMaxAgeDays } }
+  return brief === undefined || gate === 'off'
+    ? {}
+    : { brief: { gate, maxAgeDays: brief.briefMaxAgeDays, agingEvery: brief.maxAgents } }
 }
 
 function optional(deps: SeatPlanDeps, capacity: Capacity | undefined) {

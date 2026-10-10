@@ -92,6 +92,8 @@ export interface SeatPlanInputs {
 export interface SeatBriefGate {
   gate: BriefGateMode
   maxAgeDays: number
+  /** `maxAgents` (CC-928): one pick in every this many goes to the longest-ready row; absent, none does. */
+  agingEvery?: number
 }
 
 export interface SeatPlan {
@@ -243,7 +245,9 @@ interface Ordered {
 /** `planOrder`'s order when the tick passed its inputs, else `dispatchOrder`'s; an `on` brief gate re-ranks it. */
 function orderRows(inputs: SeatPlanInputs, priorPicks: Record<string, number>): Ordered {
   const ordered = baseOrder(inputs, priorPicks)
-  return inputs.brief?.gate === 'on' ? { ...ordered, order: briefReadyFirst(inputs, ordered.order) } : ordered
+  if (inputs.brief?.gate !== 'on') return ordered
+  const picks = Object.values(priorPicks).reduce((sum, n) => sum + n, 0)
+  return { ...ordered, order: briefReadyFirst(inputs, ordered.order, picks) }
 }
 
 /** CC-926: share caps and initiative decay do not apply to the ready set, so the base order is built without them. */
@@ -274,13 +278,14 @@ function baseOrder(inputs: SeatPlanInputs, priorPicks: Record<string, number>): 
   }
 }
 
-/** Brief-ready rows by `readyOrder`; the rest follow in their base order, where the gate refuses them. */
-function briefReadyFirst(inputs: SeatPlanInputs, order: Ordered['order']): Ordered['order'] {
+/** Brief-ready rows by `readyOrder`, with the aging slot (CC-928); the rest follow in their base order, where the gate refuses them. */
+function briefReadyFirst(inputs: SeatPlanInputs, order: Ordered['order'], picks: number): Ordered['order'] {
   const { brief, budget } = inputs
   if (brief === undefined) return order
   const check: BriefCheck = { maxAgeDays: brief.maxAgeDays, now: budget.ctx.now }
   const taskOf = (r: Ordered['order'][number]) => inputs.tasks.get(r.initiative)?.find(t => t.id === r.id)
-  const ready = readySet(order, taskOf, check, inputs.scope)
+  const aging = brief.agingEvery === undefined ? undefined : { every: brief.agingEvery, picks }
+  const ready = readySet(order, taskOf, check, inputs.scope, aging)
   const taken = new Set(ready)
   return [...ready, ...order.filter(r => !taken.has(r))]
 }
