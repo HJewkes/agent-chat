@@ -379,8 +379,8 @@ export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root
       result.seeds.push(...planned.seeds)
       result.dispatch.push(...planned.dispatch)
       claims.push(...planned.claims)
-      const { dispatch, refusals } = planned
-      result.outcomes.push({ seat: seat.dispatch.seat, dispatched: dispatch.length, refusals })
+      const { dispatch, refusals, roles } = planned
+      result.outcomes.push({ seat: seat.dispatch.seat, dispatched: dispatch.length, refusals, roles })
     } catch (err) {
       result.skipped.push({ seat: seat.dispatch.seat, reason: message(err) })
       result.outcomes.push({ seat: seat.dispatch.seat, dispatched: 0, refusals: [], skipped: message(err) })
