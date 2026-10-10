@@ -1,6 +1,6 @@
-import { budgetMiss, formatBudget, readBudget } from '../agents/budget.js'
+import { accountReader, budgetMiss, formatBudget, readBudget } from '../agents/budget.js'
 import { findGitRoot } from '../git.js'
-import { callerName, filterRoster, type RosterFilter } from '../agents/roster-filter.js'
+import { callerName, filterRoster, newestByName, type RosterFilter } from '../agents/roster-filter.js'
 import { pairPresence, ROSTER_STATUSES, type RosterStatus } from '../agents/identity.js'
 import { reclaim, sweepWorktrees } from '../agents/isolation/sweep.js'
 import { loadProfile, selectProfileNames } from '../agents/profiles.js'
@@ -361,7 +361,7 @@ export async function agentBudget(
   })
   const agents = filterRoster(all, filter)
 
-  const wanted = name === undefined ? agents : agents.filter(a => a.name === name)
+  const wanted = newestByName(name === undefined ? agents : agents.filter(a => a.name === name))
   if (wanted.length === 0) {
     return {
       ok: false,
@@ -370,9 +370,12 @@ export async function agentBudget(
     }
   }
 
+  const account = accountReader()
   const lines = wanted.map(agent => {
     const read = readBudget(agent.sessionId, Date.now(), agent.configDir)
-    return read.found ? formatBudget(agent.name, read) : budgetMiss(agent.name, read)
+    return read.found
+      ? formatBudget(agent.name, read, account(agent.configDir))
+      : budgetMiss(agent.name, read)
   })
   return { ok: true, lines }
 }

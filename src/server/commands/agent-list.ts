@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import type { AgentIdentity, ServerMessage } from '../../protocol.js'
-import { accountUsageLine, budgetSegment, readBudget } from '../../agents/budget.js'
+import { accountReader, accountUsageLines, budgetSegment, readBudget } from '../../agents/budget.js'
 import { transcriptLine } from '../../agents/transcript.js'
 import { accountName } from '../../agents/config-dir.js'
 import { callerName, filterRoster } from '../../agents/roster-filter.js'
@@ -42,11 +42,16 @@ export const agentList = defineTool({
     // machine with a long agent history nearly every row is one of those. Reading
     // and rendering "no budget reading" on each would repeat one absence hundreds
     // of times over, which is worse than the thing CC-94 set out to fix.
-    const budgets = agents
-      .filter(a => a.state === 'live')
-      // Under the agent's OWN recorded config dir (CC-100): an agent spawned from
-      // a session on a dedicated account publishes its status there, not here.
-      .map(a => ({ name: a.name, read: readBudget(a.sessionId, Date.now(), a.configDir, a.cwd) }))
+    const live = agents.filter(a => a.state === 'live')
+    // Under the agent's OWN recorded config dir (CC-100): an agent spawned from
+    // a session on a dedicated account publishes its status there, not here.
+    const budgets = live.map(a => ({
+      name: a.name,
+      read: readBudget(a.sessionId, Date.now(), a.configDir, a.cwd),
+    }))
+    // CC-491: from each account, not from rows; a headless row's transcript carries no rate limits.
+    const account = accountReader()
+    const accounts = [...new Set(live.map(a => account(a.configDir)))]
     const budgetByName = new Map(budgets.map(b => [b.name, b.read]))
     const rows = agents.map(a => {
       // One extra segment, CC-94: budget rides in the same bracket as state
@@ -66,6 +71,6 @@ export const agentList = defineTool({
         `\n    ${transcriptLine(a.cwd, a.sessionId, a.configDir)}${resumeHint(a)}`
       )
     })
-    return `Durable agents:\n${accountUsageLine(budgets, res.slots)}\n${rows.join('\n')}`
+    return `Durable agents:\n${accountUsageLines(accounts, res.slots)}\n${rows.join('\n')}`
   },
 })

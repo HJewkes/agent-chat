@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { accountName } from './config-dir.js'
 import { configDir } from './transcript.js'
 import { readTranscriptUsage, type TranscriptUsage } from './transcript-usage.js'
 import type { SlotUsage } from './semaphore.js'
@@ -310,30 +311,98 @@ export function budgetMiss(who: string, read: Extract<BudgetRead, { found: false
   return `NOT_FOUND: no budget reading for ${who} (${read.path}). ${tail}${transcript}`
 }
 
-export function formatBudget(who: string, read: Extract<BudgetRead, { found: true }>): string {
-  if (read.source === 'transcript') return formatTranscriptBudget(who, read)
+/**
+ * One account's rate limits for a reader (CC-491). Read from the account, never
+ * from the session being reported: two sessions in one weekly window carry the
+ * same resets_at, so a 46 h old session row looks current while it is not.
+ */
+export interface AccountReading {
+  name: string
+  config_dir: string
+  read: BudgetRead
+}
+
+export const readAccount = (dir: string, now = Date.now()): AccountReading => ({
+  name: accountName(dir),
+  config_dir: dir,
+  read: readAccountBudget(dir, now),
+})
+
+/** Reads each config dir once per call; an empty or absent dir is this process's own, as in {@link readBudget}. */
+export function accountReader(now = Date.now()): (dir?: string) => AccountReading {
+  const seen = new Map<string, AccountReading>()
+  return dir => {
+    const key = dir || configDir()
+    const reading = seen.get(key) ?? readAccount(key, now)
+    seen.set(key, reading)
+    return reading
+  }
+}
+
+const isCurrent = (read: FoundRead): boolean => read.age_seconds <= MAX_ACCOUNT_READING_AGE_SECONDS
+
+const windowsText = (rateLimits: Record<string, BudgetWindow>): string => {
+  const windows = Object.entries(rateLimits).map(([name, w]) => `${name} ${round(w.used_pct)}%`)
+  return windows.length > 0 ? windows.join(', ') : 'no account rate-limit windows in the payload'
+}
+
+/** Never the windows of a reading past 15 minutes: only its age, so nobody paces on it. */
+function accountLine(label: string, { name, read }: AccountReading): string {
+  if (!read.found) return `${label} on ${name}: no budget reading.`
+  if (!isCurrent(read))
+    return `${label} on ${name}: STALE — newest reading is ${read.age_seconds}s old, not a current figure.`
+  return `${label} on ${name} (${read.age_seconds}s old): ${windowsText(read.budget.rate_limits)}.`
+}
+
+function accountJson({ name, config_dir, read }: AccountReading): Record<string, unknown> {
+  if (!read.found) return { name, config_dir, found: false }
+  const current = isCurrent(read)
+  return {
+    name,
+    config_dir,
+    age_seconds: read.age_seconds,
+    stale: !current,
+    ...(current ? { rate_limits: read.budget.rate_limits } : {}),
+  }
+}
+
+/** The session's own rate limits are dropped: the account block is the one figure. */
+const budgetJson = (budget: SessionBudget, extra: Record<string, unknown>): string =>
+  JSON.stringify({
+    ...Object.fromEntries(Object.entries(budget).filter(([key]) => key !== 'rate_limits')),
+    ...extra,
+  })
+
+export function formatBudget(
+  who: string,
+  read: Extract<BudgetRead, { found: true }>,
+  account: AccountReading,
+): string {
+  if (read.source === 'transcript') return formatTranscriptBudget(who, read, account)
   const { budget, age_seconds, stale } = read
   const freshness = stale
     ? `STALE — last written ${age_seconds}s ago, so this is what ${who} was spending when it last redrew`
     : `${age_seconds}s old`
-  const windows = Object.entries(budget.rate_limits).map(([name, w]) => `${name} ${round(w.used_pct)}%`)
-  const account = windows.length > 0 ? windows.join(', ') : 'no account rate-limit windows in the payload'
   return [
     `${who}: ${contextLine(budget)} (${freshness}).`,
-    `Account: ${account}.`,
-    `json: ${JSON.stringify({ ...budget, age_seconds, stale })}`,
+    accountLine('Account', account),
+    `json: ${budgetJson(budget, { age_seconds, stale, account: accountJson(account) })}`,
   ].join('\n')
 }
 
-function formatTranscriptBudget(who: string, read: Extract<BudgetRead, { found: true }>): string {
+function formatTranscriptBudget(
+  who: string,
+  read: Extract<BudgetRead, { found: true }>,
+  account: AccountReading,
+): string {
   const { budget, age_seconds, stale, source } = read
   const freshness = stale
     ? `STALE — last usage record ${age_seconds}s ago, so this is the fill as of ${who}'s last API response`
     : `last usage record ${age_seconds}s old`
   return [
     `${who}: ${transcriptContext(budget)} (source: transcript, ${freshness}).`,
-    'Account: rate limits are not observable from a transcript.',
-    `json: ${JSON.stringify({ ...budget, age_seconds, stale, source })}`,
+    accountLine('Account', account),
+    `json: ${budgetJson(budget, { age_seconds, stale, source, account: accountJson(account) })}`,
   ].join('\n')
 }
 
@@ -403,11 +472,23 @@ export function accountUsageLine(budgets: NamedBudgetRead[], slots?: SlotUsage):
   if (found.length === 0) return `Account usage: no budget reading available from any row.${suffix}`
 
   const freshest = found.reduce((a, b) => (b.age_seconds < a.age_seconds ? b : a))
-  const windows = Object.entries(freshest.budget.rate_limits).map(
-    ([name, w]) => `${name} ${round(w.used_pct)}%`,
-  )
-  const usage = windows.length > 0 ? windows.join(', ') : 'no account rate-limit windows in the payload'
+  if (!isCurrent(freshest))
+    return `Account usage: STALE — newest reading (${freshest.name}'s) is ${freshest.age_seconds}s old, not a current figure.${suffix}`
+  const usage = windowsText(freshest.budget.rate_limits)
   return `Account usage (from ${freshest.name}'s reading, ${freshest.age_seconds}s old): ${usage}.${suffix}`
+}
+
+/**
+ * The agent_list header (CC-491): one line per account, each from the freshest
+ * reading under that account's config dir. The slot figure rides on the first.
+ */
+export function accountUsageLines(accounts: AccountReading[], slots?: SlotUsage): string {
+  const suffix = slots === undefined ? '' : ` · slots ${slots.held}/${slots.cap}`
+  if (!accounts.some(a => a.read.found))
+    return `Account usage: no budget reading available from any row.${suffix}`
+  return accounts
+    .map((account, i) => `${accountLine('Account usage', account)}${i === 0 ? suffix : ''}`)
+    .join('\n')
 }
 
 type FoundRead = Extract<BudgetRead, { found: true }>

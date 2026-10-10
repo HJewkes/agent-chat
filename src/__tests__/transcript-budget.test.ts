@@ -107,7 +107,7 @@ describe('a headless agent with no status line', () => {
     expect(out).toContain(
       'worker: 95k tokens of context, window unknown (source: transcript, last usage record 30s old)',
     )
-    expect(out).toContain('rate limits are not observable from a transcript')
+    expect(out).toContain(`Account on ${path.basename(configDir)}: no budget reading.`)
     expect(out).toContain('"source":"transcript"')
   })
 
