@@ -24,8 +24,9 @@ import { machineStop, type MachineStop } from '../../agents/seats/stops.js'
 import { slotUsage } from '../../suite-slots.js'
 import { suiteSlotDeps } from '../suite-slot.js'
 import type { AgentIdentity } from '../../protocol.js'
-import { scoredPlanFromDisk } from '../../agents/burndown/score-render.js'
+import { scoredPlanFromDisk, scoredSeatFromDisk } from '../../agents/burndown/score-render.js'
 import { renderPlan, seatPlanFromDisk, type SeatPlanOptions } from '../../agents/burndown/tick.js'
+import { localDate } from '../../agents/burndown/seat-tick.js'
 import { renderBoot, seatBoot, type BootDeps } from '../../agents/seats/boot.js'
 import { charterSeats, isSeatName, parsePools, parseSeat, seatSurface } from '../../agents/seats/charter.js'
 import {
@@ -690,6 +691,11 @@ function bootDeps(root: string): BootDeps {
       verdicts: eventsVerdictsPort(path.join(home(), 'events.db')),
       claims: claimsPort(burndownLedgerPath()),
     },
+    ready: async (seat, now) => {
+      const opts = { seat, top: Infinity, today: localDate(now), autonomyRoot: root, readySet: true }
+      const { plan, tasks } = scoredSeatFromDisk({ ...opts, activeWorkRoot: activeWorkRoot() })
+      return { order: plan.order, tasks }
+    },
   }
 }
 
@@ -715,7 +721,7 @@ export const seatsBootVerb = defineVerb({
   name: 'seats.boot',
   description:
     "one boot digest for a coordinator seat (CC-318), read-only: the seat file's frontmatter, the " +
-    "In flight derived from burndown claims, Shepherd rows, the roster and verdicts, the queue's Next section, the newest State at teleport section of today's log, inbox " +
+    "In flight derived from burndown claims, Shepherd rows, the roster and verdicts, the top brief:ready tasks in ready order with their age, the queue's Next section, the newest State at teleport section of today's log, inbox " +
     'messages after a cutoff and the seat status, in 6,000 characters. Over that the oldest inbox ' +
     'lines go first, then the log section; the queue and status are never cut',
   args: z.object({

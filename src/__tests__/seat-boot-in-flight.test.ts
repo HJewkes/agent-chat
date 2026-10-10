@@ -117,6 +117,7 @@ function deps(over: Partial<BootDeps['inFlight']> = {}): BootDeps {
       claims: claimsPort(path.join(tmp, 'burndown.json')),
       ...over,
     },
+    ready: async () => ({ order: [], tasks: [] }),
   }
 }
 

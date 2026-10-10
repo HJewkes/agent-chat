@@ -6,9 +6,12 @@ import {
   readLogSection,
   readQueueSections,
   readSeatDigest,
+  readyNext,
   type BootInbox,
+  type BootNext,
   type LogSection,
   type QueueSections,
+  type ReadySource,
   type SeatDigest,
 } from './boot-read.js'
 import { inFlightLines, readInFlight, type InFlight, type InFlightPorts } from './in-flight-read.js'
@@ -30,6 +33,8 @@ export interface BootDeps {
   status: (seat: string) => Promise<SeatStatus>
   /** CC-934: the sources of the In flight section; each throws when it cannot answer. */
   inFlight: InFlightPorts
+  /** CC-935: the seat's scored rows and tasks for the Next section; throws when the tasks cannot be read. */
+  ready: (seat: string, now: Date) => Promise<ReadySource>
 }
 
 export interface SeatBoot {
@@ -38,6 +43,7 @@ export interface SeatBoot {
   seatFile: SeatDigest
   queue: QueueSections
   inFlight: InFlight
+  next: BootNext
   log: LogSection
   inbox: BootInbox
   status: SeatStatus | { error: string }
@@ -70,9 +76,23 @@ export async function seatBoot(deps: BootDeps, seat: string, after?: string): Pr
     seatFile,
     queue: readQueueSections(deps.autonomyRoot, seat),
     inFlight: await readInFlight(deps.inFlight, seat, seatFile.prefix, plain),
+    next: await readNext(deps, seat, now, plain),
     log,
     inbox,
     status,
+  }
+}
+
+async function readNext(
+  deps: BootDeps,
+  seat: string,
+  now: Date,
+  plain: (err: unknown) => string,
+): Promise<BootNext> {
+  try {
+    return { tasks: readyNext(await deps.ready(seat, now), now) }
+  } catch (err) {
+    return { tasks: [], error: plain(err) }
   }
 }
 
@@ -91,6 +111,27 @@ function seatLines({ seat, seatFile }: SeatBoot): string[] {
     `== seat ${seat}`,
     `file ${path} (${chars} chars, modified ${mtime}); its prose is not shown`,
     ...Object.entries(fields).map(([key, value]) => `${key}: ${fieldText(value)}`),
+  ]
+}
+
+export const NEXT_SHOWN = 10
+export const NEXT_TITLE = 60
+
+const clip = (text: string, width: number): string =>
+  text.length <= width ? text : `${text.slice(0, width - 1)}…`
+
+/** CC-935: the seat's `brief:ready` tasks in CC-926's order, one line each, the first `NEXT_SHOWN` of them. */
+function nextLines({ next }: SeatBoot): string[] {
+  const head = '== next: brief:ready tasks, ranked'
+  if (next.error !== undefined) return [head, 'unavailable: tasks']
+  if (next.tasks.length === 0) return [head, 'next: none brief:ready']
+  const more = next.tasks.length - NEXT_SHOWN
+  return [
+    head,
+    ...next.tasks
+      .slice(0, NEXT_SHOWN)
+      .map(t => `${t.id}  p${t.priority}  ${t.ageDays}d  ${clip(t.title, NEXT_TITLE)}`),
+    ...(more > 0 ? [`+${more} more`] : []),
   ]
 }
 
@@ -141,13 +182,14 @@ function statusLines({ status }: SeatBoot): string[] {
 
 const size = (lines: string[]): number => lines.join('\n').length
 
-type Block = 'seat' | 'queue' | 'inFlight' | 'status'
+type Block = 'seat' | 'queue' | 'inFlight' | 'next' | 'status'
 
 /** Over the cap, the oldest inbox lines go first, then the log section's tail, then whatever the queue, seat and status still overrun by. */
 export function renderBoot(boot: SeatBoot, cap = BOOT_CAP, homeDir = ''): string[] {
   const render = (log: LogSection, omitted: number, cut: Partial<Record<Block, string[]>> = {}): string[] => [
     ...(cut.seat ?? seatLines(boot)),
     ...(cut.inFlight ?? inFlightLines(boot.inFlight, homeDir)),
+    ...(cut.next ?? nextLines(boot)),
     ...(cut.queue ?? queueLines(boot)),
     ...logLines(log),
     ...inboxLines(boot.inbox, omitted),
@@ -167,9 +209,10 @@ export function renderBoot(boot: SeatBoot, cap = BOOT_CAP, homeDir = ''): string
     seat: seatLines(boot),
     queue: queueLines(boot),
     inFlight: inFlightLines(boot.inFlight, homeDir),
+    next: nextLines(boot),
     status: statusLines(boot),
   }
-  for (const block of ['queue', 'inFlight', 'seat', 'status'] as const) {
+  for (const block of ['queue', 'inFlight', 'next', 'seat', 'status'] as const) {
     const over = size(lines) - cap
     if (over <= 0) break
     const text = whole[block].join('\n')

@@ -107,7 +107,7 @@ export interface BriefCheck {
 }
 
 /** The local calendar day of `now`, on `parseIsoDay`'s scale, as the tick's `today` is local. */
-const localDay = (now: Date): number =>
+export const localDay = (now: Date): number =>
   Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / 86_400_000
 
 /** Why `task`'s brief is missing or stale, whatever the gate; undefined when it carries a fresh `brief:ready`. */

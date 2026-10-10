@@ -403,10 +403,11 @@ Commands:
                                 fatal
   boot [options] <seat>         one boot digest for a coordinator seat (CC-318), read-only: the seat
                                 file's frontmatter, the In flight derived from burndown claims,
-                                Shepherd rows, the roster and verdicts, the queue's Next section,
-                                the newest State at teleport section of today's log, inbox messages
-                                after a cutoff and the seat status, in 6,000 characters. Over that
-                                the oldest inbox lines go first, then the log section; the queue and
+                                Shepherd rows, the roster and verdicts, the top brief:ready tasks in
+                                ready order with their age, the queue's Next section, the newest
+                                State at teleport section of today's log, inbox messages after a
+                                cutoff and the seat status, in 6,000 characters. Over that the
+                                oldest inbox lines go first, then the log section; the queue and
                                 status are never cut
   run-start [options] <seat>    start a new run for a seat when the owner messages it (CC-472): sets
                                 the seat's run meter in $AGENT_CHAT_HOME/seat-watchdog.json to
@@ -490,10 +491,10 @@ Options:
 Usage: agent-chat seats boot [options] <seat>
 
 one boot digest for a coordinator seat (CC-318), read-only: the seat file's frontmatter, the In
-flight derived from burndown claims, Shepherd rows, the roster and verdicts, the queue's Next
-section, the newest State at teleport section of today's log, inbox messages after a cutoff and the
-seat status, in 6,000 characters. Over that the oldest inbox lines go first, then the log section;
-the queue and status are never cut
+flight derived from burndown claims, Shepherd rows, the roster and verdicts, the top brief:ready
+tasks in ready order with their age, the queue's Next section, the newest State at teleport section
+of today's log, inbox messages after a cutoff and the seat status, in 6,000 characters. Over that
+the oldest inbox lines go first, then the log section; the queue and status are never cut
 
 Options:
   --after <value>  show inbox messages after this msg_id; default the State block's own cursor, else

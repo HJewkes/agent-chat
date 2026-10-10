@@ -124,6 +124,7 @@ const deps = (over: Partial<BootDeps> = {}): BootDeps => ({
     verdicts: async () => [],
     claims: async () => [],
   },
+  ready: async () => ({ order: [], tasks: [] }),
   ...over,
 })
 
