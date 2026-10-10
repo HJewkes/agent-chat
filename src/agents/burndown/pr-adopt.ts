@@ -15,8 +15,8 @@ import {
  * CC-861: each tick, register a seat's open PRs that Shepherd does not list, which
  * the coordinator did by hand after every DONE report. It registers only what it
  * can prove ordinary: a correctness, bug, feature, platform, product, agent-tooling or refactor task
- * whose every changed path is on an allow-list of tests, docs and changesets, and whose diff
- * is G10-small. CC-931: a sensitive word in its title or tags registers the PR and then holds
+ * whose diff is G10-small. CC-923: the changed paths do not decide, since Shepherd's own review
+ * does; a mapped kind registers whatever it touches. CC-931: a sensitive word in its title or tags registers the PR and then holds
  * the run under the g10-adversary class, naming the word and task, for the seat to release. A reason
  * Shepherd's hold check would refuse is flagged before anything registers. A hold that fails, refused
  * or not, is owed and fails closed: each later tick retries it until Shepherd takes it or no longer
@@ -135,18 +135,6 @@ const SENSITIVE_TEXT = new RegExp(`\\b((?:${SENSITIVE_STEMS.join('|')})\\w*)`, '
  * not after it. Matched anywhere, since one captured word can join stems: `authSecurity`.
  */
 const FLAG_ONLY_WORD = /secur/i
-
-/** The only paths a registered PR may change: tests, docs and changesets, which grant nothing. Anything else is flagged. */
-const ORDINARY_PATHS = [
-  /(^|\/)__tests__\//,
-  /\.test\.[cm]?[jt]sx?$/,
-  /^docs\//,
-  /^site\//,
-  /^\.changeset\/[^/]+\.md$/,
-  /(^|\/)(README|CHANGELOG)\.md$/i,
-]
-
-const isOrdinaryPath = (p: string): boolean => ORDINARY_PATHS.some(re => re.test(p))
 
 /** `hold` is the reason a registered run is held at once; absent, the run goes ahead. */
 type Verdict = { flag: string } | { register: Registration; hold?: string }
@@ -321,9 +309,8 @@ function classify(
   const shepherdKind = SHEPHERD_KINDS[kind]
   if (shepherdKind === undefined) return { flag: `task ${id} kind "${kind}" is not one the tick registers` }
   const word = sensitiveWord(found.task, pull)
-  const hit =
-    word !== undefined && FLAG_ONLY_WORD.test(word) ? `sensitive word "${word}"` : unordinaryPath(files)
-  if (hit !== undefined) return { flag: `${hit}: register it by hand (${id})` }
+  if (word !== undefined && FLAG_ONLY_WORD.test(word))
+    return { flag: `sensitive word "${word}": register it by hand (${id})` }
   const added = files.reduce((n, f) => n + f.additions, 0)
   const deleted = files.reduce((n, f) => n + f.deletions, 0)
   if (added + deleted > G10_DIFF_LINES)
@@ -354,13 +341,6 @@ function sensitiveWord(task: Task, pull: OpenPull): string | undefined {
   const texts = [task.title, pull.title, ...task.tags.map(t => t.replace(/[:_]/g, ' '))]
   const words = texts.flatMap(t => [...t.matchAll(SENSITIVE_TEXT)].map(m => m[1] as string))
   return words.find(w => FLAG_ONLY_WORD.test(w)) ?? words[0]
-}
-
-function unordinaryPath(files: readonly ChangedFile[]): string | undefined {
-  const other = files
-    .flatMap(f => (f.previousPath === undefined ? [f.path] : [f.previousPath, f.path]))
-    .find(p => !isOrdinaryPath(p))
-  return other === undefined ? undefined : `path ${other} is not a test or doc`
 }
 
 function staleFlag(seat: AdoptSeat, pull: OpenPull, target: ShepherdTarget, ctx: RepoCtx): string[] {

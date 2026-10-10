@@ -348,7 +348,7 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.seatLog[0]).toMatch(/^burndown: Acme\/Widgets#7 refused: /)
   })
 
-  it('still flags a held word on a PR whose diff touches a non-test path', () => {
+  it('registers then holds a held-word PR whose diff touches a non-test path', () => {
     const f = fake({
       pulls: [pull({ title: 'T-1: Tidy the gate' })],
       tasks: [task()],
@@ -357,8 +357,10 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
 
     tick(f)
 
-    expect(f.calls).toEqual([])
-    expect(f.seatLog[0]).toContain('path src/agents/gate.ts is not a test or doc')
+    expect(f.calls).toEqual([
+      'register Acme/Widgets#7',
+      'hold Acme/Widgets#7: g10-adversary: sensitive word "gate"; T-1',
+    ])
   })
 
   it.each([
@@ -403,25 +405,36 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.seatLog).toEqual([])
   })
 
-  it.each([
-    'src/cli/verbs/approve.ts',
-    'src/cli/verbs/endorse.ts',
-    'src/endorse-command.ts',
-    'src/server/commands/chat-endorse.ts',
-    'src/broker/core.ts',
-    'src/agents/hooks.ts',
-    'src/agents/launch-policy.ts',
-    'src/agents/identity.ts',
-    'src/agents/burndown/policy.ts',
-    'src/leak-guard/scan.ts',
-    'CLAUDE.md',
-  ])('flags a plainly titled PR whose diff touches %s, which is not a test or doc', path => {
-    const f = fake({ pulls: [pull()], tasks: [task()], files: [file('src/__tests__/a.test.ts'), file(path)] })
+  // Mutation: restoring the allow-list of test and doc paths flags both and registers neither.
+  it.each(['src/service-check.ts', 'src/agents/burndown/eligibility.ts'])(
+    'registers a mapped-kind PR whose diff touches %s, outside tests and docs',
+    path => {
+      const f = fake({
+        pulls: [pull()],
+        tasks: [task({ tags: ['kind:agent-tooling'] })],
+        files: [file('src/__tests__/a.test.ts'), file(path)],
+      })
+
+      tick(f)
+
+      expect(f.registered).toHaveLength(1)
+      expect(f.registered[0]?.kind).toBe('feature')
+      expect(f.seatLog).toEqual([])
+    },
+  )
+
+  // Mutation: mapping every kind to `feature` registers the unmapped one.
+  it('still refuses a task whose kind is unmapped, whatever its paths', () => {
+    const f = fake({
+      pulls: [pull()],
+      tasks: [task({ tags: ['kind:docs-only'] })],
+      files: [file('src/service-check.ts')],
+    })
 
     tick(f)
 
     expect(f.registered).toEqual([])
-    expect(f.seatLog[0]).toContain(`path ${path} is not a test or doc`)
+    expect(f.seatLog[0]).toContain('kind "docs-only" is not one the tick registers')
   })
 
   it('registers a PR that changes only tests and docs', () => {
@@ -528,16 +541,6 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     tick(f)
 
     expect(f.registered).toHaveLength(1)
-  })
-
-  it('flags a PR that renames a non-test file into a test path', () => {
-    const renamed = { ...file('src/__tests__/scan.test.ts'), previousPath: 'src/leak-guard/scan.ts' }
-    const f = fake({ pulls: [pull()], tasks: [task()], files: [renamed] })
-
-    tick(f)
-
-    expect(f.registered).toEqual([])
-    expect(f.seatLog[0]).toContain('path src/leak-guard/scan.ts is not a test or doc')
   })
 })
 
