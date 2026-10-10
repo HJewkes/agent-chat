@@ -441,6 +441,39 @@ describe('seat liveness (CC-320)', () => {
     expect(out.filter(line => line !== GAP_LINE)).toEqual([h.logs[0]])
   })
 
+  // CC-947. Catches: the relaunch path not refreshing the heartbeat units, or refreshing them after a failed resume.
+  it('refreshes the heartbeat units of a resumed seat, and of no seat whose resume failed', async () => {
+    const h = harness(DARK)
+    const refreshed: string[] = []
+    h.deps.refreshHeartbeat = seat => {
+      refreshed.push(seat)
+      return 'heartbeat units refreshed (rewrite t.timer); daemon-reload to apply'
+    }
+    dark(h, 6)
+    const out = await runWatchdog(h.deps, ONE)
+    expect(refreshed).toEqual(['seat-a'])
+    expect(out).toContainEqual(expect.stringMatching(/resumed seat-a .*; heartbeat units refreshed/))
+    const failed = harness(DARK)
+    failed.wakeResult = { ok: false, detail: 'refused' }
+    failed.deps.refreshHeartbeat = seat => void refreshed.push(`failed:${seat}`)
+    dark(failed, 6)
+    await runWatchdog(failed.deps, ONE)
+    expect(refreshed).toEqual(['seat-a'])
+  })
+
+  // CC-947. Catches: a unit write that throws failing the resume line it follows.
+  it('reports a heartbeat refresh that throws without losing the resume', async () => {
+    const h = harness(DARK)
+    h.deps.refreshHeartbeat = () => {
+      throw new Error('EACCES')
+    }
+    dark(h, 6)
+    const out = await runWatchdog(h.deps, ONE)
+    expect(out).toContainEqual(
+      expect.stringMatching(/resumed seat-a .*; heartbeat units not refreshed \(EACCES\)$/),
+    )
+  })
+
   it('does not resume again on later sweeps of the same dark episode, by either path', async () => {
     const h = harness(DARK)
     dark(h, 6)

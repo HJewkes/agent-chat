@@ -104,6 +104,8 @@ export interface WatchdogDeps {
   seatNames?: () => string[]
   /** CC-598: runs `titan-factory service check --json`; absent, the pass does not check. */
   serviceCheck?: ServiceCheckRunner
+  /** CC-947: re-renders a resumed seat's installed heartbeat units; says what changed, else undefined. */
+  refreshHeartbeat?: (seat: string) => string | undefined
 }
 
 export interface WatchdogOptions {
@@ -472,7 +474,17 @@ async function resumeDark(pass: Pass, seat: string, liveness: LivenessVerdict): 
     : `resume FAILED ${seat} (${woke.detail}); ${next}`
   const line = `Watchdog: ${liveness.reason}; ${outcome}`
   pass.deps.appendLog(seat, pass.deps.now(), line)
-  return `${seat}: ${line}`
+  const refreshed = woke.ok ? refreshUnits(pass.deps, seat) : undefined
+  return `${seat}: ${line}${refreshed === undefined ? '' : `; ${refreshed}`}`
+}
+
+/** A unit write that fails must not fail the resume that already happened. */
+function refreshUnits(deps: WatchdogDeps, seat: string): string | undefined {
+  try {
+    return deps.refreshHeartbeat?.(seat)
+  } catch (err) {
+    return `heartbeat units not refreshed (${err instanceof Error ? err.message : String(err)})`
+  }
 }
 
 /**

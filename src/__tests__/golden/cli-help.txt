@@ -438,6 +438,15 @@ Commands:
   watchdog-uninstall [options]  stop the watchdog job and keep it from starting at login; on Linux,
                                 also remove its units
   watchdog-status [options]     launchd state of the watchdog job, or its systemd units on Linux
+  heartbeat-install [options]   render one systemd --user service and timer per seat (CC-947) that
+                                fires on the seat file's heartbeat_cron minutes and sends the
+                                charter heartbeat when the seat logged no tick line for 35 min.
+                                Writes the unit files only: it never runs systemctl, so enabling the
+                                timers stays the owner's call
+  heartbeat-check [options]     what a seat's heartbeat timer runs (CC-947): when the seat's log has
+                                no tick line for 35 min and no WRAP, PARKED or BUDGET-PAUSE as its
+                                latest line, send the charter heartbeat through the broker and log
+                                heartbeat_external
   help [command]                display help for command
 
 === agent-chat seats watchdog
@@ -566,6 +575,33 @@ Options:
   --agent-chat-home <value>  the home the job runs against, over $AGENT_CHAT_HOME; on Linux a
                              non-default home suffixes the unit names
   -h, --help                 display help for command
+
+=== agent-chat seats heartbeat-install
+Usage: agent-chat seats heartbeat-install [options]
+
+render one systemd --user service and timer per seat (CC-947) that fires on the seat file's
+heartbeat_cron minutes and sends the charter heartbeat when the seat logged no tick line for 35 min.
+Writes the unit files only: it never runs systemctl, so enabling the timers stays the owner's call
+
+Options:
+  --root <value>        autonomy directory holding seats/ and logs/
+  --target-dir <value>  directory to write the units into (default the systemd --user unit dir)
+  --dry-run             print every unit file; write nothing
+  --seat <value>        only this seat (repeatable); default every file under seats/
+  -h, --help            display help for command
+
+=== agent-chat seats heartbeat-check
+Usage: agent-chat seats heartbeat-check [options]
+
+what a seat's heartbeat timer runs (CC-947): when the seat's log has no tick line for 35 min and no
+WRAP, PARKED or BUDGET-PAUSE as its latest line, send the charter heartbeat through the broker and
+log heartbeat_external
+
+Options:
+  --seat <value>  the seat to check (required)
+  --root <value>  autonomy directory holding seats/ and logs/
+  --dry-run       print the decision; send nothing and need no broker
+  -h, --help      display help for command
 
 === agent-chat debug
 Usage: agent-chat debug [options] [command]

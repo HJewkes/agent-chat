@@ -88,8 +88,12 @@ import { SURFACE_NAMES, type ServerMessage, type SurfaceName } from '../../proto
 import { addVerb, defineVerb, Report } from '../command.js'
 import { seatPlanOptions } from './burndown.js'
 import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from './watchdog-job.js'
-
-type Reply<T extends ServerMessage['t']> = Extract<ServerMessage, { t: T }>
+import { sendAsOwner, withRunningBroker, type Reply } from './seat-broker.js'
+import {
+  refreshSeatHeartbeat,
+  seatsHeartbeatCheckVerb,
+  seatsHeartbeatInstallVerb,
+} from './seats-heartbeat.js'
 
 const refused = (err: unknown): Report => ({
   ok: false,
@@ -122,16 +126,6 @@ const LEGACY_SURFACE_REFUSED = "use surface 'headless'"
 
 const surfaceRefused = (res: Reply<'spawn_result'>): boolean =>
   res.code === 'surface_refused' || (res.reason ?? '').includes(LEGACY_SURFACE_REFUSED)
-
-async function sendAsOwner(client: BrokerClient, seat: string, message: string): Promise<WakeResult> {
-  const res = (await client.request(
-    { t: 'human_send', to: seat, text: message, source: 'watchdog' },
-    'send_result',
-  )) as Reply<'send_result'>
-  return res.ok
-    ? { ok: true, detail: `message ${res.msgId}` }
-    : { ok: false, detail: res.reason ?? 'send refused' }
-}
 
 async function resumeOn(
   client: BrokerClient,
@@ -244,19 +238,7 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
         connected ? UNDECLARED : await declaredSurface(client, root, seat),
       ),
     appendLog: (seat, at, text) => void appendSeatLog(root, seat, at, text),
-  }
-}
-
-/** Never autostarts: a seat verb that brought up a broker would own it, and the broker serves every session. */
-async function withRunningBroker<T>(fn: (client: BrokerClient) => Promise<T>): Promise<T> {
-  const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
-    autoStart: false,
-  })
-  try {
-    await client.connect()
-    return await fn(client)
-  } finally {
-    client.close()
+    refreshHeartbeat: seat => refreshSeatHeartbeat(root, seat),
   }
 }
 
@@ -769,4 +751,6 @@ export function addSeatsCommands(program: Commander): void {
   addVerb(seats, seatsWatchdogInstallVerb)
   addVerb(seats, seatsWatchdogUninstallVerb)
   addVerb(seats, seatsWatchdogStatusVerb)
+  addVerb(seats, seatsHeartbeatInstallVerb)
+  addVerb(seats, seatsHeartbeatCheckVerb)
 }
