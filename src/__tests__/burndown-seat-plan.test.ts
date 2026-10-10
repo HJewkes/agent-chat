@@ -1031,3 +1031,40 @@ describe('planSeat ready order (CC-926)', () => {
     })
   })
 })
+
+describe('planSeat hand reserve (CC-936)', () => {
+  const agent = (name: string, profile: string): AgentIdentity =>
+    ({ name, profile, state: 'live', cwd: '/tmp/elsewhere', spawnedAt: 1 }) as AgentIdentity
+  const seat = { ...SEAT, caps: { ...SEAT.caps, implementers: 12 } }
+  const held = (n: number): Ledger => ({
+    ...EMPTY_LEDGER,
+    claims: Array.from({ length: n }, (_, i) => claim(`H-${i}`, { agentName: `sa-h-${i}` })),
+  })
+
+  it('lets the tick fill the cap minus the reserve', () => {
+    const plan = one('A-1', {}, {}, { seat, ledger: held(9), handReserve: 2 })
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+  })
+
+  it('refuses the tick once it holds the cap minus the reserve', () => {
+    const plan = one('A-1', {}, {}, { seat, ledger: held(10), handReserve: 2 })
+
+    expect(refusalOf(plan)).toEqual([['A-1', 'role-cap']])
+    expect(plan.refusals[0]?.reason).toMatch(/holds 10 tick implementers of 10; handReserve keeps 2 of 12/)
+  })
+
+  it('does not count hand spawns against the tick share', () => {
+    const agents = [agent('sa-hand-1', 'implementer'), agent('sa-hand-2', 'implementer')]
+
+    const plan = one('A-1', {}, {}, { seat, ledger: held(9), agents, handReserve: 2 })
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+  })
+
+  it("keeps today's behaviour with no reserve", () => {
+    const plan = one('A-1', {}, {}, { seat, ledger: held(10) })
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+  })
+})

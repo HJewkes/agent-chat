@@ -1171,6 +1171,7 @@ export type ServerMessage =
         | 'machine_memory_floor'
         | 'seat_budget_stop'
         | 'seat_spawn_overlap'
+        | 'seat_hand_reserve'
       /** CC-445: the machine guard's refusals clear as load drops, so the same spawn may be retried later. */
       retryable?: boolean
       warnings?: string[]

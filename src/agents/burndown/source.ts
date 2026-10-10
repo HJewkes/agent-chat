@@ -136,6 +136,12 @@ const Config = z.object({
   seats: z.array(z.string().min(1)).default([]),
   /** CC-925: each seat's brief gate; a seat not named is `off`. Flipping it is an owner step. */
   briefGate: z.record(z.string().min(1), z.enum(BRIEF_GATES)).default({}),
+  /**
+   * CC-936: implementer slots per seat that hand spawns keep. The tick fills the seat's implementer cap minus
+   * this, and the broker's spawn gate refuses a hand implementer spawn once the seat holds this many. A seat
+   * not named reserves 0, which leaves the tick the whole cap as before.
+   */
+  handReserve: z.record(z.string().min(1), count).default({}),
   /** Days a `brief:ready=<day>` tag stays fresh under an `on` gate. */
   briefMaxAgeDays: z
     .number()

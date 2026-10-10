@@ -3,8 +3,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { OverlapFacts } from '../agents/seats/spawn-gate-read.js'
-import { readOverlap } from '../agents/seats/spawn-gate-read.js'
-import { spawnOverlap, type SeatSpawnMode, type SpawnOverlapInput } from '../agents/seats/spawn-gate.js'
+import { readHandReserve, readOverlap } from '../agents/seats/spawn-gate-read.js'
+import { loadTickConfig } from '../agents/burndown/source.js'
+import {
+  handReserveOverflow,
+  spawnOverlap,
+  type SeatSpawnMode,
+  type SpawnOverlapInput,
+} from '../agents/seats/spawn-gate.js'
 import { startSupervisor, type RestartHarness } from './helpers/restart-harness.js'
 
 /** CC-932: a seat's hand spawn of a task burndown claimed, or that is brief-ready. Synthetic ids throughout. */
@@ -179,5 +185,84 @@ describe('agent spawn under the seat spawn gate', () => {
     })
 
     expect((await h.spawnAgent('ac-ab-12')).ok).toBe(true)
+  })
+})
+
+/** CC-936: a hand implementer spawn past the seat's handReserve; the tick owns the rest of the cap. */
+describe('hand implementer spawns under handReserve', () => {
+  const reserve = (over: Partial<Parameters<typeof handReserveOverflow>[0]> = {}) =>
+    handReserveOverflow({ mode: 'refuse', role: 'implementer', reserve: 2, held: 2, ...over })
+
+  it('refuses the spawn after the reserve is held', () => {
+    expect(reserve()?.reason).toContain('seat_hand_reserve: the seat holds 2 of 2 hand implementer slots')
+  })
+
+  it('passes while a reserved slot is free', () => {
+    expect(reserve({ held: 1 })).toBeUndefined()
+  })
+
+  it.each([
+    ['no reserve', { reserve: 0 }],
+    ['mode off', { mode: 'off' as const }],
+    ['a reviewer', { role: 'reviewer' }],
+    ['a fix-round override', { override: 'fix-round' }],
+  ])('passes with %s', (_label, over) => {
+    expect(reserve(over)).toBeUndefined()
+  })
+
+  it('refuses the third hand implementer spawn of a seat reserving two', async () => {
+    const facts = { reserve: 2, prefix: 'ac', held: [] }
+    const sup = startSupervisor({
+      seatOverlap: { mode: () => 'refuse', read: () => undefined, handReserve: () => facts },
+    })
+
+    try {
+      const first = await sup.spawnAgent('ac-one', { profile: 'implementer' })
+      const second = await sup.spawnAgent('ac-two', { profile: 'implementer' })
+      const third = await sup.spawnAgent('ac-three', { profile: 'implementer' })
+      const review = await sup.spawnAgent('ac-three-review', { profile: 'reviewer' })
+
+      expect([first.ok, second.ok]).toEqual([true, true])
+      expect(third).toMatchObject({ ok: false, code: 'seat_hand_reserve', retryable: false })
+      expect(review.ok).toBe(true)
+    } finally {
+      sup.close()
+    }
+  })
+})
+
+describe('reading the hand reserve', () => {
+  const dirs: string[] = []
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  const fixture = (
+    config: object,
+  ): { root: string; ledgerFile: string; activeRoot: string; tickConfigFile: string } => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-hand-reserve-'))
+    dirs.push(dir)
+    fs.mkdirSync(path.join(dir, 'seats'))
+    fs.writeFileSync(path.join(dir, 'seats', 'alpha-coord.md'), '---\nprefix: ac\npool: agents\n---\n')
+    const ledgerFile = path.join(dir, 'burndown.json')
+    fs.writeFileSync(ledgerFile, JSON.stringify({ version: 1, claims: [] }))
+    const tickConfigFile = path.join(dir, 'config.json')
+    fs.writeFileSync(tickConfigFile, JSON.stringify(config))
+    return { root: dir, ledgerFile, activeRoot: path.join(dir, 'active'), tickConfigFile }
+  }
+
+  it("reads the seat's reserve from the tick config the tick uses", () => {
+    const paths = fixture({ handReserve: { 'alpha-coord': 2 } })
+
+    const facts = readHandReserve(paths, { name: 'ac-hand', spawner: 'alpha-coord' })
+
+    expect(facts).toEqual({ reserve: 2, prefix: 'ac', held: [] })
+    expect(loadTickConfig(paths.tickConfigFile).handReserve).toEqual({ 'alpha-coord': 2 })
+  })
+
+  it('reads nothing for a seat the config does not name', () => {
+    const paths = fixture({ handReserve: { other: 2 } })
+
+    expect(readHandReserve(paths, { name: 'ac-hand', spawner: 'alpha-coord' })).toBeUndefined()
   })
 })
