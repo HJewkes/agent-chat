@@ -39,6 +39,7 @@ import {
 } from './score.js'
 import { repoForTask, type SeatDispatch } from './seat-dispatch.js'
 import { scopeRefusal, type SeatScope } from './seat-scope.js'
+import { seedSlices, type PlanReader } from './seed-slices.js'
 import { worktreePathFor } from './trust-gate.js'
 
 /**
@@ -84,6 +85,8 @@ export interface SeatPlanInputs {
   agents?: readonly AgentIdentity[]
   /** The seat's brief gate (CC-925); absent, it is off. */
   brief?: SeatBriefGate
+  /** A task's seat-written plan (CC-927), read only for planner rows under an `on` gate; absent, none is read. */
+  readPlan?: PlanReader
 }
 
 export interface SeatBriefGate {
@@ -97,6 +100,8 @@ export interface SeatPlan {
   refusals: Refusal[]
   /** What the plan noted without refusing: a shadow brief gate's `would-refuse` lines (CC-925). */
   notes: string[]
+  /** `queued` slice claims seeded from seat-written plans in place of a planner (CC-927). */
+  seeds: Claim[]
   priorPicks: Record<string, number>
   shareCapped: ShareCapRefusals
   /** `planOrder`'s own decisions for this tick (CC-778); absent when the tick ordered by `dispatchOrder` alone. */
@@ -125,6 +130,7 @@ export interface Placement {
 type Role = keyof SeatDispatch['caps']
 type Refused = Pick<Refusal, 'kind' | 'reason'>
 type Taken = { dispatch: Dispatch; role: Role; work: CollisionWork }
+type Seeded = { seeds: Claim[] }
 
 const ROUTES: Partial<Record<Route, { role: Role; profile: string }>> = {
   planner: { role: 'planners', profile: PLANNER_PROFILE },
@@ -179,6 +185,7 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
     claims: [],
     refusals: [],
     notes: [],
+    seeds: [],
     priorPicks,
     shareCapped: refused,
     ...(placement !== undefined && { placement }),
@@ -188,8 +195,9 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
     collision: (repo, work, landedRepos) =>
       inputs.collision?.(repo, work, landedRepos) ?? contractOverlap(work, acceptedContracts(plan)),
   })
-  const take = (initiative: string, task: string, outcome: Taken | Refused): void => {
+  const take = (initiative: string, task: string, outcome: Taken | Refused | Seeded): void => {
     if ('kind' in outcome) plan.refusals.push({ initiative, task, ...outcome })
+    else if ('seeds' in outcome) plan.seeds.push(...outcome.seeds)
     else {
       const { dispatch, work } = outcome
       plan.dispatch.push(dispatch)
@@ -407,7 +415,10 @@ function record(d: Dispatch, role: Role, walk: Walk): void {
   bump(walk.seatWorktrees, d.repo)
 }
 
-function consider(row: DispatchRow & Partial<Pick<PlannedRow, 'tier'>>, walk: Walk): Taken | Refused {
+function consider(
+  row: DispatchRow & Partial<Pick<PlannedRow, 'tier'>>,
+  walk: Walk,
+): Taken | Refused | Seeded {
   const { seat, tasks } = walk.inputs
   const task = tasks.get(row.initiative)?.find(t => t.id === row.id)
   if (task === undefined) return { kind: 'not-open', reason: 'scored, but no open task file was read for it' }
@@ -419,6 +430,8 @@ function consider(row: DispatchRow & Partial<Pick<PlannedRow, 'tier'>>, walk: Wa
   const repo = repoForTask(seat, row.initiative, task.tags)
   if (repo === undefined)
     return { kind: 'no-repo', reason: `seat ${seat.seat} lists no repo for ${row.initiative}` }
+  const seeded = route.role === 'planners' ? seedFromPlan(row, walk) : undefined
+  if (seeded !== undefined) return seeded
   const reason = `score ${row.score}, effective ${row.effective}`
   const dispatch = {
     ...dispatchFor({ initiative: row.initiative, task: row.id, profile: route.profile }, repo, reason, walk),
@@ -426,6 +439,25 @@ function consider(row: DispatchRow & Partial<Pick<PlannedRow, 'tier'>>, walk: Wa
   }
   const work = { taskId: row.id, tags: task.tags, owns: [] }
   return blocker(dispatch, work, route.role, walk) ?? { dispatch, role: route.role, work }
+}
+
+/**
+ * CC-927: under an `on` gate, a brief-ready task's seat-written plan stands in for the planner. Its slices
+ * hold the task from here and dispatch as ready slices from the next tick; a plan failing the lint blocks it.
+ */
+function seedFromPlan(row: DispatchRow, walk: Walk): Seeded | Refused | undefined {
+  const { seat, brief, readPlan, ledger, budget } = walk.inputs
+  if (brief?.gate !== 'on' || readPlan === undefined) return undefined
+  const parent = { taskId: row.id, initiative: row.initiative, seat: seat.seat, namePrefix: seat.prefix }
+  const seeding = seedSlices(parent, readPlan(row.initiative, row.id), ledger, budget.ctx.now)
+  if (seeding === undefined) return undefined
+  if ('blocked' in seeding) return { kind: 'plan-blocked', reason: seeding.blocked }
+  walk.claimed.add(row.id)
+  const slices = seeding.claims.map(c => c.slice).join(', ')
+  walk.notes.push(
+    `seeded ${row.initiative} ${row.id} slices ${slices} from ${seeding.plan} (seat ${seat.seat})`,
+  )
+  return { seeds: seeding.claims }
 }
 
 /** A queued slice goes to an implementer in the repo its task's tags pick, owning the paths its plan declares. */
