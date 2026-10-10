@@ -5,6 +5,7 @@ import { resolveDeciderAgentId, resolveWorktreeBudget } from '../../config.js'
 import {
   burndownConfigPath,
   burndownLedgerPath,
+  burndownOwedHoldsPath,
   burndownPausePath,
   burndownTickStatusPath,
   burndownTicksPath,
@@ -346,6 +347,7 @@ function adoptPrs(
     autonomyRoot: defaultAutonomyRoot(root),
     now,
     log,
+    owedHoldsFile: burndownOwedHoldsPath(),
   })
   const register = recordingRegister(ports.register, adoptSeatOfRegistration(seats), registrations)
   try {

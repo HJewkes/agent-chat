@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { Task } from '../agents/burndown/eligibility.js'
 import type { Runner } from '../agents/burndown/exec.js'
+import { holdReasonRefusal } from '../agents/burndown/hold-reason.js'
+import type { OwedHold } from '../agents/burndown/owed-holds.js'
 import { changedFiles, openPulls, originRepo } from '../agents/burndown/pr-adopt-ports.js'
 import {
   adoptSeatPrs,
@@ -10,6 +12,7 @@ import {
   type OpenPull,
 } from '../agents/burndown/pr-adopt.js'
 import {
+  shepherdHold,
   shepherdListed,
   shepherdRegister,
   type Registration,
@@ -47,9 +50,12 @@ const file = (path: string, additions = 10, deletions = 5): ChangedFile => ({ pa
 interface Fake {
   ports: AdoptPorts
   registered: Registration[]
+  /** Register and hold calls in order, as `register <ref>` or `hold <ref>: <reason>`. */
+  calls: string[]
   seatLog: string[]
   events: string[]
   listed: ShepherdListing | undefined
+  owed: OwedHold[]
 }
 
 const listing = (prs: string[] = [], branches: string[] = []): ShepherdListing => ({
@@ -63,9 +69,13 @@ function fake(opts: {
   listed?: ShepherdListing | undefined
   files?: ChangedFile[] | undefined
   registerExit?: number
+  /** Exit codes of successive holds; past the last, a hold succeeds. */
+  holdExits?: number[]
 }): Fake {
   const f: Fake = {
     registered: [],
+    calls: [],
+    owed: [],
     seatLog: [],
     events: [],
     listed: 'listed' in opts ? opts.listed : listing(),
@@ -84,9 +94,19 @@ function fake(opts: {
       if (opts.registerExit !== undefined)
         return { ok: false, refused: opts.registerExit === 65, reason: `exit ${opts.registerExit}` }
       f.registered.push(reg)
+      f.calls.push(`register ${reg.target.repo}#${reg.target.pr}`)
       f.listed?.prs.add(`acme/widgets#${reg.target.pr}`)
       return { ok: true }
     },
+    hold: (target, reason) => {
+      f.calls.push(`hold ${target.repo}#${target.pr}: ${reason}`)
+      // Shepherd refuses a reason outside charter §8 with exit 65 before it reads anything.
+      if (holdReasonRefusal(reason) !== undefined) return { ok: false, refused: true, reason: 'exit 65' }
+      const exit = opts.holdExits?.shift()
+      return exit === undefined ? { ok: true } : { ok: false, refused: exit === 65, reason: `exit ${exit}` }
+    },
+    owedHolds: () => [...f.owed],
+    setOwedHolds: holds => void (f.owed = [...holds]),
     logged: (_seat, key) => f.seatLog.some(line => line.includes(key)),
     append: (_seat, text) => void f.seatLog.push(text),
     log: event => void f.events.push(event),
@@ -172,8 +192,176 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.seatLog).toHaveLength(1)
   })
 
+  it.each(['security', 'gate security', 'auth_security', 'authSecurity', 'Merge_Security'])(
+    'only flags a task whose title names "%s", until Shepherd holds at registration',
+    word => {
+      const f = fake({
+        pulls: [pull()],
+        tasks: [task({ title: `Fix the ${word} check`, tags: ['kind:correctness'] })],
+      })
+
+      tick(f)
+
+      expect(f.calls).toEqual([])
+      expect(f.seatLog).toHaveLength(1)
+      expect(f.seatLog[0]).toMatch(
+        /^burndown: Acme\/Widgets#7 unregistered: sensitive word "\w*security": register it by hand \(T-1\)$/i,
+      )
+    },
+  )
+
+  it('registers and then holds a PR whose title names "gate", naming the word and task', () => {
+    const f = fake({ pulls: [pull({ title: 'T-1: Tidy the gate tests' })], tasks: [task()] })
+
+    tick(f)
+    tick(f)
+
+    expect(f.calls).toEqual([
+      'register Acme/Widgets#7',
+      'hold Acme/Widgets#7: g10-adversary: sensitive word "gate"; T-1',
+    ])
+    expect(f.events).toEqual(['burndown_pr_adopt_held'])
+    expect(f.seatLog).toEqual([])
+  })
+
+  it('flags for the seat once a day while a failed hold is owed', () => {
+    const f = fake({
+      pulls: [pull({ title: 'T-1: Tidy the gate tests' })],
+      tasks: [task()],
+      holdExits: [69, 69],
+    })
+
+    tick(f)
+    tick(f)
+
+    expect(f.registered).toHaveLength(1)
+    expect(f.events).toEqual(['burndown_pr_adopt_hold_failed', 'burndown_pr_adopt_hold_failed'])
+    expect(f.owed).toEqual([
+      { seat: 'seat-a', repo: 'Acme/Widgets', pr: 7, reason: 'g10-adversary: sensitive word "gate"; T-1' },
+    ])
+    expect(f.seatLog).toEqual([
+      'burndown: Acme/Widgets#7 not held: registered, but the hold failed (exit 69); the tick retries it, or hold it by hand: g10-adversary: sensitive word "gate"; T-1',
+    ])
+  })
+
+  it('holds on the next tick a run whose hold failed after its register', () => {
+    const f = fake({ pulls: [pull({ title: 'T-1: Tidy the gate tests' })], tasks: [task()], holdExits: [69] })
+
+    tick(f)
+    tick(f)
+
+    expect(f.calls).toEqual([
+      'register Acme/Widgets#7',
+      'hold Acme/Widgets#7: g10-adversary: sensitive word "gate"; T-1',
+      'hold Acme/Widgets#7: g10-adversary: sensitive word "gate"; T-1',
+    ])
+    expect(f.events.at(-1)).toBe('burndown_pr_adopt_held')
+    expect(f.owed).toEqual([])
+  })
+
+  it('keeps a refused hold owed and retries it each tick while the run is listed', () => {
+    const f = fake({
+      pulls: [pull({ title: 'T-1: Tidy the gate tests' })],
+      tasks: [task()],
+      holdExits: [65, 65],
+    })
+
+    tick(f)
+    tick(f)
+
+    const reason = 'g10-adversary: sensitive word "gate"; T-1'
+    expect(f.calls).toEqual([
+      'register Acme/Widgets#7',
+      `hold Acme/Widgets#7: ${reason}`,
+      `hold Acme/Widgets#7: ${reason}`,
+    ])
+    expect(f.owed).toEqual([{ seat: 'seat-a', repo: 'Acme/Widgets', pr: 7, reason }])
+    expect(f.events).toEqual(['burndown_pr_adopt_hold_refused', 'burndown_pr_adopt_hold_refused'])
+    expect(f.seatLog).toEqual([
+      `burndown: Acme/Widgets#7 unheld sensitive run: registered, but Shepherd refused the hold (exit 65); the tick retries it, but hold it by hand now: ${reason}`,
+    ])
+  })
+
+  it('rewrites an owed hold with a pre-class reason to g10-adversary and retries it', () => {
+    const f = fake({ pulls: [], tasks: [task()], listed: listing(['acme/widgets#7']) })
+    f.owed = [
+      { seat: 'seat-a', repo: 'Acme/Widgets', pr: 7, reason: 'burndown: sensitive word "gate" in T-1' },
+    ]
+
+    tick(f)
+
+    expect(f.calls).toEqual(['hold Acme/Widgets#7: g10-adversary: sensitive word "gate"; T-1'])
+    expect(f.events).toEqual(['burndown_pr_adopt_held'])
+    expect(f.owed).toEqual([])
+  })
+
+  it('keeps the rewritten reason owed when its retry fails', () => {
+    const f = fake({ pulls: [], tasks: [task()], listed: listing(['acme/widgets#7']), holdExits: [69] })
+    f.owed = [
+      { seat: 'seat-a', repo: 'Acme/Widgets', pr: 7, reason: 'burndown: sensitive word "gate" in T-1' },
+    ]
+
+    tick(f)
+
+    expect(f.owed).toEqual([
+      { seat: 'seat-a', repo: 'Acme/Widgets', pr: 7, reason: 'g10-adversary: sensitive word "gate"; T-1' },
+    ])
+  })
+
+  it('drops an owed hold once Shepherd no longer lists the run, which is then not registered', () => {
+    const f = fake({ pulls: [], tasks: [task()] })
+    f.owed = [
+      { seat: 'seat-a', repo: 'Acme/Widgets', pr: 7, reason: 'g10-adversary: sensitive word "gate"; T-1' },
+    ]
+
+    tick(f)
+
+    expect(f.calls).toEqual([])
+    expect(f.owed).toEqual([])
+  })
+
+  it('keeps an owed hold while Shepherd is down', () => {
+    const owed = {
+      seat: 'seat-a',
+      repo: 'Acme/Widgets',
+      pr: 7,
+      reason: 'g10-adversary: sensitive word "gate"; T-1',
+    }
+    const f = fake({ pulls: [], tasks: [task()], listed: undefined })
+    f.owed = [owed]
+
+    tick(f)
+
+    expect(f.owed).toEqual([owed])
+  })
+
+  it('does not hold when the register fails', () => {
+    const f = fake({
+      pulls: [pull({ title: 'T-1: Tidy the gate tests' })],
+      tasks: [task()],
+      registerExit: 65,
+    })
+
+    tick(f)
+
+    expect(f.calls).toEqual([])
+    expect(f.seatLog[0]).toMatch(/^burndown: Acme\/Widgets#7 refused: /)
+  })
+
+  it('still flags a held word on a PR whose diff touches a non-test path', () => {
+    const f = fake({
+      pulls: [pull({ title: 'T-1: Tidy the gate' })],
+      tasks: [task()],
+      files: [file('src/agents/gate.ts')],
+    })
+
+    tick(f)
+
+    expect(f.calls).toEqual([])
+    expect(f.seatLog[0]).toContain('path src/agents/gate.ts is not a test or doc')
+  })
+
   it.each([
-    'security',
     'authority',
     'permission',
     'merge policy',
@@ -202,7 +390,7 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     'provenance',
     'hook',
     'policy',
-  ])('flags a correctness task whose title names "%s"', word => {
+  ])('registers and holds a correctness task whose title names "%s"', word => {
     const f = fake({
       pulls: [pull()],
       tasks: [task({ title: `Fix the ${word} check`, tags: ['kind:correctness'] })],
@@ -210,8 +398,9 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
 
     tick(f)
 
-    expect(f.registered).toEqual([])
-    expect(f.seatLog[0]).toContain('unregistered')
+    expect(f.calls).toHaveLength(2)
+    expect(f.calls[1]).toMatch(/^hold Acme\/Widgets#7: g10-adversary: sensitive word ".+"; T-1$/)
+    expect(f.seatLog).toEqual([])
   })
 
   it.each([
@@ -444,5 +633,29 @@ describe('the tick’s real PR adoption ports (CC-861)', () => {
     expect(calls[0]).toEqual(expect.arrayContaining(['register', 'Acme/Widgets#7', '--kind', 'feature']))
     expect(calls.flat()).not.toContain('--offline')
     expect(calls.flat()).not.toContain('--policy')
+  })
+
+  it('holds with the reason and reads exit 65 as refused', () => {
+    const calls: string[][] = []
+    const exec: Runner = (_bin, args) => {
+      calls.push(args)
+      return { status: 65, stdout: '', stderr: 'no run for Acme/Widgets#7\n' }
+    }
+
+    const reply = shepherdHold(
+      { repo: 'Acme/Widgets', pr: 7 },
+      'g10-adversary: sensitive word "gate"; T-1',
+      exec,
+    )
+
+    expect(calls[0]).toEqual([
+      'shepherd',
+      'hold',
+      'Acme/Widgets#7',
+      '--reason',
+      'g10-adversary: sensitive word "gate"; T-1',
+      '--json',
+    ])
+    expect(reply).toEqual({ ok: false, refused: true, reason: 'no run for Acme/Widgets#7' })
   })
 })

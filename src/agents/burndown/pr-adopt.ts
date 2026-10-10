@@ -1,5 +1,7 @@
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import type { Task } from './eligibility.js'
+import { holdReasonRefusal } from './hold-reason.js'
+import type { OwedHold } from './owed-holds.js'
 import {
   targetRef,
   type Registration,
@@ -12,13 +14,17 @@ import {
 /**
  * CC-861: each tick, register a seat's open PRs that Shepherd does not list, which
  * the coordinator did by hand after every DONE report. It registers only what it
- * can prove ordinary: a correctness, bug, feature, platform, product, agent-tooling or refactor task whose title and
- * tags name nothing sensitive, whose every changed path is on an allow-list of tests,
- * docs and changesets, and whose diff is G10-small. Everything else is only flagged in the
- * seat's log, for the seat to register and hold by hand: Shepherd holds only a run
- * that exists and never loosens a run's policy, so the tick has no way to register
- * a PR that is held from its first moment. Shepherd down is logged and retried next tick; registration never
- * goes `--offline`.
+ * can prove ordinary: a correctness, bug, feature, platform, product, agent-tooling or refactor task
+ * whose every changed path is on an allow-list of tests, docs and changesets, and whose diff
+ * is G10-small. CC-931: a sensitive word in its title or tags registers the PR and then holds
+ * the run under the g10-adversary class, naming the word and task, for the seat to release. A reason
+ * Shepherd's hold check would refuse is flagged before anything registers. A hold that fails, refused
+ * or not, is owed and fails closed: each later tick retries it until Shepherd takes it or no longer
+ * lists the run, and the seat is flagged once a day meanwhile. Shepherd holds only a run that
+ * exists, so a seconds-wide window between the two calls stays open until Shepherd applies a
+ * hold class at registration; until then a `secur` word is still only flagged. Everything else is
+ * flagged in the seat's log, for the seat to register and hold by hand. Shepherd down is
+ * logged and retried next tick; registration never goes `--offline`.
  */
 
 export interface OpenPull {
@@ -59,6 +65,11 @@ export interface AdoptPorts {
   listed: () => ShepherdListing | undefined
   /** `shepherd register` without a listing first. */
   register: (reg: Registration) => RegisterReply
+  /** `shepherd hold` on a registered run, with the reason the seat reads. */
+  hold: (target: ShepherdTarget, reason: string) => RegisterReply
+  /** Holds a past tick registered a run for and could not place. */
+  owedHolds: () => OwedHold[]
+  setOwedHolds: (holds: readonly OwedHold[]) => void
   /** Whether today's seat log already has a line containing `key`. */
   logged: (seat: string, key: string) => boolean
   append: (seat: string, text: string) => void
@@ -116,7 +127,14 @@ const SENSITIVE_STEMS = [
   'privileg',
 ]
 
-const SENSITIVE_TEXT = new RegExp(`\\b(${SENSITIVE_STEMS.join('|')})`, 'i')
+/** Captures the whole word from the stem on, so a seat reads "authority" rather than "auth". */
+const SENSITIVE_TEXT = new RegExp(`\\b((?:${SENSITIVE_STEMS.join('|')})\\w*)`, 'gi')
+
+/**
+ * Words still only flagged: their hold needs Shepherd to apply a hold class at registration (N1),
+ * not after it. Matched anywhere, since one captured word can join stems: `authSecurity`.
+ */
+const FLAG_ONLY_WORD = /secur/i
 
 /** The only paths a registered PR may change: tests, docs and changesets, which grant nothing. Anything else is flagged. */
 const ORDINARY_PATHS = [
@@ -130,7 +148,8 @@ const ORDINARY_PATHS = [
 
 const isOrdinaryPath = (p: string): boolean => ORDINARY_PATHS.some(re => re.test(p))
 
-type Verdict = { flag: string } | { register: Registration }
+/** `hold` is the reason a registered run is held at once; absent, the run goes ahead. */
+type Verdict = { flag: string } | { register: Registration; hold?: string }
 
 /** Registers or flags each seat's unregistered PRs; returns the tick's lines. */
 export function adoptSeatPrs(
@@ -145,6 +164,7 @@ export function adoptSeatPrs(
     ports.log('burndown_pr_adopt_shepherd_down', {})
     return ['shepherd did not answer; seat PR adoption retries next tick']
   }
+  settleOwedHolds(listed, ports)
   const ctx = { listed, claimed, ports, now }
   return seats.flatMap(seat => {
     const budget = { left: REGISTERS_PER_SEAT }
@@ -219,7 +239,60 @@ function adoptPull(
     return false
   }
   ctx.budget.left -= 1
-  return registerOnce(seat, verdict.register, ports)
+  if (!registerOnce(seat, verdict.register, ports)) return false
+  if (verdict.hold === undefined) return true
+  const owed = { seat: seat.seat, ...verdict.register.target, reason: verdict.hold }
+  if (!holdRun(owed, ports)) ports.setOwedHolds([...ports.owedHolds(), owed])
+  return true
+}
+
+/**
+ * Retries every owed hold. Only a run Shepherd no longer lists has its hold dropped; every failure,
+ * a refusal included, stays owed, because the run is live and unheld. A reason written before
+ * CC-931 took the g10-adversary class is rewritten to it, since Shepherd refuses the old one.
+ */
+function settleOwedHolds(listed: ShepherdListing, ports: AdoptPorts): void {
+  const owed = ports.owedHolds()
+  if (owed.length === 0) return
+  const still = owed
+    .map(h => ({ ...h, reason: currentHoldReason(h.reason) }))
+    .filter(h => listed.prs.has(targetRef(h).toLowerCase()) && !holdRun(h, ports))
+  if (JSON.stringify(still) !== JSON.stringify(owed)) ports.setOwedHolds(still)
+}
+
+const PRE_CLASS_REASON = /^burndown: sensitive word "(\w+)" in ([A-Z]+-\d+)$/
+
+function currentHoldReason(reason: string): string {
+  const old = PRE_CLASS_REASON.exec(reason)
+  return old === null ? reason : sensitiveHoldReason(old[1] as string, old[2] as string)
+}
+
+/** False leaves the run live and unheld: the caller owes the hold, and the seat is flagged once a day. */
+function holdRun(owed: OwedHold, ports: AdoptPorts): boolean {
+  const ref = targetRef(owed)
+  const reply = ports.hold(owed, owed.reason)
+  if (reply.ok) {
+    ports.log('burndown_pr_adopt_held', { seat: owed.seat, target: ref, reason: owed.reason })
+    return true
+  }
+  if (reply.refused) {
+    ports.log('burndown_pr_adopt_hold_refused', { seat: owed.seat, target: ref, reason: reply.reason })
+    flagOnce(
+      owed.seat,
+      `burndown: ${ref} unheld sensitive run`,
+      `registered, but Shepherd refused the hold (${reply.reason}); the tick retries it, but hold it by hand now: ${owed.reason}`,
+      ports,
+    )
+    return false
+  }
+  ports.log('burndown_pr_adopt_hold_failed', { seat: owed.seat, target: ref, reason: reply.reason })
+  flagOnce(
+    owed.seat,
+    `burndown: ${ref} not held`,
+    `registered, but the hold failed (${reply.reason}); the tick retries it, or hold it by hand: ${owed.reason}`,
+    ports,
+  )
+  return false
 }
 
 function registerOnce(seat: AdoptSeat, reg: Registration, ports: AdoptPorts): boolean {
@@ -247,7 +320,9 @@ function classify(
   const kind = found.task.tags.find(t => t.startsWith('kind:'))?.slice('kind:'.length) ?? ''
   const shepherdKind = SHEPHERD_KINDS[kind]
   if (shepherdKind === undefined) return { flag: `task ${id} kind "${kind}" is not one the tick registers` }
-  const hit = sensitiveHit(found.task, pull, files)
+  const word = sensitiveWord(found.task, pull)
+  const hit =
+    word !== undefined && FLAG_ONLY_WORD.test(word) ? `sensitive word "${word}"` : unordinaryPath(files)
   if (hit !== undefined) return { flag: `${hit}: register it by hand (${id})` }
   const added = files.reduce((n, f) => n + f.additions, 0)
   const deleted = files.reduce((n, f) => n + f.deletions, 0)
@@ -255,13 +330,33 @@ function classify(
     return {
       flag: `diff +${added}/-${deleted} over ${G10_DIFF_LINES}: register and hold g10-review by hand (${id})`,
     }
-  return { register: { target, task: `${found.initiative}/${id}`, implementer, kind: shepherdKind } }
+  const register = { target, task: `${found.initiative}/${id}`, implementer, kind: shepherdKind }
+  if (word === undefined) return { register }
+  const hold = sensitiveHoldReason(word, id)
+  const refusal = holdReasonRefusal(hold)
+  if (refusal !== undefined)
+    return {
+      flag: `sensitive word "${word}", and Shepherd would refuse its hold (${refusal}): register and hold it by hand (${id})`,
+    }
+  return { register, hold }
 }
 
-function sensitiveHit(task: Task, pull: OpenPull, files: readonly ChangedFile[]): string | undefined {
+/**
+ * g10-adversary, the class seats use for authority and merge-policy PRs: unlike g10-review, Shepherd
+ * never releases it on its own review, so the run waits for the seat's `shepherd release`. Words are only letters, digits and `_`, so neither a ":" nor a ";" from the title can reach the class.
+ */
+function sensitiveHoldReason(word: string, id: string): string {
+  return `g10-adversary: sensitive word "${word}"; ${id}`
+}
+
+/** A flag-only word wins wherever it sits, so an earlier held word cannot carry it past the seat. */
+function sensitiveWord(task: Task, pull: OpenPull): string | undefined {
   const texts = [task.title, pull.title, ...task.tags.map(t => t.replace(/[:_]/g, ' '))]
-  const word = texts.map(t => SENSITIVE_TEXT.exec(t)?.[1]).find(w => w !== undefined)
-  if (word !== undefined) return `sensitive word "${word}"`
+  const words = texts.flatMap(t => [...t.matchAll(SENSITIVE_TEXT)].map(m => m[1] as string))
+  return words.find(w => FLAG_ONLY_WORD.test(w)) ?? words[0]
+}
+
+function unordinaryPath(files: readonly ChangedFile[]): string | undefined {
   const other = files
     .flatMap(f => (f.previousPath === undefined ? [f.path] : [f.previousPath, f.path]))
     .find(p => !isOrdinaryPath(p))
