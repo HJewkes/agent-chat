@@ -5,7 +5,7 @@ import { planOrder, type PlannedRow } from './plan-order.js'
 import { describeUnnamedCriterion, unnamedCriteria } from './ms-role.js'
 import { parsePlanningTasks, type TagError } from './task-tags.js'
 import { readInitiatives } from './source.js'
-import { dormantInitiatives, loadPolicy, seatScope } from './policy.js'
+import { dormantInitiatives, loadPolicy, seatScope, type Policy } from './policy.js'
 import { readScoredTasks } from './score-source.js'
 import {
   checkToday,
@@ -144,14 +144,27 @@ export function taskIdsOnDisk(root: string): string[] {
   )
 }
 
-/** Reads the seat's policy from `autonomyRoot` and its scope's open tasks from the active-work root. */
-export function scoredPlanFromDisk(opts: {
+export interface ScoredPlanDiskOptions {
   seat: string
   top: number
   today: string
   autonomyRoot: string
   activeWorkRoot: string
-}): ScoredPlan {
+  /** CC-935: order as an `on` brief gate does (CC-926), with no share caps or initiative decay. */
+  readySet?: boolean
+}
+
+/** Reads the seat's policy from `autonomyRoot` and its scope's open tasks from the active-work root. */
+export function scoredPlanFromDisk(opts: ScoredPlanDiskOptions): ScoredPlan {
+  return scoredSeatFromDisk(opts).plan
+}
+
+/** `scoredPlanFromDisk` with the open tasks it scored, whose tags and priority the rows do not carry. */
+export function scoredSeatFromDisk(opts: ScoredPlanDiskOptions): {
+  plan: ScoredPlan
+  tasks: ScoredTask[]
+  policy: Policy
+} {
   const policy = loadPolicy(opts.autonomyRoot, opts.seat)
   const weights = seatScope(policy.charter, policy.seats, opts.seat, readInitiatives(opts.activeWorkRoot))
   const { tasks, skipped } = readScoredTasks(opts.activeWorkRoot, Object.keys(weights))
@@ -163,7 +176,8 @@ export function scoredPlanFromDisk(opts: {
     seat: opts.seat,
     ...(read?.file !== undefined && { milestones: read.file }),
     weights,
-    defaults: policy.defaults,
+    defaults:
+      opts.readySet === true ? { ...policy.defaults, share_caps: {}, initiative_decay: 1 } : policy.defaults,
     exclusions: { tags: policy.seat.excluded_tags, titlePatterns: policy.seat.excluded_title_patterns },
     hardStops: policy.charter.hard_stops,
     today: opts.today,
@@ -171,9 +185,11 @@ export function scoredPlanFromDisk(opts: {
     dormant: dormantInitiatives(policy.seat),
     knownIds,
   })
-  return read === undefined
-    ? plan
-    : { ...plan, milestones: { week: read.week, errors: read.errors.map(describeError) } }
+  const withWeek =
+    read === undefined
+      ? plan
+      : { ...plan, milestones: { week: read.week, errors: read.errors.map(describeError) } }
+  return { plan: withWeek, tasks, policy }
 }
 
 const COMPONENT_KEYS: Exclude<keyof Components, 'G'>[] = ['S', 'P', 'U', 'A', 'W', 'K', 'R', 'Z', 'H']
