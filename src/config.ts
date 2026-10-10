@@ -18,6 +18,7 @@ import { DEFAULT_FULL_SUITE_SLOTS } from './suite-slots.js'
 import { ALIAS_NAME } from './leak-guard/git-alias.js'
 import { isHexColour, type PaneColourConfig } from '@titan-design/agent-surface'
 import { isInteractiveSurface, type SurfaceName } from './protocol.js'
+import { SEAT_SPAWN_MODES, type SeatSpawnMode } from './agents/seats/spawn-gate.js'
 import { POOL_PICK_MODES, type PoolPickMode } from './agents/seats/pool-pick.js'
 import {
   DEFAULT_PROCESS_KILL_BYTES,
@@ -37,6 +38,7 @@ export interface AgentChatConfig {
   ledgerShadow?: unknown
   orphanReapKill?: unknown
   poolPick?: unknown
+  seatSpawnGate?: unknown
   permissionHookTimeoutSeconds?: unknown
   decider?: unknown
   noticeTtlHours?: unknown
@@ -182,6 +184,19 @@ export function resolvePoolPickMode(): PoolPickMode {
   if (mode !== undefined) return mode
   logInvalidOnce({ key: 'poolPick', value, fallback: 'shadow' })
   return 'shadow'
+}
+
+/**
+ * CC-932: how a seat's hand spawn of a claimed or brief-ready task is treated: `off` (the default), `warn`
+ * (log `seat_spawn_overlap` and spawn) or `refuse`. From `config.json`'s `seatSpawnGate`, read per spawn.
+ */
+export function resolveSeatSpawnMode(): SeatSpawnMode {
+  const value = readConfig().seatSpawnGate
+  if (value === undefined) return 'off'
+  const mode = SEAT_SPAWN_MODES.find(known => known === value)
+  if (mode !== undefined) return mode
+  logInvalidOnce({ key: 'seatSpawnGate', value, fallback: 'off' })
+  return 'off'
 }
 
 /**

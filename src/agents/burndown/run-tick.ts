@@ -8,6 +8,7 @@ import {
   burndownOwedHoldsPath,
   burndownPausePath,
   burndownTickStatusPath,
+  burndownTicksPath,
 } from '../../paths.js'
 import type { QueueItem } from '../../protocol.js'
 import { activeWorkRoot } from '../active-work.js'
@@ -67,6 +68,7 @@ import {
   type SeatsPlan,
   type SkippedSeat,
 } from './seat-tick.js'
+import { seedSteps } from './seed-slices.js'
 import {
   accountDir,
   loadTickConfig,
@@ -82,6 +84,7 @@ import {
   shepherdRows,
   shepherdTarget,
   targetRef,
+  type Registration,
 } from './shepherd.js'
 import {
   lineStopFrom,
@@ -92,6 +95,15 @@ import {
 } from './service-check.js'
 import { retrySteps, stepsForActions, stepsForDispatch, type StepContext } from './steps.js'
 import { recordTick, type StopCode, type TickResult } from './tick-status.js'
+import {
+  adoptSeatOfRegistration,
+  claimSeatOf,
+  recordingRegister,
+  tickSummary,
+  tickSummaryWriter,
+  type RegisterRecord,
+  type SummaryPlan,
+} from './tick-summary.js'
 import { loadWorld, type World } from './tick.js'
 import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
 import {
@@ -148,6 +160,9 @@ interface ReaderFailure {
 
 /** Shown in dry-run briefs when no `reportTo` is configured; a real tick refuses instead. */
 const UNSET_REPORT_TO = '<reportTo unset>'
+
+/** One writer per process, so a summary file that cannot be written is logged once, not once per tick. */
+const appendTickSummary = tickSummaryWriter(burndownTicksPath)
 
 /** Why the tick may not act at all, or undefined when it may. */
 export function stopReason(config: TickConfig, paused: boolean): string | undefined {
@@ -239,6 +254,7 @@ async function actOn(
     serviceCheck,
     reasons,
     adopt,
+    summary,
   }: Decided,
   now: Date,
 ): Promise<string[]> {
@@ -250,17 +266,19 @@ async function actOn(
   const exhausted = await fileScopeExhausted(outcomes, seatStates, opts, now)
   const sampled = exhausted === undefined ? ledger : { ...ledger, seats: exhausted }
   const spawns: SpawnResult[] = []
+  const registrations: RegisterRecord[] = []
+  const register = (registration: Registration) => registerWithShepherd(registration, opts.exec ?? run)
   const executed = await execute(steps, sampled, {
     ledgerFile: burndownLedgerPath(),
     spawn: recordingSpawn(steps, opts.broker.spawn, spawns),
     retire: opts.broker.retire,
-    register: registration => registerWithShepherd(registration, opts.exec ?? run),
+    register: recordingRegister(register, claimSeatOf(steps, sampled), registrations),
     prHead: target => prHeadOf(target, opts.exec ?? run),
     log,
     now,
   })
   logLadder(ledger, executed.ledger, log)
-  const adopted = adoptPrs(adopt, executed.ledger, opts, now)
+  const adopted = adoptPrs(adopt, executed.ledger, opts, now, registrations)
   const woken = await actOnTriage(
     config,
     triage,
@@ -282,6 +300,7 @@ async function actOn(
     lastTickAt: now.toISOString(),
     ...(serviceCheck === undefined ? {} : { serviceCheck }),
   })
+  appendTickSummary(tickSummary({ ...summary, now, registrations }), log)
   return [...executed.lines, ...adopted, ...woken.lines, ...leaks.lines, ...told.lines]
 }
 
@@ -307,7 +326,13 @@ async function fileScopeExhausted(
 }
 
 /** CC-861: after the claims' own registrations, so a claimed PR is never adopted; a throw is an event, and the tick carries on. */
-function adoptPrs(seats: readonly AdoptSeat[], ledger: Ledger, opts: TickOptions, now: Date): string[] {
+function adoptPrs(
+  seats: readonly AdoptSeat[],
+  ledger: Ledger,
+  opts: TickOptions,
+  now: Date,
+  registrations: RegisterRecord[],
+): string[] {
   const log = opts.log ?? logEvent
   const claimed = new Set(
     heldClaims(ledger).flatMap(c => {
@@ -324,8 +349,9 @@ function adoptPrs(seats: readonly AdoptSeat[], ledger: Ledger, opts: TickOptions
     log,
     owedHoldsFile: burndownOwedHoldsPath(),
   })
+  const register = recordingRegister(ports.register, adoptSeatOfRegistration(seats), registrations)
   try {
-    return adoptSeatPrs(seats, claimed, ports, now)
+    return adoptSeatPrs(seats, claimed, { ...ports, register }, now)
   } catch (err) {
     log('burndown_pr_adopt_failed', { reason: err instanceof Error ? err.message : String(err) })
     return []
@@ -425,6 +451,8 @@ interface Decided {
   reasons: NoDispatchReason[]
   /** Seats mode only: the seats whose unregistered PRs the tick registers or flags (CC-861). */
   adopt: AdoptSeat[]
+  /** What this tick's summary row reads from the plan (CC-929). */
+  summary: SummaryPlan
 }
 
 /** Any row not retired may still run, and so may a name missing from a partial roster. */
@@ -532,6 +560,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const steps = [
     ...retrySteps(ledger, roster),
     ...advanced.steps,
+    ...seedSteps(planned.seeds),
     ...dispatched.flatMap(d => (typeof d === 'string' ? [] : d)),
   ]
   const unchecked = world.initiatives
@@ -544,6 +573,13 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     reasons: marked?.due ?? [],
     outcomes: planned.outcomes,
     adopt: seats?.loaded.map(s => adoptSeatOf(s)) ?? [],
+    summary: {
+      maxAgeDays: config.briefMaxAgeDays,
+      caps: Object.fromEntries(seats?.loaded.map(s => [s.dispatch.seat, s.dispatch.caps]) ?? []),
+      outcomes: planned.outcomes,
+      dispatch: planned.dispatch,
+      tasks: dispatchCtx.tasks,
+    },
     notes,
     failures,
     unchecked,
@@ -584,6 +620,8 @@ interface Planned {
   skippedTasks: SeatsPlan['skippedTasks']
   outcomes: SeatOutcome[]
   notes: string[]
+  /** Seats mode only: slice claims seeded from seat-written plans (CC-927). */
+  seeds?: Claim[]
 }
 
 /** Without seats, `plan()` over the briefs' autonomy blocks; with seats, `planSeat` for each loaded seat. */

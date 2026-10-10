@@ -2,12 +2,14 @@ import fs from 'node:fs'
 import net from 'node:net'
 import { serve, type ServerType } from '@hono/node-server'
 import type { Hono } from 'hono'
-import { defaultPort, home, socketPath } from '../paths.js'
+import { burndownLedgerPath, defaultPort, home, socketPath } from '../paths.js'
+import { activeWorkRoot } from '../agents/active-work.js'
 import {
   resolveOrphanReapKill,
   resolveAgentSlots,
   resolveMachineLimits,
   resolvePoolPickMode,
+  resolveSeatSpawnMode,
   resolveProcessGuardMode,
   resolveProcessKillBytes,
 } from '../config.js'
@@ -18,7 +20,12 @@ import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
 import { defaultAutonomyRoot, isWatchedSeat } from '../agents/seats/io.js'
 import { seatJournal } from '../agents/seats/journal.js'
 import { seatDispatchLog } from '../agents/seats/dispatch-log.js'
-import { readSeatSpawn, type SeatSpawnRequest } from '../agents/seats/spawn-gate-read.js'
+import {
+  readOverlap,
+  readSeatSpawn,
+  type OverlapRequest,
+  type SeatSpawnRequest,
+} from '../agents/seats/spawn-gate-read.js'
 import { readPoolPick, type PoolPickRequest } from '../agents/seats/pool-route.js'
 import { BrokerCore } from './core.js'
 import { EventLog } from './event-log.js'
@@ -254,6 +261,14 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
         seatJournal: seatJournal(defaultAutonomyRoot()),
         seatDispatch: seatDispatchLog(defaultAutonomyRoot()),
         seatBudget: { read: (spawn: SeatSpawnRequest) => readSeatSpawn(defaultAutonomyRoot(), spawn) },
+        seatOverlap: {
+          mode: resolveSeatSpawnMode,
+          read: (spawn: OverlapRequest) =>
+            readOverlap(
+              { root: defaultAutonomyRoot(), ledgerFile: burndownLedgerPath(), activeRoot: activeWorkRoot() },
+              spawn,
+            ),
+        },
         poolPick: {
           read: (spawn: PoolPickRequest) => readPoolPick(defaultAutonomyRoot(), spawn),
           mode: resolvePoolPickMode,

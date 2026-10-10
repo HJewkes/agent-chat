@@ -20,6 +20,13 @@ import { poolRule } from './watchdog.js'
 export const SEAT_BUDGET_STOP = 'seat_budget_stop'
 export type SeatBudgetRefusalCode = typeof SEAT_BUDGET_STOP
 
+/** CC-932: how a hand spawn of a claimed or brief-ready task is treated; `refuse` is the owner's later flip. */
+export const SEAT_SPAWN_MODES = ['off', 'warn', 'refuse'] as const
+export type SeatSpawnMode = (typeof SEAT_SPAWN_MODES)[number]
+
+export const SEAT_SPAWN_OVERLAP = 'seat_spawn_overlap'
+export type SeatOverlapRefusalCode = typeof SEAT_SPAWN_OVERLAP
+
 export interface SeatSpawnInput {
   seat: Seat
   /** The charter pool whose config_dir the spawn resolved to; an overflow spawn bills one that is not the seat's. */
@@ -123,4 +130,57 @@ export function seatSpawnGate(input: SeatSpawnInput): SeatSpawnVerdict {
   if (gate.sonnetOnly && !isSonnet(input.model))
     return { allow: false, reason: `${who}: ${gate.reason}; profile model ${input.model} is not sonnet` }
   return { allow: true, reason: `${who}: ${gate.reason}` }
+}
+
+/** The one `override` a spawner may state; a fix round on a claimed task is the seat's own work. */
+export const FIX_ROUND_OVERRIDE = 'fix-round'
+
+/** Work roles that never overlap burndown's implementer: reading, planning and a fix round. */
+const PASSING_ROLES = /^(?:reviewer|shepherd-review|planner|fix-round-\d+)$/
+
+export interface OverlapClaim {
+  /** The agent the claim waits on, else the seat that dispatched it. */
+  holder?: string | undefined
+}
+
+export interface SpawnOverlapInput {
+  mode: SeatSpawnMode
+  /** The spawn's work role, stated or inferred. */
+  role: string
+  override?: string | undefined
+  /** The task the spawn runs: the request's own id, else the one its name carries. */
+  task?: string | undefined
+  /** The non-done burndown claims on `task`. */
+  claims: OverlapClaim[]
+  /** The `brief:ready=<day>` day on `task`, when it carries one. */
+  briefReady?: string | undefined
+}
+
+export interface SpawnOverlap {
+  task: string
+  holder: string
+  reason: string
+}
+
+/** CC-932: what a hand spawn collides with; undefined when it may proceed whatever the mode. Pure. */
+export function spawnOverlap(input: SpawnOverlapInput): SpawnOverlap | undefined {
+  const { mode, role, task, claims, briefReady } = input
+  if (mode === 'off' || task === undefined) return undefined
+  if (input.override === FIX_ROUND_OVERRIDE || PASSING_ROLES.test(role)) return undefined
+  const [claim] = claims
+  if (claim !== undefined) {
+    const holder = claim.holder ?? 'burndown'
+    return {
+      task,
+      holder,
+      reason: `${SEAT_SPAWN_OVERLAP}: task ${task} holds a burndown claim held by ${holder}; the tick owns it`,
+    }
+  }
+  if (briefReady === undefined) return undefined
+  const holder = `brief:ready=${briefReady}`
+  return {
+    task,
+    holder,
+    reason: `${SEAT_SPAWN_OVERLAP}: task ${task} is brief-ready (${holder}); burndown dispatches it`,
+  }
 }
