@@ -1,3 +1,0 @@
-minimumReleaseAgeExclude:
-  - '@titan-design/egress-scan@0.6.1'
-  - '@titan-design/owner-queue@0.1.0'
