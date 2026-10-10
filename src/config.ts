@@ -58,6 +58,7 @@ export interface AgentChatConfig {
   processKillBytes?: unknown
   processGuardMode?: unknown
   gitShellAliases?: unknown
+  autoRetire?: unknown
 }
 
 const loggedInvalid = new Set<string>()
@@ -197,6 +198,21 @@ export function resolveSeatSpawnMode(): SeatSpawnMode {
   if (mode !== undefined) return mode
   logInvalidOnce({ key: 'seatSpawnGate', value, fallback: 'off' })
   return 'off'
+}
+
+/**
+ * CC-921: whether the broker parks and retires `spawner`'s agents when they exit on a final report.
+ * `autoRetire.onFinalReport` is `true` for every spawner or a list of spawner names; off by default.
+ * Read per exit, so a change needs no broker restart. Anything else is logged and read as off.
+ */
+export function resolveAutoRetireOnReport(spawner: string): boolean {
+  const autoRetire = readConfig().autoRetire
+  if (autoRetire === undefined) return false
+  const value = isObject(autoRetire) ? autoRetire.onFinalReport : autoRetire
+  if (value === undefined || typeof value === 'boolean') return value === true
+  if (Array.isArray(value) && value.every(name => typeof name === 'string')) return value.includes(spawner)
+  logInvalidOnce({ key: 'autoRetire.onFinalReport', value, fallback: false })
+  return false
 }
 
 /**

@@ -51,6 +51,7 @@ import {
   resolve as resolveIsolation,
   type Allocation,
   type IsolationContext,
+  type ReleaseOptions,
 } from './isolation/index.js'
 import {
   SurfaceRefused,
@@ -104,6 +105,8 @@ import {
   type NamePresence,
   type RetireScope,
 } from './isolation/retire-finished.js'
+import { retireAtReport, type ReportRetirePort } from './isolation/retire-at-report.js'
+import type { ShepherdSkipPort } from './isolation/shepherd-skip.js'
 import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
 import { isTrusted, trustGap } from './trust.js'
@@ -576,6 +579,10 @@ export interface SupervisorOptions {
   ledger?: ShadowLedger
   /** CC-316: writes a seat agent's spawn, retire and park lines. Absent in tests, which own no autonomy root. */
   seatJournal?: SeatJournal
+  /** CC-904: the open-PR and Shepherd reads every bulk or automatic retire skips on. Faked in tests. */
+  shepherdSkip?: ShepherdSkipPort
+  /** CC-921: whether a spawner opted in to retire-at-final-report. Needs `shepherdSkip` too. */
+  autoRetireOnReport?: (spawner: string) => boolean
   /** CC-331: appends a seat agent's dispatched and retired rows. Absent in tests, which own no autonomy root. */
   seatDispatch?: SeatDispatchLog
   /** CC-406: the machine-wide guard's readers. Absent in tests, which must not read the host's memory. */
@@ -763,6 +770,8 @@ export class Supervisor implements TeleportHost {
   private readonly surfaceOptions: SupervisorOptions['surface']
   private readonly hookSpawn: HookSpawnFn | undefined
   private readonly seatJournal: SeatJournal | undefined
+  private readonly shepherdSkip: ShepherdSkipPort | undefined
+  private readonly autoRetireOnReport: ((spawner: string) => boolean) | undefined
   private readonly launcherRunning: LauncherProbe
   private readonly seatDispatch: SeatDispatchLog | undefined
   private readonly unwatch: () => void
@@ -791,6 +800,8 @@ export class Supervisor implements TeleportHost {
     this.surfaceOptions = options.surface ?? {}
     this.hookSpawn = options.hookSpawn
     this.seatJournal = options.seatJournal
+    this.shepherdSkip = options.shepherdSkip
+    this.autoRetireOnReport = options.autoRetireOnReport
     this.launcherRunning = options.launcherRunning ?? psLauncherProbe
     this.seatDispatch = options.seatDispatch
     this.machineGuard = options.machineGuard
@@ -1050,6 +1061,7 @@ export class Supervisor implements TeleportHost {
     if (this.closesOnExit(agentId)) await this.closeSurface(entry)
     const exit = { code: outcome.code, signal: outcome.signal, inferred: outcome.inferred ?? false }
     this.fireHook('on_complete', { ...(await this.completionPayloadFor(agentId, exit)) })
+    if (failed === undefined && entry.cancelReason === undefined) await this.retireIfReported(agentId)
   }
 
   /** CC-763: never rejects; anything that goes wrong gathering the facts leaves the legacy fields. */
@@ -2148,7 +2160,7 @@ export class Supervisor implements TeleportHost {
     if (held === undefined || when === 'keep') return
     if (when === 'if-pane-closed' && (await this.paneStillOpen(held.handle))) return
     const ctx = { agentId, agentName: req.name, baseCwd: req.cwd ?? process.cwd() }
-    if (!(await this.releaseHeld(ctx, held, false))) return
+    if (!(await this.releaseHeld(ctx, held, {}))) return
     // Kept, not cleared, so retire still closes the pane; `none` so it never releases the tree twice.
     writeRuntimeState(agentId, { ...held, allocation: { cwd: held.allocation.cwd }, isolation: 'none' })
   }
@@ -2273,22 +2285,27 @@ export class Supervisor implements TeleportHost {
   async retire(name: string, force = false, actor?: string): Promise<{ ok: boolean; reason?: string }> {
     const identity = this.core.agents.byName(name)
     if (!identity) return { ok: false, reason: `no agent named "${name}"` }
-    return this.retireIdentity(identity, force, actor)
+    return this.retireIdentity(identity, { force }, actor)
   }
 
   /** CC-408: the bulk form retires the row it planned, never whichever row now holds the name. */
-  async retireById(agentId: string, actor?: string): Promise<{ ok: boolean; reason?: string }> {
+  async retireById(
+    agentId: string,
+    actor?: string,
+    release: ReleaseOptions = {},
+  ): Promise<{ ok: boolean; reason?: string }> {
     const identity = this.core.agents.get(agentId)
     if (identity?.origin !== 'spawned' || identity.state === 'retired')
       return { ok: false, reason: `no unretired spawned agent with id ${agentId}` }
-    return this.retireIdentity(identity, false, actor)
+    return this.retireIdentity(identity, { keepBranch: release.keepBranch === true }, actor)
   }
 
   private async retireIdentity(
     identity: AgentIdentity,
-    force: boolean,
+    release: ReleaseOptions,
     actor?: string,
   ): Promise<{ ok: boolean; reason?: string }> {
+    const force = release.force === true
     const name = identity.name
     const held = this.live.get(identity.agentId)
     const entry = held ?? this.rehydrate(identity.agentId, name)
@@ -2296,7 +2313,7 @@ export class Supervisor implements TeleportHost {
     if (tenancy?.refusal) return { ok: false, reason: tenancy.refusal }
 
     if (entry) {
-      const released = await this.releaseIsolation(identity, name, entry, force)
+      const released = await this.releaseIsolation(identity, name, entry, release)
       if (!released)
         return {
           ok: false,
@@ -2400,8 +2417,48 @@ export class Supervisor implements TeleportHost {
       current: (agentId: string) => this.core.agents.get(agentId),
       presence: (agent: AgentIdentity) => this.namePresence(agent),
       retire: (agentId: string) => this.retireById(agentId),
+      ...(this.shepherdSkip === undefined ? {} : { skip: this.shepherdSkip }),
     }
     return retireFinished(port, req)
+  }
+
+  /** CC-921: park and retire an opted-in spawner's agent that exited on a final report; logs why when it keeps one. */
+  private async retireIfReported(agentId: string): Promise<void> {
+    const port = this.reportRetirePort()
+    if (port === undefined) return
+    const result = await retireAtReport(port, agentId)
+    if (result.action === 'kept')
+      logEvent('auto_retire_kept', { agentId, name: result.name, reason: result.reason })
+    if (result.action === 'retired') logEvent('auto_retired', { agentId, ...result })
+  }
+
+  private reportRetirePort(): ReportRetirePort | undefined {
+    const enabledFor = this.autoRetireOnReport
+    if (enabledFor === undefined || this.shepherdSkip === undefined) return undefined
+    return {
+      current: agentId => this.core.agents.get(agentId),
+      roster: () => this.core.agents.roster(),
+      events: () => this.core.events.agentEvents(),
+      enabledFor,
+      lastReport: agent =>
+        this.core.events.lastStatusReport(
+          agent.name,
+          reportRecipients(agent.spawnedBy),
+          this.core.runStartedAt(agent),
+        )?.text,
+      tracked: agentId => this.live.has(agentId),
+      skip: this.shepherdSkip,
+      park: agentId => this.parkById(agentId),
+      retire: agentId => this.retireById(agentId, 'agent-chat', { keepBranch: true }),
+    }
+  }
+
+  /** `park` resolves a name, so a teleport successor holding it now is refused rather than parked. */
+  private parkById(agentId: string): Promise<{ ok: boolean; reason?: string }> {
+    const name = this.core.agents.get(agentId)?.name
+    if (name === undefined || this.core.agents.byName(name)?.agentId !== agentId)
+      return Promise.resolve({ ok: false, reason: 'the name now belongs to another agent' })
+    return this.park(name)
   }
 
   /** Read fresh each call, so the re-check before removal sees a spawn or resume that landed during the git checks. */
@@ -2495,7 +2552,7 @@ export class Supervisor implements TeleportHost {
     identity: AgentIdentity,
     name: string,
     entry: Live,
-    force: boolean,
+    release: ReleaseOptions,
   ): Promise<boolean> {
     const stopped = stoppedAt(identity)
     const ctx: IsolationContext = {
@@ -2505,16 +2562,16 @@ export class Supervisor implements TeleportHost {
       // CC-188: not lastEventAt, which each refused retire's own isolation_released row advances.
       ...(stopped !== undefined ? { stoppedAt: stopped } : {}),
     }
-    return this.releaseHeld(ctx, entry, force)
+    return this.releaseHeld(ctx, entry, release)
   }
 
   /** Shared by retire and a failed spawn, so both write the same `isolation_released` row. */
   private async releaseHeld(
     ctx: IsolationContext,
     entry: Pick<Live, 'allocation' | 'isolation'>,
-    force: boolean,
+    release: ReleaseOptions,
   ): Promise<boolean> {
-    const released = await resolveIsolation([entry.isolation]).release(ctx, entry.allocation, { force })
+    const released = await resolveIsolation([entry.isolation]).release(ctx, entry.allocation, release)
     // A `none` release is a no-op, so a row would claim a second release of what a failed spawn already gave back.
     if (entry.isolation === 'none') return released
     this.core.append({

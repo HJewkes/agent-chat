@@ -820,6 +820,22 @@ function recreateAssigned(
   return readoptWorktree(record, opts)
 }
 
+/**
+ * CC-921: the park already proved the tree clean and pushed and removed it, so nothing here
+ * deletes; the grace window guards `branch -D`, which this path never runs.
+ */
+async function releaseParked(alloc: Allocation, gitRoot: string, worktreePath: string): Promise<boolean> {
+  if (existsSync(worktreePath)) {
+    recordRefusal(
+      alloc,
+      `${worktreePath} is still on disk; a branch-keeping release takes only a parked tree`,
+    )
+    return false
+  }
+  await pruneStaleWorktrees(gitRoot)
+  return true
+}
+
 export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStrategy {
   const basePath = opts.basePath ?? DEFAULT_BASE_PATH
   const budgetNow = (): number => opts.budget ?? resolveWorktreeBudget(DEFAULT_WORKTREE_BUDGET)
@@ -929,6 +945,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
       // that was never ours. Returning true reports the release as complete,
       // because for this agent it is: there is nothing of ours left to clean up.
       if (ref.assigned === 'true') return true
+      if (releaseOpts.keepBranch === true) return releaseParked(alloc, gitRoot, worktreePath)
 
       if (!releaseOpts.force) {
         const refusal = await refuseRelease(ctx, gitRoot, worktreePath, branch, ref.base ?? 'HEAD')
