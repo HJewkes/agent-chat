@@ -86,6 +86,8 @@ export interface SeatPlanInputs {
   agents?: readonly AgentIdentity[]
   /** The seat's brief gate (CC-925); absent, it is off. */
   brief?: SeatBriefGate
+  /** CC-936: implementer slots the seat's hand spawns keep; the tick fills the cap minus this. Absent, none. */
+  handReserve?: number
   /** A task's seat-written plan (CC-927), read only for planner rows under an `on` gate; absent, none is read. */
   readPlan?: PlanReader
 }
@@ -168,6 +170,8 @@ interface Walk {
   /** Tasks inside their release backoff (CC-661). */
   held: ReadonlyMap<string, Hold>
   roles: Record<Role, number>
+  /** The hand-spawned implementers in `roles`; the tick's own are the rest. */
+  handImplementers: number
   /** The seat's active worktrees per repo: held claims with an active tree plus this plan's dispatches. */
   seatWorktrees: Map<string, number>
   /** The broker-wide ceilings, with the config's worktreeOwnerReserve added to the reserve. */
@@ -411,13 +415,15 @@ function startWalk(inputs: SeatPlanInputs): Walk {
     if (claim.worktree !== undefined && active(claim))
       bump(seatWorktrees, path.dirname(path.dirname(claim.worktree)))
   }
-  for (const role of handSpawnRoles(inputs.agents ?? [], inputs.seat.prefix, held)) roles[role] += 1
+  const hand = handSpawnRoles(inputs.agents ?? [], inputs.seat.prefix, held)
+  for (const role of hand) roles[role] += 1
   return {
     inputs,
     gate: gatePool(inputs.budget),
     claimed: new Set(held.map(c => c.taskId)),
     held: backoffHeld(inputs.ledger, inputs.budget.ctx.now),
     roles,
+    handImplementers: hand.filter(role => role === 'implementers').length,
     seatWorktrees,
     capacity: withLeftFree(inputs.capacity, inputs.seat.worktrees.leftFreePerRepo),
     tally: { agents: 0, worktrees: new Map() },
@@ -442,7 +448,11 @@ function claimAgent(held: readonly Claim[]): (name: string) => boolean {
  * CC-779: the seat's running agents its prefix names that no held claim accounts for, by the first role
  * word in the profile as `seats status` counts them; a profile naming no role counts toward no cap.
  */
-function handSpawnRoles(agents: readonly AgentIdentity[], prefix: string, held: readonly Claim[]): Role[] {
+export function handSpawnRoles(
+  agents: readonly AgentIdentity[],
+  prefix: string,
+  held: readonly Claim[],
+): Role[] {
   const ofClaim = claimAgent(held)
   return agents
     .filter(a => a.name.startsWith(`${prefix}-`) && a.state !== 'exited' && a.state !== 'retired')
@@ -627,9 +637,15 @@ function roleCap(role: Role, walk: Walk): Refused | undefined {
   const { seat } = walk.inputs
   const used = walk.roles[role]
   const cap = seat.caps[role]
-  return used < cap
+  if (used >= cap) return { kind: 'role-cap', reason: `seat ${seat.seat} holds ${used} of ${cap} ${role}` }
+  const reserve = role === 'implementers' ? (walk.inputs.handReserve ?? 0) : 0
+  const tickUsed = used - walk.handImplementers
+  return reserve === 0 || tickUsed < cap - reserve
     ? undefined
-    : { kind: 'role-cap', reason: `seat ${seat.seat} holds ${used} of ${cap} ${role}` }
+    : {
+        kind: 'role-cap',
+        reason: `seat ${seat.seat} holds ${tickUsed} tick ${role} of ${cap - reserve}; handReserve keeps ${reserve} of ${cap}`,
+      }
 }
 
 function worktreeCap(d: Dispatch, walk: Walk): Refused | undefined {

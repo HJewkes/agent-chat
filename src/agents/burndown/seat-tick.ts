@@ -175,8 +175,8 @@ export interface SeatPlanDeps {
   lineStop?: LineStop
   /** The broker's roster, which decides which held trees are active; absent, every held tree counts. */
   roster?: Roster
-  /** The config's per-seat brief gates (CC-925); absent, every seat's is off. */
-  brief?: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents'>
+  /** The config's per-seat brief gates (CC-925) and hand reserves (CC-936); absent, every gate is off and no slot is reserved. */
+  brief?: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve'>
 }
 
 /**
@@ -271,6 +271,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     ...(deps.lineStop === undefined ? {} : { lineStop: deps.lineStop }),
     ...optional(deps, lessDispatched(deps.capacity, taken.dispatch)),
     ...briefGateOf(deps, name),
+    ...handReserveOf(deps, name),
     readPlan: diskPlanReader(root),
   })
   planned.refusals.push(
@@ -345,6 +346,12 @@ export function briefGateOf({ brief }: SeatPlanDeps, seat: string): { brief?: Se
   return brief === undefined || gate === 'off'
     ? {}
     : { brief: { gate, maxAgeDays: brief.briefMaxAgeDays, agingEvery: brief.maxAgents } }
+}
+
+/** CC-936: the implementer slots the seat's hand spawns keep; none is passed as none. */
+export function handReserveOf({ brief }: SeatPlanDeps, seat: string): { handReserve?: number } {
+  const reserve = brief?.handReserve[seat] ?? 0
+  return reserve > 0 ? { handReserve: reserve } : {}
 }
 
 function optional(deps: SeatPlanDeps, capacity: Capacity | undefined) {

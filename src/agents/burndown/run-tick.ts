@@ -541,6 +541,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
         briefGate: config.briefGate,
         briefMaxAgeDays: config.briefMaxAgeDays,
         maxAgents: config.maxAgents,
+        handReserve: config.handReserve,
       },
     },
   )
