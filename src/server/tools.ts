@@ -82,6 +82,8 @@ export class ToolHandler {
      * whereas a spawned agent's name was promised to peers before it ran.
      */
     readoptedName?: string,
+    /** The session's one `ContextHinter.hint`, so a pull and a push share one once-per-crossing state. */
+    private readonly contextHint?: () => string | undefined,
   ) {
     this.registeredName = spawnedName ?? readoptedName ?? null
     this.nameIsFixed = spawnedName !== undefined
@@ -98,6 +100,7 @@ export class ToolHandler {
       format: 'human',
       broker: this.broker,
       registeredName: this.registeredName,
+      ...(this.contextHint ? { contextHint: this.contextHint } : {}),
       session: {
         name: () => this.registeredName,
         fixed: this.nameIsFixed,

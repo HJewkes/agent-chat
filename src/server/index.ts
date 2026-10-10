@@ -554,7 +554,7 @@ export async function startMcpServer(): Promise<void> {
   // A readopted session already holds its name, so the handler must know it —
   // otherwise chat_register would look unmade and the model would be told to
   // call it, which is the confusion this whole path exists to remove.
-  const handler = new ToolHandler(broker, spawned?.name, readopted ?? provisional)
+  const handler = new ToolHandler(broker, spawned?.name, readopted ?? provisional, () => hinter.hint())
   serveTools(mcp, handler)
   startParkAdvisor(mcp, broker, handler)
 
