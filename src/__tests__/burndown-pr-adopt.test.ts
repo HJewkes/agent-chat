@@ -141,17 +141,27 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.seatLog[0]).toMatch(/^burndown: Acme\/Widgets#7 unregistered: /)
   })
 
-  it.each(['agent-tooling', 'platform', 'docs', ''])(
-    'flags a task of kind "%s" it does not register',
-    kind => {
-      const f = fake({ pulls: [pull()], tasks: [task({ tags: kind === '' ? [] : [`kind:${kind}`] })] })
+  it.each(['docs', ''])('flags a task of kind "%s" it does not register', kind => {
+    const f = fake({ pulls: [pull()], tasks: [task({ tags: kind === '' ? [] : [`kind:${kind}`] })] })
 
-      tick(f)
+    tick(f)
 
-      expect(f.registered).toEqual([])
-      expect(f.seatLog).toHaveLength(1)
-    },
-  )
+    expect(f.registered).toEqual([])
+    expect(f.seatLog).toHaveLength(1)
+  })
+
+  it.each([
+    ['platform', 'feature'],
+    ['product', 'feature'],
+    ['agent-tooling', 'feature'],
+    ['bug', 'correctness'],
+  ])('registers a task of kind "%s" with Shepherd kind "%s"', (kind, mapped) => {
+    const f = fake({ pulls: [pull()], tasks: [task({ tags: [`kind:${kind}`] })] })
+
+    tick(f)
+
+    expect(f.registered.map(r => r.kind)).toEqual([mapped])
+  })
 
   it('flags rather than registers a PR whose task it cannot find', () => {
     const f = fake({ pulls: [pull()], tasks: [] })
@@ -233,6 +243,15 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
       'site/index.md',
       'README.md',
     ].map(p => file(p))
+    const f = fake({ pulls: [pull()], tasks: [task()], files })
+
+    tick(f)
+
+    expect(f.registered).toHaveLength(1)
+  })
+
+  it('registers a PR that changes only tests and a changeset', () => {
+    const files = ['src/__tests__/a.test.ts', '.changeset/x.md'].map(p => file(p))
     const f = fake({ pulls: [pull()], tasks: [task()], files })
 
     tick(f)
