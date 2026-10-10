@@ -284,7 +284,15 @@ function briefReadyFirst(inputs: SeatPlanInputs, order: Ordered['order'], picks:
   if (brief === undefined) return order
   const check: BriefCheck = { maxAgeDays: brief.maxAgeDays, now: budget.ctx.now }
   const taskOf = (r: Ordered['order'][number]) => inputs.tasks.get(r.initiative)?.find(t => t.id === r.id)
-  const aging = brief.agingEvery === undefined ? undefined : { every: brief.agingEvery, picks }
+  const claimed = new Set(heldClaims(inputs.ledger).map(c => c.taskId))
+  const held = backoffHeld(inputs.ledger, budget.ctx.now)
+  const dispatchable = (r: Ordered['order'][number]): boolean => {
+    const t = taskOf(r)
+    return (
+      t !== undefined && taskRefusal(t, inputs.seat.grants, claimed, held, briefCheck(inputs)) === undefined
+    )
+  }
+  const aging = brief.agingEvery === undefined ? undefined : { every: brief.agingEvery, picks, dispatchable }
   const ready = readySet(order, taskOf, check, inputs.scope, aging)
   const taken = new Set(ready)
   return [...ready, ...order.filter(r => !taken.has(r))]

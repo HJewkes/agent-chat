@@ -51,25 +51,28 @@ export interface ReadyTask {
 }
 
 /** CC-928: one pick in every `every` goes to the longest-ready row; `picks` is the seat's picks so far. */
-export interface AgingSlot {
+export interface AgingSlot<T = { id: string }> {
   every: number
   picks: number
+  /** Whether the row could go out, so a claimed or backed-off task never spends the slot; absent, all can. */
+  dispatchable?: (row: T) => boolean
 }
 
 /**
  * The aging slot's reorder: position `i` is the aging slot when `picks + i` is the last of a window of
  * `every`, and takes the row whose `brief:ready` day is oldest (ties by task id) among those ready a
- * day or more; the rest keep their order. With no aged row the order is unchanged.
+ * day or more that could be dispatched; the rest keep their order. With no aged row the order is unchanged.
  */
 export function withAgingSlot<T extends { id: string }>(
   ordered: readonly T[],
   readyDay: (row: T) => number | undefined,
   today: number,
-  slot: AgingSlot,
+  slot: AgingSlot<T>,
 ): T[] {
   const day = (row: T): number => readyDay(row) ?? today
   const byAge = (a: T, b: T): number => day(a) - day(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
-  const aged = ordered.filter(row => today - day(row) >= 1).sort(byAge)
+  const canGo = slot.dispatchable ?? (() => true)
+  const aged = ordered.filter(row => today - day(row) >= 1 && canGo(row)).sort(byAge)
   const remaining = [...ordered]
   const out: T[] = []
   while (remaining.length > 0) {
@@ -91,7 +94,7 @@ export function readySet<T extends ReadyOrderRow & { initiative: string }>(
   taskOf: (row: T) => ReadyTask | undefined,
   check: BriefCheck,
   scope?: SeatScope,
-  aging?: AgingSlot,
+  aging?: AgingSlot<T>,
 ): T[] {
   const ready = (row: T): boolean => {
     const task = taskOf(row)

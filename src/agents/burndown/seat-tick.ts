@@ -340,7 +340,7 @@ function orderInputs(
 }
 
 /** A seat the config does not name keeps its gate off, and an off gate is passed as none. */
-function briefGateOf({ brief }: SeatPlanDeps, seat: string): { brief?: SeatBriefGate } {
+export function briefGateOf({ brief }: SeatPlanDeps, seat: string): { brief?: SeatBriefGate } {
   const gate = brief?.briefGate[seat] ?? 'off'
   return brief === undefined || gate === 'off'
     ? {}
