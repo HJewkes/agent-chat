@@ -108,6 +108,9 @@ export const burndownLedgerPath = (): string => path.join(home(), 'burndown.json
 /** The burndown tick's heartbeat and consecutive-failure count; agent-chat writes it, titan-factory reads it. */
 export const burndownTickStatusPath = (): string => path.join(home(), 'burndown-status.json')
 
+/** One JSON summary row per burndown tick, appended; `burndown dispatch-stats` reads it (schema in tick-summary.ts). */
+export const burndownTicksPath = (): string => path.join(home(), 'burndown-ticks.jsonl')
+
 /** Per-account reserve and ceiling for `agent-chat burndown`; the design's defaults apply when absent. */
 export const burndownConfigPath = (): string => path.join(home(), 'burndown.config.json')
 

@@ -19,6 +19,8 @@ export interface SeatOutcome {
   dispatched: number
   refusals: readonly Refusal[]
   skipped?: string
+  /** What the seat holds of each role after planning, as its role caps count it (CC-929); absent when skipped. */
+  roles?: Record<'implementers' | 'reviewers' | 'planners', number>
 }
 
 export interface NoDispatchReason {

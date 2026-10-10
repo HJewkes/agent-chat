@@ -106,6 +106,8 @@ export interface SeatPlan {
   shareCapped: ShareCapRefusals
   /** `planOrder`'s own decisions for this tick (CC-778); absent when the tick ordered by `dispatchOrder` alone. */
   placement?: Placement
+  /** What the seat holds of each role after this plan: held claims, live hand spawns and this tick's dispatches. */
+  roles: Record<Role, number>
 }
 
 /** A placed row's tier, with the milestone, slack and float that put it there. */
@@ -178,7 +180,7 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
   const priorPicks = priorPicksOf(inputs.ledger, inputs.seat.seat, runStart)
   const { rows, outOfScope } = inScope(inputs)
   const { order, refused, planRefusals, placement } = orderRows({ ...inputs, rows }, priorPicks)
-  const plan: SeatPlan = {
+  const plan: Omit<SeatPlan, 'roles'> = {
     dispatch: [],
     claims: [],
     refusals: [],
@@ -210,7 +212,7 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
     plan.refusals.push({ initiative, task, kind: 'plan-blocked', reason })
   plan.refusals.push(...outOfScope)
   plan.notes.push(...walk.notes)
-  return plan
+  return { ...plan, roles: { ...walk.roles } }
 }
 
 /** Rows outside the seat's scope leave before ordering, so they spend no share cap or initiative decay. */
@@ -227,7 +229,7 @@ function inScope(inputs: SeatPlanInputs): { rows: ScoreRow[]; outOfScope: Refusa
 }
 
 /** The dispatches this pass already accepted: a queued claim holds nothing in the ledger until it goes out. */
-const acceptedContracts = (plan: SeatPlan) =>
+const acceptedContracts = (plan: Pick<SeatPlan, 'claims'>) =>
   plan.claims.map(c => ({ holder: c.agentName, contracts: c.work.contracts ?? [] }))
 
 interface Ordered {
