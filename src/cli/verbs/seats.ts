@@ -80,7 +80,8 @@ import { FIRE_CAP } from '../../agents/seats/watchdog.js'
 import { BrokerClient } from '../../client/broker-client.js'
 import { systemHost } from '../../mirror/job-host.js'
 import { hostLeaseRefusal } from '../../host-lease.js'
-import { home } from '../../paths.js'
+import { burndownLedgerPath, home } from '../../paths.js'
+import { claimsPort, eventsVerdictsPort, shepherdPort } from '../../agents/seats/in-flight-read.js'
 import { SURFACE_NAMES, type ServerMessage, type SurfaceName } from '../../protocol.js'
 import { addVerb, defineVerb, Report } from '../command.js'
 import { seatPlanOptions } from './burndown.js'
@@ -679,6 +680,16 @@ function bootDeps(root: string): BootDeps {
     homeDir: os.homedir(),
     eventsDb: path.join(home(), 'events.db'),
     status: seat => withRunningBroker(client => seatStatus(statusDeps(root, client), seat)),
+    inFlight: {
+      roster: () =>
+        withRunningBroker(
+          async client =>
+            ((await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>).agents,
+        ),
+      shepherd: shepherdPort(),
+      verdicts: eventsVerdictsPort(path.join(home(), 'events.db')),
+      claims: claimsPort(burndownLedgerPath()),
+    },
   }
 }
 
@@ -691,7 +702,10 @@ export async function bootReport(
 ): Promise<Report> {
   try {
     const boot = await seatBoot(deps, seat, after)
-    return { ok: true, lines: json ? [JSON.stringify(boot, null, 2)] : renderBoot(boot) }
+    return {
+      ok: true,
+      lines: json ? [JSON.stringify(boot, null, 2)] : renderBoot(boot, undefined, deps.homeDir),
+    }
   } catch (err) {
     return statusFailure(seat, json, plainError(err, [deps.autonomyRoot, deps.homeDir]))
   }
@@ -701,7 +715,7 @@ export const seatsBootVerb = defineVerb({
   name: 'seats.boot',
   description:
     "one boot digest for a coordinator seat (CC-318), read-only: the seat file's frontmatter, the " +
-    "queue's In flight and Next sections, the newest State at teleport section of today's log, inbox " +
+    "In flight derived from burndown claims, Shepherd rows, the roster and verdicts, the queue's Next section, the newest State at teleport section of today's log, inbox " +
     'messages after a cutoff and the seat status, in 6,000 characters. Over that the oldest inbox ' +
     'lines go first, then the log section; the queue and status are never cut',
   args: z.object({

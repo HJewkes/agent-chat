@@ -21,6 +21,8 @@ export interface SeatDigest {
   path: string
   chars: number
   mtime: string
+  /** The seat's name prefix, which the In flight section matches agents and branches on. */
+  prefix?: string
   fields: Partial<Record<(typeof SEAT_KEYS)[number], unknown>>
 }
 
@@ -30,7 +32,14 @@ export function readSeatDigest(root: string, seat: string): SeatDigest {
   const text = fs.readFileSync(file, 'utf8')
   const all = frontmatter(text)
   const fields = Object.fromEntries(SEAT_KEYS.filter(k => all[k] !== undefined).map(k => [k, all[k]]))
-  return { path: file, chars: text.length, mtime: fs.statSync(file).mtime.toISOString(), fields }
+  const prefix = typeof all.prefix === 'string' ? all.prefix : undefined
+  return {
+    path: file,
+    chars: text.length,
+    mtime: fs.statSync(file).mtime.toISOString(),
+    ...(prefix === undefined ? {} : { prefix }),
+    fields,
+  }
 }
 
 /** From the line matching `start` to the next line matching `stop`, or the end; trailing blank lines dropped. */
@@ -48,20 +57,20 @@ const QUEUE_STOP = /^#{1,2}\s/
 export interface QueueSections {
   file: string
   found: boolean
-  inFlight: string | null
   next: string | null
 }
 
 export function readQueueSections(root: string, seat: string): QueueSections {
   const file = path.join(root, 'queues', `${seat}.md`)
   const text = readText(file)
-  if (text === undefined) return { file, found: false, inFlight: null, next: null }
+  if (text === undefined) return { file, found: false, next: null }
   const lines = text.split('\n')
   const pick = (heading: RegExp): string | null => {
     const at = lines.findIndex(line => heading.test(line))
     return at === -1 ? null : sectionFrom(lines, at, QUEUE_STOP)
   }
-  return { file, found: true, inFlight: pick(/^## In flight\b/), next: pick(/^## Next\b/) }
+  // CC-934: the In flight section is derived (in-flight-read.ts), so it is not read from the file.
+  return { file, found: true, next: pick(/^## Next\b/) }
 }
 
 export const LOG_CAP = 1_500
