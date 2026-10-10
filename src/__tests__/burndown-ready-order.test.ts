@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { readyOrder, type ReadyOrderRow } from '../agents/burndown/ready-order.js'
+import {
+  agedFirst,
+  agingTurn,
+  briefReadyDay,
+  readyOrder,
+  type ReadyOrderRow,
+  type ReadyTask,
+} from '../agents/burndown/ready-order.js'
 
 const r = (id: string, score: number, patch: Partial<ReadyOrderRow> = {}): ReadyOrderRow => ({
   id,
@@ -46,5 +53,54 @@ describe('readyOrder (CC-926)', () => {
     const rows = [r('A', 99), r('B', 1)]
 
     expect(ids(readyOrder(rows, x => (x.id === 'B' ? 7 : undefined)))).toEqual(['B', 'A'])
+  })
+})
+
+describe('aging slot (CC-928)', () => {
+  const TODAY = Date.UTC(2026, 9, 10) / 86_400_000
+  const MAX_AGENTS = 3
+  const task = (id: string, priority: number, readyDay: string): ReadyTask => ({
+    id,
+    priority,
+    tags: [`brief:ready=${readyDay}`],
+  })
+  const aged = (tasks: ReadyTask[]) => {
+    const byId = new Map(tasks.map(t => [t.id, t]))
+    const ordered = readyOrder(
+      tasks.map(t => r(t.id, 1)),
+      x => byId.get(x.id)?.priority,
+    )
+    return agedFirst(ordered, x => briefReadyDay(byId.get(x.id)!), TODAY).map(x => x.id)
+  }
+  const stream = (n: number): ReadyTask[] =>
+    Array.from({ length: n }, (_, i) => task(`P1-${String(i).padStart(2, '0')}`, 1, '2026-10-10'))
+
+  it('offers the aging slot to a priority-50 task ready for 3 days within maxAgents picks', () => {
+    const tasks = [...stream(10), task('LOW', 50, '2026-10-07')]
+    const turns = [0, 1, 2].filter(picks => agingTurn(picks, MAX_AGENTS))
+
+    expect(turns).toHaveLength(1)
+    expect(aged(tasks)[0]).toBe('LOW')
+  })
+
+  it('opens the slot on the last pick of each window', () => {
+    expect([0, 1, 2, 3, 4, 5].map(picks => agingTurn(picks, 3))).toEqual([
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+    ])
+  })
+
+  it('breaks a tie between equally old ready tasks by task id', () => {
+    const tasks = [...stream(3), task('Z-9', 50, '2026-10-07'), task('B-2', 60, '2026-10-07')]
+
+    expect(aged(tasks)).toEqual(['B-2', 'Z-9'])
+  })
+
+  it('names no aged task when none has waited a day', () => {
+    expect(aged([...stream(5), task('LOW', 50, '2026-10-10')])).toEqual([])
   })
 })

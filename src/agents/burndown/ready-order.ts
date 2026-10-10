@@ -1,4 +1,6 @@
 import { briefRefusal, type BriefCheck } from './eligibility.js'
+import { parseTaskTags } from './task-tags.js'
+import { parseIsoDay } from './score.js'
 import { scopeRefusal, type SeatScope } from './seat-scope.js'
 
 /**
@@ -46,6 +48,30 @@ export interface ReadyTask {
   id: string
   tags: readonly string[]
   priority?: number
+}
+
+/** CC-928: every `every`th pick is the aging slot; `picks` counts the seat's picks so far. */
+export const agingTurn = (picks: number, every: number): boolean => picks % every === every - 1
+
+/**
+ * CC-928: the rows ready a day or more as of `today`, longest-ready first, ties by task id. The walk
+ * offers the slot to them in this order and takes the first the dispatch checks accept, so no copy
+ * of those checks lives here.
+ */
+export function agedFirst<T extends { id: string }>(
+  ready: readonly T[],
+  readyDay: (row: T) => number | undefined,
+  today: number,
+): T[] {
+  const day = (row: T): number => readyDay(row) ?? today
+  const byAge = (a: T, b: T): number => day(a) - day(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  return ready.filter(row => today - day(row) >= 1).sort(byAge)
+}
+
+/** The day the task's `brief:ready` tag names, on `localDay`'s scale. */
+export function briefReadyDay(task: ReadyTask): number | undefined {
+  const day = parseTaskTags({ id: task.id, tags: task.tags }).task.briefReady
+  return day === undefined ? undefined : parseIsoDay(day)
 }
 
 /**

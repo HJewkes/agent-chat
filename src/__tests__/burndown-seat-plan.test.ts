@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { briefGateOf } from '../agents/burndown/seat-tick.js'
 import { advance, claimKey } from '../agents/burndown/advance.js'
 import type { PoolGateInput } from '../agents/burndown/budget-gate.js'
 import type { Initiative, Task } from '../agents/burndown/eligibility.js'
@@ -967,5 +968,66 @@ describe('planSeat ready order (CC-926)', () => {
     )
 
     expect(plan.dispatch.map(d => d.task)).toEqual(['A-9', 'A-1', 'A-5'])
+  })
+
+  describe('aging slot (CC-928)', () => {
+    const OLD = 'brief:ready=2026-09-26'
+    const aged = (id: string, priority: number, tags = [OLD]) => task(id, { priority, tags })
+    const stream = () => ({
+      rows: [row('A-1', 90), row('A-2', 80), row('A-3', 70), row('A-50', 5), row('A-51', 4)],
+      tasks: [
+        aged('A-1', 1, [FRESH]),
+        aged('A-2', 1, [FRESH]),
+        aged('A-3', 1, [FRESH]),
+        aged('A-50', 50),
+        aged('A-51', 51, ['brief:ready=2026-09-27']),
+      ],
+    })
+    const withAging = (patch: Partial<SeatPlanInputs> = {}, oldest: Partial<ScoreRow> = {}) => {
+      const { rows, tasks } = stream()
+      rows[3] = row('A-50', 5, oldest)
+      return planSeat(inputs(rows, tasks, { brief: { gate: 'on', maxAgeDays: 14, agingEvery: 3 }, ...patch }))
+    }
+
+    const doneTwice = [claim('X-1', { phase: 'done' }), claim('X-2', { phase: 'done' })]
+    const one = { ...SEAT, caps: { ...SEAT.caps, implementers: 1 } }
+
+    it('dispatches the longest-ready task in the slot, counting prior picks this run', () => {
+      const ledger = { ...EMPTY_LEDGER, claims: doneTwice }
+
+      const plan = withAging({ ledger, seat: one })
+
+      expect(plan.dispatch.map(d => d.task)).toEqual(['A-50'])
+    })
+
+    it('offers the slot to the next-oldest task when the oldest is refused by the walk', () => {
+      const ledger = { ...EMPTY_LEDGER, claims: doneTwice }
+
+      const plan = withAging({ ledger, seat: one }, { stopShort: ['hard stop'] })
+
+      expect(plan.dispatch.map(d => d.task)).toEqual(['A-51'])
+    })
+
+    it('takes the window from the config maxAgents', () => {
+      const brief = { briefGate: { 'seat-a': 'on' as const }, briefMaxAgeDays: 14, maxAgents: 4 }
+
+      expect(briefGateOf({ brief } as never, 'seat-a')).toEqual({
+        brief: { gate: 'on', maxAgeDays: 14, agingEvery: 4 },
+      })
+    })
+
+    it('does not spend the slot on a task already claimed', () => {
+      const ledger = {
+        ...EMPTY_LEDGER,
+        claims: [
+          ...doneTwice,
+          claim('A-50', { phase: 'implementing', spawnedAt: '2026-09-28T09:00:00.000Z' }),
+        ],
+      }
+
+      const plan = withAging({ ledger, seat: { ...SEAT, caps: { ...SEAT.caps, implementers: 2 } } })
+
+      expect(plan.dispatch.map(d => d.task)).toEqual(['A-51'])
+    })
   })
 })
