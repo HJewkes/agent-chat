@@ -258,7 +258,7 @@ export function route(task: ScoredTask): Route {
   if (!isTriaged(task)) return 'triage'
   const estimate = task.estimate as number
   if (estimate >= 3) return 'planner'
-  return estimate <= 1 ? 'implementer-lite' : 'implementer'
+  return tagsOf(task).includes('kind:feature') ? 'implementer' : 'implementer-lite'
 }
 
 /** score.py's product, in its operand order so the float result matches bit for bit. */

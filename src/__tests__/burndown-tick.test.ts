@@ -963,8 +963,8 @@ describe('burndown tick in seats mode', () => {
     const lines = await tick(fake)
 
     expect(fake.frames.map(f => [f.name, f.profile, f.configDir])).toEqual([
-      ['st-dm-1', 'bd-implementer', accountPath()],
-      ['st-dm-2', 'bd-implementer', accountPath()],
+      ['st-dm-1', 'bd-implementer-lite', accountPath()],
+      ['st-dm-2', 'bd-implementer-lite', accountPath()],
     ])
     expect(lines.join('\n')).toContain('refused demo DM-3 [role-cap]: seat seat-t holds 2 of 2 implementers')
     const ledger = readLedger(burndownLedgerPath())
@@ -1115,8 +1115,8 @@ describe('burndown tick in seats mode', () => {
 
     expect(lines.map(l => l.replace(/: score .*$/, ''))).toEqual([
       `burndown plan at ${NOON.toISOString()} (dry run: nothing spawned, nothing claimed)`,
-      `would dispatch demo DM-1 as bd-implementer on pool-t in ${repo()}/.worktrees/st-dm-1`,
-      `would dispatch demo DM-2 as bd-implementer on pool-t in ${repo()}/.worktrees/st-dm-2`,
+      `would dispatch demo DM-1 as bd-implementer-lite on pool-t in ${repo()}/.worktrees/st-dm-1`,
+      `would dispatch demo DM-2 as bd-implementer-lite on pool-t in ${repo()}/.worktrees/st-dm-2`,
       'refused demo DM-3 [role-cap]: seat seat-t holds 2 of 2 implementers',
       'scorer skipped: 0',
     ])
@@ -1138,7 +1138,7 @@ describe('burndown tick in seats mode', () => {
 
     expect(lines).toContainEqual(
       expect.stringMatching(
-        `^would dispatch demo DM-1 as bd-implementer on pool-t in ${repo()}/.worktrees/st-dm-1`,
+        `^would dispatch demo DM-1 as bd-implementer-lite on pool-t in ${repo()}/.worktrees/st-dm-1`,
       ),
     )
   })
@@ -1216,7 +1216,7 @@ describe('burndown tick in seats mode', () => {
     const lines = await tick(fakeBroker(), true)
 
     expect(lines.join('\n')).toContain(
-      `would spawn st-dm-1 as bd-implementer (headless) on ${accountPath()} in ${repo()}`,
+      `would spawn st-dm-1 as bd-implementer-lite (headless) on ${accountPath()} in ${repo()}`,
     )
     expect(fs.existsSync(burndownLedgerPath())).toBe(false)
   })

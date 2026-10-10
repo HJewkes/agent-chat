@@ -259,8 +259,12 @@ describe('route', () => {
     ['no estimate', { done_when: 'x' }, 'triage'],
     ['no done_when', { estimate: 5 }, 'triage'],
     ['estimate 3', { estimate: 3, done_when: 'x' }, 'planner'],
-    ['estimate 2', { estimate: 2, done_when: 'x' }, 'implementer'],
+    ['estimate 2 untagged', { estimate: 2, done_when: 'x' }, 'implementer-lite'],
+    ['estimate 2 kind:feature', { estimate: 2, done_when: 'x', tags: ['kind:feature'] }, 'implementer'],
+    ['estimate 2 other kind', { estimate: 2, done_when: 'x', tags: ['kind:bug'] }, 'implementer-lite'],
+    ['estimate 3 kind:feature', { estimate: 3, done_when: 'x', tags: ['kind:feature'] }, 'planner'],
     ['estimate 1', { estimate: 1, done_when: 'x' }, 'implementer-lite'],
+    ['estimate 1 kind:feature', { estimate: 1, done_when: 'x', tags: ['kind:feature'] }, 'implementer'],
     ['estimate 0', { estimate: 0, done_when: 'x' }, 'implementer-lite'],
   ])('%s routes to %s', (_scenario, fields, expected) => {
     expect(route(task(fields))).toBe(expected)
@@ -616,7 +620,7 @@ describe('scoreAll', () => {
       r.route,
     ])
     expect(summary).toEqual([
-      ['A-1', 93.3, 'security', 'tag', [], [], 'implementer'],
+      ['A-1', 93.3, 'security', 'tag', [], [], 'implementer-lite'],
       ['A-2', 9.2, 'product', 'regex', ['A-1'], ['deploy'], 'planner'],
       ['A-3', 8.1, 'nit', 'regex', [], [], 'triage'],
       ['B-3', 4.8, 'platform', 'default', [], [], 'implementer-lite'],

@@ -172,12 +172,11 @@ export function pickTask(
 export const PLANNER_PROFILE = 'bd-planner'
 export const IMPLEMENTER_PROFILE = 'bd-implementer'
 
-/** The CC-136 split onto the lean burndown profiles: big work plans first, small work that names its tests goes to sonnet. */
+/** Owner decision 186: big work plans first, small work goes to sonnet unless it is a feature, which gets opus. */
 export function profileFor(task: Task): string {
   const estimate = task.estimate ?? Infinity
   if (estimate >= 3) return PLANNER_PROFILE
-  if (estimate <= 1 && /\btests?\b/i.test(task.doneWhen ?? '')) return 'bd-implementer-lite'
-  return IMPLEMENTER_PROFILE
+  return task.tags.includes('kind:feature') ? IMPLEMENTER_PROFILE : 'bd-implementer-lite'
 }
 
 /** Profiles that run on sonnet, which is all the tick may use above 85% `seven_day`. */

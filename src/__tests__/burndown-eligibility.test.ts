@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { backoffHeld } from '../agents/burndown/backoff.js'
-import { briefRefusal, pickTask, taskRefusal, type Task } from '../agents/burndown/eligibility.js'
+import { briefRefusal, pickTask, profileFor, taskRefusal, type Task } from '../agents/burndown/eligibility.js'
 import type { Ledger } from '../agents/burndown/ledger.js'
 
 const NOW = new Date('2026-10-01T12:00:00.000Z')
@@ -69,5 +69,33 @@ describe('eligibility under the brief gate (CC-925)', () => {
 
   it('lets an earlier refusal win over the brief gate', () => {
     expect(taskRefusal(tagged(), [], new Set(['B-1']), new Map(), brief('on'))?.kind).toBe('claimed')
+  })
+})
+
+describe('profileFor (owner decision 186)', () => {
+  const sized = (estimate: number, tags: string[] = [], doneWhen = 'x'): Task => ({
+    ...task('P-1', 1),
+    estimate,
+    tags,
+    doneWhen,
+  })
+
+  it.each([1, 2])(
+    'sends an untagged estimate-%s task to sonnet even when done_when names no tests',
+    estimate => {
+      expect(profileFor(sized(estimate))).toBe('bd-implementer-lite')
+    },
+  )
+
+  it('sends a non-feature kind to sonnet', () => {
+    expect(profileFor(sized(2, ['kind:bug']))).toBe('bd-implementer-lite')
+  })
+
+  it('sends an estimate-2 kind:feature task to opus', () => {
+    expect(profileFor(sized(2, ['kind:feature']))).toBe('bd-implementer')
+  })
+
+  it.each([[[]], [['kind:feature']]])('plans an estimate-3 task with tags %j', tags => {
+    expect(profileFor(sized(3, tags))).toBe('bd-planner')
   })
 })
