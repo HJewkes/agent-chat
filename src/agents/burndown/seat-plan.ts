@@ -40,6 +40,7 @@ import {
 } from './score.js'
 import { repoForTask, type SeatDispatch } from './seat-dispatch.js'
 import { scopeRefusal, type SeatScope } from './seat-scope.js'
+import { sliceRepo, type PathExists } from './slice-repo.js'
 import { seedSlices, type PlanReader } from './seed-slices.js'
 import { worktreePathFor } from './trust-gate.js'
 
@@ -90,6 +91,8 @@ export interface SeatPlanInputs {
   handReserve?: number
   /** A task's seat-written plan (CC-927), read only for planner rows under an `on` gate; absent, none is read. */
   readPlan?: PlanReader
+  /** Whether a path exists in a checkout, for placing a ready slice by what it owns (CC-946); absent, owns place nothing. */
+  pathExists?: PathExists
 }
 
 export interface SeatBriefGate {
@@ -535,7 +538,11 @@ function seedFromPlan(row: DispatchRow, walk: Walk): Seeded | Refused | undefine
 function considerSlice(claim: Claim, walk: Walk): Taken | Refused {
   const { seat, tasks } = walk.inputs
   const tags = tasks.get(claim.initiative)?.find(t => t.id === claim.taskId)?.tags ?? []
-  const repo = repoForTask(seat, claim.initiative, tags)
+  if (tags.includes('blocked'))
+    return { kind: 'blocked', reason: `${claim.taskId} carries the blocked tag; its queued slices wait` }
+  const placed = sliceRepo(seat, claim.initiative, tags, claim, walk.inputs.pathExists)
+  if ('ambiguous' in placed) return { kind: 'repo-ambiguous', reason: placed.ambiguous }
+  const { repo } = placed
   if (repo === undefined)
     return { kind: 'no-repo', reason: `seat ${seat.seat} lists no repo for ${claim.initiative}` }
   const work = {

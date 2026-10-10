@@ -70,6 +70,8 @@ export interface CollisionFacts {
   /** Live agent and session names on the broker. */
   names: string[] | undefined
   claims: FileClaim[] | undefined
+  /** Agents that exited less than one tick ago: the tick may not have seen their PR or branch yet (CC-946). */
+  recentlyExited?: string[]
   /** Agents on this task's held claims: a sibling slice's name and branch carry the task ID by design. */
   ours: ReadonlySet<string>
   /** Contracts on held claims other than the work's own, labelled for the refusal reason. */
@@ -126,6 +128,9 @@ function claimed(work: CollisionWork, facts: CollisionFacts): Collision | undefi
     return { kind: 'claimed', reason: 'reader broker-view failed: no live agents or file claims' }
   const holder = facts.names.find(name => !facts.ours.has(name) && namesId(name, work.taskId))
   if (holder !== undefined) return { kind: 'claimed', reason: `live agent ${holder} carries ${work.taskId}` }
+  const gone = (facts.recentlyExited ?? []).find(name => !facts.ours.has(name) && namesId(name, work.taskId))
+  if (gone !== undefined)
+    return { kind: 'claimed', reason: `agent ${gone} carrying ${work.taskId} exited less than one tick ago` }
   for (const claim of facts.claims.filter(c => c.repo === facts.repo && !facts.ours.has(c.owner))) {
     const path = overlapping(work.owns, claim.patterns)
     if (path !== undefined) return { kind: 'claimed', reason: `${path} is under ${claim.owner}'s file claim` }
@@ -244,6 +249,8 @@ const jsonLines = (text: string): unknown[] =>
 export interface BrokerView {
   names: string[]
   claims: FileClaim[]
+  /** Names of agents that exited less than one tick ago. */
+  recentlyExited?: string[]
 }
 
 /** The four readers a refusal reason names when its fact could not be read. */
@@ -307,6 +314,7 @@ function readFacts(
     prFiles,
     names: broker?.names,
     claims: broker?.claims,
+    ...(broker?.recentlyExited === undefined ? {} : { recentlyExited: broker.recentlyExited }),
     ours: new Set(),
     held: [],
   }

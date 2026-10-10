@@ -4,6 +4,7 @@ import type { TickBroker } from '../agents/burndown/run-tick.js'
 import { refusedSender, type OpenSender, type SeatSender } from '../agents/burndown/seat-deliver.js'
 import type { BrokerView } from '../agents/burndown/collision.js'
 import { LIVE, type Roster } from '../agents/burndown/observe.js'
+import { TICK_INTERVAL_SECONDS } from '../agents/burndown/tick-status.js'
 import type { SpawnReply } from '../agents/burndown/execute.js'
 
 /** The tick's broker calls over one unregistered connection, which the broker treats as the human; seat events are the exception. */
@@ -140,8 +141,13 @@ export async function collisionView(client: BrokerClient): Promise<BrokerView> {
   const roster = (await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>
   const list = (await client.request({ t: 'list' }, 'list_result')) as Reply<'list_result'>
   const agents = roster.agents.filter(a => LIVE.has(a.state)).map(a => a.name)
+  const since = Date.now() - TICK_INTERVAL_SECONDS * 1000
+  const recentlyExited = roster.agents
+    .filter(a => a.state === 'exited' && a.exitedAt !== undefined && a.exitedAt > since)
+    .map(a => a.name)
   return {
     names: [...new Set([...agents, ...list.sessions.map(s => s.name)])],
+    recentlyExited,
     claims: (list.claims ?? [])
       .filter(c => c.kind === 'files')
       .map(c => ({ owner: c.owner, repo: c.repoPath ?? c.worktreePath, patterns: c.patterns })),

@@ -27,6 +27,7 @@ import { scoreAll } from './score.js'
 import { readScoredTasks } from './score-source.js'
 import { resolveSeatDispatch, type SeatDispatch } from './seat-dispatch.js'
 import { planSeat, type OrderInputs, type SeatBriefGate } from './seat-plan.js'
+import { diskPathExists } from './slice-repo.js'
 import { diskPlanReader } from './seed-slices.js'
 import { backlogIds, seatScopeOf, type SeatScope } from './seat-scope.js'
 import { describeError, readWeekMilestones, taskIdsOnDisk } from './score-render.js'
@@ -273,6 +274,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
     ...briefGateOf(deps, name),
     ...handReserveOf(deps, name),
     readPlan: diskPlanReader(root),
+    pathExists: diskPathExists,
   })
   planned.refusals.push(
     ...[...order.faults, ...scope.faults].map(reason => ({

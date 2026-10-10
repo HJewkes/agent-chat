@@ -45,6 +45,7 @@ export function sliceClaims(parent: Parent, slices: readonly PlannedSlice[], now
     slice: s.n,
     dependsOn: s.dependsOn,
     ...(s.owns.length === 0 ? {} : { owns: s.owns }),
+    ...(s.repo === undefined ? {} : { repo: s.repo }),
     ...((s.contracts ?? []).length === 0 ? {} : { contracts: s.contracts }),
     ...(parent.seat === undefined ? {} : { seat: parent.seat }),
     ...(parent.namePrefix === undefined ? {} : { namePrefix: parent.namePrefix }),

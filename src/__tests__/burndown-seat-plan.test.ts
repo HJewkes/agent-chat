@@ -12,6 +12,8 @@ import type { Capacity, Dispatch } from '../agents/burndown/plan.js'
 import { checkSeatPrefixes, loadPolicy, type SeatPolicy } from '../agents/burndown/policy.js'
 import type { ScoreRow, ScoringDefaults } from '../agents/burndown/score.js'
 import type { SeatDispatch } from '../agents/burndown/seat-dispatch.js'
+import { readSlices } from '../agents/burndown/report.js'
+import { sliceClaims } from '../agents/burndown/seed-slices.js'
 import { planSeat, priorPicksOf, type SeatPlanInputs } from '../agents/burndown/seat-plan.js'
 import { backlogIds, seatScopeOf } from '../agents/burndown/seat-scope.js'
 import { activeTreeOf } from '../agents/burndown/seat-tick.js'
@@ -1066,5 +1068,61 @@ describe('planSeat hand reserve (CC-936)', () => {
     const plan = one('A-1', {}, {}, { seat, ledger: held(10) })
 
     expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+  })
+})
+
+describe('planSeat ready-slice placement (CC-946)', () => {
+  const queued = (taskId: string, patch: Partial<Claim> = {}): Claim =>
+    claim(taskId, { phase: 'queued', slice: 'a', owns: ['packages/cli/src/x.ts'], ...patch })
+  const plan = (claims: Claim[], tags: string[], over: Partial<SeatPlanInputs> = {}) =>
+    planSeat(
+      inputs([], [], {
+        tasks: new Map([['alpha', [task('A-1', { tags })]]]),
+        ledger: { ...EMPTY_LEDGER, claims },
+        ...over,
+      }),
+    )
+  const kinds = (p: ReturnType<typeof planSeat>) => p.refusals.map(r => [r.task, r.kind])
+
+  it('refuses a ready slice whose task carries the blocked tag', () => {
+    const planned = plan([queued('A-1')], ['blocked'])
+
+    expect(planned.dispatch).toEqual([])
+    expect(kinds(planned)).toEqual([['A-1', 'blocked']])
+  })
+
+  it("dispatches into the plan's repo over the initiative's first checkout", () => {
+    const planned = plan([queued('A-1', { repo: 'alpha-docs' })], [])
+
+    expect(planned.dispatch.map(d => d.repo)).toEqual(['/tmp/repos/alpha-docs'])
+  })
+
+  it('places a slice by the one checkout holding what it owns', () => {
+    const pathExists = (repo: string) => repo === '/tmp/repos/beta'
+
+    const planned = plan([queued('A-1')], [], { pathExists })
+
+    expect(planned.dispatch.map(d => d.repo)).toEqual(['/tmp/repos/beta'])
+  })
+
+  it('refuses as repo-ambiguous when the plan and a repo: tag disagree', () => {
+    const planned = plan([queued('A-1', { repo: 'alpha-docs' })], ['repo:alpha-app'])
+
+    expect(planned.dispatch).toEqual([])
+    expect(kinds(planned)).toEqual([['A-1', 'repo-ambiguous']])
+  })
+
+  it('keeps the tag-chosen repo when the plan names none', () => {
+    const planned = plan([queued('A-1')], ['repo:alpha-docs'])
+
+    expect(planned.dispatch.map(d => d.repo)).toEqual(['/tmp/repos/alpha-docs'])
+  })
+
+  it('carries a slice repo from the plan into its claim', () => {
+    const text =
+      '```burndown-slices\n[{"n":"a","title":"t","points":1,"doneWhen":"done","owns":["x.ts"],"repo":"alpha-docs"}]\n```\n'
+    const { slices } = readSlices(text)
+
+    expect(sliceClaims({ taskId: 'A-1', initiative: 'alpha' }, slices ?? [], NOW)[0]?.repo).toBe('alpha-docs')
   })
 })
