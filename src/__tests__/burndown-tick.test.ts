@@ -1,3 +1,4 @@
+import { planPathFor } from '../agents/burndown/brief.js'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -2860,6 +2861,39 @@ describe('burndown tick reads the real broker view and checkouts (CC-946)', () =
     await tick(fake)
 
     expect(fake.frames.map(f => f.name)).toEqual(['st-dm-1'])
+  })
+
+  it("dispatches a planner's first slice in the tick its exited planner is seeded, not a tick later", async () => {
+    seatPolicy()
+    config({ seats: ['seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    const slices = '[{"n":"a","title":"t","points":1,"doneWhen":"done","owns":["src/x.ts"]}]'
+    write(
+      planPathFor(path.join(world, 'aw', 'demo'), 'DM-1'),
+      `# plan\n\n\`\`\`burndown-slices\n${slices}\n\`\`\`\n`,
+    )
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [
+        {
+          taskId: 'DM-1',
+          initiative: 'demo',
+          seat: 'seat-t',
+          namePrefix: 'st',
+          agentName: 'st-dm-1',
+          spawned: ['st-dm-1'],
+          spawnedAt: NOON.toISOString(),
+          phase: 'planning',
+          phaseAt: NOON.toISOString(),
+        },
+      ],
+    })
+    const fake = over(clientWith([exitedAgent('st-dm-1', NOON.getTime() - 60_000)]))
+
+    const lines = await tick(fake)
+
+    expect(lines.join('\n')).not.toContain('exited less than one tick ago')
+    expect(fake.frames.map(f => f.name)).toEqual(['st-dm-1-a'])
   })
 
   it('aims a ready slice at the seat checkout that holds what it owns, so the trust check names it', async () => {

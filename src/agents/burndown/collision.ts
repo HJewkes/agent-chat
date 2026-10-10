@@ -72,6 +72,8 @@ export interface CollisionFacts {
   claims: FileClaim[] | undefined
   /** Agents that exited less than one tick ago: the tick may not have seen their PR or branch yet (CC-946). */
   recentlyExited?: string[]
+  /** Every agent any claim of this task ever spawned, done claims included: a planner whose claim just went `done` still exited from our own work. */
+  lineage?: ReadonlySet<string>
   /** Agents on this task's held claims: a sibling slice's name and branch carry the task ID by design. */
   ours: ReadonlySet<string>
   /** Contracts on held claims other than the work's own, labelled for the refusal reason. */
@@ -128,7 +130,9 @@ function claimed(work: CollisionWork, facts: CollisionFacts): Collision | undefi
     return { kind: 'claimed', reason: 'reader broker-view failed: no live agents or file claims' }
   const holder = facts.names.find(name => !facts.ours.has(name) && namesId(name, work.taskId))
   if (holder !== undefined) return { kind: 'claimed', reason: `live agent ${holder} carries ${work.taskId}` }
-  const gone = (facts.recentlyExited ?? []).find(name => !facts.ours.has(name) && namesId(name, work.taskId))
+  const gone = (facts.recentlyExited ?? []).find(
+    name => !facts.ours.has(name) && !facts.lineage?.has(name) && namesId(name, work.taskId),
+  )
   if (gone !== undefined)
     return { kind: 'claimed', reason: `agent ${gone} carrying ${work.taskId} exited less than one tick ago` }
   for (const claim of facts.claims.filter(c => c.repo === facts.repo && !facts.ours.has(c.owner))) {
@@ -283,6 +287,7 @@ export function collisionCheck(
         .filter(other => other !== repo)
         .map(other => ({ repo: other, subjects: subjectsOf(other) })),
       ours: oursFor(ledger, work.taskId),
+      lineage: lineageOf(ledger, work.taskId),
       held: heldContracts(ledger, work),
     })
   }
@@ -324,6 +329,14 @@ function readFacts(
 const oursFor = (ledger: Ledger, taskId: string): ReadonlySet<string> =>
   new Set(
     heldClaims(ledger)
+      .filter(c => c.taskId === taskId)
+      .flatMap(c => [...(c.spawned ?? []), ...(c.agentName === undefined ? [] : [c.agentName])]),
+  )
+
+/** Includes `done` claims, since a retire may not have run when the exit is read. */
+const lineageOf = (ledger: Ledger, taskId: string): ReadonlySet<string> =>
+  new Set(
+    ledger.claims
       .filter(c => c.taskId === taskId)
       .flatMap(c => [...(c.spawned ?? []), ...(c.agentName === undefined ? [] : [c.agentName])]),
   )
