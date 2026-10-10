@@ -49,7 +49,11 @@ function plan(subjectsByRepo: Record<string, string>, broken?: string, read: str
   const { loaded, skipped } = loadSeats(['seat-a'], ledger, deps())
   expect(skipped).toEqual([])
   const collision = collisionCheck(ledger, { names: [], claims: [] }, exec)
-  return planSeats(loaded, { ledger, initiatives: readInitiatives(root), collision }, root)
+  return planSeats(
+    loaded,
+    { ledger, initiatives: readInitiatives(root), scopeTagAliases: {}, collision },
+    root,
+  )
 }
 
 beforeEach(() => {

@@ -365,7 +365,11 @@ describe('planSeats over the week milestone file', () => {
       }) as AgentIdentity
     const { loaded } = loadSeats(['seat-a'], ledger, deps())
     const roster = { agents: [1, 2, 3].map(hand) }
-    const plan = planSeats(loaded, { ledger, initiatives: readInitiatives(root), roster }, root)
+    const plan = planSeats(
+      loaded,
+      { ledger, initiatives: readInitiatives(root), scopeTagAliases: {}, roster },
+      root,
+    )
     expect(plan.dispatch.map(d => d.task)).toEqual(['AA-1'])
     expect(plan.refusals).toEqual([
       expect.objectContaining({ task: 'AA-2', kind: 'role-cap', reason: expect.stringContaining('4 of 4') }),
