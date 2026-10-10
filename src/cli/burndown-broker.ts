@@ -19,6 +19,7 @@ export const BURNDOWN_SENDER = 'burndown'
 export function tickBroker(
   client: BrokerClient,
   seatSender: OpenSender = burndownSender(connectBroker),
+  now: () => number = Date.now,
 ): TickBroker {
   return {
     roster: () => tickRoster(client),
@@ -49,7 +50,7 @@ export function tickBroker(
       const res = (await client.request({ t: 'retire', name }, 'spawn_result')) as Reply<'spawn_result'>
       return spawnReply(res)
     },
-    collisionView: () => collisionView(client),
+    collisionView: () => collisionView(client, now()),
     seatSender,
   }
 }
@@ -137,11 +138,11 @@ const spawnReply = (res: Reply<'spawn_result'>): SpawnReply => ({
 })
 
 /** Live agent and session names and every `files` claim, for `burndown plan`'s collision check (CC-202). */
-export async function collisionView(client: BrokerClient): Promise<BrokerView> {
+export async function collisionView(client: BrokerClient, now: number = Date.now()): Promise<BrokerView> {
   const roster = (await client.request({ t: 'agents' }, 'agents_result')) as Reply<'agents_result'>
   const list = (await client.request({ t: 'list' }, 'list_result')) as Reply<'list_result'>
   const agents = roster.agents.filter(a => LIVE.has(a.state)).map(a => a.name)
-  const since = Date.now() - TICK_INTERVAL_SECONDS * 1000
+  const since = now - TICK_INTERVAL_SECONDS * 1000
   const recentlyExited = roster.agents
     .filter(a => a.state === 'exited' && a.exitedAt !== undefined && a.exitedAt > since)
     .map(a => a.name)

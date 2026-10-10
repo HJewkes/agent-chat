@@ -1118,6 +1118,14 @@ describe('planSeat ready-slice placement (CC-946)', () => {
     expect(planned.dispatch.map(d => d.repo)).toEqual(['/tmp/repos/alpha-docs'])
   })
 
+  it("names the plan's repo when the seat does not list it", () => {
+    const planned = plan([queued('A-1', { repo: 'elsewhere' })], [])
+
+    expect(planned.refusals).toEqual([
+      expect.objectContaining({ kind: 'no-repo', reason: 'seat seat-a lists no repo elsewhere for alpha' }),
+    ])
+  })
+
   it('carries a slice repo from the plan into its claim', () => {
     const text =
       '```burndown-slices\n[{"n":"a","title":"t","points":1,"doneWhen":"done","owns":["x.ts"],"repo":"alpha-docs"}]\n```\n'

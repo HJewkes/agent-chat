@@ -2818,3 +2818,82 @@ describe('burndown tick triage jobs (CC-649)', () => {
     ])
   })
 })
+
+describe('burndown tick reads the real broker view and checkouts (CC-946)', () => {
+  const exitedAgent = (name: string, exitedAt: number): AgentIdentity => ({
+    ...row(name, 'exited'),
+    exitedAt,
+  })
+  const clientWith = (agents: AgentIdentity[]): BrokerClient =>
+    ({
+      request: async (frame: { t: string }) =>
+        frame.t === 'list'
+          ? { t: 'list_result', sessions: [], claims: [] }
+          : { t: 'agents_result', agents, slots: { held: 4, cap: 36 } },
+    }) as unknown as BrokerClient
+  const over = (client: BrokerClient): Fake => {
+    const fake = fakeBroker()
+    const real = tickBroker(client, fake.broker.seatSender, () => NOON.getTime())
+    return { ...fake, broker: { ...fake.broker, roster: real.roster, collisionView: real.collisionView } }
+  }
+
+  it('refuses a task whose foreign agent exited within the last tick, through the real collisionView', async () => {
+    seatPolicy()
+    config({ seats: ['seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    const fake = over(clientWith([exitedAgent('pc-dm-1-swap', NOON.getTime() - 60_000)]))
+
+    const lines = await tick(fake)
+
+    expect(fake.frames).toEqual([])
+    expect(lines.join('\n')).toMatch(
+      /refused demo DM-1 \[claimed\].*pc-dm-1-swap.*exited less than one tick ago/,
+    )
+  })
+
+  it('does not refuse once the exit is older than a tick', async () => {
+    seatPolicy()
+    config({ seats: ['seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    const fake = over(clientWith([exitedAgent('pc-dm-1-swap', NOON.getTime() - 3_600_000)]))
+
+    await tick(fake)
+
+    expect(fake.frames.map(f => f.name)).toEqual(['st-dm-1'])
+  })
+
+  it('aims a ready slice at the seat checkout that holds what it owns, so the trust check names it', async () => {
+    const other = path.join(world, 'other-repo')
+    fs.mkdirSync(other, { recursive: true })
+    git(other, 'init', '-q', '-b', 'main')
+    git(other, 'commit', '-q', '--allow-empty', '-m', 'init')
+    write(path.join(other, 'packages', 'cli', 'x.ts'), 'export {}\n')
+    seatPolicy({ extraRepo: other })
+    config({ seats: ['seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+    writeLedger(burndownLedgerPath(), {
+      version: 1,
+      claims: [
+        {
+          taskId: 'DM-1',
+          initiative: 'demo',
+          seat: 'seat-t',
+          namePrefix: 'st',
+          slice: 'a',
+          owns: ['packages/cli/x.ts'],
+          spawnedAt: NOON.toISOString(),
+          phase: 'queued',
+          phaseAt: NOON.toISOString(),
+        },
+      ],
+    })
+    const fake = fakeBroker()
+
+    const lines = await tick(fake)
+
+    expect(fake.frames).toEqual([])
+    expect(lines.join('\n')).toContain(
+      `refused demo DM-1 [trust]: no accepted trust entry for ${other} or ${other}/.worktrees/st-dm-1-a`,
+    )
+  })
+})

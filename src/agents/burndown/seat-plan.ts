@@ -544,7 +544,13 @@ function considerSlice(claim: Claim, walk: Walk): Taken | Refused {
   if ('ambiguous' in placed) return { kind: 'repo-ambiguous', reason: placed.ambiguous }
   const { repo } = placed
   if (repo === undefined)
-    return { kind: 'no-repo', reason: `seat ${seat.seat} lists no repo for ${claim.initiative}` }
+    return {
+      kind: 'no-repo',
+      reason: `seat ${seat.seat} lists no repo ${claim.repo ?? ''} for ${claim.initiative}`.replace(
+        'repo  ',
+        'repo ',
+      ),
+    }
   const work = {
     initiative: claim.initiative,
     task: claim.taskId,
