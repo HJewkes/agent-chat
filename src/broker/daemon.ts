@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import { serve, type ServerType } from '@hono/node-server'
 import type { Hono } from 'hono'
-import { burndownLedgerPath, defaultPort, home, socketPath } from '../paths.js'
+import { burndownConfigPath, burndownLedgerPath, defaultPort, home, socketPath } from '../paths.js'
 import { activeWorkRoot } from '../agents/active-work.js'
 import {
   resolveOrphanReapKill,
@@ -23,6 +23,7 @@ import { seatJournal } from '../agents/seats/journal.js'
 import { cliShepherdSkipPort } from '../agents/isolation/shepherd-skip.js'
 import { seatDispatchLog } from '../agents/seats/dispatch-log.js'
 import {
+  readHandReserve,
   readOverlap,
   readSeatSpawn,
   type OverlapRequest,
@@ -270,6 +271,16 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
           read: (spawn: OverlapRequest) =>
             readOverlap(
               { root: defaultAutonomyRoot(), ledgerFile: burndownLedgerPath(), activeRoot: activeWorkRoot() },
+              spawn,
+            ),
+          handReserve: (spawn: OverlapRequest) =>
+            readHandReserve(
+              {
+                root: defaultAutonomyRoot(),
+                ledgerFile: burndownLedgerPath(),
+                activeRoot: activeWorkRoot(),
+                tickConfigFile: burndownConfigPath(),
+              },
               spawn,
             ),
         },

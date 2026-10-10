@@ -120,14 +120,17 @@ import type { SeatDispatchLog, SpawnFacts } from './seats/dispatch-log.js'
 import type { SeatSpawnRead, SeatSpawnRequest } from './seats/spawn-gate-read.js'
 import {
   SEAT_BUDGET_STOP,
+  SEAT_HAND_RESERVE,
   SEAT_SPAWN_OVERLAP,
+  handReserveOverflow,
   seatSpawnGate,
   spawnOverlap,
   type SeatBudgetRefusalCode,
+  type SeatHandReserveRefusalCode,
   type SeatOverlapRefusalCode,
   type SeatSpawnMode,
 } from './seats/spawn-gate.js'
-import type { OverlapFacts, OverlapRequest } from './seats/spawn-gate-read.js'
+import type { HandReserveFacts, OverlapFacts, OverlapRequest } from './seats/spawn-gate-read.js'
 import type { RetireSpend } from './seats/dispatch-record.js'
 import { branchHead, retireOutcomeOf } from './seats/retire-outcome.js'
 import { assignmentRefusal, inferWorkRole, spawnProvenance, worktreeProvenance } from './spawn-provenance.js'
@@ -146,6 +149,7 @@ import type { ShadowLedger } from './ledger/shadow-ledger.js'
 import { exitTerminal, LifecycleShadow } from './ledger/lifecycle-shadow.js'
 import { readExitTail, unreportedExitText, UNREPORTED_EXIT } from './exit-report.js'
 import { loadTickConfig } from './burndown/source.js'
+import { handSpawnRoles } from './burndown/seat-plan.js'
 import type { SeatTeleportDeps } from './seats/teleport-state.js'
 import {
   SuccessorNotStarted,
@@ -456,7 +460,12 @@ export interface SpawnRequest {
 }
 
 export type SpawnRefusalCode =
-  'surface_refused' | 'spawn_rate_limit' | MachineRefusalCode | SeatBudgetRefusalCode | SeatOverlapRefusalCode
+  | 'surface_refused'
+  | 'spawn_rate_limit'
+  | MachineRefusalCode
+  | SeatBudgetRefusalCode
+  | SeatOverlapRefusalCode
+  | SeatHandReserveRefusalCode
 
 /** CC-288: reads a seat-prefixed spawn's pool and meters. Absent in tests, which own no autonomy root. */
 export interface SeatBudgetReaders {
@@ -467,6 +476,8 @@ export interface SeatBudgetReaders {
 export interface SeatOverlapReaders {
   mode: () => SeatSpawnMode
   read: (spawn: OverlapRequest) => OverlapFacts | undefined
+  /** CC-936: the seat's hand reserve; absent where the seat reserves nothing. */
+  handReserve?: (spawn: OverlapRequest) => HandReserveFacts | undefined
 }
 
 /** CC-606: the pool pick's disk reader and its `poolPick` config mode, both read per spawn. */
@@ -1214,6 +1225,38 @@ export class Supervisor implements TeleportHost {
   }
 
   /**
+   * CC-936: a hand implementer spawn once the seat holds its `handReserve` of them. Follows the overlap gate's
+   * mode: warn logs `seat_hand_reserve` and spawns. An unreadable config or ledger lets the spawn through.
+   */
+  private handReserveRefusal(req: SpawnRequest, profileName: string): string | undefined {
+    const gate = this.seatOverlap
+    const mode = gate?.mode() ?? 'off'
+    if (gate?.handReserve === undefined || mode === 'off' || req.spawnedAs !== undefined) return undefined
+    try {
+      const facts = gate.handReserve({ name: req.name, spawner: req.requestedBy, task: req.task })
+      if (facts === undefined) return undefined
+      const overflow = handReserveOverflow({
+        mode,
+        role: req.workRole ?? inferWorkRole(profileName, req.name),
+        override: req.override,
+        reserve: facts.reserve,
+        held: handSpawnRoles(this.core.agents.roster(), facts.prefix, facts.held).filter(
+          role => role === 'implementers',
+        ).length,
+      })
+      if (overflow === undefined) return undefined
+      logEvent(SEAT_HAND_RESERVE, { name: req.name, mode, requested_by: req.requestedBy })
+      return mode === 'refuse' ? overflow.reason : undefined
+    } catch (err) {
+      logEvent('seat_spawn_gate_failed', {
+        name: req.name,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return undefined
+    }
+  }
+
+  /**
    * CC-932: a hand spawn of a task burndown has claimed or that is brief-ready. Warn mode logs
    * `seat_spawn_overlap` and lets it through; refuse mode returns the reason. The tick's and Shepherd's own
    * spawns carry `spawnedAs` and never pass through. An unreadable ledger lets the spawn through.
@@ -1578,6 +1621,8 @@ export class Supervisor implements TeleportHost {
     if (roleBlocked) return this.refuse(req, roleBlocked)
     const overlap = this.seatOverlapRefusal(req, profile.name)
     if (overlap) return this.refuse(req, overlap, { code: SEAT_SPAWN_OVERLAP, retryable: false })
+    const reserve = this.handReserveRefusal(req, profile.name)
+    if (reserve) return this.refuse(req, reserve, { code: SEAT_HAND_RESERVE, retryable: false })
     const machine = this.machineRefusal(this.resolve(req.surface ?? profile.surface))
     if (machine) return this.refuse(req, machine.reason, { code: machine.code, retryable: machine.retryable })
     const escalation = this.checkEscalation(req, profile)

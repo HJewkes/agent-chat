@@ -3,8 +3,8 @@ import path from 'node:path'
 import { readAccountBudget, type BudgetRead } from '../budget.js'
 import { parsePools, type Pool } from './charter.js'
 import { loadDoc, readText, type WatchdogDoc } from './io.js'
-import { readLedger, heldClaims } from '../burndown/ledger.js'
-import { readInitiatives, readTasks } from '../burndown/source.js'
+import { readLedger, heldClaims, type Claim } from '../burndown/ledger.js'
+import { loadTickConfig, readInitiatives, readTasks } from '../burndown/source.js'
 import { parseTaskTags } from '../burndown/task-tags.js'
 import { taskOf } from './journal-line.js'
 import { ownsSpawns, seatOf } from './seat-of.js'
@@ -129,4 +129,30 @@ export function readOverlap(paths: OverlapPaths, req: OverlapRequest): OverlapFa
     .filter(claim => claim.taskId.toUpperCase() === task)
     .map(claim => ({ holder: claim.agentName ?? claim.seat }))
   return { task, claims, briefReady: briefReadyOf(paths.activeRoot, task) }
+}
+
+export interface HandReserveFacts {
+  /** The seat's `handReserve`; always positive. */
+  reserve: number
+  /** The seat's agent-name prefix. */
+  prefix: string
+  /** The non-done claims, which tell the tick's agents from hand spawns. */
+  held: Claim[]
+}
+
+/**
+ * CC-936: the seat's hand reserve and the claims that tell its hand spawns from the tick's. Undefined when the
+ * spawn names no seat or the seat reserves nothing. The tick reads the same config key.
+ * Throws when the seats directory, config or ledger cannot be read; the broker logs that and lets the spawn through.
+ */
+export function readHandReserve(
+  paths: OverlapPaths & { tickConfigFile: string },
+  req: OverlapRequest,
+): HandReserveFacts | undefined {
+  const match = seatOf(paths.root, req.name, req.spawner)
+  if (match.kind !== 'seat') return undefined
+  const { seat } = match.seat
+  const reserve = loadTickConfig(paths.tickConfigFile).handReserve[seat.name] ?? 0
+  if (reserve <= 0 || seat.prefix === undefined) return undefined
+  return { reserve, prefix: seat.prefix, held: heldClaims(readLedger(paths.ledgerFile)) }
 }

@@ -184,3 +184,33 @@ export function spawnOverlap(input: SpawnOverlapInput): SpawnOverlap | undefined
     reason: `${SEAT_SPAWN_OVERLAP}: task ${task} is brief-ready (${holder}); burndown dispatches it`,
   }
 }
+
+export const SEAT_HAND_RESERVE = 'seat_hand_reserve'
+export type SeatHandReserveRefusalCode = typeof SEAT_HAND_RESERVE
+
+export interface HandReserveInput {
+  mode: SeatSpawnMode
+  role: string
+  override?: string | undefined
+  /** The seat's `handReserve` from the tick config. */
+  reserve: number
+  /** The hand-spawned implementers the seat already holds. */
+  held: number
+}
+
+export interface HandReserveOverflow {
+  reason: string
+}
+
+/**
+ * CC-936: a hand implementer spawn past the seat's `handReserve`; the rest of the implementer cap is the tick's.
+ * Reviewer, planner and fix-round roles pass, as they do for the overlap check. Pure.
+ */
+export function handReserveOverflow(input: HandReserveInput): HandReserveOverflow | undefined {
+  const { mode, role, reserve, held } = input
+  if (mode === 'off' || reserve <= 0 || role !== 'implementer') return undefined
+  if (input.override === FIX_ROUND_OVERRIDE || held < reserve) return undefined
+  return {
+    reason: `${SEAT_HAND_RESERVE}: the seat holds ${held} of ${reserve} hand implementer slots; the tick owns the rest of the cap`,
+  }
+}
