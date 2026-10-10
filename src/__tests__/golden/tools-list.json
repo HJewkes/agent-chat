@@ -539,6 +539,11 @@
           "role": {
             "type": "string",
             "description": "What this agent does for the task: implementer, reviewer, shepherd-review, planner, other, fix-round-<n>. Omit it and the broker infers one from the profile and name, and marks it inferred."
+          },
+          "override": {
+            "type": "string",
+            "const": "fix-round",
+            "description": "Set to \"fix-round\" when this spawn is a fix round on a task burndown has claimed or that is brief-ready; it passes the seat spawn gate, which otherwise warns or refuses."
           }
         },
         "required": [

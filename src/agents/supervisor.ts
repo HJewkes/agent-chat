@@ -115,10 +115,19 @@ import { runHooks, type HookEvent, type HookSpawnFn } from './hooks.js'
 import type { SeatJournal } from './seats/journal.js'
 import type { SeatDispatchLog, SpawnFacts } from './seats/dispatch-log.js'
 import type { SeatSpawnRead, SeatSpawnRequest } from './seats/spawn-gate-read.js'
-import { SEAT_BUDGET_STOP, seatSpawnGate, type SeatBudgetRefusalCode } from './seats/spawn-gate.js'
+import {
+  SEAT_BUDGET_STOP,
+  SEAT_SPAWN_OVERLAP,
+  seatSpawnGate,
+  spawnOverlap,
+  type SeatBudgetRefusalCode,
+  type SeatOverlapRefusalCode,
+  type SeatSpawnMode,
+} from './seats/spawn-gate.js'
+import type { OverlapFacts, OverlapRequest } from './seats/spawn-gate-read.js'
 import type { RetireSpend } from './seats/dispatch-record.js'
 import { branchHead, retireOutcomeOf } from './seats/retire-outcome.js'
-import { assignmentRefusal, spawnProvenance, worktreeProvenance } from './spawn-provenance.js'
+import { assignmentRefusal, inferWorkRole, spawnProvenance, worktreeProvenance } from './spawn-provenance.js'
 import {
   poolPickText,
   routePool,
@@ -426,6 +435,8 @@ export interface SpawnRequest {
   task?: string
   /** CC-915: one of `WORK_ROLES` or `fix-round-<n>`; inferred from profile and name when absent. */
   workRole?: string
+  /** CC-932: `fix-round` passes the seat spawn gate on a claimed or brief-ready task. */
+  override?: 'fix-round'
   /** Empty for a human-initiated spawn; otherwise the requesting agent's id. */
   parentAgentId?: string
   requestedBy: string
@@ -442,11 +453,17 @@ export interface SpawnRequest {
 }
 
 export type SpawnRefusalCode =
-  'surface_refused' | 'spawn_rate_limit' | MachineRefusalCode | SeatBudgetRefusalCode
+  'surface_refused' | 'spawn_rate_limit' | MachineRefusalCode | SeatBudgetRefusalCode | SeatOverlapRefusalCode
 
 /** CC-288: reads a seat-prefixed spawn's pool and meters. Absent in tests, which own no autonomy root. */
 export interface SeatBudgetReaders {
   read: (spawn: SeatSpawnRequest) => SeatSpawnRead
+}
+
+/** CC-932: the seat spawn gate's mode and its reader of the claims and tags a task holds; absent in tests. */
+export interface SeatOverlapReaders {
+  mode: () => SeatSpawnMode
+  read: (spawn: OverlapRequest) => OverlapFacts | undefined
 }
 
 /** CC-606: the pool pick's disk reader and its `poolPick` config mode, both read per spawn. */
@@ -565,6 +582,8 @@ export interface SupervisorOptions {
   machineGuard?: MachineGuardReaders
   /** CC-288: the seat budget gate's reader. */
   seatBudget?: SeatBudgetReaders
+  /** CC-932: the seat spawn gate's readers. */
+  seatOverlap?: SeatOverlapReaders
   /** CC-606: the pool pick's readers. Absent in tests, which own no autonomy root. */
   poolPick?: PoolPickReaders
   /** CC-450: how an unwatched agent's recorded launcher pid is checked. Faked in tests. */
@@ -751,6 +770,7 @@ export class Supervisor implements TeleportHost {
   private readonly shadow: LifecycleShadow
   private readonly machineGuard: MachineGuardReaders | undefined
   private readonly seatBudget: SeatBudgetReaders | undefined
+  private readonly seatOverlap: SeatOverlapReaders | undefined
   private readonly poolPick: PoolPickReaders | undefined
   private readonly processProbe: ProcessProbe
   private readonly reaper: DetachedReaper
@@ -775,6 +795,7 @@ export class Supervisor implements TeleportHost {
     this.seatDispatch = options.seatDispatch
     this.machineGuard = options.machineGuard
     this.seatBudget = options.seatBudget
+    this.seatOverlap = options.seatOverlap
     this.poolPick = options.poolPick
     this.processProbe = options.processProbe ?? hostProbe
     this.reaper = new DetachedReaper(this.settleMs, this.processProbe, (agentId, probe) =>
@@ -1180,6 +1201,43 @@ export class Supervisor implements TeleportHost {
     return decision.ok ? undefined : decision
   }
 
+  /**
+   * CC-932: a hand spawn of a task burndown has claimed or that is brief-ready. Warn mode logs
+   * `seat_spawn_overlap` and lets it through; refuse mode returns the reason. The tick's and Shepherd's own
+   * spawns carry `spawnedAs` and never pass through. An unreadable ledger lets the spawn through.
+   */
+  private seatOverlapRefusal(req: SpawnRequest, profileName: string): string | undefined {
+    const gate = this.seatOverlap
+    const mode = gate?.mode() ?? 'off'
+    if (gate === undefined || mode === 'off' || req.spawnedAs !== undefined) return undefined
+    try {
+      const facts = gate.read({ name: req.name, spawner: req.requestedBy, task: req.task })
+      const overlap = spawnOverlap({
+        mode,
+        role: req.workRole ?? inferWorkRole(profileName, req.name),
+        override: req.override,
+        task: facts?.task,
+        claims: facts?.claims ?? [],
+        briefReady: facts?.briefReady,
+      })
+      if (overlap === undefined) return undefined
+      logEvent(SEAT_SPAWN_OVERLAP, {
+        name: req.name,
+        task: overlap.task,
+        holder: overlap.holder,
+        mode,
+        requested_by: req.requestedBy,
+      })
+      return mode === 'refuse' ? overlap.reason : undefined
+    } catch (err) {
+      logEvent('seat_spawn_gate_failed', {
+        name: req.name,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return undefined
+    }
+  }
+
   /** CC-288: refuses a seat-prefixed spawn whose billed pool is past a charter budget stop; an unreadable seat lets it through. */
   private seatBudgetRefusal(req: SpawnRequest, model: string, configDir: string): string | undefined {
     if (this.seatBudget === undefined) return undefined
@@ -1506,6 +1564,8 @@ export class Supervisor implements TeleportHost {
     }
     const roleBlocked = this.checkRole(req, profile, lineage.coordinatorDepth)
     if (roleBlocked) return this.refuse(req, roleBlocked)
+    const overlap = this.seatOverlapRefusal(req, profile.name)
+    if (overlap) return this.refuse(req, overlap, { code: SEAT_SPAWN_OVERLAP, retryable: false })
     const machine = this.machineRefusal(this.resolve(req.surface ?? profile.surface))
     if (machine) return this.refuse(req, machine.reason, { code: machine.code, retryable: machine.retryable })
     const escalation = this.checkEscalation(req, profile)

@@ -153,6 +153,13 @@ const args = z.object({
         'one from the profile and name, and marks it inferred.',
     )
     .optional(),
+  override: z
+    .literal('fix-round')
+    .describe(
+      'Set to "fix-round" when this spawn is a fix round on a task burndown has claimed or that is ' +
+        'brief-ready; it passes the seat spawn gate, which otherwise warns or refuses.',
+    )
+    .optional(),
 })
 
 type SpawnArgs = z.infer<typeof args>
@@ -189,6 +196,7 @@ function spawnFrame(input: SpawnArgs): ClientMessage {
     ...(input.return_contract === undefined ? {} : { returnContract: input.return_contract }),
     ...(task === undefined ? {} : { task }),
     ...(input.role === undefined ? {} : { workRole: input.role }),
+    ...(input.override === undefined ? {} : { override: input.override }),
   }
 }
 
