@@ -507,6 +507,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     },
     {
       ...(service?.lineStop === undefined ? {} : { lineStop: service.lineStop }),
+      brief: { briefGate: config.briefGate, briefMaxAgeDays: config.briefMaxAgeDays },
     },
   )
   const dispatchCtx = { ...ctx, tasks: new Map([...ctx.tasks, ...planned.tasks]) }
@@ -519,6 +520,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     ...advanced.deferred.map(d => `deferred ${d}`),
     ...dispatched.flatMap(d => (typeof d === 'string' ? [`not dispatched: ${d}`] : [])),
     ...refusalLines(planned.refusals),
+    ...planned.notes,
     ...triageNotes(triage.plan.verdicts),
     ...planned.skipped.map(s => `seat ${s.seat} skipped: ${s.reason}`),
     ...planned.skippedTasks.map(
@@ -579,6 +581,7 @@ interface Planned {
   tasks: Map<string, Task[]>
   skippedTasks: SeatsPlan['skippedTasks']
   outcomes: SeatOutcome[]
+  notes: string[]
 }
 
 /** Without seats, `plan()` over the briefs' autonomy blocks; with seats, `planSeat` for each loaded seat. */
@@ -588,10 +591,12 @@ function planNew(
   root: string,
   roster: Roster,
   work: NewWork,
-  flow: Pick<SeatPlanDeps, 'lineStop'>,
+  flow: Pick<SeatPlanDeps, 'lineStop' | 'brief'>,
 ): Planned {
-  if (seats === undefined)
-    return { ...plan({ ...world, ...work }), skipped: [], tasks: new Map(), skippedTasks: [], outcomes: [] }
+  if (seats === undefined) {
+    const planned = plan({ ...world, ...work })
+    return { ...planned, skipped: [], tasks: new Map(), skippedTasks: [], outcomes: [], notes: [] }
+  }
   const cliVersion = installedClaudeVersion()
   const planned = planSeats(
     seats.loaded,

@@ -1,5 +1,7 @@
 import type { Autonomy } from '../active-work.js'
 import type { Hold } from './backoff.js'
+import { parseIsoDay } from './score.js'
+import { parseTaskTags } from './task-tags.js'
 
 /**
  * Which task an opted-in initiative would hand to an unattended agent next.
@@ -56,6 +58,8 @@ export type RefusalKind =
   | 'plan-blocked'
   | 'stop-line'
   | 'out-of-scope'
+  | 'no-brief'
+  | 'brief-stale'
 
 export interface Refusal {
   initiative: string
@@ -93,12 +97,41 @@ export function grantGap(doneWhen: string, grants: string[]): string | undefined
   return `done_when needs grant ${missing.map(g => g.grant).join(', ')}, which the brief does not hold`
 }
 
+/** CC-925: a seat's brief gate. `shadow` refuses nothing; the caller notes what `on` would refuse. */
+export const BRIEF_GATES = ['off', 'shadow', 'on'] as const
+export type BriefGateMode = (typeof BRIEF_GATES)[number]
+
+export interface BriefCheck {
+  maxAgeDays: number
+  now: Date
+}
+
+/** The local calendar day of `now`, on `parseIsoDay`'s scale, as the tick's `today` is local. */
+const localDay = (now: Date): number =>
+  Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / 86_400_000
+
+/** Why `task`'s brief is missing or stale, whatever the gate; undefined when it carries a fresh `brief:ready`. */
+export function briefRefusal(
+  task: Task,
+  check: BriefCheck,
+): { kind: RefusalKind; reason: string } | undefined {
+  const { briefReady } = parseTaskTags({ id: task.id, tags: task.tags }).task
+  if (briefReady === undefined) return { kind: 'no-brief', reason: 'no valid brief:ready=<YYYY-MM-DD> tag' }
+  const age = localDay(check.now) - (parseIsoDay(briefReady) ?? Number.NaN)
+  if (age <= check.maxAgeDays) return undefined
+  return {
+    kind: 'brief-stale',
+    reason: `brief:ready=${briefReady} is ${age} days old; briefMaxAgeDays is ${check.maxAgeDays}`,
+  }
+}
+
 /** The first reason `task` is ineligible, or undefined when it may be dispatched. */
 export function taskRefusal(
   task: Task,
   grants: string[],
   claimed: ReadonlySet<string>,
   held: ReadonlyMap<string, Hold> = new Map(),
+  brief?: BriefCheck & { gate: BriefGateMode },
 ): { kind: RefusalKind; reason: string } | undefined {
   if (task.status !== 'open') return { kind: 'not-open', reason: `status is ${task.status ?? 'missing'}` }
   if (task.doneWhen === undefined)
@@ -111,7 +144,8 @@ export function taskRefusal(
   if (hold !== undefined)
     return { kind: 'backoff', reason: `released ${hold.n} times; held until ${hold.until.toISOString()}` }
   const gap = grantGap(task.doneWhen, grants)
-  return gap === undefined ? undefined : { kind: 'needs-grant', reason: gap }
+  if (gap !== undefined) return { kind: 'needs-grant', reason: gap }
+  return brief?.gate === 'on' ? briefRefusal(task, brief) : undefined
 }
 
 const byPriorityThenSize = (a: Task, b: Task): number =>

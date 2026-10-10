@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { backoffHeld } from '../agents/burndown/backoff.js'
-import { pickTask, taskRefusal, type Task } from '../agents/burndown/eligibility.js'
+import { briefRefusal, pickTask, taskRefusal, type Task } from '../agents/burndown/eligibility.js'
 import type { Ledger } from '../agents/burndown/ledger.js'
 
 const NOW = new Date('2026-10-01T12:00:00.000Z')
@@ -40,5 +40,34 @@ describe('eligibility under release backoff', () => {
         reason: expect.stringContaining('released 2 times'),
       }),
     ])
+  })
+})
+
+describe('eligibility under the brief gate (CC-925)', () => {
+  const brief = (gate: 'off' | 'shadow' | 'on') => ({ gate, maxAgeDays: 14, now: NOW })
+  const tagged = (...tags: string[]): Task => ({ ...task('B-1', 1), tags })
+
+  it('refuses an untagged task as no-brief only when the gate is on', () => {
+    expect(taskRefusal(tagged(), [], new Set(), new Map(), brief('on'))?.kind).toBe('no-brief')
+    expect(taskRefusal(tagged(), [], new Set(), new Map(), brief('shadow'))).toBeUndefined()
+    expect(taskRefusal(tagged(), [], new Set(), new Map(), brief('off'))).toBeUndefined()
+    expect(taskRefusal(tagged(), [], new Set())).toBeUndefined()
+  })
+
+  it('refuses a brief older than briefMaxAgeDays as brief-stale, and keeps one exactly that old', () => {
+    const stale = taskRefusal(tagged('brief:ready=2026-09-16'), [], new Set(), new Map(), brief('on'))
+
+    expect(stale).toEqual({ kind: 'brief-stale', reason: expect.stringContaining('15 days old') })
+    expect(
+      taskRefusal(tagged('brief:ready=2026-09-17'), [], new Set(), new Map(), brief('on')),
+    ).toBeUndefined()
+  })
+
+  it('reads a malformed brief:ready tag as no brief', () => {
+    expect(briefRefusal(tagged('brief:ready=2026-13-01'), brief('on'))?.kind).toBe('no-brief')
+  })
+
+  it('lets an earlier refusal win over the brief gate', () => {
+    expect(taskRefusal(tagged(), [], new Set(['B-1']), new Map(), brief('on'))?.kind).toBe('claimed')
   })
 })

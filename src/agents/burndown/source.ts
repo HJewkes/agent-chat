@@ -7,7 +7,7 @@ import { readAccountBudget } from '../budget.js'
 import { profileDir } from '../config-dir.js'
 import type { AccountReading } from './budget-gate.js'
 import { Route } from './exception.js'
-import type { Initiative, Task } from './eligibility.js'
+import { BRIEF_GATES, type Initiative, type Task } from './eligibility.js'
 
 /** Reads the tick's inputs off disk. Read-only: active-work files, status caches and the burndown config. */
 
@@ -134,6 +134,14 @@ const Config = z.object({
     .default({ enabled: false }),
   /** Seat names for CC-205 seats-mode dispatch; empty means none. */
   seats: z.array(z.string().min(1)).default([]),
+  /** CC-925: each seat's brief gate; a seat not named is `off`. Flipping it is an owner step. */
+  briefGate: z.record(z.string().min(1), z.enum(BRIEF_GATES)).default({}),
+  /** Days a `brief:ready=<day>` tag stays fresh under an `on` gate. */
+  briefMaxAgeDays: z
+    .number()
+    .int()
+    .positive({ error: 'briefMaxAgeDays must be a positive integer' })
+    .default(14),
 })
 export type TickConfig = z.infer<typeof Config>
 
