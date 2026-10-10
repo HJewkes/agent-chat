@@ -546,10 +546,7 @@ function considerSlice(claim: Claim, walk: Walk): Taken | Refused {
   if (repo === undefined)
     return {
       kind: 'no-repo',
-      reason: `seat ${seat.seat} lists no repo ${claim.repo ?? ''} for ${claim.initiative}`.replace(
-        'repo  ',
-        'repo ',
-      ),
+      reason: `seat ${seat.seat} lists no repo${claim.repo === undefined ? '' : ` ${claim.repo}`} for ${claim.initiative}`,
     }
   const work = {
     initiative: claim.initiative,
