@@ -30,6 +30,7 @@ bundles in `~/.local/share/claude/versions/`.
 | 2.1.289 | 2.1.284 rule                   | yes | yes | yes | yes |
 | 2.1.290 | 2.1.289                        | yes | yes | yes | yes |
 | 2.1.295 | 2.1.292 (2026-10-08)           | yes | yes | yes | yes |
+| 2.1.296 | 2.1.295 (2026-10-10)           | yes | yes | yes | yes |
 
 2.1.287, 2.1.288, 2.1.289 and 2.1.290 are identical in all four snippets below once minified
 identifiers are renamed (a token-level comparison; only the names differ).
@@ -151,6 +152,15 @@ treats every folder as untrusted. A local tmux seat is never diskless, and the g
 looser side of that difference only in a mode where the CLI cannot run commands at all.
 
 2.1.293 and 2.1.294 are on disk but were not part of this check and stay unverified.
+
+## 2.1.296 (checked 2026-10-10 against the 2.1.295 bundle)
+
+`node scripts/verify-trust-rule.mjs 2.1.296` output matches (a)-(d) above; only the minified names differ:
+
+- (a) `Tt()`: `.config.json` in the config home if it exists, else `.claude${t6()}.json` in `CLAUDE_CONFIG_DIR` or the home dir.
+- (b) `YB()`: the canonical root's `projects[pFe()]` flag first, then `Iw`/`Nw` walk the folder and each ancestor up to the git root (`rootOnly` branch included).
+- (c) `Jn()`: gitdir, then commondir, then the back-pointing gitdir check, resolving to the main checkout.
+- (d) `hasTrustDialogAccepted`.
 
 ## Differences that do not change the verdict
 
