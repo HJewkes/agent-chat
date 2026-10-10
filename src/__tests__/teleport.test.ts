@@ -123,7 +123,7 @@ async function spawnAgent(over: Record<string, unknown> = {}): Promise<string> {
 }
 
 /** Installs a coordinator profile, the only kind that may run with Remote Control (CC-163). */
-function installCoordinatorProfile(): string {
+function installCoordinatorProfile(extra: Record<string, unknown> = {}): string {
   fs.mkdirSync(profilesDir(), { recursive: true })
   const profile = {
     model: 'opus',
@@ -131,6 +131,7 @@ function installCoordinatorProfile(): string {
     isolation: 'none',
     surface: 'iterm-pane',
     role: 'coordinator',
+    ...extra,
   }
   fs.writeFileSync(path.join(profilesDir(), 'lead.json'), JSON.stringify(profile))
   return 'lead'
@@ -1413,6 +1414,83 @@ describe('remote control for a coordinator seat (CC-883)', () => {
     const { args, warnings } = await resumedArgs({})
     expect(args).not.toContain('--remote-control')
     expect(warnings.join(' ')).toMatch(/scout is a worker, so it resumed without Remote Control/)
+  })
+})
+
+/** CC-924: a coordinator profile can carry remoteControl, which spawn and teleport honour. */
+describe('remote control from the profile (CC-924)', () => {
+  const PLAIN = 'claude --channels plugin:agent-chat@agent-chat-local'
+
+  it('spawns a coordinator profile with it when the request is silent', async () => {
+    const profile = installCoordinatorProfile({ remoteControl: true })
+    const agentId = await spawnAgent({ name: 'rc-prof', profile, surface: 'iterm-pane' })
+    expect(planFor(agentId).args).toContain('--remote-control')
+  })
+
+  it('lets an explicit false override the profile', async () => {
+    const profile = installCoordinatorProfile({ remoteControl: true })
+    const agentId = await spawnAgent({
+      name: 'rc-off',
+      profile,
+      surface: 'iterm-pane',
+      remoteControl: false,
+    })
+    expect(planFor(agentId).args).not.toContain('--remote-control')
+  })
+
+  it('ignores it on a headless surface', async () => {
+    const profile = installCoordinatorProfile({ remoteControl: true })
+    const agentId = await spawnAgent({ name: 'rc-headless', profile, surface: 'headless' })
+    expect(planFor(agentId).args).not.toContain('--remote-control')
+  })
+
+  it('refuses a worker profile that sets it', async () => {
+    const profile = installCoordinatorProfile({ role: 'worker', remoteControl: true })
+    const result = await supervisor.spawn({
+      name: 'rc-worker',
+      profile,
+      brief: 'b',
+      requestedBy: 'human',
+      cwd: workspace(),
+      isolation: 'none',
+      surface: 'iterm-pane',
+    })
+    expect(result.ok).toBe(false)
+    expect(result.reason).toMatch(/"remoteControl" needs "role": "coordinator"/)
+  })
+
+  it("keeps it across a teleport of another host's session through the profile", async () => {
+    const profile = installCoordinatorProfile({ remoteControl: true })
+    const agentId = await spawnAgent({ name: 'rc-far', profile, surface: 'iterm-pane' })
+    await supervisor.teleport({
+      subject: subject(agentId, { name: 'rc-far', host: 'caller-host' }),
+      handoff: 'h',
+    })
+    const plan = supervisor.teleportPlan(agentId)
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    expect((await plan).launch?.remoteControl).toBe(true)
+  })
+
+  it('keeps it across a same-host teleport whose argv lacks it', async () => {
+    supervisor.close()
+    makeSupervisor(undefined, () => PLAIN)
+    const profile = installCoordinatorProfile({ remoteControl: true })
+    const agentId = await spawnAgent({ name: 'rc-near', profile, surface: 'iterm-pane' })
+    const result = await supervisor.teleport({ subject: subject(agentId, { name: 'rc-near' }), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    expect(planFor(result.agentId as string).args).toContain('--remote-control')
+  })
+
+  it('still lets the teleport say false outright', async () => {
+    const profile = installCoordinatorProfile({ remoteControl: true })
+    const agentId = await spawnAgent({ name: 'rc-no', profile, surface: 'iterm-pane' })
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'rc-no' }),
+      handoff: 'h',
+      remoteControl: false,
+    })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    expect(planFor(result.agentId as string).args).not.toContain('--remote-control')
   })
 })
 

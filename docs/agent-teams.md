@@ -1594,6 +1594,12 @@ Therefore:
   placement. Without the cap, an agent team is a fork bomb with a language
   model deciding the branching factor. A requester whose own spawn row is
   missing, or names no profile, counts as a worker.
+- **Remote Control from the profile (CC-924):** a coordinator profile may set
+  `"remoteControl": true`. `agent_spawn` uses it when `remote_control` is
+  omitted (an explicit `false` wins; a headless surface still ignores it), and
+  a teleport carries it to the successor beside the seat-file rule and the
+  argv the session reports. A profile that sets it without
+  `"role": "coordinator"` fails to load, with an error naming the field.
 - **Resume (CC-216):** a registered worker may `agent_resume` only an agent
   whose `agent_spawned.meta.parent` is its own agent id. A coordinator, a
   human-started session and the human at the CLI may resume any agent.

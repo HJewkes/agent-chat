@@ -403,7 +403,7 @@ export class Teleport {
       // CC-881: a remote predecessor's pid names a process on its own host, not one here.
       inherited: remote ? undefined : this.host.inheritedIsolation(subject.agentId),
       // CC-163: a worker's successor never inherits Remote Control, even one its argv shows.
-      remoteControl: worker ? false : (req.remoteControl ?? this.carriedRemoteControl(req)),
+      remoteControl: worker ? false : (req.remoteControl ?? this.carriedRemoteControl(req, config.profile)),
       ...(remote ? { remote: remoteWait() } : {}),
       since: identity.spawnedAt,
       sessionId: identity.sessionId,
@@ -450,7 +450,8 @@ export class Teleport {
   }
 
   /** CC-883: a coordinator seat runs with Remote Control (10-06 plan D6); anyone else keeps what it launched with. */
-  private carriedRemoteControl(req: TeleportRequest): boolean {
+  private carriedRemoteControl(req: TeleportRequest, profile: AgentProfile): boolean {
+    if (profile.remoteControl === true) return true
     if (readSeatFile(this.seatTeleport.autonomyRoot, req.subject.name) !== undefined) return true
     return req.remoteControlSeen ?? this.predecessorRemoteControl(req.subject)
   }
