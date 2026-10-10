@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Task } from '../agents/burndown/eligibility.js'
 import type { Runner } from '../agents/burndown/exec.js'
+import type { OwedHold } from '../agents/burndown/owed-holds.js'
 import { changedFiles, openPulls, originRepo } from '../agents/burndown/pr-adopt-ports.js'
 import {
   adoptSeatPrs,
@@ -53,6 +54,7 @@ interface Fake {
   seatLog: string[]
   events: string[]
   listed: ShepherdListing | undefined
+  owed: OwedHold[]
 }
 
 const listing = (prs: string[] = [], branches: string[] = []): ShepherdListing => ({
@@ -66,11 +68,13 @@ function fake(opts: {
   listed?: ShepherdListing | undefined
   files?: ChangedFile[] | undefined
   registerExit?: number
-  holdExit?: number
+  /** Exit codes of successive holds; past the last, a hold succeeds. */
+  holdExits?: number[]
 }): Fake {
   const f: Fake = {
     registered: [],
     calls: [],
+    owed: [],
     seatLog: [],
     events: [],
     listed: 'listed' in opts ? opts.listed : listing(),
@@ -95,10 +99,11 @@ function fake(opts: {
     },
     hold: (target, reason) => {
       f.calls.push(`hold ${target.repo}#${target.pr}: ${reason}`)
-      return opts.holdExit === undefined
-        ? { ok: true }
-        : { ok: false, refused: opts.holdExit === 65, reason: `exit ${opts.holdExit}` }
+      const exit = opts.holdExits?.shift()
+      return exit === undefined ? { ok: true } : { ok: false, refused: exit === 65, reason: `exit ${exit}` }
     },
+    owedHolds: () => [...f.owed],
+    setOwedHolds: holds => void (f.owed = [...holds]),
     logged: (_seat, key) => f.seatLog.some(line => line.includes(key)),
     append: (_seat, text) => void f.seatLog.push(text),
     log: event => void f.events.push(event),
@@ -184,7 +189,7 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.seatLog).toHaveLength(1)
   })
 
-  it.each(['security', 'gate security'])(
+  it.each(['security', 'gate security', 'auth_security', 'authSecurity', 'Merge_Security'])(
     'only flags a task whose title names "%s", until Shepherd holds at registration',
     word => {
       const f = fake({
@@ -195,9 +200,10 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
       tick(f)
 
       expect(f.calls).toEqual([])
-      expect(f.seatLog).toEqual([
-        'burndown: Acme/Widgets#7 unregistered: sensitive word "security": register it by hand (T-1)',
-      ])
+      expect(f.seatLog).toHaveLength(1)
+      expect(f.seatLog[0]).toMatch(
+        /^burndown: Acme\/Widgets#7 unregistered: sensitive word "\w*security": register it by hand \(T-1\)$/i,
+      )
     },
   )
 
@@ -215,17 +221,66 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.seatLog).toEqual([])
   })
 
-  it('flags for the seat when the hold after a register fails, once', () => {
-    const f = fake({ pulls: [pull({ title: 'T-1: Tidy the gate tests' })], tasks: [task()], holdExit: 69 })
+  it('flags for the seat once a day while a failed hold is owed', () => {
+    const f = fake({
+      pulls: [pull({ title: 'T-1: Tidy the gate tests' })],
+      tasks: [task()],
+      holdExits: [69, 69],
+    })
 
     tick(f)
     tick(f)
 
     expect(f.registered).toHaveLength(1)
-    expect(f.events).toEqual(['burndown_pr_adopt_hold_failed'])
-    expect(f.seatLog).toEqual([
-      'burndown: Acme/Widgets#7 not held: registered, but the hold failed (exit 69): hold it by hand: burndown: sensitive word "gate" in T-1',
+    expect(f.events).toEqual(['burndown_pr_adopt_hold_failed', 'burndown_pr_adopt_hold_failed'])
+    expect(f.owed).toEqual([
+      { seat: 'seat-a', repo: 'Acme/Widgets', pr: 7, reason: 'burndown: sensitive word "gate" in T-1' },
     ])
+    expect(f.seatLog).toEqual([
+      'burndown: Acme/Widgets#7 not held: registered, but the hold failed (exit 69); the tick retries it, or hold it by hand: burndown: sensitive word "gate" in T-1',
+    ])
+  })
+
+  it('holds on the next tick a run whose hold failed after its register', () => {
+    const f = fake({ pulls: [pull({ title: 'T-1: Tidy the gate tests' })], tasks: [task()], holdExits: [69] })
+
+    tick(f)
+    tick(f)
+
+    expect(f.calls).toEqual([
+      'register Acme/Widgets#7',
+      'hold Acme/Widgets#7: burndown: sensitive word "gate" in T-1',
+      'hold Acme/Widgets#7: burndown: sensitive word "gate" in T-1',
+    ])
+    expect(f.events.at(-1)).toBe('burndown_pr_adopt_held')
+    expect(f.owed).toEqual([])
+  })
+
+  it('drops an owed hold once Shepherd no longer lists the run, which is then not registered', () => {
+    const f = fake({ pulls: [], tasks: [task()] })
+    f.owed = [
+      { seat: 'seat-a', repo: 'Acme/Widgets', pr: 7, reason: 'burndown: sensitive word "gate" in T-1' },
+    ]
+
+    tick(f)
+
+    expect(f.calls).toEqual([])
+    expect(f.owed).toEqual([])
+  })
+
+  it('keeps an owed hold while Shepherd is down', () => {
+    const owed = {
+      seat: 'seat-a',
+      repo: 'Acme/Widgets',
+      pr: 7,
+      reason: 'burndown: sensitive word "gate" in T-1',
+    }
+    const f = fake({ pulls: [], tasks: [task()], listed: undefined })
+    f.owed = [owed]
+
+    tick(f)
+
+    expect(f.owed).toEqual([owed])
   })
 
   it('does not hold when the register fails', () => {

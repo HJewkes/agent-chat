@@ -5,6 +5,7 @@ import { resolveDeciderAgentId, resolveWorktreeBudget } from '../../config.js'
 import {
   burndownConfigPath,
   burndownLedgerPath,
+  burndownOwedHoldsPath,
   burndownPausePath,
   burndownTickStatusPath,
 } from '../../paths.js'
@@ -321,6 +322,7 @@ function adoptPrs(seats: readonly AdoptSeat[], ledger: Ledger, opts: TickOptions
     autonomyRoot: defaultAutonomyRoot(root),
     now,
     log,
+    owedHoldsFile: burndownOwedHoldsPath(),
   })
   try {
     return adoptSeatPrs(seats, claimed, ports, now)

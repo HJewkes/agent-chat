@@ -105,6 +105,9 @@ export const ghShimDir = (): string => path.join(home(), 'gh-shim')
 /** The burndown claim ledger: which task each tick-spawned agent holds, and in what phase. */
 export const burndownLedgerPath = (): string => path.join(home(), 'burndown.json')
 
+/** CC-931: holds the tick owes on runs it registered, retried each tick until Shepherd takes them. */
+export const burndownOwedHoldsPath = (): string => path.join(home(), 'burndown-owed-holds.json')
+
 /** The burndown tick's heartbeat and consecutive-failure count; agent-chat writes it, titan-factory reads it. */
 export const burndownTickStatusPath = (): string => path.join(home(), 'burndown-status.json')
 

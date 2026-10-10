@@ -1,5 +1,6 @@
 import { BRANCH_PREFIX } from '../isolation/worktree.js'
 import type { Task } from './eligibility.js'
+import type { OwedHold } from './owed-holds.js'
 import {
   targetRef,
   type Registration,
@@ -15,7 +16,9 @@ import {
  * can prove ordinary: a correctness, bug, feature, platform, product, agent-tooling or refactor task
  * whose every changed path is on an allow-list of tests, docs and changesets, and whose diff
  * is G10-small. CC-931: a sensitive word in its title or tags registers the PR and then holds
- * the run, naming the word and task, for the seat to release. Shepherd holds only a run that
+ * the run, naming the word and task, for the seat to release. A hold that fails is owed: each
+ * later tick retries it until Shepherd takes it or no longer lists the run, and the seat is
+ * flagged once a day meanwhile. Shepherd holds only a run that
  * exists, so a seconds-wide window between the two calls stays open until Shepherd applies a
  * hold class at registration; until then a `secur` word is still only flagged. Everything else is
  * flagged in the seat's log, for the seat to register and hold by hand. Shepherd down is
@@ -62,6 +65,9 @@ export interface AdoptPorts {
   register: (reg: Registration) => RegisterReply
   /** `shepherd hold` on a registered run, with the reason the seat reads. */
   hold: (target: ShepherdTarget, reason: string) => RegisterReply
+  /** Holds a past tick registered a run for and could not place. */
+  owedHolds: () => OwedHold[]
+  setOwedHolds: (holds: readonly OwedHold[]) => void
   /** Whether today's seat log already has a line containing `key`. */
   logged: (seat: string, key: string) => boolean
   append: (seat: string, text: string) => void
@@ -122,8 +128,11 @@ const SENSITIVE_STEMS = [
 /** Captures the whole word from the stem on, so a seat reads "authority" rather than "auth". */
 const SENSITIVE_TEXT = new RegExp(`\\b((?:${SENSITIVE_STEMS.join('|')})\\w*)`, 'gi')
 
-/** Words still only flagged: their hold needs Shepherd to apply a hold class at registration (N1), not after it. */
-const FLAG_ONLY_WORD = /^secur/i
+/**
+ * Words still only flagged: their hold needs Shepherd to apply a hold class at registration (N1),
+ * not after it. Matched anywhere, since one captured word can join stems: `authSecurity`.
+ */
+const FLAG_ONLY_WORD = /secur/i
 
 /** The only paths a registered PR may change: tests, docs and changesets, which grant nothing. Anything else is flagged. */
 const ORDINARY_PATHS = [
@@ -153,6 +162,7 @@ export function adoptSeatPrs(
     ports.log('burndown_pr_adopt_shepherd_down', {})
     return ['shepherd did not answer; seat PR adoption retries next tick']
   }
+  settleOwedHolds(listed, ports)
   const ctx = { listed, claimed, ports, now }
   return seats.flatMap(seat => {
     const budget = { left: REGISTERS_PER_SEAT }
@@ -228,25 +238,39 @@ function adoptPull(
   }
   ctx.budget.left -= 1
   if (!registerOnce(seat, verdict.register, ports)) return false
-  if (verdict.hold !== undefined) holdRun(seat, verdict.register.target, verdict.hold, ports)
+  if (verdict.hold === undefined) return true
+  const owed = { seat: seat.seat, ...verdict.register.target, reason: verdict.hold }
+  if (!holdRun(owed, ports)) ports.setOwedHolds([...ports.owedHolds(), owed])
   return true
 }
 
-/** A failed hold leaves the run live and listed, so no later tick retries it: the seat must hold it by hand. */
-function holdRun(seat: AdoptSeat, target: ShepherdTarget, reason: string, ports: AdoptPorts): void {
-  const ref = targetRef(target)
-  const reply = ports.hold(target, reason)
+/**
+ * Retries every owed hold. A run Shepherd no longer lists is not registered, so its hold is
+ * dropped; any other failure stays owed, because the run is live and unheld.
+ */
+function settleOwedHolds(listed: ShepherdListing, ports: AdoptPorts): void {
+  const owed = ports.owedHolds()
+  if (owed.length === 0) return
+  const still = owed.filter(h => listed.prs.has(targetRef(h).toLowerCase()) && !holdRun(h, ports))
+  if (still.length !== owed.length) ports.setOwedHolds(still)
+}
+
+/** False leaves the run live and unheld: the caller owes the hold, and the seat is flagged once a day. */
+function holdRun(owed: OwedHold, ports: AdoptPorts): boolean {
+  const ref = targetRef(owed)
+  const reply = ports.hold(owed, owed.reason)
   if (reply.ok) {
-    ports.log('burndown_pr_adopt_held', { seat: seat.seat, target: ref, reason })
-    return
+    ports.log('burndown_pr_adopt_held', { seat: owed.seat, target: ref, reason: owed.reason })
+    return true
   }
-  ports.log('burndown_pr_adopt_hold_failed', { seat: seat.seat, target: ref, reason: reply.reason })
+  ports.log('burndown_pr_adopt_hold_failed', { seat: owed.seat, target: ref, reason: reply.reason })
   flagOnce(
-    seat.seat,
+    owed.seat,
     `burndown: ${ref} not held`,
-    `registered, but the hold failed (${reply.reason}): hold it by hand: ${reason}`,
+    `registered, but the hold failed (${reply.reason}); the tick retries it, or hold it by hand: ${owed.reason}`,
     ports,
   )
+  return false
 }
 
 function registerOnce(seat: AdoptSeat, reg: Registration, ports: AdoptPorts): boolean {

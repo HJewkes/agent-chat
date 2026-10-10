@@ -4,6 +4,7 @@ import { githubRepoOf } from '../spawn-provenance.js'
 import { expandHome } from './seat-dispatch.js'
 import type { LoadedSeat } from './seat-tick.js'
 import type { Runner } from './exec.js'
+import { readOwedHolds, writeOwedHolds } from './owed-holds.js'
 import type { AdoptPorts, AdoptSeat, ChangedFile, OpenPull } from './pr-adopt.js'
 import { shepherdHold, shepherdListed, shepherdRegister, type ShepherdTarget } from './shepherd.js'
 import { parseTask, readTaskText } from './source.js'
@@ -21,9 +22,10 @@ interface Deps {
   autonomyRoot: string
   now: Date
   log: AdoptPorts['log']
+  owedHoldsFile: string
 }
 
-export function diskAdoptPorts({ exec, root, autonomyRoot, now, log }: Deps): AdoptPorts {
+export function diskAdoptPorts({ exec, root, autonomyRoot, now, log, owedHoldsFile }: Deps): AdoptPorts {
   return {
     repoOf: checkout => originRepo(checkout, exec),
     pulls: repo => openPulls(repo, exec),
@@ -32,6 +34,8 @@ export function diskAdoptPorts({ exec, root, autonomyRoot, now, log }: Deps): Ad
     listed: () => shepherdListed(exec),
     register: reg => shepherdRegister(reg, exec),
     hold: (target, reason) => shepherdHold(target, reason, exec),
+    owedHolds: () => readOwedHolds(owedHoldsFile),
+    setOwedHolds: holds => writeOwedHolds(owedHoldsFile, holds),
     logged: (seat, key) => readSeatJournal(autonomyRoot, seat, now)?.includes(key) ?? false,
     append: (seat, text) => void appendSeatLog(autonomyRoot, seat, now, text),
     log,
