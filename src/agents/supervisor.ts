@@ -1757,7 +1757,7 @@ export class Supervisor implements TeleportHost {
       ...(req.tags?.length ? { tags: req.tags } : {}),
       ...(req.subscriptions?.length ? { subscriptions: req.subscriptions } : {}),
       ...(fork ? { forkFrom: fork.path } : {}),
-      ...(req.remoteControl ? { remoteControl: true } : {}),
+      ...((req.remoteControl ?? profile.remoteControl) ? { remoteControl: true } : {}),
       agentChatHome: home(),
       gitHooksDir: gitHooksDir(),
       configDir: account.dir,

@@ -228,27 +228,30 @@ Usage: agent-chat burndown [options] [command]
 pick and run unattended work for opted-in initiatives
 
 Options:
-  -h, --help           display help for command
+  -h, --help                display help for command
 
 Commands:
-  plan [options]       dry run: what the tick would dispatch now, and why every other task was
-                       refused
-  milestone [options]  this week's burn-down per milestone: points, critical path, WIP, throughput,
-                       forecast, status
-  seats                seats mode checks (CC-205)
-  status               claim ledger, stalled claims and each account budget gate
-  tick [options]       one pass: advance every claim a phase, then spawn new work inside the
-                       ceilings
-  pause                stop new spawns from the next tick on; running agents finish
-  resume               let the tick spawn again
-  release <task>       drop every claim on a task, stalled or not, so the tick may pick it again
-  install [options]    print the sign-off checklist, then install and start the launchd tick job (a
-                       systemd --user timer on Linux)
-  uninstall            stop the launchd tick job and keep it from starting at login; on Linux, also
-                       remove its units
-  job-status           launchd state for the tick job (its systemd units on Linux): loaded, pid, and
-                       whether it may spawn
-  help [command]       display help for command
+  plan [options]            dry run: what the tick would dispatch now, and why every other task was
+                            refused
+  milestone [options]       this week's burn-down per milestone: points, critical path, WIP,
+                            throughput, forecast, status
+  seats                     seats mode checks (CC-205)
+  status                    claim ledger, stalled claims and each account budget gate
+  dispatch-stats [options]  per seat: spawns/h tick vs hand, queue age, ready depth, cap use,
+                            refusal mix, registrations, tick health
+  tick [options]            one pass: advance every claim a phase, then spawn new work inside the
+                            ceilings
+  pause                     stop new spawns from the next tick on; running agents finish
+  resume                    let the tick spawn again
+  release <task>            drop every claim on a task, stalled or not, so the tick may pick it
+                            again
+  install [options]         print the sign-off checklist, then install and start the launchd tick
+                            job (a systemd --user timer on Linux)
+  uninstall                 stop the launchd tick job and keep it from starting at login; on Linux,
+                            also remove its units
+  job-status                launchd state for the tick job (its systemd units on Linux): loaded,
+                            pid, and whether it may spawn
+  help [command]            display help for command
 
 === agent-chat burndown plan
 Usage: agent-chat burndown plan [options]
@@ -304,6 +307,18 @@ claim ledger, stalled claims and each account budget gate
 
 Options:
   -h, --help  display help for command
+
+=== agent-chat burndown dispatch-stats
+Usage: agent-chat burndown dispatch-stats [options]
+
+per seat: spawns/h tick vs hand, queue age, ready depth, cap use, refusal mix, registrations, tick
+health
+
+Options:
+  --json                   one JSON record per seat, one per line
+  --since <value>          window to read, e.g. 90m, 24h or 7d (default 24h)
+  --autonomy-root <value>  directory holding seats/ and logs/
+  -h, --help               display help for command
 
 === agent-chat burndown tick
 Usage: agent-chat burndown tick [options]
@@ -403,11 +418,13 @@ Commands:
                                 fatal
   boot [options] <seat>         one boot digest for a coordinator seat (CC-318), read-only: the seat
                                 file's frontmatter, the In flight derived from burndown claims,
-                                Shepherd rows, the roster and verdicts, the queue's Next section,
-                                the newest State at teleport section of today's log, inbox messages
-                                after a cutoff and the seat status, in 6,000 characters. Over that
-                                the oldest inbox lines go first, then the log section; the queue and
-                                status are never cut
+                                Shepherd rows, the roster and verdicts, the top in-scope, fresh
+                                brief:ready tasks in the gate's ready order with their age, the
+                                queue's Next section, the newest State at teleport section of
+                                today's log, inbox messages after a cutoff and the seat status, in
+                                6,000 characters. Over that the oldest inbox lines go first, then
+                                the log section, then the queue, In flight, Next, seat and status
+                                sections
   run-start [options] <seat>    start a new run for a seat when the owner messages it (CC-472): sets
                                 the seat's run meter in $AGENT_CHAT_HOME/seat-watchdog.json to
                                 {since: now, last: <pool seven_day now>, spent: 0, before: <old
@@ -490,10 +507,11 @@ Options:
 Usage: agent-chat seats boot [options] <seat>
 
 one boot digest for a coordinator seat (CC-318), read-only: the seat file's frontmatter, the In
-flight derived from burndown claims, Shepherd rows, the roster and verdicts, the queue's Next
-section, the newest State at teleport section of today's log, inbox messages after a cutoff and the
-seat status, in 6,000 characters. Over that the oldest inbox lines go first, then the log section;
-the queue and status are never cut
+flight derived from burndown claims, Shepherd rows, the roster and verdicts, the top in-scope, fresh
+brief:ready tasks in the gate's ready order with their age, the queue's Next section, the newest
+State at teleport section of today's log, inbox messages after a cutoff and the seat status, in
+6,000 characters. Over that the oldest inbox lines go first, then the log section, then the queue,
+In flight, Next, seat and status sections
 
 Options:
   --after <value>  show inbox messages after this msg_id; default the State block's own cursor, else

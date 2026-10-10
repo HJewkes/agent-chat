@@ -249,6 +249,7 @@ const PROFILE_KEYS: Record<Exclude<keyof AgentProfile, 'warnings'>, true> = {
   surface: true,
   surfaceLifetime: true,
   role: true,
+  remoteControl: true,
   returnContract: true,
   effort: true,
   promptPrelude: true,
@@ -338,6 +339,12 @@ export function parseProfile(
     return { error: `${name}: "surfaceLifetime" must be one of ${SURFACE_LIFETIMES.join(', ')}` }
   if (body.role !== undefined && !isRole(body.role))
     return { error: `${name}: "role" must be one of ${AGENT_ROLES.join(', ')}` }
+  if (body.remoteControl !== undefined && typeof body.remoteControl !== 'boolean')
+    return { error: `${name}: "remoteControl" must be true or false` }
+  if (body.remoteControl === true && body.role !== 'coordinator')
+    return {
+      error: `${name}: "remoteControl" needs "role": "coordinator"; a worker profile cannot run with Remote Control`,
+    }
   if (body.returnContract !== undefined && !isContractChoice(body.returnContract))
     return { error: `${name}: "returnContract" must be one of ${CONTRACT_CHOICES.join(', ')}` }
   if (body.effort !== undefined && !EFFORT_LEVELS.includes(body.effort as never))
@@ -364,6 +371,7 @@ export function parseProfile(
       ? {}
       : { surfaceLifetime: body.surfaceLifetime as SurfaceLifetime }),
     ...(isRole(body.role) ? { role: body.role } : {}),
+    ...(body.remoteControl === true ? { remoteControl: true } : {}),
     ...(isContractChoice(body.returnContract) ? { returnContract: body.returnContract } : {}),
     ...(body.effort === undefined ? {} : { effort: body.effort as EffortLevel }),
     promptPrelude: typeof body.promptPrelude === 'string' ? body.promptPrelude : '',

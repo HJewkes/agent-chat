@@ -288,13 +288,20 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
  * the seat keeps only its tagged work in shared initiatives, and the fault is returned for the tick to report.
  */
 function scopeInputs(seat: LoadedSeat): { scope: SeatScope; faults: string[] } {
-  const { seats } = seat.policy
-  const name = seat.dispatch.seat
+  return readSeatScope(seat.policy.seats, seat.dispatch.seat, seat.autonomyRoot)
+}
+
+/** CC-935: `scopeInputs` for a caller holding the seats and the autonomy root, such as `seats boot`. */
+export function readSeatScope(
+  seats: Policy['seats'],
+  name: string,
+  autonomyRoot: string | undefined,
+): { scope: SeatScope; faults: string[] } {
   const file = seats[name]?.backlog
-  if (file === undefined || seat.autonomyRoot === undefined)
+  if (file === undefined || autonomyRoot === undefined)
     return { scope: seatScopeOf(seats, name, new Set()), faults: [] }
   try {
-    const ids = backlogIds(fs.readFileSync(path.join(seat.autonomyRoot, file), 'utf8'))
+    const ids = backlogIds(fs.readFileSync(path.join(autonomyRoot, file), 'utf8'))
     return { scope: seatScopeOf(seats, name, ids), faults: [] }
   } catch (err) {
     return { scope: seatScopeOf(seats, name, new Set()), faults: [`backlog ${file}: ${message(err)}`] }

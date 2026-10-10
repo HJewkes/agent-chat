@@ -27,7 +27,7 @@ import {
 } from './plan.js'
 import type { MilestoneFile } from './milestones.js'
 import { planOrder, type PlannedRow } from './plan-order.js'
-import { readyOrder } from './ready-order.js'
+import { readySet } from './ready-order.js'
 import {
   dispatchOrder,
   type DispatchRow,
@@ -280,11 +280,9 @@ function briefReadyFirst(inputs: SeatPlanInputs, order: Ordered['order']): Order
   if (brief === undefined) return order
   const check: BriefCheck = { maxAgeDays: brief.maxAgeDays, now: budget.ctx.now }
   const taskOf = (r: Ordered['order'][number]) => inputs.tasks.get(r.initiative)?.find(t => t.id === r.id)
-  const ready = (r: Ordered['order'][number]) => {
-    const t = taskOf(r)
-    return t !== undefined && briefRefusal(t, check) === undefined
-  }
-  return [...readyOrder(order.filter(ready), r => taskOf(r)?.priority), ...order.filter(r => !ready(r))]
+  const ready = readySet(order, taskOf, check, inputs.scope)
+  const taken = new Set(ready)
+  return [...ready, ...order.filter(r => !taken.has(r))]
 }
 
 /**
