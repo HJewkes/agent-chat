@@ -1,4 +1,11 @@
-import { EXTERNAL_HEARTBEAT_MESSAGE, judgeExternal, lastTickAt } from './heartbeat-external.js'
+import { parseSeat } from './charter.js'
+import {
+  EXTERNAL_HEARTBEAT_MESSAGE,
+  heartbeatMinutes,
+  judgeExternal,
+  lastTickAt,
+  quietLimitMs,
+} from './heartbeat-external.js'
 import type { WakeResult } from './run.js'
 import { readSeatLog } from './stops.js'
 
@@ -6,6 +13,8 @@ import { readSeatLog } from './stops.js'
 
 export interface HeartbeatCheckDeps {
   now: () => Date
+  /** `seats/<seat>.md`; read on every firing, so a cron removed after install stops the sends. */
+  readSeatFile: (seat: string) => string | undefined
   /** The seat's log for the local day of `at`; undefined when there is none. */
   readSeatLog: (seat: string, at: Date) => string | undefined
   send: (seat: string, message: string) => Promise<WakeResult>
@@ -43,9 +52,16 @@ export async function checkHeartbeat(
   seat: string,
   dryRun: boolean,
 ): Promise<CheckResult> {
+  const mins = heartbeatMinutes(parseSeat(seat, deps.readSeatFile(seat) ?? '')?.heartbeatCron)
+  if (typeof mins === 'string') return { ok: true, line: `${seat}: skip: ${mins}` }
   const now = deps.now()
   const logs = recentLogs(deps, seat, now)
-  const verdict = judgeExternal({ nowMs: now.getTime(), lastTickAt: latestTick(logs), stop: stopOf(logs) })
+  const verdict = judgeExternal({
+    nowMs: now.getTime(),
+    lastTickAt: latestTick(logs),
+    quietMs: quietLimitMs(mins),
+    stop: stopOf(logs),
+  })
   if (!verdict.send) return { ok: true, line: `${seat}: skip: ${verdict.reason}` }
   if (dryRun) return { ok: true, line: `${seat}: WOULD SEND: ${verdict.reason}` }
   const sent = await deps.send(seat, EXTERNAL_HEARTBEAT_MESSAGE)

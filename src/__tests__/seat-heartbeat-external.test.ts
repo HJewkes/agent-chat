@@ -8,6 +8,7 @@ import {
   heartbeatUnits,
   judgeExternal,
   lastTickAt,
+  quietLimitMs,
   type HeartbeatJobContext,
 } from '../agents/seats/heartbeat-external.js'
 import { installHeartbeats, refreshHeartbeat } from '../agents/seats/heartbeat-install.js'
@@ -43,6 +44,23 @@ describe('lastTickAt', () => {
     expect(lastTickAt('10:4x tick: nothing eligible', DAY)).toBe(at(10, 40))
   })
 
+  // Review of #548. Catches: a case-sensitive `tick:`-only match, which never sees a seat writing
+  // `TICK impl 2/2`, `tick.` or `tick (`, so a healthy seat got a fallback tick on every firing.
+  it.each([
+    ['00:29 TICK impl 2/2, rev 0, dispatched nothing'],
+    ['00:29 tick. 1 implementer, budget 40%'],
+    ['00:29 tick (late): nothing eligible'],
+    ['00:29 Boot tick: 0 implementers'],
+    ['00:2x Tick: nothing eligible'],
+  ])('reads the seat wording %j as a tick', line => {
+    expect(lastTickAt(line, DAY)).toBe(at(0, 20 + (line.includes('2x') ? 0 : 9)))
+  })
+
+  // Catches: loosening the match so far that a line merely mentioning a tick counts as one.
+  it('does not read a tick named mid-line as a tick', () => {
+    expect(lastTickAt('00:29 Merged the PR that fixed the tick parser', DAY)).toBeUndefined()
+  })
+
   // Catches: taking the first tick line instead of the latest.
   it('takes the latest tick of the day', () => {
     expect(lastTickAt('08:17 tick: a\n08:47 tick: b\n', DAY)).toBe(at(8, 47))
@@ -53,19 +71,39 @@ describe('judgeExternal', () => {
   // Catches: a threshold other than 35 minutes, in either direction.
   it('stays quiet under 35 minutes since the tick and sends at 35', () => {
     const tick = at(10, 0)
-    expect(judgeExternal({ nowMs: tick + 34 * MIN, lastTickAt: tick, stop: undefined }).send).toBe(false)
-    expect(judgeExternal({ nowMs: tick + 35 * MIN, lastTickAt: tick, stop: undefined }).send).toBe(true)
+    expect(
+      judgeExternal({ nowMs: tick + 34 * MIN, lastTickAt: tick, quietMs: 35 * MIN, stop: undefined }).send,
+    ).toBe(false)
+    expect(
+      judgeExternal({ nowMs: tick + 35 * MIN, lastTickAt: tick, quietMs: 35 * MIN, stop: undefined }).send,
+    ).toBe(true)
   })
 
   // Catches: a fallback tick that ends a seat's WRAP, PARKED or BUDGET-PAUSE.
   it('holds a seat whose latest line stops it, however stale', () => {
-    const verdict = judgeExternal({ nowMs: at(12, 0), lastTickAt: at(8, 0), stop: 'seat logged "WRAP"' })
+    const verdict = judgeExternal({
+      nowMs: at(12, 0),
+      lastTickAt: at(8, 0),
+      quietMs: 35 * MIN,
+      stop: 'seat logged "WRAP"',
+    })
     expect(verdict).toEqual({ send: false, reason: 'held: seat logged "WRAP"' })
   })
 
   // Catches: treating a seat with no tick at all as alive.
   it('sends to a seat with no tick line', () => {
-    expect(judgeExternal({ nowMs: at(12, 0), lastTickAt: undefined, stop: undefined }).send).toBe(true)
+    expect(
+      judgeExternal({ nowMs: at(12, 0), lastTickAt: undefined, quietMs: 35 * MIN, stop: undefined }).send,
+    ).toBe(true)
+  })
+})
+
+describe('quietLimitMs', () => {
+  // Review of #548. Catches: a fixed 35-min limit, which ticks an hourly-cron seat every hour on top of its own cron.
+  it("is the cron's widest gap across the hour plus five minutes", () => {
+    expect(quietLimitMs([17, 47])).toBe(35 * MIN)
+    expect(quietLimitMs([17])).toBe(65 * MIN)
+    expect(quietLimitMs([50, 5, 20])).toBe(35 * MIN)
   })
 })
 
@@ -158,13 +196,14 @@ interface Rig {
 const dayKey = (d: Date): number => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
 
 /** A fake clock, a fake broker and an in-memory seat log keyed by local day. */
-function rig(): Rig {
+function rig(cron: string | undefined = '17,47 * * * *'): Rig {
   let now = at(8, 0)
   const logs = new Map<number, string>()
   const sent: Rig['sent'] = []
   const events: Rig['events'] = []
   const deps: HeartbeatCheckDeps = {
     now: () => new Date(now),
+    readSeatFile: () => seatFile(cron),
     readSeatLog: (_seat, day) => logs.get(dayKey(day)),
     send: async (seat, message) => {
       sent.push({ at: now, seat, message })
@@ -200,6 +239,27 @@ describe('checkHeartbeat', () => {
       },
     ])
     expect(result.line).toBe('seat-a: no tick for 35 min; heartbeat sent (message m1)')
+  })
+
+  // Review of #548. Catches: a fixed 35-min limit; an hourly seat that ticked 40 min ago is healthy.
+  it("holds an hourly seat until its own cron's gap plus five minutes", async () => {
+    const r = rig('17 * * * *')
+    appendTick(r, at(9, 17))
+    r.setNow(at(9, 57))
+    expect((await checkHeartbeat(r.deps, 'seat-a', false)).line).toBe(
+      'seat-a: skip: ticked 40 min ago, under 65',
+    )
+    r.setNow(at(10, 22))
+    await checkHeartbeat(r.deps, 'seat-a', false)
+    expect(r.sent).toHaveLength(1)
+  })
+
+  // Review of #548. Catches: units left behind after the cron is removed still ticking the seat.
+  it('sends nothing once the seat file has no heartbeat_cron', async () => {
+    const r = rig('')
+    r.setNow(at(12, 0))
+    expect((await checkHeartbeat(r.deps, 'seat-a', false)).line).toBe('seat-a: skip: no heartbeat_cron')
+    expect(r.sent).toEqual([])
   })
 
   // Catches: --dry-run sending or logging.

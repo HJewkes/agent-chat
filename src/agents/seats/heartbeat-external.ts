@@ -5,23 +5,25 @@ import { parseCron } from './heartbeat.js'
 
 /**
  * CC-947: a seat's CronCreate heartbeat dies with its session, so a systemd user timer per seat
- * fires on the seat's `heartbeat_cron` minutes and, when the seat logged no tick line for 35
- * minutes, sends the charter heartbeat message itself. Pure: the clock and the logs arrive as arguments.
+ * fires on the seat's `heartbeat_cron` minutes and, when the seat logged no tick line for its
+ * cron's widest gap plus five minutes, sends the charter heartbeat message itself. Pure: the clock and the logs arrive as arguments.
  */
 
 /** What the seat's own CronCreate job runs, so a fallback tick reads exactly like one. */
 export const EXTERNAL_HEARTBEAT_MESSAGE = 'Heartbeat tick per charter section 3'
 
-/** One missed 30-minute slot plus five minutes for a slow tick: quieter than this, the seat's cron is gone. */
-export const EXTERNAL_QUIET_MS = 35 * 60_000
+/** A slow tick logs this long after its slot; past one missed slot plus this, the seat's cron is gone. */
+export const EXTERNAL_SLACK_MS = 5 * 60_000
 
 export const HEARTBEAT_UNIT_PREFIX = 'agent-chat-heartbeat-'
 
 /**
- * Charter section 3.5's tick line, `HH:MM tick: ...`. Seats sometimes write the last minute digit
- * as `x`; that reads as 0, the earliest it could be, so a doubtful tick never suppresses a heartbeat.
+ * Section 3.5 of the charter asks for one line per tick but names no keyword, so seats write
+ * `tick:`, `tick.`, `tick (`, `TICK` and `Boot tick:`. Any case, any punctuation, after at most
+ * one leading word. Seats sometimes write the last minute digit as `x`; that reads as 0, the
+ * earliest it could be, so a doubtful tick never suppresses a heartbeat.
  */
-const TICK_LINE = /^(\d\d):(\d)([\dx]) tick\b/
+const TICK_LINE = /^(\d\d):(\d)([\dx]) (?:[a-z]+ )?tick\b/i
 
 /** Epoch ms of the latest tick line in the seat's log for local day `day`; undefined when it has none. */
 export function lastTickAt(log: string, day: Date): number | undefined {
@@ -29,7 +31,7 @@ export function lastTickAt(log: string, day: Date): number | undefined {
   for (const line of log.split('\n')) {
     const m = TICK_LINE.exec(line)
     if (m === null) continue
-    const minute = Number(m[2]) * 10 + (m[3] === 'x' ? 0 : Number(m[3]))
+    const minute = Number(m[2]) * 10 + (m[3]?.toLowerCase() === 'x' ? 0 : Number(m[3]))
     const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), Number(m[1]), minute).getTime()
     if (latest === undefined || at > latest) latest = at
   }
@@ -39,6 +41,8 @@ export function lastTickAt(log: string, day: Date): number | undefined {
 export interface ExternalInput {
   nowMs: number
   lastTickAt: number | undefined
+  /** From `quietLimitMs` over the seat's cron. */
+  quietMs: number
   /** Why the seat's latest line stops it (`WRAP`, `PARKED`, `BUDGET-PAUSE`); a fallback tick must not end that. */
   stop: string | undefined
 }
@@ -51,10 +55,10 @@ export interface ExternalVerdict {
 const minutes = (ms: number): number => Math.floor(ms / 60_000)
 
 export function judgeExternal(input: ExternalInput): ExternalVerdict {
-  const { nowMs, lastTickAt: tick, stop } = input
+  const { nowMs, lastTickAt: tick, stop, quietMs } = input
   if (stop !== undefined) return { send: false, reason: `held: ${stop}` }
-  if (tick !== undefined && nowMs - tick < EXTERNAL_QUIET_MS)
-    return { send: false, reason: `ticked ${minutes(nowMs - tick)} min ago, under 35` }
+  if (tick !== undefined && nowMs - tick < quietMs)
+    return { send: false, reason: `ticked ${minutes(nowMs - tick)} min ago, under ${minutes(quietMs)}` }
   const quiet =
     tick === undefined ? 'no tick line today or yesterday' : `no tick for ${minutes(nowMs - tick)} min`
   return { send: true, reason: quiet }
@@ -79,6 +83,13 @@ export function heartbeatMinutes(cron: string | undefined): number[] | string {
   if (schedule.hours.size !== 24)
     return `heartbeat_cron "${cron}" restricts hours, which the timer does not render`
   return [...schedule.minutes].sort((a, b) => a - b)
+}
+
+/** The widest gap between the cron's slots, across the hour, plus the slack: `17,47` gives 35 min, `17` gives 65. */
+export function quietLimitMs(minutesPastHour: readonly number[]): number {
+  const sorted = [...minutesPastHour].sort((a, b) => a - b)
+  const gaps = sorted.map((m, i) => ((sorted[(i + 1) % sorted.length] ?? m) - m + 60) % 60 || 60)
+  return Math.max(...gaps) * 60_000 + EXTERNAL_SLACK_MS
 }
 
 /** The seat's service and timer, or why it gets none. */

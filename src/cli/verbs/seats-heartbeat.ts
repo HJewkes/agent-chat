@@ -45,7 +45,7 @@ export const seatsHeartbeatInstallVerb = defineVerb({
   name: 'seats.heartbeat-install',
   description:
     "render one systemd --user service and timer per seat (CC-947) that fires on the seat file's " +
-    'heartbeat_cron minutes and sends the charter heartbeat when the seat logged no tick line for 35 min. ' +
+    "heartbeat_cron minutes and sends the charter heartbeat when the seat logged no tick line for its cron's widest gap plus 5 min. " +
     "Writes the unit files only: it never runs systemctl, so enabling the timers stays the owner's call",
   args: z.object({
     root: z.string().optional(),
@@ -87,6 +87,7 @@ export const seatsHeartbeatInstallVerb = defineVerb({
 
 const checkDeps = (root: string, send: HeartbeatCheckDeps['send']): HeartbeatCheckDeps => ({
   now: () => new Date(),
+  readSeatFile: seatFileReader(root),
   readSeatLog: (name, at) => readSeatJournal(root, name, at),
   send,
   logEvent,
@@ -97,7 +98,7 @@ const noSend: HeartbeatCheckDeps['send'] = () => Promise.reject(new Error('a dry
 export const seatsHeartbeatCheckVerb = defineVerb({
   name: 'seats.heartbeat-check',
   description:
-    "what a seat's heartbeat timer runs (CC-947): when the seat's log has no tick line for 35 min and no " +
+    "what a seat's heartbeat timer runs (CC-947): when the seat's log has no tick line for its cron's widest gap plus 5 min and no " +
     'WRAP, PARKED or BUDGET-PAUSE as its latest line, send the charter heartbeat through the broker and ' +
     'log heartbeat_external',
   args: z.object({

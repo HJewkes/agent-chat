@@ -440,13 +440,13 @@ Commands:
   watchdog-status [options]     launchd state of the watchdog job, or its systemd units on Linux
   heartbeat-install [options]   render one systemd --user service and timer per seat (CC-947) that
                                 fires on the seat file's heartbeat_cron minutes and sends the
-                                charter heartbeat when the seat logged no tick line for 35 min.
-                                Writes the unit files only: it never runs systemctl, so enabling the
-                                timers stays the owner's call
+                                charter heartbeat when the seat logged no tick line for its cron's
+                                widest gap plus 5 min. Writes the unit files only: it never runs
+                                systemctl, so enabling the timers stays the owner's call
   heartbeat-check [options]     what a seat's heartbeat timer runs (CC-947): when the seat's log has
-                                no tick line for 35 min and no WRAP, PARKED or BUDGET-PAUSE as its
-                                latest line, send the charter heartbeat through the broker and log
-                                heartbeat_external
+                                no tick line for its cron's widest gap plus 5 min and no WRAP,
+                                PARKED or BUDGET-PAUSE as its latest line, send the charter
+                                heartbeat through the broker and log heartbeat_external
   help [command]                display help for command
 
 === agent-chat seats watchdog
@@ -580,8 +580,9 @@ Options:
 Usage: agent-chat seats heartbeat-install [options]
 
 render one systemd --user service and timer per seat (CC-947) that fires on the seat file's
-heartbeat_cron minutes and sends the charter heartbeat when the seat logged no tick line for 35 min.
-Writes the unit files only: it never runs systemctl, so enabling the timers stays the owner's call
+heartbeat_cron minutes and sends the charter heartbeat when the seat logged no tick line for its
+cron's widest gap plus 5 min. Writes the unit files only: it never runs systemctl, so enabling the
+timers stays the owner's call
 
 Options:
   --root <value>        autonomy directory holding seats/ and logs/
@@ -593,9 +594,9 @@ Options:
 === agent-chat seats heartbeat-check
 Usage: agent-chat seats heartbeat-check [options]
 
-what a seat's heartbeat timer runs (CC-947): when the seat's log has no tick line for 35 min and no
-WRAP, PARKED or BUDGET-PAUSE as its latest line, send the charter heartbeat through the broker and
-log heartbeat_external
+what a seat's heartbeat timer runs (CC-947): when the seat's log has no tick line for its cron's
+widest gap plus 5 min and no WRAP, PARKED or BUDGET-PAUSE as its latest line, send the charter
+heartbeat through the broker and log heartbeat_external
 
 Options:
   --seat <value>  the seat to check (required)
