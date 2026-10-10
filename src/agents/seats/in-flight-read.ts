@@ -1,6 +1,12 @@
-import { z } from 'zod'
 import type { AgentIdentity } from '../../protocol.js'
-import { SHEPHERD_BIN, SHEPHERD_STATUS_ARGS, shepherdTarget, targetRef } from '../burndown/shepherd.js'
+import {
+  FINISHED_PHASES,
+  SHEPHERD_BIN,
+  SHEPHERD_STATUS_ARGS,
+  parseShepherdRows,
+  shepherdTarget,
+  targetRef,
+} from '../burndown/shepherd.js'
 import { run, type Runner } from '../burndown/exec.js'
 import { readLedger, type Claim } from '../burndown/ledger.js'
 import { openEvents } from './io.js'
@@ -81,22 +87,8 @@ export interface InFlight {
   unavailable: Array<{ source: InFlightSource; reason: string }>
 }
 
-const Row = z.object({
-  repo: z.string(),
-  pr: z.number().int().nullable(),
-  runId: z.string(),
-  phase: z.string(),
-  branch: z.string().nullable().optional(),
-  task: z.string().nullable().optional(),
-  headSha: z.string().nullable().optional(),
-  nextAction: z.unknown().optional(),
-  pendingGate: z.unknown().optional(),
-  held: z.unknown().optional(),
-  stalled: z.unknown().optional(),
-})
-
 const text = (v: unknown): string | null => {
-  if (typeof v === 'string') return v === '' ? null : v
+  if (typeof v === 'string') return v === '' || v === 'none' ? null : v
   if (v !== null && typeof v === 'object') {
     const o = v as Record<string, unknown>
     for (const key of ['reason', 'kind', 'name', 'action', 'gate'])
@@ -105,30 +97,28 @@ const text = (v: unknown): string | null => {
   return null
 }
 
-/** Rows that fail the schema are dropped; a body that is no JSON array throws. */
+/**
+ * Shepherd keeps every run it has finished, so the rows read here are only the live ones: finished
+ * phases are dropped at this boundary. A body that is no JSON array throws.
+ */
 export function parseShepherdFlights(stdout: string): ShepherdFlight[] {
-  const parsed: unknown = JSON.parse(stdout)
-  if (!Array.isArray(parsed)) throw new Error('shepherd status is not a JSON array')
-  return parsed.flatMap(raw => {
-    const row = Row.safeParse(raw)
-    if (!row.success) return []
-    const r = row.data
-    return [
-      {
-        repo: r.repo,
-        pr: r.pr,
-        branch: r.branch ?? null,
-        runId: r.runId,
-        task: r.task ?? null,
-        phase: r.phase,
-        headSha: r.headSha ?? null,
-        nextAction: text(r.nextAction),
-        pendingGate: text(r.pendingGate),
-        held: r.held !== null && r.held !== undefined && r.held !== false,
-        stalled: r.stalled !== null && r.stalled !== undefined && r.stalled !== false,
-      },
-    ]
-  })
+  const rows = parseShepherdRows(stdout, () => undefined)
+  if (rows === undefined) throw new Error('shepherd status is not a JSON array')
+  return rows
+    .filter(r => !FINISHED_PHASES.includes(r.phase))
+    .map(r => ({
+      repo: r.repo,
+      pr: r.pr,
+      branch: r.branch ?? null,
+      runId: r.runId,
+      task: r.task ?? null,
+      phase: r.phase,
+      headSha: r.headSha,
+      nextAction: text(r.nextAction),
+      pendingGate: text(r.pendingGate),
+      held: r.held !== null && r.held !== undefined,
+      stalled: r.stalled !== null,
+    }))
 }
 
 export function shepherdPort(exec: Runner = run): () => Promise<ShepherdFlight[]> {

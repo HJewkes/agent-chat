@@ -66,6 +66,23 @@ const shepherdRows = [
     held: null,
     stalled: null,
   },
+  ...[
+    ['done', 50],
+    ['cancelled', 51],
+    ['failed', 52],
+  ].map(([phase, pr]) => ({
+    repo: 'acme/widgets',
+    pr,
+    branch: `agent-chat/sc-finished-${phase}`,
+    runId: `rf-${phase}`,
+    task: 'init/T-0',
+    phase,
+    headSha: 'e'.repeat(40),
+    nextAction: 'none',
+    pendingGate: null,
+    held: null,
+    stalled: null,
+  })),
   {
     repo: 'acme/widgets',
     pr: 40,
@@ -164,6 +181,13 @@ describe('In flight', () => {
     expect(text).toContain('next wait for review')
     expect(text).not.toContain('HAND-KEPT ROW')
     expect(text).toContain('1. task B')
+  })
+
+  it('leaves out finished runs on the seat prefix and never prints next none', async () => {
+    const text = (await boot()).join('\n')
+
+    for (const pr of [50, 51, 52]) expect(text).not.toContain(`acme/widgets#${pr}`)
+    expect(text).not.toContain('next none')
   })
 
   it('leaves out other seats, finished claims and Shepherd rows off the seat prefix', async () => {
