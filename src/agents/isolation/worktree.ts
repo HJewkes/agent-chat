@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process'
-import { cpSync, existsSync, lstatSync, rmSync } from 'node:fs'
+import { appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import type { Stats } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -523,6 +523,25 @@ async function raceTimer(
   }
 }
 
+/**
+ * A repository that does not ignore its worktree directory would show it untracked, and an
+ * untracked dir is a dirty primary tree (CC-916). The repo-local exclude file is not tracked,
+ * so listing it there leaves the tree clean without a commit.
+ */
+async function excludeBasePath(gitRoot: string, basePath: string): Promise<void> {
+  const file = await gitOrNull(['rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'], gitRoot)
+  if (file === null) return
+  const entry = `/${basePath.replace(/^\.?\/+|\/+$/g, '')}/`
+  try {
+    const current = existsSync(file) ? readFileSync(file, 'utf8') : ''
+    if (current.split('\n').includes(entry)) return
+    mkdirSync(path.dirname(file), { recursive: true })
+    appendFileSync(file, `${current === '' || current.endsWith('\n') ? '' : '\n'}${entry}\n`)
+  } catch {
+    // Best effort: the worktree itself is already cut, and a gitignore may cover it.
+  }
+}
+
 /** Hooks and settings live in gitignored .claude/, so a fresh worktree runs unhooked without this. */
 function copyClaudeDir(gitRoot: string, worktreePath: string): void {
   const source = path.resolve(gitRoot, '.claude')
@@ -863,6 +882,7 @@ export function createWorktreeStrategy(opts: WorktreeOptions = {}): IsolationStr
         force: ctx.forceReset === true,
         run: boundedAdd(opts.runWorktreeAdd, opts.addTimeoutMs ?? WORKTREE_ADD_TIMEOUT_MS),
       })
+      await excludeBasePath(gitRoot, basePath)
       const warnings = [
         ...(base.warning === undefined ? [] : [base.warning]),
         ...(await runWorktreeSetup(setupTarget(gitRoot, worktreePath, base), opts.runSetup)),

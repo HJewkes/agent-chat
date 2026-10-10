@@ -72,6 +72,7 @@ import {
   type MemoryReading,
 } from './machine-guard.js'
 import { canonicalPath, checkSpawnCwd, isAtOrUnder } from './spawn-cwd.js'
+import { isReviewerSpawn, primaryCheckoutOf } from './reviewer-tree.js'
 import { resolveSpawnBriefing, type BriefingResult } from './active-work.js'
 import { childConfigDir, defaultConfigDir, resolveConfigDir, type ConfigDirResolution } from './config-dir.js'
 import { configDir, findTranscript } from './transcript.js'
@@ -709,6 +710,14 @@ export function floorWarning(requested: IsolationName, profileIsolation: Isolati
     'slot; pass an assigned worktree instead if the work needs isolating.'
   )
 }
+
+const reviewerOwnsRefusal = (root: string): string =>
+  `a reviewer cannot own paths in the primary checkout ${root}: it gets a disposable worktree instead, ` +
+  'and owns would scope paths in the shared tree. Drop owns.'
+
+const reviewerRewriteWarning = (root: string): string =>
+  `reviewer spawned in the primary checkout ${root}; it runs in a disposable worktree cut from the ` +
+  "repository's default branch instead, so its git writes cannot reach the primary tree (CC-916)."
 
 export interface MachineGuardReaders {
   readMemoryFree: () => MemoryReading
@@ -1509,7 +1518,10 @@ export class Supervisor implements TeleportHost {
     if (cwdError) return this.refuse(req, cwdError)
     const conflict = worktreeOwnsConflict(req, profile)
     if (conflict) return this.refuse(req, conflict)
-    const isolationName = isolationFor(req, profile)
+    const reviewerRoot = this.reviewerPrimaryRoot(req, cwd)
+    if (reviewerRoot !== undefined && req.owns?.length)
+      return this.refuse(req, reviewerOwnsRefusal(reviewerRoot))
+    const isolationName = reviewerRoot === undefined ? isolationFor(req, profile) : 'worktree'
     // Minted before the slot is taken so that acquire and release are keyed the
     // same way. Keying acquire on the name and release on the id leaks a slot on
     // every exit, and the leak is invisible until spawning stops working.
@@ -1551,6 +1563,7 @@ export class Supervisor implements TeleportHost {
     const floor = floorWarning(isolationName, profile.isolation)
     const warnings = [
       ...(profile.warnings ?? []),
+      ...(reviewerRoot === undefined ? [] : [reviewerRewriteWarning(reviewerRoot)]),
       ...(floor ? [floor] : []),
       ...(await resolveIsolation([isolationName]).check(ctx)),
     ]
@@ -1608,6 +1621,12 @@ export class Supervisor implements TeleportHost {
       if (!this.live.has(agentId)) await this.abandonLaunch(req, agentId, reason)
       return this.refuse(req, reason)
     }
+  }
+
+  /** CC-916: the primary checkout a reviewer spawn would run in, which it must not touch; an assigned worktree is the caller's own. */
+  private reviewerPrimaryRoot(req: SpawnRequest, cwd: string): string | undefined {
+    if (req.worktree || !isReviewerSpawn(req.profile, req.name)) return undefined
+    return primaryCheckoutOf(cwd)
   }
 
   /** The write-and-launch half, after every check has passed. */
