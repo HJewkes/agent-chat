@@ -14,6 +14,7 @@ import {
   type ShepherdRun,
   type ShepherdSkipPort,
 } from '../agents/isolation/shepherd-skip.js'
+import { NOT_FINISHED } from '../agents/isolation/retire-at-report.js'
 import { resolveAutoRetireOnReport } from '../config.js'
 import type { AgentIdentity } from '../protocol.js'
 import { autoAttach } from './broker-harness.js'
@@ -277,9 +278,31 @@ describe('retire at the final report', () => {
 
     await exit(agent)
 
-    expect(keptReason()).toBe('no final Status or Verdict report')
+    expect(keptReason()).toBe(NOT_FINISHED)
 
     expect(stateOf('cc-midway')).toBe('exited')
+  })
+
+  // BLOCKED and NEEDS_CONTEXT wait on a follow-up resume, which a retired name cannot take.
+  it.each(['BLOCKED', 'NEEDS_CONTEXT'])('keeps an agent whose final report is Status: %s', async status => {
+    const name = `cc-${status.toLowerCase().replace('_', '-')}`
+    const agent = await pushedImplementer(name)
+    report(agent, `Status: ${status}\nPR: example/repo#1`)
+
+    await exit(agent)
+
+    expect(keptReason()).toBe(NOT_FINISHED)
+    expect(stateOf(name)).toBe('exited')
+    expect(fs.existsSync(agent.cwd)).toBe(true)
+  })
+
+  it('retires an agent whose final report is Status: DONE_WITH_CONCERNS', async () => {
+    const agent = await pushedImplementer('cc-concerns')
+    report(agent, 'Status: DONE_WITH_CONCERNS\nPR: example/repo#1')
+
+    await exit(agent)
+
+    expect(stateOf('cc-concerns')).toBe('retired')
   })
 
   it('does nothing for a spawner that did not opt in', async () => {

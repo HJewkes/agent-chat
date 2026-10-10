@@ -1441,8 +1441,10 @@ Retire at the final report (CC-921) is off by default. Set `autoRetire.onFinalRe
 `~/.agent-chat/config.json` to `true` for every spawner, or to a list of spawner names, for
 example `"autoRetire": { "onFinalReport": ["my-coordinator"] }`. The key is read on each exit,
 so a change needs no broker restart. When an opted-in spawner's agent exits, and its last report
-to the spawner in that run opens with a closing `Status:` or any `Verdict:`, the broker applies
-the CC-904 skip above and the adopter rule. It then parks the agent's tree under the `agent park`
+to the spawner in that run opens with `Status: DONE`, `Status: DONE_WITH_CONCERNS` or any
+`Verdict:`, the broker applies
+the CC-904 skip above and the adopter rule. `BLOCKED` and `NEEDS_CONTEXT` never trigger it, since
+those agents wait on a resume and a retired name cannot be resumed. It then parks the agent's tree under the `agent park`
 rules, so a tree another agent works in, a dirty tree, or an unpushed one stays. Last, it retires
 the agent. Neither step deletes the branch. An agent with no tree, such as a reviewer, is only
 retired. The park and the retire write their usual seat-journal lines. A kept agent is logged as

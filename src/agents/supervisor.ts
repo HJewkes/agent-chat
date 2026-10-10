@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { BrokerCore } from '../broker/core.js'
 import type { ArgvReader } from '../broker/host-channels.js'
-import { isTerminalReport, newMsgId } from '../broker/event-log.js'
+import { newMsgId } from '../broker/event-log.js'
 import {
   HUMAN,
   RESERVED_NAMES,
@@ -2440,14 +2440,12 @@ export class Supervisor implements TeleportHost {
       roster: () => this.core.agents.roster(),
       events: () => this.core.events.agentEvents(),
       enabledFor,
-      finalReport: agent => {
-        const report = this.core.events.lastStatusReport(
+      lastReport: agent =>
+        this.core.events.lastStatusReport(
           agent.name,
           reportRecipients(agent.spawnedBy),
           this.core.runStartedAt(agent),
-        )
-        return report !== undefined && isTerminalReport(report.text)
-      },
+        )?.text,
       tracked: agentId => this.live.has(agentId),
       skip: this.shepherdSkip,
       park: agentId => this.parkById(agentId),

@@ -21,8 +21,8 @@ export interface ReportRetirePort {
   events(): readonly AgentEventRow[]
   /** Whether the spawner opted in through `autoRetire.onFinalReport`. */
   enabledFor(spawner: string): boolean
-  /** The agent's last report to its spawner in this run is a terminal `Status:` or `Verdict:`. */
-  finalReport(agent: AgentIdentity): boolean
+  /** The text of the agent's last report to its spawner in this run, if any. */
+  lastReport(agent: AgentIdentity): string | undefined
   /** This broker still watches the agent's process. */
   tracked(agentId: string): boolean
   skip: ShepherdSkipPort
@@ -43,7 +43,7 @@ export async function retireAtReport(port: ReportRetirePort, agentId: string): P
   if (agent?.origin !== 'spawned' || !port.enabledFor(agent.spawnedBy)) return { action: 'off' }
   const kept = (reason: string): ReportRetireResult => ({ action: 'kept', name: agent.name, reason })
   try {
-    if (!port.finalReport(agent)) return kept('no final Status or Verdict report')
+    if (!isFinishedReport(port.lastReport(agent) ?? '')) return kept(NOT_FINISHED)
     const target = allocatedWorktree(port.events(), agentId)
     const blocked =
       adopterBlocker(agent, target, port.roster()) ?? (await shepherdSkip(port.skip, agent, target))
@@ -59,6 +59,16 @@ export async function retireAtReport(port: ReportRetirePort, agentId: string): P
     return kept((err as Error).message)
   }
 }
+
+export const NOT_FINISHED = 'no final Status: DONE, DONE_WITH_CONCERNS or Verdict report'
+
+/**
+ * Narrower than `isTerminalReport`: BLOCKED and NEEDS_CONTEXT close a turn but wait on a
+ * follow-up resume, and a retired name cannot be resumed.
+ */
+const FINISHED_OPENING = /^[\s*_`#>]*(verdict[*_`]*\s*:|status[*_`]*\s*:[\s*_`]*(done|done_with_concerns)\b)/i
+
+export const isFinishedReport = (text: string): boolean => FINISHED_OPENING.test(text)
 
 /** An adopted tree belongs to its owner and a gone one has nothing left to remove. */
 const parkable = (target: ParkTarget | undefined): target is ParkTarget =>
