@@ -53,6 +53,11 @@ describe('trustRefusal by CLI version', () => {
     expect(refusal('2.1.292')).toBeUndefined()
   })
 
+  it('verifies 2.1.296 against 2.1.295', () => {
+    expect(VERIFIED_TRUST_RULE_VERSIONS['2.1.296']).toBe('2.1.295')
+    expect(refusal('2.1.296')).toBeUndefined()
+  })
+
   it('freezes the verified release map', () => {
     expect(Object.isFrozen(VERIFIED_TRUST_RULE_VERSIONS)).toBe(true)
   })
