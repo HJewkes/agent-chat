@@ -913,3 +913,59 @@ describe('planSeat brief gate (CC-925)', () => {
     expect(plan.notes).toEqual([])
   })
 })
+
+describe('planSeat ready order (CC-926)', () => {
+  const FRESH = 'brief:ready=2026-09-28'
+  const WIDE = { ...SEAT, caps: { ...SEAT.caps, implementers: 3 } }
+  const gate = (mode: 'shadow' | 'on') => ({ brief: { gate: mode, maxAgeDays: 14 } })
+  const threeReady = () => ({
+    rows: [row('A-5', 10), row('A-1', 50), row('A-9', 90)],
+    tasks: [
+      task('A-5', { priority: 5, tags: [FRESH] }),
+      task('A-1', { priority: 1, tags: [FRESH] }),
+      task('A-9', { priority: 9, tags: [FRESH] }),
+    ],
+  })
+
+  it('dispatches ready tasks by priority under on, against inverse scores', () => {
+    const { rows, tasks } = threeReady()
+
+    const plan = planSeat(inputs(rows, tasks, { ...gate('on'), seat: WIDE }))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1', 'A-5', 'A-9'])
+  })
+
+  it('keeps the scorer order when the gate is off or shadow', () => {
+    const { rows, tasks } = threeReady()
+
+    for (const patch of [{}, gate('shadow')]) {
+      const plan = planSeat(inputs(rows, tasks, { ...patch, seat: WIDE }))
+      expect(plan.dispatch.map(d => d.task)).toEqual(['A-9', 'A-1', 'A-5'])
+    }
+  })
+
+  it('lets an expedite row go first under on', () => {
+    const { rows, tasks } = threeReady()
+    tasks[2] = task('A-9', { priority: 9, tags: [FRESH, 'cos:expedite'] })
+    const order = {
+      tasks: tasks.map(t => ({
+        id: t.id,
+        title: t.title,
+        priority: t.priority ?? 1,
+        tags: t.tags,
+        slug: 'alpha',
+      })),
+      today: '2026-09-29',
+    }
+
+    const plan = planSeat(
+      inputs(rows, tasks, {
+        ...gate('on'),
+        order,
+        seat: WIDE,
+      }),
+    )
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-9', 'A-1', 'A-5'])
+  })
+})
