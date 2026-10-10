@@ -863,3 +863,53 @@ describe('planSeat hand spawns against the caps (CC-779)', () => {
     expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
   })
 })
+
+describe('planSeat brief gate (CC-925)', () => {
+  const gate = (mode: 'shadow' | 'on') => ({ brief: { gate: mode, maxAgeDays: 14 } })
+
+  it('dispatches an untagged task and notes nothing with no gate', () => {
+    const plan = one('A-1')
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+    expect(plan.notes).toEqual([])
+  })
+
+  it('dispatches an untagged task under shadow and notes that on would refuse it', () => {
+    const plan = one('A-1', {}, {}, gate('shadow'))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+    expect(plan.refusals).toEqual([])
+    expect(plan.notes).toEqual([expect.stringMatching(/^would-refuse no-brief alpha A-1 \(seat seat-a\)/)])
+  })
+
+  it('notes a stale brief under shadow and nothing for a fresh one', () => {
+    const rows = [row('A-1', 50), row('A-2', 40)]
+    const tasks = [
+      task('A-1', { tags: ['brief:ready=2026-09-01'] }),
+      task('A-2', { tags: ['brief:ready=2026-09-28'] }),
+    ]
+
+    const plan = planSeat(inputs(rows, tasks, gate('shadow')))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1', 'A-2'])
+    expect(plan.notes).toEqual([expect.stringMatching(/^would-refuse brief-stale alpha A-1 /)])
+  })
+
+  it('refuses an untagged task and a stale brief under on, and dispatches a fresh one', () => {
+    const rows = [row('A-1', 50), row('A-2', 40), row('A-3', 30)]
+    const tasks = [
+      task('A-1'),
+      task('A-2', { tags: ['brief:ready=2026-09-01'] }),
+      task('A-3', { tags: ['brief:ready=2026-09-28'] }),
+    ]
+
+    const plan = planSeat(inputs(rows, tasks, gate('on')))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-3'])
+    expect(refusalOf(plan)).toEqual([
+      ['A-1', 'no-brief'],
+      ['A-2', 'brief-stale'],
+    ])
+    expect(plan.notes).toEqual([])
+  })
+})

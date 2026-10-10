@@ -300,6 +300,39 @@ describe('burndown.config.json seats', () => {
     expect(loadTickConfig(file).exceptions.route).toEqual({ stalled: 'owner', failed: 'owner' })
   })
 
+  it('leaves every brief gate off with a 14-day brief age when the config names none (CC-925)', () => {
+    const file = path.join(dir, 'burndown.config.json')
+    fs.writeFileSync(file, JSON.stringify({ enabled: true }))
+
+    const config = loadTickConfig(file)
+
+    expect(config.briefGate).toEqual({})
+    expect(config.briefMaxAgeDays).toBe(14)
+  })
+
+  it('reads a per-seat brief gate and a brief age', () => {
+    const file = path.join(dir, 'burndown.config.json')
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ briefGate: { 'seat-a': 'shadow', 'seat-b': 'on' }, briefMaxAgeDays: 7 }),
+    )
+
+    const config = loadTickConfig(file)
+
+    expect(config.briefGate).toEqual({ 'seat-a': 'shadow', 'seat-b': 'on' })
+    expect(config.briefMaxAgeDays).toBe(7)
+  })
+
+  it.each([{ briefGate: { 'seat-a': 'enforce' } }, { briefMaxAgeDays: 0 }, { briefMaxAgeDays: 1.5 }])(
+    'rejects the brief gate config %j',
+    config => {
+      const file = path.join(dir, 'burndown.config.json')
+      fs.writeFileSync(file, JSON.stringify(config))
+
+      expect(() => loadTickConfig(file)).toThrow('is malformed')
+    },
+  )
+
   it.each(['gate-trip', 'unknown'])('rejects a %s key under exceptions.route', key => {
     const file = path.join(dir, 'burndown.config.json')
     fs.writeFileSync(file, JSON.stringify({ exceptions: { route: { [key]: 'triage' } } }))

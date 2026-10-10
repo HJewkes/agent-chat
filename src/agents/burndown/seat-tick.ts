@@ -26,10 +26,10 @@ import {
 import { scoreAll } from './score.js'
 import { readScoredTasks } from './score-source.js'
 import { resolveSeatDispatch, type SeatDispatch } from './seat-dispatch.js'
-import { planSeat, type OrderInputs } from './seat-plan.js'
+import { planSeat, type OrderInputs, type SeatBriefGate } from './seat-plan.js'
 import { backlogIds, seatScopeOf, type SeatScope } from './seat-scope.js'
 import { describeError, readWeekMilestones, taskIdsOnDisk } from './score-render.js'
-import { readTasks } from './source.js'
+import { readTasks, type TickConfig } from './source.js'
 
 /**
  * CC-205 slice 4: seats mode for one tick. Loads the policy once, samples each
@@ -174,6 +174,8 @@ export interface SeatPlanDeps {
   lineStop?: LineStop
   /** The broker's roster, which decides which held trees are active; absent, every held tree counts. */
   roster?: Roster
+  /** The config's per-seat brief gates (CC-925); absent, every seat's is off. */
+  brief?: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays'>
 }
 
 /**
@@ -200,6 +202,8 @@ export interface SeatsPlan {
   skippedTasks: { seat: string; files: string[] }[]
   /** What each seat's planning came to, for its "dispatched nothing" line (CC-859). */
   outcomes: SeatOutcome[]
+  /** Every seat's plan notes, such as a shadow brief gate's `would-refuse` lines (CC-925). */
+  notes: string[]
 }
 
 /** The broker-wide ceilings less what earlier seats dispatched this tick. */
@@ -263,6 +267,7 @@ export function planLoaded(seat: LoadedSeat, deps: SeatPlanDeps, root: string, t
       sameTickCollision(taken.claims, repo, work) ?? deps.collision?.(repo, work, landedRepos),
     ...(deps.lineStop === undefined ? {} : { lineStop: deps.lineStop }),
     ...optional(deps, lessDispatched(deps.capacity, taken.dispatch)),
+    ...briefGateOf(deps, name),
   })
   planned.refusals.push(
     ...[...order.faults, ...scope.faults].map(reason => ({
@@ -323,6 +328,12 @@ function orderInputs(
   }
 }
 
+/** A seat the config does not name keeps its gate off, and an off gate is passed as none. */
+function briefGateOf({ brief }: SeatPlanDeps, seat: string): { brief?: SeatBriefGate } {
+  const gate = brief?.briefGate[seat] ?? 'off'
+  return brief === undefined || gate === 'off' ? {} : { brief: { gate, maxAgeDays: brief.briefMaxAgeDays } }
+}
+
 function optional(deps: SeatPlanDeps, capacity: Capacity | undefined) {
   return {
     ...(capacity === undefined ? {} : { capacity }),
@@ -347,6 +358,7 @@ export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root
     tasks: new Map(),
     skippedTasks: [],
     outcomes: [],
+    notes: [],
   }
   const claims: SameTickClaim[] = []
   for (const seat of seats) {
@@ -356,6 +368,7 @@ export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root
       if (skipped.length > 0) result.skippedTasks.push({ seat: seat.dispatch.seat, files: skipped })
       for (const [slug, list] of tasks) result.tasks.set(slug, list)
       result.refusals.push(...planned.refusals)
+      result.notes.push(...planned.notes)
       result.dispatch.push(...planned.dispatch)
       claims.push(...planned.claims)
       const { dispatch, refusals } = planned

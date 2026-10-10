@@ -1,10 +1,13 @@
 import path from 'node:path'
 import { gatePool, RUN_CAP_MS, type PoolGateInput, type PoolGateResult } from './budget-gate.js'
 import {
+  briefRefusal,
   IMPLEMENTER_PROFILE,
   PLANNER_PROFILE,
   SONNET_PROFILES,
   taskRefusal,
+  type BriefCheck,
+  type BriefGateMode,
   type Refusal,
   type Task,
 } from './eligibility.js'
@@ -78,12 +81,21 @@ export interface SeatPlanInputs {
   scope?: SeatScope
   /** The broker's roster (CC-779): the seat's running agents count against its caps; absent, only claims do. */
   agents?: readonly AgentIdentity[]
+  /** The seat's brief gate (CC-925); absent, it is off. */
+  brief?: SeatBriefGate
+}
+
+export interface SeatBriefGate {
+  gate: BriefGateMode
+  maxAgeDays: number
 }
 
 export interface SeatPlan {
   dispatch: Dispatch[]
   claims: SameTickClaim[]
   refusals: Refusal[]
+  /** What the plan noted without refusing: a shadow brief gate's `would-refuse` lines (CC-925). */
+  notes: string[]
   priorPicks: Record<string, number>
   shareCapped: ShareCapRefusals
   /** `planOrder`'s own decisions for this tick (CC-778); absent when the tick ordered by `dispatchOrder` alone. */
@@ -149,6 +161,7 @@ interface Walk {
   /** The broker-wide ceilings, with the config's worktreeOwnerReserve added to the reserve. */
   capacity: Capacity | undefined
   tally: Tally
+  notes: string[]
 }
 
 /** Ready slices of the seat's planners first, since their tasks are underway; then the scored order. */
@@ -162,6 +175,7 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
     dispatch: [],
     claims: [],
     refusals: [],
+    notes: [],
     priorPicks,
     shareCapped: refused,
     ...(placement !== undefined && { placement }),
@@ -186,6 +200,7 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
   for (const { initiative, task, reason } of planRefusals)
     plan.refusals.push({ initiative, task, kind: 'plan-blocked', reason })
   plan.refusals.push(...outOfScope)
+  plan.notes.push(...walk.notes)
   return plan
 }
 
@@ -311,6 +326,7 @@ function startWalk(inputs: SeatPlanInputs): Walk {
     seatWorktrees,
     capacity: withLeftFree(inputs.capacity, inputs.seat.worktrees.leftFreePerRepo),
     tally: { agents: 0, worktrees: new Map() },
+    notes: [],
   }
 }
 
@@ -411,13 +427,29 @@ function considerSlice(claim: Claim, walk: Walk): Taken | Refused {
 }
 
 function eligibility(row: DispatchRow, task: Task, walk: Walk): Refused | undefined {
-  const refused = taskRefusal(task, walk.inputs.seat.grants, walk.claimed, walk.held)
+  const brief = briefCheck(walk.inputs)
+  const refused = taskRefusal(task, walk.inputs.seat.grants, walk.claimed, walk.held, brief)
   if (refused?.kind === 'no-done-when' || refused?.kind === 'no-estimate')
     return { kind: 'untriaged', reason: `${refused.reason}; triage stays with the seat's Discovery` }
   if (refused !== undefined) return refused
   if (row.stopShort.length > 0)
     return { kind: 'stop-short', reason: `done_when stops short at ${row.stopShort.join(', ')}` }
+  if (brief?.gate === 'shadow') noteShadowBrief(row, task, brief, walk)
   return undefined
+}
+
+type SeatBriefCheck = BriefCheck & SeatBriefGate
+
+/** The gate takes "now" from the pool gate's clock, as the backoff check does. */
+const briefCheck = ({ brief, budget }: SeatPlanInputs): SeatBriefCheck | undefined =>
+  brief === undefined ? undefined : { ...brief, now: budget.ctx.now }
+
+/** A shadow gate dispatches as today and notes what `on` would have refused. */
+function noteShadowBrief(row: DispatchRow, task: Task, brief: SeatBriefCheck, walk: Walk): void {
+  const would = briefRefusal(task, brief)
+  if (would === undefined) return
+  const seat = walk.inputs.seat.seat
+  walk.notes.push(`would-refuse ${would.kind} ${row.initiative} ${row.id} (seat ${seat}): ${would.reason}`)
 }
 
 type Work = Pick<Dispatch, 'initiative' | 'task' | 'slice' | 'profile'>
