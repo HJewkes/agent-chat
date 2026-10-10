@@ -10,8 +10,8 @@ describe('Shepherd’s hold reason check, as the tick mirrors it (CC-931)', () =
     expect(holdReasonRefusal('sensitive word')).toBe('"sensitive word" is not a hold class')
   })
 
-  it('accepts a g10-review reason, which needs no task ID', () => {
-    expect(holdReasonRefusal('g10-review: sensitive word "gate"; T-1')).toBeUndefined()
+  it('accepts a gate-class reason, which needs no task ID', () => {
+    expect(holdReasonRefusal('g10-adversary: sensitive word "gate"; T-1')).toBeUndefined()
     expect(holdReasonRefusal('g10-review: sensitive word "gate"')).toBeUndefined()
   })
 
