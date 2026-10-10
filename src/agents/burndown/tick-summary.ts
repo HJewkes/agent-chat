@@ -3,9 +3,10 @@ import path from 'node:path'
 import { claimKey, type ClaimKey } from './advance.js'
 import { briefRefusal, type Task } from './eligibility.js'
 import type { RegisterReply, Registration } from './shepherd.js'
-import type { Claim, Ledger } from './ledger.js'
+import type { Ledger } from './ledger.js'
 import type { SeatOutcome } from './no-dispatch.js'
 import type { Dispatch } from './plan.js'
+import type { AdoptSeat } from './pr-adopt.js'
 import type { SeatDispatch } from './seat-dispatch.js'
 import type { Step } from './execute.js'
 
@@ -16,25 +17,28 @@ import type { Step } from './execute.js'
  *
  *   v               1
  *   ts              the tick's time, ISO 8601
- *   registrations   {ok, refused, failed}: every Shepherd register the tick made, seat or not
+ *   registrations   {ok, refused, failed}: every Shepherd register the tick made, for its claims and for the
+ *                   seat PRs it adopted (CC-861), seat or not
  *   seats           {[seat]: SeatSummary}, one per configured seat; empty outside seats mode
  *
  * SeatSummary:
- *   ready           tasks the seat's plan considered (dispatched or refused) with a fresh brief:ready tag
+ *   ready           tasks the seat's plan considered (dispatched or refused) with a fresh brief:ready tag; a ready
+ *                   task the plan never reached (scorer-excluded or blocked) is not counted, so this is not a
+ *                   full count of the seat's ready tasks
  *   unbriefed       considered tasks with no valid brief:ready tag
  *   stale           considered tasks whose brief:ready is older than briefMaxAgeDays
  *   dispatched      dispatches the plan made
  *   refusals        {[refusal kind]: count}
- *   roles           {used, cap}, each {implementers, reviewers, planners}; `used` counts the seat's held claims in
- *                   the ledger the tick writes, so hand-spawned agents are not in it; absent for a skipped seat
- *   registrations   {ok, refused, failed} for the seat's claims
+ *   roles           {used, cap}, each {implementers, reviewers, planners}; `used` is what the seat's role caps
+ *                   counted after planning: held claims, live hand spawns and this tick's dispatches; absent when
+ *                   the seat was not planned
+ *   registrations   {ok, refused, failed} for the seat's claims and its adopted PRs
  *   skipped         why the seat was not planned; absent when it was
  */
 
 export const TICK_SUMMARY_VERSION = 1
 
 type Roles = SeatDispatch['caps']
-type Role = keyof Roles
 export type RegisterOutcome = 'ok' | 'refused' | 'failed'
 export type RegisterCounts = Record<RegisterOutcome, number>
 
@@ -61,7 +65,7 @@ export interface RegisterRecord {
   outcome: RegisterOutcome
 }
 
-/** What `decide` already holds for the row; the tick adds its written ledger and its registrations. */
+/** What `decide` already holds for the row; the tick adds its registrations. */
 export interface SummaryPlan {
   maxAgeDays: number
   caps: Record<string, Roles>
@@ -72,14 +76,7 @@ export interface SummaryPlan {
 
 export interface SummaryInputs extends SummaryPlan {
   now: Date
-  ledger: Ledger
   registrations: readonly RegisterRecord[]
-}
-
-const ROLE_OF_PHASE: Partial<Record<Claim['phase'], Role>> = {
-  planning: 'planners',
-  implementing: 'implementers',
-  reviewing: 'reviewers',
 }
 
 const noRegistrations = (): RegisterCounts => ({ ok: 0, refused: 0, failed: 0 })
@@ -88,16 +85,6 @@ function countRegistrations(records: readonly RegisterRecord[]): RegisterCounts 
   const counts = noRegistrations()
   for (const r of records) counts[r.outcome] += 1
   return counts
-}
-
-function rolesUsed(ledger: Ledger, seat: string): Roles {
-  const used: Roles = { implementers: 0, reviewers: 0, planners: 0 }
-  for (const c of ledger.claims) {
-    if (c.seat !== seat || c.phase === 'done') continue
-    const role = ROLE_OF_PHASE[c.phase === 'spawning' ? (c.nextPhase ?? 'spawning') : c.phase]
-    if (role !== undefined) used[role] += 1
-  }
-  return used
 }
 
 /** Each task the seat's plan dispatched or refused, once, classified by its brief:ready tag. */
@@ -126,11 +113,12 @@ function seatSummary(inputs: SummaryInputs, outcome: SeatOutcome): SeatSummary {
   const refusals: Record<string, number> = {}
   for (const r of outcome.refusals) refusals[r.kind] = (refusals[r.kind] ?? 0) + 1
   const cap = inputs.caps[outcome.seat]
+  const used = outcome.roles
   return {
     ...briefCounts(inputs, outcome),
     dispatched: outcome.dispatched,
     refusals,
-    ...(cap === undefined ? {} : { roles: { used: rolesUsed(inputs.ledger, outcome.seat), cap } }),
+    ...(cap === undefined || used === undefined ? {} : { roles: { used, cap } }),
     registrations: countRegistrations(inputs.registrations.filter(r => r.seat === outcome.seat)),
     ...(outcome.skipped === undefined ? {} : { skipped: outcome.skipped }),
   }
@@ -148,26 +136,35 @@ export function tickSummary(inputs: SummaryInputs): TickSummaryRow {
 const outcomeOf = (reply: RegisterReply): RegisterOutcome =>
   reply.ok ? 'ok' : reply.refused ? 'refused' : 'failed'
 
-/** Registers through `register` and records each reply against the seat of the claim its step was for. */
-export function recordingRegister(
-  steps: readonly Step[],
-  ledger: Ledger,
-  register: (registration: Registration) => RegisterReply,
-  into: RegisterRecord[],
-): (registration: Registration) => RegisterReply {
-  const keys = new Map<Registration, ClaimKey>(
-    steps.flatMap(s => (s.kind === 'register' ? [[s.registration, s.key] as const] : [])),
-  )
-  const seatOf = (key: ClaimKey | undefined): string | undefined =>
-    key === undefined
-      ? undefined
-      : ledger.claims.find(c => c.phase !== 'done' && claimKey(c) === claimKey(key))?.seat
+type Register = (registration: Registration) => RegisterReply
+type SeatOf = (registration: Registration) => string | undefined
+
+/** The one wrapper every Shepherd register the tick makes goes through, so no path is left out of the row. */
+export function recordingRegister(register: Register, seatOf: SeatOf, into: RegisterRecord[]): Register {
   return registration => {
     const reply = register(registration)
-    const seat = seatOf(keys.get(registration))
+    const seat = seatOf(registration)
     into.push({ outcome: outcomeOf(reply), ...(seat === undefined ? {} : { seat }) })
     return reply
   }
+}
+
+/** A claim-path registration's seat: the seat of the claim its register step was for. */
+export function claimSeatOf(steps: readonly Step[], ledger: Ledger): SeatOf {
+  const keys = new Map<Registration, ClaimKey>(
+    steps.flatMap(s => (s.kind === 'register' ? [[s.registration, s.key] as const] : [])),
+  )
+  return registration => {
+    const key = keys.get(registration)
+    if (key === undefined) return undefined
+    return ledger.claims.find(c => c.phase !== 'done' && claimKey(c) === claimKey(key))?.seat
+  }
+}
+
+/** An adopted PR's seat: the one whose `<prefix>-` starts the implementer, which adoption takes from the branch. */
+export function adoptSeatOfRegistration(seats: readonly AdoptSeat[]): SeatOf {
+  const longestFirst = [...seats].sort((a, b) => b.prefix.length - a.prefix.length)
+  return registration => longestFirst.find(s => registration.implementer.startsWith(`${s.prefix}-`))?.seat
 }
 
 export type SummaryLog = (event: string, detail: Record<string, unknown>) => void

@@ -94,6 +94,8 @@ import {
 import { retrySteps, stepsForActions, stepsForDispatch, type StepContext } from './steps.js'
 import { recordTick, type StopCode, type TickResult } from './tick-status.js'
 import {
+  adoptSeatOfRegistration,
+  claimSeatOf,
   recordingRegister,
   tickSummary,
   tickSummaryWriter,
@@ -268,13 +270,13 @@ async function actOn(
     ledgerFile: burndownLedgerPath(),
     spawn: recordingSpawn(steps, opts.broker.spawn, spawns),
     retire: opts.broker.retire,
-    register: recordingRegister(steps, sampled, register, registrations),
+    register: recordingRegister(register, claimSeatOf(steps, sampled), registrations),
     prHead: target => prHeadOf(target, opts.exec ?? run),
     log,
     now,
   })
   logLadder(ledger, executed.ledger, log)
-  const adopted = adoptPrs(adopt, executed.ledger, opts, now)
+  const adopted = adoptPrs(adopt, executed.ledger, opts, now, registrations)
   const woken = await actOnTriage(
     config,
     triage,
@@ -291,13 +293,12 @@ async function actOn(
   const journal = seatJournal(defaultAutonomyRoot(opts.root), { log, now: () => now })
   const dispatch = seatMergedLog(defaultAutonomyRoot(opts.root), { log, now: () => now })
   const told = await deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now, journal, dispatch })
-  const written = {
+  writeLedger(burndownLedgerPath(), {
     ...told.ledger,
     lastTickAt: now.toISOString(),
     ...(serviceCheck === undefined ? {} : { serviceCheck }),
-  }
-  writeLedger(burndownLedgerPath(), written)
-  appendTickSummary(tickSummary({ ...summary, now, ledger: written, registrations }), log)
+  })
+  appendTickSummary(tickSummary({ ...summary, now, registrations }), log)
   return [...executed.lines, ...adopted, ...woken.lines, ...leaks.lines, ...told.lines]
 }
 
@@ -323,7 +324,13 @@ async function fileScopeExhausted(
 }
 
 /** CC-861: after the claims' own registrations, so a claimed PR is never adopted; a throw is an event, and the tick carries on. */
-function adoptPrs(seats: readonly AdoptSeat[], ledger: Ledger, opts: TickOptions, now: Date): string[] {
+function adoptPrs(
+  seats: readonly AdoptSeat[],
+  ledger: Ledger,
+  opts: TickOptions,
+  now: Date,
+  registrations: RegisterRecord[],
+): string[] {
   const log = opts.log ?? logEvent
   const claimed = new Set(
     heldClaims(ledger).flatMap(c => {
@@ -339,8 +346,9 @@ function adoptPrs(seats: readonly AdoptSeat[], ledger: Ledger, opts: TickOptions
     now,
     log,
   })
+  const register = recordingRegister(ports.register, adoptSeatOfRegistration(seats), registrations)
   try {
-    return adoptSeatPrs(seats, claimed, ports, now)
+    return adoptSeatPrs(seats, claimed, { ...ports, register }, now)
   } catch (err) {
     log('burndown_pr_adopt_failed', { reason: err instanceof Error ? err.message : String(err) })
     return []

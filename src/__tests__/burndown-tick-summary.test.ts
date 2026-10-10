@@ -8,6 +8,8 @@ import type { Claim, Ledger } from '../agents/burndown/ledger.js'
 import type { Dispatch } from '../agents/burndown/plan.js'
 import type { RegisterReply } from '../agents/burndown/shepherd.js'
 import {
+  adoptSeatOfRegistration,
+  claimSeatOf,
   recordingRegister,
   tickSummary,
   tickSummaryWriter,
@@ -45,16 +47,12 @@ const dispatch = (taskId: string): Dispatch => ({
   seat: 'seat-t',
 })
 
+const LEDGER: Ledger = {
+  version: 1,
+  claims: [claim('T-9', 'reviewing'), claim('T-8', 'done'), claim('U-1', 'implementing', { seat: 'seat-u' })],
+}
+
 function inputs(overrides: Partial<SummaryInputs> = {}): SummaryInputs {
-  const ledger: Ledger = {
-    version: 1,
-    claims: [
-      claim('T-1', 'spawning', { nextPhase: 'implementing' }),
-      claim('T-9', 'reviewing'),
-      claim('T-8', 'done'),
-      claim('U-1', 'implementing', { seat: 'seat-u' }),
-    ],
-  }
   return {
     now: NOW,
     maxAgeDays: 14,
@@ -63,6 +61,7 @@ function inputs(overrides: Partial<SummaryInputs> = {}): SummaryInputs {
       {
         seat: 'seat-t',
         dispatched: 1,
+        roles: { implementers: 1, reviewers: 1, planners: 0 },
         refusals: [
           { initiative: 'demo', task: 'T-2', kind: 'untriaged', reason: 'r' },
           { initiative: 'demo', task: 'T-3', kind: 'role-cap', reason: 'r' },
@@ -84,7 +83,6 @@ function inputs(overrides: Partial<SummaryInputs> = {}): SummaryInputs {
         ],
       ],
     ]),
-    ledger,
     registrations: [
       { seat: 'seat-t', outcome: 'ok' },
       { seat: 'seat-t', outcome: 'refused' },
@@ -144,12 +142,32 @@ describe('registration recording', () => {
     [{ ok: false, refused: false, reason: 'down' }, 'failed'],
   ])('records %j as %s against the claim seat and passes the reply through', (reply, outcome) => {
     const into: RegisterRecord[] = []
-    const register = recordingRegister(steps, inputs().ledger, () => reply, into)
+    const register = recordingRegister(() => reply, claimSeatOf(steps, LEDGER), into)
 
     const answered = register(registration)
 
     expect(answered).toBe(reply)
     expect(into).toEqual([{ seat: 'seat-t', outcome }])
+  })
+
+  it('records a registration with no register step or claim against no seat', () => {
+    const into: RegisterRecord[] = []
+    const other = { ...registration, implementer: 'st-t-5' }
+
+    recordingRegister(() => ({ ok: true }), claimSeatOf(steps, LEDGER), into)(other)
+
+    expect(into).toEqual([{ outcome: 'ok' }])
+  })
+
+  it('gives an adopted PR to the seat whose longest prefix starts its implementer', () => {
+    const seatOf = adoptSeatOfRegistration([
+      { seat: 'seat-t', prefix: 'st', repos: [] },
+      { seat: 'seat-u', prefix: 'st-u', repos: [] },
+    ])
+
+    expect(seatOf({ ...registration, implementer: 'st-u-t-4' })).toBe('seat-u')
+    expect(seatOf({ ...registration, implementer: 'st-t-4' })).toBe('seat-t')
+    expect(seatOf({ ...registration, implementer: 'xy-t-4' })).toBeUndefined()
   })
 })
 

@@ -8,6 +8,7 @@ import { readLedger } from '../agents/burndown/ledger.js'
 import { tickFromDisk, type TickBroker } from '../agents/burndown/run-tick.js'
 import { readTickStatus } from '../agents/burndown/tick-status.js'
 import { TRUST_RULE_BASELINE_CLI_VERSION } from '../agents/trust.js'
+import type { AgentIdentity } from '../protocol.js'
 
 /** CC-929: the live tick appends one summary row, and a summary it cannot write never fails it. `git` runs for real. */
 
@@ -98,22 +99,45 @@ function gitRepo(): void {
   git(repo(), 'push', '-q', 'origin', 'main')
 }
 
-/** A healthy service check, Shepherd with no rows, and a GitHub remote. */
-const factory: Runner = (bin, args, cwd) => {
-  if (bin === 'titan-factory' && args[0] === 'service')
-    return {
-      status: 0,
-      stdout: JSON.stringify({ ok: true, cause: null, message: 'ok', health: null, detail: {} }),
-    }
-  if (bin === 'titan-factory') return { status: 0, stdout: '[]' }
-  if (bin === 'gh') return { status: 0, stdout: '' }
-  if (bin === 'git' && args.includes('get-url'))
-    return { status: 0, stdout: 'https://github.com/acme/widgets.git\n' }
-  return run(bin, args, cwd)
+/** One open seat PR on T-4 that changes only a test, for the adopt path to register (CC-861). */
+const SEAT_PULL = JSON.stringify({
+  number: 7,
+  title: 'T-4: Cover the edge',
+  branch: 'agent-chat/st-t-4',
+  headRepo: 'acme/widgets',
+  updatedAt: NOW.toISOString(),
+})
+const PULL_FILES = JSON.stringify({ path: 'src/__tests__/edge.test.ts', additions: 3, deletions: 0 })
+
+/** Answers `gh api` for the seat's open pulls and their files, and nothing else. */
+const adoptGh = (args: readonly string[]): string => {
+  const url = args.find(a => a.startsWith('repos/')) ?? ''
+  if (url.includes('/files')) return PULL_FILES
+  return url.includes('/pulls?') ? SEAT_PULL : ''
 }
 
+/** A healthy service check, Shepherd with no rows that accepts every register, and a GitHub remote. */
+const factoryWith =
+  (gh: (args: readonly string[]) => string): Runner =>
+  (bin, args, cwd) => {
+    if (bin === 'titan-factory' && args[0] === 'service')
+      return {
+        status: 0,
+        stdout: JSON.stringify({ ok: true, cause: null, message: 'ok', health: null, detail: {} }),
+      }
+    if (bin === 'titan-factory') return { status: 0, stdout: '[]' }
+    if (bin === 'gh') return { status: 0, stdout: gh(args) }
+    if (bin === 'git' && args.includes('get-url'))
+      return { status: 0, stdout: 'https://github.com/acme/widgets.git\n' }
+    return run(bin, args, cwd)
+  }
+
+const factory = factoryWith(() => '')
+
+let agents: AgentIdentity[] = []
+
 const broker: TickBroker = {
-  roster: async () => ({ agents: [], slots: { held: 4, cap: 36 } }),
+  roster: async () => ({ agents, slots: { held: 4, cap: 36 } }),
   inboxSince: async () => [],
   spawn: async frame => ({ ok: true, agentId: `id-${frame.name}` }),
   retire: async () => ({ ok: true }),
@@ -127,18 +151,19 @@ const broker: TickBroker = {
   }),
 }
 
-async function tick(log: (event: string) => void = () => {}): Promise<void> {
+async function tick(log: (event: string) => void = () => {}, exec: Runner = factory): Promise<void> {
   await tickFromDisk({
     dryRun: false,
     broker,
     now: NOW,
     log: event => log(event),
-    exec: factory,
+    exec,
     ownerQueueDir: path.join(world, 'spool'),
   })
 }
 
 beforeEach(() => {
+  agents = []
   world = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-chat-tick-summary-')))
   process.env.AGENT_CHAT_HOME = home()
   process.env.AGENT_CHAT_ACTIVE_WORK_ROOT = path.join(world, 'aw')
@@ -181,6 +206,28 @@ describe('the burndown tick summary in the live tick', () => {
         },
       },
     })
+  })
+
+  it('counts a live hand-spawned seat agent in roles used, as the role cap does', async () => {
+    agents = [{ name: 'st-hand', profile: 'bd-reviewer', state: 'live', cwd: '/elsewhere' } as AgentIdentity]
+
+    await tick()
+
+    const row = JSON.parse(fs.readFileSync(ticksFile(), 'utf8'))
+    expect(row.seats['seat-t'].roles.used).toEqual({ implementers: 1, reviewers: 1, planners: 0 })
+  })
+
+  it('counts a seat PR the adopt path registered, for the seat and the tick', async () => {
+    write(
+      path.join(world, 'aw', 'demo', 'tasks', 'T-4.yml'),
+      'id: T-4\ntitle: Cover the edge\npriority: 3\nstatus: done\ntags:\n  - kind:correctness\n',
+    )
+
+    await tick(() => {}, factoryWith(adoptGh))
+
+    const row = JSON.parse(fs.readFileSync(ticksFile(), 'utf8'))
+    expect(row.registrations).toEqual({ ok: 1, refused: 0, failed: 0 })
+    expect(row.seats['seat-t'].registrations).toEqual({ ok: 1, refused: 0, failed: 0 })
   })
 
   it('still writes the ledger and records an ok tick when the summary cannot be written', async () => {
