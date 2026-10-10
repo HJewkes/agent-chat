@@ -14,6 +14,14 @@ import { claimCustody } from '../../agents/burndown/custody.js'
 import { shepherdRows, shepherdTarget } from '../../agents/burndown/shepherd.js'
 import { heldClaims, readLedger, withLedgerLock, writeLedger } from '../../agents/burndown/ledger.js'
 import { tickFromDisk } from '../../agents/burndown/run-tick.js'
+import {
+  DEFAULT_WINDOW,
+  dispatchStats,
+  parseWindow,
+  renderDispatchStats,
+  type DispatchStatsPorts,
+} from '../../agents/burndown/dispatch-stats.js'
+import { dispatchStatsPorts } from '../../agents/burndown/dispatch-stats-source.js'
 import { seatCompareFromDisk } from '../../agents/burndown/seat-compare.js'
 import {
   planFromDisk,
@@ -213,6 +221,45 @@ export const burndownMilestoneVerb = defineVerb({
   },
 })
 
+/** The dispatch-stats verb's body, taking its ports explicitly so a test can point it at fixtures. */
+export function dispatchStatsLines(ports: DispatchStatsPorts, since: string, json: boolean): Report {
+  const windowMs = parseWindow(since)
+  if (windowMs === undefined)
+    return refused(new Error(`--since ${since} is not a window; use e.g. 90m, 24h or 7d`))
+  try {
+    const stats = dispatchStats(ports, windowMs)
+    return { ok: true, lines: json ? stats.map(s => JSON.stringify(s)) : renderDispatchStats(stats) }
+  } catch (err) {
+    return refused(err)
+  }
+}
+
+export const burndownDispatchStatsVerb = defineVerb({
+  name: 'burndown.dispatch-stats',
+  description:
+    'per seat: spawns/h tick vs hand, queue age, ready depth, cap use, refusal mix, registrations, tick health',
+  args: z.object({
+    json: z.boolean().optional(),
+    since: z.string().optional(),
+    autonomyRoot: z.string().optional(),
+  }),
+  result: Report,
+  cli: {
+    options: {
+      json: { long: '--json', description: 'one JSON record per seat, one per line' },
+      since: {
+        long: '--since',
+        description: `window to read, e.g. 90m, 24h or 7d (default ${DEFAULT_WINDOW})`,
+      },
+      autonomyRoot: { long: '--autonomy-root', description: 'directory holding seats/ and logs/' },
+    },
+  },
+  async run({ json, since, autonomyRoot }) {
+    const ports = dispatchStatsPorts(autonomyRoot ?? defaultAutonomyRoot(), new Date())
+    return dispatchStatsLines(ports, since ?? DEFAULT_WINDOW, json === true)
+  },
+})
+
 export const burndownStatusVerb = defineVerb({
   name: 'burndown.status',
   description: 'claim ledger, stalled claims and each account budget gate',
@@ -360,6 +407,7 @@ export function addBurndownCommands(program: Commander): void {
   const seats = burndown.command('seats').description('seats mode checks (CC-205)')
   addVerb(seats, burndownSeatsCompareVerb)
   addVerb(burndown, burndownStatusVerb)
+  addVerb(burndown, burndownDispatchStatsVerb)
   addVerb(burndown, burndownTickVerb)
   addVerb(burndown, burndownPauseVerb)
   addVerb(burndown, burndownResumeVerb)
