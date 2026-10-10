@@ -72,6 +72,8 @@ export interface Allocation {
 export interface ReleaseOptions {
   /** Bypass the dirty/unmerged refusal. Explicit destruction only. */
   force?: boolean
+  /** CC-921: release a tree that was already parked, and keep its branch. Refused while the tree is on disk. */
+  keepBranch?: boolean
 }
 
 export interface IsolationStrategy {

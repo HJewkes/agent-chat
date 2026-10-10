@@ -12,6 +12,7 @@ import {
   resolveSeatSpawnMode,
   resolveProcessGuardMode,
   resolveProcessKillBytes,
+  resolveAutoRetireOnReport,
 } from '../config.js'
 import { readMemoryFree } from '../agents/machine-guard.js'
 import { Semaphore } from '../agents/semaphore.js'
@@ -19,6 +20,7 @@ import { backfillAtBoot } from '../agents/ledger/backfill-run.js'
 import { shadowLedgerFromConfig } from '../agents/ledger/shadow-ledger.js'
 import { defaultAutonomyRoot, isWatchedSeat } from '../agents/seats/io.js'
 import { seatJournal } from '../agents/seats/journal.js'
+import { cliShepherdSkipPort } from '../agents/isolation/shepherd-skip.js'
 import { seatDispatchLog } from '../agents/seats/dispatch-log.js'
 import {
   readOverlap,
@@ -260,6 +262,8 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
     : {
         seatJournal: seatJournal(defaultAutonomyRoot()),
         seatDispatch: seatDispatchLog(defaultAutonomyRoot()),
+        shepherdSkip: cliShepherdSkipPort,
+        autoRetireOnReport: resolveAutoRetireOnReport,
         seatBudget: { read: (spawn: SeatSpawnRequest) => readSeatSpawn(defaultAutonomyRoot(), spawn) },
         seatOverlap: {
           mode: resolveSeatSpawnMode,

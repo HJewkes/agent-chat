@@ -4,6 +4,7 @@ import { runGit, type GitRunner } from '../../git.js'
 import type { AgentIdentity, RetirePlanEntry, RetireResult } from '../../protocol.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import { allocatedWorktree, type ParkTarget } from './park.js'
+import { shepherdSkip, type ShepherdSkipPort } from './shepherd-skip.js'
 import { isLive } from './sweep.js'
 
 /**
@@ -33,6 +34,8 @@ export interface FinishedRetirePort {
   /** CC-408: by id, so a stale row never resolves to the newest holder of its name. */
   retire(agentId: string): Promise<{ ok: boolean; reason?: string }>
   git?: GitRunner
+  /** CC-904: the open-PR and Shepherd reads; the broker always passes them. */
+  skip?: ShepherdSkipPort
 }
 
 export interface FinishedRetireOutcome {
@@ -119,6 +122,8 @@ async function finishedBlocker(
   const target = allocatedWorktree(events, agent.agentId)
   const byAdopter = adopterBlocker(agent, target, roster)
   if (byAdopter) return byAdopter
+  const byShepherd = port.skip && (await shepherdSkip(port.skip, agent, target))
+  if (byShepherd) return byShepherd
   if (target === undefined) return undefined
   return workBlocker(target, port.git).catch(
     (err: Error) => `could not read ${target.worktree}: ${err.message}`,
