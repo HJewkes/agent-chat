@@ -951,6 +951,8 @@ export type ClientMessage =
       task?: string
       /** CC-915: implementer, reviewer, fix-round-N, shepherd-review, planner or other; inferred when absent. */
       workRole?: string
+      /** CC-932: `fix-round` states that a spawn on a claimed or brief-ready task is the seat's own fix round. */
+      override?: 'fix-round'
     }
   | { t: 'agents'; includeRetired?: boolean }
   /**
@@ -1168,6 +1170,7 @@ export type ServerMessage =
         | 'machine_headless_limit'
         | 'machine_memory_floor'
         | 'seat_budget_stop'
+        | 'seat_spawn_overlap'
       /** CC-445: the machine guard's refusals clear as load drops, so the same spawn may be retried later. */
       retryable?: boolean
       warnings?: string[]

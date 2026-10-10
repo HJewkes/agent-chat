@@ -286,6 +286,7 @@ export class SocketServer {
       // A blank task from the CLI is no task, as the MCP tool's `present()` already reads it.
       ...(typeof msg.task === 'string' && msg.task.trim() !== '' ? { task: msg.task.trim() } : {}),
       ...(typeof msg.workRole === 'string' ? { workRole: msg.workRole } : {}),
+      ...(msg.override === 'fix-round' ? { override: msg.override } : {}),
       ...(msg.tags === undefined ? {} : { tags: msg.tags }),
       ...(msg.subscriptions === undefined ? {} : { subscriptions: msg.subscriptions }),
       // CC-100. The explicit ask is the request's to make; the spawner's own
