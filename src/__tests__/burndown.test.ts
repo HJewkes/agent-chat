@@ -251,7 +251,7 @@ describe('burndown plan', () => {
     expect(result.dispatch.map(d => [d.task, d.profile, d.cwd])).toEqual(
       expect.arrayContaining([
         ['DM-1', 'bd-planner', repo()],
-        ['OT-1', 'bd-implementer', path.join(repo(), '.worktrees', 'bd-ot-1')],
+        ['OT-1', 'bd-implementer-lite', path.join(repo(), '.worktrees', 'bd-ot-1')],
       ]),
     )
   })
