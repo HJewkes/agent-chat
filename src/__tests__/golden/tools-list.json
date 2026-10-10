@@ -531,6 +531,14 @@
           "briefing": {
             "type": "string",
             "description": "Optional active-work initiative slug (e.g. \"claude-channels\"), or \"auto\". The broker reads that initiative's brief.md, open tasks and latest session note and prepends them to your brief, so you do not have to re-describe the project — write the ASSIGNMENT in brief and let this carry the orientation. It also asks the active-work daemon for up to six notes, sources, tasks or sessions ranked against your brief text (any initiative, foreign ones labelled) and lists them with absolute paths; if the daemon does not answer within 1 second that list is left out and the spawn carries a warning. So the brief itself is the query: name the specifics. \"auto\" resolves from your own directory first, then from cwd; if neither is inside an initiative the spawn still succeeds, with a warning and no briefing. Omit it when the work has no active-work initiative behind it."
+          },
+          "task": {
+            "type": "string",
+            "description": "The task id this agent works on, e.g. \"CC-915\". Recorded on the agent so its work can be traced back to the task; pass it whenever the work has one."
+          },
+          "role": {
+            "type": "string",
+            "description": "What this agent does for the task: implementer, reviewer, shepherd-review, planner, other, fix-round-<n>. Omit it and the broker infers one from the profile and name, and marks it inferred."
           }
         },
         "required": [

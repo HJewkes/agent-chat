@@ -947,6 +947,10 @@ export type ClientMessage =
        * session is already named by its registration; the row then records it in place of the human.
        */
       spawnedAs?: 'burndown' | 'shepherd'
+      /** CC-915: the task id the agent runs, recorded on its spawn row; a burndown spawn without one is refused. */
+      task?: string
+      /** CC-915: implementer, reviewer, fix-round-N, shepherd-review, planner or other; inferred when absent. */
+      workRole?: string
     }
   | { t: 'agents'; includeRetired?: boolean }
   /**
@@ -1295,6 +1299,18 @@ export interface AgentIdentity {
   configDir?: string
   /** CC-200: the agent runs with `CLAUDE_CONFIG_DIR` unset, so its global config is `~/.claude.json`. */
   configDirUnset?: boolean
+  /** CC-915: `owner/name` of the worktree's GitHub origin; absent off GitHub and on older rows. */
+  repo?: string
+  /** CC-915: the worktree's branch. */
+  branch?: string
+  /** CC-915: the commit a new worktree branch was cut from; a resume onto a fresh branch replaces it. */
+  base?: { sha: string; ref: string }
+  /** CC-915: the task id the spawner assigned. */
+  task?: string
+  /** CC-915: implementer, reviewer, fix-round-N, shepherd-review, planner or other. Set on every folded identity. */
+  workRole?: string
+  /** CC-915: the role was read from the profile and name, not stated by the spawner. */
+  workRoleInferred?: true
   /** Timestamp of the newest row referencing this identity, spawn included. */
   lastEventAt: number
   /** Timestamp of the `agent_exited` row, cleared by a resume; the reclaim grace window's start. */

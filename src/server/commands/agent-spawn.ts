@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { patternList, present, requiredString } from '../../args.js'
 import { ISOLATION_NAMES, SURFACE_NAMES, type ClientMessage, type ServerMessage } from '../../protocol.js'
 import { verdictLine } from '../../agents/resume-session.js'
+import { isWorkRole, WORK_ROLE_CHOICES } from '../../agents/spawn-provenance.js'
 import { defineTool } from '../command.js'
 
 /** The wording `optionalEnum` used, which callers (and agent-presence.test.ts) match on. */
@@ -137,6 +138,21 @@ const args = z.object({
         'briefing. Omit it when the work has no active-work initiative behind it.',
     )
     .optional(),
+  task: z
+    .string()
+    .describe(
+      'The task id this agent works on, e.g. "CC-915". Recorded on the agent so its work can be ' +
+        'traced back to the task; pass it whenever the work has one.',
+    )
+    .optional(),
+  role: z
+    .string()
+    .refine(isWorkRole, { error: `role must be one of: ${WORK_ROLE_CHOICES}` })
+    .describe(
+      `What this agent does for the task: ${WORK_ROLE_CHOICES}. Omit it and the broker infers ` +
+        'one from the profile and name, and marks it inferred.',
+    )
+    .optional(),
 })
 
 type SpawnArgs = z.infer<typeof args>
@@ -152,6 +168,7 @@ function spawnFrame(input: SpawnArgs): ClientMessage {
   const owns = patternList('owns', input.owns)
   const resumeSession = present(input.resume_session)
   const predecessor = present(input.predecessor)
+  const task = present(input.task)
   return {
     t: 'spawn',
     name: input.name,
@@ -170,6 +187,8 @@ function spawnFrame(input: SpawnArgs): ClientMessage {
     ...(resumeSession === undefined ? {} : { resumeSession }),
     ...(predecessor === undefined ? {} : { predecessor }),
     ...(input.return_contract === undefined ? {} : { returnContract: input.return_contract }),
+    ...(task === undefined ? {} : { task }),
+    ...(input.role === undefined ? {} : { workRole: input.role }),
   }
 }
 

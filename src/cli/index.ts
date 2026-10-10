@@ -188,6 +188,8 @@ function addAgentCommands(program: Command): void {
     .option('--briefing <slug|auto>', "prepend an active-work initiative's orientation to the brief")
     .option('--brief-stdin', 'read the brief from stdin, keeping it out of world-readable argv')
     .option('--config-dir <path>', 'the Claude config dir, and therefore the account, to run it on')
+    .option('--task <id>', 'the task id the agent works on, recorded on its agent record')
+    .option('--role <role>', 'implementer, reviewer, fix-round-<n>, shepherd-review, planner or other')
     .action(agents.agentSpawn)
   addVerb(agent, agentRetire)
   addVerb(agent, agentPark)

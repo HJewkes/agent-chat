@@ -1,5 +1,6 @@
 import type { AgentEventRow, EventStore } from '../broker/event-store.js'
 import type { AgentIdentity, AgentLifecycle, AgentOrigin } from '../protocol.js'
+import { inferWorkRole } from './spawn-provenance.js'
 
 /**
  * The durable half of an agent: who it is, not whether it is currently plugged
@@ -70,10 +71,36 @@ const spawnedFrom = (row: AgentEventRow, id: string): AgentIdentity => ({
   // reads as "the broker's own dir" — exactly what those agents actually used.
   ...(row.meta.config_dir ? { configDir: row.meta.config_dir } : {}),
   ...(row.meta.config_dir_unset === 'true' ? { configDirUnset: true } : {}),
+  ...provenanceOf(row),
   lastEventAt: row.ts,
   generation: generationOf(row),
   ...(row.meta.teleport_from ? { teleportFrom: row.meta.teleport_from } : {}),
 })
+
+/** CC-915: rows written before the fields existed get an inferred role and no worktree provenance. */
+function provenanceOf(row: AgentEventRow): Partial<AgentIdentity> {
+  const { meta } = row
+  const stated = meta.work_role !== undefined && meta.work_role_inferred !== 'true'
+  return {
+    ...(meta.repo ? { repo: meta.repo } : {}),
+    ...(meta.branch ? { branch: meta.branch } : {}),
+    ...baseOf(row),
+    ...(meta.task ? { task: meta.task } : {}),
+    workRole: meta.work_role ?? inferWorkRole(meta.profile ?? '', row.target ?? meta.name ?? ''),
+    ...(stated ? {} : { workRoleInferred: true as const }),
+  }
+}
+
+const baseOf = (row: AgentEventRow): { base?: { sha: string; ref: string } } =>
+  row.meta.base_sha && row.meta.base_ref ? { base: { sha: row.meta.base_sha, ref: row.meta.base_ref } } : {}
+
+/** A resume row carries a base only when it cut a fresh branch; a surviving branch keeps its first one. */
+function applyResumeProvenance(agent: AgentIdentity, row: AgentEventRow): void {
+  const base = baseOf(row).base
+  if (base !== undefined) agent.base = base
+  if (row.meta.repo) agent.repo = row.meta.repo
+  if (row.meta.branch) agent.branch = row.meta.branch
+}
 
 /** Lifecycle transitions, keyed by kind. Kinds absent here only bump `lastEventAt`. */
 const TRANSITIONS: Partial<Record<AgentEventRow['kind'], AgentLifecycle>> = {
@@ -124,6 +151,7 @@ export function foldAgent(rows: readonly AgentEventRow[]): AgentIdentity | undef
     // carries it, and only when a switch actually changed it — an ordinary resume
     // omits the field and leaves this alone.
     if (row.kind === 'agent_resumed' && row.meta.surface) agent.surface = row.meta.surface
+    if (row.kind === 'agent_resumed') applyResumeProvenance(agent, row)
     if (row.kind === 'agent_exited') {
       agent.exit = exitFrom(row)
       agent.exitedAt = row.ts

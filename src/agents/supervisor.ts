@@ -117,6 +117,7 @@ import type { SeatSpawnRead, SeatSpawnRequest } from './seats/spawn-gate-read.js
 import { SEAT_BUDGET_STOP, seatSpawnGate, type SeatBudgetRefusalCode } from './seats/spawn-gate.js'
 import type { RetireSpend } from './seats/dispatch-record.js'
 import { branchHead, retireOutcomeOf } from './seats/retire-outcome.js'
+import { assignmentRefusal, spawnProvenance, worktreeProvenance } from './spawn-provenance.js'
 import {
   poolPickText,
   routePool,
@@ -420,6 +421,10 @@ export interface SpawnRequest {
   tier?: number
   /** CC-802: the automation a human-requested spawn runs for; the `dispatched` row's spawner. */
   spawnedAs?: 'burndown' | 'shepherd'
+  /** CC-915: the task id this agent runs; required for a burndown spawn. */
+  task?: string
+  /** CC-915: one of `WORK_ROLES` or `fix-round-<n>`; inferred from profile and name when absent. */
+  workRole?: string
   /** Empty for a human-initiated spawn; otherwise the requesting agent's id. */
   parentAgentId?: string
   requestedBy: string
@@ -1135,7 +1140,7 @@ export class Supervisor implements TeleportHost {
         `${req.requestedBy} is a worker (profile ${requester.profile || 'unknown'}) and cannot spawn ` +
         'agents; report the need to your spawner via chat_send'
       )
-    return undefined
+    return assignmentRefusal(req)
   }
 
   /**
@@ -1668,6 +1673,7 @@ export class Supervisor implements TeleportHost {
       ...(account.unset ? { configDirUnset: true } : {}),
     })
     writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry(), plan.surface))
+    const provenance = await spawnProvenance(allocation, req, profile.name)
 
     // Appended BEFORE the launch. If the launch then fails, the identity exists
     // in `spawning` with a refusal beside it, which is exactly what you want when
@@ -1723,6 +1729,8 @@ export class Supervisor implements TeleportHost {
         ...(req.predecessor === undefined ? {} : { predecessor: req.predecessor }),
         // CC-802: stored so the retire row names the same spawner as the dispatched one.
         ...(req.spawnedAs === undefined ? {} : { spawned_as: req.spawnedAs }),
+        // CC-915: read by the session-origin miner, which sees only this row's meta.
+        ...provenance,
       },
     })
 
@@ -2715,6 +2723,7 @@ export class Supervisor implements TeleportHost {
       ...(req.remoteControl ? { remoteControl: true } : {}),
     })
     writeLaunchFiles(plan, buildMcpConfig(profile, cliEntry(), plan.surface))
+    const provenance = reattached === undefined ? {} : await worktreeProvenance(reattached)
     this.core.append({
       kind: 'agent_resumed',
       actor: req.requestedBy ?? HUMAN,
@@ -2727,6 +2736,8 @@ export class Supervisor implements TeleportHost {
         from_surface: agent.surface,
         transcript: transcript.path,
         ...(req.source === undefined ? {} : { source: req.source }),
+        // CC-915: a re-created worktree may sit on a fresh branch cut from a newer base.
+        ...provenance,
       },
     })
     const handle = await this.launchOn(surface, plan, req.anchor).catch((err: unknown) => {
