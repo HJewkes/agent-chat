@@ -983,8 +983,9 @@ describe('planSeat ready order (CC-926)', () => {
         aged('A-51', 51, ['brief:ready=2026-09-27']),
       ],
     })
-    const withAging = (patch: Partial<SeatPlanInputs> = {}) => {
+    const withAging = (patch: Partial<SeatPlanInputs> = {}, oldest: Partial<ScoreRow> = {}) => {
       const { rows, tasks } = stream()
+      rows[3] = row('A-50', 5, oldest)
       return planSeat(inputs(rows, tasks, { brief: { gate: 'on', maxAgeDays: 14, agingEvery: 3 }, ...patch }))
     }
 
@@ -997,6 +998,14 @@ describe('planSeat ready order (CC-926)', () => {
       const plan = withAging({ ledger, seat: one })
 
       expect(plan.dispatch.map(d => d.task)).toEqual(['A-50'])
+    })
+
+    it('offers the slot to the next-oldest task when the oldest is refused by the walk', () => {
+      const ledger = { ...EMPTY_LEDGER, claims: doneTwice }
+
+      const plan = withAging({ ledger, seat: one }, { stopShort: ['hard stop'] })
+
+      expect(plan.dispatch.map(d => d.task)).toEqual(['A-51'])
     })
 
     it('takes the window from the config maxAgents', () => {

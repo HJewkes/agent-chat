@@ -3,6 +3,7 @@ import { gatePool, RUN_CAP_MS, type PoolGateInput, type PoolGateResult } from '.
 import {
   briefRefusal,
   IMPLEMENTER_PROFILE,
+  localDay,
   PLANNER_PROFILE,
   SONNET_PROFILES,
   taskRefusal,
@@ -27,7 +28,7 @@ import {
 } from './plan.js'
 import type { MilestoneFile } from './milestones.js'
 import { planOrder, type PlannedRow } from './plan-order.js'
-import { readySet } from './ready-order.js'
+import { agedFirst, agingTurn, briefReadyDay, readySet } from './ready-order.js'
 import {
   dispatchOrder,
   type DispatchRow,
@@ -209,12 +210,50 @@ export function planSeat(inputs: SeatPlanInputs): SeatPlan {
   }
   for (const claim of readySlices(inputs.ledger, walk.held).filter(c => c.seat === inputs.seat.seat))
     take(claim.initiative, claim.taskId, considerSlice(claim, walk))
-  for (const row of order) take(row.initiative, row.id, consider(row, walk))
+  const picked = Object.values(priorPicks).reduce((sum, n) => sum + n, 0)
+  const aging = { aged: agedRows(inputs, order), every: inputs.brief?.agingEvery ?? 1 }
+  walkOrder(
+    order,
+    aging,
+    () => picked + plan.dispatch.length,
+    row => {
+      const outcome = consider(row, walk)
+      take(row.initiative, row.id, outcome)
+      return outcome
+    },
+  )
   for (const { initiative, task, reason } of planRefusals)
     plan.refusals.push({ initiative, task, kind: 'plan-blocked', reason })
   plan.refusals.push(...outOfScope)
   plan.notes.push(...walk.notes)
   return { ...plan, roles: { ...walk.roles } }
+}
+
+type Outcome = Taken | Refused | Seeded
+
+/**
+ * Considers each row in order. Before a row, when the seat's next pick is its aging slot, the aged rows get
+ * the pick first, longest-ready first: a refused one is spent and the next is tried, so a row the walk
+ * always refuses cannot hold the slot. With none aged the order is untouched.
+ */
+function walkOrder(
+  order: readonly DispatchRow[],
+  aging: { aged: readonly DispatchRow[]; every: number },
+  picks: () => number,
+  run: (row: DispatchRow) => Outcome,
+): void {
+  const done = new Set<DispatchRow>()
+  const once = (row: DispatchRow): Outcome => {
+    done.add(row)
+    return run(row)
+  }
+  for (let i = 0; i < order.length;) {
+    const row = order[i]!
+    const turn = aging.aged.length > 0 && agingTurn(picks(), aging.every)
+    if (turn && aging.aged.filter(r => !done.has(r)).some(r => !('kind' in once(r)))) continue
+    if (!done.has(row)) once(row)
+    i += 1
+  }
 }
 
 /** Rows outside the seat's scope leave before ordering, so they spend no share cap or initiative decay. */
@@ -246,8 +285,7 @@ interface Ordered {
 function orderRows(inputs: SeatPlanInputs, priorPicks: Record<string, number>): Ordered {
   const ordered = baseOrder(inputs, priorPicks)
   if (inputs.brief?.gate !== 'on') return ordered
-  const picks = Object.values(priorPicks).reduce((sum, n) => sum + n, 0)
-  return { ...ordered, order: briefReadyFirst(inputs, ordered.order, picks) }
+  return { ...ordered, order: briefReadyFirst(inputs, ordered.order) }
 }
 
 /** CC-926: share caps and initiative decay do not apply to the ready set, so the base order is built without them. */
@@ -278,24 +316,36 @@ function baseOrder(inputs: SeatPlanInputs, priorPicks: Record<string, number>): 
   }
 }
 
-/** Brief-ready rows by `readyOrder`, with the aging slot (CC-928); the rest follow in their base order, where the gate refuses them. */
-function briefReadyFirst(inputs: SeatPlanInputs, order: Ordered['order'], picks: number): Ordered['order'] {
-  const { brief, budget } = inputs
-  if (brief === undefined) return order
-  const check: BriefCheck = { maxAgeDays: brief.maxAgeDays, now: budget.ctx.now }
-  const taskOf = (r: Ordered['order'][number]) => inputs.tasks.get(r.initiative)?.find(t => t.id === r.id)
-  const claimed = new Set(heldClaims(inputs.ledger).map(c => c.taskId))
-  const held = backoffHeld(inputs.ledger, budget.ctx.now)
-  const dispatchable = (r: Ordered['order'][number]): boolean => {
-    const t = taskOf(r)
-    return (
-      t !== undefined && taskRefusal(t, inputs.seat.grants, claimed, held, briefCheck(inputs)) === undefined
-    )
-  }
-  const aging = brief.agingEvery === undefined ? undefined : { every: brief.agingEvery, picks, dispatchable }
-  const ready = readySet(order, taskOf, check, inputs.scope, aging)
+/** Brief-ready rows by `readyOrder`; the rest follow in their base order, where the gate refuses them. */
+function briefReadyFirst(inputs: SeatPlanInputs, order: Ordered['order']): Ordered['order'] {
+  const ready = readyRows(inputs, order)
   const taken = new Set(ready)
   return [...ready, ...order.filter(r => !taken.has(r))]
+}
+
+function readyRows(inputs: SeatPlanInputs, order: Ordered['order']): Ordered['order'] {
+  const { brief, budget } = inputs
+  if (brief === undefined) return []
+  const check: BriefCheck = { maxAgeDays: brief.maxAgeDays, now: budget.ctx.now }
+  return readySet(order, taskOfRow(inputs), check, inputs.scope)
+}
+
+const taskOfRow = (inputs: SeatPlanInputs) => (r: { initiative: string; id: string }) =>
+  inputs.tasks.get(r.initiative)?.find(t => t.id === r.id)
+
+/**
+ * CC-928: the rows the aging slot may take, longest-ready first; empty unless an `on` gate carries `agingEvery`.
+ * The walk offers the slot to them and takes the first its own checks accept.
+ */
+function agedRows(inputs: SeatPlanInputs, order: Ordered['order']): Ordered['order'] {
+  const { brief, budget } = inputs
+  if (brief?.gate !== 'on' || brief.agingEvery === undefined) return []
+  const taskOf = taskOfRow(inputs)
+  const readyDay = (r: Ordered['order'][number]): number | undefined => {
+    const task = taskOf(r)
+    return task === undefined ? undefined : briefReadyDay(task)
+  }
+  return agedFirst(readyRows(inputs, order), readyDay, localDay(budget.ctx.now))
 }
 
 /**

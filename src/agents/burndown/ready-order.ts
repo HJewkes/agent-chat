@@ -1,4 +1,4 @@
-import { briefRefusal, localDay, type BriefCheck } from './eligibility.js'
+import { briefRefusal, type BriefCheck } from './eligibility.js'
 import { parseTaskTags } from './task-tags.js'
 import { parseIsoDay } from './score.js'
 import { scopeRefusal, type SeatScope } from './seat-scope.js'
@@ -50,62 +50,44 @@ export interface ReadyTask {
   priority?: number
 }
 
-/** CC-928: one pick in every `every` goes to the longest-ready row; `picks` is the seat's picks so far. */
-export interface AgingSlot<T = { id: string }> {
-  every: number
-  picks: number
-  /** Whether the row could go out, so a claimed or backed-off task never spends the slot; absent, all can. */
-  dispatchable?: (row: T) => boolean
-}
+/** CC-928: every `every`th pick is the aging slot; `picks` counts the seat's picks so far. */
+export const agingTurn = (picks: number, every: number): boolean => picks % every === every - 1
 
 /**
- * The aging slot's reorder: position `i` is the aging slot when `picks + i` is the last of a window of
- * `every`, and takes the row whose `brief:ready` day is oldest (ties by task id) among those ready a
- * day or more that could be dispatched; the rest keep their order. With no aged row the order is unchanged.
+ * CC-928: the rows ready a day or more as of `today`, longest-ready first, ties by task id. The walk
+ * offers the slot to them in this order and takes the first the dispatch checks accept, so no copy
+ * of those checks lives here.
  */
-export function withAgingSlot<T extends { id: string }>(
-  ordered: readonly T[],
+export function agedFirst<T extends { id: string }>(
+  ready: readonly T[],
   readyDay: (row: T) => number | undefined,
   today: number,
-  slot: AgingSlot<T>,
 ): T[] {
   const day = (row: T): number => readyDay(row) ?? today
   const byAge = (a: T, b: T): number => day(a) - day(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
-  const canGo = slot.dispatchable ?? (() => true)
-  const aged = ordered.filter(row => today - day(row) >= 1 && canGo(row)).sort(byAge)
-  const remaining = [...ordered]
-  const out: T[] = []
-  while (remaining.length > 0) {
-    const turn = (slot.picks + out.length) % slot.every === slot.every - 1
-    const next = (turn ? aged.find(row => remaining.includes(row)) : undefined) ?? remaining[0]!
-    remaining.splice(remaining.indexOf(next), 1)
-    out.push(next)
-  }
-  return out
+  return ready.filter(row => today - day(row) >= 1).sort(byAge)
+}
+
+/** The day the task's `brief:ready` tag names, on `localDay`'s scale. */
+export function briefReadyDay(task: ReadyTask): number | undefined {
+  const day = parseTaskTags({ id: task.id, tags: task.tags }).task.briefReady
+  return day === undefined ? undefined : parseIsoDay(day)
 }
 
 /**
  * CC-935: the rows an `on` brief gate takes as ready, in `readyOrder`'s order: the task is in the seat's
- * scope and carries a `brief:ready` no older than `check.maxAgeDays`. The tick and `seats boot` share it;
- * only the tick passes `aging`, since `seats boot` shows the order and spends no pick.
+ * scope and carries a `brief:ready` no older than `check.maxAgeDays`. The tick and `seats boot` share it.
  */
 export function readySet<T extends ReadyOrderRow & { initiative: string }>(
   rows: readonly T[],
   taskOf: (row: T) => ReadyTask | undefined,
   check: BriefCheck,
   scope?: SeatScope,
-  aging?: AgingSlot<T>,
 ): T[] {
   const ready = (row: T): boolean => {
     const task = taskOf(row)
     if (task === undefined || scopeRefusal(scope, row.initiative, task) !== undefined) return false
     return briefRefusal(task, check) === undefined
   }
-  const ordered = readyOrder(rows.filter(ready), row => taskOf(row)?.priority)
-  if (aging === undefined) return ordered
-  const readyDay = (row: T): number | undefined => {
-    const day = parseTaskTags({ id: row.id, tags: taskOf(row)?.tags ?? [] }).task.briefReady
-    return day === undefined ? undefined : parseIsoDay(day)
-  }
-  return withAgingSlot(ordered, readyDay, localDay(check.now), aging)
+  return readyOrder(rows.filter(ready), row => taskOf(row)?.priority)
 }
