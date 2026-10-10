@@ -12,9 +12,9 @@ import {
 /**
  * CC-861: each tick, register a seat's open PRs that Shepherd does not list, which
  * the coordinator did by hand after every DONE report. It registers only what it
- * can prove ordinary: a correctness, bug, feature or refactor task whose title and
- * tags name nothing sensitive, whose every changed path is on an allow-list of tests
- * and docs, and whose diff is G10-small. Everything else is only flagged in the
+ * can prove ordinary: a correctness, bug, feature, platform, product, agent-tooling or refactor task whose title and
+ * tags name nothing sensitive, whose every changed path is on an allow-list of tests,
+ * docs and changesets, and whose diff is G10-small. Everything else is only flagged in the
  * seat's log, for the seat to register and hold by hand: Shepherd holds only a run
  * that exists and never loosens a run's policy, so the tick has no way to register
  * a PR that is held from its first moment. Shepherd down is logged and retried next tick; registration never
@@ -77,6 +77,9 @@ const SHEPHERD_KINDS: Readonly<Record<string, ShepherdKind>> = {
   correctness: 'correctness',
   bug: 'correctness',
   feature: 'feature',
+  platform: 'feature',
+  product: 'feature',
+  'agent-tooling': 'feature',
   refactor: 'refactor',
 }
 
@@ -115,12 +118,13 @@ const SENSITIVE_STEMS = [
 
 const SENSITIVE_TEXT = new RegExp(`\\b(${SENSITIVE_STEMS.join('|')})`, 'i')
 
-/** The only paths a registered PR may change: tests and docs, which grant nothing. Anything else is flagged. */
+/** The only paths a registered PR may change: tests, docs and changesets, which grant nothing. Anything else is flagged. */
 const ORDINARY_PATHS = [
   /(^|\/)__tests__\//,
   /\.test\.[cm]?[jt]sx?$/,
   /^docs\//,
   /^site\//,
+  /^\.changeset\/[^/]+\.md$/,
   /(^|\/)(README|CHANGELOG)\.md$/i,
 ]
 
