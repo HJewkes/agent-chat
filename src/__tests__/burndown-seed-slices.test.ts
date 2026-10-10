@@ -75,7 +75,7 @@ const row = (route: ScoreRow['route'] = 'planner'): ScoreRow =>
     stopShort: [],
     route,
     components: { W: 1 },
-  }) as ScoreRow
+  }) as unknown as ScoreRow
 
 const pool: PoolGateInput = {
   pool: SEAT.pool,
