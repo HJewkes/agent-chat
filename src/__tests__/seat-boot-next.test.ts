@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { PlannedRow } from '../agents/burndown/plan-order.js'
 import type { ScoredTask } from '../agents/burndown/score.js'
+import type { SeatScope } from '../agents/burndown/seat-scope.js'
 import type { BootDeps } from '../agents/seats/boot.js'
 import type { ReadySource } from '../agents/seats/boot-read.js'
 import { bootReport } from '../cli/verbs/seats.js'
@@ -18,8 +19,11 @@ const NOW = new Date(2026, 9, 10, 12, 0)
 let tmp: string
 let root: string
 
+const WHOLE: SeatScope = { tags: [], shared: [], backlog: new Set() }
+
 interface Fixture {
   id: string
+  initiative?: string
   priority: number
   tags?: string[]
   score?: number
@@ -30,7 +34,7 @@ interface Fixture {
 const row = (f: Fixture): PlannedRow =>
   ({
     id: f.id,
-    initiative: 'init',
+    initiative: f.initiative ?? 'init',
     score: f.score ?? 1,
     tier: f.tier ?? 3,
     title: f.title ?? `title ${f.id}`,
@@ -42,12 +46,15 @@ const task = (f: Fixture): ScoredTask => ({
   title: f.title ?? `title ${f.id}`,
   priority: f.priority,
   tags: f.tags ?? [],
-  slug: 'init',
+  slug: f.initiative ?? 'init',
 })
 
-const source = (fixtures: Fixture[]): ReadySource => ({
+const source = (fixtures: Fixture[], over: Partial<ReadySource> = {}): ReadySource => ({
   order: fixtures.map(row),
   tasks: fixtures.map(task),
+  scope: WHOLE,
+  maxAgeDays: 14,
+  ...over,
 })
 
 const deps = (ready: BootDeps['ready']): BootDeps => ({
@@ -137,6 +144,38 @@ describe('seats boot Next (CC-935)', () => {
     expect(report.lines[at + 1]).toBe('unavailable: tasks')
     expect(report.lines[at + 2]).toMatch(/^== queue /)
     expect(report.lines).toContain('1. hand-kept handover item')
+  })
+
+  it('leaves out a task in a shared initiative that carries none of the seat scope_tags', async () => {
+    const scope: SeatScope = { tags: ['lane:a'], shared: ['shared'], backlog: new Set(['T-3']) }
+
+    const lines = await nextSection(async () =>
+      source(
+        [
+          { id: 'T-1', priority: 0, initiative: 'shared', tags: ['brief:ready=2026-10-09'] },
+          { id: 'T-2', priority: 1, initiative: 'shared', tags: ['brief:ready=2026-10-09', 'lane:a'] },
+          { id: 'T-3', priority: 2, initiative: 'shared', tags: ['brief:ready=2026-10-09'] },
+          { id: 'T-4', priority: 3, initiative: 'own', tags: ['brief:ready=2026-10-09'] },
+        ],
+        { scope },
+      ),
+    )
+
+    expect(lines.map(line => line.split(' ')[0])).toEqual(['T-2', 'T-3', 'T-4'])
+  })
+
+  it('leaves out a brief older than briefMaxAgeDays, however high its priority', async () => {
+    const lines = await nextSection(async () =>
+      source(
+        [
+          { id: 'T-1', priority: 0, tags: ['brief:ready=2026-09-29'] },
+          { id: 'T-2', priority: 2, tags: ['brief:ready=2026-09-30'] },
+        ],
+        { maxAgeDays: 10 },
+      ),
+    )
+
+    expect(lines).toEqual(['T-2  p2  10d  title T-2'])
   })
 
   it('says so when no task is brief-ready', async () => {

@@ -3,8 +3,9 @@ import path from 'node:path'
 import { localDay } from '../burndown/eligibility.js'
 import type { PlannedRow } from '../burndown/plan-order.js'
 import { frontmatter } from '../burndown/policy.js'
-import { readyOrder } from '../burndown/ready-order.js'
+import { readySet } from '../burndown/ready-order.js'
 import { parseIsoDay, type ScoredTask } from '../burndown/score.js'
+import type { SeatScope } from '../burndown/seat-scope.js'
 import { parseTaskTags } from '../burndown/task-tags.js'
 import { openEvents, readSeatJournal, readText, seatJournalDays, seatLogPath } from './io.js'
 
@@ -264,10 +265,13 @@ export function readBootInbox(dbPath: string, seat: string, after: string | unde
   }
 }
 
-/** CC-935: the scorer's rows for a seat and the open tasks they came from. */
+/** CC-935: the scorer's rows for a seat, the open tasks they came from, and what its brief gate tests. */
 export interface ReadySource {
   order: readonly PlannedRow[]
   tasks: readonly ScoredTask[]
+  scope: SeatScope
+  /** The tick config's `briefMaxAgeDays`. */
+  maxAgeDays: number
 }
 
 export interface NextTask {
@@ -284,17 +288,17 @@ export interface BootNext {
   error?: string
 }
 
-/** CC-935: the rows whose task carries a valid `brief:ready=<day>`, in `readyOrder`'s order. */
+/** CC-935: the rows the seat's `on` brief gate would take as ready, in the order it would take them. */
 export function readyNext(source: ReadySource, now: Date): NextTask[] {
-  const tasks = new Map(source.tasks.map(t => [`${t.slug}/${t.id}`, t]))
+  const tasks = new Map(source.tasks.map(t => [`${t.slug}/${t.id}`, { ...t, tags: t.tags ?? [] }]))
   const taskOf = (row: PlannedRow) => tasks.get(`${row.initiative}/${row.id}`)
   const readyDay = (row: PlannedRow): number | undefined => {
     const task = taskOf(row)
     const day = task && parseTaskTags(task).task.briefReady
     return day === undefined ? undefined : parseIsoDay(day)
   }
-  const ready = source.order.filter(row => readyDay(row) !== undefined)
-  return readyOrder(ready, row => taskOf(row)?.priority).map(row => ({
+  const check = { maxAgeDays: source.maxAgeDays, now }
+  return readySet(source.order, taskOf, check, source.scope).map(row => ({
     id: row.id,
     initiative: row.initiative,
     priority: taskOf(row)?.priority ?? Number.NaN,

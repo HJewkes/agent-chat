@@ -5,7 +5,7 @@ import { planOrder, type PlannedRow } from './plan-order.js'
 import { describeUnnamedCriterion, unnamedCriteria } from './ms-role.js'
 import { parsePlanningTasks, type TagError } from './task-tags.js'
 import { readInitiatives } from './source.js'
-import { dormantInitiatives, loadPolicy, seatScope } from './policy.js'
+import { dormantInitiatives, loadPolicy, seatScope, type Policy } from './policy.js'
 import { readScoredTasks } from './score-source.js'
 import {
   checkToday,
@@ -160,7 +160,11 @@ export function scoredPlanFromDisk(opts: ScoredPlanDiskOptions): ScoredPlan {
 }
 
 /** `scoredPlanFromDisk` with the open tasks it scored, whose tags and priority the rows do not carry. */
-export function scoredSeatFromDisk(opts: ScoredPlanDiskOptions): { plan: ScoredPlan; tasks: ScoredTask[] } {
+export function scoredSeatFromDisk(opts: ScoredPlanDiskOptions): {
+  plan: ScoredPlan
+  tasks: ScoredTask[]
+  policy: Policy
+} {
   const policy = loadPolicy(opts.autonomyRoot, opts.seat)
   const weights = seatScope(policy.charter, policy.seats, opts.seat, readInitiatives(opts.activeWorkRoot))
   const { tasks, skipped } = readScoredTasks(opts.activeWorkRoot, Object.keys(weights))
@@ -185,7 +189,7 @@ export function scoredSeatFromDisk(opts: ScoredPlanDiskOptions): { plan: ScoredP
     read === undefined
       ? plan
       : { ...plan, milestones: { week: read.week, errors: read.errors.map(describeError) } }
-  return { plan: withWeek, tasks }
+  return { plan: withWeek, tasks, policy }
 }
 
 const COMPONENT_KEYS: Exclude<keyof Components, 'G'>[] = ['S', 'P', 'U', 'A', 'W', 'K', 'R', 'Z', 'H']

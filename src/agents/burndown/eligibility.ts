@@ -112,7 +112,7 @@ export const localDay = (now: Date): number =>
 
 /** Why `task`'s brief is missing or stale, whatever the gate; undefined when it carries a fresh `brief:ready`. */
 export function briefRefusal(
-  task: Task,
+  task: { id: string; tags: readonly string[] },
   check: BriefCheck,
 ): { kind: RefusalKind; reason: string } | undefined {
   const { briefReady } = parseTaskTags({ id: task.id, tags: task.tags }).task

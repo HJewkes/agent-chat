@@ -26,7 +26,8 @@ import { suiteSlotDeps } from '../suite-slot.js'
 import type { AgentIdentity } from '../../protocol.js'
 import { scoredPlanFromDisk, scoredSeatFromDisk } from '../../agents/burndown/score-render.js'
 import { renderPlan, seatPlanFromDisk, type SeatPlanOptions } from '../../agents/burndown/tick.js'
-import { localDate } from '../../agents/burndown/seat-tick.js'
+import { localDate, readSeatScope } from '../../agents/burndown/seat-tick.js'
+import { loadTickConfig } from '../../agents/burndown/source.js'
 import { renderBoot, seatBoot, type BootDeps } from '../../agents/seats/boot.js'
 import { charterSeats, isSeatName, parsePools, parseSeat, seatSurface } from '../../agents/seats/charter.js'
 import {
@@ -81,7 +82,7 @@ import { FIRE_CAP } from '../../agents/seats/watchdog.js'
 import { BrokerClient } from '../../client/broker-client.js'
 import { systemHost } from '../../mirror/job-host.js'
 import { hostLeaseRefusal } from '../../host-lease.js'
-import { burndownLedgerPath, home } from '../../paths.js'
+import { burndownConfigPath, burndownLedgerPath, home } from '../../paths.js'
 import { claimsPort, eventsVerdictsPort, shepherdPort } from '../../agents/seats/in-flight-read.js'
 import { SURFACE_NAMES, type ServerMessage, type SurfaceName } from '../../protocol.js'
 import { addVerb, defineVerb, Report } from '../command.js'
@@ -693,8 +694,10 @@ function bootDeps(root: string): BootDeps {
     },
     ready: async (seat, now) => {
       const opts = { seat, top: Infinity, today: localDate(now), autonomyRoot: root, readySet: true }
-      const { plan, tasks } = scoredSeatFromDisk({ ...opts, activeWorkRoot: activeWorkRoot() })
-      return { order: plan.order, tasks }
+      const { plan, tasks, policy } = scoredSeatFromDisk({ ...opts, activeWorkRoot: activeWorkRoot() })
+      const { scope } = readSeatScope(policy.seats, seat, root)
+      const { briefMaxAgeDays } = loadTickConfig(burndownConfigPath())
+      return { order: plan.order, tasks, scope, maxAgeDays: briefMaxAgeDays }
     },
   }
 }
@@ -721,9 +724,9 @@ export const seatsBootVerb = defineVerb({
   name: 'seats.boot',
   description:
     "one boot digest for a coordinator seat (CC-318), read-only: the seat file's frontmatter, the " +
-    "In flight derived from burndown claims, Shepherd rows, the roster and verdicts, the top brief:ready tasks in ready order with their age, the queue's Next section, the newest State at teleport section of today's log, inbox " +
+    "In flight derived from burndown claims, Shepherd rows, the roster and verdicts, the top in-scope, fresh brief:ready tasks in the gate's ready order with their age, the queue's Next section, the newest State at teleport section of today's log, inbox " +
     'messages after a cutoff and the seat status, in 6,000 characters. Over that the oldest inbox ' +
-    'lines go first, then the log section; the queue and status are never cut',
+    'lines go first, then the log section, then the queue, In flight, Next, seat and status sections',
   args: z.object({
     seat: requiredString('seat'),
     after: z.string().optional(),
