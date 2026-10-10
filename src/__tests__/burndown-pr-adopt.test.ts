@@ -10,6 +10,7 @@ import {
   type OpenPull,
 } from '../agents/burndown/pr-adopt.js'
 import {
+  shepherdHold,
   shepherdListed,
   shepherdRegister,
   type Registration,
@@ -47,6 +48,8 @@ const file = (path: string, additions = 10, deletions = 5): ChangedFile => ({ pa
 interface Fake {
   ports: AdoptPorts
   registered: Registration[]
+  /** Register and hold calls in order, as `register <ref>` or `hold <ref>: <reason>`. */
+  calls: string[]
   seatLog: string[]
   events: string[]
   listed: ShepherdListing | undefined
@@ -63,9 +66,11 @@ function fake(opts: {
   listed?: ShepherdListing | undefined
   files?: ChangedFile[] | undefined
   registerExit?: number
+  holdExit?: number
 }): Fake {
   const f: Fake = {
     registered: [],
+    calls: [],
     seatLog: [],
     events: [],
     listed: 'listed' in opts ? opts.listed : listing(),
@@ -84,8 +89,15 @@ function fake(opts: {
       if (opts.registerExit !== undefined)
         return { ok: false, refused: opts.registerExit === 65, reason: `exit ${opts.registerExit}` }
       f.registered.push(reg)
+      f.calls.push(`register ${reg.target.repo}#${reg.target.pr}`)
       f.listed?.prs.add(`acme/widgets#${reg.target.pr}`)
       return { ok: true }
+    },
+    hold: (target, reason) => {
+      f.calls.push(`hold ${target.repo}#${target.pr}: ${reason}`)
+      return opts.holdExit === undefined
+        ? { ok: true }
+        : { ok: false, refused: opts.holdExit === 65, reason: `exit ${opts.holdExit}` }
     },
     logged: (_seat, key) => f.seatLog.some(line => line.includes(key)),
     append: (_seat, text) => void f.seatLog.push(text),
@@ -172,8 +184,77 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.seatLog).toHaveLength(1)
   })
 
+  it.each(['security', 'gate security'])(
+    'only flags a task whose title names "%s", until Shepherd holds at registration',
+    word => {
+      const f = fake({
+        pulls: [pull()],
+        tasks: [task({ title: `Fix the ${word} check`, tags: ['kind:correctness'] })],
+      })
+
+      tick(f)
+
+      expect(f.calls).toEqual([])
+      expect(f.seatLog).toEqual([
+        'burndown: Acme/Widgets#7 unregistered: sensitive word "security": register it by hand (T-1)',
+      ])
+    },
+  )
+
+  it('registers and then holds a PR whose title names "gate", naming the word and task', () => {
+    const f = fake({ pulls: [pull({ title: 'T-1: Tidy the gate tests' })], tasks: [task()] })
+
+    tick(f)
+    tick(f)
+
+    expect(f.calls).toEqual([
+      'register Acme/Widgets#7',
+      'hold Acme/Widgets#7: burndown: sensitive word "gate" in T-1',
+    ])
+    expect(f.events).toEqual(['burndown_pr_adopt_held'])
+    expect(f.seatLog).toEqual([])
+  })
+
+  it('flags for the seat when the hold after a register fails, once', () => {
+    const f = fake({ pulls: [pull({ title: 'T-1: Tidy the gate tests' })], tasks: [task()], holdExit: 69 })
+
+    tick(f)
+    tick(f)
+
+    expect(f.registered).toHaveLength(1)
+    expect(f.events).toEqual(['burndown_pr_adopt_hold_failed'])
+    expect(f.seatLog).toEqual([
+      'burndown: Acme/Widgets#7 not held: registered, but the hold failed (exit 69): hold it by hand: burndown: sensitive word "gate" in T-1',
+    ])
+  })
+
+  it('does not hold when the register fails', () => {
+    const f = fake({
+      pulls: [pull({ title: 'T-1: Tidy the gate tests' })],
+      tasks: [task()],
+      registerExit: 65,
+    })
+
+    tick(f)
+
+    expect(f.calls).toEqual([])
+    expect(f.seatLog[0]).toMatch(/^burndown: Acme\/Widgets#7 refused: /)
+  })
+
+  it('still flags a held word on a PR whose diff touches a non-test path', () => {
+    const f = fake({
+      pulls: [pull({ title: 'T-1: Tidy the gate' })],
+      tasks: [task()],
+      files: [file('src/agents/gate.ts')],
+    })
+
+    tick(f)
+
+    expect(f.calls).toEqual([])
+    expect(f.seatLog[0]).toContain('path src/agents/gate.ts is not a test or doc')
+  })
+
   it.each([
-    'security',
     'authority',
     'permission',
     'merge policy',
@@ -202,7 +283,7 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     'provenance',
     'hook',
     'policy',
-  ])('flags a correctness task whose title names "%s"', word => {
+  ])('registers and holds a correctness task whose title names "%s"', word => {
     const f = fake({
       pulls: [pull()],
       tasks: [task({ title: `Fix the ${word} check`, tags: ['kind:correctness'] })],
@@ -210,8 +291,9 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
 
     tick(f)
 
-    expect(f.registered).toEqual([])
-    expect(f.seatLog[0]).toContain('unregistered')
+    expect(f.calls).toHaveLength(2)
+    expect(f.calls[1]).toMatch(/^hold Acme\/Widgets#7: burndown: sensitive word ".+" in T-1$/)
+    expect(f.seatLog).toEqual([])
   })
 
   it.each([
@@ -444,5 +526,29 @@ describe('the tick’s real PR adoption ports (CC-861)', () => {
     expect(calls[0]).toEqual(expect.arrayContaining(['register', 'Acme/Widgets#7', '--kind', 'feature']))
     expect(calls.flat()).not.toContain('--offline')
     expect(calls.flat()).not.toContain('--policy')
+  })
+
+  it('holds with the reason and reads exit 65 as refused', () => {
+    const calls: string[][] = []
+    const exec: Runner = (_bin, args) => {
+      calls.push(args)
+      return { status: 65, stdout: '', stderr: 'no run for Acme/Widgets#7\n' }
+    }
+
+    const reply = shepherdHold(
+      { repo: 'Acme/Widgets', pr: 7 },
+      'burndown: sensitive word "gate" in T-1',
+      exec,
+    )
+
+    expect(calls[0]).toEqual([
+      'shepherd',
+      'hold',
+      'Acme/Widgets#7',
+      '--reason',
+      'burndown: sensitive word "gate" in T-1',
+      '--json',
+    ])
+    expect(reply).toEqual({ ok: false, refused: true, reason: 'no run for Acme/Widgets#7' })
   })
 })

@@ -12,13 +12,14 @@ import {
 /**
  * CC-861: each tick, register a seat's open PRs that Shepherd does not list, which
  * the coordinator did by hand after every DONE report. It registers only what it
- * can prove ordinary: a correctness, bug, feature, platform, product, agent-tooling or refactor task whose title and
- * tags name nothing sensitive, whose every changed path is on an allow-list of tests,
- * docs and changesets, and whose diff is G10-small. Everything else is only flagged in the
- * seat's log, for the seat to register and hold by hand: Shepherd holds only a run
- * that exists and never loosens a run's policy, so the tick has no way to register
- * a PR that is held from its first moment. Shepherd down is logged and retried next tick; registration never
- * goes `--offline`.
+ * can prove ordinary: a correctness, bug, feature, platform, product, agent-tooling or refactor task
+ * whose every changed path is on an allow-list of tests, docs and changesets, and whose diff
+ * is G10-small. CC-931: a sensitive word in its title or tags registers the PR and then holds
+ * the run, naming the word and task, for the seat to release. Shepherd holds only a run that
+ * exists, so a seconds-wide window between the two calls stays open until Shepherd applies a
+ * hold class at registration; until then a `secur` word is still only flagged. Everything else is
+ * flagged in the seat's log, for the seat to register and hold by hand. Shepherd down is
+ * logged and retried next tick; registration never goes `--offline`.
  */
 
 export interface OpenPull {
@@ -59,6 +60,8 @@ export interface AdoptPorts {
   listed: () => ShepherdListing | undefined
   /** `shepherd register` without a listing first. */
   register: (reg: Registration) => RegisterReply
+  /** `shepherd hold` on a registered run, with the reason the seat reads. */
+  hold: (target: ShepherdTarget, reason: string) => RegisterReply
   /** Whether today's seat log already has a line containing `key`. */
   logged: (seat: string, key: string) => boolean
   append: (seat: string, text: string) => void
@@ -116,7 +119,11 @@ const SENSITIVE_STEMS = [
   'privileg',
 ]
 
-const SENSITIVE_TEXT = new RegExp(`\\b(${SENSITIVE_STEMS.join('|')})`, 'i')
+/** Captures the whole word from the stem on, so a seat reads "authority" rather than "auth". */
+const SENSITIVE_TEXT = new RegExp(`\\b((?:${SENSITIVE_STEMS.join('|')})\\w*)`, 'gi')
+
+/** Words still only flagged: their hold needs Shepherd to apply a hold class at registration (N1), not after it. */
+const FLAG_ONLY_WORD = /^secur/i
 
 /** The only paths a registered PR may change: tests, docs and changesets, which grant nothing. Anything else is flagged. */
 const ORDINARY_PATHS = [
@@ -130,7 +137,8 @@ const ORDINARY_PATHS = [
 
 const isOrdinaryPath = (p: string): boolean => ORDINARY_PATHS.some(re => re.test(p))
 
-type Verdict = { flag: string } | { register: Registration }
+/** `hold` is the reason a registered run is held at once; absent, the run goes ahead. */
+type Verdict = { flag: string } | { register: Registration; hold?: string }
 
 /** Registers or flags each seat's unregistered PRs; returns the tick's lines. */
 export function adoptSeatPrs(
@@ -219,7 +227,26 @@ function adoptPull(
     return false
   }
   ctx.budget.left -= 1
-  return registerOnce(seat, verdict.register, ports)
+  if (!registerOnce(seat, verdict.register, ports)) return false
+  if (verdict.hold !== undefined) holdRun(seat, verdict.register.target, verdict.hold, ports)
+  return true
+}
+
+/** A failed hold leaves the run live and listed, so no later tick retries it: the seat must hold it by hand. */
+function holdRun(seat: AdoptSeat, target: ShepherdTarget, reason: string, ports: AdoptPorts): void {
+  const ref = targetRef(target)
+  const reply = ports.hold(target, reason)
+  if (reply.ok) {
+    ports.log('burndown_pr_adopt_held', { seat: seat.seat, target: ref, reason })
+    return
+  }
+  ports.log('burndown_pr_adopt_hold_failed', { seat: seat.seat, target: ref, reason: reply.reason })
+  flagOnce(
+    seat.seat,
+    `burndown: ${ref} not held`,
+    `registered, but the hold failed (${reply.reason}): hold it by hand: ${reason}`,
+    ports,
+  )
 }
 
 function registerOnce(seat: AdoptSeat, reg: Registration, ports: AdoptPorts): boolean {
@@ -247,7 +274,9 @@ function classify(
   const kind = found.task.tags.find(t => t.startsWith('kind:'))?.slice('kind:'.length) ?? ''
   const shepherdKind = SHEPHERD_KINDS[kind]
   if (shepherdKind === undefined) return { flag: `task ${id} kind "${kind}" is not one the tick registers` }
-  const hit = sensitiveHit(found.task, pull, files)
+  const word = sensitiveWord(found.task, pull)
+  const hit =
+    word !== undefined && FLAG_ONLY_WORD.test(word) ? `sensitive word "${word}"` : unordinaryPath(files)
   if (hit !== undefined) return { flag: `${hit}: register it by hand (${id})` }
   const added = files.reduce((n, f) => n + f.additions, 0)
   const deleted = files.reduce((n, f) => n + f.deletions, 0)
@@ -255,13 +284,18 @@ function classify(
     return {
       flag: `diff +${added}/-${deleted} over ${G10_DIFF_LINES}: register and hold g10-review by hand (${id})`,
     }
-  return { register: { target, task: `${found.initiative}/${id}`, implementer, kind: shepherdKind } }
+  const register = { target, task: `${found.initiative}/${id}`, implementer, kind: shepherdKind }
+  return word === undefined ? { register } : { register, hold: `burndown: sensitive word "${word}" in ${id}` }
 }
 
-function sensitiveHit(task: Task, pull: OpenPull, files: readonly ChangedFile[]): string | undefined {
+/** A flag-only word wins wherever it sits, so an earlier held word cannot carry it past the seat. */
+function sensitiveWord(task: Task, pull: OpenPull): string | undefined {
   const texts = [task.title, pull.title, ...task.tags.map(t => t.replace(/[:_]/g, ' '))]
-  const word = texts.map(t => SENSITIVE_TEXT.exec(t)?.[1]).find(w => w !== undefined)
-  if (word !== undefined) return `sensitive word "${word}"`
+  const words = texts.flatMap(t => [...t.matchAll(SENSITIVE_TEXT)].map(m => m[1] as string))
+  return words.find(w => FLAG_ONLY_WORD.test(w)) ?? words[0]
+}
+
+function unordinaryPath(files: readonly ChangedFile[]): string | undefined {
   const other = files
     .flatMap(f => (f.previousPath === undefined ? [f.path] : [f.previousPath, f.path]))
     .find(p => !isOrdinaryPath(p))

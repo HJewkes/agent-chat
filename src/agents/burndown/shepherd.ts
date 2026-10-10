@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { z } from 'zod'
 import { logEvent } from '../../broker/log.js'
-import { childEnv, run, type Runner } from './exec.js'
+import { childEnv, run, type Runner, type RunResult } from './exec.js'
 
 /**
  * Burndown's only door to Shepherd, the factory's PR-shepherding service: the
@@ -197,7 +197,15 @@ export function shepherdRegister(reg: Registration, exec: Runner = run): Registe
     reg.implementer,
     ...(reg.kind === undefined ? [] : ['--kind', reg.kind]),
   ]
-  const result = exec(SHEPHERD_BIN, [...args, '--json'])
+  return replyOf(exec(SHEPHERD_BIN, [...args, '--json']))
+}
+
+/** CC-931: `shepherd hold`, so no merge goes through until someone releases the run; `reason` is what the seat reads. */
+export function shepherdHold(target: ShepherdTarget, reason: string, exec: Runner = run): RegisterReply {
+  return replyOf(exec(SHEPHERD_BIN, ['shepherd', 'hold', targetRef(target), '--reason', reason, '--json']))
+}
+
+function replyOf(result: RunResult): RegisterReply {
   if (result.status === 0) return { ok: true }
   const reason =
     firstLine(result.stderr) ?? (result.status === null ? 'did not run' : `exit ${result.status}`)
