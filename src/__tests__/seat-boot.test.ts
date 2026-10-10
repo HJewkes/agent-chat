@@ -118,6 +118,12 @@ const deps = (over: Partial<BootDeps> = {}): BootDeps => ({
   homeDir: tmp,
   eventsDb: path.join(tmp, 'events.db'),
   status: async () => STATUS,
+  inFlight: {
+    roster: async () => [],
+    shepherd: async () => [],
+    verdicts: async () => [],
+    claims: async () => [],
+  },
   ...over,
 })
 
@@ -165,10 +171,10 @@ describe('the seat section', () => {
 })
 
 describe('the queue section', () => {
-  it('prints In flight and Next verbatim and nothing else from the queue', async () => {
+  it("prints Next verbatim, not the queue file's In flight, and nothing else from the queue", async () => {
     const text = (await boot()).join('\n')
 
-    expect(text).toContain(IN_FLIGHT)
+    expect(text).not.toContain('sc-two: review')
     expect(text).toContain(NEXT)
     expect(text).not.toContain('OWNER ONLY LINE')
   })
@@ -303,7 +309,7 @@ describe('the status section', () => {
     const lines = await boot(undefined, { status })
 
     expect(lines.slice(-2)).toEqual(['== status', 'unavailable: broker down at sock'])
-    expect(lines.join('\n')).toContain(IN_FLIGHT)
+    expect(lines.join('\n')).toContain('== in flight')
   })
 })
 
@@ -315,7 +321,7 @@ describe('the 6,000-character cap', () => {
 
     const text = lines.join('\n')
     expect(text.length).toBeLessThanOrEqual(BOOT_CAP)
-    expect(text).toContain(IN_FLIGHT)
+    expect(text).toContain('== in flight')
     expect(text).toContain(NEXT)
     expect(text).toContain('## State at teleport 1\n- sc-one: task A')
     expect(lines).toContain('inbox 4 unread since 2026-09-30T09:00:00.000Z')
@@ -325,8 +331,8 @@ describe('the 6,000-character cap', () => {
   })
 
   it('cuts the log section after the inbox is gone, never the queue', async () => {
-    const bigQueue = `${IN_FLIGHT}\n${'- in flight row\n'.repeat(230)}`
-    write(`queues/${SEAT}.md`, `${bigQueue}\n${NEXT}\n`)
+    const bigQueue = `${NEXT}\n${'- in flight row\n'.repeat(300)}`
+    write(`queues/${SEAT}.md`, `${bigQueue}\n`)
     writeLog(`## State at teleport 1\n${'state line\n'.repeat(140)}`)
     sendMessages(10, 240)
 
@@ -335,7 +341,6 @@ describe('the 6,000-character cap', () => {
     const text = lines.join('\n')
     expect(text.length).toBeLessThanOrEqual(BOOT_CAP)
     expect(text).toContain(bigQueue.trimEnd())
-    expect(text).toContain(NEXT)
     expect(inboxLines(lines)[0]).toBe('10 earlier messages omitted')
     expect(text).toMatch(/\[cut at \d+ of \d+ chars\]/)
     expect(lines.at(-1)).toBe('inbox 4 unread since 2026-09-30T09:00:00.000Z')
@@ -355,7 +360,7 @@ describe('the inbox omission note', () => {
 
 describe('an oversized field in text mode', () => {
   it('cuts an oversized queue under the cap and says how much was cut', async () => {
-    write(`queues/${SEAT}.md`, `${IN_FLIGHT}\n${'- in flight row\n'.repeat(1_000)}\n${NEXT}\n`)
+    write(`queues/${SEAT}.md`, `${NEXT}\n${'- next row\n'.repeat(1_000)}\n`)
 
     const lines = await boot()
 
@@ -365,7 +370,7 @@ describe('an oversized field in text mode', () => {
   })
 
   it('leaves --json uncapped', async () => {
-    write(`queues/${SEAT}.md`, `${IN_FLIGHT}\n${'- in flight row\n'.repeat(1_000)}\n${NEXT}\n`)
+    write(`queues/${SEAT}.md`, `${NEXT}\n${'- next row\n'.repeat(1_000)}\n`)
 
     const report = await bootReport(deps(), SEAT, undefined, true)
 
@@ -380,7 +385,8 @@ describe('--json', () => {
     const report = await bootReport(deps(), SEAT, undefined, true)
 
     const doc = JSON.parse(report.lines[0] ?? '') as Record<string, { [k: string]: unknown }>
-    expect(doc.queue).toMatchObject({ found: true, inFlight: IN_FLIGHT, next: NEXT })
+    expect(doc.queue).toMatchObject({ found: true, next: NEXT })
+    expect(doc.inFlight).toMatchObject({ prs: [], agents: [], claims: [] })
     expect(doc.inbox).toMatchObject({ after: null, messages: [{ msgId: 'm1', from: 'peer' }] })
     expect(doc.status).toMatchObject({ seat: SEAT })
   })

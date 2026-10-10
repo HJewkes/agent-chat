@@ -402,8 +402,9 @@ Commands:
                                 an agent and seat outcomes outside the end states are counted, not
                                 fatal
   boot [options] <seat>         one boot digest for a coordinator seat (CC-318), read-only: the seat
-                                file's frontmatter, the queue's In flight and Next sections, the
-                                newest State at teleport section of today's log, inbox messages
+                                file's frontmatter, the In flight derived from burndown claims,
+                                Shepherd rows, the roster and verdicts, the queue's Next section,
+                                the newest State at teleport section of today's log, inbox messages
                                 after a cutoff and the seat status, in 6,000 characters. Over that
                                 the oldest inbox lines go first, then the log section; the queue and
                                 status are never cut
@@ -488,10 +489,11 @@ Options:
 === agent-chat seats boot
 Usage: agent-chat seats boot [options] <seat>
 
-one boot digest for a coordinator seat (CC-318), read-only: the seat file's frontmatter, the queue's
-In flight and Next sections, the newest State at teleport section of today's log, inbox messages
-after a cutoff and the seat status, in 6,000 characters. Over that the oldest inbox lines go first,
-then the log section; the queue and status are never cut
+one boot digest for a coordinator seat (CC-318), read-only: the seat file's frontmatter, the In
+flight derived from burndown claims, Shepherd rows, the roster and verdicts, the queue's Next
+section, the newest State at teleport section of today's log, inbox messages after a cutoff and the
+seat status, in 6,000 characters. Over that the oldest inbox lines go first, then the log section;
+the queue and status are never cut
 
 Options:
   --after <value>  show inbox messages after this msg_id; default the State block's own cursor, else

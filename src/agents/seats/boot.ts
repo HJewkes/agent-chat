@@ -11,6 +11,7 @@ import {
   type QueueSections,
   type SeatDigest,
 } from './boot-read.js'
+import { inFlightLines, readInFlight, type InFlight, type InFlightPorts } from './in-flight-read.js'
 import { plainError, poolReadingText, type SeatStatus } from './status.js'
 
 /**
@@ -27,6 +28,8 @@ export interface BootDeps {
   eventsDb: string
   /** Throws when the broker or the charter cannot answer; the boot keeps its other sections. */
   status: (seat: string) => Promise<SeatStatus>
+  /** CC-934: the sources of the In flight section; each throws when it cannot answer. */
+  inFlight: InFlightPorts
 }
 
 export interface SeatBoot {
@@ -34,6 +37,7 @@ export interface SeatBoot {
   at: string
   seatFile: SeatDigest
   queue: QueueSections
+  inFlight: InFlight
   log: LogSection
   inbox: BootInbox
   status: SeatStatus | { error: string }
@@ -59,11 +63,13 @@ export async function seatBoot(deps: BootDeps, seat: string, after?: string): Pr
   } catch (err) {
     status = { error: plain(err) }
   }
+  const seatFile = readSeatDigest(deps.autonomyRoot, seat)
   return {
     seat,
     at: now.toISOString(),
-    seatFile: readSeatDigest(deps.autonomyRoot, seat),
+    seatFile,
     queue: readQueueSections(deps.autonomyRoot, seat),
+    inFlight: await readInFlight(deps.inFlight, seat, seatFile.prefix, plain),
     log,
     inbox,
     status,
@@ -90,11 +96,7 @@ function seatLines({ seat, seatFile }: SeatBoot): string[] {
 
 function queueLines({ queue }: SeatBoot): string[] {
   if (!queue.found) return [`== queue: no queue file at ${queue.file}`]
-  return [
-    `== queue ${queue.file}`,
-    ...(queue.inFlight ?? '(no "## In flight" section)').split('\n'),
-    ...(queue.next ?? '(no "## Next" section)').split('\n'),
-  ]
+  return [`== queue ${queue.file}`, ...(queue.next ?? '(no "## Next" section)').split('\n')]
 }
 
 function logLines(log: LogSection): string[] {
@@ -139,12 +141,13 @@ function statusLines({ status }: SeatBoot): string[] {
 
 const size = (lines: string[]): number => lines.join('\n').length
 
-type Block = 'seat' | 'queue' | 'status'
+type Block = 'seat' | 'queue' | 'inFlight' | 'status'
 
 /** Over the cap, the oldest inbox lines go first, then the log section's tail, then whatever the queue, seat and status still overrun by. */
-export function renderBoot(boot: SeatBoot, cap = BOOT_CAP): string[] {
+export function renderBoot(boot: SeatBoot, cap = BOOT_CAP, homeDir = ''): string[] {
   const render = (log: LogSection, omitted: number, cut: Partial<Record<Block, string[]>> = {}): string[] => [
     ...(cut.seat ?? seatLines(boot)),
+    ...(cut.inFlight ?? inFlightLines(boot.inFlight, homeDir)),
     ...(cut.queue ?? queueLines(boot)),
     ...logLines(log),
     ...inboxLines(boot.inbox, omitted),
@@ -163,9 +166,10 @@ export function renderBoot(boot: SeatBoot, cap = BOOT_CAP): string[] {
   const whole: Record<Block, string[]> = {
     seat: seatLines(boot),
     queue: queueLines(boot),
+    inFlight: inFlightLines(boot.inFlight, homeDir),
     status: statusLines(boot),
   }
-  for (const block of ['queue', 'seat', 'status'] as const) {
+  for (const block of ['queue', 'inFlight', 'seat', 'status'] as const) {
     const over = size(lines) - cap
     if (over <= 0) break
     const text = whole[block].join('\n')

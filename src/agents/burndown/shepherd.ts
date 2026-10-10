@@ -60,6 +60,9 @@ const Row = z.object({
   branch: z.string().nullable().optional(),
   task: z.string().nullable().optional(),
   held: z.object({ reason: z.string() }).nullable().optional(),
+  /** CC-934: read only to print a seat's boot In flight; the shape is Shepherd's, so it is not narrowed here. */
+  nextAction: z.unknown().optional(),
+  pendingGate: z.unknown().optional(),
 })
 
 /**
@@ -236,7 +239,7 @@ export function shepherdListed(exec: Runner = run): ShepherdListing | undefined 
 const ListedRef = z.object({ repo: z.string(), pr: z.number().int() })
 const ListedBranch = z.object({ branch: z.string().min(1) })
 
-const FINISHED_PHASES: readonly ShepherdRow['phase'][] = ['done', 'failed', 'cancelled']
+export const FINISHED_PHASES: readonly ShepherdRow['phase'][] = ['done', 'failed', 'cancelled']
 
 /** A finished run, or one at another head, no longer watches this PR. */
 const isLiveAtHead = (row: ShepherdRow, headSha: string | undefined): boolean =>
