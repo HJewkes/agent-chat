@@ -85,6 +85,8 @@ export interface AgentProfile {
   surfaceLifetime?: SurfaceLifetime
   /** Absent means `worker`: spawning and Remote Control are opted into, never granted by omission. */
   role?: AgentRole
+  /** CC-924: spawn and teleport with Remote Control unless the request says otherwise. Coordinator profiles only. */
+  remoteControl?: boolean
   /** Absent means the contract is inferred from the name and grants; `none` opts out. */
   returnContract?: ReturnContract | 'none'
   /** Passed as --effort when set; unset leaves the harness default. */
