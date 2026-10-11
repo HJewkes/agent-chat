@@ -614,7 +614,10 @@ function considerSlice(claim: Claim, walk: Walk): Taken | Refused {
     profile: IMPLEMENTER_PROFILE,
     ...(claim.slice === undefined ? {} : { slice: claim.slice }),
   }
-  const dispatch = dispatchFor(work, repo, `ready slice ${claim.slice ?? '?'}`, walk)
+  const dispatch = {
+    ...dispatchFor(work, repo, `ready slice ${claim.slice ?? '?'}`, walk),
+    ...(claim.owns?.length ? { owns: claim.owns } : {}),
+  }
   const checked = {
     taskId: claim.taskId,
     ...(claim.slice === undefined ? {} : { slice: claim.slice }),

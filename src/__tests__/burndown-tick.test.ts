@@ -1419,6 +1419,46 @@ describe('burndown tick with two seats on one pool (CC-275)', () => {
   })
 })
 
+describe("burndown tick claims a slice's owns at spawn (CC-952)", () => {
+  const queuedSlice = (owns: string[]): Claim => ({
+    taskId: 'DM-1',
+    initiative: 'demo',
+    seat: 'seat-t',
+    namePrefix: 'st',
+    slice: 'a',
+    owns,
+    spawnedAt: NOON.toISOString(),
+    phase: 'queued',
+    phaseAt: NOON.toISOString(),
+  })
+
+  beforeEach(() => {
+    seatPolicy()
+    config({ seats: ['seat-t'] })
+    seatInitiative({ 'DM-1': seatTask('DM-1') })
+  })
+
+  it("sends the slice's owns as the spawn frame's claimPaths", async () => {
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [queuedSlice(['src/a/**', 'docs/a.md'])] })
+    const fake = fakeBroker()
+
+    await tick(fake)
+
+    expect(fake.frames.map(f => [f.name, f.claimPaths])).toEqual([['st-dm-1-a', ['src/a/**', 'docs/a.md']]])
+  })
+
+  it("refuses a slice whose owns overlap a live peer's file claim in the seat's repo", async () => {
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [queuedSlice(['src/a/x.ts'])] })
+    const view = () => ({ names: [], claims: [{ owner: 'peer-1', repo: repo(), patterns: ['src/a/**'] }] })
+    const fake = fakeBroker({ view })
+
+    const lines = await tick(fake)
+
+    expect(fake.frames).toEqual([])
+    expect(lines.join('\n')).toMatch(/refused demo DM-1 \[claimed\]: \S+ is under peer-1's file claim/)
+  })
+})
+
 describe('burndown tick advances a seat claim', () => {
   const seatClaim = (seat: string, over: Partial<Claim> = {}): { claim: Claim; worktree: string } => {
     const worktree = path.join(repo(), '.worktrees', 'st-dm-1')
