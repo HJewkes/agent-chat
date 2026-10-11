@@ -172,6 +172,9 @@ const PROTECTED_PATHS = [
   /^src\/(cli\/gh-write|spawn-kernel|protocol|config|paths)\.ts$/,
   /^(audit|profiles|scripts|plugins|\.claude-plugin|\.github)\//,
   /(^|\/)\.claude\//,
+  /(^|\/)\.agent-chat\//,
+  /^src\/(mirror\/|cli\/(agents|verbs\/(agent-resume|seats|seats-heartbeat))\.ts$)/,
+  /^\.node-version$/,
   /(^|\/)\.mcp\.json$/,
   /(^|\/)(CLAUDE|AGENTS)(\.local)?\.md$/i,
   /(^|\/)package(-lock)?\.json$/,
@@ -183,7 +186,7 @@ const PROTECTED_PATHS = [
   /(^|\/)(generated-paths\.json|coordinator-allowances\.ts)$/,
 ]
 
-const isProtectedPath = (p: string): boolean =>
+export const isProtectedPath = (p: string): boolean =>
   PROTECTED_PATHS.some(re => re.test(p)) || PROTECTED_NAME.test(p.slice(p.lastIndexOf('/') + 1))
 
 function protectedPath(files: readonly ChangedFile[]): string | undefined {
@@ -378,7 +381,7 @@ function classify(
     const path = protectedPath(files)
     return path === undefined ? { register } : { register, hold: pathHoldReason(path, id) }
   }
-  const hold = sensitiveHoldReason(word, id)
+  const hold = sensitiveHoldReason(word, id, protectedPath(files))
   const refusal = holdReasonRefusal(hold)
   if (refusal !== undefined)
     return {
@@ -391,8 +394,9 @@ function classify(
  * g10-adversary, the class seats use for authority and merge-policy PRs: unlike g10-review, Shepherd
  * never releases it on its own review, so the run waits for the seat's `shepherd release`. Words are only letters, digits and `_`, so neither a ":" nor a ";" from the title can reach the class.
  */
-function sensitiveHoldReason(word: string, id: string): string {
-  return `g10-adversary: sensitive word "${word}"; ${id}`
+function sensitiveHoldReason(word: string, id: string, path?: string): string {
+  const where = path === undefined ? '' : `, protected path ${path.replace(/[;:]/g, '_')}`
+  return `g10-adversary: sensitive word "${word}"${where}; ${id}`
 }
 
 function pathHoldReason(path: string, id: string): string {

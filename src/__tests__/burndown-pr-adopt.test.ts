@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { Task } from '../agents/burndown/eligibility.js'
 import type { Runner } from '../agents/burndown/exec.js'
@@ -6,6 +7,7 @@ import type { OwedHold } from '../agents/burndown/owed-holds.js'
 import { changedFiles, openPulls, originRepo } from '../agents/burndown/pr-adopt-ports.js'
 import {
   adoptSeatPrs,
+  isProtectedPath,
   SENSITIVE_STEMS,
   type AdoptPorts,
   type AdoptSeat,
@@ -349,7 +351,8 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.seatLog[0]).toMatch(/^burndown: Acme\/Widgets#7 refused: /)
   })
 
-  it('registers then holds a held-word PR whose diff touches a non-test path', () => {
+  // Mutation: building the hold reason from the word alone drops the path the seat must read.
+  it('names the protected path as well as the word when a held-word PR touches one', () => {
     const f = fake({
       pulls: [pull({ title: 'T-1: Tidy the gate' })],
       tasks: [task()],
@@ -360,7 +363,7 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
 
     expect(f.calls).toEqual([
       'register Acme/Widgets#7',
-      'hold Acme/Widgets#7: g10-adversary: sensitive word "gate"; T-1',
+      'hold Acme/Widgets#7: g10-adversary: sensitive word "gate", protected path src/agents/gate.ts; T-1',
     ])
   })
 
@@ -517,6 +520,16 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     'packages/agent-surface/src/run-agent.ts',
     'src/config.ts',
     'src/paths.ts',
+    '.agent-chat/worktree.json',
+    'src/cli/agents.ts',
+    'src/cli/verbs/agent-resume.ts',
+    'src/cli/verbs/seats.ts',
+    'src/cli/verbs/seats-heartbeat.ts',
+    'src/mirror/systemd-unit.ts',
+    'src/mirror/systemd.ts',
+    'src/mirror/launchd.ts',
+    'src/mirror/plist.ts',
+    '.node-version',
     'src/agents/hooks.ts',
     'src/agents/launch-policy.ts',
     'src/agents/identity.ts',
@@ -556,6 +569,21 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
       'register Acme/Widgets#7',
       `hold Acme/Widgets#7: g10-adversary: protected path ${path}; T-1`,
     ])
+  })
+
+  // Mutation: dropping an agent-launch door from the protected set fails here, so a new door cannot register unheld.
+  it('protects every file audit/spawn-doors.json lists as an agent-launch door', () => {
+    const { doors } = JSON.parse(
+      readFileSync(new URL('../../audit/spawn-doors.json', import.meta.url), 'utf8'),
+    ) as { doors: { path: string; external?: boolean }[] }
+
+    const unprotected = doors
+      .filter(d => d.external !== true)
+      .map(d => d.path)
+      .filter(p => !isProtectedPath(p))
+
+    expect(doors.length).toBeGreaterThan(0)
+    expect(unprotected).toEqual([])
   })
 
   // Mutation: a second hand-written name list in place of SENSITIVE_STEMS leaves a new stem unheld.
