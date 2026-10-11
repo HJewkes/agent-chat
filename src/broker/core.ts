@@ -439,9 +439,18 @@ export class BrokerCore<C = Conn> {
   }
 
   /**
-   * CC-966: send a message for a non-resident seat to its steward (`seatStewards`), marked as being for
-   * the seat. Undefined when `to` has no steward, or the steward is dark and cannot hold it either, so
-   * the caller falls through to `to`'s own hold. A dark steward holds it as it would its own message.
+   * CC-966: the steward `seatStewards` names for `seat`, unless it is `from`, so a steward's
+   * own send to its dark seat is not handed back to it.
+   */
+  stewardFor(seat: string, from: string): string | undefined {
+    const steward = resolveSeatSteward(seat)
+    return steward === from ? undefined : steward
+  }
+
+  /**
+   * CC-966: the human's message for a non-resident seat, pushed to its steward and marked as for the
+   * seat; the human overrides do-not-disturb here as on any send. Undefined when `to` has no steward,
+   * or the steward is dark and cannot hold it either, so the caller falls through to `to`'s own hold.
    */
   forwardForSeat(
     from: string,
@@ -450,12 +459,23 @@ export class BrokerCore<C = Conn> {
     inReplyTo?: string,
     source?: WakeSource,
   ): SeatForwardResult | undefined {
-    const steward = resolveSeatSteward(to)
+    const steward = this.stewardFor(to, from)
     if (steward === undefined) return undefined
-    const forwarded = `[for ${to}] ${text}`
+    const forwarded = forwardedText(to, text)
     if (this.registry.connFor(steward) !== undefined)
       return this.pushForward({ from, to, steward, text: forwarded, inReplyTo, source })
-    const held = this.holdForSeat(from, steward, forwarded, inReplyTo, source)
+    return this.holdForSteward(from, steward, forwarded, inReplyTo, source)
+  }
+
+  /** CC-966: a dark steward keeps a forwarded message in its own hold, as it would its own. */
+  holdForSteward(
+    from: string,
+    steward: string,
+    text: string,
+    inReplyTo?: string,
+    source?: WakeSource,
+  ): SeatForwardResult | undefined {
+    const held = this.holdForSeat(from, steward, text, inReplyTo, source)
     return held?.ok ? { steward, msgId: held.msgId, held: true } : undefined
   }
 
@@ -727,6 +747,9 @@ export interface VerdictResult {
 }
 
 export type SeatHoldResult = { ok: true; msgId: string } | { ok: false; reason: string }
+
+/** CC-966: how a forwarded message reads to the steward, naming the seat it was sent to. */
+export const forwardedText = (seat: string, text: string): string => `[for ${seat}] ${text}`
 
 /** CC-966: a dark seat's message sent on to its steward; `held` when the steward was dark too. */
 export interface SeatForwardResult {

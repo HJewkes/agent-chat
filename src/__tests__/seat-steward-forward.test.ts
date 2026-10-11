@@ -156,6 +156,49 @@ describe('the seat steward forward', () => {
     expect(messagesTo(STEWARD).map(row => row.ref)).toEqual(['msg-earlier'])
   })
 
+  // Catches: a peer's forward pushed live past the steward's do-not-disturb.
+  it("logs a peer's forward to a steward in do-not-disturb without pushing it", () => {
+    goDark(SEAT)
+    const steward = join(STEWARD)
+    server.handleMessage(steward.conn, { t: 'status', status: 'working', dnd: true })
+    const sender = join('rev-one')
+    vi.setSystemTime(T0 + MINUTE)
+
+    const result = send(sender, SEAT, 'Merged: #42')
+
+    expect(result).toMatchObject({ ok: true, held: true, recipients: [STEWARD] })
+    expect(pushed(steward)).toEqual([])
+    expect(messagesTo(STEWARD).map(row => [row.body, row.meta.forwarded_for])).toEqual([
+      [`[for ${SEAT}] Merged: #42`, SEAT],
+    ])
+  })
+
+  // Catches: a bare string `seatStewards` read as a steward for every unrouted name.
+  it('ignores and logs a seatStewards value that is not a map', () => {
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ seatStewards: STEWARD }))
+    const steward = join(STEWARD)
+    const sender = join('rev-one')
+
+    const result = send(sender, 'no-such-agent', 'Merged: #42')
+
+    expect(result).toMatchObject({ ok: false })
+    expect(pushed(steward)).toEqual([])
+    const log = fs.readFileSync(path.join(dir, 'broker.log'), 'utf8')
+    expect(log).toContain('"config_invalid","key":"seatStewards"')
+  })
+
+  // Catches: the steward's own send to its dark seat handed back to the steward.
+  it("keeps the seat's hold for a message the steward sends to its own dark seat", () => {
+    goDark(SEAT)
+    const steward = join(STEWARD)
+    vi.setSystemTime(T0 + MINUTE)
+
+    const result = send(steward, SEAT, 'Picking this up')
+
+    expect(result).toMatchObject({ ok: true, held: true, recipients: [SEAT] })
+    expect(messagesTo(SEAT).map(row => row.meta.held)).toEqual([SEAT_HOLD_MARK])
+  })
+
   // Catches: the human path (watchdog, CLI) skipping the steward and holding for the seat.
   it('forwards a human send to a dark mapped seat to its steward', () => {
     goDark(SEAT)

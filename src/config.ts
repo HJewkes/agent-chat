@@ -209,7 +209,11 @@ export function resolveSeatSpawnMode(): SeatSpawnMode {
 export function resolveSeatSteward(seat: string): string | undefined {
   const stewards = readConfig().seatStewards
   if (stewards === undefined) return undefined
-  const value = isObject(stewards) ? stewards[seat] : stewards
+  if (!isObject(stewards) || Array.isArray(stewards)) {
+    logInvalidOnce({ key: 'seatStewards', value: stewards, fallback: 'no stewards' })
+    return undefined
+  }
+  const value = stewards[seat]
   if (value === undefined || (typeof value === 'string' && value !== '' && value !== seat)) return value
   logInvalidOnce({ key: `seatStewards.${seat}`, value, fallback: 'no steward' })
   return undefined
