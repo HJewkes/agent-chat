@@ -3,7 +3,14 @@ import type { Command as Commander } from 'commander'
 import { z } from 'zod'
 import { resolveMachineHoldOperators } from '../../config.js'
 import { home, logPath, operatorHoldPath } from '../../paths.js'
-import { readDoc, readChatMessages, readRouteAddressees, readTextIfPresent } from '../../agents/seats/io.js'
+import {
+  defaultAutonomyRoot,
+  readDoc,
+  readChatMessages,
+  readRouteAddressees,
+  readTextIfPresent,
+  seatFileNames,
+} from '../../agents/seats/io.js'
 import {
   BROADCAST_HOLD_MAX_MS,
   machineStopStatus,
@@ -40,6 +47,7 @@ export function liveStopInputs(now: Date): StopInputs {
     operators: resolveMachineHoldOperators(),
     stopFile: () => readTextIfPresent(operatorHoldPath()),
     ownerStops: () => readDoc().stopped,
+    seatNames: () => seatFileNames(defaultAutonomyRoot()),
     readings,
     machineStop: readMachineStop(readings),
   }
@@ -59,7 +67,8 @@ export const machineStatusVerb = defineVerb({
     'tp-operator, counted by the seats it named in broker.log, whose first sentence carries HOLD, STOP ' +
     'ALL, MACHINE STOP, STEP-BACK or REBOOT NOTICE/QUIET, standing until an operator send starting with ' +
     'LIFT, CLEAR or "hold LIFTED" has reached every seat it went to, or a broadcast lift, at most ' +
-    `${BROADCAST_HOLD_MAX_MS / 3_600_000} h), the owner's stopped seats in seat-watchdog.json, and the ` +
+    `${BROADCAST_HOLD_MAX_MS / 3_600_000} h; a fan-out part for a seat that is stopped or has no seat ` +
+    "file does not count), the owner's stopped seats in seat-watchdog.json, and the " +
     'memory, load, swap and pressure readings against the machine stop. `stopped` is a hold, the ' +
     'machine stop or a source that cannot be read; an owner stop holds only its own seat',
   args: z.object({ json: z.boolean().optional() }),
