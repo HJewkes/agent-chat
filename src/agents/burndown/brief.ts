@@ -269,7 +269,7 @@ export function briefWriterBrief(t: TaskBrief): string {
     '## Scope',
     `Write the brief for task ${t.taskId} of initiative ${t.initiative}: the plan at \`${planPath}\`. Do not implement. ` +
       "Then tighten the task's `done_when` and `estimate` with `aw task edit`, and tag it `brief:proposed=<today>` " +
-      '(`aw task edit` with the tag added; keep the tags it has). A seat or the decider promotes it to ready.',
+      '(`aw task edit` with the tag added; keep the tags it has). A seat or the decider promotes it to ready and records the source; never set `brief:ready` or `brief:src` yourself.',
     `You share the repo checkout. Read code at origin: \`git fetch\`, then \`git show origin/${t.defaultBranch}:<path>\`. ` +
       'Edit and state-changing git are denied to you except the plan file and `aw task edit`.',
     '## Context',

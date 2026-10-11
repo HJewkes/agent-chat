@@ -34,8 +34,47 @@ describe('burndown brief approve', () => {
     expect(report.ok).toBe(true)
     expect(edits).toEqual([
       ['--add-tag', 'brief:ready=2026-10-10'],
+      ['--add-tag', 'brief:src=briefer'],
       ['--remove-tag', 'brief:proposed=2026-10-09'],
     ])
+  })
+
+  it('replaces a seat brief:src so the task carries one src, briefer', () => {
+    fs.writeFileSync(path.join(root, 'init', 'sources', 'CC-1-plan.md'), 'plan')
+    fs.writeFileSync(
+      path.join(root, 'init', 'tasks', 'CC-1.yml'),
+      'id: CC-1\ntags:\n  - brief:src=seat\n  - brief:proposed=2026-10-09\n',
+    )
+    approveBrief('CC-1', ports(), '2026-10-10')
+    expect(edits).toEqual([
+      ['--add-tag', 'brief:ready=2026-10-10'],
+      ['--add-tag', 'brief:src=briefer'],
+      ['--remove-tag', 'brief:src=seat'],
+      ['--remove-tag', 'brief:proposed=2026-10-09'],
+    ])
+  })
+
+  it('does not re-add brief:src=briefer when it is already the only src', () => {
+    fs.writeFileSync(path.join(root, 'init', 'sources', 'CC-1-plan.md'), 'plan')
+    fs.writeFileSync(
+      path.join(root, 'init', 'tasks', 'CC-1.yml'),
+      'id: CC-1\ntags:\n  - brief:src=briefer\n  - brief:proposed=2026-10-09\n',
+    )
+    approveBrief('CC-1', ports(), '2026-10-10')
+    expect(edits).toEqual([
+      ['--add-tag', 'brief:ready=2026-10-10'],
+      ['--remove-tag', 'brief:proposed=2026-10-09'],
+    ])
+  })
+
+  it('leaves a ready seat brief with no proposal, and its src, untouched', () => {
+    fs.writeFileSync(path.join(root, 'init', 'sources', 'CC-1-plan.md'), 'plan')
+    fs.writeFileSync(
+      path.join(root, 'init', 'tasks', 'CC-1.yml'),
+      'id: CC-1\ntags:\n  - brief:ready=2026-10-01\n  - brief:src=seat\n',
+    )
+    expect(approveBrief('CC-1', ports(), '2026-10-10').ok).toBe(false)
+    expect(edits).toEqual([])
   })
 
   it('removes an older brief:ready so only the new day remains', () => {
@@ -47,6 +86,7 @@ describe('burndown brief approve', () => {
     approveBrief('CC-1', ports(), '2026-10-10')
     expect(edits).toEqual([
       ['--add-tag', 'brief:ready=2026-10-10'],
+      ['--add-tag', 'brief:src=briefer'],
       ['--remove-tag', 'brief:ready=2026-09-01'],
       ['--remove-tag', 'brief:proposed=2026-10-09'],
     ])
