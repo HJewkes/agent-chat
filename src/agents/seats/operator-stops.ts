@@ -53,40 +53,71 @@ export function messageHead(body: string): string {
 }
 
 /**
- * Open by default (CC-957 review): a head carrying a stop word opens a hold, so a phrasing nobody
- * foresaw ("HOLD now", "SPAWN HOLD at 15:28", "STOP ALL DISPATCH") is reported rather than dropped.
- * Only the narrow exceptions below skip it.
+ * Fail closed (CC-957 review): every stop word in a head opens a hold unless the words right beside
+ * that one occurrence say it refers to a hold or names one target. A phrasing nobody foresaw opens;
+ * it never lifts, since only a head that starts with a lift form lifts.
  */
-const STOP_WORD = /\bHOLD\b|\bSTOP[ -]ALL\b|\bMACHINE STOP\b|\bSTEP-BACK\b|\bREBOOT (?:NOTICE|QUIET)\b/
-/** The sender as messages open: "tp-operator: ", "tp-ram (successor of tp-ram-1003): ", "tp-operator 22:4x: ". */
-const SENDER = String.raw`^(?:[\w-]+(?:\s*\([^)]*\))?(?:\s+\d\d:\d[\dx])?[:,]?\s+)?`
+const STOP_WORD =
+  /\bHOLD\b|\bMACHINE STOP\b|\b(?:STOP|[Ss]top)[ -](?:ALL|all)\b|\bSTOP\b|\bSTEP-BACK\b|\bREBOOT (?:NOTICE|QUIET)\b/
+const STOP_WORDS = new RegExp(STOP_WORD.source, 'g')
+/** A cited message id: 8 hex digits with at least one letter, so a date or time is never one. */
+const MESSAGE_ID = String.raw`(?=\d*[a-f])[0-9a-f]{8}\b`
+/** One piece of work: "#187", "CC-763". */
+const TARGET = String.raw`(?:#\d+|\b[A-Z]{2,5}-\d+)\b`
+/** Words just before a stop word that refer to a hold: "ACK HOLD", "Re HOLD", "under your 08:59 HOLD", "not a HOLD", "the MACHINE STOP gate". */
+const REFERS_BEFORE =
+  /(?:^|[^\w-])(?:(?:ack(?:ed)?|re)\s+|(?:no|not\s+a|my|your|the|still\s+in|during\s+a|under)\s+(?:[\w-]+(?::\w+)?\s+)?)$/i
 /**
- * A lift is said in one of two shapes, and only these lift: the head opens with LIFT or a CLEAR
- * ("tp-operator: LIFT at NORMAL pace", "LOAD CLEAR 22:34", "ALL-CLEAR on ee8b92f3"), or it says a hold or
- * stop is lifted or released ("STOP ALL and the build hold are LIFTED", "REBOOT QUIET RELEASED 13:39").
- * "no LIFT time known", "holding for LIFT" and "holding spawns until CLEAR" say a hold still stands.
+ * Words just after a stop word that refer to a hold, or name its one target or the message that opened
+ * it. Case-sensitive, so "load-5" is never read as a task id.
  */
-const LIFT_LEAD = new RegExp(String.raw`${SENDER}(?:LIFT\b|(?:[A-Z]+[ -])?CLEAR\b)`)
-const HOLD_ENDED = /(?<!restart\s)\b(?:hold|stop|quiet)s?\s+(?:is\s+|are\s+)?(?:lifted|released)\b/i
-const ACKNOWLEDGEMENT = /\back(?:ed|nowledged)?\b|\bre\s+[0-9a-f]{8}\b|^re\b/i
-/** A head citing another message ("under HOLD 058d18db", "tp-ram-1003 1f34db91") refers to a hold; it does not open one. */
-const CITES_MESSAGE = /\b[0-9a-f]{8}\b/
-/** "no memory HOLD now", "not a HOLD yet", "under your 08:59 HOLD", "My HOLD covers", "at the MACHINE STOP gate". */
-const REFERS_BACK =
-  /\b(?:no|not\s+a|under|my|your|the|still\s+in|during\s+a)\b[^,;.]{0,30}\b(?:HOLD|MACHINE STOP)\b|\bHOLD\s+(?:stays|still|covers|applies)\b/i
-/** A hold on one piece of work: "HOLD on #187", "HOLD dispatch of CC-763", "HOLD the PR", "#722 hold RELEASED". */
-const TASK_HOLD =
-  /\bHOLD\s+(?:on\s+#|dispatch\s+of\b|the\b|both\b|PR\b|#)|(?:#\d+|\b[A-Z]{2,5}-\d+)\s+holds?\b/i
+const REFERS_AFTER = new RegExp(
+  String.raw`^\s+(?:(?:ack(?:ed|nowledged)?|ACK(?:ED)?|stays|still|covers|applies)\b|(?:on\s+|dispatch\s+of\s+)?${TARGET}|${MESSAGE_ID})`,
+)
+
+function opensAHold(head: string): boolean {
+  for (const stop of head.matchAll(STOP_WORDS)) {
+    const before = head.slice(0, stop.index)
+    const after = head.slice(stop.index + stop[0].length)
+    if (!REFERS_BEFORE.test(before) && !REFERS_AFTER.test(after)) return true
+  }
+  return false
+}
+
+/** "LIFT at NORMAL pace", "LOAD CLEAR 22:34", "ALL-CLEAR"; never "NO CLEAR" or "NOT CLEAR". */
+const LIFT_LEAD = /^(?:LIFT\b|(?!(?:NO|NOT)\b)(?:[A-Z]+[ -])?CLEAR\b)/
+/** "build hold LIFTED", "STOP ALL and the build hold are LIFTED", "REBOOT QUIET RELEASED 13:39". */
+const HOLD_ENDED = /^((?:[\w-]+\s+){0,5}?)(?:hold|stop|quiet)s?\s+(?:(?:is|are)\s+)?(lifted|released)\b/i
+/** A hold that is not the machine's, or a lift still to come: "until the HOLD is LIFTED", "the restart hold". */
+const NOT_THIS_LIFT = /\b(?:until|once|for|when|after|before|if|no|not|restart)\b/i
+
+/** A lift is a head that starts with a lift form, so a lift form later in it ("parked until LIFT") never lifts. */
+function liftsTheHold(head: string): boolean {
+  if (new RegExp(TARGET).test(head)) return false
+  if (LIFT_LEAD.test(head)) return true
+  const ended = HOLD_ENDED.exec(head)
+  if (ended === null) return false
+  const [, subject = '', verb = ''] = ended
+  return verb === verb.toUpperCase() && !NOT_THIS_LIFT.test(subject)
+}
+
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * The head without its sender, as messages open: "tp-operator: ", "tp-ram (successor of tp-ram-1003): ",
+ * "tp-operator 22:4x: ". Only the message's real actor is removed, so "No LIFT yet" keeps its "No".
+ */
+export function headAfterSender(body: string, actor: string): string {
+  const sender = new RegExp(String.raw`^${escapeRegExp(actor)}(?:\s*\([^)]*\))?(?:\s+\d\d:\d[\dx])?[:,]?\s+`)
+  return messageHead(body).replace(sender, '')
+}
 
 export type Classified = 'open' | 'lift' | 'none'
 
-export function classify(body: string): Classified {
-  const head = messageHead(body)
-  // A lift is read first, since most lifts name the hold they end ("HOLD LIFTED", "LIFT of HOLD 612eaf59").
-  if (!TASK_HOLD.test(head) && (LIFT_LEAD.test(head) || HOLD_ENDED.test(head))) return 'lift'
-  const exception = [ACKNOWLEDGEMENT, TASK_HOLD, CITES_MESSAGE, REFERS_BACK].some(rule => rule.test(head))
-  if (!STOP_WORD.test(head) || exception) return 'none'
-  return 'open'
+export function classify(body: string, actor: string): Classified {
+  const head = headAfterSender(body, actor)
+  if (liftsTheHold(head)) return 'lift'
+  return opensAHold(head) ? 'open' : 'none'
 }
 
 const firstLine = (text: string): string => (text.split('\n')[0] ?? '').trim().slice(0, REASON_MAX)
@@ -108,7 +139,7 @@ export function broadcastHolds(lines: readonly ChatLine[], nowMs: number): Opera
   const open = new Map<string, ChatLine>()
   const sorted = [...lines].filter(l => l.ts <= nowMs).sort((a, b) => a.ts - b.ts)
   for (const line of sorted) {
-    const kind = classify(line.body)
+    const kind = classify(line.body, line.actor)
     if (kind === 'lift') open.clear()
     else if (kind === 'open' && !open.has(line.actor)) open.set(line.actor, line)
   }

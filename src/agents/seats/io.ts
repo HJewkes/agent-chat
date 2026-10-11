@@ -306,7 +306,8 @@ export function readAgentEvents(dbPath: string, untilMs: number): AgentEventRow[
  * CC-957: every message and broadcast since `sinceMs`, one row per message (a send to several
  * recipients logs a row each). No keyword filter: `broadcastHolds` alone decides what opens or lifts
  * a hold, so the reader can never drop a lift the parser would accept. A day is about 2k rows.
- * Throws when events.db cannot be read.
+ * Throws when events.db cannot be read. `actor` and `body` are bare columns beside `MIN(ts)`, so SQLite
+ * takes them from any row of the group; every row of one msg_id carries the same sender and body.
  */
 export function readChatMessages(dbPath: string, sinceMs: number): ChatLine[] {
   const db = openEvents(dbPath)
