@@ -53,6 +53,13 @@ describe('the brief lint refuses a tool the agent cannot use', () => {
     'Forbidden here: run agent-chat agent spawn.',
     'Use ScheduleWakeup? No.',
     'Use ScheduleWakeup, no need to poll.',
+    'You are headless, so you must never\nuse ScheduleWakeup or sleep.',
+    'Never:\n- stop for input, or\n  use AskUserQuestion',
+    'Do not block on the owner (i.e. use AskUserQuestion) at any point.',
+    'Do not wait for CI, e.g. call ScheduleWakeup.',
+    '## Never\n\nUse AskUserQuestion to ask the owner.',
+    'You must never:\nuse AskUserQuestion',
+    'Stay quiet.\nNever wait.\nUse ScheduleWakeup instead? No.',
   ])('does not refuse a prohibition or description: %s', brief => {
     expect(lint({ brief }).refusal).toBeUndefined()
   })
@@ -60,7 +67,9 @@ describe('the brief lint refuses a tool the agent cannot use', () => {
   it.each([
     '- run agent-chat agent spawn for the reviewer.',
     'Steps:\n1. Open the PR.\n2. Then call AskUserQuestion.',
-    'Never push to main.\nPlease invoke CronCreate every hour.',
+    'Never push to main.\n\nPlease invoke CronCreate every hour.',
+    'Open the PR. Use ScheduleWakeup to check back on CI.',
+    '## Steps\n\nOpen the PR and wait for\nreview.\n\n- Then run agent-chat agent spawn for a reviewer.',
   ])('refuses an imperative sentence in another position: %s', brief => {
     expect(lint({ brief }).refusal).toBeDefined()
   })

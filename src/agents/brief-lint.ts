@@ -56,56 +56,62 @@ interface Unusable {
   why: string
 }
 
-/** One sentence, and whether the heading governing its line negates it. */
-interface Sentence {
+/** A paragraph or list item, its wrapped lines joined, and whether a heading over it negates it. */
+interface Block {
   text: string
   governed: boolean
 }
 
-/** A Markdown heading, or a line ending in a colon that introduces a list. */
+/** A Markdown heading, or a line ending in a colon that introduces what follows. */
 const HEADING = /^#+\s|:$/
 
-const LIST_ITEM = /^(?:[-*+>]|\d+[.)])\s/
+const LIST_ITEM = /^(?:[-*+>]|\d+[.)])\s+/
 
 /**
- * Split on `.`, `!` and newlines only. A comma, colon, semicolon or question
- * mark can separate a verb from the negation that governs it ("You must not,
- * under any circumstances, use X"; "Use X? No"), so none of them ends a sentence.
- * A heading's negation covers the list items under it until a non-item line.
+ * The unit a refusal is decided on. A newline ends a block only at a blank
+ * line, a heading or a new list item, so a hard-wrapped sentence or list item
+ * stays whole. A negating heading governs every block until the next heading.
  */
-function sentencesOf(brief: string): Sentence[] {
-  const sentences: Sentence[] = []
+function blocksOf(brief: string): Block[] {
+  const blocks: Block[] = []
   let governed = false
+  let current: Block | undefined
   for (const line of brief.split('\n').map(l => l.trim())) {
-    if (HEADING.test(line)) governed = NEGATION.test(line)
-    else if (!LIST_ITEM.test(line)) governed = false
-    for (const text of line.split(/[.!]+/)) sentences.push({ text, governed })
+    if (line === '') current = undefined
+    else if (HEADING.test(line)) {
+      governed = NEGATION.test(line)
+      current = undefined
+      blocks.push({ text: line, governed: false })
+    } else if (current !== undefined && !LIST_ITEM.test(line)) current.text += ` ${line}`
+    else blocks.push((current = { text: line.replace(LIST_ITEM, ''), governed }))
   }
-  return sentences
+  return blocks
 }
+
+/** A `.` or `!` ends a sentence before a capital or the end, never after an abbreviation. */
+const SENTENCE_END = /(?<!\b(?:e\.g|i\.e|etc|vs|cf))[.!]+(?=\s+[A-Z]|\s*$)/
 
 /**
  * How a brief names a term. A refusal blocks a spawn, so `directive` is kept
- * narrow: a whole sentence that opens with "use", "run", "call" or "invoke" on
- * the term, with no negation anywhere in it or in a heading over it. Any other
- * un-negated naming is a `mention`, which only warns, so a phrasing this misses
- * costs a warning rather than a blocked spawn.
+ * narrow: a sentence that opens with "use", "run", "call" or "invoke" on the
+ * term, in a block with no negation anywhere in it or in a heading over it.
+ * Splitting a block into sentences can then only miss a request, never turn a
+ * prohibition into one. Any other un-negated naming is a `mention`, which only
+ * warns.
  */
 type Ask = 'directive' | 'mention' | undefined
 
 /** Words that may precede the imperative without changing what it asks. */
 const LEAD_IN = String.raw`(?:(?:then|and|please|now|first|next|also|finally|so)\s+)*`
 
-const MARKER = String.raw`(?:[-*+>]|\d+[.)])?\s*`
-
 function askOf(brief: string, term: string): Ask {
   const name = `${escape(term)}(?![\\w-])`
   const mention = new RegExp(`(?<![\\w-])${name}`, 'i')
-  const directive = new RegExp(`^${MARKER}${LEAD_IN}(?:use|run|call|invoke)\\s+[\`'"]?${name}`, 'i')
+  const directive = new RegExp(`^${LEAD_IN}(?:use|run|call|invoke)\\s+[\`'"]?${name}`, 'i')
   let ask: Ask
-  for (const { text, governed } of sentencesOf(brief)) {
+  for (const { text, governed } of blocksOf(brief)) {
     if (governed || NEGATION.test(text) || !mention.test(text)) continue
-    if (directive.test(text.trim())) return 'directive'
+    if (text.split(SENTENCE_END).some(sentence => directive.test(sentence.trim()))) return 'directive'
     ask = 'mention'
   }
   return ask
