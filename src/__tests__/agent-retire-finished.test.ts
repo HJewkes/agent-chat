@@ -542,3 +542,57 @@ describe('the recheck and parking rules, against a fake port', () => {
     ])
   })
 })
+
+describe('open PRs and Shepherd runs (CC-904)', () => {
+  let openPr = false
+
+  beforeEach(() => {
+    sup.close()
+    openPr = false
+    sup = new Supervisor(core, {
+      surface: {
+        platform: 'linux',
+        spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
+      },
+      shepherdSkip: { activeRuns: () => Promise.resolve([]), hasOpenPr: () => Promise.resolve(openPr) },
+    })
+  })
+
+  it('skips an implementer whose branch has an open PR, in the plan and the dry run', async () => {
+    const repo = repoWithOrigin()
+    const agent = await finishedIn('cc-open', repo)
+    publish(repo, `agent-chat/${agent.name}`)
+    openPr = true
+    pastGrace()
+
+    const dry = await sup.retireFinished({ prefix: 'cc-', dryRun: true })
+    const out = await sup.retireFinished({ prefix: 'cc-' })
+
+    const skipped = [{ name: 'cc-open', action: 'skip', reason: 'open PR (Shepherd wakes it)' }]
+    expect(dry.plan).toEqual(skipped)
+    expect(out.plan).toEqual(skipped)
+    expect(stateOf('cc-open')).toBe('exited')
+  })
+
+  it('retires an implementer whose PR is merged', async () => {
+    const repo = repoWithOrigin()
+    const agent = await finishedIn('cc-merged', repo)
+    publish(repo, `agent-chat/${agent.name}`)
+    pastGrace()
+
+    const out = await sup.retireFinished({ prefix: 'cc-' })
+
+    expect(out.plan).toEqual([{ name: 'cc-merged', action: 'retire' }])
+    expect(out.results).toEqual([{ name: 'cc-merged', ok: true }])
+  })
+
+  it('retires an agent that holds no branch', async () => {
+    const agent = await spawnIn('cc-nobranch', makeRepo(), { isolation: 'none' })
+    await exit(agent)
+    pastGrace()
+
+    const out = await sup.retireFinished({ prefix: 'cc-' })
+
+    expect(out.plan).toEqual([{ name: 'cc-nobranch', action: 'retire' }])
+  })
+})

@@ -2413,6 +2413,7 @@ export class Supervisor implements TeleportHost {
       .then(async read => {
         const outcome = await retireOutcomeOf(read.ok ? read.work : undefined, () => branchHead(tree))
         writeDispatch(() => log.retired(facts, sessionId, retireSpendOf(read), outcome))
+        await log.ended?.(facts, outcome)
       })
       .catch(dispatchUnavailable)
   }

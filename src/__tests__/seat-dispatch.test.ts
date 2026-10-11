@@ -229,6 +229,18 @@ describe('a seat agent’s retire', () => {
     })
   })
 
+  it('writes a done row after the retired row for a reported agent Shepherd shows no PR for (TP-1570)', async () => {
+    const shepherd = async () => []
+    const s = supervisorWith(seatDispatchLog(root, { now: () => AT, log: () => undefined, shepherd }))
+    await s.spawn(spawnReq(AGENT))
+    writeTranscript(AGENT, MODEL, [reportTo('human', 'Status: DONE')])
+
+    await s.retire(AGENT)
+
+    await expect.poll(() => rows().map(row => row.outcome)).toEqual(['dispatched', 'retired', 'done'])
+    expect(rows()[2]).toMatchObject({ agent: AGENT, by: 'agent-chat' })
+  })
+
   it('writes a no-report class and null pr and head for an agent with no report and no worktree', async () => {
     const s = supervisorWith(writerOver(root))
     await s.spawn(spawnReq(AGENT))

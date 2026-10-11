@@ -35,11 +35,12 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as {
   DatabaseSync: new (path: string) => DatabaseSyncType
 }
 
+const POOL_DIR = '/home/example/.claude'
 const CHARTER = `---
 owner_seat: seat-a
 seats: [seat-a, unconfigured, ../escape]
 pools:
-  claude:  {config_dir: /Users/o/.claude, human_uses: true, reserve_seven_day: 35, ceiling_five_hour: 70, per_day_points: 13}
+  claude:  {config_dir: ${POOL_DIR}, human_uses: true, reserve_seven_day: 35, ceiling_five_hour: 70, per_day_points: 13}
 ---
 `
 const SEAT = '---\nprefix: sa\npool: claude\nspend:\n  per_run_points: 6\n  per_day_points: 10\n---\n'
@@ -533,7 +534,7 @@ describe('seat liveness (CC-320)', () => {
   })
 
   const LIVE_ROW: Roster = {
-    agents: [{ name: 'seat-a', profile: 'seat', state: 'live', spawnedBy: 'owner' }],
+    agents: [{ name: 'seat-a', profile: 'seat', state: 'live', spawnedBy: 'owner', configDir: POOL_DIR }],
     connected: [],
   }
 
@@ -551,6 +552,46 @@ describe('seat liveness (CC-320)', () => {
     dark(h, LIVE_ROW_GRACE_MS / 60_000 + 10)
     await runWatchdog(h.deps, ONE)
     expect(h.wakes).toEqual([{ seat: 'seat-a', message: RESUME_MESSAGE, connected: false }])
+  })
+
+  // CC-959, the incident's shape. Catches: the newest-pick narrowed to spawned rows, which resumes the server row by name.
+  it('refuses to resume a seat whose latest session was started by hand, and raises it once', async () => {
+    const personal = '/home/example/.profiles/personal'
+    const row = { name: 'seat-a', profile: 'lead', state: 'exited', spawnedBy: 'human' }
+    const roster: Roster = {
+      agents: [
+        {
+          ...row,
+          agentId: 'g9',
+          origin: 'spawned',
+          generation: 9,
+          configDir: '/home/example/.profiles/server',
+        },
+        { ...row, agentId: 'h1', origin: 'adopted', sessionId: 's-h1', spawnedAt: 1 },
+        { ...row, agentId: 'h2', origin: 'adopted', sessionId: 's-h2', spawnedAt: 2 },
+      ],
+      connected: [],
+    }
+    const h = harness(roster)
+    h.deps.readSeatFile = seat =>
+      seat === 'seat-a' ? SEAT.replace('---\n', `---\nconfig_dir: ${personal}\n`) : ''
+    const raised: string[] = []
+    h.deps.notifyHuman = async text => (raised.push(text), { ok: true, detail: 'notice n1' })
+    dark(h, 54)
+
+    const dry = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+    const out = await runWatchdog(h.deps, ONE)
+    h.tick()
+    await runWatchdog(h.deps, ONE)
+
+    const line =
+      `watchdog resume seat-a REFUSED: latest session s-h2 is adopted on an unrecorded account; ` +
+      `seat file names ${personal}; older spawned rows still hold the name: g9`
+    expect(h.wakes).toEqual([])
+    expect(h.logs).toEqual([`seat-a: ${line}`])
+    expect(raised).toEqual([line])
+    expect(out).toContain(line)
+    expect(dry[0]).toMatch(/^seat-a: WOULD REFUSE: latest session s-h2 /)
   })
 
   it('treats a roster timeout as unknown: no resume, no try counted, one log line', async () => {
