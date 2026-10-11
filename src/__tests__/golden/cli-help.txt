@@ -315,7 +315,10 @@ per seat: spawns/h tick vs hand, queue age, ready depth, cap use, refusal mix, r
 health
 
 Options:
-  --json                   one JSON record per seat, one per line
+  --json                   one JSON record per seat (per brief source with --by-brief-source), one
+                           per line
+  --by-brief-source        instead: fix rounds and FIX_FIRST verdicts by who wrote the brief (seat,
+                           briefer, template, unknown)
   --since <value>          window to read, e.g. 90m, 24h or 7d (default 24h)
   --autonomy-root <value>  directory holding seats/ and logs/
   -h, --help               display help for command
