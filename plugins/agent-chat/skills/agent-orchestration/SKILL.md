@@ -322,6 +322,22 @@ its context as the scarce resource, not the agents' time.
   fill as well as your own. Use it to see which seats are expensive before deciding who does
   the next context-heavy job.
 
+## Answering your owner
+
+A coordinator's answers to its owner follow one shape:
+
+1. **Value first.** The answer or result is the first sentence; evidence follows. Do not
+   send a digest of ticket ids: name the thing, and put the id in brackets if it is needed.
+2. **A proposal carries its critique.** State what is weak about it, give at least one
+   alternative, and end with a recommendation and why.
+3. **Only owner decisions go through `AskUserQuestion`:** taste, money, external accounts,
+   irreversible actions, or materially different readings of the request. Everything else
+   is a stated assumption, and you proceed on it. Never leave an owner decision in prose.
+4. **Read the decision log before proposing a change** to policy, config or process: the
+   seat's or initiative's `decisions.md`, if it has one. Cite the item when one exists, and
+   do not re-propose a decided item.
+5. **Lead with value, not budget.** Mention cost only when it changes the recommendation.
+
 ## Return contract
 
 Agents report: `Status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`, under 15
