@@ -48,3 +48,39 @@ export function seatTarget(agents: SeatAgent[], seat: string, account: SeatAccou
     }
   return { kind: 'fresh', latest, stale }
 }
+
+/** CC-959: how soon after the seat went dark a new session in its cwd reads as its pane carrying on. */
+export const PANE_WINDOW_MS = 60_000
+
+/** CC-959: how long a possible live pane holds the resume before the human is asked instead. */
+export const PANE_HOLD_CAP_MS = 60 * 60_000
+
+export interface PaneScan {
+  agents: SeatAgent[]
+  connected: string[]
+  seat: string
+  /** The seat's working directory; undefined when neither the seat file nor a seat row records one. */
+  cwd: string | undefined
+  darkSince: number
+}
+
+/**
+ * CC-959: a connected, provisional, hand-started session that appeared in the seat's cwd
+ * within a minute of the seat going dark, as a `/clear` or a restart in the owner's pane does.
+ * It has not taken the seat's name yet, so the roster alone would call the seat dark.
+ */
+export function seatPane({ agents, connected, seat, cwd, darkSince }: PaneScan): SeatAgent | undefined {
+  if (cwd === undefined) return undefined
+  return agents.find(
+    agent =>
+      agent.name !== seat &&
+      agent.origin === 'adopted' &&
+      agent.provisionalName === true &&
+      connected.includes(agent.name) &&
+      agent.cwd !== undefined &&
+      sameDir(agent.cwd, cwd) &&
+      agent.spawnedAt !== undefined &&
+      agent.spawnedAt >= darkSince &&
+      agent.spawnedAt - darkSince <= PANE_WINDOW_MS,
+  )
+}
