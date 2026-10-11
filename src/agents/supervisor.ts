@@ -2441,10 +2441,10 @@ export class Supervisor implements TeleportHost {
         identity.state === 'detached' ? this.cwdLister : undefined,
       )
       if (!parked.ok) return parked
-      this.recordParked(name, identity.agentId, target, parked.head)
+      this.recordParked(name, identity.agentId, { ...target, branch: parked.branch }, parked.head)
       return {
         ok: true,
-        reason: `Parked ${target.worktree}; branch ${target.branch} kept at ${parked.head}.`,
+        reason: `Parked ${target.worktree}; branch ${parked.branch} kept at ${parked.head}.`,
       }
     } finally {
       this.parking.delete(identity.agentId)

@@ -236,6 +236,7 @@ Commands:
   milestone [options]       this week's burn-down per milestone: points, critical path, WIP,
                             throughput, forecast, status
   seats                     seats mode checks (CC-205)
+  brief                     task brief lifecycle (item 179)
   status                    claim ledger, stalled claims and each account budget gate
   dispatch-stats [options]  per seat: spawns/h tick vs hand, queue age, ready depth, cap use,
                             refusal mix, registrations, tick health
@@ -299,6 +300,27 @@ Options:
   --seat <value>           autonomy seat to compare
   --autonomy-root <value>  directory holding score.py, charter.md and seats/
   -h, --help               display help for command
+
+=== agent-chat burndown brief
+Usage: agent-chat burndown brief [options] [command]
+
+task brief lifecycle (item 179)
+
+Options:
+  -h, --help      display help for command
+
+Commands:
+  approve <task>  promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a
+                  plan file
+  help [command]  display help for command
+
+=== agent-chat burndown brief approve
+Usage: agent-chat burndown brief approve [options] <task>
+
+promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file
+
+Options:
+  -h, --help  display help for command
 
 === agent-chat burndown status
 Usage: agent-chat burndown status [options]

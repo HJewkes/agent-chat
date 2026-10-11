@@ -304,3 +304,68 @@ describe('the dry-run seat verbs', () => {
     expect(fs.existsSync(burndownLedgerPath())).toBe(false)
   })
 })
+
+/** CC-954: `plan --seat` reads the config's brief gate, brief age and hand reserve, as the tick does. */
+describe('plan --seat under the brief config', () => {
+  const TODAY = `${NOW.getFullYear()}-02-03`
+  const config = (patch: object): void =>
+    write(
+      path.join(world, 'home', 'burndown.config.json'),
+      JSON.stringify({
+        enabled: true,
+        reportTo: 'coord',
+        maxAgents: 3,
+        reserveSlots: 2,
+        seats: ['seat-t'],
+        ...patch,
+      }),
+    )
+  const addTask = (id: string, tags: string[]): void =>
+    write(
+      path.join(world, 'aw', 'demo', 'tasks', `${id}.yml`),
+      `id: ${id}\ntitle: Do ${id}\npriority: 3\nestimate: 2\ndone_when: unit tests cover the new branch\nstatus: open\ntags:\n${tags.map(t => `  - ${t}`).join('\n')}\n`,
+    )
+  const plan = () =>
+    seatPlanFromDisk({
+      seat: 'seat-t',
+      now: NOW,
+      root: path.join(world, 'aw'),
+      autonomyRoot: autonomyRoot(),
+      exec: factory(null).exec,
+    })
+
+  beforeEach(() => addTask('T-2', ['agent-chat', `brief:ready=${TODAY}`]))
+
+  it('an on gate refuses the untagged task and keeps the tagged one', () => {
+    config({ briefGate: { 'seat-t': 'on' } })
+
+    const planned = plan()
+
+    expect(planned.dispatch.map(d => d.task)).toEqual(['T-2'])
+    expect(planned.refusals).toEqual([expect.objectContaining({ task: 'T-1', kind: 'no-brief' })])
+  })
+
+  it('an on gate refuses a stale brief', () => {
+    config({ briefGate: { 'seat-t': 'on' }, briefMaxAgeDays: 1 })
+    addTask('T-2', ['agent-chat', 'brief:ready=2020-01-01'])
+
+    expect(plan().refusals).toContainEqual(expect.objectContaining({ task: 'T-2', kind: 'brief-stale' }))
+  })
+
+  it('a shadow gate refuses neither', () => {
+    config({ briefGate: { 'seat-t': 'shadow' } })
+
+    const planned = plan()
+
+    expect(planned.dispatch.map(d => d.task).sort()).toEqual(['T-1', 'T-2'])
+    expect(planned.refusals).toEqual([])
+  })
+
+  it('handReserve lowers the implementer slots', () => {
+    config({})
+    const open = plan().dispatch.length
+    config({ handReserve: { 'seat-t': 1 } })
+
+    expect(plan().dispatch.length).toBe(open - 1)
+  })
+})

@@ -36,6 +36,7 @@ import { BrokerClient } from '../../client/broker-client.js'
 import { systemHost } from '../../mirror/job-host.js'
 import { addVerb, defineVerb, Report } from '../command.js'
 import { collisionView, tickBroker } from '../burndown-broker.js'
+import { approveBrief, approvePortsOn } from '../../agents/burndown/brief-approve.js'
 import { releaseTask, type RetireCall } from './burndown-release.js'
 import { burndownInstallOn, burndownJobStatusOn, burndownUninstallOn } from './burndown-job.js'
 
@@ -378,6 +379,17 @@ export const burndownReleaseVerb = defineVerb({
   },
 })
 
+export const burndownBriefApproveVerb = defineVerb({
+  name: 'burndown.brief.approve',
+  description: "promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file",
+  args: z.object({ task: requiredString('task') }),
+  result: Report,
+  cli: { positional: ['task'] },
+  async run({ task }) {
+    return approveBrief(task, approvePortsOn(activeWorkRoot()), localDate(new Date()))
+  },
+})
+
 export { burndownInstall, burndownJobStatus, burndownUninstall } from './burndown-job.js'
 
 export const burndownInstallVerb = defineVerb({
@@ -428,6 +440,7 @@ export function addBurndownCommands(program: Commander): void {
   addVerb(burndown, burndownPlanVerb)
   addVerb(burndown, burndownMilestoneVerb)
   const seats = burndown.command('seats').description('seats mode checks (CC-205)')
+  const brief = burndown.command('brief').description('task brief lifecycle (item 179)')
   addVerb(seats, burndownSeatsCompareVerb)
   addVerb(burndown, burndownStatusVerb)
   addVerb(burndown, burndownDispatchStatsVerb)
@@ -435,6 +448,7 @@ export function addBurndownCommands(program: Commander): void {
   addVerb(burndown, burndownPauseVerb)
   addVerb(burndown, burndownResumeVerb)
   addVerb(burndown, burndownReleaseVerb)
+  addVerb(brief, burndownBriefApproveVerb)
   addVerb(burndown, burndownInstallVerb)
   addVerb(burndown, burndownUninstallVerb)
   addVerb(burndown, burndownJobStatusVerb)
