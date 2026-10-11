@@ -11,7 +11,7 @@ import {
 } from '../protocol.js'
 import { checkDecision, decidedText, overruleText } from './decisions.js'
 import { AgentLog } from '../agents/identity.js'
-import { resolveReportBatchMs } from '../config.js'
+import { resolveReportBatchMs, resolveSeatSteward } from '../config.js'
 import { logEvent } from './log.js'
 import { EventLog, isReport, isTerminalReport, newMsgId } from './event-log.js'
 import { ReportBatcher } from './report-batch.js'
@@ -438,6 +438,71 @@ export class BrokerCore<C = Conn> {
     return { ok: true, msgId }
   }
 
+  /**
+   * CC-966: the steward `seatStewards` names for `seat`, unless it is `from`, so a steward's
+   * own send to its dark seat is not handed back to it.
+   */
+  stewardFor(seat: string, from: string): string | undefined {
+    const steward = resolveSeatSteward(seat)
+    return steward === from ? undefined : steward
+  }
+
+  /**
+   * CC-966: the human's message for a non-resident seat, pushed to its steward and marked as for the
+   * seat; the human overrides do-not-disturb here as on any send. Undefined when `to` has no steward,
+   * or the steward is dark and cannot hold it either, so the caller falls through to `to`'s own hold.
+   */
+  forwardForSeat(
+    from: string,
+    to: string,
+    text: string,
+    inReplyTo?: string,
+    source?: WakeSource,
+  ): SeatForwardResult | undefined {
+    const steward = this.stewardFor(to, from)
+    if (steward === undefined) return undefined
+    const forwarded = forwardedText(to, text)
+    if (this.registry.connFor(steward) !== undefined)
+      return this.pushForward({ from, to, steward, text: forwarded, inReplyTo, source })
+    return this.holdForSteward(from, steward, forwarded, inReplyTo, source)
+  }
+
+  /** CC-966: a dark steward keeps a forwarded message in its own hold, as it would its own. */
+  holdForSteward(
+    from: string,
+    steward: string,
+    text: string,
+    inReplyTo?: string,
+    source?: WakeSource,
+  ): SeatForwardResult | undefined {
+    const held = this.holdForSeat(from, steward, text, inReplyTo, source)
+    return held?.ok ? { steward, msgId: held.msgId, held: true } : undefined
+  }
+
+  private pushForward(forward: SeatForward): SeatForwardResult {
+    const { from, to, steward, text, inReplyTo, source } = forward
+    const msgId = newMsgId()
+    this.append({
+      kind: 'message',
+      actor: from,
+      target: steward,
+      msgId,
+      ...(inReplyTo === undefined ? {} : { ref: inReplyTo }),
+      body: text,
+      meta: { forwarded_for: to, ...(source === undefined ? {} : { source }) },
+    })
+    this.deliverTo(steward, {
+      msgId,
+      from,
+      text,
+      at: Date.now(),
+      ...(inReplyTo === undefined ? {} : { inReplyTo }),
+      ...(source === undefined ? {} : { wakeSource: source }),
+    })
+    logEvent('route', { kind: 'message', msgId, from, to: steward, delivered: true, forwardedFor: to })
+    return { steward, msgId, held: false }
+  }
+
   /** The log id of the dark episode seat `name` is in, read before it registers. */
   darkSeat(name: string): number | undefined {
     return this.isSeat(name) ? this.events.darkSince(name)?.id : undefined
@@ -682,6 +747,25 @@ export interface VerdictResult {
 }
 
 export type SeatHoldResult = { ok: true; msgId: string } | { ok: false; reason: string }
+
+/** CC-966: how a forwarded message reads to the steward, naming the seat it was sent to. */
+export const forwardedText = (seat: string, text: string): string => `[for ${seat}] ${text}`
+
+/** CC-966: a dark seat's message sent on to its steward; `held` when the steward was dark too. */
+export interface SeatForwardResult {
+  steward: string
+  msgId: string
+  held: boolean
+}
+
+interface SeatForward {
+  from: string
+  to: string
+  steward: string
+  text: string
+  inReplyTo: string | undefined
+  source: WakeSource | undefined
+}
 
 export type DecideResult = { ok: true; reason?: string } | { ok: false; code: DecidedRefusal; reason: string }
 

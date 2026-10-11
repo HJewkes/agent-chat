@@ -18,7 +18,14 @@ import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
 import { newMsgId } from './event-log.js'
 import { type Escalation, type RouteResult } from './registry.js'
-import { BrokerCore, readoptRegistration, type Conn, type EndorseApproval } from './core.js'
+import {
+  BrokerCore,
+  readoptRegistration,
+  type Conn,
+  type EndorseApproval,
+  type SeatForwardResult,
+  forwardedText,
+} from './core.js'
 import { recoverHandoff, returningSession } from './handoff-recovery.js'
 import type { SlotUsage } from '../agents/semaphore.js'
 import { Supervisor, type SupervisorOptions } from '../agents/supervisor.js'
@@ -86,6 +93,21 @@ const replyHeld = (conn: Conn, to: string, msgId: string): void => {
     msgId,
     recipients: [to],
     results: [{ name: to, status: 'held', reason }],
+    reason,
+  })
+}
+
+/** CC-966: the sender learns the message went to the seat's steward, or waits in the steward's hold. */
+const replyForwarded = (conn: Conn, to: string, forwarded: SeatForwardResult): void => {
+  const { steward, msgId } = forwarded
+  if (forwarded.held) return replyHeld(conn, steward, msgId)
+  const reason = `"${to}" has no resident session; the message went to its steward "${steward}".`
+  reply(conn, {
+    t: 'send_result',
+    ok: true,
+    msgId,
+    recipients: [steward],
+    results: [{ name: steward, status: 'delivered', reason }],
     reason,
   })
 }
@@ -693,10 +715,31 @@ export class SocketServer {
     const result = core.registry.send(conn, to, text, inReplyTo)
     const from = core.registry.nameOf(conn)
     const unrouted = from !== undefined && result.results[0]?.status === 'no_such_session'
+    if (unrouted && this.forwardSend(conn, from, to, text, inReplyTo)) return
     const held = unrouted ? core.holdForSeat(from, to, text, inReplyTo) : undefined
     if (held === undefined) return this.handleRoute(conn, result, 'message', to)
     if (!held.ok) return this.handleRoute(conn, { ...result, reason: held.reason }, 'message', to)
     replyHeld(conn, to, held.msgId)
+  }
+
+  /**
+   * CC-966: a peer's message for a dark seat with a steward goes to the steward through ordinary
+   * routing, so the steward's do-not-disturb and the sender's budget hold. False leaves the seat's hold.
+   */
+  private forwardSend(conn: Conn, from: string, to: string, text: string, inReplyTo?: string): boolean {
+    const { core } = this
+    const steward = core.stewardFor(to, from)
+    if (steward === undefined) return false
+    const forwarded = forwardedText(to, text)
+    if (core.registry.connFor(steward) !== undefined) {
+      const result = core.registry.send(conn, steward, forwarded, inReplyTo)
+      this.handleRoute(conn, result, 'message', steward, undefined, to)
+      return true
+    }
+    const held = core.holdForSteward(from, steward, forwarded, inReplyTo)
+    if (held === undefined) return false
+    replyHeld(conn, steward, held.msgId)
+    return true
   }
 
   private handleRoute(
@@ -705,6 +748,7 @@ export class SocketServer {
     kind: 'message' | 'broadcast',
     to: string,
     tag?: string,
+    forwardedFor?: string,
   ): void {
     const { core } = this
     const from = core.registry.nameOf(conn) ?? '?'
@@ -725,6 +769,7 @@ export class SocketServer {
       const meta = {
         ...(delivery.message.audience ? { audience: delivery.message.audience.join(',') } : {}),
         ...(tag ? { tag } : {}),
+        ...(forwardedFor === undefined ? {} : { forwarded_for: forwardedFor }),
       }
       // One row per recipient so a session's inbox is a plain query on `target`.
       core.append({
@@ -1231,6 +1276,8 @@ export class SocketServer {
     const msgId = newMsgId()
     if (!target) {
       // CC-441: the watchdog's wake for a seat it just resumed visibly lands here before the seat registers.
+      const forwarded = core.forwardForSeat(HUMAN, to, text, undefined, source)
+      if (forwarded !== undefined) return replyForwarded(conn, to, forwarded)
       const held = core.holdForSeat(HUMAN, to, text, undefined, source)
       if (held?.ok) return replyHeld(conn, to, held.msgId)
       core.append({ kind: 'route_failed', actor: HUMAN, target: to, body: 'no active session' })
