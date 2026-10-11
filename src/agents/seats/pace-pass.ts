@@ -36,6 +36,8 @@ export interface PaceStore {
   write: (doc: PaceDoc) => void
   /** The watchdog pass is the one writer of the history. */
   append: (rows: ReadingRow[]) => void
+  /** CC-346: the reading history so far, which outlives a deleted seat-watchdog.json. */
+  rows?: () => ReadingRow[]
 }
 
 export function nextPaceDoc(
@@ -86,6 +88,24 @@ export function publishPace(store: PaceStore, rows: readonly PoolPace[], nowMs: 
   store.write(nextPaceDoc(previous, rows, nowMs))
 }
 
+/**
+ * CC-346: the pool's reading as the spend day opened: the latest row at or before the day start,
+ * else the day's earliest. None when that row is a rolled window or above the current reading,
+ * since the window has rolled since and the points it counts are gone.
+ */
+export function dayOpening(
+  rows: readonly ReadingRow[],
+  pool: string,
+  dayStartMs: number,
+  sevenDayNow: number,
+): ReadingRow | undefined {
+  const own = rows.filter(row => row.pool === pool)
+  const before = own.filter(row => row.ts * 1000 <= dayStartMs).sort((a, b) => b.ts - a.ts)[0]
+  const opening = before ?? own.filter(row => row.ts * 1000 > dayStartMs).sort((a, b) => a.ts - b.ts)[0]
+  if (opening === undefined || opening.rolled === true || opening.seven_day > sevenDayNow) return undefined
+  return opening
+}
+
 export const pacePath = (): string => path.join(home(), 'pace.json')
 
 export const readingHistoryPath = (root: string): string => path.join(root, 'pool-readings.jsonl')
@@ -112,8 +132,30 @@ export function appendReadingRows(root: string, rows: readonly ReadingRow[]): vo
   fs.appendFileSync(readingHistoryPath(root), rows.map(row => `${JSON.stringify(row)}\n`).join(''))
 }
 
+const isReadingRow = (row: Partial<ReadingRow> | null): row is ReadingRow =>
+  typeof row?.ts === 'number' && typeof row.pool === 'string' && typeof row.seven_day === 'number'
+
+/** A missing history is none, and a line that does not parse as a row is skipped. */
+export function readReadingRows(root: string): ReadingRow[] {
+  let text: string
+  try {
+    text = fs.readFileSync(readingHistoryPath(root), 'utf8')
+  } catch {
+    return []
+  }
+  return text.split('\n').flatMap(line => {
+    try {
+      const row = JSON.parse(line) as Partial<ReadingRow> | null
+      return isReadingRow(row) ? [row] : []
+    } catch {
+      return []
+    }
+  })
+}
+
 export const diskPaceStore = (root: string): PaceStore => ({
   read: () => readPaceDoc(),
   write: doc => writePaceDoc(doc),
   append: rows => appendReadingRows(root, rows),
+  rows: () => readReadingRows(root),
 })
