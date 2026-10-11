@@ -75,7 +75,9 @@ const agent: AgentIdentity = {
 
 async function callTool(tool: 'session_budget' | 'agent_list', nowS: number): Promise<string> {
   const reply: ServerMessage = { t: 'agents_result', agents: [{ ...agent, configDir }] }
-  const handler = new ToolHandler({ request: async () => reply } as unknown as BrokerClient)
+  const handler = new ToolHandler({
+    request: async (m: { t: string }) => (m.t === 'list' ? { t: 'list_result', sessions: [] } : reply),
+  } as unknown as BrokerClient)
   const realNow = Date.now
   Date.now = () => nowS * 1000
   try {
