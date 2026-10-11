@@ -3,12 +3,10 @@ import os from 'node:os'
 import path from 'node:path'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
-import { launchdControl, systemHost, unitControl, usesSystemd, type JobHost } from '../../mirror/job-host.js'
-import { startJob } from '../../mirror/launchd.js'
 import { jobEnv, launchdJobRefusals, renderPlist, type JobSpec } from '../../mirror/plist.js'
-import { installUnits } from '../../mirror/systemd.js'
 import { renderUnits, unitName } from '../../mirror/systemd-unit.js'
-import { cliEntry, linuxJobLogDir, socketPath } from '../../paths.js'
+import { shellQuote } from '@titan-design/agent-surface'
+import { cliEntry, linuxJobLogDir, socketPath, systemdUserUnitDir } from '../../paths.js'
 import type { HostLauncherInfo, ServerMessage } from '../../protocol.js'
 import { defaultLauncherDeps, hostSurfaces, serveHost } from '../../server/host-launcher.js'
 import { ago } from '../client.js'
@@ -91,48 +89,69 @@ export function hostLauncherJob(input: {
   }
 }
 
-export function hostInstallOn(jobHost: JobHost, host?: string): Report {
-  const linux = usesSystemd(jobHost)
+export interface InstallTarget {
+  platform: NodeJS.Platform
+  uid: number
+  nodePath: string
+  cliEntry: string
+  env: Record<string, string>
+  host?: string | undefined
+}
+
+function linuxInstall(job: JobSpec, logDir: string): string[] {
+  const units = renderUnits(job)
+  const file = path.join(systemdUserUnitDir(), `${units.name}.service`)
+  return [
+    `# write to ${file}:`,
+    units.service,
+    '# then run:',
+    `mkdir -p ${shellQuote(logDir)}`,
+    'systemctl --user daemon-reload',
+    `systemctl --user enable --now ${units.name}.service`,
+  ]
+}
+
+function darwinInstall(job: JobSpec, logDir: string, uid: number): string[] {
+  const file = plistPath()
+  return [
+    `# write to ${file}:`,
+    renderPlist(job),
+    '# then run:',
+    `mkdir -p ${shellQuote(logDir)}`,
+    `launchctl bootstrap gui/${uid} ${shellQuote(file)}`,
+  ]
+}
+
+/**
+ * Print-only: the unit or plist and the commands that would load it. Installing a login job is
+ * the owner's step, so this writes nothing and loads nothing.
+ */
+export function hostInstallReport(target: InstallTarget): Report {
+  const linux = target.platform === 'linux'
   const logDir = linux ? linuxJobLogDir(unitName(HOST_LAUNCHER_LABEL)) : darwinLogDir()
-  const job = hostLauncherJob({
-    nodePath: process.execPath,
-    cliEntry: cliEntry(),
-    logDir,
-    env: jobEnv(process.env),
-    host,
-  })
-  const errors = launchdJobRefusals({
-    ...job,
-    nodePath: process.execPath,
-    cliEntry: cliEntry(),
-    tmpdir: os.tmpdir(),
-  })
+  const job = hostLauncherJob({ ...target, logDir })
+  const errors = launchdJobRefusals({ ...target, tmpdir: os.tmpdir() })
   if (errors.length > 0) return { ok: false, lines: [], errors }
-  if (linux) {
-    const units = renderUnits(job)
-    const result = installUnits(unitControl(jobHost), units, logDir)
-    return jobHost.dryRun ? { ok: true, lines: [units.service, ...result.lines] } : result
-  }
-  const plist = renderPlist(job)
-  const result = startJob({ plist: plistPath(), logDir }, plist, launchdControl(jobHost, HOST_LAUNCHER_LABEL))
-  return jobHost.dryRun ? { ok: true, lines: [plist, ...result.lines] } : result
+  return { ok: true, lines: linux ? linuxInstall(job, logDir) : darwinInstall(job, logDir, target.uid) }
 }
 
 export const hostInstallVerb = defineVerb({
   name: 'host.install',
   description:
-    'install `host serve` as a kept-alive launchd job (systemd --user unit on Linux), so this machine ' +
-    'stays a teleport destination across logins and broker restarts',
-  args: z.object({ host: z.string().optional(), dryRun: z.boolean().optional() }),
+    'print, without writing or loading anything, the kept-alive launchd plist (systemd --user unit on ' +
+    'Linux) that runs `host serve`, and the commands that install it; the owner runs them',
+  args: z.object({ host: z.string().optional() }),
   result: Report,
-  cli: {
-    options: {
-      host: HOST_FLAG,
-      dryRun: { long: '--dry-run', description: 'print the plist or unit and the calls; load nothing' },
-    },
-  },
-  async run({ host, dryRun }) {
-    return hostInstallOn(systemHost(dryRun === true), host)
+  cli: { options: { host: HOST_FLAG } },
+  async run({ host }) {
+    return hostInstallReport({
+      platform: process.platform,
+      uid: process.getuid?.() ?? 0,
+      nodePath: process.execPath,
+      cliEntry: cliEntry(),
+      env: jobEnv(process.env),
+      host,
+    })
   },
 })
 

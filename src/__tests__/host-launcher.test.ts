@@ -12,7 +12,7 @@ import {
   type LauncherDeps,
   type LauncherIdentity,
 } from '../server/host-launcher.js'
-import { hostLauncherJob } from '../cli/verbs/host.js'
+import { hostInstallReport, hostLauncherJob } from '../cli/verbs/host.js'
 
 /**
  * CC-951 g2: the machine side of a host launcher. The broker checked the spec's paths only
@@ -128,6 +128,38 @@ describe('a host_launch spec', () => {
     expect(launched).toEqual([])
   })
 
+  it('refuses a credential directory spelled in another case', async () => {
+    const shouty = path.join(home, 'projects', '.SSH')
+    fs.mkdirSync(shouty)
+    const { deps, launched } = fakeDeps()
+
+    const answer = await answerLaunch(spec({ cwd: shouty }), LINUX, deps)
+
+    expect(answer.reason).toMatch(/protected directory \("\.ssh"\)/)
+    expect(launched).toEqual([])
+  })
+
+  it("never hands the launcher's own account to a successor whose predecessor named none", async () => {
+    const { deps, launched } = fakeDeps()
+    const { configDir: _account, ...noAccount } = spec()
+
+    await answerLaunch(noAccount, LINUX, deps)
+
+    expect(launched[0]?.plan.env.CLAUDE_CONFIG_DIR).toBeUndefined()
+  })
+
+  it('refuses a sibling of home whose name only starts with the home name', async () => {
+    const alice = `${home}ice`
+    fs.mkdirSync(path.join(alice, 'repo'), { recursive: true })
+    const { deps, launched } = fakeDeps()
+
+    const answer = await answerLaunch(spec({ cwd: path.join(alice, 'repo') }), LINUX, deps)
+
+    fs.rmSync(alice, { recursive: true, force: true })
+    expect(answer.reason).toMatch(/outside the home directory/)
+    expect(launched).toEqual([])
+  })
+
   it('refuses an iTerm2 surface on linux before writing anything', async () => {
     const { deps, written } = fakeDeps()
 
@@ -206,5 +238,26 @@ describe('host surfaces and install', () => {
 
     expect(job.args).toEqual(['/n', '/c.js', 'host', 'serve', '--host', 'mac'])
     expect(job.schedule.kind).toBe('keep-alive')
+  })
+
+  const target = { uid: 501, nodePath: '/n', cliEntry: '/opt/agent-chat/dist/cli.js', env: {}, host: 'mac' }
+
+  it('prints the launchd plist and the commands for the owner to run', () => {
+    const report = hostInstallReport({ ...target, platform: 'darwin' })
+
+    expect(report.ok).toBe(true)
+    expect(report.lines.join('\n')).toContain('<string>serve</string>')
+    expect(report.lines.at(-1)).toMatch(
+      /^launchctl bootstrap gui\/501 .*dev\.hjewkes\.agent-chat-host-launcher\.plist'?$/,
+    )
+  })
+
+  it('prints the systemd unit and the systemctl commands on linux', () => {
+    const report = hostInstallReport({ ...target, platform: 'linux' })
+
+    expect(report.lines.join('\n')).toContain(
+      'ExecStart=/n /opt/agent-chat/dist/cli.js host serve --host mac',
+    )
+    expect(report.lines.at(-1)).toBe('systemctl --user enable --now agent-chat-host-launcher.service')
   })
 })

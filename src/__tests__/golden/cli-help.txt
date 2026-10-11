@@ -882,9 +882,9 @@ Commands:
                      its probes, and launch teleport successors here with the cwd and account the
                      spec names; reconnects after a drop
   list               the host launchers connected to the broker, with their platform and surfaces
-  install [options]  install `host serve` as a kept-alive launchd job (systemd --user unit on
-                     Linux), so this machine stays a teleport destination across logins and broker
-                     restarts
+  install [options]  print, without writing or loading anything, the kept-alive launchd plist
+                     (systemd --user unit on Linux) that runs `host serve`, and the commands that
+                     install it; the owner runs them
   help [command]     display help for command
 
 === agent-chat host serve
@@ -909,13 +909,12 @@ Options:
 === agent-chat host install
 Usage: agent-chat host install [options]
 
-install `host serve` as a kept-alive launchd job (systemd --user unit on Linux), so this machine
-stays a teleport destination across logins and broker restarts
+print, without writing or loading anything, the kept-alive launchd plist (systemd --user unit on
+Linux) that runs `host serve`, and the commands that install it; the owner runs them
 
 Options:
   --host <name>  the machine name to announce; defaults to this machine's hostname, as sessions
                  report it
-  --dry-run      print the plist or unit and the calls; load nothing
   -h, --help     display help for command
 
 === agent-chat debug

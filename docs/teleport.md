@@ -325,13 +325,16 @@ always), and reconnects every 5s after a drop, so a broker restart does not
 strand it. It never autostarts a broker. The broker checked the paths only
 lexically, so the launcher resolves the cwd and config dir through realpath on
 its own disk and refuses one that is missing, resolves into a credential
-directory, or resolves outside its home. It then runs `checkLaunch` (the same
+directory (compared case-insensitively, which fails closed), or resolves outside
+its home. It then runs `checkLaunch` (the same
 allowlist as the caller path) and builds the plan with the spec's cwd and
 `CLAUDE_CONFIG_DIR` set to the spec's config dir, never its own, and always opens
 a new surface: a launcher never reuses a pane. `host list` asks the broker for
-the connected launchers. `host install` writes a kept-alive launchd job
-(`dev.hjewkes.agent-chat-host-launcher`) on macOS or a systemd --user unit on
-Linux running `host serve`; `--dry-run` prints it.
+the connected launchers. `host install` is print-only: it prints the kept-alive
+launchd plist (`dev.hjewkes.agent-chat-host-launcher`) on macOS, or the systemd
+--user unit on Linux, that runs `host serve`, with the path to write it to and
+the `launchctl bootstrap` or `systemctl --user enable --now` command. It writes
+and loads nothing, because installing a login job is the owner's step.
 
 A launch whose answer the broker never sees is retired there (the broker keeps
 the predecessor), so the launcher makes sure that successor never runs as a

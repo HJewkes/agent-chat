@@ -76,7 +76,9 @@ export function localPath(
 ): { real: string } | { reason: string } {
   const real = realDir(dir)
   if (real === undefined) return { reason: `its ${label} ${dir} is not a directory on this machine` }
-  const sensitive = SENSITIVE_DIRS.find(name => real.split(path.sep).includes(name))
+  // Lowercased always: on a case-insensitive disk `.SSH` is `.ssh`, and refusing both fails closed.
+  const segments = real.toLowerCase().split(path.sep)
+  const sensitive = SENSITIVE_DIRS.find(name => segments.includes(name.toLowerCase()))
   if (sensitive !== undefined)
     return { reason: `its ${label} ${dir} resolves inside a protected directory ("${sensitive}")` }
   const home = realDir(homeDir) ?? homeDir
