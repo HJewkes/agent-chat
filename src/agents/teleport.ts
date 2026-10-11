@@ -1,9 +1,15 @@
 import { brokerHost, isLocalHost } from '../broker/host-guard.js'
 import { resolveMachines } from '../config.js'
-import { resolveDestination, type ConnectedLauncher, type DestinationSite } from './teleport-destination.js'
+import {
+  remotePathBlocker,
+  resolveDestination,
+  type ConnectedLauncher,
+  type DestinationSite,
+} from './teleport-destination.js'
 import { surfaceBlockerFor } from './surface-resolution.js'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import type { BrokerCore } from '../broker/core.js'
 import {
   hostCarriedFlags,
@@ -286,6 +292,11 @@ interface Destination {
 }
 
 type Route = ({ ok: true } & Destination) | { ok: false; reason: string }
+
+/** CC-951: fail closed on a path a launcher would otherwise be handed unchecked. */
+const launchPathsBlocker = (cwd: string, configDir: string | undefined): string | undefined =>
+  remotePathBlocker('working directory', cwd, os.homedir()) ??
+  (configDir === undefined ? undefined : remotePathBlocker('config dir', configDir, os.homedir()))
 
 /** One launcher's answer: done, or why not. */
 export interface LauncherAnswer {
@@ -612,6 +623,8 @@ export class Teleport {
     if (platformBlock !== undefined) return platformBlock
     if (!this.hosts.surfacesOn(route.host).includes(surface))
       return `the launcher on ${route.host} cannot open a ${surface} surface`
+    const badPath = launchPathsBlocker(paths.cwd, paths.configDir)
+    if (badPath !== undefined) return badPath
     const probe: HostProbe = {
       cwd: paths.cwd,
       surface,
@@ -842,6 +855,8 @@ export class Teleport {
    * machine, with the cwd and account it checked in the probe. A refusal releases the row.
    */
   private async launchOnHost(host: string, input: RelaunchInput): Promise<void> {
+    const badPath = launchPathsBlocker(input.cwd, input.configDir)
+    if (badPath !== undefined) throw new Error(`not handed to the launcher on ${host}: ${badPath}`)
     const launch: RemoteLaunch = {
       ...this.host.prepareRemoteRelaunch(input),
       cwd: input.cwd,

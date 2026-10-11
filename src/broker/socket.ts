@@ -42,7 +42,7 @@ import { newestBuildMtime, stalenessWarning } from './staleness.js'
 import { findGitRoot } from '../git.js'
 import { resolveSpawnCwd } from './spawn-default-cwd.js'
 import { readMeta } from './lifecycle.js'
-import { resolveDeciderAgentId } from '../config.js'
+import { resolveDeciderAgentId, resolveMachines } from '../config.js'
 import { shapeMeta } from '../inbox/item-shape.js'
 import { fileServiceAsk } from './service-ask.js'
 import { PERMISSION_WAITING, permissionNoticeText } from './permission-notice.js'
@@ -200,8 +200,14 @@ const optionalCarried = (launchSeen: CarriedFlags | undefined): { launchSeen?: C
   launchSeen === undefined ? {} : { launchSeen }
 
 /** CC-951: a hello's fields come off the wire, so each is checked rather than trusted to be typed. */
-function launcherHello(msg: Extract<ClientMessage, { t: 'host_hello' }>): LauncherHello | string {
+function launcherHello(
+  msg: Extract<ClientMessage, { t: 'host_hello' }>,
+  machines: readonly string[],
+): LauncherHello | string {
   if (typeof msg.host !== 'string' || msg.host.trim() === '') return 'host_hello needs a host name'
+  const host = msg.host.trim().toLowerCase()
+  if (machines.length > 0 && !machines.some(machine => machine.toLowerCase() === host))
+    return `${msg.host.trim()} is not one of the configured machines (${machines.join(', ')})`
   const platform = asPlatform(msg.platform)
   if (platform === undefined) return `unknown platform "${String(msg.platform)}"`
   const offered: unknown[] = Array.isArray(msg.surfaces) ? msg.surfaces : []
@@ -632,8 +638,11 @@ export class SocketServer {
   }
 
   /**
-   * CC-951: a host launcher is a connection of its own. One that holds a session's registration
-   * is refused, so a session cannot also take launches for a machine by announcing it.
+   * CC-951: a host launcher is a connection of its own. The guard is per connection: one that
+   * holds a registration may not announce a machine, and a launcher's may not register (see
+   * `refuseLauncherRegister`). A session can still open a second connection; what stops it
+   * taking over a machine is that the first live launcher holds it, and that a configured
+   * `machines` list bounds which machines may be announced at all.
    */
   private handleHostHello(conn: Conn, msg: Extract<ClientMessage, { t: 'host_hello' }>): void {
     if (this.core.registry.nameOf(conn) !== undefined) {
@@ -641,13 +650,26 @@ export class SocketServer {
       return reply(conn, {
         t: 'host_hello_result',
         ok: false,
-        reason: 'a registered session cannot be a host launcher; run `agent-chat host serve` instead',
+        reason: 'a registered session cannot be a host launcher; a launcher needs a connection of its own',
       })
     }
-    const hello = launcherHello(msg)
+    const hello = launcherHello(msg, Object.values(resolveMachines()))
     if (typeof hello === 'string') return reply(conn, { t: 'host_hello_result', ok: false, reason: hello })
-    this.hosts.hello(conn, hello, frame => reply(conn, frame))
-    reply(conn, { t: 'host_hello_result', ok: true })
+    const result = this.hosts.hello(conn, hello, frame => reply(conn, frame))
+    if (!result.ok) logEvent('host_launcher_refused', { host: hello.host, reason: result.reason })
+    reply(conn, { t: 'host_hello_result', ...result })
+  }
+
+  /** CC-951: a launcher's connection never holds a session's name; it takes launches, not messages. */
+  private refuseLauncherRegister(conn: Conn): boolean {
+    const host = this.hosts.hostOf(conn)
+    if (host === undefined) return false
+    reply(conn, {
+      t: 'register_result',
+      ok: false,
+      reason: `this connection is the host launcher for ${host}, so it cannot register a session`,
+    })
+    return true
   }
 
   /** CC-913: the sender's own registration, never the frame, says whether it is the predecessor. */
@@ -1508,6 +1530,7 @@ export class SocketServer {
     this.hintUnregistered(conn, msg)
     switch (msg.t) {
       case 'register': {
+        if (this.refuseLauncherRegister(conn)) return
         // Closing the displaced socket is what makes a takeover final: leaving it
         // open would let the predecessor keep writing under a name it no longer
         // holds. `end` rather than `destroy` so the fatal frame is flushed first
@@ -1529,6 +1552,7 @@ export class SocketServer {
         return
       }
       case 'readopt':
+        if (this.refuseLauncherRegister(conn)) return
         return this.handleReadopt(conn, msg)
       case 'status':
         return reply(conn, {

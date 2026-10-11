@@ -2,7 +2,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { resolveDestination, type DestinationInput } from '../agents/teleport-destination.js'
+import {
+  remotePathBlocker,
+  resolveDestination,
+  type DestinationInput,
+} from '../agents/teleport-destination.js'
 import { resolveMachines } from '../config.js'
 
 /** CC-951 e: which machine a teleport lands on, and who launches it there. */
@@ -110,5 +114,23 @@ describe('config machines', () => {
     writeConfig({ mac: MAC, basement: '' })
 
     expect(resolveMachines()).toEqual({})
+  })
+})
+
+describe('a path handed to a launcher on another machine', () => {
+  const home = '/srv/h'
+
+  it('passes a normal path strictly under home', () => {
+    expect(remotePathBlocker('cwd', '/srv/h/projects/x', home)).toBeUndefined()
+  })
+
+  it.each([
+    ['/srv/h/../other/x', 'normalised'],
+    ['projects/x', 'normalised'],
+    ['/srv/h', 'not under the home directory'],
+    ['/etc/x', 'not under the home directory'],
+    ['/srv/h/.ssh/x', 'protected directory'],
+  ])('refuses %s', (dir, why) => {
+    expect(remotePathBlocker('cwd', dir, home)).toContain(why)
   })
 })

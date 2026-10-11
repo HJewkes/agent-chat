@@ -57,12 +57,27 @@ export class HostDirectory<K = unknown> {
 
   constructor(private readonly now: () => number = Date.now) {}
 
-  /** A later hello for the same machine replaces the earlier one, which is a restarted launcher. */
-  hello(key: K, hello: LauncherHello, send: (frame: HostRequest) => void): void {
-    const previous = this.find(hello.host)
-    if (previous !== undefined) this.drop(previous.key)
+  /**
+   * The first live launcher for a machine holds it. A second connection claiming the same
+   * machine is refused while the holder's connection is open, so it cannot take over the
+   * probes and launches meant for the real one; a restarted launcher's old entry has already
+   * gone with its connection. The holder may hello again, which replaces its own entry.
+   */
+  hello(key: K, hello: LauncherHello, send: (frame: HostRequest) => void): HostAnswer {
+    const holder = this.find(hello.host)
+    if (holder !== undefined && holder.key !== key)
+      return { ok: false, reason: `a launcher for ${holder.entry.host} is already connected` }
+    const current = this.hostOf(key)
+    if (current !== undefined && !same(current, hello.host))
+      return { ok: false, reason: `this connection is already the launcher for ${current}` }
     this.byHost.set(hello.host.toLowerCase(), { key, entry: { ...hello, connectedAt: this.now() }, send })
     logEvent('host_launcher_connected', { host: hello.host, platform: hello.platform })
+    return { ok: true }
+  }
+
+  /** The machine this connection launches for, if it is a launcher. */
+  hostOf(key: K): string | undefined {
+    return [...this.byHost.values()].find(connected => connected.key === key)?.entry.host
   }
 
   /** The launcher's connection closed: its entry goes, and anything waiting on it is answered now. */
