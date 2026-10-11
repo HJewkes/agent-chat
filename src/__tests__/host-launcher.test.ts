@@ -39,7 +39,7 @@ afterEach(() => fs.rmSync(home, { recursive: true, force: true }))
 const spec = (over: Partial<RemoteLaunch> = {}): RemoteLaunch => ({
   agentId: 'abcd1234',
   sessionId: '0f8fad5b-d9cb-469f-a165-70867728950e',
-  name: 'titan-coord',
+  name: 'cc27',
   profile: {
     name: 'inherited',
     description: 'd',
