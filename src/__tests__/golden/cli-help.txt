@@ -246,6 +246,7 @@ Commands:
   resume                    let the tick spawn again
   release <task>            drop every claim on a task, stalled or not, so the tick may pick it
                             again
+  config                    resolved burndown settings (CC-955)
   install [options]         print the sign-off checklist, then install and start the launchd tick
                             job (a systemd --user timer on Linux)
   uninstall                 stop the launchd tick job and keep it from starting at login; on Linux,
@@ -377,6 +378,28 @@ Usage: agent-chat burndown release [options] <task>
 drop every claim on a task, stalled or not, so the tick may pick it again
 
 Options:
+  -h, --help  display help for command
+
+=== agent-chat burndown config
+Usage: agent-chat burndown config [options] [command]
+
+resolved burndown settings (CC-955)
+
+Options:
+  -h, --help      display help for command
+
+Commands:
+  show [options]  print the resolved burndown config, each value with the layer it came from
+                  (CC-955)
+  help [command]  display help for command
+
+=== agent-chat burndown config show
+Usage: agent-chat burndown config show [options]
+
+print the resolved burndown config, each value with the layer it came from (CC-955)
+
+Options:
+  --json      print the resolved config as one JSON object
   -h, --help  display help for command
 
 === agent-chat burndown install

@@ -22,6 +22,7 @@ import { defaultAutonomyRoot, isWatchedSeat } from '../agents/seats/io.js'
 import { seatJournal } from '../agents/seats/journal.js'
 import { cliShepherdSkipPort } from '../agents/isolation/shepherd-skip.js'
 import { seatDispatchLog } from '../agents/seats/dispatch-log.js'
+import { shepherdRowsAsync } from '../agents/burndown/shepherd.js'
 import {
   readHandReserve,
   readOverlap,
@@ -262,7 +263,7 @@ export function openServices(ephemeral = isEphemeralHome(home())): {
     ? {}
     : {
         seatJournal: seatJournal(defaultAutonomyRoot()),
-        seatDispatch: seatDispatchLog(defaultAutonomyRoot()),
+        seatDispatch: seatDispatchLog(defaultAutonomyRoot(), { shepherd: () => shepherdRowsAsync() }),
         shepherdSkip: cliShepherdSkipPort,
         autoRetireOnReport: resolveAutoRetireOnReport,
         seatBudget: { read: (spawn: SeatSpawnRequest) => readSeatSpawn(defaultAutonomyRoot(), spawn) },
