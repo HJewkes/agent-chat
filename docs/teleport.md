@@ -281,10 +281,24 @@ An unknown machine, or a configured one with no launcher connected, is refused
 with the list of known machines. A move off the predecessor's host is refused
 when the predecessor has any isolation other than `none`, because a worktree or
 a sandbox exists only on its own host. All of these are refused before the
-handoff row is written, so nothing is ended. Today only a teleport that stays
-on its own host launches: the broker-site launch for a predecessor on another
-host and the host launcher are later slices, and until they land such a move is
-refused with a reason.
+handoff row is written, so nothing is ended.
+
+**The host launcher site (CC-951).** A machine with no live predecessor on it
+(basement → Mac) is reached through a host launcher: a connection of its own
+that sends `host_hello` with its host, platform and the surfaces it can open.
+The broker keeps these in `HostDirectory` (`broker/host-directory.ts`), one per
+machine and presence-only: an entry goes when its connection closes, and a
+later hello for the same machine replaces it. A registered session's connection
+cannot announce itself as a launcher. `agent-chat hosts` lists them. Before the
+handoff is written, teleport refuses a surface the launcher's platform or its
+announced surfaces cannot run, then sends `host_probe` with the cwd, config dir
+and surface, and refuses with the launcher's own reason (a missing path) or
+"did not answer within 10s". At the end of the countdown the successor's row is
+recorded here and its launch (with that cwd and config dir) goes out as
+`host_launch`; a refusal releases the row and keeps the predecessor. Once the
+successor attaches, the predecessor is ended successor first, locally or by its
+own `endSelf`. A successor on another machine holds no agent slot here, so the
+predecessor's slot is released when it stands down.
 
 **Depth is inherited, not incremented.** This is a real bug waiting in the
 obvious implementation. `Supervisor.depthOf` reads the parent's `meta.depth` and

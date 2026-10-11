@@ -48,6 +48,7 @@ import { fileServiceAsk } from './service-ask.js'
 import { PERMISSION_WAITING, permissionNoticeText } from './permission-notice.js'
 import { brokerHost } from './host-guard.js'
 import { linuxPeerPorts, provePeerLocal, type PeerPorts } from './peer-locality.js'
+import { HostDirectory, type LauncherHello } from './host-directory.js'
 
 /**
  * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
@@ -198,6 +199,16 @@ const optionalHost = (host: string | undefined): { host?: string } => (host === 
 const optionalCarried = (launchSeen: CarriedFlags | undefined): { launchSeen?: CarriedFlags } =>
   launchSeen === undefined ? {} : { launchSeen }
 
+/** CC-951: a hello's fields come off the wire, so each is checked rather than trusted to be typed. */
+function launcherHello(msg: Extract<ClientMessage, { t: 'host_hello' }>): LauncherHello | string {
+  if (typeof msg.host !== 'string' || msg.host.trim() === '') return 'host_hello needs a host name'
+  const platform = asPlatform(msg.platform)
+  if (platform === undefined) return `unknown platform "${String(msg.platform)}"`
+  const offered: unknown[] = Array.isArray(msg.surfaces) ? msg.surfaces : []
+  const surfaces = SURFACE_NAMES.filter(surface => offered.includes(surface))
+  return { host: msg.host.trim(), platform, surfaces }
+}
+
 const optionalPlatform = (hostPlatform: NodeJS.Platform | undefined): { hostPlatform?: NodeJS.Platform } =>
   hostPlatform === undefined ? {} : { hostPlatform }
 
@@ -215,6 +226,8 @@ export class SocketServer {
   private readonly hooks = new Map<string, HookWait>()
   /** Each connection's open service asks, for the per-connection cap; dies with the connection. */
   private readonly serviceAsks = new WeakMap<Conn, Set<string>>()
+  /** CC-951: connected host launchers, each dropped with its connection. */
+  private readonly hosts = new HostDirectory<Conn>()
 
   /** `ledgerDb` is the shadow ledger's connection, passed only while `ledgerShadow` is on. */
   constructor(
@@ -236,7 +249,7 @@ export class SocketServer {
     // outlive whoever asked for it, and the semaphore and depth cap need exactly
     // one enforcement point. The anchor comes from the requester's OWN registry
     // entry, so nobody can spawn into a pane they do not hold.
-    this.supervisor = new Supervisor(core, supervisorOptions)
+    this.supervisor = new Supervisor(core, { ...supervisorOptions, hosts: this.hosts })
     this.verifier = ledgerDb && this.lifecycleVerifier(ledgerDb, supervisorOptions.ledger)
     this.closeOrphanedHookRows()
   }
@@ -616,6 +629,25 @@ export class SocketServer {
             ...(msg.reason === undefined ? {} : { reason: msg.reason }),
           })
     reply(conn, { t: 'teleport_launched_result', ...result })
+  }
+
+  /**
+   * CC-951: a host launcher is a connection of its own. One that holds a session's registration
+   * is refused, so a session cannot also take launches for a machine by announcing it.
+   */
+  private handleHostHello(conn: Conn, msg: Extract<ClientMessage, { t: 'host_hello' }>): void {
+    if (this.core.registry.nameOf(conn) !== undefined) {
+      this.refuseToSession(conn, 'announce itself as a host launcher')
+      return reply(conn, {
+        t: 'host_hello_result',
+        ok: false,
+        reason: 'a registered session cannot be a host launcher; run `agent-chat host serve` instead',
+      })
+    }
+    const hello = launcherHello(msg)
+    if (typeof hello === 'string') return reply(conn, { t: 'host_hello_result', ok: false, reason: hello })
+    this.hosts.hello(conn, hello, frame => reply(conn, frame))
+    reply(conn, { t: 'host_hello_result', ok: true })
   }
 
   /** CC-913: the sender's own registration, never the frame, says whether it is the predecessor. */
@@ -1672,6 +1704,17 @@ export class SocketServer {
         return this.handleTeleportLaunched(conn, msg)
       case 'teleport_land_failed':
         return this.handleTeleportLandFailed(conn, msg)
+      case 'host_hello':
+        return this.handleHostHello(conn, msg)
+      case 'host_probe_result':
+      case 'host_launch_result':
+        this.hosts.answer(conn, msg.id, {
+          ok: msg.ok === true,
+          ...(msg.reason === undefined ? {} : { reason: String(msg.reason) }),
+        })
+        return
+      case 'hosts':
+        return reply(conn, { t: 'hosts_result', hosts: this.hosts.list() })
       case 'surface':
         void this.handleSurface(conn, msg.name)
         return
@@ -1744,6 +1787,7 @@ export class SocketServer {
 
     const drop = (): void => {
       this.dropHooks(conn)
+      this.hosts.drop(conn)
       core.drop(conn)
     }
     conn.on('close', drop)

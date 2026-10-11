@@ -32,6 +32,25 @@ export interface RemoteLaunch {
   landToken?: string
   /** CC-951: launch now, not after the predecessor exits, and end it only on a later `endSelf` plan. */
   successorFirst?: true
+  /** CC-951: set only for a host launcher, which has no predecessor of its own to take these from. */
+  cwd?: string
+  /** CC-951: the account the predecessor spent, which must exist on the launcher's machine. */
+  configDir?: string
+}
+
+/** CC-951: what a host launcher checks on its own machine before a teleport ends anyone. */
+export interface HostProbe {
+  cwd: string
+  configDir?: string
+  surface: PackageSurfaceName
+}
+
+/** CC-951: a connected host launcher, as `hosts` lists it. */
+export interface HostLauncherInfo {
+  host: string
+  platform: string
+  surfaces: PackageSurfaceName[]
+  connectedAt: number
 }
 
 /** A profile without the fields that run something or set the environment on the caller's host. */
@@ -1091,6 +1110,16 @@ export type ClientMessage =
    * is no field to ask for it.
    */
   | { t: 'background' }
+  /**
+   * CC-951: a host launcher announces the machine it launches on. Refused from a registered
+   * session connection: a launcher is its own connection, never a session's.
+   */
+  | { t: 'host_hello'; host: string; platform: string; surfaces: string[] }
+  /** CC-951: a launcher's answer to `host_probe` or `host_launch`, paired by `id`. */
+  | { t: 'host_probe_result'; id: string; ok: boolean; reason?: string }
+  | { t: 'host_launch_result'; id: string; ok: boolean; reason?: string }
+  /** CC-951: the connected host launchers. */
+  | { t: 'hosts' }
 
 /** Broker -> session. */
 /** Why the broker refused a `decided` frame; `not_decider` is the identity gate. */
@@ -1274,6 +1303,12 @@ export type ServerMessage =
   | { t: 'teleport_plan'; ok: boolean; reason?: string; launch?: RemoteLaunch; endSelf?: true }
   | { t: 'teleport_launched_result'; ok: boolean; reason?: string }
   | { t: 'teleport_land_failed_result'; ok: boolean; reason?: string; predecessorLive?: boolean }
+  | { t: 'host_hello_result'; ok: boolean; reason?: string }
+  /** CC-951: broker -> launcher; does `cwd`, `configDir` and `surface` work on its machine. */
+  | { t: 'host_probe'; id: string; probe: HostProbe }
+  /** CC-951: broker -> launcher; launch this successor, checked on its own machine first. */
+  | { t: 'host_launch'; id: string; launch: RemoteLaunch }
+  | { t: 'hosts_result'; hosts: HostLauncherInfo[] }
   /**
    * `surface` is where it ACTUALLY landed, which is not always what was asked
    * for: the iTerm ladder downgrades a pane or tab to a new window when the

@@ -46,6 +46,8 @@ export const REPLY_TIMEOUT_MS: Partial<Record<ReplyType, number>> = {
   // CC-881: held through the teleport countdown and the successor's brief, both on the broker.
   // CC-951: and through the successor's attach, which the broker waits on for LAND_WINDOW_MS (5 min).
   teleport_plan: 7 * 60_000,
+  // CC-951: a move to another machine waits on that machine's launcher probe (10s) before answering.
+  teleport_result: 20_000,
 }
 // Front-loaded to catch a broker already starting, tailed off for a cold one; the sum is the give-up budget.
 const RECONNECT_DELAYS_MS = [100, 250, 500, 1000, 2000, 5000]
