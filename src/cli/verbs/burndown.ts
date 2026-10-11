@@ -8,7 +8,8 @@ import { defaultAutonomyRoot } from '../../agents/burndown/policy.js'
 import { renderScored, scoredPlanFromDisk } from '../../agents/burndown/score-render.js'
 import { renderMilestoneLine } from '../../agents/burndown/milestone-report.js'
 import { milestoneReportFromDisk, type MilestoneReportRead } from '../../agents/burndown/milestone-source.js'
-import { localDate } from '../../agents/burndown/seat-tick.js'
+import { localDate, watchdogUnusable } from '../../agents/burndown/seat-tick.js'
+import { logEvent } from '../../broker/log.js'
 import { collisionCheck, type BrokerView } from '../../agents/burndown/collision.js'
 import { claimCustody } from '../../agents/burndown/custody.js'
 import { shepherdRows, shepherdTarget } from '../../agents/burndown/shepherd.js'
@@ -109,6 +110,11 @@ async function plainPlan(): Promise<Report> {
 }
 
 async function seatDispatchPlan(seat: string, autonomyRoot: string | undefined): Promise<Report> {
+  const unusable = watchdogUnusable()
+  if (unusable !== undefined) {
+    logEvent('burndown_seat_paths_skipped', { reason: unusable })
+    return plainPlan()
+  }
   const opts = await seatPlanOptions(seat, autonomyRoot)
   return { ok: true, lines: renderPlan(seatPlanFromDisk(opts), opts.now) }
 }

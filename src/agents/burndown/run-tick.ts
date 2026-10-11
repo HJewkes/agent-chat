@@ -62,6 +62,7 @@ import {
   briefDepsOf,
   diskSeatDeps,
   loadSeats,
+  watchdogUnusable,
   planSeats,
   scopeExhausted,
   type LoadedSeats,
@@ -473,8 +474,10 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const root = opts.root ?? activeWorkRoot()
   const roster = await opts.broker.roster()
   const world = loadWorld(now, root)
+  const unusable = config.seats.length === 0 ? undefined : watchdogUnusable()
+  if (unusable !== undefined) (opts.log ?? logEvent)('burndown_seat_paths_skipped', { reason: unusable })
   const seats =
-    config.seats.length === 0
+    config.seats.length === 0 || unusable !== undefined
       ? undefined
       : loadSeats(config.seats, ledger, diskSeatDeps(defaultAutonomyRoot(root), root, now))
   const held = heldClaims(ledger)
