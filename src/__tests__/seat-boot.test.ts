@@ -46,6 +46,7 @@ const QUEUE = `# Queue: ${SEAT}\n\n${IN_FLIGHT}\n\n${NEXT}\n\n## Morning queue (
 const STATUS: SeatStatus = {
   seat: SEAT,
   at: NOW.toISOString(),
+  heartbeat: { source: 'cron', cron: null, lastSlot: null },
   implementers: { active: 2, cap: 5, atCap: false, names: ['sc-a', 'sc-b'], detached: [], waitingOwner: [] },
   reviewers: { active: 1, cap: 2, atCap: false, names: ['sc-r'], detached: [], waitingOwner: [] },
   planners: { active: 0, cap: 1, atCap: false, names: [], detached: [], waitingOwner: [] },
