@@ -1351,6 +1351,67 @@ describe('remote control across a teleport', () => {
   })
 })
 
+/** CC-951: a successor keeps its predecessor's channels, permission mode and effort. */
+describe('launch flags across a teleport', () => {
+  const ARGV =
+    'claude --channels plugin:agent-chat@agent-chat-local plugin:voltras-channel@x --permission-mode auto --effort high'
+
+  async function successor(argv: string | undefined, over: Record<string, unknown> = {}) {
+    supervisor.close()
+    makeSupervisor(undefined, () => argv)
+    const cwd = workspace()
+    const agentId = adoptSession('cc27', cwd)
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27', cwd }),
+      handoff: 'h',
+      ...over,
+    })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+    return planFor(result.agentId as string).args
+  }
+
+  const after = (args: string[], name: string): string | undefined => args[args.indexOf(name) + 1]
+
+  it("carries what the predecessor's own argv shows", async () => {
+    const args = await successor(ARGV)
+
+    expect(args).toContain('plugin:voltras-channel@x')
+    expect(after(args, '--permission-mode')).toBe('auto')
+    expect(after(args, '--effort')).toBe('high')
+  })
+
+  it('reads this host before trusting what the caller reported', async () => {
+    const args = await successor('claude', { launchSeen: { channels: ['plugin:other@x'] } })
+
+    expect(args).not.toContain('plugin:other@x')
+  })
+
+  it("falls back to the caller's report when this host cannot read the argv", async () => {
+    const args = await successor(undefined, { launchSeen: { channels: ['plugin:other@x'], effort: 'max' } })
+
+    expect(args).toContain('plugin:other@x')
+    expect(after(args, '--effort')).toBe('max')
+  })
+
+  it('hands a remote caller its own reported flags in the spec', async () => {
+    const cwd = workspace()
+    const agentId = adoptSession('cc27', cwd)
+    await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27', cwd, host: 'caller-host' }),
+      handoff: 'h',
+      launchSeen: { channels: ['plugin:voltras-channel@x'], permissionMode: 'plan', effort: 'low' },
+    })
+    const plan = supervisor.teleportPlan(agentId)
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+
+    expect((await plan).launch).toMatchObject({
+      channels: ['plugin:voltras-channel@x'],
+      permissionMode: 'plan',
+      profile: { effort: 'low' },
+    })
+  })
+})
+
 /** CC-883: a coordinator seat runs with Remote Control after a watchdog resume and across a teleport; a worker never does. */
 describe('remote control for a coordinator seat (CC-883)', () => {
   beforeEach(() => {

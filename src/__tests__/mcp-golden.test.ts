@@ -886,7 +886,7 @@ const CHAT_STATUS_CASES: CallCase[] = [
 /** Fields a frame reads from this process and its checkout; they vary by machine, so the golden omits them. */
 const PROCESS_FIELDS: Partial<Record<ClientMessage['t'], string[]>> = {
   register: ['cwd', 'pid', 'hostPid', 'host', 'sessionId', 'termSessionId', 'observed', 'build'],
-  teleport: ['hostPlatform'],
+  teleport: ['hostPlatform', 'launchSeen'],
 }
 
 function frameLine(frame: ClientMessage): string {
