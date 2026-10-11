@@ -15,8 +15,9 @@ import {
  * CC-861: each tick, register a seat's open PRs that Shepherd does not list, which
  * the coordinator did by hand after every DONE report. It registers only what it
  * can prove ordinary: a correctness, bug, feature, platform, product, agent-tooling or refactor task
- * whose diff is G10-small. CC-923: the changed paths do not decide, since Shepherd's own review
- * does; a mapped kind registers whatever it touches. CC-931: a sensitive word in its title or tags registers the PR and then holds
+ * whose diff is G10-small. CC-923: a mapped kind registers whatever it touches, but a PR touching a
+ * protected path (a guard, a policy, the shepherd's own code) registers and then holds g10-adversary,
+ * naming the path, so ordinary review cannot auto-merge it. CC-931: a sensitive word in its title or tags registers the PR and then holds
  * the run under the g10-adversary class, naming the word and task, for the seat to release. A reason
  * Shepherd's hold check would refuse is flagged before anything registers. A hold that fails, refused
  * or not, is owed and fails closed: each later tick retries it until Shepherd takes it or no longer
@@ -38,7 +39,7 @@ export interface OpenPull {
 
 export interface ChangedFile {
   path: string
-  /** A rename's old path, which must be ordinary too: moving a guard into `__tests__/` changes the guard. */
+  /** A rename's old path, which the protected-path hold checks too: moving a guard into `__tests__/` changes the guard. */
   previousPath?: string
   additions: number
   deletions: number
@@ -135,6 +136,34 @@ const SENSITIVE_TEXT = new RegExp(`\\b((?:${SENSITIVE_STEMS.join('|')})\\w*)`, '
  * not after it. Matched anywhere, since one captured word can join stems: `authSecurity`.
  */
 const FLAG_ONLY_WORD = /secur/i
+
+/**
+ * Paths whose change alters authority, a guard or merge policy, in agent-chat and in titan-platform
+ * (a seat may work in either). A PR touching one is held, not refused: Shepherd's own protected-path
+ * rule covers only CODEOWNERS and .gitmodules.
+ */
+const PROTECTED_PATHS = [
+  /^src\/agents\/(hooks|launch-policy|identity)\.ts$/,
+  /^src\/agents\/burndown\/(policy|pr-adopt|hold-reason|shepherd)\.ts$/,
+  /^src\/leak-guard\//,
+  /^src\/broker\/core\.ts$/,
+  /(^|\/)(approve|endorse)[^/]*\.ts$/,
+  /^src\/gh-shim\//,
+  /^profiles\//,
+  /^packages\/(authority|tool-guard|egress-scan|decider|owner-queue)\//,
+  /^products\/factory\/src\/shepherd\/(merge-facts|hold[^/]*|release|g10-release|registration-policy|seats|override-gate|freeze[^/]*)\.ts$/,
+  /owner-guard/,
+  /^\.github\//,
+  /^CLAUDE\.md$/,
+]
+
+const isProtectedPath = (p: string): boolean => PROTECTED_PATHS.some(re => re.test(p))
+
+function protectedPath(files: readonly ChangedFile[]): string | undefined {
+  return files
+    .flatMap(f => (f.previousPath === undefined ? [f.path] : [f.previousPath, f.path]))
+    .find(isProtectedPath)
+}
 
 /** `hold` is the reason a registered run is held at once; absent, the run goes ahead. */
 type Verdict = { flag: string } | { register: Registration; hold?: string }
@@ -318,7 +347,10 @@ function classify(
       flag: `diff +${added}/-${deleted} over ${G10_DIFF_LINES}: register and hold g10-review by hand (${id})`,
     }
   const register = { target, task: `${found.initiative}/${id}`, implementer, kind: shepherdKind }
-  if (word === undefined) return { register }
+  if (word === undefined) {
+    const path = protectedPath(files)
+    return path === undefined ? { register } : { register, hold: pathHoldReason(path, id) }
+  }
   const hold = sensitiveHoldReason(word, id)
   const refusal = holdReasonRefusal(hold)
   if (refusal !== undefined)
@@ -334,6 +366,10 @@ function classify(
  */
 function sensitiveHoldReason(word: string, id: string): string {
   return `g10-adversary: sensitive word "${word}"; ${id}`
+}
+
+function pathHoldReason(path: string, id: string): string {
+  return `g10-adversary: protected path ${path.replace(/[;:]/g, '_')}; ${id}`
 }
 
 /** A flag-only word wins wherever it sits, so an earlier held word cannot carry it past the seat. */

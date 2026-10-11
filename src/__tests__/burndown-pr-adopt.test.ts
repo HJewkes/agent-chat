@@ -437,6 +437,44 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.seatLog[0]).toContain('kind "docs-only" is not one the tick registers')
   })
 
+  // Mutation: dropping the protected-path hold registers the run with no hold.
+  it('registers then holds a plainly titled PR whose diff touches a hooks path', () => {
+    const f = fake({
+      pulls: [pull()],
+      tasks: [task()],
+      files: [file('src/__tests__/a.test.ts'), file('src/agents/hooks.ts')],
+    })
+
+    tick(f)
+
+    expect(f.calls).toEqual([
+      'register Acme/Widgets#7',
+      'hold Acme/Widgets#7: g10-adversary: protected path src/agents/hooks.ts; T-1',
+    ])
+  })
+
+  // Mutation: checking only `path` and not `previousPath` leaves a guard moved into tests unheld.
+  it('holds a PR that renames a guard file into a test path', () => {
+    const renamed = { ...file('src/__tests__/scan.test.ts'), previousPath: 'src/leak-guard/scan.ts' }
+    const f = fake({ pulls: [pull()], tasks: [task()], files: [renamed] })
+
+    tick(f)
+
+    expect(f.calls).toEqual([
+      'register Acme/Widgets#7',
+      'hold Acme/Widgets#7: g10-adversary: protected path src/leak-guard/scan.ts; T-1',
+    ])
+  })
+
+  // Mutation: holding every non-test path would hold this one.
+  it('registers an ordinary non-test path with no hold', () => {
+    const f = fake({ pulls: [pull()], tasks: [task()], files: [file('src/widgets/render.ts')] })
+
+    tick(f)
+
+    expect(f.calls).toEqual(['register Acme/Widgets#7'])
+  })
+
   it('registers a PR that changes only tests and docs', () => {
     const files = [
       'src/__tests__/a.test.ts',
