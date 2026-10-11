@@ -40,6 +40,7 @@ import { doctorLifecycleCommand } from './doctor-lifecycle.js'
 import * as human from './human.js'
 import { addLifecycleCommands } from './lifecycle.js'
 import * as service from './service.js'
+import { unknownCommand } from './unknown-command.js'
 import { watch, type WatchOptions } from './watch.js'
 
 const HUMAN = 'Human commands:'
@@ -198,6 +199,11 @@ function addAgentCommands(program: Command): void {
       '--surface <surface>',
       `where it runs, overriding the profile's surface: ${SURFACE_NAMES.join(', ')}`,
       agents.parseSurface,
+    )
+    .option(
+      '--spawned-as <who>',
+      'shepherd or burndown: the automation this spawn is on behalf of',
+      agents.parseSpawnedAs,
     )
     .action(agents.agentSpawn)
   addVerb(agent, agentRetire)
@@ -384,5 +390,8 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     program.outputHelp()
     return
   }
+  const unknown = unknownCommand(program, argv.slice(2))
+  if (unknown !== undefined)
+    program.error(`error: unknown command '${unknown}'`, { exitCode: 1, code: 'commander.unknownCommand' })
   await program.parseAsync(argv)
 }

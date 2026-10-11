@@ -1,7 +1,13 @@
 import { brokerHost, isLocalHost } from '../broker/host-guard.js'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import type { BrokerCore } from '../broker/core.js'
-import { hostRemoteControl, psArgvReader, type ArgvReader } from '../broker/host-channels.js'
+import {
+  hostCarriedFlags,
+  hostRemoteControl,
+  psArgvReader,
+  type ArgvReader,
+  type CarriedFlags,
+} from '../broker/host-channels.js'
 import { newMsgId } from '../broker/event-log.js'
 import { logEvent } from '../broker/log.js'
 import {
@@ -166,6 +172,8 @@ export interface TeleportRequest {
   surface?: SurfaceName
   /** CC-951: a remote caller's own OS, which picks its successor's default surface. */
   hostPlatform?: NodeJS.Platform
+  /** CC-951: launch flags the caller read from its own argv; read here instead when on this host. */
+  launchSeen?: CarriedFlags
 }
 
 export interface TeleportOutcome {
@@ -225,7 +233,25 @@ export interface RelaunchInput {
   /** CC-200: the predecessor ran with `CLAUDE_CONFIG_DIR` unset, so its successor does too. */
   configDirUnset?: boolean
   remoteControl?: boolean
+  /** CC-951: the predecessor's channel targets beside agent-chat's own. */
+  channels?: string[]
+  permissionMode?: CarriedFlags['permissionMode']
 }
+
+/** CC-951: one `ps` per teleport, however many flags are read from the predecessor's argv. */
+function readOnce(read: ArgvReader): ArgvReader {
+  const seen = new Map<number, string | undefined>()
+  return pid => {
+    if (!seen.has(pid)) seen.set(pid, read(pid))
+    return seen.get(pid)
+  }
+}
+
+/** CC-951: the predecessor's `--effort` when its profile names none, so an adopted session keeps its own. */
+const withCarriedEffort = (profile: AgentProfile, carried: CarriedFlags): AgentProfile =>
+  profile.effort !== undefined || carried.effort === undefined
+    ? profile
+    : { ...profile, effort: carried.effort }
 
 /** CC-881: a reported host that is not the broker's; its pid and its terminal are that host's to act on. */
 const onAnotherHost = (subject: TeleportSubject): boolean =>
@@ -276,6 +302,8 @@ interface Pending {
   handoff: string
   inherited: InheritedIsolation | undefined
   remoteControl: boolean
+  /** CC-951: read at start, while the predecessor's argv still exists. */
+  carried: CarriedFlags
   reason?: TeleportReason
   /** When the predecessor's session began: the window the appendix counts inbox arrivals over. */
   since: number
@@ -365,6 +393,7 @@ export class Teleport {
       }
 
     const descendantId = newMsgId()
+    const read = readOnce(this.readArgv)
     // Stored verbatim, and the broker templates nothing: the moment it does, a
     // handoff becomes a form to fill in and stops being what the session knew.
     this.core.append({
@@ -385,7 +414,10 @@ export class Teleport {
       // CC-881: a remote predecessor's pid names a process on its own host, not one here.
       inherited: remote ? undefined : this.host.inheritedIsolation(subject.agentId),
       // CC-163: a worker's successor never inherits Remote Control, even one its argv shows.
-      remoteControl: worker ? false : (req.remoteControl ?? this.carriedRemoteControl(req, config.profile)),
+      remoteControl: worker
+        ? false
+        : (req.remoteControl ?? this.carriedRemoteControl(req, config.profile, read)),
+      carried: this.carriedFlags(req, remote, read),
       ...(remote ? { remote: remoteWait() } : {}),
       since: identity.spawnedAt,
       sessionId: identity.sessionId,
@@ -439,16 +471,22 @@ export class Teleport {
   }
 
   /** CC-883: a coordinator seat runs with Remote Control (10-06 plan D6); anyone else keeps what it launched with. */
-  private carriedRemoteControl(req: TeleportRequest, profile: AgentProfile): boolean {
+  private carriedRemoteControl(req: TeleportRequest, profile: AgentProfile, read: ArgvReader): boolean {
     if (profile.remoteControl === true) return true
     if (readSeatFile(this.seatTeleport.autonomyRoot, req.subject.name) !== undefined) return true
-    return req.remoteControlSeen ?? this.predecessorRemoteControl(req.subject)
+    return req.remoteControlSeen ?? this.predecessorRemoteControl(req.subject, read)
+  }
+
+  /** CC-951: this host's own read of a local predecessor's argv wins over what its MCP process reported. */
+  private carriedFlags(req: TeleportRequest, remote: boolean, read: ArgvReader): CarriedFlags {
+    const local = remote ? undefined : hostCarriedFlags(req.subject.hostPid, read)
+    return local ?? req.launchSeen ?? { channels: [] }
   }
 
   /** Read now, while the predecessor is still running: once it ends there is no argv left to read. */
-  private predecessorRemoteControl(subject: TeleportSubject): boolean {
+  private predecessorRemoteControl(subject: TeleportSubject, read: ArgvReader): boolean {
     if (onAnotherHost(subject)) return false
-    const found = hostRemoteControl(subject.hostPid, this.readArgv)
+    const found = hostRemoteControl(subject.hostPid, read)
     if (found === undefined)
       logEvent('teleport_remote_control_unknown', {
         name: subject.name,
@@ -811,7 +849,7 @@ export class Teleport {
     return {
       agentId: entry.descendantId,
       name: subject.name,
-      profile: entry.profile,
+      profile: withCarriedEffort(entry.profile, entry.carried),
       brief,
       cwd: entry.inherited?.allocation.cwd ?? subject.cwd,
       surface: entry.surface,
@@ -834,6 +872,8 @@ export class Teleport {
       ...(configDir ? { configDir } : {}),
       ...(unset ? { configDirUnset: true } : {}),
       ...(entry.remoteControl ? { remoteControl: true } : {}),
+      ...(entry.carried.channels.length > 0 ? { channels: entry.carried.channels } : {}),
+      ...(entry.carried.permissionMode === undefined ? {} : { permissionMode: entry.carried.permissionMode }),
       ...(subject.tags.length > 0 ? { tags: subject.tags } : {}),
       ...(subject.subscriptions.length > 0 ? { subscriptions: subject.subscriptions } : {}),
       ...(subject.anchor === undefined ? {} : { anchor: subject.anchor }),

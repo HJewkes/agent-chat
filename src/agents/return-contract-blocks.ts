@@ -13,8 +13,8 @@ import type { ReturnContract } from './types.js'
 export const MAX_BLOCK_CHARS = 2450
 
 const NEVER_PARK =
-  'Never end a turn on a background task, a sleep or a ScheduleWakeup: a headless agent exits at ' +
-  'turn end and the task dies with it.'
+  'Never end a turn on a background task, a sleep or a ScheduleWakeup: headless, you exit at turn ' +
+  'end, killing it.'
 
 /** CC-647: a logging shim named gh resolved gh to itself and forked until swap ran out. */
 const SHIM_RULE =
@@ -47,18 +47,17 @@ export const QUOTE_RULE =
 export const SHEPHERD_NONE_MARKER = 'Shepherd: none'
 
 const IMPLEMENTER_HEAD = [
-  'Check `gh api repos/<owner>/<repo> --jq .visibility`. In a public repo, put no real data',
-  'in code, fixtures, PR text, comments: task lists, charter or seat files,',
-  '/Users paths, emails, private-repo IDs or text.',
-  'Stop if `git log origin/<default> --oneline --grep <ID>` shows it landed.',
-  'Branch from origin/<default>; check `git log origin/<default>..HEAD`.',
+  'Check `gh api repos/<owner>/<repo> --jq .visibility`. If public, no real data in code, fixtures,',
+  'PR text, comments: task lists, charter or seat files, /Users paths, emails, private-repo IDs/text.',
+  'Stop if `git log origin/<default> --grep <ID>` shows it landed.',
+  'Branch from origin/<default>; check `git log origin/<default>..`.',
   'Commit before mutating; never `git checkout` uncommitted work.',
   'Scratch: worktree or `$TMPDIR/<your name>`.',
   PR_READY_RULE,
   BODY_FILE_RULE,
   'gh-write is the only write path; verify each. None: BLOCKED.',
   QUOTE_RULE,
-  'On a 403 rate limit with quota left, retry once in 5 minutes.',
+  '403 rate limit, quota left: retry once in 5 minutes.',
 ]
 
 const SHEPHERD_HANDOFF = [
@@ -78,10 +77,9 @@ const OWN_CI_WAIT = [
 const IMPLEMENTER_RULES = [
   NEVER_PARK,
   SHIM_RULE,
-  'Only when the brief asks for a load test: record the PID of each burner, kill only those, never by',
-  'name pattern; confirm with `pgrep` none survive.',
+  'Load test only if the brief asks: kill only burner PIDs you recorded, not by name; `pgrep` shows none left.',
   'A PR narrowing a timeout reports per-case CI times.',
-  'You are NOT done at "PR opened". Your LAST action must be chat_send to <spawner> starting with',
+  'Not done at "PR opened": your LAST action must be chat_send to <spawner> starting with',
   '`Status: DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT`, `PR: <owner>/<repo>#<n>` and',
   '`Head: <full sha>` lines, then',
   'CI: <paste of: gh api "repos/<owner>/<repo>/commits/<head>/check-runs" --paginate --jq \'.check_runs[]|"\\(.name) \\(.conclusion)"\'>,',
@@ -90,7 +88,8 @@ const IMPLEMENTER_RULES = [
 const ciTail = (ciAt: string): string[] => [
   `${ciAt}, never "green" alone. \`gh run watch\` covers only one`,
   'workflow; a skipped check (std / compat) is no failure, and "required" means the required contexts on',
-  'the default branch.',
+  'the default branch. Then `Concerns:` (what <spawner> must act on, or none; DONE_WITH_CONCERNS needs',
+  'one) and `Notes:` (the rest).',
 ]
 
 const implementerBlock = (handoff: string[], ciAt: string): string =>
