@@ -88,22 +88,37 @@ export function publishPace(store: PaceStore, rows: readonly PoolPace[], nowMs: 
   store.write(nextPaceDoc(previous, rows, nowMs))
 }
 
+export interface DayOpeningQuery {
+  pool: string
+  dayStartMs: number
+  /** The pool's current seven_day and the epoch ms its window resets. */
+  sevenDay: number
+  resetsAt: number | undefined
+}
+
+/** A row from before this is no reading of the day's opening: the pass was not running to record a change. */
+export const DAY_OPENING_MAX_LOOKBACK_MS = 24 * 3_600_000
+
+const RESET_TOLERANCE_MS = 3_600_000
+
+/** A rolled row, one above the current reading, or one with another reset time read another window. */
+const sameWindow = (row: ReadingRow, query: DayOpeningQuery): boolean =>
+  row.rolled !== true &&
+  row.seven_day <= query.sevenDay &&
+  (query.resetsAt === undefined || Math.abs(row.resets_at * 1000 - query.resetsAt) <= RESET_TOLERANCE_MS)
+
 /**
- * CC-346: the pool's reading as the spend day opened: the latest row at or before the day start,
- * else the day's earliest. None when that row is a rolled window or above the current reading,
- * since the window has rolled since and the points it counts are gone.
+ * CC-346: the pool's reading as the spend day opened: the latest row at or before the day start and
+ * within a day of it, else the day's earliest. None when that row read another seven_day window.
  */
-export function dayOpening(
-  rows: readonly ReadingRow[],
-  pool: string,
-  dayStartMs: number,
-  sevenDayNow: number,
-): ReadingRow | undefined {
-  const own = rows.filter(row => row.pool === pool)
+export function dayOpening(rows: readonly ReadingRow[], query: DayOpeningQuery): ReadingRow | undefined {
+  const { pool, dayStartMs } = query
+  const own = rows.filter(
+    row => row.pool === pool && row.ts * 1000 > dayStartMs - DAY_OPENING_MAX_LOOKBACK_MS,
+  )
   const before = own.filter(row => row.ts * 1000 <= dayStartMs).sort((a, b) => b.ts - a.ts)[0]
   const opening = before ?? own.filter(row => row.ts * 1000 > dayStartMs).sort((a, b) => a.ts - b.ts)[0]
-  if (opening === undefined || opening.rolled === true || opening.seven_day > sevenDayNow) return undefined
-  return opening
+  return opening !== undefined && sameWindow(opening, query) ? opening : undefined
 }
 
 export const pacePath = (): string => path.join(home(), 'pace.json')

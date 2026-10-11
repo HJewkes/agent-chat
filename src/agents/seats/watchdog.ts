@@ -182,6 +182,8 @@ export interface PoolBudgetInput {
   /** CC-404: the seat's `pacing:` and the epoch ms the pool's seven_day resets, for a reset-aware day stop. */
   pacing?: string | undefined
   resetsAt?: number | undefined
+  /** CC-346: absent, a reading of any age stands, since an idle pool's status line never redraws. */
+  maxReadingAgeSeconds?: number
 }
 
 export const poolRule = (pool: Pool): PoolRule => ({
@@ -195,8 +197,9 @@ export const poolRule = (pool: Pool): PoolRule => ({
 })
 
 /**
- * CC-346: the pass probes a pool with no reading under 15 minutes old, so a reading this old means
- * about 24 failed probes, and resuming a seat on it would trust a figure nobody has seen for hours.
+ * CC-346: a pass with a probe takes a reading for a pool with none under 15 minutes old, so a reading
+ * this old means about 24 failed probes. Without a probe only a running seat refreshes the reading,
+ * so the limit would hold an idle pool's seats for good; the caller applies it only with a probe.
  */
 export const WATCHDOG_MAX_READING_AGE_SECONDS = 6 * 3600
 
@@ -222,7 +225,7 @@ export function poolBudget(input: PoolBudgetInput): BudgetVerdict {
       runStartAt,
       ctx: { now },
     },
-    { maxReadingAgeSeconds: WATCHDOG_MAX_READING_AGE_SECONDS },
+    { maxReadingAgeSeconds: input.maxReadingAgeSeconds ?? Number.POSITIVE_INFINITY },
   )
   return { open: gate.open, reason: gate.reason }
 }
