@@ -318,6 +318,7 @@ export async function agentSpawn(
   // they think they are on actually lives.
   // CC-915: `--task` and `--role` land on the agent record; the broker validates the role.
   // CC-973: `--spawned-as` lets Shepherd or burndown claim a CLI spawn instead of the human.
+  // CC-840: `--remote-control` asks for Remote Control; the broker refuses it for a worker profile.
   options: {
     briefing?: string
     briefStdin?: boolean
@@ -326,6 +327,7 @@ export async function agentSpawn(
     role?: string
     surface?: SurfaceName
     spawnedAs?: SpawnedAs
+    remoteControl?: boolean
   } = {},
 ): Promise<void> {
   let brief: string
@@ -350,6 +352,7 @@ export async function agentSpawn(
         ...(options.role === undefined ? {} : { workRole: options.role }),
         ...(options.surface === undefined ? {} : { surface: options.surface }),
         ...(options.spawnedAs === undefined ? {} : { spawnedAs: options.spawnedAs }),
+        ...(options.remoteControl === true ? { remoteControl: true } : {}),
         ...(process.env.CLAUDE_CONFIG_DIR === undefined
           ? {}
           : { spawnerConfigDir: process.env.CLAUDE_CONFIG_DIR }),
