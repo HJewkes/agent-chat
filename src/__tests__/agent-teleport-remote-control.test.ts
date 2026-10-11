@@ -42,6 +42,9 @@ async function teleportFrame(args: Record<string, unknown>): Promise<ClientMessa
   return sent[0]
 }
 
+/** CC-951: every frame names this process's OS, so a broker on another host picks the right default surface. */
+const frame = { t: 'teleport', handoff: 'h', hostPlatform: process.platform }
+
 describe('agent_teleport reports the Remote Control its own session was launched with', () => {
   beforeEach(() => {
     argv.seen = undefined
@@ -49,22 +52,18 @@ describe('agent_teleport reports the Remote Control its own session was launched
 
   it('tells the broker it saw --remote-control in its Claude Code argv', async () => {
     argv.seen = true
-    expect(await teleportFrame({})).toEqual({ t: 'teleport', handoff: 'h', remoteControlSeen: true })
+    expect(await teleportFrame({})).toEqual({ ...frame, remoteControlSeen: true })
   })
 
   it('says nothing when the argv lacks it or cannot be read', async () => {
     argv.seen = false
-    expect(await teleportFrame({})).toEqual({ t: 'teleport', handoff: 'h' })
+    expect(await teleportFrame({})).toEqual(frame)
     argv.seen = undefined
-    expect(await teleportFrame({})).toEqual({ t: 'teleport', handoff: 'h' })
+    expect(await teleportFrame({})).toEqual(frame)
   })
 
   it('leaves an explicit remote_control to speak for itself', async () => {
     argv.seen = true
-    expect(await teleportFrame({ remote_control: false })).toEqual({
-      t: 'teleport',
-      handoff: 'h',
-      remoteControl: false,
-    })
+    expect(await teleportFrame({ remote_control: false })).toEqual({ ...frame, remoteControl: false })
   })
 })
