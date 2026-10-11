@@ -441,6 +441,7 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.seatLog[0]).toContain('kind "docs-only" is not one the tick registers')
   })
 
+  // Mutation: dropping a persistent-job pattern or file (systemd/, .service/.timer/.plist, deploy/hub, a named installer) leaves its row unheld.
   // Mutation: dropping the protected-path hold, or reverting a whole tree to named files, registers one of these unheld.
   it.each([
     'src/server/commands/chat-endorse.ts',
@@ -530,6 +531,19 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     'src/mirror/launchd.ts',
     'src/mirror/plist.ts',
     '.node-version',
+    'src/cli/verbs/watchdog-job.ts',
+    'src/cli/verbs/mirror.ts',
+    'products/factory/src/service.ts',
+    'products/factory/src/service-control.ts',
+    'products/factory/src/cli-service.ts',
+    'products/titan/src/health/install.ts',
+    'products/titan/src/health/units.ts',
+    'products/titan/src/health/cli-install.ts',
+    'ops/systemd/agent.service',
+    'packages/anthropic-account/systemd/refresh.timer',
+    'deploy/hub/compose.yml',
+    'ops/launchd/job.plist',
+    'systemd/unit.conf',
     'src/agents/hooks.ts',
     'src/agents/launch-policy.ts',
     'src/agents/identity.ts',
