@@ -74,6 +74,11 @@ sees the pause marker and spawns nothing, but a running agent finishes on its ow
 
 ## Settings, presets and overrides (CC-955)
 
+**Not live yet.** Until CC-955 S2 lands, the tick and the broker's hand-reserve gate still
+read `burndown.config.json` alone. The verbs below write the settings and the log, and
+`config show` resolves them, but nothing the tick spawns changes. Each verb except `pause`
+and `resume` says so in its reply. To stop spawning today, use `burndown pause`.
+
 `burndown.config.json` is the base layer. No verb rewrites it. Each value resolves from
 these layers, lowest first:
 
@@ -101,11 +106,14 @@ Every verb here, plus `pause` and `resume`, takes the settings lock and appends 
 parts that changed. A replaced settings or override file is kept as `<file>.bak-<time>`.
 `--by` is required, except on `pause` and `resume`, where it is optional so existing callers
 keep working; without it the row records `(unrecorded)`. A pause still writes
-`burndown.paused` when the settings file cannot be read or is locked, and says the change
-went unlogged.
+`burndown.paused`, and a resume still removes it, when the settings file cannot be read or is
+locked; either says the change went unlogged. A current state that no longer resolves (say an
+active `factory-only` after `reportTo` was removed) does not block a change: only the result
+must resolve, so `preset clear` repairs it. `seat on` warns when the flat file names no such
+seat, since a misspelt seat turned on would become a seat of its own.
 
-The broker reads `handReserve` in-process. When a change moves a seat's hand reserve while
-the running broker is older than `dist/` (or carries no build stamp), the verb prints
+Once S2 has landed: the broker reads `handReserve` in-process. When a change moves a seat's
+hand reserve while a live broker is older than `dist/` (or carries no build stamp), the verb prints
 `broker predates settings; handReserve applies to the tick only until restart`.
 
 ## Seats mode (CC-205)
