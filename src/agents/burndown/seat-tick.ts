@@ -351,6 +351,14 @@ function orderInputs(
   }
 }
 
+/** The config fields the brief gate and hand reserve read; the tick and `plan --seat` both pass these. */
+export function briefDepsOf(
+  config: Pick<TickConfig, 'briefGate' | 'briefMaxAgeDays' | 'maxAgents' | 'handReserve'>,
+): NonNullable<SeatPlanDeps['brief']> {
+  const { briefGate, briefMaxAgeDays, maxAgents, handReserve } = config
+  return { briefGate, briefMaxAgeDays, maxAgents, handReserve }
+}
+
 /** A seat the config does not name keeps its gate off, and an off gate is passed as none. */
 export function briefGateOf({ brief }: SeatPlanDeps, seat: string): { brief?: SeatBriefGate } {
   const gate = brief?.briefGate[seat] ?? 'off'

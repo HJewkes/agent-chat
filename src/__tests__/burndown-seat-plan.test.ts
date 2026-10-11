@@ -18,6 +18,7 @@ import { planSeat, priorPicksOf, type SeatPlanInputs } from '../agents/burndown/
 import { backlogIds, seatScopeOf } from '../agents/burndown/seat-scope.js'
 import { activeTreeOf } from '../agents/burndown/seat-tick.js'
 import type { Step } from '../agents/burndown/execute.js'
+import { PLANNER_BRIEF_MAX_BYTES } from '../agents/burndown/brief.js'
 import { stepsForDispatch, type StepContext } from '../agents/burndown/steps.js'
 import type { AgentIdentity, AgentLifecycle } from '../protocol.js'
 
@@ -109,6 +110,8 @@ const one = (
   patch: Partial<SeatPlanInputs> = {},
 ) => planSeat(inputs([row(id, 50, r)], [task(id, t)], patch))
 
+const withoutEstimate = ({ estimate: _drop, ...rest }: Task): Task => rest
+
 const refusalOf = (plan: ReturnType<typeof planSeat>) => plan.refusals.map(x => [x.task, x.kind])
 
 describe('planSeat dispatch', () => {
@@ -138,6 +141,17 @@ describe('planSeat dispatch', () => {
       expect.objectContaining({ profile: 'bd-planner', cwd: REPO, agentName: 'sa-a-1' }),
     ])
     expect(plan.dispatch[0]?.worktree).toBeUndefined()
+  })
+
+  it('(CC-939) dispatches a brief:wanted task with no estimate as a briefer', () => {
+    const plan = planSeat(
+      inputs(
+        [row('A-1', 50, { route: 'briefer' })],
+        [withoutEstimate(task('A-1', { tags: ['brief:wanted'] }))],
+      ),
+    )
+
+    expect(plan.dispatch).toEqual([expect.objectContaining({ profile: 'bd-planner', briefer: true })])
   })
 
   it('picks the repo a repo: tag names', () => {
@@ -700,6 +714,30 @@ describe('seat seams from the CC-246 review', () => {
     expect(frameOf({ ...d, tier: 2 })).toMatchObject({ tier: 2 })
     expect(frameOf(d)).not.toHaveProperty('tier')
   })
+
+  it('(CC-939) spawns the planner profile with the brief writer brief for a brief:wanted task', () => {
+    const d: Dispatch = {
+      initiative: 'alpha',
+      task: 'A-1',
+      profile: 'bd-planner',
+      briefer: true,
+      account: 'pool-x',
+      cwd: REPO,
+      repo: REPO,
+      agentName: 'sa-a-1',
+      reason: 'test',
+      seat: 'seat-a',
+      namePrefix: 'sa',
+    }
+    const steps = stepsForDispatch(d, stepContext()) as Step[]
+    const spawn = steps.find(s => s.kind === 'spawn') as Extract<Step, { kind: 'spawn' }>
+    const { brief } = spawn.frame as unknown as { brief: string }
+
+    expect(steps[0]).toMatchObject({ actions: [{ claims: [expect.objectContaining({ briefer: true })] }] })
+    expect(brief).toContain('/tmp/aw/alpha/sources/A-1-plan.md')
+    expect(brief).toContain('brief:proposed=<today>')
+    expect(Buffer.byteLength(brief)).toBeLessThanOrEqual(PLANNER_BRIEF_MAX_BYTES)
+  })
 })
 
 describe('(e) checkSeatPrefixes', () => {
@@ -914,6 +952,48 @@ describe('planSeat brief gate (CC-925)', () => {
       ['A-2', 'brief-stale'],
     ])
     expect(plan.notes).toEqual([])
+  })
+})
+
+describe('planSeat declared owns for brief:ready tasks (CC-952)', () => {
+  const PLAN = '/tmp/alpha/sources/A-1-plan.md'
+  const SLICE = { n: 'a', title: 'x', points: 2, doneWhen: 'x renders.', dependsOn: [], owns: ['src/x.ts'] }
+  const planText = '```burndown-slices\n' + JSON.stringify([SLICE]) + '\n```\n'
+  const readPlan = (text: string | undefined) => () => ({ path: PLAN, text })
+  const brief = (gate: 'shadow' | 'on', text: string | undefined, tags = ['brief:ready=2026-09-28']) =>
+    one('A-1', { tags }, {}, { brief: { gate, maxAgeDays: 14 }, readPlan: readPlan(text) })
+
+  it('seeds an implementer-routed task from its plan with the owns it declares, and dispatches nothing', () => {
+    const plan = brief('on', planText)
+
+    expect(plan.dispatch).toEqual([])
+    expect(plan.refusals).toEqual([])
+    expect(plan.seeds.map(c => [c.taskId, c.slice, c.phase, c.owns])).toEqual([
+      ['A-1', 'a', 'queued', ['src/x.ts']],
+    ])
+  })
+
+  it('refuses an implementer-routed task with no plan as no-owns under on, naming the plan path', () => {
+    const plan = brief('on', undefined)
+
+    expect(plan.dispatch).toEqual([])
+    expect(refusalOf(plan)).toEqual([['A-1', 'no-owns']])
+    expect(plan.refusals[0]?.reason).toContain(PLAN)
+  })
+
+  it('dispatches an implementer-routed task with no plan under shadow and notes that on would refuse it', () => {
+    const plan = brief('shadow', undefined)
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+    expect(plan.refusals).toEqual([])
+    expect(plan.notes).toEqual([expect.stringMatching(/^would-refuse no-owns alpha A-1 \(seat seat-a\)/)])
+  })
+
+  it('notes no missing owns under shadow for a task with a plan or with no brief', () => {
+    expect(brief('shadow', planText).notes).toEqual([])
+    expect(brief('shadow', undefined, []).notes).toEqual([
+      expect.stringMatching(/^would-refuse no-brief alpha A-1 /),
+    ])
   })
 })
 

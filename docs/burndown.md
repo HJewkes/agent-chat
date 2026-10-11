@@ -33,6 +33,7 @@ agent-chat burndown tick --once [--dry-run]
                                         one pass: advance every claim, then spawn inside the ceilings
 agent-chat burndown pause|resume       stop or resume new spawns from the next tick on
 agent-chat burndown release <task>     drop every claim on a task so the tick may pick it again
+agent-chat burndown brief approve <task>   promote brief:proposed to brief:ready=<today>; needs the plan file
 agent-chat burndown install [--dry-run]
                                         print the checklist, then install and start the launchd job
 agent-chat burndown uninstall          stop the launchd job and keep it from starting at login
@@ -93,6 +94,12 @@ For each listed seat, in order, the tick:
   the order through `planSeat`: eligibility, route, repo, the post-advance collision
   check, orphan, trust on the pool's `config_dir`, role caps, worktree caps, then the pool
   gate;
+- under an `on` brief gate, queues a brief:ready task's slices from its seat-written
+  `sources/<ID>-plan.md` instead of spawning a planner or an implementer (CC-927). The
+  plan's slice `owns` is where a brief:ready task declares the files it will touch, and
+  the lint requires it. An implementer-routed task with no plan is refused `no-owns`; a
+  planner-routed one spawns its planner as before. Under `shadow` the implementer still
+  dispatches, with a `would-refuse no-owns` note (CC-952);
 - spawns on the pool's `config_dir` under the seat's prefix (`<prefix>-<task>`), and the
   new claims carry `seat` and `namePrefix`.
 

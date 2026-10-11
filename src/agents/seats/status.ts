@@ -17,6 +17,8 @@ import type { DispatchRow } from '../burndown/score.js'
 import { expandHome } from '../burndown/seat-dispatch.js'
 import { localDate } from '../burndown/seat-tick.js'
 import { openEvents, type WatchdogDoc } from './io.js'
+import { parseSeat, type HeartbeatSource } from './charter.js'
+import { readSeatFile } from './teleport-state.js'
 import { paceLine, poolPace, type PoolPace } from './pace.js'
 import {
   meterSpend,
@@ -114,9 +116,18 @@ export interface EligibleStatus {
   error?: string
 }
 
+/** CC-391: who ticks the seat, from its seat file, and the last cron slot the watchdog handled. */
+export interface HeartbeatStatus {
+  source: HeartbeatSource
+  cron: string | null
+  /** ISO time of the watchdog's last handled slot; null when it has handled none or the doc is unreadable. */
+  lastSlot: string | null
+}
+
 export interface SeatStatus {
   seat: string
   at: string
+  heartbeat: HeartbeatStatus
   implementers: RoleLoad
   reviewers: RoleLoad
   planners: RoleLoad
@@ -443,6 +454,22 @@ function eligibleStatus(deps: StatusDeps, seat: string, today: string, plain: Pl
   }
 }
 
+function heartbeatStatus(deps: StatusDeps, seat: string): HeartbeatStatus {
+  const file = readSeatFile(deps.autonomyRoot, seat)
+  const parsed = file === undefined ? undefined : parseSeat(seat, file)
+  let slot: number | undefined
+  try {
+    slot = deps.loadDoc().seats[seat]?.heartbeat?.slot
+  } catch {
+    slot = undefined
+  }
+  return {
+    source: parsed?.heartbeatSource ?? 'cron',
+    cron: parsed?.heartbeatCron ?? null,
+    lastSlot: slot === undefined ? null : new Date(slot).toISOString(),
+  }
+}
+
 /** Throws for a name the charter does not list as a seat, an unreadable charter or seat file, and a broker that does not answer. */
 export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatStatus> {
   const policy = loadPolicy(deps.autonomyRoot, seat)
@@ -457,6 +484,7 @@ export async function seatStatus(deps: StatusDeps, seat: string): Promise<SeatSt
   return {
     seat,
     at: now.toISOString(),
+    heartbeat: heartbeatStatus(deps, seat),
     implementers: implementerLoad(mine, concurrency.implementers, waiting, trees),
     reviewers: roleLoad(mine, 'reviewer', concurrency.reviewers, waiting),
     planners: roleLoad(mine, 'planner', concurrency.planners, waiting),

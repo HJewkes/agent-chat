@@ -5,6 +5,8 @@
  * Pure: the clock and the journal reading arrive as arguments.
  */
 
+import type { HeartbeatSource } from './charter.js'
+
 export const HEARTBEAT_MESSAGE = 'Heartbeat tick'
 
 export const PAUSE_WAKE_MESSAGE = 'Heartbeat tick: BUDGET-PAUSE reset reached; resume per charter section 4'
@@ -34,6 +36,8 @@ export interface HeartbeatInput {
   /** Epoch ms of the seat's latest own log line. */
   activityAt: number | undefined
   mark: HeartbeatMark | undefined
+  /** CC-391: unset reads as `cron`, a seat that may have run its own CronCreate tick. */
+  source: HeartbeatSource | undefined
 }
 
 export interface HeartbeatStep {
@@ -98,7 +102,9 @@ export function heartbeatStep(input: HeartbeatInput): HeartbeatStep {
   const next = { ...mark, slot }
   // The first sight of a seat only marks the slot: nothing says whether that tick was already sent.
   if (mark?.slot === undefined) return { mark: next }
-  // A seat that logged since the slot ran its own heartbeat, so a second tick would double it.
-  if (activityAt !== undefined && activityAt >= slot) return { mark: next }
+  // A cron seat that logged since the slot ran its own heartbeat, so a second tick would double it.
+  // A watchdog seat has no cron of its own, so its line since the slot is other work, not a tick.
+  const ownTick = input.source !== 'watchdog' && activityAt !== undefined && activityAt >= slot
+  if (ownTick) return { mark: next }
   return { message: HEARTBEAT_MESSAGE, mark: next }
 }

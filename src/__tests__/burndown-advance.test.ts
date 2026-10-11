@@ -6,7 +6,7 @@ import { advance, applyActions, claimKey, type Action, type Observation } from '
 import { EMPTY_LEDGER, readLedger, writeLedger, type Claim, type Ledger } from '../agents/burndown/ledger.js'
 import { withFindings } from '../agents/burndown/finding.js'
 import { observe } from '../agents/burndown/observe.js'
-import { parseReport } from '../agents/burndown/report.js'
+import { parseReport, type Report } from '../agents/burndown/report.js'
 import type { ShepherdRow } from '../agents/burndown/shepherd.js'
 import type { StallCode } from '../agents/burndown/stall-code.js'
 import type { AgentIdentity } from '../protocol.js'
@@ -206,6 +206,40 @@ describe('burndown phase machine', () => {
       ['a', 'queued', [], ['src/ledger.ts']],
       ['b', 'queued', ['a'], undefined],
     ])
+  })
+
+  it('(CC-939) a finished briefer is done and queues no slice claims, even with a slices block', () => {
+    const briefer = claim({ phase: 'planning', worktree: undefined, briefer: true })
+
+    const { after } = step(briefer, {
+      agent: exited,
+      proposed: true,
+      slices: [{ n: 'a', title: 'ledger', dependsOn: [], owns: ['src/ledger.ts'] }],
+    })
+
+    expect(after.map(c => [c.slice, c.phase])).toEqual([[undefined, 'done']])
+  })
+
+  it('(CC-939) a briefer that tagged brief:proposed is done; one that did not stalls rather than respawns', () => {
+    const briefer = claim({ phase: 'planning', worktree: undefined, briefer: true })
+    const report = (status: 'DONE' | 'BLOCKED'): Report => ({
+      status,
+      firstLine: `Status: ${status}`,
+      text: '',
+    })
+
+    const proposed = step(briefer, { agent: exited, proposed: true, report: report('DONE') })
+    const untagged = step(briefer, { agent: exited, proposed: false, report: report('DONE') })
+    const blocked = step(briefer, { agent: exited, proposed: false, report: report('BLOCKED') })
+    const silent = step(briefer, { agent: exited })
+
+    expect(proposed.after.map(c => c.phase)).toEqual(['done'])
+    for (const { after } of [untagged, blocked, silent]) {
+      expect(after).toEqual([
+        expect.objectContaining({ phase: 'planning', stalledReason: expect.any(String) }),
+      ])
+    }
+    expect(blocked.after[0]?.stalledReason).toBe('Status: BLOCKED')
   })
 
   it("a planner slice's contracts reach its queued claim", () => {

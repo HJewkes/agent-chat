@@ -63,6 +63,9 @@ const Row = z.object({
   /** CC-934: read only to print a seat's boot In flight; the shape is Shepherd's, so it is not narrowed here. */
   nextAction: z.unknown().optional(),
   pendingGate: z.unknown().optional(),
+  /** TP-1570: read only to write a retiring seat agent's merged row; absent on an older Shepherd. */
+  implementer: z.string().nullable().optional(),
+  outcome: z.object({ kind: z.string() }).nullable().optional().catch(null),
 })
 
 /**
@@ -166,6 +169,8 @@ export interface Registration {
   headSha?: string
   /** Shepherd's `--kind`; absent, the flag is left off so a worker's own kind survives. */
   kind?: ShepherdKind
+  /** CC-952: the open PR this one is stacked on, so Shepherd lands it after that one (`--after`). */
+  after?: ShepherdTarget
 }
 
 export type ShepherdKind = 'correctness' | 'security' | 'feature' | 'refactor' | 'unknown'
@@ -180,16 +185,46 @@ export function prHeadOf(target: ShepherdTarget, exec: Runner = run): string | u
 export type RegisterReply = { ok: true } | { ok: false; refused: boolean; reason: string }
 
 /** Idempotent on `repo#pr` at Shepherd's end, so a repeat after an unanswered call starts no second run. */
-export function registerWithShepherd(reg: Registration, exec: Runner = run): RegisterReply {
+export function registerWithShepherd(
+  reg: Registration,
+  exec: Runner = run,
+  log: Log = logEvent,
+): RegisterReply {
   // A worker registers its own PR with a --kind; a repeat here would clear it.
   const listed = shepherdRows(exec)
   const row = listed && rowFor(listed, reg.target)
   if (row && isLiveAtHead(row, reg.headSha)) return { ok: true }
-  return shepherdRegister(reg, exec)
+  const after = reg.after ?? stackedOn(reg.target, exec)
+  return shepherdRegister(after === undefined ? reg : { ...reg, after }, exec, log)
 }
 
+/**
+ * CC-952: the open PR whose head branch this PR's base is, so a stacked PR
+ * lands after it; undefined for a PR on the default branch or when GitHub does
+ * not answer, which registers it unstacked as before.
+ */
+export function stackedOn(target: ShepherdTarget, exec: Runner = run): ShepherdTarget | undefined {
+  const bases = exec('gh', [
+    'api',
+    `repos/${target.repo}/pulls/${target.pr}`,
+    '--jq',
+    '[.base.ref, .base.repo.default_branch] | @tsv',
+  ])
+  if (bases.status !== 0) return undefined
+  const [base, defaultBranch] = bases.stdout.trim().split('\t')
+  if (!base || !defaultBranch || base === defaultBranch) return undefined
+  const owner = target.repo.split('/')[0] as string
+  const query = `head=${encodeURIComponent(`${owner}:${base}`)}`
+  const below = exec('gh', ['api', `repos/${target.repo}/pulls?state=open&${query}`, '--jq', '.[0].number'])
+  const pr = below.status === 0 ? Number(below.stdout.trim()) : NaN
+  return Number.isInteger(pr) && pr > 0 && pr !== target.pr ? { repo: target.repo, pr } : undefined
+}
+
+/** Commander's answer from a Shepherd built before `register --after` existed. */
+const AFTER_UNSUPPORTED = /unknown option '--after'/
+
 /** `shepherd register` itself, with no listing first; a repeat updates the run in place. */
-export function shepherdRegister(reg: Registration, exec: Runner = run): RegisterReply {
+export function shepherdRegister(reg: Registration, exec: Runner = run, log: Log = logEvent): RegisterReply {
   const args = [
     'shepherd',
     'register',
@@ -199,8 +234,13 @@ export function shepherdRegister(reg: Registration, exec: Runner = run): Registe
     '--implementer',
     reg.implementer,
     ...(reg.kind === undefined ? [] : ['--kind', reg.kind]),
+    '--json',
   ]
-  return replyOf(exec(SHEPHERD_BIN, [...args, '--json']))
+  if (reg.after === undefined) return replyOf(exec(SHEPHERD_BIN, args))
+  const stacked = exec(SHEPHERD_BIN, [...args, '--after', targetRef(reg.after)])
+  if (stacked.status === 0 || !AFTER_UNSUPPORTED.test(stacked.stderr ?? '')) return replyOf(stacked)
+  log('burndown_shepherd_after_unsupported', { target: targetRef(reg.target), after: targetRef(reg.after) })
+  return replyOf(exec(SHEPHERD_BIN, args))
 }
 
 /** CC-931: `shepherd hold`, so no merge goes through until someone releases the run; `reason` is what the seat reads. */

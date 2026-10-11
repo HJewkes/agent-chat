@@ -6,7 +6,7 @@ import { gitChildEnv } from '../../git.js'
 import type { AgentIdentity } from '../../protocol.js'
 import { canonicalPath, isAtOrUnder } from '../spawn-cwd.js'
 import { occupantOf } from './sweep.js'
-import type { WorktreeRecord } from './worktree.js'
+import { fetchDefaultTip, type WorktreeRecord } from './worktree.js'
 
 /**
  * CC-282: park a finished agent's worktree. The tree is removed and the branch
@@ -135,33 +135,57 @@ async function gitOrNull(args: readonly string[], cwd: string): Promise<string |
   return git(args, cwd).catch(() => null)
 }
 
+const DEFAULT_FETCH_MS = 30_000
+
+/** A never-pushed branch whose HEAD is already in origin's default branch (a reviewer tree) holds nothing to lose. */
+async function headOnDefaultBranch(worktree: string): Promise<boolean> {
+  const tip = await fetchDefaultTip(worktree, DEFAULT_FETCH_MS)
+  if (typeof tip === 'string') return false
+  return (await gitOrNull(['merge-base', '--is-ancestor', 'HEAD', tip.sha], worktree)) !== null
+}
+
 /** With an origin, the branch must be on it with nothing ahead; without one, the kept local branch is the copy. */
-async function unpushed(target: ParkTarget): Promise<string | undefined> {
-  const { worktree, branch } = target
+async function unpushed(target: ParkTarget, branch: string): Promise<string | undefined> {
+  const { worktree } = target
   if ((await gitOrNull(['remote', 'get-url', 'origin'], worktree)) === null) return undefined
   if ((await gitOrNull(['rev-parse', '--verify', '--quiet', `origin/${branch}`], worktree)) === null)
-    return `${branch} is not on origin; push it first`
+    return (await headOnDefaultBranch(worktree)) ? undefined : `${branch} is not on origin; push it first`
   const ahead = await gitOrNull(['rev-list', `origin/${branch}..HEAD`], worktree)
   if (ahead === null) return `could not compare ${worktree} with origin/${branch}`
   const count = ahead.split('\n').filter(Boolean).length
   return count === 0 ? undefined : `${count} commit(s) in ${worktree} are not on origin/${branch}; push first`
 }
 
-/** A commit on a detached HEAD or another branch would be unreachable once the tree is gone, since only `branch` is kept. */
-async function offBranch(target: ParkTarget): Promise<string | undefined> {
+/**
+ * The branch the tree's commits live on, or the reason it has none to keep. A commit on a detached HEAD
+ * would be unreachable once the tree is gone. A successor or adopted tree sits on the PR branch rather than
+ * the allocated one; that branch is kept too, so it parks when origin has it, and `unpushed` then holds it to
+ * nothing ahead.
+ */
+async function headBranch(target: ParkTarget): Promise<{ branch: string } | { refusal: string }> {
   const head = await gitOrNull(['symbolic-ref', '--quiet', '--short', 'HEAD'], target.worktree)
-  if (head === target.branch) return undefined
+  if (head === target.branch) return { branch: head }
+  const onOrigin =
+    head !== null &&
+    (await gitOrNull(['rev-parse', '--verify', '--quiet', `origin/${head}`], target.worktree)) !== null
+  if (head !== null && onOrigin) return { branch: head }
   const where = head === null ? 'detached' : `on ${head}`
-  return `HEAD in ${target.worktree} is ${where}, not on ${target.branch}; check out ${target.branch} first`
+  return {
+    refusal: `HEAD in ${target.worktree} is ${where}, not on ${target.branch}; check out ${target.branch} first`,
+  }
 }
 
 /** Ignored paths `git worktree remove` would delete that a build or agent-chat's own re-attach puts back. */
 const REGENERABLE_DIRS = ['node_modules', 'dist', 'coverage', '.turbo']
 
+/** Tool caches that sit at any depth as single files. */
+const REGENERABLE_FILES = ['.eslintcache']
+
 /** `.claude` only at the top, since re-attach copies it from the repository root. `.tsbuildinfo` applies to files only: a directory so named may hold anything. */
 const isRegenerable = (entry: string): boolean => {
   const segments = entry.split('/').filter(Boolean)
   if (!entry.endsWith('/') && segments.at(-1)?.endsWith('.tsbuildinfo')) return true
+  if (!entry.endsWith('/') && REGENERABLE_FILES.includes(segments.at(-1) ?? '')) return true
   return segments[0] === '.claude' || segments.some(segment => REGENERABLE_DIRS.includes(segment))
 }
 
@@ -191,7 +215,7 @@ async function unsaved(worktree: string): Promise<string | undefined> {
   if (unregenerable.length === 0) return undefined
   return (
     `ignored files in ${worktree} would be deleted (${unregenerable.slice(0, 3).join(', ')}); ` +
-    `park removes only ignored ${REGENERABLE_DIRS.join(', ')}, *.tsbuildinfo and a top-level .claude`
+    `park removes only ignored ${REGENERABLE_DIRS.join(', ')}, ${REGENERABLE_FILES.join(', ')}, *.tsbuildinfo and a top-level .claude`
   )
 }
 
@@ -205,14 +229,16 @@ export async function parkWorktree(
   recheck: () => string | undefined,
   /** Set for an untracked detached agent: the lister that finds a process still in the tree. */
   listCwds?: CwdLister,
-): Promise<{ ok: true; head: string } | { ok: false; reason: string }> {
+): Promise<{ ok: true; head: string; branch: string } | { ok: false; reason: string }> {
+  const occupied = listCwds && (await occupiedByProcess(target.worktree, listCwds))
+  const head = occupied ? undefined : await headBranch(target)
   const refusal =
-    (listCwds && (await occupiedByProcess(target.worktree, listCwds))) ??
-    (await offBranch(target)) ??
+    occupied ??
+    (head && 'refusal' in head ? head.refusal : undefined) ??
     (await unsaved(target.worktree)) ??
-    (await unpushed(target))
-  if (refusal) return { ok: false, reason: refusal }
-  const head = await git(['rev-parse', 'HEAD'], target.worktree)
+    (head && 'branch' in head ? await unpushed(target, head.branch) : undefined)
+  if (refusal || !head || !('branch' in head)) return { ok: false, reason: refusal ?? 'no branch to keep' }
+  const parkedHead = await git(['rev-parse', 'HEAD'], target.worktree)
   const late = recheck()
   if (late) return { ok: false, reason: late }
   try {
@@ -221,5 +247,5 @@ export async function parkWorktree(
     const detail = String((err as { stderr?: unknown }).stderr || (err as Error).message).trim()
     return { ok: false, reason: `git would not remove ${target.worktree}: ${detail.split('\n')[0]}` }
   }
-  return { ok: true, head }
+  return { ok: true, head: parkedHead, branch: head.branch }
 }

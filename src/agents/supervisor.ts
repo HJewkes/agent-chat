@@ -31,6 +31,7 @@ import {
   hookSettingsPath,
   mcpConfigPath,
   readRuntimeState,
+  markSuperseded,
   writeLaunchFiles,
   writeRuntimeState,
 } from './launch-files.js'
@@ -2412,6 +2413,7 @@ export class Supervisor implements TeleportHost {
       .then(async read => {
         const outcome = await retireOutcomeOf(read.ok ? read.work : undefined, () => branchHead(tree))
         writeDispatch(() => log.retired(facts, sessionId, retireSpendOf(read), outcome))
+        await log.ended?.(facts, outcome)
       })
       .catch(dispatchUnavailable)
   }
@@ -2440,10 +2442,10 @@ export class Supervisor implements TeleportHost {
         identity.state === 'detached' ? this.cwdLister : undefined,
       )
       if (!parked.ok) return parked
-      this.recordParked(name, identity.agentId, target, parked.head)
+      this.recordParked(name, identity.agentId, { ...target, branch: parked.branch }, parked.head)
       return {
         ok: true,
-        reason: `Parked ${target.worktree}; branch ${target.branch} kept at ${parked.head}.`,
+        reason: `Parked ${target.worktree}; branch ${parked.branch} kept at ${parked.head}.`,
       }
     } finally {
       this.parking.delete(identity.agentId)
@@ -2808,9 +2810,11 @@ export class Supervisor implements TeleportHost {
   private supersededRefusal(identity: AgentIdentity): string | undefined {
     const newer = this.core.agents.supersededBy(identity)
     if (newer === undefined) return undefined
+    const kind = newer.origin === 'adopted' ? 'adopted ' : ''
+    const account = newer.configDir === undefined ? '' : ` on ${newer.configDir}`
     return (
-      `${identity.name}'s session ${identity.sessionId || '(none)'} is stale: a newer ${identity.name} ` +
-      `(agent ${newer.agentId}, session ${newer.sessionId || '(none)'}) is ${newer.state}, so resuming the older one is refused`
+      `${identity.name}'s session ${identity.sessionId || '(none)'} is stale: a newer ${kind}${identity.name} ` +
+      `(agent ${newer.agentId}, session ${newer.sessionId || '(none)'}${account}) is ${newer.state}, so resuming the older one is refused`
     )
   }
 
@@ -3295,6 +3299,18 @@ export class Supervisor implements TeleportHost {
         ...input.meta,
       },
     })
+    this.markPredecessorSuperseded(input)
+  }
+
+  /** CC-762: from this row on the predecessor is superseded, so a transcript restored later must not take a turn. */
+  private markPredecessorSuperseded(input: RelaunchInput): void {
+    const from = input.meta?.teleport_from
+    if (from === undefined) return
+    try {
+      markSuperseded(from)
+    } catch (err) {
+      logEvent('superseded_marker_failed', { agentId: from, error: String(err) })
+    }
   }
 
   private announceSuccessor(input: RelaunchInput, sessionId: string, cwd: string): void {

@@ -34,7 +34,14 @@ export interface Seat {
   pacing?: string
   /** CC-862: the cron the watchdog sends `Heartbeat tick` on, e.g. `17,47 * * * *`. */
   heartbeatCron?: string
+  /** CC-391: `watchdog` says the seat runs no CronCreate heartbeat, so the watchdog is its only tick; unset or unknown reads as `cron`. */
+  heartbeatSource?: HeartbeatSource
 }
+
+export type HeartbeatSource = 'cron' | 'watchdog'
+
+const heartbeatSourceOf = (value: string | undefined): HeartbeatSource | undefined =>
+  value === 'cron' || value === 'watchdog' ? value : undefined
 
 /** The seat file's `spend:` block; either stop may be absent. */
 export interface SeatSpend {
@@ -102,19 +109,29 @@ export const charterSeats = (charter: string): string[] => listField(frontmatter
 export const charterOwnerSeat = (charter: string): string | undefined =>
   frontmatterField(charter, 'owner_seat')
 
-/** The indented `key: number` lines under a top-level `block:` in the frontmatter. */
-function nestedNumbers(text: string, block: string): Record<string, number> {
+/** The indented `key: value` lines under a top-level `block:` in the frontmatter, values matched by `value`. */
+function nestedEntries(text: string, block: string, value: RegExp): [string, string][] {
   const lines = frontmatter(text).split('\n')
   const start = lines.findIndex(line => line.startsWith(`${block}:`))
-  const found: Record<string, number> = {}
-  if (start === -1) return found
+  if (start === -1) return []
+  const found: [string, string][] = []
   for (const line of lines.slice(start + 1)) {
     if (!/^\s/.test(line)) break
-    const m = /^\s+([\w-]+):\s*([\d.]+)/.exec(line)
-    if (m?.[1] !== undefined) found[m[1]] = Number(m[2])
+    const m = new RegExp(`^\\s+([\\w.-]+):\\s*(${value.source})`).exec(line)
+    if (m?.[1] !== undefined && m[2] !== undefined) found.push([m[1], m[2]])
   }
   return found
 }
+
+/** The indented `key: number` lines under a top-level `block:` in the frontmatter. */
+const nestedNumbers = (text: string, block: string): Record<string, number> =>
+  Object.fromEntries(nestedEntries(text, block, /[\d.]+/).map(([key, value]) => [key, Number(value)]))
+
+/** The indented `key: word` lines under a top-level `block:`, quotes stripped. */
+const nestedStrings = (text: string, block: string): Record<string, string> =>
+  Object.fromEntries(
+    nestedEntries(text, block, /['"]?[\w.-]+/).map(([key, value]) => [key, value.replace(/^['"]/, '')]),
+  )
 
 function parseSpend(seatFile: string): SeatSpend {
   const spend = nestedNumbers(seatFile, 'spend')
@@ -130,6 +147,7 @@ export function parseSeat(name: string, seatFile: string): Seat | undefined {
   if (prefix === undefined || pool === undefined) return undefined
   const pacing = frontmatterField(seatFile, 'pacing')
   const heartbeatCron = frontmatterField(seatFile, 'heartbeat_cron')
+  const heartbeatSource = heartbeatSourceOf(frontmatterField(seatFile, 'heartbeat_source'))
   return {
     name,
     prefix,
@@ -137,6 +155,7 @@ export function parseSeat(name: string, seatFile: string): Seat | undefined {
     spend: parseSpend(seatFile),
     ...(pacing === undefined ? {} : { pacing }),
     ...(heartbeatCron === undefined || heartbeatCron === '' ? {} : { heartbeatCron }),
+    ...(heartbeatSource === undefined ? {} : { heartbeatSource }),
   }
 }
 
@@ -144,6 +163,21 @@ export function parseSeat(name: string, seatFile: string): Seat | undefined {
 export function seatSurface(seatFile: string | undefined): SurfaceName | undefined {
   const declared = seatFile === undefined ? undefined : frontmatterField(seatFile, 'surface')
   return SURFACE_NAMES.find(name => name === declared)
+}
+
+/**
+ * CC-951: the seat's surface on `machine` (a hostname or alias): its line in a `surfaces:` block
+ * of `<machine>: <surface>` lines, else the legacy single `surface:`. Whether the machine can run
+ * it is `chooseSurface`'s call, not this one's.
+ */
+export function seatSurfaceFor(seatFile: string | undefined, machine: string): SurfaceName | undefined {
+  if (seatFile === undefined) return undefined
+  const wanted = machine.toLowerCase()
+  const entry = Object.entries(nestedStrings(seatFile, 'surfaces')).find(
+    ([key]) => key.toLowerCase() === wanted,
+  )
+  const declared = entry === undefined ? undefined : SURFACE_NAMES.find(name => name === entry[1])
+  return declared ?? seatSurface(seatFile)
 }
 
 /** A `key: [a, b]` flow list in the frontmatter, which may wrap over lines; absent reads as undefined. */

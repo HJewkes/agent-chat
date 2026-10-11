@@ -33,6 +33,7 @@ import { addBurndownCommands } from './verbs/burndown.js'
 import { addSeatsCommands } from './verbs/seats.js'
 import { addMachineCommands } from './verbs/machine.js'
 import { profilesVerb } from './verbs/profiles.js'
+import { queueReadVerb } from './verbs/queue-read.js'
 import { teleportAbortVerb } from './verbs/teleport-abort.js'
 import * as debug from './debug.js'
 import { doctorLifecycleCommand } from './doctor-lifecycle.js'
@@ -53,6 +54,7 @@ const SERVICES = 'Service commands:'
  */
 function addHumanCommands(program: Command): void {
   addVerb(program, inboxVerb, { helpGroup: HUMAN })
+  addVerb(program, queueReadVerb, { helpGroup: HUMAN })
 
   program
     .command('answer <id> <text...>')
@@ -326,6 +328,12 @@ function addHiddenCommands(program: Command): void {
       const { permissionHook } = await import('./verbs/permission-hook.js')
       await permissionHook(options)
     })
+
+  // Run by Claude Code as every spawned agent's UserPromptSubmit hook (CC-762), never by a person.
+  program.command('stale-session-guard <agentId>', { hidden: true }).action(async (agentId: string) => {
+    const { staleSessionGuard } = await import('./verbs/stale-session-guard.js')
+    staleSessionGuard(agentId)
+  })
 
   // Run by Claude Code as every spawned agent's PreToolUse hook (CC-270), never by a person.
   program

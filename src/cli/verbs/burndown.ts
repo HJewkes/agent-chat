@@ -36,7 +36,9 @@ import { BrokerClient } from '../../client/broker-client.js'
 import { systemHost } from '../../mirror/job-host.js'
 import { addVerb, defineVerb, Report } from '../command.js'
 import { collisionView, tickBroker } from '../burndown-broker.js'
+import { approveBrief, approvePortsOn } from '../../agents/burndown/brief-approve.js'
 import { releaseTask, type RetireCall } from './burndown-release.js'
+import { burndownConfigShowVerb } from './burndown-config.js'
 import { burndownInstallOn, burndownJobStatusOn, burndownUninstallOn } from './burndown-job.js'
 
 const refused = (err: unknown): Report => ({
@@ -229,6 +231,7 @@ export function dispatchStatsLines(
   since: string,
   json: boolean,
   byBriefSource = false,
+  floor?: number,
 ): Report {
   const windowMs = parseWindow(since)
   if (windowMs === undefined)
@@ -241,7 +244,7 @@ export function dispatchStatsLines(
         lines: json ? quality.map(q => JSON.stringify(q)) : renderBriefSourceQuality(quality),
       }
     }
-    const stats = dispatchStats(ports, windowMs)
+    const stats = dispatchStats(ports, windowMs, floor)
     return { ok: true, lines: json ? stats.map(s => JSON.stringify(s)) : renderDispatchStats(stats) }
   } catch (err) {
     return refused(err)
@@ -256,6 +259,7 @@ export const burndownDispatchStatsVerb = defineVerb({
     json: z.boolean().optional(),
     since: z.string().optional(),
     byBriefSource: z.boolean().optional(),
+    floor: z.coerce.number().int().positive().optional(),
     autonomyRoot: z.string().optional(),
   }),
   result: Report,
@@ -274,12 +278,16 @@ export const burndownDispatchStatsVerb = defineVerb({
         long: '--since',
         description: `window to read, e.g. 90m, 24h or 7d (default ${DEFAULT_WINDOW})`,
       },
+      floor: {
+        long: '--floor',
+        description: 'ready depth floor to count breaches against (default 2 x the tick config maxAgents)',
+      },
       autonomyRoot: { long: '--autonomy-root', description: 'directory holding seats/ and logs/' },
     },
   },
-  async run({ json, since, byBriefSource, autonomyRoot }) {
+  async run({ json, since, byBriefSource, floor, autonomyRoot }) {
     const ports = dispatchStatsPorts(autonomyRoot ?? defaultAutonomyRoot(), new Date())
-    return dispatchStatsLines(ports, since ?? DEFAULT_WINDOW, json === true, byBriefSource === true)
+    return dispatchStatsLines(ports, since ?? DEFAULT_WINDOW, json === true, byBriefSource === true, floor)
   },
 })
 
@@ -378,6 +386,17 @@ export const burndownReleaseVerb = defineVerb({
   },
 })
 
+export const burndownBriefApproveVerb = defineVerb({
+  name: 'burndown.brief.approve',
+  description: "promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file",
+  args: z.object({ task: requiredString('task') }),
+  result: Report,
+  cli: { positional: ['task'] },
+  async run({ task }) {
+    return approveBrief(task, approvePortsOn(activeWorkRoot()), localDate(new Date()))
+  },
+})
+
 export { burndownInstall, burndownJobStatus, burndownUninstall } from './burndown-job.js'
 
 export const burndownInstallVerb = defineVerb({
@@ -428,6 +447,7 @@ export function addBurndownCommands(program: Commander): void {
   addVerb(burndown, burndownPlanVerb)
   addVerb(burndown, burndownMilestoneVerb)
   const seats = burndown.command('seats').description('seats mode checks (CC-205)')
+  const brief = burndown.command('brief').description('task brief lifecycle (item 179)')
   addVerb(seats, burndownSeatsCompareVerb)
   addVerb(burndown, burndownStatusVerb)
   addVerb(burndown, burndownDispatchStatsVerb)
@@ -435,6 +455,11 @@ export function addBurndownCommands(program: Commander): void {
   addVerb(burndown, burndownPauseVerb)
   addVerb(burndown, burndownResumeVerb)
   addVerb(burndown, burndownReleaseVerb)
+  addVerb(brief, burndownBriefApproveVerb)
+  addVerb(
+    burndown.command('config').description('resolved burndown settings (CC-955)'),
+    burndownConfigShowVerb,
+  )
   addVerb(burndown, burndownInstallVerb)
   addVerb(burndown, burndownUninstallVerb)
   addVerb(burndown, burndownJobStatusVerb)

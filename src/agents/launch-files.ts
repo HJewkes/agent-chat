@@ -82,6 +82,14 @@ export function buildMcpConfig(
 
 export const hookSettingsPath = (agentId: string): string => path.join(agentDir(agentId), 'settings.json')
 
+/** Written when a teleport retires this identity; a session resumed from its transcript afterwards is stale. */
+export const supersededMarkerPath = (agentId: string): string => path.join(agentDir(agentId), 'superseded')
+
+export function markSuperseded(agentId: string): void {
+  fs.mkdirSync(agentDir(agentId), { recursive: true, mode: DIR_MODE })
+  fs.writeFileSync(supersededMarkerPath(agentId), '', { mode: FILE_MODE })
+}
+
 /** The hook gives up this long before Claude Code would kill it, so it can withdraw its row itself. */
 const HOOK_DEADLINE_MARGIN_S = 10
 
@@ -131,7 +139,24 @@ export function buildHookSettings(
   entry: string,
   permissionTimeoutSeconds?: number,
   carried?: CarriedUserSettings,
+  agentId?: string,
 ): Record<string, unknown> {
+  const staleGuard =
+    agentId === undefined
+      ? {}
+      : {
+          UserPromptSubmit: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command: hookCommand(entry, `stale-session-guard ${shellQuote(agentId)}`),
+                  timeout: PRETOOL_TIMEOUT_S,
+                },
+              ],
+            },
+          ],
+        }
   const pretool = [
     {
       matcher: PRETOOL_MATCHER,
@@ -142,13 +167,15 @@ export function buildHookSettings(
     ...(carried?.pretool ?? []),
   ]
   const account = carried === undefined ? {} : withoutUserSettings(carried.denies)
-  if (permissionTimeoutSeconds === undefined) return { ...account, hooks: { PreToolUse: pretool } }
+  if (permissionTimeoutSeconds === undefined)
+    return { ...account, hooks: { PreToolUse: pretool, ...staleGuard } }
   const deadline = Math.max(1, permissionTimeoutSeconds - HOOK_DEADLINE_MARGIN_S)
   const command = hookCommand(entry, `permission-hook --deadline ${deadline}`)
   return {
     ...account,
     hooks: {
       PreToolUse: pretool,
+      ...staleGuard,
       PermissionRequest: [
         { matcher: '*', hooks: [{ type: 'command', command, timeout: permissionTimeoutSeconds }] },
       ],
@@ -224,7 +251,7 @@ function writePrivate(file: string, body: string, mode: number = FILE_MODE): voi
 
 export function writeLaunchFiles(plan: LaunchPlan, config: Record<string, unknown>): void {
   const permissionTimeout = plan.args.includes('--settings') ? resolvePermissionHookTimeout() : undefined
-  const settings = buildHookSettings(cliEntry(), permissionTimeout, carriedUserSettings(plan))
+  const settings = buildHookSettings(cliEntry(), permissionTimeout, carriedUserSettings(plan), plan.agentId)
   writePrivate(hookSettingsPath(plan.agentId), JSON.stringify(settings, null, 2))
   writePrivate(mcpConfigPath(plan.agentId), JSON.stringify(config, null, 2))
   writePrivate(planPath(plan.agentId), JSON.stringify(withSettings(plan), null, 2))

@@ -9,6 +9,7 @@ Options:
 
 Human commands:
   inbox [options]            what your agents need from you
+  queue [options]            read the human queue; read-only, it cannot answer, approve or endorse
   answer <id> <text...>      answer a question; routes back to the asker
   dismiss <id>               close an item without answering, or decline an endorsement
   approve <id> <allow|deny>  answer an agent's permission prompt from here
@@ -54,6 +55,16 @@ Options:
   --batch            every open item numbered, to answer in one go
   --answers <value>  with --batch, a file of "N: answer" lines, or - for stdin
   -h, --help         display help for command
+
+=== agent-chat queue
+Usage: agent-chat queue [options]
+
+read the human queue; read-only, it cannot answer, approve or endorse
+
+Options:
+  --questions  only open questions
+  --json       print one JSON object: { items }
+  -h, --help   display help for command
 
 === agent-chat answer
 Usage: agent-chat answer [options] <id> <text...>
@@ -237,6 +248,7 @@ Commands:
   milestone [options]       this week's burn-down per milestone: points, critical path, WIP,
                             throughput, forecast, status
   seats                     seats mode checks (CC-205)
+  brief                     task brief lifecycle (item 179)
   status                    claim ledger, stalled claims and each account budget gate
   dispatch-stats [options]  per seat: spawns/h tick vs hand, queue age, ready depth, cap use,
                             refusal mix, registrations, tick health
@@ -246,6 +258,7 @@ Commands:
   resume                    let the tick spawn again
   release <task>            drop every claim on a task, stalled or not, so the tick may pick it
                             again
+  config                    resolved burndown settings (CC-955)
   install [options]         print the sign-off checklist, then install and start the launchd tick
                             job (a systemd --user timer on Linux)
   uninstall                 stop the launchd tick job and keep it from starting at login; on Linux,
@@ -301,6 +314,27 @@ Options:
   --autonomy-root <value>  directory holding score.py, charter.md and seats/
   -h, --help               display help for command
 
+=== agent-chat burndown brief
+Usage: agent-chat burndown brief [options] [command]
+
+task brief lifecycle (item 179)
+
+Options:
+  -h, --help      display help for command
+
+Commands:
+  approve <task>  promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a
+                  plan file
+  help [command]  display help for command
+
+=== agent-chat burndown brief approve
+Usage: agent-chat burndown brief approve [options] <task>
+
+promote a briefer's brief:proposed tag to brief:ready=<today>; refused without a plan file
+
+Options:
+  -h, --help  display help for command
+
 === agent-chat burndown status
 Usage: agent-chat burndown status [options]
 
@@ -321,6 +355,8 @@ Options:
   --by-brief-source        instead: fix rounds and FIX_FIRST verdicts by who wrote the brief (seat,
                            briefer, template, unknown)
   --since <value>          window to read, e.g. 90m, 24h or 7d (default 24h)
+  --floor <value>          ready depth floor to count breaches against (default 2 x the tick config
+                           maxAgents)
   --autonomy-root <value>  directory holding seats/ and logs/
   -h, --help               display help for command
 
@@ -356,6 +392,28 @@ Usage: agent-chat burndown release [options] <task>
 drop every claim on a task, stalled or not, so the tick may pick it again
 
 Options:
+  -h, --help  display help for command
+
+=== agent-chat burndown config
+Usage: agent-chat burndown config [options] [command]
+
+resolved burndown settings (CC-955)
+
+Options:
+  -h, --help      display help for command
+
+Commands:
+  show [options]  print the resolved burndown config, each value with the layer it came from
+                  (CC-955)
+  help [command]  display help for command
+
+=== agent-chat burndown config show
+Usage: agent-chat burndown config show [options]
+
+print the resolved burndown config, each value with the layer it came from (CC-955)
+
+Options:
+  --json      print the resolved config as one JSON object
   -h, --help  display help for command
 
 === agent-chat burndown install
@@ -452,6 +510,11 @@ Commands:
                                 restart window, machine stop or stop line) and its logs have no tick
                                 line for its cron's widest gap plus 5 min, send the charter
                                 heartbeat through the broker and log heartbeat_external
+  heartbeat-gaps [options]      report where a seat's heartbeat deliveries (heartbeat_watchdog and
+                                heartbeat_external rows in broker.log) stopped for longer than its
+                                heartbeat_cron's widest gap plus 5 min, outside its BUDGET-PAUSE
+                                stretches, and each slot that got two deliveries (CC-391). Exits
+                                non-zero when it finds either
   help [command]                display help for command
 
 === agent-chat seats watchdog
@@ -609,6 +672,20 @@ Options:
   --root <value>  autonomy directory holding charter.md, seats/ and logs/
   --dry-run       print the decision; send nothing
   -h, --help      display help for command
+
+=== agent-chat seats heartbeat-gaps
+Usage: agent-chat seats heartbeat-gaps [options]
+
+report where a seat's heartbeat deliveries (heartbeat_watchdog and heartbeat_external rows in
+broker.log) stopped for longer than its heartbeat_cron's widest gap plus 5 min, outside its
+BUDGET-PAUSE stretches, and each slot that got two deliveries (CC-391). Exits non-zero when it finds
+either
+
+Options:
+  --seat <value>   the seat to report on (required)
+  --hours <value>  how far back to look (default 24)
+  --root <value>   autonomy directory holding seats/ and logs/
+  -h, --help       display help for command
 
 === agent-chat machine
 Usage: agent-chat machine [options] [command]
@@ -1021,6 +1098,12 @@ Usage: agent-chat permission-hook [options]
 Options:
   --deadline <seconds>  give up and withdraw the prompt after this long (default: "1790")
   -h, --help            display help for command
+
+=== agent-chat stale-session-guard
+Usage: agent-chat stale-session-guard [options] <agentId>
+
+Options:
+  -h, --help  display help for command
 
 === agent-chat leak-guard
 Usage: agent-chat leak-guard [options] [command]

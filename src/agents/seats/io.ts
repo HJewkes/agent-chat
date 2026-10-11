@@ -98,6 +98,8 @@ export type SeatRecord = SeatState & {
   relaunchTries?: number
   /** CC-465: the stuck teleport successor the human was told of, so each is raised once. */
   teleportFailed?: string
+  /** CC-959: the latest session a wake was refused on, so each is raised once. */
+  staleRefused?: string
   /** CC-402: the seat's agents already flagged as stuck in `spawning`, so each is logged once. */
   spawningFlagged?: string[]
   /** CC-862: the last heartbeat slot and pause reset the watchdog acted on. */

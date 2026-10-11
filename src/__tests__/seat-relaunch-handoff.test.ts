@@ -4,10 +4,12 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { latestTeleportSection } from '../agents/seats/boot-read.js'
 import {
+  BOOT_WITHOUT_CONFIRMATION,
   HANDOFF_CAP,
   NO_TELEPORT_STATE,
   buildRelaunchHandoff,
   renderRelaunchHandoff,
+  renderTeleportHandoff,
 } from '../agents/seats/relaunch-handoff.js'
 
 let root: string
@@ -100,5 +102,48 @@ describe('buildRelaunchHandoff', () => {
   it('carries the section found in an earlier day', () => {
     writeLog('alpha', '2026-09-30', '## State at teleport 4\nfrom the night\n')
     expect(buildRelaunchHandoff(root, 'alpha', 30, NOW)).toContain('from the night')
+  })
+})
+
+describe('boot without confirmation', () => {
+  it('tells the relaunched seat to register and boot with no owner question', () => {
+    const text = renderRelaunchHandoff({ root, seat: 'alpha', quietMinutes: 20, found: undefined })
+    expect(text).toContain(BOOT_WITHOUT_CONFIRMATION('alpha'))
+    expect(text).toContain('Register as alpha with chat_register')
+    expect(text).toMatch(/Do not ask the owner for confirmation/)
+    expect(text).not.toMatch(/\b(confirm with|ask the owner (first|before)|wait for (the owner|approval))\b/i)
+  })
+})
+
+describe('heartbeat source in the handoff', () => {
+  const writeSeat = (extra: string): void => {
+    fs.mkdirSync(path.join(root, 'seats'), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, 'seats', 'alpha.md'),
+      `---\nprefix: al\npool: pool-a\nheartbeat_cron: 17,47 * * * *\n${extra}---\n`,
+    )
+  }
+
+  it('tells a watchdog seat not to create a heartbeat cron', () => {
+    writeSeat('heartbeat_source: watchdog\n')
+    const text = buildRelaunchHandoff(root, 'alpha', 30, NOW)
+    expect(text).toContain('Do not create a heartbeat cron')
+    expect(text).not.toContain('Recreate the')
+  })
+
+  it('keeps the recreate wording for a cron seat, line for line', () => {
+    writeSeat('')
+    const text = buildRelaunchHandoff(root, 'alpha', 30, NOW)
+    expect(text).toContain(
+      `and @${root}/queues/alpha.md, then the 'State at teleport N' below only. Recreate the\nheartbeat first. `,
+    )
+    expect(text).not.toContain('Do not create a heartbeat cron')
+  })
+
+  it('tells a teleport successor of a watchdog seat the same', () => {
+    writeSeat('heartbeat_source: watchdog\n')
+    const text = renderTeleportHandoff({ root, seat: 'alpha', found: undefined, after: undefined })
+    expect(text).toContain('Do not create a heartbeat cron')
+    expect(text).not.toContain('Recreate the')
   })
 })

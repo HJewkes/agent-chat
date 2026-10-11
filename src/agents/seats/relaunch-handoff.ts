@@ -1,14 +1,23 @@
+import { parseSeat, type HeartbeatSource } from './charter.js'
+import { readSeatFile } from './teleport-state.js'
 import { TELEPORT_LOOKBACK_DAYS, capText, latestTeleportSection, type TeleportSection } from './boot-read.js'
 
 export const HANDOFF_CAP = 4_000
 
 export const NO_TELEPORT_STATE = `none found in the last ${TELEPORT_LOOKBACK_DAYS} days`
 
+/** CC-960: a relaunched seat registers and boots on its own; a confirmation question stalls it on the owner. */
+export const BOOT_WITHOUT_CONFIRMATION = (seat: string): string =>
+  `Register as ${seat} with chat_register, then boot fully: read the State at teleport, the inbox and ` +
+  'the queue, then act. Do not ask the owner for confirmation before registering or booting.'
+
 interface SeatHandoffInput {
   root: string
   seat: string
   /** The seat's latest `State at teleport` section and its journal day, or undefined when none was found. */
   found: TeleportSection | undefined
+  /** CC-391: `watchdog` tells the successor the watchdog sends its ticks; unset reads the seat file. */
+  heartbeatSource?: HeartbeatSource
 }
 
 export interface HandoffInput extends SeatHandoffInput {
@@ -22,13 +31,29 @@ export interface TeleportHandoffInput extends SeatHandoffInput {
   cursorMissing?: boolean
 }
 
+const seatHeartbeatSource = (root: string, seat: string): HeartbeatSource => {
+  const file = readSeatFile(root, seat)
+  return (file === undefined ? undefined : parseSeat(seat, file)?.heartbeatSource) ?? 'cron'
+}
+
+/** The two lines after the queue file: a cron seat's stay as they were before `heartbeat_source`. */
+const heartbeatLines = (source: HeartbeatSource, queue: string, boot: string): string[] =>
+  source === 'watchdog'
+    ? [
+        `and ${queue}, then the 'State at teleport N' below only.`,
+        `Do not create a heartbeat cron: the seat watchdog sends your ticks (heartbeat_source: watchdog). ${boot}`,
+      ]
+    : [`and ${queue}, then the 'State at teleport N' below only. Recreate the`, `heartbeat first. ${boot}`]
+
 /** Charter section 11 step 3, opened by `why` and capped so the first turn stays bounded. */
-function renderSeatHandoff(why: string, boot: string, { root, seat, found }: SeatHandoffInput): string {
+function renderSeatHandoff(why: string, boot: string, input: SeatHandoffInput): string {
+  const { root, seat, found } = input
+  const source = input.heartbeatSource ?? seatHeartbeatSource(root, seat)
   const text = [
     why,
     `Run the autonomy charter at @${root}/charter.md as seat ${seat}. Read @${root}/seats/${seat}.md`,
-    `and @${root}/queues/${seat}.md, then the 'State at teleport N' below only. Recreate the`,
-    `heartbeat first. ${boot}`,
+    ...heartbeatLines(source, `@${root}/queues/${seat}.md`, boot),
+    BOOT_WITHOUT_CONFIRMATION(seat),
     `Latest State at teleport${found === undefined ? '' : ` (from logs/${seat}/${found.day}.md)`}:`,
     found?.section ?? NO_TELEPORT_STATE,
   ].join('\n')

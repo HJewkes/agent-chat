@@ -1,6 +1,6 @@
 import type { Autonomy } from '../active-work.js'
 import type { Hold } from './backoff.js'
-import { parseIsoDay } from './score.js'
+import { parseIsoDay, wantsBrief } from './score.js'
 import { parseTaskTags } from './task-tags.js'
 
 /**
@@ -62,6 +62,7 @@ export type RefusalKind =
   | 'brief-stale'
   | 'blocked'
   | 'repo-ambiguous'
+  | 'no-owns'
 
 export interface Refusal {
   initiative: string
@@ -140,7 +141,8 @@ export function taskRefusal(
   if (task.status !== 'open') return { kind: 'not-open', reason: `status is ${task.status ?? 'missing'}` }
   if (task.doneWhen === undefined)
     return { kind: 'no-done-when', reason: 'no done_when, so no return contract' }
-  if (task.estimate === undefined) return { kind: 'no-estimate', reason: 'no estimate (CC-137)' }
+  const wanted = isBriefer(task)
+  if (task.estimate === undefined && !wanted) return { kind: 'no-estimate', reason: 'no estimate (CC-137)' }
   const reserved = task.tags.filter(tag => RESERVED_TAGS.includes(tag))
   if (reserved.length > 0) return { kind: 'reserved-tag', reason: `tagged ${reserved.join(', ')}` }
   if (claimed.has(task.id)) return { kind: 'claimed', reason: 'held in the burndown claim ledger' }
@@ -149,7 +151,7 @@ export function taskRefusal(
     return { kind: 'backoff', reason: `released ${hold.n} times; held until ${hold.until.toISOString()}` }
   const gap = grantGap(task.doneWhen, grants)
   if (gap !== undefined) return { kind: 'needs-grant', reason: gap }
-  return brief?.gate === 'on' ? briefRefusal(task, brief) : undefined
+  return brief?.gate === 'on' && !wanted ? briefRefusal(task, brief) : undefined
 }
 
 const byPriorityThenSize = (a: Task, b: Task): number =>
@@ -176,8 +178,13 @@ export function pickTask(
 export const PLANNER_PROFILE = 'bd-planner'
 export const IMPLEMENTER_PROFILE = 'bd-implementer'
 
+/** CC-939: the one place a task's role is decided: a `brief:wanted` task with a done_when gets a briefer, not a planner. */
+export const isBriefer = (task: Pick<Task, 'doneWhen' | 'tags'>): boolean =>
+  task.doneWhen !== undefined && wantsBrief(task.tags)
+
 /** Owner decision 186: big work plans first, small work goes to sonnet unless it is a feature, which gets opus. */
 export function profileFor(task: Task): string {
+  if (isBriefer(task)) return PLANNER_PROFILE
   const estimate = task.estimate ?? Infinity
   if (estimate >= 3) return PLANNER_PROFILE
   return task.tags.includes('kind:feature') ? IMPLEMENTER_PROFILE : 'bd-implementer-lite'
