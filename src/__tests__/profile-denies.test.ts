@@ -84,14 +84,21 @@ describe('the inbox deny on a profile file (CC-558)', () => {
     expect(profile).not.toHaveProperty('warnings')
   })
 
-  it('keeps inbox for a profile that allows it by name, as the decider does', () => {
+  it('keeps inbox for a profile that allows it by name', () => {
     const profile = parsed({ allowedTools: ['Read', INBOX], disallowedTools: [APPROVE, ENDORSE, ASK] })
-    const shipped = loadProfile('decider', SHIPPED)
 
     expect(profile.disallowedTools).toEqual([APPROVE, ENDORSE, ASK])
     expect(profile).not.toHaveProperty('warnings')
+  })
+
+  // Mutation caught: re-adding the inbox allow to the shipped decider (CC-426).
+  it('denies inbox on the shipped decider, which reads the queue read-only instead', () => {
+    const shipped = loadProfile('decider', SHIPPED)
+
     expect(shipped).not.toHaveProperty('error')
-    expect((shipped as AgentProfile).disallowedTools).not.toContain(INBOX)
+    expect((shipped as AgentProfile).allowedTools).not.toContain(INBOX)
+    expect((shipped as AgentProfile).disallowedTools).toContain(INBOX)
+    expect((shipped as AgentProfile).allowedTools).toContain('Bash(agent-chat queue:*)')
   })
 
   it('leaves a file that denies neither verb alone', () => {

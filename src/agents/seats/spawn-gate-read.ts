@@ -4,7 +4,9 @@ import { readAccountBudget, type BudgetRead } from '../budget.js'
 import { parsePools, type Pool } from './charter.js'
 import { loadDoc, readText, type WatchdogDoc } from './io.js'
 import { readLedger, heldClaims, type Claim } from '../burndown/ledger.js'
-import { loadTickConfig, readInitiatives, readTasks } from '../burndown/source.js'
+import { burndownOverridePath, burndownSettingsPath } from '../../paths.js'
+import { loadResolvedConfig, type SettingsPaths } from '../burndown/settings-store.js'
+import { readInitiatives, readTasks } from '../burndown/source.js'
 import { parseTaskTags } from '../burndown/task-tags.js'
 import { taskOf } from './journal-line.js'
 import { ownsSpawns, seatOf } from './seat-of.js'
@@ -142,9 +144,16 @@ export interface HandReserveFacts {
 
 /**
  * CC-936: the seat's hand reserve and the claims that tell its hand spawns from the tick's. Undefined when the
- * spawn names no seat or the seat reserves nothing. The tick reads the same config key.
+ * spawn names no seat or the seat reserves nothing. CC-955: resolved as the tick resolves it, with the settings
+ * and override files read beside `tickConfigFile`.
  * Throws when the seats directory, config or ledger cannot be read; the broker logs that and lets the spawn through.
  */
+const settingsBeside = (flat: string): SettingsPaths => ({
+  flat,
+  settings: path.join(path.dirname(flat), path.basename(burndownSettingsPath())),
+  override: path.join(path.dirname(flat), path.basename(burndownOverridePath())),
+})
+
 export function readHandReserve(
   paths: OverlapPaths & { tickConfigFile: string },
   req: OverlapRequest,
@@ -152,7 +161,8 @@ export function readHandReserve(
   const match = seatOf(paths.root, req.name, req.spawner)
   if (match.kind !== 'seat') return undefined
   const { seat } = match.seat
-  const reserve = loadTickConfig(paths.tickConfigFile).handReserve[seat.name] ?? 0
+  const reserve =
+    loadResolvedConfig({ paths: settingsBeside(paths.tickConfigFile) }).tick.handReserve[seat.name] ?? 0
   if (reserve <= 0 || seat.prefix === undefined) return undefined
   return { reserve, prefix: seat.prefix, held: heldClaims(readLedger(paths.ledgerFile)) }
 }
