@@ -628,11 +628,11 @@ describe('a fan-out HOLD whose one unlifted seat leaves the bus', () => {
 
 /**
  * HOLD 98258863 (CC-971): tp-operator fanned a HOLD and a REBOOT NOTICE out to four seats on 10-07 and
- * lifted three of them by DM on 10-08. voltras-coord, owner-stopped since 10-07 15:05, was never lifted,
- * and host-seat has no seat file. Neither part counts, so the hold ends at the 04:00:36 lift.
+ * lifted three of them by DM on 10-08. seat-x, owner-stopped since 10-07 15:05, was never lifted,
+ * and seat-z has no seat file. Neither part counts, so the hold ends at the 04:00:36 lift.
  */
 describe('a fan-out HOLD whose unlifted seat is stopped or has no seat file', () => {
-  const SEATS = ['titan-coord', 'voltras-coord', 'platform-coord', 'host-seat']
+  const SEATS = ['seat-w', 'seat-x', 'seat-y', 'seat-z']
   const ago = (iso: string): number => (NOW.getTime() - Date.parse(iso)) / MIN
   const lift = (iso: string, seat: string): Send => [
     'tp-operator',
@@ -650,27 +650,27 @@ describe('a fan-out HOLD whose unlifted seat is stopped or has no seat file', ()
       '5339f5b4',
       SEATS,
     ],
-    lift('2026-10-08T02:10:40Z', 'titan-coord'),
-    lift('2026-10-08T02:10:42Z', 'host-seat'),
-    lift('2026-10-08T04:00:36Z', 'platform-coord'),
+    lift('2026-10-08T02:10:40Z', 'seat-w'),
+    lift('2026-10-08T02:10:42Z', 'seat-z'),
+    lift('2026-10-08T04:00:36Z', 'seat-y'),
   ]
-  const VOLTRAS_STOPPED = { stopped: { 'voltras-coord': 'owner stop 10-07 15:05' } }
+  const VOLTRAS_STOPPED = { stopped: { 'seat-x': 'owner stop 10-07 15:05' } }
   const statusAt = (iso: string): MachineStopStatus => machineStopStatus(liveStopInputs(new Date(iso)))
 
   it('ends the hold at the last lift when the unlifted seat is stopped', () => {
     status({ chat, watchdog: VOLTRAS_STOPPED })
-    writeSeatFiles(['titan-coord', 'voltras-coord', 'platform-coord'])
+    writeSeatFiles(['seat-w', 'seat-x', 'seat-y'])
 
     const before = statusAt('2026-10-08T04:00:35Z')
     const after = statusAt('2026-10-08T04:00:37Z')
 
-    expect(before.holds).toMatchObject([{ by: 'tp-operator', msgId: '98258863', seats: ['platform-coord'] }])
+    expect(before.holds).toMatchObject([{ by: 'tp-operator', msgId: '98258863', seats: ['seat-y'] }])
     expect(after).toMatchObject({ stopped: false, holds: [], errors: [] })
   })
 
   it('ends the hold at the last lift when the unlifted seat has no seat file', () => {
     status({ chat })
-    writeSeatFiles(['titan-coord', 'platform-coord'])
+    writeSeatFiles(['seat-w', 'seat-y'])
 
     expect(statusAt('2026-10-08T04:00:37Z')).toMatchObject({ stopped: false, holds: [] })
   })
@@ -679,7 +679,7 @@ describe('a fan-out HOLD whose unlifted seat is stopped or has no seat file', ()
     status({ chat })
     writeSeatFiles(SEATS)
 
-    expect(statusAt('2026-10-08T04:00:37Z').holds).toMatchObject([{ seats: ['voltras-coord'] }])
+    expect(statusAt('2026-10-08T04:00:37Z').holds).toMatchObject([{ seats: ['seat-x'] }])
   })
 
   it('drops no part and reports no error when seat files cannot be listed', () => {
@@ -687,7 +687,7 @@ describe('a fan-out HOLD whose unlifted seat is stopped or has no seat file', ()
 
     const after = statusAt('2026-10-08T04:00:37Z')
 
-    expect(after.holds).toMatchObject([{ seats: ['voltras-coord'] }])
+    expect(after.holds).toMatchObject([{ seats: ['seat-x'] }])
     expect(after.errors).toEqual([])
   })
 
