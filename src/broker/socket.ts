@@ -518,6 +518,7 @@ export class SocketServer {
       ...optionalPlatform(asPlatform(msg.hostPlatform)),
       ...optionalCarried(sanitizeCarried(msg.launchSeen)),
       ...(msg.to === undefined ? {} : { to: msg.to }),
+      ...(msg.endsSelf === true ? { endsSelf: true } : {}),
     })
     reply(conn, {
       t: 'teleport_result',

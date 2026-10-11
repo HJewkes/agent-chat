@@ -7,6 +7,8 @@ import { BrokerCore, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { SocketServer } from '../broker/socket.js'
+import { COUNTDOWN_MS as COUNTDOWN_MS_DEFAULT, LAND_WINDOW_MS } from '../agents/teleport.js'
+import { REPLY_TIMEOUT_MS } from '../client/broker-client.js'
 import type { ClientMessage, ServerMessage } from '../protocol.js'
 
 /**
@@ -83,7 +85,13 @@ describe('a remote predecessor ending itself on its successor’s attach', () =>
       hostPid: 83212,
       sessionId: '0f8fad5b-d9cb-469f-a165-70867728950e',
     })
-    predecessor.send({ t: 'teleport', handoff: 'carry on', to: os.hostname(), surface: 'headless' })
+    predecessor.send({
+      t: 'teleport',
+      handoff: 'carry on',
+      to: os.hostname(),
+      surface: 'headless',
+      endsSelf: true,
+    })
     await vi.advanceTimersByTimeAsync(0)
     predecessor.send({ t: 'teleport_plan_wait' })
     await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
@@ -97,5 +105,13 @@ describe('a remote predecessor ending itself on its successor’s attach', () =>
       { t: 'teleport_plan', ok: true, endSelf: true },
       { t: 'error', reason: 'superseded by a resume of "cc27"', fatal: true },
     ])
+  })
+})
+
+describe('how long a remote predecessor waits for its plan', () => {
+  it('outlasts the countdown and the whole window the broker waits for the attach', () => {
+    expect(REPLY_TIMEOUT_MS.teleport_plan).toBeGreaterThanOrEqual(
+      COUNTDOWN_MS_DEFAULT + LAND_WINDOW_MS + 60_000,
+    )
   })
 })

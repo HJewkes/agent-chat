@@ -2192,6 +2192,7 @@ describe('a remote predecessor moving to the broker host (CC-951)', () => {
       subject: subject(agentId, { cwd, hostPid: REMOTE_PID, host: 'caller-host' }),
       handoff: 'h',
       to: os.hostname(),
+      endsSelf: true,
     })
     let answered: Awaited<ReturnType<typeof supervisor.teleportPlan>> | undefined
     void supervisor.teleportPlan(agentId).then(reply => (answered = reply))
@@ -2217,6 +2218,7 @@ describe('a remote predecessor moving to the broker host (CC-951)', () => {
       subject: subject(agentId, { cwd: missing, hostPid: REMOTE_PID, host: 'caller-host' }),
       handoff: 'h',
       to: os.hostname(),
+      endsSelf: true,
     })
     await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS)
 
@@ -2227,6 +2229,22 @@ describe('a remote predecessor moving to the broker host (CC-951)', () => {
     expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_handoff')
     expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
     expect(killed).toEqual([])
+  })
+
+  it('refuses a caller whose agent-chat cannot end itself, and ends nothing', async () => {
+    const cwd = workspace()
+    const agentId = await spawnAgent()
+    connectFromAway(agentId, cwd)
+
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { cwd, hostPid: REMOTE_PID, host: 'caller-host' }),
+      handoff: 'h',
+      to: os.hostname(),
+    })
+    await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS)
+
+    expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/predates.*not ended/) })
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_handoff')
   })
 
   it('launches the successor here, and tells the predecessor to end itself only after it attaches', async () => {
@@ -2266,7 +2284,7 @@ describe('a remote predecessor moving to the broker host (CC-951)', () => {
 
 /** CC-951 slice f: a new surface on the remote predecessor's own host opens before it ends. */
 describe('a remote predecessor asking for a new surface on its own host (CC-951)', () => {
-  it('hands a successor-first spec, and sends endSelf only once the successor attaches', async () => {
+  async function newSurface(endsSelf: boolean) {
     const cwd = workspace()
     const agentId = adoptSession('cc27', cwd)
     stopAutoAttach()
@@ -2275,17 +2293,26 @@ describe('a remote predecessor asking for a new surface on its own host (CC-951)
       handoff: 'h',
       surface: 'iterm-window',
       hostPlatform: 'darwin',
+      ...(endsSelf ? { endsSelf: true } : {}),
     })
     await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
-    const plan = await supervisor.teleportPlan(agentId)
-    const successorId = result.agentId as string
+    return {
+      cwd,
+      agentId,
+      successorId: result.agentId as string,
+      plan: await supervisor.teleportPlan(agentId),
+    }
+  }
+
+  it('hands a successor-first spec, and sends endSelf only once the successor attaches', async () => {
+    const { cwd, agentId, successorId, plan } = await newSurface(true)
     expect(plan.launch).toMatchObject({ surface: 'iterm-window', successorFirst: true })
 
     expect(supervisor.teleportLaunched(agentId, { successor: successorId, ok: true })).toEqual({ ok: true })
-    await vi.advanceTimersByTimeAsync(10_000)
+    // Asked at once, before any continuation runs: it must not get the launch plan back.
     let answered: Awaited<ReturnType<typeof supervisor.teleportPlan>> | undefined
     void supervisor.teleportPlan(agentId).then(reply => (answered = reply))
-    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(10_000)
     expect(answered).toBeUndefined()
     expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
 
@@ -2301,5 +2328,12 @@ describe('a remote predecessor asking for a new surface on its own host (CC-951)
 
     expect(answered).toEqual({ ok: true, endSelf: true })
     expect(rowsFor(agentId).map(r => r.kind)).toContain('agent_retired')
+  })
+
+  it('keeps the CC-913 order for a caller whose agent-chat cannot end itself', async () => {
+    const { plan } = await newSurface(false)
+
+    expect(plan.launch?.surface).toBe('iterm-window')
+    expect(plan.launch).not.toHaveProperty('successorFirst')
   })
 })

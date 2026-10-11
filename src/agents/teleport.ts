@@ -180,6 +180,8 @@ export interface TeleportRequest {
   launchSeen?: CarriedFlags
   /** CC-951: the destination machine, an alias from config `machines` or a hostname; absent stays put. */
   to?: string
+  /** CC-951: the caller's MCP process acts on an `endSelf` plan; an older one would be orphaned by it. */
+  endsSelf?: boolean
 }
 
 export interface TeleportOutcome {
@@ -307,6 +309,11 @@ function routeFor(req: TeleportRequest, isolation: string, configDir: string | u
       reason: `${subject.name} has ${isolation} isolation, which is local to ${subject.host}, so it cannot move to ${host}`,
     }
   if (site === 'launcher') return { ok: false, reason: `no launcher connected on ${host}` }
+  if (req.endsSelf !== true)
+    return {
+      ok: false,
+      reason: `agent-chat on ${subject.host} predates ending itself for a successor elsewhere; update it there`,
+    }
   const missing = missingHere(subject.cwd, configDir)
   if (missing !== undefined) return { ok: false, reason: `${missing} does not exist on ${host}` }
   return { ok: true, site }
@@ -342,6 +349,12 @@ interface RemoteWait {
   report?: (report: LaunchOutcome) => void
 }
 
+function rearm(remote: RemoteWait): void {
+  const next = remoteWait()
+  remote.plan = next.plan
+  remote.answer = next.answer
+}
+
 const remoteWait = (): RemoteWait => {
   let answer: (reply: RemotePlanReply) => void = () => undefined
   const plan = new Promise<RemotePlanReply>(resolve => (answer = resolve))
@@ -375,6 +388,8 @@ interface Pending {
   predecessorGone?: boolean
   /** CC-951: who launches the successor: this broker, or the remote predecessor's own host. */
   launchSite: DestinationSite
+  /** CC-951: a caller-site successor opens before its predecessor ends; only a caller that ends itself on `endSelf`. */
+  successorFirst: boolean
 }
 
 /** CC-402: typed into the predecessor's own pane, so it can only launch once the predecessor has ended. */
@@ -489,6 +504,7 @@ export class Teleport {
       // CC-951: a remote predecessor waits on this whichever site launches, since only it can end itself.
       ...(remote ? { remote: remoteWait() } : {}),
       launchSite: route.site,
+      successorFirst: config.requested && req.endsSelf === true,
       since: identity.spawnedAt,
       sessionId: identity.sessionId,
       inboxThrough: this.inboxCursor(subject.name),
@@ -980,8 +996,8 @@ export class Teleport {
       launch = {
         ...this.host.prepareRemoteRelaunch(input),
         landToken: randomUUID(),
-        // CC-951: only an asked-for surface; otherwise the helper still lands after the exit (CC-913).
-        ...(entry.surfaceRequested ? { successorFirst: true as const } : {}),
+        // CC-951: an asked-for surface from a caller that ends itself; otherwise the helper lands after the exit (CC-913).
+        ...(entry.successorFirst ? { successorFirst: true as const } : {}),
       }
     } catch (err) {
       return this.remoteFailed(entry, undefined, (err as Error).message)
@@ -990,7 +1006,7 @@ export class Teleport {
     if (!report.ok) return this.remoteFailed(entry, input, report.reason ?? 'no reason given')
     this.host.confirmRemoteRelaunch(input)
     this.openLanding(entry, launch.landToken as string)
-    if (launch.successorFirst === true) return this.awaitRemoteSuccessor(entry, remote, input)
+    if (launch.successorFirst === true) return this.awaitRemoteSuccessor(entry, input)
     // CC-913: written once the predecessor is gone, not at the report: until its own connection
     // drops it may still be kept (`landFailed`), and a stand-down row reads as superseded for good.
     await this.waitForNameFree(subject.name)
@@ -1016,16 +1032,8 @@ export class Teleport {
    * CC-951: a new surface on the caller's host opens while the predecessor runs. The caller asks
    * for its next plan once its launch is accepted, and is told to end itself only on the attach.
    */
-  private async awaitRemoteSuccessor(
-    entry: Pending,
-    remote: RemoteWait,
-    input: RelaunchInput,
-  ): Promise<void> {
-    const arrival = this.awaitArrival(entry.descendantId)
-    const next = remoteWait()
-    remote.plan = next.plan
-    remote.answer = next.answer
-    const failure = await arrival
+  private async awaitRemoteSuccessor(entry: Pending, input: RelaunchInput): Promise<void> {
+    const failure = await this.awaitArrival(entry.descendantId)
     if (failure === undefined) return this.endPredecessor(entry)
     this.keepPredecessor(entry, input, failure)
   }
@@ -1043,6 +1051,8 @@ export class Teleport {
       remote.report = report => {
         clearTimeout(timer)
         delete remote.report
+        // CC-951: re-armed before the report is acknowledged, so the caller's next wait finds the `endSelf` plan.
+        if (report.ok && launch.successorFirst === true) rearm(remote)
         resolve(report)
       }
       remote.answer({ ok: true, launch })

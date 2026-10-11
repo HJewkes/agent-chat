@@ -116,6 +116,8 @@ export const agentTeleport = defineTool({
         hostPlatform: process.platform,
         ...(launchSeen === undefined ? {} : { launchSeen }),
         ...(to === undefined ? {} : { to }),
+        // CC-951: this build ends its own Claude Code on `endSelf`, so the broker may route it successor first.
+        endsSelf: true,
       },
       'teleport_result',
     )) as Extract<ServerMessage, { t: 'teleport_result' }>

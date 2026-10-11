@@ -1047,6 +1047,8 @@ export type ClientMessage =
       launchSeen?: { channels?: string[]; permissionMode?: string; effort?: string }
       /** CC-951: the destination machine, a config `machines` alias or a hostname; absent stays put. */
       to?: string
+      /** CC-951: the caller's MCP process ends its own Claude Code on an `endSelf` plan; an older one does not. */
+      endsSelf?: boolean
     }
   /**
    * Stop a countdown that has not fired yet. The human's veto, and it has no
