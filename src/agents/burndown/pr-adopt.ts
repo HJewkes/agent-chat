@@ -142,7 +142,8 @@ const FLAG_ONLY_WORD = /secur/i
  * (a seat may work in either). A PR touching one is held, not refused: Shepherd's own protected-path
  * rule covers only CODEOWNERS and .gitmodules. Derived from patterns, not names, so a new guard
  * file is held without an edit here: a file name with a sensitive stem, whole trees, build and
- * test setup.
+ * test setup. The trees are whole on purpose, so an ordinary burndown PR under src/agents/** holds
+ * for a seat release: accepted, and safe by default.
  */
 const PATH_ONLY_STEMS = [
   'custody',
@@ -167,18 +168,19 @@ const PATH_ONLY_STEMS = [
 const PROTECTED_NAME = new RegExp(`(${[...SENSITIVE_STEMS, ...PATH_ONLY_STEMS].join('|')})`, 'i')
 
 const PROTECTED_PATHS = [
-  /^src\/(broker|agents\/(seats|burndown|isolation)|gh-shim|gh-write|leak-guard)\//,
-  /^src\/agents\/profiles/,
-  /^src\/protocol\.ts$/,
-  /^(profiles|scripts|plugins|\.claude-plugin)\//,
+  /^src\/(agents|server|broker|gh-shim|gh-write|leak-guard)\//,
+  /^src\/(cli\/gh-write|spawn-kernel|protocol)\.ts$/,
+  /^(audit|profiles|scripts|plugins|\.claude-plugin|\.github)\//,
+  /(^|\/)\.claude\//,
+  /(^|\/)\.mcp\.json$/,
+  /(^|\/)(CLAUDE|AGENTS)(\.local)?\.md$/i,
   /(^|\/)package(-lock)?\.json$/,
   /(^|\/)tsconfig[^/]*\.json$/,
   /(^|\/)\.npmrc$/,
   /(^|\/)vitest\.config\.[^/]+$/,
-  /^packages\/(authority|tool-guard|egress-scan|decider|owner-queue)\//,
-  /^products\/factory\/src\/shepherd\/[^/]*(merge|hold|release|g10|registration|seats|override|freeze)[^/]*\.ts$/,
-  /^\.github\//,
-  /^CLAUDE\.md$/,
+  /^packages\/(authority|tool-guard|egress-scan|decider|owner-queue|coordinator|agent|agent-dispatch|github)\//,
+  /^products\/factory\/src\/shepherd\//,
+  /(^|\/)(generated-paths\.json|coordinator-allowances\.ts)$/,
 ]
 
 const isProtectedPath = (p: string): boolean =>

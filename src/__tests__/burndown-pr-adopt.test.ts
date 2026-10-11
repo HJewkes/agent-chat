@@ -438,7 +438,7 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.seatLog[0]).toContain('kind "docs-only" is not one the tick registers')
   })
 
-  // Mutation: dropping the protected-path hold registers each of these with no hold.
+  // Mutation: dropping the protected-path hold, or reverting a whole tree to named files, registers one of these unheld.
   it.each([
     'src/server/commands/chat-endorse.ts',
     'src/cli/verbs/permission-hook.ts',
@@ -472,6 +472,38 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     'tsconfig.json',
     'tsconfig.build.json',
     '.claude-plugin/marketplace.json',
+    'src/agents/launch-plan.ts',
+    'src/agents/launch-files.ts',
+    'src/agents/supervisor.ts',
+    'src/agents/teleport.ts',
+    'src/agents/denials.ts',
+    'src/server/index.ts',
+    'src/server/tools.ts',
+    'src/server/commands/agent-spawn.ts',
+    'src/server/commands/agent-profiles.ts',
+    'src/server/commands/chat-decide.ts',
+    'src/cli/gh-write.ts',
+    'src/spawn-kernel.ts',
+    'audit/spawn-doors.json',
+    '.claude/settings.json',
+    '.mcp.json',
+    'docs/internal/CLAUDE.md',
+    'docs/claude.md',
+    'AGENTS.md',
+    'CLAUDE.local.md',
+    'products/factory/src/shepherd/correct-verdict.ts',
+    'products/factory/src/shepherd/await-verdict.ts',
+    'products/factory/src/shepherd/reviewer-x.ts',
+    'products/factory/src/shepherd/route-table.ts',
+    'products/factory/src/shepherd/presence.ts',
+    'products/factory/src/shepherd/train.ts',
+    'products/factory/src/shepherd/tree-carry.ts',
+    'packages/coordinator/src/seat-config.ts',
+    'packages/agent/src/claude-code-adapter.ts',
+    'packages/github/src/squash-cli.ts',
+    'packages/agent-dispatch/src/a.ts',
+    'config/generated-paths.json',
+    'packages/x/src/coordinator-allowances.ts',
     'src/agents/hooks.ts',
     'src/agents/launch-policy.ts',
     'src/agents/identity.ts',
@@ -524,8 +556,8 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.calls[1]).toContain('protected path')
   })
 
-  // Mutation: holding every non-test path would hold these.
-  it.each(['src/widgets/render.ts', 'src/service-check.ts', 'docs/guide.md', 'src/server/tools.ts'])(
+  // Mutation: holding every non-test path, or protecting all of src/, would hold these.
+  it.each(['src/widgets/render.ts', 'src/service-check.ts', 'docs/guide.md', 'src/cli/verbs/list.ts'])(
     'registers an ordinary path %s with no hold',
     path => {
       const f = fake({ pulls: [pull()], tasks: [task()], files: [file(path)] })
