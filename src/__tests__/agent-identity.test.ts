@@ -440,6 +440,23 @@ describe('AgentLog over a real event log', () => {
       expect(agents.supersededBy(agents.byName('seat')!)).toBeUndefined()
     })
 
+    it('takes a later name on a pre-mark row as chosen, though it carries the derived text', () => {
+      // The incident's seats: derived `projects`, renamed, then readopted with the original brief.
+      const log = freshLog()
+      const body = 'unregistered session in /Users/me/projects'
+      inOrder(
+        () => spawn(log, 'current', 'seat'),
+        () => log.append({ ...adoptRow('hand-started', 'projects', 'sess-1'), body }),
+        () => log.append({ kind: 'agent_attached', actor: 'projects', ref: 'hand-started', body }),
+        () =>
+          log.append({ kind: 'agent_attached', actor: 'seat', ref: 'hand-started', body: 'coordinating' }),
+        () => log.append({ kind: 'agent_attached', actor: 'seat', ref: 'hand-started', body }),
+      )
+      const agents = new AgentLog(log)
+
+      expect(agents.supersededBy(agents.byName('seat')!)?.agentId).toBe('hand-started')
+    })
+
     it('counts that session once it chooses the name for itself', () => {
       const log = freshLog()
       inOrder(

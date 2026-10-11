@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type net from 'node:net'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { BrokerCore, type Conn } from '../broker/core.js'
+import { BrokerCore, readoptRegistration, type Conn } from '../broker/core.js'
 import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Supervisor } from '../agents/supervisor.js'
@@ -213,30 +213,63 @@ describe('the watchdog resume', () => {
     expect(core.events.agentEvents().filter(r => r.kind === 'agent_resumed')).toEqual([])
   })
 
-  // Review of #566: a human session opened in the agent's worktree derives the agent's name and must not block its resume.
-  it('still resumes an agent after a session that only derived its name came and went', async () => {
-    const cwd = tmp('by-id-cwd-')
-    const meta = { cwd, profile: 'explorer', isolation: 'none', surface: 'headless', session_id: 'sess-own' }
-    spawnRow('agent', 'seat-x', 'seat-x', meta)
+  /** An exited spawned seat-x on its own account, with its transcript on disk so a resume can proceed. */
+  async function exitedSeat(cwd: string): Promise<void> {
+    spawnRow('agent', 'seat-x', 'seat-x', {
+      cwd,
+      profile: 'explorer',
+      isolation: 'none',
+      surface: 'headless',
+      session_id: 'sess-own',
+    })
     await exitRow('agent', 'seat-x')
     const file = transcriptPath(cwd, 'sess-own')
     fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(file, '{}\n')
     tick()
+  }
+
+  /** A hand-started session as the MCP server runs it: a derived name, optionally a chosen one, then a restart. */
+  function handStarted(cwd: string, derived: string, chosen?: string): void {
     const conn = {} as unknown as net.Socket as Conn
-    const registration = { name: 'seat-x', workingOn: '', cwd, pid: 1, sessionId: 'sess-human' }
-    expect(core.register(conn, { t: 'register', ...registration, provisional: true }).ok).toBe(true)
+    const base = { cwd, pid: 1, sessionId: 'sess-human' }
+    const workingOn = `unregistered session in ${cwd}`
+    expect(
+      core.register(conn, { t: 'register', name: derived, workingOn, provisional: true, ...base }).ok,
+    ).toBe(true)
+    if (chosen !== undefined)
+      expect(
+        core.register(conn, { t: 'register', name: chosen, workingOn: 'coordinating', ...base }).ok,
+      ).toBe(true)
     core.drop(conn)
-    // A readopt after an MCP restart re-registers under the same name without the flag.
+    const known = core.agents.bySession('sess-human')!
     const readopted = {} as unknown as net.Socket as Conn
-    expect(core.register(readopted, { t: 'register', ...registration, workingOn: 'reconnected' }).ok).toBe(
-      true,
-    )
+    expect(core.register(readopted, readoptRegistration(known, { t: 'readopt', ...base })).ok).toBe(true)
     core.drop(readopted)
+  }
+
+  // Review of #566: a human session opened in the agent's worktree derives the agent's name and must not block its resume.
+  it('still resumes an agent after a session that only derived its name came and went', async () => {
+    const cwd = tmp('by-id-cwd-')
+    await exitedSeat(cwd)
+    handStarted(cwd, 'seat-x')
 
     const res = await sup.resume('seat-x', { message: 'Watchdog: wake', source: 'watchdog' })
 
     expect(res).toMatchObject({ ok: true, agentId: 'agent' })
+  })
+
+  // The incident as it happened: derived `projects`, chat_register('seat-x'), an MCP restart, then the watchdog.
+  it('refuses the agent once a hand-started session chose its name and was readopted', async () => {
+    const cwd = tmp('by-id-cwd-')
+    await exitedSeat(cwd)
+    handStarted(cwd, 'projects', 'seat-x')
+
+    const res = await sup.resume('seat-x', { message: 'Watchdog: wake', source: 'watchdog' })
+
+    expect(res.ok).toBe(false)
+    expect(res.reason).toMatch(/sess-own is stale: a newer adopted seat-x/)
+    expect(core.events.agentEvents().filter(r => r.kind === 'agent_resumed')).toEqual([])
   })
 })
 
