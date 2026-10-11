@@ -615,11 +615,15 @@ is denied: the two files may set `core.pager` to a push and `core.hooksPath` for
 the TP-630 allowance for `git -c "$X" log`.
 
 An `ext::` transport runs a shell command, enabled by `protocol.ext.allow` or
-`protocol.allow=always`. The guard finds `ext::` in any word or config value a git command holds,
-case-insensitive, so a `-c remote.<x>.url=ext::…`, `-c remote.<x>.pushurl=ext::…`, a
-`url.<base>.insteadOf` whose base is `ext::…`, and `archive --remote=ext::…` are all covered, not
-only a bare `ext::` argument. It also treats the command of `git remote-ext <name> <cmd>` as run.
-git-remote-ext decodes the payload the way the guard now does (TP-636 fix round 2): arguments split
+`protocol.allow=always`. git runs `ext::` only as a whole URL, so the guard checks exactly that span
+of each word that holds `ext::`, case-insensitive: an argument that starts with it, the value of a
+`--name=` option such as `archive --remote=ext::…`, and the value of a config word given to `-c`
+or to `clone -c`/`--config`, as in `-c remote.<x>.url=ext::…` or `-c remote.<x>.pushurl=ext::…`.
+`ext::` anywhere else in a word is a span the guard cannot pin down, and denies. So does an `ext::`
+base in a `url.<base>.insteadOf` or `.pushInsteadOf` key: git joins the base to the rest of each
+URL it matches, so the end of its command is not known from the line. A commit message that
+mentions `ext::` mid-text is an accepted false deny. The guard also treats the command of
+`git remote-ext <name> <cmd>` as run. git-remote-ext decodes the payload the way the guard now does (TP-636 fix round 2): arguments split
 on spaces, `% ` an embedded space, `%%` a literal percent, `%s`/`%S`/`%G`/`%V` substitutions it
 cannot know. The decoded argv is checked as a top-level Bash line, so
 `git fetch "ext::sh -c git% push% --no-verify"` is denied: the `% ` join rebuilds

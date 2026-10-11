@@ -2497,8 +2497,32 @@ describe('a git config value that runs a program (TP-636)', () => {
     expect(checkCommand(command, ctx())).toBe(REASONS.noVerify)
   })
 
-  it('denies an ext:: value the guard cannot read', () => {
-    expect(checkCommand('git clone "ext::$C" r', ctx())).toBe(REASONS.configProgram)
+  it.each([
+    'git clone "ext::$C" r',
+    "git -c protocol.ext.allow=always -c 'url.ext::sh -c git% push% --no-verify.insteadOf=https://x.invalid/r' fetch https://x.invalid/r",
+    "git -c protocol.ext.allow=always -c 'url.ext::sh -c git% push% --no-verify.pushInsteadOf=https://x.invalid/r' push https://x.invalid/r",
+    "git -c 'URL.EXT::sh -c git% push.InsteadOf=https://x.invalid/r' fetch https://x.invalid/r",
+    "git clone -c 'url.ext::sh -c git% push.insteadOf=https://x.invalid/r' https://x.invalid/r",
+    "git clone --config='url.ext::sh -c git% push.insteadOf=https://x.invalid/r' https://x.invalid/r",
+    'git fetch "x ext::sh -c git% push% --no-verify"',
+    'git commit -m "Read ext:: URLs"',
+    'git -c "remote.x.url= ext::sh -c git% push% --no-verify" fetch x',
+  ])('denies an ext:: span the guard cannot read or pin down: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.configProgram)
+  })
+
+  it.each([
+    "git clone -c 'remote.origin.url=ext::sh -c git% push% --no-verify' https://x.invalid/r",
+    "git clone --config='remote.origin.url=ext::sh -c git% push% --no-verify' https://x.invalid/r",
+  ])('denies a skipped hook in an ext:: config value after the subcommand: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it.each([
+    'git -c protocol.ext.allow=never fetch origin',
+    "git -c 'url.https://example.com/.insteadOf=gh:' fetch gh:r",
+  ])('allows %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
   })
 })
 

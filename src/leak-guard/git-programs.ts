@@ -122,10 +122,46 @@ export function decodeExt(payload: string): string | undefined {
     .join(' ')
 }
 
+const EXT = 'ext::'
+const URL_REWRITE = /^url\..*\.(?:push)?insteadof$/i
+const hasExt = (text: string): boolean => text.toLowerCase().includes(EXT)
+
 /**
- * The commands `ext::` transport URLs run on a git command (TP-636): every argument or config
- * value that holds `ext::`, case-insensitive, and the command of `git remote-ext <name> <cmd>`.
- * `unreadable` when such a word holds an expansion the guard cannot read or a payload it cannot decode.
+ * The payload of the `ext::` URL that one text is, for git: git runs `ext::` only as a whole URL,
+ * so the span is the text when it starts with `ext::`. null for none, undefined when `ext::` sits
+ * elsewhere in the text and the span git runs cannot be pinned down.
+ */
+function urlPayload(text: string): string | null | undefined {
+  if (text.toLowerCase().startsWith(EXT)) return text.slice(EXT.length)
+  return hasExt(text) ? undefined : null
+}
+
+/**
+ * The `ext::` payload one config `key=value` runs: its value as a URL. A `url.<base>.insteadOf` or
+ * `.pushInsteadOf` base is joined to the rest of each URL it matches, so the end of an `ext::` base's
+ * command is not pinned down.
+ */
+function configPayload(kv: string): string | null | undefined {
+  const eq = kv.indexOf('=')
+  const key = eq < 0 ? kv : kv.slice(0, eq)
+  if (URL_REWRITE.test(key) && hasExt(key)) return undefined
+  return eq < 0 ? null : urlPayload(kv.slice(eq + 1))
+}
+
+/** The `ext::` payload of one argument: the word, or the value of a `--name=value` option. */
+function argPayload(word: string): string | null | undefined {
+  const option = /^--[\w-]+=/.exec(word)?.[0]
+  if (option === '--config=') return configPayload(word.slice(option.length))
+  return urlPayload(option === undefined ? word : word.slice(option.length))
+}
+
+const CONFIG_FLAGS = new Set(['-c', '--config'])
+
+/**
+ * The commands `ext::` transport URLs run on a git command (TP-636): the span of each argument or
+ * config value git runs as an `ext::` URL, and the command of `git remote-ext <name> <cmd>`.
+ * `unreadable` when a word holding `ext::` has an expansion the guard cannot read, a span it cannot
+ * pin down, or a payload it cannot decode.
  */
 export function extPrograms(
   resolved: readonly (string | undefined)[],
@@ -134,16 +170,17 @@ export function extPrograms(
 ): { scripts: string[]; unreadable: boolean } {
   const scripts: string[] = []
   let unreadable = false
-  const decode = (payload: string): void => {
-    const script = decodeExt(payload)
+  const decode = (payload: string | null | undefined): void => {
+    if (payload === null) return
+    const script = payload === undefined ? undefined : decodeExt(payload)
     if (script === undefined) unreadable = true
     else scripts.push(script)
   }
   marked.forEach((word, i) => {
-    if (!unmark(word).toLowerCase().includes('ext::')) return
+    if (!hasExt(unmark(word))) return
     const value = resolved[i]
     if (value === undefined) unreadable = true
-    else decode(value.slice(value.toLowerCase().indexOf('ext::') + 'ext::'.length))
+    else decode(CONFIG_FLAGS.has(resolved[i - 1] ?? '') ? configPayload(value) : argPayload(value))
   })
   if (resolved[at] === 'remote-ext') {
     const cmd = resolved[at + 2]
