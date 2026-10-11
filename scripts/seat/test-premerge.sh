@@ -9,9 +9,10 @@ empty_rules() { echo '[]' > "$W/case/rules_branches_main.json"; echo 404 > "$W/c
 CR=commits_SHA_check_runs_per_page_100.json
 # add_fenced_verdict <actor> <msg_id> <MERGE|FIX_FIRST> <head>: the verdict block wrapped in a code fence.
 add_fenced_verdict() {
-  local body; body=$(printf '```\nVerdict: %s\nPR: %s#%s\nHead: %s\nBlocking: none\n```' "$3" "$R" "$N" "$4")
-  sqlite3 "$EVENTS_DB" "insert into events (ts,kind,actor,msg_id,body) values (0,'message','$1','$2','$body')"
+  add_body "$1" "$2" "$(printf '```\nVerdict: %s\nPR: %s#%s\nHead: %s\nBlocking: none\n```' "$3" "$R" "$N" "$4")"
 }
+# add_body <actor> <msg_id> <body>
+add_body() { sqlite3 "$EVENTS_DB" "insert into events (ts,kind,actor,msg_id,body) values (0,'message','$1','$2','$3')"; }
 ok_case() { new_case "${1:-$CLEAN}"; add_verdict seat-9-review msg0001 MERGE "$SHA"; }
 
 ok_case; run;                                              check "OK" 0 "^OK .*actor=seat-9-review msg=msg0001"
@@ -121,6 +122,10 @@ ok_case; add_fenced_verdict seat-9-review msg0021 FIX_FIRST "$SHA"; run
 check "7b fenced FIX_FIRST beats an older unfenced MERGE" 1 "^FAIL .*latest verdict not MERGE: Verdict: FIX_FIRST"
 new_case "$CLEAN"; add_fenced_verdict seat-9-impl msg0022 MERGE "$SHA"; run
 check "7b fenced MERGE from a non-reviewer is ignored" 1 "^FAIL .*no verdict from a reviewer"
+ok_case; add_body seat-9-review msg0023 "$(printf '```\n81 passed, 0 failed\n```\nnotes\nVerdict: MERGE\nPR: %s#%s\nHead: %s' "$R" "$N" "$SHA")"; run
+check "7b fenced test output before a later verdict block is not a verdict" 0 "^OK .*msg=msg0001"
+ok_case; add_body coord-a msg0024 "$(printf '```\nreviewer wrote:\nVerdict: MERGE\nPR: %s#%s\n```\nnoted' "$R" "$N")"; run
+check "7b coordinator's fenced quote of a verdict is not a verdict" 0 "^OK .*msg=msg0001"
 
 # 8: arguments are validated before use
 out=$("$BIN/premerge" 'acme/wid gets' 7 "$SHA" "$W/clone" 2>&1); rc=$?;   check "8 bad repo" 2 "^bad argument"

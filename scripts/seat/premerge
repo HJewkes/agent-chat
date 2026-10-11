@@ -178,6 +178,7 @@ pick_verdict() {
     [ "$ractor" = "$branch_agent" ] && continue
     body=$(sqlite3 -readonly "$DB" "select body from events where id=$rid") || die "cannot read verdict $rid"
     body=$(tr -d '\r' <<<"$body" | unfence)
+    [[ $(head -1 <<<"$body") == Verdict:* ]] || continue
     grep -qxF "PR: $R#$N" <<<"$body" || continue
     if is_coordinator "$ractor"; then
       [[ $(head -1 <<<"$body") =~ ^Verdict:\ MERGE([[:space:]]|$) ]] && continue
