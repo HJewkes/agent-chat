@@ -7,6 +7,11 @@ setup_repo; setup_db
 run() { out=$("$BIN/premerge" "$R" "$N" "${1:-$SHA}" "$W/clone" "${2:-}" 2>&1); rc=$?; }
 empty_rules() { echo '[]' > "$W/case/rules_branches_main.json"; echo 404 > "$W/case/branches_main_protection_required_status_checks.status"; }
 CR=commits_SHA_check_runs_per_page_100.json
+# add_fenced_verdict <actor> <msg_id> <MERGE|FIX_FIRST> <head>: the verdict block wrapped in a code fence.
+add_fenced_verdict() {
+  local body; body=$(printf '```\nVerdict: %s\nPR: %s#%s\nHead: %s\nBlocking: none\n```' "$3" "$R" "$N" "$4")
+  sqlite3 "$EVENTS_DB" "insert into events (ts,kind,actor,msg_id,body) values (0,'message','$1','$2','$body')"
+}
 ok_case() { new_case "${1:-$CLEAN}"; add_verdict seat-9-review msg0001 MERGE "$SHA"; }
 
 ok_case; run;                                              check "OK" 0 "^OK .*actor=seat-9-review msg=msg0001"
@@ -108,6 +113,14 @@ ok_case; add_verdict seat-9-review msg0014 WAIT "$SHA"; run
 check "7 newer reviewer WAIT beats older MERGE at the same head" 1 "^FAIL .*latest verdict not MERGE: Verdict: WAIT"
 new_case "$CLEAN"; add_verdict seat-9-review msg0014 WAIT "$SHA"; add_verdict seat-9-review msg0015 MERGE "$SHA"; run
 check "7 reviewer MERGE after WAIT at the same head passes" 0 "^OK .*msg=msg0015"
+
+# 7b: a verdict whose body opens with a code fence counts like an unfenced one (CC-842)
+new_case "$CLEAN"; add_fenced_verdict seat-9-review msg0020 MERGE "$SHA"; run
+check "7b fenced MERGE from a reviewer" 0 "^OK .*actor=seat-9-review msg=msg0020"
+ok_case; add_fenced_verdict seat-9-review msg0021 FIX_FIRST "$SHA"; run
+check "7b fenced FIX_FIRST beats an older unfenced MERGE" 1 "^FAIL .*latest verdict not MERGE: Verdict: FIX_FIRST"
+new_case "$CLEAN"; add_fenced_verdict seat-9-impl msg0022 MERGE "$SHA"; run
+check "7b fenced MERGE from a non-reviewer is ignored" 1 "^FAIL .*no verdict from a reviewer"
 
 # 8: arguments are validated before use
 out=$("$BIN/premerge" 'acme/wid gets' 7 "$SHA" "$W/clone" 2>&1); rc=$?;   check "8 bad repo" 2 "^bad argument"
