@@ -63,6 +63,9 @@ const Row = z.object({
   /** CC-934: read only to print a seat's boot In flight; the shape is Shepherd's, so it is not narrowed here. */
   nextAction: z.unknown().optional(),
   pendingGate: z.unknown().optional(),
+  /** TP-1570: read only to write a retiring seat agent's merged row; absent on an older Shepherd. */
+  implementer: z.string().nullable().optional(),
+  outcome: z.object({ kind: z.string() }).nullable().optional().catch(null),
 })
 
 /**

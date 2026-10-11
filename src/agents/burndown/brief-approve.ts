@@ -6,6 +6,8 @@ import { parseTask, readTaskText } from './source.js'
 import type { Report } from '../../cli/command.js'
 
 const PROPOSED = 'brief:proposed='
+const BRIEF_SRC = 'brief:src='
+const BRIEFER_SRC = 'brief:src=briefer'
 const BRIEF_READY = /^brief:ready(=|$)/
 
 /** What approval touches outside its own logic, so a test can stand in for the disk and `active-work`. */
@@ -20,7 +22,7 @@ export interface ApprovePorts {
 const refused = (message: string): Report => ({ ok: false, lines: [], errors: [message] })
 
 /**
- * CC-940: promotes a briefer's `brief:proposed=<day>` to `brief:ready=<today>` through `active-work task edit`.
+ * CC-940: promotes a briefer's `brief:proposed=<day>` to `brief:ready=<today>` and records `brief:src=briefer` (replacing any other src) through `active-work task edit`.
  * Refused when the task is unknown, carries no proposal, or its plan file is missing.
  */
 export function approveBrief(taskId: string, ports: ApprovePorts, today: string): Report {
@@ -35,8 +37,11 @@ export function approveBrief(taskId: string, ports: ApprovePorts, today: string)
     const ready = `brief:ready=${today}`
     // Add first: a failure after it leaves the task with a ready tag, and a rerun finishes the cleanup.
     if (!tags.includes(ready)) ports.edit(slug, taskId, ['--add-tag', ready])
-    for (const stale of tags.filter(t => t !== ready && (t.startsWith(PROPOSED) || BRIEF_READY.test(t))))
-      ports.edit(slug, taskId, ['--remove-tag', stale])
+    if (!tags.includes(BRIEFER_SRC)) ports.edit(slug, taskId, ['--add-tag', BRIEFER_SRC])
+    const stale = (t: string) =>
+      t !== ready &&
+      (t.startsWith(PROPOSED) || BRIEF_READY.test(t) || (t.startsWith(BRIEF_SRC) && t !== BRIEFER_SRC))
+    for (const old of tags.filter(stale)) ports.edit(slug, taskId, ['--remove-tag', old])
   } catch (err) {
     return refused(`active-work task edit failed: ${err instanceof Error ? err.message : String(err)}`)
   }

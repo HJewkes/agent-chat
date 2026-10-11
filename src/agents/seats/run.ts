@@ -14,7 +14,7 @@ import {
   type Pool,
   type Seat,
 } from './charter.js'
-import { heartbeatStep } from './heartbeat.js'
+import { heartbeatStep, PAUSE_WAKE_MESSAGE, type HeartbeatStep } from './heartbeat.js'
 import type { Eligibility, SeatRecord, WatchdogDoc } from './io.js'
 import {
   RESUME_MESSAGE,
@@ -27,6 +27,8 @@ import type { RunLock } from './lock.js'
 import { HANDOFF_GRACE_MS, RELAUNCH_QUIET_MS, judgeRelaunch, type RelaunchVerdict } from './relaunch.js'
 import { checkAttended } from './attended.js'
 import { judgeService, runServiceCheck, type ServiceCheckRunner } from './service-check.js'
+import { seatAccount } from './seat-account.js'
+import { seatTarget } from './seat-target.js'
 import { poolPace } from './pace.js'
 import { publishPace, type PaceStore } from './pace-pass.js'
 import {
@@ -113,6 +115,8 @@ export interface WatchdogDeps {
   transcriptFound?: (agentId: string) => boolean | undefined
   /** CC-465: raises one item on the human queue. */
   notifyHuman?: (text: string) => Promise<WakeResult>
+  /** CC-391: records each delivered heartbeat as a `heartbeat_watchdog` row; absent, nothing is recorded. */
+  logEvent?: (event: string, detail: Record<string, unknown>) => void
 }
 
 export interface WatchdogOptions {
@@ -413,13 +417,17 @@ function seatRelaunch(
 const relaunchHold = (relaunch: SeatRelaunch | undefined): string | undefined =>
   relaunch === undefined ? undefined : `relaunch: ${relaunch.verdict.reason}`
 
-type CarriedMarks = Pick<SeatRecord, 'relaunchedAt' | 'relaunchTries' | 'teleportFailed' | 'heartbeat'>
+type CarriedMarks = Pick<
+  SeatRecord,
+  'relaunchedAt' | 'relaunchTries' | 'teleportFailed' | 'staleRefused' | 'heartbeat'
+>
 
 /** The marks a pass keeps from the seat's last record unless an action this pass replaces them. */
 const carriedMarks = (previous: SeatRecord | undefined): CarriedMarks => ({
   ...(previous?.relaunchedAt === undefined ? {} : { relaunchedAt: previous.relaunchedAt }),
   ...(previous?.relaunchTries === undefined ? {} : { relaunchTries: previous.relaunchTries }),
   ...(previous?.teleportFailed === undefined ? {} : { teleportFailed: previous.teleportFailed }),
+  ...(previous?.staleRefused === undefined ? {} : { staleRefused: previous.staleRefused }),
   ...(previous?.heartbeat === undefined ? {} : { heartbeat: previous.heartbeat }),
 })
 
@@ -433,6 +441,28 @@ interface Judgement {
   /** CC-326: set when the seat's journal could not be read. */
   journalFault?: string
   log: SeatJournal
+  /** CC-959: why a dark seat must not be woken by name, keyed by its latest session. */
+  stale?: StaleSeat
+}
+
+interface StaleSeat {
+  session: string
+  reason: string
+}
+
+/** CC-959: undefined when a name-keyed resume wakes the seat's latest session on the seat file's account. */
+function staleSeat(pass: Pass, seat: string): StaleSeat | undefined {
+  const account = seatAccount(pass.deps.readSeatFile(seat) ?? '', pass.pools)
+  const target = seatTarget(pass.roster.agents, seat, account)
+  if (target.kind === 'resume-by-name') return undefined
+  const { latest, stale } = target
+  const session = latest.sessionId ?? latest.agentId ?? latest.name
+  const dir = latest.configDir || 'an unrecorded account'
+  const holders = stale.length === 0 ? '' : `; older spawned rows still hold the name: ${stale.join(', ')}`
+  const reason =
+    `latest session ${session} is ${latest.origin ?? 'spawned'} on ${dir}; ` +
+    `seat file names ${account?.configDir ?? 'no account'}${holders}`
+  return { session, reason }
 }
 
 /** What the idle wake is decided on; the scorer is asked only for a seat nothing else holds. */
@@ -481,9 +511,11 @@ function judgeSeat(pass: Pass, seat: Seat): Judgement {
     ...liveness.mark,
     ...carriedMarks(previous),
   }
+  const stale = pass.roster.connected.includes(seat.name) ? undefined : staleSeat(pass, seat.name)
   const extra = {
     ...(log.unreadable === undefined ? {} : { journalFault: log.unreadable }),
     ...(relaunch === undefined ? {} : { relaunch }),
+    ...(stale === undefined ? {} : { stale }),
   }
   return { decision, budget, record, liveness: liveness.verdict, log, ...extra }
 }
@@ -599,6 +631,7 @@ async function heartbeat(pass: Pass, seat: Seat, log: SeatJournal): Promise<stri
     pauseUntil: log.pauseUntil,
     activityAt: log.activityAt,
     mark: record.heartbeat,
+    source: seat.heartbeatSource,
   })
   if (step.mark === undefined) return []
   if (step.message === undefined) {
@@ -609,7 +642,17 @@ async function heartbeat(pass: Pass, seat: Seat, log: SeatJournal): Promise<stri
   // The mark advances only on delivery, so a failed tick or pause wake is retried next run.
   if (!woke.ok) return [`${name}: Watchdog: heartbeat FAILED (${woke.detail})`]
   record.heartbeat = step.mark
+  pass.deps.logEvent?.('heartbeat_watchdog', heartbeatRow(seat, step))
   return []
+}
+
+function heartbeatRow(seat: Seat, step: HeartbeatStep): Record<string, unknown> {
+  const pauseWake = step.message === PAUSE_WAKE_MESSAGE
+  return {
+    seat: seat.name,
+    source: seat.heartbeatSource ?? 'cron',
+    ...(pauseWake ? { pauseWake: true, until: step.mark?.wokeFor } : { slot: step.mark?.slot }),
+  }
 }
 
 /** CC-465: a seat with no log line at all has been quiet at least the relaunch threshold. */
@@ -646,37 +689,60 @@ const failedTeleportLine = (seat: string, successor: string): string =>
   `watchdog relaunch ${seat} FAILED: teleport successor ${successor} never started; ` +
   `run ~/.agent-chat/agents/${successor}/relaunch`
 
-/** CC-465: retires nothing; logs and raises one human item per stuck successor, retried until one is raised. */
-async function failedTeleport(pass: Pass, seat: string, successor: string): Promise<string[]> {
+/** Logs and raises one human item per key under `mark`, retried until one is raised. */
+async function flagOnce(
+  pass: Pass,
+  seat: string,
+  mark: 'teleportFailed' | 'staleRefused',
+  key: string,
+  line: string,
+): Promise<string[]> {
   const record = pass.doc.seats[seat]
-  if (record?.teleportFailed === successor) return []
-  const line = failedTeleportLine(seat, successor)
+  if (record?.[mark] === key) return []
   pass.deps.appendLog(seat, pass.deps.now(), line)
   const raised = (await pass.deps.notifyHuman?.(line).catch((err: unknown) => ({
     ok: false,
     detail: err instanceof Error ? err.message : String(err),
   }))) ?? { ok: false, detail: 'no human queue' }
   if (!raised.ok) return [`${line}; human item not raised (${raised.detail})`]
-  if (record !== undefined) record.teleportFailed = successor
+  if (record !== undefined) record[mark] = key
   return [line]
 }
 
+/** CC-465: retires nothing; logs and raises one human item per stuck successor. */
+const failedTeleport = (pass: Pass, seat: string, successor: string): Promise<string[]> =>
+  flagOnce(pass, seat, 'teleportFailed', successor, failedTeleportLine(seat, successor))
+
+/** CC-959: wakes nothing; logs and raises one human item per refused latest session. */
+const refuseStale = (pass: Pass, seat: string, verb: string, stale: StaleSeat): Promise<string[]> =>
+  flagOnce(pass, seat, 'staleRefused', stale.session, `watchdog ${verb} ${seat} REFUSED: ${stale.reason}`)
+
 /** Liveness first, then the relaunch, then the idle wake; the first that acts ends the seat's turn. */
 async function seatAction(pass: Pass, name: string, judged: Judgement): Promise<string[]> {
-  const { liveness, relaunch, decision, journalFault } = judged
-  if (liveness.resume) return [await resumeDark(pass, name, liveness)]
+  const { liveness, relaunch, decision, journalFault, stale } = judged
+  // CC-959: every path below that launches a dark seat resumes it by name, which wakes the stale row.
+  const gated = async (verb: string, run: () => Promise<string>): Promise<string[]> =>
+    stale === undefined ? [await run()] : refuseStale(pass, name, verb, stale)
+  if (liveness.resume) return gated('resume', () => resumeDark(pass, name, liveness))
   if (liveness.refused) return [`${name}: Watchdog: ${liveness.reason}`]
   if (relaunch?.successor !== undefined) return failedTeleport(pass, name, relaunch.successor)
   const handoff = pass.deps.relaunchHandoff
   if (relaunch?.verdict.relaunch && handoff !== undefined)
-    return [await relaunchDark(pass, name, relaunch.verdict, handoff, judged.log.activityAt)]
+    return gated('relaunch', () => relaunchDark(pass, name, relaunch.verdict, handoff, judged.log.activityAt))
   if (relaunch?.verdict.refused) return [`${name}: Watchdog: ${relaunch.verdict.reason}`]
-  if (decision.fire) return [await act(pass, name, decision)]
+  if (decision.fire) return gated('wake', () => act(pass, name, decision))
   if (journalFault !== undefined) return [`${name}: Watchdog: held: ${journalFault}`]
   return []
 }
 
-function dryRunLine({ decision, liveness, relaunch }: Judgement): string {
+/** CC-959: a launch the stale gate would stop reads as refused, so a dry run shows what the pass does. */
+function dryRunLine(judged: Judgement): string {
+  const line = plannedLine(judged)
+  const launches = /^WOULD (RESUME|RELAUNCH|FIRE)/.test(line)
+  return launches && judged.stale !== undefined ? `WOULD REFUSE: ${judged.stale.reason}` : line
+}
+
+function plannedLine({ decision, liveness, relaunch }: Judgement): string {
   if (liveness.resume) return `WOULD RESUME: ${liveness.reason}`
   if (liveness.refused) return `skip: ${liveness.reason}`
   if (relaunch?.successor !== undefined)
