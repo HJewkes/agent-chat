@@ -34,7 +34,14 @@ export interface Seat {
   pacing?: string
   /** CC-862: the cron the watchdog sends `Heartbeat tick` on, e.g. `17,47 * * * *`. */
   heartbeatCron?: string
+  /** CC-391: `watchdog` says the seat runs no CronCreate heartbeat, so the watchdog is its only tick; unset or unknown reads as `cron`. */
+  heartbeatSource?: HeartbeatSource
 }
+
+export type HeartbeatSource = 'cron' | 'watchdog'
+
+const heartbeatSourceOf = (value: string | undefined): HeartbeatSource | undefined =>
+  value === 'cron' || value === 'watchdog' ? value : undefined
 
 /** The seat file's `spend:` block; either stop may be absent. */
 export interface SeatSpend {
@@ -140,6 +147,7 @@ export function parseSeat(name: string, seatFile: string): Seat | undefined {
   if (prefix === undefined || pool === undefined) return undefined
   const pacing = frontmatterField(seatFile, 'pacing')
   const heartbeatCron = frontmatterField(seatFile, 'heartbeat_cron')
+  const heartbeatSource = heartbeatSourceOf(frontmatterField(seatFile, 'heartbeat_source'))
   return {
     name,
     prefix,
@@ -147,6 +155,7 @@ export function parseSeat(name: string, seatFile: string): Seat | undefined {
     spend: parseSpend(seatFile),
     ...(pacing === undefined ? {} : { pacing }),
     ...(heartbeatCron === undefined || heartbeatCron === '' ? {} : { heartbeatCron }),
+    ...(heartbeatSource === undefined ? {} : { heartbeatSource }),
   }
 }
 
