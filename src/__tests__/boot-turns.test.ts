@@ -10,7 +10,7 @@ const read = (name: string): GenerationBoot =>
   bootTurns(fs.readFileSync(path.join(FIXTURES, name), 'utf8').split('\n'))
 
 const gen = (over: Partial<GenerationBoot>): GenerationBoot => ({
-  seat: 'titan-coord',
+  seat: 'alpha-seat',
   startedAt: '2026-10-09T08:00:00.000Z',
   turns: 10,
   bootTurns: 0,
@@ -23,8 +23,8 @@ const gen = (over: Partial<GenerationBoot>): GenerationBoot => ({
 
 describe('bootTurns', () => {
   it('names the seat from a relaunch prompt and from a charter prompt', () => {
-    expect(read('before.jsonl').seat).toBe('titan-coord')
-    expect(read('after.jsonl').seat).toBe('titan-coord')
+    expect(read('before.jsonl').seat).toBe('alpha-seat')
+    expect(read('after.jsonl').seat).toBe('alpha-seat')
   })
 
   it('leaves a session with no seat prompt unnamed, so summarise skips it', () => {
