@@ -3,10 +3,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { runChecks } from '../broker/doctor.js'
+import { dispatchStatsPorts } from '../agents/burndown/dispatch-stats-source.js'
 import { bootDeps } from '../cli/verbs/seats.js'
 
 /**
- * CC-955 S2b: the seats boot `ready` read and the doctor's burndown check read the
+ * CC-955 S2b: the seats boot `ready` read, the doctor's burndown check and the dispatch-stats `maxAgents` port read the
  * resolved config, so a settings file they cannot parse is seen by each. The flat file alone never held such a file.
  */
 
@@ -87,5 +88,21 @@ describe('doctor burndown check under the resolved burndown config', () => {
     write(settingsFile(), MALFORMED)
 
     expect(await burndown()).toMatchObject({ status: 'warn', detail: expect.stringMatching(/is malformed/) })
+  })
+})
+
+describe('dispatch-stats maxAgents under the resolved burndown config', () => {
+  const maxAgents = (): number => dispatchStatsPorts(path.join(world, 'autonomy'), new Date()).maxAgents()
+
+  it('reads the flat file cap when the settings file is sound', () => {
+    write(path.join(world, 'home', 'burndown.config.json'), JSON.stringify({ maxAgents: 7 }))
+
+    expect(maxAgents()).toBe(7)
+  })
+
+  it('fails naming the settings file when it is malformed', () => {
+    write(settingsFile(), MALFORMED)
+
+    expect(maxAgents).toThrow(/settings .* is malformed/)
   })
 })
