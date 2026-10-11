@@ -220,7 +220,7 @@ export async function parkWorktree(
   recheck: () => string | undefined,
   /** Set for an untracked detached agent: the lister that finds a process still in the tree. */
   listCwds?: CwdLister,
-): Promise<{ ok: true; head: string } | { ok: false; reason: string }> {
+): Promise<{ ok: true; head: string; branch: string } | { ok: false; reason: string }> {
   const occupied = listCwds && (await occupiedByProcess(target.worktree, listCwds))
   const head = occupied ? undefined : await headBranch(target)
   const refusal =
@@ -228,7 +228,7 @@ export async function parkWorktree(
     (head && 'refusal' in head ? head.refusal : undefined) ??
     (await unsaved(target.worktree)) ??
     (head && 'branch' in head ? await unpushed(target, head.branch) : undefined)
-  if (refusal) return { ok: false, reason: refusal }
+  if (refusal || !head || !('branch' in head)) return { ok: false, reason: refusal ?? 'no branch to keep' }
   const parkedHead = await git(['rev-parse', 'HEAD'], target.worktree)
   const late = recheck()
   if (late) return { ok: false, reason: late }
@@ -238,5 +238,5 @@ export async function parkWorktree(
     const detail = String((err as { stderr?: unknown }).stderr || (err as Error).message).trim()
     return { ok: false, reason: `git would not remove ${target.worktree}: ${detail.split('\n')[0]}` }
   }
-  return { ok: true, head: parkedHead }
+  return { ok: true, head: parkedHead, branch: head.branch }
 }

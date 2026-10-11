@@ -478,6 +478,24 @@ describe('refusing to park what the removal would lose', () => {
     expect(parked).toMatchObject({ ok: true })
     expect(fs.existsSync(agent.cwd)).toBe(false)
     expect(branchHead(repo, 'pr-branch')).toBe(pushed)
+    expect(parked.reason).toMatch(/branch pr-branch kept at/)
+    expect(parkedRows(agent.agentId).at(-1)?.meta).toMatchObject({ branch: 'pr-branch', head: pushed })
+  })
+
+  it('resumes a tree parked on the PR branch back on that branch', async () => {
+    const repo = repoWithOrigin()
+    const agent = await spawnIn('worker-a', repo)
+    git(['checkout', '-q', '-b', 'pr-branch'], agent.cwd)
+    const pushed = commitIn(agent.cwd, 'feature.ts')
+    git(['push', '-q', 'origin', 'pr-branch'], agent.cwd)
+    await exit(agent)
+    expect((await sup.park('worker-a')).ok).toBe(true)
+
+    const resumed = await sup.resume('worker-a')
+
+    expect(resumed.reason).toBeUndefined()
+    expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], agent.cwd)).toBe('pr-branch')
+    expect(git(['rev-parse', 'HEAD'], agent.cwd)).toBe(pushed)
   })
 
   it('refuses a tree on the PR branch with a commit not yet on origin', async () => {

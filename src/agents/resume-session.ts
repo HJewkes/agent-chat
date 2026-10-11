@@ -75,9 +75,20 @@ export function goneWorktree(rows: readonly AgentEventRow[], agentId: string): W
   if (meta?.strategy !== 'worktree') return undefined
   if (meta.assigned === 'true')
     return meta.worktree && !fs.existsSync(meta.worktree) ? allocationRecord(rows, meta.worktree) : undefined
-  const { gitRoot, worktree, branch } = meta
+  const { gitRoot, worktree } = meta
+  const branch = parkedBranch(rows, agentId, worktree) ?? meta.branch
   if (!gitRoot || !worktree || !branch || fs.existsSync(worktree) || !fs.existsSync(gitRoot)) return undefined
   return { gitRoot, worktree, branch }
+}
+
+/** The branch a park kept for this tree: a tree parked on the PR branch must come back on it, not on the allocated one. */
+function parkedBranch(
+  rows: readonly AgentEventRow[],
+  agentId: string,
+  worktree: string | undefined,
+): string | undefined {
+  const parked = rows.findLast(row => row.kind === 'isolation_parked' && row.ref === agentId)?.meta
+  return parked?.worktree === worktree ? parked?.branch : undefined
 }
 
 /** The removed worktree of the newest retired agent that ran this session, if there is one to re-create. */
