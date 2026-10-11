@@ -6,10 +6,10 @@ import type { AgentIdentity } from '../../protocol.js'
 import type { ParkTarget } from './park.js'
 
 /**
- * CC-904: Shepherd resumes a finished implementer or reviewer for a fix round, and a
- * retired name cannot be resumed. So any finished agent whose branch has an open PR,
- * or that a live Shepherd run names, is skipped by every bulk or automatic retire.
- * Both reads fail closed: what cannot be read is a skip, never a retire.
+ * CC-904: a finished agent whose branch has an open PR that no Shepherd run has taken is
+ * skipped by every bulk or automatic retire: nothing else will wake it for a fix round.
+ * CC-950: once a live run names the agent or its branch, Shepherd owns the PR and the
+ * agent is retired and parked. Both reads fail closed: what cannot be read is a skip.
  */
 
 export const OPEN_PR_REASON = 'open PR (Shepherd wakes it)'
@@ -43,8 +43,9 @@ export async function shepherdSkip(
     return `Shepherd could not be read (${firstLine(err)}), so a run naming it cannot be ruled out`
   }
   const branches = new Set([`agent-chat/${agent.name}`, ...(target ? [target.branch] : [])])
+  // CC-950: a registered run owns the PR, and the agent comes back through resume for a fix round.
   if (runs.some(r => (r.branch !== null && branches.has(r.branch)) || r.names.includes(agent.name)))
-    return OPEN_PR_REASON
+    return undefined
   if (target === undefined) return undefined
   try {
     return (await port.hasOpenPr(target.gitRoot, target.branch)) ? OPEN_PR_REASON : undefined

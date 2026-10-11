@@ -202,15 +202,27 @@ describe('retire at the final report', () => {
     expect(fs.existsSync(agent.cwd)).toBe(true)
   })
 
-  it('skips an agent a live Shepherd run names by its branch', async () => {
+  it('retires and parks an implementer whose open PR a live Shepherd run names by its branch', async () => {
+    shepherd.openPr = true
     shepherd.runs = () => Promise.resolve([{ branch: 'agent-chat/cc-shep', names: [] }])
     const agent = await pushedImplementer('cc-shep')
+    const repo = repoOf(agent)
 
     await exit(agent)
 
-    expect(keptReason()).toBe(OPEN_PR_REASON)
+    expect(stateOf('cc-shep')).toBe('retired')
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+    expect(branchKept(agent, repo)).toBe(true)
+  })
 
-    expect(stateOf('cc-shep')).toBe('exited')
+  it('retires an agent a live Shepherd run names by implementer name', async () => {
+    shepherd.openPr = true
+    shepherd.runs = () => Promise.resolve([{ branch: null, names: ['cc-named'] }])
+    const agent = await pushedImplementer('cc-named')
+
+    await exit(agent)
+
+    expect(stateOf('cc-named')).toBe('retired')
   })
 
   it('retires nothing when Shepherd cannot be read', async () => {
@@ -330,6 +342,20 @@ describe('retire --finished shares the CC-904 rule', () => {
     const out = await sup.retireFinished({ prefix: 'cc-' })
 
     expect(out.plan).toEqual([{ name: 'cc-bulk', action: 'skip', reason: OPEN_PR_REASON }])
+  })
+
+  it('retires an agent whose open PR a registered Shepherd run names', async () => {
+    shepherd.openPr = true
+    shepherd.runs = () => Promise.resolve([{ branch: 'agent-chat/cc-reg', names: [] }])
+    sup.close()
+    sup = supervisor({ autoRetireOnReport: () => false })
+    const agent = await pushedImplementer('cc-reg')
+    await exit(agent)
+    vi.setSystemTime(Date.now() + RECLAIM_GRACE_MS + 1_000)
+
+    const out = await sup.retireFinished({ prefix: 'cc-' })
+
+    expect(out.plan).toEqual([{ name: 'cc-reg', action: 'retire' }])
   })
 })
 
