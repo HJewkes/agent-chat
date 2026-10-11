@@ -3,35 +3,49 @@ import { configWords, keyOf, unreadable, type ConfigWord } from './git-unresolve
 import { LIVE, unmark } from './shell-words.js'
 
 /**
- * Config keys and environment variables whose value git runs as a program or shell command
- * (TP-636). A `-c` value or an env value for one is a nested script: git runs it, and passes its
- * own `-c` options on to any git it starts. The keys and names are from `git help config` and the
- * ENVIRONMENT section of `git help git` on git 2.53.
+ * Config keys git never runs as a program or shell command (TP-636). The guard fails closed: every
+ * other `-c` or `--config-env` key is treated as one whose value git may run, so a key git learns
+ * to run, or one the guard never listed, such as `tar.<format>.command`, is still checked. A
+ * section is listed whole only when none of its keys runs anything, by `git help config` on git
+ * 2.53; `include.path` and `core.hooksPath` are read by their own checks.
  */
-
-// `section.name`, or `section.*.name` for a key under a subsection; `pager.*` is matched apart.
-const PROGRAM_KEYS = new Set(
-  `core.pager core.editor core.sshcommand core.fsmonitor core.askpass core.gitproxy
-  core.alternaterefscommand sequence.editor diff.external diff.*.command diff.*.textconv
-  merge.*.driver filter.*.clean filter.*.smudge filter.*.process credential.helper
-  credential.*.helper gpg.program gpg.*.program gpg.*.defaultkeycommand interactive.difffilter
-  web.browser browser.*.cmd browser.*.path difftool.*.cmd difftool.*.path mergetool.*.cmd
-  mergetool.*.path man.*.cmd man.*.path guitool.*.cmd instaweb.browser instaweb.httpd
-  remote.*.receivepack remote.*.uploadpack submodule.*.update sendemail.tocmd sendemail.*.tocmd
-  sendemail.cccmd sendemail.*.cccmd sendemail.headercmd sendemail.*.headercmd
-  sendemail.sendmailcmd sendemail.*.sendmailcmd sendemail.smtpserver sendemail.*.smtpserver
-  trailer.*.cmd trailer.*.command hook.*.command gc.recentobjectshook
-  uploadpack.packobjectshook imap.tunnel`.split(/\s+/),
+const INERT_SECTIONS = new Set(
+  `user author committer color column advice i18n log status format commit tag branch push fetch
+  protocol http pack index feature transfer safe fsck blame grep checkout notes pretty reset stash
+  versionsort am apply`.split(/\s+/),
 )
 
-/** Whether git runs the value of `key` as a program; section and name compare case-insensitively. */
+// `section.name`, or `section.*.name` for a key under a subsection.
+const INERT_KEYS = new Set(
+  `include.path includeif.*.path core.hookspath core.quotepath core.autocrlf core.eol core.safecrlf
+  core.filemode core.ignorecase core.symlinks core.bare core.abbrev core.excludesfile
+  core.attributesfile core.whitespace core.compression core.precomposeunicode core.commentchar
+  core.commentstring core.untrackedcache core.preloadindex core.logallrefupdates core.longpaths
+  diff.noprefix diff.mnemonicprefix diff.renames diff.renamelimit diff.algorithm diff.colormoved
+  diff.context diff.submodule merge.ff merge.conflictstyle merge.log merge.renamelimit
+  merge.autostash rebase.autosquash rebase.autostash rebase.updaterefs pull.rebase pull.ff
+  help.autocorrect help.format init.defaultbranch clone.defaultremotename gc.auto gc.autodetach
+  submodule.recurse submodule.*.url submodule.*.path submodule.*.branch submodule.*.active
+  remote.*.url remote.*.pushurl remote.*.fetch remote.*.push remote.*.mirror remote.*.tagopt
+  remote.*.prune remote.*.skipdefaultupdate url.*.insteadof url.*.pushinsteadof
+  credential.usehttppath credential.username credential.*.usehttppath credential.*.username`.split(/\s+/),
+)
+
+/** A key's lower-cased section, its subsection as written, and its lower-cased name; null without a dot. */
+function splitKey(key: string): { section: string; sub: string | undefined; name: string } | null {
+  const first = key.indexOf('.')
+  const last = key.lastIndexOf('.')
+  if (first < 0) return null
+  const sub = first === last ? undefined : key.slice(first + 1, last)
+  return { section: key.slice(0, first).toLowerCase(), sub, name: key.slice(last + 1).toLowerCase() }
+}
+
+/** Whether git may run the value of `key` as a program: every key but the inert ones. */
 export function runsProgram(key: string): boolean {
-  const parts = key.split('.')
-  if (parts.length < 2) return false
-  const section = (parts[0] as string).toLowerCase()
-  const name = (parts[parts.length - 1] as string).toLowerCase()
-  if (section === 'pager') return true
-  return PROGRAM_KEYS.has(parts.length > 2 ? `${section}.*.${name}` : `${section}.${name}`)
+  const parts = splitKey(key)
+  if (parts === null) return true
+  if (INERT_SECTIONS.has(parts.section)) return false
+  return !INERT_KEYS.has(`${parts.section}.${parts.sub === undefined ? '' : '*.'}${parts.name}`)
 }
 
 /**
@@ -65,17 +79,22 @@ export const OPAQUE_PROGRAM_ENV = new Set(['LESS', 'LESSOPEN', 'LESSCLOSE', 'MAN
 
 /** The script one config word runs: null for none, undefined when the guard cannot read it. */
 function scriptOf(word: ConfigWord): string | null | undefined {
+  const pair = keyValue(word)
+  if (pair === undefined) return undefined
+  if (!runsProgram(pair.key) || pair.value === null) return null
+  // A leading `!` marks a shell snippet for a credential helper or submodule update, and is shell negation elsewhere.
+  return pair.value?.startsWith('!') ? pair.value.slice(1) : pair.value
+}
+
+/** A config word's key and value: the value undefined when the guard cannot read it, null when the word sets none. */
+function keyValue(word: ConfigWord): { key: string; value: string | null | undefined } | undefined {
   if (unreadable(word)) return undefined
   const kv = word.resolved ?? unmark(word.marked)
   const key = keyOf(kv, word.fromEnv)
-  if (!runsProgram(key)) return null
   // A `--config-env` value comes from a variable, and a `-c` value the shell expands is unread.
-  if (word.fromEnv || word.marked.includes(LIVE)) return undefined
+  if (word.fromEnv || word.marked.includes(LIVE)) return { key, value: undefined }
   const eq = kv.indexOf('=')
-  if (eq < 0) return null
-  const value = kv.slice(eq + 1)
-  // A leading `!` marks a shell snippet for a credential helper or submodule update, and is shell negation elsewhere.
-  return value.startsWith('!') ? value.slice(1) : value
+  return { key, value: eq < 0 ? null : kv.slice(eq + 1) }
 }
 
 /** The scripts git's `-c` options run, or undefined when one may run a program the guard cannot read. */
@@ -163,9 +182,44 @@ function configWordPayload(word: ConfigWord): string | null | undefined {
   return URL_REWRITE.test(key) && hasExt(key) ? undefined : null
 }
 
+// Helpers that read the URL as a URL; any other `remote.<name>.vcs` helper, such as `ext`, is handed it to run.
+const URL_VCS = new Set(['http', 'https', 'ftp', 'ftps'])
+
+/**
+ * The URLs a `remote.<name>.vcs` helper is handed as its own payload, without an `ext::` prefix
+ * (TP-636): `vcs=ext` runs the remote's `url` and `pushurl` as an ext command. For each remote whose
+ * helper is not one of URL_VCS, its `-c` url and pushurl values; undefined when such a URL is not on
+ * the line or not readable, or when `git clone` or an `insteadOf` rewrite supplies it.
+ */
+function vcsPayloads(config: readonly ConfigWord[], sub: string | undefined): string[] | undefined {
+  const pairs = config.map(keyValue)
+  const runs = new Set<string | undefined>()
+  for (const pair of pairs) {
+    const parts = pair && splitKey(pair.key)
+    if (!parts || parts.section !== 'remote' || parts.name !== 'vcs') continue
+    if (typeof pair.value !== 'string' || !URL_VCS.has(pair.value.toLowerCase())) runs.add(parts.sub)
+  }
+  if (runs.size === 0) return []
+  if (sub === 'clone' || pairs.some(pair => pair && URL_REWRITE.test(pair.key))) return undefined
+  const urls: string[] = []
+  for (const remote of runs) {
+    const own = pairs.filter(pair => {
+      const parts = pair && splitKey(pair.key)
+      return parts?.section === 'remote' && parts.sub === remote && /^(?:push)?url$/.test(parts.name)
+    })
+    if (own.length === 0) return undefined
+    for (const pair of own) {
+      if (typeof pair?.value !== 'string') return undefined
+      urls.push(pair.value)
+    }
+  }
+  return urls
+}
+
 /**
  * The commands `ext::` transport URLs run on a git command (TP-636): the span of each argument or
- * config value (every word `configWords` lists) git runs as an `ext::` URL, and the command of `git remote-ext <name> <cmd>`.
+ * config value (every word `configWords` lists) git runs as an `ext::` URL, the URLs a `remote.<name>.vcs`
+ * helper runs, and the command of `git remote-ext <name> <cmd>`.
  * `unreadable` when a word holding `ext::` has an expansion the guard cannot read, a span it cannot
  * pin down, or a payload it cannot decode.
  */
@@ -185,6 +239,9 @@ export function extPrograms(
   }
   const config = configWords(resolved, marked, splits)
   config.forEach(word => decode(configWordPayload(word)))
+  const vcs = vcsPayloads(config, resolved[at])
+  if (vcs === undefined) unreadable = true
+  else vcs.forEach(decode)
   const held = new Set(config.map(word => word.index))
   marked.forEach((word, i) => {
     if (held.has(i) || !hasExt(unmark(word))) return

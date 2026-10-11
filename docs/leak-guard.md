@@ -583,19 +583,16 @@ line, are not read.
 
 ### A config value git runs as a program (TP-636)
 
-Some config keys hold a program or shell command that git runs. The list is drawn from
-`git help config` on git 2.53 and matched case-insensitively on section and key, as git matches
-them: `core.pager`, every `pager.<cmd>`, `core.editor`, `sequence.editor`, `core.sshCommand`,
-`core.fsmonitor`, `core.askPass`, `core.gitProxy`, `core.alternateRefsCommand`, `diff.external`,
-`diff.<driver>.command` and `.textconv`, `merge.<driver>.driver`, `filter.<driver>.clean`,
-`.smudge` and `.process`, `credential.helper` and `credential.<url>.helper`, `gpg.program`,
-`gpg.<format>.program` and `gpg.ssh.defaultKeyCommand`, `interactive.diffFilter`, `web.browser`,
-`browser.<tool>.cmd`, `difftool.<tool>.cmd`, `mergetool.<tool>.cmd`, `man.<tool>.cmd` and the
-`.path` of each of those four, `guitool.<name>.cmd`, `instaweb.browser`, `instaweb.httpd`,
-`remote.<name>.receivepack` and `.uploadpack`, `submodule.<name>.update`, the `sendemail`
-`toCmd`, `ccCmd`, `headerCmd`, `sendmailCmd` and `smtpServer`, bare or under a
-`sendemail.<identity>`, `trailer.<keyAlias>.cmd` and `.command`, `hook.<name>.command` (git's
-config-defined hooks), `gc.recentObjectsHook`, `uploadpack.packObjectsHook` and `imap.tunnel`.
+Some config keys hold a program or shell command that git runs: `core.pager`, every
+`pager.<cmd>`, `core.editor`, `core.sshCommand`, `credential.helper`, `tar.<format>.command`,
+`hook.<name>.command` and many more in `git help config`. The guard fails closed (TP-636 fix round
+9): it keeps a list of keys git never runs, and treats every other key as one whose value git may
+run. Whole sections are inert only when none of their keys runs anything, such as `user`, `color`,
+`log`, `branch`, `push`, `fetch`, `http`, `protocol` and `safe`; elsewhere single keys are, such as
+`core.quotePath`, `init.defaultBranch`, `help.autocorrect`, `remote.<name>.url` and `.fetch`, and
+`url.<base>.insteadOf`. `include.path` and `core.hooksPath` are read by their own checks. A key the
+list lacks, such as one git adds later, is checked rather than allowed; matching is
+case-insensitive on section and key, as in git.
 
 Every config word one git invocation receives is read from one list: git's own `-c` and
 `--config-env` before the subcommand, and the config words of `git clone`, which git applies to
@@ -615,9 +612,10 @@ and `git -c core.pager="git push --no-verify" log` and
 `!`. git passes its `-c` options on to the git the program runs, through `GIT_CONFIG_PARAMETERS`,
 so an `include.path` on the same git is a deny, as it is for a command git runs for its
 subcommand. A safe value stays allowed: `less`, `cat`, `"less -R"`, `vim`, `store`,
-`"ssh -i key"`, `true` and an empty value.
+`"ssh -i key"`, `true`, an empty value, and a plain word such as `main` or `false` for a key that
+does not run it.
 
-A value the guard cannot read for one of these keys is a deny on every git subcommand, since any
+A value the guard cannot read for a key not on the inert list is a deny on every git subcommand, since any
 of them may start a pager or an editor: `-c core.pager="$P"`, `-c core.editor=$(cat e)`, and every
 `--config-env` on such a key, since its value always comes from a variable. A `-c` or
 `--config-env` word whose key the guard cannot read, such as `-c "$(cat k)"`, `-c "$X"`, a
@@ -635,7 +633,12 @@ above, as in `-c remote.<x>.url=ext::…` or `-c remote.<x>.pushurl=ext::…`.
 base in a `url.<base>.insteadOf` or `.pushInsteadOf` key: git joins the base to the rest of each
 URL it matches, so the end of its command is not known from the line. A commit message that
 mentions `ext::` mid-text is an accepted false deny. The guard also treats the command of
-`git remote-ext <name> <cmd>` as run. git-remote-ext decodes the payload the way the guard now does (TP-636 fix round 2): arguments split
+`git remote-ext <name> <cmd>` as run. A
+`remote.<name>.vcs` helper is handed that remote's URL with no `ext::` prefix, and `vcs=ext` runs it
+as an ext command, so for any helper but `http`, `https`, `ftp` and `ftps` the remote's `-c`
+`url` and `pushurl` values are checked as ext payloads. When that URL is not on the line (it comes
+from the repository's config or `git clone`'s argument), is not literal, or may be rewritten by an
+`insteadOf` key, the line denies as config the guard cannot read. git-remote-ext decodes the payload the way the guard now does (TP-636 fix round 2): arguments split
 on spaces, `% ` an embedded space, `%%` a literal percent, `%s`/`%S`/`%G`/`%V` substitutions it
 cannot know. The decoded argv is checked as a top-level Bash line, so
 `git fetch "ext::sh -c git% push% --no-verify"` is denied: the `% ` join rebuilds

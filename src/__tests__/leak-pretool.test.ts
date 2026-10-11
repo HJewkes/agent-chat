@@ -2528,6 +2528,64 @@ describe('a git config value that runs a program (TP-636)', () => {
   })
 })
 
+// Fix round 9: the guard fails closed, so every key but the inert ones is read as a program.
+describe('a config key the guard does not list as inert (TP-636)', () => {
+  it.each([
+    "git -c tar.tgz.command='git push --no-verify' archive --format=tgz HEAD",
+    "git -c tar.tar.gz.command='git push --no-verify' archive --format=tar.gz HEAD",
+    "git -c tar.tgz.command='git push --no-verify' archive -o x.tgz HEAD",
+    "git -c TAR.Tgz.Command='git push --no-verify' archive --format=tgz HEAD",
+    "git -c made.up.key='git push --no-verify' log",
+    "git -c madeup.key='git push --no-verify' status",
+    "git clone -c madeup.key='git push --no-verify' /r x",
+  ])('denies a skipped hook in the value: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it.each([
+    "git -c protocol.ext.allow=always -c remote.o.vcs=ext -c remote.o.url='sh -c git% push% --no-verify' fetch o",
+    "git -c protocol.ext.allow=always -c remote.o.vcs=ext -c remote.o.url='sh -c git% push% --no-verify' ls-remote o",
+    "git -c protocol.ext.allow=always -c remote.o.vcs=ext -c remote.o.pushurl='sh -c git% push% --no-verify' push o",
+    "git -c protocol.ext.allow=always -c Remote.a.b.VCS=EXT -c remote.a.b.url='sh -c git% push% --no-verify' fetch a.b",
+    "git -c remote.o.vcs=other -c remote.o.url='sh -c git% push% --no-verify' fetch o",
+    "git -c remote.o.vcs -c remote.o.url='sh -c git% push% --no-verify' fetch o",
+  ])('denies a skipped hook in a URL a remote.<name>.vcs helper runs: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it.each([
+    'git -c made.up="$X" log',
+    'git --config-env=made.up=X log',
+    'git -c protocol.ext.allow=always -c remote.o.vcs=ext fetch o',
+    'git -c remote.o.vcs=ext -c remote.o.url="$U" fetch o',
+    'git -c remote.o.vcs=ext -c remote.o.url=x -c url.y.insteadOf=x fetch o',
+    "git clone -c remote.origin.vcs=ext 'sh -c git% push% --no-verify' r",
+    "git -c remote.origin.vcs=ext clone 'sh -c git% push% --no-verify' r",
+  ])('denies a value or vcs URL the guard cannot read: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.configProgram)
+  })
+
+  it.each([
+    'git -c user.email="$EMAIL" commit -m x',
+    'git -c http.extraHeader="Authorization: Bearer $T" fetch',
+    'git --config-env=http.extraHeader=AUTH fetch',
+    'git -c core.quotePath=false status',
+    'git -c init.defaultBranch=main init',
+    'git -c branch.main.remote=origin status',
+    'git -c protocol.version=2 fetch',
+    'git -c advice.detachedHead=false checkout x',
+    'git -c safe.directory="$PWD" status',
+    'git -c color.diff.meta="$C" log',
+    'git -c commit.gpgSign=false commit -m x',
+    'git -c remote.o.url="$U" fetch o',
+    'git -c tar.tgz.command="gzip -cn" archive --format=tgz HEAD',
+    'git -c remote.o.vcs=https -c remote.o.url=https://x.invalid/r fetch o',
+    'git -c made.up.key=1 log',
+  ])('allows %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+})
+
 describe('a config value git clone applies before it fetches (TP-636)', () => {
   it.each([
     'git clone -c core.sshCommand="git push --no-verify" ssh://h/r x',
