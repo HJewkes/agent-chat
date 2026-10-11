@@ -8,7 +8,7 @@ import { EventLog } from '../broker/event-log.js'
 import { Registry } from '../broker/registry.js'
 import { Supervisor } from '../agents/supervisor.js'
 import { transcriptPath } from '../agents/transcript.js'
-import { NO_VERDICT } from '../agents/isolation/park-reviewer-at-report.js'
+import { NO_VERDICT, parkReviewerAtReport } from '../agents/isolation/park-reviewer-at-report.js'
 import type { AgentIdentity } from '../protocol.js'
 import { autoAttach } from './broker-harness.js'
 
@@ -212,5 +212,18 @@ describe('parking a reviewer at its final Verdict', () => {
     expect(resumed.reason).toBeUndefined()
     expect(fs.existsSync(agent.cwd)).toBe(true)
     expect(git(['rev-parse', '--abbrev-ref', 'HEAD'], agent.cwd)).toBe('agent-chat/rv-x')
+  })
+})
+
+describe('parkReviewerAtReport', () => {
+  it('resolves to a kept result when the event log is already closed', async () => {
+    const closed = (): never => {
+      throw new Error('database is not open')
+    }
+    const port = { current: closed, events: closed, lastReport: closed, finalText: closed, park: closed }
+
+    const result = await parkReviewerAtReport(port, 'agent-1')
+
+    expect(result).toEqual({ action: 'kept', name: 'agent-1', reason: 'database is not open' })
   })
 })

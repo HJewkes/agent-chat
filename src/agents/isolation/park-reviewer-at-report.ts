@@ -36,26 +36,32 @@ const VERDICT_LINE = /^[\s*_`#>]*verdict[*_`]*\s*:/im
 
 export const isVerdictText = (text: string): boolean => isFinishedReport(text) || VERDICT_LINE.test(text)
 
-/** Never rejects: a failure is a kept tree with the reason. */
+/** Never rejects: a failure is a kept tree with the reason, named by id when the agent could not be read. */
 export async function parkReviewerAtReport(
   port: ReviewerParkPort,
   agentId: string,
 ): Promise<ReviewerParkResult> {
-  const agent = port.current(agentId)
-  if (agent?.origin !== 'spawned' || !isReviewerSpawn(agent.profile, agent.name)) return { action: 'off' }
-  const kept = (reason: string): ReviewerParkResult => ({ action: 'kept', name: agent.name, reason })
+  let name = agentId
   try {
-    if (!parkable(allocatedWorktree(port.events(), agentId))) return { action: 'off' }
-    if (!hasVerdict(port, agent)) return kept(NO_VERDICT)
-    const parked = await port.park(agentId)
-    if (!parked.ok) return kept(parked.reason ?? 'park refused')
-    return {
-      action: 'parked',
-      name: agent.name,
-      ...(parked.reason === undefined ? {} : { reason: parked.reason }),
-    }
+    const agent = port.current(agentId)
+    if (agent?.origin !== 'spawned' || !isReviewerSpawn(agent.profile, agent.name)) return { action: 'off' }
+    name = agent.name
+    return await parkFinished(port, agent)
   } catch (err) {
-    return kept((err as Error).message)
+    return { action: 'kept', name, reason: (err as Error).message }
+  }
+}
+
+async function parkFinished(port: ReviewerParkPort, agent: AgentIdentity): Promise<ReviewerParkResult> {
+  const kept = (reason: string): ReviewerParkResult => ({ action: 'kept', name: agent.name, reason })
+  if (!parkable(allocatedWorktree(port.events(), agent.agentId))) return { action: 'off' }
+  if (!hasVerdict(port, agent)) return kept(NO_VERDICT)
+  const parked = await port.park(agent.agentId)
+  if (!parked.ok) return kept(parked.reason ?? 'park refused')
+  return {
+    action: 'parked',
+    name: agent.name,
+    ...(parked.reason === undefined ? {} : { reason: parked.reason }),
   }
 }
 
