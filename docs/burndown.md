@@ -33,6 +33,7 @@ agent-chat burndown tick --once [--dry-run]
                                         one pass: advance every claim, then spawn inside the ceilings
 agent-chat burndown pause|resume       stop or resume new spawns from the next tick on
 agent-chat burndown release <task>     drop every claim on a task so the tick may pick it again
+agent-chat burndown brief approve <task>   promote brief:proposed to brief:ready=<today>; needs the plan file
 agent-chat burndown install [--dry-run]
                                         print the checklist, then install and start the launchd job
 agent-chat burndown uninstall          stop the launchd job and keep it from starting at login
