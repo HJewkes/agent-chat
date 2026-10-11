@@ -28,9 +28,28 @@ async function count(run: Run, cwd: string, range: string): Promise<number> {
   return result.code === 0 ? Number(text(result)) : 0
 }
 
+/** CC-764: a branch with an open PR is pushed even when no local remote-tracking ref says so. */
+async function hasOpenPr(run: Run, cwd: string): Promise<boolean> {
+  const branch = await run('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd)
+  if (branch.code !== 0) return false
+  const prs = await run(
+    'gh',
+    ['pr', 'list', '--head', text(branch), '--state', 'open', '--json', 'number'],
+    cwd,
+  )
+  if (prs.code !== 0) return false
+  try {
+    const list: unknown = JSON.parse(text(prs))
+    return Array.isArray(list) && list.length > 0
+  } catch {
+    return false
+  }
+}
+
 /**
- * CC-734: a pushed branch is never rebased, since the rebase would leave local HEAD ahead of the PR
- * head. Returns undefined when the branch has no pushed ref, so the caller rebases as before.
+ * CC-734, CC-764: a pushed branch, or one with an open PR, is never rebased, since the rebase would
+ * rewrite history the PR already holds; merge the base instead. Returns undefined when the branch
+ * has neither, so the caller rebases as before.
  */
 export async function pushedBranchStep(
   run: Run,
@@ -39,17 +58,20 @@ export async function pushedBranchStep(
   strict: boolean,
 ): Promise<PushedOutcome | undefined> {
   const pushed = await pushedRef(run, cwd, base)
-  if (!pushed) return undefined
+  if (!pushed && !(await hasOpenPr(run, cwd))) return undefined
   const refspec = `+refs/heads/${base.slice(ORIGIN_PREFIX.length)}:${base}`
   const fetch = await run('git', ['fetch', '--quiet', 'origin', refspec], cwd)
   if (fetch.code !== 0) return { ok: false, reason: `git fetch failed: ${text(fetch).split('\n').pop()}` }
   const baseName = base.slice(REMOTE_PREFIX.length)
-  const unpushed = await count(run, cwd, `${pushed}..HEAD`)
+  const unpushed = pushed ? await count(run, cwd, `${pushed}..HEAD`) : 0
   const note =
-    unpushed > 0 ? `; ${unpushed} local commit(s) not pushed to ${pushed.slice(REMOTE_PREFIX.length)}` : ''
+    pushed && unpushed > 0
+      ? `; ${unpushed} local commit(s) not pushed to ${pushed.slice(REMOTE_PREFIX.length)}`
+      : ''
   if ((await count(run, cwd, `HEAD..${base}`)) === 0)
     return { ok: true, reason: `not behind ${baseName}${note}` }
-  return { ok: !strict, reason: `behind ${baseName}, branch already pushed; not rebasing${note}` }
+  const advice = pushed ? '' : `; open PR: merge ${baseName} instead`
+  return { ok: !strict, reason: `behind ${baseName}, branch already pushed; not rebasing${advice}${note}` }
 }
 
 const revision = async (run: Run, cwd: string, ref: string): Promise<string | undefined> => {

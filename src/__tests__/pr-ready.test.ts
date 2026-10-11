@@ -129,7 +129,13 @@ async function runPrReady(cwd: string, failing: string[] = [], opts: PrReadyOpti
     env: extra.env ?? { AGENT_CHAT_BASEMENT_HOST: 'off' },
     hostname: extra.hostname ?? 'workstation',
   })
-  return { code, out, calls, errLines, toolCalls: calls.filter(call => !call.startsWith('git ')) }
+  return {
+    code,
+    out,
+    calls,
+    errLines,
+    toolCalls: calls.filter(call => !call.startsWith('git ') && !call.startsWith('gh pr list')),
+  }
 }
 
 const pkg = (body: object): string => JSON.stringify(body, null, 2)
@@ -484,6 +490,22 @@ describe('pr-ready on a branch that is already pushed', () => {
       'ok rebase: behind origin/main, branch already pushed; not rebasing; ' +
         '1 local commit(s) not pushed to origin/feature',
     )
+    expect(git(work, 'rev-parse', 'HEAD')).toBe(head)
+  })
+
+  it('does not rebase an unpushed-looking branch that has an open PR, and suggests a merge', async () => {
+    const work = fixtureRepo({ 'package.json': pkg({}) }, { 'a.txt': '1\n' })
+    advanceOrigin(work, { 'b.txt': '2\n' })
+    const head = git(work, 'rev-parse', 'HEAD')
+    const openPr: Override = line =>
+      line.startsWith('gh pr list --head feature') ? { code: 0, output: '[{"number":7}]' } : undefined
+
+    const result = await runPrReady(work, [], {}, { override: openPr })
+
+    expect(result.out).toContain(
+      'ok rebase: behind origin/main, branch already pushed; not rebasing; open PR: merge origin/main instead',
+    )
+    expect(result.calls).not.toContain(`git rebase ${BASE}`)
     expect(git(work, 'rev-parse', 'HEAD')).toBe(head)
   })
 
