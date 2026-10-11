@@ -104,6 +104,24 @@ describe('the burndown tick', () => {
     expect(readLedger(burndownLedgerPath()).claims[0]).toMatchObject({ phase: 'done', prHead: HEAD })
     expect(journal()?.split('\n')).toContain('04:05 merged AB-12 sx-ab-12 example-org/widget#7@abcdef1')
   })
+
+  it('stamps the merged line with the time it appends it, not the tick start (CC-220)', async () => {
+    const config = { enabled: true, reportTo: 'coord', seats: [SEAT] }
+    write(path.join(world, 'home', 'burndown.config.json'), JSON.stringify(config))
+    writeLedger(burndownLedgerPath(), { version: 1, claims: [merging] })
+    const appended = new Date(NOW.getTime() + 7 * 60_000)
+
+    await tickFromDisk({
+      dryRun: false,
+      broker,
+      now: NOW,
+      clock: () => appended,
+      log: () => {},
+      exec: factory,
+    })
+
+    expect(journal()?.split('\n')).toContain('04:12 merged AB-12 sx-ab-12 example-org/widget#7@abcdef1')
+  })
 })
 
 describe('the broker’s services', () => {

@@ -20,12 +20,13 @@ interface Deps {
   exec: Runner
   root: string
   autonomyRoot: string
-  now: Date
+  /** CC-220: read at each journal read and append, so a line carries its append time and lands in that day's file. */
+  clock: () => Date
   log: AdoptPorts['log']
   owedHoldsFile: string
 }
 
-export function diskAdoptPorts({ exec, root, autonomyRoot, now, log, owedHoldsFile }: Deps): AdoptPorts {
+export function diskAdoptPorts({ exec, root, autonomyRoot, clock, log, owedHoldsFile }: Deps): AdoptPorts {
   return {
     repoOf: checkout => originRepo(checkout, exec),
     pulls: repo => openPulls(repo, exec),
@@ -36,8 +37,8 @@ export function diskAdoptPorts({ exec, root, autonomyRoot, now, log, owedHoldsFi
     hold: (target, reason) => shepherdHold(target, reason, exec),
     owedHolds: () => readOwedHolds(owedHoldsFile),
     setOwedHolds: holds => writeOwedHolds(owedHoldsFile, holds),
-    logged: (seat, key) => readSeatJournal(autonomyRoot, seat, now)?.includes(key) ?? false,
-    append: (seat, text) => void appendSeatLog(autonomyRoot, seat, now, text),
+    logged: (seat, key) => readSeatJournal(autonomyRoot, seat, clock())?.includes(key) ?? false,
+    append: (seat, text) => void appendSeatLog(autonomyRoot, seat, clock(), text),
     log,
   }
 }
