@@ -31,7 +31,8 @@ agent-chat burndown plan               dry run: what the tick would dispatch now
 agent-chat burndown status             claim ledger, stalled claims and each account budget gate
 agent-chat burndown tick --once [--dry-run]
                                         one pass: advance every claim, then spawn inside the ceilings
-agent-chat burndown pause|resume       stop or resume new spawns from the next tick on
+agent-chat burndown pause|resume [--by <who>]
+                                        stop or resume new spawns from the next tick on
 agent-chat burndown release <task>     drop every claim on a task so the tick may pick it again
 agent-chat burndown brief approve <task>   promote brief:proposed to brief:ready=<today>; needs the plan file
 agent-chat burndown install [--dry-run]
@@ -40,6 +41,11 @@ agent-chat burndown uninstall          stop the launchd job and keep it from sta
 agent-chat burndown job-status         launchd state: loaded, pid, and whether the tick may spawn
 agent-chat burndown seats compare --seat <name> [--autonomy-root <dir>]
                                         check a seat's dry-run plan against score.py's order
+agent-chat burndown config show [--json]   every resolved setting with the layer it came from
+agent-chat burndown preset apply <name> --by <who> | clear --by <who> | list
+agent-chat burndown override set --for <dur> --by <who> [--reason <text>] <json-patch>
+agent-chat burndown override clear --by <who>
+agent-chat burndown seat on|off <seat> --by <who>
 ```
 
 `agent-chat burndown plan --seat <name>` prints one seat's dry-run dispatch plan and its
@@ -65,6 +71,42 @@ not parse is left out, so the tick orders by the tags alone.
 `agent-chat burndown pause` is the kill switch that takes effect fastest: the next tick
 sees the pause marker and spawns nothing, but a running agent finishes on its own.
 `agent-chat burndown uninstall` also removes the scheduled job itself.
+
+## Settings, presets and overrides (CC-955)
+
+`burndown.config.json` is the base layer. No verb rewrites it. Each value resolves from
+these layers, lowest first:
+
+```
+schema default < burndown.config.json < seat file (caps, scope)
+  < burndown.settings.json seats.<name> < active preset < unexpired override
+```
+
+`burndown config show` prints every resolved value tagged with the layer it came from.
+
+- **`burndown.settings.json`.** It holds `seats.<name>` (`on`, `scope`, `briefGate {mode,
+maxAgeDays}`, `caps`, `handReserve`), named `presets`, and the `active` preset.
+  `burndown seat on|off` writes `seats.<name>.on`. If a preset or an override sets that seat
+  too, the verb says which layer shadows it.
+- **Presets.** `burndown preset apply <name>` makes a preset active, and `preset clear`
+  deactivates it. The built-in `factory-only` turns on only the flat file's `reportTo` seat,
+  with its brief gate `on`, and turns every other known seat off. A preset of the same name
+  in the settings file shadows the built-in.
+- **`burndown.override.json`.** `burndown override set --for 2h '<patch>'` lays a patch of
+  the preset shape over everything else until `expiresAt`. After that the patch is ignored,
+  and `config show` names it as lapsed. `override clear` removes it early.
+
+Every verb here, plus `pause` and `resume`, takes the settings lock and appends one
+`{at, by, verb, before, after}` row to `burndown.settings.log.jsonl`. The row holds only the
+parts that changed. A replaced settings or override file is kept as `<file>.bak-<time>`.
+`--by` is required, except on `pause` and `resume`, where it is optional so existing callers
+keep working; without it the row records `(unrecorded)`. A pause still writes
+`burndown.paused` when the settings file cannot be read or is locked, and says the change
+went unlogged.
+
+The broker reads `handReserve` in-process. When a change moves a seat's hand reserve while
+the running broker is older than `dist/` (or carries no build stamp), the verb prints
+`broker predates settings; handReserve applies to the tick only until restart`.
 
 ## Seats mode (CC-205)
 

@@ -242,11 +242,14 @@ Commands:
                             refusal mix, registrations, tick health
   tick [options]            one pass: advance every claim a phase, then spawn new work inside the
                             ceilings
-  pause                     stop new spawns from the next tick on; running agents finish
-  resume                    let the tick spawn again
+  pause [options]           stop new spawns from the next tick on; running agents finish
+  resume [options]          let the tick spawn again
   release <task>            drop every claim on a task, stalled or not, so the tick may pick it
                             again
   config                    resolved burndown settings (CC-955)
+  preset                    named burndown settings presets (CC-955)
+  override                  a time-boxed patch over the settings (CC-955)
+  seat                      turn a seat on or off in the settings (CC-955)
   install [options]         print the sign-off checklist, then install and start the launchd tick
                             job (a systemd --user timer on Linux)
   uninstall                 stop the launchd tick job and keep it from starting at login; on Linux,
@@ -362,6 +365,7 @@ Usage: agent-chat burndown pause [options]
 stop new spawns from the next tick on; running agents finish
 
 Options:
+  --by <who>  who is making the change; recorded in the settings log
   -h, --help  display help for command
 
 === agent-chat burndown resume
@@ -370,6 +374,7 @@ Usage: agent-chat burndown resume [options]
 let the tick spawn again
 
 Options:
+  --by <who>  who is making the change; recorded in the settings log
   -h, --help  display help for command
 
 === agent-chat burndown release
@@ -400,6 +405,111 @@ print the resolved burndown config, each value with the layer it came from (CC-9
 
 Options:
   --json      print the resolved config as one JSON object
+  -h, --help  display help for command
+
+=== agent-chat burndown preset
+Usage: agent-chat burndown preset [options] [command]
+
+named burndown settings presets (CC-955)
+
+Options:
+  -h, --help              display help for command
+
+Commands:
+  apply [options] <name>  make a preset the active one over the burndown settings (CC-955)
+  clear [options]         leave no preset active (CC-955)
+  list                    list the built-in and settings-file presets, marking the active one
+                          (CC-955)
+  help [command]          display help for command
+
+=== agent-chat burndown preset apply
+Usage: agent-chat burndown preset apply [options] <name>
+
+make a preset the active one over the burndown settings (CC-955)
+
+Options:
+  --by <who>  who is making the change; recorded in the settings log
+  -h, --help  display help for command
+
+=== agent-chat burndown preset clear
+Usage: agent-chat burndown preset clear [options]
+
+leave no preset active (CC-955)
+
+Options:
+  --by <who>  who is making the change; recorded in the settings log
+  -h, --help  display help for command
+
+=== agent-chat burndown preset list
+Usage: agent-chat burndown preset list [options]
+
+list the built-in and settings-file presets, marking the active one (CC-955)
+
+Options:
+  -h, --help  display help for command
+
+=== agent-chat burndown override
+Usage: agent-chat burndown override [options] [command]
+
+a time-boxed patch over the settings (CC-955)
+
+Options:
+  -h, --help             display help for command
+
+Commands:
+  set [options] <patch>  lay a time-boxed JSON patch over the burndown settings (CC-955)
+  clear [options]        remove the override before it expires (CC-955)
+  help [command]         display help for command
+
+=== agent-chat burndown override set
+Usage: agent-chat burndown override set [options] <patch>
+
+lay a time-boxed JSON patch over the burndown settings (CC-955)
+
+Options:
+  --for <duration>  how long the patch holds: 30m, 2h or 1d
+  --by <who>        who is making the change; recorded in the settings log
+  --reason <text>   why, kept with the override
+  -h, --help        display help for command
+
+=== agent-chat burndown override clear
+Usage: agent-chat burndown override clear [options]
+
+remove the override before it expires (CC-955)
+
+Options:
+  --by <who>  who is making the change; recorded in the settings log
+  -h, --help  display help for command
+
+=== agent-chat burndown seat
+Usage: agent-chat burndown seat [options] [command]
+
+turn a seat on or off in the settings (CC-955)
+
+Options:
+  -h, --help            display help for command
+
+Commands:
+  on [options] <seat>   turn a seat on in the burndown settings (CC-955)
+  off [options] <seat>  turn a seat off in the burndown settings (CC-955)
+  help [command]        display help for command
+
+=== agent-chat burndown seat on
+Usage: agent-chat burndown seat on [options] <seat>
+
+turn a seat on in the burndown settings (CC-955)
+
+Options:
+  --by <who>  who is making the change; recorded in the settings log
+  -h, --help  display help for command
+
+=== agent-chat burndown seat off
+Usage: agent-chat burndown seat off [options] <seat>
+
+turn a seat off in the burndown settings (CC-955)
+
+Options:
+  --by <who>  who is making the change; recorded in the settings log
   -h, --help  display help for command
 
 === agent-chat burndown install
