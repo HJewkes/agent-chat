@@ -65,7 +65,11 @@ describe('burndown plan --seat behind a failed upstream', () => {
   const planLines = (ledger: Ledger) => {
     const { loaded, skipped } = loadSeats(['seat-a'], ledger, deps())
     expect(skipped).toEqual([])
-    const planned = planSeats(loaded, { ledger, initiatives: readInitiatives(root) }, root)
+    const planned = planSeats(
+      loaded,
+      { ledger, initiatives: readInitiatives(root), scopeTagAliases: {} },
+      root,
+    )
     const plan = { dispatch: planned.dispatch, refusals: planned.refusals, notOptedIn: [] }
     return { lines: renderPlan(plan, NOW), dispatched: planned.dispatch.map(d => d.task) }
   }
