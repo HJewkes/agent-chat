@@ -171,7 +171,9 @@ export interface PoolGateInput {
 
 export type PoolGateResult =
   | { open: true; pool: string; sonnetOnly: boolean; reason: string; staleOk?: true }
-  | { open: false; pool: string; reason: string }
+  | { open: false; pool: string; reason: string; noReading?: true }
+
+type ClosedGate = Extract<PoolGateResult, { open: false }>
 
 export const RUN_CAP_MS = 12 * 3_600_000
 /** CC-409: a last good reading older than this never stands in for a missing one. */
@@ -302,7 +304,7 @@ export function gatePool(
 ): PoolGateResult {
   const { pool, reading, ctx } = input
   const name = pool?.name ?? 'unknown'
-  const closed = (why: string): PoolGateResult => ({
+  const closed = (why: string): ClosedGate => ({
     open: false,
     pool: name,
     reason: `BUDGET-PAUSE pool ${name}: ${why}`,
@@ -360,16 +362,20 @@ function tooClose(
 function gateLastGood(
   input: PoolGateInput,
   pool: PricedPool,
-  closed: (why: string) => PoolGateResult,
+  closed: (why: string) => ClosedGate,
 ): PoolGateResult {
   const last = input.lastGood
   const merged = standInReading(input.reading, last)
-  if (last === undefined || merged === undefined) return closed(NO_READING)
+  // CC-466: flagged so the seat watchdog can relaunch a dark seat whose own boot takes the reading.
+  if (last === undefined || merged === undefined) return { ...closed(NO_READING), noReading: true }
   const age = last.ageSeconds
   if (!(age >= 0 && age <= LAST_GOOD_MAX_AGE_SECONDS))
-    return closed(
-      `${NO_READING}; the last good one is ${age}s old, over the ${LAST_GOOD_MAX_AGE_SECONDS}s limit`,
-    )
+    return {
+      ...closed(
+        `${NO_READING}; the last good one is ${age}s old, over the ${LAST_GOOD_MAX_AGE_SECONDS}s limit`,
+      ),
+      noReading: true,
+    }
   const { ceiling, line } = windowLines(pool, input)
   const near = tooClose(input.reading, last, ceiling, line)
   if (near.length > 0)
