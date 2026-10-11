@@ -32,6 +32,7 @@ import { addMirrorCommands } from './verbs/mirror.js'
 import { addBurndownCommands } from './verbs/burndown.js'
 import { addSeatsCommands } from './verbs/seats.js'
 import { profilesVerb } from './verbs/profiles.js'
+import { queueReadVerb } from './verbs/queue-read.js'
 import { teleportAbortVerb } from './verbs/teleport-abort.js'
 import * as debug from './debug.js'
 import { doctorLifecycleCommand } from './doctor-lifecycle.js'
@@ -52,6 +53,7 @@ const SERVICES = 'Service commands:'
  */
 function addHumanCommands(program: Command): void {
   addVerb(program, inboxVerb, { helpGroup: HUMAN })
+  addVerb(program, queueReadVerb, { helpGroup: HUMAN })
 
   program
     .command('answer <id> <text...>')
