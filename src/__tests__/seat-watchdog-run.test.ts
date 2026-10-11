@@ -597,7 +597,7 @@ describe('seat liveness (CC-320)', () => {
 
   // CC-959 slice c: the same incident, now with a relaunch that can retire by id and spawn on the seat's account.
   const PERSONAL = '/home/example/.profiles/personal'
-  const incident = (): Harness => {
+  const incident = (spawnedDir = '/home/example/.profiles/server'): Harness => {
     const row = { name: 'seat-a', profile: 'lead', state: 'exited', spawnedBy: 'human' }
     const h = harness({
       agents: [
@@ -606,7 +606,7 @@ describe('seat liveness (CC-320)', () => {
           agentId: 'g9',
           origin: 'spawned',
           generation: 9,
-          configDir: '/home/example/.profiles/server',
+          configDir: spawnedDir,
         },
         { ...row, agentId: 'h1', origin: 'adopted', sessionId: 's-h1', spawnedAt: 1 },
         {
@@ -678,7 +678,8 @@ describe('seat liveness (CC-320)', () => {
   // CC-959 review, fails on b1b3297c: the retire ran, then the broker refused the spawn; that went
   // unraised, and the next run found no granted row, so the seat stayed dark with nobody told.
   it('raises one item when the broker refuses the spawn after the stale row was retired', async () => {
-    const h = incident()
+    // CC-1053: the seat file's account must be one its spawned row ran on, or nothing is retired.
+    const h = incident(PERSONAL)
     const raised: string[] = []
     h.deps.notifyHuman = async text => (raised.push(text), { ok: true, detail: 'notice n1' })
     const replies = [
