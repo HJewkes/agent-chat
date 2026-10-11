@@ -1071,6 +1071,7 @@ worktrees agent-chat is holding, and which nobody is using
 Options:
   --prune     reclaim the ones nothing would be lost from
   --force     with --prune, reclaim even those holding work
+  --json      per-repo headroom and rows as one JSON object
   -h, --help  display help for command
 
 === agent-chat agent surface
