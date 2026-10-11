@@ -465,6 +465,62 @@ describe('refusing to park what the removal would lose', () => {
     expect(fs.existsSync(agent.cwd)).toBe(true)
   })
 
+  it('parks a tree whose HEAD is on the pushed PR branch rather than the allocated one', async () => {
+    const repo = repoWithOrigin()
+    const agent = await spawnIn('worker-a', repo)
+    git(['checkout', '-q', '-b', 'pr-branch'], agent.cwd)
+    const pushed = commitIn(agent.cwd, 'feature.ts')
+    git(['push', '-q', 'origin', 'pr-branch'], agent.cwd)
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: true })
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+    expect(branchHead(repo, 'pr-branch')).toBe(pushed)
+  })
+
+  it('refuses a tree on the PR branch with a commit not yet on origin', async () => {
+    const agent = await spawnIn('worker-a', repoWithOrigin())
+    git(['checkout', '-q', '-b', 'pr-branch'], agent.cwd)
+    git(['push', '-q', 'origin', 'pr-branch'], agent.cwd)
+    commitIn(agent.cwd, 'feature.ts')
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/not on origin\/pr-branch/) })
+    expect(fs.existsSync(agent.cwd)).toBe(true)
+  })
+
+  it('parks a tree whose only ignored files are tool caches', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, '.gitignore'), '.eslintcache\ncoverage/\n.turbo/\n')
+    git(['add', '.gitignore'], agent.cwd)
+    git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+    fs.mkdirSync(path.join(agent.cwd, 'coverage'))
+    fs.writeFileSync(path.join(agent.cwd, 'coverage', 'lcov.info'), 'x\n')
+    fs.writeFileSync(path.join(agent.cwd, '.eslintcache'), '[]\n')
+    await exit(agent)
+
+    expect((await sup.park('worker-a')).ok).toBe(true)
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+  })
+
+  it('refuses an ignored pr-body file beside .eslintcache', async () => {
+    const agent = await spawnIn('worker-a', makeRepo())
+    fs.writeFileSync(path.join(agent.cwd, '.gitignore'), '.eslintcache\npr-body*.md\n')
+    git(['add', '.gitignore'], agent.cwd)
+    git(['commit', '-q', '-m', 'ignore'], agent.cwd)
+    fs.writeFileSync(path.join(agent.cwd, '.eslintcache'), '[]\n')
+    fs.writeFileSync(path.join(agent.cwd, 'pr-body-1.md'), 'text\n')
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/\(pr-body-1\.md\)/) })
+  })
+
   it('refuses an untracked file that status.showUntrackedFiles=no hides', async () => {
     const agent = await spawnIn('worker-a', makeRepo())
     git(['config', 'status.showUntrackedFiles', 'no'], agent.cwd)
