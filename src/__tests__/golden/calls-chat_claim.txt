@@ -43,7 +43,7 @@ args: {"patterns":["src/g0/**","src/g1/**","src/g2/**","src/g3/**","src/g4/**","
 [
   {
     "type": "text",
-    "text": "Error: patterns may name at most 24 globs; got 25"
+    "text": "Error: patterns may name at most 24 globs; got 25; claim a directory (dir/**) or a prefix glob (dir/name*) instead"
   }
 ]
 
