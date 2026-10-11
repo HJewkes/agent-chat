@@ -163,22 +163,44 @@ async function landedOn(gitRoot: string, branch: string): Promise<string | null>
 
 const GH_TIMEOUT_MS = 3_000
 
-/** Advisory only: never required, never allowed to change the git answer. */
-async function ghPrState(gitRoot: string, branch: string): Promise<string | null> {
+interface GhPr {
+  state: string
+  headRefOid: string
+}
+
+/** The branch's PR as gh reports it, or null when gh is missing, fails or says something unexpected. */
+async function ghPrView(gitRoot: string, branch: string): Promise<GhPr | null> {
   try {
-    const { stdout } = await execFileAsync(
-      'gh',
-      ['pr', 'view', branch, '--json', 'state', '--jq', '.state'],
-      {
-        cwd: gitRoot,
-        encoding: 'utf8',
-        timeout: GH_TIMEOUT_MS,
-      },
-    )
-    return stdout.trim() || null
+    const { stdout } = await execFileAsync('gh', ['pr', 'view', branch, '--json', 'state,headRefOid'], {
+      cwd: gitRoot,
+      encoding: 'utf8',
+      timeout: GH_TIMEOUT_MS,
+    })
+    const pr: unknown = JSON.parse(stdout)
+    if (typeof pr !== 'object' || pr === null) return null
+    const { state, headRefOid } = pr as Record<string, unknown>
+    return typeof state === 'string' && typeof headRefOid === 'string' ? { state, headRefOid } : null
   } catch {
     return null
   }
+}
+
+/**
+ * gh decides only when it proves the local tip is exactly what merged. Any other
+ * answer (open, closed, a later local commit, no gh) stays advisory.
+ */
+async function ghCheck(
+  gitRoot: string,
+  branch: string,
+): Promise<{ merged: boolean; check: ReleaseCheck } | null> {
+  const pr = await ghPrView(gitRoot, branch)
+  if (pr === null) return null
+  const tip = await gitOrNull(['rev-parse', branch], gitRoot)
+  if (pr.state === 'MERGED' && pr.headRefOid === tip) {
+    const check: ReleaseCheck = { name: 'gh', ok: true, detail: `gh reports PR merged at ${tip.slice(0, 7)}` }
+    return { merged: true, check }
+  }
+  return { merged: false, check: { name: 'gh', ok: true, detail: `gh reports the PR as ${pr.state}` } }
 }
 
 function dirtyCheck(dirty: boolean): ReleaseCheck {
@@ -215,6 +237,9 @@ function landedCheck(target: string | null, targets: readonly string[]): Release
  * landed on the checkout's current branch (or `origin/HEAD`), which is how a
  * squash-merged PR looks once GitHub deletes the remote branch. Nothing is
  * fetched: a stale local main makes this refuse until someone pulls.
+ *
+ * CC-792: the file check refuses once main edits a file the branch touched, so
+ * when it fails, gh decides if it reports the PR merged at exactly the local tip.
  */
 export async function inspectForRelease(
   gitRoot: string,
@@ -240,11 +265,12 @@ export async function inspectForRelease(
   const targets = await landingTargets(gitRoot)
   const target = await landedOn(gitRoot, branch)
   checked.push(landedCheck(target, targets))
-  if (target === null) {
-    const state = await ghPrState(gitRoot, branch)
-    if (state !== null) checked.push({ name: 'gh', ok: true, detail: `gh reports the PR as ${state}` })
-  }
-  return { dirty, unmerged: target === null, landed: target !== null, ahead, checked }
+  if (target !== null) return { dirty, unmerged: false, landed: true, ahead, checked }
+
+  const gh = await ghCheck(gitRoot, branch)
+  if (gh === null) return { dirty, unmerged: true, landed: false, ahead, checked }
+  checked.push(gh.check)
+  return { dirty, unmerged: !gh.merged, landed: gh.merged, ahead, checked }
 }
 
 /** The failed checks, as one line a coordinator can act on. */
