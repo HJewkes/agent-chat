@@ -594,6 +594,73 @@ describe('seat liveness (CC-320)', () => {
     expect(dry[0]).toMatch(/^seat-a: WOULD REFUSE: latest session s-h2 /)
   })
 
+  // CC-959: the owner's pane carried on as a provisional session 2 s after the seat deregistered.
+  const SEAT_CWD = '/home/example/projects'
+  const paneRoster = (h: Harness, cwd = SEAT_CWD, afterDarkMs = 2_000): Roster => ({
+    agents: [
+      {
+        name: 'projects',
+        profile: 'adopted',
+        state: 'live',
+        spawnedBy: 'human',
+        agentId: 'p1',
+        origin: 'adopted',
+        provisionalName: true,
+        cwd,
+        spawnedAt: (h.presence?.darkSince ?? 0) + afterDarkMs,
+      },
+    ],
+    connected: ['projects'],
+  })
+  const paneHarness = (darkMinutes: number, cwd?: string, afterDarkMs?: number) => {
+    const h = harness(DARK)
+    h.deps.readSeatFile = seat => (seat === 'seat-a' ? SEAT.replace('---\n', `---\ncwd: ${SEAT_CWD}\n`) : '')
+    const raised: string[] = []
+    h.deps.notifyHuman = async text => (raised.push(text), { ok: true, detail: 'notice n1' })
+    dark(h, darkMinutes)
+    const roster = paneRoster(h, cwd, afterDarkMs)
+    h.deps.roster = async () => roster
+    return { h, raised }
+  }
+
+  // Catches: the 60 s window check removed or widened.
+  it('holds the resume while a provisional session continues the seat pane, and names it', async () => {
+    const { h, raised } = paneHarness(10)
+    const dry = await runWatchdog(h.deps, { ...ONE, dryRun: true })
+    const out = await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toEqual([])
+    expect(raised).toEqual([])
+    expect(dry[0]).toMatch(/^seat-a: skip: .*not resumed: possible live seat pane projects \(p1\)/)
+    expect(out.filter(line => line.includes('possible live seat pane projects (p1)'))).toHaveLength(1)
+  })
+
+  it('resumes when the provisional session appeared over a minute after the seat went dark', async () => {
+    const { h } = paneHarness(10, SEAT_CWD, 61_000)
+    await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toEqual([{ seat: 'seat-a', message: RESUME_MESSAGE, connected: false }])
+  })
+
+  // Catches: the cwd match removed.
+  it('resumes when the provisional session runs in another cwd', async () => {
+    const { h } = paneHarness(10, '/home/example/elsewhere')
+    await runWatchdog(h.deps, ONE)
+    expect(h.wakes).toEqual([{ seat: 'seat-a', message: RESUME_MESSAGE, connected: false }])
+  })
+
+  // Catches: the cap dropped, or a cap that resumes instead of asking.
+  it('raises one human item, and still resumes nothing, once the pane has held the seat over 60 min', async () => {
+    const { h, raised } = paneHarness(61)
+    await runWatchdog(h.deps, ONE)
+    h.tick()
+    await runWatchdog(h.deps, ONE)
+    const line =
+      'watchdog resume seat-a HELD over 60 min: possible live seat pane projects (p1) in ' +
+      `${SEAT_CWD}; not resumed, check whether it is the seat`
+    expect(h.wakes).toEqual([])
+    expect(raised).toEqual([line])
+    expect(h.logs).toEqual([`seat-a: ${line}`])
+  })
+
   it('treats a roster timeout as unknown: no resume, no try counted, one log line', async () => {
     const h = harness(DARK)
     dark(h, 30)

@@ -1042,20 +1042,20 @@ describe('planSeat declared owns for brief:ready tasks (CC-952)', () => {
     ])
   })
 
-  it('refuses an implementer-routed task with no plan as no-owns under on, naming the plan path', () => {
+  it('sends an implementer-routed task with no plan to a planner under on, naming the plan path (CC-986)', () => {
     const plan = brief('on', undefined)
 
-    expect(plan.dispatch).toEqual([])
-    expect(refusalOf(plan)).toEqual([['A-1', 'no-owns']])
-    expect(plan.refusals[0]?.reason).toContain(PLAN)
+    expect(plan.dispatch).toEqual([expect.objectContaining({ task: 'A-1', profile: 'bd-planner' })])
+    expect(plan.refusals).toEqual([])
+    expect(plan.notes).toEqual([expect.stringContaining(PLAN)])
   })
 
-  it('dispatches an implementer-routed task with no plan under shadow and notes that on would refuse it', () => {
+  it('dispatches an implementer-routed task with no plan under shadow and notes that on would plan it', () => {
     const plan = brief('shadow', undefined)
 
     expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
     expect(plan.refusals).toEqual([])
-    expect(plan.notes).toEqual([expect.stringMatching(/^would-refuse no-owns alpha A-1 \(seat seat-a\)/)])
+    expect(plan.notes).toEqual([expect.stringMatching(/^would-plan alpha A-1 \(seat seat-a\): no plan at /)])
   })
 
   it('notes no missing owns under shadow for a task with a plan or with no brief', () => {
@@ -1163,7 +1163,7 @@ describe('planSeat ready order (CC-926)', () => {
       const brief = { briefGate: { 'seat-a': 'on' as const }, briefMaxAgeDays: 14, maxAgents: 4 }
 
       expect(briefGateOf({ brief } as never, 'seat-a')).toEqual({
-        brief: { gate: 'on', maxAgeDays: 14, agingEvery: 4 },
+        brief: { gate: 'on', maxAgeDays: 14, agingEvery: 4, readyFloor: 8 },
       })
     })
 

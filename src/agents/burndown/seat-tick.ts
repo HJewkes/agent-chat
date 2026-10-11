@@ -23,6 +23,7 @@ import {
   type Policy,
   type SeatPolicy,
 } from './policy.js'
+import { readyFloorFor } from './dispatch-stats.js'
 import { scoreAll } from './score.js'
 import { readScoredTasks } from './score-source.js'
 import { resolveSeatDispatch, type SeatDispatch } from './seat-dispatch.js'
@@ -372,7 +373,14 @@ export function briefGateOf({ brief }: SeatPlanDeps, seat: string): { brief?: Se
   const gate = brief?.briefGate[seat] ?? 'off'
   return brief === undefined || gate === 'off'
     ? {}
-    : { brief: { gate, maxAgeDays: brief.briefMaxAgeDays, agingEvery: brief.maxAgents } }
+    : {
+        brief: {
+          gate,
+          maxAgeDays: brief.briefMaxAgeDays,
+          agingEvery: brief.maxAgents,
+          readyFloor: readyFloorFor(brief.maxAgents),
+        },
+      }
 }
 
 /** CC-936: the implementer slots the seat's hand spawns keep; none is passed as none. */
