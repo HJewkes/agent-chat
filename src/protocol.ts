@@ -30,6 +30,8 @@ export interface RemoteLaunch {
   anchor?: string
   /** CC-913: this landing's secret; the only proof a later `teleport_land_failed` came from the caller that armed it. */
   landToken?: string
+  /** CC-951: launch now, not after the predecessor exits, and end it only on a later `endSelf` plan. */
+  successorFirst?: true
 }
 
 /** A profile without the fields that run something or set the environment on the caller's host. */
@@ -1049,6 +1051,8 @@ export type ClientMessage =
       launchSeen?: { channels?: string[]; permissionMode?: string; effort?: string }
       /** CC-951: the destination machine, a config `machines` alias or a hostname; absent stays put. */
       to?: string
+      /** CC-951: the caller's MCP process ends its own Claude Code on an `endSelf` plan; an older one does not. */
+      endsSelf?: boolean
     }
   /**
    * Stop a countdown that has not fired yet. The human's veto, and it has no
@@ -1266,7 +1270,8 @@ export type ServerMessage =
       /** CC-881: the session is on another host, so its MCP process runs the relaunch plan. */
       remote?: boolean
     }
-  | { t: 'teleport_plan'; ok: boolean; reason?: string; launch?: RemoteLaunch }
+  /** CC-951: `endSelf` means the successor attached, so the caller ends its own Claude Code. */
+  | { t: 'teleport_plan'; ok: boolean; reason?: string; launch?: RemoteLaunch; endSelf?: true }
   | { t: 'teleport_launched_result'; ok: boolean; reason?: string }
   | { t: 'teleport_land_failed_result'; ok: boolean; reason?: string; predecessorLive?: boolean }
   /**

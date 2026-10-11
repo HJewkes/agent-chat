@@ -18,7 +18,7 @@ args: {}
 
 === agent_teleport: visible, with a countdown and a warning
 args: {"handoff":"mid-way through S6"}
-frame: {"t":"teleport","handoff":"mid-way through S6"} (process fields omitted)
+frame: {"t":"teleport","handoff":"mid-way through S6","endsSelf":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -28,7 +28,7 @@ frame: {"t":"teleport","handoff":"mid-way through S6"} (process fields omitted)
 
 === agent_teleport: headless, onto another model
 args: {"handoff":"h","model":"claude-sonnet-5"}
-frame: {"t":"teleport","handoff":"h","model":"claude-sonnet-5"} (process fields omitted)
+frame: {"t":"teleport","handoff":"h","model":"claude-sonnet-5","endsSelf":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -38,7 +38,7 @@ frame: {"t":"teleport","handoff":"h","model":"claude-sonnet-5"} (process fields 
 
 === agent_teleport: remote_control forced on
 args: {"handoff":"h","remote_control":true}
-frame: {"t":"teleport","handoff":"h","remoteControl":true} (process fields omitted)
+frame: {"t":"teleport","handoff":"h","remoteControl":true,"endsSelf":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -48,7 +48,7 @@ frame: {"t":"teleport","handoff":"h","remoteControl":true} (process fields omitt
 
 === agent_teleport: remote_control forced off
 args: {"handoff":"h","remote_control":false}
-frame: {"t":"teleport","handoff":"h","remoteControl":false} (process fields omitted)
+frame: {"t":"teleport","handoff":"h","remoteControl":false,"endsSelf":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -58,7 +58,7 @@ frame: {"t":"teleport","handoff":"h","remoteControl":false} (process fields omit
 
 === agent_teleport: blank model
 args: {"handoff":"h","model":"  "}
-frame: {"t":"teleport","handoff":"h"} (process fields omitted)
+frame: {"t":"teleport","handoff":"h","endsSelf":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -68,7 +68,7 @@ frame: {"t":"teleport","handoff":"h"} (process fields omitted)
 
 === agent_teleport: refused by the broker
 args: {"handoff":"h"}
-frame: {"t":"teleport","handoff":"h"} (process fields omitted)
+frame: {"t":"teleport","handoff":"h","endsSelf":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -105,7 +105,7 @@ args: {"handoff":"h","model":4}
 
 === agent_teleport: parked on the human
 args: {"handoff":"h","reason":"park"}
-frame: {"t":"teleport","handoff":"h","reason":"park"} (process fields omitted)
+frame: {"t":"teleport","handoff":"h","reason":"park","endsSelf":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -124,7 +124,7 @@ args: {"handoff":"h","reason":"refresh"}
 
 === agent_teleport: onto a named surface
 args: {"handoff":"h","surface":"tmux-window"}
-frame: {"t":"teleport","handoff":"h","surface":"tmux-window"} (process fields omitted)
+frame: {"t":"teleport","handoff":"h","surface":"tmux-window","endsSelf":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -143,7 +143,7 @@ args: {"handoff":"h","surface":"bogus"}
 
 === agent_teleport: onto another machine
 args: {"handoff":"h","to":"basement"}
-frame: {"t":"teleport","handoff":"h","to":"basement"} (process fields omitted)
+frame: {"t":"teleport","handoff":"h","to":"basement","endsSelf":true} (process fields omitted)
 [
   {
     "type": "text",
@@ -153,7 +153,7 @@ frame: {"t":"teleport","handoff":"h","to":"basement"} (process fields omitted)
 
 === agent_teleport: blank machine
 args: {"handoff":"h","to":" "}
-frame: {"t":"teleport","handoff":"h"} (process fields omitted)
+frame: {"t":"teleport","handoff":"h","endsSelf":true} (process fields omitted)
 [
   {
     "type": "text",

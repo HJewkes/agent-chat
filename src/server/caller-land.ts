@@ -24,6 +24,8 @@ export interface LandInput {
   plan: LaunchPlan
   hostPid: number
   anchor?: string
+  /** CC-951: a new surface for a successor-first teleport; the predecessor runs on, so nothing waits on it. */
+  now?: boolean
 }
 
 export interface LandDeps {
@@ -57,18 +59,22 @@ async function attempt(input: LandInput, deps: LandDeps, placement: Placement): 
   }
 }
 
+/** The in-pane attempt once the predecessor exits: undefined when it landed, else why not. */
+async function landInPane(input: LandInput, deps: LandDeps): Promise<string | undefined> {
+  const paneFree = await waitForExit(input.hostPid, deps)
+  if (!paneFree) return `pid ${input.hostPid} still held its pane after ${PANE_EXIT_TIMEOUT_MS / 1000}s`
+  if (input.anchor === undefined) return ''
+  const inPane = await attempt(input, deps, { anchor: input.anchor, reuseAnchor: true })
+  return inPane === undefined ? undefined : `in its pane: ${inPane}`
+}
+
 /** Into the predecessor's pane when it frees, else beside the anchor; the broker hears only when both fail. */
 export async function landSuccessor(input: LandInput, deps: LandDeps): Promise<void> {
   const { anchor } = input
   const beside: Placement = anchor === undefined ? {} : { anchor }
-  const paneFree = await waitForExit(input.hostPid, deps)
-  const reasons: string[] = []
-  if (paneFree && anchor !== undefined) {
-    const inPane = await attempt(input, deps, { anchor, reuseAnchor: true })
-    if (inPane === undefined) return
-    reasons.push(`in its pane: ${inPane}`)
-  } else if (!paneFree)
-    reasons.push(`pid ${input.hostPid} still held its pane after ${PANE_EXIT_TIMEOUT_MS / 1000}s`)
+  const inPane = input.now === true ? '' : await landInPane(input, deps)
+  if (inPane === undefined) return
+  const reasons = inPane === '' ? [] : [inPane]
   const besideAnchor = await attempt(input, deps, beside)
   if (besideAnchor === undefined) return
   reasons.push(`beside it: ${besideAnchor}`)
@@ -121,6 +127,7 @@ export interface LandOptions {
   pid: string
   surface: string
   anchor?: string
+  now?: boolean
 }
 
 const AGENT_ID = /^[0-9a-f]{8}$/
@@ -148,5 +155,6 @@ export async function runLandVerb(agentId: string, options: LandOptions): Promis
     return deps.failed((err as Error).message)
   }
   const anchor = options.anchor === undefined ? {} : { anchor: options.anchor }
-  await landSuccessor({ surface: options.surface as SurfaceName, plan, hostPid, ...anchor }, deps)
+  const now = options.now === true ? { now: true } : {}
+  await landSuccessor({ surface: options.surface as SurfaceName, plan, hostPid, ...anchor, ...now }, deps)
 }

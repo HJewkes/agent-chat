@@ -1238,6 +1238,7 @@ Options:
   --pid <pid>          the predecessor's Claude Code, whose exit frees its pane
   --surface <surface>  where the successor runs
   --anchor <anchor>    the predecessor's pane
+  --now                launch at once, beside the running predecessor (CC-951)
   -h, --help           display help for command
 
 === agent-chat permission-hook
