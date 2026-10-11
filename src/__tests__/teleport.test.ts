@@ -1960,6 +1960,130 @@ describe('successor-first ordering (CC-951)', () => {
     expect(delivered.some(d => d.conn === predecessor && d.text.includes('You are still live'))).toBe(true)
   })
 
+  /** The predecessor's own exit, as its headless child reports it. */
+  async function predecessorExits(agentId: string): Promise<void> {
+    const recordExit = (supervisor as unknown as { recordExit: (id: string, o: unknown) => Promise<void> })
+      .recordExit
+    await recordExit.call(supervisor, agentId, { code: 0, signal: null })
+  }
+
+  const humanNotices = () => core.events.humanQueue().map(item => item.text)
+
+  it('records a predecessor that exits during the overlap without finishing or retiring it', async () => {
+    const agentId = await spawnAgent()
+    connectAs('scout', agentId)
+    stopAutoAttach()
+    core.append({
+      kind: 'message',
+      actor: 'scout',
+      target: 'human',
+      body: 'Status: DONE\nPR: example/repo#1',
+    })
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(0)
+    const noticesBefore = humanNotices().length
+
+    await predecessorExits(agentId)
+    await vi.advanceTimersByTimeAsync(0)
+
+    const exited = rowsFor(agentId).find(r => r.kind === 'agent_exited')
+    expect(exited?.body).toBe('exited while its teleport successor was starting')
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_retired')
+    expect(humanNotices()).toHaveLength(noticesBefore)
+
+    core.register(fakeConn(), {
+      t: 'register',
+      name: 'scout',
+      workingOn: 'w',
+      cwd: '/tmp',
+      pid: 2,
+      agentId: result.agentId as string,
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(rowsFor(agentId).filter(r => r.kind === 'agent_retired')).toHaveLength(1)
+    expect(signalled()).toEqual([])
+  })
+
+  it('tells the human, not the gone predecessor, when neither is left running', async () => {
+    const agentId = await spawnAgent()
+    const predecessor = connectAs('scout', agentId)
+    stopAutoAttach()
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    await predecessorExits(agentId)
+    await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS + 1_000)
+
+    const successorId = result.agentId as string
+    expect(humanNotices().some(t => t.includes('ended while its teleport successor was starting'))).toBe(true)
+    expect(delivered.some(d => d.conn === predecessor && d.text.includes('You are still live'))).toBe(false)
+    expect(rowsFor(successorId).map(r => r.kind)).not.toContain('agent_retired')
+    expect(rowsFor(agentId).map(r => r.kind)).toContain('agent_retired')
+    expect(fs.existsSync(supersededMarkerPath(agentId))).toBe(true)
+  })
+
+  it('closes a visible successor the broker opened when the teleport rolls back', async () => {
+    const scripts: string[] = []
+    supervisor.close()
+    supervisor = new Supervisor(core, {
+      countdownMs: COUNTDOWN_MS,
+      seatTeleport: isolatedSeatTeleport(),
+      launcherRunning: async () => false,
+      surface: {
+        platform: 'darwin',
+        spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
+        runAppleScript: async script => {
+          scripts.push(script)
+          return script.includes('is running') ? 'true' : 'fake-pane-uuid'
+        },
+      },
+    })
+    const agentId = await spawnAgent()
+    connectAs('scout', agentId)
+    stopAutoAttach()
+
+    await supervisor.teleport({ subject: subject(agentId), handoff: 'h', surface: 'iterm-tab' })
+    await vi.advanceTimersByTimeAsync(LAND_WINDOW_MS + 1_000)
+
+    expect(scripts.some(script => script.includes('to close'))).toBe(true)
+  })
+
+  it('keeps waiting when a retry is skipped because the successor run-agent is already running', async () => {
+    supervisor.close()
+    supervisor = new Supervisor(core, {
+      countdownMs: COUNTDOWN_MS,
+      seatTeleport: isolatedSeatTeleport(),
+      launcherRunning: async () => true,
+      surface: {
+        platform: 'darwin',
+        spawn: () => ({ pid: 4242, unref: () => undefined, once: () => undefined }),
+        runAppleScript: async () => 'true',
+      },
+    })
+    const agentId = await spawnAgent()
+    connectAs('scout', agentId)
+    stopAutoAttach()
+    vi.spyOn(supervisor as unknown as { launchOn: () => Promise<object> }, 'launchOn').mockRejectedValueOnce(
+      new Error('launch check timed out'),
+    )
+
+    const result = await supervisor.teleport({ subject: subject(agentId), handoff: 'h' })
+    await vi.advanceTimersByTimeAsync(RELAUNCH_RETRY_MS + 1_000)
+    const successorId = result.agentId as string
+    expect(rowsFor(successorId).map(r => r.kind)).not.toContain('agent_retired')
+
+    core.register(fakeConn(), {
+      t: 'register',
+      name: 'scout',
+      workingOn: 'w',
+      cwd: '/tmp',
+      pid: 2,
+      agentId: successorId,
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(signalled()[0]).toEqual({ pid: PREDECESSOR_PID, signal: 'SIGTERM' })
+  })
+
   it('still ends the predecessor first when the successor reuses its pane', async () => {
     const agentId = await spawnAgent()
 

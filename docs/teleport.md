@@ -392,9 +392,24 @@ race above is now the readiness gate on purpose:
    The severed predecessor's MCP server may restart and re-register, and that
    is refused, because its name is held by a different `agentId`.
 4. If the successor does not attach within `LAND_WINDOW_MS`, or its launch
-   fails, its row is retired unused. Its headless process, if any, is stopped.
-   The predecessor gets back its slot and its stale-session marker is cleared.
-   It was never signalled, and it is told that it is still live.
+   fails, there are two cases.
+   - **The predecessor is still running.** The successor's row is retired
+     unused. The successor itself is stopped: its headless process, or the
+     surface the broker opened for it. The predecessor gets back its slot and
+     its stale-session marker is cleared. It was never signalled, and it is
+     told that it is still live.
+   - **The predecessor has already ended.** The predecessor is retired. The
+     successor's row is kept, so its relaunch script can still start it, and
+     the human is told how. This is the same outcome as a failed v0 teleport.
+
+   A retry that is skipped because the successor's run-agent is already
+   running is not a failure. The broker keeps waiting for the attach.
+
+While a successor is starting, the predecessor's supervisor entry is marked
+`teleporting`. A headless predecessor usually exits on its own at the end of
+its turn. That exit records `agent_exited` and nothing else. The completion
+hook, the report check and auto-retire are skipped, and its slot stays with
+the successor. The teleport then knows the predecessor has gone.
 
 The "dead bus" state above still exists. It lasts from the eviction to the
 SIGTERM, which is the same tick. Pane reuse stays end-first (§4.3, CC-402): a

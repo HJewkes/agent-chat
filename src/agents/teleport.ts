@@ -281,6 +281,8 @@ export interface TeleportHost {
   standDown(agentId: string): void
   /** CC-951: a successor-first successor never attached, so its predecessor keeps what it had. */
   keepPredecessor(input: RelaunchInput, reason: string): void
+  /** CC-951: neither the predecessor nor its successor is running, so the human is told how to start it. */
+  noticeLostTeleport(input: RelaunchInput, reason: string): void
   /** CC-881: record the successor and build its launch for another host, launching nothing here. */
   prepareRemoteRelaunch(input: RelaunchInput): RemoteLaunch
   /** CC-881: the other host launched it, so the successor's execution opens. */
@@ -324,6 +326,8 @@ interface Pending {
   landFailed?: boolean
   /** CC-951: an asked-for surface opens fresh, never typed into the predecessor's pane. */
   surfaceRequested: boolean
+  /** CC-951: the predecessor ended by itself while its successor-first successor started. */
+  predecessorGone?: boolean
 }
 
 /** CC-913: an armed successor not yet registered; only the holder of `token` may report it unplaced. */
@@ -670,11 +674,41 @@ export class Teleport {
       input = { ...this.relaunchFor(entry, false, await this.briefFor(entry)), successorFirst: true }
       await this.host.relaunch(input)
     } catch (err) {
-      this.successorFailed(entry.descendantId, (err as Error).message)
+      // A real failure already settled the arrival through `successorFailed`. One that
+      // throws without it is a retry skipped because the successor may yet attach.
+      if (!(err instanceof SuccessorNotStarted))
+        this.successorFailed(entry.descendantId, (err as Error).message)
     }
     const failure = await arrival
-    if (failure !== undefined) return this.keepPredecessor(entry, input, failure)
-    this.endPredecessor(entry)
+    if (failure === undefined) return this.endPredecessor(entry)
+    if (this.predecessorRunning(entry)) return this.keepPredecessor(entry, input, failure)
+    this.predecessorLost(entry, input, failure)
+  }
+
+  /** CC-951: the supervisor saw the predecessor's own exit while its successor started. */
+  predecessorExited(agentId: string): void {
+    const entry = this.pending.get(agentId)
+    if (entry !== undefined) entry.predecessorGone = true
+  }
+
+  private predecessorRunning(entry: Pending): boolean {
+    return entry.predecessorGone !== true && pidAlive(entry.subject.hostPid as number)
+  }
+
+  /**
+   * CC-951: both are gone, as in a v0 teleport whose successor failed. The predecessor
+   * retires, the successor's row is kept so its relaunch script can still start it, and
+   * the human, the only party left, is told.
+   */
+  private predecessorLost(entry: Pending, input: RelaunchInput | undefined, reason: string): void {
+    const { subject } = entry
+    this.pending.delete(subject.agentId)
+    this.core.append({ kind: 'agent_stood_down', actor: subject.name, ref: subject.agentId })
+    this.host.standDown(subject.agentId)
+    this.retirePredecessor(entry, { ok: true })
+    if (input !== undefined) return this.host.noticeLostTeleport(input, reason)
+    this.noticeUnplaced(subject.name, reason)
+    logEvent('teleport_failed', { name: subject.name, from: subject.agentId, reason })
   }
 
   /** The successor holds the name now, so the predecessor is ended without waiting for it to free. */
@@ -682,7 +716,10 @@ export class Teleport {
     const { subject, descendantId } = entry
     this.core.append({ kind: 'agent_stood_down', actor: subject.name, ref: subject.agentId })
     this.host.standDown(subject.agentId)
-    const ended = this.host.endSession(subject.name, subject.hostPid as number, subject.host)
+    const ended =
+      entry.predecessorGone === true
+        ? { ok: true }
+        : this.host.endSession(subject.name, subject.hostPid as number, subject.host)
     this.retirePredecessor(entry, ended)
     this.pending.delete(subject.agentId)
     logEvent('teleport_completed', { name: subject.name, from: subject.agentId, to: descendantId })
