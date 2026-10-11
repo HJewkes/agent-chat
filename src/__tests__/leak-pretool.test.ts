@@ -2526,6 +2526,42 @@ describe('a git config value that runs a program (TP-636)', () => {
   })
 })
 
+describe('a config value git clone applies before it fetches (TP-636)', () => {
+  it.each([
+    'git clone -c core.sshCommand="git push --no-verify" ssh://h/r x',
+    'git clone --config core.sshCommand="git push --no-verify" ssh://h/r x',
+    'git clone --config=core.fsmonitor="git push --no-verify" /r x',
+    'git clone -ccore.sshCommand="git push --no-verify" ssh://h/r x',
+    'git clone --depth 1 -c "filter.x.smudge=git push --no-verify" /r x',
+    'git clone -c "credential.helper=!git push --no-verify" https://h/r x',
+  ])('denies a skipped hook in the value: %s', command => {
+    expect(checkCommand(command, ctx())).toBe(REASONS.noVerify)
+  })
+
+  it.each(['git clone -c core.sshCommand="$(cat f)" ssh://h/r x', 'git clone --config=core.pager="$P" /r x'])(
+    'denies a program value the guard cannot read: %s',
+    command => {
+      expect(checkCommand(command, ctx())).toBe(REASONS.configProgram)
+    },
+  )
+
+  it.each(['git clone -c "$(cat k)" /r x', 'git clone $OPTS /r x'])(
+    'denies a config word the guard cannot read: %s',
+    command => {
+      expect(checkCommand(command, ctx())).toBe(REASONS.gitConfigUnresolved)
+    },
+  )
+
+  it.each([
+    'git clone -c core.sshCommand="ssh -i key" ssh://h/r x',
+    'git clone --config user.name=x /r x',
+    'git clone /r x -- -c',
+    'git log -c core.pager="git push --no-verify"',
+  ])('allows %s', command => {
+    expect(checkCommand(command, ctx())).toBeUndefined()
+  })
+})
+
 describe('an environment variable git runs as a program (TP-636 fix round 2)', () => {
   it.each([
     "GIT_EDITOR='git push --no-verify' git commit",

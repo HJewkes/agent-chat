@@ -151,21 +151,28 @@ function configPayload(kv: string): string | null | undefined {
 /** The `ext::` payload of one argument: the word, or the value of a `--name=value` option. */
 function argPayload(word: string): string | null | undefined {
   const option = /^--[\w-]+=/.exec(word)?.[0]
-  if (option === '--config=') return configPayload(word.slice(option.length))
   return urlPayload(option === undefined ? word : word.slice(option.length))
 }
 
-const CONFIG_FLAGS = new Set(['-c', '--config'])
+/** The `ext::` payload of one config word; a `--config-env` value is read from the environment, so only its key counts. */
+function configWordPayload(word: ConfigWord): string | null | undefined {
+  if (!hasExt(unmark(word.marked))) return null
+  if (word.resolved === undefined) return undefined
+  if (!word.fromEnv) return configPayload(word.resolved)
+  const key = keyOf(word.resolved, true)
+  return URL_REWRITE.test(key) && hasExt(key) ? undefined : null
+}
 
 /**
  * The commands `ext::` transport URLs run on a git command (TP-636): the span of each argument or
- * config value git runs as an `ext::` URL, and the command of `git remote-ext <name> <cmd>`.
+ * config value (every word `configWords` lists) git runs as an `ext::` URL, and the command of `git remote-ext <name> <cmd>`.
  * `unreadable` when a word holding `ext::` has an expansion the guard cannot read, a span it cannot
  * pin down, or a payload it cannot decode.
  */
 export function extPrograms(
   resolved: readonly (string | undefined)[],
   marked: readonly string[],
+  splits: readonly string[],
   at: number,
 ): { scripts: string[]; unreadable: boolean } {
   const scripts: string[] = []
@@ -176,11 +183,13 @@ export function extPrograms(
     if (script === undefined) unreadable = true
     else scripts.push(script)
   }
+  const config = configWords(resolved, marked, splits)
+  config.forEach(word => decode(configWordPayload(word)))
+  const held = new Set(config.map(word => word.index))
   marked.forEach((word, i) => {
-    if (!hasExt(unmark(word))) return
+    if (held.has(i) || !hasExt(unmark(word))) return
     const value = resolved[i]
-    if (value === undefined) unreadable = true
-    else decode(CONFIG_FLAGS.has(resolved[i - 1] ?? '') ? configPayload(value) : argPayload(value))
+    decode(value === undefined ? undefined : argPayload(value))
   })
   if (resolved[at] === 'remote-ext') {
     const cmd = resolved[at + 2]

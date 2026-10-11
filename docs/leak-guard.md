@@ -597,13 +597,22 @@ them: `core.pager`, every `pager.<cmd>`, `core.editor`, `sequence.editor`, `core
 `sendemail.<identity>`, `trailer.<keyAlias>.cmd` and `.command`, `hook.<name>.command` (git's
 config-defined hooks), `gc.recentObjectsHook`, `uploadpack.packObjectsHook` and `imap.tunnel`.
 
-A literal `-c` value for one of these keys is checked like a top-level Bash line, so
+Every config word one git invocation receives is read from one list: git's own `-c` and
+`--config-env` before the subcommand, and the `-c`, `--config` and `--config=` words of
+`git clone`, which git applies to the new repository before it fetches or checks out, so a program
+they set runs in the same call. The program-key check, the unreadable-config check and the
+`ext::` check below all read that list. A word after `clone` that the shell may split, such as an
+unquoted `$OPTS`, may hide a `-c`, so it denies as unreadable config.
+
+A literal value for one of these keys is checked like a top-level Bash line, so
 `git -c core.pager="git -c core.hooksPath=/dev/null push" log` is denied as a hooks path override
-and `git -c core.pager="git push --no-verify" log` as a skipped hook. A `credential.helper` or
-`submodule.<name>.update` value that starts with `!` is checked without the `!`. git passes its
-`-c` options on to the git the program runs, through `GIT_CONFIG_PARAMETERS`, so an
-`include.path` on the same git is a deny, as it is for a command git runs for its subcommand. A safe value stays allowed: `less`, `cat`,
-`"less -R"`, `vim`, `store`, `"ssh -i key"`, `true` and an empty value.
+and `git -c core.pager="git push --no-verify" log` and
+`git clone -c core.sshCommand="git push --no-verify" ssh://h/r x` as a skipped hook. A
+`credential.helper` or `submodule.<name>.update` value that starts with `!` is checked without the
+`!`. git passes its `-c` options on to the git the program runs, through `GIT_CONFIG_PARAMETERS`,
+so an `include.path` on the same git is a deny, as it is for a command git runs for its
+subcommand. A safe value stays allowed: `less`, `cat`, `"less -R"`, `vim`, `store`,
+`"ssh -i key"`, `true` and an empty value.
 
 A value the guard cannot read for one of these keys is a deny on every git subcommand, since any
 of them may start a pager or an editor: `-c core.pager="$P"`, `-c core.editor=$(cat e)`, and every
@@ -617,8 +626,8 @@ the TP-630 allowance for `git -c "$X" log`.
 An `ext::` transport runs a shell command, enabled by `protocol.ext.allow` or
 `protocol.allow=always`. git runs `ext::` only as a whole URL, so the guard checks exactly that span
 of each word that holds `ext::`, case-insensitive: an argument that starts with it, the value of a
-`--name=` option such as `archive --remote=ext::…`, and the value of a config word given to `-c`
-or to `clone -c`/`--config`, as in `-c remote.<x>.url=ext::…` or `-c remote.<x>.pushurl=ext::…`.
+`--name=` option such as `archive --remote=ext::…`, and the value of each config word in the list
+above, as in `-c remote.<x>.url=ext::…` or `-c remote.<x>.pushurl=ext::…`.
 `ext::` anywhere else in a word is a span the guard cannot pin down, and denies. So does an `ext::`
 base in a `url.<base>.insteadOf` or `.pushInsteadOf` key: git joins the base to the rest of each
 URL it matches, so the end of its command is not known from the line. A commit message that
@@ -642,7 +651,9 @@ more hold options or a preprocessor spec rather than a command line, yet can sti
 less run one: `LESS` (`+!cmd`), `LESSOPEN` and `LESSCLOSE` (`|cmd %s`), and `MANOPT` (`-P cmd`).
 Both lists live in `git-programs.ts`.
 
-This is one conservative line rule, not a list of spellings. On a line that runs git anywhere,
+This is one conservative line rule, not a list of spellings, though a name built at run time
+(`export ${n}_EDITOR=…`) is not seen; that is the general gap listed under what the guard does not
+cover. On a line that runs git anywhere,
 each word is read for these names. A plain literal `NAME=value` to a name in the first list has
 its value checked as a top-level Bash line, but only where the shell reads the word as an assignment
 exactly once: a prefix assignment, an assignment right after a literal `env`, or an argument of

@@ -447,7 +447,7 @@ function checkPrograms(run: GitRun, ctx: GuardContext, scope: Scope, depth: numb
   const options = gitOptions(run.args, scope.cwd, scope.gitParams)
   const at =
     options === UNSURE_CALL ? run.resolved.findIndex(w => w !== undefined && !w.startsWith('-')) : options.at
-  const ext = extPrograms(run.resolved, run.marked, at)
+  const ext = extPrograms(run.resolved, run.marked, run.cmd.splits, at)
   if (config === undefined || ext.unreadable) return run.tied ? REASONS.configProgram : undefined
   const scripts = [...config, ...ext.scripts]
   if (scripts.length === 0) return undefined
