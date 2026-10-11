@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { backoffHeld } from '../agents/burndown/backoff.js'
-import { briefRefusal, pickTask, profileFor, taskRefusal, type Task } from '../agents/burndown/eligibility.js'
+import {
+  briefRefusal,
+  isBriefer,
+  pickTask,
+  profileFor,
+  taskRefusal,
+  type Task,
+} from '../agents/burndown/eligibility.js'
 import type { Ledger } from '../agents/burndown/ledger.js'
 
 const NOW = new Date('2026-10-01T12:00:00.000Z')
@@ -86,6 +93,14 @@ describe('profileFor (owner decision 186)', () => {
       expect(profileFor(sized(estimate))).toBe('bd-implementer-lite')
     },
   )
+
+  it('(CC-939) sends a brief:wanted task without an estimate to the planner profile', () => {
+    const wanted = { ...task('P-1', 1), estimate: undefined, tags: ['brief:wanted'], doneWhen: 'x' }
+
+    expect(profileFor(wanted)).toBe('bd-planner')
+    expect(isBriefer(wanted)).toBe(true)
+    expect(isBriefer({ ...wanted, tags: ['brief:wanted', 'brief:proposed=2026-10-10'] })).toBe(false)
+  })
 
   it('sends a non-feature kind to sonnet', () => {
     expect(profileFor(sized(2, ['kind:bug']))).toBe('bd-implementer-lite')

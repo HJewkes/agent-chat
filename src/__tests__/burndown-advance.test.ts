@@ -213,10 +213,30 @@ describe('burndown phase machine', () => {
 
     const { after } = step(briefer, {
       agent: exited,
+      proposed: true,
       slices: [{ n: 'a', title: 'ledger', dependsOn: [], owns: ['src/ledger.ts'] }],
     })
 
     expect(after.map(c => [c.slice, c.phase])).toEqual([[undefined, 'done']])
+  })
+
+  it('(CC-939) a briefer that tagged brief:proposed is done; one that did not stalls rather than respawns', () => {
+    const briefer = claim({ phase: 'planning', worktree: undefined, briefer: true })
+    const report = (status: string) =>
+      ({ status, firstLine: `Status: ${status}`, text: '' }) as Observation['report']
+
+    const proposed = step(briefer, { agent: exited, proposed: true, report: report('DONE') })
+    const untagged = step(briefer, { agent: exited, proposed: false, report: report('DONE') })
+    const blocked = step(briefer, { agent: exited, proposed: false, report: report('BLOCKED') })
+    const silent = step(briefer, { agent: exited })
+
+    expect(proposed.after.map(c => c.phase)).toEqual(['done'])
+    for (const { after } of [untagged, blocked, silent]) {
+      expect(after).toEqual([
+        expect.objectContaining({ phase: 'planning', stalledReason: expect.any(String) }),
+      ])
+    }
+    expect(blocked.after[0]?.stalledReason).toBe('Status: BLOCKED')
   })
 
   it("a planner slice's contracts reach its queued claim", () => {

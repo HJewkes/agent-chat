@@ -7,6 +7,7 @@ import {
   IMPLEMENTER_PROFILE,
   pickTask,
   PLANNER_PROFILE,
+  isBriefer,
   profileFor,
   SONNET_PROFILES,
   type Initiative,
@@ -174,6 +175,7 @@ interface Work {
   taskId: string
   slice?: string
   profile: string
+  briefer?: boolean
   /** A queued slice's claim prefix and seat, so its implementer shares the planner's. */
   namePrefix?: string
   seat?: string
@@ -237,7 +239,10 @@ function nextWork(
         inputs.ledger,
       )
     if (refusal === undefined)
-      return { work: { taskId: task.id, profile }, refusals: [...blocked, ...refusals] }
+      return {
+        work: { taskId: task.id, profile, ...(isBriefer(task) ? { briefer: true } : {}) },
+        refusals: [...blocked, ...refusals],
+      }
     blocked.push(refusal)
   }
 }
@@ -308,6 +313,7 @@ function place(
     task: work.taskId,
     ...(work.slice === undefined ? {} : { slice: work.slice }),
     profile,
+    ...(work.briefer === true ? { briefer: true } : {}),
     account: chosen.account,
     cwd,
     repo,

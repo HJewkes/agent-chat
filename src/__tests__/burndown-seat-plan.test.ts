@@ -141,6 +141,17 @@ describe('planSeat dispatch', () => {
     expect(plan.dispatch[0]?.worktree).toBeUndefined()
   })
 
+  it('(CC-939) dispatches a brief:wanted task with no estimate as a briefer', () => {
+    const plan = planSeat(
+      inputs(
+        [row('A-1', 50, { route: 'briefer' })],
+        [task('A-1', { estimate: undefined, tags: ['brief:wanted'] })],
+      ),
+    )
+
+    expect(plan.dispatch).toEqual([expect.objectContaining({ profile: 'bd-planner', briefer: true })])
+  })
+
   it('picks the repo a repo: tag names', () => {
     const plan = one('A-1', { tags: ['repo:alpha-docs'] })
 

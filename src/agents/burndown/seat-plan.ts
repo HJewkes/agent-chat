@@ -3,6 +3,7 @@ import { gatePool, RUN_CAP_MS, type PoolGateInput, type PoolGateResult } from '.
 import {
   briefRefusal,
   IMPLEMENTER_PROFILE,
+  isBriefer,
   localDay,
   PLANNER_PROFILE,
   SONNET_PROFILES,
@@ -511,7 +512,7 @@ function consider(
   const dispatch = {
     ...dispatchFor({ initiative: row.initiative, task: row.id, profile: route.profile }, repo, reason, walk),
     ...(row.tier === undefined ? {} : { tier: row.tier }),
-    ...(row.route === 'briefer' ? { briefer: true } : {}),
+    ...(isBriefer(task) ? { briefer: true } : {}),
   }
   const work = { taskId: row.id, tags: task.tags, owns: [] }
   return blocker(dispatch, work, route.role, walk) ?? { dispatch, role: route.role, work }

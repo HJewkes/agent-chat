@@ -140,7 +140,7 @@ export function taskRefusal(
   if (task.status !== 'open') return { kind: 'not-open', reason: `status is ${task.status ?? 'missing'}` }
   if (task.doneWhen === undefined)
     return { kind: 'no-done-when', reason: 'no done_when, so no return contract' }
-  const wanted = wantsBrief(task.tags)
+  const wanted = isBriefer(task)
   if (task.estimate === undefined && !wanted) return { kind: 'no-estimate', reason: 'no estimate (CC-137)' }
   const reserved = task.tags.filter(tag => RESERVED_TAGS.includes(tag))
   if (reserved.length > 0) return { kind: 'reserved-tag', reason: `tagged ${reserved.join(', ')}` }
@@ -177,8 +177,13 @@ export function pickTask(
 export const PLANNER_PROFILE = 'bd-planner'
 export const IMPLEMENTER_PROFILE = 'bd-implementer'
 
+/** CC-939: the one place a task's role is decided: a `brief:wanted` task with a done_when gets a briefer, not a planner. */
+export const isBriefer = (task: Pick<Task, 'doneWhen' | 'tags'>): boolean =>
+  task.doneWhen !== undefined && wantsBrief(task.tags)
+
 /** Owner decision 186: big work plans first, small work goes to sonnet unless it is a feature, which gets opus. */
 export function profileFor(task: Task): string {
+  if (isBriefer(task)) return PLANNER_PROFILE
   const estimate = task.estimate ?? Infinity
   if (estimate >= 3) return PLANNER_PROFILE
   return task.tags.includes('kind:feature') ? IMPLEMENTER_PROFILE : 'bd-implementer-lite'

@@ -37,6 +37,8 @@ export interface Observation {
   report?: Report
   /** Messages to the parked worker since the claim's inbox cursor. */
   inbox?: InboxMessage[]
+  /** CC-939: whether a finished briefer's task now carries `brief:proposed`. */
+  proposed?: boolean
   /** A finished planner's slices, parsed from its plan file. */
   slices?: PlannedSlice[]
   /** CC-631: why a finished planner's slices were refused, one line per slice and rule. */
@@ -122,7 +124,8 @@ type Step = (claim: Claim, obs: Observation, now: Date) => Action[]
 
 const STEPS: Partial<Record<Claim['phase'], Step>> = {
   spawning: (claim, obs) => (obs.agent === undefined ? [] : [landed(claim, obs.agent.id)]),
-  planning: (claim, obs, now) => (finished(obs) ? afterPlanner(claim, obs, now) : []),
+  planning: (claim, obs, now) =>
+    !finished(obs) ? [] : claim.briefer === true ? afterBriefer(claim, obs) : afterPlanner(claim, obs, now),
   implementing: (claim, obs) => (finished(obs) ? afterWorker(claim, obs) : []),
   parked: afterAnswer,
   reviewing: (claim, obs) => (finished(obs) ? afterReviewer(claim, obs) : []),
@@ -173,11 +176,20 @@ const landed = (claim: Claim, agentId: string): Action =>
   update(claim, { phase: claim.nextPhase ?? 'implementing', agentId, nextPhase: undefined })
 
 function afterPlanner(claim: Claim, obs: Observation, now: Date): Action[] {
-  if (claim.briefer === true) return [update(claim, { phase: 'done' }), retireAll(claim)]
   if (obs.slices === undefined)
     return [stall(claim, sliceStallReason(obs.sliceProblems), 'failed', 'planner-refused')]
   const slices = sliceClaims(claim, obs.slices, now)
   return [update(claim, { phase: 'done' }), { kind: 'add', claims: slices }, retireAll(claim)]
+}
+
+/** CC-939: a briefer is done only once the task carries `brief:proposed`; anything else stalls, as a planner with no slices does. */
+function afterBriefer(claim: Claim, obs: Observation): Action[] {
+  const status = obs.report?.status
+  if (status === 'BLOCKED' || status === 'NEEDS_CONTEXT')
+    return [stall(claim, obs.report?.firstLine ?? status, 'failed')]
+  if (obs.proposed !== true)
+    return [stall(claim, 'briefer exited without tagging brief:proposed', 'failed', 'planner-refused')]
+  return [update(claim, { phase: 'done' }), retireAll(claim)]
 }
 
 const sliceStallReason = (problems: string[] | undefined): string =>
