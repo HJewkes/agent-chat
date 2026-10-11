@@ -28,6 +28,15 @@ export function prRef(url: string | undefined, head: string | undefined): string
   return `${m[1]}#${m[2]}@${head.slice(0, SHORT_SHA)}`
 }
 
+/** TP-1570: Shepherd's `owner/repo#n` and a head as `owner/repo#n@<short sha>`; undefined unless both are known. */
+export function shepherdPrRef(
+  ref: string | null | undefined,
+  head: string | null | undefined,
+): string | undefined {
+  if (!/^[\w.-]+\/[\w.-]+#\d+$/.test(ref ?? '') || !head) return undefined
+  return `${ref}@${head.slice(0, SHORT_SHA)}`
+}
+
 const TASK = String.raw`(?:-|[A-Za-z][A-Za-z0-9]*-\d+)`
 /** A seat's agent is `<prefix>-<rest>`, which also keeps a bare word of prose from reading as one. */
 const AGENT = String.raw`[A-Za-z0-9]+-[A-Za-z0-9][A-Za-z0-9._-]*`
@@ -63,4 +72,15 @@ export function alreadyJournaled(log: string, line: string): boolean {
   const agent = agentOf(CLOCKED.exec(line)?.[1] ?? '')
   const latest = log.split('\n').findLast(l => agentOf(CLOCKED.exec(l)?.[1] ?? '') === agent)
   return latest === line
+}
+
+/** `owner/repo#n` of a journal PR field, lowercased, so a ref from Shepherd and one from a URL compare equal whatever the head. */
+const pullOf = (pr: string): string => pr.split('@')[0]?.toLowerCase() ?? ''
+
+/** CC-316: whether a broker `merged` line today already names this agent and pull request, from any path and in any minute. */
+export function alreadyMerged(log: string, agent: string, pr: string): boolean {
+  return log.split('\n').some(l => {
+    const m = JOURNAL_TEXT.exec(CLOCKED.exec(l)?.[1] ?? '')
+    return m?.[1] === 'merged' && m[2] === agent && m[3] !== ABSENT && pullOf(m[3] ?? '') === pullOf(pr)
+  })
 }
