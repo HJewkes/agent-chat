@@ -45,6 +45,7 @@ import { readMeta } from './lifecycle.js'
 import { resolveDeciderAgentId } from '../config.js'
 import { shapeMeta } from '../inbox/item-shape.js'
 import { fileServiceAsk } from './service-ask.js'
+import { PERMISSION_WAITING, permissionNoticeText } from './permission-notice.js'
 import { brokerHost } from './host-guard.js'
 import { linuxPeerPorts, provePeerLocal, type PeerPorts } from './peer-locality.js'
 
@@ -1217,7 +1218,35 @@ export class SocketServer {
     const session = core.registry.connFor(msg.session)
     if (session) core.registry.setAwaitingApproval(session, true)
     logEvent('approval_request', { msgId, from: msg.session, tool: msg.toolName, source: 'hook' })
+    this.noticePermissionWaiting(msg, msgId)
     reply(conn, { t: 'permission_hook_result', ok: true, msgId })
+  }
+
+  /** CC-610: the spawner of a parked agent hears about it; a human spawner already has the queue. */
+  private noticePermissionWaiting(
+    msg: Extract<ClientMessage, { t: 'permission_hook' }>,
+    approvalRef: string,
+  ): void {
+    const { core } = this
+    const session = core.registry.connFor(msg.session)
+    const agentId = session === undefined ? undefined : core.registry.entryFor(session)?.agentId
+    const identity = agentId === undefined ? core.agents.byName(msg.session) : core.agents.get(agentId)
+    const spawner = identity?.spawnedBy
+    if (spawner === undefined || spawner === HUMAN) return
+    const text = permissionNoticeText({
+      agent: msg.session,
+      toolName: msg.toolName,
+      toolInput: msg.toolInput,
+    })
+    const meta = {
+      event: PERMISSION_WAITING,
+      agent: msg.session,
+      tool: msg.toolName,
+      approval_ref: approvalRef,
+    }
+    const { msgId } = core.append({ kind: 'message', actor: 'agent-chat', target: spawner, body: text, meta })
+    core.deliverTo(spawner, { msgId, from: 'agent-chat', text, at: Date.now(), event: PERMISSION_WAITING })
+    logEvent(PERMISSION_WAITING, { msgId, agent: msg.session, spawner, tool: msg.toolName })
   }
 
   /**

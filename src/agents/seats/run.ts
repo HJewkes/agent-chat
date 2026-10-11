@@ -28,9 +28,9 @@ import { HANDOFF_GRACE_MS, RELAUNCH_QUIET_MS, judgeRelaunch, type RelaunchVerdic
 import { checkAttended } from './attended.js'
 import { judgeService, runServiceCheck, type ServiceCheckRunner } from './service-check.js'
 import { seatAccount } from './seat-account.js'
-import { seatTarget } from './seat-target.js'
+import { PANE_HOLD_CAP_MS, seatPane, seatTarget } from './seat-target.js'
 import { poolPace } from './pace.js'
-import { publishPace, type PaceStore } from './pace-pass.js'
+import { dayOpening, publishPace, type PaceStore } from './pace-pass.js'
 import {
   RESTART_WINDOW_MAX_MS,
   advanceMeter,
@@ -46,6 +46,7 @@ import {
 import {
   FIRE_CAP,
   WAKE_MESSAGE,
+  WATCHDOG_MAX_READING_AGE_SECONDS,
   accountReading,
   decide,
   keepReading,
@@ -177,6 +178,20 @@ function freshRead(pass: Pass, pool: Pool, nowMs: number): BudgetRead {
   return pass.deps.readBudget(pool.configDir, nowMs)
 }
 
+/** CC-346: a pool with no saved day meter starts from the reading history, so a deleted doc keeps the day's spend. */
+function dayMeter(pass: Pass, pool: string, sevenDay: number | undefined): SpendMeter | undefined {
+  const saved = pass.doc.pools[pool]
+  if (saved !== undefined || sevenDay === undefined) return saved
+  const dayStartMs = dayStart(pass.now)
+  const resetsAt = pass.resets.get(pool)
+  const opening = dayOpening(pass.deps.pace?.rows?.() ?? [], { pool, dayStartMs, sevenDay, resetsAt })
+  if (opening === undefined) return undefined
+  const at = opening.ts * 1000
+  if (at > dayStartMs) pass.gaps.push(pool)
+  // A first sample after 07:00 dates the meter, as one the pass started then would be, so status names the gap.
+  return { since: Math.max(at, dayStartMs), last: opening.seven_day, spent: 0 }
+}
+
 function poolReading(pass: Pass, pool: Pool): AccountReading | undefined {
   if (!pass.readings.has(pool.name)) {
     const nowMs = pass.now.getTime()
@@ -187,10 +202,10 @@ function poolReading(pass: Pass, pool: Pool): AccountReading | undefined {
     pass.resets.set(pool.name, resetsAt === undefined ? undefined : resetsAt * 1000)
     const kept = keepReading(pass.doc.lastReadings?.[pool.name], reading, nowMs)
     if (kept !== undefined) pass.doc.lastReadings = { ...pass.doc.lastReadings, [pool.name]: kept }
-    const meter = advanceMeter(pass.doc.pools[pool.name], reading?.sevenDay, nowMs, sameSpendDay)
+    const seeded = dayMeter(pass, pool.name, reading?.sevenDay)
+    const meter = advanceMeter(seeded, reading?.sevenDay, nowMs, sameSpendDay)
     if (meter !== undefined) {
-      const started = pass.doc.pools[pool.name] !== meter && meter.since === nowMs
-      if (started && meter.before === undefined) pass.gaps.push(pool.name)
+      if (seeded === undefined && meter.since === nowMs) pass.gaps.push(pool.name)
       pass.doc.pools[pool.name] = meter
     }
   }
@@ -287,6 +302,7 @@ function seatBudget(
     now: pass.now,
     pacing: seat.pacing,
     resetsAt: pool === undefined ? undefined : pass.resets.get(pool.name),
+    ...(pass.deps.probe === undefined ? {} : { maxReadingAgeSeconds: WATCHDOG_MAX_READING_AGE_SECONDS }),
   })
 }
 
@@ -298,6 +314,14 @@ interface SeatLiveness {
   mark: ResumeMark
   /** Read only for a seat with no connected session on a readable roster. */
   presence?: Presence
+  /** CC-959: a session that may be the seat's pane carrying on under another name. */
+  pane?: PaneHold
+}
+
+interface PaneHold {
+  pane: SeatAgent
+  /** The hold has outrun its cap, so the human is asked instead. */
+  overCap: boolean
 }
 
 type Absence = NonNullable<SeatRecord['absent']>
@@ -363,11 +387,45 @@ function seatLiveness(pass: Pass, seat: string, hold: string | undefined): SeatL
   const unconfirmed = previous?.resumeRetry
   const input = { connected, presence, hold, absentSince: absent?.since, attempted, unconfirmed, nowMs }
   const judged = judgeLiveness(input)
-  const verdict = rowLive(pass.roster, seat) ? heldByLiveRow(judged, nowMs) : judged
+  const byRow = rowLive(pass.roster, seat) ? heldByLiveRow(judged, nowMs) : judged
+  const pane = paneHold(pass, seat, presence)
+  const verdict = pane === undefined ? byRow : heldByPane(byRow, pane.pane)
   const mark = verdict.resume
     ? resumeMark(verdict.episode, verdict.tries, absent)
     : resumeMark(attempted, unconfirmed, absent)
-  return { verdict, mark, ...(presence === undefined ? {} : { presence }) }
+  return {
+    verdict,
+    mark,
+    ...(presence === undefined ? {} : { presence }),
+    ...(pane === undefined ? {} : { pane }),
+  }
+}
+
+/** CC-959: the seat file's cwd, else the one its newest row ran in. */
+function seatCwd(pass: Pass, seat: string): string | undefined {
+  const own = seatAccount(pass.deps.readSeatFile(seat) ?? '', pass.pools)?.cwd
+  if (own !== undefined) return own
+  const rows = pass.roster.agents.filter(agent => agent.name === seat && agent.cwd !== undefined)
+  return rows.sort((a, b) => (b.spawnedAt ?? 0) - (a.spawnedAt ?? 0))[0]?.cwd
+}
+
+function paneHold(pass: Pass, seat: string, presence: Presence | undefined): PaneHold | undefined {
+  const darkSince = presence?.darkSince
+  if (darkSince === undefined) return undefined
+  const { agents, connected } = pass.roster
+  const pane = seatPane({ agents, connected, seat, cwd: seatCwd(pass, seat), darkSince })
+  if (pane === undefined) return undefined
+  return { pane, overCap: pass.now.getTime() - darkSince > PANE_HOLD_CAP_MS }
+}
+
+const paneLabel = (pane: SeatAgent): string =>
+  `possible live seat pane ${pane.name} (${pane.agentId ?? pane.sessionId ?? 'no id'}) in ${pane.cwd}`
+
+/** CC-959: unlike a live row, a possible pane has no grace that lets the resume go ahead. */
+function heldByPane(verdict: LivenessVerdict, pane: SeatAgent): LivenessVerdict {
+  const idleHold = paneLabel(pane)
+  if (!verdict.resume) return { ...verdict, idleHold: verdict.idleHold ?? idleHold }
+  return { resume: false, reason: `${verdict.reason}; not resumed: ${idleHold}`, refused: true, idleHold }
 }
 
 /** What the relaunch step does for a seat: relaunch, flag a failed teleport, or say why not. */
@@ -398,6 +456,7 @@ function seatRelaunch(
 ): SeatRelaunch | undefined {
   const { verdict } = liveness
   if (pass.deps.relaunchHandoff === undefined || verdict.resume || verdict.refused) return undefined
+  if (liveness.pane !== undefined) return undefined
   const connected = pass.roster.connected.includes(seat)
   if (connected || pass.roster.unknown !== undefined || rowLive(pass.roster, seat)) return undefined
   const previous = pass.doc.seats[seat]
@@ -419,7 +478,7 @@ const relaunchHold = (relaunch: SeatRelaunch | undefined): string | undefined =>
 
 type CarriedMarks = Pick<
   SeatRecord,
-  'relaunchedAt' | 'relaunchTries' | 'teleportFailed' | 'staleRefused' | 'heartbeat'
+  'relaunchedAt' | 'relaunchTries' | 'teleportFailed' | 'staleRefused' | 'paneHeld' | 'heartbeat'
 >
 
 /** The marks a pass keeps from the seat's last record unless an action this pass replaces them. */
@@ -428,6 +487,7 @@ const carriedMarks = (previous: SeatRecord | undefined): CarriedMarks => ({
   ...(previous?.relaunchTries === undefined ? {} : { relaunchTries: previous.relaunchTries }),
   ...(previous?.teleportFailed === undefined ? {} : { teleportFailed: previous.teleportFailed }),
   ...(previous?.staleRefused === undefined ? {} : { staleRefused: previous.staleRefused }),
+  ...(previous?.paneHeld === undefined ? {} : { paneHeld: previous.paneHeld }),
   ...(previous?.heartbeat === undefined ? {} : { heartbeat: previous.heartbeat }),
 })
 
@@ -443,6 +503,8 @@ interface Judgement {
   log: SeatJournal
   /** CC-959: why a dark seat must not be woken by name, keyed by its latest session. */
   stale?: StaleSeat
+  /** CC-959: a possible live pane whose hold outran its cap. */
+  paneOverCap?: SeatAgent
 }
 
 interface StaleSeat {
@@ -516,6 +578,7 @@ function judgeSeat(pass: Pass, seat: Seat): Judgement {
     ...(log.unreadable === undefined ? {} : { journalFault: log.unreadable }),
     ...(relaunch === undefined ? {} : { relaunch }),
     ...(stale === undefined ? {} : { stale }),
+    ...(liveness.pane?.overCap === true ? { paneOverCap: liveness.pane.pane } : {}),
   }
   return { decision, budget, record, liveness: liveness.verdict, log, ...extra }
 }
@@ -714,7 +777,7 @@ const failedTeleportLine = (seat: string, successor: string): string =>
 async function flagOnce(
   pass: Pass,
   seat: string,
-  mark: 'teleportFailed' | 'staleRefused',
+  mark: 'teleportFailed' | 'staleRefused' | 'paneHeld',
   key: string,
   line: string,
 ): Promise<string[]> {
@@ -738,9 +801,18 @@ const failedTeleport = (pass: Pass, seat: string, successor: string): Promise<st
 const refuseStale = (pass: Pass, seat: string, verb: string, stale: StaleSeat): Promise<string[]> =>
   flagOnce(pass, seat, 'staleRefused', stale.session, `watchdog ${verb} ${seat} REFUSED: ${stale.reason}`)
 
+const paneOverCapLine = (seat: string, pane: SeatAgent): string =>
+  `watchdog resume ${seat} HELD over ${PANE_HOLD_CAP_MS / 60_000} min: ${paneLabel(pane)}; ` +
+  `not resumed, check whether it is the seat`
+
+/** CC-959: resumes nothing; logs and raises one human item per pane that held the seat past the cap. */
+const paneOverCap = (pass: Pass, seat: string, pane: SeatAgent): Promise<string[]> =>
+  flagOnce(pass, seat, 'paneHeld', pane.agentId ?? pane.name, paneOverCapLine(seat, pane))
+
 /** Liveness first, then the relaunch, then the idle wake; the first that acts ends the seat's turn. */
 async function seatAction(pass: Pass, name: string, judged: Judgement): Promise<string[]> {
   const { liveness, relaunch, decision, journalFault, stale } = judged
+  if (judged.paneOverCap !== undefined) return paneOverCap(pass, name, judged.paneOverCap)
   // CC-959: every path below that launches a dark seat resumes it by name, which wakes the stale row.
   const gated = async (verb: string, run: () => Promise<string>): Promise<string[]> =>
     stale === undefined ? [await run()] : refuseStale(pass, name, verb, stale)
@@ -763,7 +835,8 @@ function dryRunLine(judged: Judgement): string {
   return launches && judged.stale !== undefined ? `WOULD REFUSE: ${judged.stale.reason}` : line
 }
 
-function plannedLine({ decision, liveness, relaunch }: Judgement): string {
+function plannedLine({ decision, liveness, relaunch, paneOverCap }: Judgement): string {
+  if (paneOverCap !== undefined) return `WOULD FLAG: ${paneLabel(paneOverCap)}`
   if (liveness.resume) return `WOULD RESUME: ${liveness.reason}`
   if (liveness.refused) return `skip: ${liveness.reason}`
   if (relaunch?.successor !== undefined)
