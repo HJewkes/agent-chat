@@ -29,6 +29,7 @@ import { collisionCheck, type BrokerView, type CollisionReader } from './collisi
 import { deciderVerdict, recordRefusal, wakeDecider, type DeciderVerdict } from './decider.js'
 import type { Initiative, Refusal, Task } from './eligibility.js'
 import type { EgressRunner } from './egress-runner.js'
+import { doneIdsOnDisk, fileHumanSteps, humanStepSource } from './human-steps.js'
 import { leakCheck } from './leak-check.js'
 import { readExitedWork } from './exited-adopt.js'
 import { run, type Runner } from './exec.js'
@@ -66,6 +67,7 @@ import {
   watchdogUnusable,
   planSeats,
   scopeExhausted,
+  type LoadedSeat,
   type LoadedSeats,
   type SeatPlanDeps,
   type SeatsPlan,
@@ -271,6 +273,7 @@ async function actOn(
     reasons,
     adopt,
     summary,
+    humanStepSeats,
   }: Decided,
   now: Date,
 ): Promise<string[]> {
@@ -282,6 +285,7 @@ async function actOn(
   for (const skipped of skippedSeats) log('burndown_seat_skipped', { ...skipped })
   const exhausted = await fileScopeExhausted(outcomes, seatStates, opts, now)
   const sampled = exhausted === undefined ? ledger : { ...ledger, seats: exhausted }
+  const routed = await fileSeatHumanSteps(humanStepSeats, config, opts)
   const spawns: SpawnResult[] = []
   const registrations: RegisterRecord[] = []
   const register = (registration: Registration) => registerWithShepherd(registration, opts.exec ?? run)
@@ -318,7 +322,27 @@ async function actOn(
     ...(serviceCheck === undefined ? {} : { serviceCheck }),
   })
   appendTickSummary(tickSummary({ ...summary, now, registrations }), log)
-  return [...executed.lines, ...adopted, ...woken.lines, ...leaks.lines, ...told.lines]
+  return [...routed, ...executed.lines, ...adopted, ...woken.lines, ...leaks.lines, ...told.lines]
+}
+
+/** CC-974: files each seat's due kind:owner and kind:operator task into the owner queue, beside `fileScopeExhausted`. */
+async function fileSeatHumanSteps(
+  seats: readonly LoadedSeat[],
+  config: TickConfig,
+  opts: TickOptions,
+): Promise<string[]> {
+  if (seats.length === 0) return []
+  const root = opts.root ?? activeWorkRoot()
+  const done = memo(() => doneIdsOnDisk(root))
+  return fileHumanSteps(
+    () => {
+      const initiatives = readInitiatives(root)
+      return seats.map(s => humanStepSource(s, initiatives, root, config.scopeTagAliases))
+    },
+    id => done().has(id),
+    spoolOwnerQueue(opts.ownerQueueDir ?? ownerQueueSpoolDir()),
+    opts.log ?? logEvent,
+  )
 }
 
 /**
@@ -470,6 +494,8 @@ interface Decided {
   adopt: AdoptSeat[]
   /** What this tick's summary row reads from the plan (CC-929). */
   summary: SummaryPlan
+  /** Seats mode only: the loaded seats whose due human steps the tick routes (CC-974). */
+  humanStepSeats: LoadedSeat[]
 }
 
 /** Any row not retired may still run, and so may a name missing from a partial roster. */
@@ -601,6 +627,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     reasons: marked?.due ?? [],
     outcomes: planned.outcomes,
     adopt: seats?.loaded.map(s => adoptSeatOf(s)) ?? [],
+    humanStepSeats: seats?.loaded ?? [],
     summary: {
       maxAgeDays: config.briefMaxAgeDays,
       caps: Object.fromEntries(seats?.loaded.map(s => [s.dispatch.seat, s.dispatch.caps]) ?? []),
