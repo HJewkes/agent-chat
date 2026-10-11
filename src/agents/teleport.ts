@@ -1,8 +1,15 @@
 import { brokerHost, isLocalHost } from '../broker/host-guard.js'
 import { resolveMachines } from '../config.js'
-import { resolveDestination, type DestinationSite } from './teleport-destination.js'
+import {
+  remotePathBlocker,
+  resolveDestination,
+  type ConnectedLauncher,
+  type DestinationSite,
+} from './teleport-destination.js'
+import { surfaceBlockerFor } from './surface-resolution.js'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import type { BrokerCore } from '../broker/core.js'
 import {
   hostCarriedFlags,
@@ -16,6 +23,7 @@ import { logEvent } from '../broker/log.js'
 import {
   HUMAN,
   type AgentIdentity,
+  type HostProbe,
   type IsolationName,
   type RemoteLaunch,
   type Subscription,
@@ -276,7 +284,41 @@ function hostReason(subject: TeleportSubject): string {
   )
 }
 
-type Route = { ok: true; site: DestinationSite } | { ok: false; reason: string }
+/** CC-951: where the successor lands; `platform` is known only for a launcher. */
+interface Destination {
+  site: DestinationSite
+  host: string
+  platform?: NodeJS.Platform
+}
+
+type Route = ({ ok: true } & Destination) | { ok: false; reason: string }
+
+/** CC-951: fail closed on a path a launcher would otherwise be handed unchecked. */
+const launchPathsBlocker = (cwd: string, configDir: string | undefined): string | undefined =>
+  remotePathBlocker('working directory', cwd, os.homedir()) ??
+  (configDir === undefined ? undefined : remotePathBlocker('config dir', configDir, os.homedir()))
+
+/** One launcher's answer: done, or why not. */
+export interface LauncherAnswer {
+  ok: boolean
+  reason?: string
+}
+
+/** CC-951: the host launchers connected to this broker, as teleport uses them. */
+export interface LauncherSite {
+  launchers(): ConnectedLauncher[]
+  /** The surfaces the named machine's launcher said it can open. */
+  surfacesOn(host: string): readonly SurfaceName[]
+  probe(host: string, probe: HostProbe): Promise<LauncherAnswer>
+  launch(host: string, launch: RemoteLaunch): Promise<LauncherAnswer>
+}
+
+const NO_LAUNCHERS: LauncherSite = {
+  launchers: () => [],
+  surfacesOn: () => [],
+  probe: host => Promise.resolve({ ok: false, reason: `no launcher connected on ${host}` }),
+  launch: host => Promise.resolve({ ok: false, reason: `no launcher connected on ${host}` }),
+}
 
 /** CC-951: what a successor moved onto this host needs here before its predecessor may be ended. */
 function missingHere(cwd: string, configDir: string | undefined): string | undefined {
@@ -287,36 +329,41 @@ function missingHere(cwd: string, configDir: string | undefined): string | undef
 
 /**
  * CC-951: who launches the successor where `to` points, or why nobody can. The broker launches a
- * remote predecessor's successor itself once its cwd and config dir exist here; the launcher
- * site (g1) is not routable yet.
+ * remote predecessor's successor itself once its cwd and config dir exist here; a launcher
+ * checks its own machine when it is probed.
  */
-function routeFor(req: TeleportRequest, isolation: string, configDir: string | undefined): Route {
+function routeFor(
+  req: TeleportRequest,
+  isolation: string,
+  configDir: string | undefined,
+  launchers: ConnectedLauncher[],
+): Route {
   const { subject } = req
   const resolved = resolveDestination({
     to: req.to,
     callerHost: subject.host as string,
     brokerHost: brokerHost(),
-    launchers: [],
+    launchers,
     aliases: resolveMachines(),
   })
   if (!resolved.ok) return resolved
   const { site, host } = resolved.destination
-  if (host === subject.host) return { ok: true, site }
+  if (host === subject.host) return { ok: true, ...resolved.destination }
   // An adopted session records no isolation at all, which is the same as none.
   if (isolation !== '' && isolation !== 'none')
     return {
       ok: false,
       reason: `${subject.name} has ${isolation} isolation, which is local to ${subject.host}, so it cannot move to ${host}`,
     }
-  if (site === 'launcher') return { ok: false, reason: `no launcher connected on ${host}` }
-  if (req.endsSelf !== true)
+  if (onAnotherHost(subject) && req.endsSelf !== true)
     return {
       ok: false,
       reason: `agent-chat on ${subject.host} predates ending itself for a successor elsewhere; update it there`,
     }
-  const missing = missingHere(subject.cwd, configDir)
+  // A launcher checks its own machine in `probeLauncher`; only this host's disk can be read here.
+  const missing = site === 'launcher' ? undefined : missingHere(subject.cwd, configDir)
   if (missing !== undefined) return { ok: false, reason: `${missing} does not exist on ${host}` }
-  return { ok: true, site }
+  return { ok: true, ...resolved.destination }
 }
 
 /** What teleport borrows from the supervisor: process control and the launch path. */
@@ -339,8 +386,8 @@ export interface TeleportHost {
   prepareRemoteRelaunch(input: RelaunchInput): RemoteLaunch
   /** CC-881: the other host launched it, so the successor's execution opens. */
   confirmRemoteRelaunch(input: RelaunchInput): void
-  /** CC-881: the other host did not launch it, so the successor's row is retired unused. */
-  releaseRemoteRelaunch(input: RelaunchInput, reason: string): void
+  /** CC-881: the other host did not launch it, so the successor's row is retired unused; `where` names that host. */
+  releaseRemoteRelaunch(input: RelaunchInput, reason: string, where?: string): void
 }
 
 interface RemoteWait {
@@ -386,14 +433,21 @@ interface Pending {
   surfaceRequested: boolean
   /** CC-951: the predecessor ended by itself while its successor-first successor started. */
   predecessorGone?: boolean
-  /** CC-951: who launches the successor: this broker, or the remote predecessor's own host. */
+  /** CC-951: who launches the successor: this broker, the remote predecessor's own host, or a launcher. */
   launchSite: DestinationSite
+  /** CC-951: the machine the successor lands on. */
+  destination: string
   /** CC-951: a caller-site successor opens before its predecessor ends; only a caller that ends itself on `endSelf`. */
   successorFirst: boolean
 }
 
 /** CC-402: typed into the predecessor's own pane, so it can only launch once the predecessor has ended. */
-const reusesPane = (entry: Pending): boolean => entry.subject.anchor !== undefined && !entry.surfaceRequested
+const reusesPane = (entry: Pending): boolean =>
+  entry.subject.anchor !== undefined && !entry.surfaceRequested && entry.launchSite !== 'launcher'
+
+/** CC-951: the predecessor's pane is on its own host, so only a successor landing there may use it. */
+const landsBesidePredecessor = (entry: Pending): boolean =>
+  entry.launchSite === 'caller' || (entry.launchSite === 'broker' && entry.remote === undefined)
 
 /** CC-913: an armed successor not yet registered; only the holder of `token` may report it unplaced. */
 interface Landing {
@@ -424,6 +478,8 @@ export class Teleport {
   private readonly landings = new Map<string, Landing>()
   /** CC-951: local successors whose predecessor waits on their attach; each settles once, with a failure or none. */
   private readonly arrivals = new Map<string, (failure: string | undefined) => void>()
+  /** CC-951: requests past preflight and not yet pending or refused. */
+  private readonly starting = new Set<string>()
   private readonly unwatch: () => void
 
   constructor(
@@ -432,6 +488,7 @@ export class Teleport {
     private readonly countdownMs: number = COUNTDOWN_MS,
     private readonly readArgv: ArgvReader = psArgvReader,
     private readonly seatTeleport: SeatTeleportDeps = defaultSeatTeleportDeps(),
+    private readonly hosts: LauncherSite = NO_LAUNCHERS,
   ) {
     this.unwatch = core.onAppend(row => {
       if (row.kind !== 'agent_attached' || row.ref === undefined) return
@@ -446,28 +503,41 @@ export class Teleport {
    * called this needs to know it succeeded long before then.
    */
   async start(req: TeleportRequest): Promise<TeleportOutcome> {
-    const { subject } = req
     const blocked = this.preflight(req)
     if (blocked) return { ok: false, reason: blocked }
+    // CC-951: held from preflight until the entry is pending or refused, across the launcher
+    // probe's wait, so a second request for the same session cannot pass preflight meanwhile.
+    this.starting.add(req.subject.agentId)
+    try {
+      return await this.begin(req)
+    } finally {
+      this.starting.delete(req.subject.agentId)
+    }
+  }
+
+  private async begin(req: TeleportRequest): Promise<TeleportOutcome> {
+    const { subject } = req
 
     const identity = this.core.agents.get(subject.agentId)
     if (!identity) return { ok: false, reason: `no durable identity for ${subject.agentId}` }
-    const route = routeFor(req, identity.isolation, this.configDirOf(subject).configDir)
+    const { configDir } = this.configDirOf(subject)
+    const route = routeFor(req, identity.isolation, configDir, this.hosts.launchers())
     if (!route.ok) return { ok: false, reason: `${route.reason}. ${subject.name} was not ended.` }
 
     const remote = onAnotherHost(subject)
-    const callerLaunches = route.site === 'caller'
     const config = teleportConfig({
       identity,
       subject,
       model: req.model,
       requested: req.surface,
-      seatSurface: this.seatSurfaceOf(subject, callerLaunches),
-      platform: callerLaunches ? req.hostPlatform : this.host.surfacePlatform(),
+      seatSurface: seatSurfaceFor(readSeatFile(this.seatTeleport.autonomyRoot, subject.name), route.host),
+      platform: this.platformAt(route, req.hostPlatform),
     })
     if ('error' in config) return { ok: false, reason: config.error }
-    const impossible = callerLaunches ? undefined : this.host.surfaceBlocker(config.surface)
+    const impossible = await this.blockerAt(route, config.surface, { cwd: subject.cwd, configDir })
     if (impossible !== undefined) return this.cannotComplete(subject, impossible)
+    const gone = route.site === 'launcher' ? this.goneDuringCheck(subject) : undefined
+    if (gone !== undefined) return { ok: false, reason: gone }
     const worker = recordedRole(this.core.agents.spawnMeta(subject.agentId)) === 'worker'
     if (worker && req.remoteControl === true)
       return {
@@ -495,7 +565,9 @@ export class Teleport {
       surface: config.surface,
       surfaceRequested: config.requested,
       // CC-881: a remote predecessor's pid names a process on its own host, not one here.
-      inherited: remote ? undefined : this.host.inheritedIsolation(subject.agentId),
+      // CC-951: a successor on another machine stands in no tree and holds no slot here.
+      inherited:
+        remote || route.site === 'launcher' ? undefined : this.host.inheritedIsolation(subject.agentId),
       // CC-163: a worker's successor never inherits Remote Control, even one its argv shows.
       remoteControl: worker
         ? false
@@ -504,6 +576,7 @@ export class Teleport {
       // CC-951: a remote predecessor waits on this whichever site launches, since only it can end itself.
       ...(remote ? { remote: remoteWait() } : {}),
       launchSite: route.site,
+      destination: route.host,
       successorFirst: config.requested && req.endsSelf === true,
       since: identity.spawnedAt,
       sessionId: identity.sessionId,
@@ -539,11 +612,53 @@ export class Teleport {
     return { ...result, countdownMs: this.countdownMs }
   }
 
-  /** CC-951: the seat file's surface for the machine the successor lands on. */
-  private seatSurfaceOf(subject: TeleportSubject, remote: boolean): SurfaceName | undefined {
-    const machine = remote ? subject.host : brokerHost()
-    if (machine === undefined) return undefined
-    return seatSurfaceFor(readSeatFile(this.seatTeleport.autonomyRoot, subject.name), machine)
+  /**
+   * CC-951: the launcher probe is a wait, and the predecessor can disconnect, be taken over or
+   * retire during it. Only one that still holds its name on a live connection gets a handoff.
+   */
+  private goneDuringCheck(subject: TeleportSubject): string | undefined {
+    const { registry, agents } = this.core
+    const conn = registry.connFor(subject.name)
+    const holder = conn === undefined ? undefined : registry.entryFor(conn)?.agentId
+    if (holder === subject.agentId && agents.get(subject.agentId)?.state !== 'retired') return undefined
+    return `${subject.name} disconnected or was replaced while its destination was checked, so it was not teleported`
+  }
+
+  /** CC-951: the OS the successor launches on, which picks its default surface. */
+  private platformAt(
+    route: Destination,
+    callerPlatform: NodeJS.Platform | undefined,
+  ): NodeJS.Platform | undefined {
+    if (route.site === 'caller') return callerPlatform
+    if (route.site === 'launcher') return route.platform
+    return this.host.surfacePlatform()
+  }
+
+  /**
+   * CC-880/CC-951: why the destination cannot run this successor, asked before anyone is ended.
+   * The caller checks its own host; a launcher is asked about its machine's paths and surfaces.
+   */
+  private async blockerAt(
+    route: Destination,
+    surface: SurfaceName,
+    paths: { cwd: string; configDir: string | undefined },
+  ): Promise<string | undefined> {
+    if (route.site === 'caller') return undefined
+    if (route.site === 'broker') return this.host.surfaceBlocker(surface)
+    const platformBlock =
+      route.platform === undefined ? undefined : surfaceBlockerFor(surface, route.platform)
+    if (platformBlock !== undefined) return platformBlock
+    if (!this.hosts.surfacesOn(route.host).includes(surface))
+      return `the launcher on ${route.host} cannot open a ${surface} surface`
+    const badPath = launchPathsBlocker(paths.cwd, paths.configDir)
+    if (badPath !== undefined) return badPath
+    const probe: HostProbe = {
+      cwd: paths.cwd,
+      surface,
+      ...(paths.configDir ? { configDir: paths.configDir } : {}),
+    }
+    const answer = await this.hosts.probe(route.host, probe)
+    return answer.ok ? undefined : (answer.reason ?? `the launcher on ${route.host} refused`)
   }
 
   /** CC-863: the handoff is already stored when this runs, so a failed read drops the cursor and never the teleport. */
@@ -600,7 +715,8 @@ export class Teleport {
   /** Everything checkable before the handoff is written and the sequence is entered. */
   private preflight(req: TeleportRequest): string | undefined {
     const { subject } = req
-    if (this.pending.has(subject.agentId)) return `${subject.name} is already teleporting`
+    if (this.pending.has(subject.agentId) || this.starting.has(subject.agentId))
+      return `${subject.name} is already teleporting`
     // Without it there is no way to end the predecessor that does not sever the
     // bus and leave a live session no peer can reach — the failure §5.1 measured.
     // Every current client sends it on `register`; an older one does not, and
@@ -744,7 +860,7 @@ export class Teleport {
     let input: RelaunchInput | undefined
     try {
       input = { ...this.relaunchFor(entry, false, await this.briefFor(entry)), successorFirst: true }
-      await this.host.relaunch(input)
+      await this.launchSuccessor(entry, input)
     } catch (err) {
       // A real failure already settled the arrival through `successorFailed`. One that
       // throws without it is a retry skipped because the successor may yet attach.
@@ -755,6 +871,30 @@ export class Teleport {
     if (failure === undefined) return this.endPredecessor(entry)
     if (this.predecessorRunning(entry)) return this.keepPredecessor(entry, input, failure)
     this.predecessorLost(entry, input, failure)
+  }
+
+  private launchSuccessor(entry: Pending, input: RelaunchInput): Promise<void> {
+    if (entry.launchSite !== 'launcher') return this.host.relaunch(input)
+    return this.launchOnHost(entry.destination, input)
+  }
+
+  /**
+   * CC-951: the successor's row is recorded here and its launch handed to the launcher on its
+   * machine, with the cwd and account it checked in the probe. A refusal releases the row.
+   */
+  private async launchOnHost(host: string, input: RelaunchInput): Promise<void> {
+    const badPath = launchPathsBlocker(input.cwd, input.configDir)
+    if (badPath !== undefined) throw new Error(`not handed to the launcher on ${host}: ${badPath}`)
+    const launch: RemoteLaunch = {
+      ...this.host.prepareRemoteRelaunch(input),
+      cwd: input.cwd,
+      ...(input.configDir === undefined ? {} : { configDir: input.configDir }),
+    }
+    const answer = await this.hosts.launch(host, launch)
+    if (answer.ok) return this.host.confirmRemoteRelaunch(input)
+    const reason = `the launcher on ${host} did not launch it: ${answer.reason ?? 'no reason given'}`
+    this.host.releaseRemoteRelaunch(input, reason, `the launcher on ${host}`)
+    throw new Error(reason)
   }
 
   /** CC-951: the supervisor saw the predecessor's own exit while its successor started. */
@@ -1079,7 +1219,7 @@ export class Teleport {
     const generation = Number.parseInt(previous.generation ?? '1', 10)
     const { configDir, unset } = this.configDirOf(subject)
     // CC-951: a remote predecessor's pane is on its own host, so a successor launched here opens fresh.
-    const anchor = entry.remote !== undefined && entry.launchSite !== 'caller' ? undefined : subject.anchor
+    const anchor = landsBesidePredecessor(entry) ? subject.anchor : undefined
     return {
       agentId: entry.descendantId,
       name: subject.name,

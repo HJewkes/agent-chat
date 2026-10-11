@@ -173,6 +173,7 @@ import {
   type TeleportHost,
   type TeleportOutcome,
   type TeleportRequest,
+  type LauncherSite,
 } from './teleport.js'
 import {
   DEFAULT_SURFACE_LIFETIME,
@@ -596,6 +597,8 @@ export interface SupervisorOptions {
   argvReader?: ArgvReader
   /** CC-863: where a seat's teleport State block is written and how Shepherd is read. Faked in tests. */
   seatTeleport?: SeatTeleportDeps
+  /** CC-951: the host launchers a teleport can land a successor through, owned by the socket layer. */
+  hosts?: LauncherSite
   /**
    * How long a mode switch waits for the stopped process's socket to go before
    * reclaiming its name. Shortened in tests, where nothing ever closes a fake
@@ -845,7 +848,14 @@ export class Supervisor implements TeleportHost {
       this.reapIfDead(agentId, probe),
     )
     this.unwatch = core.onAppend(row => this.onRow(row))
-    this.teleporter = new Teleport(core, this, options.countdownMs, options.argvReader, options.seatTeleport)
+    this.teleporter = new Teleport(
+      core,
+      this,
+      options.countdownMs,
+      options.argvReader,
+      options.seatTeleport,
+      options.hosts,
+    )
     this.shadow = new LifecycleShadow(options.ledger)
     this.staleAtBoot = staleAtStart(core.agents.roster())
     for (const agentId of [...this.staleAtBoot.keys()]) this.reapAtStart(agentId)
@@ -3379,6 +3389,8 @@ export class Supervisor implements TeleportHost {
     if (predecessor === undefined) return
     if (predecessor.settle) clearTimeout(predecessor.settle)
     this.live.delete(agentId)
+    // CC-951: a successor on another machine took no slot here, so the predecessor's goes with it.
+    this.semaphore.release(agentId)
   }
 
   /**
@@ -3465,14 +3477,14 @@ export class Supervisor implements TeleportHost {
     this.remoteSessions.delete(input.agentId)
   }
 
-  releaseRemoteRelaunch(input: RelaunchInput, reason: string): void {
+  releaseRemoteRelaunch(input: RelaunchInput, reason: string, where = "its caller's host"): void {
     this.remoteSessions.delete(input.agentId)
     this.core.append({
       kind: 'agent_retired',
       actor: 'agent-chat',
       target: input.name,
       ref: input.agentId,
-      body: `teleport successor not launched on its caller's host: ${reason}`,
+      body: `teleport successor not launched on ${where}: ${reason}`,
     })
   }
 

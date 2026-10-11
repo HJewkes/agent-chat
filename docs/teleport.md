@@ -281,10 +281,46 @@ An unknown machine, or a configured one with no launcher connected, is refused
 with the list of known machines. A move off the predecessor's host is refused
 when the predecessor has any isolation other than `none`, because a worktree or
 a sandbox exists only on its own host. All of these are refused before the
-handoff row is written, so nothing is ended. Today only a teleport that stays
-on its own host launches: the broker-site launch for a predecessor on another
-host and the host launcher are later slices, and until they land such a move is
-refused with a reason.
+handoff row is written, so nothing is ended.
+
+**The host launcher site (CC-951).** A machine with no live predecessor on it
+(basement → Mac) is reached through a host launcher: a connection of its own
+that sends `host_hello` with its host, platform and the surfaces it can open.
+The client that sends it, `agent-chat host serve`, is a later slice (g2) and
+does not exist yet. The broker keeps launchers in `HostDirectory`
+(`broker/host-directory.ts`), one per machine and presence-only: an entry goes
+when its connection closes. The first live launcher holds its machine, and a
+second connection naming the same machine (in any case) is refused while the
+holder is connected, so it cannot take over that machine's probes and launches.
+When `config.json` sets `machines`, only those hostnames may be announced. The
+session guard is per connection: a registered connection cannot send
+`host_hello`, and a launcher's connection cannot register. A session can still
+open a second connection, so the trust boundary is the first-wins rule and the
+`machines` list, on top of the OS account.
+
+Before the handoff is written, teleport refuses a surface the launcher's
+platform or its announced surfaces cannot run, and a cwd or config dir that is
+not an absolute, normalised path strictly under the home directory (shared
+across this deployment's machines) or that sits in a credential directory. It
+then sends `host_probe` with the cwd, config dir and surface, and refuses with
+the launcher's own reason (a missing path) or "did not answer within 10s". At
+the end of the countdown the paths are checked again, the successor's row is
+recorded here, and its launch (with that cwd and config dir) goes out as
+`host_launch`. A refusal, a timeout or a launcher disconnect releases the
+successor and keeps the predecessor. Once the successor attaches, the
+predecessor is ended successor first, locally or by its own `endSelf`. A
+successor on another machine holds no agent slot here, so the predecessor's
+slot is released when it stands down.
+
+A request is held as in flight from its preflight until it is pending or
+refused, so a second teleport for the same session sent during the probe's wait
+is refused as already teleporting. After the probe, a predecessor that no
+longer holds its name on a live connection gets no handoff. One case is left to
+the launcher client (g2): a launcher that does launch the successor but whose
+answer arrives after the 60s launch timeout. The broker has by then retired the
+successor's row and kept the predecessor, so a successor that starts anyway
+runs on a retired identity beside a live predecessor. g2 should close a launch
+whose answer it could not deliver in time.
 
 **Depth is inherited, not incremented.** This is a real bug waiting in the
 obvious implementation. `Supervisor.depthOf` reads the parent's `meta.depth` and

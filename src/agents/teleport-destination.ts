@@ -6,6 +6,9 @@
  * Pure: the caller supplies the hosts, the connected launchers and the configured aliases.
  */
 
+import path from 'node:path'
+import { SENSITIVE_DIRS } from './spawn-cwd.js'
+
 export type DestinationSite = 'broker' | 'caller' | 'launcher'
 
 /** A host launcher connected to the broker, presence-only. */
@@ -63,4 +66,20 @@ export function resolveDestination(input: DestinationInput): DestinationResult {
   const known = Object.values(input.aliases).some(target => same(target, host))
   const why = known ? `no launcher connected on ${host}` : `unknown machine "${to}"`
   return { ok: false, reason: `${why}; known machines: ${knownMachines(input)}` }
+}
+
+/**
+ * CC-951: why a path handed to a launcher on another machine is refused, checked here before the
+ * probe and again before the launch. The broker cannot read that machine's disk, so the check is
+ * lexical: absolute, already normal (no `..`), clear of credential directories, and strictly
+ * under the home directory, which this deployment shares across its machines. Whether it exists
+ * there is the launcher's probe to say.
+ */
+export function remotePathBlocker(label: string, dir: string, home: string): string | undefined {
+  if (!path.isAbsolute(dir) || path.normalize(dir) !== dir || dir.split(path.sep).includes('..'))
+    return `its ${label} ${dir} is not an absolute, normalised path`
+  const sensitive = SENSITIVE_DIRS.find(name => dir.split(path.sep).includes(name))
+  if (sensitive !== undefined) return `its ${label} ${dir} is inside a protected directory ("${sensitive}")`
+  if (!dir.startsWith(home + path.sep)) return `its ${label} ${dir} is not under the home directory ${home}`
+  return undefined
 }

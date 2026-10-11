@@ -42,12 +42,13 @@ import { newestBuildMtime, stalenessWarning } from './staleness.js'
 import { findGitRoot } from '../git.js'
 import { resolveSpawnCwd } from './spawn-default-cwd.js'
 import { readMeta } from './lifecycle.js'
-import { resolveDeciderAgentId } from '../config.js'
+import { resolveDeciderAgentId, resolveMachines } from '../config.js'
 import { shapeMeta } from '../inbox/item-shape.js'
 import { fileServiceAsk } from './service-ask.js'
 import { PERMISSION_WAITING, permissionNoticeText } from './permission-notice.js'
 import { brokerHost } from './host-guard.js'
 import { linuxPeerPorts, provePeerLocal, type PeerPorts } from './peer-locality.js'
+import { HostDirectory, type LauncherHello } from './host-directory.js'
 
 /**
  * Ceiling on one `inbox_since` read, so a watcher arming against an old cursor
@@ -198,6 +199,22 @@ const optionalHost = (host: string | undefined): { host?: string } => (host === 
 const optionalCarried = (launchSeen: CarriedFlags | undefined): { launchSeen?: CarriedFlags } =>
   launchSeen === undefined ? {} : { launchSeen }
 
+/** CC-951: a hello's fields come off the wire, so each is checked rather than trusted to be typed. */
+function launcherHello(
+  msg: Extract<ClientMessage, { t: 'host_hello' }>,
+  machines: readonly string[],
+): LauncherHello | string {
+  if (typeof msg.host !== 'string' || msg.host.trim() === '') return 'host_hello needs a host name'
+  const host = msg.host.trim().toLowerCase()
+  if (machines.length > 0 && !machines.some(machine => machine.toLowerCase() === host))
+    return `${msg.host.trim()} is not one of the configured machines (${machines.join(', ')})`
+  const platform = asPlatform(msg.platform)
+  if (platform === undefined) return `unknown platform "${String(msg.platform)}"`
+  const offered: unknown[] = Array.isArray(msg.surfaces) ? msg.surfaces : []
+  const surfaces = SURFACE_NAMES.filter(surface => offered.includes(surface))
+  return { host: msg.host.trim(), platform, surfaces }
+}
+
 const optionalPlatform = (hostPlatform: NodeJS.Platform | undefined): { hostPlatform?: NodeJS.Platform } =>
   hostPlatform === undefined ? {} : { hostPlatform }
 
@@ -215,6 +232,8 @@ export class SocketServer {
   private readonly hooks = new Map<string, HookWait>()
   /** Each connection's open service asks, for the per-connection cap; dies with the connection. */
   private readonly serviceAsks = new WeakMap<Conn, Set<string>>()
+  /** CC-951: connected host launchers, each dropped with its connection. */
+  private readonly hosts = new HostDirectory<Conn>()
 
   /** `ledgerDb` is the shadow ledger's connection, passed only while `ledgerShadow` is on. */
   constructor(
@@ -236,7 +255,7 @@ export class SocketServer {
     // outlive whoever asked for it, and the semaphore and depth cap need exactly
     // one enforcement point. The anchor comes from the requester's OWN registry
     // entry, so nobody can spawn into a pane they do not hold.
-    this.supervisor = new Supervisor(core, supervisorOptions)
+    this.supervisor = new Supervisor(core, { ...supervisorOptions, hosts: this.hosts })
     this.verifier = ledgerDb && this.lifecycleVerifier(ledgerDb, supervisorOptions.ledger)
     this.closeOrphanedHookRows()
   }
@@ -616,6 +635,41 @@ export class SocketServer {
             ...(msg.reason === undefined ? {} : { reason: msg.reason }),
           })
     reply(conn, { t: 'teleport_launched_result', ...result })
+  }
+
+  /**
+   * CC-951: a host launcher is a connection of its own. The guard is per connection: one that
+   * holds a registration may not announce a machine, and a launcher's may not register (see
+   * `refuseLauncherRegister`). A session can still open a second connection; what stops it
+   * taking over a machine is that the first live launcher holds it, and that a configured
+   * `machines` list bounds which machines may be announced at all.
+   */
+  private handleHostHello(conn: Conn, msg: Extract<ClientMessage, { t: 'host_hello' }>): void {
+    if (this.core.registry.nameOf(conn) !== undefined) {
+      this.refuseToSession(conn, 'announce itself as a host launcher')
+      return reply(conn, {
+        t: 'host_hello_result',
+        ok: false,
+        reason: 'a registered session cannot be a host launcher; a launcher needs a connection of its own',
+      })
+    }
+    const hello = launcherHello(msg, Object.values(resolveMachines()))
+    if (typeof hello === 'string') return reply(conn, { t: 'host_hello_result', ok: false, reason: hello })
+    const result = this.hosts.hello(conn, hello, frame => reply(conn, frame))
+    if (!result.ok) logEvent('host_launcher_refused', { host: hello.host, reason: result.reason })
+    reply(conn, { t: 'host_hello_result', ...result })
+  }
+
+  /** CC-951: a launcher's connection never holds a session's name; it takes launches, not messages. */
+  private refuseLauncherRegister(conn: Conn): boolean {
+    const host = this.hosts.hostOf(conn)
+    if (host === undefined) return false
+    reply(conn, {
+      t: 'register_result',
+      ok: false,
+      reason: `this connection is the host launcher for ${host}, so it cannot register a session`,
+    })
+    return true
   }
 
   /** CC-913: the sender's own registration, never the frame, says whether it is the predecessor. */
@@ -1476,6 +1530,7 @@ export class SocketServer {
     this.hintUnregistered(conn, msg)
     switch (msg.t) {
       case 'register': {
+        if (this.refuseLauncherRegister(conn)) return
         // Closing the displaced socket is what makes a takeover final: leaving it
         // open would let the predecessor keep writing under a name it no longer
         // holds. `end` rather than `destroy` so the fatal frame is flushed first
@@ -1497,6 +1552,7 @@ export class SocketServer {
         return
       }
       case 'readopt':
+        if (this.refuseLauncherRegister(conn)) return
         return this.handleReadopt(conn, msg)
       case 'status':
         return reply(conn, {
@@ -1672,6 +1728,17 @@ export class SocketServer {
         return this.handleTeleportLaunched(conn, msg)
       case 'teleport_land_failed':
         return this.handleTeleportLandFailed(conn, msg)
+      case 'host_hello':
+        return this.handleHostHello(conn, msg)
+      case 'host_probe_result':
+      case 'host_launch_result':
+        this.hosts.answer(conn, msg.id, {
+          ok: msg.ok === true,
+          ...(msg.reason === undefined ? {} : { reason: String(msg.reason) }),
+        })
+        return
+      case 'hosts':
+        return reply(conn, { t: 'hosts_result', hosts: this.hosts.list() })
       case 'surface':
         void this.handleSurface(conn, msg.name)
         return
@@ -1744,6 +1811,7 @@ export class SocketServer {
 
     const drop = (): void => {
       this.dropHooks(conn)
+      this.hosts.drop(conn)
       core.drop(conn)
     }
     conn.on('close', drop)
