@@ -525,6 +525,8 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     '.agent-chat/worktree.json',
     'src/cli/agents.ts',
     'src/cli/verbs/agent-resume.ts',
+    'src/cli/index.ts',
+    'src/cli/verbs/seat-broker.ts',
     'src/cli/verbs/seats.ts',
     'src/cli/verbs/seats-heartbeat.ts',
     'src/mirror/systemd-unit.ts',
@@ -588,6 +590,21 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
       `hold Acme/Widgets#7: g10-adversary: protected path ${path}; T-1`,
     ])
   })
+
+  // Mutation: dropping index| or seat-broker| from the cli row registers these unheld; widening the row to src/cli/ holds the ordinary src/cli/verbs/list.ts row.
+  it.each(['src/cli/index.ts', 'src/cli/verbs/seat-broker.ts'])(
+    'registers then holds a PR whose only change is %s',
+    path => {
+      const f = fake({ pulls: [pull()], tasks: [task()], files: [file(path)] })
+
+      tick(f)
+
+      expect(f.calls).toEqual([
+        'register Acme/Widgets#7',
+        `hold Acme/Widgets#7: g10-adversary: protected path ${path}; T-1`,
+      ])
+    },
+  )
 
   // Mutation: dropping an agent-launch door from the protected set fails here, so a new door cannot register unheld.
   it('protects every file audit/spawn-doors.json lists as an agent-launch door', () => {
