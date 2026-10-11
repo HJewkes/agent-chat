@@ -21,6 +21,7 @@ Commands:
   mirror                     project the human queue into a Matrix room and fold phone verdicts back
   burndown                   pick and run unattended work for opted-in initiatives
   seats                      autonomy seats: the idle watchdog
+  machine                    operator HOLDs, owner stops and the machine stop
   debug                      diagnostics: sessions, history, routing
   doctor                     check the things that fail silently
   lifecycle                  offline maintenance of the agent lifecycle ledger
@@ -826,6 +827,44 @@ Options:
   --hours <value>  how far back to look (default 24)
   --root <value>   autonomy directory holding seats/ and logs/
   -h, --help       display help for command
+
+=== agent-chat machine
+Usage: agent-chat machine [options] [command]
+
+operator HOLDs, owner stops and the machine stop
+
+Options:
+  -h, --help        display help for command
+
+Commands:
+  status [options]  every stop on this machine, read-only (CC-957): operator HOLDs from the stop
+                    file and from chat (a broadcast or fan-out to two or more seats by one of
+                    config.json's machineHoldOperators, default tp-operator, counted by the seats it
+                    named in broker.log, whose first sentence carries HOLD, STOP ALL, MACHINE STOP,
+                    STEP-BACK or REBOOT NOTICE/QUIET, standing until an operator send starting with
+                    LIFT, CLEAR or "hold LIFTED" has reached every seat it went to, or a broadcast
+                    lift, at most 24 h), the owner's stopped seats in seat-watchdog.json, and the
+                    memory, load, swap and pressure readings against the machine stop. `stopped` is
+                    a hold, the machine stop or a source that cannot be read; an owner stop holds
+                    only its own seat
+  help [command]    display help for command
+
+=== agent-chat machine status
+Usage: agent-chat machine status [options]
+
+every stop on this machine, read-only (CC-957): operator HOLDs from the stop file and from chat (a
+broadcast or fan-out to two or more seats by one of config.json's machineHoldOperators, default
+tp-operator, counted by the seats it named in broker.log, whose first sentence carries HOLD, STOP
+ALL, MACHINE STOP, STEP-BACK or REBOOT NOTICE/QUIET, standing until an operator send starting with
+LIFT, CLEAR or "hold LIFTED" has reached every seat it went to, or a broadcast lift, at most 24 h),
+the owner's stopped seats in seat-watchdog.json, and the memory, load, swap and pressure readings
+against the machine stop. `stopped` is a hold, the machine stop or a source that cannot be read; an
+owner stop holds only its own seat
+
+Options:
+  --json      one object: at, stopped, holds[{kind, by, since, reason, msgId?, seats?}], ownerStops,
+              machine, errors
+  -h, --help  display help for command
 
 === agent-chat debug
 Usage: agent-chat debug [options] [command]

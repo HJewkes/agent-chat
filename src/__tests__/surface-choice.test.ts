@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { chooseSurface, platformDefaultSurface, surfaceBlockerFor } from '../agents/surface-resolution.js'
+import {
+  chooseSurface,
+  defaultSpawnSurface,
+  platformDefaultSurface,
+  surfaceBlockerFor,
+} from '../agents/surface-resolution.js'
 import { seatSurfaceFor } from '../agents/seats/charter.js'
 
 const seatFile = (front: string): string => `---\nprefix: TC\npool: personal\n${front}\n---\n# seat\n`
@@ -118,5 +123,25 @@ describe('seatSurfaceFor', () => {
     })
 
     expect(choice).toEqual({ ok: true, surface: 'headless', from: 'seat' })
+  })
+})
+
+describe('defaultSpawnSurface (CC-485)', () => {
+  const base = { profileSurface: 'iterm-pane', role: 'worker', seatSpawn: true } as const
+
+  it("runs a seat's worker headless when nothing names a surface", () => {
+    expect(defaultSpawnSurface(base)).toBe('headless')
+  })
+
+  it('keeps an explicit request on a seat spawn', () => {
+    expect(defaultSpawnSurface({ ...base, requested: 'iterm-pane' })).toBe('iterm-pane')
+  })
+
+  it("keeps the profile's surface for a spawn no seat owns", () => {
+    expect(defaultSpawnSurface({ ...base, seatSpawn: false })).toBe('iterm-pane')
+  })
+
+  it("keeps a coordinator profile's surface on a seat spawn", () => {
+    expect(defaultSpawnSurface({ ...base, role: 'coordinator' })).toBe('iterm-pane')
   })
 })
