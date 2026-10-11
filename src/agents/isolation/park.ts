@@ -126,13 +126,18 @@ export function parkBlocker(
   return undefined
 }
 
-async function git(args: readonly string[], cwd: string): Promise<string> {
-  const { stdout } = await execFileAsync('git', [...args], { cwd, encoding: 'utf8', env: gitChildEnv() })
+async function git(args: readonly string[], cwd: string, timeout = 0): Promise<string> {
+  const { stdout } = await execFileAsync('git', [...args], {
+    cwd,
+    encoding: 'utf8',
+    env: gitChildEnv(),
+    timeout,
+  })
   return stdout.trim()
 }
 
-async function gitOrNull(args: readonly string[], cwd: string): Promise<string | null> {
-  return git(args, cwd).catch(() => null)
+async function gitOrNull(args: readonly string[], cwd: string, timeout = 0): Promise<string | null> {
+  return git(args, cwd, timeout).catch(() => null)
 }
 
 const DEFAULT_FETCH_MS = 30_000
@@ -144,10 +149,24 @@ async function headOnDefaultBranch(worktree: string): Promise<boolean> {
   return (await gitOrNull(['merge-base', '--is-ancestor', 'HEAD', tip.sha], worktree)) !== null
 }
 
-/** With an origin, the branch must be on it with nothing ahead; without one, the kept local branch is the copy. */
-async function unpushed(target: ParkTarget, branch: string): Promise<string | undefined> {
-  const { worktree } = target
-  if ((await gitOrNull(['remote', 'get-url', 'origin'], worktree)) === null) return undefined
+/**
+ * CC-1039: the first branch origin lists right now whose tip contains HEAD, so commits pushed under another
+ * name (a PR head) count as pushed. It asks origin rather than reading tracking refs, so a branch deleted or
+ * force-pushed on origin does not count; a tip whose object is not local fails closed.
+ */
+async function containingRemoteHead(worktree: string): Promise<string | undefined> {
+  const listed = await gitOrNull(['ls-remote', '--heads', 'origin'], worktree, DEFAULT_FETCH_MS)
+  for (const line of (listed ?? '').split('\n')) {
+    const [sha, ref] = line.split('\t')
+    if (!sha || !ref?.startsWith('refs/heads/')) continue
+    if ((await gitOrNull(['merge-base', '--is-ancestor', 'HEAD', sha], worktree)) !== null)
+      return ref.slice('refs/heads/'.length)
+  }
+  return undefined
+}
+
+/** Why `origin/<branch>` does not hold HEAD, or undefined when it does. */
+async function behindTracked(worktree: string, branch: string): Promise<string | undefined> {
   if ((await gitOrNull(['rev-parse', '--verify', '--quiet', `origin/${branch}`], worktree)) === null)
     return (await headOnDefaultBranch(worktree)) ? undefined : `${branch} is not on origin; push it first`
   const ahead = await gitOrNull(['rev-list', `origin/${branch}..HEAD`], worktree)
@@ -156,19 +175,34 @@ async function unpushed(target: ParkTarget, branch: string): Promise<string | un
   return count === 0 ? undefined : `${count} commit(s) in ${worktree} are not on origin/${branch}; push first`
 }
 
+type Pushed = { refusal: string } | { containedIn?: string }
+
+/** With an origin, HEAD must be on it, under its own name or any other; without one, the kept local branch is the copy. */
+async function unpushed(worktree: string, branch: string): Promise<Pushed> {
+  if ((await gitOrNull(['remote', 'get-url', 'origin'], worktree)) === null) return {}
+  const refusal = await behindTracked(worktree, branch)
+  if (refusal === undefined) return {}
+  const containedIn = await containingRemoteHead(worktree)
+  return containedIn === undefined ? { refusal } : { containedIn }
+}
+
+type HeadBranch = { branch: string; containedIn?: string } | { refusal: string }
+
 /**
  * The branch the tree's commits live on, or the reason it has none to keep. A commit on a detached HEAD
  * would be unreachable once the tree is gone. A successor or adopted tree sits on the PR branch rather than
- * the allocated one; that branch is kept too, so it parks when origin has it, and `unpushed` then holds it to
- * nothing ahead.
+ * the allocated one; that local branch is kept too, so it parks when origin has it or has HEAD under another
+ * name, and `unpushed` then holds it to nothing ahead.
  */
-async function headBranch(target: ParkTarget): Promise<{ branch: string } | { refusal: string }> {
+async function headBranch(target: ParkTarget): Promise<HeadBranch> {
   const head = await gitOrNull(['symbolic-ref', '--quiet', '--short', 'HEAD'], target.worktree)
   if (head === target.branch) return { branch: head }
   const onOrigin =
     head !== null &&
     (await gitOrNull(['rev-parse', '--verify', '--quiet', `origin/${head}`], target.worktree)) !== null
   if (head !== null && onOrigin) return { branch: head }
+  const containedIn = head === null ? undefined : await containingRemoteHead(target.worktree)
+  if (head !== null && containedIn !== undefined) return { branch: head, containedIn }
   const where = head === null ? 'detached' : `on ${head}`
   return {
     refusal: `HEAD in ${target.worktree} is ${where}, not on ${target.branch}; check out ${target.branch} first`,
@@ -219,25 +253,37 @@ async function unsaved(worktree: string): Promise<string | undefined> {
   )
 }
 
+/** The local branch to keep, and the origin branch holding HEAD when that is another name, or why nothing parks. */
+async function keepable(
+  target: ParkTarget,
+  listCwds: CwdLister | undefined,
+): Promise<{ branch: string; containedIn?: string } | { reason: string }> {
+  const occupied = listCwds && (await occupiedByProcess(target.worktree, listCwds))
+  if (occupied) return { reason: occupied }
+  const head = await headBranch(target)
+  if ('refusal' in head) return { reason: head.refusal }
+  const dirty = await unsaved(target.worktree)
+  if (dirty) return { reason: dirty }
+  if (head.containedIn !== undefined) return head
+  const pushed = await unpushed(target.worktree, head.branch)
+  if ('refusal' in pushed) return { reason: pushed.refusal }
+  return pushed.containedIn === undefined ? head : { branch: head.branch, containedIn: pushed.containedIn }
+}
+
 /**
  * Refuse a tree that would lose anything; otherwise remove it without --force and keep the branch.
  * `recheck` runs after the git checks and right before the removal, so a spawn or resume that
- * started meanwhile is caught. Returns the parked head.
+ * started meanwhile is caught. Returns the parked head, and `containedIn` when origin holds it only
+ * under another branch name.
  */
 export async function parkWorktree(
   target: ParkTarget,
   recheck: () => string | undefined,
   /** Set for an untracked detached agent: the lister that finds a process still in the tree. */
   listCwds?: CwdLister,
-): Promise<{ ok: true; head: string; branch: string } | { ok: false; reason: string }> {
-  const occupied = listCwds && (await occupiedByProcess(target.worktree, listCwds))
-  const head = occupied ? undefined : await headBranch(target)
-  const refusal =
-    occupied ??
-    (head && 'refusal' in head ? head.refusal : undefined) ??
-    (await unsaved(target.worktree)) ??
-    (head && 'branch' in head ? await unpushed(target, head.branch) : undefined)
-  if (refusal || !head || !('branch' in head)) return { ok: false, reason: refusal ?? 'no branch to keep' }
+): Promise<{ ok: true; head: string; branch: string; containedIn?: string } | { ok: false; reason: string }> {
+  const kept = await keepable(target, listCwds)
+  if ('reason' in kept) return { ok: false, reason: kept.reason }
   const parkedHead = await git(['rev-parse', 'HEAD'], target.worktree)
   const late = recheck()
   if (late) return { ok: false, reason: late }
@@ -247,5 +293,5 @@ export async function parkWorktree(
     const detail = String((err as { stderr?: unknown }).stderr || (err as Error).message).trim()
     return { ok: false, reason: `git would not remove ${target.worktree}: ${detail.split('\n')[0]}` }
   }
-  return { ok: true, head: parkedHead, branch: head.branch }
+  return { ok: true, head: parkedHead, ...kept }
 }

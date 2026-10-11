@@ -951,7 +951,7 @@ describe('worktree release after the work landed', () => {
       withRemote(repo)
       const ctx = ctxFor(repo)
       const alloc = await worktreeStrategy.allocate(ctx)
-      commitIn(alloc.cwd, 'feature.ts')
+      const first = commitIn(alloc.cwd, 'feature.ts')
       const tip = commitIn(alloc.cwd, 'more.ts')
       git(['push', 'origin', 'agent-chat/alice'], alloc.cwd)
       squashMerge(repo, 'agent-chat/alice')
@@ -959,24 +959,62 @@ describe('worktree release after the work landed', () => {
       git(['commit', '-am', 'later fix'], repo)
       git(['push', 'origin', 'main', ':agent-chat/alice'], repo)
       git(['fetch', '--prune', 'origin'], repo)
-      return { repo, ctx, alloc, tip }
+      return { repo, ctx, alloc, first, tip }
     }
 
+    /** gh's view of the PR: `state`, the merged head, and the PR's commit oids. */
+    const prJson = (state: string, headRefOid: string, commits: readonly string[] | string): string =>
+      JSON.stringify({
+        state,
+        headRefOid,
+        commits: typeof commits === 'string' ? commits : commits.map(oid => ({ oid })),
+      })
+
+    /** update-branch's merge commit, pushed to the PR head but never fetched locally. */
+    const MOVED_HEAD = 'f'.repeat(40)
+
     it('releases a squash-merged branch when gh reports the PR merged at its exact tip', async () => {
-      const { repo, ctx, alloc, tip } = await squashedThenEdited()
-      fakeGh(JSON.stringify({ state: 'MERGED', headRefOid: tip }))
+      const { repo, ctx, alloc, first, tip } = await squashedThenEdited()
+      fakeGh(prJson('MERGED', tip, [first, tip]))
 
       expect(await worktreeStrategy.release(ctx, alloc)).toBe(true)
       expect(git(['branch', '--list', 'agent-chat/alice'], repo)).toBe('')
     })
 
     it('refuses when a local commit follows the head gh reports merged', async () => {
-      const { repo, ctx, alloc, tip } = await squashedThenEdited()
+      const { repo, ctx, alloc, first, tip } = await squashedThenEdited()
       commitIn(alloc.cwd, 'after.ts')
-      fakeGh(JSON.stringify({ state: 'MERGED', headRefOid: tip }))
+      fakeGh(prJson('MERGED', tip, [first, tip]))
 
       expect(await worktreeStrategy.release(ctx, alloc)).toBe(false)
       expect(refusalOf(alloc)).toMatch(/^3 commit\(s\) not on [0-9a-f]{40}; work not landed on main/)
+      expect(git(['branch', '--list', 'agent-chat/alice'], repo)).toContain('agent-chat/alice')
+    })
+
+    it('releases a squash-merged branch whose tip is in the PR after the head moved past it', async () => {
+      const { repo, ctx, alloc, first, tip } = await squashedThenEdited()
+      fakeGh(prJson('MERGED', MOVED_HEAD, [first, tip, MOVED_HEAD]))
+
+      expect(await worktreeStrategy.release(ctx, alloc)).toBe(true)
+      expect(git(['branch', '--list', 'agent-chat/alice'], repo)).toBe('')
+    })
+
+    it('refuses when a local commit outside the PR follows a moved head', async () => {
+      const { repo, ctx, alloc, first, tip } = await squashedThenEdited()
+      commitIn(alloc.cwd, 'after.ts')
+      fakeGh(prJson('MERGED', MOVED_HEAD, [first, tip, MOVED_HEAD]))
+
+      expect(await worktreeStrategy.release(ctx, alloc)).toBe(false)
+      expect(refusalOf(alloc)).toMatch(/^3 commit\(s\) not on [0-9a-f]{40}; /)
+      expect(refusalOf(alloc)).toMatch(/gh reports the PR as MERGED$/)
+      expect(git(['branch', '--list', 'agent-chat/alice'], repo)).toContain('agent-chat/alice')
+    })
+
+    it('refuses when gh reports a moved head with malformed commits', async () => {
+      const { repo, ctx, alloc } = await squashedThenEdited()
+      fakeGh(prJson('MERGED', MOVED_HEAD, 'x'))
+
+      expect(await worktreeStrategy.release(ctx, alloc)).toBe(false)
       expect(git(['branch', '--list', 'agent-chat/alice'], repo)).toContain('agent-chat/alice')
     })
 
@@ -989,8 +1027,8 @@ describe('worktree release after the work landed', () => {
     })
 
     it('refuses when gh reports the PR still open at the same tip', async () => {
-      const { ctx, alloc, tip } = await squashedThenEdited()
-      fakeGh(JSON.stringify({ state: 'OPEN', headRefOid: tip }))
+      const { ctx, alloc, first, tip } = await squashedThenEdited()
+      fakeGh(prJson('OPEN', tip, [first, tip]))
 
       expect(await worktreeStrategy.release(ctx, alloc)).toBe(false)
       expect(refusalOf(alloc)).toMatch(/gh reports the PR as OPEN$/)
