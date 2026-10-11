@@ -636,6 +636,10 @@
               "tmux-window"
             ],
             "description": "Optional. Omit to land where your seat file, or failing that your current surface, says, when this machine can run it, else in its OS default: tmux-window on Linux, iterm-tab on macOS. Set it to open your successor somewhere else; a surface this machine cannot run (iTerm on Linux) is refused, and you are not ended."
+          },
+          "to": {
+            "type": "string",
+            "description": "Optional. Omit to stay on the machine you run on now. Set it to a machine alias from the broker's config (such as \"mac\" or \"basement\") or a hostname to land your successor there. An unknown or unreachable machine is refused, naming the known ones, and you are not ended."
           }
         },
         "required": [

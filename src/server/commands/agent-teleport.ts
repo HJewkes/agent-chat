@@ -82,15 +82,27 @@ export const agentTeleport = defineTool({
           '(iTerm on Linux) is refused, and you are not ended.',
       )
       .optional(),
+    to: z
+      .string()
+      .describe(
+        'Optional. Omit to stay on the machine you run on now. Set it to a machine alias from the ' +
+          'broker\'s config (such as "mac" or "basement") or a hostname to land your successor ' +
+          'there. An unknown or unreachable machine is refused, naming the known ones, and you are not ended.',
+      )
+      .optional(),
   }),
   result: z.string(),
-  async run({ handoff, model: requested, remote_control: remoteControl, reason, surface }, ctx) {
+  async run(
+    { handoff, model: requested, remote_control: remoteControl, reason, surface, to: destination },
+    ctx,
+  ) {
     if (ctx.registeredName === null)
       return (
         'Register with chat_register first: teleport hands your name to a successor, and you do not ' +
         'have one yet.'
       )
     const model = present(requested)
+    const to = present(destination)
     // CC-883: a broker on another host cannot read this session's argv, so this process reports it.
     const seen = remoteControl === undefined && hostRemoteControl(hostIdentity().hostPid) === true
     const launchSeen = hostCarriedFlags(hostIdentity().hostPid)
@@ -106,6 +118,7 @@ export const agentTeleport = defineTool({
         // CC-951: a broker on another host picks this session's default surface by its OS, not its own.
         hostPlatform: process.platform,
         ...(launchSeen === undefined ? {} : { launchSeen }),
+        ...(to === undefined ? {} : { to }),
       },
       'teleport_result',
     )) as Extract<ServerMessage, { t: 'teleport_result' }>

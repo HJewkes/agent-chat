@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -1251,6 +1252,76 @@ describe('a session on another host', () => {
 
   it('answers a plan request with a refusal when nothing is teleporting', async () => {
     expect(await supervisor.teleportPlan('nobody')).toMatchObject({ ok: false })
+  })
+
+  // CC-951 e: a move off the predecessor's host is refused before the handoff while no site can launch it.
+  it('refuses a cross-host move of a worktree-isolated agent before the handoff row', async () => {
+    const repo = workspace()
+    for (const args of [
+      ['init', '-b', 'main'],
+      ['-c', 'user.email=t@example.com', '-c', 'user.name=T', 'commit', '--allow-empty', '-m', 'seed'],
+    ])
+      execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
+    const agentId = await spawnAgent({ cwd: repo, isolation: 'worktree' })
+
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { host: 'caller-host' }),
+      handoff: 'h',
+      to: os.hostname(),
+    })
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/worktree isolation.*not ended/),
+    })
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_handoff')
+  })
+
+  it('refuses an unknown machine, naming the known ones, and ends nothing', async () => {
+    const agentId = adoptSession('cc27', workspace())
+
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27' }),
+      handoff: 'h',
+      to: 'attic',
+    })
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringMatching(/unknown machine "attic"; known machines: /),
+    })
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_handoff')
+    expect(killed).toEqual([])
+  })
+
+  it('refuses a remote caller moving to the broker host until that site can launch it', async () => {
+    const agentId = adoptSession('cc27', workspace())
+
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27', host: 'caller-host' }),
+      handoff: 'h',
+      to: os.hostname(),
+    })
+
+    expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/not supported yet/) })
+    expect(rowsFor(agentId).map(r => r.kind)).not.toContain('agent_handoff')
+  })
+
+  it("resolves a configured alias for the caller's own host and launches there as before", async () => {
+    fs.writeFileSync(
+      path.join(process.env.AGENT_CHAT_HOME as string, 'config.json'),
+      JSON.stringify({ machines: { mac: 'caller-host' } }),
+    )
+    const agentId = adoptSession('cc27', workspace())
+
+    const result = await supervisor.teleport({
+      subject: subject(agentId, { name: 'cc27', host: 'caller-host' }),
+      handoff: 'h',
+      to: 'mac',
+    })
+
+    expect(result).toMatchObject({ ok: true, remote: true })
   })
 
   it('leaves a same-host teleport launching locally', async () => {
