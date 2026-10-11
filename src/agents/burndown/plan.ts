@@ -93,6 +93,8 @@ export interface Plan {
   notOptedIn: string[]
   /** A seat plan's malformed open tasks the scorer left out; absent for the unseated plan. */
   skippedTasks?: string[]
+  /** A seat plan's service-check state, printed under the header; absent for the unseated plan. */
+  serviceCheck?: string
 }
 
 /** A claim with no `namePrefix` names its agents `bd-...`, as every claim did before seats (CC-205). */

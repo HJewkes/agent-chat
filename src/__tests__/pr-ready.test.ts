@@ -701,6 +701,39 @@ describe('pr-ready scan', () => {
     expect(result.out).toContain('FAIL clean-tree: uncommitted changes in stray.txt')
   })
 
+  it('passes the clean-tree check with an untracked node_modules symlink into another checkout', async () => {
+    const dir = work()
+    fs.symlinkSync(scratchDir(), path.join(dir, 'node_modules'))
+
+    const result = await runPrReady(dir)
+
+    expect(result.out).toContain('ok clean-tree')
+    expect(result.out.at(-1)).toBe(
+      `PR-READY OK ${git(dir, 'rev-parse', 'HEAD')} (scan skipped: no body file)`,
+    )
+  })
+
+  it('passes the clean-tree check with an untracked nested node_modules directory', async () => {
+    const dir = work()
+    commit(dir, { 'packages/x/index.ts': '1\n' }, 'package')
+    writeFiles(dir, { 'packages/x/node_modules/dep/index.js': '1\n' })
+
+    const result = await runPrReady(dir)
+
+    expect(result.out).toContain('ok clean-tree')
+  })
+
+  it('still fails the clean-tree check on another untracked file beside a node_modules symlink', async () => {
+    const dir = work()
+    fs.symlinkSync(scratchDir(), path.join(dir, 'node_modules'))
+    fs.writeFileSync(path.join(dir, 'other.txt'), 'x\n')
+
+    const result = await runPrReady(dir)
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain('FAIL clean-tree: uncommitted changes in other.txt')
+  })
+
   it('reads a relative body file from the repo it checks', async () => {
     const dir = work()
     fs.writeFileSync(path.join(path.dirname(dir), 'body.md'), `Mentions ${TERM}.\n`)
