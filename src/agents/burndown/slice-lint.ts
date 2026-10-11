@@ -1,3 +1,4 @@
+import { HUMAN_OPS, opsHits } from './ops.js'
 import type { PlannedSlice } from './report.js'
 
 /**
@@ -22,7 +23,21 @@ const RULES: Rule[] = [
   (s, names) =>
     s.dependsOn.filter(dep => !names.has(dep)).map(dep => `slice ${s.n}: depends on unknown slice ${dep}`),
   s => repeatedScopes(s).map(scope => `slice ${s.n}: contract scope ${scope} is declared more than once`),
+  s => undeclaredOps(s),
+  s =>
+    (s.ops ?? [])
+      .filter(op => HUMAN_OPS.includes(op))
+      .map(op => `slice ${s.n}: declares ${op}; split it into a kind:operator or kind:owner task`),
 ]
+
+/** CC-974: a doneWhen hit needs an `ops` field, so the planner says whether a person does the step. */
+function undeclaredOps(slice: PlannedSlice): string[] {
+  if (slice.ops !== undefined) return []
+  const hits = opsHits(slice.doneWhen ?? '')
+  if (hits.length === 0) return []
+  const named = hits.map(hit => `${hit.op} ('${hit.text}')`).join(', ')
+  return [`slice ${slice.n}: doneWhen mentions ${named}; add "ops" ([] when it is subject matter)`]
+}
 
 function repeatedScopes(slice: PlannedSlice): string[] {
   const seen = new Set<string>()
