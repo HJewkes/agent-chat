@@ -14,6 +14,7 @@ const HERMETIC_SUITES = [
   'test-pace.sh',
   'test-premerge.sh',
   'test-queue.sh',
+  'test-queue-turns.sh',
   'test-scorecard.sh',
 ]
 // Drives the real active-work CLI, which is not shown to write only under ACTIVE_ROOT.
