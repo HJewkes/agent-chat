@@ -352,6 +352,10 @@ export interface ExperimentArm {
   arm: string
 }
 
+/** CC-168: why a follow-up message was sent, recorded on its message rows for the experiment tables. */
+export const FOLLOWUP_KINDS = ['fix', 'rebase', 'extension', 'review'] as const
+export type FollowupKind = (typeof FOLLOWUP_KINDS)[number]
+
 export interface Subscription {
   selector: SubscriptionSelector
   kinds: SubscribableKind[]
@@ -748,7 +752,17 @@ export type ClientMessage =
    * charged the same way — a tag is a way of naming recipients, not a cheaper
    * fanout. A tag nothing carries is a FAILURE, not a silent no-op.
    */
-  | { t: 'send'; to?: string | string[]; toTag?: string; text: string; inReplyTo?: string }
+  | {
+      t: 'send'
+      to?: string | string[]
+      toTag?: string
+      text: string
+      inReplyTo?: string
+      /** CC-168: recorded on every message row the send writes; both fields must be non-empty. */
+      experiment?: ExperimentArm
+      /** CC-168: recorded on every message row the send writes. */
+      followupKind?: FollowupKind
+    }
   /**
    * Add or remove tags, on yourself or on a peer (CC-13).
    *

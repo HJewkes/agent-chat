@@ -63,7 +63,7 @@ import {
   readOutputTail,
   type SurfaceOptions,
 } from '@titan-design/agent-surface'
-import { resolveSurface, surfaceBlockerFor } from './surface-resolution.js'
+import { defaultSpawnSurface, resolveSurface, surfaceBlockerFor } from './surface-resolution.js'
 import { psLauncherProbe, relaunchScriptPath, surfaceFor, type LauncherProbe } from './launcher.js'
 import { Semaphore, type SlotUsage } from './semaphore.js'
 import {
@@ -1630,7 +1630,7 @@ export class Supervisor implements TeleportHost {
     if (overlap) return this.refuse(req, overlap, { code: SEAT_SPAWN_OVERLAP, retryable: false })
     const reserve = this.handReserveRefusal(req, profile.name)
     if (reserve) return this.refuse(req, reserve, { code: SEAT_HAND_RESERVE, retryable: false })
-    const machine = this.machineRefusal(this.resolve(req.surface ?? profile.surface))
+    const machine = this.machineRefusal(this.spawnSurface(req, profile))
     if (machine) return this.refuse(req, machine.reason, { code: machine.code, retryable: machine.retryable })
     const escalation = this.checkEscalation(req, profile)
     if ('refusal' in escalation) return this.refuse(req, escalation.refusal)
@@ -1776,7 +1776,7 @@ export class Supervisor implements TeleportHost {
       body: allocation.note ?? '',
       meta: { strategy: isolationName, ...(allocation.ref ?? {}) },
     })
-    const surface = this.resolve(req.surface ?? profile.surface)
+    const surface = this.spawnSurface(req, profile)
     // CC-158: on disk before anything can fail, so a launch that dies still leaves something to release.
     writeRuntimeState(agentId, { handle: { surface }, allocation, isolation: isolationName })
 
@@ -2232,6 +2232,33 @@ export class Supervisor implements TeleportHost {
       if (entry.anchor === anchor && entry.handle.paneRef) bottom = entry.handle.paneRef
     }
     return bottom
+  }
+
+  /** CC-485: the host surface a fresh spawn launches on; a seat's worker with none requested runs headless. */
+  private spawnSurface(req: SpawnRequest, profile: AgentProfile): SurfaceName {
+    const requested = defaultSpawnSurface({
+      requested: req.surface,
+      profileSurface: profile.surface,
+      role: roleOf(profile),
+      seatSpawn: req.surface === undefined && this.isSeatSpawn(req),
+    })
+    return this.resolve(requested)
+  }
+
+  /** A seat owns the name; an unreadable seats directory counts as no seat, so the profile's surface stands. */
+  private isSeatSpawn(req: SpawnRequest): boolean {
+    if (this.seatBudget === undefined) return false
+    try {
+      const spawn = {
+        name: req.name,
+        spawner: req.requestedBy,
+        configDir: defaultConfigDir(),
+        now: new Date(),
+      }
+      return this.seatBudget.read(spawn).kind !== 'none'
+    } catch {
+      return false
+    }
   }
 
   /** CC-804: the surface a requested name lands on, given this host's platform. */

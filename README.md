@@ -424,6 +424,22 @@ and any spawn while free memory (`kern.memorystatus_level`) is below
 refuses, because macOS keeps swap allocated after memory pressure ends. A reader
 that fails lets the spawn through. Details are in `docs/agent-teams.md` §11.3.
 
+**Every stop in one read.** `agent-chat machine status --json` reports operator
+HOLDs (the stop file `~/.agent-chat/operator.hold`, and chat HOLDs: a broadcast or
+a fan-out to two or more seats by one of `machineHoldOperators` in `config.json`,
+default `["tp-operator"]`, whose first sentence carries `HOLD`, `STOP ALL`,
+`MACHINE STOP`, `STEP-BACK` or `REBOOT NOTICE`/`QUIET`, standing until such a send
+starts with `LIFT`, `CLEAR` or "hold LIFTED", at most 24 h), the owner's stopped
+seats, and the machine-stop readings. A fan-out counts by the seats it named in
+`broker.log`, so one that reached a single seat still holds the machine. An
+operator's lift, DM included, lifts the newest hold on each seat it went to; a
+fan-out hold ends when its last seat is lifted, never because a seat left the bus,
+and a broadcast hold ends only on a broadcast lift. An operator's DM HOLD
+stops one seat, not the machine, and any other agent's message never holds or lifts. Its
+`stopped` field is true for a hold, the machine stop or an unreadable source; an
+owner stop holds only its seat. A consumer off the bus, such as Shepherd, reads
+this instead of parsing chat.
+
 ## Not built yet
 
 - Path claims — reusing the lease primitive for files instead of nicknames.
