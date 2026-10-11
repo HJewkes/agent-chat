@@ -88,8 +88,10 @@ import { SURFACE_NAMES, type ServerMessage, type SurfaceName } from '../../proto
 import { addVerb, defineVerb, Report } from '../command.js'
 import { seatPlanOptions } from './burndown.js'
 import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from './watchdog-job.js'
-
-type Reply<T extends ServerMessage['t']> = Extract<ServerMessage, { t: T }>
+import { sendAsOwner, withRunningBroker, type Reply } from './seat-broker.js'
+import { refreshSeatHeartbeat, seatsHeartbeatInstallVerb } from './seats-heartbeat.js'
+import { checkHeartbeat } from '../../agents/seats/heartbeat-check.js'
+import { logEvent } from '../../broker/log.js'
 
 const refused = (err: unknown): Report => ({
   ok: false,
@@ -122,16 +124,6 @@ const LEGACY_SURFACE_REFUSED = "use surface 'headless'"
 
 const surfaceRefused = (res: Reply<'spawn_result'>): boolean =>
   res.code === 'surface_refused' || (res.reason ?? '').includes(LEGACY_SURFACE_REFUSED)
-
-async function sendAsOwner(client: BrokerClient, seat: string, message: string): Promise<WakeResult> {
-  const res = (await client.request(
-    { t: 'human_send', to: seat, text: message, source: 'watchdog' },
-    'send_result',
-  )) as Reply<'send_result'>
-  return res.ok
-    ? { ok: true, detail: `message ${res.msgId}` }
-    : { ok: false, detail: res.reason ?? 'send refused' }
-}
 
 async function resumeOn(
   client: BrokerClient,
@@ -244,19 +236,7 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
         connected ? UNDECLARED : await declaredSurface(client, root, seat),
       ),
     appendLog: (seat, at, text) => void appendSeatLog(root, seat, at, text),
-  }
-}
-
-/** Never autostarts: a seat verb that brought up a broker would own it, and the broker serves every session. */
-async function withRunningBroker<T>(fn: (client: BrokerClient) => Promise<T>): Promise<T> {
-  const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
-    autoStart: false,
-  })
-  try {
-    await client.connect()
-    return await fn(client)
-  } finally {
-    client.close()
+    refreshHeartbeat: seat => refreshSeatHeartbeat(root, seat),
   }
 }
 
@@ -352,6 +332,50 @@ export const seatsWatchdogVerb = defineVerb({
         ...(seat === undefined ? {} : { seats: seat }),
         ...(fireCap === undefined ? {} : { fireCap }),
       })
+    } catch (err) {
+      return refused(err)
+    }
+  },
+})
+
+export const seatsHeartbeatCheckVerb = defineVerb({
+  name: 'seats.heartbeat-check',
+  description:
+    "what a seat's heartbeat timer runs (CC-947): when the watchdog would neither hold the seat nor " +
+    'resume it (connected, no owner stop, restart window, machine stop or stop line) and its logs have ' +
+    "no tick line for its cron's widest gap plus 5 min, send the charter heartbeat through the broker " +
+    'and log heartbeat_external',
+  args: z.object({
+    seat: requiredString('seat'),
+    root: z.string().optional(),
+    dryRun: z.boolean().optional(),
+  }),
+  result: Report,
+  cli: {
+    options: {
+      seat: { long: '--seat', description: 'the seat to check (required)' },
+      root: { long: '--root', description: 'autonomy directory holding charter.md, seats/ and logs/' },
+      dryRun: { long: '--dry-run', description: 'print the decision; send nothing' },
+    },
+  },
+  async run({ seat, root, dryRun }) {
+    const offLease = hostLeaseRefusal()
+    if (offLease !== undefined) return refused(new Error(offLease))
+    if (!isSeatName(seat)) return refused(new Error(`not a seat name: ${seat}`))
+    const dir = root ?? defaultAutonomyRoot()
+    try {
+      const result = await withRunningBroker(client =>
+        checkHeartbeat(
+          {
+            watchdog: liveDeps(dir, client),
+            send: (name, message) => sendAsOwner(client, name, message),
+            logEvent,
+          },
+          seat,
+          dryRun === true,
+        ),
+      )
+      return { ok: result.ok, lines: [result.line] }
     } catch (err) {
       return refused(err)
     }
@@ -769,4 +793,6 @@ export function addSeatsCommands(program: Commander): void {
   addVerb(seats, seatsWatchdogInstallVerb)
   addVerb(seats, seatsWatchdogUninstallVerb)
   addVerb(seats, seatsWatchdogStatusVerb)
+  addVerb(seats, seatsHeartbeatInstallVerb)
+  addVerb(seats, seatsHeartbeatCheckVerb)
 }
