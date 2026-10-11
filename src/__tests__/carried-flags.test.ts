@@ -3,15 +3,15 @@ import { carriedFlagsFromArgv, hostCarriedFlags, sanitizeCarried } from '../brok
 
 /** CC-951: the launch flags a teleport successor inherits, read from its predecessor's argv. */
 
-const TITAN_COORD =
+const COORDINATOR =
   'claude --model claude-opus-5-5 --remote-control --channels plugin:agent-chat@agent-chat-local ' +
-  '--name titan-coord boot'
+  '--name alpha-coord boot'
 
 const words = (line: string): string[] => line.split(/\s+/)
 
 describe("a predecessor's carried flags", () => {
   it("leaves agent-chat's own channel to the launch, which always adds it", () => {
-    expect(carriedFlagsFromArgv(words(TITAN_COORD))).toEqual({ channels: [] })
+    expect(carriedFlagsFromArgv(words(COORDINATOR))).toEqual({ channels: [] })
   })
 
   it('carries every other channel target, the permission mode and the effort', () => {
@@ -41,7 +41,7 @@ describe("a predecessor's carried flags", () => {
 
   it('is undefined when the argv cannot be read, so the caller falls back rather than carrying nothing', () => {
     expect(hostCarriedFlags(4242, () => undefined)).toBeUndefined()
-    expect(hostCarriedFlags(4242, () => TITAN_COORD)).toEqual({ channels: [] })
+    expect(hostCarriedFlags(4242, () => COORDINATOR)).toEqual({ channels: [] })
   })
 })
 
