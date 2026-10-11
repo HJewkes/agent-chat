@@ -1,3 +1,4 @@
+import type { CarriedPermissionMode } from '../broker/host-channels.js'
 import type { IsolationName, Subscription, SurfaceName } from '../protocol.js'
 
 /**
@@ -199,6 +200,10 @@ export interface LaunchPlanInput {
   preamble?: string
   /** Emit `--remote-control` on an interactive run; a print-mode run cannot use it and ignores this. */
   remoteControl?: boolean
+  /** CC-951: channel targets beside agent-chat's own, carried from a teleport predecessor. */
+  channels?: string[]
+  /** CC-951: an interactive run's `--permission-mode`, carried from a teleport predecessor; headless stays pinned. */
+  permissionMode?: CarriedPermissionMode
 }
 
 export type { CloseOutcome, LaunchHandle, LaunchPlan, Surface } from '@titan-design/agent-surface'

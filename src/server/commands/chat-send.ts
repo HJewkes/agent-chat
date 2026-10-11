@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { MAX_MULTICAST_RECIPIENTS, tagProblem } from '../../protocol.js'
+import { FOLLOWUP_KINDS, MAX_MULTICAST_RECIPIENTS, tagProblem } from '../../protocol.js'
 import type { RecipientResult, ServerMessage } from '../../protocol.js'
 import { nonBlank, requiredString } from '../../args.js'
 import { defineTool } from '../command.js'
@@ -32,6 +32,23 @@ const args = z.object({
     .optional(),
   text: requiredString('text').describe('Message body'),
   in_reply_to: z.string().describe('msg_id of the message being answered, if any').optional(),
+  experiment: z
+    .object({
+      id: requiredString('experiment.id').describe('The experiment this message belongs to, e.g. "E3".'),
+      arm: requiredString('experiment.arm').describe('The arm of that experiment the recipient runs.'),
+    })
+    .describe(
+      'Optional experiment and arm, recorded on the message rows. Pass it only for a message that is ' +
+        'part of a planned experiment.',
+    )
+    .optional(),
+  followup_kind: z
+    .enum(FOLLOWUP_KINDS, { error: `followup_kind must be one of: ${FOLLOWUP_KINDS.join(', ')}` })
+    .describe(
+      'Optional reason this message hands a recipient more work, recorded on the message rows: ' +
+        'fix (repair its own output), rebase, extension (more scope) or review.',
+    )
+    .optional(),
 })
 
 type SendArgs = z.infer<typeof args>
@@ -155,6 +172,8 @@ export const chatSend = defineTool({
         ...(toTag === undefined ? {} : { toTag }),
         text: input.text,
         ...(inReplyTo === undefined ? {} : { inReplyTo }),
+        ...(input.experiment === undefined ? {} : { experiment: input.experiment }),
+        ...(input.followup_kind === undefined ? {} : { followupKind: input.followup_kind }),
       },
       'send_result',
     )) as SendResult
