@@ -491,6 +491,8 @@ export interface PoolPickReaders {
 }
 
 type Account = Extract<ConfigDirResolution, { dir: string }>
+/** The profile facts the seat budget gate reads: its name for the inferred role, and its model. */
+type SpawnProfile = { name: string; model: string }
 
 /** The default account runs with the variable unset (CC-200), as a spawner on it would leave its child. */
 const poolAccount = (dir: string): Account => ({
@@ -1298,7 +1300,7 @@ export class Supervisor implements TeleportHost {
   }
 
   /** CC-288: refuses a seat-prefixed spawn whose billed pool is past a charter budget stop; an unreadable seat lets it through. */
-  private seatBudgetRefusal(req: SpawnRequest, model: string, configDir: string): string | undefined {
+  private seatBudgetRefusal(req: SpawnRequest, profile: SpawnProfile, configDir: string): string | undefined {
     if (this.seatBudget === undefined) return undefined
     let read: SeatSpawnRead
     try {
@@ -1315,7 +1317,8 @@ export class Supervisor implements TeleportHost {
       logEvent('seat_spawn_gate', { name: req.name, allow: true, reason: read.reason })
       return undefined
     }
-    const verdict = seatSpawnGate({ ...read.input, model })
+    const role = req.workRole ?? inferWorkRole(profile.name, req.name)
+    const verdict = seatSpawnGate({ ...read.input, model: profile.model, role })
     logEvent('seat_spawn_gate', { name: req.name, allow: verdict.allow, reason: verdict.reason })
     return verdict.allow ? undefined : `seat budget stop: ${verdict.reason}`
   }
@@ -1379,13 +1382,13 @@ export class Supervisor implements TeleportHost {
    */
   private billedAccount(
     req: SpawnRequest,
-    model: string,
+    profile: SpawnProfile,
     account: Account,
     site: { cwd: string; initiative?: string; keepsAccount: boolean },
   ): { account: Account } | { refusal: string } {
     const refusals = new Map<string, string | undefined>()
     const gate = (dir: string): string | undefined => {
-      if (!refusals.has(dir)) refusals.set(dir, this.seatBudgetRefusal(req, model, dir))
+      if (!refusals.has(dir)) refusals.set(dir, this.seatBudgetRefusal(req, profile, dir))
       return refusals.get(dir)
     }
     const { keepsAccount, ...where } = site
@@ -1707,7 +1710,7 @@ export class Supervisor implements TeleportHost {
     if ('error' in resolved) return this.refuse(req, resolved.error)
     if (resolved.warning !== undefined) warnings.push(resolved.warning)
     // A fork or a resumed session continues a transcript that lives under its account, so neither is routed.
-    const billed = this.billedAccount(req, profile.model, resolved, {
+    const billed = this.billedAccount(req, profile, resolved, {
       cwd,
       ...(injected === undefined ? {} : { initiative: injected.slug }),
       keepsAccount: fork !== undefined || req.resumeSession !== undefined,

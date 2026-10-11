@@ -174,6 +174,45 @@ describe('the seat spawn gate', () => {
     expect(sonnet.allow).toBe(true)
   })
 
+  describe('a review role inside the sonnet band (CC-523)', () => {
+    const inBand = {
+      reading: { sevenDay: 70, fiveHour: 20, ageSeconds: 30 },
+      dayMeter: { since: DAY_START, last: 70, spent: 0 },
+    }
+
+    it('admits an opus reviewer and says so', () => {
+      const verdict = seatSpawnGate(input({ ...inBand, model: 'opus', role: 'reviewer' }))
+
+      expect(verdict.allow).toBe(true)
+      expect(verdict.reason).toContain('within 10 points, sonnet only; review role reviewer admitted on opus')
+    })
+
+    it('admits a fable shepherd review', () => {
+      const verdict = seatSpawnGate(input({ ...inBand, model: 'fable', role: 'shepherd-review' }))
+
+      expect(verdict.allow).toBe(true)
+    })
+
+    it.each(['implementer', 'planner', 'fix-round-1', 'other', undefined])(
+      'still refuses an opus %s spawn',
+      role => {
+        const verdict = seatSpawnGate(input({ ...inBand, model: 'opus', role }))
+
+        expect(verdict.allow).toBe(false)
+        expect(verdict.reason).toContain('profile model opus is not sonnet')
+      },
+    )
+
+    it('still refuses a reviewer past the seven_day line', () => {
+      const verdict = seatSpawnGate(
+        input({ model: 'opus', role: 'reviewer', reading: { sevenDay: 76, fiveHour: 20, ageSeconds: 30 } }),
+      )
+
+      expect(verdict.allow).toBe(false)
+      expect(verdict.reason).toContain('seven_day 76% at or above line 75%')
+    })
+  })
+
   describe("with the pool's sonnet_band_points", () => {
     const banded = (band: number | undefined, sevenDay: number) =>
       seatSpawnGate(
@@ -393,6 +432,18 @@ describe('agent spawn under the seat budget gate', () => {
     const sup = gated(20)
 
     expect((await sup.spawnAgent('ac-under')).ok).toBe(true)
+  })
+
+  it('spawns an opus reviewer inside the sonnet band and refuses an opus peer (CC-523)', async () => {
+    const sup = gated(80)
+
+    const stated = await sup.spawnAgent('ac-stated', { profile: 'peer', workRole: 'reviewer' })
+    const inferred = await sup.spawnAgent('ac-pr-review', { profile: 'peer' })
+    const peer = await sup.spawnAgent('ac-peer', { profile: 'peer' })
+
+    expect(stated.ok).toBe(true)
+    expect(inferred.ok).toBe(true)
+    expect(peer).toMatchObject({ ok: false, code: 'seat_budget_stop' })
   })
 
   it('spawns when the reader throws, and logs the failure', async () => {
