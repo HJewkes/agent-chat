@@ -425,10 +425,13 @@ refuses, because macOS keeps swap allocated after memory pressure ends. A reader
 that fails lets the spawn through. Details are in `docs/agent-teams.md` §11.3.
 
 **Every stop in one read.** `agent-chat machine status --json` reports operator
-HOLDs (the stop file `~/.agent-chat/operator.hold`, and chat messages whose first
-sentence carries `HOLD`, `STOP ALL`, `MACHINE STOP`, `STEP-BACK` or
-`REBOOT NOTICE`/`QUIET`, until any sender's `LIFT`, `CLEAR` or "hold lifted", at
-most 24 h), the owner's stopped seats, and the machine-stop readings. Its
+HOLDs (the stop file `~/.agent-chat/operator.hold`, and chat HOLDs: a broadcast or
+a fan-out to two or more seats by one of `machineHoldOperators` in `config.json`,
+default `["tp-operator"]`, whose first sentence carries `HOLD`, `STOP ALL`,
+`MACHINE STOP`, `STEP-BACK` or `REBOOT NOTICE`/`QUIET`, standing until such a send
+starts with `LIFT`, `CLEAR` or "hold LIFTED", at most 24 h), the owner's stopped
+seats, and the machine-stop readings. A DM, or any other agent's message, never
+holds or lifts. Its
 `stopped` field is true for a hold, the machine stop or an unreadable source; an
 owner stop holds only its seat. A consumer off the bus, such as Shepherd, reads
 this instead of parsing chat.

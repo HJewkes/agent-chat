@@ -16,6 +16,10 @@ export interface ChatLine {
   actor: string
   msgId: string | null
   body: string
+  /** Sent with chat_broadcast. */
+  broadcast: boolean
+  /** How many seats the send went to. */
+  recipients: number
 }
 
 export interface OperatorHold {
@@ -46,19 +50,35 @@ export interface MachineStopStatus {
 
 /** A message's head: its first sentence on its first line, where every observed stop and lift is stated. */
 const HEAD_MAX = 160
+const SENTENCE_END = /[.!?;](?:\s|$)/
 export function messageHead(body: string): string {
   const first = body.trimStart().split('\n')[0] ?? ''
-  const end = first.search(/[.!?;](?:\s|$)/)
+  const end = first.search(SENTENCE_END)
   return (end === -1 ? first : first.slice(0, end)).slice(0, HEAD_MAX)
 }
 
+/** "LIFT yet?", "is the hold LIFTED?": a first sentence that asks changes nothing. */
+function asks(body: string): boolean {
+  const first = body.trimStart().split('\n')[0] ?? ''
+  const end = first.search(SENTENCE_END)
+  return end !== -1 && first[end] === '?'
+}
+
 /**
- * Fail closed (CC-957 review): every stop word in a head opens a hold unless the words right beside
- * that one occurrence say it refers to a hold or names one target. A phrasing nobody foresaw opens;
- * it never lifts, since only a head that starts with a lift form lifts.
+ * Who may hold the machine from chat (CC-957 review): one of the configured operators, sending to
+ * the machine (a broadcast, or a fan-out to two or more seats). A coordinator's relay, ack or question
+ * and any DM, the operator's own included, never reach the classifier.
  */
-const STOP_WORD =
-  /\bHOLD\b|\bMACHINE STOP\b|\b(?:STOP|[Ss]top)[ -](?:ALL|all)\b|\bSTOP\b|\bSTEP-BACK\b|\bREBOOT (?:NOTICE|QUIET)\b/
+export function machineScoped(line: ChatLine, operators: readonly string[]): boolean {
+  return operators.includes(line.actor) && (line.broadcast || line.recipients >= 2)
+}
+
+/**
+ * The operator's stop vocabulary, upper case as it is sent. Every one of these in a head opens a hold
+ * unless the words right beside that occurrence say it refers to a hold or names one target; only a
+ * head that starts with a lift form lifts.
+ */
+const STOP_WORD = /\bHOLD\b|\bMACHINE STOP\b|\bSTOP[ -]ALL\b|\bSTEP-BACK\b|\bREBOOT (?:NOTICE|QUIET)\b/
 const STOP_WORDS = new RegExp(STOP_WORD.source, 'g')
 /** A cited message id: 8 hex digits with at least one letter, so a date or time is never one. */
 const MESSAGE_ID = String.raw`(?=\d*[a-f])[0-9a-f]{8}\b`
@@ -116,7 +136,7 @@ export type Classified = 'open' | 'lift' | 'none'
 
 export function classify(body: string, actor: string): Classified {
   const head = headAfterSender(body, actor)
-  if (liftsTheHold(head)) return 'lift'
+  if (liftsTheHold(head)) return asks(body) ? 'none' : 'lift'
   return opensAHold(head) ? 'open' : 'none'
 }
 
@@ -131,26 +151,35 @@ function holdReason(body: string): string {
 }
 
 /**
- * Active broadcast HOLDs, one per sender, each dated from that sender's first stop since the last
- * lift. A lift from any sender ends every open hold: the hold is the machine's, and coordinators relay
- * an operator's HOLD as their own but never lift it, so per-sender lifts left relays standing a day.
+ * Active broadcast HOLDs, one per operator, each dated from that operator's first stop since the last
+ * lift. Only machine-scoped operator sends count, and a lift from any operator ends every open hold:
+ * the hold is the machine's. The cap runs from the operator's latest stop, so a HOLD sent again
+ * stands a full cap past the repeat; the reader reads one cap back, so `since` is then the oldest
+ * stop within it.
  */
-export function broadcastHolds(lines: readonly ChatLine[], nowMs: number): OperatorHold[] {
-  const open = new Map<string, ChatLine>()
-  const sorted = [...lines].filter(l => l.ts <= nowMs).sort((a, b) => a.ts - b.ts)
+export function broadcastHolds(
+  lines: readonly ChatLine[],
+  nowMs: number,
+  operators: readonly string[],
+): OperatorHold[] {
+  const open = new Map<string, { first: ChatLine; latestMs: number }>()
+  const sorted = lines
+    .filter(line => line.ts <= nowMs && machineScoped(line, operators))
+    .sort((a, b) => a.ts - b.ts)
   for (const line of sorted) {
     const kind = classify(line.body, line.actor)
     if (kind === 'lift') open.clear()
-    else if (kind === 'open' && !open.has(line.actor)) open.set(line.actor, line)
+    else if (kind === 'open')
+      open.set(line.actor, { first: open.get(line.actor)?.first ?? line, latestMs: line.ts })
   }
   return [...open.values()]
-    .filter(line => nowMs - line.ts <= BROADCAST_HOLD_MAX_MS)
-    .map(line => ({
+    .filter(({ latestMs }) => nowMs - latestMs <= BROADCAST_HOLD_MAX_MS)
+    .map(({ first }) => ({
       kind: 'broadcast' as const,
-      by: line.actor,
-      since: new Date(line.ts).toISOString(),
-      reason: holdReason(line.body.trimStart()),
-      ...(line.msgId === null ? {} : { msgId: line.msgId }),
+      by: first.actor,
+      since: new Date(first.ts).toISOString(),
+      reason: holdReason(first.body.trimStart()),
+      ...(first.msgId === null ? {} : { msgId: first.msgId }),
     }))
 }
 
@@ -174,6 +203,8 @@ export interface StopInputs {
   now: Date
   /** Undefined when events.db could not be read. */
   chat: readonly ChatLine[] | undefined
+  /** The agents whose machine-wide sends open and lift a chat HOLD. */
+  operators: readonly string[]
   /** The stop file's text; undefined when it does not exist. */
   stopFile: () => string | undefined
   /** seat-watchdog.json's `stopped` map; throws when the file cannot be read. */
@@ -198,7 +229,7 @@ export function machineStopStatus(input: StopInputs): MachineStopStatus {
   if (file !== undefined && 'error' in file) errors.push(file.error)
   const holds = [
     ...(file === undefined || 'error' in file ? [] : [file]),
-    ...broadcastHolds(input.chat ?? [], input.now.getTime()),
+    ...broadcastHolds(input.chat ?? [], input.now.getTime(), input.operators),
   ]
   const stopped = tryRead(input.ownerStops, errors, 'seat-watchdog.json') ?? {}
   const ownerStops = Object.entries(stopped).map(([seat, reason]) => ({ seat, reason }))

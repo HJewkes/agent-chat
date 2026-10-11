@@ -1,6 +1,7 @@
 import path from 'node:path'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
+import { resolveMachineHoldOperators } from '../../config.js'
 import { home, operatorHoldPath } from '../../paths.js'
 import { readDoc, readChatMessages, readTextIfPresent } from '../../agents/seats/io.js'
 import {
@@ -27,6 +28,7 @@ export function liveStopInputs(now: Date): StopInputs {
   return {
     now,
     chat: holdMessages(now.getTime()),
+    operators: resolveMachineHoldOperators(),
     stopFile: () => readTextIfPresent(operatorHoldPath()),
     ownerStops: () => readDoc().stopped,
     readings,
@@ -44,8 +46,9 @@ export const machineStatusVerb = defineVerb({
   name: 'machine.status',
   description:
     'every stop on this machine, read-only (CC-957): operator HOLDs from the stop file and from chat ' +
-    'messages (a first sentence carrying HOLD, STOP ALL, MACHINE STOP, STEP-BACK or REBOOT NOTICE/QUIET ' +
-    `stands until any sender's LIFT, CLEAR or "hold lifted", at most ` +
+    "(a broadcast or fan-out to two or more seats by one of config.json's machineHoldOperators, default " +
+    'tp-operator, whose first sentence carries HOLD, STOP ALL, MACHINE STOP, STEP-BACK or REBOOT ' +
+    'NOTICE/QUIET, standing until such a send starts with LIFT, CLEAR or "hold LIFTED", at most ' +
     `${BROADCAST_HOLD_MAX_MS / 3_600_000} h), the owner's stopped seats in seat-watchdog.json, and the ` +
     'memory, load, swap and pressure readings against the machine stop. `stopped` is a hold, the ' +
     'machine stop or a source that cannot be read; an owner stop holds only its own seat',

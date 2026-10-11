@@ -59,6 +59,7 @@ export interface AgentChatConfig {
   processGuardMode?: unknown
   gitShellAliases?: unknown
   autoRetire?: unknown
+  machineHoldOperators?: unknown
 }
 
 const loggedInvalid = new Set<string>()
@@ -228,6 +229,21 @@ export function resolveDeciderAgentId(): string | undefined {
   if (typeof agentId === 'string' && agentId !== '') return agentId
   logInvalidOnce({ key: 'decider.agentId', value: agentId, fallback: 'no decider' })
   return undefined
+}
+
+export const DEFAULT_MACHINE_HOLD_OPERATORS: readonly string[] = ['tp-operator']
+
+/**
+ * CC-957: the agents whose machine-wide sends open and lift a chat HOLD, from `machineHoldOperators`,
+ * read per call. Anything but a non-empty list of names is logged and read as the default.
+ */
+export function resolveMachineHoldOperators(): readonly string[] {
+  const value = readConfig().machineHoldOperators
+  if (value === undefined) return DEFAULT_MACHINE_HOLD_OPERATORS
+  const isName = (name: unknown): name is string => typeof name === 'string' && name !== ''
+  if (Array.isArray(value) && value.length > 0 && value.every(isName)) return value
+  logInvalidOnce({ key: 'machineHoldOperators', value, fallback: DEFAULT_MACHINE_HOLD_OPERATORS })
+  return DEFAULT_MACHINE_HOLD_OPERATORS
 }
 
 /** How long a headless agent's PermissionRequest hook blocks for the human (CC-144); read per spawn. */
