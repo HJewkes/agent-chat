@@ -3,6 +3,8 @@ import {
   dispatchStats,
   journalRefusals,
   parseWindow,
+  briefSourceQuality,
+  type BriefSourceQuality,
   type DispatchStatsPorts,
   type SeatDispatchStats,
 } from '../agents/burndown/dispatch-stats.js'
@@ -94,6 +96,7 @@ const ports = (over: Partial<DispatchStatsPorts> = {}): DispatchStatsPorts => ({
   dispatchLog: seat => (seat === 'sa' ? LOG_SA : undefined),
   journal: () => undefined,
   lastOkAt: () => ago(3),
+  verdicts: () => [],
   ...over,
 })
 
@@ -203,5 +206,104 @@ describe('burndown dispatch-stats', () => {
 
   it('reads no refusal mix from a journal without a dispatched-nothing line', () => {
     expect(journalRefusals('09:00 spawn AB-1 sa-ab-1 -\n', NOW)).toBeUndefined()
+  })
+})
+
+describe('burndown dispatch-stats --by-brief-source', () => {
+  const run = (task: string, minutesAgo: number, briefSource?: string): string =>
+    JSON.stringify({
+      ts: ago(minutesAgo),
+      agent: `sa-${task.toLowerCase()}`,
+      agent_id: `id-${task}`,
+      task,
+      outcome: 'dispatched',
+      by: 'broker',
+      spawner: 'burndown',
+      ...(briefSource === undefined ? {} : { briefSource }),
+    })
+
+  const withRounds = (taskId: string, reviewRound?: number): Claim => ({
+    ...claim(taskId, 'sa', 'implementing', 60),
+    ...(reviewRound === undefined ? {} : { reviewRound }),
+  })
+
+  const verdict = (task: string, verdict: 'MERGE' | 'FIX_FIRST', head: string) => ({
+    task,
+    pr: 'o/r#1',
+    head,
+    verdict,
+  })
+
+  const fixture = (): DispatchStatsPorts =>
+    ports({
+      dispatchLog: seat =>
+        seat === 'sa'
+          ? [
+              run('AB-1', 100, 'seat'),
+              run('AB-2', 90, 'seat'),
+              run('AB-3', 80, 'briefer'),
+              run('AB-4', 70, 'template'),
+              run('AB-5', 60),
+              run('AB-6', 60, 'bogus'),
+              run('AB-7', 3 * 24 * 60, 'seat'),
+            ].join('\n')
+          : undefined,
+      ledger: () =>
+        ({
+          version: 1,
+          claims: [
+            withRounds('AB-1', 2),
+            withRounds('AB-2', 1),
+            withRounds('AB-3'),
+            withRounds('AB-4', 3),
+            withRounds('AB-5', 1),
+            withRounds('AB-7', 9),
+          ],
+        }) as Ledger,
+      verdicts: () => [
+        verdict('AB-1', 'FIX_FIRST', 'a'),
+        verdict('AB-2', 'FIX_FIRST', 'b'),
+        verdict('AB-2', 'FIX_FIRST', 'c'),
+        verdict('AB-2', 'MERGE', 'd'),
+        verdict('AB-4', 'FIX_FIRST', 'e'),
+        verdict('AB-5', 'FIX_FIRST', 'f'),
+        verdict('AB-7', 'FIX_FIRST', 'g'),
+      ],
+    })
+
+  it('counts fix rounds and FIX_FIRST verdicts per brief source, one JSON record each', () => {
+    const report = dispatchStatsLines(fixture(), '24h', true, true)
+
+    const records = report.lines.map(l => JSON.parse(l) as BriefSourceQuality)
+    expect(
+      records.map(({ source, tasks, fixRounds, fixFirst }) => [source, tasks, fixRounds, fixFirst]),
+    ).toEqual([
+      ['seat', 2, 3, 3],
+      ['briefer', 1, 0, 0],
+      ['template', 1, 3, 1],
+      ['unknown', 2, 1, 1],
+    ])
+  })
+
+  it('prints a line per source, and lists a source with no tasks as zeroes', () => {
+    const lines = dispatchStatsLines(ports(), '24h', false, true).lines
+
+    expect(lines).toEqual([
+      'seat      tasks 0, fix rounds 0, FIX_FIRST 0',
+      'briefer   tasks 0, fix rounds 0, FIX_FIRST 0',
+      'template  tasks 0, fix rounds 0, FIX_FIRST 0',
+      'unknown   tasks 0, fix rounds 0, FIX_FIRST 0',
+    ])
+  })
+
+  it('reports an unreadable event log as a refusal', () => {
+    const p = ports({
+      verdicts: () => {
+        throw new Error('events.db unreadable')
+      },
+    })
+
+    expect(dispatchStatsLines(p, '24h', true, true).ok).toBe(false)
+    expect(() => briefSourceQuality(p, DAY_MS)).toThrow('events.db unreadable')
   })
 })

@@ -1,6 +1,8 @@
-import { foldDispatch } from '../seats/dispatch-record.js'
+import { foldDispatch, type DispatchRecord } from '../seats/dispatch-record.js'
 import type { Ledger } from './ledger.js'
 import { NO_DISPATCH_PREFIX } from './no-dispatch.js'
+import { BRIEF_SOURCES, type BriefSource } from './task-tags.js'
+import type { VerdictObservation } from './waste.js'
 import {
   TICK_SUMMARY_VERSION,
   type RegisterCounts,
@@ -25,6 +27,8 @@ export interface DispatchStatsPorts {
   journal: (seat: string, day: Date) => string | undefined
   /** The tick status file's last good tick, the fallback when no tick row is in the window. */
   lastOkAt: () => string | undefined
+  /** CC-938: the review verdicts on the PRs of `runs`' tasks since `sinceMs`; throws when the event log cannot be read. */
+  verdicts: (runs: readonly DispatchRecord[], sinceMs: number) => VerdictObservation[]
 }
 
 export interface RefusalMix {
@@ -271,4 +275,62 @@ export function renderDispatchStats(stats: readonly SeatDispatchStats[]): string
       `  tick           ${tickLine(s)}`,
     ]
   })
+}
+
+/** CC-938 (item 179 S14): review churn on the tasks whose brief came from one source. */
+export interface BriefSourceQuality {
+  source: BriefSource
+  since: string
+  /** Distinct tasks with a dispatch in the window. */
+  tasks: number
+  /** Summed `reviewRound` over those tasks' claims. */
+  fixRounds: number
+  fixFirst: number
+}
+
+const SOURCES: readonly BriefSource[] = [...BRIEF_SOURCES, 'unknown']
+
+/** A task's source is its earliest dispatch row's; a row from before CC-953 reads as `unknown`. */
+function sourcesByTask(runs: readonly DispatchRecord[]): Map<string, BriefSource> {
+  const byTask = new Map<string, BriefSource>()
+  const ordered = runs.toSorted((a, b) => Date.parse(a.ts ?? '') - Date.parse(b.ts ?? ''))
+  for (const r of ordered) {
+    if (r.task !== null && !byTask.has(r.task)) byTask.set(r.task, r.briefSource ?? 'unknown')
+  }
+  return byTask
+}
+
+/** One record per brief source, in `seat, briefer, template, unknown` order, over every seat's dispatches in the window. */
+export function briefSourceQuality(ports: DispatchStatsPorts, windowMs: number): BriefSourceQuality[] {
+  const sinceMs = ports.now.getTime() - windowMs
+  const runs = ports
+    .seats()
+    .flatMap(seat => foldDispatch(ports.dispatchLog(seat) ?? '').records)
+    .filter(r => r.ts !== null && Date.parse(r.ts) >= sinceMs)
+  const sourceOf = sourcesByTask(runs)
+  const rounds = new Map<string, number>()
+  for (const c of ports.ledger().claims)
+    rounds.set(c.taskId, (rounds.get(c.taskId) ?? 0) + (c.reviewRound ?? 0))
+  const fixFirst = new Map<string, number>()
+  for (const v of ports.verdicts(runs, sinceMs)) {
+    if (v.verdict === 'FIX_FIRST') fixFirst.set(v.task, (fixFirst.get(v.task) ?? 0) + 1)
+  }
+  return SOURCES.map(source => {
+    const tasks = [...sourceOf].filter(([, s]) => s === source).map(([task]) => task)
+    const total = (by: Map<string, number>): number => tasks.reduce((n, t) => n + (by.get(t) ?? 0), 0)
+    return {
+      source,
+      since: new Date(sinceMs).toISOString(),
+      tasks: tasks.length,
+      fixRounds: total(rounds),
+      fixFirst: total(fixFirst),
+    }
+  })
+}
+
+/** The text form: one line per source. */
+export function renderBriefSourceQuality(rows: readonly BriefSourceQuality[]): string[] {
+  return rows.map(
+    r => `${r.source.padEnd(9)} tasks ${r.tasks}, fix rounds ${r.fixRounds}, FIX_FIRST ${r.fixFirst}`,
+  )
 }
