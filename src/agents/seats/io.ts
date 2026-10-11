@@ -12,7 +12,7 @@ import { scoredPlanFromDisk } from '../burndown/score-render.js'
 import { localDate } from '../burndown/seat-tick.js'
 import type { HeartbeatMark } from './heartbeat.js'
 import { watchedSeats, type Presence } from './liveness.js'
-import type { ChatLine } from './operator-stops.js'
+import type { ChatLine, PresenceLine } from './operator-stops.js'
 import type { OwnerMessage, SpendMeter } from './stops.js'
 import type { PoolReading, SeatState } from './watchdog.js'
 
@@ -331,6 +331,46 @@ export function readChatMessages(dbPath: string, sinceMs: number): ChatLine[] {
     }))
   } finally {
     db.close()
+  }
+}
+
+/** CC-957: every registered and deregistered row since `sinceMs`. Throws when events.db cannot be read. */
+export function readPresenceRows(dbPath: string, sinceMs: number): PresenceLine[] {
+  const db = openEvents(dbPath)
+  try {
+    const rows = db
+      .prepare(
+        "SELECT ts, kind, actor FROM events WHERE kind IN ('registered', 'deregistered') AND ts >= ? ORDER BY id",
+      )
+      .all(sinceMs) as unknown as { ts: number; kind: string; actor: string }[]
+    return rows.map(row => ({ ts: row.ts, seat: row.actor, registered: row.kind === 'registered' }))
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * CC-957: the seats each multicast named, by msg id, from broker.log route rows (`to` is the names
+ * joined with ", "). events.db logs only the seats a send reached. A broadcast ('*') or tag send
+ * names no list. Throws when a log exists but cannot be read.
+ */
+export function readRouteAddressees(logTexts: readonly (string | undefined)[]): Map<string, string[]> {
+  const named = new Map<string, string[]>()
+  for (const text of logTexts)
+    for (const line of (text ?? '').split('\n')) {
+      if (!line.includes('"event":"route"')) continue
+      const row = parseRoute(line)
+      if (row !== undefined && row.to.includes(', ')) named.set(row.msgId, row.to.split(', '))
+    }
+  return named
+}
+
+function parseRoute(line: string): { msgId: string; to: string } | undefined {
+  try {
+    const { msgId, to } = JSON.parse(line) as { msgId?: unknown; to?: unknown }
+    return typeof msgId === 'string' && typeof to === 'string' ? { msgId, to } : undefined
+  } catch {
+    return undefined
   }
 }
 

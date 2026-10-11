@@ -14,7 +14,7 @@ import {
   type StopInputs,
 } from '../agents/seats/operator-stops.js'
 import { liveStopInputs, machineStatusReport } from '../cli/verbs/machine.js'
-import { configPath, home, operatorHoldPath } from '../paths.js'
+import { configPath, home, logPath, operatorHoldPath } from '../paths.js'
 
 /**
  * Every hold, lift, stop-file and owner-stop case runs through the live readers (`liveStopInputs`,
@@ -56,6 +56,10 @@ interface World {
   watchdog?: object | 'dir'
   /** config.json's machineHoldOperators; `OPERATORS` unless given, and absent when null. */
   operators?: string[] | null
+  /** broker.log route rows: the seats each msg id named, as the broker logs a multicast. */
+  routes?: Record<string, string[]>
+  /** events.db presence rows: `[seat, minutesAgo, registered]`. */
+  presence?: [seat: string, minutesAgo: number, registered: boolean][]
 }
 
 const eventsDb = (): string => path.join(home(), 'events.db')
@@ -74,6 +78,28 @@ function writeChat(sends: Send[]): void {
   db.close()
 }
 
+function writeRoutes(routes: Record<string, string[]>): void {
+  const rows = Object.entries(routes).map(([msgId, to]) =>
+    JSON.stringify({
+      ts: NOW.toISOString(),
+      event: 'route',
+      kind: 'message',
+      msgId,
+      from: 'tp-operator',
+      to: to.join(', '),
+    }),
+  )
+  fs.writeFileSync(logPath(), rows.map(row => `${row}\n`).join(''))
+}
+
+function writePresence(rows: NonNullable<World['presence']>): void {
+  const db = new DatabaseSync(eventsDb())
+  const insert = db.prepare('INSERT INTO events (ts, kind, actor) VALUES (?, ?, ?)')
+  for (const [seat, minutesAgo, registered] of rows)
+    insert.run(at(minutesAgo), registered ? 'registered' : 'deregistered', seat)
+  db.close()
+}
+
 function writeAt(file: string, content: string | 'dir'): void {
   if (content === 'dir') fs.mkdirSync(file, { recursive: true })
   else fs.writeFileSync(file, content)
@@ -83,6 +109,8 @@ function status(world: World): MachineStopStatus {
   const operators = world.operators === undefined ? OPERATORS : world.operators
   if (operators !== null) fs.writeFileSync(configPath(), JSON.stringify({ machineHoldOperators: operators }))
   if (world.chat !== undefined) writeChat(world.chat)
+  if (world.presence !== undefined) writePresence(world.presence)
+  if (world.routes !== undefined) writeRoutes(world.routes)
   if (world.stopFile !== undefined) writeAt(operatorHoldPath(), world.stopFile)
   if (world.watchdog !== undefined)
     writeAt(watchdogStatePath(), world.watchdog === 'dir' ? 'dir' : JSON.stringify(world.watchdog))
@@ -92,7 +120,7 @@ function status(world: World): MachineStopStatus {
 const holdsBy = (world: World): string[] => status(world).holds.map(h => h.by)
 
 afterEach(() => {
-  for (const file of [eventsDb(), operatorHoldPath(), watchdogStatePath(), configPath()])
+  for (const file of [eventsDb(), operatorHoldPath(), watchdogStatePath(), configPath(), logPath()])
     fs.rmSync(file, { recursive: true, force: true })
 })
 
@@ -521,6 +549,46 @@ describe('a fan-out HOLD lifted one seat at a time by DM', () => {
     const held = [590, 421, 420, 301, 300, 0].map(seatsHeldAt)
 
     expect(held).toEqual([SEATS, SEATS, ['seat-3', 'seat-4'], ['seat-3', 'seat-4'], undefined, undefined])
+  })
+})
+
+describe('round 8 review: what chat rows cannot show', () => {
+  it('opens on an operator fan-out HOLD that reached only one of the seats it named', () => {
+    const held: Send = ['tp-operator', 5, 'tp-operator: HOLD now', 'h1', ['seat-a']]
+
+    expect(holdsBy({ chat: [held], routes: { h1: ['seat-a', 'seat-b'] } })).toEqual(['tp-operator'])
+  })
+
+  it('ends a fan-out HOLD lifted by DM at every seat still on the bus once the rest have left', () => {
+    const seats = ['seat-1', 'seat-2', 'seat-3', 'seat-4']
+    const chat: Send[] = [
+      ['tp-operator', 600, 'tp-operator: HOLD (memory trip)', 'h0', seats],
+      ['tp-operator', 420, 'tp-operator: LIFT', 'l1', ['seat-1']],
+      ['tp-operator', 420, 'tp-operator: LIFT', 'l2', ['seat-2']],
+      ['tp-operator', 300, 'tp-operator: LIFT', 'l3', ['seat-3']],
+    ]
+
+    expect(holdsBy({ chat, presence: [['seat-4', 500, false]] })).toEqual([])
+  })
+
+  it('keeps a fan-out HOLD nobody has lifted though every seat it reached has left', () => {
+    const chat: Send[] = [['tp-operator', 600, 'tp-operator: HOLD (memory trip)', 'h0']]
+    const presence: World['presence'] = [
+      ['seat-a', 500, false],
+      ['seat-b', 500, false],
+    ]
+
+    expect(holdsBy({ chat, presence })).toEqual(['tp-operator'])
+  })
+
+  it("keeps a seat in the fan-out HOLD when an operator DM lift answers that seat's own later DM HOLD", () => {
+    const chat: Send[] = [
+      HELD,
+      ['tp-operator', 20, 'tp-operator: HOLD, your branch is wrong', 'd1', ['seat-a']],
+      ['tp-operator', 10, 'tp-operator: LIFT, branch fixed', 'd2', ['seat-a']],
+    ]
+
+    expect(status({ chat }).holds).toMatchObject([{ by: 'tp-operator', seats: ['seat-a', 'seat-b'] }])
   })
 })
 
