@@ -303,16 +303,18 @@ export function readAgentEvents(dbPath: string, untilMs: number): AgentEventRow[
 }
 
 /**
- * CC-957: every sender's messages since `sinceMs` that mention a hold or a lift, one row per message
- * (a send to several recipients logs a row each). Throws when events.db cannot be read.
+ * CC-957: every message and broadcast since `sinceMs`, one row per message (a send to several
+ * recipients logs a row each). No keyword filter: `broadcastHolds` alone decides what opens or lifts
+ * a hold, so the reader can never drop a lift the parser would accept. A day is about 2k rows.
+ * Throws when events.db cannot be read.
  */
-export function readHoldMessages(dbPath: string, sinceMs: number): ChatLine[] {
+export function readChatMessages(dbPath: string, sinceMs: number): ChatLine[] {
   const db = openEvents(dbPath)
   try {
     const rows = db
       .prepare(
         "SELECT MIN(ts) AS ts, actor, msg_id, body FROM events WHERE kind IN ('message', 'broadcast') AND ts >= ? " +
-          "AND (body LIKE '%HOLD%' OR body LIKE '%LIFT%') GROUP BY COALESCE(msg_id, id) ORDER BY MIN(id)",
+          'GROUP BY COALESCE(msg_id, id) ORDER BY MIN(id)',
       )
       .all(sinceMs) as unknown as { ts: number; actor: string; msg_id: string | null; body: string | null }[]
     return rows.map(row => ({ ts: row.ts, actor: row.actor, msgId: row.msg_id, body: row.body ?? '' }))
