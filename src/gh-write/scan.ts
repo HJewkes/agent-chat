@@ -10,11 +10,13 @@ import {
   loadTerms,
   longValue,
   prSources,
-  readText,
   REASONS,
   shortValue,
   type TermsLoad,
 } from '../leak-guard/pretool.js'
+import { NOT_UTF8, readBodyFile, utf8Body } from './body-text.js'
+
+export { NOT_UTF8 }
 
 /**
  * gh-write's own leak scan (CC-501 S1). It runs the PreToolUse guard's rules on the argument list
@@ -31,6 +33,7 @@ export const SCAN_REASONS = {
   unknownCommand: `leak-guard: gh-write could not tell which text this gh command posts, so it did not run it. Spell gh's own group and verb out, with no empty word, alias or extension. ${DOCS}`,
   otherText: `leak-guard: this gh command carries a text flag (body, title, field, input, notes, comment or message) that gh-write does not scan for it. Post the text with pr or issue create, edit, comment, review or merge, or with gh api. ${DOCS}`,
   flagFirst: `leak-guard: gh-write needs gh's group and verb first; only -R/--repo may come before them. Put every other flag after the verb. ${DOCS}`,
+  notUtf8: `leak-guard: a body or input file (or stdin) is UTF-16 or holds NUL bytes, so gh-write cannot scan the text gh would post. Save it as UTF-8. ${DOCS}`,
   unscannedCreate: `leak-guard: --fill, --template and --recover make gh read text gh-write cannot scan. Pass --title and --body or --body-file instead. ${DOCS}`,
 } as const
 
@@ -40,8 +43,8 @@ export const findingReason = (found: readonly string[]): string =>
 
 export interface ScanDeps {
   terms(): TermsLoad
-  readFile(file: string): string | undefined
-  readStdin(): Promise<string | undefined>
+  readFile(file: string): string | undefined | typeof NOT_UTF8
+  readStdin(): Promise<string | undefined | typeof NOT_UTF8>
 }
 
 /** The text read from each file source, keyed by the argument gh would have read it from. */
@@ -55,15 +58,15 @@ export interface Prepared {
 /** Like the pre-push hook: the passwd home, so no variable can point the scan at another list. */
 export const defaultTermsFile = (): string => termsFileFor(passwdHome())
 
-async function readStdin(): Promise<string> {
+async function readStdin(): Promise<string | typeof NOT_UTF8> {
   const chunks: Buffer[] = []
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer)
-  return Buffer.concat(chunks).toString('utf8')
+  return utf8Body(Buffer.concat(chunks))
 }
 
 export const scanDeps = (termsFile: string): ScanDeps => ({
   terms: () => loadTerms(termsFile),
-  readFile: readText,
+  readFile: readBodyFile,
   readStdin,
 })
 
@@ -190,6 +193,7 @@ async function readSources(files: readonly string[], deps: ScanDeps): Promise<Sc
   for (const file of new Set(files)) {
     const text = file === '-' ? await deps.readStdin() : deps.readFile(file)
     if (text === undefined) return { reason: SCAN_REASONS.unreadableSource }
+    if (text === NOT_UTF8) return { reason: SCAN_REASONS.notUtf8 }
     read.set(file, text)
   }
   return { files: read }
