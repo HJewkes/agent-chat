@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { Runner } from '../agents/burndown/exec.js'
 import { execute, type ExecuteDeps, type Step } from '../agents/burndown/execute.js'
 import { readLedger, writeLedger, type Claim, type Ledger } from '../agents/burndown/ledger.js'
-import { prHeadOf, registerWithShepherd } from '../agents/burndown/shepherd.js'
+import { prHeadOf, registerWithShepherd, stackedOn } from '../agents/burndown/shepherd.js'
 
 const reg = {
   target: { repo: 'Acme/Widgets', pr: 7 },
@@ -64,6 +64,70 @@ describe('burndown registering a PR with Shepherd (TP-468)', () => {
     registerWithShepherd(reg, exec)
 
     expect(calls.some(a => a[1] === 'register')).toBe(true)
+  })
+})
+
+/** Two stacked PRs on o/r: #1 on main, #2 on #1's head branch `feat-one`. */
+function stackedRepo(after: 'supported' | 'unsupported' = 'supported'): {
+  exec: Runner
+  registers: string[][]
+} {
+  const registers: string[][] = []
+  const pulls: Record<string, string> = {
+    'repos/o/r/pulls/1': 'main\tmain',
+    'repos/o/r/pulls/2': 'feat-one\tmain',
+  }
+  const exec: Runner = (bin, args) => {
+    if (bin === 'gh') {
+      const url = args[1] as string
+      if (url in pulls) return { status: 0, stdout: `${pulls[url]}\n` }
+      if (url === 'repos/o/r/pulls?state=open&head=o%3Afeat-one') return { status: 0, stdout: '1\n' }
+      return { status: 0, stdout: '' }
+    }
+    if (args[1] === 'status') return { status: 0, stdout: '[]' }
+    registers.push(args)
+    if (after === 'unsupported' && args.includes('--after'))
+      return { status: 2, stdout: '', stderr: "error: unknown option '--after'\n" }
+    return { status: 0, stdout: '' }
+  }
+  return { exec, registers }
+}
+
+const stackedReg = (pr: number) => ({
+  target: { repo: 'o/r', pr },
+  task: 'demo/CC-1',
+  implementer: 'bd-cc-1',
+})
+const afterOf = (args: string[] | undefined) => {
+  const at = args?.indexOf('--after') ?? -1
+  return at < 0 ? undefined : args?.[at + 1]
+}
+
+describe('burndown registering a stacked PR on top of its base PR (CC-952)', () => {
+  it('registers the PR on the default branch without --after and the PR stacked on it with --after', () => {
+    const { exec, registers } = stackedRepo()
+
+    expect(registerWithShepherd(stackedReg(1), exec, () => {})).toEqual({ ok: true })
+    expect(registerWithShepherd(stackedReg(2), exec, () => {})).toEqual({ ok: true })
+
+    expect(registers.map(afterOf)).toEqual([undefined, 'o/r#1'])
+  })
+
+  it('retries once without --after when Shepherd lacks the flag, and logs it', () => {
+    const { exec, registers } = stackedRepo('unsupported')
+    const logged: string[] = []
+
+    const reply = registerWithShepherd(stackedReg(2), exec, event => logged.push(event))
+
+    expect(reply).toEqual({ ok: true })
+    expect(registers.map(afterOf)).toEqual(['o/r#1', undefined])
+    expect(logged).toEqual(['burndown_shepherd_after_unsupported'])
+  })
+
+  it('reads no base PR when GitHub does not answer', () => {
+    const silent: Runner = () => ({ status: 1, stdout: '' })
+
+    expect(stackedOn({ repo: 'o/r', pr: 2 }, silent)).toBeUndefined()
   })
 })
 
