@@ -312,6 +312,16 @@ predecessor is ended successor first, locally or by its own `endSelf`. A
 successor on another machine holds no agent slot here, so the predecessor's
 slot is released when it stands down.
 
+A request is held as in flight from its preflight until it is pending or
+refused, so a second teleport for the same session sent during the probe's wait
+is refused as already teleporting. After the probe, a predecessor that no
+longer holds its name on a live connection gets no handoff. One case is left to
+the launcher client (g2): a launcher that does launch the successor but whose
+answer arrives after the 60s launch timeout. The broker has by then retired the
+successor's row and kept the predecessor, so a successor that starts anyway
+runs on a retired identity beside a live predecessor. g2 should close a launch
+whose answer it could not deliver in time.
+
 **Depth is inherited, not incremented.** This is a real bug waiting in the
 obvious implementation. `Supervisor.depthOf` reads the parent's `meta.depth` and
 returns it plus one, and the spawn cap reads `meta.coordinator_depth` the same

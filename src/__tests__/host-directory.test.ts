@@ -233,6 +233,32 @@ describe('teleporting a local session to a launcher’s machine', () => {
     expect(kinds()).not.toContain('agent_handoff')
   })
 
+  it('refuses a second teleport sent while the first one’s probe is pending', async () => {
+    const launcher = macLauncher()
+    const predecessor = localPredecessor()
+    await teleportToMac(predecessor)
+    await teleportToMac(predecessor)
+    expect(frame(predecessor, 'teleport_result')?.reason).toContain('already teleporting')
+
+    answer(launcher, 'host_probe', true)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(launcher.frames.filter(f => f.t === 'host_probe')).toHaveLength(1)
+    expect(kinds().filter(kind => kind === 'agent_handoff')).toHaveLength(1)
+  })
+
+  it('writes no handoff for a predecessor that disconnects during the probe', async () => {
+    const launcher = macLauncher()
+    const predecessor = localPredecessor()
+    await teleportToMac(predecessor)
+    predecessor.conn.emit('close')
+    answer(launcher, 'host_probe', true)
+    await vi.advanceTimersByTimeAsync(COUNTDOWN_MS)
+
+    expect(frame(predecessor, 'teleport_result')?.reason).toContain('disconnected or was replaced')
+    expect(kinds()).not.toContain('agent_handoff')
+    expect(frame(launcher, 'host_launch')).toBeUndefined()
+  })
+
   it('refuses when the launcher does not answer its probe', async () => {
     macLauncher()
     const predecessor = localPredecessor()
@@ -307,6 +333,7 @@ describe('teleporting a local session to a launcher’s machine', () => {
     const retired = core.events
       .agentEvents()
       .find(row => row.kind === 'agent_retired' && row.ref === successorOf())
+    expect(retired?.body).toContain(`not launched on the launcher on ${MAC}`)
     expect(retired?.body).toContain('checkLaunch refused it')
     expect(kinds()).not.toContain('agent_stood_down')
   })

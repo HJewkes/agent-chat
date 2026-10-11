@@ -386,8 +386,8 @@ export interface TeleportHost {
   prepareRemoteRelaunch(input: RelaunchInput): RemoteLaunch
   /** CC-881: the other host launched it, so the successor's execution opens. */
   confirmRemoteRelaunch(input: RelaunchInput): void
-  /** CC-881: the other host did not launch it, so the successor's row is retired unused. */
-  releaseRemoteRelaunch(input: RelaunchInput, reason: string): void
+  /** CC-881: the other host did not launch it, so the successor's row is retired unused; `where` names that host. */
+  releaseRemoteRelaunch(input: RelaunchInput, reason: string, where?: string): void
 }
 
 interface RemoteWait {
@@ -478,6 +478,8 @@ export class Teleport {
   private readonly landings = new Map<string, Landing>()
   /** CC-951: local successors whose predecessor waits on their attach; each settles once, with a failure or none. */
   private readonly arrivals = new Map<string, (failure: string | undefined) => void>()
+  /** CC-951: requests past preflight and not yet pending or refused. */
+  private readonly starting = new Set<string>()
   private readonly unwatch: () => void
 
   constructor(
@@ -501,9 +503,20 @@ export class Teleport {
    * called this needs to know it succeeded long before then.
    */
   async start(req: TeleportRequest): Promise<TeleportOutcome> {
-    const { subject } = req
     const blocked = this.preflight(req)
     if (blocked) return { ok: false, reason: blocked }
+    // CC-951: held from preflight until the entry is pending or refused, across the launcher
+    // probe's wait, so a second request for the same session cannot pass preflight meanwhile.
+    this.starting.add(req.subject.agentId)
+    try {
+      return await this.begin(req)
+    } finally {
+      this.starting.delete(req.subject.agentId)
+    }
+  }
+
+  private async begin(req: TeleportRequest): Promise<TeleportOutcome> {
+    const { subject } = req
 
     const identity = this.core.agents.get(subject.agentId)
     if (!identity) return { ok: false, reason: `no durable identity for ${subject.agentId}` }
@@ -523,6 +536,8 @@ export class Teleport {
     if ('error' in config) return { ok: false, reason: config.error }
     const impossible = await this.blockerAt(route, config.surface, { cwd: subject.cwd, configDir })
     if (impossible !== undefined) return this.cannotComplete(subject, impossible)
+    const gone = route.site === 'launcher' ? this.goneDuringCheck(subject) : undefined
+    if (gone !== undefined) return { ok: false, reason: gone }
     const worker = recordedRole(this.core.agents.spawnMeta(subject.agentId)) === 'worker'
     if (worker && req.remoteControl === true)
       return {
@@ -595,6 +610,18 @@ export class Teleport {
     entry.timer = setTimeout(() => void this.finish(subject.agentId), this.countdownMs)
     entry.timer.unref?.()
     return { ...result, countdownMs: this.countdownMs }
+  }
+
+  /**
+   * CC-951: the launcher probe is a wait, and the predecessor can disconnect, be taken over or
+   * retire during it. Only one that still holds its name on a live connection gets a handoff.
+   */
+  private goneDuringCheck(subject: TeleportSubject): string | undefined {
+    const { registry, agents } = this.core
+    const conn = registry.connFor(subject.name)
+    const holder = conn === undefined ? undefined : registry.entryFor(conn)?.agentId
+    if (holder === subject.agentId && agents.get(subject.agentId)?.state !== 'retired') return undefined
+    return `${subject.name} disconnected or was replaced while its destination was checked, so it was not teleported`
   }
 
   /** CC-951: the OS the successor launches on, which picks its default surface. */
@@ -688,7 +715,8 @@ export class Teleport {
   /** Everything checkable before the handoff is written and the sequence is entered. */
   private preflight(req: TeleportRequest): string | undefined {
     const { subject } = req
-    if (this.pending.has(subject.agentId)) return `${subject.name} is already teleporting`
+    if (this.pending.has(subject.agentId) || this.starting.has(subject.agentId))
+      return `${subject.name} is already teleporting`
     // Without it there is no way to end the predecessor that does not sever the
     // bus and leave a live session no peer can reach — the failure §5.1 measured.
     // Every current client sends it on `register`; an older one does not, and
@@ -865,7 +893,7 @@ export class Teleport {
     const answer = await this.hosts.launch(host, launch)
     if (answer.ok) return this.host.confirmRemoteRelaunch(input)
     const reason = `the launcher on ${host} did not launch it: ${answer.reason ?? 'no reason given'}`
-    this.host.releaseRemoteRelaunch(input, reason)
+    this.host.releaseRemoteRelaunch(input, reason, `the launcher on ${host}`)
     throw new Error(reason)
   }
 

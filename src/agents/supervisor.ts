@@ -3477,14 +3477,14 @@ export class Supervisor implements TeleportHost {
     this.remoteSessions.delete(input.agentId)
   }
 
-  releaseRemoteRelaunch(input: RelaunchInput, reason: string): void {
+  releaseRemoteRelaunch(input: RelaunchInput, reason: string, where = "its caller's host"): void {
     this.remoteSessions.delete(input.agentId)
     this.core.append({
       kind: 'agent_retired',
       actor: 'agent-chat',
       target: input.name,
       ref: input.agentId,
-      body: `teleport successor not launched on its caller's host: ${reason}`,
+      body: `teleport successor not launched on ${where}: ${reason}`,
     })
   }
 
