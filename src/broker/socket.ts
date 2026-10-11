@@ -18,7 +18,7 @@ import { cliEntry, socketPath } from '../paths.js'
 import { logEvent, loggedCount } from './log.js'
 import { newMsgId } from './event-log.js'
 import { type Escalation, type RouteResult } from './registry.js'
-import { BrokerCore, type Conn, type EndorseApproval } from './core.js'
+import { BrokerCore, readoptRegistration, type Conn, type EndorseApproval } from './core.js'
 import { recoverHandoff, returningSession } from './handoff-recovery.js'
 import type { SlotUsage } from '../agents/semaphore.js'
 import { Supervisor, type SupervisorOptions } from '../agents/supervisor.js'
@@ -622,19 +622,7 @@ export class SocketServer {
     if (this.core.registry.connFor(known.name) !== undefined)
       return reply(conn, { t: 'register_result', ok: false, reason: `${known.name} is already connected` })
 
-    const result = this.core.register(conn, {
-      t: 'register',
-      name: known.name,
-      workingOn: known.brief === '' ? 'reconnected after its MCP server was replaced' : known.brief,
-      cwd: msg.cwd,
-      pid: msg.pid,
-      sessionId: msg.sessionId,
-      ...(msg.hostPid === undefined ? {} : { hostPid: msg.hostPid }),
-      ...(msg.host === undefined ? {} : { host: msg.host }),
-      ...(msg.termSessionId === undefined ? {} : { termSessionId: msg.termSessionId }),
-      ...(msg.observed === undefined ? {} : { observed: msg.observed }),
-      ...(msg.build === undefined ? {} : { build: msg.build }),
-    })
+    const result = this.core.register(conn, readoptRegistration(known, msg))
     if (result.ok) logEvent('readopted', { name: known.name, sessionId: msg.sessionId })
     reply(conn, { t: 'register_result', ...result, ...(result.ok ? { name: known.name } : {}) })
     if (result.ok) this.core.deliverStranded(known.name)

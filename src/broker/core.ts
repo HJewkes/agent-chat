@@ -23,6 +23,41 @@ import { SEAT_HOLD_MARK, heldMessages, holdVerdict } from './seat-hold.js'
 
 type RegisterMessage = Extract<ClientMessage, { t: 'register' }>
 
+/**
+ * CC-959: whether the name on this frame was derived from the session's
+ * directory or chosen, as the frame states it. Recorded on every adoption and
+ * attach so the fold never has to infer it, and a session merely opened in a
+ * stopped agent's worktree does not supersede that agent.
+ */
+const provisionalMeta = (msg: RegisterMessage): { provisional: string } => ({
+  provisional: msg.provisional === true ? 'true' : 'false',
+})
+
+/**
+ * The register frame that puts a returning session back under the name the log
+ * says it held. CC-959: the name is the one it held, so it stays exactly as
+ * derived or as chosen as it was; the brief is no evidence either way.
+ */
+export function readoptRegistration(
+  known: AgentIdentity,
+  msg: Extract<ClientMessage, { t: 'readopt' }>,
+): RegisterMessage {
+  return {
+    t: 'register',
+    name: known.name,
+    workingOn: known.brief === '' ? 'reconnected after its MCP server was replaced' : known.brief,
+    cwd: msg.cwd,
+    pid: msg.pid,
+    sessionId: msg.sessionId,
+    ...(known.provisionalName === true ? { provisional: true } : {}),
+    ...(msg.hostPid === undefined ? {} : { hostPid: msg.hostPid }),
+    ...(msg.host === undefined ? {} : { host: msg.host }),
+    ...(msg.termSessionId === undefined ? {} : { termSessionId: msg.termSessionId }),
+    ...(msg.observed === undefined ? {} : { observed: msg.observed }),
+    ...(msg.build === undefined ? {} : { build: msg.build }),
+  }
+}
+
 export type Conn = net.Socket
 
 /**
@@ -172,7 +207,13 @@ export class BrokerCore<C = Conn> {
     const agentId = known ?? this.adopt(msg)
     if (agentId !== undefined) {
       this.registry.bindIdentity(conn, agentId)
-      this.append({ kind: 'agent_attached', actor: msg.name, ref: agentId, body: msg.workingOn })
+      this.append({
+        kind: 'agent_attached',
+        actor: msg.name,
+        ref: agentId,
+        body: msg.workingOn,
+        ...(msg.agentId === undefined ? { meta: provisionalMeta(msg) } : {}),
+      })
     }
     return { ok: true }
   }
@@ -271,6 +312,9 @@ export class BrokerCore<C = Conn> {
         name: msg.name,
         cwd: msg.cwd,
         session_id: msg.sessionId,
+        // CC-959: observed by the MCP subprocess, so the roster can show which account a hand-started seat bills.
+        ...(msg.observed?.configDir ? { config_dir: msg.observed.configDir } : {}),
+        ...provisionalMeta(msg),
         // Spawns this session requests are now its children, and depthOf() reads
         // the parent's recorded depth and adds one. Zero leaves them at exactly
         // the depth they had while a human session had no identity to be a
