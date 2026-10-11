@@ -2,6 +2,7 @@ import path from 'node:path'
 import type { ExceptionClass } from './exception.js'
 import { claimKey, type Action, type ClaimKey } from './advance.js'
 import {
+  briefWriterBrief,
   planPathFor,
   plannerBrief,
   reviewerBrief,
@@ -401,6 +402,11 @@ export function retrySteps(ledger: Ledger, roster: Roster): Step[] {
 
 type Unretired = NonNullable<Claim['unretired']>[number]
 
+function briefFor(d: Dispatch, t: TaskBrief): string {
+  if (d.profile !== PLANNER_PROFILE) return workerBrief(t)
+  return d.briefer === true ? briefWriterBrief(t) : plannerBrief(t)
+}
+
 /** A new claim (or a queued slice moved to `spawning`), then its spawn; or why it cannot go. */
 export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string {
   const initiative = ctx.initiatives.get(d.initiative)
@@ -419,6 +425,7 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
     nextPhase: planner ? ('planning' as const) : ('implementing' as const),
     agentName: d.agentName,
     spawned: [d.agentName],
+    ...(d.briefer === true ? { briefer: true } : {}),
     ...(d.worktree === undefined ? {} : { worktree: d.worktree }),
     ...(d.seat === undefined ? {} : { seat: d.seat }),
     ...(d.namePrefix === undefined ? {} : { namePrefix: d.namePrefix }),
@@ -430,7 +437,7 @@ export function stepsForDispatch(d: Dispatch, ctx: StepContext): Step[] | string
   const frame = spawnFrame({
     name: d.agentName,
     profile: d.profile,
-    brief: planner ? plannerBrief(t) : workerBrief(t),
+    brief: briefFor(d, t),
     cwd: d.repo,
     configDir: t.configDir,
     initiative: d.initiative,

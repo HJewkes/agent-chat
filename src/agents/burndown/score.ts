@@ -46,7 +46,7 @@ export interface Exclusions {
 }
 
 export type KindSource = 'tag' | 'regex' | 'default'
-export type Route = 'triage' | 'planner' | 'implementer-lite' | 'implementer'
+export type Route = 'triage' | 'briefer' | 'planner' | 'implementer-lite' | 'implementer'
 export type RefusalCounts = Partial<Record<'excluded-tag' | 'excluded-pattern', number>>
 
 /** S, P, U, A: the additive terms. W, K, R, Z, H, G: the multipliers. */
@@ -254,7 +254,16 @@ export function stopShortTerm(stopShort: readonly string[], defaults: ScoringDef
   return stopShort.length > 0 ? defaults.stop_short_factor : 1
 }
 
+/** CC-939: a seat's intent awaiting a brief; `brief:proposed` means the briefer has answered. */
+export function wantsBrief(tags: readonly string[]): boolean {
+  return (
+    tags.includes('brief:wanted') &&
+    !tags.some(tag => tag === 'brief:proposed' || tag.startsWith('brief:proposed='))
+  )
+}
+
 export function route(task: ScoredTask): Route {
+  if (task.done_when && wantsBrief(tagsOf(task))) return 'briefer'
   if (!isTriaged(task)) return 'triage'
   const estimate = task.estimate as number
   if (estimate >= 3) return 'planner'

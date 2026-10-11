@@ -3,6 +3,7 @@ import { gatePool, RUN_CAP_MS, type PoolGateInput, type PoolGateResult } from '.
 import {
   briefRefusal,
   IMPLEMENTER_PROFILE,
+  isBriefer,
   localDay,
   PLANNER_PROFILE,
   SONNET_PROFILES,
@@ -141,6 +142,7 @@ type Taken = { dispatch: Dispatch; role: Role; work: CollisionWork }
 type Seeded = { seeds: Claim[] }
 
 const ROUTES: Partial<Record<Route, { role: Role; profile: string }>> = {
+  briefer: { role: 'planners', profile: PLANNER_PROFILE },
   planner: { role: 'planners', profile: PLANNER_PROFILE },
   implementer: { role: 'implementers', profile: IMPLEMENTER_PROFILE },
   'implementer-lite': { role: 'implementers', profile: 'bd-implementer-lite' },
@@ -504,12 +506,13 @@ function consider(
   const repo = repoForTask(seat, row.initiative, task.tags)
   if (repo === undefined)
     return { kind: 'no-repo', reason: `seat ${seat.seat} lists no repo for ${row.initiative}` }
-  const seeded = route.role === 'planners' ? seedFromPlan(row, walk) : undefined
+  const seeded = row.route === 'planner' ? seedFromPlan(row, walk) : undefined
   if (seeded !== undefined) return seeded
   const reason = `score ${row.score}, effective ${row.effective}`
   const dispatch = {
     ...dispatchFor({ initiative: row.initiative, task: row.id, profile: route.profile }, repo, reason, walk),
     ...(row.tier === undefined ? {} : { tier: row.tier }),
+    ...(isBriefer(task) ? { briefer: true } : {}),
   }
   const work = { taskId: row.id, tags: task.tags, owns: [] }
   return blocker(dispatch, work, route.role, walk) ?? { dispatch, role: route.role, work }

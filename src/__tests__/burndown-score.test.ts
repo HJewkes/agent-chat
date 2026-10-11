@@ -266,6 +266,13 @@ describe('route', () => {
     ['estimate 1', { estimate: 1, done_when: 'x' }, 'implementer-lite'],
     ['estimate 1 kind:feature', { estimate: 1, done_when: 'x', tags: ['kind:feature'] }, 'implementer'],
     ['estimate 0', { estimate: 0, done_when: 'x' }, 'implementer-lite'],
+    ['brief:wanted without estimate', { done_when: 'x', tags: ['brief:wanted'] }, 'briefer'],
+    [
+      'brief:wanted already proposed',
+      { estimate: 5, done_when: 'x', tags: ['brief:wanted', 'brief:proposed=2026-10-10'] },
+      'planner',
+    ],
+    ['brief:wanted without done_when', { tags: ['brief:wanted'] }, 'triage'],
   ])('%s routes to %s', (_scenario, fields, expected) => {
     expect(route(task(fields))).toBe(expected)
   })
