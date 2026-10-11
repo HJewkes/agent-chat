@@ -14,7 +14,7 @@ import {
   type Pool,
   type Seat,
 } from './charter.js'
-import { heartbeatStep, PAUSE_WAKE_MESSAGE, type HeartbeatStep } from './heartbeat.js'
+import { heartbeatStep, idleLiveStep, PAUSE_WAKE_MESSAGE, type HeartbeatStep } from './heartbeat.js'
 import type { Eligibility, SeatRecord, WatchdogDoc } from './io.js'
 import {
   RESUME_MESSAGE,
@@ -633,10 +633,9 @@ async function heartbeat(pass: Pass, seat: Seat, log: SeatJournal): Promise<stri
     mark: record.heartbeat,
     source: seat.heartbeatSource,
   })
-  if (step.mark === undefined) return []
   if (step.message === undefined) {
-    record.heartbeat = step.mark
-    return []
+    if (step.mark !== undefined) record.heartbeat = step.mark
+    return idleLive(pass, seat, log)
   }
   const woke = await pass.deps.wake(name, step.message, true)
   // The mark advances only on delivery, so a failed tick or pause wake is retried next run.
@@ -644,6 +643,28 @@ async function heartbeat(pass: Pass, seat: Seat, log: SeatJournal): Promise<stri
   record.heartbeat = step.mark
   pass.deps.logEvent?.('heartbeat_watchdog', heartbeatRow(seat, step))
   return []
+}
+
+/** CC-400: a seat waiting on its agents can go a whole cron slot without a turn; wake it once per quiet episode. */
+async function idleLive(pass: Pass, seat: Seat, log: SeatJournal): Promise<string[]> {
+  const record = pass.doc.seats[seat.name]
+  if (record === undefined) return []
+  const implementers = runningImplementers(pass.roster.agents, seat).length
+  const step = idleLiveStep({
+    implementers,
+    activityAt: log.activityAt,
+    stopped: log.stop !== undefined,
+    paused: log.paused === true,
+    nowMs: pass.now.getTime(),
+    mark: record.heartbeat,
+  })
+  if (step.message === undefined) return []
+  const woke = await pass.deps.wake(seat.name, step.message, true)
+  // As with the tick, the mark advances only on delivery, so a failed wake is retried next run.
+  if (!woke.ok) return [`${seat.name}: Watchdog: idle-live wake FAILED (${woke.detail})`]
+  record.heartbeat = step.mark
+  pass.deps.logEvent?.('idle_live_wake', { seat: seat.name, implementers, activityAt: log.activityAt })
+  return [`${seat.name}: ${step.message}`]
 }
 
 function heartbeatRow(seat: Seat, step: HeartbeatStep): Record<string, unknown> {
