@@ -8,6 +8,7 @@ import {
   SERVICE_CHECK_WINDOW_MS,
   lineStopFrom,
   readServiceCheck,
+  serviceCheckLine,
   serviceCheckNote,
 } from '../agents/burndown/service-check.js'
 
@@ -102,6 +103,42 @@ describe('lineStopFrom', () => {
 
   it('a stopping read carries no note', () => {
     expect(serviceCheckNote(stopping)).toBeUndefined()
+  })
+})
+
+describe('serviceCheckLine', () => {
+  const stopping = { cause: 'crash loop', message: 'serve restarted 3 times' }
+
+  it('an ok read prints ok', () => {
+    expect(serviceCheckLine({ cause: null, message: 'serve answers' }, undefined, NOW)).toBe(
+      'service check: ok',
+    )
+  })
+
+  it('one stopping read says the line runs until a second inside the window', () => {
+    expect(serviceCheckLine(stopping, { at: ago(TICK_MS), cause: null }, NOW)).toBe(
+      'service check: crash loop (one stopping read, the line runs; a second inside 20 min stops it): serve restarted 3 times',
+    )
+  })
+
+  it('two stopping reads print the stop with both causes and the exemptions', () => {
+    expect(serviceCheckLine(stopping, { at: ago(TICK_MS), cause: 'stale pid' }, NOW)).toBe(
+      'service check: line stopped (stale pid, then crash loop): serve restarted 3 times; only cos:expedite and planners dispatch',
+    )
+  })
+
+  it('a stopping read after one outside the window counts as the first', () => {
+    const line = serviceCheckLine(stopping, { at: ago(SERVICE_CHECK_WINDOW_MS + 1), cause: 'stale pid' }, NOW)
+
+    expect(line).toMatch(/^service check: crash loop \(one stopping read/)
+  })
+
+  it('a note cause prints the note, even after a stopping read', () => {
+    const read = { cause: 'stale build', message: 'serve runs an old build' }
+
+    expect(serviceCheckLine(read, { at: ago(TICK_MS), cause: 'stale pid' }, NOW)).toBe(
+      'service check: stale build (a note, the line runs): serve runs an old build',
+    )
   })
 })
 

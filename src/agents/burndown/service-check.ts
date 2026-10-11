@@ -86,6 +86,23 @@ export function serviceCheckNote(current: ServiceRead): string | undefined {
   return `service check: ${current.cause} (a note, the line runs): ${current.message}`
 }
 
+const WINDOW_MINUTES = SERVICE_CHECK_WINDOW_MS / 60_000
+
+/** The one line a seat plan prints for the read: ok, one stopping read, line stopped, or a note (CC-786). */
+export function serviceCheckLine(
+  current: ServiceRead,
+  previous: PersistedRead | undefined,
+  now: Date,
+): string {
+  if (current.cause === null) return 'service check: ok'
+  const note = serviceCheckNote(current)
+  if (note !== undefined) return note
+  const stop = lineStopFrom(current, previous, now)
+  if (stop === undefined)
+    return `service check: ${current.cause} (one stopping read, the line runs; a second inside ${WINDOW_MINUTES} min stops it): ${current.message}`
+  return `service check: line stopped (${stop.previous}, then ${stop.current}): ${stop.message}; only cos:expedite and planners dispatch`
+}
+
 export const persisted = (current: ServiceRead, now: Date): PersistedRead => ({
   at: now.toISOString(),
   cause: current.cause,
