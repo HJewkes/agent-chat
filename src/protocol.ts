@@ -906,6 +906,13 @@ export type ClientMessage =
        */
       owns?: string[]
       /**
+       * CC-952: path globs, relative to the agent's own worktree, the broker
+       * claims as a `files` claim held by the agent's name, so the burndown tick
+       * sees them before the agent registers. Unlike `owns` it isolates nothing
+       * and is accepted with a worktree profile.
+       */
+      claimPaths?: string[]
+      /**
        * CC-44: start the agent from a COPY of the requester's own conversation
        * instead of from an empty one. `'context'` is the only value, and there
        * is deliberately no field naming WHOSE conversation — the broker resolves
