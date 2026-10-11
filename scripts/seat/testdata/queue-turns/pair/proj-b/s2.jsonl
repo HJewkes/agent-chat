@@ -1,0 +1,2 @@
+{"type":"assistant","isSidechain":false,"timestamp":"2026-10-10T09:00:00.000Z","message":{"id":"p1","content":[{"type":"tool_use","id":"u1","name":"Bash","input":{"command":"/repo/scripts/seat/queue beta done AA-1"}}]}}
+{"type":"assistant","isSidechain":false,"timestamp":"2026-10-10T09:01:00.000Z","message":{"id":"p2","content":[{"type":"tool_use","id":"u2","name":"Bash","input":{"command":"cat > /r/queues/beta.md <<'MD'\n# beta\nMD"}}]}}

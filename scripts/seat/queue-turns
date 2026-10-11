@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Count tool uses on seat queue files by kind for one local day (CC-315).
+
+Usage: queue-turns <YYYY-MM-DD> [--roots DIR...] [--tz Area/City]
+Scans <root>/*/*.jsonl (default roots ~/.claude/projects and ~/.claude-profiles/*/projects),
+skips sidechains, and keeps assistant tool uses timestamped in that local day whose input
+names queues/<x>.md or calls the queue script with a verb. Kinds:
+  script     a `queue <seat> <verb>` call
+  edit-tool  the Edit or MultiEdit tool
+  write-tool the Write tool
+  heredoc    Bash running python or a `<<` heredoc
+  sed-i      Bash running sed -i or perl -i
+  read       everything else
+Prints one line per kind, `turns <N>` (distinct assistant message ids) and the adoption share:
+script over script + edit-tool + write-tool + heredoc + sed-i.
+"""
+import argparse, datetime, glob, json, os, re, sys
+from zoneinfo import ZoneInfo
+
+KINDS = ('script', 'edit-tool', 'write-tool', 'heredoc', 'sed-i', 'read')
+WRITES = KINDS[:-1]
+QUEUE_FILE = re.compile(r'queues/[\w.-]+\.md')
+QUEUE_SCRIPT = re.compile(r'''(?:bin|seat)/queue['"]?\s+['"]?[\w.-]+['"]?\s+(?:done|park|add|move|replace|set)\b''')
+HEREDOC = re.compile(r'<<|\bpython3?\b')
+SED_I = re.compile(r'\b(?:sed|perl)\s+(?:-\w+\s+)*-\w*i')
+
+
+def parse_args(argv):
+    p = argparse.ArgumentParser(prog='queue-turns', description='Count queue-file tool uses by kind for one local day.')
+    p.add_argument('day', type=datetime.date.fromisoformat, help='local day, YYYY-MM-DD')
+    p.add_argument('--roots', nargs='+', help='project dirs holding <session-dir>/*.jsonl')
+    p.add_argument('--tz', help='IANA zone for the day boundary (default: system local)')
+    return p.parse_args(argv)
+
+
+def default_roots():
+    home = os.path.expanduser('~')
+    return [os.path.join(home, '.claude', 'projects')] + sorted(glob.glob(os.path.join(home, '.claude-profiles', '*', 'projects')))
+
+
+def day_bounds(day, tz):
+    start = datetime.datetime.combine(day, datetime.time(), tzinfo=tz)
+    end = datetime.datetime.combine(day + datetime.timedelta(days=1), datetime.time(), tzinfo=tz)
+    return start, end
+
+
+def classify(name, tool_input):
+    text = json.dumps(tool_input)
+    command = tool_input.get('command', '') if isinstance(tool_input, dict) else ''
+    if name == 'Bash' and QUEUE_SCRIPT.search(command):
+        return 'script'
+    if not QUEUE_FILE.search(text):
+        return None
+    if name in ('Edit', 'MultiEdit'):
+        return 'edit-tool'
+    if name == 'Write':
+        return 'write-tool'
+    if name == 'Bash' and HEREDOC.search(command):
+        return 'heredoc'
+    if name == 'Bash' and SED_I.search(command):
+        return 'sed-i'
+    return 'read'
+
+
+def tool_uses(row):
+    content = (row.get('message') or {}).get('content')
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if isinstance(block, dict) and block.get('type') == 'tool_use':
+            yield block
+
+
+def in_day(row, start, end):
+    stamp = row.get('timestamp')
+    if not stamp:
+        return False
+    try:
+        when = datetime.datetime.fromisoformat(stamp.replace('Z', '+00:00'))
+    except ValueError:
+        return False
+    return start <= when < end
+
+
+def scan_file(path, start, end, counts, turns, seen):
+    with open(path, encoding='utf-8', errors='replace') as f:
+        for line in f:
+            if 'queue' not in line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get('type') != 'assistant' or row.get('isSidechain') or not in_day(row, start, end):
+                continue
+            for use in tool_uses(row):
+                kind = classify(use.get('name'), use.get('input') or {})
+                key = use.get('id') or (path, id(use))
+                if kind is None or key in seen:
+                    continue
+                seen.add(key)
+                counts[kind] += 1
+                turns.add(row['message'].get('id') or row.get('uuid'))
+
+
+def adoption_line(counts):
+    writes = sum(counts[k] for k in WRITES)
+    if writes == 0:
+        return 'adoption n/a (0 writes)'
+    return f"adoption {round(100 * counts['script'] / writes)}% ({counts['script']} of {writes} writes)"
+
+
+def main(argv):
+    args = parse_args(argv)
+    tz = ZoneInfo(args.tz) if args.tz else datetime.datetime.now().astimezone().tzinfo
+    start, end = day_bounds(args.day, tz)
+    counts, turns, seen = dict.fromkeys(KINDS, 0), set(), set()
+    for root in args.roots or default_roots():
+        for path in sorted(glob.glob(os.path.join(root, '*', '*.jsonl'))):
+            if os.path.getmtime(path) >= start.timestamp():
+                scan_file(path, start, end, counts, turns, seen)
+    for kind in KINDS:
+        print(f'{kind} {counts[kind]}')
+    print(f'turns {len(turns)}')
+    print(adoption_line(counts))
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])

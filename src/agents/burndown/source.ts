@@ -7,6 +7,7 @@ import { readAccountBudget } from '../budget.js'
 import { profileDir } from '../config-dir.js'
 import type { AccountReading } from './budget-gate.js'
 import { Route } from './exception.js'
+import { PRIOR_ROUTINGS } from './prior-route.js'
 import { BRIEF_GATES, type Initiative, type Task } from './eligibility.js'
 
 /** Reads the tick's inputs off disk. Read-only: active-work files, status caches and the burndown config. */
@@ -132,6 +133,8 @@ export const TickConfigSchema = z.object({
     .object({ enabled: z.boolean().default(false) })
     .strict()
     .default({ enabled: false }),
+  /** CC-638: route the implementer by the task-time prior; `shadow` only notes it. Flipping it is an owner step. */
+  priorRouting: z.enum(PRIOR_ROUTINGS).default('off'),
   /** Seat names for CC-205 seats-mode dispatch; empty means none. */
   seats: z.array(z.string().min(1)).default([]),
   /** CC-925: each seat's brief gate; a seat not named is `off`. Flipping it is an owner step. */
