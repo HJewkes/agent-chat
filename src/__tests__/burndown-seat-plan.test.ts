@@ -645,7 +645,7 @@ describe('planSeat pool charges and same-tick claims (CC-275)', () => {
       ...EMPTY_LEDGER,
       claims: [
         queued('A-1', { slice: 'b', contracts: [{ scope, op: 'remove' }] }),
-        queued('A-1', { slice: 'c', contracts: [{ scope, op: 'extend' }] }),
+        queued('A-1', { slice: 'c', owns: ['src/y.ts'], contracts: [{ scope, op: 'extend' }] }),
       ],
     }
 
@@ -661,13 +661,42 @@ describe('planSeat pool charges and same-tick claims (CC-275)', () => {
       ...EMPTY_LEDGER,
       claims: [
         queued('A-1', { slice: 'b', contracts: [{ scope, op: 'add' }] }),
-        queued('A-1', { slice: 'c', contracts: [{ scope, op: 'extend' }] }),
+        queued('A-1', { slice: 'c', owns: ['src/y.ts'], contracts: [{ scope, op: 'extend' }] }),
       ],
     }
 
     const plan = planSeat(inputs([], [task('A-1')], { ledger }))
 
     expect(plan.dispatch.map(d => d.slice)).toEqual(['b', 'c'])
+  })
+
+  it('dispatches the first of two tasks whose owns overlap in one repo and refuses the second file-overlap (CC-952)', () => {
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [queued('A-1', { owns: ['src/a/**'] }), queued('A-2', { slice: 'a', owns: ['src/a/x.ts'] })],
+    }
+
+    const plan = planSeat(inputs([], [task('A-1'), task('A-2')], { ledger }))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1'])
+    expect(plan.refusals).toEqual([
+      expect.objectContaining({
+        task: 'A-2',
+        kind: 'file-overlap',
+        reason: "src/a/x.ts is under sa-a-1-b's owns",
+      }),
+    ])
+  })
+
+  it('dispatches two tasks in one repo in one pass when their owns are disjoint (CC-952)', () => {
+    const ledger: Ledger = {
+      ...EMPTY_LEDGER,
+      claims: [queued('A-1', { owns: ['src/a/**'] }), queued('A-2', { slice: 'a', owns: ['src/b.ts'] })],
+    }
+
+    const plan = planSeat(inputs([], [task('A-1'), task('A-2')], { ledger }))
+
+    expect(plan.dispatch.map(d => d.task)).toEqual(['A-1', 'A-2'])
   })
 
   it("passes a ready slice's contracts to the collision check (CC-710)", () => {
