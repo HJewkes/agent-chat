@@ -681,6 +681,26 @@ describe('pr-ready scan', () => {
     expect(result.out.at(-1)).toBe(`PR-READY OK ${git(dir, 'rev-parse', 'HEAD')}`)
   })
 
+  it('passes the clean-tree check when the only untracked path is the body file', async () => {
+    const dir = work()
+    fs.writeFileSync(path.join(dir, 'pr-body.md'), 'A clean body.\n')
+
+    const result = await runPrReady(dir, [], { bodyFile: path.join(fs.realpathSync(dir), 'pr-body.md') })
+
+    expect(result.out).toContain('ok clean-tree')
+  })
+
+  it('still fails the clean-tree check on another untracked file beside the body file', async () => {
+    const dir = work()
+    fs.writeFileSync(path.join(dir, 'pr-body.md'), 'A clean body.\n')
+    fs.writeFileSync(path.join(dir, 'stray.txt'), 'x\n')
+
+    const result = await runPrReady(dir, [], { bodyFile: 'pr-body.md' })
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain('FAIL clean-tree: uncommitted changes in stray.txt')
+  })
+
   it('reads a relative body file from the repo it checks', async () => {
     const dir = work()
     fs.writeFileSync(path.join(path.dirname(dir), 'body.md'), `Mentions ${TERM}.\n`)

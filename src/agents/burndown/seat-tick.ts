@@ -424,6 +424,16 @@ export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root
   return result
 }
 
+/** The reason the watchdog's state file cannot be read, or undefined when it can; the seat paths stay closed while it is set. */
+export function watchdogUnusable(): string | undefined {
+  try {
+    loadDoc()
+    return undefined
+  } catch (err) {
+    return message(err)
+  }
+}
+
 /** The live readers: the pool's status file and the watchdog's saved run meter. */
 export function diskSeatDeps(autonomyRoot: string, root: string, now: Date): SeatTickDeps {
   const doc = loadDoc()
