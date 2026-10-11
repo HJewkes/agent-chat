@@ -374,6 +374,50 @@ generation-suffix workaround this revision deleted, or a broker-only rename
 door, or something not yet designed. Do not assume the current naming
 decision still holds once an overlap exists.
 
+**Reopened by CC-951: successor first, on the local path.** The owner asked
+that the old session end only after the new one registers, so this section
+was reopened and the overlap came back. It is kept short, and the eviction
+race above is now the readiness gate on purpose:
+
+1. The broker launches the successor while the predecessor is still running.
+   `relaunch` keeps the predecessor's supervisor entry (`successorFirst`).
+2. The successor registers under the base name. `BrokerCore` passes
+   `Registry.register` a `succeeds` argument. That is the successor's own
+   `teleport_from`, read from the log and only while its identity is still
+   `spawning`. It is never a frame field. The registry then evicts the holder
+   whose `agentId` matches, the same way it does for a resume. The detach row
+   reads `superseded by teleport successor`.
+3. On the successor's `agent_attached`, the predecessor is stood down. Its
+   supervisor entry is dropped, its host pid is signalled, and it is retired.
+   The severed predecessor's MCP server may restart and re-register, and that
+   is refused, because its name is held by a different `agentId`.
+4. If the successor does not attach within `LAND_WINDOW_MS`, or its launch
+   fails, there are two cases.
+   - **The predecessor is still running.** The successor's row is retired
+     unused. The successor itself is stopped: its headless process, or the
+     surface the broker opened for it. The predecessor gets back its slot and
+     its stale-session marker is cleared. It was never signalled, and it is
+     told that it is still live.
+   - **The predecessor has already ended.** The predecessor is retired. The
+     successor's row is kept, so its relaunch script can still start it, and
+     the human is told how. This is the same outcome as a failed v0 teleport.
+
+   A retry that is skipped because the successor's run-agent is already
+   running is not a failure. The broker keeps waiting for the attach.
+
+While a successor is starting, the predecessor's supervisor entry is marked
+`teleporting`. A headless predecessor usually exits on its own at the end of
+its turn. That exit records `agent_exited` and nothing else. The completion
+hook, the report check and auto-retire are skipped, and its slot stays with
+the successor. The teleport then knows the predecessor has gone.
+
+The "dead bus" state above still exists. It lasts from the eviction to the
+SIGTERM, which is the same tick. Pane reuse stays end-first (§4.3, CC-402): a
+command typed into a pane whose Claude Code is still alive is swallowed. So a
+predecessor with an anchor and no requested surface is ended before its
+successor launches, as before. The remote and caller paths (CC-881/CC-913) are
+unchanged here.
+
 ---
 
 ## 6. Shutdown is self-directed, not peer-directed

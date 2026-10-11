@@ -29,6 +29,7 @@ import { cwdHoldsUserSettings } from './launch-policy.js'
 import {
   buildMcpConfig,
   clearRuntimeState,
+  clearSuperseded,
   hookSettingsPath,
   mcpConfigPath,
   readRuntimeState,
@@ -559,6 +560,8 @@ interface Live {
   cancelReason?: string
   /** CC-118: `observe_running` is written once; a later attach is presence, not lifecycle. */
   runningObserved?: boolean
+  /** CC-951: kept while its successor-first successor starts, so its own exit is not a finish. */
+  teleporting?: boolean
 }
 
 export interface SupervisorOptions {
@@ -1011,6 +1014,36 @@ export class Supervisor implements TeleportHost {
   }
 
   /**
+   * CC-951: a predecessor that ended while its successor starts. Its slot already moved
+   * to the successor, and it did not finish its work, so the exit is recorded and nothing
+   * else: no completion hook, no report check, no auto-retire. The teleport is told.
+   */
+  private recordTeleportingExit(
+    entry: Live,
+    outcome: { code: number | null; signal: string | null; inferred?: boolean },
+  ): void {
+    this.live.delete(entry.agentId)
+    this.core.append({
+      kind: 'agent_exited',
+      actor: entry.name,
+      ref: entry.agentId,
+      body: 'exited while its teleport successor was starting',
+      meta: {
+        ...(outcome.code === null ? {} : { code: String(outcome.code) }),
+        ...(outcome.signal === null ? {} : { signal: outcome.signal }),
+        ...(outcome.inferred ? { inferred: 'true' } : {}),
+      },
+    })
+    logEvent('agent_exited', {
+      agentId: entry.agentId,
+      name: entry.name,
+      code: outcome.code,
+      teleporting: true,
+    })
+    this.teleporter.predecessorExited(entry.agentId)
+  }
+
+  /**
    * Idempotent: a headless child's exit and its detach settle can both arrive.
    *
    * `launch`, when given, is the exact `Live` object this exit belongs to —
@@ -1033,6 +1066,7 @@ export class Supervisor implements TeleportHost {
     if (entry.settle) clearTimeout(entry.settle)
     if (entry.attachCeiling) clearTimeout(entry.attachCeiling)
     this.attachWaiters.delete(agentId)
+    if (entry.teleporting === true) return this.recordTeleportingExit(entry, outcome)
     this.live.delete(agentId)
     this.semaphore.release(agentId)
 
@@ -3250,11 +3284,11 @@ export class Supervisor implements TeleportHost {
     // to clear: `find(name)` scans by name, and for as long as both entries sit
     // in the map, "the live agent called scout" resolves to the dead one — so a
     // kill or an `agent attach` would be aimed at a process that is already gone.
+    // CC-951: a successor-first teleport keeps it, since the predecessor is still
+    // running and is kept if the successor never attaches; `standDown` drops it.
     const predecessor = input.inheritedFrom === undefined ? undefined : this.live.get(input.inheritedFrom)
-    if (predecessor !== undefined) {
-      if (predecessor.settle) clearTimeout(predecessor.settle)
-      this.live.delete(predecessor.agentId)
-    }
+    if (predecessor !== undefined && input.successorFirst === true) predecessor.teleporting = true
+    else if (predecessor !== undefined) this.standDown(predecessor.agentId)
 
     const isolation = input.inherited?.isolation ?? 'none'
     const allocation = input.inherited?.allocation ?? { cwd: input.cwd }
@@ -3284,6 +3318,65 @@ export class Supervisor implements TeleportHost {
     this.bindExecution(input.agentId, executionId)
     this.watchSuccessor(launch, handle, retried)
     this.announceSuccessor(input, sessionId, allocation.cwd)
+  }
+
+  /** CC-951: the predecessor's entry goes once it is being ended, so its own exit records nothing over its successor. */
+  standDown(agentId: string): void {
+    const predecessor = this.live.get(agentId)
+    if (predecessor === undefined) return
+    if (predecessor.settle) clearTimeout(predecessor.settle)
+    this.live.delete(agentId)
+  }
+
+  /**
+   * CC-951: a successor-first teleport whose successor never attached, while its
+   * predecessor still runs. The predecessor gets back what `relaunch` moved to it: its
+   * slot, and prompts its stale-session guard would now block. The successor is stopped,
+   * headless or in a surface the broker opened, since its row retires.
+   */
+  keepPredecessor(input: RelaunchInput, reason: string): void {
+    const successor = this.live.get(input.agentId)
+    if (successor !== undefined) {
+      if (successor.settle) clearTimeout(successor.settle)
+      this.live.delete(input.agentId)
+      this.finishFailedLaunch(successor.executionId, reason)
+      this.stopSuccessor(successor)
+    }
+    this.semaphore.release(input.agentId)
+    if (input.inheritedFrom === undefined) return
+    const predecessor = this.live.get(input.inheritedFrom)
+    if (predecessor !== undefined) delete predecessor.teleporting
+    if (input.inherited?.slot) this.semaphore.acquire(input.inheritedFrom)
+    clearSuperseded(input.inheritedFrom)
+  }
+
+  /** CC-951: the predecessor ended and its successor did not start, so only the human can act. */
+  noticeLostTeleport(input: RelaunchInput, reason: string): void {
+    this.noticeDeadSuccessor(
+      input,
+      `${input.name} ended while its teleport successor was starting, and the successor did not start: ${reason}`,
+      reason,
+    )
+  }
+
+  private stopSuccessor(entry: Live): void {
+    if (entry.handle.surface !== 'headless') {
+      void this.closeSurface(entry).catch(err =>
+        logEvent('teleport_successor_stop_failed', { name: entry.name, error: (err as Error).message }),
+      )
+      return
+    }
+    this.stopHeadless(entry)
+  }
+
+  private stopHeadless(entry: Live): void {
+    const { pid, surface } = entry.handle
+    if (surface !== 'headless' || pid === undefined) return
+    try {
+      process.kill(pid, 'SIGTERM')
+    } catch (err) {
+      logEvent('teleport_successor_stop_failed', { name: entry.name, pid, error: (err as Error).message })
+    }
   }
 
   /**
@@ -3483,13 +3576,21 @@ export class Supervisor implements TeleportHost {
   /** The human queue and the seat's log, since nobody is left inside the session to notice (CC-191, CC-402). */
   private reportDeadSuccessor(input: RelaunchInput, reason: string): void {
     if (this.hasAttached(input.agentId)) return
+    // CC-951: the teleport it waits on decides who is told, since its predecessor may still run.
+    if (input.successorFirst === true && this.teleporter.successorFailed(input.agentId, reason)) return
+    this.noticeDeadSuccessor(
+      input,
+      `${input.name} shut down for a teleport and its successor was still not running after one retry: ${reason}`,
+      reason,
+    )
+  }
+
+  private noticeDeadSuccessor(input: RelaunchInput, lead: string, reason: string): void {
     this.core.append({
       kind: 'notice',
       actor: 'agent-chat',
       target: HUMAN,
-      body:
-        `${input.name} shut down for a teleport and its successor was still not running after one retry: ${reason}. ` +
-        `Run ${relaunchScriptPath(input.agentId)} in a terminal to start it.`,
+      body: `${lead}. Run ${relaunchScriptPath(input.agentId)} in a terminal to start it.`,
     })
     this.seatJournal?.({ event: 'teleport-failed', agent: input.name })
     logEvent('teleport_failed', { name: input.name, from: input.inheritedFrom, reason })
