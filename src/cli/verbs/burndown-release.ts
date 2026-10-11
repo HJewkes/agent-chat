@@ -1,13 +1,8 @@
 import { burndownLedgerPath } from '../../paths.js'
 import { heldUntil } from '../../agents/burndown/backoff.js'
 import { shepherdTarget } from '../../agents/burndown/shepherd.js'
-import {
-  readLedger,
-  withLedgerLock,
-  writeLedger,
-  type Claim,
-  type Ledger,
-} from '../../agents/burndown/ledger.js'
+import { readLedger, withLedgerLock, writeLedger, type Claim } from '../../agents/burndown/ledger.js'
+import { releaseHeld } from '../../agents/burndown/release.js'
 import type { Report } from '../command.js'
 
 export type RetireCall = (name: string) => Promise<{ ok: boolean; reason?: string }>
@@ -32,7 +27,7 @@ async function retireNames(claim: Claim, retire: RetireCall): Promise<string[]> 
 /**
  * Drops every held claim on `task`, counts the release toward its backoff (CC-700), then retires each
  * one's spawned agents; a refused retire never keeps a claim. A release with no held claim changes nothing.
- * With `slice`, only that slice's claim is dropped (CC-978); see `releaseSlice`.
+ * With `slice`, only that slice's claim is dropped (CC-978); see `releaseHeld`.
  */
 export async function releaseTask(
   task: string,
@@ -42,23 +37,9 @@ export async function releaseTask(
 ): Promise<Report> {
   const file = burndownLedgerPath()
   const locked = await withLedgerLock(file, () => {
-    const ledger = readLedger(file)
-    const dropped = ledger.claims.filter(
-      c => c.taskId === task && c.phase !== 'done' && (slice === undefined || c.slice === slice),
-    )
-    if (dropped.length === 0) return { dropped, hold: undefined }
-    const claims = ledger.claims.filter(c => !dropped.includes(c))
-    if (slice !== undefined) {
-      writeLedger(file, releaseSlice(ledger, claims, task, slice))
-      return { dropped, hold: undefined }
-    }
-    const record = { n: (ledger.releases?.[task]?.n ?? 0) + 1, at: now.toISOString() }
-    writeLedger(file, {
-      ...withoutSliceReleases(ledger, task),
-      claims,
-      releases: { ...ledger.releases, [task]: record },
-    })
-    return { dropped, hold: record }
+    const released = releaseHeld(readLedger(file), task, now, slice)
+    if (released.dropped.length > 0) writeLedger(file, released.ledger)
+    return released
   })
   if (!locked.ran) return refusedReport(`a tick holds the ledger lock (pid ${locked.holder}); try again`)
   const { dropped, hold } = locked.value
@@ -69,22 +50,6 @@ export async function releaseTask(
   if (hold !== undefined)
     lines.push(`released ${hold.n} times; held until ${new Date(heldUntil(hold)).toISOString()}`)
   return { ok: true, lines }
-}
-
-/**
- * One slice's release: the task's other slices keep their claims, the task stays seeded, and the dropped
- * slice no longer gates its dependents. No backoff is counted, since that would hold the other slices back.
- */
-function releaseSlice(ledger: Ledger, claims: Claim[], task: string, slice: string): Ledger {
-  const released = [...new Set([...(ledger.slicesReleased?.[task] ?? []), slice])]
-  return { ...ledger, claims, slicesReleased: { ...ledger.slicesReleased, [task]: released } }
-}
-
-/** A whole-task release lets the task be seeded again. */
-function withoutSliceReleases(ledger: Ledger, task: string): Ledger {
-  const { slicesReleased: all, ...rest } = ledger
-  const { [task]: _cleared, ...kept } = all ?? {}
-  return Object.keys(kept).length === 0 ? rest : { ...rest, slicesReleased: kept }
 }
 
 /**

@@ -11,9 +11,11 @@ import {
   type LadderRecord,
   type Ledger,
 } from './ledger.js'
+import type { ClaimPr } from './pr-state.js'
 import { agentNameFor, reviewerNameFor, successorNameFor } from './plan.js'
 import type { Progress } from './progress.js'
 import type { PlannedSlice, Report } from './report.js'
+import { releaseHeld } from './release.js'
 import { sliceClaims } from './seed-slices.js'
 import { shepherdTarget, type Registration, type ShepherdRow } from './shepherd.js'
 import { capVerdict, type ClaimSpend } from './spend-cap.js'
@@ -56,6 +58,8 @@ export interface Observation {
   spend?: { claim: ClaimSpend; cap: number }
   /** CC-673: an implementer that exited with no status line: its branch's open PR and commits ahead. */
   exitedWork?: ExitedWork | 'unreadable'
+  /** CC-1054: what GitHub says about an implementing or stalled claim's PR, by its record or its agents' branches. */
+  prState?: ClaimPr | 'unreadable'
 }
 
 export type SpawnContext =
@@ -101,6 +105,8 @@ export type Action =
       /** The agents that may still run, newest first; a retired one is no longer the broker's to retire. */
       names: string[]
     }
+  /** CC-1054: the claim's release as `burndown release` writes it, for a claim whose agent left no PR. */
+  | { kind: 'drop'; key: ClaimKey }
 
 /** Retire in the order given; `held` records a refusal on the held claim rather than a done one (CC-660). */
 export type RetireAction = {
@@ -138,7 +144,9 @@ const STEPS: Partial<Record<Claim['phase'], Step>> = {
 function advanceClaim(claim: Claim, obs: Observation, now: Date): Action[] {
   if (claim.phase === 'done') return []
   const merged = MERGES.has(claim.phase) ? landedRun(obs.shepherd) : undefined
-  if (merged !== undefined) return mergedPr(claim, merged)
+  if (merged !== undefined) return mergedPr(claim, prRef(merged), merged.headSha)
+  const settled = settledOnGitHub(claim, obs)
+  if (settled !== undefined) return settled
   if (claim.stallCode === 'outside-owns') return unfenced(claim, obs, now)
   if (claim.stalledReason !== undefined) return linkPr(claim, obs)
   if (obs.spend !== undefined && capVerdict(obs.spend.claim, obs.spend.cap) === 'over')
@@ -309,13 +317,27 @@ function landedRun(run: Observation['shepherd']): ShepherdRow | undefined {
 const prRef = (row: ShepherdRow): string | undefined =>
   row.pr === null ? undefined : `${row.repo}#${row.pr}`
 
+/**
+ * CC-1054: a PR GitHub reports merged finishes the claim; a stalled implementing claim whose agent finished
+ * and left neither a PR nor work in its worktree is released. An open PR is Shepherd's, and an unread one
+ * moves nothing. Work left behind, or a stall in another phase, stays for the ladder and the owner.
+ */
+function settledOnGitHub(claim: Claim, obs: Observation): Action[] | undefined {
+  const pr = obs.prState
+  if (pr === undefined || pr === 'unreadable' || pr.kind === 'open') return undefined
+  if (pr.kind === 'merged') return mergedPr(claim, pr.pr, pr.head)
+  const leftNothing = claim.phase === 'implementing' && finished(obs) && obs.diff?.reviewable === false
+  if (claim.stalledReason === undefined || claim.respawn !== undefined || !leftNothing) return undefined
+  return [{ kind: 'drop', key: keyOf(claim) }, retireAll(claim)]
+}
+
 /** A queued claim ran no agent, so it has none to retire. */
-function mergedPr(claim: Claim, row: ShepherdRow): Action[] {
-  const pr = claim.pr ?? prRef(row)
+function mergedPr(claim: Claim, found: string | undefined, head: string | null): Action[] {
+  const pr = claim.pr ?? found
   const finish = update(claim, {
     phase: 'done',
     ...(pr === undefined ? {} : { pr }),
-    ...(row.headSha === null ? {} : { prHead: row.headSha }),
+    ...(head === null ? {} : { prHead: head }),
     stalledReason: undefined,
     stalledClass: undefined,
     stallCode: undefined,
@@ -417,6 +439,7 @@ export function applyActions(ledger: Ledger, actions: Action[], now: Date): Ledg
     if (action.kind === 'add') return action.claims.reduce(addClaim, current)
     if (action.kind === 'ladder') return withLadder(current, claimKey(action.key), action.record)
     if (action.kind === 'release') return released(current, action, at)
+    if (action.kind === 'drop') return releaseHeld(current, action.key.taskId, now, action.key.slice).ledger
     if (action.kind === 'brake') {
       const { brake: _cleared, ...rest } = current
       return action.brake === undefined ? rest : { ...rest, brake: action.brake }
