@@ -1,0 +1,29 @@
+CC-826: Decide claim glob overlap exactly and name the colliding pair (#613)
+
+## Summary
+
+Slice 1 of CC-826 (plan: `claude-channels/sources/CC-826-plan.md`). Also covers CC-695, CC-685, CC-666 and CC-294.
+
+## What changes
+- `patternsOverlap` (src/broker/claims.ts) decides glob-vs-glob overlap exactly, segment by segment, with a memoised walk. Interior `**` takes zero or more segments and trailing `**` one or more. Two `*` segments intersect when their fixed heads and tails are prefix- and suffix-compatible. If either side is an exact path, the answer is `matchPattern`'s and the code never falls through to a prefix test. `x/` is read as `x/**`. A `**` inside a longer segment is still reported as an overlap (conservative).
+- The old heuristics are removed: `isShallow`, `shallowOverlap`, `directoryOf` and `literalPrefix`.
+- A refusal names the specific pair: `"alice" holds src/cli/** (overlaps your src/cli/args.ts)`.
+- The cap message in `src/args.ts` suggests `dir/**` or `dir/name*`. Both goldens are updated to match.
+
+## Tests
+- Added a table of the accepted pairs from CC-826, CC-695, CC-685, CC-666 and CC-294, checked both ways round. Added a table of refused pairs: `src/**` vs `src/a.ts`, `*.md` vs `**/*.md`, `src/a*.ts` vs `src/*b.ts`, `packages/*/src/**` vs `packages/ui/**`, and others.
+- Added a ClaimLedger test for the CC-826 scenario and one for the pair-naming refusal.
+- The two cases in the old "over-reports" test are now `false`, under a test name that states the exact decision.
+- Against the old `claims.ts`, 14 of the new or changed tests fail. Two rows pass there by design and act as guards: `config*.ts` vs `cli.ts`, and `package.json` vs `packages/hitl/package.json`.
+- Run locally with `vitest run` on claims, burndown-collision, burndown, burndown-tick, seat-tick-landed, isolation, mcp-golden and cli-golden. All passed. Typecheck and prettier are clean. I did not run the full `npm run verify` because the machine rule allows named tests only, so CI's `check` covers the rest.
+
+## Changes
+
+- **CC-826: Decide claim glob overlap exactly and name the colliding pair.** patternsOverlap fell back to directory and literal-prefix heuristics for wildcard pairs, so disjoint globs in one directory (config*.ts beside gate-resolve-round*) were always refused. It now walks both patterns segment by segment: interior ** takes zero or more segments, trailing ** one or more, and two * segments meet when their fixed heads and tails agree. An exact path is asked of the other glob and never falls through.
+
+  A refusal now names the held pattern and the wanted one that overlap, and the pattern-cap message suggests a directory or prefix glob.
+
+  Covers CC-695, CC-685, CC-666 and CC-294.
+- **CC-826: Use synthetic owners in the claims test, not real seat names.**
+
+Refs: CC-826, #613

@@ -9,6 +9,7 @@ import type { Contract } from '../agents/burndown/report.js'
 import {
   collision,
   collisionCheck,
+  coveredIds,
   namesId,
   readOpenPrs,
   readSubjects,
@@ -17,6 +18,8 @@ import {
   type CollisionWork,
 } from '../agents/burndown/collision.js'
 import type { Runner } from '../agents/burndown/exec.js'
+
+const AC613_MESSAGE = path.join(import.meta.dirname, 'fixtures', 'ac613-commit-message.txt')
 
 /** The CC-202 collision check: a table per kind over plain facts, and the readers over a real git repo or a stub `gh`. */
 
@@ -171,6 +174,19 @@ describe('readSubjects over a real repository', () => {
     expect(collision(work(id), facts({ subjects }))?.kind).toBe(kind)
   })
 
+  it.each(['CC-695', 'CC-685', 'CC-666', 'CC-294'])(
+    "%s is landed: ac#613's Covers clause names it (CC-1068)",
+    id => {
+      git('commit', '--allow-empty', '-q', '-F', AC613_MESSAGE)
+      git('push', '-q', 'origin', 'main')
+
+      const refusal = collision(work(id), facts({ subjects: readSubjects(repo, 'main') }))
+
+      expect(refusal?.kind).toBe('landed')
+      expect(refusal?.reason).toContain('[covers')
+    },
+  )
+
   it('fetches the default branch first, so a landing the local ref has not seen counts', () => {
     commit('Land the pager (R-9) (#20)')
     git('push', '-q', 'origin', 'main')
@@ -187,6 +203,31 @@ describe('readSubjects over a real repository', () => {
 
   it('reports an unreadable ref as undefined rather than as no subjects', () => {
     expect(readSubjects(repo, 'no-such-branch')).toBeUndefined()
+  })
+})
+
+describe('coveredIds', () => {
+  it.each([
+    ['Covers CC-1, CC-2 and CC-3.', ['CC-1', 'CC-2', 'CC-3']],
+    ['Slice 1 of X. Also covers TP-4 & TP-5.', ['TP-4', 'TP-5']],
+    ['- Covers: R-9', ['R-9']],
+    ['Refs: CC-826, #613', []],
+    ['Partly covers CC-9', []],
+    ['Leaves R-48 for later', []],
+    ['accepted pairs from CC-695', []],
+    ['This covers CC-7', []],
+    ['The old suite Covers CC-8 only in part', []],
+  ])('%j gives %j', (body, ids) => {
+    expect(coveredIds(body)).toEqual(ids)
+  })
+
+  it("reads ac#613's body as covering exactly its four ids, not its prose or Refs", () => {
+    expect(coveredIds(fs.readFileSync(AC613_MESSAGE, 'utf8'))).toEqual([
+      'CC-695',
+      'CC-685',
+      'CC-666',
+      'CC-294',
+    ])
   })
 })
 

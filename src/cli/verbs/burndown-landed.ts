@@ -10,7 +10,7 @@ const DEFAULT_DAYS = 7
 export const burndownLandedVerb = defineVerb({
   name: 'burndown.landed',
   description:
-    "every open, unreconciled task in a seat's scope that a recent default-branch subject names (CC-611); writes nothing",
+    "every open, unreconciled task in a seat's scope that a recent default-branch subject or Covers clause names (CC-611); writes nothing",
   args: z.object({
     seat: requiredString('seat'),
     days: z.coerce.number().int().positive().optional(),
