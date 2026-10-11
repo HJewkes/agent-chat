@@ -108,6 +108,7 @@ import {
   type RetireScope,
 } from './isolation/retire-finished.js'
 import { retireAtReport, type ReportRetirePort } from './isolation/retire-at-report.js'
+import { parkReviewerAtReport, type ReviewerParkPort } from './isolation/park-reviewer-at-report.js'
 import type { ShepherdSkipPort } from './isolation/shepherd-skip.js'
 import { findGitRoot } from '../git.js'
 import { SpawnRateBudget } from './spawn-rate.js'
@@ -146,6 +147,7 @@ import {
 } from './seats/pool-route.js'
 import type { PoolPickMode } from './seats/pool-pick.js'
 import { readTranscriptSpend, type TranscriptSpendRead } from './transcript-spend.js'
+import { finalAssistantText } from './turns.js'
 import { completionPayload, type CompletionPayload, type ExitFacts } from './worker-facts.js'
 import type { ShadowLedger } from './ledger/shadow-ledger.js'
 import { exitTerminal, LifecycleShadow } from './ledger/lifecycle-shadow.js'
@@ -1080,7 +1082,10 @@ export class Supervisor implements TeleportHost {
     if (this.closesOnExit(agentId)) await this.closeSurface(entry)
     const exit = { code: outcome.code, signal: outcome.signal, inferred: outcome.inferred ?? false }
     this.fireHook('on_complete', { ...(await this.completionPayloadFor(agentId, exit)) })
-    if (failed === undefined && entry.cancelReason === undefined) await this.retireIfReported(agentId)
+    if (failed === undefined && entry.cancelReason === undefined) {
+      await this.retireIfReported(agentId)
+      await this.parkReviewerIfReported(agentId)
+    }
   }
 
   /** CC-763: never rejects; anything that goes wrong gathering the facts leaves the legacy fields. */
@@ -2537,6 +2542,33 @@ export class Supervisor implements TeleportHost {
     if (result.action === 'retired') logEvent('auto_retired', { agentId, ...result })
   }
 
+  /** CC-976: park a reviewer's tree at its final Verdict, opt-in or not; a CC-921 park already removed it. */
+  private async parkReviewerIfReported(agentId: string): Promise<void> {
+    const result = await parkReviewerAtReport(this.reviewerParkPort(), agentId)
+    if (result.action === 'kept')
+      logEvent('reviewer_park_kept', { agentId, name: result.name, reason: result.reason })
+    if (result.action === 'parked') logEvent('reviewer_parked', { agentId, ...result })
+  }
+
+  private reviewerParkPort(): ReviewerParkPort {
+    return {
+      current: agentId => this.core.agents.get(agentId),
+      events: () => this.core.events.agentEvents(),
+      lastReport: agent => this.lastReportText(agent),
+      finalText: agent =>
+        finalAssistantText(agent.cwd, agent.sessionId, agent.configDir === '' ? undefined : agent.configDir),
+      park: agentId => this.parkById(agentId),
+    }
+  }
+
+  private lastReportText(agent: AgentIdentity): string | undefined {
+    return this.core.events.lastStatusReport(
+      agent.name,
+      reportRecipients(agent.spawnedBy),
+      this.core.runStartedAt(agent),
+    )?.text
+  }
+
   private reportRetirePort(): ReportRetirePort | undefined {
     const enabledFor = this.autoRetireOnReport
     if (enabledFor === undefined || this.shepherdSkip === undefined) return undefined
@@ -2545,12 +2577,7 @@ export class Supervisor implements TeleportHost {
       roster: () => this.core.agents.roster(),
       events: () => this.core.events.agentEvents(),
       enabledFor,
-      lastReport: agent =>
-        this.core.events.lastStatusReport(
-          agent.name,
-          reportRecipients(agent.spawnedBy),
-          this.core.runStartedAt(agent),
-        )?.text,
+      lastReport: agent => this.lastReportText(agent),
       tracked: agentId => this.live.has(agentId),
       skip: this.shepherdSkip,
       park: agentId => this.parkById(agentId),

@@ -71,7 +71,7 @@ const FINISHED_OPENING = /^[\s*_`#>]*(verdict[*_`]*\s*:|status[*_`]*\s*:[\s*_`]*
 export const isFinishedReport = (text: string): boolean => FINISHED_OPENING.test(text)
 
 /** An adopted tree belongs to its owner and a gone one has nothing left to remove. */
-const parkable = (target: ParkTarget | undefined): target is ParkTarget =>
+export const parkable = (target: ParkTarget | undefined): target is ParkTarget =>
   target !== undefined && !target.assigned && existsSync(target.worktree)
 
 /** The checks await, so the agent may have been resumed meanwhile. */
