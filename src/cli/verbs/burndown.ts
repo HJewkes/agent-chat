@@ -231,6 +231,7 @@ export function dispatchStatsLines(
   since: string,
   json: boolean,
   byBriefSource = false,
+  floor?: number,
 ): Report {
   const windowMs = parseWindow(since)
   if (windowMs === undefined)
@@ -243,7 +244,7 @@ export function dispatchStatsLines(
         lines: json ? quality.map(q => JSON.stringify(q)) : renderBriefSourceQuality(quality),
       }
     }
-    const stats = dispatchStats(ports, windowMs)
+    const stats = dispatchStats(ports, windowMs, floor)
     return { ok: true, lines: json ? stats.map(s => JSON.stringify(s)) : renderDispatchStats(stats) }
   } catch (err) {
     return refused(err)
@@ -258,6 +259,7 @@ export const burndownDispatchStatsVerb = defineVerb({
     json: z.boolean().optional(),
     since: z.string().optional(),
     byBriefSource: z.boolean().optional(),
+    floor: z.coerce.number().int().positive().optional(),
     autonomyRoot: z.string().optional(),
   }),
   result: Report,
@@ -276,12 +278,16 @@ export const burndownDispatchStatsVerb = defineVerb({
         long: '--since',
         description: `window to read, e.g. 90m, 24h or 7d (default ${DEFAULT_WINDOW})`,
       },
+      floor: {
+        long: '--floor',
+        description: 'ready depth floor to count breaches against (default 2 x the tick config maxAgents)',
+      },
       autonomyRoot: { long: '--autonomy-root', description: 'directory holding seats/ and logs/' },
     },
   },
-  async run({ json, since, byBriefSource, autonomyRoot }) {
+  async run({ json, since, byBriefSource, floor, autonomyRoot }) {
     const ports = dispatchStatsPorts(autonomyRoot ?? defaultAutonomyRoot(), new Date())
-    return dispatchStatsLines(ports, since ?? DEFAULT_WINDOW, json === true, byBriefSource === true)
+    return dispatchStatsLines(ports, since ?? DEFAULT_WINDOW, json === true, byBriefSource === true, floor)
   },
 })
 

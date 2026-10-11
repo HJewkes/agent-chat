@@ -1848,7 +1848,7 @@ describe('burndown tick wakes the decider', () => {
     const lines = await tick(fake)
 
     expect(fake.resumes.map(r => r.name)).toEqual(['decider'])
-    expect(fake.resumes[0]?.message).toContain('`agent-chat inbox`')
+    expect(fake.resumes[0]?.message).toContain('`agent-chat queue --questions --json`')
     expect(fake.resumes[0]?.message).toContain('end your turn')
     expect(fake.resumes[0]?.message).not.toContain('which branch?')
     expect(fake.frames).toEqual([])

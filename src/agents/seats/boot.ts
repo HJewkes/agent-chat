@@ -1,4 +1,4 @@
-import { isSeatName } from './charter.js'
+import { isSeatName, parseSeat } from './charter.js'
 import {
   INBOX_TAIL,
   capText,
@@ -15,7 +15,8 @@ import {
   type SeatDigest,
 } from './boot-read.js'
 import { inFlightLines, readInFlight, type InFlight, type InFlightPorts } from './in-flight-read.js'
-import { plainError, poolReadingText, type SeatStatus } from './status.js'
+import { readSeatFile } from './teleport-state.js'
+import { plainError, poolReadingText, type HeartbeatStatus, type SeatStatus } from './status.js'
 
 /**
  * CC-318: one boot digest for a coordinator seat, so a successor reads one command's output
@@ -41,6 +42,7 @@ export interface SeatBoot {
   seat: string
   at: string
   seatFile: SeatDigest
+  heartbeat: Pick<HeartbeatStatus, 'source' | 'cron'>
   queue: QueueSections
   inFlight: InFlight
   next: BootNext
@@ -74,6 +76,7 @@ export async function seatBoot(deps: BootDeps, seat: string, after?: string): Pr
     seat,
     at: now.toISOString(),
     seatFile,
+    heartbeat: seatHeartbeat(deps.autonomyRoot, seat),
     queue: readQueueSections(deps.autonomyRoot, seat),
     inFlight: await readInFlight(deps.inFlight, seat, seatFile.prefix, plain),
     next: await readNext(deps, seat, now, plain),
@@ -81,6 +84,28 @@ export async function seatBoot(deps: BootDeps, seat: string, after?: string): Pr
     inbox,
     status,
   }
+}
+
+function seatHeartbeat(root: string, seat: string): SeatBoot['heartbeat'] {
+  const file = readSeatFile(root, seat)
+  const parsed = file === undefined ? undefined : parseSeat(seat, file)
+  return { source: parsed?.heartbeatSource ?? 'cron', cron: parsed?.heartbeatCron ?? null }
+}
+
+/** `17,47 * * * *` reads as slots `17,47`; a cron that restricts the hour is shown whole. */
+const cronSlots = (cron: string): string => {
+  const [minute, hour, ...rest] = cron.trim().split(/\s+/)
+  return minute !== undefined && hour === '*' && rest.every(f => f === '*') ? minute : cron
+}
+
+/** CC-391: who owns the seat's heartbeat, so a booting seat neither re-arms nor skips it. */
+export function heartbeatLine({ source, cron }: SeatBoot['heartbeat']): string {
+  const slots = cron === null ? undefined : cronSlots(cron)
+  if (source === 'watchdog')
+    return `Heartbeat: watchdog (${slots === undefined ? 'no heartbeat_cron' : `slots ${slots}`}; do not CronCreate)`
+  return slots === undefined
+    ? 'Heartbeat: cron (no heartbeat_cron in the seat file)'
+    : `Heartbeat: cron ${slots} (CronCreate per charter §1.3)`
 }
 
 async function readNext(
@@ -105,11 +130,12 @@ function fieldText(value: unknown): string {
   return String(value)
 }
 
-function seatLines({ seat, seatFile }: SeatBoot): string[] {
+function seatLines({ seat, seatFile, heartbeat }: SeatBoot): string[] {
   const { path, chars, mtime, fields } = seatFile
   return [
     `== seat ${seat}`,
     `file ${path} (${chars} chars, modified ${mtime}); its prose is not shown`,
+    heartbeatLine(heartbeat),
     ...Object.entries(fields).map(([key, value]) => `${key}: ${fieldText(value)}`),
   ]
 }

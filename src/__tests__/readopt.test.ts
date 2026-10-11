@@ -164,6 +164,70 @@ describe('a session whose MCP server was replaced', () => {
 })
 
 /**
+ * CC-959 — whether a name was derived from the directory or chosen decides
+ * whether it supersedes an agent under that name, so a restart must carry it
+ * across exactly as it was.
+ */
+describe('a replaced MCP server keeps whether the name was derived or chosen', () => {
+  const rosterEntry = async (sessionId: string) => {
+    const res = (await ask(await connect(), { t: 'agents' }, 'agents_result')) as Extract<
+      ServerMessage,
+      { t: 'agents_result' }
+    >
+    return res.agents.find(a => a.sessionId === sessionId)
+  }
+
+  async function startDerived(name: string, sessionId: string): Promise<net.Socket> {
+    const socket = await connect()
+    const register: ClientMessage = {
+      t: 'register',
+      name,
+      workingOn: `unregistered session in ${TEST_HOME}`,
+      cwd: TEST_HOME,
+      pid: 4242,
+      sessionId,
+      provisional: true,
+    }
+    expect(registerResult(await ask(socket, register, 'register_result')).ok).toBe(true)
+    return socket
+  }
+
+  async function restart(socket: net.Socket, sessionId: string): Promise<void> {
+    socket.destroy()
+    await new Promise(resolve => setTimeout(resolve, 150))
+    const readopt: ClientMessage = { t: 'readopt', sessionId, cwd: TEST_HOME, pid: 4243 }
+    expect(registerResult(await ask(await connect(), readopt, 'register_result')).ok).toBe(true)
+  }
+
+  it('keeps a derived name derived', async () => {
+    const session = 'aaaaaaaa-0000-0000-0000-000000000001'
+    await restart(await startDerived('derived-x', session), session)
+
+    expect(await rosterEntry(session)).toMatchObject({ name: 'derived-x', provisionalName: true })
+  })
+
+  it('keeps a chosen name chosen, though the brief is still the derived text', async () => {
+    const session = 'aaaaaaaa-0000-0000-0000-000000000002'
+    const socket = await startDerived('projects-y', session)
+    const choose: ClientMessage = {
+      t: 'register',
+      name: 'seat-y',
+      workingOn: 'coordinating',
+      cwd: TEST_HOME,
+      pid: 4242,
+      sessionId: session,
+    }
+    expect(registerResult(await ask(socket, choose, 'register_result')).ok).toBe(true)
+
+    await restart(socket, session)
+
+    const entry = await rosterEntry(session)
+    expect(entry?.name).toBe('seat-y')
+    expect(entry?.provisionalName).toBeUndefined()
+  })
+})
+
+/**
  * CC-36 — a client can register perfectly while running a DIFFERENT build from
  * the broker, and then advertise a stale tool list. It appears healthy from both
  * sides; only the tools are wrong. This cost most of an hour during the CC-23

@@ -9,6 +9,7 @@ Options:
 
 Human commands:
   inbox [options]            what your agents need from you
+  queue [options]            read the human queue; read-only, it cannot answer, approve or endorse
   answer <id> <text...>      answer a question; routes back to the asker
   dismiss <id>               close an item without answering, or decline an endorsement
   approve <id> <allow|deny>  answer an agent's permission prompt from here
@@ -53,6 +54,16 @@ Options:
   --batch            every open item numbered, to answer in one go
   --answers <value>  with --batch, a file of "N: answer" lines, or - for stdin
   -h, --help         display help for command
+
+=== agent-chat queue
+Usage: agent-chat queue [options]
+
+read the human queue; read-only, it cannot answer, approve or endorse
+
+Options:
+  --questions  only open questions
+  --json       print one JSON object: { items }
+  -h, --help   display help for command
 
 === agent-chat answer
 Usage: agent-chat answer [options] <id> <text...>
@@ -343,6 +354,8 @@ Options:
   --by-brief-source        instead: fix rounds and FIX_FIRST verdicts by who wrote the brief (seat,
                            briefer, template, unknown)
   --since <value>          window to read, e.g. 90m, 24h or 7d (default 24h)
+  --floor <value>          ready depth floor to count breaches against (default 2 x the tick config
+                           maxAgents)
   --autonomy-root <value>  directory holding seats/ and logs/
   -h, --help               display help for command
 

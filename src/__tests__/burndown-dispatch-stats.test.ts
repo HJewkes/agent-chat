@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   dispatchStats,
+  readyFloor,
   journalRefusals,
   parseWindow,
   briefSourceQuality,
@@ -96,6 +97,7 @@ const ports = (over: Partial<DispatchStatsPorts> = {}): DispatchStatsPorts => ({
   dispatchLog: seat => (seat === 'sa' ? LOG_SA : undefined),
   journal: () => undefined,
   lastOkAt: () => ago(3),
+  maxAgents: () => 20,
   verdicts: () => [],
   ...over,
 })
@@ -109,10 +111,11 @@ describe('burndown dispatch-stats', () => {
 
     expect(report.ok).toBe(true)
     const sa = report.lines.slice(report.lines.findIndex(l => l.startsWith('sa ')))
-    expect(sa.slice(1, 8)).toEqual([
+    expect(sa.slice(1, 9)).toEqual([
       '  spawns/h       tick 0.08 (2), hand 0.13 (3)',
       '  queue          3 queued, age p50 30m, max 50m',
       '  ready depth    ready 2, unbriefed 5, stale 1',
+      '  ready floor    2 of 2 ticks below 40, min 2, p50 2, longest 10m',
       '  cap use        implementers 2/3, reviewers 0/2, planners 1/1',
       `  refusals       out-of-scope 40, trust 7 (tick-summary ${ago(10)})`,
       '  registrations  ok 3, refused 1, failed 1',
@@ -305,5 +308,54 @@ describe('burndown dispatch-stats --by-brief-source', () => {
 
     expect(dispatchStatsLines(p, '24h', true, true).ok).toBe(false)
     expect(() => briefSourceQuality(p, DAY_MS)).toThrow('events.db unreadable')
+  })
+})
+
+describe('ready floor', () => {
+  const ticksAt = (ready: number[]): TickSummaryRow[] =>
+    ready.map(
+      (n, i) => JSON.parse(row((ready.length - i) * 10, { sa: summary({ ready: n }) })) as TickSummaryRow,
+    )
+
+  it('counts the ticks strictly under the floor, and not one at it', () => {
+    const f = readyFloor(ticksAt([50, 39, 10, 45, 40]), 'sa', 40)
+
+    expect(f).toMatchObject({ floor: 40, ticks: 5, below: 2, min: 10 })
+  })
+
+  it('counts none in a window held above the floor', () => {
+    const f = readyFloor(ticksAt([40, 55, 41]), 'sa', 40)
+
+    expect(f).toMatchObject({ below: 0, longestBelowMinutes: 0 })
+  })
+
+  it('measures the longest stretch in elapsed minutes, not rows', () => {
+    const f = readyFloor(ticksAt([50, 5, 6, 7, 50, 1]), 'sa', 40)
+
+    expect(f.longestBelowMinutes).toBe(20)
+  })
+
+  it('skips a row without the seat instead of counting it as zero', () => {
+    const rows = [...ticksAt([50]), JSON.parse(row(5, { sb: summary() })) as TickSummaryRow]
+
+    expect(readyFloor(rows, 'sa', 40)).toMatchObject({ ticks: 1, below: 0 })
+  })
+
+  it('takes the floor as twice the config maxAgents and reports it per seat', () => {
+    const stats = statsOf(ports({ maxAgents: () => 3 }), 'sa')
+
+    expect(stats?.readyFloor.floor).toBe(6)
+  })
+
+  it('lets an explicit floor win over maxAgents without reading the config', () => {
+    const unread = ports({
+      maxAgents: () => {
+        throw new Error('config read')
+      },
+    })
+
+    const stats = dispatchStats(unread, DAY_MS, 1).find(s => s.seat === 'sa')
+
+    expect(stats?.readyFloor).toMatchObject({ floor: 1, below: 0 })
   })
 })

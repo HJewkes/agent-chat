@@ -12,14 +12,11 @@ import type { AgentProfile } from '../agents/types.js'
 
 const INBOX_DENY = 'Bash(agent-chat inbox:*)'
 const PROFILES_DIR = path.join(__dirname, '../../profiles')
-// The decider reads the human queue with `agent-chat inbox` by design; see CC-425 follow-up.
-const READS_HUMAN_QUEUE = ['decider']
 
 const filed = fs
   .readdirSync(PROFILES_DIR)
   .filter(f => f.endsWith('.json'))
   .map(f => path.basename(f, '.json'))
-  .filter(name => !READS_HUMAN_QUEUE.includes(name))
   .map((name): AgentProfile => {
     const parsed = parseProfile(
       name,

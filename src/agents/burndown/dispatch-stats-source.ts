@@ -1,11 +1,18 @@
 import path from 'node:path'
-import { burndownLedgerPath, burndownTickStatusPath, burndownTicksPath, home } from '../../paths.js'
+import {
+  burndownConfigPath,
+  burndownLedgerPath,
+  burndownTickStatusPath,
+  burndownTicksPath,
+  home,
+} from '../../paths.js'
 import type { DispatchRecord } from '../seats/dispatch-record.js'
 import { isSeatName, parseSeat } from '../seats/charter.js'
 import { dispatchLogPath } from '../seats/dispatch-log.js'
 import { readSeatJournal, readText, seatFileNames } from '../seats/io.js'
 import type { DispatchStatsPorts } from './dispatch-stats.js'
 import { readLedger } from './ledger.js'
+import { loadTickConfig } from './source.js'
 import { readWasteObservations } from './waste-source.js'
 import { readTickStatus } from './tick-status.js'
 import type { VerdictObservation } from './waste.js'
@@ -20,6 +27,7 @@ export function dispatchStatsPorts(root: string, now: Date): DispatchStatsPorts 
     dispatchLog: seat => seatDispatchLog(root, seat),
     journal: (seat, day) => readSeatJournal(root, seat, day),
     lastOkAt: () => readTickStatus(burndownTickStatusPath()).lastOkAt,
+    maxAgents: () => loadTickConfig(burndownConfigPath()).maxAgents,
     verdicts: (runs, sinceMs) => readVerdicts(runs, sinceMs, now),
   }
 }
