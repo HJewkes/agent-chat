@@ -311,7 +311,7 @@ async function fetchTip(gitRoot: string, branch: string, timeoutMs: number): Pro
 }
 
 /** The timeout is one budget shared by every candidate, not one per candidate. */
-async function fetchDefaultTip(gitRoot: string, timeoutMs: number): Promise<BranchBase | string> {
+export async function fetchDefaultTip(gitRoot: string, timeoutMs: number): Promise<BranchBase | string> {
   if ((await gitOrNull(['remote', 'get-url', 'origin'], gitRoot)) === null)
     return 'the repository has no origin remote'
   const deadline = Date.now() + timeoutMs
