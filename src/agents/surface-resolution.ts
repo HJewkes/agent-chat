@@ -33,11 +33,11 @@ export function platformDefaultSurface(platform: NodeJS.Platform): SurfaceName {
 
 export interface SurfaceChoiceInput {
   /** An explicit request; refused rather than replaced when the host cannot run it. */
-  requested?: SurfaceName
+  requested?: SurfaceName | undefined
   /** The seat file's entry for the destination machine (`seatSurfaceFor`). */
-  seatSurface?: SurfaceName
+  seatSurface?: SurfaceName | undefined
   /** The surface the session last ran in. */
-  recorded?: SurfaceName
+  recorded?: SurfaceName | undefined
   platform: NodeJS.Platform
 }
 
