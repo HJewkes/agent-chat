@@ -7,7 +7,8 @@ import { z } from 'zod'
 import { requiredString } from '../../args.js'
 import { gitChildEnv } from '../../git.js'
 import { activeWorkRoot } from '../../agents/active-work.js'
-import { readAccountBudget } from '../../agents/budget.js'
+import { readAccountBudget, readBudget } from '../../agents/budget.js'
+import { hostIdentity } from '../../server/host.js'
 import {
   countLiveHeadless,
   machineStatus,
@@ -538,6 +539,11 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
     machineStop: readMachineStop,
     ledgerImplementers: seat => ledgerImplementers(readLedger(burndownLedgerPath()), seat),
     waitingPermission: nowMs => readWaitingPermission(path.join(home(), 'events.db'), nowMs),
+    contextOf: agent => readBudget(agent.sessionId, Date.now(), agent.configDir, agent.cwd),
+    selfContext: () => {
+      const { sessionId } = hostIdentity()
+      return sessionId === undefined ? null : readBudget(sessionId)
+    },
   }
 }
 
