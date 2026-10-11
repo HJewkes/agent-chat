@@ -227,6 +227,12 @@ describe('the watchdog resume', () => {
     const registration = { name: 'seat-x', workingOn: '', cwd, pid: 1, sessionId: 'sess-human' }
     expect(core.register(conn, { t: 'register', ...registration, provisional: true }).ok).toBe(true)
     core.drop(conn)
+    // A readopt after an MCP restart re-registers under the same name without the flag.
+    const readopted = {} as unknown as net.Socket as Conn
+    expect(core.register(readopted, { t: 'register', ...registration, workingOn: 'reconnected' }).ok).toBe(
+      true,
+    )
+    core.drop(readopted)
 
     const res = await sup.resume('seat-x', { message: 'Watchdog: wake', source: 'watchdog' })
 

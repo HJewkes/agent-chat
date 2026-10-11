@@ -105,6 +105,18 @@ describe('adopting a human-started session', () => {
     expect(core.agents.roster()[0]?.provisionalName).toBeUndefined()
   })
 
+  it('keeps a derived name derived when the session re-registers under it without the flag', () => {
+    // Readopt after an MCP restart re-registers under the known name and never passes `provisional`.
+    const core = makeCore()
+    const first = fakeConn()
+    core.register(first, registration({ name: 'agent-x', provisional: true }))
+    core.drop(first)
+
+    core.register(fakeConn(), registration({ name: 'agent-x', workingOn: 'reconnected' }))
+
+    expect(core.agents.roster()[0]?.provisionalName).toBe(true)
+  })
+
   it('attributes the session to the human, since a human started it', () => {
     const core = makeCore()
     core.register(fakeConn(), registration())

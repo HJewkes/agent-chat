@@ -314,14 +314,15 @@ describe('AgentLog over a real event log', () => {
     expect(new AgentLog(log).byName('scout')?.agentId).toBe('a2')
   })
 
+  const adoptRow = (id: string, name: string, sessionId: string) => ({
+    kind: 'agent_spawned' as const,
+    actor: 'human',
+    target: name,
+    msgId: id,
+    meta: { origin: 'adopted', session_id: sessionId },
+  })
   const adopt = (log: EventLog, id: string, name: string, sessionId: string) =>
-    log.append({
-      kind: 'agent_spawned',
-      actor: 'human',
-      target: name,
-      msgId: id,
-      meta: { origin: 'adopted', session_id: sessionId },
-    })
+    log.append(adoptRow(id, name, sessionId))
 
   it('finds an adopted identity by the Claude Code session it belongs to', () => {
     const log = freshLog()
@@ -420,6 +421,19 @@ describe('AgentLog over a real event log', () => {
         () => spawn(log, 'current', 'seat'),
         () => adopt(log, 'opened-here', 'seat', 'sess-1'),
         () => attach(log, 'opened-here', 'seat', { provisional: 'true' }),
+      )
+      const agents = new AgentLog(log)
+
+      expect(agents.supersededBy(agents.byName('seat')!)).toBeUndefined()
+    })
+
+    it('recognises a derived name on rows written before the mark existed', () => {
+      const log = freshLog()
+      const body = 'unregistered session in /work/.worktrees/seat'
+      inOrder(
+        () => spawn(log, 'current', 'seat'),
+        () => log.append({ ...adoptRow('old-session', 'seat', 'sess-1'), body }),
+        () => log.append({ kind: 'agent_attached', actor: 'seat', ref: 'old-session', body }),
       )
       const agents = new AgentLog(log)
 

@@ -24,8 +24,17 @@ import { SEAT_HOLD_MARK, heldMessages, holdVerdict } from './seat-hold.js'
 type RegisterMessage = Extract<ClientMessage, { t: 'register' }>
 
 /** CC-959: marks a derived name, so a session opened in a stopped agent's worktree does not supersede it. */
-const provisionalMeta = (msg: RegisterMessage): { meta?: Record<string, string> } =>
-  msg.provisional === true ? { meta: { provisional: 'true' } } : {}
+const provisionalMeta = (derived: boolean): { meta?: Record<string, string> } =>
+  derived ? { meta: { provisional: 'true' } } : {}
+
+/**
+ * A derived name stays derived until the session registers under a different
+ * one. Re-registering under the same name (readopt after an MCP restart, or
+ * any future path that does not pass the flag) keeps the mark rather than
+ * turning a name nobody chose into one that supersedes an agent.
+ */
+const isDerivedName = (msg: RegisterMessage, adopted: AgentIdentity | undefined): boolean =>
+  msg.provisional === true || (adopted?.provisionalName === true && adopted.name === msg.name)
 
 export type Conn = net.Socket
 
@@ -172,8 +181,8 @@ export class BrokerCore<C = Conn> {
     // the identity it already has. Minting happens only here, after a successful
     // registration: mint any earlier and a name that turned out to be held leaves
     // an identity behind with nothing able to attach to it.
-    const known = msg.agentId ?? this.agents.bySession(msg.sessionId ?? '')?.agentId
-    const agentId = known ?? this.adopt(msg)
+    const adopted = msg.agentId === undefined ? this.agents.bySession(msg.sessionId ?? '') : undefined
+    const agentId = msg.agentId ?? adopted?.agentId ?? this.adopt(msg)
     if (agentId !== undefined) {
       this.registry.bindIdentity(conn, agentId)
       this.append({
@@ -181,7 +190,7 @@ export class BrokerCore<C = Conn> {
         actor: msg.name,
         ref: agentId,
         body: msg.workingOn,
-        ...provisionalMeta(msg),
+        ...provisionalMeta(isDerivedName(msg, adopted)),
       })
     }
     return { ok: true }
@@ -283,7 +292,7 @@ export class BrokerCore<C = Conn> {
         session_id: msg.sessionId,
         // CC-959: observed by the MCP subprocess, so the roster can show which account a hand-started seat bills.
         ...(msg.observed?.configDir ? { config_dir: msg.observed.configDir } : {}),
-        ...provisionalMeta(msg).meta,
+        ...provisionalMeta(msg.provisional === true).meta,
         // Spawns this session requests are now its children, and depthOf() reads
         // the parent's recorded depth and adds one. Zero leaves them at exactly
         // the depth they had while a human session had no identity to be a

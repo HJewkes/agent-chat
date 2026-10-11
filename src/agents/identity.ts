@@ -71,7 +71,7 @@ const spawnedFrom = (row: AgentEventRow, id: string): AgentIdentity => ({
   // reads as "the broker's own dir" — exactly what those agents actually used.
   ...(row.meta.config_dir ? { configDir: row.meta.config_dir } : {}),
   ...(row.meta.config_dir_unset === 'true' ? { configDirUnset: true } : {}),
-  ...(row.meta.provisional === 'true' ? { provisionalName: true as const } : {}),
+  ...(originOf(row) === 'adopted' && derivedName(row) ? { provisionalName: true as const } : {}),
   ...provenanceOf(row),
   lastEventAt: row.ts,
   generation: generationOf(row),
@@ -103,10 +103,21 @@ function applyResumeProvenance(agent: AgentIdentity, row: AgentEventRow): void {
   if (row.meta.branch) agent.branch = row.meta.branch
 }
 
+/** The working-on text a provisional registration sends (`src/server/index.ts`). */
+const DERIVED_WORKING_ON = 'unregistered session in '
+
+/**
+ * CC-959: rows written before the `provisional` mark existed are recognised by
+ * the text the provisional registration sends, which a readopt also carries on
+ * as the identity's brief.
+ */
+const derivedName = (row: AgentEventRow): boolean =>
+  row.meta.provisional === 'true' || (row.body ?? '').startsWith(DERIVED_WORKING_ON)
+
 /** An adopted name follows its latest attach, and so does whether that name was derived or chosen. */
 function attachAdopted(agent: AgentIdentity, row: AgentEventRow): void {
   agent.name = row.actor
-  if (row.meta.provisional === 'true') agent.provisionalName = true
+  if (derivedName(row)) agent.provisionalName = true
   else delete agent.provisionalName
 }
 
