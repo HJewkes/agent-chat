@@ -33,9 +33,28 @@ describe('burndown brief approve', () => {
     const report = approveBrief('CC-1', ports(), '2026-10-10')
     expect(report.ok).toBe(true)
     expect(edits).toEqual([
-      ['--remove-tag', 'brief:proposed=2026-10-09'],
       ['--add-tag', 'brief:ready=2026-10-10'],
+      ['--remove-tag', 'brief:proposed=2026-10-09'],
     ])
+  })
+
+  it('removes an older brief:ready so only the new day remains', () => {
+    fs.writeFileSync(path.join(root, 'init', 'sources', 'CC-1-plan.md'), 'plan')
+    fs.writeFileSync(
+      path.join(root, 'init', 'tasks', 'CC-1.yml'),
+      'id: CC-1\ntags:\n  - brief:ready=2026-09-01\n  - brief:proposed=2026-10-09\n',
+    )
+    approveBrief('CC-1', ports(), '2026-10-10')
+    expect(edits).toEqual([
+      ['--add-tag', 'brief:ready=2026-10-10'],
+      ['--remove-tag', 'brief:ready=2026-09-01'],
+      ['--remove-tag', 'brief:proposed=2026-10-09'],
+    ])
+  })
+
+  it('refuses an unknown task', () => {
+    const report = approveBrief('CC-9', ports(), '2026-10-10')
+    expect(report.errors?.[0]).toContain('no task CC-9')
   })
 
   it('refuses when no plan file exists', () => {

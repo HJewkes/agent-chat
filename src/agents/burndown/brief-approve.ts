@@ -6,6 +6,7 @@ import { parseTask, readTaskText } from './source.js'
 import type { Report } from '../../cli/command.js'
 
 const PROPOSED = 'brief:proposed='
+const BRIEF_READY = /^brief:ready(=|$)/
 
 /** What approval touches outside its own logic, so a test can stand in for the disk and `active-work`. */
 export interface ApprovePorts {
@@ -31,8 +32,11 @@ export function approveBrief(taskId: string, ports: ApprovePorts, today: string)
   const plan = planPathFor(path.join(ports.root, slug), taskId)
   if (!ports.planExists(plan)) return refused(`no plan file at ${plan}`)
   try {
-    ports.edit(slug, taskId, ['--remove-tag', proposed])
-    ports.edit(slug, taskId, ['--add-tag', `brief:ready=${today}`])
+    const ready = `brief:ready=${today}`
+    // Add first: a failure after it leaves the task with a ready tag, and a rerun finishes the cleanup.
+    if (!tags.includes(ready)) ports.edit(slug, taskId, ['--add-tag', ready])
+    for (const stale of tags.filter(t => t !== ready && (t.startsWith(PROPOSED) || BRIEF_READY.test(t))))
+      ports.edit(slug, taskId, ['--remove-tag', stale])
   } catch (err) {
     return refused(`active-work task edit failed: ${err instanceof Error ? err.message : String(err)}`)
   }
