@@ -1,14 +1,14 @@
-import fs from 'node:fs'
 import type { Command as Commander } from 'commander'
 import { z } from 'zod'
 import { requiredString } from '../../args.js'
-import { burndownLedgerPath, burndownPausePath } from '../../paths.js'
+import { burndownLedgerPath } from '../../paths.js'
 import { activeWorkRoot } from '../../agents/active-work.js'
 import { defaultAutonomyRoot } from '../../agents/burndown/policy.js'
 import { renderScored, scoredPlanFromDisk } from '../../agents/burndown/score-render.js'
 import { renderMilestoneLine } from '../../agents/burndown/milestone-report.js'
 import { milestoneReportFromDisk, type MilestoneReportRead } from '../../agents/burndown/milestone-source.js'
-import { localDate } from '../../agents/burndown/seat-tick.js'
+import { localDate, watchdogUnusable } from '../../agents/burndown/seat-tick.js'
+import { logEvent } from '../../broker/log.js'
 import { collisionCheck, type BrokerView } from '../../agents/burndown/collision.js'
 import { claimCustody } from '../../agents/burndown/custody.js'
 import { shepherdRows, shepherdTarget } from '../../agents/burndown/shepherd.js'
@@ -37,8 +37,20 @@ import { systemHost } from '../../mirror/job-host.js'
 import { addVerb, defineVerb, Report } from '../command.js'
 import { collisionView, tickBroker } from '../burndown-broker.js'
 import { approveBrief, approvePortsOn } from '../../agents/burndown/brief-approve.js'
-import { releaseTask, type RetireCall } from './burndown-release.js'
-import { burndownConfigShowVerb } from './burndown-config.js'
+import { linkSlicePr, releaseTask, type RetireCall } from './burndown-release.js'
+import {
+  burndownConfigShowVerb,
+  burndownOverrideClearVerb,
+  burndownOverrideSetVerb,
+  burndownPresetApplyVerb,
+  burndownPresetClearVerb,
+  burndownPresetListVerb,
+  burndownSeatOffVerb,
+  burndownSeatOnVerb,
+  pauseByArgs,
+  pauseByCli,
+  pauseFromCli,
+} from './burndown-config.js'
 import { burndownInstallOn, burndownJobStatusOn, burndownUninstallOn } from './burndown-job.js'
 
 const refused = (err: unknown): Report => ({
@@ -109,6 +121,15 @@ async function plainPlan(): Promise<Report> {
 }
 
 async function seatDispatchPlan(seat: string, autonomyRoot: string | undefined): Promise<Report> {
+  const unusable = watchdogUnusable()
+  if (unusable !== undefined) {
+    logEvent('burndown_seat_paths_skipped', { reason: unusable })
+    const plain = await plainPlan()
+    return {
+      ...plain,
+      lines: [`seat paths skipped, showing the legacy plan: ${unusable}`, ...plain.lines],
+    }
+  }
   const opts = await seatPlanOptions(seat, autonomyRoot)
   return { ok: true, lines: renderPlan(seatPlanFromDisk(opts), opts.now) }
 }
@@ -340,32 +361,38 @@ export const burndownTickVerb = defineVerb({
 export const burndownPauseVerb = defineVerb({
   name: 'burndown.pause',
   description: 'stop new spawns from the next tick on; running agents finish',
-  args: z.object({}),
+  args: pauseByArgs,
   result: Report,
-  async run() {
-    fs.writeFileSync(burndownPausePath(), `${new Date().toISOString()}\n`)
-    return { ok: true, lines: [`paused: ${burndownPausePath()} written`] }
-  },
+  cli: pauseByCli,
+  run: ({ by }) => pauseFromCli(true, by),
 })
 
 export const burndownResumeVerb = defineVerb({
   name: 'burndown.resume',
   description: 'let the tick spawn again',
-  args: z.object({}),
+  args: pauseByArgs,
   result: Report,
-  async run() {
-    fs.rmSync(burndownPausePath(), { force: true })
-    return { ok: true, lines: ['resumed'] }
-  },
+  cli: pauseByCli,
+  run: ({ by }) => pauseFromCli(false, by),
 })
 
 export const burndownReleaseVerb = defineVerb({
   name: 'burndown.release',
-  description: 'drop every claim on a task, stalled or not, so the tick may pick it again',
-  args: z.object({ task: requiredString('task') }),
+  description:
+    'drop every claim on a task, stalled or not, so the tick may pick it again; --slice drops only that slice',
+  args: z.object({ task: requiredString('task'), slice: z.string().min(1).optional() }),
   result: Report,
-  cli: { positional: ['task'] },
-  async run({ task }) {
+  cli: {
+    positional: ['task'],
+    options: {
+      slice: {
+        long: '--slice',
+        description:
+          "drop only this slice's claim; the task stays seeded and the slice no longer gates its dependents",
+      },
+    },
+  },
+  async run({ task, slice }) {
     // Never autostart: a release that brought up a broker would own it, and the broker serves every session.
     const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
       autoStart: false,
@@ -379,11 +406,27 @@ export const burndownReleaseVerb = defineVerb({
       return tickBroker(client).retire(name)
     }
     try {
-      return await releaseTask(task, retire)
+      return await releaseTask(task, retire, new Date(), slice)
     } finally {
       client.close()
     }
   },
+})
+
+export const burndownLinkVerb = defineVerb({
+  name: 'burndown.link',
+  description:
+    'record a hand-dispatched PR on a queued slice, so the tick never dispatches it and finishes it on merge',
+  args: z.object({ task: requiredString('task'), slice: requiredString('slice'), pr: requiredString('pr') }),
+  result: Report,
+  cli: {
+    positional: ['task'],
+    options: {
+      slice: { long: '--slice', description: 'the queued slice the PR implements' },
+      pr: { long: '--pr', description: 'the PR, as owner/repo#n or its URL' },
+    },
+  },
+  run: ({ task, slice, pr }) => linkSlicePr(task, slice, pr),
 })
 
 export const burndownBriefApproveVerb = defineVerb({
@@ -455,11 +498,22 @@ export function addBurndownCommands(program: Commander): void {
   addVerb(burndown, burndownPauseVerb)
   addVerb(burndown, burndownResumeVerb)
   addVerb(burndown, burndownReleaseVerb)
+  addVerb(burndown, burndownLinkVerb)
   addVerb(brief, burndownBriefApproveVerb)
   addVerb(
     burndown.command('config').description('resolved burndown settings (CC-955)'),
     burndownConfigShowVerb,
   )
+  const preset = burndown.command('preset').description('named burndown settings presets (CC-955)')
+  addVerb(preset, burndownPresetApplyVerb)
+  addVerb(preset, burndownPresetClearVerb)
+  addVerb(preset, burndownPresetListVerb)
+  const override = burndown.command('override').description('a time-boxed patch over the settings (CC-955)')
+  addVerb(override, burndownOverrideSetVerb)
+  addVerb(override, burndownOverrideClearVerb)
+  const seat = burndown.command('seat').description('turn a seat on or off in the settings (CC-955)')
+  addVerb(seat, burndownSeatOnVerb)
+  addVerb(seat, burndownSeatOffVerb)
   addVerb(burndown, burndownInstallVerb)
   addVerb(burndown, burndownUninstallVerb)
   addVerb(burndown, burndownJobStatusVerb)

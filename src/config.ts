@@ -39,6 +39,7 @@ export interface AgentChatConfig {
   orphanReapKill?: unknown
   poolPick?: unknown
   seatSpawnGate?: unknown
+  seatStewards?: unknown
   permissionHookTimeoutSeconds?: unknown
   decider?: unknown
   noticeTtlHours?: unknown
@@ -199,6 +200,24 @@ export function resolveSeatSpawnMode(): SeatSpawnMode {
   if (mode !== undefined) return mode
   logInvalidOnce({ key: 'seatSpawnGate', value, fallback: 'off' })
   return 'off'
+}
+
+/**
+ * CC-966: the session that takes a non-resident seat's messages while the seat has no active session,
+ * from `config.json`'s `seatStewards` (`{"<seat>": "<steward>"}`). Read per send; an invalid entry is
+ * logged and read as no steward, so the seat keeps today's dark-seat hold.
+ */
+export function resolveSeatSteward(seat: string): string | undefined {
+  const stewards = readConfig().seatStewards
+  if (stewards === undefined) return undefined
+  if (!isObject(stewards) || Array.isArray(stewards)) {
+    logInvalidOnce({ key: 'seatStewards', value: stewards, fallback: 'no stewards' })
+    return undefined
+  }
+  const value = stewards[seat]
+  if (value === undefined || (typeof value === 'string' && value !== '' && value !== seat)) return value
+  logInvalidOnce({ key: `seatStewards.${seat}`, value, fallback: 'no steward' })
+  return undefined
 }
 
 /**

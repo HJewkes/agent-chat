@@ -63,6 +63,7 @@ import {
   briefDepsOf,
   diskSeatDeps,
   loadSeats,
+  watchdogUnusable,
   planSeats,
   scopeExhausted,
   type LoadedSeats,
@@ -139,6 +140,8 @@ export interface TickOptions {
   dryRun: boolean
   broker: TickBroker
   now?: Date
+  /** CC-220: read at each seat-log append; defaults to the wall clock, or to `now` when a test pins it. */
+  clock?: () => Date
   root?: string
   log?: (event: string, detail: Record<string, unknown>) => void
   /** Runs the collision check's `git` and `gh` readers and the `titan-factory` calls; a test injects one that reaches neither. */
@@ -191,7 +194,14 @@ export function modeConflict(config: TickConfig, initiatives: readonly Initiativ
 export async function tickFromDisk(opts: TickOptions): Promise<string[]> {
   if (opts.dryRun) return (await tickOnce(opts)).lines
   const now = opts.now ?? new Date()
-  return recordTick(burndownTickStatusPath(), () => tickOnce({ ...opts, now }), now, opts.log)
+  const clock = clockOf(opts)
+  return recordTick(burndownTickStatusPath(), () => tickOnce({ ...opts, now, clock }), now, opts.log)
+}
+
+/** A tick runs for minutes, so seat-log lines stamp the time they are appended, not the tick's `now`. */
+function clockOf({ clock, now }: TickOptions): () => Date {
+  if (clock !== undefined) return clock
+  return now === undefined ? () => new Date() : () => now
 }
 
 const stopCode = (config: TickConfig, paused: string | undefined): StopCode =>
@@ -265,7 +275,8 @@ async function actOn(
   now: Date,
 ): Promise<string[]> {
   const log = opts.log ?? logEvent
-  logReasons(defaultAutonomyRoot(opts.root), reasons, now, log)
+  const clock = clockOf(opts)
+  logReasons(defaultAutonomyRoot(opts.root), reasons, clock, log)
   for (const failure of failures) log('burndown_collision_reader_failed', { ...failure })
   for (const initiative of unchecked) log('burndown_collision_skipped', { initiative, reason: 'no repo' })
   for (const skipped of skippedSeats) log('burndown_seat_skipped', { ...skipped })
@@ -298,8 +309,8 @@ async function actOn(
     ...(opts.egress === undefined ? {} : { egress: opts.egress }),
   })
   const diff = { seats: config.seats, before: ledger, after: leaks.ledger, spawns, human: leaks.human }
-  const journal = seatJournal(defaultAutonomyRoot(opts.root), { log, now: () => now })
-  const dispatch = seatMergedLog(defaultAutonomyRoot(opts.root), { log, now: () => now })
+  const journal = seatJournal(defaultAutonomyRoot(opts.root), { log, now: clock })
+  const dispatch = seatMergedLog(defaultAutonomyRoot(opts.root), { log, now: clock })
   const told = await deliverSeatEvents(diff, { open: opts.broker.seatSender, log, now, journal, dispatch })
   writeLedger(burndownLedgerPath(), {
     ...told.ledger,
@@ -351,7 +362,7 @@ function adoptPrs(
     exec: opts.exec ?? run,
     root,
     autonomyRoot: defaultAutonomyRoot(root),
-    now,
+    clock: clockOf(opts),
     log,
     owedHoldsFile: burndownOwedHoldsPath(),
   })
@@ -368,12 +379,12 @@ function adoptPrs(
 function logReasons(
   autonomyRoot: string,
   reasons: readonly NoDispatchReason[],
-  now: Date,
+  clock: () => Date,
   log: NonNullable<TickOptions['log']>,
 ): void {
   for (const { seat, text } of reasons) {
     try {
-      appendSeatLog(autonomyRoot, seat, now, text)
+      appendSeatLog(autonomyRoot, seat, clock(), text)
     } catch (err) {
       log('burndown_seat_log_failed', { seat, reason: err instanceof Error ? err.message : String(err) })
     }
@@ -478,10 +489,14 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
   const root = opts.root ?? activeWorkRoot()
   const roster = await opts.broker.roster()
   const world = loadWorld(now, root)
+  const unusable = config.seats.length === 0 ? undefined : watchdogUnusable()
+  if (unusable !== undefined) (opts.log ?? logEvent)('burndown_seat_paths_skipped', { reason: unusable })
   const seats =
     config.seats.length === 0
       ? undefined
-      : loadSeats(config.seats, ledger, diskSeatDeps(defaultAutonomyRoot(root), root, now))
+      : unusable !== undefined
+        ? { loaded: [], skipped: config.seats.map(seat => ({ seat, reason: unusable })) }
+        : loadSeats(config.seats, ledger, diskSeatDeps(defaultAutonomyRoot(root), root, now))
   const held = heldClaims(ledger)
   const shepherd = memo(() => shepherdRows(opts.exec ?? run, opts.log))
   const tasks = new Map([...world.tasks, ...seatClaimTasks(held, world, root)])

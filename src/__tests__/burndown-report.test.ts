@@ -165,6 +165,35 @@ describe('burndown lints planner slices (CC-631)', () => {
     expect(read.problems?.[0]).toContain('contracts.0.scope')
   })
 
+  it('passes a slice whose doneWhen names an op and carries no ops field, as the planner brief does not ask yet (CC-974)', () => {
+    expect(readSlices(planOf({ ...good, doneWhen: 'live after a broker restart' })).problems).toBeUndefined()
+  })
+
+  it('fails a slice whose ops field leaves out an op its doneWhen names', () => {
+    const slice = { ...good, doneWhen: 'live after a broker restart', ops: ['publish'] }
+
+    expect(readSlices(planOf(slice)).problems).toEqual([
+      `slice a: doneWhen mentions restart ('broker restart'), which "ops" does not declare`,
+    ])
+  })
+
+  it('passes a slice whose doneWhen names an op as subject matter with an empty ops field', () => {
+    const read = readSlices(planOf({ ...good, doneWhen: 'live after a broker restart', ops: [] }))
+
+    expect(read.problems).toBeUndefined()
+    expect(read.slices?.[0]?.ops).toEqual([])
+  })
+
+  it('fails a slice that declares a human op, telling the planner to split it out', () => {
+    expect(readSlices(planOf({ ...good, ops: ['restart'] })).problems).toEqual([
+      'slice a: declares restart; split it into a kind:operator or kind:owner task',
+    ])
+  })
+
+  it('passes a slice that declares publish, which a grant unlocks', () => {
+    expect(readSlices(planOf({ ...good, ops: ['publish'] })).problems).toBeUndefined()
+  })
+
   it('gives one lint line for a scope repeated in one slice', () => {
     const contracts = [
       { scope: 'sym:a', op: 'add' },

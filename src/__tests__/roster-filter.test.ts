@@ -189,7 +189,10 @@ describe('agent_list tool filters', () => {
   const ctx = (registeredName: string | null) =>
     ({
       registeredName,
-      broker: { request: async () => ({ t: 'agents_result', agents: TEN }) },
+      broker: {
+        request: async (m: { t: string }) =>
+          m.t === 'list' ? { t: 'list_result', sessions: [] } : { t: 'agents_result', agents: TEN },
+      },
     }) as never
 
   it("mine lists only the session's own spawns", async () => {

@@ -129,7 +129,13 @@ async function runPrReady(cwd: string, failing: string[] = [], opts: PrReadyOpti
     env: extra.env ?? { AGENT_CHAT_BASEMENT_HOST: 'off' },
     hostname: extra.hostname ?? 'workstation',
   })
-  return { code, out, calls, errLines, toolCalls: calls.filter(call => !call.startsWith('git ')) }
+  return {
+    code,
+    out,
+    calls,
+    errLines,
+    toolCalls: calls.filter(call => !call.startsWith('git ') && !call.startsWith('gh pr list')),
+  }
 }
 
 const pkg = (body: object): string => JSON.stringify(body, null, 2)
@@ -487,6 +493,22 @@ describe('pr-ready on a branch that is already pushed', () => {
     expect(git(work, 'rev-parse', 'HEAD')).toBe(head)
   })
 
+  it('does not rebase an unpushed-looking branch that has an open PR, and suggests a merge', async () => {
+    const work = fixtureRepo({ 'package.json': pkg({}) }, { 'a.txt': '1\n' })
+    advanceOrigin(work, { 'b.txt': '2\n' })
+    const head = git(work, 'rev-parse', 'HEAD')
+    const openPr: Override = line =>
+      line.startsWith('gh pr list --head feature') ? { code: 0, output: '[{"number":7}]' } : undefined
+
+    const result = await runPrReady(work, [], {}, { override: openPr })
+
+    expect(result.out).toContain(
+      'ok rebase: behind origin/main, branch already pushed; not rebasing; open PR: merge origin/main instead',
+    )
+    expect(result.calls).not.toContain(`git rebase ${BASE}`)
+    expect(git(work, 'rev-parse', 'HEAD')).toBe(head)
+  })
+
   it('still rebases a branch that tracks only the default branch', async () => {
     const work = fixtureRepo({ 'package.json': pkg({}) }, { 'a.txt': '1\n' })
     git(work, 'branch', '--set-upstream-to=origin/main')
@@ -657,6 +679,59 @@ describe('pr-ready scan', () => {
     expect(result.code).toBe(0)
     expect(result.out).toContain('ok scan')
     expect(result.out.at(-1)).toBe(`PR-READY OK ${git(dir, 'rev-parse', 'HEAD')}`)
+  })
+
+  it('passes the clean-tree check when the only untracked path is the body file', async () => {
+    const dir = work()
+    fs.writeFileSync(path.join(dir, 'pr-body.md'), 'A clean body.\n')
+
+    const result = await runPrReady(dir, [], { bodyFile: path.join(fs.realpathSync(dir), 'pr-body.md') })
+
+    expect(result.out).toContain('ok clean-tree')
+  })
+
+  it('still fails the clean-tree check on another untracked file beside the body file', async () => {
+    const dir = work()
+    fs.writeFileSync(path.join(dir, 'pr-body.md'), 'A clean body.\n')
+    fs.writeFileSync(path.join(dir, 'stray.txt'), 'x\n')
+
+    const result = await runPrReady(dir, [], { bodyFile: 'pr-body.md' })
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain('FAIL clean-tree: uncommitted changes in stray.txt')
+  })
+
+  it('passes the clean-tree check with an untracked node_modules symlink into another checkout', async () => {
+    const dir = work()
+    fs.symlinkSync(scratchDir(), path.join(dir, 'node_modules'))
+
+    const result = await runPrReady(dir)
+
+    expect(result.out).toContain('ok clean-tree')
+    expect(result.out.at(-1)).toBe(
+      `PR-READY OK ${git(dir, 'rev-parse', 'HEAD')} (scan skipped: no body file)`,
+    )
+  })
+
+  it('passes the clean-tree check with an untracked nested node_modules directory', async () => {
+    const dir = work()
+    commit(dir, { 'packages/x/index.ts': '1\n' }, 'package')
+    writeFiles(dir, { 'packages/x/node_modules/dep/index.js': '1\n' })
+
+    const result = await runPrReady(dir)
+
+    expect(result.out).toContain('ok clean-tree')
+  })
+
+  it('still fails the clean-tree check on another untracked file beside a node_modules symlink', async () => {
+    const dir = work()
+    fs.symlinkSync(scratchDir(), path.join(dir, 'node_modules'))
+    fs.writeFileSync(path.join(dir, 'other.txt'), 'x\n')
+
+    const result = await runPrReady(dir)
+
+    expect(result.code).toBe(1)
+    expect(result.out).toContain('FAIL clean-tree: uncommitted changes in other.txt')
   })
 
   it('reads a relative body file from the repo it checks', async () => {

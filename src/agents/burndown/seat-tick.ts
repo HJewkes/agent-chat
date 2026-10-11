@@ -12,7 +12,7 @@ import { isLive, occupantOf } from '../isolation/sweep.js'
 import type { Claim, Ledger, SeatState } from './ledger.js'
 import type { LineStop } from './flow-gate.js'
 import { noDispatchReason, stopOf, type SeatOutcome } from './no-dispatch.js'
-import { rowNamed, type Roster } from './observe.js'
+import { LIVE, rowNamed, type Roster } from './observe.js'
 import type { Capacity, Dispatch, PlanInputs } from './plan.js'
 import {
   dormantInitiatives,
@@ -193,6 +193,14 @@ export function activeTreeOf(roster: Roster): (claim: Claim) => boolean {
     const assigned = rowNamed(roster, claim.agentName)
     if (assigned !== undefined && isLive(assigned.state)) return true
     return occupantOf(claim.worktree, roster.agents) !== undefined
+  }
+}
+
+/** CC-978: a named agent whose row is running may still run, and so may a name missing from a partial roster. */
+export function liveAgentOf(roster: Roster): (name: string | undefined) => boolean {
+  return name => {
+    const row = rowNamed(roster, name)
+    return row === undefined ? name !== undefined && roster.partial !== undefined : LIVE.has(row.state)
   }
 }
 
@@ -380,7 +388,11 @@ function optional(deps: SeatPlanDeps, capacity: Capacity | undefined) {
     ...(deps.trust === undefined ? {} : { trust: deps.trust }),
     ...(deps.roster === undefined
       ? {}
-      : { activeTree: activeTreeOf(deps.roster), agents: deps.roster.agents }),
+      : {
+          activeTree: activeTreeOf(deps.roster),
+          agents: deps.roster.agents,
+          liveAgent: liveAgentOf(deps.roster),
+        }),
   }
 }
 
@@ -422,6 +434,16 @@ export function planSeats(seats: readonly LoadedSeat[], deps: SeatPlanDeps, root
     }
   }
   return result
+}
+
+/** The reason the watchdog's state file cannot be read, or undefined when it can; the seat paths stay closed while it is set. */
+export function watchdogUnusable(): string | undefined {
+  try {
+    loadDoc()
+    return undefined
+  } catch (err) {
+    return message(err)
+  }
 }
 
 /** The live readers: the pool's status file and the watchdog's saved run meter. */

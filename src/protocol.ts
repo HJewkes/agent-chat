@@ -342,6 +342,12 @@ export type SubscribableKind = (typeof SUBSCRIBABLE_KINDS)[number]
  */
 export type SubscriptionSelector = { all: true } | { name: string } | { tag: string } | { spawnedBy: 'self' }
 
+/** CC-168: which experiment a spawn belongs to and which arm it runs, recorded on its spawn row. */
+export interface ExperimentArm {
+  id: string
+  arm: string
+}
+
 export interface Subscription {
   selector: SubscriptionSelector
   kinds: SubscribableKind[]
@@ -938,6 +944,8 @@ export type ClientMessage =
        * from the log, and refuses unless the requester spawned it.
        */
       predecessor?: string
+      /** CC-168: the experiment and arm this spawn runs; both must be non-empty or the spawn is refused. */
+      experiment?: ExperimentArm
       /** CC-286: `none` stops the broker appending its return contract to `brief`. */
       returnContract?: 'none'
       /** CC-774: the class-of-service tier the burndown plan placed the task in; recorded on the `dispatched` row. */

@@ -167,15 +167,18 @@ describe('the agent_list header', () => {
     const ctx = {
       registeredName: 'me',
       broker: {
-        request: async () => ({
-          t: 'agents_result',
-          agents: [
-            identity({ name: 'w1', state: 'live', sessionId: 'headless-w1' }),
-            identity({ name: 'w2', state: 'live', sessionId: 'headless-w2' }),
-            identity({ name: 'a1', state: 'live', sessionId: 'headless-a1', configDir: agents }),
-          ],
-          slots: { held: 3, cap: 30 },
-        }),
+        request: async (m: { t: string }) =>
+          m.t === 'list'
+            ? { t: 'list_result', sessions: [] }
+            : {
+                t: 'agents_result',
+                agents: [
+                  identity({ name: 'w1', state: 'live', sessionId: 'headless-w1' }),
+                  identity({ name: 'w2', state: 'live', sessionId: 'headless-w2' }),
+                  identity({ name: 'a1', state: 'live', sessionId: 'headless-a1', configDir: agents }),
+                ],
+                slots: { held: 3, cap: 30 },
+              },
       },
     } as never
 

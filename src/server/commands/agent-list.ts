@@ -12,6 +12,13 @@ const resumeHint = (agent: AgentIdentity): string =>
     ? `\n    session: ${agent.sessionId} (agent_spawn resume_session brings it back)`
     : ''
 
+/**
+ * CC-217: the ledger's `live` only says a process attached. Unless a session of
+ * that name is registered too, chat_list will not show it, so the row says so.
+ */
+const stateSegment = (agent: AgentIdentity, registered: ReadonlySet<string>): string =>
+  agent.state === 'live' && !registered.has(agent.name) ? 'live, attached-unregistered' : agent.state
+
 export const agentList = defineTool({
   name: 'agent_list',
   description:
@@ -32,6 +39,11 @@ export const agentList = defineTool({
       { t: 'agents', ...(includeRetired ? { includeRetired } : {}) },
       'agents_result',
     )) as Extract<ServerMessage, { t: 'agents_result' }>
+    const { sessions } = (await ctx.broker.request({ t: 'list' }, 'list_result')) as Extract<
+      ServerMessage,
+      { t: 'list_result' }
+    >
+    const registered = new Set(sessions.map(s => s.name))
     const agents = filterRoster(res.agents, {
       ...(mine === true ? { spawner: callerName({ AGENT_CHAT_NAME: ctx.registeredName ?? undefined }) } : {}),
       ...(prefix === undefined ? {} : { prefix }),
@@ -64,7 +76,7 @@ export const agentList = defineTool({
         // An adopted identity has no profile and no surface we chose, and its
         // name is self-reported — so it says what it is rather than rendering
         // two empty fields and reading like an agent someone spawned.
-        `- ${a.name} [${a.state}, ${a.origin === 'adopted' ? 'human-started session' : `${a.profile}, ${a.surface}`}${budgetPart}]` +
+        `- ${a.name} [${stateSegment(a, registered)}, ${a.origin === 'adopted' ? 'human-started session' : `${a.profile}, ${a.surface}`}${budgetPart}]` +
         ` spawned by ${a.spawnedBy}${a.configDir ? `, account: ${accountName(a.configDir)}` : ''}\n    ${a.cwd}` +
         // A headless agent's output is discarded, so this is the only way to read
         // what it actually did without interrupting it for a report.

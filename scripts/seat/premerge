@@ -156,9 +156,16 @@ check_merge_tree() {
 
 is_coordinator() { local c; for c in $COORDS; do [ "$c" = "$1" ] && return 0; done; return 1; }
 
-# Verdict rows for this PR, newest first: "<id> <actor>".
+FENCE='```'
+
+# Verdict rows for this PR, newest first: "<id> <actor>". A body may open with a code fence line (CC-842).
 verdict_rows() {
-  sqlite3 -readonly -separator ' ' "$DB" "select id, actor from events where kind='message' and body like 'Verdict:%' and (body||char(10)) like '%PR: $R#$N'||char(10)||'%' order by id desc"
+  sqlite3 -readonly -separator ' ' "$DB" "select id, actor from events where kind='message' and (body like 'Verdict:%' or body like '$FENCE%'||char(10)||'Verdict:%') and (body||char(10)) like '%PR: $R#$N'||char(10)||'%' order by id desc"
+}
+
+# Drops an opening fence line and its closing fence so the verdict block reads as if unfenced.
+unfence() {
+  awk -v f="$FENCE" 'NR==1 && index($0,f)==1 {open=1; next} open && $0==f {open=0; next} {print}'
 }
 
 # Newest verdict that counts: from a reviewer, or a coordinator's non-MERGE. Sets id actor first vh.
@@ -170,7 +177,8 @@ pick_verdict() {
     [ -n "$rid" ] || continue
     [ "$ractor" = "$branch_agent" ] && continue
     body=$(sqlite3 -readonly "$DB" "select body from events where id=$rid") || die "cannot read verdict $rid"
-    body=$(tr -d '\r' <<<"$body")
+    body=$(tr -d '\r' <<<"$body" | unfence)
+    [[ $(head -1 <<<"$body") == Verdict:* ]] || continue
     grep -qxF "PR: $R#$N" <<<"$body" || continue
     if is_coordinator "$ractor"; then
       [[ $(head -1 <<<"$body") =~ ^Verdict:\ MERGE([[:space:]]|$) ]] && continue

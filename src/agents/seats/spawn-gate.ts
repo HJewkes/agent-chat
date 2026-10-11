@@ -40,6 +40,8 @@ export interface SeatSpawnInput {
   dayMeter?: SpendMeter | undefined
   /** The spawn profile's model. */
   model: string
+  /** The spawn's work role, stated or inferred; a review role passes the sonnet band on any model. */
+  role?: string | undefined
   now: Date
   /** Epoch ms of the owner's last typed turn; absent reads as the owner present, as every other gate does. */
   humanLastTurnAt?: number | undefined
@@ -62,6 +64,9 @@ const missing = (reading: AccountReading | undefined): string =>
     : `reading is ${reading.ageSeconds}s old, over the ${MAX_READING_AGE_SECONDS}s limit`
 
 export const isSonnet = (model: string): boolean => /sonnet/i.test(model)
+
+/** Charter section 4 allows "sonnet work and reviews" inside the band; a fix round is implementer work. */
+const isReviewRole = (role: string | undefined): boolean => role === 'reviewer' || role === 'shepherd-review'
 
 interface SpendHistory {
   history: SevenDaySample[]
@@ -110,7 +115,7 @@ function spawnCaps(
   }
 }
 
-/** Allows on a missing or stale reading; refuses past a stop, and opus inside the pool's sonnet band. */
+/** Allows on a missing or stale reading; refuses past a stop, and non-sonnet work but reviews inside the sonnet band. */
 export function seatSpawnGate(input: SeatSpawnInput): SeatSpawnVerdict {
   const { seat, pool, reading, now } = input
   const who = `seat ${seat.name}`
@@ -127,8 +132,14 @@ export function seatSpawnGate(input: SeatSpawnInput): SeatSpawnVerdict {
     ctx: { now, ...(input.humanLastTurnAt === undefined ? {} : { humanLastTurnAt: input.humanLastTurnAt }) },
   })
   if (!gate.open) return { allow: false, reason: `${who}: ${gate.reason}` }
-  if (gate.sonnetOnly && !isSonnet(input.model))
+  if (gate.sonnetOnly && !isSonnet(input.model)) {
+    if (isReviewRole(input.role))
+      return {
+        allow: true,
+        reason: `${who}: ${gate.reason}; review role ${input.role} admitted on ${input.model}`,
+      }
     return { allow: false, reason: `${who}: ${gate.reason}; profile model ${input.model} is not sonnet` }
+  }
   return { allow: true, reason: `${who}: ${gate.reason}` }
 }
 

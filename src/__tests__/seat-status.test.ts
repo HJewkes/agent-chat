@@ -432,6 +432,16 @@ describe('a seat against its concurrency caps', () => {
     expect(implementers.names).toEqual([])
   })
 
+  it("shows the burndown ledger's implementer count beside the live one when they differ (CC-978)", async () => {
+    seedAgent({ name: 'ss-al-1', profile: 'implementer' })
+
+    const differs = await statusReport(deps({ ledgerImplementers: () => 5 }), SEAT, false)
+    const same = await statusReport(deps({ ledgerImplementers: () => 1 }), SEAT, false)
+
+    expect(differs.lines[1]).toBe('implementers  1/2 (ledger 5)  ss-al-1')
+    expect(same.lines[1]).toBe('implementers  1/2  ss-al-1')
+  })
+
   it('counts a detached implementer as active and names it as detached', async () => {
     seedAgent({ name: 'ss-al-1', profile: 'implementer' })
     seedAgent({ name: 'ss-al-2', profile: 'implementer', detached: true })
@@ -723,6 +733,20 @@ describe("the seat's spend caps", () => {
   const RUN_UNKNOWN = stopOf('no seven_day reading at run start, so run spend is unknown')
   const DAY_UNKNOWN = stopOf('no seven_day reading at or before 07:00, so day spend unknown')
   const dayMeter = { since: at(7), last: 40, spent: 8 }
+  const runStart = () =>
+    startRun(
+      {
+        now: () => NOW,
+        readCharter: () => fs.readFileSync(path.join(autonomy, 'charter.md'), 'utf8'),
+        readSeatFile: seat => fs.readFileSync(path.join(autonomy, 'seats', `${seat}.md`), 'utf8'),
+        readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
+        loadDoc: () => loadDoc(statePath()),
+        saveDoc: next => saveDoc(next, statePath()),
+        lock: () => acquireRunLock(path.join(tmp, 'seat-watchdog.lock')),
+        sleep: async () => undefined,
+      },
+      SEAT,
+    )
 
   it('stops a per_day cap as unknown when the watchdog has saved no state file', async () => {
     const { budget } = await fromDisk()
@@ -850,23 +874,27 @@ describe("the seat's spend caps", () => {
     fs.writeFileSync(statePath(), JSON.stringify(saved))
     const before = await fromDisk()
 
-    await startRun(
-      {
-        now: () => NOW,
-        readCharter: () => fs.readFileSync(path.join(autonomy, 'charter.md'), 'utf8'),
-        readSeatFile: seat => fs.readFileSync(path.join(autonomy, 'seats', `${seat}.md`), 'utf8'),
-        readBudget: (dir, nowMs) => readAccountBudget(dir, nowMs),
-        loadDoc: () => loadDoc(statePath()),
-        saveDoc: next => saveDoc(next, statePath()),
-        lock: () => acquireRunLock(path.join(tmp, 'seat-watchdog.lock')),
-        sleep: async () => undefined,
-      },
-      SEAT,
-    )
+    await runStart()
     const after = await fromDisk()
 
     expect(before.budget.stop).toBe(stopOf("run spend 20 points at or above the seat's per_run_points 5"))
     expect(after.budget.stop).toBeNull()
+  })
+
+  it('counts run spend from the run-start reading, not from the saved run it replaced', async () => {
+    writeAutonomy({ spend: { per_run_points: 5 }, configDir: poolDir })
+    const run = { since: at(1), last: 30, spent: 9 }
+    const saved = { seats: { [SEAT]: { idleRuns: 0, at: at(9, 45), run } }, pools: { [POOL]: dayMeter } }
+    fs.writeFileSync(statePath(), JSON.stringify(saved))
+
+    await runStart()
+    writeReading(12, 45)
+    const belowCap = await fromDisk()
+    writeReading(12, 46)
+    const atCap = await fromDisk()
+
+    expect(belowCap.budget.stop).toBeNull()
+    expect(atCap.budget.stop).toBe(stopOf("run spend 5 points at or above the seat's per_run_points 5"))
   })
 
   it('counts a run meter older than 12 hours from its last reading, not from zero', async () => {
