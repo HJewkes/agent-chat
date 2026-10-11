@@ -10,6 +10,8 @@ import { Supervisor } from '../agents/supervisor.js'
 import { transcriptPath } from '../agents/transcript.js'
 import type { DeliveredMessage } from '../protocol.js'
 import { autoAttach } from './broker-harness.js'
+import { BACKGROUND_RESUME_MESSAGE } from '../agents/background-resume.js'
+import { readLaunchPlan } from '../agents/launch-files.js'
 
 /**
  * CC-266 and CC-255: a headless agent that exits without a `Status:` report to
@@ -111,25 +113,107 @@ const backgroundBash = [
 const unreported = () =>
   core.events.history(200).filter(row => row.kind === 'message' && row.meta.event === 'unreported-exit')
 
+const exits = () => core.events.agentEvents().filter(r => r.kind === 'agent_exited').length
+const resumes = () => core.events.agentEvents().filter(r => r.kind === 'agent_resumed')
+
 async function exitAndSettle(code = 0): Promise<void> {
+  const before = exits()
   exitChild(code)
-  await vi.waitFor(() => expect(core.events.agentEvents().some(r => r.kind === 'agent_exited')).toBe(true))
+  await vi.waitFor(() => expect(exits()).toBeGreaterThan(before))
 }
 
-describe('an agent that exits without its Status report', () => {
-  it('tells its spawner it exited with a pending background task (CC-255)', async () => {
-    const coord = {} as unknown as net.Socket
-    core.register(coord, {
-      t: 'register',
-      name: 'coord',
-      workingOn: '',
-      cwd: tmp('agent-chat-coord-'),
-      pid: 1,
-    })
+function registerCoord(): net.Socket {
+  const coord = {} as unknown as net.Socket
+  core.register(coord, { t: 'register', name: 'coord', workingOn: '', cwd: tmp('agent-chat-coord-'), pid: 1 })
+  return coord
+}
+
+/** The background resume's run, attached, so its own exit reads as an ordinary one. */
+async function exitIntoBackgroundResume(agentId: string): Promise<void> {
+  exitChild(0)
+  await vi.waitFor(() => expect(resumes()).toHaveLength(1))
+  await vi.waitFor(() => expect(core.agents.get(agentId)?.state).not.toBe('exited'))
+  core.append({ kind: 'agent_attached', actor: 'scout', ref: agentId })
+  await vi.waitFor(() => expect(core.agents.get(agentId)?.state).toBe('live'))
+}
+
+describe('an agent that exits on a pending background task (CC-336)', () => {
+  it('is resumed once with the finish-in-the-foreground message and no notice', async () => {
+    registerCoord()
     const agentId = await spawnScout()
     writeTranscript(agentId, backgroundBash)
 
+    await exitIntoBackgroundResume(agentId)
+
+    const [resumed] = resumes()
+    expect(resumed?.actor).toBe('coord')
+    expect(resumed?.meta.cause).toBe('background-resume')
+    expect(readLaunchPlan(agentId).stdin).toBe(BACKGROUND_RESUME_MESSAGE)
+    expect(unreported()).toEqual([])
+    expect(delivered.some(d => d.message.event === 'unreported-exit')).toBe(false)
+  })
+
+  it('is not resumed again when the resumed run also ends without a report', async () => {
+    registerCoord()
+    const agentId = await spawnScout()
+    writeTranscript(agentId, backgroundBash)
+    await exitIntoBackgroundResume(agentId)
+
     await exitAndSettle()
+
+    expect(resumes()).toHaveLength(1)
+    expect(unreported()).toHaveLength(1)
+    expect(unreported()[0]?.meta.pending_background).toBe('true')
+  })
+
+  it('is not resumed when the resumed run reports', async () => {
+    const agentId = await spawnScout()
+    writeTranscript(agentId, backgroundBash)
+    await exitIntoBackgroundResume(agentId)
+    core.append({ kind: 'message', actor: 'scout', target: 'coord', body: 'Status: DONE' })
+
+    await exitAndSettle()
+
+    expect(resumes()).toHaveLength(1)
+    expect(unreported()).toEqual([])
+  })
+
+  it('starts a new chain after a resume someone else asked for', async () => {
+    const agentId = await spawnScout()
+    writeTranscript(agentId, backgroundBash)
+    await exitIntoBackgroundResume(agentId)
+    await exitAndSettle()
+    expect((await supervisor.resume('scout', { requestedBy: 'coord' })).ok).toBe(true)
+    core.append({ kind: 'agent_attached', actor: 'scout', ref: agentId })
+
+    exitChild(0)
+
+    await vi.waitFor(() => expect(resumes()).toHaveLength(3))
+    expect(resumes()[2]?.meta.cause).toBe('background-resume')
+  })
+})
+
+describe('an agent that exits without its Status report', () => {
+  it('tells its spawner at once when no background task was pending', async () => {
+    const coord = registerCoord()
+    await spawnScout()
+
+    await exitAndSettle()
+
+    expect(resumes()).toEqual([])
+    const pushed = delivered.find(d => d.message.event === 'unreported-exit')
+    expect(pushed?.conn).toBe(coord)
+    expect(unreported()[0]?.text).toBe('scout exited with no Status report; last action: unknown')
+  })
+
+  it('tells its spawner it exited with a pending background task when the resume is refused (CC-255)', async () => {
+    const coord = registerCoord()
+    const agentId = await spawnScout()
+    writeTranscript(agentId, backgroundBash)
+    vi.spyOn(supervisor, 'resume').mockResolvedValue({ ok: false, reason: 'no free agent slots' })
+
+    await exitAndSettle()
+    await vi.waitFor(() => expect(unreported()).toHaveLength(1))
 
     const [row] = unreported()
     expect(row?.from).toBe('agent-chat')
