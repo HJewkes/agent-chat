@@ -182,13 +182,13 @@ describe('which sends may hold the machine', () => {
   })
 
   it.each<[string, Send]>([
-    ['an operator DM', ['tp-operator', 5, 'tp-operator: STOP the gate sweep now', 'd1', ['titan-coord']]],
-    ['an operator DM HOLD', ['tp-operator', 5, 'tp-operator: HOLD now', 'd2', ['titan-coord']]],
+    ['an operator DM', ['tp-operator', 5, 'tp-operator: STOP the gate sweep now', 'd1', ['coord-a']]],
+    ['an operator DM HOLD', ['tp-operator', 5, 'tp-operator: HOLD now', 'd2', ['coord-a']]],
     [
       "a coordinator's DM to its implementer",
       ['design-coord', 5, 'please STOP work on #800 now, push nothing more, and exit', 'd3', ['impl']],
     ],
-    ['a coordinator fan-out', ['voltras-coord', 5, 'voltras-coord: STOP ALL, the full suite is hot']],
+    ['a coordinator fan-out', ['coord-v', 5, 'coord-v: STOP ALL, the full suite is hot']],
     ['a coordinator relay', ['coord-d', 5, 'coord-d: machine HOLD from tp-operator (memory trip)']],
     ['a coordinator holding one link', ['design-coord', 5, 'please HOLD the b15 round-1 link']],
     ['a coordinator holding its implementer', ['design-coord', 5, 'in HOLD until you push the fix']],
@@ -217,7 +217,7 @@ describe('which sends may hold the machine', () => {
     ],
     [
       'an operator DM lift to one seat',
-      ['tp-operator', 5, 'tp-operator: LIFT for titan-coord', 'l1', ['titan-coord']],
+      ['tp-operator', 5, 'tp-operator: LIFT for coord-a', 'l1', ['coord-a']],
     ],
     ['an operator question', ['tp-operator', 5, 'tp-operator: LIFT now?']],
   ])("does not lift the operator's HOLD on %s", (_name, send) => {
@@ -407,7 +407,7 @@ const LIVE: [actor: string, body: string, expected: 'open' | 'lift' | 'none', re
     'tp-operator: LIFT at NORMAL pace (reboot reset kalloc). Observed 02:32: kalloc 3,359',
     'lift',
   ],
-  ['tp-operator', 'tp-operator: STOP the gate sweep now. No more gate resolve', 'none', ['titan-coord']],
+  ['tp-operator', 'tp-operator: STOP the gate sweep now. No more gate resolve', 'none', ['coord-a']],
   ['tp-operator', 'tp-operator: HOLD now. Observed 03:21:42: kern.memorystatus_vm_pressure_level 4', 'open'],
   ['coord-d', 'coord-d: machine HOLD from tp-operator (memory pressure level 4, swap nearly full)', 'none'],
   ['tp-operator', 'tp-operator: LIFT at HALF RATE (as 6316791e: half implementer caps)', 'lift'],
