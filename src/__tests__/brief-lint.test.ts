@@ -47,6 +47,39 @@ describe('the brief lint refuses a tool the agent cannot use', () => {
 
     expect(lint({ brief: 'Write the findings up as a list.', profile: explorer }).refusal).toBeUndefined()
   })
+
+  it('refuses a request even when a negation follows it in the sentence', () => {
+    expect(lint({ brief: 'Use ScheduleWakeup, no need to poll.' }).refusal).toContain('ScheduleWakeup')
+  })
+})
+
+describe('the brief lint only warns on a tool it names without asking for it', () => {
+  it('does not refuse a done-when line naming a denied agent-chat verb, and warns instead', () => {
+    const brief = 'Done when: agent-chat agent spawn and agent resume accept --remote-control.'
+
+    const result = lint({ brief })
+
+    expect(result.refusal).toBeUndefined()
+    expect(result.warnings).toEqual([expect.stringContaining('agent-chat agent')])
+  })
+
+  it('does not refuse a task that describes the lint itself', () => {
+    const brief = 'Done when: A test brief naming ScheduleWakeup for a headless implementer is refused.'
+
+    expect(lint({ brief }).refusal).toBeUndefined()
+  })
+
+  it('ignores a Bash deny that is not an agent-chat verb', () => {
+    const reviewer = BUILTIN_PROFILES.find(p => p.name === 'reviewer')!
+
+    const result = lint({
+      brief: 'Run git stash before checking out.',
+      profile: reviewer,
+      surface: 'iterm-pane',
+    })
+
+    expect(result).toEqual({ warnings: [] })
+  })
 })
 
 describe('the brief lint warns on a public repo with no synthetic-data line', () => {
@@ -91,5 +124,14 @@ describe('the repo visibility reader', () => {
 
     expect(await failing('/a')).toBe('unknown')
     expect(await noOrigin('/a')).toBe('unknown')
+  })
+
+  it('asks again after a failure instead of caching unknown', async () => {
+    const answers = [Promise.reject(new Error('timeout')), Promise.resolve('public')]
+    answers[0]?.catch(() => undefined)
+    const read = repoVisibilityReader(git, () => answers.shift() ?? Promise.resolve('private'))
+
+    expect(await read('/a')).toBe('unknown')
+    expect(await read('/a')).toBe('public')
   })
 })

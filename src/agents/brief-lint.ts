@@ -34,7 +34,8 @@ const NEGATION = /\b(?:never|not|don't|dont|no|without)\b/i
 
 const SYNTHETIC_LINE = /synthetic/i
 
-const BASH_PATTERN = /^Bash\((.+):\*\)$/
+/** The plan's scope: only agent-chat verbs, since a git or gh deny is named in task text far more than it is asked for. */
+const AGENT_CHAT_DENY = /^Bash\((agent-chat [\w-]+):\*\)$/
 
 /**
  * Only CamelCase tool names are matched bare: `Write`, `Edit` and `Bash` are
@@ -50,39 +51,64 @@ const sentencesOf = (brief: string): string[] => brief.split(/[.!?;\n]+/)
 /** A brief that needs no visibility read: the synthetic-data line is already there. */
 export const mentionsSyntheticData = (brief: string): boolean => SYNTHETIC_LINE.test(brief)
 
-/** True when some sentence names the term and carries no negation. */
-function asksFor(brief: string, term: string): boolean {
-  const mention = new RegExp(`(?<![\\w-])${escape(term)}(?![\\w-])`)
-  return sentencesOf(brief).some(sentence => mention.test(sentence) && !NEGATION.test(sentence))
+interface Unusable {
+  term: string
+  why: string
 }
 
-/** The literal a deny entry blocks: a CamelCase tool name, or the command inside `Bash(<command>:*)`. */
+/**
+ * How a brief names a term. `directive` is an instruction to use it ("use X",
+ * "run X") with no negation before it; `mention` is any other un-negated
+ * naming, such as a done-when line or a task description, which is only warned on.
+ */
+type Ask = 'directive' | 'mention' | undefined
+
+function askOf(brief: string, term: string): Ask {
+  const name = `${escape(term)}(?![\\w-])`
+  const mention = new RegExp(`(?<![\\w-])${name}`)
+  const directive = new RegExp(`\\b(?:[Uu]se|[Rr]un|[Cc]all|[Ii]nvoke)\\s+[\`'"]?${name}`)
+  let ask: Ask
+  for (const sentence of sentencesOf(brief)) {
+    const order = directive.exec(sentence)
+    if (order && !NEGATION.test(sentence.slice(0, order.index))) return 'directive'
+    if (mention.test(sentence) && !NEGATION.test(sentence)) ask = 'mention'
+  }
+  return ask
+}
+
+/** The literal a deny entry blocks: a CamelCase tool name, or the verb inside `Bash(agent-chat <verb>:*)`. */
 function deniedTerm(entry: string): string | undefined {
-  const command = BASH_PATTERN.exec(entry)?.[1]
+  const command = AGENT_CHAT_DENY.exec(entry)?.[1]
   if (command !== undefined) return command
   return CAMEL_CASE_TOOL.test(entry) ? entry : undefined
 }
 
-function deniedToolRefusal(input: BriefLintInput): string | undefined {
-  const { brief, profile, surface } = input
-  for (const entry of profile.disallowedTools ?? []) {
+function unusableTerms({ profile, surface }: BriefLintInput): Unusable[] {
+  const denied = (profile.disallowedTools ?? []).flatMap(entry => {
     const term = deniedTerm(entry)
-    if (term !== undefined && asksFor(brief, term))
-      return `brief asks ${profile.name} to use ${term}, which the profile denies (${entry}); reword the brief`
-  }
-  if (surface !== 'headless') return undefined
-  const unusable = HEADLESS_UNUSABLE.find(tool => asksFor(brief, tool))
-  return unusable === undefined
-    ? undefined
-    : `brief asks ${profile.name} to use ${unusable}, which a headless agent cannot use; reword the brief`
+    return term === undefined ? [] : [{ term, why: `which the profile denies (${entry})` }]
+  })
+  const headless =
+    surface === 'headless'
+      ? HEADLESS_UNUSABLE.map(term => ({ term, why: 'which a headless agent cannot use' }))
+      : []
+  return [...denied, ...headless]
 }
 
 export function lintBrief(input: BriefLintInput): BriefLint {
-  const refusal = deniedToolRefusal(input)
-  const warnings =
-    input.repoVisibility === 'public' && !mentionsSyntheticData(input.brief)
-      ? ['brief targets a public repo but has no synthetic-data line; real data could land in the PR']
-      : []
+  const { brief, profile } = input
+  const warnings: string[] = []
+  let refusal: string | undefined
+  for (const { term, why } of unusableTerms(input)) {
+    const ask = askOf(brief, term)
+    if (ask === 'directive') refusal ??= `brief asks ${profile.name} to use ${term}, ${why}; reword the brief`
+    if (ask === 'mention')
+      warnings.push(`brief names ${term}, ${why}; check ${profile.name} is not expected to use it`)
+  }
+  if (input.repoVisibility === 'public' && !mentionsSyntheticData(brief))
+    warnings.push(
+      'brief targets a public repo but has no synthetic-data line; real data could land in the PR',
+    )
   return { ...(refusal === undefined ? {} : { refusal }), warnings }
 }
 
@@ -100,20 +126,27 @@ const asVisibility = (text: string): RepoVisibility => {
 
 /**
  * The visibility of the GitHub repo a spawn's cwd belongs to, cached per repo
- * for the broker's life. Any failure is `unknown`, which warns about nothing.
+ * for the broker's life. Any failure is `unknown`, which warns about nothing and
+ * is not cached, so one timeout does not silence the warning until a restart.
  */
 export function repoVisibilityReader(
   git: GitRunner = runGit,
   gh: GhRunner = runGh,
 ): (cwd: string) => Promise<RepoVisibility> {
-  const cache = new Map<string, Promise<RepoVisibility>>()
-  const lookup = (repo: string): Promise<RepoVisibility> =>
-    gh(['api', `repos/${repo}`, '--jq', '.visibility']).then(asVisibility, () => 'unknown' as const)
+  const cache = new Map<string, RepoVisibility>()
+  const lookup = async (repo: string): Promise<RepoVisibility> => {
+    const known = cache.get(repo)
+    if (known !== undefined) return known
+    const read = await gh(['api', `repos/${repo}`, '--jq', '.visibility']).then(
+      asVisibility,
+      () => 'unknown' as const,
+    )
+    if (read !== 'unknown') cache.set(repo, read)
+    return read
+  }
   return async cwd => {
     const url = await git(['config', '--get', 'remote.origin.url'], cwd).catch(() => null)
     const repo = url === null ? undefined : githubRepoOf(url)
-    if (repo === undefined) return 'unknown'
-    if (!cache.has(repo)) cache.set(repo, lookup(repo))
-    return cache.get(repo) ?? 'unknown'
+    return repo === undefined ? 'unknown' : lookup(repo)
   }
 }
