@@ -114,7 +114,14 @@ const readLogRows = (file: string, seat: string): DeliveryRow[] => {
         ok?: boolean
       }
       if (row.seat !== seat || typeof row.event !== 'string' || typeof row.ts !== 'string') return []
-      return [{ event: row.event, at: Date.parse(row.ts), slot: row.slot, ok: row.ok }]
+      return [
+        {
+          event: row.event,
+          at: Date.parse(row.ts),
+          ...(row.slot === undefined ? {} : { slot: row.slot }),
+          ...(row.ok === undefined ? {} : { ok: row.ok }),
+        },
+      ]
     } catch {
       return []
     }
