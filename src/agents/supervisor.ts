@@ -1827,7 +1827,10 @@ export class Supervisor implements TeleportHost {
       body: req.brief,
       meta: {
         name: req.name,
-        ...(briefing ? { briefing: briefing.slug } : {}),
+        // CC-171: the delivered brief's first `briefing_chars` characters are the
+        // injected block, so a reader can find the assignment without matching
+        // this module's heading strings.
+        ...(briefing ? { briefing: briefing.slug, briefing_chars: String(briefing.text.length) } : {}),
         parent: req.parentAgentId ?? '',
         profile: profile.name,
         model: profile.model,
