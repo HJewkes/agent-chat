@@ -91,7 +91,7 @@ import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from './watc
 import { notifyAsWatchdog, sendAsOwner, withRunningBroker, type Reply } from './seat-broker.js'
 import { buildRelaunchHandoff } from '../../agents/seats/relaunch-handoff.js'
 import { identityTranscript } from '../../agents/resume-session.js'
-import { refreshSeatHeartbeat, seatsHeartbeatInstallVerb } from './seats-heartbeat.js'
+import { refreshSeatHeartbeat, seatsHeartbeatGapsVerb, seatsHeartbeatInstallVerb } from './seats-heartbeat.js'
 import { checkHeartbeat } from '../../agents/seats/heartbeat-check.js'
 import { logEvent } from '../../broker/log.js'
 
@@ -258,6 +258,7 @@ function liveDeps(root: string, client: BrokerClient): WatchdogDeps {
       ),
     appendLog: (seat, at, text) => void appendSeatLog(root, seat, at, text),
     refreshHeartbeat: seat => refreshSeatHeartbeat(root, seat),
+    logEvent,
     relaunchHandoff: (seat, quietMinutes, now) => buildRelaunchHandoff(root, seat, quietMinutes, now),
     transcriptFound: agentId => {
       const identity = identities.get(agentId)
@@ -822,4 +823,5 @@ export function addSeatsCommands(program: Commander): void {
   addVerb(seats, seatsWatchdogStatusVerb)
   addVerb(seats, seatsHeartbeatInstallVerb)
   addVerb(seats, seatsHeartbeatCheckVerb)
+  addVerb(seats, seatsHeartbeatGapsVerb)
 }

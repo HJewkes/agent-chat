@@ -38,10 +38,15 @@ interface Tagged<T> {
 type SeatLayer = [Source, SeatSettings | undefined]
 
 /** The active preset, built-ins shadowed by the file's own; an unknown name throws rather than resolving without it. */
-function activePreset(settings: Settings | undefined): Preset | undefined {
+function activePreset(flat: TickConfig, settings: Settings | undefined): Preset | undefined {
   const wanted = settings?.active?.preset
   if (wanted === undefined) return undefined
-  const preset = settings?.presets[wanted] ?? BUILTIN_PRESETS[wanted]
+  const preset =
+    settings?.presets[wanted] ??
+    BUILTIN_PRESETS[wanted]?.({
+      ...(flat.reportTo === undefined ? {} : { reportTo: flat.reportTo }),
+      seats: seatNames(flat, [settings?.seats]),
+    })
   if (preset === undefined) throw new Error(`burndown settings names unknown preset ${wanted}`)
   return preset
 }
@@ -166,7 +171,7 @@ const SEAT_LAYERS: Source[] = ['settings', 'preset', 'override']
 /** CC-955: default < flat file < settings `seats` < active preset < unexpired override, each value tagged with its layer. */
 export function resolve(layers: Layers, now: number): Resolved {
   const { flat, settings } = layers
-  const preset = activePreset(settings)
+  const preset = activePreset(flat, settings)
   const { live, lapsed } = liveOverride(layers.override, now)
   const patches = [settings?.seats, preset?.seats, live?.patch.seats]
   const sources = topSources(flat, layers.flatRaw)

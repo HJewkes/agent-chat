@@ -81,13 +81,26 @@ const commandText = (c: Command): string => [c.cmd, ...c.args].join(' ')
 /** `-z` output, so a non-ASCII path arrives as itself rather than quoted and escaped. */
 const nulSeparated = (output: string): string[] => output.split('\0').filter(Boolean)
 
-export async function cleanTreeStep(run: Run, cwd: string): Promise<StepOutcome> {
+const realpathOrResolved = (file: string): string => {
+  try {
+    return fs.realpathSync(file)
+  } catch {
+    return path.resolve(file)
+  }
+}
+
+/** `exempt` is the PR body file: the brief has agents write it at the worktree root before pr-ready. */
+const exemptBodyFile = (cwd: string, bodyFile: string | undefined): string | undefined =>
+  bodyFile === undefined ? undefined : realpathOrResolved(path.resolve(cwd, bodyFile))
+
+export async function cleanTreeStep(run: Run, cwd: string, exempt?: string): Promise<StepOutcome> {
   const status = await run('git', ['status', '--porcelain'], cwd)
   if (status.code !== 0) return { ok: false, reason: `git status failed: ${lastLine(status.output)}` }
   const files = status.output
     .split('\n')
     .filter(line => line.trim() !== '')
     .map(line => line.slice(3))
+    .filter(file => exempt === undefined || realpathOrResolved(path.resolve(cwd, file)) !== exempt)
   if (files.length === 0) return { ok: true }
   return { ok: false, reason: `uncommitted changes in ${files.join(', ')}` }
 }
@@ -389,7 +402,8 @@ export async function prReady(opts: PrReadyOptions, deps: PrReadyDeps = defaultD
     if (opts.rebase === false) return { ok: true, reason: 'skipped (--no-rebase)' }
     return (await pushedBranchStep(run, cwd, base, opts.strict === true)) ?? trappedRebaseStep(deps, base)
   }
-  if (!(await step('clean-tree', () => cleanTreeStep(run, cwd)))) return fail()
+  if (!(await step('clean-tree', () => cleanTreeStep(run, cwd, exemptBodyFile(cwd, opts.bodyFile)))))
+    return fail()
   if (!(await step('base', resolveBase))) return fail()
   if (!(await step('rebase', rebase))) return fail()
   let ok = await step('checks', () => checksStep(run, cwd, base, deps.err, deps.env, deps.hostname))
