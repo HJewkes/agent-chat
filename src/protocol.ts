@@ -1047,6 +1047,8 @@ export type ClientMessage =
       hostPlatform?: string
       /** CC-951: launch flags the caller read from its own argv, which a broker on another host cannot. */
       launchSeen?: { channels?: string[]; permissionMode?: string; effort?: string }
+      /** CC-951: the destination machine, a config `machines` alias or a hostname; absent stays put. */
+      to?: string
     }
   /**
    * Stop a countdown that has not fired yet. The human's veto, and it has no

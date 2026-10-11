@@ -269,6 +269,23 @@ the linux broker instead of being refused and falling back to headless. There
 the seat file outranks the agent record, which may hold an earlier headless
 fallback, and a seat that names nothing anywhere still resumes headless.
 
+**The destination machine (CC-951).** `agent_teleport` also takes an optional
+`to`: an alias from `config.json`'s `machines` (alias → hostname, for example
+`{"mac": "<mac hostname>", "basement": "<server hostname>"}`) or a bare hostname,
+matched without case. `resolveDestination` (`agents/teleport-destination.ts`)
+maps it to a launch site: `broker` when it is the broker's own host, `caller`
+when it is the predecessor's own host on another machine (the CC-881 path), and
+`launcher` when a host launcher is connected for it. With no `to`, the
+successor stays on the predecessor's own host, never the broker's by default.
+An unknown machine, or a configured one with no launcher connected, is refused
+with the list of known machines. A move off the predecessor's host is refused
+when the predecessor has any isolation other than `none`, because a worktree or
+a sandbox exists only on its own host. All of these are refused before the
+handoff row is written, so nothing is ended. Today only a teleport that stays
+on its own host launches: the broker-site launch for a predecessor on another
+host and the host launcher are later slices, and until they land such a move is
+refused with a reason.
+
 **Depth is inherited, not incremented.** This is a real bug waiting in the
 obvious implementation. `Supervisor.depthOf` reads the parent's `meta.depth` and
 returns it plus one, and the spawn cap reads `meta.coordinator_depth` the same

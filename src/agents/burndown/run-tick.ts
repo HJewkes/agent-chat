@@ -19,6 +19,7 @@ import { seatJournal } from '../seats/journal.js'
 import { ownerQueueSpoolDir, spoolOwnerQueue } from './owner-queue-spool.js'
 import { adoptSeatPrs, type AdoptSeat } from './pr-adopt.js'
 import { adoptSeatOf, diskAdoptPorts } from './pr-adopt-ports.js'
+import { claimPrReader } from './pr-state.js'
 import { DEFAULT_WORKTREE_BUDGET } from '../isolation/worktree.js'
 import { advance, applyActions, claimKey, type Action, type ClaimKey, type InboxMessage } from './advance.js'
 import { withFindings } from './finding.js'
@@ -511,6 +512,7 @@ async function decide(config: TickConfig, opts: TickOptions, ledger: Ledger, now
     shepherdRows: shepherd,
     landed: target => shepherdLanded(target, opts.exec ?? run),
     exitedWork: worktree => readExitedWork(worktree, opts.exec ?? run),
+    prState: claimPrReader(opts.exec ?? run),
   })
   const ctx = {
     ...stepContext(world, config, now, root),

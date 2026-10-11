@@ -76,21 +76,30 @@ export const agentTeleport = defineTool({
     surface: z
       .enum(SURFACE_NAMES)
       .describe(
-        'Optional. Omit to land where your seat file, or failing that your current surface, says, ' +
-          'when this machine can run it, else in its OS default: tmux-window on Linux, iterm-tab on ' +
-          'macOS. Set it to open your successor somewhere else; a surface this machine cannot run ' +
-          '(iTerm on Linux) is refused, and you are not ended.',
+        'Optional. Omit for your seat or current surface when the destination runs it, else its OS ' +
+          'default (tmux-window on Linux, iterm-tab on macOS). One it cannot run is refused.',
+      )
+      .optional(),
+    to: z
+      .string()
+      .describe(
+        'Optional. Omit to stay on this machine; else a machine alias from the broker config, or a ' +
+          'hostname. Unknown or unreachable is refused and never ends you.',
       )
       .optional(),
   }),
   result: z.string(),
-  async run({ handoff, model: requested, remote_control: remoteControl, reason, surface }, ctx) {
+  async run(
+    { handoff, model: requested, remote_control: remoteControl, reason, surface, to: destination },
+    ctx,
+  ) {
     if (ctx.registeredName === null)
       return (
         'Register with chat_register first: teleport hands your name to a successor, and you do not ' +
         'have one yet.'
       )
     const model = present(requested)
+    const to = present(destination)
     // CC-883: a broker on another host cannot read this session's argv, so this process reports it.
     const seen = remoteControl === undefined && hostRemoteControl(hostIdentity().hostPid) === true
     const launchSeen = hostCarriedFlags(hostIdentity().hostPid)
@@ -106,6 +115,7 @@ export const agentTeleport = defineTool({
         // CC-951: a broker on another host picks this session's default surface by its OS, not its own.
         hostPlatform: process.platform,
         ...(launchSeen === undefined ? {} : { launchSeen }),
+        ...(to === undefined ? {} : { to }),
       },
       'teleport_result',
     )) as Extract<ServerMessage, { t: 'teleport_result' }>

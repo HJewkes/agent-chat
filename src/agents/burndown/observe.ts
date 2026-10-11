@@ -11,6 +11,7 @@ import { run, type Runner } from './exec.js'
 import { readExitedWork, type ExitedWork } from './exited-adopt.js'
 import { AGENT_PHASES, type Claim, type Phase } from './ledger.js'
 import { DEFAULT_NAME_PREFIX, type WorktreeUse } from './plan.js'
+import type { ClaimPr } from './pr-state.js'
 import { readProgress, type Progress } from './progress.js'
 import { defaultAutonomyRoot, loadPolicy } from './policy.js'
 import { outsideOwns } from './owns-fence.js'
@@ -67,6 +68,8 @@ export interface ObserveDeps {
   spendCap?: (seat: string) => number | undefined
   /** What an exited implementer with no readable status left in its worktree (CC-673); defaults to `readExitedWork`. */
   exitedWork?: (worktree: string) => ExitedWork | undefined
+  /** CC-1054: GitHub's word on a claim's PR, undefined when it could not tell; absent reads nothing. */
+  prState?: (claim: Claim) => ClaimPr | undefined
 }
 
 export interface Observed {
@@ -141,7 +144,10 @@ export async function observe(claims: Claim[], roster: Roster, deps: ObserveDeps
   for (const claim of claims) {
     const result = await observeClaim(claim, roster, once)
     if (typeof result === 'string') unread.push(`${claimKey(claim)}: ${result}`)
-    else observations.set(claimKey(claim), prRuns === undefined ? result : withPrRun(result, claim, prRuns))
+    else {
+      const observed = prRuns === undefined ? result : withPrRun(result, claim, prRuns)
+      observations.set(claimKey(claim), withPrState(observed, claim, deps.prState))
+    }
   }
   return { observations, unread }
 }
@@ -157,6 +163,16 @@ function withPrRun(obs: Observation, claim: Claim, deps: ObserveDeps): Observati
   if (row.phase !== 'done' || row.outcome?.kind === 'merged') return { ...obs, shepherd: { row } }
   const landed = (deps.landed ?? (t => shepherdLanded(t)))({ repo: row.repo, pr: row.pr })
   return landed === undefined ? obs : { ...obs, shepherd: { row, landed } }
+}
+
+const SETTLED_STALLS: ReadonlySet<Phase> = new Set(['spawning', 'reviewing'])
+
+/** CC-1054: read for every implementing claim, and for a stalled one whose agent ran or should have. */
+function withPrState(obs: Observation, claim: Claim, read: ObserveDeps['prState']): Observation {
+  const reads =
+    claim.phase === 'implementing' || (claim.stalledReason !== undefined && SETTLED_STALLS.has(claim.phase))
+  if (read === undefined || !reads) return obs
+  return { ...obs, prState: read(claim) ?? 'unreadable' }
 }
 
 /**

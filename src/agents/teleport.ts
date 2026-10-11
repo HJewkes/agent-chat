@@ -1,4 +1,6 @@
 import { brokerHost, isLocalHost } from '../broker/host-guard.js'
+import { resolveMachines } from '../config.js'
+import { resolveDestination } from './teleport-destination.js'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import type { BrokerCore } from '../broker/core.js'
 import {
@@ -175,6 +177,8 @@ export interface TeleportRequest {
   hostPlatform?: NodeJS.Platform
   /** CC-951: launch flags the caller read from its own argv; read here instead when on this host. */
   launchSeen?: CarriedFlags
+  /** CC-951: the destination machine, an alias from config `machines` or a hostname; absent stays put. */
+  to?: string
 }
 
 export interface TeleportOutcome {
@@ -265,6 +269,29 @@ function hostReason(subject: TeleportSubject): string {
     `${subject.name} runs on host ${subject.host ?? 'unknown'}, not on the broker's host ${brokerHost()}, ` +
     'so the broker cannot end it or relaunch it there'
   )
+}
+
+/**
+ * CC-951: why the successor cannot land where `to` points. Only a move that stays on the
+ * predecessor's own host is routable until the remote-predecessor (f) and launcher (g1) sites land.
+ */
+function destinationBlocker(req: TeleportRequest, isolation: string): string | undefined {
+  const { subject } = req
+  const resolved = resolveDestination({
+    to: req.to,
+    callerHost: subject.host as string,
+    brokerHost: brokerHost(),
+    launchers: [],
+    aliases: resolveMachines(),
+  })
+  if (!resolved.ok) return resolved.reason
+  const { site, host } = resolved.destination
+  if (host === subject.host) return undefined
+  // An adopted session records no isolation at all, which is the same as none.
+  if (isolation !== '' && isolation !== 'none')
+    return `${subject.name} has ${isolation} isolation, which is local to ${subject.host}, so it cannot move to ${host}`
+  if (site === 'launcher') return `no launcher connected on ${host}`
+  return `moving ${subject.name} from ${subject.host} to the broker's host ${host} is not supported yet`
 }
 
 /** What teleport borrows from the supervisor: process control and the launch path. */
@@ -387,6 +414,9 @@ export class Teleport {
 
     const identity = this.core.agents.get(subject.agentId)
     if (!identity) return { ok: false, reason: `no durable identity for ${subject.agentId}` }
+    const unroutable = destinationBlocker(req, identity.isolation)
+    if (unroutable !== undefined)
+      return { ok: false, reason: `${unroutable}. ${subject.name} was not ended.` }
 
     const remote = onAnotherHost(subject)
     const config = teleportConfig({
