@@ -441,6 +441,7 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     expect(f.seatLog[0]).toContain('kind "docs-only" is not one the tick registers')
   })
 
+  // Mutation: dropping the deploy[^/]*.ts pattern leaves the deploy rows unheld; widening it to service* holds the read-only service-check and service-ports rows.
   // Mutation: dropping a persistent-job pattern or file (systemd/, .service/.timer/.plist, deploy/hub, a named installer) leaves its row unheld.
   // Mutation: dropping the protected-path hold, or reverting a whole tree to named files, registers one of these unheld.
   it.each([
@@ -544,6 +545,9 @@ describe('the tick adopting a seat’s unregistered PRs (CC-861)', () => {
     'deploy/hub/compose.yml',
     'ops/launchd/job.plist',
     'systemd/unit.conf',
+    'products/factory/src/deploy.ts',
+    'products/factory/src/deploy-bootstrap.ts',
+    'products/factory/src/deploy-checkout.ts',
     'src/agents/hooks.ts',
     'src/agents/launch-policy.ts',
     'src/agents/identity.ts',

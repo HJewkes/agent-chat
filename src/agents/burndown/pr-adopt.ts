@@ -179,6 +179,7 @@ const PROTECTED_PATHS = [
   /\.(service|timer|plist)$/,
   /^deploy\/hub\//,
   /^products\/factory\/src\/(service|service-control|cli-service)\.ts$/,
+  /^products\/factory\/src\/deploy[^/]*\.ts$/,
   /^products\/titan\/src\/health\/(install|units|cli-install)\.ts$/,
   /(^|\/)\.mcp\.json$/,
   /(^|\/)(CLAUDE|AGENTS)(\.local)?\.md$/i,
