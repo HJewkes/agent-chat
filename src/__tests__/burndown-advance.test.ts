@@ -208,6 +208,17 @@ describe('burndown phase machine', () => {
     ])
   })
 
+  it('(CC-939) a finished briefer is done and queues no slice claims, even with a slices block', () => {
+    const briefer = claim({ phase: 'planning', worktree: undefined, briefer: true })
+
+    const { after } = step(briefer, {
+      agent: exited,
+      slices: [{ n: 'a', title: 'ledger', dependsOn: [], owns: ['src/ledger.ts'] }],
+    })
+
+    expect(after.map(c => [c.slice, c.phase])).toEqual([[undefined, 'done']])
+  })
+
   it("a planner slice's contracts reach its queued claim", () => {
     const planning = claim({ phase: 'planning', worktree: undefined })
     const contracts = [{ scope: 'api:/v1/report', op: 'remove' as const }]

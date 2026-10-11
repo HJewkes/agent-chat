@@ -29,6 +29,8 @@ export interface Dispatch {
   /** A planner's slice, dispatched from a `queued` claim rather than a task file. */
   slice?: string
   profile: string
+  /** CC-939: a planner-profile spawn that writes the task's brief. */
+  briefer?: boolean
   account: string
   /** Where trust was checked: the repo for a planner, the worktree the spawn will cut otherwise. */
   cwd: string

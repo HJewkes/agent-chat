@@ -173,6 +173,7 @@ const landed = (claim: Claim, agentId: string): Action =>
   update(claim, { phase: claim.nextPhase ?? 'implementing', agentId, nextPhase: undefined })
 
 function afterPlanner(claim: Claim, obs: Observation, now: Date): Action[] {
+  if (claim.briefer === true) return [update(claim, { phase: 'done' }), retireAll(claim)]
   if (obs.slices === undefined)
     return [stall(claim, sliceStallReason(obs.sliceProblems), 'failed', 'planner-refused')]
   const slices = sliceClaims(claim, obs.slices, now)

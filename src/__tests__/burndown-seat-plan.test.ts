@@ -707,6 +707,7 @@ describe('seat seams from the CC-246 review', () => {
       initiative: 'alpha',
       task: 'A-1',
       profile: 'bd-planner',
+      briefer: true,
       account: 'pool-x',
       cwd: REPO,
       repo: REPO,
@@ -715,12 +716,11 @@ describe('seat seams from the CC-246 review', () => {
       seat: 'seat-a',
       namePrefix: 'sa',
     }
-    const ctx = { ...stepContext(), tasks: new Map([['alpha', [task('A-1', { tags: ['brief:wanted'] })]]]) }
-
-    const steps = stepsForDispatch(d, ctx) as Step[]
+    const steps = stepsForDispatch(d, stepContext()) as Step[]
     const spawn = steps.find(s => s.kind === 'spawn') as Extract<Step, { kind: 'spawn' }>
     const { brief } = spawn.frame as unknown as { brief: string }
 
+    expect(steps[0]).toMatchObject({ actions: [{ claims: [expect.objectContaining({ briefer: true })] }] })
     expect(brief).toContain('/tmp/aw/alpha/sources/A-1-plan.md')
     expect(brief).toContain('brief:proposed=<today>')
     expect(Buffer.byteLength(brief)).toBeLessThanOrEqual(PLANNER_BRIEF_MAX_BYTES)

@@ -162,7 +162,7 @@ async function observeClaim(claim: Claim, roster: Roster, deps: ObserveDeps): Pr
   if (row === undefined || !FINISHED.has(row.state) || claim.phase === 'spawning') return obs
   const text = (deps.finalText ?? defaultFinalText)(row)
   if (text !== undefined) obs.report = parseReport(text)
-  if (claim.phase === 'planning') return withSlices(obs, claim, deps)
+  if (claim.phase === 'planning' && claim.briefer !== true) return withSlices(obs, claim, deps)
   if (claim.phase === 'implementing' && claim.worktree !== undefined) {
     obs.diff = (deps.diff ?? assessDiff)(claim.worktree)
     return withExitedWork(obs, claim.worktree, deps)
