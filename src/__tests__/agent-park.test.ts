@@ -371,6 +371,27 @@ describe('refusing to park', () => {
     expect(fs.existsSync(agent.cwd)).toBe(true)
   })
 
+  it('parks a never-pushed branch whose HEAD is already on origin/main', async () => {
+    const repo = repoWithOrigin()
+    const agent = await finishedIn('worker-a', repo)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: true })
+    expect(fs.existsSync(agent.cwd)).toBe(false)
+    expect(branchHead(repo, 'agent-chat/worker-a')).toBe(git(['rev-parse', 'origin/main'], repo))
+  })
+
+  it('refuses a never-pushed branch with a local-only commit on top of origin/main', async () => {
+    const agent = await spawnIn('worker-a', repoWithOrigin())
+    commitIn(agent.cwd, 'feature.ts')
+    await exit(agent)
+
+    const parked = await sup.park('worker-a')
+
+    expect(parked).toMatchObject({ ok: false, reason: expect.stringMatching(/not on origin; push it first/) })
+  })
+
   it('refuses commits made after the last push', async () => {
     const agent = await spawnIn('worker-a', repoWithOrigin())
     commitIn(agent.cwd, 'feature.ts')

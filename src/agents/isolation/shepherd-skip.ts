@@ -6,10 +6,10 @@ import type { AgentIdentity } from '../../protocol.js'
 import type { ParkTarget } from './park.js'
 
 /**
- * CC-904: Shepherd resumes a finished implementer or reviewer for a fix round, and a
- * retired name cannot be resumed. So any finished agent whose branch has an open PR,
- * or that a live Shepherd run names, is skipped by every bulk or automatic retire.
- * Both reads fail closed: what cannot be read is a skip, never a retire.
+ * CC-904: a finished agent whose branch has an open PR that no Shepherd run has taken is
+ * skipped by every bulk or automatic retire: nothing else will wake it for a fix round.
+ * CC-950: once a live run names the agent or its branch, Shepherd owns the PR and the
+ * agent is retired and parked, unless the run names it as reviewer. Both reads fail closed: what cannot be read is a skip.
  */
 
 export const OPEN_PR_REASON = 'open PR (Shepherd wakes it)'
@@ -19,6 +19,8 @@ export interface ShepherdRun {
   branch: string | null
   /** The run's implementer and reviewer names, when Shepherd lists them. */
   names: string[]
+  /** CC-950: the implementer alone, since Shepherd replaces it with a successor but resumes a reviewer by name. */
+  implementer: string | null
 }
 
 export interface ShepherdSkipPort {
@@ -43,8 +45,14 @@ export async function shepherdSkip(
     return `Shepherd could not be read (${firstLine(err)}), so a run naming it cannot be ruled out`
   }
   const branches = new Set([`agent-chat/${agent.name}`, ...(target ? [target.branch] : [])])
-  if (runs.some(r => (r.branch !== null && branches.has(r.branch)) || r.names.includes(agent.name)))
-    return OPEN_PR_REASON
+  const holds = (r: ShepherdRun): boolean =>
+    (r.branch !== null && branches.has(r.branch)) || r.names.includes(agent.name)
+  // CC-950: a run's implementer may go, since a fix round starts a successor; a reviewer stays for verdict correction.
+  const registered = runs.filter(holds)
+  if (registered.length > 0)
+    return registered.every(r => r.implementer === agent.name || r.names.includes(agent.name) === false)
+      ? undefined
+      : OPEN_PR_REASON
   if (target === undefined) return undefined
   try {
     return (await port.hasOpenPr(target.gitRoot, target.branch)) ? OPEN_PR_REASON : undefined
@@ -71,6 +79,7 @@ export function parseActiveRuns(stdout: string): ShepherdRun[] {
     .map(row => ({
       branch: text(row.branch) ?? null,
       names: [row.implementer, row.reviewer].map(text).filter((n): n is string => n !== undefined),
+      implementer: text(row.implementer) ?? null,
     }))
 }
 
