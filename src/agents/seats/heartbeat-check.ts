@@ -6,17 +6,16 @@ import {
   lastTickAt,
   quietLimitMs,
 } from './heartbeat-external.js'
-import type { WakeResult } from './run.js'
-import { readSeatLog } from './stops.js'
+import { seatGate, type WakeResult, type WatchdogDeps } from './run.js'
 
-/** CC-947: what one firing of a seat's heartbeat timer does. Every reading and the send are injected. */
+/**
+ * CC-947: what one firing of a seat's heartbeat timer does. Whether the seat is connected and
+ * held is the watchdog's own judgement (`seatGate`); only the tick reading is this module's.
+ */
 
 export interface HeartbeatCheckDeps {
-  now: () => Date
-  /** `seats/<seat>.md`; read on every firing, so a cron removed after install stops the sends. */
-  readSeatFile: (seat: string) => string | undefined
-  /** The seat's log for the local day of `at`; undefined when there is none. */
-  readSeatLog: (seat: string, at: Date) => string | undefined
+  /** The watchdog's readings: seat file, every log day, roster, owner stops, restart window, machine pressure. */
+  watchdog: WatchdogDeps
   send: (seat: string, message: string) => Promise<WakeResult>
   logEvent: (event: string, detail: Record<string, unknown>) => void
 }
@@ -26,42 +25,37 @@ export interface CheckResult {
   line: string
 }
 
-interface DayLog {
-  day: Date
-  text: string
+/** The newest tick in any log day, newest day first, so a tick in an old file still counts. */
+function latestTick(deps: WatchdogDeps, seat: string): number | undefined {
+  for (const day of deps.seatLogDays(seat)) {
+    const at = lastTickAt(deps.readSeatLog(seat, day) ?? '', day)
+    if (at !== undefined) return at
+  }
+  return undefined
 }
 
-/** Today and yesterday, so a tick just before midnight still counts after it. */
-function recentLogs(deps: HeartbeatCheckDeps, seat: string, now: Date): DayLog[] {
-  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 12)
-  return [now, yesterday].map(day => ({ day, text: deps.readSeatLog(seat, day) ?? '' }))
+/** Why the fallback stays quiet before it reads ticks, or the quiet limit when it may send. */
+async function gate(deps: WatchdogDeps, name: string): Promise<string | number> {
+  const seat = parseSeat(name, deps.readSeatFile(name) ?? '')
+  if (seat === undefined) return `seats/${name}.md has no prefix or pool`
+  const mins = heartbeatMinutes(seat.heartbeatCron)
+  if (typeof mins === 'string') return mins
+  const { connected, hold } = await seatGate(deps, seat)
+  if (hold !== undefined) return `held: ${hold}`
+  // A dark seat is the watchdog's to resume; a send would sit in the broker's hold for it.
+  if (!connected) return 'not connected'
+  return quietLimitMs(mins)
 }
-
-const latestTick = (logs: DayLog[]): number | undefined =>
-  logs.reduce<number | undefined>((best, { day, text }) => {
-    const at = lastTickAt(text, day)
-    return at === undefined || (best !== undefined && best >= at) ? best : at
-  }, undefined)
-
-/** The newest day with a seat line decides the stop, as the watchdog reads it. */
-const stopOf = (logs: DayLog[]): string | undefined =>
-  logs.map(({ day, text }) => readSeatLog(text, day)).find(v => v.activityAt !== undefined)?.stop
 
 export async function checkHeartbeat(
   deps: HeartbeatCheckDeps,
   seat: string,
   dryRun: boolean,
 ): Promise<CheckResult> {
-  const mins = heartbeatMinutes(parseSeat(seat, deps.readSeatFile(seat) ?? '')?.heartbeatCron)
-  if (typeof mins === 'string') return { ok: true, line: `${seat}: skip: ${mins}` }
-  const now = deps.now()
-  const logs = recentLogs(deps, seat, now)
-  const verdict = judgeExternal({
-    nowMs: now.getTime(),
-    lastTickAt: latestTick(logs),
-    quietMs: quietLimitMs(mins),
-    stop: stopOf(logs),
-  })
+  const limit = await gate(deps.watchdog, seat)
+  if (typeof limit === 'string') return { ok: true, line: `${seat}: skip: ${limit}` }
+  const nowMs = deps.watchdog.now().getTime()
+  const verdict = judgeExternal({ nowMs, lastTickAt: latestTick(deps.watchdog, seat), quietMs: limit })
   if (!verdict.send) return { ok: true, line: `${seat}: skip: ${verdict.reason}` }
   if (dryRun) return { ok: true, line: `${seat}: WOULD SEND: ${verdict.reason}` }
   const sent = await deps.send(seat, EXTERNAL_HEARTBEAT_MESSAGE)

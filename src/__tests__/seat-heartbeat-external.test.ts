@@ -12,6 +12,8 @@ import {
   type HeartbeatJobContext,
 } from '../agents/seats/heartbeat-external.js'
 import { installHeartbeats, refreshHeartbeat } from '../agents/seats/heartbeat-install.js'
+import type { WatchdogDeps } from '../agents/seats/run.js'
+import type { OwnerMessage } from '../agents/seats/stops.js'
 
 const DAY = new Date(2026, 9, 8, 12)
 const at = (hh: number, mm: number, day = 8): number => new Date(2026, 9, day, hh, mm).getTime()
@@ -68,33 +70,19 @@ describe('lastTickAt', () => {
 })
 
 describe('judgeExternal', () => {
-  // Catches: a threshold other than 35 minutes, in either direction.
-  it('stays quiet under 35 minutes since the tick and sends at 35', () => {
+  const judge = (nowMs: number, lastTick: number | undefined) =>
+    judgeExternal({ nowMs, lastTickAt: lastTick, quietMs: 35 * MIN }).send
+
+  // Catches: a limit applied off by one in either direction.
+  it('stays quiet under the limit since the tick and sends at it', () => {
     const tick = at(10, 0)
-    expect(
-      judgeExternal({ nowMs: tick + 34 * MIN, lastTickAt: tick, quietMs: 35 * MIN, stop: undefined }).send,
-    ).toBe(false)
-    expect(
-      judgeExternal({ nowMs: tick + 35 * MIN, lastTickAt: tick, quietMs: 35 * MIN, stop: undefined }).send,
-    ).toBe(true)
+    expect(judge(tick + 34 * MIN, tick)).toBe(false)
+    expect(judge(tick + 35 * MIN, tick)).toBe(true)
   })
 
-  // Catches: a fallback tick that ends a seat's WRAP, PARKED or BUDGET-PAUSE.
-  it('holds a seat whose latest line stops it, however stale', () => {
-    const verdict = judgeExternal({
-      nowMs: at(12, 0),
-      lastTickAt: at(8, 0),
-      quietMs: 35 * MIN,
-      stop: 'seat logged "WRAP"',
-    })
-    expect(verdict).toEqual({ send: false, reason: 'held: seat logged "WRAP"' })
-  })
-
-  // Catches: treating a seat with no tick at all as alive.
-  it('sends to a seat with no tick line', () => {
-    expect(
-      judgeExternal({ nowMs: at(12, 0), lastTickAt: undefined, quietMs: 35 * MIN, stop: undefined }).send,
-    ).toBe(true)
+  // Catches: treating a connected, unheld seat that never logged a tick as alive.
+  it('sends when no log holds a tick line', () => {
+    expect(judge(at(12, 0), undefined)).toBe(true)
   })
 })
 
@@ -185,33 +173,55 @@ describe('installHeartbeats and refreshHeartbeat', () => {
   })
 })
 
+const CHARTER =
+  '---\nowner_seat: seat-hub\nseats: [seat-a]\npools:\n  p:  {config_dir: /srv/p, reserve_seven_day: 35, ceiling_five_hour: 70}\n---\n'
+
 interface Rig {
   deps: HeartbeatCheckDeps
   logs: Map<number, string>
   sent: { at: number; seat: string; message: string }[]
   events: { event: string; detail: Record<string, unknown> }[]
   setNow: (ms: number) => void
+  /** What the watchdog's readings say: who is connected, owner stops, owner messages, machine pressure. */
+  world: { connected: string[]; stopped: Record<string, string>; owner: OwnerMessage[]; machine?: string }
 }
 
 const dayKey = (d: Date): number => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
 
-/** A fake clock, a fake broker and an in-memory seat log keyed by local day. */
-function rig(cron: string | undefined = '17,47 * * * *'): Rig {
+/** A fake clock, a fake broker, and the watchdog's readings over an in-memory log keyed by local day. */
+function rig(cron = '17,47 * * * *'): Rig {
   let now = at(8, 0)
   const logs = new Map<number, string>()
   const sent: Rig['sent'] = []
   const events: Rig['events'] = []
-  const deps: HeartbeatCheckDeps = {
+  const world: Rig['world'] = { connected: ['seat-a'], stopped: {}, owner: [] }
+  const watchdog: WatchdogDeps = {
     now: () => new Date(now),
+    readCharter: () => CHARTER,
     readSeatFile: () => seatFile(cron),
+    seatLogDays: () => [...logs.keys()].sort((x, y) => y - x).map(k => new Date(k + 12 * 60 * MIN)),
     readSeatLog: (_seat, day) => logs.get(dayKey(day)),
+    readBudget: () => ({ found: false, path: '/x', reason: 'no_file' }),
+    ownerMessages: () => world.owner,
+    machineStop: () => world.machine,
+    roster: async () => ({ agents: [], connected: world.connected }),
+    presence: () => undefined,
+    eligible: () => undefined,
+    loadDoc: () => ({ seats: {}, pools: {}, stopped: world.stopped }),
+    saveDoc: () => undefined,
+    wake: async () => ({ ok: false, detail: 'the check never wakes through the watchdog' }),
+    appendLog: () => undefined,
+    lock: () => ({ held: true, release: () => undefined }),
+  }
+  const deps: HeartbeatCheckDeps = {
+    watchdog,
     send: async (seat, message) => {
       sent.push({ at: now, seat, message })
       return { ok: true, detail: `message m${sent.length}` }
     },
     logEvent: (event, detail) => events.push({ event, detail }),
   }
-  return { deps, logs, sent, events, setNow: ms => void (now = ms) }
+  return { deps, logs, sent, events, world, setNow: ms => void (now = ms) }
 }
 
 const clock = (ms: number): string => {
@@ -219,10 +229,14 @@ const clock = (ms: number): string => {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-function appendTick(r: Rig, ms: number): void {
+function appendLine(r: Rig, ms: number, text: string): void {
   const key = dayKey(new Date(ms))
-  r.logs.set(key, `${r.logs.get(key) ?? ''}${clock(ms)} tick: 0 implementers, nothing eligible\n`)
+  r.logs.set(key, `${r.logs.get(key) ?? ''}${clock(ms)} ${text}\n`)
 }
+
+const appendTick = (r: Rig, ms: number): void => appendLine(r, ms, 'tick: 0 implementers, nothing eligible')
+
+const check = async (r: Rig): Promise<string> => (await checkHeartbeat(r.deps, 'seat-a', false)).line
 
 describe('checkHeartbeat', () => {
   // Catches: a send without the heartbeat_external event, or with another message than the charter's.
@@ -230,7 +244,7 @@ describe('checkHeartbeat', () => {
     const r = rig()
     appendTick(r, at(9, 17))
     r.setNow(at(9, 52))
-    const result = await checkHeartbeat(r.deps, 'seat-a', false)
+    expect(await check(r)).toBe('seat-a: no tick for 35 min; heartbeat sent (message m1)')
     expect(r.sent).toEqual([{ at: at(9, 52), seat: 'seat-a', message: EXTERNAL_HEARTBEAT_MESSAGE }])
     expect(r.events).toEqual([
       {
@@ -238,27 +252,24 @@ describe('checkHeartbeat', () => {
         detail: { seat: 'seat-a', reason: 'no tick for 35 min', ok: true, detail: 'message m1' },
       },
     ])
-    expect(result.line).toBe('seat-a: no tick for 35 min; heartbeat sent (message m1)')
   })
 
-  // Review of #548. Catches: a fixed 35-min limit; an hourly seat that ticked 40 min ago is healthy.
+  // Round 1 of #548. Catches: a fixed 35-min limit; an hourly seat that ticked 40 min ago is healthy.
   it("holds an hourly seat until its own cron's gap plus five minutes", async () => {
     const r = rig('17 * * * *')
     appendTick(r, at(9, 17))
     r.setNow(at(9, 57))
-    expect((await checkHeartbeat(r.deps, 'seat-a', false)).line).toBe(
-      'seat-a: skip: ticked 40 min ago, under 65',
-    )
+    expect(await check(r)).toBe('seat-a: skip: ticked 40 min ago, under 65')
     r.setNow(at(10, 22))
-    await checkHeartbeat(r.deps, 'seat-a', false)
+    await check(r)
     expect(r.sent).toHaveLength(1)
   })
 
-  // Review of #548. Catches: units left behind after the cron is removed still ticking the seat.
+  // Round 1 of #548. Catches: units left behind after the cron is removed still ticking the seat.
   it('sends nothing once the seat file has no heartbeat_cron', async () => {
     const r = rig('')
     r.setNow(at(12, 0))
-    expect((await checkHeartbeat(r.deps, 'seat-a', false)).line).toBe('seat-a: skip: no heartbeat_cron')
+    expect(await check(r)).toBe('seat-a: skip: no heartbeat_cron')
     expect(r.sent).toEqual([])
   })
 
@@ -276,17 +287,61 @@ describe('checkHeartbeat', () => {
     const r = rig()
     appendTick(r, at(23, 50, 8))
     r.setNow(at(0, 5, 9))
-    expect((await checkHeartbeat(r.deps, 'seat-a', false)).line).toBe(
-      'seat-a: skip: ticked 15 min ago, under 35',
-    )
+    expect(await check(r)).toBe('seat-a: skip: ticked 15 min ago, under 35')
+  })
+})
+
+/** Round 2 of #548: the check holds exactly where the watchdog's `seatGate` does. */
+describe('checkHeartbeat holds where the watchdog holds', () => {
+  const quietSeat = (): Rig => {
+    const r = rig()
+    appendTick(r, at(9, 17, 5))
+    r.setNow(at(12, 0, 8))
+    return r
+  }
+
+  // Catches: a two-day log window, which misses a WRAP three days old and ticks a seat that stopped itself.
+  it('holds a seat whose stop line sits in a file older than yesterday', async () => {
+    const r = quietSeat()
+    appendLine(r, at(9, 30, 5), 'WRAP done until the owner is back')
+    expect(await check(r)).toBe('seat-a: skip: held: seat logged "WRAP done until the owner is back"')
+    expect(r.sent).toEqual([])
   })
 
-  // Catches: the stop read from a day other than the newest with a seat line.
+  // Catches: a BUDGET-PAUSE ended by a fallback tick.
   it('holds a seat whose latest line is BUDGET-PAUSE', async () => {
-    const r = rig()
-    r.logs.set(dayKey(new Date(at(9, 0))), '09:00 tick: x\n09:05 BUDGET-PAUSE until 14:00\n')
-    r.setNow(at(11, 17))
-    expect((await checkHeartbeat(r.deps, 'seat-a', false)).line).toMatch(/^seat-a: skip: held: /)
+    const r = quietSeat()
+    appendLine(r, at(9, 5, 8), 'BUDGET-PAUSE until 14:00')
+    expect(await check(r)).toMatch(/^seat-a: skip: held: seat logged "BUDGET-PAUSE/)
+  })
+
+  // Catches: ignoring the owner's stop in seat-watchdog.json.
+  it('holds a seat the owner stopped', async () => {
+    const r = quietSeat()
+    r.world.stopped = { 'seat-a': 'off for the week' }
+    expect(await check(r)).toBe('seat-a: skip: held: stopped by the owner: off for the week')
+  })
+
+  // Catches: ticking a seat inside an announced broker restart window.
+  it('holds every seat while the owner seat has announced a restart without "restart done"', async () => {
+    const r = quietSeat()
+    r.world.owner = [{ ts: at(11, 50, 8), body: 'broker restart at 12:10' }]
+    expect(await check(r)).toMatch(/^seat-a: skip: held: restart window open since/)
+    expect(r.sent).toEqual([])
+  })
+
+  // Catches: ignoring machine pressure.
+  it('holds a seat while the machine is under pressure', async () => {
+    const r = quietSeat()
+    r.world.machine = 'memory 3% free under 5%'
+    expect(await check(r)).toBe('seat-a: skip: held: memory 3% free under 5%')
+  })
+
+  // Catches: a send to a dark seat, which piles held heartbeats in the broker's hold for it.
+  it('sends nothing to a seat with no connected session', async () => {
+    const r = quietSeat()
+    r.world.connected = []
+    expect(await check(r)).toBe('seat-a: skip: not connected')
     expect(r.sent).toEqual([])
   })
 })

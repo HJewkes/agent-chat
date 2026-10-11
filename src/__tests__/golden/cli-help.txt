@@ -443,9 +443,10 @@ Commands:
                                 charter heartbeat when the seat logged no tick line for its cron's
                                 widest gap plus 5 min. Writes the unit files only: it never runs
                                 systemctl, so enabling the timers stays the owner's call
-  heartbeat-check [options]     what a seat's heartbeat timer runs (CC-947): when the seat's log has
-                                no tick line for its cron's widest gap plus 5 min and no WRAP,
-                                PARKED or BUDGET-PAUSE as its latest line, send the charter
+  heartbeat-check [options]     what a seat's heartbeat timer runs (CC-947): when the watchdog would
+                                neither hold the seat nor resume it (connected, no owner stop,
+                                restart window, machine stop or stop line) and its logs have no tick
+                                line for its cron's widest gap plus 5 min, send the charter
                                 heartbeat through the broker and log heartbeat_external
   help [command]                display help for command
 
@@ -594,14 +595,15 @@ Options:
 === agent-chat seats heartbeat-check
 Usage: agent-chat seats heartbeat-check [options]
 
-what a seat's heartbeat timer runs (CC-947): when the seat's log has no tick line for its cron's
-widest gap plus 5 min and no WRAP, PARKED or BUDGET-PAUSE as its latest line, send the charter
-heartbeat through the broker and log heartbeat_external
+what a seat's heartbeat timer runs (CC-947): when the watchdog would neither hold the seat nor
+resume it (connected, no owner stop, restart window, machine stop or stop line) and its logs have no
+tick line for its cron's widest gap plus 5 min, send the charter heartbeat through the broker and
+log heartbeat_external
 
 Options:
   --seat <value>  the seat to check (required)
-  --root <value>  autonomy directory holding seats/ and logs/
-  --dry-run       print the decision; send nothing and need no broker
+  --root <value>  autonomy directory holding charter.md, seats/ and logs/
+  --dry-run       print the decision; send nothing
   -h, --help      display help for command
 
 === agent-chat debug

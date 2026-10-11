@@ -1,17 +1,12 @@
 import os from 'node:os'
 import path from 'node:path'
 import { z } from 'zod'
-import { logEvent } from '../../broker/log.js'
-import { requiredString } from '../../args.js'
-import { isSeatName } from '../../agents/seats/charter.js'
-import { checkHeartbeat, type HeartbeatCheckDeps } from '../../agents/seats/heartbeat-check.js'
 import { HEARTBEAT_UNIT_PREFIX, type HeartbeatJobContext } from '../../agents/seats/heartbeat-external.js'
 import { installHeartbeats, refreshHeartbeat } from '../../agents/seats/heartbeat-install.js'
-import { defaultAutonomyRoot, readSeatJournal, readText, seatFileNames } from '../../agents/seats/io.js'
+import { defaultAutonomyRoot, readText, seatFileNames } from '../../agents/seats/io.js'
 import { jobEnv, launchdJobRefusals } from '../../mirror/plist.js'
 import { cliEntry, linuxJobLogDir, systemdUserUnitDir } from '../../paths.js'
 import { defineVerb, Report } from '../command.js'
-import { sendAsOwner, withRunningBroker } from './seat-broker.js'
 
 const jobContext = (root: string): HeartbeatJobContext => ({
   nodePath: process.execPath,
@@ -79,56 +74,6 @@ export const seatsHeartbeatInstallVerb = defineVerb({
         targetDir: path.resolve(targetDir ?? systemdUserUnitDir()),
         print: dryRun === true,
       })
-    } catch (err) {
-      return failed(err)
-    }
-  },
-})
-
-const checkDeps = (root: string, send: HeartbeatCheckDeps['send']): HeartbeatCheckDeps => ({
-  now: () => new Date(),
-  readSeatFile: seatFileReader(root),
-  readSeatLog: (name, at) => readSeatJournal(root, name, at),
-  send,
-  logEvent,
-})
-
-const noSend: HeartbeatCheckDeps['send'] = () => Promise.reject(new Error('a dry run sends nothing'))
-
-export const seatsHeartbeatCheckVerb = defineVerb({
-  name: 'seats.heartbeat-check',
-  description:
-    "what a seat's heartbeat timer runs (CC-947): when the seat's log has no tick line for its cron's widest gap plus 5 min and no " +
-    'WRAP, PARKED or BUDGET-PAUSE as its latest line, send the charter heartbeat through the broker and ' +
-    'log heartbeat_external',
-  args: z.object({
-    seat: requiredString('seat'),
-    root: z.string().optional(),
-    dryRun: z.boolean().optional(),
-  }),
-  result: Report,
-  cli: {
-    options: {
-      seat: { long: '--seat', description: 'the seat to check (required)' },
-      root: ROOT_FLAG,
-      dryRun: { long: '--dry-run', description: 'print the decision; send nothing and need no broker' },
-    },
-  },
-  async run({ seat, root, dryRun }) {
-    if (!isSeatName(seat)) return failed(new Error(`not a seat name: ${seat}`))
-    const dir = root ?? defaultAutonomyRoot()
-    try {
-      const result =
-        dryRun === true
-          ? await checkHeartbeat(checkDeps(dir, noSend), seat, true)
-          : await withRunningBroker(client =>
-              checkHeartbeat(
-                checkDeps(dir, (name, message) => sendAsOwner(client, name, message)),
-                seat,
-                false,
-              ),
-            )
-      return { ok: result.ok, lines: [result.line] }
     } catch (err) {
       return failed(err)
     }

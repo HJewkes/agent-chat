@@ -43,8 +43,6 @@ export interface ExternalInput {
   lastTickAt: number | undefined
   /** From `quietLimitMs` over the seat's cron. */
   quietMs: number
-  /** Why the seat's latest line stops it (`WRAP`, `PARKED`, `BUDGET-PAUSE`); a fallback tick must not end that. */
-  stop: string | undefined
 }
 
 export interface ExternalVerdict {
@@ -55,12 +53,10 @@ export interface ExternalVerdict {
 const minutes = (ms: number): number => Math.floor(ms / 60_000)
 
 export function judgeExternal(input: ExternalInput): ExternalVerdict {
-  const { nowMs, lastTickAt: tick, stop, quietMs } = input
-  if (stop !== undefined) return { send: false, reason: `held: ${stop}` }
+  const { nowMs, lastTickAt: tick, quietMs } = input
   if (tick !== undefined && nowMs - tick < quietMs)
     return { send: false, reason: `ticked ${minutes(nowMs - tick)} min ago, under ${minutes(quietMs)}` }
-  const quiet =
-    tick === undefined ? 'no tick line today or yesterday' : `no tick for ${minutes(nowMs - tick)} min`
+  const quiet = tick === undefined ? 'no tick line in any log' : `no tick for ${minutes(nowMs - tick)} min`
   return { send: true, reason: quiet }
 }
 

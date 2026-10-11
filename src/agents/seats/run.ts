@@ -215,7 +215,11 @@ function seatJournal(deps: WatchdogDeps, seat: string): SeatJournal {
 }
 
 /** Owner stop first, then the restart window, machine pressure, then the seat's own pause line. */
-function holdFor(pass: Pass, seat: Seat, logStop: string | undefined): string | undefined {
+function holdFor(
+  pass: Pick<Pass, 'doc' | 'restart' | 'machine'>,
+  seat: Seat,
+  logStop: string | undefined,
+): string | undefined {
   const ownerStop = pass.doc.stopped[seat.name]
   return (
     (ownerStop === undefined ? undefined : `stopped by the owner: ${ownerStop}`) ??
@@ -223,6 +227,26 @@ function holdFor(pass: Pass, seat: Seat, logStop: string | undefined): string | 
     pass.machine ??
     logStop
   )
+}
+
+/** CC-947: the watchdog's view of one seat outside a pass, for a caller that must hold exactly when it would. */
+export interface SeatGate {
+  /** An unreadable roster reads as not connected. */
+  connected: boolean
+  hold: string | undefined
+}
+
+export async function seatGate(deps: WatchdogDeps, seat: Seat): Promise<SeatGate> {
+  const charter = deps.readCharter()
+  if (charter === undefined) throw new Error('no autonomy charter.md under the root')
+  const roster = await deps.roster()
+  const journal = seatJournal(deps, seat.name)
+  const holds = {
+    doc: deps.loadDoc(),
+    restart: openRestartWindow(deps, charter, deps.now()),
+    machine: deps.machineStop?.(),
+  }
+  return { connected: roster.connected.includes(seat.name), hold: holdFor(holds, seat, journal.stop) }
 }
 
 /** gatePool on the seat's pool, reading the run and day meters as the spend at each window's start. */

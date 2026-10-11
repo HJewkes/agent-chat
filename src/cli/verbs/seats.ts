@@ -89,11 +89,9 @@ import { addVerb, defineVerb, Report } from '../command.js'
 import { seatPlanOptions } from './burndown.js'
 import { watchdogInstallOn, watchdogStatusOn, watchdogUninstallOn } from './watchdog-job.js'
 import { sendAsOwner, withRunningBroker, type Reply } from './seat-broker.js'
-import {
-  refreshSeatHeartbeat,
-  seatsHeartbeatCheckVerb,
-  seatsHeartbeatInstallVerb,
-} from './seats-heartbeat.js'
+import { refreshSeatHeartbeat, seatsHeartbeatInstallVerb } from './seats-heartbeat.js'
+import { checkHeartbeat } from '../../agents/seats/heartbeat-check.js'
+import { logEvent } from '../../broker/log.js'
 
 const refused = (err: unknown): Report => ({
   ok: false,
@@ -334,6 +332,50 @@ export const seatsWatchdogVerb = defineVerb({
         ...(seat === undefined ? {} : { seats: seat }),
         ...(fireCap === undefined ? {} : { fireCap }),
       })
+    } catch (err) {
+      return refused(err)
+    }
+  },
+})
+
+export const seatsHeartbeatCheckVerb = defineVerb({
+  name: 'seats.heartbeat-check',
+  description:
+    "what a seat's heartbeat timer runs (CC-947): when the watchdog would neither hold the seat nor " +
+    'resume it (connected, no owner stop, restart window, machine stop or stop line) and its logs have ' +
+    "no tick line for its cron's widest gap plus 5 min, send the charter heartbeat through the broker " +
+    'and log heartbeat_external',
+  args: z.object({
+    seat: requiredString('seat'),
+    root: z.string().optional(),
+    dryRun: z.boolean().optional(),
+  }),
+  result: Report,
+  cli: {
+    options: {
+      seat: { long: '--seat', description: 'the seat to check (required)' },
+      root: { long: '--root', description: 'autonomy directory holding charter.md, seats/ and logs/' },
+      dryRun: { long: '--dry-run', description: 'print the decision; send nothing' },
+    },
+  },
+  async run({ seat, root, dryRun }) {
+    const offLease = hostLeaseRefusal()
+    if (offLease !== undefined) return refused(new Error(offLease))
+    if (!isSeatName(seat)) return refused(new Error(`not a seat name: ${seat}`))
+    const dir = root ?? defaultAutonomyRoot()
+    try {
+      const result = await withRunningBroker(client =>
+        checkHeartbeat(
+          {
+            watchdog: liveDeps(dir, client),
+            send: (name, message) => sendAsOwner(client, name, message),
+            logEvent,
+          },
+          seat,
+          dryRun === true,
+        ),
+      )
+      return { ok: result.ok, lines: [result.line] }
     } catch (err) {
       return refused(err)
     }
