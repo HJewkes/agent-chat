@@ -7,7 +7,7 @@ import { readAccountBudget } from '../agents/budget.js'
 import { gateAccount, MAX_READING_AGE_SECONDS } from '../agents/burndown/budget-gate.js'
 import { collisionCheck, type BrokerView } from '../agents/burndown/collision.js'
 import { backoffHeld, RELEASE_BASE_MS } from '../agents/burndown/backoff.js'
-import { grantGap } from '../agents/burndown/eligibility.js'
+import { opsGap } from '../agents/burndown/eligibility.js'
 import type { Runner } from '../agents/burndown/exec.js'
 import {
   addClaim,
@@ -521,15 +521,17 @@ describe('autonomy frontmatter', () => {
 })
 
 describe('grant keywords', () => {
+  const gap = (doneWhen: string, tags: string[], grants: string[]) => opsGap({ doneWhen, tags }, grants)
+
   it('sends a merge to the backlog without the merge grant and passes it with one', () => {
-    expect(grantGap('PR merged to main', [])).toContain('merge-on-green-approve')
-    expect(grantGap('PR merged to main', ['merge-on-green-approve'])).toBeUndefined()
+    expect(gap('PR merged to main', [], [])?.reason).toContain('merge-on-green-approve')
+    expect(gap('PR merged to main', [], ['merge-on-green-approve'])).toBeUndefined()
   })
 
-  it('never lets a grant unlock a broker restart', () => {
-    expect(grantGap('shipped in a planned restart window', ['merge-on-green-approve'])).toContain(
-      'human-only',
-    )
+  it('never lets a grant unlock a declared broker restart', () => {
+    expect(
+      gap('shipped in a planned restart window', ['ops:restart'], ['merge-on-green-approve'])?.kind,
+    ).toBe('needs-human')
   })
 })
 
