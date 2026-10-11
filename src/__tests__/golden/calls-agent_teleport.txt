@@ -140,3 +140,23 @@ args: {"handoff":"h","surface":"bogus"}
     "text": "Error: Invalid arguments: surface: Invalid option: expected one of \"headless\"|\"iterm-pane\"|\"iterm-tab\"|\"iterm-window\"|\"tmux-window\""
   }
 ]
+
+=== agent_teleport: onto another machine
+args: {"handoff":"h","to":"basement"}
+frame: {"t":"teleport","handoff":"h","to":"basement"} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Teleport accepted. Handoff recorded; your successor is a-2 and keeps the name \"me\". Your successor is starting now and this session is being shut down. Do not start anything new — finish or write down whatever is in flight, because it will not survive this turn."
+  }
+]
+
+=== agent_teleport: blank machine
+args: {"handoff":"h","to":" "}
+frame: {"t":"teleport","handoff":"h"} (process fields omitted)
+[
+  {
+    "type": "text",
+    "text": "Teleport accepted. Handoff recorded; your successor is a-2 and keeps the name \"me\". Your successor is starting now and this session is being shut down. Do not start anything new — finish or write down whatever is in flight, because it will not survive this turn."
+  }
+]
