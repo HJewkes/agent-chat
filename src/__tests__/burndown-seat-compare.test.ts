@@ -122,6 +122,35 @@ describe('seats compare verdicts', () => {
   })
 })
 
+/** CC-786: a stopped line refuses every implementer but a cos:expedite one and planners. */
+describe('seats compare under a stopped line', () => {
+  const STOP =
+    'service check failed twice (stale pid, then crash loop): serve restarted 3 times; only cos:expedite dispatches'
+  const stopped = {
+    dispatch: [dispatch('ZZ-4'), dispatch('ZZ-1', { profile: 'bd-planner' })],
+    refusals: [refusal('ZZ-2', 'stop-line', STOP), refusal('ZZ-5', 'stop-line', STOP)],
+    placement: placed({ 'ZZ-4': { tier: 0 }, 'ZZ-1': { tier: 3 } }),
+  }
+
+  it('reports a stop-line refusal as refused, not beyond caps', () => {
+    const result = compareSeat(input(stopped, { held: new Set(['ZZ-3']) }))
+
+    expect(verdictLine(result.lines, 'ZZ-2')).toContain(`refused [stop-line]: ${STOP}`)
+    expect(result.lines.at(-1)).toBe(
+      'PASS: 5 score.py IDs; 2 dispatched, 2 refused, 1 held, 0 beyond caps, 0 unexplained',
+    )
+  })
+
+  it('explains an expedite dispatch above the stopped rows by its tier', () => {
+    const result = compareSeat(input(stopped, { held: new Set(['ZZ-3']) }))
+
+    expect(result.ok).toBe(true)
+    expect(verdictLine(result.lines, 'ZZ-4')).toContain(
+      'dispatched as pick 1, ahead of #1 ZZ-1: tier 0 (expedite) over tier 3 (standard)',
+    )
+  })
+})
+
 describe('seats compare order', () => {
   const reordered = {
     dispatch: [dispatch('ZZ-4'), dispatch('ZZ-1')],

@@ -83,6 +83,7 @@ import { BrokerClient } from '../../client/broker-client.js'
 import { systemHost } from '../../mirror/job-host.js'
 import { hostLeaseRefusal } from '../../host-lease.js'
 import { burndownLedgerPath, home } from '../../paths.js'
+import { ledgerImplementers, readLedger } from '../../agents/burndown/ledger.js'
 import { claimsPort, eventsVerdictsPort, shepherdPort } from '../../agents/seats/in-flight-read.js'
 import { SURFACE_NAMES, type ServerMessage, type SurfaceName } from '../../protocol.js'
 import { addVerb, defineVerb, Report } from '../command.js'
@@ -493,6 +494,7 @@ function statusDeps(root: string, client: BrokerClient): StatusDeps {
       }),
     machine: readMachineStatus,
     machineStop: readMachineStop,
+    ledgerImplementers: seat => ledgerImplementers(readLedger(burndownLedgerPath()), seat),
   }
 }
 

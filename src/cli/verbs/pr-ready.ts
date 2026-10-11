@@ -93,12 +93,19 @@ const realpathOrResolved = (file: string): string => {
 const exemptBodyFile = (cwd: string, bodyFile: string | undefined): string | undefined =>
   bodyFile === undefined ? undefined : realpathOrResolved(path.resolve(cwd, bodyFile))
 
+/**
+ * Worktrees often link `node_modules` into the main checkout, and the `node_modules/` ignore
+ * rule matches directories only, so git lists the symlink as untracked.
+ */
+const isUntrackedNodeModules = (line: string): boolean =>
+  line.startsWith('?? ') && line.slice(3).replace(/\/$/, '').split('/').includes('node_modules')
+
 export async function cleanTreeStep(run: Run, cwd: string, exempt?: string): Promise<StepOutcome> {
   const status = await run('git', ['status', '--porcelain'], cwd)
   if (status.code !== 0) return { ok: false, reason: `git status failed: ${lastLine(status.output)}` }
   const files = status.output
     .split('\n')
-    .filter(line => line.trim() !== '')
+    .filter(line => line.trim() !== '' && !isUntrackedNodeModules(line))
     .map(line => line.slice(3))
     .filter(file => exempt === undefined || realpathOrResolved(path.resolve(cwd, file)) !== exempt)
   if (files.length === 0) return { ok: true }

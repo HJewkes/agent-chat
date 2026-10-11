@@ -37,7 +37,7 @@ import { systemHost } from '../../mirror/job-host.js'
 import { addVerb, defineVerb, Report } from '../command.js'
 import { collisionView, tickBroker } from '../burndown-broker.js'
 import { approveBrief, approvePortsOn } from '../../agents/burndown/brief-approve.js'
-import { releaseTask, type RetireCall } from './burndown-release.js'
+import { linkSlicePr, releaseTask, type RetireCall } from './burndown-release.js'
 import {
   burndownConfigShowVerb,
   burndownOverrideClearVerb,
@@ -378,11 +378,21 @@ export const burndownResumeVerb = defineVerb({
 
 export const burndownReleaseVerb = defineVerb({
   name: 'burndown.release',
-  description: 'drop every claim on a task, stalled or not, so the tick may pick it again',
-  args: z.object({ task: requiredString('task') }),
+  description:
+    'drop every claim on a task, stalled or not, so the tick may pick it again; --slice drops only that slice',
+  args: z.object({ task: requiredString('task'), slice: z.string().min(1).optional() }),
   result: Report,
-  cli: { positional: ['task'] },
-  async run({ task }) {
+  cli: {
+    positional: ['task'],
+    options: {
+      slice: {
+        long: '--slice',
+        description:
+          "drop only this slice's claim; the task stays seeded and the slice no longer gates its dependents",
+      },
+    },
+  },
+  async run({ task, slice }) {
     // Never autostart: a release that brought up a broker would own it, and the broker serves every session.
     const client = new BrokerClient(() => undefined, undefined, undefined, undefined, undefined, {
       autoStart: false,
@@ -396,11 +406,27 @@ export const burndownReleaseVerb = defineVerb({
       return tickBroker(client).retire(name)
     }
     try {
-      return await releaseTask(task, retire)
+      return await releaseTask(task, retire, new Date(), slice)
     } finally {
       client.close()
     }
   },
+})
+
+export const burndownLinkVerb = defineVerb({
+  name: 'burndown.link',
+  description:
+    'record a hand-dispatched PR on a queued slice, so the tick never dispatches it and finishes it on merge',
+  args: z.object({ task: requiredString('task'), slice: requiredString('slice'), pr: requiredString('pr') }),
+  result: Report,
+  cli: {
+    positional: ['task'],
+    options: {
+      slice: { long: '--slice', description: 'the queued slice the PR implements' },
+      pr: { long: '--pr', description: 'the PR, as owner/repo#n or its URL' },
+    },
+  },
+  run: ({ task, slice, pr }) => linkSlicePr(task, slice, pr),
 })
 
 export const burndownBriefApproveVerb = defineVerb({
@@ -472,6 +498,7 @@ export function addBurndownCommands(program: Commander): void {
   addVerb(burndown, burndownPauseVerb)
   addVerb(burndown, burndownResumeVerb)
   addVerb(burndown, burndownReleaseVerb)
+  addVerb(burndown, burndownLinkVerb)
   addVerb(brief, burndownBriefApproveVerb)
   addVerb(
     burndown.command('config').description('resolved burndown settings (CC-955)'),
