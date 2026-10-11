@@ -1,3 +1,4 @@
+import type { AgentOrigin } from '../../protocol.js'
 import type { BudgetRead, BudgetWindow } from '../budget.js'
 import { gatePool, type AccountReading, type PoolRule, type SevenDaySample } from '../burndown/budget-gate.js'
 import type { Pool, Seat, SeatSpend } from './charter.js'
@@ -36,6 +37,11 @@ export interface SeatAgent {
   /** CC-465: the durable id and teleport depth, which a live roster carries. */
   agentId?: string
   generation?: number
+  /** CC-959: which row is the seat's latest session, and the account it ran on; a replay's roster has none. */
+  origin?: AgentOrigin
+  sessionId?: string
+  cwd?: string
+  configDir?: string
 }
 
 /** CC-402: a seat agent still in `spawning` past this never started, and nothing else says so. */

@@ -12,6 +12,8 @@ import {
   type RetireSpend,
 } from './dispatch-record.js'
 import type { RetireOutcome } from './retire-outcome.js'
+import { retireSeatOutcome } from './retire-seat-outcome.js'
+import type { ShepherdRow } from '../burndown/shepherd.js'
 import { parseTaskTags, type BriefSource } from '../burndown/task-tags.js'
 import { taskOf } from './journal-line.js'
 import { readText } from './io.js'
@@ -30,6 +32,8 @@ export interface SeatDispatchLog {
   dispatched: (spawn: SpawnFacts) => void
   abandoned: (spawn: SpawnFacts) => void
   retired: (spawn: SpawnFacts, sessionId: string | null, spend: RetireSpend, outcome: RetireOutcome) => void
+  /** TP-1570: after `retired`, appends `merged` or `done` when Shepherd and the report tell it. Absent without `shepherd`. */
+  ended?: (spawn: SpawnFacts, outcome: RetireOutcome) => Promise<void>
 }
 
 type Log = (event: string, detail: Record<string, unknown>) => void
@@ -41,6 +45,8 @@ export interface DispatchLogDeps {
   activeWork?: string
   /** The stat used to re-check an opened log against its path; injectable so a directory swap can be simulated. */
   stat?: (file: string) => fs.Stats
+  /** TP-1570: every Shepherd row, undefined when unread; without it no `merged` or `done` row is written. */
+  shepherd?: () => Promise<ShepherdRow[] | undefined>
 }
 
 const UNAVAILABLE = 'seat_dispatch_unavailable'
@@ -52,6 +58,7 @@ const NOT_REGULAR = 'dispatch_log is not a regular file'
 const NO_OPEN = new Set(['ENXIO', 'EOPNOTSUPP'])
 const NO_OPEN_ERRNO = new Set([-os.constants.errno.ENXIO, -os.constants.errno.EOPNOTSUPP])
 const UNREADABLE = 'seat_dispatch_seat_unreadable'
+const OUTCOME_UNAVAILABLE = 'seat_outcome_unavailable'
 
 /** CC-469: the tick's end-state row for a merged PR, read by the fold as a seat's own row since it is not the broker's. */
 export interface MergedRow {
@@ -63,11 +70,23 @@ export interface MergedRow {
   by: 'burndown'
 }
 
+/** TP-1570: the broker's end-state row at retire; `by` is not `broker`, so the fold reads it as the seat's own. */
+export interface EndedRow {
+  ts: string
+  task: string | null
+  agent: string
+  pr: string | null
+  head: string | null
+  outcome: 'merged' | 'done'
+  by: 'agent-chat'
+}
+
 type Row =
   | ReturnType<typeof dispatchedRow>
   | ReturnType<typeof retiredRow>
   | ReturnType<typeof abandonedRow>
   | MergedRow
+  | EndedRow
 
 /** The writer over the autonomy root at `root`. Each problem is logged once per writer and retried silently. */
 export function seatDispatchLog(root: string, deps: DispatchLogDeps = {}): SeatDispatchLog {
@@ -85,6 +104,30 @@ export function seatDispatchLog(root: string, deps: DispatchLogDeps = {}): SeatD
     abandoned: spawn => write(spawn, abandonedRow),
     retired: (spawn, sessionId, spend, outcome) =>
       write(spawn, run => retiredRow(run, sessionId, spend, outcome)),
+    ...(deps.shepherd === undefined ? {} : { ended: endedWriter(context, deps.shepherd, deps.now) }),
+  }
+}
+
+/** Reads Shepherd only for a seat's agent; a failed read is logged once and writes nothing. Never throws. */
+function endedWriter(
+  ctx: WriteContext,
+  shepherd: () => Promise<ShepherdRow[] | undefined>,
+  now: (() => Date) | undefined,
+): (spawn: SpawnFacts, outcome: RetireOutcome) => Promise<void> {
+  return async ({ agent, spawner }, outcome) => {
+    try {
+      const target = targetOf(ctx, agent, spawner ?? undefined)
+      if (target === undefined) return
+      const rows = await shepherd().catch(() => undefined)
+      if (rows === undefined) return ctx.once(OUTCOME_UNAVAILABLE, OUTCOME_UNAVAILABLE, { agent })
+      const ended = retireSeatOutcome({ agent, outcome, shepherd: rows })
+      if (ended === undefined) return
+      const ts = (now?.() ?? new Date()).toISOString()
+      const row: EndedRow = { ts, task: target.task, agent, ...ended, by: 'agent-chat' }
+      appendTo(ctx, target, row, text => hasOutcomeRow(text, agent, ended.outcome))
+    } catch (err) {
+      ctx.once(UNAVAILABLE, UNAVAILABLE, { reason: err instanceof Error ? err.message : String(err) })
+    }
   }
 }
 
@@ -167,21 +210,24 @@ export function seatMergedLog(root: string, deps: DispatchLogDeps = {}): SeatMer
       if (target === undefined) return
       const ts = (deps.now?.() ?? new Date()).toISOString()
       const row: MergedRow = { ts, task: target.task, agent, pr, outcome: 'merged', by: 'burndown' }
-      appendTo(ctx, target, row, text => hasMergedRow(text, agent, pr))
+      appendTo(ctx, target, row, text =>
+        hasRow(text, r => r.outcome === 'merged' && r.agent === agent && r.pr === pr),
+      )
     } catch (err) {
       ctx.once(UNAVAILABLE, UNAVAILABLE, { reason: err instanceof Error ? err.message : String(err) })
     }
   }
 }
 
-/** Whether any line of `log`, hand-written or not, records `agent` merging `pr`. */
-export function hasMergedRow(log: string, agent: string, pr: string): boolean {
+/** Whether any line of `log`, hand-written or not, records `agent` ending with `outcome`, whatever its PR. */
+const hasOutcomeRow = (log: string, agent: string, outcome: string): boolean =>
+  hasRow(log, r => r.outcome === outcome && r.agent === agent)
+
+function hasRow(log: string, match: (row: Record<string, unknown>) => boolean): boolean {
   return log.split('\n').some(line => {
     try {
       const row: unknown = JSON.parse(line)
-      if (typeof row !== 'object' || row === null) return false
-      const r = row as Record<string, unknown>
-      return r.outcome === 'merged' && r.agent === agent && r.pr === pr
+      return typeof row === 'object' && row !== null && match(row as Record<string, unknown>)
     } catch {
       return false
     }
