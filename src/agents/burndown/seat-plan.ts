@@ -142,6 +142,8 @@ type Role = keyof SeatDispatch['caps']
 type Refused = Pick<Refusal, 'kind' | 'reason'>
 type Taken = { dispatch: Dispatch; role: Role; work: CollisionWork }
 type Seeded = { seeds: Claim[] }
+/** CC-986: an implementer-routed task with no plan to seed from; a planner writes the one at this path. */
+type Replan = { replan: string }
 
 const ROUTES: Partial<Record<Route, { role: Role; profile: string }>> = {
   briefer: { role: 'planners', profile: PLANNER_PROFILE },
@@ -149,6 +151,9 @@ const ROUTES: Partial<Record<Route, { role: Role; profile: string }>> = {
   implementer: { role: 'implementers', profile: IMPLEMENTER_PROFILE },
   'implementer-lite': { role: 'implementers', profile: 'bd-implementer-lite' },
 }
+
+/** CC-986: the route a brief:ready task with no plan takes, so a planner writes the slices that declare its owns. */
+const PLANNER_ROUTE = { role: 'planners', profile: PLANNER_PROFILE } as const
 
 const ROLE_OF_PHASE: Partial<Record<Claim['phase'], Role>> = {
   planning: 'planners',
@@ -539,24 +544,34 @@ function consider(
   if (repo === undefined)
     return { kind: 'no-repo', reason: `seat ${seat.seat} lists no repo for ${row.initiative}` }
   const seeded = seedFromPlan(row, task, route.role, walk)
-  if (seeded !== undefined) return seeded
+  if (seeded !== undefined && !('replan' in seeded)) return seeded
+  const { role, profile } = seeded === undefined ? route : PLANNER_ROUTE
   const reason = `score ${row.score}, effective ${row.effective}`
   const dispatch = {
-    ...dispatchFor({ initiative: row.initiative, task: row.id, profile: route.profile }, repo, reason, walk),
+    ...dispatchFor({ initiative: row.initiative, task: row.id, profile }, repo, reason, walk),
     ...(row.tier === undefined ? {} : { tier: row.tier }),
     ...(isBriefer(task) ? { briefer: true } : {}),
   }
   const work = { taskId: row.id, tags: task.tags, owns: [] }
-  return blocker(dispatch, work, route.role, walk) ?? { dispatch, role: route.role, work }
+  const refused = blocker(dispatch, work, role, walk)
+  if (refused !== undefined) return refused
+  if (seeded !== undefined)
+    walk.notes.push(`planning ${row.initiative} ${row.id}: no plan at ${seeded.replan} (seat ${seat.seat})`)
+  return { dispatch, role, work }
 }
 
 /**
  * CC-927: under an `on` gate, a brief-ready task's seat-written plan stands in for the planner. Its slices
  * hold the task from here and dispatch as ready slices from the next tick; a plan failing the lint blocks it.
- * CC-952: an implementer-routed task seeds the same way, and with no plan it refuses `no-owns`, since only
- * the plan's slices declare the files it will touch. A planner with no plan runs as before.
+ * CC-952: an implementer-routed task seeds the same way, since only the plan's slices declare the files it
+ * will touch. CC-986: with no plan it goes to a planner instead of being refused. A planner with no plan runs as before.
  */
-function seedFromPlan(row: DispatchRow, task: Task, role: Role, walk: Walk): Seeded | Refused | undefined {
+function seedFromPlan(
+  row: DispatchRow,
+  task: Task,
+  role: Role,
+  walk: Walk,
+): Seeded | Replan | Refused | undefined {
   const { seat, brief, readPlan, ledger, budget } = walk.inputs
   if (readPlan === undefined || (row.route !== 'planner' && role !== 'implementers')) return undefined
   if (brief?.gate === 'shadow' && role === 'implementers')
@@ -565,7 +580,7 @@ function seedFromPlan(row: DispatchRow, task: Task, role: Role, walk: Walk): See
       : undefined
   if (brief?.gate !== 'on') return undefined
   const plan = readPlan(row.initiative, row.id)
-  if (plan.text === undefined && role === 'implementers') return noOwns(plan.path)
+  if (plan.text === undefined && role === 'implementers') return { replan: plan.path }
   const parent = { taskId: row.id, initiative: row.initiative, seat: seat.seat, namePrefix: seat.prefix }
   const seeding = seedSlices(parent, plan, ledger, budget.ctx.now)
   if (seeding === undefined) return undefined
@@ -578,19 +593,12 @@ function seedFromPlan(row: DispatchRow, task: Task, role: Role, walk: Walk): See
   return { seeds: seeding.claims }
 }
 
-const noOwns = (plan: string): Refused => ({
-  kind: 'no-owns',
-  reason: `no plan at ${plan}; a brief:ready task declares the files it touches as slice owns there`,
-})
-
-/** A shadow gate dispatches the implementer as today and notes that `on` would refuse it for want of a plan. */
+/** A shadow gate dispatches the implementer as today and notes that `on` would send a planner for want of a plan. */
 function noteShadowOwns(row: DispatchRow, readPlan: PlanReader, walk: Walk): undefined {
   const plan = readPlan(row.initiative, row.id)
   if (plan.text !== undefined) return undefined
   const seat = walk.inputs.seat.seat
-  walk.notes.push(
-    `would-refuse no-owns ${row.initiative} ${row.id} (seat ${seat}): ${noOwns(plan.path).reason}`,
-  )
+  walk.notes.push(`would-plan ${row.initiative} ${row.id} (seat ${seat}): no plan at ${plan.path}`)
   return undefined
 }
 
