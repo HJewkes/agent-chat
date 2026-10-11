@@ -425,11 +425,11 @@ const LIVE: [actor: string, body: string, expected: 'open' | 'lift' | 'none', re
 
 describe('the classifier against live operator phrasings', () => {
   it('opens a hold at every live operator stop and closes it at every live lift', () => {
-    const chat: Send[] = LIVE.map(([actor, body, , recipients], i) => [
+    const chat = LIVE.map(([actor, body, , recipients = ['seat-a', 'seat-b']], i): Send => [
       actor,
       LIVE.length - i,
       body,
-      undefined,
+      `m${i}`,
       recipients,
     ])
     writeChat(chat)
