@@ -1,5 +1,5 @@
 import os from 'node:os'
-import { burndownConfigPath, burndownLedgerPath } from '../../paths.js'
+import { burndownLedgerPath } from '../../paths.js'
 import { activeWorkRoot } from '../active-work.js'
 import { gateAccount, type AccountReading } from './budget-gate.js'
 import { routeOf, type RouteConfig } from './exception.js'
@@ -20,7 +20,8 @@ import {
   type LoadedSeats,
   type SeatPlanDeps,
 } from './seat-tick.js'
-import { accountDir, loadTickConfig, readInitiatives, readReadings, readTasks } from './source.js'
+import { loadResolvedConfig } from './settings-store.js'
+import { accountDir, readInitiatives, readReadings, readTasks } from './source.js'
 import { currentTriage, exceptionOf } from './triage.js'
 import { installedClaudeVersion, trustRefusal } from './trust-gate.js'
 
@@ -117,7 +118,7 @@ export function seatPlanSetup(opts: SeatPlanOptions): {
   const cliVersion = installedClaudeVersion()
   // A dry run judges this read against the persisted one and writes neither.
   const lineStop = lineStopFrom(readServiceCheck(opts.exec), ledger.serviceCheck, opts.now)
-  const config = loadTickConfig(burndownConfigPath())
+  const config = loadResolvedConfig().tick
   const deps: SeatPlanDeps = {
     ledger,
     scopeTagAliases: config.scopeTagAliases,
@@ -196,7 +197,7 @@ export function renderStatus(ledger: Ledger, now: Date, autonomyRoot = defaultAu
   const pools = charterRules(autonomyRoot)
   const readings = readReadings(Object.keys(pools.rules), now.getTime(), poolDir(pools.rules))
   const held = heldClaims(ledger)
-  const { route } = loadTickConfig(burndownConfigPath()).exceptions
+  const { route } = loadResolvedConfig().tick.exceptions
   const lines = [
     `ledger ${burndownLedgerPath()}: ${held.length} held, last tick ${ledger.lastTickAt ?? 'never'}`,
   ]
