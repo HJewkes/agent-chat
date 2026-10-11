@@ -372,6 +372,15 @@ describe('charter and seat parsing', () => {
     })
   })
 
+  it.each([
+    ['heartbeat_source: watchdog\n', 'watchdog'],
+    ['heartbeat_source: cron\n', 'cron'],
+    ['heartbeat_source: bogus\n', undefined],
+    ['', undefined],
+  ])('reads the seat line %j as heartbeat source %s, unset meaning cron', (line, source) => {
+    expect(parseSeat('x', `---\nprefix: x\npool: claude\n${line}---\n`)?.heartbeatSource).toBe(source)
+  })
+
   it('reads a seat without a spend block as having no seat spend stops', () => {
     expect(parseSeat('x', '---\nprefix: x\npool: claude\n---\n')?.spend).toEqual({})
   })
