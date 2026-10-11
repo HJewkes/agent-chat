@@ -60,12 +60,16 @@ export type RefusalKind =
   | 'out-of-scope'
   | 'no-brief'
   | 'brief-stale'
+  | 'blocked'
+  | 'repo-ambiguous'
 
 export interface Refusal {
   initiative: string
   task?: string
   kind: RefusalKind
   reason: string
+  /** CC-945: the task's own tags, set on an `out-of-scope` refusal so the log can name the tag that failed. */
+  tags?: readonly string[]
 }
 
 export const RESERVED_TAGS = ['human-only', 'blocked', 'needs-decision']

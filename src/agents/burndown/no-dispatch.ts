@@ -55,6 +55,18 @@ export function stopOf(refusals: readonly Refusal[]): { name: string; reading: s
   return undefined
 }
 
+const NAMED_OUT_OF_SCOPE = 5
+
+/** CC-945: the first few out-of-scope task ids with the tags they carry, which is what failed the scope. */
+function outOfScopeNamed(refusals: readonly Refusal[]): string {
+  const out = refusals.filter(r => r.kind === 'out-of-scope' && r.task !== undefined)
+  if (out.length === 0) return ''
+  const named = out
+    .slice(0, NAMED_OUT_OF_SCOPE)
+    .map(r => `${r.task} [${r.tags === undefined || r.tags.length === 0 ? 'no tags' : r.tags.join(' ')}]`)
+  return `; out-of-scope first ${named.length}: ${named.join(', ')}`
+}
+
 /** The seat's reason line, or undefined when it dispatched. */
 export function noDispatchReason(outcome: SeatOutcome): NoDispatchReason | undefined {
   const { seat, refusals, skipped } = outcome
@@ -71,7 +83,7 @@ export function noDispatchReason(outcome: SeatOutcome): NoDispatchReason | undef
   return {
     seat,
     key: [stop?.name ?? '-', ...kinds].join(' '),
-    text: `${NO_DISPATCH_PREFIX}${head}; ${listed}`,
+    text: `${NO_DISPATCH_PREFIX}${head}; ${listed}${outOfScopeNamed(refusals)}`,
   }
 }
 
