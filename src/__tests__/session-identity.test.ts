@@ -80,6 +80,46 @@ describe('adopting a human-started session', () => {
     expect(core.agents.roster()[0]?.sessionId).toBe('sess-abc')
   })
 
+  it('records the account the session observed itself running on', () => {
+    const core = makeCore()
+    core.register(fakeConn(), registration({ observed: { configDir: '/profiles/personal' } }))
+
+    expect(core.agents.roster()[0]?.configDir).toBe('/profiles/personal')
+  })
+
+  it('records no account for a session that observed none', () => {
+    const core = makeCore()
+    core.register(fakeConn(), registration())
+
+    expect(core.agents.roster()[0]?.configDir).toBeUndefined()
+  })
+
+  it('marks a derived name, and clears the mark when the session names itself', () => {
+    const core = makeCore()
+    core.register(fakeConn(), registration({ name: 'agent-x', provisional: true }))
+    expect(core.agents.roster()[0]?.provisionalName).toBe(true)
+
+    core.register(fakeConn(), registration({ name: 'chosen' }))
+
+    expect(core.agents.roster()[0]).toMatchObject({ name: 'chosen' })
+    expect(core.agents.roster()[0]?.provisionalName).toBeUndefined()
+  })
+
+  it('takes the derived name as chosen once the session registers it without the flag', () => {
+    // An agent restarted by hand in its own worktree may deliberately keep the name the directory gave it.
+    const core = makeCore()
+    const first = fakeConn()
+    core.register(first, registration({ name: 'agent-x', provisional: true }))
+    core.drop(first)
+
+    core.register(
+      fakeConn(),
+      registration({ name: 'agent-x', workingOn: 'unregistered session in /tmp/project' }),
+    )
+
+    expect(core.agents.roster()[0]?.provisionalName).toBeUndefined()
+  })
+
   it('attributes the session to the human, since a human started it', () => {
     const core = makeCore()
     core.register(fakeConn(), registration())
