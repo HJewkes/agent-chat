@@ -509,6 +509,11 @@ Commands:
                                 restart window, machine stop or stop line) and its logs have no tick
                                 line for its cron's widest gap plus 5 min, send the charter
                                 heartbeat through the broker and log heartbeat_external
+  heartbeat-gaps [options]      report where a seat's heartbeat deliveries (heartbeat_watchdog and
+                                heartbeat_external rows in broker.log) stopped for longer than its
+                                heartbeat_cron's widest gap plus 5 min, outside its BUDGET-PAUSE
+                                stretches, and each slot that got two deliveries (CC-391). Exits
+                                non-zero when it finds either
   help [command]                display help for command
 
 === agent-chat seats watchdog
@@ -666,6 +671,20 @@ Options:
   --root <value>  autonomy directory holding charter.md, seats/ and logs/
   --dry-run       print the decision; send nothing
   -h, --help      display help for command
+
+=== agent-chat seats heartbeat-gaps
+Usage: agent-chat seats heartbeat-gaps [options]
+
+report where a seat's heartbeat deliveries (heartbeat_watchdog and heartbeat_external rows in
+broker.log) stopped for longer than its heartbeat_cron's widest gap plus 5 min, outside its
+BUDGET-PAUSE stretches, and each slot that got two deliveries (CC-391). Exits non-zero when it finds
+either
+
+Options:
+  --seat <value>   the seat to report on (required)
+  --hours <value>  how far back to look (default 24)
+  --root <value>   autonomy directory holding seats/ and logs/
+  -h, --help       display help for command
 
 === agent-chat debug
 Usage: agent-chat debug [options] [command]
