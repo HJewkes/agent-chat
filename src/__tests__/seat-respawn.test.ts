@@ -126,12 +126,12 @@ describe('respawnSeat', () => {
     const plan: SeatRelaunchPlan = { ...incident, target: { kind: 'fresh', latest: onServer, stale: ['g9'] } }
     const b = broker([retired('g9'), retired('g10'), spawned])
 
-    await respawnSeat(b.client, 'titan-coord', plan, { surface: 'tmux', from: 'seat file' })
+    await respawnSeat(b.client, 'titan-coord', plan, { surface: 'tmux-window', from: 'seat file' })
 
     expect(b.frames.map(f => f.agentId ?? f.t)).toEqual(['g9', 'g10', 'spawn'])
     expect(b.frames[2]).toMatchObject({
       brief: 'HANDOFF',
-      surface: 'tmux',
+      surface: 'tmux-window',
       remoteControl: true,
       configDir: PERSONAL,
     })
