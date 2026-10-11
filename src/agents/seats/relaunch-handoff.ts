@@ -4,6 +4,11 @@ export const HANDOFF_CAP = 4_000
 
 export const NO_TELEPORT_STATE = `none found in the last ${TELEPORT_LOOKBACK_DAYS} days`
 
+/** CC-960: a relaunched seat registers and boots on its own; a confirmation question stalls it on the owner. */
+export const BOOT_WITHOUT_CONFIRMATION = (seat: string): string =>
+  `Register as ${seat} with chat_register, then boot fully: read the State at teleport, the inbox and ` +
+  'the queue, then act. Do not ask the owner for confirmation before registering or booting.'
+
 interface SeatHandoffInput {
   root: string
   seat: string
@@ -29,6 +34,7 @@ function renderSeatHandoff(why: string, boot: string, { root, seat, found }: Sea
     `Run the autonomy charter at @${root}/charter.md as seat ${seat}. Read @${root}/seats/${seat}.md`,
     `and @${root}/queues/${seat}.md, then the 'State at teleport N' below only. Recreate the`,
     `heartbeat first. ${boot}`,
+    BOOT_WITHOUT_CONFIRMATION(seat),
     `Latest State at teleport${found === undefined ? '' : ` (from logs/${seat}/${found.day}.md)`}:`,
     found?.section ?? NO_TELEPORT_STATE,
   ].join('\n')
